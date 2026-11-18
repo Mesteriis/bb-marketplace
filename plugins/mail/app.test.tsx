@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, waitFor, within } from "@testing-library/react";
+import { act, cleanup, createEvent, fireEvent, waitFor, within } from "@testing-library/react";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { useEffect, useMemo, useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -170,6 +170,7 @@ const threadA: ThreadSummary = {
   snoozedUntil: null,
   category: null,
   categorySuggestion: null,
+  projectId: null,
 };
 
 const threadB: ThreadSummary = {
@@ -185,6 +186,7 @@ const threadB: ThreadSummary = {
   snoozedUntil: null,
   category: null,
   categorySuggestion: null,
+  projectId: null,
 };
 
 function message(overrides: Partial<MessageHeader> & { id: string }): MessageHeader {
@@ -199,18 +201,27 @@ function message(overrides: Partial<MessageHeader> & { id: string }): MessageHea
     isRead: true,
     isFlagged: false,
     hasAttachments: false,
+    kept: null,
+    labels: [],
     to: [{ name: null, address: "owner@example.org" }],
     cc: [],
     attachments: [],
     draftId: null,
     agentSubject: overrides.subject ?? "Quarterly plan",
     inAiScope: true,
+    devLinks: [],
+    dev: null,
+    patch: null,
+    alert: false,
+    bbLinks: [],
     ...overrides,
   };
 }
 
 const detailA: ThreadDetail = {
   thread: threadA,
+  project: null,
+  projectSuggestion: null,
   messages: [
     message({ id: "m-old", date: "2026-11-13T08:00:00.000Z", isRead: false, snippet: "First note" }),
     message({ id: "m-new", date: "2026-11-14T08:30:00.000Z", isRead: false, snippet: "Here is the draft" }),
@@ -356,6 +367,8 @@ describe("Mail page", () => {
   it("opening a conversation marks every unread message read", async () => {
     const detail: ThreadDetail = {
       thread: { ...threadA, messageCount: 3, unreadCount: 2 },
+      project: null,
+      projectSuggestion: null,
       messages: [
         message({ id: "m-1", date: "2026-11-12T08:00:00.000Z", isRead: false, snippet: "One" }),
         message({ id: "m-2", date: "2026-11-13T08:00:00.000Z", isRead: true, snippet: "Two" }),
@@ -554,6 +567,7 @@ function folder(overrides: Partial<Folder> & { path: string; name: string }): Fo
     selectable: true,
     unreadCount: 0,
     totalCount: 3,
+    subscribed: true,
     ...overrides,
   };
 }
@@ -574,6 +588,8 @@ const FOLDERS: Folder[] = [
 function detailIn(inFolder: string): ThreadDetail {
   return {
     thread: threadA,
+    project: null,
+    projectSuggestion: null,
     messages: [
       message({ id: "m-old", folder: inFolder, date: "2026-11-13T08:00:00.000Z", snippet: "First note" }),
       message({
@@ -632,6 +648,9 @@ const NOT_MOVES = [
   "Summarize",
   "Find tasks",
   "Remind me\u2026",
+  // Slice 3g.
+  "New thread\u2026",
+  "Make a task\u2026",
 ];
 
 function toolbar(slot: ReturnType<typeof render>) {
@@ -649,7 +668,8 @@ describe("Mail folders", () => {
     expect(rail.getByRole("button", { name: /Inbox/ }).getAttribute("aria-current")).toBe("page");
     // "[Gmail]" holds only system folders; "Projects" holds one of the owner's.
     expect(rail.queryByText("[Gmail]")).toBeNull();
-    expect(rail.getByText("Projects").closest("button")).toBeNull();
+    // The folder named Projects is a heading, not a button (the rail's own Projects entry is, slice 3g).
+    expect(rail.getAllByText("Projects").find((el) => el.tagName === "LI")?.closest("button")).toBeNull();
     expect(rail.getByRole("button", { name: /Alpha/ })).toBeTruthy();
     expect(callsTo(slot, "folders_list")[0]?.input).toEqual({ accountId: "acc-1" });
     expect(callsTo(slot, "threads_list")[0]?.input).toMatchObject({
@@ -765,8 +785,9 @@ describe("Message actions", () => {
     });
     await waitFor(() => expect(toasts.success).toEqual(["Moved to Spam"]));
     await waitFor(() => expect(slot.queryByRole("button", { name: /Quarterly plan/ })).toBeNull());
-    expect(slot.queryByRole("heading", { name: "Quarterly plan" })).toBeNull();
     expect(slot.getByText("Lunch")).toBeTruthy();
+    // Slice 3i (part B B5): the next conversation opens in its place.
+    await waitFor(() => expect(callsTo(slot, "thread_get").at(-1)?.input).toMatchObject({ threadId: "th-b" }));
   });
 
   it("Not spam is offered only in Spam and moves from there", async () => {
@@ -864,8 +885,13 @@ describe("Remote images", () => {
   });
 
   it("Always show allows the sender, then shows the images", async () => {
+    // Slice 3i: a judged sender (an unknown check waits for its refresh, part A resolution 5).
+    const judged: ThreadDetail = {
+      ...detailA,
+      messages: detailA.messages.map((m) => ({ ...m, senderCheck: { state: "unchecked" as const, summary: null } })),
+    };
     const slot = render(
-      folderRpc({ ...withImage(false), images_allow_sender: () => ({ address: "ada@example.org" }) }),
+      folderRpc({ ...withImage(false), thread_get: () => judged, images_allow_sender: () => ({ address: "ada@example.org" }) }),
     );
 
     fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
@@ -918,6 +944,8 @@ describe("Refreshes and read marks", () => {
   it("a refresh that brings a new unread message into the open conversation does not mark it", async () => {
     let detail: ThreadDetail = {
       thread: threadA,
+      project: null,
+      projectSuggestion: null,
       messages: [message({ id: "m-1", isRead: true, snippet: "One" })],
     };
     const slot = render(mailRpc({ thread_get: () => detail }));
@@ -928,6 +956,8 @@ describe("Refreshes and read marks", () => {
 
     detail = {
       thread: threadA,
+      project: null,
+      projectSuggestion: null,
       messages: [...detail.messages, message({ id: "m-2", isRead: false, snippet: "Just arrived" })],
     };
     await slot.behavior.emitRealtime(MAIL_CHANGED_CHANNEL, { accountId: "acc-1" });
@@ -1006,7 +1036,18 @@ describe("Fix round 1", () => {
       .map((button) => button.textContent?.trim())
       .filter((label) => label !== "Back");
     // Writing still applies; the moves do not.
-    expect(labels).toEqual(["Reply", "Reply all", "Forward", "Translate", "Block", "Summarize", "Find tasks", "Hand to agent"]);
+    expect(labels).toEqual([
+      "Reply",
+      "Reply all",
+      "Forward",
+      "Translate",
+      "Block",
+      "New thread\u2026",
+      "Make a task\u2026",
+      "Summarize",
+      "Find tasks",
+      "Hand to agent",
+    ]);
   });
 
   it("shows Spam and Delete but no Archive in an archive folder", async () => {
@@ -1227,6 +1268,8 @@ const threadW: ThreadSummary = {
 function detailOf(thread: ThreadSummary, folderPath: string, ids: string[]): ThreadDetail {
   return {
     thread,
+    project: null,
+    projectSuggestion: null,
     messages: ids.map((id, i) =>
       message({
         id,
@@ -1287,10 +1330,16 @@ describe("All accounts", () => {
       "Archive",
       "Trash",
     ]);
+    // Slice 3h: each folder also has its options button.
+    const named = (list: ReturnType<typeof within>) =>
+      list
+        .getAllByRole("button")
+        .filter((b: HTMLElement) => b.getAttribute("aria-label") !== "Folder options")
+        .map((b: HTMLElement) => b.textContent);
     const first = within(rail.getByRole("list", { name: "owner@example.org" }));
-    expect(first.getAllByRole("button").map((b) => b.textContent)).toEqual(["Work"]);
+    expect(named(first)).toEqual(["Work"]);
     const second = within(rail.getByRole("list", { name: "me@work.example.org" }));
-    expect(second.getAllByRole("button").map((b) => b.textContent)).toEqual(["All Mail", "Clients"]);
+    expect(named(second)).toEqual(["All Mail", "Clients"]);
   });
 
   it("switches between roles and an account's own folder", async () => {
@@ -1577,6 +1626,8 @@ describe("Flags and read state", () => {
     const slot = render(folderRpc({ message_action: () => movedTo("INBOX", "") }));
 
     fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
+    // Slice 3i: the two earlier read messages wait in the stack.
+    fireEvent.click(await slot.findByRole("button", { name: /2 earlier messages/ }));
     const reply = within(await slot.findByRole("article", { name: "Message from owner@example.org" }));
     fireEvent.click(reply.getByRole("button", { name: "Flag message" }));
 
@@ -1702,7 +1753,7 @@ describe("Details and downloads", () => {
           {
             ...detailA.messages[1]!,
             attachments: [
-              { partId: "2", filename: "plan.pdf", mimeType: "application/pdf", size: 2048, isInline: false },
+              { partId: "2", filename: "plan.pdf", mimeType: "application/pdf", size: 2048, isInline: false, kind: "pdf" },
             ],
           },
         ],
@@ -1714,7 +1765,7 @@ describe("Details and downloads", () => {
     fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
     fireEvent.click(await slot.findByRole("button", { name: "Download .eml" }));
     await waitFor(() => expect(saves.calls).toHaveLength(1));
-    fireEvent.click(slot.getByRole("button", { name: "Download plan.pdf, PDF, 2 KB" }));
+    fireEvent.click(slot.getByRole("button", { name: "Download plan.pdf" }));
     await waitFor(() => expect(saves.calls).toHaveLength(2));
 
     expect(callsTo(slot, "download_ticket").map((call) => call.input)).toEqual([
@@ -1747,7 +1798,7 @@ describe("Details and downloads", () => {
 
       // "failed": the ticket may be spent, so a fresh one goes to the link.
       saves.outcome = "failed";
-      fireEvent.click(slot.getByRole("button", { name: "Download plan.pdf, PDF, 2 KB" }));
+      fireEvent.click(slot.getByRole("button", { name: "Download plan.pdf" }));
       await waitFor(() => expect(clicks).toHaveLength(2));
       expect(callsTo(slot, "download_ticket")).toHaveLength(4);
       expect(document.querySelector("a[download]")).toBeNull();
@@ -2462,8 +2513,12 @@ describe("Final fix wave", () => {
       await waitFor(() => expect(slot.queryByRole("toolbar", { name: "Selected conversations" })).toBeNull());
       await waitFor(() => expect(document.activeElement).not.toBe(document.body));
 
+      if (label === "Delete") {
+        // Slice 3i (B6): the cursor takes the row after the removed one, so j moves on from there.
+        await waitFor(() => expect(document.activeElement?.closest("li")?.textContent).toMatch(/Lunch/));
+      }
       key(J);
-      expect(document.activeElement?.closest("li")?.textContent).toMatch(label === "Delete" ? /Lunch/ : /Quarterly plan/);
+      expect(document.activeElement?.closest("li")?.textContent).toMatch(label === "Delete" ? /Tickets/ : /Quarterly plan/);
     });
   }
 
@@ -4436,5 +4491,1459 @@ describe("Slice 3f: Today, Tasks, Mail settings and day notices", () => {
     expect(await slot.findByText("Nothing yet.")).toBeTruthy();
     fireEvent.click(slot.getByRole("tab", { name: "AI features" }));
     expect(await slot.findByText("On: the Today digest is ready at 07:30.")).toBeTruthy();
+  });
+});
+
+describe("BB integration in the reading pane (slice 3g)", () => {
+  const projects = [{ id: "p-api", name: "api", kind: "local", hasTree: true, repo: null }];
+  const PROMPT = "Untrusted email content follows.\n<b>kept as text</b>";
+
+  it("Shift+N opens New thread with the server's prompt; Start starts it and opens the BB thread", async () => {
+    const slot = render(
+      mailRpc({
+        projects_list: () => ({ projects }),
+        thread_get: () => ({ ...detailA, project: { id: "p-api", name: "api", source: "owner" } }),
+        bb_thread_prepare: () => ({ prompt: PROMPT, title: "Quarterly plan", hidden: 0, leftOut: 0, permissionMode: "accept-edits" }),
+        bb_thread_start: () => ({ bbThreadId: "bbt-1" }),
+      }),
+    );
+    fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
+    await slot.findByRole("heading", { name: "Quarterly plan" });
+    press(pageRoot(slot), { key: "N", code: "KeyN", shiftKey: true });
+    const prompt = await slot.findByTestId("bb-thread-prompt");
+    expect(prompt.textContent).toBe(PROMPT);
+    expect(slot.getByText("Runs with accept-edits permissions")).toBeTruthy();
+    expect(callsTo(slot, "bb_thread_prepare")[0]?.input).toEqual({ messageId: "m-new", include: "message", projectId: "p-api" });
+    fireEvent.click(slot.getByRole("button", { name: "Start thread" }));
+    await waitFor(() => expect(slot.inspection.navigateCalls).toContainEqual({ method: "toThread", threadId: "bbt-1" }));
+    expect(toasts.plain).toContain("Thread started");
+  });
+
+  it("Edit in composer opens BB's composer with the prompt", async () => {
+    const slot = render(
+      mailRpc({
+        projects_list: () => ({ projects }),
+        bb_thread_prepare: () => ({ prompt: PROMPT, title: "Quarterly plan", hidden: 0, leftOut: 0, permissionMode: null }),
+      }),
+    );
+    fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
+    await slot.findByRole("heading", { name: "Quarterly plan" });
+    fireEvent.click(toolbar(slot).getByRole("button", { name: "New thread\u2026" }));
+    const select = (await slot.findByLabelText("Project")) as HTMLSelectElement;
+    await slot.findByRole("option", { name: "api" });
+    fireEvent.change(select, { target: { value: "p-api" } });
+    await slot.findByTestId("bb-thread-prompt");
+    fireEvent.click(slot.getByRole("button", { name: "Edit in composer" }));
+    await waitFor(() => expect(slot.inspection.navigateCalls.some((c) => c.method === "toCompose" as never)).toBe(true));
+  });
+
+  it("New thread is off for mail outside AI access, Make a task stays", async () => {
+    const outside = { ...detailA, messages: detailA.messages.map((m) => ({ ...m, inAiScope: false })) };
+    const slot = render(mailRpc({ thread_get: () => outside }));
+    fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
+    await slot.findByRole("heading", { name: "Quarterly plan" });
+    expect((toolbar(slot).getByRole("button", { name: "New thread\u2026" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((toolbar(slot).getByRole("button", { name: "Make a task\u2026" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("a plain body's code goes through BB's highlighter", async () => {
+    const fence = "```";
+    const slot = render(
+      mailRpc({
+        message_body: ({ messageId }: { messageId: string }) => ({
+          messageId,
+          text: `Run this:\n${fence}sh\nmake test\n${fence}\n`,
+          html: null,
+          htmlTruncated: false,
+          remoteImagesAllowed: false,
+          codeBlocks: [],
+        }),
+      }),
+    );
+    fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
+    expect(await slot.findByRole("figure", { name: "Code (sh)" })).toBeTruthy();
+  });
+});
+
+describe("Slice 3g: views, BB surfaces and settings", () => {
+  function renderWith(rpc: Record<string, unknown>, settings: Record<string, string | number | boolean> = {}, subPath = "") {
+    return renderSlot({ component: MailWithSidebar }, { subPath }, {
+      rpc: rpc as never,
+      settings,
+      composer: { scope: { kind: "new-thread", projectId: null } },
+    });
+  }
+  const GROUP = {
+    source: "github",
+    repo: "github.com/example-org/demo",
+    counts: { ci: 1, pr: 0, mr: 0, issue: 0, review: 0, release: 0, security: 0, alert: 0, other: 0 },
+    ciFailed: 1,
+    latestFailure: null,
+    unread: 1,
+    total: 1,
+    latestDate: null,
+    messageIds: ["m-1"],
+    projectId: null,
+    projectName: null,
+  };
+
+  it("registers Email the result in BB's organize group, Email this and the Mail Info section", () => {
+    const action = app.threadActions.find((a) => a.id === "email-result")!;
+    expect(action.title).toBe("Email the result");
+    expect(action.group).toBe("2_organize");
+    expect(action.placement).toBe("menu");
+    expect(app.messageActions.map((a) => a.id)).toContain("email-message");
+    expect(app.threadInfoSections.map((s) => s.id)).toContain("mail");
+  });
+
+  it("Email this ignores user messages", async () => {
+    const run = app.messageActions.find((a) => a.id === "email-message")!.run;
+    await run({ threadId: "bbt-1", message: { id: "x", threadId: "bbt-1", role: "user", text: "hello", sourceSeqEnd: 1, experimental_messageSeq: 1 } } as never);
+    expect(toasts.error).toEqual([]);
+    expect(toasts.success).toEqual([]);
+  });
+
+  it("g n opens Dev; Mark read acts on the group's messages with Undo", async () => {
+    const slot = renderWith(
+      mailRpc({
+        dev_digest_get: () => ({ groups: [GROUP], next: null }),
+        message_action: () => ({ groups: [{ accountId: "acc-1", folder: "INBOX", ids: ["m-1"], error: null }], undoable: true }),
+      }),
+    );
+    await slot.findByRole("button", { name: /Quarterly plan/ });
+    press(pageRoot(slot), { key: "g", code: "KeyG" });
+    press(pageRoot(slot), { key: "n", code: "KeyN" });
+    await waitFor(() =>
+      expect(slot.inspection.navigateCalls).toContainEqual({ method: "toPluginPanel", path: "mail", options: { subPath: "dev" } }),
+    );
+    expect(await slot.findByText("github.com/example-org/demo")).toBeTruthy();
+    fireEvent.click(slot.getByRole("button", { name: "Mark read" }));
+    await waitFor(() => expect(callsTo(slot, "message_action")).toHaveLength(1));
+    expect(callsTo(slot, "message_action")[0]?.input).toMatchObject({ messageIds: ["m-1"], action: "mark_read", role: "inbox" });
+    await waitFor(() => expect(toasts.log.some((t) => t.options?.action?.label === "Undo")).toBe(true));
+  });
+
+  it("Hide dev notifications filters the list with notDev", async () => {
+    const slot = renderWith(mailRpc());
+    fireEvent.click(await slot.findByRole("button", { name: "Hide dev notifications" }));
+    await waitFor(() => expect(callsTo(slot, "threads_list").at(-1)?.input).toMatchObject({ filter: { notDev: true } }));
+  });
+
+  it("with dev notifications off there is no Hide dev filter and no Dev entry", async () => {
+    const slot = renderWith(mailRpc(), { devNotifications: false });
+    await slot.findByRole("button", { name: /Quarterly plan/ });
+    expect(slot.queryByRole("button", { name: "Hide dev notifications" })).toBeNull();
+    expect(slot.queryByRole("button", { name: "Dev" })).toBeNull();
+  });
+
+  it("with mail rules on, the Inbox shows Ready to start; Review opens New thread with the rule's template", async () => {
+    const run = {
+      id: "run-1",
+      ruleId: "r-1",
+      ruleName: "CI failures",
+      accountId: "acc-1",
+      messageId: "m-new",
+      threadId: "th-a",
+      state: "ready",
+      bbThreadId: null,
+      subject: "Run failed",
+      createdAt: "2026-11-16T08:00:00.000Z",
+    };
+    const slot = renderWith(
+      mailRpc({
+        rule_runs_list: () => ({ runs: [run], next: null }),
+        rules_list: () => ({
+          rules: [{ id: "r-1", name: "CI failures", enabled: true, match: {}, projectId: "p-api", projectName: "api", template: "Find the test", mode: "prepare", createdAt: "x", updatedAt: "x" }],
+        }),
+        projects_list: () => ({ projects: [{ id: "p-api", name: "api", kind: "local", hasTree: true, repo: null }] }),
+        bb_thread_prepare: () => ({ prompt: "P", title: "T", hidden: 0, leftOut: 0, permissionMode: null }),
+      }),
+      { mailRules: true },
+    );
+    const strip = await slot.findByRole("region", { name: "Ready to start" });
+    fireEvent.click(within(strip).getByRole("button", { name: "Review" }));
+    await slot.findByTestId("bb-thread-prompt");
+    expect(callsTo(slot, "bb_thread_prepare")[0]?.input).toEqual({ messageId: "m-new", include: "message", projectId: "p-api", instruction: "Find the test" });
+  });
+
+  it("Mail settings show BB integration and Rules", async () => {
+    const slot = renderWith(mailRpc({ bindings_list: () => ({ bindings: [] }), identities_list: () => ({ identities: [] }), templates_list: () => ({ templates: [] }) }), {
+      attachmentFolder: "inbox-files",
+    });
+    await slot.findByRole("button", { name: /Quarterly plan/ });
+    fireEvent.click(slot.getByRole("button", { name: /Mail settings|Settings/ }));
+    fireEvent.click(await slot.findByRole("tab", { name: "BB integration" }));
+    expect(await slot.findByText("Attachments saved to a project go to inbox-files/")).toBeTruthy();
+    fireEvent.click(slot.getByRole("tab", { name: "Rules" }));
+    expect(slot.getByText("Off: no rule runs.")).toBeTruthy();
+  });
+});
+
+describe("Slice 3h: search, saved searches, folders, labels, drag and Files", () => {
+  function renderWith(rpc: Record<string, unknown>, settings: Record<string, string | number | boolean> = {}, subPath = "") {
+    return renderSlot({ component: MailWithSidebar }, { subPath }, {
+      rpc: rpc as never,
+      settings,
+      composer: { scope: { kind: "new-thread", projectId: null } },
+    });
+  }
+  const gmailAccount: Account = { ...account, preset: "gmail" };
+  const hit = message({ id: "m-new", labels: ["Travel"] });
+  async function searchFor(slot: ReturnType<typeof render>, query: string) {
+    fireEvent.change(await slot.findByLabelText("Search mail"), { target: { value: query } });
+    fireEvent.submit(slot.getByRole("search"));
+  }
+
+  it("asks for attachment text only with the setting on, shows notes, excerpts and pages", async () => {
+    const slot = renderWith(
+      folderRpc({
+        search: ({ cursor }: { cursor?: string | null }) =>
+          cursor == null
+            ? {
+                hits: [hit],
+                nextCursor: "c1",
+                notes: [{ kind: "bad_value", term: "larger:abc" }],
+                attachmentMatches: [{ messageId: "m-new", filename: "report.pdf", excerpt: "quarterly totals" }],
+              }
+            : { hits: [message({ id: "m-old", subject: "Older one" })], nextCursor: null, notes: [], attachmentMatches: [] },
+      }),
+      { indexAttachmentText: true },
+    );
+    await searchFor(slot, "plan larger:abc");
+    expect(await slot.findByText("larger:abc \u2014 not understood (sizes look like 10K or 2M)")).toBeTruthy();
+    expect(callsTo(slot, "search")[0]?.input).toMatchObject({ query: "plan larger:abc", attachments: true });
+    const results = within(slot.getByRole("list", { name: "Search results" }));
+    expect(results.getByText("report.pdf")).toBeTruthy();
+    expect(results.getByText("Travel")).toBeTruthy();
+    fireEvent.click(slot.getByRole("button", { name: "Load more" }));
+    await waitFor(() => expect(callsTo(slot, "search")[1]?.input).toMatchObject({ cursor: "c1", attachments: true }));
+    expect(await slot.findByText("Older one")).toBeTruthy();
+  });
+
+  it("never asks for attachment text with the setting off", async () => {
+    const slot = renderWith(folderRpc({ search: () => ({ hits: [hit], nextCursor: null, notes: [], attachmentMatches: [] }) }));
+    await searchFor(slot, "plan");
+    await slot.findByRole("list", { name: "Search results" });
+    expect(callsTo(slot, "search")[0]?.input).not.toHaveProperty("attachments");
+  });
+
+  it("searches on the server: progress, Cancel, and hits marked from the server", async () => {
+    let state: "running" | "cancelled" = "running";
+    let found: string[] = [];
+    const slot = renderWith(
+      folderRpc({
+        search: () => ({ hits: found.length > 0 ? [hit, message({ id: "m-srv", subject: "Old invoice" })] : [hit], nextCursor: null, notes: [], attachmentMatches: [] }),
+        server_search_start: () => ({ jobId: "job-1", localOnly: [] }),
+        server_job_poll: () => ({
+          state,
+          accounts: [{ accountId: "acc-1", searched: 4, total: 23, fetched: found.length, found: found.length, skipped: 0, partial: false, reason: state === "cancelled" ? "cancelled" : null }],
+          messageIds: found,
+          moreAvailable: false,
+        }),
+        server_job_cancel: () => {
+          state = "cancelled";
+          return { ok: true };
+        },
+      }),
+    );
+    await searchFor(slot, "invoice");
+    await slot.findByRole("list", { name: "Search results" });
+    found = ["m-srv"];
+    fireEvent.click(slot.getByRole("button", { name: "Search on the server" }));
+    const strip = await slot.findByRole("status", { name: "Server search" });
+    await waitFor(() => expect(strip.textContent).toContain("owner@example.org: 4 of 23 folders\u2026"));
+    await waitFor(() => expect(slot.getByText("Old invoice")).toBeTruthy());
+    const row = slot.getByText("Old invoice").closest("li")!;
+    expect(within(row).getByText("from the server")).toBeTruthy();
+    fireEvent.click(within(strip).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(callsTo(slot, "server_job_cancel")[0]?.input).toEqual({ jobId: "job-1" }));
+    await waitFor(() => expect(slot.getByRole("status", { name: "Server search" }).textContent).toContain("Stopped"), { timeout: 3000 });
+  });
+
+  it("shows a refused server search", async () => {
+    const slot = renderWith(
+      folderRpc({
+        search: () => ({ hits: [hit], nextCursor: null, notes: [], attachmentMatches: [] }),
+        server_search_start: () => {
+          throw new Error("Nothing to search on the server for this query");
+        },
+      }),
+    );
+    await searchFor(slot, "invoice");
+    fireEvent.click(await slot.findByRole("button", { name: "Search on the server" }));
+    expect((await slot.findByText("Nothing to search on the server for this query")).getAttribute("role")).toBe("alert");
+  });
+
+  it("saves a search and opens it from the rail; a deleted one says so", async () => {
+    let searches: { id: string; name: string; query: string; accountId: string | null; unread: number; capped: boolean }[] = [
+      { id: "ss-1", name: "Invoices", query: "subject:invoice", accountId: null, unread: 3, capped: false },
+    ];
+    const slot = renderWith(
+      folderRpc({
+        search: () => ({ hits: [hit], nextCursor: null, notes: [], attachmentMatches: [] }),
+        saved_searches_list: () => ({ searches }),
+        saved_search_save: () => {
+          searches = [...searches, { id: "ss-2", name: "plan", query: "plan", accountId: "acc-1", unread: 0, capped: false }];
+          return { id: "ss-2" };
+        },
+      }),
+    );
+    await searchFor(slot, "plan");
+    fireEvent.click(await slot.findByRole("button", { name: "Save search" }));
+    fireEvent.click(within(await slot.findByRole("dialog")).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(callsTo(slot, "saved_search_save")[0]?.input).toEqual({ name: "plan", query: "plan", accountId: "acc-1" }));
+    fireEvent.click(await folderRail(slot).findByRole("button", { name: "Invoices 3 unread" }));
+    await waitFor(() => expect(callsTo(slot, "search").at(-1)?.input).toMatchObject({ query: "subject:invoice" }));
+    expect(await slot.findByText(/subject:invoice/)).toBeTruthy();
+
+    const gone = renderWith(folderRpc({ saved_searches_list: () => ({ searches: [] }) }), {}, "s/ss-9");
+    expect(await gone.findAllByText("This saved search was deleted")).toBeTruthy();
+  });
+
+  it("Files lists attachments and opens a file's message", async () => {
+    const file = {
+      messageId: "m-new",
+      partId: "2",
+      filename: "invoice.pdf",
+      kind: "pdf",
+      mimeType: "application/pdf",
+      size: 4096,
+      date: "2026-11-10T08:00:00.000Z",
+      from: { name: "Ada Example", address: "ada@example.org" },
+      accountId: "acc-1",
+      threadId: "th-a",
+    };
+    const slot = renderWith(folderRpc({ files_list: () => ({ files: [file], nextCursor: null }) }), {}, "files");
+    expect(await slot.findByText("invoice.pdf")).toBeTruthy();
+    expect(callsTo(slot, "files_list")[0]?.input).toEqual({ cursor: null, limit: 50 });
+    fireEvent.click(slot.getByRole("button", { name: "Open the message of invoice.pdf" }));
+    expect(await slot.findByRole("heading", { name: "Quarterly plan" })).toBeTruthy();
+  });
+
+  it("g f goes to Files", async () => {
+    const slot = renderWith(folderRpc({ files_list: () => ({ files: [], nextCursor: null }) }));
+    await slot.findByRole("button", { name: /Quarterly plan/ });
+    key({ key: "g", code: "KeyG" });
+    key({ key: "f", code: "KeyF" });
+    expect(await slot.findByText("No files here.")).toBeTruthy();
+  });
+
+  it("deletes a non-empty folder through the move step", async () => {
+    const slot = renderWith(
+      folderRpc({
+        folder_delete_check: () => ({ messages: 41, children: 0, gmailLabel: false, refusal: null }),
+        folder_delete: () => ({ ok: true, moved: 41 }),
+      }),
+    );
+    const rail = folderRail(slot);
+    const alpha = (await rail.findByRole("button", { name: /^Alpha/ })).closest("li")!;
+    fireEvent.click(within(alpha).getByRole("button", { name: "Folder options" }));
+    fireEvent.click(within(await slot.findByRole("dialog")).getByRole("button", { name: "Delete\u2026" }));
+    fireEvent.click(await slot.findByRole("button", { name: "Move 41 to Trash, then delete" }));
+    await waitFor(() =>
+      expect(callsTo(slot, "folder_delete")[0]?.input).toEqual({ accountId: "acc-1", path: "Projects/Alpha", moveToTrash: true, expectedMessages: 41 }),
+    );
+    await waitFor(() => expect(toasts.plain).toContain("Moved 41 messages to Trash and deleted Alpha"));
+  });
+
+  it("drag: a foreign page id moves nothing, Trash means Delete, 201 messages are refused", async () => {
+    const big = { ...threadB, messageCount: 199 };
+    const slot = renderWith(folderRpc({ threads_list: () => ({ threads: [threadA, big], nextCursor: null }), message_action: () => movedTo("INBOX", "[Gmail]/Trash") }));
+    const row = (await slot.findByRole("button", { name: /Quarterly plan/ })).closest("li")!;
+    const data = new Map<string, string>();
+    const dataTransfer = {
+      setData: (type: string, value: string) => data.set(type, value),
+      getData: (type: string) => data.get(type) ?? "",
+      get types() {
+        return [...data.keys()];
+      },
+      dropEffect: "none",
+      effectAllowed: "all",
+    };
+    const fire = (target: Element, make: (el: Element) => Event) => {
+      const event = make(target);
+      Object.defineProperty(event, "dataTransfer", { value: dataTransfer });
+      fireEvent(target, event);
+    };
+    fire(row, createEvent.dragStart);
+    const payload = JSON.parse(data.get("application/x-makosh-mail-move")!);
+    expect(payload).toMatchObject({ v: 1, threadIds: ["th-a"] });
+    const trash = folderRail(slot).getByRole("button", { name: /^Trash/ }).closest("li")!;
+
+    data.set("application/x-makosh-mail-move", JSON.stringify({ ...payload, pageId: "another-page" }));
+    fire(trash, createEvent.drop);
+    expect(callsTo(slot, "message_action")).toHaveLength(0);
+
+    data.set("application/x-makosh-mail-move", JSON.stringify(payload));
+    fire(trash, createEvent.drop);
+    await waitFor(() => expect(callsTo(slot, "message_action")[0]?.input).toMatchObject({ action: "delete" }));
+
+    data.set("application/x-makosh-mail-move", JSON.stringify({ ...payload, threadIds: ["th-a", "th-b"] }));
+    fire(trash, createEvent.drop);
+    await waitFor(() => expect(toasts.error).toContain("Move up to 200 at a time"));
+    expect(callsTo(slot, "message_action")).toHaveLength(1);
+  });
+
+  it("l opens Labels for a Gmail conversation and records an undo", async () => {
+    const gmailDetail: ThreadDetail = {
+      ...detailA,
+      messages: detailA.messages.map((m) => ({ ...m, labels: ["Travel"] })),
+    };
+    const slot = renderWith(
+      mailRpc({
+        status_get: () => status({ accounts: [gmailAccount] }),
+        thread_get: () => gmailDetail,
+        labels_list: () => ({ labels: [{ name: "Travel", path: "Travel" }, { name: "Receipts", path: "Receipts" }, { name: "\\Inbox", path: null }] }),
+        labels_change: () => ({ changed: 2 }),
+      }),
+    );
+    fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
+    await slot.findByRole("heading", { name: "Quarterly plan" });
+    key({ key: "l", code: "KeyL" });
+    const dialog = await slot.findByRole("dialog");
+    fireEvent.click(await within(dialog).findByRole("checkbox", { name: "Receipts" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Apply" }));
+    await waitFor(() =>
+      expect(callsTo(slot, "labels_change")[0]?.input).toMatchObject({ messageIds: ["m-old", "m-new"], add: ["Receipts"], remove: [] }),
+    );
+    await waitFor(() => expect(toasts.plain).toContain("Labels changed"));
+  });
+
+  it("a folder set to one row per message lists messages", async () => {
+    globalThis.localStorage?.setItem("makosh-mail.ungroupedFolders", JSON.stringify(["acc-1\nINBOX"]));
+    try {
+      const slot = renderWith(folderRpc({ messages_list: () => ({ messages: [message({ id: "m-new", subject: "Single one" })], nextCursor: null }) }));
+      expect(await slot.findByRole("list", { name: "Messages" })).toBeTruthy();
+      expect(callsTo(slot, "messages_list")[0]?.input).toMatchObject({ scope: { kind: "account", accountId: "acc-1", folder: "INBOX" } });
+    } finally {
+      globalThis.localStorage?.removeItem("makosh-mail.ungroupedFolders");
+    }
+  });
+
+  it("loads 30 more days at the end of a folder and says when there is nothing older", async () => {
+    const slot = renderWith(
+      folderRpc({
+        history_load: () => ({ jobId: "h-1" }),
+        server_job_poll: () => ({
+          state: "done",
+          accounts: [{ accountId: "acc-1", searched: 1, total: 1, fetched: 0, found: 0, skipped: 0, partial: false, reason: null }],
+          messageIds: [],
+          moreAvailable: false,
+          historySince: "2026-09-17T00:00:00.000Z",
+          emptySteps: 3,
+        }),
+      }),
+    );
+    fireEvent.click(await slot.findByRole("button", { name: "Load 30 more days" }));
+    await waitFor(() => expect(callsTo(slot, "history_load")[0]?.input).toEqual({ accountId: "acc-1", folder: "INBOX" }));
+    expect(await slot.findByText("No older mail on the server in this folder")).toBeTruthy();
+    expect(slot.getByText(/Showing mail since/)).toBeTruthy();
+  });
+});
+
+describe("Slice 3h: reading", () => {
+  function renderWith(rpc: Record<string, unknown>, settings: Record<string, string | number | boolean> = {}, codeTheme?: { mode: "dark" | "light" }) {
+    return renderSlot({ component: MailWithSidebar }, { subPath: "" }, {
+      rpc: rpc as never,
+      settings,
+      composer: { scope: { kind: "new-thread", projectId: null } },
+      ...(codeTheme !== undefined ? { codeTheme } : {}),
+    } as never);
+  }
+  const withPhoto: ThreadDetail = {
+    ...detailA,
+    messages: [
+      detailA.messages[0]!,
+      message({
+        id: "m-new",
+        date: "2026-11-14T08:30:00.000Z",
+        isRead: false,
+        hasAttachments: true,
+        attachments: [{ partId: "2", filename: "photo.png", mimeType: "image/png", size: 2048, isInline: false, kind: "image" }],
+      }),
+    ],
+  };
+
+  async function openThread(slot: ReturnType<typeof renderWith>) {
+    fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
+    await slot.findByRole("heading", { name: "Quarterly plan" });
+  }
+
+  it("views an image attachment from a blob of the server's type and revokes it on close", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(new Blob([new Uint8Array([137, 80, 78, 71])]), { status: 200, headers: { "content-type": "image/png" } }));
+    const created: string[] = [];
+    const revoked: string[] = [];
+    const urls = URL as unknown as { createObjectURL?: (b: Blob) => string; revokeObjectURL?: (u: string) => void };
+    const before = { create: urls.createObjectURL, revoke: urls.revokeObjectURL };
+    urls.createObjectURL = (blob: Blob) => {
+      created.push(blob.type);
+      return "blob:photo";
+    };
+    urls.revokeObjectURL = (url: string) => void revoked.push(url);
+    try {
+      const slot = renderWith(
+        mailRpc({
+          thread_get: () => withPhoto,
+          attachment_view_ticket: () => ({ url: "/plugins/makosh-mail/download/v-1", kind: "image", mimeType: "image/png", size: 2048 }),
+        }),
+      );
+      await openThread(slot);
+      fireEvent.click(await slot.findByRole("button", { name: "View photo.png, PNG, 2 KB" }));
+      await waitFor(() => expect(callsTo(slot, "attachment_view_ticket")[0]?.input).toEqual({ messageId: "m-new", partId: "2" }));
+      expect(await slot.findByRole("img", { name: "photo.png" })).toBeTruthy();
+      expect(created).toEqual(["image/png"]);
+      expect(fetchSpy).toHaveBeenCalledWith("/plugins/makosh-mail/download/v-1", expect.objectContaining({ credentials: "same-origin" }));
+      fireEvent.keyDown(slot.getByRole("dialog"), { key: "Escape", code: "Escape" });
+      await waitFor(() => expect(revoked).toEqual(["blob:photo"]));
+    } finally {
+      fetchSpy.mockRestore();
+      urls.createObjectURL = before.create;
+      urls.revokeObjectURL = before.revoke;
+    }
+  });
+
+  it("opens the sender card and searches from the sender", async () => {
+    const slot = renderWith(
+      mailRpc({
+        sender_card: () => ({
+          name: "Ada Example",
+          address: "ada@example.org",
+          fromCount: 48,
+          toCount: 12,
+          toCapped: false,
+          firstDate: null,
+          lastDate: null,
+          conversations: [],
+          files: [],
+          imagesAllowed: false,
+          blocked: false,
+          projectId: null,
+        }),
+        search: () => ({ hits: [], nextCursor: null, notes: [], attachmentMatches: [] }),
+      }),
+    );
+    await openThread(slot);
+    fireEvent.click((await slot.findAllByRole("button", { name: "About Ada Example" }))[0]!);
+    expect(await slot.findByText("48 from, 12 to")).toBeTruthy();
+    expect(callsTo(slot, "sender_card")[0]?.input).toEqual({ address: "ada@example.org", accountId: "acc-1" });
+    fireEvent.click(slot.getByRole("button", { name: "Search from this sender" }));
+    await waitFor(() => expect(callsTo(slot, "search")[0]?.input).toMatchObject({ query: "from:ada@example.org" }));
+  });
+
+  it("shows related mail with reasons, loaded on open", async () => {
+    const slot = renderWith(
+      mailRpc({
+        related_messages: () => ({
+          hits: [{ summary: message({ id: "m-r", subject: "Invoice INV-2041", threadId: "th-b" }), reasons: [{ kind: "terms", terms: ["INV-2041"] }] }],
+        }),
+      }),
+    );
+    await openThread(slot);
+    expect(callsTo(slot, "related_messages")).toHaveLength(0);
+    fireEvent.click(slot.getByRole("button", { name: /Related/ }));
+    expect(await slot.findByText(/mentions INV-2041/)).toBeTruthy();
+    expect(callsTo(slot, "related_messages")[0]?.input).toEqual({ messageId: "m-new" });
+  });
+
+  it("loads the whole conversation from the server and reloads it", async () => {
+    const slot = renderWith(
+      mailRpc({
+        conversation_load: () => ({ jobId: "c-1" }),
+        server_job_poll: () => ({
+          state: "done",
+          accounts: [{ accountId: "acc-1", searched: 2, total: 2, fetched: 3, found: 3, skipped: 0, partial: false, reason: null }],
+          messageIds: ["m-1", "m-2", "m-3"],
+          moreAvailable: false,
+        }),
+      }),
+    );
+    await openThread(slot);
+    const gets = callsTo(slot, "thread_get").length;
+    fireEvent.click(slot.getByRole("button", { name: "Load the whole conversation" }));
+    expect(await slot.findByText("Loaded 3 messages from the server")).toBeTruthy();
+    expect(callsTo(slot, "conversation_load")[0]?.input).toEqual({ threadId: "th-a" });
+    await waitFor(() => expect(callsTo(slot, "thread_get").length).toBeGreaterThan(gets));
+  });
+
+  it("; expands every message and Shift+P prints from a sandboxed frame", async () => {
+    const slot = renderWith(mailRpc());
+    await openThread(slot);
+    key({ key: ";", code: "Semicolon" });
+    await waitFor(() => expect(callsTo(slot, "message_body").map((c) => (c.input as { messageId: string }).messageId)).toContain("m-old"));
+    key({ key: "P", code: "KeyP", shiftKey: true });
+    await waitFor(() => expect(document.querySelector('iframe[sandbox="allow-same-origin allow-modals"]')).not.toBeNull());
+    const printed = document.querySelector('iframe[sandbox="allow-same-origin allow-modals"]')!.getAttribute("srcdoc") ?? "";
+    expect(printed).toContain("Body of m-old");
+    expect(printed).not.toContain("https:");
+    document.querySelector('iframe[sandbox="allow-same-origin allow-modals"]')?.remove();
+  });
+
+  it("dark BB adapts mail colors; Original colors turns it off for the message", async () => {
+    const slot = renderWith(mailRpc(), {}, { mode: "dark" });
+    await openThread(slot);
+    const frameDoc = async () =>
+      ((await slot.findAllByTitle(/Message from Ada Example/)).at(-1) as HTMLIFrameElement).getAttribute("srcdoc") ?? "";
+    await waitFor(async () => expect(await frameDoc()).toContain("invert(0.9)"));
+    fireEvent.click(slot.getAllByRole("button", { name: "Original colors" }).at(-1)!);
+    await waitFor(async () => expect(await frameDoc()).not.toContain("invert(0.9)"));
+  });
+
+  it("Show plain text renders the text of an HTML mail", async () => {
+    const slot = renderWith(mailRpc(), { mailView: "plain" });
+    await openThread(slot);
+    expect(await slot.findByText("Body of m-new")).toBeTruthy();
+    expect(slot.queryAllByTitle(/Message from Ada Example/)).toHaveLength(0);
+    fireEvent.click(slot.getAllByRole("button", { name: "Show original" }).at(-1)!);
+    expect((await slot.findAllByTitle(/Message from Ada Example/)).length).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Slice 3i, part B: Apple Mail keys on the page (arrows open, Shift+arrows
+// select, Backspace/Delete delete, never from a field).
+
+describe("Apple keys and reading flow", () => {
+  const DOWN = { key: "ArrowDown", code: "ArrowDown" };
+  const UP = { key: "ArrowUp", code: "ArrowUp" };
+  /** rowsRpc whose conversations arrive unread, so an open marks them read. */
+  function unreadRowsRpc(overrides: Record<string, (input: never) => unknown> = {}) {
+    const ids: Record<string, string[]> = { "th-a": ["a-1", "a-2"], "th-b": ["b-1"], "th-c": ["c-1"] };
+    const threads = [threadA, threadB, threadC];
+    return rowsRpc({
+      thread_get: ({ threadId }: { threadId: string }) => {
+        const detail = detailOf(threads.find((t) => t.id === threadId) ?? threadA, "INBOX", ids[threadId] ?? []);
+        return { ...detail, messages: detail.messages.map((m) => ({ ...m, isRead: false })) };
+      },
+      ...overrides,
+    });
+  }
+  const openedThreads = (slot: ReturnType<typeof render>) =>
+    callsTo(slot, "thread_get").map((call) => (call.input as { threadId: string }).threadId);
+
+  it("Down with nothing open opens the first row and marks it read", async () => {
+    const slot = render(unreadRowsRpc());
+    await slot.findByText("Tickets");
+    pageRoot(slot).focus();
+
+    key(DOWN);
+    expect(document.activeElement).toBe(rowButton(slot, /Quarterly plan/));
+    await slot.findByRole("heading", { name: "Quarterly plan" });
+    expect(openedThreads(slot)).toEqual(["th-a"]);
+    await waitFor(() =>
+      expect(callsTo(slot, "message_open").map((call) => call.input)).toEqual(
+        expect.arrayContaining([{ messageId: "a-1" }, { messageId: "a-2" }]),
+      ),
+    );
+
+    key(DOWN);
+    await waitFor(() => expect(openedThreads(slot)).toEqual(["th-a", "th-b"]));
+    key(UP);
+    await waitFor(() => expect(openedThreads(slot)).toEqual(["th-a", "th-b", "th-a"]));
+  });
+
+  it("a held Down moves the cursor only, and opens the row it stopped on when released", async () => {
+    const slot = render(unreadRowsRpc());
+    await slot.findByText("Tickets");
+    pageRoot(slot).focus();
+
+    key(DOWN);
+    await waitFor(() => expect(openedThreads(slot)).toEqual(["th-a"]));
+    key({ ...DOWN, repeat: true });
+    key({ ...DOWN, repeat: true });
+    expect(document.activeElement).toBe(rowButton(slot, /Tickets/));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(openedThreads(slot)).toEqual(["th-a"]);
+    expect(callsTo(slot, "message_open").map((call) => call.input)).not.toContainEqual({ messageId: "b-1" });
+
+    fireEvent.keyUp(document.activeElement!, DOWN);
+    await waitFor(() => expect(openedThreads(slot)).toEqual(["th-a", "th-c"]));
+    // b was passed, never opened nor marked read.
+    expect(callsTo(slot, "message_open").map((call) => call.input)).not.toContainEqual({ messageId: "b-1" });
+    // A plain release (no held run) opens nothing more.
+    fireEvent.keyUp(document.activeElement!, DOWN);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(openedThreads(slot)).toEqual(["th-a", "th-c"]);
+  });
+
+  it("a held Down released in a field, or after the window lost focus, opens nothing (slice 3i review)", async () => {
+    const slot = render(unreadRowsRpc());
+    await slot.findByText("Tickets");
+    pageRoot(slot).focus();
+    key(DOWN);
+    await waitFor(() => expect(openedThreads(slot)).toEqual(["th-a"]));
+    key({ ...DOWN, repeat: true });
+    fireEvent.keyUp(slot.getByLabelText("Search mail"), DOWN);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(openedThreads(slot)).toEqual(["th-a"]);
+    // The release that follows on the page belongs to no held run any more.
+    fireEvent.keyUp(document.activeElement!, DOWN);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(openedThreads(slot)).toEqual(["th-a"]);
+
+    key({ ...DOWN, repeat: true });
+    fireEvent.blur(window);
+    fireEvent.keyUp(document.activeElement!, DOWN);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(openedThreads(slot)).toEqual(["th-a"]);
+  });
+
+  it("j with nothing open moves the cursor and opens nothing", async () => {
+    const slot = render(unreadRowsRpc());
+    await slot.findByText("Tickets");
+    pageRoot(slot).focus();
+
+    key(J);
+    key(J);
+    expect(document.activeElement).toBe(rowButton(slot, /Lunch/));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(callsTo(slot, "thread_get")).toHaveLength(0);
+    expect(callsTo(slot, "message_open")).toHaveLength(0);
+  });
+
+  it("Shift+Down selects the cursor row and the next; turning back shrinks the run; nothing opens", async () => {
+    const slot = render(unreadRowsRpc());
+    await slot.findByText("Tickets");
+    pageRoot(slot).focus();
+
+    key(J);
+    key({ ...DOWN, shiftKey: true });
+    expect(slot.getByText("2 selected")).toBeTruthy();
+    expect(document.activeElement).toBe(rowButton(slot, /Lunch/));
+    key({ ...DOWN, shiftKey: true });
+    expect(slot.getByText("3 selected")).toBeTruthy();
+    key({ ...UP, shiftKey: true });
+    expect(slot.getByText("2 selected")).toBeTruthy();
+    expect((slot.getByRole("checkbox", { name: "Select Quarterly plan" }) as HTMLInputElement).getAttribute("aria-checked")).toBe("true");
+    expect((slot.getByRole("checkbox", { name: "Select Tickets" }) as HTMLInputElement).getAttribute("aria-checked")).toBe("false");
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(callsTo(slot, "thread_get")).toHaveLength(0);
+  });
+
+  it("Shift+Down keeps a selection made with x", async () => {
+    const slot = render(unreadRowsRpc());
+    await slot.findByText("Tickets");
+    pageRoot(slot).focus();
+
+    key(J);
+    key({ key: "x", code: "KeyX" });
+    key(J);
+    key(J);
+    key({ ...UP, shiftKey: true });
+    expect(slot.getByText("3 selected")).toBeTruthy();
+    key({ ...DOWN, shiftKey: true });
+    expect(slot.getByText("2 selected")).toBeTruthy();
+    expect((slot.getByRole("checkbox", { name: "Select Quarterly plan" }) as HTMLInputElement).getAttribute("aria-checked")).toBe("true");
+    expect((slot.getByRole("checkbox", { name: "Select Lunch" }) as HTMLInputElement).getAttribute("aria-checked")).toBe("false");
+  });
+
+  it("Backspace and Delete delete the cursor row, and the open conversation", async () => {
+    const slot = render(unreadRowsRpc());
+    await slot.findByText("Tickets");
+    pageRoot(slot).focus();
+
+    key(J);
+    key({ key: "Backspace", code: "Backspace" });
+    await waitFor(() => expect(actionInputs(slot).map((input) => [input.action, input.messageIds])).toEqual([["delete", ["a-1", "a-2"]]]));
+    await waitFor(() => expect(slot.queryByText("Quarterly plan")).toBeNull());
+    await new Promise((resolve) => setTimeout(resolve, 450));
+
+    key({ key: "o", code: "KeyO" });
+    await slot.findByRole("heading", { name: "Lunch" });
+    key({ key: "Delete", code: "Delete" });
+    await waitFor(() =>
+      expect(actionInputs(slot).map((input) => [input.action, input.messageIds])).toEqual([
+        ["delete", ["a-1", "a-2"]],
+        ["delete", ["b-1"]],
+      ]),
+    );
+  });
+
+  it("the Conversation section takes focus for scrolling and keeps the arrows native there", async () => {
+    const slot = render(unreadRowsRpc());
+    await slot.findByText("Tickets");
+    pageRoot(slot).focus();
+    key(DOWN);
+    await slot.findByRole("heading", { name: "Quarterly plan" });
+    const conversation = slot.getByRole("region", { name: "Conversation" });
+    expect(conversation.hasAttribute("data-mail-reading")).toBe(true);
+    expect(conversation.getAttribute("tabindex")).toBe("-1");
+
+    conversation.focus();
+    const event = createEvent.keyDown(conversation, DOWN);
+    fireEvent(conversation, event);
+    expect(event.defaultPrevented).toBe(false);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(openedThreads(slot)).toEqual(["th-a"]);
+  });
+
+  it("Backspace on a selection deletes it; the cursor takes the row after the last removed one and nothing opens", async () => {
+    const slot = render(unreadRowsRpc());
+    await slot.findByText("Tickets");
+    pageRoot(slot).focus();
+
+    key(J);
+    key({ ...DOWN, shiftKey: true });
+    expect(slot.getByText("2 selected")).toBeTruthy();
+    key({ key: "Backspace", code: "Backspace" });
+    await waitFor(() => expect(actionInputs(slot).map((input) => input.messageIds)).toEqual([["a-1", "a-2", "b-1"]]));
+    await waitFor(() => expect(slot.queryByText("Lunch")).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(rowButton(slot, /Tickets/)));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    // thread_get resolves the selection's messages; nothing opens or is marked read.
+    expect(slot.queryByRole("heading", { name: "Tickets" })).toBeNull();
+    expect(callsTo(slot, "message_open")).toHaveLength(0);
+  });
+
+  it("Backspace in the search field, the composer and the Move\u2026 dialog deletes nothing", async () => {
+    const slot = render(composeRpc({ message_action: () => movedTo("INBOX", "Trash") }));
+    await slot.findByText("Lunch");
+    pageRoot(slot).focus();
+    key(J);
+
+    const search = slot.getByRole("searchbox", { name: "Search mail" });
+    for (const code of ["Backspace", "Delete"]) press(search, { key: code, code });
+
+    press(pageRoot(slot), { key: "v", code: "KeyV" });
+    const move = await slot.findByRole("dialog", { name: "Move to\u2026" });
+    for (const code of ["Backspace", "Delete"]) press(within(move).getAllByRole("button")[0]!, { key: code, code });
+    fireEvent.keyDown(move, { key: "Escape", code: "Escape" });
+    await waitFor(() => expect(slot.queryByRole("dialog", { name: "Move to\u2026" })).toBeNull());
+
+    press(pageRoot(slot), { key: "c", code: "KeyC" });
+    const composer = await composerRegion(slot, "New message");
+    const editor = await waitFor(() => {
+      const found = composer.querySelector<HTMLElement>('[contenteditable="true"]');
+      if (found === null) throw new Error("no editor yet");
+      return found;
+    });
+    for (const target of [editor, within(composer).getByRole("toolbar", { name: "Formatting" })]) {
+      for (const code of ["Backspace", "Delete"]) press(target, { key: code, code });
+      press(target, { key: "ArrowDown", code: "ArrowDown" });
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(callsTo(slot, "message_action")).toHaveLength(0);
+    expect(callsTo(slot, "thread_get")).toHaveLength(0);
+  });
+});
+
+describe("Slice 3i: sender checks, images and links", () => {
+  const IMAGE = "https://images.example.org/invented.png";
+  const judged = (state: "ok" | "failed" | "unchecked" | "unknown", extra: Partial<MessageHeader> = {}): ThreadDetail => ({
+    ...detailA,
+    messages: detailA.messages.map((m) => ({ ...m, senderCheck: { state, summary: state === "failed" ? "DMARC failed" : null }, ...extra })),
+  });
+  const withImage = {
+    message_body: ({ messageId }: { messageId: string }) => ({
+      messageId,
+      text: null,
+      html: `<p>Body of ${messageId}</p><img src="${IMAGE}" alt="pic">`,
+      htmlTruncated: false,
+      remoteImagesAllowed: false,
+    }),
+  };
+  const srcdoc = async (slot: ReturnType<typeof render>) =>
+    ((await slot.findByTitle("Message from Ada Example")) as HTMLIFrameElement).getAttribute("srcdoc") ?? "";
+
+  async function openA(slot: ReturnType<typeof render>) {
+    fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
+    await slot.findByRole("heading", { name: "Quarterly plan" });
+  }
+
+  /** Puts one link in the loaded frame and clicks it, as the owner would. */
+  async function clickLink(slot: ReturnType<typeof render>, href: string, text: string) {
+    const iframe = (await slot.findByTitle("Message from Ada Example")) as HTMLIFrameElement;
+    fireEvent.load(iframe);
+    const doc = iframe.contentDocument!;
+    const anchor = doc.createElement("a");
+    anchor.setAttribute("href", href);
+    anchor.textContent = text;
+    doc.body.replaceChildren(anchor);
+    const win = doc.defaultView as Window & typeof globalThis;
+    anchor.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true }));
+  }
+  const opened = (slot: ReturnType<typeof render>) =>
+    slot.inspection.navigateCalls.flatMap((call) => (call.method === "openUrl" ? [call.url] : []));
+
+  it("a link core cleanLink refuses never reaches openUrl", async () => {
+    const slot = render(folderRpc({ thread_get: () => judged("ok") }));
+    await openA(slot);
+    await clickLink(slot, `https://example.org/${"a".repeat(9000)}`, "long");
+    await waitFor(() => expect(toasts.error).toEqual(["This link cannot be opened here."]));
+    expect(opened(slot)).toEqual([]);
+  });
+
+  it("opens a plain link cleaned, with no dialog", async () => {
+    const slot = render(folderRpc({ thread_get: () => judged("ok") }));
+    await openA(slot);
+    await clickLink(slot, "https://shop.example.com/sale?utm_source=x&id=7", "the sale");
+    await waitFor(() => expect(opened(slot)).toEqual(["https://shop.example.com/sale?id=7"]));
+    expect(slot.queryByRole("dialog")).toBeNull();
+  });
+
+  it("a deceptive link asks first: Cancel opens nothing, Open opens the cleaned URL", async () => {
+    const slot = render(folderRpc({ thread_get: () => judged("ok") }));
+    await openA(slot);
+    await clickLink(slot, "https://login.evil.example.net/x?utm_medium=y", "www.example.com");
+    const dialog = await slot.findByRole("dialog", { name: "Open example.net?" });
+    expect(dialog.textContent).toContain("This link says www.example.com but opens example.net.");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(slot.queryByRole("dialog")).toBeNull());
+    expect(opened(slot)).toEqual([]);
+
+    await clickLink(slot, "https://login.evil.example.net/x?utm_medium=y", "www.example.com");
+    fireEvent.click(within(await slot.findByRole("dialog", { name: "Open example.net?" })).getByRole("button", { name: "Open" }));
+    await waitFor(() => expect(opened(slot)).toEqual(["https://login.evil.example.net/x"]));
+  });
+
+  it("a listed tracking redirect opens on the first click", async () => {
+    const slot = render(folderRpc({ thread_get: () => judged("ok") }));
+    await openA(slot);
+    await clickLink(slot, "https://u1.ct.sendgrid.net/ls/click?upn=abc", "www.example.com");
+    await waitFor(() => expect(opened(slot)).toEqual(["https://u1.ct.sendgrid.net/ls/click?upn=abc"]));
+    expect(slot.queryByRole("dialog")).toBeNull();
+  });
+
+  it("the status line shows where a hovered link goes", async () => {
+    const slot = render(folderRpc({ thread_get: () => judged("ok") }));
+    await openA(slot);
+    const iframe = (await slot.findByTitle("Message from Ada Example")) as HTMLIFrameElement;
+    fireEvent.load(iframe);
+    const doc = iframe.contentDocument!;
+    doc.body.innerHTML = '<a id="l" href="https://shop.example.com/sale" data-mk-cleaned="3">sale</a>';
+    const win = doc.defaultView as Window & typeof globalThis;
+    doc.getElementById("l")!.dispatchEvent(new win.MouseEvent("mouseover", { bubbles: true }));
+    expect((await slot.findByRole("status", { name: "Link address" })).textContent).toBe(
+      "\u2192 https://shop.example.com/sale (3 tracking parameters removed)",
+    );
+    doc.getElementById("l")!.dispatchEvent(new win.MouseEvent("mouseout", { bubbles: true }));
+    await waitFor(() => expect(slot.queryByRole("status", { name: "Link address" })).toBeNull());
+  });
+
+  for (const [name, detail, reason] of [
+    ["a failed check", judged("failed"), "the sender check failed"],
+    ["a lookalike", judged("ok", { warnings: [{ kind: "lookalike", domain: "examp1e.org", like: "example.org" }] }), "the domain looks like another"],
+    ["a name that shows another address", judged("ok", { warnings: [{ kind: "name_shows_address", shown: "ceo@example.com", actual: "ada@example.org" }] }), "the name shows another address"],
+  ] as const) {
+    it(`${name}: no automatic images and no Always show; Show images still loads`, async () => {
+      const slot = render(folderRpc({ ...withImage, thread_get: () => detail }));
+      await openA(slot);
+      expect(await slot.findByText(`Images from this sender are not loaded automatically because ${reason}.`)).toBeTruthy();
+      expect(slot.queryByRole("button", { name: /Always show/ })).toBeNull();
+      expect(await srcdoc(slot)).not.toContain(IMAGE);
+      fireEvent.click(slot.getByRole("button", { name: "Show images" }));
+      await waitFor(async () => expect(await srcdoc(slot)).toContain(`src="${IMAGE}"`));
+    });
+  }
+
+  it("an always-show sender's unknown message waits for its check", async () => {
+    const slot = render(folderRpc({ ...withImage, thread_get: () => judged("unknown"), images_allow_sender: () => ({ address: "ada@example.org" }) }));
+    await openA(slot);
+    fireEvent.click(await slot.findByRole("button", { name: "Always show from ada@example.org" }));
+    expect(await slot.findByText("Images from this sender are not loaded automatically because the sender check has not run yet.")).toBeTruthy();
+    expect(await srcdoc(slot)).not.toContain(IMAGE);
+  });
+
+  it("shows the failed-check strip, the warning lines and the receipt note", async () => {
+    const slot = render(
+      folderRpc({
+        thread_get: () =>
+          judged("failed", { receiptRequested: true, warnings: [{ kind: "reply_to_elsewhere", addresses: ["help@example.net"] }] }),
+      }),
+    );
+    await openA(slot);
+    const strip = await slot.findByRole("note", { name: "Sender not verified" });
+    expect(strip.textContent).toContain("could not confirm this came from example.org (DMARC failed)");
+    expect(slot.getByRole("list", { name: "Sender warnings" }).textContent).toBe("Replies go to help@example.net, not to example.org.");
+    expect(slot.getByText("The sender asked for a read receipt. Makosh Mail does not send receipts.")).toBeTruthy();
+  });
+
+  it("an encrypted message shows the placeholder and its chip, and loads no body frame", async () => {
+    const slot = render(folderRpc({ thread_get: () => judged("ok", { crypto: { kind: "pgp_encrypted", opaque: false } }) }));
+    await openA(slot);
+    // Slice 3k: an OpenPGP message offers Decrypt in place of the placeholder; nothing is asked for until the click.
+    expect(await slot.findByRole("button", { name: "Decrypt" })).toBeTruthy();
+    expect(slot.getAllByText("Encrypted (PGP)").length).toBeGreaterThan(0);
+    expect(slot.queryByTitle("Message from Ada Example")).toBeNull();
+    expect(callsTo(slot, "pgp_open")).toHaveLength(0);
+  });
+
+  it("an S/MIME encrypted message keeps the placeholder: Mail cannot open it", async () => {
+    const slot = render(folderRpc({ thread_get: () => judged("ok", { crypto: { kind: "smime_encrypted", opaque: false } }) }));
+    await openA(slot);
+    expect(await slot.findByText("This message is encrypted. Open it in a mail client that has your key.")).toBeTruthy();
+    expect(slot.queryByRole("button", { name: "Decrypt" })).toBeNull();
+  });
+
+  it("Details shows Authenticity, and Check again forces a refresh and reloads", async () => {
+    const source = {
+      headers: [["From", "Ada Example <ada@example.org>"]] as [string, string][],
+      structure: ["text/plain"],
+      size: 10,
+      uid: 7,
+      folder: "INBOX",
+      accountEmail: "owner@example.org",
+      authenticity: { authserv: "mx.example.org", lines: ["SPF pass (example.org)", "DMARC pass (example.org)"] },
+    };
+    const slot = render(
+      folderRpc({
+        thread_get: () => judged("ok"),
+        message_source: () => source,
+        sender_check_refresh: () => ({ refreshed: 1, failed: 0 }),
+      }),
+    );
+    await openA(slot);
+    fireEvent.click(await slot.findByRole("button", { name: "Details" }));
+    const dialog = await slot.findByRole("dialog", { name: "Message details" });
+    expect((await within(dialog).findByRole("group", { name: "Authenticity" })).textContent).toContain(
+      "Authenticity (from mx.example.org): SPF pass (example.org) \u00b7 DMARC pass (example.org)",
+    );
+    const threadCalls = callsTo(slot, "thread_get").length;
+    fireEvent.click(within(dialog).getByRole("button", { name: "Check again" }));
+    await waitFor(() =>
+      expect(callsTo(slot, "sender_check_refresh").map((call) => call.input)).toEqual([{ messageIds: ["m-new"], force: true }]),
+    );
+    await waitFor(() => expect(callsTo(slot, "thread_get").length).toBe(threadCalls + 1));
+    await waitFor(() => expect(callsTo(slot, "message_source")).toHaveLength(2));
+  });
+
+  it("refreshes an unknown expanded message once after 600 ms, not when another conversation opened first", async () => {
+    const judgedB: ThreadDetail = { thread: threadB, project: null, projectSuggestion: null, messages: [message({ id: "m-b", threadId: "th-b", senderCheck: { state: "ok", summary: null } })] };
+    const slot = render(
+      folderRpc({
+        thread_get: ({ threadId }: { threadId: string }) => (threadId === "th-b" ? judgedB : judged("unknown")),
+        sender_check_refresh: () => ({ refreshed: 0, failed: 0 }),
+      }),
+    );
+    fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
+    await slot.findByRole("heading", { name: "Quarterly plan" });
+    fireEvent.click(slot.getByRole("button", { name: /Lunch/ }));
+    await slot.findByRole("heading", { name: "Lunch" });
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    expect(callsTo(slot, "sender_check_refresh")).toHaveLength(0);
+
+    fireEvent.click(slot.getByRole("button", { name: /Quarterly plan/ }));
+    await slot.findByRole("heading", { name: "Quarterly plan" });
+    await waitFor(() => expect(callsTo(slot, "sender_check_refresh").map((call) => call.input)).toEqual([{ messageIds: ["m-new"] }]), {
+      timeout: 2000,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    expect(callsTo(slot, "sender_check_refresh")).toHaveLength(1);
+  });
+});
+
+describe("Slice 3i part B: the next conversation, undo, frame keys and the stack", () => {
+  const BACKSPACE = { key: "Backspace", code: "Backspace" };
+  const all = [threadA, threadB, threadC];
+  const ids: Record<string, string[]> = { "th-a": ["a-1", "a-2"], "th-b": ["b-1"], "th-c": ["c-1"] };
+  /** Three conversations; removing actions take them off the list and are undoable; undo brings them all back. */
+  function flowRpc(overrides: Record<string, (input: never) => unknown> = {}) {
+    let threads = [...all];
+    return folderRpc({
+      threads_list: () => ({ threads, nextCursor: null }),
+      thread_get: ({ threadId }: { threadId: string }) => detailOf(all.find((t) => t.id === threadId) ?? threadA, "INBOX", ids[threadId] ?? []),
+      message_action: ({ messageIds, action }: { messageIds: string[]; action: string }) => {
+        if (!action.startsWith("mark") && !action.endsWith("flag")) {
+          threads = threads.filter((t) => !(ids[t.id] ?? []).some((id) => messageIds.includes(id)));
+        }
+        return { groups: [{ accountId: "acc-1", folder: "INBOX", queued: messageIds.length, destination: "Trash", error: null }], undoable: true };
+      },
+      action_undo: () => {
+        threads = [...all];
+        return { outcome: "done", restored: 1, skipped: [], failed: 0, groups: [] };
+      },
+      // Search hits: one per conversation still there, under its own subject.
+      search: () => ({
+        hits: threads.map((t) => message({ id: ids[t.id]!.at(-1)!, threadId: t.id, subject: t.subject, agentSubject: t.subject })),
+        nextCursor: null,
+        notes: [],
+        attachmentMatches: [],
+      }),
+      ...overrides,
+    });
+  }
+  const opened = (slot: ReturnType<typeof render>) => callsTo(slot, "thread_get").map((call) => (call.input as { threadId: string }).threadId);
+  /** Opens a row with the keyboard: j to it, then o. */
+  async function openRow(slot: ReturnType<typeof render>, steps: number, subject: string) {
+    pageRoot(slot).focus();
+    for (let i = 0; i < steps; i++) key(J);
+    key({ key: "o", code: "KeyO" });
+    await slot.findByRole("heading", { name: subject });
+  }
+  /** The destructive guard drops a second removing key right after the first. */
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 450));
+
+  it("Backspace opens the row below; on the last row the one above; on the only row the empty state", async () => {
+    const slot = render(flowRpc());
+    await slot.findByText("Tickets");
+    await openRow(slot, 2, "Lunch");
+
+    key(BACKSPACE);
+    await slot.findByRole("heading", { name: "Tickets" });
+    expect(opened(slot)).toEqual(["th-b", "th-c"]);
+    await settle();
+
+    key(BACKSPACE);
+    await slot.findByRole("heading", { name: "Quarterly plan" });
+    expect(opened(slot)).toEqual(["th-b", "th-c", "th-a"]);
+    await settle();
+
+    key(BACKSPACE);
+    await waitFor(() => expect(slot.queryByRole("heading", { name: "Quarterly plan" })).toBeNull());
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(opened(slot)).toEqual(["th-b", "th-c", "th-a"]);
+    expect(actionInputs(slot).map((input) => input.messageIds)).toEqual([["b-1"], ["c-1"], ["a-1", "a-2"]]);
+  });
+
+  it("a tap right after the action completes never deletes the conversation it opened (slice 3i review)", async () => {
+    let release: (() => void) | null = null;
+    const base = flowRpc() as unknown as Record<string, (input: never) => unknown>;
+    const slot = render(
+      flowRpc({
+        // The first delete is slow: it lands after the guard set at dispatch has run out.
+        message_action: (input: never) =>
+          new Promise((resolve) => {
+            release = () => resolve(base.message_action!(input));
+          }),
+      }),
+    );
+    await slot.findByText("Tickets");
+    await openRow(slot, 2, "Lunch");
+    key(BACKSPACE);
+    await new Promise((resolve) => setTimeout(resolve, 450));
+    release!();
+    await slot.findByRole("heading", { name: "Tickets" });
+    key(BACKSPACE);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(actionInputs(slot).map((input) => input.messageIds)).toEqual([["b-1"]]);
+  });
+
+  it("search results: deleting the open hit's conversation opens the next hit", async () => {
+    const slot = render(flowRpc());
+    await slot.findByText("Tickets");
+    fireEvent.change(slot.getByLabelText("Search mail"), { target: { value: "note" } });
+    fireEvent.submit(slot.getByRole("search"));
+    await waitFor(() => expect(callsTo(slot, "search")).toHaveLength(1));
+    fireEvent.click(await slot.findByRole("button", { name: /Lunch/ }));
+    await slot.findByRole("heading", { name: "Lunch" });
+    pageRoot(slot).focus();
+    key(BACKSPACE);
+    await slot.findByRole("heading", { name: "Tickets" });
+    expect(opened(slot)).toEqual(["th-b", "th-c"]);
+  });
+
+  it("a failed action keeps the conversation open", async () => {
+    const slot = render(
+      flowRpc({
+        message_action: () => ({ groups: [{ accountId: "acc-1", folder: "INBOX", queued: 0, destination: null, error: "Invented refusal" }] }),
+      }),
+    );
+    await slot.findByText("Tickets");
+    await openRow(slot, 2, "Lunch");
+    key(BACKSPACE);
+    await waitFor(() => expect(toasts.error).toEqual(["Invented refusal"]));
+    expect(slot.getByRole("heading", { name: "Lunch" })).toBeTruthy();
+    expect(opened(slot)).toEqual(["th-b"]);
+  });
+
+  it("a conversation the owner opened while the action ran stays open", async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const base = flowRpc();
+    const slot = render({
+      ...base,
+      message_action: async (input: { messageIds: string[]; action: string }) => {
+        await gate;
+        return ((base as Record<string, unknown>).message_action as (i: typeof input) => unknown)(input);
+      },
+    });
+    await slot.findByText("Tickets");
+    await openRow(slot, 1, "Quarterly plan");
+    key(BACKSPACE);
+    await waitFor(() => expect(callsTo(slot, "message_action")).toHaveLength(1));
+    fireEvent.click(rowButton(slot, /Tickets/));
+    await slot.findByRole("heading", { name: "Tickets" });
+    release();
+    await waitFor(() => expect(slot.queryByRole("button", { name: /Quarterly plan/ })).toBeNull());
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(slot.getByRole("heading", { name: "Tickets" })).toBeTruthy();
+    expect(opened(slot)).toEqual(["th-a", "th-c"]);
+  });
+
+  it("z after an advance reopens the conversation; not after the owner opened another", async () => {
+    const slot = render(flowRpc());
+    await slot.findByText("Tickets");
+    await openRow(slot, 2, "Lunch");
+    key(BACKSPACE);
+    await slot.findByRole("heading", { name: "Tickets" });
+    await settle();
+    key({ key: "z", code: "KeyZ" });
+    await waitFor(() => expect(callsTo(slot, "action_undo")).toHaveLength(1));
+    await slot.behavior.emitRealtime(MAIL_CHANGED_CHANNEL, { accountId: "acc-1" });
+    await slot.findByRole("heading", { name: "Lunch" });
+    expect(opened(slot)).toEqual(["th-b", "th-c", "th-b"]);
+
+    await settle();
+    key(BACKSPACE);
+    await slot.findByRole("heading", { name: "Tickets" });
+    fireEvent.click(rowButton(slot, /Quarterly plan/));
+    await slot.findByRole("heading", { name: "Quarterly plan" });
+    pageRoot(slot).focus();
+    key({ key: "z", code: "KeyZ" });
+    await waitFor(() => expect(callsTo(slot, "action_undo")).toHaveLength(2));
+    await slot.behavior.emitRealtime(MAIL_CHANGED_CHANNEL, { accountId: "acc-1" });
+    await waitFor(() => expect(slot.getByRole("button", { name: /Lunch/ })).toBeTruthy());
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(slot.getByRole("heading", { name: "Quarterly plan" })).toBeTruthy();
+    expect(opened(slot).at(-1)).toBe("th-a");
+  });
+
+  it("the toast's own Undo reopens too", async () => {
+    const slot = render(flowRpc());
+    await slot.findByText("Tickets");
+    await openRow(slot, 2, "Lunch");
+    key(BACKSPACE);
+    await slot.findByRole("heading", { name: "Tickets" });
+    const undoToast = toasts.log.filter((t) => t.options?.action?.label === "Undo").at(-1)!;
+    await act(async () => undoToast.options!.action!.onClick());
+    await waitFor(() => expect(callsTo(slot, "action_undo")).toHaveLength(1));
+    await slot.behavior.emitRealtime(MAIL_CHANGED_CHANNEL, { accountId: "acc-1" });
+    await slot.findByRole("heading", { name: "Lunch" });
+  });
+
+  it("dragging the open conversation to a folder opens the next one", async () => {
+    const slot = render(flowRpc());
+    await slot.findByText("Tickets");
+    await openRow(slot, 2, "Lunch");
+    const row = rowButton(slot, /Lunch/).closest("li")!;
+    const data = new Map<string, string>();
+    const dataTransfer = {
+      setData: (type: string, value: string) => data.set(type, value),
+      getData: (type: string) => data.get(type) ?? "",
+      get types() {
+        return [...data.keys()];
+      },
+      dropEffect: "none",
+      effectAllowed: "all",
+    };
+    const fire = (target: Element, make: (el: Element) => Event) => {
+      const event = make(target);
+      Object.defineProperty(event, "dataTransfer", { value: dataTransfer });
+      fireEvent(target, event);
+    };
+    fire(row, createEvent.dragStart);
+    fire(folderRail(slot).getByRole("button", { name: /^Trash/ }).closest("li")!, createEvent.drop);
+    fire(row, createEvent.dragEnd);
+    await waitFor(() => expect(actionInputs(slot)).toEqual([expect.objectContaining({ action: "delete", messageIds: ["b-1"] })]));
+    await slot.findByRole("heading", { name: "Tickets" });
+  });
+
+  it("a key pressed in the message frame runs the hotkey; one typed into a field there does not", async () => {
+    const slot = render(flowRpc());
+    await slot.findByText("Tickets");
+    await openRow(slot, 2, "Lunch");
+    const iframe = (await slot.findByTitle("Message from Ada Example")) as HTMLIFrameElement;
+    fireEvent.load(iframe);
+    const doc = iframe.contentDocument!;
+    doc.body.innerHTML = '<p id="p">text</p><div id="e" contenteditable="true"></div><a id="l" href="https://example.org/page">page</a>';
+    const win = doc.defaultView as Window & typeof globalThis;
+    const press = (id: string, init: KeyboardEventInit) =>
+      doc.getElementById(id)!.dispatchEvent(new win.KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init }));
+
+    press("e", BACKSPACE);
+    // Enter on a focused link opens the link only, never the cursor row.
+    press("l", { key: "Enter", code: "Enter" });
+    doc.getElementById("l")!.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true }));
+    await waitFor(() => expect(slot.inspection.navigateCalls).toContainEqual({ method: "openUrl", url: "https://example.org/page" }));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(callsTo(slot, "message_action")).toHaveLength(0);
+    expect(opened(slot)).toEqual(["th-b"]);
+
+    press("p", BACKSPACE);
+    await waitFor(() => expect(actionInputs(slot)).toEqual([expect.objectContaining({ action: "delete", messageIds: ["b-1"] })]));
+  });
+
+  it("Down on a message header moves focus to the next header", async () => {
+    const slot = render(mailRpc());
+    fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
+    await slot.findByRole("heading", { name: "Quarterly plan" });
+    const headers = Array.from(slot.container.ownerDocument.querySelectorAll<HTMLElement>("[data-mail-message-toggle]"));
+    expect(headers).toHaveLength(2);
+    headers[0]!.focus();
+    key({ key: "ArrowDown", code: "ArrowDown" });
+    expect(document.activeElement).toBe(headers[1]);
+    key({ key: "ArrowUp", code: "ArrowUp" });
+    expect(document.activeElement).toBe(headers[0]);
+  });
+
+  it("Command+N on a Mac is left to BB: not prevented, no composer", async () => {
+    const before = Object.getOwnPropertyDescriptor(navigator, "platform");
+    Object.defineProperty(navigator, "platform", { value: "MacIntel", configurable: true });
+    try {
+      const slot = render(composeRpc());
+      await slot.findByText("Lunch");
+      const root = pageRoot(slot);
+      root.focus();
+      const event = createEvent.keyDown(root, { key: "n", code: "KeyN", metaKey: true });
+      fireEvent(root, event);
+      expect(event.defaultPrevented).toBe(false);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(callsTo(slot, "compose_new")).toHaveLength(0);
+    } finally {
+      if (before !== undefined) Object.defineProperty(navigator, "platform", before);
+      else delete (navigator as { platform?: string }).platform;
+    }
+  });
+
+  describe("the earlier-messages stack", () => {
+    const sixIds = ["s1", "s2", "s3", "s4", "s5", "s6"];
+    const six = (extra: (id: string) => Partial<MessageHeader> = () => ({})): ThreadDetail => {
+      const detail = detailOf(threadA, "INBOX", sixIds);
+      return { ...detail, messages: detail.messages.map((m) => ({ ...m, isRead: m.id !== "s6", ...extra(m.id) })) };
+    };
+    const stack = (slot: ReturnType<typeof render>) => slot.queryByRole("button", { name: /earlier messages/ });
+    const articles = (slot: ReturnType<typeof render>) => slot.queryAllByRole("article");
+
+    it("collapses five earlier messages into one control; click opens it; ; expands all; Collapse all closes it", async () => {
+      const slot = render(folderRpc({ thread_get: () => six() }));
+      fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
+      const button = await slot.findByRole("button", { name: /5 earlier messages/ });
+      expect(button.getAttribute("aria-expanded")).toBe("false");
+      expect(button.hasAttribute("data-mail-stack")).toBe(true);
+      expect(slot.container.ownerDocument.getElementById(button.getAttribute("aria-controls")!)).not.toBeNull();
+      expect(articles(slot).map((a) => a.getAttribute("data-message-id"))).toEqual(["s6"]);
+      expect(slot.getByTitle("Message from Ada Example")).toBeTruthy();
+
+      fireEvent.click(button);
+      await waitFor(() => expect(articles(slot)).toHaveLength(6));
+      expect(stack(slot)).toBeNull();
+      await waitFor(() =>
+        expect(document.activeElement).toBe(articles(slot)[0]!.querySelector("[data-mail-message-toggle]")),
+      );
+
+      fireEvent.click(slot.getByRole("button", { name: "Collapse all" }));
+      expect(await slot.findByRole("button", { name: /5 earlier messages/ })).toBeTruthy();
+
+      pageRoot(slot).focus();
+      key({ key: ";", code: "Semicolon" });
+      await waitFor(() => expect(articles(slot)).toHaveLength(6));
+      await waitFor(() =>
+        expect(articles(slot).every((a) => a.querySelector("[aria-expanded]")?.getAttribute("aria-expanded") === "true")).toBe(true),
+      );
+
+      fireEvent.click(slot.getByRole("button", { name: "Collapse all" }));
+      expect(await slot.findByRole("button", { name: /5 earlier messages/ })).toBeTruthy();
+    });
+
+    it("an unread-at-open message is never stacked, and a stacked warning shows as the marker", async () => {
+      const slot = render(
+        folderRpc({
+          thread_get: () =>
+            six((id) =>
+              id === "s4"
+                ? { isRead: false }
+                : id === "s2"
+                  ? { senderCheck: { state: "failed" as const, summary: "DMARC failed" } }
+                  : {},
+            ),
+        }),
+      );
+      fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
+      const button = await slot.findByRole("button", { name: /3 earlier messages/ });
+      expect(button.textContent).toContain("sender warning");
+      expect(articles(slot).map((a) => a.getAttribute("data-message-id"))).toEqual(["s4", "s5", "s6"]);
+    });
+
+    it("Print with a closed stack prints all six", async () => {
+      const slot = render(folderRpc({ thread_get: () => six() }));
+      fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
+      await slot.findByRole("button", { name: /5 earlier messages/ });
+      fireEvent.click(slot.getByRole("button", { name: "Print conversation\u2026" }));
+      await waitFor(() =>
+        expect(new Set(callsTo(slot, "message_body").map((call) => (call.input as { messageId: string }).messageId))).toEqual(new Set(sixIds)),
+      );
+    });
+
+    it("Collapse all forms the stack again after a message inside it was expanded", async () => {
+      const slot = render(folderRpc({ thread_get: () => six() }));
+      fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
+      await slot.findByRole("button", { name: /5 earlier messages/ });
+      // A message expanded inside the stack's range moves the boundary.
+      fireEvent.click(slot.getByRole("button", { name: /5 earlier messages/ }));
+      await waitFor(() => expect(articles(slot)).toHaveLength(6));
+      fireEvent.click(within(articles(slot)[2]!).getAllByRole("button")[0]!);
+      fireEvent.click(slot.getByRole("button", { name: "Collapse all" }));
+      expect(await slot.findByRole("button", { name: /5 earlier messages/ })).toBeTruthy();
+    });
+  });
+});
+
+describe("slice 3j: density and the reading pane", () => {
+  function renderSet(settings: Record<string, string | number | boolean>) {
+    return renderSlot({ component: MailWithSidebar }, { subPath: "" }, {
+      rpc: rowsRpc() as never,
+      settings,
+      composer: { scope: { kind: "new-thread", projectId: null } },
+    });
+  }
+
+  it("shows comfortable rows with their preview by default, the pane to the right", async () => {
+    const slot = renderSet({});
+    await slot.findByText("Tickets");
+    const row = rowButton(slot as never, /Quarterly plan/).closest("li")!;
+    expect(row.getAttribute("data-density")).toBe("comfortable");
+    expect(row.querySelectorAll("button[data-row-key] > span")).toHaveLength(3);
+    expect(slot.container.querySelector("[data-reading-pane]")!.getAttribute("data-reading-pane")).toBe("right");
+  });
+
+  it("compact rows drop the preview line", async () => {
+    const slot = renderSet({ listDensity: "compact" });
+    await slot.findByText("Tickets");
+    const row = rowButton(slot as never, /Quarterly plan/).closest("li")!;
+    expect(row.getAttribute("data-density")).toBe("compact");
+    expect(row.querySelectorAll("button[data-row-key] > span")).toHaveLength(2);
+  });
+
+  it("puts the reading pane below the list in a wide window, with both visible", async () => {
+    const slot = renderSet({ readingPane: "bottom" });
+    await slot.findByText("Tickets");
+    const layout = slot.container.querySelector("[data-reading-pane]")!;
+    await waitFor(() => expect(layout.getAttribute("data-reading-pane")).toBe("bottom"));
+    expect(layout.className).toContain("flex-col");
+    const [list, conversation] = Array.from(layout.children) as HTMLElement[];
+    expect(list!.className).toContain("h-2/5");
+    expect(list!.className).not.toContain("hidden");
+    expect(conversation!.className).not.toContain("hidden");
+  });
+});
+
+describe("slice 3j: the page in Russian", () => {
+  function renderIn(language: string) {
+    return renderSlot({ component: MailWithSidebar }, { subPath: "" }, {
+      rpc: rowsRpc() as never,
+      settings: { language },
+      composer: { scope: { kind: "new-thread", projectId: null } },
+    });
+  }
+
+  it("shows Mail's own texts in Russian and leaves mail data as it came", async () => {
+    const { RU } = await import("./src/ui/i18n/ru.ts");
+    const slot = renderIn("ru");
+    // Subjects are mail data: never translated.
+    await slot.findByText("Tickets");
+    expect(pageRoot(slot as never).getAttribute("lang")).toBe("ru");
+    expect(slot.getByRole("button", { name: RU["Sync now"] as string })).toBeTruthy();
+    expect(slot.getByRole("button", { name: RU["Keyboard shortcuts"] as string })).toBeTruthy();
+    expect(slot.queryByRole("button", { name: "Sync now" })).toBeNull();
+    expect(slot.getByRole("group", { name: RU["Quick filters"] as string })).toBeTruthy();
+  });
+
+  it("stays English when the setting says English", async () => {
+    const slot = renderIn("en");
+    await slot.findByText("Tickets");
+    expect(pageRoot(slot as never).getAttribute("lang")).toBe("en");
+    expect(slot.getByRole("button", { name: "Sync now" })).toBeTruthy();
   });
 });

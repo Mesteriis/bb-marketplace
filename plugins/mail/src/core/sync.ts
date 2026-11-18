@@ -23,7 +23,15 @@
 // the next). One failing folder is recorded and the round goes on; a rejected
 // login stops the account. Never throws; error text is built from error
 // classes and codes, so it never carries the password.
-import type { AccountPreset, FetchedMessage, FlagChange, FlagIntent, Folder, RemoteFolder } from "./model.ts";
+//
+// Slice 3h: rows loaded by a history or server-search job carry `kept`
+// (KeptState). Reconcile clears it on rows inside the window (they are
+// window rows again) and, with `historyCheck`, once a day per folder also
+// checks the flags of loaded history (between history_since and the
+// window), deleting what left the server. A reset also looks for `opened`
+// rows and clears history_since. Gmail sessions report X-GM-LABELS, which
+// are stored at every fetch and refreshed in the flag pass.
+import type { AccountPreset, FetchedMessage, FlagChange, FlagIntent, Folder, RemoteFolder, SpecialUse } from "./model.ts";
 import {
   ImapAuthError,
   type ChangeNotifier,
@@ -38,6 +46,9 @@ import { normalizeMessageId } from "./headers.ts";
 import { SNOOZES_MAX_PER_ACCOUNT } from "./snooze.ts";
 import { buildThreads } from "./threading.ts";
 import { unsubscribeInfoOf } from "./unsubscribe.ts";
+import { classifyDev, normalizeListId } from "./dev-notify.ts";
+import { cryptoKindOf, firstNonBlankLine, isEncrypted } from "./mail-crypto.ts";
+import { senderCheckOf } from "./sender-check.ts";
 
 export const INBOX = "INBOX";
 
@@ -68,7 +79,23 @@ export interface SyncOptions {
    * appended. Absent: a full round.
    */
   only?: "inbox";
+  /**
+   * Slice 3g: classify new rows as dev notifications (the devNotifications
+   * setting); Spam and Trash rows are never classified. Absent: off.
+   */
+  classify?: boolean;
+  /** Hosts of the BB projects' remotes: a self-hosted GitLab or Jenkins sender counts only from these (or with its own List-Id). */
+  devHosts?: readonly string[];
+  /**
+   * Slice 3h (spec resolution 9): reconcile also checks the flags of the
+   * loaded history of a folder whose last check is missing or older than
+   * HISTORY_CHECK_EVERY_MS. The sync service sets it on full rounds.
+   */
+  historyCheck?: boolean;
 }
+
+/** Loaded history of a folder is checked against the server at most this often. */
+export const HISTORY_CHECK_EVERY_MS = 86_400_000;
 
 export type SyncOutcome =
   | {
@@ -105,9 +132,22 @@ export type SyncOutcome =
 
 type FolderCounts = { fetched: number; removed: number; flagsChanged: number };
 
-/** What one folder's sync needs beyond the session: how to judge headers, and where new Inbox rows go. */
-type FolderContext = {
+/** How a fetched message is judged before it is stored (sync, and slice 3h jobs). */
+export type PrepareContext = {
   preset: AccountPreset;
+  /** Slice 3g: classification is on and the folder is not Spam or Trash. */
+  classifyDev: boolean;
+  /** The project remotes' hosts the classifier vouches for. */
+  devHosts: ReadonlySet<string>;
+  /**
+   * Slice 3i: the role of the folder being judged (not a `Folder`'s own
+   * field): Sent and Drafts copies are not sender-checked (resolution 3).
+   */
+  folderRole: SpecialUse | null;
+};
+
+/** What one folder's sync needs beyond the session: how to judge headers, and where new Inbox rows go. */
+type FolderContext = PrepareContext & {
   /** Set for an Inbox-role folder: its incremental fetch collects inserted rows here. */
   collect: { newInbox: string[]; returning: string[] } | null;
   /** Every row inserted this round in any folder, reconcile backfill included (slice 3f). */
@@ -126,6 +166,16 @@ type RoundProgress = {
   /** Strips the password from error text (defence in depth). */
   describe: (error: unknown) => string;
 };
+
+/**
+ * Rethreads the account when rows were inserted or deleted since the last
+ * time (slice 3j): a round that only changed flags, or nothing, skips the
+ * read of every row that threading needs.
+ */
+function rethreadIfStale(store: MailStore, accountId: string): void {
+  if (!store.threadsStale(accountId)) return;
+  store.assignThreads(accountId, buildThreads(store.threadingInputs(accountId)));
+}
 
 /** An account-level failure whose message is fixed text, safe to show. */
 class SyncRoundError extends Error {
@@ -199,6 +249,9 @@ export async function syncAccount(
       try {
         const context: FolderContext = {
           preset: account.preset,
+          classifyDev: options.classify === true && folder.specialUse !== "junk" && folder.specialUse !== "trash",
+          devHosts: new Set((options.devHosts ?? []).map((host) => host.toLowerCase())),
+          folderRole: folder.specialUse,
           collect: folder.specialUse === "inbox" ? collected : null,
           inserted,
         };
@@ -215,7 +268,7 @@ export async function syncAccount(
       }
     }
 
-    store.assignThreads(accountId, buildThreads(store.threadingInputs(accountId)));
+    rethreadIfStale(store, accountId);
     const lastError = problemText(progress);
     if (folders.length > 0 && synced === 0) {
       // Every folder failed: like a failed slice-1 round, lastSyncAt stays.
@@ -256,9 +309,7 @@ export async function syncAccount(
     const authFailed = error instanceof ImapAuthError;
     const message = redact(describeError(error), password);
     try {
-      if (progress.changed) {
-        store.assignThreads(accountId, buildThreads(store.threadingInputs(accountId)));
-      }
+      if (progress.changed) rethreadIfStale(store, accountId);
       const roundError = [message, problemText(progress)].filter((t) => t !== null).join("; ");
       store.recordSyncResult(accountId, {
         lastSyncAt: account.lastSyncAt,
@@ -563,7 +614,11 @@ async function syncFolder(
     stored === null || resetting
       ? keptAtReset(store, accountId, path, stored === null, queuedAtReset)
       : new Map<string, number | null>();
-  if (resetting) store.beginFolderReset(accountId, path);
+  if (resetting) {
+    store.beginFolderReset(accountId, path);
+    // Loaded history named the old uids: "Load 30 more days" starts again.
+    store.setHistorySince(accountId, path, null);
+  }
   const initial = stored === null || resetting;
 
   const baseState = initial
@@ -590,13 +645,14 @@ async function syncFolder(
     for (let i = 0; i < batchUids.length; i += options.batchSize) {
       const batch = batchUids.slice(i, i + options.batchSize);
       const messages: FetchedMessage[] = (await session.fetchMessages(batch)).map((message) =>
-        withUnsubscribe(message, context.preset),
+        prepareMessage(message, context),
       );
       for (const uid of batch) lastUid = Math.max(lastUid, uid);
       for (const message of messages) lastUid = Math.max(lastUid, message.uid);
       count += messages.length;
       const stored = store.transaction(() => {
         const result = store.upsertMessages(accountId, path, messages);
+        storeLabels(store, accountId, path, messages.map((m) => ({ uid: m.uid, labels: m.gmLabels })));
         store.saveSyncState(accountId, path, { ...baseState, lastUid });
         return result;
       });
@@ -623,7 +679,9 @@ async function syncFolder(
     lastUid = highest;
     store.saveSyncState(accountId, path, { ...baseState, lastUid });
   }
-  const reconciled = await reconcile(store, session, accountId, path, since, fetchAndStore);
+  const historyFrom = initial || options.historyCheck !== true ? null : historyDue(store, accountId, path, now);
+  const reconciled = await reconcile(store, session, accountId, path, since, fetchAndStore, historyFrom);
+  if (historyFrom !== null) store.historyChecked(accountId, path, now.toISOString());
   fetched += reconciled.backfilled;
   if (initial) {
     // The window is stored: start incremental sync from the end of the
@@ -635,7 +693,7 @@ async function syncFolder(
   // Every successful round, not only the one that saw the change: a reset
   // round that failed midway has already saved the new UIDVALIDITY, so the
   // rows it detached are only cleaned up here.
-  if (kept.size > 0) fetched += await reattachKept(store, session, accountId, path, kept, context.preset, options.batchSize, context.inserted);
+  if (kept.size > 0) fetched += await reattachKept(store, session, accountId, path, kept, context, options.batchSize, context.inserted);
   const stillThere = queuedAtReset.filter((id) => store.getMessage(id) !== null);
   const resetRemoved = store.finishFolderReset(accountId, path);
   const droppedMoves = stillThere.filter((id) => store.getMessage(id) === null);
@@ -661,6 +719,8 @@ function keptAtReset(
 ): Map<string, number | null> {
   const wanted = new Set<string>(queued);
   for (const snooze of store.listSnoozes(accountId, { limit: SNOOZES_MAX_PER_ACCOUNT })) wanted.add(snooze.messageId);
+  // Slice 3h (spec resolution 16): a row the owner touched is never lost only because of the reset.
+  for (const id of store.keptIds(accountId, path, "opened")) wanted.add(id);
   const kept = new Map<string, number | null>();
   for (const row of store.detachedRows(accountId, path)) if (neverSynced || wanted.has(row.id)) kept.set(row.id, null);
   for (const entry of store.localFolderIndex(accountId, path, EPOCH_ISO)) {
@@ -682,7 +742,7 @@ async function reattachKept(
   accountId: string,
   path: string,
   kept: ReadonlyMap<string, number | null>,
-  preset: AccountPreset,
+  context: PrepareContext,
   batchSize: number,
   inserted: string[],
 ): Promise<number> {
@@ -703,9 +763,15 @@ async function reattachKept(
       if (rows.length === 0) return;
       const messages = (await session.fetchMessages(fresh.slice(i, i + batchSize)))
         .filter((message) => ours(message, rows))
-        .map((message) => withUnsubscribe(message, preset));
+        .map((message) => prepareMessage(message, context));
       if (messages.length === 0) continue;
-      inserted.push(...store.transaction(() => store.upsertMessages(accountId, path, messages)).inserted);
+      inserted.push(
+        ...store.transaction(() => {
+          const result = store.upsertMessages(accountId, path, messages);
+          storeLabels(store, accountId, path, messages.map((m) => ({ uid: m.uid, labels: m.gmLabels })));
+          return result;
+        }).inserted,
+      );
       stored += messages.length;
     }
   };
@@ -738,6 +804,8 @@ async function reconcile(
   path: string,
   since: Date,
   fetchAndStore: (uids: number[]) => Promise<number>,
+  /** Slice 3h: also check loaded history from this date up to the window (null: the window only). */
+  historyFrom: string | null,
 ): Promise<{ backfilled: number; removed: number; flagsChanged: number }> {
   const serverUids = await session.searchSince(since);
   // Every stored uid, not only the window's: a message whose stored date falls
@@ -754,16 +822,82 @@ async function reconcile(
     .map((entry) => entry.uid);
   const onServer = new Set<number>();
   let flagsChanged = 0;
-  for (let i = 0; i < local.length; i += FLAG_BATCH_SIZE) {
-    const flags = await session.fetchFlags(local.slice(i, i + FLAG_BATCH_SIZE));
+  // Slice 3h: loaded history between historyFrom and the window, checked the same way.
+  const windowUids = new Set(local);
+  const history =
+    historyFrom === null
+      ? []
+      : store
+          .localFolderIndex(accountId, path, historyFrom)
+          .map((entry) => entry.uid)
+          .filter((uid) => !windowUids.has(uid));
+  const checked = [...local, ...history];
+  for (let i = 0; i < checked.length; i += FLAG_BATCH_SIZE) {
+    const flags = await session.fetchFlags(checked.slice(i, i + FLAG_BATCH_SIZE));
     for (const entry of flags) onServer.add(entry.uid);
     flagsChanged += store.applyFlags(accountId, path, flags);
+    storeLabels(store, accountId, path, flags.map((entry) => ({ uid: entry.uid, labels: entry.labels })));
   }
+  // Rows inside the window are window rows, whatever loaded them (spec "Window setting change").
+  store.clearWindowKept(accountId, path, since.toISOString());
   // Every flag batch succeeded (a failure throws and ends the round), so a uid
   // the server returned nothing for is gone from it.
-  const gone = local.filter((uid) => !onServer.has(uid));
+  const gone = checked.filter((uid) => !onServer.has(uid));
   const removed = gone.length > 0 ? store.deleteByUids(accountId, path, gone) : 0;
   return { backfilled, removed, flagsChanged };
+}
+
+/**
+ * Where the history check of a folder starts when it is due (spec
+ * resolution 9): history was loaded and the last check is missing or older
+ * than HISTORY_CHECK_EVERY_MS. Null when there is nothing to check.
+ */
+function historyDue(store: MailStore, accountId: string, path: string, now: Date): string | null {
+  const state = store.historyState(accountId, path);
+  if (state === null || state.historySince === null) return null;
+  const checkedAt = state.historyCheckedAt === null ? null : Date.parse(state.historyCheckedAt);
+  if (checkedAt !== null && Number.isFinite(checkedAt) && now.getTime() - checkedAt < HISTORY_CHECK_EVERY_MS) return null;
+  return state.historySince;
+}
+
+/** Stores the X-GM-LABELS a Gmail session reported; entries without labels (other servers) are left out. */
+function storeLabels(
+  store: MailStore,
+  accountId: string,
+  path: string,
+  entries: readonly { uid: number; labels?: string[] | undefined }[],
+): void {
+  const reported = entries.flatMap((entry) => (entry.labels === undefined ? [] : [{ uid: entry.uid, labels: entry.labels }]));
+  if (reported.length > 0) store.setGmLabels(accountId, path, reported);
+}
+
+/**
+ * The message as the store takes it: unsubscribe info, (slice 3g) the local
+ * dev class when classification is on for the folder, and (slice 3i) the
+ * sender check, signed or encrypted kind and receipt request. A failed check
+ * gets no dev class whatever the folder says (resolution 2); an encrypted
+ * body is dropped here, before the store sees it (resolution 6). Nothing
+ * here writes to the server. Slice 3h jobs call it with the same context, so
+ * their rows are judged like synced rows (spec resolution 7).
+ */
+export function prepareMessage(message: FetchedMessage, context: PrepareContext): FetchedMessage {
+  let out = withSecurity(withUnsubscribe(message, context.preset), context);
+  if (out.senderCheck?.state === "failed") return { ...out, dev: null };
+  if (context.classifyDev) {
+    // The store keeps the List-Id itself, from the same bulk headers.
+    const listId = message.bulkHeaders === undefined ? null : normalizeListId(message.bulkHeaders.listId);
+    const headers =
+      message.devHeaders === undefined ? null : new Map(message.devHeaders.map((line) => [line.key.toLowerCase(), line.value] as const));
+    const dev = classifyDev({
+      from: message.from.address,
+      subject: message.subject,
+      headers,
+      listId,
+      knownHosts: context.devHosts,
+    });
+    out = { ...out, dev };
+  }
+  return out;
 }
 
 /**
@@ -773,6 +907,26 @@ async function reconcile(
 function withUnsubscribe(message: FetchedMessage, preset: AccountPreset): FetchedMessage {
   if (message.unsubscribeHeaders === undefined) return message;
   return { ...message, unsubscribe: unsubscribeInfoOf(message.unsubscribeHeaders, preset, message.from) };
+}
+
+/**
+ * Slice 3i: the sender check from the kept header lines (absent headers
+ * leave the stored check alone), and the crypto kind from the top
+ * Content-Type and the first non-blank text line (only when the fetch read
+ * headers). Encrypted bodies are nulled; the store then keeps an empty
+ * snippet and indexes nothing.
+ */
+function withSecurity(message: FetchedMessage, context: PrepareContext): FetchedMessage {
+  let out = message;
+  if (message.unsubscribeHeaders !== undefined) {
+    out = { ...out, senderCheck: senderCheckOf(message.unsubscribeHeaders, context.preset, message.from, { folderRole: context.folderRole }) };
+  }
+  if (message.contentType !== undefined) {
+    const crypto = cryptoKindOf(message.contentType, firstNonBlankLine(message.bodyText));
+    out = { ...out, crypto };
+    if (isEncrypted(crypto?.kind)) out = { ...out, bodyText: null, bodyHtml: null };
+  }
+  return out;
 }
 
 async function closeQuietly(session: FolderSession): Promise<void> {

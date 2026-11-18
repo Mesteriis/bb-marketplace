@@ -3,6 +3,7 @@ import type { z } from "zod";
 import { AI_KINDS } from "./ai-input.ts";
 import {
   AI_START_KINDS,
+  BB_REFUSAL_TEXT,
   DAY_NOTICE_CHANNEL,
   MAIL_CHANGED_CHANNEL,
   NEW_MAIL_CHANNEL,
@@ -11,6 +12,13 @@ import {
   headerAddressInput,
   newMailPayloadSchema,
   rpcSchemas,
+  SLICE_3H_METHODS,
+  SLICE_3I_METHODS,
+  SLICE_3K_METHODS,
+  SLICE_3L_METHODS,
+  SLICE_3M_METHODS,
+  SLICE_3N_METHODS,
+  SLICE_3P_METHODS,
 } from "./contract.ts";
 import {
   accountSchema,
@@ -27,10 +35,19 @@ import {
   messageActionSchema,
   messageHeaderSchema,
   messageSummarySchema,
+  messageBodySchema,
+  threadDetailSchema,
+  taskViewSchema,
+  composeAttachmentSchema,
   specialUseSchema,
   statusViewSchema,
   threadSummarySchema,
+  mailCryptoSchema,
+  senderCheckViewSchema,
 } from "./model.ts";
+import { CRYPTO_KINDS } from "./mail-crypto.ts";
+import { SENDER_CHECK_STATES } from "./sender-check.ts";
+import { DISGUISE_WARNING_KINDS } from "./sender-disguise.ts";
 
 const SECRET_KEY = /pass|secret|seal|key/i;
 
@@ -130,6 +147,43 @@ const SLICE_3F_METHODS = [
   "agent_log_clear",
 ] as const;
 
+/** The 31 owner-only methods slice 3g adds. */
+const SLICE_3G_METHODS = [
+  "projects_list",
+  "bb_thread_prepare",
+  "bb_thread_start",
+  "task_targets",
+  "task_from_mail",
+  "attachment_save",
+  "project_files",
+  "project_folders",
+  "thread_files",
+  "bb_threads_recent",
+  "compose_attach_bb",
+  "draft_from_bb",
+  "dev_digest_get",
+  "patch_view",
+  "patch_save",
+  "patch_handoff",
+  "patch_handoff_prepare",
+  "alert_view",
+  "incident_start",
+  "incident_prepare",
+  "incident_append",
+  "conversation_project_set",
+  "binding_add",
+  "binding_remove",
+  "bindings_list",
+  "project_mail",
+  "bb_thread_mail",
+  "rules_list",
+  "rule_save",
+  "rule_delete",
+  "rules_pause",
+  "rule_runs_list",
+  "rule_run_dismiss",
+] as const;
+
 /** Header-injection payloads every header field must refuse. */
 const LINE_BREAKS = ["x\r\nBcc: eve@example.net", "x\nBcc: eve@example.net", "x\rX", "x\u0000y"];
 
@@ -141,7 +195,7 @@ function keysOf(schema: z.ZodType): string[] {
     return Object.entries(shape).flatMap(([key, child]) => [key, ...keysOf(child)]);
   }
   if (def.type === "array") return keysOf(def.element as z.ZodType);
-  if (def.type === "nullable" || def.type === "optional") {
+  if (def.type === "nullable" || def.type === "optional" || def.type === "default") {
     return keysOf(def.innerType as z.ZodType);
   }
   if (def.type === "tuple") return (def.items as z.ZodType[]).flatMap(keysOf);
@@ -150,14 +204,18 @@ function keysOf(schema: z.ZodType): string[] {
 }
 
 describe("rpcSchemas", () => {
-  it("declares exactly the slice-1 methods plus the slice-2, 3a, 3b, 3c, 3d, 3e and 3f additions", () => {
+  it("declares exactly the slice-1 methods plus the slice-2, 3a, 3b, 3c, 3d, 3e, 3f and 3g additions", () => {
     expect(Object.keys(rpcSchemas).sort()).toEqual(
       [
         ...COMPOSE_METHODS,
+        ...SLICE_3G_METHODS,
         ...SLICE_3C_METHODS,
         ...SLICE_3D_METHODS,
         ...SLICE_3E_METHODS,
         ...SLICE_3F_METHODS,
+        ...SLICE_3H_METHODS,
+        ...SLICE_3I_METHODS,
+        ...SLICE_3K_METHODS, ...SLICE_3L_METHODS, ...SLICE_3M_METHODS, ...SLICE_3N_METHODS, ...SLICE_3P_METHODS,
         "status_get",
         "accounts_test",
         "accounts_add",
@@ -333,7 +391,7 @@ describe("rpcSchemas", () => {
     const body = { messageId: "m", text: null, html: null, htmlTruncated: false };
     expect(rpcSchemas.message_body.output.safeParse(body).success).toBe(false);
     expect(
-      rpcSchemas.message_body.output.safeParse({ ...body, remoteImagesAllowed: true }).success,
+      rpcSchemas.message_body.output.safeParse({ ...body, remoteImagesAllowed: true, codeBlocks: [] }).success,
     ).toBe(true);
   });
 
@@ -411,6 +469,7 @@ describe("slice-2 model", () => {
       selectable: true,
       unreadCount: 0,
       totalCount: 3,
+      subscribed: true,
     };
     expect(folderSchema.safeParse(folder).success).toBe(true);
     expect(folderSchema.safeParse({ ...folder, specialUse: null }).success).toBe(true);
@@ -469,7 +528,7 @@ describe("slice-3b contract", () => {
 
   it("adds exactly 19 methods to the 17 before it", () => {
     expect(COMPOSE_METHODS).toHaveLength(19);
-    const later: readonly string[] = [...SLICE_3C_METHODS, ...SLICE_3D_METHODS, ...SLICE_3E_METHODS, ...SLICE_3F_METHODS];
+    const later: readonly string[] = [...SLICE_3C_METHODS, ...SLICE_3D_METHODS, ...SLICE_3E_METHODS, ...SLICE_3F_METHODS, ...SLICE_3G_METHODS, ...SLICE_3H_METHODS, ...SLICE_3I_METHODS, ...SLICE_3K_METHODS, ...SLICE_3L_METHODS, ...SLICE_3M_METHODS, ...SLICE_3N_METHODS, ...SLICE_3P_METHODS];
     expect(Object.keys(rpcSchemas).filter((m) => !later.includes(m))).toHaveLength(36);
   });
 
@@ -644,6 +703,7 @@ describe("slice-3b contract", () => {
       "unknown",
       "sent_no_copy",
       "done",
+      "waiting",
     ]);
     expect(outboxStateSchema.options).not.toContain("cancelled");
     expect(sendErrorKindSchema.options).toEqual([
@@ -659,6 +719,7 @@ describe("slice-3b contract", () => {
       "no_sent_folder",
       "append_failed",
       "sender_refused",
+      "no_smtp",
     ]);
   });
 
@@ -690,7 +751,7 @@ describe("slice-3b contract", () => {
       bcc: [],
       subject: "Re: Garden plans",
       doc: { type: "doc", content: [{ type: "paragraph" }] },
-      attachments: [{ id: "a_1", fileName: "plan.pdf", mimeType: "application/pdf", size: 1200 }],
+      attachments: [{ id: "a_1", fileName: "plan.pdf", mimeType: "application/pdf", size: 1200, origin: null }],
       revision: 1,
       serverCopy: "none",
       queued: false,
@@ -778,7 +839,7 @@ describe("slice-3c contract", () => {
 
   it("adds exactly 8 methods to the 36 before it", () => {
     expect(SLICE_3C_METHODS).toHaveLength(8);
-    const later: readonly string[] = [...SLICE_3D_METHODS, ...SLICE_3E_METHODS, ...SLICE_3F_METHODS];
+    const later: readonly string[] = [...SLICE_3D_METHODS, ...SLICE_3E_METHODS, ...SLICE_3F_METHODS, ...SLICE_3G_METHODS, ...SLICE_3H_METHODS, ...SLICE_3I_METHODS, ...SLICE_3K_METHODS, ...SLICE_3L_METHODS, ...SLICE_3M_METHODS, ...SLICE_3N_METHODS, ...SLICE_3P_METHODS];
     expect(Object.keys(rpcSchemas).filter((m) => !later.includes(m))).toHaveLength(44);
     expect(COMPOSE_METHODS).toHaveLength(19);
   });
@@ -1016,7 +1077,7 @@ describe("slice-3d contract", () => {
 
   it("adds exactly 11 methods to the 44 before it", () => {
     expect(SLICE_3D_METHODS).toHaveLength(11);
-    const later: readonly string[] = [...SLICE_3E_METHODS, ...SLICE_3F_METHODS];
+    const later: readonly string[] = [...SLICE_3E_METHODS, ...SLICE_3F_METHODS, ...SLICE_3G_METHODS, ...SLICE_3H_METHODS, ...SLICE_3I_METHODS, ...SLICE_3K_METHODS, ...SLICE_3L_METHODS, ...SLICE_3M_METHODS, ...SLICE_3N_METHODS, ...SLICE_3P_METHODS];
     expect(Object.keys(rpcSchemas).filter((m) => !later.includes(m))).toHaveLength(55);
     expect(COMPOSE_METHODS).toHaveLength(19);
     expect(SLICE_3C_METHODS).toHaveLength(8);
@@ -1195,7 +1256,8 @@ describe("slice-3e contract", () => {
 
   it("adds exactly 14 methods to the 55 before it", () => {
     expect(SLICE_3E_METHODS).toHaveLength(14);
-    expect(Object.keys(rpcSchemas).filter((m) => !(SLICE_3F_METHODS as readonly string[]).includes(m))).toHaveLength(69);
+    const later: readonly string[] = [...SLICE_3F_METHODS, ...SLICE_3G_METHODS, ...SLICE_3H_METHODS, ...SLICE_3I_METHODS, ...SLICE_3K_METHODS, ...SLICE_3L_METHODS, ...SLICE_3M_METHODS, ...SLICE_3N_METHODS, ...SLICE_3P_METHODS];
+    expect(Object.keys(rpcSchemas).filter((m) => !later.includes(m))).toHaveLength(69);
     expect(COMPOSE_METHODS).toHaveLength(19);
     expect(SLICE_3C_METHODS).toHaveLength(8);
     expect(SLICE_3D_METHODS).toHaveLength(11);
@@ -1340,7 +1402,8 @@ describe("slice-3f contract", () => {
 
   it("adds exactly 24 methods to the 69 before it", () => {
     expect(SLICE_3F_METHODS).toHaveLength(24);
-    expect(Object.keys(rpcSchemas)).toHaveLength(93);
+    const later: readonly string[] = [...SLICE_3G_METHODS, ...SLICE_3H_METHODS, ...SLICE_3I_METHODS, ...SLICE_3K_METHODS, ...SLICE_3L_METHODS, ...SLICE_3M_METHODS, ...SLICE_3N_METHODS, ...SLICE_3P_METHODS];
+    expect(Object.keys(rpcSchemas).filter((m) => !later.includes(m))).toHaveLength(93);
     expect(COMPOSE_METHODS).toHaveLength(19);
     expect(SLICE_3C_METHODS).toHaveLength(8);
     expect(SLICE_3D_METHODS).toHaveLength(11);
@@ -1488,5 +1551,486 @@ describe("slice-3f contract", () => {
     expect(dayNoticePayloadSchema.safeParse({ token: "abc", kind: "digest" }).success).toBe(false);
     expect(dayNoticePayloadSchema.safeParse({ token: "t".repeat(65) }).success).toBe(false);
     expect(dayNoticePayloadSchema.safeParse({}).success).toBe(false);
+  });
+});
+
+describe("slice-3g contract", () => {
+  const parses = (method: keyof typeof rpcSchemas, input: unknown) =>
+    rpcSchemas[method].input.safeParse(input).success;
+  const outputs = (method: keyof typeof rpcSchemas, output: unknown) =>
+    rpcSchemas[method].output.safeParse(output).success;
+  const SHA = "c".repeat(64);
+  const rule = (overrides: Record<string, unknown> = {}) => ({
+    name: "CI failures",
+    enabled: true,
+    match: { dev: { source: "github", kind: "ci", state: "failed" } },
+    projectId: "p1",
+    template: "Find the failing test.",
+    mode: "prepare",
+    ...overrides,
+  });
+
+  it("adds exactly 33 methods to the 93 before it, leaving the earlier lists alone", () => {
+    // 31 at the build, then incident_prepare and patch_handoff_prepare (review C5).
+    expect(SLICE_3G_METHODS).toHaveLength(33);
+    expect(
+      Object.keys(rpcSchemas).filter((m) => !([...SLICE_3H_METHODS, ...SLICE_3I_METHODS, ...SLICE_3K_METHODS, ...SLICE_3L_METHODS, ...SLICE_3M_METHODS, ...SLICE_3N_METHODS, ...SLICE_3P_METHODS] as readonly string[]).includes(m)),
+    ).toHaveLength(126);
+    expect(COMPOSE_METHODS).toHaveLength(19);
+    expect(SLICE_3C_METHODS).toHaveLength(8);
+    expect(SLICE_3D_METHODS).toHaveLength(11);
+    expect(SLICE_3E_METHODS).toHaveLength(14);
+    expect(SLICE_3F_METHODS).toHaveLength(24);
+  });
+
+  it("bounds the instruction, part ids and list limits", () => {
+    const thread = { messageId: "m", include: "message", projectId: "p" };
+    expect(parses("bb_thread_prepare", { ...thread, instruction: "x".repeat(4_000) })).toBe(true);
+    expect(parses("bb_thread_prepare", { ...thread, instruction: "x".repeat(4_001) })).toBe(false);
+    expect(parses("bb_thread_prepare", { ...thread, include: "folder" })).toBe(false);
+    expect(parses("bb_thread_start", { ...thread, saveAttachments: true, ruleRunId: "r1" })).toBe(true);
+    expect(parses("incident_start", { messageId: "m", projectId: "p", instruction: "x".repeat(4_001) })).toBe(false);
+    const save = { messageId: "m", projectId: "p", onConflict: "ask" };
+    expect(parses("attachment_save", { ...save, partIds: Array.from({ length: 20 }, (_, i) => `${i}`) })).toBe(true);
+    expect(parses("attachment_save", { ...save, partIds: Array.from({ length: 21 }, (_, i) => `${i}`) })).toBe(false);
+    expect(parses("attachment_save", { ...save, partIds: [] })).toBe(false);
+    expect(parses("attachment_save", { ...save, partIds: ["1"], folder: "a".repeat(240) })).toBe(true);
+    expect(parses("attachment_save", { ...save, partIds: ["1"], folder: "a".repeat(241) })).toBe(false);
+    expect(parses("attachment_save", { ...save, partIds: ["1"], onConflict: "overwrite" })).toBe(false);
+    expect(parses("attachment_save", { ...save, partIds: ["1"], onConflict: "replace", replaceSha: "nope" })).toBe(false);
+    expect(parses("project_files", { projectId: "p", query: "", limit: 50 })).toBe(true);
+    expect(parses("project_files", { projectId: "p", query: "", limit: 51 })).toBe(false);
+    expect(parses("project_folders", { projectId: "p", query: "q".repeat(201), limit: 5 })).toBe(false);
+    expect(parses("thread_files", { bbThreadId: "t", limit: 51 })).toBe(false);
+    expect(parses("bb_threads_recent", { projectId: "p", limit: 30 })).toBe(true);
+    expect(parses("bb_threads_recent", { projectId: "p", limit: 31 })).toBe(false);
+    expect(parses("dev_digest_get", { days: 31 })).toBe(false);
+    expect(parses("dev_digest_get", {})).toBe(true);
+  });
+
+  it("bounds the task title and note and checks the target", () => {
+    const task = { messageId: "m", target: { kind: "taskboard", boardId: "b" }, excerpt: true };
+    expect(parses("task_from_mail", { ...task, title: "t".repeat(500), note: "n".repeat(4_000) })).toBe(true);
+    expect(parses("task_from_mail", { ...task, title: "t".repeat(501) })).toBe(false);
+    expect(parses("task_from_mail", { ...task, title: "t", note: "n".repeat(4_001) })).toBe(false);
+    expect(parses("task_from_mail", { ...task, title: "" })).toBe(false);
+    expect(parses("task_from_mail", { ...task, title: "t", target: { kind: "local", due: "2026-11-20" } })).toBe(true);
+    expect(parses("task_from_mail", { ...task, title: "t", target: { kind: "jira" } })).toBe(false);
+    expect(outputs("task_from_mail", { kind: "unavailable", reason: "Taskboard did not answer" })).toBe(true);
+  });
+
+  it("bounds draft_from_bb's text and compose_attach_bb's sources", () => {
+    expect(parses("draft_from_bb", { bbThreadId: "t", source: { kind: "output" } })).toBe(true);
+    expect(parses("draft_from_bb", { bbThreadId: "t", source: { kind: "message", text: "x".repeat(100_000) } })).toBe(true);
+    expect(parses("draft_from_bb", { bbThreadId: "t", source: { kind: "message", text: "x".repeat(100_001) } })).toBe(false);
+    expect(parses("compose_attach_bb", { draftId: "d", source: { kind: "project", projectId: "p", path: "src/a.ts" } })).toBe(true);
+    expect(parses("compose_attach_bb", { draftId: "d", source: { kind: "thread", bbThreadId: "t", path: "out.md" }, confirmed: true })).toBe(true);
+    expect(parses("compose_attach_bb", { draftId: "d", source: { kind: "project", projectId: "p", path: "a\nb" } })).toBe(false);
+    expect(parses("compose_attach_bb", { draftId: "d", source: { kind: "host", path: "a" } })).toBe(false);
+  });
+
+  it("takes patch refs as sha256 hex and the checkout fallback only by name", () => {
+    const patch = { messageId: "m", projectId: "p", patchRef: SHA };
+    expect(parses("patch_save", patch)).toBe(true);
+    expect(parses("patch_save", { ...patch, patchRef: "C".repeat(64) })).toBe(false);
+    expect(parses("patch_handoff", { ...patch, environment: "checkout" })).toBe(true);
+    expect(parses("patch_handoff", { ...patch, environment: "host" })).toBe(false);
+  });
+
+  it("bounds rule names, templates and match lists, and needs the confirmation for start mode", () => {
+    expect(parses("rule_save", rule())).toBe(true);
+    expect(parses("rule_save", rule({ name: "n".repeat(80) }))).toBe(true);
+    expect(parses("rule_save", rule({ name: "n".repeat(81) }))).toBe(false);
+    expect(parses("rule_save", rule({ name: "a\nb" }))).toBe(false);
+    expect(parses("rule_save", rule({ template: "t".repeat(4_000) }))).toBe(true);
+    expect(parses("rule_save", rule({ template: "t".repeat(4_001) }))).toBe(false);
+    const addresses = (n: number) => Array.from({ length: n }, (_, i) => `a${i}@example.com`);
+    expect(parses("rule_save", rule({ match: { from: addresses(20) } }))).toBe(true);
+    expect(parses("rule_save", rule({ match: { from: addresses(21) } }))).toBe(false);
+    expect(parses("rule_save", rule({ match: { domains: Array.from({ length: 21 }, (_, i) => `d${i}.example.com`) } }))).toBe(false);
+    expect(parses("rule_save", rule({ match: { subjectWords: Array.from({ length: 11 }, (_, i) => `w${i}`) } }))).toBe(false);
+    expect(parses("rule_save", rule({ match: { accounts: Array.from({ length: 51 }, (_, i) => `a${i}`) } }))).toBe(false);
+    expect(parses("rule_save", rule({ match: { dev: { kind: "nope" } } }))).toBe(false);
+    expect(parses("rule_save", rule({ mode: "start" }))).toBe(false);
+    expect(parses("rule_save", rule({ mode: "start", confirmedStart: false }))).toBe(false);
+    expect(parses("rule_save", rule({ mode: "start", confirmedStart: true }))).toBe(true);
+    expect(parses("rules_pause", { undo: true })).toBe(true);
+    expect(parses("rule_runs_list", { state: "starting" })).toBe(true);
+    expect(parses("rule_runs_list", { state: "running" })).toBe(false);
+  });
+
+  it("bounds binding values and kinds", () => {
+    expect(parses("binding_add", { kind: "repo", value: "github.com/example-org/demo", projectId: "p" })).toBe(true);
+    expect(parses("binding_add", { kind: "folder", value: "x", projectId: "p" })).toBe(false);
+    expect(parses("binding_add", { kind: "domain", value: "x".repeat(321), projectId: "p" })).toBe(false);
+    expect(parses("binding_add", { kind: "address", value: "a@example.com\r\nX", projectId: "p" })).toBe(false);
+    expect(parses("conversation_project_set", { accountId: "a", threadId: "t", projectId: null })).toBe(true);
+  });
+
+  it("adds the rule day notice and refuses extra keys on it", () => {
+    expect(outputs("day_notice_get", { kind: "rule", ruleName: "CI failures", count: 2 })).toBe(true);
+    expect(outputs("day_notice_get", { kind: "rule", ruleName: "CI failures", count: 2, subject: "x" })).toBe(false);
+    expect(outputs("day_notice_get", { kind: "rule", ruleName: "CI failures", count: 0 })).toBe(false);
+  });
+
+  it("adds the 3g fields to the model and the Today view", () => {
+    expect(Object.keys(messageHeaderSchema.shape)).toEqual(
+      expect.arrayContaining(["devLinks", "dev", "patch", "alert", "bbLinks"]),
+    );
+    expect(Object.keys(threadSummarySchema.shape)).toEqual(expect.arrayContaining(["projectId"]));
+    expect(Object.keys(threadDetailSchema.shape)).toEqual(expect.arrayContaining(["project", "projectSuggestion"]));
+    expect(Object.keys(messageBodySchema.shape)).toEqual(expect.arrayContaining(["codeBlocks"]));
+    expect(Object.keys(taskViewSchema.shape)).toEqual(expect.arrayContaining(["note"]));
+    expect(Object.keys(composeAttachmentSchema.shape)).toEqual(expect.arrayContaining(["origin"]));
+    const list = { scope: { kind: "account", accountId: "a", folder: "INBOX" }, cursor: null, limit: 50 };
+    expect(parses("threads_list", { ...list, filter: { notDev: true, projectId: "p" } })).toBe(true);
+    expect(parses("threads_list", { ...list, filter: { notDev: false } })).toBe(false);
+    expect(Object.keys(rpcSchemas.today_get.output.shape)).toEqual(expect.arrayContaining(["dev", "rulesReady"]));
+  });
+
+  it("names every refusal kind with a fixed text", () => {
+    expect(Object.keys(BB_REFUSAL_TEXT)).toEqual(expect.arrayContaining(["out_of_scope", "no_tree", "confirm_needed", "in_flight"]));
+  });
+
+  it("puts no credential-like key in any new output; sensitiveName, alertRef, patchRef and permissionMode pass", () => {
+    for (const method of SLICE_3G_METHODS) {
+      const keys = keysOf(rpcSchemas[method].output);
+      expect(keys.length, method).toBeGreaterThan(0);
+      expect(keys.filter((key) => SECRET_KEY.test(key)), method).toEqual([]);
+    }
+    for (const key of ["sensitiveName", "alertRef", "patchRef", "permissionMode"]) expect(SECRET_KEY.test(key), key).toBe(false);
+    expect(keysOf(rpcSchemas.alert_view.output)).toContain("alertRef");
+    expect(keysOf(rpcSchemas.patch_view.output)).toContain("patchRef");
+    expect(keysOf(rpcSchemas.bb_thread_prepare.output)).toContain("permissionMode");
+    for (const schema of [messageHeaderSchema, threadDetailSchema, messageBodySchema, rpcSchemas.today_get.output]) {
+      expect(keysOf(schema).filter((key) => SECRET_KEY.test(key))).toEqual([]);
+    }
+  });
+});
+
+describe("slice 3h contract", () => {
+  const parses = (method: keyof typeof rpcSchemas, input: unknown) => rpcSchemas[method].input.safeParse(input).success;
+  const earlier = [...COMPOSE_METHODS, ...SLICE_3C_METHODS, ...SLICE_3D_METHODS, ...SLICE_3E_METHODS, ...SLICE_3F_METHODS, ...SLICE_3G_METHODS];
+
+  it("adds exactly 28 methods to the 126 before it, leaving the earlier lists alone", () => {
+    expect(SLICE_3H_METHODS).toHaveLength(28);
+    expect(new Set(SLICE_3H_METHODS).size).toBe(28);
+    expect(
+      Object.keys(rpcSchemas).filter((m) => !([...SLICE_3I_METHODS, ...SLICE_3K_METHODS, ...SLICE_3L_METHODS, ...SLICE_3M_METHODS, ...SLICE_3N_METHODS, ...SLICE_3P_METHODS] as readonly string[]).includes(m)),
+    ).toHaveLength(154);
+    for (const method of SLICE_3H_METHODS) expect(earlier as readonly string[], method).not.toContain(method);
+    expect(SLICE_3G_METHODS).toHaveLength(33);
+  });
+
+  it("puts no credential-like key in any new output, nor in the changed search and model views", () => {
+    for (const method of SLICE_3H_METHODS) {
+      const keys = keysOf(rpcSchemas[method].output);
+      expect(keys.length, method).toBeGreaterThan(0);
+      expect(keys.filter((key) => SECRET_KEY.test(key)), method).toEqual([]);
+    }
+    for (const schema of [rpcSchemas.search.output, messageSummarySchema, messageHeaderSchema, folderSchema]) {
+      expect(keysOf(schema).filter((key) => SECRET_KEY.test(key))).toEqual([]);
+    }
+    expect(keysOf(rpcSchemas.search.output)).toEqual(
+      expect.arrayContaining(["hits", "nextCursor", "notes", "attachmentMatches", "excerpt", "kept", "labels"]),
+    );
+    expect(keysOf(rpcSchemas.server_job_poll.output)).toEqual(expect.arrayContaining(["skipped", "reason"]));
+    expect(keysOf(rpcSchemas.folder_delete_check.output)).toContain("gmailLabel");
+    expect(keysOf(rpcSchemas.attachment_text_status.output)).toContain("full");
+  });
+
+  it("keeps search input without attachments or cursor parsing as before", () => {
+    expect(parses("search", { query: "invoice", accountId: null, limit: 50 })).toBe(true);
+    expect(parses("search", { query: "invoice", accountId: null, limit: 50, attachments: true, cursor: "c1" })).toBe(true);
+    expect(parses("search", { query: "invoice", accountId: null, limit: 50, cursor: null })).toBe(true);
+    expect(parses("search", { query: "invoice", accountId: null, limit: 50, attachments: "yes" })).toBe(false);
+  });
+
+  it("bounds queries at 500, saved-search names at 60 and folder names at 100", () => {
+    const q = (query: string) => ({ query, accountId: null });
+    expect(parses("server_search_start", q("x".repeat(500)))).toBe(true);
+    expect(parses("server_search_start", q("x".repeat(501)))).toBe(false);
+    expect(parses("server_search_start", q(""))).toBe(false);
+    const saved = (name: string, query = "from:a@example.org") => ({ name, query, accountId: null });
+    expect(parses("saved_search_save", saved("n".repeat(60)))).toBe(true);
+    expect(parses("saved_search_save", saved("n".repeat(61)))).toBe(false);
+    expect(parses("saved_search_save", saved("n", "q".repeat(501)))).toBe(false);
+    expect(parses("saved_search_move", { id: "s1", position: 49 })).toBe(true);
+    expect(parses("saved_search_move", { id: "s1", position: 50 })).toBe(false);
+    const create = (name: string) => ({ accountId: "a1", parent: null, name });
+    expect(parses("folder_create", create("f".repeat(100)))).toBe(true);
+    expect(parses("folder_create", create("f".repeat(101)))).toBe(false);
+    expect(parses("folder_create", create(""))).toBe(false);
+    expect(parses("folder_rename", { accountId: "a1", path: "Work", name: "f".repeat(101) })).toBe(false);
+  });
+
+  it("bounds label changes: up to 200 messages and 20 labels each way, at least one label", () => {
+    const ids = (n: number) => Array.from({ length: n }, (_, i) => `m${i}`);
+    const labels = (n: number) => Array.from({ length: n }, (_, i) => `L${i}`);
+    expect(parses("labels_change", { messageIds: ids(200), add: labels(20), remove: [] })).toBe(true);
+    expect(parses("labels_change", { messageIds: ids(201), add: labels(1), remove: [] })).toBe(false);
+    expect(parses("labels_change", { messageIds: ids(1), add: labels(21), remove: [] })).toBe(false);
+    expect(parses("labels_change", { messageIds: ids(1), add: [], remove: labels(21) })).toBe(false);
+    expect(parses("labels_change", { messageIds: ids(1), add: [], remove: [] })).toBe(false);
+    expect(parses("labels_change", { messageIds: ids(1), add: ["l".repeat(101)], remove: [] })).toBe(false);
+    expect(parses("labels_change", { messageIds: [], add: ["A"], remove: [] })).toBe(false);
+  });
+
+  it("bounds list limits and files filters", () => {
+    const files = (extra: object) => ({ cursor: null, limit: 100, ...extra });
+    expect(parses("files_list", files({}))).toBe(true);
+    expect(parses("files_list", files({ limit: 101 }))).toBe(false);
+    expect(parses("files_list", files({ kind: "pdf", includeJunk: true }))).toBe(true);
+    expect(parses("files_list", files({ kind: "exe" }))).toBe(false);
+    const scope = { kind: "account", accountId: "a1", folder: "INBOX" };
+    expect(parses("messages_list", { scope, cursor: null, limit: 100 })).toBe(true);
+    expect(parses("messages_list", { scope, cursor: null, limit: 101 })).toBe(false);
+    expect(parses("folder_delete", { accountId: "a1", path: "Work", moveToTrash: false, expectedMessages: -1 })).toBe(false);
+    expect(parses("folder_prefs_set", { accountId: "*", path: "inbox", grouping: false })).toBe(true);
+  });
+
+  it("refuses empty and overlong ids in every new method that takes one", () => {
+    const long = "x".repeat(257);
+    expect(parses("server_job_poll", { jobId: "" })).toBe(false);
+    expect(parses("server_job_poll", { jobId: long })).toBe(false);
+    expect(parses("history_load", { accountId: "a1", folder: long })).toBe(false);
+    expect(parses("conversation_load", { threadId: "" })).toBe(false);
+    expect(parses("attachment_view_ticket", { messageId: "m1", partId: "" })).toBe(false);
+    expect(parses("related_messages", { messageId: long })).toBe(false);
+    expect(parses("sender_card", { address: "a@", accountId: null })).toBe(false);
+    expect(parses("sender_card", { address: "a@example.org", accountId: null })).toBe(true);
+  });
+});
+
+describe("slice 3i contract", () => {
+  const parses = (method: keyof typeof rpcSchemas, input: unknown) => rpcSchemas[method].input.safeParse(input).success;
+
+  it("adds exactly one method to the 154 before it", () => {
+    expect(SLICE_3I_METHODS).toEqual(["sender_check_refresh"]);
+    expect(
+      Object.keys(rpcSchemas).filter((m) => !([...SLICE_3K_METHODS, ...SLICE_3L_METHODS, ...SLICE_3M_METHODS, ...SLICE_3N_METHODS, ...SLICE_3P_METHODS] as readonly string[]).includes(m)),
+    ).toHaveLength(155);
+  });
+
+  it("bounds sender_check_refresh to 1-50 ids", () => {
+    const ids = (n: number) => Array.from({ length: n }, (_, i) => `m_${i}`);
+    expect(parses("sender_check_refresh", { messageIds: ids(1) })).toBe(true);
+    expect(parses("sender_check_refresh", { messageIds: ids(50), force: true })).toBe(true);
+    expect(parses("sender_check_refresh", { messageIds: [] })).toBe(false);
+    expect(parses("sender_check_refresh", { messageIds: ids(51) })).toBe(false);
+    expect(parses("sender_check_refresh", { messageIds: [""] })).toBe(false);
+    expect(parses("sender_check_refresh", { messageIds: ids(1), force: "yes" })).toBe(false);
+  });
+
+  it("puts no credential-like or token key in any new or changed output", () => {
+    const strict = /pass|secret|seal|key|token/i;
+    for (const schema of [rpcSchemas.sender_check_refresh.output, rpcSchemas.message_source.output, messageHeaderSchema]) {
+      expect(keysOf(schema).filter((key) => strict.test(key))).toEqual([]);
+    }
+    expect(keysOf(rpcSchemas.sender_check_refresh.output)).toEqual(expect.arrayContaining(["refreshed", "failed"]));
+    expect(keysOf(rpcSchemas.message_source.output)).toEqual(expect.arrayContaining(["authenticity", "authserv", "lines"]));
+    expect(keysOf(messageHeaderSchema)).toEqual(
+      expect.arrayContaining(["senderCheck", "state", "summary", "warnings", "receiptRequested", "crypto", "opaque"]),
+    );
+  });
+
+  it("defaults the new header fields so older headers still parse", () => {
+    const header = {
+      id: "m_1",
+      accountId: "acc_1",
+      folder: "INBOX",
+      threadId: "t_1",
+      date: null,
+      from: { name: null, address: "a@example.com" },
+      subject: "Hello",
+      snippet: "",
+      isRead: false,
+      isFlagged: false,
+      hasAttachments: false,
+      kept: null,
+      labels: [],
+      to: [],
+      cc: [],
+      attachments: [],
+      draftId: null,
+      agentSubject: "Hello",
+      inAiScope: true,
+      devLinks: [],
+      dev: null,
+      patch: null,
+      alert: false,
+      bbLinks: [],
+    };
+    const parsed = messageHeaderSchema.parse(header);
+    expect(parsed.senderCheck).toEqual({ state: "unknown", summary: null });
+    expect(parsed.warnings).toEqual([]);
+    expect(parsed.receiptRequested).toBe(false);
+    expect(parsed.crypto).toBeNull();
+    const full = messageHeaderSchema.parse({
+      ...header,
+      senderCheck: { state: "failed", summary: "DMARC failed" },
+      warnings: [
+        { kind: "reply_to_elsewhere", addresses: ["help@example.net"] },
+        { kind: "lookalike", domain: "examp1e.com", like: "example.com" },
+        { kind: "mixed_script", domain: "xn--shp-ted.example.org" },
+        { kind: "name_shows_address", shown: "ceo@example.com", actual: "x@example.org" },
+      ],
+      receiptRequested: true,
+      crypto: { kind: "smime_signed", opaque: true },
+    });
+    expect(full.warnings).toHaveLength(4);
+    expect(messageHeaderSchema.safeParse({ ...header, senderCheck: { state: "verified", summary: null } }).success).toBe(false);
+    expect(messageHeaderSchema.safeParse({ ...header, crypto: { kind: "pgp", opaque: false } }).success).toBe(false);
+  });
+
+  it("defaults message_source's authenticity block", () => {
+    const base = { headers: [], structure: [], size: 1, uid: 1, folder: "INBOX", accountEmail: "a@example.com" };
+    expect(rpcSchemas.message_source.output.parse(base).authenticity).toEqual({ authserv: null, lines: [] });
+  });
+
+  it("keeps the view enums in step with the core", () => {
+    expect([...SENDER_CHECK_STATES]).toEqual(["ok", "failed", "unchecked", "unknown"]);
+    expect([...CRYPTO_KINDS]).toEqual(["pgp_signed", "pgp_encrypted", "smime_signed", "smime_encrypted"]);
+    expect([...DISGUISE_WARNING_KINDS]).toEqual(["reply_to_elsewhere", "lookalike", "mixed_script", "name_shows_address"]);
+    expect(senderCheckViewSchema.shape.state.options).toEqual([...SENDER_CHECK_STATES]);
+    expect(mailCryptoSchema.shape.kind.options).toEqual([...CRYPTO_KINDS]);
+  });
+});
+
+describe("slice 3k contract (OpenPGP)", () => {
+  const parses = (method: keyof typeof rpcSchemas, input: unknown) =>
+    rpcSchemas[method].input.safeParse(input).success;
+
+  it("adds exactly nine methods to the 155 before it", () => {
+    expect(SLICE_3K_METHODS).toHaveLength(9);
+    expect(new Set(SLICE_3K_METHODS).size).toBe(9);
+    expect(
+      Object.keys(rpcSchemas).filter((m) => !([...SLICE_3L_METHODS, ...SLICE_3M_METHODS, ...SLICE_3N_METHODS, ...SLICE_3P_METHODS] as readonly string[]).includes(m)),
+    ).toHaveLength(164);
+  });
+
+  it("names no output after a credential, and offers a private key only as an export locked by a passphrase", () => {
+    for (const method of SLICE_3K_METHODS) {
+      expect(keysOf(rpcSchemas[method].output).filter((name) => SECRET_KEY.test(name)), method).toEqual([]);
+    }
+    expect(keysOf(rpcSchemas.pgp_certs_list.output)).not.toContain("armor");
+    expect(keysOf(rpcSchemas.pgp_cert_generate.output)).not.toContain("armor");
+    // A backup passphrase is at least 8 characters; without one the export is the public key.
+    expect(parses("pgp_cert_export", { id: "pgp_1" })).toBe(true);
+    expect(parses("pgp_cert_export", { id: "pgp_1", phrase: "short" })).toBe(false);
+    expect(parses("pgp_cert_export", { id: "pgp_1", phrase: "long enough words" })).toBe(true);
+  });
+
+  it("bounds the pasted armor and the recipients", () => {
+    expect(parses("pgp_cert_import", { armor: "x".repeat(200_001) })).toBe(false);
+    expect(parses("pgp_cert_import", { armor: "x" })).toBe(true);
+    expect(parses("pgp_check", { from: "a@example.org", recipients: Array.from({ length: 101 }, (_, i) => `r${i}@example.org`) })).toBe(false);
+    expect(parses("pgp_check", { from: "a@example.org\r\nBcc: x@example.org", recipients: [] })).toBe(false);
+  });
+
+  it("lets compose_send ask for signing and encryption", () => {
+    const base = { draftId: "d_1", baseRevision: 1, requestId: "00000000-0000-4000-8000-000000000001" };
+    expect(parses("compose_send", base)).toBe(true);
+    expect(parses("compose_send", { ...base, protect: { sign: true, encrypt: false } })).toBe(true);
+    expect(parses("compose_send", { ...base, protect: { sign: "yes" } })).toBe(false);
+  });
+});
+
+describe("slice 3l contract (Send later, calendar invitations)", () => {
+  const parses = (method: keyof typeof rpcSchemas, input: unknown) =>
+    rpcSchemas[method].input.safeParse(input).success;
+
+  it("adds exactly two methods to the 164 before it", () => {
+    expect(SLICE_3L_METHODS).toEqual(["invite_view", "invite_reply"]);
+    expect(
+      Object.keys(rpcSchemas).filter((m) => !([...SLICE_3M_METHODS, ...SLICE_3N_METHODS, ...SLICE_3P_METHODS] as readonly string[]).includes(m)),
+    ).toHaveLength(166);
+    for (const method of SLICE_3L_METHODS) {
+      expect(keysOf(rpcSchemas[method].output).filter((name) => SECRET_KEY.test(name)), method).toEqual([]);
+    }
+  });
+
+  it("takes one of three answers and a request id", () => {
+    const base = { messageId: "m_1", requestId: "00000000-0000-4000-8000-000000000001" };
+    for (const answer of ["accepted", "tentative", "declined"]) expect(parses("invite_reply", { ...base, answer })).toBe(true);
+    expect(parses("invite_reply", { ...base, answer: "delegated" })).toBe(false);
+    expect(parses("invite_reply", { messageId: "m_1", answer: "accepted" })).toBe(false);
+    expect(parses("invite_reply", { ...base, answer: "accepted", requestId: "again" })).toBe(false);
+  });
+
+  it("lets compose_send carry a time to send at, as an ISO instant only", () => {
+    const base = { draftId: "d_1", baseRevision: 1, requestId: "00000000-0000-4000-8000-000000000001" };
+    expect(parses("compose_send", { ...base, sendAt: "2026-11-20T09:00:00.000Z" })).toBe(true);
+    expect(parses("compose_send", { ...base, sendAt: "tomorrow" })).toBe(false);
+    expect(parses("compose_send", { ...base, sendAt: "2026-11-20 09:00" })).toBe(false);
+  });
+
+  it("marks a scheduled row and the invitation answer's purpose on an Outbox row", () => {
+    expect(outboxRowSchema.shape.purpose.unwrap().unwrap().options).toEqual(["unsubscribe", "invite_reply"]);
+    expect(outboxRowSchema.shape.scheduled.safeParse(true).success).toBe(true);
+    expect(outboxRowSchema.shape.scheduled.safeParse(undefined).success).toBe(true);
+  });
+});
+
+describe("slice 3m contract (filters)", () => {
+  const parses = (input: unknown) => rpcSchemas.filter_save.input.safeParse(input).success;
+  const base = {
+    name: "Invented",
+    enabled: true,
+    match: { domains: ["news.example.com"] },
+    actions: { move: "none", folder: null, markRead: true, flag: false },
+  };
+
+  it("adds exactly three methods to the 166 before it", () => {
+    expect(SLICE_3M_METHODS).toEqual(["filters_list", "filter_save", "filter_delete"]);
+    expect(
+      Object.keys(rpcSchemas).filter((m) => !([...SLICE_3N_METHODS, ...SLICE_3P_METHODS] as readonly string[]).includes(m)),
+    ).toHaveLength(169);
+    for (const method of SLICE_3M_METHODS) {
+      expect(keysOf(rpcSchemas[method].output).filter((name) => SECRET_KEY.test(name)), method).toEqual([]);
+    }
+  });
+
+  it("bounds a filter: four moves, no dev match, no line breaks in a name or a folder", () => {
+    expect(parses(base)).toBe(true);
+    for (const move of ["none", "archive", "trash", "folder"]) expect(parses({ ...base, actions: { ...base.actions, move } })).toBe(true);
+    expect(parses({ ...base, actions: { ...base.actions, move: "delete" } })).toBe(false);
+    expect(parses({ ...base, actions: { ...base.actions, folder: "A\r\nB" } })).toBe(false);
+    expect(parses({ ...base, actions: { ...base.actions, folder: "x".repeat(1001) } })).toBe(false);
+    expect(parses({ ...base, name: "A\nB" })).toBe(false);
+    expect(parses({ ...base, match: { from: Array.from({ length: 21 }, (_, i) => `a${i}@example.com`) } })).toBe(false);
+    const withDev = rpcSchemas.filter_save.input.parse({ ...base, match: { ...base.match, dev: { kind: "alert" } } });
+    expect("dev" in withDev.match).toBe(false);
+  });
+});
+
+describe("slice 3n contract (subscriptions overview)", () => {
+  it("adds one method to the 169 before it, and its output never carries a list key", () => {
+    expect(SLICE_3N_METHODS).toEqual(["subscriptions_list"]);
+    expect(Object.keys(rpcSchemas).filter((m) => !(SLICE_3P_METHODS as readonly string[]).includes(m))).toHaveLength(170);
+    const keys = keysOf(rpcSchemas.subscriptions_list.output);
+    expect(keys.filter((name) => SECRET_KEY.test(name))).toEqual([]);
+    expect(keys).not.toContain("listKey");
+    expect(rpcSchemas.subscriptions_list.input.safeParse({ accountId: null }).success).toBe(true);
+    expect(rpcSchemas.subscriptions_list.input.safeParse({}).success).toBe(false);
+  });
+});
+
+describe("slice 3p contract (local archive)", () => {
+  it("adds five methods to the 170 before it, none naming a credential", () => {
+    expect(SLICE_3P_METHODS).toHaveLength(5);
+    expect(Object.keys(rpcSchemas)).toHaveLength(175);
+    for (const method of SLICE_3P_METHODS) {
+      expect(keysOf(rpcSchemas[method].output).filter((name) => SECRET_KEY.test(name)), method).toEqual([]);
+    }
+  });
+
+  it("bounds the search text and the cursor", () => {
+    const parses = (input: unknown) => rpcSchemas.archive_messages.input.safeParse(input).success;
+    expect(parses({ archiveId: null, query: "", cursor: null })).toBe(true);
+    expect(parses({ archiveId: "arc_1", query: "zebra", cursor: { date: null, id: "12" } })).toBe(true);
+    expect(parses({ archiveId: null, query: "x".repeat(201), cursor: null })).toBe(false);
+    expect(parses({ archiveId: null, query: "", cursor: { date: "x".repeat(41), id: "1" } })).toBe(false);
+    expect(parses({ archiveId: null, query: "" })).toBe(false);
   });
 });

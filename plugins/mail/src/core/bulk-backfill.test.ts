@@ -88,7 +88,7 @@ describe("backfillBulk", () => {
     gateway = new ScriptedImapGateway({ uidValidity: 1, uidNext: 1, messages: [] });
     cursors = new Map();
     store.saveAccount(makeStoredAccount());
-    store.saveFolders("acc_1", [{ path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true }]);
+    store.saveFolders("acc_1", [{ path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true, subscribed: true }]);
     store.saveSyncState("acc_1", "INBOX", state);
   });
 
@@ -110,8 +110,8 @@ describe("backfillBulk", () => {
   it("never overwrites a mark sync set, and skips folders without NULL rows", async () => {
     gateway.addFolder({ path: "Archive" });
     store.saveFolders("acc_1", [
-      { path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true },
-      { path: "Archive", name: "Archive", delimiter: "/", specialUse: "archive", selectable: true },
+      { path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true, subscribed: true },
+      { path: "Archive", name: "Archive", delimiter: "/", specialUse: "archive", selectable: true, subscribed: true },
     ]);
     store.saveSyncState("acc_1", "Archive", state);
     // Synced with headers: the stored mark is personal although the server now says list.
@@ -177,10 +177,43 @@ describe("backfillBulk", () => {
     expect(gateway.sessions[0]!.closed).toBe(true);
   });
 
+  it("slice 3g: fills the List-Id of an old row whose mark is already known, and of rows it marks", async () => {
+    const known = oldMessage("INBOX", LIST);
+    // A 3f-era row: the mark is known, the List-Id is not.
+    store.fillBulk("acc_1", "INBOX", 1, [{ uid: known, bulk: true }]);
+    const fresh = oldMessage("INBOX", { ...NO_BULK_HEADERS, listId: "Demo <Demo.Example-Org.GitHub.com>" });
+    const personal = oldMessage("INBOX");
+
+    const outcome = await backfillBulk(deps(), "acc_1", { cursors });
+
+    // Two marks filled, one row that needed only its List-Id.
+    expect(outcome).toEqual({ marked: 3, unanswered: 0, folders: 1, skipped: 0, failed: 0 });
+    expect(marks()).toEqual(new Map([[known, true], [fresh, true], [personal, false]]));
+    expect(store.listUnknown("acc_1", "INBOX", null, 10)).toEqual([]);
+    store.addBinding({ kind: "list", value: "news.example.net", projectId: "p_news", createdAt: "2026-11-16T10:00:00.000Z" });
+    store.addBinding({ kind: "list", value: "demo.example-org.github.com", projectId: "p_demo", createdAt: "2026-11-16T10:00:00.000Z" });
+    store.assignThreads("acc_1", new Map());
+    const projects = store.listThreads("acc_1", "INBOX", null, 10).threads.map((t) => t.projectId).sort();
+    expect(projects).toEqual(["p_demo", "p_news", null].sort());
+    expect(gateway.sessions[0]!.calls.map((c) => c.method)).toEqual(["status", "fetchListHeaders"]);
+
+    expect(await backfillBulk(deps(), "acc_1", { cursors })).toMatchObject({ marked: 0, folders: 0 });
+  });
+
+  it("slice 3g: leaves List-Ids unknown in a folder whose UIDVALIDITY changed", async () => {
+    const known = oldMessage("INBOX", LIST);
+    store.fillBulk("acc_1", "INBOX", 1, [{ uid: known, bulk: true }]);
+    gateway.mailbox.uidValidity = 2;
+
+    expect(await backfillBulk(deps(), "acc_1", { cursors })).toEqual({ marked: 0, unanswered: 0, folders: 0, skipped: 1, failed: 0 });
+    expect(store.listUnknown("acc_1", "INBOX", null, 10)).toEqual([{ uid: known }]);
+    expect(store.fillListIds("acc_1", "INBOX", 2, [{ uid: known, listId: "news.example.net" }])).toBe(0);
+  });
+
   it("a folder never synced is left alone", async () => {
     const fresh = new InMemoryMailStore();
     fresh.saveAccount(makeStoredAccount());
-    fresh.saveFolders("acc_1", [{ path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true }]);
+    fresh.saveFolders("acc_1", [{ path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true, subscribed: true }]);
     fresh.upsertMessages("acc_1", "INBOX", [makeFetchedMessage(1)]);
     const outcome = await backfillBulk({ store: fresh, gateway, vault: new IdentityVault() }, "acc_1", { cursors });
     expect(outcome.folders).toBe(0);
@@ -215,8 +248,8 @@ describe("backfillBulk", () => {
   it("a failing folder is counted and the next one still runs; a rejected login stops the account", async () => {
     gateway.addFolder({ path: "Archive" });
     store.saveFolders("acc_1", [
-      { path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true },
-      { path: "Archive", name: "Archive", delimiter: "/", specialUse: "archive", selectable: true },
+      { path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true, subscribed: true },
+      { path: "Archive", name: "Archive", delimiter: "/", specialUse: "archive", selectable: true, subscribed: true },
     ]);
     store.saveSyncState("acc_1", "Archive", state);
     oldMessage("INBOX");
@@ -287,8 +320,8 @@ describe("backfillUnsubscribe", () => {
     store.saveAccount(makeStoredAccount());
     gateway.addFolder({ path: "Archive" });
     store.saveFolders("acc_1", [
-      { path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true },
-      { path: "Archive", name: "Archive", delimiter: "/", specialUse: "archive", selectable: true },
+      { path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true, subscribed: true },
+      { path: "Archive", name: "Archive", delimiter: "/", specialUse: "archive", selectable: true, subscribed: true },
     ]);
     store.saveSyncState("acc_1", "INBOX", state);
     store.saveSyncState("acc_1", "Archive", state);

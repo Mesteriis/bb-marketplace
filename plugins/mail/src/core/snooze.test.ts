@@ -18,7 +18,7 @@ const PAST = "2026-11-15T11:00:00.000Z";
 const FUTURE = "2026-11-16T08:00:00.000Z";
 
 function folder(path: string, specialUse: SpecialUse | null, selectable = true): Folder {
-  return { accountId: "a1", path, name: path, specialUse, selectable, unreadCount: 0, totalCount: 0 };
+  return { accountId: "a1", path, name: path, specialUse, selectable, unreadCount: 0, totalCount: 0, subscribed: true };
 }
 const FOLDERS = [folder("INBOX", "inbox"), folder("Snoozed", null), folder("Work", null), folder("Old", null, false)];
 const ctx = { snoozeFolder: "Snoozed", inbox: "INBOX", folders: FOLDERS, now: NOW };

@@ -6,11 +6,27 @@ import imapflowFetch from "imapflow/lib/commands/fetch.js";
 import { compiler as imapCompiler, parser as imapParser } from "imapflow/lib/handler/imap-handler.js";
 import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { HEADER_LINES_TRUNCATED, ImapAuthError, LIST_HEADER_FIELDS, UNSUBSCRIBE_HEADER_FIELDS, trustOf, unsubscribeInfoOf } from "../../core/index.ts";
+import {
+  HEADER_LINES_TRUNCATED,
+  ImapAuthError,
+  LIST_HEADER_FIELDS,
+  RECEIPT_HEADERS,
+  UNSUBSCRIBE_HEADER_FIELDS,
+  trustOf,
+  unsubscribeInfoOf,
+} from "../../core/index.ts";
 import {
   LIST_HEADERS_QUERY,
   WATCH_LOGOUT_CAP_MS,
   createFolderWith,
+  createImapflowGateway,
+  deleteFolderWith,
+  folderStatusWith,
+  namedLikeSpecialUse,
+  renameFolderWith,
+  setSubscribedWith,
+  toSearchObject,
+  type FolderOpsClient,
   runWatch,
   type WatchClient,
   SafeImapError,
@@ -861,14 +877,14 @@ const ICLOUD_LIST: ListResponse[] = [
 describe("toRemoteFolders", () => {
   it("maps a Gmail listing and skips the virtual Starred and Important folders", () => {
     expect(toRemoteFolders(GMAIL_LIST)).toEqual([
-      { path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true },
-      { path: "[Gmail]", name: "[Gmail]", delimiter: "/", specialUse: null, selectable: false },
-      { path: "[Gmail]/All Mail", name: "All Mail", delimiter: "/", specialUse: "all", selectable: true },
-      { path: "[Gmail]/Drafts", name: "Drafts", delimiter: "/", specialUse: "drafts", selectable: true },
-      { path: "[Gmail]/Sent Mail", name: "Sent Mail", delimiter: "/", specialUse: "sent", selectable: true },
-      { path: "[Gmail]/Spam", name: "Spam", delimiter: "/", specialUse: "junk", selectable: true },
-      { path: "[Gmail]/Trash", name: "Trash", delimiter: "/", specialUse: "trash", selectable: true },
-      { path: "Work", name: "Work", delimiter: "/", specialUse: null, selectable: true },
+      { path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true, subscribed: true },
+      { path: "[Gmail]", name: "[Gmail]", delimiter: "/", specialUse: null, selectable: false, subscribed: true },
+      { path: "[Gmail]/All Mail", name: "All Mail", delimiter: "/", specialUse: "all", selectable: true, subscribed: true },
+      { path: "[Gmail]/Drafts", name: "Drafts", delimiter: "/", specialUse: "drafts", selectable: true, subscribed: true },
+      { path: "[Gmail]/Sent Mail", name: "Sent Mail", delimiter: "/", specialUse: "sent", selectable: true, subscribed: true },
+      { path: "[Gmail]/Spam", name: "Spam", delimiter: "/", specialUse: "junk", selectable: true, subscribed: true },
+      { path: "[Gmail]/Trash", name: "Trash", delimiter: "/", specialUse: "trash", selectable: true, subscribed: true },
+      { path: "Work", name: "Work", delimiter: "/", specialUse: null, selectable: true, subscribed: true },
     ]);
   });
 
@@ -905,8 +921,8 @@ describe("toRemoteFolders", () => {
       listEntry("Gone", [], undefined, undefined, { listed: false }),
     ]);
     expect(folders).toEqual([
-      { path: "Flagged", name: "Flagged", delimiter: "/", specialUse: null, selectable: true },
-      { path: "Odd", name: "Odd", delimiter: "/", specialUse: null, selectable: true },
+      { path: "Flagged", name: "Flagged", delimiter: "/", specialUse: null, selectable: true, subscribed: true },
+      { path: "Odd", name: "Odd", delimiter: "/", specialUse: null, selectable: true, subscribed: true },
     ]);
   });
 });
@@ -1278,6 +1294,41 @@ describe("toFetchedMessage unsubscribe headers", () => {
   });
 });
 
+describe("toFetchedMessage receipt request and content type (slice 3i, resolution 16)", () => {
+  const withHeader = (name: string) =>
+    TRIAGE_RAW.replace("Message-ID: <n-1@example.com>\r\n", `Message-ID: <n-1@example.com>\r\n${name}: news@example.com\r\n`);
+
+  it("sets receiptRequested for each receipt header, and leaves the kept unsubscribe lines unchanged", async () => {
+    const plain = toFetchedMessage(imapMessage({ source: Buffer.from(TRIAGE_RAW) }), await PostalMime.parse(TRIAGE_RAW));
+    expect(plain.receiptRequested).toBe(false);
+    for (const name of RECEIPT_HEADERS) {
+      const raw = withHeader(name);
+      const fetched = toFetchedMessage(imapMessage({ source: Buffer.from(raw) }), await PostalMime.parse(raw));
+      expect(fetched.receiptRequested, name).toBe(true);
+      expect(fetched.unsubscribeHeaders, name).toEqual(plain.unsubscribeHeaders);
+    }
+  });
+
+  it("keeps the top Content-Type as written, null without one", async () => {
+    const raw = TRIAGE_RAW.replace(
+      "Subject: Invented news\r\n",
+      'Subject: Invented news\r\nContent-Type: multipart/signed; protocol="application/pgp-signature"; boundary="b1"\r\n',
+    ).replace("Invented body.\r\n", "--b1\r\nContent-Type: text/plain\r\n\r\nInvented body.\r\n--b1--\r\n");
+    const fetched = toFetchedMessage(imapMessage({ source: Buffer.from(raw) }), await PostalMime.parse(raw));
+    expect(fetched.contentType).toMatch(/^multipart\/signed; protocol="application\/pgp-signature"/);
+    const headers = [{ key: "from", value: "a@example.org" }];
+    const bare = toFetchedMessage(imapMessage(), { headers, headerLines: [], attachments: [] } as unknown as Email);
+    expect(bare.contentType).toBeNull();
+    expect(bare.receiptRequested).toBe(false);
+  });
+
+  it("leaves both absent when the fetch read no headers", () => {
+    const fetched = toFetchedMessage(imapMessage({ source: undefined }), { headers: [], headerLines: [], attachments: [] });
+    expect(fetched.receiptRequested).toBeUndefined();
+    expect(fetched.contentType).toBeUndefined();
+  });
+});
+
 type FakeWatch = {
   client: WatchClient;
   emitter: EventEmitter;
@@ -1483,5 +1534,333 @@ describe("createFolderWith", () => {
     expect(String((error as Error).message)).not.toContain("private");
     const none = { mailboxCreate: async () => undefined };
     await expect(createFolderWith(none as never, "Snoozed")).rejects.toMatchObject({ code: "CreateFailed" });
+  });
+});
+
+const DEV_RAW = [
+  "From: GitHub <notifications@github.com>",
+  "Subject: [example-org/demo] Run failed: CI - main (abc1234)",
+  "List-ID: example-org/demo <demo.example-org.github.com>",
+  "X-GitHub-Reason: ci_activity",
+  "X-GitLab-Project-Path: Group/Demo",
+  "X-Unrelated: kept out",
+  "Message-ID: <dev-1@example.com>",
+  "",
+  "Invented body.",
+  "",
+].join("\r\n");
+
+describe("toFetchedMessage dev headers (slice 3g)", () => {
+  it("keeps the DEV_HEADER_FIELDS lines with lower-case keys, and List-Id in the bulk headers", async () => {
+    const parsed = await PostalMime.parse(DEV_RAW);
+    const fetched = toFetchedMessage(imapMessage({ source: Buffer.from(DEV_RAW) }), parsed);
+    expect(fetched.devHeaders).toEqual([
+      { key: "x-github-reason", value: "ci_activity" },
+      { key: "x-gitlab-project-path", value: "Group/Demo" },
+    ]);
+    expect(fetched.bulkHeaders?.listId).toBe("example-org/demo <demo.example-org.github.com>");
+  });
+
+  it("leaves devHeaders absent when the fetch read no headers", () => {
+    const fetched = toFetchedMessage(imapMessage({ source: undefined }), { headers: [], headerLines: [], attachments: [] });
+    expect(fetched.devHeaders).toBeUndefined();
+  });
+});
+
+describe("slice 3h: searchServer", () => {
+  it("translates each criterion into imapflow's SearchObject", () => {
+    expect(toSearchObject({ text: "plan", from: "ana@example.org", to: "owner@example.org", cc: "copy@example.org", subject: "Invoice" }, false)).toEqual({
+      text: "plan",
+      from: "ana@example.org",
+      to: "owner@example.org",
+      cc: "copy@example.org",
+      subject: "Invoice",
+    });
+    expect(toSearchObject({ since: "2026-01-01", before: "2026-02-01", larger: 10, smaller: 20, seen: false, flagged: true }, false)).toEqual({
+      since: new Date("2026-01-01T00:00:00.000Z"),
+      before: new Date("2026-02-01T00:00:00.000Z"),
+      larger: 10,
+      smaller: 20,
+      seen: false,
+      flagged: true,
+    });
+  });
+
+  it("sends one NOT for one negation and NOT (OR ...) for several", () => {
+    expect(toSearchObject({ text: "plan", not: [{ from: "a@example.org" }] }, false)).toEqual({ text: "plan", not: { from: "a@example.org" } });
+    expect(toSearchObject({ text: "plan", not: [{ from: "a@example.org" }, { larger: 5 }] }, false)).toEqual({
+      text: "plan",
+      not: { or: [{ from: "a@example.org" }, { larger: 5 }] },
+    });
+  });
+
+  it("sends a thread id, one header, or several headers ORed", () => {
+    expect(toSearchObject({ threadId: "1789000000000000001" }, true)).toEqual({ threadId: "1789000000000000001" });
+    expect(toSearchObject({ headers: [{ name: "Message-ID", value: "<a@example.org>" }] }, false)).toEqual({
+      header: { "Message-ID": "<a@example.org>" },
+    });
+    expect(
+      toSearchObject(
+        {
+          headers: [
+            { name: "References", value: "<a@example.org>" },
+            { name: "Message-ID", value: "<a@example.org>" },
+          ],
+        },
+        false,
+      ),
+    ).toEqual({ or: [{ header: { References: "<a@example.org>" } }, { header: { "Message-ID": "<a@example.org>" } }] });
+  });
+
+  it("sends X-GM-RAW only on Gmail, and nothing at all for empty criteria", () => {
+    const criteria = { text: "plan", gmailRaw: '"plan" has:attachment' };
+    expect(toSearchObject(criteria, true)).toEqual({ gmraw: '"plan" has:attachment' });
+    expect(toSearchObject(criteria, false)).toEqual({ text: "plan" });
+    expect(toSearchObject({ gmailRaw: "is:starred" }, false)).toBeNull();
+    expect(toSearchObject({}, true)).toBeNull();
+  });
+
+  it("searches by uid on the session's capabilities, keeps the newest 2000, newest first", async () => {
+    const many = Array.from({ length: 2_100 }, (_, i) => i + 1);
+    const gmail = stubClient({ search: many, capabilities: ["IMAP4rev1", "X-GM-EXT-1"] });
+    const uids = await createSession(gmail.client, true).searchServer({ text: "plan", gmailRaw: '"plan"' });
+    expect(uids).toHaveLength(2_000);
+    expect(uids[0]).toBe(2_100);
+    expect(uids[1_999]).toBe(101);
+    expect(gmail.calls[0]).toEqual({ method: "search", args: [{ gmraw: '"plan"' }, { uid: true }] });
+    const other = stubClient({ search: [3, 1, 2] });
+    expect(await createSession(other.client, true).searchServer({ text: "plan", gmailRaw: '"plan"' })).toEqual([3, 2, 1]);
+    expect(other.calls[0]).toEqual({ method: "search", args: [{ text: "plan" }, { uid: true }] });
+  });
+
+  it("a refused search is SearchFailed, never no mail; empty criteria send nothing", async () => {
+    for (const refused of [false, undefined]) {
+      const session = createSession(stubClient({ search: refused }).client, true);
+      await expect(session.searchServer({ text: "plan" })).rejects.toMatchObject({ code: "SearchFailed" });
+    }
+    const { client, calls } = stubClient({ search: [1] });
+    expect(await createSession(client, true).searchServer({ gmailRaw: "is:starred" })).toEqual([]);
+    expect(calls).toEqual([]);
+  });
+});
+
+describe("slice 3h: Gmail labels", () => {
+  const GMAIL = ["IMAP4rev1", "X-GM-EXT-1", "UIDPLUS", "MOVE"];
+
+  it("fetchMessages and fetchFlags ask for labels on Gmail and report them", async () => {
+    const fetched = [imapMessage({ uid: 1, labels: new Set(["\\Inbox", "Receipts"]) })];
+    const { client, calls } = stubClient({ fetched, capabilities: GMAIL });
+    const session = createSession(client, true);
+    expect((await session.fetchMessages([1]))[0]!.gmLabels).toEqual(["\\Inbox", "Receipts"]);
+    expect((await session.fetchFlags([1]))[0]).toMatchObject({ uid: 1, labels: ["\\Inbox", "Receipts"] });
+    const queries = calls.filter((c) => c.method === "fetch").map((c) => c.args[1]);
+    expect(queries[0]).toMatchObject({ labels: true, source: true });
+    expect(queries[1]).toMatchObject({ labels: true, flags: true });
+  });
+
+  it("does not ask for labels elsewhere and reports none", async () => {
+    const { client, calls } = stubClient({ fetched: [imapMessage({ uid: 1 })] });
+    const session = createSession(client, true);
+    expect((await session.fetchMessages([1]))[0]).not.toHaveProperty("gmLabels");
+    expect((await session.fetchFlags([1]))[0]).not.toHaveProperty("labels");
+    expect(await session.fetchLabels([1])).toEqual([]);
+    for (const call of calls) expect(call.args[1]).not.toHaveProperty("labels");
+  });
+
+  it("fetchLabels reads X-GM-LABELS only", async () => {
+    const fetched = [imapMessage({ uid: 4, labels: new Set(["Receipts"]) }), imapMessage({ uid: 5, labels: undefined })];
+    const { client, calls } = stubClient({ fetched, capabilities: GMAIL });
+    expect(await createSession(client, true).fetchLabels([4, 5])).toEqual([
+      { uid: 4, labels: ["Receipts"] },
+      { uid: 5, labels: [] },
+    ]);
+    expect(calls[0]!.args).toEqual([[4, 5], { uid: true, labels: true }, { uid: true }]);
+  });
+
+  it("setLabels stores with useLabels, then re-fetches what the server reports", async () => {
+    const fetched = [imapMessage({ uid: 7, labels: new Set(["Travel"]) })];
+    const { client, calls } = stubClient({ fetched, capabilities: GMAIL });
+    const after = await createSession(client, false).setLabels([7], { add: ["Travel"], remove: ["Receipts"] });
+    expect(after).toEqual([{ uid: 7, labels: ["Travel"] }]);
+    expect(calls.map((c) => c.method)).toEqual(["messageFlagsAdd", "messageFlagsRemove", "fetch"]);
+    expect(calls[0]!.args).toEqual([[7], ["Travel"], { uid: true, useLabels: true }]);
+    expect(calls[1]!.args).toEqual([[7], ["Receipts"], { uid: true, useLabels: true }]);
+    expect(calls[2]!.args[1]).toEqual({ uid: true, labels: true });
+  });
+
+  it("a refused label STORE is LabelsRefused and is not re-fetched", async () => {
+    for (const options of [{ stored: false }, { removed: false }]) {
+      const { client, calls } = stubClient({ ...options, capabilities: GMAIL });
+      await expect(createSession(client, false).setLabels([7], { add: ["A"], remove: ["B"] })).rejects.toMatchObject({
+        code: "LabelsRefused",
+      });
+      expect(calls.some((c) => c.method === "fetch")).toBe(false);
+    }
+  });
+
+  it("setLabels refuses a read-only session and a server without X-GM-EXT-1 before any command", async () => {
+    const readOnly = stubClient({ capabilities: GMAIL });
+    await expect(createSession(readOnly.client, true).setLabels([1], { add: ["A"], remove: [] })).rejects.toMatchObject({ code: "ReadOnly" });
+    const other = stubClient();
+    await expect(createSession(other.client, false).setLabels([1], { add: ["A"], remove: [] })).rejects.toMatchObject({ code: "LabelsRefused" });
+    expect([...readOnly.calls, ...other.calls]).toEqual([]);
+  });
+});
+
+type FolderOpsStub = {
+  status?: unknown;
+  renamed?: unknown;
+  deleted?: unknown;
+  subscribed?: unknown;
+  throwOn?: string;
+  selected?: unknown;
+  capabilities?: string[];
+};
+
+/** A session-less client that records the selected mailbox at every command. */
+function folderOpsClient(options: FolderOpsStub = {}) {
+  const calls: { method: string; args: unknown[]; selected: unknown }[] = [];
+  const client = {
+    mailbox: options.selected ?? false,
+    loggedOut: false,
+    capabilities: new Map((options.capabilities ?? []).map((name) => [name, true])),
+  } as Record<string, unknown>;
+  const method = (name: string, answer: unknown) =>
+    async (...args: unknown[]) => {
+      calls.push({ method: name, args, selected: client.mailbox });
+      if (options.throwOn === name) throw Object.assign(new Error("NO private server text"), { responseText: "private" });
+      return answer;
+    };
+  client.status = method("status", "status" in options ? options.status : { path: "Old", messages: 0, uidValidity: 9n });
+  client.mailboxRename = method("mailboxRename", "renamed" in options ? options.renamed : { path: "Old", newPath: "New" });
+  client.mailboxDelete = method("mailboxDelete", "deleted" in options ? options.deleted : { path: "Old" });
+  client.mailboxSubscribe = method("mailboxSubscribe", "subscribed" in options ? options.subscribed : true);
+  client.mailboxUnsubscribe = method("mailboxUnsubscribe", "subscribed" in options ? options.subscribed : true);
+  return { client: client as unknown as FolderOpsClient, calls };
+}
+
+describe("slice 3h: folder commands", () => {
+  it("rename and delete run with no mailbox selected at the command", async () => {
+    const { client, calls } = folderOpsClient();
+    expect(await renameFolderWith(client, "Old", "New")).toEqual({ path: "New" });
+    await deleteFolderWith(client, "Old", { expectEmpty: true });
+    await deleteFolderWith(client, "Label", { expectEmpty: false });
+    expect(calls.map((c) => c.method)).toEqual(["mailboxRename", "status", "mailboxDelete", "mailboxDelete"]);
+    for (const call of calls) expect(call.selected).toBe(false);
+  });
+
+  it("refuses before any command when a mailbox is selected", async () => {
+    const { client, calls } = folderOpsClient({ selected: { path: "Old" } });
+    await expect(renameFolderWith(client, "Old", "New")).rejects.toMatchObject({ code: "RenameFailed" });
+    await expect(deleteFolderWith(client, "Old", { expectEmpty: true })).rejects.toMatchObject({ code: "DeleteFailed" });
+    await expect(deleteFolderWith(client, "Old", { expectEmpty: false })).rejects.toMatchObject({ code: "DeleteFailed" });
+    expect(calls).toEqual([]);
+  });
+
+  it("delete with expectEmpty refuses at messages > 0 without DELETE", async () => {
+    const { client, calls } = folderOpsClient({ status: { path: "Old", messages: 3, uidValidity: 9n } });
+    await expect(deleteFolderWith(client, "Old", { expectEmpty: true })).rejects.toMatchObject({ code: "NotEmpty" });
+    expect(calls.map((c) => c.method)).toEqual(["status"]);
+    expect(calls[0]!.args).toEqual(["Old", { messages: true, uidValidity: true }]);
+  });
+
+  it("a Gmail label delete issues DELETE without STATUS when the connection advertises X-GM-EXT-1", async () => {
+    const { client, calls } = folderOpsClient({ status: { path: "Label", messages: 41, uidValidity: 9n }, capabilities: ["X-GM-EXT-1"] });
+    await deleteFolderWith(client, "Label", { expectEmpty: false, gmailLabel: true });
+    expect(calls.map((c) => c.method)).toEqual(["mailboxDelete"]);
+  });
+
+  it("a Gmail label delete without X-GM-EXT-1 takes the normal path: STATUS first, NotEmpty above 0", async () => {
+    const { client, calls } = folderOpsClient({ status: { path: "Label", messages: 41, uidValidity: 9n } });
+    await expect(deleteFolderWith(client, "Label", { expectEmpty: false, gmailLabel: true })).rejects.toMatchObject({ code: "NotEmpty" });
+    expect(calls.map((c) => c.method)).toEqual(["status"]);
+  });
+
+  it("a \\Noselect folder (expectEmpty false) is deleted without STATUS", async () => {
+    const { client, calls } = folderOpsClient({ status: false });
+    await deleteFolderWith(client, "Group", { expectEmpty: false });
+    expect(calls.map((c) => c.method)).toEqual(["mailboxDelete"]);
+  });
+
+  it("status maps messages and uidValidity; a refusal is StatusFailed", async () => {
+    expect(await folderStatusWith(folderOpsClient({ status: { path: "A", messages: 12, uidValidity: 77n } }).client, "A")).toEqual({
+      messages: 12,
+      uidValidity: 77,
+    });
+    await expect(folderStatusWith(folderOpsClient({ status: false }).client, "A")).rejects.toMatchObject({ code: "StatusFailed" });
+    await expect(folderStatusWith(folderOpsClient({ throwOn: "status" }).client, "A")).rejects.toMatchObject({ code: "StatusFailed" });
+  });
+
+  it("maps refusals to safe codes without the server's text", async () => {
+    const cases: [Promise<unknown>, string][] = [
+      [renameFolderWith(folderOpsClient({ throwOn: "mailboxRename" }).client, "Old", "New"), "RenameFailed"],
+      [renameFolderWith(folderOpsClient({ renamed: undefined }).client, "Old", "New"), "RenameFailed"],
+      [deleteFolderWith(folderOpsClient({ throwOn: "mailboxDelete" }).client, "Old", { expectEmpty: false }), "DeleteFailed"],
+      [deleteFolderWith(folderOpsClient({ deleted: undefined }).client, "Old", { expectEmpty: false }), "DeleteFailed"],
+      [setSubscribedWith(folderOpsClient({ throwOn: "mailboxSubscribe" }).client, "Old", true), "SubscribeFailed"],
+      [setSubscribedWith(folderOpsClient({ subscribed: false }).client, "Old", false), "SubscribeFailed"],
+    ];
+    for (const [promise, code] of cases) {
+      const error = await promise.catch((e: unknown) => e);
+      expect(error).toMatchObject({ code });
+      expect(String((error as Error).message)).not.toContain("private");
+    }
+  });
+
+  it("subscribe and unsubscribe call the matching command", async () => {
+    const { client, calls } = folderOpsClient();
+    await setSubscribedWith(client, "A", true);
+    await setSubscribedWith(client, "A", false);
+    expect(calls.map((c) => [c.method, c.args[0]])).toEqual([
+      ["mailboxSubscribe", "A"],
+      ["mailboxUnsubscribe", "A"],
+    ]);
+  });
+
+  it("the gateway opens a fresh connection per command and logs out after, also on a refusal", async () => {
+    const events: string[] = [];
+    const { client } = folderOpsClient({ status: { path: "A", messages: 2, uidValidity: 1n } });
+    const fake = Object.assign(client, {
+      on: () => {},
+      connect: async () => {
+        events.push("connect");
+      },
+      logout: async () => {
+        events.push("logout");
+      },
+      close: () => {},
+    });
+    const gateway = createImapflowGateway({ createClient: () => fake as never });
+    const config = { host: "imap.example.org", port: 993, user: "owner@example.org", password: ["not", "real"].join("-") };
+    await gateway.renameFolder(config, "A", "B");
+    await gateway.folderStatus(config, "A");
+    await expect(gateway.deleteFolder(config, "A", { expectEmpty: true })).rejects.toMatchObject({ code: "NotEmpty" });
+    await gateway.setSubscribed(config, "A", false);
+    expect(events).toEqual(["connect", "logout", "connect", "logout", "connect", "logout", "connect", "logout"]);
+  });
+});
+
+describe("slice 3h: names imapflow reads as special use", () => {
+  it("refuses system-looking names and lets others pass", () => {
+    expect(namedLikeSpecialUse("Trash")).toBe(true);
+    expect(namedLikeSpecialUse("Sent Mail")).toBe(true);
+    expect(namedLikeSpecialUse("\u041e\u0442\u043f\u0440\u0430\u0432\u043b\u0435\u043d\u043d\u044b\u0435")).toBe(true);
+    expect(namedLikeSpecialUse("Receipts")).toBe(false);
+    expect(createImapflowGateway().namedLikeSpecialUse("Trash")).toBe(true);
+  });
+});
+
+describe("slice 3h: listing keeps the subscription state", () => {
+  it("maps subscribed, true when the server reports none", () => {
+    const folders = toRemoteFolders([
+      { ...listEntry("Kept", []), subscribed: false },
+      { ...listEntry("Plain", []), subscribed: true },
+      listEntry("Unknown", []),
+    ]);
+    expect(folders.map((f) => [f.path, f.subscribed])).toEqual([
+      ["Kept", false],
+      ["Plain", true],
+      ["Unknown", true],
+    ]);
   });
 });

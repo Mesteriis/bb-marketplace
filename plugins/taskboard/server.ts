@@ -1,3 +1,4 @@
+import { registerWorklogTools } from "./src/adapters/bb/worklog-tools.ts";
 // Makosh Taskboard — BB backend entry.
 //
 // Composition root: builds the BB implementations of the core's ports and
@@ -19,6 +20,10 @@ import {
 } from "./src/adapters/bb/credential-store.ts";
 import { createSqliteStore, MIGRATIONS } from "./src/adapters/bb/sqlite-store.ts";
 import {
+  listAssignedJiraProjects,
+  fetchJiraKanban,
+  jiraKanbanClientFor,
+  prepareWorklog,
   DomainError,
   applyTransition,
   createBoard,
@@ -123,6 +128,9 @@ export default async function plugin(bb: BbPluginApi) {
   }
 
   bb.rpc.register(rpcContract, {
+    jira_projects: ({ connectionId }) => run(async () => ({ projects: await listAssignedJiraProjects(connectionId, syncDeps) })),
+    jira_boards: ({ connectionId, projectKey }) => run(async () => ({ boards: await jiraKanbanClientFor(connectionId, syncDeps).boards(projectKey) })),
+    jira_kanban: ({ connectionId, projectKey, jiraBoardId }) => run(() => fetchJiraKanban(connectionId, projectKey, jiraBoardId, syncDeps)),
     boards_list: () => run(() => ({ boards: listBoards(boardDeps) })),
     tasks_list: ({ boardId }) => run(() => listTasks(boardId, boardDeps)),
     connections_list: () => run(() => ({ connections: listConnections(connectionDeps) })),
@@ -147,8 +155,15 @@ export default async function plugin(bb: BbPluginApi) {
     run_list: ({ taskId }) => run(() => ({ runs: listRunsForTask(taskId, lifecycleDeps) })),
     run_complete: (input) => run(() => completeRun(input, lifecycleDeps).then((timeEntry) => ({ timeEntry }))),
     time_entry_update: (input) => run(() => ({ timeEntry: updateTimeEntry(input, lifecycleDeps) })),
+    worklog_prepare: (input) => run(() => ({ timeEntry: prepareWorklog(input, lifecycleDeps) })),
     time_entry_submit: (input) => run(() => submitTimeEntry(input, lifecycleDeps).then((worklog) => ({ worklog }))),
     time_entries_pending: () => run(() => ({ entries: listPendingTimeEntries(lifecycleDeps) })),
+    jira_worklogs_list: ({ taskId }) => run(async () => {
+      const task = store.getTask(taskId);
+      const board = task ? store.getBoard(task.boardId) : null;
+      if (!task || task.origin !== "jira" || !task.originKey || !board?.connectionId) throw new DomainError("not_found", "Connected Jira task not found");
+      return { worklogs: await jiraClientFor(board.connectionId, syncDeps).listWorklogs(task.originKey) };
+    }),
     worklogs_list: ({ taskId }) => run(() => ({ worklogs: listWorklogsForTask(taskId, lifecycleDeps) })),
     time_entries_by_task: ({ taskId }) => run(() => ({ entries: lifecycleDeps.lifecycle.listTimeEntriesByTask(taskId) })),
     time_entry_retry: ({ entryId }) => run(() => ({ timeEntry: retryTimeEntry(entryId, lifecycleDeps) })),
@@ -174,8 +189,10 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
 
+  const worklogTools = registerWorklogTools(bb, lifecycleDeps);
+
   bb.agents.configure((context) => {
     const hasRun = typeof context.pluginMetadata.runId === "string";
-    return { tools: hasRun ? ["finish_work"] : [], skills: [] };
+    return { tools: hasRun ? [...worklogTools, "finish_work"] : worklogTools, skills: [] };
   });
 }

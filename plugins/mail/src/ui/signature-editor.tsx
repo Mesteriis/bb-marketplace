@@ -7,6 +7,7 @@ import type { Editor } from "@tiptap/react";
 import { Button } from "@/components/ui/button";
 import { ComposeEditor, type EditorDoc } from "./compose-editor.tsx";
 import { ComposeToolbar, type ToolId } from "./compose-toolbar.tsx";
+import { tx } from "./i18n/index.ts";
 
 /** The signature editor's tools: marks and links, no lists, no quotes. */
 export const SIGNATURE_TOOLS: readonly ToolId[] = ["bold", "italic", "underline", "link"];
@@ -59,10 +60,10 @@ export function SignatureEditor({ address, initial, onSave, onCancel }: Signatur
         />
       </div>
       <ComposeEditor
-        label={`Signature for ${address}`}
+        label={tx("Signature for {address}", { address })}
         initialDoc={initial ?? EMPTY_DOC}
         importFrom={null}
-        features={{ lists: false, quotes: false }}
+        features={{ lists: false, quotes: false, code: false }}
         onChange={(next) => {
           doc.current = next;
           setProblem(null);
@@ -78,10 +79,10 @@ export function SignatureEditor({ address, initial, onSave, onCancel }: Signatur
       ) : null}
       <div className="flex justify-end gap-2 border-t border-border px-2 py-1.5">
         <Button variant="ghost" size="sm" onClick={onCancel} disabled={busy}>
-          Cancel
+          {tx("Cancel")}
         </Button>
         <Button size="sm" onClick={() => void save()} disabled={busy}>
-          Save signature
+          {tx("Save signature")}
         </Button>
       </div>
     </div>

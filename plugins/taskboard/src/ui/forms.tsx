@@ -131,8 +131,6 @@ export function ConnectionForm({ open, onOpenChange, initial, notify, onSave }: 
   const [edition, setEdition] = useState<"cloud" | "server">("cloud");
   const [baseUrl, setBaseUrl] = useState("");
   const [email, setEmail] = useState("");
-  const [projectKey, setProjectKey] = useState("");
-  const [jql, setJql] = useState("");
   const [credential, setCredential] = useState("");
   const [saving, setSaving] = useState(false);
 
@@ -142,8 +140,6 @@ export function ConnectionForm({ open, onOpenChange, initial, notify, onSave }: 
       setEdition(initial?.edition ?? "cloud");
       setBaseUrl(initial?.baseUrl ?? "");
       setEmail(initial?.email ?? "");
-      setProjectKey(initial?.projectKey ?? "");
-      setJql(initial?.jql ?? "");
       setCredential("");
     }
   }, [open, initial]);
@@ -151,15 +147,14 @@ export function ConnectionForm({ open, onOpenChange, initial, notify, onSave }: 
   const baseUrlOk = edition === "cloud" ? cloudBaseUrlOk(baseUrl) : serverBaseUrlOk(baseUrl);
   const emailInvalid = edition === "cloud" && email.trim() === "";
   const credentialMissing = initial === null && credential.trim() === "";
-  const scopeMissing = edition === "cloud" && projectKey.trim() === "" && jql.trim() === "";
 
   const submit = async () => {
     setSaving(true);
     try {
       if (initial === null) {
-        await onSave({ name, edition, baseUrl, email: edition === "cloud" ? email : undefined, projectKey, jql, credential });
+        await onSave({ name, edition, baseUrl, email: edition === "cloud" ? email : undefined, projectKey: "", jql: "", credential });
       } else {
-        const patch: ConnectionUpdateInput = { connectionId: initial.id, name, projectKey, jql };
+        const patch: ConnectionUpdateInput = { connectionId: initial.id, name, projectKey: "", jql: "" };
         if (edition === "cloud") patch.email = email;
         if (credential.trim() !== "") patch.credential = credential;
         await onSave(patch);
@@ -172,7 +167,7 @@ export function ConnectionForm({ open, onOpenChange, initial, notify, onSave }: 
     }
   };
 
-  const disabled = saving || name.trim() === "" || !baseUrlOk || emailInvalid || credentialMissing || scopeMissing;
+  const disabled = saving || name.trim() === "" || !baseUrlOk || emailInvalid || credentialMissing;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -206,15 +201,7 @@ export function ConnectionForm({ open, onOpenChange, initial, notify, onSave }: 
               {emailInvalid && <span className="text-xs text-destructive">Email is required for Cloud</span>}
             </div>
           )}
-          <div className="flex flex-col gap-1">
-            <label htmlFor="conn-project" className="text-sm font-medium">Project key</label>
-            <Input id="conn-project" value={projectKey} onChange={(event) => setProjectKey(event.target.value)} placeholder="PROJ" />
-          </div>
-          <div className="flex flex-col gap-1">
-            <label htmlFor="conn-jql" className="text-sm font-medium">JQL</label>
-            <Input id="conn-jql" value={jql} onChange={(event) => setJql(event.target.value)} placeholder="project = PROJ" />
-            {scopeMissing && <span className="text-xs text-destructive">Cloud needs a project key or JQL to scope the fetch</span>}
-          </div>
+          <p className="text-sm text-muted-foreground">All tasks assigned to you are fetched across Jira projects, then grouped by project.</p>
           <div className="flex flex-col gap-1">
             <label htmlFor="conn-credential" className="text-sm font-medium">
               {edition === "cloud" ? "API token" : "Personal access token"}

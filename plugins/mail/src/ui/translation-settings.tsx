@@ -16,6 +16,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { stopEscape } from "./shortcuts.ts";
 import { TRANSLATE_LANGUAGES } from "./translation-block.tsx";
+import { tx } from "./i18n/index.ts";
 
 /** translate_settings_get's answer. */
 export interface TranslateSettingsData {
@@ -109,32 +110,31 @@ export function TranslationSettings({ open, onOpenChange, load, save, clear, onS
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-md" onEscapeKeyDown={stopEscape}>
         <DialogHeader>
-          <DialogTitle>AI settings</DialogTitle>
+          <DialogTitle>{tx("AI settings")}</DialogTitle>
           <DialogDescription>
-            Translate sends the message's subject and text, never attachments or images, to the provider you
-            choose in Makosh AI. Translations are kept on this computer until you clear them.
+            {tx("Translate sends the message's subject and text, never attachments or images, to the provider you choose in Makosh AI. Translations are kept on this computer until you clear them.")}
           </DialogDescription>
         </DialogHeader>
-        {loaded.kind === "loading" ? <p className="text-sm text-muted-foreground">Loading…</p> : null}
+        {loaded.kind === "loading" ? <p className="text-sm text-muted-foreground">{tx("Loading\u2026")}</p> : null}
         {loaded.kind === "error" ? (
           <p role="alert" className="text-sm text-destructive">
-            Could not load the translation settings.
+            {tx("Could not load the translation settings.")}
           </p>
         ) : null}
         {data !== null && !gatewayOk ? (
           <p role="alert" className="text-sm text-muted-foreground">
-            Translation needs the Makosh AI plugin. Install or enable it in BB, then open these settings again.
+            {tx("Translation needs the Makosh AI plugin. Install or enable it in BB, then open these settings again.")}
           </p>
         ) : null}
         {data !== null && gatewayOk ? (
           <div className="flex flex-col gap-3">
             <div className="flex flex-col gap-1">
               <label id={`${id}-provider`} className="text-sm font-medium text-foreground">
-                Provider
+                {tx("Provider")}
               </label>
               <Select value={providerId === "" ? undefined : providerId} onValueChange={setProviderId}>
                 <SelectTrigger aria-labelledby={`${id}-provider`}>
-                  <SelectValue placeholder="Choose a provider" />
+                  <SelectValue placeholder={tx("Choose a provider")} />
                 </SelectTrigger>
                 <SelectContent>
                   {data.providers.map((p) => (
@@ -146,22 +146,22 @@ export function TranslationSettings({ open, onOpenChange, load, save, clear, onS
               </Select>
               {chosen !== null && !chosen.available ? (
                 <>
-                  <p className="text-xs text-destructive">This provider is not available in Makosh AI right now.</p>
+                  <p className="text-xs text-destructive">{tx("This provider is not available in Makosh AI right now.")}</p>
                   {chosen.reason !== null && chosen.reason !== "" ? (
-                    <p className="text-xs text-muted-foreground">{`Makosh AI: ${chosen.reason}`}</p>
+                    <p className="text-xs text-muted-foreground">{tx("Makosh AI: {reason}", { reason: chosen.reason })}</p>
                   ) : null}
                 </>
               ) : null}
-              <p className="text-xs text-muted-foreground">Other providers need a Makosh Mail update.</p>
+              <p className="text-xs text-muted-foreground">{tx("Other providers need a Makosh Mail update.")}</p>
             </div>
             <div className="flex flex-col gap-1">
               <label id={`${id}-model`} htmlFor={`${id}-model-input`} className="text-sm font-medium text-foreground">
-                Model
+                {tx("Model")}
               </label>
               {models !== null ? (
                 <Select value={model === "" ? undefined : model} onValueChange={setModel}>
                   <SelectTrigger aria-labelledby={`${id}-model`}>
-                    <SelectValue placeholder="Choose a model" />
+                    <SelectValue placeholder={tx("Choose a model")} />
                   </SelectTrigger>
                   <SelectContent>
                     {models.map((m) => (
@@ -178,19 +178,19 @@ export function TranslationSettings({ open, onOpenChange, load, save, clear, onS
                     value={model}
                     maxLength={200}
                     onChange={(event) => setModel(event.target.value)}
-                    placeholder="Model id"
+                    placeholder={tx("Model id")}
                   />
                   <p className="text-xs text-muted-foreground">
                     {providerId !== data.current.providerId
-                      ? "Save to see this provider's models; or type a model id."
-                      : "Makosh AI did not list models; type a model id."}
+                      ? tx("Save to see this provider's models; or type a model id.")
+                      : tx("Makosh AI did not list models; type a model id.")}
                   </p>
                 </>
               )}
             </div>
             <div className="flex flex-col gap-1">
               <label id={`${id}-language`} className="text-sm font-medium text-foreground">
-                Translate into
+                {tx("Translate into")}
               </label>
               <Select value={language} onValueChange={setLanguage}>
                 <SelectTrigger aria-labelledby={`${id}-language`}>
@@ -199,7 +199,7 @@ export function TranslationSettings({ open, onOpenChange, load, save, clear, onS
                 <SelectContent>
                   {TRANSLATE_LANGUAGES.map((l) => (
                     <SelectItem key={l.tag} value={l.tag}>
-                      {l.label}
+                      {tx(l.label)}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -210,14 +210,14 @@ export function TranslationSettings({ open, onOpenChange, load, save, clear, onS
         {note !== null ? <p role="status" className="text-sm text-muted-foreground">{note}</p> : null}
         <DialogFooter className="gap-2 sm:justify-between">
           <Button variant="outline" size="sm" disabled={busy || data === null} onClick={() => void onClear()}>
-            Clear translations
+            {tx("Clear translations")}
           </Button>
           <div className="flex gap-2">
             <Button variant="outline" size="sm" onClick={() => onOpenChange(false)}>
-              Cancel
+              {tx("Cancel")}
             </Button>
             <Button size="sm" disabled={busy || !gatewayOk} onClick={() => void onSave()}>
-              Save
+              {tx("Save")}
             </Button>
           </div>
         </DialogFooter>

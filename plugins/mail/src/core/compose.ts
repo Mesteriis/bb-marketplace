@@ -198,6 +198,38 @@ export function planUnsubscribe(
   };
 }
 
+/** The MIME type an invitation answer is kept under on its hidden draft. */
+export const INVITE_REPLY_MIME = "text/calendar; method=REPLY; charset=utf-8";
+
+/**
+ * The answer to a calendar invitation (slice 3l), not yet written: from the
+ * invited address (one of the account's identities), to the organizer, one
+ * line of text, and the calendar text as the draft's one attachment
+ * (outgoingOf sends it as the body's text/calendar alternative).
+ */
+export function planInviteReply(
+  deps: Pick<ComposeDeps, "store" | "newId">,
+  messageId: string,
+  reply: { from: string; to: MailAddress; subject: string; body: string; calendar: string },
+): ComposePlan {
+  const source = deps.store.replySource(messageId);
+  if (source === null) throw new ComposeError("not_found");
+  const account = requireAccount(deps.store, source.accountId);
+  const wanted = reply.from.trim().toLowerCase();
+  const identity = accountIdentities(deps.store, account).find((entry) => entry.address.toLowerCase() === wanted);
+  if (identity === undefined) throw new ComposeError("from_unknown");
+  const plan = planNew(deps, account.id, fromAddressOf(identity));
+  return {
+    ...plan,
+    to: [reply.to],
+    subject: reply.subject,
+    doc: docFromLines([reply.body]),
+    attachments: [
+      { fileName: "invite.ics", mimeType: INVITE_REPLY_MIME, bytes: new TextEncoder().encode(reply.calendar), contentId: null },
+    ],
+  };
+}
+
 /**
  * A reply, reply-all or forward of a stored message, not yet written:
  * recipients, subject and threading from the store (Reply-To from the server
@@ -707,7 +739,7 @@ export function attachmentRoom(store: MailStore, draftId: string): number {
 export function addComposeAttachment(
   store: MailStore,
   draftId: string,
-  file: { fileName: string; mimeType: string; size: number; sha256: string; data: Uint8Array },
+  file: { fileName: string; mimeType: string; size: number; sha256: string; data: Uint8Array; origin?: string | null },
 ) {
   const draft = store.getDraft(draftId);
   if (draft === null) throw new ComposeError("not_found");
@@ -848,7 +880,11 @@ export function outgoingOf(
     contentId: a.contentId,
   }));
   const { html, text } = renderDoc(draft.doc);
+  // An invitation answer travels as an alternative of the body, not as a file.
+  const calendarAt = draft.purpose === "invite_reply" ? attachments.findIndex((a) => a.mimeType === INVITE_REPLY_MIME) : -1;
+  const calendar = calendarAt === -1 ? null : new TextDecoder().decode(attachments.splice(calendarAt, 1)[0]!.bytes);
   return {
+    ...(calendar === null ? {} : { calendar: { method: "REPLY" as const, content: calendar } }),
     from: { name: identity.displayName?.trim() || null, address: from.value.address },
     to: list(draft.to),
     cc: list(draft.cc),

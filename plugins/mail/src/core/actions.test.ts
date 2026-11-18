@@ -19,6 +19,7 @@ function folder(path: string, specialUse: SpecialUse | null, overrides: Partial<
     selectable: true,
     unreadCount: 0,
     totalCount: 0,
+    subscribed: true,
     ...overrides,
   };
 }

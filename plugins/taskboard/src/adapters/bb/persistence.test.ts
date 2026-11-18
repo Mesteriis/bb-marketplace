@@ -21,7 +21,7 @@ function makeDeps() {
 describe("SQLite persistence and nullable thread_id", () => {
   it("upgrades a pre-null schema preserving runs/time entries/worklogs", () => {
     const db = new Database(":memory:");
-    for (const migration of MIGRATIONS.slice(0, -5)) db.exec(migration);
+    for (const migration of MIGRATIONS.slice(0, MIGRATIONS.findIndex(m => m.startsWith("CREATE TABLE runs_v2")))) db.exec(migration);
     db.exec("INSERT INTO runs (id, task_id, project_id, environment_id, thread_id, branch_name, start_status_id, next_status_id, state, started_at, completed_at, duration_seconds, delivered_summary) VALUES ('r1','t1','p1',NULL,'th1','B','c1','c2','active','x',NULL,NULL,NULL)");
     db.exec("INSERT INTO runs (id, task_id, project_id, environment_id, thread_id, branch_name, start_status_id, next_status_id, state, started_at, completed_at, duration_seconds, delivered_summary) VALUES ('r0','t0','p0',NULL,'','','c1','c2','provisioning','x',NULL,NULL,NULL)");
     db.exec("INSERT INTO time_entries (id, run_id, task_id, state, duration_seconds, comment, created_at, submitted_at) VALUES ('e1','r1','t1','pending',3600,'','x',NULL)");

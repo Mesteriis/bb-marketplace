@@ -16,6 +16,7 @@ import {
 import { Icon } from "@/components/ui/icon";
 import { shownText } from "./agent-send-card.tsx";
 import { stopEscape } from "./shortcuts.ts";
+import { tx } from "./i18n/index.ts";
 
 export type UnsubscribeMethod = "one_click" | "mailto";
 
@@ -35,18 +36,17 @@ export function MailtoPreview({ subject, body, hiddenChars }: { subject: string;
   return (
     <div role="group" aria-label={MAILTO_PREVIEW_LABEL} className="flex flex-col gap-1 rounded-md border border-border px-2 py-1.5 text-xs">
       <p className="min-w-0 break-words">
-        <span className="text-muted-foreground">Subject: </span>
+        <span className="text-muted-foreground">{tx("Subject:")} </span>
         <span className="text-foreground">{shownText(subject)}</span>
       </p>
       {text === "" ? (
-        <p className="text-muted-foreground">(no text)</p>
+        <p className="text-muted-foreground">{tx("(no text)")}</p>
       ) : (
         <p className="min-w-0 whitespace-pre-wrap break-words text-foreground">{text}</p>
       )}
       {hiddenChars > 0 ? (
         <p role="note" className="text-destructive">
-          {hiddenChars === 1 ? "1 hidden character removed" : `${hiddenChars} hidden characters removed`} (invisible marks the
-          list put in the subject or the text).
+          {hiddenChars === 1 ? tx("1 hidden character removed") : `${hiddenChars} hidden characters removed`} {tx("(invisible marks the list put in the subject or the text).")}
         </p>
       ) : null}
     </div>
@@ -124,13 +124,13 @@ export function UnsubscribeDialog({
         onAfterCloseAutoFocus={onAfterCloseAutoFocus}
       >
         <DialogHeader>
-          <DialogTitle>{list !== null ? `Unsubscribe from ${list}?` : "Unsubscribe from this list?"}</DialogTitle>
+          <DialogTitle>{list !== null ? `Unsubscribe from ${list}?` : tx("Unsubscribe from this list?")}</DialogTitle>
           <DialogDescription>{UNSUBSCRIBE_PRIVACY}</DialogDescription>
         </DialogHeader>
         {method === "one_click" && oneClick !== null ? (
           <p className="flex items-start gap-2 text-sm text-foreground">
             <Icon name="Link" fallback="Mail" className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden />
-            <span className="min-w-0 break-all">One click to {shownText(oneClick.host)}</span>
+            <span className="min-w-0 break-all">{tx("One click to")} {shownText(oneClick.host)}</span>
           </p>
         ) : null}
         {method === "mailto" && mailto !== null ? (
@@ -138,7 +138,7 @@ export function UnsubscribeDialog({
             <p className="flex items-start gap-2 text-sm text-foreground">
               <Icon name="Mail" className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden />
               <span className="min-w-0 break-all">
-                An email from {fromAddress} goes to {shownText(mailto.address)}.
+                {tx("An email from")} {fromAddress} {tx("goes to")} {shownText(mailto.address)}.
               </span>
             </p>
             {mailto.foreignDomain ? (
@@ -151,10 +151,10 @@ export function UnsubscribeDialog({
         ) : null}
         <DialogFooter>
           <Button ref={cancel} variant="outline" size="sm" onClick={onCancel}>
-            Cancel
+            {tx("Cancel")}
           </Button>
           <Button size="sm" disabled={method === null} onClick={() => method !== null && onConfirm(method)}>
-            Unsubscribe
+            {tx("Unsubscribe")}
           </Button>
         </DialogFooter>
       </DialogContent>

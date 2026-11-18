@@ -11,6 +11,7 @@ function folder(path: string, overrides: Partial<Folder> = {}): Folder {
     selectable: true,
     unreadCount: 0,
     totalCount: 0,
+    subscribed: true,
     ...overrides,
   };
 }

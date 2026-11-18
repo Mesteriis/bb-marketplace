@@ -9,15 +9,23 @@ import { dismissalKey } from "../../core/digest.ts";
 import type { NewDraft, NewOutboxRow, ParsedQuery, RemoteFolder } from "../../core/model.ts";
 import {
   AI_RESULT_MAX_BYTES,
+  BINDINGS_MAX,
   TASKS_OPEN_MAX,
   type AiResultRecord,
+  type BbLinkRow,
+  type NewRuleRun,
   type MailStore,
+  type SearchOptions,
   type NewProposal,
   type NewReminder,
   type NewTask,
   type TranslationRecord,
 } from "../../core/ports.ts";
 import { REMINDERS_LIVE_MAX, dueAt } from "../../core/reminders.ts";
+import { parseQuery } from "../../core/search.ts";
+import { fileKindOf } from "../../core/file-kinds.ts";
+import type { SearchCursor } from "../../core/model.ts";
+import { RULES_MAX, type Rule } from "../../core/mail-rules.ts";
 import { TRANSLATION_CACHE_ROWS } from "../../core/translate.ts";
 import type { UnsubscribeInfo } from "../../core/unsubscribe.ts";
 import {
@@ -25,7 +33,8 @@ import {
   makeFetchedMessage,
   makeStoredAccount,
 } from "../../core/testing/fakes.ts";
-import { MIGRATIONS, createSqliteStore } from "./sqlite-store.ts";
+import { MIGRATIONS, createSqliteStore, hardenDatabase } from "./sqlite-store.ts";
+import { senderCheckOf, type SenderCheck } from "../../core/sender-check.ts";
 
 const INBOX = "INBOX";
 const EPOCH = "1970-01-01T00:00:00.000Z";
@@ -33,6 +42,8 @@ const EPOCH = "1970-01-01T00:00:00.000Z";
 const PAGE_MS = 250;
 /** Test timeout for tests that seed thousands of rows; seeding is never inside a timed span. */
 const SEEDING_TIMEOUT_MS = 60_000;
+/** Bound for the store's part of one sync round at scale (slice 3j). */
+const ROUND_MS = 1_500;
 
 /** Times one call alone. */
 function timeOne<T>(fn: () => T): { value: T; ms: number } {
@@ -159,6 +170,7 @@ describe("createSqliteStore", () => {
       snoozedUntil: null,
       category: null,
       categorySuggestion: null,
+      projectId: null,
     });
     expect(detail.messages[1]).toEqual({
       id: second,
@@ -172,14 +184,21 @@ describe("createSqliteStore", () => {
       isRead: false,
       isFlagged: false,
       hasAttachments: true,
+      kept: null,
+      labels: [],
       to: [{ name: null, address: "owner@example.org" }],
       cc: [{ name: "Copy", address: "copy@example.org" }],
       attachments: [
-        { partId: "2", filename: "plan.txt", mimeType: "text/plain", size: 12, isInline: false },
+        { partId: "2", filename: "plan.txt", mimeType: "text/plain", size: 12, isInline: false, kind: "text" },
       ],
       draftId: null,
       agentSubject: "Re: Invented plan",
       inAiScope: true,
+      devLinks: [],
+      dev: null,
+      patch: null,
+      alert: false,
+      bbLinks: [],
     });
     expect(store.threadingInputs("acc_1")).toContainEqual({
       id: second,
@@ -457,7 +476,7 @@ describe("createSqliteStore", () => {
       expect(count(db, table)).toBe(0);
     }
     expect(count(db, "messages_fts_docsize")).toBe(0);
-    expect(store.search({ text: "Invented" }, null, 50)).toEqual([]);
+    expect(store.search(parseQuery("Invented"), null, 50)).toEqual([]);
   });
 
   it("listThreads pages with a cursor", () => {
@@ -492,10 +511,10 @@ describe("createSqliteStore", () => {
       makeFetchedMessage(1, { subject: "Отчёт за квартал" }),
       makeFetchedMessage(2, { subject: "Invented other" }),
     ]);
-    const results = store.search({ text: "квартал" }, "acc_1", 50);
+    const results = store.search(parseQuery("квартал"), "acc_1", 50);
     expect(results.map((r) => r.id)).toEqual([idOf(store, 1)]);
     expect(results[0]).toMatchObject({ subject: "Отчёт за квартал", accountId: "acc_1" });
-    expect(store.search({ text: "ОТЧЁТ" }, null, 50).map((r) => r.id)).toEqual([idOf(store, 1)]);
+    expect(store.search(parseQuery("ОТЧЁТ"), null, 50).map((r) => r.id)).toEqual([idOf(store, 1)]);
   });
 
   it("search follows content updates and survives flag-only updates", () => {
@@ -505,16 +524,16 @@ describe("createSqliteStore", () => {
     store.markOpened(id);
     store.applyFlags("acc_1", INBOX, [{ uid: 1, seen: true, flagged: true }]);
     store.assignThreads("acc_1", new Map([[id, "t_other"]]));
-    expect(store.search({ text: "alpha" }, null, 50)).toEqual([]);
-    expect(store.search({ text: "omega" }, null, 50).map((r) => r.id)).toEqual([id]);
+    expect(store.search(parseQuery("alpha"), null, 50)).toEqual([]);
+    expect(store.search(parseQuery("omega"), null, 50).map((r) => r.id)).toEqual([id]);
   });
 
   it("search ignores control characters in the text", () => {
     store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, { subject: "Invented hello" })]);
-    expect(store.search({ text: "hel\u0000lo\u001f\u007f" }, null, 50).map((r) => r.id)).toEqual([
+    expect(store.search(parseQuery("hel\u0000lo\u001f\u007f"), null, 50).map((r) => r.id)).toEqual([
       idOf(store, 1),
     ]);
-    expect(() => store.search({ text: "\u0000\u0001" }, null, 50)).not.toThrow();
+    expect(() => store.search(parseQuery("\u0000\u0001"), null, 50)).not.toThrow();
   });
 
   it("subject: filter matches Cyrillic regardless of case", () => {
@@ -522,10 +541,10 @@ describe("createSqliteStore", () => {
       makeFetchedMessage(1, { subject: "Отчёт за квартал" }),
       makeFetchedMessage(2, { subject: "Invented other" }),
     ]);
-    expect(store.search({ text: "", subject: "отчёт" }, null, 50).map((r) => r.id)).toEqual([
+    expect(store.search(parseQuery("subject:отчёт"), null, 50).map((r) => r.id)).toEqual([
       idOf(store, 1),
     ]);
-    expect(store.search({ text: "", subject: "КВАРТАЛ" }, null, 50).map((r) => r.id)).toEqual([
+    expect(store.search(parseQuery("subject:КВАРТАЛ"), null, 50).map((r) => r.id)).toEqual([
       idOf(store, 1),
     ]);
   });
@@ -535,10 +554,10 @@ describe("createSqliteStore", () => {
       makeFetchedMessage(1, { from: { name: "Иван Петров", address: "ivan@example.org" } }),
       makeFetchedMessage(2),
     ]);
-    expect(store.search({ text: "", from: "иван" }, null, 50).map((r) => r.id)).toEqual([
+    expect(store.search(parseQuery("from:иван"), null, 50).map((r) => r.id)).toEqual([
       idOf(store, 1),
     ]);
-    expect(store.search({ text: "", from: "ПЕТРОВ" }, null, 50).map((r) => r.id)).toEqual([
+    expect(store.search(parseQuery("from:ПЕТРОВ"), null, 50).map((r) => r.id)).toEqual([
       idOf(store, 1),
     ]);
   });
@@ -548,8 +567,8 @@ describe("createSqliteStore", () => {
       makeFetchedMessage(1, { subject: "Юг и север" }),
       makeFetchedMessage(2, { subject: "Invented other" }),
     ]);
-    expect(store.search({ text: "юг" }, null, 50).map((r) => r.id)).toEqual([idOf(store, 1)]);
-    expect(store.search({ text: "ЮГ" }, null, 50).map((r) => r.id)).toEqual([idOf(store, 1)]);
+    expect(store.search(parseQuery("юг"), null, 50).map((r) => r.id)).toEqual([idOf(store, 1)]);
+    expect(store.search(parseQuery("ЮГ"), null, 50).map((r) => r.id)).toEqual([idOf(store, 1)]);
   });
 
   it("search with a 2-character query falls back to LIKE", () => {
@@ -558,17 +577,17 @@ describe("createSqliteStore", () => {
       makeFetchedMessage(2, { subject: "Invented", bodyText: "hi in the body only" }),
       makeFetchedMessage(3, { subject: "Invented", from: { name: "Hilda", address: "h@example.org" } }),
     ]);
-    const ids = store.search({ text: "hi" }, null, 50).map((r) => r.id);
+    const ids = store.search(parseQuery("hi"), null, 50).map((r) => r.id);
     expect(ids.sort()).toEqual([idOf(store, 1), idOf(store, 3)].sort());
-    expect(store.search({ text: "%" }, null, 50)).toEqual([]);
+    expect(store.search(parseQuery("%"), null, 50)).toEqual([]);
   });
 
   it("search escapes quotes in the query", () => {
     store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, { subject: 'Say "hello" now' })]);
-    expect(store.search({ text: '"hello"' }, null, 50).map((r) => r.id)).toEqual([idOf(store, 1)]);
-    expect(() => store.search({ text: 'a"b OR c' }, null, 50)).not.toThrow();
+    expect(store.search(parseQuery('"hello"'), null, 50).map((r) => r.id)).toEqual([idOf(store, 1)]);
+    expect(() => store.search(parseQuery('a"b OR c'), null, 50)).not.toThrow();
     // "zzzz" occurs nowhere: a live OR operator would still match on "hello".
-    expect(store.search({ text: "hello OR zzzz" }, null, 50)).toEqual([]);
+    expect(store.search(parseQuery("hello OR zzzz"), null, 50)).toEqual([]);
   });
 
   it("search applies operators, orders newest first and honours the limit", () => {
@@ -583,13 +602,13 @@ describe("createSqliteStore", () => {
     ]);
     const ids = (q: Parameters<MailStore["search"]>[0], limit = 50) =>
       store.search(q, "acc_1", limit).map((r) => r.id);
-    expect(ids({ text: "budget" })).toEqual([idOf(store, 3), idOf(store, 2), idOf(store, 1)]);
-    expect(ids({ text: "budget" }, 1)).toEqual([idOf(store, 3)]);
-    expect(ids({ text: "", from: "boss" })).toEqual([idOf(store, 3)]);
-    expect(ids({ text: "", subject: "budget", unread: true })).toEqual([idOf(store, 3), idOf(store, 1)]);
-    expect(ids({ text: "", unread: false })).toEqual([idOf(store, 2)]);
-    expect(ids({ text: "", after: "2026-11-05", before: "2026-11-09" })).toEqual([idOf(store, 2)]);
-    expect(store.search({ text: "budget" }, "acc_other", 50)).toEqual([]);
+    expect(ids(parseQuery("budget"))).toEqual([idOf(store, 3), idOf(store, 2), idOf(store, 1)]);
+    expect(ids(parseQuery("budget"), 1)).toEqual([idOf(store, 3)]);
+    expect(ids(parseQuery("from:boss"))).toEqual([idOf(store, 3)]);
+    expect(ids(parseQuery("subject:budget is:unread"))).toEqual([idOf(store, 3), idOf(store, 1)]);
+    expect(ids(parseQuery("is:read"))).toEqual([idOf(store, 2)]);
+    expect(ids(parseQuery("after:2026-11-05 before:2026-11-09"))).toEqual([idOf(store, 2)]);
+    expect(store.search(parseQuery("budget"), "acc_other", 50)).toEqual([]);
   });
 
   it("unreadCount counts per account and overall", () => {
@@ -627,7 +646,7 @@ describe("createSqliteStore", () => {
       store.getThread(threadId, INBOX),
       store.getMessage(id),
       store.getBody(id),
-      store.search({ text: "Invented" }, null, 10),
+      store.search(parseQuery("Invented"), null, 10),
       store.unreadCount(null),
     ];
     for (const output of outputs) {
@@ -675,7 +694,7 @@ function remoteFolder(
   specialUse: RemoteFolder["specialUse"] = null,
   overrides: Partial<RemoteFolder> = {},
 ): RemoteFolder {
-  return { path, name: path.split("/").pop()!, delimiter: "/", specialUse, selectable: true, ...overrides };
+  return { path, name: path.split("/").pop()!, delimiter: "/", specialUse, selectable: true, subscribed: true, ...overrides };
 }
 
 function idIn(target: MailStore, folder: string, uid: number, accountId = "acc_1"): string {
@@ -744,7 +763,7 @@ describe("slice-2 migrations (SQLite)", () => {
 
   it("shipped migration elements are unchanged", () => {
     const sha = (text: string) => createHash("sha256").update(text).digest("hex");
-    expect(MIGRATIONS.slice(0, 11).map(sha)).toEqual([
+    expect(MIGRATIONS.slice(0, 19).map(sha)).toEqual([
       "023f294a929e0c6d2aea10f38acb89287dbeba167e67f2b31c85103fd74ec5b4",
       "e34d0e9cbe94c27a6da39809436d656dcf4f787e1d35dd82fef86889bb22758f",
       "9430a1b0edb5ab94a14189c472a81384b3869786c2c5c56a00a56c2b02097396",
@@ -762,7 +781,181 @@ describe("slice-2 migrations (SQLite)", () => {
       "3879e176864850515f3b6b28845843c8cd4bdbf96a05b268e21bbe086c89aa19",
       // Element 10 (slice 3f: AI access, the agent log, AI results, tasks, categories, Today, reminders).
       "7fb5168f63a78ec868ee8302d7f4b24f565b6c22a018ce01e6635857a52ecb2f",
+      // Element 11 (slice 3g: dev columns, list_id, BB links, bindings, incidents, mail rules and runs).
+      "fc77dbcbd543d0c12209f9e3a00560ed06a257fdc34fd8d8433886d16c8b26dd",
+      // Element 12 (slice 3g review: the rule-thread gate and caps outlive the mail).
+      "e4714d9efb12775f4b66b49f5d831a93df288b19004a05c29ab72cf73cf2d3d8",
+      // Element 13 (slice 3h: kept rows, Gmail labels, attachment kinds and text, saved searches, folder prefs).
+      "9308a59ee243d1fcd946a94f35d8c86665cafd9d5ea6bb822af0f47b936ad4ba",
+      // Element 14 (slice 3i: sender check, read receipt request, crypto kind).
+      "85e10b2409d979ca08535d7c9a7b495375e014126b9b16ab645be6f16c189d79",
+      // Element 15 (slice 3k: OpenPGP keys).
+      "692137cda01ae3f12987900d2ec20feae427352122f78ddb1b5a515c73c1b93a",
+      // Element 16 (slice 3l: the scheduled mark of a "Send later" row).
+      "62597e0677e25aefadc475f6a6afadbc30e89474c48400d85c576bc82b14e929",
+      // Element 17 (slice 3m: filters).
+      "32a4f62febff3500b7c877687dc2defc39bc8ab3a4fc4620b1761953fa1f380c",
+      // Element 18 (slice 3p: local archives).
+      "484e585d5c158287c94e3370663b0c697d3fcdd065de9a9decbc1ca1e054e3a7",
     ]);
+  });
+
+  describe("local archives (slice 3p)", () => {
+    const at = "2026-11-17T10:00:00.000Z";
+    const open = () => {
+      const db = new Database(":memory:");
+      db.transaction(() => MIGRATIONS.forEach((statement) => db.exec(statement)))();
+      return { db, s: createSqliteStore(db) };
+    };
+    const archive = (id: string, sourcePath = `/invented/${id}.mbox`) => ({
+      id,
+      name: `Invented ${id}`,
+      sourcePath,
+      kind: "mbox" as const,
+      sourceSize: 1000,
+      messages: 0,
+      skipped: 0,
+      complete: false,
+      resumeAt: 0,
+      createdAt: at,
+      updatedAt: at,
+    });
+    const message = (offset: number, overrides: Record<string, unknown> = {}) => ({
+      file: "",
+      offset,
+      length: 100,
+      rawHash: `hash-${offset}`,
+      messageId: `<m-${offset}@example.org>`,
+      from: { name: "Ana Example", address: "ana@example.com" },
+      to: [{ name: null, address: "owner@example.org" }],
+      cc: [],
+      subject: `Invented subject ${offset}`,
+      date: `2020-01-${String(10 + offset).padStart(2, "0")}T08:00:00.000Z`,
+      snippet: "Invented snippet",
+      bodyText: `Invented body ${offset} about the orchard`,
+      bodyHtml: "<p>Invented</p>",
+      htmlTruncated: false,
+      attachments: [],
+      size: 100,
+      ...overrides,
+    });
+    const progress = (overrides: Record<string, unknown> = {}) => ({ resumeAt: 0, skipped: 0, complete: false, nowIso: at, ...overrides });
+
+    it("keeps archives apart from mailboxes: no message, thread, unread count or search hit of live mail", () => {
+      const { db, s } = open();
+      s.createArchive(archive("arc_1"));
+      expect(s.appendArchiveMessages("arc_1", [message(1), message(2)], progress({ complete: true, resumeAt: 1000 }))).toBe(2);
+      expect(s.getArchive("arc_1")).toMatchObject({ messages: 2, complete: true, resumeAt: 1000 });
+      expect(db.prepare("SELECT count(*) AS n FROM messages").get()).toEqual({ n: 0 });
+      expect(db.prepare("SELECT count(*) AS n FROM threads").get()).toEqual({ n: 0 });
+      expect(s.unreadCount(null)).toBe(0);
+      expect(s.search(parseQuery("orchard"), null, 10)).toEqual([]);
+    });
+
+    it("pages newest first with undated rows last, and searches the subject, the sender and the text", () => {
+      const { s } = open();
+      s.createArchive(archive("arc_1"));
+      s.createArchive(archive("arc_2"));
+      s.appendArchiveMessages(
+        "arc_1",
+        [message(1), message(2, { date: null }), message(3), message(4, { subject: "Quarterly zebra report", attachments: [{ partId: "1", filename: "a.pdf", mimeType: "application/pdf", size: 5, isInline: false }] })],
+        progress(),
+      );
+      s.appendArchiveMessages("arc_2", [message(5, { from: { name: "Bob", address: "bob@example.net" }, bodyText: "pelican" })], progress());
+      const first = s.archiveMessages("arc_1", { query: "", limit: 2, cursor: null });
+      expect(first.rows.map((r) => r.subject)).toEqual(["Quarterly zebra report", "Invented subject 3"]);
+      expect(first.rows[0]).toMatchObject({ archiveId: "arc_1", hasAttachments: true, from: { name: "Ana Example", address: "ana@example.com" } });
+      const second = s.archiveMessages("arc_1", { query: "", limit: 2, cursor: first.nextCursor });
+      expect(second.rows.map((r) => r.subject)).toEqual(["Invented subject 1", "Invented subject 2"]);
+      expect(second.nextCursor).toBeNull();
+      expect(s.archiveMessages(null, { query: "", limit: 10, cursor: null }).rows).toHaveLength(5);
+      expect(s.archiveMessages(null, { query: "zebra", limit: 10, cursor: null }).rows.map((r) => r.subject)).toEqual(["Quarterly zebra report"]);
+      expect(s.archiveMessages(null, { query: "pelican", limit: 10, cursor: null }).rows.map((r) => r.archiveId)).toEqual(["arc_2"]);
+      expect(s.archiveMessages("arc_1", { query: "pelican", limit: 10, cursor: null }).rows).toEqual([]);
+      expect(s.archiveMessages(null, { query: "bob@example.net", limit: 10, cursor: null }).rows).toHaveLength(1);
+      // Two characters: a plain match on the subject and the sender, and no syntax of the index gets through.
+      expect(s.archiveMessages(null, { query: "Bo", limit: 10, cursor: null }).rows).toHaveLength(1);
+      expect(s.archiveMessages(null, { query: 'zebra" OR subject:*', limit: 10, cursor: null }).rows).toEqual([]);
+    });
+
+    it("gives one message with its place in the source, and continues an import without doubling", () => {
+      const { s } = open();
+      s.createArchive(archive("arc_1"));
+      s.appendArchiveMessages("arc_1", [message(1), message(2)], progress({ resumeAt: 250 }));
+      // The same batch again (an import that was stopped and run again), plus one new message.
+      expect(s.appendArchiveMessages("arc_1", [message(2), message(3)], progress({ resumeAt: 400, skipped: 1, complete: true }))).toBe(1);
+      expect(s.getArchive("arc_1")).toMatchObject({ messages: 3, skipped: 1, complete: true, resumeAt: 400 });
+      const [newest] = s.archiveMessages("arc_1", { query: "", limit: 1, cursor: null }).rows;
+      expect(s.archiveMessage(newest!.id)).toEqual({
+        message: {
+          id: newest!.id,
+          archiveId: "arc_1",
+          date: "2020-01-13T08:00:00.000Z",
+          from: { name: "Ana Example", address: "ana@example.com" },
+          subject: "Invented subject 3",
+          snippet: "Invented snippet",
+          hasAttachments: false,
+          to: [{ name: null, address: "owner@example.org" }],
+          cc: [],
+          text: "Invented body 3 about the orchard",
+          html: "<p>Invented</p>",
+          htmlTruncated: false,
+          attachments: [],
+        },
+        place: { archiveId: "arc_1", file: "", offset: 3, length: 100, rawHash: "hash-3" },
+      });
+      expect(s.archiveMessage("nope")).toBeNull();
+      expect(s.archiveMessage("999")).toBeNull();
+    });
+
+    it("removes an archive with its messages and its search entries, caps the number of archives, and finds one by its source", () => {
+      const { db, s } = open();
+      s.createArchive(archive("arc_1"));
+      s.createArchive(archive("arc_2"));
+      s.appendArchiveMessages("arc_1", [message(1)], progress());
+      s.appendArchiveMessages("arc_2", [message(1, { subject: "Kept zebra" })], progress());
+      expect(s.findArchiveBySource("/invented/arc_2.mbox")?.id).toBe("arc_2");
+      expect(s.findArchiveBySource("/invented/nope.mbox")).toBeNull();
+      expect(s.removeArchive("arc_1")).toBe(true);
+      expect(s.removeArchive("arc_1")).toBe(false);
+      expect(s.listArchives().map((a) => a.id)).toEqual(["arc_2"]);
+      expect(s.archiveMessages(null, { query: "Invented subject", limit: 10, cursor: null }).rows).toEqual([]);
+      expect(s.archiveMessages(null, { query: "zebra", limit: 10, cursor: null }).rows).toHaveLength(1);
+      expect(db.prepare("SELECT count(*) AS n FROM archive_messages").get()).toEqual({ n: 1 });
+      for (let i = 3; i <= 21; i++) s.createArchive(archive(`arc_${i}`));
+      expect(s.listArchives()).toHaveLength(20);
+      expect(s.createArchive(archive("arc_over"))).toEqual({ full: true });
+    });
+  });
+
+  it("filters keep the order they were made in, an edit keeps its place, and the list is capped (slice 3m)", () => {
+    const db = new Database(":memory:");
+    db.transaction(() => MIGRATIONS.forEach((statement) => db.exec(statement)))();
+    const s = createSqliteStore(db);
+    const at = "2026-11-17T10:00:00.000Z";
+    const make = (id: string, name = id) => ({
+      id,
+      name,
+      enabled: true,
+      match: { domains: ["news.example.com"], accounts: ["acc_1"] },
+      actions: { move: "folder" as const, folder: "Lists", markRead: true, flag: false },
+    });
+    // Ids out of order, all made in one instant.
+    for (const id of ["flt_z", "flt_a", "flt_m"]) expect(s.saveMailFilter(make(id), at)).toEqual({ filter: make(id) });
+    expect(s.listMailFilters().map((f) => f.id)).toEqual(["flt_z", "flt_a", "flt_m"]);
+    s.saveMailFilter({ ...make("flt_z", "Renamed"), enabled: false }, "2026-11-18T10:00:00.000Z");
+    expect(s.listMailFilters().map((f) => [f.id, f.name, f.enabled])).toEqual([
+      ["flt_z", "Renamed", false],
+      ["flt_a", "flt_a", true],
+      ["flt_m", "flt_m", true],
+    ]);
+    expect(s.deleteMailFilter("flt_a")).toBe(true);
+    expect(s.deleteMailFilter("flt_a")).toBe(false);
+    for (let i = 0; i < 48; i++) s.saveMailFilter(make(`flt_${i}`), at);
+    expect(s.listMailFilters()).toHaveLength(50);
+    expect(s.saveMailFilter(make("flt_over"), at)).toEqual({ full: true });
+    // An edit of an existing one still goes through at the cap.
+    expect(s.saveMailFilter(make("flt_m", "Edited"), at)).toMatchObject({ filter: { name: "Edited" } });
   });
 
   it("listThreads by folder stays fast for a few thousand messages", () => {
@@ -991,6 +1184,7 @@ describe.each(storeKinds)("slice-2 store semantics (%s)", (_kind, make) => {
       selectable: true,
       unreadCount: 0,
       totalCount: 0,
+      subscribed: true,
     });
     expect(folders.find((f) => f.path === "Alpha")?.selectable).toBe(false);
   });
@@ -1033,7 +1227,7 @@ describe.each(storeKinds)("slice-2 store semantics (%s)", (_kind, make) => {
     expect(inboxCounts()).toEqual([1, 1]);
     expect(s.listFolders("acc_1").find((f) => f.path === "Spam")?.totalCount).toBe(0);
     expect(s.unreadCount("acc_1")).toBe(1);
-    expect(s.search({ text: "Invented subject 1" }, "acc_1", 10)).toEqual([]);
+    expect(s.search(parseQuery("Invented subject 1"), "acc_1", 10)).toEqual([]);
     expect(s.getMessage(id1)?.folder).toBe(INBOX);
     expect(s.pendingMoves("acc_1", INBOX)).toEqual([{ uid: 1, id: id1, destination: "Spam" }]);
 
@@ -1171,10 +1365,10 @@ describe.each(storeKinds)("slice-2 store semantics (%s)", (_kind, make) => {
 
   it("search returns one hit per dedup key", () => {
     gmail();
-    const hits = s.search({ text: "Invented" }, null, 10);
+    const hits = s.search(parseQuery("Invented"), null, 10);
     expect(hits.map((h) => h.folder).sort()).toEqual([ALL_MAIL, INBOX].sort());
     expect(hits.find((h) => h.subject === "Invented subject 1")?.folder).toBe(INBOX);
-    expect(s.search({ text: "Invented" }, "acc_1", 1)).toHaveLength(1);
+    expect(s.search(parseQuery("Invented"), "acc_1", 1)).toHaveLength(1);
   });
 
   it("Message-ID copies dedupe only when their sizes match", () => {
@@ -1193,7 +1387,7 @@ describe.each(storeKinds)("slice-2 store semantics (%s)", (_kind, make) => {
     ]);
     expect(s.unreadCount("acc_1")).toBe(2);
     expect(s.listThreads("acc_1", INBOX, null, 10).threads[0]?.messageCount).toBe(2);
-    expect(s.search({ text: "", subject: "Invented subject" }, "acc_1", 10)).toHaveLength(2);
+    expect(s.search(parseQuery('subject:"Invented subject"'), "acc_1", 10)).toHaveLength(2);
     s.markOpened(idIn(s, INBOX, 1));
     expect(s.getMessage(idIn(s, "Archive", 9))?.isRead).toBe(true);
     expect(s.getMessage(idIn(s, INBOX, 2))?.isRead).toBe(false);
@@ -2085,7 +2279,7 @@ describe.each(storeKinds)("slice-3b store semantics (%s)", (_kind, make) => {
       s.createDraft(newDraft());
       const a = s.addAttachment("d_1", file([1, 2, 3], { fileName: "a.txt" }));
       const b = s.addAttachment("d_1", file([4], { fileName: "logo.png", contentId: "logo@example.org" }));
-      expect(a).toEqual({ id: expect.any(String), fileName: "a.txt", mimeType: "text/plain", size: 3 });
+      expect(a).toEqual({ id: expect.any(String), fileName: "a.txt", mimeType: "text/plain", size: 3, origin: null });
       expect(s.listAttachments("d_1")).toEqual([a, b]);
       expect(s.attachmentData("d_1")).toEqual([
         { ...a, sha256: "a".repeat(64), contentId: null, data: new Uint8Array([1, 2, 3]) },
@@ -2128,6 +2322,7 @@ describe.each(storeKinds)("slice-3b store semantics (%s)", (_kind, make) => {
           errorKind: null,
           rejected: [],
           updatedAt: T0,
+          scheduled: false,
         },
       });
       const again = s.queueOutbox(newOutbox({ subject: "Ignored" }), 7);
@@ -2191,6 +2386,19 @@ describe.each(storeKinds)("slice-3b store semantics (%s)", (_kind, make) => {
       expect(s.getDraft("d_1")).not.toBeNull();
     });
 
+    it("claims a waiting row once it is due, and leaves it alone on a restart (slice 3j)", () => {
+      s.queueOutbox(newOutbox({ sendAfter: later(1_000) }), 1);
+      expect(s.claimDueOutbox(later(1_000), [])).toMatchObject({ state: "sending", attempts: 1 });
+      expect(
+        s.transitionOutbox("out_1", ["sending"], "waiting", { errorKind: "connect", sendAfter: later(61_000) }),
+      ).toBe(true);
+      expect(s.nextDueOutbox(later(60_000), [])).toBeNull();
+      expect(s.recoverOutboxOnStart(later(70_000))).toEqual({ unknown: 0, held: 0 });
+      expect(s.getOutbox("out_1")).toMatchObject({ state: "waiting", errorKind: "connect" });
+      expect(s.claimDueOutbox(later(70_000), [])).toMatchObject({ id: "out_1", state: "sending", attempts: 2 });
+      expect(s.claimDueOutbox(later(70_000), [])).toBeNull();
+    });
+
     it("claims the oldest due row of an account not busy, once", () => {
       s.createDraft(newDraft({ id: "d_2", accountId: "acc_2" }));
       s.createDraft(newDraft({ id: "d_3" }));
@@ -2236,6 +2444,24 @@ describe.each(storeKinds)("slice-3b store semantics (%s)", (_kind, make) => {
       ).toEqual({ sending: "unknown", overdue: "held", fresh: "queued", appending: "sent", failed: "failed" });
       expect(s.getOutbox("sending")!.errorKind).toBe("unknown_after_data");
       expect(s.hasSendingOutbox("acc_1")).toBe(false);
+    });
+
+    it("a scheduled send survives a restart: under a day late it stays queued, later it is held (slice 3l)", () => {
+      const DAY = 86_400_000;
+      for (const id of ["d_2", "d_3"]) s.createDraft(newDraft({ id }));
+      s.queueOutbox(newOutbox({ id: "late", sendAfter: later(1_000), scheduled: true }), 1);
+      s.queueOutbox(newOutbox({ id: "stale", draftId: "d_2", sendAfter: later(500), scheduled: true }), 1);
+      s.queueOutbox(newOutbox({ id: "ahead", draftId: "d_3", sendAfter: later(3 * DAY), scheduled: true }), 1);
+      expect(s.getOutbox("late")).toMatchObject({ state: "queued", scheduled: true });
+      expect(s.recoverOutboxOnStart(later(DAY + 700))).toEqual({ unknown: 0, held: 1 });
+      expect(Object.fromEntries(s.listOutbox(null).map((r) => [r.id, r.state]))).toEqual({
+        late: "queued",
+        stale: "held",
+        ahead: "queued",
+      });
+      expect(s.transitionOutbox("stale", ["held"], "queued", { sendAfter: later(DAY + 800), scheduled: false })).toBe(true);
+      expect(s.getOutbox("stale")).toMatchObject({ state: "queued", scheduled: false });
+      expect(s.getOutbox("fresh")).toBeNull();
     });
 
     it("completeOutbox deletes the row and its draft with attachments", () => {
@@ -3269,10 +3495,10 @@ describe.each(storeKinds)("slice-3d store semantics (%s)", (_kind, make) => {
 // ---------------------------------------------------------------------------
 
 const FOLDERS_3E: RemoteFolder[] = [
-  { path: INBOX, name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true },
-  { path: "Spam", name: "Spam", delimiter: "/", specialUse: "junk", selectable: true },
-  { path: "Archive", name: "Archive", delimiter: "/", specialUse: "archive", selectable: true },
-  { path: "Snoozed", name: "Snoozed", delimiter: "/", specialUse: null, selectable: true },
+  { path: INBOX, name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true, subscribed: true },
+  { path: "Spam", name: "Spam", delimiter: "/", specialUse: "junk", selectable: true, subscribed: true },
+  { path: "Archive", name: "Archive", delimiter: "/", specialUse: "archive", selectable: true, subscribed: true },
+  { path: "Snoozed", name: "Snoozed", delimiter: "/", specialUse: null, selectable: true, subscribed: true },
 ];
 
 const INFO: UnsubscribeInfo = {
@@ -3336,7 +3562,7 @@ describe("slice-3e migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(9).forEach((s) => old.exec(s)))();
 
-    expect(MIGRATIONS).toHaveLength(11);
+    expect(MIGRATIONS).toHaveLength(19);
     const migrated = createSqliteStore(old);
     expect(migrated.getUnsubscribeInfo(ids[0]!)).toEqual({ ...INFO, listKey: "id:weekly.example.com" });
     expect(migrated.getUnsubscribeInfo(ids[1]!)?.listKey).toBe("from:news@example.com");
@@ -3921,12 +4147,12 @@ describe.each(storeKinds)("slice-3e store semantics (%s)", (_kind, make) => {
 // ---- Slice 3f: AI scope, agent log, AI results, tasks, categories, Today, reminders ----
 
 const FOLDERS_3F: RemoteFolder[] = [
-  { path: INBOX, name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true },
-  { path: "Spam", name: "Spam", delimiter: "/", specialUse: "junk", selectable: true },
-  { path: "Trash", name: "Trash", delimiter: "/", specialUse: "trash", selectable: true },
-  { path: "Archive", name: "Archive", delimiter: "/", specialUse: "archive", selectable: true },
-  { path: "Sent", name: "Sent", delimiter: "/", specialUse: "sent", selectable: true },
-  { path: "Projects", name: "Projects", delimiter: "/", specialUse: null, selectable: true },
+  { path: INBOX, name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true, subscribed: true },
+  { path: "Spam", name: "Spam", delimiter: "/", specialUse: "junk", selectable: true, subscribed: true },
+  { path: "Trash", name: "Trash", delimiter: "/", specialUse: "trash", selectable: true, subscribed: true },
+  { path: "Archive", name: "Archive", delimiter: "/", specialUse: "archive", selectable: true, subscribed: true },
+  { path: "Sent", name: "Sent", delimiter: "/", specialUse: "sent", selectable: true, subscribed: true },
+  { path: "Projects", name: "Projects", delimiter: "/", specialUse: null, selectable: true, subscribed: true },
 ];
 
 function aiScope(
@@ -3939,7 +4165,7 @@ function aiScope(
   };
 }
 
-const ALL_TEXT: ParsedQuery = { text: "" };
+const ALL_TEXT: ParsedQuery = parseQuery("");
 
 function logInput(overrides: Partial<LogEntry> = {}): LogEntry {
   return {
@@ -3984,7 +4210,7 @@ describe("slice-3f migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(10).forEach((s) => old.exec(s)))();
 
-    expect(MIGRATIONS).toHaveLength(11);
+    expect(MIGRATIONS).toHaveLength(19);
     const migrated = createSqliteStore(old);
     migrated.assignThreads("acc_1", new Map());
     expect(migrated.listThreads("acc_1", INBOX, null, 10).threads).toEqual([
@@ -4128,11 +4354,24 @@ describe.each(storeKinds)("slice-3f store semantics (%s)", (_kind, make) => {
       expect(s.inboxMessages("acc_1", { unreadOnly: false, limit: 50 })).toHaveLength(4);
     });
 
+    it("lists a Gmail Inbox message whose in-scope copy is its All Mail copy (chosen folders)", () => {
+      s.saveFolders("acc_2", [...FOLDERS_3F, { path: "[Gmail]/All Mail", name: "All Mail", delimiter: "/", specialUse: "all", selectable: true, subscribed: true }]);
+      s.upsertMessages("acc_2", "[Gmail]/All Mail", [makeFetchedMessage(9, { messageId: "other-account@example.org" })]);
+      thread("acc_2");
+      s.setAiScope(aiScope([["acc_2", { mode: "folders", folders: ["[Gmail]/All Mail"] }]]));
+      const inboxCopy = idIn(INBOX, 1, "acc_2");
+      expect(s.scopedMessage(inboxCopy)).not.toBeNull();
+      expect(s.inboxMessages("acc_2", { unreadOnly: false, limit: 50, scoped: true }).map((m) => m.id)).toEqual([inboxCopy]);
+      // A copy in Spam or Trash never lends its scope: only All Mail does.
+      s.setAiScope(aiScope([["acc_2", { mode: "folders", folders: ["Archive"] }]]));
+      expect(s.inboxMessages("acc_2", { unreadOnly: false, limit: 50, scoped: true })).toEqual([]);
+    });
+
     it("picks the in-scope copy before the dedup and answers an out-of-scope id as unknown", () => {
       s.setAiScope(aiScope());
       const archived = idIn("Archive", 10);
       const trashed = idIn("Trash", 11);
-      expect(ids(s.search({ text: "" }, "acc_1", 50))).toContain(trashed);
+      expect(ids(s.search(parseQuery(""), "acc_1", 50))).toContain(trashed);
       const scoped = ids(s.search(ALL_TEXT, "acc_1", 50, { scoped: true }));
       expect(scoped).toContain(archived);
       expect(scoped).not.toContain(trashed);
@@ -4156,6 +4395,23 @@ describe.each(storeKinds)("slice-3f store semantics (%s)", (_kind, make) => {
       thread("acc_1");
       s.refreshExcludedThreads();
       expect(s.scopedMessage(idIn(INBOX, 1))).toBeNull();
+    });
+
+    it("new rows from an excluded sender close their conversation before any refresh (a round still running or failed)", () => {
+      s.setAiScope(aiScope([], { addresses: ["late@example.net"] }));
+      expect(s.scopedMessage(idIn(INBOX, 1))).not.toBeNull();
+      s.upsertMessages("acc_1", INBOX, [
+        makeFetchedMessage(20, {
+          from: { name: "Late", address: "late@example.net" },
+          inReplyTo: "msg-1@example.org",
+          references: ["msg-1@example.org"],
+        }),
+      ]);
+      thread("acc_1");
+      expect(s.scopedMessage(idIn(INBOX, 1))).toBeNull();
+      expect(s.getMessage(idIn(INBOX, 1))!.inAiScope).toBe(false);
+      expect(ids(s.search(ALL_TEXT, "acc_1", 50, { scoped: true }))).not.toContain(idIn(INBOX, 1));
+      expect(s.inboxMessages("acc_1", { unreadOnly: false, limit: 50, scoped: true }).map((m) => m.id)).not.toContain(idIn(INBOX, 1));
     });
 
     it("stores the scope rows and loads them back", () => {
@@ -4506,6 +4762,18 @@ describe.each(storeKinds)("slice-3f store semantics (%s)", (_kind, make) => {
       expect(s.createReminder(reminderRow({ id: "r_room" }))).toEqual({ created: true });
     });
 
+    it("a queued reminder of a permanently failed send does not count toward the live cap", () => {
+      s.createDraft(newDraft({ id: "d_f" }));
+      s.queueOutbox(newOutbox({ id: "out_f", draftId: "d_f", sendAfter: later(1) }), 1);
+      s.transitionOutbox("out_f", ["queued"], "failed", { errorKind: "auth" });
+      s.createReminder(reminderRow({ id: "r_failed", outboxId: "out_f" }));
+      for (let i = 1; i < REMINDERS_LIVE_MAX; i++) s.createReminder(reminderRow({ id: `r_x${i}`, outboxId: null, state: "waiting" }));
+      expect(s.createReminder(reminderRow({ id: "r_room", outboxId: null, state: "waiting" }))).toEqual({ created: true });
+      expect(s.createReminder(reminderRow({ id: "r_over", outboxId: null, state: "waiting" }))).toEqual({ full: true });
+      // A retry makes it live again; it is still there to bind.
+      expect(s.getReminder("r_failed")).toMatchObject({ state: "queued", outboxId: "out_f" });
+    });
+
     it("lists by state and due time and updates fields", () => {
       s.createReminder(reminderRow({ id: "r_a", outboxId: null, state: "waiting", dueAt: later(3000), sentAt: T0 }));
       s.createReminder(reminderRow({ id: "r_b", outboxId: null, state: "waiting", dueAt: later(1000), sentAt: T0 }));
@@ -4624,10 +4892,12 @@ describe.each(storeKinds)("slice-3f store semantics (%s)", (_kind, make) => {
       s.createReminder(reminderRow({ id: "r_old", outboxId: null, state: "answered", createdAt: daysAgo(31) }));
       s.createReminder(reminderRow({ id: "r_new", outboxId: null, state: "answered", createdAt: daysAgo(1) }));
       s.createReminder(reminderRow({ id: "r_live", outboxId: null, state: "waiting", createdAt: daysAgo(90) }));
+      s.createReminder(reminderRow({ id: "r_dismissed_old", outboxId: null, state: "dismissed", createdAt: daysAgo(31) }));
+      s.createReminder(reminderRow({ id: "r_dismissed_new", outboxId: null, state: "dismissed", createdAt: daysAgo(1) }));
       s.appendAgentLog(logInput({ at: daysAgo(91) }));
       s.appendAgentLog(logInput({ at: daysAgo(1) }));
 
-      expect(s.purgeDaily(now)).toBe(7);
+      expect(s.purgeDaily(now)).toBe(8);
 
       expect(s.categoriesOf([kept]).get(kept)).toEqual({ category: "bills", source: "owner", suggestion: "personal" });
       expect(s.getAiResult("summary", s.getMessage(kept)!.threadId)).not.toBeNull();
@@ -4638,8 +4908,1758 @@ describe.each(storeKinds)("slice-3f store semantics (%s)", (_kind, make) => {
       expect(s.getReminder("r_old")).toBeNull();
       expect(s.getReminder("r_new")).not.toBeNull();
       expect(s.getReminder("r_live")).not.toBeNull();
+      expect(s.getReminder("r_dismissed_old")).toBeNull();
+      expect(s.getReminder("r_dismissed_new")).not.toBeNull();
       expect(s.listAgentLog({ limit: 10 }).entries).toHaveLength(1);
       expect(s.purgeDaily(now)).toBe(0);
     });
+  });
+});
+
+// ---- Slice 3g: dev classes, List-Id, BB links, project binding, incidents, mail rules ----
+
+const T3G = "2026-11-16T10:00:00.000Z";
+const at3g = (ms: number) => new Date(Date.parse(T3G) + ms).toISOString();
+const HOUR = 3_600_000;
+const DAY = 86_400_000;
+const CAPS = { perRuleHour: 3, perRuleDay: 10, allDay: 20 };
+const CI_FAILED = { source: "github", repo: "github.com/example-org/demo", kind: "ci", state: "failed", ref: "17" } as const;
+
+function ruleOf(id: string, overrides: Partial<Rule> = {}): Rule {
+  return {
+    id,
+    name: `Rule ${id}`,
+    enabled: true,
+    match: { dev: { kind: "ci" } },
+    projectId: "p_api",
+    template: "Find the failing test.",
+    mode: "start",
+    ...overrides,
+  };
+}
+
+function runOf(id: string, overrides: Partial<NewRuleRun> = {}): NewRuleRun {
+  return { id, ruleId: "r1", accountId: "acc_1", messageId: `m_${id}`, threadId: `t_${id}`, state: "starting", createdAt: T3G, ...overrides };
+}
+
+function linkOf(id: string, overrides: Partial<BbLinkRow> = {}): BbLinkRow {
+  return {
+    id,
+    accountId: "acc_1",
+    messageId: "m_x",
+    threadId: "t_x",
+    kind: "thread",
+    targetId: `bb_${id}`,
+    projectId: "p_api",
+    extra: null,
+    createdAt: T3G,
+    ...overrides,
+  };
+}
+
+describe("slice-3g migration (SQLite)", () => {
+  it("element 11 on a 3f database adds the columns and tables without REFERENCES; old rows stay unknown", () => {
+    const old = new Database(":memory:");
+    old.transaction(() => MIGRATIONS.slice(0, 11).forEach((s) => old.exec(s)))();
+    const legacy = createSqliteStore(old);
+    legacy.saveAccount(makeStoredAccount());
+    legacy.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1)]);
+
+    old.transaction(() => MIGRATIONS.slice(11).forEach((s) => old.exec(s)))();
+
+    expect(MIGRATIONS.length).toBeGreaterThanOrEqual(12);
+    expect(old.prepare("SELECT list_id, dev_source, dev_repo, dev_kind, dev_state, dev_ref FROM messages").get()).toEqual({
+      list_id: null,
+      dev_source: null,
+      dev_repo: null,
+      dev_kind: null,
+      dev_state: null,
+      dev_ref: null,
+    });
+    const tables = ["bb_links", "conversation_projects", "project_bindings", "incident_threads", "mail_rules", "rule_runs"];
+    const objects = old
+      .prepare(`SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name IN (${tables.map(() => "?").join(", ")})`)
+      .all(...tables) as { name: string; sql: string }[];
+    expect(objects.map((o) => o.name).sort()).toEqual([...tables].sort());
+    for (const object of objects) expect(object.sql).not.toMatch(/REFERENCES/i);
+    const indexes = (old.prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all() as { name: string }[]).map((r) => r.name);
+    expect(indexes).toEqual(expect.arrayContaining(["messages_dev", "bb_links_target", "rule_runs_bb_thread", "rule_runs_rule"]));
+    const columns = (table: string) => (old.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((c) => c.name);
+    expect(columns("compose_attachments")).toContain("origin");
+    expect(columns("mail_tasks")).toContain("note");
+
+    const migrated = createSqliteStore(old);
+    migrated.assignThreads("acc_1", new Map());
+    const id = idOf(migrated, 1);
+    expect(migrated.getMessage(id)).toMatchObject({ dev: null, bbLinks: [] });
+    expect(migrated.devUnclassified(10).map((r) => r.id)).toEqual([id]);
+    expect(migrated.listUnknown("acc_1", INBOX, null, 10)).toEqual([{ uid: 1 }]);
+  });
+
+  it("element 12 keeps rule runs with a message key and the rule's project, and copies started rule threads", () => {
+    const old = new Database(":memory:");
+    old.transaction(() => MIGRATIONS.slice(0, 12).forEach((s) => old.exec(s)))();
+    const legacy = createSqliteStore(old);
+    legacy.saveAccount(makeStoredAccount());
+    legacy.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1)]);
+    const messageId = idOf(legacy, 1);
+    old.prepare(
+      `INSERT INTO mail_rules (id, name, enabled, match_json, project_id, template, mode, created_at, updated_at)
+       VALUES ('r1', 'Invented', 1, '{}', 'p_api', '', 'start', ?, ?)`,
+    ).run(T3G, T3G);
+    const insertRun = old.prepare(
+      `INSERT INTO rule_runs (id, rule_id, account_id, message_id, thread_id, state, bb_thread_id, notified_at, created_at, updated_at)
+       VALUES (?, ?, 'acc_1', ?, NULL, ?, ?, NULL, ?, ?)`,
+    );
+    insertRun.run("a1", "r1", messageId, "started", "bb_rule", T3G, T3G);
+    insertRun.run("a2", "r_gone", "m_gone", "failed", "bb_failed", T3G, T3G);
+
+    old.transaction(() => MIGRATIONS.slice(12).forEach((s) => old.exec(s)))();
+
+    expect(MIGRATIONS).toHaveLength(19);
+    const runs = old.prepare("SELECT id, message_id, message_key, project_id FROM rule_runs ORDER BY id").all();
+    expect(runs).toEqual([
+      { id: "a1", message_id: messageId, message_key: expect.stringMatching(/^acc_1:/), project_id: "p_api" },
+      { id: "a2", message_id: "m_gone", message_key: "id:m_gone", project_id: null },
+    ]);
+    expect(old.prepare("SELECT bb_thread_id, rule_id, run_id FROM rule_threads").all()).toEqual([
+      { bb_thread_id: "bb_rule", rule_id: "r1", run_id: "a1" },
+    ]);
+    const indexes = (old.prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all() as { name: string }[]).map((r) => r.name);
+    expect(indexes).toEqual(expect.arrayContaining(["rule_runs_state", "rule_runs_rule", "rule_runs_bb_thread", "rule_runs_message"]));
+    const migrated = createSqliteStore(old);
+    expect(migrated.isRuleThread("bb_rule")).toBe(true);
+    expect(migrated.isRuleThread("bb_failed")).toBe(false);
+    legacy.deleteByUids("acc_1", INBOX, [1]);
+    expect(migrated.isRuleThread("bb_rule")).toBe(true);
+    expect(migrated.getRuleRun("a1")).toMatchObject({ messageId: null, projectId: "p_api" });
+  });
+
+  it("one projectId page among 5 000+ conversations is fast (timed alone)", () => {
+    store.upsertMessages(
+      "acc_1",
+      INBOX,
+      Array.from({ length: 5_200 }, (_, i) =>
+        makeFetchedMessage(i + 1, {
+          messageId: `bind-${i}@example.org`,
+          from: { name: null, address: i % 7 === 0 ? `dev${i}@example.com` : `person${i}@example.net` },
+          date: new Date(Date.UTC(2026, 9, 1) + i * 60_000).toISOString(),
+        }),
+      ),
+    );
+    store.assignThreads("acc_1", new Map());
+    store.addBinding({ kind: "domain", value: "example.com", projectId: "p_api", createdAt: T3G });
+    store.addBinding({ kind: "address", value: "person5@example.net", projectId: "p_web", createdAt: T3G });
+    const { value: page, ms } = timeOne(() =>
+      store.listThreads("acc_1", INBOX, null, 50, { projectId: "p_api" }),
+    );
+    expect(ms).toBeLessThan(PAGE_MS);
+    expect(page.threads).toHaveLength(50);
+    expect(page.threads.every((t) => t.projectId === "p_api")).toBe(true);
+    expect(page.nextCursor).not.toBeNull();
+  }, SEEDING_TIMEOUT_MS);
+});
+
+describe.each(storeKinds)("slice-3g store semantics (%s)", (_kind, make) => {
+  let s: MailStore;
+  beforeEach(() => {
+    s = make();
+    s.saveAccount(makeStoredAccount());
+    s.saveAccount(makeStoredAccount({ id: "acc_2", email: "second@example.org", username: "second@example.org" }));
+    s.saveFolders("acc_1", FOLDERS_3F);
+    s.saveFolders("acc_2", FOLDERS_3F);
+  });
+  const idIn = (folder: string, uid: number, accountId = "acc_1") =>
+    s.localFolderIndex(accountId, folder, EPOCH).find((e) => e.uid === uid)!.id;
+  const thread = (accountId = "acc_1") => s.assignThreads(accountId, buildThreads(s.threadingInputs(accountId)));
+  const day = (n: number) => new Date(Date.UTC(2026, 10, n, 9)).toISOString();
+
+  describe("dev classes and List-Id", () => {
+    it("writes classes, marks checked rows and pages unclassified rows newest first outside Spam and Trash", () => {
+      s.upsertMessages("acc_1", INBOX, [1, 2, 3].map((uid) => makeFetchedMessage(uid, { date: day(uid) })));
+      s.upsertMessages("acc_1", "Spam", [makeFetchedMessage(4, { date: day(9) })]);
+      s.upsertMessages("acc_1", "Trash", [makeFetchedMessage(5, { date: day(9) })]);
+      expect(s.devUnclassified(10).map((r) => r.id)).toEqual([idIn(INBOX, 3), idIn(INBOX, 2), idIn(INBOX, 1)]);
+      expect(s.devUnclassified(1)).toEqual([
+        { id: idIn(INBOX, 3), accountId: "acc_1", from: "sender@example.org", subject: "Invented subject 3" },
+      ]);
+      expect(s.setDevClass([{ id: idIn(INBOX, 3), dev: { ...CI_FAILED } }, { id: idIn(INBOX, 2), dev: null }])).toBe(2);
+      expect(s.devUnclassified(10).map((r) => r.id)).toEqual([idIn(INBOX, 1)]);
+      expect(s.getMessage(idIn(INBOX, 3))!.dev).toEqual(CI_FAILED);
+      expect(s.getMessage(idIn(INBOX, 2))!.dev).toBeNull();
+      expect(s.devUnclassified(0)).toEqual([]);
+    });
+
+    it("fills List-Ids only where unknown and only while UIDVALIDITY matches", () => {
+      s.upsertMessages("acc_1", INBOX, [1, 2, 3].map((uid) => makeFetchedMessage(uid)));
+      s.saveSyncState("acc_1", INBOX, { uidValidity: 7, lastUid: 3, syncedSince: T3G });
+      expect(s.listUnknown("acc_1", INBOX, null, 10)).toEqual([{ uid: 3 }, { uid: 2 }, { uid: 1 }]);
+      expect(s.listUnknown("acc_1", INBOX, 3, 1)).toEqual([{ uid: 2 }]);
+      expect(s.fillListIds("acc_1", INBOX, 8, [{ uid: 1, listId: "demo.example-org.github.com" }])).toBe(0);
+      expect(s.fillListIds("acc_1", INBOX, 7, [{ uid: 1, listId: "demo.example-org.github.com" }, { uid: 2, listId: "" }])).toBe(2);
+      expect(s.fillListIds("acc_1", INBOX, 7, [{ uid: 1, listId: "other.example.com" }])).toBe(0);
+      expect(s.listUnknown("acc_1", INBOX, null, 10)).toEqual([{ uid: 3 }]);
+    });
+
+    it("reads List-Ids by message id for rule matching", () => {
+      s.upsertMessages("acc_1", INBOX, [1, 2, 3].map((uid) => makeFetchedMessage(uid)));
+      s.saveSyncState("acc_1", INBOX, { uidValidity: 7, lastUid: 3, syncedSince: T3G });
+      s.fillListIds("acc_1", INBOX, 7, [{ uid: 1, listId: "demo.example-org.github.com" }, { uid: 2, listId: "" }]);
+      const ids = s.listIds([idIn(INBOX, 1), idIn(INBOX, 2), idIn(INBOX, 3), "m_gone"]);
+      expect([...ids]).toEqual(
+        expect.arrayContaining([
+          [idIn(INBOX, 1), "demo.example-org.github.com"],
+          [idIn(INBOX, 2), ""],
+          [idIn(INBOX, 3), null],
+        ]),
+      );
+      expect(ids.size).toBe(3);
+      expect(s.listIds([]).size).toBe(0);
+    });
+
+    it("upsert keeps the List-Id of read headers ('' when absent) and a judged dev class, never overwriting them", () => {
+      const headers = { listId: "Demo <demo.example-org.github.com>", listUnsubscribe: null, precedence: null, autoSubmitted: null };
+      s.upsertMessages("acc_1", INBOX, [
+        makeFetchedMessage(1, { bulkHeaders: headers, dev: { ...CI_FAILED } }),
+        makeFetchedMessage(2, { bulkHeaders: { ...headers, listId: null }, dev: null }),
+        makeFetchedMessage(3),
+      ]);
+      expect(s.listUnknown("acc_1", INBOX, null, 10)).toEqual([{ uid: 3 }]);
+      expect(s.getMessage(idIn(INBOX, 1))!.dev).toEqual(CI_FAILED);
+      expect(s.devUnclassified(10).map((r) => r.id)).toEqual([idIn(INBOX, 3)]);
+      s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, { bulkHeaders: { ...headers, listId: "<other.example.com>" }, dev: null })]);
+      expect(s.getMessage(idIn(INBOX, 1))!.dev).toEqual(CI_FAILED);
+      s.addBinding({ kind: "list", value: "demo.example-org.github.com", projectId: "p_demo", createdAt: T3G });
+      thread();
+      expect(s.listThreads("acc_1", INBOX, null, 10, { projectId: "p_demo" }).threads).toHaveLength(1);
+    });
+
+    it("groups dev mail by (source, repo) with counts, the latest failure and unread, paged by group", () => {
+      s.upsertMessages("acc_1", INBOX, [
+        makeFetchedMessage(1, { date: day(10), subject: "Run failed: build" }),
+        makeFetchedMessage(2, { date: day(12), subject: "Run failed: test", seen: true }),
+        makeFetchedMessage(3, { date: day(11), subject: "PR opened", seen: true }),
+        makeFetchedMessage(4, { date: day(13), subject: "Alert firing" }),
+        makeFetchedMessage(5, { date: day(1), subject: "Too old" }),
+      ]);
+      s.upsertMessages("acc_1", "Trash", [makeFetchedMessage(6, { date: day(14) })]);
+      const repo = "github.com/example-org/demo";
+      s.setDevClass([
+        { id: idIn(INBOX, 1), dev: { ...CI_FAILED } },
+        { id: idIn(INBOX, 2), dev: { ...CI_FAILED, ref: "18" } },
+        { id: idIn(INBOX, 3), dev: { source: "github", repo, kind: "pr", state: null, ref: "42" } },
+        { id: idIn(INBOX, 4), dev: { source: "monitoring", repo: "grafana", kind: "alert", state: "firing", ref: null } },
+        { id: idIn(INBOX, 5), dev: { ...CI_FAILED } },
+        { id: idIn("Trash", 6), dev: { ...CI_FAILED } },
+      ]);
+      const all = s.devGroups({ sinceIso: day(5), limit: 50 });
+      expect(all.next).toBeNull();
+      expect(all.groups).toEqual([
+        {
+          source: "monitoring",
+          repo: "grafana",
+          counts: { alert: 1 },
+          ciFailed: 0,
+          firing: 1,
+          latestFailure: null,
+          unread: 1,
+          total: 1,
+          latestDate: day(13),
+          messageIds: [idIn(INBOX, 4)],
+        },
+        {
+          source: "github",
+          repo,
+          counts: { ci: 2, pr: 1 },
+          ciFailed: 2,
+          firing: 0,
+          latestFailure: { messageId: idIn(INBOX, 2), subject: "Run failed: test", date: day(12) },
+          unread: 1,
+          total: 3,
+          latestDate: day(12),
+          messageIds: [idIn(INBOX, 2), idIn(INBOX, 3), idIn(INBOX, 1)],
+        },
+      ]);
+      const first = s.devGroups({ sinceIso: day(5), limit: 1 });
+      expect(first.groups.map((g) => g.source)).toEqual(["monitoring"]);
+      const second = s.devGroups({ sinceIso: day(5), limit: 1, cursor: first.next });
+      expect(second.groups.map((g) => g.source)).toEqual(["github"]);
+      expect(second.next).toBeNull();
+      expect(s.devGroups({ sinceIso: day(5), accountId: "acc_2", limit: 50 }).groups).toEqual([]);
+    });
+
+    it("hides dev notifications with notDev, keeping the open conversation", () => {
+      s.upsertMessages("acc_1", INBOX, [1, 2, 3].map((uid) => makeFetchedMessage(uid, { date: day(uid) })));
+      thread();
+      s.setDevClass([{ id: idIn(INBOX, 2), dev: { ...CI_FAILED } }, { id: idIn(INBOX, 3), dev: null }]);
+      const listed = s.listThreads("acc_1", INBOX, null, 10, { notDev: true }).threads.map((t) => t.subject);
+      expect(listed).toEqual(["Invented subject 3", "Invented subject 1"]);
+      const devThread = s.getMessage(idIn(INBOX, 2))!.threadId;
+      expect(s.listThreads("acc_1", INBOX, null, 10, { notDev: true, keep: devThread }).threads).toHaveLength(3);
+      expect(s.listThreadsAll("inbox", null, 10, { notDev: true }).threads).toHaveLength(2);
+    });
+  });
+
+  describe("project binding", () => {
+    beforeEach(() => {
+      s.upsertMessages("acc_1", INBOX, [
+        makeFetchedMessage(1, { date: day(1), from: { name: null, address: "Anna@Example.com" } }),
+        makeFetchedMessage(2, { date: day(2), from: { name: null, address: "bot@lists.example.org" } }),
+        makeFetchedMessage(3, { date: day(3), from: { name: null, address: "notifications@example.net" } }),
+        makeFetchedMessage(4, { date: day(4), from: { name: null, address: "bo@example.com" } }),
+        makeFetchedMessage(5, { date: day(5), from: { name: null, address: "other@example.info" } }),
+      ]);
+      s.saveSyncState("acc_1", INBOX, { uidValidity: 1, lastUid: 5, syncedSince: T3G });
+      s.fillListIds("acc_1", INBOX, 1, [{ uid: 2, listId: "demo.lists.example.org" }]);
+      s.setDevClass([{ id: idIn(INBOX, 3), dev: { ...CI_FAILED } }]);
+      thread();
+    });
+    const projectOf = (uid: number) => {
+      const threadId = s.getMessage(idIn(INBOX, uid))!.threadId;
+      return s.listThreads("acc_1", INBOX, null, 50).threads.find((t) => t.id === threadId)!.projectId;
+    };
+
+    it("resolves address, list, repo and domain rules at read time, the owner's choice winning", () => {
+      expect([1, 2, 3, 4, 5].map(projectOf)).toEqual([null, null, null, null, null]);
+      expect(s.addBinding({ kind: "domain", value: "example.com", projectId: "p_domain", createdAt: T3G })).toEqual({ created: true });
+      expect(s.addBinding({ kind: "address", value: "anna@example.com", projectId: "p_address", createdAt: T3G })).toEqual({ created: true });
+      s.addBinding({ kind: "list", value: "demo.lists.example.org", projectId: "p_list", createdAt: T3G });
+      s.addBinding({ kind: "repo", value: "github.com/example-org/demo", projectId: "p_repo", createdAt: T3G });
+      expect([1, 2, 3, 4, 5].map(projectOf)).toEqual(["p_address", "p_list", "p_repo", "p_domain", null]);
+      const annaThread = s.getMessage(idIn(INBOX, 1))!.threadId;
+      s.setConversationProject("acc_1", annaThread, "p_owner", T3G);
+      expect(s.conversationProject("acc_1", annaThread)).toBe("p_owner");
+      expect(projectOf(1)).toBe("p_owner");
+      expect(s.getThread(annaThread, INBOX)!.thread.projectId).toBe("p_owner");
+      s.setConversationProject("acc_1", annaThread, null, T3G);
+      expect(projectOf(1)).toBe("p_address");
+      expect(s.addBinding({ kind: "domain", value: "example.com", projectId: "p_moved", createdAt: T3G })).toEqual({ created: false });
+      expect(projectOf(4)).toBe("p_moved");
+      expect(s.removeBinding("domain", "example.com")).toBe(true);
+      expect(s.removeBinding("domain", "example.com")).toBe(false);
+      expect(projectOf(4)).toBeNull();
+      expect(s.listBindings().map((b) => `${b.kind}:${b.value}:${b.projectId}`)).toEqual([
+        "address:anna@example.com:p_address",
+        "list:demo.lists.example.org:p_list",
+        "repo:github.com/example-org/demo:p_repo",
+      ]);
+    });
+
+    it("filters by project across a filtered page boundary and lists a project's conversations", () => {
+      s.addBinding({ kind: "domain", value: "example.com", projectId: "p_api", createdAt: T3G });
+      s.addBinding({ kind: "repo", value: "github.com/example-org/demo", projectId: "p_api", createdAt: T3G });
+      s.setConversationProject("acc_1", s.getMessage(idIn(INBOX, 5))!.threadId, "p_api", T3G);
+      // Address wins over domain for uid 1: it leaves p_api.
+      s.addBinding({ kind: "address", value: "anna@example.com", projectId: "p_other", createdAt: T3G });
+      const first = s.listThreads("acc_1", INBOX, null, 2, { projectId: "p_api" });
+      expect(first.threads.map((t) => t.subject)).toEqual(["Invented subject 5", "Invented subject 4"]);
+      const second = s.listThreads("acc_1", INBOX, first.nextCursor, 2, { projectId: "p_api" });
+      expect(second.threads.map((t) => t.subject)).toEqual(["Invented subject 3"]);
+      expect(second.nextCursor).toBeNull();
+      expect(s.projectThreads("p_api", { cursor: null, limit: 50 }).threads.map((t) => t.subject)).toEqual([
+        "Invented subject 5",
+        "Invented subject 4",
+        "Invented subject 3",
+      ]);
+      expect(s.projectThreads("p_other", { cursor: null, limit: 50 }).threads.map((t) => t.projectId)).toEqual(["p_other"]);
+      expect(s.listThreadsAll("inbox", null, 10, { projectId: "p_other" }).threads).toHaveLength(1);
+    });
+
+    it("stops at BINDINGS_MAX new rules", () => {
+      for (let i = 0; i < BINDINGS_MAX; i++) {
+        expect(s.addBinding({ kind: "address", value: `a${i}@example.com`, projectId: "p", createdAt: T3G })).toEqual({ created: true });
+      }
+      expect(s.addBinding({ kind: "address", value: "over@example.com", projectId: "p", createdAt: T3G })).toEqual({ full: true });
+      expect(s.addBinding({ kind: "address", value: "a1@example.com", projectId: "q", createdAt: T3G })).toEqual({ created: false });
+    });
+  });
+
+  describe("BB links and incidents", () => {
+    it("lists links by message, conversation and target, shows them on the header and prunes by target", () => {
+      s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1), makeFetchedMessage(2)]);
+      thread();
+      const m1 = s.getMessage(idIn(INBOX, 1))!;
+      s.addBbLink(linkOf("l1", { messageId: m1.id, threadId: m1.threadId }));
+      s.addBbLink(linkOf("l2", { messageId: m1.id, threadId: m1.threadId, kind: "project_file", targetId: "mail-attachments/a.pdf", extra: "s".repeat(64), createdAt: at3g(1) }));
+      s.addBbLink(linkOf("l3", { messageId: idIn(INBOX, 2), threadId: "t_other", kind: "incident", targetId: "bb_l1", createdAt: at3g(2) }));
+      expect(s.listBbLinks({ messageIds: [m1.id] }).map((l) => l.id)).toEqual(["l1", "l2"]);
+      expect(s.listBbLinks({ messageIds: [] })).toEqual([]);
+      expect(s.listBbLinks({ accountId: "acc_1", threadId: m1.threadId }).map((l) => l.id)).toEqual(["l1", "l2"]);
+      expect(s.listBbLinks({ targetId: "bb_l1" }).map((l) => l.id)).toEqual(["l1", "l3"]);
+      expect(s.listBbLinks({ targetId: "bb_l1" })[0]).toEqual(linkOf("l1", { messageId: m1.id, threadId: m1.threadId }));
+      expect(s.getMessage(m1.id)!.bbLinks).toEqual([
+        { kind: "thread", targetId: "bb_l1", projectId: "p_api", title: null, createdAt: T3G },
+        { kind: "project_file", targetId: "mail-attachments/a.pdf", projectId: "p_api", title: null, createdAt: at3g(1) },
+      ]);
+      expect(s.pruneBbLinks("thread", ["bb_l1"])).toBe(1);
+      expect(s.listBbLinks({ targetId: "bb_l1" }).map((l) => l.id)).toEqual(["l3"]);
+      expect(s.pruneBbLinks("thread", [])).toBe(0);
+    });
+
+    it("reserves an incident start in one step: compare with the row the caller saw, then hold it pending", () => {
+      const at = T3G;
+      expect(s.reserveIncident("f1", null, { token: "k1", projectId: "p_api", at })).toBe(true);
+      // Pending is no incident to readers, and a second start is refused while it is held.
+      expect(s.incidentFor("f1")).toBeNull();
+      expect(s.reserveIncident("f1", null, { token: "k2", projectId: "p_api", at: at3g(1) })).toBe(false);
+      s.putIncident({ fingerprint: "f1", bbThreadId: "bb_1", projectId: "p_api", createdAt: at3g(2), lastAt: at3g(2) });
+      expect(s.incidentFor("f1")!.bbThreadId).toBe("bb_1");
+      // A caller that saw no incident (or another thread) loses to the one that started.
+      expect(s.reserveIncident("f1", null, { token: "k3", projectId: "p_api", at: at3g(3) })).toBe(false);
+      expect(s.reserveIncident("f1", "bb_1", { token: "k4", projectId: "p_api", at: at3g(4) })).toBe(true);
+      s.releaseIncident("f1", "k_other");
+      expect(s.reserveIncident("f1", "bb_1", { token: "k5", projectId: "p_api", at: at3g(5) })).toBe(false);
+      s.releaseIncident("f1", "k4");
+      expect(s.incidentFor("f1")).toBeNull();
+      expect(s.reserveIncident("f1", null, { token: "k6", projectId: "p_api", at: at3g(6) })).toBe(true);
+      // A reservation older than 10 minutes is stale and may be taken over.
+      expect(s.reserveIncident("f1", null, { token: "k7", projectId: "p_api", at: at3g(6 + 11 * 60_000) })).toBe(true);
+    });
+
+    it("keeps one incident per fingerprint and touches it", () => {
+      expect(s.incidentFor("f1")).toBeNull();
+      s.putIncident({ fingerprint: "f1", bbThreadId: "bb_1", projectId: "p_api", createdAt: T3G, lastAt: T3G });
+      expect(s.touchIncident("f1", at3g(HOUR))).toBe(true);
+      expect(s.touchIncident("f2", at3g(HOUR))).toBe(false);
+      expect(s.incidentFor("f1")).toEqual({ fingerprint: "f1", bbThreadId: "bb_1", projectId: "p_api", createdAt: T3G, lastAt: at3g(HOUR) });
+    });
+  });
+
+  describe("mail rules and runs", () => {
+    it("saves, edits keeping the id, lists, deletes and stops at RULES_MAX", () => {
+      expect(s.saveRule(ruleOf("r1"), T3G)).toEqual({ rule: { ...ruleOf("r1"), createdAt: T3G, updatedAt: T3G } });
+      expect(s.saveRule(ruleOf("r1", { name: "Renamed", mode: "prepare" }), at3g(1))).toEqual({
+        rule: { ...ruleOf("r1", { name: "Renamed", mode: "prepare" }), createdAt: T3G, updatedAt: at3g(1) },
+      });
+      for (let i = 2; i <= RULES_MAX; i++) expect(s.saveRule(ruleOf(`r${i}`), at3g(i))).toHaveProperty("rule");
+      expect(s.saveRule(ruleOf("r_over"), at3g(99))).toEqual({ full: true });
+      expect(s.listRules()).toHaveLength(RULES_MAX);
+      expect(s.listRules()[0]!.name).toBe("Renamed");
+      expect(s.deleteRule("r2")).toBe(true);
+      expect(s.deleteRule("r2")).toBe(false);
+      expect(s.saveRule(ruleOf("r_over"), at3g(99))).toHaveProperty("rule");
+    });
+
+    it("pauses every enabled rule and resumes exactly those", () => {
+      s.saveRule(ruleOf("r1"), T3G);
+      s.saveRule(ruleOf("r2", { enabled: false }), T3G);
+      s.saveRule(ruleOf("r3"), T3G);
+      expect(s.pauseRules(at3g(1))).toEqual(["r1", "r3"]);
+      expect(s.listRules().map((r) => r.enabled)).toEqual([false, false, false]);
+      expect(s.pauseRules(at3g(2))).toEqual([]);
+      expect(s.resumeRules(["r1", "r3", "r_gone"], at3g(3))).toBe(2);
+      expect(s.listRules().map((r) => r.enabled)).toEqual([true, false, true]);
+    });
+
+    it("caps starts at 3 per rule per hour", () => {
+      for (let i = 0; i < 3; i++) expect(s.insertRuleRun(runOf(`a${i}`, { createdAt: at3g(i) }), CAPS)).toBe("inserted");
+      expect(s.insertRuleRun(runOf("a3", { createdAt: at3g(10) }), CAPS)).toBe("capped");
+      expect(s.getRuleRun("a3")!.state).toBe("capped");
+      // An hour later the hourly cap is free again.
+      expect(s.insertRuleRun(runOf("a4", { createdAt: at3g(HOUR + 10) }), CAPS)).toBe("inserted");
+      // Another rule is not capped by this one's hour.
+      expect(s.insertRuleRun(runOf("b1", { ruleId: "r2", createdAt: at3g(20) }), CAPS)).toBe("inserted");
+    });
+
+    it("caps starts at 10 per rule per day and 20 in all per day, deleted rules' runs included", () => {
+      for (let i = 0; i < 10; i++) {
+        expect(s.insertRuleRun(runOf(`a${i}`, { createdAt: at3g(i * 2 * HOUR) }), CAPS)).toBe("inserted");
+      }
+      expect(s.insertRuleRun(runOf("a10", { createdAt: at3g(20 * HOUR) }), CAPS)).toBe("capped");
+      s.deleteRule("r1");
+      for (let i = 0; i < 10; i++) {
+        expect(s.insertRuleRun(runOf(`b${i}`, { ruleId: `r_b${i}`, createdAt: at3g(20 * HOUR + i) }), CAPS)).toBe("inserted");
+      }
+      expect(s.insertRuleRun(runOf("c0", { ruleId: "r_c", createdAt: at3g(20 * HOUR + 50) }), CAPS)).toBe("capped");
+      // A day after the first run, the oldest drop out of the window.
+      expect(s.insertRuleRun(runOf("c1", { ruleId: "r_c", createdAt: at3g(DAY + 3 * HOUR) }), CAPS)).toBe("inserted");
+    });
+
+    it("counts only starting and started runs, and allows one per conversation per rule per day", () => {
+      expect(s.insertRuleRun(runOf("a0", { threadId: "t_same" }), CAPS)).toBe("inserted");
+      expect(s.insertRuleRun(runOf("a1", { threadId: "t_same", createdAt: at3g(1) }), CAPS)).toBe("capped");
+      expect(s.insertRuleRun(runOf("a2", { threadId: "t_same", ruleId: "r2", createdAt: at3g(2) }), CAPS)).toBe("inserted");
+      expect(s.insertRuleRun(runOf("a3", { threadId: "t_same", accountId: "acc_2", createdAt: at3g(3) }), CAPS)).toBe("inserted");
+      s.updateRuleRun("a0", { state: "failed" }, at3g(4));
+      expect(s.insertRuleRun(runOf("a4", { threadId: "t_same", createdAt: at3g(5) }), CAPS)).toBe("inserted");
+      // Prepare runs are not capped.
+      for (let i = 0; i < 25; i++) expect(s.insertRuleRun(runOf(`p${i}`, { state: "ready", createdAt: at3g(10 + i) }), CAPS)).toBe("inserted");
+    });
+
+    it("refuses a second run for the same rule and message", () => {
+      expect(s.insertRuleRun(runOf("a0"), CAPS)).toBe("inserted");
+      expect(s.insertRuleRun(runOf("a1", { messageId: "m_a0" }), CAPS)).toBe("duplicate");
+      expect(s.insertRuleRun(runOf("a2", { messageId: "m_a0", ruleId: "r2" }), CAPS)).toBe("inserted");
+    });
+
+    it("finds a rule thread by its BB thread only while starting or started, pages runs and fails stale starts", () => {
+      s.insertRuleRun(runOf("a0"), CAPS);
+      s.insertRuleRun(runOf("a1", { state: "ready", createdAt: at3g(1) }), CAPS);
+      s.insertRuleRun(runOf("a2", { createdAt: at3g(20 * 60_000) }), CAPS);
+      expect(s.updateRuleRun("a0", { state: "started", bbThreadId: "bb_rule" }, at3g(2))).toBe(true);
+      expect(s.updateRuleRun("nope", { state: "started" }, at3g(2))).toBe(false);
+      expect(s.ruleRunByBbThread("bb_rule")).toMatchObject({ id: "a0", state: "started", bbThreadId: "bb_rule", updatedAt: at3g(2) });
+      expect(s.ruleRunByBbThread("bb_other")).toBeNull();
+      const page = s.listRuleRuns({ limit: 2 });
+      expect(page.runs.map((r) => r.id)).toEqual(["a2", "a1"]);
+      expect(s.listRuleRuns({ limit: 2, cursor: page.next }).runs.map((r) => r.id)).toEqual(["a0"]);
+      expect(s.listRuleRuns({ state: "ready", limit: 10 }).runs.map((r) => r.id)).toEqual(["a1"]);
+      expect(s.failStaleStarts(at3g(10 * 60_000), at3g(30 * 60_000))).toBe(0);
+      expect(s.failStaleStarts(at3g(30 * 60_000), at3g(31 * 60_000))).toBe(1);
+      expect(s.getRuleRun("a2")!.state).toBe("failed");
+      expect(s.updateRuleRun("a0", { state: "dismissed" }, at3g(3))).toBe(true);
+      expect(s.ruleRunByBbThread("bb_rule")).toBeNull();
+    });
+  });
+
+  describe("tasks and attachments", () => {
+    it("keeps a local task's note and an attachment's origin", () => {
+      s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1)]);
+      const task: NewTask = { id: "task_1", accountId: "acc_1", messageId: idIn(INBOX, 1), dedupKey: "k", title: "Fix it", due: null, createdAt: T3G, note: "From mail: Ada" };
+      expect(s.keepTasks([task, { ...task, id: "task_2", note: undefined }])).toEqual({ kept: 2 });
+      expect(s.getTask("task_1")!.note).toBe("From mail: Ada");
+      expect(s.getTask("task_2")!.note).toBeNull();
+      s.createDraft(newDraft());
+      const attached = s.addAttachment("d_1", { ...file([1, 2]), origin: "bb:project:p_api" });
+      expect(attached.origin).toBe("bb:project:p_api");
+      expect(s.listAttachments("d_1")[0]!.origin).toBe("bb:project:p_api");
+      expect(s.attachmentData("d_1")[0]!.origin).toBe("bb:project:p_api");
+      expect(s.addAttachment("d_1", file([3])).origin).toBeNull();
+    });
+  });
+
+  describe("deletes and prunes", () => {
+    beforeEach(() => {
+      s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1), makeFetchedMessage(2)]);
+      s.upsertMessages("acc_2", INBOX, [makeFetchedMessage(1, { messageId: "acc2@example.org" })]);
+      thread("acc_1");
+      thread("acc_2");
+    });
+
+    it("deleteAccount deletes the account's links, bindings and runs; rules, rule bindings and incidents stay", () => {
+      const m1 = s.getMessage(idIn(INBOX, 1))!;
+      const other = s.getMessage(idIn(INBOX, 1, "acc_2"))!;
+      s.addBbLink(linkOf("l1", { messageId: m1.id, threadId: m1.threadId }));
+      s.addBbLink(linkOf("l2", { accountId: "acc_2", messageId: other.id, threadId: other.threadId }));
+      s.setConversationProject("acc_1", m1.threadId, "p_api", T3G);
+      s.setConversationProject("acc_2", other.threadId, "p_api", T3G);
+      s.insertRuleRun(runOf("a1", { messageId: m1.id }), CAPS);
+      s.insertRuleRun(runOf("a2", { accountId: "acc_2", messageId: other.id }), CAPS);
+      s.saveRule(ruleOf("r1"), T3G);
+      s.addBinding({ kind: "domain", value: "example.org", projectId: "p_api", createdAt: T3G });
+      s.putIncident({ fingerprint: "f1", bbThreadId: "bb_1", projectId: "p_api", createdAt: T3G, lastAt: T3G });
+
+      s.deleteAccount("acc_1");
+
+      expect(s.listBbLinks({ targetId: "bb_l1" })).toEqual([]);
+      expect(s.listBbLinks({ targetId: "bb_l2" }).map((l) => l.id)).toEqual(["l2"]);
+      expect(s.conversationProject("acc_1", m1.threadId)).toBeNull();
+      expect(s.conversationProject("acc_2", other.threadId)).toBe("p_api");
+      // The run outlives the account for the caps, without its message (review C1).
+      expect(s.getRuleRun("a1")).toMatchObject({ messageId: null, state: "starting" });
+      expect(s.getRuleRun("a2")).toMatchObject({ messageId: other.id });
+      expect(s.listRules()).toHaveLength(1);
+      expect(s.listBindings()).toHaveLength(1);
+      expect(s.incidentFor("f1")).not.toBeNull();
+    });
+
+    it("removing messages deletes their links; rule runs stay without the message and still count", () => {
+      const m1 = idIn(INBOX, 1);
+      const m2 = idIn(INBOX, 2);
+      s.addBbLink(linkOf("l1", { messageId: m1 }));
+      s.addBbLink(linkOf("l2", { messageId: m2 }));
+      s.insertRuleRun(runOf("a1", { messageId: m1 }), CAPS);
+      s.insertRuleRun(runOf("a2", { messageId: m2 }), CAPS);
+      s.deleteByUids("acc_1", INBOX, [1]);
+      expect(s.listBbLinks({ messageIds: [m1, m2] }).map((l) => l.id)).toEqual(["l2"]);
+      expect(s.getRuleRun("a1")).toMatchObject({ messageId: null, state: "starting" });
+      expect(s.getRuleRun("a2")).toMatchObject({ messageId: m2 });
+      // Not offered in the strip any more: nothing to review.
+      expect(s.listRuleRuns({ limit: 10 }).runs.map((r) => r.id)).toEqual(["a2"]);
+      // The hourly cap (3) still counts the run of the deleted mail.
+      expect(s.insertRuleRun(runOf("a3", { createdAt: at3g(1) }), CAPS)).toBe("inserted");
+      expect(s.insertRuleRun(runOf("a4", { createdAt: at3g(2) }), CAPS)).toBe("capped");
+    });
+
+    it("the same mail synced again is still a duplicate for its rule", () => {
+      const m1 = idIn(INBOX, 1);
+      expect(s.insertRuleRun(runOf("a1", { messageId: m1 }), CAPS)).toBe("inserted");
+      s.deleteByUids("acc_1", INBOX, [1]);
+      s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1)]);
+      expect(s.insertRuleRun(runOf("a2", { messageId: idIn(INBOX, 1), createdAt: at3g(1) }), CAPS)).toBe("duplicate");
+    });
+
+    it("a rule thread stays gated after its mail, folder or account is gone, until 180 days", () => {
+      const m1 = idIn(INBOX, 1);
+      s.insertRuleRun(runOf("a1", { messageId: m1 }), CAPS);
+      s.updateRuleRun("a1", { state: "started", bbThreadId: "bb_rule" }, at3g(1));
+      s.addRuleThread({ bbThreadId: "bb_rule", ruleId: "r1", runId: "a1", createdAt: at3g(1) });
+      s.addRuleThread({ bbThreadId: "bb_rule", ruleId: "r1", runId: "a1", createdAt: at3g(2) });
+      expect(s.isRuleThread("bb_rule")).toBe(true);
+      expect(s.isRuleThread("bb_other")).toBe(false);
+      s.deleteByUids("acc_1", INBOX, [1]);
+      expect(s.isRuleThread("bb_rule")).toBe(true);
+      s.finishFolderReset("acc_1", INBOX);
+      s.deleteAccount("acc_1");
+      s.purgeDaily(at3g(91 * DAY), []);
+      expect(s.isRuleThread("bb_rule")).toBe(true);
+      s.purgeDaily(at3g(181 * DAY), []);
+      expect(s.isRuleThread("bb_rule")).toBe(false);
+    });
+
+    it("lists starting runs older than a time for reconciliation, with the rule's project", () => {
+      s.insertRuleRun(runOf("a1", { projectId: "p_api" }), CAPS);
+      s.insertRuleRun(runOf("a2", { createdAt: at3g(30 * 60_000) }), CAPS);
+      s.insertRuleRun(runOf("a3", { state: "ready" }), CAPS);
+      expect(s.staleStartingRuns(at3g(10 * 60_000)).map((r) => [r.id, r.projectId])).toEqual([["a1", "p_api"]]);
+    });
+
+    it("the daily purge drops gone conversations' and unknown projects' bindings, old runs and incidents, and expires ready runs", () => {
+      const m1 = s.getMessage(idIn(INBOX, 1))!;
+      const m2 = s.getMessage(idIn(INBOX, 2))!;
+      s.setConversationProject("acc_1", m1.threadId, "p_api", T3G);
+      s.setConversationProject("acc_1", m2.threadId, "p_removed", T3G);
+      s.setConversationProject("acc_1", "t_gone", "p_api", T3G);
+      s.insertRuleRun(runOf("old", { createdAt: T3G }), CAPS);
+      s.insertRuleRun(runOf("ready_old", { state: "ready", createdAt: at3g(25 * DAY) }), CAPS);
+      s.insertRuleRun(runOf("ready_new", { state: "ready", createdAt: at3g(30 * DAY) }), CAPS);
+      s.putIncident({ fingerprint: "f_old", bbThreadId: "bb_1", projectId: "p_api", createdAt: T3G, lastAt: T3G });
+      s.putIncident({ fingerprint: "f_new", bbThreadId: "bb_2", projectId: "p_api", createdAt: at3g(30 * DAY), lastAt: T3G });
+      const now = at3g(91 * DAY);
+
+      s.purgeDaily(now, ["p_api"]);
+
+      expect(s.conversationProject("acc_1", m1.threadId)).toBe("p_api");
+      expect(s.conversationProject("acc_1", m2.threadId)).toBeNull();
+      expect(s.conversationProject("acc_1", "t_gone")).toBeNull();
+      expect(s.getRuleRun("old")).toBeNull();
+      expect(s.getRuleRun("ready_old")).toBeNull();
+      expect(s.incidentFor("f_old")).toBeNull();
+      expect(s.incidentFor("f_new")).not.toBeNull();
+    });
+
+    it("expires ready runs after 7 days and keeps unknown-project bindings without a project list", () => {
+      const m1 = s.getMessage(idIn(INBOX, 1))!;
+      s.setConversationProject("acc_1", m1.threadId, "p_removed", T3G);
+      s.insertRuleRun(runOf("ready_old", { state: "ready", createdAt: T3G }), CAPS);
+      s.insertRuleRun(runOf("ready_new", { state: "ready", createdAt: at3g(5 * DAY) }), CAPS);
+      s.purgeDaily(at3g(8 * DAY));
+      expect(s.getRuleRun("ready_old")!.state).toBe("expired");
+      expect(s.getRuleRun("ready_new")!.state).toBe("ready");
+      expect(s.conversationProject("acc_1", m1.threadId)).toBe("p_removed");
+      s.purgeDaily(at3g(40 * DAY), []);
+      expect(s.conversationProject("acc_1", m1.threadId)).toBeNull();
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Slice 3h
+// ---------------------------------------------------------------------------
+
+const NOW_3H = new Date("2026-11-16T12:00:00.000Z");
+const q3h = (raw: string) => parseQuery(raw, NOW_3H);
+const hitIds = (target: MailStore, raw: string, opts: SearchOptions = {}, accountId: string | null = null) =>
+  target.search(q3h(raw), accountId, 50, opts).map((hit) => hit.id);
+
+function seedFolders(target: MailStore, accountId = "acc_1"): void {
+  target.saveFolders(accountId, [
+    remoteFolder(INBOX, "inbox"),
+    remoteFolder("Trash", "trash"),
+    remoteFolder("Junk", "junk"),
+    remoteFolder("Archive", "archive"),
+    remoteFolder("Work"),
+    remoteFolder("Work/Sub"),
+    remoteFolder("Work2"),
+  ]);
+}
+
+describe("slice-3h migration (SQLite)", () => {
+  it("element 13 on a 3g database adds the columns, backfills kinds per CASE arm and indexes attachment text", () => {
+    const old = new Database(":memory:");
+    old.transaction(() => MIGRATIONS.slice(0, 13).forEach((s) => old.exec(s)))();
+    const legacy = createSqliteStore(old);
+    legacy.saveAccount(makeStoredAccount());
+    const arms: [string, string | null, string][] = [
+      ["application/pdf", "a.bin", "pdf"],
+      ["application/octet-stream", "scan.PDF", "pdf"],
+      ["image/png", "a.png", "image"],
+      ["text/calendar", "invite", "calendar"],
+      ["application/octet-stream", "x.ics", "calendar"],
+      ["text/plain", "a.txt", "text"],
+      ["application/json", "a.json", "text"],
+      ["application/zip", "a.zip", "archive"],
+      ["application/vnd.oasis.opendocument.text", "a.odt", "document"],
+      ["application/msword", "a.doc", "document"],
+      ["application/octet-stream", null, "other"],
+    ];
+    legacy.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(1, {
+        attachments: arms.map(([mimeType, filename], i) => ({ partId: String(i + 2), filename, mimeType, size: 10, isInline: false })),
+      }),
+    ]);
+
+    old.transaction(() => MIGRATIONS.slice(13).forEach((s) => old.exec(s)))();
+
+    expect(MIGRATIONS).toHaveLength(19);
+    const kinds = old.prepare("SELECT part_id, kind FROM attachments ORDER BY CAST(part_id AS INTEGER)").all() as {
+      part_id: string;
+      kind: string;
+    }[];
+    expect(kinds.map((row) => row.kind)).toEqual(arms.map(([, , kind]) => kind));
+    // fileKindOf and the CASE agree on every arm.
+    for (const [mimeType, filename, kind] of arms) expect(fileKindOf(mimeType, filename)).toBe(kind);
+
+    const columns = (table: string) => (old.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((c) => c.name);
+    expect(columns("sync_state")).toEqual(expect.arrayContaining(["history_since", "history_checked_at"]));
+    expect(columns("messages")).toEqual(expect.arrayContaining(["kept", "kept_at", "gm_labels"]));
+    expect(columns("attachments")).toContain("kind");
+    expect(columns("folders")).toContain("subscribed");
+    const tables = ["attachment_text", "saved_searches", "folder_prefs"];
+    const objects = old
+      .prepare(`SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name IN (${tables.map(() => "?").join(", ")})`)
+      .all(...tables) as { name: string; sql: string }[];
+    expect(objects.map((o) => o.name).sort()).toEqual([...tables].sort());
+    for (const object of objects) expect(object.sql).not.toMatch(/REFERENCES/i);
+    const indexes = (old.prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all() as { name: string }[]).map((r) => r.name);
+    expect(indexes).toEqual(expect.arrayContaining(["messages_kept", "messages_from", "attachments_kind"]));
+
+    // New attachments get their kind from the same CASE (trigger).
+    const migrated = createSqliteStore(old);
+    migrated.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(2, { attachments: [{ partId: "2", filename: "r.pdf", mimeType: "application/octet-stream", size: 5, isInline: false }] }),
+    ]);
+    expect(migrated.getMessage(idOf(migrated, 2))!.attachments).toEqual([expect.objectContaining({ partId: "2", kind: "pdf" })]);
+
+    // The trigram index follows inserts, updates and deletes.
+    const id = idOf(migrated, 1);
+    const fts = (phrase: string) =>
+      (old.prepare("SELECT rowid FROM attachment_text_fts WHERE attachment_text_fts MATCH ?").all(`"${phrase}"`) as unknown[]).length;
+    migrated.insertAttachmentText({ messageId: id, partId: "2", state: "indexed", reason: null, body: "Invented ledger INV-2041", extractedAt: T0 });
+    expect(fts("ledger")).toBe(1);
+    old.prepare("UPDATE attachment_text SET body = 'Invented quarterly notes'").run();
+    expect(fts("ledger")).toBe(0);
+    expect(fts("quarterly")).toBe(1);
+    old.prepare("DELETE FROM attachment_text").run();
+    expect(fts("quarterly")).toBe(0);
+  });
+});
+
+describe("slice-3h search (SQLite)", () => {
+  beforeEach(() => seedFolders(store));
+
+  it("matches each condition with bound parameters", () => {
+    store.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(1, {
+        to: [{ name: "Ann", address: "ann@example.org" }],
+        cc: [{ name: null, address: "carl@example.org" }],
+        size: 5000,
+        attachments: [{ partId: "2", filename: "Invoice.PDF", mimeType: "application/pdf", size: 10, isInline: false }],
+        flagged: true,
+      }),
+      makeFetchedMessage(2, { from: { name: null, address: "other@example.org" }, size: 50, seen: true }),
+    ]);
+    const one = idOf(store, 1);
+    const two = idOf(store, 2);
+    expect(hitIds(store, "to:ann@example.org")).toEqual([one]);
+    expect(hitIds(store, "cc:carl")).toEqual([one]);
+    expect(hitIds(store, "filename:pdf")).toEqual([one]);
+    expect(hitIds(store, "filename:invoice.p")).toEqual([one]);
+    expect(hitIds(store, "has:attachment")).toEqual([one]);
+    expect(hitIds(store, "-has:attachment")).toEqual([two]);
+    expect(hitIds(store, "larger:1K")).toEqual([one]);
+    expect(hitIds(store, "smaller:100")).toEqual([two]);
+    expect(hitIds(store, "is:starred")).toEqual([one]);
+    expect(hitIds(store, "is:read")).toEqual([two]);
+    // A negated from: with a NULL name still matches (NULL-safe NOT).
+    expect(hitIds(store, "-from:sender@example.org")).toEqual([two]);
+    expect(hitIds(store, "account:owner@example.org")).toHaveLength(2);
+    expect(hitIds(store, "account:nobody@example.org")).toEqual([]);
+    expect(hitIds(store, "in:inbox -in:inbox")).toEqual([]);
+  });
+
+  it("finds a Trash copy with in:trash before the dedup picks the Inbox copy", () => {
+    const shared = { messageId: "shared@example.org", size: 300 };
+    store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, shared)]);
+    store.upsertMessages("acc_1", "Trash", [makeFetchedMessage(7, shared)]);
+    expect(hitIds(store, "Invented")).toEqual([idOf(store, 1)]);
+    expect(hitIds(store, "in:trash")).toEqual([idIn(store, "Trash", 7)]);
+    expect(hitIds(store, "in:work in:trash")).toEqual([idIn(store, "Trash", 7)]);
+  });
+
+  it("matches label: by Gmail labels of any copy and by folder name elsewhere", () => {
+    const shared = { messageId: "lab@example.org", gmMsgId: "17", size: 10 };
+    store.saveFolders("acc_1", [remoteFolder(INBOX, "inbox"), remoteFolder("[Gmail]/All Mail", "all"), remoteFolder("Work")]);
+    store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, shared)]);
+    store.upsertMessages("acc_1", "[Gmail]/All Mail", [makeFetchedMessage(1, shared)]);
+    store.upsertMessages("acc_1", "Work", [makeFetchedMessage(2)]);
+    store.setGmLabels("acc_1", "[Gmail]/All Mail", [{ uid: 1, labels: ["\\Inbox", "Receipts"] }]);
+    expect(hitIds(store, "label:receipts")).toEqual([idOf(store, 1)]);
+    expect(hitIds(store, "label:work")).toEqual([idIn(store, "Work", 2)]);
+    // The Inbox copy shows the All Mail copy's owner labels.
+    expect(store.getMessage(idOf(store, 1))!.labels).toEqual(["Receipts"]);
+    expect(store.gmLabels([idOf(store, 1)]).get(idOf(store, 1))).toEqual(["\\Inbox", "Receipts"]);
+    expect(store.accountLabels("acc_1")).toEqual(["\\Inbox", "Receipts"]);
+  });
+
+  it("stores a message's Gmail labels on every copy of it", () => {
+    const shared = { messageId: "every@example.org", gmMsgId: "1789000000000000301", size: 10 };
+    store.saveFolders("acc_1", [remoteFolder(INBOX, "inbox"), remoteFolder("[Gmail]/All Mail", "all")]);
+    store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, shared), makeFetchedMessage(2)]);
+    store.upsertMessages("acc_1", "[Gmail]/All Mail", [makeFetchedMessage(5, shared)]);
+    store.setGmLabels("acc_1", INBOX, [{ uid: 1, labels: ["\\Inbox", "Receipts"] }]);
+    store.setGmLabels("acc_1", "[Gmail]/All Mail", [{ uid: 5, labels: ["\\Inbox"] }]);
+    // The change stored on All Mail reaches the Inbox copy: chips and the next change's deltas.
+    expect(store.getMessage(idOf(store, 1))!.labels).toEqual([]);
+    expect(store.gmLabels([idOf(store, 1)]).get(idOf(store, 1))).toEqual(["\\Inbox"]);
+    expect(store.gmLabels([idOf(store, 2)]).get(idOf(store, 2))).toEqual([]);
+  });
+
+  it("finds a message's copy in a folder by dedup key, with its uid", () => {
+    const shared = { messageId: "copy@example.org", gmMsgId: "21", size: 10 };
+    store.saveFolders("acc_1", [remoteFolder(INBOX, "inbox"), remoteFolder("[Gmail]/All Mail", "all")]);
+    store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, shared), makeFetchedMessage(2)]);
+    store.upsertMessages("acc_1", "[Gmail]/All Mail", [makeFetchedMessage(5, shared)]);
+    const copies = store.copiesIn("[Gmail]/All Mail", [idOf(store, 1), idOf(store, 2), "m_unknown"]);
+    expect([...copies.keys()]).toEqual([idOf(store, 1)]);
+    expect(copies.get(idOf(store, 1))).toEqual({ id: idIn(store, "[Gmail]/All Mail", 5), accountId: "acc_1", uid: 5 });
+  });
+
+  it("pages across equal and NULL dates without gaps or repeats", () => {
+    const dates = [null, null, "2026-11-10T09:00:00.000Z", "2026-11-10T09:00:00.000Z", "2026-11-10T09:00:00.000Z", "2026-11-09T09:00:00.000Z"];
+    store.upsertMessages(
+      "acc_1",
+      INBOX,
+      dates.map((date, i) => makeFetchedMessage(i + 1, { date })),
+    );
+    const all = store.searchPage(q3h("Invented"), null, 50).hits.map((h) => h.id);
+    expect(all).toHaveLength(6);
+    const seen: string[] = [];
+    let cursor: SearchCursor | null = null;
+    for (let i = 0; i < 6; i++) {
+      const page: ReturnType<MailStore["searchPage"]> = store.searchPage(q3h("Invented"), null, 2, { cursor });
+      seen.push(...page.hits.map((h) => h.id));
+      cursor = page.nextCursor;
+      if (cursor === null) break;
+    }
+    expect(seen).toEqual(all);
+  });
+
+  it("joins attachment text only with attachments: true, scoped or not, with an excerpt", () => {
+    store.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(1, { attachments: [{ partId: "2", filename: "ledger.txt", mimeType: "text/plain", size: 10, isInline: false }] }),
+    ]);
+    const id = idOf(store, 1);
+    store.insertAttachmentText({ messageId: id, partId: "2", state: "indexed", reason: null, body: "Quarterly zebracorn totals", extractedAt: T0 });
+    expect(hitIds(store, "zebracorn")).toEqual([]);
+    expect(hitIds(store, "zebracorn", { scoped: true })).toEqual([]);
+    expect(store.searchPage(q3h("zebracorn"), null, 50).attachmentMatches).toEqual([]);
+    expect(hitIds(store, "zebracorn", { attachments: true })).toEqual([id]);
+    expect(store.searchPage(q3h("zebracorn"), null, 50, { attachments: true }).attachmentMatches).toEqual([
+      { messageId: id, filename: "ledger.txt", excerpt: "Quarterly zebracorn totals" },
+    ]);
+  });
+});
+
+describe("slice-3h kept rows (SQLite)", () => {
+  it("keeps job rows, never downgrades, and promotes on open, flag, move and snooze", () => {
+    seedFolders(store);
+    store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1)]);
+    store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1), makeFetchedMessage(2)], { kept: "search" });
+    expect(store.getMessage(idOf(store, 1))!.kept).toBeNull();
+    expect(store.getMessage(idOf(store, 2))!.kept).toBe("search");
+    store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(2), makeFetchedMessage(3)], { kept: "history" });
+    expect(store.getMessage(idOf(store, 2))!.kept).toBe("history");
+    expect(store.getMessage(idOf(store, 3))!.kept).toBe("history");
+    store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(4)], { kept: "search" });
+    store.markOpened(idOf(store, 4));
+    expect(store.getMessage(idOf(store, 4))!.kept).toBe("opened");
+    store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(4)], { kept: "history" });
+    expect(store.getMessage(idOf(store, 4))!.kept).toBe("opened");
+    store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(5), makeFetchedMessage(6), makeFetchedMessage(7)], { kept: "search" });
+    store.setDesired([idOf(store, 5)], { flagged: true });
+    store.queueMove([idOf(store, 6)], "Archive");
+    store.createSnoozes([{ messageId: idOf(store, 7), accountId: "acc_1", returnTo: INBOX, dueAt: T0, state: "snoozed" }], T0);
+    for (const uid of [5, 6, 7]) expect(store.getMessage(idOf(store, uid))!.kept, String(uid)).toBe("opened");
+    expect(store.promoteKept([idOf(store, 3)])).toEqual([idOf(store, 3)]);
+  });
+
+  it("expires old server hits with their attachments and attachment text", () => {
+    store.upsertMessages(
+      "acc_1",
+      INBOX,
+      [makeFetchedMessage(1, { attachments: [{ partId: "2", filename: "a.txt", mimeType: "text/plain", size: 5, isInline: false }] })],
+      { kept: "search" },
+    );
+    store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(2)], { kept: "history" });
+    const id = idOf(store, 1);
+    store.insertAttachmentText({ messageId: id, partId: "2", state: "indexed", reason: null, body: "Invented", extractedAt: T0 });
+    const later = new Date(Date.now() + 15 * DAY).toISOString();
+    expect(store.expireSearchRows(new Date().toISOString(), 14)).toEqual({ removed: 0, accounts: [] });
+    expect(store.expireSearchRows(later, 14)).toEqual({ removed: 1, accounts: ["acc_1"] });
+    expect(store.getMessage(id)).toBeNull();
+    expect(count(db, "attachments")).toBe(0);
+    expect(count(db, "attachment_text")).toBe(0);
+    expect(store.getMessage(idOf(store, 2))).not.toBeNull();
+  });
+
+  it("forgets loaded history before the window, not opened rows", () => {
+    store.saveSyncState("acc_1", INBOX, { uidValidity: 7, lastUid: 10, syncedSince: "2026-10-17T00:00:00.000Z" });
+    store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(9, { date: "2026-11-01T00:00:00.000Z" })]);
+    store.upsertMessages(
+      "acc_1",
+      INBOX,
+      [makeFetchedMessage(1, { date: "2026-09-01T00:00:00.000Z" }), makeFetchedMessage(2, { date: "2026-09-02T00:00:00.000Z" })],
+      { kept: "history" },
+    );
+    store.markOpened(idOf(store, 2));
+    store.setHistorySince("acc_1", INBOX, "2026-09-01T00:00:00.000Z");
+    store.historyChecked("acc_1", INBOX, T0);
+    expect(store.historyState("acc_1", INBOX)).toEqual({ historySince: "2026-09-01T00:00:00.000Z", historyCheckedAt: T0 });
+    expect(store.historyForgetCount("acc_1", INBOX)).toBe(1);
+    expect(store.historyForget("acc_1", INBOX)).toBe(1);
+    expect(store.historyState("acc_1", INBOX)!.historySince).toBeNull();
+    expect(store.localFolderIndex("acc_1", INBOX, EPOCH).map((e) => e.uid)).toEqual([2, 9]);
+    expect(store.historyState("acc_1", "Nowhere")).toBeNull();
+  });
+
+  it("clears kept on window rows (dated inside or undated) and lists ids by kept state", () => {
+    store.upsertMessages(
+      "acc_1",
+      INBOX,
+      [
+        makeFetchedMessage(1, { date: "2026-09-01T00:00:00.000Z" }),
+        makeFetchedMessage(2, { date: "2026-11-01T00:00:00.000Z" }),
+        makeFetchedMessage(3, { date: null }),
+      ],
+      { kept: "history" },
+    );
+    store.markOpened(idOf(store, 1));
+    expect(store.keptIds("acc_1", INBOX, "opened")).toEqual([idOf(store, 1)]);
+    expect(store.keptIds("acc_1", INBOX, "history")).toEqual([idOf(store, 2), idOf(store, 3)].sort());
+    expect(store.clearWindowKept("acc_1", INBOX, "2026-10-17T00:00:00.000Z")).toBe(2);
+    expect(store.keptIds("acc_1", INBOX, "history")).toEqual([]);
+    expect(store.getMessage(idOf(store, 2))!.kept).toBeNull();
+    expect(store.getMessage(idOf(store, 1))!.kept).toBe("opened");
+    expect(store.clearWindowKept("acc_1", INBOX, "2026-10-17T00:00:00.000Z")).toBe(0);
+  });
+
+  it("finds one stored id per dedup key of the account", () => {
+    store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, { gmMsgId: "1789000000000000301" })]);
+    const found = store.idsByDedupKey("acc_1", ["gm:1789000000000000301", "gm:1789000000000000302"]);
+    expect([...found]).toEqual([["gm:1789000000000000301", idOf(store, 1)]]);
+    expect(store.idsByDedupKey("acc_2", ["gm:1789000000000000301"]).size).toBe(0);
+  });
+});
+
+describe("slice-3h folders (SQLite)", () => {
+  /** Every column a folder path can live in: the names folder, path, *_folder, return_to and move_pending, plus folders_json. */
+  function pathColumns(target: Database.Database): string[] {
+    const tables = (target.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as { name: string }[]).map((r) => r.name);
+    return tables.flatMap((table) =>
+      (target.prepare(`PRAGMA table_info("${table}")`).all() as { name: string }[])
+        .map((c) => c.name)
+        .filter(
+          (name) =>
+            name === "folder" ||
+            name === "path" ||
+            name.endsWith("_folder") ||
+            name === "return_to" ||
+            name === "move_pending" ||
+            name === "folders_json",
+        )
+        .map((name) => `${table}.${name}`),
+    );
+  }
+
+  it("re-homes every path column, children included, never a sibling prefix (schema scan)", () => {
+    // Fails when a new column can hold a folder path and rehomeFolder does not cover it.
+    expect(pathColumns(db).sort()).toEqual(
+      [
+        "accounts.snooze_folder",
+        "ai_scope_accounts.folders_json",
+        "compose_drafts.server_folder",
+        "folder_prefs.path",
+        "folders.path",
+        "messages.folder",
+        "messages.move_pending",
+        "snoozes.return_to",
+        "sync_state.folder",
+      ].sort(),
+    );
+    seedFolders(store);
+    for (const path of ["Work", "Work/Sub", "Work2"]) {
+      store.upsertMessages("acc_1", path, [makeFetchedMessage(1, { messageId: `${path}@example.org` })]);
+      store.saveSyncState("acc_1", path, { uidValidity: 1, lastUid: 1, syncedSince: EPOCH });
+      store.setFolderGrouping("acc_1", path, false);
+    }
+    store.setSnoozeFolder("acc_1", "Work/Sub");
+    store.createSnoozes([{ messageId: idIn(store, "Work2", 1), accountId: "acc_1", returnTo: "Work", dueAt: T0, state: "snoozed" }], T0);
+    store.createDraft(newDraft());
+    db.prepare("UPDATE compose_drafts SET server_folder = 'Work/Sub'").run();
+    store.putAiScope([{ accountId: "acc_1", scope: { mode: "folders", folders: [INBOX, "Work", "Work/Sub", "Work2"] } }], [], T0);
+    // A queued move into a child of the renamed folder follows it.
+    store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(9, { messageId: "queued@example.org" })]);
+    db.prepare("UPDATE messages SET move_pending = 'Work/Sub' WHERE folder = ? AND uid = 9").run(INBOX);
+
+    store.rehomeFolder("acc_1", "Work", "Jobs", "/");
+
+    const values = (column: string) => {
+      const [table, name] = column.split(".");
+      return (db.prepare(`SELECT ${name} AS v FROM ${table}`).all() as { v: string | null }[]).map((r) => r.v ?? "");
+    };
+    for (const column of pathColumns(db)) {
+      for (const value of values(column)) {
+        const paths = column.endsWith("folders_json") ? (JSON.parse(value || "[]") as string[]) : [value];
+        for (const path of paths) expect(path === "Work" || path.startsWith("Work/"), `${column} ${path}`).toBe(false);
+      }
+    }
+    expect(store.listFolders("acc_1").map((f) => [f.path, f.name])).toEqual(
+      expect.arrayContaining([["Jobs", "Jobs"], ["Jobs/Sub", "Sub"], ["Work2", "Work2"]]),
+    );
+    expect(store.loadAiScope().accounts.get("acc_1")).toEqual({ mode: "folders", folders: [INBOX, "Jobs", "Jobs/Sub", "Work2"] });
+    expect(store.getAccount("acc_1")!.snoozeFolder).toBe("Jobs/Sub");
+    expect(store.listSnoozes("acc_1", { limit: 10 })[0]!.returnTo).toBe("Jobs");
+    expect(store.folderGrouping("acc_1", "Jobs/Sub")).toBe(false);
+    expect(store.getSyncState("acc_1", "Jobs")).not.toBeNull();
+    expect(store.localFolderIndex("acc_1", "Work2", EPOCH)).toHaveLength(1);
+    expect(db.prepare("SELECT move_pending AS v FROM messages WHERE folder = ? AND uid = 9").get(INBOX)).toEqual({ v: "Jobs/Sub" });
+  });
+
+  it("drops a deleted folder with its rows, prefs and AI scope entry", () => {
+    seedFolders(store);
+    store.upsertMessages("acc_1", "Work2", [makeFetchedMessage(1)]);
+    store.setFolderGrouping("acc_1", "Work2", false);
+    store.putAiScope([{ accountId: "acc_1", scope: { mode: "folders", folders: [INBOX, "Work2"] } }], [], T0);
+    store.dropFolder("acc_1", "Work2");
+    expect(store.listFolders("acc_1").map((f) => f.path)).not.toContain("Work2");
+    expect(store.localFolderIndex("acc_1", "Work2", EPOCH)).toEqual([]);
+    expect(store.folderGrouping("acc_1", "Work2")).toBe(true);
+    expect(store.loadAiScope().accounts.get("acc_1")).toEqual({ mode: "folders", folders: [INBOX] });
+  });
+
+  it("saveFolders stores subscribed and drops removed paths from folders_json", () => {
+    store.saveFolders("acc_1", [remoteFolder(INBOX, "inbox"), remoteFolder("Old", null, { subscribed: false })]);
+    expect(store.listFolders("acc_1").find((f) => f.path === "Old")!.subscribed).toBe(false);
+    store.putAiScope([{ accountId: "acc_1", scope: { mode: "folders", folders: [INBOX, "Old"] } }], [], T0);
+    store.saveFolders("acc_1", [remoteFolder(INBOX, "inbox")]);
+    expect(store.loadAiScope().accounts.get("acc_1")).toEqual({ mode: "folders", folders: [INBOX] });
+  });
+
+  it("counts pending moves out of and into a folder", () => {
+    seedFolders(store);
+    store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1), makeFetchedMessage(2)]);
+    store.queueMove([idOf(store, 1)], "Work");
+    expect(store.movePendingCount("acc_1", "Work")).toBe(1);
+    expect(store.movePendingCount("acc_1", INBOX)).toBe(1);
+    expect(store.movePendingCount("acc_1", "Work2")).toBe(0);
+  });
+});
+
+describe("slice-3h saved searches, prefs and attachment text (SQLite)", () => {
+  it("saves, updates, moves and deletes saved searches, at most 50", () => {
+    const save = (id: string | null, name: string, newId: string) =>
+      store.saveSavedSearch({ id, name, query: "from:a@example.org", accountId: null, nowIso: T0 }, newId);
+    expect(save(null, "A", "s1")).toEqual({ id: "s1" });
+    expect(save(null, "B", "s2")).toEqual({ id: "s2" });
+    expect(save("s1", "A2", "unused")).toEqual({ id: "s1" });
+    expect(save("missing", "X", "unused")).toBe("not_found");
+    expect(store.moveSavedSearch("s2", 0)).toBe(true);
+    expect(store.listSavedSearches().map((s) => [s.id, s.name, s.position])).toEqual([
+      ["s2", "B", 0],
+      ["s1", "A2", 1],
+    ]);
+    expect(store.deleteSavedSearch("s2")).toBe(true);
+    expect(store.listSavedSearches().map((s) => [s.id, s.position])).toEqual([["s1", 0]]);
+    for (let i = 0; i < 49; i++) save(null, `N${i}`, `n${i}`);
+    expect(save(null, "Full", "z")).toBe("full");
+    store.deleteAccount("acc_1");
+    expect(store.listSavedSearches()).toHaveLength(50);
+  });
+
+  it("lists an Inbox attachment behind 1,001 newer pending ones in Spam", () => {
+    seedFolders(store);
+    const attachment = { partId: "2", filename: "a.txt", mimeType: "text/plain", size: 10, isInline: false };
+    store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, { date: "2026-01-01T00:00:00.000Z", attachments: [attachment] })]);
+    store.upsertMessages(
+      "acc_1",
+      "Junk",
+      Array.from({ length: 1_001 }, (_, i) => makeFetchedMessage(i + 1, { date: "2026-11-01T00:00:00.000Z", messageId: `junk-${i}@example.org`, attachments: [attachment] })),
+    );
+    expect(store.attachmentTextCandidates(1_000).map((c) => c.messageId)).toEqual([idOf(store, 1)]);
+  });
+
+  it("deletes the account's saved searches, prefs and attachment text with it", () => {
+    store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1)]);
+    store.saveSavedSearch({ id: null, name: "Mine", query: "x", accountId: "acc_1", nowIso: T0 }, "s1");
+    store.setFolderGrouping("acc_1", INBOX, false);
+    store.insertAttachmentText({ messageId: idOf(store, 1), partId: "2", state: "failed", reason: "timeout", body: null, extractedAt: T0 });
+    store.deleteAccount("acc_1");
+    expect(count(db, "saved_searches")).toBe(0);
+    expect(count(db, "folder_prefs")).toBe(0);
+    expect(count(db, "attachment_text")).toBe(0);
+  });
+
+  it("lists candidates, reports status with the total characters, retries and clears", () => {
+    seedFolders(store);
+    const attachment = (partId: string, filename: string, mimeType: string) => ({ partId, filename, mimeType, size: 10, isInline: false });
+    store.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(1, { attachments: [attachment("2", "a.txt", "text/plain"), attachment("3", "b.pdf", "application/pdf"), attachment("4", "c.png", "image/png")] }),
+    ]);
+    store.upsertMessages("acc_1", "Junk", [makeFetchedMessage(2, { attachments: [attachment("2", "s.txt", "text/plain")] })]);
+    const id = idOf(store, 1);
+    expect(store.attachmentTextCandidates(10).filter((c) => c.messageId === id).map((c) => [c.partId, c.kind])).toEqual([
+      ["2", "text"],
+      ["3", "pdf"],
+    ]);
+    // Spam and Trash are never candidates, so 1,000 pending parts there cannot starve the rest.
+    expect(store.attachmentTextCandidates(10).find((c) => c.folderUse === "junk")).toBeUndefined();
+    store.insertAttachmentText({ messageId: id, partId: "2", state: "indexed", reason: null, body: "12345", extractedAt: T0 });
+    store.insertAttachmentText({ messageId: id, partId: "3", state: "failed", reason: "timeout", body: "ignored", extractedAt: T0 });
+    expect(store.attachmentTextStatus()).toEqual({ indexed: 1, skipped: 0, failed: 1, pending: 0, totalChars: 5 });
+    expect(store.retryAttachmentText()).toBe(1);
+    expect(store.attachmentTextStatus()).toMatchObject({ failed: 0, pending: 1 });
+    expect(store.clearAttachmentText()).toBe(1);
+    expect(store.attachmentTextStatus()).toEqual({ indexed: 0, skipped: 0, failed: 0, pending: 2, totalChars: 0 });
+  });
+
+  it("keeps a folder grouping preference, '*' for All accounts", () => {
+    expect(store.folderGrouping("acc_1", INBOX)).toBe(true);
+    store.setFolderGrouping("*", "inbox", false);
+    expect(store.folderGrouping("*", "inbox")).toBe(false);
+    store.setFolderGrouping("*", "inbox", true);
+    expect(store.folderGrouping("*", "inbox")).toBe(true);
+  });
+});
+
+describe("slice-3h files, sender card, related and message lists (SQLite)", () => {
+  const pdf = (partId = "2", filename = "plan.pdf") => ({ partId, filename, mimeType: "application/pdf", size: 10, isInline: false });
+
+  it("lists files once per message copy and part, without Spam and Trash unless asked, paging by keyset", () => {
+    seedFolders(store);
+    const shared = { messageId: "f@example.org", size: 77, attachments: [pdf()] };
+    store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, shared), makeFetchedMessage(2, { date: null, attachments: [pdf("2", "n.pdf")] })]);
+    store.upsertMessages("acc_1", "Archive", [makeFetchedMessage(1, shared)]);
+    store.upsertMessages("acc_1", "Junk", [makeFetchedMessage(3, { attachments: [pdf("2", "spam.pdf")] })]);
+    store.upsertMessages("acc_1", "Work", [
+      makeFetchedMessage(4, { date: "2026-11-01T00:00:00.000Z", attachments: [pdf("2", "a.pdf"), pdf("3", "b.pdf"), { ...pdf("4", "i.png"), mimeType: "image/png", isInline: true }] }),
+    ]);
+    const all = store.filesList({}, null, 100).files;
+    expect(all.map((f) => f.filename)).toEqual(["n.pdf", "plan.pdf", "a.pdf", "b.pdf"]);
+    expect(all[1]!.messageId).toBe(idOf(store, 1));
+    expect(store.filesList({ includeJunk: true }, null, 100).files.map((f) => f.filename)).toContain("spam.pdf");
+    expect(store.filesList({ name: "PLAN" }, null, 100).files.map((f) => f.filename)).toEqual(["plan.pdf"]);
+    expect(store.filesList({ kind: "image" }, null, 100).files).toEqual([]);
+    const paged: string[] = [];
+    let cursor: string | null = null;
+    do {
+      const page: ReturnType<MailStore["filesList"]> = store.filesList({}, cursor, 1);
+      paged.push(...page.files.map((f) => f.filename ?? ""));
+      cursor = page.nextCursor;
+    } while (cursor !== null);
+    expect(paged).toEqual(["n.pdf", "plan.pdf", "a.pdf", "b.pdf"]);
+  });
+
+  it("builds the sender card counts by equality on From, outside Spam and Trash", () => {
+    seedFolders(store);
+    const boss = { name: "Invented Boss", address: "Boss@Example.org" };
+    store.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(1, { from: boss, date: "2026-11-01T00:00:00.000Z", attachments: [pdf()] }),
+      makeFetchedMessage(2, { from: { ...boss, address: "boss@example.org" }, date: "2026-11-05T00:00:00.000Z" }),
+      makeFetchedMessage(3, { to: [{ name: null, address: "boss@example.org" }] }),
+    ]);
+    store.upsertMessages("acc_1", "Trash", [makeFetchedMessage(4, { from: boss })]);
+    store.assignThreads("acc_1", new Map());
+    const card = store.senderStats("boss@example.org", null);
+    expect(card).toMatchObject({
+      name: "Invented Boss",
+      fromCount: 2,
+      toCount: 1,
+      toCapped: false,
+      firstDate: "2026-11-01T00:00:00.000Z",
+      lastDate: "2026-11-05T00:00:00.000Z",
+    });
+    expect(card.conversations).toHaveLength(2);
+    expect(card.files.map((f) => f.filename)).toEqual(["plan.pdf"]);
+    expect(store.senderStats("boss@example.org", "acc_other").fromCount).toBe(0);
+  });
+
+  it("finds related candidates by term, participant and reference, outside the open conversation", () => {
+    seedFolders(store);
+    store.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(1, { subject: "Ledger review", from: { name: null, address: "ann@example.org" }, references: ["root@example.org"] }),
+      makeFetchedMessage(2, { subject: "Other ledger notes", from: { name: null, address: "zed@example.org" } }),
+      makeFetchedMessage(3, { subject: "Lunch", from: { name: null, address: "ann@example.org" } }),
+      makeFetchedMessage(4, { subject: "Root", messageId: "root@example.org", from: { name: null, address: "x@example.org" } }),
+      makeFetchedMessage(5, { subject: "Unrelated", from: { name: null, address: "y@example.org" } }),
+    ]);
+    store.upsertMessages("acc_1", "Junk", [makeFetchedMessage(6, { subject: "ledger spam" })]);
+    store.assignThreads("acc_1", new Map());
+    const byId = new Map(store.relatedCandidates(idOf(store, 1), ["ledger"]).map((c) => [c.messageId, c]));
+    expect(byId.get(idOf(store, 2))).toMatchObject({ terms: ["ledger"], participants: 0, reference: false });
+    expect(byId.get(idOf(store, 3))).toMatchObject({ terms: [], participants: 1 });
+    expect(byId.get(idOf(store, 4))).toMatchObject({ reference: true });
+    expect(byId.has(idOf(store, 5))).toBe(false);
+    expect(byId.has(idOf(store, 1))).toBe(false);
+    expect(byId.has(idIn(store, "Junk", 6))).toBe(false);
+    expect(store.relatedCandidates("missing", ["ledger"])).toEqual([]);
+  });
+
+  it("lists one row per message of a folder and of a role, paging across NULL dates", () => {
+    seedFolders(store);
+    store.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(1, { date: null }),
+      makeFetchedMessage(2, { date: "2026-11-10T00:00:00.000Z" }),
+      makeFetchedMessage(3, { date: "2026-11-10T00:00:00.000Z", seen: true }),
+    ]);
+    const all = store.listMessages("acc_1", INBOX, null, 10).messages.map((m) => m.id);
+    expect(all).toEqual([idOf(store, 1), idOf(store, 3), idOf(store, 2)]);
+    const paged: string[] = [];
+    let cursor: string | null = null;
+    do {
+      const page: ReturnType<MailStore["listMessages"]> = store.listMessages("acc_1", INBOX, cursor, 1);
+      paged.push(...page.messages.map((m) => m.id));
+      cursor = page.nextCursor;
+    } while (cursor !== null);
+    expect(paged).toEqual(all);
+    expect(store.listMessages("acc_1", INBOX, null, 10, { unread: true }).messages).toHaveLength(2);
+    expect(store.listMessagesAll("inbox", null, 10).messages).toHaveLength(3);
+    expect(store.listMessagesAll("all", null, 10).messages).toEqual([]);
+    expect(store.summaries([idOf(store, 2), "missing"]).map((m) => m.id)).toEqual([idOf(store, 2)]);
+  });
+
+  it(
+    "pages search, files, sender card, related candidates and the message list fast at 20 000 messages (each timed alone)",
+    () => {
+      seedFolders(store);
+      const messages = Array.from({ length: 20_000 }, (_, i) =>
+        makeFetchedMessage(i + 1, {
+          date: new Date(Date.UTC(2026, 0, 1) + i * 60_000).toISOString(),
+          from: { name: null, address: `sender${i % 50}@example.org` },
+          subject: `Invented ledger ${i % 97}`,
+          attachments: i % 10 === 0 ? [pdf("2", `f${i}.pdf`)] : [],
+        }),
+      );
+      store.transaction(() => store.upsertMessages("acc_1", INBOX, messages));
+      const one = idOf(store, 1);
+      const search = timeOne(() => store.searchPage(q3h("ledger has:attachment -is:starred"), null, 50));
+      const files = timeOne(() => store.filesList({ kind: "pdf" }, null, 100));
+      const card = timeOne(() => store.senderStats("sender7@example.org", null));
+      const related = timeOne(() => store.relatedCandidates(one, ["ledger", "invented"]));
+      const list = timeOne(() => store.listMessages("acc_1", INBOX, null, 100));
+      expect(search.value.hits).toHaveLength(50);
+      expect(files.value.files).toHaveLength(100);
+      expect(card.value.fromCount).toBe(400);
+      expect(related.value.length).toBeLessThanOrEqual(200);
+      expect(list.value.messages).toHaveLength(100);
+      for (const [name, entry] of Object.entries({ search, files, card, related, list })) {
+        expect(entry.ms, name).toBeLessThan(PAGE_MS);
+      }
+    },
+    SEEDING_TIMEOUT_MS,
+  );
+});
+
+describe.each(storeKinds)("slice-3h store semantics (%s)", (_kind, make) => {
+  let s: MailStore;
+  beforeEach(() => {
+    s = make();
+    s.saveAccount(makeStoredAccount());
+    seedFolders(s);
+  });
+
+  it("applies conditions before the dedup, ORs in:, and negates NULL-safely", () => {
+    const shared = {
+      messageId: "shared@example.org",
+      size: 300,
+      attachments: [{ partId: "2", filename: "a.pdf", mimeType: "application/pdf", size: 1, isInline: false }],
+    };
+    s.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(1, shared),
+      makeFetchedMessage(2, { from: { name: null, address: "other@example.org" } }),
+    ]);
+    s.upsertMessages("acc_1", "Trash", [makeFetchedMessage(7, shared)]);
+    expect(hitIds(s, "in:trash")).toEqual([idIn(s, "Trash", 7)]);
+    expect(hitIds(s, "in:trash in:Work")).toEqual([idIn(s, "Trash", 7)]);
+    expect(hitIds(s, "filename:pdf")).toEqual([idOf(s, 1)]);
+    expect(hitIds(s, "-has:attachment")).toEqual([idOf(s, 2)]);
+    expect(hitIds(s, "-from:sender@example.org")).toEqual([idOf(s, 2)]);
+  });
+
+  it("joins attachment text only on request and pages with a cursor", () => {
+    s.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(1, { attachments: [{ partId: "2", filename: "l.txt", mimeType: "text/plain", size: 1, isInline: false }] }),
+      makeFetchedMessage(2, { date: "2026-11-09T00:00:00.000Z" }),
+    ]);
+    s.insertAttachmentText({ messageId: idOf(s, 1), partId: "2", state: "indexed", reason: null, body: "Invented zebracorn", extractedAt: T0 });
+    expect(hitIds(s, "zebracorn")).toEqual([]);
+    expect(s.searchPage(q3h("zebracorn"), null, 5, { attachments: true }).attachmentMatches).toEqual([
+      { messageId: idOf(s, 1), filename: "l.txt", excerpt: "Invented zebracorn" },
+    ]);
+    const first = s.searchPage(q3h("Invented"), null, 1);
+    expect(first.hits.map((h) => h.id)).toEqual([idOf(s, 1)]);
+    expect(s.searchPage(q3h("Invented"), null, 1, { cursor: first.nextCursor }).hits.map((h) => h.id)).toEqual([idOf(s, 2)]);
+  });
+
+  it("keeps job rows without downgrading and promotes what the owner touches", () => {
+    s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1)]);
+    s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1), makeFetchedMessage(2), makeFetchedMessage(3)], { kept: "search" });
+    s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(2)], { kept: "history" });
+    expect([1, 2, 3].map((uid) => s.getMessage(idOf(s, uid))!.kept)).toEqual([null, "history", "search"]);
+    s.markOpened(idOf(s, 3));
+    expect(s.getMessage(idOf(s, 3))!.kept).toBe("opened");
+    expect(s.expireSearchRows(new Date(Date.now() + 30 * DAY).toISOString(), 14)).toEqual({ removed: 0, accounts: [] });
+  });
+
+  it("re-homes a rename, keeps prefs and saved searches, and drops a deleted folder", () => {
+    s.upsertMessages("acc_1", "Work/Sub", [makeFetchedMessage(1)]);
+    s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(2)]);
+    s.queueMove([idIn(s, INBOX, 2)], "Work/Sub");
+    s.setFolderGrouping("acc_1", "Work", false);
+    s.putAiScope([{ accountId: "acc_1", scope: { mode: "folders", folders: ["Work", "Work/Sub", "Work2"] } }], [], T0);
+    s.rehomeFolder("acc_1", "Work", "Jobs", "/");
+    expect(s.localFolderIndex("acc_1", "Jobs/Sub", EPOCH)).toHaveLength(1);
+    // A queued move into a child follows the rename.
+    expect(s.pendingMoves("acc_1", INBOX).map((move) => move.destination)).toEqual(["Jobs/Sub"]);
+    expect(s.folderGrouping("acc_1", "Jobs")).toBe(false);
+    expect(s.loadAiScope().accounts.get("acc_1")).toEqual({ mode: "folders", folders: ["Jobs", "Jobs/Sub", "Work2"] });
+    expect(s.listFolders("acc_1").find((f) => f.path === "Jobs")?.name).toBe("Jobs");
+    s.dropFolder("acc_1", "Work2");
+    expect(s.loadAiScope().accounts.get("acc_1")).toEqual({ mode: "folders", folders: ["Jobs", "Jobs/Sub"] });
+    expect(s.saveSavedSearch({ id: null, name: "A", query: "x", accountId: null, nowIso: T0 }, "s1")).toEqual({ id: "s1" });
+    expect(s.listSavedSearches().map((row) => row.position)).toEqual([0]);
+  });
+
+  it("stores Gmail labels and shows owner labels on every copy", () => {
+    const shared = { messageId: "g@example.org", gmMsgId: "5", size: 1 };
+    s.saveFolders("acc_1", [remoteFolder(INBOX, "inbox"), remoteFolder("[Gmail]/All Mail", "all")]);
+    s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, shared)]);
+    s.upsertMessages("acc_1", "[Gmail]/All Mail", [makeFetchedMessage(9, shared)]);
+    s.setGmLabels("acc_1", "[Gmail]/All Mail", [{ uid: 9, labels: ["\\Important", "Plans"] }]);
+    expect(s.getMessage(idOf(s, 1))!.labels).toEqual(["Plans"]);
+    expect(s.accountLabels("acc_1")).toEqual(["\\Important", "Plans"]);
+    expect(hitIds(s, "label:plans")).toEqual([idOf(s, 1)]);
+  });
+});
+
+// ---- Slice 3i ----
+
+/** A stored sender check of this state, built by the core from synthetic header lines. */
+function checkOf(state: "ok" | "failed" | "unchecked"): SenderCheck {
+  const results =
+    state === "ok" ? "dmarc=pass header.from=example.com" : state === "failed" ? "dmarc=fail header.from=example.com" : "spf=none";
+  return senderCheckOf(
+    [
+      { key: "received", value: "by mx.google.com" },
+      { key: "authentication-results", value: `mx.google.com; ${results}` },
+      { key: "from", value: "billing@example.com" },
+    ],
+    "gmail",
+    { name: null, address: "billing@example.com" },
+    { folderRole: "inbox" },
+  );
+}
+const FTS_BODY_WORD = "zebracrossing";
+
+describe("slice-3i migration (SQLite)", () => {
+  it("element 14 on a 3h database adds the three columns, NULL on old rows", () => {
+    const old = new Database(":memory:");
+    old.transaction(() => MIGRATIONS.slice(0, 14).forEach((statement) => old.exec(statement)))();
+    const legacy = createSqliteStore(old);
+    legacy.saveAccount(makeStoredAccount());
+    legacy.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1)]);
+
+    old.transaction(() => MIGRATIONS.slice(14).forEach((statement) => old.exec(statement)))();
+
+    expect(MIGRATIONS).toHaveLength(19);
+    const columns = (old.prepare("PRAGMA table_info(messages)").all() as { name: string }[]).map((c) => c.name);
+    expect(columns).toEqual(expect.arrayContaining(["sender_check_json", "receipt_requested", "crypto"]));
+    expect(old.prepare("SELECT sender_check_json, receipt_requested, crypto FROM messages").all()).toEqual([
+      { sender_check_json: null, receipt_requested: null, crypto: null },
+    ]);
+    const migrated = createSqliteStore(old);
+    const [row] = migrated.senderCheckRows([idOf(migrated, 1)]);
+    expect(row).toMatchObject({ senderCheckJson: null, receiptRequested: null, crypto: null });
+  });
+
+  it("element 14 holds only the three ALTERs", () => {
+    const statements = (MIGRATIONS[14] ?? "")
+      .split(";")
+      .map((part) => part.replace(/--[^\n]*/g, "").trim())
+      .filter((part) => part !== "");
+    expect(statements).toEqual([
+      "ALTER TABLE messages ADD COLUMN sender_check_json TEXT",
+      "ALTER TABLE messages ADD COLUMN receipt_requested INTEGER",
+      "ALTER TABLE messages ADD COLUMN crypto TEXT",
+    ]);
+  });
+});
+
+describe("hardenDatabase (SQLite)", () => {
+  it("turns on secure_delete and the FTS5 secure-delete option of both indexes", () => {
+    expect(db.pragma("secure_delete", { simple: true })).toBe(0);
+    expect(hardenDatabase(db)).toEqual({ pragma: true, fts: true });
+    expect(db.pragma("secure_delete", { simple: true })).toBe(1);
+    for (const table of ["messages_fts", "attachment_text_fts"]) {
+      expect(db.prepare(`SELECT v FROM ${table}_config WHERE k = 'secure-delete'`).get(), table).toEqual({ v: 1 });
+    }
+    // Repeating it each load is harmless.
+    expect(hardenDatabase(db)).toEqual({ pragma: true, fts: true });
+  });
+
+  it("reports an FTS option it could not set without throwing", () => {
+    const bare = new Database(":memory:");
+    expect(hardenDatabase(bare)).toEqual({ pragma: true, fts: false });
+  });
+});
+
+describe("slice-3i store (SQLite)", () => {
+  beforeEach(() => {
+    store.saveFolders("acc_1", [remoteFolder(INBOX, "inbox"), remoteFolder("Sent", "sent"), remoteFolder("Spam", "junk")]);
+  });
+
+  it("stores the check, receipt and crypto on upsert and leaves them alone when a fetch has none", () => {
+    store.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(1, { senderCheck: checkOf("ok"), receiptRequested: true, crypto: { kind: "smime_signed", opaque: true } }),
+    ]);
+    const id = idOf(store, 1);
+    const [row] = store.senderCheckRows([id]);
+    expect(JSON.parse(row!.senderCheckJson!)).toEqual(checkOf("ok"));
+    expect(row).toMatchObject({ receiptRequested: true, crypto: { kind: "smime_signed", opaque: true }, folderRole: "inbox", uid: 1 });
+    store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1)]);
+    expect(store.senderCheckRows([id])[0]).toMatchObject({ receiptRequested: true, crypto: { kind: "smime_signed", opaque: true } });
+    expect(store.senderCheckRows([id])[0]!.senderCheckJson).not.toBeNull();
+  });
+
+  it("stores a failed row's dev class as checked-none and keeps it out of devUnclassified", () => {
+    store.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(1, { senderCheck: checkOf("failed"), dev: { source: "github", repo: null, kind: "ci", state: "failed", ref: null } }),
+      makeFetchedMessage(2, { senderCheck: checkOf("failed") }),
+      makeFetchedMessage(3),
+    ]);
+    expect(db.prepare("SELECT dev_source FROM messages WHERE id = ?").get(idOf(store, 1))).toEqual({ dev_source: "" });
+    expect(store.getMessage(idOf(store, 1))!.dev).toBeNull();
+    expect(store.devUnclassified(10).map((r) => r.id)).toEqual([idOf(store, 3)]);
+  });
+
+  it("writeSenderCheck writes only an unknown row unless forced, and clears the dev class of a row turned failed", () => {
+    store.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(1, { dev: { source: "github", repo: null, kind: "ci", state: "failed", ref: null } }),
+    ]);
+    const id = idOf(store, 1);
+    expect(store.getMessage(id)!.dev).not.toBeNull();
+    expect(store.writeSenderCheck(id, { check: checkOf("ok"), receipt: false, crypto: null, force: false })).toBe(true);
+    expect(store.writeSenderCheck(id, { check: checkOf("failed"), receipt: true, crypto: null, force: false })).toBe(false);
+    expect(JSON.parse(store.senderCheckRows([id])[0]!.senderCheckJson!).state).toBe("ok");
+    expect(store.senderCheckRows([id])[0]!.receiptRequested).toBe(false);
+    expect(store.writeSenderCheck(id, { check: checkOf("failed"), receipt: true, crypto: null, force: true })).toBe(true);
+    expect(JSON.parse(store.senderCheckRows([id])[0]!.senderCheckJson!).state).toBe("failed");
+    expect(store.senderCheckRows([id])[0]!.receiptRequested).toBe(true);
+    expect(store.getMessage(id)!.dev).toBeNull();
+    expect(store.devUnclassified(10)).toEqual([]);
+    expect(store.writeSenderCheck("m_missing", { check: checkOf("ok"), receipt: null, crypto: null, force: true })).toBe(false);
+  });
+
+  it("writeSenderCheck holds to the folder's UIDVALIDITY when given one", () => {
+    store.saveSyncState("acc_1", INBOX, { uidValidity: 7, lastUid: 1, syncedSince: EPOCH });
+    store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1)]);
+    const id = idOf(store, 1);
+    expect(store.writeSenderCheck(id, { check: checkOf("ok"), receipt: null, crypto: null, force: false, guard: { uidValidity: 8 } })).toBe(false);
+    expect(store.writeSenderCheck(id, { check: checkOf("ok"), receipt: null, crypto: null, force: false, guard: { uidValidity: 7 } })).toBe(true);
+  });
+
+  it("a refresh that finds an encrypted row nulls its body and the search index forgets it", () => {
+    store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, { bodyText: `Hello ${FTS_BODY_WORD} there`, bodyHtml: null })]);
+    const id = idOf(store, 1);
+    expect(store.search(parseQuery(FTS_BODY_WORD), null, 10).map((hit) => hit.id)).toEqual([id]);
+    expect(
+      store.writeSenderCheck(id, { check: checkOf("unchecked"), receipt: false, crypto: { kind: "pgp_encrypted", opaque: false }, force: false }),
+    ).toBe(true);
+    expect(db.prepare("SELECT body_text, body_html, snippet, crypto FROM messages WHERE id = ?").get(id)).toEqual({
+      body_text: null,
+      body_html: null,
+      snippet: "",
+      crypto: "pgp_encrypted",
+    });
+    expect(store.search(parseQuery(FTS_BODY_WORD), null, 10)).toEqual([]);
+  });
+
+  it("never stores the body of a message upserted as encrypted", () => {
+    store.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(1, { bodyText: `Hi ${FTS_BODY_WORD}`, bodyHtml: "<p>x</p>", crypto: { kind: "smime_encrypted", opaque: false } }),
+    ]);
+    expect(db.prepare("SELECT body_text, body_html, snippet FROM messages").get()).toEqual({ body_text: null, body_html: null, snippet: "" });
+    expect(store.search(parseQuery(FTS_BODY_WORD), null, 10)).toEqual([]);
+    // A refetch that did not judge crypto keeps it out too.
+    store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, { bodyText: `Hi ${FTS_BODY_WORD}`, bodyHtml: null })]);
+    expect(db.prepare("SELECT body_text, snippet, crypto FROM messages").get()).toEqual({ body_text: null, snippet: "", crypto: "smime_encrypted" });
+    expect(store.search(parseQuery(FTS_BODY_WORD), null, 10)).toEqual([]);
+  });
+
+  it("keeps encrypted rows out of attachment text", () => {
+    const part = { partId: "2", filename: "notes.txt", mimeType: "text/plain", size: 10, isInline: false };
+    store.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(1, { attachments: [part] }),
+      makeFetchedMessage(2, { attachments: [part], crypto: { kind: "pgp_encrypted", opaque: false } }),
+      makeFetchedMessage(3, { attachments: [part], crypto: { kind: "pgp_signed", opaque: false } }),
+    ]);
+    expect(store.attachmentTextCandidates(10).map((c) => c.messageId).sort()).toEqual([idOf(store, 1), idOf(store, 3)].sort());
+  });
+
+  it("reads what the sender check and header view need", () => {
+    store.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(1, {
+        from: { name: "Billing", address: "billing@example.com" },
+        replyTo: [{ name: null, address: "help@example.net" }],
+        bodyText: "\n\n  -----BEGIN PGP MESSAGE-----\nabc",
+      }),
+    ]);
+    store.upsertMessages("acc_1", "Sent", [makeFetchedMessage(1, { messageId: "s@example.org" })]);
+    const sentId = store.localFolderIndex("acc_1", "Sent", EPOCH)[0]!.id;
+    const rows = store.senderCheckRows([idOf(store, 1), sentId, "m_missing"]);
+    expect(rows).toHaveLength(2);
+    const inbox = rows.find((row) => row.id === idOf(store, 1))!;
+    expect(inbox).toMatchObject({
+      accountId: "acc_1",
+      folder: INBOX,
+      folderRole: "inbox",
+      from: { name: "Billing", address: "billing@example.com" },
+      replyTo: [{ name: null, address: "help@example.net" }],
+      firstLine: "-----BEGIN PGP MESSAGE-----",
+    });
+    expect(rows.find((row) => row.id === sentId)!.folderRole).toBe("sent");
+  });
+
+  it("knownDomainList joins own, sent-to and Sent-folder domains, deduplicated and capped", () => {
+    db.prepare("INSERT INTO sent_recipients (account_id, address, last_sent_at) VALUES (?, ?, ?)").run("acc_1", "a@news.example.net", EPOCH);
+    db.prepare("INSERT INTO sent_recipients (account_id, address, last_sent_at) VALUES (?, ?, ?)").run("acc_1", "b@example.net", EPOCH);
+    store.upsertMessages("acc_1", "Sent", [
+      makeFetchedMessage(1, { to: [{ name: null, address: "x@Partner.Example.com" }], cc: [{ name: null, address: "y@example.co.uk" }] }),
+    ]);
+    store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, { to: [{ name: null, address: "z@inbound-only.example" }] })]);
+    const all = store.knownDomainList(5_000);
+    expect([...all].sort()).toEqual(["example.co.uk", "example.com", "example.net", "example.org"]);
+    expect(all[0]).toBe("example.org");
+    expect(store.knownDomainList(2)).toHaveLength(2);
+    expect(store.knownDomainList(0)).toEqual([]);
+  });
+});
+
+describe.each(storeKinds)("slice-3i store semantics (%s)", (_kind, make) => {
+  let s: MailStore;
+  beforeEach(() => {
+    s = make();
+    s.saveAccount(makeStoredAccount());
+    s.saveFolders("acc_1", FOLDERS_3F);
+  });
+  const idIn = (folder: string, uid: number) => s.localFolderIndex("acc_1", folder, EPOCH).find((e) => e.uid === uid)!.id;
+
+  // Slice 3i review, finding 3: a check over 2 KB is cut to fit, never dropped.
+  const longDomain = (i: number) => `${"a".repeat(63)}.${"b".repeat(63)}.${"c".repeat(63)}.${"d".repeat(50)}.s${i}.example.org`;
+  const bigFailed = (): SenderCheck => ({
+    ...checkOf("failed"),
+    spf: { result: "temperror", domain: longDomain(9) },
+    dkim: Array.from({ length: 5 }, (_, i) => ({ result: "temperror" as const, domain: longDomain(i), aligned: false })),
+    otherDmarc: Array.from({ length: 3 }, (_, i) => ({ result: "pass" as const, domain: longDomain(i + 5) })),
+  });
+  const storedBytes = (id: string) => new TextEncoder().encode(s.senderCheckRows([id])[0]!.senderCheckJson!).length;
+
+  it("shrinks a check over 2 KB to fit and keeps a failure, clearing the dev class", () => {
+    expect(new TextEncoder().encode(JSON.stringify(bigFailed())).length).toBeGreaterThan(2_048);
+    s.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(1, { senderCheck: bigFailed(), dev: { source: "github", repo: null, kind: "ci", state: "failed", ref: null } }),
+      makeFetchedMessage(2, { dev: { source: "github", repo: null, kind: "ci", state: "failed", ref: null } }),
+    ]);
+    const first = idIn(INBOX, 1);
+    expect(JSON.parse(s.senderCheckRows([first])[0]!.senderCheckJson!)).toMatchObject({ state: "failed", decidedBy: "dmarc" });
+    expect(storedBytes(first)).toBeLessThanOrEqual(2_048);
+    expect(s.getMessage(first)!.dev).toBeNull();
+
+    const second = idIn(INBOX, 2);
+    expect(s.writeSenderCheck(second, { check: bigFailed(), receipt: null, crypto: null, force: false })).toBe(true);
+    expect(JSON.parse(s.senderCheckRows([second])[0]!.senderCheckJson!).state).toBe("failed");
+    expect(storedBytes(second)).toBeLessThanOrEqual(2_048);
+    expect(s.getMessage(second)!.dev).toBeNull();
+  });
+
+  it("a forced refresh never turns a stored encrypted kind back to none once the body is gone (finding 8)", () => {
+    s.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(1, { bodyText: "-----BEGIN PGP MESSAGE-----", bodyHtml: null, crypto: { kind: "pgp_encrypted", opaque: false } }),
+      makeFetchedMessage(2, { crypto: { kind: "smime_signed", opaque: false } }),
+    ]);
+    // The refresh judges inline armor from the stored body's first line, which is NULL now.
+    expect(s.writeSenderCheck(idIn(INBOX, 1), { check: checkOf("unchecked"), receipt: false, crypto: null, force: true })).toBe(true);
+    expect(s.senderCheckRows([idIn(INBOX, 1)])[0]!.crypto).toEqual({ kind: "pgp_encrypted", opaque: false });
+    // Anything else is still overwritten with force.
+    expect(s.writeSenderCheck(idIn(INBOX, 2), { check: checkOf("unchecked"), receipt: false, crypto: null, force: true })).toBe(true);
+    expect(s.senderCheckRows([idIn(INBOX, 2)])[0]!.crypto).toBeNull();
+  });
+
+  it("writes checks where unknown, forces on request and drops failed rows from dev backfill", () => {
+    s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1), makeFetchedMessage(2, { senderCheck: checkOf("failed") })]);
+    expect(s.devUnclassified(10).map((r) => r.id)).toEqual([idIn(INBOX, 1)]);
+    expect(s.writeSenderCheck(idIn(INBOX, 1), { check: checkOf("ok"), receipt: true, crypto: null, force: false })).toBe(true);
+    expect(s.writeSenderCheck(idIn(INBOX, 1), { check: checkOf("failed"), receipt: null, crypto: null, force: false })).toBe(false);
+    expect(s.writeSenderCheck(idIn(INBOX, 1), { check: checkOf("failed"), receipt: null, crypto: null, force: true })).toBe(true);
+    expect(s.devUnclassified(10)).toEqual([]);
+    const [row] = s.senderCheckRows([idIn(INBOX, 1)]);
+    expect(row).toMatchObject({ receiptRequested: true, folderRole: "inbox" });
+    expect(JSON.parse(row!.senderCheckJson!).state).toBe("failed");
+  });
+
+  it("knows the domains the owner writes to and owns", () => {
+    s.upsertMessages("acc_1", "Sent", [makeFetchedMessage(1, { to: [{ name: null, address: "x@mail.example.com" }] })]);
+    expect([...s.knownDomainList(100)].sort()).toEqual(["example.com", "example.org"]);
+  });
+});
+
+describe("slice 3j: rethreading only what changed", () => {
+  let db: Database.Database;
+  let s: MailStore;
+  const threadRows = () =>
+    db.prepare("SELECT * FROM threads ORDER BY id").all() as Record<string, unknown>[];
+  const rethread = () => s.assignThreads("acc_1", buildThreads(s.threadingInputs("acc_1")));
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    migrate(db);
+    s = createSqliteStore(db);
+    s.saveAccount(makeStoredAccount());
+  });
+
+  it("is stale until threads are assigned, and again after an insert or a delete", () => {
+    expect(s.threadsStale("acc_1")).toBe(true);
+    s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1)]);
+    rethread();
+    expect(s.threadsStale("acc_1")).toBe(false);
+
+    s.applyFlags("acc_1", INBOX, [{ uid: 1, seen: true, flagged: false }]);
+    expect(s.threadsStale("acc_1")).toBe(false);
+
+    s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(2)]);
+    expect(s.threadsStale("acc_1")).toBe(true);
+    rethread();
+    s.deleteByUids("acc_1", INBOX, [2]);
+    expect(s.threadsStale("acc_1")).toBe(true);
+  });
+
+  it("keeps the thread rows equal to a full rebuild as rows join, leave and change", () => {
+    s.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(1, { subject: "Invented plan", date: "2026-11-11T10:00:00.000Z" }),
+      makeFetchedMessage(2, { subject: "Invented lunch", date: "2026-11-11T11:00:00.000Z" }),
+    ]);
+    rethread();
+    // Second assignment is incremental: a reply joins the first thread.
+    s.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(3, {
+        subject: "Re: Invented plan",
+        date: "2026-11-12T10:00:00.000Z",
+        inReplyTo: "msg-1@example.org",
+        references: ["msg-1@example.org"],
+      }),
+    ]);
+    rethread();
+    s.applyFlags("acc_1", INBOX, [{ uid: 3, seen: true, flagged: true }]);
+    s.deleteByUids("acc_1", INBOX, [2]);
+    rethread();
+
+    const incremental = threadRows();
+    expect(incremental).toHaveLength(1);
+    expect(incremental[0]).toMatchObject({ message_count: 2 });
+    expect(s.repairThreads("acc_1")).toBe(1);
+    expect(threadRows()).toEqual(incremental);
+  });
+
+  it(
+    "rethreads one new message in a 20,000-row account without rewriting every thread row",
+    () => {
+      // 50,000 rows when MAIL_SCALE=1 is set (measured by hand, not in `npm run check`).
+      const rows = process.env.MAIL_SCALE === "1" ? 50_000 : 20_000;
+      const start = Date.UTC(2026, 0, 1);
+      for (let from = 0; from < rows; from += 5_000) {
+        s.upsertMessages(
+          "acc_1",
+          INBOX,
+          Array.from({ length: 5_000 }, (_, i) =>
+            makeFetchedMessage(from + i + 1, {
+              messageId: `scale-${from + i}@example.org`,
+              date: new Date(start + (from + i) * 60_000).toISOString(),
+            }),
+          ),
+        );
+      }
+      rethread();
+      s.upsertMessages("acc_1", INBOX, [
+        makeFetchedMessage(rows + 1, {
+          messageId: "scale-new@example.org",
+          inReplyTo: "scale-7@example.org",
+          references: ["scale-7@example.org"],
+        }),
+      ]);
+      const inputs = s.threadingInputs("acc_1");
+      const threadOf = buildThreads(inputs);
+      const deletes: string[] = [];
+      db.function("mail_test_note", (id: string) => {
+        deletes.push(id);
+        return 0;
+      });
+      db.exec(
+        "CREATE TEMP TRIGGER note_thread_delete AFTER DELETE ON threads BEGIN SELECT mail_test_note(old.id); END",
+      );
+      const { ms } = timeOne(() => s.assignThreads("acc_1", threadOf));
+      // The reply's own thread and the one it joined: nothing else is rewritten.
+      expect(deletes.length).toBeLessThanOrEqual(2);
+      expect(ms).toBeLessThan(ROUND_MS);
+      expect(count(db, "threads")).toBe(rows);
+      expect(timeOne(() => s.threadsStale("acc_1")).ms).toBeLessThan(PAGE_MS);
+    },
+    SEEDING_TIMEOUT_MS * 3,
+  );
+
+  it("rebuilds every thread row on the first assignment after a load", () => {
+    s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1)]);
+    rethread();
+    db.prepare("UPDATE threads SET message_count = 99").run();
+    const reloaded = createSqliteStore(db);
+    reloaded.assignThreads("acc_1", buildThreads(reloaded.threadingInputs("acc_1")));
+    expect(threadRows()[0]).toMatchObject({ message_count: 1 });
+  });
+});
+
+describe("slice 3k: OpenPGP keys in the store", () => {
+  let db: Database.Database;
+  let s: MailStore;
+  const key = (id: string, kind: "own" | "contact", fingerprint: string) => ({
+    id,
+    kind,
+    fingerprint,
+    addresses: ["owner@example.org"],
+    userIds: ["Owner <owner@example.org>"],
+    publicArmor: "invented public armor",
+    createdAt: "2026-11-17T10:00:00.000Z",
+    expiresAt: null,
+    addedAt: "2026-11-17T10:00:00.000Z",
+    source: "generated" as const,
+  });
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    migrate(db);
+    s = createSqliteStore(db);
+  });
+
+  it("keeps the private half out of every row and returns it sealed for an own key only", () => {
+    expect(s.savePgpKey(key("pgp_1", "own", "AA"), "sealed-own")).toBe("saved");
+    expect(s.savePgpKey(key("pgp_2", "contact", "AA"), "sealed-ignored")).toBe("saved");
+    expect(s.savePgpKey(key("pgp_3", "own", "AA"), "x")).toBe("exists");
+    expect(s.listPgpKeys().map((row) => row.id)).toEqual(["pgp_1", "pgp_2"]);
+    expect(JSON.stringify(s.listPgpKeys())).not.toContain("sealed");
+    expect(JSON.stringify(s.getPgpKey("pgp_1"))).not.toContain("sealed");
+    expect(s.pgpPrivateSealed("pgp_1")).toBe("sealed-own");
+    expect(s.pgpPrivateSealed("pgp_2")).toBeNull();
+    expect(s.pgpPrivateSealed("nope")).toBeNull();
+    expect(s.deletePgpKey("pgp_1")).toBe(true);
+    expect(s.deletePgpKey("pgp_1")).toBe(false);
+    expect(s.getPgpKey("pgp_1")).toBeNull();
   });
 });

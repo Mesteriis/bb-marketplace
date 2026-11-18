@@ -67,7 +67,7 @@ function fakePorts() {
     upload: {
       begin: vi.fn(async () => ({ uploadId: "up-1" })),
       chunk: vi.fn(async () => ({ received: 0 })),
-      finish: vi.fn(async () => ({ id: "att-9", fileName: "shot.png", mimeType: "image/png", size: 4 })),
+      finish: vi.fn(async () => ({ id: "att-9", fileName: "shot.png", mimeType: "image/png", size: 4, origin: null })),
     },
     removeAttachment: vi.fn(async () => undefined),
     suggest: vi.fn(async () => []),
@@ -174,6 +174,26 @@ describe("Composer", () => {
     expect((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
+  it("Send later sends the picked time with the send (slice 3l)", async () => {
+    const { ports, onSent } = mount();
+    addRecipient();
+    fireEvent.click(screen.getByRole("button", { name: "Send later" }));
+    const before = Date.now();
+    fireEvent.click(await screen.findByRole("button", { name: /^In an hour/ }));
+    await waitFor(() => expect(onSent).toHaveBeenCalledTimes(1));
+    const input = ports.send.mock.calls[0]![0] as { sendAt?: string };
+    const ahead = Date.parse(input.sendAt!) - before;
+    expect(ahead).toBeGreaterThanOrEqual(3_600_000 - 1_000);
+    expect(ahead).toBeLessThan(3_600_000 + 60_000);
+    // A plain Send after that carries no time.
+    cleanup();
+    const again = mount();
+    addRecipient();
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(again.onSent).toHaveBeenCalledTimes(1));
+    expect("sendAt" in (again.ports.send.mock.calls[0]![0] as object)).toBe(false);
+  });
+
   it("refuses to send with an invalid address", async () => {
     const { ports } = mount();
     addRecipient("not-an-address");
@@ -223,6 +243,29 @@ describe("Composer", () => {
     fireEvent.keyDown(subject(), { key: "Enter", metaKey: true });
     await waitFor(() => expect(onSent).toHaveBeenCalled());
     expect(ports.send).toHaveBeenCalledTimes(1);
+  });
+
+  it("slice 3i: Shift+Command+D sends on a Mac, through the same path, and not elsewhere", async () => {
+    const mac = mount({ mac: true });
+    addRecipient();
+    fireEvent.keyDown(subject(), { key: "\u0432", code: "KeyD", metaKey: true, shiftKey: true });
+    await waitFor(() => expect(mac.onSent).toHaveBeenCalled());
+    expect(mac.ports.send).toHaveBeenCalledTimes(1);
+    cleanup();
+
+    const pc = mount({ mac: false });
+    addRecipient();
+    fireEvent.keyDown(subject(), { key: "D", code: "KeyD", metaKey: true, shiftKey: true });
+    fireEvent.keyDown(subject(), { key: "D", code: "KeyD", ctrlKey: true, shiftKey: true });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(pc.ports.send).not.toHaveBeenCalled();
+    cleanup();
+
+    const extra = mount({ mac: true });
+    addRecipient();
+    fireEvent.keyDown(subject(), { key: "D", code: "KeyD", metaKey: true, shiftKey: true, altKey: true });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(extra.ports.send).not.toHaveBeenCalled();
   });
 
   it("closes on Escape when nothing changed, dropping an untouched new draft", async () => {
@@ -613,6 +656,16 @@ describe("Composer: identities, signatures, checks and templates (slice 3d)", ()
     expect(ports.send).not.toHaveBeenCalled();
   });
 
+  it("slice 3i: Before you send lists a Reply-To that goes elsewhere", async () => {
+    const ports = checkPorts([{ kind: "reply_to_elsewhere", addresses: ["help@example.net"] }]);
+    mount({}, ports as never);
+    addRecipient();
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    const dialog = await screen.findByRole("dialog", { name: "Before you send" });
+    expect(dialog.textContent).toContain("Reply-To differs from the sender: help@example.net");
+    expect(ports.send).not.toHaveBeenCalled();
+  });
+
   const TEMPLATES = [
     { id: "tpl-1", name: "Thanks", doc: { type: "doc", content: [p("Thank you, made-up text.")] }, updatedAt: "2026-11-10T09:00:00.000Z" },
     { id: "tpl-2", name: "Follow-up", doc: { type: "doc", content: [p("Following up, invented.")] }, updatedAt: "2026-11-10T09:00:00.000Z" },
@@ -753,5 +806,84 @@ describe("Composer: Improve and reply reminders (slice 3f)", () => {
     const button = screen.getByRole("button", { name: /Improve/ }) as HTMLButtonElement;
     expect(button.disabled).toBe(true);
     expect(button.closest("span")?.getAttribute("title")).toBe("AI features need the Makosh AI plugin");
+  });
+});
+
+describe("Composer: files from BB (slice 3g)", () => {
+  it("Attach from BB opens the project picker and adds what it attached", async () => {
+    const calls: { method: string; input: unknown }[] = [];
+    const call = (async (method: string, input: unknown) => {
+      calls.push({ method, input });
+      if (method === "projects_list") return { projects: [{ id: "p-api", name: "api", kind: "local", hasTree: true, repo: null }] };
+      if (method === "project_files") return { files: [{ name: "a.txt", path: "a.txt" }], truncated: false };
+      if (method === "compose_attach_bb") return { id: "att-9", fileName: "a.txt", mimeType: "text/plain", size: 5, origin: "bb:project:p-api" };
+      throw new Error(method);
+    }) as never;
+    mount({ bbFiles: { call, projectId: "p-api", threadId: null } });
+    fireEvent.click(screen.getByRole("button", { name: "Attach from BB \u25be" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "From a project\u2026" }));
+    fireEvent.click(await screen.findByLabelText("a.txt"));
+    fireEvent.click(screen.getByRole("button", { name: "Attach" }));
+    expect(await screen.findByText("from a BB project")).toBeTruthy();
+    expect(calls.find((c) => c.method === "compose_attach_bb")?.input).toMatchObject({ source: { kind: "project", projectId: "p-api", path: "a.txt" } });
+  });
+
+  it("offers no BB attach without the integration", () => {
+    mount();
+    expect(screen.queryByRole("button", { name: "Attach from BB \u25be" })).toBeNull();
+  });
+});
+
+describe("Composer: OpenPGP (slice 3k)", () => {
+  const withPgp = (answer: { canSign: boolean; missing: string[] }) => {
+    const ports = { ...fakePorts(), pgpCheck: vi.fn(async (_from: string, _recipients: string[]) => answer) };
+    return ports;
+  };
+
+  it("shows no OpenPGP row without the port, and sends as before", async () => {
+    const { ports, onSent } = mount();
+    addRecipient();
+    expect(screen.queryByRole("group", { name: "OpenPGP" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(onSent).toHaveBeenCalledTimes(1));
+    expect(ports.send.mock.calls[0]![0]).not.toHaveProperty("protect");
+  });
+
+  it("signs and encrypts when ticked, asking with the From and the recipients", async () => {
+    const ports = withPgp({ canSign: true, missing: [] });
+    const { onSent } = mount({}, ports);
+    addRecipient();
+    const group = await screen.findByRole("group", { name: "OpenPGP" });
+    await waitFor(() => expect(ports.pgpCheck).toHaveBeenLastCalledWith(account.email, ["ada@example.org"]));
+    // Off until the owner ticks them.
+    expect(group.textContent).not.toContain("The subject and the addresses are not encrypted.");
+    fireEvent.click(screen.getByRole("checkbox", { name: "Sign with OpenPGP" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Encrypt with OpenPGP" }));
+    expect(group.textContent).toContain("The subject and the addresses are not encrypted.");
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(onSent).toHaveBeenCalledTimes(1));
+    expect(ports.send.mock.calls[0]![0]).toMatchObject({ protect: { sign: true, encrypt: true } });
+  });
+
+  it("cannot encrypt to a recipient without a key, and says who", async () => {
+    const ports = withPgp({ canSign: true, missing: ["ada@example.org"] });
+    const { onSent } = mount({}, ports);
+    addRecipient();
+    const group = await screen.findByRole("group", { name: "OpenPGP" });
+    await waitFor(() => expect(group.textContent).toContain("No OpenPGP key for: ada@example.org"));
+    expect((screen.getByRole("checkbox", { name: "Encrypt with OpenPGP" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole("checkbox", { name: "Sign with OpenPGP" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(onSent).toHaveBeenCalledTimes(1));
+    expect(ports.send.mock.calls[0]![0]).toMatchObject({ protect: { sign: true, encrypt: false } });
+  });
+
+  it("offers nothing to tick for an address with no key", async () => {
+    const ports = withPgp({ canSign: false, missing: [] });
+    mount({}, ports);
+    addRecipient();
+    await screen.findByRole("group", { name: "OpenPGP" });
+    expect((screen.getByRole("checkbox", { name: "Sign with OpenPGP" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("checkbox", { name: "Encrypt with OpenPGP" }) as HTMLButtonElement).disabled).toBe(true);
   });
 });

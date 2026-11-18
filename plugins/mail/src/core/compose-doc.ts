@@ -15,15 +15,25 @@ export type DocNodeInput = {
 export type DocMarkInput = { type: string; attrs?: Record<string, unknown> | null };
 
 export type ComposeMark =
-  | { type: "bold" | "italic" | "underline" }
+  | { type: "bold" | "italic" | "underline" | "code" }
   | { type: "link"; attrs: { href: string } };
 export type ComposeInline =
   | { type: "text"; text: string; marks?: ComposeMark[] }
   | { type: "hardBreak" };
 export type ComposeParagraph = { type: "paragraph"; content?: ComposeInline[] };
 export type ComposeListItem = { type: "listItem"; content: ComposeBlock[] };
+/**
+ * A code block (slice 3g): its text verbatim (line breaks and tabs kept, no
+ * marks), the language a short lower-case word or null.
+ */
+export type ComposeCodeBlock = {
+  type: "codeBlock";
+  attrs: { language: string | null };
+  content?: { type: "text"; text: string }[];
+};
 export type ComposeBlock =
   | ComposeParagraph
+  | ComposeCodeBlock
   | { type: "bulletList" | "orderedList"; content: ComposeListItem[] }
   | { type: "blockquote"; content: ComposeBlock[] };
 /**
@@ -42,7 +52,9 @@ const TEXT_WIDTH = 76;
 const MIN_WIDTH = 20;
 const HREF_MAX = 2048;
 const LINK_PROTOCOLS = new Set(["http:", "https:", "mailto:"]);
-const BLOCK_TYPES = new Set(["paragraph", "bulletList", "orderedList", "listItem", "blockquote", "signature"]);
+const BLOCK_TYPES = new Set(["paragraph", "bulletList", "orderedList", "listItem", "blockquote", "signature", "codeBlock"]);
+/** A code block's language: a short word of lower-case letters, digits, +, # and -. */
+const LANGUAGE = /^[a-z0-9+#-]{1,32}$/;
 /** The fixed class of the signature's `div`; the page never supplies attributes. */
 export const SIGNATURE_CLASS = "makosh-signature";
 
@@ -107,7 +119,7 @@ function boundsProblem(value: unknown): string | null {
 
 /**
  * Keeps doc, paragraph, text, hardBreak, bulletList, orderedList, listItem,
- * blockquote and the bold, italic, underline and link marks. Unknown nodes
+ * blockquote, codeBlock and the bold, italic, underline, code and link marks. Unknown nodes
  * and marks are stripped and their text kept; a link keeps its href only
  * for http, https and mailto; the structure is repaired so TipTap can load
  * the result again. At most one top-level `signature` is kept, holding
@@ -162,18 +174,33 @@ export function ownerParagraphs(doc: ComposeDoc): { paragraphs: string[]; marks:
   for (const block of doc.content) {
     if (block.type === "blockquote" || block.type === "signature") break;
     if (block.type === "paragraph") paragraphs.push(text(block));
-    else paragraphs.push(flattenParagraphs(block.content).map(text).join("\n"));
+    else if (block.type === "codeBlock") {
+      // Apply writes paragraphs: the code formatting is lost, so it counts as a mark.
+      marks = true;
+      paragraphs.push(codeText(block));
+    } else paragraphs.push(flattenParagraphs(block.content).map(text).join("\n"));
   }
   return { paragraphs, marks };
 }
 
-/** Every paragraph of the blocks, in order: lists and quotes are opened up. */
+/** Every paragraph of the blocks, in order: lists and quotes are opened up, a code block becomes one paragraph. */
 export function flattenParagraphs(list: (ComposeBlock | ComposeListItem | ComposeSignature)[]): ComposeParagraph[] {
   return list.flatMap((block) =>
     block.type === "paragraph"
       ? [block]
-      : flattenParagraphs(block.content as (ComposeBlock | ComposeListItem)[]),
+      : block.type === "codeBlock"
+        ? [codeParagraph(block)]
+        : flattenParagraphs(block.content as (ComposeBlock | ComposeListItem)[]),
   );
+}
+
+/** A code block's whole text. */
+export function codeText(block: ComposeCodeBlock): string {
+  return (block.content ?? []).map((node) => node.text).join("");
+}
+
+function codeParagraph(block: ComposeCodeBlock): ComposeParagraph {
+  return paragraph(inlines([{ type: "text", text: codeText(block) }]));
 }
 
 function blocks(nodes: DocNodeInput[]): ComposeBlock[] {
@@ -205,6 +232,10 @@ function blocks(nodes: DocNodeInput[]): ComposeBlock[] {
       case "listItem":
         flush();
         out.push(...blocks(node.content ?? []));
+        break;
+      case "codeBlock":
+        flush();
+        out.push(codeBlock(node));
         break;
       case "text":
       case "hardBreak":
@@ -247,6 +278,28 @@ function listItems(nodes: DocNodeInput[]): ComposeListItem[] {
   return items;
 }
 
+/** The text of every text and hardBreak node below, marks dropped. */
+function plainOf(nodes: DocNodeInput[]): string {
+  return nodes
+    .map((node) =>
+      node.type === "text" ? (node.text ?? "") : node.type === "hardBreak" ? "\n" : plainOf(node.content ?? []),
+    )
+    .join("");
+}
+
+function codeBlock(node: DocNodeInput): ComposeCodeBlock {
+  const raw = node.attrs?.language;
+  const lower = typeof raw === "string" ? raw.trim().toLowerCase() : "";
+  const language = LANGUAGE.test(lower) ? lower : null;
+  // Code keeps tabs and line breaks; other control characters go.
+  const text = plainOf(node.content ?? [])
+    .replace(/\r\n?/g, "\n")
+    .replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, "");
+  return text === ""
+    ? { type: "codeBlock", attrs: { language } }
+    : { type: "codeBlock", attrs: { language }, content: [{ type: "text", text }] };
+}
+
 function paragraph(content: ComposeInline[]): ComposeParagraph {
   return content.length > 0 ? { type: "paragraph", content } : { type: "paragraph" };
 }
@@ -284,7 +337,7 @@ function normalizeMarks(marks: DocMarkInput[]): ComposeMark[] {
   const out: ComposeMark[] = [];
   for (const mark of marks) {
     if (out.some((kept) => kept.type === mark.type)) continue;
-    if (mark.type === "bold" || mark.type === "italic" || mark.type === "underline") {
+    if (mark.type === "bold" || mark.type === "italic" || mark.type === "underline" || mark.type === "code") {
       out.push({ type: mark.type });
     } else if (mark.type === "link") {
       const href = safeHref(mark.attrs?.href);
@@ -309,7 +362,7 @@ function safeHref(raw: unknown): string | null {
 }
 
 const KEPT_NODES = new Set(["doc", "text", "hardBreak", ...BLOCK_TYPES]);
-const KEPT_MARKS = new Set(["bold", "italic", "underline", "link"]);
+const KEPT_MARKS = new Set(["bold", "italic", "underline", "code", "link"]);
 
 /**
  * True when normalizeDoc would drop something of this document: a node or
@@ -334,6 +387,8 @@ export function docLosesContent(input: DocNodeInput): boolean {
 const FITTING_TAGS = new Set([
   "html", "head", "body", "meta", "title", "p", "br", "div", "span",
   "ul", "ol", "li", "blockquote", "b", "strong", "i", "em", "u", "a",
+  // Slice 3g: the editor keeps code blocks and inline code.
+  "pre", "code",
 ]);
 /** Attributes that carry no formatting or content. */
 const FITTING_ATTRS = new Set(["href", "target", "rel", "class", "id", "dir", "lang", "name", "title", "charset", "content", "http-equiv", "type", "start"]);
@@ -390,11 +445,10 @@ function lineParagraph(line: string): ComposeParagraph {
 
 /** True when the document holds no visible text. */
 export function isDocEmpty(doc: ComposeDoc): boolean {
-  const stack: (ComposeBlock | ComposeListItem | ComposeInline)[] = doc.content.filter(
-    (block): block is ComposeBlock => block.type !== "signature",
-  );
+  type Node = ComposeBlock | ComposeListItem | ComposeInline | { type: "text"; text: string };
+  const stack: Node[] = doc.content.filter((block): block is ComposeBlock => block.type !== "signature");
   while (stack.length > 0) {
-    const node = stack.pop() as ComposeBlock | ComposeListItem | ComposeInline;
+    const node = stack.pop() as Node;
     if (node.type === "text") {
       if (node.text.trim() !== "") return false;
     } else if (node.type !== "hardBreak") {
@@ -469,6 +523,11 @@ function blockHtml(block: ComposeBlock | ComposeListItem): string {
       return `<li>${block.content.map(blockHtml).join("")}</li>`;
     case "blockquote":
       return `<blockquote>${block.content.map(blockHtml).join("")}</blockquote>`;
+    case "codeBlock": {
+      const language = block.attrs.language;
+      const open = language === null ? "<code>" : `<code class="language-${escapeHtml(language)}">`;
+      return `<pre>${open}${escapeHtml(codeText(block))}</code></pre>`;
+    }
   }
 }
 
@@ -476,6 +535,7 @@ function inlineHtml(node: ComposeInline): string {
   if (node.type === "hardBreak") return "<br>";
   let html = escapeHtml(node.text);
   const marks = node.marks ?? [];
+  if (marks.some((mark) => mark.type === "code")) html = `<code>${html}</code>`;
   for (const type of ["underline", "italic", "bold"] as const) {
     if (marks.some((mark) => mark.type === type)) {
       html = `<${MARK_TAGS[type]}>${html}</${MARK_TAGS[type]}>`;
@@ -517,6 +577,9 @@ function blockText(block: ComposeBlock, width: number): string[] {
       return blocksText(block.content, Math.max(MIN_WIDTH, width - 2), "\n\n").map((line) =>
         line === "" ? ">" : `> ${line}`,
       );
+    case "codeBlock":
+      // Verbatim: never wrapped, so the code still runs after a copy.
+      return codeText(block).split("\n");
   }
 }
 
@@ -541,8 +604,9 @@ function paragraphText(content: ComposeInline[]): string[] {
     const href = linkOf(node);
     if (href !== runHref) closeRun();
     runHref = href;
+    const shown = (node.marks ?? []).some((mark) => mark.type === "code") ? `\`${node.text}\`` : node.text;
     runText += node.text;
-    lines[lines.length - 1] += node.text;
+    lines[lines.length - 1] += shown;
   }
   closeRun();
   return lines;

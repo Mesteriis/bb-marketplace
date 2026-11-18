@@ -1198,3 +1198,30 @@ These override the sections above. Items marked *(owner defaults)* were decided 
 17. **Gmail labels and chosen folders** (gap). On a Gmail account in **Chosen folders** mode, a message is in scope when any of its copies sits in a chosen folder (the dedup picks the in-scope copy); with All Mail chosen, every message is. The settings view states it under the picker: "Gmail: a message is shared when any of its labels or All Mail is chosen".
 18. **Element 9 is pinned with element 10** (replaces "element 9's hash joins the SHA pin in this slice's store task"). The store task leaves the pin at `MIGRATIONS.slice(0, 9)`; the docs-and-listing task pins elements 9 and 10 (`MIGRATIONS.slice(0, 11)`). Element 10 includes `digests.notified_at` and `reply_reminders.notified_at` (resolution 14).
 19. **Timing tests measure one page** (gap). The existing "listThreads by folder stays fast for a few thousand messages" test in `sqlite-store.test.ts` flakes under parallel load: it times each `listThreads` page call alone with a generous bound (250 ms per page) and never times seeding; `listFolders` and `unreadCount` are timed one call each. Every new timing test (the category filter at 5 000+ threads, the scope function, the redaction linear-time check) follows the same rule.
+
+## Resolutions after the review
+
+These override the sections and resolutions above. Each was verified against the code first and has a regression test.
+
+1. **A value under its label across blank lines** (refines resolution 10). HTML mail becomes text with blank lines around `<p>`, `<h1>` and `<table>`, so the label window crosses them: the first non-blank line above a value counts within 200 characters, and for a value alone on its line the second non-blank line too. CRLF counts as a line end. Split codes alone on a line under a label may be 2–4 groups of 2–4 digits (`12 34 56`). The canary test gains an HTML sign-in mail (`<p>Enter this code to finish signing in:</p><h1>…</h1>`), a plain "Your code:" one and a Russian one with CRLF, under neutral subjects, read through `mail_read`, CLI `read`, the mention and Hand to agent.
+2. **More shapes and fewer false positives** (adds to "Detectors" and resolutions 10–11).
+   - A password label's value runs to the end of its line (at most 128 characters), or is the quoted text when it starts with a quote; values after it on that line are hidden with it and counted once. A password label without a separator hides the next run only when it reads as a secret (a digit, a symbol or an inner capital). `pass` joins the labels. The value may sit under blank lines.
+   - URLs: a path segment of 6+ characters with a digit or mixed case after `reset`, `verify`, `confirm`, `activate`, `magic`, `login`, `r` or `t`; a `t` parameter of 6+ (the `k` rule stays at 16+); user info before `@` (the password, or all of it without a colon).
+   - Card and code groups may be joined by a no-break, narrow no-break or thin space, or by two spaces.
+   - `Authorization: Basic|Bearer` values; a standalone `Bearer` value of 16+ with a digit. SendGrid `SG.x.y` keys whole.
+   - IBANs (two letters, two digits, 11–30 more, in one run or in groups of up to four) that pass the mod-97 check, hidden as the card kind: no new kind, so the placeholder grammar, prompts and counts stay.
+   - Recovery or backup code lists: every code (4–20 letters, digits and hyphens with a digit) on the lines under the label, list markers allowed. Seed phrases: 12+ lower-case words after a seed, recovery, secret or backup phrase or mnemonic label, on its line or the lines under it.
+   - Full-width digits and colon are read as ASCII for detection (same length, so placeholders land on the original).
+   - Left: `code` or `код` after `zip`, `postal`, `post` or `error`, or before `of conduct`, `товара`, `ошибки`; hexadecimal after the word `commit` and a hex segment after `/commit/` or `/commits/`; an issue key (`PROJ-1234`) after a key or token label.
+   - Every new detector is a bounded forward scan; the linear-time test covers each.
+3. **The Ask log lists what was sent** (refines "Agent and AI action log"). The `ai_ask` row is written at start (the plan sends the question only) and updated after step 2 with the excerpt message ids, their count and the hidden count (store `setAgentLogSources`). `ai_translate` rows log the job's hidden count.
+4. **A snoozed reminder is announced again** (refines resolution 14). The notice book keys a reminder by id and due time, so a reminder snoozed after its first notice publishes `mail-day` when it turns due again.
+5. **No credential-format literals in the working tree.** Test fixtures shaped like a GitHub token, an OpenAI-style key, an AWS key id or PEM armour are joined from pieces at run time. Commits 19ef941, 8ec9ff5 and 5bd4d12 still hold such literals; rewriting them before a push or a `.gitleaksignore` at the repository root is the owner's call.
+6. **extractJson moves past an unbalanced brace** (refines resolution 13): it tries the next `{`, within the existing 20 starts.
+7. **Smaller fixes.**
+   - `day_notice_get` answers nothing inside quiet hours and leaves the notice unshown; the clock announces every unshown notice again at its first tick after quiet hours.
+   - Gmail chosen folders (resolution 17): `mail_inbox` lists, and `mail_triage` accepts, an Inbox message whose All Mail copy is in scope. A Spam or Trash copy lends no scope.
+   - New rows or threads mark the excluded-conversation set stale; the next scoped read rebuilds it, so a conversation an excluded sender joins is out before the round ends, or when it fails.
+   - A reply that names the sent Message-ID answers a reminder when dated up to 24 hours before the send (a skewed clock).
+   - Dismissed reminders are purged 30 days after their last change, as answered ones are. A queued reminder whose outbox row is `failed` does not count toward the 500 live reminders until a retry queues it again.
+   - Unchanged: CLI calls outside a thread are not logged (resolution 16).

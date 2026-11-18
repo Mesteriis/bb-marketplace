@@ -14,7 +14,8 @@ import {
 } from "./identities.ts";
 import type { DraftRecord, StoredAccount } from "./model.ts";
 import type { MailStore } from "./ports.ts";
-import { inheritedSubject, presendIssues, type PresendIssue } from "./presend.ts";
+import { bbOriginLabels, inheritedSubject, presendIssues, type PresendIssue } from "./presend.ts";
+import { replyToElsewhereOf, type KnownSource } from "./sender-view.ts";
 import { normalizeTemplate, templateName, templateNameKey } from "./templates.ts";
 
 /**
@@ -201,20 +202,31 @@ export function deleteTemplate(store: MailStore, id: string): { ok: true } {
  * The advisory issues of the saved draft (spec "Pre-send check"); `conflict`
  * when the page's revision is not the saved one. Never refuses a send.
  */
-export function checkDraft(store: MailStore, draft: DraftRecord, baseRevision: number): PresendIssue[] {
+export function checkDraft(
+  store: MailStore,
+  draft: DraftRecord,
+  baseRevision: number,
+  projectNames?: ReadonlyMap<string, string>,
+  known?: KnownSource,
+): PresendIssue[] {
   if (draft.revision !== baseRevision) throw new ComposeError("conflict");
   const recipients = [...draft.to, ...draft.cc, ...draft.bcc].map((a) => a.address);
   const reply = draft.kind === "reply" || draft.kind === "reply_all";
+  const attachments = store.listAttachments(draft.id);
+  const own = new Set(ownAddresses(store));
   return presendIssues({
     kind: draft.kind,
     subject: draft.subject,
     doc: draft.doc,
-    attachmentCount: store.listAttachments(draft.id).length,
+    attachmentCount: attachments.length,
+    bbOrigins: bbOriginLabels(attachments, projectNames),
     recipients,
-    own: new Set(ownAddresses(store)),
+    own,
     sentTo: store.addressesSentTo(recipients),
     conversation: reply && draft.sourceMessageId !== null ? store.conversationAddresses(draft.sourceMessageId) : null,
     inheritedSubject: inheritedSubject(draft.kind, sourceSubject(store, draft)),
+    // Slice 3i (resolution 17): the source's flagged Reply-To addresses, computed here, not in the page.
+    replyToElsewhere: reply && draft.sourceMessageId !== null ? replyToElsewhereOf(store, draft.sourceMessageId, own, known) : [],
   });
 }
 

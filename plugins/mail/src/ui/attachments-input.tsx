@@ -6,6 +6,7 @@ import type { ComposeAttachment } from "../core/model.ts";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
+import { tx } from "./i18n/index.ts";
 
 /**
  * Largest decoded chunk the server takes (core contract UPLOAD_CHUNK_BYTES).
@@ -89,6 +90,14 @@ export interface PendingUpload {
   error: string | null;
 }
 
+/** Where a BB file came from (slice 3g): "from a BB project" or "from a BB thread"; null for uploads. */
+export function originLabel(origin: string | null | undefined): string | null {
+  if (origin === null || origin === undefined) return null;
+  if (origin.startsWith("bb:project:")) return "from a BB project";
+  if (origin.startsWith("bb:thread:")) return "from a BB thread";
+  return "from BB";
+}
+
 export interface AttachmentsInputProps {
   attachments: readonly ComposeAttachment[];
   uploads: readonly PendingUpload[];
@@ -122,7 +131,7 @@ export function AttachButton({ onAdd, disabled }: Pick<AttachmentsInputProps, "o
         variant="ghost"
         size="icon"
         className="size-8"
-        aria-label="Attach files"
+        aria-label={tx("Attach files")}
         disabled={disabled}
         onClick={() => inputRef.current?.click()}
       >
@@ -140,7 +149,7 @@ export function AttachmentChips({
 }: Omit<AttachmentsInputProps, "onAdd">) {
   if (attachments.length === 0 && uploads.length === 0) return null;
   return (
-    <ul aria-label="Attachments" className="flex flex-wrap gap-2 px-3 py-2">
+    <ul aria-label={tx("Attachments")} className="flex flex-wrap gap-2 px-3 py-2">
       {attachments.map((attachment) => (
         <li
           key={attachment.id}
@@ -148,10 +157,11 @@ export function AttachmentChips({
         >
           <Icon name="Paperclip" className="size-3.5 shrink-0" aria-hidden />
           <span className="min-w-0 truncate text-foreground">{attachment.fileName}</span>
+          {originLabel(attachment.origin) !== null ? <span className="shrink-0">{originLabel(attachment.origin)}</span> : null}
           <span className="shrink-0">{formatBytes(attachment.size)}</span>
           <button
             type="button"
-            aria-label={`Remove ${attachment.fileName}`}
+            aria-label={tx("Remove {fileName}", { fileName: attachment.fileName })}
             onClick={() => onRemove(attachment.id)}
             className="flex size-6 shrink-0 items-center justify-center rounded-sm hover:bg-state-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
@@ -171,7 +181,7 @@ export function AttachmentChips({
           <span className="min-w-0 truncate">{upload.fileName}</span>
           {upload.error === null ? (
             <span className="shrink-0" role="status">
-              {upload.size === 0 ? "Uploading…" : `${Math.floor((upload.sent / upload.size) * 100)}%`}
+              {upload.size === 0 ? tx("Uploading\u2026") : `${Math.floor((upload.sent / upload.size) * 100)}%`}
             </span>
           ) : (
             <>
@@ -180,7 +190,7 @@ export function AttachmentChips({
               </span>
               <button
                 type="button"
-                aria-label={`Dismiss ${upload.fileName}`}
+                aria-label={tx("Dismiss {fileName}", { fileName: upload.fileName })}
                 onClick={() => onDismissUpload(upload.key)}
                 className="flex size-6 shrink-0 items-center justify-center rounded-sm hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >

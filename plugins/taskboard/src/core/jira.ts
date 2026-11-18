@@ -15,7 +15,6 @@ import {
   DESCRIPTION_MAX,
   ID_MAX,
   ISSUE_KEY_MAX,
-  JIRA_FETCH_MAX,
   JIRA_PAGE_MAX,
   LABELS_MAX,
   LABEL_MAX,
@@ -68,6 +67,7 @@ export interface JiraTransitionView {
   id: string;
   name: string;
   toName: string;
+  toId?: string;
 }
 
 export type FetchLike = (input: string, init: RequestInit) => Promise<Response>;
@@ -77,7 +77,7 @@ function apiPath(auth: JiraAuth, suffix: string): string {
   return auth.baseUrl + "/rest/api/" + version + suffix;
 }
 
-async function requestJson(auth: JiraAuth, suffix: string, init: RequestInit, fetchFn: FetchLike): Promise<unknown> {
+export async function requestJson(auth: JiraAuth, suffix: string, init: RequestInit, fetchFn: FetchLike, api: "platform" | "agile" = "platform"): Promise<unknown> {
   const headers: Record<string, string> = {
     Accept: "application/json",
     Authorization: auth.authHeader,
@@ -85,7 +85,7 @@ async function requestJson(auth: JiraAuth, suffix: string, init: RequestInit, fe
   };
   let response: Response;
   try {
-    response = await fetchFn(apiPath(auth, suffix), {
+    response = await fetchFn(api === "agile" ? auth.baseUrl + "/rest/agile/1.0" + suffix : apiPath(auth, suffix), {
       method: init.method ?? "GET",
       headers,
       body: init.body,
@@ -100,6 +100,9 @@ async function requestJson(auth: JiraAuth, suffix: string, init: RequestInit, fe
   }
   if (response.status === 404) {
     throw new DomainError("not_found", "Not found on the Jira server");
+  }
+  if (response.status === 400 || response.status === 422) {
+    throw new DomainError("invalid", "Jira rejected the request (HTTP " + response.status + ")");
   }
   if (!response.ok) {
     throw new DomainError("http", "Request failed (HTTP " + response.status + ")");
@@ -192,7 +195,7 @@ function boundedUrl(value: string): string | null {
   return value.length > URL_MAX ? null : value;
 }
 
-function toSummary(raw: unknown, baseUrl: string): JiraIssueSummary | null {
+export function toSummary(raw: unknown, baseUrl: string): JiraIssueSummary | null {
   const issue = (raw ?? {}) as Record<string, unknown>;
   const fields = (issue.fields ?? {}) as Record<string, unknown>;
   const status = (fields.status ?? {}) as Record<string, unknown>;
@@ -273,10 +276,11 @@ export interface JiraClient {
   readonly edition: "cloud" | "server";
   /** The authenticated user, to test a connection. */
   myself(): Promise<string>;
-  /** All issues matching the JQL, up to maxResults (default JIRA_FETCH_MAX). */
+  /** All issues matching the JQL, up to maxResults when explicitly supplied; otherwise all pages. */
   listIssues(jql: string, options?: { maxResults?: number }): Promise<JiraIssuePage>;
   getTransitions(issueKey: string): Promise<JiraTransitionView[]>;
   transition(issueKey: string, transitionId: string): Promise<void>;
+  listWorklogs(issueKey: string): Promise<{ id: string; durationSeconds: number; comment: string }[]>;
   submitWorklog(input: JiraWorklogInput): Promise<{ id: string }>;
 }
 
@@ -289,13 +293,14 @@ export function createJiraClient(auth: JiraAuth, fetchFn: FetchLike = fetch): Ji
       return bounded(data.displayName, NAME_MAX, bounded(data.name, NAME_MAX, "authenticated"));
     },
     async listIssues(jql, options) {
-      const maxResults = Math.max(1, Math.min(options?.maxResults ?? JIRA_FETCH_MAX, JIRA_FETCH_MAX));
+      const maxResults = Math.max(1, options?.maxResults ?? Number.POSITIVE_INFINITY);
       const pageSize = Math.min(JIRA_PAGE_MAX, maxResults);
       const out: JiraIssueSummary[] = [];
       let pageToken: string | null = null;
       let startAt = 0;
       let total: number | null = null;
       let truncated = false;
+      const seenTokens = new Set<string>();
       for (;;) {
         const page = await searchPage(auth, jql, pageSize, pageToken, startAt, fetchFn);
         if (total === null) total = page.total;
@@ -314,8 +319,14 @@ export function createJiraClient(auth: JiraAuth, fetchFn: FetchLike = fetch): Ji
           break;
         }
         if (!more) break;
-        if (auth.edition === "cloud") pageToken = page.nextPageToken;
-        else startAt += page.issues.length;
+        if (auth.edition === "cloud") {
+          if (seenTokens.has(page.nextPageToken!)) throw new DomainError("http", "Jira pagination repeated a page token");
+          seenTokens.add(page.nextPageToken!);
+          pageToken = page.nextPageToken;
+        } else {
+          if (page.issues.length === 0) throw new DomainError("http", "Jira pagination made no progress");
+          startAt += page.issues.length;
+        }
       }
       return { issues: out.slice(0, maxResults), total, truncated };
     },
@@ -331,7 +342,7 @@ export function createJiraClient(auth: JiraAuth, fetchFn: FetchLike = fetch): Ji
         if (id === "") continue;
         const toName = bounded(to.name, NAME_MAX, "").trim();
         const name = bounded(t.name, NAME_MAX, toName === "" ? "Transition" : toName).trim();
-        out.push({ id, name, toName: toName === "" ? name : toName });
+        out.push({ id, name, toName: toName === "" ? name : toName, ...(bounded(to.id, ID_MAX, "") !== "" ? { toId: bounded(to.id, ID_MAX, "") } : {}) });
       }
       return out;
     },
@@ -346,6 +357,21 @@ export function createJiraClient(auth: JiraAuth, fetchFn: FetchLike = fetch): Ji
         },
         fetchFn,
       );
+    },
+    async listWorklogs(issueKey) {
+      const out: { id: string; durationSeconds: number; comment: string }[] = [];
+      let startAt = 0;
+      for (;;) {
+        const raw = await requestJson(auth, "/issue/" + encodeURIComponent(issueKey) + "/worklog?startAt=" + startAt + "&maxResults=100", {}, fetchFn) as Record<string, unknown>;
+        if (!raw || !Array.isArray(raw.worklogs) || typeof raw.total !== "number") throw new DomainError("http", "Unexpected Jira worklog response");
+        for (const item of raw.worklogs) {
+          if (!item || typeof item.id !== "string" || typeof item.timeSpentSeconds !== "number") throw new DomainError("http", "Invalid Jira worklog record");
+          out.push({ id: bounded(item.id, 200, ""), durationSeconds: item.timeSpentSeconds, comment: boundedText(typeof item.comment === "string" ? item.comment : descriptionText(item.comment), 4000) });
+        }
+        startAt += raw.worklogs.length;
+        if (startAt >= raw.total) return out;
+        if (raw.worklogs.length === 0) throw new DomainError("http", "Jira worklog pagination made no progress");
+      }
     },
     async submitWorklog(input) {
       const body: Record<string, unknown> = { timeSpentSeconds: input.timeSpentSeconds, started: jiraTimestamp(input.startedAtIso) };

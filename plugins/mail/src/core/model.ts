@@ -3,7 +3,11 @@ import type { OutgoingAddress } from "./compose-address.ts";
 import { composeDocInputSchema, type ComposeDoc } from "./compose-doc.ts";
 import type { SignatureDoc } from "./compose-signature.ts";
 import type { HeaderLine, UnsubscribeInfo } from "./unsubscribe.ts";
+import type { MailCrypto } from "./mail-crypto.ts";
+import type { SenderCheck } from "./sender-check.ts";
 import { LOG_ACTORS, LOG_OUTCOMES, LOG_TOOLS } from "./agent-log.ts";
+import { DEV_KINDS, DEV_SOURCES, DEV_STATES, type DevClass } from "./dev-notify.ts";
+import { DEV_LINK_KINDS } from "./dev-links.ts";
 
 /** Which server preset an account was set up with. */
 export const accountPresetSchema = z.enum(["icloud", "gmail", "other"]);
@@ -89,6 +93,28 @@ export const newAccountInputSchema = z.object({
 );
 export type NewAccountInput = z.infer<typeof newAccountInputSchema>;
 
+// ---- Slice 3h: kinds, kept rows, related reasons (defined early: schemas below use them) ----
+
+/** What an attachment is, for the viewer and the Files view (slice 3h; stored in attachments.kind). */
+export const fileKindSchema = z.enum(["image", "pdf", "text", "document", "archive", "calendar", "other"]);
+export type FileKind = z.infer<typeof fileKindSchema>;
+
+/**
+ * Why a row outside the sync window is kept (slice 3h, `messages.kept`):
+ * loaded history, a server search hit (expires), or opened by the owner
+ * (never expires). NULL in the column: a window row.
+ */
+export const keptStateSchema = z.enum(["history", "search", "opened"]);
+export type KeptState = z.infer<typeof keptStateSchema>;
+
+/** Why a message is listed as related (slice 3h, #83). */
+export const relatedReasonSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("terms"), terms: z.array(z.string()) }),
+  z.object({ kind: z.literal("participants"), count: z.number().int().min(1) }),
+  z.object({ kind: z.literal("reference") }),
+]);
+export type RelatedReason = z.infer<typeof relatedReasonSchema>;
+
 export const attachmentMetaSchema = z.object({
   partId: z.string(),
   filename: z.string().nullable(),
@@ -97,6 +123,56 @@ export const attachmentMetaSchema = z.object({
   isInline: z.boolean(),
 });
 export type AttachmentMeta = z.infer<typeof attachmentMetaSchema>;
+
+/** An attachment as the reading pane sees it: with its kind (slice 3h, stored in attachments.kind). */
+export const attachmentViewSchema = attachmentMetaSchema.extend({ kind: fileKindSchema });
+export type AttachmentView = z.infer<typeof attachmentViewSchema>;
+
+/** A notification's local dev class (slice 3g, dev-notify.ts); `repo` "host/owner/repo" or a service. */
+export const devClassSchema = z.object({
+  source: z.enum(DEV_SOURCES),
+  repo: z.string().nullable(),
+  kind: z.enum(DEV_KINDS),
+  state: z.enum(DEV_STATES).nullable(),
+  ref: z.string().nullable(),
+});
+
+/** A repository by host and path (projects.ts RepoRef). */
+export const repoRefSchema = z.object({ host: z.string(), path: z.string() });
+
+/** One repository, PR, issue or CI link of a message (slice 3g, dev-links.ts); the text shown is the URL. */
+export const devLinkViewSchema = z.object({
+  url: z.string(),
+  kind: z.enum(DEV_LINK_KINDS),
+  repo: repoRefSchema.nullable(),
+  number: z.string().nullable(),
+  projectId: z.string().nullable(),
+});
+export type DevLinkView = z.infer<typeof devLinkViewSchema>;
+
+/**
+ * What a message was handed to in BB (slice 3g, `bb_links`): a thread, a
+ * Taskboard task, a file saved into a project, a patch hand-off or an
+ * incident thread. `targetId` is the BB thread id, the task id or the
+ * project-relative path; `title` the BB thread title when known.
+ */
+export const bbLinkKindSchema = z.enum(["thread", "taskboard_task", "project_file", "patch", "incident"]);
+export type BbLinkRowKind = z.infer<typeof bbLinkKindSchema>;
+export const bbLinkViewSchema = z.object({
+  kind: bbLinkKindSchema,
+  targetId: z.string(),
+  projectId: z.string().nullable(),
+  title: z.string().nullable(),
+  createdAt: z.string(),
+});
+export type BbLinkView = z.infer<typeof bbLinkViewSchema>;
+
+/** A patch in a message: file count and line totals (slice 3g). */
+export const patchSummarySchema = z.object({
+  files: z.number().int().min(0),
+  added: z.number().int().min(0),
+  removed: z.number().int().min(0),
+});
 
 /** The role a folder plays, from its special-use flag or a name fallback. */
 export const specialUseSchema = z.enum([
@@ -119,6 +195,8 @@ export const folderSchema = z.object({
   selectable: z.boolean(),
   unreadCount: z.number().int(),
   totalCount: z.number().int(),
+  /** Slice 3h: subscribed on the server (servers without LSUB report every folder subscribed). */
+  subscribed: z.boolean(),
 });
 export type Folder = z.infer<typeof folderSchema>;
 
@@ -170,21 +248,68 @@ export const messageSummarySchema = z.object({
   isRead: z.boolean(),
   isFlagged: z.boolean(),
   hasAttachments: z.boolean(),
+  /** Slice 3h: why a row outside the sync window is kept; null for a window row. */
+  kept: keptStateSchema.nullable(),
+  /** Slice 3h: the owner's Gmail labels (system labels left out); empty elsewhere. */
+  labels: z.array(z.string()),
 });
 export type MessageSummary = z.infer<typeof messageSummarySchema>;
+
+/** Slice 3i: the sender check as the header shows it; `summary` is Mail's fixed text, null for ok. */
+export const senderCheckViewSchema = z.object({
+  state: z.enum(["ok", "failed", "unchecked", "unknown"]),
+  summary: z.string().nullable(),
+});
+export type SenderCheckView = z.infer<typeof senderCheckViewSchema>;
+
+/** Slice 3i: one disguise warning (core sender-disguise.ts); domains and addresses in ASCII. */
+export const disguiseWarningSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("reply_to_elsewhere"), addresses: z.array(z.string()) }),
+  z.object({ kind: z.literal("lookalike"), domain: z.string(), like: z.string() }),
+  z.object({ kind: z.literal("mixed_script"), domain: z.string() }),
+  z.object({ kind: z.literal("name_shows_address"), shown: z.string(), actual: z.string() }),
+]);
+
+/** Slice 3i: signed or encrypted mail, recognised only (core mail-crypto.ts); `opaque` for S/MIME signed-data. */
+export const mailCryptoSchema = z.object({
+  kind: z.enum(["pgp_signed", "pgp_encrypted", "smime_signed", "smime_encrypted"]),
+  opaque: z.boolean(),
+});
 
 export const messageHeaderSchema = messageSummarySchema.extend({
   to: z.array(mailAddressSchema),
   cc: z.array(mailAddressSchema),
-  attachments: z.array(attachmentMetaSchema),
+  attachments: z.array(attachmentViewSchema),
   /** The compose_drafts row whose server copy is this message, or null (drives Edit draft). */
   draftId: z.string().nullable(),
   /** The subject with its secrets hidden (slice 3f): the Hand-to-agent chip label. */
   agentSubject: z.string(),
   /** Inside the AI access scope: AI buttons and Hand to agent are enabled. */
   inAiScope: z.boolean(),
+  /** Slice 3g: repository, PR, issue and CI links of the body (computed when read, not stored). */
+  devLinks: z.array(devLinkViewSchema),
+  /** Slice 3g: the local dev class, or null. */
+  dev: devClassSchema.nullable(),
+  /** Slice 3g: the patch the message carries, or null. */
+  patch: patchSummarySchema.nullable(),
+  /** Slice 3g: a monitoring alert (the card asks alert_view). */
+  alert: z.boolean(),
+  /** Slice 3g: what this message was handed to in BB. */
+  bbLinks: z.array(bbLinkViewSchema),
+  /** Slice 3i: the stored sender check; `unknown` until judged. Defaults keep older fixtures parsing. */
+  senderCheck: senderCheckViewSchema.default({ state: "unknown", summary: null }),
+  /** Slice 3i: disguise warnings computed when the thread is read, at most four. */
+  warnings: z.array(disguiseWarningSchema).default([]),
+  /** Slice 3i: the sender asked for a read receipt (never sent). */
+  receiptRequested: z.boolean().default(false),
+  /** Slice 3i: signed or encrypted, recognised only; null for ordinary mail. */
+  crypto: mailCryptoSchema.nullable().default(null),
 });
-export type MessageHeader = z.infer<typeof messageHeaderSchema>;
+/** The parsed header with every slice-3i field present (what the page receives). */
+export type MessageHeaderView = z.infer<typeof messageHeaderSchema>;
+/** Slice 3i's four fields have defaults, so a header built in code may leave them out (older fixtures, fakes). */
+export type MessageHeader = Omit<MessageHeaderView, SliceThreeIHeaderFields> & Partial<Pick<MessageHeaderView, SliceThreeIHeaderFields>>;
+type SliceThreeIHeaderFields = "senderCheck" | "warnings" | "receiptRequested" | "crypto";
 
 /** The four local categories (slice 3f). */
 export const categorySchema = z.enum(["bills", "notifications", "personal", "newsletters"]);
@@ -206,6 +331,8 @@ export const threadSummarySchema = z.object({
   category: categorySchema.nullable(),
   /** The latest member row's suggestion (model, else local); null when none or categories are off. */
   categorySuggestion: categorySchema.nullable(),
+  /** Slice 3g: the conversation's project (the owner's binding, else the first matching binding rule); null when none. */
+  projectId: z.string().nullable(),
 });
 export type ThreadSummary = z.infer<typeof threadSummarySchema>;
 
@@ -213,8 +340,13 @@ export type ThreadSummary = z.infer<typeof threadSummarySchema>;
 export const threadDetailSchema = z.object({
   thread: threadSummarySchema,
   messages: z.array(messageHeaderSchema),
+  /** Slice 3g: the bound project; `source` owner (the chip) or rule (a binding rule). */
+  project: z.object({ id: z.string(), name: z.string(), source: z.enum(["owner", "rule"]) }).nullable(),
+  /** Slice 3g: a project the conversation's dev links or repo map to, when none is bound; never bound by itself. */
+  projectSuggestion: z.object({ id: z.string(), name: z.string(), repo: z.string().nullable() }).nullable(),
 });
-export type ThreadDetail = z.infer<typeof threadDetailSchema>;
+/** Messages typed as MessageHeader, so code-built details may leave out slice 3i's defaulted fields. */
+export type ThreadDetail = Omit<z.infer<typeof threadDetailSchema>, "messages"> & { messages: MessageHeader[] };
 
 export const messageBodySchema = z.object({
   messageId: z.string(),
@@ -222,8 +354,14 @@ export const messageBodySchema = z.object({
   /** `cid:` references already replaced by `data:` URIs. */
   html: z.string().nullable(),
   htmlTruncated: z.boolean(),
-  /** The owner allowed remote images from this sender. */
+  /**
+   * Remote images load by themselves: the owner allowed this sender and, from
+   * slice 3i, the sender check lets them (`autoImagesAllowed`: not failed or
+   * unknown, no lookalike or name-shows-address warning).
+   */
   remoteImagesAllowed: z.boolean(),
+  /** Slice 3g: the texts of the HTML body's <pre> blocks (empty for plain mail). */
+  codeBlocks: z.array(z.string()),
 });
 export type MessageBody = z.infer<typeof messageBodySchema>;
 
@@ -326,6 +464,33 @@ export type FetchedMessage = {
    * List-Unsubscribe). Absent: the store leaves the stored info alone.
    */
   unsubscribe?: UnsubscribeInfo | null;
+  /**
+   * Slice 3g: the DEV_HEADER_FIELDS lines (lower-case keys), in message
+   * order. Absent when the fetch did not read headers.
+   */
+  devHeaders?: HeaderLine[];
+  /**
+   * Slice 3i: a read-receipt header is present (receipts.ts). Read from the
+   * parsed headers, kept apart from `unsubscribeHeaders` (resolution 16).
+   * Absent when the fetch did not read headers.
+   */
+  receiptRequested?: boolean;
+  /** Slice 3i: the top Content-Type as written; null without one. Absent when the fetch did not read headers. */
+  contentType?: string | null;
+  /** Slice 3i: the sender check sync judged. Absent: the store leaves the stored check alone. */
+  senderCheck?: SenderCheck;
+  /** Slice 3i: signed or encrypted, as sync judged it (null: neither). Absent: left alone. */
+  crypto?: MailCrypto | null;
+  /**
+   * Slice 3g: the dev class sync judged (null = not a dev notification).
+   * Absent: not classified (classification off, or Spam and Trash).
+   */
+  dev?: DevClass | null;
+  /**
+   * Slice 3h: X-GM-LABELS as the server sent them (system labels included).
+   * Present only on Gmail sessions (X-GM-EXT-1); sync stores them.
+   */
+  gmLabels?: string[];
 };
 
 /** A folder as the server lists it. */
@@ -335,6 +500,8 @@ export type RemoteFolder = {
   delimiter: string;
   specialUse: SpecialUse | null;
   selectable: boolean;
+  /** Slice 3h: ListResponse.subscribed. */
+  subscribed: boolean;
 };
 
 /** What threading needs to know about one stored message. */
@@ -367,7 +534,51 @@ export type RawRef = {
   uidValidity: number | null;
 };
 
-/** A parsed search query: free text plus optional operators. */
+/** The operators a search condition may carry (slice 3h). */
+export const searchFieldSchema = z.enum([
+  "from",
+  "to",
+  "cc",
+  "subject",
+  "has",
+  "filename",
+  "in",
+  "account",
+  "is",
+  "larger",
+  "smaller",
+  "after",
+  "before",
+  "list",
+  "category",
+  "label",
+]);
+export type SearchField = z.infer<typeof searchFieldSchema>;
+
+/**
+ * One operator of a query, its value normalized (slice 3h): `has` is
+ * `attachment`; `is` is `unread` or `flagged` (read and unflagged are their
+ * negations); sizes are whole bytes; dates are ISO dates (relative dates are
+ * already turned into `after` / `before`); `in` roles are lower case
+ * (`spam` is `junk`).
+ */
+export type SearchCondition = { field: SearchField; value: string; negated: boolean };
+
+/**
+ * Why a query word stayed free text. `term` is the word as typed (the spec
+ * calls it `token`; output keys never say token, contract.test.ts).
+ */
+export const searchNoteSchema = z.object({
+  kind: z.enum(["unknown_operator", "bad_value"]),
+  term: z.string(),
+});
+export type SearchNote = z.infer<typeof searchNoteSchema>;
+
+/**
+ * A parsed search query: free text plus operators. `conditions` is the full
+ * query (slice 3h); `from`, `subject`, `unread`, `after` and `before` are
+ * derived from its positive conditions for older callers.
+ */
 export type ParsedQuery = {
   text: string;
   from?: string;
@@ -375,7 +586,76 @@ export type ParsedQuery = {
   unread?: boolean;
   after?: string;
   before?: string;
+  conditions: SearchCondition[];
+  notes: SearchNote[];
 };
+
+// ---- Slice 3h views ----
+
+/** One attachment in the Files view and the sender card (stored metadata only). */
+export const fileRowSchema = z.object({
+  messageId: z.string(),
+  partId: z.string(),
+  filename: z.string().nullable(),
+  kind: fileKindSchema,
+  mimeType: z.string(),
+  size: z.number().int(),
+  date: z.string().nullable(),
+  from: mailAddressSchema,
+  accountId: z.string(),
+  threadId: z.string(),
+});
+export type FileRow = z.infer<typeof fileRowSchema>;
+
+/** A saved search in the rail; `unread` counts hits up to 500 (`capped` above that). */
+export const savedSearchViewSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  query: z.string(),
+  accountId: z.string().nullable(),
+  unread: z.number().int().min(0),
+  capped: z.boolean(),
+});
+export type SavedSearchView = z.infer<typeof savedSearchViewSchema>;
+
+/**
+ * The sender card (#86). Counts by dedup key across folders, Spam and Trash
+ * left out; `toCapped`: To/Cc were counted over the newest rows only
+ * ("in recent mail").
+ */
+export const senderCardSchema = z.object({
+  name: z.string().nullable(),
+  address: z.string(),
+  fromCount: z.number().int().min(0),
+  toCount: z.number().int().min(0),
+  toCapped: z.boolean(),
+  firstDate: z.string().nullable(),
+  lastDate: z.string().nullable(),
+  conversations: z.array(threadSummarySchema).max(10),
+  files: z.array(fileRowSchema).max(5),
+  imagesAllowed: z.boolean(),
+  blocked: z.boolean(),
+  projectId: z.string().nullable(),
+});
+export type SenderCard = z.infer<typeof senderCardSchema>;
+
+/** A related message with why it is related (#83). */
+export const relatedHitSchema = z.object({
+  summary: messageSummarySchema,
+  reasons: z.array(relatedReasonSchema),
+});
+export type RelatedHit = z.infer<typeof relatedHitSchema>;
+
+/** The search keyset cursor: the store's order `date IS NULL DESC, date DESC, id DESC` (spec resolution 17). */
+export type SearchCursor = { date: string | null; id: string };
+
+/** An attachment-text hit of the owner's search (spec resolution 4). */
+export const attachmentMatchSchema = z.object({
+  messageId: z.string(),
+  filename: z.string().nullable(),
+  excerpt: z.string(),
+});
+export type AttachmentMatch = z.infer<typeof attachmentMatchSchema>;
 
 // ---- Compose and send (slice 3b) ----
 
@@ -400,6 +680,8 @@ export const outboxStateSchema = z.enum([
   "unknown",
   "sent_no_copy",
   "done",
+  /** Slice 3j: a send that never reached the server waits for its next automatic try. */
+  "waiting",
 ]);
 export type OutboxState = z.infer<typeof outboxStateSchema>;
 
@@ -418,6 +700,8 @@ export const sendErrorKindSchema = z.enum([
   "append_failed",
   /** A 5xx reply to MAIL FROM (other than 552) for an alias From; the core decides it (slice 3d). */
   "sender_refused",
+  /** Slice 3j: the account has no SMTP server set; nothing was opened and nothing retries. */
+  "no_smtp",
 ]);
 export type SendErrorKind = z.infer<typeof sendErrorKindSchema>;
 
@@ -426,6 +710,8 @@ export const composeAttachmentSchema = z.object({
   fileName: z.string(),
   mimeType: z.string(),
   size: z.number().int(),
+  /** Slice 3g: `bb:project:<id>` or `bb:thread:<id>` for a file picked from BB; null for uploads. Never sent. */
+  origin: z.string().nullable(),
 });
 export type ComposeAttachment = z.infer<typeof composeAttachmentSchema>;
 
@@ -490,7 +776,9 @@ export const outboxRowSchema = z.object({
    * "unsubscribe": a send the plugin made for the owner's Unsubscribe click
    * (slice 3e): the Outbox labels it "Unsubscribe request" and offers no Edit.
    */
-  purpose: z.enum(["unsubscribe"]).nullable().optional(),
+  purpose: z.enum(["unsubscribe", "invite_reply"]).nullable().optional(),
+  /** Slice 3l: the owner picked `sendAfter` as the time to send ("Send later"). */
+  scheduled: z.boolean().optional(),
 });
 export type OutboxRow = z.infer<typeof outboxRowSchema>;
 
@@ -518,6 +806,11 @@ export type OutgoingMessage = {
   html: string;
   text: string;
   attachments: OutgoingAttachment[];
+  /**
+   * Slice 3l: the answer to a calendar invitation, sent as a text/calendar
+   * alternative of the body so the organizer's calendar reads it.
+   */
+  calendar?: { method: "REPLY"; content: string };
 };
 
 /** What a reply or forward reads from the original on the server. */
@@ -591,7 +884,7 @@ export type NewDraft = DraftFields & {
   createdAt: string;
 };
 
-export type DraftPurpose = "unsubscribe";
+export type DraftPurpose = "unsubscribe" | "invite_reply";
 
 /** A compose_drafts row. Starts at revision 1; every save bumps it. */
 export type DraftRecord = NewDraft & {
@@ -622,6 +915,12 @@ export type NewOutboxRow = {
   origin: DraftOrigin;
   /** ISO 8601. */
   createdAt: string;
+  /**
+   * Slice 3l: the owner picked `sendAfter` as the time to send. The row has no
+   * Undo window, and one that came due while BB was closed is still sent on
+   * the next start when it is less than a day late.
+   */
+  scheduled?: boolean;
 };
 
 /** An outbox row without its blobs. */
@@ -681,6 +980,10 @@ export const presendIssueSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("empty_subject") }),
   z.object({ kind: z.literal("outside_conversation"), addresses: z.array(z.string()) }),
   z.object({ kind: z.literal("new_recipients"), addresses: z.array(z.string()) }),
+  z.object({ kind: z.literal("bb_files"), count: z.number().int(), origins: z.array(z.string()) }),
+  z.object({ kind: z.literal("looks_secret"), count: z.number().int() }),
+  /** Slice 3i. */
+  z.object({ kind: z.literal("reply_to_elsewhere"), addresses: z.array(z.string()) }),
 ]);
 
 /** What the confirmation card shows: the whole message, server-built. */
@@ -746,6 +1049,10 @@ export const threadFilterSchema = z.object({
   keep: z.string().min(1).max(256).optional(),
   /** Slice 3f: a member row carries this label. */
   category: categorySchema.optional(),
+  /** Slice 3g: the latest member row is not a dev notification ("Hide dev notifications"). */
+  notDev: z.literal(true).optional(),
+  /** Slice 3g: the conversation's project is this one. */
+  projectId: z.string().min(1).max(256).optional(),
 });
 export type ThreadFilter = z.infer<typeof threadFilterSchema>;
 
@@ -959,6 +1266,8 @@ export const taskViewSchema = z.object({
   /** ISO 8601. */
   doneAt: z.string().nullable(),
   createdAt: z.string(),
+  /** Slice 3g: a task from mail kept locally holds its note (plain text, never sent). */
+  note: z.string().nullable(),
 });
 export type TaskView = z.infer<typeof taskViewSchema>;
 

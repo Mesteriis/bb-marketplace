@@ -123,7 +123,43 @@ describe("Today and Tasks pages (slice 3f)", () => {
     expect(parsePageSubPath(pageSubPath("today"))).toBe("today");
     expect(parsePageSubPath(pageSubPath("tasks"))).toBe("tasks");
     for (const other of ["", "today/x", "Tasks", "v/all/inbox", "t/a/b"]) expect(parsePageSubPath(other)).toBeNull();
+  });
+
+  it("parses and builds Dev and Projects (slice 3g)", async () => {
+    const { pageSubPath, parsePageSubPath, projectSubPath, parseProjectSubPath } = await import("./routes.ts");
+    expect(pageSubPath("dev")).toBe("dev");
+    expect(parsePageSubPath("dev")).toBe("dev");
+    expect(pageSubPath("projects")).toBe("p");
+    expect(parsePageSubPath("p")).toBe("projects");
+    const host = (path: string) => path.split("/").map(encodeURIComponent).join("/");
+    expect(projectSubPath("proj/1")).toBe("p/proj%2F1");
+    expect(parseProjectSubPath(host(projectSubPath("proj/1")))).toBe("proj/1");
+    expect(parsePageSubPath(host(projectSubPath("p-api")))).toBe("projects");
+    expect(parseProjectSubPath("p")).toBeNull();
+    for (const other of ["p/a/b", "dev/x", "Dev"]) {
+      expect(parseProjectSubPath(other)).toBeNull();
+      expect(parsePageSubPath(other)).toBeNull();
+    }
     expect(parseViewSubPath("today")).toBeNull();
     expect(parseThreadSubPath("tasks")).toBeNull();
+  });
+});
+
+describe("Files and saved searches (slice 3h)", () => {
+  it("parses and builds files", async () => {
+    const { pageSubPath, parsePageSubPath } = await import("./routes.ts");
+    expect(pageSubPath("files")).toBe("files");
+    expect(parsePageSubPath("files")).toBe("files");
+    for (const other of ["files/x", "Files", "file"]) expect(parsePageSubPath(other)).toBeNull();
+  });
+
+  it("parses and builds s/<id> through the host's encoding", async () => {
+    const { parsePageSubPath, parseSavedSearchSubPath, parseViewSubPath, savedSearchSubPath } = await import("./routes.ts");
+    expect(savedSearchSubPath("ss-1")).toBe("s/ss-1");
+    expect(parseSavedSearchSubPath("s/ss-1")).toBe("ss-1");
+    expect(parseSavedSearchSubPath(hostEncode(savedSearchSubPath("a/b c")))).toBe("a/b c");
+    for (const other of ["", "s", "s/", "s/a/b", "x/ss-1", "files"]) expect(parseSavedSearchSubPath(other)).toBeNull();
+    expect(parsePageSubPath("s/ss-1")).toBeNull();
+    expect(parseViewSubPath("s/ss-1")).toBeNull();
   });
 });

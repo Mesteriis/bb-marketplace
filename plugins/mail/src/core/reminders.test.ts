@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { ANSWERED_KEEP_DAYS, REMINDER_DAYS, REMINDERS_LIVE_MAX, answers, dueAt, reminderToastName } from "./reminders.ts";
+import {
+  ANSWERED_KEEP_DAYS,
+  REMINDER_DAYS,
+  REMINDERS_LIVE_MAX,
+  REPLY_CLOCK_SKEW_MS,
+  answers,
+  dueAt,
+  reminderToastName,
+} from "./reminders.ts";
 
 const reminder = { rfcMessageId: "<sent-1@example.com>", sentAt: "2026-11-10T10:00:00.000Z" };
 
@@ -39,6 +47,13 @@ describe("answers", () => {
     expect(answers(reminder, row({ fromAddress: "noreply@example.org", bulk: false, inReplyTo: "<sent-1@example.com>" }))).toBe(false);
     expect(answers(reminder, row({ date: "2026-11-09T10:00:00.000Z", inReplyTo: "<sent-1@example.com>" }))).toBe(false);
     expect(answers(reminder, row({ date: null, inReplyTo: "<sent-1@example.com>" }))).toBe(false);
+  });
+
+  it("accepts a referencing reply dated up to 24 hours before the send (a skewed clock), not earlier", () => {
+    expect(answers(reminder, row({ date: "2026-11-10T02:00:00.000Z", inReplyTo: "<sent-1@example.com>" }))).toBe(true);
+    expect(answers(reminder, row({ date: "2026-11-09T10:00:00.001Z", references: ["<sent-1@example.com>"] }))).toBe(true);
+    expect(answers(reminder, row({ date: "2026-11-09T09:00:00.000Z", inReplyTo: "<sent-1@example.com>" }))).toBe(false);
+    expect(REPLY_CLOCK_SKEW_MS).toBe(86_400_000);
   });
 
   it("is not answered by a same-thread message without references", () => {

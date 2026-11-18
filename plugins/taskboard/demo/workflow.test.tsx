@@ -32,3 +32,22 @@ describe("demo Take into work flow (no real network)", () => {
     expect(taskRuns.some((run) => run.state === "completed")).toBe(true);
   });
 });
+
+it("logs time directly on a Jira task without creating or completing a run", async () => {
+  const api = await buildDemoApi();
+  render(<TaskboardPage api={api} />);
+  const board = (await api.listBoards()).find((b) => b.name === "Atlassian Cloud (demo)")!;
+  fireEvent.change(await screen.findByLabelText("Board"), { target: { value: board.id } });
+  fireEvent.click(await screen.findByText("Ship mobile onboarding"));
+  fireEvent.click(await screen.findByRole("button", { name: "Log time" }));
+  const dialog = await screen.findByRole("dialog");
+  fireEvent.change(within(dialog).getByLabelText("Duration (seconds)"), { target: { value: "1200" } });
+  fireEvent.change(within(dialog).getByLabelText("Comment"), { target: { value: "Reviewed requirements" } });
+  fireEvent.click(within(dialog).getByRole("button", { name: "Confirm" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  fireEvent.click(screen.getByRole("button", { name: "Refresh worklog history" }));
+  await screen.findByText("Reviewed requirements");
+  const task = (await api.listTasks(board.id)).tasks.find((t) => t.originKey === "DEMO-101")!;
+  expect(await api.listRuns(task.id)).toEqual([]);
+  expect((await api.listWorklogs!(task.id))[0].durationSeconds).toBe(1200);
+});

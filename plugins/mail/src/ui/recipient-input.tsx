@@ -9,6 +9,7 @@ import type { MailAddress } from "../core/model.ts";
 import { parseAddress, splitAddressList, type AddressProblem } from "../core/compose-address.ts";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
+import { msg, tx } from "./i18n/index.ts";
 
 /** How long typing rests before suggestions are asked for. */
 export const SUGGEST_DEBOUNCE_MS = 150;
@@ -20,15 +21,15 @@ export const MAX_CHIP_LENGTH = 320;
 export const MAX_CHIPS = 100;
 
 const PROBLEM_TEXT: Record<AddressProblem, string> = {
-  empty: "Empty address",
-  too_long: "This address is too long",
-  control: "This address contains a control character",
-  syntax: "This is not an email address",
-  non_ascii_local: "Addresses with non-Latin letters before the @ cannot be sent yet",
+  empty: msg("Empty address"),
+  too_long: msg("This address is too long"),
+  control: msg("This address contains a control character"),
+  syntax: msg("This is not an email address"),
+  non_ascii_local: msg("Addresses with non-Latin letters before the @ cannot be sent yet"),
 };
 
 export function addressProblemText(problem: AddressProblem): string {
-  return PROBLEM_TEXT[problem];
+  return tx(PROBLEM_TEXT[problem]);
 }
 
 /** A stored address as chip text: "Name <address>", the name quoted when it needs it. */
@@ -246,7 +247,7 @@ export function RecipientInput({ label, chips, text, onChange, suggest, autoFocu
               <button
                 type="button"
                 tabIndex={-1}
-                aria-label={`Remove ${chip}`}
+                aria-label={tx("Remove {chip}", { chip })}
                 onClick={() => remove(index)}
                 className="flex size-5 shrink-0 items-center justify-center rounded-sm text-muted-foreground hover:bg-state-hover hover:text-foreground"
               >

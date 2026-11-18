@@ -1,18 +1,18 @@
 {
   "name": "bb-plugin-makosh-mail",
   "version": "0.1.0",
-  "description": "Reads, snoozes, sends and translates iCloud, Gmail and IMAP mail; AI summaries, Ask, tasks and Today on click; agent access scoped, logged.",
+  "description": "Reads, searches, files and sends iCloud, Gmail and IMAP mail; sender warnings; AI on click; mail to BB threads and tasks; agent log.",
   "private": true,
   "type": "module",
   "license": "MIT",
   "author": "Mesteriis",
-  "homepage": "https://github.com/Mesteriis/makosh-bb/tree/main/plugins/mail#readme",
+  "homepage": "https://github.com/Mesteriis/bb-makosh-mail/tree/main/plugins/mail#readme",
   "bugs": {
-    "url": "https://github.com/Mesteriis/makosh-bb/issues"
+    "url": "https://github.com/Mesteriis/bb-makosh-mail/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Mesteriis/makosh-bb.git",
+    "url": "git+https://github.com/Mesteriis/bb-makosh-mail.git",
     "directory": "plugins/mail"
   },
   "keywords": [
@@ -27,7 +27,7 @@
   },
   "bb": {
     "name": "Makosh Mail [Experimental]",
-    "description": "Reads, snoozes, sends and translates iCloud, Gmail and IMAP mail; AI summaries, Ask, tasks and Today on click; agent access scoped, logged.",
+    "description": "Reads, searches, files and sends iCloud, Gmail and IMAP mail; sender warnings; AI on click; mail to BB threads and tasks; agent log.",
     "branding": {
       "icon": "./assets/icon.svg"
     },
@@ -51,6 +51,8 @@
     "dompurify": "^3.4.18",
     "imapflow": "^2.11.0",
     "nodemailer": "10.3.1",
+    "openpgp": "6.3.2",
+    "pdfjs-dist": "6.5.438",
     "postal-mime": "4.2.1",
     "zod": "^4.6.5"
   },

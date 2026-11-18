@@ -10,6 +10,7 @@ import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 import { shownText } from "./agent-send-card.tsx";
 import type { AiJobState, AiPhase } from "./ai-job.ts";
+import { tx } from "./i18n/index.ts";
 
 export type AiCitation = AiResultView["citations"][number];
 export type AiNotes = AiResultView["notes"];
@@ -30,11 +31,11 @@ export function aiLabel(provider: string | null, model: string | null, cached = 
 export function phaseText(phase: AiPhase | null, waiting: string): string {
   switch (phase) {
     case "planning":
-      return "Searching your mail\u2026";
+      return tx("Searching your mail\u2026");
     case "reading":
-      return "Reading the messages found\u2026";
+      return tx("Reading the messages found\u2026");
     case "writing":
-      return "Writing the answer\u2026";
+      return tx("Writing the answer\u2026");
     default:
       return waiting;
   }
@@ -73,7 +74,7 @@ export function CitationChips({
         <button
           key={citation.n}
           type="button"
-          aria-label={`Open cited message ${citation.n}`}
+          aria-label={tx("Open cited message {n}", { n: citation.n })}
           onClick={() => onCite(citation)}
           className="rounded-sm border border-border px-1 text-xs leading-4 text-muted-foreground transition-colors hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
@@ -108,7 +109,7 @@ export function AiNotesList({ notes }: { notes: AiNotes }) {
   const lines = notesText(notes);
   if (lines.length === 0) return null;
   return (
-    <ul aria-label="Notes" className="flex flex-col text-xs text-muted-foreground">
+    <ul aria-label={tx("Notes")} className="flex flex-col text-xs text-muted-foreground">
       {lines.map((line) => (
         <li key={line}>{line}</li>
       ))}
@@ -122,7 +123,7 @@ export function AiFailure({ state }: { state: Extract<AiJobState, { status: "fai
     <div role="alert" className="flex flex-col gap-0.5 text-xs text-destructive">
       <p>{state.text}</p>
       {state.gatewayMessage !== null && state.gatewayMessage !== "" ? (
-        <p className="text-muted-foreground">Makosh AI says: {shownText(state.gatewayMessage)}</p>
+        <p className="text-muted-foreground">{tx("Makosh AI says:")} {shownText(state.gatewayMessage)}</p>
       ) : null}
     </div>
   );

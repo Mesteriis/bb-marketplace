@@ -27,6 +27,7 @@ import {
 } from "@/components/ui/select";
 import { accountLabel } from "./folder-list.tsx";
 import { stopEscape } from "./shortcuts.ts";
+import { tx } from "./i18n/index.ts";
 
 export interface SmtpSettingsInput {
   accountId: string;
@@ -53,12 +54,12 @@ export function smtpInput(
   fields: { host: string; port: string; security: SmtpSecurity; username: string },
 ): SmtpSettingsInput | string {
   const host = fields.host.trim();
-  if (host === "") return "Enter the SMTP server.";
-  if (!HOST.test(host)) return "The SMTP server is a host name like smtp.example.org.";
+  if (host === "") return tx("Enter the SMTP server.");
+  if (!HOST.test(host)) return tx("The SMTP server is a host name like smtp.example.org.");
   const port = Number(fields.port);
-  if (!Number.isInteger(port) || port < 1 || port > 65535) return "Enter a port between 1 and 65535.";
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return tx("Enter a port between 1 and 65535.");
   const username = fields.username.trim();
-  if (/[\r\n\u0000]/.test(username) || username.length > 320) return "The username cannot be used.";
+  if (/[\r\n\u0000]/.test(username) || username.length > 320) return tx("The username cannot be used.");
   return { accountId, host, port, security: fields.security, ...(username !== "" ? { username } : {}) };
 }
 
@@ -122,14 +123,14 @@ function SmtpForm({ account, onClose, onTest, onSave }: SmtpDialogProps & { acco
       const result = await (kind === "test" ? onTest(input) : onSave(input));
       if (result.signInRequired === true) setAskPassword(true);
       if (!result.ok) {
-        setOutcome({ kind: "error", message: result.reason ?? "The SMTP server refused the login." });
+        setOutcome({ kind: "error", message: result.reason ?? tx("The SMTP server refused the login.") });
       } else if (kind === "test") {
-        setOutcome({ kind: "ok", message: "SMTP works." });
+        setOutcome({ kind: "ok", message: tx("SMTP works.") });
       } else {
         onClose();
       }
     } catch (error) {
-      setOutcome({ kind: "error", message: error instanceof Error && error.message ? error.message : "Something went wrong" });
+      setOutcome({ kind: "error", message: error instanceof Error && error.message ? error.message : tx("Something went wrong") });
     } finally {
       setBusy(null);
     }
@@ -143,7 +144,7 @@ function SmtpForm({ account, onClose, onTest, onSave }: SmtpDialogProps & { acco
   return (
     <form onSubmit={submit} noValidate className="flex flex-col gap-4">
       <DialogHeader>
-        <DialogTitle>SMTP for {accountLabel(account)}</DialogTitle>
+        <DialogTitle>{tx("SMTP for")} {accountLabel(account)}</DialogTitle>
         <DialogDescription>
           Mail sends through this server with the account&apos;s app password.
         </DialogDescription>
@@ -151,7 +152,7 @@ function SmtpForm({ account, onClose, onTest, onSave }: SmtpDialogProps & { acco
       <div className="flex gap-3">
         <div className="flex min-w-0 flex-1 flex-col gap-1.5">
           <label htmlFor={`${id}-host`} className="text-sm font-medium text-foreground">
-            SMTP server
+            {tx("SMTP server")}
           </label>
           <Input
             id={`${id}-host`}
@@ -163,7 +164,7 @@ function SmtpForm({ account, onClose, onTest, onSave }: SmtpDialogProps & { acco
         </div>
         <div className="flex w-24 flex-col gap-1.5">
           <label htmlFor={`${id}-port`} className="text-sm font-medium text-foreground">
-            Port
+            {tx("Port")}
           </label>
           <Input id={`${id}-port`} inputMode="numeric" value={port} readOnly={fixed} onChange={(e) => setPort(e.target.value)} />
         </div>
@@ -173,7 +174,7 @@ function SmtpForm({ account, onClose, onTest, onSave }: SmtpDialogProps & { acco
       ) : null}
       <div className="flex flex-col gap-1.5">
         <label id={`${id}-security`} className="text-sm font-medium text-foreground">
-          Security
+          {tx("Security")}
         </label>
         <Select
           value={security}
@@ -188,14 +189,14 @@ function SmtpForm({ account, onClose, onTest, onSave }: SmtpDialogProps & { acco
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="tls">TLS (usually port 465)</SelectItem>
-            <SelectItem value="starttls">STARTTLS (usually port 587)</SelectItem>
+            <SelectItem value="tls">{tx("TLS (usually port 465)")}</SelectItem>
+            <SelectItem value="starttls">{tx("STARTTLS (usually port 587)")}</SelectItem>
           </SelectContent>
         </Select>
       </div>
       <div className="flex flex-col gap-1.5">
         <label htmlFor={`${id}-username`} className="text-sm font-medium text-foreground">
-          Username
+          {tx("Username")}
         </label>
         <Input
           id={`${id}-username`}
@@ -203,12 +204,12 @@ function SmtpForm({ account, onClose, onTest, onSave }: SmtpDialogProps & { acco
           placeholder={account.username}
           onChange={(e) => setUsername(e.target.value)}
         />
-        <p className="text-xs text-muted-foreground">Leave empty to use the IMAP username.</p>
+        <p className="text-xs text-muted-foreground">{tx("Leave empty to use the IMAP username.")}</p>
       </div>
       {askPassword ? (
         <div className="flex flex-col gap-1.5">
           <label htmlFor={`${id}-password`} className="text-sm font-medium text-foreground">
-            Account password
+            {tx("Account password")}
           </label>
           <Input
             id={`${id}-password`}
@@ -218,7 +219,7 @@ function SmtpForm({ account, onClose, onTest, onSave }: SmtpDialogProps & { acco
             onChange={(e) => setPassword(e.target.value)}
           />
           <p className="text-xs text-muted-foreground">
-            This server is outside {account.host}&apos;s domain. The IMAP server checks the password first; it is
+            {tx("This server is outside")} {account.host}&apos;s domain. The IMAP server checks the password first; it is
             stored only if both servers accept it.
           </p>
         </div>
@@ -233,13 +234,13 @@ function SmtpForm({ account, onClose, onTest, onSave }: SmtpDialogProps & { acco
       ) : null}
       <DialogFooter>
         <Button type="button" variant="ghost" size="sm" onClick={onClose} disabled={busy !== null}>
-          Cancel
+          {tx("Cancel")}
         </Button>
         <Button type="button" variant="outline" size="sm" onClick={() => void run("test")} disabled={busy !== null}>
-          {busy === "test" ? "Testing…" : "Test"}
+          {busy === "test" ? tx("Testing\u2026") : tx("Test")}
         </Button>
         <Button type="submit" size="sm" disabled={busy !== null}>
-          {busy === "save" ? "Saving…" : "Save"}
+          {busy === "save" ? tx("Saving\u2026") : tx("Save")}
         </Button>
       </DialogFooter>
     </form>

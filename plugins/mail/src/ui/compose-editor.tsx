@@ -1,6 +1,6 @@
 // The composer's rich-text editor: TipTap with the schema the server keeps
-// (paragraphs, lists, quotes, hard breaks; bold, italic, underline and
-// http/https/mailto links). It emits the document JSON only, never HTML.
+// (paragraphs, lists, quotes, code blocks, hard breaks; bold, italic,
+// underline, inline code and http/https/mailto links). It emits the document JSON only, never HTML.
 // HTML that comes in (a quoted original, a continued draft, a paste) goes
 // through the email sanitizer with remote images off and loses every image
 // and style before TipTap parses it, so the editor never loads anything.
@@ -65,6 +65,8 @@ export interface EditorFeatures {
   quotes?: boolean;
   /** The top-level signature block (the composer only). */
   signature?: boolean;
+  /** Code blocks and inline code (slice 3g); off in the signature editor. */
+  code?: boolean;
 }
 
 /** The StarterKit as the composer uses it: the server's schema, nothing more. */
@@ -72,14 +74,14 @@ export function composeExtensions(features: EditorFeatures = {}) {
   const lists = features.lists ?? true;
   const quotes = features.quotes ?? true;
   const signature = features.signature ?? true;
+  const code = features.code ?? true;
   return [
     StarterKit.configure({
       ...(signature ? { document: false } : {}),
       // A signature at the end stays the last block (its `-- ` is drawn then).
       trailingNode: { notAfter: ["paragraph", "signature"] },
       heading: false,
-      code: false,
-      codeBlock: false,
+      ...(code ? { codeBlock: { languageClassPrefix: "language-" } } : { code: false, codeBlock: false }),
       strike: false,
       horizontalRule: false,
       ...(lists ? {} : { bulletList: false, orderedList: false, listItem: false, listKeymap: false }),
@@ -160,7 +162,11 @@ export function ownerParagraphsOf(doc: JSONContent): { paragraphs: string[]; has
   for (const block of doc.content ?? []) {
     if (block.type === "blockquote" || block.type === "signature") break;
     if (block.type === "paragraph") paragraphs.push(text(block));
-    else paragraphs.push(paragraphsIn(block).map(text).join("\n"));
+    else if (block.type === "codeBlock") {
+      // As the server's ownerParagraphs: Apply writes paragraphs, so the code formatting counts as a mark.
+      hasMarks = true;
+      paragraphs.push((block.content ?? []).map((node) => node.text ?? "").join(""));
+    } else paragraphs.push(paragraphsIn(block).map(text).join("\n"));
   }
   return { paragraphs, hasMarks };
 }
@@ -207,6 +213,52 @@ export function replaceOwnerRange(editor: Editor, paragraphs: readonly string[])
   });
   const tr = closeHistory(state.tr.replaceWith(0, to, nodes));
   editor.view.dispatch(tr);
+}
+
+/** A fence line that opens a code block: ``` with an optional language word. */
+const FENCE_OPEN = /^```([a-z0-9+#-]{0,20})$/i;
+
+/**
+ * Pasted plain text with a fenced block, as editor content: text lines as
+ * paragraphs, each fenced run as a code block (its lines verbatim). Null
+ * when the text has no complete fence, so the paste stays as it was.
+ */
+export function fencedPaste(text: string): JSONContent[] | null {
+  const lines = text.replace(/\r\n?/g, "\n").split("\n");
+  const out: JSONContent[] = [];
+  let found = false;
+  for (let i = 0; i < lines.length; i++) {
+    const open = FENCE_OPEN.exec(lines[i]!.trim());
+    const close = open === null ? -1 : lines.findIndex((line, j) => j > i && line.trim() === "```");
+    if (open !== null && close !== -1) {
+      found = true;
+      const code = lines.slice(i + 1, close).join("\n");
+      const language = open[1] !== undefined && open[1] !== "" ? open[1].toLowerCase() : null;
+      out.push({ type: "codeBlock", attrs: { language }, ...(code !== "" ? { content: [{ type: "text", text: code }] } : {}) });
+      i = close;
+      continue;
+    }
+    const line = lines[i]!;
+    out.push(line === "" ? { type: "paragraph" } : { type: "paragraph", content: [{ type: "text", text: line }] });
+  }
+  return found ? out : null;
+}
+
+/** Enter after ``` (and a language) on an empty line turns the line into a code block. */
+function fenceEnter(editor: Editor): boolean {
+  const { $from, empty } = editor.state.selection;
+  if (!empty || $from.parent.type.name !== "paragraph" || $from.parentOffset !== $from.parent.content.size) return false;
+  const match = FENCE_OPEN.exec($from.parent.textContent);
+  if (match === null || editor.schema.nodes.codeBlock === undefined) return false;
+  const language = match[1] !== undefined && match[1] !== "" ? match[1].toLowerCase() : null;
+  return editor
+    .chain()
+    .command(({ tr }) => {
+      tr.delete($from.start(), $from.end());
+      return true;
+    })
+    .setNode("codeBlock", { language })
+    .run();
 }
 
 /** Files of a paste or a drop; empty when it carries none. */
@@ -259,6 +311,7 @@ export function ComposeEditor({
   handlers.current = { onChange, onFiles, onLinkShortcut, onImported };
   const imported = useRef(false);
   const importing = useRef(false);
+  const editorRef = useRef<Editor | null>(null);
 
   const editor = useEditor({
     extensions: composeExtensions(features),
@@ -274,6 +327,8 @@ export function ComposeEditor({
           "[&_blockquote]:my-1 [&_blockquote]:border-l-2 [&_blockquote]:border-border [&_blockquote]:pl-3 [&_blockquote]:text-muted-foreground",
           "[&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:min-h-[1lh]",
           "[&_a]:text-primary [&_a]:underline [&_a]:underline-offset-2",
+          "[&_pre]:my-1 [&_pre]:overflow-x-auto [&_pre]:rounded-md [&_pre]:bg-muted [&_pre]:p-2 [&_pre]:font-mono [&_pre]:text-xs",
+          "[&_:not(pre)>code]:rounded-sm [&_:not(pre)>code]:bg-muted [&_:not(pre)>code]:px-1 [&_:not(pre)>code]:font-mono [&_:not(pre)>code]:text-xs",
           // The signature: a muted `-- ` above it only when it is last; nothing when empty.
           "[&_.makosh-signature:empty]:hidden [&_.makosh-signature:last-child]:before:block",
           "[&_.makosh-signature:last-child]:before:text-muted-foreground [&_.makosh-signature:last-child]:before:content-['--_']",
@@ -282,7 +337,18 @@ export function ComposeEditor({
       transformPastedHTML: (html) => cleanPastedHtml(html),
       handlePaste: (_view, event) => {
         const files = filesOf(event.clipboardData);
-        if (files.length === 0) return false;
+        if (files.length === 0) {
+          // Plain text with a fenced block becomes a code block (slice 3g).
+          const plain = event.clipboardData?.getData("text/plain") ?? "";
+          const html = event.clipboardData?.getData("text/html") ?? "";
+          const current = editorRef.current;
+          if (html !== "" || plain === "" || current === null || current.schema.nodes.codeBlock === undefined) return false;
+          const content = fencedPaste(plain);
+          if (content === null) return false;
+          event.preventDefault();
+          current.chain().insertContent(content).run();
+          return true;
+        }
         event.preventDefault();
         handlers.current.onFiles(files);
         return true;
@@ -295,6 +361,13 @@ export function ComposeEditor({
         return true;
       },
       handleKeyDown: (_view, event) => {
+        if (event.key === "Enter" && !event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey) {
+          const current = editorRef.current;
+          if (current !== null && fenceEnter(current)) {
+            event.preventDefault();
+            return true;
+          }
+        }
         if ((event.metaKey || event.ctrlKey) && !event.altKey && event.code === "KeyK") {
           event.preventDefault();
           handlers.current.onLinkShortcut();
@@ -308,6 +381,7 @@ export function ComposeEditor({
     },
   });
 
+  editorRef.current = editor;
   useEffect(() => {
     if (editor === null) return;
     onReady(editor);

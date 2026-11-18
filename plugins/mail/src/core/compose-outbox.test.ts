@@ -17,10 +17,14 @@ import {
   UNDO_MS,
   UNDONE_TTL_MS,
   UndoneSends,
+  RETRY_BACKOFF_MS,
+  RETRY_STAGGER_MS,
+  RETRY_WINDOW_MS,
   canTransition,
   cancelSend,
   classifySendError,
   dismissOutbox,
+  hastenWaiting,
   nextOutboxState,
   outboxErrorText,
   queueSend,
@@ -406,14 +410,15 @@ describe("runOutboxOnce", () => {
 });
 
 describe("failure matrix", () => {
-  const cases: [string, Error, "failed" | "unknown", SendErrorKind][] = [
-    ["DNS / connect", new SendError("connect", false), "failed", "connect"],
+  const cases: [string, Error, "failed" | "unknown" | "waiting", SendErrorKind][] = [
+    // Slice 3j: the three kinds that never reached the server wait for another try.
+    ["DNS / connect", new SendError("connect", false), "waiting", "connect"],
     ["TLS", new SendError("tls", false), "failed", "tls"],
     ["AUTH refused", new SendError("auth", false), "failed", "auth"],
     ["size refused", new SendError("too_large", false), "failed", "too_large"],
     ["all recipients refused", new SendError("rejected_all", false), "failed", "rejected_all"],
-    ["timeout before DATA", new SendError("timeout_before_data", false), "failed", "timeout_before_data"],
-    ["4xx at any stage", new SendError("temporary", true), "failed", "temporary"],
+    ["timeout before DATA", new SendError("timeout_before_data", false), "waiting", "timeout_before_data"],
+    ["4xx at any stage", new SendError("temporary", true), "waiting", "temporary"],
     ["5xx after DATA", new SendError("rejected_message", true), "failed", "rejected_message"],
     ["no reply after DATA", new SendError("unknown_after_data", true), "unknown", "unknown_after_data"],
     ["a before-DATA kind claimed after DATA", new SendError("connect", true), "unknown", "unknown_after_data"],
@@ -428,7 +433,7 @@ describe("failure matrix", () => {
       await drain();
       expect(h.store.getOutbox(id)).toMatchObject({ state, errorKind: kind, attempts: 1 });
       expect(h.transport.sent).toHaveLength(1);
-      expect(classifySendError(error)).toEqual({ state, kind });
+      expect(classifySendError(error)).toEqual({ state: state === "waiting" ? "failed" : state, kind });
     });
   }
 
@@ -456,7 +461,7 @@ describe("failure matrix", () => {
   });
 
   it("Retry after a failure before DATA sends again", async () => {
-    h.transport.answer(new SendError("connect", false));
+    h.transport.answer(new SendError("tls", false));
     const { id } = await queued();
     h.advance(UNDO_MS);
     await drain();
@@ -887,5 +892,200 @@ describe("purpose drafts (slice 3e)", () => {
     await queueSend(deps, { ...draft, requestId: id, origin: "owner" });
     expect(cancelSend(deps, id)).toEqual({ cancelled: true, draftId: draft.draftId });
     expect(h.store.getDraft(draft.draftId)).toMatchObject({ purpose: null });
+  });
+});
+
+describe("slice 3j: automatic retry of sends that never reached the server", () => {
+  const failOnce = async (error: Error) => {
+    h.transport.answer(error);
+    const sent = await queued();
+    h.advance(UNDO_MS);
+    await drain();
+    return sent;
+  };
+
+  it("waits with a backoff, then sends once and finishes", async () => {
+    const { id } = await failOnce(new SendError("connect", false));
+    expect(h.store.getOutbox(id)).toMatchObject({ state: "waiting", errorKind: "connect", attempts: 1 });
+    expect(states().at(-1)).toBe("waiting");
+
+    // Not due before the first backoff has passed.
+    h.advance(RETRY_BACKOFF_MS[0]! - 1);
+    expect(await runOutboxOnce(h.deps, signal)).toBe(false);
+    expect(h.transport.sent).toHaveLength(1);
+
+    h.advance(1);
+    await drain();
+    expect(h.transport.sent).toHaveLength(2);
+    expect(h.transport.sent[1]!.raw).toEqual(h.transport.sent[0]!.raw);
+    expect(h.store.getOutbox(id)).toBeNull();
+  });
+
+  it("backs off longer each time and gives up 24 hours after Send", async () => {
+    const { id } = await failOnce(new SendError("connect", false));
+    const waits: number[] = [];
+    for (let n = 0; n < 60 && h.store.getOutbox(id)!.state === "waiting"; n++) {
+      const row = h.store.getOutbox(id)!;
+      const wait = Date.parse(row.sendAfter) - h.clock.now().getTime();
+      waits.push(wait);
+      h.transport.answer(new SendError("connect", false));
+      h.advance(wait);
+      await drain();
+    }
+    expect(waits.slice(0, 5)).toEqual(RETRY_BACKOFF_MS);
+    expect(waits.at(-1)).toBe(RETRY_BACKOFF_MS.at(-1));
+    const row = h.store.getOutbox(id)!;
+    expect(row).toMatchObject({ state: "failed", errorKind: "connect" });
+    expect(h.clock.now().getTime() - Date.parse(row.createdAt)).toBeGreaterThanOrEqual(RETRY_WINDOW_MS);
+  });
+
+  it("never retries a send that may have reached the server, or one the server refused", async () => {
+    const lost = await failOnce(new SendError("unknown_after_data", true));
+    const refused = await failOnce(new SendError("rejected_message", true));
+    const auth = await failOnce(new SendError("auth", false));
+    expect(h.store.getOutbox(lost.id)!.state).toBe("unknown");
+    expect(h.store.getOutbox(refused.id)!.state).toBe("failed");
+    expect(h.store.getOutbox(auth.id)!.state).toBe("failed");
+    const sent = h.transport.sent.length;
+    h.advance(RETRY_WINDOW_MS);
+    await drain();
+    expect(h.transport.sent).toHaveLength(sent);
+  });
+
+  it("an account without an outgoing server fails at once and never waits", async () => {
+    const { id } = await queued();
+    const account = h.store.getAccount("acc_1")!;
+    h.store.saveAccount({ ...account, smtp: null });
+    h.advance(UNDO_MS);
+    await drain();
+    expect(h.store.getOutbox(id)).toMatchObject({ state: "failed", errorKind: "no_smtp" });
+    expect(h.transport.sent).toHaveLength(0);
+  });
+
+  it("a sync round that came back releases waiting sends a few seconds apart", async () => {
+    const first = await failOnce(new SendError("connect", false));
+    const second = await failOnce(new SendError("connect", false));
+    expect(hastenWaiting(h.deps, "acc_other")).toBe(0);
+    expect(hastenWaiting(h.deps, "acc_1")).toBe(2);
+    const now = h.clock.now().getTime();
+    const due = [first.id, second.id].map((id) => Date.parse(h.store.getOutbox(id)!.sendAfter) - now).sort((a, b) => a - b);
+    expect(due).toEqual([0, RETRY_STAGGER_MS]);
+    // Already due: nothing to move the second time.
+    expect(hastenWaiting(h.deps, "acc_1")).toBe(0);
+  });
+
+  it("an automatic try over the per-account cap moves back instead of sending", async () => {
+    const { id } = await failOnce(new SendError("connect", false));
+    const capped = { ...h.deps, rate };
+    const row = h.store.getOutbox(id)!;
+    h.advance(Date.parse(row.sendAfter) - h.clock.now().getTime());
+    while (rate.take("acc_1")) {
+      // use up the minute's cap
+    }
+    const sent = h.transport.sent.length;
+    expect(await runOutboxOnce(capped, signal)).toBe(true);
+    expect(h.transport.sent).toHaveLength(sent);
+    expect(h.store.getOutbox(id)!.state).toBe("waiting");
+    expect(Date.parse(h.store.getOutbox(id)!.sendAfter)).toBeGreaterThan(h.clock.now().getTime());
+  });
+
+  it("Send now, Edit and Discard work on a waiting row; a restart leaves it waiting", async () => {
+    const a = await failOnce(new SendError("temporary", false));
+    expect(h.store.recoverOutboxOnStart(h.clock.now().toISOString())).toEqual({ unknown: 0, held: 0 });
+    expect(h.store.getOutbox(a.id)!.state).toBe("waiting");
+    expect(sendNow(deps, a.id)).toEqual({ ok: true });
+    expect(h.store.getOutbox(a.id)).toMatchObject({ state: "queued", errorKind: null });
+    h.advance(UNDO_MS);
+    await drain();
+    expect(h.store.getOutbox(a.id)).toBeNull();
+
+    const b = await failOnce(new SendError("connect", false));
+    expect(cancelSend(deps, b.id)).toEqual({ cancelled: true, draftId: b.draftId });
+    expect(h.store.getDraft(b.draftId)).not.toBeNull();
+
+    const c = await failOnce(new SendError("connect", false));
+    dismissOutbox(deps, c.id);
+    expect(h.store.getOutbox(c.id)).toBeNull();
+    expect(h.store.getDraft(c.draftId)).toBeNull();
+  });
+});
+
+describe("Send later (slice 3l)", () => {
+  const HOUR = 3_600_000;
+  const at = (ms: number) => new Date(h.clock.now().getTime() + ms).toISOString();
+
+  async function scheduledIn(ms: number) {
+    const draft = await readyDraft();
+    const id = requestId();
+    const sendAt = at(ms);
+    const result = await queueSend(deps, { ...draft, requestId: id, origin: "owner", sendAt });
+    return { ...draft, id, sendAt, result };
+  }
+
+  it("queues the send for the picked time, which is the message's Date too", async () => {
+    const { id, sendAt, result } = await scheduledIn(3 * HOUR);
+    expect(result.sendAfter).toBe(sendAt);
+    expect(h.store.getOutbox(id)).toMatchObject({ state: "queued", sendAfter: sendAt, scheduled: true });
+    expect(h.builder.built.at(-1)!.date).toBe(sendAt);
+    h.advance(3 * HOUR - 1_000);
+    await drain();
+    expect(h.transport.sent).toHaveLength(0);
+    h.advance(1_000);
+    await drain();
+    expect(h.transport.sent).toHaveLength(1);
+  });
+
+  it("refuses a time under a minute or over a year ahead, an unreadable one, and an agent's", async () => {
+    const draft = await readyDraft();
+    for (const sendAt of [at(30_000), at(-HOUR), at(366 * 24 * HOUR), "tomorrow"]) {
+      await expect(queueSend(deps, { ...draft, requestId: requestId(), origin: "owner", sendAt })).rejects.toMatchObject({
+        kind: "invalid",
+      });
+    }
+    await expect(queueSend(deps, { ...draft, requestId: requestId(), origin: "agent", sendAt: at(HOUR) })).rejects.toMatchObject({
+      kind: "invalid",
+    });
+    expect(h.store.listOutbox(null)).toHaveLength(0);
+  });
+
+  it("Edit before the time deletes the row and leaves the draft", async () => {
+    const { id, draftId } = await scheduledIn(HOUR);
+    h.advance(HOUR / 2);
+    expect(cancelSend(deps, id)).toEqual({ cancelled: true, draftId });
+    h.advance(HOUR);
+    await drain();
+    expect(h.transport.sent).toHaveLength(0);
+    expect(h.store.getDraft(draftId)).not.toBeNull();
+  });
+
+  it("a send that came due while BB was closed goes out on the next start when under a day late", async () => {
+    const { id } = await scheduledIn(HOUR);
+    h.advance(HOUR + 23 * HOUR);
+    expect(h.store.recoverOutboxOnStart(h.clock.now().toISOString())).toEqual({ unknown: 0, held: 0 });
+    expect(h.store.getOutbox(id)!.state).toBe("queued");
+    await drain();
+    expect(h.transport.sent).toHaveLength(1);
+  });
+
+  it("a day late or more it is held; Send now then sends it with the usual Undo window", async () => {
+    const { id } = await scheduledIn(HOUR);
+    h.advance(HOUR + 24 * HOUR);
+    expect(h.store.recoverOutboxOnStart(h.clock.now().toISOString())).toEqual({ unknown: 0, held: 1 });
+    expect(h.store.getOutbox(id)).toMatchObject({ state: "held", scheduled: true });
+    await drain();
+    expect(h.transport.sent).toHaveLength(0);
+    sendNow(deps, id);
+    expect(h.store.getOutbox(id)).toMatchObject({
+      state: "queued",
+      scheduled: false,
+      sendAfter: at(UNDO_MS),
+    });
+  });
+
+  it("a send not yet due stays queued over a restart", async () => {
+    const { id } = await scheduledIn(48 * HOUR);
+    h.advance(HOUR);
+    expect(h.store.recoverOutboxOnStart(h.clock.now().toISOString())).toEqual({ unknown: 0, held: 0 });
+    expect(h.store.getOutbox(id)!.state).toBe("queued");
   });
 });

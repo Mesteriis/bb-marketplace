@@ -8,6 +8,7 @@ import type { OutboxRow } from "../core/model.ts";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { outboxStateText } from "./outbox.tsx";
+import { tx } from "./i18n/index.ts";
 
 export type ProposalStatus = {
   state: "pending" | "confirming" | "queued" | "opened" | "cancelled" | "expired" | "refused";
@@ -96,33 +97,33 @@ export function AgentSendRow({ status, outbox, undo, openDraft, version = 0, now
     [reload, undo],
   );
 
-  if (loaded.kind === "loading") return <Line>Checking where this email stands…</Line>;
-  if (loaded.kind === "error") return <Line>This email is no longer tracked here. See the Outbox in Mail.</Line>;
+  if (loaded.kind === "loading") return <Line>{tx("Checking where this email stands\u2026")}</Line>;
+  if (loaded.kind === "error") return <Line>{tx("This email is no longer tracked here. See the Outbox in Mail.")}</Line>;
 
   const { status: s } = loaded;
   const openButton =
     s.draftId !== null ? (
       <Button variant="outline" size="sm" className="h-7 px-2" onClick={() => openDraft(s.draftId!)}>
-        Open in Mail
+        {tx("Open in Mail")}
       </Button>
     ) : null;
 
   let body: ReactNode;
   switch (s.state) {
     case "pending":
-      body = <Line>Waiting for your review</Line>;
+      body = <Line>{tx("Waiting for your review")}</Line>;
       break;
     case "confirming":
-      body = <Line>Confirmed; queuing…</Line>;
+      body = <Line>{tx("Confirmed; queuing\u2026")}</Line>;
       break;
     case "queued":
       if (row === null) {
-        body = <Line>Sent</Line>;
+        body = <Line>{tx("Sent")}</Line>;
       } else if (row.state === "queued") {
         const left = Math.max(1, Math.ceil((due - now()) / 1000));
         body = (
           <Line>
-            <span>Sending in {Number.isNaN(left) ? 10 : left} s</span>
+            <span>{tx("Sending in")} {Number.isNaN(left) ? 10 : left} s</span>
             <Button
               variant="outline"
               size="sm"
@@ -130,13 +131,13 @@ export function AgentSendRow({ status, outbox, undo, openDraft, version = 0, now
               disabled={undoing}
               onClick={() => void onUndo(row.id)}
             >
-              Undo
+              {tx("Undo")}
             </Button>
           </Line>
         );
       } else {
         const attention = row.state === "failed" || row.state === "unknown" || row.state === "sent_no_copy" || row.state === "held";
-        body = <Line warning={attention}>{outboxStateText(row)}{attention ? " · see the Outbox in Mail" : ""}</Line>;
+        body = <Line warning={attention}>{outboxStateText(row)}{attention ? tx(" \u00b7 see the Outbox in Mail") : ""}</Line>;
       }
       break;
     case "opened":
@@ -145,20 +146,20 @@ export function AgentSendRow({ status, outbox, undo, openDraft, version = 0, now
           <span>
             {s.reason !== null && s.reason !== "changed"
               ? `Not sent · ${NOT_QUEUED_TEXT[s.reason]}`
-              : "Not sent · kept as a draft in Mail"}
+              : tx("Not sent \u00b7 kept as a draft in Mail")}
           </span>
           {openButton}
         </Line>
       );
       break;
     case "refused":
-      body = <Line>Not sent: the proposal changed</Line>;
+      body = <Line>{tx("Not sent: the proposal changed")}</Line>;
       break;
     case "cancelled":
-      body = <Line>Cancelled. Nothing was sent.</Line>;
+      body = <Line>{tx("Cancelled. Nothing was sent.")}</Line>;
       break;
     case "expired":
-      body = <Line>Expired. Nothing was sent.</Line>;
+      body = <Line>{tx("Expired. Nothing was sent.")}</Line>;
       break;
   }
   return (

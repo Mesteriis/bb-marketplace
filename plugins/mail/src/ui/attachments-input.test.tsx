@@ -9,6 +9,7 @@ import {
   AttachmentChips,
   CHUNK_BYTES,
   formatBytes,
+  originLabel,
   sha256Hex,
   toBase64,
   uploadFile,
@@ -31,7 +32,7 @@ function recordingPort() {
     },
     finish: async (input) => {
       calls.push({ method: "finish", input });
-      return { id: "att-1", fileName: "report_.pdf", mimeType: "application/pdf", size: 3 };
+      return { id: "att-1", fileName: "report_.pdf", mimeType: "application/pdf", size: 3, origin: null };
     },
   };
   return { port, calls };
@@ -99,7 +100,7 @@ describe("attachment chips", () => {
     const onDismiss = vi.fn();
     render(
       <AttachmentChips
-        attachments={[{ id: "att-1", fileName: "plan.pdf", mimeType: "application/pdf", size: 2048 }]}
+        attachments={[{ id: "att-1", fileName: "plan.pdf", mimeType: "application/pdf", size: 2048, origin: null }]}
         uploads={[
           { key: "u1", fileName: "big.zip", size: 100, sent: 50, error: null },
           { key: "u2", fileName: "bad.exe", size: 10, sent: 0, error: "Upload refused" },
@@ -125,5 +126,22 @@ describe("attachment chips", () => {
     const file = new File(["x"], "a.txt", { type: "text/plain" });
     fireEvent.change(screen.getByTestId("compose-file-input"), { target: { files: [file] } });
     expect(onAdd).toHaveBeenCalledWith([file]);
+  });
+});
+
+describe("BB files (slice 3g)", () => {
+  it("labels a file picked from BB by its origin", () => {
+    expect(originLabel(null)).toBeNull();
+    expect(originLabel("bb:project:p-api")).toBe("from a BB project");
+    expect(originLabel("bb:thread:bbt-1")).toBe("from a BB thread");
+    render(
+      <AttachmentChips
+        attachments={[{ id: "a-1", fileName: "out.log", mimeType: "text/plain", size: 10, origin: "bb:thread:bbt-1" }]}
+        uploads={[]}
+        onRemove={vi.fn()}
+        onDismissUpload={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("from a BB thread")).toBeTruthy();
   });
 });

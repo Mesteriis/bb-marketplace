@@ -1,0 +1,113 @@
+// @vitest-environment jsdom
+import { cleanup, render, screen } from "@testing-library/react";
+import { installTestPluginRuntime } from "@get-bb/plugin-sdk/testing/app";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { ThreadSummary } from "../core/index.ts";
+import { ListDensityContext, LOAD_MORE_MARGIN_PX, ThreadList, offscreenRowStyle } from "./thread-list.tsx";
+
+installTestPluginRuntime();
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
+
+const thread = (n: number): ThreadSummary => ({
+  id: `th-${n}`,
+  accountId: "acc_1",
+  subject: `Invented subject ${n}`,
+  lastDate: "2026-11-17T10:00:00.000Z",
+  messageCount: 1,
+  unreadCount: 0,
+  participants: [{ name: "Sender", address: "sender@example.org" }],
+  snippet: `Invented preview ${n}`,
+  flagged: false,
+  snoozedUntil: null,
+  category: null,
+  categorySuggestion: null,
+  projectId: null,
+});
+
+function list(overrides: Partial<Parameters<typeof ThreadList>[0]> = {}) {
+  return (
+    <ThreadList
+      threads={[thread(1), thread(2)]}
+      selectedThreadId={null}
+      ownAddress={() => null}
+      marker={() => null}
+      onSelect={() => undefined}
+      hasMore
+      loadingMore={false}
+      onLoadMore={() => undefined}
+      checked={new Set()}
+      onToggleChecked={() => undefined}
+      onToggleFlag={() => undefined}
+      focusedId={null}
+      {...overrides}
+    />
+  );
+}
+
+/** A stand-in observer the test fires by hand. */
+function stubObserver() {
+  const observers: { fire: (isIntersecting: boolean) => void; options: IntersectionObserverInit | undefined; disconnected: boolean }[] = [];
+  class Stub {
+    private readonly entry: (typeof observers)[number];
+    constructor(callback: IntersectionObserverCallback, options?: IntersectionObserverInit) {
+      this.entry = {
+        options,
+        disconnected: false,
+        fire: (isIntersecting) =>
+          callback([{ isIntersecting } as IntersectionObserverEntry], this as unknown as IntersectionObserver),
+      };
+      observers.push(this.entry);
+    }
+    observe() {}
+    unobserve() {}
+    disconnect() {
+      this.entry.disconnected = true;
+    }
+  }
+  vi.stubGlobal("IntersectionObserver", Stub);
+  return observers;
+}
+
+describe("big lists (slice 3j)", () => {
+  it("lets the browser skip rows that are far from view, at the row's own height", () => {
+    expect(offscreenRowStyle(false)).toEqual({ contentVisibility: "auto", containIntrinsicSize: "auto 68px" });
+    expect(offscreenRowStyle(true)).toEqual({ contentVisibility: "auto", containIntrinsicSize: "auto 44px" });
+    render(<ListDensityContext.Provider value="compact">{list()}</ListDensityContext.Provider>);
+    const row = screen.getByRole("button", { name: /Invented subject 1/ }).closest("li")!;
+    expect(row.style.getPropertyValue("content-visibility")).toBe("auto");
+    // Every loaded row stays in the document: the keys and the selection reach it.
+    expect(screen.getAllByRole("listitem")).toHaveLength(2);
+  });
+
+  it("asks for the next page when the end of the list comes near, not while one is loading", () => {
+    const observers = stubObserver();
+    const onLoadMore = vi.fn();
+    const view = render(list({ onLoadMore }));
+    expect(observers).toHaveLength(1);
+    expect(observers[0]!.options?.rootMargin).toBe(`0px 0px ${LOAD_MORE_MARGIN_PX}px 0px`);
+
+    observers[0]!.fire(false);
+    expect(onLoadMore).not.toHaveBeenCalled();
+    observers[0]!.fire(true);
+    expect(onLoadMore).toHaveBeenCalledTimes(1);
+
+    view.rerender(list({ onLoadMore, loadingMore: true }));
+    observers[0]!.fire(true);
+    expect(onLoadMore).toHaveBeenCalledTimes(1);
+
+    view.rerender(list({ onLoadMore, hasMore: false }));
+    expect(observers[0]!.disconnected).toBe(true);
+    expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
+  });
+
+  it("keeps the Load more button where the browser cannot watch the list", () => {
+    vi.stubGlobal("IntersectionObserver", undefined);
+    const onLoadMore = vi.fn();
+    render(list({ onLoadMore }));
+    screen.getByRole("button", { name: "Load more" }).click();
+    expect(onLoadMore).toHaveBeenCalledTimes(1);
+  });
+});

@@ -6,12 +6,18 @@ message to an agent, emails an agent proposes for you to send, machine
 translation of a message, and AI on your click (summaries, Ask, tasks,
 categories, a Today view, reply reminders, Improve), with secrets hidden
 from every agent and model, an AI access scope and a local log of what
-agents did.
+agents did. On your click it hands mail to BB: a new agent thread or a task,
+an attachment saved into a project, a patch or an alert handed to an agent,
+and a thread's result back as a draft (see [BB integration](#bb-integration)).
+It searches your mail server on your click, loads older mail, manages folders
+and Gmail labels, and opens attachments in its own viewer (see
+[Search, older mail, folders and attachments](#search-older-mail-folders-and-attachments)).
 
 **Status: experimental.** Plugin id: `makosh-mail`. It reads mail, and
 changes it on the server only when you click or press a key: read and unread,
-flags, moves, and the snoozes and block rules you set up, which move mail
-later on their own. It sends mail you write through your account's SMTP server,
+flags, moves, folders you create, rename, delete or subscribe to, Gmail
+labels, and the snoozes and block rules you set up, which move mail later on
+their own. It sends mail you write through your account's SMTP server,
 after a 10-second Undo window. Agents cannot send on their own: with
 `agentPropose` on (off by default) an agent can propose an email, and it goes
 out only when you press **Send** on its card in that agent's thread.
@@ -48,7 +54,9 @@ out only when you press **Send** on its card in that agent's thread.
   has no stored inline images: they show only once that message is fetched
   again, which does not happen automatically. Remote images are hidden; a bar
   offers **Show images** for that message or **Always show from** its
-  sender. Only `https:` images load, even when allowed.
+  sender. Only `https:` images load, even when allowed. Tracking pixels
+  never load, and a sender whose check failed or who looks disguised gets
+  no automatic images (see [Security and privacy](#security-and-privacy)).
 - **Spam**, **Not spam** (in Spam only), **Archive** and **Delete** in the
   reading pane move the open conversation's messages in the folder you are
   viewing. Delete moves to Trash; nothing is ever permanently deleted.
@@ -68,7 +76,10 @@ out only when you press **Send** on its card in that agent's thread.
   list of safe ones (HTML, SVG and scripts among them) are saved as generic
   binary files.
 - Hotkeys on the Mail page; `?` shows them all. Slice 3f adds Shift+`s`
-  summarize and Shift+`t` find tasks. `j` / `k` next and previous
+  summarize and Shift+`t` find tasks; slice 3g adds Shift+`n` New thread…,
+  Shift+`k` Make a task… and `g` then `n` for Dev; slice 3h adds `g` then `f`
+  for Files, `l` Labels (Gmail), `;` expand or collapse the conversation and
+  Shift+`p` print it. `j` / `k` next and previous
   conversation, `o` or Enter open, `u` back to the list, `/` search, `x`
   select, `e` archive, `#` delete, `!` spam, `s` flag or unflag, Shift+`u`
   mark unread, Shift+`i` mark read, `v` Move to…, `b` snooze, and `g` then `i`, `s`, `d`,
@@ -77,7 +88,9 @@ out only when you press **Send** on its card in that agent's thread.
   while you type in a field. `c` compose, `r` reply, `a` reply all, `f`
   forward, `t` translate (again: show the original), `z` undo the last
   action; in the composer Cmd/Ctrl+Enter sends, Cmd/Ctrl+Alt+T opens the
-  templates and Escape closes.
+  templates and Escape closes. Slice 3i adds Apple Mail's keys beside these:
+  arrows, Shift+arrows, Backspace and Delete everywhere, Command chords on a
+  Mac (see [Apple Mail keys and the reading flow](#apple-mail-keys-and-the-reading-flow)).
 - When a sender's images are always shown, the message says so and offers
   **Stop showing**.
 - What the plugin writes on the server: `\Seen` when you open a message or
@@ -96,8 +109,11 @@ out only when you press **Send** on its card in that agent's thread.
   else uses COPY. Every other undo is an ordinary move back. Snooze creates
   one folder per account, "Snoozed" (on Gmail "Snoozed (Makosh)"), only when
   you confirm it, and moves snoozed mail there and back; block rules and
-  approved triage items move mail like your own buttons. Instant new mail
-  watches the Inbox read-only (`EXAMINE`) and writes nothing. The one
+  approved triage items move mail like your own buttons. Folders you create,
+  rename, delete or (un)subscribe and Gmail labels you add or remove are the
+  other writes, each on your click (see
+  [Folders](#folders)). Instant new mail, server search and loading older
+  mail read through read-only (`EXAMINE`) sessions and write nothing. The one
   outbound web request is an unsubscribe one-click POST you confirmed (see
   [Inbox tools](#inbox-tools-new-mail-unsubscribe-snooze-block-filters)).
 - Agent tools `mail_search` and `mail_read` and the `mail` skill, off by
@@ -108,7 +124,10 @@ out only when you press **Send** on its card in that agent's thread.
   The one way an agent writes mail is `mail_propose`, behind its own
   `agentPropose` setting (see [Emails an agent proposes](#emails-an-agent-proposes)).
   Drafts synced from the server's Drafts folder, yours included, are
-  ordinary messages to `mail_search` and `mail_read`.
+  ordinary messages to `mail_search` and `mail_read`. `mail_search` takes the
+  same operators as the search box, over synced and already loaded mail
+  only: agents cannot search the mail server, load older mail or search
+  attachment text.
 - `agentTools` controls what agents are offered; it is not a barrier against
   an agent that has shell access to the machine running the BB server. Such
   an agent can also call the plugin's RPC methods, including the ones behind
@@ -136,9 +155,10 @@ Account passwords are sealed with AES-256-GCM under the `vaultKey` secret
 setting, generated on first load. Mail and credentials stay on the machine
 that runs the BB server.
 
-Not yet: creating or renaming folders (beyond the one snooze folder), Gmail
-API or OAuth, scheduled send, system notifications, and writing categories
-or reminders to the mail server.
+Not yet: Gmail API or OAuth, scheduled send, system notifications, semantic
+search, export to mbox or .eml archives, writing categories or reminders to
+the mail server, and S/MIME signing, checking and decryption (Mail only
+recognises such mail; OpenPGP works, see [OpenPGP](#openpgp)).
 
 ## Writing and sending
 
@@ -161,20 +181,41 @@ or reminders to the mail server.
   which brings the draft back. Then the BB server sends it over SMTP with
   TLS and saves the Sent copy. The Sent copy keeps the Bcc line; the
   message on the wire has none. Gmail's own Sent copy does not show Bcc.
+- **Send later** picks the time a message goes out: In an hour, This
+  evening, Tomorrow morning, Tomorrow afternoon, Monday morning, or a date
+  and time from one minute to a year ahead. The message waits in the Outbox
+  as "Scheduled for …" and carries the picked time as its Date. It is built
+  when you schedule it, so to change it use **Edit**, which cancels the send
+  and reopens the draft. The BB server sends it, so BB must be running at
+  that time. A send that came due while BB was closed goes out when BB next
+  starts if it is less than a day late; later than that it is held ("Not
+  sent: its time passed while BB was closed") and you choose **Send now**
+  or **Edit**. Agents cannot schedule a send.
 - **Outbox**, at the top of Sent, lists every send that is not done and
   offers only what is safe from its state:
 
   | State | Means | You can |
   | --- | --- | --- |
   | Sending soon | inside the Undo window | Undo |
+  | Scheduled for … | waits for the time you picked in **Send later** | Edit (the send is cancelled, the draft reopens) |
   | Held | was waiting when BB restarted; nothing sent | Send now, Edit |
   | Sending… / saving a copy | in progress | — |
   | Not sent | the server refused it or could not be reached | Retry, Edit (draft back), Discard (message and draft deleted) |
   | May have been sent | the connection dropped after the message went out | Send again (a second copy may arrive), Discard |
   | Sent; the copy failed | sent, but the copy to Sent failed | Retry copy, Dismiss |
 
-  Nothing resends on its own. A Gmail send that may have been sent is
-  marked done when it shows up in Sent within 5 minutes.
+  A send that never reached the server retries on its own: when the
+  outgoing server could not be reached, did not answer before the message
+  was handed over, or asked to try again later (a 4xx reply). The row reads
+  "Not sent yet … Next try at 10:42"; the waits are 1, 5, 15, 30 and then
+  60 minutes, and the tries end 24 hours after Send, when the row becomes
+  "Not sent". An ok sync round of that account sends the waiting rows at
+  once, a few seconds apart, within the same cap of 10 sends a minute.
+  **Send now**, **Edit** and **Discard** work on a waiting row. A send that
+  may have reached the server, one the server refused, a sign-in or TLS
+  failure, and an account with no outgoing server never retry. A Gmail send
+  that may have been sent is marked done when it shows up in Sent within 5
+  minutes.
 
 ### SMTP setup
 
@@ -239,12 +280,15 @@ aliases you added.
 
 ## Before you send
 
-Send saves the draft and runs four checks; none of them blocks a send:
+Send saves the draft and runs these checks; none of them blocks a send:
 
 - an attachment mentioned ("attached", "see the file", "во вложении", "прикрепляю"…) with nothing attached;
 - an empty subject;
 - on a reply, a recipient who is not in the conversation;
-- on a new message or forward, an address you have never sent to.
+- on a new message or forward, an address you have never sent to;
+- on a reply or reply all, a recipient that is the original's Reply-To
+  address when it goes elsewhere than the sender ("Reply-To differs from
+  the sender: …"; **Fix** marks the address). Slice 3i.
 
 When one applies, **Before you send** lists them. **Fix** takes you to it
 (the attachment picker, the subject, the recipient row with the chips
@@ -274,6 +318,77 @@ reached: try Undo again).
   long sync holds the account, it says "Undo will finish after the current
   sync".
 
+## Apple Mail keys and the reading flow
+
+Slice 3i adds Apple Mail's keys beside the Gmail letters; every letter
+keeps what it did. Letters, arrows and Backspace follow the physical key,
+so they work on other keyboard layouts.
+
+On every platform:
+
+| Key | Does |
+| --- | --- |
+| Down / Up | Next / previous conversation, and opens it (like `j` / `k`, which open only when a conversation is already open) |
+| Shift+Down / Shift+Up | Extend the selection from the cursor row (grouped lists only, as `x`) |
+| Down / Up on a message header or the earlier-messages stack | Move focus to the next / previous header |
+| Backspace, Delete | Delete, as `#` |
+
+On a Mac only (the same chords with Ctrl would collide with browser and
+system keys on Windows and Linux, where the letters cover them):
+
+| Chord | Does | Letter |
+| --- | --- | --- |
+| ⌘R / ⇧⌘R | Reply / Reply all | `r` / `a` |
+| ⇧⌘F | Forward | `f` |
+| ⌃⌘A | Archive | `e` |
+| ⇧⌘J | Spam | `!` |
+| ⌃⌘M | Move to… | `v` |
+| ⇧⌘U | Mark read, or unread when nothing is unread | Shift+`i` / Shift+`u` |
+| ⇧⌘L | Flag or unflag | `s` |
+| ⌥⌘F | Search | `/` |
+| ⌘Z | Undo the last action (outside any field) | `z` |
+| ⌘Backspace | Delete | `#` |
+| ⇧⌘D | Send, in the composer (with Before you send) | Cmd+Enter |
+
+- **Keys BB keeps.** Mail never binds a chord BB uses: ⌘N (use `c`),
+  ⇧⌘N (the Sync button), ⌘F (use `/` or ⌥⌘F), ⌘P (Shift+`p`), ⌘1–⌘9
+  (`g` then a letter), ⌘K, ⌘J, ⌘W, ⌘T, ⌘O, ⌘[ and ⌘], ⌘\ and the other BB
+  defaults, the ⌃⌘ arrows and Escape (use `u`). Apple's Erase Junk Mail
+  (⌥⌘J) is not bound: Mail never expunges by key. ⌘R, ⇧⌘R and ⌘Z stay
+  bound until the live check in BB shows whether the desktop app reloads
+  the window or runs its own undo on them; a chord that does is removed. In
+  a browser tab the browser may keep ⌘R for itself; the letters still work.
+- **Arrows open.** In two columns Down and Up open the next conversation
+  even when none is open, and opening marks it read, as any open does. In
+  one column with nothing open they only move the cursor; once a
+  conversation is open they open as in two columns. A held arrow only moves
+  the cursor and opens the row it stops on when you release it. Inside the
+  message text Up and Down scroll, as the browser does. In Drafts an arrow
+  opens the draft in the reading pane, not the composer.
+- **Keys stay safe.** No key acts while you type in a field, the composer,
+  a dialog, a menu or a list, or while an input method is composing. A held
+  chord or Backspace acts once; a second Delete while the first is still
+  running is dropped, so it never deletes the next conversation unseen.
+- **The next conversation opens** after Archive, Delete, Spam, Not spam,
+  Move to…, Snooze, or a drag to a folder of the conversation that is open,
+  from the reading pane, a hotkey, an Apple chord or the drag: the row
+  below, at the end of the list the row above, and the empty state when no
+  rows are left. It opens only while the conversation you acted on is still
+  open, and an action that fails leaves it open. Mark unread, Block sender
+  and anything a rule or another device does close the conversation as
+  before. After an action on a selection the cursor moves to the next
+  remaining row and nothing opens.
+- **Undo reopens.** Undo (the toast's **Undo**, `z` or ⌘Z) brings the
+  conversation back and opens it again when the conversation that action
+  opened (or nothing) is still shown; after you opened something else it
+  does not. On Gmail an archived conversation added back with UID COPY may
+  come back as a new conversation; then nothing reopens.
+- **Keys inside a message.** After a click into a message's text the keys
+  still reach the page, so hotkeys and Backspace keep working. Enter,
+  Space, Tab, arrows, Page Up/Down, Home and End stay with the message:
+  Enter on a focused link opens that link (through the link check below),
+  never the cursor row.
+
 ## Inbox tools: new mail, unsubscribe, snooze, block, filters
 
 **Instant new mail.** While BB runs, each account keeps one more IMAP
@@ -295,6 +410,14 @@ remote BB server uses its own hours. Nothing is saved for later. A forged
 From naming someone you write to can toast too; the address shown is the
 one in the message. A snoozed message that comes back toasts by the same
 rule.
+
+**Important senders.** The `importantSenders` setting takes addresses and
+domains (`ana@example.com`, `example.org`), separated by commas; a domain
+covers its subdomains, and the list holds up to 200 entries. Mail from them
+toasts during quiet hours, toasts even when you never wrote to them, and
+toasts when it is a mailing list. Your own addresses and blocked senders
+still never toast. `notifyImportantOnly` limits toasts to these senders at
+all hours. With no important senders named, quiet hours silence everything.
 
 **Unsubscribe.** A message with `List-Unsubscribe` gets **Unsubscribe** in
 the reading pane (never in Spam or Trash, which says "Use Spam or Block for
@@ -328,6 +451,28 @@ while BB runs: on your phone it waits in Snoozed, and overdue mail returns at
 the next start. Renaming or deleting the folder elsewhere ends those snoozes
 (the mail stays where it is).
 
+**Subscriptions** (Mail settings → Subscriptions) lists the mailing lists
+in the mail stored on this machine, outside Spam, Trash, Drafts and Sent,
+largest first: the list's name, the sender, how many messages and how many
+unread, the date of the newest, and the latest unsubscribe request if there
+was one. Tick up to 10 lists and **Unsubscribe from N lists**: Mail shows
+the requests it would make — one request to the list's host, or an email
+with its exact subject and text — and nothing goes out until you confirm.
+Each request is the same one **Unsubscribe** in a message makes, with the
+same checks, one after another; each row then says what happened, and an
+email waits in the Outbox with its Undo.
+
+- A list has no tick when Mail has no way to unsubscribe that it can trust,
+  when its latest request is done or waiting, or when its unsubscribe
+  address is not at the sender's domain. The last kind is unsubscribed from
+  a message of that list, where the address is shown.
+- A list is a List-Id, or for mail without one the sender's address. Only
+  mail whose unsubscribe headers are already stored is counted, and only
+  the newest 50,000 such messages; the 200 largest lists are shown.
+- The same caution applies as for one message: unsubscribing tells the
+  sender the address is read. For mail you never signed up for, use Spam or
+  Block.
+
 **Block** a sender's address, or everyone at their domain (not offered for
 public providers like gmail.com). It says when you have written to them and
 can also move their stored Inbox mail (ticked for an address, unticked for a
@@ -338,7 +483,31 @@ out of Spam, is not moved again. "Blocked · Undo" takes a rule back; Mail
 settings → Inbox → Blocked senders lists them with **Unblock** (mail already
 in Spam stays there).
 
-**Filters.** **Unread**, **Flagged** and **Attachments** above the list
+**Filters for new mail** (Mail settings → Filters) sort Inbox mail as it
+arrives, without an agent. A filter matches all of what you give it: sender
+addresses, sender domains (a domain covers its subdomains), a mailing list
+id, whole subject words, and one account or every account. It can move the
+message to a folder, to the archive or to Trash, mark it read and flag it.
+
+- The first filter in the list that matches a message applies; later ones
+  are not looked at. The list is in the order you made the filters, and an
+  edit keeps a filter's place. Up to 50 filters; each can be turned off.
+- Filters see only mail that arrives after they are saved. Mail already in
+  the Inbox, mail that comes back from a snooze, and mail you move into the
+  Inbox yourself are left alone.
+- A blocked sender's mail goes to Spam before any filter. Your own mail is
+  never sorted. A message whose sender check failed is never sorted either,
+  so a forged sender cannot have mail filed away or marked read.
+- A message a filter moved out of the Inbox does not toast and does not
+  start a mail rule. Moving to a folder needs one account chosen, since
+  folders belong to an account; if the folder, the archive or Trash is
+  missing, the message stays in the Inbox and the rest of the filter still
+  applies.
+- Filters are kept on this machine and run while BB runs. They are not
+  server-side rules: mail that arrives while BB is closed is sorted when BB
+  next syncs it, and other mail apps see it in the Inbox until then.
+
+**List filters.** **Unread**, **Flagged** and **Attachments** above the list
 narrow it; each view keeps its own while the page is open, and the open
 conversation stays listed until you open another. Search has `is:unread`
 instead.
@@ -495,21 +664,661 @@ translation you read, the hidden values come back in place: the provider saw
 `[hidden one-time code]`, you see the code. The map that restores them lives
 only in the running job and is dropped when it ends.
 
+## BB integration
+
+Slice 3g connects mail to BB's projects, threads and Taskboard. Every step
+starts with your click (or a mail rule you made, below), and nothing in it
+writes to the mail server, sends mail, runs a command or makes a web request.
+
+- **New thread…** (Shift+`n`): pick a BB project, this message or the whole
+  conversation (the latest 10), and an optional instruction. The dialog shows
+  the exact prompt the thread starts with, read-only, the project's
+  permission mode ("Runs with full permissions" adds "The agent can run
+  commands without asking") and how many hidden values and earlier messages
+  were left out. **Start thread** starts it in the project's default
+  environment and opens it; **Edit in composer** opens BB's own composer with
+  that prompt instead. **Also save the attachments** saves them as below.
+- **Make a task…** (Shift+`k`): on a board of Makosh Taskboard (its **Take
+  into work** then shows the description) when Taskboard answers, else a
+  task in Mail's own Tasks with your note and a due date. If Taskboard does
+  not answer, the dialog offers the Mail task instead; Taskboard's own
+  refusals show as "Taskboard: …". Setting `taskTarget`.
+- **Save to project…** on an attachment, **Save all to project…** on a
+  message: into the project's working tree, in `attachmentFolder` (default
+  `mail-attachments/`) or a folder you type. Mail writes only new files there
+  (it reads first and writes only when the name is free), mode `0644`, never
+  into `.git` or a folder that starts with a dot, never outside the tree. A
+  name that exists asks: **Keep both** (`report (2).pdf`, the default),
+  **Replace** (a second confirmation, and only the file the dialog showed:
+  a file that changed since is not replaced) or **Cancel**. Shortcut files
+  and names agents read as instructions (`AGENTS.md`, `CLAUDE.md`,
+  `.cursorrules`, `*.mdc` and the like) are saved with `.txt` added. Mail
+  never opens or runs a saved file. Saving is allowed for mail outside AI
+  access (it is your file); the other BB actions are not.
+- **Attach from BB ▾** in the composer: **From a project…** (search its
+  files) or **From a thread…** (the thread Mail runs beside, or a recent
+  thread of a project), up to 10 files. The list marks them "from a BB
+  project"; a name that looks like it holds a secret (`.env.local`,
+  `id_rsa`) asks again. Before you send, the check lists the files from BB,
+  and warns when your text looks like it holds a password, token or code.
+- **Email the result** in a BB thread's menu and **Email this** on an
+  assistant message turn the thread's result or that message into a Mail
+  draft (Markdown becomes paragraphs, lists and code blocks). A thread
+  started from a mail opens a reply to that mail, decided from Mail's own
+  records, never from thread metadata. Nothing is sent until you press Send.
+- **Dev** in the rail (`g` `n`): GitHub, GitLab, CI and monitoring mail of the
+  last 7 days by repository, with CI failures, the latest failure and the
+  project, and **Mark read** / **Archive** with Undo. Recognised on this
+  computer at sync from headers, sender and subject (`devNotifications`, on);
+  a self-hosted GitLab or Jenkins sender counts only from the host of a BB
+  project's remote or with a List-Id of its own domain, and an alert from a
+  domain that is not a known monitoring service only with such a List-Id;
+  **Hide dev notifications** in the list. Today shows "Dev: N CI failures".
+- **Links**: repository, PR, issue, commit and CI links of a message, listed
+  by their real URL with **Open**, **Open project** and **New thread…** in the
+  project whose remote matches.
+- **Code**: code, diffs and logs in plain mail show with BB's highlighter and
+  diff viewer (a plain `<pre>` where BB does not offer them), each with
+  **Copy**; an HTML mail's `<pre>` blocks show under it as "Code (N)". The
+  composer has **Code block** (or ```` ``` ```` and Enter), and a pasted fenced
+  block becomes one.
+- **Patches**: a `.patch` / `.diff` attachment or a `git format-patch` body
+  shows "Patch · N files · +a -r · Review". The review lists each file's diff
+  and warnings (executable files, symlinks, CI workflows, hooks, lock files,
+  agent instruction files); a patch that touches `.git`, absolute or `..`
+  paths, or more than 200 files is refused with no action. **Save .patch to
+  project** writes it as above (`patchFolder`, default `mail-patches/`).
+  **Apply with an agent** uploads the patch to a new thread in a fresh
+  managed worktree with a fixed instruction (`git apply --check` first, no
+  commit, push or scripts); Mail never applies a patch itself. When BB cannot
+  make a worktree, the dialog offers your checkout only after a warning.
+- **Alerts**: a Grafana, Alertmanager, Sentry, PagerDuty or Datadog mail shows
+  the alert's name, state, service and links; **Open incident thread…**
+  starts one thread per alert, and a later mail of the same alert offers
+  **Add to incident thread** for 7 days.
+- **Projects**: the **Project** chip binds a conversation to a project
+  (**Always for** its sender, domain or repository adds a binding rule; a
+  suggestion from the mail's links is never bound by itself). **Projects**
+  in the rail lists each project's mail; a BB thread's Info tab shows a
+  **Mail** section with the project's latest bound conversations and those
+  the thread came from.
+- **Mail rules** (Mail settings → Rules, `mailRules`, **off by default**):
+  "when new Inbox mail matches … → in project … with this instruction". Only
+  mail that a regular sync round brought into the Inbox counts, never a
+  backfill, a first sync or old mail. A rule **prepares** a thread by
+  default: it waits in the **Ready to start** strip of the Inbox for your
+  **Review** (the New thread dialog) and a toast says so. **Start the thread
+  by itself** is a per-rule choice behind a confirmation ("An email from
+  anyone matching this rule will start an agent in *project*"); such a thread
+  runs in a new managed worktree with `accept-edits` permissions (the agent
+  may edit files there without asking, but not in your checkout), never in
+  your checkout, and needs a project with a local checkout. Caps: 3 threads
+  an hour and 10 a day per rule, 20 a day for all rules, one a day per
+  conversation per rule; over a cap the run waits for you. A rule thread
+  gets no mail tools, no mail skill and no mail CLI, and stays so (for 180
+  days) after its mail, folder or account is gone; the caps keep counting its
+  run. A thread whose metadata says a rule started it is treated the same;
+  metadata never lifts the restriction. The mail CLI also refuses a call that
+  names a project but no thread. **Pause all rules** in the strip and in
+  settings, with Undo.
+
+What goes into BB: every prompt, title, task text, incident text and alert
+update is built in one place on the server from mail in AI access, with
+secrets replaced by `[hidden …]` placeholders over each whole field, quoted
+history removed and the mail framed as untrusted data. Thread metadata holds
+ids only. The agent log records each hand-off by ids and counts, never a
+path, project name, title or prompt. What a thread's agent does with that
+text goes to its model provider, as with Hand to agent.
+
+Settings: `devNotifications`, `mailRules`, `attachmentFolder`,
+`patchFolder` and `taskTarget` are BB plugin settings (BB Settings →
+Plugins → Makosh Mail); Mail settings shows them under **BB integration**
+and **Rules**, with the binding rules.
+
+## Search, older mail, folders and attachments
+
+Slice 3h. Everything here starts with your click, runs on the BB server's
+machine, sends nothing to an AI provider, and makes no web request. The
+new reads go to your own mail server only; the new writes are listed under
+[Folders](#folders).
+
+### Search
+
+- **Operators** in the search box (the **?** beside it lists them):
+  `from:`, `to:`, `cc:`, `subject:`, `has:attachment`, `filename:` (`pdf`
+  alone means `*.pdf`), `in:` (a role such as `inbox`, `sent`, `trash`,
+  `spam`, `archive`, `snoozed`, or a folder name), `account:`, `is:unread`,
+  `is:read`, `is:flagged`, `larger:` / `smaller:` (`10K`, `2M`), `after:` /
+  `before:` (`YYYY-MM-DD`), `newer_than:` / `older_than:` (`7d`, `2w`, `3m`,
+  `1y`), `list:`, `category:` and `label:`; a leading `-` negates one, values
+  with spaces are quoted. A value Mail cannot read stays text and the box
+  says so.
+- **Search on the server**, below the local hits, sends the query to your
+  own mail server: on Gmail as one Gmail search on All Mail (on Trash or Spam
+  for `in:trash` / `in:spam`), elsewhere an IMAP `SEARCH` in up to 30
+  folders (never Trash, Spam or Drafts unless you name them with `in:`) with
+  a 60-second budget per account and **Cancel**. The newest 50 hits not
+  already in Mail are fetched (`BODY.PEEK`, read-only, nothing is marked
+  read) and shown "from the server"; **More from the server** fetches the
+  next 50. `list:`, `category:` and non-Gmail `label:` are local only. A
+  server that refuses the search says "This server could not search for this
+  text" (non-ASCII text) or "The server refused the search". Unopened server
+  hits are removed from Mail after `serverSearchKeepDays` (default 14);
+  opening, flagging, moving, replying to, snoozing, labelling or binding
+  one keeps it.
+- **Saved searches** (up to 50) sit in the rail's **Saved** section with
+  their unread count; rename, edit, reorder or delete them from their menu.
+- **Search inside attachments** (`indexAttachmentText`, **off by default**):
+  after a sync round Mail fetches attachments of synced and loaded mail
+  (not Spam, Trash or unopened server hits) and keeps their text in a local
+  index: text files (text, CSV, JSON, XML, code, `.ics`, HTML as source) up
+  to 10 MB and PDFs up to 5 MB. PDF text is extracted by pdf.js in a
+  separate worker thread with memory limits and a 20-second timeout, so a
+  bad PDF cannot block or crash the plugin. At most 50 files a round, 200 MB
+  of fetching a day and 200 000 characters a file; the whole index stops at
+  50 million characters ("Attachment text index is full"). Mail settings
+  show the counts, **Retry failed** and **Remove attachment text**. Only your
+  own search on the Mail page reads the index: never `mail_search`, the CLI,
+  mentions, AI features or BB hand-offs.
+- **Related** under a conversation lists up to 10 local conversations that
+  share people, a reference or distinctive words, each with its reason. No
+  model and no network: it is ranked by local SQL.
+
+### Older mail
+
+- At the end of a folder, **Load 30 more days** (`historyStepDays`, default
+  30) fetches up to 500 older messages per step from the server, read-only;
+  **Stop** ends a step. A step that had more than 500, or was stopped, runs
+  the same days again next time, skipping what is already loaded. In a
+  conversation, **Load the whole conversation** looks for its other messages
+  (Gmail by the conversation id; elsewhere by Message-ID and References, in
+  the conversation's folders plus Sent and Archive), at most 100; they are
+  kept like server hits, so unopened ones are removed after
+  `serverSearchKeepDays` unless a later step loads their days.
+- Loaded mail stays until you choose **Forget older mail** in the folder's
+  menu, which removes it from Mail only; nothing changes on the server.
+  Flags of loaded mail are checked once a day, so a message deleted on the
+  server can stay in loaded history for up to a day.
+- A server-search, history or conversation load never adds mail newer than
+  the last sync round, and skips a folder that has not synced yet or whose
+  UIDVALIDITY changed, so new mail still reaches toasts, rules and triage.
+
+### Folders
+
+The folder menu in the rail has **New subfolder…**, **Rename…**,
+**Subscribed** and **Delete…**; the account menu has **New folder…**.
+Unsubscribed folders still sync and sit under **More folders**. Each
+operation runs on a fresh connection with no folder selected, so nothing is
+ever expunged.
+
+- **Create** and **rename** refuse names with control characters or the
+  folder delimiter, INBOX, and names your server could read as a system
+  folder ("That name is used for system folders"). Inbox, system folders,
+  Gmail's `[Gmail]` folders and the snooze folder cannot be renamed or
+  deleted. A rename moves Mail's own records (messages, drafts, snoozes,
+  folder settings, the AI access choice) to the new path.
+- **Delete** of an empty folder is a plain `DELETE` after `STATUS` shows 0
+  messages on the same connection. A folder with messages asks first: "Move
+  them to Trash first?" moves them with `MOVE` (not undoable with Undo; they
+  are in Trash), checks again and deletes only at 0; if mail arrived
+  meanwhile it stops with "New mail arrived in the folder; it was not
+  deleted". A folder with subfolders is refused.
+- **Gmail labels as folders**: deleting one removes the label only. The
+  messages stay in All Mail and keep their other labels, so Mail never moves
+  them.
+- **Residual risk (not Gmail)**: a message delivered to the folder between
+  the `STATUS` check and the `DELETE` (one round trip) would be lost with
+  the folder.
+- **A crash right after a rename**: if the plugin stops between the
+  server's answer and moving its own records, the next listing drops the old
+  path locally and syncs the new one as a new folder. The sync window comes
+  back; mail loaded beyond it, server hits, opened rows and the folder's
+  settings are lost locally only. Nothing is lost on the server.
+- **Drag** conversations (or the selection) onto a folder in the rail to
+  move them; dropping on Trash, Spam or Archive runs Delete, Spam or
+  Archive. Undo works as for **Move to…**, and only Mail's own drag from the
+  same page is accepted.
+- **Gmail labels** show as chips on the message and the list row. **Labels…**
+  (`l`) adds or removes labels (`STORE X-GM-LABELS` on All Mail) or creates a
+  new one; Undo reverts exactly the labels the change added or removed. A
+  refused change makes no Undo.
+
+What the server sees: your search words and the folders and dates you load,
+on your own mail server. Server writes added by this slice are only folder
+`CREATE`, `RENAME`, `DELETE`, `SUBSCRIBE` / `UNSUBSCRIBE`, `STORE
+X-GM-LABELS`, and the `MOVE`s you ask for.
+
+### Attachments and reading
+
+- **The viewer**: clicking an attachment opens it inside Mail. The BB
+  server checks the bytes (a type that does not match the attachment's is
+  refused) and serves images up to 20 MB, PDFs up to 25 MB and text (the
+  first 2 MB). Images show as images, text as text, never as HTML. SVG,
+  HTML and every other type are download-only. The page keeps the bytes in
+  a `blob:` that it never navigates to and drops on close.
+- **PDF** pages are drawn by pdf.js in a `blob:` worker without scripts,
+  forms or network requests; links in the PDF are listed by their real URL
+  and open only on your click. If BB's page refuses the worker, the PDF is
+  download-only with "PDF preview is not available here". Fonts or images
+  that need files from the web may not display.
+- **Files** in the rail (`g` then `f`) lists every attachment of synced and
+  loaded mail with filters for type, sender, account and name, and **View**,
+  **Download** and **Open message**.
+- **Quoted text** of replies is hidden behind "Show quoted text"
+  (`hideQuotes`, on); **Expand all** / **Collapse all** (`;`) opens every
+  message of the conversation with its quotes. **Group by conversation** in
+  a folder's menu can turn grouping off for that folder.
+- **Show plain text** per message, or for all mail with `mailView`. In BB's
+  dark mode HTML mail is shown in adapted colors (`darkMail`, `adapt`) unless
+  it supports dark mode itself; **Original colors** per message.
+- **About** a sender opens a card with counts, recent conversations and
+  files, **Search from this sender**, **Files**, **Always show images** and
+  **Block…**.
+- **Print…** (Shift+`p`) prints a message or the conversation through the
+  system dialog (on macOS also **Save as PDF**) from a frame without
+  scripts. Remote images are never printed ("Remote images are not
+  printed"); where printing is not available, **Save printable page** saves
+  the same HTML.
+
+Settings: `historyStepDays`, `serverSearchKeepDays`, `indexAttachmentText`,
+`mailView`, `darkMail` and `hideQuotes` are BB plugin settings.
+
+- **Earlier messages** (slice 3i): when a conversation opens, the read
+  messages before the first one you need wait in one closed stack, "N
+  earlier messages", when there are two or more of them. The message you
+  opened, the newest and every message that was unread when the
+  conversation opened are never stacked, nor is one you expanded. A click,
+  Enter or Space opens the stack; **Expand all** (`;`) opens it with
+  everything, **Collapse all** closes it again, and a finished **Load the
+  whole conversation** that added messages opens it. The stack names the
+  senders and adds "· sender warning" when a stacked message has one. Order
+  stays oldest to newest; print, Hand to agent and citations still see every
+  message. The single-message view has no stack.
+
+**pdf.js** (`pdfjs-dist` 6.5.438, exact) is the one new dependency. npm may
+also install its optional `@napi-rs/canvas` package into `node_modules`;
+Mail never loads it (the server worker blocks it) and it is not in the
+build. `dist/app.js` contains one inert mention of it in pdf.js's Node-only
+code path, which never runs in BB's page.
+
+## Reliability, layout and language
+
+### Big mailboxes
+
+- **Threading.** A sync round groups mail into conversations again only
+  when it inserted or deleted messages; a round that changed flags, or
+  nothing, skips it. When it runs, only the conversations a message left or
+  joined are rewritten. The first round after BB starts rebuilds every
+  conversation once, which also repairs rows left wrong by a crash.
+- **Lists.** Every loaded row stays in the list, so the keys, the selection
+  and drag reach it; a row far from view is not laid out or painted
+  (`content-visibility`). The next page loads by itself as the end of the
+  list scrolls near; **Load more** stays for a browser that cannot watch
+  the list. BB's own find-in-page (⌘F) therefore sees loaded rows only; use
+  Mail's search to find a message.
+- Tested with 20 000 messages in one account in `npm run check` (50 000
+  with `MAIL_SCALE=1`).
+
+### Sync status
+
+- The header's status is a button: **Mail status** lists each account's last
+  sync, what is in the way, and its waiting and unsent messages, with
+  **Sync now**.
+- **Offline.** When the only problem is the network or a busy server and
+  the last good sync is under 30 minutes old, the header reads
+  "Offline · synced 10:42" and there is no banner; Mail keeps trying. After
+  30 minutes, and for any other problem (a refused sign-in, an unreadable
+  password, flags or moves that could not be saved), the red banner shows
+  the problem in words. "Reconnecting to BB…" means the page itself lost
+  its link to BB.
+
+### `bb makosh-mail doctor` and `backup`
+
+Both work only in your own terminal; inside an agent thread they refuse.
+
+```bash
+bb makosh-mail doctor              # every account and the database
+bb makosh-mail doctor <accountId> --repair-threads
+bb makosh-mail backup /full/path/mail-backup.db
+```
+
+- **doctor** prints one line per check, `ok`, `warn` or `fail`: the
+  database's integrity, sizes and conversation rows; for each account
+  whether the saved password can be read, the IMAP sign-in, the outgoing
+  server, the known folders, the last sync and its problems, and the
+  Outbox. It prints no password, no server reply and no mail. Exit code 1
+  when a check failed; `--json` for a script. `--repair-threads` rebuilds
+  every conversation from its messages. When an account was stopped
+  because the server refused the sign-in, and the server accepts the saved
+  password during this check, doctor turns the account's sync back on and
+  says so: some servers refuse a good password for a while after many
+  sign-ins.
+- **backup** writes a consistent copy of Mail's database to a new file that
+  only you can read. The path must be absolute, its folder must exist, and
+  Mail never writes over an existing file. The copy holds your mail text
+  and the passwords in their sealed form, without the key; BB's settings
+  are not in it. Keep it as private as the mailbox. To restore: quit BB,
+  replace the plugin's database file with the copy, start BB.
+
+### `bb makosh-mail export`
+
+Writes one folder of an account as files other mail programs read. Like
+doctor and backup it runs in your own terminal and refuses inside an agent
+thread.
+
+```bash
+bb makosh-mail export <accountId> INBOX /full/path/inbox.mbox
+bb makosh-mail export <accountId> "Work/Reports" /full/path/reports --format eml --since 2026-01-01
+```
+
+- The messages come from the mail server, whole, through a read-only
+  session: the export reads everything the folder holds there, not only
+  what Mail keeps on this machine, and marks nothing read.
+- `mbox` (the default) is one file in the "mboxrd" form; `--format eml`
+  makes a new directory with one `.eml` file per message, named by the
+  message's number in the folder. The files are readable by you only.
+- The path must be absolute, its folder must exist, and Mail never writes
+  over anything that exists.
+- It takes the newest 2,000 messages unless you give `--max` (up to
+  50,000); `--since YYYY-MM-DD` takes only messages from that day on. The
+  command says how many older messages it left out.
+- A message that is gone meanwhile or larger than 50 MB is skipped and
+  counted. If the connection drops, what was written so far is kept and
+  the command says how many messages that is.
+- Flags (read, flagged) and Gmail labels are not written.
+
+### Local archive: `bb makosh-mail archive`
+
+An old mbox file, an `.eml` file or a folder of `.eml` files can be read
+into Mail and searched there without being uploaded anywhere. It becomes a
+local archive: mail that is in no mailbox.
+
+```bash
+bb makosh-mail archive add /full/path/old-mail.mbox --name "Old work mail"
+bb makosh-mail archive list
+bb makosh-mail archive remove <archiveId>
+```
+
+- **Apart from your mailboxes.** Archive mail is on the **Local archive**
+  page in the left rail and nowhere else: not in the Inbox, a folder, All
+  accounts, the unread count, a conversation or Mail's main search. Sync,
+  filters, block rules, snooze and sending never see it, and nothing of it
+  is sent to a mail server.
+- **Agents cannot read it.** No tool, mention or `bb makosh-mail` command
+  in a thread reaches an archive, and AI features do not run on it.
+- **What is kept.** Mail's database keeps each message's headers, text and
+  HTML (up to 1 MB each), and the names and sizes of its attachments. The
+  attachments themselves stay in the file you imported: Mail reads one
+  from there when you download it, and checks that the file still holds
+  the same message. Move or change the file and the text stays readable,
+  but attachments are no longer available. Mail never writes to the file.
+- **Reading.** Pick one archive or all, search by subject, sender or words
+  of the text, open a message. It is shown in the same frame as live mail:
+  scripts removed, remote images off until you ask for one message, links
+  through the same check. There is no sender check for archive mail, and
+  the page says so. Archive mail is read-only: no reply, move or delete of
+  one message. **Remove archive** takes the whole archive out of Mail and
+  leaves the file.
+- **Importing.** The file is read in one pass, in batches. If the import
+  is stopped, what was read stays, and the same command goes on from
+  there. A complete archive is not read again; remove it first to re-read
+  a file. mbox is read in its common forms (mboxrd and mboxo, where a
+  body line that starts with "From " is written as ">From ").
+- **Limits.** 20 archives; 200,000 messages and 20 GB per archive; a
+  message over 50 MB or one that is not readable as mail is left out and
+  counted. Pictures embedded in a message's HTML are not shown. An archive
+  is a flat list, not conversations. The command runs in your own terminal
+  and refuses inside an agent thread.
+
+### Layout
+
+Two BB settings of the plugin: **List rows** (comfortable, or compact with
+no preview line; search results stay comfortable) and **Reading pane**
+(right of the list, or below it in a wide window; a narrow window keeps one
+column).
+
+### Language
+
+**Language of Mail's pages**: same as the system, Russian or English.
+Russian covers Mail's own pages, dialogs, toasts and the refusals its
+server answers; dates follow the language. These stay English: the labels
+of BB's settings, the `bb makosh-mail` commands, what agents read, the
+logs, and the words Mail puts into outgoing mail (`Re:`, `Fwd:`, the
+"On … wrote:" line). A text with no translation yet is shown in English.
+Mail data (subjects, names, folders, labels) is never translated.
+
+## Security and privacy
+
+Slice 3i warns about senders, blocks trackers and cleans links. It adds no
+network traffic of its own: no DNS lookup, no link prefetch, no redirect
+probe, and nothing written to your mail server.
+
+### Sender check
+
+- **What it reads.** The `Authentication-Results` your own mail provider
+  wrote at the top of the message, and only from a provider id Mail trusts:
+  Gmail (`mx.google.com`). Mail does not verify DKIM or SPF itself. iCloud
+  shows "Not checked" until its provider id is pinned after a live check;
+  other servers show "Not checked: Mail does not read this server's
+  results". Mail in Sent and Drafts is your own and is not checked.
+- **Failed** means DMARC failed for the From domain, or there was no DMARC
+  answer and SPF failed with no DKIM pass aligned with From. Only the
+  topmost trusted result counts and a fail is never cancelled by a pass; a
+  result a sender wrote lower in the headers is ignored. The check also
+  fails, saying why, when From holds more than one sender, when the
+  provider's result could not be read in full (a value over 64 KB, more than
+  20 DKIM results, or a quote or comment left open), or when every DMARC
+  result names a domain other than the one in From.
+- **No trust badge.** Mail shows warnings only. A pass appears only in
+  **Details**, in the provider's words ("Authenticity (from mx.google.com):
+  SPF pass … · DMARC pass"); nothing in the list or the header says a
+  sender is verified. **Check again** in Details reads the headers again.
+- **A failed check** shows "Sender not verified" above the body. It can also
+  be a forwarder or an old-style mailing list that rewrites mail (Mail does
+  not evaluate ARC), so it means "could not confirm", not "forged".
+- **What a failed check stops:** the message never prepares or starts a mail
+  rule, gets no Dev class (no Dev entry, no alert card, no rule match on Dev
+  fields) and loads no remote images through **Always show from**. Agent
+  and BB text get the line "Sender check: failed" after From. Notifications
+  are unchanged.
+- **Older mail** synced before 3i is checked when you open it: after the
+  conversation has stayed open briefly, Mail fetches the header fields of
+  its expanded messages once with `BODY.PEEK` (read-only, through the
+  account's queue). Nothing is checked in bulk; stacked and collapsed
+  messages wait until you expand them.
+- **Limits.** The registrable-domain rule is a heuristic, not the public
+  suffix list: the last two labels, three under a country second level
+  (`example.co.uk`), and three under a short list of shared hosting suffixes
+  whose tenants are separate (`github.io`, `onmicrosoft.com`,
+  `sharepoint.com` and a few more); a shared suffix not on that list counts
+  as one organization. A provider that does not strip a forged result
+  carrying its own id from incoming mail would be believed (RFC 8601 says it
+  must strip it). **Details** reads the whole header block, so there a
+  result the sender wrote under its own headers never counts; the sync and
+  the older-mail check see only the header fields they fetch.
+
+### Sender warnings
+
+Under the From line, fixed text with the values shown as data (domains in
+their real ASCII form):
+
+- "Replies go to … , not to …" when Reply-To goes to another domain. Before
+  you send then lists "Reply-To differs from the sender: …" when a reply
+  still goes there.
+- "… looks like …, which you write to" for a domain that imitates one you
+  sent mail to or your own (confusable letters, or one edit away).
+- "This domain mixes alphabets: xn--…" (shown as it really is).
+- "The name shows … but the address is …".
+
+A lookalike domain or a name that shows another address, like a failed
+check, gets no automatic images. **Show images** for that one message still
+works; **Always show** is not offered there and your always-show list is
+kept. The image bar says why: "Images from this sender are not loaded
+automatically because the sender check failed" (or because the domain looks
+like another, the name shows another address, or the sender check has not
+run yet; an older message from an always-show sender loads its images once
+its check has run).
+
+### Trackers
+
+Tracking pixels are removed even when images are allowed: images at most
+2 pixels wide or high (by attribute or inline style), hidden by an inline
+style (`display:none`, `visibility:hidden`, `opacity:0`), or from a short
+list of open-tracking hosts. The bar says "Images shown · 2 trackers
+blocked", or with images hidden that the message has trackers and they stay
+blocked; a message whose only remote images are trackers offers no **Show
+images**. Limit: an image hidden by a `<style>` class or by a hidden parent
+element is not found (Mail does no layout).
+
+### Links
+
+- **Cleaned.** Links in a message, the printed and saved page and the plain
+  view lose known tracking parameters (`utm_*`, `fbclid`, `gclid`, `mc_eid`
+  and similar); the rest of the address is kept byte for byte. Google
+  `/url?q=`, Outlook SafeLinks and Facebook `l.php` wrappers are unwrapped
+  to the address they carry (one level, read from the URL, never fetched).
+  The setting `cleanLinks` ("Remove tracking from links I open", on) turns
+  removal and unwrapping off; the checks below stay. A wrapper whose target
+  would decode to a control, bidi or space character stays wrapped. Links
+  handed to agents and BB (message text, task excerpts, alert links) are
+  always cleaned, so an agent that opens one does not confirm a tracked
+  open.
+- **Status line.** Pointing at or focusing a link shows where it goes at the
+  bottom of the reading pane: "→ https://shop.example.com/sale (3 tracking
+  parameters removed)", or "→ via tracking redirect at
+  click.example-esp.com; Mail cannot see where it ends" for a known
+  newsletter click host (Mail never follows the redirect to find out).
+- **The dialog.** A link opens only after a dialog when its text names one
+  site but it opens another ("This link says www.example.com but opens
+  example.net."; invisible characters and the punctuation or arrows around
+  the text do not hide it, and a word starting with `https://` or `www.`
+  counts anywhere in the text, while a bare name like `report.pdf` counts
+  only as the whole text), when its host mixes alphabets, or when it looks like one
+  of your own domains or a domain a sender warning in the open conversation
+  names. A known tracking redirect and a host that is only in
+  punycode (`xn--`) open without a dialog; the status line shows them. A
+  link Mail cannot open safely is refused ("This link cannot be opened
+  here."). PDF, alert and Dev links pass the same check.
+
+### Read receipts, signed and encrypted mail
+
+- **Read receipts are never sent.** When a message asks for one, the header
+  says "The sender asked for a read receipt. Makosh Mail does not send
+  receipts." Mail's own mail never asks for one either.
+- **S/MIME mail is recognised only.** It gets a neutral chip ("Signed
+  (S/MIME)", "Encrypted (S/MIME)"); Mail does not check or open it. An
+  encrypted body is never stored: the pane says "This message is encrypted.
+  Open it in a mail client that has your key.", agents and BB get
+  "[encrypted message — not readable]", and the search and attachment-text
+  indexes hold none of it. The ciphertext stays reachable through the
+  attachments and **Download .eml**.
+- **OpenPGP mail** can be signed, encrypted, checked and opened; see
+  [OpenPGP](#openpgp) below.
+
+### Calendar invitations
+
+A message with a calendar part (`text/calendar`, or an `.ics` file) shows
+the event above its text: the title, when, where, the organizer and who is
+invited with their answers. Mail reads the part from the server when you
+open the message and stores nothing.
+
+- **Time.** A time is shown in this computer's time when the invitation
+  gives it in UTC, in a zone with a standard name (`Europe/Madrid`), or in
+  a zone the invitation defines itself, as Outlook does. Otherwise it is
+  shown as written, with the zone's name beside it. A repeating event shows
+  its first time and says that it repeats.
+- **Answering.** **Accept**, **Maybe** and **Decline** send your answer to
+  the organizer as an email their calendar reads (iTIP `REPLY`). It goes
+  through the Outbox with the 10-second Undo, from the address that was
+  invited. The buttons appear only for an open invitation sent to one of
+  the account's addresses, outside Spam and Trash; a cancellation or
+  someone else's answer is shown without them. Nothing is answered without
+  your click, and agents cannot answer.
+- **Limits.** Mail has no calendar: the event is not saved anywhere, and
+  Mail does not remember your answer after you close the message. Only the
+  first event of a file is shown. The invitation's text is untrusted: it is
+  shown as plain text and nothing in it is opened or followed.
+
+### OpenPGP
+
+Mail signs and encrypts with OpenPGP (PGP/MIME, RFC 3156) between people
+who exchanged keys. Everything happens on this computer.
+
+- **Your key.** Mail settings → **Encryption (OpenPGP)** → **Make a key**
+  next to a sending address makes a Curve25519 key pair for it. The private
+  half is stored in Mail's database sealed with the same credential key as
+  your passwords (`vaultKey`), and is unsealed on the server for one
+  signature or one decryption. It never goes to the page, an agent, a model
+  or BB, and no log line names a key, an address or a fingerprint.
+- **Back it up.** **Back up…** asks for a passphrase of at least 8
+  characters and shows the private key locked by it, to copy into a file.
+  Mail does not keep the passphrase. Without a backup, losing the database
+  or the credential key loses the key, and mail encrypted to it cannot be
+  read again. To restore, paste the backup under **Add a key** with the
+  passphrase.
+- **Other people's keys.** Paste a public key under **Add a key**, or use
+  **Save the key from this message** on a signed message that carries one.
+  Mail does not look keys up anywhere on the network, and a saved key is
+  trusted only because you saved it: compare the fingerprint with its owner
+  another way first. Revoked keys are refused; expired keys are not used.
+- **Sending.** The composer shows **Sign** and **Encrypt** when the From
+  address has a key; both are off until you tick them, for that message
+  only. Encrypt needs a saved key for every To and Cc address and refuses a
+  message with Bcc (each recipient's key id is visible in an encrypted
+  message). The message is also encrypted to your own key, so the copy in
+  Sent stays readable to you. **The subject, the addresses and the dates
+  are not encrypted**, and a draft's copy on the mail server is not either:
+  Mail removes it when the message is sent. Mail an agent proposes is never
+  signed or encrypted.
+- **Reading.** An encrypted message shows **Decrypt**: Mail fetches the
+  message, opens it with your key and shows the text as plain text for that
+  view. The text is not stored, indexed or given to agents, AI features,
+  search or BB, and it is gone when you leave the message. Attachments
+  inside an encrypted message are listed by name only for now. A signed
+  message shows **Check signature**: "Signed by a key you saved for this
+  sender", "by a key you saved, but not for this sender's address", "does
+  not match this message", or "Mail has no key for the signer". A sender
+  check from your provider and an OpenPGP signature are separate facts.
+- **Limits.** Only PGP/MIME and a body that is one armored block are read;
+  clear-signed text is not checked. Mail does not publish your key, does
+  not fetch keys (no WKD, no key servers, no Autocrypt), and does not
+  rotate or revoke keys. An agent with shell access to the machine that
+  runs BB can read the database and the credential key, as with passwords.
+- **S/MIME** is not supported: it needs a certificate issued to you by a
+  certificate authority, and a self-made one would not be trusted by the
+  people you write to.
+
+### Deleted mail on disk
+
+Mail overwrites what it deletes from its database file (SQLite
+`secure_delete`), including the search indexes where SQLite supports the
+FTS `secure-delete` option (3.42 and later). BB's SQLite version is not
+verified: if the option is unavailable, the plugin log says
+`secure_delete: fts option unavailable` and the search index may keep words
+of deleted mail until SQLite merges it. Copies in the database's WAL file
+until the next checkpoint, in backups and in BB's own files are outside
+this; the database itself is not encrypted.
+
 ## Agents, AI and your secrets
 
 ### Redaction
 
 Every text that reaches an agent or a model passes one redaction: the tools,
 the CLI in a thread, mentions, **Hand to agent**, translation and every AI
-feature below. One-time codes (also split, prefixed or on the next line),
-passwords and app passwords next to their labels, API keys and tokens
-(GitHub, GitLab, Stripe, Slack, AWS and Google keys, `sk-` keys, JWTs, PEM blocks, long hex and
-UUID tokens, secret-looking URL parameters such as `token=` or `code=`), and
-card numbers (Luhn-checked) and CVVs next to a card become placeholders:
-`[hidden one-time code]`, `[hidden password]`, `[hidden token]`, `[hidden
-card number]`. The whole field is redacted before any cut, so a secret on a
-limit is still hidden. Dates, times, amounts, phone numbers, years and email
-addresses stay. Agents are told the placeholders are deliberate and never to
+feature below. One-time codes (also split, prefixed, full-width, or under
+their label across blank lines as HTML mail lays them out), recovery-code
+lists, passwords next to their labels (to the end of the line, or the quoted
+text), app passwords and seed phrases, API keys and tokens (GitHub, GitLab,
+Stripe, Slack, SendGrid, AWS and Google keys, `sk-` keys, JWTs, PEM blocks,
+`Authorization: Basic` and `Bearer` values, long hex and UUID tokens,
+secret-looking URL parameters such as `token=` or `code=`, short reset-link
+segments and passwords in a URL), card numbers (Luhn-checked) and CVVs next
+to a card, and IBANs (checksum-checked, shown as a card number) become
+placeholders: `[hidden one-time code]`, `[hidden password]`, `[hidden
+token]`, `[hidden card number]`. The whole field is redacted before any cut,
+so a secret on a limit is still hidden. Dates, times, amounts, phone numbers,
+years, email addresses, zip and error codes, issue keys such as `PROJ-1234`
+and commit hashes stay. Agents are told the placeholders are deliberate and never to
 ask you to paste a hidden value into the thread; they cannot search for
 codes or tokens either (a search matches only text they could read).
 
@@ -581,8 +1390,9 @@ wrong; check the cited messages".
   listed conversations to the model.
 - **Reply reminders**: **Remind me if no reply in N days** beside Send
   (`replyReminderDays`, 3) or **Remind me…** on a Sent message. A reminder is
-  answered when a later message (not bulk, not automated) refers to the sent
-  one by In-Reply-To or References; otherwise it turns due, shows in the
+  answered when a message (not bulk, not automated, dated after the send or
+  up to a day before it, for a skewed clock) refers to the sent one by
+  In-Reply-To or References; otherwise it turns due, shows in the
   **Waiting for a reply** strip atop the Inbox and in Today, with a toast.
   A server that rewrites the Message-ID on send (some corporate relays)
   leaves replies unmatched: the reminder then turns due and you dismiss it.
@@ -612,6 +1422,10 @@ redacted text framed as untrusted data:
   characters each.
 - Improve: your own text of the draft and your instruction.
 - Translation: the message's subject and text.
+- New thread, Make a task through Taskboard (its **Take into work**), incident,
+  patch and rule threads (slice 3g): the text goes into a BB thread or a
+  Taskboard task, built as described in [BB integration](#bb-integration);
+  the thread's agent then sends it to its own model provider.
 
 Never: recipients' addresses, attachments, images, HTML, folder or account
 names. Text handed to an agent goes to that agent's model provider.
@@ -621,8 +1435,17 @@ names. Text handed to an agent goes to that agent's model provider.
 AI access, redaction and the log bind every plugin surface for agents. They
 do not bind an agent with shell access to the BB server, which can call the
 Mail page's own methods (`ai_start`, `message_body`, `thread_get`, `search`
-among them) through `bb plugin rpc call`, as described above. This is the
-accepted limit of slices 3c to 3e, and the skill tells agents not to.
+among them) through `bb plugin rpc call`, as described above. Slice 3g adds
+methods that write into BB on the owner's behalf: `attachment_save`,
+`bb_thread_start`, `task_from_mail`, `patch_save`, `patch_handoff`,
+`incident_start` and `rule_save`. Slice 3h adds methods that change your mail
+server: `folder_create`, `folder_rename`, `folder_delete`, `folder_subscribe`
+and `labels_change`; methods that fetch from it: `server_search_start`,
+`server_search_more`, `history_load` and `conversation_load`; and the owner's
+search with `attachments: true`, which reads attachment text. Slice 3i adds
+`sender_check_refresh`, which fetches header fields from your mail server
+(read-only) and stores the sender check. This is the accepted limit of
+slices 3c to 3i, and the skill tells agents not to.
 
 ## Mail in the sidebar
 

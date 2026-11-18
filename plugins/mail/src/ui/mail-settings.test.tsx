@@ -348,3 +348,49 @@ describe("MailSettings: AI features (slice 3f)", () => {
     expect(screen.queryByRole("tab", { name: "AI access" })).toBeNull();
   });
 });
+
+describe("Search and reading (slice 3h)", () => {
+  it("shows the attachment text status, retries failed files and removes the text", async () => {
+    const { SearchSection, attachmentTextLine } = await import("./mail-settings.tsx");
+    const status = { indexed: 1240, skipped: 10, failed: 8, pending: 2, running: true, full: false };
+    const retry = vi.fn(async () => {});
+    const clear = vi.fn(async () => {});
+    render(
+      <SearchSection
+        hint="hint"
+        search={{
+          values: { historyStepDays: 30, serverSearchKeepDays: 14, indexAttachmentText: true, mailView: "original", darkMail: "adapt", hideQuotes: true, cleanLinks: false },
+          loadStatus: async () => status,
+          retry,
+          clear,
+        }}
+      />,
+    );
+    expect(await screen.findByText(attachmentTextLine(status))).toBeTruthy();
+    expect(screen.getByText("Remove tracking from links I open: Off")).toBeTruthy();
+    expect(attachmentTextLine(status)).toBe("Attachment text: 1240 indexed \u00b7 18 skipped (too large or unreadable) \u00b7 indexing\u2026");
+    fireEvent.click(screen.getByRole("button", { name: "Retry failed" }));
+    await waitFor(() => expect(retry).toHaveBeenCalled());
+    fireEvent.click(await screen.findByRole("button", { name: "Remove attachment text" }));
+    await waitFor(() => expect(clear).toHaveBeenCalled());
+  });
+
+  it("says when the index is full", async () => {
+    const { SearchSection } = await import("./mail-settings.tsx");
+    render(
+      <SearchSection
+        hint="hint"
+        search={{
+          values: { historyStepDays: 30, serverSearchKeepDays: 14, indexAttachmentText: true, mailView: "plain", darkMail: "original", hideQuotes: false },
+          loadStatus: async () => ({ indexed: 5, skipped: 0, failed: 0, pending: 0, running: false, full: true }),
+          retry: vi.fn(),
+          clear: vi.fn(),
+        }}
+      />,
+    );
+    expect(await screen.findByText("Attachment text index is full")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Retry failed" })).toBeNull();
+    expect(screen.getByText("Show mail as: Plain text")).toBeTruthy();
+    expect(screen.getByText("Remove tracking from links I open: On")).toBeTruthy();
+  });
+});

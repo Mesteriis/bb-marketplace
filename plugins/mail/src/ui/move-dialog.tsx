@@ -14,6 +14,7 @@ import {
 import { stopEscape } from "./shortcuts.ts";
 import { Icon } from "@/components/ui/icon";
 import { folderIcon, folderRows } from "./folder-list.tsx";
+import { tx } from "./i18n/index.ts";
 
 /** The folders a move can go to: the account's selectable folders, not the sources. */
 export function moveDestinations(
@@ -41,13 +42,13 @@ export function FolderPickList({
   onPick: (path: string) => void;
 }) {
   if (destinations.length === 0) {
-    return <p className="text-sm text-muted-foreground">There is no other folder to move to.</p>;
+    return <p className="text-sm text-muted-foreground">{tx("There is no other folder to move to.")}</p>;
   }
   const rows = folderRows(
     folders.filter((f) => f.accountId === accountId && (destinations.includes(f) || !f.selectable)),
   );
   return (
-    <ul aria-label="Folders" className="flex max-h-80 flex-col gap-px overflow-y-auto">
+    <ul aria-label={tx("Folders")} className="flex max-h-80 flex-col gap-px overflow-y-auto">
       {rows.map((row) =>
         row.kind === "group" ? (
           <li
@@ -108,17 +109,17 @@ export function MoveDialog({
       <DialogContent className="max-w-sm" onEscapeKeyDown={stopEscape} onCloseAutoFocus={onCloseAutoFocus}
         onAfterCloseAutoFocus={onAfterCloseAutoFocus}>
         <DialogHeader>
-          <DialogTitle>Move to…</DialogTitle>
+          <DialogTitle>{tx("Move to\u2026")}</DialogTitle>
           <DialogDescription>
             {accountId === null
-              ? "Moving works within one account. Select conversations of one account to move them."
-              : "Choose a folder of the same account."}
+              ? tx("Moving works within one account. Select conversations of one account to move them.")
+              : tx("Choose a folder of the same account.")}
           </DialogDescription>
         </DialogHeader>
         {accountId !== null ? <FolderPickList folders={folders} accountId={accountId} destinations={destinations} onPick={onMove} /> : null}
         <DialogFooter>
           <Button variant="outline" size="sm" onClick={() => onOpenChange(false)}>
-            Cancel
+            {tx("Cancel")}
           </Button>
         </DialogFooter>
       </DialogContent>

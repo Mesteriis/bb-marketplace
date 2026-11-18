@@ -55,8 +55,8 @@ function draft(overrides: Partial<DraftRecord> = {}): DraftRecord {
 }
 
 const FILES: HashedAttachment[] = [
-  { id: "a1", fileName: "plan.txt", mimeType: "text/plain", size: 10, sha256: "a".repeat(64) },
-  { id: "a2", fileName: "map.png", mimeType: "image/png", size: 20, sha256: "b".repeat(64) },
+  { id: "a1", fileName: "plan.txt", mimeType: "text/plain", size: 10, sha256: "a".repeat(64), origin: null },
+  { id: "a2", fileName: "map.png", mimeType: "image/png", size: 20, sha256: "b".repeat(64), origin: null },
 ];
 
 describe("constants", () => {

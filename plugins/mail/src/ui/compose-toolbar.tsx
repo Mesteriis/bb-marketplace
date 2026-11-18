@@ -1,5 +1,5 @@
 // The composer's formatting toolbar: bold, italic, underline, lists, link,
-// quote and clear formatting. One tab stop with arrow-key (roving) focus,
+// quote, code block and clear formatting. One tab stop with arrow-key (roving) focus,
 // like a native toolbar; each button names its shortcut.
 import { useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { useEditorState, type Editor } from "@tiptap/react";
@@ -7,13 +7,15 @@ import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
+import { isMacPlatform } from "./shortcuts.ts";
+import { msg, tx } from "./i18n/index.ts";
 
-/** "⌘" on Apple platforms, "Ctrl+" elsewhere. */
-export function modKeyLabel(platform: string = typeof navigator === "undefined" ? "" : navigator.platform): string {
-  return /mac|iphone|ipad|ipod/i.test(platform) ? "⌘" : "Ctrl+";
+/** "⌘" on Apple platforms, "Ctrl+" elsewhere (the platform rule is shortcuts.ts's isMacPlatform). */
+export function modKeyLabel(platform?: string): string {
+  return isMacPlatform(platform) ? "⌘" : "Ctrl+";
 }
 
-export type ToolId = "bold" | "italic" | "underline" | "bulletList" | "orderedList" | "link" | "blockquote" | "clear";
+export type ToolId = "bold" | "italic" | "underline" | "bulletList" | "orderedList" | "link" | "blockquote" | "codeBlock" | "clear";
 
 interface Tool {
   id: ToolId;
@@ -25,14 +27,15 @@ interface Tool {
 }
 
 const ALL_TOOLS: Tool[] = [
-  { id: "bold", label: "Bold", icon: "Bold", fallback: "Type", key: "B" },
-  { id: "italic", label: "Italic", icon: "Italic", fallback: "Type", key: "I" },
-  { id: "underline", label: "Underline", icon: "Underline", fallback: "Type", key: "U" },
-  { id: "bulletList", label: "Bulleted list", icon: "List", fallback: "ListChecks" },
-  { id: "orderedList", label: "Numbered list", icon: "ListOrdered", fallback: "List" },
-  { id: "link", label: "Link", icon: "Link", fallback: "ExternalLink", key: "K" },
-  { id: "blockquote", label: "Quote", icon: "Quote", fallback: "MessageSquare" },
-  { id: "clear", label: "Clear formatting", icon: "RemoveFormatting", fallback: "X" },
+  { id: "bold", label: msg("Bold"), icon: msg("Bold"), fallback: msg("Type"), key: "B" },
+  { id: "italic", label: msg("Italic"), icon: msg("Italic"), fallback: msg("Type"), key: "I" },
+  { id: "underline", label: msg("Underline"), icon: msg("Underline"), fallback: msg("Type"), key: "U" },
+  { id: "bulletList", label: msg("Bulleted list"), icon: msg("List"), fallback: "ListChecks" },
+  { id: "orderedList", label: msg("Numbered list"), icon: "ListOrdered", fallback: msg("List") },
+  { id: "link", label: msg("Link"), icon: msg("Link"), fallback: "ExternalLink", key: "K" },
+  { id: "blockquote", label: msg("Quote"), icon: msg("Quote"), fallback: "MessageSquare" },
+  { id: "codeBlock", label: msg("Code block"), icon: "SquareCode", fallback: msg("Code") },
+  { id: "clear", label: msg("Clear formatting"), icon: "RemoveFormatting", fallback: "X" },
 ];
 
 /**
@@ -104,6 +107,7 @@ export function ComposeToolbar({
             orderedList: current.isActive("orderedList"),
             link: current.isActive("link"),
             blockquote: current.isActive("blockquote"),
+            codeBlock: current.isActive("codeBlock"),
           },
   });
 
@@ -123,6 +127,8 @@ export function ComposeToolbar({
         return void chain.toggleOrderedList().run();
       case "blockquote":
         return void chain.toggleBlockquote().run();
+      case "codeBlock":
+        return void chain.toggleCodeBlock().run();
       case "clear":
         return void chain.unsetAllMarks().clearNodes().run();
       case "link":
@@ -154,14 +160,14 @@ export function ComposeToolbar({
       <div className="flex items-center gap-1">
         <div
           role="toolbar"
-          aria-label="Formatting"
+          aria-label={tx("Formatting")}
           aria-orientation="horizontal"
           onKeyDown={onKeyDown}
           className="flex flex-wrap items-center gap-0.5"
         >
           {TOOLS.map((tool, index) => {
             const pressed = tool.id === "clear" ? undefined : (active?.[tool.id] ?? false);
-            const hint = tool.key !== undefined ? `${tool.label} (${mod}${tool.key})` : tool.label;
+            const hint = tool.key !== undefined ? `${tx(tool.label)} (${mod}${tool.key})` : tx(tool.label);
             return (
               <Button
                 key={tool.id}
@@ -202,7 +208,7 @@ export function ComposeToolbar({
               onClick={onImprove}
             >
               <Icon name="Sparkles" fallback="Bot" aria-hidden />
-              Improve
+              {tx("Improve")}
               <Icon name="ChevronDown" fallback="ArrowDown" aria-hidden />
             </Button>
           </span>
@@ -213,7 +219,7 @@ export function ComposeToolbar({
             variant="ghost"
             size="sm"
             className={cn("h-7 px-2", onImprove === undefined && "ml-auto")}
-            aria-label={`Templates (${mod}${mod === "⌘" ? "⌥" : "Alt+"}T)`}
+            aria-label={tx("Templates ({mod}{p1}T)", { mod, p1: mod === "⌘" ? "⌥" : "Alt+" })}
             aria-keyshortcuts="Control+Alt+T Meta+Alt+T"
             aria-expanded={templatesOpen === true}
             disabled={editor === null}
@@ -221,7 +227,7 @@ export function ComposeToolbar({
             onClick={onTemplates}
           >
             <Icon name="FileText" fallback="Mail" aria-hidden />
-            Templates
+            {tx("Templates")}
           </Button>
         ) : null}
       </div>
@@ -259,10 +265,10 @@ function LinkField({ editor, onClose }: { editor: Editor; onClose: () => void })
   };
 
   return (
-    <form onSubmit={apply} className="flex flex-wrap items-center gap-1 pt-1" aria-label="Link">
+    <form onSubmit={apply} className="flex flex-wrap items-center gap-1 pt-1" aria-label={tx("Link")}>
       <Input
         autoFocus
-        aria-label="Link address"
+        aria-label={tx("Link address")}
         aria-invalid={problem !== null}
         aria-describedby={problem !== null ? "compose-link-problem" : undefined}
         placeholder="https://example.org"
@@ -282,7 +288,7 @@ function LinkField({ editor, onClose }: { editor: Editor; onClose: () => void })
         className="h-7 min-w-40 flex-1 text-xs"
       />
       <Button type="submit" variant="outline" size="sm" className="h-7">
-        Apply
+        {tx("Apply")}
       </Button>
       {current !== "" ? (
         <Button
@@ -295,7 +301,7 @@ function LinkField({ editor, onClose }: { editor: Editor; onClose: () => void })
             onClose();
           }}
         >
-          Remove link
+          {tx("Remove link")}
         </Button>
       ) : null}
       {problem !== null ? (

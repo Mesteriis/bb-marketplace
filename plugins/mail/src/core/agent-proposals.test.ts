@@ -897,6 +897,16 @@ describe("proposals by identity (slice 3d)", () => {
     expect(view.to[0]!.flags).toContain("new");
   });
 
+  it("the card's checks raise reply_to_elsewhere for a reply to a foreign Reply-To (slice 3i)", async () => {
+    const id = stored({ from: { name: "Billing", address: "billing@example.com" }, replyTo: [{ name: null, address: "collect@elsewhere.example.net" }] });
+    const view = await cardOf(await propose({ kind: "reply", sourceMessageId: id, accountId: undefined, subject: undefined, to: [], body: "Thanks" }));
+    expect(view.to.map((r) => r.address)).toEqual(["collect@elsewhere.example.net"]);
+    expect(view.checks).toContainEqual({ kind: "reply_to_elsewhere", addresses: ["collect@elsewhere.example.net"] });
+    const plain = stored({ from: { name: "Anna", address: "anna@example.org" } }, "INBOX", 2);
+    const quiet = await cardOf(await propose({ kind: "reply", sourceMessageId: plain, accountId: undefined, subject: undefined, to: [], body: "Thanks" }, "thread_2"));
+    expect(quiet.checks.map((c) => c.kind)).not.toContain("reply_to_elsewhere");
+  });
+
   it("the card's checks ignore attachment words in an inherited Re: subject", async () => {
     const id = stored({ from: { name: "Anna", address: "anna@example.org" }, subject: "Report attached" });
     const proposed = await propose({ kind: "reply", sourceMessageId: id, accountId: undefined, subject: undefined, to: [], body: "Thanks" });

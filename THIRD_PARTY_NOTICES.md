@@ -247,6 +247,27 @@ SOFTWARE.
    limitations under the License.
 ```
 
+## pdf.js (pdfjs-dist)
+
+- Source: <https://github.com/mozilla/pdf.js>, npm `pdfjs-dist` 6.5.438
+  (build `0a4153349`), an exact dependency of `plugins/mail`.
+- Paths: bundled into `plugins/mail/dist/app.js` (the PDF viewer and its
+  worker, which the page starts from a `blob:` URL), and loaded by
+  `plugins/mail/dist/server.js` from `plugins/mail/node_modules/pdfjs-dist`
+  inside a `worker_threads` worker (attachment text). The page side is
+  `plugins/mail/src/adapters/bb/pdf-page.ts` with the worker text from
+  `pdf-worker-source.ts`; the server side is
+  `plugins/mail/src/adapters/bb/pdf-text.ts`. `dist/app.js` keeps one inert
+  `@napi-rs/canvas` string from pdf.js's Node-only canvas factory, which
+  never runs in a page.
+- License: Apache-2.0, Copyright Mozilla Foundation. The full license text
+  is the Apache License 2.0 reproduced under "Velo" above, and ships as
+  `plugins/mail/node_modules/pdfjs-dist/LICENSE`. pdf.js ships no NOTICE
+  file. The license header of pdf.js is kept in the bundled code.
+- The optional dependency `@napi-rs/canvas` may be installed with
+  `pdfjs-dist`, but Mail does not use it: the server worker refuses to
+  resolve it, and no canvas code is bundled.
+
 ## Fardgram
 
 The dark chat layout and chat row/avatar styles in Makosh Telegram are adapted
@@ -304,3 +325,16 @@ See [the import inventory](subtrees.json) for per-package upstream sources and m
 ## Independent plugins imported with git subtree
 
 The source repository, directory, pinned revision, maintained fork and branch for every imported plugin are recorded in [subtrees.json](subtrees.json). Each plugin keeps its original package license and notices; the root MIT license does not relicense these packages. Root-level upstream notices are preserved under [licenses](licenses/). Local configuration, credentials and runtime data are excluded.
+
+## OpenPGP.js (openpgp)
+
+- Source: <https://github.com/openpgpjs/openpgpjs>, npm `openpgp` 6.3.2, an
+  exact dependency of `plugins/mail`.
+- Paths: bundled into `plugins/mail/dist/server.js` only (never the page),
+  used through `plugins/mail/src/adapters/bb/pgp-openpgp.ts` for making
+  keys, signing, verifying, encrypting and decrypting.
+- License: LGPL-3.0-or-later, Copyright ProtonMail and the OpenPGP.js
+  contributors. The library is used unmodified. Its source is the npm
+  package at the version above; `plugins/mail` builds its bundle from that
+  package with `npm ci && npm run build`, so a changed copy of the library
+  can be put in its place and the plugin rebuilt.

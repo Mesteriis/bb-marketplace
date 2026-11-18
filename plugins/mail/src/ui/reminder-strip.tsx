@@ -17,6 +17,7 @@ import { Input } from "@/components/ui/input";
 import { Icon } from "@/components/ui/icon";
 import { stopEscape } from "./shortcuts.ts";
 import { addressLabel, formatListDate, subjectOrPlaceholder } from "./thread-list.tsx";
+import { tx } from "./i18n/index.ts";
 
 export const REMINDER_DAYS_MIN = 1;
 export const REMINDER_DAYS_MAX = 30;
@@ -44,16 +45,16 @@ export interface ReminderStripProps {
 export function ReminderStrip({ reminders, defaultDays, onOpen, onSnooze, onDismiss }: ReminderStripProps) {
   if (reminders.length === 0) return null;
   return (
-    <section aria-label="Waiting for a reply" className="flex shrink-0 flex-col gap-1 border-b border-border bg-card px-3 py-2">
+    <section aria-label={tx("Waiting for a reply")} className="flex shrink-0 flex-col gap-1 border-b border-border bg-card px-3 py-2">
       <h3 className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
         <Icon name="Clock" fallback="Info" className="size-3.5" aria-hidden />
-        Waiting for a reply
+        {tx("Waiting for a reply")}
       </h3>
       <ul className="flex flex-col gap-1">
         {reminders.map((reminder) => (
           <li key={reminder.id} className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
             <span className="min-w-0 flex-1 truncate">
-              <span className="text-foreground">{reminder.recipient !== null ? addressLabel(reminder.recipient) : "Unknown recipient"}</span>
+              <span className="text-foreground">{reminder.recipient !== null ? addressLabel(reminder.recipient) : tx("Unknown recipient")}</span>
               <span className="text-muted-foreground">{` \u00b7 ${subjectOrPlaceholder(reminder.subject)}`}</span>
               {reminder.sentAt !== null ? (
                 <span className="text-xs text-muted-foreground">{` \u00b7 sent ${formatListDate(reminder.sentAt)}`}</span>
@@ -61,13 +62,13 @@ export function ReminderStrip({ reminders, defaultDays, onOpen, onSnooze, onDism
             </span>
             <span className="flex shrink-0 gap-1">
               <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" disabled={reminder.threadId === null} onClick={() => onOpen(reminder)}>
-                Open
+                {tx("Open")}
               </Button>
               <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => onSnooze(reminder, defaultDays)}>
-                {`Remind in ${daysText(defaultDays)}`}
+                {tx("Remind in {p1}", { p1: daysText(defaultDays) })}
               </Button>
               <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => onDismiss(reminder)}>
-                Dismiss
+                {tx("Dismiss")}
               </Button>
             </span>
           </li>
@@ -110,29 +111,29 @@ export function RemindDialog({
       <DialogContent className="max-w-sm" onEscapeKeyDown={stopEscape} onCloseAutoFocus={onCloseAutoFocus}>
         <form onSubmit={submit} className="flex flex-col gap-3">
           <DialogHeader>
-            <DialogTitle>Remind me if no reply</DialogTitle>
+            <DialogTitle>{tx("Remind me if no reply")}</DialogTitle>
             <DialogDescription>
-              Makosh Mail shows this message under Waiting for a reply when no reply arrives in time.
+              {tx("Makosh Mail shows this message under Waiting for a reply when no reply arrives in time.")}
             </DialogDescription>
           </DialogHeader>
           <label className="flex items-center gap-2 text-sm text-foreground">
-            After
+            {tx("After")}
             <Input
-              aria-label="Days"
+              aria-label={tx("Days")}
               inputMode="numeric"
               value={value}
               onChange={(event) => setValue(event.target.value)}
               className="h-8 w-16"
             />
-            days
+            {tx("days")}
           </label>
-          {days === null ? <p className="text-xs text-destructive">From 1 to 30 days.</p> : null}
+          {days === null ? <p className="text-xs text-destructive">{tx("From 1 to 30 days.")}</p> : null}
           <DialogFooter>
             <Button type="button" variant="ghost" onClick={onCancel}>
-              Cancel
+              {tx("Cancel")}
             </Button>
             <Button type="submit" disabled={days === null}>
-              Remind me
+              {tx("Remind me")}
             </Button>
           </DialogFooter>
         </form>

@@ -3,8 +3,8 @@ import { act, cleanup, render } from "@testing-library/react";
 import { installTestPluginRuntime } from "@get-bb/plugin-sdk/testing/app";
 import type { Editor } from "@tiptap/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanEditorHtml, ComposeEditor, ownerParagraphsOf, ownerRange, replaceOwnerRange, type EditorDoc } from "./compose-editor.tsx";
-import { normalizeDoc, ownerParagraphs } from "../core/compose-doc.ts";
+import { cleanEditorHtml, ComposeEditor, fencedPaste, ownerParagraphsOf, ownerRange, replaceOwnerRange, type EditorDoc } from "./compose-editor.tsx";
+import { htmlFitsDoc, normalizeDoc, ownerParagraphs, renderDoc } from "../core/compose-doc.ts";
 
 installTestPluginRuntime();
 // jsdom has no ClipboardEvent; EditorView.pasteHTML builds one.
@@ -150,16 +150,18 @@ describe("ComposeEditor", () => {
     expect(text).not.toContain("hacked");
   });
 
-  it("keeps only the server's schema: no headings, code, strike or rules", () => {
+  it("keeps only the server's schema: no headings, strike or rules; code blocks and inline code stay (slice 3g)", () => {
     const { editor } = mount();
     act(() => {
       editor().view.pasteHTML("<h1>Title</h1><pre><code>x()</code></pre><p><s>gone</s> <u>under</u> <code>c</code></p><hr>");
     });
     const { types } = typesAndHrefs(editor().getJSON());
-    for (const banned of ["heading", "codeBlock", "horizontalRule", "mark:strike", "mark:code"]) {
+    for (const banned of ["heading", "horizontalRule", "mark:strike"]) {
       expect(types.has(banned)).toBe(false);
     }
     expect(types.has("mark:underline")).toBe(true);
+    expect(types.has("codeBlock")).toBe(true);
+    expect(types.has("mark:code")).toBe(true);
   });
 
   it("hands a pasted image file to onFiles instead of the document", () => {
@@ -320,6 +322,7 @@ describe("ComposeEditor: the owner's range for Improve (slice 3f)", () => {
       { type: "doc", content: [p(text("tab\there\u0007")), SIG] },
       { type: "doc", content: [QUOTE, p(text("x"))] },
       { type: "doc", content: [{ type: "orderedList", content: [{ type: "listItem", content: [p(text("a")), p(text("b"))] }] }] },
+      { type: "doc", content: [p(text("see")), { type: "codeBlock", attrs: { language: "ts" }, content: [{ type: "text", text: "a();\n  b();" }] }, QUOTE] },
     ];
     for (const doc of docs) {
       const server = ownerParagraphs(normalizeDoc(doc as never));
@@ -359,5 +362,74 @@ describe("ComposeEditor: the owner's range for Improve (slice 3f)", () => {
     const plain = mount({ initialDoc: { type: "doc", content: [p(text("a")), p(text("b"))] } });
     act(() => replaceOwnerRange(plain.editor(), ["x", "y", "z"]));
     expect(ownerRange(plain.editor()).paragraphs).toEqual(["x", "y", "z"]);
+  });
+});
+
+describe("ComposeEditor: code blocks (slice 3g)", () => {
+  const CODE_DOC: EditorDoc = {
+    type: "doc",
+    content: [
+      { type: "paragraph", content: [{ type: "text", text: "Try " }, { type: "text", text: "run()", marks: [{ type: "code" }] }] },
+      { type: "codeBlock", attrs: { language: "ts" }, content: [{ type: "text", text: "const a = 1;\n\tif (a) b();" }] },
+    ],
+  };
+
+  it("round-trips a code block through the server's HTML and back into the editor", () => {
+    const html = renderDoc(normalizeDoc(CODE_DOC as never)).html;
+    expect(html).toContain('<pre><code class="language-ts">');
+    expect(htmlFitsDoc(html)).toBe(true);
+    const { editor, imports } = mount({ importFrom: { html, into: "body" } });
+    const doc = imports.at(-1) ?? editor().getJSON();
+    const block = (doc.content ?? []).find((node) => node.type === "codeBlock");
+    expect(block?.attrs?.language).toBe("ts");
+    expect((block?.content?.[0] as { text?: string } | undefined)?.text).toBe("const a = 1;\n\tif (a) b();");
+    expect(JSON.stringify(doc)).toContain('"type":"code"');
+  });
+
+  it("keeps the plain part's code lines verbatim", () => {
+    const { text } = renderDoc(normalizeDoc(CODE_DOC as never));
+    expect(text).toContain("const a = 1;\n\tif (a) b();");
+    expect(text).toContain("`run()`");
+  });
+
+  it("turns pasted text with a fence into a code block, and leaves other text alone", () => {
+    expect(fencedPaste("no fence here")).toBeNull();
+    expect(fencedPaste("```js\nopen only")).toBeNull();
+    expect(fencedPaste("Look:\n```js\nx();\n```\nthanks")).toEqual([
+      { type: "paragraph", content: [{ type: "text", text: "Look:" }] },
+      { type: "codeBlock", attrs: { language: "js" }, content: [{ type: "text", text: "x();" }] },
+      { type: "paragraph", content: [{ type: "text", text: "thanks" }] },
+    ]);
+    const { editor } = mount();
+    const event = new Event("paste", { bubbles: true, cancelable: true }) as ClipboardEvent;
+    Object.defineProperty(event, "clipboardData", {
+      value: { files: [], items: [], types: ["text/plain"], getData: (type: string) => (type === "text/plain" ? "```\nls -la\n```" : "") },
+    });
+    act(() => {
+      editor().view.dom.dispatchEvent(event);
+    });
+    expect(event.defaultPrevented).toBe(true);
+    const block = (editor().getJSON().content ?? []).find((node) => node.type === "codeBlock");
+    expect((block?.content?.[0] as { text?: string } | undefined)?.text).toBe("ls -la");
+  });
+
+  it("``` and Enter on an empty line starts a code block with the language", () => {
+    const { editor } = mount();
+    act(() => {
+      editor().commands.insertContent("```py");
+    });
+    act(() => {
+      editor().view.dom.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    });
+    const first = editor().getJSON().content?.[0];
+    expect(first?.type).toBe("codeBlock");
+    expect(first?.attrs?.language).toBe("py");
+    expect(first?.content).toBeUndefined();
+  });
+
+  it("the signature editor has no code", () => {
+    const { editor } = mount({ features: { lists: false, quotes: false, code: false, signature: false } });
+    expect(editor().schema.nodes.codeBlock).toBeUndefined();
+    expect(editor().schema.marks.code).toBeUndefined();
   });
 });

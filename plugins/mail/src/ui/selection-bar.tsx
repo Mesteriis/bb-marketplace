@@ -6,6 +6,7 @@ import type { MessageAction, SpecialUse } from "../core/index.ts";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Icon } from "@/components/ui/icon";
+import { tx } from "./i18n/index.ts";
 
 /**
  * The selection after the owner toggles `id`. With `range` (shift-click) and
@@ -166,11 +167,11 @@ export function SelectionBar({ title, pageIds, selection, onSelectionChange, com
     <div className="sticky top-0 z-10 flex shrink-0 flex-col border-b border-border bg-background">
       <div
         role={count > 0 ? "group" : undefined}
-        aria-label={count > 0 ? "Selection" : undefined}
+        aria-label={count > 0 ? tx("Selection") : undefined}
         className="flex min-h-9 shrink-0 items-center gap-1 px-3 py-1"
       >
         <Checkbox
-          aria-label="Select all on page"
+          aria-label={tx("Select all on page")}
           checked={checked}
           disabled={pageIds.length === 0}
           onClick={() => onSelectionChange(all || count > 0 ? new Set() : new Set(pageIds))}
@@ -181,13 +182,13 @@ export function SelectionBar({ title, pageIds, selection, onSelectionChange, com
         ) : (
           <>
             <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground" aria-live="polite">
-              {count} selected
+              {count} {tx("selected")}
             </span>
             <Button
               variant="ghost"
               size="icon"
               className="size-7 shrink-0"
-              aria-label="Clear selection"
+              aria-label={tx("Clear selection")}
               onClick={() => onSelectionChange(new Set())}
             >
               <Icon name="X" aria-hidden />
@@ -198,7 +199,7 @@ export function SelectionBar({ title, pageIds, selection, onSelectionChange, com
       {count > 0 && compactActions !== null ? (
         <div
           role="toolbar"
-          aria-label="Selection actions"
+          aria-label={tx("Selection actions")}
           className="flex shrink-0 flex-nowrap items-center gap-0.5 overflow-x-auto px-2 pb-1"
         >
           <ActionButtons {...compactActions} iconOnly />
@@ -226,7 +227,7 @@ export function SelectionPanel({ count, perAccount, actions, onAction, pending }
     <div className="box-border flex w-full min-w-0 flex-1 flex-col gap-3 px-4 pb-6 pt-2">
       <div
         role="toolbar"
-        aria-label="Selected conversations"
+        aria-label={tx("Selected conversations")}
         className="flex flex-wrap items-center gap-1 border-b border-border pb-2"
       >
         <ActionButtons actions={actions} onAction={onAction} pending={pending} iconOnly={false} />
@@ -234,7 +235,7 @@ export function SelectionPanel({ count, perAccount, actions, onAction, pending }
       <div role="status" className="flex flex-1 flex-col items-center justify-center gap-1 py-10 text-center">
         <Icon name="Mail" className="size-6 text-muted-foreground" aria-hidden />
         <p className="text-sm font-medium text-foreground">
-          {count === 1 ? "1 conversation selected" : `${count} conversations selected`}
+          {count === 1 ? tx("1 conversation selected") : `${count} conversations selected`}
         </p>
         {perAccount.length > 1
           ? perAccount.map(({ label, count: n }) => (

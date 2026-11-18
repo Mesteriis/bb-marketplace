@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { BlockRule } from "./blocking.ts";
 import {
+  IMPORTANT_SENDERS_MAX,
+  isImportantSender,
+  parseImportantSenders,
   NEW_MAIL_TOAST_ITEMS,
   NOTIFY_MAX_AGE_MS,
   inQuietHours,
@@ -121,5 +124,46 @@ describe("toastName", () => {
     expect(toastName(null, "x@example.com")).toBe("x@example.com");
     expect(toastName(" \u200b ", "x@example.com")).toBe("x@example.com");
     expect(NEW_MAIL_TOAST_ITEMS).toBe(3);
+  });
+});
+
+describe("important senders (slice 3l)", () => {
+  const list = parseImportantSenders("Boss@Example.net, @partner.example  ; team.example.org\nnot an entry, x@, ");
+
+  it("reads addresses and domains from the setting and nothing else", () => {
+    expect([...list.addresses]).toEqual(["boss@example.net"]);
+    expect(list.domains).toEqual(["partner.example", "team.example.org"]);
+    expect(parseImportantSenders("")).toEqual({ addresses: new Set(), domains: [] });
+    const many = Array.from({ length: 500 }, (_, i) => `p${i}@example.org`).join(",");
+    expect(parseImportantSenders(many).addresses.size).toBe(IMPORTANT_SENDERS_MAX);
+  });
+
+  it("matches an address exactly and a domain with its subdomains only", () => {
+    expect(isImportantSender("boss@example.net", list)).toBe(true);
+    expect(isImportantSender("other@example.net", list)).toBe(false);
+    expect(isImportantSender("ann@partner.example", list)).toBe(true);
+    expect(isImportantSender("ann@mail.partner.example", list)).toBe(true);
+    expect(isImportantSender("ann@notpartner.example", list)).toBe(false);
+    expect(isImportantSender("ann@partner.example.evil.test", list)).toBe(false);
+    expect(isImportantSender("boss@example.net", undefined)).toBe(false);
+  });
+
+  it("lets an important sender notify without an earlier letter and when bulk, but never when blocked or read", () => {
+    const stranger = row("m1", { fromAddress: "boss@example.net", bulk: true });
+    expect(ids(notifiable([stranger], ctx()))).toEqual([]);
+    expect(ids(notifiable([stranger], ctx({ important: list })))).toEqual(["m1"]);
+    expect(ids(notifiable([{ ...stranger, isRead: true }], ctx({ important: list })))).toEqual([]);
+    const blocked: BlockRule[] = [{ id: "b1", kind: "address", value: "boss@example.net", createdAt: "2026-11-01T00:00:00.000Z" }];
+    expect(ids(notifiable([stranger], ctx({ important: list, rules: blocked })))).toEqual([]);
+    // The owner's own address never notifies, important or not.
+    const own = parseImportantSenders("owner@example.org");
+    expect(ids(notifiable([row("m2", { fromAddress: "owner@example.org" })], ctx({ important: own })))).toEqual([]);
+  });
+
+  it("with only-important on, everyone else is silent", () => {
+    const rows = [row("friend"), row("boss", { fromAddress: "boss@example.net" })];
+    expect(ids(notifiable(rows, ctx({ important: list })))).toEqual(["friend", "boss"]);
+    expect(ids(notifiable(rows, ctx({ important: list, importantOnly: true })))).toEqual(["boss"]);
+    expect(ids(notifiable(rows, ctx({ importantOnly: true })))).toEqual([]);
   });
 });

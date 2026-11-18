@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { ImapAuthError } from "./ports.ts";
-import { INBOX, syncAccount, type SyncDeps } from "./sync.ts";
+import { INBOX, prepareMessage, syncAccount, type SyncDeps } from "./sync.ts";
 import { planSnoozes } from "./snooze.ts";
 import {
   FixedClock,
@@ -1689,5 +1689,368 @@ describe("snoozed mail outside the sync window (review item 1)", () => {
     box.messages = [];
     expect(await syncAccount(depsAt(deps, later), ACCOUNT_ID, OPTIONS)).toMatchObject({ status: "ok", removed: 1 });
     expect(store.getMessage(id)).toBeNull();
+  });
+});
+
+describe("slice 3g: dev classification and List-Id at sync", () => {
+  const CLASSIFY = { ...OPTIONS, classify: true };
+  const githubCi = {
+    from: { name: "GitHub", address: "notifications@github.com" },
+    subject: "[example-org/demo] Run failed: CI - main (abc1234)",
+    bulkHeaders: { listId: "Example <demo.example-org.github.com>", listUnsubscribe: null, precedence: "list", autoSubmitted: null },
+    devHeaders: [{ key: "x-github-reason", value: "ci_activity" }],
+  };
+  /** Session calls that could change the server. */
+  const WRITES = new Set(["setFlags", "markSeen", "moveMessages", "copyMessages", "appendMessage", "expungeOwn"]);
+
+  it("classifies a new GitHub CI failure at insert and keeps its List-Id", async () => {
+    const { store, gateway, deps } = setup(mailbox(1));
+    await syncAccount(deps, ACCOUNT_ID, CLASSIFY);
+    const ci = gateway.deliver(githubCi);
+    const outcome = await syncAccount(deps, ACCOUNT_ID, CLASSIFY);
+
+    const id = idByUid(store, INBOX, ci.uid);
+    expect(outcome).toMatchObject({ status: "ok", newInbox: [id], returning: [] });
+    expect(store.getMessage(id)!.dev).toEqual({ source: "github", repo: "github.com/example-org/demo", kind: "ci", state: "failed", ref: null });
+    expect(store.listUnknown(ACCOUNT_ID, INBOX, null, 10).map((r) => r.uid)).not.toContain(ci.uid);
+    store.addBinding({ kind: "list", value: "demo.example-org.github.com", projectId: "p_api", createdAt: NOW.toISOString() });
+    expect(store.listThreads(ACCOUNT_ID, INBOX, null, 10, { projectId: "p_api" }).threads.map((t) => t.id)).toEqual([
+      store.getMessage(id)!.threadId,
+    ]);
+    // The first message was fetched without headers: its List-Id stays unknown.
+    expect(store.listUnknown(ACCOUNT_ID, INBOX, null, 10)).toEqual([{ uid: 1 }]);
+    const calls = gateway.sessions.flatMap((s) => s.calls.map((c) => c.method));
+    expect(calls.filter((method) => WRITES.has(method))).toEqual([]);
+  });
+
+  it("reads GitLab's headers", async () => {
+    const { store, gateway, deps } = setup(mailbox(0));
+    await syncAccount(deps, ACCOUNT_ID, CLASSIFY);
+    const pipeline = gateway.deliver({
+      from: { name: null, address: "gitlab@gitlab.example.com" },
+      subject: "Failed pipeline for main | demo | abc1234",
+      devHeaders: [
+        { key: "x-gitlab-project-path", value: "Group/Sub/Demo" },
+        { key: "x-gitlab-pipeline-status", value: "failed" },
+        { key: "x-gitlab-pipeline-id", value: "88" },
+      ],
+    });
+    // A self-hosted GitLab counts only from a project remote's host (review).
+    await syncAccount(deps, ACCOUNT_ID, { ...CLASSIFY, devHosts: ["GitLab.example.com"] });
+    expect(store.getMessage(idByUid(store, INBOX, pipeline.uid))!.dev).toEqual({
+      source: "gitlab",
+      repo: "gitlab.example.com/group/sub/demo",
+      kind: "ci",
+      state: "failed",
+      ref: "88",
+    });
+    const unknown = gateway.deliver({
+      from: { name: null, address: "gitlab@git.unknown.example" },
+      subject: "Failed pipeline for main | demo | abc1234",
+      devHeaders: [{ key: "x-gitlab-project-path", value: "group/demo" }],
+    });
+    await syncAccount(deps, ACCOUNT_ID, { ...CLASSIFY, devHosts: ["gitlab.example.com"] });
+    expect(store.getMessage(idByUid(store, INBOX, unknown.uid))!.dev).toBeNull();
+  });
+
+  it("leaves Spam rows unclassified, and classifies nothing with classification off", async () => {
+    const { store, gateway, deps } = setup(mailbox(0));
+    gateway.addFolder({ path: "Spam", name: "Spam", specialUse: "junk" }, { uidValidity: 4, uidNext: 1, messages: [] });
+    await syncAccount(deps, ACCOUNT_ID, CLASSIFY);
+    const spam = gateway.deliver(githubCi, "Spam");
+    const off = gateway.deliver(githubCi);
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    expect(store.getMessage(idByUid(store, INBOX, off.uid))!.dev).toBeNull();
+    expect(store.devUnclassified(10).map((r) => r.id)).toEqual([idByUid(store, INBOX, off.uid)]);
+    const later = gateway.deliver({ ...githubCi, messageId: "later@example.org" }, "Spam");
+    await syncAccount(deps, ACCOUNT_ID, CLASSIFY);
+    expect(store.getMessage(idByUid(store, "Spam", spam.uid))!.dev).toBeNull();
+    expect(store.getMessage(idByUid(store, "Spam", later.uid))!.dev).toBeNull();
+    // Spam rows are not offered to the backfill either.
+    expect(store.devUnclassified(10).map((r) => r.id)).toEqual([idByUid(store, INBOX, off.uid)]);
+  });
+});
+
+describe("slice 3h: kept rows, history check and Gmail labels", () => {
+  const DAY = 86_400_000;
+  const daysAgo = (days: number) => new Date(NOW.getTime() - days * DAY).toISOString();
+  const EPOCH = "1970-01-01T00:00:00.000Z";
+
+  /** INBOX with three recent messages and two from 60 and 61 days ago (outside the 30-day window). */
+  function withHistory() {
+    const box: FakeMailbox = {
+      uidValidity: 7,
+      uidNext: 6,
+      messages: [
+        makeFetchedMessage(1, { date: daysAgo(61), messageId: "<old-1@example.org>" }),
+        makeFetchedMessage(2, { date: daysAgo(60), messageId: "<old-2@example.org>" }),
+        makeFetchedMessage(3, { date: hoursAgo(3) }),
+        makeFetchedMessage(4, { date: hoursAgo(2) }),
+        makeFetchedMessage(5, { date: hoursAgo(1) }),
+      ],
+    };
+    const env = setup(box);
+    return { ...env, box };
+  }
+
+  /** Loads the two old messages as history, as a history job would. */
+  function loadHistory(store: InMemoryMailStore, box: FakeMailbox) {
+    store.upsertMessages(ACCOUNT_ID, INBOX, box.messages.slice(0, 2).map((m) => structuredClone(m)), { kept: "history" });
+    store.setHistorySince(ACCOUNT_ID, INBOX, daysAgo(65));
+  }
+
+  const flagUids = (gateway: ScriptedImapGateway, from = 0) =>
+    gateway.sessions.slice(from).flatMap((s) => s.calls.filter((c) => c.method === "fetchFlags").flatMap((c) => c.uids!));
+
+  const idAt = (store: InMemoryMailStore, uid: number) =>
+    store.localFolderIndex(ACCOUNT_ID, INBOX, EPOCH).find((e) => e.uid === uid)?.id;
+
+  it("prepareMessage is exported and judges unsubscribe info and the dev class as sync does", async () => {
+    const message = makeFetchedMessage(1, {
+      unsubscribeHeaders: [{ key: "list-unsubscribe", value: "<https://example.org/u>" }],
+    });
+    const prepared = prepareMessage(message, { preset: "other", classifyDev: false, devHosts: new Set(), folderRole: "inbox" });
+    expect(prepared.unsubscribe).not.toBeUndefined();
+    expect(prepared).not.toHaveProperty("dev");
+    expect(prepareMessage(makeFetchedMessage(2), { preset: "other", classifyDev: false, devHosts: new Set(), folderRole: "inbox" })).toEqual(makeFetchedMessage(2));
+    expect(prepareMessage(makeFetchedMessage(3), { preset: "other", classifyDev: true, devHosts: new Set(), folderRole: "inbox" })).toHaveProperty("dev");
+  });
+
+  it("checks history rows only with historyCheck, then at most once a day", async () => {
+    const { store, gateway, deps, box } = withHistory();
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    loadHistory(store, box);
+    // An incremental round never fetches the flags of history rows.
+    let from = gateway.sessions.length;
+    expect((await syncAccount(deps, ACCOUNT_ID, OPTIONS)).status).toBe("ok");
+    expect(flagUids(gateway, from).sort()).toEqual([3, 4, 5]);
+    expect(store.historyState(ACCOUNT_ID, INBOX)!.historyCheckedAt).toBeNull();
+
+    // A full round with historyCheck checks them; a message gone from the server leaves.
+    box.messages = box.messages.filter((m) => m.uid !== 1);
+    box.messages[0]!.seen = true;
+    from = gateway.sessions.length;
+    const outcome = await syncAccount(deps, ACCOUNT_ID, { ...OPTIONS, historyCheck: true });
+    expect(outcome).toMatchObject({ status: "ok", removed: 1, newInbox: [], returning: [], inserted: [] });
+    expect(flagUids(gateway, from).sort()).toEqual([1, 2, 3, 4, 5]);
+    expect(idAt(store, 1)).toBeUndefined();
+    expect(store.getMessage(idAt(store, 2)!)!.isRead).toBe(true);
+    expect(store.getMessage(idAt(store, 2)!)!.kept).toBe("history");
+    expect(store.historyState(ACCOUNT_ID, INBOX)!.historyCheckedAt).toBe(NOW.toISOString());
+
+    // Checked less than a day ago: not again.
+    from = gateway.sessions.length;
+    await syncAccount(deps, ACCOUNT_ID, { ...OPTIONS, historyCheck: true });
+    expect(flagUids(gateway, from).sort()).toEqual([3, 4, 5]);
+    const later = { ...deps, clock: new FixedClock(new Date(NOW.getTime() + DAY + 1)) };
+    from = gateway.sessions.length;
+    await syncAccount(later, ACCOUNT_ID, { ...OPTIONS, historyCheck: true });
+    expect(flagUids(gateway, from)).toContain(2);
+  });
+
+  it("checks nothing outside the window when no history was loaded", async () => {
+    const { store, gateway, deps } = withHistory();
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    const from = gateway.sessions.length;
+    await syncAccount(deps, ACCOUNT_ID, { ...OPTIONS, historyCheck: true });
+    expect(flagUids(gateway, from).sort()).toEqual([3, 4, 5]);
+    expect(store.historyState(ACCOUNT_ID, INBOX)!.historyCheckedAt).toBeNull();
+  });
+
+  it("clears kept on rows inside the window", async () => {
+    const { store, deps, box } = withHistory();
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    // A server hit that turned out to be inside the window (the window grew).
+    store.upsertMessages(ACCOUNT_ID, INBOX, [structuredClone(box.messages[1]!)], { kept: "search" });
+    const id = idAt(store, 2)!;
+    expect(store.getMessage(id)!.kept).toBe("search");
+    await syncAccount(deps, ACCOUNT_ID, { ...OPTIONS, windowDays: 90 });
+    expect(store.getMessage(id)!.kept).toBeNull();
+  });
+
+  it("a UIDVALIDITY reset keeps opened rows it finds, deletes the rest, and clears history_since", async () => {
+    const { store, deps, box } = withHistory();
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    // uid 1 loaded and opened, uid 2 loaded as history, plus an opened row the server no longer has.
+    store.upsertMessages(ACCOUNT_ID, INBOX, box.messages.slice(0, 2).map((m) => structuredClone(m)), { kept: "history" });
+    store.upsertMessages(ACCOUNT_ID, INBOX, [makeFetchedMessage(9, { date: daysAgo(70), messageId: "<gone@example.org>" })], {
+      kept: "history",
+    });
+    const opened = idAt(store, 1)!;
+    const history = idAt(store, 2)!;
+    const goneOpened = idAt(store, 9)!;
+    store.promoteKept([opened, goneOpened]);
+    store.setHistorySince(ACCOUNT_ID, INBOX, daysAgo(75));
+
+    // The server renumbers the folder: same messages, new uids.
+    box.uidValidity = 8;
+    box.messages = box.messages.map((m, i) => ({ ...m, uid: 101 + i }));
+    box.uidNext = 106;
+    const outcome = await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+
+    expect(outcome.status).toBe("ok");
+    expect(store.getMessage(opened)).toMatchObject({ kept: "opened" });
+    expect(idAt(store, 101)).toBe(opened);
+    expect(store.getMessage(goneOpened)).toBeNull();
+    expect(store.getMessage(history)).toBeNull();
+    expect(store.historyState(ACCOUNT_ID, INBOX)!.historySince).toBeNull();
+  });
+
+  it("stores Gmail labels at sync and refreshes them in the flag pass", async () => {
+    const box = mailbox(2);
+    box.messages[0]!.gmLabels = ["\\Inbox", "Receipts"];
+    box.messages[1]!.gmLabels = ["\\Inbox"];
+    const { store, gateway, deps } = setup(box);
+    gateway.gmail = true;
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    const first = idAt(store, 1)!;
+    expect(store.gmLabels([first]).get(first)).toEqual(["\\Inbox", "Receipts"]);
+    box.messages[0]!.gmLabels = ["\\Inbox", "Travel"];
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    expect(store.gmLabels([first]).get(first)).toEqual(["\\Inbox", "Travel"]);
+  });
+
+  it("the fake store keeps a message's Gmail labels on every copy, as SQLite does", () => {
+    const store = new InMemoryMailStore();
+    const shared = { messageId: "every@example.org", gmMsgId: "1789000000000000301", size: 10 };
+    store.upsertMessages(ACCOUNT_ID, INBOX, [makeFetchedMessage(1, shared)]);
+    store.upsertMessages(ACCOUNT_ID, "[Gmail]/All Mail", [makeFetchedMessage(5, shared)]);
+    store.setGmLabels(ACCOUNT_ID, INBOX, [{ uid: 1, labels: ["\\Inbox", "Receipts"] }]);
+    store.setGmLabels(ACCOUNT_ID, "[Gmail]/All Mail", [{ uid: 5, labels: ["\\Inbox"] }]);
+    const inboxCopy = idByUid(store, INBOX, 1);
+    expect(store.gmLabels([inboxCopy]).get(inboxCopy)).toEqual(["\\Inbox"]);
+  });
+
+  it("stores no labels off Gmail", async () => {
+    const box = mailbox(1);
+    box.messages[0]!.gmLabels = ["Receipts"];
+    const { store, deps } = setup(box);
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    const id = idAt(store, 1)!;
+    expect(store.gmLabels([id]).get(id)).toEqual([]);
+  });
+});
+
+describe("slice 3i: sender check, crypto and receipt at sync", () => {
+  const GMAIL = { preset: "gmail" as const, classifyDev: false, devHosts: new Set<string>() };
+  const line = (key: string, value: string) => ({ key: key.toLowerCase(), value });
+  /** Gmail's top block with one trusted Authentication-Results header, synthetic values. */
+  const gmailHeaders = (results: string, fromValue: string) => [
+    line("Received", "by 2002:a05:6000:1:b0:1 with SMTP id x; Mon, 16 Nov 2026 10:00:00 -0800"),
+    line("X-Google-Smtp-Source", "AGHT+synthetic"),
+    line("Authentication-Results", `mx.google.com;\r\n       ${results}`),
+    line("From", fromValue),
+  ];
+  const DMARC_FAIL = "dkim=none; spf=fail smtp.mailfrom=bounce@example.com; dmarc=fail (p=REJECT) header.from=example.com";
+  const githubCiFailed = {
+    from: { name: "GitHub", address: "notifications@github.com" },
+    subject: "[example-org/demo] Run failed: CI - main (abc1234)",
+    bulkHeaders: { listId: "Example <demo.example-org.github.com>", listUnsubscribe: null, precedence: "list", autoSubmitted: null },
+    devHeaders: [{ key: "x-github-reason", value: "ci_activity" }],
+    unsubscribeHeaders: gmailHeaders(
+      "dkim=none; spf=fail smtp.mailfrom=notifications@github.com; dmarc=fail (p=REJECT) header.from=github.com",
+      "GitHub <notifications@github.com>",
+    ),
+  };
+
+  it("judges the check, receipt and crypto only when the fetch read headers", () => {
+    expect(prepareMessage(makeFetchedMessage(1), { ...GMAIL, folderRole: "inbox" })).toEqual(makeFetchedMessage(1));
+    const prepared = prepareMessage(
+      makeFetchedMessage(2, {
+        from: { name: "Billing", address: "billing@example.com" },
+        unsubscribeHeaders: gmailHeaders("dmarc=pass header.from=example.com", "Billing <billing@example.com>"),
+        receiptRequested: true,
+        contentType: "text/plain; charset=utf-8",
+      }),
+      { ...GMAIL, folderRole: "inbox" },
+    );
+    expect(prepared.senderCheck).toMatchObject({ state: "ok", basis: "results", authserv: "mx.google.com" });
+    expect(prepared.receiptRequested).toBe(true);
+    expect(prepared.crypto).toBeNull();
+  });
+
+  it("gives a failed row no dev class, even with classification on", () => {
+    const prepared = prepareMessage(makeFetchedMessage(1, githubCiFailed), { ...GMAIL, classifyDev: true, folderRole: "inbox" });
+    expect(prepared.senderCheck?.state).toBe("failed");
+    expect(prepared.dev).toBeNull();
+    // The same mail with a passing check is a dev notification.
+    const passing = prepareMessage(
+      makeFetchedMessage(2, {
+        ...githubCiFailed,
+        unsubscribeHeaders: gmailHeaders("dkim=pass header.i=@github.com; dmarc=pass header.from=github.com", "GitHub <notifications@github.com>"),
+      }),
+      { ...GMAIL, classifyDev: true, folderRole: "inbox" },
+    );
+    expect(passing.dev).toMatchObject({ source: "github", kind: "ci" });
+  });
+
+  it("drops an encrypted message's bodies before the store, by type or by inline armor", () => {
+    const pgp = prepareMessage(
+      makeFetchedMessage(1, {
+        bodyText: "Invented readable text",
+        bodyHtml: "<p>Invented</p>",
+        contentType: 'multipart/encrypted; protocol="application/pgp-encrypted"; boundary="b"',
+        unsubscribeHeaders: [],
+      }),
+      { ...GMAIL, folderRole: "inbox" },
+    );
+    expect(pgp.crypto).toEqual({ kind: "pgp_encrypted", opaque: false });
+    expect(pgp.bodyText).toBeNull();
+    expect(pgp.bodyHtml).toBeNull();
+    const armor = prepareMessage(
+      makeFetchedMessage(2, { bodyText: "\n  -----BEGIN PGP MESSAGE-----\nhQEMA0invented\n", contentType: null, unsubscribeHeaders: [] }),
+      { ...GMAIL, folderRole: "inbox" },
+    );
+    expect(armor.crypto?.kind).toBe("pgp_encrypted");
+    expect(armor.bodyText).toBeNull();
+    // Signed mail keeps its text.
+    const signed = prepareMessage(
+      makeFetchedMessage(3, { contentType: 'multipart/signed; protocol="application/pgp-signature"', unsubscribeHeaders: [] }),
+      { ...GMAIL, folderRole: "inbox" },
+    );
+    expect(signed.crypto?.kind).toBe("pgp_signed");
+    expect(signed.bodyText).toBe("Invented body 3");
+  });
+
+  it("does not judge a Sent copy, but judges mail forged from an owner address into the Inbox", () => {
+    const own = { name: "Owner", address: "owner@example.com" };
+    const headers = gmailHeaders(DMARC_FAIL, "Owner <owner@example.com>");
+    const sent = prepareMessage(makeFetchedMessage(1, { from: own, unsubscribeHeaders: headers }), { ...GMAIL, folderRole: "sent" });
+    expect(sent.senderCheck).toMatchObject({ state: "unchecked", basis: "own" });
+    const forged = prepareMessage(makeFetchedMessage(2, { from: own, unsubscribeHeaders: headers }), { ...GMAIL, folderRole: "inbox" });
+    expect(forged.senderCheck).toMatchObject({ state: "failed", decidedBy: "dmarc" });
+  });
+
+  it("syncAccount passes each folder's role", async () => {
+    const { store, gateway, deps } = setup(mailbox(0));
+    store.saveAccount(makeStoredAccount({ id: ACCOUNT_ID, passwordSealed: PASSWORD, preset: "gmail" }));
+    gateway.addFolder({ path: "Sent", name: "Sent", specialUse: "sent" }, { uidValidity: 9, uidNext: 1, messages: [] });
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    const from = { name: "Billing", address: "billing@example.com" };
+    const headers = gmailHeaders(DMARC_FAIL, "Billing <billing@example.com>");
+    const inboxCopy = gateway.deliver({ from, unsubscribeHeaders: headers });
+    const sentCopy = gateway.deliver({ from, unsubscribeHeaders: headers, messageId: "sent-1@example.org" }, "Sent");
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    const [inboxRow] = store.senderCheckRows([idByUid(store, INBOX, inboxCopy.uid)]);
+    const [sentRow] = store.senderCheckRows([idByUid(store, "Sent", sentCopy.uid)]);
+    expect(JSON.parse(inboxRow!.senderCheckJson!)).toMatchObject({ state: "failed" });
+    expect(JSON.parse(sentRow!.senderCheckJson!)).toMatchObject({ state: "unchecked", basis: "own" });
+  });
+});
+
+describe("slice 3j: rethread only on change", () => {
+  it("skips threading in a round that changed no rows", async () => {
+    const { store, deps } = setup(mailbox(2));
+    expect(await syncAccount(deps, ACCOUNT_ID, OPTIONS)).toMatchObject({ status: "ok" });
+    const before = store.assignThreadsCalls;
+    expect(before).toBeGreaterThan(0);
+
+    store.staleThreads = false;
+    expect(await syncAccount(deps, ACCOUNT_ID, OPTIONS)).toMatchObject({ status: "ok", fetched: 0 });
+    expect(store.assignThreadsCalls).toBe(before);
+
+    store.staleThreads = true;
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    expect(store.assignThreadsCalls).toBe(before + 1);
   });
 });

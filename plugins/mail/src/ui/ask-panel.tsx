@@ -7,6 +7,7 @@ import { useEffect } from "react";
 import type { AiResultView } from "../core/model.ts";
 import { useAiJob, type AiJobPorts } from "./ai-job.ts";
 import { AiAction, AiFailure, AiFrame, AiNotesList, AiText, CitationChips, aiLabel, phaseText, type AiCitation } from "./ai-text.tsx";
+import { tx } from "./i18n/index.ts";
 
 type AskResult = Extract<AiResultView, { kind: "ask" }>;
 
@@ -49,13 +50,13 @@ export function AskPanel({ ports, question, accountId, onOpen, onClose, pollMs }
         <AiText text={question} />
       </p>
       <AiFrame
-        title="Answer"
-        label={result !== null ? aiLabel(result.provider, result.model) : "AI answer"}
+        title={tx("Answer")}
+        label={result !== null ? aiLabel(result.provider, result.model) : tx("AI answer")}
         caution={result !== null && result.found}
         actions={
           <>
-            {state.status === "running" ? <AiAction onClick={job.cancel}>Stop</AiAction> : null}
-            <AiAction onClick={onClose}>Close</AiAction>
+            {state.status === "running" ? <AiAction onClick={job.cancel}>{tx("Stop")}</AiAction> : null}
+            <AiAction onClick={onClose}>{tx("Close")}</AiAction>
           </>
         }
       >
@@ -65,7 +66,7 @@ export function AskPanel({ ports, question, accountId, onOpen, onClose, pollMs }
           </p>
         ) : null}
         {state.status === "failed" ? <AiFailure state={state} /> : null}
-        {state.status === "cancelled" ? <p className="text-xs text-muted-foreground">The question was stopped.</p> : null}
+        {state.status === "cancelled" ? <p className="text-xs text-muted-foreground">{tx("The question was stopped.")}</p> : null}
         {result !== null && !result.found ? <p className="text-sm text-muted-foreground">{ASK_NOT_FOUND}</p> : null}
         {result !== null && result.found ? (
           <p className="text-sm text-foreground">
@@ -75,7 +76,7 @@ export function AskPanel({ ports, question, accountId, onOpen, onClose, pollMs }
         ) : null}
         {sources.length > 0 ? (
           <div className="flex flex-col gap-1">
-            <h3 className="text-xs font-medium text-muted-foreground">Sources</h3>
+            <h3 className="text-xs font-medium text-muted-foreground">{tx("Sources")}</h3>
             <ul className="flex flex-col gap-1">
               {sources.map((citation) => (
                 <li key={citation.n}>
@@ -84,7 +85,7 @@ export function AskPanel({ ports, question, accountId, onOpen, onClose, pollMs }
                     onClick={() => onOpen(citation)}
                     className="text-left text-sm text-foreground underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                   >
-                    {`Message ${citation.n}: open the conversation`}
+                    {tx("Message {n}: open the conversation", { n: citation.n })}
                   </button>
                 </li>
               ))}

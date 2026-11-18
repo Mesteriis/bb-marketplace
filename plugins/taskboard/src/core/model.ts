@@ -108,6 +108,7 @@ export const taskSchema = z
     createdAt: z.string().min(1),
     updatedAt: z.string().min(1),
     sortOrder: z.number().int(),
+    inScope: z.boolean().optional(),
   })
   .strict();
 export type Task = z.infer<typeof taskSchema>;
@@ -132,7 +133,7 @@ export const boardViewSchema = boardSchema.extend({ columns: z.array(columnSchem
 export type BoardView = z.infer<typeof boardViewSchema>;
 
 export const transitionSchema = z
-  .object({ id: z.string().min(1).max(ID_MAX), name: z.string().min(1).max(NAME_MAX), toName: z.string().min(1).max(NAME_MAX) })
+  .object({ id: z.string().min(1).max(ID_MAX), name: z.string().min(1).max(NAME_MAX), toName: z.string().min(1).max(NAME_MAX), toId: z.string().max(ID_MAX).optional() })
   .strict();
 export type JiraTransition = z.infer<typeof transitionSchema>;
 

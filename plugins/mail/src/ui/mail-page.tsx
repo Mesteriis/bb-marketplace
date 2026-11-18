@@ -5,6 +5,7 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode, type RefObject } from "react";
 import type {
   Account,
+  AttachmentMatch,
   AttachmentMeta,
   DraftView,
   Folder,
@@ -13,6 +14,9 @@ import type {
   MessageSummary,
   NewAccountInput,
   OutboxRow,
+  SearchField,
+  SearchNote,
+  SenderCard,
   SpecialUse,
   StatusView,
   ThreadDetail,
@@ -50,15 +54,25 @@ import type { AiCitation } from "./ai-text.tsx";
 import { AskPanel, ASK_QUESTION_MAX } from "./ask-panel.tsx";
 import { CategoryChip, type Category } from "./category-chips.tsx";
 import { RemindDialog, ReminderStrip } from "./reminder-strip.tsx";
+import { useBbDialogs, type MailBbPorts } from "./bb-dialogs.tsx";
+import { RuleStrip } from "./rule-strip.tsx";
 import { SummaryBlock } from "./summary-block.tsx";
 import { TasksDialog, type TaskPick } from "./tasks-dialog.tsx";
 import { SnoozeMenu } from "./snooze-menu.tsx";
 import { OutboxSection, type OutboxAction } from "./outbox.tsx";
 import {
+  MailStatusDialog,
+  accountProblemTexts,
+  accountsNeedingAttention,
+  syncStatusLabel,
+  type BbLink,
+} from "./mail-status.tsx";
+import {
   conversationAiReason,
   messageToHand,
   ReadingPane,
   type BodyState,
+  type ReadingSlice3h,
   type ReadingTranslation,
 } from "./reading-pane.tsx";
 import {
@@ -70,9 +84,11 @@ import {
   type SelectionGroup,
 } from "./selection-bar.tsx";
 import { ShortcutSheet } from "./shortcut-sheet.tsx";
+import { extendSelection, successorRow } from "./successor.ts";
 import { SmtpDialog, type SmtpResult, type SmtpSettingsInput } from "./smtp-dialog.tsx";
 import {
   createDestructiveGuard,
+  isTypingTarget,
   useShortcuts,
   type DestructiveGuard,
   type GoTarget,
@@ -82,11 +98,20 @@ import {
   filterActive,
   FilteredEmpty,
   formatListDate,
+  HistoryStrip,
   QuickFilters,
   SearchResultList,
   ThreadList,
+  type HistoryState,
   type ListFilter,
+  ListDensityContext,
+  type ListDensity,
 } from "./thread-list.tsx";
+import { SearchHelpButton, SearchNotes } from "./search-help.tsx";
+import { ServerSearchStrip, type ServerJobView } from "./server-search-strip.tsx";
+import { SAVED_SEARCH_GONE_TEXT } from "./saved-searches.tsx";
+import { SenderCardDialog } from "./sender-card.tsx";
+import { getLanguage, tx } from "./i18n/index.ts";
 
 export { ALL_ACCOUNTS };
 
@@ -96,6 +121,8 @@ export interface ThreadListState {
   loading: boolean;
   loadingMore: boolean;
   error: string | null;
+  /** Slice 3h: the folder is not grouped by conversation: one row per message (messages_list). */
+  messages?: MessageSummary[];
 }
 
 export interface SearchState {
@@ -104,6 +131,60 @@ export interface SearchState {
   hits: MessageSummary[];
   loading: boolean;
   error: string | null;
+  /** Slice 3h: why words of the query stayed text. */
+  notes?: SearchNote[];
+  /** Slice 3h: hits inside attachments (the owner's search with attachment text on). */
+  attachmentMatches?: AttachmentMatch[];
+  /** Slice 3h: the next page's cursor. */
+  nextCursor?: string | null;
+  loadingMore?: boolean;
+}
+
+/** Slice 3h: the page's server search. */
+export interface ServerSearchState {
+  /** The query it ran for; the strip shows only while that query is the search. */
+  query: string;
+  job: ServerJobView | null;
+  localOnly: readonly SearchField[];
+  /** Hits it brought into Mail. */
+  ids: ReadonlySet<string>;
+  error: string | null;
+}
+
+/** Search, older mail, saved searches, labels, drag and Files (slice 3h). */
+export interface MailSlice3hPorts {
+  /** This page load's drag id (drag-move.ts). */
+  pageId: string;
+  /** Files; the sender card opens it filtered by the sender. */
+  onOpenFiles: (filter?: { sender: string }) => void;
+  /** Save search: the page's dialog, with the query. */
+  onSaveSearch: (query: string) => void;
+  server: ServerSearchState | null;
+  onServerSearch: (query: string) => void;
+  onServerCancel: () => void;
+  onServerMore: () => void;
+  onSearchMore: () => void;
+  /** An open saved search: its header with Edit, or the deleted note. */
+  savedSearch: { name: string; query: string; onEdit: () => void } | "missing" | null;
+  /** Older mail of the folder viewed; null for a role view. */
+  history: HistoryState | null;
+  historyStepDays: number;
+  onLoadHistory: () => void;
+  onStopHistory: () => void;
+  /**
+   * A drag of these conversations started (their accounts), or ended (null).
+   * `advance` (slice 3i): opens the next conversation when the open one is
+   * dragged to a folder and moved; null when nothing should open.
+   */
+  onDragAccounts: (accountIds: string[] | null, advance?: (() => void) | null) => void;
+  /** Labels... (l) for conversations: Gmail accounts only. */
+  onLabels: (threadIds: string[]) => void;
+  /** Whether an account is Gmail (labels apply). */
+  gmail: (accountId: string) => boolean;
+  /** Reading (Task 11): viewer, quotes, plain text, dark mail, sender card, related mail and print. */
+  reading?: Omit<ReadingSlice3h, "quotesAll" | "onExpandAll" | "onCollapseAll" | "onSender" | "stackOpen" | "onStackOpen"> & {
+    loadSenderCard: (address: string, accountId: string | null) => Promise<SenderCard>;
+  };
 }
 
 export interface ReadingState {
@@ -141,8 +222,11 @@ export interface MailInboxPorts {
   /** Unsubscribe in the pane: the page opens its confirmation. */
   onUnsubscribe: (message: MessageHeader) => void;
   onArchiveList: (message: MessageHeader) => void;
-  /** Snooze the conversations' Inbox mail until `until` (UTC ISO). */
-  onSnooze: (threadIds: string[], until: string) => void;
+  /**
+   * Snooze the conversations' Inbox mail until `until` (UTC ISO). `then`
+   * (slice 3i): run instead of closing when the open conversation went.
+   */
+  onSnooze: (threadIds: string[], until: string, then?: (() => void) | null) => void;
   onReturnNow: (threadId: string) => void;
   loadBlockCheck: (messageId: string) => Promise<BlockCheck>;
   onBlock: (messageId: string, choice: BlockChoice) => void;
@@ -195,17 +279,34 @@ export interface MailPageProps {
   onSearch: (query: string) => void;
   syncing: boolean;
   onSync: () => void;
+  /** The page's own link to BB (slice 3j); absent means connected. */
+  bbLink?: BbLink;
+  /** Slice 3j: row height of the lists; absent means comfortable. */
+  density?: ListDensity;
+  /** Slice 3j: where the reading pane sits in a wide window; absent means right. */
+  readingPane?: "right" | "bottom";
   reading: ReadingState;
   onSelectThread: (threadId: string, messageId: string | null, accountId: string) => void;
   onCloseThread: () => void;
   onToggleMessage: (messageId: string) => void;
-  onOpenLink: (url: string) => void;
+  /** A link the owner opened, with its visible text when it came from a message body (slice 3i). */
+  onOpenLink: (url: string, text?: string | null) => void;
   onHandToAgent: (message: MessageHeader) => void;
   /** Checked conversations of the list. */
   selection: ReadonlySet<string>;
   onSelectionChange: (next: ReadonlySet<string>) => void;
-  /** An action on conversations' messages in the view; `destination` goes with move. */
-  onThreadsAction: (threadIds: string[], action: MessageAction, destination?: string) => void;
+  /**
+   * An action on conversations' messages in the view; `destination` goes with
+   * move. `then` (slice 3i, removing actions on the open conversation with no
+   * selection): run where the open conversation would close, only while it is
+   * still the one acted on; null means nothing is left to open.
+   */
+  onThreadsAction: (
+    threadIds: string[],
+    action: MessageAction,
+    destination?: string,
+    then?: (() => void) | null,
+  ) => void;
   /** An action is in flight; the buttons wait. */
   actionPending: boolean;
   /** The row star: flag the newest message in the view, or unflag the flagged ones. */
@@ -214,6 +315,8 @@ export interface MailPageProps {
   details: DetailsState | null;
   onOpenDetails: (message: MessageHeader) => void;
   onCloseDetails: () => void;
+  /** Slice 3i: Details' Check again (sender_check_refresh with force); absent: not offered. */
+  onCheckSender?: (messageId: string) => Promise<void>;
   onCopy: (text: string) => Promise<boolean>;
   onDownloadEml: (message: MessageHeader) => void;
   onDownloadAttachment: (message: MessageHeader, attachment: AttachmentMeta) => void;
@@ -269,6 +372,10 @@ export interface MailPageProps {
   ai?: MailAiPorts;
   /** The Today or Tasks page (slice 3f), shown instead of the list and the conversation. */
   page?: ReactNode;
+  /** Slice 3g: the BB integration; absent: none of it. */
+  bb?: MailBbPorts;
+  /** Slice 3h: search, older mail, saved searches, labels, drag and Files; absent: none of it. */
+  slice3h?: MailSlice3hPorts;
 }
 
 function PageFrame({ children }: { children: ReactNode }) {
@@ -296,7 +403,7 @@ export function MailPage(props: MailPageProps) {
   if (status === null) {
     return (
       <PageFrame>
-        <LoadingState label="Loading mail…" />
+        <LoadingState label={tx("Loading mail\u2026")} />
       </PageFrame>
     );
   }
@@ -315,10 +422,10 @@ export function MailPage(props: MailPageProps) {
           key={accountForm?.initial?.email ?? "new"}
           title={
             first
-              ? "Connect your mailbox"
+              ? tx("Connect your mailbox")
               : accountForm?.initial
-                ? `Reconnect ${accountForm.initial.email}`
-                : "Add an account"
+                ? tx("Reconnect {email}", { email: accountForm.initial.email })
+                : tx("Add an account")
           }
           initial={accountForm?.initial}
           onTest={props.onTestAccount}
@@ -395,7 +502,7 @@ function viewModel(props: MailPageProps & { status: StatusView }): ViewModel {
   const all = props.folders ?? [];
   const foldersOf = (accountId: string) => all.filter((f) => f.accountId === accountId);
   const folderName = (accountId: string, path: string) =>
-    foldersOf(accountId).find((f) => f.path === path)?.name ?? (path === "INBOX" ? "Inbox" : path);
+    foldersOf(accountId).find((f) => f.path === path)?.name ?? (path === "INBOX" ? tx("Inbox") : path);
   const use: SpecialUse | null =
     view.kind === "role"
       ? view.role
@@ -403,7 +510,7 @@ function viewModel(props: MailPageProps & { status: StatusView }): ViewModel {
         (view.path === "INBOX" ? "inbox" : null));
   const pathsOf = (accountId: string) => viewPaths(view, all, accountId);
   return {
-    title: view.kind === "role" ? ROLE_NAMES[view.role] : folderName(view.accountId, view.path),
+    title: view.kind === "role" ? tx(`${ROLE_NAMES[view.role]}|folder`) : folderName(view.accountId, view.path),
     use,
     foldersOf,
     pathsOf,
@@ -417,7 +524,7 @@ function viewModel(props: MailPageProps & { status: StatusView }): ViewModel {
 }
 
 /** The view `g` then a letter goes to; null when there is none. */
-function goView(props: MailPageProps, model: ViewModel, target: Exclude<GoTarget, "all">): MailView | null {
+function goView(props: MailPageProps, model: ViewModel, target: Exclude<GoTarget, "all" | "dev" | "files">): MailView | null {
   const role: RoleName = target;
   if (props.unified) return { kind: "role", role };
   const account = props.account;
@@ -434,9 +541,24 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
   const anchor = useRef<string | null>(null);
+  /** Slice 3i: a run of Shift+Down/Up: the selection when it started and the row it started on. */
+  const shiftRun = useRef<{ base: ReadonlySet<string>; anchor: string } | null>(null);
+  /** Slice 3i: a held arrow moved the cursor; its release opens the row there. */
+  const heldArrow = useRef(false);
+  /** Slice 3i: where the cursor goes once a removing action on a selection took its rows. */
+  const afterSelection = useRef<{ target: string | null; removed: string[] } | null>(null);
+  const conversationRef = useRef<HTMLElement | null>(null);
   const guardRef = useRef<DestructiveGuard | null>(null);
   guardRef.current ??= createDestructiveGuard();
   const destructiveGuard = guardRef.current;
+  // Slice 3i review: a held arrow whose release the page never sees (focus left the window) opens nothing later.
+  useEffect(() => {
+    const drop = () => {
+      heldArrow.current = false;
+    };
+    window.addEventListener("blur", drop);
+    return () => window.removeEventListener("blur", drop);
+  }, []);
   const [focusedId, setFocusedId] = useState<string | null>(null);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [moveTargets, setMoveTargets] = useState<string[] | null>(null);
@@ -450,6 +572,14 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
   const [asked, setAsked] = useState<{ question: string; serial: number } | null>(null);
   const [highlight, setHighlight] = useState<{ messageId: string; serial: number } | null>(null);
   const [remindMessage, setRemindMessage] = useState<string | null>(null);
+  /** Slice 3h: the message opened from a folder that is not grouped; it shows alone. */
+  const [singleMessage, setSingleMessage] = useState<string | null>(null);
+  /** Slice 3h: the sender card open, from a message of the conversation. */
+  const [senderFor, setSenderFor] = useState<{ message: MessageHeader; card: SenderCard | null; error: string | null } | null>(null);
+  /** Slice 3h: Expand all / Collapse all of the open conversation (quotes follow). */
+  const [quotesAll, setQuotesAll] = useState<{ threadId: string; shown: boolean } | null>(null);
+  // Slice 3i (part B resolution 7): the earlier-messages stack's open state, beside quotesAll.
+  const [stackOpen, setStackOpen] = useState<{ threadId: string; open: boolean } | null>(null);
   // A composer that closed while focused leaves no focus behind.
   const composerId = props.composer?.draft.id ?? null;
   useEffect(() => {
@@ -458,6 +588,8 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
   const searching = search.query !== "";
   const selecting = selection.size > 0;
   const wide = useWideLayout(rootRef);
+  // Slice 3j: the reading pane below the list, in a wide window only.
+  const paneBelow = wide && props.readingPane === "bottom";
   const markers = accountMarkers(status.accounts);
   const marker = (accountId: string) => (props.unified ? (markers.get(accountId) ?? null) : null);
   /** Ours (a server copy of a compose draft), or any message in a Drafts folder. */
@@ -507,25 +639,30 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
     if (focusLost()) restoreFocus(new Event("close"));
   };
 
-  const rowIds = searching ? search.hits.map((h) => h.id) : list.threads.map((t) => t.id);
+  /** Slice 3h: a folder that is not grouped lists messages, as search does. */
+  const messageRows = searching ? search.hits : (list.messages ?? null);
+  const rowIds = messageRows !== null ? messageRows.map((h) => h.id) : list.threads.map((t) => t.id);
   const rowKey = rowIds.join("\n");
 
   // An action took the cursor row off the list: the next row (else the previous) takes the cursor.
+  // After a removing action on a selection (slice 3i), the row after the last removed one does.
   const shownRows = useRef<string[]>(rowIds);
   useEffect(() => {
     const before = shownRows.current;
     shownRows.current = rowIds;
+    // Consumed by the first change of the rows: a failed action leaves nothing behind.
+    const pending = afterSelection.current;
+    afterSelection.current = null;
+    if (pending !== null && pending.removed.some((id) => !rowIds.includes(id))) {
+      const target = pending.target !== null && rowIds.includes(pending.target) ? pending.target : null;
+      if (target !== null) {
+        setFocusedId(target);
+        if (focusLost() && !focusRowElement(target)) focusRoot();
+        return;
+      }
+    }
     if (focusedId === null || rowIds.includes(focusedId)) return;
-    const at = before.indexOf(focusedId);
-    const next =
-      at < 0
-        ? null
-        : (before.slice(at + 1).find((id) => rowIds.includes(id)) ??
-          before
-            .slice(0, at)
-            .reverse()
-            .find((id) => rowIds.includes(id)) ??
-          null);
+    const next = successorRow(before, (id) => !rowIds.includes(id), focusedId);
     setFocusedId(next);
     if (focusLost() && (next === null || !focusRowElement(next))) focusRoot();
     // rowKey stands for rowIds.
@@ -594,7 +731,7 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
       const messages = reading.detail?.messages ?? [];
       return messages.some(model.inView) ? [reading.threadId] : [];
     }
-    if (!searching && focusedId !== null && rowIds.includes(focusedId)) return [focusedId];
+    if (messageRows === null && focusedId !== null && rowIds.includes(focusedId)) return [focusedId];
     return [];
   };
   /** Runs `action` on `ids` when it applies to every account among them. */
@@ -607,17 +744,61 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
   };
   /** An action that takes mail out of the list quiets the destructive keys for a moment. */
   const runAction = (ids: string[], action: MessageAction, destination?: string) => {
-    if (REMOVING_ACTIONS.has(action)) destructiveGuard.ran();
-    if (destination === undefined) props.onThreadsAction(ids, action);
+    const removing = REMOVING_ACTIONS.has(action);
+    if (removing) destructiveGuard.ran();
+    const then = removing ? advanceFor(ids) : undefined;
+    if (then !== undefined) props.onThreadsAction(ids, action, destination, then);
+    else if (destination === undefined) props.onThreadsAction(ids, action);
     else props.onThreadsAction(ids, action, destination);
+  };
+  /** Whether a row belongs to one of the conversations `ids` (search hits and message rows by their conversation). */
+  const rowIn = (ids: readonly string[]) => {
+    const set = new Set(ids);
+    return (rowId: string) =>
+      messageRows !== null ? set.has(messageRows.find((h) => h.id === rowId)?.threadId ?? "") : set.has(rowId);
+  };
+  /**
+   * Slice 3i (B5, B6): what comes after a removing action (or snooze) on
+   * `ids`. With a selection, nothing opens: the cursor goes to the row after
+   * the last removed one once the rows go (undefined is returned). On the
+   * open conversation, the next row opens (`then`), or nothing is left (null).
+   * Otherwise undefined: the app closes as before. The rows are the ones shown now.
+   */
+  const advanceFor = (ids: readonly string[]): (() => void) | null | undefined => {
+    const isRemoved = rowIn(ids);
+    if (selecting) {
+      const removed = rowIds.filter(isRemoved);
+      const last = removed.at(-1);
+      afterSelection.current = last === undefined ? null : { target: successorRow(rowIds, isRemoved, last), removed };
+      return undefined;
+    }
+    const open = reading.threadId;
+    if (open === null || !ids.includes(open)) return undefined;
+    const current =
+      focusedId !== null && rowIds.includes(focusedId) && isRemoved(focusedId)
+        ? focusedId
+        : (rowIds.find((id) => rowIn([open])(id)) ?? null);
+    if (current === null) return undefined;
+    const next = successorRow(rowIds, isRemoved, current);
+    if (next === null) return null;
+    return () => {
+      // The successor opens now, maybe long after the key: a quick second tap must not delete it (slice 3i review).
+      destructiveGuard.ran();
+      setFocusedId(next);
+      openRow(next);
+    };
   };
 
   const openRow = (id: string) => {
-    if (searching) {
-      const hit = search.hits.find((h) => h.id === id);
-      if (hit !== undefined) props.onSelectThread(hit.threadId, hit.id, hit.accountId);
+    if (messageRows !== null) {
+      const hit = messageRows.find((h) => h.id === id);
+      if (hit !== undefined) {
+        setSingleMessage(!searching ? hit.id : null);
+        props.onSelectThread(hit.threadId, hit.id, hit.accountId);
+      }
       return;
     }
+    setSingleMessage(null);
     const thread = list.threads.find((t) => t.id === id);
     if (thread !== undefined) props.onSelectThread(thread.id, null, thread.accountId);
   };
@@ -625,15 +806,72 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
     setFocusedId(id);
     focusRowElement(id);
   };
-  /** A held j/k (`repeat`) only moves the cursor: passing a conversation never opens it. */
-  const step = (delta: 1 | -1, repeat: boolean) => {
+  /**
+   * Whether moving the cursor opens the row: j/k only while a conversation is
+   * open; Down/Up (slice 3i) also with nothing open in two columns. Behind the
+   * selection panel nothing opens (it would be marked read unseen).
+   */
+  const moveOpens = (arrow: boolean) => !selecting && (threadOpen || (arrow && wide));
+  /**
+   * A held key (`repeat`) only moves the cursor: passing a conversation never
+   * opens it. A held arrow opens the row it stopped on when released (onKeyUp).
+   */
+  const step = (delta: 1 | -1, repeat: boolean, arrow = false) => {
     if (rowIds.length === 0) return;
     const current = focusedId === null ? -1 : rowIds.indexOf(focusedId);
     const nextIndex = current < 0 ? 0 : Math.min(Math.max(current + delta, 0), rowIds.length - 1);
     const next = rowIds[nextIndex]!;
     focusRow(next);
-    // Behind the selection panel nothing opens (it would be marked read unseen).
-    if (threadOpen && !repeat && !selecting) openRow(next);
+    heldArrow.current = repeat && arrow && moveOpens(true);
+    if (!repeat && moveOpens(arrow)) openRow(next);
+  };
+  /** Releasing a held arrow opens the row under the cursor (same rule as a press). */
+  const onKeyUp = (event: { code: string; target: EventTarget | null }) => {
+    if (event.code !== "ArrowDown" && event.code !== "ArrowUp") return;
+    if (!heldArrow.current) return;
+    heldArrow.current = false;
+    // Released in a field (focus moved there while held): the run ends, nothing opens (slice 3i review).
+    if (isTypingTarget(event.target)) return;
+    if (focusedId === null || !rowIds.includes(focusedId) || !moveOpens(true)) return;
+    openRow(focusedId);
+  };
+  /** Shift+Down/Up (slice 3i): the cursor moves and the selection grows from where the run started. */
+  const extend = (delta: 1 | -1) => {
+    // Grouped lists only, never in one column with a conversation open (as x).
+    if (messageRows !== null || (threadOpen && !wide) || rowIds.length === 0) return;
+    const current = focusedId === null ? -1 : rowIds.indexOf(focusedId);
+    let run = shiftRun.current;
+    if (run === null || !rowIds.includes(run.anchor) || (selection.size > 0 && !selection.has(run.anchor))) {
+      const start = current < 0 ? rowIds[0]! : focusedId!;
+      run = { base: new Set(selection), anchor: start };
+      shiftRun.current = run;
+    }
+    const to = current < 0 ? run.anchor : rowIds[Math.min(Math.max(current + delta, 0), rowIds.length - 1)]!;
+    focusRow(to);
+    anchor.current = to;
+    props.onSelectionChange(extendSelection({ order: rowIds, base: run.base, anchor: run.anchor, to }));
+  };
+  /** Down/Up on a message header or the stack (slice 3i): focus moves to the next or previous one. */
+  const focusMessage = (delta: 1 | -1) => {
+    const container = conversationRef.current;
+    if (container === null) return;
+    const headers = Array.from(
+      container.querySelectorAll<HTMLElement>("[data-mail-message-toggle], [data-mail-stack]"),
+    );
+    const active = document.activeElement;
+    const at = headers.findIndex((element) => element === active || element.contains(active));
+    if (at < 0) return;
+    headers[at + delta]?.focus();
+  };
+  /** Shift+Command+U (slice 3i): mark read when anything targeted is unread, else unread. */
+  const toggleRead = () => {
+    const ids = targets();
+    if (ids.length === 0) return;
+    // The open conversation was marked read when it opened.
+    const anyUnread = ids.some(
+      (id) => id !== reading.threadId && (list.threads.find((t) => t.id === id)?.unreadCount ?? 0) > 0,
+    );
+    runIfAllowed(ids, anyUnread ? "mark_read" : "mark_unread");
   };
   /**
    * A row click (or o/Enter on the cursor row). With a selection: in one
@@ -641,6 +879,7 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
    * ends the selection and opens the row, as Apple Mail does.
    */
   const activateRow = (id: string) => {
+    shiftRun.current = null;
     if (selecting && !searching) {
       if (!wide) {
         toggleChecked(id, false);
@@ -651,6 +890,7 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
     openRow(id);
   };
   const toggleChecked = (id: string, range: boolean) => {
+    shiftRun.current = null;
     props.onSelectionChange(toggleSelection(rowIds, selection, id, range, anchor.current));
     anchor.current = id;
   };
@@ -709,16 +949,96 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
     const timer = setTimeout(() => setHighlight(null), 2_000);
     return () => clearTimeout(timer);
   }, [highlight?.serial]);
+  const bbUi = useBbDialogs(props.bb, reading.detail);
+  const bbMessage = () => {
+    if (!threadOpen || selecting || reading.detail === null) return null;
+    const message = messageToHand(reading.detail.messages, reading.expandedIds);
+    return message !== null && !isDraft(message) ? message : null;
+  };
+  /** Slice 3h: every message of the open conversation opens (quotes shown), or all but the newest close. */
+  const expandAll = (expand: boolean) => {
+    const detail = reading.detail;
+    if (detail === null || reading.threadId === null) return;
+    const messages = detail.messages;
+    for (const [index, message] of messages.entries()) {
+      const open = reading.expandedIds.has(message.id);
+      const wanted = expand || index === messages.length - 1;
+      if (open !== wanted) props.onToggleMessage(message.id);
+    }
+    setQuotesAll({ threadId: reading.threadId, shown: expand });
+    setStackOpen({ threadId: reading.threadId, open: expand });
+  };
+  // Slice 3i: a finished "Load the whole conversation" that brought older
+  // messages opens the stack (the owner asked to see them). The count is
+  // taken when the job starts and compared at the first thread load after it ends.
+  const conversationState = props.slice3h?.reading?.conversation.state ?? "idle";
+  const loadStart = useRef<{ threadId: string; count: number; detail: ThreadDetail | null } | null>(null);
+  useEffect(() => {
+    const start = loadStart.current;
+    if (start !== null && start.threadId !== reading.threadId) loadStart.current = null;
+    if (conversationState === "running" && reading.threadId !== null && reading.detail !== null) {
+      if (loadStart.current === null) loadStart.current = { threadId: reading.threadId, count: reading.detail.messages.length, detail: null };
+      return;
+    }
+    const current = loadStart.current;
+    if (current === null || conversationState !== "done" || reading.detail === null) return;
+    // The first detail seen after the job ended is the one before the reload; wait for the next.
+    if (current.detail === null) {
+      current.detail = reading.detail;
+      return;
+    }
+    if (current.detail === reading.detail) return;
+    loadStart.current = null;
+    if (reading.detail.messages.length > current.count) setStackOpen({ threadId: current.threadId, open: true });
+  }, [conversationState, reading.detail, reading.threadId]);
+  const openSender = (message: MessageHeader) => {
+    const port = props.slice3h?.reading;
+    if (port === undefined) return;
+    rememberOpener();
+    setSenderFor({ message, card: null, error: null });
+    port.loadSenderCard(message.from.address, message.accountId).then(
+      (card) => setSenderFor((prev) => (prev?.message === message ? { ...prev, card } : prev)),
+      (error: unknown) =>
+        setSenderFor((prev) => (prev?.message === message ? { ...prev, error: error instanceof Error ? error.message : String(error) } : prev)),
+    );
+  };
+  const reading3h: ReadingSlice3h | undefined =
+    props.slice3h?.reading === undefined
+      ? undefined
+      : {
+          ...props.slice3h.reading,
+          onSender: openSender,
+          quotesAll: quotesAll !== null && quotesAll.threadId === reading.threadId ? quotesAll.shown : null,
+          onExpandAll: () => expandAll(true),
+          onCollapseAll: () => expandAll(false),
+          stackOpen: stackOpen !== null && stackOpen.threadId === reading.threadId && stackOpen.open,
+          onStackOpen: () => {
+            if (reading.threadId !== null) setStackOpen({ threadId: reading.threadId, open: true });
+          },
+        };
   const summaryShown = summaryFor !== null && summaryFor.threadId === reading.threadId && openDetail !== null && ai !== undefined;
 
   const onKeyDown = useShortcuts((command: ShortcutCommand, repeat: boolean) => {
     // A quick second tap after an action must not reach the cursor row.
     if (!destructiveGuard.admit(command)) return;
+    // Any other key ends a run of Shift+Down/Up; a held arrow's run ends on any other key.
+    if (command.kind !== "select_down" && command.kind !== "select_up") shiftRun.current = null;
+    if (command.kind !== "next" && command.kind !== "previous") heldArrow.current = false;
     switch (command.kind) {
       case "next":
-        return step(1, repeat);
+        return step(1, repeat, command.arrow === true);
       case "previous":
-        return step(-1, repeat);
+        return step(-1, repeat, command.arrow === true);
+      case "select_down":
+        return extend(1);
+      case "select_up":
+        return extend(-1);
+      case "message_next":
+        return focusMessage(1);
+      case "message_previous":
+        return focusMessage(-1);
+      case "toggle_read":
+        return toggleRead();
       case "open":
         if (focusedId === null || !rowIds.includes(focusedId)) return;
         if (model.use === "drafts" && !searching && !selecting) {
@@ -749,7 +1069,7 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
         return;
       case "select":
         // In one column an open conversation hides the list: x does nothing there.
-        if (!(threadOpen && !wide) && !searching && focusedId !== null && rowIds.includes(focusedId)) toggleChecked(focusedId, false);
+        if (!(threadOpen && !wide) && messageRows === null && focusedId !== null && rowIds.includes(focusedId)) toggleChecked(focusedId, false);
         return;
       case "archive":
         return runIfAllowed(targets(), "archive");
@@ -777,11 +1097,48 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
         return summarize();
       case "find_tasks":
         return findTasks();
+      case "new_bb_thread": {
+        const message = bbMessage();
+        if (message !== null) bbUi.newThreadFor(message);
+        return;
+      }
+      case "make_task": {
+        const message = bbMessage();
+        if (message !== null) bbUi.makeTaskFor(message);
+        return;
+      }
+      case "expand_all": {
+        if (!threadOpen || selecting || reading.detail === null || reading3h === undefined) return;
+        const allOpen = reading.detail.messages.every((m) => reading.expandedIds.has(m.id));
+        expandAll(!allOpen || reading3h.quotesAll !== true);
+        return;
+      }
+      case "print": {
+        if (!threadOpen || selecting || reading.detail === null || reading3h === undefined) return;
+        reading3h.onPrint(reading.detail.messages);
+        return;
+      }
+      case "labels": {
+        const ids = targets();
+        const s3 = props.slice3h;
+        if (s3 === undefined || ids.length === 0) return;
+        const accounts = new Set(ids.map(accountOfThread));
+        if ([...accounts].every((id) => id !== null && s3.gmail(id))) s3.onLabels(ids);
+        return;
+      }
       case "sheet":
         rememberOpener();
         setSheetOpen(true);
         return;
       case "go": {
+        if (command.target === "dev") {
+          props.bb?.onOpenDev?.();
+          return;
+        }
+        if (command.target === "files") {
+          props.slice3h?.onOpenFiles();
+          return;
+        }
         if (command.target === "all") {
           if (status.accounts.length > 1) props.onSelectAccount(ALL_ACCOUNTS);
           return;
@@ -823,6 +1180,9 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
         {...(props.ai !== undefined
           ? { improve: { jobs: props.ai.jobs, disabledReason: props.ai.disabledReason }, reminderDays: props.ai.reminderDays }
           : {})}
+        {...(props.bb !== undefined
+          ? { bbFiles: { call: props.bb.call, projectId: props.bb.context.projectId, threadId: props.bb.context.threadId } }
+          : {})}
       />
     ) : null;
   const docked = composer !== null && composer.dockThreadId !== null && composer.dockThreadId === reading.threadId;
@@ -832,8 +1192,9 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
   );
   const moveAccount = moveAccounts.size === 1 ? [...moveAccounts][0]! : null;
   const openAccount = reading.detail?.thread.accountId ?? null;
-  const errors = status.accounts.filter(
-    (a) => a.lastError !== null && (props.unified || a.id === props.account?.id),
+  const errors = accountsNeedingAttention(
+    status.accounts.filter((a) => props.unified || a.id === props.account?.id),
+    Date.now(),
   );
 
   return (
@@ -841,6 +1202,8 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
       ref={rootRef}
       tabIndex={-1}
       onKeyDown={onKeyDown}
+      onKeyUp={onKeyUp}
+      lang={getLanguage()}
       className="@container flex h-full min-h-0 flex-1 flex-col outline-none"
     >
       {composerView !== null && !wide ? (
@@ -866,7 +1229,7 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
         >
           <span className="min-w-0 flex-1">
             {props.unified ? `${accountLabel(account)}: ` : ""}
-            {account.lastError}
+            {accountProblemTexts(account).join(" ")}
           </span>
           {account.authFailed ? (
             <Button
@@ -883,17 +1246,22 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
                 })
               }
             >
-              Update app password
+              {tx("Update app password")}
             </Button>
           ) : null}
         </div>
       ))}
-      <div className="flex min-h-0 flex-1">
+      <ListDensityContext.Provider value={props.density ?? "comfortable"}>
+      <div className={cn("flex min-h-0 flex-1", paneBelow && "flex-col")} data-reading-pane={paneBelow ? "bottom" : "right"}>
         <section
           aria-label={model.title}
           className={cn(
-            "min-h-0 w-full shrink-0 flex-col overflow-y-auto @3xl:flex @3xl:w-80 @3xl:border-r @3xl:border-border @6xl:w-96",
-            threadOpen && !selecting ? "hidden" : "flex",
+            "min-h-0 w-full shrink-0 flex-col overflow-y-auto",
+            // Slice 3j: with the pane below, the list keeps the full width and two fifths of the height.
+            paneBelow
+              ? "flex h-2/5 min-h-48 border-b border-border"
+              : "@3xl:flex @3xl:w-80 @3xl:border-r @3xl:border-border @6xl:w-96",
+            !paneBelow && (threadOpen && !selecting ? "hidden" : "flex"),
           )}
         >
           {!searching ? (
@@ -908,7 +1276,12 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
             />
           ) : null}
           {!searching && props.listFilter !== undefined && props.onListFilter !== undefined ? (
-            <QuickFilters filter={props.listFilter} onChange={props.onListFilter} categories={ai?.categoriesOn === true} />
+            <QuickFilters
+              filter={props.listFilter}
+              onChange={props.onListFilter}
+              categories={ai?.categoriesOn === true}
+              dev={props.bb?.devFilter === true}
+            />
           ) : null}
           {!searching && ai !== undefined && ai.categoriesOn && list.threads.length > 0 ? (
             <div className="flex shrink-0 flex-wrap items-center gap-1 border-b border-border px-3 py-1">
@@ -919,7 +1292,7 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
                 disabled={ai.disabledReason !== null}
                 onClick={() => ai.onSuggestCategories(list.threads.map((t) => t.id))}
               >
-                Suggest categories
+                {tx("Suggest categories")}
               </Button>
               <Button
                 variant="ghost"
@@ -930,7 +1303,7 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
                   ai.onAcceptPage(list.threads.filter((t) => t.category === null && t.categorySuggestion !== null).map((t) => t.id))
                 }
               >
-                Accept all on this page
+                {tx("Accept all on this page")}
               </Button>
             </div>
           ) : null}
@@ -943,6 +1316,14 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
               }}
               onSnooze={ai.onReminderSnooze}
               onDismiss={ai.onReminderDismiss}
+            />
+          ) : null}
+          {!searching && props.bb?.ruleRuns !== undefined && model.use === "inbox" ? (
+            <RuleStrip
+              runs={props.bb.ruleRuns}
+              onReview={bbUi.reviewRun}
+              onDismiss={(run) => props.bb?.onDismissRun?.(run)}
+              onPauseAll={() => props.bb?.onPauseRules?.()}
             />
           ) : null}
           {model.use === "sent" && !searching ? (
@@ -963,6 +1344,11 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
               onClose={() => setAsked(null)}
             />
           ) : null}
+          {!searching && props.slice3h?.savedSearch === "missing" ? (
+            <p role="status" className="border-b border-border px-3 py-2 text-sm text-muted-foreground">
+              {SAVED_SEARCH_GONE_TEXT}
+            </p>
+          ) : null}
           <ListColumn
             {...props}
             focusedId={focusedId}
@@ -973,13 +1359,22 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
             }}
             onToggleChecked={toggleChecked}
             emptyName={model.title}
+            dragAdvance={(ids) => {
+              // A drag of a selection, or of other rows than the open one: nothing opens.
+              if (selecting || reading.threadId === null || !ids.includes(reading.threadId)) return null;
+              return advanceFor(ids) ?? null;
+            }}
           />
         </section>
         <section
-          aria-label="Conversation"
+          ref={conversationRef}
+          aria-label={tx("Conversation")}
+          // Slice 3i: a click on message text focuses the conversation, where the arrows scroll.
+          data-mail-reading=""
+          tabIndex={-1}
           className={cn(
-            "min-h-0 min-w-0 flex-1 flex-col overflow-y-auto @3xl:flex",
-            threadOpen && !selecting ? "flex" : "hidden",
+            "min-h-0 min-w-0 flex-1 flex-col overflow-y-auto outline-none @3xl:flex",
+            paneBelow ? "flex" : threadOpen && !selecting ? "flex" : "hidden",
           )}
         >
           {composerView !== null && !docked ? (
@@ -998,6 +1393,12 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
               detail={reading.detail}
               loading={reading.loading}
               error={reading.error}
+              onlyMessageId={list.messages !== undefined && !searching ? singleMessage : null}
+              onShowConversation={() => setSingleMessage(null)}
+              {...(reading3h !== undefined ? { reading3h } : {})}
+              {...(props.slice3h !== undefined && openAccount !== null && props.slice3h.gmail(openAccount) && reading.threadId !== null
+                ? { onLabels: () => props.slice3h?.onLabels([reading.threadId!]) }
+                : {})}
               expandedIds={reading.expandedIds}
               bodies={reading.bodies}
               onToggleMessage={props.onToggleMessage}
@@ -1033,6 +1434,7 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
               onEditDraft={props.onEditDraft}
               hideToolbar={docked && composerFocused}
               translation={props.translation}
+              {...(bbUi.reading !== undefined ? { bb: bbUi.reading } : {})}
               ai={
                 ai === undefined || openDetail === null
                   ? undefined
@@ -1116,6 +1518,7 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
           )}
         </section>
       </div>
+      </ListDensityContext.Provider>
       </>
       )}
       <MoveDialog
@@ -1146,7 +1549,9 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
               const ids = snoozeTargets ?? [];
               setSnoozeTargets(null);
               destructiveGuard.ran();
-              props.inbox?.onSnooze(ids, until);
+              const then = advanceFor(ids);
+              if (then !== undefined) props.inbox?.onSnooze(ids, until, then);
+              else props.inbox?.onSnooze(ids, until);
             }}
             onCloseAutoFocus={restoreFocus}
             onAfterCloseAutoFocus={afterClose}
@@ -1164,6 +1569,7 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
           />
         </>
       ) : null}
+      {bbUi.dialogs}
       {ai !== undefined ? (
         <>
           <TasksDialog
@@ -1196,6 +1602,7 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
         onCopy={props.onCopy}
         onCloseAutoFocus={restoreFocus}
         onAfterCloseAutoFocus={afterClose}
+        {...(props.onCheckSender !== undefined ? { onCheckAgain: props.onCheckSender } : {})}
       />
       <SmtpDialog
         account={status.accounts.find((a) => a.id === props.smtpAccountId) ?? null}
@@ -1203,6 +1610,46 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
         onTest={props.onTestSmtp}
         onSave={props.onSaveSmtp}
       />
+      {props.slice3h?.reading !== undefined ? (
+        <SenderCardDialog
+          address={senderFor?.message.from.address ?? null}
+          card={senderFor?.card ?? null}
+          error={senderFor?.error ?? null}
+          onClose={() => setSenderFor(null)}
+          actions={{
+            onSearch: (address) => {
+              setSenderFor(null);
+              props.onSearch(`from:${address}`);
+            },
+            onFiles: (address) => {
+              setSenderFor(null);
+              props.slice3h?.onOpenFiles({ sender: address });
+            },
+            onOpenConversation: (thread) => {
+              setSenderFor(null);
+              props.onSelectThread(thread.id, null, thread.accountId);
+            },
+            ...(senderFor !== null
+              ? {
+                  onAlwaysShowImages: () => {
+                    const message = senderFor.message;
+                    setSenderFor(null);
+                    props.onAlwaysShowImages(message);
+                  },
+                }
+              : {}),
+            ...(senderFor !== null && props.inbox !== undefined
+              ? {
+                  onBlock: () => {
+                    const message = senderFor.message;
+                    setSenderFor(null);
+                    setBlockMessage(message.id);
+                  },
+                }
+              : {}),
+          }}
+        />
+      ) : null}
       <ShortcutSheet open={sheetOpen} onOpenChange={setSheetOpen} onCloseAutoFocus={restoreFocus}
         onAfterCloseAutoFocus={afterClose} />
     </div>
@@ -1217,25 +1664,133 @@ function ListColumn(
     onOpenRow: (id: string) => void;
     onToggleChecked: (id: string, range: boolean) => void;
     emptyName: string;
+    /** Slice 3i: what opens if the dragged conversations are moved (see advanceFor). */
+    dragAdvance: (ids: string[]) => (() => void) | null;
   },
 ) {
   const { status, list, search, reading } = props;
   const emailOf = (accountId: string) => status.accounts.find((a) => a.id === accountId)?.email ?? null;
 
+  const s3 = props.slice3h;
   if (search.query !== "") {
+    const server = s3?.server ?? null;
+    const serverHere = server !== null && server.query === search.query ? server : null;
+    let results: ReactNode;
     if (search.error !== null) {
-      return <ListMessage role="alert" text={search.error} />;
+      results = <ListMessage role="alert" text={search.error} />;
+    } else if (search.loading && search.hits.length === 0) {
+      results = <ListMessage text="Searching\u2026" />;
+    } else if (search.hits.length === 0) {
+      results = <NoSearchResults query={search.query} />;
+    } else {
+      results = (
+        <SearchResultList
+          hits={search.hits}
+          selectedThreadId={reading.threadId}
+          marker={props.marker}
+          onSelect={(hit) => props.onOpenRow(hit.id)}
+          focusedId={props.focusedId}
+          {...(serverHere !== null ? { serverIds: serverHere.ids } : {})}
+          matches={search.attachmentMatches ?? []}
+          more={
+            s3 !== undefined && (search.nextCursor ?? null) !== null
+              ? { loading: search.loadingMore === true, onMore: s3.onSearchMore }
+              : null
+          }
+        />
+      );
     }
-    if (search.loading && search.hits.length === 0) return <ListMessage text="Searching…" />;
-    if (search.hits.length === 0) return <NoSearchResults query={search.query} />;
+    if (s3 === undefined) return results;
+    const saved = s3.savedSearch;
     return (
-      <SearchResultList
-        hits={search.hits}
-        selectedThreadId={reading.threadId}
-        marker={props.marker}
-        onSelect={(hit) => props.onOpenRow(hit.id)}
-        focusedId={props.focusedId}
-      />
+      <>
+        {saved === "missing" ? (
+          <p role="status" className="border-b border-border px-3 py-2 text-sm text-muted-foreground">
+            {SAVED_SEARCH_GONE_TEXT}
+          </p>
+        ) : saved !== null ? (
+          <div className="flex min-w-0 items-center gap-2 border-b border-border px-3 py-1.5 text-xs text-muted-foreground">
+            <span className="min-w-0 flex-1 truncate">
+              <span className="font-medium text-foreground">{saved.name}</span>
+              {` \u00b7 ${saved.query}`}
+            </span>
+            <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={saved.onEdit}>
+              {tx("Edit")}
+            </Button>
+          </div>
+        ) : null}
+        <SearchNotes notes={search.notes ?? []} />
+        <div className="flex flex-wrap items-center gap-1 border-b border-border px-3 py-1 text-xs text-muted-foreground">
+          <span className="mr-1">
+            {search.loading ? tx("Searching\u2026") : `${search.hits.length}${(search.nextCursor ?? null) !== null ? "+" : ""} in Mail`}
+          </span>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 px-2 text-xs"
+            disabled={serverHere?.job?.state === "running"}
+            onClick={() => s3.onServerSearch(search.query)}
+          >
+            {tx("Search on the server")}
+          </Button>
+          {saved === null ? (
+            <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => s3.onSaveSearch(search.query)}>
+              {tx("Save search")}
+            </Button>
+          ) : null}
+        </div>
+        {serverHere !== null && serverHere.error !== null ? (
+          <p role="alert" className="border-b border-border px-3 py-1 text-xs text-destructive">
+            {serverHere.error}
+          </p>
+        ) : null}
+        {serverHere !== null && serverHere.job !== null ? (
+          <ServerSearchStrip
+            job={serverHere.job}
+            query={search.query}
+            localOnly={serverHere.localOnly}
+            accountName={(id) => {
+              const account = status.accounts.find((a) => a.id === id);
+              return account === undefined ? tx("Account") : accountLabel(account);
+            }}
+            shownFromServer={search.hits.filter((h) => serverHere.ids.has(h.id)).length}
+            onCancel={s3.onServerCancel}
+            onMore={s3.onServerMore}
+          />
+        ) : null}
+        {results}
+      </>
+    );
+  }
+
+  const history =
+    s3 !== undefined && s3.history !== null ? (
+      <HistoryStrip state={s3.history} stepDays={s3.historyStepDays} onLoad={s3.onLoadHistory} onStop={s3.onStopHistory} />
+    ) : null;
+  if (list.messages !== undefined) {
+    if (list.error !== null && list.messages.length === 0) return <ListMessage role="alert" text={list.error} />;
+    if (list.loading && list.messages.length === 0) return <ListMessage text="Loading mail\u2026" />;
+    if (list.messages.length === 0) {
+      return (
+        <>
+          <EmptyFolder name={props.emptyName} />
+          {history}
+        </>
+      );
+    }
+    return (
+      <>
+        <SearchResultList
+          label={tx("Messages")}
+          hits={list.messages}
+          selectedThreadId={reading.threadId}
+          marker={props.marker}
+          onSelect={(hit) => props.onOpenRow(hit.id)}
+          focusedId={props.focusedId}
+          more={list.nextCursor !== null ? { loading: list.loadingMore, onMore: props.onLoadMore } : null}
+        />
+        {list.nextCursor === null ? history : null}
+      </>
     );
   }
 
@@ -1254,7 +1809,12 @@ function ListColumn(
     if (clean && (props.syncing || shown.some((a) => a.lastSyncAt === null))) {
       return <SyncingState />;
     }
-    return <EmptyFolder name={props.emptyName} />;
+    return (
+      <>
+        <EmptyFolder name={props.emptyName} />
+        {history}
+      </>
+    );
   }
   return (
     <ThreadList
@@ -1271,6 +1831,22 @@ function ListColumn(
       onToggleFlag={props.onToggleThreadFlag}
       focusedId={props.focusedId}
       categories={props.ai?.categoriesOn === true}
+      footer={history}
+      {...(s3 !== undefined
+        ? {
+            drag: {
+              pageId: s3.pageId,
+              onStart: (ids: string[]) =>
+                s3.onDragAccounts(
+                  [
+                    ...new Set(ids.map((id) => list.threads.find((t) => t.id === id)?.accountId).filter((a): a is string => a !== undefined)),
+                  ],
+                  props.dragAdvance(ids),
+                ),
+              onEnd: () => s3.onDragAccounts(null),
+            },
+          }
+        : {})}
     />
   );
 }
@@ -1286,13 +1862,6 @@ function ListMessage({ text, role = "status" }: { text: string; role?: "status" 
   );
 }
 
-/** "Synced …" for the account, or the stalest of all accounts. */
-function syncLabel(accounts: readonly Account[], syncing: boolean): string {
-  if (syncing) return "Syncing…";
-  if (accounts.length === 0 || accounts.some((a) => a.lastSyncAt === null)) return "Not synced yet";
-  const oldest = accounts.map((a) => a.lastSyncAt!).sort()[0]!;
-  return `Synced ${formatListDate(oldest)}`;
-}
 
 function MailHeader(
   props: MailPageProps & {
@@ -1305,6 +1874,7 @@ function MailHeader(
     onAsk?: (question: string) => void;
   },
 ) {
+  const [statusOpen, setStatusOpen] = useState(false);
   const [draft, setDraft] = useState(props.search.query);
   const asking = props.askMode === true;
 
@@ -1336,7 +1906,7 @@ function MailHeader(
   return (
     <header className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2">
       {props.onAskMode !== undefined ? (
-        <div role="group" aria-label="Search or ask" className="flex shrink-0 items-center rounded-md border border-border p-0.5">
+        <div role="group" aria-label={tx("Search or ask")} className="flex shrink-0 items-center rounded-md border border-border p-0.5">
           <Button
             type="button"
             variant={asking ? "ghost" : "secondary"}
@@ -1345,7 +1915,7 @@ function MailHeader(
             aria-pressed={!asking}
             onClick={() => switchMode(false)}
           >
-            Search
+            {tx("Search")}
           </Button>
           <Button
             type="button"
@@ -1355,7 +1925,7 @@ function MailHeader(
             aria-pressed={asking}
             onClick={() => switchMode(true)}
           >
-            Ask
+            {tx("Ask")}
           </Button>
         </div>
       ) : null}
@@ -1363,8 +1933,8 @@ function MailHeader(
         <Input
           ref={props.searchRef}
           type="search"
-          aria-label={asking ? "Ask about your mail" : "Search mail"}
-          placeholder={asking ? "Ask about your mail (AI)" : "Search mail — from:, subject:, is:unread"}
+          aria-label={asking ? tx("Ask about your mail") : tx("Search mail")}
+          placeholder={asking ? tx("Ask about your mail (AI)") : tx("Search mail \u2014 from:, has:attachment, -in:trash")}
           value={draft}
           maxLength={asking ? ASK_QUESTION_MAX : 500}
           onChange={(event) => setDraft(event.target.value)}
@@ -1372,16 +1942,37 @@ function MailHeader(
         />
         {props.search.query !== "" || (asking && draft !== "") ? (
           <Button type="button" variant="ghost" size="sm" onClick={clear}>
-            Clear
+            {tx("Clear")}
           </Button>
         ) : null}
+        {props.slice3h !== undefined && !asking ? <SearchHelpButton /> : null}
       </form>
 
-      <span className="text-xs text-muted-foreground">{syncLabel(shown, props.syncing)}</span>
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        className="h-7 px-2 text-xs font-normal text-muted-foreground"
+        aria-haspopup="dialog"
+        aria-label={tx("Mail status: {p1}", { p1: syncStatusLabel(shown, props.syncing, Date.now(), props.bbLink) })}
+        onClick={() => setStatusOpen(true)}
+      >
+        {syncStatusLabel(shown, props.syncing, Date.now(), props.bbLink)}
+      </Button>
+      <MailStatusDialog
+        open={statusOpen}
+        onOpenChange={setStatusOpen}
+        accounts={shown}
+        outbox={props.outbox}
+        syncing={props.syncing}
+        onSync={props.onSync}
+        nowMs={Date.now()}
+        bbLink={props.bbLink}
+      />
       <Button
         variant="ghost"
         size="icon"
-        aria-label="Sync now"
+        aria-label={tx("Sync now")}
         disabled={props.syncing}
         onClick={props.onSync}
       >
@@ -1390,7 +1981,7 @@ function MailHeader(
       <Button
         variant="ghost"
         size="icon"
-        aria-label="Keyboard shortcuts"
+        aria-label={tx("Keyboard shortcuts")}
         onClick={props.onShowShortcuts}
       >
         <Icon name="Keyboard" fallback="Info" aria-hidden />
@@ -1398,7 +1989,7 @@ function MailHeader(
       <Button
         variant="ghost"
         size="icon"
-        aria-label="New message"
+        aria-label={tx("New message")}
         className="@4xl:hidden"
         onClick={props.onCompose}
       >
@@ -1407,7 +1998,7 @@ function MailHeader(
       <Button
         variant="ghost"
         size="icon"
-        aria-label="Add account"
+        aria-label={tx("Add account")}
         onClick={() => props.onOpenAccountForm({})}
       >
         <Icon name="Plus" aria-hidden />

@@ -44,11 +44,15 @@ import { daysText } from "./reminder-strip.tsx";
 import { ComposeToolbar } from "./compose-toolbar.tsx";
 import { accountLabel } from "./folder-list.tsx";
 import { chipText, MAX_CHIP_LENGTH, MIN_CHIP_LENGTH, RecipientInput, addChips, splitTyped } from "./recipient-input.tsx";
-import { stopEscape } from "./shortcuts.ts";
+import { isMacPlatform, stopEscape } from "./shortcuts.ts";
 import { sendCheckText, type TemplateView } from "./mail-settings.tsx";
 import { PresendDialog } from "./presend-dialog.tsx";
+import { BbFilePicker, type FilePickRequest } from "./bb-file-picker.tsx";
+import type { BbCall } from "./bb-ports.ts";
 import { findSignature, signatureKey } from "./signature-node.ts";
 import { TemplatesPopover } from "./templates-popover.tsx";
+import { SendLaterMenu } from "./send-later-menu.tsx";
+import { msg, tx } from "./i18n/index.ts";
 
 /** Typing rests this long before the draft is saved. */
 export const AUTOSAVE_MS = 1_500;
@@ -76,7 +80,16 @@ export type ComposerSaveResult = { revision: number; originalKept?: true } | { c
 /** The RPC surface the composer needs, injected by the host adapter. */
 export interface ComposerPorts {
   save(input: ComposerSaveInput): Promise<ComposerSaveResult>;
-  send(input: { draftId: string; baseRevision: number; requestId: string; remindAfterDays?: number }): Promise<{
+  send(input: {
+    draftId: string;
+    baseRevision: number;
+    requestId: string;
+    remindAfterDays?: number;
+    /** Slice 3k: sign or encrypt this message with OpenPGP. */
+    protect?: { sign: boolean; encrypt: boolean };
+    /** Slice 3l, "Send later": the time to send, UTC ISO. */
+    sendAt?: string;
+  }): Promise<{
     outboxId: string;
     sendAfter: string;
   }>;
@@ -88,9 +101,13 @@ export interface ComposerPorts {
   reload(draftId: string): Promise<DraftView>;
   /** compose_check: the advisory pre-send issues (slice 3d). Any failure sends anyway. */
   check?(input: { draftId: string; baseRevision: number }): Promise<{ issues: PresendIssue[] }>;
+  /** Slice 3k: whether From has an OpenPGP key, and the recipients Mail has no key for. Absent: no OpenPGP row. */
+  pgpCheck?(from: string, recipients: string[]): Promise<{ canSign: boolean; missing: string[] }>;
 }
 
 export interface ComposerProps {
+  /** Slice 3i: Apple Mail's Shift+Command+D sends; absent: read from the platform. */
+  mac?: boolean;
   draft: DraftView;
   accounts: readonly Account[];
   ports: ComposerPorts;
@@ -117,6 +134,8 @@ export interface ComposerProps {
   improve?: { jobs: AiJobPorts; disabledReason: string | null };
   /** replyReminderDays (slice 3f): the Remind checkbox beside Send; absent: none. */
   reminderDays?: number;
+  /** Attach from a BB project or thread (slice 3g); absent: not offered. */
+  bbFiles?: { call: BbCall; projectId: string | null; threadId: string | null };
 }
 
 /** One entry of the From list: an identity of an account that can send. */
@@ -217,14 +236,14 @@ type SaveState =
 type Conflict = { revision: number; queued: boolean } | null;
 
 const TITLES: Record<DraftView["kind"], string> = {
-  new: "New message",
-  reply: "Reply",
-  reply_all: "Reply all",
-  forward: "Forward",
+  new: msg("New message"),
+  reply: msg("Reply"),
+  reply_all: msg("Reply all"),
+  forward: msg("Forward"),
 };
 
 function messageOf(error: unknown): string {
-  return error instanceof Error && error.message ? error.message : "Something went wrong";
+  return error instanceof Error && error.message ? error.message : tx("Something went wrong");
 }
 
 function fieldOf(addresses: readonly MailAddress[]): Field {
@@ -304,6 +323,11 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
   const [improveRequest, setImproveRequest] = useState<ImproveRequest | null>(null);
   const [remind, setRemind] = useState(false);
   const remindRef = useRef(remind);
+  // Slice 3k: OpenPGP for this message. Both start off; the choice is not kept with the draft.
+  const [pgpSign, setPgpSign] = useState(false);
+  const [pgpEncrypt, setPgpEncrypt] = useState(false);
+  const [pgpState, setPgpState] = useState<{ canSign: boolean; missing: string[] } | null>(null);
+  const pgpRef = useRef({ sign: false, encrypt: false });
   remindRef.current = remind;
   const [marked, setMarked] = useState<ReadonlySet<string>>(new Set());
   const [templatesOpen, setTemplatesOpen] = useState(false);
@@ -515,6 +539,51 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
     }
   };
 
+  // Slice 3k: which OpenPGP options this message can use, asked again when From or the recipients change.
+  const pgpRecipients = [...to.chips, ...cc.chips].map(chipAddress).filter((a) => a !== "").join("\n");
+  const hasBcc = bcc.chips.length > 0;
+  const pgpCheck = props.ports.pgpCheck;
+  // A null From is the account's own address.
+  const pgpFrom = from.address ?? accounts.find((account) => account.id === accountId)?.email ?? "";
+  useEffect(() => {
+    if (pgpCheck === undefined || pgpFrom === "") return;
+    let stale = false;
+    const timer = setTimeout(() => {
+      pgpCheck(pgpFrom, pgpRecipients === "" ? [] : pgpRecipients.split("\n")).then(
+        (state) => {
+          if (!stale) setPgpState(state);
+        },
+        () => {
+          // Without an answer the row stays as it was; sending without OpenPGP still works.
+        },
+      );
+    }, 300);
+    return () => {
+      stale = true;
+      clearTimeout(timer);
+    };
+  }, [pgpCheck, pgpFrom, pgpRecipients]);
+  /** Why Encrypt cannot be ticked, or null when it can. */
+  const pgpEncryptBlock =
+    pgpState === null
+      ? null
+      : !pgpState.canSign
+        ? tx("Make an OpenPGP key for this address in Mail settings to sign or encrypt.")
+        : pgpRecipients === ""
+          ? tx("Add a recipient to encrypt.")
+          : hasBcc
+            ? tx("An encrypted message cannot have Bcc recipients.")
+            : pgpState.missing.length > 0
+              ? tx("No OpenPGP key for: {missing}", { missing: pgpState.missing.join(", ") })
+              : null;
+  const pgpSignOn = pgpSign && pgpState?.canSign === true;
+  const pgpEncryptOn = pgpEncrypt && pgpEncryptBlock === null && pgpState !== null;
+  pgpRef.current = { sign: pgpSignOn, encrypt: pgpEncryptOn };
+
+  /** Slice 3l: the time picked in "Send later" for the send in flight; null sends now. */
+  const sendAtRef = useRef<string | null>(null);
+  const [laterOpen, setLaterOpen] = useState(false);
+
   /** Queues the saved revision: one request id per Send of it, retried once. */
   const queue = async (baseRevision: number) => {
     // One request id per Send of this revision: a retried call is the same send.
@@ -524,7 +593,15 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
         : (props.newRequestId ?? (() => crypto.randomUUID()))();
     attempt.current = { revision: baseRevision, requestId };
     const remindAfterDays = remindRef.current && props.reminderDays !== undefined ? props.reminderDays : undefined;
-    const input = { draftId: draft.id, baseRevision, requestId, ...(remindAfterDays !== undefined ? { remindAfterDays } : {}) };
+    const protect = pgpRef.current;
+    const input = {
+      draftId: draft.id,
+      baseRevision,
+      requestId,
+      ...(remindAfterDays !== undefined ? { remindAfterDays } : {}),
+      ...(protect.sign || protect.encrypt ? { protect } : {}),
+      ...(sendAtRef.current !== null ? { sendAt: sendAtRef.current } : {}),
+    };
     let outbox: { outboxId: string; sendAfter: string };
     try {
       outbox = await portsRef.current.send(input);
@@ -557,8 +634,10 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
    * advisory pre-send check. Issues open "Before you send"; none, or any
    * failure of the check, queues the send (slice 3d: no check blocks).
    */
-  const send = async () => {
+  const send = async (sendAt: string | null = null) => {
     if (sendingRef.current || closing) return;
+    // "Send later" keeps its time through "Before you send" (Send anyway).
+    sendAtRef.current = sendAt;
     const now = commitAll();
     const all = [...now.to.chips, ...now.cc.chips, ...now.bcc.chips];
     const typed = [now.to, now.cc, now.bcc].some((f) => f.text.trim() !== "");
@@ -651,14 +730,20 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
       case "empty_subject":
         return () => rootRef.current?.ownerDocument.getElementById(`compose-subject-${draft.id}`)?.focus();
       case "outside_conversation":
-      case "new_recipients": {
+      case "new_recipients":
+      case "reply_to_elsewhere": {
         const wanted = new Set(issue.addresses.map((a) => a.toLowerCase()));
         setMarked(wanted);
         const holds = (field: Field) => field.chips.some((chip) => wanted.has(chipAddress(chip)));
         const field = holds(to) ? "To" : holds(cc) ? "Cc" : holds(bcc) ? "Bcc" : "To";
         if (field !== "To") setShowCopies(true);
-        return () => within(`input[role="combobox"][aria-label="${field}"]`)?.focus();
+        // The field is found by its label, which is shown in the page's language.
+        return () => within(`input[role="combobox"][aria-label="${tx(field)}"]`)?.focus();
       }
+      case "bb_files":
+      case "looks_secret":
+        // The dialog closes; the owner checks the attachments or the text.
+        return undefined;
     }
   };
 
@@ -701,6 +786,9 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
     if (editor === null) return;
     editor.chain().focus().insertContent(template.doc.content ?? []).run();
   };
+
+  const [bbMenuOpen, setBbMenuOpen] = useState(false);
+  const [bbPick, setBbPick] = useState<FilePickRequest | null>(null);
 
   const addFiles = (files: File[]) => {
     for (const file of files) {
@@ -755,6 +843,21 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
       void send();
       return;
     }
+    // Slice 3i (part B resolution 9): Apple Mail's Shift+Command+D, by the physical key, through the same pre-send.
+    if (
+      (props.mac ?? isMacPlatform()) &&
+      event.metaKey &&
+      event.shiftKey &&
+      !event.ctrlKey &&
+      !event.altKey &&
+      event.code === "KeyD" &&
+      !event.nativeEvent.isComposing
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+      void send();
+      return;
+    }
     // Mod+Alt+T: the template picker (Alt+T and Alt+Shift+T are BB's model picker).
     if ((event.metaKey || event.ctrlKey) && event.altKey && event.code === "KeyT" && props.templates !== undefined) {
       event.preventDefault();
@@ -779,7 +882,7 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
   return (
     <section
       ref={rootRef}
-      aria-label={TITLES[draft.kind]}
+      aria-label={tx(TITLES[draft.kind])}
       data-mail-composer=""
       onKeyDown={onKeyDown}
       onFocus={() => props.onFocusWithin?.(true)}
@@ -808,14 +911,14 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
         {page ? (
           <Button variant="ghost" size="sm" onClick={() => void close()} disabled={closing}>
             <Icon name="ArrowLeft" aria-hidden />
-            Back
+            {tx("Back")}
           </Button>
         ) : null}
-        <h2 className="min-w-0 flex-1 truncate px-1 text-sm font-semibold text-foreground">{TITLES[draft.kind]}</h2>
+        <h2 className="min-w-0 flex-1 truncate px-1 text-sm font-semibold text-foreground">{tx(TITLES[draft.kind])}</h2>
         {draft.origin === "agent" ? (
           <span className="flex shrink-0 items-center gap-1 rounded-sm bg-secondary px-1.5 py-0.5 text-xs text-secondary-foreground">
             <Icon name="Bot" fallback="Mail" className="size-3.5" aria-hidden />
-            Started by an agent
+            {tx("Started by an agent")}
           </span>
         ) : null}
         {!page ? (
@@ -823,7 +926,7 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
             variant="ghost"
             size="icon"
             className="size-7"
-            aria-label="Close"
+            aria-label={tx("Close")}
             disabled={closing}
             onClick={() => void close()}
           >
@@ -836,15 +939,15 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
         <div role="alert" className="flex flex-wrap items-center gap-2 border-b border-border bg-card px-3 py-2 text-sm">
           <span className="min-w-0 flex-1 text-foreground">
             {conflict.queued
-              ? "A send of this draft is queued. Undo it to edit the draft."
-              : "This draft changed in another window."}
+              ? tx("A send of this draft is queued. Undo it to edit the draft.")
+              : tx("This draft changed in another window.")}
           </span>
           <Button variant="outline" size="sm" onClick={() => void reload()}>
-            Reload
+            {tx("Reload")}
           </Button>
           {!conflict.queued ? (
             <Button variant="ghost" size="sm" onClick={keepMine}>
-              Keep mine
+              {tx("Keep mine")}
             </Button>
           ) : null}
         </div>
@@ -858,10 +961,10 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
         </div>
       ) : null}
 
-      <FieldRow label="From">
+      <FieldRow label={tx("From")}>
         {fromChoices.length > 1 ? (
           <Select value={chosen?.key ?? ""} onValueChange={chooseFrom}>
-            <SelectTrigger aria-label="From" className="h-7 w-auto max-w-80 border-none px-1 text-sm">
+            <SelectTrigger aria-label={tx("From")} className="h-7 w-auto max-w-80 border-none px-1 text-sm">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -886,13 +989,13 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
         <p role="status" className="flex items-start gap-1 border-b border-border px-3 py-1.5 text-xs text-destructive">
           <Icon name="TriangleAlert" fallback="Info" className="mt-0.5 size-3.5 shrink-0" aria-hidden />
           {chosen.missing
-            ? "This sending address is no longer set up for the account; choose another From."
+            ? tx("This sending address is no longer set up for the account; choose another From.")
             : sendCheckText(chosen.sendCheck)}
         </p>
       ) : null}
       {keptSignature !== null ? (
         <div role="status" className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-1.5 text-xs text-muted-foreground">
-          <span>Kept your edited signature</span>
+          <span>{tx("Kept your edited signature")}</span>
           <span aria-hidden>·</span>
           <Button
             variant="link"
@@ -903,22 +1006,22 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
               setKeptSignature(null);
             }}
           >
-            Use {keptSignature.address}'s
+            {tx("Use")} {keptSignature.address}'s
           </Button>
         </div>
       ) : null}
       {!smtpReady ? (
         <div role="alert" className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2 text-sm">
-          <span className="min-w-0 flex-1 text-destructive">SMTP is not set for this account.</span>
+          <span className="min-w-0 flex-1 text-destructive">{tx("SMTP is not set for this account.")}</span>
           <Button variant="outline" size="sm" onClick={() => props.onOpenSmtpSettings(accountId)}>
-            Set up SMTP
+            {tx("Set up SMTP")}
           </Button>
         </div>
       ) : null}
 
-      <FieldRow label="To">
+      <FieldRow label={tx("To")}>
         <RecipientInput
-          label="To"
+          label={tx("To")}
           chips={to.chips}
           text={to.text}
           onChange={setField(setTo)}
@@ -928,21 +1031,21 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
         />
         {!showCopies ? (
           <Button variant="ghost" size="sm" className="h-7 shrink-0 px-2" onClick={() => setShowCopies(true)}>
-            Cc Bcc
+            {tx("Cc Bcc")}
           </Button>
         ) : null}
       </FieldRow>
       {showCopies ? (
         <>
-          <FieldRow label="Cc">
-            <RecipientInput label="Cc" chips={cc.chips} text={cc.text} onChange={setField(setCc)} suggest={(p) => portsRef.current.suggest(p)} marked={marked} />
+          <FieldRow label={tx("Cc")}>
+            <RecipientInput label={tx("Cc")} chips={cc.chips} text={cc.text} onChange={setField(setCc)} suggest={(p) => portsRef.current.suggest(p)} marked={marked} />
           </FieldRow>
-          <FieldRow label="Bcc">
-            <RecipientInput label="Bcc" chips={bcc.chips} text={bcc.text} onChange={setField(setBcc)} suggest={(p) => portsRef.current.suggest(p)} marked={marked} />
+          <FieldRow label={tx("Bcc")}>
+            <RecipientInput label={tx("Bcc")} chips={bcc.chips} text={bcc.text} onChange={setField(setBcc)} suggest={(p) => portsRef.current.suggest(p)} marked={marked} />
           </FieldRow>
         </>
       ) : null}
-      <FieldRow label="Subject" htmlFor={`compose-subject-${draft.id}`}>
+      <FieldRow label={tx("Subject")} htmlFor={`compose-subject-${draft.id}`}>
         <input
           id={`compose-subject-${draft.id}`}
           type="text"
@@ -1001,7 +1104,7 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
         <ComposeEditor
-          label="Message"
+          label={tx("Message")}
           initialDoc={draft.doc as EditorDoc}
           importFrom={draft.import}
           onChange={(next) => {
@@ -1032,18 +1135,111 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
           aria-keyshortcuts="Control+Enter Meta+Enter"
         >
           <Icon name="Send" fallback="Mail" aria-hidden />
-          {sending ? "Sending…" : "Send"}
+          {sending ? tx("Sending\u2026") : tx("Send")}
         </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="h-8 px-2"
+          aria-haspopup="dialog"
+          onClick={() => setLaterOpen(true)}
+          disabled={sending || closing || noRecipients || !smtpReady || conflict !== null}
+        >
+          <Icon name="Clock" fallback="Mail" aria-hidden />
+          {tx("Send later")}
+        </Button>
+        <SendLaterMenu
+          open={laterOpen}
+          onOpenChange={setLaterOpen}
+          onPick={(at) => {
+            setLaterOpen(false);
+            void send(at);
+          }}
+        />
         <AttachButton onAdd={addFiles} disabled={closing} />
+        {props.bbFiles !== undefined ? (
+          <span className="relative inline-flex">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-8 px-2"
+              aria-haspopup="menu"
+              aria-expanded={bbMenuOpen}
+              disabled={closing}
+              onClick={() => setBbMenuOpen((open) => !open)}
+            >
+              {tx("Attach from BB \u25be")}
+            </Button>
+            {bbMenuOpen ? (
+              <span
+                role="menu"
+                aria-label={tx("Attach from BB")}
+                className="absolute bottom-full left-0 z-10 mb-1 flex min-w-44 flex-col rounded-md border border-border bg-popover p-1 shadow-md"
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") {
+                    event.stopPropagation();
+                    setBbMenuOpen(false);
+                  }
+                }}
+              >
+                {(
+                  [
+                    ["project", "From a project\u2026"],
+                    ["thread", "From a thread\u2026"],
+                  ] as const
+                ).map(([kind, label]) => (
+                  <button
+                    key={kind}
+                    type="button"
+                    role="menuitem"
+                    className="rounded-sm px-2 py-1 text-left text-sm text-foreground hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    onClick={() => {
+                      setBbMenuOpen(false);
+                      setBbPick({ kind, draftId: draft.id });
+                    }}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </span>
+            ) : null}
+          </span>
+        ) : null}
         {props.reminderDays !== undefined ? (
           <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
             <Checkbox
-              aria-label={`Remind me if no reply in ${daysText(props.reminderDays)}`}
+              aria-label={tx("Remind me if no reply in {p1}", { p1: daysText(props.reminderDays) })}
               checked={remind}
               onCheckedChange={(checked) => setRemind(checked === true)}
             />
-            {`Remind me if no reply in ${daysText(props.reminderDays)}`}
+            {tx("Remind me if no reply in {p1}", { p1: daysText(props.reminderDays) })}
           </label>
+        ) : null}
+        {pgpState !== null ? (
+          <span role="group" aria-label={tx("OpenPGP")} className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+            <label className="flex items-center gap-1.5">
+              <Checkbox
+                aria-label={tx("Sign with OpenPGP")}
+                checked={pgpSignOn}
+                disabled={!pgpState.canSign}
+                onCheckedChange={(checked) => setPgpSign(checked === true)}
+              />
+              {tx("Sign")}
+            </label>
+            <label className="flex items-center gap-1.5">
+              <Checkbox
+                aria-label={tx("Encrypt with OpenPGP")}
+                checked={pgpEncryptOn}
+                disabled={pgpEncryptBlock !== null}
+                onCheckedChange={(checked) => setPgpEncrypt(checked === true)}
+              />
+              {tx("Encrypt")}
+            </label>
+            {pgpEncryptOn ? <span>{tx("The subject and the addresses are not encrypted.")}</span> : null}
+            {!pgpEncryptOn && pgpEncryptBlock !== null && (pgpEncrypt || pgpState.canSign) ? <span>{pgpEncryptBlock}</span> : null}
+          </span>
         ) : null}
         <SaveStateLine state={saveState} serverCopy={draft.serverCopy} />
         <span className="flex-1" />
@@ -1051,7 +1247,7 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
           variant="ghost"
           size="icon"
           className="size-8"
-          aria-label="Discard draft"
+          aria-label={tx("Discard draft")}
           disabled={closing || sending}
           onClick={() => void discard()}
         >
@@ -1075,6 +1271,20 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
           }}
         />
       ) : null}
+      {props.bbFiles !== undefined ? (
+        <BbFilePicker
+          request={bbPick}
+          call={props.bbFiles.call}
+          currentProjectId={props.bbFiles.projectId}
+          currentThreadId={props.bbFiles.threadId}
+          onAttached={(added) => {
+            if (added.length === 0) return;
+            setAttachments((prev) => [...prev, ...added]);
+            changed();
+          }}
+          onClose={() => setBbPick(null)}
+        />
+      ) : null}
       <PresendDialog
         issues={presend}
         onFix={fix}
@@ -1085,12 +1295,12 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
       <Dialog open={escapeOpen} onOpenChange={setEscapeOpen}>
         <DialogContent className="max-w-sm" onEscapeKeyDown={stopEscape}>
           <DialogHeader>
-            <DialogTitle>Close this draft?</DialogTitle>
-            <DialogDescription>It has changes that are not saved yet.</DialogDescription>
+            <DialogTitle>{tx("Close this draft?")}</DialogTitle>
+            <DialogDescription>{tx("It has changes that are not saved yet.")}</DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button variant="ghost" size="sm" onClick={() => setEscapeOpen(false)}>
-              Keep editing
+              {tx("Keep editing")}
             </Button>
             <Button
               variant="outline"
@@ -1100,7 +1310,7 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
                 void discard();
               }}
             >
-              Discard
+              {tx("Discard")}
             </Button>
             <Button
               size="sm"
@@ -1109,7 +1319,7 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
                 void close();
               }}
             >
-              Save draft
+              {tx("Save draft")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1138,17 +1348,17 @@ function FieldRow({ label, htmlFor, children }: { label: string; htmlFor?: strin
 function SaveStateLine({ state, serverCopy }: { state: SaveState; serverCopy: DraftView["serverCopy"] }) {
   const text =
     state.kind === "saving"
-      ? "Saving…"
+      ? tx("Saving\u2026")
       : state.kind === "unsaved"
-        ? "Not saved yet"
+        ? tx("Not saved yet")
         : state.kind === "error"
-          ? `Not saved: ${state.text}`
+          ? tx("Not saved: {text}", { text: state.text })
           : serverCopy === "failed"
-            ? "Saved on this computer — server copy failed"
+            ? tx("Saved on this computer \u2014 server copy failed")
             : serverCopy === "local_only"
-              ? "Saved on this computer"
+              ? tx("Saved on this computer")
               : state.kind === "saved"
-                ? "Saved"
+                ? tx("Saved")
                 : "";
   return (
     <span
@@ -1173,9 +1383,9 @@ function fromItem(choice: FromChoice) {
     <SelectItem key={choice.key} value={choice.key}>
       <span className="flex min-w-0 items-center gap-1.5">
         <span className="truncate">{choice.label}</span>
-        {!choice.primary ? <span className="shrink-0 text-xs text-muted-foreground">alias</span> : null}
+        {!choice.primary ? <span className="shrink-0 text-xs text-muted-foreground">{tx("alias")}</span> : null}
         {warning ? (
-          <Icon name="TriangleAlert" fallback="Info" className="size-3.5 shrink-0 text-destructive" aria-label="Check this address" />
+          <Icon name="TriangleAlert" fallback="Info" className="size-3.5 shrink-0 text-destructive" aria-label={tx("Check this address")} />
         ) : null}
       </span>
     </SelectItem>

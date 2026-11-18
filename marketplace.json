@@ -788,7 +788,7 @@
     {
       "id": "makosh-mail",
       "displayName": "Makosh Mail [Experimental]",
-      "description": "Reads, snoozes, sends and translates iCloud, Gmail and IMAP mail; AI summaries, Ask, tasks and Today on click; agent access scoped, logged.",
+      "description": "Reads, searches, files and sends iCloud, Gmail and IMAP mail; sender warnings; AI on click; mail to BB threads and tasks; agent log.",
       "icon": {
         "url": "./plugins/mail/assets/icon.svg"
       },
@@ -1256,7 +1256,7 @@
     {
       "id": "makosh-taskboard",
       "displayName": "Makosh Taskboard [Experimental]",
-      "description": "Local task CRUD plus Jira Cloud and Server/Data Center boards in one focused List and Kanban view.",
+      "description": "Assigned tasks in List, real Jira project Kanban boards, development threads, worklogs and agent time-tracking tools.",
       "icon": {
         "url": "./plugins/taskboard/assets/icon.svg"
       },

@@ -19,7 +19,7 @@ import {
   type TranslateFinish,
   type Translator,
 } from "../../core/translate.ts";
-import { newRestoreTag, restoreSecrets } from "../../core/redact.ts";
+import { hiddenTotal, newRestoreTag, restoreSecrets } from "../../core/redact.ts";
 import type { Clock, MailStore, TranslationView } from "../../core/index.ts";
 
 export const JOB_MAX_RUNNING = 2;
@@ -83,6 +83,8 @@ type Job = {
   /** Placeholder -> original, in this job's memory only; dropped at every end state (spec resolution 2). */
   restore: Map<string, string> | null;
   tag: string;
+  /** Values redacted in what the model was sent (logged, never the values). */
+  hidden: number;
   finish?: TranslateFinish;
   error?: TranslateErrorKind;
   gatewayMessage?: string;
@@ -155,6 +157,7 @@ export class TranslateJobs {
       raw: "",
       restore: source.restore ?? new Map(),
       tag,
+      hidden: hiddenTotal(source.counts),
       truncatedInput: source.truncated,
       startedAt: now,
       polledAt: now,
@@ -184,6 +187,11 @@ export class TranslateJobs {
       ...(job.provider === undefined ? {} : { provider: job.provider }),
       ...(job.model === undefined ? {} : { model: job.model }),
     };
+  }
+
+  /** How many values redaction hid in a job's input; 0 for an unknown job. */
+  hiddenCount(jobId: string): number {
+    return this.jobs.get(jobId)?.hidden ?? 0;
   }
 
   /** Stops a running job (its stream is released); false when it is not running. */

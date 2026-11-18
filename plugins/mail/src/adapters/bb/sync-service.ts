@@ -32,9 +32,18 @@
 // ok round, inside the same queue task and after the send checks,
 // onRoundOk(accountId, outcome, only) runs (the server's block, notify and
 // snooze hooks); the bulk and unsubscribe backfills run on full rounds only.
+//
+// Slice 3g: with `classify` on (the devNotifications setting) sync judges
+// new rows' dev class, and after a full round the dev backfill classifies up
+// to DEV_BACKFILL_BUDGET older rows from their stored From and subject (no
+// server contact) while unclassified rows remain.
+//
+// Slice 3h: full rounds pass historyCheck, so sync checks a folder's loaded
+// history against the server at most once a day (spec resolution 9).
 import {
   backfillBulk,
   backfillUnsubscribe,
+  devBackfill,
   syncAccount,
   type BackfillCursors,
   type AccountWriteQueue,
@@ -197,6 +206,8 @@ export function createSyncLoop(
         }
         const outcome = await syncAccount(guarded, accountId, syncOptions);
         const label = syncOptions.only === "inbox" ? `${accountId} inbox` : accountId;
+        // A round cut short by the service stopping (a reload) is not a sync error worth a line.
+        if (outcome.status !== "ok" && signal.aborted) return;
         log(
           outcome.status === "ok"
             ? `sync ${label}: ok, fetched ${outcome.fetched}, removed ${outcome.removed}, marked read ${outcome.pushedSeen}, flags ${outcome.pushedFlags}`
@@ -229,6 +240,9 @@ export function createSyncLoop(
       );
     }
 
+    /** False once a dev backfill found no unclassified rows left (new rows are classified at sync); true again while classification is off. */
+    let devRowsLeft = true;
+
     /** True when the round had accounts to sync (only those count toward the wake window). */
     async function round(target: "all" | Map<string, "inbox" | "all">): Promise<boolean> {
       if (!isReady()) return false;
@@ -236,8 +250,8 @@ export function createSyncLoop(
       let syncOptions: SyncOptions;
       try {
         ids = guarded.store.listAccounts().map((account) => account.id);
-        const { windowDays, batchSize } = settings();
-        syncOptions = { windowDays, batchSize };
+        const { windowDays, batchSize, classify } = settings();
+        syncOptions = classify === true ? { windowDays, batchSize, classify } : { windowDays, batchSize };
       } catch {
         log("sync: cannot start a round");
         return false;
@@ -245,8 +259,16 @@ export function createSyncLoop(
       if (target !== "all") ids = ids.filter((id) => target.has(id));
       for (const id of ids) {
         if (signal.aborted) break;
-        const only = target !== "all" && target.get(id) === "inbox" ? { only: "inbox" as const } : {};
+        // Slice 3h: full rounds may check loaded history (once a day per folder, decided by sync).
+        const only = target !== "all" && target.get(id) === "inbox" ? { only: "inbox" as const } : { historyCheck: true };
         await Promise.race([syncOne(id, { ...syncOptions, ...only }), aborted]);
+      }
+      // Rows synced while classification was off wait for the backfill again.
+      if (syncOptions.classify !== true) devRowsLeft = true;
+      if (target === "all" && syncOptions.classify === true && !signal.aborted && devRowsLeft) {
+        const dev = devBackfill(guarded.store, syncOptions.devHosts === undefined ? {} : { devHosts: syncOptions.devHosts });
+        devRowsLeft = dev.more;
+        if (dev.checked > 0) log(`backfill dev: checked ${dev.checked}, classified ${dev.classified}`);
       }
       return ids.length > 0;
     }

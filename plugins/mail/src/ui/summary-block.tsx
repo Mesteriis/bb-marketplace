@@ -7,6 +7,7 @@ import { useEffect } from "react";
 import type { AiResultView } from "../core/model.ts";
 import { useAiJob, type AiJobPorts } from "./ai-job.ts";
 import { AiAction, AiFailure, AiFrame, AiNotesList, AiText, CitationChips, aiLabel, phaseText, type AiCitation } from "./ai-text.tsx";
+import { tx } from "./i18n/index.ts";
 
 type Summary = Extract<AiResultView, { kind: "summary" }>;
 
@@ -70,22 +71,22 @@ export function SummaryBlock({ ports, threadId, folder, onCite, onClose, pollMs 
       ? aiLabel(result.provider, result.model, result.cached)
       : state.status === "failed"
         ? aiLabel(state.provider, state.model)
-        : "AI summary";
+        : tx("AI summary");
   const empty =
     result !== null && result.decisions.length === 0 && result.questions.length === 0 && result.deadlines.length === 0;
   return (
     <AiFrame
-      title="Summary"
+      title={tx("Summary")}
       label={label}
       caution={result !== null}
       actions={
         <>
           {running ? (
-            <AiAction onClick={job.cancel}>Stop</AiAction>
+            <AiAction onClick={job.cancel}>{tx("Stop")}</AiAction>
           ) : (
-            <AiAction onClick={() => start(true)}>Summarize again</AiAction>
+            <AiAction onClick={() => start(true)}>{tx("Summarize again")}</AiAction>
           )}
-          <AiAction onClick={onClose}>Close</AiAction>
+          <AiAction onClick={onClose}>{tx("Close")}</AiAction>
         </>
       }
     >
@@ -95,18 +96,18 @@ export function SummaryBlock({ ports, threadId, folder, onCite, onClose, pollMs 
         </p>
       ) : null}
       {state.status === "failed" ? <AiFailure state={state} /> : null}
-      {state.status === "cancelled" ? <p className="text-xs text-muted-foreground">The summary was stopped.</p> : null}
+      {state.status === "cancelled" ? <p className="text-xs text-muted-foreground">{tx("The summary was stopped.")}</p> : null}
       {result !== null && result.stale ? (
         <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-          <span>The conversation has new messages since this summary.</span>
+          <span>{tx("The conversation has new messages since this summary.")}</span>
         </div>
       ) : null}
       {result !== null ? (
         <>
-          <Group title="Decisions" items={result.decisions} citations={result.citations} onCite={onCite} />
-          <Group title="Open questions" items={result.questions} citations={result.citations} onCite={onCite} />
-          <Group title="Deadlines" items={result.deadlines} citations={result.citations} onCite={onCite} />
-          {empty ? <p className="text-sm text-muted-foreground">Nothing to note in this conversation.</p> : null}
+          <Group title={tx("Decisions")} items={result.decisions} citations={result.citations} onCite={onCite} />
+          <Group title={tx("Open questions")} items={result.questions} citations={result.citations} onCite={onCite} />
+          <Group title={tx("Deadlines")} items={result.deadlines} citations={result.citations} onCite={onCite} />
+          {empty ? <p className="text-sm text-muted-foreground">{tx("Nothing to note in this conversation.")}</p> : null}
           <AiNotesList notes={result.notes} />
         </>
       ) : null}

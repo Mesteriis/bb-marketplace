@@ -4,7 +4,7 @@ import { installTestPluginRuntime } from "@get-bb/plugin-sdk/testing/app";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TodayView as TodayData } from "../core/contract.ts";
 import type { ThreadSummary } from "../core/model.ts";
-import { TodayView } from "./today-view.tsx";
+import { devLine, TodayView } from "./today-view.tsx";
 import { BASE, HOSTILE, fakePorts } from "./testing/ai-fixtures.ts";
 
 installTestPluginRuntime();
@@ -23,6 +23,7 @@ const THREAD: ThreadSummary = {
   snoozedUntil: null,
   category: null,
   categorySuggestion: null,
+  projectId: null,
 };
 
 const DATA: TodayData = {
@@ -41,10 +42,12 @@ const DATA: TodayData = {
     },
   ],
   tasksDue: [
-    { id: "task-1", accountId: "acc-1", messageId: "m-1", threadId: "th-1", title: "Sign the form", due: "2026-11-16", doneAt: null, createdAt: "2026-11-15T09:00:00.000Z" },
+    { id: "task-1", accountId: "acc-1", messageId: "m-1", threadId: "th-1", title: "Sign the form", due: "2026-11-16", doneAt: null, createdAt: "2026-11-15T09:00:00.000Z", note: null },
   ],
   since: { notifications: 14, newsletters: 9, bills: 0, bulk: 2, personal: 0, from: "2026-11-15T08:00:00.000Z" },
   digestDay: "2026-11-16",
+  dev: { ciFailed: 0, repos: 0, alertsFiring: 0 },
+  rulesReady: 0,
 };
 
 function mount(overrides: Partial<Parameters<typeof TodayView>[0]> = {}) {
@@ -109,5 +112,19 @@ describe("TodayView", () => {
     expect((screen.getByRole("button", { name: "Summarize" }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.queryByRole("button", { name: "14 notifications" })).toBeNull();
     expect(screen.getByText("14 notifications")).toBeTruthy();
+  });
+
+  it("shows the Dev line and the rule threads ready (slice 3g)", async () => {
+    expect(devLine({ ciFailed: 0, repos: 0, alertsFiring: 0 })).toBeNull();
+    expect(devLine({ ciFailed: 2, repos: 1, alertsFiring: 1 })).toBe("Dev: 2 CI failures in 1 repository \u00b7 1 alert firing");
+    const onOpenDev = vi.fn();
+    const onReviewRules = vi.fn();
+    mount({ load: vi.fn(async () => ({ ...DATA, dev: { ciFailed: 1, repos: 1, alertsFiring: 0 }, rulesReady: 2 })), onOpenDev, onReviewRules });
+    expect(await screen.findByText("Dev: 1 CI failure in 1 repository")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Open Dev" }));
+    expect(onOpenDev).toHaveBeenCalled();
+    expect(screen.getByText("2 rule threads are ready to start")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Review" }));
+    expect(onReviewRules).toHaveBeenCalled();
   });
 });

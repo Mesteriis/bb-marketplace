@@ -17,9 +17,12 @@ Kanban view.
 - **List and Kanban** — ordered columns, drag-and-drop and a keyboard-accessible
   status menu, and a details panel that becomes a full overlay on narrow
   panels.
-- **Fetch issues** — imports a JQL result into the board as jira-origin tasks
-  and appends a column for each Jira status. Local and Jira tasks coexist;
-  every Jira task keeps its origin key.
+- **Fetch issues** — fetches all issues assigned to the authenticated user
+  across Jira projects, without selecting a project or entering JQL. All pages
+  are loaded, including results beyond 200 issues. List groups tasks
+  by project key and offers a project filter. Previous connection scopes are
+  ignored. Reassigned issues are hidden on refresh while their cached records,
+  development runs and time history remain intact. Local tasks stay separate.
 - **Transitions** — move a Jira task through its real workflow. A transition
   Jira rejects rolls back the optimistic move.
 - **Connections** — add, edit, test and delete connections. Credentials are
@@ -96,3 +99,33 @@ and retries never duplicate threads, transitions or worklogs.
 [MIT](./LICENSE), adapted from the MIT-licensed Taskboard plugin by Mateo
 Cerquetella (upstream commit 0ae0d539b3a46c1ffb158e119a7e3c23060f9a5b); see
 [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md).
+
+## Direct time tracking and agent access
+
+Open any task and choose **Log time** to enter duration in seconds and a comment,
+then Confirm. This works independently of development runs and does not move the
+task. Jira tasks submit a Cloud/Server worklog; local tasks store time locally.
+**Refresh worklog history** shows entries recorded through Taskboard (it does not
+import pre-existing Jira worklogs). Failed/unknown submissions use the same safe
+retry and owner-reconciliation controls as completion time entries.
+
+Agents have `boards_list`, `tasks_list`, `worklog_prepare`, `worklog_submit`,
+`worklogs_list`, and `time_entries_by_task`. Prepare requires a stable unique
+`entryId`; reuse it on retries and inspect uncertain results instead of creating
+another entry. Submit only time the owner authorized. Preparing writes a draft;
+submitting records the time. No development thread is required.
+
+The read-only `jira_worklogs_list` RPC verifies worklogs on the connected Jira issue directly (including records created outside Taskboard).
+
+## Jira Kanban
+
+List is the default and the only cross-project view of assigned tasks. Jira
+Kanban requires selecting a project with assigned tasks (from the last Fetch) and a real Kanban board. It
+loads the board's configured columns in their Jira order, maps issues by status
+ID (several statuses may share a column), and shows WIP limits. Board tasks use
+the board filter plus the selected project, including teammates' tasks.
+Unmapped/backlog statuses are reported without inventing extra columns.
+Moving a card offers valid Jira transitions to the destination column's statuses.
+Local boards retain their own editable Kanban columns.
+
+Kanban project choices exclude projects represented only by cached teammates’ tasks. Host RPC wrapper changes and opening task details do not trigger a remote board reload.

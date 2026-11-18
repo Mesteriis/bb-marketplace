@@ -2,9 +2,13 @@
 import { describe, expect, it } from "vitest";
 import {
   cleanEmailCss,
+  declaresDarkSupport,
+  htmlToPlainText,
   EMAIL_CSP,
   EMAIL_CSP_REMOTE_IMAGES,
   isAllowedLinkUrl,
+  markQuotes,
+  QUOTE_ELEMENTS_MAX,
   sanitizeEmailHtml,
 } from "./sanitize.ts";
 
@@ -369,5 +373,172 @@ describe("sanitizeEmailHtml and the signature class (slice 3d)", () => {
     );
     expect(html).toContain('<div class="makosh-signature"><p>Made-up Name</p></div>');
     expect(html).not.toContain("onclick");
+  });
+});
+
+describe("slice 3h: quotes, own marks and dark mail", () => {
+  const body = (html: string) => new DOMParser().parseFromString(html, "text/html");
+
+  it("strips an incoming data-mk-quote, so the mail cannot hide its own text", () => {
+    const result = sanitizeEmailHtml("<div data-mk-quote>Shown text</div><p data-mk-x='1'>more</p>", { remoteImages: false });
+    expect(result.html).toContain("<body><div>Shown text</div><p>more</p></body>");
+    expect(result.quotes).toBe(0);
+  });
+
+  it("marks quote blocks and the attribution above a plain blockquote", () => {
+    const result = sanitizeEmailHtml(
+      "<p>My answer</p><div class=\"gmail_quote\">On Mon, Ada wrote:<blockquote>old</blockquote></div>" +
+        "<p>On Tue, Bo wrote:</p><blockquote>older</blockquote>",
+      { remoteImages: false },
+    );
+    const doc = body(result.html);
+    expect(result.quotes).toBe(3);
+    expect(doc.querySelector("div.gmail_quote")?.hasAttribute("data-mk-quote")).toBe(true);
+    expect(doc.querySelectorAll("[data-mk-quote]")).toHaveLength(3);
+    expect(doc.querySelector("p")?.hasAttribute("data-mk-quote")).toBe(false);
+    expect(result.html).toContain('html:not([data-mk-quotes="shown"]) [data-mk-quote] { display: none !important; }');
+  });
+
+  it("marks Outlook's reply header and everything after it", () => {
+    const result = sanitizeEmailHtml('<p>Reply</p><div id="divRplyFwdMsg">From: Ada</div><p>Old text</p>', { remoteImages: false });
+    const marked = Array.from(body(result.html).querySelectorAll("[data-mk-quote]")).map((e) => e.textContent);
+    expect(marked).toEqual(["From: Ada", "Old text"]);
+  });
+
+  it("hides nothing when everything would be hidden", () => {
+    const result = sanitizeEmailHtml('<blockquote type="cite">Forwarded text only</blockquote>', { remoteImages: false });
+    expect(result.quotes).toBe(0);
+    expect(result.html).toContain('<body><blockquote type="cite">Forwarded text only</blockquote></body>');
+  });
+
+  it("marks the attribution above a blockquote past empty siblings, in one pass", () => {
+    const doc = body("<p>Reply</p><p>On Mon, Ada wrote:</p><div></div><blockquote></blockquote><blockquote>old</blockquote>");
+    expect(markQuotes(doc.body)).toBe(3);
+    expect(Array.from(doc.querySelectorAll("[data-mk-quote]")).map((e) => e.textContent)).toEqual(["On Mon, Ada wrote:", "", "old"]);
+  });
+
+  it("marks only the outermost of nested quotes", () => {
+    const doc = body('<p>Reply</p><div class="gmail_quote">On Mon, Ada wrote:<blockquote type="cite">old<blockquote type="cite">older</blockquote></blockquote></div>');
+    expect(markQuotes(doc.body)).toBe(1);
+    expect(doc.querySelector("div.gmail_quote")?.hasAttribute("data-mk-quote")).toBe(true);
+  });
+
+  it("marks nothing above QUOTE_ELEMENTS_MAX quote elements (everything shows)", () => {
+    const doc = body("<p>Reply</p>" + '<blockquote type="cite">a</blockquote>'.repeat(QUOTE_ELEMENTS_MAX + 1));
+    expect(markQuotes(doc.body)).toBe(0);
+    expect(doc.querySelector("[data-mk-quote]")).toBeNull();
+    const fewer = body("<p>Reply</p>" + '<blockquote type="cite">a</blockquote>'.repeat(QUOTE_ELEMENTS_MAX));
+    expect(markQuotes(fewer.body)).toBe(QUOTE_ELEMENTS_MAX);
+  });
+
+  it("stays fast on 20,000 sibling blockquotes (one call)", () => {
+    const cite = body("<p>Reply</p>" + '<blockquote type="cite">a</blockquote>'.repeat(20_000));
+    const empty = body("<p>Reply</p>" + "<blockquote></blockquote>".repeat(20_000));
+    const started = performance.now();
+    markQuotes(cite.body);
+    markQuotes(empty.body);
+    expect(performance.now() - started).toBeLessThan(2_000);
+  });
+
+  it("reads dark support fast from 200,000 characters of unclosed meta tags (one call)", () => {
+    const started = performance.now();
+    expect(declaresDarkSupport("<meta ".repeat(40_000))).toBe(false);
+    expect(performance.now() - started).toBeLessThan(1_000);
+    expect(declaresDarkSupport("<meta " + "x".repeat(2_000) + '<meta name="color-scheme" content="dark">')).toBe(true);
+    expect(declaresDarkSupport('<META\nname="color-scheme"\ncontent="light dark"/>')).toBe(true);
+    expect(declaresDarkSupport('<metadata name="color-scheme" content="dark">')).toBe(false);
+  });
+
+  it("reads dark support from the raw HTML", () => {
+    expect(declaresDarkSupport('<meta name="color-scheme" content="light dark">')).toBe(true);
+    expect(declaresDarkSupport("<meta name='supported-color-schemes' content='dark'>")).toBe(true);
+    expect(declaresDarkSupport("<style>@media (prefers-color-scheme: dark) { body { color: #fff } }</style>")).toBe(true);
+    expect(declaresDarkSupport('<meta name="color-scheme" content="light">')).toBe(false);
+    expect(declaresDarkSupport("<p>prefers-color-scheme: dark</p>")).toBe(false);
+    expect(declaresDarkSupport("<p>Hello</p>")).toBe(false);
+  });
+
+  it("adds the dark style only with dark set and no dark styles in the mail; the CSP is the same", () => {
+    const light = sanitizeEmailHtml("<p>x</p>", { remoteImages: false });
+    expect(light.html).not.toContain("color-scheme: dark");
+    const adapted = sanitizeEmailHtml("<p>x</p>", { remoteImages: false, dark: true });
+    expect(adapted.html).toContain(":root { color-scheme: dark; }");
+    expect(adapted.html).toContain("filter: invert(0.9) hue-rotate(180deg)");
+    const own = sanitizeEmailHtml("<p>x</p>", { remoteImages: false, dark: true, darkSupported: true });
+    expect(own.html).toContain(":root { color-scheme: dark; }");
+    expect(own.html).not.toContain("invert(");
+    for (const result of [light, adapted, own]) expect(result.html).toContain(`content="${EMAIL_CSP}"`);
+  });
+
+  it("turns HTML into plain text with links", () => {
+    expect(htmlToPlainText('<p>Hello</p><p>See <a href="https://example.org/a">the page</a><br>bye</p>')).toBe(
+      "Hello\n\nSee the page <https://example.org/a>\nbye",
+    );
+  });
+});
+
+describe("slice 3i: trackers and link cleaning", () => {
+  const PIXEL = '<img src="https://mailtrack.io/trace/open.png" alt="">';
+  const TINY = '<img src="https://images.example.org/t.png" width="1" height="1">';
+  const PHOTO = '<img src="https://images.example.org/photo.png" alt="photo">';
+
+  it("removes trackers in allowed mode and counts them apart from blocked images", () => {
+    const allowed = sanitizeEmailHtml(`<p>Hi</p>${PIXEL}${TINY}${PHOTO}`, { remoteImages: true });
+    expect(allowed.trackers).toBe(2);
+    expect(allowed.html).not.toContain("mailtrack.io");
+    expect(allowed.html).not.toContain("t.png");
+    expect(allowed.html).toContain('src="https://images.example.org/photo.png"');
+    expect(allowed.blockedRemoteImages).toBe(false);
+
+    const hidden = sanitizeEmailHtml(`<p>Hi</p>${PIXEL}${TINY}${PHOTO}`, { remoteImages: false });
+    expect(hidden.trackers).toBe(2);
+    expect(hidden.blockedRemoteImages).toBe(true);
+    expect(hidden.html).not.toContain("mailtrack.io");
+  });
+
+  it("a message whose only remote images are trackers has nothing to show", () => {
+    const hidden = sanitizeEmailHtml(`<p>Hi</p>${PIXEL}`, { remoteImages: false });
+    expect(hidden.trackers).toBe(1);
+    expect(hidden.blockedRemoteImages).toBe(false);
+  });
+
+  it("the HOSTILE fixture's pixel.gif stays a normal image in allowed mode", () => {
+    const allowed = sanitizeEmailHtml(HOSTILE, { remoteImages: true });
+    expect(allowed.trackers).toBe(0);
+    expect(allowed.html).toContain('src="https://tracker.example.org/pixel.gif"');
+  });
+
+  it("a quote followed by a pixel is marked as without the pixel", () => {
+    const quoted = '<div class="gmail_quote">old text</div>';
+    const withPixel = sanitizeEmailHtml(`${quoted}${PIXEL}`, { remoteImages: true });
+    const without = sanitizeEmailHtml(quoted, { remoteImages: true });
+    expect(withPixel.quotes).toBe(without.quotes);
+  });
+
+  it("cleans hrefs with Mail's marks, and drops marks the mail brings", () => {
+    const html =
+      '<a href="https://shop.example.com/sale?utm_source=x&amp;id=7&amp;fbclid=y#top">sale</a>' +
+      '<a href="https://www.google.com/url?q=https%3A%2F%2Fexample.net%2Fpage&amp;sa=D">wrapped</a>' +
+      '<a href="https://example.org/plain" data-mk-cleaned="9">plain</a>';
+    const doc = new DOMParser().parseFromString(sanitizeEmailHtml(html, { remoteImages: false, cleanLinks: true }).html, "text/html");
+    const [sale, wrapped, plain] = Array.from(doc.querySelectorAll("a"));
+    expect(sale?.getAttribute("href")).toBe("https://shop.example.com/sale?id=7#top");
+    expect(sale?.getAttribute("data-mk-cleaned")).toBe("2");
+    expect(wrapped?.getAttribute("href")).toBe("https://example.net/page");
+    expect(wrapped?.hasAttribute("data-mk-unwrapped")).toBe(true);
+    expect(plain?.getAttribute("href")).toBe("https://example.org/plain");
+    expect(plain?.hasAttribute("data-mk-cleaned")).toBe(false);
+  });
+
+  it("leaves links alone without cleanLinks", () => {
+    const html = '<a href="https://shop.example.com/sale?utm_source=x">sale</a>';
+    expect(sanitizeEmailHtml(html, { remoteImages: false }).html).toContain("utm_source=x");
+    expect(sanitizeEmailHtml(html, { remoteImages: false, cleanLinks: false }).html).toContain("utm_source=x");
+  });
+
+  it("the plain view prints cleaned URLs", () => {
+    const html = '<p><a href="https://shop.example.com/sale?utm_source=x&amp;id=7">sale</a></p>';
+    expect(htmlToPlainText(html, { cleanLinks: true })).toBe("sale <https://shop.example.com/sale?id=7>");
+    expect(htmlToPlainText(html)).toContain("utm_source=x");
   });
 });

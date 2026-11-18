@@ -1,3 +1,72 @@
 # Deliberately invalid vault key fixture (base64 of "too-short") in plugins/mail/server.test.ts,
 # committed before it carried a gitleaks:allow marker.
 853a40fe1a031ad334830cd2d265a803b3446112:plugins/mail/server.test.ts:generic-api-key:138
+
+# Sorted on 2026-11-17 from a full-history scan of this branch (gitleaks 8.30.1, 43 findings). None is a
+# credential of this project or its owner. Each group says what the values are.
+
+# Makosh Mail: invented values in redaction tests (a GitHub-token shape, an AWS-key shape, a short
+# made-up PEM block), written as literals in these commits. The current tests build them at run time.
+19ef941549cc10f8b94452ad59ae31b00a0ccc70:plugins/mail/src/core/redact.test.ts:private-key:24
+5bd4d122f35891305e0d6bde047c97dc8422a1cc:plugins/mail/src/adapters/bb/ai-jobs.test.ts:github-pat:192
+8ec9ff5319b9dd047eb77f1c966aa65421ba7ea8:plugins/mail/server.test.ts:github-pat:5162
+8ec9ff5319b9dd047eb77f1c966aa65421ba7ea8:plugins/mail/server.test.ts:aws-access-token:5165
+
+# Imported plugin account-pool-balanced (squashed upstream history): an OAuth client id. An identifier,
+# not a secret.
+f0149acd0fb9c6edc0bc85045dcb08d37925d351:src/claude-adapter.ts:generic-api-key:25
+f0149acd0fb9c6edc0bc85045dcb08d37925d351:src/oauth-login.ts:generic-api-key:8
+
+# Imported plugin desktop-browser-agent (squashed upstream history): the browser extension's public key
+# in its manifest. Public by design.
+2d46976e36a5ceb7aff7b17169d9735aceeb98d0:browser-extension/static/manifest.json:generic-api-key:7
+
+# Imported plugin hotspot (squashed upstream history): one entry of a list of sample secrets in its test
+# "secrets on the command line never reach the name", beside "hunter2...". Its author's fixture, already
+# public in the upstream repository.
+f81be6949714e6ada7717f58f0456e78cc13ce94:test/proc-name.test.mjs:github-pat:41
+
+# Imported plugin meetings (squashed upstream history): a constant that names a delivery channel
+# ("meeting-..."), not a credential.
+96e8998c90ce73bd432735724f43be9cf302b270:src/server/notetaker-service.ts:generic-api-key:17
+
+# Imported plugin unified-inbox (squashed upstream history): example tokens in vendor documentation it
+# keeps under docs/research, and made-up tokens in its tests (sequential digits, a UUID of f's and 0's).
+92684fb4f5c45362cb4e69045e774cce9d8bd12b:docs/research/imessage/sources/bluebubbles-private-api-docs.txt:generic-api-key:217
+92684fb4f5c45362cb4e69045e774cce9d8bd12b:docs/research/imessage/sources/bluebubbles-private-api-docs.txt:generic-api-key:222
+92684fb4f5c45362cb4e69045e774cce9d8bd12b:docs/research/imessage/sources/bluebubbles-private-api-docs.txt:generic-api-key:225
+92684fb4f5c45362cb4e69045e774cce9d8bd12b:docs/research/imessage/sources/bluebubbles-server-docs.txt:generic-api-key:76
+92684fb4f5c45362cb4e69045e774cce9d8bd12b:docs/research/imessage/sources/bluebubbles-server-docs.txt:generic-api-key:86
+92684fb4f5c45362cb4e69045e774cce9d8bd12b:docs/research/imessage/sources/bluebubbles-server-docs.txt:generic-api-key:92
+92684fb4f5c45362cb4e69045e774cce9d8bd12b:docs/research/imessage/sources/bluebubbles-server-docs.txt:generic-api-key:130
+92684fb4f5c45362cb4e69045e774cce9d8bd12b:docs/research/imessage/sources/bluebubbles-server-docs.txt:generic-api-key:182
+92684fb4f5c45362cb4e69045e774cce9d8bd12b:docs/research/imessage/sources/bluebubbles-server-docs.txt:generic-api-key:350
+92684fb4f5c45362cb4e69045e774cce9d8bd12b:docs/research/imessage/sources/bluebubbles-server-docs.txt:generic-api-key:360
+92684fb4f5c45362cb4e69045e774cce9d8bd12b:docs/research/imessage/sources/bluebubbles-server-docs.txt:generic-api-key:364
+92684fb4f5c45362cb4e69045e774cce9d8bd12b:docs/research/imessage/sources/bluebubbles-server-docs.txt:generic-api-key:708
+92684fb4f5c45362cb4e69045e774cce9d8bd12b:docs/research/imessage/sources/bluebubbles-server-docs.txt:generic-api-key:712
+92684fb4f5c45362cb4e69045e774cce9d8bd12b:docs/research/imessage/sources/bluebubbles-server-docs.txt:generic-api-key:807
+92684fb4f5c45362cb4e69045e774cce9d8bd12b:docs/research/imessage/sources/bluebubbles-server-docs.txt:generic-api-key:1066
+92684fb4f5c45362cb4e69045e774cce9d8bd12b:docs/research/imessage/sources/bluebubbles-server-docs.txt:generic-api-key:1246
+92684fb4f5c45362cb4e69045e774cce9d8bd12b:docs/research/imessage/sources/bluebubbles-server-docs.txt:generic-api-key:2738
+92684fb4f5c45362cb4e69045e774cce9d8bd12b:docs/research/imessage/sources/photon-documentation.txt:generic-api-key:5944
+92684fb4f5c45362cb4e69045e774cce9d8bd12b:docs/research/imessage/sources/photon-documentation.txt:generic-api-key:5954
+92684fb4f5c45362cb4e69045e774cce9d8bd12b:docs/research/imessage/sources/photon-documentation.txt:generic-api-key:7033
+92684fb4f5c45362cb4e69045e774cce9d8bd12b:docs/research/imessage/sources/photon-documentation.txt:generic-api-key:7466
+92684fb4f5c45362cb4e69045e774cce9d8bd12b:tests/adapters/gmail.test.ts:generic-api-key:15
+92684fb4f5c45362cb4e69045e774cce9d8bd12b:tests/adapters/provider-error.test.ts:generic-api-key:7
+92684fb4f5c45362cb4e69045e774cce9d8bd12b:tests/google-people.test.ts:generic-api-key:10
+92684fb4f5c45362cb4e69045e774cce9d8bd12b:tests/linkedin-ui.test.ts:generic-api-key:279
+92684fb4f5c45362cb4e69045e774cce9d8bd12b:tests/linkedin-write.test.ts:generic-api-key:360
+92684fb4f5c45362cb4e69045e774cce9d8bd12b:tests/linkedin-write.test.ts:generic-api-key:371
+92684fb4f5c45362cb4e69045e774cce9d8bd12b:tests/linkedin-write.test.ts:generic-api-key:426
+92684fb4f5c45362cb4e69045e774cce9d8bd12b:tests/linkedin-write.test.ts:generic-api-key:430
+
+# Imported plugin workspaces (squashed upstream history): request labels in its tests ("publish...-1").
+5dabc8f5bd0ab8fcce1cc1ee58c7d3d4bc72e6b8:tests/session-expansion.test.ts:generic-api-key:510
+5dabc8f5bd0ab8fcce1cc1ee58c7d3d4bc72e6b8:tests/session-expansion.test.ts:generic-api-key:635
+
+# Imported plugins read-aloud and read-aloud-local (squashed upstream history): the public client token
+# of the speech service they call, the same value every open client of that service ships.
+3b5961367901ce836750e167fc30d49cdcf57adb:synth.ts:generic-api-key:42
+431e9a6856acc6cabfc18c63bce0b20ca359793f:synth.ts:generic-api-key:37

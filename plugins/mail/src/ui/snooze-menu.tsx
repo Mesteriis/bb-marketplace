@@ -15,6 +15,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { stopEscape } from "./shortcuts.ts";
 import { formatUntil } from "./thread-list.tsx";
+import { tx } from "./i18n/index.ts";
 
 export const SNOOZE_RANGE_TEXT = "Pick a time from 5 minutes to a year from now.";
 
@@ -85,10 +86,10 @@ export function SnoozeMenu({
         onAfterCloseAutoFocus={onAfterCloseAutoFocus}
       >
         <DialogHeader>
-          <DialogTitle>{count > 1 ? `Snooze ${count} conversations until…` : "Snooze until…"}</DialogTitle>
-          <DialogDescription>It leaves the Inbox and comes back unread at that time, while BB runs.</DialogDescription>
+          <DialogTitle>{count > 1 ? `Snooze ${count} conversations until…` : tx("Snooze until\u2026")}</DialogTitle>
+          <DialogDescription>{tx("It leaves the Inbox and comes back unread at that time, while BB runs.")}</DialogDescription>
         </DialogHeader>
-        <ul aria-label="Snooze times" className="flex flex-col gap-px">
+        <ul aria-label={tx("Snooze times")} className="flex flex-col gap-px">
           {presets.map((preset) => (
             <li key={preset.id}>
               <button
@@ -108,7 +109,7 @@ export function SnoozeMenu({
               onClick={() => setPicking((open) => !open)}
               className="flex h-8 w-full items-center rounded-md px-2 text-left text-sm text-foreground transition-colors hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"
             >
-              Pick a date and time
+              {tx("Pick a date and time")}
             </button>
           </li>
         </ul>
@@ -116,7 +117,7 @@ export function SnoozeMenu({
           <form onSubmit={submitCustom} className="flex flex-col gap-2">
             <Input
               type="datetime-local"
-              aria-label="Snooze until"
+              aria-label={tx("Snooze until")}
               value={value}
               onChange={(event) => {
                 setValue(event.target.value);
@@ -130,13 +131,13 @@ export function SnoozeMenu({
               </p>
             ) : null}
             <Button type="submit" size="sm" className="self-end">
-              Snooze
+              {tx("Snooze")}
             </Button>
           </form>
         ) : null}
         <DialogFooter>
           <Button variant="outline" size="sm" onClick={() => onOpenChange(false)}>
-            Cancel
+            {tx("Cancel")}
           </Button>
         </DialogFooter>
       </DialogContent>

@@ -19,7 +19,7 @@ describe("demo synthetic api", () => {
     const jira = boards.find((board) => board.name === "Atlassian Cloud (demo)")!;
     const { columns, tasks } = await api.listTasks(jira.id);
     const keys = tasks.map((task) => task.originKey).filter((key): key is string => key !== null).sort();
-    expect(keys).toEqual(["DEMO-101", "DEMO-102", "DEMO-103"]);
+    expect(keys).toEqual(["API-201", "DEMO-101", "DEMO-102", "DEMO-103"]);
     expect(tasks.some((task) => task.origin === "local" && task.title === "Team follow-up on the demo")).toBe(true);
 
     // Every task status must resolve to a column on its board.

@@ -1,58 +1,61 @@
-This experimental release adds a focused task board next to your threads:
-keep persistent local tasks, connect Jira Cloud or Jira Server/Data Center,
-and work both in one List and Kanban view.
+Makosh Taskboard combines persistent local tasks, Jira Cloud and Jira
+Server/Data Center issues, development threads and time tracking.
 
-## What you get
+## Assigned-task List
 
-- A **Taskboard** page with a board selector, **List** and **Board** views,
-  and a task details panel (full-width on narrow panels).
-- **Local tasks**: create, edit, move and delete persistent tasks that stay on
-  the BB server. Boards have ordered, editable columns.
-- **Jira Cloud** and **Jira Server/Data Center** connections. Cloud uses
-  account email + API token against an `https://<site>.atlassian.net` URL;
-  Server uses a personal access token and a configurable HTTPS URL with a
-  context path.
-- **Fetch issues** pulls a JQL result into the board as jira-origin tasks and
-  appends a column for each Jira status, up to **200 issues per run** (more
-  available is reported, not fetched). Local and Jira tasks coexist; every
-  Jira task keeps its issue key.
-- **Transitions**: move a Jira task through its real workflow from the status
-  menu or the transitions list in details. A rejected move rolls back the
-  optimistic change.
-- **Delete** removes the local copy only: for a Jira task it never touches the
-  Jira issue; for a local task it is permanent (confirmed in the details
-  panel).
-- **Take into work**: from a task's details choose a BB project plus a start
-  status and a completion target. Taskboard creates a worktree/branch and a new
-  agent thread with the task context, then opens it. The run's association
-  (task, project, environment, thread, branch, elapsed time) persists across
-  restarts.
-- **Explicit completion**: an agent finishes with the scoped `finish_work`
-  tool, or you press Complete in details. The task transitions to the chosen
-  next status and an editable time-entry dialog opens with the elapsed duration
-  prefilled. Confirm submits a Jira Cloud/Server worklog (or stores a local
-  worklog for local tasks); a dismissed dialog keeps the pending draft. Time is
-  never auto-submitted.
-- **Connections** manager: add, edit, test, delete and **Fetch** each
-  connection (no pre-bound board required). Credentials are write-only and
-  never sent to the frontend.
-- **Search and filters** by text, origin, status and label in both views, and a
-  **Board settings** editor for renaming and reordering columns.
-- Imported Jira descriptions are shown read-only; Jira titles and bodies are
-  never edited from the cache.
+List is the default and the only general view across Jira projects. Fetch loads
+all issues assigned to the authenticated user, paging through the full result.
+No project or JQL is required at connection time; older scopes are ignored.
+Search and filters cover project, origin, status and labels. Reassigned issues
+are hidden after refresh; cached records, development runs and time history
+remain intact. Jira descriptions and titles are read-only.
 
-## What it costs
+## Jira project Kanban
 
-- A credential per connection (API token or PAT). Nothing is shared or
-  uploaded beyond the Jira server you configure; only HTTPS URLs are accepted.
+Board offers only projects with tasks assigned to you after the latest Fetch.
+Select a project and a real Kanban board when several
+exist. Names, order, status-ID mappings and WIP limits come from the board's
+actual Jira configuration. Several statuses may share one column; Taskboard
+never adds synthetic or other-project columns to this view.
 
-## Not yet
+Issues come from the selected board, scoped to the selected project, including
+teammates' tasks. These do not enter the assigned-task List. Unmapped/backlog
+statuses are reported without extra columns. Drag a card or select a destination
+column, then choose an available Jira workflow transition.
 
-Creating Jira issues, attachments, or comments. The worktree branch is
-named by BB; Taskboard records the actual branch and titles the thread with
-the issue key.
+## Local tasks and connections
 
-## Source
+Local tasks support create, edit, move and confirmed delete. Local boards retain
+editable, ordered columns and List/Kanban. Narrow panels use a full-width task
+details overlay; task cards support keyboard access.
 
-Requires BB 0.49 or later. MIT licensed; adapted from MateoCerquetella's
-MIT Taskboard plugin (upstream commit 0ae0d539b3a46c1ffb158e119a7e3c23060f9a5b).
+Cloud connects to https://example.atlassian.net using email and API token.
+Server/Data Center uses a personal access token and an HTTPS URL, including a
+context path. Connections support add, edit, test, fetch and delete. Credentials
+are encrypted on the server and never returned to the frontend. Deleting a
+connection preserves its cached tasks and disables remote operations.
+
+Deleting a Jira task deletes only its local copy, never the Jira issue.
+
+## Development workflow
+
+Take into work chooses a BB project and start/completion statuses. Taskboard
+creates an owned worktree with an issue-key branch, opens an agent thread and
+persists its association. Completion uses the thread-scoped finish_work tool or
+the Complete action. Idle or failed turns never complete a task.
+
+Explicit completion transitions the issue and opens an editable elapsed-time
+draft. Time is submitted only on Confirm. Interrupted or ambiguous external
+operations keep recovery state to avoid blind duplicate submissions.
+
+## Direct time tracking and agent access
+
+Log time on any task accepts seconds and a comment, without a development run
+or status change. Confirm writes to Jira Cloud/Server or local storage. Worklog
+history shows entries recorded through Taskboard, not pre-existing Jira entries.
+Failed and unknown results retain owner recovery controls.
+
+Agents have boards_list, tasks_list, worklog_prepare, worklog_submit,
+worklogs_list and time_entries_by_task. Prepare saves a draft with a stable
+unique entryId; submit records authorized time. Reuse that ID for retries and
+never blindly repeat an unknown Jira result.

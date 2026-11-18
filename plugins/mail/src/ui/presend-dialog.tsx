@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/dialog";
 import { Icon } from "@/components/ui/icon";
 import { stopEscape } from "./shortcuts.ts";
+import { tx } from "./i18n/index.ts";
 
 export type { PresendIssue };
 
@@ -24,13 +25,22 @@ export type { PresendIssue };
 export function presendIssueText(issue: PresendIssue): { text: string; fix: string } {
   switch (issue.kind) {
     case "attachment_mentioned":
-      return { text: `You wrote “${issue.phrase}”, but nothing is attached.`, fix: "Attach a file" };
+      return { text: tx("You wrote \u201c{phrase}\u201d, but nothing is attached.", { phrase: issue.phrase }), fix: "Attach a file" };
     case "empty_subject":
-      return { text: "The subject is empty.", fix: "Add a subject" };
+      return { text: tx("The subject is empty."), fix: "Add a subject" };
     case "outside_conversation":
-      return { text: `Not in this conversation: ${issue.addresses.join(", ")}`, fix: "Check recipients" };
+      return { text: tx("Not in this conversation: {p1}", { p1: issue.addresses.join(", ") }), fix: "Check recipients" };
     case "new_recipients":
-      return { text: `You have not written to ${issue.addresses.join(", ")} before.`, fix: "Check recipients" };
+      return { text: tx("You have not written to {p1} before.", { p1: issue.addresses.join(", ") }), fix: "Check recipients" };
+    case "bb_files":
+      return {
+        text: `${issue.count} ${issue.count === 1 ? "file" : "files"} from BB: ${issue.origins.join(", ")}`,
+        fix: "Check attachments",
+      };
+    case "looks_secret":
+      return { text: tx("The text looks like it holds a password, token or code ({count})", { count: issue.count }), fix: "Check the text" };
+    case "reply_to_elsewhere":
+      return { text: tx("Reply-To differs from the sender: {p1}", { p1: issue.addresses.join(", ") }), fix: "Check recipients" };
   }
 }
 
@@ -79,10 +89,10 @@ export function PresendDialog({ issues, onFix, onBack, onSendAnyway }: PresendDi
         }}
       >
         <DialogHeader>
-          <DialogTitle>Before you send</DialogTitle>
-          <DialogDescription>These may be on purpose; nothing stops the send.</DialogDescription>
+          <DialogTitle>{tx("Before you send")}</DialogTitle>
+          <DialogDescription>{tx("These may be on purpose; nothing stops the send.")}</DialogDescription>
         </DialogHeader>
-        <ul aria-label="Issues" className="flex flex-col gap-2">
+        <ul aria-label={tx("Issues")} className="flex flex-col gap-2">
           {(issues ?? []).map((issue, index) => {
             const { text, fix } = presendIssueText(issue);
             return (
@@ -105,10 +115,10 @@ export function PresendDialog({ issues, onFix, onBack, onSendAnyway }: PresendDi
         </ul>
         <DialogFooter>
           <Button ref={back} size="sm" onClick={onBack}>
-            Back to editing
+            {tx("Back to editing")}
           </Button>
           <Button variant="outline" size="sm" onClick={onSendAnyway}>
-            Send anyway
+            {tx("Send anyway")}
           </Button>
         </DialogFooter>
       </DialogContent>

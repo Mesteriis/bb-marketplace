@@ -3,35 +3,41 @@
 // there (the failure matrix): Undo while queued, Send now or Edit when held
 // after a restart, Retry, Edit or Discard after a failure, Send again or
 // Discard when it may have been sent, Retry copy or Dismiss when the Sent
-// copy failed. Nothing
-// here resends on its own.
+// copy failed. A "Send later" row (slice 3l) waits for its time and offers
+// Edit only: its Date is the picked time, so it is not sent early as it is.
+// Nothing here resends on its own.
 import type { OutboxRow, SendErrorKind } from "../core/model.ts";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
-import { subjectOrPlaceholder } from "./thread-list.tsx";
+import { formatUntil, subjectOrPlaceholder } from "./thread-list.tsx";
+import { dateLocale, msg, tx } from "./i18n/index.ts";
 
 export type OutboxAction = "undo" | "send_now" | "edit" | "retry" | "resend" | "dismiss" | "retry_copy";
 
 const ACTION_LABELS: Record<OutboxAction, string> = {
-  undo: "Undo",
-  send_now: "Send now",
-  edit: "Edit",
-  retry: "Retry",
-  resend: "Send again",
-  dismiss: "Discard",
-  retry_copy: "Retry copy",
+  undo: msg("Undo"),
+  send_now: msg("Send now"),
+  edit: msg("Edit"),
+  retry: msg("Retry"),
+  resend: msg("Send again"),
+  dismiss: msg("Discard"),
+  retry_copy: msg("Retry copy"),
 };
 
 /** What the owner may do with a row in its state; an unsubscribe request is never edited. */
-export function outboxActions(row: Pick<OutboxRow, "state"> & Partial<Pick<OutboxRow, "purpose">>): OutboxAction[] {
+export function outboxActions(
+  row: Pick<OutboxRow, "state"> & Partial<Pick<OutboxRow, "purpose" | "scheduled">>,
+): OutboxAction[] {
+  if (row.state === "queued" && row.scheduled === true) return ["edit"];
   const actions = stateActions(row);
-  return row.purpose === "unsubscribe" ? actions.filter((action) => action !== "edit") : actions;
+  // A send Mail wrote itself (an unsubscribe email, an invitation answer) has no draft to edit.
+  return row.purpose != null ? actions.filter((action) => action !== "edit") : actions;
 }
 
 /** The row's title: its subject, or "Unsubscribe request" for the plugin's own unsubscribe email. */
 export function outboxRowTitle(row: Pick<OutboxRow, "subject"> & Partial<Pick<OutboxRow, "purpose">>): string {
-  return row.purpose === "unsubscribe" ? "Unsubscribe request" : subjectOrPlaceholder(row.subject);
+  return row.purpose === "unsubscribe" ? tx("Unsubscribe request") : subjectOrPlaceholder(row.subject);
 }
 
 function stateActions(row: Pick<OutboxRow, "state">): OutboxAction[] {
@@ -46,6 +52,8 @@ function stateActions(row: Pick<OutboxRow, "state">): OutboxAction[] {
       return ["resend", "dismiss"];
     case "sent_no_copy":
       return ["retry_copy", "dismiss"];
+    case "waiting":
+      return ["send_now", "edit", "dismiss"];
     case "sending":
     case "sent":
     case "appending":
@@ -56,64 +64,90 @@ function stateActions(row: Pick<OutboxRow, "state">): OutboxAction[] {
 
 /** The label of an action on a row; Discard reads Dismiss once the message was sent. */
 export function outboxActionLabel(row: Pick<OutboxRow, "state">, action: OutboxAction): string {
-  if (action === "dismiss" && row.state === "sent_no_copy") return "Dismiss";
-  return ACTION_LABELS[action];
+  if (action === "dismiss" && row.state === "sent_no_copy") return tx("Dismiss");
+  return tx(ACTION_LABELS[action]);
 }
 
 /** A line under a row that says what its buttons keep and delete, or null. */
-export function outboxRowHint(row: Pick<OutboxRow, "state"> & Partial<Pick<OutboxRow, "purpose">>): string | null {
-  if (row.purpose === "unsubscribe") return row.state === "failed" || row.state === "unknown" ? "Discard deletes the request." : null;
+export function outboxRowHint(
+  row: Pick<OutboxRow, "state"> & Partial<Pick<OutboxRow, "purpose" | "scheduled">>,
+): string | null {
+  if (row.state === "queued" && row.scheduled === true) return tx("Edit cancels the send and reopens the draft.");
+  if (row.purpose === "unsubscribe") return row.state === "failed" || row.state === "unknown" || row.state === "waiting" ? tx("Discard deletes the request.") : null;
+  if (row.purpose === "invite_reply") return row.state === "failed" || row.state === "unknown" || row.state === "waiting" ? tx("Discard deletes the answer.") : null;
   switch (row.state) {
     case "failed":
-      return "Edit reopens the draft. Discard deletes the message and its draft.";
+    case "waiting":
+      return tx("Edit reopens the draft. Discard deletes the message and its draft.");
     case "unknown":
-      return "Discard deletes the message and its draft.";
+      return tx("Discard deletes the message and its draft.");
     default:
       return null;
   }
 }
 
 const REASONS: Record<SendErrorKind, string> = {
-  auth: "sign-in refused",
-  tls: "the secure connection failed",
-  connect: "the server could not be reached",
-  timeout_before_data: "the server did not answer",
-  temporary: "the server asked to try again later",
-  rejected_all: "recipients refused",
-  rejected_message: "the server refused the message",
-  too_large: "too large for the server",
-  unknown_after_data: "the connection was lost while sending",
-  no_sent_folder: "no Sent folder to copy to",
-  sender_refused: "the server refused to send from this address",
-  append_failed: "the copy to Sent failed",
+  auth: msg("sign-in refused"),
+  tls: msg("the secure connection failed"),
+  connect: msg("the server could not be reached"),
+  timeout_before_data: msg("the server did not answer"),
+  temporary: msg("the server asked to try again later"),
+  rejected_all: msg("recipients refused"),
+  rejected_message: msg("the server refused the message"),
+  too_large: msg("too large for the server"),
+  unknown_after_data: msg("the connection was lost while sending"),
+  no_sent_folder: msg("no Sent folder to copy to"),
+  sender_refused: msg("the server refused to send from this address"),
+  append_failed: msg("the copy to Sent failed"),
+  no_smtp: msg("this account has no outgoing server set"),
 };
 
 export function sendErrorText(kind: SendErrorKind): string {
-  return REASONS[kind];
+  return tx(REASONS[kind]);
 }
 
 /** Where a send stands, in words. */
-export function outboxStateText(row: Pick<OutboxRow, "state" | "errorKind" | "rejected">): string {
-  const reason = row.errorKind !== null ? REASONS[row.errorKind] : null;
+export function outboxStateText(
+  row: Pick<OutboxRow, "state" | "errorKind" | "rejected"> & Partial<Pick<OutboxRow, "sendAfter" | "attempts" | "scheduled">>,
+): string {
+  const reason = row.errorKind !== null ? tx(REASONS[row.errorKind]) : null;
   switch (row.state) {
     case "queued":
-      return "Sending soon";
+      return row.scheduled === true && row.sendAfter !== undefined
+        ? tx("Scheduled for {when}", { when: formatUntil(row.sendAfter) })
+        : tx("Sending soon");
     case "held":
-      return "Not sent: held after a restart";
+      return row.scheduled === true
+        ? tx("Not sent: its time passed while BB was closed")
+        : tx("Not sent: held after a restart");
     case "sending":
-      return "Sending…";
+      return tx("Sending\u2026");
     case "sent":
     case "appending":
-      return row.rejected.length > 0 ? `Sent, but not to: ${row.rejected.join(", ")}` : "Sent; saving a copy to Sent…";
+      return row.rejected.length > 0 ? tx("Sent, but not to: {p1}", { p1: row.rejected.join(", ") }) : tx("Sent; saving a copy to Sent\u2026");
     case "failed":
-      return reason !== null ? `Not sent: ${reason}` : "Not sent";
+      return reason !== null ? tx("Not sent: {reason}", { reason }) : tx("Not sent");
     case "unknown":
-      return "May have been sent";
+      return tx("May have been sent");
     case "sent_no_copy":
-      return reason !== null ? `Sent; ${reason}` : "Sent; the copy to Sent failed";
+      return reason !== null ? tx("Sent; {reason}", { reason }) : tx("Sent; the copy to Sent failed");
     case "done":
-      return "Sent";
+      return tx("Sent");
+    case "waiting": {
+      const why = reason !== null ? tx("Not sent yet: {reason}", { reason }) : tx("Not sent yet");
+      const at = row.sendAfter !== undefined ? clockTime(row.sendAfter) : null;
+      if (at === null) return `${why}. Mail will try again.`;
+      const tries = row.attempts !== undefined && row.attempts > 0 ? ` (try ${row.attempts + 1})` : "";
+      return `${why}. Next try at ${at}${tries}.`;
+    }
   }
+}
+
+/** A time of day for an ISO date, or null when it does not parse. */
+function clockTime(iso: string): string | null {
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return null;
+  return at.toLocaleTimeString(dateLocale(), { hour: "2-digit", minute: "2-digit" });
 }
 
 /** Rows that need the owner: shown as a count on Sent in the folder rail. */
@@ -134,10 +168,10 @@ export function OutboxSection({ rows, onAction, pending, marker }: OutboxSection
   const shown = rows.filter((row) => row.state !== "done");
   if (shown.length === 0) return null;
   return (
-    <section aria-label="Outbox" className="shrink-0 border-b border-border">
+    <section aria-label={tx("Outbox")} className="shrink-0 border-b border-border">
       <h3 className="flex items-center gap-1.5 px-3 pb-1 pt-2 text-xs font-medium text-muted-foreground">
         <Icon name="Send" fallback="Mail" className="size-3.5" aria-hidden />
-        Outbox
+        {tx("Outbox")}
       </h3>
       <ul className="flex flex-col">
         {shown.map((row) => {
@@ -157,7 +191,7 @@ export function OutboxSection({ rows, onAction, pending, marker }: OutboxSection
                 </span>
                 {row.origin === "agent" ? (
                   <span className="shrink-0 rounded-sm bg-secondary px-1 text-xs text-secondary-foreground">
-                    Agent message
+                    {tx("Agent message")}
                   </span>
                 ) : null}
                 {label !== null ? (

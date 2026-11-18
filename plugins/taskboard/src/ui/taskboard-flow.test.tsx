@@ -99,7 +99,6 @@ describe("taskboard end-to-end UI", () => {
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Demo Cloud" } });
     fireEvent.change(screen.getByLabelText("HTTPS URL"), { target: { value: "https://example.atlassian.net" } });
     fireEvent.change(screen.getByLabelText("Account email"), { target: { value: "me@example.com" } });
-    fireEvent.change(screen.getByLabelText("Project key"), { target: { value: "DEMO" } });
     fireEvent.change(screen.getByLabelText("API token"), { target: { value: "tok" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     // Connection saved; reopen the manager and fetch from it.
@@ -285,4 +284,28 @@ describe("taskboard defensive UI", () => {
     await waitFor(() => expect((screen.getByLabelText("Move task") as HTMLSelectElement).value).toBe("c1"));
     expect(moveCalls).toEqual(["c2"]);
   });
+});
+
+
+it("groups assigned issues in List and requires project selection for Kanban", async () => {
+  const { api, connectionDeps } = buildApi(async () => json({ issues: [
+    { key: "WEB-1", fields: { summary: "Website task", status: { name: "To do" } } },
+    { key: "API-2", fields: { summary: "Backend task", status: { name: "To do" } } },
+  ], nextPageToken: null }));
+  const connection = createConnection({ name: "All assigned", edition: "cloud", baseUrl: "https://example.atlassian.net", email: "demo@example.com", credential: "synthetic", projectKey: "", jql: "" }, connectionDeps);
+  await api.fetchIssues(connection.id);
+  render(<TaskboardPage api={api} />);
+  const apiGroup = await screen.findByRole("region", { name: "Project API" });
+  expect(within(apiGroup).getByText("Backend task")).toBeTruthy();
+  expect(within(screen.getByRole("region", { name: "Project WEB" })).getByText("Website task")).toBeTruthy();
+  fireEvent.change(screen.getByLabelText("Project filter"), { target: { value: "API" } });
+  expect(screen.queryByText("Website task")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Board" }));
+  expect(screen.getByText("Select a Jira project to view Kanban. All assigned tasks are available in List.")).toBeTruthy();
+  expect(screen.queryByRole("region", { name: "Project WEB" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "List" }));
+  fireEvent.click(screen.getByRole("button", { name: "Clear" }));
+  expect(screen.getByText("Website task")).toBeTruthy();
+  fireEvent.change(screen.getByLabelText("Search tasks"), { target: { value: "not present" } });
+  expect(screen.getByText("No tasks match these filters.")).toBeTruthy();
 });

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { docFromLines, type ComposeDoc, type ComposeParagraph } from "./compose-doc.ts";
 import type { ComposeKind } from "./model.ts";
-import { attachmentMention, cardChecks, inheritedSubject, ownText, presendIssues, type PresendIssue } from "./presend.ts";
+import { attachmentMention, bbOriginLabels, cardChecks, inheritedSubject, ownText, presendIssues, type PresendIssue } from "./presend.ts";
 
 const para = (value: string): ComposeParagraph =>
   value === "" ? { type: "paragraph" } : { type: "paragraph", content: [{ type: "text", text: value }] };
@@ -236,5 +236,88 @@ describe("cardChecks", () => {
       { kind: "new_recipients", addresses: ["carol@example.net"] },
     ];
     expect(cardChecks(issues).map((i) => i.kind)).toEqual(["attachment_mentioned", "empty_subject", "outside_conversation"]);
+  });
+});
+
+describe("presendIssues: slice 3g kinds", () => {
+  const base = {
+    kind: "new" as ComposeKind,
+    subject: "Plan",
+    doc: docFromLines(["Hello"]),
+    attachmentCount: 0,
+    recipients: ["bob@example.org"],
+    own: new Set(["anna@example.com"]),
+    sentTo: new Set(["bob@example.org"]),
+    conversation: null as ReadonlySet<string> | null,
+    inheritedSubject: null as string | null,
+  };
+  // Made up, joined at run time.
+  const TOKEN = ["ghp", "InventedToken0123456789abcdefXYZ"].join("_");
+
+  it("lists files from BB by origin only when there are any", () => {
+    expect(presendIssues({ ...base, attachmentCount: 3, bbOrigins: [] })).toEqual([]);
+    expect(presendIssues({ ...base, attachmentCount: 3, bbOrigins: ["project api", "thread Fix", "project api"] })).toEqual([
+      { kind: "bb_files", count: 3, origins: ["project api", "thread Fix"] },
+    ]);
+  });
+
+  it("warns when the owner's text holds something redaction would hide, not the quote", () => {
+    expect(presendIssues({ ...base, doc: docFromLines([`Here is my token ${TOKEN}`, "and the code 482913"]) })).toEqual([
+      { kind: "looks_secret", count: 2 },
+    ]);
+    expect(presendIssues({ ...base, kind: "reply", doc: docFromLines(["Thanks"], [`token ${TOKEN}`]) })).toEqual([]);
+  });
+
+  it("puts the new kinds after the 3d ones", () => {
+    const issues = presendIssues({ ...base, subject: "", doc: docFromLines([`attached ${TOKEN}`]), bbOrigins: ["project api"] });
+    expect(issues.map((i) => i.kind)).toEqual(["attachment_mentioned", "empty_subject", "bb_files", "looks_secret"]);
+  });
+});
+
+describe("bbOriginLabels (slice 3g)", () => {
+  it("labels BB attachments by project name or as a thread, and leaves uploads out", () => {
+    const names = new Map([["p1", "Invented api"]]);
+    expect(
+      bbOriginLabels(
+        [{ origin: "bb:project:p1" }, { origin: "bb:project:gone" }, { origin: "bb:thread:t1" }, { origin: null }, {}],
+        names,
+      ),
+    ).toEqual(["project Invented api", "a BB project", "a BB thread"]);
+    expect(bbOriginLabels([{ origin: "bb:project:p1" }])).toEqual(["a BB project"]);
+  });
+});
+
+describe("presendIssues: reply_to_elsewhere (slice 3i)", () => {
+  const reply = {
+    kind: "reply" as ComposeKind,
+    subject: "Re: Invoice",
+    doc: docFromLines(["Paid."]),
+    attachmentCount: 0,
+    recipients: ["help@example-support.net"],
+    own: new Set(["anna@example.com"]),
+    sentTo: new Set<string>(),
+    conversation: new Set(["billing@example.com", "help@example-support.net"]) as ReadonlySet<string>,
+    inheritedSubject: "Re: Invoice" as string | null,
+    replyToElsewhere: ["help@example-support.net"],
+  };
+
+  it("is raised for a reply that still goes to the flagged Reply-To", () => {
+    expect(presendIssues(reply)).toEqual([{ kind: "reply_to_elsewhere", addresses: ["help@example-support.net"] }]);
+    expect(presendIssues({ ...reply, kind: "reply_all", recipients: ["Help@Example-Support.net", "billing@example.com"] })).toEqual([
+      { kind: "reply_to_elsewhere", addresses: ["help@example-support.net"] },
+    ]);
+  });
+
+  it("clears when the owner edits the address out, and never for other kinds", () => {
+    expect(presendIssues({ ...reply, recipients: ["billing@example.com"] })).toEqual([]);
+    expect(presendIssues({ ...reply, replyToElsewhere: [] })).toEqual([]);
+    const { replyToElsewhere: _unused, ...withoutField } = reply;
+    expect(presendIssues(withoutField)).toEqual([]);
+    expect(presendIssues({ ...reply, kind: "forward", conversation: null, sentTo: new Set(["help@example-support.net"]) })).toEqual([]);
+  });
+
+  it("comes after the conversation check and before BB files", () => {
+    const issues = presendIssues({ ...reply, recipients: ["help@example-support.net", "eve@example.net"], bbOrigins: ["a BB thread"] });
+    expect(issues.map((issue) => issue.kind)).toEqual(["outside_conversation", "reply_to_elsewhere", "bb_files"]);
   });
 });

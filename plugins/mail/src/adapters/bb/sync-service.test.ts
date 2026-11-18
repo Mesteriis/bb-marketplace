@@ -41,6 +41,21 @@ class OneBadUserGateway implements ImapGateway {
   createFolder(config: ImapConfig, name: string) {
     return this.inner.createFolder(config, name);
   }
+  renameFolder(...args: Parameters<ImapGateway["renameFolder"]>) {
+    return this.inner.renameFolder(...args);
+  }
+  folderStatus(...args: Parameters<ImapGateway["folderStatus"]>) {
+    return this.inner.folderStatus(...args);
+  }
+  deleteFolder(...args: Parameters<ImapGateway["deleteFolder"]>) {
+    return this.inner.deleteFolder(...args);
+  }
+  setSubscribed(...args: Parameters<ImapGateway["setSubscribed"]>) {
+    return this.inner.setSubscribed(...args);
+  }
+  namedLikeSpecialUse(name: string) {
+    return this.inner.namedLikeSpecialUse(name);
+  }
 }
 
 function setup() {
@@ -199,6 +214,35 @@ describe("createSyncLoop", () => {
     expect(notifier.changes).toHaveLength(1);
   });
 
+  it("a round cut short by the stop logs no sync error; the same failure while running does", async () => {
+    const run = async (abortFirst: boolean) => {
+      const { store, scripted, deps } = setup();
+      store.saveAccount(account("acc_1"));
+      let fail!: () => void;
+      let opened = false;
+      vi.spyOn(scripted, "openFolder").mockImplementation(
+        () =>
+          new Promise<FolderSession>((_, reject) => {
+            opened = true;
+            fail = () => reject(new Error("connection closed"));
+          }),
+      );
+      const lines: string[] = [];
+      const loop = createSyncLoop(deps, SETTINGS, { log: (line) => lines.push(line) });
+      const controller = new AbortController();
+      const done = loop.start(controller.signal);
+      await vi.waitFor(() => expect(opened).toBe(true));
+      if (abortFirst) controller.abort();
+      fail();
+      await new Promise((r) => setTimeout(r, 20));
+      controller.abort();
+      await done;
+      return lines.filter((line) => line.startsWith("sync "));
+    };
+    expect(await run(true)).toEqual([]);
+    expect(await run(false)).toEqual(["sync acc_1: error"]);
+  });
+
   it("abort resolves start while an account sync is stuck", async () => {
     const { store, deps } = setup();
     store.saveAccount(account("acc_1"));
@@ -206,7 +250,7 @@ describe("createSyncLoop", () => {
     const stuck: ImapGateway = {
       test: async () => ({ ok: true }),
       listFolders: async () => [
-        { path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true },
+        { path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true, subscribed: true },
       ],
       openFolder: () => {
         opened = true;
@@ -216,6 +260,19 @@ describe("createSyncLoop", () => {
       createFolder: async () => {
         throw new Error("unused");
       },
+      renameFolder: async () => {
+        throw new Error("unused");
+      },
+      folderStatus: async () => {
+        throw new Error("unused");
+      },
+      deleteFolder: async () => {
+        throw new Error("unused");
+      },
+      setSubscribed: async () => {
+        throw new Error("unused");
+      },
+      namedLikeSpecialUse: () => false,
     };
     const loop = createSyncLoop({ ...deps, gateway: stuck }, SETTINGS);
     const controller = new AbortController();
@@ -245,6 +302,11 @@ describe("createSyncLoop", () => {
       },
       watchFolder: (...args) => scripted.watchFolder(...args),
       createFolder: (config, name) => scripted.createFolder(config, name),
+      renameFolder: (...args) => scripted.renameFolder(...args),
+      folderStatus: (...args) => scripted.folderStatus(...args),
+      deleteFolder: (...args) => scripted.deleteFolder(...args),
+      setSubscribed: (...args) => scripted.setSubscribed(...args),
+      namedLikeSpecialUse: (name) => scripted.namedLikeSpecialUse(name),
     };
     const loop = createSyncLoop({ ...deps, gateway: gated }, SETTINGS);
     const controller = new AbortController();
@@ -508,6 +570,31 @@ describe("createSyncLoop Inbox-only rounds and onRoundOk (slice 3e)", () => {
     await done;
   });
 
+  it("asks the daily history check on full rounds only (slice 3h)", async () => {
+    vi.useFakeTimers();
+    const t0 = Date.now();
+    const until = (ms: number) => vi.advanceTimersByTimeAsync(t0 + ms - Date.now());
+    const { store, deps } = setup();
+    store.saveAccount(account("acc_1"));
+    const checked = vi.spyOn(store, "historyChecked");
+    const loop = createSyncLoop(deps, SETTINGS);
+    const controller = new AbortController();
+    const done = loop.start(controller.signal);
+    await vi.advanceTimersByTimeAsync(0);
+    store.setHistorySince("acc_1", "INBOX", "2026-09-01T00:00:00.000Z");
+    await until(20_000);
+    loop.wake("acc_1", { only: "inbox" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(checked).not.toHaveBeenCalled();
+    await until(40_000);
+    loop.wake("acc_1");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(checked).toHaveBeenCalledTimes(1);
+    expect(checked.mock.calls[0]!.slice(0, 2)).toEqual(["acc_1", "INBOX"]);
+    controller.abort();
+    await done;
+  });
+
   it("a scheduled full round clears a queued Inbox-only wake", async () => {
     vi.useFakeTimers();
     const t0 = Date.now();
@@ -576,5 +663,44 @@ describe("createSyncLoop Inbox-only rounds and onRoundOk (slice 3e)", () => {
     expect(order.slice(0, 2)).toEqual(["ok acc_1 0", "hook done"]);
     expect(order).toContain("end");
     expect(lines).toContain("sync acc_1: round hook failed");
+  });
+});
+
+describe("createSyncLoop: slice 3g dev classification", () => {
+  it("passes classify to sync and runs the dev backfill after a full round, logging counts only", async () => {
+    const { store, scripted, deps } = setup();
+    store.saveAccount(account("acc_1"));
+    // An old row stored before 3g: never classified.
+    store.upsertMessages("acc_1", "Archive", [
+      { ...scripted.mailbox.messages[0]!, uid: 9, messageId: "old@example.org", from: { name: null, address: "notifications@github.com" }, subject: "[example-org/demo] Run failed: CI - main (abc)" },
+    ]);
+    const lines: string[] = [];
+    const loop = createSyncLoop(deps, () => ({ ...SETTINGS(), classify: true }), { log: (line) => lines.push(line) });
+    const controller = new AbortController();
+    const done = loop.start(controller.signal);
+    await vi.waitFor(() => expect(lines.some((line) => line.startsWith("backfill dev:"))).toBe(true));
+    controller.abort();
+    await done;
+    expect(lines).toContain("backfill dev: checked 1, classified 1");
+    expect(lines.join("\n")).not.toContain("example-org");
+    // The synced Inbox row was classified at insert (not a dev notification).
+    const [entry] = store.localFolderIndex("acc_1", "INBOX", "1970-01-01T00:00:00.000Z");
+    expect(store.getMessage(entry!.id)!.dev).toBeNull();
+    expect(store.devUnclassified(10)).toEqual([]);
+  });
+
+  it("classifies nothing and runs no dev backfill with classification off", async () => {
+    const { store, deps } = setup();
+    store.saveAccount(account("acc_1"));
+    const backfill = vi.spyOn(store, "devUnclassified");
+    const lines: string[] = [];
+    const loop = createSyncLoop(deps, SETTINGS, { log: (line) => lines.push(line) });
+    const controller = new AbortController();
+    const done = loop.start(controller.signal);
+    await vi.waitFor(() => expect(lines.some((line) => line.startsWith("sync acc_1: ok"))).toBe(true));
+    controller.abort();
+    await done;
+    expect(backfill).not.toHaveBeenCalled();
+    expect(store.devUnclassified(10)).toHaveLength(1);
   });
 });

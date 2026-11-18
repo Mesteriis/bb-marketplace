@@ -20,11 +20,13 @@ const RU_CARD = "\u043a\u0430\u0440\u0442\u0430"; // "card"
 const FAKE_GHP = "ghp_" + "Zx9Qw8Er7Ty6Ui5Op4As3Df2Gh1Jk0Lm";
 const FAKE_JWT =
   "eyJhbGciOiJIUzI1NiJ9" + "." + "eyJzdWIiOiJpbnZlbnRlZCJ9" + "." + "c2lnbmF0dXJlLWludmVudGVk";
+// The PEM armour lines are joined at run time, so no key-format literal sits in the source.
+const PEM_LABEL = ["PRIVATE", "KEY"].join(" ");
 const FAKE_PEM = [
-  "-----BEGIN PRIVATE KEY-----",
+  `-----BEGIN ${PEM_LABEL}-----`,
   "MIIBVQIBADANBgkqhkiG9w0BAQEFAASCAT8wggE7AgEAAkEAinvented",
   "aW52ZW50ZWQga2V5IG1hdGVyaWFsIG9ubHk=",
-  "-----END PRIVATE KEY-----",
+  `-----END ${PEM_LABEL}-----`,
 ].join("\n");
 const FAKE_UUID = "3f2b8c1e-9a4d-4e7f-b6a0-1c2d3e4f5a6b";
 const FAKE_HEX40 = "0123456789abcdef0123456789abcdef01234567";
@@ -46,6 +48,26 @@ describe("redactSecrets: one-time codes", () => {
 
   it("hides a value on the line after the label", () => {
     expect(hidden("Your code:\n482913\nThanks")).toBe(`Your code:\n${PLACEHOLDER.code}\nThanks`);
+  });
+
+  it("hides a code under its label across blank lines and CRLF (HTML paragraphs, headings)", () => {
+    const html = `Enter this code to finish signing in:\n\n604185\n\nThanks`;
+    expect(hidden(html)).toBe(`Enter this code to finish signing in:\n\n${PLACEHOLDER.code}\n\nThanks`);
+    expect(hidden("Your code:\n\n518327\n")).toBe(`Your code:\n\n${PLACEHOLDER.code}\n`);
+    expect(hidden(`${RU_YOUR_CODE}:\r\n\r\n927460\r\n`)).toBe(`${RU_YOUR_CODE}:\r\n\r\n${PLACEHOLDER.code}\r\n`);
+    expect(hidden("Your verification code\n\nUse it within ten minutes.\n\n604185")).toBe(
+      `Your verification code\n\nUse it within ten minutes.\n\n${PLACEHOLDER.code}`,
+    );
+    expect(hidden("Your code:\n\n482 913")).toBe(`Your code:\n\n${PLACEHOLDER.code}`);
+    expect(hidden("Your code:\n12 34 56\n")).toBe(`Your code:\n${PLACEHOLDER.code}\n`);
+  });
+
+  it("does not reach past two non-empty lines or 200 characters", () => {
+    const far = "Your code:\n\nLine one.\n\nLine two.\n\n604185";
+    expect(hidden(far)).toBe(far);
+    const long = `Your code:\n\n${"\n".repeat(10)}${" ".repeat(220)}\n604185`;
+    expect(hidden(long)).toBe(long);
+    expect(hidden("Room 12 34 56")).toBe("Room 12 34 56");
   });
 
   it("hides split and prefixed codes", () => {
@@ -112,7 +134,7 @@ describe("redactSecrets: tokens", () => {
     expect(hidden(`token ${FAKE_GHP} here`)).not.toContain(FAKE_GHP.slice(4));
     expect(hidden(`Bearer ${FAKE_JWT}`)).toBe(`Bearer ${PLACEHOLDER.token}`);
     expect(hidden(`Key below\n${FAKE_PEM}\nEnd`)).toBe(`Key below\n${PLACEHOLDER.token}\nEnd`);
-    expect(hidden(`commit ${FAKE_HEX40}`)).toBe(`commit ${PLACEHOLDER.token}`);
+    expect(hidden(`ref ${FAKE_HEX40}`)).toBe(`ref ${PLACEHOLDER.token}`);
     expect(hidden(`ref ${FAKE_HEX32}`)).toBe(`ref ${PLACEHOLDER.token}`);
     expect(hidden(`id ${FAKE_UUID}`)).toBe(`id ${PLACEHOLDER.token}`);
     expect(hidden("b".repeat(40))).toBe("b".repeat(40));
@@ -137,8 +159,8 @@ describe("redactSecrets: tokens", () => {
     expect(hidden("https://example.org/users/password/edit?reset_password_token=invented42")).toBe(
       `https://example.org/users/password/edit?reset_password_token=${PLACEHOLDER.token}`,
     );
-    expect(hidden(`https://example.org/commit/${FAKE_HEX40}/files`)).toBe(
-      `https://example.org/commit/${PLACEHOLDER.token}/files`,
+    expect(hidden(`https://example.org/blob/${FAKE_HEX40}/files`)).toBe(
+      `https://example.org/blob/${PLACEHOLDER.token}/files`,
     );
     expect(hidden("https://example.org/m?t=AbCdEfGh12345678xy")).toBe(`https://example.org/m?t=${PLACEHOLDER.token}`);
     expect(hidden("https://example.org/m?t=short")).toBe("https://example.org/m?t=short");
@@ -152,6 +174,71 @@ describe("redactSecrets: tokens", () => {
   it("leaves e-mail addresses alone", () => {
     const address = "Ab3dEf6hIj9lMn2pQr5tUv8xYz1bCd4fGh7@example.com";
     expect(hidden(`Write to ${address}`)).toBe(`Write to ${address}`);
+  });
+});
+
+// Made-up values for the detector tables, joined so no credential-format literal sits in the source.
+const FAKE_SENDGRID = ["SG", "Ab3dEf6hIj9lMn2pQr5tUv", "Wx8yZa1bCd4eFg7hIj0kLm3nOp6qRs9tUv2wXy5zAb8"].join(".");
+const FAKE_BASIC = ["dXNlcjpp", "bnZlbnRlZA=="].join("");
+const FAKE_BEARER = ["inv", "Ab3dEf6hIj9lMn2pQr"].join("");
+const FAKE_USERINFO = ["bob", "Hunter22x"].join(":");
+const FULLWIDTH_CODE = "\uff14\uff18\uff12\uff19\uff11\uff13"; // "482913" in full-width digits
+const NBSP = "\u00a0";
+const RU_NEW_PASSWORD = "\u0412\u0430\u0448 \u043d\u043e\u0432\u044b\u0439 \u043f\u0430\u0440\u043e\u043b\u044c"; // "your new password"
+const RU_PRODUCT_CODE = "\u043a\u043e\u0434 \u0442\u043e\u0432\u0430\u0440\u0430"; // "product code"
+const RU_ERROR_CODE = "\u043a\u043e\u0434 \u043e\u0448\u0438\u0431\u043a\u0438"; // "error code"
+const SEED_WORDS = "able baker cedar delta eagle fable gamma hotel ivory joker karma lemon";
+
+describe("redactSecrets: shapes found after the review", () => {
+  it.each([
+    ["multi-word password to the end of the line", "Password: correct horse battery\nBye", `Password: ${PLACEHOLDER.credential}\nBye`],
+    ["quoted password", 'Your password is "my secret pass" for now', `Your password is "${PLACEHOLDER.credential}" for now`],
+    ["password without a separator (Russian)", `${RU_NEW_PASSWORD} Kx7pq2Lm`, `${RU_NEW_PASSWORD} ${PLACEHOLDER.credential}`],
+    ["pass label after a login", "login: ivy / pass: Kx7pq2Lm", `login: ivy / pass: ${PLACEHOLDER.credential}`],
+    ["password under a blank line", "Password:\n\nKx7pq2Lm\n", `Password:\n\n${PLACEHOLDER.credential}\n`],
+    ["short reset path", "https://example.com/reset/Ab12Cd?x=1", `https://example.com/reset/${PLACEHOLDER.token}?x=1`],
+    ["short magic path", "https://example.com/r/Qw9xYz", `https://example.com/r/${PLACEHOLDER.token}`],
+    ["t parameter of 6+", "https://example.com/m?t=Ab12Cd", `https://example.com/m?t=${PLACEHOLDER.token}`],
+    ["URL userinfo", `https://${FAKE_USERINFO}@example.com/x`, `https://bob:${PLACEHOLDER.token}@example.com/x`],
+    ["card grouped by NBSP", `Card 4111${NBSP}1111${NBSP}1111${NBSP}1111`, `Card ${PLACEHOLDER.card}`],
+    ["card grouped by double spaces", "Paid with 4111  1111  1111  1111", `Paid with ${PLACEHOLDER.card}`],
+    ["Authorization: Basic", `Authorization: Basic ${FAKE_BASIC}`, `Authorization: Basic ${PLACEHOLDER.token}`],
+    ["Authorization: Bearer", `Authorization: Bearer ${FAKE_BEARER}`, `Authorization: Bearer ${PLACEHOLDER.token}`],
+    ["IBAN grouped", "IBAN GB82 WEST 1234 5698 7654 32 thanks", `IBAN ${PLACEHOLDER.card} thanks`],
+    ["IBAN in one run", "Pay to DE89370400440532013000.", `Pay to ${PLACEHOLDER.card}.`],
+    ["full-width digits", `Your code is ${FULLWIDTH_CODE}`, `Your code is ${PLACEHOLDER.code}`],
+    ["SendGrid key whole", `key ${FAKE_SENDGRID} end`, `key ${PLACEHOLDER.token} end`],
+    ["seed phrase under its label", `Your recovery phrase:\n${SEED_WORDS}\nKeep it safe`, `Your recovery phrase:\n${PLACEHOLDER.credential}\nKeep it safe`],
+    ["seed phrase on the label line", `Seed phrase: ${SEED_WORDS}`, `Seed phrase: ${PLACEHOLDER.credential}`],
+  ])("hides %s", (_name, text, expected) => {
+    expect(hidden(text)).toBe(expected);
+  });
+
+  it("hides every code of a recovery-code list", () => {
+    const text = "Your backup codes:\n\n1. 4821 9930\n2. 7710 2284\n3. ab3k-9xq2\n\nStore them safely.";
+    const r = redactSecrets(text);
+    for (const value of ["4821", "9930", "7710", "2284", "ab3k-9xq2"]) expect(r.text).not.toContain(value);
+    expect(r.text).toContain("Store them safely.");
+    expect(r.counts.code).toBe(5);
+    expect(hidden("Recovery codes:\n- 4821-9930\n- 7710-2284\n")).toBe(`Recovery codes:\n- ${PLACEHOLDER.code}\n- ${PLACEHOLDER.code}\n`);
+  });
+
+  it.each([
+    ["a zip code", "Zip code: 94103"],
+    ["a postal code", "Postal code 10115"],
+    ["a ZIP/postal code", "ZIP/postal code: 94103"],
+    ["a product code (Russian)", `${RU_PRODUCT_CODE}: 448812`],
+    ["an error code (Russian)", `${RU_ERROR_CODE} 5021`],
+    ["an error code", "Error code 5021, please retry"],
+    ["the code of conduct", "Read the code of conduct 2024 edition"],
+    ["a commit hash after the word commit", `commit ${FAKE_HEX40}`],
+    ["a commit URL", `https://github.com/acme/app/commit/${FAKE_HEX40}`],
+    ["an issue key after a key label", "ticket key: PROJ-1234"],
+    ["a password sentence without a value", "Your password has been changed."],
+    ["Bearer as a word", "The bearer of this letter"],
+    ["an IBAN-like string failing its checksum", "Ref GB82 WEST 1234 5698 7654 33"],
+  ])("leaves %s", (_name, text) => {
+    expect(hidden(text)).toBe(text);
   });
 });
 
@@ -274,6 +361,17 @@ describe("redactSecrets: linear time", () => {
     ["one token run", "aB3".repeat(66_000)],
     ["digit groups", "1 ".repeat(100_000)],
     ["labels", "password: ".repeat(20_000)],
+    ["quoted labels", 'password: "'.repeat(18_000)],
+    ["unclosed quotes", "password: \u00ab".repeat(18_000)],
+    ["bare labels", "password ".repeat(22_000)],
+    ["seed labels", "seed phrase ".repeat(16_000)],
+    ["seed label lines", "mnemonic\n".repeat(22_000)],
+    ["recovery labels", "backup codes\n".repeat(15_000)],
+    ["auth schemes", "Authorization: Bearer ".repeat(9_000)],
+    ["IBAN starts", "GB82 ".repeat(40_000)],
+    ["SendGrid starts", "SG.".repeat(66_000)],
+    ["URL user info", "https://a@".repeat(20_000)],
+    ["no-break groups", "1\u00a0\u00a0".repeat(66_000)],
     ["app password shapes", "abcd ".repeat(40_000)],
     ["upper words", "AB12CD ".repeat(28_000)],
   ])("%s: 200 000 characters in one call", (_name, text) => {

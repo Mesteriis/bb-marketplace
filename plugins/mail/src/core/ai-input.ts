@@ -11,6 +11,7 @@ import { sha256Hex } from "./compose.ts";
 import { removeControls, removeInvisible, truncateText } from "./html-entities.ts";
 import { draftModeSchema, type AiErrorKind, type MailAddress } from "./model.ts";
 import { redactSecrets, hiddenTotal, type Redaction } from "./redact.ts";
+import { isAttribution } from "./quotes.ts";
 
 // ---------------------------------------------------------------------------
 // Kinds, caps and rates
@@ -107,13 +108,9 @@ export class AiError extends Error {
 const CONTROLS = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g;
 
 const WROTE = "wrote:";
-/** The Russian forms of "wrote:" (masculine, feminine, either). */
-const WROTE_RU = ["\u043d\u0430\u043f\u0438\u0441\u0430\u043b:", "\u043d\u0430\u043f\u0438\u0441\u0430\u043b\u0430:", "\u043d\u0430\u043f\u0438\u0441\u0430\u043b(\u0430):"];
 
-function isAttribution(line: string): boolean {
-  const text = line.trim();
-  return text.endsWith(WROTE) || WROTE_RU.some((suffix) => text.endsWith(suffix));
-}
+// The attribution rule moved to quotes.ts (slice 3h), so the page can read it without this module.
+export { isAttribution };
 
 /**
  * The message without quoted text: lines starting with ">" removed, then a
@@ -520,7 +517,8 @@ const SCAN_STARTS = 20;
 
 /**
  * The JSON object of a model answer: a fenced block first, else the first
- * balanced top-level {...} that parses (string-aware scan). Null when none.
+ * balanced top-level {...} that parses (string-aware scan; an unbalanced or
+ * unparsable brace moves on to the next one, up to SCAN_STARTS). Null when none.
  */
 export function extractJson(output: string): Record<string, unknown> | null {
   const block = fenced(output);
@@ -533,8 +531,8 @@ export function extractJson(output: string): Record<string, unknown> | null {
     const start = output.indexOf("{", from);
     if (start === -1) return null;
     const end = balancedEnd(output, start);
-    if (end === -1) return null;
-    const parsed = parseObject(output.slice(start, end));
+    // An unbalanced brace ("use { as a set") may precede the answer: try the next one.
+    const parsed = end === -1 ? null : parseObject(output.slice(start, end));
     if (parsed !== null) return parsed;
     from = start + 1;
   }

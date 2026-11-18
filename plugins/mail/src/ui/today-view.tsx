@@ -14,6 +14,7 @@ import type { Category } from "./category-chips.tsx";
 import { daysText } from "./reminder-strip.tsx";
 import { LoadingState } from "./empty-states.tsx";
 import { addressLabel, formatListDate, participantsLabel, subjectOrPlaceholder } from "./thread-list.tsx";
+import { tx } from "./i18n/index.ts";
 
 export interface TodayViewProps {
   load: () => Promise<TodayData>;
@@ -31,6 +32,23 @@ export interface TodayViewProps {
   /** Changes when the page should load again (mail changed). */
   refreshKey?: number;
   pollMs?: number;
+  /** Slice 3g: the Dev view; absent: no Dev line. */
+  onOpenDev?: () => void;
+  /** Slice 3g: the Inbox, where the Ready to start strip is; absent: no rules line. */
+  onReviewRules?: () => void;
+}
+
+/** "Dev: 2 CI failures in 1 repository \u00b7 1 alert firing", or null when nothing failed or fires. */
+export function devLine(dev: TodayData["dev"] | undefined): string | null {
+  if (dev === undefined) return null;
+  const parts: string[] = [];
+  if (dev.ciFailed > 0) {
+    parts.push(
+      `${dev.ciFailed} CI ${dev.ciFailed === 1 ? "failure" : "failures"} in ${dev.repos} ${dev.repos === 1 ? "repository" : "repositories"}`,
+    );
+  }
+  if (dev.alertsFiring > 0) parts.push(`${dev.alertsFiring} ${dev.alertsFiring === 1 ? "alert" : "alerts"} firing`);
+  return parts.length === 0 ? null : tx("Dev: {p1}", { p1: parts.join(" \u00b7 ") });
 }
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
@@ -58,7 +76,7 @@ export function TodayView(props: TodayViewProps) {
       setData(await load());
       setError(null);
     } catch (problem) {
-      setError(problem instanceof Error && problem.message !== "" ? problem.message : "Today could not be loaded");
+      setError(tx(problem instanceof Error && problem.message !== "" ? problem.message : "Today could not be loaded"));
     }
   }, [load]);
   useEffect(() => {
@@ -77,7 +95,7 @@ export function TodayView(props: TodayViewProps) {
         {error}
       </p>
     ) : (
-      <LoadingState label={"Loading Today\u2026"} />
+      <LoadingState label={tx("Loading Today\u2026")} />
     );
   }
   const since = data.since;
@@ -85,7 +103,7 @@ export function TodayView(props: TodayViewProps) {
   return (
     <div className="flex flex-col gap-5">
       <div className="flex flex-wrap items-center gap-2">
-        <h1 className="min-w-0 flex-1 text-lg font-semibold text-foreground">Today</h1>
+        <h1 className="min-w-0 flex-1 text-lg font-semibold text-foreground">{tx("Today")}</h1>
         {data.needsReply.length > 0 ? (
           <span title={props.aiDisabledReason ?? undefined} className="inline-flex">
             <Button
@@ -95,14 +113,32 @@ export function TodayView(props: TodayViewProps) {
               onClick={() => void digest.run({ kind: "digest" })}
             >
               <Icon name="Sparkles" fallback="Bot" aria-hidden />
-              Summarize
+              {tx("Summarize")}
             </Button>
           </span>
         ) : null}
       </div>
+      {props.onOpenDev !== undefined && devLine(data.dev) !== null ? (
+        <div className="flex flex-wrap items-center gap-2 text-sm">
+          <span className="min-w-0 flex-1 text-foreground">{devLine(data.dev)}</span>
+          <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={props.onOpenDev}>
+            {tx("Open Dev")}
+          </Button>
+        </div>
+      ) : null}
+      {props.onReviewRules !== undefined && (data.rulesReady ?? 0) > 0 ? (
+        <div className="flex flex-wrap items-center gap-2 text-sm">
+          <span className="min-w-0 flex-1 text-foreground">
+            {data.rulesReady === 1 ? tx("1 rule thread is ready to start") : `${data.rulesReady} rule threads are ready to start`}
+          </span>
+          <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={props.onReviewRules}>
+            {tx("Review")}
+          </Button>
+        </div>
+      ) : null}
       {digest.state.status === "running" ? (
         <p role="status" className="text-xs text-muted-foreground">
-          {"Summarizing the conversations\u2026"}
+          {tx("Summarizing the conversations\u2026")}
         </p>
       ) : null}
       {digest.state.status === "failed" ? <AiFailure state={digest.state} /> : null}
@@ -114,9 +150,9 @@ export function TodayView(props: TodayViewProps) {
         </div>
       ) : null}
 
-      <Section title="Needs a reply">
+      <Section title={tx("Needs a reply")}>
         {data.needsReply.length === 0 ? (
-          <p className="text-sm text-muted-foreground">Nothing waits for your reply.</p>
+          <p className="text-sm text-muted-foreground">{tx("Nothing waits for your reply.")}</p>
         ) : (
           <ul className="flex flex-col divide-y divide-border rounded-md border border-border">
             {data.needsReply.map((thread) => (
@@ -136,7 +172,7 @@ export function TodayView(props: TodayViewProps) {
                     </time>
                   ) : null}
                   <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={act(() => props.onNoReply(thread.id))}>
-                    No reply needed
+                    {tx("No reply needed")}
                   </Button>
                 </div>
                 {gists.has(thread.id) ? (
@@ -150,15 +186,15 @@ export function TodayView(props: TodayViewProps) {
         )}
       </Section>
 
-      <Section title="Waiting for a reply">
+      <Section title={tx("Waiting for a reply")}>
         {data.waiting.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No reminder is due.</p>
+          <p className="text-sm text-muted-foreground">{tx("No reminder is due.")}</p>
         ) : (
           <ul className="flex flex-col divide-y divide-border rounded-md border border-border">
             {data.waiting.map((reminder) => (
               <li key={reminder.id} className="flex flex-wrap items-center gap-2 px-3 py-2 text-sm">
                 <span className="min-w-0 flex-1 truncate">
-                  <span className="text-foreground">{reminder.recipient !== null ? addressLabel(reminder.recipient) : "Unknown recipient"}</span>
+                  <span className="text-foreground">{reminder.recipient !== null ? addressLabel(reminder.recipient) : tx("Unknown recipient")}</span>
                   <span className="text-muted-foreground">{` \u00b7 ${subjectOrPlaceholder(reminder.subject)}`}</span>
                 </span>
                 <Button
@@ -168,7 +204,7 @@ export function TodayView(props: TodayViewProps) {
                   disabled={reminder.threadId === null}
                   onClick={() => reminder.threadId !== null && props.onOpen(reminder.accountId, reminder.threadId)}
                 >
-                  Open
+                  {tx("Open")}
                 </Button>
                 <Button
                   variant="ghost"
@@ -176,10 +212,10 @@ export function TodayView(props: TodayViewProps) {
                   className="h-7 px-2 text-xs"
                   onClick={act(() => props.onReminderSnooze(reminder, props.reminderDays))}
                 >
-                  {`Remind in ${daysText(props.reminderDays)}`}
+                  {tx("Remind in {p1}", { p1: daysText(props.reminderDays) })}
                 </Button>
                 <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={act(() => props.onReminderDismiss(reminder))}>
-                  Dismiss
+                  {tx("Dismiss")}
                 </Button>
               </li>
             ))}
@@ -187,9 +223,9 @@ export function TodayView(props: TodayViewProps) {
         )}
       </Section>
 
-      <Section title="Tasks due">
+      <Section title={tx("Tasks due")}>
         {data.tasksDue.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No task is due.</p>
+          <p className="text-sm text-muted-foreground">{tx("No task is due.")}</p>
         ) : (
           <ul className="flex flex-col divide-y divide-border rounded-md border border-border">
             {data.tasksDue.map((task) => (
@@ -199,7 +235,7 @@ export function TodayView(props: TodayViewProps) {
                 </span>
                 {task.due !== null ? <span className="text-xs text-muted-foreground">{task.due}</span> : null}
                 <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={act(() => props.onTaskDone(task))}>
-                  Done
+                  {tx("Done")}
                 </Button>
               </li>
             ))}
@@ -207,9 +243,9 @@ export function TodayView(props: TodayViewProps) {
         )}
       </Section>
 
-      <Section title="Since yesterday">
+      <Section title={tx("Since yesterday")}>
         {sinceParts.length === 0 && since.bulk === 0 ? (
-          <p className="text-sm text-muted-foreground">Nothing new from lists or services.</p>
+          <p className="text-sm text-muted-foreground">{tx("Nothing new from lists or services.")}</p>
         ) : (
           <p className="flex flex-wrap gap-x-2 text-sm text-muted-foreground">
             {sinceParts.map(({ key, one, many }) => {

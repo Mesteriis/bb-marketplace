@@ -2,6 +2,10 @@
 // canned Jira fetch. The real src/ui runs against this, so pointer and
 // keyboard flows exercise the actual logic (no UI mock). Dev-only.
 import {
+  listAssignedJiraProjects,
+  fetchJiraKanban,
+  jiraKanbanClientFor,
+  prepareWorklog,
   applyTransition,
   createBoard,
   createConnection,
@@ -44,12 +48,20 @@ function issue(key: string, summary: string, statusName: string, labels: string[
 function demoJiraFetch(): FetchLike {
   return async (url, init) => {
     const method = init.method ?? "GET";
+    if (url.includes("/project/search")) return json({ values: [{ key: "DEMO", name: "Demo project" }, { key: "API", name: "API project" }], isLast: true });
+    if (url.includes("/rest/agile/1.0/board?") ) return json({ values: [{ id: 7, name: "Delivery Kanban" }], isLast: true });
+    if (url.includes("/configuration")) return json({ columnConfig: { columns: [{ name: "Ready", statuses: [{ id: "1" }, { id: "2" }] }, { name: "Delivered", statuses: [{ id: "3" }] }] } });
+    if (url.includes("/board/7/issue")) return json({ total: 2, issues: [
+      { ...issue("DEMO-101", "Ship mobile onboarding", "To do", ["mobile"], "Onboarding"), fields: { summary: "Ship mobile onboarding", status: { id: "1", name: "To do" } } },
+      { key: "DEMO-104", fields: { summary: "Team board task", status: { id: "2", name: "In progress" } } },
+    ] });
     if (url.includes("/myself")) return json({ displayName: "Demo User" });
     if (url.includes("/search")) {
       return json({
         issues: [
           issue("DEMO-101", "Ship mobile onboarding", "To do", ["mobile", "growth"], "Onboard new users in three clear steps."),
           issue("DEMO-102", "Migrate auth to OIDC", "In progress", ["security"], "Replace the legacy session store with OIDC."),
+          issue("API-201", "Improve API error handling", "To do", ["platform"], "Return actionable errors to API clients."),
           issue("DEMO-103", "Deprecate legacy API", "Done", ["platform"], "Mark the v1 endpoints deprecated and document the migration."),
         ],
         nextPageToken: null,
@@ -57,8 +69,8 @@ function demoJiraFetch(): FetchLike {
     }
     if (url.includes("/transitions") && method === "GET") {
       return json({ transitions: [
-        { id: "11", name: "Start", to: { name: "In progress" } },
-        { id: "21", name: "Complete", to: { name: "Done" } },
+        { id: "11", name: "Start", to: { id: "2", name: "In progress" } },
+        { id: "21", name: "Complete", to: { id: "3", name: "Done" } },
         { id: "31", name: "Reopen", to: { name: "To do" } },
       ] });
     }
@@ -103,6 +115,9 @@ export async function buildDemoApi(): Promise<TaskboardApi> {
   }
 
   return {
+    jiraProjects: (connectionId) => listAssignedJiraProjects(connectionId, syncDeps),
+    jiraBoards: (connectionId, projectKey) => jiraKanbanClientFor(connectionId, syncDeps).boards(projectKey),
+    jiraKanban: (connectionId, projectKey, boardId) => fetchJiraKanban(connectionId, projectKey, boardId, syncDeps),
     listBoards: () => Promise.resolve(listBoards(boardDeps)),
     listConnections: () => Promise.resolve(listConnections(connectionDeps)),
     listTasks: (boardId) => Promise.resolve(listTasks(boardId, boardDeps)),
@@ -126,6 +141,8 @@ export async function buildDemoApi(): Promise<TaskboardApi> {
     listRuns: (taskId) => Promise.resolve(listRunsForTask(taskId, lifecycleDeps)),
     completeRun: (input) => completeRun(input, lifecycleDeps),
     updateTimeEntry: (input) => Promise.resolve(updateTimeEntry(input, lifecycleDeps)),
+    prepareWorklog: (input) => Promise.resolve(prepareWorklog(input, lifecycleDeps)),
+    listWorklogs: (taskId) => Promise.resolve(lifecycleDeps.lifecycle.listWorklogsForTask(taskId)),
     submitTimeEntry: (input) => submitTimeEntry(input, lifecycleDeps),
     listPendingTimeEntries: () => Promise.resolve(listPendingTimeEntries(lifecycleDeps)),
     listTimeEntriesByTask: (taskId) => Promise.resolve(lifecycleDeps.lifecycle.listTimeEntriesByTask(taskId)),

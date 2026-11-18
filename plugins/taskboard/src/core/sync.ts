@@ -1,3 +1,4 @@
+import { createJiraKanbanClient } from "./jira-kanban.ts";
 // Jira import and status transitions. Imported issues coexist with local
 // tasks in the same board; their origin ("jira") and originKey keep them
 // traceable back to the tracker, and a transition writes back to Jira before
@@ -91,7 +92,7 @@ function isValidTask(task: Task): boolean {
   return taskSchema.safeParse(task).success;
 }
 
-function upsertFromIssue(board: Board, column: Column, issue: JiraIssueSummary, deps: SyncDeps): boolean {
+function upsertFromIssue(board: Board, column: Column, issue: JiraIssueSummary, deps: SyncDeps, inScope = true): boolean {
   const title = issue.summary.trim() === "" ? issue.key : issue.summary.trim();
   if (title === "" || issue.key === "") return false;
   const existing = deps.store
@@ -101,6 +102,7 @@ function upsertFromIssue(board: Board, column: Column, issue: JiraIssueSummary, 
   if (existing !== undefined) {
     const next: Task = {
       ...existing,
+      inScope,
       title,
       status: column.id,
       originUrl: issue.url,
@@ -120,6 +122,7 @@ function upsertFromIssue(board: Board, column: Column, issue: JiraIssueSummary, 
     description: issue.description,
     status: column.id,
     origin: "jira",
+    inScope,
     originKey: issue.key,
     originUrl: issue.url,
     labels: issue.labels,
@@ -132,11 +135,8 @@ function upsertFromIssue(board: Board, column: Column, issue: JiraIssueSummary, 
   return true;
 }
 
-export function defaultJql(connection: { projectKey: string; jql: string }): string {
-  const jql = connection.jql.trim();
-  if (jql !== "") return jql;
-  const projectKey = connection.projectKey.trim();
-  return projectKey === "" ? "" : "project = " + JSON.stringify(projectKey);
+export function defaultJql(_connection: { projectKey: string; jql: string }): string {
+  return "assignee = currentUser() ORDER BY project ASC, updated DESC";
 }
 
 export async function fetchIssues(
@@ -146,9 +146,6 @@ export async function fetchIssues(
   const connection = deps.store.getConnection(connectionId);
   if (connection === null) throw new DomainError("not_found", "Connection not found");
   const jql = defaultJql(connection);
-  if (connection.edition === "cloud" && jql === "") {
-    throw new DomainError("invalid", "Cloud connections need a project key or JQL to scope the fetch");
-  }
   return serialize(connectionKey(connectionId), () => fetchIssuesInner(connectionId, jql, deps));
 }
 
@@ -184,6 +181,12 @@ async function fetchIssuesInner(
 
   let imported = 0;
   deps.store.transaction(() => {
+    if (!truncated) {
+      const keys = new Set(issues.map((issue) => issue.key));
+      for (const task of deps.store.listTasks(board.id)) {
+        if (task.origin === "jira" && !keys.has(task.originKey ?? "")) deps.store.saveTask({ ...task, inScope: false });
+      }
+    }
     for (const issue of issues) {
       const column = columnForStatus(board.id, issue.statusName, columns, deps);
       if (upsertFromIssue(board, column, issue, deps)) imported += 1;
@@ -318,4 +321,50 @@ async function moveTaskInner(taskId: string, status: string, deps: SyncDeps): Pr
   if (!isValidTask(next)) throw new DomainError("conflict", "The move result could not be stored");
   deps.store.saveTask(next);
   return next;
+}
+
+
+export function jiraKanbanClientFor(connectionId: string, deps: SyncDeps) {
+  return createJiraKanbanClient(resolveJiraAuth(connectionId, deps), deps.fetchFn);
+}
+
+export async function fetchJiraKanban(connectionId: string, projectKey: string, jiraBoardId: number, deps: SyncDeps) {
+  return serialize(connectionKey(connectionId), async () => {
+    const originalBoard = deps.store.listBoards().find(board => board.connectionId === connectionId);
+    if (!originalBoard) throw new DomainError("not_found", "Connected board not found");
+    const client = jiraKanbanClientFor(connectionId, deps);
+    const boards = await client.boards(projectKey);
+    if (!boards.some(board => board.id === jiraBoardId)) throw new DomainError("not_found", "Jira board is not available for this project");
+    const columns = await client.columns(jiraBoardId);
+    const issues = await client.issues(jiraBoardId, projectKey);
+    resolveJiraAuth(connectionId, deps);
+    const board = deps.store.getBoard(originalBoard.id);
+    if (!board || board.connectionId !== connectionId) throw new DomainError("not_found", "Board was removed");
+    const storedColumns = deps.store.listColumns(board.id);
+    const items: { task: Task; statusId: string }[] = [];
+    deps.store.transaction(() => {
+      for (const issue of issues) {
+        const existing = deps.store.listTasks(board.id).find(task => task.origin === "jira" && task.originKey === issue.key);
+        const column = columnForStatus(board.id, issue.statusName, storedColumns, deps);
+        if (upsertFromIssue(board, column, issue, deps, existing?.inScope !== false && existing !== undefined)) {
+          const task = deps.store.listTasks(board.id).find(task => task.origin === "jira" && task.originKey === issue.key)!;
+          items.push({ task, statusId: issue.statusId });
+        }
+      }
+    });
+    return { columns, items };
+  });
+}
+
+
+/** Project picker follows the last completed assigned-task fetch, not the
+ * board cache: viewing teammates' tasks must not expand the project choices. */
+export async function listAssignedJiraProjects(connectionId: string, deps: SyncDeps) {
+  const board = deps.store.listBoards().find(board => board.connectionId === connectionId);
+  const keys = new Set(board ? deps.store.listTasks(board.id)
+    .filter(task => task.origin === "jira" && task.inScope !== false && task.originKey)
+    .map(task => task.originKey!.replace(/-\d+$/, "")) : []);
+  if (keys.size === 0) return [];
+  const projects = await jiraKanbanClientFor(connectionId, deps).projects();
+  return projects.filter(project => keys.has(project.key));
 }

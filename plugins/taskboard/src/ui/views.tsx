@@ -25,7 +25,7 @@ function LabelChips({ task }: { task: Task }) {
   return (
     <>
       {task.labels.slice(0, 3).map((label) => (
-        <span key={label} className="shrink-0 rounded-full border border-border px-1.5 py-0.5 text-xs text-muted-foreground">
+        <span key={label} className="max-w-40 shrink-0 truncate rounded-full border border-border px-1.5 py-0.5 text-xs text-muted-foreground">
           {label}
         </span>
       ))}
@@ -45,7 +45,7 @@ function MoveSelect({ task, columns, canMove, onMove }: { task: Task; columns: C
   return (
     <select
       aria-label="Move task"
-      className="shrink-0 rounded-md border border-input bg-transparent px-2 py-1 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50"
+      className="max-w-full shrink-0 rounded-md border border-input bg-transparent px-2 py-1 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50"
       value={task.status}
       disabled={!canMove}
       onChange={(event) => onMove(task.id, event.target.value)}
@@ -82,13 +82,15 @@ export function ListView({ tasks, columns, canMove, onOpen, onMove }: ViewProps)
             ) : (
               <ul className="flex flex-col divide-y divide-border rounded-md border border-border">
                 {list.map((task) => (
-                  <li key={task.id} className="flex items-center gap-2 px-3 py-2">
-                    <button type="button" className="min-w-0 flex-1 truncate text-left text-sm hover:underline" onClick={() => onOpen(task)}>
+                  <li key={task.id} className="flex flex-col items-start gap-2 px-3 py-2 sm:flex-row sm:items-center">
+                    <button type="button" className="w-full min-w-0 flex-1 truncate text-left text-sm hover:underline" onClick={() => onOpen(task)}>
                       {task.title}
                     </button>
-                    <OriginBadge task={task} />
-                    <LabelChips task={task} />
-                    <MoveSelect task={task} columns={columns} canMove={canMove(task)} onMove={onMove} />
+                    <div className="flex max-w-full flex-wrap items-center gap-2">
+                      <OriginBadge task={task} />
+                      <LabelChips task={task} />
+                      <MoveSelect task={task} columns={columns} canMove={canMove(task)} onMove={onMove} />
+                    </div>
                   </li>
                 ))}
               </ul>

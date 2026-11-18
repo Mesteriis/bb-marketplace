@@ -78,12 +78,11 @@ describe("normalizeDoc", () => {
     expect(norm(input)).toEqual(input);
   });
 
-  it("strips heading, code, image and table nodes and keeps their text", () => {
+  it("strips heading, image and table nodes and keeps their text", () => {
     const result = norm(
       doc(
         { type: "heading", attrs: { level: 2 }, content: [text("Title")] },
-        { type: "codeBlock", content: [text("line one\nline two")] },
-        p(text("see "), { type: "image", attrs: { src: "https://tracker.example.net/p.png" } }, text("this", [{ type: "code" }])),
+        p(text("see "), { type: "image", attrs: { src: "https://tracker.example.net/p.png" } }, text("this")),
         {
           type: "table",
           content: [
@@ -93,15 +92,50 @@ describe("normalizeDoc", () => {
         { type: "horizontalRule" },
       ),
     );
-    expect(result).toEqual(
+    expect(result).toEqual(doc(p(text("Title")), p(text("see "), text("this")), p(text("cell"))));
+    expect(JSON.stringify(result)).not.toMatch(/image|tracker|table|heading|attrs/);
+  });
+
+  it("keeps code blocks and the inline code mark (slice 3g)", () => {
+    const result = norm(
       doc(
-        p(text("Title")),
-        p(text("line one"), { type: "hardBreak" }, text("line two")),
-        p(text("see "), text("this")),
-        p(text("cell")),
+        { type: "codeBlock", attrs: { language: "TypeScript" }, content: [text("const a = 1;\n\tif (a < 2) {}")] },
+        { type: "codeBlock", content: [text("line one\nline two")] },
+        p(text("run "), text("npm test", [{ type: "code" }])),
       ),
     );
-    expect(JSON.stringify(result)).not.toMatch(/image|tracker|table|heading|code|attrs/);
+    expect(result).toEqual(
+      doc(
+        { type: "codeBlock", attrs: { language: "typescript" }, content: [text("const a = 1;\n\tif (a < 2) {}")] },
+        { type: "codeBlock", attrs: { language: null }, content: [text("line one\nline two")] },
+        p(text("run "), text("npm test", [{ type: "code" }])),
+      ),
+    );
+  });
+
+  it("drops a bad code language and marks inside a code block, and keeps an empty block", () => {
+    const result = norm(
+      doc(
+        { type: "codeBlock", attrs: { language: "x\"><script>" }, content: [text("a", [{ type: "bold" }]), { type: "hardBreak" }, text("b")] },
+        { type: "codeBlock", attrs: { language: "a".repeat(40) } },
+      ),
+    );
+    expect(result).toEqual(
+      doc(
+        { type: "codeBlock", attrs: { language: null }, content: [text("a\nb")] },
+        { type: "codeBlock", attrs: { language: null } },
+      ),
+    );
+  });
+
+  it("keeps a code block inside a quote, as a reply's quoted <pre> arrives from the editor", () => {
+    const input = doc(p(text("Reply")), {
+      type: "blockquote",
+      content: [p(text("On Mon you wrote:")), { type: "codeBlock", attrs: { language: null }, content: [text("x = 1\ny = 2")] }],
+    });
+    expect(norm(input)).toEqual(input);
+    expect(renderDoc(norm(input)).html).toContain("<blockquote><p>On Mon you wrote:</p><pre><code>x = 1\ny = 2</code></pre></blockquote>");
+    expect(renderDoc(norm(input)).text).toContain("> x = 1\n> y = 2");
   });
 
   it("keeps a link's href for http, https and mailto only", () => {
@@ -283,6 +317,10 @@ describe("htmlFitsDoc", () => {
     expect(htmlFitsDoc("<div>Line<br></div><div><i>two</i> <a href=\"mailto:a@example.org\">x</a></div>")).toBe(true);
   });
 
+  it("fits code blocks and inline code (slice 3g)", () => {
+    expect(htmlFitsDoc('<pre><code class="language-ts">const a = 1;</code></pre><p>use <code>a</code></p>')).toBe(true);
+  });
+
   it("refuses images, tables, headings, styles and links the editor drops", () => {
     for (const html of [
       '<p>Hi <img src="cid:part1"></p>',
@@ -292,11 +330,47 @@ describe("htmlFitsDoc", () => {
       "<style>p{color:red}</style><p>x</p>",
       '<p><font color="red">x</font></p>',
       '<p><a href="ftp://example.org/f">file</a></p>',
-      "<pre>code</pre>",
+      '<pre style="color:red">code</pre>',
       "<s>gone</s>",
     ]) {
       expect(htmlFitsDoc(html), html).toBe(false);
     }
+  });
+});
+
+describe("renderDoc: code (slice 3g)", () => {
+  it("renders code blocks and inline code, escaped, in HTML and plain text", () => {
+    const rendered = renderDoc(
+      norm(
+        doc(
+          p(text("Run "), text("a<b & c", [{ type: "code" }]), text(" now")),
+          { type: "codeBlock", attrs: { language: "c++" }, content: [text("if (a < b && c) {\n    return 1;\n}")] },
+          { type: "codeBlock", content: [text("plain & simple")] },
+        ),
+      ),
+    );
+    expect(rendered.html).toContain("<p>Run <code>a&lt;b &amp; c</code> now</p>");
+    expect(rendered.html).toContain('<pre><code class="language-c++">if (a &lt; b &amp;&amp; c) {\n    return 1;\n}</code></pre>');
+    expect(rendered.html).toContain("<pre><code>plain &amp; simple</code></pre>");
+    expect(rendered.text).toBe(["Run `a<b & c` now", "", "if (a < b && c) {", "    return 1;", "}", "", "plain & simple"].join("\n"));
+  });
+
+  it("never wraps a long code line", () => {
+    const long = `const x = "${"y".repeat(100)}"; // and more words after it`;
+    expect(renderDoc(norm(doc({ type: "codeBlock", content: [text(long)] }))).text).toBe(long);
+  });
+
+  it("counts code as kept and code text as text", () => {
+    expect(docLosesContent(doc({ type: "codeBlock", attrs: { language: "js" }, content: [text("x")] }, p(text("y", [{ type: "code" }]))) as never)).toBe(false);
+    expect(isDocEmpty(norm(doc({ type: "codeBlock", content: [text("x")] })))).toBe(false);
+    expect(isDocEmpty(norm(doc({ type: "codeBlock" })))).toBe(true);
+  });
+
+  it("ownerParagraphs reads a code block as one paragraph and reports it as formatting", () => {
+    expect(ownerParagraphs(norm(doc(p(text("Hi")), { type: "codeBlock", content: [text("a\nb")] })))).toEqual({
+      paragraphs: ["Hi", "a\nb"],
+      marks: true,
+    });
   });
 });
 

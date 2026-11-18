@@ -3,21 +3,25 @@
 // call. Rows hold ids, counts, codes, timestamps, the thread id and (for
 // owner_ai only) the provider and model setting values; never a query, a
 // question, an instruction, a subject, a name, an address, a snippet, a
-// result or an error text.
+// result or an error text. Slice 3g adds the owner's BB hand-offs and mail
+// rules; their ref_id is a BB thread, Taskboard task or rule id, never a path,
+// project name, title or prompt.
 
-export const LOG_ACTORS = ["agent", "mention", "handoff", "cli", "owner_ai"] as const;
+export const LOG_ACTORS = ["agent", "mention", "handoff", "cli", "owner_ai", "owner_bb", "rule"] as const;
 export type LogActor = (typeof LOG_ACTORS)[number];
 
 export const LOG_TOOLS = [
   "search", "read", "contacts", "inbox", "propose", "templates", "triage", "mention", "handoff",
   "cli_search", "cli_read",
   "ai_translate", "ai_summary", "ai_ask", "ai_tasks", "ai_categories", "ai_digest", "ai_draft",
+  "bb_thread", "bb_task", "project_save", "patch_handoff", "incident", "rule_thread",
 ] as const;
 export type LogTool = (typeof LOG_TOOLS)[number];
 
 export const LOG_OUTCOMES = [
   "ok", "empty", "refused_off", "refused_scope", "refused_invalid", "refused_caps",
   "proposed", "sent", "opened", "cancelled", "expired", "applied", "failed",
+  "prepared", "started", "capped",
 ] as const;
 export type LogOutcome = (typeof LOG_OUTCOMES)[number];
 
@@ -99,6 +103,12 @@ export const LOG_TOOL_LABEL: Record<LogTool, string> = {
   ai_categories: "Suggested categories",
   ai_digest: "Summarized Today",
   ai_draft: "Improved your draft",
+  bb_thread: "Started a BB thread",
+  bb_task: "Made a task",
+  project_save: "Saved files to a project",
+  patch_handoff: "Handed a patch to an agent",
+  incident: "Opened or updated an incident thread",
+  rule_thread: "Mail rule",
 };
 
 export const LOG_OUTCOME_LABEL: Record<LogOutcome, string> = {
@@ -115,4 +125,7 @@ export const LOG_OUTCOME_LABEL: Record<LogOutcome, string> = {
   expired: "Expired",
   applied: "Applied",
   failed: "Failed",
+  prepared: "Ready to start",
+  started: "Started",
+  capped: "Held: limit reached",
 };

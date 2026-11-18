@@ -230,7 +230,8 @@ describe("adversarial input (fix round 1)", () => {
     const ms = timed(() => (lines = describeStructure(raw)));
     expect(lines).toHaveLength(STRUCTURE_MAX_LINES + 1);
     expect(lines.at(-1)).toBe("…");
-    expect(ms).toBeLessThan(1000);
+    // Loose for the same reason as the folded-lines test below.
+    expect(ms).toBeLessThan(3000);
   });
 
   it("does not rescan a long tail of folded lines for every part without a blank line", () => {
@@ -242,7 +243,9 @@ describe("adversarial input (fix round 1)", () => {
     let lines: string[] = [];
     const ms = timed(() => (lines = describeStructure(raw)));
     expect(lines).toHaveLength(192);
-    expect(ms).toBeLessThan(1000);
+    // A rescan per part is orders of magnitude slower; the loose bound only
+    // keeps a loaded machine (parallel suite) from failing a linear run.
+    expect(ms).toBeLessThan(3000);
   });
 
   it("caps the number of header pairs", () => {

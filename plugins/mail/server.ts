@@ -27,6 +27,7 @@ import {
   FETCH_FAILED_MESSAGE,
   RawRefusal,
   STALE_MESSAGE,
+  TOO_LARGE_MESSAGE,
   TicketBook,
   checkRawRef,
   downloadHeaders,
@@ -56,14 +57,63 @@ import { createMimeBuilder } from "./src/adapters/bb/mime-builder.ts";
 import { createOriginalReader } from "./src/adapters/bb/original-reader.ts";
 import { createOutboxWorker, type OutboxWorker } from "./src/adapters/bb/outbox-worker.ts";
 import { createSmtpTransport } from "./src/adapters/bb/smtp-transport.ts";
+import {
+  BACKUP_REFUSALS,
+  BackupRefused,
+  accountSection,
+  backupDatabase,
+  RESUMED_CHECK,
+  databaseSection,
+  doctorText,
+  worstLevel,
+  type DoctorDeps,
+  type DoctorSection,
+} from "./src/adapters/bb/doctor.ts";
 import { UploadBook, UploadError } from "./src/adapters/bb/uploads.ts";
-import { MIGRATIONS, createSqliteStore } from "./src/adapters/bb/sqlite-store.ts";
+import { MIGRATIONS, createSqliteStore, hardenDatabase } from "./src/adapters/bb/sqlite-store.ts";
+import { createSenderChecks, type SenderChecks } from "./src/adapters/bb/sender-checks.ts";
+import { createPgpEngine } from "./src/adapters/bb/pgp-openpgp.ts";
+import { createPgpService, type PgpService } from "./src/adapters/bb/pgp-service.ts";
+import { readCalendarText } from "./src/adapters/bb/invite.ts";
+import { ARCHIVE_REFUSALS, ArchiveRefused, importArchive, readArchiveAttachment } from "./src/adapters/bb/archive-import.ts";
+import { ARCHIVE_PAGE, type ArchiveRecord } from "./src/core/archive.ts";
+import type { ArchiveView } from "./src/core/contract.ts";
+import {
+  EXPORT_MAX_DEFAULT,
+  EXPORT_MAX_LIMIT,
+  EXPORT_REFUSALS,
+  ExportRefused,
+  exportFolder,
+  type ExportResult,
+} from "./src/adapters/bb/export.ts";
+import { buildInviteReply, parseInvite, type InviteAnswer, type InviteView } from "./src/core/calendar-invite.ts";
+import type { PgpEngine } from "./src/core/pgp.ts";
+import { createServerJobs } from "./src/adapters/bb/server-search-jobs.ts";
+import { RetryLater, charsetOf, createAttachmentIndexer, matchingPart } from "./src/adapters/bb/attachment-indexer.ts";
+import { extractPdfText } from "./src/adapters/bb/pdf-text.ts";
+import { Slice3hRefusal, createSlice3hRpc, decodeCursor, encodeCursor, type Slice3hRpc } from "./src/adapters/bb/slice-3h-rpc.ts";
+import { SNIFF_BYTES, VIEW_CAPS, sniffType, viewableAs } from "./src/core/file-kinds.ts";
 import { createSyncLoop, type SyncLoop } from "./src/adapters/bb/sync-service.ts";
 import { createIdleSupervisor, type IdleSupervisor } from "./src/adapters/bb/idle-service.ts";
 import { NewMailBook } from "./src/adapters/bb/new-mail-book.ts";
 import { createSnoozeClock, type SnoozeClock } from "./src/adapters/bb/snooze-clock.ts";
 import { ONE_CLICK_TOTAL_MS, UnsubscribeRate, createOneClickPoster } from "./src/adapters/bb/one-click.ts";
 import { createVault, generateVaultKey } from "./src/adapters/bb/vault.ts";
+import { createProjectDirectory } from "./src/adapters/bb/bb-projects.ts";
+import { createBbThreads } from "./src/adapters/bb/bb-threads.ts";
+import { createTaskboardTarget } from "./src/adapters/bb/taskboard-target.ts";
+import {
+  RULE_THREAD_MESSAGE,
+  STALE_START_MS,
+  afterRoundRules,
+  bbRefusal,
+  createBbRpc,
+  reconcileRuleStarts,
+  normalizeRuleMatch,
+  type BbSettings,
+  type RuleDeps,
+} from "./src/adapters/bb/bb-rpc.ts";
+import { ruleThreadMetadata } from "./src/core/bb-text.ts";
 import { describeStructure, headerLines, readHeaders } from "./src/core/headers.ts";
 import {
   IdentityRefusal,
@@ -82,6 +132,7 @@ import { templatesForAgent } from "./src/core/templates.ts";
 import { planUndo, recordGroups, type RecordableGroup, type UndoGroup, type UndoRow, type UndoStep } from "./src/core/undo.ts";
 import { RoundWakes, UndoBook } from "./src/adapters/bb/undo-book.ts";
 import { outboxErrorText } from "./src/core/compose-outbox.ts";
+import { accountIdentities } from "./src/core/compose.ts";
 import {
   AGENT_RESULT,
   SUPPORTED_LANGUAGES,
@@ -111,6 +162,7 @@ import {
   OUTBOX_CHANGED_CHANNEL,
   ROLE_NAMES,
   SendRateLimit,
+  hastenWaiting,
   UndoneSends,
   addComposeAttachment,
   attachmentRoom,
@@ -188,10 +240,13 @@ import {
   redactedSubject,
   renderContactsCounted,
   renderInboxForAgentCounted,
+  failedSenderIds,
+  autoImagesAllowed,
   renderMessageForAgentCounted,
   renderSearchHitsCounted,
   type LogEntryInput,
   type LogOutcome,
+  type LogTool,
   resolveActionDestination,
   resolveMoveDestination,
   roleFolders,
@@ -230,8 +285,13 @@ import {
   inQuietHours,
   isHiddenDraft,
   matchesBlock,
+  filterFor,
+  groupSubscriptions,
+  SUBSCRIPTIONS_SCAN_MAX,
+  validateFilter,
   notifiable,
   ownAddresses,
+  parseImportantSenders,
   parseQuietHours,
   NEW_MAIL_TOAST_ITEMS,
   toastName,
@@ -240,6 +300,7 @@ import {
   effectiveSpecialUse,
   offeredMethods,
   planUnsubscribe,
+  planInviteReply,
   unsubscribeInfoOf,
   type UnsubscribeInfo,
   type UnsubscribeInfoView,
@@ -271,6 +332,11 @@ import {
   type TriageItemRecord,
   type TriageRowState,
   type TriageView,
+  projectFolder,
+  scanHtml,
+  type BbThreads,
+  type ProjectDirectory,
+  type TaskTarget,
 } from "./src/core/index.ts";
 
 export const rpcContract = defineRpcContract(rpcSchemas);
@@ -282,6 +348,15 @@ export const AGENT_MAIL_OFF_MESSAGE =
 
 export const REMOVE_IN_THREAD_MESSAGE =
   "Removing an account works only in the owner's own terminal, not inside an agent thread.";
+
+/** Slice 3j: doctor and backup read the owner's own setup and write files. */
+export const OWNER_TERMINAL_MESSAGE =
+  "This command works only in the owner's own terminal, not inside an agent thread.";
+
+export const PGP_NOT_OWN_ADDRESS_MESSAGE = "Make a key only for an address this account sends from";
+export const PGP_EXISTS_MESSAGE = "This address already has an OpenPGP key in Mail";
+export const PGP_FULL_MESSAGE = "Mail keeps at most 500 OpenPGP keys; remove some first";
+export const PGP_UNKNOWN_MESSAGE = "This OpenPGP key is not in Mail, or its private half cannot be read";
 
 export const MESSAGE_GONE_CONTEXT = "This email is no longer available in Makosh Mail.";
 /** What an agent gets for an unknown id, and for an id outside the AI scope (never told apart). */
@@ -389,6 +464,8 @@ export interface MailPluginOverrides {
   gateway?: ImapGateway;
   clock?: Clock;
   transport?: MailTransport;
+  /** Slice 3k: the OpenPGP engine; tests may pass a counting one. */
+  pgpEngine?: PgpEngine;
   /** The outbox worker's tick; tests shorten it. */
   outboxIntervalMs?: number;
   /** The per-account write queue; tests hold it to race an undo with a round. */
@@ -397,6 +474,8 @@ export interface MailPluginOverrides {
   undoWaitMs?: number;
   /** The one-click unsubscribe POST (slice 3e); tests pass a fake. */
   poster?: UnsubscribePoster;
+  /** Saving into a project's working tree (slice 3g, SAVE_TO_PROJECT_ENABLED); tests turn it off. */
+  saveToProjectEnabled?: boolean;
 }
 
 /** action_undo waits this long for the account tasks, then answers `pending` (spec "Execution"). */
@@ -488,6 +567,19 @@ function defineSettings(bb: BbPluginApi) {
       label: "Notify about new mail from people you write to",
       default: true,
     },
+    importantSenders: {
+      type: "string",
+      label: "Important senders",
+      description:
+        "Addresses or domains, separated by commas. They notify during quiet hours, and even when you never wrote to them.",
+      default: "",
+      experimental_schema: z.string().max(20_000),
+    },
+    notifyImportantOnly: {
+      type: "boolean",
+      label: "Notify only about mail from important senders",
+      default: false,
+    },
     quietHours: {
       type: "string",
       label: "Quiet hours",
@@ -524,7 +616,119 @@ function defineSettings(bb: BbPluginApi) {
       default: 3,
       experimental_schema: z.number().int().min(1).max(30),
     },
+    // Slice 3g.
+    devNotifications: {
+      type: "boolean",
+      label: "Recognise GitHub, GitLab, CI and monitoring mail (Dev view)",
+      description: "Judged on this computer when mail arrives; nothing is sent anywhere.",
+      default: true,
+    },
+    mailRules: {
+      type: "boolean",
+      label: "Run my mail rules on new Inbox mail",
+      description: "Rules you make prepare agent threads (or start them, if you chose that for a rule), within fixed limits.",
+      default: false,
+    },
+    attachmentFolder: {
+      type: "string",
+      label: "Folder for attachments saved into a project",
+      description: "Relative to the project's folder; no folder that starts with a dot.",
+      default: ATTACHMENT_FOLDER_DEFAULT,
+      experimental_schema: projectFolderSetting(),
+    },
+    patchFolder: {
+      type: "string",
+      label: "Folder for patches saved into a project",
+      default: PATCH_FOLDER_DEFAULT,
+      experimental_schema: projectFolderSetting(),
+    },
+    taskTarget: {
+      type: "select",
+      label: "Make a task in",
+      options: ["auto", "taskboard", "local"],
+      experimental_optionLabels: { auto: "Taskboard when available", taskboard: "Taskboard", local: "Mail's own tasks" },
+      default: "auto",
+    },
+    // Slice 3h.
+    historyStepDays: {
+      type: "number",
+      label: "Days loaded by \"Load more days\"",
+      default: 30,
+      experimental_schema: z.number().int().min(7).max(365),
+    },
+    serverSearchKeepDays: {
+      type: "number",
+      label: "Keep unopened server search results (days)",
+      default: 14,
+      experimental_schema: z.number().int().min(1).max(90),
+    },
+    indexAttachmentText: {
+      type: "boolean",
+      label: "Search inside attachments (text and PDF, on this computer)",
+      description: "Text is extracted on this computer and only your own Mail search reads it; agents never do.",
+      default: false,
+    },
+    mailView: {
+      type: "select",
+      label: "Show mail as",
+      options: ["original", "plain"],
+      experimental_optionLabels: { original: "Original", plain: "Plain text" },
+      default: "original",
+    },
+    darkMail: {
+      type: "select",
+      label: "Mail in dark mode",
+      options: ["adapt", "original"],
+      experimental_optionLabels: { adapt: "Adapt colors", original: "Original colors" },
+      default: "adapt",
+    },
+    hideQuotes: {
+      type: "boolean",
+      label: "Hide quoted text in replies",
+      default: true,
+    },
+    // Slice 3j: how the lists and the reading pane are laid out.
+    listDensity: {
+      type: "select",
+      label: "List rows",
+      options: ["comfortable", "compact"],
+      experimental_optionLabels: { comfortable: "Comfortable", compact: "Compact (no preview line)" },
+      default: "comfortable",
+    },
+    readingPane: {
+      type: "select",
+      label: "Reading pane",
+      options: ["right", "bottom"],
+      experimental_optionLabels: { right: "Right of the list", bottom: "Below the list" },
+      default: "right",
+    },
+    language: {
+      type: "select",
+      label: "Language of Mail's pages",
+      options: ["auto", "ru", "en"],
+      experimental_optionLabels: { auto: "Same as the system", ru: "\u0420\u0443\u0441\u0441\u043a\u0438\u0439", en: "English" },
+      default: "auto",
+    },
+    // Slice 3i: off keeps every parameter and wrapper; the status line, tracking note and dialog stay.
+    cleanLinks: {
+      type: "boolean",
+      label: "Remove tracking from links I open",
+      default: true,
+    },
   });
+}
+
+export const ATTACHMENT_FOLDER_DEFAULT = "mail-attachments";
+export const PATCH_FOLDER_DEFAULT = "mail-patches";
+
+/** A project-relative folder setting, checked like a save's folder. */
+function projectFolderSetting() {
+  return z.string().refine((value) => projectFolder(value).ok, "Must be a folder inside the project, not starting with a dot");
+}
+
+/** A folder setting, its default when the stored value is no longer valid. */
+function folderOr(value: string, fallback: string): string {
+  return projectFolder(value).ok ? value : fallback;
 }
 
 /** The digest time setting: HH:MM on a 24-hour clock. */
@@ -545,6 +749,9 @@ type NewMailDeps = {
   publishNew: (token: string) => void;
   notifyOn: () => boolean;
   quietHours: () => string;
+  /** Slice 3l: the owner's important senders, and whether only they notify. */
+  importantSenders: () => string;
+  importantOnly: () => boolean;
   log: (line: string) => void;
 };
 
@@ -601,6 +808,73 @@ function blockNewInbox(deps: NewMailDeps, accountId: string, ids: string[], only
 }
 
 /**
+ * Filters after a round (slice 3m): genuinely new Inbox rows (never
+ * returning ones, never one a block rule just queued to Spam, never the
+ * owner's own mail, never a sender whose check failed) get the actions of
+ * the first filter that matches: \Seen, \Flagged, and a move to the
+ * archive, Trash or the filter's folder. A missing folder skips the move
+ * and keeps the rest. Returns the ids queued to move. Logs counts only.
+ */
+function sortNewInbox(deps: NewMailDeps, accountId: string, ids: string[], only: "inbox" | undefined): string[] {
+  if (ids.length === 0) return [];
+  const { store } = deps;
+  const filters = store.listMailFilters().filter((filter) => filter.enabled);
+  if (filters.length === 0) return [];
+  const account = store.getAccount(accountId);
+  if (account === null) return [];
+  const rows = store.notifyRows(ids, deps.clock.now().toISOString());
+  const own = new Set(ownAddresses(store).map(lower));
+  const listIds = store.listIds(ids);
+  const failed = failedSenderIds(store, ids);
+  const folders = store.listFolders(accountId);
+  const where = new Map(store.undoRows(ids).map((row) => [row.id, row.folder]));
+  const read: string[] = [];
+  const flagged: string[] = [];
+  const moves: { id: string; destination: string }[] = [];
+  let noFolder = false;
+  for (const row of rows) {
+    if (row.accountId !== accountId || row.uid === null || row.movePending !== null || row.folderRole !== "inbox") continue;
+    if (own.has(lower(row.fromAddress))) continue;
+    const subject = store.getMessage(row.id)?.subject;
+    if (subject === undefined) continue;
+    const filter = filterFor(filters, {
+      accountId,
+      fromAddress: row.fromAddress,
+      listId: listIds.get(row.id) ?? null,
+      subject,
+      senderFailed: failed.has(row.id),
+    });
+    if (filter === null) continue;
+    const { move, folder, markRead, flag } = filter.actions;
+    if (markRead) read.push(row.id);
+    if (flag) flagged.push(row.id);
+    if (move === "none") continue;
+    const source = where.get(row.id);
+    if (source === undefined) continue;
+    let destination: string | null = null;
+    if (move === "folder") {
+      const target = folders.find((entry) => entry.path === folder);
+      destination = target !== undefined && target.selectable && target.path !== source ? target.path : null;
+    } else {
+      const resolved = resolveActionDestination(move === "trash" ? "delete" : "archive", source, folders, account.preset);
+      destination = "refusal" in resolved ? null : resolved.destination.path;
+    }
+    if (destination === null) noFolder = true;
+    else moves.push({ id: row.id, destination });
+  }
+  if (read.length > 0) store.setDesired(read, { seen: true });
+  if (flagged.length > 0) store.setDesired(flagged, { flagged: true });
+  const moved = moves.filter((entry) => store.queueMove([entry.id], entry.destination) !== null).map((entry) => entry.id);
+  if (noFolder) deps.log(`filter ${accountId}: a folder to move to is missing`);
+  if (read.length + flagged.length + moved.length > 0) {
+    deps.log(`filter ${accountId}: moved ${moved.length}, read ${read.length}, flagged ${flagged.length}`);
+    deps.publishChanged(accountId);
+    deps.wake(accountId, only === "inbox" ? { only: "inbox" } : undefined);
+  }
+  return moved;
+}
+
+/**
  * Toasts rows by the new-mail filter (spec "Which messages"), outside quiet
  * hours and with notifyNewMail on: the kept ids go into the book and only a
  * token is published. `returned`: a snooze return, aged from now.
@@ -608,7 +882,10 @@ function blockNewInbox(deps: NewMailDeps, accountId: string, ids: string[], only
 function notifyNew(deps: NewMailDeps, accountId: string, ids: string[], returned: boolean): void {
   if (ids.length === 0 || !deps.notifyOn()) return;
   const now = deps.clock.now();
-  if (inQuietHours(parseQuietHours(deps.quietHours()), now.getHours() * 60 + now.getMinutes())) return;
+  const important = parseImportantSenders(deps.importantSenders());
+  const quiet = inQuietHours(parseQuietHours(deps.quietHours()), now.getHours() * 60 + now.getMinutes());
+  // Quiet hours let important senders through; with none named they silence everything, as before.
+  if (quiet && important.addresses.size === 0 && important.domains.length === 0) return;
   const { store } = deps;
   const nowIso = now.toISOString();
   const rows = store.notifyRows(ids, nowIso);
@@ -618,6 +895,8 @@ function notifyNew(deps: NewMailDeps, accountId: string, ids: string[], returned
     sentTo: store.addressesSentTo(rows.map((row) => row.fromAddress)),
     rules: store.listBlockRules(),
     now,
+    important,
+    importantOnly: quiet || deps.importantOnly(),
     ...(returned ? { ageFrom: () => nowIso } : {}),
   });
   if (kept.length === 0) return;
@@ -639,6 +918,12 @@ function afterRound(
     moved = new Set(blockNewInbox(deps, accountId, fresh, only));
   } catch (error) {
     deps.log(`block ${accountId}: failed (${errorKind(error)})`);
+  }
+  try {
+    // Filters sort what block rules left; what they move away does not toast either.
+    for (const id of sortNewInbox(deps, accountId, fresh.filter((id) => !moved.has(id)), only)) moved.add(id);
+  } catch (error) {
+    deps.log(`filter ${accountId}: failed (${errorKind(error)})`);
   }
   try {
     notifyNew(
@@ -735,7 +1020,7 @@ function aliasErrorText(store: MailStore, row: OutboxRecord): string | null {
   return outboxErrorText(row.errorKind, from, alias?.sendCheck ?? "unknown", PROVIDER_NAMES[account.preset]);
 }
 
-function toOutboxRow(row: OutboxRecord, errorText: string | null = null, purpose: "unsubscribe" | null = null): OutboxRow {
+function toOutboxRow(row: OutboxRecord, errorText: string | null = null, purpose: OutboxRow["purpose"] = null): OutboxRow {
   return {
     errorText,
     purpose,
@@ -748,6 +1033,7 @@ function toOutboxRow(row: OutboxRecord, errorText: string | null = null, purpose
     sendAfter: row.sendAfter,
     attempts: row.attempts,
     origin: row.origin,
+    scheduled: row.scheduled === true,
   };
 }
 
@@ -798,22 +1084,32 @@ function folderNames(store: MailStore): (message: { accountId: string; folder: s
 
 // ---- Agent paths (slice 3f): scope, redaction and the action log ----
 
-/** Writes one content-free agent-log row; a failure is logged by kind only and never stops the path. */
-type AgentLog = (input: LogEntryInput) => void;
+/** Writes one content-free agent-log row and answers its seq (null on failure); a failure is logged by kind only and never stops the path. */
+type AgentLog = (input: LogEntryInput) => number | null;
 /** Moves a proposal's or triage batch's rows to their final outcome. */
 type AgentLogUpdate = (refId: string, outcome: LogOutcome, count: number) => void;
+/** Records what a row's later step sent (Ask's excerpts). */
+type AgentLogSources = (seq: number, messageIds: readonly string[], hiddenCount: number) => void;
 
 function createAgentLog(
   store: MailStore,
   clock: Clock,
   warn: (line: string) => void,
-): { log: AgentLog; update: AgentLogUpdate } {
+): { log: AgentLog; update: AgentLogUpdate; sources: AgentLogSources } {
   return {
     log: (input) => {
       try {
-        store.appendAgentLog(logEntry(input, clock.now()));
+        return store.appendAgentLog(logEntry(input, clock.now()));
       } catch (error) {
         warn(`agent log failed (${errorKind(error)})`);
+        return null;
+      }
+    },
+    sources: (seq, messageIds, hiddenCount) => {
+      try {
+        store.setAgentLogSources(seq, messageIds, messageIds.length, hiddenCount);
+      } catch (error) {
+        warn(`agent log update failed (${errorKind(error)})`);
       }
     },
     update: (refId, outcome, count) => {
@@ -836,9 +1132,17 @@ type AgentRead =
  * the AI scope is read (agent paths); an id outside it answers as unknown.
  * Never marks the message read.
  */
-function readForAgent(store: MailStore, messageId: string, maxChars: number, scoped = true): AgentRead {
-  const header = scoped ? store.scopedMessage(messageId) : store.getMessage(messageId);
-  if (header === null) return { found: false, outOfScope: scoped && store.getMessage(messageId) !== null };
+function readForAgent(
+  store: MailStore,
+  secure: (header: MessageHeader) => MessageHeader,
+  messageId: string,
+  maxChars: number,
+  scoped = true,
+): AgentRead {
+  const stored = scoped ? store.scopedMessage(messageId) : store.getMessage(messageId);
+  if (stored === null) return { found: false, outOfScope: scoped && store.getMessage(messageId) !== null };
+  // Slice 3i: Mail's sender line and the encrypted placeholder come from the stored check and crypto.
+  const header = secure(stored);
   const rendered = renderMessageForAgentCounted(header, store.getBody(header.id), maxChars, folderNames(store)(header));
   return { found: true, id: header.id, ...rendered };
 }
@@ -858,11 +1162,16 @@ function agentSearch(
   raw: string,
   accountId: string | null,
   limit: number,
+  now: Date,
   scoped = true,
 ): { refused: string } | { hits: MessageSummary[] } {
-  const parsed = parseQuery(raw);
-  const refused =
-    agentSearchRefusal(parsed.text.trim()) ?? (parsed.subject === undefined ? null : agentSearchRefusal(parsed.subject.trim()));
+  const parsed = parseQuery(raw, now);
+  // Every free-text-bearing value is screened, not only text and subject (slice 3h, spec "Agents").
+  const values = [
+    parsed.text,
+    ...parsed.conditions.filter((condition) => SCREENED_FIELDS.has(condition.field)).map((condition) => condition.value),
+  ];
+  const refused = values.map((value) => agentSearchRefusal(value.trim())).find((answer) => answer !== null) ?? null;
   if (refused !== null) return { refused };
   const terms = [parsed.text.trim(), parsed.subject?.trim() ?? ""].filter((term) => term !== "");
   const hits = store.search(parsed, accountId, limit, { scoped });
@@ -876,6 +1185,9 @@ function agentSearch(
     ),
   };
 }
+
+/** Operator values an agent's search is screened on, beside the free text (slice 3h). */
+const SCREENED_FIELDS: ReadonlySet<string> = new Set(["to", "cc", "subject", "filename", "list", "label"]);
 
 function searchText(store: MailStore, hits: MessageSummary[]): { text: string; hiddenCount: number } {
   return renderSearchHitsCounted(hits, folderNames(store));
@@ -1002,6 +1314,12 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
 
     const db = bb.storage.database();
     bb.storage.migrate(db, MIGRATIONS);
+    // Slice 3i (resolution 8): deleted rows are overwritten, the search indexes too where SQLite can.
+    try {
+      if (!hardenDatabase(db).fts) bb.log.warn("secure_delete: fts option unavailable");
+    } catch {
+      bb.log.warn("secure_delete: fts option unavailable");
+    }
     const store = createSqliteStore(db);
     // Snippets stored before entities were fully decoded; runs before the sync loop.
     // A failure here must not stop the plugin: the snippets stay as they are.
@@ -1019,6 +1337,38 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       bb.log.warn(`AI scope load failed (${errorKind(error)})`);
     }
     const agentLog = createAgentLog(store, clock, (line) => bb.log.warn(line));
+    // Slice 3g: BB projects, threads and Taskboard, over bb.sdk only.
+    const projectDirectory = createProjectDirectory(bb.sdk, { now: () => clock.now().getTime() });
+    const bbThreads = createBbThreads(bb.sdk);
+    const taskTarget = createTaskboardTarget(bb.sdk);
+    /**
+     * A BB thread started by a mail rule (spec resolution 4, review C1):
+     * Mail's own rule_threads rows (kept apart from messages, folders and
+     * accounts) and starting or started runs. configure also gates a thread
+     * whose metadata says it came from a rule, and records it here; metadata
+     * never lifts the gate. A failed lookup counts as a rule thread, so no
+     * mail is offered.
+     */
+    const isRuleThread = (threadId: string): boolean => {
+      try {
+        return store.isRuleThread(threadId);
+      } catch (error) {
+        bb.log.warn(`rule thread lookup failed (${errorKind(error)})`);
+        return true;
+      }
+    };
+    /** configure's check: Mail's rows, then the thread's metadata (adding the gate row when it says rule). */
+    const isRuleThreadContext = (threadId: string, metadata: unknown): boolean => {
+      if (isRuleThread(threadId)) return true;
+      const named = ruleThreadMetadata(metadata);
+      if (named === null) return false;
+      try {
+        store.addRuleThread({ bbThreadId: threadId, ruleId: named.ruleId ?? "unknown", runId: named.ruleRunId, createdAt: clock.now().toISOString() });
+      } catch (error) {
+        bb.log.warn(`rule thread record failed (${errorKind(error)})`);
+      }
+      return true;
+    };
     const gateway =
       overrides.gateway ?? createImapflowGateway({ logger: (line) => bb.log.warn(line) });
     const publishChanged = (accountId: string | null) =>
@@ -1042,6 +1392,17 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
     // One promise chain per account: sync rounds, APPENDs, expunges and SMTP
     // sends of an account never overlap (resolution 7).
     const queue = overrides.queue ?? createAccountQueue();
+    // Slice 3i: the known-domain cache, header view fields and the old-row refresh.
+    const senderChecks = createSenderChecks({
+      store,
+      clock,
+      gateway,
+      vault: sealer,
+      queue,
+      vaultReady: () => vault !== null,
+      log: (line) => bb.log.warn(line),
+      publishChanged,
+    });
     // Undo's second wake: the account's next round end wakes it once more.
     const roundWakes = new RoundWakes((accountId) => loop.wake(accountId));
     // New-mail toasts (slice 3e): ids in memory under a token; realtime carries the token only.
@@ -1055,9 +1416,17 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       publishNew: (token) => bb.realtime.publish(NEW_MAIL_CHANNEL, { token } satisfies NewMailPayload),
       notifyOn: () => current.notifyNewMail,
       quietHours: () => current.quietHours,
+      importantSenders: () => current.importantSenders,
+      importantOnly: () => current.notifyImportantOnly,
       log: (line) => bb.log.info(line),
     };
 
+    /**
+     * Hosts of the BB projects' remotes, refreshed with the daily purge (and
+     * at start-up): the dev classifier takes a self-hosted GitLab or Jenkins
+     * sender only from these, or with a List-Id of its own domain.
+     */
+    let devHosts: string[] = [];
     // Always registered; without a key no password can be sealed or opened, so
     // rounds do nothing until one is saved.
     const loop = createSyncLoop(
@@ -1066,6 +1435,9 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
         windowDays: current.syncWindowDays,
         batchSize: FETCH_BATCH_SIZE,
         intervalMinutes: clampInterval(current.syncIntervalMinutes),
+        // Slice 3g: dev notifications judged at sync, older rows by the dev backfill after full rounds.
+        classify: current.devNotifications,
+        devHosts,
       }),
       {
         log: (line) => bb.log.info(line),
@@ -1075,12 +1447,36 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
           // New rows may add a conversation with an excluded sender (spec resolution 12).
           try {
             store.refreshExcludedThreads();
+            // A full round listed the folders again (saveFolders drops removed
+            // paths from the scope table): the in-memory scope follows (slice 3h).
+            if (only === undefined) store.setAiScope(store.loadAiScope());
           } catch (error) {
             bb.log.warn(`AI scope refresh failed (${errorKind(error)})`);
+          }
+          // Attachment text after an ok round (slice 3h), when the owner turned it on.
+          if (only === undefined) startIndexing();
+          // Slice 3i: new Sent rows add domains the owner writes to. A failed
+          // lookup marks the set stale too (no log line: resolution 18 allows two).
+          try {
+            if (outcome.inserted.length > 0 && store.senderCheckRows(outcome.inserted).some((row) => row.folderRole === "sent")) {
+              senderChecks.markStale();
+            }
+          } catch {
+            senderChecks.markStale();
+          }
+          // Slice 3j: the server answered, so sends waiting for it go now.
+          try {
+            if (hastenWaiting({ store, clock }, accountId) > 0) worker.wake(accountId);
+          } catch (error) {
+            bb.log.warn(`outbox: waiting sends not released (${errorKind(error)})`);
           }
           afterRound(newMailDeps, accountId, outcome, only);
           // Category rules and reply reminders over the round's new rows (slice 3f).
           afterRoundAi({ store, clock, categoriesOn: () => current.mailCategories, log: (line) => bb.log.info(line) }, accountId, outcome);
+          // Mail rules over the round's genuinely new Inbox rows (slice 3g); a spawn runs after this returns.
+          void afterRoundRules(ruleDeps, accountId, outcome).catch((error: unknown) => {
+            bb.log.warn(`rules ${accountId}: failed (${errorKind(error)})`);
+          });
           idle.firstRoundOk(accountId);
         },
         onRoundEnd: (accountId) => {
@@ -1139,6 +1535,57 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       vaultReady: () => vault !== null,
       messages: { needsKey: NEEDS_KEY_MESSAGE, passwordNeeded: PASSWORD_NEEDED_MESSAGE },
     };
+
+    // Slice 3h: server search, history and conversation jobs and the
+    // attachment text indexer run outside sync's loop, so they write through
+    // a store that refuses every call once the plugin stopped (the host
+    // closes the database then); stopping also cancels every job.
+    let stopped = false;
+    const lateStore = new Proxy(store, {
+      get(target, key, receiver) {
+        const value = Reflect.get(target, key, receiver) as unknown;
+        if (typeof value !== "function") return value;
+        return (...args: unknown[]) => {
+          if (stopped) throw new Error("Mail stopped");
+          return (value as (...a: unknown[]) => unknown).apply(target, args);
+        };
+      },
+    }) as MailStore;
+    const serverJobs = createServerJobs({
+      store: lateStore,
+      gateway,
+      vault: sealer,
+      clock,
+      notifier: { mailChanged: (accountId) => (stopped ? undefined : publishChanged(accountId)) },
+      settings: () => ({ historyStepDays: current.historyStepDays, classify: current.devNotifications, devHosts }),
+      log: (line) => bb.log.info(line),
+    });
+    const indexerRaw: RawDeps = { ...rawDeps, store: lateStore };
+    const indexer = createAttachmentIndexer({
+      store: lateStore,
+      clock,
+      fetchRaw: async (messageId) => {
+        try {
+          return (await fetchRawGuarded(indexerRaw, messageId)).raw;
+        } catch (error) {
+          // The account or server cannot be reached now: the parts stay pending.
+          if (error instanceof RawRefusal && error.message !== STALE_MESSAGE && error.message !== TOO_LARGE_MESSAGE) throw new RetryLater();
+          throw error;
+        }
+      },
+      parse: (raw) => parseMail(raw),
+      extractPdf: (bytes) => extractPdfText(bytes),
+      log: (line) => bb.log.info(line),
+    });
+    /** A round of attachment text, when the owner turned it on and a key is set. */
+    const startIndexing = () => {
+      if (stopped || !current.indexAttachmentText || vault === null) return;
+      void indexer.runRound();
+    };
+    bb.onDispose(() => {
+      stopped = true;
+      serverJobs.cancelAll();
+    });
     const composeDeps: ComposeDeps = {
       store,
       gateway,
@@ -1167,14 +1614,32 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
           publishChanged(accountId);
           loop.wake(accountId);
         }
+        // Slice 3i: a finished send may add a domain the owner writes to.
+        if (state === "done") senderChecks.markStale();
       },
     };
-    const queueDeps: QueueDeps = { ...composeDeps, notifier: outboxNotifier, rate: new SendRateLimit(clock), undone: new UndoneSends(clock) };
+    // Slice 3k: OpenPGP. The private keys are sealed by the same vault as the passwords.
+    const pgp = createPgpService({
+      store,
+      engine: overrides.pgpEngine ?? createPgpEngine(),
+      vault: () => vault,
+      clock,
+      newId: randomUUID,
+      log: (line) => bb.log.info(line),
+    });
+    const queueDeps: QueueDeps = {
+      ...composeDeps,
+      notifier: outboxNotifier,
+      rate: new SendRateLimit(clock),
+      undone: new UndoneSends(clock),
+      protect: (mime, request) => pgp.protect(mime, request),
+    };
     const worker = createOutboxWorker(
       {
         ...composeDeps,
         notifier: outboxNotifier,
         transport,
+        rate: queueDeps.rate,
         isReady: () => vault !== null,
         mailChanged: (accountId) => {
           publishChanged(accountId);
@@ -1256,17 +1721,51 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
         digestTime: current.digestTime,
         quietHours: current.quietHours,
         mailCategories: current.mailCategories,
+        serverSearchKeepDays: current.serverSearchKeepDays,
       }),
       publish: (token) => bb.realtime.publish(DAY_NOTICE_CHANNEL, { token } satisfies DayNoticePayload),
       book: dayNotices,
       clock,
       isReady: () => vault !== null,
       log: (line) => bb.log.info(line),
+      // Slice 3h: the daily expiry of server-search hits wakes the lists.
+      mailChanged: publishChanged,
     });
-    const purgeDaily = () => {
-      purgeProposals();
+    const ruleDeps: RuleDeps = {
+      store,
+      clock,
+      newId: randomUUID,
+      projects: projectDirectory,
+      threads: bbThreads,
+      agentLog: agentLog.log,
+      log: (line) => bb.log.info(line),
+      mailRules: () => current.mailRules,
+      notify: () => dayClock.tick(),
+      security: (header) => senderChecks.secure([header])[0]!,
+    };
+    const reconcileStarts = async () => {
       try {
-        const purged = store.purgeDaily(clock.now().toISOString());
+        const now = clock.now();
+        const settled = await reconcileRuleStarts(ruleDeps, new Date(now.getTime() - STALE_START_MS).toISOString());
+        if (settled.started + settled.failed > 0) bb.log.info(`rules: ${settled.started} starts found, ${settled.failed} failed`);
+      } catch (error) {
+        bb.log.warn(`rule start recovery failed (${errorKind(error)})`);
+      }
+    };
+    const purgeDaily = async () => {
+      purgeProposals();
+      await reconcileStarts();
+      // Bindings to projects BB no longer has go after 30 days; unknown when BB does not answer.
+      let known: string[] | null = null;
+      try {
+        const listed = await projectDirectory.list();
+        known = listed.map((project) => project.id);
+        devHosts = [...new Set(listed.flatMap((project) => (project.remote === null ? [] : [project.remote.host.toLowerCase()])))];
+      } catch {
+        known = null;
+      }
+      try {
+        const purged = store.purgeDaily(clock.now().toISOString(), known);
         if (purged > 0) bb.log.info(`daily purge removed ${purged} rows`);
       } catch (error) {
         bb.log.warn(`daily purge failed (${errorKind(error)})`);
@@ -1275,8 +1774,11 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
 
     bb.background.service("sync", {
       start: async (signal) => {
-        purgeDaily();
-        const daily = setInterval(purgeDaily, PURGE_INTERVAL_MS);
+        // Not awaited: the purge asks BB for its projects, and the loops must not wait for that.
+        // It first settles rule runs still starting (the plugin stopped, or the spawn errored)
+        // against BB's threads by their metadata; never failed while BB is silent (review C1).
+        void purgeDaily();
+        const daily = setInterval(() => void purgeDaily(), PURGE_INTERVAL_MS);
         const sweep = setInterval(() => {
           jobs.sweep();
           aiJobs.sweep();
@@ -1310,10 +1812,52 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       }
       if (next.syncIntervalMinutes !== prev.syncIntervalMinutes) loop.reschedule();
       if (next.instantMail !== prev.instantMail || wasReady !== (vault !== null)) idle.refresh();
+      if (next.indexAttachmentText && !prev.indexAttachmentText) startIndexing();
     });
 
     const tickets = new TicketBook<DownloadRequest>(clock);
+    const archiveTickets = new TicketBook<ArchiveDownload>(clock);
+    const undoBook = new UndoBook(clock);
+    const slice3h = createSlice3hRpc({
+      store,
+      gateway,
+      vault: sealer,
+      vaultReady: () => vault !== null,
+      clock,
+      queue,
+      jobs: serverJobs,
+      indexer,
+      undo: undoBook,
+      viewUrl: (request) => `${downloadUrl(bb.pluginId)}?t=${tickets.mint(request)}`,
+      newId: randomUUID,
+      changed: (accountId) => {
+        publishChanged(accountId);
+        loop.wake(accountId);
+      },
+      foldersChanged: () => {
+        try {
+          store.setAiScope(store.loadAiScope());
+        } catch (error) {
+          bb.log.warn(`AI scope reload failed (${errorKind(error)})`);
+        }
+        idle.refresh();
+      },
+      indexAttachmentText: () => current.indexAttachmentText,
+      startIndexing,
+      messages: { needsKey: NEEDS_KEY_MESSAGE, passwordNeeded: PASSWORD_NEEDED_MESSAGE },
+      log: (line) => bb.log.info(line),
+    });
     const rpcDeps: RpcDeps = {
+      projects: projectDirectory,
+      bbThreads,
+      taskTarget,
+      saveToProjectEnabled: overrides.saveToProjectEnabled,
+      bbSettings: () => ({
+        attachmentFolder: folderOr(current.attachmentFolder, ATTACHMENT_FOLDER_DEFAULT),
+        patchFolder: folderOr(current.patchFolder, PATCH_FOLDER_DEFAULT),
+        taskTarget: current.taskTarget === "taskboard" || current.taskTarget === "local" ? current.taskTarget : "auto",
+        devNotifications: current.devNotifications,
+      }),
       agentTriage: () => current.agentTriage,
       poster: overrides.poster ?? createOneClickPoster({ clock }),
       unsubscribeRate: new UnsubscribeRate(clock),
@@ -1344,22 +1888,36 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       },
       rawDeps,
       tickets,
-      undo: new UndoBook(clock),
+      archiveTickets,
+      undo: undoBook,
+      slice3h,
       roundWakes,
       undoWaitMs: overrides.undoWaitMs ?? UNDO_WAIT_MS,
       idle,
       newMail,
       agentLog: agentLog.log,
       agentLogUpdate: agentLog.update,
+      agentLogSources: agentLog.sources,
       aiJobs,
       aiNonce: () => translateNonce((size) => new Uint8Array(randomBytes(size))),
       restoreTag: (parts) => newRestoreTag((size) => new Uint8Array(randomBytes(size)), parts),
       categoriesOn: () => current.mailCategories,
+      quietHours: () => current.quietHours,
       categoryUndo: new CategoryUndoBook(randomUUID),
+      senderChecks,
+      pgp,
     };
     registerRpc(bb, rpcDeps);
+    /** One header with its 3i fields, for agent text (the sender line and the encrypted placeholder). */
+    function secureOne(header: MessageHeader): MessageHeader {
+      return senderChecks.secure([header])[0]!;
+    }
     registerDownloadRoute(bb, store, rawDeps, tickets);
-    registerAgentSurfaces(bb, store, {
+    registerArchiveDownloadRoute(bb, store, archiveTickets);
+    // Every agent tool refuses inside a rule thread, by the thread it runs in (spec resolution 4).
+    const agentBb = gateRuleThreads(bb, isRuleThread, agentLog.log);
+    registerAgentSurfaces(agentBb, store, {
+      now: () => clock.now(),
       agentTools: () => current.agentTools,
       agentPropose: () => current.agentPropose,
       agentTriage: () => current.agentTriage,
@@ -1368,20 +1926,42 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       notQueued,
       agentLog: agentLog.log,
       agentLogUpdate: agentLog.update,
+      isRuleThread,
+      isRuleThreadContext,
+      secure: secureOne,
     });
-    registerTriageTools(bb, rpcDeps);
+    registerTriageTools(agentBb, rpcDeps);
     registerCli(bb, store, {
+      now: () => clock.now(),
+      isRuleThread,
       loop,
       accountDeps,
       publishChanged,
       vaultReady: () => vault !== null,
       agentTools: () => current.agentTools,
       agentLog: agentLog.log,
+      secure: secureOne,
+      doctor: () => ({
+        store,
+        gateway,
+        transport,
+        vault,
+        run: (accountId, work) => queue.run(accountId, work),
+        db,
+        now: () => clock.now(),
+      }),
+      log: (line) => bb.log.info(line),
     });
   };
 }
 
 type RpcDeps = {
+  /** Slice 3g: BB projects and working trees, threads, Taskboard and the owner's settings for them. */
+  projects: ProjectDirectory;
+  bbThreads: BbThreads;
+  taskTarget: TaskTarget;
+  saveToProjectEnabled: boolean | undefined;
+  bbSettings: () => BbSettings;
   store: MailStore;
   accountDeps: AccountDeps;
   composeDeps: ComposeDeps;
@@ -1405,8 +1985,12 @@ type RpcDeps = {
   }) => Promise<void>;
   rawDeps: RawDeps;
   tickets: TicketBook<DownloadRequest>;
+  /** Slice 3p: one-time tickets for an archive message's attachment. */
+  archiveTickets: TicketBook<ArchiveDownload>;
   /** The one undo slot (slice 3d). */
   undo: UndoBook;
+  /** Slice 3h methods (search jobs, folders, labels, files, attachment text). */
+  slice3h: Slice3hRpc;
   roundWakes: RoundWakes;
   undoWaitMs: number;
   /** The IDLE supervisor: refreshed when accounts change (slice 3e). */
@@ -1425,6 +2009,7 @@ type RpcDeps = {
   /** The content-free agent action log (slice 3f). */
   agentLog: AgentLog;
   agentLogUpdate: AgentLogUpdate;
+  agentLogSources: AgentLogSources;
   /** Owner-click AI jobs (slice 3f). */
   aiJobs: AiJobs;
   /** A fresh frame nonce. */
@@ -1433,12 +2018,19 @@ type RpcDeps = {
   restoreTag: (parts: string[]) => string;
   /** The owner's "Sort mail into categories" setting. */
   categoriesOn: () => boolean;
+  /** The owner's quiet hours: Today's notices wait them out (slice 3f). */
+  quietHours: () => string;
   categoryUndo: CategoryUndoBook;
+  /** Slice 3i: sender checks, disguise warnings and the old-row refresh. */
+  senderChecks: SenderChecks;
+  /** Slice 3k: OpenPGP keys, signing, encryption and opening. */
+  pgp: PgpService;
 };
 
 /** What a download ticket stands for; the name and bytes are resolved again when it is used. */
 type DownloadRequest = {
-  kind: "attachment" | "eml";
+  /** `view` (slice 3h): the attachment viewer's bytes, sniffed on the server. */
+  kind: "attachment" | "eml" | "view";
   messageId: string;
   partId: string | null;
 };
@@ -1770,9 +2362,32 @@ async function runUndo(deps: RpcDeps, undoId: string, log: (line: string) => voi
     }
   };
 
+  // Label steps (slice 3h, spec resolution 10): per message, through the account's queue.
+  const labelGroups = runnable.filter((group) => group.kind === "labels");
+  const labelTasks: Promise<void>[] = [];
+  if (labelGroups.length > 0) {
+    const plan = planUndo({ ...record, groups: labelGroups }, rowsOf(labelGroups), foldersOf);
+    for (const entry of plan.skipped) skip(entry.reason, entry.count);
+    for (const step of plan.steps) {
+      if (step.kind !== "labels") continue;
+      labelTasks.push(
+        deps.slice3h
+          .undoLabels(step)
+          .then(({ restored, failed: notDone }) => {
+            for (const id of restored) restoredIds.add(id);
+            failed += notDone;
+          })
+          .catch((error: unknown) => {
+            log(`undo ${step.accountId}: labels failed (${errorKind(error)})`);
+            failed += step.changes.length;
+          }),
+      );
+    }
+  }
+
   const byAccount = new Map<string, UndoGroup[]>();
   for (const group of runnable) {
-    if (group.kind === "flags" || group.destination === null) continue;
+    if (group.kind === "flags" || group.kind === "labels" || group.destination === null) continue;
     byAccount.set(group.accountId, [...(byAccount.get(group.accountId) ?? []), group]);
   }
   const tasks = [...byAccount].map(([accountId, groups]) =>
@@ -1813,7 +2428,7 @@ async function runUndo(deps: RpcDeps, undoId: string, log: (line: string) => voi
   );
   let timer: ReturnType<typeof setTimeout> | undefined;
   const finished = await Promise.race([
-    Promise.all(tasks).then(() => true),
+    Promise.all([...tasks, ...labelTasks]).then(() => true),
     new Promise<false>((resolve) => (timer = setTimeout(() => resolve(false), deps.undoWaitMs))),
   ]);
   clearTimeout(timer);
@@ -1829,7 +2444,10 @@ async function runUndo(deps: RpcDeps, undoId: string, log: (line: string) => voi
       accountId: group.accountId,
       folder: group.source,
       queued: error === null ? group.ids.filter((id) => restoredIds.has(id)).length : 0,
-      destination: group.kind === "flags" || group.destination === null || error !== null ? null : folderName(group.accountId, group.source),
+      destination:
+        group.kind === "flags" || group.kind === "labels" || group.destination === null || error !== null
+          ? null
+          : folderName(group.accountId, group.source),
       error,
     };
   });
@@ -2303,9 +2921,105 @@ async function unsubscribeOnce(
   return { outcome: "queued", reason: null, outboxId: queued.outboxId };
 }
 
+export const UNKNOWN_ARCHIVE_MESSAGE = "Unknown archive";
+export const UNKNOWN_FILTER_MESSAGE = "Unknown filter";
+export const FILTER_FOLDER_MESSAGE = "Choose a folder of the chosen account to move to";
+export const FILTERS_FULL_MESSAGE = "There are 50 filters already; delete one first";
+
+export const INVITE_NONE_MESSAGE = "This message carries no calendar invitation";
+export const INVITE_NOT_ANSWERABLE_MESSAGE = "Only an invitation sent to one of this account's addresses can be answered";
+export const INVITE_HIDDEN_MESSAGE = "An invitation in Spam or Trash is not answered";
+
+const INVITE_ANSWER_TEXT: Record<InviteAnswer, { subject: string; body: string }> = {
+  accepted: { subject: "Accepted", body: "accepted this invitation." },
+  tentative: { subject: "Tentative", body: "tentatively accepted this invitation." },
+  declined: { subject: "Declined", body: "declined this invitation." },
+};
+
+/** Why the invitation cannot be answered, or null when it can. */
+function inviteRefusal(invite: InviteView | null, role: string | null): string | null {
+  if (invite === null) return INVITE_NONE_MESSAGE;
+  if (role === "junk" || role === "trash") return INVITE_HIDDEN_MESSAGE;
+  const open = invite.method === "request" && !invite.cancelled;
+  return open && invite.self !== null && invite.organizer !== null && invite.uid !== null ? null : INVITE_NOT_ANSWERABLE_MESSAGE;
+}
+
+/** The invitation a stored message carries, read from the server; `own` are the account's sending addresses. */
+async function readInvite(deps: RpcDeps, messageId: string): Promise<{ invite: InviteView | null; role: string | null; accountId: string }> {
+  const { store } = deps;
+  const message = store.getMessage(messageId);
+  if (message === null) throw refuse("not_found", "Unknown message");
+  const account = store.getAccount(message.accountId);
+  if (account === null) throw refuse("not_found", "Unknown message");
+  const fetched = await fetchRawGuarded(deps.rawDeps, messageId).catch((error: unknown) => {
+    throw rawRefusal(error);
+  });
+  const text = await readCalendarText(fetched.raw);
+  const own = new Set(accountIdentities(store, account).map((identity) => identity.address.toLowerCase()));
+  return {
+    invite: text === null ? null : parseInvite(text, own),
+    role: roleOfFolder(store, message.accountId, message.folder),
+    accountId: account.id,
+  };
+}
+
+/**
+ * invite_reply (slice 3l): the owner's answer goes to the organizer as a
+ * hidden purpose draft queued at once with origin owner, like an unsubscribe
+ * email, so it keeps the Outbox Undo. Idempotent per requestId.
+ */
+async function replyToInvite(
+  deps: RpcDeps,
+  input: { messageId: string; answer: InviteAnswer; requestId: string },
+  log: (line: string) => void,
+): Promise<{ outboxId: string; sendAfter: string }> {
+  const { store, composeDeps } = deps;
+  const repeated = store.getOutbox(input.requestId);
+  if (repeated !== null) return { outboxId: repeated.id, sendAfter: repeated.sendAfter };
+  if (!deps.vaultReady()) throw refuse("conflict", NEEDS_KEY_MESSAGE);
+  const { invite, role, accountId } = await readInvite(deps, input.messageId);
+  const refusal = inviteRefusal(invite, role);
+  if (invite === null || refusal !== null) throw refuse("conflict", refusal ?? INVITE_NONE_MESSAGE);
+  const account = store.getAccount(accountId)!;
+  if (account.authFailed) throw refuse("conflict", PASSWORD_NEEDED_MESSAGE);
+  if (deps.queueDeps.undone.has(input.requestId)) throw new ComposeError("undone");
+  const self = invite.self!;
+  const identity = accountIdentities(store, account).find((entry) => entry.address.toLowerCase() === self.address);
+  const name = identity?.displayName?.trim() || null;
+  const calendar = buildInviteReply(invite, { name, address: self.address }, input.answer, composeDeps.clock.now());
+  if (calendar === null) throw refuse("conflict", INVITE_NOT_ANSWERABLE_MESSAGE);
+  const words = INVITE_ANSWER_TEXT[input.answer];
+  const plan = planInviteReply(composeDeps, input.messageId, {
+    from: self.address,
+    to: invite.organizer!,
+    subject: `${words.subject}: ${invite.summary}`.trim(),
+    body: `${name ?? self.address} ${words.body}`,
+    calendar,
+  });
+  const { draftId } = await createComposeDraft(composeDeps, plan, { origin: "owner", proposalId: null, purpose: "invite_reply" });
+  let queued: { outboxId: string; sendAfter: string };
+  try {
+    queued = await queueSend(deps.queueDeps, {
+      draftId,
+      baseRevision: store.getDraft(draftId)!.revision,
+      requestId: input.requestId,
+      origin: "owner",
+    });
+  } catch (error) {
+    // Nothing was queued: the hidden draft goes with the refusal.
+    store.deleteDraft(draftId);
+    throw error;
+  }
+  deps.worker.wake(accountId);
+  log(`invite reply ${input.messageId}: ${input.answer} queued`);
+  return { outboxId: queued.outboxId, sendAfter: queued.sendAfter };
+}
+
 function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
   const { store, accountDeps, composeDeps, publishChanged } = deps;
   const log = (line: string) => bb.log.warn(line);
+  /** Slice 3i: one header with its sender check, warnings, receipt and crypto. */
+  const secureOne = (header: MessageHeader): MessageHeader => deps.senderChecks.secure([header])[0]!;
   /** Owner-only compose handler: plugin callers refused first, failures as fixed-text refusals. */
   function owner<I, O>(method: string, run: (input: I) => O | Promise<O>) {
     return async (input: I, context: ExperimentalPluginRpcHandlerContext): Promise<O> => {
@@ -2351,7 +3065,62 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
   };
   const nowIso = () => composeDeps.clock.now().toISOString();
   const ai = createAiRpc(deps, ownerDraft);
-  const day = createDayRpc(deps, ai.withCategories);
+
+  const bbRpc = createBbRpc({
+    store,
+    clock: composeDeps.clock,
+    newId: randomUUID,
+    projects: deps.projects,
+    threads: deps.bbThreads,
+    tasks: deps.taskTarget,
+    rawDeps: deps.rawDeps,
+    composeDeps,
+    ownerDraft,
+    settings: deps.bbSettings,
+    agentLog: deps.agentLog,
+    publishChanged,
+    log,
+    ...(deps.saveToProjectEnabled === undefined ? {} : { saveEnabled: deps.saveToProjectEnabled }),
+    security: secureOne,
+  });
+  const day = createDayRpc(deps, ai.withCategories, { dev: () => bbRpc.todayDev(), rulesReady: () => bbRpc.rulesReady() });
+  /** A slice 3g owner method: plugin callers refused first; BB failures as fixed texts. */
+  /** A slice 3h method: plugin callers refused first; failures as fixed-text refusals, logged by kind only. */
+  function owner3h<I, O>(method: string, run: (input: I) => O | Promise<O>) {
+    return async (input: I, context: ExperimentalPluginRpcHandlerContext): Promise<O> => {
+      refusePluginCaller(context);
+      try {
+        return await run(input);
+      } catch (error) {
+        if (error instanceof experimental_PluginRpcRefusal) throw error;
+        if (error instanceof Slice3hRefusal) throw refuse(error.code, error.message);
+        log(`${method} failed (${errorKind(error)})`);
+        throw refuse("conflict", COMPOSE_FAILED_MESSAGE);
+      }
+    };
+  }
+  const s3 = deps.slice3h;
+  function ownerBb<I, O>(method: string, run: (input: I) => O | Promise<O>) {
+    return async (input: I, context: ExperimentalPluginRpcHandlerContext): Promise<O> => {
+      refusePluginCaller(context);
+      try {
+        return await run(input);
+      } catch (error) {
+        if (error instanceof experimental_PluginRpcRefusal || error instanceof ComposeError || error instanceof AiError) {
+          throw composeRefusal(error, log, method);
+        }
+        throw bbRefusal(error, log, method);
+      }
+    };
+  }
+  /** Project names for the pre-send labels of BB attachments; empty when BB does not answer. */
+  const projectNames = async (): Promise<Map<string, string>> => {
+    try {
+      return new Map((await deps.projects.list()).map((project) => [project.id, project.name]));
+    } catch {
+      return new Map();
+    }
+  };
   // No method is published as discoverable, and none (message_action and the
   // image methods included) is exposed as a tool, CLI command or mention. They
   // are still reachable by anything that can call local plugin RPC as a client,
@@ -2411,7 +3180,9 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       },
       threads_list: ({ scope, cursor, limit, filter }) => {
         // Category filters and fields only while categories are on (slice 3f).
-        const shown = filter !== undefined && filter.category !== undefined && !deps.categoriesOn() ? { ...filter, category: undefined } : filter;
+        const categorized = filter !== undefined && filter.category !== undefined && !deps.categoriesOn() ? { ...filter, category: undefined } : filter;
+        // "Hide dev notifications" only while they are recognised (slice 3g).
+        const shown = categorized !== undefined && categorized.notDev !== undefined && !deps.bbSettings().devNotifications ? { ...categorized, notDev: undefined } : categorized;
         const page =
           scope.kind === "account"
             ? store.listThreads(scope.accountId, scope.folder, cursor, limit, shown)
@@ -2421,23 +3192,29 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         if (page === null) throw refuse("invalid", ALL_ROLE_MESSAGE);
         return { ...page, threads: ai.withCategories(page.threads, scope.kind === "account" ? scope.folder : "INBOX") };
       },
-      thread_get: ({ threadId, folder }) => {
+      thread_get: async ({ threadId, folder }) => {
         const thread = store.getThread(threadId, folder);
         if (thread === null) throw refuse("not_found", "Unknown thread");
-        return thread;
+        const detail = await bbRpc.threadDetail(thread);
+        // Slice 3i: the sender check, disguise warnings, receipt request and crypto kind.
+        return { ...detail, messages: deps.senderChecks.secure(detail.messages) };
       },
       // cid: images come inline as data: URLs, so the page fetches nothing for them.
       message_body: ({ messageId }) => {
-        const body = store.getBody(messageId);
-        if (body === null) throw refuse("not_found", "Unknown message");
+        const stored = store.getBody(messageId);
+        if (stored === null) throw refuse("not_found", "Unknown message");
+        // Slice 3i (resolution 5): an always-show sender's images wait for a known, unwarned check.
+        const view = stored.remoteImagesAllowed ? deps.senderChecks.views([messageId]).get(messageId) : undefined;
+        const body = { ...stored, remoteImagesAllowed: view !== undefined && autoImagesAllowed(view.check, view.warnings) };
         if (body.html === null) return body;
-        return { ...body, html: inlineCidImages(body.html, store.inlineParts(messageId)) };
+        // Slice 3g: the HTML's <pre> blocks for the code-block view (no DOM on the server).
+        return { ...body, html: inlineCidImages(body.html, store.inlineParts(messageId)), codeBlocks: scanHtml(body.html).preBlocks };
       },
       // Hand to agent without a mention: the text goes into the owner's prompt.
       // Like the tools and mentions, it never marks the message read.
       // Outside the AI scope it answers as an unknown message (spec resolution 4).
       message_agent_text: ({ messageId }) => {
-        const read = readForAgent(store, messageId, AGENT_TEXT_CAP);
+        const read = readForAgent(store, secureOne, messageId, AGENT_TEXT_CAP);
         if (!read.found) {
           deps.agentLog({ actor: "handoff", tool: "handoff", outcome: unknownOutcome(read) });
           throw refuse("not_found", "Unknown message");
@@ -2455,8 +3232,15 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         deps.loop.wake(opened.accountId);
         return { ok: true };
       },
-      search: ({ query, accountId, limit }) => ({
-        hits: store.search(parseQuery(query), accountId, limit),
+      // Slice 3h Task 3: the new output fields; Task 9 adds paging, attachment text and the plugin-caller refusal.
+      // Owner-only (slice 3h); attachment text only when the page asks (spec resolution 4).
+      search: owner3h("search", ({ query, accountId, limit, cursor, attachments }) => {
+        const parsed = parseQuery(query, composeDeps.clock.now());
+        const page = store.searchPage(parsed, accountId, limit, {
+          cursor: decodeCursor(cursor),
+          attachments: attachments === true,
+        });
+        return { hits: page.hits, nextCursor: encodeCursor(page.nextCursor), notes: parsed.notes, attachmentMatches: page.attachmentMatches };
       }),
       folders_list: ({ accountId }) =>
         accountId === null
@@ -2485,8 +3269,16 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
           throw rawRefusal(error);
         }
         const { ref, account, raw } = fetched;
+        let authenticity: { authserv: string | null; lines: string[] } = { authserv: null, lines: [] };
+        try {
+          // Slice 3i: Details' Authenticity from the full headers; stores the check where it reads unknown.
+          authenticity = deps.senderChecks.fromRaw(messageId, raw);
+        } catch {
+          // Hostile headers that do not parse: the panel shows the source without the block.
+        }
         return {
           ...renderSource(raw, (line) => bb.log.warn(line)),
+          authenticity,
           size: raw.byteLength,
           uid: ref.uid,
           folder: ref.folder,
@@ -2530,7 +3322,12 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       // Compose and send (slice 3b). Owner only: every handler refuses plugin
       // callers first; none is discoverable, a tool, a CLI command or a mention.
       compose_new: owner("compose_new", ({ accountId }) => newCompose(composeDeps, accountId)),
-      compose_prepare: owner("compose_prepare", (input) => prepareCompose(composeDeps, input)),
+      compose_prepare: owner("compose_prepare", async (input) => {
+        const prepared = await prepareCompose(composeDeps, input);
+        // Replying to a loaded or server-found message keeps it (slice 3h: kept = opened).
+        if (input.kind !== "forward") store.promoteKept([input.messageId]);
+        return prepared;
+      }),
       compose_open: owner("compose_open", async (input) => {
         if ("draftId" in input) ownerDraft(input.draftId);
         const opened = await openDraft(composeDeps, input);
@@ -2662,7 +3459,16 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         }
         const started = await deps.jobs.start(messageId, targetLanguage, current, force === undefined ? {} : { force });
         if ("jobId" in started) {
-          deps.agentLog({ actor: "owner_ai", tool: "ai_translate", outcome: "ok", messageIds: [messageId], count: 1, provider: current.providerId, model: current.model });
+          deps.agentLog({
+            actor: "owner_ai",
+            tool: "ai_translate",
+            outcome: "ok",
+            messageIds: [messageId],
+            count: 1,
+            hiddenCount: deps.jobs.hiddenCount(started.jobId),
+            provider: current.providerId,
+            model: current.model,
+          });
         }
         return started;
       }),
@@ -2719,9 +3525,11 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       template_save: owner("template_save", (input) => saveTemplate(store, input, `tpl_${randomUUID()}`, nowIso())),
       template_delete: owner("template_delete", ({ id }) => deleteTemplate(store, id)),
       // Advisory only: the page sends anyway when this fails in any way.
-      compose_check: owner("compose_check", ({ draftId, baseRevision }) => ({
-        issues: checkDraft(store, ownerDraft(draftId), baseRevision),
-      })),
+      compose_check: owner("compose_check", async ({ draftId, baseRevision }) => {
+        const draft = ownerDraft(draftId);
+        const origins = store.listAttachments(draftId).some((attachment) => attachment.origin !== null);
+        return { issues: checkDraft(store, draft, baseRevision, origins ? await projectNames() : undefined, () => deps.senderChecks.known()) };
+      }),
       action_undo: owner("action_undo", ({ undoId }) => runUndo(deps, undoId, (line) => bb.log.info(line))),
       // Slice 3e: wired in the server tasks; until then every call refuses.
       new_mail_get: ({ token }, context) => {
@@ -2743,6 +3551,17 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         refusePluginCaller(context);
         return unsubscribeView(deps, messageId, (line) => bb.log.info(line));
       },
+      // Slice 3n: the lists the stored mail comes from. Owner only; the list keys stay here.
+      subscriptions_list: owner("subscriptions_list", ({ accountId }) => {
+        const rows = store.subscriptionRows(accountId, SUBSCRIPTIONS_SCAN_MAX);
+        return {
+          subscriptions: groupSubscriptions(rows).map(({ listKey, ...list }) => {
+            const earlier = store.getUnsubscribe(list.accountId, listKey);
+            return { ...list, already: earlier === null ? null : { state: earlier.state, at: earlier.requestedAt } };
+          }),
+          truncated: rows.length >= SUBSCRIPTIONS_SCAN_MAX,
+        };
+      }),
       unsubscribe_run: owner("unsubscribe_run", (input) => runUnsubscribe(deps, input, (line) => bb.log.info(line))),
       // "Archive all from this list": an ordinary archive of the account's stored Inbox rows of that list.
       unsubscribe_archive: owner("unsubscribe_archive", ({ messageId, undoId }) => {
@@ -2890,6 +3709,212 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       ai_scope_set: owner("ai_scope_set", (input) => day.setScope(input)),
       agent_log_list: owner("agent_log_list", (input) => day.logList(input)),
       agent_log_clear: owner("agent_log_clear", () => ({ removed: store.clearAgentLog() })),
+      // Slice 3g (owner only, like every compose method).
+      projects_list: ownerBb("projects_list", () => bbRpc.projectsList()),
+      bb_thread_prepare: ownerBb("bb_thread_prepare", (input) => bbRpc.threadPrepare(input)),
+      bb_thread_start: ownerBb("bb_thread_start", (input) => bbRpc.threadStart(input)),
+      task_targets: ownerBb("task_targets", () => bbRpc.taskTargets()),
+      task_from_mail: ownerBb("task_from_mail", (input) => bbRpc.taskFromMail(input)),
+      attachment_save: ownerBb("attachment_save", (input) => bbRpc.attachmentSave(input)),
+      project_files: ownerBb("project_files", (input) => bbRpc.projectFiles(input)),
+      project_folders: ownerBb("project_folders", (input) => bbRpc.projectFolders(input)),
+      thread_files: ownerBb("thread_files", (input) => bbRpc.threadFiles(input)),
+      bb_threads_recent: ownerBb("bb_threads_recent", (input) => bbRpc.threadsRecent(input)),
+      compose_attach_bb: ownerBb("compose_attach_bb", (input) => bbRpc.composeAttachBb(input)),
+      draft_from_bb: ownerBb("draft_from_bb", (input) => bbRpc.draftFromBb(input)),
+      dev_digest_get: ownerBb("dev_digest_get", (input) => bbRpc.devDigest(input)),
+      patch_view: ownerBb("patch_view", (input) => bbRpc.patchView(input)),
+      patch_save: ownerBb("patch_save", (input) => bbRpc.patchSave(input)),
+      patch_handoff_prepare: ownerBb("patch_handoff_prepare", (input) => bbRpc.patchHandoffPrepare(input)),
+      patch_handoff: ownerBb("patch_handoff", (input) => bbRpc.patchHandoff(input)),
+      alert_view: ownerBb("alert_view", (input) => bbRpc.alertView(input)),
+      incident_prepare: ownerBb("incident_prepare", (input) => bbRpc.incidentPrepare(input)),
+      incident_start: ownerBb("incident_start", (input) => bbRpc.incidentStart(input)),
+      incident_append: ownerBb("incident_append", (input) => bbRpc.incidentAppend(input)),
+      conversation_project_set: ownerBb("conversation_project_set", async (input) => {
+        const result = await bbRpc.conversationProjectSet(input);
+        // A bound conversation's loaded or server-found rows are kept (slice 3h).
+        if (input.projectId !== null) {
+          const thread = store.getThread(input.threadId, "");
+          if (thread !== null) store.promoteKept(thread.messages.map((message) => message.id));
+        }
+        return result;
+      }),
+      binding_add: ownerBb("binding_add", (input) => bbRpc.bindingAdd(input)),
+      binding_remove: ownerBb("binding_remove", (input) => bbRpc.bindingRemove(input)),
+      bindings_list: ownerBb("bindings_list", () => bbRpc.bindingsList()),
+      project_mail: ownerBb("project_mail", (input) => bbRpc.projectMail(input)),
+      bb_thread_mail: ownerBb("bb_thread_mail", (input) => bbRpc.bbThreadMail(input)),
+      rules_list: ownerBb("rules_list", () => bbRpc.rulesList()),
+      rule_save: ownerBb("rule_save", (input) => bbRpc.ruleSave(input)),
+      rule_delete: ownerBb("rule_delete", (input) => bbRpc.ruleDelete(input)),
+      rules_pause: ownerBb("rules_pause", (input) => bbRpc.rulesPause(input)),
+      rule_runs_list: ownerBb("rule_runs_list", (input) => bbRpc.ruleRunsList(input)),
+      rule_run_dismiss: ownerBb("rule_run_dismiss", (input) => bbRpc.ruleRunDismiss(input)),
+      // Slice 3h: owner-only.
+      server_search_start: owner3h("server_search_start", (input) => s3.serverSearchStart(input)),
+      server_search_more: owner3h("server_search_more", (input) => s3.serverSearchMore(input)),
+      history_load: owner3h("history_load", (input) => s3.historyLoad(input)),
+      conversation_load: owner3h("conversation_load", (input) => s3.conversationLoad(input)),
+      server_job_poll: owner3h("server_job_poll", (input) => s3.jobPoll(input)),
+      server_job_cancel: owner3h("server_job_cancel", (input) => s3.jobCancel(input)),
+      history_forget_check: owner3h("history_forget_check", (input) => s3.historyForgetCheck(input)),
+      history_forget: owner3h("history_forget", (input) => s3.historyForget(input)),
+      saved_searches_list: owner3h("saved_searches_list", () => s3.savedSearchesList()),
+      saved_search_save: owner3h("saved_search_save", (input) => s3.savedSearchSave(input)),
+      saved_search_delete: owner3h("saved_search_delete", (input) => s3.savedSearchDelete(input)),
+      saved_search_move: owner3h("saved_search_move", (input) => s3.savedSearchMove(input)),
+      folder_create: owner3h("folder_create", (input) => s3.folderCreate(input)),
+      folder_rename: owner3h("folder_rename", (input) => s3.folderRename(input)),
+      folder_delete_check: owner3h("folder_delete_check", (input) => s3.folderDeleteCheck(input)),
+      folder_delete: owner3h("folder_delete", (input) => s3.folderDelete(input)),
+      folder_subscribe: owner3h("folder_subscribe", (input) => s3.folderSubscribe(input)),
+      folder_prefs_set: owner3h("folder_prefs_set", (input) => s3.folderPrefsSet(input)),
+      messages_list: owner3h("messages_list", ({ scope, cursor, limit, filter }) => {
+        // The same filter rules as threads_list.
+        const categorized = filter !== undefined && filter.category !== undefined && !deps.categoriesOn() ? { ...filter, category: undefined } : filter;
+        const shown = categorized !== undefined && categorized.notDev !== undefined && !deps.bbSettings().devNotifications ? { ...categorized, notDev: undefined } : categorized;
+        return s3.messagesList({ scope, cursor, limit, ...(shown === undefined ? {} : { filter: shown }) });
+      }),
+      labels_list: owner3h("labels_list", (input) => s3.labelsList(input)),
+      labels_change: owner3h("labels_change", (input) => s3.labelsChange(input)),
+      attachment_view_ticket: owner3h("attachment_view_ticket", (input) => s3.attachmentViewTicket(input)),
+      files_list: owner3h("files_list", (input) => s3.filesList(input)),
+      attachment_text_status: owner3h("attachment_text_status", () => s3.attachmentTextStatus()),
+      attachment_text_retry: owner3h("attachment_text_retry", () => s3.attachmentTextRetry()),
+      attachment_text_clear: owner3h("attachment_text_clear", () => s3.attachmentTextClear()),
+      related_messages: owner3h("related_messages", (input) => s3.relatedMessages(input)),
+      sender_card: owner3h("sender_card", (input) => s3.senderCard(input)),
+      // Slice 3i (resolution 7): the old-row check, one read-only PEEK session per folder
+      // through the account queue; Details' Check again passes force.
+      sender_check_refresh: async ({ messageIds, force }, context) => {
+        refusePluginCaller(context);
+        return deps.senderChecks.refresh({ messageIds, force });
+      },
+      // Slice 3k: OpenPGP. Every method refuses another plugin first; nothing here is a tool or a command.
+      pgp_certs_list: (_input, context) => {
+        refusePluginCaller(context);
+        return { certs: deps.pgp.list(), vaultReady: deps.vaultReady() };
+      },
+      pgp_cert_generate: async ({ accountId, address }, context) => {
+        refusePluginCaller(context);
+        const account = store.getAccount(accountId);
+        if (account === null) throw refuse("not_found", "Unknown account");
+        const wanted = address.trim().toLowerCase();
+        const identity = accountIdentities(store, account).find((entry) => entry.address.toLowerCase() === wanted);
+        // Only for an address this account sends from: a key for someone else's address would mislead.
+        if (identity === undefined) throw refuse("invalid", PGP_NOT_OWN_ADDRESS_MESSAGE);
+        const made = await deps.pgp.generate(wanted, identity.displayName);
+        if ("refused" in made) {
+          throw refuse("conflict", made.refused === "vault" ? NEEDS_KEY_MESSAGE : made.refused === "exists" ? PGP_EXISTS_MESSAGE : PGP_FULL_MESSAGE);
+        }
+        return { cert: made };
+      },
+      pgp_cert_import: async ({ armor, phrase }, context) => {
+        refusePluginCaller(context);
+        return deps.pgp.importArmor(armor, phrase ?? null);
+      },
+      pgp_cert_import_message: async ({ messageId }, context) => {
+        refusePluginCaller(context);
+        const fetched = await fetchRawGuarded(deps.rawDeps, messageId).catch((error: unknown) => {
+          throw rawRefusal(error);
+        });
+        return deps.pgp.importFromMessage(fetched.raw);
+      },
+      pgp_cert_remove: ({ id }, context) => {
+        refusePluginCaller(context);
+        return { ok: deps.pgp.remove(id) };
+      },
+      pgp_cert_export: async ({ id, phrase }, context) => {
+        refusePluginCaller(context);
+        const exported = await deps.pgp.exportArmor(id, phrase ?? null);
+        if (exported === null) throw refuse("not_found", PGP_UNKNOWN_MESSAGE);
+        return exported;
+      },
+      pgp_check: ({ from, recipients }, context) => {
+        refusePluginCaller(context);
+        return deps.pgp.check(from, recipients);
+      },
+      pgp_verify: async ({ messageId }, context) => {
+        refusePluginCaller(context);
+        const fetched = await fetchRawGuarded(deps.rawDeps, messageId).catch((error: unknown) => {
+          throw rawRefusal(error);
+        });
+        const sender = store.getMessage(messageId)?.from?.address ?? null;
+        const checked = await deps.pgp.verify(fetched.raw, sender);
+        log(`pgp verify ${messageId}: ${checked.state}`);
+        return "fingerprint" in checked ? checked : { state: checked.state, fingerprint: null, signer: null, fromSender: false };
+      },
+      // Slice 3p: local archives. Owner only; nothing here is a tool, a mention or a CLI read.
+      archives_list: owner("archives_list", () => ({ archives: store.listArchives().map(toArchiveView) })),
+      archive_messages: owner("archive_messages", ({ archiveId, query, cursor }) => {
+        if (archiveId !== null && store.getArchive(archiveId) === null) throw refuse("not_found", UNKNOWN_ARCHIVE_MESSAGE);
+        return store.archiveMessages(archiveId, { query, limit: ARCHIVE_PAGE, cursor });
+      }),
+      archive_message: owner("archive_message", ({ id }) => {
+        const found = store.archiveMessage(id);
+        if (found === null) throw refuse("not_found", "Unknown message");
+        return found.message;
+      }),
+      archive_download_ticket: owner("archive_download_ticket", ({ id, partId }) => {
+        const found = store.archiveMessage(id);
+        const attachment = found?.message.attachments.find((entry) => entry.partId === partId);
+        if (found === null || attachment === undefined) throw refuse("not_found", "Unknown attachment");
+        const ticket = deps.archiveTickets.mint({ id, partId });
+        return { url: `${archiveDownloadUrl(bb.pluginId)}?t=${ticket}`, fileName: sanitizeFileName(attachment.filename, "attachment") };
+      }),
+      archive_remove: owner("archive_remove", ({ id }) => {
+        const removed = store.removeArchive(id);
+        if (removed) log(`archive ${id}: removed`);
+        return { ok: removed };
+      }),
+      // Slice 3m: filters. Owner only; saving one changes what happens to new mail.
+      filters_list: owner("filters_list", () => ({ filters: store.listMailFilters() })),
+      filter_save: owner("filter_save", (input) => {
+        const match = normalizeRuleMatch(input.match);
+        const accounts = input.match.accounts ?? [];
+        if (accounts.some((id) => store.getAccount(id) === null)) throw refuse("invalid", "Unknown account");
+        const filter = {
+          id: input.id ?? `flt_${randomUUID()}`,
+          name: input.name.trim(),
+          enabled: input.enabled,
+          match: { ...match, ...(accounts.length > 0 ? { accounts } : {}) },
+          actions: input.actions,
+        };
+        const checked = validateFilter(filter);
+        if (!checked.ok) throw refuse("invalid", checked.reason);
+        if (input.id !== undefined && !store.listMailFilters().some((entry) => entry.id === input.id)) {
+          throw refuse("not_found", UNKNOWN_FILTER_MESSAGE);
+        }
+        if (filter.actions.move === "folder") {
+          const target = store.listFolders(accounts[0] ?? "").find((entry) => entry.path === filter.actions.folder);
+          if (target === undefined || !target.selectable || target.specialUse === "inbox") throw refuse("invalid", FILTER_FOLDER_MESSAGE);
+        }
+        const saved = store.saveMailFilter(filter, composeDeps.clock.now().toISOString());
+        if ("full" in saved) throw refuse("conflict", FILTERS_FULL_MESSAGE);
+        log(`filter saved: ${saved.filter.id}`);
+        return saved.filter;
+      }),
+      filter_delete: owner("filter_delete", ({ id }) => ({ ok: store.deleteMailFilter(id) })),
+      invite_view: async ({ messageId }, context) => {
+        refusePluginCaller(context);
+        const { invite, role } = await readInvite(deps, messageId);
+        return { invite, answerable: inviteRefusal(invite, role) === null };
+      },
+      invite_reply: owner("invite_reply", (input) => replyToInvite(deps, input, log)),
+      pgp_open: async ({ messageId }, context) => {
+        refusePluginCaller(context);
+        const fetched = await fetchRawGuarded(deps.rawDeps, messageId).catch((error: unknown) => {
+          throw rawRefusal(error);
+        });
+        const sender = store.getMessage(messageId)?.from?.address ?? null;
+        const opened = await deps.pgp.open(fetched.raw, sender);
+        // The outcome only: never a subject, an address or a byte of the text.
+        log(`pgp open ${messageId}: ${opened.state}`);
+        return opened.state === "opened"
+          ? opened
+          : { state: opened.state, text: null, html: null, attachments: [], signature: null };
+      },
     },
     { experimental_discoverable: false },
   );
@@ -2925,17 +3950,63 @@ export function renderSource(
   return { headers, structure };
 }
 
+/** What an archive download ticket stands for (slice 3p). */
+type ArchiveDownload = { id: string; partId: string };
+
+function archiveDownloadUrl(pluginId: string): string {
+  return `/api/v1/plugins/${pluginId}/http/archive-download`;
+}
+
+function toArchiveView(archive: ArchiveRecord): ArchiveView {
+  return {
+    id: archive.id,
+    name: archive.name,
+    sourcePath: archive.sourcePath,
+    kind: archive.kind,
+    messages: archive.messages,
+    skipped: archive.skipped,
+    complete: archive.complete,
+    createdAt: archive.createdAt,
+  };
+}
+
+/**
+ * GET /archive-download?t=<ticket> (slice 3p): one attachment of an archive
+ * message, read from the archive's source file and checked against the hash
+ * taken at import. Always served as a download with a safe type. Nothing is
+ * logged but a failure's kind.
+ */
+function registerArchiveDownloadRoute(bb: BbPluginApi, store: MailStore, tickets: TicketBook<ArchiveDownload>): void {
+  bb.http.route(
+    "GET",
+    "/archive-download",
+    async (c) => {
+      const request = tickets.take(c.req.query("t") ?? "");
+      if (request === null) return new Response(null, { status: 404, headers: BASE_HEADERS });
+      const found = store.archiveMessage(request.id);
+      const stored = found?.message.attachments.find((attachment) => attachment.partId === request.partId);
+      if (found === null || found === undefined || stored === undefined) return textResponse(409, ARCHIVE_REFUSALS.changed);
+      try {
+        const bytes = await readArchiveAttachment(store, found.place, stored);
+        return new Response(new Uint8Array(bytes), {
+          status: 200,
+          headers: downloadHeaders(sanitizeFileName(stored.filename, "attachment"), safeContentType(stored.mimeType), bytes.byteLength),
+        });
+      } catch (error) {
+        if (error instanceof ArchiveRefused) return textResponse(409, ARCHIVE_REFUSALS[error.reason]);
+        bb.log.warn(`archive download failed (${errorKind(error)})`);
+        return textResponse(502, ARCHIVE_REFUSALS.failed);
+      }
+    },
+    { auth: "local" },
+  );
+}
+
 function textResponse(status: number, text: string): Response {
   return new Response(text, {
     status,
     headers: { ...BASE_HEADERS, "Content-Type": "text/plain; charset=utf-8" },
   });
-}
-
-function partBytes(content: ArrayBuffer | Uint8Array | string): Uint8Array | null {
-  if (content instanceof Uint8Array) return content;
-  if (content instanceof ArrayBuffer) return new Uint8Array(content);
-  return null;
 }
 
 /**
@@ -2972,16 +4043,23 @@ function registerDownloadRoute(
         const stored = header.attachments.find((a) => a.partId === request.partId);
         if (stored === undefined) throw new RawRefusal("conflict", STALE_MESSAGE);
         const parsed = await parseMail(raw);
-        const part = parsed.attachments[Number(request.partId) - 1];
-        const bytes = part === undefined ? null : partBytes(part.content);
-        if (
-          part === undefined ||
-          bytes === null ||
-          (part.filename ?? null) !== stored.filename ||
-          part.mimeType !== stored.mimeType ||
-          bytes.byteLength !== stored.size
-        ) {
-          throw new RawRefusal("conflict", STALE_MESSAGE);
+        const bytes = matchingPart(parsed.attachments, request.partId ?? "", stored);
+        if (bytes === null) throw new RawRefusal("conflict", STALE_MESSAGE);
+        if (request.kind === "view") {
+          // The viewer (slice 3h): the bytes are sniffed here, and only a kind
+          // that agrees with the stored one is served, with the sniffed type.
+          // SVG and HTML never agree (spec resolutions 13, 20).
+          const sniffed = sniffType(bytes.subarray(0, SNIFF_BYTES), stored.mimeType, stored.kind);
+          const kind = viewableAs(stored.kind, stored.mimeType, sniffed);
+          if (kind === null || sniffed === null) return textResponse(409, "not_viewable");
+          const cap = kind === "image" ? VIEW_CAPS.image : kind === "pdf" ? VIEW_CAPS.pdf : null;
+          if (cap !== null && bytes.byteLength > cap) return textResponse(409, "too_large");
+          const shown = cap === null ? bytes.subarray(0, VIEW_CAPS.textShown) : bytes;
+          const type = cap === null ? `text/plain; charset=${charsetOf(bytes) ?? "utf-8"}` : sniffed.mimeType;
+          return new Response(new Uint8Array(shown), {
+            status: 200,
+            headers: downloadHeaders(sanitizeFileName(stored.filename, "attachment"), type, shown.byteLength),
+          });
         }
         return new Response(new Uint8Array(bytes), {
           status: 200,
@@ -3011,6 +4089,8 @@ const AGENT_MAIL_OFF_RESULT = {
 };
 
 type AgentSurfaceDeps = {
+  /** The clock for relative dates in queries (newer_than, older_than). */
+  now: () => Date;
   agentTools: () => boolean;
   agentPropose: () => boolean;
   agentTriage: () => boolean;
@@ -3019,7 +4099,52 @@ type AgentSurfaceDeps = {
   notQueued: Map<string, NotQueuedReason>;
   agentLog: AgentLog;
   agentLogUpdate: AgentLogUpdate;
+  /** A BB thread started by a mail rule (slice 3g): it gets no mail tools and no skill. */
+  isRuleThread: (threadId: string) => boolean;
+  /** configure's check: also a thread whose metadata says it came from a rule (review C1). */
+  isRuleThreadContext: (threadId: string, metadata: unknown) => boolean;
+  /** Slice 3i: a header with its sender check, warnings and crypto, for agent text. */
+  secure: (header: MessageHeader) => MessageHeader;
 };
+
+/** Each agent tool's agent-log name. */
+const TOOL_LOG_NAMES: Partial<Record<string, LogTool>> = {
+  mail_search: "search",
+  mail_read: "read",
+  [CONTACTS_TOOL]: "contacts",
+  [INBOX_TOOL]: "inbox",
+  [PROPOSE_TOOL]: "propose",
+  [TEMPLATES_TOOL]: "templates",
+  [TRIAGE_TOOL]: "triage",
+};
+
+/**
+ * The bb tools register on (slice 3g, spec resolution 4): every tool's
+ * execute first checks the thread it runs in, so a configuration cached by a
+ * running session cannot widen a rule thread. The rule thread is told so,
+ * and the refusal is logged.
+ */
+function gateRuleThreads(bb: BbPluginApi, isRuleThread: (threadId: string) => boolean, agentLog: AgentLog): BbPluginApi {
+  type Definition = Parameters<BbPluginApi["agents"]["registerTool"]>[0];
+  type Execute = (params: unknown, ctx: { threadId: string }) => unknown;
+  const registerTool = (definition: Definition) => {
+    const execute = definition.execute as unknown as Execute;
+    const gated: Execute = (params, ctx) => {
+      if (isRuleThread(ctx.threadId)) {
+        agentLog({ actor: "agent", tool: TOOL_LOG_NAMES[definition.name] ?? "read", outcome: "refused_off", threadId: ctx.threadId });
+        return toolError(RULE_THREAD_MESSAGE);
+      }
+      return execute(params, ctx);
+    };
+    return bb.agents.registerTool({ ...definition, execute: gated } as unknown as Definition);
+  };
+  const bound = <T extends object>(target: T, key: string | symbol): unknown => {
+    const value = Reflect.get(target, key);
+    return typeof value === "function" ? value.bind(target) : value;
+  };
+  const agents = new Proxy(bb.agents, { get: (target, key) => (key === "registerTool" ? registerTool : bound(target, key)) });
+  return new Proxy(bb, { get: (target, key) => (key === "agents" ? agents : bound(target, key)) });
+}
 
 /** proposal_status's reason: a refused check is "changed"; a confirmed card that could not be queued says why. */
 function proposalReason(
@@ -3229,7 +4354,7 @@ function registerAgentSurfaces(bb: BbPluginApi, store: MailStore, deps: AgentSur
   bb.agents.registerTool({
     name: "mail_search",
     description:
-      "Search the owner's synced mail (every synced folder of every connected account; a message in several folders is listed once). Operators: from:x, subject:x, is:unread, after:YYYY-MM-DD, before:YYYY-MM-DD. Returns message ids, dates, senders, subjects, folders and snippets.",
+      "Search the owner's synced mail (every synced folder of every connected account; a message in several folders is listed once). Operators: from:x, to:x, cc:x, subject:x, has:attachment, filename:x, in:folder, is:unread, is:flagged, larger:5M, smaller:1M, after:YYYY-MM-DD, before:YYYY-MM-DD, newer_than:7d, older_than:1y, list:x, label:x; a leading - negates one. Returns message ids, dates, senders, subjects, folders and snippets.",
     instructions: SEARCH_INSTRUCTIONS,
     presentation: { label: { pending: "Searching mail", completed: "Searched mail" } },
     parameters: z.object({
@@ -3243,7 +4368,7 @@ function registerAgentSurfaces(bb: BbPluginApi, store: MailStore, deps: AgentSur
         agentLog({ actor: "agent", tool: "search", outcome: "refused_off", threadId });
         return AGENT_MAIL_OFF_RESULT;
       }
-      const found = agentSearch(store, query, accountId ?? null, limit ?? TOOL_SEARCH_DEFAULT);
+      const found = agentSearch(store, query, accountId ?? null, limit ?? TOOL_SEARCH_DEFAULT, deps.now());
       if ("refused" in found) {
         agentLog({ actor: "agent", tool: "search", outcome: "refused_invalid", threadId });
         return toolError(found.refused);
@@ -3278,7 +4403,7 @@ function registerAgentSurfaces(bb: BbPluginApi, store: MailStore, deps: AgentSur
         agentLog({ actor: "agent", tool: "read", outcome: "refused_off", threadId });
         return AGENT_MAIL_OFF_RESULT;
       }
-      const read = readForAgent(store, messageId, maxChars ?? AGENT_TEXT_CAP);
+      const read = readForAgent(store, deps.secure, messageId, maxChars ?? AGENT_TEXT_CAP);
       if (read.found) {
         agentLog({ actor: "agent", tool: "read", outcome: "ok", threadId, messageIds: [read.id], count: 1, hiddenCount: read.hiddenCount });
         return read.text;
@@ -3343,7 +4468,9 @@ function registerAgentSurfaces(bb: BbPluginApi, store: MailStore, deps: AgentSur
   });
   // mail_propose follows its own setting, independent of agentTools.
   // Inbox triage follows agentTriage (slice 3e): mail_inbox, mail_triage and mail_read.
-  bb.agents.configure(() => {
+  bb.agents.configure((context) => {
+    // A rule thread gets no mail tools and no skill, whatever its metadata says (spec resolution 4).
+    if (deps.isRuleThreadContext(context.thread.id, context.pluginMetadata)) return { tools: [], skills: [] };
     const read = agentTools();
     const propose = deps.agentPropose();
     const triage = deps.agentTriage();
@@ -3378,7 +4505,7 @@ function registerAgentSurfaces(bb: BbPluginApi, store: MailStore, deps: AgentSur
     // Throwing would block the owner's send, so a lost or out-of-scope message resolves to a notice.
     resolve: (itemId) => {
       try {
-        const read = readForAgent(store, itemId, AGENT_TEXT_CAP);
+        const read = readForAgent(store, deps.secure, itemId, AGENT_TEXT_CAP);
         if (!read.found) {
           agentLog({ actor: "mention", tool: "mention", outcome: unknownOutcome(read) });
           return { context: MESSAGE_GONE_CONTEXT };
@@ -3792,6 +4919,7 @@ function registerTriageTools(bb: BbPluginApi, deps: RpcDeps): void {
         limit: limit ?? INBOX_DEFAULT,
         scoped: true,
       });
+      const failed = failedSenderIds(store, rows.map((row) => row.id));
       const rendered = renderInboxForAgentCounted(
         rows.map((row) => {
           const offered = row.unsubscribe === null ? null : offeredMethods(row.unsubscribe, row.from.address);
@@ -3807,6 +4935,7 @@ function registerTriageTools(bb: BbPluginApi, deps: RpcDeps): void {
             bulk: isBulkRow(row.bulk, row.from.address),
             unsubscribe: offered?.oneClick ? "one_click" : offered?.mailto ? "email" : null,
             snoozedUntil: row.snoozedUntil,
+            senderFailed: failed.has(row.id),
           };
         }),
       );
@@ -3845,7 +4974,9 @@ function registerTriageTools(bb: BbPluginApi, deps: RpcDeps): void {
       const rows = triageRowStates(store, askedIds, nowIso);
       let outOfScope = false;
       for (const id of [...rows.keys()]) {
-        if (store.scopedMessage(id)?.id !== id) {
+        // In scope: this copy, or (Gmail, chosen folders) its All Mail copy, as mail_read and mail_inbox judge it.
+        const scoped = store.scopedMessage(id);
+        if (scoped === null || (scoped.id !== id && roleOfFolder(store, scoped.accountId, scoped.folder) !== "all")) {
           rows.delete(id);
           outOfScope = true;
         }
@@ -4129,6 +5260,7 @@ function taskView(task: TaskRecord) {
     due: task.due,
     doneAt: task.doneAt,
     createdAt: task.createdAt,
+    note: task.note,
   };
 }
 
@@ -4140,9 +5272,9 @@ function createAiRpc(deps: RpcDeps, ownerDraft: (draftId: string) => DraftRecord
     const current = deps.translateSettings();
     return { provider: current.providerId, model: current.model };
   };
-  const logAi = (kind: string, outcome: LogOutcome, ids: readonly string[] = [], hidden = 0) => {
+  const logAi = (kind: string, outcome: LogOutcome, ids: readonly string[] = [], hidden = 0): number | null => {
     const { provider, model } = settings();
-    deps.agentLog({
+    return deps.agentLog({
       actor: "owner_ai",
       tool: `ai_${kind}` as LogEntryInput["tool"],
       outcome,
@@ -4168,10 +5300,11 @@ function createAiRpc(deps: RpcDeps, ownerDraft: (draftId: string) => DraftRecord
     return { thread, inScope, leftOut: thread.messages.length - inScope.length };
   };
 
-  const startJob = (kind: AiKind, built: AiBuild, extra: Partial<AiJobContext> = {}) => {
+  const startJob = (kind: AiKind, built: AiBuild, extra: Partial<AiJobContext> = {}, onLogged?: (seq: number | null) => void) => {
     try {
       const started = deps.aiJobs.start(kind, built, { ...settings(), ...extra });
-      logAi(kind, "ok", built.parts.map((part) => part.messageId), built.notes.hidden);
+      const seq = logAi(kind, "ok", built.parts.map((part) => part.messageId), built.notes.hidden);
+      onLogged?.(seq);
       return started;
     } catch (error) {
       if (error instanceof AiJobRefusal) logAi(kind, "refused_caps");
@@ -4179,13 +5312,22 @@ function createAiRpc(deps: RpcDeps, ownerDraft: (draftId: string) => DraftRecord
     }
   };
 
-  /** Ask's second step: the planned queries and the question's words, scoped, post-filtered, deduped, newest first. */
-  const askSearch = (question: string, accountId: string | null, today: string) => (queries: string[]): AiBuild => {
+  /**
+   * Ask's second step: the planned queries and the question's words, scoped,
+   * post-filtered, deduped, newest first. `sent` receives the excerpts' ids
+   * and hidden count, so the log row lists what went to the model.
+   */
+  const askSearch = (
+    question: string,
+    accountId: string | null,
+    today: string,
+    sent: (messageIds: string[], hidden: number) => void,
+  ) => (queries: string[]): AiBuild => {
     const seen = new Set<string>();
     const hits: MessageSummary[] = [];
     const words = queryWords(question).filter((word) => [...word].length >= 3).slice(0, ASK_QUESTION_WORDS);
     for (const query of [...queries, ...words]) {
-      const found = agentSearch(store, query, accountId, ASK_HITS_PER_QUERY);
+      const found = agentSearch(store, query, accountId, ASK_HITS_PER_QUERY, clock.now());
       if ("refused" in found) continue;
       for (const hit of found.hits) {
         const key = `${hit.accountId}\u0000${hit.id}`;
@@ -4199,7 +5341,9 @@ function createAiRpc(deps: RpcDeps, ownerDraft: (draftId: string) => DraftRecord
       const header = store.getMessage(hit.id);
       return header === null ? [] : [sourceMessage(store, header)];
     });
-    return withNonce(deps, (nonce) => askAnswerInput(question, excerpts, { nonce, today }));
+    const built = withNonce(deps, (nonce) => askAnswerInput(question, excerpts, { nonce, today }));
+    sent(built.parts.map((part) => part.messageId), built.notes.hidden);
+    return built;
   };
 
   async function start(input: AiStartInput): Promise<{ cached: NonNullable<AiResultViewOut> } | { jobId: string }> {
@@ -4265,7 +5409,17 @@ function createAiRpc(deps: RpcDeps, ownerDraft: (draftId: string) => DraftRecord
       }
       case "ask": {
         const plan = askPlanInput(input.question, today);
-        return startJob("ask", plan, { search: askSearch(input.question, input.accountId ?? null, today) });
+        // The row is written at start (the plan sends the question only); step 2 fills in the excerpts.
+        let seq: number | null = null;
+        let pending: { ids: string[]; hidden: number } | null = null;
+        const sent = (ids: string[], hidden: number) => {
+          if (seq === null) pending = { ids, hidden };
+          else deps.agentLogSources(seq, ids, hidden);
+        };
+        return startJob("ask", plan, { search: askSearch(input.question, input.accountId ?? null, today, sent) }, (logged) => {
+          seq = logged;
+          if (seq !== null && pending !== null) deps.agentLogSources(seq, pending.ids, pending.hidden);
+        });
       }
       case "categories": {
         requireCategories();
@@ -4510,7 +5664,11 @@ function aiScopeView(store: MailStore) {
   };
 }
 
-function createDayRpc(deps: RpcDeps, withCategories: (threads: ThreadSummary[], folder: string) => ThreadSummary[]) {
+function createDayRpc(
+  deps: RpcDeps,
+  withCategories: (threads: ThreadSummary[], folder: string) => ThreadSummary[],
+  bb: { dev: () => { ciFailed: number; repos: number; alertsFiring: number }; rulesReady: () => number },
+) {
   const { store } = deps;
   const clock = deps.composeDeps.clock;
   const nowIso = () => clock.now().toISOString();
@@ -4533,6 +5691,8 @@ function createDayRpc(deps: RpcDeps, withCategories: (threads: ThreadSummary[], 
       tasksDue,
       since: { ...sinceCountsNow(store, since, deps.categoriesOn()), from: since },
       digestDay: store.getDigest(day)?.day ?? null,
+      dev: bb.dev(),
+      rulesReady: bb.rulesReady(),
     };
   }
 
@@ -4595,9 +5755,10 @@ function createDayRpc(deps: RpcDeps, withCategories: (threads: ThreadSummary[], 
   }
 
   function notice() {
-    const taken = takeDayNotice(store, clock.now());
+    const taken = takeDayNotice(store, clock.now(), deps.quietHours());
     if (taken === null) throw refuse("not_found", NO_DAY_NOTICE_MESSAGE);
     if (taken.kind === "digest") return { kind: "digest" as const, replyCount: taken.replyCount };
+    if (taken.kind === "rule") return { kind: "rule" as const, ruleName: taken.ruleName, count: taken.count };
     const copy = sentCopy(store, taken.reminder);
     const to = copy?.to[0] ?? { name: null, address: "" };
     return {
@@ -4679,12 +5840,21 @@ function createDayRpc(deps: RpcDeps, withCategories: (threads: ThreadSummary[], 
 const jsonOption = { json: { type: "boolean", description: "Emit machine-readable JSON" } } as const;
 
 type CliDeps = {
+  /** A BB thread started by a mail rule (slice 3g): the CLI answers no mail there. */
+  isRuleThread: (threadId: string) => boolean;
   loop: SyncLoop;
   accountDeps: AccountDeps;
   publishChanged: (accountId: string | null) => void;
   vaultReady: () => boolean;
   agentTools: () => boolean;
   agentLog: AgentLog;
+  /** The clock for relative dates in queries (newer_than, older_than). */
+  now: () => Date;
+  /** Slice 3i: a header with its sender check, warnings and crypto, for agent text. */
+  secure: (header: MessageHeader) => MessageHeader;
+  /** Slice 3j: what doctor needs; `vault` is read at call time. */
+  doctor: () => DoctorDeps;
+  log: (line: string) => void;
 };
 
 function unknownAccount(accountId: string): PluginCliError {
@@ -4694,6 +5864,10 @@ function unknownAccount(accountId: string): PluginCliError {
   });
 }
 
+/** The CLI inside a project with no thread id: which thread asks cannot be known. */
+export const NO_THREAD_MESSAGE =
+  "Mail commands need the BB thread they run in (BB_THREAD_ID); run them from that thread or from your own terminal.";
+
 function registerCli(bb: BbPluginApi, store: MailStore, deps: CliDeps): void {
   const { loop, agentTools, agentLog } = deps;
   /**
@@ -4701,9 +5875,21 @@ function registerCli(bb: BbPluginApi, store: MailStore, deps: CliDeps): void {
    * mail and account data follow agentTools, like the tools; the owner's own
    * terminal has no thread. The thread id comes from the agent's environment,
    * so this decides what agents are offered; it is not a barrier against an
-   * agent with shell access to the BB server machine.
+   * agent with shell access to the BB server machine. A call that carries a
+   * project but no thread (an agent environment whose BB_THREAD_ID was
+   * dropped) cannot be told apart from a rule thread, so it is refused too
+   * (review C1).
    */
+  const refuseRuleThread = (ctx: PluginCliContext) => {
+    if (ctx.threadId === undefined && ctx.projectId !== undefined) {
+      throw new PluginCliError(NO_THREAD_MESSAGE, { code: "thread_unknown" });
+    }
+    if (ctx.threadId !== undefined && deps.isRuleThread(ctx.threadId)) {
+      throw new PluginCliError(RULE_THREAD_MESSAGE, { code: "rule_thread" });
+    }
+  };
   const requireMailAccess = (ctx: PluginCliContext) => {
+    refuseRuleThread(ctx);
     if (ctx.threadId !== undefined && !agentTools()) {
       throw new PluginCliError(AGENT_MAIL_OFF_MESSAGE, { code: "agent_mail_access_off" });
     }
@@ -4731,7 +5917,7 @@ function registerCli(bb: BbPluginApi, store: MailStore, deps: CliDeps): void {
           },
         }),
         search: cliCommand({
-          summary: "Search synced mail (from:, subject:, is:unread, after:, before:)",
+          summary: "Search synced mail (from:, to:, subject:, has:, in:, is:, after:, before:, newer_than:, -negation)",
           positionals: [
             {
               name: "query",
@@ -4758,8 +5944,8 @@ function registerCli(bb: BbPluginApi, store: MailStore, deps: CliDeps): void {
             // Inside an agent thread: the scope, the refusal and the post-filter of
             // mail_search, and a log row; the owner's terminal is not logged (spec resolution 16).
             const found = inThread
-              ? agentSearch(store, query, options.account ?? null, options.limit)
-              : { hits: store.search(parseQuery(query), options.account ?? null, options.limit) };
+              ? agentSearch(store, query, options.account ?? null, options.limit, deps.now())
+              : { hits: store.search(parseQuery(query, deps.now()), options.account ?? null, options.limit) };
             if ("refused" in found) {
               agentLog({ actor: "cli", tool: "cli_search", outcome: "refused_invalid", threadId: ctx.threadId });
               throw new PluginCliError(found.refused, { code: "search_refused" });
@@ -4800,7 +5986,7 @@ function registerCli(bb: BbPluginApi, store: MailStore, deps: CliDeps): void {
             requireMailAccess(ctx);
             const { messageId } = positionals;
             const inThread = ctx.threadId !== undefined;
-            const read = readForAgent(store, messageId, options["max-chars"], inThread);
+            const read = readForAgent(store, deps.secure, messageId, options["max-chars"], inThread);
             if (inThread) {
               agentLog(
                 read.found
@@ -4822,7 +6008,8 @@ function registerCli(bb: BbPluginApi, store: MailStore, deps: CliDeps): void {
           summary: "Start a sync round now, for one account or all",
           positionals: [{ name: "accountId", description: "Only this account id" }],
           options: jsonOption,
-          run: ({ positionals, options }) => {
+          run: ({ positionals, options }, ctx) => {
+            refuseRuleThread(ctx);
             if (!deps.vaultReady()) {
               throw new PluginCliError(NEEDS_KEY_MESSAGE, { code: "vault_not_ready" });
             }
@@ -4846,6 +6033,7 @@ function registerCli(bb: BbPluginApi, store: MailStore, deps: CliDeps): void {
           positionals: [{ name: "accountId", description: "Account id", required: true }],
           options: jsonOption,
           run: ({ positionals, options }, ctx) => {
+            refuseRuleThread(ctx);
             if (ctx.threadId !== undefined) {
               throw new PluginCliError(REMOVE_IN_THREAD_MESSAGE, { code: "owner_terminal_only" });
             }
@@ -4863,6 +6051,185 @@ function registerCli(bb: BbPluginApi, store: MailStore, deps: CliDeps): void {
             deps.publishChanged(accountId);
             if (options.json) return { exitCode: 0, stdout: json({ removed: true, accountId }) };
             return { exitCode: 0, stdout: `Removed ${accountId}.\n` };
+          },
+        }),
+        doctor: cliCommand({
+          summary: "Check accounts, servers and the database (owner's terminal only)",
+          positionals: [{ name: "accountId", description: "Only this account id", required: false }],
+          options: {
+            "repair-threads": { type: "boolean", description: "Rebuild every conversation from its messages" },
+            ...jsonOption,
+          },
+          run: async ({ positionals, options }, ctx) => {
+            refuseRuleThread(ctx);
+            if (ctx.threadId !== undefined) {
+              throw new PluginCliError(OWNER_TERMINAL_MESSAGE, { code: "owner_terminal_only" });
+            }
+            const doctorDeps = deps.doctor();
+            const only = positionals.accountId ?? null;
+            if (only !== null && store.getAccount(only) === null) throw unknownAccount(only);
+            const ids = only !== null ? [only] : store.listAccounts().map((account) => account.id);
+            const sections: DoctorSection[] = [databaseSection(doctorDeps.db)];
+            for (const id of ids) {
+              const section = await accountSection(doctorDeps, id, { repairThreads: options["repair-threads"] === true });
+              if (section === null) continue;
+              sections.push(section);
+              // The one log line: the account id and the outcome, nothing else.
+              deps.log(`doctor ${id}: ${worstLevel([section])}`);
+              if (section.lines.some((entry) => entry.check === RESUMED_CHECK)) {
+                deps.log(`doctor ${id}: sign-in works again, sync resumed`);
+                deps.publishChanged(id);
+                loop.wake(id);
+              }
+              if (options["repair-threads"] === true) deps.publishChanged(id);
+            }
+            const worst = worstLevel(sections);
+            const exitCode = worst === "fail" ? 1 : 0;
+            if (options.json) return { exitCode, stdout: json({ result: worst, sections }) };
+            return { exitCode, stdout: `${doctorText(sections)}\n` };
+          },
+        }),
+        archive: cliCommand({
+          summary: "Read an old mbox or .eml archive into Mail, list archives or remove one (owner's terminal only)",
+          positionals: [
+            { name: "action", description: "add, list or remove", required: true },
+            { name: "target", description: "add: full path of the mbox file, .eml file or folder of .eml files; remove: the archive id", required: false },
+          ],
+          options: {
+            name: { type: "string", description: "add: a name for the archive (default: the file's name)" },
+            ...jsonOption,
+          },
+          run: async ({ positionals, options }, ctx) => {
+            refuseRuleThread(ctx);
+            if (ctx.threadId !== undefined) {
+              throw new PluginCliError(OWNER_TERMINAL_MESSAGE, { code: "owner_terminal_only" });
+            }
+            const { action, target } = positionals;
+            if (action === "list") {
+              const archives = store.listArchives();
+              if (options.json) return { exitCode: 0, stdout: json({ archives }) };
+              const lines =
+                archives.length === 0
+                  ? ["No archives. Add one with `bb makosh-mail archive add /full/path/old.mbox`."]
+                  : archives.map(
+                      (archive) =>
+                        `${archive.id}  ${archive.name}: ${archive.messages} messages${archive.complete ? "" : " (not finished)"}, from ${archive.sourcePath}`,
+                    );
+              return { exitCode: 0, stdout: `${lines.join("\n")}\n` };
+            }
+            if (action === "remove") {
+              if (target === undefined || store.getArchive(target) === null) {
+                throw new PluginCliError("unknown archive; `bb makosh-mail archive list` shows the ids", { code: "archive_not_found" });
+              }
+              store.removeArchive(target);
+              deps.log(`archive ${target}: removed`);
+              deps.publishChanged(null);
+              if (options.json) return { exitCode: 0, stdout: json({ removed: true, id: target }) };
+              return { exitCode: 0, stdout: "Removed from Mail. The file it was read from is untouched.\n" };
+            }
+            if (action !== "add") throw new PluginCliError("the action is add, list or remove", { code: "archive_action" });
+            if (target === undefined) throw new PluginCliError(ARCHIVE_REFUSALS.not_absolute, { code: "archive_not_absolute" });
+            let result: Awaited<ReturnType<typeof importArchive>>;
+            try {
+              result = await importArchive({ store, now: deps.doctor().now, newId: randomUUID }, { path: target, name: options.name ?? null });
+            } catch (error) {
+              const reason = error instanceof ArchiveRefused ? error.reason : "failed";
+              deps.log(`archive add: ${reason}`);
+              deps.publishChanged(null);
+              const again = reason === "failed" ? " Run the same command again to go on from where it stopped." : "";
+              throw new PluginCliError(`${ARCHIVE_REFUSALS[reason]}${again}`, { code: `archive_${reason}` });
+            }
+            const { archive } = result;
+            // The archive id and counts: never the path, the name or anything of a message.
+            deps.log(`archive ${archive.id}: ${result.added} added, ${archive.skipped} skipped, ${archive.complete ? "complete" : "not finished"}`);
+            deps.publishChanged(null);
+            if (options.json) return { exitCode: 0, stdout: json({ ...result, archive }) };
+            const lines = result.already
+              ? [`"${archive.name}" is already in Mail: ${archive.messages} messages. Remove it first to read the file again.`]
+              : [`"${archive.name}": ${result.added} messages added${result.resumed ? " (went on from an earlier run)" : ""}, ${archive.messages} in all.`];
+            if (!result.already && archive.skipped > 0) lines.push(`${archive.skipped} were left out (not readable as mail, or over 50 MB).`);
+            if (result.capped) lines.push("The archive holds 200,000 messages, the most one archive takes; the rest of the file was left out.");
+            if (!result.already) lines.push("Open Mail's Local archive page to read and search it. The file stays where it is: attachments are read from it.");
+            return { exitCode: 0, stdout: `${lines.join("\n")}\n` };
+          },
+        }),
+        export: cliCommand({
+          summary: "Write a folder's messages to a new mbox file or a directory of .eml files (owner's terminal only)",
+          positionals: [
+            { name: "accountId", description: "Account id", required: true },
+            { name: "folder", description: "The folder's full name, for example INBOX", required: true },
+            { name: "file", description: "Full path of the file (mbox) or directory (eml) to create", required: true },
+          ],
+          options: {
+            format: { type: "string", description: "mbox (default) or eml" },
+            since: { type: "string", description: "Only messages from this day on, YYYY-MM-DD" },
+            max: { type: "string", description: `At most this many, the newest (default ${EXPORT_MAX_DEFAULT}, up to ${EXPORT_MAX_LIMIT})` },
+            ...jsonOption,
+          },
+          run: async ({ positionals, options }, ctx) => {
+            refuseRuleThread(ctx);
+            if (ctx.threadId !== undefined) {
+              throw new PluginCliError(OWNER_TERMINAL_MESSAGE, { code: "owner_terminal_only" });
+            }
+            if (store.getAccount(positionals.accountId) === null) throw unknownAccount(positionals.accountId);
+            const format = options.format ?? "mbox";
+            if (format !== "mbox" && format !== "eml") throw new PluginCliError("--format is mbox or eml", { code: "export_format" });
+            const since = options.since === undefined ? null : new Date(`${options.since}T00:00:00.000Z`);
+            if (since !== null && (!/^\d{4}-\d{2}-\d{2}$/.test(options.since ?? "") || Number.isNaN(since.getTime()))) {
+              throw new PluginCliError("--since is a day, YYYY-MM-DD", { code: "export_since" });
+            }
+            const max = options.max === undefined ? EXPORT_MAX_DEFAULT : Number(options.max);
+            if (!Number.isInteger(max) || max < 1 || max > EXPORT_MAX_LIMIT) {
+              throw new PluginCliError(`--max is a number from 1 to ${EXPORT_MAX_LIMIT}`, { code: "export_max" });
+            }
+            const { store: exportStore, gateway, vault, now } = deps.doctor();
+            let result: ExportResult;
+            try {
+              result = await exportFolder(
+                { store: exportStore, gateway, vault, now },
+                { accountId: positionals.accountId, folder: positionals.folder, file: positionals.file, format, since, max },
+              );
+            } catch (error) {
+              const reason = error instanceof ExportRefused ? error.reason : "failed";
+              const written = error instanceof ExportRefused ? error.written : 0;
+              // The account id, the outcome and a count: never the folder, the path or anything of a message.
+              deps.log(`export ${positionals.accountId}: ${reason}, ${written} written`);
+              const partial = written > 0 ? ` ${written} messages were written before that.` : "";
+              throw new PluginCliError(`${EXPORT_REFUSALS[reason]}${partial}`, { code: `export_${reason}` });
+            }
+            deps.log(`export ${positionals.accountId}: ok, ${result.messages} written, ${result.skipped} skipped`);
+            if (options.json) return { exitCode: 0, stdout: json({ written: true, format, ...result }) };
+            const megabytes = (result.bytes / (1024 * 1024)).toFixed(1);
+            const lines = [`Exported ${result.messages} messages, ${megabytes} MB. Keep it as private as the mailbox itself.`];
+            if (result.skipped > 0) lines.push(`${result.skipped} could not be read (gone meanwhile, or over 50 MB).`);
+            if (result.left > 0) lines.push(`${result.left} older messages were left out; raise --max or narrow with --since to get them.`);
+            return { exitCode: 0, stdout: `${lines.join("\n")}\n` };
+          },
+        }),
+        backup: cliCommand({
+          summary: "Write a copy of Mail's database to a new file (owner's terminal only)",
+          positionals: [{ name: "file", description: "Full path of the file to create", required: true }],
+          options: jsonOption,
+          run: async ({ positionals, options }, ctx) => {
+            refuseRuleThread(ctx);
+            if (ctx.threadId !== undefined) {
+              throw new PluginCliError(OWNER_TERMINAL_MESSAGE, { code: "owner_terminal_only" });
+            }
+            let written: { bytes: number; messages: number };
+            try {
+              written = await backupDatabase(deps.doctor().db, positionals.file);
+            } catch (error) {
+              const reason = error instanceof BackupRefused ? error.reason : "failed";
+              deps.log(`backup: ${reason}`);
+              throw new PluginCliError(BACKUP_REFUSALS[reason], { code: `backup_${reason}` });
+            }
+            deps.log("backup: ok");
+            if (options.json) return { exitCode: 0, stdout: json({ written: true, ...written }) };
+            const megabytes = (written.bytes / (1024 * 1024)).toFixed(1);
+            return {
+              exitCode: 0,
+              stdout: `Backup written: ${megabytes} MB, ${written.messages} messages. Keep it as private as the mailbox itself.\n`,
+            };
           },
         }),
       },

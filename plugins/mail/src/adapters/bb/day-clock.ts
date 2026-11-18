@@ -8,8 +8,13 @@
 // only: it never scans references (resolution 7) and never calls a model.
 // Beside it, the post-round step labels new mail by the owner's category
 // rules and clears reminders a round's new rows answer.
+//
+// Slice 3h: once a day (the first tick of each local day) the clock deletes,
+// locally, server-search hits kept longer than serverSearchKeepDays (14 by
+// default); opened and history rows never expire. It logs the count only.
 import {
   REMINDERS_LIVE_MAX,
+  REPLY_CLOCK_SKEW_MS,
   answers,
   digestDue,
   inQuietHours,
@@ -27,6 +32,7 @@ import {
   type MailStore,
   type ReminderRecord,
   type ReplyCandidate,
+  type RuleRunRecord,
   type SinceCounts,
   type SyncOutcome,
 } from "../../core/index.ts";
@@ -118,7 +124,9 @@ export function replyArrived(store: MailStore, nowIso: string, only?: ReadonlySe
     (r): r is ReminderRecord & { sentAt: string } => r.sentAt !== null && (r.state === "waiting" || r.state === "due"),
   );
   if (live.length === 0) return 0;
-  const after = live.reduce((min, r) => (r.sentAt < min ? r.sentAt : min), live[0]!.sentAt);
+  const earliest = live.reduce((min, r) => (r.sentAt < min ? r.sentAt : min), live[0]!.sentAt);
+  // Rows dated up to REPLY_CLOCK_SKEW_MS before the send can answer (core `answers`).
+  const after = new Date(Date.parse(earliest) - REPLY_CLOCK_SKEW_MS).toISOString();
   const rows = store
     .answeringRows(
       live.map((r) => r.rfcMessageId),
@@ -187,12 +195,47 @@ export function afterRoundAi(deps: AfterRoundAiDeps, accountId: string, outcome:
 // ---------------------------------------------------------------------------
 
 /** What a window shows: today's digest counts, or one due reminder. */
-export type DayNotice = { kind: "digest"; day: string; replyCount: number } | { kind: "reminder"; reminder: ReminderRecord };
+export type DayNotice =
+  | { kind: "digest"; day: string; replyCount: number }
+  | { kind: "reminder"; reminder: ReminderRecord }
+  | { kind: "rule"; ruleName: string; count: number };
+
+/** Rule runs looked at for a notice. */
+const RULE_NOTICE_RUNS = 200;
+
+/** Prepared (ready) and started rule runs not shown in a notice yet, oldest first. */
+function unnotifiedRuns(store: MailStore): RuleRunRecord[] {
+  return (["ready", "started"] as const)
+    .flatMap((state) => store.listRuleRuns({ state, limit: RULE_NOTICE_RUNS }).runs)
+    .filter((run) => run.notifiedAt === null)
+    .sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0));
+}
+
+/**
+ * A rule notice (slice 3g): the rule of the oldest unshown prepared or
+ * started run, with how many of its runs are new; those runs are marked
+ * shown. Runs of a deleted rule are marked shown without a notice.
+ */
+function takeRuleNotice(store: MailStore, nowIso: string): DayNotice | null {
+  const runs = unnotifiedRuns(store);
+  if (runs.length === 0) return null;
+  const rules = new Map(store.listRules().map((rule) => [rule.id, rule]));
+  const done = new Set<string>();
+  for (const run of runs) {
+    if (done.has(run.ruleId)) continue;
+    done.add(run.ruleId);
+    const ofRule = runs.filter((other) => other.ruleId === run.ruleId);
+    for (const other of ofRule) store.updateRuleRun(other.id, { notifiedAt: nowIso }, nowIso);
+    const rule = rules.get(run.ruleId);
+    if (rule !== undefined) return { kind: "rule", ruleName: rule.name, count: ofRule.length };
+  }
+  return null;
+}
 
 /**
  * Tokens for announced notices, in memory. Each notice (today's digest, a
- * due reminder) is announced once per process; the token only wakes the
- * windows, which then ask for the oldest unshown notice.
+ * reminder at one due time) is announced once per process; the token only
+ * wakes the windows, which then ask for the oldest unshown notice.
  */
 export class DayNoticeBook {
   private readonly announced = new Set<string>();
@@ -210,6 +253,11 @@ export class DayNoticeBook {
     return token;
   }
 
+  /** Forgets what was announced: after quiet hours every unshown notice is announced again. */
+  reannounce(): void {
+    this.announced.clear();
+  }
+
   /** Whether a token was handed out (an unknown one still gets the oldest notice). */
   knows(token: string): boolean {
     return this.tokens.has(token);
@@ -218,9 +266,11 @@ export class DayNoticeBook {
 
 /**
  * The oldest unshown notice of today, marked shown: today's built digest
- * first, then due reminders by due time. Null when none waits.
+ * first, then due reminders by due time. Null when none waits, and inside
+ * quiet hours (the notice stays unshown; the clock announces it again after).
  */
-export function takeDayNotice(store: MailStore, now: Date): DayNotice | null {
+export function takeDayNotice(store: MailStore, now: Date, quietHours = ""): DayNotice | null {
+  if (inQuietHours(parseQuietHours(quietHours), localMinutes(now))) return null;
   const nowIso = now.toISOString();
   const day = localDay(now);
   const digest = store.getDigest(day);
@@ -233,14 +283,24 @@ export function takeDayNotice(store: MailStore, now: Date): DayNotice | null {
   if (reminder !== undefined && store.updateReminder(reminder.id, { notifiedAt: nowIso }, nowIso)) {
     return { kind: "reminder", reminder };
   }
-  return null;
+  return takeRuleNotice(store, nowIso);
 }
 
 // ---------------------------------------------------------------------------
 // The clock
 // ---------------------------------------------------------------------------
 
-export type DayClockSettings = { morningDigest: boolean; digestTime: string; quietHours: string; mailCategories: boolean };
+export type DayClockSettings = {
+  morningDigest: boolean;
+  digestTime: string;
+  quietHours: string;
+  mailCategories: boolean;
+  /** Slice 3h: days a server-search hit is kept (default SERVER_SEARCH_KEEP_DAYS). */
+  serverSearchKeepDays?: number;
+};
+
+/** Days a server-search hit the owner never touched is kept. */
+export const SERVER_SEARCH_KEEP_DAYS = 14;
 
 export interface DayClockDeps {
   store: MailStore;
@@ -251,6 +311,8 @@ export interface DayClockDeps {
   clock: Clock;
   isReady: () => boolean;
   log?: (line: string) => void;
+  /** Slice 3h: an account whose rows the expiry deleted (the lists refresh). */
+  mailChanged?: (accountId: string) => void;
 }
 
 export interface DayClock {
@@ -283,6 +345,27 @@ export function createDayClock(deps: DayClockDeps): DayClock {
     }
   }
 
+  /** Whether the last tick fell inside quiet hours. */
+  let wasQuiet = false;
+  /** The local day the server-hit expiry last ran. */
+  let expiredOn: string | null = null;
+
+  function expireServerHits(now: Date, day: string, keepDays: number | undefined): void {
+    if (expiredOn === day) return;
+    expiredOn = day;
+    const days = keepDays !== undefined && Number.isFinite(keepDays) && keepDays >= 1 ? Math.floor(keepDays) : SERVER_SEARCH_KEEP_DAYS;
+    const { removed, accounts } = deps.store.expireSearchRows(now.toISOString(), days);
+    if (removed === 0) return;
+    log(`server hits: ${removed} expired`);
+    for (const accountId of accounts) {
+      try {
+        deps.mailChanged?.(accountId);
+      } catch {
+        // A broken notifier must not stop the clock.
+      }
+    }
+  }
+
   function tickOnce(): void {
     const { store } = deps;
     const now = deps.clock.now();
@@ -294,6 +377,8 @@ export function createDayClock(deps: DayClockDeps): DayClock {
     const due = store.listReminders({ states: ["waiting"], dueBefore: nowIso, limit: REMINDERS_LIVE_MAX });
     for (const reminder of due) store.updateReminder(reminder.id, { state: "due" }, nowIso);
     if (due.length > 0) log(`reminders: ${due.length} due`);
+
+    expireServerHits(now, day, settings.serverSearchKeepDays);
 
     if (settings.morningDigest) {
       const minutes = parseDigestTime(settings.digestTime);
@@ -311,7 +396,13 @@ export function createDayClock(deps: DayClockDeps): DayClock {
     }
 
     // Announce what waits, outside quiet hours; once per notice.
-    if (inQuietHours(parseQuietHours(settings.quietHours), localMinutes(now))) return;
+    if (inQuietHours(parseQuietHours(settings.quietHours), localMinutes(now))) {
+      wasQuiet = true;
+      return;
+    }
+    // A window that asked inside quiet hours got nothing: wake the windows again for what is still unshown.
+    if (wasQuiet) deps.book.reannounce();
+    wasQuiet = false;
     const digest = settings.morningDigest ? store.getDigest(day) : null;
     if (digest !== null && digest.notifiedAt === null) {
       const token = deps.book.announce(`digest:${day}`);
@@ -319,7 +410,16 @@ export function createDayClock(deps: DayClockDeps): DayClock {
     }
     for (const reminder of store.listReminders({ states: ["due"], dueBefore: nowIso, limit: REMINDERS_LIVE_MAX })) {
       if (reminder.notifiedAt !== null) continue;
-      const token = deps.book.announce(`reminder:${reminder.id}`);
+      // Keyed by the due time too: a snoozed reminder that comes due again is a new notice.
+      const token = deps.book.announce(`reminder:${reminder.id}:${reminder.dueAt}`);
+      if (token !== null) deps.publish(token);
+    }
+    // Rule runs prepared or started since the last notice (slice 3g): one
+    // announcement per rule and newest run, so a burst wakes the windows once.
+    const newest = new Map<string, string>();
+    for (const run of unnotifiedRuns(store)) newest.set(run.ruleId, run.id);
+    for (const [ruleId, runId] of newest) {
+      const token = deps.book.announce(`rule:${ruleId}:${runId}`);
       if (token !== null) deps.publish(token);
     }
   }

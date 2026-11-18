@@ -36,6 +36,7 @@ import {
   triageBatchStateSchema,
   triageViewSchema,
   unsubscribeInfoViewSchema,
+  unsubscribeStateSchema,
   aiErrorKindSchema,
   aiResultViewSchema,
   aiScopeModeSchema,
@@ -46,8 +47,19 @@ import {
   reminderViewSchema,
   taskViewSchema,
   draftModeSchema,
+  devClassSchema,
+  attachmentMatchSchema,
+  fileKindSchema,
+  fileRowSchema,
+  relatedHitSchema,
+  savedSearchViewSchema,
+  searchFieldSchema,
+  searchNoteSchema,
+  senderCardSchema,
 } from "./model.ts";
 import { languageTagSchema } from "./translate.ts";
+import { DEV_KINDS, DEV_SOURCES, DEV_STATES } from "./dev-notify.ts";
+import { BINDING_KINDS, RULE_RUN_STATES } from "./ports.ts";
 
 /** An id, folder path or account id coming in from the page. */
 const idInput = z.string().min(1).max(256);
@@ -168,6 +180,348 @@ const actionGroupSchema = z.object({
   error: z.string().nullable(),
 });
 
+
+// ---- Slice 3g: BB threads, tasks, project files, dev mail, patches, alerts, binding and rules ----
+
+/** Fixed texts of the 3g refusals (the SDK code is conflict or invalid; the text names the kind). */
+export const BB_REFUSAL_TEXT = {
+  out_of_scope: "Outside AI access (Mail settings)",
+  no_tree: "This project has no single local checkout",
+  confirm_needed: "This file name looks like it holds a secret; confirm to attach it",
+  in_flight: "Already starting a thread for this message",
+  not_available: "Not available yet",
+  save_disabled: "Saving attachments into a project is turned off in this version: BB could not confirm the file stays inside the project",
+  no_result: "This thread has no result yet",
+  prompt_changed: "The prompt changed; review it again",
+  busy: "Already working on this message; try again in a moment",
+} as const;
+
+/** The owner's instruction for a BB thread. */
+const instructionInput = z.string().max(4_000);
+/** A project-relative path or a thread storage path coming in from the page. */
+const bbPathInput = z.string().min(1).max(1_024).refine(noLineBreaks, NO_LINE_BREAKS);
+/** A project-relative folder (projectFolder checks it again). */
+const folderInput = z.string().max(240).refine(noLineBreaks, NO_LINE_BREAKS);
+const shaInput = z.string().regex(/^[0-9a-f]{64}$/);
+const permissionModeSchema = z.enum(["accept-edits", "auto", "full"]);
+/** What a Start would send, shown before it (incident and patch dialogs). */
+const preparedThreadSchema = z.object({
+  prompt: z.string(),
+  title: z.string(),
+  hidden: z.number().int().min(0),
+  /** The project's default; null: none set ("project default"). */
+  permissionMode: permissionModeSchema.nullable(),
+  /** SHA-256 of the title and prompt; Start passes it back. */
+  promptRef: z.string(),
+});
+const patchHandoffInput = z.object({
+  messageId: idInput,
+  partId: idInput.optional(),
+  projectId: idInput,
+  patchRef: shaInput,
+  environment: z.enum(["worktree", "checkout"]).optional(),
+});
+const bbFileEntrySchema = z.object({ name: z.string(), path: z.string() });
+const includeSchema = z.enum(["message", "conversation"]);
+const bbThreadInput = z.object({
+  messageId: idInput,
+  include: includeSchema,
+  projectId: idInput,
+  instruction: instructionInput.optional(),
+});
+
+/** One attachment saved into a project. */
+export const saveResultSchema = z.discriminatedUnion("outcome", [
+  z.object({ partId: z.string(), outcome: z.literal("saved"), path: z.string(), sizeBytes: z.number().int().min(0) }),
+  z.object({ partId: z.string(), outcome: z.literal("exists"), path: z.string(), currentSha: z.string() }),
+  z.object({ partId: z.string(), outcome: z.literal("failed"), reason: z.string().max(300) }),
+]);
+
+const devCountsSchema = z.object(Object.fromEntries(DEV_KINDS.map((kind) => [kind, z.number().int().min(0)])) as Record<(typeof DEV_KINDS)[number], z.ZodNumber>);
+
+/** One repository (or monitoring service) of the Dev view. */
+export const devGroupSchema = z.object({
+  source: z.enum(DEV_SOURCES),
+  repo: z.string().max(300).nullable(),
+  counts: devCountsSchema,
+  ciFailed: z.number().int().min(0),
+  latestFailure: z.object({ messageId: z.string(), subject: z.string().max(1_000), date: z.string().nullable() }).nullable(),
+  unread: z.number().int().min(0),
+  total: z.number().int().min(0),
+  latestDate: z.string().nullable(),
+  messageIds: z.array(z.string()).max(200),
+  projectId: z.string().nullable(),
+  projectName: z.string().max(300).nullable(),
+});
+
+export const patchFileSchema = z.object({
+  oldPath: z.string().max(4_096).nullable(),
+  newPath: z.string().max(4_096).nullable(),
+  added: z.number().int().min(0),
+  removed: z.number().int().min(0),
+  status: z.enum(["added", "deleted", "renamed", "copied", "modified"]),
+  binary: z.boolean(),
+  symlink: z.boolean(),
+  executable: z.boolean(),
+  patch: z.string(),
+});
+
+export const alertViewSchema = z.object({
+  source: z.string().max(200),
+  name: z.string().max(200),
+  state: z.enum(["firing", "resolved"]),
+  severity: z.string().max(200).nullable(),
+  service: z.string().max(200).nullable(),
+  environment: z.string().max(200).nullable(),
+  links: z.array(z.string().max(2_000)).max(5),
+  alertRef: z.string().max(64),
+});
+
+const bindingKindSchema = z.enum(BINDING_KINDS);
+export const bindingViewSchema = z.object({
+  kind: bindingKindSchema,
+  value: z.string().max(320),
+  projectId: z.string(),
+  projectName: z.string().max(300).nullable(),
+  /** The project is no longer in BB. */
+  removed: z.boolean(),
+  createdAt: z.string(),
+});
+
+const ruleDevMatchSchema = z.object({
+  source: z.enum(DEV_SOURCES).optional(),
+  repo: z.string().min(1).max(300).optional(),
+  kind: z.enum(DEV_KINDS).optional(),
+  state: z.enum(DEV_STATES).optional(),
+});
+const ruleMatchSchema = z.object({
+  from: z.array(addressInput.refine(noLineBreaks, NO_LINE_BREAKS)).max(20).optional(),
+  domains: z.array(z.string().min(1).max(253).refine(noLineBreaks, NO_LINE_BREAKS)).max(20).optional(),
+  list: z.string().max(200).refine(noLineBreaks, NO_LINE_BREAKS).nullable().optional(),
+  subjectWords: z.array(z.string().min(1).max(60).refine(noLineBreaks, NO_LINE_BREAKS)).max(10).optional(),
+  dev: ruleDevMatchSchema.nullable().optional(),
+  accounts: z.array(idInput).max(50).optional(),
+});
+const ruleModeSchema = z.enum(["prepare", "start"]);
+
+const filterMatchSchema = ruleMatchSchema.omit({ dev: true });
+const filterActionsSchema = z.object({
+  move: z.enum(["none", "archive", "trash", "folder"]),
+  /** The folder's path for `move: "folder"`; null otherwise. */
+  folder: z.string().min(1).max(1_000).refine(noLineBreaks, NO_LINE_BREAKS).nullable(),
+  markRead: z.boolean(),
+  flag: z.boolean(),
+});
+
+/** A filter from the settings form (slice 3m, core mail-filters.ts). */
+export const filterInputSchema = z.object({
+  id: idInput.optional(),
+  name: z.string().min(1).max(80).refine(noLineBreaks, NO_LINE_BREAKS),
+  enabled: z.boolean(),
+  match: filterMatchSchema,
+  actions: filterActionsSchema,
+});
+
+export const filterViewSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  enabled: z.boolean(),
+  match: filterMatchSchema,
+  actions: filterActionsSchema,
+});
+
+/** A rule from the settings form; `mode: "start"` only with the form's confirmation. */
+export const ruleInputSchema = z
+  .object({
+    id: idInput.optional(),
+    name: z.string().min(1).max(80).refine(noLineBreaks, NO_LINE_BREAKS),
+    enabled: z.boolean(),
+    match: ruleMatchSchema,
+    projectId: idInput,
+    template: z.string().max(4_000),
+    mode: ruleModeSchema,
+    confirmedStart: z.boolean().optional(),
+  })
+  .refine((rule) => rule.mode !== "start" || rule.confirmedStart === true, {
+    message: "Start mode needs the owner's confirmation",
+    path: ["confirmedStart"],
+  });
+
+export const ruleViewSchema = z.object({
+  id: z.string(),
+  name: z.string().max(80),
+  enabled: z.boolean(),
+  match: ruleMatchSchema,
+  projectId: z.string(),
+  projectName: z.string().max(300).nullable(),
+  template: z.string().max(4_000),
+  mode: ruleModeSchema,
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+
+export const ruleRunViewSchema = z.object({
+  id: z.string(),
+  ruleId: z.string(),
+  /** Null once the rule was deleted. */
+  ruleName: z.string().max(80).nullable(),
+  accountId: z.string(),
+  messageId: z.string(),
+  threadId: z.string().nullable(),
+  state: z.enum(RULE_RUN_STATES),
+  bbThreadId: z.string().nullable(),
+  /** The message's subject (owner UI), empty when the message is gone. */
+  subject: z.string().max(1_000),
+  createdAt: z.string(),
+});
+
+// ---- Slice 3h inputs ----
+
+/** A search query, as `search` takes it. */
+const queryInput = z.string().min(1).max(500);
+/** A saved search's name (saved-searches.ts SAVED_SEARCH_NAME_MAX). */
+const savedSearchNameInput = z.string().min(1).max(60);
+/** A folder's new name (folder-ops.ts FOLDER_NAME_MAX); folder-ops checks the rest. */
+const folderNameInput = z.string().min(1).max(100);
+/** A Gmail label name (labels.ts LABEL_NAME_MAX). */
+const labelNameInput = z.string().min(1).max(100);
+const labelListInput = z.array(labelNameInput).max(20);
+/** Why a job skipped a folder or stopped early (spec resolution 6). */
+const jobReasonSchema = z.enum([
+  "not_synced",
+  "changed",
+  "search_failed",
+  "time_budget",
+  "cancelled",
+  "connection_failed",
+  "password_needed",
+  "nothing_to_search",
+]);
+/** Why a folder cannot be renamed or deleted (folder-ops.ts FolderOpRefusal). */
+const folderRefusalSchema = z.enum([
+  "inbox",
+  "special_use",
+  "gmail_system",
+  "snooze_folder",
+  "has_children",
+  "move_pending",
+  "parent_not_selectable",
+]);
+
+/** An OpenPGP key as the page sees it (slice 3k): never the private half. */
+export const pgpCertSchema = z.object({
+  id: z.string(),
+  kind: z.enum(["own", "contact"]),
+  fingerprint: z.string(),
+  addresses: z.array(z.string()),
+  userIds: z.array(z.string()),
+  createdAt: z.string(),
+  expiresAt: z.string().nullable(),
+  addedAt: z.string(),
+  source: z.enum(["generated", "imported", "message"]),
+  expired: z.boolean(),
+});
+export type PgpCert = z.infer<typeof pgpCertSchema>;
+
+export const pgpImportResultSchema = z.enum(["added", "exists", "full", "unreadable", "locked", "wrong_phrase", "revoked"]);
+
+const inviteMomentSchema = z.object({
+  /** The instant, when the zone could be resolved. */
+  utc: z.string().nullable(),
+  /** The time as written: "2026-11-20T09:00", or "2026-11-20" for a whole day. */
+  wall: z.string(),
+  zone: z.string().nullable(),
+  allDay: z.boolean(),
+});
+const invitePersonSchema = z.object({ name: z.string().nullable(), address: z.string() });
+const inviteStatusSchema = z.enum(["accepted", "tentative", "declined", "needs_action", "delegated", "unknown"]);
+
+/** A calendar invitation as the reading pane shows it (slice 3l, core calendar-invite.ts). */
+export const inviteViewSchema = z.object({
+  method: z.enum(["request", "cancel", "reply", "publish", "other"]),
+  uid: z.string().nullable(),
+  sequence: z.number().int(),
+  summary: z.string(),
+  location: z.string().nullable(),
+  description: z.string().nullable(),
+  start: inviteMomentSchema.nullable(),
+  end: inviteMomentSchema.nullable(),
+  organizer: invitePersonSchema.nullable(),
+  attendees: z.array(invitePersonSchema.extend({ status: inviteStatusSchema, optional: z.boolean() })),
+  attendeesTotal: z.number().int(),
+  recurring: z.boolean(),
+  cancelled: z.boolean(),
+  self: z.object({ address: z.string(), status: inviteStatusSchema }).nullable(),
+});
+
+/** One mailing list of the overview (slice 3n, core subscriptions.ts). */
+export const subscriptionViewSchema = z.object({
+  messageId: z.string(),
+  accountId: z.string(),
+  name: z.string(),
+  address: z.string(),
+  total: z.number().int(),
+  unread: z.number().int(),
+  lastDate: z.string().nullable(),
+  method: z.enum(["one_click", "mailto"]).nullable(),
+  /** Where the request goes: the one-click host, or the mailto address. */
+  target: z.string().nullable(),
+  /** May be unsubscribed together with others (false: decided in the message). */
+  batch: z.boolean(),
+  /** For the mailto: the exact subject and text the email carries. */
+  mail: z.object({ subject: z.string(), body: z.string(), hiddenChars: z.number().int() }).nullable(),
+  /** The latest request for this list, if any. */
+  already: z.object({ state: unsubscribeStateSchema, at: z.string() }).nullable(),
+});
+export type SubscriptionView = z.infer<typeof subscriptionViewSchema>;
+
+const archiveAddressSchema = z.object({ name: z.string().nullable(), address: z.string() });
+const archiveAttachmentSchema = z.object({
+  partId: z.string(),
+  filename: z.string().nullable(),
+  mimeType: z.string(),
+  size: z.number().int(),
+  isInline: z.boolean(),
+});
+
+/** A local archive as its page lists it (slice 3p, core archive.ts). */
+export const archiveViewSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  /** The file or folder it was read from, for the owner. */
+  sourcePath: z.string(),
+  kind: z.enum(["mbox", "eml", "eml_dir"]),
+  messages: z.number().int(),
+  skipped: z.number().int(),
+  /** False: the import stopped before the end of the source. */
+  complete: z.boolean(),
+  createdAt: z.string(),
+});
+export type ArchiveView = z.infer<typeof archiveViewSchema>;
+
+export const archiveSummarySchema = z.object({
+  id: z.string(),
+  archiveId: z.string(),
+  date: z.string().nullable(),
+  from: archiveAddressSchema,
+  subject: z.string(),
+  snippet: z.string(),
+  hasAttachments: z.boolean(),
+});
+export type ArchiveSummaryView = z.infer<typeof archiveSummarySchema>;
+
+const archiveCursorSchema = z.object({ date: z.string().max(40).nullable(), id: idInput });
+
+export const archiveMessageSchema = archiveSummarySchema.extend({
+  to: z.array(archiveAddressSchema),
+  cc: z.array(archiveAddressSchema),
+  text: z.string().nullable(),
+  html: z.string().nullable(),
+  htmlTruncated: z.boolean(),
+  attachments: z.array(archiveAttachmentSchema),
+});
+export type ArchiveMessageView = z.infer<typeof archiveMessageSchema>;
+
 export const rpcSchemas = {
   status_get: {
     input: z.null(),
@@ -228,8 +582,17 @@ export const rpcSchemas = {
       query: z.string().min(1).max(500),
       accountId: z.string().nullable(),
       limit: z.number().int().min(1).max(50),
+      /** Slice 3h: the keyset cursor of the previous page. */
+      cursor: cursorInput.nullable().optional(),
+      /** Slice 3h: the owner's page also searches attachment text (spec resolution 4). */
+      attachments: z.boolean().optional(),
     }),
-    output: z.object({ hits: z.array(messageSummarySchema) }),
+    output: z.object({
+      hits: z.array(messageSummarySchema),
+      nextCursor: z.string().nullable(),
+      notes: z.array(searchNoteSchema),
+      attachmentMatches: z.array(attachmentMatchSchema),
+    }),
   },
   /** One account's folders, or (null) every account's with the merged roles. */
   folders_list: {
@@ -283,6 +646,10 @@ export const rpcSchemas = {
       uid: z.number().int(),
       folder: z.string(),
       accountEmail: z.string(),
+      /** Slice 3i: the provider's results for Details, fixed-format lines (sender-check.ts authenticityLines). */
+      authenticity: z
+        .object({ authserv: z.string().nullable(), lines: z.array(z.string()) })
+        .default({ authserv: null, lines: [] }),
     }),
   },
   /**
@@ -404,6 +771,10 @@ export const rpcSchemas = {
       requestId: z.uuid(),
       /** Slice 3f: remind the owner when no reply came within these days. */
       remindAfterDays: reminderDaysInput.optional(),
+      /** Slice 3k: sign or encrypt this message with OpenPGP. */
+      protect: z.object({ sign: z.boolean(), encrypt: z.boolean() }).optional(),
+      /** Slice 3l, "Send later": the time to send, one minute to a year ahead. */
+      sendAt: z.iso.datetime().optional(),
     }),
     output: z.object({ outboxId: z.string(), sendAfter: z.string() }),
   },
@@ -608,6 +979,19 @@ export const rpcSchemas = {
     input: z.object({ messageId: idInput }),
     output: unsubscribeInfoViewSchema,
   },
+  /**
+   * Slice 3n: the mailing lists the stored mail comes from, largest first
+   * (never a list's own key). `messageId` is the list's newest stored message:
+   * unsubscribe_run is asked with it. `truncated`: more mail than one
+   * overview reads.
+   */
+  subscriptions_list: {
+    input: z.object({ accountId: idInput.nullable() }),
+    output: z.object({
+      subscriptions: z.array(subscriptionViewSchema),
+      truncated: z.boolean(),
+    }),
+  },
   /** Idempotent per requestId; refuses a method unsubscribe_info would not offer now. */
   unsubscribe_run: {
     input: z.object({ messageId: idInput, method: z.enum(["one_click", "mailto"]), requestId: z.uuid() }),
@@ -808,6 +1192,14 @@ export const rpcSchemas = {
         from: z.string(),
       }),
       digestDay: z.string().nullable(),
+      /** Slice 3g: the last 24 hours of dev mail. */
+      dev: z.object({
+        ciFailed: z.number().int().min(0),
+        repos: z.number().int().min(0),
+        alertsFiring: z.number().int().min(0),
+      }),
+      /** Slice 3g: rule runs ready to start. */
+      rulesReady: z.number().int().min(0),
     }),
   },
   /** "No reply needed": by the conversation's latest message. */
@@ -844,6 +1236,8 @@ export const rpcSchemas = {
         accountId: z.string(),
         threadId: z.string().nullable(),
       }),
+      /** Slice 3g: prepared and started rule runs since the last notice. */
+      z.strictObject({ kind: z.literal("rule"), ruleName: z.string().max(80), count: z.number().int().min(1) }),
     ]),
   },
   ai_scope_get: {
@@ -871,7 +1265,616 @@ export const rpcSchemas = {
     input: z.object({}),
     output: z.object({ removed: z.number().int().min(0) }),
   },
+  // ---- Slice 3g ----
+  projects_list: {
+    input: z.object({}),
+    output: z.object({
+      projects: z.array(
+        z.object({ id: z.string(), name: z.string(), kind: z.string(), hasTree: z.boolean(), repo: z.string().nullable() }),
+      ),
+    }),
+  },
+  /** The exact prompt the thread would start with; refusals out_of_scope, not_found. */
+  bb_thread_prepare: {
+    /** saveAttachments: the preview lists the files Start would save (nothing is written). */
+    input: bbThreadInput.extend({ saveAttachments: z.boolean().optional() }),
+    output: z.object({
+      prompt: z.string(),
+      title: z.string(),
+      hidden: z.number().int().min(0),
+      leftOut: z.number().int().min(0),
+      /** The project's default; null: none set ("project default"). */
+      permissionMode: permissionModeSchema.nullable(),
+    }),
+  },
+  /** Refusals out_of_scope, not_found, no_tree (saving), conflict (in flight), failed. */
+  bb_thread_start: {
+    input: bbThreadInput.extend({ saveAttachments: z.boolean().optional(), ruleRunId: idInput.optional() }),
+    output: z.object({ bbThreadId: z.string(), saved: z.array(saveResultSchema).optional() }),
+  },
+  task_targets: {
+    input: z.object({}),
+    output: z.object({
+      taskboard: z.object({ boards: z.array(z.object({ id: z.string(), name: z.string() })) }).nullable(),
+      /** Why Taskboard is not offered ("Taskboard did not answer"), null when it is. */
+      reason: z.string().max(300).nullable(),
+      lastBoardId: z.string().nullable(),
+      target: z.enum(["auto", "taskboard", "local"]),
+    }),
+  },
+  /** `unavailable`: Taskboard did not answer; the page offers the local task. */
+  task_from_mail: {
+    input: z.object({
+      messageId: idInput,
+      target: z.discriminatedUnion("kind", [
+        z.object({ kind: z.literal("taskboard"), boardId: idInput }),
+        z.object({ kind: z.literal("local"), due: dayInput.nullable().optional() }),
+      ]),
+      title: z.string().min(1).max(500),
+      note: z.string().max(4_000).optional(),
+      excerpt: z.boolean(),
+    }),
+    output: z.discriminatedUnion("kind", [
+      z.object({ kind: z.literal("taskboard"), taskId: z.string() }),
+      z.object({ kind: z.literal("local"), taskId: z.string() }),
+      z.object({ kind: z.literal("unavailable"), reason: z.string().max(300) }),
+    ]),
+  },
+  attachment_save: {
+    input: z.object({
+      messageId: idInput,
+      partIds: z.array(idInput).min(1).max(20),
+      projectId: idInput,
+      folder: folderInput.optional(),
+      onConflict: z.enum(["ask", "keep_both", "replace"]),
+      replaceSha: shaInput.optional(),
+    }),
+    output: z.object({ results: z.array(saveResultSchema) }),
+  },
+  project_files: {
+    input: z.object({ projectId: idInput, query: z.string().max(200), limit: z.number().int().min(1).max(50) }),
+    output: z.object({ files: z.array(bbFileEntrySchema), truncated: z.boolean() }),
+  },
+  project_folders: {
+    input: z.object({ projectId: idInput, query: z.string().max(200), limit: z.number().int().min(1).max(50) }),
+    output: z.object({ folders: z.array(bbFileEntrySchema), truncated: z.boolean() }),
+  },
+  thread_files: {
+    input: z.object({ bbThreadId: idInput, query: z.string().max(200).optional(), limit: z.number().int().min(1).max(50) }),
+    output: z.object({ files: z.array(bbFileEntrySchema), truncated: z.boolean() }),
+  },
+  bb_threads_recent: {
+    input: z.object({ projectId: idInput, limit: z.number().int().min(1).max(30) }),
+    output: z.object({ threads: z.array(z.object({ id: z.string(), title: z.string(), updatedAt: z.string().nullable() })) }),
+  },
+  /** Refusal confirm_needed for a secret-like name without `confirmed`. */
+  compose_attach_bb: {
+    input: z.object({
+      draftId: idInput,
+      source: z.discriminatedUnion("kind", [
+        z.object({ kind: z.literal("project"), projectId: idInput, path: bbPathInput }),
+        z.object({ kind: z.literal("thread"), bbThreadId: idInput, path: bbPathInput }),
+      ]),
+      confirmed: z.boolean().optional(),
+    }),
+    output: composeAttachmentSchema,
+  },
+  /** A reply when Mail's own links tie the thread to a stored message, else a new draft. */
+  draft_from_bb: {
+    input: z.object({
+      bbThreadId: idInput,
+      source: z.discriminatedUnion("kind", [
+        z.object({ kind: z.literal("output") }),
+        z.object({ kind: z.literal("message"), text: z.string().min(1).max(100_000) }),
+      ]),
+    }),
+    output: z.object({ draftId: z.string(), accountId: z.string(), reply: z.boolean() }),
+  },
+  dev_digest_get: {
+    input: z.object({
+      days: z.number().int().min(1).max(30).optional(),
+      accountId: idInput.optional(),
+      cursor: cursorInput.nullable().optional(),
+    }),
+    output: z.object({ groups: z.array(devGroupSchema), next: z.string().nullable() }),
+  },
+  patch_view: {
+    input: z.object({ messageId: idInput, partId: idInput.optional() }),
+    output: z.object({
+      files: z.array(patchFileSchema).max(200),
+      warnings: z.array(z.string().max(500)),
+      refused: z.string().max(500).nullable(),
+      commitMessage: z.string().nullable(),
+      patchRef: shaInput,
+    }),
+  },
+  patch_save: {
+    input: z.object({ messageId: idInput, partId: idInput.optional(), projectId: idInput, patchRef: shaInput }),
+    output: z.object({ path: z.string() }),
+  },
+  /** `environment: "checkout"` only when the owner chose it after a worktree refusal. */
+  /** The exact prompt, title, environment and permission mode patch_handoff would use; nothing is uploaded. */
+  patch_handoff_prepare: {
+    input: patchHandoffInput,
+    output: preparedThreadSchema.extend({ environment: z.enum(["worktree", "checkout"]) }),
+  },
+  /** promptRef: the prepared prompt's reference; a different prompt now refuses prompt_changed. */
+  patch_handoff: {
+    input: patchHandoffInput.extend({ promptRef: shaInput.optional() }),
+    output: z.object({ bbThreadId: z.string(), environment: z.enum(["worktree", "checkout"]) }),
+  },
+  alert_view: {
+    input: z.object({ messageId: idInput }),
+    output: z.object({
+      alert: alertViewSchema.nullable(),
+      incident: z.object({ bbThreadId: z.string(), title: z.string().nullable(), canAppend: z.boolean() }).nullable(),
+    }),
+  },
+  /** The exact prompt, title and permission mode incident_start would use; nothing starts. */
+  incident_prepare: {
+    input: z.object({ messageId: idInput, projectId: idInput, instruction: instructionInput.optional() }),
+    output: preparedThreadSchema,
+  },
+  /** promptRef: the prepared prompt's reference; a different prompt now refuses prompt_changed. */
+  incident_start: {
+    input: z.object({ messageId: idInput, projectId: idInput, instruction: instructionInput.optional(), promptRef: shaInput.optional() }),
+    output: z.object({ bbThreadId: z.string() }),
+  },
+  incident_append: {
+    input: z.object({ messageId: idInput }),
+    output: z.object({ bbThreadId: z.string() }),
+  },
+  conversation_project_set: {
+    input: z.object({ accountId: idInput, threadId: idInput, projectId: idInput.nullable() }),
+    output: okOutput,
+  },
+  binding_add: {
+    input: z.object({
+      kind: bindingKindSchema,
+      value: z.string().min(1).max(320).refine(noLineBreaks, NO_LINE_BREAKS),
+      projectId: idInput,
+    }),
+    output: okOutput,
+  },
+  binding_remove: {
+    input: z.object({ kind: bindingKindSchema, value: z.string().min(1).max(320).refine(noLineBreaks, NO_LINE_BREAKS) }),
+    output: okOutput,
+  },
+  bindings_list: {
+    input: z.object({}),
+    output: z.object({ bindings: z.array(bindingViewSchema) }),
+  },
+  project_mail: {
+    input: z.object({ projectId: idInput, cursor: cursorInput.nullable().optional() }),
+    output: z.object({ threads: z.array(threadSummarySchema), next: z.string().nullable() }),
+  },
+  /** The thread Info section: the project's latest bound conversations and those the thread came from. */
+  bb_thread_mail: {
+    input: z.object({ projectId: idInput, bbThreadId: idInput }),
+    output: z.object({
+      bound: z.array(threadSummarySchema).max(5),
+      origin: z.array(threadSummarySchema).max(5),
+      total: z.number().int().min(0),
+    }),
+  },
+  /**
+   * Slice 3p: local archives, mail read from files on this machine and kept
+   * apart from every mailbox. Owner only; no agent surface reads them.
+   */
+  archives_list: {
+    input: z.object({}),
+    output: z.object({ archives: z.array(archiveViewSchema) }),
+  },
+  /** One page, newest first; `archiveId` null: every archive. */
+  archive_messages: {
+    input: z.object({
+      archiveId: idInput.nullable(),
+      query: z.string().max(200),
+      cursor: archiveCursorSchema.nullable(),
+    }),
+    output: z.object({ rows: z.array(archiveSummarySchema), nextCursor: archiveCursorSchema.nullable() }),
+  },
+  archive_message: {
+    input: z.object({ id: idInput }),
+    output: archiveMessageSchema,
+  },
+  /** A one-time URL for one attachment, read from the archive's source file. */
+  archive_download_ticket: {
+    input: z.object({ id: idInput, partId: z.string().min(1).max(20) }),
+    output: z.object({ url: z.string(), fileName: z.string() }),
+  },
+  /** Removes the archive from Mail; the source file stays. */
+  archive_remove: {
+    input: z.object({ id: idInput }),
+    output: okOutput,
+  },
+  /** Slice 3m: the filters that sort new Inbox mail, in the order they apply. */
+  filters_list: {
+    input: z.object({}),
+    output: z.object({ filters: z.array(filterViewSchema) }),
+  },
+  filter_save: {
+    input: filterInputSchema,
+    output: filterViewSchema,
+  },
+  filter_delete: {
+    input: z.object({ id: idInput }),
+    output: okOutput,
+  },
+  rules_list: {
+    input: z.object({}),
+    output: z.object({ rules: z.array(ruleViewSchema) }),
+  },
+  rule_save: {
+    input: ruleInputSchema,
+    output: ruleViewSchema,
+  },
+  rule_delete: {
+    input: z.object({ id: idInput }),
+    output: okOutput,
+  },
+  /** Disables every rule; `undo` enables the last paused set again. */
+  rules_pause: {
+    input: z.object({ undo: z.boolean().optional() }),
+    output: z.object({ paused: z.number().int().min(0) }),
+  },
+  rule_runs_list: {
+    input: z.object({ state: z.enum(RULE_RUN_STATES).optional(), cursor: cursorInput.nullable().optional() }),
+    output: z.object({ runs: z.array(ruleRunViewSchema), next: z.string().nullable() }),
+  },
+  rule_run_dismiss: {
+    input: z.object({ id: idInput }),
+    output: okOutput,
+  },
+
+  // ---- Slice 3h: server search, older mail, saved searches, folders, labels, files ----
+
+  /** Searches the owner's own mail servers (read-only); `localOnly`: operators the server did not use. */
+  server_search_start: {
+    input: z.object({ query: queryInput, accountId: idInput.nullable() }),
+    output: z.object({ jobId: z.string(), localOnly: z.array(searchFieldSchema) }),
+  },
+  /** Fetches the next 50 hits of a finished server search. */
+  server_search_more: {
+    input: z.object({ jobId: idInput }),
+    output: okOutput,
+  },
+  /** Loads the next historyStepDays of one folder. */
+  history_load: {
+    input: z.object({ accountId: idInput, folder: idInput }),
+    output: z.object({ jobId: z.string() }),
+  },
+  /** Loads the rest of one conversation from the server. */
+  conversation_load: {
+    input: z.object({ threadId: idInput }),
+    output: z.object({ jobId: z.string() }),
+  },
+  server_job_poll: {
+    input: z.object({ jobId: idInput }),
+    output: z.object({
+      state: z.enum(["running", "done", "failed", "cancelled"]),
+      accounts: z.array(
+        z.object({
+          accountId: z.string(),
+          searched: z.number().int().min(0),
+          total: z.number().int().min(0),
+          fetched: z.number().int().min(0),
+          found: z.number().int().min(0),
+          /** Uids left out: above last_uid, or a folder skipped (spec resolution 6). */
+          skipped: z.number().int().min(0),
+          partial: z.boolean(),
+          reason: jobReasonSchema.nullable(),
+        }),
+      ),
+      messageIds: z.array(z.string()),
+      moreAvailable: z.boolean(),
+      /** history_load: where loaded history starts now. */
+      historySince: z.string().nullable().optional(),
+      /** history_load: empty steps in a row (the list speaks at three). */
+      emptySteps: z.number().int().min(0).optional(),
+    }),
+  },
+  server_job_cancel: {
+    input: z.object({ jobId: idInput }),
+    output: okOutput,
+  },
+  history_forget_check: {
+    input: z.object({ accountId: idInput, folder: idInput }),
+    output: z.object({ count: z.number().int().min(0) }),
+  },
+  history_forget: {
+    input: z.object({ accountId: idInput, folder: idInput }),
+    output: z.object({ removed: z.number().int().min(0) }),
+  },
+  saved_searches_list: {
+    input: z.object({}),
+    output: z.object({ searches: z.array(savedSearchViewSchema).max(50) }),
+  },
+  saved_search_save: {
+    input: z.object({
+      id: idInput.optional(),
+      name: savedSearchNameInput,
+      query: queryInput,
+      accountId: idInput.nullable(),
+    }),
+    output: z.object({ id: z.string() }),
+  },
+  saved_search_delete: {
+    input: z.object({ id: idInput }),
+    output: okOutput,
+  },
+  saved_search_move: {
+    input: z.object({ id: idInput, position: z.number().int().min(0).max(49) }),
+    output: okOutput,
+  },
+  folder_create: {
+    input: z.object({ accountId: idInput, parent: idInput.nullable(), name: folderNameInput }),
+    output: z.object({ path: z.string() }),
+  },
+  folder_rename: {
+    input: z.object({ accountId: idInput, path: idInput, name: folderNameInput }),
+    output: z.object({ path: z.string() }),
+  },
+  /** The server's message count, the children and why the folder cannot go; `gmailLabel`: a plain DELETE (spec resolution 5). */
+  folder_delete_check: {
+    input: z.object({ accountId: idInput, path: idInput }),
+    output: z.object({
+      messages: z.number().int().min(0),
+      children: z.number().int().min(0),
+      gmailLabel: z.boolean(),
+      refusal: folderRefusalSchema.nullable(),
+    }),
+  },
+  /** Never expunges: DELETE only at 0 messages, emptying only by MOVE to Trash (Gmail labels: a plain DELETE). */
+  folder_delete: {
+    input: z.object({
+      accountId: idInput,
+      path: idInput,
+      moveToTrash: z.boolean(),
+      expectedMessages: z.number().int().min(0),
+    }),
+    output: z.object({ ok: z.boolean(), moved: z.number().int().min(0) }),
+  },
+  folder_subscribe: {
+    input: z.object({ accountId: idInput, path: idInput, subscribed: z.boolean() }),
+    output: okOutput,
+  },
+  /** `accountId` '*' with a role name as `path`: an All accounts view. */
+  folder_prefs_set: {
+    input: z.object({ accountId: idInput, path: idInput, grouping: z.boolean() }),
+    output: okOutput,
+  },
+  /** A folder one message per row (grouping off), as threads_list. */
+  messages_list: {
+    input: z.object({
+      scope: threadScope,
+      cursor: z.string().nullable(),
+      limit: z.number().int().min(1).max(100),
+      filter: threadFilterSchema.optional(),
+    }),
+    output: z.object({ messages: z.array(messageSummarySchema), nextCursor: z.string().nullable() }),
+  },
+  labels_list: {
+    input: z.object({ accountId: idInput }),
+    output: z.object({ labels: z.array(z.object({ name: z.string(), path: z.string().nullable() })) }),
+  },
+  labels_change: {
+    input: z
+      .object({
+        messageIds: messageIdList,
+        add: labelListInput,
+        remove: labelListInput,
+        undoId: z.uuid().optional(),
+      })
+      .refine((input) => input.add.length + input.remove.length > 0, { message: "Add or remove a label" }),
+    output: z.object({ changed: z.number().int().min(0) }),
+  },
+  /** A one-time URL for the viewer; the server sniffs the bytes (409 not_viewable on a mismatch). */
+  attachment_view_ticket: {
+    input: z.object({ messageId: idInput, partId: idInput }),
+    output: z.object({ url: z.string(), kind: fileKindSchema, mimeType: z.string(), size: z.number().int().min(0) }),
+  },
+  files_list: {
+    input: z.object({
+      kind: fileKindSchema.optional(),
+      sender: addressInput.optional(),
+      accountId: idInput.optional(),
+      name: z.string().min(1).max(200).optional(),
+      includeJunk: z.boolean().optional(),
+      cursor: cursorInput.nullable(),
+      limit: z.number().int().min(1).max(100),
+    }),
+    output: z.object({ files: z.array(fileRowSchema), nextCursor: z.string().nullable() }),
+  },
+  attachment_text_status: {
+    input: z.object({}),
+    output: z.object({
+      indexed: z.number().int().min(0),
+      skipped: z.number().int().min(0),
+      failed: z.number().int().min(0),
+      pending: z.number().int().min(0),
+      running: z.boolean(),
+      /** The index reached ATTACHMENT_TEXT_TOTAL_MAX (spec resolution 15). */
+      full: z.boolean(),
+    }),
+  },
+  attachment_text_retry: {
+    input: z.object({}),
+    output: okOutput,
+  },
+  attachment_text_clear: {
+    input: z.object({}),
+    output: okOutput,
+  },
+  related_messages: {
+    input: z.object({ messageId: idInput }),
+    output: z.object({ hits: z.array(relatedHitSchema).max(10) }),
+  },
+  sender_card: {
+    input: z.object({ address: addressInput, accountId: idInput.nullable() }),
+    output: senderCardSchema,
+  },
+  /**
+   * Slice 3i: judge the sender check of these messages from a read-only
+   * header fetch (BODY.PEEK), one session per folder. Without `force` only
+   * rows still `unknown` are written; `force` is Details' Check again.
+   */
+  sender_check_refresh: {
+    input: z.object({ messageIds: z.array(idInput).min(1).max(50), force: z.boolean().optional() }),
+    output: z.object({ refreshed: z.number().int().min(0), failed: z.number().int().min(0) }),
+  },
+
+  // Slice 3k: OpenPGP. Owner only. "cert" is an OpenPGP key: the outputs never
+  // carry a private key except `pgp_cert_export` with a passphrase, whose
+  // armor is locked by that passphrase (a backup the owner saves).
+  pgp_certs_list: {
+    input: z.object({}),
+    output: z.object({ certs: z.array(pgpCertSchema), vaultReady: z.boolean() }),
+  },
+  /** Makes a key pair for one of the account's sending addresses. */
+  pgp_cert_generate: {
+    input: z.object({ accountId: idInput, address: addressInput.refine(noLineBreaks, NO_LINE_BREAKS) }),
+    output: z.object({ cert: pgpCertSchema }),
+  },
+  /** Pasted armor: a public key (a contact), or a private-key backup with its passphrase (the owner's). */
+  pgp_cert_import: {
+    input: z.object({ armor: z.string().min(1).max(200_000), phrase: z.string().max(1024).optional() }),
+    output: z.object({ result: pgpImportResultSchema, added: z.array(pgpCertSchema) }),
+  },
+  /** The public keys attached to or pasted into a message, saved as contact keys. */
+  pgp_cert_import_message: {
+    input: z.object({ messageId: idInput }),
+    output: z.object({ result: pgpImportResultSchema, added: z.array(pgpCertSchema) }),
+  },
+  pgp_cert_remove: {
+    input: z.object({ id: idInput }),
+    output: okOutput,
+  },
+  /** The public armor; with `phrase`, an own key's private half locked by it. */
+  pgp_cert_export: {
+    input: z.object({ id: idInput, phrase: z.string().min(8).max(1024).optional() }),
+    output: z.object({ armor: z.string(), fileName: z.string() }),
+  },
+  /** Whether From can sign, and the recipients Mail has no usable key for. */
+  pgp_check: {
+    input: z.object({
+      from: addressInput.refine(noLineBreaks, NO_LINE_BREAKS),
+      recipients: z.array(addressInput.refine(noLineBreaks, NO_LINE_BREAKS)).max(100),
+    }),
+    output: z.object({ canSign: z.boolean(), missing: z.array(z.string()) }),
+  },
+  /** Checks a signed message against the saved keys; fetches the message from the server. */
+  pgp_verify: {
+    input: z.object({ messageId: idInput }),
+    output: z.object({
+      state: z.enum(["valid", "invalid", "no_cert", "not_pgp", "failed"]),
+      fingerprint: z.string().nullable(),
+      signer: z.string().nullable(),
+      fromSender: z.boolean(),
+    }),
+  },
+  /**
+   * Slice 3l: the calendar invitation a message carries, read from the server
+   * for the owner's page; null when it carries none. Nothing is stored.
+   */
+  invite_view: {
+    input: z.object({ messageId: idInput }),
+    /** `answerable`: an open invitation to one of the account's addresses, outside Spam and Trash. */
+    output: z.object({ invite: inviteViewSchema.nullable(), answerable: z.boolean() }),
+  },
+  /**
+   * Slice 3l: the owner's answer to an invitation, queued as a message to the
+   * organizer with the usual Undo window. Only the owner's click asks.
+   */
+  invite_reply: {
+    input: z.object({ messageId: idInput, answer: z.enum(["accepted", "tentative", "declined"]), requestId: z.uuid() }),
+    output: z.object({ outboxId: z.string(), sendAfter: z.string() }),
+  },
+  /** Opens an encrypted message for the owner's page; the text is never stored. */
+  pgp_open: {
+    input: z.object({ messageId: idInput }),
+    output: z.object({
+      state: z.enum(["opened", "no_cert", "not_pgp", "failed"]),
+      text: z.string().nullable(),
+      html: z.string().nullable(),
+      attachments: z.array(z.object({ fileName: z.string(), size: z.number().int() })),
+      signature: z
+        .object({
+          state: z.enum(["valid", "invalid", "no_cert"]),
+          fingerprint: z.string().nullable(),
+          signer: z.string().nullable(),
+          fromSender: z.boolean(),
+        })
+        .nullable(),
+    }),
+  },
 } as const;
+
+/** The 28 owner-only methods slice 3h adds. */
+export const SLICE_3H_METHODS = [
+  "server_search_start",
+  "server_search_more",
+  "history_load",
+  "conversation_load",
+  "server_job_poll",
+  "server_job_cancel",
+  "history_forget_check",
+  "history_forget",
+  "saved_searches_list",
+  "saved_search_save",
+  "saved_search_delete",
+  "saved_search_move",
+  "folder_create",
+  "folder_rename",
+  "folder_delete_check",
+  "folder_delete",
+  "folder_subscribe",
+  "folder_prefs_set",
+  "messages_list",
+  "labels_list",
+  "labels_change",
+  "attachment_view_ticket",
+  "files_list",
+  "attachment_text_status",
+  "attachment_text_retry",
+  "attachment_text_clear",
+  "related_messages",
+  "sender_card",
+] as const satisfies readonly (keyof typeof rpcSchemas)[];
+
+/** The five owner-only methods slice 3p adds. */
+export const SLICE_3P_METHODS = [
+  "archives_list",
+  "archive_messages",
+  "archive_message",
+  "archive_download_ticket",
+  "archive_remove",
+] as const satisfies readonly (keyof typeof rpcSchemas)[];
+
+/** The owner-only method slice 3n adds. */
+export const SLICE_3N_METHODS = ["subscriptions_list"] as const satisfies readonly (keyof typeof rpcSchemas)[];
+
+/** The three owner-only methods slice 3m adds. */
+export const SLICE_3M_METHODS = ["filters_list", "filter_save", "filter_delete"] as const satisfies readonly (keyof typeof rpcSchemas)[];
+
+/** The two owner-only methods slice 3l adds. */
+export const SLICE_3L_METHODS = ["invite_view", "invite_reply"] as const satisfies readonly (keyof typeof rpcSchemas)[];
+
+/** The 9 owner-only methods slice 3k adds. */
+export const SLICE_3K_METHODS = [
+  "pgp_certs_list",
+  "pgp_cert_generate",
+  "pgp_cert_import",
+  "pgp_cert_import_message",
+  "pgp_cert_remove",
+  "pgp_cert_export",
+  "pgp_check",
+  "pgp_verify",
+  "pgp_open",
+] as const satisfies readonly (keyof typeof rpcSchemas)[];
+
+/** The owner-only method slice 3i adds. */
+export const SLICE_3I_METHODS = ["sender_check_refresh"] as const satisfies readonly (keyof typeof rpcSchemas)[];
 
 /** Realtime channel the server publishes on when stored mail changes. */
 export const MAIL_CHANGED_CHANNEL = "mail-changed";
@@ -921,3 +1924,29 @@ export type TodayView = z.output<(typeof rpcSchemas)["today_get"]["output"]>;
 export type DayNotice = z.output<(typeof rpcSchemas)["day_notice_get"]["output"]>;
 /** What ai_scope_set takes. */
 export type AiScopeInput = z.input<(typeof rpcSchemas)["ai_scope_set"]["input"]>;
+
+// ---- Page-side types of the 3g methods ----
+
+type Out<M extends keyof typeof rpcSchemas> = z.output<(typeof rpcSchemas)[M]["output"]>;
+export type SaveResult = z.output<typeof saveResultSchema>;
+export type DevGroup = z.output<typeof devGroupSchema>;
+export type PatchFileView = z.output<typeof patchFileSchema>;
+export type AlertViewOutput = z.output<typeof alertViewSchema>;
+export type BindingView = z.output<typeof bindingViewSchema>;
+export type RuleView = z.output<typeof ruleViewSchema>;
+export type FilterView = z.output<typeof filterViewSchema>;
+export type FilterInput = z.input<typeof filterInputSchema>;
+export type RuleRunView = z.output<typeof ruleRunViewSchema>;
+export type RuleInput = z.input<typeof ruleInputSchema>;
+export type BbThreadPrepareOutput = Out<"bb_thread_prepare">;
+export type TaskTargetsOutput = Out<"task_targets">;
+export type PatchViewOutput = Out<"patch_view">;
+export type IncidentPrepareOutput = Out<"incident_prepare">;
+export type PatchHandoffPrepareOutput = Out<"patch_handoff_prepare">;
+export type AlertViewResult = Out<"alert_view">;
+export type ProjectListItem = Out<"projects_list">["projects"][number];
+
+/** Any RPC method, its input as the page sends it and its output as the page reads it. */
+export type RpcMethod = keyof typeof rpcSchemas;
+export type RpcIn<M extends RpcMethod> = z.input<(typeof rpcSchemas)[M]["input"]>;
+export type RpcOut<M extends RpcMethod> = z.output<(typeof rpcSchemas)[M]["output"]>;

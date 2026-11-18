@@ -1,5 +1,7 @@
+import { jiraBoardSchema, jiraColumnSchema, jiraProjectSchema } from "./jira-kanban.ts";
 // The RPC wire contract: plain zod schemas. server.ts wraps them for BB RPC;
 // another host wraps the same schemas for its own transport.
+import { prepareWorklogSchema } from "./manual-worklogs.ts";
 import { z } from "zod";
 import { taskRunSchema, timeEntrySchema, worklogSchema } from "./lifecycle.ts";
 import {
@@ -20,6 +22,9 @@ import {
 } from "./model.ts";
 
 export const rpcSchemas = {
+  jira_projects: { input: z.object({ connectionId: idSchema }).strict(), output: z.object({ projects: z.array(jiraProjectSchema) }).strict() },
+  jira_boards: { input: z.object({ connectionId: idSchema, projectKey: z.string().min(1).max(200) }).strict(), output: z.object({ boards: z.array(jiraBoardSchema) }).strict() },
+  jira_kanban: { input: z.object({ connectionId: idSchema, projectKey: z.string().min(1).max(200), jiraBoardId: z.number().int().positive() }).strict(), output: z.object({ columns: z.array(jiraColumnSchema), items: z.array(z.object({ task: taskSchema, statusId: z.string() })) }).strict() },
   boards_list: {
     input: z.object({}).strict(),
     output: z.object({ boards: z.array(boardViewSchema) }).strict(),
@@ -106,6 +111,10 @@ export const rpcSchemas = {
     input: z.object({ runId: idSchema, deliveredSummary: z.string().max(4000).optional() }).strict(),
     output: z.object({ timeEntry: timeEntrySchema }).strict(),
   },
+  worklog_prepare: {
+    input: prepareWorklogSchema,
+    output: z.object({ timeEntry: timeEntrySchema }).strict(),
+  },
   time_entry_update: {
     input: z.object({ entryId: idSchema, durationSeconds: z.number().int().min(1).max(31_536_000), comment: z.string().max(4000) }).strict(),
     output: z.object({ timeEntry: timeEntrySchema }).strict(),
@@ -117,6 +126,10 @@ export const rpcSchemas = {
   time_entries_pending: {
     input: z.object({}).strict(),
     output: z.object({ entries: z.array(timeEntrySchema) }).strict(),
+  },
+  jira_worklogs_list: {
+    input: z.object({ taskId: idSchema }).strict(),
+    output: z.object({ worklogs: z.array(z.object({ id: z.string(), durationSeconds: z.number(), comment: z.string() })) }).strict(),
   },
   worklogs_list: {
     input: z.object({ taskId: idSchema }).strict(),

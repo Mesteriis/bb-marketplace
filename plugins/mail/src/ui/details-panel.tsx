@@ -13,6 +13,7 @@ import {
 import { stopEscape } from "./shortcuts.ts";
 import { Icon } from "@/components/ui/icon";
 import { LoadingState } from "./empty-states.tsx";
+import { tx } from "./i18n/index.ts";
 
 /** What message_source returns. */
 export interface MessageSource {
@@ -22,6 +23,8 @@ export interface MessageSource {
   uid: number;
   folder: string;
   accountEmail: string;
+  /** Slice 3i: the provider's results, fixed-format lines (absent from older fixtures). */
+  authenticity?: { authserv: string | null; lines: string[] };
 }
 
 export type DetailsState =
@@ -50,11 +53,31 @@ export interface DetailsPanelProps {
   onCloseAutoFocus?: (event: Event) => void;
   /** The compact (drawer) layout's close hook. */
   onAfterCloseAutoFocus?: () => void;
+  /** Slice 3i: Check again (sender_check_refresh with force); absent: not offered. */
+  onCheckAgain?: (messageId: string) => Promise<void>;
 }
 
-export function DetailsPanel({ details, onClose, onCopy, onCloseAutoFocus, onAfterCloseAutoFocus }: DetailsPanelProps) {
+/** "Authenticity (from mx.google.com): SPF pass (example.com) \u00b7 DMARC pass"; the lines alone without an authserv-id. */
+export function authenticityText(authenticity: { authserv: string | null; lines: string[] }): string {
+  const lines = authenticity.lines.join(" \u00b7 ");
+  return authenticity.authserv !== null ? tx("Authenticity (from {authserv}): {lines}", { authserv: authenticity.authserv, lines }) : tx("Authenticity: {lines}", { lines });
+}
+
+export function DetailsPanel({ details, onClose, onCopy, onCloseAutoFocus, onAfterCloseAutoFocus, onCheckAgain }: DetailsPanelProps) {
   const [copied, setCopied] = useState<"idle" | "copied" | "failed">("idle");
+  const [checking, setChecking] = useState<"idle" | "running" | "failed">("idle");
   const source = details?.status === "ready" ? details.source : null;
+
+  async function checkAgain(messageId: string) {
+    if (onCheckAgain === undefined) return;
+    setChecking("running");
+    try {
+      await onCheckAgain(messageId);
+      setChecking("idle");
+    } catch {
+      setChecking("failed");
+    }
+  }
 
   async function copy() {
     if (source === null) return;
@@ -67,6 +90,7 @@ export function DetailsPanel({ details, onClose, onCopy, onCloseAutoFocus, onAft
       onOpenChange={(open) => {
         if (!open) {
           setCopied("idle");
+          setChecking("idle");
           onClose();
         }
       }}
@@ -76,40 +100,55 @@ export function DetailsPanel({ details, onClose, onCopy, onCloseAutoFocus, onAft
         onAfterCloseAutoFocus={onAfterCloseAutoFocus}
       >
         <DialogHeader>
-          <DialogTitle>Message details</DialogTitle>
+          <DialogTitle>{tx("Message details")}</DialogTitle>
           <DialogDescription>
-            Headers and structure as the server has them. Viewing them does not mark the message read.
+            {tx("Headers and structure as the server has them. Viewing them does not mark the message read.")}
           </DialogDescription>
         </DialogHeader>
         {details === null ? null : details.status === "loading" ? (
-          <LoadingState label="Loading details…" />
+          <LoadingState label={tx("Loading details\u2026")} />
         ) : details.status === "error" ? (
           <p role="alert" className="text-sm text-destructive">
             {details.error}
           </p>
         ) : (
           <div className="flex min-h-0 flex-col gap-3">
+            {details.source.authenticity !== undefined && details.source.authenticity.lines.length > 0 ? (
+              <div role="group" aria-label={tx("Authenticity")} className="flex flex-wrap items-center gap-2 text-xs">
+                <p className="min-w-0 flex-1 break-words text-foreground">{authenticityText(details.source.authenticity)}</p>
+                {onCheckAgain !== undefined ? (
+                  <Button variant="outline" size="sm" disabled={checking === "running"} onClick={() => void checkAgain(details.messageId)}>
+                    {tx("Check again")}
+                  </Button>
+                ) : null}
+                {checking === "failed" ? (
+                  <span role="alert" className="text-destructive">
+                    {tx("Could not check again")}
+                  </span>
+                ) : null}
+              </div>
+            ) : null}
             <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-0.5 text-xs">
-              <dt className="text-muted-foreground">Account</dt>
+              <dt className="text-muted-foreground">{tx("Account")}</dt>
               <dd className="truncate text-foreground">{details.source.accountEmail}</dd>
-              <dt className="text-muted-foreground">Folder</dt>
+              <dt className="text-muted-foreground">{tx("Folder")}</dt>
               <dd className="truncate text-foreground">{details.source.folder}</dd>
-              <dt className="text-muted-foreground">UID</dt>
+              <dt className="text-muted-foreground">{tx("UID")}</dt>
               <dd className="text-foreground">{details.source.uid}</dd>
-              <dt className="text-muted-foreground">Size</dt>
+              <dt className="text-muted-foreground">{tx("Size")}</dt>
               <dd className="text-foreground">{formatBytes(details.source.size)}</dd>
             </dl>
             <div className="flex items-center gap-2">
               <Button variant="outline" size="sm" onClick={() => void copy()}>
                 <Icon name="Copy" fallback="Check" aria-hidden />
-                Copy
+                {tx("Copy")}
               </Button>
               <span role="status" className="text-xs text-muted-foreground">
-                {copied === "copied" ? "Copied" : copied === "failed" ? "Could not copy" : ""}
+                {copied === "copied" ? tx("Copied") : copied === "failed" ? tx("Could not copy") : ""}
               </span>
             </div>
             <pre
-              aria-label="Headers"
+              aria-label={tx("Headers")}
               className="min-h-0 overflow-auto whitespace-pre-wrap break-all rounded-md border border-border bg-muted p-2 font-mono text-xs leading-relaxed text-foreground"
             >
               {details.source.headers.map(([name, value], index) => (
@@ -120,7 +159,7 @@ export function DetailsPanel({ details, onClose, onCopy, onCloseAutoFocus, onAft
               ))}
             </pre>
             <pre
-              aria-label="Structure"
+              aria-label={tx("Structure")}
               className="overflow-auto whitespace-pre rounded-md border border-border bg-muted p-2 font-mono text-xs text-foreground"
             >
               {details.source.structure.join("\n")}

@@ -48,9 +48,23 @@ import type {
   ThreadFilter,
 } from "../model.ts";
 import { headerValue, normalizeMessageId } from "../headers.ts";
+import { fileKindOf } from "../file-kinds.ts";
 import type { ProposalCapRow, ProposalState } from "../agent-propose.ts";
 import type { ProposalDeps } from "../agent-proposals.ts";
 import { SendRateLimit, UndoneSends } from "../compose-outbox.ts";
+import { SCHEDULE_LATE_MS } from "../send-later.ts";
+import { FILTERS_MAX, type MailFilter } from "../mail-filters.ts";
+import type { SubscriptionRow } from "../subscriptions.ts";
+import {
+  ARCHIVES_MAX,
+  ARCHIVE_MESSAGES_MAX,
+  type ArchiveCursor,
+  type ArchiveMessage,
+  type ArchivePlace,
+  type ArchiveRecord,
+  type ArchiveSummary,
+  type NewArchiveMessage,
+} from "../archive.ts";
 import { TRANSLATION_CACHE_ROWS } from "../translate.ts";
 import {
   CONTACT_SCAN,
@@ -109,7 +123,39 @@ import type {
   ReminderRecord,
   TaskRecord,
 } from "../ports.ts";
-import { AI_RESULT_MAX_BYTES, TASKS_OPEN_MAX } from "../ports.ts";
+import { AI_RESULT_MAX_BYTES, PGP_KEYS_MAX, TASKS_OPEN_MAX, type PgpKeyRow } from "../ports.ts";
+import { BINDINGS_MAX, INCIDENT_PENDING_PREFIX, INCIDENT_RESERVE_MS } from "../ports.ts";
+import type {
+  BbLinkRow,
+  BindingKind,
+  BindingRow,
+  DevGroupRow,
+  DevUnclassifiedRow,
+  IncidentRow,
+  NewRuleRun,
+  RuleCaps,
+  RuleRecord,
+  RuleRunRecord,
+  RuleRunState,
+} from "../ports.ts";
+import type { BbLinkRowKind } from "../model.ts";
+import type { AttachmentTextRow, FilesFilter, SavedSearchRow, SearchOptions, SenderCheckRow, SenderStats } from "../ports.ts";
+import { SENDER_CHECK_MAX_BYTES } from "../ports.ts";
+import { firstNonBlankLine, isEncrypted, type MailCrypto } from "../mail-crypto.ts";
+import { fitSenderCheck, orgDomain, type SenderCheck } from "../sender-check.ts";
+import { SERVER_SEARCH_CAPS, type ServerCriteria } from "../server-search.ts";
+import type { AttachmentMatch, FileRow, KeptState, SearchCondition, SearchCursor } from "../model.ts";
+import { excerptAround, type AttachmentCandidate } from "../attachment-text.ts";
+import { RELATED_CANDIDATES_MAX, type RelatedCandidate } from "../related.ts";
+import { ownerLabels } from "../labels.ts";
+import { renamedPath } from "../folder-ops.ts";
+import { SAVED_SEARCHES_MAX } from "../saved-searches.ts";
+import { filenameMatches } from "../server-search.ts";
+import { normalizeListId, type DevClass } from "../dev-notify.ts";
+import { RULES_MAX, RULE_READY_DAYS, RULE_RUNS_KEEP_DAYS, RULE_THREADS_KEEP_DAYS, capVerdict, type Rule } from "../mail-rules.ts";
+import { INCIDENT_KEEP_DAYS } from "../alerts.ts";
+import { UNKNOWN_PROJECT_DAYS } from "../projects.ts";
+import { groupDevRows, pageDevGroups } from "../dev-groups.ts";
 import { OPEN_AI_SCOPE, inAiScope, senderExcluded, type AccountScope, type AiScope } from "../ai-scope.ts";
 import { AGENT_LOG_IDS_MAX, AGENT_LOG_KEEP_DAYS, AGENT_LOG_ROWS_MAX, type LogEntry, type LogOutcome } from "../agent-log.ts";
 import type { AiCategoryAnswer } from "../ai-input.ts";
@@ -145,6 +191,17 @@ export function makeStoredAccount(overrides: Partial<StoredAccount> = {}): Store
 }
 
 /** A fetched message as stored: Delivered-To lower case, distinct, at most 10 (as the SQLite upsert). */
+/** The stored sender check, or null over SENDER_CHECK_MAX_BYTES (as SQLite: not stored). */
+function fakeSenderCheckJson(check: SenderCheck): string {
+  return JSON.stringify(fitSenderCheck(check, SENDER_CHECK_MAX_BYTES));
+}
+
+/** An encrypted body reaches no reader (slice 3i resolution 6). */
+function dropFakeBody(row: Row): void {
+  row.message.bodyText = null;
+  row.message.bodyHtml = null;
+}
+
 function storedMessage(message: FetchedMessage): FetchedMessage {
   const copy = structuredClone(message);
   if (copy.deliveredTo !== undefined) {
@@ -271,6 +328,21 @@ type Row = {
   bulk: boolean | null;
   /** `unsubscribe_json` (slice 3e): null when not known. */
   unsubscribe: UnsubscribeInfo | null;
+  /** Slice 3g: List-Id; undefined or null = unknown, '' = checked, none. */
+  listId?: string | null;
+  /** Slice 3g: the dev class; undefined = not classified, null = checked, none. */
+  dev?: DevClass | null;
+  /** Slice 3h: why a row outside the window is kept; null for a window row. */
+  kept: KeptState | null;
+  keptAt: string | null;
+  /** Slice 3h: X-GM-LABELS as the server sent them; null when not fetched. */
+  gmLabels: string[] | null;
+  /** Slice 3i: the stored sender check JSON; undefined or null = not judged. */
+  senderCheckJson?: string | null;
+  /** Slice 3i: undefined or null = not known. */
+  receiptRequested?: boolean | null;
+  /** Slice 3i: signed or encrypted; undefined or null = neither, or not known. */
+  crypto?: MailCrypto | null;
 };
 
 type StoredSnooze = SnoozeRow & { createdAt: string; updatedAt: string };
@@ -332,6 +404,30 @@ type StoreState = {
   /** stateKey(accountId, dedupKey) to dismissed at. */
   replyDismissals: Map<string, string>;
   reminders: Map<string, ReminderRecord>;
+  // Slice 3g.
+  bbLinks: BbLinkRow[];
+  /** stateKey(accountId, threadId) to project id and set at. */
+  conversationProjects: Map<string, { projectId: string; createdAt: string }>;
+  /** `${kind}\u0000${value}`. */
+  bindings: Map<string, BindingRow>;
+  incidents: Map<string, IncidentRow>;
+  rules: Map<string, RuleRecord>;
+  filters: Map<string, { filter: MailFilter; createdAt: string }>;
+  archives: Map<string, ArchiveRecord>;
+  archiveRows: { seq: number; archiveId: string; row: NewArchiveMessage }[];
+  archiveSeq: number;
+  ruleRuns: (RuleRunRecord & { messageKey: string })[];
+  /** bb thread id to its rule thread row (review C1): never dropped with mail. */
+  ruleThreads: Map<string, { ruleId: string; runId: string | null; createdAt: string }>;
+  // Slice 3h.
+  /** stateKey(accountId, folder): loaded history and the last daily check. */
+  history: Map<string, { since: string | null; checkedAt: string | null }>;
+  /** stateKey(accountId, path): grouping. */
+  folderPrefs: Map<string, boolean>;
+  /** In rail order. */
+  savedSearches: SavedSearchRow[];
+  /** `${messageId}\u0000${partId}`. */
+  attachmentText: Map<string, AttachmentTextRow>;
 };
 
 type StoredTask = Omit<TaskRecord, "threadId">;
@@ -360,6 +456,10 @@ function dueOrder(a: OutboxRecord, b: OutboxRecord): number {
 function normalizeIso(date: string): string | null {
   const time = Date.parse(date);
   return Number.isFinite(time) ? new Date(time).toISOString() : null;
+}
+
+function isoOrNull(date: string | null): string | null {
+  return date === null ? null : normalizeIso(date);
 }
 
 const MOVE_MAX_FAILURES = 3;
@@ -422,10 +522,27 @@ export class InMemoryMailStore implements MailStore {
     digests: new Map(),
     replyDismissals: new Map(),
     reminders: new Map(),
+    bbLinks: [],
+    conversationProjects: new Map(),
+    bindings: new Map(),
+    incidents: new Map(),
+    rules: new Map(),
+    filters: new Map(),
+    archives: new Map(),
+    archiveRows: [],
+    archiveSeq: 0,
+    ruleRuns: [],
+    ruleThreads: new Map(),
+    history: new Map(),
+    folderPrefs: new Map(),
+    savedSearches: [],
+    attachmentText: new Map(),
   };
   /** The installed AI scope and its excluded conversations: memory only, as SQLite's. */
   private aiScope: AiScope = OPEN_AI_SCOPE;
   private excludedThreads: ReadonlySet<string> = new Set();
+  /** New rows or threads since the excluded conversations were built (rebuilt on the next scope read). */
+  private excludedStale = false;
 
   /** Runs fn; on a throw restores the state from before the call, like a rollback. */
   transaction<T>(fn: () => T): T {
@@ -510,6 +627,18 @@ export class InMemoryMailStore implements MailStore {
       for (const key of [...map.keys()]) if (key.startsWith(`${id}\u0000`)) map.delete(key);
     }
     for (const [key, row] of [...this.state.reminders]) if (row.accountId === id) this.state.reminders.delete(key);
+    // Slice 3g: bindings, incidents and rules are not per account and stay.
+    this.state.bbLinks = this.state.bbLinks.filter((link) => link.accountId !== id);
+    for (const key of [...this.state.conversationProjects.keys()]) {
+      if (key.startsWith(`${id}\u0000`)) this.state.conversationProjects.delete(key);
+    }
+    // Rule runs stay for the caps, without their messages (review C1).
+    for (const run of this.state.ruleRuns) if (run.accountId === id) run.messageId = null;
+    // Slice 3h: saved searches and prefs of the account; attachment text goes with its messages.
+    this.state.savedSearches = this.state.savedSearches.filter((row) => row.accountId !== id);
+    for (const map of [this.state.history, this.state.folderPrefs] as Map<string, unknown>[]) {
+      for (const key of [...map.keys()]) if (key.startsWith(`${id}\u0000`)) map.delete(key);
+    }
     this.dropOrphanTranslations();
   }
 
@@ -545,7 +674,13 @@ export class InMemoryMailStore implements MailStore {
 
   // Messages ---------------------------------------------------------------
 
-  upsertMessages(accountId: string, folder: string, messages: FetchedMessage[]): { inserted: string[]; returning: string[] } {
+  upsertMessages(
+    accountId: string,
+    folder: string,
+    messages: FetchedMessage[],
+    opts?: { kept?: "history" | "search" },
+  ): { inserted: string[]; returning: string[] } {
+    this.excludedStale = true;
     const inserted: string[] = [];
     const returning: string[] = [];
     const junk = this.roleOf(accountId, folder) === "junk";
@@ -573,7 +708,17 @@ export class InMemoryMailStore implements MailStore {
         row.inlineParts = inlineParts;
         row.bulk = bulkMarkOf(message);
         if (message.unsubscribe !== undefined) row.unsubscribe = storedUnsubscribe(message.unsubscribe);
+        // Slice 3g: List-Id and dev class only where still unknown (as SQLite).
+        const listId = listIdOf(message);
+        if (listId !== undefined && (row.listId === undefined || row.listId === null)) row.listId = listId;
+        if (message.dev !== undefined && row.dev === undefined) row.dev = message.dev === null ? null : { ...message.dev };
+        this.applySecurityFields(row, message);
         if (junk) this.markSpamSeen(row);
+        // Slice 3h: never downgraded; a server hit covered by a history load becomes history.
+        if (opts?.kept === "history" && row.kept === "search") {
+          row.kept = "history";
+          row.keptAt = new Date().toISOString();
+        }
         continue;
       }
       const id = `m_${this.state.nextId++}`;
@@ -598,7 +743,13 @@ export class InMemoryMailStore implements MailStore {
         inlineParts,
         bulk: bulkMarkOf(message),
         unsubscribe: message.unsubscribe === undefined ? null : storedUnsubscribe(message.unsubscribe),
+        ...(listIdOf(message) === undefined ? {} : { listId: listIdOf(message) }),
+        ...(message.dev === undefined ? {} : { dev: message.dev === null ? null : { ...message.dev } }),
+        kept: opts?.kept ?? null,
+        keptAt: opts?.kept === undefined ? null : new Date().toISOString(),
+        gmLabels: null,
       });
+      this.applySecurityFields(this.state.rows[this.state.rows.length - 1]!, message);
       if (junk) this.markSpamSeen(this.state.rows[this.state.rows.length - 1]!);
     }
     return { inserted, returning };
@@ -717,6 +868,7 @@ export class InMemoryMailStore implements MailStore {
         }
       }
     }
+    this.promoteKept(messageIds);
     return accounts.map((accountId) => ({ accountId }));
   }
 
@@ -744,6 +896,7 @@ export class InMemoryMailStore implements MailStore {
       copy.isRead = true;
       copy.seenDesired = copy.uid !== null || copy === row ? true : null;
     }
+    this.promoteKept([messageId]);
     return { accountId: row.accountId };
   }
 
@@ -763,7 +916,22 @@ export class InMemoryMailStore implements MailStore {
       }));
   }
 
+  /** How many times assignThreads ran, for tests of the rethread-on-change rule. */
+  assignThreadsCalls = 0;
+  /** Tests set this to false to model a round that changed no rows. */
+  staleThreads: boolean | null = null;
+
+  threadsStale(_accountId: string): boolean {
+    return this.staleThreads ?? true;
+  }
+
+  repairThreads(accountId: string): number {
+    return new Set(this.state.rows.filter((r) => r.accountId === accountId).map((r) => r.threadId)).size;
+  }
+
   assignThreads(accountId: string, threadOf: Map<string, string>): void {
+    this.assignThreadsCalls++;
+    this.excludedStale = true;
     for (const row of this.state.rows) {
       if (row.accountId !== accountId) continue;
       row.threadId = threadOf.get(row.id) ?? `t_${row.id}`;
@@ -848,7 +1016,7 @@ export class InMemoryMailStore implements MailStore {
     const messages = this.onePerKey(rows, (r) => r.dedupKey, folder)
       .sort(oldestFirst)
       .map((r) => this.header(r));
-    return { thread, messages };
+    return { thread, messages, project: null, projectSuggestion: null };
   }
 
   getMessage(messageId: string): MessageHeader | null {
@@ -864,39 +1032,13 @@ export class InMemoryMailStore implements MailStore {
       text: row.message.bodyText,
       html: row.message.bodyHtml,
       htmlTruncated: false,
+      codeBlocks: [],
       remoteImagesAllowed: this.isImageSenderAllowed(row.accountId, row.message.from.address),
     };
   }
 
-  search(query: ParsedQuery, accountId: string | null, limit: number, opts?: { scoped: boolean }): MessageSummary[] {
-    const contains = (haystack: string | null | undefined, needle: string) =>
-      (haystack ?? "").toLowerCase().includes(needle.toLowerCase());
-    const after = query.after === undefined ? null : Date.parse(query.after);
-    const before = query.before === undefined ? null : Date.parse(query.before);
-    const matches = this.state.rows
-      .filter((r) => accountId === null || r.accountId === accountId)
-      .filter((r) => r.movePending === null)
-      .filter((r) => opts?.scoped !== true || this.inAiScope(r))
-      .filter((r) => {
-        const m = r.message;
-        const time = timeOf(m.date);
-        if (query.text && !(
-          contains(m.subject, query.text) ||
-          contains(m.from.name, query.text) ||
-          contains(m.from.address, query.text) ||
-          contains(m.bodyText, query.text)
-        )) return false;
-        if (query.from && !(contains(m.from.name, query.from) || contains(m.from.address, query.from))) return false;
-        if (query.subject && !contains(m.subject, query.subject)) return false;
-        if (query.unread !== undefined && r.isRead === query.unread) return false;
-        if (after !== null && (time === null || time < after)) return false;
-        if (before !== null && (time === null || time >= before)) return false;
-        return true;
-      });
-    return this.onePerKey(matches, (r) => `${r.accountId}\u0000${r.dedupKey}`)
-      .sort((a, b) => oldestFirst(b, a))
-      .slice(0, limit)
-      .map((r) => this.summary(r));
+  search(query: ParsedQuery, accountId: string | null, limit: number, opts?: SearchOptions): MessageSummary[] {
+    return this.searchPage(query, accountId, limit, opts).hits;
   }
 
   /** Snippets here are computed on read, so nothing stored can be stale. */
@@ -1005,6 +1147,7 @@ export class InMemoryMailStore implements MailStore {
       sha256: string;
       data: Uint8Array;
       contentId?: string | null;
+      origin?: string | null;
     },
   ): ComposeAttachment {
     if (!this.state.drafts.has(draftId)) throw new Error("Draft not found");
@@ -1018,10 +1161,11 @@ export class InMemoryMailStore implements MailStore {
       sha256: input.sha256,
       data: input.data.slice(),
       contentId: input.contentId ?? null,
+      origin: input.origin ?? null,
       position: own.reduce((max, a) => Math.max(max, a.position), -1) + 1,
     };
     this.state.composeAttachments.push(stored);
-    return { id: stored.id, fileName: stored.fileName, mimeType: stored.mimeType, size: stored.size };
+    return { id: stored.id, fileName: stored.fileName, mimeType: stored.mimeType, size: stored.size, origin: stored.origin };
   }
 
   listAttachments(draftId: string): ComposeAttachment[] {
@@ -1030,6 +1174,7 @@ export class InMemoryMailStore implements MailStore {
       fileName: a.fileName,
       mimeType: a.mimeType,
       size: a.size,
+      origin: a.origin,
     }));
   }
 
@@ -1043,6 +1188,7 @@ export class InMemoryMailStore implements MailStore {
       size: a.size,
       sha256: a.sha256,
       contentId: a.contentId,
+      origin: a.origin,
       data: a.data.slice(),
     }));
   }
@@ -1075,6 +1221,7 @@ export class InMemoryMailStore implements MailStore {
       errorKind: null,
       rejected: [],
       updatedAt: input.createdAt,
+      scheduled: input.scheduled === true,
     };
     this.state.outbox.set(input.id, { record, mime: mime.slice(), bccHeader });
     return { row: structuredClone(record), created: true };
@@ -1107,6 +1254,7 @@ export class InMemoryMailStore implements MailStore {
       rejected?: string[];
       sendAfter?: string;
       countAttempt?: boolean;
+      scheduled?: boolean;
       updatedAt?: string;
     } = {},
   ): boolean {
@@ -1126,6 +1274,7 @@ export class InMemoryMailStore implements MailStore {
     if (patch.rejected !== undefined) record.rejected = [...patch.rejected];
     if (patch.sendAfter !== undefined) record.sendAfter = patch.sendAfter;
     if (patch.countAttempt) record.attempts++;
+    if (patch.scheduled !== undefined) record.scheduled = patch.scheduled;
     if (patch.updatedAt !== undefined) record.updatedAt = patch.updatedAt;
     return true;
   }
@@ -1143,7 +1292,7 @@ export class InMemoryMailStore implements MailStore {
       .map((e) => e.record)
       .filter(
         (r) =>
-          r.state === "queued" &&
+          (r.state === "queued" || r.state === "waiting") &&
           Date.parse(r.sendAfter) <= now &&
           !busyAccounts.includes(r.accountId) &&
           (onlyId === undefined || r.id === onlyId),
@@ -1175,7 +1324,11 @@ export class InMemoryMailStore implements MailStore {
         record.errorKind = "unknown_after_data";
         record.updatedAt = nowIso;
         unknown++;
-      } else if (record.state === "queued" && Date.parse(record.sendAfter) <= now) {
+      } else if (
+        record.state === "queued" &&
+        Date.parse(record.sendAfter) <= now &&
+        !(record.scheduled === true && Date.parse(record.sendAfter) > now - SCHEDULE_LATE_MS)
+      ) {
         record.state = "held";
         record.updatedAt = nowIso;
         held++;
@@ -1725,6 +1878,7 @@ export class InMemoryMailStore implements MailStore {
     for (const row of rows) {
       this.state.snoozes.set(row.messageId, { ...row, createdAt: nowIso, updatedAt: nowIso });
     }
+    this.promoteKept(rows.map((row) => row.messageId));
     return { created: rows.length };
   }
 
@@ -1887,6 +2041,18 @@ export class InMemoryMailStore implements MailStore {
       .map((row) => ({ uid: row.uid, from: { ...row.message.from } }));
   }
 
+  /** Gmail: whether the message's All Mail copy is inside the scope (spec resolution 17). */
+  private allMailCopyInScope(row: { accountId: string; dedupKey: string; id: string }): boolean {
+    return this.state.rows.some(
+      (c) =>
+        c.id !== row.id &&
+        c.accountId === row.accountId &&
+        c.dedupKey === row.dedupKey &&
+        this.roleOf(c.accountId, c.folder) === "all" &&
+        this.inAiScope(c),
+    );
+  }
+
   inboxMessages(accountId: string | null, opts: { unreadOnly: boolean; limit: number; scoped?: boolean }): InboxMessage[] {
     const rows = this.state.rows.filter(
       (r) =>
@@ -1895,7 +2061,7 @@ export class InMemoryMailStore implements MailStore {
         r.movePending === null &&
         this.roleOf(r.accountId, r.folder) === "inbox" &&
         (!opts.unreadOnly || !r.isRead) &&
-        (opts.scoped !== true || this.inAiScope(r)),
+        (opts.scoped !== true || this.inAiScope(r) || this.allMailCopyInScope(r)),
     );
     return this.onePerKey(rows, (r) => `${r.accountId}\u0000${r.dedupKey}`)
       .sort((a, b) => oldestFirst(b, a))
@@ -1905,6 +2071,27 @@ export class InMemoryMailStore implements MailStore {
         bulk: r.bulk,
         unsubscribe: r.unsubscribe === null ? null : structuredClone(r.unsubscribe),
         snoozedUntil: this.state.snoozes.get(r.id)?.dueAt ?? null,
+      }));
+  }
+
+  subscriptionRows(accountId: string | null, limit: number): SubscriptionRow[] {
+    const skipped: (SpecialUse | null)[] = ["junk", "trash", "drafts", "sent"];
+    return this.state.rows
+      .filter(
+        (r) =>
+          (accountId === null || r.accountId === accountId) && r.unsubscribe !== null && !skipped.includes(this.roleOf(r.accountId, r.folder)),
+      )
+      .sort((a, b) => oldestFirst(b, a))
+      .slice(0, limit)
+      .map((r) => ({
+        id: r.id,
+        accountId: r.accountId,
+        dedupKey: r.dedupKey,
+        fromName: r.message.from.name,
+        fromAddress: r.message.from.address,
+        date: r.message.date,
+        isRead: r.isRead,
+        info: structuredClone(r.unsubscribe!),
       }));
   }
 
@@ -2066,6 +2253,10 @@ export class InMemoryMailStore implements MailStore {
 
   /** The row is inside the installed AI scope (the SQLite mail_ai_in_scope). */
   private inAiScope(row: Row): boolean {
+    if (this.excludedStale) {
+      this.excludedStale = false;
+      this.refreshExcludedThreads();
+    }
     return inAiScope(
       {
         accountId: row.accountId,
@@ -2105,6 +2296,15 @@ export class InMemoryMailStore implements MailStore {
     const seq = this.state.nextLogSeq++;
     this.state.agentLog.push({ ...entry, messageIds: entry.messageIds.slice(0, AGENT_LOG_IDS_MAX), seq });
     return seq;
+  }
+
+  setAgentLogSources(seq: number, messageIds: readonly string[], count: number, hiddenCount: number): number {
+    const entry = this.state.agentLog.find((row) => row.seq === seq);
+    if (entry === undefined) return 0;
+    entry.messageIds = [...new Set(messageIds)].slice(0, AGENT_LOG_IDS_MAX);
+    entry.count = count;
+    entry.hiddenCount = hiddenCount;
+    return 1;
   }
 
   updateAgentLog(refId: string, outcome: LogOutcome, count: number): number {
@@ -2159,7 +2359,7 @@ export class InMemoryMailStore implements MailStore {
     const open = [...this.state.tasks.values()].filter((t) => t.doneAt === null).length;
     if (open + rows.length > TASKS_OPEN_MAX) return { full: true };
     for (const row of rows) {
-      this.state.tasks.set(row.id, { ...row, doneAt: null, updatedAt: row.createdAt });
+      this.state.tasks.set(row.id, { ...row, note: row.note ?? null, doneAt: null, updatedAt: row.createdAt });
     }
     return { kept: rows.length };
   }
@@ -2363,7 +2563,11 @@ export class InMemoryMailStore implements MailStore {
   }
 
   createReminder(row: NewReminder): { created: true } | { full: true } {
-    const live = [...this.state.reminders.values()].filter((r) => r.state === "queued" || r.state === "waiting" || r.state === "due");
+    // A queued reminder whose send failed is not live until a retry queues it again.
+    const failed = (r: ReminderRecord) => r.outboxId !== null && this.state.outbox.get(r.outboxId)?.record.state === "failed";
+    const live = [...this.state.reminders.values()].filter(
+      (r) => (r.state === "queued" && !failed(r)) || r.state === "waiting" || r.state === "due",
+    );
     if (live.length >= REMINDERS_LIVE_MAX) return { full: true };
     this.state.reminders.set(row.id, { ...row, updatedAt: row.createdAt, notifiedAt: null });
     return { created: true };
@@ -2450,7 +2654,498 @@ export class InMemoryMailStore implements MailStore {
     return rows[rows.length - 1]?.threadId ?? null;
   }
 
-  purgeDaily(nowIso: string): number {
+  // ---- Slice 3g ----
+
+  setDevClass(rows: { id: string; dev: DevClass | null }[]): number {
+    let changed = 0;
+    for (const { id, dev } of rows) {
+      const row = this.state.rows.find((r) => r.id === id);
+      if (row === undefined) continue;
+      row.dev = dev === null ? null : { ...dev };
+      changed++;
+    }
+    return changed;
+  }
+
+  devUnclassified(limit: number): DevUnclassifiedRow[] {
+    if (limit <= 0) return [];
+    return this.state.rows
+      .filter((r) => r.dev === undefined && !["junk", "trash"].includes(this.roleOf(r.accountId, r.folder) ?? ""))
+      // Slice 3i: a failed sender is never classified (resolution 2).
+      .filter((r) => r.senderCheckJson === undefined || r.senderCheckJson === null || JSON.parse(r.senderCheckJson).state !== "failed")
+      .sort((a, b) => -oldestFirst(a, b))
+      .slice(0, limit)
+      .map((r) => ({ id: r.id, accountId: r.accountId, from: r.message.from.address, subject: r.message.subject }));
+  }
+
+  listUnknown(accountId: string, folder: string, belowUid: number | null, limit: number): { uid: number }[] {
+    if (limit <= 0) return [];
+    return this.state.rows
+      .filter(
+        (r) =>
+          r.accountId === accountId &&
+          r.folder === folder &&
+          r.uid !== null &&
+          (r.listId === undefined || r.listId === null) &&
+          (belowUid === null || r.uid < belowUid),
+      )
+      .map((r) => r.uid!)
+      .sort((a, b) => b - a)
+      .slice(0, limit)
+      .map((uid) => ({ uid }));
+  }
+
+  listIds(ids: string[]): Map<string, string | null> {
+    const out = new Map<string, string | null>();
+    for (const id of ids) {
+      const row = this.state.rows.find((r) => r.id === id);
+      if (row !== undefined) out.set(id, row.listId ?? null);
+    }
+    return out;
+  }
+
+  fillListIds(accountId: string, folder: string, uidValidity: number, ids: { uid: number; listId: string }[]): number {
+    if (this.state.syncStates.get(stateKey(accountId, folder))?.uidValidity !== uidValidity) return 0;
+    let changed = 0;
+    for (const { uid, listId } of ids) {
+      const row = this.state.rows.find((r) => r.accountId === accountId && r.folder === folder && r.uid === uid);
+      if (row === undefined || (row.listId !== undefined && row.listId !== null)) continue;
+      row.listId = listId;
+      changed++;
+    }
+    return changed;
+  }
+
+  devGroups(opts: { sinceIso: string; accountId?: string | null; cursor?: string | null; limit: number }): {
+    groups: DevGroupRow[];
+    next: string | null;
+  } {
+    const rows = this.state.rows
+      .filter(
+        (r) =>
+          r.dev !== undefined &&
+          r.dev !== null &&
+          r.message.date !== null &&
+          r.message.date >= opts.sinceIso &&
+          (opts.accountId == null || r.accountId === opts.accountId) &&
+          r.movePending === null &&
+          !["junk", "trash"].includes(this.roleOf(r.accountId, r.folder) ?? ""),
+      )
+      .sort((a, b) => -oldestFirst(a, b))
+      .map((r) => ({
+        id: r.id,
+        accountId: r.accountId,
+        dedupKey: r.dedupKey,
+        source: r.dev!.source,
+        repo: r.dev!.repo,
+        kind: r.dev!.kind,
+        state: r.dev!.state,
+        subject: r.message.subject,
+        date: r.message.date,
+        isRead: r.isRead,
+      }));
+    return pageDevGroups(groupDevRows(rows), opts.cursor ?? null, opts.limit);
+  }
+
+  addBbLink(row: BbLinkRow): void {
+    if (this.state.bbLinks.some((link) => link.id === row.id)) throw new Error("UNIQUE constraint failed: bb_links.id");
+    this.state.bbLinks.push({ ...row });
+  }
+
+  listBbLinks(query: { messageIds: string[] } | { accountId: string; threadId: string } | { targetId: string }): BbLinkRow[] {
+    const match =
+      "messageIds" in query
+        ? (link: BbLinkRow) => query.messageIds.includes(link.messageId)
+        : "targetId" in query
+          ? (link: BbLinkRow) => link.targetId === query.targetId
+          : (link: BbLinkRow) => link.accountId === query.accountId && link.threadId === query.threadId;
+    return this.state.bbLinks
+      .filter(match)
+      .sort((a, b) => (a.createdAt === b.createdAt ? (a.id < b.id ? -1 : 1) : a.createdAt < b.createdAt ? -1 : 1))
+      .map((link) => ({ ...link }));
+  }
+
+  pruneBbLinks(kind: BbLinkRowKind, targetIds: string[]): number {
+    const before = this.state.bbLinks.length;
+    this.state.bbLinks = this.state.bbLinks.filter((link) => link.kind !== kind || !targetIds.includes(link.targetId));
+    return before - this.state.bbLinks.length;
+  }
+
+  setConversationProject(accountId: string, threadId: string, projectId: string | null, nowIso: string): void {
+    const key = stateKey(accountId, threadId);
+    if (projectId === null) this.state.conversationProjects.delete(key);
+    else this.state.conversationProjects.set(key, { projectId, createdAt: nowIso });
+  }
+
+  conversationProject(accountId: string, threadId: string): string | null {
+    return this.state.conversationProjects.get(stateKey(accountId, threadId))?.projectId ?? null;
+  }
+
+  addBinding(row: BindingRow): { created: boolean } | { full: true } {
+    const key = `${row.kind}\u0000${row.value}`;
+    const existing = this.state.bindings.get(key);
+    if (existing !== undefined) {
+      existing.projectId = row.projectId;
+      return { created: false };
+    }
+    if (this.state.bindings.size >= BINDINGS_MAX) return { full: true };
+    this.state.bindings.set(key, { ...row });
+    return { created: true };
+  }
+
+  removeBinding(kind: BindingKind, value: string): boolean {
+    return this.state.bindings.delete(`${kind}\u0000${value}`);
+  }
+
+  listBindings(): BindingRow[] {
+    return [...this.state.bindings.values()]
+      .sort((a, b) => (a.kind === b.kind ? (a.value < b.value ? -1 : a.value > b.value ? 1 : 0) : a.kind < b.kind ? -1 : 1))
+      .map((row) => ({ ...row }));
+  }
+
+  projectThreads(projectId: string, opts: { cursor: string | null; limit: number }): {
+    threads: ThreadSummary[];
+    nextCursor: string | null;
+  } {
+    const groups = new Map<string, Row[]>();
+    for (const row of this.state.rows) {
+      const group = groups.get(row.threadId);
+      if (group) group.push(row);
+      else groups.set(row.threadId, [row]);
+    }
+    const all = [...groups.entries()]
+      .filter(([id, rows]) => this.projectOf(rows[0]!.accountId, id) === projectId)
+      .map(([id, rows]) => this.summarize(id, rows, (r) => r.movePending === null))
+      .sort((a, b) => {
+        const byDate = (timeOf(b.lastDate) ?? -Infinity) - (timeOf(a.lastDate) ?? -Infinity);
+        if (byDate !== 0) return byDate;
+        return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
+      });
+    const offset = opts.cursor === null ? 0 : Number(opts.cursor);
+    const threads = all.slice(offset, offset + opts.limit);
+    const next = offset + threads.length;
+    return { threads, nextCursor: next < all.length ? String(next) : null };
+  }
+
+  putIncident(row: IncidentRow): void {
+    this.state.incidents.set(row.fingerprint, { ...row });
+  }
+
+  incidentFor(fingerprint: string): IncidentRow | null {
+    const row = this.state.incidents.get(fingerprint);
+    return row === undefined || row.bbThreadId.startsWith(INCIDENT_PENDING_PREFIX) ? null : { ...row };
+  }
+
+  reserveIncident(fingerprint: string, expectedBbThreadId: string | null, row: { token: string; projectId: string; at: string }): boolean {
+    const current = this.state.incidents.get(fingerprint);
+    const pending = current !== undefined && current.bbThreadId.startsWith(INCIDENT_PENDING_PREFIX);
+    if (pending && Date.parse(row.at) - Date.parse(current.createdAt) < INCIDENT_RESERVE_MS) return false;
+    const currentId = current === undefined || pending ? null : current.bbThreadId;
+    if (currentId !== expectedBbThreadId) return false;
+    this.putIncident({ fingerprint, bbThreadId: `${INCIDENT_PENDING_PREFIX}${row.token}`, projectId: row.projectId, createdAt: row.at, lastAt: row.at });
+    return true;
+  }
+
+  releaseIncident(fingerprint: string, token: string): void {
+    if (this.state.incidents.get(fingerprint)?.bbThreadId === `${INCIDENT_PENDING_PREFIX}${token}`) this.state.incidents.delete(fingerprint);
+  }
+
+  touchIncident(fingerprint: string, nowIso: string): boolean {
+    const row = this.state.incidents.get(fingerprint);
+    if (row === undefined) return false;
+    row.lastAt = nowIso;
+    return true;
+  }
+
+  listArchives(): ArchiveRecord[] {
+    return [...this.state.archives.values()].map((archive) => ({ ...archive }));
+  }
+
+  getArchive(id: string): ArchiveRecord | null {
+    const archive = this.state.archives.get(id);
+    return archive === undefined ? null : { ...archive };
+  }
+
+  findArchiveBySource(sourcePath: string): ArchiveRecord | null {
+    const archive = [...this.state.archives.values()].find((entry) => entry.sourcePath === sourcePath);
+    return archive === undefined ? null : { ...archive };
+  }
+
+  createArchive(archive: ArchiveRecord): { archive: ArchiveRecord } | { full: true } {
+    if (this.state.archives.size >= ARCHIVES_MAX) return { full: true };
+    this.state.archives.set(archive.id, { ...archive, messages: 0 });
+    return { archive: { ...archive, messages: 0 } };
+  }
+
+  appendArchiveMessages(
+    archiveId: string,
+    rows: NewArchiveMessage[],
+    progress: { resumeAt: number; skipped: number; complete: boolean; nowIso: string },
+  ): number {
+    const mine = () => this.state.archiveRows.filter((entry) => entry.archiveId === archiveId);
+    let added = 0;
+    for (const row of rows) {
+      if (mine().length >= ARCHIVE_MESSAGES_MAX) break;
+      if (mine().some((entry) => entry.row.file === row.file && entry.row.offset === row.offset)) continue;
+      this.state.archiveRows.push({ seq: ++this.state.archiveSeq, archiveId, row: structuredClone(row) });
+      added += 1;
+    }
+    const archive = this.state.archives.get(archiveId);
+    if (archive !== undefined) {
+      Object.assign(archive, {
+        messages: mine().length,
+        skipped: progress.skipped,
+        complete: progress.complete,
+        resumeAt: progress.resumeAt,
+        updatedAt: progress.nowIso,
+      });
+    }
+    return added;
+  }
+
+  removeArchive(id: string): boolean {
+    this.state.archiveRows = this.state.archiveRows.filter((entry) => entry.archiveId !== id);
+    return this.state.archives.delete(id);
+  }
+
+  private archiveSummary(entry: { seq: number; archiveId: string; row: NewArchiveMessage }): ArchiveSummary {
+    return {
+      id: String(entry.seq),
+      archiveId: entry.archiveId,
+      date: entry.row.date,
+      from: { ...entry.row.from },
+      subject: entry.row.subject,
+      snippet: entry.row.snippet,
+      hasAttachments: entry.row.attachments.some((a) => !a.isInline),
+    };
+  }
+
+  archiveMessages(
+    archiveId: string | null,
+    opts: { query: string; limit: number; cursor: ArchiveCursor | null },
+  ): { rows: ArchiveSummary[]; nextCursor: ArchiveCursor | null } {
+    const needle = opts.query.trim().toLowerCase();
+    // Newest first, undated last, then by seq descending.
+    const order = (a: { seq: number; row: NewArchiveMessage }, b: { seq: number; row: NewArchiveMessage }) => {
+      if (a.row.date === null || b.row.date === null) return a.row.date === b.row.date ? b.seq - a.seq : a.row.date === null ? 1 : -1;
+      return a.row.date === b.row.date ? b.seq - a.seq : a.row.date < b.row.date ? 1 : -1;
+    };
+    const all = this.state.archiveRows
+      .filter((entry) => archiveId === null || entry.archiveId === archiveId)
+      .filter(
+        (entry) =>
+          needle === "" ||
+          [entry.row.subject, entry.row.from.name ?? "", entry.row.from.address, entry.row.bodyText ?? ""].some((text) => text.toLowerCase().includes(needle)),
+      )
+      .sort(order);
+    const cursor = opts.cursor;
+    const start = cursor === null ? 0 : all.findIndex((entry) => String(entry.seq) === cursor.id) + 1;
+    const page = all.slice(start, start + opts.limit).map((entry) => this.archiveSummary(entry));
+    const last = page[page.length - 1];
+    return { rows: page, nextCursor: start + opts.limit < all.length && last !== undefined ? { date: last.date, id: last.id } : null };
+  }
+
+  archiveMessage(id: string): { message: ArchiveMessage; place: ArchivePlace } | null {
+    const entry = this.state.archiveRows.find((candidate) => String(candidate.seq) === id);
+    if (entry === undefined) return null;
+    const { row } = entry;
+    return {
+      message: {
+        ...this.archiveSummary(entry),
+        to: structuredClone(row.to),
+        cc: structuredClone(row.cc),
+        text: row.bodyText,
+        html: row.bodyHtml,
+        htmlTruncated: row.htmlTruncated,
+        attachments: structuredClone(row.attachments),
+      },
+      place: { archiveId: entry.archiveId, file: row.file, offset: row.offset, length: row.length, rawHash: row.rawHash },
+    };
+  }
+
+  listMailFilters(): MailFilter[] {
+    // A Map keeps the order filters were made in, and an edit keeps its place.
+    return [...this.state.filters.values()].map((entry) => structuredClone(entry.filter));
+  }
+
+  saveMailFilter(filter: MailFilter, nowIso: string): { filter: MailFilter } | { full: true } {
+    const existing = this.state.filters.get(filter.id);
+    if (existing === undefined && this.state.filters.size >= FILTERS_MAX) return { full: true };
+    this.state.filters.set(filter.id, { filter: structuredClone(filter), createdAt: existing?.createdAt ?? nowIso });
+    return { filter: structuredClone(filter) };
+  }
+
+  deleteMailFilter(id: string): boolean {
+    return this.state.filters.delete(id);
+  }
+
+  listRules(): RuleRecord[] {
+    return [...this.state.rules.values()]
+      .sort((a, b) => (a.createdAt === b.createdAt ? (a.id < b.id ? -1 : 1) : a.createdAt < b.createdAt ? -1 : 1))
+      .map((rule) => structuredClone(rule));
+  }
+
+  saveRule(rule: Rule, nowIso: string): { rule: RuleRecord } | { full: true } {
+    const existing = this.state.rules.get(rule.id);
+    if (existing === undefined && this.state.rules.size >= RULES_MAX) return { full: true };
+    const record: RuleRecord = {
+      ...structuredClone(rule),
+      createdAt: existing?.createdAt ?? nowIso,
+      updatedAt: nowIso,
+    };
+    this.state.rules.set(rule.id, record);
+    return { rule: structuredClone(record) };
+  }
+
+  deleteRule(id: string): boolean {
+    return this.state.rules.delete(id);
+  }
+
+  pauseRules(nowIso: string): string[] {
+    const paused: string[] = [];
+    for (const rule of this.state.rules.values()) {
+      if (!rule.enabled) continue;
+      rule.enabled = false;
+      rule.updatedAt = nowIso;
+      paused.push(rule.id);
+    }
+    return paused.sort();
+  }
+
+  resumeRules(ids: string[], nowIso: string): number {
+    let changed = 0;
+    for (const id of ids) {
+      const rule = this.state.rules.get(id);
+      if (rule === undefined) continue;
+      rule.enabled = true;
+      rule.updatedAt = nowIso;
+      changed++;
+    }
+    return changed;
+  }
+
+  insertRuleRun(row: NewRuleRun, caps: RuleCaps): "inserted" | "capped" | "duplicate" {
+    const stored = this.state.rows.find((r) => r.id === row.messageId);
+    const messageKey = stored === undefined ? `id:${row.messageId}` : `${stored.accountId}:${stored.dedupKey}`;
+    if (this.state.ruleRuns.some((run) => run.ruleId === row.ruleId && run.messageKey === messageKey)) return "duplicate";
+    let state: RuleRunState = row.state;
+    if (row.state === "starting") {
+      const at = Date.parse(row.createdAt);
+      const hour = new Date(at - 3_600_000).toISOString();
+      const day = new Date(at - 86_400_000).toISOString();
+      const live = this.state.ruleRuns.filter((run) => (run.state === "starting" || run.state === "started") && run.createdAt >= day);
+      const own = live.filter((run) => run.ruleId === row.ruleId);
+      const counts = {
+        ruleHour: own.filter((run) => run.createdAt >= hour).length,
+        ruleDay: own.length,
+        allDay: live.length,
+        conversationDay:
+          row.threadId === null ? 0 : own.filter((run) => run.accountId === row.accountId && run.threadId === row.threadId).length,
+      };
+      if (capVerdict(counts, caps) === "capped") state = "capped";
+    }
+    this.state.ruleRuns.push({
+      id: row.id,
+      ruleId: row.ruleId,
+      accountId: row.accountId,
+      messageId: row.messageId,
+      threadId: row.threadId,
+      projectId: row.projectId ?? null,
+      messageKey,
+      state,
+      bbThreadId: null,
+      notifiedAt: null,
+      createdAt: row.createdAt,
+      updatedAt: row.createdAt,
+    });
+    return state === "capped" ? "capped" : "inserted";
+  }
+
+  updateRuleRun(
+    id: string,
+    patch: { state?: RuleRunState; bbThreadId?: string | null; notifiedAt?: string | null },
+    nowIso: string,
+  ): boolean {
+    const run = this.state.ruleRuns.find((r) => r.id === id);
+    if (run === undefined) return false;
+    Object.assign(run, definedOnly(patch), { updatedAt: nowIso });
+    return true;
+  }
+
+  ruleRunByBbThread(bbThreadId: string): RuleRunRecord | null {
+    const run = this.state.ruleRuns
+      .filter((r) => r.bbThreadId === bbThreadId && (r.state === "starting" || r.state === "started"))
+      .sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1))[0];
+    return run === undefined ? null : publicRun(run);
+  }
+
+  getRuleRun(id: string): RuleRunRecord | null {
+    const run = this.state.ruleRuns.find((r) => r.id === id);
+    return run === undefined ? null : publicRun(run);
+  }
+
+  listRuleRuns(opts: { state?: RuleRunState; cursor?: string | null; limit: number }): { runs: RuleRunRecord[]; next: string | null } {
+    const all = this.state.ruleRuns
+      .filter((run) => run.messageId !== null && (opts.state === undefined || run.state === opts.state))
+      .sort((a, b) => (a.createdAt === b.createdAt ? (a.id < b.id ? 1 : -1) : a.createdAt < b.createdAt ? 1 : -1));
+    const offset = opts.cursor == null ? 0 : Number(opts.cursor);
+    const runs = all.slice(offset, offset + opts.limit).map(publicRun);
+    const next = offset + runs.length;
+    return { runs, next: next < all.length ? String(next) : null };
+  }
+
+  staleStartingRuns(beforeIso: string): RuleRunRecord[] {
+    return this.state.ruleRuns
+      .filter((run) => run.state === "starting" && run.createdAt < beforeIso)
+      .sort((a, b) => (a.createdAt === b.createdAt ? (a.id < b.id ? -1 : 1) : a.createdAt < b.createdAt ? -1 : 1))
+      .map(publicRun);
+  }
+
+  addRuleThread(row: { bbThreadId: string; ruleId: string; runId: string | null; createdAt: string }): void {
+    if (this.state.ruleThreads.has(row.bbThreadId)) return;
+    this.state.ruleThreads.set(row.bbThreadId, { ruleId: row.ruleId, runId: row.runId, createdAt: row.createdAt });
+  }
+
+  isRuleThread(bbThreadId: string): boolean {
+    return this.state.ruleThreads.has(bbThreadId) || this.ruleRunByBbThread(bbThreadId) !== null;
+  }
+
+  failStaleStarts(beforeIso: string, nowIso: string): number {
+    let changed = 0;
+    for (const run of this.state.ruleRuns) {
+      if (run.state !== "starting" || run.createdAt >= beforeIso) continue;
+      run.state = "failed";
+      run.updatedAt = nowIso;
+      changed++;
+    }
+    return changed;
+  }
+
+  /** The conversation's project: the owner's binding, else the first matching rule (address, list, repo, domain). */
+  private projectOf(accountId: string, threadId: string): string | null {
+    const owner = this.state.conversationProjects.get(stateKey(accountId, threadId));
+    if (owner !== undefined) return owner.projectId;
+    if (this.state.bindings.size === 0) return null;
+    // The most recently stored row first (SQLite orders by seq).
+    const rows = this.state.rows.filter((r) => r.threadId === threadId).reverse();
+    const lookups: [BindingKind, (r: Row) => string | null | undefined][] = [
+      ["address", (r) => r.message.from.address.toLowerCase()],
+      ["list", (r) => r.listId],
+      ["repo", (r) => r.dev?.repo],
+      ["domain", (r) => r.message.from.address.slice(r.message.from.address.indexOf("@") + 1).toLowerCase()],
+    ];
+    for (const [kind, valueOf] of lookups) {
+      for (const row of rows) {
+        const value = valueOf(row);
+        if (value === undefined || value === null || value === "") continue;
+        const binding = this.state.bindings.get(`${kind}\u0000${value}`);
+        if (binding !== undefined) return binding.projectId;
+      }
+    }
+    return null;
+  }
+
+  purgeDaily(nowIso: string, knownProjectIds?: readonly string[] | null): number {
     const now = Date.parse(nowIso);
     const before = (days: number) => new Date(now - days * 86_400_000).toISOString();
     const keys = new Set(this.state.rows.map((r) => stateKey(r.accountId, r.dedupKey)));
@@ -2481,11 +3176,782 @@ export class InMemoryMailStore implements MailStore {
     }
     const answered = before(ANSWERED_KEEP_DAYS);
     for (const [id, row] of [...this.state.reminders]) {
-      if (row.state !== "answered" || row.updatedAt >= answered) continue;
+      if ((row.state !== "answered" && row.state !== "dismissed") || row.updatedAt >= answered) continue;
       this.state.reminders.delete(id);
       removed++;
     }
-    return removed + this.purgeAgentLog(before(AGENT_LOG_KEEP_DAYS), AGENT_LOG_ROWS_MAX);
+    removed += this.purgeAgentLog(before(AGENT_LOG_KEEP_DAYS), AGENT_LOG_ROWS_MAX);
+    // Slice 3g.
+    const conversations = new Set(this.state.rows.map((r) => stateKey(r.accountId, r.threadId)));
+    const unknownBefore = before(UNKNOWN_PROJECT_DAYS);
+    for (const [key, row] of [...this.state.conversationProjects]) {
+      const unknown = knownProjectIds != null && !knownProjectIds.includes(row.projectId) && row.createdAt < unknownBefore;
+      if (conversations.has(key) && !unknown) continue;
+      this.state.conversationProjects.delete(key);
+      removed++;
+    }
+    const ready = before(RULE_READY_DAYS);
+    for (const run of this.state.ruleRuns) {
+      if (run.state === "ready" && run.createdAt < ready) {
+        run.state = "expired";
+        run.updatedAt = nowIso;
+      }
+    }
+    const runs = before(RULE_RUNS_KEEP_DAYS);
+    const keptRuns = this.state.ruleRuns.filter((run) => run.createdAt >= runs);
+    removed += this.state.ruleRuns.length - keptRuns.length;
+    this.state.ruleRuns = keptRuns;
+    const ruleThreads = before(RULE_THREADS_KEEP_DAYS);
+    for (const [key, row] of [...this.state.ruleThreads]) {
+      if (row.createdAt >= ruleThreads) continue;
+      this.state.ruleThreads.delete(key);
+      removed++;
+    }
+    const incidents = before(INCIDENT_KEEP_DAYS);
+    for (const [key, row] of [...this.state.incidents]) {
+      if (row.createdAt >= incidents) continue;
+      this.state.incidents.delete(key);
+      removed++;
+    }
+    return removed;
+  }
+
+  // ---- Slice 3h ---------------------------------------------------------------
+
+  searchPage(
+    query: ParsedQuery,
+    accountId: string | null,
+    limit: number,
+    opts?: SearchOptions,
+  ): { hits: MessageSummary[]; nextCursor: SearchCursor | null; attachmentMatches: AttachmentMatch[] } {
+    const text = query.text.replace(/[\u0000-\u001f\u007f]/g, "").trim();
+    const withAttachments = opts?.attachments === true && Array.from(text).length >= 3;
+    const textHit = (r: Row) => {
+      const contains = (haystack: string | null | undefined) => (haystack ?? "").toLowerCase().includes(text.toLowerCase());
+      const m = r.message;
+      return contains(m.subject) || contains(m.from.name) || contains(m.from.address) || contains(m.bodyText);
+    };
+    const attachmentHit = (r: Row) => this.attachmentTextOfCopies(r).some((entry) => entry.body.toLowerCase().includes(text.toLowerCase()));
+    const matches = this.state.rows
+      .filter((r) => accountId === null || r.accountId === accountId)
+      .filter((r) => r.movePending === null)
+      .filter((r) => opts?.scoped !== true || this.inAiScope(r))
+      .filter((r) => text === "" || textHit(r) || (withAttachments && attachmentHit(r)))
+      .filter((r) => this.matchesConditions(r, query.conditions));
+    // Newest first, undated first, then id descending (the SQLite order).
+    const ordered = this.onePerKey(matches, (r) => `${r.accountId}\u0000${r.dedupKey}`).sort((a, b) => {
+      const ta = timeOf(a.message.date);
+      const tb = timeOf(b.message.date);
+      if (ta !== tb) return ta === null ? -1 : tb === null ? 1 : tb - ta;
+      return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
+    });
+    const cursor = opts?.cursor ?? null;
+    const start = cursor === null ? 0 : ordered.findIndex((r) => r.id === cursor.id) + 1;
+    const page = ordered.slice(start, start + limit);
+    const last = page[page.length - 1];
+    const more = start + limit < ordered.length;
+    return {
+      hits: page.map((r) => this.summary(r)),
+      nextCursor: more && last !== undefined ? { date: isoOrNull(last.message.date), id: last.id } : null,
+      attachmentMatches: withAttachments
+        ? page.flatMap((r) => {
+            const entry = this.attachmentTextOfCopies(r).find((e) => e.body.toLowerCase().includes(text.toLowerCase()));
+            if (entry === undefined) return [];
+            const filename = this.state.rows
+              .find((row) => row.id === entry.messageId)
+              ?.message.attachments.find((a) => a.partId === entry.partId)?.filename ?? null;
+            return [{ messageId: r.id, filename, excerpt: excerptAround(entry.body, text) }];
+          })
+        : [],
+    };
+  }
+
+  listMessages(
+    accountId: string,
+    folder: string,
+    cursor: string | null,
+    limit: number,
+    filter?: ThreadFilter,
+  ): { messages: MessageSummary[]; nextCursor: string | null } {
+    const inScope = (r: Row) => r.accountId === accountId && r.folder === folder && r.movePending === null;
+    return this.pageRows(this.state.rows.filter(this.member(inScope, filter)), cursor, limit);
+  }
+
+  listMessagesAll(
+    role: SpecialUse,
+    cursor: string | null,
+    limit: number,
+    filter?: ThreadFilter,
+  ): { messages: MessageSummary[]; nextCursor: string | null } {
+    if (role === "all") return { messages: [], nextCursor: null };
+    const inScope = (r: Row) => r.movePending === null && this.roleOf(r.accountId, r.folder) === role;
+    return this.pageRows(this.state.rows.filter(this.member(inScope, filter)), cursor, limit);
+  }
+
+  promoteKept(messageIds: readonly string[]): string[] {
+    const changed: string[] = [];
+    for (const id of messageIds) {
+      const row = this.state.rows.find((r) => r.id === id);
+      if (row === undefined) continue;
+      for (const copy of this.state.rows) {
+        if (copy.accountId !== row.accountId || copy.dedupKey !== row.dedupKey) continue;
+        if (copy.kept !== "history" && copy.kept !== "search") continue;
+        copy.kept = "opened";
+        changed.push(copy.id);
+      }
+    }
+    return changed;
+  }
+
+  expireSearchRows(nowIso: string, days: number): { removed: number; accounts: string[] } {
+    const cutoff = Date.parse(nowIso) - days * 86_400_000;
+    const expired = this.state.rows.filter((r) => r.kept === "search" && r.keptAt !== null && Date.parse(r.keptAt) < cutoff);
+    const gone = new Set(expired.map((r) => r.id));
+    this.state.rows = this.state.rows.filter((r) => !gone.has(r.id));
+    this.dropOrphanTranslations();
+    return { removed: expired.length, accounts: [...new Set(expired.map((r) => r.accountId))] };
+  }
+
+  historyState(accountId: string, folder: string): { historySince: string | null; historyCheckedAt: string | null } | null {
+    if (!this.state.syncStates.has(stateKey(accountId, folder))) return null;
+    const history = this.state.history.get(stateKey(accountId, folder));
+    return { historySince: history?.since ?? null, historyCheckedAt: history?.checkedAt ?? null };
+  }
+
+  setHistorySince(accountId: string, folder: string, since: string | null): void {
+    if (!this.state.syncStates.has(stateKey(accountId, folder))) return;
+    const key = stateKey(accountId, folder);
+    this.state.history.set(key, { since: since === null ? null : isoOrNull(since), checkedAt: this.state.history.get(key)?.checkedAt ?? null });
+  }
+
+  clearWindowKept(accountId: string, folder: string, sinceIso: string): number {
+    const since = timeOf(sinceIso) ?? -Infinity;
+    let changed = 0;
+    for (const row of this.folderRows(accountId, folder)) {
+      if (row.kept === null) continue;
+      const time = timeOf(row.message.date);
+      if (time !== null && time < since) continue;
+      row.kept = null;
+      row.keptAt = null;
+      changed++;
+    }
+    return changed;
+  }
+
+  idsByDedupKey(accountId: string, keys: readonly string[]): Map<string, string> {
+    const found = new Map<string, string>();
+    for (const key of keys) {
+      const row = this.state.rows
+        .filter((r) => r.accountId === accountId && r.dedupKey === key)
+        .sort((a, b) => a.id.localeCompare(b.id))[0];
+      if (row !== undefined) found.set(key, row.id);
+    }
+    return found;
+  }
+
+  keptIds(accountId: string, folder: string, kept: KeptState): string[] {
+    return this.folderRows(accountId, folder)
+      .filter((row) => row.kept === kept)
+      .map((row) => row.id)
+      .sort();
+  }
+
+  historyChecked(accountId: string, folder: string, atIso: string): void {
+    if (!this.state.syncStates.has(stateKey(accountId, folder))) return;
+    const key = stateKey(accountId, folder);
+    this.state.history.set(key, { since: this.state.history.get(key)?.since ?? null, checkedAt: isoOrNull(atIso) });
+  }
+
+  historyForgetCount(accountId: string, folder: string): number {
+    return this.forgettable(accountId, folder).length;
+  }
+
+  historyForget(accountId: string, folder: string): number {
+    const rows = this.forgettable(accountId, folder);
+    const gone = new Set(rows.map((r) => r.id));
+    this.state.rows = this.state.rows.filter((r) => !gone.has(r.id));
+    this.dropOrphanTranslations();
+    this.setHistorySince(accountId, folder, null);
+    return rows.length;
+  }
+
+  rehomeFolder(accountId: string, from: string, to: string, delimiter: string): void {
+    const move = (path: string) => renamedPath(path, from, to, delimiter);
+    const rekey = <V>(map: Map<string, V>) => {
+      for (const [key, value] of [...map]) {
+        const [account, path] = key.split("\u0000") as [string, string];
+        const next = account === accountId ? move(path) : null;
+        if (next === null) continue;
+        map.delete(key);
+        map.set(stateKey(account, next), value);
+      }
+    };
+    for (const row of this.state.rows) {
+      const next = row.accountId === accountId ? move(row.folder) : null;
+      if (next !== null) row.folder = next;
+      const destination = row.accountId === accountId && row.movePending !== null ? move(row.movePending) : null;
+      if (destination !== null) row.movePending = destination;
+    }
+    rekey(this.state.syncStates);
+    rekey(this.state.history);
+    rekey(this.state.folderPrefs);
+    this.state.folders.set(
+      accountId,
+      (this.state.folders.get(accountId) ?? []).map((f) => {
+        const next = move(f.path);
+        if (next === null) return f;
+        // The renamed folder's own name is its last segment; children keep theirs.
+        const name = delimiter !== "" && to.includes(delimiter) ? to.slice(to.lastIndexOf(delimiter) + 1) : to;
+        return { ...f, path: next, name: next === to ? name : f.name };
+      }),
+    );
+    for (const draft of this.state.drafts.values()) {
+      if (draft.accountId !== accountId || draft.serverCopy === null) continue;
+      const next = move(draft.serverCopy.folder);
+      if (next !== null) draft.serverCopy = { ...draft.serverCopy, folder: next };
+    }
+    const account = this.state.accounts.get(accountId);
+    if (account?.snoozeFolder) {
+      const next = move(account.snoozeFolder);
+      if (next !== null) this.state.accounts.set(accountId, { ...account, snoozeFolder: next });
+    }
+    for (const snooze of this.state.snoozes.values()) {
+      const next = snooze.accountId === accountId ? move(snooze.returnTo) : null;
+      if (next !== null) snooze.returnTo = next;
+    }
+    this.rewriteScopeFolders(accountId, (path) => move(path) ?? path);
+  }
+
+  dropFolder(accountId: string, path: string): void {
+    const delimiter = (this.state.folders.get(accountId) ?? []).find((f) => f.path === path)?.delimiter ?? "";
+    this.state.rows = this.state.rows.filter((r) => !(r.accountId === accountId && r.folder === path));
+    this.state.syncStates.delete(stateKey(accountId, path));
+    this.state.history.delete(stateKey(accountId, path));
+    this.state.folderPrefs.delete(stateKey(accountId, path));
+    this.state.folders.set(accountId, (this.state.folders.get(accountId) ?? []).filter((f) => f.path !== path));
+    this.dropOrphanTranslations();
+    this.rewriteScopeFolders(accountId, (entry) => (renamedPath(entry, path, path, delimiter) === null ? entry : null));
+  }
+
+  movePendingCount(accountId: string, path: string): number {
+    return this.state.rows.filter(
+      (r) => r.accountId === accountId && ((r.folder === path && r.movePending !== null) || r.movePending === path),
+    ).length;
+  }
+
+  folderGrouping(accountId: string, path: string): boolean {
+    return this.state.folderPrefs.get(stateKey(accountId, path)) ?? true;
+  }
+
+  setFolderGrouping(accountId: string, path: string, grouping: boolean): void {
+    this.state.folderPrefs.set(stateKey(accountId, path), grouping);
+  }
+
+  // OpenPGP keys (slice 3k) ---------------------------------------------------
+  private readonly pgpKeys = new Map<string, { row: PgpKeyRow; privateSealed: string | null }>();
+
+  listPgpKeys(): PgpKeyRow[] {
+    return [...this.pgpKeys.values()]
+      .map((entry) => structuredClone(entry.row))
+      .sort((a, b) => (a.kind === b.kind ? a.addedAt.localeCompare(b.addedAt) || a.id.localeCompare(b.id) : a.kind === "own" ? -1 : 1));
+  }
+
+  getPgpKey(id: string): PgpKeyRow | null {
+    const entry = this.pgpKeys.get(id);
+    return entry === undefined ? null : structuredClone(entry.row);
+  }
+
+  savePgpKey(row: PgpKeyRow, privateSealed: string | null): "saved" | "exists" | "full" {
+    if ([...this.pgpKeys.values()].some((e) => e.row.kind === row.kind && e.row.fingerprint === row.fingerprint)) return "exists";
+    if (this.pgpKeys.size >= PGP_KEYS_MAX) return "full";
+    this.pgpKeys.set(row.id, { row: structuredClone(row), privateSealed: row.kind === "own" ? privateSealed : null });
+    return "saved";
+  }
+
+  deletePgpKey(id: string): boolean {
+    return this.pgpKeys.delete(id);
+  }
+
+  pgpPrivateSealed(id: string): string | null {
+    const entry = this.pgpKeys.get(id);
+    return entry !== undefined && entry.row.kind === "own" ? entry.privateSealed : null;
+  }
+
+  listSavedSearches(): SavedSearchRow[] {
+    return this.state.savedSearches.map((row, position) => ({ ...row, position }));
+  }
+
+  saveSavedSearch(
+    row: { id: string | null; name: string; query: string; accountId: string | null; nowIso: string },
+    newId: string,
+  ): { id: string } | "full" | "not_found" {
+    if (row.id !== null) {
+      const found = this.state.savedSearches.find((entry) => entry.id === row.id);
+      if (found === undefined) return "not_found";
+      Object.assign(found, { name: row.name, query: row.query, accountId: row.accountId, updatedAt: row.nowIso });
+      return { id: row.id };
+    }
+    if (this.state.savedSearches.length >= SAVED_SEARCHES_MAX) return "full";
+    this.state.savedSearches.push({
+      id: newId,
+      name: row.name,
+      query: row.query,
+      accountId: row.accountId,
+      position: this.state.savedSearches.length,
+      createdAt: row.nowIso,
+      updatedAt: row.nowIso,
+    });
+    return { id: newId };
+  }
+
+  deleteSavedSearch(id: string): boolean {
+    const before = this.state.savedSearches.length;
+    this.state.savedSearches = this.state.savedSearches.filter((row) => row.id !== id);
+    return this.state.savedSearches.length < before;
+  }
+
+  moveSavedSearch(id: string, position: number): boolean {
+    const at = this.state.savedSearches.findIndex((row) => row.id === id);
+    if (at === -1) return false;
+    const [row] = this.state.savedSearches.splice(at, 1);
+    this.state.savedSearches.splice(Math.max(0, Math.min(position, this.state.savedSearches.length)), 0, row!);
+    return true;
+  }
+
+  filesList(filter: FilesFilter, cursor: string | null, limit: number): { files: FileRow[]; nextCursor: string | null } {
+    const rows = this.state.rows.filter(
+      (r) =>
+        r.movePending === null &&
+        (filter.includeJunk === true || !["junk", "trash"].includes(this.roleOf(r.accountId, r.folder) ?? "")) &&
+        (filter.accountId === undefined || r.accountId === filter.accountId) &&
+        (filter.sender === undefined || r.message.from.address.toLowerCase() === filter.sender.toLowerCase()),
+    );
+    const files: (FileRow & { order: Row })[] = [];
+    for (const row of this.onePerKey(rows, (r) => `${r.accountId}\u0000${r.dedupKey}`)) {
+      for (const a of row.message.attachments) {
+        if (a.isInline) continue;
+        const kind = fileKindOf(a.mimeType, a.filename);
+        if (filter.kind !== undefined && kind !== filter.kind) continue;
+        if (filter.name !== undefined && !(a.filename ?? "").toLowerCase().includes(filter.name.toLowerCase())) continue;
+        files.push({
+          messageId: row.id,
+          partId: a.partId,
+          filename: a.filename,
+          kind,
+          mimeType: a.mimeType,
+          size: a.size,
+          date: isoOrNull(row.message.date),
+          from: { ...row.message.from },
+          accountId: row.accountId,
+          threadId: row.threadId,
+          order: row,
+        });
+      }
+    }
+    files.sort((a, b) => {
+      const ta = timeOf(a.date);
+      const tb = timeOf(b.date);
+      if (ta !== tb) return ta === null ? -1 : tb === null ? 1 : tb - ta;
+      const seqA = this.state.rows.indexOf(a.order);
+      const seqB = this.state.rows.indexOf(b.order);
+      if (seqA !== seqB) return seqB - seqA;
+      return a.partId < b.partId ? -1 : a.partId > b.partId ? 1 : 0;
+    });
+    const offset = cursor === null ? 0 : Number(cursor);
+    const page = files.slice(offset, offset + limit).map(({ order: _order, ...file }) => file);
+    const next = offset + page.length;
+    return { files: page, nextCursor: next < files.length ? String(next) : null };
+  }
+
+  senderStats(address: string, accountId: string | null): SenderStats {
+    const outside = (r: Row) =>
+      r.movePending === null &&
+      (accountId === null || r.accountId === accountId) &&
+      !["junk", "trash"].includes(this.roleOf(r.accountId, r.folder) ?? "");
+    const lower = address.toLowerCase();
+    const fromRows = this.state.rows.filter((r) => outside(r) && r.message.from.address.toLowerCase() === lower);
+    const toRows = this.state.rows.filter(
+      (r) => outside(r) && [...r.message.to, ...r.message.cc].some((a) => a.address.toLowerCase() === lower),
+    );
+    const keys = (rows: Row[]) => new Set(rows.map((r) => `${r.accountId}\u0000${r.dedupKey}`)).size;
+    const dates = fromRows.map((r) => isoOrNull(r.message.date)).filter((d): d is string => d !== null).sort();
+    const named = [...fromRows].sort((a, b) => oldestFirst(b, a)).find((r) => r.message.from.name);
+    const threadIds = [...new Set([...fromRows].sort((a, b) => oldestFirst(b, a)).map((r) => r.threadId))].slice(0, 10);
+    return {
+      name: named?.message.from.name ?? null,
+      fromCount: keys(fromRows),
+      toCount: keys(toRows),
+      toCapped: false,
+      firstDate: dates[0] ?? null,
+      lastDate: dates[dates.length - 1] ?? null,
+      conversations: threadIds.map((id) =>
+        this.summarize(
+          id,
+          this.state.rows.filter((r) => r.threadId === id),
+          () => true,
+        ),
+      ),
+      files: this.filesList({ sender: address, ...(accountId === null ? {} : { accountId }) }, null, 5).files,
+    };
+  }
+
+  relatedCandidates(messageId: string, terms: readonly string[]): RelatedCandidate[] {
+    const open = this.state.rows.find((r) => r.id === messageId);
+    if (open === undefined) return [];
+    const own = this.state.accounts.get(open.accountId)?.email.toLowerCase() ?? "";
+    const addresses = (r: Row) => [r.message.from, ...r.message.to, ...r.message.cc].map((a) => a.address.toLowerCase());
+    const participants = new Set(addresses(open).filter((a) => a !== "" && a !== own));
+    const refs = new Set([...open.message.references, ...(open.message.messageId === null ? [] : [open.message.messageId])]);
+    const pool = this.onePerKey(
+      this.state.rows.filter(
+        (r) =>
+          r.accountId === open.accountId &&
+          r.threadId !== open.threadId &&
+          r.movePending === null &&
+          !["junk", "trash"].includes(this.roleOf(r.accountId, r.folder) ?? ""),
+      ),
+      (r) => r.dedupKey,
+    );
+    const candidates: RelatedCandidate[] = [];
+    for (const row of pool) {
+      const haystack = `${row.message.subject}\n${row.message.from.name ?? ""} ${row.message.from.address}\n${row.message.bodyText ?? ""}`.toLowerCase();
+      const matched = terms.filter((term) => haystack.includes(term.toLowerCase()));
+      const shared = [...participants].filter((a) => addresses(row).includes(a)).length;
+      const reference = row.message.messageId !== null && refs.has(row.message.messageId);
+      if (matched.length === 0 && shared === 0 && !reference) continue;
+      candidates.push({
+        messageId: row.id,
+        threadId: row.threadId,
+        date: row.message.date,
+        terms: matched,
+        participants: shared,
+        reference,
+        rank: matched.length === 0 ? null : -matched.length,
+      });
+      if (candidates.length >= RELATED_CANDIDATES_MAX) break;
+    }
+    return candidates;
+  }
+
+  summaries(messageIds: readonly string[]): MessageSummary[] {
+    return messageIds.flatMap((id) => {
+      const row = this.state.rows.find((r) => r.id === id);
+      return row === undefined ? [] : [this.summary(row)];
+    });
+  }
+
+  gmLabels(messageIds: readonly string[]): Map<string, string[]> {
+    const out = new Map<string, string[]>();
+    for (const id of messageIds) {
+      const row = this.state.rows.find((r) => r.id === id);
+      if (row !== undefined) out.set(id, [...this.labelsOfCopies(row)]);
+    }
+    return out;
+  }
+
+  copiesIn(folder: string, messageIds: readonly string[]): Map<string, { id: string; accountId: string; uid: number | null }> {
+    const out = new Map<string, { id: string; accountId: string; uid: number | null }>();
+    for (const id of new Set(messageIds)) {
+      const row = this.state.rows.find((r) => r.id === id);
+      if (row === undefined) continue;
+      const copies = this.state.rows
+        .filter((r) => r.accountId === row.accountId && r.dedupKey === row.dedupKey && r.folder === folder)
+        .sort((a, b) => (a.uid === null ? 1 : 0) - (b.uid === null ? 1 : 0) || (a.id < b.id ? -1 : 1));
+      const copy = copies[0];
+      if (copy !== undefined) out.set(id, { id: copy.id, accountId: copy.accountId, uid: copy.uid });
+    }
+    return out;
+  }
+
+  setGmLabels(accountId: string, folder: string, entries: readonly { uid: number; labels: string[] }[]): void {
+    for (const entry of entries) {
+      const row = this.state.rows.find((r) => r.accountId === accountId && r.folder === folder && r.uid === entry.uid);
+      if (row === undefined) continue;
+      // Every copy of the message (same dedup key) takes the labels, as in SQLite.
+      for (const copy of this.state.rows) if (copy.accountId === accountId && copy.dedupKey === row.dedupKey) copy.gmLabels = [...entry.labels];
+    }
+  }
+
+  accountLabels(accountId: string): string[] {
+    const labels = new Set<string>();
+    for (const row of this.state.rows) if (row.accountId === accountId) for (const label of row.gmLabels ?? []) labels.add(label);
+    return [...labels].sort((a, b) => a.localeCompare(b));
+  }
+
+  attachmentTextCandidates(limit: number): AttachmentCandidate[] {
+    const out: AttachmentCandidate[] = [];
+    for (const row of [...this.state.rows].sort((a, b) => oldestFirst(b, a))) {
+      if (row.movePending !== null || row.kept === "search") continue;
+      if (isEncrypted(row.crypto?.kind)) continue;
+      const use = this.roleOf(row.accountId, row.folder);
+      if (use === "junk" || use === "trash") continue;
+      for (const a of row.message.attachments) {
+        const kind = fileKindOf(a.mimeType, a.filename);
+        if (a.isInline || (kind !== "text" && kind !== "pdf")) continue;
+        if (this.state.attachmentText.has(`${row.id}\u0000${a.partId}`)) continue;
+        out.push({
+          messageId: row.id,
+          partId: a.partId,
+          kind,
+          size: a.size,
+          messageSize: row.message.size,
+          date: isoOrNull(row.message.date),
+          folderUse: this.roleOf(row.accountId, row.folder),
+          kept: row.kept,
+          inline: false,
+        });
+      }
+    }
+    return out.slice(0, limit);
+  }
+
+  insertAttachmentText(row: AttachmentTextRow): void {
+    this.state.attachmentText.set(`${row.messageId}\u0000${row.partId}`, {
+      ...row,
+      body: row.state === "indexed" ? row.body : null,
+    });
+  }
+
+  attachmentTextStatus(): { indexed: number; skipped: number; failed: number; pending: number; totalChars: number } {
+    // Rows of messages gone are left out, as SQLite deletes them with their message.
+    const live = this.liveAttachmentText();
+    const of = (state: AttachmentTextRow["state"]) => live.filter((row) => row.state === state).length;
+    return {
+      indexed: of("indexed"),
+      skipped: of("skipped"),
+      failed: of("failed"),
+      pending: this.attachmentTextCandidates(Number.MAX_SAFE_INTEGER).filter(
+        (c) => c.folderUse !== "junk" && c.folderUse !== "trash",
+      ).length,
+      totalChars: live.reduce((sum, row) => sum + (row.body?.length ?? 0), 0),
+    };
+  }
+
+  retryAttachmentText(): number {
+    const failed = this.liveAttachmentText().filter((row) => row.state === "failed");
+    for (const row of failed) this.state.attachmentText.delete(`${row.messageId}\u0000${row.partId}`);
+    return failed.length;
+  }
+
+  clearAttachmentText(): number {
+    const count = this.liveAttachmentText().length;
+    this.state.attachmentText.clear();
+    return count;
+  }
+  // Slice 3i ---------------------------------------------------------------
+
+  /** Writes what a fetch judged (absent fields leave the row alone), as SQLite's upsert. */
+  private applySecurityFields(row: Row, message: FetchedMessage): void {
+    if (message.senderCheck !== undefined) {
+      row.senderCheckJson = fakeSenderCheckJson(message.senderCheck);
+      if (message.senderCheck.state === "failed") row.dev = null;
+    }
+    if (message.receiptRequested !== undefined) row.receiptRequested = message.receiptRequested;
+    if (message.crypto !== undefined) row.crypto = message.crypto === null ? null : { ...message.crypto };
+    if (isEncrypted(row.crypto?.kind)) dropFakeBody(row);
+  }
+
+  knownDomainList(limit: number): string[] {
+    if (limit <= 0) return [];
+    const own = [
+      ...this.listAccounts().map((account) => account.email),
+      ...this.state.identities.filter((row) => row.state === "active").map((row) => row.address),
+    ];
+    const sent = [...this.state.sentRecipients.entries()]
+      .sort((a, b) => (a[1] < b[1] ? 1 : a[1] > b[1] ? -1 : 0))
+      .map(([key]) => key.slice(key.indexOf("\u0000") + 1));
+    const rows = this.state.rows
+      .filter((row) => this.roleOf(row.accountId, row.folder) === "sent")
+      .sort((a, b) => -oldestFirst(a, b))
+      .flatMap((row) => [...row.message.to, ...row.message.cc].map((a) => a.address));
+    const out: string[] = [];
+    for (const address of [...own, ...sent, ...rows]) {
+      const at = address.lastIndexOf("@");
+      if (at === -1) continue;
+      const org = orgDomain(address.slice(at + 1));
+      if (!org.includes(".") || out.includes(org)) continue;
+      out.push(org);
+      if (out.length >= limit) break;
+    }
+    return out;
+  }
+
+  senderCheckRows(ids: string[]): SenderCheckRow[] {
+    const wanted = new Set(ids);
+    return this.state.rows
+      .filter((row) => wanted.has(row.id))
+      .map((row) => ({
+        id: row.id,
+        accountId: row.accountId,
+        folder: row.folder,
+        uid: row.uid,
+        folderRole: this.roleOf(row.accountId, row.folder),
+        senderCheckJson: row.senderCheckJson ?? null,
+        receiptRequested: row.receiptRequested ?? null,
+        crypto: row.crypto === undefined || row.crypto === null ? null : { ...row.crypto },
+        from: { ...row.message.from },
+        replyTo: row.message.replyTo === undefined ? null : row.message.replyTo.map((a) => ({ ...a })),
+        listId: row.listId === undefined || row.listId === null || row.listId === "" ? null : row.listId,
+        bulk: row.bulk,
+        firstLine: firstNonBlankLine(row.message.bodyText?.slice(0, 4_096) ?? null),
+      }));
+  }
+
+  writeSenderCheck(
+    id: string,
+    input: { check: SenderCheck; receipt: boolean | null; crypto: MailCrypto | null; force: boolean; guard?: { uidValidity: number } },
+  ): boolean {
+    const json = fakeSenderCheckJson(input.check);
+    const row = this.state.rows.find((r) => r.id === id);
+    if (row === undefined) return false;
+    if (!input.force && row.senderCheckJson !== undefined && row.senderCheckJson !== null) return false;
+    if (input.guard !== undefined) {
+      if (row.uid === null || this.getSyncState(row.accountId, row.folder)?.uidValidity !== input.guard.uidValidity) return false;
+    }
+    row.senderCheckJson = json;
+    if (input.receipt !== null && (input.force || row.receiptRequested === undefined || row.receiptRequested === null)) {
+      row.receiptRequested = input.receipt;
+    }
+    const noBody = row.message.bodyText === null && row.message.bodyHtml === null;
+    const keepEncrypted = isEncrypted(row.crypto?.kind) && noBody && !isEncrypted(input.crypto?.kind);
+    if ((input.force || row.crypto === undefined || row.crypto === null) && !keepEncrypted) {
+      row.crypto = input.crypto === null ? null : { ...input.crypto };
+    }
+    if (input.check.state === "failed") row.dev = null;
+    if (isEncrypted(row.crypto?.kind)) dropFakeBody(row);
+    return true;
+  }
+
+
+  private liveAttachmentText(): AttachmentTextRow[] {
+    const ids = new Set(this.state.rows.map((r) => r.id));
+    return [...this.state.attachmentText.values()].filter((row) => ids.has(row.messageId));
+  }
+
+  /** Indexed attachment text of any copy of the row's message. */
+  private attachmentTextOfCopies(row: Row): { messageId: string; partId: string; body: string }[] {
+    const copies = new Set(
+      this.state.rows.filter((r) => r.accountId === row.accountId && r.dedupKey === row.dedupKey).map((r) => r.id),
+    );
+    return [...this.state.attachmentText.values()].flatMap((entry) =>
+      entry.state === "indexed" && entry.body !== null && copies.has(entry.messageId)
+        ? [{ messageId: entry.messageId, partId: entry.partId, body: entry.body }]
+        : [],
+    );
+  }
+
+  /** X-GM-LABELS of the row, else of another copy of its message (as SQLite). */
+  private labelsOfCopies(row: Row): string[] {
+    if (row.gmLabels !== null) return row.gmLabels;
+    return (
+      this.state.rows.find((r) => r.accountId === row.accountId && r.dedupKey === row.dedupKey && r.gmLabels !== null)?.gmLabels ?? []
+    );
+  }
+
+  private forgettable(accountId: string, folder: string): Row[] {
+    const since = this.state.syncStates.get(stateKey(accountId, folder))?.syncedSince;
+    return this.folderRows(accountId, folder).filter((r) => {
+      if (r.kept !== "history" && r.kept !== "search") return false;
+      const time = timeOf(r.message.date);
+      return time === null || (since !== undefined && time < Date.parse(since));
+    });
+  }
+
+  private rewriteScopeFolders(accountId: string, map: (path: string) => string | null): void {
+    const scope = this.state.scopeAccounts.get(accountId);
+    if (scope?.mode !== "folders") return;
+    const folders: string[] = [];
+    for (const path of scope.folders) {
+      const next = map(path);
+      if (next !== null && !folders.includes(next)) folders.push(next);
+    }
+    this.state.scopeAccounts.set(accountId, { mode: "folders", folders });
+  }
+
+  /** One row per message, newest first, undated first; offset cursors like the fake's thread lists. */
+  private pageRows(rows: Row[], cursor: string | null, limit: number): { messages: MessageSummary[]; nextCursor: string | null } {
+    const ordered = this.onePerKey(rows, (r) => `${r.accountId}\u0000${r.dedupKey}`).sort((a, b) => {
+      const ta = timeOf(a.message.date);
+      const tb = timeOf(b.message.date);
+      if (ta !== tb) return ta === null ? -1 : tb === null ? 1 : tb - ta;
+      return this.state.rows.indexOf(b) - this.state.rows.indexOf(a);
+    });
+    const offset = cursor === null ? 0 : Number(cursor);
+    const page = ordered.slice(offset, offset + limit);
+    const next = offset + page.length;
+    return { messages: page.map((r) => this.summary(r)), nextCursor: next < ordered.length ? String(next) : null };
+  }
+
+  /** The search conditions on one row (spec "Search operators"; SQLite builds the same as SQL). */
+  private matchesConditions(row: Row, conditions: readonly SearchCondition[]): boolean {
+    const test = (condition: SearchCondition): boolean => {
+      const m = row.message;
+      const has = (value: string | null | undefined, needle: string) => (value ?? "").toLowerCase().includes(needle.toLowerCase());
+      const addresses = (list: MailAddress[]) => list.some((a) => has(a.address, condition.value) || has(a.name, condition.value));
+      const folderNamed = (value: string) => {
+        const lower = value.toLowerCase();
+        return (
+          row.folder.toLowerCase() === lower ||
+          (this.state.folders.get(row.accountId) ?? []).some((f) => f.path === row.folder && f.name.toLowerCase() === lower)
+        );
+      };
+      switch (condition.field) {
+        case "from":
+          return has(m.from.address, condition.value) || has(m.from.name, condition.value);
+        case "to":
+          return addresses(m.to);
+        case "cc":
+          return addresses(m.cc);
+        case "subject":
+          return has(m.subject, condition.value);
+        case "list":
+          return has(row.listId, condition.value);
+        case "has":
+          return m.attachments.some((a) => !a.isInline);
+        case "filename":
+          return m.attachments.some((a) => !a.isInline && filenameMatches(a.filename ?? "", condition.value));
+        case "is":
+          return condition.value === "unread" ? !row.isRead : row.isFlagged;
+        case "larger":
+          return m.size > Number(condition.value);
+        case "smaller":
+          return m.size < Number(condition.value);
+        case "after":
+        case "before": {
+          const time = timeOf(m.date);
+          if (time === null) return false;
+          const at = Date.parse(condition.value);
+          return condition.field === "after" ? time >= at : time < at;
+        }
+        case "category":
+          return this.state.categories.get(stateKey(row.accountId, row.dedupKey))?.category === condition.value.toLowerCase();
+        case "label":
+          return (
+            this.labelsOfCopies(row).some((label) => label.toLowerCase() === condition.value.toLowerCase()) ||
+            folderNamed(condition.value)
+          );
+        case "in":
+          if (condition.value === "snoozed") return row.folder === this.state.accounts.get(row.accountId)?.snoozeFolder;
+          if (["inbox", "sent", "drafts", "junk", "trash", "archive", "all"].includes(condition.value)) {
+            return this.roleOf(row.accountId, row.folder) === condition.value;
+          }
+          return folderNamed(condition.value);
+        case "account": {
+          const account = this.state.accounts.get(row.accountId);
+          const lower = condition.value.toLowerCase();
+          return (
+            row.accountId === condition.value ||
+            account?.email.toLowerCase() === lower ||
+            (account?.displayName ?? "").toLowerCase() === lower
+          );
+        }
+      }
+    };
+    for (const field of ["in", "account"] as const) {
+      const ors = conditions.filter((c) => c.field === field && !c.negated);
+      if (ors.length > 0 && !ors.some(test)) return false;
+    }
+    return conditions.every((c) => ((c.field === "in" || c.field === "account") && !c.negated) || test(c) !== c.negated);
   }
 
   /** Translations and snoozes follow their message: dropped with every removed row (as SQLite deleteRows). */
@@ -2501,6 +3967,9 @@ export class InMemoryMailStore implements MailStore {
     for (const task of this.state.tasks.values()) {
       if (task.messageId !== null && !ids.has(task.messageId)) task.messageId = null;
     }
+    // Slice 3g: links go with their message; rule runs stay without it (review C1).
+    this.state.bbLinks = this.state.bbLinks.filter((link) => ids.has(link.messageId));
+    for (const run of this.state.ruleRuns) if (run.messageId !== null && !ids.has(run.messageId)) run.messageId = null;
   }
 
   /** The row landed in a junk-role folder: block never moves its dedup key again (spec resolution 17). */
@@ -2547,7 +4016,10 @@ export class InMemoryMailStore implements MailStore {
     for (const path of removed) {
       this.state.rows = this.state.rows.filter((r) => !(r.accountId === accountId && r.folder === path));
       this.state.syncStates.delete(stateKey(accountId, path));
+      this.state.history.delete(stateKey(accountId, path));
+      this.state.folderPrefs.delete(stateKey(accountId, path));
     }
+    if (removed.length > 0) this.rewriteScopeFolders(accountId, (path) => (removed.includes(path) ? null : path));
     this.dropOrphanTranslations();
     return { removed };
   }
@@ -2562,6 +4034,7 @@ export class InMemoryMailStore implements MailStore {
           name: f.name,
           specialUse: effectiveSpecialUse(f.path, f.specialUse),
           selectable: f.selectable,
+          subscribed: f.subscribed ?? true,
           unreadCount: new Set(rows.filter((r) => !r.isRead).map((r) => r.dedupKey)).size,
           totalCount: new Set(rows.map((r) => r.dedupKey)).size,
         };
@@ -2601,6 +4074,7 @@ export class InMemoryMailStore implements MailStore {
       row.movePending = destination;
       row.moveFailures = 0;
     }
+    this.promoteKept(ids);
     return { accountId: first.accountId, folder: first.folder };
   }
 
@@ -2760,6 +4234,8 @@ export class InMemoryMailStore implements MailStore {
       isRead: row.isRead,
       isFlagged: row.isFlagged,
       hasAttachments: row.message.attachments.some((a) => !a.isInline),
+      kept: row.kept,
+      labels: ownerLabels(this.labelsOfCopies(row)),
     };
   }
 
@@ -2768,10 +4244,17 @@ export class InMemoryMailStore implements MailStore {
       ...this.summary(row),
       to: row.message.to.map((a) => ({ ...a })),
       cc: row.message.cc.map((a) => ({ ...a })),
-      attachments: row.message.attachments.map((a) => ({ ...a })),
+      attachments: row.message.attachments.map((a) => ({ ...a, kind: fileKindOf(a.mimeType, a.filename) })),
       draftId: row.uid === null ? null : this.draftForServerCopy(row.accountId, row.folder, row.uid),
       agentSubject: redactSecrets(row.message.subject).text,
       inAiScope: this.anyCopyInScope(row),
+      devLinks: [],
+      dev: row.dev ?? null,
+      patch: null,
+      alert: false,
+      bbLinks: this.state.bbLinks
+        .filter((link) => link.messageId === row.id)
+        .map((link) => ({ kind: link.kind, targetId: link.targetId, projectId: link.projectId, title: null, createdAt: link.createdAt })),
     };
   }
 
@@ -2808,6 +4291,7 @@ export class InMemoryMailStore implements MailStore {
       flagged: rows.some((r) => inScope(r) && r.isFlagged),
       snoozedUntil: this.snoozedUntil(rows.filter(inScope)),
       ...this.labelsOf(rows.filter((r) => inScope(r) && r.movePending === null)),
+      projectId: this.projectOf(latest.accountId, threadId),
     };
   }
 
@@ -2846,6 +4330,8 @@ export class InMemoryMailStore implements MailStore {
       if (filter?.category !== undefined && this.state.categories.get(stateKey(r.accountId, r.dedupKey))?.category !== filter.category) {
         return false;
       }
+      if (filter?.notDev === true && r.dev !== undefined && r.dev !== null) return false;
+      if (filter?.projectId !== undefined && this.projectOf(r.accountId, r.threadId) !== filter.projectId) return false;
       return true;
     };
   }
@@ -2865,6 +4351,11 @@ export class InMemoryMailStore implements MailStore {
       .map(([id, rows]) => this.summarize(id, rows, this.inFolder(folder)))
       .sort((a, b) => (timeOf(b.lastDate) ?? -Infinity) - (timeOf(a.lastDate) ?? -Infinity));
   }
+}
+
+/** Slice 3g: the List-Id kept from the fetched bulk headers ('' = none); undefined without headers (as SQLite). */
+function listIdOf(message: FetchedMessage): string | undefined {
+  return message.bulkHeaders === undefined ? undefined : (normalizeListId(message.bulkHeaders.listId) ?? "");
 }
 
 function senderKey(accountId: string, address: string): string {
@@ -2905,7 +4396,58 @@ export type SessionCall = {
   messageId?: string;
   guard?: { messageId: string; size: number };
   fields?: string[];
+  /** Slice 3h: searchServer's criteria. */
+  criteria?: ServerCriteria;
+  /** Slice 3h: setLabels' change. */
+  labels?: { add: string[]; remove: string[] };
 };
+
+/** One session-less folder command (slice 3h), with the mailbox selected at the time (always none). */
+export type FolderOp = {
+  op: "rename" | "status" | "delete" | "subscribe" | "unsubscribe";
+  path: string;
+  to?: string;
+  expectEmpty?: boolean;
+  gmailLabel?: boolean;
+  selected: string | null;
+};
+
+/** Lower-case names the fake reads as special use (a small stand-in for imapflow's tables). */
+const FAKE_SPECIAL_NAMES = new Set(["trash", "sent", "sent mail", "sent items", "drafts", "junk", "spam", "archive", "deleted items"]);
+
+/** Whether a fake message matches Mail's criteria (X-GM-RAW is not interpreted: it matches). */
+function matchesCriteria(message: FetchedMessage, internalDate: string | null, criteria: ServerCriteria): boolean {
+  const has = (haystack: string | null | undefined, needle: string) =>
+    (haystack ?? "").toLowerCase().includes(needle.toLowerCase());
+  const addresses = (list: MailAddress[]) => list.map((a) => `${a.name ?? ""} ${a.address}`).join(" ");
+  if (criteria.text !== undefined) {
+    const all = [message.subject, message.bodyText, addresses([message.from]), addresses(message.to)].join(" ");
+    if (!has(all, criteria.text)) return false;
+  }
+  if (criteria.from !== undefined && !has(addresses([message.from]), criteria.from)) return false;
+  if (criteria.to !== undefined && !has(addresses(message.to), criteria.to)) return false;
+  if (criteria.cc !== undefined && !has(addresses(message.cc), criteria.cc)) return false;
+  if (criteria.subject !== undefined && !has(message.subject, criteria.subject)) return false;
+  const day = (internalDate ?? message.date ?? "").slice(0, 10);
+  if (criteria.since !== undefined && day !== "" && day < criteria.since) return false;
+  if (criteria.before !== undefined && day !== "" && day >= criteria.before) return false;
+  if (criteria.larger !== undefined && !(message.size > criteria.larger)) return false;
+  if (criteria.smaller !== undefined && !(message.size < criteria.smaller)) return false;
+  if (criteria.seen !== undefined && message.seen !== criteria.seen) return false;
+  if (criteria.flagged !== undefined && message.flagged !== criteria.flagged) return false;
+  if (criteria.threadId !== undefined && message.gmThreadId !== criteria.threadId) return false;
+  if (criteria.headers !== undefined && criteria.headers.length > 0) {
+    const headerOf = (name: string): string => {
+      const lower = name.toLowerCase();
+      if (lower === "message-id") return message.messageId ?? "";
+      if (lower === "references") return [...message.references, message.inReplyTo ?? ""].join(" ");
+      return "";
+    };
+    if (!criteria.headers.some((h) => headerOf(h.name).includes(h.value))) return false;
+  }
+  for (const negated of criteria.not ?? []) if (matchesCriteria(message, internalDate, negated)) return false;
+  return true;
+}
 
 export type OpenedSession = {
   path: string;
@@ -2946,7 +4488,7 @@ export class ScriptedImapGateway implements ImapGateway {
   readonly sessions: OpenedSession[] = [];
   readonly mailboxes = new Map<string, FakeMailbox>();
   folders: RemoteFolder[] = [
-    { path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true },
+    { path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true, subscribed: true },
   ];
   listFoldersCalls = 0;
   moveUidMap = true;
@@ -2992,6 +4534,7 @@ export class ScriptedImapGateway implements ImapGateway {
       delimiter: "/",
       specialUse: null,
       selectable: true,
+      subscribed: true,
       ...folder,
     };
     this.folders = [...this.folders.filter((f) => f.path !== listed.path), listed];
@@ -3089,6 +4632,74 @@ export class ScriptedImapGateway implements ImapGateway {
     return { path: name, created: true };
   }
 
+  // Slice 3h folder writes: each is a fresh connection with nothing selected.
+  /** Every session-less folder command, in order. */
+  readonly folderOps: FolderOp[] = [];
+  /** A refusal per command ("rename", "status", "delete", "subscribe"); kept until cleared. */
+  readonly refuseFolderOp = new Map<"rename" | "status" | "delete" | "subscribe", Error>();
+  /** Server SEARCH answers per path (slice 3h); unset paths match by criteria. */
+  readonly searchAnswers = new Map<string, number[]>();
+
+  private folderOp(op: FolderOp): void {
+    this.folderOps.push(op);
+    if (this.openFailure) throw this.openFailure;
+  }
+
+  async renameFolder(_config: ImapConfig, from: string, to: string): Promise<{ path: string }> {
+    this.folderOp({ op: "rename", path: from, to, selected: null });
+    const refusal = this.refuseFolderOp.get("rename");
+    if (refusal) throw refusal;
+    if (!this.folders.some((f) => f.path === from)) throw imapError("RenameFailed");
+    const renamed = (path: string) => {
+      if (path === from) return to;
+      const delimiter = this.folders.find((f) => f.path === from)?.delimiter ?? "/";
+      return delimiter !== "" && path.startsWith(`${from}${delimiter}`) ? `${to}${path.slice(from.length)}` : path;
+    };
+    this.folders = this.folders.map((f) => {
+      const path = renamed(f.path);
+      return path === f.path ? f : { ...f, path, name: path === to ? (to.split(f.delimiter || "/").pop() ?? to) : f.name };
+    });
+    for (const [path, box] of [...this.mailboxes]) {
+      const next = renamed(path);
+      if (next === path) continue;
+      this.mailboxes.delete(path);
+      this.mailboxes.set(next, box);
+    }
+    return { path: to };
+  }
+
+  async folderStatus(_config: ImapConfig, path: string): Promise<{ messages: number; uidValidity: number }> {
+    this.folderOp({ op: "status", path, selected: null });
+    const refusal = this.refuseFolderOp.get("status");
+    if (refusal) throw refusal;
+    const box = this.mailboxes.get(path);
+    if (!box) throw imapError("StatusFailed");
+    return { messages: box.messages.length, uidValidity: box.uidValidity };
+  }
+
+  async deleteFolder(_config: ImapConfig, path: string, options: { expectEmpty: boolean; gmailLabel?: boolean }): Promise<void> {
+    this.folderOp({ op: "delete", path, expectEmpty: options.expectEmpty, ...(options.gmailLabel === true ? { gmailLabel: true } : {}), selected: null });
+    const refusal = this.refuseFolderOp.get("delete");
+    if (refusal) throw refusal;
+    if (!this.folders.some((f) => f.path === path)) throw imapError("DeleteFailed");
+    // A Gmail label is deleted without the check only on a server with X-GM-EXT-1.
+    const check = options.gmailLabel === true ? !this.gmail : options.expectEmpty;
+    if (check && (this.mailboxes.get(path)?.messages.length ?? 0) > 0) throw imapError("NotEmpty");
+    this.removeFolder(path);
+  }
+
+  async setSubscribed(_config: ImapConfig, path: string, subscribed: boolean): Promise<void> {
+    this.folderOp({ op: subscribed ? "subscribe" : "unsubscribe", path, selected: null });
+    const refusal = this.refuseFolderOp.get("subscribe");
+    if (refusal) throw refusal;
+    if (!this.folders.some((f) => f.path === path)) throw imapError("SubscribeFailed");
+    this.folders = this.folders.map((f) => (f.path === path ? { ...f, subscribed } : f));
+  }
+
+  namedLikeSpecialUse(name: string): boolean {
+    return FAKE_SPECIAL_NAMES.has(name.trim().toLowerCase());
+  }
+
   async listFolders(_config: ImapConfig): Promise<RemoteFolder[]> {
     this.listFoldersCalls++;
     if (this.openFailure) throw this.openFailure;
@@ -3164,7 +4775,11 @@ export class ScriptedImapGateway implements ImapGateway {
         record({ method: "fetchMessages", uids: [...uids] });
         return uids.flatMap((uid) => {
           const message = box().messages.find((m) => m.uid === uid);
-          return message ? [structuredClone(message)] : [];
+          if (!message) return [];
+          const copy = structuredClone(message);
+          // Labels are reported only on Gmail sessions, as imapflow asks for them only there.
+          if (!this.gmail) delete copy.gmLabels;
+          return [copy];
         });
       },
       fetchListHeaders: async (uids) => {
@@ -3185,9 +4800,9 @@ export class ScriptedImapGateway implements ImapGateway {
         record({ method: "fetchFlags", uids: [...uids] });
         return uids.flatMap((uid) => {
           const message = box().messages.find((m) => m.uid === uid);
-          return message
-            ? [{ uid, seen: message.seen, flagged: message.flagged, gmMsgId: message.gmMsgId }]
-            : [];
+          if (!message) return [];
+          const flags = { uid, seen: message.seen, flagged: message.flagged, gmMsgId: message.gmMsgId };
+          return [this.gmail && message.gmLabels !== undefined ? { ...flags, labels: [...message.gmLabels] } : flags];
         });
       },
       markSeen: async (uids) => {
@@ -3293,6 +4908,41 @@ export class ScriptedImapGateway implements ImapGateway {
         }
         messages.splice(index, 1);
         this.expunged.push({ path, uid });
+      },
+      // Slice 3h: read-only server search and Gmail labels.
+      searchServer: async (criteria) => {
+        record({ method: "searchServer", criteria: structuredClone(criteria) });
+        const scripted = this.searchAnswers.get(path);
+        const found =
+          scripted ??
+          box()
+            .messages.filter((m) => matchesCriteria(m, box().internalDates?.get(m.uid) ?? null, criteria))
+            .map((m) => m.uid);
+        return [...new Set(found)].sort((a, b) => b - a).slice(0, SERVER_SEARCH_CAPS.uidsPerFolder);
+      },
+      fetchLabels: async (uids) => {
+        record({ method: "fetchLabels", uids: [...uids] });
+        if (!this.gmail) return [];
+        return uids.flatMap((uid) => {
+          const message = box().messages.find((m) => m.uid === uid);
+          return message ? [{ uid, labels: [...(message.gmLabels ?? [])] }] : [];
+        });
+      },
+      setLabels: async (uids, change) => {
+        record({ method: "setLabels", uids: [...uids], labels: { add: [...change.add], remove: [...change.remove] } });
+        if (options.readOnly) throw imapError("ReadOnly");
+        if (!this.gmail) throw imapError("LabelsRefused");
+        const changed: { uid: number; labels: string[] }[] = [];
+        for (const uid of uids) {
+          const message = box().messages.find((m) => m.uid === uid);
+          if (!message) continue;
+          const labels = new Set(message.gmLabels ?? []);
+          for (const label of change.add) labels.add(label);
+          for (const label of change.remove) labels.delete(label);
+          message.gmLabels = [...labels];
+          changed.push({ uid, labels: [...labels] });
+        }
+        return changed;
       },
       close: async () => {
         opened.closed = true;
@@ -3484,4 +5134,10 @@ export function composeHarness(options: { now?: string } = {}) {
     vaultReady: () => proposal.vaultOpen,
   };
   return Object.assign(harness, { ...deps, deps, drafts, sent, advance, sleeps, proposal, proposalDeps });
+}
+
+/** A stored rule run without the fake's dedup key. */
+function publicRun(run: RuleRunRecord & { messageKey: string }): RuleRunRecord {
+  const { messageKey: _key, ...rest } = run;
+  return rest;
 }

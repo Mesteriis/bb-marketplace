@@ -11,6 +11,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { accountLabel } from "./folder-list.tsx";
+import { msg, tx } from "./i18n/index.ts";
 
 type Mode = AiScopeView["accounts"][number]["mode"];
 type Sender = AiScopeView["senders"][number];
@@ -20,9 +21,9 @@ export const GMAIL_SCOPE_NOTE = "Gmail: a message is shared when any of its labe
 export const AI_SCOPE_SENDERS_MAX = 1_000;
 
 const MODES: readonly { value: Mode; label: string }[] = [
-  { value: "all", label: "All folders" },
-  { value: "folders", label: "Chosen folders\u2026" },
-  { value: "none", label: "None" },
+  { value: "all", label: msg("All folders") },
+  { value: "folders", label: msg("Chosen folders\u2026") },
+  { value: "none", label: msg("None") },
 ];
 
 /** A typed sender as a rule: an address with "@", else a domain. */
@@ -88,11 +89,11 @@ function FolderPicker({
       live = false;
     };
   }, [draft.accountId, folders]);
-  if (list === null) return <p className="text-xs text-muted-foreground">{"Loading folders\u2026"}</p>;
+  if (list === null) return <p className="text-xs text-muted-foreground">{tx("Loading folders\u2026")}</p>;
   const shown = list.filter((f) => f.selectable && f.specialUse !== "junk" && f.specialUse !== "trash");
   return (
     <div className="flex flex-col gap-1 pl-1">
-      <ul aria-label="Folders shared with AI" className="flex max-h-48 flex-col gap-1 overflow-y-auto">
+      <ul aria-label={tx("Folders shared with AI")} className="flex max-h-48 flex-col gap-1 overflow-y-auto">
         {shown.map((folder) => (
           <li key={folder.path}>
             <label className="flex items-center gap-2 text-sm text-foreground">
@@ -110,9 +111,9 @@ function FolderPicker({
       {draft.stale.map((path) => (
         <p key={path} className="flex items-center gap-2 text-xs text-muted-foreground">
           <span className="truncate">{path}</span>
-          <span className="text-destructive">not found</span>
+          <span className="text-destructive">{tx("not found")}</span>
           <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => onChange(draft.chosen.filter((p) => p !== path))}>
-            Remove
+            {tx("Remove")}
           </Button>
         </p>
       ))}
@@ -134,7 +135,7 @@ export function AiAccessSettings({ accounts, load, save, folders }: AiAccessSett
         setSenders(view.senders);
       },
       (error: unknown) => {
-        if (live) setState({ kind: "error", text: error instanceof Error ? error.message : "AI access could not be loaded" });
+        if (live) setState({ kind: "error", text: error instanceof Error ? error.message : tx("AI access could not be loaded") });
       },
     );
     return () => {
@@ -149,7 +150,7 @@ export function AiAccessSettings({ accounts, load, save, folders }: AiAccessSett
         {state.text}
       </p>
     ) : (
-      <p className="text-sm text-muted-foreground">{"Loading\u2026"}</p>
+      <p className="text-sm text-muted-foreground">{tx("Loading\u2026")}</p>
     );
   }
   const patch = (accountId: string, change: Partial<AccountDraft>) => {
@@ -172,15 +173,14 @@ export function AiAccessSettings({ accounts, load, save, folders }: AiAccessSett
       setSenders(view.senders);
       setState({ kind: "saved" });
     } catch (error) {
-      setState({ kind: "error", text: error instanceof Error && error.message !== "" ? error.message : "AI access could not be saved" });
+      setState({ kind: "error", text: tx(error instanceof Error && error.message !== "" ? error.message : tx("AI access could not be saved")) });
     }
   };
 
   return (
     <div className="flex flex-col gap-4">
       <p className="text-sm text-muted-foreground">
-        What agents in BB threads and the AI features (summaries, Ask, tasks, categories, Today, Improve, translation)
-        may read. Mail outside it does not exist for them.
+        {tx("What agents in BB threads and the AI features (summaries, Ask, tasks, categories, Today, Improve, translation) may read. Mail outside it does not exist for them.")}
       </p>
       <p className="text-xs text-muted-foreground">{SPAM_TRASH_LINE}</p>
       {accounts.map((account) => {
@@ -191,13 +191,13 @@ export function AiAccessSettings({ accounts, load, save, folders }: AiAccessSett
             <div className="flex flex-wrap items-center gap-2">
               <h4 className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">{accountLabel(account)}</h4>
               <Select value={draft.mode} onValueChange={(mode) => patch(account.id, { mode: mode as Mode })}>
-                <SelectTrigger aria-label={`AI access for ${accountLabel(account)}`} className="h-8 w-auto">
+                <SelectTrigger aria-label={tx("AI access for {p1}", { p1: accountLabel(account) })} className="h-8 w-auto">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
                   {MODES.map((m) => (
                     <SelectItem key={m.value} value={m.value}>
-                      {m.label}
+                      {tx(m.label)}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -210,10 +210,10 @@ export function AiAccessSettings({ accounts, load, save, folders }: AiAccessSett
           </section>
         );
       })}
-      <section aria-label="Never share mail from" className="flex flex-col gap-2">
-        <h4 className="text-sm font-medium text-foreground">Never share mail from</h4>
+      <section aria-label={tx("Never share mail from")} className="flex flex-col gap-2">
+        <h4 className="text-sm font-medium text-foreground">{tx("Never share mail from")}</h4>
         <p className="text-xs text-muted-foreground">
-          Addresses and domains, including mail you sent them and whole conversations with them.
+          {tx("Addresses and domains, including mail you sent them and whole conversations with them.")}
         </p>
         {senders.length > 0 ? (
           <ul className="flex flex-col gap-1">
@@ -230,7 +230,7 @@ export function AiAccessSettings({ accounts, load, save, folders }: AiAccessSett
                     setState({ kind: "idle" });
                   }}
                 >
-                  Remove
+                  {tx("Remove")}
                 </Button>
               </li>
             ))}
@@ -238,26 +238,26 @@ export function AiAccessSettings({ accounts, load, save, folders }: AiAccessSett
         ) : null}
         <form onSubmit={addSender} className="flex items-center gap-2">
           <Input
-            aria-label="Address or domain"
-            placeholder="name@example.com or example.com"
+            aria-label={tx("Address or domain")}
+            placeholder={tx("name@example.com or example.com")}
             value={typed}
             maxLength={320}
             onChange={(event) => setTyped(event.target.value)}
             className="h-8 flex-1"
           />
           <Button type="submit" variant="outline" size="sm" disabled={candidate === null || senders.length >= AI_SCOPE_SENDERS_MAX}>
-            Add
+            {tx("Add")}
           </Button>
         </form>
         {senders.length >= AI_SCOPE_SENDERS_MAX ? (
-          <p className="text-xs text-muted-foreground">This list is full; remove some first.</p>
+          <p className="text-xs text-muted-foreground">{tx("This list is full; remove some first.")}</p>
         ) : null}
       </section>
       <div className="flex items-center gap-2">
         <Button size="sm" disabled={state.kind === "saving"} onClick={() => void submit()}>
-          Save
+          {tx("Save")}
         </Button>
-        {state.kind === "saved" ? <span className="text-xs text-muted-foreground">Saved</span> : null}
+        {state.kind === "saved" ? <span className="text-xs text-muted-foreground">{tx("Saved")}</span> : null}
         {state.kind === "error" ? (
           <span role="alert" className="text-xs text-destructive">
             {state.text}

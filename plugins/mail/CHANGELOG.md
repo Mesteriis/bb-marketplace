@@ -8,6 +8,163 @@ All notable changes to Makosh Mail are recorded here. The format follows
 
 ### Added
 
+- Local archive (slice 3p). `bb makosh-mail archive add <file>` reads an
+  mbox file, an `.eml` file or a folder of `.eml` files into a local
+  archive, apart from every mailbox and never uploaded. The **Local
+  archive** page lists, searches and opens its messages read-only;
+  attachments are read from the source file. No agent surface reads an
+  archive. Database migration 18.
+
+- Export (slice 3o). `bb makosh-mail export <accountId> <folder> <file>`
+  in the owner's terminal writes a folder from the mail server as one mbox
+  file or, with `--format eml`, a directory of `.eml` files; read-only, and
+  never over an existing file.
+
+- Subscriptions (slice 3n). Mail settings → Subscriptions: the mailing
+  lists of the stored mail with message counts, and unsubscribing from up
+  to 10 at once. Each request is the message's own Unsubscribe, shown
+  before it is sent; nothing new is stored.
+
+- Filters (slice 3m). Mail settings → Filters: a filter matches new Inbox
+  mail by sender, sender domain, mailing list or subject words and moves
+  it to a folder, the archive or Trash, marks it read or flags it. The
+  first matching filter applies; blocked senders, the owner's own mail and
+  messages whose sender check failed are never sorted. Database migration
+  17 (`mail_filters`).
+
+- Send later, important senders and calendar invitations (slice 3l).
+  **Send later** in the composer picks the time a message goes out; it
+  waits in the Outbox as "Scheduled for …", carries that time as its Date,
+  and is sent by the BB server while BB runs (under a day late after a
+  restart it still goes; later it is held). The `importantSenders` setting
+  names addresses and domains whose mail toasts through quiet hours, and
+  `notifyImportantOnly` limits toasts to them. A message with a calendar
+  part shows the event (what, when, where, who), and Accept, Maybe and
+  Decline send the answer to the organizer through the Outbox with Undo.
+  Database migration 16 (`outbox.scheduled`). No new dependency.
+
+- OpenPGP (slice 3k). A key pair for a sending address is made in Mail
+  settings and kept sealed with the credential key; a backup leaves locked
+  by a passphrase. Public keys of other people are pasted in or saved from
+  a message. The composer signs and encrypts (PGP/MIME) on request; an
+  encrypted message is opened for one view and never stored; a signed one
+  is checked against the saved keys. New dependency: `openpgp` 6.3.2
+  (LGPL-3.0-or-later). S/MIME stays recognised only.
+
+- Reliability, layout and language (slice 3j). Sync rethreads an account
+  only when messages were inserted or deleted, and rewrites only the
+  conversations they touched. List rows far from view are not laid out or
+  painted, and the next page loads as the end scrolls near. A send that
+  never reached the server retries on its own for 24 hours (new Outbox
+  state "Not sent yet"); an account with no outgoing server fails at once.
+  The header's status opens Mail status; a lost network is a quiet
+  "Offline" for 30 minutes before it becomes a banner, and sync problems
+  are shown in words. `bb makosh-mail doctor` and `backup` in the owner's
+  terminal. Settings for list density, the reading pane below the list and
+  the language of Mail's pages; Mail's pages in Russian.
+
+- Security and privacy (slice 3i, part A). A sender check from the
+  provider's own `Authentication-Results` (trusted ids only: Gmail; iCloud
+  "Not checked" until its id is pinned live; the topmost trusted header,
+  worst result per method, DMARC for the From domain only; more than one
+  sender in From, a result that cannot be read in full or DMARC only for
+  another domain counts as failed), shown as a
+  "Sender not verified" strip and, for a pass, only in **Details** with
+  **Check again**; never a "verified" badge. Warnings for a foreign
+  Reply-To (also in **Before you send**), a lookalike of a domain you write
+  to, mixed alphabets and a name that shows another address. A failed
+  sender gets no mail rule, no Dev class or alert and no automatic images;
+  lookalike and name warnings also hold automatic images, and the image bar
+  says why. Older mail is checked on open with a read-only header fetch
+  (`sender_check_refresh`, owner only). Agent and BB text get "Sender
+  check: failed" / "Sender warning: …" after From.
+- Trackers (pixels by size or inline style, and a short list of
+  open-tracking hosts) are removed even when images are allowed, and
+  counted on the image bar. Links lose tracking parameters and unwrap
+  Google, SafeLinks and Facebook redirects (`cleanLinks`, on), everywhere
+  Mail shows or prints them and always for agents; a status line shows the
+  real address, and a link whose text names another site, whose host mixes
+  alphabets or that imitates a known domain opens after a dialog (known
+  tracking redirects and punycode-only hosts get a note only).
+- Read receipt requests are shown and never answered. PGP and S/MIME mail
+  gets a neutral Signed or Encrypted chip; encrypted bodies are never
+  stored, indexed or handed to an agent, model or BB. SQLite
+  `secure_delete` (and the FTS `secure-delete` option where available)
+  overwrites deleted mail in the database file. Migration element 14 adds
+  three message columns.
+- Apple Mail keys and reading flow (slice 3i, part B). Down/Up open the
+  next or previous conversation (cursor only in one column with nothing
+  open; a held arrow opens on release), Shift+Down/Up extend the selection,
+  Up/Down move between message headers, Backspace and Delete delete. On a
+  Mac: ⌘R, ⇧⌘R, ⇧⌘F, ⌃⌘A, ⇧⌘J, ⌃⌘M, ⇧⌘U, ⇧⌘L, ⌥⌘F, ⌘Z, ⌘Backspace and
+  ⇧⌘D to send in the composer; no chord BB owns is taken, and ⌘R, ⇧⌘R and
+  ⌘Z are subject to the live check. After Archive, Delete, Spam, Not spam,
+  Move, Snooze or a drag to a folder of the open conversation the next one
+  opens; Undo reopens it. Earlier read messages wait in one closed "N
+  earlier messages" stack. Keys typed inside a message body reach the page.
+
+- Search, older mail, folders and attachments (slice 3h). Gmail-style search
+  operators with `-` negation (`to:`, `cc:`, `has:attachment`, `filename:`,
+  `in:`, `account:`, `is:`, `larger:`, `smaller:`, `newer_than:`,
+  `older_than:`, `list:`, `category:`, `label:`), also for `mail_search`.
+  **Search on the server** (read-only, Gmail search on All Mail, IMAP
+  `SEARCH` elsewhere, 50 hits at a time, Cancel); unopened hits expire after
+  `serverSearchKeepDays`. Saved searches with unread counts in the rail.
+- **Load 30 more days** per folder (`historyStepDays`), **Load the whole
+  conversation**, **Forget older mail**; loaded mail is checked daily. Jobs
+  never add mail newer than the last sync round.
+- Folder **New folder…**, **New subfolder…**, **Rename…**, **Subscribed**
+  and **Delete…** (only at 0 messages, after an optional move to Trash;
+  never expunged; a Gmail label folder loses the label only); names read as system folders
+  are refused. Drag conversations onto rail folders. Gmail labels as chips,
+  **Labels…** (`l`) with per-message Undo.
+- Attachment viewer for images, text and PDF (pdf.js 6.5.438 in a `blob:`
+  worker, download-only when the page refuses it); SVG and other types are
+  download-only. **Files** view (`g f`). Opt-in local search inside text and
+  PDF attachments (`indexAttachmentText`, off; PDF text in a resource-limited
+  worker thread), for the owner's own searches only.
+- Hidden quoted text (`hideQuotes`), **Expand all** / **Collapse all** (`;`),
+  **Group by conversation** per folder, plain text (`mailView`), dark mail
+  (`darkMail`) with **Original colors**, a sender card, local **Related**
+  mail, and **Print…** (Shift+P) without remote images or **Save printable
+  page**.
+- BB integration (slice 3g). **New thread…** (Shift+N) starts a BB agent
+  thread from a message or conversation after showing the exact prompt and
+  the project's permission mode; **Edit in composer** opens BB's composer
+  with it. **Make a task…** (Shift+K) on a Makosh Taskboard board, or in
+  Mail's Tasks with a note when Taskboard does not answer.
+- **Save to project…** and **Save all to project…**: attachments written as
+  new files inside a project's working tree (`attachmentFolder`), mode
+  0644, never into `.git` or a dot folder, with Keep both, Replace (only the
+  file shown) or Cancel when a name exists; agent instruction and shortcut
+  names get `.txt`. **Attach from BB** in the composer picks up to 10
+  project or thread files, asks again for secret-like names, and the
+  pre-send check lists them and warns about secret-looking text.
+- **Email the result** (thread menu) and **Email this** (assistant
+  messages) make a Mail draft from a BB thread, a reply when the thread
+  started from a mail. Nothing is sent.
+- **Dev** view (`g n`) of GitHub, GitLab, CI and monitoring mail by
+  repository, recognised locally at sync (`devNotifications`), with Mark
+  read and Archive, **Hide dev notifications** and a Dev line in Today.
+  Repository, PR, issue and CI links listed by URL with their project.
+- Code, diffs and logs in mail render with BB's highlighter and diff viewer;
+  HTML `<pre>` blocks show as "Code (N)". The composer keeps code blocks and
+  inline code (toolbar **Code block**, ```` ``` ```` + Enter, fenced paste).
+- Patches: review per file with warnings and refusals, **Save .patch to
+  project** (`patchFolder`), **Apply with an agent** in a new managed
+  worktree. Alerts: **Open incident thread** once per alert, **Add to
+  incident thread** for a later mail.
+- Project binding: the **Project** chip and binding rules, a **Projects**
+  view, and a **Mail** section in a BB thread's Info tab.
+- **Mail rules** (`mailRules`, off by default): prepare a thread for review
+  in the Inbox's **Ready to start** strip, or start one in a worktree with
+  accept-edits after an explicit confirmation; capped, paused with Undo,
+  and with no mail tools in rule threads.
+- Settings `devNotifications`, `mailRules`, `attachmentFolder`,
+  `patchFolder`, `taskTarget`; Mail settings gain **BB integration** and
+  **Rules**. Migration element 11 adds the dev columns, `list_id`, BB links,
+  bindings, incidents and rule tables.
+
 - Agents and AI (slice 3f). Redaction: every text that reaches an agent or
   a model (tools, the CLI in a thread, mentions, Hand to agent, translation
   and the AI features) has one-time codes, passwords, tokens and card
@@ -215,6 +372,13 @@ All notable changes to Makosh Mail are recorded here. The format follows
   and says why; provider, model, sign-in, quota and refusal failures have
   their own texts. At most 30 translations an hour.
 - The `d/<draftId>` page route opens a draft in the composer.
+
+### Fixed
+
+- A sync round cut short by a plugin reload no longer logs "sync …: error".
+- `bb makosh-mail doctor` turns sync back on for an account that was
+  stopped by a refused sign-in once the server accepts the saved password
+  again.
 
 ### Changed
 

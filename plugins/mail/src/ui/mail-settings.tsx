@@ -8,7 +8,7 @@
 // Inbox tab: Blocked senders (Unblock asks first) and each account's
 // Snoozed folder with Change…. Slice 3f adds AI access, Agent activity
 // and AI features (categories, Today, reply reminders, AI settings).
-import { useEffect, useId, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useState, type FormEvent, type ReactNode } from "react";
 import type { Editor } from "@tiptap/react";
 import type { Account, BlockRuleView, CategoryRuleView, IdentityView } from "../core/model.ts";
 import { AiAccessSettings, type AiAccessSettingsProps } from "./ai-access-settings.tsx";
@@ -31,11 +31,136 @@ import { ComposeToolbar, type ToolId } from "./compose-toolbar.tsx";
 import { accountLabel } from "./folder-list.tsx";
 import { editorDocEmpty, SignatureEditor } from "./signature-editor.tsx";
 import { stopEscape } from "./shortcuts.ts";
+import { BbIntegrationSettings, type BbSettingsValues } from "./bb-integration-settings.tsx";
+import { RulesSettings } from "./rules-settings.tsx";
+import { FiltersSettings, type SettingsFilterPorts } from "./filters-settings.tsx";
+import { SubscriptionsSettings, type SettingsSubscriptionPorts } from "./subscriptions-settings.tsx";
+import type { BbCall } from "./bb-ports.ts";
+import { dateLocale, tx } from "./i18n/index.ts";
 
 export type TemplateView = { id: string; name: string; doc: EditorDoc; updatedAt: string };
 export type SuggestionView = { address: string; count: number; lastDate: string };
 export type IdentityKey = { accountId: string; address: string };
-export type SettingsSection = "addresses" | "templates" | "inbox" | "ai_access" | "activity" | "ai";
+import { PgpSettings, type SettingsPgpPorts } from "./pgp-settings.tsx";
+export type SettingsSection = "addresses" | "templates" | "inbox" | "ai_access" | "activity" | "ai" | "bb" | "rules" | "search" | "pgp" | "filters" | "subscriptions";
+
+/** attachment_text_status (slice 3h). */
+export interface AttachmentTextStatus {
+  indexed: number;
+  skipped: number;
+  failed: number;
+  pending: number;
+  running: boolean;
+  full: boolean;
+}
+
+/** Mail settings' Search and reading tab (slice 3h). */
+export interface SettingsSearchPorts {
+  /** The plugin settings as BB has them now. */
+  values: {
+    historyStepDays: number;
+    serverSearchKeepDays: number;
+    indexAttachmentText: boolean;
+    mailView: "original" | "plain";
+    darkMail: "adapt" | "original";
+    hideQuotes: boolean;
+    /** Slice 3i: Remove tracking from links I open (absent: on). */
+    cleanLinks?: boolean;
+  };
+  loadStatus: () => Promise<AttachmentTextStatus>;
+  retry: () => Promise<void>;
+  clear: () => Promise<void>;
+}
+
+/** "Attachment text: 1 240 indexed - 18 skipped (too large or unreadable) - indexing...". */
+export function attachmentTextLine(status: AttachmentTextStatus): string {
+  const parts = [`${status.indexed} indexed`];
+  if (status.skipped + status.failed > 0) parts.push(`${status.skipped + status.failed} skipped (too large or unreadable)`);
+  if (status.running || status.pending > 0) parts.push("indexing\u2026");
+  return tx("Attachment text: {p1}", { p1: parts.join(" \u00b7 ") });
+}
+
+export function SearchSection({ search, hint }: { search: SettingsSearchPorts; hint: string }) {
+  const [status, setStatus] = useState<AttachmentTextStatus | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const reload = useCallback(async () => {
+    try {
+      setStatus(await search.loadStatus());
+      setProblem(null);
+    } catch (error) {
+      setProblem(messageOf(error, "The status could not be loaded"));
+    }
+  }, [search]);
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+  const run = async (action: () => Promise<void>) => {
+    setBusy(true);
+    try {
+      await action();
+    } catch (error) {
+      setProblem(messageOf(error, "That did not work"));
+    } finally {
+      setBusy(false);
+      void reload();
+    }
+  };
+  const v = search.values;
+  return (
+    <div className="flex flex-col gap-4 text-sm">
+      <section className="flex flex-col gap-1">
+        <h3 className="font-medium text-foreground">{tx("Search and older mail")}</h3>
+        <p className="text-muted-foreground">{tx("Load more days loads {historyStepDays} days at a time. Unopened server search results are kept {serverSearchKeepDays} days.", { historyStepDays: v.historyStepDays, serverSearchKeepDays: v.serverSearchKeepDays })}</p>
+        <p className="text-muted-foreground">
+          {v.indexAttachmentText
+            ? tx("Search inside attachments is on: text and PDF attachments are read on this computer, and only your own search uses them.")
+            : tx("Search inside attachments is off.")}
+        </p>
+        {v.indexAttachmentText && status !== null ? (
+          <>
+            <p className="text-muted-foreground">{attachmentTextLine(status)}</p>
+            {status.full ? <p className="text-destructive">{tx("Attachment text index is full")}</p> : null}
+          </>
+        ) : null}
+        {problem !== null ? (
+          <p role="alert" className="text-destructive">
+            {problem}
+          </p>
+        ) : null}
+        <div className="flex flex-wrap gap-1">
+          {v.indexAttachmentText && status !== null && status.failed > 0 ? (
+            <Button variant="outline" size="sm" disabled={busy} onClick={() => void run(search.retry)}>
+              {tx("Retry failed")}
+            </Button>
+          ) : null}
+          {status !== null && status.indexed + status.skipped + status.failed + status.pending > 0 ? (
+            <Button variant="outline" size="sm" disabled={busy} onClick={() => void run(search.clear)}>
+              {tx("Remove attachment text")}
+            </Button>
+          ) : null}
+        </div>
+      </section>
+      <section className="flex flex-col gap-1">
+        <h3 className="font-medium text-foreground">{tx("Reading")}</h3>
+        <p className="text-muted-foreground">{tx("Show mail as: {p1}", { p1: v.mailView === "plain" ? "Plain text" : "Original" })}</p>
+        <p className="text-muted-foreground">{tx("Mail in dark mode: {p1}", { p1: v.darkMail === "adapt" ? "Adapt colors" : "Original colors" })}</p>
+        <p className="text-muted-foreground">{tx("Hide quoted text in replies: {p1}", { p1: v.hideQuotes ? "On" : "Off" })}</p>
+        <p className="text-muted-foreground">{tx("Remove tracking from links I open: {p1}", { p1: v.cleanLinks !== false ? "On" : "Off" })}</p>
+      </section>
+      <p className="text-xs text-muted-foreground">{hint}</p>
+    </div>
+  );
+}
+
+/** Mail settings' BB tabs (slice 3g). */
+export interface SettingsBbPorts {
+  call: BbCall;
+  /** The plugin settings as BB has them now. */
+  values: BbSettingsValues;
+  mailRules: boolean;
+  notify: (text: string, action?: { label: string; run: () => void }) => void;
+}
 
 /** Mail settings' AI tabs (slice 3f). */
 export interface SettingsAiPorts {
@@ -63,6 +188,7 @@ export const TEMPLATE_TOOLS: readonly ToolId[] = [
   "bulletList",
   "orderedList",
   "link",
+  "codeBlock",
   "clear",
 ];
 
@@ -90,6 +216,16 @@ export interface MailSettingsProps {
   onChangeSnoozeFolder?: (accountId: string) => void;
   /** AI access, Agent activity and AI features (slice 3f); absent: none of those tabs. */
   ai?: SettingsAiPorts;
+  /** BB integration and Rules (slice 3g); absent: neither tab. */
+  bb?: SettingsBbPorts;
+  /** Search and reading (slice 3h); absent: no tab. */
+  search?: SettingsSearchPorts;
+  /** OpenPGP keys (slice 3k); absent: no tab. */
+  pgp?: SettingsPgpPorts;
+  /** Filters over new Inbox mail (slice 3m); absent: no tab. */
+  filters?: SettingsFilterPorts;
+  /** The mailing lists of the stored mail (slice 3n); absent: no tab. */
+  subscriptions?: SettingsSubscriptionPorts;
 }
 
 function messageOf(error: unknown, fallback: string): string {
@@ -121,10 +257,10 @@ export function docPreview(doc: EditorDoc | null): string {
 /** What the owner sees about an address's sends; null when there is nothing to warn about. */
 export function sendCheckText(check: IdentityView["sendCheck"]): string | null {
   if (check === "rewritten") {
-    return "The last message from this address went out from the account's own address: the provider does not let this account send as it.";
+    return tx("The last message from this address went out from the account's own address: the provider does not let this account send as it.");
   }
   if (check === "refused") {
-    return "The server refused to send from this address. Set it up with your provider, or remove it.";
+    return tx("The server refused to send from this address. Set it up with your provider, or remove it.");
   }
   return null;
 }
@@ -132,7 +268,7 @@ export function sendCheckText(check: IdentityView["sendCheck"]): string | null {
 function formatDay(iso: string): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return "";
-  return date.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+  return date.toLocaleDateString(dateLocale(), { day: "numeric", month: "short", year: "numeric" });
 }
 
 export function MailSettings(props: MailSettingsProps) {
@@ -153,17 +289,19 @@ export function MailSettings(props: MailSettingsProps) {
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex max-h-[85vh] max-w-2xl flex-col gap-3" onEscapeKeyDown={stopEscape}>
         <DialogHeader>
-          <DialogTitle>Mail settings</DialogTitle>
+          <DialogTitle>{tx("Mail settings")}</DialogTitle>
           <DialogDescription>
-            Sending addresses, signatures and templates. They are kept on this computer.
+            {tx("Sending addresses, signatures and templates. They are kept on this computer.")}
           </DialogDescription>
         </DialogHeader>
-        <div role="tablist" aria-label="Settings" className="flex shrink-0 gap-1 border-b border-border">
+        <div role="tablist" aria-label={tx("Settings")} className="flex shrink-0 gap-1 border-b border-border">
           {(
             [
               ["addresses", "Sending addresses"],
               ["templates", "Templates"],
               ...(props.onUnblock !== undefined ? ([["inbox", "Inbox"]] as const) : []),
+              ...(props.filters !== undefined ? ([["filters", "Filters"]] as const) : []),
+              ...(props.subscriptions !== undefined ? ([["subscriptions", "Subscriptions"]] as const) : []),
               ...(props.ai !== undefined
                 ? ([
                     ["ai_access", "AI access"],
@@ -171,6 +309,14 @@ export function MailSettings(props: MailSettingsProps) {
                     ["ai", "AI features"],
                   ] as const)
                 : []),
+              ...(props.bb !== undefined
+                ? ([
+                    ["bb", "BB integration"],
+                    ["rules", "Rules"],
+                  ] as const)
+                : []),
+              ...(props.search !== undefined ? ([["search", "Search and reading"]] as const) : []),
+              ...(props.pgp !== undefined ? ([["pgp", "Encryption (OpenPGP)"]] as const) : []),
             ] as const
           ).map(([id, label]) => (
             <button
@@ -186,14 +332,14 @@ export function MailSettings(props: MailSettingsProps) {
                   : "border-transparent text-muted-foreground hover:text-foreground",
               )}
             >
-              {label}
+              {tx(label)}
             </button>
           ))}
         </div>
         <div role="tabpanel" className="min-h-0 flex-1 overflow-y-auto pr-1">
           {section === "addresses" ? (
             account === null ? (
-              <p className="text-sm text-muted-foreground">No mail account yet.</p>
+              <p className="text-sm text-muted-foreground">{tx("No mail account yet.")}</p>
             ) : (
               <AddressesSection
                 key={account.id}
@@ -208,6 +354,18 @@ export function MailSettings(props: MailSettingsProps) {
             <AgentActivity {...props.ai.activity} />
           ) : section === "ai" && props.ai !== undefined ? (
             <AiFeaturesSection ai={props.ai} />
+          ) : section === "bb" && props.bb !== undefined ? (
+            <BbIntegrationSettings values={props.bb.values} call={props.bb.call} hint={PLUGIN_SETTINGS_HINT} />
+          ) : section === "rules" && props.bb !== undefined ? (
+            <RulesSettings on={props.bb.mailRules} call={props.bb.call} notify={props.bb.notify} hint={PLUGIN_SETTINGS_HINT} />
+          ) : section === "subscriptions" && props.subscriptions !== undefined ? (
+            <SubscriptionsSettings ports={props.subscriptions} accounts={props.accounts} />
+          ) : section === "filters" && props.filters !== undefined ? (
+            <FiltersSettings ports={props.filters} accounts={props.accounts} />
+          ) : section === "pgp" && props.pgp !== undefined ? (
+            <PgpSettings ports={props.pgp} identities={props.identities} />
+          ) : section === "search" && props.search !== undefined ? (
+            <SearchSection search={props.search} hint={PLUGIN_SETTINGS_HINT} />
           ) : section === "inbox" && props.onUnblock !== undefined ? (
             <InboxSection
               accounts={accounts}
@@ -306,7 +464,7 @@ function AddressesSection(
       <div className="flex flex-wrap items-center gap-2">
         {accounts.length > 1 ? (
           <Select value={account.id} onValueChange={props.onSelectAccount}>
-            <SelectTrigger aria-label="Account" className="h-8 w-auto max-w-72">
+            <SelectTrigger aria-label={tx("Account")} className="h-8 w-auto max-w-72">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -322,21 +480,21 @@ function AddressesSection(
         )}
         <span className="flex-1" />
         <Button variant="link" size="sm" className="h-7 px-1" onClick={() => props.onOpenSmtp(account.id)}>
-          SMTP settings…
+          {tx("SMTP settings\u2026")}
         </Button>
       </div>
 
-      <ul aria-label="Sending addresses" className="flex flex-col divide-y divide-border rounded-md border border-border">
+      <ul aria-label={tx("Sending addresses")} className="flex flex-col divide-y divide-border rounded-md border border-border">
         {own.map((identity) => (
           <IdentityRow key={identity.address} identity={identity} {...props} />
         ))}
       </ul>
 
-      <SectionHeading>Add address</SectionHeading>
-      <form onSubmit={(event) => void add(event)} className="flex flex-wrap items-end gap-2" aria-label="Add address">
+      <SectionHeading>{tx("Add address")}</SectionHeading>
+      <form onSubmit={(event) => void add(event)} className="flex flex-wrap items-end gap-2" aria-label={tx("Add address")}>
         <div className="flex min-w-48 flex-1 flex-col gap-1">
           <label htmlFor={`${id}-address`} className="text-xs text-muted-foreground">
-            Address
+            {tx("Address")}
           </label>
           <Input
             id={`${id}-address`}
@@ -353,7 +511,7 @@ function AddressesSection(
         </div>
         <div className="flex min-w-40 flex-1 flex-col gap-1">
           <label htmlFor={`${id}-name`} className="text-xs text-muted-foreground">
-            Name (optional)
+            {tx("Name (optional)")}
           </label>
           <Input
             id={`${id}-name`}
@@ -365,7 +523,7 @@ function AddressesSection(
           />
         </div>
         <Button type="submit" size="sm" disabled={adding || address.trim() === ""}>
-          Add address
+          {tx("Add address")}
         </Button>
         {addProblem !== null ? (
           <p role="alert" className="w-full text-xs text-destructive">
@@ -374,24 +532,23 @@ function AddressesSection(
         ) : null}
       </form>
       <p className="text-xs text-muted-foreground">
-        The plugin cannot check that the provider lets this account send from an address; after the first send
-        it says so here.
+        {tx("The plugin cannot check that the provider lets this account send from an address; after the first send it says so here.")}
       </p>
 
-      <SectionHeading>Suggestions</SectionHeading>
-      {suggested === "loading" ? <p className="text-xs text-muted-foreground">Looking for suggestions…</p> : null}
-      {suggested === "error" ? <p className="text-xs text-muted-foreground">Could not load suggestions.</p> : null}
+      <SectionHeading>{tx("Suggestions")}</SectionHeading>
+      {suggested === "loading" ? <p className="text-xs text-muted-foreground">{tx("Looking for suggestions\u2026")}</p> : null}
+      {suggested === "error" ? <p className="text-xs text-muted-foreground">{tx("Could not load suggestions.")}</p> : null}
       {Array.isArray(suggested) && suggested.length === 0 ? (
-        <p className="text-xs text-muted-foreground">No suggestions.</p>
+        <p className="text-xs text-muted-foreground">{tx("No suggestions.")}</p>
       ) : null}
       {Array.isArray(suggested) && suggested.length > 0 ? (
-        <ul aria-label="Suggestions" className="flex flex-col divide-y divide-border rounded-md border border-border">
+        <ul aria-label={tx("Suggestions")} className="flex flex-col divide-y divide-border rounded-md border border-border">
           {suggested.map((suggestion) => (
             <li key={suggestion.address} className="flex flex-wrap items-center gap-2 px-3 py-2">
               <div className="min-w-0 flex-1">
                 <p className="truncate text-sm text-foreground">{suggestion.address}</p>
                 <p className="text-xs text-muted-foreground">
-                  {suggestion.count === 1 ? "1 message" : `${suggestion.count} messages`} · last{" "}
+                  {suggestion.count === 1 ? tx("1 message") : `${suggestion.count} messages`} {tx("\u00b7 last")}{" "}
                   {formatDay(suggestion.lastDate)}
                 </p>
               </div>
@@ -399,14 +556,14 @@ function AddressesSection(
                 variant="outline"
                 size="sm"
                 className="h-7"
-                aria-label={`Add ${suggestion.address}`}
+                aria-label={tx("Add {address}", { address: suggestion.address })}
                 onClick={() => {
                   setAddress(suggestion.address);
                   setAddProblem(null);
                   document.getElementById(`${id}-name`)?.focus();
                 }}
               >
-                Add
+                {tx("Add")}
               </Button>
               <Button
                 variant="ghost"
@@ -415,7 +572,7 @@ function AddressesSection(
                 aria-label={`${suggestion.address} is not mine`}
                 onClick={() => void dismiss(suggestion)}
               >
-                Not mine
+                {tx("Not mine")}
               </Button>
             </li>
           ))}
@@ -463,7 +620,7 @@ function IdentityRow({ identity, onUpdate, onRemove }: { identity: IdentityView 
           </p>
         </div>
         <span className="shrink-0 rounded-sm bg-secondary px-1.5 py-0.5 text-xs text-secondary-foreground">
-          {identity.primary ? "Own address" : "Alias"}
+          {identity.primary ? tx("Own address") : tx("Alias")}
         </span>
       </div>
       {warning !== null ? (
@@ -474,14 +631,14 @@ function IdentityRow({ identity, onUpdate, onRemove }: { identity: IdentityView 
       ) : null}
       {mode !== "signature" ? (
         <p className={cn("whitespace-pre-line text-xs", signature === "" ? "text-muted-foreground" : "text-foreground")}>
-          {signature === "" ? "No signature" : signature}
+          {signature === "" ? tx("No signature") : signature}
         </p>
       ) : null}
 
       {mode === "view" ? (
         <div className="flex flex-wrap gap-1">
           <Button variant="outline" size="sm" className="h-7" onClick={() => setMode("signature")}>
-            {signature === "" ? "Add signature" : "Edit signature"}
+            {signature === "" ? tx("Add signature") : tx("Edit signature")}
           </Button>
           {!identity.primary ? (
             <>
@@ -494,10 +651,10 @@ function IdentityRow({ identity, onUpdate, onRemove }: { identity: IdentityView 
                   setMode("rename");
                 }}
               >
-                Rename
+                {tx("Rename")}
               </Button>
               <Button variant="ghost" size="sm" className="h-7" onClick={() => setMode("remove")}>
-                Remove
+                {tx("Remove")}
               </Button>
             </>
           ) : null}
@@ -516,7 +673,7 @@ function IdentityRow({ identity, onUpdate, onRemove }: { identity: IdentityView 
           }}
         >
           <label htmlFor={`${id}-rename`} className="sr-only">
-            Name for {identity.address}
+            {tx("Name for")} {identity.address}
           </label>
           <Input
             id={`${id}-rename`}
@@ -527,10 +684,10 @@ function IdentityRow({ identity, onUpdate, onRemove }: { identity: IdentityView 
             className="h-7 min-w-40 flex-1 text-sm"
           />
           <Button type="submit" size="sm" className="h-7" disabled={busy}>
-            Save name
+            {tx("Save name")}
           </Button>
           <Button type="button" variant="ghost" size="sm" className="h-7" onClick={() => setMode("view")}>
-            Cancel
+            {tx("Cancel")}
           </Button>
         </form>
       ) : null}
@@ -548,9 +705,9 @@ function IdentityRow({ identity, onUpdate, onRemove }: { identity: IdentityView 
       ) : null}
 
       {mode === "remove" ? (
-        <div role="alertdialog" aria-label={`Remove ${identity.address}`} className="flex flex-wrap items-center gap-2">
+        <div role="alertdialog" aria-label={tx("Remove {address}", { address: identity.address })} className="flex flex-wrap items-center gap-2">
           <p className="min-w-0 flex-1 text-xs text-foreground">
-            Remove this address? New mail can no longer be sent from it; sends already queued keep it.
+            {tx("Remove this address? New mail can no longer be sent from it; sends already queued keep it.")}
           </p>
           <Button
             variant="destructive"
@@ -559,10 +716,10 @@ function IdentityRow({ identity, onUpdate, onRemove }: { identity: IdentityView 
             disabled={busy}
             onClick={() => void run(() => onRemove(key), "Could not remove the address.")}
           >
-            Remove
+            {tx("Remove")}
           </Button>
           <Button variant="ghost" size="sm" className="h-7" onClick={() => setMode("view")}>
-            Cancel
+            {tx("Cancel")}
           </Button>
         </div>
       ) : null}
@@ -593,21 +750,21 @@ function InboxSection({
   const [problem, setProblem] = useState<string | null>(null);
   return (
     <div className="flex flex-col gap-2">
-      <SectionHeading>Blocked senders</SectionHeading>
+      <SectionHeading>{tx("Blocked senders")}</SectionHeading>
       <p className="text-xs text-muted-foreground">
-        New mail from them moves to Spam in every account while BB runs. Mail already in Spam stays there.
+        {tx("New mail from them moves to Spam in every account while BB runs. Mail already in Spam stays there.")}
       </p>
-      {rules === null ? <p className="text-sm text-muted-foreground">Loading…</p> : null}
+      {rules === null ? <p className="text-sm text-muted-foreground">{tx("Loading\u2026")}</p> : null}
       {rules !== null && rules.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No blocked senders. Block one from a message's toolbar.</p>
+        <p className="text-sm text-muted-foreground">{tx("No blocked senders. Block one from a message's toolbar.")}</p>
       ) : null}
       {rules !== null && rules.length > 0 ? (
-        <ul aria-label="Blocked senders" className="flex flex-col divide-y divide-border rounded-md border border-border">
+        <ul aria-label={tx("Blocked senders")} className="flex flex-col divide-y divide-border rounded-md border border-border">
           {rules.map((rule) => (
             <li key={rule.id} aria-label={rule.value} className="flex flex-col gap-1 px-3 py-2">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="shrink-0 rounded-sm border border-border px-1 text-xs text-muted-foreground">
-                  {rule.kind === "address" ? "Address" : "Domain"}
+                  {rule.kind === "address" ? tx("Address") : tx("Domain")}
                 </span>
                 <span className="min-w-0 flex-1 break-all text-sm text-foreground">{rule.value}</span>
                 <span className="shrink-0 text-xs text-muted-foreground">{formatDay(rule.createdAt)}</span>
@@ -615,19 +772,19 @@ function InboxSection({
                   variant="ghost"
                   size="sm"
                   className="h-7"
-                  aria-label={`Unblock ${rule.value}`}
+                  aria-label={tx("Unblock {value}", { value: rule.value })}
                   onClick={() => {
                     setProblem(null);
                     setRemoving(rule.id);
                   }}
                 >
-                  Unblock
+                  {tx("Unblock")}
                 </Button>
               </div>
               {removing === rule.id ? (
-                <div role="alertdialog" aria-label={`Unblock ${rule.value}`} className="flex flex-wrap items-center gap-2">
+                <div role="alertdialog" aria-label={tx("Unblock {value}", { value: rule.value })} className="flex flex-wrap items-center gap-2">
                   <p className="min-w-0 flex-1 text-xs text-foreground">
-                    Unblock {rule.value}? Mail already in Spam stays there.
+                    {tx("Unblock")} {rule.value}{tx("? Mail already in Spam stays there.")}
                   </p>
                   <Button
                     variant="destructive"
@@ -640,10 +797,10 @@ function InboxSection({
                       );
                     }}
                   >
-                    Unblock
+                    {tx("Unblock")}
                   </Button>
                   <Button variant="ghost" size="sm" className="h-7" onClick={() => setRemoving(null)}>
-                    Cancel
+                    {tx("Cancel")}
                   </Button>
                 </div>
               ) : null}
@@ -656,26 +813,26 @@ function InboxSection({
           {problem}
         </p>
       ) : null}
-      <SectionHeading>Snoozed folder</SectionHeading>
+      <SectionHeading>{tx("Snoozed folder")}</SectionHeading>
       <p className="text-xs text-muted-foreground">
-        Snoozed mail waits in this folder and comes back while BB runs. Renaming it elsewhere ends those snoozes.
+        {tx("Snoozed mail waits in this folder and comes back while BB runs. Renaming it elsewhere ends those snoozes.")}
       </p>
-      <ul aria-label="Snoozed folders" className="flex flex-col divide-y divide-border rounded-md border border-border">
+      <ul aria-label={tx("Snoozed folders")} className="flex flex-col divide-y divide-border rounded-md border border-border">
         {accounts.map((account) => (
           <li key={account.id} aria-label={accountLabel(account)} className="flex flex-wrap items-center gap-2 px-3 py-2">
             <span className="min-w-0 flex-1 truncate text-sm text-foreground">{accountLabel(account)}</span>
             <span className="min-w-0 truncate text-xs text-muted-foreground">
-              {account.snoozeFolder ?? "None yet; the first snooze asks"}
+              {account.snoozeFolder ?? tx("None yet; the first snooze asks")}
             </span>
             {onChangeSnoozeFolder !== undefined ? (
               <Button
                 variant="outline"
                 size="sm"
                 className="h-7"
-                aria-label={`Change the snoozed folder of ${accountLabel(account)}`}
+                aria-label={tx("Change the snoozed folder of {p1}", { p1: accountLabel(account) })}
                 onClick={() => onChangeSnoozeFolder(account.id)}
               >
-                Change…
+                {tx("Change\u2026")}
               </Button>
             ) : null}
           </li>
@@ -713,12 +870,12 @@ function TemplatesSection({
               }}
             >
               <Icon name="Plus" aria-hidden />
-              New template
+              {tx("New template")}
             </Button>
           ) : null
         }
       >
-        Templates
+        {tx("Templates")}
       </SectionHeading>
       {editing !== null ? (
         <TemplateEditor
@@ -732,10 +889,10 @@ function TemplatesSection({
         />
       ) : null}
       {templates.length === 0 && editing === null ? (
-        <p className="text-sm text-muted-foreground">No templates yet. A template is inserted at the cursor.</p>
+        <p className="text-sm text-muted-foreground">{tx("No templates yet. A template is inserted at the cursor.")}</p>
       ) : null}
       {templates.length > 0 ? (
-        <ul aria-label="Templates" className="flex flex-col divide-y divide-border rounded-md border border-border">
+        <ul aria-label={tx("Templates")} className="flex flex-col divide-y divide-border rounded-md border border-border">
           {templates.map((template) => (
             <li key={template.id} aria-label={template.name} className="flex flex-col gap-1 px-3 py-2">
               <div className="flex flex-wrap items-center gap-2">
@@ -744,28 +901,28 @@ function TemplatesSection({
                   variant="ghost"
                   size="sm"
                   className="h-7"
-                  aria-label={`Edit ${template.name}`}
+                  aria-label={tx("Edit {name}", { name: template.name })}
                   onClick={() => {
                     setProblem(null);
                     setEditing({ id: template.id, name: template.name, doc: template.doc });
                   }}
                 >
-                  Edit
+                  {tx("Edit")}
                 </Button>
                 <Button
                   variant="ghost"
                   size="sm"
                   className="h-7"
-                  aria-label={`Delete ${template.name}`}
+                  aria-label={tx("Delete {name}", { name: template.name })}
                   onClick={() => setRemoving(template.id)}
                 >
-                  Delete
+                  {tx("Delete")}
                 </Button>
               </div>
               <p className="line-clamp-2 whitespace-pre-line text-xs text-muted-foreground">{docPreview(template.doc)}</p>
               {removing === template.id ? (
-                <div role="alertdialog" aria-label={`Delete ${template.name}`} className="flex flex-wrap items-center gap-2">
-                  <p className="min-w-0 flex-1 text-xs text-foreground">Delete this template?</p>
+                <div role="alertdialog" aria-label={tx("Delete {name}", { name: template.name })} className="flex flex-wrap items-center gap-2">
+                  <p className="min-w-0 flex-1 text-xs text-foreground">{tx("Delete this template?")}</p>
                   <Button
                     variant="destructive"
                     size="sm"
@@ -778,10 +935,10 @@ function TemplatesSection({
                       );
                     }}
                   >
-                    Delete
+                    {tx("Delete")}
                   </Button>
                   <Button variant="ghost" size="sm" className="h-7" onClick={() => setRemoving(null)}>
-                    Cancel
+                    {tx("Cancel")}
                   </Button>
                 </div>
               ) : null}
@@ -833,12 +990,12 @@ function TemplateEditor({
   return (
     <form
       onSubmit={(event) => void save(event)}
-      aria-label={edit.id === null ? "New template" : `Edit ${edit.name}`}
+      aria-label={edit.id === null ? tx("New template") : tx("Edit {name}", { name: edit.name })}
       className="flex flex-col gap-2 rounded-md border border-border p-2"
     >
       <div className="flex flex-col gap-1">
         <label htmlFor={`${id}-name`} className="text-xs text-muted-foreground">
-          Name
+          {tx("Name")}
         </label>
         <Input
           id={`${id}-name`}
@@ -857,7 +1014,7 @@ function TemplateEditor({
           <ComposeToolbar editor={editor} linkOpen={linkOpen} onLinkOpenChange={setLinkOpen} tools={TEMPLATE_TOOLS} />
         </div>
         <ComposeEditor
-          label="Template text"
+          label={tx("Template text")}
           initialDoc={edit.doc}
           importFrom={null}
           features={{ quotes: false }}
@@ -877,10 +1034,10 @@ function TemplateEditor({
       ) : null}
       <div className="flex justify-end gap-2">
         <Button type="button" variant="ghost" size="sm" onClick={onCancel} disabled={busy}>
-          Cancel
+          {tx("Cancel")}
         </Button>
         <Button type="submit" size="sm" disabled={busy}>
-          Save template
+          {tx("Save template")}
         </Button>
       </div>
     </form>
@@ -917,24 +1074,24 @@ function AiFeaturesSection({ ai }: { ai: SettingsAiPorts }) {
   };
   return (
     <div className="flex flex-col gap-4">
-      <section aria-label="Categories" className="flex flex-col gap-1">
-        <SectionHeading>Categories</SectionHeading>
-        <p className="text-sm text-foreground">{ai.categoriesOn ? "On: mail is sorted into local labels." : "Off."}</p>
+      <section aria-label={tx("Categories")} className="flex flex-col gap-1">
+        <SectionHeading>{tx("Categories")}</SectionHeading>
+        <p className="text-sm text-foreground">{ai.categoriesOn ? tx("On: mail is sorted into local labels.") : "Off."}</p>
         <p className="text-xs text-muted-foreground">
-          Bills, Notifications, Personal and Newsletters live only in Makosh Mail; nothing is written to the mail server.{" "}
+          {tx("Bills, Notifications, Personal and Newsletters live only in Makosh Mail; nothing is written to the mail server.")}{" "}
           {PLUGIN_SETTINGS_HINT}
         </p>
         {ai.categoriesOn ? (
           rules === null ? null : rules.length === 0 ? (
-            <p className="text-xs text-muted-foreground">No sender rules. Always for this sender in a conversation adds one.</p>
+            <p className="text-xs text-muted-foreground">{tx("No sender rules. Always for this sender in a conversation adds one.")}</p>
           ) : (
-            <ul aria-label="Category rules" className="flex flex-col gap-1">
+            <ul aria-label={tx("Category rules")} className="flex flex-col gap-1">
               {rules.map((rule) => (
                 <li key={rule.id} className="flex items-center gap-2 text-sm">
                   <span className="min-w-0 flex-1 truncate text-foreground">{rule.value}</span>
                   <span className="text-xs text-muted-foreground">{categoryLabel(rule.category)}</span>
                   <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => void remove(rule.id)}>
-                    Remove
+                    {tx("Remove")}
                   </Button>
                 </li>
               ))}
@@ -947,25 +1104,25 @@ function AiFeaturesSection({ ai }: { ai: SettingsAiPorts }) {
           </p>
         ) : null}
       </section>
-      <section aria-label="Today" className="flex flex-col gap-1">
-        <SectionHeading>Today</SectionHeading>
+      <section aria-label={tx("Today")} className="flex flex-col gap-1">
+        <SectionHeading>{tx("Today")}</SectionHeading>
         <p className="text-sm text-foreground">
-          {ai.morningDigest ? `On: the Today digest is ready at ${ai.digestTime}.` : "Off: the Today view still works when you open it."}
+          {ai.morningDigest ? `On: the Today digest is ready at ${ai.digestTime}.` : tx("Off: the Today view still works when you open it.")}
         </p>
         <p className="text-xs text-muted-foreground">{PLUGIN_SETTINGS_HINT}</p>
       </section>
-      <section aria-label="Reply reminders" className="flex flex-col gap-1">
-        <SectionHeading>Reply reminders</SectionHeading>
-        <p className="text-sm text-foreground">{`Remind me after ${ai.reminderDays === 1 ? "1 day" : `${ai.reminderDays} days`} by default.`}</p>
+      <section aria-label={tx("Reply reminders")} className="flex flex-col gap-1">
+        <SectionHeading>{tx("Reply reminders")}</SectionHeading>
+        <p className="text-sm text-foreground">{tx("Remind me after {p1} by default.", { p1: ai.reminderDays === 1 ? "1 day" : `${ai.reminderDays} days` })}</p>
         <p className="text-xs text-muted-foreground">
-          A reminder turns due when no message answering yours (by In-Reply-To or References) arrives in time. {PLUGIN_SETTINGS_HINT}
+          {tx("A reminder turns due when no message answering yours (by In-Reply-To or References) arrives in time.")} {PLUGIN_SETTINGS_HINT}
         </p>
       </section>
-      <section aria-label="AI settings" className="flex flex-col items-start gap-1">
-        <SectionHeading>AI settings</SectionHeading>
-        <p className="text-xs text-muted-foreground">The Makosh AI provider and model every AI feature and translation uses.</p>
+      <section aria-label={tx("AI settings")} className="flex flex-col items-start gap-1">
+        <SectionHeading>{tx("AI settings")}</SectionHeading>
+        <p className="text-xs text-muted-foreground">{tx("The Makosh AI provider and model every AI feature and translation uses.")}</p>
         <Button variant="outline" size="sm" onClick={ai.onOpenAiSettings}>
-          {"AI settings\u2026"}
+          {tx("AI settings\u2026")}
         </Button>
       </section>
     </div>

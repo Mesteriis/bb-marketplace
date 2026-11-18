@@ -38,7 +38,48 @@ export type NotifyContext = {
   now: Date;
   /** The time a row's age is measured from; a snooze return passes its return time (spec resolution 16). */
   ageFrom?: (row: NotifyRow) => string;
+  /** Senders the owner named as important: they notify even when never written to, and when bulk. */
+  important?: ImportantSenders;
+  /** Only important senders notify (quiet hours, or the owner's setting). */
+  importantOnly?: boolean;
 };
+
+/** The owner's important senders: whole addresses, and domains with their subdomains. */
+export type ImportantSenders = { addresses: ReadonlySet<string>; domains: readonly string[] };
+
+/** How many entries the important-senders setting holds. */
+export const IMPORTANT_SENDERS_MAX = 200;
+
+/**
+ * The setting's text as addresses and domains: entries are separated by
+ * commas, semicolons or white space; `name@host` is an address, `host` or
+ * `@host` a domain. Anything else is left out.
+ */
+export function parseImportantSenders(text: string): ImportantSenders {
+  const addresses = new Set<string>();
+  const domains: string[] = [];
+  for (const raw of text.slice(0, 20_000).split(/[\s,;]+/)) {
+    if (addresses.size + domains.length >= IMPORTANT_SENDERS_MAX) break;
+    const entry = raw.trim().toLowerCase();
+    if (entry === "") continue;
+    if (/^[^@\s]+@[a-z0-9.-]+\.[a-z0-9-]+$/.test(entry)) addresses.add(entry);
+    else if (/^@?[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(entry)) {
+      const domain = entry.replace(/^@/, "");
+      if (!domains.includes(domain)) domains.push(domain);
+    }
+  }
+  return { addresses, domains };
+}
+
+/** Whether a sender (lower case) is one the owner named. */
+export function isImportantSender(from: string, list: ImportantSenders | undefined): boolean {
+  if (list === undefined) return false;
+  if (list.addresses.has(from)) return true;
+  const at = from.lastIndexOf("@");
+  if (at < 0) return false;
+  const host = from.slice(at + 1);
+  return list.domains.some((domain) => host === domain || host.endsWith(`.${domain}`));
+}
 
 function timeOf(text: string | null | undefined): number | null {
   if (text === null || text === undefined) return null;
@@ -55,9 +96,11 @@ export function notifiable(rows: readonly NotifyRow[], ctx: NotifyContext): Noti
   const now = ctx.now.getTime();
   return rows.filter((row) => {
     if (row.isRead || row.uid === null || row.movePending !== null || row.folderRole !== "inbox") return false;
-    if (isBulkRow(row.bulk, row.fromAddress)) return false;
     const from = row.fromAddress.trim().toLowerCase();
-    if (ctx.own.has(from) || !ctx.sentTo.has(from)) return false;
+    const important = isImportantSender(from, ctx.important);
+    if (ctx.importantOnly === true && !important) return false;
+    if (!important && isBulkRow(row.bulk, row.fromAddress)) return false;
+    if (ctx.own.has(from) || (!important && !ctx.sentTo.has(from))) return false;
     if (matchesBlock(from, ctx.rules) !== null) return false;
     const since =
       (ctx.ageFrom !== undefined ? timeOf(ctx.ageFrom(row)) : null) ?? timeOf(row.date) ?? timeOf(row.fetchedAt);

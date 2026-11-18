@@ -54,6 +54,8 @@ export function composerOptions(input: OutgoingMessage): MailComposerOptions {
         ...(cid === "" ? {} : { cid }),
       };
     }),
+    // Slice 3l: an invitation answer, as text/calendar beside the text and HTML.
+    ...(input.calendar === undefined ? {} : { icalEvent: { method: input.calendar.method, content: input.calendar.content } }),
     disableFileAccess: true,
     disableUrlAccess: true,
     newline: "windows",

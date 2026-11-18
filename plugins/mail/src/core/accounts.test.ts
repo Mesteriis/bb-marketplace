@@ -154,6 +154,11 @@ describe("addAccount", () => {
       openFolder: (config, path, options) => gateway.openFolder(config, path, options),
       watchFolder: (...args) => gateway.watchFolder(...args),
       createFolder: (config, name) => gateway.createFolder(config, name),
+      renameFolder: (...args) => gateway.renameFolder(...args),
+      folderStatus: (...args) => gateway.folderStatus(...args),
+      deleteFolder: (...args) => gateway.deleteFolder(...args),
+      setSubscribed: (...args) => gateway.setSubscribed(...args),
+      namedLikeSpecialUse: (name) => gateway.namedLikeSpecialUse(name),
     };
     await addAccount(
       { ...deps, gateway: recording },
@@ -282,6 +287,11 @@ describe("testSmtp and setSmtp", () => {
       openFolder: (config, path, options) => gateway.openFolder(config, path, options),
       watchFolder: (...args) => gateway.watchFolder(...args),
       createFolder: (config, name) => gateway.createFolder(config, name),
+      renameFolder: (...args) => gateway.renameFolder(...args),
+      folderStatus: (...args) => gateway.folderStatus(...args),
+      deleteFolder: (...args) => gateway.deleteFolder(...args),
+      setSubscribed: (...args) => gateway.setSubscribed(...args),
+      namedLikeSpecialUse: (name) => gateway.namedLikeSpecialUse(name),
     };
     return { tested, recording };
   };

@@ -113,3 +113,51 @@ describe("OutboxSection", () => {
     expect(container.innerHTML).toBe("");
   });
 });
+
+describe("a waiting send (slice 3j)", () => {
+  it("offers Send now, Edit and Discard and says when Mail tries again", () => {
+    const waiting = row("waiting", { errorKind: "connect", attempts: 2, sendAfter: "2026-11-17T10:42:00.000Z" });
+    expect(outboxActions(waiting)).toEqual(["send_now", "edit", "dismiss"]);
+    const text = outboxStateText(waiting);
+    expect(text).toMatch(/^Not sent yet: the server could not be reached\. Next try at .+ \(try 3\)\.$/);
+    expect(outboxRowHint(waiting)).toBe("Edit reopens the draft. Discard deletes the message and its draft.");
+    // Waiting is not yet a problem for the owner to fix.
+    expect(outboxAttention([waiting])).toBe(0);
+  });
+
+  it("has a text without a time when the date does not parse", () => {
+    expect(outboxStateText({ state: "waiting", errorKind: null, rejected: [], sendAfter: "nope" })).toBe(
+      "Not sent yet. Mail will try again.",
+    );
+  });
+});
+
+describe("a scheduled send (slice 3l)", () => {
+  it("says when it goes out and offers Edit only", () => {
+    const scheduled = row("queued", { scheduled: true, sendAfter: "2027-03-04T09:00:00.000Z" });
+    expect(outboxActions(scheduled)).toEqual(["edit"]);
+    expect(outboxStateText(scheduled)).toMatch(/^Scheduled for .*\d{2}:\d{2}/);
+    expect(outboxRowHint(scheduled)).toBe("Edit cancels the send and reopens the draft.");
+    expect(outboxAttention([scheduled])).toBe(0);
+    // An ordinary queued send keeps its Undo.
+    expect(outboxActions(row("queued"))).toEqual(["undo"]);
+    expect(outboxStateText(row("queued"))).toBe("Sending soon");
+  });
+
+  it("held because its time passed says so and can be sent now or edited", () => {
+    const held = row("held", { scheduled: true });
+    expect(outboxStateText(held)).toBe("Not sent: its time passed while BB was closed");
+    expect(outboxActions(held)).toEqual(["send_now", "edit"]);
+    expect(outboxAttention([held])).toBe(1);
+  });
+});
+
+describe("an invitation answer (slice 3l)", () => {
+  it("is shown by its subject, is never edited, and says what Discard deletes", () => {
+    const failed = row("failed", { purpose: "invite_reply", subject: "Accepted: Invented planning", errorKind: "auth" });
+    expect(outboxActions(failed)).toEqual(["retry", "dismiss"]);
+    expect(outboxRowHint(failed)).toBe("Discard deletes the answer.");
+    expect(outboxRowHint(row("queued", { purpose: "invite_reply" }))).toBeNull();
+    expect(outboxActions(row("queued", { purpose: "invite_reply" }))).toEqual(["undo"]);
+  });
+});

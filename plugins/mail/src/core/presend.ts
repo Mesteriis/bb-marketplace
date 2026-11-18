@@ -1,16 +1,24 @@
-// The pre-send check (slice 3d): four advisory issues the composer shows
-// in "Before you send" and the agent card lists. Nothing here refuses a
+// The pre-send check (slice 3d): advisory issues the composer shows in
+// "Before you send" and the agent card lists. Slice 3g adds files attached
+// from BB and text that looks like it holds a secret. Nothing here refuses a
 // send. Pure.
 import { renderDoc, type ComposeBlock, type ComposeDoc } from "./compose-doc.ts";
 import { forwardSubject, replySubject } from "./compose-subjects.ts";
 import type { ComposeKind } from "./model.ts";
+import { hiddenTotal, redactSecrets } from "./redact.ts";
 
 export type PresendIssue =
   /** `phrase`: the matched words, from the owner's own text or subject. */
   | { kind: "attachment_mentioned"; phrase: string }
   | { kind: "empty_subject" }
   | { kind: "outside_conversation"; addresses: string[] }
-  | { kind: "new_recipients"; addresses: string[] };
+  | { kind: "new_recipients"; addresses: string[] }
+  /** Slice 3g: files attached from BB projects or threads; `origins` de-duplicated, in order. */
+  | { kind: "bb_files"; count: number; origins: string[] }
+  /** Slice 3g: values redaction would hide in the owner's own text. */
+  | { kind: "looks_secret"; count: number }
+  /** Slice 3i: a reply still goes to the source's Reply-To that points away from its sender (ASCII addresses). */
+  | { kind: "reply_to_elsewhere"; addresses: string[] };
 
 export type PresendInput = {
   kind: ComposeKind;
@@ -32,6 +40,13 @@ export type PresendInput = {
    * no longer stored) searches it always.
    */
   inheritedSubject: string | null;
+  /** Slice 3g: one display label per attachment taken from BB ("project api"); absent or empty for none. */
+  bbOrigins?: readonly string[];
+  /**
+   * Slice 3i: the source message's `reply_to_elsewhere` addresses (from
+   * `disguiseWarnings`); reply and reply all only. Absent or empty for none.
+   */
+  replyToElsewhere?: readonly string[];
 };
 
 /** What quoteHeaderText writes above a forwarded message. */
@@ -123,7 +138,8 @@ function mentionIn(text: string): string | null {
 const lower = (address: string) => address.trim().toLowerCase();
 
 /**
- * The issues, in the order attachment, subject, outside, new. A reply or
+ * The issues, in the order attachment, subject, outside, new, Reply-To
+ * elsewhere, BB files, secret-like text. A reply or
  * reply all with a stored source is checked against its conversation only:
  * its participants are never "new" (spec resolution 5). Own addresses are
  * never listed.
@@ -150,7 +166,42 @@ export function presendIssues(input: PresendInput): PresendIssue[] {
     const fresh = recipients.filter((address) => !sentTo.has(address));
     if (fresh.length > 0) issues.push({ kind: "new_recipients", addresses: fresh });
   }
+  if (reply) {
+    const flagged = new Set((input.replyToElsewhere ?? []).map(lower));
+    const still = recipients.filter((address) => flagged.has(address));
+    if (still.length > 0) issues.push({ kind: "reply_to_elsewhere", addresses: still });
+  }
+  const origins = input.bbOrigins ?? [];
+  if (origins.length > 0) issues.push({ kind: "bb_files", count: origins.length, origins: [...new Set(origins)] });
+  const hidden = hiddenTotal(redactSecrets(ownText(input.doc, input.kind)).counts);
+  if (hidden > 0) issues.push({ kind: "looks_secret", count: hidden });
   return issues;
+}
+
+/**
+ * The pre-send label of an attachment taken from BB (slice 3g): "project
+ * <name>" (the project's name when known), "a BB thread", or null for an
+ * upload. The origin itself is never sent.
+ */
+export function bbOriginLabel(origin: string | null | undefined, projectNames?: ReadonlyMap<string, string>): string | null {
+  if (origin === null || origin === undefined) return null;
+  if (origin.startsWith("bb:project:")) {
+    const name = projectNames?.get(origin.slice("bb:project:".length));
+    return name === undefined || name.trim() === "" ? "a BB project" : `project ${name}`;
+  }
+  if (origin.startsWith("bb:thread:")) return "a BB thread";
+  return null;
+}
+
+/** The labels of a draft's attachments taken from BB, one per attachment. */
+export function bbOriginLabels(
+  attachments: readonly { origin?: string | null }[],
+  projectNames?: ReadonlyMap<string, string>,
+): string[] {
+  return attachments.flatMap((attachment) => {
+    const label = bbOriginLabel(attachment.origin, projectNames);
+    return label === null ? [] : [label];
+  });
 }
 
 /** The agent card's checks: it flags new addresses on its own (3c), so `new_recipients` is left out. */
