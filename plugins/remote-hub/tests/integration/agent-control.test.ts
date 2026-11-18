@@ -6,6 +6,7 @@
 //  RDP: an agent moves the pointer on a real desktop with typed actions; a stale geometry is refused and moves nothing;
 //       a takeover refuses the next input.
 // Needs docker and REMOTE_HUB_INTEGRATION=1; a 300 s watchdog aborts a hung run.
+import { WatcherBook } from "../../src/core/watchers.ts";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -101,8 +102,9 @@ type Handlers = { onOpen(s: FakeSocket): void | Promise<void>; onMessage(s: Fake
 async function compose(env: Record<string, string>) {
   const profiles = new ProfileBook({ store: new MemoryProfiles(), now: () => new Date(), newId: () => randomUUID() });
   const leases = new ControlLeases({ now: () => Date.now(), newId: () => randomUUID() });
+  const watchers = new WatcherBook({ now: () => Date.now() });
   const service = createRemoteHubService({
-    control: createControlGate(leases),
+    control: createControlGate(leases, watchers),
     startHelper: () => HelperProcess.spawn(HELPER, (bin, args) => spawn(bin, args, { stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, ...env } }) as unknown as ChildProcessWithoutNullStreams),
     env: { ...process.env, REMOTE_HUB_TEST_ALLOW_KNOWN_HOSTS: "1" } as Record<string, string | undefined>,
   });
@@ -125,7 +127,7 @@ async function compose(env: Record<string, string>) {
   const audit = new AgentAudit({ store, now: () => new Date() });
   const registry = new AgentSessionRegistry();
   const handlers = createRpcHandlers({ service, profiles, credentials: book, imports: memoryImportBook(profiles, book), agentControl: createAgentControlRpc({ service, leases, registry, audit }) });
-  const controlPorts = agentControlPorts({ service, profiles, handlers });
+  const controlPorts = agentControlPorts({ service, profiles, handlers, watchers });
   const toolDeps = {
     access, audit,
     budget: new ToolBudget({ now: () => Date.now(), callsPerWindow: 10_000, bytesPerWindow: 500 * 1024 * 1024, globalCallsPerWindow: 100_000, globalBytesPerWindow: 5_000 * 1024 * 1024 }),
@@ -139,14 +141,16 @@ async function compose(env: Record<string, string>) {
   };
   const text = (r: ToolResult) => r.content.filter((c) => c.type === "text").map((c) => (c as { text: string }).text).join("\n");
   let captured: ((ctx: { url: URL }) => Handlers) | null = null;
-  registerStreamSocket({ http: { experimental_websocket: (_p: string, h: typeof captured) => (captured = h) } } as never, { service });
-  const view = async (handle: { generation: string; sessionId: number }) => {
+  registerStreamSocket({ http: { experimental_websocket: (_p: string, h: typeof captured) => (captured = h) } } as never, { service, watchers });
+  /** A view of the session as the page shows it; by default visible and reporting in (a person looking at it). */
+  const view = async (handle: { generation: string; sessionId: number }, visible: boolean | null = true) => {
     const socket = makeSocket();
     const h = captured!({ url: new URL("ws://bb/attach?attach=" + service.sessionAttach(handle)) });
     await h.onOpen(socket);
+    if (visible !== null) h.onMessage(socket, JSON.stringify({ type: "watch", visible }));
     return { socket, h };
   };
-  return { profiles, book, leases, registry, service, access, rows, handlers, call, text, view, tools };
+  return { profiles, book, leases, registry, service, access, rows, handlers, call, text, view, tools, watchers };
 }
 
 const fields = (over: Partial<ProfileFields>): ProfileFields => ({
@@ -273,10 +277,12 @@ describe.skipIf(!dockerOk)("agent control over SSH: connect, owner decides the h
     expect(c.service.agentControl(handle)).toBe("never");
   }, 60_000);
 
-  it("no human view at all: connect, take control, type and read — the scrollback fills without any attached stream", async () => {
+  it("no human view: reading works, typing is refused until a view is open and visible, and refused again when it closes or is hidden", async () => {
     c.access.set(profileId, "input", true);
     const opened = key(await c.call("remote_connect", { connectionId: profileId }));
     sessionId = opened.sessionId as string;
+    expect(opened.watching).toBe(false);
+    expect(opened.liveView).toBe(`::remote-session{id="${sessionId}"}`);
     const [generation, id] = sessionId.split(".");
     handle = { generation: generation as string, sessionId: Number(id) };
     await poll(async () => {
@@ -284,12 +290,31 @@ describe.skipIf(!dockerOk)("agent control over SSH: connect, owner decides the h
       return c.service.agentControl(handle) === "ready";
     }, 60_000, "the session is ready");
     const lease = key(await c.call("remote_control_acquire", { sessionId }));
-    await c.call("remote_terminal_input", { sessionId, leaseId: lease.leaseId, actions: [{ type: "text", text: "printf 'N%sV' $((8*9))" }, { type: "key", key: "Enter" }] });
-    const body = await readUntil("N72V");
-    expect(body).toContain("N72V");
-    expect(c.service.creditState(handle)?.size()).toBe(0); // no view was ever attached
+    expect(lease.watching).toBe(false);
+    const type = (text: string) => c.call("remote_terminal_input", { sessionId, leaseId: lease.leaseId, actions: [{ type: "text", text }, { type: "key", key: "Enter" }] });
+    // Nobody is looking: nothing is typed.
+    expect(c.text(await type("printf 'N%sV' $((8*9))"))).toContain("owner_not_watching");
+    // Reads need no watcher (and show the shell prompt that arrived without any view).
+    expect((await c.call("remote_terminal_read", { sessionId, sinceOffset: 0 })).isError).toBeUndefined();
+    // A hidden tab is not watching either.
+    const hidden = await c.view(handle, false);
+    expect(c.text(await type("printf 'H%sV' 1"))).toContain("owner_not_watching");
+    hidden.h.onClose();
+    // A visible view: typing goes through and the output is read back.
+    const shown = await c.view(handle, true);
+    expect((await type("printf 'N%sV' $((8*9))")).isError).toBeUndefined();
+    expect(await readUntil("N72V")).toContain("N72V");
+    // The view closes: refused again, and the lease is suspended (the helper's owner moved on).
+    shown.h.onClose();
+    expect(c.text(await type("printf 'X%sV' 3"))).toContain("owner_not_watching");
+    expect(c.leases.owner(sessionId).kind).toBe("agent");
+    // It comes back: the same lease works again.
+    const again = await c.view(handle, true);
+    expect((await type("printf 'M%sV' 4")).isError).toBeUndefined();
+    expect(await readUntil("M4V")).toContain("M4V");
+    again.h.onClose();
     expect((await c.call("remote_disconnect", { sessionId })).isError).toBeUndefined();
-  }, 150_000);
+  }, 180_000);
 
   it("Z1: a terminal session the human opened by hand (plain ssh, its questions in the terminal) cannot be driven; reading it is allowed", async () => {
     const empty = join(tmp, "empty_known_hosts_plain");
@@ -444,6 +469,8 @@ describe.skipIf(!dockerOk)("agent control over RDP: typed input on a real deskto
     const certificate = c.service.rdpInfo(handle)!.prompt!;
     await c.service.rdpCertDecision(handle, certificate.fingerprint, "session_trust");
     await poll(() => c.service.rdpInfo(handle)?.state === "desktop_ready", 40_000, "desktop_ready");
+    // The owner has the desktop open and visible: that is what lets an agent act on it.
+    await c.view(handle, true);
     const lease = JSON.parse(c.text(await c.call("remote_control_acquire", { sessionId }))) as { leaseId: string };
     const status = JSON.parse(c.text(await c.call("remote_session_status", { sessionId }))) as { session: { rdp: { desktop: { frameId: number; width: number; height: number } } } };
     const observed = status.session.rdp.desktop;
