@@ -126,7 +126,7 @@ async function compose(env: Record<string, string>) {
   };
   const audit = new AgentAudit({ store, now: () => new Date() });
   const registry = new AgentSessionRegistry();
-  const handlers = createRpcHandlers({ service, profiles, credentials: book, imports: memoryImportBook(profiles, book), agentControl: createAgentControlRpc({ service, leases, registry, audit }) });
+  const handlers = createRpcHandlers({ service, profiles, credentials: book, imports: memoryImportBook(profiles, book), agentControl: createAgentControlRpc({ service, leases, registry, audit, watchers }) });
   const controlPorts = agentControlPorts({ service, profiles, handlers, watchers });
   const toolDeps = {
     access, audit,

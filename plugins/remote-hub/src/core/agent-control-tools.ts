@@ -37,7 +37,13 @@ export class AgentSessionRegistry {
   private readonly opened = new Map<string, string>();
   mark(sessionKey: string, threadId: string): void {
     this.opened.set(sessionKey, threadId);
+    for (const cb of this.markListeners) cb(sessionKey);
   }
+  /** Told when an agent's session is registered (the owner's pages learn about it). */
+  onMark(cb: (sessionKey: string) => void): void {
+    this.markListeners.push(cb);
+  }
+  private readonly markListeners: Array<(sessionKey: string) => void> = [];
   threadOf(sessionKey: string): string | undefined {
     return this.opened.get(sessionKey);
   }

@@ -661,3 +661,52 @@
 .rh-import .rh-badge {
   align-self: flex-start;
 }
+
+/* The standing notice that an agent is active: fixed, readable wherever the owner is in BB. */
+.rh-agent-banner {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: min(440px, calc(100vw - 32px));
+}
+
+.rh-agent-banner-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--accent, #d29922);
+  border-radius: 6px;
+  background: var(--surface-recessed-solid, #161b22);
+  color: var(--ink, #c9d1d9);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+}
+
+.rh-agent-banner-row > span {
+  flex: 1 1 200px;
+}
+
+/* One live session, inline in a message, in a side tab or above the page. */
+.rh-live {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  min-height: 320px;
+}
+
+.rh-live-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.rh-live .rh-terminal,
+.rh-live .rh-rdp-wrap {
+  min-height: 280px;
+}

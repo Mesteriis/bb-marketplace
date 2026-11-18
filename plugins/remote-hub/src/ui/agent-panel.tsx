@@ -42,6 +42,8 @@ export interface AgentSessionView {
   leaseExpiresAt: number | null;
   questions: Array<{ kind: "host_key" | "login_prompt"; promptId: number; text: string }>;
   certificate: RdpCertPromptInfo | null;
+  /** A person has this session's live view open and visible right now. */
+  watching: boolean;
 }
 
 export interface AgentApi {
@@ -164,7 +166,13 @@ export function AgentPanel({ api, profileNames, onClose }: AgentPanelProps) {
                   {s.kind}
                   {s.openedByThread !== null ? (s.openedByArchivedThread ? ` · opened by an archived thread (${s.openedByThread})` : ` · opened by agent thread ${s.openedByThread}`) : ""}
                   {" · "}
-                  {s.holdUntil !== null ? `kept by you until ${new Date(s.holdUntil).toLocaleTimeString()} · ` : ""}{s.controlledBy === "agent" ? `driven by an agent (thread ${s.leaseThreadId ?? "?"}${s.leaseExpiresAt !== null ? ", until " + new Date(s.leaseExpiresAt).toLocaleTimeString() : ""})` : "driven by you"}
+                  {[
+                    s.holdUntil !== null ? `kept by you until ${new Date(s.holdUntil).toLocaleTimeString()}` : null,
+                    s.watching ? "you are watching" : "nobody is watching: an agent cannot act on it",
+                    s.controlledBy === "agent" ? `driven by an agent (thread ${s.leaseThreadId ?? "?"}${s.leaseExpiresAt !== null ? ", until " + new Date(s.leaseExpiresAt).toLocaleTimeString() : ""})` : "driven by you",
+                  ]
+                    .filter((part): part is string => part !== null)
+                    .join(" · ")}
                 </span>
               </div>
               <div className="rh-profile-actions">

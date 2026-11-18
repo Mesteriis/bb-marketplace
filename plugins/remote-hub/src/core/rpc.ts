@@ -260,6 +260,8 @@ export const rpcSchemas = {
         leaseExpiresAt: z.number().nullable(),
         questions: z.array(z.object({ kind: z.enum(["host_key", "login_prompt"]), promptId: z.number().int(), text: z.string() })),
         certificate: rdpCertPromptInfoSchema.nullable(),
+        /** A person has this session's live view open and visible right now. */
+        watching: z.boolean(),
       }),
     ),
   },

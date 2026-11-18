@@ -3,6 +3,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { AgentAudit, type AuditRow, type AuditStore } from "../../core/agent-audit.ts";
 import { AgentSessionRegistry } from "../../core/agent-control-tools.ts";
+import { WatcherBook } from "../../core/watchers.ts";
 import { ControlLeases } from "../../core/control-lease.ts";
 import type { RemoteHubService, SessionInfo } from "./service.ts";
 import { createAgentControlRpc } from "./agent-control-rpc.ts";
@@ -40,8 +41,9 @@ function setup() {
     sshPendingPrompts: (h: { sessionId: number }) => (h.sessionId === 1 ? [{ promptId: 7, text: "Are you sure you want to continue connecting (yes/no/[fingerprint])?", kind: "confirm" }] : []),
     sshPromptAnswer: vi.fn(async () => undefined),
   };
-  const rpc = createAgentControlRpc({ service: service as unknown as RemoteHubService, leases, registry, audit });
-  return { rpc, rows, leases, registry, service, sessions };
+  const watchers = new WatcherBook({ now: () => 1_000_000 });
+  const rpc = createAgentControlRpc({ service: service as unknown as RemoteHubService, leases, registry, audit, watchers });
+  return { rpc, rows, leases, registry, service, sessions, watchers };
 }
 
 describe("agent_control_takeover", () => {
@@ -71,6 +73,18 @@ describe("agent_control_allow (Z5)", () => {
     expect(leases.acquire(K1, "thr_a", 60)).toMatchObject({ ok: true });
     expect(await rpc.agent_control_allow(H2)).toEqual({ allowed: false });
     expect(rows.map((r) => [r.tool, r.threadId])).toContainEqual(["control.allow", "owner RPC"]);
+  });
+});
+
+describe("agent_sessions and the live view", () => {
+  it("says for each session whether a person is looking at its live view right now", async () => {
+    const { rpc, leases, watchers } = setup();
+    leases.acquire(K1, "thr_a", 60);
+    expect((await rpc.agent_sessions({})).find((s) => s.sessionId === 1)).toMatchObject({ watching: false });
+    watchers.beat(K1, "view", true);
+    expect((await rpc.agent_sessions({})).find((s) => s.sessionId === 1)).toMatchObject({ watching: true });
+    watchers.beat(K1, "view", false);
+    expect((await rpc.agent_sessions({})).find((s) => s.sessionId === 1)).toMatchObject({ watching: false });
   });
 });
 

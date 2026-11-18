@@ -6,6 +6,7 @@ import { experimental_PluginRpcRefusal } from "@get-bb/plugin-sdk";
 import type { AgentAudit } from "../../core/agent-audit.ts";
 import type { AgentSessionRegistry } from "../../core/agent-control-tools.ts";
 import type { ControlLeases } from "../../core/control-lease.ts";
+import type { WatcherBook } from "../../core/watchers.ts";
 import type { RpcSchemas } from "../../core/rpc.ts";
 import type { z } from "zod";
 import { OWNER_RPC } from "./rpc-handlers.ts";
@@ -24,11 +25,12 @@ export interface AgentControlRpcDeps {
   leases: ControlLeases;
   registry: AgentSessionRegistry;
   audit: AgentAudit;
+  watchers: WatcherBook;
 }
 
 const keyOf = (h: { generation: string; sessionId: number }): string => `${h.generation}.${h.sessionId}`;
 
-export function createAgentControlRpc({ service, leases, registry, audit }: AgentControlRpcDeps): AgentControlRpc {
+export function createAgentControlRpc({ service, leases, registry, audit, watchers }: AgentControlRpcDeps): AgentControlRpc {
   return {
     agent_control_takeover: async (handle) => {
       const key = keyOf(handle);
@@ -74,6 +76,7 @@ export function createAgentControlRpc({ service, leases, registry, audit }: Agen
             .sshPendingPrompts(s)
             .map((p) => ({ kind: p.kind === "confirm" ? ("host_key" as const) : ("login_prompt" as const), promptId: p.promptId, text: p.text })),
           certificate: s.rdp?.prompt ?? null,
+          watching: watchers.watching(key),
         });
       }
       return out;

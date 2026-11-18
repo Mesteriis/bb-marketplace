@@ -133,8 +133,16 @@ describe("AgentPanel: sessions agents opened or drive (stage 4b-1)", () => {
   const GEN = "a".repeat(32);
   const base: AgentSessionView = {
     generation: GEN, sessionId: 4, kind: "ssh", connectionId: P1, state: "running", openedByThread: "thr_a", controlledBy: "human",
-    leaseThreadId: null, leaseExpiresAt: null, questions: [], certificate: null, openedByArchivedThread: false, holdUntil: null,
+    leaseThreadId: null, leaseExpiresAt: null, questions: [], certificate: null, openedByArchivedThread: false, holdUntil: null, watching: false,
   };
+
+  it("says whether anybody is watching each session, and that an unwatched one cannot be acted on", async () => {
+    mount(api({ sessions: vi.fn(async () => [{ ...base, controlledBy: "agent" as const, leaseThreadId: "thr_a", watching: false }, { ...base, sessionId: 5, watching: true }]) }));
+    await screen.findByText(/driven by an agent/);
+    const text = document.body.textContent ?? "";
+    expect(text).toContain("nobody is watching: an agent cannot act on it");
+    expect(text).toContain("you are watching");
+  });
 
   it("says there are none when no agent opened or holds a session", async () => {
     mount(api());

@@ -4,6 +4,7 @@
 // service, exposes a schema-validated RPC contract to the app, and tears the
 // helper down on dispose. All wire schemas live in src/core/rpc.ts and
 // src/core/protocol.ts.
+import { publishAgentSignals } from "./src/adapters/bb/agent-signals.ts";
 import { AgentFeed } from "./src/core/agent-feed.ts";
 import { WatcherBook } from "./src/core/watchers.ts";
 import { randomUUID } from "node:crypto";
@@ -89,7 +90,7 @@ export default function plugin(bb: BbPluginApi): void {
     credentials,
     imports,
     agents: { access: agentAccess, audit: agentAudit },
-    agentControl: createAgentControlRpc({ service, leases, registry, audit: agentAudit }),
+    agentControl: createAgentControlRpc({ service, leases, registry, audit: agentAudit, watchers }),
   });
   const controlPorts = agentControlPorts({ service, profiles, handlers, watchers });
   const toolDeps = {
@@ -103,6 +104,7 @@ export default function plugin(bb: BbPluginApi): void {
   bb.rpc.register(rpcContract, handlers);
   registerControlLifecycle(bb, { leases, registry, service, watchers, closeSession: (key) => controlPorts.disconnect(key) });
 
+  publishAgentSignals(bb, { leases, watchers, registry });
   registerStreamSocket(bb, { service, audit: agentAudit, watchers, feed });
 
   bb.onDispose(() => {
