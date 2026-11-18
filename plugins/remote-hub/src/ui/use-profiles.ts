@@ -7,7 +7,8 @@ import type { SessionInfo } from "../core/rpc.ts";
 export interface ProfilesApi {
   list: () => Promise<Profile[]>;
   save: (input: ProfileInput) => Promise<Profile>;
-  remove: (id: string) => Promise<{ deleted: boolean }>;
+  /** `deleteCredential` also deletes the profile's saved password (the server does so only when no other profile uses it). */
+  remove: (id: string, deleteCredential?: boolean) => Promise<{ deleted: boolean; credentialDeleted?: boolean; credentialError?: string }>;
   duplicate: (id: string) => Promise<Profile>;
   sessions: () => Promise<Array<SessionInfo & { profileId?: string }>>;
 }

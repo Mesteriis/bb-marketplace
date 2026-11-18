@@ -45,7 +45,7 @@ function ConnectTab() {
     () => createConnectBridge((method, input) => (rpc.call as (m: string, ...a: unknown[]) => Promise<unknown>)(method, ...(input === undefined ? [] : [input])), wsUrl),
     [rpc, wsUrl],
   );
-  return <ConnectPage profiles={bridge.profiles} ssh={bridge.ssh} rdp={bridge.rdp} />;
+  return <ConnectPage profiles={bridge.profiles} credentials={bridge.credentials} ssh={bridge.ssh} rdp={bridge.rdp} />;
 }
 
 export default definePluginApp((app) => {

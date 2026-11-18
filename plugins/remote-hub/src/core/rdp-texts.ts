@@ -57,6 +57,16 @@ const ERROR_CODES: Record<string, string> = {
   bad_control: "the page sent a message the service did not understand",
   protocol_error: "the helper answered out of order",
   helper_exited: "the Remote Hub helper exited",
+  keychain_locked: "The Keychain is locked or needs approval. Unlock it in Keychain Access, then try again.",
+  keychain_denied: "The Keychain refused access to the saved password.",
+  keychain_unavailable: "The Keychain is not available on this Mac.",
+  credential_missing: "The saved password is no longer in the Keychain. Edit the profile to save it again.",
+  credential_unknown: "That saved password does not exist any more.",
+  credential_target_mismatch: "That saved password belongs to a different host or user, so it was not used.",
+  credential_exists: "This profile already has a saved password; replace it instead.",
+  credential_not_applicable: "This profile does not use a stored password.",
+  empty_secret: "Type a password first.",
+  invalid_credential_source: "Use either a saved password or a typed one, not both.",
 };
 
 export function errorCodeText(code: string): string {

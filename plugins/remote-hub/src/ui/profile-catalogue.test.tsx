@@ -119,7 +119,7 @@ describe("ProfileCatalogue", () => {
     expect(screen.queryByRole("button", { name: "Confirm delete Build box" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Delete Build box" }));
     fireEvent.click(screen.getByRole("button", { name: "Confirm delete Build box" }));
-    expect(h.onDelete).toHaveBeenCalledWith(PROFILES[0]);
+    expect(h.onDelete).toHaveBeenCalledWith(PROFILES[0], false);
   });
 
   it("has loading, error (with Retry) and empty states", () => {
@@ -140,5 +140,54 @@ describe("ProfileCatalogue", () => {
   it("shows the last failure code of an open, never a message", () => {
     mount({ profiles: [profile({ id: A, name: "Flaky", recentErrors: [{ at: "2026-11-18T10:00:00.000Z", code: "not_found" }] })] });
     expect(screen.getByText("last open failed: not_found")).toBeTruthy();
+  });
+});
+
+describe("ProfileCatalogue and saved passwords (stage 3b-1)", () => {
+  const REF = "rh-cred:v1:local:0b8e6f4a-5c2d-4e1b-9a37-1f2e3d4c5b6a";
+  const WITH = profile({ id: A, name: "Win", protocol: "rdp", authType: "password", username: "u", credentialRef: REF });
+  const TWIN = profile({ id: B, name: "Win twin", protocol: "rdp", authType: "password", username: "u", credentialRef: REF });
+  const ALONE = profile({ id: C, name: "Solo", protocol: "rdp", authType: "password", username: "u", credentialRef: "rh-cred:v1:local:11111111-2222-4333-8444-555555555555" });
+
+  it("marks a profile that has a saved password", () => {
+    mount({ profiles: [WITH, profile({ id: C, name: "Plain" })] });
+    expect(within(screen.getByRole("listitem", { name: "Win" })).getByText("saved password")).toBeTruthy();
+    expect(within(screen.getByRole("listitem", { name: "Plain" })).queryByText("saved password")).toBeNull();
+  });
+
+  it("deleting a profile whose password nobody else uses asks whether to delete it too (default yes)", () => {
+    const h = mount({ profiles: [ALONE] });
+    fireEvent.click(screen.getByRole("button", { name: "Delete Solo" }));
+    const box = screen.getByLabelText("Also delete the saved password") as HTMLInputElement;
+    expect(box.checked).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Confirm delete Solo" }));
+    expect(h.onDelete).toHaveBeenCalledWith(ALONE, true);
+  });
+
+  it("the choice can be turned off, and then the password is kept", () => {
+    const h = mount({ profiles: [ALONE] });
+    fireEvent.click(screen.getByRole("button", { name: "Delete Solo" }));
+    fireEvent.click(screen.getByLabelText("Also delete the saved password"));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm delete Solo" }));
+    expect(h.onDelete).toHaveBeenCalledWith(ALONE, false);
+  });
+
+  it("when another profile shares the password there is no question: it stays, and the screen says so", () => {
+    const h = mount({ profiles: [WITH, TWIN] });
+    fireEvent.click(screen.getByRole("button", { name: "Delete Win" }));
+    expect(screen.queryByLabelText("Also delete the saved password")).toBeNull();
+    expect(screen.getByText(/Win twin still uses the saved password/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Confirm delete Win" }));
+    expect(h.onDelete).toHaveBeenCalledWith(WITH, false);
+  });
+
+  it("offers Credentials only when the screen exists", () => {
+    const onShowCredentials = vi.fn();
+    mount({ onShowCredentials });
+    fireEvent.click(screen.getByRole("button", { name: "Credentials" }));
+    expect(onShowCredentials).toHaveBeenCalledTimes(1);
+    cleanup();
+    mount();
+    expect(screen.queryByRole("button", { name: "Credentials" })).toBeNull();
   });
 });

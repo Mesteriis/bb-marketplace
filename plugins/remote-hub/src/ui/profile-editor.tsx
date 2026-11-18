@@ -4,10 +4,13 @@
 import { useState } from "react";
 import { profileFieldsSchema, type ProfileFields } from "../core/profile.ts";
 
+/** What to do with the saved password when the profile is saved. The secret exists only in this value. */
+export type SecretAction = { type: "keep" } | { type: "save"; secret: string } | { type: "remove" };
+
 export interface ProfileEditorProps {
   /** null = a new profile. */
   initial: ProfileFields | null;
-  onSave: (fields: ProfileFields) => Promise<void>;
+  onSave: (fields: ProfileFields, secret: SecretAction) => Promise<void>;
   onCancel: () => void;
 }
 
@@ -66,11 +69,23 @@ export function ProfileEditor(props: ProfileEditorProps) {
   const [identityFile, setIdentityFile] = useState(start.identityFile ?? "");
   const [width, setWidth] = useState(start.rdpWidth === null ? "" : String(start.rdpWidth));
   const [height, setHeight] = useState(start.rdpHeight === null ? "" : String(start.rdpHeight));
+  // A password typed here lives only until Save is pressed; it is cleared at once.
+  const [secret, setSecret] = useState("");
+  const [removeSaved, setRemoveSaved] = useState(false);
   const [issues, setIssues] = useState<Array<{ field: string; message: string }>>([]);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
   const rdp = protocol === "rdp";
+  const hasSaved = props.initial?.credentialRef != null;
+  // The saved password is tied to its endpoint: moving the endpoint drops it (the server does that).
+  const endpointMoved =
+    hasSaved &&
+    props.initial !== null &&
+    (host.trim() !== props.initial.host ||
+      (numberOrNull(port) ?? null) !== props.initial.port ||
+      (orNull(username) ?? null) !== props.initial.username ||
+      (orNull(domain) ?? null) !== props.initial.domain);
   const effectiveAuth = rdp ? "password" : authType;
 
   const choose = (next: ProfileFields["protocol"]) => {
@@ -112,8 +127,10 @@ export function ProfileEditor(props: ProfileEditorProps) {
     setIssues([]);
     setSaveError(null);
     setSaving(true);
+    const action: SecretAction = removeSaved ? { type: "remove" } : secret !== "" ? { type: "save", secret } : { type: "keep" };
+    setSecret("");
     try {
-      await props.onSave(parsed.data);
+      await props.onSave(parsed.data, action);
     } catch (e) {
       setSaveError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -196,10 +213,35 @@ export function ProfileEditor(props: ProfileEditorProps) {
             <input value={identityFile} onChange={(e) => setIdentityFile(e.target.value)} placeholder="/Users/you/.ssh/id_ed25519" />
           </label>
         )}
+        {rdp && (
+          <>
+            {hasSaved ? (
+              <>
+                <p className="rh-hint">A password is saved in the Keychain for this profile.</p>
+                <label>
+                  Replace the saved password
+                  <input type="password" autoComplete="off" value={secret} onChange={(e) => setSecret(e.target.value)} disabled={removeSaved} />
+                </label>
+                <label className="rh-check">
+                  <input type="checkbox" checked={removeSaved} onChange={(e) => setRemoveSaved(e.target.checked)} />
+                  Remove the saved password
+                </label>
+                {endpointMoved && <p className="rh-error">Changing the host, port, user or domain: the saved password will be forgotten.</p>}
+              </>
+            ) : (
+              <label>
+                Password to save in the Keychain
+                <input type="password" autoComplete="off" value={secret} onChange={(e) => setSecret(e.target.value)} />
+              </label>
+            )}
+          </>
+        )}
         <p className="rh-hint">
           {effectiveAuth === "password"
             ? rdp
-              ? "The password is not stored: you type it when you connect."
+              ? hasSaved
+                ? "Connect uses the saved password; nothing is typed."
+                : "Leave empty to type it each time you connect, or enter one to keep it in the Keychain."
               : "The password is not stored: ssh asks for it in the terminal."
             : effectiveAuth === "key"
               ? "Only the path is saved; OpenSSH reads the key and asks for its passphrase itself."

@@ -19,7 +19,10 @@ export interface RdpConnectTarget {
   host: string;
   port: number;
   username: string;
-  password: string;
+  /** A password typed for this connect. Absent when a saved credential is used. */
+  password?: string;
+  /** A saved credential (the Keychain item the helper resolves); absent when a password is typed. */
+  credentialRef?: string;
   domain?: string;
 }
 
@@ -42,6 +45,8 @@ export interface RdpPrefill {
   domain: string | null;
   width: number | null;
   height: number | null;
+  /** The profile's saved credential, if it has one. */
+  credentialRef?: string | null;
 }
 
 export interface RdpPageProps {
@@ -104,8 +109,11 @@ export function RdpPage(props: RdpPageProps) {
   const opening = useRef(false);
   // The saved profile the form currently stands for; editing the endpoint ends it.
   const linked = useRef<{ profileId: string; size: { width: number; height: number } | null } | null>(null);
+  // The saved credential in use; ends with the link when the endpoint is edited.
+  const [savedRef, setSavedRef] = useState<string | null>(null);
   const edit = (set: (value: string) => void) => (value: string) => {
     linked.current = null;
+    setSavedRef(null);
     set(value);
   };
   const lastPrefill = useRef<number | null>(null);
@@ -119,6 +127,7 @@ export function RdpPage(props: RdpPageProps) {
     setDomain(fill.domain ?? "");
     setPassword("");
     linked.current = { profileId: fill.profileId, size: fill.width !== null && fill.height !== null ? { width: fill.width, height: fill.height } : null };
+    setSavedRef(fill.credentialRef ?? null);
     passwordInput.current?.focus();
   }, [props.prefill]);
 
@@ -176,6 +185,7 @@ export function RdpPage(props: RdpPageProps) {
     }
     if (opening.current) return;
     // The password leaves component state HERE; only this call's closure holds it.
+    const useSaved = savedRef !== null;
     const secret = password;
     setPassword("");
     setError(null);
@@ -185,7 +195,13 @@ export function RdpPage(props: RdpPageProps) {
     let handle: SessionHandle;
     opening.current = true;
     try {
-      const target: RdpConnectTarget = { host, port: portNumber, username, password: secret, ...(domain !== "" ? { domain } : {}) };
+      const target: RdpConnectTarget = {
+        host,
+        port: portNumber,
+        username,
+        ...(useSaved ? { credentialRef: savedRef as string } : { password: secret }),
+        ...(domain !== "" ? { domain } : {}),
+      };
       const link = linked.current;
       handle = await onRdpOpen(target, link?.size ?? DESKTOP_SIZE, link?.profileId);
     } catch (e) {
@@ -206,7 +222,7 @@ export function RdpPage(props: RdpPageProps) {
       patch({ detached: true });
       setError(errorTextFromMessage(e instanceof Error ? e.message : String(e)));
     }
-  }, [host, port, username, domain, password, onRdpOpen, onAttach, patch]);
+  }, [host, port, username, domain, password, savedRef, onRdpOpen, onAttach, patch]);
 
   const disconnect = useCallback(async () => {
     if (view === null) return;
@@ -283,15 +299,24 @@ export function RdpPage(props: RdpPageProps) {
           <input aria-label="host" placeholder="host" value={host} onChange={(e) => edit(setHost)(e.target.value)} />
           <input aria-label="port" placeholder="3389" value={port} onChange={(e) => edit(setPort)(e.target.value)} className="rh-port" />
           <input aria-label="user" placeholder="user" value={username} onChange={(e) => edit(setUsername)(e.target.value)} />
-          <input
-            aria-label="password"
-            placeholder="password"
-            type="password"
-            autoComplete="off"
-            ref={passwordInput}
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-          />
+          {savedRef !== null ? (
+            <span className="rh-saved">
+              Using the saved password (Keychain){" "}
+              <button type="button" onClick={() => setSavedRef(null)}>
+                Use another password
+              </button>
+            </span>
+          ) : (
+            <input
+              aria-label="password"
+              placeholder="password"
+              type="password"
+              autoComplete="off"
+              ref={passwordInput}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+            />
+          )}
           <input aria-label="domain" placeholder="domain (optional)" value={domain} onChange={(e) => edit(setDomain)(e.target.value)} />
           <button type="submit" disabled={host === "" || username === "" || connecting !== null}>
             Connect

@@ -8,6 +8,7 @@ import type { Profile, ProfileInput } from "../core/profile.ts";
 import type { RdpDecision, SessionHandle, SessionInfo, SshTarget } from "../core/rpc.ts";
 import type { RdpAttach, RdpConnectTarget, RdpPageProps, RdpScreenshotResult } from "./rdp-page.tsx";
 import type { SshAttach, SshPageProps } from "./ssh-page.tsx";
+import type { CredentialItem, CredentialsApi, CredentialStateName } from "./use-credentials.ts";
 import type { ProfilesApi } from "./use-profiles.ts";
 
 /** What useRpc().call looks like to this module; the page's own typing stays in app.tsx. */
@@ -15,6 +16,7 @@ export type RpcCall = (method: string, input?: unknown) => Promise<unknown>;
 
 export interface ConnectBridge {
   profiles: ProfilesApi;
+  credentials: CredentialsApi;
   ssh: Pick<SshPageProps, "onSshOpen" | "onAttach" | "onClose">;
   rdp: Pick<RdpPageProps, "onRdpOpen" | "onAttach" | "onClose" | "onDecision" | "onScreenshot">;
 }
@@ -33,9 +35,16 @@ export function createConnectBridge(call: RpcCall, wsUrl: string): ConnectBridge
     profiles: {
       list: () => send<Profile[]>("profile_list"),
       save: (input: ProfileInput) => send<Profile>("profile_save", input),
-      remove: (id) => send<{ deleted: boolean }>("profile_delete", { id }),
+      remove: (id, deleteCredential) => send<{ deleted: boolean; credentialDeleted?: boolean; credentialError?: string }>("profile_delete", { id, deleteCredential }),
       duplicate: (id) => send<Profile>("profile_duplicate", { id }),
       sessions: () => send<Array<SessionInfo & { profileId?: string }>>("session_list"),
+    },
+    credentials: {
+      list: () => send<CredentialItem[]>("credential_list"),
+      save: (input) => send<{ ref: string }>("credential_save", input),
+      update: (ref, secret) => send("credential_update", { ref, secret }),
+      remove: (ref) => send<{ unlinked: number }>("credential_delete", { ref }),
+      status: (ref) => send<{ state: CredentialStateName }>("credential_status", { ref }),
     },
     ssh: {
       onSshOpen: (target: SshTarget, profileId?: string) => send<SessionHandle>("ssh_open", { target, profileId }),

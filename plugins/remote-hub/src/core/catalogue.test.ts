@@ -118,7 +118,7 @@ describe("opening a profile", () => {
   });
 
   it("builds the RDP form values with the protocol defaults", () => {
-    expect(profileToRdpForm(SET[2] as Profile)).toEqual({ host: "win.example.test", port: 3389, username: "admin", domain: "CORP", width: 1920, height: 1080 });
+    expect(profileToRdpForm(SET[2] as Profile)).toEqual({ host: "win.example.test", port: 3389, username: "admin", domain: "CORP", width: 1920, height: 1080, credentialRef: null });
     expect(profileToRdpForm(profile({ id: A, name: "x", protocol: "rdp", authType: "password", username: "u" }))).toEqual({
       host: "h.example.test",
       port: 3389,
@@ -126,6 +126,7 @@ describe("opening a profile", () => {
       domain: null,
       width: null,
       height: null,
+      credentialRef: null,
     });
   });
 });

@@ -141,3 +141,68 @@ describe("ProfileEditor", () => {
     expect(onCancel).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("ProfileEditor: the saved password (stage 3b-1, RDP)", () => {
+  const SECRET = "S3cr3t-EDIT-1";
+  const passwordField = () => screen.getByLabelText("Password to save in the Keychain") as HTMLInputElement;
+
+  it("an RDP profile offers a password field of type password; an SSH profile does not", () => {
+    const { container } = render(<ProfileEditor initial={null} onSave={async () => {}} onCancel={() => {}} />);
+    expect(container.querySelector('input[type="password"]')).toBeNull();
+    fireEvent.change(screen.getByLabelText("Protocol"), { target: { value: "rdp" } });
+    expect(passwordField().type).toBe("password");
+    expect(passwordField().autocomplete).toBe("off");
+    expect(screen.getByText(/Leave empty to type it each time/)).toBeTruthy();
+  });
+
+  it("typing a password passes it as the save action, never inside the profile fields", async () => {
+    const { onSave } = mount({ ...EXISTING, credentialRef: null });
+    fireEvent.change(passwordField(), { target: { value: SECRET } });
+    fireEvent.click(screen.getByText("Save"));
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+    expect((onSave.mock.calls[0] as unknown[])[1]).toEqual({ type: "save", secret: SECRET });
+    expect(JSON.stringify((onSave.mock.calls[0] as unknown[])[0])).not.toContain(SECRET);
+  });
+
+  it("the typed password leaves the form at once: the field is empty while the save is still running", async () => {
+    let finish!: () => void;
+    const onSave = vi.fn(() => new Promise<void>((resolve) => (finish = resolve)));
+    render(<ProfileEditor initial={{ ...EXISTING, credentialRef: null }} onSave={onSave as never} onCancel={() => {}} />);
+    fireEvent.change(passwordField(), { target: { value: SECRET } });
+    fireEvent.click(screen.getByText("Save"));
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    expect(passwordField().value).toBe("");
+    finish();
+  });
+
+  it("with no password typed the action is keep", async () => {
+    const { onSave } = mount({ ...EXISTING, credentialRef: null });
+    fireEvent.click(screen.getByText("Save"));
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+    expect((onSave.mock.calls[0] as unknown[])[1]).toEqual({ type: "keep" });
+  });
+
+  it("a profile that already has a saved password says so, can replace it or remove it", async () => {
+    const { onSave } = mount(EXISTING); // EXISTING has a credentialRef
+    expect(screen.getByText(/A password is saved in the Keychain/)).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("Remove the saved password"));
+    fireEvent.click(screen.getByText("Save"));
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+    expect((onSave.mock.calls[0] as unknown[])[1]).toEqual({ type: "remove" });
+  });
+
+  it("replacing sends the new password; removing wins over a typed replacement being ignored by the checkbox", async () => {
+    const { onSave } = mount(EXISTING);
+    fireEvent.change(screen.getByLabelText("Replace the saved password"), { target: { value: SECRET } });
+    fireEvent.click(screen.getByText("Save"));
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+    expect((onSave.mock.calls[0] as unknown[])[1]).toEqual({ type: "save", secret: SECRET });
+  });
+
+  it("moving the endpoint of a profile with a saved password warns that the password will be forgotten", () => {
+    mount(EXISTING);
+    expect(screen.queryByText(/will be forgotten/)).toBeNull();
+    type("Host", "other.example.test");
+    expect(screen.getByText(/saved password will be forgotten/)).toBeTruthy();
+  });
+});

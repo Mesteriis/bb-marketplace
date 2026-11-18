@@ -28,6 +28,9 @@ describe("rdp texts", () => {
   it("reads the code the RPC layer puts in front of a helper refusal", () => {
     expect(errorTextFromMessage("not_ready: the desktop is not ready yet")).toBe("the desktop is not ready yet");
     expect(errorTextFromMessage("screenshot_too_large: too big")).toBe("the screenshot is too large to send");
+    expect(errorTextFromMessage("keychain_locked: the Keychain is locked")).toMatch(/Keychain is locked or needs approval/);
+    expect(errorTextFromMessage("credential_target_mismatch: x")).toMatch(/different host or user/);
+    expect(errorTextFromMessage("credential_missing: gone")).toMatch(/no longer in the Keychain/);
     expect(errorTextFromMessage("connection refused")).toBe("connection refused");
     expect(errorTextFromMessage("whatever: text")).toBe("whatever: text");
   });

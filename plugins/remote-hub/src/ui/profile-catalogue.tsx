@@ -15,8 +15,11 @@ export interface ProfileCatalogueProps {
   onEdit: (profile: Profile) => void;
   onNew: () => void;
   onDuplicate: (profile: Profile) => void;
-  onDelete: (profile: Profile) => void;
+  /** `deleteCredential`: also delete the profile's saved password (only offered when no other profile uses it). */
+  onDelete: (profile: Profile, deleteCredential: boolean) => void;
   onRetry: () => void;
+  /** Opens the Credentials screen; the button shows only when this is given. */
+  onShowCredentials?: () => void;
 }
 
 function endpoint(p: Profile): string {
@@ -28,6 +31,7 @@ export function ProfileCatalogue(props: ProfileCatalogueProps) {
   const [protocol, setProtocol] = useState<CatalogueFilter["protocol"]>("all");
   const [favoritesOnly, setFavoritesOnly] = useState(false);
   const [confirming, setConfirming] = useState<string | null>(null);
+  const [alsoCredential, setAlsoCredential] = useState(true);
 
   const { profiles } = props;
   const visible = profiles === null ? [] : filterProfiles(profiles, { query, protocol, favoritesOnly });
@@ -49,6 +53,11 @@ export function ProfileCatalogue(props: ProfileCatalogueProps) {
         <button type="button" className="rh-new" onClick={props.onNew}>
           New profile
         </button>
+        {props.onShowCredentials !== undefined && (
+          <button type="button" onClick={props.onShowCredentials}>
+            Credentials
+          </button>
+        )}
       </div>
 
       {profiles === null && props.error === null && <p className="rh-hint">Loading profiles…</p>}
@@ -72,6 +81,7 @@ export function ProfileCatalogue(props: ProfileCatalogueProps) {
             {group.profiles.map((p) => {
               const status = profileStatus(p.id, props.sessions);
               const lastError = p.recentErrors.at(-1);
+              const others = p.credentialRef === null ? [] : (profiles ?? []).filter((o) => o.id !== p.id && o.credentialRef === p.credentialRef);
               return (
                 <li key={p.id} aria-label={p.name} className="rh-profile" style={p.color !== null ? { borderLeftColor: p.color } : undefined}>
                   <div className="rh-profile-main">
@@ -83,6 +93,7 @@ export function ProfileCatalogue(props: ProfileCatalogueProps) {
                     <span data-testid="profile-status" className="rh-status">
                       {status.state === "idle" ? "" : status.sessions > 1 ? `${status.state} ×${status.sessions}` : status.state}
                     </span>
+                    {p.credentialRef !== null && <span className="rh-status">saved password</span>}
                     {lastError !== undefined && <span className="rh-error">last open failed: {lastError.code}</span>}
                   </div>
                   <div className="rh-profile-actions">
@@ -97,12 +108,21 @@ export function ProfileCatalogue(props: ProfileCatalogueProps) {
                     </button>
                     {confirming === p.id ? (
                       <>
+                        {p.credentialRef !== null && others.length === 0 && (
+                          <label className="rh-check">
+                            <input type="checkbox" checked={alsoCredential} onChange={(e) => setAlsoCredential(e.target.checked)} />
+                            Also delete the saved password
+                          </label>
+                        )}
+                        {p.credentialRef !== null && others.length > 0 && (
+                          <span className="rh-hint">{others.map((o) => o.name).join(", ")} still uses the saved password; it stays.</span>
+                        )}
                         <button
                           type="button"
                           aria-label={"Confirm delete " + p.name}
                           onClick={() => {
                             setConfirming(null);
-                            props.onDelete(p);
+                            props.onDelete(p, p.credentialRef !== null && others.length === 0 && alsoCredential);
                           }}
                         >
                           Delete?
@@ -112,7 +132,14 @@ export function ProfileCatalogue(props: ProfileCatalogueProps) {
                         </button>
                       </>
                     ) : (
-                      <button type="button" aria-label={"Delete " + p.name} onClick={() => setConfirming(p.id)}>
+                      <button
+                        type="button"
+                        aria-label={"Delete " + p.name}
+                        onClick={() => {
+                          setAlsoCredential(true);
+                          setConfirming(p.id);
+                        }}
+                      >
                         Delete
                       </button>
                     )}

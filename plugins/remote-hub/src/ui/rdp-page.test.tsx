@@ -87,6 +87,74 @@ async function connect(p: RdpPageProps, fill: Array<[string, string]> = []) {
   return { socket, say };
 }
 
+describe("RdpPage: a saved password (stage 3b-1)", () => {
+  const PID = "11111111-2222-4333-8444-555555555555";
+  const REF = "rh-cred:v1:local:0b8e6f4a-5c2d-4e1b-9a37-1f2e3d4c5b6a";
+  const fill = (over: Record<string, unknown> = {}) => ({
+    nonce: 1,
+    profileId: PID,
+    host: "win.example.test",
+    port: 3389,
+    username: "admin",
+    domain: "CORP",
+    width: null,
+    height: null,
+    credentialRef: REF,
+    ...over,
+  });
+
+  it("shows no password field, connects with the reference and sends no password at all", async () => {
+    const p = props();
+    render(<RdpPage {...p} prefill={fill()} />);
+    expect(screen.queryByLabelText("password")).toBeNull();
+    expect(screen.getByText(/Using the saved password/)).toBeTruthy();
+    fireEvent.click(screen.getByText("Connect"));
+    await flush();
+    const target = p.calls.onRdpOpen.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(target).toEqual({ host: "win.example.test", port: 3389, username: "admin", domain: "CORP", credentialRef: REF });
+    expect("password" in target).toBe(false);
+    expect(nonJsonPath(target)).toBeNull();
+    expect(p.calls.onRdpOpen.mock.calls[0]?.[2]).toBe(PID);
+  });
+
+  it("Use another password switches to a typed password and forgets the reference for this connect", async () => {
+    const p = props();
+    render(<RdpPage {...p} prefill={fill()} />);
+    fireEvent.click(screen.getByText("Use another password"));
+    type("password", SECRET);
+    fireEvent.click(screen.getByText("Connect"));
+    await flush();
+    const target = p.calls.onRdpOpen.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(target.password).toBe(SECRET);
+    expect("credentialRef" in target).toBe(false);
+  });
+
+  it("editing the host drops the saved password mode (a credential is only for its own endpoint)", async () => {
+    const p = props();
+    render(<RdpPage {...p} prefill={fill()} />);
+    type("host", "other.example.test");
+    expect(screen.getByLabelText("password")).toBeTruthy();
+    expect(screen.queryByText(/Using the saved password/)).toBeNull();
+  });
+
+  it("a locked Keychain at open is shown as a plain explanation and the saved mode stays for a retry", async () => {
+    const onRdpOpen = vi.fn(async () => {
+      throw new Error("keychain_locked: the Keychain is locked");
+    });
+    const p = props({ onRdpOpen: onRdpOpen as never });
+    render(<RdpPage {...p} prefill={fill()} />);
+    fireEvent.click(screen.getByText("Connect"));
+    await flush();
+    expect(screen.getByText(/Keychain is locked or needs approval/)).toBeTruthy();
+    expect(screen.getByText(/Using the saved password/)).toBeTruthy();
+  });
+
+  it("a prefill without a reference keeps the typed-password form", () => {
+    render(<RdpPage {...props()} prefill={fill({ credentialRef: null })} />);
+    expect(screen.getByLabelText("password")).toBeTruthy();
+  });
+});
+
 describe("RdpPage: one open at a time (P1)", () => {
   it("a second submit while the first open is pending does not open a second session", async () => {
     let finish!: (h: SessionHandle) => void;

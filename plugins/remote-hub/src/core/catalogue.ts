@@ -75,6 +75,8 @@ export interface RdpFormValues {
   domain: string | null;
   width: number | null;
   height: number | null;
+  /** The profile's saved credential; the password itself is never here. */
+  credentialRef: string | null;
 }
 
 /** The RDP form values for a profile; the password is typed at connect time. */
@@ -86,5 +88,6 @@ export function profileToRdpForm(p: Profile): RdpFormValues {
     domain: p.domain,
     width: p.rdpWidth,
     height: p.rdpHeight,
+    credentialRef: p.credentialRef,
   };
 }
