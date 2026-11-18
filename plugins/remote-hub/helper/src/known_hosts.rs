@@ -319,6 +319,23 @@ pub fn merge_now(copy: &mut SessionCopy) -> Result<usize, KnownHostsError> {
     Ok(fresh.len())
 }
 
+/// Whether the overlay lines already hold a key for this endpoint (`host` on port 22, `[host]:port` otherwise). A
+/// hashed line cannot be matched, so it never counts.
+pub fn knows_endpoint(lines: &[String], host: &str, port: u16) -> bool {
+    let wanted = if port == 22 { host.to_ascii_lowercase() } else { format!("[{}]:{}", host.to_ascii_lowercase(), port) };
+    lines.iter().any(|l| !l.starts_with("|1|") && l.split(' ').next().unwrap_or("").split(',').any(|h| h.eq_ignore_ascii_case(&wanted)))
+}
+
+/// Test-hooks only: a test named the overlay file, so a fake ssh may take part in the first-use serialisation.
+#[cfg(feature = "test-hooks")]
+pub fn test_overlay_configured() -> bool {
+    std::env::var_os("REMOTE_HUB_KNOWN_HOSTS_PATH").is_some()
+}
+#[cfg(not(feature = "test-hooks"))]
+pub fn test_overlay_configured() -> bool {
+    false
+}
+
 /// At helper start: copies left by a helper that died are removed.
 pub fn cleanup_stale_copies() {
     let Ok(overlay) = overlay_path() else { return };

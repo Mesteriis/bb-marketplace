@@ -101,7 +101,14 @@ pub struct SessionManager {
     /// Sessions whose user just answered "yes" to a host-key question: ssh writes the key to the copy right after,
     /// and `merge_host_keys_pending` moves it into the overlay as soon as it is there.
     host_key_confirmed: HashMap<u32, Instant>,
+    /// First-use endpoints (`host:port`, no key in the overlay yet) with the session that is deciding them. While
+    /// a hold lives, another saved-secret open to the same endpoint is refused: its copy of the overlay would not
+    /// have the key the first session is about to record, and it could be shown a DIFFERENT key as unknown.
+    endpoint_holds: HashMap<String, (u32, Instant)>,
 }
+
+/// How long a first-use hold lasts at most: long enough for a person to read a host-key question.
+const ENDPOINT_HOLD: Duration = Duration::from_secs(120);
 
 #[derive(Debug)]
 pub enum SessionError {
@@ -306,7 +313,28 @@ impl SessionManager {
             askpass: None,
             host_key_copies: HashMap::new(),
             host_key_confirmed: HashMap::new(),
+            endpoint_holds: HashMap::new(),
         }
+    }
+
+    /// Whether a live session is still deciding this endpoint's first host key.
+    pub fn endpoint_pending(&mut self, endpoint: &str) -> bool {
+        match self.endpoint_holds.get(endpoint) {
+            Some((id, since)) if since.elapsed() < ENDPOINT_HOLD && self.sessions.contains_key(id) => true,
+            Some(_) => {
+                self.endpoint_holds.remove(endpoint);
+                false
+            }
+            None => false,
+        }
+    }
+
+    pub fn hold_endpoint(&mut self, id: u32, endpoint: String) {
+        self.endpoint_holds.insert(endpoint, (id, Instant::now()));
+    }
+
+    fn release_endpoints(&mut self, id: u32) {
+        self.endpoint_holds.retain(|_, (holder, _)| *holder != id);
     }
 
     /// Tries, for sessions whose user confirmed a host key a moment ago, to move that key into the overlay now.
@@ -321,6 +349,8 @@ impl SessionManager {
             };
             if done {
                 self.host_key_confirmed.remove(&id);
+                // The key is in the overlay now (or will not come): the next open sees what there is.
+                self.release_endpoints(id);
             }
         }
     }
@@ -397,6 +427,7 @@ impl SessionManager {
 
     fn askpass_forget(&mut self, id: u32) {
         self.host_key_confirmed.remove(&id);
+        self.release_endpoints(id);
         if let Some(copy) = self.host_key_copies.remove(&id) {
             crate::known_hosts::merge_session(&copy);
         }

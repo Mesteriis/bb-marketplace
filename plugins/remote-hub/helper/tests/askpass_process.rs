@@ -607,3 +607,66 @@ fn a_mixed_case_host_is_bound_and_prompted_in_lower_case() {
     let (text, _) = f.drive(sid, Duration::from_secs(20), |t, _| t.contains("DONE"));
     assert_eq!(field(&text, "H"), SECRET_DIGEST, "{text}");
 }
+
+/// Y3: while one session is deciding a server's first host key, a second saved-secret open to the same host:port is
+/// refused (it would copy an overlay that does not have the key yet and could be shown a DIFFERENT key as unknown).
+#[test]
+fn a_second_open_to_a_server_whose_first_host_key_is_being_decided_is_refused_until_the_first_ends() {
+    let kh_dir = std::env::temp_dir().join(format!("rh-ask-kh-{}", std::process::id()));
+    std::os::unix::fs::DirBuilderExt::mode(&mut std::fs::DirBuilder::new(), 0o700).create(&kh_dir).unwrap();
+    let kh = kh_dir.join("known_hosts");
+    let mut f = Fixture::new("y3", &[("REMOTE_HUB_KNOWN_HOSTS_PATH", kh.to_str().unwrap())]);
+    let try_open = |f: &mut Fixture, id: u64| {
+        let facts = f.facts.clone();
+        let mut env = HashMap::new();
+        env.insert("PATH".to_string(), "/usr/bin:/bin".to_string());
+        f.h().send(&Request::OpenSsh {
+            id,
+            cols: 80,
+            rows: 24,
+            program: "/usr/bin/perl".into(),
+            argv: vec!["perl".into(), "-e".into(), "sleep 60;".into()],
+            env,
+            cwd: None,
+            askpass: Some(AskpassSpec { credential_ref: REF.into(), test_facts: Some(facts) }),
+        });
+        f.h().read_reply(id)
+    };
+    let first = try_open(&mut f, 20);
+    let Response::SessionOpened { session_id: first_id, .. } = first else { panic!("first open: {first:?}") };
+    // Same host and port: refused with its own code, and nothing was started.
+    assert_eq!(error_code(try_open(&mut f, 21)), "host_key_confirmation_pending");
+    // When the first session ends the hold ends with it.
+    f.h().send(&Request::SessionClose { id: 24, session_id: first_id });
+    let _ = f.h().read_reply(24);
+    assert!(matches!(try_open(&mut f, 25), Response::SessionOpened { .. }));
+    let _ = std::fs::remove_dir_all(&kh_dir);
+}
+
+/// Y3: a server whose key the overlay already holds is not serialised: any number of sessions may open.
+#[test]
+fn a_server_with_a_key_in_the_overlay_is_not_held() {
+    let kh_dir = std::env::temp_dir().join(format!("rh-ask-kh2-{}", std::process::id()));
+    std::os::unix::fs::DirBuilderExt::mode(&mut std::fs::DirBuilder::new(), 0o700).create(&kh_dir).unwrap();
+    let kh = kh_dir.join("known_hosts");
+    std::fs::write(&kh, "host ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n").unwrap();
+    std::fs::set_permissions(&kh, std::os::unix::fs::PermissionsExt::from_mode(0o600)).unwrap();
+    let mut f = Fixture::new("y3b", &[("REMOTE_HUB_KNOWN_HOSTS_PATH", kh.to_str().unwrap())]);
+    for id in [30u64, 31, 32] {
+        let facts = f.facts.clone();
+        let mut env = HashMap::new();
+        env.insert("PATH".to_string(), "/usr/bin:/bin".to_string());
+        f.h().send(&Request::OpenSsh {
+            id,
+            cols: 80,
+            rows: 24,
+            program: "/usr/bin/perl".into(),
+            argv: vec!["perl".into(), "-e".into(), "sleep 60;".into()],
+            env,
+            cwd: None,
+            askpass: Some(AskpassSpec { credential_ref: REF.into(), test_facts: Some(facts) }),
+        });
+        assert!(matches!(f.h().read_reply(id), Response::SessionOpened { .. }), "open {id}");
+    }
+    let _ = std::fs::remove_dir_all(&kh_dir);
+}

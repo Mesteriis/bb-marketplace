@@ -544,6 +544,7 @@ fn handle(
             // (S4), and the secret must be bound to exactly that (S2). Both are the helper's own checks.
             let mut askpass_plan: Option<(crate::binding::Bind, String)> = None;
             let mut host_key_copy: Option<crate::known_hosts::SessionCopy> = None;
+            let mut first_use_endpoint: Option<String> = None;
             if let Some(spec) = &askpass {
                 if !valid_credential_ref(&spec.credential_ref) {
                     return Ok(protocol::encode_response(&Response::Error {
@@ -572,6 +573,21 @@ fn handle(
                 // is never a second writer; the helper merges what the user confirmed when the session ends),
                 // named as ONE quoted file, with every trust option stated: no global known_hosts, the question
                 // asked for an unknown key, a refusal for a changed one, no host-key updates or DNS trust.
+                // First use of a host:port (no key in the overlay yet): one session at a time decides it.
+                if program == "/usr/bin/ssh" || crate::known_hosts::test_overlay_configured() {
+                    let lines = crate::known_hosts::read_lines().unwrap_or_default();
+                    if !crate::known_hosts::knows_endpoint(&lines, &facts.host, facts.port) {
+                        let endpoint = format!("{}:{}", facts.host.to_ascii_lowercase(), facts.port);
+                        if manager.endpoint_pending(&endpoint) {
+                            return Ok(protocol::encode_response(&Response::Error {
+                                id: Some(id),
+                                code: "host_key_confirmation_pending".to_string(),
+                                message: "another session to this server is waiting for a host key decision; try again when it is done".to_string(),
+                            }));
+                        }
+                        first_use_endpoint = Some(endpoint);
+                    }
+                }
                 if program == "/usr/bin/ssh" && !argv.iter().any(|a| a.starts_with("UserKnownHostsFile=")) {
                     let opened = crate::known_hosts::session_copy().and_then(|copy| crate::known_hosts::ssh_known_hosts_option(&copy.path).map(|option| (copy, option)));
                     match opened {
@@ -609,6 +625,9 @@ fn handle(
                     Ok(session_id) => {
                         if let Some(copy) = host_key_copy.take() {
                             manager.set_host_key_copy(session_id, copy);
+                        }
+                        if let Some(endpoint) = first_use_endpoint.take() {
+                            manager.hold_endpoint(session_id, endpoint);
                         }
                         let pid = manager.child_pid(session_id).unwrap_or(0);
                         Ok(protocol::encode_response(&Response::SessionOpened {
