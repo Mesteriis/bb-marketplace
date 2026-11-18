@@ -515,7 +515,7 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
       const info = rdpRecord(key);
       if (runtime === undefined || info?.rdp === undefined) throw new HelperRuntimeError("session_not_found", "unknown rdp session");
       runtime.views.set(viewId, sink);
-      applyEffects(runtime, { ackHelper: null, refresh: runtime.mux.attach(viewId).refresh });
+      applyEffects(runtime, runtime.mux.attach(viewId));
       const rdp = info.rdp;
       return {
         initial: { type: "attached", state: rdp.state, prompt: rdp.prompt, desktop: rdp.desktop, target: rdp.target },
@@ -529,7 +529,7 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
         },
         refresh() {
           // Resynchronise this view only: it becomes needsFull and the next full update reaches it.
-          applyEffects(runtime, { ackHelper: null, refresh: runtime.mux.resync(viewId).refresh });
+          applyEffects(runtime, runtime.mux.resync(viewId));
         },
         detach() {
           runtime.views.delete(viewId);

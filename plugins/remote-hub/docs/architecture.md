@@ -211,6 +211,11 @@ three RPCs and the same attach socket as SSH. There is no UI yet (stage 2b-3).
   (a full frame under a new frame id). The helper is acked on the FIRST ack of a
   frame by any receiver, at once when nobody can take the update, and when the
   last receiver detaches — so a view that never acks costs the others nothing.
+  The helper queues a refresh BEHIND the frame in flight, so a view that attaches
+  or resyncs while the current frame is un-acked releases that frame at once
+  (the holders keep their in-flight mark and are skipped from then on): the
+  newcomer's full frame arrives after one helper round trip, never after a
+  silent view's ack.
 - **Attach socket** (`rdp-socket.ts`): text events `attached` (state, prompt,
   desktop, endpoint), `state`, `cert_prompt`, `desktop`, `input_rejected`,
   `closed`, `error {code}`; binary frames = `{frameId u64, fbWidth, fbHeight, x,
@@ -218,6 +223,11 @@ three RPCs and the same attach socket as SSH. There is no UI yet (stage 2b-3).
   (fbWidth/fbHeight map to the helper's `geom_width/geom_height`; refused with
   `not_ready` before `desktop_ready`), `refresh`, `detach`. 4401 unknown token,
   4000 session ended (the stored reason is sent first), 4410 helper exited.
+- **Screenshot memory**: a chunked answer is reassembled in the TS adapter: up to
+  64 chunks x 768 KiB = 48 MiB of base64 per screenshot, at most 4 outstanding
+  per session (the helper refuses a fifth with `screenshot_busy`), so at most
+  about 192 MiB of base64 per session in the worst case; each pending request is
+  dropped on `session.closed`, helper death or its 30 s timeout.
 - **Known limits**: a stream the service finds out of step (a `seq` or `frameId`
   that does not follow) is dropped chunk by chunk, not turned into a session
   error (the helper validates every frame, so it is not expected); `screenshot_too_large`

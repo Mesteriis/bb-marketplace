@@ -341,6 +341,21 @@ describe("RDP service: views, updates and input", () => {
     expect(frameIds).toEqual([2, 3, 4, 5, 6, 7, 8]);
   });
 
+  it("a healthy view that attaches while a silent view holds the frame still gets a frame (L1)", async () => {
+    const { helper, service, wire, handle, sid } = await readySession();
+    const silent = await attach(service, wire, handle);
+    helper.update(sid, 2, 0, true); // held by the silent view, which never acks
+    expect(helper.acks).toEqual([]);
+    const healthy = await attach(service, wire, handle);
+    expect(helper.acks).toEqual([2]); // the held frame is released so the refresh can flow
+    expect(helper.refreshes).toBeGreaterThanOrEqual(1);
+    helper.update(sid, 3, 0, true); // the refreshed full frame, a new frame id
+    expect(binaries(healthy.socket).length).toBe(1);
+    expect(binaries(silent.socket).length).toBe(1);
+    healthy.handlers.onMessage(healthy.socket, JSON.stringify({ type: "ack", frameId: 3 }));
+    expect(helper.acks).toEqual([2, 3]);
+  });
+
   it("an attach after the desktop is ready asks the helper for a full frame (refresh on reattach)", async () => {
     const { helper, service, wire, handle } = await readySession();
     const first = await attach(service, wire, handle);

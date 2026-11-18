@@ -14,10 +14,10 @@ const part = (frameId: number) => chunk(frameId, 10, 10, 8, 8);
 describe("RdpViewMux", () => {
   it("a new view needs a full frame and asks for exactly one refresh", () => {
     const mux = new RdpViewMux();
-    expect(mux.attach("a")).toEqual({ refresh: true });
+    expect(mux.attach("a")).toEqual({ refresh: true, ackHelper: null });
     expect(mux.needsFull("a")).toBe(true);
     // a second view while the refresh is outstanding does not ask again
-    expect(mux.attach("b")).toEqual({ refresh: false });
+    expect(mux.attach("b")).toEqual({ refresh: false, ackHelper: null });
   });
 
   it("delivers the full update to both views, acks the helper on the FIRST view ack, and clears needsFull", () => {
@@ -57,7 +57,7 @@ describe("RdpViewMux", () => {
     mux.attach("a");
     mux.onChunk(0, full(1));
     mux.onViewAck("a", 1);
-    expect(mux.attach("late")).toEqual({ refresh: true });
+    expect(mux.attach("late")).toEqual({ refresh: true, ackHelper: null });
     const partial = mux.onChunk(0, part(2));
     expect(partial.deliver).toEqual(["a"]); // late is free but a partial band cannot resync it
     // a new update began without resyncing `late`: the earlier request is spent, ask once more
@@ -124,13 +124,40 @@ describe("RdpViewMux", () => {
     mux.attach("a");
     mux.onChunk(0, full(1));
     expect(mux.needsFull("a")).toBe(false);
-    expect(mux.resync("a")).toEqual({ refresh: true });
-    expect(mux.inFlight("a")).toBe(1); // still holds frame 1
+    // Frame 1 is held un-acked: the resync releases it at the helper so the refresh can flow.
+    expect(mux.resync("a")).toEqual({ refresh: true, ackHelper: 1 });
+    expect(mux.inFlight("a")).toBe(1); // it still holds frame 1
     expect(mux.needsFull("a")).toBe(true);
-    expect(mux.resync("a")).toEqual({ refresh: false }); // one request outstanding
-    expect(mux.resync("nobody")).toEqual({ refresh: false });
-    // the ack for the frame it holds still releases the helper
-    expect(mux.onViewAck("a", 1).ackHelper).toBe(1);
+    expect(mux.resync("a")).toEqual({ refresh: false, ackHelper: null }); // one request outstanding, frame 1 already released
+    expect(mux.resync("nobody")).toEqual({ refresh: false, ackHelper: null });
+    // the late ack for frame 1 does not ack the helper a second time
+    expect(mux.onViewAck("a", 1).ackHelper).toBeNull();
+  });
+
+  it("a healthy view that attaches while a silent view holds the frame gets a full frame (L1)", () => {
+    const mux = new RdpViewMux();
+    mux.attach("silent");
+    expect(mux.onChunk(0, full(1)).deliver).toEqual(["silent"]); // frame 1 held, never acked
+    // The newcomer asks for a refresh, which the helper queues BEHIND frame 1: frame 1 is released now.
+    expect(mux.attach("healthy")).toEqual({ refresh: true, ackHelper: 1 });
+    // The refreshed full frame (a NEW frame id) reaches the healthy view only.
+    const out = mux.onChunk(0, full(2));
+    expect(out.deliver).toEqual(["healthy"]);
+    expect(mux.needsFull("healthy")).toBe(false);
+    expect(mux.needsFull("silent")).toBe(true);
+    expect(mux.onViewAck("healthy", 2)).toEqual({ ackHelper: 2, refresh: false });
+    // and it keeps receiving updates afterwards, the silent view stays at frame 1
+    expect(mux.onChunk(0, part(3)).deliver).toEqual(["healthy"]);
+    expect(mux.inFlight("silent")).toBe(1);
+  });
+
+  it("the frame is released only once: a later ack by the holder does not ack the helper again", () => {
+    const mux = new RdpViewMux();
+    mux.attach("silent");
+    mux.onChunk(0, full(1));
+    expect(mux.attach("healthy").ackHelper).toBe(1);
+    expect(mux.attach("another").ackHelper).toBeNull();
+    expect(mux.onViewAck("silent", 1).ackHelper).toBeNull();
   });
 
   it("an ack for a frame the view does not hold changes nothing", () => {

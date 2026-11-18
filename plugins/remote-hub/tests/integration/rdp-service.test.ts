@@ -229,6 +229,18 @@ describe.skipIf(!runDocker)("RDP service against xrdp (cases 6b and 8)", () => {
     expect(silent.distinct()).toEqual(silentFrame); // still exactly one
     expect(a.distinct().length).toBeGreaterThanOrEqual(before + 2);
 
+    // Late attach behind a silent SOLE view (L1): with every other view gone, a new
+    // silent view receives the current full frame and never acks it. A healthy view
+    // that attaches then must still get a frame (the held frame is released so the
+    // refresh can flow), not starve.
+    for (const v of views) v.handlers.onClose();
+    views.length = 0;
+    const sole = await attachView(handle, true);
+    await poll(() => (pumpAll(), sole.frames.length > 0), 20_000, "the sole silent view's frame");
+    const late = await attachView(handle, false);
+    await poll(() => (pumpAll(), late.frames.length > 0), 20_000, "a late healthy view's first frame while a silent view holds the current frame");
+    expect(sole.distinct().length).toBe(1);
+
     for (const v of views) v.handlers.onClose();
     views.length = 0;
     await service.sessionClose(handle);

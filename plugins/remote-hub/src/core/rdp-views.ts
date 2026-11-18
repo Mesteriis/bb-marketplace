@@ -19,7 +19,14 @@
 //   detaches, so a view that never acks costs the others nothing and the
 //   helper never wedges;
 // - a view that becomes free while `needsFull` (or is new) triggers one
-//   `rdp.refresh` (full framebuffer) request, until an update arrives.
+//   `rdp.refresh` (full framebuffer) request, until an update arrives;
+// - the refresh is coalesced by the helper BEHIND the update in flight, so a
+//   view that attaches (or asks to resync) while the current frame is held by
+//   views that have not acked it releases that frame at once: the helper is
+//   acked for it. The holders keep their in-flight mark, are skipped for the
+//   following updates (and so become needsFull), and may not ack for ever; the
+//   newcomer's full frame therefore reaches it after one helper round trip, not
+//   after the silent view's ack.
 import type { RdpUpdateChunk } from "./rdp-protocol.ts";
 
 interface ViewState {
@@ -75,19 +82,27 @@ export class RdpViewMux {
     return this.views.get(viewId)?.needsFull ?? false;
   }
 
-  attach(viewId: string): { refresh: boolean } {
+  attach(viewId: string): ViewEffects {
     this.views.set(viewId, { inFlight: null, needsFull: true, fullRows: 0 });
-    return { refresh: this.takeRefresh() };
+    return { refresh: this.takeRefresh(), ackHelper: this.releaseHeld() };
   }
 
   /** The view asks for a fresh full frame (explicit refresh): it becomes
    *  needsFull; what it has in flight stays in flight. */
-  resync(viewId: string): { refresh: boolean } {
+  resync(viewId: string): ViewEffects {
     const view = this.views.get(viewId);
-    if (view === undefined) return { refresh: false };
+    if (view === undefined) return { ackHelper: null, refresh: false };
     view.needsFull = true;
     view.fullRows = 0;
-    return { refresh: this.takeRefresh() };
+    return { refresh: this.takeRefresh(), ackHelper: this.releaseHeld() };
+  }
+
+  /** Release the frame in flight at the helper before its holders have acked it. */
+  private releaseHeld(): number | null {
+    const cur = this.current;
+    if (cur === null || cur.acked) return null;
+    cur.acked = true;
+    return cur.frameId;
   }
 
   detach(viewId: string): ViewEffects {
