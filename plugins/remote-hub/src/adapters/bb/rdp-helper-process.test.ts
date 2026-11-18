@@ -303,3 +303,23 @@ describe("HelperProcess RDP: the first update right behind session.opened", () =
   });
 });
 
+
+describe("HelperProcess askpass events", () => {
+  it("passes a prompt, its expiry and the credential notices on as session events", async () => {
+    const { fake, hp } = await start();
+    const seen: Array<[number, unknown]> = [];
+    hp.onSshAskpass((sessionId, event) => seen.push([sessionId, event]));
+    reply(fake, { type: "ssh.prompt", sessionId: 3, promptId: 1, text: "Continue (yes/no)?", kind: "confirm" });
+    reply(fake, { type: "ssh.prompt_expired", sessionId: 3, promptId: 1 });
+    reply(fake, { type: "ssh.credential_rejected", sessionId: 3 });
+    reply(fake, { type: "ssh.credential_failed", sessionId: 3, code: "keychain_locked" });
+    await tick();
+    await tick();
+    expect(seen).toEqual([
+      [3, { type: "prompt", promptId: 1, text: "Continue (yes/no)?", kind: "confirm" }],
+      [3, { type: "prompt_expired", promptId: 1 }],
+      [3, { type: "credential_rejected" }],
+      [3, { type: "credential_failed", code: "keychain_locked" }],
+    ]);
+  });
+});

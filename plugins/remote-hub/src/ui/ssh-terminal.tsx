@@ -100,6 +100,8 @@ export function SshTerminal(props: SshTerminalProps) {
           });
         } else if (msg.type === "prompt" && typeof msg.promptId === "number" && typeof msg.text === "string") {
           props.onAskpass?.({ type: "prompt", promptId: msg.promptId, text: msg.text, kind: msg.kind ?? "none" });
+        } else if (msg.type === "prompt_expired" && typeof msg.promptId === "number") {
+          props.onAskpass?.({ type: "prompt_expired", promptId: msg.promptId });
         } else if (msg.type === "credential_rejected") {
           props.onAskpass?.({ type: "credential_rejected" });
         } else if (msg.type === "credential_failed") {

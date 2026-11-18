@@ -100,6 +100,8 @@ enum Reply {
 pub enum BrokerEvent {
     /// A prompt for the user. `kind` is "secret" (a typed, masked answer), "confirm" or "none".
     Prompt { session_id: u32, prompt_id: u64, text: String, kind: String },
+    /// A question the user did not answer in time (or whose ssh went away): it was refused, so the page may close it.
+    PromptExpired { session_id: u32, prompt_id: u64 },
     /// The saved credential was used once and the server asked again: it was refused.
     CredentialRejected { session_id: u32 },
     /// The Keychain would not hand the saved credential over (keychain_locked, credential_missing, ...).
@@ -161,11 +163,22 @@ impl Broker {
         let base = if base.as_os_str().len() > 40 { PathBuf::from("/tmp") } else { base };
         let dir = base.join(format!("rh-ap-{}-{}", std::process::id(), random_hex(4)));
         std::fs::DirBuilder::new().mode(0o700).create(&dir)?;
-        let socket_path = dir.join("s");
-        let listener = UnixListener::bind(&socket_path)?;
-        std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))?;
-        listener.set_nonblocking(true)?;
-        symlink(helper_exe, dir.join(ASKPASS_NAME))?;
+        // Whatever fails after the directory exists must not leave it behind.
+        let built = (|| -> std::io::Result<(PathBuf, UnixListener)> {
+            let socket_path = dir.join("s");
+            let listener = UnixListener::bind(&socket_path)?;
+            std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))?;
+            listener.set_nonblocking(true)?;
+            symlink(helper_exe, dir.join(ASKPASS_NAME))?;
+            Ok((socket_path, listener))
+        })();
+        let (socket_path, listener) = match built {
+            Ok(parts) => parts,
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&dir);
+                return Err(e);
+            }
+        };
         Ok(Broker {
             dir,
             socket_path,
@@ -256,15 +269,21 @@ impl Broker {
     fn service_conn(&mut self, index: usize, fetch: &mut dyn FnMut(&str) -> Result<Item, String>) -> bool {
         let now = Instant::now();
         match &self.conns[index].state {
-            State::Ui { since, .. } => {
-                if now.duration_since(*since) > ui_timeout() {
+            State::Ui { since, prompt_id, session_id } => {
+                let (since, prompt_id, session_id) = (*since, *prompt_id, *session_id);
+                if now.duration_since(since) > ui_timeout() {
                     let conn = &mut self.conns[index];
                     let _ = write_reply(&mut conn.stream, Reply::Deny);
+                    self.events.push(BrokerEvent::PromptExpired { session_id, prompt_id });
                     return true;
                 }
                 // The client going away cancels the question.
                 let mut probe = [0u8; 1];
-                return matches!(self.conns[index].stream.read(&mut probe), Ok(0));
+                let gone = matches!(self.conns[index].stream.read(&mut probe), Ok(0));
+                if gone {
+                    self.events.push(BrokerEvent::PromptExpired { session_id, prompt_id });
+                }
+                return gone;
             }
             State::Reading => {}
         }

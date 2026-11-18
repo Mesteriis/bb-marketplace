@@ -342,7 +342,7 @@ describe("SshPage and OpenSSH's questions / a saved secret", () => {
       socket.onmessage?.({ data: JSON.stringify({ type: "prompt", promptId: 7, text: "Are you sure you want to continue connecting (yes/no)?", kind: "confirm" }) });
     });
     expect(screen.getByTestId("ssh-prompt-text").textContent).toContain("continue connecting");
-    fireEvent.click(screen.getByText("Yes"));
+    fireEvent.click(screen.getByText("Yes"), { detail: 1 });
     expect(socket.sent.filter((d) => typeof d === "string" && d.includes("prompt_answer"))).toEqual([
       JSON.stringify({ type: "prompt_answer", promptId: 7, answer: "yes" }),
     ]);
@@ -404,5 +404,51 @@ describe("SshPage and a typed answer to an ambiguous prompt", () => {
       JSON.stringify({ type: "prompt_answer", promptId: 2, answer: "654321" }),
     ]);
     expect(screen.queryByLabelText("Answer")).toBeNull();
+  });
+});
+
+describe("SshPage host-key confirmation needs a deliberate yes (S9)", () => {
+  async function withPrompt() {
+    const onSshOpen = vi.fn(async () => ({ generation: "a".repeat(32), sessionId: 1 }));
+    const onAttach = vi.fn(async () => ({ token: "b".repeat(32), wsUrl: "ws://x" }));
+    render(<SshPage onSshOpen={onSshOpen} onAttach={onAttach} onClose={async () => {}} launch={{ nonce: 1, profileId: "11111111-2222-4333-8444-555555555555", target: { host: "box.test", extraOptions: [] } }} />);
+    await act(async () => {
+      for (let i = 0; i < 6; i += 1) await Promise.resolve();
+    });
+    const socket = FakeWebSocket.instances[0];
+    await act(async () => {
+      socket.onmessage?.({ data: JSON.stringify({ type: "prompt", promptId: 4, text: "Are you sure (yes/no)?", kind: "confirm" }) });
+    });
+    const answers = () => socket.sent.filter((d) => typeof d === "string" && d.includes("prompt_answer"));
+    return { socket, answers };
+  }
+
+  it("a keyboard activation of Yes (click with no pointer) answers nothing; a pointer click does", async () => {
+    const { answers } = await withPrompt();
+    fireEvent.click(screen.getByText("Yes")); // detail 0: Enter or Space on the focused button
+    expect(answers()).toEqual([]);
+    expect(screen.getByRole("alertdialog")).toBeTruthy();
+    fireEvent.click(screen.getByText("Yes"), { detail: 1 });
+    expect(answers()).toEqual([JSON.stringify({ type: "prompt_answer", promptId: 4, answer: "yes" })]);
+  });
+
+  it("typing yes and pressing Enter answers; anything else typed does not", async () => {
+    const { answers } = await withPrompt();
+    const input = screen.getByLabelText("Type yes to continue");
+    fireEvent.change(input, { target: { value: "ye" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(answers()).toEqual([]);
+    fireEvent.change(input, { target: { value: "yes" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(answers()).toEqual([JSON.stringify({ type: "prompt_answer", promptId: 4, answer: "yes" })]);
+  });
+
+  it("an expired question closes the dialog and says so", async () => {
+    const { socket } = await withPrompt();
+    await act(async () => {
+      socket.onmessage?.({ data: JSON.stringify({ type: "prompt_expired", promptId: 4 }) });
+    });
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(screen.getByTestId("ssh-credential-notice").textContent).toContain("not answered in time");
   });
 });

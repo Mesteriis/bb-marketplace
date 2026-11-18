@@ -1,7 +1,8 @@
 // A question OpenSSH asked that the helper must not answer itself: a host key
 // confirmation ("yes"/"no") or an informational message. The user's answer is
 // handed back once and never stored. Nothing is preselected, Enter on the dialog
-// does nothing, and Escape cancels (which OpenSSH treats as a refusal).
+// does nothing, "yes" to a host key needs a pointer click or the word typed, and
+// Escape cancels (which OpenSSH treats as a refusal).
 import { useEffect, useRef, useState } from "react";
 
 export interface SshPromptInfo {
@@ -54,6 +55,25 @@ export function SshPromptDialog(props: SshPromptDialogProps) {
       <p id="rh-ssh-prompt-text" className="rh-ssh-prompt-text" data-testid="ssh-prompt-text">
         {prompt.text}
       </p>
+      {confirm && (
+        <label className="rh-ssh-prompt-type">
+          Or type yes and press Enter
+          <input
+            type="text"
+            autoComplete="off"
+            aria-label="Type yes to continue"
+            value={typed}
+            onChange={(e) => setTyped(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                e.stopPropagation();
+                if (typed.trim().toLowerCase() === "yes") answer("yes");
+              }
+            }}
+          />
+        </label>
+      )}
       {secret && (
         <input
           type="password"
@@ -77,7 +97,9 @@ export function SshPromptDialog(props: SshPromptDialogProps) {
           </button>
         ) : confirm ? (
           <>
-            <button type="button" onClick={() => answer("yes")}>
+            {/* A host-key "yes" needs a deliberate act: a pointer click, or typing yes. Enter or Space on a
+                focused button (a click event with no pointer, detail 0) answers nothing. */}
+            <button type="button" onClick={(e) => (e.detail > 0 ? answer("yes") : undefined)}>
               Yes
             </button>
             <button type="button" onClick={() => answer("no")}>

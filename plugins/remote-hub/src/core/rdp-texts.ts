@@ -68,6 +68,7 @@ const ERROR_CODES: Record<string, string> = {
   credential_exists: "This profile already has a saved password; replace it instead.",
   credential_not_applicable: "This profile does not use a stored password.",
   ssh_credential_rejected: "The server refused the saved password or passphrase. It was tried once and not again. Edit the profile to save the right one.",
+  prompt_expired: "The question was not answered in time and was refused.",
   prompt_gone: "That question is no longer open.",
   empty_secret: "Type a password first.",
   invalid_credential_source: "Use either a saved password or a typed one, not both.",

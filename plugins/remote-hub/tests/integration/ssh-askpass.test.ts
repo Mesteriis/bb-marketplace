@@ -8,6 +8,10 @@
 //  - no secret appears in any channel: helper stderr, session list, credential list, profile
 //    and metadata rows, askpass events, terminal output, process arguments and environments.
 // (The sentinels are only ever compared, never printed.)
+// WHAT THIS CANNOT OBSERVE: the process search is a snapshot taken at the end, so the short-lived askpass
+// and Keychain children (which exist for milliseconds) are not in it; BB's own host logging and traces,
+// and transient kernel state, are outside this test too. Their argv and environment are covered by
+// construction instead (the secret travels only over pipes and the askpass socket; see architecture.md).
 // Needs docker and REMOTE_HUB_INTEGRATION=1; a 240 s watchdog aborts a hung run.
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";

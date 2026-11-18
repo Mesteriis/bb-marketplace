@@ -34,7 +34,11 @@ both through a Rust helper, plus the echo console from stage 1.
   is no fallback to storing the password anywhere else.
 - SSH uses a saved password or passphrase through OpenSSH's askpass hook, served by
   the helper itself: it answers only the one password or passphrase prompt the session
-  was set up for, once. A refused secret is not retried (the server's own log shows
+  was set up for (the exact line OpenSSH writes for that user@host or key file), once.
+  The helper itself checks that the saved secret was saved for exactly this host, port
+  and user, or this key file. A session with a saved secret reads no SSH configuration
+  (`-F none`), so a profile that relies on `~/.ssh/config` aliases cannot use a saved
+  secret yet. A refused secret is not retried (the server's own log shows
   one attempt) and is reported plainly. A host-key question or any other prompt is
   shown to you and answered by you, once, and never saved.
 - The helper owns every session; detaching a view never ends it, and
@@ -43,7 +47,11 @@ both through a Rust helper, plus the echo console from stage 1.
 
 ## Honest limits
 
-A saved SSH secret answers only password or passphrase prompts; keyboard-interactive
+Passwords saved before the binding existed are refused ("save it again"). The Keychain
+gives encryption at rest and a per-app access list, not isolation from another program
+of the same user that can drive the helper: such a program still cannot send a saved
+secret anywhere but where it was saved for, and nothing prints one, but it is not
+protected from by the Keychain alone. A saved SSH secret answers only password or passphrase prompts; keyboard-interactive
 logins (one-time codes) are always typed by you. Certificate trust lasts for the BB run, and there is no
 import of SSH config, no agent tools and no CLI yet. The helper is not code-signed,
 so macOS may ask you to approve its Keychain access; until you do, a saved password

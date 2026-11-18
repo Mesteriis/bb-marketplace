@@ -207,9 +207,12 @@ fn an_unanswered_prompt_times_out_and_askpass_fails() {
     let script = r#"my ($a, $r) = ask("Continue?", "confirm"); print "A=[" . ($a // "") . "] R=$r DONE\n"; sleep 1;"#;
     let started = Instant::now();
     let sid = f.open(script, true);
-    let (text, _) = f.drive(sid, Duration::from_secs(20), |t, _| t.contains("DONE"));
+    let (text, events) = f.drive(sid, Duration::from_secs(20), |t, e| t.contains("DONE") && e.iter().any(|r| matches!(r, Response::SshPromptExpired { .. })));
     assert!(text.contains("R=1"), "{text}");
     assert!(started.elapsed() < Duration::from_secs(15));
+    // The page is told, so it can close the dialog.
+    let prompt = events.iter().find_map(|r| match r { Response::SshPrompt { prompt_id, .. } => Some(*prompt_id), _ => None });
+    assert!(events.iter().any(|r| matches!(r, Response::SshPromptExpired { session_id, prompt_id } if *session_id == sid && Some(*prompt_id) == prompt)), "{events:?}");
 }
 
 #[test]

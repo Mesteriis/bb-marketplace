@@ -74,6 +74,9 @@ export function SshPage(props: SshPageProps) {
   const onAskpass = useCallback((event: SshAskpassEvent) => {
     if (event.type === "prompt") {
       setPrompts((cur) => (cur.some((p) => p.promptId === event.promptId) ? cur : [...cur, { promptId: event.promptId, text: event.text, kind: event.kind }]));
+    } else if (event.type === "prompt_expired") {
+      setPrompts((cur) => cur.filter((p) => p.promptId !== event.promptId));
+      setNotice(errorCodeText("prompt_expired"));
     } else if (event.type === "credential_rejected") {
       setNotice(errorCodeText("ssh_credential_rejected"));
     } else {

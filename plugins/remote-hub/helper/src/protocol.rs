@@ -251,6 +251,14 @@ pub enum Response {
         session_id: u32,
         code: String,
     },
+    /// A question was refused because it was not answered in time, or its ssh went away.
+    #[serde(rename = "ssh.prompt_expired")]
+    SshPromptExpired {
+        #[serde(rename = "sessionId")]
+        session_id: u32,
+        #[serde(rename = "promptId")]
+        prompt_id: u64,
+    },
     #[serde(rename = "ssh.prompt_ack")]
     SshPromptAck { id: u64 },
     /// The answer to `credential.status` (a different name: `credential.status` is the request).

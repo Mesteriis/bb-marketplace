@@ -343,3 +343,34 @@ and `useProfiles` around the existing session pages; Quick connect stays.
   for another endpoint, and a sentinel search over helper stderr, session and credential lists,
   profile and metadata rows, askpass events, terminal output, and the arguments and
   environments of the helper and its descendants.
+
+### Stage 3b repair round (S1-S10)
+
+- **The helper decides where a secret may go.** The binding (endpoint, or key file) is stored
+  INSIDE the Keychain item with the secret (`{"v":1,"bind":...,"secret":...}`); the helper compares
+  it with what the request does (RDP: host, port, user, domain; SSH: the argv's own host, port,
+  `-l` user or `-i` key) and refuses a mismatch with `credential_target_mismatch`. An item with no
+  binding is `credential_unbound` and never used. TypeScript checks too, but is no longer the only check.
+- **Saved-secret SSH sessions are helper-shaped (S1/S4):** the helper refuses one unless the argv has
+  `-F none`, exactly one `PreferredAuthentications` (`password` with `-l`, or `publickey` with `-i`,
+  `IdentitiesOnly=yes` and `IdentityAgent=none`) and `NumberOfPasswordPrompts=2`, and no other option.
+  So no HostName redirect, ProxyCommand, ControlMaster, extra identities or keyboard-interactive.
+- **The prompt is computed by the helper (S2/S5):** `root@host's password: ` or
+  `Enter passphrase for key '<path>': ` from the session's own argv; only that exact line gets the
+  secret. The client's reported prompt kind is believed only for `confirm` and `none`.
+- **The Keychain is read by the helper, not the askpass client (S3/S6):** the broker calls the bounded
+  `--keychain-op` child, checks the binding again, and sends the answer over the private socket. A
+  Keychain failure, or a second secret prompt, stops the ssh process BEFORE askpass replies (OpenSSH
+  would otherwise send an empty password) and raises `ssh.credential_failed` / `_rejected`.
+- **Who may call what:** `--keychain-op` refuses unless its parent process is this same binary. The
+  askpass client checks the socket (a socket of ours in a 0700 directory of ours, mode 0600), that
+  the peer is its grandparent, and that the peer runs this binary, before it sends anything.
+- **Known limit:** the Keychain is encryption at rest plus a per-app access list. A program of the same
+  user that can drive the helper cannot make it send a secret to a place it was not saved for, but the
+  Keychain does not isolate secrets from such a program.
+- **Smaller items:** the keychain child's stdin write runs under the same deadline with partial writes
+  and `POLLOUT` (S7); the opened test keychain must be the same file (dev/inode) as the validated one
+  (S8; a replacement racing the open cannot be forced in a test, the identity check is unit-tested);
+  a host-key "yes" needs a pointer click or the word typed, an unanswered question closes with a notice
+  (`ssh.prompt_expired`), and the broker's directory is removed when its constructor fails (S9); the
+  fixture key's passphrase never appears in argv (S10).

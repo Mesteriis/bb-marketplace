@@ -409,6 +409,9 @@ export class HelperProcess {
       case "ssh.prompt":
         this.emitSshAskpass(resp.sessionId, { type: "prompt", promptId: resp.promptId, text: resp.text, kind: resp.kind });
         return true;
+      case "ssh.prompt_expired":
+        this.emitSshAskpass(resp.sessionId, { type: "prompt_expired", promptId: resp.promptId });
+        return true;
       case "ssh.credential_rejected":
         this.emitSshAskpass(resp.sessionId, { type: "credential_rejected" });
         return true;

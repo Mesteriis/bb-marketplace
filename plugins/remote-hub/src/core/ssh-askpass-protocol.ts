@@ -30,13 +30,15 @@ export const sshCredentialFailedSchema = z.object({
   sessionId: sessionIdSchema,
   code: z.string().min(1).max(64),
 });
+export const sshPromptExpiredSchema = z.object({ type: z.literal("ssh.prompt_expired"), sessionId: sessionIdSchema, promptId: z.number().int().min(0) });
 export const sshPromptAckSchema = z.object({ type: z.literal("ssh.prompt_ack"), id: idSchema });
 
 export const sshAskpassRequestSchemas = [sshPromptAnswerRequestSchema] as const;
-export const sshAskpassResponseSchemas = [sshPromptSchema, sshCredentialRejectedSchema, sshCredentialFailedSchema, sshPromptAckSchema] as const;
+export const sshAskpassResponseSchemas = [sshPromptSchema, sshCredentialRejectedSchema, sshCredentialFailedSchema, sshPromptExpiredSchema, sshPromptAckSchema] as const;
 
 /** What the page is told about a session's askpass activity. */
 export type SshAskpassEvent =
   | { type: "prompt"; promptId: number; text: string; kind: string }
+  | { type: "prompt_expired"; promptId: number }
   | { type: "credential_rejected" }
   | { type: "credential_failed"; code: string };

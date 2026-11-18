@@ -116,7 +116,7 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
   // credential, and the sockets listening. Holds prompt TEXT only, never an answer or a secret.
   interface AskpassState {
     prompts: Map<number, Extract<SshAskpassEvent, { type: "prompt" }>>;
-    notice: Exclude<SshAskpassEvent, { type: "prompt" }> | null;
+    notice: Exclude<SshAskpassEvent, { type: "prompt" | "prompt_expired" }> | null;
     listeners: Set<(event: SshAskpassEvent) => void>;
   }
   const askpassStates = new Map<string, AskpassState>();
@@ -131,6 +131,7 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
   const handleSshAskpass = (generation: string, sessionId: number, event: SshAskpassEvent): void => {
     const state = askpassState(generation + ":" + sessionId);
     if (event.type === "prompt") state.prompts.set(event.promptId, event);
+    else if (event.type === "prompt_expired") state.prompts.delete(event.promptId);
     else state.notice = event;
     for (const cb of state.listeners) {
       try {
