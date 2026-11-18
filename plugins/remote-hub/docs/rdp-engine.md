@@ -209,6 +209,7 @@ called.
   decision or the helper's EOF is always read. Engine control frames are capped at
   4 MiB (the client's frame limit); every engine frame counts against the per-turn
   byte budget.
+- **Refresh (stage 2b-2)**: `rdp.refresh {sessionId}` (helper request → `Refresh` command → `Desk::refresh`) marks the whole framebuffer dirty through the same pump: the next update — at once, or the one released by the pending ack — covers the full desktop. A new, re-attached or lagging view needs it to resynchronise (the helper has ONE consumer, the TS service, which multiplexes views). Before `desktop_ready` it is refused with `not_ready`; before the first update the engine ignores it.
 - `desktop_ready` (`rdp.desktop`) fires only after the first non-empty
   `GraphicsUpdate` has been applied (B2).
 - First video path: plain bitmap updates (`ironrdp-graphics`), no native deps.

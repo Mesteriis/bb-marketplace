@@ -142,6 +142,7 @@ fn request_id(req: &Request) -> Option<u64> {
         | Request::RdpInput { id, .. }
         | Request::RdpScreenshot { id, .. }
         | Request::RdpUpdateAck { id, .. }
+        | Request::RdpRefresh { id, .. }
         | Request::SessionInput { id, .. }
         | Request::SessionResize { id, .. }
         | Request::SessionCredit { id, .. }
@@ -418,6 +419,12 @@ fn handle(
                 return Ok(refusal);
             }
             rdp_command(rdp, id, session_id, &EngineCommand::Ack { frame_id })
+        }
+        Request::RdpRefresh { id, session_id } => {
+            if let Some(refusal) = rdp_not_ready(rdp, id, session_id) {
+                return Ok(refusal);
+            }
+            rdp_command(rdp, id, session_id, &EngineCommand::Refresh)
         }
         Request::RdpScreenshot { id, session_id } => {
             if !rdp.contains(session_id) {

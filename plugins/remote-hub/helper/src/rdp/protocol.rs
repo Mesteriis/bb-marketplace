@@ -62,6 +62,10 @@ pub enum EngineCommand {
     CertDecision { fingerprint: String, accept: String },
     Input { events: Vec<InputEvent> },
     Screenshot,
+    /// Mark the whole framebuffer dirty: the next update (immediately, or once
+    /// the update in flight is acked) covers the full desktop. A new or lagging
+    /// view needs it to resynchronise. Ignored before the first update.
+    Refresh,
     /// The consumer received the update in flight (frame id of that update).
     Ack { frame_id: u64 },
     Close,

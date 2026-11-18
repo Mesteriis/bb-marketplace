@@ -96,6 +96,13 @@ pub enum Request {
         #[serde(rename = "sessionId")]
         session_id: u32,
     },
+    /// Resend the whole framebuffer as the next update (a new or lagging view).
+    #[serde(rename = "rdp.refresh")]
+    RdpRefresh {
+        id: u64,
+        #[serde(rename = "sessionId")]
+        session_id: u32,
+    },
     /// The consumer received the update in flight; releases the next one.
     #[serde(rename = "rdp.update_ack")]
     RdpUpdateAck {

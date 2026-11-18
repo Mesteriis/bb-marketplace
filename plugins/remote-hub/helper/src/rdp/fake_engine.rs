@@ -100,6 +100,7 @@ async fn run(
                 None => return Ok(()),
                 Some(Control::Ack(frame_id)) => desk.ack(&out, frame_id)?,
                 Some(Control::Screenshot) => desk.screenshot(&out)?,
+                Some(Control::Refresh) => desk.refresh(&out)?,
                 Some(Control::Input(_)) => {}
             },
             _ = tokio::time::sleep(Duration::from_millis(1)) => {

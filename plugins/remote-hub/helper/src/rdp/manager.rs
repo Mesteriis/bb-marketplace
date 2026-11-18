@@ -484,7 +484,7 @@ impl RdpManager {
         // One bound for every command kind that a client can repeat. Decisions
         // and Close are single-shot (a decision needs a pending prompt) and
         // always get through.
-        let bounded = matches!(cmd, EngineCommand::Input { .. } | EngineCommand::Ack { .. } | EngineCommand::Screenshot);
+        let bounded = matches!(cmd, EngineCommand::Input { .. } | EngineCommand::Ack { .. } | EngineCommand::Screenshot | EngineCommand::Refresh);
         if bounded && s.write_buf.len() > WRITE_INPUT_SOFT_CAP {
             return Err(EnqueueError::Full);
         }

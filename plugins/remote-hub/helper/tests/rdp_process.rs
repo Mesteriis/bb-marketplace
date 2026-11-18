@@ -285,6 +285,37 @@ fn g10_an_unacked_view_gets_exactly_one_update_then_one_coalesced_region() {
     h.shutdown();
 }
 
+/// R1: `rdp.refresh` marks the whole framebuffer dirty. While an update is in
+/// flight it coalesces with the pending region, so the update released by the
+/// ack covers the full 1920x1080 desktop — where without it (g10) the same
+/// ack releases only the 128x128 bounding box of the repainted blocks.
+#[test]
+fn r1_refresh_makes_the_next_update_the_whole_desktop() {
+    let mut h = start(&[(FAKE, "ack")]);
+    let (rdp, _) = h.open_rdp_sized(closed_port(), 1920, 1080);
+    let rx = h.frames_in_background(rdp);
+
+    let first_chunk = next_update(&rx);
+    let seen = wait_paints(&rx, 50);
+    let mut first = vec![first_chunk];
+    first.extend(queued_updates(&rx));
+    let ids = distinct_frames(&first);
+    assert_eq!(ids.len(), 1);
+
+    h.send(&Request::RdpRefresh { id: 60, session_id: rdp });
+    h.send(&Request::RdpUpdateAck { id: 61, session_id: rdp, frame_id: ids[0] });
+    let second_chunk = next_update(&rx);
+    let _ = wait_paints(&rx, seen + 50);
+    let mut second = vec![second_chunk];
+    second.extend(queued_updates(&rx));
+    let ids2 = distinct_frames(&second);
+    assert_eq!(ids2.len(), 1, "one ack must release exactly one update: {ids2:?}");
+    let pixels: u32 = second.iter().map(|c| c.w * c.h).sum();
+    assert_eq!(pixels, FULL_FRAME_PIXELS, "the refreshed update must cover the whole desktop");
+    assert_eq!((second[0].x, second[0].y), (0, 0));
+    h.shutdown();
+}
+
 /// G10: a client that never reads stdout while a (buggy) engine floods 1920x1080
 /// updates without pacing cannot grow the helper: RSS growth < 32 MiB over 3 s.
 #[test]
@@ -437,6 +468,11 @@ fn h1_input_and_acks_before_the_desktop_are_refused_and_helper_death_is_noticed(
     match h.read_reply(2000) {
         Response::Error { code, .. } => assert_eq!(code, "not_ready"),
         other => panic!("ack: expected not_ready, got {other:?}"),
+    }
+    h.send(&Request::RdpRefresh { id: 2100, session_id: rdp });
+    match h.read_reply(2100) {
+        Response::Error { code, .. } => assert_eq!(code, "not_ready"),
+        other => panic!("refresh: expected not_ready, got {other:?}"),
     }
     unsafe { libc::kill(h.pid() as libc::pid_t, libc::SIGKILL) };
     let _ = h.child.wait();

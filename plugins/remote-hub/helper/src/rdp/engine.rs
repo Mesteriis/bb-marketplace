@@ -138,6 +138,16 @@ impl Desk {
         Ok(())
     }
 
+    /// The whole framebuffer is dirty again (a new or lagging view needs it).
+    /// Before the first update there is nothing to resend.
+    pub fn refresh(&mut self, out: &Out) -> std::io::Result<()> {
+        if !self.desktop_sent {
+            return Ok(());
+        }
+        let full = Rect { x: 0, y: 0, w: self.fb.width(), h: self.fb.height() };
+        self.dirty(out, full)
+    }
+
     fn send(&mut self, out: &Out, rect: Rect) -> std::io::Result<()> {
         send_region(&self.fb, out, rect)?;
         self.pump.sent(self.fb.frame_id());
@@ -268,6 +278,10 @@ fn handle_control(
         }
         Control::Ack(frame_id) => {
             a.desk.ack(out, frame_id)?;
+            Ok(Vec::new())
+        }
+        Control::Refresh => {
+            a.desk.refresh(out)?;
             Ok(Vec::new())
         }
     }

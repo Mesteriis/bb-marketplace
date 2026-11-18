@@ -63,6 +63,7 @@ pub enum Control {
     Input(Vec<InputEvent>),
     Screenshot,
     Ack(u64),
+    Refresh,
 }
 
 /// Set once, by the first cause: the helper asked to close, or it went away.
@@ -182,6 +183,11 @@ pub(crate) fn spawn_reader_with_capacity(mut stream: UnixStream, capacity: usize
                         }
                         EngineCommand::Screenshot => {
                             if !forward(&ctl_tx, Control::Screenshot, &thread_cancel, &dec_tx) {
+                                break;
+                            }
+                        }
+                        EngineCommand::Refresh => {
+                            if !forward(&ctl_tx, Control::Refresh, &thread_cancel, &dec_tx) {
                                 break;
                             }
                         }
