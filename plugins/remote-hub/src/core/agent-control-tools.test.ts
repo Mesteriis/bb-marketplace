@@ -108,6 +108,11 @@ function setup(opts: Setup = {}) {
 }
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
+/** Waits until `cond` holds (the input tools write their audit row, and so are queued, before anything else awaits). */
+async function until(cond: () => boolean): Promise<void> {
+  for (let i = 0; i < 400 && !cond(); i++) await new Promise((r) => setTimeout(r, 5));
+  if (!cond()) throw new Error("condition not reached");
+}
 
 describe("the control tool set", () => {
   it("has exactly six tools, each starting with what it cannot do, with strict schemas and no password anywhere", () => {
@@ -248,10 +253,11 @@ describe("remote_terminal_input", () => {
   it("a takeover while an earlier write is in flight drops the queued one and lets the in-flight one finish", async () => {
     const t = await leased();
     t.holdWrites();
+    const n0 = t.rows.length;
     const first = t.call("remote_terminal_input", { sessionId: SSH_KEY, leaseId: "lease-1", actions: [{ type: "text", text: "one" }] });
-    await tick();
+    await until(() => t.rows.length >= n0 + 1);
     const second = t.call("remote_terminal_input", { sessionId: SSH_KEY, leaseId: "lease-1", actions: [{ type: "text", text: "two" }] });
-    await tick();
+    await until(() => t.rows.length >= n0 + 2);
     t.leases.takeover(SSH_KEY);
     t.releaseWrites();
     expect((await first).isError).toBeUndefined();
@@ -262,10 +268,11 @@ describe("remote_terminal_input", () => {
   it("revoking the grant while a write waits drops it", async () => {
     const t = await leased();
     t.holdWrites();
+    const n0 = t.rows.length;
     const first = t.call("remote_terminal_input", { sessionId: SSH_KEY, leaseId: "lease-1", actions: [{ type: "text", text: "one" }] });
-    await tick();
+    await until(() => t.rows.length >= n0 + 1);
     const second = t.call("remote_terminal_input", { sessionId: SSH_KEY, leaseId: "lease-1", actions: [{ type: "text", text: "two" }] });
-    await tick();
+    await until(() => t.rows.length >= n0 + 2);
     t.access.set(P_SSH, "none", false);
     t.releaseWrites();
     await first;
@@ -277,10 +284,11 @@ describe("remote_terminal_input", () => {
     const t = await leased();
     t.holdWrites();
     const abort = new AbortController();
+    const n0 = t.rows.length;
     const first = t.call("remote_terminal_input", { sessionId: SSH_KEY, leaseId: "lease-1", actions: [{ type: "text", text: "one" }] });
-    await tick();
+    await until(() => t.rows.length >= n0 + 1);
     const second = t.call("remote_terminal_input", { sessionId: SSH_KEY, leaseId: "lease-1", actions: [{ type: "text", text: "two" }] }, { ...CTX, signal: abort.signal });
-    await tick();
+    await until(() => t.rows.length >= n0 + 2);
     abort.abort();
     t.releaseWrites();
     await first;
@@ -344,16 +352,16 @@ describe("remote_rdp_input", () => {
     const t = await leased();
     await send(t, [{ type: "key", code: "ShiftLeft", down: true }, { type: "mouse_button", button: "left", down: true, x: 5, y: 5 }]);
     t.holdWrites();
+    const n0 = t.rows.length;
     const inFlight = send(t, [{ type: "key", code: "KeyA" }]);
-    await tick();
+    await until(() => t.rows.length >= n0 + 1);
     const queued = send(t, [{ type: "key", code: "KeyB" }]);
-    await tick();
+    await until(() => t.rows.length >= n0 + 2);
     t.leases.takeover(RDP_KEY);
     t.releaseWrites();
     await inFlight;
     expect(t.textOf(await queued)).toContain("lease_lost");
-    await tick();
-    await tick();
+    await until(() => t.rdpSent.flatMap((s) => s.events).some((e) => e.kind === "mouse_button" && !e.down));
     const all = t.rdpSent.flatMap((s) => s.events);
     const last = all.slice(-2);
     expect(last.map((e) => (e.kind === "key" ? ["key", e.down] : e.kind === "mouse_button" ? ["button", e.down] : [e.kind]))).toEqual(expect.arrayContaining([["key", false], ["button", false]]));
@@ -365,8 +373,7 @@ describe("remote_rdp_input", () => {
     await send(t, [{ type: "key", code: "ControlLeft", down: true }]);
     t.advance(121_000);
     t.leases.sweep();
-    await tick();
-    await tick();
+    await until(() => t.rdpSent.length >= 2);
     const last = t.rdpSent.at(-1)!.events;
     expect(last).toEqual([expect.objectContaining({ kind: "key", down: false })]);
   });
