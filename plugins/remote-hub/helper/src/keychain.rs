@@ -195,6 +195,13 @@ fn validate_keychain_path(path: &std::path::Path) -> Result<(), KeychainError> {
     Ok(())
 }
 
+/// Which file a path names right now: device and inode (the path itself is not followed if it is a link).
+#[cfg(all(feature = "test-hooks", unix))]
+fn file_identity(path: &std::path::Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::symlink_metadata(path).ok().map(|m| (m.dev(), m.ino()))
+}
+
 #[cfg(all(feature = "test-hooks", unix))]
 fn validate_keychain_dir(dir: &std::path::Path) -> Result<(), KeychainError> {
     use std::os::unix::fs::MetadataExt;
@@ -247,15 +254,16 @@ mod imp {
                 // user's DEFAULT keychain. So the reference must report exactly the intended file
                 // and a healthy status, or the operation fails closed.
                 super::validate_keychain_path(path)?;
+                let before = super::file_identity(path).ok_or(KeychainError::Unavailable)?;
                 let keychain = SecKeychain::open(path).map_err(|e| classify(e.code()))?;
-                verify_opened(&keychain, path)?;
+                verify_opened(&keychain, path, before)?;
                 Ok(keychain)
             }
         }
     }
 
     #[cfg(feature = "test-hooks")]
-    fn verify_opened(keychain: &SecKeychain, expected: &std::path::Path) -> Result<(), KeychainError> {
+    fn verify_opened(keychain: &SecKeychain, expected: &std::path::Path, before: (u64, u64)) -> Result<(), KeychainError> {
         use core_foundation::base::TCFType;
         let raw = keychain.as_concrete_TypeRef() as *mut std::ffi::c_void;
         let mut buf = [0 as std::ffi::c_char; 1024];
@@ -266,9 +274,17 @@ mod imp {
         let bytes: Vec<u8> = buf[..len as usize].iter().map(|c| *c as u8).collect();
         let reported = std::fs::canonicalize(std::path::PathBuf::from(std::ffi::OsString::from(String::from_utf8_lossy(&bytes).to_string())));
         let wanted = std::fs::canonicalize(expected);
-        match (reported, wanted) {
+        match (&reported, &wanted) {
             (Ok(a), Ok(b)) if a == b => {}
             _ => return Err(KeychainError::Unavailable),
+        }
+        // The same FILE, not just the same name: the file Security opened, and the file at the path
+        // now, must both be the one that was validated before the open (a replacement in between is
+        // a different inode).
+        let reported_id = super::file_identity(reported.as_ref().expect("checked above"));
+        let now = super::file_identity(expected);
+        if reported_id != Some(before) || now != Some(before) {
+            return Err(KeychainError::Unavailable);
         }
         let mut status: u32 = 0;
         if unsafe { SecKeychainGetStatus(raw, &mut status) } != 0 {
@@ -534,5 +550,26 @@ fn fake_op(mode: &str) -> i32 {
             0
         }
         _ => 2,
+    }
+}
+
+#[cfg(all(test, feature = "test-hooks", unix))]
+mod identity_tests {
+    use super::file_identity;
+
+    #[test]
+    fn a_file_swapped_in_under_the_same_name_has_a_different_identity() {
+        let dir = std::env::temp_dir().join(format!("rh-kc-id-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (a, b) = (dir.join("a"), dir.join("b"));
+        std::fs::write(&a, "1").unwrap();
+        std::fs::write(&b, "2").unwrap();
+        let before = file_identity(&a).unwrap();
+        assert_eq!(file_identity(&a), Some(before), "stable while nothing changes");
+        std::fs::rename(&b, &a).unwrap(); // a different file now answers to the name
+        assert_ne!(file_identity(&a), Some(before));
+        std::fs::remove_file(&a).unwrap();
+        assert_eq!(file_identity(&a), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
