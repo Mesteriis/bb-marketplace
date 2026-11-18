@@ -39,16 +39,22 @@ struct IgnoreCounter;
 struct Message(bool);
 impl Visit for Message {
     fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
-        // The text is looked at and thrown away: only whether it begins with "Ignoring" matters.
-        if field.name() == "message" && format!("{value:?}").starts_with("Ignoring") {
-            self.0 = true;
+        // The text is looked at and thrown away: only whether it says a VISUAL update was ignored matters. An ignored
+        // pointer update is not a lost piece of the picture, so it is not counted as one.
+        if field.name() == "message" {
+            let text = format!("{value:?}");
+            if text.starts_with("Ignoring") && !text.contains("pointer") {
+                self.0 = true;
+            }
         }
     }
 }
 
 impl Subscriber for IgnoreCounter {
     fn enabled(&self, metadata: &Metadata<'_>) -> bool {
-        *metadata.level() <= Level::WARN && metadata.target().starts_with("ironrdp")
+        // Only the session crate decodes the picture: the connector's own "Ignoring ..." notes (capabilities, channels)
+        // during the handshake are not discarded updates.
+        *metadata.level() <= Level::WARN && metadata.target().starts_with("ironrdp_session")
     }
     fn new_span(&self, _: &Attributes<'_>) -> Id {
         Id::from_u64(1)
@@ -182,6 +188,8 @@ mod tests {
             tracing::warn!(target: "ironrdp_session::fast_path", update_code = 1, "Ignoring invalid Fast-Path update");
             tracing::warn!(target: "ironrdp_session::fast_path", "something else went wrong");
             tracing::warn!(target: "some_other_crate", "Ignoring this one: not ironrdp");
+            tracing::warn!(target: "ironrdp_connector::connection", "Ignoring a server capability during the handshake");
+            tracing::warn!(target: "ironrdp_session::fast_path", pointer_error = "x", "Ignoring unsupported pointer update");
             tracing::info!(target: "ironrdp_session::fast_path", "Ignoring but only info");
         });
         assert_eq!(discarded_updates() - before, 2);

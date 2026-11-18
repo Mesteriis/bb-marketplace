@@ -119,8 +119,12 @@ class Helper:
         return None
 
     def states(self):
-        """The rdp.state names seen so far, in order."""
-        return [m["state"] for m in self.trace if m.get("type") == "rdp.state"]
+        """The rdp.state names seen so far, in order. Picture counters travel as `stats ...` lines on the same message
+        type; they are measurements whose number and timing depend on the traffic, not states, so they are left out."""
+        return [m["state"] for m in self.trace if m.get("type") == "rdp.state" and not m["state"].startswith("stats ")]
+
+    def stats_lines(self):
+        return [m["state"] for m in self.trace if m.get("type") == "rdp.state" and m["state"].startswith("stats ")]
 
     def open_rdp(self, host, port, user, password, width=800, height=600, expected=None):
         self.send({"type": "session.open_rdp", "id": 100, "host": host, "port": port,
