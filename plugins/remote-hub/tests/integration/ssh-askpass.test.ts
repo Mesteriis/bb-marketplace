@@ -132,6 +132,7 @@ describe.skipIf(!dockerOk)("SSH askpass: saved secrets, one attempt, user prompt
   let lockedKey = "";
   let knownHosts = "";
   let emptyKnownHosts = "";
+  let hostKeyLine = "";
   let service: RemoteHubService;
   let stderr = "";
   let helperPid = 0;
@@ -228,12 +229,13 @@ describe.skipIf(!dockerOk)("SSH askpass: saved secrets, one attempt, user prompt
     });
     await sleep(2000);
     const hostKey = execFileSync("docker", ["exec", cid, "cat", "/etc/ssh/ssh_host_ed25519_key.pub"], { encoding: "utf8" }).trim();
+    hostKeyLine = hostKey;
     knownHosts = join(tmp, "known_hosts");
     // A real session reads OpenSSH's default known_hosts (never touched here); this test-hooks helper allows a file.
     writeFileSync(knownHosts, `[127.0.0.1]:${port} ${hostKey}\n[localhost]:${port} ${hostKey}\n`);
     emptyKnownHosts = join(tmp, "empty_known_hosts");
 
-    const env = { ...process.env, REMOTE_HUB_KEYCHAIN_PATH: join(tmp, "kc.keychain-db"), REMOTE_HUB_KEYCHAIN_CREATE_PASSWORD: "throwaway-kc-password", REMOTE_HUB_TEST_ALLOW_KNOWN_HOSTS: "1" };
+    const env = { ...process.env, REMOTE_HUB_KEYCHAIN_PATH: join(tmp, "kc.keychain-db"), REMOTE_HUB_KEYCHAIN_CREATE_PASSWORD: "throwaway-kc-password", REMOTE_HUB_TEST_ALLOW_KNOWN_HOSTS: "1", REMOTE_HUB_KNOWN_HOSTS_PATH: join(tmp, "overlay", "known_hosts") };
     service = createRemoteHubService({
       startHelper: () =>
         HelperProcess.spawn(HELPER, (bin, args) => {
@@ -375,6 +377,48 @@ describe.skipIf(!dockerOk)("SSH askpass: saved secrets, one attempt, user prompt
       spawnSync("docker", ["rm", "-f", kbd], { stdio: "ignore" });
     }
   }, 150_000);
+
+  it("the helper-owned overlay: an unknown key raises the question once, a yes keeps it, the next session is not asked, a changed key blocks", async () => {
+    const overlay = join(tmp, "overlay", "known_hosts");
+    const p = profiles.list().find((x) => x.name === "pw")!;
+    const open = async () => {
+      // No knownHostsFile: a saved-secret session reads only the overlay the helper chose.
+      const handle = await rpc.ssh_open({ target: target({ knownHostsFile: undefined }), cols: 80, rows: 24, profileId: p.id, credentialRef: p.credentialRef! } as never);
+      const mine: SshAskpassEvent[] = [];
+      service.subscribeSshAskpass(handle, (e) => mine.push(e));
+      return { handle, mine };
+    };
+    const keyBlob = hostKeyLine.split(" ")[1];
+
+    // 1. Unknown key: the confirm question, once; "yes" lets the saved password log in and the key is kept in the overlay.
+    const first = await open();
+    const prompt = (await poll(() => first.mine.find((e) => e.type === "prompt"), 40_000, "the host-key question")) as Extract<SshAskpassEvent, { type: "prompt" }>;
+    expect(prompt.kind).toBe("confirm");
+    await service.sshPromptAnswer(first.handle, prompt.promptId, "yes");
+    await expectShell(first.handle, 3, 11);
+    expect(first.mine.filter((e) => e.type === "prompt")).toHaveLength(1);
+    expect(readFileSync(overlay, "utf8")).toContain(keyBlob);
+    events.push(...first.mine);
+
+    // 2. Trusted now: no question, straight to the shell.
+    const second = await open();
+    await expectShell(second.handle, 4, 12);
+    expect(second.mine.filter((e) => e.type === "prompt")).toEqual([]);
+    events.push(...second.mine);
+
+    // 3. The server's key "changes" (the overlay now holds another key for it): the connection is refused,
+    //    no question is offered and no password is sent.
+    const other = join(tmp, "id_other");
+    execFileSync("ssh-keygen", ["-t", "ed25519", "-N", "", "-f", other, "-q"]);
+    const otherBlob = readFileSync(other + ".pub", "utf8").split(" ")[1];
+    writeFileSync(overlay, readFileSync(overlay, "utf8").split(keyBlob).join(otherBlob), { mode: 0o600 });
+    const before = failedPasswords();
+    const third = await open();
+    await poll(() => closedOf(third.handle), 60_000, "the session ends: the host key changed");
+    expect(third.mine.filter((e) => e.type === "prompt"), "a changed key is a refusal, not a question").toEqual([]);
+    expect(failedPasswords() - before).toBe(0);
+    events.push(...third.mine);
+  }, 240_000);
 
   it("no secret appears in any channel", () => {
     const processes = ourProcesses(helperPid);
