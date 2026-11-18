@@ -398,10 +398,15 @@ describe.skipIf(!dockerOk)("SSH askpass: saved secrets, one attempt, user prompt
     await service.sshPromptAnswer(first.handle, prompt.promptId, "yes");
     await expectShell(first.handle, 3, 11);
     expect(first.mine.filter((e) => e.type === "prompt")).toHaveLength(1);
-    // ssh wrote the key to its PRIVATE copy; the helper, the only writer of the overlay, merges it when the session ends.
+    // ssh wrote the key to its PRIVATE copy; the helper, the only writer of the overlay, moves it there right after
+    // the confirmation: a second session opened while the first is STILL RUNNING already trusts it.
+    await poll(() => (existsSync(overlay) && readFileSync(overlay, "utf8").includes(keyBlob) ? true : null), 20_000, "the confirmed key in the overlay while session A is open");
+    const whileOpen = await open();
+    await expectShell(whileOpen.handle, 5, 13);
+    expect(whileOpen.mine.filter((e) => e.type === "prompt"), "session B must not be asked about a key A already confirmed").toEqual([]);
+    await service.sessionClose(whileOpen.handle);
     await service.sessionClose(first.handle);
-    await poll(() => (existsSync(overlay) && readFileSync(overlay, "utf8").includes(keyBlob) ? true : null), 20_000, "the confirmed key in the overlay");
-    events.push(...first.mine);
+    events.push(...first.mine, ...whileOpen.mine);
 
     // 2. Trusted now: no question, straight to the shell.
     const second = await open();

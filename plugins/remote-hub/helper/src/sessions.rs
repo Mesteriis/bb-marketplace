@@ -98,6 +98,9 @@ pub struct SessionManager {
     askpass: Option<crate::askpass::Broker>,
     /// The private known_hosts copy of each saved-secret ssh session; merged into the overlay when it ends.
     host_key_copies: HashMap<u32, crate::known_hosts::SessionCopy>,
+    /// Sessions whose user just answered "yes" to a host-key question: ssh writes the key to the copy right after,
+    /// and `merge_host_keys_pending` moves it into the overlay as soon as it is there.
+    host_key_confirmed: HashMap<u32, Instant>,
 }
 
 #[derive(Debug)]
@@ -302,6 +305,23 @@ impl SessionManager {
             echo_argv: argv,
             askpass: None,
             host_key_copies: HashMap::new(),
+            host_key_confirmed: HashMap::new(),
+        }
+    }
+
+    /// Tries, for sessions whose user confirmed a host key a moment ago, to move that key into the overlay now.
+    /// A key that does not show up within a few seconds is left to the final merge when the session ends.
+    pub fn merge_host_keys_pending(&mut self) {
+        let ids: Vec<u32> = self.host_key_confirmed.keys().copied().collect();
+        for id in ids {
+            let since = self.host_key_confirmed[&id];
+            let done = match self.host_key_copies.get_mut(&id) {
+                Some(copy) => matches!(crate::known_hosts::merge_now(copy), Ok(n) if n > 0) || since.elapsed() > Duration::from_secs(10),
+                None => true,
+            };
+            if done {
+                self.host_key_confirmed.remove(&id);
+            }
         }
     }
 
@@ -369,10 +389,14 @@ impl SessionManager {
     }
 
     pub fn askpass_answer(&mut self, session_id: u32, prompt_id: u64, answer: Option<String>) -> bool {
+        if answer.as_deref().map(|a| a.trim().eq_ignore_ascii_case("yes")).unwrap_or(false) && self.host_key_copies.contains_key(&session_id) {
+            self.host_key_confirmed.insert(session_id, Instant::now());
+        }
         self.askpass.as_mut().map(|b| b.answer(session_id, prompt_id, answer)).unwrap_or(false)
     }
 
     fn askpass_forget(&mut self, id: u32) {
+        self.host_key_confirmed.remove(&id);
         if let Some(copy) = self.host_key_copies.remove(&id) {
             crate::known_hosts::merge_session(&copy);
         }

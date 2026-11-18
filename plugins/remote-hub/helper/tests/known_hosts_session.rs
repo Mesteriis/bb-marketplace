@@ -1,7 +1,7 @@
 //! The helper-owned known_hosts overlay and the private copy a saved-secret ssh session gets (W1, W5). One
 //! test function: it names the overlay through an environment variable of THIS process, which is shared.
 //! Every path is a fixture directory under the system temp dir, with a SPACE in it, like the production path.
-use remote_hub_helper::known_hosts::{add_lines, merge_session, read_lines, remove_host, session_copy, ssh_known_hosts_option, KnownHostsError};
+use remote_hub_helper::known_hosts::{add_lines, merge_now, merge_session, read_lines, remove_host, session_copy, ssh_known_hosts_option, KnownHostsError};
 use std::os::unix::fs::DirBuilderExt;
 
 const ED: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
@@ -52,6 +52,25 @@ fn the_overlay_has_one_writer_and_ssh_gets_a_private_quoted_copy() {
     assert!(lines.iter().any(|l| l.starts_with("[gamma.example.test]:2222 ")), "the confirmed key survived the forget: {lines:?}");
     assert!(!lines.iter().any(|l| l.starts_with("beta.example.test ")), "the forgotten host stayed forgotten: {lines:?}");
     assert!(!lines.iter().any(|l| l.starts_with("delta.")), "a half-written line is never taken: {lines:?}");
+
+    // --- X3: a key the user confirmed in session A counts for session B BEFORE A closes.
+    let mut a = session_copy().unwrap();
+    let mut f = std::fs::OpenOptions::new().append(true).open(&a.path).unwrap();
+    writeln!(f, "[epsilon.example.test]:2222 {ED}").unwrap();
+    drop(f);
+    assert_eq!(merge_now(&mut a), Ok(1));
+    assert_eq!(merge_now(&mut a), Ok(0), "nothing new the second time");
+    let b = session_copy().unwrap(); // session B opens while A is still running
+    assert!(b.snapshot.iter().any(|l| l.starts_with("[epsilon.example.test]:2222 ")), "B sees the key A confirmed: {:?}", b.snapshot);
+    // A's later key is the only thing its final merge still adds; nothing is duplicated.
+    let mut f = std::fs::OpenOptions::new().append(true).open(&a.path).unwrap();
+    writeln!(f, "zeta.example.test {ED2}").unwrap();
+    drop(f);
+    merge_session(&a);
+    merge_session(&b);
+    let lines = read_lines().unwrap();
+    assert_eq!(lines.iter().filter(|l| l.starts_with("[epsilon.example.test]:2222 ")).count(), 1, "{lines:?}");
+    assert_eq!(lines.iter().filter(|l| l.starts_with("zeta.example.test ")).count(), 1, "{lines:?}");
 
     // --- the copy cannot smuggle anything the overlay would refuse.
     let copy = session_copy().unwrap();

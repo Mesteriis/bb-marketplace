@@ -1465,6 +1465,8 @@ pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
             }));
         }
 
+        guard.manager.merge_host_keys_pending();
+
         // Reap children that exited on their own (never shuts down the helper).
         guard.manager.reap();
         guard.rdp.reap();

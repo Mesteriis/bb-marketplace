@@ -278,21 +278,45 @@ pub fn merge_session(copy: &SessionCopy) {
     let _ = std::fs::remove_file(&copy.path);
 }
 
-fn merge_inner(copy: &SessionCopy) -> Result<(), KnownHostsError> {
+/// The complete, valid, plain lines of the copy that were not in its snapshot. A last line without its newline may
+/// be half written (ssh killed mid-append): it is not taken.
+fn fresh_lines(copy: &SessionCopy) -> Result<(Vec<String>, Vec<String>), KnownHostsError> {
     let text = read_all(&copy.path)?;
-    // A last line without its newline may be half written (ssh killed mid-append): it is not taken.
     let complete = match text.rfind('\n') {
         Some(i) => &text[..i],
-        None => return Ok(()),
+        None => return Ok((Vec::new(), Vec::new())),
     };
     let known: std::collections::HashSet<&str> = copy.snapshot.iter().map(String::as_str).collect();
-    let fresh: Vec<String> = complete.lines().filter(|l| valid_line(l) && !known.contains(l.trim_end())).map(str::to_string).collect();
+    let all: Vec<String> = complete.lines().filter(|l| valid_line(l)).map(str::to_string).collect();
+    let fresh = all.iter().filter(|l| !known.contains(l.trim_end())).cloned().collect();
+    Ok((fresh, all))
+}
+
+fn merge_inner(copy: &SessionCopy) -> Result<(), KnownHostsError> {
+    let (fresh, _) = fresh_lines(copy)?;
     if fresh.is_empty() {
         return Ok(());
     }
     let overlay = ensure()?;
     let _lock = take_lock(overlay.parent().ok_or(KnownHostsError::Io)?)?;
     append_missing(&overlay, &fresh).map(|_| ())
+}
+
+/// Merges what ssh has recorded so far WITHOUT ending the session's copy: right after the user confirmed a key, a
+/// second saved-secret session must already see it, not only after the first one closes. Returns how many lines
+/// were found; those become part of the copy's snapshot so the final merge adds only what comes after.
+pub fn merge_now(copy: &mut SessionCopy) -> Result<usize, KnownHostsError> {
+    let (fresh, all) = fresh_lines(copy)?;
+    if fresh.is_empty() {
+        return Ok(0);
+    }
+    let overlay = ensure()?;
+    {
+        let _lock = take_lock(overlay.parent().ok_or(KnownHostsError::Io)?)?;
+        append_missing(&overlay, &fresh)?;
+    }
+    copy.snapshot = all;
+    Ok(fresh.len())
 }
 
 /// At helper start: copies left by a helper that died are removed.
