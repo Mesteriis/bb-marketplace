@@ -51,13 +51,18 @@
   screen is moved automatically only when they are already looking at that agent's thread; anywhere else the banner asks. Reads (terminal text,
   screenshots) need no watcher but are listed in Agent activity. The gate has no per-connection switch; there is ONE plugin-wide owner setting, "Agents may act only while I am watching the session" (default ON, stored in SQLite, changed only by the owner RPC from the Agent activity screen, every change audited and listed under Access changes). OFF means an agent can act while nobody looks: input and commands are not refused and leases are not suspended, but the banner, the live-view line, the pointer and the live command list stay. Tool results carry `watchingRequired`.
 - **The overlay while an agent drives.** The live view (terminal and desktop, on the page, in the tab and wherever the widget is
-  mounted) shows a light layer of drifting dots over the widget and a small card, "Agent is controlling this session" (with the
-  agent thread's title when the service knows the thread), with one button, "Take control", which uses the owner's existing
-  take-over path (audited the same way as the banner's). It is a picture only: translucent, no blur or dimming, no pointer
+  mounted) shows a slim bar ABOVE the widget, "Agent is controlling this session" (with the agent thread's title when the
+  service knows the thread) and one button, "Take control", which uses the owner's existing take-over path (audited the same
+  way as the banner's); and a field of small dots over the widget with a visible travelling wave. The dots are drawn by
+  tsParticles (`@tsparticles/engine` 4.6.0, MIT, engine only; about 81 kB minified, loaded lazily when an agent lease first
+  appears, so pages without an agent run none of it): at most 30 frames per second, one dot per 900 px² with a floor of 24 and
+  a hard maximum of 360, paused while the document is hidden or the view is off screen, destroyed (canvas, listeners, loop)
+  when the lease ends or the view goes away. Under `prefers-reduced-motion`, or if the library fails to load, no particle code
+  runs and static CSS dots stay. The dots are a picture only: translucent, no blur or dimming, the canvas takes no pointer
   events (text can still be selected; the human's input is refused by the service while the agent drives, which stays the
-  source of truth), CSS transform/opacity animation, static under `prefers-reduced-motion`. It follows the same lease state the
-  banner uses and sits beside the widget, so it neither counts as "not watching" nor changes the view's on-screen ratio. It can
-  cover the top-right of the first lines of a terminal; the card is small and the owner can take control to remove it.
+  source of truth). The overlay follows the same lease state the banner uses; it is a sibling of the widget, so it neither
+  counts as "not watching" nor changes the view's on-screen ratio (the bar takes its own row, so the widget is a little
+  shorter while an agent drives).
 - **Suspension.** When the last watcher goes (closed, hidden, stalled) an agent's lease is suspended at once: its owner tag
   changes in the helper, so what it had queued is dropped and what it held down is released (the same barrier as a
   takeover), its input is refused, and it resumes when a watcher returns. The lease still expires as usual.

@@ -19,6 +19,12 @@ Version 0.10.0. Source: https://github.com/xtermjs/xterm.js
 Copyright (c) 2025 Colin McDonnell. MIT licence (the text below). Version 4.6.7, bundled in the plugin's server code.
 Source: https://github.com/colinhacks/zod
 
+## @tsparticles/engine
+
+Copyright (c) 2020 Matteo Bruni. MIT licence (the text below). Version 4.6.0 (the engine only, no shape, updater or colour
+bundles), loaded lazily the first time an agent holds a session, to draw the dots of the agent overlay.
+Source: https://github.com/tsparticles/tsparticles
+
 ## MIT License
 
 Permission is hereby granted, free of charge, to any person obtaining a copy

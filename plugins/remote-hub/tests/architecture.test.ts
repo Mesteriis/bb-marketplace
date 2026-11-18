@@ -62,7 +62,8 @@ const core: Layer = {
 
 const ui: Layer = {
   directory: "src/ui",
-  packages: ["react", "@xterm/xterm", "@xterm/addon-fit"],
+  // @tsparticles/engine: a browser-only canvas library (like xterm), loaded lazily by agent-dots.ts; no host code.
+  packages: ["react", "@xterm/xterm", "@xterm/addon-fit", "@tsparticles/engine"],
   reachable: ["src/ui", "src/core"],
 };
 
