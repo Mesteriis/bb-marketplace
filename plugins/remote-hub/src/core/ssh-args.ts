@@ -181,3 +181,21 @@ export function buildSshSpawn(target: SshTarget, env: Record<string, string | un
     env: sshEnvAllowlist(env),
   };
 }
+
+/** The longest remote command line, in UTF-8 bytes (the helper enforces the same bound). */
+export const EXEC_COMMAND_MAX_BYTES = 8192;
+
+/**
+ * One remote command: the SAME argv as an interactive session (same options, same host, same saved-secret rules) with `-T`
+ * (no pty) and the command as ONE last word. ssh hands that word to the remote user's shell, which parses it. Nothing on
+ * this machine does: there is no local shell and no local expansion.
+ */
+export function buildSshExecSpawn(target: SshTarget, command: string, env: Record<string, string | undefined>): SshSpawnSpec {
+  if (command.length === 0 || command.includes("\0") || new TextEncoder().encode(command).byteLength > EXEC_COMMAND_MAX_BYTES) {
+    invalid("invalid_command", `a command is 1 to ${EXEC_COMMAND_MAX_BYTES} bytes without a NUL`);
+  }
+  const argv = buildSshArgv(target, { allowKnownHostsFileWithSecret: env.REMOTE_HUB_TEST_ALLOW_KNOWN_HOSTS !== undefined });
+  argv[1] = "-T";
+  argv.push(command);
+  return { program: "/usr/bin/ssh", argv, env: sshEnvAllowlist(env) };
+}

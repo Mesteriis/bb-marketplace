@@ -6,8 +6,6 @@ import { z } from "zod";
 const idSchema = z.number().int().min(0);
 const execIdSchema = z.number().int().min(0).max(0xffff_ffff);
 
-/** The longest remote command line, in UTF-8 bytes (matches helper EXEC_COMMAND_MAX). */
-export const EXEC_COMMAND_MAX_BYTES = 8192;
 export const EXEC_TIMEOUT_MIN_MS = 1000;
 export const EXEC_TIMEOUT_MAX_MS = 600_000;
 /** Bytes kept per stream (the head); more is counted and dropped (helper: 1 KiB .. 4 MiB). */

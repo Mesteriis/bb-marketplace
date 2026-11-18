@@ -4,6 +4,7 @@ import {
   SshArgError,
   assertSshOptionAllowed,
   buildSshArgv,
+  buildSshExecSpawn,
   buildSshSpawn,
   sshEnvAllowlist,
   type SshTarget,
@@ -201,5 +202,33 @@ describe("a host-key file with a saved secret (W8)", () => {
 
   it("only a test-hooks setup lets the same field through", () => {
     expect(buildSshSpawn(withSecret, { REMOTE_HUB_TEST_ALLOW_KNOWN_HOSTS: "1" }).argv).toContain("UserKnownHostsFile=/tmp/kh");
+  });
+});
+
+describe("buildSshExecSpawn: one remote command, no pty", () => {
+  const target: SshTarget = { host: "Box.Example.Test", user: "ops", port: 2222, authMethod: "password", extraOptions: [] };
+
+  it("is the session argv with -T instead of -tt and the command as ONE last word after the host", () => {
+    const spec = buildSshExecSpawn(target, "ls -la /tmp; echo $HOME | wc -l", { PATH: "/usr/bin", HOME: "/h", SECRET_TOKEN: "x" });
+    expect(spec.program).toBe("/usr/bin/ssh");
+    expect(spec.argv).toEqual([
+      "ssh", "-T", "-l", "ops", "-p", "2222", "-F", "none", "-o", "PreferredAuthentications=password", "-o", "NumberOfPasswordPrompts=2", "--", "box.example.test",
+      "ls -la /tmp; echo $HOME | wc -l",
+    ]);
+    expect(spec.env).toEqual({ TERM: "xterm-256color", HOME: "/h", PATH: "/usr/bin" });
+  });
+
+  it("keeps the command byte for byte: no splitting, quoting or expansion is done here", () => {
+    const tricky = "printf '%s\n' \"a b\" $(id) `id` > /tmp/x; echo 'it''s'";
+    expect(buildSshExecSpawn(target, tricky, {}).argv.at(-1)).toBe(tricky);
+  });
+
+  it("refuses an empty command, one with a NUL, and one over 8192 UTF-8 bytes (a limit counted in bytes, not characters)", () => {
+    expect(() => buildSshExecSpawn(target, "", {})).toThrow(SshArgError);
+    expect(() => buildSshExecSpawn(target, "a\0b", {})).toThrow(SshArgError);
+    expect(() => buildSshExecSpawn(target, "x".repeat(8193), {})).toThrow(SshArgError);
+    expect(buildSshExecSpawn(target, "x".repeat(8192), {}).argv.at(-1)).toHaveLength(8192);
+    expect(() => buildSshExecSpawn(target, "é".repeat(4097), {})).toThrow(SshArgError); // 8194 bytes
+    expect(buildSshExecSpawn(target, "é".repeat(4096), {}).argv.at(-1)).toHaveLength(4096);
   });
 });
