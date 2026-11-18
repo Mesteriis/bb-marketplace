@@ -40,8 +40,15 @@
 ## Agents are never hidden (stage 4c)
 
 - **The watching gate.** Agent input (terminal and desktop) is refused with `owner_not_watching` unless at least one
-  person has that session's live view open and **visible**. A view reports in over its stream socket every 2 s with its
-  page visibility; a hidden tab counts for nothing and a report older than 6 s is stale. Reads (terminal text,
+  person has that session's live view open and **on screen**: its element at least half inside the viewport (an
+  IntersectionObserver), the document visible AND the window focused. A view reports over its stream socket every 2 s and
+  at once on a change; a view that is mounted but scrolled away, behind another tab, in a hidden window or in an unfocused
+  window counts for nothing, a missing document, observer or element is "not looking", and a report older than 6 s is
+  stale. The `::remote-session` directive in a message is only a card (what the session is, "Watch in split", "Open live
+  view"); it never attaches by itself. "Watch in split" opens the live view in the main pane and the agent's thread in a
+  split beside it (BB can split a thread from a plugin but cannot split a plugin page, hence this arrangement); the
+  thread comes from the service's record of who holds or opened the session, never from the directive text. The owner's
+  screen is moved automatically only when they are already looking at that agent's thread; anywhere else the banner asks. Reads (terminal text,
   screenshots) need no watcher but are listed in Agent activity. The gate has no per-connection switch; there is ONE plugin-wide owner setting, "Agents may act only while I am watching the session" (default ON, stored in SQLite, changed only by the owner RPC from the Agent activity screen, every change audited and listed under Access changes). OFF means an agent can act while nobody looks: input and commands are not refused and leases are not suspended, but the banner, the live-view line, the pointer and the live command list stay. Tool results carry `watchingRequired`.
 - **Suspension.** When the last watcher goes (closed, hidden, stalled) an agent's lease is suspended at once: its owner tag
   changes in the helper, so what it had queued is dropped and what it held down is released (the same barrier as a
@@ -98,7 +105,8 @@ Limits, plainly:
    the plugin's RPC and the Keychain prompts. Not contained.
 2. Observe shows everything on screen or in the terminal, secrets included, and the scrollback.
 3. The helper binary is unsigned; the Keychain item is protected by the user's login Keychain, not by the helper.
-4. The watching gate proves a visible view is open, not that a person looks at it; one tab left open counts. The owner can
+4. The watching gate proves a view is on screen in the focused BB window, not that a person looks at it; a window left
+   focused on it counts. The owner can
    switch the rule off, and then an agent can act while nobody looks.
 5. The live-view line in a reply depends on the agent following the skill text; the banner and the audit do not.
 6. `openTab` (opening the live view without a click) is best effort and untested against a real BB; the SDK surfaces used

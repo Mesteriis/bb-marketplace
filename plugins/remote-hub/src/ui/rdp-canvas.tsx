@@ -200,7 +200,7 @@ export function RdpCanvas(props: RdpCanvasProps) {
     socket.onopen = () => {
       emit({ type: "socket", state: "open" });
       // This view is being looked at: tell the service, so an agent may act on the desktop.
-      stopBeat = startWatchBeat(sendJson);
+      stopBeat = startWatchBeat(sendJson, canvas);
     };
     socket.onmessage = (event: { data: unknown }) => {
       if (disposed) return;

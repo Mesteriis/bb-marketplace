@@ -30,6 +30,8 @@ function api(rows: AgentSessionView[], over: Partial<AgentBannerApi> = {}) {
     sessions: vi.fn(async () => rows),
     takeover: vi.fn(async () => ({ tookOver: true })),
     watch: vi.fn(),
+    watchInSplit: vi.fn(async () => ({ result: "split" as const })),
+    openThread: vi.fn(),
     subscribe: (cb) => {
       listeners.push(cb);
       return () => void listeners.splice(listeners.indexOf(cb), 1);
@@ -57,6 +59,16 @@ describe("AgentBanner", () => {
     expect(a.watch).toHaveBeenCalledWith(`${GEN}.1`);
     fireEvent.click(screen.getByRole("button", { name: "Take control" }));
     await waitFor(() => expect(a.takeover).toHaveBeenCalledWith({ generation: GEN, sessionId: 1 }));
+  });
+
+  it("Watch in split passes the thread that holds the session; a refused split shows a way to the thread", async () => {
+    const a = api([row({ controlledBy: "agent", leaseThreadId: "thr_lease", openedByThread: "thr_open" })], { watchInSplit: vi.fn(async () => ({ result: "fallback" as const })) });
+    render(<AgentBanner api={a} />);
+    await waitFor(() => screen.getByRole("button", { name: "Watch in split" }));
+    fireEvent.click(screen.getByRole("button", { name: "Watch in split" }));
+    await waitFor(() => expect(a.watchInSplit).toHaveBeenCalledWith(`${GEN}.1`, "thr_lease"));
+    fireEvent.click(await screen.findByRole("button", { name: /Splits are off here/ }));
+    expect(a.openThread).toHaveBeenCalledWith("thr_lease");
   });
 
   it("with the owner's rule OFF an unwatched agent is announced as acting anyway, not as paused", async () => {

@@ -1,57 +1,115 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { WATCH_BEAT_MS, startWatchBeat } from "./watch-beat.ts";
+import { WATCH_BEAT_MS, startWatchBeat, type WatchEnv } from "./watch-beat.ts";
 
 afterEach(() => vi.useRealTimers());
 
-function setVisibility(state: "visible" | "hidden") {
-  Object.defineProperty(document, "visibilityState", { configurable: true, get: () => state });
+/** An observer the test drives by hand. */
+class FakeObserver {
+  static last: FakeObserver | null = null;
+  disconnected = false;
+  constructor(readonly cb: (entries: Array<{ isIntersecting: boolean; intersectionRatio: number }>) => void) {
+    FakeObserver.last = this;
+  }
+  observe(): void {}
+  disconnect(): void {
+    this.disconnected = true;
+  }
+  see(ratio: number): void {
+    this.cb([{ isIntersecting: ratio > 0, intersectionRatio: ratio }]);
+  }
 }
 
-describe("startWatchBeat: the view tells the service it is being looked at", () => {
-  it("reports at once, then every interval, with the page's visibility", () => {
+function setup(over: { visible?: boolean; focused?: boolean; observer?: boolean } = {}) {
+  let visible = over.visible ?? true;
+  let focused = over.focused ?? true;
+  const doc = document;
+  Object.defineProperty(doc, "visibilityState", { configurable: true, get: () => (visible ? "visible" : "hidden") });
+  doc.hasFocus = () => focused;
+  const env: WatchEnv = { document: doc, window, ...(over.observer === false ? {} : { IntersectionObserver: FakeObserver as unknown as typeof IntersectionObserver }) };
+  const sent: boolean[] = [];
+  const target = document.createElement("div");
+  const stop = startWatchBeat((m) => sent.push(m.visible), target, env);
+  return {
+    sent,
+    stop,
+    see: (r: number) => FakeObserver.last!.see(r),
+    setVisible: (v: boolean) => {
+      visible = v;
+      doc.dispatchEvent(new Event("visibilitychange"));
+    },
+    setFocused: (f: boolean) => {
+      focused = f;
+      window.dispatchEvent(new Event(f ? "focus" : "blur"));
+    },
+  };
+}
+
+describe("startWatchBeat: the view tells the service it is on screen in the focused window", () => {
+  it("is not visible until the element is at least half inside the viewport", () => {
     vi.useFakeTimers();
-    setVisibility("visible");
-    const sent: unknown[] = [];
-    const stop = startWatchBeat((m) => sent.push(m));
-    expect(sent).toEqual([{ type: "watch", visible: true }]);
-    vi.advanceTimersByTime(WATCH_BEAT_MS * 2);
-    expect(sent).toHaveLength(3);
-    stop();
+    const t = setup();
+    expect(t.sent).toEqual([false]); // visible document, focused window, but nothing seen yet
+    t.see(0.49);
+    expect(t.sent.at(-1)).toBe(false);
+    t.see(0.5);
+    expect(t.sent.at(-1)).toBe(true);
+    t.see(0);
+    expect(t.sent.at(-1)).toBe(false);
+    t.stop();
+  });
+
+  it("an off-screen element keeps reporting false on every beat (a mounted view that is scrolled away or hidden by a tab)", () => {
+    vi.useFakeTimers();
+    const t = setup();
+    t.see(0);
     vi.advanceTimersByTime(WATCH_BEAT_MS * 3);
-    expect(sent).toHaveLength(3);
+    expect(t.sent.every((v) => v === false)).toBe(true);
+    t.stop();
   });
 
-  it("a page that becomes hidden says so immediately (and visible again too)", () => {
+  it("needs a visible document AND a focused window, and says so at once when either changes", () => {
     vi.useFakeTimers();
-    setVisibility("visible");
-    const sent: Array<{ visible: boolean }> = [];
-    const stop = startWatchBeat((m) => sent.push(m as { visible: boolean }));
-    setVisibility("hidden");
-    document.dispatchEvent(new Event("visibilitychange"));
-    setVisibility("visible");
-    document.dispatchEvent(new Event("visibilitychange"));
-    expect(sent.map((m) => m.visible)).toEqual([true, false, true]);
-    stop();
+    const t = setup();
+    t.see(1);
+    t.sent.length = 0;
+    t.setVisible(false);
+    t.setVisible(true);
+    t.setFocused(false);
+    t.setFocused(true);
+    expect(t.sent).toEqual([false, true, false, true]);
+    t.stop();
   });
 
-  it("a hidden page keeps reporting hidden on every beat", () => {
+  it("reports every interval and stops when the view goes away", () => {
     vi.useFakeTimers();
-    setVisibility("hidden");
-    const sent: Array<{ visible: boolean }> = [];
-    const stop = startWatchBeat((m) => sent.push(m as { visible: boolean }));
+    const t = setup();
+    t.see(1);
+    const n = t.sent.length;
+    vi.advanceTimersByTime(WATCH_BEAT_MS * 2);
+    expect(t.sent.length).toBe(n + 2);
+    t.stop();
+    expect(FakeObserver.last!.disconnected).toBe(true);
+    vi.advanceTimersByTime(WATCH_BEAT_MS * 3);
+    window.dispatchEvent(new Event("focus"));
+    expect(t.sent.length).toBe(n + 2);
+  });
+
+  it("without an IntersectionObserver, without an element or without a document the view is never visible", () => {
+    vi.useFakeTimers();
+    const noObserver = setup({ observer: false });
     vi.advanceTimersByTime(WATCH_BEAT_MS);
-    expect(sent.every((m) => m.visible === false)).toBe(true);
-    stop();
-  });
+    expect(noObserver.sent.every((v) => v === false)).toBe(true);
+    noObserver.stop();
 
-  it("stopping removes the visibility listener", () => {
-    setVisibility("visible");
-    const sent: unknown[] = [];
-    const stop = startWatchBeat((m) => sent.push(m));
-    stop();
-    sent.length = 0;
-    document.dispatchEvent(new Event("visibilitychange"));
-    expect(sent).toEqual([]);
+    const sent: boolean[] = [];
+    const stopNoTarget = startWatchBeat((m) => sent.push(m.visible), null, { document, window, IntersectionObserver: FakeObserver as unknown as typeof IntersectionObserver });
+    stopNoTarget();
+    const sentNoDoc: boolean[] = [];
+    const stopNoDoc = startWatchBeat((m) => sentNoDoc.push(m.visible), document.createElement("div"), { IntersectionObserver: FakeObserver as unknown as typeof IntersectionObserver });
+    FakeObserver.last!.see(1);
+    stopNoDoc();
+    expect(sent).toEqual([false]);
+    expect(sentNoDoc.every((v) => v === false)).toBe(true);
   });
 });

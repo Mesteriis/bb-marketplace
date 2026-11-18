@@ -43,13 +43,40 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+
+/** An IntersectionObserver the test drives: `showing(ratio)` tells every view how much of it is on screen. */
+class FakeIntersectionObserver {
+  static all: FakeIntersectionObserver[] = [];
+  constructor(readonly cb: (entries: Array<{ isIntersecting: boolean; intersectionRatio: number }>) => void) {
+    FakeIntersectionObserver.all.push(this);
+  }
+  observe() {}
+  disconnect() {}
+  static showing(ratio: number) {
+    for (const o of FakeIntersectionObserver.all) o.cb([{ isIntersecting: ratio > 0, intersectionRatio: ratio }]);
+  }
+}
+function lookAtScreen() {
+  FakeIntersectionObserver.all = [];
+  (globalThis as unknown as { IntersectionObserver: unknown }).IntersectionObserver = FakeIntersectionObserver;
+  document.hasFocus = () => true;
+  Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "visible" });
+}
+
 const msg = (socket: FakeWebSocket, value: unknown) => act(() => socket.onmessage?.({ data: JSON.stringify(value) }));
 
 describe("RdpCanvas shows what an agent does and says it is being looked at", () => {
-  it("reports a visible heartbeat as soon as the socket is open", async () => {
+  it("reports visible only while the canvas is on screen in the focused window, not just mounted", async () => {
+    lookAtScreen();
     render(<RdpCanvas wsUrl="ws://x/attach" token="t" fit="fit" label="desktop" onEvent={() => {}} />);
     await act(async () => {});
-    expect(FakeWebSocket.instances[0]!.messages).toContainEqual({ type: "watch", visible: true });
+    const sentNow = () => FakeWebSocket.instances[0]!.messages;
+    expect(sentNow()).toContainEqual({ type: "watch", visible: false });
+    expect(sentNow()).not.toContainEqual({ type: "watch", visible: true });
+    act(() => FakeIntersectionObserver.showing(0.8));
+    expect(sentNow().at(-1)).toEqual({ type: "watch", visible: true });
+    act(() => FakeIntersectionObserver.showing(0.1));
+    expect(sentNow().at(-1)).toEqual({ type: "watch", visible: false });
   });
 
   it("draws the agent's pointer at its place on the desktop (fit: the picture is centred) and removes it after a few seconds", async () => {

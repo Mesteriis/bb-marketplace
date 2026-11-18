@@ -5,7 +5,7 @@
 // file must be loaded by BB, not imported directly.
 import "./app.css";
 import { useCallback, useMemo, useRef } from "react";
-import { definePluginApp, experimental_useAppPanel, useBbNavigate, useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
+import { definePluginApp, experimental_useAppPanel, useBbContext, useBbNavigate, useRealtime, useRpc, useSidebarSplitLayout } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server.ts";
 import type { SessionHandle } from "./src/core/rpc.ts";
 import { RemoteHubPage } from "./src/ui/remote-hub-page.tsx";
@@ -13,6 +13,9 @@ import { ConnectPage } from "./src/ui/connect-page.tsx";
 import { createConnectBridge } from "./src/ui/rpc-bridge.ts";
 import { AgentBanner, type AgentBannerApi } from "./src/ui/agent-banner.tsx";
 import { LiveSession, parseSessionKey, type LiveSessionApi } from "./src/ui/live-session.tsx";
+import { SessionCard, type SessionCardApi } from "./src/ui/session-card.tsx";
+import type { AgentSessionView } from "./src/ui/agent-panel.tsx";
+import { SESSION_PAGE, autoSplitOnSignal, openWatchInSplit, splitShows } from "./src/ui/split-watch.ts";
 import { LIVE_TAB_ID, revealSession } from "./src/ui/reveal.ts";
 
 /** The plugin's realtime channel: "an agent did something" (identifiers only). Same string as AGENT_SIGNAL_CHANNEL on the server. */
@@ -35,10 +38,41 @@ function useLiveApi(): LiveSessionApi {
   );
 }
 
-/** `::remote-session{id="…"}` in an agent's reply: the live session, inline. The id is untrusted text; LiveSession validates it. */
+/** Opening a session beside its agent's thread: the live view in the main pane, the thread in a split next to it. */
+function useSplitActions() {
+  const navigate = useBbNavigate();
+  const layout = useSidebarSplitLayout();
+  const layoutRef = useRef(layout);
+  layoutRef.current = layout;
+  return useMemo(
+    () => ({
+      watchInSplit: (sessionKey: string, agentThread: string | null) =>
+        openWatchInSplit({ nav: navigate, sessionKey, agentThread, isSplit: (t) => splitShows(layoutRef.current, t) }),
+      open: (sessionKey: string) => navigate.toPluginPanel(SESSION_PAGE, { subPath: sessionKey }),
+      openThread: (threadId: string) => navigate.toThread(threadId),
+      layout: () => layoutRef.current,
+    }),
+    [navigate],
+  );
+}
+
+/** `::remote-session{id="…"}` in an agent's reply: a CARD with two buttons, never a live view. The id is untrusted text. */
 function RemoteSessionDirective({ attributes }: { attributes: Readonly<Record<string, string>> }) {
-  const api = useLiveApi();
-  return <LiveSession sessionKey={attributes.id ?? ""} api={api} />;
+  const rpc = useRpc<typeof rpcContract>();
+  const split = useSplitActions();
+  const api = useMemo<SessionCardApi>(
+    () => ({
+      describe: async (h) => {
+        const all = (await rpc.call("agent_sessions", {})) as AgentSessionView[];
+        return all.find((x) => x.generation === h.generation && x.sessionId === h.sessionId) ?? null;
+      },
+      watchInSplit: split.watchInSplit,
+      open: split.open,
+      openThread: split.openThread,
+    }),
+    [rpc, split],
+  );
+  return <SessionCard sessionKey={attributes.id ?? ""} api={api} />;
 }
 
 /** The side-panel tab the overlay opens when an agent starts acting. */
@@ -53,12 +87,27 @@ function AgentBannerOverlay() {
   const rpc = useRpc<typeof rpcContract>();
   const navigate = useBbNavigate();
   const panel = experimental_useAppPanel();
+  const split = useSplitActions();
+  const context = useBbContext();
+  const contextRef = useRef(context);
+  contextRef.current = context;
   const listeners = useRef(new Set<() => void>());
-  const revealed = useRef(new Set<string>());
+  const autoDone = useRef(new Set<string>());
   useRealtime(AGENT_CHANNEL, (payload) => {
-    // Only the session id is read, to try to show it; what the agent did is never in the signal.
+    // Only the session id is read. The owner's screen is moved ONLY when they are already looking at that agent's thread;
+    // anywhere else the banner below is what tells them.
     const id = typeof payload === "object" && payload !== null ? (payload as { sessionId?: unknown }).sessionId : undefined;
-    if (typeof id === "string" && parseSessionKey(id) !== null) revealSession(panel, id, revealed.current);
+    const handle = typeof id === "string" ? parseSessionKey(id) : null;
+    if (typeof id === "string" && handle !== null) {
+      autoSplitOnSignal({
+        key: id,
+        listSessions: () => rpc.call("agent_sessions", {}) as Promise<AgentSessionView[]>,
+        layout: split.layout,
+        contextThread: () => contextRef.current.threadId,
+        done: autoDone.current,
+        watchInSplit: split.watchInSplit,
+      }).catch(() => undefined);
+    }
     for (const l of listeners.current) l();
   });
   const api = useMemo<AgentBannerApi>(
@@ -67,14 +116,16 @@ function AgentBannerOverlay() {
       takeover: (h) => rpc.call("agent_control_takeover", { generation: h.generation, sessionId: h.sessionId }),
       watch: (key) => {
         // The tab if BB can open it here, else the plugin's page on that session.
-        if (!revealSession(panel, key, new Set())) navigate.toPluginPanel("ssh", { subPath: key });
+        if (!revealSession(panel, key, new Set())) navigate.toPluginPanel(SESSION_PAGE, { subPath: key });
       },
+      watchInSplit: split.watchInSplit,
+      openThread: split.openThread,
       subscribe: (cb) => {
         listeners.current.add(cb);
         return () => void listeners.current.delete(cb);
       },
     }),
-    [rpc, navigate, panel],
+    [rpc, navigate, panel, split],
   );
   return <AgentBanner api={api} />;
 }

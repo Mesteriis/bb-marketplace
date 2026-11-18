@@ -691,6 +691,38 @@
   flex: 1 1 200px;
 }
 
+/* The directive in a message: a card with two buttons, never a live view. */
+.rh-session-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 6px;
+  background: var(--surface-recessed-solid, #161b22);
+  color: var(--ink, #c9d1d9);
+}
+
+.rh-session-card p {
+  margin: 0;
+}
+
+.rh-session-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.rh-link {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--accent, #58a6ff);
+  text-decoration: underline;
+  cursor: pointer;
+  font: inherit;
+}
+
 /* One live session, inline in a message, in a side tab or above the page. */
 .rh-live {
   display: flex;

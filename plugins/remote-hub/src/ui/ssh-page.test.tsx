@@ -26,6 +26,26 @@ vi.mock("@xterm/addon-fit", () => ({
   },
 }));
 
+
+/** An IntersectionObserver the test drives: `showing(ratio)` tells every view how much of it is on screen. */
+class FakeIntersectionObserver {
+  static all: FakeIntersectionObserver[] = [];
+  constructor(readonly cb: (entries: Array<{ isIntersecting: boolean; intersectionRatio: number }>) => void) {
+    FakeIntersectionObserver.all.push(this);
+  }
+  observe() {}
+  disconnect() {}
+  static showing(ratio: number) {
+    for (const o of FakeIntersectionObserver.all) o.cb([{ isIntersecting: ratio > 0, intersectionRatio: ratio }]);
+  }
+}
+function lookAtScreen() {
+  FakeIntersectionObserver.all = [];
+  (globalThis as unknown as { IntersectionObserver: unknown }).IntersectionObserver = FakeIntersectionObserver;
+  document.hasFocus = () => true;
+  Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "visible" });
+}
+
 class FakeResizeObserver {
   observe() {}
   disconnect() {}
@@ -85,10 +105,17 @@ async function connectAndRun() {
 }
 
 describe("SshPage terminal says it is being looked at", () => {
-  it("sends a visible heartbeat on the session socket as soon as it is open", async () => {
+  it("says visible only while the terminal is on screen in the focused window, not just mounted", async () => {
+    lookAtScreen();
     await connectAndRun();
     const socket = FakeWebSocket.instances[0]!;
-    expect(socket.sent.filter((d) => typeof d === "string").map((d) => JSON.parse(d as string))).toContainEqual({ type: "watch", visible: true });
+    const watches = () => socket.sent.filter((d) => typeof d === "string").map((d) => JSON.parse(d as string)).filter((m) => m.type === "watch");
+    expect(watches()).toContainEqual({ type: "watch", visible: false });
+    expect(watches()).not.toContainEqual({ type: "watch", visible: true });
+    act(() => FakeIntersectionObserver.showing(1));
+    expect(watches().at(-1)).toEqual({ type: "watch", visible: true });
+    act(() => FakeIntersectionObserver.showing(0));
+    expect(watches().at(-1)).toEqual({ type: "watch", visible: false });
   });
 });
 

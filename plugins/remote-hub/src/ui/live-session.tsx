@@ -4,6 +4,7 @@
 // view reports in while it is visible (see watch-beat.ts).
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { SessionHandle } from "../core/rpc.ts";
+import { parseSessionKey } from "./session-key.ts";
 import { errorTextFromMessage } from "../core/rdp-texts.ts";
 import { ControlBadge, ControlNotice, HUMAN_CONTROL, nextControl, type ControlMessage, type ControlView } from "./control-banner.tsx";
 import type { FeedEvent } from "../core/agent-feed.ts";
@@ -18,11 +19,7 @@ export interface LiveSessionApi {
   takeover: (handle: SessionHandle) => Promise<unknown>;
 }
 
-/** The id in a directive is text an agent wrote: only `generation.number` is a session, anything else is refused. */
-export function parseSessionKey(text: string | undefined): SessionHandle | null {
-  const m = typeof text === "string" ? /^([0-9a-f]{32})\.(\d{1,9})$/.exec(text) : null;
-  return m === null ? null : { generation: m[1] as string, sessionId: Number(m[2]) };
-}
+export { parseSessionKey };
 
 export function LiveSession({ sessionKey, api }: { sessionKey: string; api: LiveSessionApi }) {
   const handle = parseSessionKey(sessionKey);

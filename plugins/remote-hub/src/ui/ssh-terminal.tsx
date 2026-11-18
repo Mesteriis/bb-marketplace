@@ -78,7 +78,7 @@ export function SshTerminal(props: SshTerminalProps) {
       if (disposed) return;
       props.onStateChange?.("running");
       // This view is being looked at: tell the service, so an agent may type into the session.
-      stopBeat = startWatchBeat(sendControl);
+      stopBeat = startWatchBeat(sendControl, container);
       terminal.onData((data) => {
         if (socket.readyState === WebSocket.OPEN) {
           socket.send(new TextEncoder().encode(data));
