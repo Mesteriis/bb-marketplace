@@ -730,14 +730,26 @@ fn s3_close_emits_queued_output_before_closed() {
     let mut helper = start_with_args(&["--echo-command", "/bin/sh", "-c", script]);
     helper.hello();
     let (sid, pid) = helper.open();
-    std::thread::sleep(Duration::from_millis(400));
 
+    // Positive signal instead of a fixed sleep: close only after the helper has
+    // emitted at least one stream frame of the child's output, so there is
+    // always something already read to be emitted before session.closed.
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut seqs: Vec<u32> = Vec::new();
+    while seqs.is_empty() {
+        let (kind, payload) = helper.read_frame();
+        if kind == FRAME_KIND_STREAM {
+            let rsid = u32::from_le_bytes(payload[0..4].try_into().unwrap());
+            if rsid == sid {
+                seqs.push(u32::from_le_bytes(payload[4..8].try_into().unwrap()));
+                bytes.extend_from_slice(&payload[8..]);
+            }
+        }
+    }
     helper.send(&Request::SessionClose { id: 1, session_id: sid });
 
     let literal: String = (0..786432).map(|i| format!("{i:08}")).collect();
     let literal = literal.into_bytes();
-    let mut bytes: Vec<u8> = Vec::new();
-    let mut seqs: Vec<u32> = Vec::new();
     let mut closed = false;
     for _ in 0..20_000 {
         let (kind, payload) = helper.read_frame();
@@ -2016,8 +2028,15 @@ fn w4_hup_does_not_block_the_loop() {
     assert_eq!(hup_count, 50, "every child's hang-up must precede its reap");
     let _ = std::fs::remove_dir_all(&gate_dir);
 
+    // This 5 s bound IS the assertion that reaping 50 hung-up sessions does not
+    // stall the loop: by now every child is closed and nothing is left to
+    // flush, so the helper must exit within a few poll turns. A per-session
+    // delay in the reaper (5 ms before each waitpid, mutation M-h2) turns
+    // this into ~39 s. Stdout is drained while waiting, but the limit is NOT
+    // the generous SHUTDOWN_HANG_GUARD used where output may still be flushing.
     drop(stdin);
-    let status = wait_exit_draining(&mut child, &mut stdout, SHUTDOWN_HANG_GUARD).expect("helper did not exit within the hang guard after stdin close");
+    let status = wait_exit_draining(&mut child, &mut stdout, Duration::from_secs(5))
+        .expect("helper did not exit within 5s of stdin close");
     assert_eq!(status.code(), Some(0));
     reader.join().expect("stderr reader joined");
 }
