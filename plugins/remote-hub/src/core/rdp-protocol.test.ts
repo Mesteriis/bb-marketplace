@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { decodeFrame, encodeControlFrame, FRAME_KIND_CONTROL } from "./protocol.ts";
-import { parseUpdateChunk, rdpInputEventSchema, UPDATE_HEADER_BYTES } from "./rdp-protocol.ts";
+import { parseUpdateChunk, RDP_CLOSED_REASONS, rdpInputEventSchema, UPDATE_HEADER_BYTES } from "./rdp-protocol.ts";
 
 function controlFrameOf(json: string): Uint8Array {
   const body = new Uint8Array(1 + json.length);
@@ -149,5 +149,25 @@ describe("parseUpdateChunk", () => {
     expect(parseUpdateChunk(updateFrame({ frameId: 1n, fbW: 3841, fbH: 4, x: 0, y: 0, w: 1, h: 1, pixels: 4 }))).toBeNull();
     expect(parseUpdateChunk(updateFrame({ frameId: 1n, fbW: 4, fbH: 4, x: 0, y: 0, w: 0, h: 1, pixels: 0 }))).toBeNull();
     expect(parseUpdateChunk(updateFrame({ frameId: 2n ** 53n, fbW: 4, fbH: 4, x: 0, y: 0, w: 1, h: 1, pixels: 4 }))).toBeNull();
+  });
+});
+
+describe("closed reasons", () => {
+  it("are exactly the contract's list plus server_disconnected", () => {
+    expect([...RDP_CLOSED_REASONS].sort()).toEqual(
+      [
+        "auth_failed",
+        "cert_changed",
+        "cert_rejected",
+        "engine_exited",
+        "helper_shutdown",
+        "killed_by_close",
+        "network_error",
+        "protocol_error",
+        "server_disconnected",
+        "timeout",
+        "tls_error",
+      ].sort(),
+    );
   });
 });

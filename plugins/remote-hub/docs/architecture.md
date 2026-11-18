@@ -177,7 +177,54 @@ declarations in `node_modules/@get-bb/plugin-sdk/bundled-types/`.
   identical to HTTP routes. Remote Hub relies on that default and adds its
   own single-use attach token plus per-session binding on top. Auth and origin
   checks are not exercised in a live BB server in this stage.
-- RDP image frames: not in this stage; nothing is claimed about them yet.
+- RDP image frames: stage 2b-2, see the section "Stage 2b-2 — the RDP service layer" below.
+
+## Stage 2b-2 — the RDP service layer
+
+The helper's RDP engine (docs/rdp-engine.md) is reached from the page through
+three RPCs and the same attach socket as SSH. There is no UI yet (stage 2b-3).
+
+- **RPC** (`src/core/rpc.ts`): `rdp_open {target {host, port, username,
+  password, domain?, expectedFingerprint?}, width, height}`, `rdp_cert_decision
+  {handle, fingerprint, accept: once | session_trust | reject}`,
+  `rdp_screenshot {handle}` (base64 PNG, chunked answers reassembled by
+  `HelperProcess`). `session_list` entries gain kind `rdp` and an `rdp` record
+  `{target, state, prompt, desktop, trace}`; the record never holds the password
+  (it exists only in the RPC payload, the helper request frame and engine memory).
+  Helper refusals keep their code in the RPC error text (`not_ready: …`).
+- **Certificate trust** (`src/core/rdp-trust.ts`, in service memory only): the
+  helper prompts for every certificate strict validation rejects. A fingerprint
+  the user trusted for this BB run (`session_trust`) is answered `once`
+  automatically; a DIFFERENT certificate on a host:port that has a trusted one is
+  shown with reason `cert_changed` and is never auto-accepted; a decision must
+  name the presented fingerprint (`fingerprint_mismatch` otherwise, nothing
+  reaches the helper).
+- **Updates and views** (`src/core/rdp-views.ts`): the helper has ONE consumer,
+  the service, and sends one update at a time (all chunks share a `frameId`;
+  `seq` is the chunk index inside that update and restarts at 0 for every update,
+  so it is validated per frame, never as a global sequence). RDP has no byte
+  credit; `credit.ts` stays SSH-only. The service multiplexes views without a
+  per-view queue and without a TS framebuffer: a view with nothing in flight gets
+  the whole update and is then "in flight"; a busy view is skipped and marked
+  `needsFull`; a `needsFull` view only accepts an update that starts with a
+  full-width band at (0, 0), and the service asks the helper for `rdp.refresh`
+  (a full frame under a new frame id). The helper is acked on the FIRST ack of a
+  frame by any receiver, at once when nobody can take the update, and when the
+  last receiver detaches — so a view that never acks costs the others nothing.
+- **Attach socket** (`rdp-socket.ts`): text events `attached` (state, prompt,
+  desktop, endpoint), `state`, `cert_prompt`, `desktop`, `input_rejected`,
+  `closed`, `error {code}`; binary frames = `{frameId u64, fbWidth, fbHeight, x,
+  y, w, h u32 LE}` + RGBA rows; from the view `ack {frameId}`, `input {events}`
+  (fbWidth/fbHeight map to the helper's `geom_width/geom_height`; refused with
+  `not_ready` before `desktop_ready`), `refresh`, `detach`. 4401 unknown token,
+  4000 session ended (the stored reason is sent first), 4410 helper exited.
+- **Known limits**: a stream the service finds out of step (a `seq` or `frameId`
+  that does not follow) is dropped chunk by chunk, not turned into a session
+  error (the helper validates every frame, so it is not expected); `screenshot_too_large`
+  cannot occur at the largest desktop (64 chunks = 48 MiB of base64 against a
+  ~44 MiB worst-case PNG).
+- **Live probe**: `scripts/rdp-probe.ts` (not part of the bundle), see
+  docs/rdp-windows-check.md.
 
 ## 4. Where metadata, secrets, keys and trust records live
 
