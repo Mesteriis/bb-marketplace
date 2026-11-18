@@ -83,6 +83,7 @@ class FakeRdpHelper {
     this.closedCb.push(cb);
   }
   onSessionOutput(): void {}
+  onSshAskpass(): void {}
   onRdpEvent(cb: (sid: number, e: RdpHelperEvent) => void): void {
     this.eventCb.push(cb);
   }

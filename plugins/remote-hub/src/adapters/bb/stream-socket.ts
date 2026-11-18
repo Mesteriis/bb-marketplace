@@ -33,6 +33,12 @@ const controlSchema = z.discriminatedUnion("type", [
     bytes: z.number().int().min(1).max(2_147_483_647),
   }),
   z.object({ type: z.literal("detach") }),
+  // The user's answer to an askpass prompt (null = cancelled): passed on once, never kept.
+  z.object({
+    type: z.literal("prompt_answer"),
+    promptId: z.number().int().min(0),
+    answer: z.string().max(4096).nullable(),
+  }),
 ]);
 
 function safeJson(text: string): unknown {
@@ -64,6 +70,7 @@ export function registerStreamSocket(bb: BbPluginApi, deps: StreamSocketDeps): v
     let unsubscribe: (() => void) | null = null;
     let offExit: (() => void) | null = null;
     let offEnd: (() => void) | null = null;
+    let offAskpass: (() => void) | null = null;
 
     const guardSend = (socket: { send: (data: string | Uint8Array) => void }, data: string | Uint8Array): void => {
       try {
@@ -141,6 +148,10 @@ export function registerStreamSocket(bb: BbPluginApi, deps: StreamSocketDeps): v
           guardedClose(WS_SESSION_ENDED, "session ended");
         };
         offExit = deps.service.onHelperExit(() => guardedClose(WS_GENERATION_STALE, "helper exited"));
+        // Askpass prompts and credential notices of this session go to the view as text events.
+        offAskpass = deps.service.subscribeSshAskpass(handle!, (event) => {
+          if (attached) guardSend(socket, JSON.stringify(event));
+        });
         offEnd = deps.service.subscribeSessionEnd(handle!, (info) => {
           if (!attached) return;
           if (liveSubscribed) sendEnd(info);
@@ -230,6 +241,9 @@ export function registerStreamSocket(bb: BbPluginApi, deps: StreamSocketDeps): v
             case "detach":
               socket.close(1000, "detach");
               break;
+            case "prompt_answer":
+              deps.service.sshPromptAnswer(handle, msg.promptId, msg.answer).catch(() => replyError(socket, "prompt_gone"));
+              break;
           }
         } else {
           deps.service.sessionTerminalInput(handle, data).catch(() => {
@@ -247,6 +261,7 @@ export function registerStreamSocket(bb: BbPluginApi, deps: StreamSocketDeps): v
         if (unsubscribe !== null) unsubscribe();
         if (offExit !== null) offExit();
         if (offEnd !== null) offEnd();
+        if (offAskpass !== null) offAskpass();
       },
       onError() {
         attached = false;
@@ -257,6 +272,7 @@ export function registerStreamSocket(bb: BbPluginApi, deps: StreamSocketDeps): v
         if (unsubscribe !== null) unsubscribe();
         if (offExit !== null) offExit();
         if (offEnd !== null) offEnd();
+        if (offAskpass !== null) offAskpass();
       },
     };
   });

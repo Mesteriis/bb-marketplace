@@ -52,6 +52,7 @@ class FakeHelper {
     this.outputCb = cb;
   }
   onRdpEvent(): void {}
+  onSshAskpass(): void {}
   onRdpUpdate(): void {}
   onSessionClosed(cb: (sessionId: number, info: { exitCode: number | null; signal: number | null; reason: string }) => void): void {
     this.closedCbs.push(cb);

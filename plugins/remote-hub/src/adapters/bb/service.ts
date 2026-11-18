@@ -5,6 +5,7 @@
 import { AttachTokens, ATTACH_TOKEN_TTL_MS, type Clock } from "../../core/attach.ts";
 import { createCreditState, type CreditState } from "../../core/credit.ts";
 import { CredentialError, type CredentialVault } from "../../core/credential.ts";
+import type { SshAskpassEvent } from "../../core/ssh-askpass-protocol.ts";
 import { buildSshSpawn, type SshTarget } from "../../core/ssh-args.ts";
 import { HelperProcess, type HelperStatus, HelperRuntimeError, HelperRequestError, type RdpHelperEvent } from "./helper-process.ts";
 import type { RdpInfo, RdpTarget, SessionHandle } from "../../core/rpc.ts";
@@ -59,7 +60,11 @@ export interface RemoteHubService {
   echoOpen(cols: number, rows: number): Promise<SessionHandle>;
   echoInput(handle: SessionHandle, data: string): Promise<{ output: string; truncated: boolean }>;
   echoClose(handle: SessionHandle): Promise<{ closed: boolean }>;
-  sshOpen(target: SshTarget, cols: number, rows: number, profileId?: string): Promise<SessionHandle>;
+  sshOpen(target: SshTarget, cols: number, rows: number, profileId?: string, askpass?: { credentialRef: string }): Promise<SessionHandle>;
+  /** Askpass events of an SSH session: open prompts and what happened to a saved credential. Replays what is open. */
+  subscribeSshAskpass(handle: SessionHandle, cb: (event: SshAskpassEvent) => void): () => void;
+  /** The user's answer to a prompt (null = cancelled). Passed to the helper once and never kept here. */
+  sshPromptAnswer(handle: SessionHandle, promptId: number, answer: string | null): Promise<void>;
   sshOpenTest(cols: number, rows: number): Promise<SessionHandle>;
   rdpOpen(target: RdpTarget, width: number, height: number, profileId?: string): Promise<SessionHandle>;
   rdpCertDecision(handle: SessionHandle, fingerprint: string, accept: "once" | "session_trust" | "reject"): Promise<void>;
@@ -107,6 +112,34 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
   const listeners = new Map<string, Set<(data: Uint8Array) => void>>();
   const credits = new Map<string, CreditState>();
   const sessionEndListeners = new Map<string, Set<(info: { exitCode: number | null; signal: number | null; reason: string }) => void>>();
+  // Per SSH session: the prompts still waiting for the user, the last notice about a saved
+  // credential, and the sockets listening. Holds prompt TEXT only, never an answer or a secret.
+  interface AskpassState {
+    prompts: Map<number, Extract<SshAskpassEvent, { type: "prompt" }>>;
+    notice: Exclude<SshAskpassEvent, { type: "prompt" }> | null;
+    listeners: Set<(event: SshAskpassEvent) => void>;
+  }
+  const askpassStates = new Map<string, AskpassState>();
+  const askpassState = (key: string): AskpassState => {
+    let state = askpassStates.get(key);
+    if (state === undefined) {
+      state = { prompts: new Map(), notice: null, listeners: new Set() };
+      askpassStates.set(key, state);
+    }
+    return state;
+  };
+  const handleSshAskpass = (generation: string, sessionId: number, event: SshAskpassEvent): void => {
+    const state = askpassState(generation + ":" + sessionId);
+    if (event.type === "prompt") state.prompts.set(event.promptId, event);
+    else state.notice = event;
+    for (const cb of state.listeners) {
+      try {
+        cb(event);
+      } catch {
+        // one socket's throw must not skip the others
+      }
+    }
+  };
   const attachTokens = new AttachTokens(ATTACH_TOKEN_TTL_MS, deps.clock);
   const helperExitCallbacks = new Set<() => void>();
   const trust = deps.trust ?? createRdpTrustStore();
@@ -397,9 +430,11 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
                 }
               }
             }
+            askpassStates.delete(key); // nothing can be answered for an ended session
             maybeEvictClosed(key);
           });
           started.onRdpEvent((sessionId, event) => handleRdpEvent(generation, sessionId, event));
+          started.onSshAskpass((sessionId, event) => handleSshAskpass(generation, sessionId, event));
           started.onRdpUpdate((sessionId, seq, payload) => handleRdpUpdate(generation, sessionId, seq, payload));
           started.onSessionOutput((sessionId, data) => {
             credits.get(generation + ":" + sessionId)?.onConsumed(data.byteLength);
@@ -474,10 +509,10 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
       applyEarlyClosed(keyOf(handle));
       return handle;
     }),
-    sshOpen: tracked(async (target, cols, rows, profileId) => {
+    sshOpen: tracked(async (target, cols, rows, profileId, askpass) => {
       const hp = await start();
       const spec = buildSshSpawn(target, deps.env ?? process.env);
-      const handle = await hp.openSsh(spec, cols, rows);
+      const handle = await hp.openSsh(spec, cols, rows, askpass);
       sessions.set(keyOf(handle), {
         generation: handle.generation,
         sessionId: handle.sessionId,
@@ -585,6 +620,27 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
           applyEffects(runtime, runtime.mux.detach(viewId));
         },
       };
+    },
+    subscribeSshAskpass(handle, cb) {
+      requireGeneration(handle);
+      const state = askpassState(keyOf(handle));
+      state.listeners.add(cb);
+      // Replay what is still open, so a view that attaches (or reattaches) late sees it.
+      for (const prompt of state.prompts.values()) cb(prompt);
+      if (state.notice !== null) cb(state.notice);
+      return () => {
+        state.listeners.delete(cb);
+      };
+    },
+    async sshPromptAnswer(handle, promptId, answer) {
+      requireGeneration(handle);
+      const hp = await start();
+      try {
+        await hp.sshPromptAnswer(handle, promptId, answer);
+      } finally {
+        // Answered or refused as already gone: either way the prompt is no longer open.
+        askpassStates.get(keyOf(handle))?.prompts.delete(promptId);
+      }
     },
     credentialVault: {
       save: async (ref, secret) => viaVault(async (hp) => hp.credentialSave(ref, secret)),

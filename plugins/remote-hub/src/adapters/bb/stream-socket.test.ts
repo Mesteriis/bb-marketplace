@@ -48,6 +48,8 @@ function makeHarness(overrides: Partial<RemoteHubService> = {}) {
     creditState: vi.fn(),
     subscribeSessionEnd: vi.fn().mockReturnValue(() => {}),
     onHelperExit: vi.fn().mockReturnValue(() => {}),
+    subscribeSshAskpass: vi.fn().mockReturnValue(() => {}),
+    sshPromptAnswer: vi.fn().mockResolvedValue(undefined),
     sessionAttach: vi.fn().mockReturnValue(""),
     helperStatus: vi.fn(),
     echoOpen: vi.fn(),

@@ -7,6 +7,7 @@
 // experimental_execHostFile from "@get-bb/plugin-sdk/process"
 // (bundled-types/bb-plugin-sdk-process.d.ts:46-54); both wrap Node's
 // child_process, which is what the BB server itself runs on.
+import type { SshAskpassEvent } from "../../core/ssh-askpass-protocol.ts";
 import { experimental_execHostFile, experimental_spawnHostProcess } from "@get-bb/plugin-sdk/process";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -228,6 +229,7 @@ export class HelperProcess {
   private readonly echoSessions = new Set<number>();
   private readonly rdpSessions = new Set<number>();
   private readonly screens = new Map<number, PendingScreenshot>();
+  private readonly onSshAskpassCallbacks: Array<(sessionId: number, event: SshAskpassEvent) => void> = [];
   private readonly onRdpEventCallbacks: Array<(sessionId: number, event: RdpHelperEvent) => void> = [];
   private readonly onRdpUpdateCallbacks: Array<(sessionId: number, seq: number, payload: Uint8Array) => void> = [];
   private readonly onSessionClosedCallbacks: Array<(sessionId: number, info: { exitCode: number | null; signal: number | null; reason: string }) => void> = [];
@@ -378,6 +380,7 @@ export class HelperProcess {
       return;
     }
     if (this.handleRdpControl(resp)) return;
+    if (this.handleSshAskpassControl(resp)) return;
     const id = "id" in resp ? (resp as { id?: unknown }).id : undefined;
     if (typeof id === "number" && this.pending.has(id)) {
       const entry = this.pending.get(id)!;
@@ -397,6 +400,40 @@ export class HelperProcess {
       for (const cb of this.onSessionClosedCallbacks) cb(resp.sessionId, info);
       if (this._status !== null) this._status.sessionCount = Math.max(0, this._status.sessionCount - 1);
     }
+  }
+
+  /** Askpass events of an SSH session (a prompt for the user, what happened to a saved credential). */
+  private handleSshAskpassControl(resp: ResponseMessage): boolean {
+    switch (resp.type) {
+      case "ssh.prompt":
+        this.emitSshAskpass(resp.sessionId, { type: "prompt", promptId: resp.promptId, text: resp.text, kind: resp.kind });
+        return true;
+      case "ssh.credential_rejected":
+        this.emitSshAskpass(resp.sessionId, { type: "credential_rejected" });
+        return true;
+      case "ssh.credential_failed":
+        this.emitSshAskpass(resp.sessionId, { type: "credential_failed", code: resp.code });
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  private emitSshAskpass(sessionId: number, event: SshAskpassEvent): void {
+    for (const cb of this.onSshAskpassCallbacks) cb(sessionId, event);
+  }
+
+  /** Register for askpass events of SSH sessions. */
+  onSshAskpass(cb: (sessionId: number, event: SshAskpassEvent) => void): void {
+    this.onSshAskpassCallbacks.push(cb);
+  }
+
+  /** The user's answer to an `ssh.prompt` (null = cancelled). It is passed on once and never kept. */
+  async sshPromptAnswer(handle: SessionHandle, promptId: number, answer: string | null): Promise<void> {
+    this.assertGeneration(handle);
+    const resp = await this.request({ type: "ssh.prompt_answer", sessionId: handle.sessionId, promptId, answer } as RequestMessage);
+    if (resp.type === "error") throw new HelperRequestError(resp.code, resp.message);
+    if (resp.type !== "ssh.prompt_ack") throw new Error("unexpected helper response: " + resp.type);
   }
 
   /** RDP messages that are not plain request/response pairs. True when consumed. */
@@ -673,7 +710,7 @@ export class HelperProcess {
     if (resp.type === "error") throw new Error(resp.message);
   }
 
-  async openSsh(spec: SshSpawnSpec, cols: number, rows: number): Promise<SessionHandle> {
+  async openSsh(spec: SshSpawnSpec, cols: number, rows: number, askpass?: { credentialRef: string }): Promise<SessionHandle> {
     const resp = await this.request({
       type: "session.open_ssh",
       cols,
@@ -682,8 +719,9 @@ export class HelperProcess {
       argv: spec.argv,
       env: spec.env,
       cwd: null,
+      ...(askpass !== undefined ? { askpass } : {}),
     } as RequestMessage);
-    if (resp.type === "error") throw new Error(resp.message);
+    if (resp.type === "error") throw new HelperRequestError(resp.code, resp.message);
     if (resp.type !== "session.opened") throw new Error("unexpected helper response: " + resp.type);
     if (this._status !== null) this._status.sessionCount += 1;
     return { generation: this.generation, sessionId: resp.sessionId };

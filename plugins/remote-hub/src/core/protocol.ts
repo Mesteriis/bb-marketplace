@@ -10,6 +10,7 @@
 // The Rust mirror lives in helper/src/protocol.rs and must stay in sync with
 // these constants and message names.
 import { credentialRequestSchemas, credentialResponseSchemas } from "./credential-protocol.ts";
+import { sshAskpassRequestSchemas, sshAskpassResponseSchemas } from "./ssh-askpass-protocol.ts";
 import { z } from "zod";
 import {
   openRdpRequestSchema,
@@ -66,6 +67,8 @@ export const openSshRequestSchema = z.object({
   argv: z.array(z.string()),
   env: z.record(z.string(), z.string()),
   cwd: z.string().nullable(),
+  /** A saved credential whose secret prompt the helper answers from the Keychain (stage 3b-2). */
+  askpass: z.object({ credentialRef: z.string().min(1).max(96) }).optional(),
 });
 /** Maximum UTF-8 bytes a single session.input may carry (matches Rust PENDING_INPUT_CAP). */
 export const MAX_SESSION_INPUT_BYTES = 262_144;
@@ -177,6 +180,7 @@ export const errorEnvelopeSchema = z.object({
 
 export const requestSchema = z.discriminatedUnion("type", [
   ...credentialRequestSchemas,
+  ...sshAskpassRequestSchemas,
   helloRequestSchema,
   pingRequestSchema,
   openEchoRequestSchema,
@@ -190,6 +194,7 @@ export const requestSchema = z.discriminatedUnion("type", [
 
 export const responseSchema = z.discriminatedUnion("type", [
   ...credentialResponseSchemas,
+  ...sshAskpassResponseSchemas,
   helloAckSchema,
   pongSchema,
   sessionOpenedSchema,
@@ -223,6 +228,8 @@ export const controlMessageSchema = z.union([
     errorEnvelopeSchema,
     ...credentialRequestSchemas,
     ...credentialResponseSchemas,
+    ...sshAskpassRequestSchemas,
+    ...sshAskpassResponseSchemas,
     openRdpRequestSchema,
     rdpCertDecisionRequestSchema,
     rdpInputRequestSchema,
