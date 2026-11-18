@@ -4,6 +4,9 @@ import { z } from "zod";
 import { credentialBindSchema } from "./credential.ts";
 import { profileInputSchema, profileSchema } from "./profile.ts";
 import { rdpOptionsSchema } from "./rdp-options.ts";
+import { PVE_OUTCOMES } from "./pve-targets.ts";
+import { pveGuestSchema, pveNodeSchema } from "./pve-protocol.ts";
+import { pveProfileTrustSchema } from "./pve-trust.ts";
 
 const sourceKindSchema = z.enum(["ssh-config", "hosts", "keys-dir", "agent", "known-hosts"]);
 export const importSourceSchema = z.object({
@@ -165,6 +168,47 @@ export const credentialViewSchema = z.object({
   usedBy: z.array(z.object({ id: z.string(), name: z.string() })),
 });
 
+const pveGuestViewSchema = z.object({
+  /** profile id + VMID: the identity of a guest. */
+  key: z.string(),
+  profileId: z.string(),
+  vmid: z.number().int(),
+  name: z.string(),
+  kind: z.enum(["qemu", "lxc"]),
+  node: z.string(),
+  status: z.string(),
+  template: z.boolean(),
+  console: z.object({ available: z.boolean(), reason: z.string().nullable() }),
+  linkedProfileId: z.string().nullable(),
+});
+export const pveConnectionViewSchema = z.object({
+  profileId: z.string(),
+  profileName: z.string(),
+  outcome: z.enum(PVE_OUTCOMES),
+  message: z.string().nullable(),
+  fingerprint: z.string().nullable(),
+  version: z.string().nullable(),
+  nodes: z.array(pveNodeSchema),
+  guests: z.array(pveGuestViewSchema),
+  fetchedAt: z.string().nullable(),
+  stale: z.object({ ageSeconds: z.number().int() }).nullable(),
+});
+
+const pveEndpointSchema = z.object({
+  host: rdpHostSchema,
+  port: z.number().int().min(1).max(65535).default(8006),
+  /** null = the system roots. */
+  trust: pveProfileTrustSchema.nullable().default(null),
+});
+const pveAdminSchema = pveEndpointSchema.extend({
+  /** The administrator's own login, used for this call only and never stored. */
+  adminUser: z.string().min(1).max(256),
+  adminPassword: z.string().min(1).max(1024),
+  aclPath: z.string().min(1).max(80).default("/"),
+});
+const pveFailureSchema = z.object({ ok: z.literal(false), code: z.string(), message: z.string(), fingerprint: z.string().nullable() });
+const pvePlanActionSchema = z.enum(["create", "keep", "update", "rotate_password"]);
+
 export const rpcSchemas = {
   helper_status: {
     input: z.null(),
@@ -204,6 +248,36 @@ export const rpcSchemas = {
       options: rdpOptionsSchema.optional(),
     }),
     output: sessionHandleSchema,
+  },
+  /** Every Proxmox connection (or the named ones), each with its own outcome; one failing never hides the rest. */
+  pve_targets: {
+    input: z.object({ profileIds: z.array(z.string().uuid()).max(200).optional(), refresh: z.boolean().default(false) }).strict(),
+    output: z.object({ connections: z.array(pveConnectionViewSchema) }),
+  },
+  /** The owner confirmed the certificate a refusal showed: trust that exact one for this connection. */
+  pve_trust_pin: {
+    input: z.object({ profileId: z.string().uuid(), fingerprint: z.string().regex(/^([0-9A-F]{2}:){31}[0-9A-F]{2}$/) }).strict(),
+    output: z.object({ pinned: z.literal(true) }),
+  },
+  /** Link (or unlink with null) a guest to a saved SSH/RDP profile; the owner's choice, never a guessed address. */
+  pve_guest_link_set: {
+    input: z.object({ profileId: z.string().uuid(), vmid: z.number().int().min(100).max(999_999_999), linkProfileId: z.string().uuid().nullable() }).strict(),
+    output: z.object({ linked: z.boolean() }),
+  },
+  /** Mode 1, step 1: what would be created in Proxmox. Reads only. */
+  pve_onboard_plan: {
+    input: pveAdminSchema.strict(),
+    output: z.union([z.object({ ok: z.literal(true), role: pvePlanActionSchema, user: pvePlanActionSchema, acl: pvePlanActionSchema }), pveFailureSchema]),
+  },
+  /** Mode 1, step 2 (after the owner confirmed): create the restricted role, user and ACL entry; save the new password. */
+  pve_onboard_apply: {
+    input: pveAdminSchema.extend({ name: z.string().trim().min(1).max(100) }).strict(),
+    output: z.union([z.object({ ok: z.literal(true), profileId: z.string(), role: pvePlanActionSchema, user: pvePlanActionSchema, acl: pvePlanActionSchema }), pveFailureSchema]),
+  },
+  /** Mode 2: connect as is; the secret is saved for this connection only and nothing is created in Proxmox. */
+  pve_onboard_connect: {
+    input: pveEndpointSchema.extend({ name: z.string().trim().min(1).max(100), authMode: z.enum(["ticket", "token"]), user: z.string().min(1).max(256), secret: z.string().min(1).max(4096) }).strict(),
+    output: z.union([z.object({ ok: z.literal(true), profileId: z.string() }), z.object({ ok: z.literal(false), code: z.string(), message: z.string() })]),
   },
   rdp_cert_decision: {
     input: sessionHandleSchema.extend({

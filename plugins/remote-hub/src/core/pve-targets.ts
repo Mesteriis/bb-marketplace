@@ -11,6 +11,11 @@ export type PveAnswer =
   | { ok: true; version: string | null; nodes: PveNode[]; guests: PveGuest[] }
   | { ok: false; code: string; message: string; fingerprint: string | null };
 
+/** What mode 1 answered: the plan (dry run) or the applied result, or the failure with the certificate it saw. */
+export type PveProvisionAnswer =
+  | { ok: true; applied: boolean; role: string; user: string; acl: string }
+  | { ok: false; code: string; message: string; fingerprint: string | null };
+
 export interface PveGuestView {
   /** Identity of a guest: the PVE profile and the VMID. The node is a location, kept apart, and is looked up again before opening. */
   key: string;

@@ -100,6 +100,9 @@ function bindOf(p: Profile): CredentialBind {
   return { type: "endpoint", ...endpointOf(p) };
 }
 
+/** What a secret saved for this profile is bound to (the helper enforces it on every use). */
+export const bindForProfile = (p: Profile): CredentialBind => bindOf(p);
+
 const sameBind = (a: CredentialBind, b: CredentialBind): boolean => JSON.stringify(a) === JSON.stringify(b);
 
 export class CredentialBook {

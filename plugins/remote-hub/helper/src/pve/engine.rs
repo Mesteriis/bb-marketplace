@@ -17,6 +17,19 @@ use super::term::{self, Gate, OkGate};
 /// How long to wait for the server's `OK` after the ticket line (termproxy itself waits 10 s for the ticket).
 const OK_TIMEOUT: Duration = Duration::from_secs(12);
 const DEFAULT_KEEPALIVE: u64 = 30;
+/// A whole discovery, and a whole onboarding, are bounded no matter how the individual steps add up.
+const TARGETS_DEADLINE: Duration = Duration::from_secs(45);
+const PROVISION_DEADLINE: Duration = Duration::from_secs(60);
+
+async fn bounded(limit: Duration, out: &Out, work: impl std::future::Future<Output = i32>) -> i32 {
+    match tokio::time::timeout(limit, work).await {
+        Ok(code) => code,
+        Err(_) => {
+            out.error(&ApiError::Timeout).await;
+            1
+        }
+    }
+}
 
 pub fn run_engine() -> i32 {
     let std_stream = unsafe { std::os::unix::net::UnixStream::from_raw_fd(3) };
@@ -127,8 +140,8 @@ pub async fn serve(stream: tokio::net::UnixStream) -> i32 {
             1
         }
         Ok(client) => match op {
-            PveOp::Targets => run_targets(&client, &auth, &out).await,
-            PveOp::Provision { dry_run, acl_path } => run_provision(&client, &auth, dry_run, &acl_path, &out).await,
+            PveOp::Targets => bounded(TARGETS_DEADLINE, &out, run_targets(&client, &auth, &out)).await,
+            PveOp::Provision { dry_run, acl_path } => bounded(PROVISION_DEADLINE, &out, run_provision(&client, &auth, dry_run, &acl_path, &out)).await,
             PveOp::Terminal { target, cols, rows } => {
                 let keepalive = Duration::from_secs(keepalive_secs.unwrap_or(DEFAULT_KEEPALIVE).clamp(1, 120));
                 run_terminal(&client, &auth, &target, (cols, rows), keepalive, &out, &mut cmd_rx).await

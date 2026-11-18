@@ -14,6 +14,8 @@ import type { z } from "zod";
 import { HelperRequestError, HelperRuntimeError, HelperStartError } from "./helper-process.ts";
 import type { AgentControlRpc } from "./agent-control-rpc.ts";
 import type { RemoteHubService } from "./service.ts";
+import type { PveRpc } from "./pve-rpc.ts";
+import { PveRpcError } from "./pve-rpc.ts";
 
 type Input<K extends keyof RpcSchemas> = z.output<RpcSchemas[K]["input"]>;
 type Output<K extends keyof RpcSchemas> = z.input<RpcSchemas[K]["output"]>;
@@ -71,9 +73,22 @@ export interface RpcHandlerDeps {
   agentControl?: AgentControlRpc;
   /** Which agent thread opened a session (stage 4c): the catalogue marks those. */
   openedBy?: (sessionKey: string) => string | undefined;
+  /** Proxmox discovery and onboarding (the owner's page only). */
+  pve?: PveRpc;
 }
 
-export function createRpcHandlers({ service, profiles, credentials, imports, agents, agentControl, openedBy }: RpcHandlerDeps): RpcHandlers {
+export function createRpcHandlers({ service, profiles, credentials, imports, agents, agentControl, openedBy, pve }: RpcHandlerDeps): RpcHandlers {
+  const withPve = async <T>(run: (p: PveRpc) => T | Promise<T>): Promise<T> => {
+    if (pve === undefined) throw new experimental_PluginRpcRefusal({ code: "not_found", message: "Proxmox support is not available" });
+    try {
+      return await run(pve);
+    } catch (error) {
+      if (error instanceof PveRpcError) throw new experimental_PluginRpcRefusal({ code: error.code, message: error.message });
+      if (error instanceof ProfileError) throw new experimental_PluginRpcRefusal({ code: "not_found", message: error.message });
+      if (error instanceof HelperStartError || error instanceof HelperRuntimeError) throw new experimental_PluginRpcRefusal({ code: "not_found", message: error.message });
+      throw error;
+    }
+  };
   const control = (): AgentControlRpc => {
     if (agentControl === undefined) throw new experimental_PluginRpcRefusal({ code: "not_found", message: "agent control is not available" });
     return agentControl;
@@ -200,7 +215,34 @@ export function createRpcHandlers({ service, profiles, credentials, imports, age
     import_scan: (input) => withImport(() => imports.scan(input.id)),
     import_apply: (input) => withImport(() => imports.apply(input.id, input.keys, input.scanId)),
     import_resolve: (input) => withImport(() => imports.resolve(input.id, input.scanId, input.keys)),
-    profile_delete: (input) => withProfile(() => credentials.deleteProfile(input.id, input.deleteCredential ?? false)),
+    profile_delete: (input) =>
+      withProfile(async () => {
+        const result = await credentials.deleteProfile(input.id, input.deleteCredential ?? false);
+        if (result.deleted) pve?.onProfileDeleted(input.id);
+        return result;
+      }),
+    pve_targets: (input) => withPve(async (p) => ({ connections: await p.targets({ profileIds: input.profileIds, refresh: input.refresh }) })),
+    pve_trust_pin: (input) =>
+      withPve((p) => {
+        p.pinTrust(input.profileId, input.fingerprint);
+        return { pinned: true as const };
+      }),
+    pve_guest_link_set: (input) =>
+      withPve((p) => {
+        p.linkGuest(input.profileId, input.vmid, input.linkProfileId);
+        return { linked: input.linkProfileId !== null };
+      }),
+    pve_onboard_plan: (input) =>
+      withPve(async (p) => {
+        const a = await p.onboardPlan(input);
+        return a.ok ? { ok: true as const, role: a.role as never, user: a.user as never, acl: a.acl as never } : a;
+      }),
+    pve_onboard_apply: (input) =>
+      withPve(async (p) => {
+        const a = await p.onboardApply(input);
+        return a.ok ? { ok: true as const, profileId: a.profileId, role: a.plan.role as never, user: a.plan.user as never, acl: a.plan.acl as never } : a;
+      }),
+    pve_onboard_connect: (input) => withPve((p) => p.onboardConnect(input)),
     credential_list: () => credentials.list(),
     credential_save: (input) => withProfile(() => credentials.save(input)),
     credential_update: (input) =>

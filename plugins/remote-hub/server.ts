@@ -36,6 +36,8 @@ import { createSqliteCredentialStore } from "./src/adapters/bb/credential-sqlite
 import { createFsSourceReader } from "./src/adapters/bb/fs-source-reader.ts";
 import { createSqliteImportStore } from "./src/adapters/bb/import-sqlite.ts";
 import { createRpcHandlers } from "./src/adapters/bb/rpc-handlers.ts";
+import { createPveRpc } from "./src/adapters/bb/pve-rpc.ts";
+import { createSqlitePveGuestLinks } from "./src/adapters/bb/pve-sqlite.ts";
 import { ImportBook } from "./src/core/import-book.ts";
 import { CredentialBook } from "./src/core/credential.ts";
 import { ProfileBook } from "./src/core/profile-book.ts";
@@ -88,11 +90,13 @@ export default function plugin(bb: BbPluginApi): void {
   const agentAccess = new AgentAccessBook({ store: createSqliteAgentGrantStore(db), profiles: { has: (id) => profiles.get(id) !== null }, now: () => new Date() });
   const agentAudit = new AgentAudit({ store: createSqliteAgentAuditStore(db), now: () => new Date() });
   const registry = new AgentSessionRegistry();
+  const pveRpc = createPveRpc({ service, profiles, credentials, links: createSqlitePveGuestLinks(db), newId: () => randomUUID(), now: () => new Date(), audit: agentAudit });
   const handlers = createRpcHandlers({
     service,
     profiles,
     credentials,
     imports,
+    pve: pveRpc,
     agents: { access: agentAccess, audit: agentAudit },
     agentControl: createAgentControlRpc({ service, leases, registry, audit: agentAudit, watchers, settings: agentSettings }),
     openedBy: (key) => registry.threadOf(key),

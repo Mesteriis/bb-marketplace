@@ -5,12 +5,14 @@
 import type { ExecStateMessage } from "../../core/exec-protocol.ts";
 import { AttachTokens, ATTACH_TOKEN_TTL_MS, type Clock } from "../../core/attach.ts";
 import { createCreditState, type CreditState } from "../../core/credit.ts";
-import { CredentialError, type CredentialVault } from "../../core/credential.ts";
+import { CredentialError, type CredentialBind, type CredentialVault } from "../../core/credential.ts";
+import type { PveConnect } from "../../core/pve-protocol.ts";
+import type { PveAnswer, PveProvisionAnswer } from "../../core/pve-targets.ts";
 import type { SshAskpassEvent } from "../../core/ssh-askpass-protocol.ts";
 import type { RdpOptions } from "../../core/rdp-options.ts";
 import type { KnownHostsOverlay } from "../../core/import-book.ts";
 import { buildSshExecSpawn, buildSshSpawn, type SshTarget } from "../../core/ssh-args.ts";
-import { HelperProcess, type HelperStatus, HelperRuntimeError, HelperRequestError, type RdpHelperEvent } from "./helper-process.ts";
+import { HelperProcess, type HelperStatus, HelperRuntimeError, HelperRequestError, PveRequestFailure, type RdpHelperEvent } from "./helper-process.ts";
 import type { RdpInfo, RdpTarget, SessionHandle } from "../../core/rpc.ts";
 import { parseUpdateChunk, RDP_STATES, type RdpInputEvent } from "../../core/rdp-protocol.ts";
 import type { RdpDecision } from "../../core/rpc.ts";
@@ -111,6 +113,11 @@ export interface RemoteHubService {
   rdpAttach(handle: SessionHandle, viewId: string, sink: RdpViewSink): RdpAttachment;
   /** Test/inspection: the runtime view of one RDP session (never holds a password). */
   rdpInfo(handle: SessionHandle): RdpInfo | undefined;
+  /** Proxmox VE: discovery and onboarding, through the helper. A refusal is an answer with a code, never a thrown secret. */
+  pve: {
+    targets(connect: PveConnect): Promise<PveAnswer>;
+    provision(args: { connect: PveConnect; dryRun: boolean; aclPath: string; save?: { ref: string; bind: CredentialBind } }): Promise<PveProvisionAnswer>;
+  };
   /** The Keychain, through the helper. A refusal is a CredentialError carrying the helper's code. */
   credentialVault: CredentialVault;
   /** The helper-owned known_hosts overlay (saved-secret SSH sessions trust what is in it). */
@@ -383,6 +390,12 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
       if (error instanceof HelperRequestError) throw new CredentialError(error.code, error.code);
       throw error;
     }
+  };
+  /** A failed PVE request as an answer: the helper's closed code and the certificate it saw. Anything else is not ours to hide. */
+  const pveFailure = (error: unknown): { ok: false; code: string; message: string; fingerprint: string | null } => {
+    if (error instanceof PveRequestFailure) return { ok: false, code: error.code, message: error.message, fingerprint: error.fingerprint };
+    if (error instanceof HelperRequestError) return { ok: false, code: error.code, message: error.message, fingerprint: null };
+    throw error;
   };
   const EVICT_CLOSED_AFTER_MS = 5 * 60 * 1000;
 
@@ -915,6 +928,24 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
       list: async () => (await start()).knownHostsList(),
       add: async (lines) => (await start()).knownHostsAdd(lines),
       remove: async (host) => (await start()).knownHostsRemove(host),
+    },
+    pve: {
+      async targets(connect) {
+        const hp = await start();
+        try {
+          return { ok: true, ...(await hp.pveTargets(connect)) };
+        } catch (error) {
+          return pveFailure(error);
+        }
+      },
+      async provision(args) {
+        const hp = await start();
+        try {
+          return { ok: true, ...(await hp.pveProvision(args)) };
+        } catch (error) {
+          return pveFailure(error);
+        }
+      },
     },
     credentialVault: {
       save: async (ref, secret, bind) => viaVault(async (hp) => hp.credentialSave(ref, secret, bind)),
