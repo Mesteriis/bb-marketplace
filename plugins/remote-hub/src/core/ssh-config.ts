@@ -73,20 +73,34 @@ interface Item {
 
 const MAX_LINES = 20_000;
 
+/**
+ * Splits the way OpenSSH's argv_split does for config lines: words at blanks; single or double quotes group and
+ * are removed BEFORE a pattern is looked at (so `'!prod'` is the negation `!prod`); a backslash before a quote or
+ * a backslash is that character; an unquoted `#` starts a comment.
+ */
 function splitWords(text: string): string[] {
   const words: string[] = [];
   let current = "";
-  let quoted = false;
+  let quote: string | null = null;
   let started = false;
-  for (const ch of text) {
-    if (ch === '"') {
-      quoted = !quoted;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i] as string;
+    const next = text[i + 1];
+    if (ch === "\\" && next !== undefined && (next === '"' || next === "'" || next === "\\" || (quote === null && next === " "))) {
+      current += next;
       started = true;
-    } else if (!quoted && (ch === " " || ch === "\t")) {
+      i += 1;
+    } else if (quote !== null) {
+      if (ch === quote) quote = null;
+      else current += ch;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+      started = true;
+    } else if (ch === " " || ch === "\t") {
       if (started) words.push(current);
       current = "";
       started = false;
-    } else if (!quoted && ch === "#") {
+    } else if (ch === "#") {
       break;
     } else {
       current += ch;

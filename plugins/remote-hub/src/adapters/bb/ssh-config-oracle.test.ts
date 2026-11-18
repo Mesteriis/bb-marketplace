@@ -56,25 +56,30 @@ function compare(files: Record<string, string>, aliases: string[]): number {
 
 describe.skipIf(!haveSsh)("the reader agrees with `ssh -G` on fixture configs", () => {
   it("an Include before values written after it (the reviewers' fixture)", () => {
-    compare(
-      { config: "Include extra.conf\nUser admin\nHostName 10.9.9.9\n", "extra.conf": "Host prod\n  User deploy\n  HostName 10.0.0.1\n  Port 2201\n" },
-      ["prod", "other"],
-    );
+    expect(
+      compare(
+        { config: "Include extra.conf\nUser admin\nHostName 10.9.9.9\n", "extra.conf": "Host prod\n  User deploy\n  HostName 10.0.0.1\n  Port 2201\n" },
+        ["prod", "other"],
+      ),
+    ).toBe(1); // `other` is not named by the config, so only prod is compared
   });
 
   it("an Include after the values it would have set: the earlier lines win", () => {
-    compare({ config: "Host prod\n  HostName first.example\n  User first\nInclude extra.conf\n", "extra.conf": "Host prod\n  User second\n  HostName second.example\n  Port 2222\n" }, ["prod"]);
+    expect(compare({ config: "Host prod\n  HostName first.example\n  User first\nInclude extra.conf\n", "extra.conf": "Host prod\n  User second\n  HostName second.example\n  Port 2222\n" }, ["prod"])).toBe(1);
   });
 
   it("an Include inside a Host block applies only to that alias, with its own Host lines inside", () => {
-    compare(
-      { config: "Host a\n  Include inner.conf\n  HostName a-late\nHost b\n  HostName b.example\nHost leak\n  Port 4444\n", "inner.conf": "User fromextra\nHost leak\n  Port 3333\n" },
-      ["a", "b", "leak"],
-    );
+    expect(
+      compare(
+        { config: "Host a\n  Include inner.conf\n  HostName a-late\nHost b\n  HostName b.example\nHost leak\n  Port 4444\n", "inner.conf": "User fromextra\nHost leak\n  Port 3333\n" },
+        ["a", "b", "leak"],
+      ),
+    ).toBe(3);
   });
 
   it("wildcard blocks, Host *, negation and several patterns on one line, in file order", () => {
-    compare(
+    expect(
+      compare(
       {
         config: [
           "Host web db",
@@ -92,7 +97,8 @@ describe.skipIf(!haveSsh)("the reader agrees with `ssh -G` on fixture configs", 
         ].join("\n"),
       },
       ["web", "db", "a.corp", "skip.corp", "zzz"],
-    );
+      ),
+    ).toBe(3); // web, db and skip.corp are named; a.corp and zzz are only matched by patterns
   });
 
   it("keywords in any case, = syntax, quotes, and a first value that a later one must not replace", () => {
@@ -109,6 +115,32 @@ describe.skipIf(!haveSsh)("the reader agrees with `ssh -G` on fixture configs", 
   });
 
   it("%h in HostName, and %% staying a percent sign", () => {
-    compare({ config: "Host tpl\n  HostName %h.example\nHost pct\n  HostName a%%b.example\n" }, ["tpl", "pct"]);
+    expect(compare({ config: "Host tpl\n  HostName %h.example\nHost pct\n  HostName a%%b.example\n" }, ["tpl", "pct"])).toBe(2);
+  });
+
+  it("a quoted negated pattern excludes the alias (W3a): `Host * '!prod'`", () => {
+    expect(compare({ config: "Host * '!prod'\n  HostName shared.example\nHost prod\n  HostName prod.example\nHost other\n  Port 22\n" }, ["prod", "other"])).toBe(2);
+    // The reader and ssh agree that prod is NOT matched by the first block; `other` is.
+    const parse = readerFor(join(home, ".ssh", "config"));
+    expect(parse.entries.find((e) => e.alias === "prod")?.hostName).toBe("prod.example");
+    expect(parse.entries.find((e) => e.alias === "other")?.hostName).toBe("shared.example");
+  });
+
+  it('double and single quotes and escaped quotes in a Host line are removed the way ssh does (W3a)', () => {
+    expect(compare({ config: "Host \"a b\" 'c' d\\\"e\n  HostName quoted.example\nHost *\n  HostName fallback.example\n" }, ["c"])).toBe(1);
+  });
+
+  it("a relative Include is anchored to ~/.ssh, not to the directory of the chosen file (W3b)", () => {
+    mkdirSync(join(home, "elsewhere"), { recursive: true });
+    writeFileSync(join(home, "elsewhere", "config"), "Include extra.conf\n");
+    writeFileSync(join(home, "elsewhere", "extra.conf"), "Host p\n  HostName from-elsewhere\n");
+    writeFileSync(join(home, ".ssh", "extra.conf"), "Host p\n  HostName from-dot-ssh\n");
+    const config = join(home, "elsewhere", "config");
+    // The real ssh takes the file under ~/.ssh ...
+    expect(sshG(config, "p").get("hostname")).toBe("from-dot-ssh");
+    // ... so a reader that followed the include next to the chosen file would be wrong. It is incomplete instead.
+    const parse = readerFor(config);
+    expect(parse.incomplete).toBe(true);
+    expect(parse.entries.every((e) => e.flags.includes("incomplete"))).toBe(true);
   });
 });

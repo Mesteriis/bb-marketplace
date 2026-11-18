@@ -63,6 +63,12 @@ function readRegular(path: string, boundary: string, maxBytes: number): { data: 
   }
 }
 
+/** The lookup said "nothing there" (as opposed to "could not look"). */
+function isAbsent(error: unknown): boolean {
+  const code = (error as { code?: string }).code;
+  return code === "ENOENT" || code === "ENOTDIR";
+}
+
 /** A pattern with `*` or `?` only in its last segment: the directory part must be literal. */
 function globToRegExp(segment: string): RegExp {
   const escaped = segment.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".");
@@ -102,6 +108,17 @@ export function createFsSourceReader(options: FsSourceReaderOptions = {}): Sourc
       let complete = true;
       try {
         const base = realpathSync(dirname(configPath));
+        // OpenSSH anchors a relative Include of a USER config to ~/.ssh, whichever file was chosen. A config that
+        // lives elsewhere would resolve differently from what we can read, so it is reported as incomplete.
+        if (!isAbsolute(pattern) && !pattern.startsWith("~")) {
+          let dotSsh = "";
+          try {
+            dotSsh = realpathSync(join(home, ".ssh"));
+          } catch {
+            // no ~/.ssh: nothing equals it
+          }
+          if (dotSsh === "" || base !== dotSsh) return { files, complete: false };
+        }
         const target = isAbsolute(pattern) ? pattern : resolve(base, pattern);
         const dir = dirname(target);
         const last = basename(target);
@@ -109,8 +126,9 @@ export function createFsSourceReader(options: FsSourceReaderOptions = {}): Sourc
         let realDir: string;
         try {
           realDir = realpathSync(dir);
-        } catch {
-          return { files, complete: true }; // no such directory: nothing to include, as for ssh
+        } catch (e) {
+          // No such directory: nothing to include, as for ssh. Any other failure (permission...) is not absence.
+          return { files, complete: isAbsent(e) };
         }
         if (realDir !== base && !inside(base, realDir)) return { files, complete: false };
         const names = /[*?]/.test(last) ? readdirSync(realDir).filter((n) => globToRegExp(last).test(n)).sort() : [last];
@@ -119,7 +137,11 @@ export function createFsSourceReader(options: FsSourceReaderOptions = {}): Sourc
           let exists = true;
           try {
             lstatSync(full);
-          } catch {
+          } catch (e) {
+            if (!isAbsent(e)) {
+              complete = false; // the lookup itself failed: not the same as "not there"
+              continue;
+            }
             exists = false;
           }
           if (!exists) continue; // a missing file is simply not there

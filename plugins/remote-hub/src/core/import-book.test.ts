@@ -322,6 +322,45 @@ describe("a hosts file offers candidates", () => {
   });
 });
 
+describe("incomplete reads are never credential-eligible (W3d)", () => {
+  it("a truncated hosts file offers its names as unresolved and says it is incomplete", async () => {
+    const { book } = setup();
+    FILES["/fixture/hosts"] = "10.0.0.5 build.example.test\n10.0.0.6 cut.exa";
+    const original = reader.readText;
+    reader.readText = (p) => (p === "/fixture/hosts" ? { text: FILES[p] as string, truncated: true } : original(p, 1 << 20));
+    try {
+      const source = book.addSource({ kind: "hosts", path: "/fixture/hosts", label: "hosts" });
+      book.setEnabled(source.id, true);
+      const scan = await book.scan(source.id);
+      if (scan.kind !== "hosts") throw new Error("kind");
+      expect(scan.incomplete).toBe(true);
+      expect(scan.items.map((i) => [i.key, i.resolved, i.flags])).toEqual([
+        ["build.example.test", false, ["incomplete"]],
+        ["cut.exa", false, ["incomplete"]],
+      ]);
+    } finally {
+      reader.readText = original;
+    }
+  });
+
+  it("ssh -G is refused for a scan that is incomplete: its answer would make an entry resolved under a read that cannot be trusted", async () => {
+    const { book } = setup();
+    const source = enabledConfig(book, "Include refused.conf\nHost m\n  User a\n");
+    book.setSshG(source.id, true);
+    const originalInclude = reader.include;
+    reader.include = () => ({ files: [], complete: false });
+    try {
+      const scan = await book.scan(source.id);
+      if (scan.kind !== "ssh-config") throw new Error("kind");
+      expect(scan.incomplete).toBe(true);
+      await expect(book.resolve(source.id, scan.scanId, ["m"])).rejects.toMatchObject({ code: "scan_incomplete" });
+      expect(sshG).not.toHaveBeenCalled();
+    } finally {
+      reader.include = originalInclude;
+    }
+  });
+});
+
 describe("a known_hosts source adds host keys to the helper's overlay, only the chosen ones", () => {
   it("scan lists plain host keys (none chosen), apply trusts the chosen ones once, and the overlay is what 'trusted' shows", async () => {
     const { book } = setup();

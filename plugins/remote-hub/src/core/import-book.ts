@@ -264,8 +264,10 @@ export class ImportBook {
     if (source.kind === "hosts") {
       const read = reader.readText(path, MAX_HOSTS_BYTES);
       if (read === null) throw new ImportError("source_unreadable", "the file could not be read (a link that leaves its directory, a pipe or a missing file is refused)");
+      // A cut file may end in half a name: nothing from it is offered as resolved.
+      const candidates = parseHostsFile(read.text).map(candidateFromHost).map((c) => (read.truncated ? { ...c, resolved: false, flags: ["incomplete"] } : c));
       return {
-        candidates: parseHostsFile(read.text).map(candidateFromHost),
+        candidates,
         issues: read.truncated ? ["the file was cut at its size limit"] : [],
         incomplete: read.truncated,
       };
@@ -317,6 +319,7 @@ export class ImportBook {
     if (!source.useSshG) throw new ImportError("ssh_g_off", "ssh -G is switched off for this source");
     const review = this.reviewed.get(sourceId);
     if (review === undefined || review.id !== scanId) throw new ImportError("scan_required", "scan the source again before resolving");
+    if (review.incomplete) throw new ImportError("scan_incomplete", "part of this config could not be read completely, so nothing from it is offered as resolved");
     const next: Candidate[] = [];
     const issues: string[] = [];
     for (const candidate of review.candidates) {
