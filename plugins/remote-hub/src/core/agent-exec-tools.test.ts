@@ -50,8 +50,10 @@ function setup(opts: { sessions?: AgentSessionView[] } = {}) {
   feed.subscribe(SSH, (e) => feedSeen.push(e));
   let watched = true;
   let required = true;
+  const watchListeners: Array<(key: string, watching: boolean) => void> = [];
+  const ruleListeners: Array<() => void> = [];
   let n = 0;
-  const started: Array<{ sessionKey: string; profileId: string; command: string; timeoutMs: number }> = [];
+  const started: Array<{ commandId: string; sessionKey: string; profileId: string; command: string; timeoutMs: number }> = [];
   const finishedListeners: Array<(runKey: string) => void> = [];
   const cancelled: string[] = [];
   const forgotten: string[] = [];
@@ -73,7 +75,7 @@ function setup(opts: { sessions?: AgentSessionView[] } = {}) {
     access, audit, budget: new ToolBudget({ now: () => 1_000_000, callsPerWindow: 1000, bytesPerWindow: 50 * 1024 * 1024, globalCallsPerWindow: 10000, globalBytesPerWindow: 500 * 1024 * 1024 }),
     leases: new ControlLeases({ now: () => 1_000_000, newId: () => "l" }), registry, feed, exec, newCommandId: () => `cmd_${++idn}`,
     ports: { profiles: { list: () => profiles, get: (id) => profiles.find((p) => p.id === id) ?? null }, sessions: { list: () => sessions, read: () => null, screenshot: async () => { throw new Error("n/a"); } }, fitScreenshot: () => { throw new Error("n/a"); } },
-    control: { terminalWrite: async () => undefined, rdpWrite: async () => undefined, connect: async () => ({ sessionKey: SSH }), disconnect: async () => undefined, waitingForOwner: () => [], watching: () => watched, watchingRequired: () => required },
+    control: { terminalWrite: async () => undefined, rdpWrite: async () => undefined, connect: async () => ({ sessionKey: SSH }), disconnect: async () => undefined, waitingForOwner: () => [], watching: () => watched, watchingRequired: () => required, onWatchChange: (cb) => (watchListeners.push(cb), () => undefined), onRuleChange: (cb) => (ruleListeners.push(cb), () => undefined) },
   });
   const call = (name: string, input: unknown, ctx: { threadId: string; projectId: string; signal?: AbortSignal } = CTX): Promise<ToolResult> => {
     const t = tools.find((x) => x.name === name) as AgentToolDef;
@@ -83,7 +85,14 @@ function setup(opts: { sessions?: AgentSessionView[] } = {}) {
   const data = (r: ToolResult) => JSON.parse(textOf(r)) as Record<string, any>;
   return {
     tools, call, textOf, data, access, rows, feedSeen, registry, started, cancelled, forgotten, exec, sessions,
-    setWatching: (v: boolean) => void (watched = v), setRequired: (v: boolean) => void (required = v), setReads: (r: ExecSnapshotView[]) => void (reads = r), failStart: (e: Error | null) => void (startFails = e),
+    setWatching: (v: boolean) => {
+      watched = v;
+      watchListeners.forEach((l) => l(SSH, v));
+    },
+    setRequired: (v: boolean) => {
+      required = v;
+      ruleListeners.forEach((l) => l());
+    }, setReads: (r: ExecSnapshotView[]) => void (reads = r), failStart: (e: Error | null) => void (startFails = e),
     finish: (runKey: string) => finishedListeners.forEach((l) => l(runKey)),
   };
 }
@@ -121,7 +130,7 @@ describe("remote_ssh_exec", () => {
     expect(r).toMatchObject({ commandId: "cmd_1", sessionId: SSH, state: "running", timeoutSeconds: 30, watching: true, watchingRequired: true, liveView: `::remote-session{id="${SSH}"}` });
     expect(String(r.note)).toContain("remote shell");
     expect(String(r.note)).toContain("no local shell");
-    expect(t.started).toEqual([{ sessionKey: SSH, profileId: P, command: "uname -a; echo $HOME", timeoutMs: 30_000 }]);
+    expect(t.started).toEqual([{ commandId: "cmd_1", sessionKey: SSH, profileId: P, command: "uname -a; echo $HOME", timeoutMs: 30_000 }]);
   });
 
   it("refuses a session another thread opened, one the owner opened, a desktop, and a session that is not authenticated yet", async () => {
@@ -290,5 +299,184 @@ describe("remote_command_cancel", () => {
       t.finish(`run-${i}`);
     }
     expect(t.forgotten).toEqual(["run-1", "run-2"]);
+  });
+});
+
+function setupExec() {
+  const t = setup();
+  t.access.set(P, "exec", false);
+  return t;
+}
+
+describe("B2: a command does not outlive the authorization it was started under", () => {
+  const run = async (t: ReturnType<typeof setup>, session = SSH) => t.data(await t.call("remote_ssh_exec", { sessionId: session, command: "sleep 100" }));
+
+  it("the last watcher leaving cancels the running commands after the grace, not before; a watcher that returns in time keeps them", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = setupExec();
+      const started = await run(t);
+      t.setWatching(false);
+      await vi.advanceTimersByTimeAsync(4999);
+      expect(t.cancelled).toEqual([]);
+      t.setWatching(true);
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(t.cancelled, "a watcher came back inside the grace").toEqual([]);
+      t.setWatching(false);
+      await vi.advanceTimersByTimeAsync(5001);
+      expect(t.cancelled).toEqual(["run-1"]);
+      expect(started.commandId).toBe("cmd_1");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("the grace restarts when the watcher leaves a second time: the first absence's timer does not count", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = setupExec();
+      await run(t);
+      t.setWatching(false);
+      await vi.advanceTimersByTimeAsync(2000);
+      t.setWatching(true);
+      await vi.advanceTimersByTimeAsync(1000);
+      t.setWatching(false); // second absence begins at +3 s
+      await vi.advanceTimersByTimeAsync(3000); // +6 s: the first timer would have fired at +5 s
+      expect(t.cancelled).toEqual([]);
+      await vi.advanceTimersByTimeAsync(2100); // +8.1 s: five seconds after the second absence
+      expect(t.cancelled).toEqual(["run-1"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("with the rule OFF nothing is cancelled for lack of a watcher; switching it on later starts the grace", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = setupExec();
+      t.setRequired(false);
+      await run(t);
+      t.setWatching(false);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(t.cancelled).toEqual([]);
+      t.setRequired(true);
+      await vi.advanceTimersByTimeAsync(5001);
+      expect(t.cancelled).toEqual(["run-1"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a read after the cancellation returns the cancellation and none of what the command printed", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = setupExec();
+      const { commandId } = await run(t);
+      t.setReads([snap({ running: true, exitCode: null, reason: null, stdout: stream("SECRET-LATE-OUTPUT\n") })]);
+      t.setWatching(false);
+      await vi.advanceTimersByTimeAsync(5001);
+      const r = t.data(await t.call("remote_command_read", { commandId }));
+      expect(r).toMatchObject({ running: false, reason: "owner_not_watching", cancelledByOwnerRules: true });
+      expect(JSON.stringify(r)).not.toContain("SECRET-LATE-OUTPUT");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a read that is already waiting gets the cancellation when the grace ends, not later output", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = setupExec();
+      const { commandId } = await run(t);
+      t.setReads([snap({ running: true, exitCode: null, reason: null, stdout: stream("LATE\n") })]);
+      const pending = t.call("remote_command_read", { commandId, waitSeconds: 20 });
+      t.setWatching(false);
+      await vi.advanceTimersByTimeAsync(5600);
+      const r = t.data(await pending);
+      expect(r).toMatchObject({ running: false, reason: "owner_not_watching" });
+      expect(JSON.stringify(r)).not.toContain("LATE");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a revoke during a waiting read ends it with the access error", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = setupExec();
+      const { commandId } = await run(t);
+      t.setReads([snap({ running: true, exitCode: null, reason: null })]);
+      const pending = t.call("remote_command_read", { commandId, waitSeconds: 10 });
+      t.access.set(P, "input", false);
+      await vi.advanceTimersByTimeAsync(400);
+      expect(t.textOf(await pending)).toContain("agent_access_denied");
+      expect(t.cancelled).toEqual(["run-1"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a revoke while the command is starting cancels the run and nothing is returned", async () => {
+    const t = setupExec();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const start = t.exec.start;
+    t.exec.start = async (req) => {
+      await gate;
+      return start(req);
+    };
+    const pending = t.call("remote_ssh_exec", { sessionId: SSH, command: "id" });
+    await Promise.resolve();
+    t.access.set(P, "input", false);
+    release();
+    const text = t.textOf(await pending);
+    expect(text).toContain("agent_access_denied");
+    expect(text).not.toContain("commandId");
+    expect(t.cancelled).toEqual(["run-1"]);
+  });
+
+  it("a watcher lost while the command is starting cancels the run and nothing is returned", async () => {
+    const t = setupExec();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const start = t.exec.start;
+    t.exec.start = async (req) => {
+      await gate;
+      return start(req);
+    };
+    const pending = t.call("remote_ssh_exec", { sessionId: SSH, command: "id" });
+    await Promise.resolve();
+    t.setWatching(false);
+    release();
+    const text = t.textOf(await pending);
+    expect(text).toContain("owner_not_watching");
+    expect(text).not.toContain("commandId");
+    expect(t.cancelled).toEqual(["run-1"]);
+  });
+
+  it("the per-session slot is reserved before the start is awaited: three parallel calls cannot all get in", async () => {
+    const t = setupExec();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const start = t.exec.start;
+    t.exec.start = async (req) => {
+      await gate;
+      return start(req);
+    };
+    const calls = [1, 2, 3].map(() => t.call("remote_ssh_exec", { sessionId: SSH, command: "id" }));
+    await Promise.resolve();
+    release();
+    const texts = (await Promise.all(calls)).map((r) => t.textOf(r));
+    expect(texts.filter((x) => x.includes("commandId")).length).toBe(2);
+    expect(texts.filter((x) => x.includes("too_many_commands")).length).toBe(1);
+  });
+});
+
+describe("B4: one public command id from start to end in the live view", () => {
+  it("the run is started with the id the agent receives, and the feed's start carries that same id", async () => {
+    const t = setupExec();
+    const r = t.data(await t.call("remote_ssh_exec", { sessionId: SSH, command: "df -h" }));
+    expect(t.started[0]!.commandId).toBe(r.commandId);
+    expect(t.feedSeen[0]).toMatchObject({ kind: "exec", commandId: r.commandId, phase: "started", text: "df -h" });
   });
 });

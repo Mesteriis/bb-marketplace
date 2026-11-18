@@ -46,8 +46,11 @@ export interface ExecSnapshotView {
 }
 
 export interface AgentExecPorts {
-  /** Starts the command on the connection's host with its saved credential; throws a ToolError or an Error with a `code`. */
-  start(request: { sessionKey: string; profileId: string; command: string; timeoutMs: number }): Promise<{ runKey: string }>;
+  /**
+   * Starts the command on the connection's host with its saved credential; throws a ToolError or an Error with a `code`.
+   * `commandId` is the public id: the live view's events for this run carry it from first to last.
+   */
+  start(request: { commandId: string; sessionKey: string; profileId: string; command: string; timeoutMs: number }): Promise<{ runKey: string }>;
   read(runKey: string, stdoutFrom: number, stderrFrom: number, max: number): Promise<ExecSnapshotView>;
   cancel(runKey: string): Promise<ExecSnapshotView>;
   forget(runKey: string): Promise<void>;
@@ -59,7 +62,12 @@ export interface AgentExecDeps extends AgentControlDeps {
   exec: AgentExecPorts;
   /** Makes a command id (unguessable). */
   newCommandId?: () => string;
+  /** How long a session may have no watcher before its running commands are cancelled (a tab switch must not kill a run). */
+  watchGraceMs?: number;
 }
+
+/** Cancelled for lack of a watcher after this long (the default of `watchGraceMs`). */
+export const EXEC_WATCH_GRACE_MS = 5000;
 
 const EXEC_NOTE =
   "The command is ONE string sent to the remote shell, which parses it (quotes, pipes, $VARIABLES and globs are the remote shell's). There is no local shell and nothing is expanded here. It runs in its own ssh process with no terminal and stdin closed: a command that waits for input sees end of file at once.";
@@ -80,6 +88,8 @@ const COMMAND_ERRORS: Record<string, string> = {
   keychain_locked: "the Keychain is locked",
 };
 
+const EMPTY_STREAM: ExecStreamView = { start: 0, end: 0, data: new Uint8Array(), total: 0, truncated: false };
+
 export function createExecTools(deps: AgentExecDeps): AgentToolDef[] {
   const { access, exec, ports } = deps;
   const { guarded, noSession } = createGate(deps);
@@ -96,26 +106,73 @@ export function createExecTools(deps: AgentExecDeps): AgentToolDef[] {
     profileId: string;
     running: boolean;
     order: number;
+    /** Set when the command was cancelled because authorization ended; reads then report this and no output. */
+    cancelledFor: "owner_not_watching" | "agent_access_denied" | null;
   }
   const commands = new Map<string, Command>();
   let order = 0;
-  /** Starts counted before they are awaited, so parallel calls cannot all see room. */
+  /** Starts counted before they are awaited, per thread AND per session, so parallel calls cannot all see room. */
   const starting = new Map<string, number>();
+  const startingBySession = new Map<string, number>();
+  const bump = (map: Map<string, number>, key: string, by: 1 | -1): void => {
+    const n = (map.get(key) ?? 0) + by;
+    if (n > 0) map.set(key, n);
+    else map.delete(key);
+  };
+  const graceMs = deps.watchGraceMs ?? EXEC_WATCH_GRACE_MS;
+  /** Sessions whose watcher left while commands run: the commands are cancelled when the grace ends, unless one returns. */
+  const graceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   const byRun = (runKey: string): Command | undefined => [...commands.values()].find((c) => c.runKey === runKey);
   exec.onFinished((runKey) => {
     const c = byRun(runKey);
-    if (c !== undefined) c.running = false;
+    if (c === undefined) return;
+    c.running = false;
+    reconcile(c.sessionKey);
   });
 
   const sessionOf = (key: string) => ports.sessions.list().find((s) => s.key === key);
   const mayAct = (key: string): boolean => !control.watchingRequired() || control.watching(key);
 
+  /** Cancels a running command because authorization ended; what it prints afterwards is not returned to the agent. */
+  const stopFor = (c: Command, reason: "owner_not_watching" | "agent_access_denied"): void => {
+    c.cancelledFor = reason;
+    void exec.cancel(c.runKey).catch(() => undefined);
+  };
+
   // The owner lowering the grant below exec stops what runs for that connection.
   access.onChange(() => {
     for (const c of commands.values()) {
-      if (c.running && !access.check(c.profileId, "exec").ok) void exec.cancel(c.runKey).catch(() => undefined);
+      if (c.running && !access.check(c.profileId, "exec").ok) stopFor(c, "agent_access_denied");
     }
+  });
+
+  /**
+   * With the rule on, a session nobody watches stops its running commands after the grace; a watcher coming back (or the
+   * rule going off) within it keeps them. Run again whenever the watcher, the rule or the set of commands changes.
+   */
+  const reconcile = (sessionKey: string): void => {
+    const running = [...commands.values()].filter((c) => c.running && c.sessionKey === sessionKey);
+    const unwatched = control.watchingRequired() && !control.watching(sessionKey);
+    const pending = graceTimers.get(sessionKey);
+    if (running.length === 0 || !unwatched) {
+      if (pending !== undefined) clearTimeout(pending);
+      graceTimers.delete(sessionKey);
+      return;
+    }
+    if (pending !== undefined) return;
+    const timer = setTimeout(() => {
+      graceTimers.delete(sessionKey);
+      if (control.watchingRequired() && !control.watching(sessionKey)) {
+        for (const c of commands.values()) if (c.running && c.sessionKey === sessionKey) stopFor(c, "owner_not_watching");
+      }
+    }, graceMs);
+    timer.unref?.();
+    graceTimers.set(sessionKey, timer);
+  };
+  control.onWatchChange((sessionKey) => reconcile(sessionKey));
+  control.onRuleChange(() => {
+    for (const key of new Set([...commands.values()].map((c) => c.sessionKey))) reconcile(key);
   });
 
   const live = (pick: (c: Command) => boolean): number => [...commands.values()].filter((c) => c.running && pick(c)).length;
@@ -167,12 +224,14 @@ export function createExecTools(deps: AgentExecDeps): AgentToolDef[] {
           if (session.control === "pending") throw new ToolError("session_not_ready", "the session is not authenticated yet, or the owner has a question to answer: try again shortly");
           if (!mayAct(session.key)) throw NOT_WATCHING;
           if (live((c) => c.threadId === ctx.threadId) + (starting.get(ctx.threadId) ?? 0) >= MAX_LIVE_COMMANDS_PER_THREAD) throw new ToolError("too_many_commands", `this thread already has ${MAX_LIVE_COMMANDS_PER_THREAD} commands running: wait for one or cancel it`);
-          if (live((c) => c.sessionKey === session.key) >= MAX_LIVE_COMMANDS_PER_SESSION) throw new ToolError("too_many_commands", `this session already has ${MAX_LIVE_COMMANDS_PER_SESSION} commands running`);
+          if (live((c) => c.sessionKey === session.key) + (startingBySession.get(session.key) ?? 0) >= MAX_LIVE_COMMANDS_PER_SESSION) throw new ToolError("too_many_commands", `this session already has ${MAX_LIVE_COMMANDS_PER_SESSION} commands running`);
           const timeoutSeconds = params.timeoutSeconds ?? EXEC_TIMEOUT_DEFAULT_SECONDS;
-          starting.set(ctx.threadId, (starting.get(ctx.threadId) ?? 0) + 1);
+          bump(starting, ctx.threadId, 1);
+          bump(startingBySession, session.key, 1);
+          const id = newId();
           let run: { runKey: string };
           try {
-            run = await exec.start({ sessionKey: session.key, profileId: session.profileId, command: params.command, timeoutMs: timeoutSeconds * 1000 });
+            run = await exec.start({ commandId: id, sessionKey: session.key, profileId: session.profileId, command: params.command, timeoutMs: timeoutSeconds * 1000 });
           } catch (error) {
             if (error instanceof ToolError) throw error;
             // What the agent is told is a closed list: a failure's own text can name the Keychain, the helper or a host.
@@ -180,15 +239,30 @@ export function createExecTools(deps: AgentExecDeps): AgentToolDef[] {
             if (typeof code === "string" && code in COMMAND_ERRORS) throw new ToolError(code, COMMAND_ERRORS[code] as string);
             throw new ToolError("exec_failed", "the command could not be started; the owner can see why on the Remote Hub page");
           } finally {
-            const left = (starting.get(ctx.threadId) ?? 1) - 1;
-            if (left > 0) starting.set(ctx.threadId, left);
-            else starting.delete(ctx.threadId);
+            bump(starting, ctx.threadId, -1);
+            bump(startingBySession, session.key, -1);
           }
-          const id = newId();
-          commands.set(id, { id, runKey: run.runKey, threadId: ctx.threadId, sessionKey: session.key, profileId: session.profileId, running: true, order: ++order });
+          const command: Command = { id, runKey: run.runKey, threadId: ctx.threadId, sessionKey: session.key, profileId: session.profileId, running: true, order: ++order, cancelledFor: null };
+          commands.set(id, command);
           forgetOldFinished(ctx.threadId);
           // Shown to the owner whatever "record commands" says; held in memory by the open views only.
           deps.feed?.emit(session.key, { kind: "exec", commandId: id, phase: "started", text: params.command.slice(0, 2000) });
+          // Authorization is checked again now that the run exists: a revoke, a closed session or a watcher that left while
+          // it was starting ends it, and nothing about it is returned.
+          const stillOpen = sessionOf(session.key)?.state !== "closed";
+          if (!access.check(session.profileId, "exec").ok) {
+            stopFor(command, "agent_access_denied");
+            throw new ToolError("agent_access_denied", "the owner has not allowed agents to run commands on this connection");
+          }
+          if (!stillOpen) {
+            stopFor(command, "owner_not_watching");
+            throw new ToolError("session_closed", "this session has ended");
+          }
+          if (!mayAct(session.key)) {
+            stopFor(command, "owner_not_watching");
+            throw NOT_WATCHING;
+          }
+          reconcile(session.key);
           return {
             content: [
               json({
@@ -227,12 +301,25 @@ export function createExecTools(deps: AgentExecDeps): AgentToolDef[] {
         const known = commands.get(params.commandId);
         return guarded("remote_command_read", ctx, { sessionKey: known?.sessionKey ?? null, profileId: known?.profileId ?? null, reserve: max * 8 + 8192 }, async () => {
           const c = ownCommand(params.commandId, ctx);
+          // A command stopped because authorization ended reports that and nothing it printed, now or later.
+          const cancelled = (): ReturnType<typeof json> | null =>
+            c.cancelledFor === null
+              ? null
+              : json({ commandId: c.id, sessionId: c.sessionKey, running: false, exitCode: null, signal: null, reason: c.cancelledFor, cancelledByOwnerRules: true, elapsedMs: 0, refused: null, stdout: streamView(EMPTY_STREAM), stderr: streamView(EMPTY_STREAM) });
           const deadline = Date.now() + (params.waitSeconds ?? 0) * 1000;
+          const early = cancelled();
+          if (early !== null) return { content: [early] };
           let snapshot = await exec.read(c.runKey, params.stdoutFrom ?? 0, params.stderrFrom ?? 0, max);
           while (snapshot.running && Date.now() < deadline && ctx.signal?.aborted !== true) {
             await new Promise((resolve) => setTimeout(resolve, 200));
+            // Authorization is looked at again on every turn of a waiting read: a revoke or a cancellation ends it at once.
+            if (!access.check(c.profileId, "exec").ok) throw new ToolError("agent_access_denied", "the owner has not allowed agents to run commands on this connection");
+            const stopped = cancelled();
+            if (stopped !== null) return { content: [stopped] };
             snapshot = await exec.read(c.runKey, params.stdoutFrom ?? 0, params.stderrFrom ?? 0, max);
           }
+          const late = cancelled();
+          if (late !== null) return { content: [late] };
           if (!snapshot.running) c.running = false;
           return {
             content: [

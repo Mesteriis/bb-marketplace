@@ -489,12 +489,15 @@ describe.skipIf(!dockerOk)("remote commands over a real sshd (stage 4b-2)", () =
     const seen: any[] = [];
     const handle = { generation: sessionId.split(".")[0] as string, sessionId: Number(sessionId.split(".")[1]) };
     const off = c.feed.subscribe(sessionId, (e) => seen.push(e));
-    const r = await read((await run("echo LIVE-MARKER-1; sleep 1; echo LIVE-MARKER-2")).commandId);
+    const started = await run("echo LIVE-MARKER-1; sleep 1; echo LIVE-MARKER-2");
+    const r = await read(started.commandId);
     off();
     expect(r.exitCode).toBe(0);
     await poll(() => seen.some((e) => e.phase === "finished"), 10_000, "the live view saw the end");
     expect(seen[0]).toMatchObject({ kind: "exec", phase: "started", text: "echo LIVE-MARKER-1; sleep 1; echo LIVE-MARKER-2" });
     expect(seen.filter((e) => e.phase === "output").map((e) => e.text).join("")).toContain("LIVE-MARKER-2");
+    // One public id from start to end, through the production adapter.
+    expect(seen.map((e) => e.commandId)).toEqual(seen.map(() => started.commandId));
     expect(JSON.stringify(c.rows)).not.toContain("LIVE-MARKER");
     expect(c.rows.filter((x) => x.tool === "remote_ssh_exec").every((x) => x.detailMode === "length" && /^len \d+$/.test(x.detail ?? ""))).toBe(true);
     void handle;

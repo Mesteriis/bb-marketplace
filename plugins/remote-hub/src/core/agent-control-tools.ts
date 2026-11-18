@@ -32,6 +32,10 @@ export interface AgentControlPorts {
   watching(sessionKey: string): boolean;
   /** The owner's setting: agents act only while the session is watched (default true). Read on every call. */
   watchingRequired(): boolean;
+  /** Told when a session gains or loses its watcher (already settled: a report that merely expired is noticed by the sweep). */
+  onWatchChange(cb: (sessionKey: string, watching: boolean) => void): () => void;
+  /** Told when the owner switches the watching rule. */
+  onRuleChange(cb: () => void): () => void;
 }
 
 /** Which thread opened which session through remote_connect (memory only; empty after a restart, like leases). */

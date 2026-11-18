@@ -54,7 +54,7 @@ export function agentExecPorts({ service, profiles, credentials, feed, pollMs = 
   service.onExecFinished((e) => announceFinished(keyOf(e.handle)));
 
   /** Reads what is new on both streams and shows it; stops once the run is over. */
-  function livePoll(runKey: string, sessionKey: string): void {
+  function livePoll(runKey: string, sessionKey: string, commandId: string): void {
     const sent = { stdout: 0, stderr: 0 };
     let busy = false;
     const timer = setInterval(() => {
@@ -69,7 +69,7 @@ export function agentExecPorts({ service, profiles, credentials, feed, pollMs = 
             for (const stream of ["stdout", "stderr"] as const) {
               const c = snap[stream];
               if (c.data.length > 0) {
-                feed?.emit(sessionKey, { kind: "exec", commandId: runKey, phase: "output", stream, text: sanitizeTerminalBytes(c.data) });
+                feed?.emit(sessionKey, { kind: "exec", commandId, phase: "output", stream, text: sanitizeTerminalBytes(c.data) });
                 sent[stream] = c.end;
                 if (c.data.length >= LIVE_CHUNK_BYTES) full = true;
               }
@@ -78,7 +78,7 @@ export function agentExecPorts({ service, profiles, credentials, feed, pollMs = 
             snap = await service.execRead(handleOf(runKey), sent.stdout, sent.stderr, LIVE_CHUNK_BYTES);
           }
           if (!snap.running) {
-            feed?.emit(sessionKey, { kind: "exec", commandId: runKey, phase: "finished", text: "", exitCode: snap.exitCode, ...(snap.reason === null ? {} : { reason: snap.reason }) });
+            feed?.emit(sessionKey, { kind: "exec", commandId, phase: "finished", text: "", exitCode: snap.exitCode, ...(snap.reason === null ? {} : { reason: snap.reason }) });
             stopPoll(runKey);
             announceFinished(runKey);
           }
@@ -96,7 +96,7 @@ export function agentExecPorts({ service, profiles, credentials, feed, pollMs = 
   }
 
   return {
-    async start({ sessionKey, profileId, command, timeoutMs }) {
+    async start({ commandId, sessionKey, profileId, command, timeoutMs }) {
       const profile = profiles.get(profileId);
       if (profile === null || profile.protocol !== "ssh" || profile.credentialRef === null) throw new ToolError("needs_saved_credential", "this connection has no saved credential");
       const target = profileToSshTarget(profile);
@@ -109,12 +109,15 @@ export function agentExecPorts({ service, profiles, credentials, feed, pollMs = 
       }
       const handle = await service.execRun({ ...target, authMethod }, command, profile.credentialRef, timeoutMs, EXEC_KEEP_BYTES);
       const runKey = keyOf(handle);
-      livePoll(runKey, sessionKey);
+      livePoll(runKey, sessionKey, commandId);
       return { runKey };
     },
     read: async (runKey, stdoutFrom, stderrFrom, max): Promise<ExecSnapshotView> => service.execRead(handleOf(runKey), stdoutFrom, stderrFrom, max),
     cancel: async (runKey): Promise<ExecSnapshotView> => service.execCancel(handleOf(runKey)),
-    forget: async (runKey) => service.execForget(handleOf(runKey)),
+    forget: async (runKey) => {
+      stopPoll(runKey);
+      return service.execForget(handleOf(runKey));
+    },
     onFinished(cb) {
       finishedListeners.add(cb);
       return () => void finishedListeners.delete(cb);

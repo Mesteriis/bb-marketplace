@@ -35,7 +35,7 @@ function setup(p: Profile | null = profile()) {
 describe("agent exec ports", () => {
   it("starts the command with the profile's saved credential, the lower-cased host, the authorised method and the bound limits", async () => {
     const t = setup();
-    const run = await t.ports.start({ sessionKey: SESSION, profileId: P, command: "id", timeoutMs: 30_000 });
+    const run = await t.ports.start({ commandId: "cmd_1", sessionKey: SESSION, profileId: P, command: "id", timeoutMs: 30_000 });
     expect(run.runKey).toBe(`${GEN}.9`);
     expect(t.credentials.authorizeSsh).toHaveBeenCalledWith(REF, { protocol: "ssh", host: "box.test", port: 2222, user: "ops", domain: null }, undefined);
     expect(t.service.execRun).toHaveBeenCalledWith({ host: "Box.test", user: "ops", port: 2222, extraOptions: [], authMethod: "password" }, "id", REF, 30_000, EXEC_KEEP_BYTES);
@@ -44,7 +44,7 @@ describe("agent exec ports", () => {
   it("a profile that is gone, is not SSH or has no saved credential cannot run anything, with a closed-list code", async () => {
     for (const [p, code] of [[null, "needs_saved_credential"], [profile({ protocol: "rdp" }), "needs_saved_credential"], [profile({ credentialRef: null }), "needs_saved_credential"]] as const) {
       const t = setup(p);
-      await expect(t.ports.start({ sessionKey: SESSION, profileId: P, command: "id", timeoutMs: 1000 })).rejects.toMatchObject({ code });
+      await expect(t.ports.start({ commandId: "cmd_1", sessionKey: SESSION, profileId: P, command: "id", timeoutMs: 1000 })).rejects.toMatchObject({ code });
       expect(t.service.execRun).not.toHaveBeenCalled();
     }
   });
@@ -54,30 +54,32 @@ describe("agent exec ports", () => {
     t.credentials.authorizeSsh.mockImplementation(() => {
       throw new CredentialError("credential_target_mismatch");
     });
-    await expect(t.ports.start({ sessionKey: SESSION, profileId: P, command: "id", timeoutMs: 1000 })).rejects.toMatchObject({ code: "credential_target_mismatch" });
+    await expect(t.ports.start({ commandId: "cmd_1", sessionKey: SESSION, profileId: P, command: "id", timeoutMs: 1000 })).rejects.toMatchObject({ code: "credential_target_mismatch" });
     expect(t.service.execRun).not.toHaveBeenCalled();
   });
 
   it("the helper's own error code passes through for the tools' closed list (they never show its text)", async () => {
     const t = setup();
     t.service.execRun.mockRejectedValueOnce(Object.assign(new Error("long internal text"), { code: "host_key_unknown" }));
-    await expect(t.ports.start({ sessionKey: SESSION, profileId: P, command: "id", timeoutMs: 1000 })).rejects.toMatchObject({ code: "host_key_unknown" });
+    await expect(t.ports.start({ commandId: "cmd_1", sessionKey: SESSION, profileId: P, command: "id", timeoutMs: 1000 })).rejects.toMatchObject({ code: "host_key_unknown" });
   });
 
   it("streams what the command prints to the session's live view as it happens, then its end, without storing it", async () => {
     const t = setup();
     t.setReads([snap({ stdout: chunk("line one\n") }), snap({ stdout: chunk("line two\n", 9, 18), stderr: chunk("oops\n") }), snap({ running: false, exitCode: 4, reason: "exited", stdout: chunk("", 18, 18), stderr: chunk("", 5, 5) })]);
-    await t.ports.start({ sessionKey: SESSION, profileId: P, command: "id", timeoutMs: 1000 });
+    await t.ports.start({ commandId: "cmd_1", sessionKey: SESSION, profileId: P, command: "id", timeoutMs: 1000 });
     await vi.waitFor(() => expect(t.seen.some((e) => (e as { phase?: string }).phase === "finished")).toBe(true));
     const out = (t.seen as Array<{ kind: string; phase: string; stream?: string; text: string; exitCode?: number | null; reason?: string }>).filter((e) => e.phase === "output");
     expect(out.map((e) => [e.stream, e.text])).toEqual([["stdout", "line one\n"], ["stdout", "line two\n"], ["stderr", "oops\n"]]);
     expect(t.seen.at(-1)).toMatchObject({ kind: "exec", phase: "finished", exitCode: 4, reason: "exited" });
+    // The public command id, not the run key, names every event of the run.
+    expect((t.seen as Array<{ commandId: string }>).every((e) => e.commandId === "cmd_1")).toBe(true);
   });
 
   it("the live text has its control sequences removed, like terminal text", async () => {
     const t = setup();
     t.setReads([snap({ stdout: chunk("a\u001b[31mred\u001b[0m\u0007b\n") }), snap({ running: false, exitCode: 0, reason: "exited" })]);
-    await t.ports.start({ sessionKey: SESSION, profileId: P, command: "id", timeoutMs: 1000 });
+    await t.ports.start({ commandId: "cmd_1", sessionKey: SESSION, profileId: P, command: "id", timeoutMs: 1000 });
     await vi.waitFor(() => expect(t.seen.some((e) => (e as { phase?: string }).phase === "finished")).toBe(true));
     expect((t.seen as Array<{ phase: string; text: string }>).find((e) => e.phase === "output")!.text).toBe("aredb\n");
   });
@@ -87,7 +89,7 @@ describe("agent exec ports", () => {
     const ended: string[] = [];
     t.ports.onFinished((k) => ended.push(k));
     t.setReads([snap({ running: false, exitCode: 0, reason: "exited", stdout: chunk("last words\n") })]);
-    await t.ports.start({ sessionKey: SESSION, profileId: P, command: "id", timeoutMs: 1000 });
+    await t.ports.start({ commandId: "cmd_1", sessionKey: SESSION, profileId: P, command: "id", timeoutMs: 1000 });
     t.finished[0]!({ handle: { generation: GEN, execId: 9 }, exitCode: 0, signal: null, reason: "exited", refused: null });
     expect(ended).toEqual([`${GEN}.9`]);
     await vi.waitFor(() => expect(t.seen.some((e) => (e as { phase?: string }).phase === "finished")).toBe(true));

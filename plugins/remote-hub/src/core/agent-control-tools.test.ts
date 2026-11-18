@@ -104,6 +104,8 @@ function setup(opts: Setup = {}) {
       waitingForOwner: (key) => waiting.get(key) ?? [],
       watching: () => watched,
       watchingRequired: () => required,
+      onWatchChange: () => () => undefined,
+      onRuleChange: () => () => undefined,
     },
   });
   const tool = (name: string): AgentToolDef => tools.find((t) => t.name === name)!;

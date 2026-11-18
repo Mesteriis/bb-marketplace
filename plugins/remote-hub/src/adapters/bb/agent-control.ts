@@ -102,6 +102,8 @@ export function agentControlPorts({ service, profiles, handlers, watchers, setti
   return {
     watching: (key) => watchers.watching(key),
     watchingRequired: () => settings.requireWatching(),
+    onWatchChange: (cb) => watchers.onChange(cb),
+    onRuleChange: (cb) => settings.onChange(cb),
     terminalWrite: async (key, data, owner) => lostLeaseAsToolError(() => service.agentTerminalInput(handleOf(key), data, owner)),
     rdpWrite: async (key, events, owner) => lostLeaseAsToolError(() => service.agentRdpInput(handleOf(key), events, owner)),
     async connect(profileId) {
