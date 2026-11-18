@@ -467,6 +467,7 @@
 }
 
 .rh-saved button,
+.rh-import button,
 .rh-credentials button {
   background: transparent;
   color: var(--ink, #c9d1d9);
@@ -559,6 +560,14 @@
   gap: 8px;
   padding: 12px;
   max-width: 760px;
+  min-width: 0;
+  box-sizing: border-box;
+  overflow-y: auto;
+}
+
+.rh-import button:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .rh-import-head {
@@ -580,4 +589,14 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+.rh-import .rh-check.rh-profile-main {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.rh-import-note {
+  display: block;
 }

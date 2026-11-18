@@ -186,9 +186,9 @@ export function ImportPanel({ api, onImported, onClose }: ImportPanelProps) {
                     <strong>{i.name}</strong> <span className="rh-badge">{ACTION_TEXT[i.action]}</span>
                     <br />
                     <span className="rh-profile-endpoint">{(i.username !== null ? i.username + "@" : "") + i.host + (i.port !== null ? ":" + i.port : "")}</span>
-                    {i.skip !== null && <span className="rh-error"> {i.skip}</span>}
-                    {!i.resolved && <span className="rh-hint"> Uses your SSH config as it is; a password cannot be saved for it.</span>}
-                    {i.flags.length > 0 && <span className="rh-hint"> ({i.flags.map((f) => FLAG_TEXT[f] ?? f).join("; ")})</span>}
+                    {i.skip !== null && <span className="rh-error rh-import-note">{i.skip}</span>}
+                    {!i.resolved && <span className="rh-hint rh-import-note">Uses your SSH config as it is; a password cannot be saved for it.</span>}
+                    {i.flags.length > 0 && <span className="rh-hint rh-import-note">{i.flags.map((f) => FLAG_TEXT[f] ?? f).join("; ")}</span>}
                   </span>
                 </label>
               </li>
