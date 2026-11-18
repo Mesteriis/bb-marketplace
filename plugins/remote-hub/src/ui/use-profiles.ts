@@ -22,6 +22,10 @@ export function useProfiles(api: ProfilesApi | undefined) {
   const [error, setError] = useState<string | null>(null);
   const [sessions, setSessions] = useState<Array<SessionInfo & { profileId?: string }>>([]);
   const alive = useRef(true);
+  // A response is applied only if no newer request of its kind started after it:
+  // an older answer arriving late must not undo a delete or a status change.
+  const listSeq = useRef(0);
+  const sessionsSeq = useRef(0);
 
   useEffect(() => {
     alive.current = true;
@@ -32,9 +36,10 @@ export function useProfiles(api: ProfilesApi | undefined) {
 
   const reloadSessions = useCallback(async () => {
     if (api === undefined) return;
+    const seq = ++sessionsSeq.current;
     try {
       const next = await api.sessions();
-      if (alive.current) setSessions(next);
+      if (alive.current && seq === sessionsSeq.current) setSessions(next);
     } catch {
       // A status refresh that fails keeps the last known status; the list has its own error.
     }
@@ -42,13 +47,15 @@ export function useProfiles(api: ProfilesApi | undefined) {
 
   const reload = useCallback(async () => {
     if (api === undefined) return;
+    const seq = ++listSeq.current;
     try {
       const next = await api.list();
-      if (!alive.current) return;
-      setProfiles(next);
-      setError(null);
+      if (alive.current && seq === listSeq.current) {
+        setProfiles(next);
+        setError(null);
+      }
     } catch (e) {
-      if (alive.current) setError(message(e));
+      if (alive.current && seq === listSeq.current) setError(message(e));
     }
     await reloadSessions();
   }, [api, reloadSessions]);
