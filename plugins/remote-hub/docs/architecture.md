@@ -509,7 +509,7 @@ and `useProfiles` around the existing session pages; Quick connect stays.
   an agent left down are released when its lease ends. `remote_connect` takes a connection id and uses its SAVED
   credential through the same RPC path as the page; there is no password, host or approval parameter. SSH connections
   with an agent or an unsaved key are refused (`needs_saved_credential`): OpenSSH could prompt in the PTY, where an agent
-  could type. At most four open sessions per thread. The audit keeps the length and a short hash of an input.
+  could type. At most four open sessions per thread. The audit keeps the length of an input, no hash.
 - **Human side.** The service drops the human's input while an agent holds the lease (`sessionTerminalInput` and the RDP
   attachment return false); the view is told the owner (`control`) and, at most every 2 s, `input_blocked`. The page shows
   an owner badge, a paused-input notice and one-click Take control (`agent_control_takeover`: ends the lease, drops queued

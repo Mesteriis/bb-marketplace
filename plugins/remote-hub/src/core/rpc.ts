@@ -226,7 +226,7 @@ export const rpcSchemas = {
         tool: z.string(),
         profileId: z.string().nullable(),
         sessionKey: z.string().nullable(),
-        detailMode: z.enum(["none", "hash", "text"]),
+        detailMode: z.enum(["none", "length", "text"]),
         detail: z.string().nullable(),
         outcome: z.string().nullable(),
         count: z.number().int(),

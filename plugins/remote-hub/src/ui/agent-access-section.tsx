@@ -79,7 +79,7 @@ export function AgentAccessSection({ api, profileId }: AgentAccessSectionProps) 
           {level === "exec" && (
             <label className="rh-check">
               <input type="checkbox" checked={record} disabled={busy} onChange={(e) => apply("exec", e.target.checked)} />
-              Record the text of commands in the activity list (off: only length and a short hash)
+              Record the text of commands in the activity list (off: only the length)
             </label>
           )}
           {message !== null && <p role="status" className="rh-hint">{message}</p>}

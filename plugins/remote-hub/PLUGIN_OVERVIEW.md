@@ -34,7 +34,7 @@ both through a Rust helper, plus the echo console from stage 1.
   in a helper-owned file used by saved-password SSH). Profiles keep their source; re-importing changes
   nothing. Private keys are never opened. An alias behind a proxy or Match rule
   keeps using your ssh config and cannot save a password.
-- Agent access: per connection, default none, set by you in the editor (any thread of this BB). Observe: agents list connections, read terminals, take screenshots, and see all the terminal or screen shows, secrets too. Input: they may open a connection that has a SAVED password (never shown or typed by them), hold a lease on a session (2 min; your input pauses, one click, Take control, ends it) and send typed keys, text and pointer actions. Host keys and certificates stay yours. Levels limit these tools only; an agent with a shell as you is not contained. All audited (input: length, hash).
+- Agent access: per connection, default none, set by you in the editor (any thread of this BB). Observe: agents list connections, read terminals, take screenshots, and see all the terminal or screen shows, secrets too. Input: they may open a connection that has a SAVED password (never shown or typed by them), hold a lease on a session (2 min; your input pauses, one click, Take control, ends it) and send typed keys, text and pointer actions. Host keys and certificates stay yours. Levels limit these tools only; an agent with a shell as you is not contained. All audited (input: length only).
 - The helper owns every session; detaching a view never ends it, and disconnecting never logs the remote user off.
 
 ## Honest limits

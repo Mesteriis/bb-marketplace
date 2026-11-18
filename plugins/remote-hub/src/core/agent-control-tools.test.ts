@@ -59,6 +59,7 @@ function setup(opts: Setup = {}) {
   const gates: { terminal: Array<() => void>; rdp: Array<() => void> } = { terminal: [], rdp: [] };
   let hold = false;
   const opened: string[] = [];
+  let connectGate: Promise<void> | null = null;
   const disconnected: string[] = [];
   const waiting = new Map<string, Array<"host_key" | "certificate" | "login_prompt">>();
   const registry = new AgentSessionRegistry();
@@ -81,6 +82,7 @@ function setup(opts: Setup = {}) {
         rdpSent.push({ key, events, owner });
       },
       connect: async (profileId) => {
+        if (connectGate !== null) await connectGate;
         const p = profiles.find((x) => x.id === profileId)!;
         const key = `${GEN}.${10 + opened.length}`;
         opened.push(p.id);
@@ -101,6 +103,14 @@ function setup(opts: Setup = {}) {
   return {
     registry, access, rows, leases, sessions, wrote, rdpSent, tools, tool, call, textOf, data, opened, disconnected, waiting,
     advance: (ms: number) => void (now += ms),
+    holdConnect: () => {
+      let release!: () => void;
+      connectGate = new Promise<void>((r) => (release = r));
+      return () => {
+        connectGate = null;
+        release();
+      };
+    },
     holdWrites: () => void (hold = true),
     releaseWrites: () => {
       hold = false;
@@ -226,13 +236,13 @@ describe("remote_terminal_input", () => {
     expect(ok([{ type: "text", text: "x".repeat(5000) }])).toBe(false);
   });
 
-  it("the audit row is written before the action and keeps only the length and a short hash of the input", async () => {
+  it("the audit row is written before the action and keeps only the length of the input", async () => {
     const t = await leased();
     await t.call("remote_terminal_input", { sessionId: SSH_KEY, leaseId: "lease-1", actions: [{ type: "text", text: "super-secret-command" }] });
     const row = t.rows.at(-1)!;
     expect(row.tool).toBe("remote_terminal_input");
-    expect(row.detailMode).toBe("hash");
-    expect(row.detail).toMatch(/^len 20 sha [0-9a-f]{8}$/);
+    expect(row.detailMode).toBe("length");
+    expect(row.detail).toBe("len 20");
     expect(row.outcome).toBe("ok");
     expect(JSON.stringify(t.rows)).not.toContain("super-secret-command");
     expect(row.profileId).toBe(P_SSH);
@@ -341,12 +351,12 @@ describe("remote_rdp_input", () => {
     expect(t.textOf(await t.call("remote_rdp_input", { sessionId: SSH_KEY, leaseId: "lease-1", actions: [{ type: "key", code: "Enter" }] }))).toContain("not_a_desktop");
   });
 
-  it("the audit keeps length and hash only", async () => {
+  it("the audit keeps the length only", async () => {
     const t = await leased();
     await send(t, [{ type: "text", text: "p4ssw0rd-typed" }]);
     const row = t.rows.at(-1)!;
-    expect(row.detailMode).toBe("hash");
-    expect(row.detail).toMatch(/^len \d+ sha [0-9a-f]{8}$/);
+    expect(row.detailMode).toBe("length");
+    expect(row.detail).toMatch(/^len \d+$/);
     expect(JSON.stringify(t.rows)).not.toContain("p4ssw0rd-typed");
   });
 
@@ -525,6 +535,51 @@ describe("Z5: takeover hold, abort scope, retired threads", () => {
     t.registry.markDeleted("thr_a");
     expect(t.textOf(await t.call("remote_control_acquire", { sessionId: SSH_KEY }))).toContain("thread_retired");
     expect(t.leases.owner(SSH_KEY).kind).toBe("human");
+  });
+});
+
+describe("Z6: remote_connect reserves its slot before awaiting and revalidates after", () => {
+  it("six parallel connects admit only four, and the slot of a failed open is given back", async () => {
+    const t = setup({ sessions: [] });
+    t.access.set(P_SSH, "input", false);
+    const release = t.holdConnect();
+    const calls = Array.from({ length: 6 }, () => t.call("remote_connect", { connectionId: P_SSH }));
+    await until(() => t.rows.length >= 6);
+    release();
+    const results = await Promise.all(calls);
+    expect(results.filter((r) => r.isError !== true)).toHaveLength(4);
+    expect(results.filter((r) => t.textOf(r).includes("too_many_sessions"))).toHaveLength(2);
+    expect(t.opened).toHaveLength(4);
+  });
+
+  it("a grant revoked while the connection opens closes the session and returns an error, not a session", async () => {
+    const t = setup({ sessions: [] });
+    t.access.set(P_SSH, "input", false);
+    const release = t.holdConnect();
+    const pending = t.call("remote_connect", { connectionId: P_SSH });
+    await until(() => t.rows.length >= 1);
+    t.access.set(P_SSH, "none", false);
+    release();
+    const r = await pending;
+    expect(t.textOf(r)).toContain("connect_cancelled");
+    expect(t.disconnected).toEqual([`${GEN}.10`]);
+    expect(t.registry.threadOf(`${GEN}.10`)).toBeUndefined();
+  });
+
+  it("a thread archived, or a call aborted, while the connection opens closes it too", async () => {
+    for (const how of ["archived", "aborted"] as const) {
+      const t = setup({ sessions: [] });
+      t.access.set(P_SSH, "input", false);
+      const release = t.holdConnect();
+      const abort = new AbortController();
+      const pending = t.call("remote_connect", { connectionId: P_SSH }, { ...CTX, signal: abort.signal });
+      await until(() => t.rows.length >= 1);
+      if (how === "archived") t.registry.markArchived("thr_a");
+      else abort.abort();
+      release();
+      expect(t.textOf(await pending), how).toContain("connect_cancelled");
+      expect(t.disconnected, how).toEqual([`${GEN}.10`]);
+    }
   });
 });
 

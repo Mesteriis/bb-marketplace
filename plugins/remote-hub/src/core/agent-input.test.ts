@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { SerialQueue, rdpActionsSchema, toRdpEvents, shortHash } from "./agent-input.ts";
+import { SerialQueue, rdpActionsSchema, toRdpEvents } from "./agent-input.ts";
 
 const GEOM = { width: 800, height: 600 };
 
@@ -108,12 +108,5 @@ describe("SerialQueue", () => {
     expect(await q.run("two", () => true, async () => "free")).toEqual({ ran: true, value: "free" });
     release();
     await blocked;
-  });
-});
-
-describe("shortHash", () => {
-  it("is the first 8 hex of SHA-256, so an input is recorded as its length and this and never its text", async () => {
-    expect(await shortHash("abc")).toBe("ba7816bf"); // SHA-256("abc") = ba7816bf 8f01cfea ...
-    expect(await shortHash("")).toBe("e3b0c442");
   });
 });

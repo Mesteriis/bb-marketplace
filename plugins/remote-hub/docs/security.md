@@ -22,7 +22,7 @@
   server certificate. A saved RDP password is pinned to the certificate it was first used with (trust on first sight);
   a saved-secret SSH session reads only the helper-owned known_hosts overlay.
 - **Audit** records who (thread), what (tool, connection, session) and the outcome; it never records terminal text,
-  keystrokes, screenshots or secrets. An input is recorded as its length and a short hash; command text only when the
+  keystrokes, screenshots or secrets. An input is recorded as its length only (an unkeyed hash of a short typed secret could be guessed offline); command text only when the
   owner enables it (stage 4b-2).
 - **Control.** At the `input` level an agent can open a connection with its SAVED credential (it never gets or types a
   secret), hold a lease on a session and send typed input. The owner sees who drives each session, the human's input is

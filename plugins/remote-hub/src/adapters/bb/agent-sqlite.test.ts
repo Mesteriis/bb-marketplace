@@ -77,3 +77,12 @@ describe("the agent audit in SQLite", () => {
     expect(db.prepare("SELECT COUNT(*) AS n FROM agent_audit").get()).toEqual({ n: 3 });
   });
 });
+
+describe("Z7: no hash of an input in the audit", () => {
+  it("an old row written with a hash is read as its length only", () => {
+    db.prepare("INSERT INTO agent_audit (at, thread_id, project_id, tool, profile_id, session_key, detail_mode, detail, outcome, count) VALUES ('2026-01-01T00:00:00.000Z','t','p','remote_terminal_input',NULL,'g.1','hash','len 8 sha 1a2b3c4d','ok',1)").run();
+    const rows = createSqliteAgentAuditStore(db).list(5);
+    expect(rows[0]).toMatchObject({ detailMode: "length", detail: "len 8" });
+    expect(JSON.stringify(rows)).not.toContain("1a2b3c4d");
+  });
+});

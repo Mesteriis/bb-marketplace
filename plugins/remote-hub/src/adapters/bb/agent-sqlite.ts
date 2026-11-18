@@ -80,8 +80,9 @@ const toAudit = (r: AuditDbRow): AuditRow => ({
   tool: r.tool,
   profileId: r.profile_id,
   sessionKey: r.session_key,
-  detailMode: r.detail_mode === "text" || r.detail_mode === "hash" ? r.detail_mode : "none",
-  detail: r.detail,
+  // Rows written before the hash was dropped (mode "hash", `len N sha xxxxxxxx`) are shown as their length only.
+  detailMode: r.detail_mode === "text" ? "text" : r.detail_mode === "length" || r.detail_mode === "hash" ? "length" : "none",
+  detail: r.detail_mode === "hash" ? (r.detail ?? "").replace(/ sha [0-9a-f]+$/, "") : r.detail,
   outcome: r.outcome,
   count: r.count,
 });

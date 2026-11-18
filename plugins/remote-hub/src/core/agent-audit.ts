@@ -1,10 +1,10 @@
 // The audit of agent tool calls (stage 4a). A row is written BEFORE the action runs and its outcome filled in
 // afterwards, so a crash leaves a trace. A row holds who (thread, project), what (tool, profile, session) and
-// the outcome; never terminal text, keystrokes, screenshots or secrets. `detail` is the length and a short hash
+// the outcome; never terminal text, keystrokes, screenshots or secrets. `detail` is the length (never a hash: an unkeyed hash of a short typed secret can be guessed offline)
 // of an input, or, only when the owner switched "record commands" on for that profile, the command text cut at
 // 512 characters; `detailMode` says which of the two was in effect.
 
-export type AuditDetailMode = "none" | "hash" | "text";
+export type AuditDetailMode = "none" | "length" | "text";
 
 export interface AuditRow {
   id: number;

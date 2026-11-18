@@ -1,6 +1,6 @@
 // What an agent may send to a session, as typed data (stage 4b-1): RDP actions that map to the helper's input
 // events, the keys and buttons an agent left down (released when its lease ends), a per-session serial queue whose
-// waiting operations are dropped when the owner is gone, and the short hash an audit row records instead of text.
+// waiting operations are dropped when the owner is gone, and nothing else about an input: an audit row records its length, not its text and no hash of it.
 import { z } from "zod";
 import { codeToScancode } from "./rdp-keys.ts";
 import type { RdpInputEvent } from "./rdp-protocol.ts";
@@ -87,10 +87,4 @@ export class SerialQueue {
     });
     return result;
   }
-}
-
-/** The first 8 hex characters of SHA-256 of a text: what an audit row keeps of an input instead of the input. */
-export async function shortHash(text: string): Promise<string> {
-  const digest = new Uint8Array(await globalThis.crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)));
-  return Array.from(digest.subarray(0, 4), (b) => b.toString(16).padStart(2, "0")).join("");
 }

@@ -112,10 +112,10 @@ describe("AgentPanel", () => {
   });
 
   it("says which recording mode was in effect for a recorded input, and never invents text", async () => {
-    mount(api({ rows: [row({ id: 2, tool: "remote_ssh_exec", detailMode: "text", detail: "uptime" }), row({ id: 1, tool: "remote_terminal_input", detailMode: "hash", detail: "len 4 sha 1a2b" })] }));
+    mount(api({ rows: [row({ id: 2, tool: "remote_ssh_exec", detailMode: "text", detail: "uptime" }), row({ id: 1, tool: "remote_terminal_input", detailMode: "length", detail: "len 4" })] }));
     const text = (await screen.findByLabelText("Agent activity list")).textContent ?? "";
     expect(text).toContain("command: uptime");
-    expect(text).toContain("recorded as length and hash only");
+    expect(text).toContain("recorded as its length only");
     expect(text).not.toContain("1a2b");
   });
 

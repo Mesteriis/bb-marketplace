@@ -7,9 +7,9 @@
 //  - typed input only (named keys, plain text without control characters, typed RDP actions), never a byte stream;
 //  - no password, key, host or approval anywhere: a connection is opened by its id and a SAVED credential, and every
 //    host-key or certificate question goes to the owner (the agent only learns that the owner is being asked).
-// The audit keeps the length and a short hash of an input, never the input itself.
+// The audit keeps the length of an input, never the input itself and no hash of it.
 import { z } from "zod";
-import { SerialQueue, rdpActionsSchema, shortHash, toRdpEvents, type RdpAction } from "./agent-input.ts";
+import { SerialQueue, rdpActionsSchema, toRdpEvents, type RdpAction } from "./agent-input.ts";
 import { CANNOT, ToolError, connectionIdSchema, createGate, def, errorResult, json, sessionIdSchema, type AgentCallContext, type AgentSessionView, type AgentToolDef, type AgentToolDeps } from "./agent-tools.ts";
 import { LEASE_DEFAULT_SECONDS, LEASE_MAX_SECONDS, LEASE_MIN_SECONDS, type ControlLeases, type LeaseEnd } from "./control-lease.ts";
 import type { RdpInputEvent } from "./rdp-protocol.ts";
@@ -141,6 +141,8 @@ export function createControlTools(deps: AgentControlDeps): AgentToolDef[] {
   const queue = new SerialQueue();
   /** Which thread opened which session (memory only): a thread may disconnect what it opened, and no more than four at a time. */
   const openedBy = deps.registry ?? new AgentSessionRegistry();
+  /** Opens in flight per thread: they count against the per-thread cap before they finish. */
+  const opening = new Map<string, number>();
 
   const sessionOf = (key: string): AgentSessionView | undefined => ports.sessions.list().find((s) => s.key === key);
   /** For the owner's audit only: which connection a session belongs to, whatever the grant says. */
@@ -254,10 +256,24 @@ export function createControlTools(deps: AgentControlDeps): AgentToolDef[] {
           const profile = ports.profiles.get(params.connectionId);
           if (profile === null || !access.check(params.connectionId, "connect").ok) throw new ToolError("agent_access_denied", "the owner has not allowed agents to use this connection");
           if (profile.credentialRef === null) throw new ToolError("needs_saved_credential", "this connection has no saved credential; the owner must save one on the Remote Hub page first");
+          // The slot is taken BEFORE the open is awaited, and given back on every way out: parallel calls cannot all see room.
           const live = ports.sessions.list().filter((s) => s.state !== "closed" && openedBy.threadOf(s.key) === ctx.threadId).length;
-          if (live >= MAX_SESSIONS_PER_THREAD) throw new ToolError("too_many_sessions", `this thread already has ${MAX_SESSIONS_PER_THREAD} open sessions: disconnect one first`);
-          const { sessionKey } = await control.connect(profile.id);
-          openedBy.mark(sessionKey, ctx.threadId);
+          if (live + (opening.get(ctx.threadId) ?? 0) >= MAX_SESSIONS_PER_THREAD) throw new ToolError("too_many_sessions", `this thread already has ${MAX_SESSIONS_PER_THREAD} open sessions: disconnect one first`);
+          opening.set(ctx.threadId, (opening.get(ctx.threadId) ?? 0) + 1);
+          let sessionKey: string;
+          try {
+            ({ sessionKey } = await control.connect(profile.id));
+            // The open took time: if the grant, the thread or the call ended meanwhile, the session is closed, not handed over.
+            if (!access.check(profile.id, "connect").ok || openedBy.isRetired(ctx.threadId) || ctx.signal?.aborted === true) {
+              await control.disconnect(sessionKey).catch(() => undefined);
+              throw new ToolError("connect_cancelled", "the permission to connect ended while the connection was opening; it was closed");
+            }
+            openedBy.mark(sessionKey, ctx.threadId);
+          } finally {
+            const left = (opening.get(ctx.threadId) ?? 1) - 1;
+            if (left > 0) opening.set(ctx.threadId, left);
+            else opening.delete(ctx.threadId);
+          }
           const waiting = control.waitingForOwner(sessionKey);
           return { content: [json({ sessionId: sessionKey, connectionId: profile.id, state: sessionOf(sessionKey)?.state ?? "connecting", ...(waiting.length > 0 ? { waitingForOwner: waiting } : {}) })] };
         }),
@@ -281,13 +297,13 @@ export function createControlTools(deps: AgentControlDeps): AgentToolDef[] {
       description:
         CANNOT +
         "Types into a terminal session you hold the lease on: plain text (no control characters) and named keys (Enter, Tab, Escape, Backspace, arrows, Home, End, Ctrl-C/D/Z/L), in order. " +
-        `At most ${TERMINAL_INPUT_MAX_BYTES} bytes per call. Cannot send raw bytes or escape sequences, and cannot type into a desktop session. The audit keeps the length and a short hash of what you send, not the text.`,
+        `At most ${TERMINAL_INPUT_MAX_BYTES} bytes per call. Cannot send raw bytes or escape sequences, and cannot type into a desktop session. The audit keeps the length of what you send, not the text.`,
       parameters: z.object({ sessionId: sessionIdSchema, leaseId: leaseIdSchema, actions: z.array(terminalActionSchema).min(1).max(40) }).strict(),
       execute: async (params, ctx) => {
         const bytes = terminalBytes(params.actions);
         if (bytes.length > TERMINAL_INPUT_MAX_BYTES) return errorResult("input_too_large", `more than ${TERMINAL_INPUT_MAX_BYTES} bytes in one call`);
-        const detail = `len ${bytes.length} sha ${await shortHash(JSON.stringify(params.actions))}`;
-        return guarded("remote_terminal_input", ctx, { sessionKey: params.sessionId, profileId: profileOf(params.sessionId), detailMode: "hash", detail }, async () => {
+        const detail = `len ${bytes.length}`;
+        return guarded("remote_terminal_input", ctx, { sessionKey: params.sessionId, profileId: profileOf(params.sessionId), detailMode: "length", detail }, async () => {
           const { session, profileId } = controllable(params.sessionId);
           if (session.kind === "rdp") throw new ToolError("not_a_terminal", "this is a desktop session: use remote_rdp_input");
           await driven(params.sessionId, ctx, params.leaseId, profileId, () => control.terminalWrite(params.sessionId, bytes, ownerTag(params.leaseId)));
@@ -305,8 +321,8 @@ export function createControlTools(deps: AgentControlDeps): AgentToolDef[] {
       parameters: z.object({ sessionId: sessionIdSchema, leaseId: leaseIdSchema, observed: observedSchema.optional(), actions: rdpActionsSchema }).strict(),
       execute: async (params, ctx) => {
         const actions = params.actions as RdpAction[];
-        const detail = `len ${JSON.stringify(actions).length} sha ${await shortHash(JSON.stringify(actions))}`;
-        return guarded("remote_rdp_input", ctx, { sessionKey: params.sessionId, profileId: profileOf(params.sessionId), detailMode: "hash", detail }, async () => {
+        const detail = `len ${JSON.stringify(actions).length}`;
+        return guarded("remote_rdp_input", ctx, { sessionKey: params.sessionId, profileId: profileOf(params.sessionId), detailMode: "length", detail }, async () => {
           const { session, profileId } = controllable(params.sessionId);
           if (session.kind !== "rdp") throw new ToolError("not_a_desktop", "this is a terminal session: use remote_terminal_input");
           const desktop = session.rdp?.desktop ?? null;

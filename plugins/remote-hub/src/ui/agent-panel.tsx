@@ -21,7 +21,7 @@ export interface AgentAuditView {
   tool: string;
   profileId: string | null;
   sessionKey: string | null;
-  detailMode: "none" | "hash" | "text";
+  detailMode: "none" | "length" | "text";
   detail: string | null;
   outcome: string | null;
   count: number;
@@ -83,7 +83,7 @@ export interface AgentPanelProps {
 
 const outcomeText = (outcome: string | null): string => (outcome === null ? "unfinished (no outcome was recorded)" : outcome);
 const detailText = (r: AgentAuditView): string =>
-  r.detailMode === "text" ? "command: " + (r.detail ?? "") : r.detailMode === "hash" ? "recorded as length and hash only" : "";
+  r.detailMode === "text" ? "command: " + (r.detail ?? "") : r.detailMode === "length" ? "recorded as its length only" : "";
 
 export function AgentPanel({ api, profileNames, onClose }: AgentPanelProps) {
   const [grants, setGrants] = useState<AgentGrantView[] | null>(null);
