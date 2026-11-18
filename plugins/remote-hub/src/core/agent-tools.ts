@@ -19,6 +19,8 @@ export interface ToolResult {
 export interface AgentCallContext {
   threadId: string;
   projectId: string;
+  /** Aborts when the call is cancelled or the thread is stopped or deleted. */
+  signal?: AbortSignal;
 }
 
 export interface AgentSessionView {
