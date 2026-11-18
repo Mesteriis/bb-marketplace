@@ -600,3 +600,7 @@
 .rh-import-note {
   display: block;
 }
+
+.rh-import .rh-badge {
+  align-self: flex-start;
+}

@@ -429,3 +429,22 @@ and `useProfiles` around the existing session pages; Quick connect stays.
 - **Hosts file.** Names become candidates; loopback, link-local, broadcast and duplicates are skipped.
 - **Tests** use fixture directories only (real files and SQLite in a temp directory, a real `/usr/bin/ssh -G` against a
   fixture config); none touches `~/.ssh`, `/etc/ssh` or the login keychain.
+
+## Stage 3c-2 — certificate pin, trust for good, known_hosts overlay
+
+- **RDP pin (T4).** `Bind::Endpoint` carries an optional `certFingerprint`, stored inside the Keychain item with the
+  secret. `session.open_rdp` with a `credentialRef`: when the item has a pin, the helper passes it to the engine as the
+  expected fingerprint and ignores the caller's; the engine compares the presented certificate before CredSSP, so a
+  different certificate closes the session as `cert_changed` and never receives the password. Without a pin, the helper
+  remembers the item for that session and, on the first `Certificate` event (the certificate the user accepted), asks the
+  keychain child to `pin` it. `pin` only fills an empty pin on an item bound to exactly that endpoint; saving the password
+  again writes a binding without a pin, which is the way to start over after a legitimate certificate change.
+- **Trust for good.** "Always trust" is the plugin's own record (SQLite table `rdp_trusted_certs`: host, port,
+  fingerprint, time), behind the `PersistentRdpTrust` port of `core/rdp-trust.ts`. The helper hears only "accept". A
+  different certificate on a server with a trusted one is `cert_changed` and is not offered "for good"; the old one has
+  to be forgotten first (Import screen, "RDP certificates you trust").
+- **known_hosts overlay.** Saved-secret SSH sessions use the helper-owned file (see 3c-2 helper notes in
+  `known_hosts.rs`): an unknown key raises the confirm prompt once, a yes is kept by OpenSSH, a changed key is refused
+  with no question and no password. Proven against a real Docker sshd (`tests/integration/ssh-askpass.test.ts`).
+- **Resolved destinations.** Unchanged from 3c-1: a resolved alias becomes an explicit profile that can hold a secret;
+  an unresolved one (proxy, Match, tokens, incomplete read) keeps using the user's ssh config and cannot save a secret.
