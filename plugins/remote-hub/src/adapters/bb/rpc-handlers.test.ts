@@ -149,3 +149,56 @@ describe("profile_save cannot attach a credential (R5b)", () => {
     expect(saved.credentialRef).toBeNull();
   });
 });
+
+const SSH: ProfileFields = { ...RDP, name: "box", protocol: "ssh", host: "box.example.test", port: 2222, username: "root", domain: null };
+const sshInput = (target: Record<string, unknown>, extra: Record<string, unknown> = {}) =>
+  ({ target: { host: "box.example.test", port: 2222, user: "root", extraOptions: [], ...target }, cols: 80, rows: 24, ...extra }) as never;
+
+describe("ssh_open and a saved credential", () => {
+  it("a saved password opens with the password method and the reference, never the secret", async () => {
+    const { profiles, credentials, handlers, service } = setup();
+    const p = profiles.save({ fields: SSH });
+    const { ref } = await credentials.save({ profileId: p.id, secret: SECRET });
+    await expect(handlers.ssh_open(sshInput({}, { credentialRef: ref, profileId: p.id }))).resolves.toEqual(HANDLE);
+    const call = service.sshOpen.mock.calls[0] as unknown as unknown[];
+    expect((call[0] as { authMethod?: string }).authMethod).toBe("password");
+    expect(call[4]).toEqual({ credentialRef: ref });
+    expect(JSON.stringify(call)).not.toContain(SECRET);
+  });
+
+  it("a saved key passphrase opens with the publickey method for exactly that key file", async () => {
+    const { profiles, credentials, handlers, service } = setup();
+    const p = profiles.save({ fields: { ...SSH, authType: "key", identityFile: "/keys/id_test" } });
+    const { ref } = await credentials.save({ profileId: p.id, secret: SECRET });
+    await handlers.ssh_open(sshInput({ identityFile: "/keys/id_test" }, { credentialRef: ref }));
+    expect((service.sshOpen.mock.calls[0] as unknown as unknown[][])[0]).toMatchObject({ authMethod: "publickey", identityFile: "/keys/id_test" });
+    await expect(handlers.ssh_open(sshInput({ identityFile: "/keys/other" }, { credentialRef: ref }))).rejects.toMatchObject({
+      message: expect.stringContaining("credential_target_mismatch"),
+    });
+    await expect(handlers.ssh_open(sshInput({}, { credentialRef: ref }))).rejects.toMatchObject({ message: expect.stringContaining("credential_target_mismatch") });
+    expect(service.sshOpen).toHaveBeenCalledTimes(1);
+  });
+
+  it("a password saved for another host, port or user is refused and nothing reaches the helper", async () => {
+    const { profiles, credentials, handlers, service } = setup();
+    const p = profiles.save({ fields: SSH });
+    const { ref } = await credentials.save({ profileId: p.id, secret: SECRET });
+    for (const change of [{ host: "evil.example.test" }, { port: 22 }, { user: "admin" }]) {
+      await expect(handlers.ssh_open(sshInput({ ...change }, { credentialRef: ref })), JSON.stringify(change)).rejects.toMatchObject({
+        message: expect.stringContaining("credential_target_mismatch"),
+      });
+    }
+    await expect(handlers.ssh_open(sshInput({}, { credentialRef: "rh-cred:v1:local:00000000-0000-4000-8000-0000000000ff" }))).rejects.toMatchObject({
+      message: expect.stringContaining("credential_unknown"),
+    });
+    expect(service.sshOpen).not.toHaveBeenCalled();
+  });
+
+  it("without a reference the open is unchanged: no authMethod, no askpass", async () => {
+    const { handlers, service } = setup();
+    await handlers.ssh_open(sshInput({}));
+    const call = service.sshOpen.mock.calls[0] as unknown as unknown[];
+    expect((call[0] as { authMethod?: string }).authMethod).toBeUndefined();
+    expect(call[4]).toBeUndefined();
+  });
+});

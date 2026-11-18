@@ -132,6 +132,8 @@ export const rpcSchemas = {
       rows: sizeSchema.default(24),
       /** The saved profile this open belongs to; the session carries it and the profile records the outcome. */
       profileId: z.string().uuid().optional(),
+      /** A saved password or key passphrase; the helper's askpass fetches it, it never travels here. */
+      credentialRef: z.string().max(200).optional(),
     }),
     output: sessionHandleSchema,
   },

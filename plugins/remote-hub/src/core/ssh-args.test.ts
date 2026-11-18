@@ -148,3 +148,15 @@ describe("ssh-args shared fixture (asserted by both TS and Rust)", () => {
     }
   });
 });
+
+describe("authMethod (set by the server when a saved secret is used)", () => {
+  const base = { host: "h.test", extraOptions: [] as string[] };
+  it("emits exactly one PreferredAuthentications for each method", () => {
+    expect(buildSshArgv({ ...base, authMethod: "password" })).toContain("PreferredAuthentications=password");
+    expect(buildSshArgv({ ...base, authMethod: "publickey" })).toContain("PreferredAuthentications=publickey");
+    expect(buildSshArgv(base).some((a) => a.startsWith("PreferredAuthentications"))).toBe(false);
+  });
+  it("refuses another value", () => {
+    expect(() => buildSshArgv({ ...base, authMethod: "none" as never })).toThrow(/authMethod/);
+  });
+});

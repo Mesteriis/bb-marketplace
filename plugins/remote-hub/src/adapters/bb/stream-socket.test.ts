@@ -143,3 +143,55 @@ describe("stream-socket subscription leak (V7)", () => {
     expect(unsubscribe).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("stream-socket askpass events and answers", () => {
+  it("forwards prompts and credential notices to the view as text, and drops them after close", async () => {
+    let push: (e: unknown) => void = () => {};
+    const off = vi.fn();
+    const { handlers } = makeHarness({
+      subscribeSshAskpass: vi.fn((_h: unknown, cb: (e: unknown) => void) => {
+        push = cb;
+        return off;
+      }) as never,
+    });
+    const socket = makeSocket();
+    await handlers.onOpen(socket);
+    socket.sent.length = 0;
+    push({ type: "prompt", promptId: 3, text: "Continue connecting (yes/no)?", kind: "confirm" });
+    push({ type: "credential", state: "rejected" });
+    expect(socket.sent.map((s) => JSON.parse(String(s)))).toEqual([
+      { type: "prompt", promptId: 3, text: "Continue connecting (yes/no)?", kind: "confirm" },
+      { type: "credential", state: "rejected" },
+    ]);
+    handlers.onClose();
+    expect(off).toHaveBeenCalledTimes(1);
+    socket.sent.length = 0;
+    push({ type: "credential", state: "failed", code: "keychain_locked" });
+    expect(socket.sent).toEqual([]);
+  });
+
+  it("passes a prompt answer (and a cancel) to the service once, and refuses a malformed one", async () => {
+    const sshPromptAnswer = vi.fn().mockResolvedValue(undefined);
+    const { handlers } = makeHarness({ sshPromptAnswer: sshPromptAnswer as never });
+    const socket = makeSocket();
+    await handlers.onOpen(socket);
+    socket.sent.length = 0;
+    handlers.onMessage(socket, JSON.stringify({ type: "prompt_answer", promptId: 3, answer: "yes" }));
+    handlers.onMessage(socket, JSON.stringify({ type: "prompt_answer", promptId: 4, answer: null }));
+    expect(sshPromptAnswer.mock.calls.map((c) => [c[1], c[2]])).toEqual([[3, "yes"], [4, null]]);
+    handlers.onMessage(socket, JSON.stringify({ type: "prompt_answer", promptId: -1, answer: "x" }));
+    handlers.onMessage(socket, JSON.stringify({ type: "prompt_answer", promptId: 1, answer: 5 }));
+    expect(sshPromptAnswer).toHaveBeenCalledTimes(2);
+    expect(socket.sent.map((s) => JSON.parse(String(s)))).toEqual([{ type: "error", code: "bad_control" }, { type: "error", code: "bad_control" }]);
+  });
+
+  it("an answer for a prompt that is gone reports prompt_gone", async () => {
+    const { handlers } = makeHarness({ sshPromptAnswer: vi.fn().mockRejectedValue(new Error("no_pending_prompt")) as never });
+    const socket = makeSocket();
+    await handlers.onOpen(socket);
+    socket.sent.length = 0;
+    handlers.onMessage(socket, JSON.stringify({ type: "prompt_answer", promptId: 9, answer: "yes" }));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(socket.sent.map((s) => JSON.parse(String(s)))).toEqual([{ type: "error", code: "prompt_gone" }]);
+  });
+});

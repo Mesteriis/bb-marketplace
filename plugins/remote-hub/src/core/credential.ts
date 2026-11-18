@@ -280,6 +280,24 @@ export class CredentialBook {
     }
   }
 
+  /**
+   * Throws unless the credential may be used for this SSH connection, and returns how it
+   * authenticates: a password must be the one saved for exactly this host, port and user;
+   * a passphrase must be the one saved for exactly this identity file.
+   */
+  authorizeSsh(ref: string, endpoint: Endpoint, identityFile: string | undefined): "password" | "publickey" {
+    const meta = this.deps.store.get(ref);
+    if (meta === null) throw new CredentialError("credential_unknown", "no such credential");
+    if (meta.kind === "password") {
+      this.authorizeEndpoint(ref, endpoint);
+      return "password";
+    }
+    if (identityFile === undefined || !this.matchesKey(ref, identityFile)) {
+      throw new CredentialError("credential_target_mismatch", "this passphrase was saved for a different key file");
+    }
+    return "publickey";
+  }
+
   /** Whether a key passphrase may be used for this key file. */
   matchesKey(ref: string, path: string): boolean {
     const meta = this.deps.store.get(ref);

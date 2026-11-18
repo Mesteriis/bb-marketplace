@@ -8,6 +8,8 @@ export interface SshTarget {
   configFile?: string;
   knownHostsFile?: string;
   identityFile?: string;
+  /** Set by the server (never the client) when a saved secret is used: the only prompt then expected. */
+  authMethod?: "password" | "publickey";
   extraOptions: string[];
 }
 
@@ -142,6 +144,10 @@ export function buildSshArgv(target: SshTarget): string[] {
   if (target.identityFile !== undefined) {
     assertAbsolutePath(target.identityFile, "identityFile");
     argv.push("-i", target.identityFile, "-o", "IdentitiesOnly=yes");
+  }
+  if (target.authMethod !== undefined) {
+    if (target.authMethod !== "password" && target.authMethod !== "publickey") invalid("invalid_authMethod", "authMethod must be password or publickey");
+    argv.push("-o", "PreferredAuthentications=" + target.authMethod);
   }
   for (const option of target.extraOptions) {
     assertSshOptionAllowed(option);

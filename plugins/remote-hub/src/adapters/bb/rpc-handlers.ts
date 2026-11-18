@@ -5,6 +5,7 @@ import { experimental_PluginRpcRefusal } from "@get-bb/plugin-sdk";
 import { CredentialError, type CredentialBook } from "../../core/credential.ts";
 import { ProfileError, type ProfileBook } from "../../core/profile-book.ts";
 import type { RpcSchemas } from "../../core/rpc.ts";
+import type { SshTarget as SshOpenTarget } from "../../core/ssh-args.ts";
 import type { z } from "zod";
 import { HelperRequestError, HelperRuntimeError, HelperStartError } from "./helper-process.ts";
 import type { RemoteHubService } from "./service.ts";
@@ -72,14 +73,29 @@ export function createRpcHandlers({ service, profiles, credentials }: RpcHandler
     // profileId is a claim, not a fact: it is kept only when the target is the
     // profile's own endpoint; otherwise the open runs unattributed.
     ssh_open: async (input) => {
-      const profileId = profiles.attribute(input.profileId, {
-        protocol: "ssh",
+      const endpoint = {
+        protocol: "ssh" as const,
         host: input.target.host,
         port: input.target.port ?? 22,
         user: input.target.user ?? null,
         domain: null,
-      });
-      return profiles.track(profileId, () => withHelper(() => service.sshOpen(input.target, input.cols, input.rows, profileId)));
+      };
+      // A saved secret only works for the connection it was saved for; the server, not the
+      // client, decides how the session authenticates (the one prompt that is expected).
+      let target: SshOpenTarget = input.target;
+      let askpass: { credentialRef: string } | undefined;
+      if (input.credentialRef !== undefined) {
+        try {
+          const authMethod = credentials.authorizeSsh(input.credentialRef, endpoint, input.target.identityFile);
+          target = { ...input.target, authMethod };
+          askpass = { credentialRef: input.credentialRef };
+        } catch (error) {
+          if (error instanceof CredentialError) throw credentialRefusal(error);
+          throw error;
+        }
+      }
+      const profileId = profiles.attribute(input.profileId, endpoint);
+      return profiles.track(profileId, () => withHelper(() => service.sshOpen(target, input.cols, input.rows, profileId, askpass)));
     },
     rdp_open: async (input) => {
       const endpoint = {
