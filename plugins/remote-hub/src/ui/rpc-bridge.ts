@@ -10,6 +10,7 @@ import type { RdpAttach, RdpConnectTarget, RdpPageProps, RdpScreenshotResult } f
 import type { SshAttach, SshPageProps } from "./ssh-page.tsx";
 import type { CredentialItem, CredentialsApi, CredentialStateName } from "./use-credentials.ts";
 import type { ProfilesApi } from "./use-profiles.ts";
+import type { ImportApi } from "./import-panel.tsx";
 
 /** What useRpc().call looks like to this module; the page's own typing stays in app.tsx. */
 export type RpcCall = (method: string, input?: unknown) => Promise<unknown>;
@@ -17,6 +18,7 @@ export type RpcCall = (method: string, input?: unknown) => Promise<unknown>;
 export interface ConnectBridge {
   profiles: ProfilesApi;
   credentials: CredentialsApi;
+  imports: ImportApi;
   ssh: Pick<SshPageProps, "onSshOpen" | "onAttach" | "onClose">;
   rdp: Pick<RdpPageProps, "onRdpOpen" | "onAttach" | "onClose" | "onDecision" | "onScreenshot">;
 }
@@ -45,6 +47,15 @@ export function createConnectBridge(call: RpcCall, wsUrl: string): ConnectBridge
       update: (ref, secret) => send("credential_update", { ref, secret }),
       remove: (ref) => send<{ unlinked: number }>("credential_delete", { ref }),
       status: (ref) => send<{ state: CredentialStateName }>("credential_status", { ref }),
+    },
+    imports: {
+      suggestions: () => send("import_suggestions"),
+      list: () => send("import_source_list"),
+      add: (input) => send("import_source_add", input),
+      set: (input) => send("import_source_set", input),
+      remove: (id) => send("import_source_remove", { id }),
+      scan: (id) => send("import_scan", { id }),
+      apply: (id, keys) => send("import_apply", { id, keys }),
     },
     ssh: {
       onSshOpen: (target: SshTarget, profileId?: string, credentialRef?: string) => send<SessionHandle>("ssh_open", { target, profileId, credentialRef }),

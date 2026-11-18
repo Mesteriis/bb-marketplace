@@ -7,6 +7,7 @@ import { profileToRdpForm, profileToSshTarget } from "../core/catalogue.ts";
 import { profileFieldsOf, type Profile, type ProfileFields } from "../core/profile.ts";
 import { ProfileCatalogue } from "./profile-catalogue.tsx";
 import { CredentialsPanel } from "./credentials-panel.tsx";
+import { ImportPanel, type ImportApi } from "./import-panel.tsx";
 import { ProfileEditor, type SecretAction } from "./profile-editor.tsx";
 import { errorCodeText, errorTextFromMessage } from "../core/rdp-texts.ts";
 import { useCredentials, type CredentialsApi } from "./use-credentials.ts";
@@ -24,6 +25,8 @@ export interface ConnectPageProps {
   profiles?: ProfilesApi;
   /** Saved passwords (the Keychain); without it there is no Credentials screen and no way to save one. */
   credentials?: CredentialsApi;
+  /** Sources to import profiles from (ssh config, hosts file, keys, agent); without it there is no Import screen. */
+  imports?: ImportApi;
 }
 
 export function ConnectPage(props: ConnectPageProps) {
@@ -33,6 +36,7 @@ export function ConnectPage(props: ConnectPageProps) {
   const [rdpPrefill, setRdpPrefill] = useState<RdpPrefill | undefined>(undefined);
   const [notice, setNotice] = useState<string | null>(null);
   const [showCredentials, setShowCredentials] = useState(false);
+  const [showImport, setShowImport] = useState(false);
   const nonce = useRef(0);
   const api = props.profiles;
   const data = useProfiles(api);
@@ -141,7 +145,8 @@ export function ConnectPage(props: ConnectPageProps) {
               }
             })
           }
-          {...(credentialsApi !== undefined ? { onShowCredentials: () => setShowCredentials(true) } : {})}
+          {...(credentialsApi !== undefined ? { onShowCredentials: () => { setShowImport(false); setShowCredentials(true); } } : {})}
+          {...(props.imports !== undefined ? { onShowImport: () => { setShowCredentials(false); setEditing(null); setShowImport(true); } } : {})}
           onRetry={() => void reload()}
         />
       )}
@@ -165,7 +170,10 @@ export function ConnectPage(props: ConnectPageProps) {
             onClose={() => setShowCredentials(false)}
           />
         )}
-        {editing !== null && !showCredentials && (
+        {showImport && props.imports !== undefined && (
+          <ImportPanel api={props.imports} onImported={() => void reload()} onClose={() => setShowImport(false)} />
+        )}
+        {editing !== null && !showCredentials && !showImport && (
           <ProfileEditor
             key={editing.key}
             initial={editing.profile === null ? null : profileFieldsOf(editing.profile)}
@@ -173,7 +181,7 @@ export function ConnectPage(props: ConnectPageProps) {
             onCancel={() => setEditing(null)}
           />
         )}
-        <div hidden={editing !== null || showCredentials} className="rh-connect-sessions">
+        <div hidden={editing !== null || showCredentials || showImport} className="rh-connect-sessions">
           <div className="rh-kind" role="group" aria-label="connection kind">
             {api !== undefined && <span className="rh-quick">Quick connect</span>}
             <button type="button" aria-pressed={kind === "ssh"} onClick={() => setKind("ssh")}>

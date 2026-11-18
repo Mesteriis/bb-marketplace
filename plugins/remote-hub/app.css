@@ -552,3 +552,32 @@
   color: var(--muted-foreground, #8b949e);
   margin-bottom: 8px;
 }
+
+.rh-import {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  max-width: 760px;
+}
+
+.rh-import-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.rh-import h2,
+.rh-import h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.rh-import ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}

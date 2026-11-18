@@ -1,0 +1,131 @@
+// @vitest-environment jsdom
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { ImportOutcome, ImportSource, ScanResult } from "../core/import-book.ts";
+import { ImportPanel, type ImportApi } from "./import-panel.tsx";
+
+afterEach(cleanup);
+
+function fakeApi(over: Partial<ImportApi> = {}) {
+  let sources: ImportSource[] = [];
+  const api = {
+    suggestions: vi.fn(async () => [{ kind: "ssh-config" as const, path: "/h/.ssh/config", label: "SSH config" }, { kind: "agent" as const, path: null, label: "SSH agent" }]),
+    list: vi.fn(async () => sources),
+    add: vi.fn(async (input) => {
+      const s: ImportSource = { id: "s" + (sources.length + 1), enabled: false, useSshG: false, ...input };
+      sources = [...sources, s];
+      return s;
+    }),
+    set: vi.fn(async (input) => {
+      sources = sources.map((s) => (s.id === input.id ? { ...s, ...(input.enabled !== undefined ? { enabled: input.enabled } : {}), ...(input.useSshG !== undefined ? { useSshG: input.useSshG } : {}) } : s));
+      return sources.find((s) => s.id === input.id) as ImportSource;
+    }),
+    remove: vi.fn(async (id: string) => {
+      sources = sources.filter((s) => s.id !== id);
+      return { removed: true };
+    }),
+    scan: vi.fn(async (): Promise<ScanResult> => ({ kind: "ssh-config", items: [], stale: [], issues: [] })),
+    apply: vi.fn(async (): Promise<ImportOutcome> => ({ created: 1, updated: 0, unchanged: 0, conflicts: [], deletedLocally: [], skipped: [], markedStale: 0 })),
+    ...over,
+  } satisfies ImportApi;
+  return api;
+}
+
+const item = (over: Record<string, unknown> = {}) => ({ key: "build", name: "build", action: "create" as const, resolved: true, flags: [] as string[], host: "build.example.test", port: 2222, username: "ci", identityFile: null, skip: null, ...over });
+
+async function mount(api: ImportApi, onImported = vi.fn()) {
+  render(<ImportPanel api={api} onImported={onImported} onClose={() => {}} />);
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  return onImported;
+}
+
+describe("ImportPanel", () => {
+  it("offers suggested sources as strings; adding one registers it OFF and nothing is scanned", async () => {
+    const api = fakeApi();
+    await mount(api);
+    expect(screen.getByText("Nothing is read until you switch a source on.", { exact: false })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Add SSH config" }));
+    await waitFor(() => expect(screen.getByLabelText("Read this source")).toBeTruthy());
+    expect((screen.getByLabelText("Read this source") as HTMLInputElement).checked).toBe(false);
+    expect((screen.getByRole("button", { name: "Scan SSH config" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(api.scan).not.toHaveBeenCalled();
+  });
+
+  it("ssh -G has its own switch, shown only for an enabled ssh config, with the warning in words", async () => {
+    const api = fakeApi();
+    await mount(api);
+    fireEvent.click(screen.getByRole("button", { name: "Add SSH config" }));
+    await waitFor(() => screen.getByLabelText("Read this source"));
+    expect(screen.queryByLabelText(/ssh -G/)).toBeNull();
+    fireEvent.click(screen.getByLabelText("Read this source"));
+    const g = await screen.findByLabelText(/ssh -G resolve entries/);
+    expect(g.parentElement?.textContent).toContain("Match exec");
+    expect((g as HTMLInputElement).checked).toBe(false);
+    fireEvent.click(g);
+    await waitFor(() => expect(api.set).toHaveBeenCalledWith({ id: "s1", useSshG: true }));
+  });
+
+  it("scan lists entries with what would happen; new ones are ticked, already-imported ones cannot be; unresolved ones say a password cannot be saved; only ticked entries are imported", async () => {
+    const api = fakeApi({
+      scan: vi.fn(async (): Promise<ScanResult> => ({
+        kind: "ssh-config",
+        items: [item(), item({ key: "jump", name: "jump", resolved: false, flags: ["proxy"], port: null, username: null, host: "jump" }), item({ key: "old", name: "old", action: "unchanged" })],
+        stale: ["gone"],
+        issues: [],
+      })),
+    });
+    const imported = await mount(api);
+    fireEvent.click(screen.getByRole("button", { name: "Add SSH config" }));
+    await waitFor(() => screen.getByLabelText("Read this source"));
+    fireEvent.click(screen.getByLabelText("Read this source"));
+    await waitFor(() => expect((screen.getByRole("button", { name: "Scan SSH config" }) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByRole("button", { name: "Scan SSH config" }));
+    const scan = await screen.findByLabelText("Scan result");
+    expect(scan.textContent).toContain("ci@build.example.test:2222");
+    expect(scan.textContent).toContain("Uses your SSH config as it is; a password cannot be saved for it.");
+    expect(scan.textContent).toContain("goes through a proxy or jump host");
+    expect(scan.textContent).toContain("No longer in the source: gone.");
+    const box = (name: string) => screen.getByLabelText(name).querySelector("input[type=checkbox]") as HTMLInputElement;
+    expect(box("build").checked).toBe(true);
+    expect(box("old").checked).toBe(false);
+    expect(box("old").disabled).toBe(true);
+    expect(box("jump").checked).toBe(true);
+    fireEvent.click(box("jump")); // untick jump
+    fireEvent.click(screen.getByRole("button", { name: "Import selected" }));
+    await waitFor(() => expect(api.apply).toHaveBeenCalledWith("s1", ["build"]));
+    await waitFor(() => expect(imported).toHaveBeenCalled());
+    expect((await screen.findByRole("status")).textContent).toBe("1 created, 0 updated, 0 unchanged.");
+  });
+
+  it("keys: public keys with fingerprints, and the private file only named; never a way to open it", async () => {
+    const api = fakeApi({
+      suggestions: vi.fn(async () => [{ kind: "keys-dir" as const, path: "/h/.ssh", label: "SSH keys (public files)" }]),
+      scan: vi.fn(async (): Promise<ScanResult> => ({ kind: "keys-dir", keys: [{ publicPath: "/h/.ssh/id_a.pub", privatePath: "/h/.ssh/id_a", type: "ssh-ed25519", comment: "me@fixture", fingerprint: "SHA256:abc" }], issues: [] })),
+    });
+    await mount(api);
+    fireEvent.click(screen.getByRole("button", { name: "Add SSH keys (public files)" }));
+    await waitFor(() => screen.getByLabelText("Read this source"));
+    fireEvent.click(screen.getByLabelText("Read this source"));
+    await waitFor(() => expect((screen.getByRole("button", { name: "Scan SSH keys (public files)" }) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByRole("button", { name: "Scan SSH keys (public files)" }));
+    const scan = await screen.findByLabelText("Scan result");
+    expect(scan.textContent).toContain("SHA256:abc");
+    expect(scan.textContent).toContain("Private key files are never opened");
+    expect(scan.textContent).toContain("Private file: /h/.ssh/id_a");
+    expect(screen.queryByRole("button", { name: /Import selected/ })).toBeNull();
+  });
+
+  it("an error from the service is shown, and switching a source off closes its scan", async () => {
+    const api = fakeApi({ scan: vi.fn(async () => { throw new Error("source_unreadable: the file could not be read"); }) });
+    await mount(api);
+    fireEvent.click(screen.getByRole("button", { name: "Add SSH config" }));
+    await waitFor(() => screen.getByLabelText("Read this source"));
+    fireEvent.click(screen.getByLabelText("Read this source"));
+    await waitFor(() => expect((screen.getByRole("button", { name: "Scan SSH config" }) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByRole("button", { name: "Scan SSH config" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("the file could not be read");
+  });
+});

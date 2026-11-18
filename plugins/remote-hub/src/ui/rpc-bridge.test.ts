@@ -97,4 +97,19 @@ describe("the UI -> RPC bridge sends strict JSON only (L1)", () => {
     expect(calls.map((c) => c.method)).toEqual(["session_attach", "session_close", "rdp_cert_decision", "rdp_screenshot"]);
     expect(calls[2]?.input).toEqual({ generation: HANDLE.generation, sessionId: 3, fingerprint: "AA:BB", accept: "once" });
   });
+
+  it("import calls carry only JSON values: an absent key list and a null path are sent, undefined never", async () => {
+    const { call, calls } = strictRpc();
+    const { imports } = createConnectBridge(call, "ws://x");
+    await imports.add({ kind: "agent", path: null, label: "agent" });
+    await imports.apply("s1");
+    await imports.apply("s1", ["a"]);
+    await imports.set({ id: "s1", enabled: true });
+    expect(calls).toEqual([
+      { method: "import_source_add", input: { kind: "agent", path: null, label: "agent" } },
+      { method: "import_apply", input: { id: "s1" } },
+      { method: "import_apply", input: { id: "s1", keys: ["a"] } },
+      { method: "import_source_set", input: { id: "s1", enabled: true } },
+    ]);
+  });
 });

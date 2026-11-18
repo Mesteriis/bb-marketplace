@@ -20,6 +20,8 @@ export interface ProfileCatalogueProps {
   onRetry: () => void;
   /** Opens the Credentials screen; the button shows only when this is given. */
   onShowCredentials?: () => void;
+  /** Opens the Import screen; the button shows only when this is given. */
+  onShowImport?: () => void;
 }
 
 function endpoint(p: Profile): string {
@@ -58,6 +60,11 @@ export function ProfileCatalogue(props: ProfileCatalogueProps) {
             Credentials
           </button>
         )}
+        {props.onShowImport !== undefined && (
+          <button type="button" onClick={props.onShowImport}>
+            Import
+          </button>
+        )}
       </div>
 
       {profiles === null && props.error === null && <p className="rh-hint">Loading profiles…</p>}
@@ -94,6 +101,14 @@ export function ProfileCatalogue(props: ProfileCatalogueProps) {
                       {status.state === "idle" ? "" : status.sessions > 1 ? `${status.state} ×${status.sessions}` : status.state}
                     </span>
                     {p.credentialRef !== null && <span className="rh-status">saved password</span>}
+                    {p.provenance != null && (
+                      <span className="rh-status" data-testid="profile-provenance">
+                        {"imported from " + (p.provenance.sourceKind === "ssh-config" ? "ssh config" : "hosts file")}
+                        {p.provenance.stale ? " · no longer in the source" : ""}
+                        {p.provenance.editedLocally ? " · edited here" : ""}
+                        {!p.provenance.resolved ? " · uses your ssh config, no saved password" : ""}
+                      </span>
+                    )}
                     {lastError !== undefined && <span className="rh-error">last open failed: {lastError.code}</span>}
                   </div>
                   <div className="rh-profile-actions">
