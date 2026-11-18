@@ -216,6 +216,44 @@ fn wait_timeout(child: &mut Child, timeout: Duration) -> Option<std::process::Ex
     }
 }
 
+/// Hang guard for waiting on a helper that is shutting down after its stdin
+/// closed. The helper may legitimately spend up to ~10 s flushing output to a
+/// slow reader: its loop gives up after 200 consecutive turns without progress
+/// (poll interval 50 ms), so the designed bound is 200 x 50 ms = 10 s. The
+/// guard is 3 x that, so only a helper that never exits fails here.
+const SHUTDOWN_HANG_GUARD: Duration = Duration::from_secs(30);
+
+/// Waits for the helper to exit while draining (and discarding) its stdout, so
+/// the wait never depends on the pipe being read elsewhere. Returns None only
+/// when `guard` elapses.
+fn wait_exit_draining(
+    child: &mut Child,
+    stdout: &mut ChildStdout,
+    guard: Duration,
+) -> Option<std::process::ExitStatus> {
+    unsafe {
+        let fd = stdout.as_raw_fd();
+        let flags = libc::fcntl(fd, libc::F_GETFL);
+        libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+    }
+    let start = Instant::now();
+    let mut buf = [0u8; 65536];
+    loop {
+        if let Some(status) = child.try_wait().expect("try_wait") {
+            return Some(status);
+        }
+        if start.elapsed() > guard {
+            return None;
+        }
+        match stdout.read(&mut buf) {
+            Ok(n) if n > 0 => continue,
+            Ok(_) => std::thread::sleep(Duration::from_millis(5)),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => std::thread::sleep(Duration::from_millis(5)),
+        }
+    }
+}
+
 fn pid_alive(pid: u32) -> bool {
     unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
 }
@@ -387,8 +425,8 @@ fn lifecycle_closing_stdin_reaps_every_child() {
 
     drop(helper.stdin);
 
-    let status = wait_timeout(&mut helper.child, Duration::from_secs(5));
-    let status = status.expect("helper did not exit within 5s of stdin close");
+    let status = wait_exit_draining(&mut helper.child, &mut helper.stdout, SHUTDOWN_HANG_GUARD);
+    let status = status.expect("helper did not exit within the hang guard after stdin close");
     assert_eq!(status.code(), Some(0));
     for pid in pids {
         assert!(!pid_alive(pid), "child pid {pid} still alive after helper exit");
@@ -496,8 +534,8 @@ fn r2_large_input_echoes_in_order_and_shutdown_clean() {
     assert_eq!(received, expected);
 
     drop(helper.stdin);
-    let status = wait_timeout(&mut helper.child, Duration::from_secs(5))
-        .expect("helper did not exit within 5s of stdin close");
+    let status = wait_exit_draining(&mut helper.child, &mut helper.stdout, SHUTDOWN_HANG_GUARD)
+        .expect("helper did not exit within the hang guard after stdin close");
     assert_eq!(status.code(), Some(0));
     assert!(!pid_alive(pid), "child {pid} still alive after helper exit");
 }
@@ -1175,7 +1213,7 @@ fn u2_failed_setup_does_not_leak_descriptors() {
     );
 
     drop(stdin);
-    let status = wait_timeout(&mut child, Duration::from_secs(5)).expect("helper did not exit");
+    let status = wait_exit_draining(&mut child, &mut stdout, SHUTDOWN_HANG_GUARD).expect("helper did not exit within the hang guard after stdin close");
     assert_eq!(status.code(), Some(0));
 }
 
@@ -1541,7 +1579,7 @@ fn b6_allowlisted_fd_is_passed() {
     assert!(fds[3] > 2);
 
     drop(stdin);
-    let status = wait_timeout(&mut child, Duration::from_secs(5)).expect("helper did not exit");
+    let status = wait_exit_draining(&mut child, &mut stdout, SHUTDOWN_HANG_GUARD).expect("helper did not exit within the hang guard after stdin close");
     assert_eq!(status.code(), Some(0));
     let _ = stderr;
 }
@@ -1979,7 +2017,7 @@ fn w4_hup_does_not_block_the_loop() {
     let _ = std::fs::remove_dir_all(&gate_dir);
 
     drop(stdin);
-    let status = wait_timeout(&mut child, Duration::from_secs(5)).expect("helper did not exit");
+    let status = wait_exit_draining(&mut child, &mut stdout, SHUTDOWN_HANG_GUARD).expect("helper did not exit within the hang guard after stdin close");
     assert_eq!(status.code(), Some(0));
     reader.join().expect("stderr reader joined");
 }
