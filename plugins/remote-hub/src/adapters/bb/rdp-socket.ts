@@ -12,6 +12,7 @@
 // the service multiplexer (src/core/rdp-views.ts) sends at most one update at a
 // time to it.
 import type { WatcherBook } from "../../core/watchers.ts";
+import type { AgentFeed } from "../../core/agent-feed.ts";
 import type { SessionHandle } from "../../core/rpc.ts";
 import { rdpViewMessageSchema, toHelperEvent } from "../../core/rdp-view-messages.ts";
 import { attachControlView } from "./control-notice.ts";
@@ -41,11 +42,13 @@ export function createRdpSocketHandlers(
   binding: { sessionId: number; generation: string } | null,
   attachId: string,
   watchers?: WatcherBook,
+  feed?: AgentFeed,
 ) {
   let attachment: RdpAttachment | null = null;
   let offExit: (() => void) | null = null;
   let offEnd: (() => void) | null = null;
   let control: ReturnType<typeof attachControlView> | null = null;
+  let offFeed: (() => void) | null = null;
   let handle: SessionHandle | null = null;
 
   const guardSend = (socket: RdpSocketLike, data: string | Uint8Array): void => {
@@ -69,6 +72,8 @@ export function createRdpSocketHandlers(
     if (offEnd !== null) offEnd();
     if (control !== null) control.off();
     watchers?.remove(attachId);
+    if (offFeed !== null) offFeed();
+    offFeed = null;
     offExit = null;
     offEnd = null;
     control = null;
@@ -103,6 +108,7 @@ export function createRdpSocketHandlers(
       });
       guardSend(socket, JSON.stringify(attachment.initial));
       control = attachControlView(service, handle, (json) => guardSend(socket, json));
+      offFeed = feed?.subscribe(`${handle.generation}.${handle.sessionId}`, (event) => guardSend(socket, JSON.stringify({ type: "agent", event }))) ?? null;
     },
     onMessage(socket: RdpSocketLike, data: string | Uint8Array): void {
       if (attachment === null) return;

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { AgentFeed } from "./agent-feed.ts";
 import { AgentAccessBook, type AgentGrant } from "./agent-access.ts";
 import { AgentAudit, type AuditRow, type AuditStore } from "./agent-audit.ts";
 import { AgentSessionRegistry, controlSessionExtras, createControlTools } from "./agent-control-tools.ts";
@@ -65,7 +66,11 @@ function setup(opts: Setup = {}) {
   let watched = true;
   const waiting = new Map<string, Array<"host_key" | "certificate" | "login_prompt">>();
   const registry = new AgentSessionRegistry();
+  const feed = new AgentFeed();
+  const feedSeen: Array<{ key: string; event: unknown }> = [];
+  for (const key of [SSH_KEY, RDP_KEY]) feed.subscribe(key, (event) => feedSeen.push({ key, event }));
   const tools = createControlTools({
+    feed,
     access, audit, budget: new ToolBudget({ now: () => now, callsPerWindow: 1000, bytesPerWindow: 50 * 1024 * 1024, globalCallsPerWindow: 10000, globalBytesPerWindow: 500 * 1024 * 1024 }),
     leases,
     registry,
@@ -109,7 +114,7 @@ function setup(opts: Setup = {}) {
   return {
     setFailDisconnect: (v: boolean) => void (failDisconnect = v),
     setWatching: (v: boolean) => void (watched = v),
-    registry, access, rows, leases, sessions, wrote, rdpSent, tools, tool, call, textOf, data, opened, disconnected, waiting,
+    feedSeen, registry, access, rows, leases, sessions, wrote, rdpSent, tools, tool, call, textOf, data, opened, disconnected, waiting,
     advance: (ms: number) => void (now += ms),
     holdConnect: () => {
       let release!: () => void;
@@ -712,6 +717,20 @@ describe("agents are never hidden: input needs a watcher", () => {
     expect(opened.watching).toBe(false);
     expect(opened.liveView).toBe(`::remote-session{id="${opened.sessionId}"}`);
     expect(String(opened.instruction)).toContain("liveView");
+  });
+
+  it("what the agent does is announced to the owner's views: typed length (the text itself is in the terminal) and the desktop pointer", async () => {
+    const t = setup();
+    t.access.set(P_SSH, "input", false);
+    t.access.set(P_RDP, "input", false);
+    const ssh = t.data(await t.call("remote_control_acquire", { sessionId: SSH_KEY }));
+    await t.call("remote_terminal_input", { sessionId: SSH_KEY, leaseId: ssh.leaseId, actions: [{ type: "text", text: "ls" }, { type: "key", key: "Enter" }] });
+    const rdp = t.data(await t.call("remote_control_acquire", { sessionId: RDP_KEY }));
+    await t.call("remote_rdp_input", { sessionId: RDP_KEY, leaseId: rdp.leaseId, observed: { frameId: 7, width: 800, height: 600 }, actions: [{ type: "click", button: "left", x: 10, y: 20 }] });
+    expect(t.feedSeen).toEqual([
+      { key: SSH_KEY, event: { kind: "typed", length: 3 } },
+      { key: RDP_KEY, event: { kind: "pointer", x: 10, y: 20, width: 800, height: 600, click: "left" } },
+    ]);
   });
 
   it("session rows say whether the owner is watching", () => {

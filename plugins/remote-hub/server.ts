@@ -4,6 +4,7 @@
 // service, exposes a schema-validated RPC contract to the app, and tears the
 // helper down on dispose. All wire schemas live in src/core/rpc.ts and
 // src/core/protocol.ts.
+import { AgentFeed } from "./src/core/agent-feed.ts";
 import { WatcherBook } from "./src/core/watchers.ts";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
@@ -57,6 +58,7 @@ export default function plugin(bb: BbPluginApi): void {
   // Who drives which session (stage 4b-1): in memory only, so a restart gives every session back to the human.
   const leases = new ControlLeases({ now: () => Date.now(), newId: () => randomUUID() });
   const watchers = new WatcherBook({ now: () => Date.now() });
+  const feed = new AgentFeed();
   const service = createRemoteHubService({
     control: createControlGate(leases, watchers),
     startHelper: () => HelperProcess.start(pluginRootDir()),
@@ -97,11 +99,11 @@ export default function plugin(bb: BbPluginApi): void {
     ports: agentPorts(service, profiles),
     sessionExtras: controlSessionExtras(leases, controlPorts),
   };
-  registerAgentTools(bb, [...createAgentTools(toolDeps), ...createControlTools({ ...toolDeps, leases, control: controlPorts, registry })]);
+  registerAgentTools(bb, [...createAgentTools(toolDeps), ...createControlTools({ ...toolDeps, leases, control: controlPorts, registry, feed })]);
   bb.rpc.register(rpcContract, handlers);
   registerControlLifecycle(bb, { leases, registry, service, watchers, closeSession: (key) => controlPorts.disconnect(key) });
 
-  registerStreamSocket(bb, { service, audit: agentAudit, watchers });
+  registerStreamSocket(bb, { service, audit: agentAudit, watchers, feed });
 
   bb.onDispose(() => {
     service.stop();

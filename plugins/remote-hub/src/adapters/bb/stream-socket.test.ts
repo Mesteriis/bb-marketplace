@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { AgentFeed } from "../../core/agent-feed.ts";
 import { WatcherBook } from "../../core/watchers.ts";
 import { registerStreamSocket } from "./stream-socket.ts";
 import type { RemoteHubService } from "./service.ts";
@@ -26,7 +27,7 @@ function makeSocket(): FakeSocket {
   };
 }
 
-function makeHarness(overrides: Partial<RemoteHubService> = {}, watchers?: WatcherBook) {
+function makeHarness(overrides: Partial<RemoteHubService> = {}, watchers?: WatcherBook, feed?: AgentFeed) {
   let handler: ((ctx: { url: URL }) => Record<string, unknown>) | null = null;
   const bb = {
     http: { experimental_websocket(_path: string, h: typeof handler) { handler = h; } },
@@ -66,7 +67,7 @@ function makeHarness(overrides: Partial<RemoteHubService> = {}, watchers?: Watch
     ...overrides,
   } as unknown as RemoteHubService;
 
-  registerStreamSocket(bb, { service, ...(watchers === undefined ? {} : { watchers }) });
+  registerStreamSocket(bb, { service, ...(watchers === undefined ? {} : { watchers }), ...(feed === undefined ? {} : { feed }) });
   const ctx = { url: new URL("http://bb/api/attach?attach=abc") };
   const handlers = handler!(ctx) as {
     onOpen(socket: FakeSocket): Promise<void>;
@@ -94,6 +95,23 @@ describe("stream-socket control validation (V6)", () => {
       expect(socket.sent).toEqual([JSON.stringify({ type: "error", code: "bad_control" })]);
     },
   );
+});
+
+describe("stream-socket: what an agent does reaches the open view", () => {
+  it("forwards feed events of its session as text, and stops after the view closes", async () => {
+    const feed = new AgentFeed();
+    const { handlers } = makeHarness({}, undefined, feed);
+    const socket = makeSocket();
+    await handlers.onOpen(socket);
+    const key = `${"a".repeat(32)}.1`;
+    feed.emit(key, { kind: "typed", length: 4 });
+    feed.emit(`${"a".repeat(32)}.2`, { kind: "typed", length: 9 });
+    expect(socket.sent.filter((d) => typeof d === "string").map((d) => JSON.parse(d as string)).filter((m) => m.type === "agent")).toEqual([{ type: "agent", event: { kind: "typed", length: 4 } }]);
+    handlers.onClose();
+    socket.sent.length = 0;
+    feed.emit(key, { kind: "typed", length: 1 });
+    expect(socket.sent).toEqual([]);
+  });
 });
 
 describe("stream-socket: the view reports whether it is being looked at", () => {

@@ -8,6 +8,7 @@
 //  - no password, key, host or approval anywhere: a connection is opened by its id and a SAVED credential, and every
 //    host-key or certificate question goes to the owner (the agent only learns that the owner is being asked).
 // The audit keeps the length of an input, never the input itself and no hash of it.
+import { pointerOf, type AgentFeed } from "./agent-feed.ts";
 import { z } from "zod";
 import { MAX_RDP_EVENTS_PER_CALL, SerialQueue, rdpActionsSchema, toRdpEvents, type RdpAction } from "./agent-input.ts";
 import { CANNOT, ToolError, connectionIdSchema, createGate, def, errorResult, json, sessionIdSchema, type AgentCallContext, type AgentSessionView, type AgentToolDef, type AgentToolDeps } from "./agent-tools.ts";
@@ -89,6 +90,8 @@ export interface AgentControlDeps extends AgentToolDeps {
   control: AgentControlPorts;
   /** Shared with the owner's page, which lists what agents opened. */
   registry?: AgentSessionRegistry;
+  /** What agents do, announced to the owner's open views. */
+  feed?: AgentFeed;
 }
 
 export const MAX_SESSIONS_PER_THREAD = 4;
@@ -345,6 +348,7 @@ export function createControlTools(deps: AgentControlDeps): AgentToolDef[] {
           const { session, profileId } = controllable(params.sessionId);
           if (session.kind === "rdp") throw new ToolError("not_a_terminal", "this is a desktop session: use remote_rdp_input");
           await driven(params.sessionId, ctx, params.leaseId, profileId, () => control.terminalWrite(params.sessionId, bytes, ownerTag(params.leaseId)));
+          deps.feed?.emit(params.sessionId, { kind: "typed", length: bytes.length });
           return { content: [json({ sessionId: params.sessionId, queuedBytes: bytes.length })] };
         });
       },
@@ -383,6 +387,8 @@ export function createControlTools(deps: AgentControlDeps): AgentToolDef[] {
             if (positional && (now === null || now.width !== desktop.width || now.height !== desktop.height)) throw new ToolError("stale_geometry", "the desktop changed size while this input waited; take a new screenshot");
             await control.rdpWrite(params.sessionId, events.events, ownerTag(params.leaseId));
           });
+          const shown = pointerOf(events.events);
+          if (shown !== null) deps.feed?.emit(params.sessionId, shown);
           // "queued" says what is known: the helper accepted the events. The desktop can still refuse a position (rdp.input_rejected).
           return { content: [json({ sessionId: params.sessionId, queuedEvents: events.events.length })] };
         });

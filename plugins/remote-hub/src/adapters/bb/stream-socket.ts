@@ -14,6 +14,7 @@ import { attachControlView } from "./control-notice.ts";
 import type { AgentAudit } from "../../core/agent-audit.ts";
 import { OWNER_RPC } from "./rpc-handlers.ts";
 import type { WatcherBook } from "../../core/watchers.ts";
+import type { AgentFeed } from "../../core/agent-feed.ts";
 import { createRdpSocketHandlers } from "./rdp-socket.ts";
 import type { RemoteHubService } from "./service.ts";
 
@@ -23,6 +24,8 @@ export interface StreamSocketDeps {
   audit?: AgentAudit;
   /** Who is looking at which session: the view's heartbeats land here (agents are never hidden). */
   watchers?: WatcherBook;
+  /** What agents do on a session, shown in its open views. */
+  feed?: AgentFeed;
 }
 
 const WS_TOKEN_EXPIRED = 4401;
@@ -73,7 +76,7 @@ export function registerStreamSocket(bb: BbPluginApi, deps: StreamSocketDeps): v
       binding !== null &&
       deps.service.sessionList().some((r) => r.generation === binding.generation && r.sessionId === binding.sessionId && r.kind === "rdp")
     ) {
-      return createRdpSocketHandlers(deps.service, binding, attachId, deps.watchers);
+      return createRdpSocketHandlers(deps.service, binding, attachId, deps.watchers, deps.feed);
     }
     let attached = false;
     let handle: SessionHandle | null = null;
@@ -81,6 +84,7 @@ export function registerStreamSocket(bb: BbPluginApi, deps: StreamSocketDeps): v
     let offExit: (() => void) | null = null;
     let offEnd: (() => void) | null = null;
     let offAskpass: (() => void) | null = null;
+    let offFeed: (() => void) | null = null;
     let control: ReturnType<typeof attachControlView> | null = null;
 
     const guardSend = (socket: { send: (data: string | Uint8Array) => void }, data: string | Uint8Array): void => {
@@ -164,6 +168,7 @@ export function registerStreamSocket(bb: BbPluginApi, deps: StreamSocketDeps): v
           if (attached) guardSend(socket, JSON.stringify(event));
         });
         control = attachControlView(deps.service, handle!, (json) => guardSend(socket, json));
+        offFeed = deps.feed?.subscribe(`${handle!.generation}.${handle!.sessionId}`, (event) => guardSend(socket, JSON.stringify({ type: "agent", event }))) ?? null;
         offEnd = deps.service.subscribeSessionEnd(handle!, (info) => {
           if (!attached) return;
           if (liveSubscribed) sendEnd(info);
@@ -293,6 +298,7 @@ export function registerStreamSocket(bb: BbPluginApi, deps: StreamSocketDeps): v
         if (offExit !== null) offExit();
         if (offEnd !== null) offEnd();
         if (offAskpass !== null) offAskpass();
+        if (offFeed !== null) offFeed();
         if (control !== null) control.off();
       },
       onError() {
@@ -306,6 +312,7 @@ export function registerStreamSocket(bb: BbPluginApi, deps: StreamSocketDeps): v
         if (offExit !== null) offExit();
         if (offEnd !== null) offEnd();
         if (offAskpass !== null) offAskpass();
+        if (offFeed !== null) offFeed();
         if (control !== null) control.off();
       },
     };
