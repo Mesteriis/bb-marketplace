@@ -233,7 +233,7 @@ export function createAgentTools(deps: AgentToolDeps): AgentToolDef[] {
       description: CANNOT + "Lists the saved connections the owner allowed agents to use, without any secret. Does not connect anything.",
       parameters: empty,
       execute: (_params, ctx) =>
-        guarded("remote_connections_list", ctx, {}, async () => {
+        guarded("remote_connections_list", ctx, { reserve: LIST_MAX_BYTES + DEFAULT_RESERVE_BYTES }, async () => {
           const rows = ports.profiles
             .list()
             .map((p) => ({ p, grant: access.check(p.id, "observe") }))
@@ -246,12 +246,12 @@ export function createAgentTools(deps: AgentToolDeps): AgentToolDef[] {
       description: CANNOT + "Shows one allowed connection and its open sessions. Cannot show connections the owner did not allow.",
       parameters: z.object({ connectionId: connectionIdSchema }).strict(),
       execute: (params, ctx) =>
-        guarded("remote_connection_get", ctx, { profileId: params.connectionId }, async () => {
+        guarded("remote_connection_get", ctx, { profileId: params.connectionId, reserve: LIST_MAX_BYTES + DEFAULT_RESERVE_BYTES }, async () => {
           const profile = ports.profiles.get(params.connectionId);
           const check = access.check(params.connectionId, "observe");
           if (profile === null || !check.ok) throw denied();
           const sessions = ports.sessions.list().filter((s) => s.profileId === profile.id).map(sessionRow);
-          return { content: [json({ connection: viewOf(profile, check.grant.level), sessions })] };
+          return { content: [json({ connection: viewOf(profile, check.grant.level), ...fitListKey("sessions", sessions) })] };
         }),
     }),
     def({
@@ -259,7 +259,7 @@ export function createAgentTools(deps: AgentToolDeps): AgentToolDef[] {
       description: CANNOT + "Lists open sessions of the connections the owner allowed. Sessions of other connections, and sessions opened without a saved connection, are not shown.",
       parameters: empty,
       execute: (_params, ctx) =>
-        guarded("remote_sessions_list", ctx, {}, async () => {
+        guarded("remote_sessions_list", ctx, { reserve: LIST_MAX_BYTES + DEFAULT_RESERVE_BYTES }, async () => {
           const rows = ports.sessions
             .list()
             .filter((s) => s.profileId !== undefined && access.check(s.profileId, "observe").ok)
@@ -294,7 +294,18 @@ export function createAgentTools(deps: AgentToolDeps): AgentToolDef[] {
           // A read can start inside an escape sequence: the bytes just before it put the sanitizer in the right state.
           const before = read.start > 0 ? ports.sessions.read(params.sessionId, Math.max(0, read.start - CONTEXT_BYTES), CONTEXT_BYTES) : null;
           const context = before === null || before.start >= read.start ? undefined : before.bytes.subarray(0, read.start - before.start);
-          return { content: [json(meta), text(frameRemoteOutput(sanitizeTerminalBytes(read.bytes, context)))] };
+          // At the oldest retained byte there is nothing before to say whether this starts inside an escape sequence: the
+          // first partial line is left out (up to its newline, within 512 bytes) instead of risking a shown remainder.
+          let bytes = read.bytes;
+          let trimmedStart = false;
+          if (read.start > 0 && context === undefined) {
+            const newline = bytes.subarray(0, 512).indexOf(0x0a);
+            if (newline >= 0) {
+              bytes = bytes.subarray(newline + 1);
+              trimmedStart = true;
+            }
+          }
+          return { content: [json({ ...meta, ...(trimmedStart ? { startTrimmed: true } : {}) }), text(frameRemoteOutput(sanitizeTerminalBytes(bytes, context)))] };
         }),
     }),
     def({

@@ -11,11 +11,15 @@ import { z } from "zod";
 import type { SessionHandle } from "../../core/rpc.ts";
 import { SLOW_VIEW_BYTES } from "../../core/credit.ts";
 import { attachControlView } from "./control-notice.ts";
+import type { AgentAudit } from "../../core/agent-audit.ts";
+import { OWNER_RPC } from "./rpc-handlers.ts";
 import { createRdpSocketHandlers } from "./rdp-socket.ts";
 import type { RemoteHubService } from "./service.ts";
 
 export interface StreamSocketDeps {
   service: RemoteHubService;
+  /** Where the owner's answers to a question are recorded (without the answer). */
+  audit?: AgentAudit;
 }
 
 const WS_TOKEN_EXPIRED = 4401;
@@ -244,9 +248,18 @@ export function registerStreamSocket(bb: BbPluginApi, deps: StreamSocketDeps): v
             case "detach":
               socket.close(1000, "detach");
               break;
-            case "prompt_answer":
-              deps.service.sshPromptAnswer(handle, msg.promptId, msg.answer).catch(() => replyError(socket, "prompt_gone"));
+            case "prompt_answer": {
+              // Recorded as answered or cancelled, never what was typed (it may be a one-time code).
+              const ticket = deps.audit?.begin({ threadId: OWNER_RPC, projectId: "", tool: "prompt.answer", sessionKey: `${handle.generation}.${handle.sessionId}`, detail: msg.answer === null ? "cancelled" : "answered" });
+              deps.service
+                .sshPromptAnswer(handle, msg.promptId, msg.answer)
+                .then(() => ticket?.finish("ok"))
+                .catch(() => {
+                  ticket?.finish("prompt_gone");
+                  replyError(socket, "prompt_gone");
+                });
               break;
+            }
           }
         } else {
           deps.service

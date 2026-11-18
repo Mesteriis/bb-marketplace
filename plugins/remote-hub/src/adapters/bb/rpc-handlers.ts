@@ -208,7 +208,16 @@ export function createRpcHandlers({ service, profiles, credentials, imports, age
     profile_duplicate: (input) => withProfile(() => profiles.duplicate(input.id)),
     rdp_cert_decision: (input) =>
       withHelper(async () => {
-        await service.rdpCertDecision({ generation: input.generation, sessionId: input.sessionId }, input.fingerprint, input.accept);
+        // The owner's decision about a certificate is recorded like any other act of theirs on a session an agent may touch:
+        // which session and what they chose, never the certificate.
+        const ticket = agents?.audit.begin({ threadId: OWNER_RPC, projectId: "", tool: "cert.decision", sessionKey: `${input.generation}.${input.sessionId}`, detail: input.accept });
+        try {
+          await service.rdpCertDecision({ generation: input.generation, sessionId: input.sessionId }, input.fingerprint, input.accept);
+          ticket?.finish("ok");
+        } catch (error) {
+          ticket?.finish(error instanceof HelperRequestError ? error.code : "error");
+          throw error;
+        }
         return { decided: true as const };
       }),
     agent_access_list: async () => withAgents(({ access }) => access.list().map(({ profileId, level, recordCommands, updatedAt }) => ({ profileId, level: level as "observe" | "input" | "exec", recordCommands, updatedAt }))),

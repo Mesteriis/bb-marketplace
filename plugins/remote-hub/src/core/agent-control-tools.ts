@@ -9,7 +9,7 @@
 //    host-key or certificate question goes to the owner (the agent only learns that the owner is being asked).
 // The audit keeps the length of an input, never the input itself and no hash of it.
 import { z } from "zod";
-import { SerialQueue, rdpActionsSchema, toRdpEvents, type RdpAction } from "./agent-input.ts";
+import { MAX_RDP_EVENTS_PER_CALL, SerialQueue, rdpActionsSchema, toRdpEvents, type RdpAction } from "./agent-input.ts";
 import { CANNOT, ToolError, connectionIdSchema, createGate, def, errorResult, json, sessionIdSchema, type AgentCallContext, type AgentSessionView, type AgentToolDef, type AgentToolDeps } from "./agent-tools.ts";
 import { LEASE_DEFAULT_SECONDS, LEASE_MAX_SECONDS, LEASE_MIN_SECONDS, type ControlLeases, type LeaseEnd } from "./control-lease.ts";
 import type { RdpInputEvent } from "./rdp-protocol.ts";
@@ -307,7 +307,7 @@ export function createControlTools(deps: AgentControlDeps): AgentToolDef[] {
           const { session, profileId } = controllable(params.sessionId);
           if (session.kind === "rdp") throw new ToolError("not_a_terminal", "this is a desktop session: use remote_rdp_input");
           await driven(params.sessionId, ctx, params.leaseId, profileId, () => control.terminalWrite(params.sessionId, bytes, ownerTag(params.leaseId)));
-          return { content: [json({ sessionId: params.sessionId, sentBytes: bytes.length })] };
+          return { content: [json({ sessionId: params.sessionId, queuedBytes: bytes.length })] };
         });
       },
     }),
@@ -316,7 +316,8 @@ export function createControlTools(deps: AgentControlDeps): AgentToolDef[] {
       description:
         CANNOT +
         "Sends typed actions to a desktop (RDP) session you hold the lease on: mouse_move, click, mouse_button, wheel, key (a KeyboardEvent.code such as Enter or KeyA), text and ctrl_alt_del. " +
-        "Positions are desktop pixels. Any action with a position needs `observed` (frameId, width, height from remote_rdp_screenshot): a changed desktop size or a frame newer than you saw is refused as stale_geometry. " +
+        "Positions are desktop pixels. Any action with a position needs `observed` (frameId, width, height from remote_rdp_screenshot): a changed desktop size, or a frame number the desktop has not reached, is refused as stale_geometry (a frame older than the current one is fine while the size is the same). " +
+        `At most ${MAX_RDP_EVENTS_PER_CALL} events per call; text has no control characters. The answer says the events were queued, which is not proof that the desktop acted on them. ` +
         "Keys and buttons left down are released when your control ends. Cannot send raw events or type into a terminal session.",
       parameters: z.object({ sessionId: sessionIdSchema, leaseId: leaseIdSchema, observed: observedSchema.optional(), actions: rdpActionsSchema }).strict(),
       execute: async (params, ctx) => {
@@ -335,8 +336,17 @@ export function createControlTools(deps: AgentControlDeps): AgentToolDef[] {
           }
           const events = toRdpEvents(actions, desktop);
           if (!events.ok) throw new ToolError("out_of_bounds", `action ${events.index + 1} is outside the ${desktop.width}x${desktop.height} desktop`);
-          await driven(params.sessionId, ctx, params.leaseId, profileId, () => control.rdpWrite(params.sessionId, events.events, ownerTag(params.leaseId)));
-          return { content: [json({ sessionId: params.sessionId, sentEvents: events.events.length })] };
+          // A text event becomes a press and a release per character in the engine: it weighs twice its length.
+          const weight = events.events.reduce((n, e) => n + (e.kind === "unicode" ? 2 * e.text.length : 1), 0);
+          if (weight > MAX_RDP_EVENTS_PER_CALL) throw new ToolError("too_many_events", `these actions come to ${weight} key and pointer events; at most ${MAX_RDP_EVENTS_PER_CALL} per call`);
+          await driven(params.sessionId, ctx, params.leaseId, profileId, async () => {
+            // The size is checked again when this write's turn comes: a resize while it waited is a stale geometry, not a click somewhere else.
+            const now = sessionOf(params.sessionId)?.rdp?.desktop ?? null;
+            if (positional && (now === null || now.width !== desktop.width || now.height !== desktop.height)) throw new ToolError("stale_geometry", "the desktop changed size while this input waited; take a new screenshot");
+            await control.rdpWrite(params.sessionId, events.events, ownerTag(params.leaseId));
+          });
+          // "queued" says what is known: the helper accepted the events. The desktop can still refuse a position (rdp.input_rejected).
+          return { content: [json({ sessionId: params.sessionId, queuedEvents: events.events.length })] };
         });
       },
     }),

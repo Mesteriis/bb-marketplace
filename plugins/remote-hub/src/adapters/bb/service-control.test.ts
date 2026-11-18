@@ -377,4 +377,3 @@ describe("Z2: a change of driver is a barrier the helper acknowledges, and stale
     expect(helper.agentTyped).toHaveLength(1);
   });
 });
-

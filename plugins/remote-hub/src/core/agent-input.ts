@@ -15,10 +15,12 @@ export const rdpActionSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("mouse_button"), button, down: z.boolean(), x: coordinate, y: coordinate }).strict(),
   z.object({ type: z.literal("wheel"), x: coordinate, y: coordinate, notches: z.number().int().min(-10).max(10) }).strict(),
   z.object({ type: z.literal("key"), code: keyCode, down: z.boolean().optional() }).strict(),
-  z.object({ type: z.literal("text"), text: z.string().min(1).max(256) }).strict(),
+  z.object({ type: z.literal("text"), text: z.string().min(1).max(256).refine((t) => !/[\u0000-\u001f\u007f-\u009f]/.test(t), { message: "text cannot contain control characters; use a key action for Enter, Tab and so on" }) }).strict(),
   z.object({ type: z.literal("ctrl_alt_del") }).strict(),
 ]);
 export const MAX_RDP_ACTIONS = 40;
+/** Events one call may expand to (a text action is one event per character, a click is three). */
+export const MAX_RDP_EVENTS_PER_CALL = 400;
 export const rdpActionsSchema = z.array(rdpActionSchema).min(1).max(MAX_RDP_ACTIONS);
 export type RdpAction = z.infer<typeof rdpActionSchema>;
 

@@ -197,3 +197,35 @@ describe("stream-socket askpass events and answers", () => {
     expect(socket.sent.map((s) => JSON.parse(String(s)))).toEqual([{ type: "error", code: "prompt_gone" }]);
   });
 });
+
+describe("Z8: the owner's answer to an SSH question over the socket is audited without the answer", () => {
+  it("answered and cancelled are recorded as such; a prompt that is already gone is recorded as prompt_gone", async () => {
+    const rows: Array<{ tool: string; threadId: string; detail: string | null; outcome: string | null }> = [];
+    const audit = { begin: (call: { tool: string; threadId: string; detail?: string | null }) => { const row = { tool: call.tool, threadId: call.threadId, detail: call.detail ?? null, outcome: null as string | null }; rows.push(row); return { finish: (o: string) => void (row.outcome = o) }; } };
+    let handler: ((ctx: { url: URL }) => Record<string, unknown>) | null = null;
+    const bb = { http: { experimental_websocket(_p: string, h: typeof handler) { handler = h; } } } as never;
+    const answer = vi.fn().mockResolvedValueOnce(undefined).mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error("gone"));
+    const service = {
+      consumeAttachToken: vi.fn().mockReturnValue({ sessionId: 1, generation: "a".repeat(32) }),
+      sessionCredit: vi.fn().mockResolvedValue(undefined), sessionResize: vi.fn(), sessionTerminalInput: vi.fn().mockResolvedValue(true),
+      sessionList: vi.fn().mockReturnValue([]), controlState: vi.fn().mockReturnValue({ owner: "human", expiresAt: null }), subscribeControl: vi.fn().mockReturnValue(() => {}),
+      attachStream: vi.fn().mockReturnValue({ snapshot: new Uint8Array(0), subscribe: vi.fn().mockReturnValue(() => {}) }),
+      creditAttach: vi.fn().mockReturnValue(262_144), creditDetach: vi.fn().mockReturnValue(0), creditLiveSent: vi.fn(), creditAck: vi.fn().mockReturnValue(0), creditState: vi.fn(),
+      subscribeSessionEnd: vi.fn().mockReturnValue(() => {}), onHelperExit: vi.fn().mockReturnValue(() => {}), subscribeSshAskpass: vi.fn().mockReturnValue(() => {}), sshPromptAnswer: answer,
+    } as unknown as RemoteHubService;
+    registerStreamSocket(bb, { service, audit: audit as never });
+    const handlers = handler!({ url: new URL("http://bb/api/attach?attach=abc") }) as { onOpen(s: FakeSocket): Promise<void>; onMessage(s: FakeSocket, d: string | Uint8Array): void };
+    const socket = makeSocket();
+    await handlers.onOpen(socket);
+    handlers.onMessage(socket, JSON.stringify({ type: "prompt_answer", promptId: 1, answer: "yes-secret-code" }));
+    handlers.onMessage(socket, JSON.stringify({ type: "prompt_answer", promptId: 2, answer: null }));
+    handlers.onMessage(socket, JSON.stringify({ type: "prompt_answer", promptId: 3, answer: "again" }));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(rows).toEqual([
+      { tool: "prompt.answer", threadId: "owner RPC", detail: "answered", outcome: "ok" },
+      { tool: "prompt.answer", threadId: "owner RPC", detail: "cancelled", outcome: "ok" },
+      { tool: "prompt.answer", threadId: "owner RPC", detail: "answered", outcome: "prompt_gone" },
+    ]);
+    expect(JSON.stringify(rows)).not.toContain("secret-code");
+  });
+});

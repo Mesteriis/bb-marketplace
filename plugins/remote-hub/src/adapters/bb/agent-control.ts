@@ -100,7 +100,10 @@ export function agentControlPorts({ service, profiles, handlers }: AgentControlP
         return { sessionKey: keyOf(h) };
       } catch (error) {
         if (error instanceof ToolError) throw error;
-        throw new ToolError("connect_failed", error instanceof Error ? error.message : "the connection could not be opened");
+        // What the agent is told is a closed list: the text of a refusal can name the Keychain, the helper or a host.
+        const message = error instanceof Error ? error.message : "";
+        if (message.startsWith("host_key_confirmation_pending")) throw new ToolError("connect_failed", "another session to this server is waiting for the owner's host key decision; try again later");
+        throw new ToolError("connect_failed", "the connection could not be opened; the owner can see why on the Remote Hub page");
       }
     },
     disconnect: async (key) => void (await service.sessionClose(handleOf(key))),

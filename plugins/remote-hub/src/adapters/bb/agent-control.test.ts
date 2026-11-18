@@ -82,10 +82,14 @@ describe("the control ports", () => {
 
   it("a refusal from the open is passed on as a tool error that names the reason, not as a crash", async () => {
     const { p, handlers, profiles } = ports();
-    handlers.ssh_open.mockRejectedValueOnce(Object.assign(new Error("host_key_confirmation_pending: another session is waiting"), { code: "conflict" }));
+    handlers.ssh_open.mockRejectedValueOnce(Object.assign(new Error("keychain_locked: the login keychain is locked on host 10.0.0.9"), { code: "forbidden" }));
     const prof = profile({});
     profiles.set(prof.id, prof);
-    await expect(p.connect(prof.id)).rejects.toBeInstanceOf(ToolError);
+    const refused = await p.connect(prof.id).catch((e: unknown) => e);
+    expect(refused).toBeInstanceOf(ToolError);
+    expect((refused as Error).message).not.toMatch(/keychain|10\.0\.0\.9/);
+    handlers.ssh_open.mockRejectedValueOnce(new Error("host_key_confirmation_pending: another session is waiting"));
+    expect(((await p.connect(prof.id).catch((e: unknown) => e)) as Error).message).toContain("host key decision");
     await expect(p.connect("99999999-2222-4333-8444-555555555559")).rejects.toMatchObject({ code: "connection_incomplete" });
   });
 

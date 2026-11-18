@@ -21,7 +21,7 @@ const profile = (id: string, over: Partial<Profile> = {}): Profile =>
     username: "ops", domain: null, authType: "password", identityFile: null, credentialRef: SECRET_REF, rdpWidth: null, rdpHeight: null, ...over,
   }) as Profile;
 
-function setup(opts: { sessions?: AgentSessionView[]; budget?: ConstructorParameters<typeof ToolBudget>[0]; shotWait?: Promise<void>; extraProfiles?: number; fitPng?: string } = {}) {
+function setup(opts: { sessions?: AgentSessionView[]; budget?: ConstructorParameters<typeof ToolBudget>[0]; shotWait?: Promise<void>; extraProfiles?: number; fitPng?: string; scrollbackBytes?: number; scrollbackText?: string } = {}) {
   const profiles = [profile(P_OPEN), profile(P_SECOND, { protocol: "rdp", authType: "password", username: "u", domain: "CORP", port: 3389, rdpWidth: 800, rdpHeight: 600 }), profile(P_CLOSED, { authType: "key", identityFile: SECRET_PATH })];
   for (let i = 0; i < (opts.extraProfiles ?? 0); i++) profiles.push(profile(`22222222-2222-4333-8444-${String(i).padStart(12, "0")}`, { name: "bulk-" + i }));
   const grants = new Map<string, AgentGrant>();
@@ -41,8 +41,8 @@ function setup(opts: { sessions?: AgentSessionView[]; budget?: ConstructorParame
   };
   const audit = new AgentAudit({ store, now: () => new Date("2026-11-18T12:00:00.000Z") });
   const budget = new ToolBudget(opts.budget ?? { now: () => 1_000_000 });
-  const scrollback = new Scrollback(1000);
-  scrollback.append(new TextEncoder().encode("\u001b[32mhello\u001b[0m\nworld\n"));
+  const scrollback = new Scrollback(opts.scrollbackBytes ?? 1000);
+  scrollback.append(new TextEncoder().encode(opts.scrollbackText ?? "\u001b[32mhello\u001b[0m\nworld\n"));
   const sessions: AgentSessionView[] = opts.sessions ?? [
     { key: `${GEN}.1`, kind: "ssh", state: "running", profileId: P_OPEN, exitCode: null, reason: null, control: "ready" },
     { key: `${GEN}.2`, kind: "rdp", state: "running", profileId: P_SECOND, exitCode: null, reason: null, control: "ready", rdp: { state: "desktop_ready", desktop: { frameId: 7, width: 800, height: 600 } } },
@@ -380,6 +380,28 @@ describe("Z1: reading is allowed on a session an agent may not drive, and says s
     const status = JSON.parse(textOf(await call("remote_session_status", { sessionId: `${GEN}.1` }))) as { session: Record<string, unknown> };
     expect(status.session).toMatchObject({ sessionId: `${GEN}.1`, agentControl: "never" });
     expect((await call("remote_terminal_read", { sessionId: `${GEN}.1` })).isError).toBeUndefined();
+  });
+});
+
+describe("Z8: a read that starts at the oldest retained byte", () => {
+  it("leaves out the first partial line, so the rest of a cut escape sequence is never shown, and says so", async () => {
+    // 17 bytes in, the last 10 kept: it starts with "1mred", the tail of ESC[1;31m
+    const { call, access } = setup({ scrollbackBytes: 10, scrollbackText: "xx\u001b[1;31mred\nnext" });
+    access.set(P_OPEN, "observe", false);
+    const r = await call("remote_terminal_read", { sessionId: `${GEN}.1`, sinceOffset: 0 });
+    const meta = JSON.parse(r.content.find((c) => c.type === "text")!.type === "text" ? (r.content[0] as { text: string }).text : "{}") as Record<string, unknown>;
+    expect(meta.startTrimmed).toBe(true);
+    expect(textOf(r)).toContain("next");
+    expect(textOf(r)).not.toContain("1mred");
+  });
+
+  it("a connection with very many sessions is cut like the lists", async () => {
+    const many: AgentSessionView[] = Array.from({ length: 800 }, (_, i) => ({ key: `${GEN}.${i + 1}`, kind: "ssh", state: "running", profileId: P_OPEN, exitCode: null, reason: null, control: "ready" }));
+    const { call, access } = setup({ sessions: many });
+    access.set(P_OPEN, "observe", false);
+    const body = JSON.parse(textOf(await call("remote_connection_get", { connectionId: P_OPEN }))) as { sessions: unknown[]; truncated?: boolean };
+    expect(body.truncated).toBe(true);
+    expect(body.sessions.length).toBeLessThan(800);
   });
 });
 

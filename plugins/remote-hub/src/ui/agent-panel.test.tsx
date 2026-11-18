@@ -219,4 +219,3 @@ describe("AgentPanel: sessions agents opened or drive (stage 4b-1)", () => {
     await waitFor(() => expect(a.allowAgents).toHaveBeenCalledWith({ generation: GEN, sessionId: 4 }));
   });
 });
-

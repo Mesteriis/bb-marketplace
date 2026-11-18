@@ -9,7 +9,6 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
 import { createConnection, createServer } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -147,7 +146,7 @@ async function compose(env: Record<string, string>) {
     await h.onOpen(socket);
     return { socket, h };
   };
-  return { profiles, book, leases, service, access, rows, handlers, call, text, view, tools };
+  return { profiles, book, leases, registry, service, access, rows, handlers, call, text, view, tools };
 }
 
 const fields = (over: Partial<ProfileFields>): ProfileFields => ({
@@ -160,6 +159,7 @@ describe.skipIf(!dockerOk)("agent control over SSH: connect, owner decides the h
   let cid = "";
   let c!: Awaited<ReturnType<typeof compose>>;
   let profileId = "";
+  let sshPort = 0;
   const watchdog = setTimeout(() => process.abort(), 300_000);
   const key = (r: ToolResult) => JSON.parse(c.text(r)) as Record<string, any>;
 
@@ -168,6 +168,7 @@ describe.skipIf(!dockerOk)("agent control over SSH: connect, owner decides the h
     execFileSync("docker", ["build", "-q", "-t", "remote-hub-sshd-test", here], { stdio: "ignore" });
     tmp = makeTemp("rh-agentctl-");
     const port = await freePort();
+    sshPort = port;
     cid = execFileSync("docker", ["run", "-d", "-p", `127.0.0.1:${port}:22`, "remote-hub-sshd-test"], { encoding: "utf8" }).trim();
     execFileSync("docker", ["exec", "-i", cid, "chpasswd"], { input: `root:${PASSWORD}\n` });
     await sleep(2000);
@@ -208,16 +209,14 @@ describe.skipIf(!dockerOk)("agent control over SSH: connect, owner decides the h
     const status = key(await c.call("remote_session_status", { sessionId }));
     expect(status.session.waitingForOwner).toEqual(["host_key"]);
     expect(JSON.stringify(status)).not.toMatch(/fingerprint|SHA256|continue connecting/);
-    // It may drive the session, but what it types goes to the terminal, never to the question.
-    const lease = key(await c.call("remote_control_acquire", { sessionId, seconds: 600 }));
-    await c.call("remote_terminal_input", { sessionId, leaseId: lease.leaseId, actions: [{ type: "text", text: "xyzzy" }, { type: "key", key: "Enter" }] });
-    await sleep(2500);
-    expect(c.service.ownerQuestions(handle), "the agent must not be able to answer the host-key question").toContain("host_key");
-    await c.call("remote_control_release", { sessionId, leaseId: lease.leaseId });
+    // While the owner has a question open the session is not ready: the agent cannot take control, so it cannot type.
+    expect(c.text(await c.call("remote_control_acquire", { sessionId }))).toContain("session_not_ready");
+    expect(c.leases.owner(sessionId).kind).toBe("human");
+    expect(c.service.ownerQuestions(handle)).toContain("host_key");
     // The owner answers through the page's RPC.
     const [question] = c.service.sshPendingPrompts(handle);
     await c.handlers.agent_prompt_answer({ ...handle, promptId: question!.promptId, answer: "yes" } as never);
-    await poll(() => c.service.sessionList().find((s) => s.sessionId === handle.sessionId)?.state === "running" && c.service.ownerQuestions(handle).length === 0, 40_000, "the session runs after the owner's answer");
+    await poll(() => c.service.agentControl(handle) === "ready", 40_000, "the session is ready (credential used, no question open) after the owner's answer");
     expect(c.rows.some((r) => r.tool === "prompt.answer" && r.threadId === "owner RPC" && r.detail === "answered")).toBe(true);
     expect(JSON.stringify(c.rows)).not.toContain(PASSWORD);
   }, 120_000);
@@ -270,8 +269,28 @@ describe.skipIf(!dockerOk)("agent control over SSH: connect, owner decides the h
   it("the agent disconnects the session it opened and nothing else", async () => {
     expect((await c.call("remote_disconnect", { sessionId })).isError).toBeUndefined();
     await poll(() => c.service.sessionList().find((s) => s.sessionId === handle.sessionId)?.state === "closed", 20_000, "the session closed");
-    expect(existsSync(tmp)).toBe(true);
+    expect(c.registry.threadOf(sessionId)).toBeUndefined();
+    expect(c.service.agentControl(handle)).toBe("never");
   }, 60_000);
+
+  it("Z1: a terminal session the human opened by hand (plain ssh, its questions in the terminal) cannot be driven; reading it is allowed", async () => {
+    const empty = join(tmp, "empty_known_hosts_plain");
+    const plain = await c.service.sshOpen({ host: "127.0.0.1", port: sshPort, user: "root", knownHostsFile: empty, extraOptions: [] }, 100, 30, profileId);
+    const key2 = `${plain.generation}.${plain.sessionId}`;
+    c.access.set(profileId, "input", false);
+    expect(c.service.agentControl(plain)).toBe("never");
+    // ssh asks its host-key question IN the terminal: an agent can read that, and could have typed "yes" if it were allowed to drive.
+    let seen = "";
+    await poll(async () => {
+      seen = c.text(await c.call("remote_terminal_read", { sessionId: key2, sinceOffset: 0 }));
+      return seen.includes("continue connecting");
+    }, 40_000, "the host-key question in the terminal");
+    const missing = c.text(await c.call("remote_control_acquire", { sessionId: `${plain.generation}.99999` }));
+    expect(c.text(await c.call("remote_control_acquire", { sessionId: key2 }))).toBe(missing);
+    expect(c.text(await c.call("remote_terminal_input", { sessionId: key2, leaseId: "x", actions: [{ type: "text", text: "yes" }] }))).toContain("session_not_found");
+    expect(c.leases.owner(key2).kind).toBe("human");
+    await c.service.sessionClose(plain);
+  }, 90_000);
 });
 
 describe.skipIf(!dockerOk)("agent control over RDP: typed input on a real desktop", () => {

@@ -99,7 +99,7 @@ export default function plugin(bb: BbPluginApi): void {
   bb.rpc.register(rpcContract, handlers);
   registerControlLifecycle(bb, { leases, registry, service, closeSession: (key) => controlPorts.disconnect(key) });
 
-  registerStreamSocket(bb, { service });
+  registerStreamSocket(bb, { service, audit: agentAudit });
 
   bb.onDispose(() => {
     service.stop();

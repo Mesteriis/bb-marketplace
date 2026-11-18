@@ -583,3 +583,50 @@ describe("Z6: remote_connect reserves its slot before awaiting and revalidates a
   });
 });
 
+
+describe("Z8: RDP input bounds and dispatch-time geometry", () => {
+  const OBS = { frameId: 7, width: 800, height: 600 };
+  async function leasedRdp() {
+    const t = setup();
+    t.access.set(P_RDP, "input", false);
+    await t.call("remote_control_acquire", { sessionId: RDP_KEY });
+    return t;
+  }
+
+  it("text has no control characters, and one call may expand to at most 400 events", async () => {
+    const t = await leasedRdp();
+    const tool = t.tool("remote_rdp_input");
+    expect(tool.parameters.safeParse({ sessionId: RDP_KEY, leaseId: "lease-1", actions: [{ type: "text", text: "a\nb" }] }).success).toBe(false);
+    const many = Array.from({ length: 3 }, () => ({ type: "text", text: "x".repeat(200) }));
+    expect(t.textOf(await t.call("remote_rdp_input", { sessionId: RDP_KEY, leaseId: "lease-1", actions: many }))).toContain("too_many_events");
+    expect(t.rdpSent).toEqual([]);
+  });
+
+  it("the answer says queued, not done", async () => {
+    const t = await leasedRdp();
+    const r = t.data(await t.call("remote_rdp_input", { sessionId: RDP_KEY, leaseId: "lease-1", observed: OBS, actions: [{ type: "mouse_move", x: 1, y: 1 }] }));
+    expect(r).toMatchObject({ queuedEvents: 1 });
+    expect(r.sentEvents).toBeUndefined();
+  });
+
+  it("a desktop that changed size while the write waited is stale_geometry at dispatch, and nothing is sent", async () => {
+    const t = await leasedRdp();
+    t.holdWrites();
+    const n0 = t.rows.length;
+    const first = t.call("remote_rdp_input", { sessionId: RDP_KEY, leaseId: "lease-1", actions: [{ type: "key", code: "KeyA" }] });
+    await until(() => t.rows.length >= n0 + 1);
+    const second = t.call("remote_rdp_input", { sessionId: RDP_KEY, leaseId: "lease-1", observed: OBS, actions: [{ type: "mouse_move", x: 5, y: 5 }] });
+    await until(() => t.rows.length >= n0 + 2);
+    t.sessions.find((s) => s.key === RDP_KEY)!.rdp = { state: "desktop_ready", desktop: { frameId: 9, width: 1024, height: 768 } };
+    t.releaseWrites();
+    await first;
+    expect(t.textOf(await second)).toContain("stale_geometry");
+    expect(t.rdpSent.flatMap((s) => s.events).some((e) => e.kind === "mouse_move")).toBe(false);
+  });
+
+  it("the tool description states the frame policy it enforces", () => {
+    const { tool } = setup();
+    expect(tool("remote_rdp_input").description).toContain("a frame number the desktop has not reached");
+    expect(tool("remote_rdp_input").description).not.toContain("newer than you saw");
+  });
+});

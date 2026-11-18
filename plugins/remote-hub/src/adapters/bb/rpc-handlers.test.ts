@@ -64,6 +64,7 @@ function setup() {
   const service = {
     rdpOpen: vi.fn(async () => HANDLE),
     sshOpen: vi.fn(async () => HANDLE),
+    rdpCertDecision: vi.fn(async () => undefined),
   };
   const handlers = createRpcHandlers({ service: service as unknown as RemoteHubService, profiles, credentials, imports: memoryImportBook(profiles, credentials) });
   return { profiles, credentials, vault, service, handlers };
@@ -327,6 +328,15 @@ describe("agent access RPCs (stage 4a): the owner's page is the only way to chan
       ["access.set", "owner RPC", p.id, "observe <- exec", "ok"],
       ["access.set", "owner RPC", p.id, "exec <- none", "ok"],
     ]);
+  });
+
+  it("Z8: the owner's certificate decision is audited as theirs, with the choice and not the certificate", async () => {
+    const { handlers, audit, service } = await withAgents();
+    await handlers.rdp_cert_decision({ ...HANDLE, fingerprint: "AA:BB", accept: "always_trust" } as never);
+    expect(service.rdpCertDecision).toHaveBeenCalledTimes(1);
+    const rows = audit.list(5).map((r) => [r.tool, r.threadId, r.sessionKey, r.detail, r.outcome]);
+    expect(rows).toEqual([["cert.decision", "owner RPC", `${HANDLE.generation}.${HANDLE.sessionId}`, "always_trust", "ok"]]);
+    expect(JSON.stringify(audit.list(5))).not.toContain("AA:BB");
   });
 
   it("without the agent deps the RPCs are not available instead of silently allowing", async () => {
