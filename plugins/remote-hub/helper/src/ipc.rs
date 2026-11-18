@@ -1509,6 +1509,7 @@ pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
                     Response::SshPrompt { session_id, prompt_id, text, kind }
                 }
                 crate::askpass::BrokerEvent::CredentialUsed { session_id } => Response::SshCredentialUsed { session_id },
+                crate::askpass::BrokerEvent::Connected { session_id } => Response::SshConnected { session_id },
                 crate::askpass::BrokerEvent::CredentialRejected { session_id } => Response::SshCredentialRejected { session_id },
                 crate::askpass::BrokerEvent::PromptExpired { session_id, prompt_id } => Response::SshPromptExpired { session_id, prompt_id },
                 crate::askpass::BrokerEvent::CredentialFailed { session_id, code } => Response::SshCredentialFailed { session_id, code },

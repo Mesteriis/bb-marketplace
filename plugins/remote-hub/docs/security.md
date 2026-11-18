@@ -29,3 +29,10 @@
   paused while an agent drives, and one click takes the session back at once. A lease is in memory only, ends when the
   grant drops, the thread goes or the call is aborted, and never survives a restart. What an agent types is visible to the
   remote side, as for a person: Input is the power to act as the logged-in user on that session.
+- **When an SSH session becomes drivable.** Only after the SERVER accepted the login. For a session with a saved
+  secret the helper adds `-o PermitLocalCommand=yes -o LocalCommand=<private link to itself>` itself (callers may not
+  name either option); OpenSSH runs that command on this machine only after authentication succeeded, and the helper
+  accepts it only from a child of that session's ssh process carrying the session's nonce, only after the saved secret
+  was handed over, and once. Until then (and while the owner has a question open, and for ever after a refusal)
+  an agent can neither take control nor type. A session the owner opened by hand never carries this and is never
+  drivable. Tested against a real sshd that holds its answer for seven seconds after the password.

@@ -163,9 +163,11 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
   // credential, and the sockets listening. Holds prompt TEXT only, never an answer or a secret.
   interface AskpassState {
     prompts: Map<number, Extract<SshAskpassEvent, { type: "prompt" }>>;
-    notice: Exclude<SshAskpassEvent, { type: "prompt" | "prompt_expired" | "credential_used" }> | null;
+    notice: Exclude<SshAskpassEvent, { type: "prompt" | "prompt_expired" | "credential_used" | "connected" }> | null;
     /** The helper handed the saved credential to ssh; the saved credential was then refused or could not be read. */
     used: boolean;
+    /** OpenSSH ran LocalCommand: the server accepted the login. Only this makes a session ready for an agent. */
+    connected: boolean;
     failed: boolean;
     listeners: Set<(event: SshAskpassEvent) => void>;
   }
@@ -213,13 +215,17 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
   const askpassState = (key: string): AskpassState => {
     let state = askpassStates.get(key);
     if (state === undefined) {
-      state = { prompts: new Map(), notice: null, used: false, failed: false, listeners: new Set() };
+      state = { prompts: new Map(), notice: null, used: false, connected: false, failed: false, listeners: new Set() };
       askpassStates.set(key, state);
     }
     return state;
   };
   const handleSshAskpass = (generation: string, sessionId: number, event: SshAskpassEvent): void => {
     const state = askpassState(generation + ":" + sessionId);
+    if (event.type === "connected") {
+      state.connected = true;
+      return;
+    }
     if (event.type === "credential_used") {
       // A fact for the service (agent control), not something the page shows.
       state.used = true;
@@ -977,7 +983,7 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
       const ask = askpassStates.get(key);
       if (ask === undefined) return "pending"; // nothing from the helper yet
       if (ask.failed) return "never";
-      if (!ask.used || ask.prompts.size > 0) return "pending";
+      if (!ask.connected || ask.prompts.size > 0) return "pending";
       return "ready";
     },
     sshPendingPrompts(handle) {

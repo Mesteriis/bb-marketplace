@@ -41,6 +41,8 @@ use std::time::{Duration, Instant};
 
 /// The askpass program's name: what argv[0] of the symlink is.
 pub const ASKPASS_NAME: &str = "remote-hub-askpass";
+/// The LocalCommand program's name: OpenSSH runs it on this machine only after the server accepted the login.
+pub const CONNECTED_NAME: &str = "remote-hub-connected";
 pub const ENV_SOCKET: &str = "REMOTE_HUB_ASKPASS_SOCKET";
 pub const ENV_NONCE: &str = "REMOTE_HUB_ASKPASS_NONCE";
 
@@ -85,6 +87,9 @@ struct Request {
     /// SSH_ASKPASS_PROMPT as the client saw it. Only "confirm" and "none" are believed.
     #[serde(default)]
     kind: String,
+    /// "connected" when this is LocalCommand telling the helper that authentication is complete; empty for a prompt.
+    #[serde(default)]
+    event: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -108,6 +113,8 @@ pub enum BrokerEvent {
     CredentialRejected { session_id: u32 },
     /// The saved credential was handed to ssh (once): the strongest signal OpenSSH gives that authentication has begun.
     CredentialUsed { session_id: u32 },
+    /// OpenSSH ran LocalCommand: the server accepted the login (the trusted authentication-complete signal).
+    Connected { session_id: u32 },
     /// The Keychain would not hand the saved credential over (keychain_locked, credential_missing, ...).
     CredentialFailed { session_id: u32, code: String },
 }
@@ -119,6 +126,7 @@ struct Session {
     expected: String,
     burned: bool,
     rejected_sent: bool,
+    connected: bool,
 }
 
 enum State {
@@ -164,7 +172,9 @@ impl Broker {
     pub fn new(helper_exe: &str) -> std::io::Result<Broker> {
         // The socket path must fit sun_path (104 bytes on macOS): a short base.
         let base = std::env::temp_dir();
-        let base = if base.as_os_str().len() > 40 { PathBuf::from("/tmp") } else { base };
+        // The LocalCommand path goes through a shell: only plain path characters are allowed in it.
+        let plain = base.to_string_lossy().chars().all(|c| c.is_ascii_alphanumeric() || "/_.-".contains(c));
+        let base = if base.as_os_str().len() > 40 || !plain { PathBuf::from("/tmp") } else { base };
         let dir = base.join(format!("rh-ap-{}-{}", std::process::id(), random_hex(4)));
         std::fs::DirBuilder::new().mode(0o700).create(&dir)?;
         // Whatever fails after the directory exists must not leave it behind.
@@ -174,6 +184,7 @@ impl Broker {
             std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))?;
             listener.set_nonblocking(true)?;
             symlink(helper_exe, dir.join(ASKPASS_NAME))?;
+            symlink(helper_exe, dir.join(CONNECTED_NAME))?;
             Ok((socket_path, listener))
         })();
         let (socket_path, listener) = match built {
@@ -194,6 +205,11 @@ impl Broker {
             next_prompt: 1,
             events: Vec::new(),
         })
+    }
+
+    /// The exact LocalCommand value for a session: the private symlink, a plain path with no shell metacharacter.
+    pub fn connected_command(&self) -> String {
+        self.dir.join(CONNECTED_NAME).to_string_lossy().to_string()
     }
 
     pub fn dir(&self) -> &Path {
@@ -221,7 +237,7 @@ impl Broker {
     pub fn register(&mut self, nonce: &str, session_id: u32, child_pid: i32, reference: &str, bind: Bind, expected: &str) {
         if self.pending.remove(nonce).is_some() {
             self.by_nonce.insert(nonce.to_string(), session_id);
-            self.sessions.insert(session_id, Session { child_pid, reference: reference.to_string(), bind, expected: expected.to_string(), burned: false, rejected_sent: false });
+            self.sessions.insert(session_id, Session { child_pid, reference: reference.to_string(), bind, expected: expected.to_string(), burned: false, rejected_sent: false, connected: false });
         }
     }
 
@@ -344,6 +360,20 @@ impl Broker {
         // 2. A child of the ssh process this nonce was issued to.
         let Some(session) = self.sessions.get_mut(&session_id) else { return Some(Reply::Deny) };
         let child_pid = session.child_pid;
+        if request.event == "connected" {
+            // LocalCommand runs through the user's shell: the caller is ssh's child, or (a shell that did not exec) its grandchild.
+            let near = peer_pid(fd).and_then(parent_pid);
+            let far = near.and_then(parent_pid);
+            if near != Some(child_pid) && far != Some(child_pid) {
+                return Some(Reply::Deny);
+            }
+            // Only a login that used the saved secret and was not refused counts, once.
+            if session.burned && !session.rejected_sent && !session.connected {
+                session.connected = true;
+                self.events.push(BrokerEvent::Connected { session_id });
+            }
+            return Some(Reply::Deny);
+        }
         match peer_pid(fd).and_then(parent_pid) {
             Some(parent) if parent == child_pid => {}
             _ => return Some(Reply::Deny),
@@ -486,7 +516,7 @@ pub fn run_client(args: &[String]) -> i32 {
     // A cancelled/hung helper must not hold ssh for ever: bounded by the UI timeout plus slack.
     let _ = stream.set_read_timeout(Some(UI_TIMEOUT + Duration::from_secs(10)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
-    let request = Request { nonce, prompt, kind };
+    let request = Request { nonce, prompt, kind, event: String::new() };
     let Ok(mut line) = serde_json::to_string(&request) else { return 1 };
     line.push('\n');
     if stream.write_all(line.as_bytes()).is_err() {
@@ -522,6 +552,40 @@ pub fn run_client(args: &[String]) -> i32 {
         return 1;
     }
     0
+}
+
+/// What `remote-hub-connected` (OpenSSH's LocalCommand) does: tell the helper the login completed. Exit status is
+/// irrelevant to ssh; the client holds no secret and checks it is talking to the helper that started its ssh.
+pub fn run_connected_client() -> i32 {
+    let (Ok(socket), Ok(nonce)) = (std::env::var(ENV_SOCKET), std::env::var(ENV_NONCE)) else { return 1 };
+    if !socket_path_is_private(&socket) {
+        return 1;
+    }
+    let Ok(mut stream) = UnixStream::connect(&socket) else { return 1 };
+    // The helper is our grandparent (ssh exec'd the command) or great-grandparent (through a shell).
+    let ppid = unsafe { libc::getppid() };
+    let up2 = parent_pid(ppid);
+    let up3 = up2.and_then(parent_pid);
+    match peer_pid(stream.as_raw_fd()) {
+        Some(peer) if (up2 == Some(peer) || up3 == Some(peer)) && exe_is_this_binary(peer) => {}
+        _ => return 1,
+    }
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+    let request = Request { nonce, prompt: String::new(), kind: String::new(), event: "connected".to_string() };
+    let Ok(mut line) = serde_json::to_string(&request) else { return 1 };
+    line.push('\n');
+    if stream.write_all(line.as_bytes()).is_err() {
+        return 1;
+    }
+    let mut sink = [0u8; 64];
+    let _ = stream.read(&mut sink);
+    0
+}
+
+/// True when this process was started as the LocalCommand program.
+pub fn invoked_as_connected(argv0: &str) -> bool {
+    Path::new(argv0).file_name().map(|n| n == CONNECTED_NAME).unwrap_or(false)
 }
 
 /// True when this process was started as the askpass program.

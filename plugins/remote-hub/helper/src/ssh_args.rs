@@ -430,4 +430,12 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn a_caller_can_never_name_local_command_options_the_helper_adds_its_own() {
+        for option in ["PermitLocalCommand=yes", "LocalCommand=/tmp/x", "LocalCommand=remote-hub-connected"] {
+            let a: Vec<String> = ["ssh", "-tt", "-o", option, "--", "example.com"].iter().map(|s| s.to_string()).collect();
+            assert!(validate_ssh_spawn("/usr/bin/ssh", &a, &env(&[("TERM", "xterm-256color")])).is_err(), "{option}");
+        }
+    }
 }

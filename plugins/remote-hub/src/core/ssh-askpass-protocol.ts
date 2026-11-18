@@ -26,6 +26,8 @@ export const sshPromptSchema = z.object({
 });
 /** The saved credential was handed to ssh once (stage 4b-1, Z1): not shown to the page. */
 export const sshCredentialUsedSchema = z.object({ type: z.literal("ssh.credential_used"), sessionId: sessionIdSchema });
+/** OpenSSH ran LocalCommand: the server accepted the login (A1): not shown to the page. */
+export const sshConnectedSchema = z.object({ type: z.literal("ssh.connected"), sessionId: sessionIdSchema });
 export const sshCredentialRejectedSchema = z.object({ type: z.literal("ssh.credential_rejected"), sessionId: sessionIdSchema });
 export const sshCredentialFailedSchema = z.object({
   type: z.literal("ssh.credential_failed"),
@@ -36,12 +38,13 @@ export const sshPromptExpiredSchema = z.object({ type: z.literal("ssh.prompt_exp
 export const sshPromptAckSchema = z.object({ type: z.literal("ssh.prompt_ack"), id: idSchema });
 
 export const sshAskpassRequestSchemas = [sshPromptAnswerRequestSchema] as const;
-export const sshAskpassResponseSchemas = [sshPromptSchema, sshCredentialUsedSchema, sshCredentialRejectedSchema, sshCredentialFailedSchema, sshPromptExpiredSchema, sshPromptAckSchema] as const;
+export const sshAskpassResponseSchemas = [sshPromptSchema, sshCredentialUsedSchema, sshConnectedSchema, sshCredentialRejectedSchema, sshCredentialFailedSchema, sshPromptExpiredSchema, sshPromptAckSchema] as const;
 
 /** What the page is told about a session's askpass activity. */
 export type SshAskpassEvent =
   | { type: "prompt"; promptId: number; text: string; kind: string }
   | { type: "prompt_expired"; promptId: number }
   | { type: "credential_used" }
+  | { type: "connected" }
   | { type: "credential_rejected" }
   | { type: "credential_failed"; code: string };

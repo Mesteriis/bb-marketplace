@@ -1,0 +1,12 @@
+# Test sshd whose login decision can be delayed: PAM runs a script that sleeps for as long as /tmp/delay says,
+# AFTER the password was typed and BEFORE sshd answers. Same pinned base as the plain test image.
+FROM alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
+
+RUN apk add --no-cache openssh-server openssh-server-pam linux-pam openssh-keygen bash \
+    && ssh-keygen -A && mkdir -p /run/sshd && echo "root:root" | chpasswd \
+    && printf 'PermitRootLogin yes\nPasswordAuthentication yes\nUsePAM yes\nKbdInteractiveAuthentication no\n' >> /etc/ssh/sshd_config \
+    && printf '#!/bin/sh\nsleep "$(cat /tmp/delay 2>/dev/null || echo 0)"\nexit 0\n' > /usr/local/bin/delay.sh && chmod +x /usr/local/bin/delay.sh \
+    && printf 'auth required pam_exec.so quiet /usr/local/bin/delay.sh\nauth required pam_unix.so\naccount required pam_permit.so\nsession required pam_permit.so\n' > /etc/pam.d/sshd
+
+EXPOSE 22
+CMD ["/usr/sbin/sshd.pam", "-D", "-e"]

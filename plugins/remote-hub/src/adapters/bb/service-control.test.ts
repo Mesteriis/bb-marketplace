@@ -274,6 +274,8 @@ describe("Z1: which sessions an agent may drive", () => {
     const h = await service.sshOpen({ host: "h", extraOptions: [] }, 80, 24, undefined, ASK);
     expect(service.agentControl(h)).toBe("pending");
     helper.askpass(h.sessionId, { type: "credential_used" });
+    expect(service.agentControl(h), "the secret was handed over but the server has not decided").toBe("pending");
+    helper.askpass(h.sessionId, { type: "connected" });
     expect(service.agentControl(h)).toBe("ready");
     helper.askpass(h.sessionId, { type: "prompt", promptId: 3, text: "One-time code:", kind: "secret" });
     expect(service.agentControl(h)).toBe("pending");
@@ -289,6 +291,7 @@ describe("Z1: which sessions an agent may drive", () => {
     expect(service.ownerQuestions(h)).toEqual([]);
     expect(service.agentControl(h)).toBe("pending");
     helper.askpass(h.sessionId, { type: "credential_used" });
+    helper.askpass(h.sessionId, { type: "connected" });
     expect(service.agentControl(h)).toBe("ready");
   });
 
@@ -298,6 +301,7 @@ describe("Z1: which sessions an agent may drive", () => {
     const seen: unknown[] = [];
     service.subscribeSshAskpass(h, (e) => seen.push(e));
     helper.askpass(h.sessionId, { type: "credential_used" });
+    helper.askpass(h.sessionId, { type: "connected" });
     expect(seen).toEqual([]);
   });
 
@@ -305,6 +309,7 @@ describe("Z1: which sessions an agent may drive", () => {
     const { helper, service } = setup();
     const a = await service.sshOpen({ host: "h", extraOptions: [] }, 80, 24, undefined, ASK);
     helper.askpass(a.sessionId, { type: "credential_used" });
+    helper.askpass(a.sessionId, { type: "connected" });
     helper.askpass(a.sessionId, { type: "credential_rejected" });
     expect(service.agentControl(a)).toBe("never");
     const b = await service.sshOpen({ host: "h", extraOptions: [] }, 80, 24, undefined, ASK);

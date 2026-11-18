@@ -3,6 +3,9 @@ use remote_hub_helper::ipc;
 fn main() {
     // OpenSSH runs $SSH_ASKPASS, a symlink named remote-hub-askpass to this binary.
     if let Some(argv0) = std::env::args().next() {
+        if remote_hub_helper::askpass::invoked_as_connected(&argv0) {
+            std::process::exit(remote_hub_helper::askpass::run_connected_client());
+        }
         if remote_hub_helper::askpass::invoked_as_askpass(&argv0) {
             let all: Vec<String> = std::env::args().collect();
             std::process::exit(remote_hub_helper::askpass::run_client(&all));

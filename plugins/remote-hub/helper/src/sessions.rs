@@ -385,6 +385,20 @@ impl SessionManager {
         }
         let broker = self.askpass.as_mut().expect("just created");
         let (nonce, mut env) = broker.prepare();
+        // OpenSSH runs LocalCommand on this machine only after the login succeeded: the trusted signal that the
+        // server accepted the secret. The values are fixed here, after the caller's argv was validated (and the
+        // validator refuses both options from anyone else).
+        if spec.argv.first().and_then(|a| a.to_str().ok()).map(|a| a.rsplit('/').next() == Some("ssh")).unwrap_or(false) {
+            if let Some(at) = spec.argv.iter().position(|a| a.as_bytes() == b"--") {
+                let command = broker.connected_command();
+                let extra: Vec<CString> = ["-o", "PermitLocalCommand=yes", "-o"]
+                    .iter()
+                    .map(|v| CString::new(*v).expect("no nul"))
+                    .chain(std::iter::once(CString::new(format!("LocalCommand={command}")).map_err(|_| SessionError::Sys { step: "localcommand", errno: 0 })?))
+                    .collect();
+                spec.argv.splice(at..at, extra);
+            }
+        }
         // Test-hooks only: the askpass client (a child of ssh, with the session's small environment)
         // must open the same temporary keychain the helper was given.
         #[cfg(feature = "test-hooks")]

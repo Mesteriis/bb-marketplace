@@ -416,6 +416,9 @@ export class HelperProcess {
       case "ssh.credential_used":
         this.emitSshAskpass(resp.sessionId, { type: "credential_used" });
         return true;
+      case "ssh.connected":
+        this.emitSshAskpass(resp.sessionId, { type: "connected" });
+        return true;
       case "ssh.credential_rejected":
         this.emitSshAskpass(resp.sessionId, { type: "credential_rejected" });
         return true;

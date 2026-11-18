@@ -315,6 +315,90 @@ describe.skipIf(!dockerOk)("agent control over SSH: connect, owner decides the h
   }, 90_000);
 });
 
+describe.skipIf(!dockerOk)("A1: an agent can drive an SSH session only after the server ACCEPTED the login", () => {
+  const DELAY_S = 7;
+  let tmp = "";
+  let cid = "";
+  let c!: Awaited<ReturnType<typeof compose>>;
+  let goodId = "";
+  let badId = "";
+  const watchdog = setTimeout(() => process.abort(), 300_000);
+  const key = (r: ToolResult) => JSON.parse(c.text(r)) as Record<string, any>;
+
+  beforeAll(async () => {
+    assertTestHooksHelper(HELPER);
+    execFileSync("docker", ["build", "-q", "-f", join(here, "Dockerfile.pam"), "-t", "remote-hub-sshd-pam-test", here], { stdio: "ignore" });
+    tmp = makeTemp("rh-agentctl-pam-");
+    const port = await freePort();
+    cid = execFileSync("docker", ["run", "-d", "-p", `127.0.0.1:${port}:22`, "remote-hub-sshd-pam-test"], { encoding: "utf8" }).trim();
+    execFileSync("docker", ["exec", "-i", cid, "chpasswd"], { input: `root:${PASSWORD}\n` });
+    execFileSync("docker", ["exec", cid, "sh", "-c", `echo ${DELAY_S} > /tmp/delay`]);
+    await sleep(2000);
+    c = await compose(throwawayEnv(tmp));
+    const good = c.profiles.save({ fields: fields({ port, name: "pam good" }) });
+    goodId = good.id;
+    await c.book.save({ profileId: good.id, secret: PASSWORD });
+    const bad = c.profiles.save({ fields: fields({ port, name: "pam bad" }) });
+    badId = bad.id;
+    await c.book.save({ profileId: bad.id, secret: "not-the-password" });
+    c.access.set(goodId, "input", false);
+    c.access.set(badId, "input", false);
+  }, 180_000);
+
+  afterAll(() => {
+    clearTimeout(watchdog);
+    c?.service.stop();
+    if (cid !== "") spawnSync("docker", ["rm", "-f", cid], { stdio: "ignore" });
+    removeTemps();
+  });
+
+  async function connect(id: string) {
+    const opened = key(await c.call("remote_connect", { connectionId: id }));
+    const sid = opened.sessionId as string;
+    const [generation, n] = sid.split(".");
+    return { sid, handle: { generation: generation as string, sessionId: Number(n) } };
+  }
+
+  it("while the server is still deciding the session is not ready: no control, no input; it becomes ready only after the decision", async () => {
+    const { sid, handle } = await connect(goodId);
+    let answeredAt = 0;
+    let readyAt = 0;
+    const seen = new Set<string>();
+    await poll(async () => {
+      for (const q of c.service.sshPendingPrompts(handle)) {
+        await c.handlers.agent_prompt_answer({ ...handle, promptId: q.promptId, answer: "yes" } as never);
+        answeredAt = Date.now();
+      }
+      const state = c.service.agentControl(handle);
+      seen.add(state);
+      if (state === "pending" && answeredAt > 0 && Date.now() - answeredAt > 1500 && Date.now() - answeredAt < 4000) {
+        // The password has been handed to ssh and PAM is sleeping: an agent still gets nothing.
+        expect(c.text(await c.call("remote_control_acquire", { sessionId: sid }))).toContain("session_not_ready");
+        expect(c.text(await c.call("remote_terminal_input", { sessionId: sid, leaseId: "x", actions: [{ type: "text", text: "id" }] }))).not.toMatch(/"queued"|accepted/);
+      }
+      if (state === "ready") readyAt = Date.now();
+      return state === "ready";
+    }, 60_000, "ready after the server's decision");
+    expect(seen.has("ready") && seen.has("pending")).toBe(true);
+    // The server held its answer for DELAY_S seconds after the password; ready came no earlier than that (minus the time the host-key question took).
+    expect(readyAt - Math.max(answeredAt, 1)).toBeGreaterThanOrEqual((DELAY_S - 2) * 1000);
+    expect((await c.call("remote_disconnect", { sessionId: sid })).isError).toBeUndefined();
+  }, 120_000);
+
+  it("a rejected password never becomes ready", async () => {
+    const { sid, handle } = await connect(badId);
+    const states: string[] = [];
+    await poll(async () => {
+      for (const q of c.service.sshPendingPrompts(handle)) await c.handlers.agent_prompt_answer({ ...handle, promptId: q.promptId, answer: "yes" } as never);
+      const state = c.service.agentControl(handle);
+      states.push(state);
+      return state === "never";
+    }, 90_000, "the refused credential ends the session for agents");
+    expect(states).not.toContain("ready");
+    expect(c.text(await c.call("remote_control_acquire", { sessionId: sid }))).toMatch(/session_not_found|no_session|not found/i);
+  }, 120_000);
+});
+
 describe.skipIf(!dockerOk)("agent control over RDP: typed input on a real desktop", () => {
   let cid = "";
   let c!: Awaited<ReturnType<typeof compose>>;

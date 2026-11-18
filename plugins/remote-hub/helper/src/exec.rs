@@ -141,7 +141,7 @@ impl ExecManager {
         // Every descriptor the helper owns is close-on-exec (the askpass socket, the signal pipe, the keychain pipes), and
         // stdin/stdout/stderr are replaced above, so the child inherits nothing. (No pre_exec close loop: it would close the
         // pipe std uses to report a failed exec.)
-        let mut child = command.spawn().map_err(|e| ExecError::Spawn(e.raw_os_error().unwrap_or(0)))?;
+        let child = command.spawn().map_err(|e| ExecError::Spawn(e.raw_os_error().unwrap_or(0)))?;
         if let Some(out) = child.stdout.as_ref() {
             set_nonblocking(out.as_raw_fd());
         }

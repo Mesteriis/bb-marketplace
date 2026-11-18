@@ -373,6 +373,11 @@ pub enum Response {
         #[serde(rename = "sessionId")]
         session_id: u32,
     },
+    #[serde(rename = "ssh.connected")]
+    SshConnected {
+        #[serde(rename = "sessionId")]
+        session_id: u32,
+    },
     #[serde(rename = "ssh.credential_rejected")]
     SshCredentialRejected {
         #[serde(rename = "sessionId")]

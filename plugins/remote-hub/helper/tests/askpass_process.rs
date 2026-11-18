@@ -675,3 +675,45 @@ fn a_server_with_a_key_in_the_overlay_is_not_held() {
     }
     let _ = std::fs::remove_dir_all(&kh_dir);
 }
+
+/// How OpenSSH runs LocalCommand: the private `remote-hub-connected` link, called as a child of ssh (directly, or through a shell).
+const RUN_CONNECTED: &str = r#"
+sub connected { my ($via_shell) = @_; (my $c = $ENV{SSH_ASKPASS}) =~ s{remote-hub-askpass$}{remote-hub-connected}; return $via_shell ? system("$c; true") : system($c); }
+"#;
+
+#[test]
+fn local_command_after_the_secret_was_used_says_connected_once_and_not_before() {
+    let mut f = Fixture::new("conn", &[]);
+    let script = format!(
+        r#"{RUN_CONNECTED}
+connected(0);                 # before any secret was handed over: must be ignored
+my ($p1, $r1) = ask("user\@host's password: ");
+print "ASKED\n";
+connected(0);                 # directly under ssh
+connected(1);                 # through a shell, once more: still one event
+print "DONE\n";
+sleep 5;
+"#
+    );
+    let sid = f.open(&script, true);
+    let (_, events) = f.drive(sid, Duration::from_secs(20), |t, _| t.contains("DONE"));
+    // Give the helper a turn to forward everything it queued.
+    std::thread::sleep(Duration::from_millis(300));
+    let (_, more) = f.drive(sid, Duration::from_secs(2), |_, _| true);
+    let all: Vec<&Response> = events.iter().chain(more.iter()).collect();
+    let used = all.iter().position(|r| matches!(r, Response::SshCredentialUsed { session_id } if *session_id == sid));
+    let connected = all.iter().position(|r| matches!(r, Response::SshConnected { session_id } if *session_id == sid));
+    assert!(used.is_some() && connected.is_some() && used < connected, "{all:?}");
+    assert_eq!(all.iter().filter(|r| matches!(r, Response::SshConnected { .. })).count(), 1, "{all:?}");
+}
+
+#[test]
+fn local_command_with_no_saved_secret_used_never_says_connected() {
+    let mut f = Fixture::new("conn-no", &[]);
+    let script = format!("{RUN_CONNECTED}\nconnected(0);\nprint \"DONE\\n\";\nsleep 3;\n");
+    let sid = f.open(&script, true);
+    let (_, events) = f.drive(sid, Duration::from_secs(20), |t, _| t.contains("DONE"));
+    std::thread::sleep(Duration::from_millis(300));
+    let (_, more) = f.drive(sid, Duration::from_secs(2), |_, _| true);
+    assert!(!events.iter().chain(more.iter()).any(|r| matches!(r, Response::SshConnected { .. })));
+}
