@@ -77,7 +77,7 @@ export function AgentPanel({ api, profileNames, onClose }: AgentPanelProps) {
   const name = (id: string | null) => (id === null ? "" : (profileNames.get(id) ?? "a deleted connection"));
 
   return (
-    <section aria-label="Agent activity" className="rh-agents">
+    <section aria-label="Agent activity" className="rh-import rh-agents">
       <div className="rh-import-head">
         <h2>Agent access and activity</h2>
         <button type="button" onClick={onClose}>
