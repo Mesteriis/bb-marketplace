@@ -202,9 +202,14 @@ describe.skipIf(!runDocker)("RDP service against xrdp (cases 6b and 8)", () => {
     const refreshFrom = a.frames.length;
     a.handlers.onMessage(a.socket, JSON.stringify({ type: "refresh" }));
     await poll(() => (pumpAll(), a.frames.length > refreshFrom && b.frames.length > 0), 20_000, "the refreshed frame on both views");
+    // What must hold is not that the two histories are identical at one instant: the desktop keeps painting (the cursor
+    // blinks) and a view that is busy may legitimately skip an intermediate update while the other receives it. What must
+    // hold is that each view only ever moves FORWARD, and that both end on the same newest frame.
     pumpAll();
-    expect(a.frames.slice(-b.frames.length)).toEqual(b.frames);
-    expect(a.last()).toBe(b.last());
+    const forward = (ids: number[]) => ids.every((id, i) => i === 0 || id >= (ids[i - 1] as number));
+    expect(forward(a.frames), JSON.stringify(a.frames)).toBe(true);
+    expect(forward(b.frames), JSON.stringify(b.frames)).toBe(true);
+    await poll(() => (pumpAll(), a.last() !== undefined && a.last() === b.last()), 20_000, "both views end on the same newest frame");
 
     // A third view never acks. It gets exactly the one full update it is sent on attach.
     const silent = await attachView(handle, true);
