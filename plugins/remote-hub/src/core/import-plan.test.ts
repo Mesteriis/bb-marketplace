@@ -4,6 +4,14 @@ import type { ConfigEntry } from "./ssh-config.ts";
 
 const entry = (over: Partial<ConfigEntry> = {}): ConfigEntry => ({ alias: "Build", hostName: "Build.Example.Test", port: 2222, user: "ci", identityFiles: ["/k/id_build"], flags: [], ...over });
 
+describe("a host name that is not a host name (X2)", () => {
+  it("a HostName with @ is shown as skipped, not importable", () => {
+    const c = candidateFromConfigEntry(entry({ alias: "odd", hostName: "user@host.example.test" }));
+    expect(c.skip).toBe("the host name must not contain @");
+    expect(candidateFromConfigEntry(entry({ alias: "fine", hostName: "host.example.test" })).skip).toBeNull();
+  });
+});
+
 describe("candidateFromConfigEntry", () => {
   it("a resolved entry becomes an explicit destination with a lower-case host and its key", () => {
     const c = candidateFromConfigEntry(entry());

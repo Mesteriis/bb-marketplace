@@ -155,6 +155,12 @@ function readInto(text: string, base: Cond[], depth: number, state: ReadState): 
     } else if (kw.key === "include") {
       for (const word of splitWords(kw.rest)) includeInto(word, conds, depth, state);
     } else {
+      // ssh refuses a single-value keyword with more than one word ("garbage at end of line"), so nothing it
+      // would have said about this alias can be trusted.
+      if ((kw.key === "hostname" || kw.key === "port" || kw.key === "user") && splitWords(kw.rest).length > 1) {
+        state.issues.push(`a "${kw.key}" line with more than one value was not understood`);
+        state.incomplete = true;
+      }
       state.items.push({ conds, directive: { key: kw.key, value: kw.rest, line: index + 1 } });
     }
   });

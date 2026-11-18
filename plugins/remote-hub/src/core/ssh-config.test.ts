@@ -7,6 +7,25 @@ const opts = (files: Record<string, string> = {}, over: Partial<ConfigOptions> =
   ...over,
 });
 
+describe("single-value keywords (X2)", () => {
+  const noInclude = { home: "/h", include: () => ({ files: [], complete: true }) };
+
+  it("extra words after HostName, Port or User make the read incomplete: ssh refuses such a line, so nothing it says is trusted", () => {
+    for (const line of ["HostName a.example b.example", "Port 22 23", "User one two"]) {
+      const parse = parseSshConfig(`Host x\n  ${line}\n`, noInclude);
+      expect(parse.incomplete, line).toBe(true);
+      expect(parse.entries[0]?.flags, line).toContain("incomplete");
+      expect(parse.issues.join(" "), line).toContain("more than one value");
+    }
+  });
+
+  it("one quoted value with spaces, a trailing comment and the = form are still one value", () => {
+    for (const line of ['HostName "a b.example"', "HostName a.example # note", "HostName=a.example", "Port = 22"]) {
+      expect(parseSshConfig(`Host x\n  ${line}\n`, noInclude).incomplete, line).toBe(false);
+    }
+  });
+});
+
 describe("parseSshConfig", () => {
   it("reads an alias with HostName, Port, User and IdentityFile (~ expanded), and nothing else", () => {
     const parse = parseSshConfig(

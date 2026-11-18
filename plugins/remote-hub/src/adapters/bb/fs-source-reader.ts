@@ -106,6 +106,9 @@ export function createFsSourceReader(options: FsSourceReaderOptions = {}): Sourc
     include(configPath, pattern, budget: IncludeBudget): IncludeResult {
       const files: IncludedFile[] = [];
       let complete = true;
+      // glob(3) knows `[...]` classes and braces, and a backslash escapes: this reader implements `*` and `?` only,
+      // so any other metacharacter must not be taken for part of a file name.
+      if (/[\[\]{}\\]/.test(pattern)) return { files, complete: false };
       try {
         const base = realpathSync(dirname(configPath));
         // OpenSSH anchors a relative Include of a USER config to ~/.ssh, whichever file was chosen. A config that

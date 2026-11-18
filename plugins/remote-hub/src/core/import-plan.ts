@@ -32,6 +32,7 @@ const BLOCKING = new Set(["proxy", "match", "tokens", "canonicalize", "host-key-
 
 /** Why an entry cannot become a profile (null when it can). */
 export function skipReason(f: ImportedFields, name: string): string | null {
+  if (f.host.includes("@")) return "the host name must not contain @";
   const parsed = profileFieldsSchema.safeParse({ ...toProfileFields(f, name, "Imported"), credentialRef: null });
   return parsed.success ? null : (parsed.error.issues[0]?.message ?? "not a valid profile");
 }

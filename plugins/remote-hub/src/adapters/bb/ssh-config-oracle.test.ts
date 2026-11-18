@@ -130,6 +130,16 @@ describe.skipIf(!haveSsh)("the reader agrees with `ssh -G` on fixture configs", 
     expect(compare({ config: "Host \"a b\" 'c' d\\\"e\n  HostName quoted.example\nHost *\n  HostName fallback.example\n" }, ["c"])).toBe(1);
   });
 
+  it("a bracket glob in an Include: ssh expands it, so the reader must not guess a literal name (X2)", () => {
+    writeFileSync(join(home, ".ssh", "extra1.conf"), "Host p\n  HostName from-extra1\n");
+    writeFileSync(join(home, ".ssh", "config"), "Include extra[12].conf\nHost p\n  HostName from-main\n");
+    const config = join(home, ".ssh", "config");
+    expect(sshG(config, "p").get("hostname")).toBe("from-extra1"); // ssh DID read extra1.conf
+    const parse = readerFor(config);
+    expect(parse.incomplete).toBe(true);
+    expect(parse.entries.every((e) => e.flags.includes("incomplete"))).toBe(true);
+  });
+
   it("a relative Include is anchored to ~/.ssh, not to the directory of the chosen file (W3b)", () => {
     mkdirSync(join(home, "elsewhere"), { recursive: true });
     writeFileSync(join(home, "elsewhere", "config"), "Include extra.conf\n");

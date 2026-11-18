@@ -121,6 +121,18 @@ describe("fs source reader (fixture directories only)", () => {
     expect(reader().include(join(root, "elsewhere", "config"), join(root, "elsewhere", "extra.conf"), budget()).files.map((f) => f.text)).toEqual(["Host p"]);
   });
 
+  it("an Include path with a glob metacharacter this reader does not implement is incomplete, never a literal file name (X2)", () => {
+    writeFileSync(join(dir, "config"), "x");
+    writeFileSync(join(dir, "extra1.conf"), "Host a");
+    writeFileSync(join(dir, "[12].conf"), "Host literal");
+    const r = reader();
+    for (const pattern of ["extra[12].conf", "extra{1,2}.conf", "extra\\1.conf", "[12].conf", "extra1].conf"]) {
+      expect(r.include(join(dir, "config"), pattern, budget()), pattern).toEqual({ files: [], complete: false });
+    }
+    // The wildcards it does implement still work.
+    expect(r.include(join(dir, "config"), "extra?.conf", budget()).files.map((f) => f.text)).toEqual(["Host a"]);
+  });
+
   it("ssh -G resolves a fixture config without connecting (real /usr/bin/ssh, fixture file only)", async () => {
     writeFileSync(join(dir, "config"), "Host web\n  HostName web.fixture.invalid\n  Port 2022\n  User deploy\n");
     const out = await reader().sshG(join(dir, "config"), "web");
