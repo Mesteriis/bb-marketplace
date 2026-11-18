@@ -1,7 +1,7 @@
 {
   "name": "bb-plugin-makosh-remote-hub",
   "version": "0.1.0",
-  "description": "Experimental SSH/RDP manager. Stage 2a: one real SSH session in xterm, a Rust PTY helper, versioned stdio + binary WebSocket.",
+  "description": "Experimental SSH/RDP manager: SSH in xterm and RDP on a canvas (strict TLS, NLA, input, screenshots) through a Rust helper.",
   "private": true,
   "type": "module",
   "license": "MIT",
@@ -28,7 +28,7 @@
   },
   "bb": {
     "name": "Remote Hub [Experimental]",
-    "description": "Experimental SSH/RDP manager. Stage 2a: one real SSH session in xterm, a Rust PTY helper, versioned stdio + binary WebSocket.",
+    "description": "Experimental SSH/RDP manager: SSH in xterm and RDP on a canvas (strict TLS, NLA, input, screenshots) through a Rust helper.",
     "branding": {
       "icon": "./assets/icon.svg"
     },
