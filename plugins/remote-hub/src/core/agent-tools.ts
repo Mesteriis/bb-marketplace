@@ -4,7 +4,7 @@
 // credential override, or an approval flag (the schemas are strict, so unknown keys are refused).
 import { z } from "zod";
 import type { AgentAccessBook, AgentLevel } from "./agent-access.ts";
-import type { AgentAudit, AuditTicket } from "./agent-audit.ts";
+import type { AgentAudit, AuditDetailMode, AuditTicket } from "./agent-audit.ts";
 import type { ToolBudget } from "./agent-budget.ts";
 import type { Profile } from "./profile.ts";
 import type { ScrollbackRead } from "./scrollback.ts";
@@ -59,6 +59,8 @@ export interface AgentToolDeps {
   audit: AgentAudit;
   budget: ToolBudget;
   ports: AgentToolPorts;
+  /** More fields for a session's row (who controls it, what waits for the owner): added by the control tools. */
+  sessionExtras?: (s: AgentSessionView) => Record<string, unknown>;
 }
 
 export interface AgentToolDef<S extends z.ZodType = z.ZodType> {
@@ -75,24 +77,24 @@ export const SCREENSHOT_DEFAULT_DIM = 1280;
 export const SCREENSHOT_MAX_DIM = 1920;
 export const SCREENSHOT_MAX_BYTES = 700 * 1024;
 
-const CANNOT = "Cannot read or write passwords, passphrases or keys, and cannot approve hosts or certificates (the owner does that on the Remote Hub page). ";
+export const CANNOT = "Cannot read or write passwords, passphrases or keys, and cannot approve hosts or certificates (the owner does that on the Remote Hub page). ";
 
-class ToolError extends Error {
+export class ToolError extends Error {
   constructor(readonly code: string, message: string) {
     super(message);
   }
 }
 
-const text = (t: string): ToolContent => ({ type: "text", text: t });
-const json = (value: unknown): ToolContent => text(JSON.stringify(value, null, 2));
-const errorResult = (code: string, message: string): ToolResult => ({ content: [text(`error ${code}: ${message}`)], isError: true });
+export const text = (t: string): ToolContent => ({ type: "text", text: t });
+export const json = (value: unknown): ToolContent => text(JSON.stringify(value, null, 2));
+export const errorResult = (code: string, message: string): ToolResult => ({ content: [text(`error ${code}: ${message}`)], isError: true });
 
 function resultBytes(r: ToolResult): number {
   return r.content.reduce((n, p) => n + (p.type === "text" ? p.text.length : p.data.length), 0);
 }
 
-const connectionIdSchema = z.string().uuid();
-const sessionIdSchema = z.string().regex(/^[0-9a-f]{32}\.\d{1,10}$/);
+export const connectionIdSchema = z.string().uuid();
+export const sessionIdSchema = z.string().regex(/^[0-9a-f]{32}\.\d{1,10}$/);
 
 /** What an agent may see of a profile: never the credential reference, the key path or any secret. */
 function viewOf(p: Profile, level: AgentLevel) {
@@ -114,18 +116,19 @@ function viewOf(p: Profile, level: AgentLevel) {
 }
 
 /** Keeps each tool's own parameter type while the list holds them all. */
-function def<S extends z.ZodType>(tool: AgentToolDef<S>): AgentToolDef {
+export function def<S extends z.ZodType>(tool: AgentToolDef<S>): AgentToolDef {
   return tool as unknown as AgentToolDef;
 }
 
-export function createAgentTools(deps: AgentToolDeps): AgentToolDef[] {
+/** The gate every tool call passes through, and the lookups the tools share. */
+export function createGate(deps: AgentToolDeps) {
   const { access, audit, budget, ports } = deps;
 
   /** The one gate every call passes through. `ids` are what the call names (for the audit); the handler checks access. */
   async function guarded(
     tool: string,
     ctx: AgentCallContext,
-    ids: { profileId?: string | null; sessionKey?: string | null },
+    ids: { profileId?: string | null; sessionKey?: string | null; detailMode?: AuditDetailMode; detail?: string | null },
     handler: () => Promise<ToolResult>,
   ): Promise<ToolResult> {
     const admitted = budget.admit(ctx.threadId);
@@ -170,7 +173,15 @@ export function createAgentTools(deps: AgentToolDeps): AgentToolDef[] {
     exitCode: s.exitCode,
     closeReason: s.reason,
     ...(s.rdp === undefined ? {} : { rdp: { state: s.rdp.state, desktop: s.rdp.desktop } }),
+    ...(deps.sessionExtras === undefined ? {} : deps.sessionExtras(s)),
   });
+
+  return { guarded, denied, noSession, observableSession, sessionRow };
+}
+
+export function createAgentTools(deps: AgentToolDeps): AgentToolDef[] {
+  const { access, ports } = deps;
+  const { guarded, denied, noSession, observableSession, sessionRow } = createGate(deps);
 
   const empty = z.object({}).strict();
   const tools: AgentToolDef[] = [
