@@ -37,6 +37,7 @@ import { createFsSourceReader } from "./src/adapters/bb/fs-source-reader.ts";
 import { createSqliteImportStore } from "./src/adapters/bb/import-sqlite.ts";
 import { createRpcHandlers } from "./src/adapters/bb/rpc-handlers.ts";
 import { createPveRpc } from "./src/adapters/bb/pve-rpc.ts";
+import { createPveTools } from "./src/core/agent-pve-tools.ts";
 import { createSqlitePveGuestLinks } from "./src/adapters/bb/pve-sqlite.ts";
 import { ImportBook } from "./src/core/import-book.ts";
 import { CredentialBook } from "./src/core/credential.ts";
@@ -111,7 +112,7 @@ export default function plugin(bb: BbPluginApi): void {
   };
   const controlDeps = { ...toolDeps, leases, control: controlPorts, registry, feed };
   const execPorts = agentExecPorts({ service, profiles, credentials, feed });
-  registerAgentTools(bb, [...createAgentTools(toolDeps), ...createControlTools(controlDeps), ...createExecTools({ ...controlDeps, exec: execPorts })]);
+  registerAgentTools(bb, [...createAgentTools(toolDeps), ...createPveTools({ ...toolDeps, pve: { targets: (o) => pveRpc.targets(o) } }), ...createControlTools(controlDeps), ...createExecTools({ ...controlDeps, exec: execPorts })]);
   bb.rpc.register(rpcContract, handlers);
   registerControlLifecycle(bb, { leases, registry, service, watchers, closeSession: (key) => controlPorts.disconnect(key) });
 
