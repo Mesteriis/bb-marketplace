@@ -157,6 +157,9 @@ pub enum EngineEvent {
     /// helper answers with `PinAnswer`.
     PinRequest { fingerprint: String },
     Desktop { frame_id: u64, width: u32, height: u32, timestamp: u64 },
+    /// How complete the picture is (counts only): applied updates, covered pixels, time of the last one, updates IronRDP
+    /// discarded, full-redraw requests sent and not sent, output kinds this engine does not act on.
+    Stats { updates: u64, pixels: u64, last_update_ms: u64, discarded: u64, recoveries: u64, recovery_skipped: u64, ignored_outputs: u64 },
     Closed { reason: String },
     Screenshot { frame_id: u64, width: u32, height: u32, timestamp: u64, png: String },
     /// The header of a chunked screenshot (a PNG whose base64 does not fit one

@@ -1228,6 +1228,11 @@ fn relay_rdp_frames(rdp: &mut RdpManager, outbox: &mut VecDeque<u8>, current_exe
             RdpFrame::Event(EngineEvent::OwnerSet { .. }) => {
                 // The manager turns this into RdpFrame::OwnerSet.
             }
+            RdpFrame::Event(EngineEvent::Stats { updates, pixels, last_update_ms, discarded, recoveries, recovery_skipped, ignored_outputs }) => {
+                // Counts only. Carried as one `rdp.state` line so a reader of session_list sees them without a new message type.
+                let state = format!("stats updates={updates} pixels={pixels} last_ms={last_update_ms} discarded={discarded} recoveries={recoveries} skipped={recovery_skipped} ignored={ignored_outputs}");
+                outbox.extend(protocol::encode_response(&Response::RdpState { session_id: rid, state }));
+            }
             RdpFrame::Event(EngineEvent::Closed { .. }) => {
                 // Reported once via RdpManager::take_all_closed().
             }

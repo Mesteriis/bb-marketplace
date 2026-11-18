@@ -6,7 +6,7 @@
 use std::os::fd::FromRawFd;
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use ironrdp_graphics::image_processing::PixelFormat;
 use ironrdp_pdu::geometry::InclusiveRectangle;
@@ -20,6 +20,7 @@ use super::connect::{
 use super::driver::Driver;
 use super::engine_io::{read_frame, spawn_reader, Cancel, Control, Inbox, Out};
 use super::framebuffer::{Framebuffer, Rect};
+use super::health::{self, Health};
 use super::input::Geometry;
 use super::input_encode::{coalesce_moves, encode_input};
 use super::mapping::map_terminate;
@@ -57,6 +58,7 @@ fn engine_main(mut stream: UnixStream) -> std::io::Result<i32> {
     else {
         return Ok(1);
     };
+    health::install_counter();
     let params = Params { host, port, username, password, domain, width, height, expected_fingerprint, pin_first_use };
     let out = Arc::new(Out::new(stream.try_clone()?));
     let inbox = spawn_reader(stream);
@@ -171,6 +173,10 @@ struct Active {
     desk: Desk,
     /// Who drives (A2): stale input is dropped here, and what was applied and is still down is released on a handover.
     driver: Driver,
+    health: Health,
+    /// What the server advertised for asking it to repaint (a redraw request needs one of them).
+    refresh_rect: bool,
+    suppress_output: bool,
 }
 
 /// How long the session may wait for its first painted update.
@@ -216,7 +222,8 @@ async fn run_active(
     }
     .build();
     let image = DecodedImage::new(PixelFormat::RgbA32, framebuffer.width() as u16, framebuffer.height() as u16);
-    let a = Active { reader, writer, stage, image, desk: Desk::new(framebuffer), driver: Driver::default() };
+    let (refresh_rect, suppress_output) = (connection.refresh_rect_support, connection.suppress_output_support);
+    let a = Active { reader, writer, stage, image, desk: Desk::new(framebuffer), driver: Driver::default(), health: Health::new(), refresh_rect, suppress_output };
     drive(a, out, control, cancel, FirstPaint::new(clock, first_paint)).await
 }
 
@@ -259,7 +266,49 @@ async fn drive(
         if let Some(reason) = handle_outputs(&mut a, out, outputs).await? {
             return report_closed(out, reason);
         }
+        if let Some(reason) = recover_and_report(&mut a, out).await? {
+            return report_closed(out, reason);
+        }
     }
+}
+
+/// After a turn: IronRDP discards a malformed visual update and latches a request for a full redraw; answer it (bounded:
+/// `health::RECOVERY_CAP` per minute, and only when the server advertised a way to repaint), then say how complete the
+/// picture is. Counts only, never a payload.
+async fn recover_and_report(a: &mut Active, out: &Out) -> std::io::Result<Option<RdpClosedReason>> {
+    let mut force = false;
+    if a.stage.take_bitmap_recovery_request() {
+        force = true;
+        let (w, h) = (a.desk.fb.width(), a.desk.fb.height());
+        let sendable = (a.refresh_rect || a.suppress_output) && w > 0 && h > 0 && w <= u32::from(u16::MAX) && h <= u32::from(u16::MAX);
+        if sendable && a.health.allow_recovery(Instant::now()) {
+            match a.stage.request_full_redraw(w as u16, h as u16, a.refresh_rect, a.suppress_output) {
+                Ok(frames) => {
+                    for frame in frames {
+                        if a.writer.write_all(&frame).await.is_err() {
+                            return Ok(Some(RdpClosedReason::NetworkError));
+                        }
+                    }
+                    a.health.recovered();
+                }
+                Err(_) => a.health.recovery_skipped(),
+            }
+        } else {
+            a.health.recovery_skipped();
+        }
+    }
+    if let Some(s) = a.health.due(Instant::now(), force) {
+        out.send(&EngineEvent::Stats {
+            updates: s.updates,
+            pixels: s.pixels,
+            last_update_ms: s.last_update_ms,
+            discarded: s.discarded,
+            recoveries: s.recoveries,
+            recovery_skipped: s.recovery_skipped,
+            ignored_outputs: s.ignored_outputs,
+        })?;
+    }
+    Ok(None)
 }
 
 /// One helper command. Queued input batches are merged first (see
@@ -338,10 +387,20 @@ async fn handle_outputs(
                 if a.desk.fb.apply_from_image(rect, a.image.data(), stride, now_ms()).is_err() {
                     return Ok(Some(RdpClosedReason::ProtocolError));
                 }
+                a.health.applied(rect.w, rect.h);
                 a.desk.dirty(out, rect)?;
             }
             ActiveStageOutput::Terminate(reason) => return Ok(Some(map_terminate(&reason))),
-            _ => {}
+            // Output kinds this engine does not act on, each counted (`ignored_outputs`) so a silent drop is visible:
+            // - pointer shape/position/visibility: the owner's view draws its own pointer, the remote one is not forwarded;
+            // - monitor layout: one monitor only, the desktop size is fixed at connect;
+            // - windowing orders and anything IronRDP adds later: no such channel is negotiated, nothing to apply.
+            ActiveStageOutput::PointerDefault
+            | ActiveStageOutput::PointerHidden
+            | ActiveStageOutput::PointerPosition { .. }
+            | ActiveStageOutput::PointerBitmap(_)
+            | ActiveStageOutput::MonitorLayout(_) => a.health.ignored_output(),
+            _ => a.health.ignored_output(),
         }
     }
     Ok(None)
@@ -687,8 +746,8 @@ mod tests {
     /// An `Active` over streams that never deliver a byte (the server is quiet).
     fn quiet_active() -> (Active, tokio::io::DuplexStream, tokio::io::DuplexStream) {
         use ironrdp_svc::StaticChannelSet;
-        let (client_r, server_r) = tokio::io::duplex(64);
-        let (client_w, server_w) = tokio::io::duplex(64);
+        let (client_r, server_r) = tokio::io::duplex(4096);
+        let (client_w, server_w) = tokio::io::duplex(4096);
         let reader_stream: super::super::connect::BoxStream = Box::new(client_r);
         let writer_stream: super::super::connect::BoxStream = Box::new(client_w);
         let (reader, _unused_w) = tokio::io::split(reader_stream);
@@ -711,6 +770,9 @@ mod tests {
             image: DecodedImage::new(PixelFormat::RgbA32, 8, 8),
             desk: Desk::new(Framebuffer::new(8, 8).unwrap()),
             driver: Driver::default(),
+            health: Health::new(),
+            refresh_rect: true,
+            suppress_output: false,
         };
         (a, server_r, server_w)
     }
@@ -859,5 +921,114 @@ mod tests {
         assert_eq!(base64_encode(b"fo"), "Zm8=");
         assert_eq!(base64_encode(b"foo"), "Zm9v");
         assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
+    }
+
+    // ---- picture completeness: discarded updates are answered with a full-redraw request ----
+
+    /// A Fast-Path Bitmap update that claims more bytes than it carries (the shape ironrdp discards and latches recovery on).
+    fn truncated_bitmap_pdu() -> Vec<u8> {
+        use ironrdp_pdu::fast_path::{EncryptionFlags, FastPathHeader, UpdateCode};
+        let mut frame = ironrdp_core::encode_vec(&FastPathHeader::new(EncryptionFlags::empty(), 1 + 2 + 3_200)).unwrap();
+        frame.push(UpdateCode::Bitmap.as_u8());
+        frame.extend_from_slice(&48_788u16.to_le_bytes());
+        frame.resize(frame.len() + 3_200, 0);
+        frame
+    }
+
+    fn run<T>(f: impl std::future::Future<Output = T>) -> T {
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(f)
+    }
+
+    /// What the (fake) server has received so far from the client, without waiting for more.
+    fn received(server: &mut tokio::io::DuplexStream) -> Vec<u8> {
+        use tokio::io::AsyncReadExt as _;
+        run(async {
+            let mut buf = vec![0u8; 4096];
+            match tokio::time::timeout(std::time::Duration::from_millis(100), server.read(&mut buf)).await {
+                Ok(Ok(n)) => buf[..n].to_vec(),
+                _ => Vec::new(),
+            }
+        })
+    }
+
+    fn feed_truncated(a: &mut Active) {
+        let dispatch = tracing_core::Dispatch::new(health::test_counter());
+        tracing_core::dispatcher::with_default(&dispatch, || {
+            let frame = truncated_bitmap_pdu();
+            a.stage.process(&mut a.image, ironrdp_pdu::Action::FastPath, &frame, None).expect("a malformed update is not fatal");
+        });
+    }
+
+    fn stats_of(out: Out, peer: &mut std::os::unix::net::UnixStream) -> Vec<serde_json::Value> {
+        event_texts(out, peer)
+            .split(|c: char| !c.is_ascii() || c.is_control())
+            .flat_map(|chunk| chunk.match_indices("{\"type\":\"stats\"").map(|(i, _)| chunk[i..].to_string()).collect::<Vec<_>>())
+            .filter_map(|t| serde_json::Deserializer::from_str(&t).into_iter::<serde_json::Value>().next().and_then(|r| r.ok()))
+            .collect()
+    }
+
+    #[test]
+    fn a_discarded_bitmap_update_is_answered_with_one_full_redraw_request_and_counted() {
+        let (mut a, mut server_to_client_unused, mut client_to_server) = quiet_active();
+        let _ = &mut server_to_client_unused;
+        let (engine_end, mut peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let out = Out::new(engine_end);
+        feed_truncated(&mut a);
+        assert!(run(recover_and_report(&mut a, &out)).unwrap().is_none());
+        assert!(!received(&mut client_to_server).is_empty(), "a redraw request must reach the server");
+        // IronRDP latches: the same loss reported again is not a second request.
+        feed_truncated(&mut a);
+        assert!(run(recover_and_report(&mut a, &out)).unwrap().is_none());
+        assert!(received(&mut client_to_server).is_empty(), "no second request for the same latch");
+        let stats = stats_of(out, &mut peer);
+        let last = stats.last().expect("stats were sent");
+        assert!(last["discarded"].as_u64().unwrap() >= 1, "{last}");
+        assert_eq!(last["recoveries"], 1, "{last}");
+        assert_eq!(last["recovery_skipped"], 0, "{last}");
+    }
+
+    #[test]
+    fn without_a_way_to_repaint_no_request_is_sent_and_the_skip_is_counted() {
+        let (mut a, _unused, mut client_to_server) = quiet_active();
+        a.refresh_rect = false;
+        a.suppress_output = false;
+        let (engine_end, mut peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let out = Out::new(engine_end);
+        feed_truncated(&mut a);
+        run(recover_and_report(&mut a, &out)).unwrap();
+        assert!(received(&mut client_to_server).is_empty());
+        let stats = stats_of(out, &mut peer);
+        let last = stats.last().unwrap();
+        assert_eq!((last["recoveries"].clone(), last["recovery_skipped"].clone()), (0.into(), 1.into()), "{last}");
+    }
+
+    #[test]
+    fn requests_are_capped_per_minute_even_if_the_latch_is_rearmed() {
+        let (mut a, _unused, _w) = quiet_active();
+        let (engine_end, mut peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let out = Out::new(engine_end);
+        // Pre-fill the window so the cap is already reached, then a fresh loss.
+        for _ in 0..health::RECOVERY_CAP {
+            assert!(a.health.allow_recovery(Instant::now()));
+        }
+        feed_truncated(&mut a);
+        run(recover_and_report(&mut a, &out)).unwrap();
+        let stats = stats_of(out, &mut peer);
+        let last = stats.last().unwrap();
+        assert_eq!((last["recoveries"].clone(), last["recovery_skipped"].clone()), (0.into(), 1.into()), "{last}");
+    }
+
+    #[test]
+    fn output_kinds_the_engine_does_not_act_on_are_counted_not_silent() {
+        let (mut a, _r, _w) = quiet_active();
+        let (engine_end, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let out = Out::new(engine_end);
+        let outputs = vec![ActiveStageOutput::PointerDefault, ActiveStageOutput::PointerHidden, ActiveStageOutput::PointerPosition { x: 1, y: 2 }];
+        assert!(run(handle_outputs(&mut a, &out, outputs)).unwrap().is_none());
+        assert_eq!(a.health.snapshot().ignored_outputs, 3);
+        let region = InclusiveRectangle { left: 0, top: 0, right: 3, bottom: 1 };
+        run(handle_outputs(&mut a, &out, vec![ActiveStageOutput::GraphicsUpdate(region)])).unwrap();
+        let s = a.health.snapshot();
+        assert_eq!((s.updates, s.pixels), (1, 8), "a 4x2 region covers 8 pixels");
     }
 }

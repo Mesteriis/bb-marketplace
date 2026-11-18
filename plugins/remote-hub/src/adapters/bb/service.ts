@@ -429,6 +429,16 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
     const rdp = info.rdp;
     switch (event.type) {
       case "rdp.state": {
+        if (event.state.startsWith("stats ")) {
+          // Picture-completeness counters (numbers only): one line, replaced as it changes, so the trace stays short.
+          const line = /^stats( [a-z_]+=\d{1,20}){7}$/.test(event.state) ? event.state : null;
+          if (line !== null) {
+            const at = rdp.trace.findIndex((t) => t.startsWith("stats "));
+            if (at >= 0) rdp.trace[at] = line;
+            else rdp.trace.push(line);
+          }
+          return;
+        }
         if (!(RDP_STATES as readonly string[]).includes(event.state)) return; // e.g. a test engine's paint counter
         if (rdp.state === "closed") return;
         rdp.state = event.state as RdpInfo["state"];

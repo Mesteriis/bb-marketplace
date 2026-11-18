@@ -136,6 +136,9 @@ Every crate in the helper's release dependency tree (`cargo tree --locked
 aws-lc-rs is in the lockfile but not linked into any target Remote Hub builds;
 the only rustls crypto provider is ring.
 
+The RDP engine now depends directly on tracing-core 0.1.36 (MIT; already in the tree through ironrdp) to count the
+warnings IronRDP logs when it discards an update; `tracing` 0.1.44 (MIT) is a dev-dependency used by its unit test.
+
 Test-only (never in the shipped binary): rustls and tokio-rustls as
 dev-dependencies, and a throwaway test CA and leaf certificate under
 `helper/tests/fixtures/tls-*.der` generated with openssl.

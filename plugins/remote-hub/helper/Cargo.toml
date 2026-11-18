@@ -83,6 +83,8 @@ ironrdp-pdu = "=0.11.0"
 ironrdp-graphics = "=0.11.0"
 ironrdp-input = "=0.9.0"
 ironrdp-core = "=0.3.1"
+# Counts the warnings IronRDP logs when it discards an update (already in the tree through ironrdp; MIT).
+tracing-core = "=0.1.36"
 
 tokio = { version = "=1.54.1", features = ["rt-multi-thread", "net", "io-util", "sync", "time", "macros"] }
 x509-cert = { version = "=0.3.0", default-features = false, features = ["std"] }
@@ -105,6 +107,7 @@ tokio-rustls = { version = "=0.26.6", default-features = false, features = ["rin
 # Test-only: builds an ActiveStage over quiet streams (already in the tree as a
 # transitive dependency of ironrdp-session).
 ironrdp-svc = "=0.10.0"
+tracing = "=0.1.44"
 
 [[test]]
 name = "known_hosts_process"
