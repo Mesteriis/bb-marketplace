@@ -135,3 +135,20 @@ fn interaction_stays_off_under_concurrent_use() {
     }
     assert!(Keychain::interaction_is_off());
 }
+
+/// The child-process protocol: one request, one reply, errors as codes.
+#[test]
+fn the_keychain_child_executes_requests_and_answers_with_codes() {
+    use remote_hub_helper::keychain::{execute, OpRequest};
+    let t = Temp::new("op");
+    let kc = t.keychain();
+    let req = |op: &str, secret: Option<&str>| OpRequest { op: op.into(), reference: "acct".into(), secret: secret.map(Secret::new) };
+    assert_eq!(execute(&kc, &req("status", None)).present, Some(false));
+    assert!(execute(&kc, &req("save", Some(SENTINEL))).error.is_none());
+    assert_eq!(execute(&kc, &req("status", None)).present, Some(true));
+    assert_eq!(execute(&kc, &req("get", None)).secret.unwrap().expose(), SENTINEL);
+    assert!(execute(&kc, &req("delete", None)).error.is_none());
+    assert_eq!(execute(&kc, &req("get", None)).error.as_deref(), Some("credential_missing"));
+    assert_eq!(execute(&kc, &req("save", None)).error.as_deref(), Some("keychain_unavailable")); // save without a secret
+    assert_eq!(execute(&kc, &req("frobnicate", None)).error.as_deref(), Some("keychain_unavailable"));
+}

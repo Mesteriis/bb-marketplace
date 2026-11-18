@@ -7,6 +7,9 @@
 //!   pump, exactly like the real engine. Every 25th paint it reports
 //!   `state = "paint=<n>"` (n = paints so far) so a test can wait for "the
 //!   desktop has repainted N more times" as an event instead of sleeping.
+//! * `credential` — as `ack`, and right after the first states it reports
+//!   `state = "pw_sha256=<first 16 hex of SHA-256(password)>"`: the helper's resolution of
+//!   a saved credential can be asserted without the password ever being printed.
 //! * `noise` — as `ack`, but the first full frame is incompressible pseudo-random
 //!   pixels (a fixed xorshift sequence), so a PNG screenshot of it is far above
 //!   one frame and exercises the chunked screenshot path.
@@ -29,11 +32,14 @@ use super::reasons::RdpClosedReason;
 
 pub fn run_fake_engine(mode: &str) -> i32 {
     let mut stream = unsafe { UnixStream::from_raw_fd(3) };
-    let (width, height) = loop {
+    let (width, height, password_digest) = loop {
         match read_frame(&mut stream) {
             Ok(Some(body)) if body.first() == Some(&protocol::FRAME_CONTROL) => {
-                if let Ok(EngineCommand::Open { width, height, .. }) = serde_json::from_slice(&body[1..]) {
-                    break (width, height);
+                if let Ok(EngineCommand::Open { width, height, password, .. }) = serde_json::from_slice(&body[1..]) {
+                    use sha2::{Digest, Sha256};
+                    let digest = Sha256::digest(password.expose().as_bytes());
+                    let hex: String = digest.iter().take(8).map(|b| format!("{b:02x}")).collect();
+                    break (width, height, hex);
                 }
             }
             Ok(Some(_)) => {}
@@ -46,7 +52,8 @@ pub fn run_fake_engine(mode: &str) -> i32 {
     let signal = mode.strip_prefix("flood-signal:").map(std::path::PathBuf::from);
     let flood = mode == "flood" || signal.is_some();
     let noise = mode == "noise";
-    match rt.block_on(run(flood, noise, signal, width, height, out, inbox)) {
+    let report = (mode == "credential").then_some(password_digest);
+    match rt.block_on(run(flood, noise, signal, report, width, height, out, inbox)) {
         Ok(()) => 0,
         Err(_) => 2,
     }
@@ -63,6 +70,7 @@ async fn run(
     flood: bool,
     noise: bool,
     signal: Option<std::path::PathBuf>,
+    report_password: Option<String>,
     width: u32,
     height: u32,
     out: Arc<Out>,
@@ -90,6 +98,9 @@ async fn run(
     let Inbox { mut control, cancel, .. } = inbox;
     for state in ["connecting", "tls", "authenticating"] {
         out.state(state)?;
+    }
+    if let Some(digest) = report_password {
+        out.state(&format!("pw_sha256={digest}"))?;
     }
     let Ok(fb) = Framebuffer::new(width, height) else { return out.closed(RdpClosedReason::ProtocolError) };
     let mut desk = Desk::new(fb);

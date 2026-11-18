@@ -68,12 +68,38 @@ pub enum Request {
         host: String,
         port: u16,
         username: String,
-        password: crate::secret::Secret,
+        /// Exactly one of `password` (use once) and `credentialRef` (a saved credential the
+        /// helper resolves from the Keychain itself; the secret never travels back).
+        #[serde(default)]
+        password: Option<crate::secret::Secret>,
+        #[serde(default, rename = "credentialRef")]
+        credential_ref: Option<String>,
         domain: Option<String>,
         width: u32,
         height: u32,
         #[serde(rename = "expectedFingerprint")]
         expected_fingerprint: Option<String>,
+    },
+    /// Store (or replace) a secret in the Keychain under `ref`. The secret is consumed here.
+    #[serde(rename = "credential.save")]
+    CredentialSave {
+        id: u64,
+        #[serde(rename = "ref")]
+        reference: String,
+        secret: crate::secret::Secret,
+    },
+    #[serde(rename = "credential.delete")]
+    CredentialDelete {
+        id: u64,
+        #[serde(rename = "ref")]
+        reference: String,
+    },
+    /// Whether the credential exists and the Keychain would hand it over. Never returns it.
+    #[serde(rename = "credential.status")]
+    CredentialStatus {
+        id: u64,
+        #[serde(rename = "ref")]
+        reference: String,
     },
     #[serde(rename = "rdp.cert_decision")]
     RdpCertDecision {
@@ -174,6 +200,10 @@ pub enum Response {
         code: String,
         message: String,
     },
+    #[serde(rename = "credential.ok")]
+    CredentialOk { id: u64 },
+    #[serde(rename = "credential.status")]
+    CredentialStatus { id: u64, present: bool },
     #[serde(rename = "rdp.ack")]
     RdpAck {
         id: u64,

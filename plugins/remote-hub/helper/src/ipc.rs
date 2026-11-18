@@ -136,6 +136,9 @@ fn request_id(req: &Request) -> Option<u64> {
         | Request::OpenEcho { id, .. }
         | Request::OpenSsh { id, .. }
         | Request::OpenRdp { id, .. }
+        | Request::CredentialSave { id, .. }
+        | Request::CredentialDelete { id, .. }
+        | Request::CredentialStatus { id, .. }
         | Request::RdpCertDecision { id, .. }
         | Request::RdpInput { id, .. }
         | Request::RdpScreenshot { id, .. }
@@ -146,6 +149,102 @@ fn request_id(req: &Request) -> Option<u64> {
         | Request::SessionCredit { id, .. }
         | Request::SessionClose { id, .. } => Some(*id),
     }
+}
+
+/// The only account names the helper will touch in the Keychain: our own
+/// references (rh-cred:v1:<executionHostId>:<uuid>). A request cannot name any
+/// other Keychain item.
+fn valid_credential_ref(reference: &str) -> bool {
+    reference.starts_with("rh-cred:v1:")
+        && reference.len() <= 96
+        && reference.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b':' || b == b'-')
+}
+
+enum CredentialRefusal {
+    BadRef,
+    Keychain(String),
+}
+
+impl CredentialRefusal {
+    fn into_response(self, id: u64) -> Response {
+        let (code, message) = match self {
+            CredentialRefusal::BadRef => ("invalid_credential_ref".to_string(), "not a Remote Hub credential reference".to_string()),
+            CredentialRefusal::Keychain(code) => {
+                let message = match code.as_str() {
+                    "keychain_locked" => crate::keychain::KeychainError::Locked.message(),
+                    "keychain_denied" => crate::keychain::KeychainError::Denied.message(),
+                    "credential_missing" => crate::keychain::KeychainError::Missing.message(),
+                    _ => crate::keychain::KeychainError::Unavailable.message(),
+                };
+                (code, message.to_string())
+            }
+        };
+        Response::Error { id: Some(id), code, message }
+    }
+}
+
+/// How long a keychain child may take. A locked keychain answers at once (prompts are off).
+const KEYCHAIN_CHILD_TIMEOUT_MS: libc::c_int = 5_000;
+
+/// Runs one Keychain operation in a `--keychain-op` child (the helper itself must stay
+/// single-threaded; see keychain.rs). The secret goes over the child's stdin pipe.
+fn keychain_child(
+    current_exe: &str,
+    op: &str,
+    reference: &str,
+    secret: Option<&crate::secret::Secret>,
+) -> Result<crate::keychain::OpReply, CredentialRefusal> {
+    use std::io::{Read, Write};
+    use std::os::fd::AsRawFd;
+    use std::process::{Command, Stdio};
+    if !valid_credential_ref(reference) {
+        return Err(CredentialRefusal::BadRef);
+    }
+    let unavailable = || CredentialRefusal::Keychain("keychain_unavailable".to_string());
+    let request = crate::keychain::OpRequest { op: op.to_string(), reference: reference.to_string(), secret: secret.cloned() };
+    let text = serde_json::to_string(&request).map_err(|_| unavailable())?;
+    let mut child = Command::new(current_exe)
+        .arg("--keychain-op")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| unavailable())?;
+    if let Some(mut stdin) = child.stdin.take() {
+        if stdin.write_all(text.as_bytes()).is_err() {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(unavailable());
+        }
+    }
+    let mut stdout = child.stdout.take().ok_or_else(unavailable)?;
+    let mut pfd = libc::pollfd { fd: stdout.as_raw_fd(), events: libc::POLLIN | libc::POLLHUP, revents: 0 };
+    let ready = unsafe { libc::poll(&mut pfd, 1, KEYCHAIN_CHILD_TIMEOUT_MS) };
+    if ready <= 0 {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(unavailable());
+    }
+    let mut body = String::new();
+    let read = stdout.by_ref().take(64 * 1024).read_to_string(&mut body);
+    let _ = child.wait();
+    if read.is_err() {
+        return Err(unavailable());
+    }
+    serde_json::from_str::<crate::keychain::OpReply>(&body).map_err(|_| unavailable())
+}
+
+fn keychain_ok(reply: crate::keychain::OpReply) -> Result<crate::keychain::OpReply, CredentialRefusal> {
+    match reply.error {
+        Some(code) => Err(CredentialRefusal::Keychain(code)),
+        None => Ok(reply),
+    }
+}
+
+/// The saved secret for a reference, for the one request that consumes it.
+fn resolve_credential(current_exe: &str, reference: &str) -> Result<crate::secret::Secret, CredentialRefusal> {
+    let reply = keychain_ok(keychain_child(current_exe, "get", reference, None)?)?;
+    reply.secret.ok_or_else(|| CredentialRefusal::Keychain("keychain_unavailable".to_string()))
 }
 
 /// Validate and build a SpawnSpec from a client-provided session.open_ssh.
@@ -367,11 +466,28 @@ fn handle(
             port,
             username,
             password,
+            credential_ref,
             domain,
             width,
             height,
             expected_fingerprint,
-        } => match rdp.open(current_exe, host, port, username, password, domain, width, height, expected_fingerprint) {
+        } => {
+            // The secret comes from exactly one place: the request (use once) or the Keychain.
+            let password = match (password, credential_ref) {
+                (Some(password), None) => password,
+                (None, Some(reference)) => match resolve_credential(current_exe, &reference) {
+                    Ok(password) => password,
+                    Err(refusal) => return Ok(protocol::encode_response(&refusal.into_response(id))),
+                },
+                _ => {
+                    return Ok(protocol::encode_response(&Response::Error {
+                        id: Some(id),
+                        code: "invalid_credential_source".to_string(),
+                        message: "give exactly one of password and credentialRef".to_string(),
+                    }))
+                }
+            };
+            match rdp.open(current_exe, host, port, username, password, domain, width, height, expected_fingerprint) {
             Ok((session_id, pid)) => Ok(protocol::encode_response(&Response::SessionOpened {
                 id,
                 session_id,
@@ -385,7 +501,23 @@ fn handle(
                 code: "rdp_open_failed".to_string(),
                 message,
             })),
-        },
+        }
+        }
+        Request::CredentialSave { id, reference, secret } => Ok(protocol::encode_response(
+            &keychain_child(current_exe, "save", &reference, Some(&secret))
+                .and_then(keychain_ok)
+                .map_or_else(|r| r.into_response(id), |_| Response::CredentialOk { id }),
+        )),
+        Request::CredentialDelete { id, reference } => Ok(protocol::encode_response(
+            &keychain_child(current_exe, "delete", &reference, None)
+                .and_then(keychain_ok)
+                .map_or_else(|r| r.into_response(id), |_| Response::CredentialOk { id }),
+        )),
+        Request::CredentialStatus { id, reference } => Ok(protocol::encode_response(
+            &keychain_child(current_exe, "status", &reference, None)
+                .and_then(keychain_ok)
+                .map_or_else(|r| r.into_response(id), |reply| Response::CredentialStatus { id, present: reply.present.unwrap_or(false) }),
+        )),
         Request::RdpCertDecision { id, session_id, fingerprint, accept } => {
             if let Err(refusal) = rdp.check_decision(session_id, &fingerprint) {
                 let (code, message) = match refusal {

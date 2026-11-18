@@ -118,6 +118,8 @@ impl Helper {
                 | Response::SessionResized { id, .. }
                 | Response::SessionCreditAck { id, .. }
                 | Response::RdpAck { id, .. }
+                | Response::CredentialOk { id }
+                | Response::CredentialStatus { id, .. }
                 | Response::RdpScreenshot { id, .. } => Some(*id),
                 Response::SessionClosed { id, .. } | Response::Error { id, .. } => *id,
                 _ => None,
@@ -144,7 +146,8 @@ impl Helper {
             host: "127.0.0.1".to_string(),
             port,
             username: "tester".to_string(),
-            password: Secret::new("S3cr3t-MARK-91"),
+            password: Some(Secret::new("S3cr3t-MARK-91")),
+            credential_ref: None,
             domain: None,
             width,
             height,

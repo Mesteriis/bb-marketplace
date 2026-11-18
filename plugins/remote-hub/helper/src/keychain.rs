@@ -240,3 +240,75 @@ mod tests {
         }
     }
 }
+
+// ---- the keychain child process ----------------------------------------------
+//
+// The Security framework starts its own threads on first use, and the helper
+// must stay single-threaded (it forks PTY children and RDP engines; see
+// threads.rs). So the helper never calls the framework itself: every Keychain
+// operation runs in a short-lived child, `remote-hub-helper --keychain-op`, that
+// reads ONE JSON request on stdin and writes ONE JSON reply on stdout. The secret
+// travels over those pipes only (never argv or the environment) and the child's
+// process is gone right after.
+
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize)]
+pub struct OpRequest {
+    pub op: String,
+    #[serde(rename = "ref")]
+    pub reference: String,
+    #[serde(default)]
+    pub secret: Option<Secret>,
+}
+
+#[derive(Serialize, Deserialize, Default)]
+pub struct OpReply {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub present: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret: Option<Secret>,
+}
+
+/// Executes one request against `keychain`. Pure of I/O, so it is tested directly.
+pub fn execute(keychain: &Keychain, request: &OpRequest) -> OpReply {
+    let fail = |e: KeychainError| OpReply { error: Some(e.code().to_string()), ..OpReply::default() };
+    match (request.op.as_str(), &request.secret) {
+        ("save", Some(secret)) => match keychain.set(&request.reference, secret) {
+            Ok(()) => OpReply::default(),
+            Err(e) => fail(e),
+        },
+        ("delete", _) => match keychain.delete(&request.reference) {
+            Ok(()) => OpReply::default(),
+            Err(e) => fail(e),
+        },
+        ("status", _) => match keychain.exists(&request.reference) {
+            Ok(present) => OpReply { present: Some(present), ..OpReply::default() },
+            Err(e) => fail(e),
+        },
+        ("get", _) => match keychain.get(&request.reference) {
+            Ok(secret) => OpReply { secret: Some(secret), ..OpReply::default() },
+            Err(e) => fail(e),
+        },
+        _ => OpReply { error: Some("keychain_unavailable".to_string()), ..OpReply::default() },
+    }
+}
+
+/// The `--keychain-op` entry point: one request in, one reply out.
+pub fn run_op() -> i32 {
+    use std::io::{Read, Write};
+    let mut input = String::new();
+    if std::io::stdin().take(64 * 1024).read_to_string(&mut input).is_err() {
+        return 2;
+    }
+    let Ok(request) = serde_json::from_str::<OpRequest>(&input) else { return 2 };
+    let reply = execute(&Keychain::from_env(), &request);
+    let Ok(text) = serde_json::to_string(&reply) else { return 2 };
+    let mut out = std::io::stdout();
+    if out.write_all(text.as_bytes()).and_then(|()| out.flush()).is_err() {
+        return 2;
+    }
+    0
+}
