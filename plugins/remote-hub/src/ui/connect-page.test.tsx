@@ -120,7 +120,7 @@ describe("ConnectPage with saved profiles", () => {
     const { ssh } = withProfiles([{ ...SSH_PROFILE, credentialRef: REF }]);
     fireEvent.click(await screen.findByRole("button", { name: "Connect Build box" }));
     await waitFor(() => expect(ssh.onSshOpen).toHaveBeenCalledTimes(1));
-    expect(ssh.onSshOpen.mock.calls[0]?.[2]).toBe(REF);
+    expect((ssh.onSshOpen.mock.calls[0] as unknown[])[2]).toBe(REF);
   });
 
   it("Connect on an RDP profile switches to RDP, fills the form and waits for the password", async () => {
