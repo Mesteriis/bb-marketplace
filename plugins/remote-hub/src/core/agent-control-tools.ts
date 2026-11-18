@@ -299,7 +299,8 @@ export function createControlTools(deps: AgentControlDeps): AgentToolDef[] {
         CANNOT +
         "Opens a saved connection the owner allowed at the input level or above, using its SAVED credential; connections without one are refused. There is no password, host or approval parameter. " +
         "A new host key, a changed key or a certificate is decided by the owner on the Remote Hub page: the result then says waitingForOwner and the session stays connecting until the owner answers. " +
-        `At most ${MAX_SESSIONS_PER_THREAD} open sessions per thread.`,
+        `At most ${MAX_SESSIONS_PER_THREAD} open sessions per thread. ` +
+        "On a desktop: no launching programs through Start/Run/Win+R unless the owner asked in this conversation; on a security/EDR block stop all input and report (see the skill).",
       parameters: z.object({ connectionId: connectionIdSchema }).strict(),
       execute: (params, ctx) =>
         guarded("remote_connect", ctx, { profileId: params.connectionId }, async () => {
@@ -377,7 +378,8 @@ export function createControlTools(deps: AgentControlDeps): AgentToolDef[] {
         "Sends typed actions to a desktop (RDP) session you hold the lease on: mouse_move, click, mouse_button, wheel, key (a KeyboardEvent.code such as Enter or KeyA), text and ctrl_alt_del. " +
         "Positions are desktop pixels. Any action with a position needs `observed` (frameId, width, height from remote_rdp_screenshot): a changed desktop size, or a frame number the desktop has not reached, is refused as stale_geometry (a frame older than the current one is fine while the size is the same). " +
         `At most ${MAX_RDP_EVENTS_PER_CALL} events per call; text has no control characters. The answer says the events were queued, which is not proof that the desktop acted on them. ` +
-        "Keys and buttons left down are released when your control ends. Cannot send raw events or type into a terminal session.",
+        "Keys and buttons left down are released when your control ends. Cannot send raw events or type into a terminal session. " +
+        "Do NOT launch shells or programs through Start/Run/Win+R or launch shortcuts unless the owner asked for that in this conversation; say what you will type first. On any security/EDR block, access-denied launch error or antivirus notice: stop all input, dismiss nothing, try no other route, report what was shown. Endpoint protection may flag automated input.",
       parameters: z.object({ sessionId: sessionIdSchema, leaseId: leaseIdSchema, observed: observedSchema.optional(), actions: rdpActionsSchema }).strict(),
       execute: async (params, ctx) => {
         const actions = params.actions as RdpAction[];

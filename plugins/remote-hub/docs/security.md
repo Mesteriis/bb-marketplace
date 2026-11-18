@@ -123,6 +123,12 @@ Limits, plainly:
    the plugin's RPC and the Keychain prompts. Not contained.
 2. Observe shows everything on screen or in the terminal, secrets included, and the scrollback.
 3. The helper binary is unsigned; the Keychain item is protected by the user's login Keychain, not by the helper.
+4a. Automated input on a host with endpoint protection (EDR, antivirus) can raise a detection under the owner's account: a
+    live incident blocked `powershell.exe` started from the Run dialog through the RDP client. This is a stated limit, not
+    something to work around. Agent policy (skill text and the `remote_rdp_input` / `remote_connect` descriptions): do not
+    launch shells or programs through Start/Run/Win+R or launch shortcuts unless the owner asked in this conversation, and say
+    what you will type first; on a security block, an access-denied launch error or an antivirus notice stop all input, dismiss
+    nothing, try no other route and report what was shown. This is guidance to the agent, not a technical control.
 4. The watching gate proves a view is on screen in the focused BB window, not that a person looks at it; a window left
    focused on it counts. "On screen" is viewport intersection of the view's element, so an element drawn over the view (a modal,
    another panel) does not stop it counting. The owner can
