@@ -82,11 +82,29 @@ export class ProfileBook {
       ...input.fields,
       id: existing?.id ?? this.deps.newId(),
       executionHostId: existing?.executionHostId ?? LOCAL_EXECUTION_HOST_ID,
-      origin: "manual",
+      origin: existing?.origin ?? "manual",
       createdAt: existing?.createdAt ?? stamp,
       updatedAt: stamp,
       lastOpenedAt: existing?.lastOpenedAt ?? null,
       recentErrors: existing?.recentErrors ?? [],
+    });
+    this.deps.store.put(profile);
+    return profile;
+  }
+
+  /** A new profile from an import: same rules as `save`, marked as imported. */
+  saveImported(raw: { fields: ProfileInput["fields"] }): Profile {
+    const input = profileInputSchema.parse({ fields: raw.fields });
+    const stamp = this.deps.now().toISOString();
+    const profile = profileSchema.parse({
+      ...input.fields,
+      id: this.deps.newId(),
+      executionHostId: LOCAL_EXECUTION_HOST_ID,
+      origin: "imported",
+      createdAt: stamp,
+      updatedAt: stamp,
+      lastOpenedAt: null,
+      recentErrors: [],
     });
     this.deps.store.put(profile);
     return profile;

@@ -119,19 +119,40 @@ export const profileInputSchema = z.object({ id: z.string().uuid().optional(), f
 
 const recentErrorSchema = z.object({ at: z.string(), code: z.string().min(1).max(64) }).strict();
 
+/** Where an imported profile came from (a read-only view). */
+export const provenanceSchema = z
+  .object({
+    sourceId: z.string(),
+    sourceKind: z.enum(["ssh-config", "hosts"]),
+    /** The entry in the source: the Host alias, or the host name. */
+    sourceKey: z.string(),
+    /** False when the entry depends on configuration this plugin cannot read from text (ProxyJump, Match...): it keeps using the user's ssh config and cannot use a saved secret. */
+    resolved: z.boolean(),
+    /** The source no longer has this entry. */
+    stale: z.boolean(),
+    flags: z.array(z.string()),
+    /** The imported values were changed here after import. */
+    editedLocally: z.boolean(),
+  })
+  .strict();
+
+export type Provenance = z.infer<typeof provenanceSchema>;
+
 /** A stored profile as the page sees it. */
 export const profileSchema = z
   .object({
     id: z.string().uuid(),
     executionHostId: z.string().min(1).max(32),
-    /** Where the profile came from; imports (stage 3c) add values. */
-    origin: z.enum(["manual"]),
+    /** Where the profile came from: typed in, or imported from a source the user switched on (stage 3c). */
+    origin: z.enum(["manual", "imported"]),
     createdAt: z.string(),
     updatedAt: z.string(),
     /** When a session was last opened from it: the open call succeeded, not that the server accepted a login. */
     lastOpenedAt: z.string().nullable(),
     /** Failure codes of recent opens, newest last, never message text. */
     recentErrors: z.array(recentErrorSchema).max(5),
+    /** For an imported profile: where from. Filled in by the import layer when profiles are listed, never stored in the profile. */
+    provenance: z.lazy(() => provenanceSchema).nullable().optional(),
   })
   .strict()
   .and(profileFieldsSchema)
