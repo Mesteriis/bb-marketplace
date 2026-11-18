@@ -41,12 +41,18 @@ pub async fn read_state(client: &Client, session: &Session) -> Result<ServerStat
     Ok(ServerState { roles: client.roles(session).await?, users: client.users(session).await?, acl: client.acl(session).await? })
 }
 
+/// A privilege list as a sorted, de-duplicated set: PVE may answer the same privileges in another order or with spaces.
+fn normalise_privs(privs: &str) -> String {
+    let set: std::collections::BTreeSet<&str> = privs.split(',').map(str::trim).filter(|p| !p.is_empty()).collect();
+    set.into_iter().collect::<Vec<_>>().join(",")
+}
+
 /// The plan for `state`. `context` binds the digest to where and as whom it was made (endpoint, admin, certificate).
 pub fn plan_from(state: &ServerState, user_id: &str, acl_path: &str, context: &str) -> Plan {
-    let role_current = state.roles.iter().find(|(id, _)| id == PROVISION_ROLE).map(|(_, p)| p.clone());
+    let role_current = state.roles.iter().find(|(id, _)| id == PROVISION_ROLE).map(|(_, p)| normalise_privs(p));
     let role = match &role_current {
         None => ACTION_CREATE,
-        Some(privs) if privs == PROVISION_PRIVS => ACTION_KEEP,
+        Some(privs) if *privs == normalise_privs(PROVISION_PRIVS) => ACTION_KEEP,
         Some(_) => ACTION_DIFFERS,
     };
     let user_row = state.users.iter().find(|u| u.userid == user_id);
@@ -79,7 +85,7 @@ pub fn plan_from(state: &ServerState, user_id: &str, acl_path: &str, context: &s
 fn digest_of(state: &ServerState, user_id: &str, acl_path: &str, context: &str) -> String {
     let mut text = format!("rh-plan-v1\ncontext={context}\nuser={user_id}\nacl-path={acl_path}\n");
     match state.roles.iter().find(|(id, _)| id == PROVISION_ROLE) {
-        Some((_, privs)) => text.push_str(&format!("role=present:{privs}\n")),
+        Some((_, privs)) => text.push_str(&format!("role=present:{}\n", normalise_privs(privs))),
         None => text.push_str("role=absent\n"),
     }
     match state.users.iter().find(|u| u.userid == user_id) {
@@ -263,6 +269,22 @@ mod tests {
         let s = state(vec![("RemoteHubConsole", PROVISION_PRIVS)], vec![user(OURS, PROVISION_COMMENT)], vec![("/", "user", OURS, "RemoteHubConsole")]);
         let p = plan_from(&s, OURS, "/", "ctx");
         assert_eq!((p.role, p.user, p.acl), ("keep", "rotate_password", "keep"));
+    }
+
+    #[test]
+    fn privileges_are_compared_as_a_set_not_as_text() {
+        let role = |privs: &str| plan_from(&state(vec![("RemoteHubConsole", privs)], vec![], vec![]), OURS, "/", "c");
+        // another order, spaces around the commas, a repeated name: still exactly our four
+        assert_eq!(role("VM.Console, VM.Audit,Sys.Console ,Sys.Audit,VM.Audit").role, "keep");
+        // a fifth privilege, or one missing: not ours
+        assert_eq!(role("Sys.Audit,Sys.Console,VM.Audit,VM.Console,Sys.Modify").role, "differs");
+        assert_eq!(role("Sys.Audit,VM.Audit,VM.Console").role, "differs");
+        assert_eq!(role("").role, "differs");
+        // the same set gives the same digest, so a reordering by the server is not drift
+        assert_eq!(role("VM.Console,VM.Audit,Sys.Console,Sys.Audit").digest, role(PROVISION_PRIVS).digest);
+        assert_ne!(role("Sys.Audit,VM.Audit,VM.Console").digest, role(PROVISION_PRIVS).digest);
+        // what the owner is shown is the normalised set
+        assert_eq!(role("VM.Console, VM.Audit").role_privs.as_deref(), Some("VM.Audit,VM.Console"));
     }
 
     #[test]
