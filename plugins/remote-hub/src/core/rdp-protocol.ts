@@ -216,8 +216,12 @@ export const RDP_ERROR_CODES = [
 export { fingerprintSchema };
 
 // ---- binary update frames (helper -> view) ----
-/** frameId u64, fbWidth, fbHeight, x, y, w, h u32 (all little-endian). */
-export const UPDATE_HEADER_BYTES = 32;
+/**
+ * frameId u64, fbWidth, fbHeight, x, y, w, h, chunks u32 (all little-endian).
+ * `chunks` is the number of bands (frames) the whole update was split into;
+ * every band of one update carries the same value.
+ */
+export const UPDATE_HEADER_BYTES = 36;
 
 export interface RdpUpdateChunk {
   frameId: number;
@@ -227,6 +231,8 @@ export interface RdpUpdateChunk {
   y: number;
   w: number;
   h: number;
+  /** Bands in the whole update this chunk belongs to (at least 1). */
+  chunks: number;
   /** Raw RGBA rows, exactly w * h * 4 bytes. */
   pixels: Uint8Array;
 }
@@ -234,7 +240,7 @@ export interface RdpUpdateChunk {
 /**
  * Parse the payload of an RDP update stream frame (what follows the 8-byte
  * sessionId + seq header). Returns null for anything malformed: a short header,
- * an empty or out-of-framebuffer rectangle, a framebuffer above 3840x2160, a
+ * an empty or out-of-framebuffer rectangle, a band count of zero or above the framebuffer's rows, a framebuffer above 3840x2160, a
  * frame id above 2^53, or a pixel length different from w * h * 4. The helper
  * validates all of this already; the service does not trust it twice.
  */
@@ -249,9 +255,11 @@ export function parseUpdateChunk(payload: Uint8Array): RdpUpdateChunk | null {
   const y = view.getUint32(20, true);
   const w = view.getUint32(24, true);
   const h = view.getUint32(28, true);
+  const chunks = view.getUint32(32, true);
   if (fbWidth === 0 || fbHeight === 0 || fbWidth > MAX_DESKTOP_WIDTH || fbHeight > MAX_DESKTOP_HEIGHT) return null;
+  if (chunks === 0 || chunks > fbHeight) return null;
   if (w === 0 || h === 0 || x + w > fbWidth || y + h > fbHeight) return null;
   const pixels = payload.subarray(UPDATE_HEADER_BYTES);
   if (pixels.byteLength !== w * h * 4) return null;
-  return { frameId: Number(frameBig), fbWidth, fbHeight, x, y, w, h, pixels };
+  return { frameId: Number(frameBig), fbWidth, fbHeight, x, y, w, h, chunks, pixels };
 }

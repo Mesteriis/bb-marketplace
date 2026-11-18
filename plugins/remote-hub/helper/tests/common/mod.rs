@@ -311,24 +311,30 @@ pub fn lsof_fds(pid: u32) -> Vec<(i32, String, String)> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpdateChunk {
     pub frame_id: u64,
+    /// Stream `seq`: the band's index inside its update.
+    pub seq: u32,
     pub x: u32,
     pub y: u32,
     pub w: u32,
     pub h: u32,
+    /// Bands in the whole update this chunk belongs to.
+    pub chunks: u32,
     /// Bytes on the wire: length prefix, kind, stream header, update header, pixels.
     pub wire_len: usize,
 }
 
 pub fn parse_update_chunk(payload: &[u8]) -> UpdateChunk {
     // stream header: sessionId u32, seq u32; update header: frameId u64,
-    // fbW, fbH, x, y, w, h (u32 each); then RGBA rows.
+    // fbW, fbH, x, y, w, h, chunks (u32 each); then RGBA rows.
     let u32_at = |i: usize| u32::from_le_bytes(payload[i..i + 4].try_into().unwrap());
     UpdateChunk {
+        seq: u32_at(4),
         frame_id: u64::from_le_bytes(payload[8..16].try_into().unwrap()),
         x: u32_at(24),
         y: u32_at(28),
         w: u32_at(32),
         h: u32_at(36),
+        chunks: u32_at(40),
         wire_len: 4 + 1 + payload.len(),
     }
 }

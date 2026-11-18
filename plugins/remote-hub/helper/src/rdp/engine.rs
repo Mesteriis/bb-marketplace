@@ -23,7 +23,7 @@ use super::input::Geometry;
 use super::input_encode::{coalesce_moves, encode_input};
 use super::mapping::map_terminate;
 use super::pump::UpdatePump;
-use super::protocol::{self, EngineCommand, EngineEvent, ENGINE_UPDATE_OVERHEAD};
+use super::protocol::{self, EngineCommand, EngineEvent};
 use super::reasons::RdpClosedReason;
 
 fn now_ms() -> u64 {
@@ -351,14 +351,18 @@ pub fn region_to_rect(region: &InclusiveRectangle, fb_w: u32, fb_h: u32) -> Opti
 /// Send the dirty region, split into update frames of at most 1 MiB on the
 /// wire with every header counted.
 pub(crate) fn send_region(fb: &Framebuffer, out: &Out, rect: Rect) -> std::io::Result<()> {
-    let rows_per_chunk = protocol::rows_per_chunk(rect.w, ENGINE_UPDATE_OVERHEAD) as u32;
+    // Sized for the client frame (the larger header), so the helper forwards
+    // every band whole and `chunks` is the band count the view sees.
+    let rows_per_chunk = protocol::rows_per_chunk(rect.w, protocol::CLIENT_UPDATE_OVERHEAD) as u32;
+    let chunks = rect.h.div_ceil(rows_per_chunk);
     let mut y = rect.y;
     let mut remaining = rect.h;
+    let mut band = 0u32;
     let mut pixels = Vec::new();
     while remaining > 0 {
         let chunk_h = remaining.min(rows_per_chunk);
         let sub = fb.copy_region(rect.x, y, rect.w, chunk_h, &mut pixels);
-        out.send_frame(&protocol::encode_update(
+        out.send_frame(&protocol::encode_update_band(
             0,
             fb.frame_id(),
             fb.width(),
@@ -367,10 +371,13 @@ pub(crate) fn send_region(fb: &Framebuffer, out: &Out, rect: Rect) -> std::io::R
             sub.y,
             sub.w,
             sub.h,
+            band,
+            chunks,
             &pixels,
         ))?;
         y += chunk_h;
         remaining -= chunk_h;
+        band += 1;
     }
     Ok(())
 }

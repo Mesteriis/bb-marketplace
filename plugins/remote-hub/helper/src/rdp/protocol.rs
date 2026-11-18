@@ -36,9 +36,9 @@ pub const FRAME_BINARY: u8 = 0x02;
 /// the update header.
 pub const ENGINE_UPDATE_OVERHEAD: usize = 4 + 1 + UPDATE_HEADER_BYTES;
 /// Non-pixel bytes of a helper → client update stream frame: length prefix,
-/// kind, stream header (sessionId + seq) and the 28-byte update header
-/// {frameId u64, fbW, fbH, x, y, w, h}.
-pub const CLIENT_UPDATE_OVERHEAD: usize = 4 + 1 + 8 + 28;
+/// kind, stream header (sessionId + seq) and the 36-byte update header
+/// {frameId u64, fbW, fbH, x, y, w, h, chunks u32}.
+pub const CLIENT_UPDATE_OVERHEAD: usize = 4 + 1 + 8 + 36;
 
 /// Rows of `width` RGBA pixels that fit one update frame once `overhead`
 /// non-pixel bytes are counted. At least one row, so progress is always made.
@@ -49,7 +49,7 @@ pub fn rows_per_chunk(width: u32, overhead: usize) -> usize {
 
 /// Binary update body after the kind byte: session_id (u32) + the update
 /// header + raw RGBA rows.
-pub const UPDATE_HEADER_BYTES: usize = 4 /* session_id */ + 8 /* frame_id */ + 4 * 6 /* fb w/h, x,y,w,h */;
+pub const UPDATE_HEADER_BYTES: usize = 4 /* session_id */ + 8 /* frame_id */ + 4 * 6 /* fb w/h, x,y,w,h */ + 4 /* chunks */ + 4 /* band */;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -189,6 +189,24 @@ pub fn encode_update(
     h: u32,
     rgba: &[u8],
 ) -> Vec<u8> {
+    encode_update_band(session_id, frame_id, fb_width, fb_height, x, y, w, h, 0, 1, rgba)
+}
+
+/// Band number `band` (from 0) of an update the engine splits into `chunks` bands.
+#[allow(clippy::too_many_arguments)]
+pub fn encode_update_band(
+    session_id: u32,
+    frame_id: u64,
+    fb_width: u32,
+    fb_height: u32,
+    x: u32,
+    y: u32,
+    w: u32,
+    h: u32,
+    band: u32,
+    chunks: u32,
+    rgba: &[u8],
+) -> Vec<u8> {
     let mut payload = Vec::with_capacity(UPDATE_HEADER_BYTES + rgba.len());
     payload.extend_from_slice(&session_id.to_le_bytes());
     payload.extend_from_slice(&frame_id.to_le_bytes());
@@ -198,6 +216,8 @@ pub fn encode_update(
     payload.extend_from_slice(&y.to_le_bytes());
     payload.extend_from_slice(&w.to_le_bytes());
     payload.extend_from_slice(&h.to_le_bytes());
+    payload.extend_from_slice(&chunks.to_le_bytes());
+    payload.extend_from_slice(&band.to_le_bytes());
     payload.extend_from_slice(rgba);
     encode_frame(FRAME_BINARY, &payload)
 }
@@ -212,6 +232,10 @@ pub struct UpdateHeader {
     pub y: u32,
     pub w: u32,
     pub h: u32,
+    /// Bands in the whole update this frame belongs to (at least 1).
+    pub chunks: u32,
+    /// This band's index inside the update (0-based, below `chunks`).
+    pub band: u32,
 }
 
 /// Decode a binary update body (everything after the kind byte).
@@ -228,8 +252,10 @@ pub fn decode_update_body(payload: &[u8]) -> Option<(UpdateHeader, &[u8])> {
     let y = u32_at(24);
     let w = u32_at(28);
     let h = u32_at(32);
+    let chunks = u32_at(36);
+    let band = u32_at(40);
     let rgba = &payload[UPDATE_HEADER_BYTES..];
-    Some((UpdateHeader { session_id, frame_id, fb_width, fb_height, x, y, w, h }, rgba))
+    Some((UpdateHeader { session_id, frame_id, fb_width, fb_height, x, y, w, h, chunks, band }, rgba))
 }
 
 /// Check an engine update header against its payload. The engine is
@@ -243,7 +269,15 @@ pub fn update_is_valid(header: &UpdateHeader, rgba_len: usize) -> bool {
         || header.fb_height > MAX_DESKTOP_HEIGHT
         || header.w == 0
         || header.h == 0
+        || header.chunks == 0
+        || header.chunks > header.fb_height
+        || header.band >= header.chunks
     {
+        return false;
+    }
+    // A band must already fit one client frame: the helper forwards it whole,
+    // so the band count the engine states is the band count the view sees.
+    if header.h as usize > rows_per_chunk(header.w, CLIENT_UPDATE_OVERHEAD) {
         return false;
     }
     let (Some(right), Some(bottom)) = (header.x.checked_add(header.w), header.y.checked_add(header.h)) else {
@@ -263,7 +297,7 @@ mod tests {
     use super::*;
 
     fn header(fb_w: u32, fb_h: u32, x: u32, y: u32, w: u32, h: u32) -> UpdateHeader {
-        UpdateHeader { session_id: 0, frame_id: 1, fb_width: fb_w, fb_height: fb_h, x, y, w, h }
+        UpdateHeader { session_id: 0, frame_id: 1, fb_width: fb_w, fb_height: fb_h, x, y, w, h, chunks: 1, band: 0 }
     }
 
     #[test]
@@ -281,27 +315,53 @@ mod tests {
         assert!(!update_is_valid(&header(0, 100, 0, 0, 1, 1), 4));
     }
 
+    /// N3: the band count is validated — at least one, never more than the rows
+    /// of the framebuffer — and a band must fit one client frame, because the helper
+    /// forwards bands whole.
+    #[test]
+    fn update_is_valid_checks_the_band_count_and_the_band_size() {
+        let mut ok = header(100, 100, 0, 0, 2, 1);
+        ok.chunks = 3; // a last, short band of a three-band update
+        ok.band = 2;
+        assert!(update_is_valid(&ok, 8));
+        let mut late = header(100, 100, 0, 0, 2, 2);
+        late.chunks = 2;
+        late.band = 2; // band index must be below the band count
+        assert!(!update_is_valid(&late, 16));
+        let mut zero = header(100, 100, 0, 0, 2, 2);
+        zero.chunks = 0;
+        assert!(!update_is_valid(&zero, 16));
+        let mut many = header(100, 100, 0, 0, 2, 2);
+        many.chunks = 101; // more bands than the framebuffer has rows
+        assert!(!update_is_valid(&many, 16));
+        // 2048 wide: 8192 bytes a row, 127 rows fit 1 MiB with 49 bytes of framing.
+        let fits = header(2048, 200, 0, 0, 2048, 127);
+        assert!(update_is_valid(&fits, 2048 * 127 * 4));
+        let too_tall = header(2048, 200, 0, 0, 2048, 128);
+        assert!(!update_is_valid(&too_tall, 2048 * 128 * 4));
+    }
+
     /// B5: a frame is at most 1 048 576 bytes on the wire, headers included.
-    /// At width 512 a row is 2048 bytes; 511 rows + 41 bytes of framing is
-    /// 1 046 569, while 512 rows would be 1 048 617.
+    /// At width 512 a row is 2048 bytes; 511 rows + 49 bytes of framing is
+    /// 1 046 577, while 512 rows would be 1 048 625.
     #[test]
     fn rows_per_chunk_counts_all_headers_at_width_512() {
-        assert_eq!(ENGINE_UPDATE_OVERHEAD, 41);
-        assert_eq!(CLIENT_UPDATE_OVERHEAD, 41);
+        assert_eq!(ENGINE_UPDATE_OVERHEAD, 49);
+        assert_eq!(CLIENT_UPDATE_OVERHEAD, 49);
         assert_eq!(rows_per_chunk(512, ENGINE_UPDATE_OVERHEAD), 511);
         assert_eq!(rows_per_chunk(512, CLIENT_UPDATE_OVERHEAD), 511);
         let rgba = vec![0u8; 511 * 512 * 4];
         let frame = encode_update(0, 1, 512, 512, 0, 0, 512, 511, &rgba);
-        assert_eq!(frame.len(), 1_046_569);
+        assert_eq!(frame.len(), 1_046_577);
         assert!(frame.len() <= 1_048_576);
         let too_big = encode_update(0, 1, 512, 512, 0, 0, 512, 512, &vec![0u8; 512 * 512 * 4]);
-        assert_eq!(too_big.len(), 1_048_617);
+        assert_eq!(too_big.len(), 1_048_625);
     }
 
     #[test]
     fn rows_per_chunk_makes_progress_for_any_width() {
-        assert_eq!(rows_per_chunk(3840, ENGINE_UPDATE_OVERHEAD), 68); // (1048576-41)/15360 = 68.26
-        assert_eq!(rows_per_chunk(1, ENGINE_UPDATE_OVERHEAD), 262_133); // (1048576-41)/4
+        assert_eq!(rows_per_chunk(3840, ENGINE_UPDATE_OVERHEAD), 68); // (1048576-49)/15360 = 68.26
+        assert_eq!(rows_per_chunk(1, ENGINE_UPDATE_OVERHEAD), 262_131); // (1048576-49)/4
         assert_eq!(rows_per_chunk(u32::MAX, ENGINE_UPDATE_OVERHEAD), 1);
     }
 
@@ -342,6 +402,7 @@ mod tests {
         assert_eq!(header.y, 2);
         assert_eq!(header.w, 1);
         assert_eq!(header.h, 2);
+        assert_eq!(header.chunks, 1);
         assert_eq!(out_rgba, &rgba[..]);
     }
 

@@ -13,9 +13,7 @@ use crate::protocol::{
     PROTOCOL_VERSION, STREAM_HEADER_BYTES,
 };
 use crate::rdp::manager::{DecisionRefusal, EnqueueError, RdpFrame, RdpManager};
-use crate::rdp::protocol::{
-    rows_per_chunk, EngineCommand, EngineEvent, UpdateHeader, CLIENT_UPDATE_OVERHEAD,
-};
+use crate::rdp::protocol::{EngineCommand, EngineEvent, UpdateHeader};
 use crate::sessions::{SessionError, SessionManager, SpawnSpec, READ_CHUNK};
 use std::collections::HashMap;
 use std::ffi::CString;
@@ -635,39 +633,25 @@ fn relay_rdp_frames(rdp: &mut RdpManager, outbox: &mut VecDeque<u8>, rid: u32, f
     }
 }
 
-/// Split one engine update into helper stream frames of at most 1 MiB on the
-/// wire (every header counted), each with its own {frameId, fbWidth, fbHeight,
-/// x, y, w, h} header + RGBA rows. The manager already validated that `rgba`
-/// is exactly `w * h * 4` bytes inside the framebuffer.
+/// Forward one engine band as one helper stream frame: {frameId, fbWidth,
+/// fbHeight, x, y, w, h, chunks} + RGBA rows. The engine already split the
+/// update into bands that fit one client frame (1 MiB with every header
+/// counted) and states how many there are, so the view acks after the last;
+/// the stream `seq` is the band's index inside the update.
+/// The manager validated that `rgba` is exactly `w * h * 4` bytes inside the
+/// framebuffer and that the band fits one frame.
 fn relay_rdp_update(outbox: &mut VecDeque<u8>, rid: u32, header: UpdateHeader, rgba: &[u8]) {
-    let bytes_per_row = header.w as usize * 4;
-    if bytes_per_row == 0 {
-        return;
-    }
-    let rows_per_chunk = rows_per_chunk(header.w, CLIENT_UPDATE_OVERHEAD);
-    let mut y = header.y;
-    let mut remaining = header.h;
-    let mut off = 0usize;
-    let mut seq = 0u32;
-    while remaining > 0 {
-        let chunk_h = remaining.min(rows_per_chunk as u32);
-        let row_bytes = bytes_per_row * chunk_h as usize;
-        let Some(data) = rgba.get(off..off + row_bytes) else { return };
-        off += row_bytes;
-        let mut payload = Vec::with_capacity(28 + data.len());
-        payload.extend_from_slice(&header.frame_id.to_le_bytes());
-        payload.extend_from_slice(&header.fb_width.to_le_bytes());
-        payload.extend_from_slice(&header.fb_height.to_le_bytes());
-        payload.extend_from_slice(&header.x.to_le_bytes());
-        payload.extend_from_slice(&y.to_le_bytes());
-        payload.extend_from_slice(&header.w.to_le_bytes());
-        payload.extend_from_slice(&chunk_h.to_le_bytes());
-        payload.extend_from_slice(data);
-        outbox.extend(protocol::encode_stream(rid, seq, &payload));
-        seq = seq.wrapping_add(1);
-        y += chunk_h;
-        remaining -= chunk_h;
-    }
+    let mut payload = Vec::with_capacity(36 + rgba.len());
+    payload.extend_from_slice(&header.frame_id.to_le_bytes());
+    payload.extend_from_slice(&header.fb_width.to_le_bytes());
+    payload.extend_from_slice(&header.fb_height.to_le_bytes());
+    payload.extend_from_slice(&header.x.to_le_bytes());
+    payload.extend_from_slice(&header.y.to_le_bytes());
+    payload.extend_from_slice(&header.w.to_le_bytes());
+    payload.extend_from_slice(&header.h.to_le_bytes());
+    payload.extend_from_slice(&header.chunks.to_le_bytes());
+    payload.extend_from_slice(rgba);
+    outbox.extend(protocol::encode_stream(rid, header.band, &payload));
 }
 
 /// A stdin frame error: fatal means the stream is out of step and the helper

@@ -117,7 +117,7 @@ describe("RDP input events", () => {
   });
 });
 
-function updateFrame(opts: { frameId: bigint; fbW: number; fbH: number; x: number; y: number; w: number; h: number; pixels: number }): Uint8Array {
+function updateFrame(opts: { frameId: bigint; fbW: number; fbH: number; x: number; y: number; w: number; h: number; chunks?: number; pixels: number }): Uint8Array {
   const out = new Uint8Array(UPDATE_HEADER_BYTES + opts.pixels);
   const view = new DataView(out.buffer);
   view.setBigUint64(0, opts.frameId, true);
@@ -127,20 +127,21 @@ function updateFrame(opts: { frameId: bigint; fbW: number; fbH: number; x: numbe
   view.setUint32(20, opts.y, true);
   view.setUint32(24, opts.w, true);
   view.setUint32(28, opts.h, true);
+  view.setUint32(32, opts.chunks ?? 1, true);
   return out;
 }
 
 describe("parseUpdateChunk", () => {
-  it("reads the 32-byte header and the pixel rows", () => {
+  it("reads the 36-byte header and the pixel rows", () => {
     const payload = updateFrame({ frameId: 258n, fbW: 4, fbH: 4, x: 1, y: 2, w: 2, h: 1, pixels: 8 });
     payload.set([9, 8, 7, 255], UPDATE_HEADER_BYTES);
     const chunk = parseUpdateChunk(payload)!;
-    expect(chunk).toMatchObject({ frameId: 258, fbWidth: 4, fbHeight: 4, x: 1, y: 2, w: 2, h: 1 });
+    expect(chunk).toMatchObject({ frameId: 258, fbWidth: 4, fbHeight: 4, x: 1, y: 2, w: 2, h: 1, chunks: 1 });
     expect(Array.from(chunk.pixels.subarray(0, 4))).toEqual([9, 8, 7, 255]);
     expect(chunk.pixels.byteLength).toBe(8);
   });
   it("returns null for every malformed header", () => {
-    expect(parseUpdateChunk(new Uint8Array(31))).toBeNull(); // short header
+    expect(parseUpdateChunk(new Uint8Array(35))).toBeNull(); // short header
     expect(parseUpdateChunk(updateFrame({ frameId: 1n, fbW: 4, fbH: 4, x: 0, y: 0, w: 2, h: 2, pixels: 15 }))).toBeNull(); // short pixels
     expect(parseUpdateChunk(updateFrame({ frameId: 1n, fbW: 4, fbH: 4, x: 0, y: 0, w: 2, h: 2, pixels: 17 }))).toBeNull(); // long pixels
     expect(parseUpdateChunk(updateFrame({ frameId: 1n, fbW: 4, fbH: 4, x: 3, y: 0, w: 2, h: 1, pixels: 8 }))).toBeNull(); // x+w = 5
@@ -148,6 +149,8 @@ describe("parseUpdateChunk", () => {
     expect(parseUpdateChunk(updateFrame({ frameId: 1n, fbW: 0, fbH: 4, x: 0, y: 0, w: 1, h: 1, pixels: 4 }))).toBeNull();
     expect(parseUpdateChunk(updateFrame({ frameId: 1n, fbW: 3841, fbH: 4, x: 0, y: 0, w: 1, h: 1, pixels: 4 }))).toBeNull();
     expect(parseUpdateChunk(updateFrame({ frameId: 1n, fbW: 4, fbH: 4, x: 0, y: 0, w: 0, h: 1, pixels: 0 }))).toBeNull();
+    expect(parseUpdateChunk(updateFrame({ frameId: 1n, fbW: 4, fbH: 4, x: 0, y: 0, w: 1, h: 1, chunks: 0, pixels: 4 }))).toBeNull(); // no bands
+    expect(parseUpdateChunk(updateFrame({ frameId: 1n, fbW: 4, fbH: 4, x: 0, y: 0, w: 1, h: 1, chunks: 5, pixels: 4 }))).toBeNull(); // more bands than rows
     expect(parseUpdateChunk(updateFrame({ frameId: 2n ** 53n, fbW: 4, fbH: 4, x: 0, y: 0, w: 1, h: 1, pixels: 4 }))).toBeNull();
   });
 });

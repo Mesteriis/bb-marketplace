@@ -1,14 +1,14 @@
 // The attach socket for an RDP session (stage 2b-2, C1). Same route and the same
 // single-use token as SSH; for an RDP session the socket carries
 //
-//   service -> view   binary: one update chunk = 32-byte header
-//                     {frameId u64, fbWidth, fbHeight, x, y, w, h u32 LE} + RGBA rows
+//   service -> view   binary: one update band = 36-byte header
+//                     {frameId u64, fbWidth, fbHeight, x, y, w, h, chunks u32 LE} + RGBA rows
 //                     text:   {type:"attached"|"state"|"cert_prompt"|"desktop"|
 //                             "input_rejected"|"closed"|"error", ...}
 //   view -> service   text:   {type:"ack",frameId} | {type:"input",events} |
 //                             {type:"refresh"} | {type:"detach"}
 //
-// There is no per-view byte queue: the view acks an update after drawing it and
+// There is no per-view byte queue: the view acks an update after drawing its last band and
 // the service multiplexer (src/core/rdp-views.ts) sends at most one update at a
 // time to it.
 import type { SessionHandle } from "../../core/rpc.ts";

@@ -6,7 +6,7 @@ const FB_W = 100;
 const FB_H = 60;
 
 function chunk(frameId: number, x: number, y: number, w: number, h: number): RdpUpdateChunk {
-  return { frameId, fbWidth: FB_W, fbHeight: FB_H, x, y, w, h, pixels: new Uint8Array(w * h * 4) };
+  return { frameId, fbWidth: FB_W, fbHeight: FB_H, x, y, w, h, chunks: 1, pixels: new Uint8Array(w * h * 4) };
 }
 const full = (frameId: number) => chunk(frameId, 0, 0, FB_W, FB_H);
 const part = (frameId: number) => chunk(frameId, 10, 10, 8, 8);

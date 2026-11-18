@@ -182,7 +182,9 @@ declarations in `node_modules/@get-bb/plugin-sdk/bundled-types/`.
 ## Stage 2b-2 — the RDP service layer
 
 The helper's RDP engine (docs/rdp-engine.md) is reached from the page through
-three RPCs and the same attach socket as SSH. There is no UI yet (stage 2b-3).
+three RPCs and the same attach socket as SSH. The UI (stage 2b-3) is the
+`RdpPage` / `RdpCanvas` / `RdpCertDialog` trio under `src/ui/`; the SSH | RDP
+switch on the connect page picks between the two.
 
 - **RPC** (`src/core/rpc.ts`): `rdp_open {target {host, port, username,
   password, domain?, expectedFingerprint?}, width, height}`, `rdp_cert_decision
@@ -201,7 +203,7 @@ three RPCs and the same attach socket as SSH. There is no UI yet (stage 2b-3).
   reaches the helper).
 - **Updates and views** (`src/core/rdp-views.ts`): the helper has ONE consumer,
   the service, and sends one update at a time (all chunks share a `frameId`;
-  `seq` is the chunk index inside that update and restarts at 0 for every update,
+  `seq` is the band index inside that update and restarts at 0 for every update,
   so it is validated per frame, never as a global sequence). RDP has no byte
   credit; `credit.ts` stays SSH-only. The service multiplexes views without a
   per-view queue and without a TS framebuffer: a view with nothing in flight gets
@@ -219,7 +221,9 @@ three RPCs and the same attach socket as SSH. There is no UI yet (stage 2b-3).
 - **Attach socket** (`rdp-socket.ts`): text events `attached` (state, prompt,
   desktop, endpoint), `state`, `cert_prompt`, `desktop`, `input_rejected`,
   `closed`, `error {code}`; binary frames = `{frameId u64, fbWidth, fbHeight, x,
-  y, w, h u32 LE}` + RGBA rows; from the view `ack {frameId}`, `input {events}`
+  y, w, h, chunks u32 LE}` + RGBA rows (`chunks` = bands in the whole update; the
+  view acks after drawing the LAST band, so the helper never sends the next
+  update over bands still to come); from the view `ack {frameId}`, `input {events}`
   (fbWidth/fbHeight map to the helper's `geom_width/geom_height`; refused with
   `not_ready` before `desktop_ready`), `refresh`, `detach`. 4401 unknown token,
   4000 session ended (the stored reason is sent first), 4410 helper exited.

@@ -74,10 +74,16 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
-/** One update chunk: header {frameId, fbW, fbH, x, y, w, h} + RGBA rows (first pixel = `rgba`). */
-function chunk(frameId: number, fb: [number, number], rect: [number, number, number, number], rgba: [number, number, number, number]): ArrayBuffer {
+/** One update chunk: header {frameId, fbW, fbH, x, y, w, h, chunks} + RGBA rows (first pixel = `rgba`). */
+function chunk(
+  frameId: number,
+  fb: [number, number],
+  rect: [number, number, number, number],
+  rgba: [number, number, number, number],
+  bands = 1,
+): ArrayBuffer {
   const [x, y, w, h] = rect;
-  const buffer = new ArrayBuffer(32 + w * h * 4);
+  const buffer = new ArrayBuffer(36 + w * h * 4);
   const view = new DataView(buffer);
   view.setBigUint64(0, BigInt(frameId), true);
   view.setUint32(8, fb[0], true);
@@ -86,7 +92,8 @@ function chunk(frameId: number, fb: [number, number], rect: [number, number, num
   view.setUint32(20, y, true);
   view.setUint32(24, w, true);
   view.setUint32(28, h, true);
-  new Uint8Array(buffer).set(rgba, 32);
+  view.setUint32(32, bands, true);
+  new Uint8Array(buffer).set(rgba, 36);
   return buffer;
 }
 
@@ -138,13 +145,13 @@ describe("RdpCanvas: painting and acks", () => {
     expect(puts.at(-1)).toEqual({ w: 16, h: 8, x: 0, y: 0, first: [9, 9, 9, 255] });
   });
 
-  it("acks ONCE per frame, after drawing: three chunks of frame 7, then frame 8 -> acks [7, 8]", async () => {
+  it("acks ONCE per frame, after the LAST band is drawn: three bands of frame 7, then frame 8 -> acks [7, 8]", async () => {
     const { socket, binary } = await mount();
-    await binary(chunk(7, [8, 4], [0, 0, 8, 1], [1, 0, 0, 255]));
-    expect(puts.length).toBe(1);
-    expect(socket.acks).toEqual([7]);
-    await binary(chunk(7, [8, 4], [0, 1, 8, 1], [2, 0, 0, 255]));
-    await binary(chunk(7, [8, 4], [0, 2, 8, 2], [3, 0, 0, 255]));
+    await binary(chunk(7, [8, 4], [0, 0, 8, 1], [1, 0, 0, 255], 3));
+    await binary(chunk(7, [8, 4], [0, 1, 8, 1], [2, 0, 0, 255], 3));
+    expect(puts.length).toBe(2);
+    expect(socket.acks).toEqual([]); // two of three bands: the helper must not yet send the next update
+    await binary(chunk(7, [8, 4], [0, 2, 8, 2], [3, 0, 0, 255], 3));
     expect(socket.acks).toEqual([7]);
     await binary(chunk(8, [8, 4], [3, 1, 2, 2], [4, 0, 0, 255]));
     expect(socket.acks).toEqual([7, 8]);
@@ -172,6 +179,13 @@ describe("RdpCanvas: painting and acks", () => {
     await binary(chunk(3, [8, 4], [0, 0, 8, 4], [1, 2, 3, 255]));
     await binary(chunk(4, [8, 4], [3, 1, 2, 2], [1, 2, 3, 255]));
     expect(order).toEqual(["draw", "ack", "draw", "ack"]);
+  });
+
+  it("a multi-band update draws every band before its single ack", async () => {
+    const { binary } = await mount();
+    await binary(chunk(3, [8, 4], [0, 0, 8, 2], [1, 2, 3, 255], 2));
+    await binary(chunk(3, [8, 4], [0, 2, 8, 2], [1, 2, 3, 255], 2));
+    expect(order).toEqual(["draw", "draw", "ack"]);
   });
 
   it("ignores a malformed binary frame without drawing or acking", async () => {

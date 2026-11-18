@@ -110,6 +110,7 @@ class FakeRdpHelper {
     view.setUint32(20, y, true);
     view.setUint32(24, w, true);
     view.setUint32(28, h, true);
+    view.setUint32(32, 1, true);
     for (const cb of this.updateCb) cb(sid, seq, payload);
   }
   closed(sid: number, reason: string, exitCode: number | null = null): void {

@@ -263,6 +263,11 @@ fn g10_an_unacked_view_gets_exactly_one_update_then_one_coalesced_region() {
     let pixels: u32 = first.iter().map(|c| c.w * c.h).sum();
     assert_eq!(pixels, FULL_FRAME_PIXELS, "the first update must cover the whole desktop");
     assert!(first.iter().all(|c| c.wire_len <= 1_048_576), "a chunk exceeded 1 MiB on the wire");
+    // 1920x1080 RGBA at 136 rows per 1 MiB frame is 8 bands, and every band
+    // says so: the view acks only after the last one.
+    assert_eq!(first.len(), 8);
+    assert!(first.iter().all(|c| c.chunks == 8), "chunks must equal the bands of the update: {first:?}");
+    assert_eq!(first.iter().map(|c| c.seq).collect::<Vec<_>>(), (0..8).collect::<Vec<u32>>(), "seq is the band index");
 
     // The ack releases the coalesced region: the bounding box of the four
     // 64x64 blocks the synthetic desktop cycles through, at (0,0).
@@ -275,6 +280,7 @@ fn g10_an_unacked_view_gets_exactly_one_update_then_one_coalesced_region() {
     assert_eq!(ids2.len(), 1, "one ack must release exactly one update: {ids2:?}");
     assert_ne!(ids2[0], ids[0]);
     assert_eq!(second.len(), 1, "a 128x128 region is a single chunk");
+    assert_eq!(second[0].chunks, 1);
     assert_eq!((second[0].x, second[0].y, second[0].w, second[0].h), (0, 0, 128, 128));
 
     // A stale ack (the first frame's id) releases nothing, however long the

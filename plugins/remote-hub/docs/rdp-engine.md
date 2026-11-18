@@ -189,9 +189,14 @@ called.
   time, latest pixels win) until the consumer acks it with
   `rdp.update_ack {sessionId, frameId}` (helper request → `Ack` command). A
   stale ack (any frame id but the one in flight) releases nothing. An update
-  larger than one wire frame is split into chunks sharing a `frameId`; every
-  frame on either hop is at most 1 048 576 bytes **including all headers**
-  (`rows_per_chunk`; at width 512 that is 511 rows, 1 046 569 bytes).
+  larger than one wire frame is split by the engine into bands sharing a `frameId`;
+  every band states its index (`band`, forwarded as the stream `seq`) and the
+  band count of the whole update (`chunks`), so the view acks after the last
+  band. Every frame on either hop is at most 1 048 576 bytes **including all
+  headers** (`rows_per_chunk`, sized for the larger client header; at width 512
+  that is 511 rows, 1 046 577 bytes). The helper rejects a band whose index is
+  not below `chunks`, a `chunks` of zero or above the framebuffer rows, and a band
+  too tall for one client frame (`protocol_error`).
 - **Helper bounds**: engine fds are polled and read only while the outbox has
   room for a whole update frame, with a per-turn frame/byte budget, so a client
   that stops reading stdout holds the engine back instead of growing the helper;

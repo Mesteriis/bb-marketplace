@@ -88,6 +88,8 @@ export function RdpCanvas(props: RdpCanvasProps) {
     let ready = false;
     let fb = { width: 0, height: 0 };
     let lastAcked = -1;
+    let bandsFrame = -1;
+    let bandsDrawn = 0;
     const held = new HeldKeys();
     // Buttons pressed on the canvas and not yet released, with the last pointer position.
     const heldButtons = new Set<number>();
@@ -174,9 +176,15 @@ export function RdpCanvas(props: RdpCanvasProps) {
       // `payload` is the WebSocket's own ArrayBuffer: the pixel rows are a view of it.
       const pixels = new Uint8ClampedArray(payload, chunk.pixels.byteOffset, chunk.pixels.byteLength);
       context.putImageData(new ImageData(pixels, chunk.w, chunk.h), chunk.x, chunk.y);
-      // One ack per frame, after the first chunk of it is drawn: the service
-      // delivers all chunks of a frame back to back.
-      if (chunk.frameId !== lastAcked) {
+      // One ack per frame, after the LAST band of it is drawn: the helper sends
+      // the next update only after the ack, so acking earlier would let it
+      // overwrite the bands still to come. Every band states how many there are.
+      if (chunk.frameId !== bandsFrame) {
+        bandsFrame = chunk.frameId;
+        bandsDrawn = 0;
+      }
+      bandsDrawn += 1;
+      if (bandsDrawn >= chunk.chunks && chunk.frameId !== lastAcked) {
         lastAcked = chunk.frameId;
         sendJson({ type: "ack", frameId: chunk.frameId });
       }
