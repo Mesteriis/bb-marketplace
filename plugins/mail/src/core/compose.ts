@@ -808,6 +808,7 @@ export function draftView(store: MailStore, draft: DraftRecord): DraftView {
         ? null
         : { html: draft.importHtml.html, into: draft.importHtml.into, stripSignature: draft.importHtml.stripSignature ?? false },
     origin: draft.origin,
+    preparedBy: draft.preparedBy ?? null,
     fromAddress: draft.fromAddress,
   };
 }

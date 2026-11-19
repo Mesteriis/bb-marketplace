@@ -759,6 +759,8 @@ export const draftViewSchema = z.object({
     .nullable(),
   /** "agent": started by an agent proposal the owner opened in Mail (the composer's badge). */
   origin: draftOriginSchema,
+  /** The plugin that prepared the draft through the plugin API; null otherwise. */
+  preparedBy: z.string().nullable().default(null),
   /** The identity the draft sends from; null = the account's own address. */
   fromAddress: z.string().nullable(),
 });
@@ -900,6 +902,8 @@ export type DraftPurpose = "unsubscribe" | "invite_reply";
 
 /** A compose_drafts row. Starts at revision 1; every save bumps it. */
 export type DraftRecord = NewDraft & {
+  /** The plugin that prepared this draft through the plugin API; null for the owner's and agents' drafts. */
+  preparedBy: string | null;
   purpose: DraftPurpose | null;
   revision: number;
   /** Where the copy in Drafts stands: "saved" with a serverCopy, else none, failed or local_only. */

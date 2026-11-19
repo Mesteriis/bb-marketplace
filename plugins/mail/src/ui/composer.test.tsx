@@ -35,6 +35,7 @@ const account: Account = {
 
 function draft(overrides: Partial<DraftView> = {}): DraftView {
   return {
+    preparedBy: null,
     id: "draft-1",
     accountId: "acc-1",
     kind: "new",
@@ -157,6 +158,15 @@ describe("Composer", () => {
     document.dispatchEvent(new Event("visibilitychange"));
     await waitFor(() => expect(ports.save).toHaveBeenCalledTimes(2));
     Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+  });
+
+  it("says which plugin prepared a draft, as text, and nothing for the owner's own", () => {
+    mount({ draft: draft({ preparedBy: "<b>calendar</b>" }) });
+    expect(screen.getByText("Prepared by <b>calendar</b>")).toBeTruthy();
+    expect(document.querySelector("b")).toBeNull();
+    cleanup();
+    mount();
+    expect(screen.queryByText(/Prepared by/)).toBeNull();
   });
 
   it("marks a draft an agent started, and only that one", () => {

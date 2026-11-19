@@ -35,6 +35,8 @@ export const PLUGIN_QUERY_MAX = 500;
 export const PLUGIN_MESSAGES_MAX = 100;
 export const PLUGIN_CONTACTS_MAX = 200;
 export const PLUGIN_READ_CHARS = 100_000;
+export const PLUGIN_RECIPIENTS_MAX = 50;
+export const PLUGIN_LETTER_CHARS = 200_000;
 export const CURSOR_MESSAGE = "Unknown cursor";
 export const UNKNOWN_MESSAGE = "Unknown message";
 
@@ -121,6 +123,20 @@ export const pluginApiSchemas = {
       nextCursor: z.string().nullable(),
     }),
   },
+  /**
+   * Puts a new letter in front of the owner as a draft marked with the calling
+   * plugin. It is never sent from here: the owner sends it from the composer.
+   */
+  plugin_mail_propose: {
+    input: z.object({
+      accountId: z.string(),
+      to: z.array(z.string().max(320)).min(1).max(PLUGIN_RECIPIENTS_MAX),
+      cc: z.array(z.string().max(320)).max(PLUGIN_RECIPIENTS_MAX).default([]),
+      subject: z.string().max(998),
+      text: z.string().max(PLUGIN_LETTER_CHARS),
+    }),
+    output: z.object({ draftId: z.string() }),
+  },
   /** Owner: every plugin that holds a grant or asked for one. */
   plugin_grants_list: {
     input: z.object({}),
@@ -162,6 +178,7 @@ export const PLUGIN_API_METHODS: readonly string[] = [
   "plugin_contacts_list",
   "plugin_invites_list",
   "plugin_invite_read",
+  "plugin_mail_propose",
 ];
 
 /** The owner's methods of Mail settings; a plugin caller is refused on them like on any other. */
@@ -180,4 +197,5 @@ export const PLUGIN_METHOD_RIGHT: Readonly<Record<string, PluginRight | "google"
   plugin_contacts_list: "contacts.read",
   plugin_invites_list: "invites.read",
   plugin_invite_read: "invites.read",
+  plugin_mail_propose: "mail.propose",
 };

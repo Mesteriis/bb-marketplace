@@ -626,6 +626,10 @@ export interface MailStore {
   /** Cascades to its attachments. */
   deleteDraft(id: string): void;
   listDrafts(accountId: string): DraftRecord[];
+  /** Marks a draft as prepared by a plugin (the plugin API); the mark stays through saves. */
+  markDraftPreparedBy(draftId: string, pluginId: string): void;
+  /** When a plugin's drafts were prepared, newest first, the last 30 days. */
+  pluginDraftTimes(pluginId: string): string[];
   /** The draft whose server copy is (folder, uid) of the account, or null. */
   draftForServerCopy(accountId: string, folder: string, uid: number): string | null;
   /** The "new" draft continuing that foreign Drafts message (messages.id), or null. */

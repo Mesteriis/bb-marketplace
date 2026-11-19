@@ -1054,6 +1054,7 @@ export class InMemoryMailStore implements MailStore {
   createDraft(input: NewDraft): DraftRecord {
     const record: DraftRecord = {
       ...structuredClone(input),
+      preparedBy: null,
       purpose: input.purpose ?? null,
       revision: 1,
       serverState: input.serverCopy === null ? "none" : "saved",
@@ -1061,6 +1062,19 @@ export class InMemoryMailStore implements MailStore {
     };
     this.state.drafts.set(record.id, record);
     return structuredClone(record);
+  }
+
+  markDraftPreparedBy(draftId: string, pluginId: string): void {
+    const draft = this.state.drafts.get(draftId);
+    if (draft) draft.preparedBy = pluginId;
+  }
+
+  pluginDraftTimes(pluginId: string): string[] {
+    return [...this.state.drafts.values()]
+      .filter((draft) => draft.preparedBy === pluginId)
+      .map((draft) => draft.createdAt)
+      .sort()
+      .reverse();
   }
 
   getDraft(id: string): DraftRecord | null {

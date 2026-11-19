@@ -915,6 +915,12 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
           </Button>
         ) : null}
         <h2 className="min-w-0 flex-1 truncate px-1 text-sm font-semibold text-foreground">{tx(TITLES[draft.kind])}</h2>
+        {typeof draft.preparedBy === "string" ? (
+          <span className="flex min-w-0 shrink items-center gap-1 rounded-sm bg-secondary px-1.5 py-0.5 text-xs text-secondary-foreground">
+            <Icon name="Plug" fallback="Mail" className="size-3.5 shrink-0" aria-hidden />
+            <span className="truncate">{tx("Prepared by {plugin}", { plugin: draft.preparedBy })}</span>
+          </span>
+        ) : null}
         {draft.origin === "agent" ? (
           <span className="flex shrink-0 items-center gap-1 rounded-sm bg-secondary px-1.5 py-0.5 text-xs text-secondary-foreground">
             <Icon name="Bot" fallback="Mail" className="size-3.5" aria-hidden />

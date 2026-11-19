@@ -50,6 +50,7 @@ function setup(overrides: Partial<PluginReads> = {}, start = "2026-11-19T10:00:0
     log: (entry) => void logged.push(entry),
     clockMs: () => clock.now.getTime(),
     reads,
+    propose: async () => ({ ok: false, reason: "account" }),
   });
   const guarded = guardHandlers(api.handlers, { api: new Set(PLUGIN_API_METHODS), check: api.check });
   return { store, clock, announced, logged, api: guarded };

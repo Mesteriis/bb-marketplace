@@ -2979,6 +2979,7 @@ describe("Mail in BB's sidebar", () => {
 
 function draftView(overrides: Partial<DraftView> = {}): DraftView {
   return {
+    preparedBy: null,
     id: "d-1",
     accountId: "acc-1",
     kind: "new",

@@ -5810,6 +5810,33 @@ describe("the plugin API reads", () => {
     await expect(crm("plugin_invite_read", { messageId: messageIdAt(host, "Work", 22) })).rejects.toMatchObject({ code: "not_found" });
   });
 
+  it("a proposed letter is a marked draft the owner can open; nothing is queued to send", async () => {
+    const { host, crm } = await loadGranted(["mail.propose"]);
+    const letter = { accountId: "acc_1", to: ["Ada <ada@example.com>"], subject: "Invented follow-up", text: "Invented line" };
+    const { draftId } = (await crm("plugin_mail_propose", letter)) as { draftId: string };
+    const opened = (await call(host, "compose_open", { draftId })) as { draft: { preparedBy: string | null; subject: string; to: { address: string }[] } };
+    expect(opened.draft).toMatchObject({ preparedBy: "crm", subject: "Invented follow-up", to: [{ address: "ada@example.com" }] });
+    const db = host.bb.storage.database();
+    expect(db.prepare("SELECT COUNT(*) AS n FROM outbox").get()).toEqual({ n: 0 });
+    // The owner's own save keeps the mark.
+    expect(db.prepare("SELECT prepared_by FROM compose_drafts WHERE id = ?").get(draftId)).toEqual({ prepared_by: "crm" });
+    await expect(crm("plugin_mail_propose", { ...letter, to: ["not an address"] })).rejects.toMatchObject({ code: "invalid" });
+    await expect(crm("plugin_mail_propose", { ...letter, accountId: "acc_2" })).rejects.toMatchObject({
+      code: "forbidden",
+      message: 'Makosh Mail: this plugin has no "mail.propose" access',
+    });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM compose_drafts WHERE prepared_by IS NOT NULL").get()).toEqual({ n: 1 });
+    const rows = agentLogRows(host).filter((row) => row.tool === "plugin_propose");
+    expect(rows.map((row) => row.outcome)).toEqual(["prepared", "refused_invalid", "refused_scope"]);
+    expect(JSON.stringify(rows)).not.toContain("ada@example.com");
+  });
+
+  it("without the right a plugin prepares nothing", async () => {
+    const { host, crm } = await loadGranted(["mail.read"]);
+    await expect(crm("plugin_mail_propose", { accountId: "acc_1", to: ["ada@example.com"], subject: "x", text: "y" })).rejects.toMatchObject({ code: "forbidden" });
+    expect(host.bb.storage.database().prepare("SELECT COUNT(*) AS n FROM compose_drafts").get()).toEqual({ n: 0 });
+  });
+
   it("every call is logged by plugin, tool and count, without a subject, an address or text", async () => {
     const { host, crm } = await loadGranted();
     await crm("plugin_accounts_list", {});

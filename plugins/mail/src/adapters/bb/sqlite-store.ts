@@ -1233,6 +1233,7 @@ type MessageRow = {
 type HeaderRow = MessageRow & { to_json: string; cc_json: string; uid: number | null };
 
 type DraftRow = {
+  prepared_by?: string | null;
   id: string;
   account_id: string;
   kind: ComposeKind;
@@ -1828,6 +1829,7 @@ function toDraft(row: DraftRow): DraftRecord {
           }
         : null,
     origin: row.origin,
+    preparedBy: row.prepared_by ?? null,
     proposalId: row.proposal_id,
     purpose: row.purpose,
     fromAddress: row.from_address,
@@ -4451,6 +4453,17 @@ export function createSqliteStore(db: Database.Database): MailStore {
       atomic(() => deleteDraftRows(id));
     },
 
+    markDraftPreparedBy(draftId, pluginId) {
+      db.prepare("UPDATE compose_drafts SET prepared_by = ? WHERE id = ?").run(pluginId, draftId);
+    },
+    pluginDraftTimes(pluginId) {
+      return db
+        .prepare<[string, string], { created_at: string }>(
+          "SELECT created_at FROM compose_drafts WHERE prepared_by = ? AND created_at > ? ORDER BY created_at DESC",
+        )
+        .all(pluginId, new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString())
+        .map((row) => row.created_at);
+    },
     listDrafts(accountId) {
       return db
         .prepare<[string], DraftRow>(

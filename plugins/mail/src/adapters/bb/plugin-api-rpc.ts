@@ -35,6 +35,7 @@ import {
   REQUEST_LIMIT_MESSAGE,
   missingRightMessage,
 } from "../../core/plugin-api.ts";
+import { PROPOSE_REFUSAL_TEXT, type PluginLetter, type proposePluginLetter } from "../../core/plugin-propose.ts";
 import type { MailStore } from "../../core/ports.ts";
 import { refuse } from "./bb-rpc.ts";
 import type { PluginCheck } from "./plugin-guard.ts";
@@ -50,6 +51,8 @@ export type PluginApiDeps = {
   clockMs?: () => number;
   /** The reads agents use: inside the owner's AI access, secrets hidden. */
   reads: PluginReads;
+  /** A letter as a marked draft of the account; never a send. */
+  propose: (pluginId: string, letter: PluginLetter) => ReturnType<typeof proposePluginLetter>;
 };
 
 export type PluginReads = {
@@ -309,6 +312,22 @@ export function createPluginApi(deps: PluginApiDeps) {
       const invite = await deps.reads.invite(header.id);
       done(pluginId, "plugin_invites", [header.id], invite === null ? 0 : 1);
       return { invite };
+    },
+
+    plugin_mail_propose: async (
+      input: { accountId: string; to: string[]; cc: string[]; subject: string; text: string },
+      context: Context,
+    ) => {
+      const pluginId = callingPlugin(context);
+      const accountId = granted(pluginId, "plugin_mail_propose", "mail.propose", input.accountId);
+      const result = await deps.propose(pluginId, { ...input, accountId });
+      if (!result.ok) {
+        deps.log({ actor: "plugin", tool: "plugin_propose", outcome: result.reason === "limit" ? "refused_caps" : "refused_invalid", refId: pluginRef(pluginId) });
+        throw refuse(result.reason === "limit" ? "conflict" : result.reason === "account" ? "not_found" : "invalid", PROPOSE_REFUSAL_TEXT[result.reason]);
+      }
+      deps.log({ actor: "plugin", tool: "plugin_propose", outcome: "prepared", count: 1, refId: pluginRef(pluginId) });
+      deps.announce(null);
+      return { draftId: result.draftId };
     },
 
     plugin_grants_list: (_input: Record<string, never>, _context?: Context) => {

@@ -2267,6 +2267,7 @@ describe.each(storeKinds)("slice-3b store semantics (%s)", (_kind, make) => {
       const created = s.createDraft(newDraft({ importHtml: { html: "<p>q</p>", into: "quote" }, references: ["<r@example.org>"] }));
       expect(created).toEqual({
         ...newDraft({ importHtml: { html: "<p>q</p>", into: "quote" }, references: ["<r@example.org>"] }),
+        preparedBy: null,
         revision: 1,
         serverState: "none",
         updatedAt: T0,
@@ -2303,6 +2304,7 @@ describe.each(storeKinds)("slice-3b store semantics (%s)", (_kind, make) => {
       s.renewMessageId("d_1", "<fresh@example.org>");
       expect(s.getDraft("d_1")).toEqual({
         ...newDraft({ messageId: "<fresh@example.org>" }),
+        preparedBy: null,
         revision: 1,
         serverState: "none",
         updatedAt: T0,

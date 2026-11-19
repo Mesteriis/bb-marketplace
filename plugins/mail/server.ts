@@ -117,6 +117,7 @@ import {
   type RuleDeps,
 } from "./src/adapters/bb/bb-rpc.ts";
 import { createPluginApi } from "./src/adapters/bb/plugin-api-rpc.ts";
+import { proposePluginLetter } from "./src/core/plugin-propose.ts";
 import { guardHandlers } from "./src/adapters/bb/plugin-guard.ts";
 import {
   PLUGIN_ACCESS_CHANNEL,
@@ -3203,6 +3204,7 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
     now: () => new Date(),
     announce: deps.announcePluginAccess,
     log: (entry) => void deps.agentLog(entry),
+    propose: (pluginId, letter) => proposePluginLetter(composeDeps, pluginId, letter),
     reads: {
       search: (query, accountId, limit, cursor) => pluginSearch(store, query, accountId, limit, cursor, new Date()),
       read: (messageId) => {
