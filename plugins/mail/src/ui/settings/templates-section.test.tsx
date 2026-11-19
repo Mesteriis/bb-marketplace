@@ -30,7 +30,7 @@ describe("Templates settings: what a template carries", () => {
   });
 
   it("edits the subject and recipients and saves them as lists", async () => {
-    const onSave = vi.fn(async () => {});
+    const onSave = vi.fn(async (_input: Record<string, unknown>) => {});
     render(<TemplatesSection templates={[offer]} onSave={onSave} onDelete={async () => {}} />);
     fireEvent.click(screen.getByRole("button", { name: "Edit Offer" }));
     const form = within(await screen.findByRole("form", { name: "Edit Offer" }));

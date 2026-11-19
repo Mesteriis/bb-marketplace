@@ -352,6 +352,11 @@ describe("MailSettings: templates", () => {
       id: "tpl-1",
       name: "Thanks a lot",
       doc: expect.objectContaining({ type: "doc" }),
+      // Typing speed: a plain template saves with nothing beside its text.
+      subject: "",
+      to: [],
+      cc: [],
+      bcc: [],
     });
     expect(screen.queryByRole("form", { name: "Edit Thanks" })).toBeNull();
   });
