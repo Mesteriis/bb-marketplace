@@ -404,6 +404,8 @@ export const statusViewSchema = z.object({
   agentPropose: z.boolean(),
   translate: z.object({ gateway: translateGatewaySchema }),
   accounts: z.array(accountSchema),
+  /** The plugin has a usable Google client, so "Sign in with Google" can be offered; absent means no. */
+  googleSignIn: z.boolean().optional(),
   unreadCount: z.number().int(),
 });
 export type StatusView = z.infer<typeof statusViewSchema>;

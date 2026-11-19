@@ -548,6 +548,33 @@ describe("makosh-mail server", () => {
     await expect(host.harness.behavior.callRpc("sync_now", { accountId })).resolves.toEqual({ started: true });
   });
 
+  it("offers Google sign-in, starts a flow for the owner only, and reads an unknown flow as expired", async () => {
+    const host = await load();
+    const status = (await host.harness.behavior.callRpc("status_get", null)) as { googleSignIn?: boolean };
+    expect(status.googleSignIn).toBe(true);
+
+    const asPlugin = { experimental_caller: { kind: "plugin", pluginId: "other" } } as const;
+    await expect(host.harness.behavior.callRpc("google_sign_in_start", { email: null }, asPlugin)).rejects.toThrow();
+    await expect(host.harness.behavior.callRpc("google_sign_in_status", { flowId: "f" }, asPlugin)).rejects.toThrow();
+
+    const started = (await host.harness.behavior.callRpc("google_sign_in_start", { email: "owner@example.org" })) as {
+      flowId: string;
+      url: string;
+    };
+    const consent = new URL(started.url);
+    expect(consent.hostname).toBe("accounts.google.com");
+    expect(consent.searchParams.get("redirect_uri")).toMatch(/^http:\/\/127\.0\.0\.1:[0-9]+$/);
+    expect(consent.searchParams.get("scope")).toBe("openid email https://mail.google.com/");
+    expect(consent.searchParams.has("client_secret")).toBe(false);
+    await expect(host.harness.behavior.callRpc("google_sign_in_status", { flowId: started.flowId })).resolves.toEqual({
+      state: "pending",
+    });
+    await expect(host.harness.behavior.callRpc("google_sign_in_status", { flowId: "missing" })).resolves.toEqual({
+      state: "failed",
+      reason: "timeout",
+    });
+  });
+
   it("accounts_retry_sign_in resumes a stopped account once the server accepts the saved password", async () => {
     const host = await load();
     const accountId = await addStopped(host);

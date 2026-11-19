@@ -41,6 +41,7 @@ import { createAccountQueue } from "./src/adapters/bb/account-queue.ts";
 import { createImapflowGateway, parseMail } from "./src/adapters/bb/imapflow-gateway.ts";
 import { googleClient } from "./src/adapters/bb/google-oauth-client.ts";
 import { createGoogleTokens, type GoogleTokens } from "./src/adapters/bb/google-tokens.ts";
+import { createGoogleSignIn, type GoogleSignIn } from "./src/adapters/bb/google-sign-in.ts";
 import { MAKOSH_AI_PLUGIN_ID, createMakoshAiTranslator } from "./src/adapters/bb/makosh-ai-translator.ts";
 import { TranslateJobRefusal, TranslateJobs } from "./src/adapters/bb/translate-jobs.ts";
 import { AiJobRefusal, AiJobs, type AiFinished, type AiJobContext } from "./src/adapters/bb/ai-jobs.ts";
@@ -255,6 +256,8 @@ import {
   rpcSchemas,
   testAccount,
   retrySignIn,
+  saveGoogleAccount,
+  PRESETS,
   toPublicAccount,
   imapConfigOf,
   type Account,
@@ -963,6 +966,8 @@ function refusePluginCaller(context: ExperimentalPluginRpcHandlerContext): void 
 }
 
 export const ACCOUNT_BUSY_MESSAGE = "A message is being sent";
+/** google_sign_in_start when the plugin has no usable client or the listener cannot open. */
+export const GOOGLE_UNAVAILABLE_MESSAGE = "Google sign-in is not available";
 /** new_mail_get for an unknown or expired token. */
 export const NEW_MAIL_GONE_MESSAGE = "This notification has expired";
 /** Fixed texts of translation refusals. */
@@ -1855,7 +1860,30 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       messages: { needsKey: NEEDS_KEY_MESSAGE, passwordNeeded: PASSWORD_NEEDED_MESSAGE },
       log: (line) => bb.log.info(line),
     });
+    const googleSignIn = createGoogleSignIn({
+      client: googleClient(),
+      tokens: googleTokens,
+      testSignIn: async (email, refreshToken) => {
+        const preset = PRESETS.gmail;
+        const result = await gateway
+          .test({ host: preset.host!, port: preset.port, user: email, password: refreshToken, authKind: "google" })
+          .catch(() => null);
+        if (result === null) return "unreachable";
+        return result.ok ? "ok" : result.authFailed ? "refused" : "unreachable";
+      },
+      save: async (input) => {
+        const account = await saveGoogleAccount(accountDeps, input);
+        publishChanged(account.id);
+        loop.wake(account.id);
+        idle.refresh();
+        bb.log.info(`google sign-in ${account.id}: saved`);
+        return account;
+      },
+    });
+    bb.onDispose(() => googleSignIn.close());
     const rpcDeps: RpcDeps = {
+      googleSignIn,
+      googleSignInOffered: googleClient() !== null,
       projects: projectDirectory,
       bbThreads,
       taskTarget,
@@ -1964,6 +1992,9 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
 }
 
 type RpcDeps = {
+  /** Google sign-in flows, and whether the plugin has a client to offer them with. */
+  googleSignIn: GoogleSignIn;
+  googleSignInOffered: boolean;
   /** Slice 3g: BB projects and working trees, threads, Taskboard and the owner's settings for them. */
   projects: ProjectDirectory;
   bbThreads: BbThreads;
@@ -3142,8 +3173,22 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         agentPropose: deps.agentPropose(),
         translate: { gateway: await deps.gateway.status() },
         accounts: store.listAccounts().map(toPublicAccount),
+        googleSignIn: deps.googleSignInOffered,
         unreadCount: store.unreadCount(null),
       }),
+      google_sign_in_start: async ({ email }, context) => {
+        refusePluginCaller(context);
+        if (!deps.vaultReady()) throw refuse("conflict", NEEDS_KEY_MESSAGE);
+        try {
+          return await deps.googleSignIn.start({ email });
+        } catch {
+          throw refuse("conflict", GOOGLE_UNAVAILABLE_MESSAGE);
+        }
+      },
+      google_sign_in_status: ({ flowId }, context) => {
+        refusePluginCaller(context);
+        return deps.googleSignIn.status(flowId);
+      },
       accounts_test: (input) => testAccount(accountDeps, input),
       accounts_add: async (input, context) => {
         refusePluginCaller(context);

@@ -548,6 +548,23 @@ export const rpcSchemas = {
     input: z.object({ accountId: z.string() }),
     output: z.object({ result: z.enum(["resumed", "refused", "unreachable", "unreadable", "sign_in_needed"]) }),
   },
+  /** Starts a Google sign-in: opens the loopback listener and gives the consent page to open (google-sign-in.ts). */
+  google_sign_in_start: {
+    input: z.object({ email: z.string().min(3).max(320).nullable() }),
+    output: z.object({ flowId: z.string(), url: z.string() }),
+  },
+  /** How a Google sign-in stands; an unknown flow reads as failed with "timeout". */
+  google_sign_in_status: {
+    input: z.object({ flowId: z.string().min(1).max(64) }),
+    output: z.discriminatedUnion("state", [
+      z.object({ state: z.literal("pending") }),
+      z.object({ state: z.literal("done"), accountId: z.string() }),
+      z.object({
+        state: z.literal("failed"),
+        reason: z.enum(["denied", "timeout", "mismatch", "no_refresh_token", "refused", "unreachable", "alias", "error"]),
+      }),
+    ]),
+  },
   threads_list: {
     input: z.object({
       scope: threadScope,
@@ -1849,6 +1866,9 @@ export const SLICE_3H_METHODS = [
 
 /** The owner-only method that tries a stopped account's saved password again. */
 export const SIGN_IN_METHODS = ["accounts_retry_sign_in"] as const satisfies readonly (keyof typeof rpcSchemas)[];
+
+/** The owner-only methods of Google sign-in. */
+export const GOOGLE_METHODS = ["google_sign_in_start", "google_sign_in_status"] as const satisfies readonly (keyof typeof rpcSchemas)[];
 
 /** The five owner-only methods slice 3p adds. */
 export const SLICE_3P_METHODS = [
