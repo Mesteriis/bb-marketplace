@@ -29,6 +29,18 @@ describe("what an agent may see of a Proxmox console", () => {
     expect(all).toEqual(["1", "2", "3", "4", "5"]);
   });
 
+  it("the view says how long an ended console was active: 0 when it never was, null while it still is", () => {
+    const withTimes = (activeAt: number | null, endedAt: number | null) => {
+      const row = session(3, "pve", { console: "lxc" }) as { pve: Record<string, unknown> };
+      row.pve.activeAt = activeAt;
+      row.pve.endedAt = endedAt;
+      return agentPorts({ sessionList: () => [row], agentControl: () => "ready" } as never, { list: () => [], get: () => null } as never, () => "thr_a").sessions.list("thr_a")[0]!.pve!.activeMs;
+    };
+    expect(withTimes(1000, 13_000)).toBe(12_000);
+    expect(withTimes(null, 5000)).toBe(0);
+    expect(withTimes(1000, null)).toBeNull();
+  });
+
   it("the rule alone", () => {
     const by = (t: string | undefined) => () => t;
     expect(agentMayUse({ kind: "pve", pve: { console: "node" } }, by("thr_a"), "k", "thr_a")).toBe(false);

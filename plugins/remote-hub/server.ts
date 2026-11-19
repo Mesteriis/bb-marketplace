@@ -101,6 +101,7 @@ export default function plugin(bb: BbPluginApi): void {
     agents: { access: agentAccess, audit: agentAudit },
     agentControl: createAgentControlRpc({ service, leases, registry, audit: agentAudit, watchers, settings: agentSettings }),
     openedBy: (key) => registry.threadOf(key),
+    ownerOpened: (profileId) => registry.unblock(profileId),
   });
   const controlPorts = agentControlPorts({ service, profiles, handlers, pveOpen: (input) => pveRpc.openConsole(input), watchers, settings: agentSettings });
   const toolDeps = {

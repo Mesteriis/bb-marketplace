@@ -77,9 +77,11 @@ export interface RpcHandlerDeps {
   openedBy?: (sessionKey: string) => string | undefined;
   /** Proxmox discovery and onboarding (the owner's page only). */
   pve?: PveRpc;
+  /** The owner opened a console on this connection successfully: whatever blocked agents on it is lifted. */
+  ownerOpened?: (profileId: string) => void;
 }
 
-export function createRpcHandlers({ service, profiles, credentials, imports, agents, agentControl, openedBy, pve }: RpcHandlerDeps): RpcHandlers {
+export function createRpcHandlers({ service, profiles, credentials, imports, agents, agentControl, openedBy, pve, ownerOpened }: RpcHandlerDeps): RpcHandlers {
   const withPve = async <T>(run: (p: PveRpc) => T | Promise<T>): Promise<T> => {
     if (pve === undefined) throw new experimental_PluginRpcRefusal({ code: "not_found", message: "Proxmox support is not available" });
     try {
@@ -257,6 +259,7 @@ export function createRpcHandlers({ service, profiles, credentials, imports, age
       withPve(async (p) => {
         const request = input.console === "node" ? ({ console: "node", node: input.node as string } as const) : ({ console: input.console, vmid: input.vmid as number } as const);
         const answer = await p.openConsole({ ...request, profileId: input.profileId, cols: input.cols, rows: input.rows });
+        if (answer.ok) ownerOpened?.(input.profileId);
         return answer.ok ? { ok: true as const, generation: answer.handle.generation, sessionId: answer.handle.sessionId, kind: answer.kind, node: answer.node } : answer;
       }),
     pve_onboard_plan: (input) => withPve((p) => p.onboardPlan(input)),

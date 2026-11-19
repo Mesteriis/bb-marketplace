@@ -39,7 +39,7 @@ export interface AgentSessionView {
   control: "ready" | "pending" | "never";
   rdp?: { state: string; desktop: { frameId: number; width: number; height: number } | null };
   /** A Proxmox console (kind pve or vnc): what it is, its state and the fixed reason text of a failure. */
-  pve?: { console: "node" | "lxc" | "qemu"; node: string; vmid: number | null; state: string; reason: string | null; /** The fixed code behind `reason`. */ reasonCode?: string | null };
+  pve?: { console: "node" | "lxc" | "qemu"; node: string; vmid: number | null; state: string; reason: string | null; /** The fixed code behind `reason`. */ reasonCode?: string | null; /** How long the console was active (ms), once it ended: what "it held" means. */ activeMs?: number | null };
 }
 
 

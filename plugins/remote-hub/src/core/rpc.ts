@@ -152,6 +152,9 @@ export const pveConsoleInfoSchema = z.object({
   state: z.enum(["connecting", "active", "lost", "disconnected", "error"]),
   /** Why a console failed or was lost: fixed local text, never a server body. */
   reason: z.object({ code: z.string(), text: z.string(), fingerprint: z.string().nullable() }).nullable(),
+  /** When the console became active and when it ended (ms since the epoch): how long it really held. */
+  activeAt: z.number().nullable().optional(),
+  endedAt: z.number().nullable().optional(),
 });
 
 export const pveConsoleTabSchema = z.object({

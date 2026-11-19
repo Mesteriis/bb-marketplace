@@ -532,6 +532,7 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
     clearIdle(key);
     vncRelays.get(key)?.dispose();
     vncRelays.delete(key);
+    info.pve.endedAt ??= Date.now();
     if (info.pve.state !== "error") {
       info.pve.state = endStateOf(reason);
       info.pve.reason = info.pve.state === "lost" || reason === "idle_timeout" || reason === "view_closed" ? { code: reason, text: reasonText(reason), fingerprint: null } : null;
@@ -554,10 +555,14 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
     if (event.type === "state") {
       if (info.pve.state === "error") return;
       info.pve.state = consoleStateOf(event.state);
-      if (event.state === "open") info.state = "running";
+      if (event.state === "open") {
+        info.state = "running";
+        info.pve.activeAt ??= Date.now();
+      }
       notifyConsole(key);
     } else if (event.type === "error") {
       info.pve.state = "error";
+      info.pve.endedAt ??= Date.now();
       info.pve.reason = { code: event.code, text: reasonText(event.code), fingerprint: event.fingerprint };
       notifyConsole(key);
     } else {
@@ -1143,6 +1148,8 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
           guestName: args.guestName,
           state: "connecting",
           reason: null,
+          activeAt: null,
+          endedAt: null,
         },
       });
       if (kind === "vnc") vncRelays.set(key, new VncRelay(deps.vncBufferBytes ?? 256 * 1024));

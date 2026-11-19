@@ -61,6 +61,30 @@ export class AgentSessionRegistry {
     this.lineage.delete(sessionKey);
   }
   /** How many times in a row this console was reopened by remote_reconnect, and when this session was opened (memory only). */
+  /** A console being reopened right now: a second remote_reconnect on the same old session is refused until the first ends. */
+  private readonly reserved = new Set<string>();
+  reserve(sessionKey: string): boolean {
+    if (this.reserved.has(sessionKey)) return false;
+    this.reserved.add(sessionKey);
+    return true;
+  }
+  release(sessionKey: string): void {
+    this.reserved.delete(sessionKey);
+  }
+  /**
+   * A connection whose login, certificate or second factor was refused: agents may not open it again (no login loop against
+   * Proxmox with the saved credential) until the owner opens a console on it successfully.
+   */
+  private readonly blocked = new Map<string, string>();
+  block(profileId: string, code: string): void {
+    this.blocked.set(profileId, code);
+  }
+  unblock(profileId: string): void {
+    this.blocked.delete(profileId);
+  }
+  blockedCode(profileId: string): string | undefined {
+    return this.blocked.get(profileId);
+  }
   private readonly lineage = new Map<string, { reconnects: number; openedAt: number }>();
   setLineage(sessionKey: string, reconnects: number, openedAt: number): void {
     this.lineage.set(sessionKey, { reconnects, openedAt });
@@ -291,10 +315,17 @@ export function createControlTools(deps: AgentControlDeps): AgentToolDef[] {
   async function openRegistered(ctx: AgentCallContext, profileId: string, consoleRequest: ConsoleRequest | undefined, reconnects = 0): Promise<string> {
     const live = ports.sessions.list(ctx.threadId).filter((s) => s.state !== "closed" && openedBy.threadOf(s.key) === ctx.threadId).length;
     if (live + (opening.get(ctx.threadId) ?? 0) >= MAX_SESSIONS_PER_THREAD) throw new ToolError("too_many_sessions", `this thread already has ${MAX_SESSIONS_PER_THREAD} open sessions: disconnect one first`);
+    const blockedBy = consoleRequest === undefined ? undefined : openedBy.blockedCode(profileId);
+    if (blockedBy !== undefined) throw new ToolError("connection_blocked", `this connection's login or certificate was refused (${blockedBy}); agents may not try it again until the owner opens a console on it successfully`);
     opening.set(ctx.threadId, (opening.get(ctx.threadId) ?? 0) + 1);
     let sessionKey: string;
     try {
-      ({ sessionKey } = await control.connect(profileId, consoleRequest));
+      try {
+        ({ sessionKey } = await control.connect(profileId, consoleRequest));
+      } catch (error) {
+        if (consoleRequest !== undefined && error instanceof ToolError && NO_AGENT_RETRY.has(error.code)) openedBy.block(profileId, error.code);
+        throw error;
+      }
       // Registered at once: whatever happens next, the session is accounted for until it is confirmed closed.
       openedBy.mark(sessionKey, ctx.threadId);
       openedBy.setLineage(sessionKey, reconnects, Date.now());
@@ -416,14 +447,28 @@ export function createControlTools(deps: AgentControlDeps): AgentToolDef[] {
           if (profile.credentialRef === null) throw new ToolError("needs_saved_credential", "this connection has no saved credential; the owner must save one on the Remote Hub page first");
           if (old.state !== "closed") throw new ToolError("still_connected", "this console is still connected: use it, or remote_disconnect it first");
           const code = old.pve.reasonCode ?? null;
-          if (code !== null && NO_AGENT_RETRY.has(code)) throw new ToolError("reconnect_refused", `the console ended with ${code}: ${old.pve.reason ?? "the owner has to fix the connection"} Reconnecting would only repeat it.`);
-          // A reopening that held for a while starts the count again; quick repeated losses count up to the cap.
-          const openedAt = openedBy.openedAtOf(old.key);
-          const held = openedAt !== undefined && Date.now() - openedAt >= STABLE_AFTER_MS;
-          const reconnects = held ? 1 : openedBy.reconnectsOf(old.key) + 1;
-          if (reconnects > RECONNECT_ATTEMPTS) throw new ToolError("reconnect_limit", `this console was reopened ${RECONNECT_ATTEMPTS} times in a row without holding; ask the owner to look at it`);
-          const request: ConsoleRequest = { console: old.pve.console, vmid: old.pve.vmid ?? 0 };
-          const sessionKey = await openRegistered(ctx, profile.id, request, reconnects);
+          if (code !== null && NO_AGENT_RETRY.has(code)) {
+            openedBy.block(profile.id, code);
+            throw new ToolError("reconnect_refused", `the console ended with ${code}: ${old.pve.reason ?? "the owner has to fix the connection"} Reconnecting would only repeat it.`);
+          }
+          const blockedBy = openedBy.blockedCode(profile.id);
+          if (blockedBy !== undefined) throw new ToolError("connection_blocked", `this connection's login or certificate was refused (${blockedBy}); agents may not try it again until the owner opens a console on it successfully`);
+          // The old session is reserved BEFORE anything is awaited: a second call on it meets this one, not an open session.
+          if (!openedBy.reserve(old.key)) throw new ToolError("reconnect_in_progress", "this console is already being reopened by another call");
+          let sessionKey: string;
+          let reconnects: number;
+          try {
+            // It held if it was actually ACTIVE for a while (how long it ran, not how long ago it was registered); a quick loss
+            // counts up. Every attempt, failed ones too, is counted on the old session until a reopen succeeds.
+            const held = old.pve.activeMs != null && old.pve.activeMs >= STABLE_AFTER_MS;
+            reconnects = held ? 1 : openedBy.reconnectsOf(old.key) + 1;
+            if (reconnects > RECONNECT_ATTEMPTS) throw new ToolError("reconnect_limit", `this console was reopened ${RECONNECT_ATTEMPTS} times in a row without holding; ask the owner to look at it`);
+            openedBy.setLineage(old.key, reconnects, openedBy.openedAtOf(old.key) ?? Date.now());
+            const request: ConsoleRequest = { console: old.pve.console, vmid: old.pve.vmid ?? 0 };
+            sessionKey = await openRegistered(ctx, profile.id, request, reconnects);
+          } finally {
+            openedBy.release(old.key);
+          }
           // The old session is gone for this thread: its lease ended and its id no longer answers.
           leases.endSession(old.key, "session_closed");
           openedBy.forget(old.key);

@@ -19,6 +19,9 @@ export interface PveConsoleInfo {
   state: PveConsoleState;
   /** Why a console is in the `error` or `lost` state; fixed local text, never a server body. */
   reason: { code: string; text: string; fingerprint: string | null } | null;
+  /** When the console became active and when it ended (ms since the epoch). */
+  activeAt?: number | null;
+  endedAt?: number | null;
 }
 
 /** The helper's state words for a console, as a header state. */

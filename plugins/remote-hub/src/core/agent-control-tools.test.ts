@@ -969,23 +969,82 @@ describe("remote_reconnect", () => {
     expect(t.registry.threadOf(old)).toBe("thr_a");
   });
 
-  it("five reopenings in a row that did not hold are the limit; one that held for ten seconds starts the count again", async () => {
+  it("five reopenings in a row that did not hold are the limit; one that was ACTIVE for ten seconds starts the count again", async () => {
     const t = ready();
-    let clock = 5_000_000;
-    vi.spyOn(Date, "now").mockImplementation(() => clock);
     let key = await lostConsole(t);
+    const lose = (k: string, activeMs: number | null) => {
+      const row = t.sessions.find((x) => x.key === k)!;
+      row.state = "closed";
+      row.pve = { console: "lxc", node: "pve1", vmid: 101, state: "lost", reason: "x", reasonCode: "remote_closed", activeMs };
+    };
     for (let n = 1; n <= 5; n++) {
       const out = t.data(await t.call("remote_reconnect", { sessionId: key }));
       expect(out.reconnects).toBe(n);
       key = out.sessionId as string;
-      const row = t.sessions.find((x) => x.key === key)!;
-      row.state = "closed";
-      row.pve = { console: "lxc", node: "pve1", vmid: 101, state: "lost", reason: "x", reasonCode: "remote_closed" };
-      clock += 2000; // lost again two seconds after it opened
+      lose(key, 2000); // active for two seconds only, however long ago it was registered
     }
     expect(t.textOf(await t.call("remote_reconnect", { sessionId: key }))).toContain("reconnect_limit");
-    clock += 10_000; // ...but a console that held starts a new count
-    expect(t.textOf(await t.call("remote_reconnect", { sessionId: key }))).not.toContain("reconnect_limit");
+    lose(key, 10_000); // it held: active for ten seconds
+    expect(t.data(await t.call("remote_reconnect", { sessionId: key })).reconnects).toBe(1);
+  });
+
+  it("how long ago the old console was registered does not make it 'held': only its active time does", async () => {
+    const t = ready();
+    let clock = 1_000;
+    vi.spyOn(Date, "now").mockImplementation(() => clock);
+    const key = await lostConsole(t);
+    clock += 3_600_000; // an hour later
+    expect(t.data(await t.call("remote_reconnect", { sessionId: key })).reconnects).toBe(1);
+    const second = t.sessions.at(-1)!.key;
+    const row = t.sessions.find((x) => x.key === second)!;
+    row.state = "closed";
+    row.pve = { console: "lxc", node: "pve1", vmid: 101, state: "lost", reason: "x", reasonCode: "remote_closed", activeMs: 500 };
+    clock += 3_600_000;
+    expect(t.data(await t.call("remote_reconnect", { sessionId: second })).reconnects).toBe(2);
+  });
+
+  it("two concurrent calls on the same closed session open exactly one console; the other is told it is in progress", async () => {
+    const t = ready();
+    const old = await lostConsole(t);
+    const release = t.holdConnect();
+    const first = t.call("remote_reconnect", { sessionId: old });
+    const second = t.call("remote_reconnect", { sessionId: old });
+    await tick();
+    release();
+    const texts = [t.textOf(await first), t.textOf(await second)];
+    expect(texts.filter((x) => x.includes("reconnect_in_progress"))).toHaveLength(1);
+    expect(texts.filter((x) => x.includes("previousSessionId"))).toHaveLength(1);
+    expect(t.opened).toHaveLength(2); // the original and one reopening
+  });
+
+  it("failed reopens count: after five failures the sixth call is the limit, from the same old session", async () => {
+    const t = ready();
+    const old = await lostConsole(t);
+    t.refusePve(new ToolError("unreachable", "The Proxmox endpoint did not answer."));
+    for (let n = 1; n <= 5; n++) expect(t.textOf(await t.call("remote_reconnect", { sessionId: old })), String(n)).toContain("unreachable");
+    expect(t.textOf(await t.call("remote_reconnect", { sessionId: old }))).toContain("reconnect_limit");
+    expect(t.opened).toHaveLength(1);
+  });
+
+  it.each(["login_failed", "tfa_required", "tls_untrusted", "cert_changed"])("a %s on an open blocks the connection for agents (reconnect and connect) until the owner opens it successfully", async (code) => {
+    const t = ready();
+    const old = await lostConsole(t);
+    t.refusePve(new ToolError(code, "refused"));
+    expect(t.textOf(await t.call("remote_reconnect", { sessionId: old }))).toContain(code);
+    t.refusePve(null);
+    expect(t.textOf(await t.call("remote_reconnect", { sessionId: old }))).toContain("connection_blocked");
+    expect(t.textOf(await t.call("remote_connect", { connectionId: P_PVE, console: "lxc", vmid: 101 }))).toContain("connection_blocked");
+    expect(t.opened).toHaveLength(1);
+    t.registry.unblock(P_PVE); // the owner opened a console on it
+    expect(t.data(await t.call("remote_reconnect", { sessionId: old })).reconnects).toBe(2); // the refused attempt counted
+  });
+
+  it("a console that ended with login_failed blocks the connection when the agent asks to reopen it", async () => {
+    const t = ready();
+    const old = await lostConsole(t, "lxc", "login_failed", "refused");
+    expect(t.textOf(await t.call("remote_reconnect", { sessionId: old }))).toContain("reconnect_refused");
+    expect(t.registry.blockedCode(P_PVE)).toBe("login_failed");
+    expect(t.textOf(await t.call("remote_connect", { connectionId: P_PVE, console: "qemu", vmid: 200 }))).toContain("connection_blocked");
   });
 
   it("is audited under its own name, and a failure writes its outcome", async () => {

@@ -112,8 +112,20 @@ describe("a terminal console (node, LXC)", () => {
     expect(kind).toBe("pve");
     const r = record(handle);
     expect(r.kind).toBe("pve");
-    expect(r.pve).toEqual({ profileId: "11111111-1111-4111-8111-111111111111", connectionName: "lab", console: "lxc", node: "pve1", vmid: 101, guestName: "web", state: "connecting", reason: null });
+    expect(r.pve).toEqual({ profileId: "11111111-1111-4111-8111-111111111111", connectionName: "lab", console: "lxc", node: "pve1", vmid: 101, guestName: "web", state: "connecting", reason: null, activeAt: null, endedAt: null });
     expect(JSON.stringify(service.sessionList())).not.toContain("rh-cred");
+  });
+
+  it("records when the console became active and when it ended: the time it really held", async () => {
+    vi.setSystemTime(new Date("2026-11-19T10:00:00.000Z"));
+    const { helper, service, record } = setup();
+    const { handle } = await service.pveOpen(args("lxc"));
+    vi.setSystemTime(new Date("2026-11-19T10:00:03.000Z"));
+    helper.event(handle.sessionId, { type: "state", state: "open" });
+    expect(record(handle).pve).toMatchObject({ activeAt: Date.parse("2026-11-19T10:00:03.000Z"), endedAt: null });
+    vi.setSystemTime(new Date("2026-11-19T10:00:15.000Z"));
+    helper.ended(handle.sessionId, "remote_closed");
+    expect(record(handle).pve).toMatchObject({ activeAt: Date.parse("2026-11-19T10:00:03.000Z"), endedAt: Date.parse("2026-11-19T10:00:15.000Z") });
   });
 
   it("goes connecting, then active when the helper says open", async () => {
