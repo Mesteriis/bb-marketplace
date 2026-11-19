@@ -10,6 +10,7 @@
 // Reconnect opens a new one and says so. Tabs are remembered as targets only (no output, no secrets) and come back after a restart
 // as "not connected" with a Reconnect button.
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
+import { consoleReasonRu } from "./pve-texts.ts";
 import { endStateOf, reasonText, type PveConsoleState } from "../core/pve-console.ts";
 import { decideReconnect, LOST_SEPARATOR, RECONNECT_ATTEMPTS, RECONNECTED_SEPARATOR, STABLE_AFTER_MS } from "../core/pve-reconnect.ts";
 import type { PveConsoleTabRow, SessionHandle } from "../core/rpc.ts";
@@ -255,7 +256,7 @@ export function PveConsoles(props: PveConsolesProps) {
         return;
       }
       if (!opened.ok) {
-        failed(opened.code, reasonText(opened.code) === `The console ended (${opened.code}).` ? opened.message : reasonText(opened.code), opened.fingerprint);
+        failed(opened.code, reasonText(opened.code) === `The console ended (${opened.code}).` ? opened.message : consoleReasonRu(opened.code), opened.fingerprint);
         return;
       }
       const handle: SessionHandle = { generation: opened.generation, sessionId: opened.sessionId };
@@ -417,7 +418,7 @@ export function PveConsoles(props: PveConsolesProps) {
   const lost = (tab: Tab, code: string, final: "lost" | "error" = "lost", fingerprint: string | null = null): void => {
     const now = tabsRef.current.find((t) => t.id === tab.id);
     if (now === undefined || now.state === "disconnected" || now.state === "error" || now.state === "reconnecting" || closedTabs.current.has(tab.id)) return;
-    const reason = { code, text: reasonText(code), fingerprint };
+    const reason = { code, text: consoleReasonRu(code), fingerprint };
     if (isGraphics(now)) {
       patch(tab.id, { state: final, reason });
       return;
@@ -486,7 +487,7 @@ export function PveConsoles(props: PveConsolesProps) {
       reconnect(now, "Proxmox закрыл графическую консоль раньше, чем она что-то показала (его прокси VNC ждёт экран около десяти секунд). Новая консоль открыта один раз автоматически.");
       return true;
     }
-    patch(tab.id, { state: "lost", reason: { code: "vnc_start_timeout", text: reasonText("vnc_start_timeout"), fingerprint: null } });
+    patch(tab.id, { state: "lost", reason: { code: "vnc_start_timeout", text: consoleReasonRu("vnc_start_timeout"), fingerprint: null } });
     return true;
   };
   const onEnded = (tab: Tab) => (info: { code: string; text: string }) => {

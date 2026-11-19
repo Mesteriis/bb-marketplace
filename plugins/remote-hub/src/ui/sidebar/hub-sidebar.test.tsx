@@ -100,7 +100,7 @@ describe("HubSidebar", () => {
     const p = props({ connections: { pve1: { outcome: "tls_untrusted", nodes: [], guests: [] } } });
     render(<HubSidebar {...p} />);
     fireEvent.click(screen.getByRole("button", { name: /^Proxmox/ }));
-    expect(screen.getByTestId("sidebar-problem").textContent).toContain("Список не прочитан (tls_untrusted)");
+    expect(screen.getByTestId("sidebar-problem").textContent).toContain("Список не прочитан: сертификат не доверенный");
     fireEvent.click(screen.getByRole("button", { name: "Подробнее" }));
     expect(p.onGuests).toHaveBeenCalledWith("pve1");
   });

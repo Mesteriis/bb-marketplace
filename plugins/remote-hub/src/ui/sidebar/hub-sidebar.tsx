@@ -13,6 +13,7 @@ import type { Thumb } from "../../core/thumb.ts";
 import { buildTree, type GuestFilter, type TreeConnection, type TreeProfile, type TreeRow } from "../../core/hub-tree.ts";
 import { kindText, stateText, StatusDot } from "../desk/status.tsx";
 import { plural, tx } from "../i18n.ts";
+import { outcomeRu } from "../pve-texts.ts";
 import type { PveConsoleRequest } from "../pve-api.ts";
 
 export interface HubSidebarProps {
@@ -139,7 +140,7 @@ export function HubSidebar(props: HubSidebarProps) {
       case "problem":
         return (
           <div key={`e${r.profileId}`} className="flex flex-col gap-1.5 py-1 pl-7 pr-2 text-xs text-muted-foreground" role="status" data-testid="sidebar-problem">
-            <span>{r.outcome === "keychain_needs_approval" ? tx("pve.needsApproval") : tx("pve.unreadable", { code: r.outcome })}</span>
+            <span>{r.outcome === "keychain_needs_approval" ? tx("pve.needsApproval") : tx("pve.unreadable", { code: outcomeRu(r.outcome) })}</span>
             <Button type="button" size="sm" variant="outline" className="self-start" onClick={() => (r.outcome === "keychain_needs_approval" ? props.onAllow(r.profileId) : props.onGuests(r.profileId))}>
               {tx(r.outcome === "keychain_needs_approval" ? "pve.allow" : "pve.details")}
             </Button>

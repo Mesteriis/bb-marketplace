@@ -200,7 +200,7 @@ describe("restricted user mode", () => {
     render(<PveOnboarding api={a} onDone={vi.fn()} onCancel={vi.fn()} />);
     fillAdmin();
     review();
-    expect((await screen.findByTestId("pve-onboard-error")).textContent).toContain("refused the login");
+    expect((await screen.findByTestId("pve-onboard-error")).textContent).toContain("Proxmox отклонил вход");
     expect(passwordField().value).toBe("");
   });
 

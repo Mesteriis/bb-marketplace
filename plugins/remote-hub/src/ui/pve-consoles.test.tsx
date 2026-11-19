@@ -127,7 +127,7 @@ describe("PveConsoles", () => {
     await screen.findByTestId("terminal");
     act(() => lastTerminal().onStateChange?.("closed", { exitCode: null, signal: null, reason: "login_failed" }));
     expect(screen.getByTestId("pve-console-state").textContent).toBe("lost");
-    expect(screen.getByTestId("pve-console-reason").textContent).toContain("enter its password again");
+    expect(screen.getByTestId("pve-console-reason").textContent).toContain("введите пароль заново");
     expect(screen.getByTestId("pve-console-new-console").textContent).toContain("НОВУЮ консоль");
     fireEvent.click(screen.getByRole("button", { name: "Переподключить" }));
     await waitFor(() => expect(calls.open).toHaveLength(2));
@@ -180,7 +180,7 @@ describe("PveConsoles", () => {
     // a specific reason that came first is not replaced by the generic one that follows it
     act(() => props.onConsole?.({ state: "lost", reason: { code: "remote_closed", text: "Proxmox closed the console.", fingerprint: null } }));
     act(() => props.onEnded?.({ code: "websocket_error", text: "The console connection broke (websocket error)." }));
-    expect(screen.getByTestId("pve-console-reason").textContent).toContain("Proxmox closed the console");
+    expect(screen.getByTestId("pve-console-reason").textContent).toContain("Proxmox закрыл консоль");
   });
 
   it("an adopted console (one an agent opened) is attached to, not opened again; Reconnect later opens a new one", async () => {
@@ -297,7 +297,7 @@ describe("PveConsoles: reconnecting, restoring and moved guests", () => {
     }
     expect(state()).toBe("error");
     expect(screen.getByTestId("pve-console-reason").textContent).toContain("Попыток: 5, больше не пробую");
-    expect(screen.getByTestId("pve-console-reason").textContent).toContain("did not answer");
+    expect(screen.getByTestId("pve-console-reason").textContent).toContain("Сервер Proxmox не ответил");
     await advance(60_000);
     expect(calls).toBe(6); // no sixth attempt
   });
@@ -549,7 +549,7 @@ describe("PveConsoles: reconnecting, restoring and moved guests", () => {
       await act(async () => void (await vi.advanceTimersByTimeAsync(0)));
       expect(calls.open).toHaveLength(2); // no third
       expect(state()).toBe("lost");
-      expect(screen.getByTestId("pve-console-reason").textContent).toContain("waits only about ten seconds");
+      expect(screen.getByTestId("pve-console-reason").textContent).toContain("ждёт экран около десяти секунд");
       expect(screen.getByTestId("pve-console-reason").textContent).not.toContain("websocket error");
     });
 

@@ -34,7 +34,7 @@ const ru = {
   "pve.needsApproval": "macOS не разрешил этой сборке читать сохранённый пароль",
   "pve.allow": "Разрешить доступ",
   "pve.details": "Подробнее",
-  "pve.unreadable": "Список не прочитан ({code})",
+  "pve.unreadable": "Список не прочитан: {code}",
 
   "session.connecting": "подключение",
   "session.active": "подключено",

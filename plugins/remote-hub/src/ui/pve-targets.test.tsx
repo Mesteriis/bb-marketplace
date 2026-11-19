@@ -44,7 +44,7 @@ describe("PveTargets", () => {
     expect(within(sections[0]!).getByTestId("pve-outcome").textContent).toBe("подключено");
     expect(within(sections[0]!).getByText("web")).toBeTruthy();
     expect(within(sections[1]!).getByTestId("pve-outcome").textContent).toBe("вход отклонён");
-    expect(within(sections[1]!).getByText("Proxmox refused the login.")).toBeTruthy();
+    expect(within(sections[1]!).getByText(/^Proxmox отклонил вход\./)).toBeTruthy();
   });
 
   it("has no power buttons; without console support the button is off with its reason, and a stopped guest says why", async () => {
@@ -55,7 +55,7 @@ describe("PveTargets", () => {
     expect((within(web).getByRole("button", { name: /Открыть консоль: web/ }) as HTMLButtonElement).disabled).toBe(true);
     expect(within(web).getByTestId("pve-console-reason").textContent).toBe(CONSOLE_OFF_REASON);
     expect((within(old).getByRole("button", { name: /Открыть консоль: old/ }) as HTMLButtonElement).disabled).toBe(true);
-    expect(within(old).getByTestId("pve-console-reason").textContent).toContain("the guest is stopped");
+    expect(within(old).getByTestId("pve-console-reason").textContent).toContain("гость выключен");
   });
 
   it("with console support the buttons open a node shell, a container console and a VM's graphics; a stopped guest stays off", async () => {

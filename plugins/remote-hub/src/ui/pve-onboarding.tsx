@@ -7,7 +7,8 @@
 import { useState } from "react";
 import { PVE_PROVISION, type PvePlan, type PveSteps } from "../core/pve-protocol.ts";
 import type { PveProfileTrust } from "../core/pve-trust.ts";
-import { adviceFor, outcomeOfFailure } from "../core/pve-targets.ts";
+import { adviceRu } from "./pve-texts.ts";
+import { outcomeOfFailure } from "../core/pve-targets.ts";
 import type { PveAdminInput, PveApi, PveFailure } from "./pve-api.ts";
 
 export interface PveOnboardingProps {
@@ -291,7 +292,7 @@ export function PveOnboarding(props: PveOnboardingProps) {
 
       {certificateFailure && failure !== null && (
         <div className="rh-cert" data-testid="pve-onboard-cert">
-          <p className="rh-error">{adviceFor(outcomeOfFailure(failure.code), null)}</p>
+          <p className="rh-error">{adviceRu(outcomeOfFailure(failure.code), null)}</p>
           <p>
             Отпечаток сертификата (SHA-256): <code>{failure.fingerprint}</code>
           </p>
@@ -302,7 +303,7 @@ export function PveOnboarding(props: PveOnboardingProps) {
       )}
       {failure !== null && !certificateFailure && (
         <div role="alert" className="rh-error" data-testid="pve-onboard-error">
-          <p>{FAILURE_TEXT[failure.code] ?? adviceFor(outcomeOfFailure(failure.code), failure.message) ?? failure.message}</p>
+          <p>{FAILURE_TEXT[failure.code] ?? adviceRu(outcomeOfFailure(failure.code), failure.message) ?? failure.message}</p>
           {failure.steps != null && (
             <ul data-testid="pve-onboard-steps">
               <li>Роль: {STEP_TEXT[failure.steps.role]}</li>

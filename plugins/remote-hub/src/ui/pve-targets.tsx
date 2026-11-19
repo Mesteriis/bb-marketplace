@@ -2,6 +2,7 @@
 // never hides the others), a search over name, VMID, node and kind, and a card per guest. There are no power buttons:
 // Remote Hub never starts or stops a guest. "Open console" is disabled with its reason; a guest links to an SSH or RDP
 // profile the owner chooses, never to an address guessed from Proxmox.
+import { adviceRu, consoleOffRu, guestStatusRu } from "./pve-texts.ts";
 import { useCallback, useEffect, useState } from "react";
 import type { Profile } from "../core/profile.ts";
 import { searchGuests, type PveConnectionView, type PveGuestView, type PveOutcome } from "../core/pve-targets.ts";
@@ -48,7 +49,7 @@ export const CONSOLE_OFF_REASON = "Консоли в этом виде недо�
 function GuestCard(props: { guest: PveGuestView; linkable: Profile[]; onLink: (vmid: number, linkProfileId: string | null) => void; onConnectProfile: (id: string) => void; onOpenConsole?: (() => void) | undefined }) {
   const { guest, linkable } = props;
   const linked = guest.linkedProfileId === null ? null : (linkable.find((p) => p.id === guest.linkedProfileId) ?? null);
-  const reason = guest.console.available ? (props.onOpenConsole === undefined ? CONSOLE_OFF_REASON : null) : (guest.console.reason ?? "недоступна");
+  const reason = guest.console.available ? (props.onOpenConsole === undefined ? CONSOLE_OFF_REASON : null) : (consoleOffRu(guest) ?? guest.console.reason ?? "недоступна");
   const label = guest.kind === "qemu" ? "Открыть графику" : "Открыть консоль";
   return (
     <li className="rh-guest" aria-label={guest.name || String(guest.vmid)} data-testid="pve-guest">
@@ -56,7 +57,7 @@ function GuestCard(props: { guest: PveGuestView; linkable: Profile[]; onLink: (v
         <strong>{guest.name || "(без имени)"}</strong> <span className="rh-badge">{guest.kind === "qemu" ? "VM" : "LXC"}</span> <span className="rh-guest-id">#{guest.vmid}</span>
       </span>
       <span className="rh-status" data-testid="pve-guest-state">
-        {guest.template ? "шаблон" : guest.status} · узел {guest.node}
+        {guest.template ? "шаблон" : guestStatusRu(guest.status)} · узел {guest.node}
       </span>
       <div className="rh-guest-actions">
         <button type="button" disabled={reason !== null} aria-label={"Открыть консоль: " + (guest.name || guest.vmid)} title={reason ?? undefined} onClick={() => props.onOpenConsole?.()}>
@@ -174,7 +175,7 @@ export function PveTargets(props: PveTargetsProps) {
                 Показан последний список, прочитанный {age(c.stale.ageSeconds)} назад; сейчас сервер недоступен.
               </p>
             )}
-            {c.message !== null && <p className="rh-error">{c.message}</p>}
+            {c.message !== null && <p className="rh-error">{adviceRu(c.outcome, c.outcome === "error" ? c.message.replace(/^Proxmox could not be read\.? ?\(?|\)$/g, "") : null) ?? c.message}</p>}
             {c.outcome === "keychain_needs_approval" && c.credentialRef !== null && props.onAllowAccess !== undefined && (
               <p>
                 <button type="button" onClick={() => void allow(c.credentialRef as string)} title="macOS спросит один раз; выберите «Всегда разрешать». Пока открыт его диалог, остальные сессии на паузе.">
