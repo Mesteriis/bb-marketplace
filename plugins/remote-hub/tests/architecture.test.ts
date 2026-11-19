@@ -65,7 +65,9 @@ const ui: Layer = {
   // @tsparticles/engine: a browser-only canvas library (like xterm), loaded lazily by agent-dots.ts; no host code.
   // @novnc/novnc: the VNC client for Proxmox QEMU graphics, a browser-only library (like xterm) loaded lazily by vnc-view.tsx. It is
   // vendored unmodified under vendor/novnc (the specifier is mapped there by tsconfig paths and the vitest alias); no host code.
-  packages: ["react", "@xterm/xterm", "@xterm/addon-fit", "@tsparticles/engine", "@novnc/novnc"],
+  // @/components, @/lib, @/hooks: the design-system seam (docs/architecture.md): vendored BB plugin UI registry source that another
+  // host swaps for components with the same exports. The UI imports the seam, never the host SDK itself.
+  packages: ["react", "@xterm/xterm", "@xterm/addon-fit", "@tsparticles/engine", "@novnc/novnc", "@/components", "@/lib", "@/hooks"],
   reachable: ["src/ui", "src/core"],
 };
 

@@ -15,7 +15,12 @@
     ],
     "noEmit": true,
     "paths": {
-      "@novnc/novnc/core/*": ["./vendor/novnc/core/*"]
+      "@novnc/novnc/core/*": [
+        "./vendor/novnc/core/*"
+      ],
+      "@/*": [
+        "./*"
+      ]
     },
     "skipLibCheck": false
   },
@@ -24,6 +29,9 @@
     "app.tsx",
     "src",
     "tests",
-    "scripts"
+    "scripts",
+    "components",
+    "lib",
+    "hooks"
   ]
 }

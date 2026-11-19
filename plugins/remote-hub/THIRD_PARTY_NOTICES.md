@@ -25,6 +25,17 @@ Copyright (c) 2020 Matteo Bruni. MIT licence (the text below). Version 4.6.0 (th
 bundles), loaded lazily the first time an agent holds a session, to draw the dots of the agent overlay.
 Source: https://github.com/tsparticles/tsparticles
 
+## BB plugin UI registry (vendored)
+
+MIT License. Copyright (c) 2026 Michael Yong.
+Source: https://github.com/get-bb/bb, `packages/plugin-registry`, tag `desktop-v0.50.1` (scaffolded by `bb plugin new`,
+plus `select`, `dropdown-menu` and `tooltip` added with `npx shadcn add @bb/...`). Paths: `components/ui/`, `lib/`, `hooks/`.
+
+## @radix-ui/react-checkbox, @radix-ui/react-slot
+
+MIT License. Copyright (c) 2022 WorkOS.
+Versions 1.4.1 and 1.5.0, with their @radix-ui/* dependencies. Source: https://github.com/radix-ui/primitives
+
 ## noVNC (vendored, unmodified)
 
 noVNC 1.6.0, Copyright (C) 2022 The noVNC authors. The core library is licensed under the Mozilla Public License 2.0; the files under

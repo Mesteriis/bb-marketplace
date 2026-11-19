@@ -1,3 +1,18 @@
+/* Remote Hub tokens. BB's theme variables (--background, --foreground, --border, --primary, --muted-foreground, --sidebar …)
+   are the palette; these add only what a remote session needs and BB has no name for. New screens use these and BB's
+   Tailwind utilities; the older .rh-* rules below are removed screen by screen. */
+/* Put .rh-tokens on the root element of every surface (page, BB sidebar, thread panel): the build scopes plugin CSS itself. */
+.rh-tokens {
+  --rh-screen: color-mix(in oklch, var(--background, #1e1e2e) 78%, black);
+  --rh-ok: var(--success, #a6e3a1);
+  --rh-warn: var(--warning, #f9e2af);
+  --rh-bad: var(--destructive, #f38ba8);
+  --rh-agent: var(--primary, #cba6f7);
+  --rh-idle: color-mix(in oklch, var(--foreground, #cdd6f4) 55%, var(--background, #1e1e2e));
+  --rh-row: 30px;
+  --rh-header: 47px;
+}
+
 /* Remote Hub SSH view. Scoped under the plugin surface; colors use bb theme
    tokens with a dark fallback so the view is legible even outside a themed bb. */
 .rh-page {

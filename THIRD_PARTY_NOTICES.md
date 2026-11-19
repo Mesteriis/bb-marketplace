@@ -12,6 +12,8 @@ Name the source, the revision, the license, and the paths it landed in.
   `desktop-v0.49.0` (scaffolded by `bb plugin new`).
 - Paths: `plugins/mail/components/ui/`, `plugins/mail/lib/`,
   `plugins/mail/hooks/`.
+- Also `plugins/remote-hub/components/ui/`, `plugins/remote-hub/lib/`,
+  `plugins/remote-hub/hooks/` from tag `desktop-v0.50.1`.
 - License: MIT, Copyright (c) 2026 Michael Yong.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
