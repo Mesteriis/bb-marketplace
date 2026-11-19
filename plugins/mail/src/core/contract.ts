@@ -1,5 +1,6 @@
 // The RPC contract between the Mail page and the server, as plain zod
 // schemas. server.ts wraps it with the SDK's defineRpcContract.
+import { GOOGLE_EXTRA_SCOPES } from "./plugin-access.ts";
 import { pluginApiSchemas } from "./plugin-api.ts";
 import { z } from "zod";
 import { pageSettingsPatchSchema, pageSettingsSchema } from "./page-settings.ts";
@@ -573,7 +574,11 @@ export const rpcSchemas = {
   },
   /** Starts a Google sign-in: opens the loopback listener and gives the consent page to open (google-sign-in.ts). */
   google_sign_in_start: {
-    input: z.object({ email: z.string().min(3).max(320).nullable() }),
+    input: z.object({
+      email: z.string().min(3).max(320).nullable(),
+      /** More Google services for this sign-in (plugin keys); never anything but these. */
+      extraScopes: z.array(z.enum(GOOGLE_EXTRA_SCOPES)).max(GOOGLE_EXTRA_SCOPES.length).optional(),
+    }),
     output: z.object({ flowId: z.string(), url: z.string() }),
   },
   /** How a Google sign-in stands; an unknown flow reads as failed with "timeout". */

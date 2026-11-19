@@ -92,9 +92,8 @@ describe("PluginAccessSection", () => {
     render(<PluginAccessSection port={p} accounts={accounts} />);
     const block = await screen.findByRole("listitem", { name: "crm" });
     expect(within(block).getByText("Never called")).toBeTruthy();
-    // The header and four rights: Google keys are not offered without a sign-in to run.
-    expect(within(block).getAllByRole("row")).toHaveLength(5);
-    expect(within(block).queryByText("Google Calendar key")).toBeNull();
+    // The header and six rights.
+    expect(within(block).getAllByRole("row")).toHaveLength(7);
     expect(within(block).getByRole("switch", { name: "Read mail, first@example.com" }).getAttribute("aria-checked")).toBe("true");
     fireEvent.click(within(block).getByRole("switch", { name: "Read contacts, second@example.net" }));
     await waitFor(() => expect(calls).toEqual(["set crm contacts.read acc_2 true"]));
@@ -122,17 +121,34 @@ describe("PluginAccessSection", () => {
     await waitFor(() => expect(calls).toEqual(["revoke crm"]));
   });
 
-  it("a Google key: off for an account without Google sign-in, through the sign-in for one with it", async () => {
-    const onGoogleGrant = vi.fn();
+  it("a Google key: off for a mailbox without Google sign-in; granted when the sign-in holds the service", async () => {
     const { port: p, calls } = port({ plugins: [crm], requests: [] });
-    render(<PluginAccessSection port={p} accounts={accounts} onGoogleGrant={onGoogleGrant} />);
+    render(<PluginAccessSection port={p} accounts={accounts} onGoogleGrant={vi.fn()} />);
     const block = await screen.findByRole("listitem", { name: "crm" });
     const without = within(block).getByRole("switch", { name: "Google Calendar key, second@example.net" }) as HTMLButtonElement;
     expect(without.disabled).toBe(true);
     expect(within(block).getAllByText("Needs Google sign-in")).toHaveLength(2);
     fireEvent.click(within(block).getByRole("switch", { name: "Google Calendar key, first@example.com" }));
+    await waitFor(() => expect(calls).toEqual(["set crm google.calendar acc_1 true"]));
+    expect(within(block).queryByRole("button", { name: "Sign in to Google with this access" })).toBeNull();
+  });
+
+  it("a Google key the sign-in does not hold yet: says why and offers the sign-in that asks for it", async () => {
+    const onGoogleGrant = vi.fn();
+    const { port: p } = port(
+      { plugins: [crm], requests: [] },
+      { setGrant: async () => ({ ok: false, message: "Sign this mailbox in to Google with this access first" }) },
+    );
+    render(<PluginAccessSection port={p} accounts={accounts} onGoogleGrant={onGoogleGrant} />);
+    const block = await screen.findByRole("listitem", { name: "crm" });
+    fireEvent.click(within(block).getByRole("switch", { name: "Google Calendar key, first@example.com" }));
+    expect((await within(block).findByRole("alert")).textContent).toBe("Sign this mailbox in to Google with this access first");
+    fireEvent.click(within(block).getByRole("button", { name: "Sign in to Google with this access" }));
     expect(onGoogleGrant).toHaveBeenCalledWith("crm", "google.calendar", "acc_1");
-    expect(calls).toEqual([]);
+    // A refused ordinary right offers no Google sign-in.
+    fireEvent.click(within(block).getByRole("switch", { name: "Read contacts, first@example.com" }));
+    await within(block).findByRole("alert");
+    expect(within(block).queryByRole("button", { name: "Sign in to Google with this access" })).toBeNull();
   });
 
   it("a plugin id that looks like markup is shown as text", async () => {

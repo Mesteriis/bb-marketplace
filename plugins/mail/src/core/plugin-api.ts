@@ -20,7 +20,11 @@ export const REQUEST_INVALID_MESSAGE = "Unknown right in the request";
 export const REQUEST_LIMIT_MESSAGE = "Too many access requests today";
 export const GRANT_RIGHT_MESSAGE = "Unknown right";
 export const GRANT_ACCOUNT_MESSAGE = "Unknown account";
-export const GRANT_GOOGLE_MESSAGE = "Turn this on in Mail settings";
+/** A Google key for a mailbox that is not signed in with Google, or whose sign-in lacks that service. */
+export const GRANT_GOOGLE_MESSAGE = "Sign this mailbox in to Google with this access first";
+export const GOOGLE_NOT_SIGNED_MESSAGE = "This account does not sign in with Google";
+export const GOOGLE_KEY_UNAVAILABLE_MESSAGE = "Google did not give a key; try again later";
+export const GOOGLE_KEY_REVOKED_MESSAGE = "Google no longer accepts this sign-in";
 /** A plugin without the right a method needs; names the right so the plugin can ask for it. */
 export const missingRightMessage = (right: PluginRight): string => `Makosh Mail: this plugin has no "${right}" access`;
 
@@ -143,6 +147,15 @@ export const pluginApiSchemas = {
     }),
     output: z.object({ draftId: z.string() }),
   },
+  /**
+   * A short-lived Google access token for one service of a granted Google
+   * account. It carries that one scope: it cannot read mail. The grant's
+   * refresh token never leaves Mail.
+   */
+  plugin_google_token: {
+    input: z.object({ accountId: z.string(), right: z.string() }),
+    output: z.object({ accessToken: z.string(), expiresAt: z.string(), scope: z.string() }),
+  },
   /** Owner: every plugin that holds a grant or asked for one. */
   plugin_grants_list: {
     input: z.object({}),
@@ -185,6 +198,7 @@ export const PLUGIN_API_METHODS: readonly string[] = [
   "plugin_invites_list",
   "plugin_invite_read",
   "plugin_mail_propose",
+  "plugin_google_token",
 ];
 
 /** The owner's methods of Mail settings; a plugin caller is refused on them like on any other. */
@@ -204,4 +218,5 @@ export const PLUGIN_METHOD_RIGHT: Readonly<Record<string, PluginRight | "google"
   plugin_invites_list: "invites.read",
   plugin_invite_read: "invites.read",
   plugin_mail_propose: "mail.propose",
+  plugin_google_token: "google",
 };

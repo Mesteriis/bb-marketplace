@@ -16,12 +16,24 @@ const REFRESH_MARGIN_MS = 5 * 60_000;
 const CACHE_MAX = 16;
 const REQUEST_TIMEOUT_MS = 20_000;
 
+export type NarrowToken = { accessToken: string; expiresAt: number; scope: string };
+
+/** A narrowed token is handed to another plugin: it is reused only while a minute of it is left. */
+const NARROW_MARGIN_MS = 60_000;
+
 export interface GoogleTokens {
   /** A valid access token for the grant. Throws GrantRevokedError or SafeImapError("TokenUnavailable"). */
   accessToken(refreshToken: string): Promise<string>;
   /** The code of a finished consent for a grant; never throws. */
   exchangeCode(input: { code: string; codeVerifier: string; redirectUri: string }): Promise<GoogleTokenReply>;
-  /** Drops what is remembered for a grant. */
+  /**
+   * An access token limited to one scope of the grant (the plugin API): Google
+   * narrows it on refresh. Throws GrantRevokedError, or
+   * SafeImapError("TokenUnavailable") when Google's answer is not exactly
+   * that scope: a wider token is never handed on.
+   */
+  narrowToken(refreshToken: string, scope: string): Promise<NarrowToken>;
+  /** Drops what is remembered for a grant, its narrowed tokens included. */
   forget(refreshToken: string): void;
 }
 
@@ -38,6 +50,7 @@ const unavailable = () => new SafeImapError("TokenUnavailable");
 export function createGoogleTokens(deps: GoogleTokensDeps): GoogleTokens {
   const cached = new Map<string, { accessToken: string; expiresAt: number }>();
   const running = new Map<string, Promise<string>>();
+  const narrowed = new Map<string, NarrowToken>();
 
   function remember(refreshToken: string, accessToken: string, expiresInSeconds: number): void {
     cached.delete(refreshToken);
@@ -97,8 +110,24 @@ export function createGoogleTokens(deps: GoogleTokensDeps): GoogleTokens {
       return reply;
     },
 
+    async narrowToken(refreshToken, scope) {
+      const key = `${refreshToken}\n${scope}`;
+      const known = narrowed.get(key);
+      if (known !== undefined && known.expiresAt - deps.now() > NARROW_MARGIN_MS) return known;
+      narrowed.delete(key);
+      const reply = await post({ grant_type: "refresh_token", refresh_token: refreshToken, scope });
+      if (!reply.ok) throw reply.reason === "invalid_grant" ? new GrantRevokedError() : unavailable();
+      // Google says which scopes the token carries; anything but the one asked for is refused.
+      if (reply.scopes.length !== 1 || reply.scopes[0] !== scope) throw unavailable();
+      const token = { accessToken: reply.accessToken, expiresAt: deps.now() + reply.expiresInSeconds * 1000, scope };
+      narrowed.set(key, token);
+      while (narrowed.size > CACHE_MAX) narrowed.delete(narrowed.keys().next().value as string);
+      return token;
+    },
+
     forget(refreshToken) {
       cached.delete(refreshToken);
+      for (const key of [...narrowed.keys()]) if (key.startsWith(`${refreshToken}\n`)) narrowed.delete(key);
     },
   };
 }

@@ -267,6 +267,7 @@ describe("Google accounts sign in with an access token", () => {
     const gateway = createImapflowGateway({
       googleTokens: {
         accessToken: async () => "a1",
+        narrowToken: async () => Promise.reject(new Error("not used")),
         exchangeCode: async () => ({ ok: false, reason: "other" }),
         forget: (refreshToken) => void forgotten.push(refreshToken),
         ...tokens,

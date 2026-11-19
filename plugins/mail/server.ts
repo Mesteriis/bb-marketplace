@@ -116,8 +116,9 @@ import {
   type BbSettings,
   type RuleDeps,
 } from "./src/adapters/bb/bb-rpc.ts";
-import { createPluginApi } from "./src/adapters/bb/plugin-api-rpc.ts";
+import { createPluginApi, type GoogleKey } from "./src/adapters/bb/plugin-api-rpc.ts";
 import { proposePluginLetter } from "./src/core/plugin-propose.ts";
+import { GrantRevokedError } from "./src/core/ports.ts";
 import { guardHandlers } from "./src/adapters/bb/plugin-guard.ts";
 import {
   PLUGIN_ACCESS_CHANNEL,
@@ -1913,6 +1914,17 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
     const rpcDeps: RpcDeps = {
       googleSignIn,
       googleSignInOffered: googleClient() !== null,
+      pluginGoogleKey: async (accountId, scope) => {
+        const account = store.getAccount(accountId);
+        if (account === null || account.authKind !== "google") return { ok: false, reason: "not_google" };
+        if (!account.grantedScopes.includes(scope)) return { ok: false, reason: "scope" };
+        try {
+          const refreshToken = sealer.open(account.passwordSealed);
+          return { ok: true, ...(await googleTokens.narrowToken(refreshToken, scope)) };
+        } catch (error) {
+          return { ok: false, reason: error instanceof GrantRevokedError ? "revoked" : "unavailable" };
+        }
+      },
       announcePluginAccess: (request) => bb.realtime.publish(PLUGIN_ACCESS_CHANNEL, { request } satisfies PluginAccessPayload),
       pageSettings: {
         get: () => pageSettingsOf(current),
@@ -2033,6 +2045,8 @@ type RpcDeps = {
   /** Google sign-in flows, and whether the plugin has a client to offer them with. */
   googleSignIn: GoogleSignIn;
   googleSignInOffered: boolean;
+  /** A Google access token of an account narrowed to one scope (the plugin API). */
+  pluginGoogleKey: (accountId: string, scope: string) => Promise<GoogleKey>;
   /** Plugin requests or grants changed (the plugin API). */
   announcePluginAccess: (request: string | null) => void;
   /** The settings page: the settings it shows, and a change of the writable ones. */
@@ -3205,6 +3219,7 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
     announce: deps.announcePluginAccess,
     log: (entry) => void deps.agentLog(entry),
     propose: (pluginId, letter) => proposePluginLetter(composeDeps, pluginId, letter),
+    googleKey: deps.pluginGoogleKey,
     reads: {
       search: (query, accountId, limit, cursor) => pluginSearch(store, query, accountId, limit, cursor, new Date()),
       read: (messageId) => {
@@ -3247,10 +3262,10 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
           throw refuse("invalid", SETTINGS_REFUSED_MESSAGE);
         }
       },
-      google_sign_in_start: async ({ email }, context) => {
+      google_sign_in_start: async ({ email, extraScopes }, context) => {
         if (!deps.vaultReady()) throw refuse("conflict", NEEDS_KEY_MESSAGE);
         try {
-          return await deps.googleSignIn.start({ email });
+          return await deps.googleSignIn.start({ email, ...(extraScopes === undefined ? {} : { extraScopes }) });
         } catch {
           throw refuse("conflict", GOOGLE_UNAVAILABLE_MESSAGE);
         }

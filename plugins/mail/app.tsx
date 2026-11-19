@@ -186,6 +186,7 @@ import { browserPdfEngine } from "./src/adapters/bb/pdf-page.ts";
 import type { RuleRunView } from "./src/core/contract.ts";
 import { resolveLanguage, setLanguage, tx, type Language } from "./src/ui/i18n/index.ts";
 import { PLUGIN_ACCESS_CHANNEL, type PluginAccessPayload } from "./src/core/plugin-api.ts";
+import { GOOGLE_EXTRA_SCOPES, GOOGLE_RIGHT_SCOPE, isGoogleRight, type PluginRight } from "./src/core/plugin-access.ts";
 import type { PluginAccessPort } from "./src/ui/settings/plugin-access-section.tsx";
 
 // The channel name is checked against the core constant without importing it
@@ -1862,8 +1863,8 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
    * the account is saved, the sign-in fails or the form goes away.
    */
   const googleSignIn = useCallback(
-    async (email: string | null, signal: AbortSignal): Promise<GoogleSignInOutcome> => {
-      const { flowId, url } = await rpc.call("google_sign_in_start", { email });
+    async (email: string | null, signal: AbortSignal, extraScopes?: (typeof GOOGLE_EXTRA_SCOPES)[number][]): Promise<GoogleSignInOutcome> => {
+      const { flowId, url } = await rpc.call("google_sign_in_start", extraScopes === undefined ? { email } : { email, extraScopes });
       if (!navigate.openUrl(url)) return { ok: false, message: tx("This link cannot be opened here.") };
       for (;;) {
         await new Promise((resolve) => setTimeout(resolve, GOOGLE_SIGN_IN_POLL_MS));
@@ -2992,7 +2993,24 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       }}
       search={settingsSearch}
       pgp={settingsPgp}
-      pluginAccess={{ port: settingsPluginAccess, reloadKey: pluginAccessTick, waiting: pluginRequests }}
+      pluginAccess={{
+        port: settingsPluginAccess,
+        reloadKey: pluginAccessTick,
+        waiting: pluginRequests,
+        ...(googleSignInOffered
+          ? {
+              onGoogleGrant: (_pluginId: string, right: PluginRight, accountId: string) => {
+                const account = status?.accounts.find((a) => a.id === accountId);
+                if (account === undefined || !isGoogleRight(right)) return;
+                // The mailbox signs in again with this service added; the owner then turns the key on.
+                void googleSignIn(account.email, new AbortController().signal, [GOOGLE_RIGHT_SCOPE[right]]).then((outcome) => {
+                  toast(outcome.ok ? tx("Signed in to Google. Turn the key on now.") : outcome.message || tx("Google sign-in did not finish."));
+                  setPluginAccessTick((n) => n + 1);
+                });
+              },
+            }
+          : {}),
+      }}
       filters={settingsFilters}
       subscriptions={settingsSubscriptions}
     />

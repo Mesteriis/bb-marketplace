@@ -33,6 +33,7 @@ function setup(overrides: Partial<GoogleSignInDeps> = {}, reply: GoogleTokenRepl
     client,
     tokens: {
       accessToken: async () => "a1",
+      narrowToken: async () => Promise.reject(new Error("not used")),
       exchangeCode: async (input) => (exchanged.push(input), reply),
       forget: () => undefined,
     },
@@ -89,6 +90,14 @@ describe("createGoogleSignIn", () => {
       { email: "owner@example.org", refreshToken: "invented-refresh", scopes: ["openid", "email", "https://mail.google.com/"] },
     ]);
     expect(await refusesConnections(url)).toBe(true);
+  });
+
+  it("a sign-in for a plugin key asks for mail and that service, each once", async () => {
+    const { signIn } = setup();
+    const calendar = "https://www.googleapis.com/auth/calendar";
+    const { url } = await signIn.start({ email: "owner@example.org", extraScopes: [calendar, calendar] });
+    expect(new URL(url).searchParams.get("scope")).toBe(`openid email https://mail.google.com/ ${calendar}`);
+    signIn.close();
   });
 
   it("the challenge sent to Google is the SHA-256 of the verifier sent with the code", async () => {
@@ -181,7 +190,7 @@ describe("createGoogleSignIn", () => {
     const saved: string[] = [];
     const signIn = createGoogleSignIn({
       client,
-      tokens: { accessToken: async () => "a1", exchangeCode: () => held, forget: () => undefined },
+      tokens: { accessToken: async () => "a1", narrowToken: async () => Promise.reject(new Error("not used")), exchangeCode: () => held, forget: () => undefined },
       testSignIn: async () => "ok",
       save: async (input) => (saved.push(input.email), { id: "acc_1" } as Account),
     });

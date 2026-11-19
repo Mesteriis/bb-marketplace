@@ -150,3 +150,63 @@ describe("createGoogleTokens", () => {
     expect(await tokens.exchangeCode({ code: "c2", codeVerifier: "v2", redirectUri: "http://127.0.0.1:8123" })).toEqual({ ok: false, reason: "other" });
   });
 });
+
+describe("a key narrowed to one Google service", () => {
+  const CAL = "https://www.googleapis.com/auth/calendar";
+  const scoped = (accessToken: string, scope: string, expiresIn = 3599) =>
+    new Response(JSON.stringify({ access_token: accessToken, expires_in: expiresIn, scope }), { status: 200 });
+
+  it("asks for that scope alone and returns the token Google limited to it", async () => {
+    const { fetch, calls } = endpoint([scoped("at-calendar-1", CAL)]);
+    const tokens = createGoogleTokens({ client, fetch, now: () => 1_000_000 });
+    expect(await tokens.narrowToken("invented-refresh", CAL)).toEqual({ accessToken: "at-calendar-1", expiresAt: 1_000_000 + 3_599_000, scope: CAL });
+    expect(calls[0]!.body).toEqual({
+      grant_type: "refresh_token",
+      refresh_token: "invented-refresh",
+      scope: CAL,
+      client_id: "invented-client-id",
+      client_secret: "invented-client-secret",
+    });
+  });
+
+  it("refuses a reply whose scope is wider, missing or another one, and remembers nothing", async () => {
+    for (const scope of [`https://mail.google.com/ ${CAL}`, "", "https://www.googleapis.com/auth/contacts"]) {
+      const { fetch, calls } = endpoint([scoped("at-wide", scope), scoped("at-calendar-2", CAL)]);
+      const tokens = createGoogleTokens({ client, fetch, now: () => 1_000_000 });
+      await expect(tokens.narrowToken("invented-refresh", CAL)).rejects.toMatchObject({ code: "TokenUnavailable" });
+      expect(await tokens.narrowToken("invented-refresh", CAL)).toMatchObject({ accessToken: "at-calendar-2" });
+      expect(calls).toHaveLength(2);
+    }
+  });
+
+  it("reuses the token until a minute before it expires, per scope, apart from the mail token", async () => {
+    let now = 1_000_000;
+    const { fetch, calls } = endpoint([scoped("at-calendar-1", CAL), granted("mail-1"), scoped("at-calendar-2", CAL)]);
+    const tokens = createGoogleTokens({ client, fetch, now: () => now });
+    await tokens.narrowToken("invented-refresh", CAL);
+    expect(await tokens.accessToken("invented-refresh")).toBe("mail-1");
+    now += 3_500_000;
+    expect((await tokens.narrowToken("invented-refresh", CAL)).accessToken).toBe("at-calendar-1");
+    now += 60_000;
+    expect((await tokens.narrowToken("invented-refresh", CAL)).accessToken).toBe("at-calendar-2");
+    expect(calls).toHaveLength(3);
+  });
+
+  it("forget drops the narrowed tokens of the grant too", async () => {
+    const { fetch, calls } = endpoint([scoped("at-calendar-1", CAL), scoped("at-calendar-2", CAL)]);
+    const tokens = createGoogleTokens({ client, fetch, now: () => 1_000_000 });
+    await tokens.narrowToken("invented-refresh", CAL);
+    tokens.forget("invented-refresh");
+    expect((await tokens.narrowToken("invented-refresh", CAL)).accessToken).toBe("at-calendar-2");
+    expect(calls).toHaveLength(2);
+  });
+
+  it("a revoked grant and a scope the grant lacks are told apart", async () => {
+    const revoked = new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 });
+    const lacking = new Response(JSON.stringify({ error: "invalid_scope" }), { status: 400 });
+    const { fetch } = endpoint([revoked, lacking]);
+    const tokens = createGoogleTokens({ client, fetch, now: () => 1_000_000 });
+    await expect(tokens.narrowToken("invented-refresh", CAL)).rejects.toBeInstanceOf(GrantRevokedError);
+    await expect(tokens.narrowToken("invented-refresh", CAL)).rejects.toMatchObject({ code: "TokenUnavailable" });
+  });
+});

@@ -16,10 +16,13 @@ export type PluginRight = (typeof PLUGIN_RIGHTS)[number];
 export type GoogleRight = "google.calendar" | "google.contacts";
 
 /** The one Google scope a right stands for. None of them reads mail. */
-export const GOOGLE_RIGHT_SCOPE: Record<GoogleRight, string> = {
+export const GOOGLE_RIGHT_SCOPE = {
   "google.calendar": "https://www.googleapis.com/auth/calendar",
   "google.contacts": "https://www.googleapis.com/auth/contacts",
-};
+} as const satisfies Record<GoogleRight, string>;
+
+/** The scopes a sign-in may add to mail for plugin keys. */
+export const GOOGLE_EXTRA_SCOPES = [GOOGLE_RIGHT_SCOPE["google.calendar"], GOOGLE_RIGHT_SCOPE["google.contacts"]] as const;
 
 export function isPluginRight(value: string): value is PluginRight {
   return (PLUGIN_RIGHTS as readonly string[]).includes(value);

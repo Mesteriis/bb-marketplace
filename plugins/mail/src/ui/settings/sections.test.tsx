@@ -119,6 +119,11 @@ describe("Mailboxes and sign-in", () => {
     mount({ section: "accounts", accounts: [{ ...gmail, authKind: "google" }], onGoogleSwitch, onReplacePassword: vi.fn() });
     expect(screen.queryByRole("button", { name: "Replace app password" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Sign in to Google" })).toBeNull();
+    // A working Google account can renew its sign-in at any time: Google ends a test app's sign-in after 7 days.
+    fireEvent.click(screen.getByRole("button", { name: "Renew Google sign-in" }));
+    expect(onGoogleSwitch).toHaveBeenCalledTimes(1);
+    onGoogleSwitch.mockClear();
+    expect(screen.getByText("Google ends a sign-in 7 days after you gave it while the Makosh app is in testing; renewing starts the 7 days again.")).toBeTruthy();
     cleanup();
     mount({
       section: "accounts",

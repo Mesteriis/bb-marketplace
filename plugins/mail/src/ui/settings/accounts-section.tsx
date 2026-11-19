@@ -78,10 +78,20 @@ export function AccountsSection(props: AccountsSectionProps) {
                         {tx("Sign in to Google")}
                       </Button>
                     ) : null}
+                    {props.onGoogleSwitch !== undefined && google && !(account.authFailed || grantRevoked(account.lastError)) ? (
+                      <Button variant="outline" size="sm" className="h-7" onClick={() => props.onGoogleSwitch?.(account)}>
+                        {tx("Renew Google sign-in")}
+                      </Button>
+                    ) : null}
                     <Button variant="link" size="sm" className="h-7 px-1" onClick={() => props.onOpenSmtp(account.id)}>
                       {tx("SMTP settings…")}
                     </Button>
                   </div>
+                  {google ? (
+                    <p className="text-xs text-muted-foreground">
+                      {tx("Google ends a sign-in 7 days after you gave it while the Makosh app is in testing; renewing starts the 7 days again.")}
+                    </p>
+                  ) : null}
                   <p className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                     <span>{tx("To remove this account with its mail, run in your terminal:")}</span>
                     <code className="rounded-sm bg-muted px-1 py-0.5 text-foreground">{removeCommand}</code>

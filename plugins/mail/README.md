@@ -1509,6 +1509,11 @@ plugin's server can call only the small plugin API
   nothing.
 - Rights: read mail, read contacts, read invitations, propose letters. Each
   is granted per account, and a new account is not covered by old grants.
+- Google keys: for a mailbox signed in with Google, a plugin can be given a
+  one-hour key for Google Calendar or Google Contacts alone. The key cannot
+  read mail, and Mail's own sign-in never leaves it. Turning the right on
+  for the first time asks you to sign in to Google again with that service
+  added.
 - A plugin reads only what you share with agents in **Agent access**, with
   passwords, codes and tokens hidden.
 - A letter a plugin proposes is a draft marked "Prepared by …". Only your

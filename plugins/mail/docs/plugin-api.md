@@ -34,7 +34,7 @@ raises it.
 | `contacts.read` | `plugin_contacts_list` |
 | `invites.read` | `plugin_invites_list`, `plugin_invite_read` |
 | `mail.propose` | `plugin_mail_propose` |
-| `google.calendar`, `google.contacts` | reserved for Google keys; not available yet |
+| `google.calendar`, `google.contacts` | `plugin_google_token` for that Google service |
 
 ## Methods
 
@@ -142,6 +142,24 @@ the account's signature under your text. Answer `{ "draftId": "…" }`. The
 letter is **not sent**: the owner opens it in Mail, edits it or not, and
 presses Send. The subject is one line. New letters only in version 1 (no reply threading, no
 attachments). At most 50 recipients and 20 letters a day per plugin.
+
+### `plugin_google_token` — `google.calendar` or `google.contacts`
+
+Input `{ "accountId": "acc_…", "right": "google.calendar" }`. Answer:
+
+```json
+{ "accessToken": "…", "expiresAt": "2026-11-19T11:00:00.000Z", "scope": "https://www.googleapis.com/auth/calendar" }
+```
+
+An access token of the mailbox's Google sign-in, narrowed by Google to that
+one service (`…/auth/calendar` or `…/auth/contacts`). It cannot read mail.
+It lives about an hour; ask again when `expiresAt` is near, not on every
+request. Keep it in memory only: never store or log it. The owner can grant
+this only for a mailbox that signs in with Google and whose sign-in holds
+the service; otherwise the call is refused with `invalid`. `conflict` means
+Google gave no key now (try later) or no longer accepts the sign-in (the
+owner must sign in again). A key already handed out keeps working for up to
+an hour after the owner revokes the right.
 
 ## Refusals
 

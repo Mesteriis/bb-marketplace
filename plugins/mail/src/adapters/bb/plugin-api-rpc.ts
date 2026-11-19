@@ -9,6 +9,7 @@ import type { InviteView } from "../../core/calendar-invite.ts";
 import type { Contact } from "../../core/contacts.ts";
 import type { MessageHeader, MessageSummary, SearchCursor } from "../../core/model.ts";
 import {
+  GOOGLE_RIGHT_SCOPE,
   PLUGIN_ID_MAX,
   REQUESTS_PER_DAY,
   cleanRequest,
@@ -27,6 +28,9 @@ import {
   QUERY_MESSAGE,
   UNKNOWN_MESSAGE,
   GRANT_ACCOUNT_MESSAGE,
+  GOOGLE_KEY_REVOKED_MESSAGE,
+  GOOGLE_KEY_UNAVAILABLE_MESSAGE,
+  GOOGLE_NOT_SIGNED_MESSAGE,
   GRANT_GOOGLE_MESSAGE,
   GRANT_RIGHT_MESSAGE,
   PLUGIN_API_VERSION,
@@ -53,9 +57,15 @@ export type PluginApiDeps = {
   clockMs?: () => number;
   /** The reads agents use: inside the owner's AI access, secrets hidden. */
   reads: PluginReads;
+  /** An access token of the account's Google sign-in narrowed to one scope; never the refresh token. */
+  googleKey: (accountId: string, scope: string) => Promise<GoogleKey>;
   /** A letter as a marked draft of the account; never a send. */
   propose: (pluginId: string, letter: PluginLetter) => ReturnType<typeof proposePluginLetter>;
 };
+
+export type GoogleKey =
+  | { ok: true; accessToken: string; expiresAt: number; scope: string }
+  | { ok: false; reason: "not_google" | "scope" | "revoked" | "unavailable" };
 
 export type PluginReads = {
   /** A page of one account's search in Mail's syntax; `refused` when the text would match a secret. */
@@ -356,6 +366,29 @@ export function createPluginApi(deps: PluginApiDeps) {
       return { draftId: result.draftId };
     },
 
+    plugin_google_token: async (input: { accountId: string; right: string }, context: Context) => {
+      const pluginId = callingPlugin(context);
+      if (!isGoogleRight(input.right)) throw refuse("invalid", GRANT_RIGHT_MESSAGE);
+      const accountId = granted(pluginId, "plugin_google_token", input.right, input.accountId);
+      const key = await deps.googleKey(accountId, GOOGLE_RIGHT_SCOPE[input.right]);
+      if (!key.ok) {
+        deps.log({ actor: "plugin", tool: "plugin_token", outcome: "failed", refId: pluginRef(pluginId) });
+        throw refuse(
+          key.reason === "not_google" || key.reason === "scope" ? "invalid" : "conflict",
+          key.reason === "not_google"
+            ? GOOGLE_NOT_SIGNED_MESSAGE
+            : key.reason === "scope"
+              ? GRANT_GOOGLE_MESSAGE
+              : key.reason === "revoked"
+                ? GOOGLE_KEY_REVOKED_MESSAGE
+                : GOOGLE_KEY_UNAVAILABLE_MESSAGE,
+        );
+      }
+      // The log says a key was taken and by whom; never the key.
+      deps.log({ actor: "plugin", tool: "plugin_token", outcome: "ok", count: 1, refId: pluginRef(pluginId) });
+      return { accessToken: key.accessToken, expiresAt: new Date(key.expiresAt).toISOString(), scope: key.scope };
+    },
+
     plugin_grants_list: (_input: Record<string, never>, _context?: Context) => {
       const grants = store.listPluginGrants();
       const requests = store.getPluginRequests();
@@ -376,9 +409,12 @@ export function createPluginApi(deps: PluginApiDeps) {
     plugin_grant_set: (input: { pluginId: string; right: string; accountId: string; on: boolean }, _context?: Context) => {
       const grant = grantOf(input);
       if (input.on) {
-        // A Google key needs Google's own consent for its scope first: Mail settings run that sign-in.
-        if (isGoogleRight(grant.right)) throw refuse("invalid", GRANT_GOOGLE_MESSAGE);
-        if (store.getAccount(grant.accountId) === null) throw refuse("not_found", GRANT_ACCOUNT_MESSAGE);
+        const account = store.getAccount(grant.accountId);
+        if (account === null) throw refuse("not_found", GRANT_ACCOUNT_MESSAGE);
+        // A Google key needs Google's own consent for its service first: the mailbox signs in with it in Mail settings.
+        if (isGoogleRight(grant.right) && !(account.authKind === "google" && account.grantedScopes.includes(GOOGLE_RIGHT_SCOPE[grant.right]))) {
+          throw refuse("conflict", GRANT_GOOGLE_MESSAGE);
+        }
       }
       store.setPluginGrant(grant, input.on);
       deps.announce(null);

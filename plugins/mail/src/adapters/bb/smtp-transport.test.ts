@@ -185,6 +185,7 @@ describe("createSmtpTransport against a local server", () => {
       factory: localFactory(port),
       googleTokens: {
         accessToken: async (refreshToken) => (asked.push(refreshToken), "a1"),
+        narrowToken: async () => Promise.reject(new Error("not used")),
         exchangeCode: async () => ({ ok: false, reason: "other" }),
         forget: () => undefined,
       },
@@ -209,7 +210,7 @@ describe("createSmtpTransport against a local server", () => {
     const failing = (error: Error) =>
       createSmtpTransport({
         factory: localFactory(port),
-        googleTokens: { accessToken: async () => { throw error; }, exchangeCode: async () => ({ ok: false, reason: "other" }), forget: () => undefined },
+        googleTokens: { accessToken: async () => { throw error; }, narrowToken: async () => Promise.reject(new Error("not used")), exchangeCode: async () => ({ ok: false, reason: "other" }), forget: () => undefined },
       });
     const google = { ...config(), password: "invented-refresh-token", authKind: "google" as const };
 

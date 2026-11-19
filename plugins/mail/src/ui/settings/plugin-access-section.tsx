@@ -119,6 +119,8 @@ export function PluginAccessSection({
   /** A request being allowed: its plugin and the cells checked so far; nothing is saved until Save. */
   const [allowing, setAllowing] = useState<{ pluginId: string; cells: ReadonlySet<string> } | null>(null);
   const [revoking, setRevoking] = useState<string | null>(null);
+  /** A Google key the owner tried to grant before the mailbox's sign-in held that service. */
+  const [signIn, setSignIn] = useState<{ pluginId: string; right: PluginRight; accountId: string } | null>(null);
 
   const reload = useCallback(async () => {
     try {
@@ -143,8 +145,7 @@ export function PluginAccessSection({
     }
   };
 
-  // Google keys are offered only where the page can run Google's consent for them.
-  const rights = PLUGIN_RIGHTS.filter((right) => onGoogleGrant !== undefined || !isGoogleRight(right));
+  const rights = PLUGIN_RIGHTS;
 
   const note = (
     <p className="text-xs text-muted-foreground">
@@ -203,10 +204,6 @@ export function PluginAccessSection({
                         on={allowing.cells}
                         busy={busy}
                         onToggle={(right, account, next) => {
-                          if (isGoogleRight(right)) {
-                            if (next) onGoogleGrant?.(request.pluginId, right, account.id);
-                            return;
-                          }
                           const cells = new Set(allowing.cells);
                           if (next) cells.add(cellKey(right, account.id));
                           else cells.delete(cellKey(right, account.id));
@@ -287,13 +284,29 @@ export function PluginAccessSection({
                   on={new Set(plugin.grants.map((grant) => cellKey(grant.right, grant.accountId)))}
                   busy={busy}
                   onToggle={(right, account, next) => {
-                    if (next && isGoogleRight(right)) {
-                      onGoogleGrant?.(plugin.pluginId, right, account.id);
-                      return;
-                    }
-                    void run(plugin.pluginId, () => port.setGrant(plugin.pluginId, right, account.id, next));
+                    setSignIn(null);
+                    void run(plugin.pluginId, async () => {
+                      const saved = await port.setGrant(plugin.pluginId, right, account.id, next);
+                      // Google has not given Mail this service for the mailbox yet: offer the sign-in that asks for it.
+                      if (!saved.ok && next && isGoogleRight(right)) setSignIn({ pluginId: plugin.pluginId, right, accountId: account.id });
+                      return saved;
+                    });
                   }}
                 />
+                {signIn !== null && signIn.pluginId === plugin.pluginId && onGoogleGrant !== undefined ? (
+                  <div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        onGoogleGrant(signIn.pluginId, signIn.right, signIn.accountId);
+                        setSignIn(null);
+                      }}
+                    >
+                      {tx("Sign in to Google with this access")}
+                    </Button>
+                  </div>
+                ) : null}
                 {plugin.grants.some((grant) => isGoogleRight(grant.right)) ? (
                   <p className="text-xs text-muted-foreground">{tx("A key already handed out works for up to an hour after you revoke.")}</p>
                 ) : null}

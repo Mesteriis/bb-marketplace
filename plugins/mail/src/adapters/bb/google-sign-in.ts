@@ -37,7 +37,7 @@ export type GoogleSignInStatus =
 
 export interface GoogleSignIn {
   /** Opens the listener and returns the consent page to open. Rejects when the plugin has no client. */
-  start(input: { email: string | null }): Promise<{ flowId: string; url: string }>;
+  start(input: { email: string | null; extraScopes?: readonly string[] }): Promise<{ flowId: string; url: string }>;
   status(flowId: string): GoogleSignInStatus;
   /** Ends every flow and closes every listener. */
   close(): void;
@@ -137,7 +137,8 @@ export function createGoogleSignIn(deps: GoogleSignInDeps): GoogleSignIn {
   }
 
   return {
-    async start({ email }) {
+    async start({ email, extraScopes }) {
+      const asked = [...new Set([...scopes, ...(extraScopes ?? [])])];
       const client = deps.client;
       if (client === null) throw new Error("Google sign-in is not available");
       prune();
@@ -194,7 +195,7 @@ export function createGoogleSignIn(deps: GoogleSignInDeps): GoogleSignIn {
       flows.set(flowId, flow);
       return {
         flowId,
-        url: googleAuthorizationUrl({ clientId: client.id, redirectUri, scopes, state, codeChallenge, loginHint: email }),
+        url: googleAuthorizationUrl({ clientId: client.id, redirectUri, scopes: asked, state, codeChallenge, loginHint: email }),
       };
     },
 

@@ -920,7 +920,9 @@ describe("slice-3c contract", () => {
     }
     for (const [name, method] of Object.entries(rpcSchemas)) {
       const tokens = keysOf(method.output as z.ZodType).filter((key) => /token/i.test(key));
-      expect(tokens, name).toEqual(name === "proposal_view" || name === "triage_view" ? ["viewToken"] : []);
+      // One method hands out a token on purpose: a Google key narrowed to one service, to a plugin the owner granted.
+      const allowed = name === "proposal_view" || name === "triage_view" ? ["viewToken"] : name === "plugin_google_token" ? ["accessToken"] : [];
+      expect(tokens, name).toEqual(allowed);
     }
   });
 
@@ -2061,7 +2063,12 @@ describe("Google sign-in contract", () => {
   it("adds two methods to the 176 before it, and neither carries a token, a code or the client", () => {
     expect(GOOGLE_METHODS).toEqual(["google_sign_in_start", "google_sign_in_status"]);
     expect(Object.keys(rpcSchemas).filter((m) => !([...SETTINGS_METHODS, ...PLUGIN_METHODS] as readonly string[]).includes(m))).toHaveLength(178);
-    expect(keysOf(rpcSchemas.google_sign_in_start.input)).toEqual(["email"]);
+    expect(keysOf(rpcSchemas.google_sign_in_start.input)).toEqual(["email", "extraScopes"]);
+    const start = (input: unknown) => rpcSchemas.google_sign_in_start.input.safeParse(input).success;
+    expect(start({ email: null, extraScopes: ["https://www.googleapis.com/auth/calendar"] })).toBe(true);
+    // Nothing but the two plugin-key services can be added to a sign-in; mail is never asked for through here.
+    expect(start({ email: null, extraScopes: ["https://mail.google.com/"] })).toBe(false);
+    expect(start({ email: null, extraScopes: ["https://www.googleapis.com/auth/drive"] })).toBe(false);
     expect(keysOf(rpcSchemas.google_sign_in_start.output)).toEqual(["flowId", "url"]);
     expect(keysOf(rpcSchemas.google_sign_in_status.input)).toEqual(["flowId"]);
   });
