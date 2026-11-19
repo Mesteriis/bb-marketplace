@@ -1,6 +1,7 @@
 // The RPC contract between the Mail page and the server, as plain zod
 // schemas. server.ts wraps it with the SDK's defineRpcContract.
 import { TAB_NAME_MAX, TAB_QUERY_MAX } from "./inbox-tabs.ts";
+import { PHRASES_MAX } from "./phrases.ts";
 import { GOOGLE_EXTRA_SCOPES } from "./plugin-access.ts";
 import { pluginApiSchemas } from "./plugin-api.ts";
 import { z } from "zod";
@@ -608,6 +609,15 @@ export const rpcSchemas = {
       threads: z.array(threadSummarySchema),
       nextCursor: z.string().nullable(),
     }),
+  },
+  /**
+   * Typing speed: the phrases the owner writes often (their own sent mail and
+   * templates), most frequent first, for the composer's grey text. The
+   * owner's page only; never part of a log, an agent's read or a plugin's.
+   */
+  phrases_list: {
+    input: z.object({}),
+    output: z.object({ phrases: z.array(z.string().max(400)).max(PHRASES_MAX) }),
   },
   /** The owner's Inbox tabs in order, each with its unread conversations in the scope; `broken`: its condition no longer parses. */
   inbox_tabs_list: {
@@ -1930,6 +1940,9 @@ export const PLUGIN_METHODS = Object.keys(pluginSchemas) as readonly (keyof type
 
 /** The owner's methods for Inbox tabs (Split Inbox). */
 export const INBOX_TAB_METHODS = ["inbox_tabs_list", "inbox_tab_save", "inbox_tab_delete", "inbox_tab_move"] as const satisfies readonly (keyof typeof rpcSchemas)[];
+
+/** The owner's methods of the typing-speed project. */
+export const TYPING_METHODS = ["phrases_list"] as const satisfies readonly (keyof typeof rpcSchemas)[];
 
 export const SETTINGS_METHODS = ["settings_get", "settings_set"] as const satisfies readonly (keyof typeof rpcSchemas)[];
 

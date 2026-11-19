@@ -2321,6 +2321,14 @@ export class InMemoryMailStore implements MailStore {
     other.position = position;
   }
 
+  sentTexts(limit: number): string[] {
+    return this.state.rows
+      .filter((r) => r.movePending === null && this.roleOf(r.accountId, r.folder) === "sent" && (r.message.bodyText ?? "") !== "")
+      .sort((a, b) => (b.message.date ?? "").localeCompare(a.message.date ?? ""))
+      .slice(0, limit)
+      .map((r) => r.message.bodyText ?? "");
+  }
+
   tabUnreadCounts(scope: { accountId: string; folder: string } | { role: SpecialUse }, matches: readonly (TabMatch | null)[]): number[] {
     const inScope = (r: Row) =>
       r.movePending === null &&

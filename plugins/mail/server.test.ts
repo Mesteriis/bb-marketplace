@@ -5715,6 +5715,26 @@ function agentLogRows(host: Host): Record<string, unknown>[] {
   return host.bb.storage.database().prepare("SELECT * FROM agent_log ORDER BY seq").all() as Record<string, unknown>[];
 }
 
+describe("typing speed: the owner's phrases", () => {
+  const seedSent = (store: ReturnType<typeof createSqliteStore>) => {
+    const sent = (uid: number, bodyText: string) =>
+      store.upsertMessages("acc_1", "Sent", [
+        makeFetchedMessage(100 + uid, { messageId: `phrase-${uid}@example.org`, from: { name: null, address: "owner@example.org" }, bodyText }),
+      ]);
+    for (let i = 0; i < 3; i++) sent(i, `Invented opening ${"x".repeat(i + 1)} word.\nLooking forward to the pelican review.\n\nOn Mon, Ada wrote:\n> Their quoted pelican secret sentence.`);
+    sent(7, "Written once about heron matters.");
+  };
+
+  it("lists the phrases written often in Sent mail, never quoted text, and only to the owner's page", async () => {
+    const host = await loadCanary({}, {}, seedSent);
+    expect(await call(host, "phrases_list", {})).toEqual({ phrases: ["Looking forward to the pelican review."] });
+    const other = { experimental_caller: { kind: "plugin", pluginId: "other" } } as const;
+    await expect(host.harness.behavior.callRpc("phrases_list", {}, other)).rejects.toMatchObject({ code: "forbidden" });
+    expect(JSON.stringify(agentLogRows(host))).not.toContain("pelican review");
+    expect(host.harness.inspection.logEntries.map((e) => e.message).join("\n")).not.toContain("pelican review");
+  });
+});
+
 describe("Inbox tabs (Split Inbox)", () => {
   const scope = { kind: "account", accountId: "acc_1", folder: "INBOX" } as const;
   const subjects = async (host: Host, tabId?: string) =>

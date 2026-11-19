@@ -2952,6 +2952,24 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
   );
   const pluginSettings = useSettings().values;
   cleanLinksOn.current = pluginSettings?.cleanLinks !== false;
+  // Typing speed: the owner's phrases for the grey text, read when a composer opens (the server keeps them ten minutes).
+  const [phrases, setPhrases] = useState<readonly string[]>([]);
+  const composerOpen = mailComposer !== null;
+  const autocompleteOn = pluginSettings?.autocomplete !== false;
+  useEffect(() => {
+    if (!composerOpen || !autocompleteOn) return;
+    let live = true;
+    rpc.call("phrases_list", {}).then(
+      (result) => {
+        if (live) setPhrases(result.phrases);
+      },
+      // Without phrases there is no grey text; nothing else depends on them.
+      () => {},
+    );
+    return () => {
+      live = false;
+    };
+  }, [composerOpen, autocompleteOn, rpc]);
   // Typing speed: the composer's aids.
   const pairsText = typeof pluginSettings?.autocorrectPairs === "string" ? pluginSettings.autocorrectPairs : "";
   const typing = useMemo<TypingOptions>(
@@ -2959,9 +2977,9 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       autocorrect: pluginSettings?.autocorrect !== false,
       pairs: parsePairs(pairsText),
       autocomplete: pluginSettings?.autocomplete !== false,
-      phrases: [],
+      phrases,
     }),
-    [pluginSettings?.autocorrect, pluginSettings?.autocomplete, pairsText],
+    [pluginSettings?.autocorrect, pluginSettings?.autocomplete, pairsText, phrases],
   );
   // Slice 3h: the reading settings and the Search and reading tab.
   const readingSettings = {

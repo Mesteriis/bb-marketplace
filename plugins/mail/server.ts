@@ -119,6 +119,11 @@ import {
 import { createPluginApi, type GoogleKey } from "./src/adapters/bb/plugin-api-rpc.ts";
 import { proposePluginLetter } from "./src/core/plugin-propose.ts";
 import { teamDomains } from "./src/core/inbox-tabs.ts";
+import { buildPhrases } from "./src/core/phrases.ts";
+
+/** The owner's phrases come from this many of the newest sent messages, and are rebuilt this often at most. */
+const PHRASES_FROM_SENT = 2_000;
+const PHRASES_FRESH_MS = 10 * 60_000;
 import { createInboxTabsRpc } from "./src/adapters/bb/inbox-tabs-rpc.ts";
 import { GrantRevokedError } from "./src/core/ports.ts";
 import { guardHandlers } from "./src/adapters/bb/plugin-guard.ts";
@@ -3249,6 +3254,15 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       return new Map();
     }
   };
+  // The owner's phrases for the composer's grey text: from Sent mail and templates, at most once in ten minutes.
+  let phrasesKept: { at: number; phrases: string[] } | null = null;
+  const ownerPhrases = (): string[] => {
+    const now = Date.now();
+    if (phrasesKept !== null && now - phrasesKept.at < PHRASES_FRESH_MS) return phrasesKept.phrases;
+    const templates = store.listTemplates().map((template) => ownerParagraphs(template.doc).paragraphs.join("\n"));
+    phrasesKept = { at: now, phrases: buildPhrases(store.sentTexts(PHRASES_FROM_SENT), templates) };
+    return phrasesKept.phrases;
+  };
   const inboxTabs = createInboxTabsRpc({ store, now: () => new Date(), newId: () => randomUUID() });
   // The plugin API reads what agents read: inside the owner's AI access, secrets hidden.
   const pluginApi = createPluginApi({
@@ -3718,6 +3732,8 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         suggestions: identitySuggestions(store, accountId),
       })),
       identity_dismiss: owner("identity_dismiss", (input) => dismissIdentity(store, input, nowIso())),
+      // Typing speed. Never logged: the phrases are the owner's own words.
+      phrases_list: () => ({ phrases: ownerPhrases() }),
       templates_list: owner("templates_list", () => ({ templates: listTemplateViews(store) })),
       template_save: owner("template_save", (input) => saveTemplate(store, input, `tpl_${randomUUID()}`, nowIso())),
       template_delete: owner("template_delete", ({ id }) => deleteTemplate(store, id)),

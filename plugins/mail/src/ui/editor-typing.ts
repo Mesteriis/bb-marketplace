@@ -1,11 +1,13 @@
 // The composer's typing aids as ProseMirror plugins inside the TipTap editor:
 // autocorrect when a word ends (Backspace right after puts back what was
-// typed). The rules live in src/core; this file only reads the text around
+// typed), and the grey rest of a phrase the owner often writes (Tab takes
+// it). The rules live in src/core; this file only reads the text around
 // the cursor and applies what they return.
 import { Extension } from "@tiptap/react";
 import { Plugin, PluginKey, type EditorState } from "@tiptap/pm/state";
-import type { EditorView } from "@tiptap/pm/view";
+import { Decoration, DecorationSet, type EditorView } from "@tiptap/pm/view";
 import { correctWord, type Correction } from "../core/autocorrect.ts";
+import { completion } from "../core/phrases.ts";
 
 /** What the composer wants from the typing aids now; read on every key, so a setting applies at once. */
 export interface TypingOptions {
@@ -103,6 +105,77 @@ function autocorrectPlugin(options: () => TypingOptions): Plugin<CorrectState> {
   });
 }
 
+/** Escape hid the grey text for the sentence that starts here. */
+type GhostState = { hiddenAt: number | null };
+const ghostKey = new PluginKey<GhostState>("makoshGhost");
+
+/** The sentence the cursor ends, when grey text may follow it: its start and its text so far. */
+function sentenceBefore(state: EditorState): { start: number; text: string } | null {
+  const { $from, empty } = state.selection;
+  const parent = $from.parent;
+  if (!empty || !parent.isTextblock || parent.type.spec.code === true) return null;
+  // Only at the end of the block: grey text in the middle of a line would push the rest around.
+  if ($from.parentOffset !== parent.content.size) return null;
+  if ($from.marks().some((mark) => mark.type.name === "link" || mark.type.name === "code")) return null;
+  const before = parent.textBetween(0, $from.parentOffset, undefined, "\ufffc");
+  const cut = Math.max(before.lastIndexOf(". "), before.lastIndexOf("! "), before.lastIndexOf("? "), before.lastIndexOf("\u2026 "));
+  const text = cut === -1 ? before : before.slice(cut + 2);
+  return { start: $from.pos - text.length, text };
+}
+
+/** The grey text to show now: the rest of a phrase, and where its sentence starts. */
+export function ghostOf(state: EditorState, options: TypingOptions): { rest: string; start: number } | null {
+  if (!options.autocomplete || options.phrases.length === 0) return null;
+  const sentence = sentenceBefore(state);
+  if (sentence === null || ghostKey.getState(state)?.hiddenAt === sentence.start) return null;
+  const rest = completion(options.phrases, sentence.text);
+  return rest === null ? null : { rest, start: sentence.start };
+}
+
+function ghostPlugin(options: () => TypingOptions): Plugin<GhostState> {
+  return new Plugin<GhostState>({
+    key: ghostKey,
+    state: {
+      init: () => ({ hiddenAt: null }),
+      apply(tr, value) {
+        const hide = tr.getMeta(ghostKey) as number | undefined;
+        if (hide !== undefined) return { hiddenAt: hide };
+        // The mark follows the text; it ends when another sentence is being written.
+        return value.hiddenAt !== null && tr.docChanged ? { hiddenAt: tr.mapping.map(value.hiddenAt, -1) } : value;
+      },
+    },
+    props: {
+      decorations(state) {
+        const ghost = ghostOf(state, options());
+        if (ghost === null) return null;
+        const widget = Decoration.widget(
+          state.selection.from,
+          () => {
+            const span = document.createElement("span");
+            span.dataset.ghost = "";
+            span.setAttribute("aria-hidden", "true");
+            span.className = "pointer-events-none select-none text-muted-foreground opacity-60";
+            span.textContent = ghost.rest;
+            return span;
+          },
+          { side: 1, key: `ghost:${ghost.rest}` },
+        );
+        return DecorationSet.create(state.doc, [widget]);
+      },
+      handleKeyDown(view, event) {
+        if (event.shiftKey || event.metaKey || event.ctrlKey || event.altKey) return false;
+        if (event.key !== "Tab" && event.key !== "Escape") return false;
+        const ghost = ghostOf(view.state, options());
+        // Without grey text the key is not ours: Tab moves the focus, Escape closes what it closes.
+        if (ghost === null) return false;
+        if (event.key === "Tab") view.dispatch(view.state.tr.insertText(ghost.rest));
+        else view.dispatch(view.state.tr.setMeta(ghostKey, ghost.start));
+        return true;
+      },
+    },
+  });
+}
+
 /** The typing aids as one editor extension; `options` is read on every key. */
 export function typingExtension(options: () => TypingOptions) {
   return Extension.create({
@@ -110,7 +183,7 @@ export function typingExtension(options: () => TypingOptions) {
     // Before the editor's own keys, so Backspace can undo a fix.
     priority: 1000,
     addProseMirrorPlugins() {
-      return [autocorrectPlugin(options)];
+      return [autocorrectPlugin(options), ghostPlugin(options)];
     },
   });
 }

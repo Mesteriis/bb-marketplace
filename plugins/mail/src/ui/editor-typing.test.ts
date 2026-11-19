@@ -110,3 +110,67 @@ describe("autocorrect in the editor", () => {
     expect(text(editor)).toBe("teh the ");
   });
 });
+
+describe("the grey rest of a phrase", () => {
+  const phrases = ["Let me know if you have any questions.", "Thanks for the update!"];
+  const ghost = (editor: Editor) => editor.view.dom.querySelector("[data-ghost]")?.textContent ?? null;
+  const on = { autocorrect: false, autocomplete: true, phrases };
+
+  it("shows after the start of a phrase and Tab writes it", () => {
+    const { editor } = make(on);
+    type(editor, "Let me");
+    expect(ghost(editor)).toBeNull();
+    type(editor, " know if");
+    expect(ghost(editor)).toBe(" you have any questions.");
+    expect(press(editor, "Tab")).toBe(true);
+    expect(text(editor)).toBe("Let me know if you have any questions.");
+    expect(ghost(editor)).toBeNull();
+  });
+
+  it("starts again after a sentence ends", () => {
+    const { editor } = make(on);
+    type(editor, "Got it. thanks for");
+    expect(ghost(editor)).toBe(" the update!");
+  });
+
+  it("Escape hides it for this sentence; typing on keeps it hidden, the next sentence offers again", () => {
+    const { editor } = make(on);
+    type(editor, "Let me know if");
+    expect(press(editor, "Escape")).toBe(true);
+    expect(ghost(editor)).toBeNull();
+    type(editor, " you");
+    expect(ghost(editor)).toBeNull();
+    type(editor, " can. Thanks for");
+    expect(ghost(editor)).toBe(" the update!");
+  });
+
+  it("another key just types, and the grey text follows or goes", () => {
+    const { editor } = make(on);
+    type(editor, "Let me know if y");
+    expect(ghost(editor)).toBe("ou have any questions.");
+    type(editor, "es");
+    expect(ghost(editor)).toBeNull();
+    expect(text(editor)).toBe("Let me know if yes");
+  });
+
+  it("takes neither Tab nor Escape without grey text, and shows none with the setting off, in code or mid-line", () => {
+    const plain = make(on);
+    type(plain.editor, "Hello there");
+    expect(press(plain.editor, "Tab")).toBe(false);
+    expect(press(plain.editor, "Escape")).toBe(false);
+
+    const off = make({ ...on, autocomplete: false });
+    type(off.editor, "Let me know if");
+    expect(ghost(off.editor)).toBeNull();
+
+    const code = make(on, { type: "doc", content: [{ type: "codeBlock" }] });
+    code.editor.commands.focus("start");
+    type(code.editor, "Let me know if");
+    expect(ghost(code.editor)).toBeNull();
+
+    const mid = make(on);
+    type(mid.editor, "Let me know if tail");
+    mid.editor.commands.setTextSelection(15);
+    expect(ghost(mid.editor)).toBeNull();
+  });
+});

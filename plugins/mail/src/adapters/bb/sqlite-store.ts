@@ -4067,6 +4067,17 @@ export function createSqliteStore(db: Database.Database): MailStore {
         set.run(tabs[at]!.position, other.id);
       });
     },
+    sentTexts(limit) {
+      return db
+        .prepare<[number], { body_text: string }>(
+          `SELECT m.body_text FROM ${MESSAGES_WITH_FOLDER}
+           WHERE ${ROW_ROLE} = 'sent' AND m.body_text IS NOT NULL AND m.body_text <> '' AND m.move_pending IS NULL
+           ORDER BY m.date DESC, m.seq DESC LIMIT ?`,
+        )
+        .all(limit)
+        .map((row) => row.body_text);
+    },
+
     tabUnreadCounts(scope, matches) {
       const rows = "accountId" in scope ? ACCOUNT_FOLDER_ROWS : ROLE_ROWS;
       const base: Record<string, unknown> = "accountId" in scope ? { accountId: scope.accountId, folder: scope.folder } : { role: scope.role };

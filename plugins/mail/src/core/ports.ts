@@ -861,6 +861,8 @@ export interface MailStore {
   cancelMove(ids: string[], folder: string, destination: string): string[];
   /** Every template, by name key. */
   listTemplates(): TemplateRecord[];
+  /** Typing speed: the plain text of the newest sent messages that have one, newest first (the owner's phrases come from it). */
+  sentTexts(limit: number): string[];
   /** Insert (id null) or update by id; `conflict` when another template has the name key. */
   saveTemplate(
     input: { id: string | null; name: string; nameKey: string; doc: ComposeDoc },
