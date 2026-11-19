@@ -3,7 +3,7 @@ guest discovery. Real SSH sessions run in xterm and RDP on a canvas, through a R
 
 ## What you get
 
-- A page with a helper status line, an echo console and an SSH / RDP switch.
+- One page, Remote Hub: Quick connect (SSH / RDP), saved profiles and the Proxmox guest list.
 - Proxmox VE: Add Proxmox creates a restricted user (you confirm the plan; your admin login is used for this setup only, never stored) or saves a login or API token you have. The guest list shows each connection's outcome, search and links. Open a node shell, a container terminal or a VM's graphics (noVNC), several at once. A lost terminal reconnects itself (5 tries, 1-16 s, new console, scrollback kept); graphics never: Reconnect opens a new one. Tabs return after a restart as "not connected". Agents: container terminals, remote_reconnect; graphics only open, state, disconnect. No power buttons.
 - SSH: connect form (host, user, port), a real /usr/bin/ssh session on a
   helper-owned PTY, xterm.js rendering, resize, and a binary WebSocket with

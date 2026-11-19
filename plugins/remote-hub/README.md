@@ -12,7 +12,7 @@ canvas, Rust-помощник с настоящими PTY и отдельным 
   версионированным протоколом stdio: length-prefixed JSON-кадры для управления
   и бинарные stream-кадры с session id и sequence number для терминальных
   байтов.
-- Echo-консоль: RPC helper_status / echo_open / echo_input / echo_close.
+- Echo-RPC helper_status / echo_open / echo_input / echo_close остались на сервере для проверок помощника; страницы echo-консоли в интерфейсе нет (одна панель «Remote Hub», путь `ssh`).
 - SSH-сеанс: форма подключения (host, user, port), запуск системного
   /usr/bin/ssh на собственном PTY помощника, xterm.js, resize, бинарный поток
   через WebSocket (attach/detach, повторное подключение со snapshot scrollback),
