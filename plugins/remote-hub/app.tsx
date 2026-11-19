@@ -7,7 +7,8 @@ import "./app.css";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ThreadTitle, definePluginApp, experimental_useAppPanel, useBbContext, useBbNavigate, useRealtime, useRpc, useSidebarSplitLayout } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server.ts";
-import { ConnectPage } from "./src/ui/connect-page.tsx";
+import { HubPage } from "./src/ui/hub-page.tsx";
+import { HubSidebarConnected } from "./src/ui/sidebar/hub-sidebar-connected.tsx";
 import type { PveConsoleLaunch } from "./src/ui/pve-consoles.tsx";
 import { createConnectBridge } from "./src/ui/rpc-bridge.ts";
 import { AgentBanner, type AgentBannerApi } from "./src/ui/agent-banner.tsx";
@@ -169,6 +170,18 @@ function AgentBannerOverlay() {
 }
 
 
+/** The page's and the sidebar's RPC calls. The bridge strips undefined-valued keys (BB's RPC carries JSON values only). */
+function useBridge() {
+  const rpc = useRpc<typeof rpcContract>();
+  return useMemo(() => createConnectBridge((method, input) => (rpc.call as (m: string, ...a: unknown[]) => Promise<unknown>)(method, ...(input === undefined ? [] : [input])), attachUrl()), [rpc]);
+}
+
+/** BB's sidebar while the Remote Hub page is open: the connections and the open sessions instead of the thread list. */
+function HubSidebarSlot() {
+  const bridge = useBridge();
+  return <HubSidebarConnected profiles={bridge.profiles} pve={bridge.pve} allow={bridge.credentials.allow} />;
+}
+
 function ConnectTab({ subPath }: { subPath: string }) {
   const rpc = useRpc<typeof rpcContract>();
   const liveApi = useLiveApi();
@@ -198,16 +211,11 @@ function ConnectTab({ subPath }: { subPath: string }) {
       cancelled = true;
     };
   }, [watchedKey]);
-  const wsUrl = (typeof window !== "undefined" ? (window.location.protocol === "https:" ? "wss://" : "ws://") + window.location.host : "") + "/api/v1/plugins/makosh-remote-hub/http/attach";
-  // The bridge strips undefined-valued keys (BB's RPC carries JSON values only).
-  const bridge = useMemo(
-    () => createConnectBridge((method, input) => (rpc.call as (m: string, ...a: unknown[]) => Promise<unknown>)(method, ...(input === undefined ? [] : [input])), wsUrl),
-    [rpc, wsUrl],
-  );
+  const bridge = useBridge();
   return (
     <WithAgentContext>
       {watched !== null && <LiveSession sessionKey={`${watched.generation}.${watched.sessionId}`} api={liveApi} />}
-      <ConnectPage profiles={bridge.profiles} credentials={bridge.credentials} imports={bridge.imports} agents={bridge.agents} pve={bridge.pve} pveConsoles={bridge.pveConsoles} {...(adopt !== undefined ? { adoptConsole: adopt } : {})} live={liveApi} ssh={bridge.ssh} rdp={bridge.rdp} />
+      <HubPage profiles={bridge.profiles} credentials={bridge.credentials} imports={bridge.imports} agents={bridge.agents} pve={bridge.pve} pveConsoles={bridge.pveConsoles} {...(adopt !== undefined ? { adoptConsole: adopt } : {})} ssh={bridge.ssh} rdp={bridge.rdp} />
     </WithAgentContext>
   );
 }
@@ -229,5 +237,6 @@ export default definePluginApp((app) => {
     icon: "Terminal",
     path: "ssh",
     component: ConnectTab,
+    experimental_sidebar: HubSidebarSlot,
   });
 });

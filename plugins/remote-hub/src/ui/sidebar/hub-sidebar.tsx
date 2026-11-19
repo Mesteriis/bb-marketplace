@@ -36,6 +36,8 @@ export interface HubSidebarProps {
 }
 
 const ROW = "flex h-[var(--rh-row)] w-full min-w-0 items-center gap-2 rounded-md px-2 text-left text-sm hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+/** What ends a row; it gives way to the row's action button while the row is hovered or focused. */
+const TRAIL = "flex shrink-0 items-center gap-2 group-focus-within:invisible group-hover:invisible";
 const SECTION = "flex items-center justify-between px-2 pb-1.5 pt-3.5 text-xs uppercase tracking-wide text-muted-foreground";
 const FILTERS: ReadonlyArray<{ value: GuestFilter; key: "pve.filter.all" | "pve.filter.running" | "pve.filter.lxc" | "pve.filter.vm" }> = [
   { value: "all", key: "pve.filter.all" },
@@ -74,7 +76,7 @@ export function HubSidebar(props: HubSidebarProps) {
         );
       case "profile":
         return (
-          <div key={`p${r.id}`} className="group flex items-center">
+          <div key={`p${r.id}`} className="group relative">
             <button
               type="button"
               className={ROW}
@@ -84,10 +86,12 @@ export function HubSidebar(props: HubSidebarProps) {
             >
               {r.protocol === "pve" && <Icon name={r.expanded ? "ChevronDown" : "ChevronRight"} className="size-3 shrink-0 text-muted-foreground" />}
               <span className="min-w-0 flex-1 truncate">{r.name}</span>
-              <ProtocolTag protocol={r.protocol} />
-              {r.guestCount !== null && <span className="shrink-0 text-xs text-muted-foreground" title={plural(r.guestCount, GUESTS)}>{r.guestCount}</span>}
+              <span className={TRAIL}>
+                <ProtocolTag protocol={r.protocol} />
+                {r.guestCount !== null && <span className="text-xs text-muted-foreground" title={plural(r.guestCount, GUESTS)}>{r.guestCount}</span>}
+              </span>
             </button>
-            <Button type="button" variant="ghost" size="icon" className="size-7 shrink-0 opacity-0 focus-visible:opacity-100 group-hover:opacity-100" aria-label={`${tx("sidebar.edit")}: ${r.name}`} onClick={() => props.onEdit(r.id)}>
+            <Button type="button" variant="ghost" size="icon" className="absolute right-0.5 top-1/2 size-7 -translate-y-1/2 opacity-0 focus-visible:opacity-100 group-hover:opacity-100" aria-label={`${tx("sidebar.edit")}: ${r.name}`} onClick={() => props.onEdit(r.id)}>
               <Icon name="Settings" className="size-3.5" />
             </Button>
           </div>
@@ -160,13 +164,13 @@ export function HubSidebar(props: HubSidebarProps) {
               <span>{props.sessions.length}</span>
             </div>
             {props.sessions.map((s) => (
-              <div key={s.id} className="group flex items-center" data-testid="sidebar-session">
+              <div key={s.id} className="group relative" data-testid="sidebar-session">
                 <button type="button" className={cn(ROW, props.shown.includes(s.id) && "bg-accent")} aria-current={props.shown.includes(s.id) ? "true" : undefined} title={`${s.detail} · ${stateText(s)}`} onClick={() => props.onFocusSession(s.id)}>
                   <StatusDot tone={toneOf(s)} />
                   <span className="min-w-0 flex-1 truncate">{s.title}</span>
-                  <span className="shrink-0 text-xs text-muted-foreground">{s.state === "active" ? kindText(s.kind) : stateText(s)}</span>
+                  <span className={cn(TRAIL, "text-xs text-muted-foreground")}>{s.state === "active" ? kindText(s.kind) : stateText(s)}</span>
                 </button>
-                <Button type="button" variant="ghost" size="icon" className="size-7 shrink-0 opacity-0 focus-visible:opacity-100 group-hover:opacity-100" aria-label={`${tx("session.close")}: ${s.title}`} onClick={() => props.onCloseSession(s.id)}>
+                <Button type="button" variant="ghost" size="icon" className="absolute right-0.5 top-1/2 size-7 -translate-y-1/2 opacity-0 focus-visible:opacity-100 group-hover:opacity-100" aria-label={`${tx("session.close")}: ${s.title}`} onClick={() => props.onCloseSession(s.id)}>
                   <Icon name="X" className="size-3.5" />
                 </Button>
               </div>

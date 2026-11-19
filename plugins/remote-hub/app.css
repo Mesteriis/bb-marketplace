@@ -94,6 +94,16 @@
 
 /* Connect page: the profile catalogue beside Quick connect / the editor. */
 /* The container the layout reacts to: the panel's width, not the window's. */
+/* A session page inside a desk pane: the pane draws the title, state and actions. */
+.rh-page.rh-embedded {
+  padding: 0;
+  gap: 0;
+}
+
+.rh-page.rh-embedded > [hidden] {
+  display: none;
+}
+
 .rh-root {
   container-type: inline-size;
   height: 100%;

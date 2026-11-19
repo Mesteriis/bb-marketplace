@@ -56,6 +56,15 @@ const ru = {
   "desk.one": "Одна",
   "desk.two": "Две рядом",
   "desk.count": "{count} рядом",
+  "desk.back": "К сессиям",
+
+  "profile.duplicate": "Дублировать",
+  "profile.delete": "Удалить",
+  "profile.deleteConfirm": "Удалить «{name}»? Сохранённый пароль тоже удалится, если им не пользуется другое подключение.",
+  "profile.cancel": "Отмена",
+  "notice.passwordForgotten": "Сохранённый пароль забыт: изменились адрес, порт, пользователь или домен.",
+  "notice.savedNoPassword": "Подключение сохранено, пароль — нет: {reason}",
+  "notice.deletedNoPassword": "Подключение удалено, сохранённый пароль — нет: {reason}",
 } as const;
 
 export type TextKey = keyof typeof ru;

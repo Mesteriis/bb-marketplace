@@ -65,6 +65,16 @@ export interface RdpPageProps {
   onTakeover?: (handle: SessionHandle) => Promise<void>;
   /** Save a PNG for the user; the browser download by default. */
   onSavePng?: (filename: string, base64: string) => void;
+  /** Told about every change of state or driver, for the desk and BB's sidebar. */
+  onStatus?: (status: RdpPageStatus) => void;
+  /** Filled with the actions the desk pane offers for this session. */
+  actionsRef?: { current: { disconnect(): Promise<void> } | null };
+}
+
+export interface RdpPageStatus {
+  state: "idle" | "connecting" | "waiting" | "running" | "detached" | "closed" | "error";
+  owner: "human" | "agent";
+  error: string | null;
 }
 
 const DESKTOP_SIZE = { width: 1280, height: 800 };
@@ -299,6 +309,21 @@ export function RdpPage(props: RdpPageProps) {
   const live = view !== null && view.state !== "closed";
   const ready = view?.state === "desktop_ready";
   const prompt = view?.prompt ?? null;
+
+  const { onStatus, actionsRef } = props;
+  const deskState: RdpPageStatus["state"] =
+    view === null ? (connecting !== null ? "connecting" : error !== null ? "error" : "idle") : view.state === "closed" ? "closed" : view.detached ? "detached" : prompt !== null ? "waiting" : ready ? "running" : "connecting";
+  const ownerKind = view?.control.owner ?? "human";
+  useEffect(() => {
+    onStatus?.({ state: deskState, owner: ownerKind, error });
+  }, [onStatus, deskState, ownerKind, error]);
+  useEffect(() => {
+    if (actionsRef === undefined) return;
+    actionsRef.current = { disconnect };
+    return () => {
+      actionsRef.current = null;
+    };
+  }, [actionsRef, disconnect]);
 
   return (
     <div className="rh-page">

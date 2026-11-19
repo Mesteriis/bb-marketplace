@@ -1,0 +1,28 @@
+/* Stand-ins for what BB's own stylesheet provides (Catppuccin Mocha, the owner's theme). Preview only. */
+:root {
+  --background: #1e1e2e; --foreground: #cdd6f4; --muted-foreground: #bac2de; --primary: #cba6f7; --primary-foreground: #1e1e2e;
+  --destructive: #f38ba8; --destructive-foreground: #1e1e2e; --success: #a6e3a1; --warning: #f9e2af;
+  --border: color-mix(in oklch, #cdd6f4 19.4%, #1e1e2e); --input: color-mix(in oklch, #cdd6f4 32.6%, #1e1e2e);
+  --accent: color-mix(in oklch, #cdd6f4 13%, #1e1e2e); --secondary: color-mix(in oklch, #cdd6f4 10%, #1e1e2e); --secondary-foreground: #cdd6f4;
+  --muted: color-mix(in oklch, #cdd6f4 8%, #1e1e2e); --popover: #24243a; --popover-foreground: #cdd6f4; --card: #1e1e2e; --card-foreground: #cdd6f4;
+  --state-hover: color-mix(in oklch, #cdd6f4 8%, #1e1e2e); --state-active: color-mix(in oklch, #cdd6f4 13%, #1e1e2e); --ring: #cba6f7;
+  --surface-recessed-solid: #181825; --sidebar: color-mix(in oklch, #cdd6f4 4.3%, #1e1e2e); --rail: color-mix(in oklch, #cdd6f4 6%, #1e1e2e);
+  --spacing: 0.25rem; --radius: 0.5rem;
+  --text-xs: 0.75rem; --text-xs--line-height: calc(1 / 0.75); --text-sm: 0.875rem; --text-sm--line-height: calc(1.25 / 0.875); --text-base: 1rem; --text-base--line-height: 1.5;
+  --font-weight-medium: 500; --font-weight-semibold: 600; --tracking-tight: -0.025em; --tracking-wide: 0.025em; --tracking-widest: 0.1em;
+  --font-sans: "Inter Variable", Inter, system-ui, sans-serif; --font-terminal: ui-monospace, SFMono-Regular, Menlo, monospace;
+  --shadow-xs: 0 1px 2px #0003; --shadow-sm: 0 1px 3px #0004; --shadow-md: 0 4px 12px #0006;
+  --default-transition-duration: 150ms; --default-transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1); --color-black: #000;
+  --container-sm: 24rem; --container-lg: 32rem;
+}
+@layer base {
+* { box-sizing: border-box; border: 0 solid var(--border); margin: 0; }
+button, input { font: inherit; color: inherit; background: transparent; padding: 0; }
+}
+html, body, #root { margin: 0; height: 100%; }
+body { background: var(--background); color: var(--foreground); font: 14px/1.35 var(--font-sans); overflow: hidden; }
+.pv-shell { display: flex; height: 100%; }
+.pv-rail { width: 48px; background: var(--rail); flex: none; }
+.pv-side { width: 272px; background: var(--sidebar); border-right: 1px solid var(--border); flex: none; min-height: 0; }
+.pv-main { flex: 1; min-width: 0; min-height: 0; }
+.pv-term { flex: 1; margin: 0; background: #181825; font: 13px/1.5 var(--font-terminal); padding: 14px 16px; white-space: pre; overflow: hidden; }
