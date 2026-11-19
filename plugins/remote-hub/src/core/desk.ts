@@ -107,3 +107,30 @@ export function patchSession(state: DeskState, id: string, patch: Partial<Pick<D
   if (!state.sessions.some((s) => s.id === id)) return state;
   return { ...state, sessions: state.sessions.map((s) => (s.id === id ? { ...s, ...patch } : s)) };
 }
+
+const sameSession = (a: DeskSession, b: DeskSession): boolean =>
+  a.kind === b.kind && a.title === b.title && a.detail === b.detail && a.state === b.state && a.owner === b.owner && a.attempt === b.attempt && a.reason === b.reason && targetKey(a.target) === targetKey(b.target);
+
+/**
+ * Makes the desk agree with a component that owns some sessions itself (the Proxmox consoles and their tabs): `next` is the
+ * whole current list of that group. Kept sessions are updated in place, missing ones are closed, new ones are opened in order.
+ */
+export function syncGroup(state: DeskState, belongs: (session: DeskSession) => boolean, next: readonly DeskSession[]): DeskState {
+  const byId = new Map(next.map((s) => [s.id, s]));
+  let result = state;
+  for (const s of state.sessions) if (belongs(s) && !byId.has(s.id)) result = closeSession(result, s.id);
+  const known = new Set(result.sessions.map((s) => s.id));
+  let changed = false;
+  const updated = result.sessions.map((s) => {
+    const fresh = byId.get(s.id);
+    if (fresh === undefined || sameSession(s, fresh)) return s;
+    changed = true;
+    return fresh;
+  });
+  if (changed) result = { ...result, sessions: updated };
+  for (const s of next) {
+    if (known.has(s.id)) continue;
+    result = focusSession({ ...result, sessions: [...result.sessions, s] }, s.id);
+  }
+  return result;
+}

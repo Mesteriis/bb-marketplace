@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { closeSession, emptyDesk, focusSession, openSession, patchSession, setLayout, targetKey, type DeskSession, type DeskState } from "./desk.ts";
+import { closeSession, emptyDesk, focusSession, openSession, patchSession, setLayout, syncGroup, targetKey, type DeskSession, type DeskState } from "./desk.ts";
 
 const P = "5b568675-f842-4a96-83e0-78ae53d96024";
 
@@ -131,5 +131,40 @@ describe("patchSession", () => {
   it("an unknown id is ignored", () => {
     const before = opened(lxc("a", 165, "rdp-ssh-test"));
     expect(patchSession(before, "zzz", { state: "active" })).toBe(before);
+  });
+});
+
+describe("syncGroup", () => {
+  const isPve = (s: DeskSession): boolean => s.target.type === "pve";
+  const ssh: DeskSession = { id: "s", kind: "ssh", title: "win-test", detail: "admin@10.0.0.5", target: { type: "profile", profileId: "abc" }, state: "active", owner: "human", attempt: 0, reason: null };
+
+  it("adds the group's new sessions, shows the newest and leaves other sessions alone", () => {
+    const state = syncGroup(opened(ssh), isPve, [lxc("a", 165, "rdp-ssh-test"), lxc("b", 110, "db")]);
+    expect(state.sessions.map((s) => s.id)).toEqual(["s", "a", "b"]);
+    expect(state.shown).toEqual(["b"]);
+    expect(state.focus).toBe("b");
+  });
+
+  it("updates a session that is still there without moving it or the focus", () => {
+    const before = focusSession(opened(lxc("a", 165, "rdp-ssh-test"), ssh), "s");
+    const state = syncGroup(before, isPve, [{ ...lxc("a", 165, "rdp-ssh-test"), state: "lost", reason: "The console was lost." }]);
+    expect(state.sessions.map((s) => [s.id, s.state])).toEqual([
+      ["a", "lost"],
+      ["s", "active"],
+    ]);
+    expect(state.shown).toEqual(["s"]);
+    expect(state.focus).toBe("s");
+  });
+
+  it("removes the group's sessions that are gone, as if they were closed", () => {
+    const state = syncGroup(opened(ssh, lxc("a", 165, "rdp-ssh-test"), lxc("b", 110, "db")), isPve, [lxc("a", 165, "rdp-ssh-test")]);
+    expect(state.sessions.map((s) => s.id)).toEqual(["s", "a"]);
+    expect(state.shown).toEqual(["a"]);
+    expect(state.focus).toBe("a");
+  });
+
+  it("returns the same state when nothing differs", () => {
+    const before = opened(ssh, lxc("a", 165, "rdp-ssh-test"));
+    expect(syncGroup(before, isPve, [lxc("a", 165, "rdp-ssh-test")])).toBe(before);
   });
 });

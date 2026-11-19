@@ -30,9 +30,26 @@ export interface SshPageProps {
   onClose: (handle: SessionHandle) => Promise<void>;
   /** The owner takes the session back from an agent at once. */
   onTakeover?: (handle: SessionHandle) => Promise<void>;
+  /** On the desk: the pane draws the title, state and actions, so the page hides its own form and status line. */
+  embedded?: boolean;
+  /** Told about every change of state or driver, for the desk and BB's sidebar. */
+  onStatus?: (status: SshPageStatus) => void;
+  /** Filled with the actions the desk pane offers for this session. */
+  actionsRef?: { current: SessionActions | null };
 }
 
-type PageState = "idle" | "connecting" | "running" | "detached" | "closed" | "error";
+export interface SshPageStatus {
+  state: PageState;
+  owner: "human" | "agent";
+  error: string | null;
+}
+
+/** What a desk pane can ask of the session it shows. */
+export interface SessionActions {
+  disconnect(): Promise<void>;
+}
+
+export type PageState = "idle" | "connecting" | "running" | "detached" | "closed" | "error";
 
 /** Everything on screen for ONE session; replaced as a unit, so the endpoint
  *  shown, the handle Disconnect closes and the terminal attached never disagree. */
@@ -184,9 +201,22 @@ export function SshPage(props: SshPageProps) {
   const attach = session?.attach ?? null;
   const target = session?.target ?? pending;
 
+  const { onStatus, actionsRef } = props;
+  const ownerKind = owner.owner;
+  useEffect(() => {
+    onStatus?.({ state, owner: ownerKind, error });
+  }, [onStatus, state, ownerKind, error]);
+  useEffect(() => {
+    if (actionsRef === undefined) return;
+    actionsRef.current = { disconnect };
+    return () => {
+      actionsRef.current = null;
+    };
+  }, [actionsRef, disconnect]);
+
   return (
-    <div className="rh-page">
-      <div className="rh-form">
+    <div className={props.embedded === true ? "rh-page rh-embedded" : "rh-page"}>
+      <div className="rh-form" hidden={props.embedded === true}>
         <input placeholder="host" value={host} onChange={(e) => setHost(e.target.value)} />
         <input placeholder="user" value={user} onChange={(e) => setUser(e.target.value)} />
         <input placeholder="port" value={port} onChange={(e) => setPort(e.target.value)} className="rh-port" />
@@ -204,7 +234,7 @@ export function SshPage(props: SshPageProps) {
           </>
         )}
       </div>
-      <div className="rh-header">
+      <div className="rh-header" hidden={props.embedded === true}>
         {target !== null && (
           <span>
             target: <strong>{target.user ? target.user + "@" : ""}{target.host}{target.port ? ":" + target.port : ""}</strong>

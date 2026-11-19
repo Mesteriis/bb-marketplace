@@ -1,7 +1,7 @@
 // One desk for the whole plugin bundle: the page and BB's sidebar are separate React roots, so the state they share lives
 // here and both read it with useSyncExternalStore. Transitions are the pure functions of core/desk.ts.
 import { useSyncExternalStore } from "react";
-import { closeSession, emptyDesk, focusSession, openSession, patchSession, setLayout, type DeskLayout, type DeskSession, type DeskState } from "../core/desk.ts";
+import { closeSession, emptyDesk, focusSession, openSession, patchSession, setLayout, syncGroup, type DeskLayout, type DeskSession, type DeskState } from "../core/desk.ts";
 
 export interface DeskStore {
   get(): DeskState;
@@ -11,6 +11,8 @@ export interface DeskStore {
   close(id: string): void;
   patch(id: string, patch: Parameters<typeof patchSession>[2]): void;
   layout(layout: DeskLayout): void;
+  /** Replaces the sessions a component owns itself with its current list (see core/desk.ts syncGroup). */
+  sync(belongs: (session: DeskSession) => boolean, next: readonly DeskSession[]): void;
 }
 
 export function createDeskStore(): DeskStore {
@@ -32,6 +34,7 @@ export function createDeskStore(): DeskStore {
     close: (id) => apply(closeSession(state, id)),
     patch: (id, patch) => apply(patchSession(state, id, patch)),
     layout: (layout) => apply(setLayout(state, layout)),
+    sync: (belongs, next) => apply(syncGroup(state, belongs, next)),
   };
 }
 
