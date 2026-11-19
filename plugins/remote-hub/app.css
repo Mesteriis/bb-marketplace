@@ -1088,3 +1088,38 @@
   flex-wrap: wrap;
   gap: 6px;
 }
+
+/* The screens not yet moved to BB's components (editor, credentials, import, agent activity, Proxmox setup, the RDP form):
+   their controls take BB's sizes, radius, colours and focus ring, so they sit beside the new ones without a second look. */
+:is(.rh-root, .rh-page) :is(input:not([type="checkbox"]):not([type="radio"]), select) {
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--input, #30363d);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--foreground, #c9d1d9);
+  font-size: 13px;
+}
+
+:is(.rh-root, .rh-page) button {
+  height: 30px;
+  padding: 0 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+:is(.rh-root, .rh-page) button[type="submit"] {
+  background: var(--primary, #cba6f7);
+  color: var(--primary-foreground, #1e1e2e);
+  border-color: transparent;
+}
+
+:is(.rh-root, .rh-page) :is(input, select, button):focus-visible {
+  outline: 1px solid var(--ring, #cba6f7);
+  outline-offset: 0;
+}
+
+:is(.rh-root, .rh-page) fieldset {
+  border-radius: 8px;
+}
