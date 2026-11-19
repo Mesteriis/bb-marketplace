@@ -54,7 +54,7 @@ createRoot(document.getElementById("root")!).render(
         <Desk>
           {(scene === "desk" ? fake : []).map((s) => (
             <DeskPane key={s.id} session={deskStore.get().sessions.find((x) => x.id === s.id) ?? s} onClose={() => deskStore.close(s.id)}>
-              <pre className="pv-term">{shell}</pre>
+              <div className="pv-term xterm-rows">{shell.split("\n").map((line, i) => <div key={i}>{line}</div>)}</div>
             </DeskPane>
           ))}
         </Desk>

@@ -1,12 +1,13 @@
 // One session on the desk: a header (what it is, its state, who drives it, its actions) over the session's own view.
 // A pane places itself: it is on screen only while the desk shows its id, in the order the desk gives.
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import type { DeskSession } from "../../core/desk.ts";
 import { useDesk } from "../desk-store.ts";
 import { tx } from "../i18n.ts";
 import { registerCloser, useDeskStore } from "./desk-context.tsx";
 import { SessionStatus } from "./status.tsx";
+import { useThumb } from "./use-thumb.ts";
 
 export interface DeskPaneProps {
   session: Pick<DeskSession, "id" | "title" | "detail" | "state" | "attempt" | "owner">;
@@ -25,6 +26,8 @@ export function DeskPane({ session, actions, onClose, note, children }: DeskPane
   const order = desk.shown.indexOf(session.id);
   const focused = desk.focus === session.id;
   useEffect(() => registerCloser(session.id, onClose), [session.id, onClose]);
+  const body = useRef<HTMLDivElement | null>(null);
+  useThumb(session.id, body);
   return (
     <section
       hidden={order === -1}
@@ -49,7 +52,9 @@ export function DeskPane({ session, actions, onClose, note, children }: DeskPane
         {actions}
       </header>
       {note}
-      <div className="relative flex min-h-0 flex-1 flex-col">{children}</div>
+      <div ref={body} className="relative flex min-h-0 flex-1 flex-col">
+        {children}
+      </div>
     </section>
   );
 }

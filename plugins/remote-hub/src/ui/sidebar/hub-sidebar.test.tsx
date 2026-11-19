@@ -78,6 +78,15 @@ describe("HubSidebar", () => {
     expect(p.onCloseSession).toHaveBeenCalledWith("a");
   });
 
+  it("a session card shows the terminal's last lines, or the desktop's frame, and says when an agent drives it", () => {
+    const desktop: DeskSession = { ...session, id: "b", kind: "pve-graphics", title: "win11", owner: "agent" };
+    render(<HubSidebar {...props({ sessions: [session, desktop], shown: ["a"], thumbs: { a: { type: "text", lines: ["$ uptime", " 10:02 up 3 days"] }, b: { type: "image", url: "data:image/jpeg;base64,AAAA" } } })} />);
+    const [first, second] = screen.getAllByTestId("sidebar-session");
+    expect(first!.querySelector("[data-testid=sidebar-thumb]")!.textContent).toBe("$ uptime\n 10:02 up 3 days");
+    expect(second!.querySelector("img")!.getAttribute("src")).toBe("data:image/jpeg;base64,AAAA");
+    expect(second!.textContent).toContain("управляет агент");
+  });
+
   it("a connection macOS has not allowed offers Allow access", () => {
     const p = props({ connections: { pve1: { outcome: "keychain_needs_approval", nodes: [], guests: [] } } });
     render(<HubSidebar {...p} />);

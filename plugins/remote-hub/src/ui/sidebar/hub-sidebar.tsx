@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import type { DeskSession } from "../../core/desk.ts";
 import { toneOf } from "../../core/desk-status.ts";
+import type { Thumb } from "../../core/thumb.ts";
 import { buildTree, type GuestFilter, type TreeConnection, type TreeProfile, type TreeRow } from "../../core/hub-tree.ts";
 import { kindText, stateText, StatusDot } from "../desk/status.tsx";
 import { plural, tx } from "../i18n.ts";
@@ -20,6 +21,8 @@ export interface HubSidebarProps {
   error: string | null;
   connections: Readonly<Record<string, TreeConnection>>;
   sessions: readonly DeskSession[];
+  /** The small pictures of the open sessions, by session id. */
+  thumbs?: Readonly<Record<string, Thumb>>;
   shown: readonly string[];
   onFocusSession: (id: string) => void;
   onCloseSession: (id: string) => void;
@@ -46,6 +49,16 @@ const FILTERS: ReadonlyArray<{ value: GuestFilter; key: "pve.filter.all" | "pve.
   { value: "qemu", key: "pve.filter.vm" },
 ];
 const GUESTS = ["гость", "гостя", "гостей"] as const;
+
+/** The session's small picture: a terminal's last lines or a desktop's frame; an empty screen until there is one. */
+function SessionThumb({ thumb }: { thumb: Thumb | undefined }) {
+  return (
+    <span className="block h-14 w-full overflow-hidden rounded bg-[var(--rh-screen)]" aria-hidden="true" data-testid="sidebar-thumb">
+      {thumb?.type === "image" && <img src={thumb.url} alt="" className="size-full object-cover object-top" />}
+      {thumb?.type === "text" && <span className="block whitespace-pre p-1.5 font-mono text-[8px] leading-[1.3] text-muted-foreground">{thumb.lines.join("\n")}</span>}
+    </span>
+  );
+}
 
 function ProtocolTag({ protocol }: { protocol: TreeProfile["protocol"] }) {
   return <span className="shrink-0 rounded border border-border px-1 text-[10.5px] leading-4 text-muted-foreground">{protocol === "pve" ? "PVE" : protocol.toUpperCase()}</span>;
@@ -164,13 +177,22 @@ export function HubSidebar(props: HubSidebarProps) {
               <span>{props.sessions.length}</span>
             </div>
             {props.sessions.map((s) => (
-              <div key={s.id} className="group relative" data-testid="sidebar-session">
-                <button type="button" className={cn(ROW, props.shown.includes(s.id) && "bg-accent")} aria-current={props.shown.includes(s.id) ? "true" : undefined} title={`${s.detail} · ${stateText(s)}`} onClick={() => props.onFocusSession(s.id)}>
-                  <StatusDot tone={toneOf(s)} />
-                  <span className="min-w-0 flex-1 truncate">{s.title}</span>
-                  <span className={cn(TRAIL, "text-xs text-muted-foreground")}>{s.state === "active" ? kindText(s.kind) : stateText(s)}</span>
+              <div key={s.id} className={cn("group relative mb-2 rounded-lg border", props.shown.includes(s.id) ? "border-ring" : "border-border")} data-testid="sidebar-session">
+                <button
+                  type="button"
+                  className="flex w-full min-w-0 flex-col gap-1.5 rounded-lg p-2 text-left text-sm hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  aria-current={props.shown.includes(s.id) ? "true" : undefined}
+                  title={`${s.detail} · ${stateText(s)}`}
+                  onClick={() => props.onFocusSession(s.id)}
+                >
+                  <SessionThumb thumb={props.thumbs?.[s.id]} />
+                  <span className="flex w-full min-w-0 items-center gap-2">
+                    <StatusDot tone={toneOf(s)} />
+                    <span className="min-w-0 flex-1 truncate">{s.title}</span>
+                    <span className="shrink-0 text-xs text-muted-foreground">{s.state === "active" ? (s.owner === "agent" ? tx("session.drivenByAgent") : kindText(s.kind)) : stateText(s)}</span>
+                  </span>
                 </button>
-                <Button type="button" variant="ghost" size="icon" className="absolute right-0.5 top-1/2 size-7 -translate-y-1/2 opacity-0 focus-visible:opacity-100 group-hover:opacity-100" aria-label={`${tx("session.close")}: ${s.title}`} onClick={() => props.onCloseSession(s.id)}>
+                <Button type="button" variant="secondary" size="icon" className="absolute right-1 top-1 size-6 opacity-0 focus-visible:opacity-100 group-hover:opacity-100" aria-label={`${tx("session.close")}: ${s.title}`} onClick={() => props.onCloseSession(s.id)}>
                   <Icon name="X" className="size-3.5" />
                 </Button>
               </div>
