@@ -341,6 +341,7 @@ describe("ConnectPage with Proxmox", () => {
       onboardPlan: vi.fn(),
       onboardApply: vi.fn(),
       onboardConnect: vi.fn(),
+      openConsole: vi.fn(async (_input?: unknown) => ({ ok: true as const, generation: "b".repeat(32), sessionId: 4, kind: "pve" as const })),
     };
     const rows = [...initial];
     const api = {
@@ -352,8 +353,9 @@ describe("ConnectPage with Proxmox", () => {
     } as unknown as ProfilesApi;
     const ssh = { onSshOpen: vi.fn(async () => ({ generation: "a".repeat(32), sessionId: 1 })), onAttach: vi.fn(async () => Promise.reject(new Error("none"))), onClose: vi.fn(async () => {}) };
     const rdp = { onRdpOpen: vi.fn(), onAttach: vi.fn(), onClose: vi.fn(), onDecision: vi.fn(), onScreenshot: vi.fn() };
-    const view = render(<ConnectPage ssh={ssh as never} rdp={rdp as never} profiles={api} pve={pve as never} />);
-    return { pve, ssh, view };
+    const pveConsoles = { attach: vi.fn(async () => Promise.reject(new Error("no attach in this test"))), close: vi.fn(async () => {}) };
+    const view = render(<ConnectPage ssh={ssh as never} rdp={rdp as never} profiles={api} pve={pve as never} pveConsoles={pveConsoles as never} />);
+    return { pve, ssh, pveConsoles, view };
   }
 
   it("a Proxmox connection's Guests button lists its guests instead of opening an SSH or RDP session", async () => {
@@ -394,5 +396,50 @@ describe("ConnectPage with Proxmox", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Connect to web through Build box" }));
     await waitFor(() => expect(ssh.onSshOpen).toHaveBeenCalledTimes(1));
     expect((ssh.onSshOpen.mock.calls[0] as unknown[])[1]).toBe(SID);
+  });
+
+  const GUEST = (linked: string | null) => ({
+    connections: [
+      {
+        profileId: PID, profileName: "lab pve", outcome: "ok", message: null, fingerprint: null, version: "9.2.4", fetchedAt: "x", stale: null,
+        nodes: [{ node: "pve1", status: "online" }],
+        guests: [{ key: `${PID}/101`, profileId: PID, vmid: 101, name: "web", kind: "lxc", node: "pve1", status: "running", template: false, console: { available: true, reason: null }, linkedProfileId: linked }],
+      },
+    ],
+  });
+
+  it("Open console on a guest switches to the Proxmox tab and opens that console through the Proxmox connection", async () => {
+    const { pve } = withPve([PVE_PROFILE, SSH_PROFILE]);
+    pve.targets.mockResolvedValue(GUEST(null));
+    fireEvent.click(await screen.findByRole("button", { name: "Show guests of lab pve" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Open console of web" }));
+    await waitFor(() => expect(pve.openConsole).toHaveBeenCalledWith({ console: "lxc", vmid: 101, profileId: PID, cols: 80, rows: 24 }));
+    expect(screen.getByRole("button", { name: "Proxmox", pressed: true })).toBeTruthy();
+    // the guest list is gone, the console tab is there
+    expect(screen.queryByLabelText("Proxmox guests")).toBeNull();
+    expect(await screen.findByLabelText("Proxmox consoles")).toBeTruthy();
+  });
+
+  it("a node shell button opens a node console", async () => {
+    const { pve } = withPve([PVE_PROFILE]);
+    pve.targets.mockResolvedValue(GUEST(null));
+    fireEvent.click(await screen.findByRole("button", { name: "Show guests of lab pve" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Open shell of node pve1" }));
+    await waitFor(() => expect(pve.openConsole).toHaveBeenCalledWith({ console: "node", node: "pve1", profileId: PID, cols: 80, rows: 24 }));
+  });
+
+  it("Connect through opens the linked SSH profile with ITS credential and never the Proxmox login", async () => {
+    const SSH_WITH_SECRET = stored({ id: SID, name: "Build box", host: "build.example.test", username: "ci", port: 2222, authType: "password", credentialRef: "rh-cred:v1:local:0b8e6f4a-5c2d-4e1b-9a37-1f2e3d4c5b99" });
+    const PVE_WITH_SECRET = stored({ id: PID, name: "lab pve", protocol: "pve", authType: "password", username: "remotehub@pve", host: "pve.test", credentialRef: "rh-cred:v1:local:0b8e6f4a-5c2d-4e1b-9a37-1f2e3d4c5b01" });
+    const { pve, ssh } = withPve([PVE_WITH_SECRET, SSH_WITH_SECRET]);
+    pve.targets.mockResolvedValue(GUEST(SID));
+    fireEvent.click(await screen.findByRole("button", { name: "Show guests of lab pve" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Connect to web through Build box" }));
+    await waitFor(() => expect(ssh.onSshOpen).toHaveBeenCalledTimes(1));
+    const [target, profileId, credentialRef] = ssh.onSshOpen.mock.calls[0] as unknown as [{ host: string; user: string }, string, string];
+    expect(target).toMatchObject({ host: "build.example.test", user: "ci" });
+    expect(profileId).toBe(SID);
+    expect(credentialRef).toBe("rh-cred:v1:local:0b8e6f4a-5c2d-4e1b-9a37-1f2e3d4c5b99");
+    expect(pve.openConsole).not.toHaveBeenCalled();
   });
 });

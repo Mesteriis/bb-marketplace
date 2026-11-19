@@ -264,6 +264,21 @@ describe("the graphical console view", () => {
     expect(s.server.keyEvents().filter((k) => !k.down)).toHaveLength(2);
   });
 
+  it("takes focus when the first frame is ready, and the owner's typing reaches the console as key events", async () => {
+    const m = mount();
+    const s = await startSession(m);
+    const canvas = m.view.getByTestId("vnc-view").querySelector("canvas") as HTMLCanvasElement;
+    expect(document.activeElement).toBe(canvas);
+    await act(async () => {
+      canvas.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyA", key: "a", bubbles: true }));
+      canvas.dispatchEvent(new KeyboardEvent("keyup", { code: "KeyA", key: "a", bubbles: true }));
+    });
+    expect(s.server.keyEvents()).toEqual([
+      { down: true, keysym: 0x61 },
+      { down: false, keysym: 0x61 },
+    ]);
+  });
+
   it("sends the owner's mouse clicks to the console as pointer events", async () => {
     const m = mount();
     const s = await startSession(m);

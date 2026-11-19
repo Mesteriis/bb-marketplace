@@ -4,6 +4,7 @@ import type { HelperProcess, PveSessionEvent } from "./helper-process.ts";
 import { createRemoteHubService, type ControlGate, type RemoteHubService } from "./service.ts";
 import type { SessionHandle } from "../../core/rpc.ts";
 import type { PveOpenArgs } from "./service.ts";
+import { registerStreamSocket } from "./stream-socket.ts";
 
 const GEN = "d".repeat(32);
 const SECRET_PW = "VNC-PW-sentinel-71";
@@ -327,5 +328,143 @@ describe("the idle policy", () => {
     expect(helper.closes).toEqual([1]);
     await vi.advanceTimersByTimeAsync(5000);
     expect(helper.closes).toEqual([1]);
+  });
+});
+
+// ---- the attach sockets of consoles, over the same scripted helper ----
+
+type Handlers = {
+  onOpen(socket: FakeSocket): void | Promise<void>;
+  onMessage(socket: FakeSocket, data: string | Uint8Array): void;
+  onClose(): void;
+  onError(): void;
+};
+class FakeSocket {
+  readyState = 1;
+  sent: Array<string | Uint8Array> = [];
+  closedWith: { code?: number; reason?: string } | null = null;
+  send(data: string | Uint8Array): void {
+    this.sent.push(data);
+  }
+  close(code?: number, reason?: string): void {
+    this.readyState = 3;
+    this.closedWith = { ...(code === undefined ? {} : { code }), ...(reason === undefined ? {} : { reason }) };
+  }
+}
+const texts = (s: FakeSocket) => s.sent.filter((d): d is string => typeof d === "string").map((d) => JSON.parse(d) as Record<string, unknown>);
+const binaries = (s: FakeSocket) => s.sent.filter((d): d is Uint8Array => typeof d !== "string").map((d) => [...d]);
+
+function wired(over: Parameters<typeof setup>[0] = {}) {
+  const ctx = setup(over);
+  let captured: ((c: { url: URL }) => Handlers) | null = null;
+  registerStreamSocket({ http: { experimental_websocket: (_p: string, h: typeof captured) => void (captured = h) } } as never, { service: ctx.service });
+  const attach = async (handle: SessionHandle) => {
+    const socket = new FakeSocket();
+    const handlers = captured!({ url: new URL("ws://x/attach?attach=" + ctx.service.sessionAttach(handle)) });
+    await handlers.onOpen(socket);
+    return { socket, handlers };
+  };
+  return { ...ctx, attach };
+}
+
+describe("the attach socket of a graphical console", () => {
+  it("sends the console's header, then the one-time password as its own message, then the RFB bytes, in that order", async () => {
+    const { helper, service, attach } = wired();
+    const { handle } = await service.pveOpen(args("qemu"));
+    helper.event(handle.sessionId, { type: "vnc_password", password: SECRET_PW });
+    helper.data(handle.sessionId, 82, 70, 66);
+    const { socket } = await attach(handle);
+    const order = socket.sent.map((d) => (typeof d === "string" ? (JSON.parse(d) as { type: string }).type : "bytes"));
+    expect(order.slice(0, 3)).toEqual(["attached", "password", "bytes"]);
+    expect(texts(socket)[0]).toMatchObject({ type: "attached", console: { console: "qemu", node: "pve1", vmid: 101, state: "connecting" } });
+    expect(texts(socket)[1]).toEqual({ type: "password", value: SECRET_PW });
+    expect(binaries(socket)).toEqual([[82, 70, 66]]);
+    // the header never carries the password
+    expect(JSON.stringify(texts(socket)[0])).not.toContain(SECRET_PW);
+  });
+
+  it("forwards the view's raw bytes to the console and live console bytes to the view", async () => {
+    const { helper, service, attach } = wired();
+    const { handle } = await service.pveOpen(args("qemu"));
+    const { socket, handlers } = await attach(handle);
+    handlers.onMessage(socket, Uint8Array.of(9, 8, 7));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(helper.vncInputs).toEqual([{ sessionId: 1, bytes: [9, 8, 7] }]);
+    helper.data(handle.sessionId, 5, 6);
+    expect(binaries(socket)).toContainEqual([5, 6]);
+  });
+
+  it("a second view is told why and refused; a view after the first left too", async () => {
+    const { service, attach } = wired();
+    const { handle } = await service.pveOpen(args("qemu"));
+    const first = await attach(handle);
+    const second = await attach(handle);
+    expect(texts(second.socket).at(-1)).toMatchObject({ type: "error", code: "vnc_view_taken" });
+    expect(second.socket.closedWith?.code).toBe(4409);
+    first.handlers.onClose();
+    const third = await attach(handle);
+    expect(texts(third.socket).at(-1)).toMatchObject({ type: "error", code: "vnc_not_resumable" });
+  });
+
+  it("tells the view when the console ends, with our text, and closes the socket", async () => {
+    const { helper, service, attach } = wired();
+    const { handle } = await service.pveOpen(args("qemu"));
+    const { socket } = await attach(handle);
+    helper.ended(handle.sessionId, "remote_closed");
+    expect(texts(socket).at(-1)).toMatchObject({ type: "closed", reason: "remote_closed", text: "Proxmox closed the console." });
+    expect(socket.closedWith?.code).toBe(4000);
+  });
+
+  it("relays the console's state changes and failure reason to the view", async () => {
+    const { helper, service, attach } = wired();
+    const { handle } = await service.pveOpen(args("qemu"));
+    const { socket } = await attach(handle);
+    helper.event(handle.sessionId, { type: "state", state: "open" });
+    expect(texts(socket).filter((t) => t.type === "console").map((t) => t.state)).toEqual(["connecting", "active"]);
+  });
+
+  it("a closed console is answered with its end and nothing is attached", async () => {
+    const { helper, service, attach } = wired();
+    const { handle } = await service.pveOpen(args("qemu"));
+    helper.ended(handle.sessionId, "websocket_error");
+    const { socket } = await attach(handle);
+    expect(texts(socket)).toEqual([{ type: "closed", reason: "websocket_error", text: "The console connection broke (websocket error)." }]);
+    expect(socket.closedWith?.code).toBe(4000);
+  });
+
+  it("the view going away is not the console ending: it stays until the idle timeout closes it", async () => {
+    const { helper, service, attach } = wired({ idle: 1000 });
+    const { handle } = await service.pveOpen(args("qemu"));
+    const { handlers } = await attach(handle);
+    handlers.onClose();
+    expect(helper.closes).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1001);
+    expect(helper.closes).toEqual([1]);
+  });
+
+  it("rejects an invalid control message and takes a detach", async () => {
+    const { service, attach } = wired();
+    const { handle } = await service.pveOpen(args("qemu"));
+    const { socket, handlers } = await attach(handle);
+    handlers.onMessage(socket, "not json");
+    expect(texts(socket).at(-1)).toEqual({ type: "error", code: "bad_control" });
+    handlers.onMessage(socket, JSON.stringify({ type: "detach" }));
+    expect(socket.closedWith?.code).toBe(1000);
+  });
+});
+
+describe("the attach socket of a Proxmox terminal", () => {
+  it("is the ordinary terminal socket and also tells the view the console's state and reason", async () => {
+    const { helper, service, attach } = wired();
+    const { handle } = await service.pveOpen(args("lxc"));
+    const { socket } = await attach(handle);
+    helper.event(handle.sessionId, { type: "state", state: "open" });
+    helper.event(handle.sessionId, { type: "error", code: "websocket_error", message: "", fingerprint: null });
+    const consoles = texts(socket).filter((t) => t.type === "console");
+    expect(consoles.map((c) => c.state)).toEqual(["connecting", "active", "error"]);
+    expect(consoles.at(-1)).toMatchObject({ reason: { code: "websocket_error" } });
+    // it is the terminal path: a snapshot marker and a live marker come first
+    const kinds = texts(socket).map((t) => t.type);
+    expect(kinds.indexOf("snapshot")).toBeLessThan(kinds.indexOf("live"));
   });
 });
