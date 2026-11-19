@@ -185,10 +185,9 @@ function consoleRequestOf(protocol: string, p: { console?: "node" | "lxc" | "qem
     return undefined;
   }
   if (p.console === undefined) throw new ToolError("console_required", 'a Proxmox connection needs `console`: "node" with `node`, "lxc" or "qemu" with `vmid`');
-  if (p.console === "node") {
-    if (p.node === undefined || p.vmid !== undefined) throw new ToolError("invalid_target", "a node shell names its node and no vmid");
-    return { console: "node", node: p.node };
-  }
+  // A node shell is a shell on the hypervisor: PVE logs the console's user straight in (root@pam gets a root shell with no prompt)
+  // or shows a login prompt the owner answers by hand. Neither is for an agent, whoever asks and whatever the grant.
+  if (p.console === "node") throw new ToolError("node_shell_owner_only", "a shell on a Proxmox node is only for the owner: agents cannot open one, read one or type into one");
   if (p.vmid === undefined || p.node !== undefined) throw new ToolError("invalid_target", "a guest console names its vmid and no node (the node is looked up)");
   return { console: p.console, vmid: p.vmid };
 }
@@ -320,8 +319,8 @@ export function createControlTools(deps: AgentControlDeps): AgentToolDef[] {
       description:
         CANNOT +
         "Opens a saved connection the owner allowed at the input level or above, using its SAVED credential; connections without one are refused. There is no password, host or approval parameter. " +
-        "A Proxmox connection also needs `console`: \"node\" with `node` (a shell on that node), \"lxc\" with `vmid` (a container's terminal) or \"qemu\" with `vmid` (a virtual machine's graphics). The guest's node is looked up again; a stopped guest or a template is refused and is never started. " +
-        "Node and container consoles are terminals: read them with remote_terminal_read and type with remote_terminal_input. A virtual machine's graphics you can open, see the state of and disconnect, but you get NO screenshot and NO input for it in this version; the owner sees it. " +
+        "A Proxmox connection also needs `console`: \"lxc\" with `vmid` (a container's terminal) or \"qemu\" with `vmid` (a virtual machine's graphics). A shell on a Proxmox NODE is never available to agents (node_shell_owner_only). The guest's node is looked up again; a stopped guest or a template is refused and is never started. " +
+        "A container console is a terminal: read it with remote_terminal_read and type with remote_terminal_input. It is whatever the container's console is logged in as (not the Proxmox API user). Only a container console YOU opened here is available to you; one the owner opened by hand is not (the owner may have typed a password into it). A virtual machine's graphics you can open, see the state of and disconnect, but you get NO screenshot and NO input for it in this version; the owner sees it. " +
         "A new host key, a changed key or a certificate is decided by the owner on the Remote Hub page: the result then says waitingForOwner and the session stays connecting until the owner answers. " +
         `At most ${MAX_SESSIONS_PER_THREAD} open sessions per thread. ` +
         "On a desktop: no launching programs through Start/Run/Win+R unless the owner asked in this conversation; on a security/EDR block stop all input and report (see the skill).",

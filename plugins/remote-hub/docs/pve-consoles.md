@@ -231,11 +231,20 @@ guards it.
 
 ### Agents
 
-`remote_connect` takes `console`, `node` or `vmid`. Node and container terminals work with `remote_terminal_read` and `remote_terminal_input`,
-the control lease, the watching rule and the overlay with no special cases. For a QEMU guest an agent may open, see the state
-(`remote_sessions_list` → `proxmoxConsole`) and `remote_disconnect`; there is NO screenshot (`graphics_no_screenshot`), NO text
-(`graphics_not_readable`) and NO input (`graphics_no_input`) in this version, said in the tool descriptions, the skill and here. The three
-remote-desktop rules of the skill apply to these consoles.
+`remote_connect` takes `console` (`lxc` or `qemu`), and `vmid`.
+
+- **A shell on a node is never available to an agent.** `remote_connect` refuses it (`node_shell_owner_only`) and a node-shell session
+  is not in an agent's session list at all (no lease, no read, no input) whoever opened it. Reason: what a console can do is whatever
+  the console itself is logged in as, NOT the Proxmox API user. PVE's termproxy runs `login -f <user>`-style for the connection's
+  user, so a connection saved as `root@pam` ("connect as is") gives a root shell on the hypervisor with no prompt, and a shell the owner
+  logged into by hand at the prompt is the owner's. There is no per-connection opt-in in this version.
+- **A container console** is a terminal of whatever the container's console is logged in as (a getty login prompt or a left-over
+  shell). Only one the agent opened itself with `remote_connect` is available to agents (lease, watching rule, overlay, read and typed
+  input like SSH); one the owner opened by hand is hidden from agents, because the owner may have typed a password into it.
+- **A QEMU guest**: an agent may open, see the state (`remote_sessions_list` → `proxmoxConsole`) and `remote_disconnect`; there is NO
+  screenshot (`graphics_no_screenshot`), NO text (`graphics_not_readable`) and NO input (`graphics_no_input`) in this version.
+
+The three remote-desktop rules of the skill apply to these consoles.
 
 ### Helper changes of this stage
 

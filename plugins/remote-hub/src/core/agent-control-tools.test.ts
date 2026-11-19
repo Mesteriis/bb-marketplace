@@ -791,21 +791,32 @@ describe("Proxmox consoles through remote_connect", () => {
     t.access.set(P_SSH, "input", false);
     expect(t.textOf(await t.call("remote_connect", { connectionId: P_PVE }))).toContain("console_required");
     expect(t.textOf(await t.call("remote_connect", { connectionId: P_PVE, console: "lxc" }))).toContain("invalid_target");
-    expect(t.textOf(await t.call("remote_connect", { connectionId: P_PVE, console: "node", node: "pve1", vmid: 101 }))).toContain("invalid_target");
     expect(t.textOf(await t.call("remote_connect", { connectionId: P_PVE, console: "lxc", vmid: 101, node: "pve1" }))).toContain("invalid_target");
     expect(t.textOf(await t.call("remote_connect", { connectionId: P_SSH, console: "lxc", vmid: 101 }))).toContain("not_a_proxmox_connection");
     expect(t.opened).toEqual([]);
   });
 
-  it("opens a container terminal, a node shell and a VM's graphics under the same access model (input level, saved credential)", async () => {
+  it("opens a container terminal and a VM's graphics under the same access model (input level, saved credential)", async () => {
     const t = setup({ sessions: [] });
     t.access.set(P_PVE, "observe", false);
     expect(t.textOf(await t.call("remote_connect", { connectionId: P_PVE, console: "lxc", vmid: 101 }))).toContain("agent_access_denied");
     t.access.set(P_PVE, "input", false);
     expect(t.data(await t.call("remote_connect", { connectionId: P_PVE, console: "lxc", vmid: 101 })).sessionId).toBe(`${GEN}.10`);
-    await t.call("remote_connect", { connectionId: P_PVE, console: "node", node: "pve1" });
     await t.call("remote_connect", { connectionId: P_PVE, console: "qemu", vmid: 200 });
-    expect(t.consoles).toEqual([{ console: "lxc", vmid: 101 }, { console: "node", node: "pve1" }, { console: "qemu", vmid: 200 }]);
+    expect(t.consoles).toEqual([{ console: "lxc", vmid: 101 }, { console: "qemu", vmid: 200 }]);
+  });
+
+  it("a shell on a node is never opened for an agent: root@pam or a hand-typed login would make it a shell on the hypervisor", async () => {
+    const t = setup({ sessions: [] });
+    t.access.set(P_PVE, "input", false);
+    for (const input of [{ connectionId: P_PVE, console: "node" as const, node: "pve1" }, { connectionId: P_PVE, console: "node" as const }, { connectionId: P_PVE, console: "node" as const, node: "pve1", vmid: 101 }]) {
+      const text = t.textOf(await t.call("remote_connect", input));
+      expect(text).toContain("node_shell_owner_only");
+    }
+    expect(t.opened).toEqual([]);
+    expect(t.consoles).toEqual([]);
+    // a connection saved as root@pam gets no other way in
+    expect(t.tool("remote_connect").description).toContain("never available to agents (node_shell_owner_only)");
   });
 
   it("a refusal (stopped guest...) reaches the agent as our own fixed text", async () => {

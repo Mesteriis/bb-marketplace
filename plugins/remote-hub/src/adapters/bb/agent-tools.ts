@@ -11,12 +11,24 @@ function parseKey(key: string): { generation: string; sessionId: number } | null
   return m === null ? null : { generation: m[1] as string, sessionId: Number(m[2]) };
 }
 
-export function agentPorts(service: RemoteHubService, profiles: ProfileBook): AgentToolPorts {
+/**
+ * What an agent may see of a Proxmox console. A node shell never (a shell on the hypervisor: PVE logs the user in without a
+ * prompt, or the owner types a password at its prompt). A container console only if an agent opened it itself: one the owner
+ * opened by hand may have a password typed into it. Such sessions are not in the list at all, so every tool answers for them
+ * exactly as for a session that does not exist.
+ */
+export function agentMayUse(s: { kind: string; pve?: { console: string } | undefined }, openedByAgent: (key: string) => boolean, key: string): boolean {
+  if (s.kind !== "pve") return true;
+  if (s.pve?.console !== "lxc") return false;
+  return openedByAgent(key);
+}
+
+export function agentPorts(service: RemoteHubService, profiles: ProfileBook, openedByAgent: (key: string) => boolean = () => false): AgentToolPorts {
   return {
     profiles: { list: () => profiles.list(), get: (id) => profiles.get(id) },
     sessions: {
       list: () =>
-        service.sessionList().map(
+        service.sessionList().filter((s) => agentMayUse(s, openedByAgent, `${s.generation}.${s.sessionId}`)).map(
           (s): AgentSessionView => ({
             key: `${s.generation}.${s.sessionId}`,
             kind: s.kind,
