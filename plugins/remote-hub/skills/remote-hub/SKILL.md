@@ -55,6 +55,12 @@ Hub never starts one.
   (`proxmoxConsole`: `state` and a fixed `reason`), and `remote_disconnect` it. You get **no screenshot and no input** for it
   in this version (`graphics_not_readable`, `graphics_no_screenshot`, `graphics_no_input`): the owner looks at it on the
   Remote Hub page. If the guest has a linked SSH or RDP connection, use that, or ask the owner.
+- **`remote_reconnect`** reopens a console you opened after it ended (a lost connection, a restart of the guest). It is always a NEW
+  console and a NEW session id (use the returned `sessionId`; the old one is gone, and so is its lease: `remote_control_acquire`
+  again). Nothing you typed is sent again, and the old terminal text is not copied. It says `still_connected` while the console lives,
+  `reconnect_refused` after a login, certificate or second-factor refusal (tell the owner; never loop), and `reconnect_limit` after five
+  quick reopenings. `remote_sessions_list` / `remote_session_status` show `proxmoxConsole.state`, `reason`, `reasonCode` and
+  `reconnects`. A shell on a node and any power control stay unavailable.
 - The three remote-desktop rules below apply to every console you open here, graphical or not.
 - A container console nobody looks at (no live view, no lease of yours) is closed by Remote Hub after five minutes.
 

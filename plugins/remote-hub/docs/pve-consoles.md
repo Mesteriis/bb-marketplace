@@ -205,8 +205,9 @@ including a temporary keychain), unit tests beside each module, `src/core/pve-pr
   and no agent lease is closed by the service after **5 minutes** (`consoleIdleMs`, reason `idle_timeout`, shown as `disconnected`); a view
   attaching or an agent taking a lease stops the clock, and it starts again when the last one leaves. Only Proxmox consoles have this
   rule; SSH and RDP sessions are unchanged. An explicit **Disconnect** closes at once.
-- **Reconnect** opens a NEW console for the same target and closes the old one; it is offered only when the console is not connecting or
-  active. Automatic retries with backoff and an agent reconnect tool are not in this stage.
+- **Reconnect** opens a NEW console for the same target and closes the old one; it is offered when the console is lost, failed,
+  disconnected or restored (not connecting, active or waiting for an automatic attempt). For graphics the tab says so: "Reconnect opens
+  a NEW console; the screen you had is not restored". Automatic attempts and tab restore are in the stage 3 section below.
 - **Graphics have exactly one view, ever.** An RFB stream cannot be resumed, so the first view to attach owns it; a second view while the
   first is attached is refused (`vnc_view_taken`), and so is any view after the first left (`vnc_not_resumable`: disconnect and open it
   again). The page keeps the view mounted for as long as its tab exists. Bytes the console sends before its view attaches (the 12-byte
@@ -274,3 +275,65 @@ The three remote-desktop rules of the skill apply to these consoles.
 QEMU `vncproxy` with `websocket=1` and the raw relay (`engine.rs::run_vnc`); `pve.vnc_input` (base64) for the view's RFB bytes;
 `pve.vnc_password`; a binary stream frame addressed to a `pve` terminal session is routed to the PVE manager (a Proxmox terminal takes
 the human's keys on the same path as SSH), and to a `vnc` session it is refused (graphics take input only through `pve.vnc_input`).
+
+## 9. Stage 3: resilience and agent tools
+
+### Reconnecting a lost terminal console (node shell, container)
+
+- **When.** A terminal console that was lost without anyone's decision (`remote_closed`, `websocket_error`, `engine_exited`,
+  `helper_exited`, `protocol_error`, `upstream_stalled`, `unreachable`, `timeout`, `api_error`, `node_offline`) starts automatic attempts
+  (`src/core/pve-reconnect.ts`, `decideReconnect`). **Never** automatically after: the owner's Disconnect, `idle_timeout`, `view_closed`,
+  a login refusal (`login_failed`), a permission refusal (`no_permission`), a certificate refusal (`tls_untrusted`, `cert_changed`), a
+  second-factor account, a stopped guest (`guest_stopped`: shown, never started), a template or a vanished guest: the tab shows the reason.
+- **How many, how fast.** 5 attempts, waiting **1, 2, 4, 8 and 16 s** before them, each wait jittered by up to ±25 %. The header reads
+  `reconnecting (n of 5)`; after the fifth failure it is `error`, the reason is the last concrete one and the text starts "Gave up after
+  5 attempts". A connection that held for **10 s** (`STABLE_AFTER_MS`) after an attempt starts a fresh count at its next loss; a loss
+  sooner continues the same count, so a flapping console cannot loop.
+- **Each attempt is a whole new open:** a fresh login (a new engine process logs in once), the guest's node read again (see below), a new
+  console ticket and websocket. Nothing typed, run or pasted before the loss is replayed; the lost console is closed first.
+- **An expired ticket** is answered by exactly one new login and one repeat of the refused call inside the same open (engine
+  `relogin_once!`, tickets only, never tokens); a second refusal is `login_failed` after two logins in total and stops. The text for it
+  tells the owner to open the connection and enter the password again; nothing retries it.
+- **Scrollback.** The lost console's text stays on screen; a separator line "connection lost" is written where it broke, and the new
+  console's terminal starts with that text followed by "reconnected: a new console, nothing typed before is sent again". Only the last
+  2000 lines and plain text (colours are not kept).
+- **Input while not active** is refused: the terminal does not send it and the tab shows "Not connected: what you type is not sent, and is
+  not kept to be sent later". It is never queued.
+- **Graphics** are never reattached (RFB cannot resume); a lost graphical console shows the reason and Reconnect, which opens a NEW
+  console and says so.
+- **Location.** Every open and every reconnect re-reads the guest from Proxmox (`openConsole` always refreshes) and opens on the node the
+  guest is on now; the header shows `on <node>` from that read (`pve_console_open` returns `node`). A guest that moved between the list
+  and the open is therefore opened where it is. If it is not found, `guest_not_found`.
+
+### Restoring tabs
+
+The console tabs are remembered as **targets only** (connection id, kind, node, VMID, the guest's name) in the plugin's SQLite table
+`pve_console_tabs`, through `pve_console_tab_put` / `_remove` / `_tabs_list`. No output, no ticket, no password and no session id is
+stored. After a BB restart or a page reload every remembered tab comes back as **not connected** with a Reconnect button; it opens
+nothing by itself and never looks live. Close tab forgets it. Tabs whose connection was deleted stay until closed.
+
+### Orphans: what ends when
+
+| What ends | What is gone, and by when |
+| --- | --- |
+| A console is closed (Disconnect, Close tab, idle, view closed) | its engine process and its upstream websocket, within the engine's 2 s close grace; the helper kills an engine that ignores it after 3 s |
+| The helper is killed (SIGKILL, crash) | every engine sees its socketpair close and ends; their sockets close; within 5 s (tested) |
+| The service stops, or the plugin reloads (BB's process ends) | the helper's stdin reaches EOF, it terminates its engines and exits; within 5 s (tested) |
+| An engine is killed | the console ends as `engine_exited`; the helper carries on |
+
+`pve_process.rs` opens and closes 20 consoles (14 containers, 6 graphics) against the fake PVE and checks that no engine child process
+remains, the fake saw 20 sockets opened and 20 closed, and the helper holds the same number of descriptors as before the first.
+
+### Agents
+
+- **`remote_reconnect({ sessionId })`** reopens a Proxmox container or VM console this thread opened with `remote_connect` after it
+  ended. It is **always a new session id** (returned as `sessionId`; `previousSessionId` is the old one, which is forgotten; the lease
+  ended with it); for graphics too. The same checks as `remote_connect` (connect level, saved credential, four sessions per thread). It
+  is refused: while the console is still connected (`still_connected`); after `login_failed`, `tls_untrusted`, `cert_changed`,
+  `tfa_required` or `no_credential` (`reconnect_refused`; repeating them could lock an account); after 5 reopenings in a row that each
+  held for less than 10 s (`reconnect_limit`); for a node shell (`node_shell_owner_only`); for a console another thread opened
+  (`not_opened_by_you`).
+- **`remote_session_status`** (and the session list) of a console returns `proxmoxConsole`: `state`, `reason` (our fixed text),
+  `reasonCode`, and `reconnects` / `maxReconnects` (reopenings in a row by `remote_reconnect`). The owner's page reconnects owner-opened
+  tabs by itself; an agent's console does not reconnect on its own.
+- There is no generic Proxmox API tool and nothing for power control.
