@@ -151,6 +151,22 @@ describe("PluginAccessSection", () => {
     expect(within(block).queryByRole("button", { name: "Sign in to Google with this access" })).toBeNull();
   });
 
+  it("a plugin that asks only for a Google key: a refused Save offers the sign-in in the request itself", async () => {
+    const onGoogleGrant = vi.fn();
+    const { port: p } = port(
+      { plugins: [], requests: [{ pluginId: "calendar", rights: ["google.calendar"], reason: "", askedAt: at }] },
+      { setGrant: async () => ({ ok: false, message: "Sign this mailbox in to Google with this access first" }) },
+    );
+    render(<PluginAccessSection port={p} accounts={accounts} onGoogleGrant={onGoogleGrant} />);
+    const row = await screen.findByRole("listitem", { name: "calendar" });
+    fireEvent.click(within(row).getByRole("button", { name: "Allow\u2026" }));
+    fireEvent.click(within(row).getByRole("switch", { name: "Google Calendar key, first@example.com" }));
+    fireEvent.click(within(row).getByRole("button", { name: "Save" }));
+    expect((await within(row).findByRole("alert")).textContent).toBe("Sign this mailbox in to Google with this access first");
+    fireEvent.click(within(row).getByRole("button", { name: "Sign in to Google with this access" }));
+    expect(onGoogleGrant).toHaveBeenCalledWith("calendar", "google.calendar", "acc_1");
+  });
+
   it("a plugin id that looks like markup is shown as text", async () => {
     const id = "<img src=x onerror=1>";
     const { port: p } = port({ plugins: [{ ...crm, pluginId: id }], requests: [{ ...request, rights: ["mail.read"], pluginId: `${id}2` }] });

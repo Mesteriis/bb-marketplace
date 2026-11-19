@@ -168,7 +168,7 @@ an hour after the owner revokes the right.
 | `forbidden` | a method outside this API; a missing right: `Makosh Mail: this plugin has no "<right>" access` |
 | `not_found` | an unknown or unshared message, an unknown account |
 | `invalid` | input outside the limits, an unknown cursor, an unknown right, a bad address |
-| `conflict` | a daily limit |
+| `conflict` | a daily or hourly limit; Google gave no key now, or no longer accepts the sign-in |
 
 Treat `forbidden` with a right's name as "ask the owner", not as an error
 to retry.

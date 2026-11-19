@@ -2758,6 +2758,9 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
   // Slice 3k: OpenPGP keys in Mail settings.
   // Access of other plugins: requests wait in settings; a new one is announced once.
   const [pluginAccessTick, setPluginAccessTick] = useState(0);
+  /** The one Google sign-in started for a plugin key; a new click or leaving the page ends its wait. */
+  const googleGrantRun = useRef<AbortController | null>(null);
+  useEffect(() => () => googleGrantRun.current?.abort(), []);
   const [pluginRequests, setPluginRequests] = useState(0);
   const settingsPluginAccess = useMemo<PluginAccessPort>(() => {
     const save = async (work: () => Promise<unknown>): Promise<SaveResult> => {
@@ -2999,14 +3002,25 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
         waiting: pluginRequests,
         ...(googleSignInOffered
           ? {
-              onGoogleGrant: (_pluginId: string, right: PluginRight, accountId: string) => {
+              onGoogleGrant: (pluginId: string, right: PluginRight, accountId: string) => {
                 const account = status?.accounts.find((a) => a.id === accountId);
                 if (account === undefined || !isGoogleRight(right)) return;
-                // The mailbox signs in again with this service added; the owner then turns the key on.
-                void googleSignIn(account.email, new AbortController().signal, [GOOGLE_RIGHT_SCOPE[right]]).then((outcome) => {
-                  toast(outcome.ok ? tx("Signed in to Google. Turn the key on now.") : outcome.message || tx("Google sign-in did not finish."));
-                  setPluginAccessTick((n) => n + 1);
-                });
+                // The mailbox signs in again with this service added. The owner's click was for the key, so it is
+                // turned on right after; Mail refuses it when Google did not give the service (the owner unticked it).
+                googleGrantRun.current?.abort();
+                const run = new AbortController();
+                googleGrantRun.current = run;
+                void googleSignIn(account.email, run.signal, [GOOGLE_RIGHT_SCOPE[right]])
+                  .then(async (outcome) => {
+                    if (!outcome.ok) {
+                      if (outcome.message !== "") toast(outcome.message);
+                      return;
+                    }
+                    const granted = await settingsPluginAccess.setGrant(pluginId, right, accountId, true);
+                    toast(granted.ok ? tx("Signed in to Google; the key is on.") : tx("Google did not give this access, so the key stays off."));
+                  })
+                  .catch(() => toast(tx("Google sign-in did not finish.")))
+                  .finally(() => setPluginAccessTick((n) => n + 1));
               },
             }
           : {}),

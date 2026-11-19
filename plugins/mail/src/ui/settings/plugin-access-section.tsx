@@ -174,6 +174,22 @@ export function PluginAccessSection({
       </p>
     ) : null;
 
+  const signInOffer = (pluginId: string) =>
+    signIn !== null && signIn.pluginId === pluginId && onGoogleGrant !== undefined ? (
+      <div>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => {
+            onGoogleGrant(signIn.pluginId, signIn.right, signIn.accountId);
+            setSignIn(null);
+          }}
+        >
+          {tx("Sign in to Google with this access")}
+        </Button>
+      </div>
+    ) : null;
+
   return (
     <div className="flex flex-col gap-4">
       {note}
@@ -214,17 +230,22 @@ export function PluginAccessSection({
                         <Button
                           size="sm"
                           disabled={busy}
-                          onClick={() =>
+                          onClick={() => {
+                            setSignIn(null);
                             void run(request.pluginId, async () => {
                               for (const cell of allowing.cells) {
                                 const [right, accountId] = cell.split("\n") as [PluginRight, string];
                                 const saved = await port.setGrant(request.pluginId, right, accountId, true);
-                                if (!saved.ok) return saved;
+                                if (!saved.ok) {
+                                  // The mailbox's Google sign-in does not hold this service yet: offer the sign-in that asks for it.
+                                  if (isGoogleRight(right)) setSignIn({ pluginId: request.pluginId, right, accountId });
+                                  return saved;
+                                }
                               }
                               setAllowing(null);
                               return port.dismiss(request.pluginId);
-                            })
-                          }
+                            });
+                          }}
                         >
                           {tx("Save")}
                         </Button>
@@ -258,6 +279,7 @@ export function PluginAccessSection({
                       </Button>
                     </div>
                   )}
+                  {signInOffer(request.pluginId)}
                   {problemOf(request.pluginId)}
                 </li>
               );
@@ -293,20 +315,7 @@ export function PluginAccessSection({
                     });
                   }}
                 />
-                {signIn !== null && signIn.pluginId === plugin.pluginId && onGoogleGrant !== undefined ? (
-                  <div>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => {
-                        onGoogleGrant(signIn.pluginId, signIn.right, signIn.accountId);
-                        setSignIn(null);
-                      }}
-                    >
-                      {tx("Sign in to Google with this access")}
-                    </Button>
-                  </div>
-                ) : null}
+                {signInOffer(plugin.pluginId)}
                 {plugin.grants.some((grant) => isGoogleRight(grant.right)) ? (
                   <p className="text-xs text-muted-foreground">{tx("A key already handed out works for up to an hour after you revoke.")}</p>
                 ) : null}
