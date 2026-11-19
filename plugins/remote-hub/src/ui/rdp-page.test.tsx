@@ -332,7 +332,7 @@ describe("RdpPage: the form", () => {
     type("пользователь", "alice");
     fireEvent.click(screen.getByText("Подключить"));
     await flush();
-    expect(screen.getByTestId("rdp-state").textContent).toContain("error");
+    expect(screen.getByTestId("rdp-state").textContent).toContain("ошибка");
     expect(screen.getByRole("alert").textContent).toBe("не удалось запустить сессию RDP");
   });
 });
