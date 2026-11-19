@@ -196,6 +196,7 @@ export async function fetchRawGuarded(
       port: account.port,
       user: account.username,
       password: deps.vault.open(account.passwordSealed),
+      authKind: account.authKind,
     };
     const session = await deps.gateway.openFolder(config, ref.folder, { readOnly: true });
     try {

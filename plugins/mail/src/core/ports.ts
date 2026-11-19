@@ -41,6 +41,7 @@ import type {
   FileRow,
   KeptState,
   SearchCursor,
+  AuthKind,
 } from "./model.ts";
 import type { ServerCriteria } from "./server-search.ts";
 import type { AttachmentCandidate } from "./attachment-text.ts";
@@ -78,7 +79,10 @@ export interface ImapConfig {
   host: string;
   port: number;
   user: string;
+  /** The app password; for a Google account, its refresh token. */
   password: string;
+  /** Absent means "password". */
+  authKind?: AuthKind;
 }
 
 export type ImapTestResult =
@@ -252,7 +256,10 @@ export interface SmtpConfig {
   port: number;
   security: SmtpSecurity;
   username: string;
+  /** The app password; for a Google account, its refresh token. */
   password: string;
+  /** Absent means "password". */
+  authKind?: AuthKind;
 }
 
 /** What the server accepted. No response text: it is never kept or logged. */

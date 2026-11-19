@@ -774,6 +774,7 @@ export function imapConfigOf(account: StoredAccount, vault: SecretVault): ImapCo
     port: account.port,
     user: account.username,
     password: vault.open(account.passwordSealed),
+    authKind: account.authKind,
   };
 }
 

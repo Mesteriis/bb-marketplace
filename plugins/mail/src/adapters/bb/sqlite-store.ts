@@ -1021,6 +1021,13 @@ export const MIGRATIONS: string[] = [
     VALUES ('delete', old.seq, old.subject, old.from_name, old.from_address, old.body_text);
   END;
   `,
+  // 19: Google sign-in. An account says how it signs in; for 'google' the
+  // sealed credential is the grant's refresh token, and the scopes Google
+  // granted are kept space-separated.
+  `
+  ALTER TABLE accounts ADD COLUMN auth_kind TEXT NOT NULL DEFAULT 'password';
+  ALTER TABLE accounts ADD COLUMN granted_scopes TEXT NOT NULL DEFAULT '';
+  `,
 ];
 
 const HTML_CAP = 1_000_000;
@@ -1167,6 +1174,8 @@ type AccountRow = {
   last_sync_at: string | null;
   last_error: string | null;
   auth_failed: number;
+  auth_kind: string;
+  granted_scopes: string;
   smtp_host: string | null;
   smtp_port: number | null;
   smtp_security: SmtpSecurity | null;
@@ -1743,7 +1752,9 @@ function toAccount(row: AccountRow): StoredAccount {
     lastSyncAt: row.last_sync_at,
     lastError: row.last_error,
     authFailed: row.auth_failed === 1,
+    authKind: row.auth_kind === "google" ? "google" : "password",
     passwordSealed: row.password_sealed,
+    grantedScopes: row.granted_scopes === "" ? [] : row.granted_scopes.split(" "),
     smtp:
       row.smtp_host !== null && row.smtp_port !== null && row.smtp_security !== null
         ? {
@@ -3265,10 +3276,12 @@ export function createSqliteStore(db: Database.Database): MailStore {
       db.prepare(
         `INSERT INTO accounts (id, email, display_name, host, port, username, password_sealed,
            preset, created_at, last_sync_at, last_error, auth_failed,
-           smtp_host, smtp_port, smtp_security, smtp_username, sent_copy, signature_json, snooze_folder)
+           smtp_host, smtp_port, smtp_security, smtp_username, sent_copy, signature_json, snooze_folder,
+           auth_kind, granted_scopes)
          VALUES (@id, @email, @displayName, @host, @port, @username, @passwordSealed,
            @preset, @createdAt, @lastSyncAt, @lastError, @authFailed,
-           @smtpHost, @smtpPort, @smtpSecurity, @smtpUsername, @sentCopy, @signature, @snoozeFolder)
+           @smtpHost, @smtpPort, @smtpSecurity, @smtpUsername, @sentCopy, @signature, @snoozeFolder,
+           @authKind, @grantedScopes)
          ON CONFLICT(id) DO UPDATE SET email = excluded.email,
            display_name = excluded.display_name, host = excluded.host, port = excluded.port,
            username = excluded.username, password_sealed = excluded.password_sealed,
@@ -3277,7 +3290,8 @@ export function createSqliteStore(db: Database.Database): MailStore {
            auth_failed = excluded.auth_failed, smtp_host = excluded.smtp_host,
            smtp_port = excluded.smtp_port, smtp_security = excluded.smtp_security,
            smtp_username = excluded.smtp_username, sent_copy = excluded.sent_copy,
-           signature_json = excluded.signature_json, snooze_folder = excluded.snooze_folder`,
+           signature_json = excluded.signature_json, snooze_folder = excluded.snooze_folder,
+           auth_kind = excluded.auth_kind, granted_scopes = excluded.granted_scopes`,
       ).run({
         id: account.id,
         email: account.email,
@@ -3298,6 +3312,8 @@ export function createSqliteStore(db: Database.Database): MailStore {
         sentCopy: account.sentCopy,
         signature: account.signature === null ? null : JSON.stringify(account.signature),
         snoozeFolder: account.snoozeFolder,
+        authKind: account.authKind,
+        grantedScopes: account.grantedScopes.join(" "),
       });
     },
 

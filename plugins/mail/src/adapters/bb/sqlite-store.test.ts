@@ -707,6 +707,18 @@ function bytes(length: number, fill: number): Uint8Array {
   return new Uint8Array(length).fill(fill);
 }
 
+/**
+ * The account of makeStoredAccount() in a database that is not fully
+ * migrated: written as SQL, because the store's own saveAccount names the
+ * columns of the newest schema.
+ */
+function seedLegacyAccount(db: Database.Database): void {
+  db.prepare(
+    `INSERT INTO accounts (id, email, host, port, username, password_sealed, preset, created_at)
+     VALUES ('acc_1', 'owner@example.org', 'imap.example.org', 993, 'owner@example.org', 'sealed-password', 'other', '2026-01-01T00:00:00.000Z')`,
+  ).run();
+}
+
 describe("slice-2 migrations (SQLite)", () => {
   it("migrations append and backfill dedup keys of slice-1 rows", () => {
     const old = new Database(":memory:");
@@ -798,6 +810,30 @@ describe("slice-2 migrations (SQLite)", () => {
       // Element 18 (slice 3p: local archives).
       "484e585d5c158287c94e3370663b0c697d3fcdd065de9a9decbc1ca1e054e3a7",
     ]);
+  });
+
+  describe("credential kind (migration 19)", () => {
+    it("keeps an account's kind and granted scopes", () => {
+      const db = new Database(":memory:");
+      db.transaction(() => MIGRATIONS.forEach((statement) => db.exec(statement)))();
+      const s = createSqliteStore(db);
+      s.saveAccount(makeStoredAccount({ authKind: "google", grantedScopes: ["openid", "email"] }));
+      expect(s.getAccount("acc_1")).toMatchObject({ authKind: "google", grantedScopes: ["openid", "email"] });
+      s.saveAccount(makeStoredAccount({ id: "acc_2", email: "second@example.org" }));
+      expect(s.getAccount("acc_2")).toMatchObject({ authKind: "password", grantedScopes: [] });
+    });
+
+    it("an account from before the migration is a password account", () => {
+      const db = new Database(":memory:");
+      db.transaction(() => MIGRATIONS.slice(0, 19).forEach((statement) => db.exec(statement)))();
+      db.prepare(
+        `INSERT INTO accounts (id, email, host, port, username, password_sealed, preset, created_at)
+         VALUES ('acc_1', 'owner@example.org', 'imap.example.org', 993, 'owner', 'sealed', 'other', ?)`,
+      ).run("2026-01-01T00:00:00.000Z");
+      db.transaction(() => MIGRATIONS.slice(19).forEach((statement) => db.exec(statement)))();
+      expect(MIGRATIONS).toHaveLength(20);
+      expect(createSqliteStore(db).getAccount("acc_1")).toMatchObject({ authKind: "password", grantedScopes: [], passwordSealed: "sealed" });
+    });
   });
 
   describe("local archives (slice 3p)", () => {
@@ -3550,7 +3586,7 @@ describe("slice-3e migration (SQLite)", () => {
     const old = new Database(":memory:");
     old.transaction(() => MIGRATIONS.slice(0, 9).forEach((s) => old.exec(s)))();
     const legacy = createSqliteStore(old);
-    legacy.saveAccount(makeStoredAccount());
+    seedLegacyAccount(old);
     legacy.upsertMessages("acc_1", INBOX, [
       makeFetchedMessage(1, { unsubscribe: INFO }),
       makeFetchedMessage(2, { unsubscribe: { ...INFO, listKey: "news@example.com" } }),
@@ -3562,7 +3598,7 @@ describe("slice-3e migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(9).forEach((s) => old.exec(s)))();
 
-    expect(MIGRATIONS).toHaveLength(19);
+    expect(MIGRATIONS).toHaveLength(20);
     const migrated = createSqliteStore(old);
     expect(migrated.getUnsubscribeInfo(ids[0]!)).toEqual({ ...INFO, listKey: "id:weekly.example.com" });
     expect(migrated.getUnsubscribeInfo(ids[1]!)?.listKey).toBe("from:news@example.com");
@@ -4205,12 +4241,12 @@ describe("slice-3f migration (SQLite)", () => {
     const old = new Database(":memory:");
     old.transaction(() => MIGRATIONS.slice(0, 10).forEach((s) => old.exec(s)))();
     const legacy = createSqliteStore(old);
-    legacy.saveAccount(makeStoredAccount());
+    seedLegacyAccount(old);
     legacy.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1)]);
 
     old.transaction(() => MIGRATIONS.slice(10).forEach((s) => old.exec(s)))();
 
-    expect(MIGRATIONS).toHaveLength(19);
+    expect(MIGRATIONS).toHaveLength(20);
     const migrated = createSqliteStore(old);
     migrated.assignThreads("acc_1", new Map());
     expect(migrated.listThreads("acc_1", INBOX, null, 10).threads).toEqual([
@@ -4962,7 +4998,7 @@ describe("slice-3g migration (SQLite)", () => {
     const old = new Database(":memory:");
     old.transaction(() => MIGRATIONS.slice(0, 11).forEach((s) => old.exec(s)))();
     const legacy = createSqliteStore(old);
-    legacy.saveAccount(makeStoredAccount());
+    seedLegacyAccount(old);
     legacy.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1)]);
 
     old.transaction(() => MIGRATIONS.slice(11).forEach((s) => old.exec(s)))();
@@ -5000,7 +5036,7 @@ describe("slice-3g migration (SQLite)", () => {
     const old = new Database(":memory:");
     old.transaction(() => MIGRATIONS.slice(0, 12).forEach((s) => old.exec(s)))();
     const legacy = createSqliteStore(old);
-    legacy.saveAccount(makeStoredAccount());
+    seedLegacyAccount(old);
     legacy.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1)]);
     const messageId = idOf(legacy, 1);
     old.prepare(
@@ -5016,7 +5052,7 @@ describe("slice-3g migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(12).forEach((s) => old.exec(s)))();
 
-    expect(MIGRATIONS).toHaveLength(19);
+    expect(MIGRATIONS).toHaveLength(20);
     const runs = old.prepare("SELECT id, message_id, message_key, project_id FROM rule_runs ORDER BY id").all();
     expect(runs).toEqual([
       { id: "a1", message_id: messageId, message_key: expect.stringMatching(/^acc_1:/), project_id: "p_api" },
@@ -5579,7 +5615,7 @@ describe("slice-3h migration (SQLite)", () => {
     const old = new Database(":memory:");
     old.transaction(() => MIGRATIONS.slice(0, 13).forEach((s) => old.exec(s)))();
     const legacy = createSqliteStore(old);
-    legacy.saveAccount(makeStoredAccount());
+    seedLegacyAccount(old);
     const arms: [string, string | null, string][] = [
       ["application/pdf", "a.bin", "pdf"],
       ["application/octet-stream", "scan.PDF", "pdf"],
@@ -5601,7 +5637,7 @@ describe("slice-3h migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(13).forEach((s) => old.exec(s)))();
 
-    expect(MIGRATIONS).toHaveLength(19);
+    expect(MIGRATIONS).toHaveLength(20);
     const kinds = old.prepare("SELECT part_id, kind FROM attachments ORDER BY CAST(part_id AS INTEGER)").all() as {
       part_id: string;
       kind: string;
@@ -6266,12 +6302,12 @@ describe("slice-3i migration (SQLite)", () => {
     const old = new Database(":memory:");
     old.transaction(() => MIGRATIONS.slice(0, 14).forEach((statement) => old.exec(statement)))();
     const legacy = createSqliteStore(old);
-    legacy.saveAccount(makeStoredAccount());
+    seedLegacyAccount(old);
     legacy.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1)]);
 
     old.transaction(() => MIGRATIONS.slice(14).forEach((statement) => old.exec(statement)))();
 
-    expect(MIGRATIONS).toHaveLength(19);
+    expect(MIGRATIONS).toHaveLength(20);
     const columns = (old.prepare("PRAGMA table_info(messages)").all() as { name: string }[]).map((c) => c.name);
     expect(columns).toEqual(expect.arrayContaining(["sender_check_json", "receipt_requested", "crypto"]));
     expect(old.prepare("SELECT sender_check_json, receipt_requested, crypto FROM messages").all()).toEqual([

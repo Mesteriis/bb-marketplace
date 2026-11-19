@@ -51,6 +51,10 @@ const smtpUsernameInput = z.string().min(1).max(320).refine(noLineBreaks, {
 });
 
 /** A connected account as the UI sees it. Never carries a credential. */
+/** How an account signs in: an app password, or a Google grant (its refresh token is the sealed credential). */
+export const authKindSchema = z.enum(["password", "google"]);
+export type AuthKind = z.infer<typeof authKindSchema>;
+
 export const accountSchema = z.object({
   id: z.string(),
   email: z.string(),
@@ -64,6 +68,8 @@ export const accountSchema = z.object({
   lastSyncAt: z.string().nullable(),
   lastError: z.string().nullable(),
   authFailed: z.boolean(),
+  /** Absent means "password". */
+  authKind: authKindSchema.optional(),
   /** The account has an SMTP server, so it can send. */
   smtpConfigured: z.boolean(),
   /** The folder snoozed mail waits in (slice 3e), for Mail settings; null until there is one. */
@@ -403,8 +409,12 @@ export const statusViewSchema = z.object({
 export type StatusView = z.infer<typeof statusViewSchema>;
 
 /** An account as the store keeps it. Never leaves the server. */
-export type StoredAccount = Omit<Account, "smtpConfigured"> & {
+export type StoredAccount = Omit<Account, "smtpConfigured" | "authKind"> & {
+  authKind: AuthKind;
+  /** The sealed app password, or the sealed refresh token of a Google account. */
   passwordSealed: string;
+  /** The scopes Google granted; empty for a password account. */
+  grantedScopes: string[];
   smtp: StoredSmtp | null;
   sentCopy: SentCopyPolicy;
   /** The own address's signature (slice 3d); null = none. */

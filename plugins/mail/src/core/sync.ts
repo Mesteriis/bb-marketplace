@@ -238,7 +238,7 @@ export async function syncAccount(
   };
   try {
     password = vault.open(account.passwordSealed);
-    const config = { host: account.host, port: account.port, user: account.username, password };
+    const config = { host: account.host, port: account.port, user: account.username, password, authKind: account.authKind };
     // An Inbox-only round (IDLE) lists nothing: the stored listing stands.
     if (!inboxOnly) {
       saveListing(store, accountId, account.snoozeFolder, await gateway.listFolders(config), progress);

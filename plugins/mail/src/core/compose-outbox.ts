@@ -652,6 +652,7 @@ export function smtpConfigOf(account: StoredAccount, deps: Pick<ComposeDeps, "va
     security: account.smtp.security,
     username: account.smtp.username ?? account.username,
     password: deps.vault.open(account.passwordSealed),
+    authKind: account.authKind,
   };
 }
 

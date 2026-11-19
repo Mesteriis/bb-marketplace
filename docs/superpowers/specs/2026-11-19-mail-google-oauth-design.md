@@ -102,19 +102,20 @@ to replace the file with one's own.
 
 An account gets a credential kind: `password` (today) or `google`.
 
-- Store: a new column `auth_kind TEXT NOT NULL DEFAULT 'password'` by a
-  new migration. For `google`, `password_sealed` holds the sealed refresh
-  token; nothing else changes in the row. `Account` (public) gets
-  `authKind`, so the page can show the right actions.
-- A core port `AccessTokens` gives a valid access token for an account:
-  `tokenFor(accountId): Promise<string>`. The adapter keeps access tokens
-  in memory only, refreshes one when it has under five minutes left, and
-  runs one refresh at a time per account.
-- `ImapConfig` and `SmtpConfig` carry either `password` or `accessToken`.
-  The IMAP gateway passes `auth: { user, accessToken }` to imapflow; the
-  SMTP transport logs in with XOAUTH2. One function builds the config for
-  an account, so every caller of `imapConfigOf` / `smtpConfigOf` gets
-  tokens without changes of its own; it becomes async.
+- Store: migration element 19 adds `auth_kind TEXT NOT NULL DEFAULT
+  'password'` and `granted_scopes TEXT NOT NULL DEFAULT ''` to `accounts`.
+  For `google`, `password_sealed` holds the sealed refresh token; nothing
+  else changes in the row. `Account` (public) gets an optional `authKind`
+  (absent means `password`), so the page can show the right actions.
+- `ImapConfig` and `SmtpConfig` carry `authKind` next to `password`; for
+  `google`, `password` is the refresh token. Every place that builds a
+  config passes the account's kind and stays synchronous.
+- The adapters turn the refresh token into an access token when they
+  connect (`src/adapters/bb/google-tokens.ts`): access tokens live in
+  memory only, one is refreshed when it has under five minutes left, and
+  one refresh runs at a time per grant. The IMAP gateway passes `auth: {
+  user, accessToken }` to imapflow; the SMTP transport logs in with
+  XOAUTH2. There is no token port in the core.
 
 ### Sign-in
 

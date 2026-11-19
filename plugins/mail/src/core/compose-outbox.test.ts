@@ -336,6 +336,7 @@ describe("runOutboxOnce", () => {
       security: "tls",
       username: "owner@example.org",
       password: "invented-password",
+      authKind: "password",
     });
     expect(text(smtp.raw)).not.toContain("Bcc:");
     expect(smtp.raw).toEqual(h.store.outboxPayload(id) ?? smtp.raw);

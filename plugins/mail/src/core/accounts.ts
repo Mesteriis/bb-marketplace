@@ -130,9 +130,53 @@ export async function addAccount(deps: AccountDeps, input: NewAccountInput): Pro
     lastSyncAt: existing?.lastSyncAt ?? null,
     lastError: null,
     authFailed: false,
+    authKind: "password",
     passwordSealed: deps.vault.seal(input.password),
+    grantedScopes: [],
     smtp,
     sentCopy,
+    signature: existing?.signature ?? null,
+    snoozeFolder: existing?.snoozeFolder ?? null,
+  };
+  deps.store.saveAccount(stored);
+  return toPublicAccount(stored);
+}
+
+/**
+ * Saves a Gmail account that signs in with a Google grant: the refresh token
+ * is sealed where a password would be. The caller has already signed in with
+ * it, so nothing connects here. An account with the same address keeps its
+ * id, history and settings and becomes a Google account; its stop is cleared.
+ * An active alias of another account is refused, as in addAccount.
+ */
+export async function saveGoogleAccount(
+  deps: AccountDeps,
+  input: { email: string; refreshToken: string; scopes: string[] },
+): Promise<Account> {
+  const email = input.email.trim().toLowerCase();
+  const existing = deps.store.findAccountByEmail(email);
+  const aliasElsewhere = deps.store
+    .listIdentities(null)
+    .some((row) => row.state === "active" && row.accountId !== existing?.id && row.address.toLowerCase() === email);
+  if (aliasElsewhere) throw new Error(ADDRESS_IS_ALIAS);
+  const preset = PRESETS.gmail;
+  const stored: StoredAccount = {
+    id: existing?.id ?? deps.newId(),
+    email: existing?.email ?? email,
+    displayName: existing?.displayName ?? null,
+    preset: "gmail",
+    host: preset.host!,
+    port: preset.port,
+    username: email,
+    createdAt: existing?.createdAt ?? deps.clock.now().toISOString(),
+    lastSyncAt: existing?.lastSyncAt ?? null,
+    lastError: null,
+    authFailed: false,
+    authKind: "google",
+    passwordSealed: deps.vault.seal(input.refreshToken),
+    grantedScopes: [...input.scopes],
+    smtp: { host: preset.smtp!.host, port: preset.smtp!.port, security: preset.smtp!.security, username: null },
+    sentCopy: preset.smtp!.sentCopy,
     signature: existing?.signature ?? null,
     snoozeFolder: existing?.snoozeFolder ?? null,
   };
@@ -230,7 +274,7 @@ async function checkSmtp(
       return fail({ ok: false, reason: "The stored password cannot be read" });
     }
   }
-  const result = await verifySmtp(deps.transport, { ...settings, password });
+  const result = await verifySmtp(deps.transport, { ...settings, password, authKind: typed === null ? account.authKind : "password" });
   return result.ok ? { result, settings, typed } : fail(result);
 }
 
@@ -265,6 +309,7 @@ export function toPublicAccount(stored: StoredAccount): Account {
     lastSyncAt: stored.lastSyncAt,
     lastError: stored.lastError,
     authFailed: stored.authFailed,
+    authKind: stored.authKind,
     smtpConfigured: stored.smtp !== null,
     snoozeFolder: stored.snoozeFolder,
   };
