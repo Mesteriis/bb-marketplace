@@ -3613,10 +3613,79 @@ describe("sending polish: templates", () => {
       call(host, "template_save", { name: "Quoted", doc: { type: "doc", content: [{ type: "blockquote", content: [para("q")] }] } }),
     ).rejects.toThrow("Templates cannot hold quotes");
     const listed = (await call(host, "templates_list", {})) as { templates: { id: string; name: string; doc: unknown; updatedAt: string }[] };
-    expect(listed.templates).toEqual([{ id, name: "Invented renamed", doc: TEMPLATE_DOC, updatedAt: NOW.toISOString() }]);
+    expect(listed.templates).toEqual([
+      { id, name: "Invented renamed", doc: TEMPLATE_DOC, updatedAt: NOW.toISOString(), subject: null, to: [], cc: [], bcc: [], files: [] },
+    ]);
     expect(await call(host, "template_delete", { id })).toEqual({ ok: true });
     await expect(call(host, "template_delete", { id })).rejects.toThrow("Unknown template");
     expectNoLeak(host, [TEMPLATE_TEXT, TEMPLATE_NAME, "Invented renamed"]);
+  });
+});
+
+describe("typing speed: what a template carries", () => {
+  const sendFile = async (host: Host, templateId: string, fileName: string, bytes: Uint8Array) => {
+    const { uploadId } = (await call(host, "template_file_begin", { templateId, fileName, mimeType: "application/pdf", size: bytes.length })) as { uploadId: string };
+    await call(host, "compose_attachment_chunk", { uploadId, offset: 0, dataBase64: Buffer.from(bytes).toString("base64") });
+    return (await call(host, "template_file_finish", { uploadId, sha256: createHash("sha256").update(bytes).digest("hex") })) as { file: { id: string; name: string; size: number } };
+  };
+
+  it("saves and lists a subject and recipients; a save without them keeps them; bad ones are refused", async () => {
+    const host = await loadCompose();
+    const { id } = (await call(host, "template_save", {
+      name: TEMPLATE_NAME,
+      doc: TEMPLATE_DOC,
+      subject: " Invented subject ",
+      to: ["Ada <ada@example.com>"],
+      bcc: ["boss@example.org"],
+    })) as { id: string };
+    const list = async () => ((await call(host, "templates_list", {})) as { templates: Record<string, unknown>[] }).templates;
+    expect(await list()).toEqual([
+      { id, name: TEMPLATE_NAME, doc: TEMPLATE_DOC, updatedAt: NOW.toISOString(), subject: "Invented subject", to: ["Ada <ada@example.com>"], cc: [], bcc: ["boss@example.org"], files: [] },
+    ]);
+    await call(host, "template_save", { id, name: TEMPLATE_NAME, doc: TEMPLATE_DOC });
+    expect((await list())[0]).toMatchObject({ subject: "Invented subject", to: ["Ada <ada@example.com>"] });
+    await expect(call(host, "template_save", { id, name: TEMPLATE_NAME, doc: TEMPLATE_DOC, to: ["not an address"] })).rejects.toMatchObject({ code: "invalid" });
+    await call(host, "template_save", { id, name: TEMPLATE_NAME, doc: TEMPLATE_DOC, subject: "", to: [], cc: [], bcc: [] });
+    expect((await list())[0]).toMatchObject({ subject: null, to: [], bcc: [] });
+  });
+
+  it("keeps files with a template and attaches them to a draft, leaving out what does not fit", async () => {
+    const host = await loadCompose();
+    const { id } = (await call(host, "template_save", { name: TEMPLATE_NAME, doc: TEMPLATE_DOC })) as { id: string };
+    const small = new Uint8Array(1024).fill(1);
+    const one = await sendFile(host, id, "../price list.pdf", small);
+    expect(one.file).toMatchObject({ name: "price list.pdf", size: 1024 });
+    const big = new Uint8Array(400 * 1024).fill(2);
+    await sendFile(host, id, "big.pdf", big);
+    const listed = ((await call(host, "templates_list", {})) as { templates: { files: { name: string; size: number }[] }[] }).templates[0]!;
+    expect(listed.files.map((f) => [f.name, f.size])).toEqual([["price list.pdf", 1024], ["big.pdf", 400 * 1024]]);
+
+    const { draftId } = await savedDraft(host);
+    const applied = (await call(host, "template_apply", { draftId, templateId: id })) as { attached: { fileName: string; size: number }[]; leftOut: string[] };
+    expect(applied.attached.map((a) => [a.fileName, a.size])).toEqual([["price list.pdf", 1024], ["big.pdf", 400 * 1024]]);
+    expect(applied.leftOut).toEqual([]);
+
+    expect(await call(host, "template_file_remove", { templateId: id, fileId: one.file.id })).toEqual({ removed: true });
+    expect(await call(host, "template_file_remove", { templateId: id, fileId: one.file.id })).toEqual({ removed: false });
+    await expect(call(host, "template_file_begin", { templateId: "tpl_gone", fileName: "a.pdf", mimeType: "application/pdf", size: 1 })).rejects.toMatchObject({ code: "not_found" });
+    await expect(call(host, "template_apply", { draftId, templateId: "tpl_gone" })).rejects.toMatchObject({ code: "not_found" });
+    await expect(call(host, "template_file_begin", { templateId: id, fileName: "huge.pdf", mimeType: "application/pdf", size: 10 * 1024 * 1024 })).rejects.toMatchObject({
+      code: "invalid",
+      message: "Attachments are over the size limit",
+    });
+  });
+
+  it("another plugin can use none of it", async () => {
+    const host = await loadCompose();
+    const other = { experimental_caller: { kind: "plugin", pluginId: "other" } } as const;
+    for (const [method, input] of [
+      ["template_file_begin", { templateId: "t", fileName: "a.pdf", mimeType: "application/pdf", size: 1 }],
+      ["template_file_finish", { uploadId: "u", sha256: "a".repeat(64) }],
+      ["template_file_remove", { templateId: "t", fileId: "f" }],
+      ["template_apply", { draftId: "d", templateId: "t" }],
+    ] as const) {
+      await expect(host.harness.behavior.callRpc(method, input, other)).rejects.toMatchObject({ code: "forbidden" });
+    }
   });
 });
 

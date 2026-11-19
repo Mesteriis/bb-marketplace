@@ -2,6 +2,7 @@
 // schemas. server.ts wraps it with the SDK's defineRpcContract.
 import { TAB_NAME_MAX, TAB_QUERY_MAX } from "./inbox-tabs.ts";
 import { PHRASES_MAX } from "./phrases.ts";
+import { TEMPLATE_FILES_MAX_BYTES, TEMPLATE_RECIPIENTS_MAX } from "./snippets.ts";
 import { GOOGLE_EXTRA_SCOPES } from "./plugin-access.ts";
 import { pluginApiSchemas } from "./plugin-api.ts";
 import { z } from "zod";
@@ -537,6 +538,9 @@ const pluginSchemas = {
   },
 };
 
+const templateFileSchema = z.object({ id: z.string(), name: z.string(), mimeType: z.string(), size: z.number().int() });
+const templateRecipients = z.array(z.string().min(1).max(400).refine(noLineBreaks, NO_LINE_BREAKS)).max(TEMPLATE_RECIPIENTS_MAX);
+
 export const rpcSchemas = {
   ...pluginSchemas,
   status_get: {
@@ -1024,14 +1028,57 @@ export const rpcSchemas = {
     input: z.object({}),
     output: z.object({
       templates: z.array(
-        z.object({ id: z.string(), name: z.string(), doc: composeDocInputSchema, updatedAt: z.string() }),
+        z.object({
+          id: z.string(),
+          name: z.string(),
+          doc: composeDocInputSchema,
+          updatedAt: z.string(),
+          /** Typing speed: what the template fills beside the body. */
+          subject: z.string().nullable(),
+          to: z.array(z.string()),
+          cc: z.array(z.string()),
+          bcc: z.array(z.string()),
+          files: z.array(templateFileSchema),
+        }),
       ),
     }),
   },
   /** Insert (no id) or update; `conflict` on a duplicate name. */
   template_save: {
-    input: z.object({ id: idInput.optional(), name: templateNameInput, doc: composeDocInputSchema }),
+    input: z.object({
+      id: idInput.optional(),
+      name: templateNameInput,
+      doc: composeDocInputSchema,
+      /** Typing speed. None of the four named: an existing template keeps what it has. */
+      subject: z.string().max(400).refine(noLineBreaks, NO_LINE_BREAKS).optional(),
+      to: templateRecipients.optional(),
+      cc: templateRecipients.optional(),
+      bcc: templateRecipients.optional(),
+    }),
     output: z.object({ id: z.string() }),
+  },
+  /** A file to keep with a template; its bytes go through compose_attachment_chunk. */
+  template_file_begin: {
+    input: z.object({
+      templateId: idInput,
+      fileName: z.string().min(1).max(255).refine(noLineBreaks, NO_LINE_BREAKS),
+      mimeType: z.string().min(1).max(127).refine(noLineBreaks, NO_LINE_BREAKS),
+      size: z.number().int().min(1).max(TEMPLATE_FILES_MAX_BYTES),
+    }),
+    output: z.object({ uploadId: z.string() }),
+  },
+  template_file_finish: {
+    input: z.object({ uploadId: idInput, sha256: z.string().regex(/^[0-9a-f]{64}$/) }),
+    output: z.object({ file: templateFileSchema }),
+  },
+  template_file_remove: {
+    input: z.object({ templateId: idInput, fileId: idInput }),
+    output: z.object({ removed: z.boolean() }),
+  },
+  /** Attaches a template's files to a draft; `leftOut` names the ones the message has no room for. */
+  template_apply: {
+    input: z.object({ draftId: idInput, templateId: idInput }),
+    output: z.object({ attached: z.array(composeAttachmentSchema), leftOut: z.array(z.string()) }),
   },
   template_delete: {
     input: z.object({ id: idInput }),
@@ -1942,7 +1989,7 @@ export const PLUGIN_METHODS = Object.keys(pluginSchemas) as readonly (keyof type
 export const INBOX_TAB_METHODS = ["inbox_tabs_list", "inbox_tab_save", "inbox_tab_delete", "inbox_tab_move"] as const satisfies readonly (keyof typeof rpcSchemas)[];
 
 /** The owner's methods of the typing-speed project. */
-export const TYPING_METHODS = ["phrases_list"] as const satisfies readonly (keyof typeof rpcSchemas)[];
+export const TYPING_METHODS = ["phrases_list", "template_file_begin", "template_file_finish", "template_file_remove", "template_apply"] as const satisfies readonly (keyof typeof rpcSchemas)[];
 
 export const SETTINGS_METHODS = ["settings_get", "settings_set"] as const satisfies readonly (keyof typeof rpcSchemas)[];
 

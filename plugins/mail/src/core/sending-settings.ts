@@ -2,9 +2,13 @@
 // (the own address and its aliases), alias suggestions, templates, and the
 // advisory pre-send check of a saved draft. Only the owner's RPCs call these;
 // nothing here adds an identity on its own (suggestions only list).
+import { TEMPLATE_FILES_MAX, TEMPLATE_FILES_MAX_BYTES, normalizeExtras, type TemplateExtras } from "./snippets.ts";
+import type { TemplateFileInfo } from "./ports.ts";
 import { parseAddress } from "./compose-address.ts";
 import { normalizeSignature } from "./compose-signature.ts";
-import { ComposeError, accountIdentities, ownAddresses, requireAccount } from "./compose.ts";
+import { ComposeError, accountIdentities, addComposeAttachment, attachmentRoom, ownAddresses, requireAccount } from "./compose.ts";
+
+type ComposeAttachment = ReturnType<typeof addComposeAttachment>;
 import type { ComposeDoc } from "./compose-doc.ts";
 import {
   PROVIDER_DOMAINS,
@@ -174,21 +178,64 @@ export function identitySuggestions(store: MailStore, accountId: string): AliasS
   return aliasSuggestions(store.inboundAddressRows(account.id), known, dismissed, ownDomains, PROVIDER_DOMAINS[account.preset]);
 }
 
-export type TemplateView = { id: string; name: string; doc: ComposeDoc; updatedAt: string };
+export type TemplateView = TemplateExtras & { id: string; name: string; doc: ComposeDoc; updatedAt: string; files: TemplateFileInfo[] };
 
 export function listTemplateViews(store: MailStore): TemplateView[] {
-  return store.listTemplates().map((row) => ({ id: row.id, name: row.name, doc: row.doc, updatedAt: row.updatedAt }));
+  return store.listTemplates().map((row) => ({
+    id: row.id,
+    name: row.name,
+    doc: row.doc,
+    updatedAt: row.updatedAt,
+    subject: row.subject,
+    to: row.to,
+    cc: row.cc,
+    bcc: row.bcc,
+    files: row.files,
+  }));
+}
+
+/** How many more bytes a template's files may take; throws `not_found` for an unknown template and `conflict` at five files. */
+export function templateFileRoom(store: MailStore, templateId: string): number {
+  const template = store.listTemplates().find((row) => row.id === templateId);
+  if (template === undefined) throw new IdentityRefusal("not_found", UNKNOWN_TEMPLATE_TEXT);
+  if (template.files.length >= TEMPLATE_FILES_MAX) throw new IdentityRefusal("conflict", "A template holds at most 5 files");
+  return Math.max(0, TEMPLATE_FILES_MAX_BYTES - template.files.reduce((sum, file) => sum + file.size, 0));
+}
+
+/**
+ * Typing speed: attaches a template's files to a draft, each whole or not at
+ * all. A file with no room left in the message is named in `leftOut`.
+ */
+export function applyTemplate(store: MailStore, draftId: string, templateId: string): { attached: ComposeAttachment[]; leftOut: string[] } {
+  if (!store.listTemplates().some((row) => row.id === templateId)) throw new IdentityRefusal("not_found", UNKNOWN_TEMPLATE_TEXT);
+  const attached: ComposeAttachment[] = [];
+  const leftOut: string[] = [];
+  for (const file of store.templateFiles(templateId)) {
+    if (file.size > attachmentRoom(store, draftId)) {
+      leftOut.push(file.name);
+      continue;
+    }
+    attached.push(addComposeAttachment(store, draftId, { fileName: file.name, mimeType: file.mimeType, size: file.size, sha256: file.sha256, data: file.data }));
+  }
+  return { attached, leftOut };
 }
 
 export function saveTemplate(
   store: MailStore,
-  input: { id?: string | undefined; name: string; doc: unknown },
+  input: { id?: string | undefined; name: string; doc: unknown; subject?: unknown; to?: unknown; cc?: unknown; bcc?: unknown },
   newId: string,
   nowIso: string,
 ): { id: string } {
   const name = templateName(input.name);
   const doc = normalizeTemplate(input.doc);
-  const saved = store.saveTemplate({ id: input.id ?? null, name, nameKey: templateNameKey(name), doc }, newId, nowIso);
+  // A save that names none of them (an older page, an agent's tool) leaves the template's subject and recipients alone.
+  const named = input.subject !== undefined || input.to !== undefined || input.cc !== undefined || input.bcc !== undefined;
+  const extras = named ? normalizeExtras({ subject: input.subject, to: input.to, cc: input.cc, bcc: input.bcc }) : undefined;
+  const saved = store.saveTemplate(
+    { id: input.id ?? null, name, nameKey: templateNameKey(name), doc, ...(extras !== undefined ? { extras } : {}) },
+    newId,
+    nowIso,
+  );
   if ("conflict" in saved) throw new IdentityRefusal("conflict", TEMPLATE_NAME_TAKEN);
   return saved;
 }

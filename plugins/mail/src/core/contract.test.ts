@@ -1189,7 +1189,19 @@ describe("slice-3d contract", () => {
     ).toBe(true);
     expect(
       outputs("templates_list", {
-        templates: [{ id: "t_1", name: "Thanks", doc: DOC, updatedAt: "2026-11-15T10:00:00.000Z" }],
+        templates: [
+          {
+            id: "t_1",
+            name: "Thanks",
+            doc: DOC,
+            updatedAt: "2026-11-15T10:00:00.000Z",
+            subject: null,
+            to: ["ada@example.com"],
+            cc: [],
+            bcc: [],
+            files: [{ id: "f_1", name: "a.pdf", mimeType: "application/pdf", size: 3 }],
+          },
+        ],
       }),
     ).toBe(true);
     expect(outputs("template_save", { id: "t_1" })).toBe(true);

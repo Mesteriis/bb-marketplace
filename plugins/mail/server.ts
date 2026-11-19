@@ -124,6 +124,8 @@ import { buildPhrases } from "./src/core/phrases.ts";
 /** The owner's phrases come from this many of the newest sent messages, and are rebuilt this often at most. */
 const PHRASES_FROM_SENT = 2_000;
 const PHRASES_FRESH_MS = 10 * 60_000;
+/** The key of a template's upload in the upload book, where a draft's id goes for a draft. */
+const TEMPLATE_UPLOAD = "template:";
 import { createInboxTabsRpc } from "./src/adapters/bb/inbox-tabs-rpc.ts";
 import { GrantRevokedError } from "./src/core/ports.ts";
 import { guardHandlers } from "./src/adapters/bb/plugin-guard.ts";
@@ -141,6 +143,8 @@ import {
   addIdentity,
   checkDraft,
   deleteTemplate,
+  applyTemplate,
+  templateFileRoom,
   dismissIdentity,
   identitySuggestions,
   listIdentityViews,
@@ -3737,6 +3741,30 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       templates_list: owner("templates_list", () => ({ templates: listTemplateViews(store) })),
       template_save: owner("template_save", (input) => saveTemplate(store, input, `tpl_${randomUUID()}`, nowIso())),
       template_delete: owner("template_delete", ({ id }) => deleteTemplate(store, id)),
+      // Typing speed: a template's files. The bytes arrive through compose_attachment_chunk, by upload id.
+      template_file_begin: owner("template_file_begin", ({ templateId, fileName, mimeType, size }) => ({
+        uploadId: deps.uploads.begin(`${TEMPLATE_UPLOAD}${templateId}`, { fileName, mimeType, size }, templateFileRoom(store, templateId)),
+      })),
+      template_file_finish: owner("template_file_finish", ({ uploadId, sha256 }) => {
+        const upload = deps.uploads.finish(uploadId, sha256);
+        if (!upload.draftId.startsWith(TEMPLATE_UPLOAD)) throw new ComposeError("not_found");
+        const templateId = upload.draftId.slice(TEMPLATE_UPLOAD.length);
+        const file = {
+          id: `tfile_${randomUUID()}`,
+          name: sanitizeFileName(upload.fileName, "attachment"),
+          mimeType: safeContentType(upload.mimeType),
+          size: upload.size,
+        };
+        const added = store.addTemplateFile(templateId, { ...file, sha256: upload.sha256, data: upload.data }, nowIso());
+        if (added === "unknown") throw new ComposeError("not_found");
+        if (added === "full") throw new ComposeError("too_large");
+        return { file };
+      }),
+      template_file_remove: owner("template_file_remove", ({ templateId, fileId }) => ({ removed: store.removeTemplateFile(templateId, fileId) })),
+      template_apply: owner("template_apply", ({ draftId, templateId }) => {
+        ownerDraft(draftId);
+        return applyTemplate(store, draftId, templateId);
+      }),
       // Advisory only: the page sends anyway when this fails in any way.
       compose_check: owner("compose_check", async ({ draftId, baseRevision }) => {
         const draft = ownerDraft(draftId);
