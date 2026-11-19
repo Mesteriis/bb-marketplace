@@ -9,7 +9,9 @@ import { tx } from "../i18n/index.ts";
 import type { SettingsSectionId } from "./sections.ts";
 import { PgpSettings } from "../pgp-settings.tsx";
 import { PLUGIN_SETTINGS_HINT, type MailSettingsProps } from "./shared.ts";
+import { AccountsSection } from "./accounts-section.tsx";
 import { AddressesSection } from "./addresses-section.tsx";
+import { LocalDataSection } from "./local-data-section.tsx";
 import { AiFeaturesSection } from "./ai-features-section.tsx";
 import { InboxSection } from "./inbox-section.tsx";
 import { SearchSection } from "./reading-section.tsx";
@@ -72,6 +74,16 @@ export function SettingsBody(props: MailSettingsProps & { section: SettingsSecti
   if (section === "templates") {
     return <TemplatesSection templates={props.templates} onSave={props.onSaveTemplate} onDelete={props.onDeleteTemplate} />;
   }
-  // "accounts" and "local" get their sections in a later step of the plan.
-  return <p className="text-sm text-muted-foreground">{tx("This section is being set up.")}</p>;
+  if (section === "local") return <LocalDataSection vaultReady={props.vaultReady !== false} onCopy={props.onCopy} />;
+  return (
+    <AccountsSection
+      accounts={accounts}
+      settings={props.settings}
+      onAddAccount={props.onAddAccount}
+      onReplacePassword={props.onReplacePassword}
+      onGoogleSwitch={props.onGoogleSwitch}
+      onOpenSmtp={props.onOpenSmtp}
+      onCopy={props.onCopy}
+    />
+  );
 }

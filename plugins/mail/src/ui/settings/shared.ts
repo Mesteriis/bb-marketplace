@@ -1,3 +1,4 @@
+import type { PageSettingsPort } from "./setting-controls.tsx";
 import type { Account, BlockRuleView, CategoryRuleView, IdentityView } from "../../core/model.ts";
 import { type AiAccessSettingsProps } from "../ai-access-settings.tsx";
 import { type AgentActivityProps } from "../agent-activity.tsx";
@@ -105,6 +106,14 @@ export interface MailSettingsProps {
   onSaveTemplate: (input: { id?: string; name: string; doc: EditorDoc }) => Promise<void>;
   onDeleteTemplate: (id: string) => Promise<void>;
   onOpenSmtp: (accountId: string) => void;
+  /** The plugin's settings for the rows that save on change; absent: those rows are not shown. */
+  settings?: PageSettingsPort;
+  /** False while the credential key is not set. */
+  vaultReady?: boolean;
+  onAddAccount?: () => void;
+  /** Opens the account form to type a new app password. */
+  onReplacePassword?: (account: Account) => void;
+  onCopy?: (text: string) => void;
   /** Switches a Gmail account that uses an app password to Google sign-in; absent: not offered. */
   onGoogleSwitch?: (account: Account) => void;
   /** Blocked senders (slice 3e); null while they load. Absent: no Inbox tab. */

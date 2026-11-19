@@ -15,9 +15,12 @@ const plugin = join(here, "..", "..", "..");
 function pageTexts(): Map<string, string> {
   const files = [
     join(plugin, "app.tsx"),
-    ...readdirSync(join(plugin, "src/ui"))
-      .filter((name) => /\.tsx?$/.test(name) && !/\.test\./.test(name))
-      .map((name) => join(plugin, "src/ui", name)),
+    // The pages, and the settings page's own folder.
+    ...["src/ui", "src/ui/settings"].flatMap((folder) =>
+      readdirSync(join(plugin, folder))
+        .filter((name) => /\.tsx?$/.test(name) && !/\.test\./.test(name))
+        .map((name) => join(plugin, folder, name)),
+    ),
   ];
   const texts = new Map<string, string>();
   for (const file of files) {

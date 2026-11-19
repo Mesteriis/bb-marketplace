@@ -126,6 +126,8 @@ import {
 import { TranslationSettings } from "./src/ui/translation-settings.tsx";
 import { type SettingsAiPorts, type SettingsSection, type TemplateView } from "./src/ui/settings/shared.ts";
 import { SettingsPage } from "./src/ui/settings/settings-page.tsx";
+import type { PageSettingsPort, SaveResult } from "./src/ui/settings/setting-controls.tsx";
+import type { PageSettings } from "./src/core/page-settings.ts";
 import type { LanguageTag } from "./src/core/translate.ts";
 import { filterActive, formatUntil, subjectOrPlaceholder, type ListFilter } from "./src/ui/thread-list.tsx";
 import {
@@ -2686,14 +2688,36 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     },
     [navigate],
   );
-  // The page's lists load when it opens, by a click or by its address.
+  // The page's lists and settings load when it opens, by a click or by its address.
   const settingsShown = settingsSection !== null;
+  const [pageSettings, setPageSettings] = useState<PageSettings | null>(null);
   useEffect(() => {
     if (!settingsShown) return;
     void loadIdentities();
     void loadTemplates();
     void loadBlockRules();
-  }, [settingsShown, loadBlockRules, loadIdentities, loadTemplates]);
+    rpc.call("settings_get", {}).then(setPageSettings, () => undefined);
+  }, [settingsShown, loadBlockRules, loadIdentities, loadTemplates, rpc]);
+  /** Writes of the settings page go one after another, in the order they were made. */
+  const settingsWrites = useRef<Promise<unknown>>(Promise.resolve());
+  const pageSettingsPort = useMemo<PageSettingsPort>(
+    () => ({
+      values: pageSettings,
+      save: (patch) => {
+        const write = settingsWrites.current.then(async (): Promise<SaveResult> => {
+          try {
+            setPageSettings(await rpc.call("settings_set", patch));
+            return { ok: true };
+          } catch (error) {
+            return { ok: false, message: messageOf(error) };
+          }
+        });
+        settingsWrites.current = write;
+        return write;
+      },
+    }),
+    [pageSettings, rpc],
+  );
   /** Mail settings' Change… for an account's snooze folder. */
   const [settingsFolder, setSettingsFolder] = useState<SnoozeFolderRequest | null>(null);
   const settingsFolders = useAccountFolders(settingsFolder?.accountId ?? null);
@@ -2856,6 +2880,13 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       section={settingsSection}
       onSection={(section) => navigate.toPluginPanel("mail", { subPath: settingsSubPath(section) })}
       onBack={() => navigate.toPluginPanel("mail", { subPath: viewSubPath(latest.current.view) })}
+      settings={pageSettingsPort}
+      vaultReady={status?.vaultReady !== false}
+      onAddAccount={() => setAccountForm({})}
+      onReplacePassword={(account) =>
+        setAccountForm({ initial: { preset: account.preset, email: account.email, host: account.host, port: account.port } })
+      }
+      onCopy={(text) => void copy(text)}
       accounts={accounts}
       identities={identities}
       templates={templates}

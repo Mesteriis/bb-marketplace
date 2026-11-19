@@ -95,17 +95,6 @@ export function AddressesSection(
         ) : (
           <span className="truncate text-sm font-medium text-foreground">{accountLabel(account)}</span>
         )}
-        <span className="flex-1" />
-        {account.authKind === "google" ? (
-          <span className="text-xs text-muted-foreground">{tx("Signed in with Google")}</span>
-        ) : account.preset === "gmail" && props.onGoogleSwitch !== undefined ? (
-          <Button variant="link" size="sm" className="h-7 px-1" onClick={() => props.onGoogleSwitch?.(account)}>
-            {tx("Switch to Google sign-in")}
-          </Button>
-        ) : null}
-        <Button variant="link" size="sm" className="h-7 px-1" onClick={() => props.onOpenSmtp(account.id)}>
-          {tx("SMTP settings\u2026")}
-        </Button>
       </div>
 
       <ul aria-label={tx("Sending addresses")} className="flex flex-col divide-y divide-border rounded-md border border-border">

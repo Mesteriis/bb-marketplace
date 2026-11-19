@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { installTestPluginRuntime } from "@get-bb/plugin-sdk/testing/app";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Account, IdentityView } from "../../core/model.ts";
+import { PAGE_SETTING_DEFAULTS } from "../../core/page-settings.ts";
 import { useState } from "react";
 import { sendCheckText, type MailSettingsProps, type TemplateView } from "./shared.ts";
 import { SettingsPage } from "./settings-page.tsx";
@@ -83,24 +84,104 @@ function mount({ section = "addresses", ...overrides }: Partial<MailSettingsProp
 
 const rows = () => within(screen.getByRole("list", { name: "Sending addresses" })).getAllByRole("listitem");
 
-describe("MailSettings: Google sign-in of an account", () => {
-  it("offers the switch to a Gmail account that uses an app password", () => {
-    const onGoogleSwitch = vi.fn();
-    mount({ accounts: [{ ...account, preset: "gmail" }], onGoogleSwitch });
-    fireEvent.click(screen.getByRole("button", { name: "Switch to Google sign-in" }));
-    expect(onGoogleSwitch).toHaveBeenCalledWith(expect.objectContaining({ id: account.id, preset: "gmail" }));
+describe("Mailboxes and sign-in", () => {
+  const gmail = { ...account, preset: "gmail" as const };
+  const box = () => within(screen.getByRole("list", { name: "Mailboxes" })).getByRole("listitem");
+
+  it("shows each mailbox with its provider and how it signs in", () => {
+    mount({ section: "accounts", accounts: [gmail] });
+    expect(box().textContent).toContain("owner@example.org");
+    expect(box().textContent).toContain("Gmail · App password");
+    cleanup();
+    mount({ section: "accounts", accounts: [{ ...gmail, authKind: "google" }] });
+    expect(box().textContent).toContain("Gmail · Signed in with Google");
   });
 
-  it("says a Google account is signed in with Google, and offers nothing elsewhere", () => {
-    mount({ accounts: [{ ...account, preset: "gmail", authKind: "google" }], onGoogleSwitch: vi.fn() });
-    expect(screen.getByText("Signed in with Google")).toBeTruthy();
+  it("a password account can replace its password; a Gmail one can switch to Google when that is offered", () => {
+    const onGoogleSwitch = vi.fn();
+    const onReplacePassword = vi.fn();
+    mount({ section: "accounts", accounts: [gmail], onGoogleSwitch, onReplacePassword });
+    fireEvent.click(within(box()).getByRole("button", { name: "Replace app password" }));
+    expect(onReplacePassword).toHaveBeenCalledWith(expect.objectContaining({ id: account.id }));
+    fireEvent.click(within(box()).getByRole("button", { name: "Switch to Google sign-in" }));
+    expect(onGoogleSwitch).toHaveBeenCalledWith(expect.objectContaining({ id: account.id, preset: "gmail" }));
+    cleanup();
+    mount({ section: "accounts", accounts: [gmail], onReplacePassword });
     expect(screen.queryByRole("button", { name: "Switch to Google sign-in" })).toBeNull();
     cleanup();
-    mount({ accounts: [{ ...account, preset: "icloud" }], onGoogleSwitch: vi.fn() });
+    mount({ section: "accounts", accounts: [{ ...account, preset: "icloud" }], onGoogleSwitch, onReplacePassword });
     expect(screen.queryByRole("button", { name: "Switch to Google sign-in" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Replace app password" })).toBeTruthy();
+  });
+
+  it("a Google account offers no password, and a new sign-in only when it is stopped", () => {
+    const onGoogleSwitch = vi.fn();
+    mount({ section: "accounts", accounts: [{ ...gmail, authKind: "google" }], onGoogleSwitch, onReplacePassword: vi.fn() });
+    expect(screen.queryByRole("button", { name: "Replace app password" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Sign in to Google" })).toBeNull();
     cleanup();
-    mount({ accounts: [{ ...account, preset: "gmail" }] });
-    expect(screen.queryByRole("button", { name: "Switch to Google sign-in" })).toBeNull();
+    mount({
+      section: "accounts",
+      accounts: [{ ...gmail, authKind: "google", authFailed: true, lastError: "Google sign-in expired" }],
+      onGoogleSwitch,
+    });
+    expect(within(box()).getByRole("alert").textContent).toBe("Google no longer accepts this sign-in. Sign in to Google again.");
+    fireEvent.click(within(box()).getByRole("button", { name: "Sign in to Google" }));
+    expect(onGoogleSwitch).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens SMTP settings and Add an account, and gives the remove command to copy", () => {
+    const onAddAccount = vi.fn();
+    const onCopy = vi.fn();
+    const props = mount({ section: "accounts", onAddAccount, onCopy });
+    fireEvent.click(within(box()).getByRole("button", { name: "SMTP settings…" }));
+    expect(props.onOpenSmtp).toHaveBeenCalledWith("acc-1");
+    fireEvent.click(screen.getByRole("button", { name: "Add an account" }));
+    expect(onAddAccount).toHaveBeenCalledTimes(1);
+    expect(box().textContent).toContain("bb makosh-mail remove acc-1");
+    fireEvent.click(within(box()).getByRole("button", { name: "Copy the command that removes owner@example.org" }));
+    expect(onCopy).toHaveBeenCalledWith("bb makosh-mail remove acc-1");
+  });
+
+  it("without accounts says so and still offers Add an account", () => {
+    const onAddAccount = vi.fn();
+    mount({ section: "accounts", accounts: [], onAddAccount });
+    expect(screen.getByText("No mail account yet.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Add an account" })).toBeTruthy();
+  });
+
+  it("sync settings save through the page's settings", async () => {
+    const save = vi.fn(async () => ({ ok: true as const }));
+    mount({ section: "accounts", settings: { values: PAGE_SETTING_DEFAULTS, save } });
+    expect((screen.getByLabelText("Check for mail every") as HTMLInputElement).value).toBe("5");
+    expect((screen.getByLabelText("Keep in sync the last") as HTMLInputElement).value).toBe("30");
+    fireEvent.click(screen.getByRole("switch", { name: "Instant new mail" }));
+    expect(save).toHaveBeenCalledWith({ instantMail: false });
+    cleanup();
+    mount({ section: "accounts" });
+    expect(screen.queryByLabelText("Check for mail every")).toBeNull();
+  });
+});
+
+describe("Local data", () => {
+  it("says where mail is kept, that the key is set, and gives the commands to copy", () => {
+    const onCopy = vi.fn();
+    mount({ section: "local", vaultReady: true, onCopy });
+    expect(screen.getByText(/stay on the computer that runs BB/)).toBeTruthy();
+    expect(screen.getByText(/The credential key is set/)).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
+    const commands = within(screen.getByRole("list", { name: "Terminal commands" })).getAllByRole("listitem");
+    expect(commands.map((item) => item.querySelector("code")!.textContent)).toEqual([
+      "bb makosh-mail doctor",
+      "bb makosh-mail backup /absolute/path/mail-backup.db",
+    ]);
+    fireEvent.click(screen.getByRole("button", { name: "Copy bb makosh-mail doctor" }));
+    expect(onCopy).toHaveBeenCalledWith("bb makosh-mail doctor");
+  });
+
+  it("says when the credential key is missing", () => {
+    mount({ section: "local", vaultReady: false });
+    expect(screen.getByRole("alert").textContent).toContain("The credential key is not set");
   });
 });
 
@@ -218,10 +299,10 @@ describe("MailSettings: sending addresses", () => {
     expect(props.onAdd).not.toHaveBeenCalled();
   });
 
-  it("links to the account's SMTP dialog", () => {
-    const props = mount();
-    fireEvent.click(screen.getByRole("button", { name: "SMTP settings…" }));
-    expect(props.onOpenSmtp).toHaveBeenCalledWith("acc-1");
+  it("has no sign-in or SMTP links: they live in Mailboxes and sign-in", () => {
+    mount();
+    expect(screen.queryByRole("button", { name: "SMTP settings…" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Switch to Google sign-in" })).toBeNull();
   });
 });
 

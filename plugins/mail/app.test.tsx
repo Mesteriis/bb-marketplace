@@ -3711,7 +3711,7 @@ describe("Mail settings (slice 3d)", () => {
   });
 
   it("SMTP settings… opens the account's SMTP dialog over the page", async () => {
-    const slot = render(settingsRpc(), "settings/addresses");
+    const slot = render(settingsRpc(), "settings/accounts");
     const dialog = await slot.findByRole("region", { name: "Mail settings" });
     fireEvent.click(await within(dialog).findByRole("button", { name: "SMTP settings…" }));
     expect(await slot.findByRole("dialog", { name: /SMTP/ })).toBeTruthy();
