@@ -9,8 +9,13 @@
     "pluginSdkVersion": "0.6.157"
   },
   "runtimeSlots": [
+    "classVarianceAuthority",
+    "clsx",
     "jsxRuntime",
     "pluginSdkApp",
-    "react"
+    "radixDropdownMenu",
+    "react",
+    "reactDom",
+    "tailwindMerge"
   ]
 }
