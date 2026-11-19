@@ -12,7 +12,7 @@ import { subjectOrPlaceholder } from "./thread-list.tsx";
 import { dateLocale, msg, tx } from "./i18n/index.ts";
 
 export const LOG_PAGE = 50;
-export const TERMINAL_NOT_LOGGED = "Commands in your own terminal are not logged.";
+export const TERMINAL_NOT_LOGGED = msg("Commands in your own terminal are not logged.");
 export const MESSAGE_GONE = "no longer in Makosh Mail";
 const ALL_THREADS = "all";
 
@@ -150,7 +150,7 @@ export function AgentActivity({ load, clear, onOpen }: AgentActivityProps) {
   return (
     <div className="flex flex-col gap-3">
       <p className="text-sm text-muted-foreground">
-        {tx("What agents and AI features did with your mail, kept on this computer for 90 days. The log keeps ids and counts, never a query, subject or text.")} {TERMINAL_NOT_LOGGED}
+        {tx("What agents and AI features did with your mail, kept on this computer for 90 days. The log keeps ids and counts, never a query, subject or text.")} {tx(TERMINAL_NOT_LOGGED)}
       </p>
       <div className="flex flex-wrap items-center gap-2">
         <Select value={thread} onValueChange={setThread}>

@@ -16,8 +16,8 @@ import { msg, tx } from "./i18n/index.ts";
 type Mode = AiScopeView["accounts"][number]["mode"];
 type Sender = AiScopeView["senders"][number];
 
-export const SPAM_TRASH_LINE = "Spam and Trash are never shared, whatever you choose here.";
-export const GMAIL_SCOPE_NOTE = "Gmail: a message is shared when any of its labels or All Mail is chosen.";
+export const SPAM_TRASH_LINE = msg("Spam and Trash are never shared, whatever you choose here.");
+export const GMAIL_SCOPE_NOTE = msg("Gmail: a message is shared when any of its labels or All Mail is chosen.");
 export const AI_SCOPE_SENDERS_MAX = 1_000;
 
 const MODES: readonly { value: Mode; label: string }[] = [
@@ -182,7 +182,7 @@ export function AiAccessSettings({ accounts, load, save, folders }: AiAccessSett
       <p className="text-sm text-muted-foreground">
         {tx("What agents in BB threads and the AI features (summaries, Ask, tasks, categories, Today, Improve, translation) may read. Mail outside it does not exist for them.")}
       </p>
-      <p className="text-xs text-muted-foreground">{SPAM_TRASH_LINE}</p>
+      <p className="text-xs text-muted-foreground">{tx(SPAM_TRASH_LINE)}</p>
       {accounts.map((account) => {
         const draft = drafts.find((d) => d.accountId === account.id);
         if (draft === undefined) return null;
@@ -206,7 +206,7 @@ export function AiAccessSettings({ accounts, load, save, folders }: AiAccessSett
             {draft.mode === "folders" ? (
               <FolderPicker draft={draft} folders={folders} onChange={(chosen) => patch(account.id, { chosen, stale: draft.stale.filter((p) => chosen.includes(p)) })} />
             ) : null}
-            {account.preset === "gmail" ? <p className="text-xs text-muted-foreground">{GMAIL_SCOPE_NOTE}</p> : null}
+            {account.preset === "gmail" ? <p className="text-xs text-muted-foreground">{tx(GMAIL_SCOPE_NOTE)}</p> : null}
           </section>
         );
       })}
