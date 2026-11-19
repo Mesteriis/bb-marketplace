@@ -3200,6 +3200,59 @@ describe("bulk mark (SQLite)", () => {
   });
 });
 
+describe.each(storeKinds)("operators for Inbox tabs (%s)", (_kind, make) => {
+  let s: MailStore;
+  let uid = 0;
+  const put = (folder: string, overrides: Parameters<typeof makeFetchedMessage>[1]) => {
+    uid++;
+    s.upsertMessages("acc_1", folder, [
+      makeFetchedMessage(uid, { messageId: `tab-${uid}@example.org`, bulkHeaders: PERSONAL_HEADERS, to: [{ name: null, address: "owner@example.org" }], ...overrides }),
+    ]);
+  };
+  const from = (address: string, overrides: Parameters<typeof makeFetchedMessage>[1] = {}) =>
+    put(INBOX, { from: { name: null, address }, subject: address, ...overrides });
+  const found = (query: string) => s.search(parseQuery(query), null, 50).map((hit) => hit.from.address).sort();
+
+  beforeEach(() => {
+    uid = 0;
+    s = make();
+    s.saveAccount(makeStoredAccount());
+    s.saveFolders("acc_1", [remoteFolder(INBOX, "inbox"), remoteFolder(SENT, "sent")]);
+    from("boss@vip.example.com");
+    from("anna@partner.example.net");
+    from("colleague@example.org");
+    from("friend@gmail.com");
+    from("noreply@shop.example.net");
+    from("planner@events.example.net", { attachments: [{ partId: "2", filename: "invite.ics", mimeType: "text/calendar", size: 10, isInline: false }] });
+    put(SENT, { from: { name: null, address: "owner@example.org" }, to: [{ name: null, address: "Friend@Gmail.com" }], subject: "sent" });
+    s.setSenderSets({
+      vip: { addresses: new Set(["anna@partner.example.net"]), domains: new Set(["vip.example.com"]) },
+      team: new Set(["example.org"]),
+    });
+  });
+
+  it("from:vip takes the important addresses and domains", () => {
+    expect(found("from:vip in:inbox")).toEqual(["anna@partner.example.net", "boss@vip.example.com"]);
+  });
+
+  it("from:team takes the owner's own domain, and from:known the people the owner wrote to", () => {
+    expect(found("from:team in:inbox")).toEqual(["colleague@example.org"]);
+    expect(found("from:known in:inbox")).toEqual(["friend@gmail.com"]);
+  });
+
+  it("is:automated takes no-reply senders, has:invite the calendar parts, and a minus turns each around", () => {
+    expect(found("is:automated in:inbox")).toEqual(["noreply@shop.example.net"]);
+    expect(found("has:invite in:inbox")).toEqual(["planner@events.example.net"]);
+    expect(found("-from:vip -is:automated -has:invite in:inbox")).toEqual(["colleague@example.org", "friend@gmail.com"]);
+  });
+
+  it("with empty sets from:vip and from:team find nobody", () => {
+    s.setSenderSets({ vip: { addresses: new Set(), domains: new Set() }, team: new Set() });
+    expect(found("from:vip in:inbox")).toEqual([]);
+    expect(found("from:team in:inbox")).toEqual([]);
+  });
+});
+
 describe.each(storeKinds)("bulk backfill store methods (%s)", (_kind, make) => {
   let s: MailStore;
   const STATE = { uidValidity: 7, lastUid: 9, syncedSince: EPOCH };

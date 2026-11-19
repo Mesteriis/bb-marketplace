@@ -60,6 +60,7 @@ import type { SignatureDoc } from "./compose-signature.ts";
 import type { AliasRow, InboundRow, SendCheck } from "./identities.ts";
 import type { UndoRow } from "./undo.ts";
 import type { AccountScope, AiScope } from "./ai-scope.ts";
+import type { SenderSets } from "./inbox-tabs.ts";
 import type { PluginGrant, PluginRequest } from "./plugin-access.ts";
 import type { LogEntry, LogOutcome } from "./agent-log.ts";
 import type { Category, CategoryRule, CategorySource, PreviousLabel } from "./categories.ts";
@@ -787,6 +788,8 @@ export interface MailStore {
    * another account reaches the answer.
    */
   contacts(query: string, limit: number, opts?: { scoped: boolean; accountId?: string }): Contact[];
+  /** Installs what `from:vip` and `from:team` match (read at start and when the setting or the accounts change). */
+  setSenderSets(sets: SenderSets): void;
   /** Whether a stored message carries a calendar part. */
   hasCalendarPart(messageId: string): boolean;
   /** Per account, the latest personal mail received from and sent to any of the addresses (correspondenceOf); junk and trash left out. */

@@ -69,6 +69,7 @@ import {
   type SendCheck,
 } from "../../core/identities.ts";
 import { PLUGIN_REF_PREFIX } from "../../core/agent-log.ts";
+import { NO_SENDER_SETS, inSenderSet, type SenderSets } from "../../core/inbox-tabs.ts";
 import { isPluginRight, type PluginRight } from "../../core/plugin-access.ts";
 import { OPEN_AI_SCOPE, inAiScope, senderExcluded, type AccountScope, type AiScope } from "../../core/ai-scope.ts";
 import { redactSecrets } from "../../core/redact.ts";
@@ -145,6 +146,7 @@ import {
   queryWords,
   rankContacts,
   type ContactMessage,
+  isAutomatedAddress,
 } from "../../core/contacts.ts";
 import {
   capInlineParts,
@@ -1694,7 +1696,14 @@ function conditionSql(condition: SearchCondition, params: unknown[]): string | n
     case "list":
       params.push(likePattern(value));
       return LIKE("m.list_id");
+    case "sender":
+      // The owner's sent mail (rows of a Sent folder and accepted recipients) names the people they know.
+      if (value === "known") return "mail_known_sender(m.from_address) = 1";
+      if (value !== "vip" && value !== "team") return null;
+      params.push(value);
+      return "mail_sender_set(?, m.from_address) = 1";
     case "has":
+      if (value === "invite") return "EXISTS (SELECT 1 FROM attachments ia WHERE ia.message_id = m.id AND ia.kind = 'calendar')";
       return "m.has_attachments = 1";
     case "filename": {
       // No dot: an extension (filename:pdf is *.pdf); else a fragment.
@@ -1703,6 +1712,9 @@ function conditionSql(condition: SearchCondition, params: unknown[]): string | n
       return `EXISTS (SELECT 1 FROM attachments fa WHERE fa.message_id = m.id AND fa.is_inline = 0 AND ${LIKE("fa.filename")})`;
     }
     case "is":
+      if (value === "dev") return "(m.dev_source IS NOT NULL AND m.dev_source <> '')";
+      // A sender that is a machine by its address, or bulk mail that is not a mailing list.
+      if (value === "automated") return "(mail_automated(m.from_address) = 1 OR (m.bulk = 1 AND COALESCE(m.list_id, '') = ''))";
       return value === "unread" ? "m.is_read = 0" : "m.is_flagged = 1";
     case "larger":
       params.push(Number(value));
@@ -2396,6 +2408,37 @@ export function createSqliteStore(db: Database.Database): MailStore {
       return [];
     }
   };
+  // Inbox tabs: the sender sets of from:vip and from:team, and the people the owner wrote to (from:known).
+  let senderSets: SenderSets = NO_SENDER_SETS;
+  let known: { at: number; addresses: Set<string> } | null = null;
+  const KNOWN_FRESH_MS = 60_000;
+  /**
+   * Reads the people the owner wrote to before a statement that asks for them runs: a SQL function cannot
+   * query the connection that is executing it.
+   */
+  const freshKnown = (conditions: readonly SearchCondition[]): void => {
+    if (!conditions.some((condition) => condition.field === "sender" && condition.value === "known")) return;
+    const now = Date.now();
+    if (known !== null && now - known.at < KNOWN_FRESH_MS) return;
+    const addresses = new Set<string>();
+    for (const row of db.prepare<[], { address: string }>("SELECT address FROM sent_recipients").iterate()) {
+      addresses.add(row.address.trim().toLowerCase());
+    }
+    const sent = db
+      .prepare<[], { to_json: string; cc_json: string }>(`SELECT m.to_json, m.cc_json FROM ${MESSAGES_WITH_FOLDER} WHERE ${ROW_ROLE} = 'sent'`)
+      .iterate();
+    for (const row of sent) {
+      for (const address of [...addressesOf(row.to_json), ...addressesOf(row.cc_json)]) addresses.add(address.trim().toLowerCase());
+    }
+    known = { at: now, addresses };
+  };
+  db.function("mail_sender_set", { deterministic: false }, (kind: unknown, from: unknown) =>
+    (kind === "vip" || kind === "team") && inSenderSet(senderSets, kind, String(from ?? "")) ? 1 : 0,
+  );
+  db.function("mail_known_sender", { deterministic: false }, (from: unknown) =>
+    known !== null && known.addresses.has(String(from ?? "").trim().toLowerCase()) ? 1 : 0,
+  );
+  db.function("mail_automated", { deterministic: true }, (from: unknown) => (isAutomatedAddress(String(from ?? "")) ? 1 : 0));
   db.function("mail_sender_excluded", { deterministic: false }, (from: unknown, to: unknown, cc: unknown) =>
     senderExcluded([String(from ?? ""), ...addressesOf(to), ...addressesOf(cc)], aiScope) ? 1 : 0,
   );
@@ -2910,6 +2953,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
       where.push("m.account_id = ?");
       params.push(accountId);
     }
+    freshKnown(query.conditions);
     where.push(...conditionsSql(query.conditions, params));
     // A row waiting to move out is hidden until the move completes.
     where.push("m.move_pending IS NULL");
@@ -5860,6 +5904,10 @@ export function createSqliteStore(db: Database.Database): MailStore {
         )
         .all();
       return new Map(rows.filter((row) => row.ref_id.startsWith(PLUGIN_REF_PREFIX)).map((row) => [row.ref_id.slice(PLUGIN_REF_PREFIX.length), row.at]));
+    },
+    setSenderSets(sets) {
+      senderSets = sets;
+      known = null;
     },
     hasCalendarPart(messageId) {
       return (

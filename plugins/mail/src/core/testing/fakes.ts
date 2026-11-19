@@ -12,6 +12,8 @@
 //   - thread, folder, badge and search counts count distinct dedup keys, and
 //     rows waiting to move out are hidden from their folder, the badge and
 //     search; moves re-home rows (same id), detaching them without a uid map.
+import { isCalendarPart } from "../calendar-invite.ts";
+import { NO_SENDER_SETS, inSenderSet, type SenderSets } from "../inbox-tabs.ts";
 import type { PluginGrant, PluginRequest } from "../plugin-access.ts";
 import type { ReplySource } from "../compose-reply.ts";
 import type {
@@ -77,6 +79,7 @@ import {
   type AccountCorrespondence,
   type Contact,
   type ContactMessage,
+  isAutomatedAddress,
 } from "../contacts.ts";
 import type { ComposeDoc } from "../compose-doc.ts";
 import type { SignatureDoc } from "../compose-signature.ts";
@@ -2269,6 +2272,17 @@ export class InMemoryMailStore implements MailStore {
     return new Map();
   }
 
+  private senderSets: SenderSets = NO_SENDER_SETS;
+
+  setSenderSets(sets: SenderSets): void {
+    this.senderSets = sets;
+  }
+
+  /** Accepted recipients of sends, where this fake keeps them; none otherwise. */
+  private sentRecipientAddresses(): Set<string> {
+    return new Set();
+  }
+
   hasCalendarPart(): boolean {
     return false;
   }
@@ -3979,11 +3993,25 @@ export class InMemoryMailStore implements MailStore {
           return has(m.subject, condition.value);
         case "list":
           return has(row.listId, condition.value);
+        case "sender": {
+          if (condition.value === "known") {
+            const address = m.from.address.trim().toLowerCase();
+            return (
+              this.state.rows.some(
+                (r) => this.roleOf(r.accountId, r.folder) === "sent" && [...r.message.to, ...r.message.cc].some((a) => a.address.trim().toLowerCase() === address),
+              ) || this.sentRecipientAddresses().has(address)
+            );
+          }
+          return (condition.value === "vip" || condition.value === "team") && inSenderSet(this.senderSets, condition.value, m.from.address);
+        }
         case "has":
+          if (condition.value === "invite") return m.attachments.some((a) => isCalendarPart({ mimeType: a.mimeType, filename: a.filename ?? null }));
           return m.attachments.some((a) => !a.isInline);
         case "filename":
           return m.attachments.some((a) => !a.isInline && filenameMatches(a.filename ?? "", condition.value));
         case "is":
+          if (condition.value === "dev") return (row.dev ?? null) !== null;
+          if (condition.value === "automated") return isAutomatedAddress(m.from.address) || (this.bulkOf(row) === true && (row.listId ?? "") === "");
           return condition.value === "unread" ? !row.isRead : row.isFlagged;
         case "larger":
           return m.size > Number(condition.value);

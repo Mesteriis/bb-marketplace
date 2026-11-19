@@ -36,6 +36,9 @@ const PLAIN_FIELDS: ReadonlySet<string> = new Set([
   "label",
 ]);
 
+/** `from:` values that name a set of senders (Inbox tabs): important senders, the owner's own domains, people written to. */
+export const SENDER_SETS: ReadonlySet<string> = new Set(["vip", "team", "known"]);
+
 /** `in:` role names; `spam` is read as `junk`. */
 const IN_ROLES: Readonly<Record<string, string>> = {
   inbox: "inbox",
@@ -146,10 +149,13 @@ function readOperator(token: Token, now: Date | undefined): Read {
     condition: { field, value: v, negated },
   });
   const name = token.name;
+  // A sender set is the whole word; an address that only contains it stays a fragment.
+  if (name === "from" && SENDER_SETS.has(value.toLowerCase())) return make("sender", value.toLowerCase());
   if (PLAIN_FIELDS.has(name)) return make(name as SearchField, value);
   switch (name) {
     case "has": {
       const lower = value.toLowerCase();
+      if (lower === "invite" || lower === "invitation") return make("has", "invite");
       return lower === "attachment" || lower === "attachments" ? make("has", "attachment") : { note: "bad_value" };
     }
     case "is":
@@ -163,6 +169,10 @@ function readOperator(token: Token, now: Date | undefined): Read {
           return make("is", "flagged");
         case "unflagged":
           return make("is", "flagged", !token.negated);
+        case "dev":
+          return make("is", "dev");
+        case "automated":
+          return make("is", "automated");
         default:
           return { note: "bad_value" };
       }

@@ -118,6 +118,7 @@ import {
 } from "./src/adapters/bb/bb-rpc.ts";
 import { createPluginApi, type GoogleKey } from "./src/adapters/bb/plugin-api-rpc.ts";
 import { proposePluginLetter } from "./src/core/plugin-propose.ts";
+import { teamDomains } from "./src/core/inbox-tabs.ts";
 import { GrantRevokedError } from "./src/core/ports.ts";
 import { guardHandlers } from "./src/adapters/bb/plugin-guard.ts";
 import {
@@ -1370,6 +1371,17 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       bb.log.warn(`snippet repair failed (${errorKind(error)})`);
     }
     const clock: Clock = overrides.clock ?? { now: () => new Date() };
+    // Inbox tabs and search: what from:vip and from:team match. Read again when the setting changes and
+    // after every sync round's notifier (an account or an alias may have been added).
+    const installSenderSets = () => {
+      try {
+        const vip = parseImportantSenders(current.importantSenders);
+        store.setSenderSets({ vip: { addresses: vip.addresses, domains: new Set(vip.domains) }, team: teamDomains(ownAddresses(store)) });
+      } catch (error) {
+        bb.log.warn(`sender sets: failed (${errorKind(error)})`);
+      }
+    };
+    installSenderSets();
     // The AI access scope agent paths read (slice 3f); the installed scope starts open.
     try {
       store.setAiScope(store.loadAiScope());
@@ -1847,6 +1859,7 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
     // in that state, but sync starts at once.
     settings.onChange((next, prev) => {
       current = next;
+      installSenderSets();
       const wasReady = vault !== null;
       vault = openVault(next.vaultKey);
       if (!wasReady && vault !== null) {

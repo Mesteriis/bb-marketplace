@@ -549,6 +549,8 @@ export type RawRef = {
 /** The operators a search condition may carry (slice 3h). */
 export const searchFieldSchema = z.enum([
   "from",
+  /** A sender set, not a fragment: `vip`, `team` or `known` (written from:vip and so on). */
+  "sender",
   "to",
   "cc",
   "subject",
