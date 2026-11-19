@@ -112,6 +112,8 @@ describe("a lost terminal console, with the real terminal component", () => {
     expect(second.text).toContain("file-a");
     expect(second.text).toContain("connection lost");
     expect(second.text).toContain("reconnected: a new console");
+    // scrolled out of the viewport (one screen of blank lines follows), so a clear-screen from the guest cannot erase it
+    expect(second.text.endsWith("\r\n".repeat(24))).toBe(true);
   }, 10_000);
 
   it("a manual Reconnect keeps the screen too", async () => {
