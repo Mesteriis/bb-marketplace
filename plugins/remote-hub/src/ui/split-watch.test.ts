@@ -136,3 +136,15 @@ describe("autoSplitOnSignal", () => {
     expect(await run("thr_l", [session({ leaseThreadId: "thr_l" })])).toMatchObject({ result: "opened", opened: [[`${GEN}.4`, "thr_l"]] });
   });
 });
+
+import { sessionKeysOfThread } from "./split-watch.ts";
+
+describe("sessionKeysOfThread", () => {
+  const s = (sessionId: number, over: object) => ({ generation: "g1", sessionId, state: "running" as const, leaseThreadId: null, openedByThread: null, ...over });
+  it("names the open sessions a thread holds or opened, and no others", () => {
+    const all = [s(1, { openedByThread: "thr_a" }), s(2, { openedByThread: "thr_b", leaseThreadId: "thr_a" }), s(3, { openedByThread: "thr_a", leaseThreadId: "thr_b" }), s(4, { openedByThread: "thr_a", state: "closed" as const }), s(5, {})];
+    expect(sessionKeysOfThread(all, "thr_a")).toEqual(["g1.1", "g1.2"]);
+    expect(sessionKeysOfThread(all, "thr_b")).toEqual(["g1.3"]);
+    expect(sessionKeysOfThread(all, "thr_c")).toEqual([]);
+  });
+});

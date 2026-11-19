@@ -9,6 +9,8 @@
 // The dots are an absolutely positioned sibling of the widget (its size and on-screen ratio are untouched); the bar takes its own
 // slim row above the widget while an agent drives.
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { Button } from "@/components/ui/button";
+import { tx } from "./i18n.ts";
 import type { SessionHandle } from "../core/rpc.ts";
 import { errorTextFromMessage } from "../core/rdp-texts.ts";
 import type { ControlView } from "./control-banner.tsx";
@@ -75,21 +77,21 @@ export function AgentBar(props: { control: ControlView; onTakeover: () => Promis
   }, [onTakeover]);
   if (control.owner !== "agent") return null;
   return (
-    <div className="rh-agent-card" role="group" aria-label="Agent control">
+    <div className="rh-agent-card" role="group" aria-label={tx("agent.group")}>
       <span role="status" aria-live="polite" className="rh-agent-label">
-        Agent is controlling this session{threadTitle !== undefined && threadTitle !== null ? <> — {threadTitle}</> : null}
+        {tx("agent.controls")}{threadTitle !== undefined && threadTitle !== null ? <> — {threadTitle}</> : null}
       </span>
       {control.blocked && (
         <span role="alert" className="rh-agent-blocked">
-          Your input was not sent because an agent is driving this session.
+          {tx("agent.inputBlocked")}
         </span>
       )}
-      <button type="button" className="rh-agent-take" onClick={take} disabled={busy}>
-        Take control
-      </button>
+      <Button type="button" size="sm" className="rh-agent-take" onClick={take} disabled={busy}>
+        {tx("session.takeControl")}
+      </Button>
       {failure !== null && (
         <span role="alert" className="rh-error">
-          Could not take control: {failure}
+          {tx("agent.takeFailed", { reason: failure })}
         </span>
       )}
     </div>

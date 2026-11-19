@@ -1,6 +1,8 @@
 // Who drives a session, as the page shows it (stage 4b-1): a badge in the session header, and while an agent holds the
 // session the overlay (agent-overlay.tsx) with one button that takes it back at once. The service drops the human's input
 // while an agent holds the lease; the first keystroke or click after that makes the overlay say so.
+import { tx } from "./i18n.ts";
+
 export interface ControlView {
   owner: "human" | "agent";
   /** Epoch ms the agent's lease runs out; null while the human drives. */
@@ -18,10 +20,10 @@ export function nextControl(current: ControlView, message: ControlMessage): Cont
 }
 
 export function ControlBadge({ control }: { control: ControlView }) {
-  const until = control.owner === "agent" && control.expiresAt !== null ? ` (until ${new Date(control.expiresAt).toLocaleTimeString()})` : "";
+  const text = control.owner !== "agent" ? tx("session.drivenByYou") : control.expiresAt === null ? tx("session.drivenByAgent") : tx("agent.until", { time: new Date(control.expiresAt).toLocaleTimeString() });
   return (
     <span data-testid="control-owner" className={control.owner === "agent" ? "rh-badge rh-badge-agent" : "rh-badge"}>
-      {control.owner === "agent" ? "driven by an agent" + until : "driven by you"}
+      {text}
     </span>
   );
 }

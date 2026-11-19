@@ -505,14 +505,14 @@ describe("SshPage: who drives the session (stage 4b-1)", () => {
     return { handle, say };
   }
 
-  it("shows 'driven by you' with no notice until an agent takes the session", async () => {
+  it("shows 'управляете вы' with no notice until an agent takes the session", async () => {
     const { say } = await running();
-    expect(screen.getByTestId("control-owner").textContent).toBe("driven by you");
-    expect(screen.queryByRole("button", { name: "Take control" })).toBeNull();
+    expect(screen.getByTestId("control-owner").textContent).toBe("управляете вы");
+    expect(screen.queryByRole("button", { name: "Взять управление" })).toBeNull();
     expect(screen.queryByTestId("agent-overlay")).toBeNull();
     await say({ type: "control", owner: "agent", expiresAt: Date.now() + 60_000 });
-    expect(screen.getByTestId("control-owner").textContent).toContain("driven by an agent");
-    expect(screen.getByText(/Agent is controlling this session/)).toBeTruthy();
+    expect(screen.getByTestId("control-owner").textContent).toContain("управляет агент");
+    expect(screen.getByText(/Агент управляет этой сессией/)).toBeTruthy();
   });
 
   it("a blocked key becomes an alert, and Take control calls the owner RPC with this session's handle", async () => {
@@ -520,14 +520,14 @@ describe("SshPage: who drives the session (stage 4b-1)", () => {
     const { say, handle } = await running(onTakeover);
     await say({ type: "control", owner: "agent", expiresAt: Date.now() + 60_000 });
     await say({ type: "input_blocked" });
-    expect(screen.getByRole("alert").textContent).toContain("Your input was not sent");
-    fireEvent.click(screen.getByRole("button", { name: "Take control" }));
+    expect(screen.getByRole("alert").textContent).toContain("Ввод не отправлен");
+    fireEvent.click(screen.getByRole("button", { name: "Взять управление" }));
     await act(async () => {
       await Promise.resolve();
     });
     expect(onTakeover).toHaveBeenCalledWith(handle);
     await say({ type: "control", owner: "human", expiresAt: null });
-    expect(screen.getByTestId("control-owner").textContent).toBe("driven by you");
-    expect(screen.queryByRole("button", { name: "Take control" })).toBeNull();
+    expect(screen.getByTestId("control-owner").textContent).toBe("управляете вы");
+    expect(screen.queryByRole("button", { name: "Взять управление" })).toBeNull();
   });
 });

@@ -9,6 +9,8 @@ import type { PveConnectionView } from "../../src/core/pve-targets.ts";
 import { deskStore } from "../../src/ui/desk-store.ts";
 import { Desk } from "../../src/ui/desk/desk.tsx";
 import { DeskPane } from "../../src/ui/desk/desk-pane.tsx";
+import { AgentStage } from "../../src/ui/agent-overlay.tsx";
+import { HUMAN_CONTROL } from "../../src/ui/control-banner.tsx";
 import { HubPage } from "../../src/ui/hub-page.tsx";
 import { HubSidebarConnected } from "../../src/ui/sidebar/hub-sidebar-connected.tsx";
 
@@ -54,7 +56,9 @@ createRoot(document.getElementById("root")!).render(
         <Desk>
           {(scene === "desk" ? fake : []).map((s) => (
             <DeskPane key={s.id} session={deskStore.get().sessions.find((x) => x.id === s.id) ?? s} onClose={() => deskStore.close(s.id)}>
+              <AgentStage handle={null} control={s.owner === "agent" ? { owner: "agent", expiresAt: null, blocked: false } : HUMAN_CONTROL} onTakeover={async () => undefined}>
               <div className="pv-term xterm-rows">{shell.split("\n").map((line, i) => <div key={i}>{line}</div>)}</div>
+              </AgentStage>
             </DeskPane>
           ))}
         </Desk>

@@ -3,6 +3,8 @@
 // that already exists (an agent opened it, or the owner did); showing it is what lets an agent act on it, because the
 // view reports in while it is visible (see watch-beat.ts).
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Button } from "@/components/ui/button";
+import { tx } from "./i18n.ts";
 import type { SessionHandle } from "../core/rpc.ts";
 import { parseSessionKey } from "./session-key.ts";
 import { errorTextFromMessage } from "../core/rdp-texts.ts";
@@ -27,7 +29,7 @@ export { parseSessionKey };
 
 export function LiveSession({ sessionKey, api }: { sessionKey: string; api: LiveSessionApi }) {
   const handle = parseSessionKey(sessionKey);
-  const [view, setView] = useState<{ kind: "ssh" | "rdp" | "pve" | "vnc"; token: string; wsUrl: string } | { graphics: { console: string; node: string; vmid: number | null; state: string; connectionName: string } | null } | { problem: string } | null>(null);
+  const [view, setView] = useState<{ kind: "ssh" | "rdp" | "pve" | "vnc"; token: string; wsUrl: string } | { graphics: { console: string; node: string; vmid: number | null; state: string; connectionName: string } | null } | { problem: string; closed: boolean } | null>(null);
   const [owner, setOwner] = useState<ControlView>(HUMAN_CONTROL);
   const onControl = useCallback((message: ControlMessage) => setOwner((cur) => nextControl(cur, message)), []);
   // The commands an agent runs on this session, as they happen (shown, not stored: this lives in the open view only).
@@ -46,14 +48,14 @@ export function LiveSession({ sessionKey, api }: { sessionKey: string; api: Live
       try {
         const found = await apiRef.current.find(h);
         if (cancelled) return;
-        if (found === null || found.state === "closed" || found.kind === "echo") return setView({ problem: "This session is no longer open." });
+        if (found === null || found.state === "closed" || found.kind === "echo") return setView({ problem: tx("live.closed"), closed: true });
         // A graphics console has exactly ONE view for its whole life, and this card is not the place for it: attaching here would
         // take it from the Remote Hub page (an RFB stream cannot be shared or resumed). It shows the state and a way there.
         if (found.kind === "vnc") return setView({ graphics: found.pve ?? null });
         const attach = await apiRef.current.attach(h);
         if (!cancelled) setView({ kind: found.kind, token: attach.token, wsUrl: attach.wsUrl });
       } catch (e) {
-        if (!cancelled) setView({ problem: "Could not show this session: " + errorTextFromMessage(e instanceof Error ? e.message : String(e)) });
+        if (!cancelled) setView({ problem: tx("live.failed", { reason: errorTextFromMessage(e instanceof Error ? e.message : String(e)) }), closed: false });
       }
     })();
     return () => {
@@ -64,27 +66,26 @@ export function LiveSession({ sessionKey, api }: { sessionKey: string; api: Live
   if (handle === null) {
     return (
       <p role="alert" className="rh-error">
-        This is not a session this plugin can show.
+        {tx("live.notASession")}
       </p>
     );
   }
-  if (view === null) return <p className="rh-notice">Opening the live view…</p>;
+  if (view === null) return <p className="rh-notice">{tx("live.opening")}</p>;
   if ("graphics" in view) {
     const g = view.graphics;
     return (
       <div className="rh-live" data-testid="live-session-graphics">
         <p className="rh-notice">
-          {g === null ? "A virtual machine's graphical console." : `Graphics of ${g.console === "qemu" ? "VM" : g.console}${g.vmid === null ? "" : " #" + g.vmid} on ${g.connectionName}, node ${g.node}: ${g.state}.`} It has one view, which is the Remote Hub
-          page, so it is not shown here.
+          {g === null ? tx("live.graphicsUnknown") : tx("live.graphics", { what: `${g.console === "qemu" ? "VM" : g.console}${g.vmid === null ? "" : " " + g.vmid}`, connection: g.connectionName, node: g.node, state: g.state })} {tx("live.graphicsOneView")}
         </p>
-        <button type="button" onClick={() => api.openRemoteHub?.(handle)} disabled={api.openRemoteHub === undefined}>
-          View in Remote Hub
-        </button>
+        <Button type="button" size="sm" variant="outline" className="self-start" onClick={() => api.openRemoteHub?.(handle)} disabled={api.openRemoteHub === undefined}>
+          {tx("live.openHub")}
+        </Button>
       </div>
     );
   }
   if ("problem" in view) {
-    return view.problem.startsWith("Could not") ? (
+    return !view.closed ? (
       <p role="alert" className="rh-error">
         {view.problem}
       </p>
@@ -106,7 +107,7 @@ export function LiveSession({ sessionKey, api }: { sessionKey: string; api: Live
           <VncView wsUrl={view.wsUrl} token={view.token} onControl={onControl} onAgent={onAgent} />
         ) : (
           <div className="rh-rdp-wrap">
-            <RdpCanvas wsUrl={view.wsUrl} token={view.token} fit="fit" label="Remote desktop" onEvent={(e) => (e.type === "control" || e.type === "input_blocked" ? onControl(e as ControlMessage) : undefined)} />
+            <RdpCanvas wsUrl={view.wsUrl} token={view.token} fit="fit" label={tx("kind.desktop")} onEvent={(e) => (e.type === "control" || e.type === "input_blocked" ? onControl(e as ControlMessage) : undefined)} />
           </div>
         )}
       </AgentStage>

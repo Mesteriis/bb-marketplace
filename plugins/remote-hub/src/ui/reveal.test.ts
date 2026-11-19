@@ -8,7 +8,7 @@ describe("revealSession: open the live view without a click, if BB lets us", () 
     const openTab = vi.fn(() => true);
     const seen = new Set<string>();
     expect(revealSession({ openTab }, KEY, seen)).toBe(true);
-    expect(openTab).toHaveBeenCalledWith({ tab: { id: LIVE_TAB_ID, context: { kind: "thread" }, availability: "action" }, params: { sessionId: KEY }, title: "Remote session" });
+    expect(openTab).toHaveBeenCalledWith({ tab: { id: LIVE_TAB_ID, context: { kind: "thread" }, availability: "action" }, params: { sessionId: KEY }, title: "Remote Hub" });
     expect(seen.has(KEY)).toBe(true);
   });
 

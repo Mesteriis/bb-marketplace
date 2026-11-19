@@ -24,6 +24,11 @@ export function agentThreadOf(s: Pick<AgentSessionView, "leaseThreadId" | "opene
   return s.leaseThreadId ?? s.openedByThread;
 }
 
+/** The keys of the open sessions the thread `threadId` works on, in the order given. */
+export function sessionKeysOfThread(sessions: ReadonlyArray<Pick<AgentSessionView, "generation" | "sessionId" | "state" | "leaseThreadId" | "openedByThread">>, threadId: string): string[] {
+  return sessions.filter((s) => s.state !== "closed" && agentThreadOf(s) === threadId).map((s) => `${s.generation}.${s.sessionId}`);
+}
+
 /** The thread the owner is looking at: the focused split pane's thread, else the surface's own thread. */
 export function focusedThread(layout: SplitLayout | null, contextThread: string | null): string | null {
   const pane = layout?.panes.find((p) => p.isFocused);

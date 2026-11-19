@@ -212,7 +212,7 @@ describe("PveConsoles", () => {
     render(<PveConsoles api={api} launch={launch(1, { console: "lxc", vmid: 101 })} />);
     await screen.findByTestId("terminal");
     act(() => lastTerminal().onControl?.({ type: "control", owner: "agent", expiresAt: null }));
-    expect(within(screen.getByTestId("pve-console")).getByTestId("control-owner").textContent).toContain("driven by an agent");
+    expect(within(screen.getByTestId("pve-console")).getByTestId("control-owner").textContent).toContain("управляет агент");
   });
 });
 

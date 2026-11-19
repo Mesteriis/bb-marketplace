@@ -47,8 +47,8 @@ describe("LiveSession", () => {
     await waitFor(() => expect(screen.getByTestId("terminal").getAttribute("data-token")).toBe("tok1"));
     expect(a.attach).toHaveBeenCalledWith({ generation: GEN, sessionId: 4 });
     act(() => (globalThis as unknown as { __term: { onControl: (m: unknown) => void } }).__term.onControl({ type: "control", owner: "agent", expiresAt: 1_700_000_000_000 }));
-    expect(screen.getByTestId("control-owner").textContent).toContain("driven by an agent");
-    fireEvent.click(screen.getByRole("button", { name: "Take control" }));
+    expect(screen.getByTestId("control-owner").textContent).toContain("управляет агент");
+    fireEvent.click(screen.getByRole("button", { name: "Взять управление" }));
     await waitFor(() => expect(a.takeover).toHaveBeenCalledWith({ generation: GEN, sessionId: 4 }));
   });
 
@@ -70,19 +70,19 @@ describe("LiveSession", () => {
     expect(screen.queryByTestId("terminal")).toBeNull();
   });
 
-  it("says plainly when the session is gone, and when the id is not a session id at all", async () => {
+  it("says plainly when the session is gone, and when the id is не сессия id at all", async () => {
     const { unmount } = render(<LiveSession sessionKey={KEY} api={api("none")} />);
-    await waitFor(() => expect(screen.getByRole("status").textContent).toContain("no longer open"));
+    await waitFor(() => expect(screen.getByRole("status").textContent).toContain("уже закрыта"));
     unmount();
     const a = api("ssh");
     render(<LiveSession sessionKey="not-a-session" api={a} />);
-    expect(screen.getByRole("alert").textContent).toContain("not a session");
+    expect(screen.getByRole("alert").textContent).toContain("не сессия");
     expect(a.find).not.toHaveBeenCalled();
   });
 
   it("an attach failure is shown, not thrown", async () => {
     render(<LiveSession sessionKey={KEY} api={api("ssh", { attach: vi.fn(async () => { throw new Error("session_not_found: gone"); }) })} />);
-    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("Could not show"));
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("Не удалось показать"));
   });
 
   it("a graphics console is NEVER attached by a card: it shows its state and a way to the Remote Hub page", async () => {
@@ -93,18 +93,18 @@ describe("LiveSession", () => {
     });
     render(<LiveSession sessionKey={KEY} api={a} />);
     const card = await screen.findByTestId("live-session-graphics");
-    expect(card.textContent).toContain("Graphics of VM #200 on lab, node pve1: active");
-    expect(card.textContent).toContain("not shown here");
+    expect(card.textContent).toContain("Графика VM 200 на «lab», узел pve1: active");
+    expect(card.textContent).toContain("здесь она не показывается");
     expect(a.attach).not.toHaveBeenCalled();
     expect(screen.queryByTestId("vnc-view-mounted")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "View in Remote Hub" }));
+    fireEvent.click(screen.getByRole("button", { name: "Открыть в Remote Hub" }));
     expect(openRemoteHub).toHaveBeenCalledWith({ generation: GEN, sessionId: 4 });
   });
 
   it("the graphics card has no button that does nothing when the page cannot open Remote Hub", async () => {
     const a = api("ssh", { find: vi.fn(async () => ({ generation: GEN, sessionId: 4, kind: "vnc" as const, state: "running" as const })) });
     render(<LiveSession sessionKey={KEY} api={a} />);
-    expect((await screen.findByRole("button", { name: "View in Remote Hub" })) as HTMLButtonElement).toHaveProperty("disabled", true);
+    expect((await screen.findByRole("button", { name: "Открыть в Remote Hub" })) as HTMLButtonElement).toHaveProperty("disabled", true);
     expect(a.attach).not.toHaveBeenCalled();
   });
 });

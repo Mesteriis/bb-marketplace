@@ -21,53 +21,53 @@ describe("AgentBar", () => {
     const { container, rerender } = render(<AgentBar control={HUMAN_CONTROL} onTakeover={async () => {}} />);
     expect(container.textContent).toBe("");
     rerender(<AgentBar control={AGENT} onTakeover={async () => {}} />);
-    expect(screen.getByRole("group", { name: "Agent control" })).toBeTruthy();
+    expect(screen.getByRole("group", { name: "Управление агента" })).toBeTruthy();
     rerender(<AgentBar control={HUMAN_CONTROL} onTakeover={async () => {}} />);
-    expect(screen.queryByRole("group", { name: "Agent control" })).toBeNull();
+    expect(screen.queryByRole("group", { name: "Управление агента" })).toBeNull();
   });
 
   it("names itself for assistive technology: a group, a polite live label and a button called Take control", () => {
     render(<AgentBar control={AGENT} onTakeover={async () => {}} threadTitle="Fix the deploy" />);
-    expect(screen.getByRole("group", { name: "Agent control" })).toBeTruthy();
+    expect(screen.getByRole("group", { name: "Управление агента" })).toBeTruthy();
     const label = screen.getByRole("status");
     expect(label.getAttribute("aria-live")).toBe("polite");
-    expect(label.textContent).toBe("Agent is controlling this session — Fix the deploy");
-    expect(screen.getByRole("button", { name: "Take control" })).toBeTruthy();
+    expect(label.textContent).toBe("Агент управляет этой сессией — Fix the deploy");
+    expect(screen.getByRole("button", { name: "Взять управление" })).toBeTruthy();
   });
 
   it("without a known thread title it says only what it knows", () => {
     render(<AgentBar control={AGENT} onTakeover={async () => {}} />);
-    expect(screen.getByRole("status").textContent).toBe("Agent is controlling this session");
+    expect(screen.getByRole("status").textContent).toBe("Агент управляет этой сессией");
   });
 
   it("Take control calls the owner path once, is off while it runs, and shows a failure", async () => {
     let fail!: (e: Error) => void;
     const onTakeover = vi.fn(() => new Promise<void>((_ok, no) => (fail = no)));
     render(<AgentBar control={AGENT} onTakeover={onTakeover} />);
-    const button = screen.getByRole("button", { name: "Take control" }) as HTMLButtonElement;
+    const button = screen.getByRole("button", { name: "Взять управление" }) as HTMLButtonElement;
     fireEvent.click(button);
     fireEvent.click(button);
     expect(onTakeover).toHaveBeenCalledTimes(1);
     expect(button.disabled).toBe(true);
     fail(new Error("not_found: nope"));
-    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("Could not take control"));
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("Не удалось взять управление"));
     expect(button.disabled).toBe(false);
   });
 
   it("Escape does not take control; a click on the label does not either; only the button does", () => {
     const onTakeover = vi.fn(async () => {});
     render(<AgentBar control={AGENT} onTakeover={onTakeover} />);
-    fireEvent.keyDown(screen.getByRole("group", { name: "Agent control" }), { key: "Escape" });
+    fireEvent.keyDown(screen.getByRole("group", { name: "Управление агента" }), { key: "Escape" });
     fireEvent.keyDown(document.body, { key: "Escape" });
     fireEvent.click(screen.getByRole("status"));
     expect(onTakeover).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "Take control" }));
+    fireEvent.click(screen.getByRole("button", { name: "Взять управление" }));
     expect(onTakeover).toHaveBeenCalledTimes(1);
   });
 
   it("after a blocked key it says the input was not sent", () => {
     render(<AgentBar control={{ ...AGENT, blocked: true }} onTakeover={async () => {}} />);
-    expect(screen.getByRole("alert").textContent).toContain("Your input was not sent");
+    expect(screen.getByRole("alert").textContent).toContain("Ввод не отправлен");
   });
 });
 
@@ -147,7 +147,7 @@ describe("AgentStage", () => {
     );
     expect(screen.getByTestId("widget")).toBeTruthy();
     expect(screen.queryByTestId("agent-overlay")).toBeNull();
-    expect(screen.queryByRole("group", { name: "Agent control" })).toBeNull();
+    expect(screen.queryByRole("group", { name: "Управление агента" })).toBeNull();
     expect(value.leaseThread).not.toHaveBeenCalled();
   });
 
@@ -157,6 +157,6 @@ describe("AgentStage", () => {
         <div>terminal</div>
       </AgentStage>,
     );
-    expect(screen.getByRole("status").textContent).toBe("Agent is controlling this session");
+    expect(screen.getByRole("status").textContent).toBe("Агент управляет этой сессией");
   });
 });

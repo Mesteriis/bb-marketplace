@@ -23,8 +23,8 @@ describe("nextControl", () => {
 describe("ControlBadge", () => {
   it("says who drives, plainly", () => {
     const { rerender } = render(<ControlBadge control={HUMAN_CONTROL} />);
-    expect(screen.getByTestId("control-owner").textContent).toBe("driven by you");
+    expect(screen.getByTestId("control-owner").textContent).toBe("управляете вы");
     rerender(<ControlBadge control={{ owner: "agent", expiresAt: 1_700_000_000_000, blocked: false }} />);
-    expect(screen.getByTestId("control-owner").textContent).toContain("driven by an agent");
+    expect(screen.getByTestId("control-owner").textContent).toContain("управляет агент");
   });
 });

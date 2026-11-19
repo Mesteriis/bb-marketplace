@@ -17,8 +17,11 @@ import { SessionCard, type SessionCardApi } from "./src/ui/session-card.tsx";
 import { AgentContextProvider, type AgentContextValue } from "./src/ui/agent-context.tsx";
 import type { AgentSessionView } from "./src/ui/agent-panel.tsx";
 import { markSessionPage, sessionPageShowing } from "./src/ui/active-surface.ts";
-import { SESSION_PAGE, autoSplitOnSignal, focusedThread, openWatchInSplit, splitShows, stillWhereWePutThem } from "./src/ui/split-watch.ts";
+import { SESSION_PAGE, sessionKeysOfThread, autoSplitOnSignal, focusedThread, openWatchInSplit, splitShows, stillWhereWePutThem } from "./src/ui/split-watch.ts";
 import { LIVE_TAB_ID, revealSession } from "./src/ui/reveal.ts";
+import { ThreadStrip } from "./src/ui/thread-strip.tsx";
+import { WatchedView } from "./src/ui/watched-view.tsx";
+import { tx } from "./src/ui/i18n.ts";
 
 /** The plugin's realtime channel: "an agent did something" (identifiers only). Same string as AGENT_SIGNAL_CHANNEL on the server. */
 const AGENT_CHANNEL = "remote-hub.agents";
@@ -212,20 +215,67 @@ function ConnectTab({ subPath }: { subPath: string }) {
     };
   }, [watchedKey]);
   const bridge = useBridge();
+  const navigate = useBbNavigate();
+  // A session an agent works on fills the page (its thread sits in the split beside it); a graphics console goes to the desk.
+  const focused = watchedKey !== null && adopt === undefined;
   return (
     <WithAgentContext>
-      {watched !== null && <LiveSession sessionKey={`${watched.generation}.${watched.sessionId}`} api={liveApi} />}
+      {focused && <WatchedView sessionKey={watchedKey} api={liveApi} onBack={() => navigate.toPluginPanel(SESSION_PAGE)} />}
+      <div className={focused ? "hidden" : "h-full"}>
       <HubPage profiles={bridge.profiles} credentials={bridge.credentials} imports={bridge.imports} agents={bridge.agents} pve={bridge.pve} pveConsoles={bridge.pveConsoles} {...(adopt !== undefined ? { adoptConsole: adopt } : {})} ssh={bridge.ssh} rdp={bridge.rdp} />
+      </div>
     </WithAgentContext>
   );
 }
 
+/** The open sessions the thread's agent works on; refreshed when an agent does something. */
+function useThreadSessionKeys(threadId: string): string[] {
+  const rpc = useRpc<typeof rpcContract>();
+  const [keys, setKeys] = useState<string[]>([]);
+  const [tick, setTick] = useState(0);
+  useRealtime(AGENT_CHANNEL, () => setTick((n) => n + 1));
+  useEffect(() => {
+    let cancelled = false;
+    (rpc.call("agent_sessions", {}) as Promise<AgentSessionView[]>).then(
+      (all) => !cancelled && setKeys(sessionKeysOfThread(all, threadId)),
+      () => undefined,
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [rpc, threadId, tick]);
+  return keys;
+}
+
+/** Above the thread's composer: "Remote Hub: N" while the thread's agent has sessions open; a click shows the first. */
+function ThreadStripSlot({ threadId }: { threadId: string }) {
+  const keys = useThreadSessionKeys(threadId);
+  const panel = experimental_useAppPanel();
+  const navigate = useBbNavigate();
+  return (
+    <ThreadStrip
+      count={keys.length}
+      onOpen={() => {
+        const key = keys[0];
+        if (key !== undefined && !revealSession(panel, key, new Set())) navigate.toPluginPanel(SESSION_PAGE, { subPath: key });
+      }}
+    />
+  );
+}
+
 export default definePluginApp((app) => {
+  app.slots.experimental_threadContextSegment({
+    id: "remote-hub-sessions",
+    title: tx("strip.title"),
+    group: "5_remote_hub",
+    summary: ThreadStripSlot,
+    useVisible: ({ threadId }) => useThreadSessionKeys(threadId).length > 0,
+  });
   app.slots.messageDirective({ id: "remote-session", component: RemoteSessionDirective });
   app.slots.experimental_appOverlay({ id: "remote-hub-agent-banner", component: AgentBannerOverlay });
   app.slots.experimental_tab({
     id: LIVE_TAB_ID,
-    title: "Remote session",
+    title: "Remote Hub",
     icon: "Terminal",
     context: { kind: "thread" },
     availability: "action",

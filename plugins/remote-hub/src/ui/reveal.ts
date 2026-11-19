@@ -12,7 +12,7 @@ export function revealSession(panel: RevealPanel, sessionKey: string, seen: Set<
   if (seen.has(sessionKey)) return false;
   let opened = false;
   try {
-    opened = panel.openTab({ tab: { id: LIVE_TAB_ID, context: { kind: "thread" }, availability: "action" }, params: { sessionId: sessionKey }, title: "Remote session" });
+    opened = panel.openTab({ tab: { id: LIVE_TAB_ID, context: { kind: "thread" }, availability: "action" }, params: { sessionId: sessionKey }, title: "Remote Hub" });
   } catch {
     opened = false;
   }
