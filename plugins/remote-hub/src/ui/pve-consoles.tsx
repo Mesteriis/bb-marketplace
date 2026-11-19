@@ -27,6 +27,8 @@ export interface PveConsoleLaunch {
   request: PveConsoleRequest;
   /** The guest's name, for the tab. */
   title: string;
+  /** A console that is already open (an agent opened it): the tab attaches to it instead of opening a new one. Used once. */
+  adopt?: { handle: SessionHandle; kind: "pve" | "vnc" };
 }
 
 export interface PveConsolesProps {
@@ -64,6 +66,8 @@ export function PveConsoles(props: PveConsolesProps) {
   const [active, setActive] = useState<number | null>(null);
   const nextId = useRef(1);
   const lastNonce = useRef(0);
+  // Tabs the owner closed: a console that finishes opening for one of them is closed again, never orphaned.
+  const closedTabs = useRef(new Set<number>());
   const apiRef = useRef(api);
   apiRef.current = api;
   const tabsRef = useRef<Tab[]>([]);
@@ -79,7 +83,9 @@ export function PveConsoles(props: PveConsolesProps) {
       patch(id, { state: "opening", reason: null, handle: null, attach: null, kind: null, owner: HUMAN_CONTROL });
       let opened: PveConsoleOpened;
       try {
-        opened = await apiRef.current.open({ ...launch.request, profileId: launch.profileId, cols: 80, rows: 24 });
+        opened = launch.adopt !== undefined
+          ? { ok: true, generation: launch.adopt.handle.generation, sessionId: launch.adopt.handle.sessionId, kind: launch.adopt.kind }
+          : await apiRef.current.open({ ...launch.request, profileId: launch.profileId, cols: 80, rows: 24 });
       } catch (e) {
         patch(id, { state: "error", reason: { code: "open_failed", text: e instanceof Error ? e.message : String(e), fingerprint: null } });
         return;
@@ -89,7 +95,7 @@ export function PveConsoles(props: PveConsolesProps) {
         return;
       }
       const handle: SessionHandle = { generation: opened.generation, sessionId: opened.sessionId };
-      if (!tabsRef.current.some((t) => t.id === id)) {
+      if (closedTabs.current.has(id)) {
         void apiRef.current.close(handle).catch(() => undefined);
         return;
       }
@@ -109,7 +115,9 @@ export function PveConsoles(props: PveConsolesProps) {
     if (launch === undefined || launch.nonce === lastNonce.current) return;
     lastNonce.current = launch.nonce;
     const id = nextId.current++;
-    setTabs((cur) => [...cur, { id, launch, handle: null, kind: null, attach: null, state: "opening", reason: null, owner: HUMAN_CONTROL }]);
+    // Adopting is for the first attach only: Reconnect always opens a new console.
+    const { adopt: _once, ...reopenable } = launch;
+    setTabs((cur) => [...cur, { id, launch: reopenable, handle: null, kind: null, attach: null, state: "opening", reason: null, owner: HUMAN_CONTROL }]);
     setActive(id);
     void start(id, launch);
   }, [props.launch, start]);
@@ -127,6 +135,7 @@ export function PveConsoles(props: PveConsolesProps) {
     void start(tab.id, tab.launch);
   };
   const closeTab = (tab: Tab): void => {
+    closedTabs.current.add(tab.id);
     closeQuietly(tab.handle);
     setTabs((cur) => cur.filter((t) => t.id !== tab.id));
     setActive((cur) => (cur === tab.id ? (tabsRef.current.find((t) => t.id !== tab.id)?.id ?? null) : cur));
@@ -147,7 +156,8 @@ export function PveConsoles(props: PveConsolesProps) {
   };
   const onEnded = (tab: Tab) => (info: { code: string; text: string }) => {
     const state = info.code === "vnc_not_resumable" || info.code === "vnc_view_taken" || info.code === "viewer_unavailable" || info.code === "vnc_auth_failed" ? "error" : endStateOf(info.code);
-    patch(tab.id, (t) => (t.state === "disconnected" || (t.state === "error" && t.reason !== null) ? {} : { state, reason: state === "disconnected" ? null : { code: info.code, text: info.text, fingerprint: null } }));
+    // The most specific reason seen so far is kept: a bare socket close (websocket_error) never replaces a real one.
+    patch(tab.id, (t) => (t.state === "disconnected" || (t.reason !== null && (t.state === "error" || (info.code === "websocket_error" && t.state === "lost"))) ? {} : { state, reason: state === "disconnected" ? null : { code: info.code, text: info.text, fingerprint: null } }));
   };
   const onControl = (tab: Tab) => (message: ControlMessage) => patch(tab.id, (t) => ({ owner: nextControl(t.owner, message) }));
 

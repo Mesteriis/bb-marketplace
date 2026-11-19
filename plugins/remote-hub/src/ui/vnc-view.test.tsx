@@ -310,6 +310,26 @@ describe("the graphical console view", () => {
     expect(m2.ended[0]?.code).toBe("vnc_not_resumable");
   });
 
+  it("a socket that closes without any message of its own is reported as the console lost (never left looking active)", async () => {
+    const m = mount();
+    const s = await startSession(m);
+    await act(async () => {
+      s.close(1006);
+    });
+    expect(m.ended).toEqual([{ code: "websocket_error", text: "The console connection broke (websocket error)." }]);
+    expect(m.states.at(-1)).toBe("ended");
+  });
+
+  it("a console's own end message is the reason; the socket close that follows adds nothing", async () => {
+    const m = mount();
+    const s = await startSession(m);
+    await act(async () => {
+      s.fromServerText({ type: "closed", reason: "remote_closed", text: "Proxmox closed the console." });
+      s.close(4000);
+    });
+    expect(m.ended).toEqual([{ code: "remote_closed", text: "Proxmox closed the console." }]);
+  });
+
   it("unmounting ends the view: it says detach, closes the socket and disconnects noVNC", async () => {
     const m = mount();
     const s = await startSession(m);

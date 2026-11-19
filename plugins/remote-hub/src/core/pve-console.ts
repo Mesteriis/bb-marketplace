@@ -49,6 +49,7 @@ const REASON_TEXT: Record<string, string> = {
   helper_exited: "The Remote Hub helper ended.",
   node_offline: "The node is not online.",
   idle_timeout: "Closed because nobody was looking at it.",
+  view_closed: "The graphical view was closed, so the console was closed with it. Open it again to get a new one.",
   vnc_buffer_overflow: "The console sent data before a view attached, so it was closed.",
   vnc_view_taken: "This console is already open in another view.",
   vnc_not_resumable: "This graphical console cannot be reattached; disconnect and open it again.",
@@ -61,7 +62,7 @@ export function reasonText(code: string): string {
 
 /** End reasons that are the owner's own doing: the console is `disconnected`. Everything else is `lost`. */
 export function endStateOf(reason: string): "disconnected" | "lost" {
-  return reason === "closed_by_user" || reason === "idle_timeout" || reason === "killed_by_close" ? "disconnected" : "lost";
+  return reason === "closed_by_user" || reason === "idle_timeout" || reason === "view_closed" || reason === "killed_by_close" ? "disconnected" : "lost";
 }
 
 export interface VncViewSink {

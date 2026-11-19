@@ -4,12 +4,13 @@
 // @get-bb/plugin-sdk/app are provided by the BB app at load time, so this
 // file must be loaded by BB, not imported directly.
 import "./app.css";
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ThreadTitle, definePluginApp, experimental_useAppPanel, useBbContext, useBbNavigate, useRealtime, useRpc, useSidebarSplitLayout } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server.ts";
 import type { SessionHandle } from "./src/core/rpc.ts";
 import { RemoteHubPage } from "./src/ui/remote-hub-page.tsx";
 import { ConnectPage } from "./src/ui/connect-page.tsx";
+import type { PveConsoleLaunch } from "./src/ui/pve-consoles.tsx";
 import { createConnectBridge } from "./src/ui/rpc-bridge.ts";
 import { AgentBanner, type AgentBannerApi } from "./src/ui/agent-banner.tsx";
 import { LiveSession, parseSessionKey, type LiveSessionApi } from "./src/ui/live-session.tsx";
@@ -27,6 +28,7 @@ const attachUrl = (): string => (typeof window !== "undefined" ? (window.locatio
 /** What a live view needs from the server, as the owner's RPC calls. */
 function useLiveApi(): LiveSessionApi {
   const rpc = useRpc<typeof rpcContract>();
+  const navigate = useBbNavigate();
   return useMemo<LiveSessionApi>(
     () => ({
       find: async (h) => {
@@ -35,8 +37,9 @@ function useLiveApi(): LiveSessionApi {
       },
       attach: async (h) => ({ token: ((await rpc.call("session_attach", { generation: h.generation, sessionId: h.sessionId })) as { token: string }).token, wsUrl: attachUrl() }),
       takeover: (h) => rpc.call("agent_control_takeover", { generation: h.generation, sessionId: h.sessionId }),
+      openRemoteHub: (h) => navigate.toPluginPanel(SESSION_PAGE, { subPath: `${h.generation}.${h.sessionId}` }),
     }),
-    [rpc],
+    [rpc, navigate],
   );
 }
 
@@ -207,6 +210,21 @@ function ConnectTab({ subPath }: { subPath: string }) {
   // This page is on screen for that session while it is mounted (the split fallback relies on it).
   const watchedKey = watched === null ? null : `${watched.generation}.${watched.sessionId}`;
   useEffect(() => (watchedKey === null ? undefined : markSessionPage(watchedKey)), [watchedKey]);
+  // A graphics console an agent opened is viewed here, on the Remote Hub page: its one view for its whole life.
+  const [adopt, setAdopt] = useState<PveConsoleLaunch | undefined>(undefined);
+  useEffect(() => {
+    if (watchedKey === null || watched === null) return;
+    let cancelled = false;
+    void (async () => {
+      const all = (await rpc.call("session_list")) as Array<{ generation: string; sessionId: number; kind: string; state: string; profileId?: string; pve?: { connectionName: string; console: "node" | "lxc" | "qemu"; node: string; vmid: number | null; guestName: string | null } }>;
+      const s = all.find((x) => x.generation === watched.generation && x.sessionId === watched.sessionId);
+      if (cancelled || s === undefined || s.kind !== "vnc" || s.state === "closed" || s.pve === undefined || s.profileId === undefined || s.pve.vmid === null) return;
+      setAdopt({ nonce: watched.sessionId + 1, profileId: s.profileId, connectionName: s.pve.connectionName, request: { console: "qemu", vmid: s.pve.vmid }, title: s.pve.guestName ?? "", adopt: { handle: watched, kind: "vnc" } });
+    })().catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [watchedKey]);
   const wsUrl = (typeof window !== "undefined" ? (window.location.protocol === "https:" ? "wss://" : "ws://") + window.location.host : "") + "/api/v1/plugins/makosh-remote-hub/http/attach";
   // The bridge strips undefined-valued keys (BB's RPC carries JSON values only).
   const bridge = useMemo(
@@ -216,7 +234,7 @@ function ConnectTab({ subPath }: { subPath: string }) {
   return (
     <WithAgentContext>
       {watched !== null && <LiveSession sessionKey={`${watched.generation}.${watched.sessionId}`} api={liveApi} />}
-      <ConnectPage profiles={bridge.profiles} credentials={bridge.credentials} imports={bridge.imports} agents={bridge.agents} pve={bridge.pve} pveConsoles={bridge.pveConsoles} live={liveApi} ssh={bridge.ssh} rdp={bridge.rdp} />
+      <ConnectPage profiles={bridge.profiles} credentials={bridge.credentials} imports={bridge.imports} agents={bridge.agents} pve={bridge.pve} pveConsoles={bridge.pveConsoles} {...(adopt !== undefined ? { adoptConsole: adopt } : {})} live={liveApi} ssh={bridge.ssh} rdp={bridge.rdp} />
     </WithAgentContext>
   );
 }

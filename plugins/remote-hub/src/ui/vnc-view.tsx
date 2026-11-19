@@ -46,6 +46,13 @@ export function VncView(props: VncViewProps) {
     // The password lives only in this variable, from the socket's message until noVNC takes it.
     let password: string | null = null;
     let wantsCredentials = false;
+    // Said once: the console's own end (a `closed` or `error` message) is the specific reason; a bare socket close is only the fallback.
+    let endReported = false;
+    const report = (info: { code: string; text: string }): void => {
+      if (endReported) return;
+      endReported = true;
+      propsRef.current.onEnded?.(info);
+    };
     const tracker = new ModifierTracker();
 
     const say = (state: VncViewState): void => propsRef.current.onViewState?.(state);
@@ -111,7 +118,7 @@ export function VncView(props: VncViewProps) {
           rfb?.focus({ preventScroll: true });
         });
         rfb.addEventListener("securityfailure", () => {
-          propsRef.current.onEnded?.({ code: "vnc_auth_failed", text: "The console refused the VNC password. Disconnect and open it again." });
+          report({ code: "vnc_auth_failed", text: "The console refused the VNC password. Disconnect and open it again." });
         });
         rfb.addEventListener("disconnect", () => {
           if (!disposed) say("ended");
@@ -119,7 +126,7 @@ export function VncView(props: VncViewProps) {
         say("waiting_frame");
       })
       .catch(() => {
-        if (!disposed) propsRef.current.onEnded?.({ code: "viewer_unavailable", text: "The graphical viewer could not be started." });
+        if (!disposed) report({ code: "viewer_unavailable", text: "The graphical viewer could not be started." });
       });
 
     let stopBeat: (() => void) | null = null;
@@ -147,9 +154,9 @@ export function VncView(props: VncViewProps) {
         propsRef.current.onConsole?.({ state: msg.state, reason: (msg.reason as PveConsoleInfo["reason"] | undefined) ?? null });
       } else if (msg.type === "closed") {
         password = null;
-        propsRef.current.onEnded?.({ code: typeof msg.reason === "string" ? msg.reason : (msg.code ?? "closed"), text: msg.text ?? "The console ended." });
+        report({ code: typeof msg.reason === "string" ? msg.reason : (msg.code ?? "closed"), text: msg.text ?? "The console ended." });
       } else if (msg.type === "error") {
-        propsRef.current.onEnded?.({ code: msg.code ?? "error", text: msg.text ?? "The console could not be shown." });
+        report({ code: msg.code ?? "error", text: msg.text ?? "The console could not be shown." });
       } else if (msg.type === "control" && (msg.owner === "human" || msg.owner === "agent")) {
         propsRef.current.onControl?.({ type: "control", owner: msg.owner, expiresAt: typeof msg.expiresAt === "number" ? msg.expiresAt : null });
       } else if (msg.type === "input_blocked") {
@@ -160,10 +167,13 @@ export function VncView(props: VncViewProps) {
     };
     socket.onclose = (event) => {
       channel.deliverClose(event.code, event.reason);
-      if (!disposed) say("ended");
+      if (disposed) return;
+      say("ended");
+      // A socket that closes with no message of its own is a terminal outcome too: the console is gone.
+      report({ code: "websocket_error", text: "The console connection broke (websocket error)." });
     };
     socket.onerror = () => {
-      if (!disposed) propsRef.current.onEnded?.({ code: "websocket_error", text: "The console connection broke (websocket error)." });
+      if (!disposed) report({ code: "websocket_error", text: "The console connection broke (websocket error)." });
     };
 
     return () => {

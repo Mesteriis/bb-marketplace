@@ -16,16 +16,18 @@ import { SshTerminal } from "./ssh-terminal.tsx";
 
 export interface LiveSessionApi {
   /** The session if it is open, else null. */
-  find: (handle: SessionHandle) => Promise<{ generation: string; sessionId: number; kind: "echo" | "ssh" | "rdp" | "pve" | "vnc"; state: "connecting" | "running" | "closed" } | null>;
+  find: (handle: SessionHandle) => Promise<{ generation: string; sessionId: number; kind: "echo" | "ssh" | "rdp" | "pve" | "vnc"; state: "connecting" | "running" | "closed"; pve?: { console: string; node: string; vmid: number | null; state: string; connectionName: string } } | null>;
   attach: (handle: SessionHandle) => Promise<{ token: string; wsUrl: string }>;
   takeover: (handle: SessionHandle) => Promise<unknown>;
+  /** Opens the Remote Hub page on this session: the one place a graphics console is viewed. */
+  openRemoteHub?: (handle: SessionHandle) => void;
 }
 
 export { parseSessionKey };
 
 export function LiveSession({ sessionKey, api }: { sessionKey: string; api: LiveSessionApi }) {
   const handle = parseSessionKey(sessionKey);
-  const [view, setView] = useState<{ kind: "ssh" | "rdp" | "pve" | "vnc"; token: string; wsUrl: string } | { problem: string } | null>(null);
+  const [view, setView] = useState<{ kind: "ssh" | "rdp" | "pve" | "vnc"; token: string; wsUrl: string } | { graphics: { console: string; node: string; vmid: number | null; state: string; connectionName: string } | null } | { problem: string } | null>(null);
   const [owner, setOwner] = useState<ControlView>(HUMAN_CONTROL);
   const onControl = useCallback((message: ControlMessage) => setOwner((cur) => nextControl(cur, message)), []);
   // The commands an agent runs on this session, as they happen (shown, not stored: this lives in the open view only).
@@ -45,6 +47,9 @@ export function LiveSession({ sessionKey, api }: { sessionKey: string; api: Live
         const found = await apiRef.current.find(h);
         if (cancelled) return;
         if (found === null || found.state === "closed" || found.kind === "echo") return setView({ problem: "This session is no longer open." });
+        // A graphics console has exactly ONE view for its whole life, and this card is not the place for it: attaching here would
+        // take it from the Remote Hub page (an RFB stream cannot be shared or resumed). It shows the state and a way there.
+        if (found.kind === "vnc") return setView({ graphics: found.pve ?? null });
         const attach = await apiRef.current.attach(h);
         if (!cancelled) setView({ kind: found.kind, token: attach.token, wsUrl: attach.wsUrl });
       } catch (e) {
@@ -64,6 +69,20 @@ export function LiveSession({ sessionKey, api }: { sessionKey: string; api: Live
     );
   }
   if (view === null) return <p className="rh-notice">Opening the live view…</p>;
+  if ("graphics" in view) {
+    const g = view.graphics;
+    return (
+      <div className="rh-live" data-testid="live-session-graphics">
+        <p className="rh-notice">
+          {g === null ? "A virtual machine's graphical console." : `Graphics of ${g.console === "qemu" ? "VM" : g.console}${g.vmid === null ? "" : " #" + g.vmid} on ${g.connectionName}, node ${g.node}: ${g.state}.`} It has one view, which is the Remote Hub
+          page, so it is not shown here.
+        </p>
+        <button type="button" onClick={() => api.openRemoteHub?.(handle)} disabled={api.openRemoteHub === undefined}>
+          View in Remote Hub
+        </button>
+      </div>
+    );
+  }
   if ("problem" in view) {
     return view.problem.startsWith("Could not") ? (
       <p role="alert" className="rh-error">

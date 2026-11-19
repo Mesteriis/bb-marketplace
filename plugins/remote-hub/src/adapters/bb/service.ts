@@ -530,7 +530,7 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
     vncRelays.delete(key);
     if (info.pve.state !== "error") {
       info.pve.state = endStateOf(reason);
-      info.pve.reason = info.pve.state === "lost" || reason === "idle_timeout" ? { code: reason, text: reasonText(reason), fingerprint: null } : null;
+      info.pve.reason = info.pve.state === "lost" || reason === "idle_timeout" || reason === "view_closed" ? { code: reason, text: reasonText(reason), fingerprint: null } : null;
     }
     notifyConsole(key);
   };
@@ -1195,6 +1195,10 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
             done = true;
             relay.detach();
             viewDetached(key);
+            // The stream cannot be resumed, so a console whose one view is gone has no use: it is closed now, not kept for a view
+            // that can never come (and nothing, not even the password, outlives it).
+            const info = sessions.get(key);
+            if (info !== undefined && info.state !== "closed") void closeSession(handle, "view_closed").catch(() => {});
           },
         },
       };

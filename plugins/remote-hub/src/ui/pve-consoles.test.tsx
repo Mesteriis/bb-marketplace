@@ -166,6 +166,33 @@ describe("PveConsoles", () => {
     expect(screen.getByTestId("pve-console-reason").textContent).toContain("cannot be reattached");
   });
 
+  it("a graphics socket that closes bare makes the tab lost with Reconnect enabled, and keeps an earlier specific reason", async () => {
+    const { api } = fakeApi();
+    render(<PveConsoles api={api} launch={launch(1, { console: "qemu", vmid: 200 }, "db")} />);
+    await screen.findByTestId("vnc");
+    const props = vncs[vncs.length - 1] as Record<string, (...a: unknown[]) => void>;
+    act(() => props.onConsole?.({ state: "active", reason: null }));
+    act(() => props.onEnded?.({ code: "websocket_error", text: "The console connection broke (websocket error)." }));
+    expect(screen.getByTestId("pve-console-state").textContent).toBe("lost");
+    expect((screen.getByRole("button", { name: "Reconnect" }) as HTMLButtonElement).disabled).toBe(false);
+    // a specific reason that came first is not replaced by the generic one that follows it
+    act(() => props.onConsole?.({ state: "lost", reason: { code: "remote_closed", text: "Proxmox closed the console.", fingerprint: null } }));
+    act(() => props.onEnded?.({ code: "websocket_error", text: "The console connection broke (websocket error)." }));
+    expect(screen.getByTestId("pve-console-reason").textContent).toContain("Proxmox closed the console");
+  });
+
+  it("an adopted console (one an agent opened) is attached to, not opened again; Reconnect later opens a new one", async () => {
+    const { api, calls } = fakeApi();
+    render(<PveConsoles api={api} launch={{ ...launch(1, { console: "qemu", vmid: 200 }, "db"), adopt: { handle: { generation: "c".repeat(32), sessionId: 3 }, kind: "vnc" } }} />);
+    await screen.findByTestId("vnc");
+    expect(calls.open).toEqual([]);
+    expect(calls.attach).toEqual([{ generation: "c".repeat(32), sessionId: 3 }]);
+    const props = vncs[vncs.length - 1] as Record<string, (...a: unknown[]) => void>;
+    act(() => props.onConsole?.({ state: "lost", reason: { code: "remote_closed", text: "x", fingerprint: null } }));
+    fireEvent.click(screen.getByRole("button", { name: "Reconnect" }));
+    await waitFor(() => expect(calls.open).toHaveLength(1));
+  });
+
   it("Close tab closes the console and removes the tab; a console opened for a tab closed meanwhile is closed again", async () => {
     let release: (v: { ok: true; generation: string; sessionId: number; kind: "pve" }) => void = () => {};
     const { api, calls } = fakeApi({ open: vi.fn(() => new Promise<PveConsoleOpened>((r) => (release = r as never))) });

@@ -8,6 +8,9 @@ vi.mock("./ssh-terminal.tsx", () => ({
     return <div data-testid="terminal" data-token={p.token} />;
   },
 }));
+vi.mock("./vnc-view.tsx", () => ({
+  VncView: () => <div data-testid="vnc-view-mounted" />,
+}));
 vi.mock("./rdp-canvas.tsx", () => ({
   RdpCanvas: (p: { token: string }) => <div data-testid="desktop" data-token={p.token} />,
 }));
@@ -80,5 +83,28 @@ describe("LiveSession", () => {
   it("an attach failure is shown, not thrown", async () => {
     render(<LiveSession sessionKey={KEY} api={api("ssh", { attach: vi.fn(async () => { throw new Error("session_not_found: gone"); }) })} />);
     await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("Could not show"));
+  });
+
+  it("a graphics console is NEVER attached by a card: it shows its state and a way to the Remote Hub page", async () => {
+    const openRemoteHub = vi.fn();
+    const a = api("ssh", {
+      find: vi.fn(async () => ({ generation: GEN, sessionId: 4, kind: "vnc" as const, state: "running" as const, pve: { console: "qemu", node: "pve1", vmid: 200, state: "active", connectionName: "lab" } })),
+      openRemoteHub,
+    });
+    render(<LiveSession sessionKey={KEY} api={a} />);
+    const card = await screen.findByTestId("live-session-graphics");
+    expect(card.textContent).toContain("Graphics of VM #200 on lab, node pve1: active");
+    expect(card.textContent).toContain("not shown here");
+    expect(a.attach).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("vnc-view-mounted")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "View in Remote Hub" }));
+    expect(openRemoteHub).toHaveBeenCalledWith({ generation: GEN, sessionId: 4 });
+  });
+
+  it("the graphics card has no button that does nothing when the page cannot open Remote Hub", async () => {
+    const a = api("ssh", { find: vi.fn(async () => ({ generation: GEN, sessionId: 4, kind: "vnc" as const, state: "running" as const })) });
+    render(<LiveSession sessionKey={KEY} api={a} />);
+    expect((await screen.findByRole("button", { name: "View in Remote Hub" })) as HTMLButtonElement).toHaveProperty("disabled", true);
+    expect(a.attach).not.toHaveBeenCalled();
   });
 });

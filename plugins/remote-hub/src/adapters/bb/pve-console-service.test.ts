@@ -225,13 +225,26 @@ describe("a graphical console (QEMU)", () => {
     expect(helper.vncInputs).toEqual([{ sessionId: 1, bytes: [3, 8, 255] }]);
   });
 
-  it("a second view is refused, and so is any view after the first one left", async () => {
+  it("a second view is refused while the first is attached", async () => {
     const { service } = setup();
     const { handle } = await service.pveOpen(args("qemu"));
-    const first = service.vncAttach(handle, sink().view);
+    service.vncAttach(handle, sink().view);
     expect(service.vncAttach(handle, sink().view)).toEqual({ ok: false, code: "vnc_view_taken" });
-    if (first.ok) first.attachment.detach();
-    expect(service.vncAttach(handle, sink().view)).toEqual({ ok: false, code: "vnc_not_resumable" });
+  });
+
+  it("when the one view detaches the console is closed with view_closed, and no view can attach to it any more", async () => {
+    const { helper, service, record } = setup();
+    const { handle } = await service.pveOpen(args("qemu"));
+    helper.event(handle.sessionId, { type: "vnc_password", password: SECRET_PW });
+    const first = service.vncAttach(handle, sink().view);
+    if (!first.ok) throw new Error("refused");
+    first.attachment.detach();
+    first.attachment.detach(); // twice is once
+    await vi.advanceTimersByTimeAsync(0);
+    expect(helper.closes).toEqual([1]);
+    expect(record(handle)).toMatchObject({ state: "closed", reason: "view_closed" });
+    expect(record(handle).pve).toMatchObject({ state: "disconnected", reason: { code: "view_closed" } });
+    expect(() => service.vncAttach(handle, sink().view)).toThrow();
   });
 
   it("the human's input is dropped while an agent holds the session", async () => {
@@ -432,14 +445,14 @@ describe("the attach socket of a graphical console", () => {
     expect(socket.closedWith?.code).toBe(4000);
   });
 
-  it("the view going away is not the console ending: it stays until the idle timeout closes it", async () => {
-    const { helper, service, attach } = wired({ idle: 1000 });
+  it("the view going away closes the console at once (an RFB stream cannot be resumed)", async () => {
+    const { helper, service, attach, record } = wired({ idle: 1000 });
     const { handle } = await service.pveOpen(args("qemu"));
     const { handlers } = await attach(handle);
     handlers.onClose();
-    expect(helper.closes).toEqual([]);
-    await vi.advanceTimersByTimeAsync(1001);
+    await vi.advanceTimersByTimeAsync(0);
     expect(helper.closes).toEqual([1]);
+    expect(record(handle).reason).toBe("view_closed");
   });
 
   it("rejects an invalid control message and takes a detach", async () => {

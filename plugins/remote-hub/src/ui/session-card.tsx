@@ -65,7 +65,7 @@ export function SessionCard({ sessionKey, api }: { sessionKey: string; api: Sess
   return (
     <div className="rh-session-card" role="group" aria-label="Live remote session" data-testid="session-card">
       <p>
-        <strong>Live session</strong> — {info.kind === "rdp" ? "desktop" : "terminal"}
+        <strong>Live session</strong> — {info.kind === "rdp" ? "desktop" : info.kind === "vnc" ? "graphics" : "terminal"}
         {thread !== null ? `, with agent thread ${thread}` : ""}.{" "}
         {info.watching ? "You are watching it." : info.watchingRequired ? "The agent can act only while you watch it." : "Your setting lets the agent act without a watcher."}
       </p>

@@ -40,6 +40,8 @@ export interface ConnectPageProps {
   /** Proxmox VE: adding a connection and listing its guests; without it there is no Proxmox screen. */
   pve?: PveApi;
   /** Proxmox consoles (a node shell, a container terminal, a VM's graphics); without it the console buttons stay off. */
+  /** A console an agent opened, to be viewed here (the Remote Hub page is where graphics have their one view). */
+  adoptConsole?: PveConsoleLaunch;
   pveConsoles?: { attach: PveConsolesApi["attach"]; close: PveConsolesApi["close"]; takeover?: PveConsolesApi["takeover"] };
 }
 
@@ -57,6 +59,12 @@ export function ConnectPage(props: ConnectPageProps) {
   const [pveList, setPveList] = useState<{ profileIds: string[] | null; key: number } | null>(null);
   const [addingPve, setAddingPve] = useState(false);
   const [consoleLaunch, setConsoleLaunch] = useState<PveConsoleLaunch | undefined>(undefined);
+  const adopted = useRef(0);
+  if (props.adoptConsole !== undefined && props.adoptConsole.nonce !== adopted.current && props.pveConsoles !== undefined) {
+    adopted.current = props.adoptConsole.nonce;
+    setConsoleLaunch(props.adoptConsole);
+    setKind("pve");
+  }
   const nonce = useRef(0);
   const api = props.profiles;
   const data = useProfiles(api);
