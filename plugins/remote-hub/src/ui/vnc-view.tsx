@@ -15,6 +15,7 @@ import { reasonText, VNC_CHANNEL_BACKLOG_BYTES, type PveConsoleInfo } from "../c
 const ACK_EVERY_BYTES = 256 * 1024;
 import type { ControlMessage } from "./control-banner.tsx";
 import { VncChannel } from "./vnc-channel.ts";
+import { loadNovnc } from "./novnc-loader.ts";
 import { ModifierTracker } from "./vnc-modifiers.ts";
 import { startWatchBeat } from "./watch-beat.ts";
 
@@ -34,7 +35,6 @@ export interface VncViewProps {
   loadRfb?: () => Promise<typeof RfbType>;
 }
 
-const loadNovnc = async (): Promise<typeof RfbType> => (await import("@novnc/novnc/core/rfb.js")).default;
 
 export function VncView(props: VncViewProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);

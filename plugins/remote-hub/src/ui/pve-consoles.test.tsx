@@ -173,6 +173,7 @@ describe("PveConsoles", () => {
     await screen.findByTestId("vnc");
     const props = vncs[vncs.length - 1] as Record<string, (...a: unknown[]) => void>;
     act(() => props.onConsole?.({ state: "active", reason: null }));
+    act(() => props.onViewState?.("ready")); // a screen was shown: this is a loss, not a failed start
     act(() => props.onEnded?.({ code: "websocket_error", text: "The console connection broke (websocket error)." }));
     expect(screen.getByTestId("pve-console-state").textContent).toBe("lost");
     expect((screen.getByRole("button", { name: "Reconnect" }) as HTMLButtonElement).disabled).toBe(false);
@@ -392,6 +393,7 @@ describe("PveConsoles: reconnecting, restoring and moved guests", () => {
     await act(async () => void (await vi.advanceTimersByTimeAsync(0)));
     const props = vncs[vncs.length - 1] as Record<string, (...a: unknown[]) => void>;
     act(() => props.onConsole?.({ state: "active", reason: null }));
+    act(() => props.onViewState?.("ready"));
     act(() => props.onConsole?.({ state: "lost", reason: { code: "remote_closed", text: "Proxmox closed the console.", fingerprint: null } }));
     expect(state()).toBe("lost");
     expect(screen.getByTestId("pve-console-new-console").textContent).toContain("cannot be resumed");
@@ -516,6 +518,63 @@ describe("PveConsoles: reconnecting, restoring and moved guests", () => {
       const before = state();
       act(() => oldTerminal.onConsole?.({ state: "lost", reason: { code: "remote_closed", text: "x", fingerprint: null } }));
       expect(state()).toBe(before);
+    });
+  });
+
+  describe("a graphical console that Proxmox closes before it showed anything", () => {
+    const lastVnc = () => vncs[vncs.length - 1] as Record<string, (...a: unknown[]) => void>;
+    const closedByProxmox = () => act(() => lastVnc().onConsole?.({ state: "lost", reason: { code: "remote_closed", text: "Proxmox closed the console.", fingerprint: null } }));
+
+    it("is opened ONCE more automatically (a new console), and says so", async () => {
+      const { api, calls } = fakeApi();
+      render(<PveConsoles api={api} launch={launch(1, { console: "qemu", vmid: 152 }, "vm")} />);
+      await act(async () => void (await vi.advanceTimersByTimeAsync(0)));
+      act(() => lastVnc().onConsole?.({ state: "active", reason: null }));
+      closedByProxmox();
+      await act(async () => void (await vi.advanceTimersByTimeAsync(0)));
+      await act(async () => void (await vi.advanceTimersByTimeAsync(0)));
+      expect(calls.open).toHaveLength(2);
+      expect(calls.close).toEqual([{ generation: "a".repeat(32), sessionId: 1 }]);
+      expect(screen.getByTestId("pve-console-notice").textContent).toContain("A new console was opened once");
+    });
+
+    it("a second failure before any screen stops with the vnc_start_timeout text, not 'websocket error'", async () => {
+      const { api, calls } = fakeApi();
+      render(<PveConsoles api={api} launch={launch(1, { console: "qemu", vmid: 152 }, "vm")} />);
+      await act(async () => void (await vi.advanceTimersByTimeAsync(0)));
+      closedByProxmox();
+      await act(async () => void (await vi.advanceTimersByTimeAsync(0)));
+      await act(async () => void (await vi.advanceTimersByTimeAsync(0)));
+      closedByProxmox();
+      await act(async () => void (await vi.advanceTimersByTimeAsync(0)));
+      expect(calls.open).toHaveLength(2); // no third
+      expect(state()).toBe("lost");
+      expect(screen.getByTestId("pve-console-reason").textContent).toContain("waits only about ten seconds");
+      expect(screen.getByTestId("pve-console-reason").textContent).not.toContain("websocket error");
+    });
+
+    it("a console that showed a screen is never retried by itself", async () => {
+      const { api, calls } = fakeApi();
+      render(<PveConsoles api={api} launch={launch(1, { console: "qemu", vmid: 152 }, "vm")} />);
+      await act(async () => void (await vi.advanceTimersByTimeAsync(0)));
+      act(() => lastVnc().onViewState?.("ready"));
+      closedByProxmox();
+      await act(async () => void (await vi.advanceTimersByTimeAsync(0)));
+      expect(calls.open).toHaveLength(1);
+      expect(state()).toBe("lost");
+    });
+
+    it("the viewer starts loading as soon as a graphical console is asked for, before the open answers; a terminal does not", async () => {
+      const preload = vi.fn();
+      const { api } = fakeApi({ preload, open: vi.fn(() => new Promise<PveConsoleOpened>(() => {})) });
+      render(<PveConsoles api={api} launch={launch(1, { console: "qemu", vmid: 152 }, "vm")} />);
+      await act(async () => void (await vi.advanceTimersByTimeAsync(0)));
+      expect(preload).toHaveBeenCalledTimes(1);
+      cleanup();
+      const p2 = vi.fn();
+      render(<PveConsoles api={fakeApi({ preload: p2 }).api} launch={launch(2, { console: "lxc", vmid: 101 })} />);
+      await act(async () => void (await vi.advanceTimersByTimeAsync(0)));
+      expect(p2).not.toHaveBeenCalled();
     });
   });
 

@@ -13,6 +13,7 @@ import type { ProfilesApi } from "./use-profiles.ts";
 import type { AgentApi } from "./agent-panel.tsx";
 import type { ImportApi } from "./import-panel.tsx";
 import type { PveApi } from "./pve-api.ts";
+import { preloadNovnc } from "./novnc-loader.ts";
 import type { PveConsolesApi } from "./pve-consoles.tsx";
 
 /** What useRpc().call looks like to this module; the page's own typing stays in app.tsx. */
@@ -24,7 +25,7 @@ export interface ConnectBridge {
   imports: ImportApi;
   agents: AgentApi;
   pve: PveApi;
-  pveConsoles: { attach: PveConsolesApi["attach"]; close: PveConsolesApi["close"]; takeover: NonNullable<PveConsolesApi["takeover"]>; tabs: NonNullable<PveConsolesApi["tabs"]> };
+  pveConsoles: { attach: PveConsolesApi["attach"]; close: PveConsolesApi["close"]; takeover: NonNullable<PveConsolesApi["takeover"]>; preload: NonNullable<PveConsolesApi["preload"]>; tabs: NonNullable<PveConsolesApi["tabs"]> };
   ssh: Pick<SshPageProps, "onSshOpen" | "onAttach" | "onClose" | "onTakeover">;
   rdp: Pick<RdpPageProps, "onRdpOpen" | "onAttach" | "onClose" | "onDecision" | "onScreenshot" | "onTakeover">;
 }
@@ -105,6 +106,7 @@ export function createConnectBridge(call: RpcCall, wsUrl: string): ConnectBridge
       takeover: async (handle) => {
         await send("agent_control_takeover", handle);
       },
+      preload: preloadNovnc,
       tabs: {
         list: async () => (await send<{ tabs: PveConsoleTabRow[] }>("pve_console_tabs_list", {})).tabs,
         put: async (row) => void (await send("pve_console_tab_put", row)),

@@ -55,6 +55,7 @@ const REASON_TEXT: Record<string, string> = {
   idle_timeout: "Closed because nobody was looking at it.",
   viewer_too_slow: "The viewer could not keep up with the console, so the console was closed (a graphics stream is never thinned out). Open it again.",
   viewer_failed: "The graphical viewer failed to start or stopped working, so the console was closed. Open it again.",
+  vnc_start_timeout: "Proxmox closed the graphical console before it showed anything (its VNC proxy waits only about ten seconds for the viewer). A second try was made and failed too. Reconnect opens a new one.",
   view_closed: "The graphical view was closed, so the console was closed with it. Open it again to get a new one.",
   vnc_buffer_overflow: "The console sent data before a view attached, so it was closed.",
   vnc_view_taken: "This console is already open in another view.",

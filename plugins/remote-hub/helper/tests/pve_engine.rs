@@ -351,6 +351,22 @@ async fn input_for_a_transport_that_never_reads_closes_the_console_instead_of_gr
 }
 
 #[tokio::test]
+async fn a_graphical_console_connects_its_websocket_at_once_and_waits_for_no_view() {
+    let fake = start_fake(default_state()).await;
+    let mut d = start_engine(&open(fake.port, ticket_auth(), ca_trust(), qemu("pve1", 100))).await;
+    // Nothing is sent after Open (no view, no attach, no input): the engine alone gets the proxy, the socket and the greeting.
+    let started = std::time::Instant::now();
+    d.until_state("open").await;
+    assert!(started.elapsed() < Duration::from_secs(2), "{:?}", started.elapsed());
+    let st = fake.state.lock().unwrap();
+    assert_eq!(st.vnc_opened, 1);
+    assert_eq!(st.requests.iter().filter(|r| r.ends_with("/vncproxy")).count(), 1);
+    drop(st);
+    d.send(&PveCommand::Close).await;
+    let _ = d.all().await;
+}
+
+#[tokio::test]
 async fn a_console_open_that_meets_an_expired_ticket_logs_in_again_once_and_opens() {
     let mut st = default_state();
     st.expire_next_uses = 1;

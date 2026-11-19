@@ -349,3 +349,18 @@ remains, the fake saw 20 sockets opened and 20 closed, and the helper holds the 
   `reasonCode`, and `reconnects` / `maxReconnects` (reopenings in a row by `remote_reconnect`). The owner's page reconnects owner-opened
   tabs by itself; an agent's console does not reconnect on its own.
 - There is no generic Proxmox API tool and nothing for power control.
+
+### Live-run fixes (build 30a043be, real PVE 9.2.4)
+
+- **First graphics open timed out ten seconds after the vncproxy task started.** The engine already connects the `vncwebsocket` right
+  after `vncproxy` returns and waits for no view (tested: no command after Open, socket and greeting within 2 s). What the view does
+  wait for is noVNC: a large lazily loaded chunk that was fetched only when the first graphical view mounted, so on a cold page the
+  viewer answered the server's greeting late, and Proxmox's VNC proxy gives up on a viewer that is silent for about ten seconds. (The
+  exact PVE-side timer is inferred from the symptom, not read from PVE's source.) Fixes: the page starts loading noVNC as soon as a
+  graphical console is asked for (`preloadNovnc`, in parallel with the open); a graphical console that Proxmox closes before it showed
+  a screen is opened ONCE more automatically (a new `vncproxy`) with a notice; a second failure says `vnc_start_timeout` in words
+  ("its VNC proxy waits only about ten seconds for the viewer") instead of "websocket error".
+- **A reconnected terminal was blank.** The new terminal is a new component; its history now comes from the screen text captured from
+  the previous terminal (read from it before it is replaced, and again from its teardown), written above "connection lost" and
+  "reconnected: a new console" lines. Covered by tests that run the real terminal component (`pve-consoles-real-terminal.test.tsx`).
+- **The guest list stays open** when a console is opened from it.

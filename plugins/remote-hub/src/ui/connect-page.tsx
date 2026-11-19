@@ -42,7 +42,7 @@ export interface ConnectPageProps {
   /** Proxmox consoles (a node shell, a container terminal, a VM's graphics); without it the console buttons stay off. */
   /** A console an agent opened, to be viewed here (the Remote Hub page is where graphics have their one view). */
   adoptConsole?: PveConsoleLaunch;
-  pveConsoles?: { attach: PveConsolesApi["attach"]; close: PveConsolesApi["close"]; takeover?: PveConsolesApi["takeover"]; tabs?: PveConsolesApi["tabs"] };
+  pveConsoles?: { attach: PveConsolesApi["attach"]; close: PveConsolesApi["close"]; takeover?: PveConsolesApi["takeover"]; preload?: PveConsolesApi["preload"]; tabs?: PveConsolesApi["tabs"] };
 }
 
 export function ConnectPage(props: ConnectPageProps) {
@@ -298,7 +298,7 @@ export function ConnectPage(props: ConnectPageProps) {
           {props.pveConsoles !== undefined && props.pve !== undefined && (
             <div hidden={kind !== "pve"} className="rh-kind-pane">
               <PveConsoles
-                api={{ open: props.pve.openConsole, attach: props.pveConsoles.attach, close: props.pveConsoles.close, ...(props.pveConsoles.takeover !== undefined ? { takeover: props.pveConsoles.takeover } : {}), ...(props.pveConsoles.tabs !== undefined ? { tabs: props.pveConsoles.tabs } : {}) }}
+                api={{ open: props.pve.openConsole, attach: props.pveConsoles.attach, close: props.pveConsoles.close, ...(props.pveConsoles.takeover !== undefined ? { takeover: props.pveConsoles.takeover } : {}), ...(props.pveConsoles.preload !== undefined ? { preload: props.pveConsoles.preload } : {}), ...(props.pveConsoles.tabs !== undefined ? { tabs: props.pveConsoles.tabs } : {}) }}
                 connectionName={(id) => data.profiles?.find((p) => p.id === id)?.name ?? null}
                 {...(consoleLaunch !== undefined ? { launch: consoleLaunch } : {})}
               />

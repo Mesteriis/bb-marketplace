@@ -24,6 +24,8 @@ export interface PveConsolesApi {
   attach(handle: SessionHandle): Promise<{ token: string; wsUrl: string }>;
   close(handle: SessionHandle): Promise<void>;
   takeover?(handle: SessionHandle): Promise<void>;
+  /** Starts loading the graphical viewer now (called when a graphical console is asked for). */
+  preload?(): void;
   /** Where the tab list is kept (targets only), so tabs come back after a restart as "not connected". */
   tabs?: {
     list(): Promise<PveConsoleTabRow[]>;
@@ -138,6 +140,9 @@ export function PveConsoles(props: PveConsolesProps) {
   const bump = (id: number): void => void tokens.current.set(id, (tokens.current.get(id) ?? 0) + 1);
   // What each tab's terminal showed when it was torn down (text only): the next console of that tab starts with it.
   const screens = useRef(new Map<number, string>());
+  // Graphics: whether a tab's current console ever showed a screen, and which tabs already had their one automatic second try.
+  const shown = useRef(new Set<number>());
+  const retriedOnce = useRef(new Set<number>());
   const terminalApis = useRef(new Map<number, MutableRefObject<TerminalApi | null>>());
 
   const patch = useCallback((id: number, change: Partial<Tab> | ((t: Tab) => Partial<Tab>)) => {
@@ -172,6 +177,7 @@ export function PveConsoles(props: PveConsolesProps) {
   const start = useCallback(
     async (id: number, launch: PveConsoleLaunch, attemptNo: number) => {
       const automatic = attemptNo > 0;
+      if (launch.request.console === "qemu") apiRef.current.preload?.();
       const mine = tokens.current.get(id) ?? 0;
       const stale = (): boolean => (tokens.current.get(id) ?? 0) !== mine || closedTabs.current.has(id);
       const earlier = tabsRef.current.find((t) => t.id === id)?.node ?? null;
@@ -333,8 +339,10 @@ export function PveConsoles(props: PveConsolesProps) {
     closeQuietly(tab.handle);
     patch(tab.id, { state: "disconnected", reason: null, attempt: 0 });
   };
-  const reconnect = (tab: Tab): void => {
+  const reconnect = (tab: Tab, notice: string | null = null): void => {
     bump(tab.id);
+    shown.current.delete(tab.id);
+    if (notice === null) retriedOnce.current.delete(tab.id);
     stopEpisode(tab.id);
     const mine = tokens.current.get(tab.id) ?? 0;
     // Close, then open: the old console is gone before the new one starts.
@@ -342,6 +350,7 @@ export function PveConsoles(props: PveConsolesProps) {
       if (tab.handle !== null) await apiRef.current.close(tab.handle).catch(() => undefined);
       if ((tokens.current.get(tab.id) ?? 0) !== mine || closedTabs.current.has(tab.id)) return;
       await start(tab.id, tab.launch, 0);
+      if (notice !== null) patch(tab.id, { notice });
     })();
   };
   const closeTab = (tab: Tab): void => {
@@ -402,6 +411,7 @@ export function PveConsoles(props: PveConsolesProps) {
     const state = event.state as PveConsoleState;
     const now = tabsRef.current.find((t) => t.id === tab.id);
     if (now === undefined || now.state === "disconnected" || now.state === "reconnecting") return;
+    if (state === "lost" && isGraphics(now) && graphicsLostBeforeScreen(now, event.reason?.code ?? "websocket_error")) return;
     if (state === "lost") {
       lost(tab, event.reason?.code ?? "websocket_error");
       return;
@@ -417,8 +427,25 @@ export function PveConsoles(props: PveConsolesProps) {
       if (e !== undefined && e.stable === null) e.stable = setTimeout(() => stopEpisode(tab.id), STABLE_AFTER_MS);
     }
   };
+  /**
+   * A graphical console that ends before it ever showed a screen, with the other side closing it (Proxmox's VNC proxy gives up on a
+   * viewer that took about ten seconds to answer): ONE automatic second try with a new console; if that fails the same way the
+   * reason says so instead of "websocket error". Returns true when it handled the loss.
+   */
+  const graphicsLostBeforeScreen = (tab: Tab, code: string): boolean => {
+    const now = tabsRef.current.find((t) => t.id === tab.id);
+    if (now === undefined || shown.current.has(tab.id) || !(code === "websocket_error" || code === "remote_closed") || now.state === "disconnected" || now.state === "error") return false;
+    if (!retriedOnce.current.has(tab.id)) {
+      retriedOnce.current.add(tab.id);
+      reconnect(now, "The graphical console was closed by Proxmox before it showed anything (its VNC proxy waits about ten seconds for the viewer). A new console was opened once, automatically.");
+      return true;
+    }
+    patch(tab.id, { state: "lost", reason: { code: "vnc_start_timeout", text: reasonText("vnc_start_timeout"), fingerprint: null } });
+    return true;
+  };
   const onEnded = (tab: Tab) => (info: { code: string; text: string }) => {
     if (superseded(tab)) return;
+    if ((info.code === "websocket_error" || info.code === "remote_closed") && isGraphics(tabsRef.current.find((t) => t.id === tab.id) ?? tab) && graphicsLostBeforeScreen(tab, info.code)) return;
     const state = info.code === "vnc_not_resumable" || info.code === "vnc_view_taken" || info.code === "viewer_unavailable" || info.code === "vnc_auth_failed" ? "error" : endStateOf(info.code);
     // The most specific reason seen so far is kept: a bare socket close (websocket_error) never replaces a real one.
     patch(tab.id, (t) => (t.state === "disconnected" || (t.reason !== null && (t.state === "error" || (info.code === "websocket_error" && t.state === "lost"))) ? {} : { state, reason: state === "disconnected" ? null : { code: info.code, text: info.text, fingerprint: null } }));
@@ -498,7 +525,7 @@ export function PveConsoles(props: PveConsolesProps) {
           {t.attach !== null && t.handle !== null && t.state !== "disconnected" && (
             <AgentStage handle={t.handle} control={t.owner} onTakeover={async () => void (await apiRef.current.takeover?.(t.handle as SessionHandle))}>
               {t.kind === "vnc" ? (
-                <VncView key={t.attach.token} wsUrl={t.attach.wsUrl} token={t.attach.token} onConsole={onConsole(t)} onEnded={onEnded(t)} onControl={onControl(t)} />
+                <VncView key={t.attach.token} onViewState={(v) => { if (v === "ready" && !superseded(t)) { shown.current.add(t.id); retriedOnce.current.delete(t.id); } }} wsUrl={t.attach.wsUrl} token={t.attach.token} onConsole={onConsole(t)} onEnded={onEnded(t)} onControl={onControl(t)} />
               ) : (
                 <SshTerminal
                   key={t.attach.token}
