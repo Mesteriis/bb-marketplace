@@ -136,6 +136,8 @@ export function PveConsoles(props: PveConsolesProps) {
   // produces is closed, never adopted, and a stale failure schedules nothing.
   const tokens = useRef(new Map<number, number>());
   const bump = (id: number): void => void tokens.current.set(id, (tokens.current.get(id) ?? 0) + 1);
+  // What each tab's terminal showed when it was torn down (text only): the next console of that tab starts with it.
+  const screens = useRef(new Map<number, string>());
   const terminalApis = useRef(new Map<number, MutableRefObject<TerminalApi | null>>());
 
   const patch = useCallback((id: number, change: Partial<Tab> | ((t: Tab) => Partial<Tab>)) => {
@@ -207,7 +209,13 @@ export function PveConsoles(props: PveConsolesProps) {
       const handle: SessionHandle = { generation: opened.generation, sessionId: opened.sessionId };
       const node = opened.node === "" ? earlier : opened.node;
       const current = tabsRef.current.find((t) => t.id === id);
-      patch(id, { handle, kind: opened.kind, node, state: "connecting", attach: null });
+      // A NEW console of a tab that showed something starts with that screen, a "lost" line and a "reconnected" line above its own
+      // output (the new terminal is a new component: without this it would be blank).
+      // The terminal still mounted (a Reconnect or an attempt starts before it is replaced) is read now; one already gone left its text.
+      const onScreen = terminalApis.current.get(id)?.current?.text() ?? "";
+      const carried = onScreen !== "" ? onScreen : (screens.current.get(id) ?? "");
+      const history = carried === "" ? "" : carried + (carried.split("\r\n").at(-1)?.includes("connection lost") ? "" : LOST_SEPARATOR) + RECONNECTED_SEPARATOR;
+      patch(id, { handle, kind: opened.kind, node, state: "connecting", attach: null, history });
       try {
         const attach = await apiRef.current.attach(handle);
         if (stale()) {
@@ -360,12 +368,9 @@ export function PveConsoles(props: PveConsolesProps) {
       return;
     }
     const api = terminalApis.current.get(tab.id)?.current ?? null;
-    let history = now.history;
     // Only a console that was live leaves a separator in the scrollback; an attempt that never became active adds nothing.
-    if (api !== null && now.state === "active") {
-      api.note(LOST_SEPARATOR);
-      history = api.text();
-    }
+    if (api !== null && now.state === "active") api.note(LOST_SEPARATOR);
+    const history = now.history;
     const e = episodeOf(tab.id);
     if (e.stable !== null) {
       clearTimeout(e.stable);
@@ -500,7 +505,8 @@ export function PveConsoles(props: PveConsolesProps) {
                   wsUrl={t.attach.wsUrl}
                   token={t.attach.token}
                   apiRef={apiRefFor(t.id)}
-                  history={t.history === "" ? "" : t.history + RECONNECTED_SEPARATOR}
+                  history={t.history}
+                  onDispose={(text) => void (text !== "" && screens.current.set(t.id, text))}
                   inputEnabled={t.state === "active"}
                   onInputRefused={() => patch(t.id, { notice: NOT_SENT })}
                   onStateChange={onTerminalState(t)}

@@ -43,6 +43,8 @@ export interface SshTerminalProps {
   /** False: what the user types is NOT sent; `onInputRefused` is told, so the page can say so. */
   inputEnabled?: boolean;
   onInputRefused?: () => void;
+  /** Told the screen's text just before the terminal is torn down, whatever the reason: a page can keep it for the next console. */
+  onDispose?: (screenText: string) => void;
   /** Filled with a function that sends a control message on the open socket. */
   controlRef?: MutableRefObject<((msg: unknown) => void) | null>;
 }
@@ -76,17 +78,15 @@ export function SshTerminal(props: SshTerminalProps) {
     terminal.open(container);
     fit.fit();
     if (props.history !== undefined && props.history !== "") terminal.write(props.history);
+    const screenText = (): string => {
+      const buffer = terminal.buffer.active;
+      const lines: string[] = [];
+      for (let i = Math.max(0, buffer.length - 2000); i < buffer.length; i++) lines.push(buffer.getLine(i)?.translateToString(true) ?? "");
+      while (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+      return lines.join("\r\n");
+    };
     if (props.apiRef !== undefined) {
-      props.apiRef.current = {
-        text: () => {
-          const buffer = terminal.buffer.active;
-          const lines: string[] = [];
-          for (let i = Math.max(0, buffer.length - 2000); i < buffer.length; i++) lines.push(buffer.getLine(i)?.translateToString(true) ?? "");
-          while (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
-          return lines.join("\r\n");
-        },
-        note: (line) => terminal.write(line),
-      };
+      props.apiRef.current = { text: screenText, note: (line) => terminal.write(line) };
     }
 
     const socket = new WebSocket(props.wsUrl + "?attach=" + encodeURIComponent(props.token));
@@ -211,6 +211,11 @@ export function SshTerminal(props: SshTerminalProps) {
       if (props.apiRef !== undefined) props.apiRef.current = null;
       if (socket.readyState === WebSocket.OPEN) sendControl({ type: "detach" });
       socket.close();
+      try {
+        propsRef.current.onDispose?.(screenText());
+      } catch {
+        // a screen that cannot be read is not worth failing the teardown
+      }
       terminal.dispose();
     };
   }, [props.wsUrl, props.token]);
