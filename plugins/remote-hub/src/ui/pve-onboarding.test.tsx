@@ -26,11 +26,11 @@ function api(over: Partial<PveApi> = {}) {
 }
 
 function fillAdmin(host = "pve.test") {
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: host } });
-  fireEvent.change(screen.getByLabelText("Administrator password"), { target: { value: ADMIN_PW } });
+  fireEvent.change(screen.getByLabelText("Адрес"), { target: { value: host } });
+  fireEvent.change(screen.getByLabelText("Пароль администратора"), { target: { value: ADMIN_PW } });
 }
-const passwordField = () => screen.getByLabelText("Administrator password") as HTMLInputElement;
-const review = () => fireEvent.click(screen.getByRole("button", { name: "Review what will be created" }));
+const passwordField = () => screen.getByLabelText("Пароль администратора") as HTMLInputElement;
+const review = () => fireEvent.click(screen.getByRole("button", { name: "Показать, что будет создано" }));
 
 describe("restricted user mode", () => {
   it("shows exactly what will be created and creates nothing before the owner confirms", async () => {
@@ -42,7 +42,7 @@ describe("restricted user mode", () => {
     expect(plan.textContent).toContain("RemoteHubConsole");
     expect(plan.textContent).toContain("Sys.Audit, Sys.Console, VM.Audit, VM.Console");
     expect(plan.textContent).toContain("remotehub@pve");
-    expect(plan.textContent).toContain("will be created with a generated password");
+    expect(plan.textContent).toContain("будет создан со сгенерированным паролем");
     expect(plan.textContent).toContain("pveum user delete remotehub@pve");
     expect(a.onboardPlan).toHaveBeenCalledWith({ host: "pve.test", port: 8006, trust: null, adminUser: "root@pam", adminPassword: ADMIN_PW, aclPath: "/", userId: "remotehub@pve" });
     expect(a.onboardApply).not.toHaveBeenCalled();
@@ -50,7 +50,7 @@ describe("restricted user mode", () => {
 
   it("says truthfully that the administrator login is used for this setup only, never stored", () => {
     render(<PveOnboarding api={api()} onDone={vi.fn()} onCancel={vi.fn()} />);
-    expect(screen.getByText(/used for this setup only, never stored/)).toBeTruthy();
+    expect(screen.getByText(/только для этой настройки, нигде не хранится/)).toBeTruthy();
     expect(document.body.textContent).not.toContain("used once");
   });
 
@@ -59,10 +59,10 @@ describe("restricted user mode", () => {
     const onDone = vi.fn();
     render(<PveOnboarding api={a} onDone={onDone} onCancel={vi.fn()} />);
     fillAdmin();
-    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "My PVE" } });
+    fireEvent.change(screen.getByLabelText("Название"), { target: { value: "My PVE" } });
     review();
     await screen.findByTestId("pve-plan");
-    fireEvent.click(screen.getByRole("button", { name: "Create and save" }));
+    fireEvent.click(screen.getByRole("button", { name: "Создать и сохранить" }));
     await waitFor(() => expect(onDone).toHaveBeenCalledWith("new-profile"));
     expect(a.onboardApply).toHaveBeenCalledWith({ host: "pve.test", port: 8006, trust: null, adminUser: "root@pam", adminPassword: ADMIN_PW, aclPath: "/", userId: "remotehub@pve", name: "My PVE", planDigest: DIGEST, replaceRole: false });
     expect(passwordField().value).toBe("");
@@ -72,11 +72,11 @@ describe("restricted user mode", () => {
     const a = api();
     render(<PveOnboarding api={a} onDone={vi.fn()} onCancel={vi.fn()} />);
     fillAdmin();
-    fireEvent.change(screen.getByLabelText("New user for Remote Hub"), { target: { value: "bad@pam" } });
+    fireEvent.change(screen.getByLabelText("Новый пользователь для Remote Hub"), { target: { value: "bad@pam" } });
     review();
     expect((await screen.findAllByRole("alert"))[0]?.textContent).toContain("@pve");
     expect(a.onboardPlan).not.toHaveBeenCalled();
-    fireEvent.change(screen.getByLabelText("New user for Remote Hub"), { target: { value: "rh-two@pve" } });
+    fireEvent.change(screen.getByLabelText("Новый пользователь для Remote Hub"), { target: { value: "rh-two@pve" } });
     review();
     await screen.findByTestId("pve-plan");
     expect(a.onboardPlan).toHaveBeenCalledWith(expect.objectContaining({ userId: "rh-two@pve" }));
@@ -89,13 +89,13 @@ describe("restricted user mode", () => {
     fillAdmin();
     review();
     const plan = await screen.findByTestId("pve-plan");
-    expect(plan.textContent).toContain("already exists with exactly these privileges; it stays as it is");
-    expect(plan.textContent).toContain("its password will be replaced by a new generated one");
+    expect(plan.textContent).toContain("уже существует ровно с этими правами; остаётся как есть");
+    expect(plan.textContent).toContain("его пароль будет заменён новым сгенерированным");
     const more = screen.getByTestId("pve-plan-extras").textContent ?? "";
-    expect(more).toContain("Permission PVEAdmin on /");
-    expect(more).toContain("Member of group admins");
-    expect(more).toContain("API token ci");
-    expect(more).toContain("None of it is removed");
+    expect(more).toContain("Право PVEAdmin на /");
+    expect(more).toContain("Состоит в группе admins");
+    expect(more).toContain("Токен API ci");
+    expect(more).toContain("Ничего из этого не убирается");
   });
 
   it("a user that is not ours blocks the apply and says to choose another name", async () => {
@@ -104,8 +104,8 @@ describe("restricted user mode", () => {
     fillAdmin();
     review();
     const plan = await screen.findByTestId("pve-plan");
-    expect(plan.textContent).toContain("was not created by Remote Hub");
-    expect((screen.getByRole("button", { name: "Create and save" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(plan.textContent).toContain("создан не Remote Hub");
+    expect((screen.getByRole("button", { name: "Создать и сохранить" }) as HTMLButtonElement).disabled).toBe(true);
     expect(a.onboardApply).not.toHaveBeenCalled();
   });
 
@@ -115,11 +115,11 @@ describe("restricted user mode", () => {
     fillAdmin();
     review();
     const plan = await screen.findByTestId("pve-plan");
-    expect(plan.textContent).toContain("exists with other privileges (now: Sys.Modify,VM.Audit)");
-    expect(plan.textContent).toContain("narrows the role for everyone who holds it");
-    const create = screen.getByRole("button", { name: "Create and save" }) as HTMLButtonElement;
+    expect(plan.textContent).toContain("существует с другими правами (сейчас: Sys.Modify,VM.Audit)");
+    expect(plan.textContent).toContain("сузит роль и для всех, у кого она есть");
+    const create = screen.getByRole("button", { name: "Создать и сохранить" }) as HTMLButtonElement;
     expect(create.disabled).toBe(true);
-    fireEvent.click(screen.getByLabelText(/Replace the role/));
+    fireEvent.click(screen.getByLabelText(/Заменить права роли/));
     expect(create.disabled).toBe(false);
     fireEvent.click(create);
     await waitFor(() => expect(a.onboardApply).toHaveBeenCalledWith(expect.objectContaining({ replaceRole: true })));
@@ -132,8 +132,8 @@ describe("restricted user mode", () => {
     fillAdmin();
     review();
     await screen.findByTestId("pve-plan");
-    fireEvent.click(screen.getByRole("button", { name: "Create and save" }));
-    expect((await screen.findByTestId("pve-onboard-error")).textContent).toContain("Proxmox changed after you reviewed the plan");
+    fireEvent.click(screen.getByRole("button", { name: "Создать и сохранить" }));
+    expect((await screen.findByTestId("pve-onboard-error")).textContent).toContain("Proxmox изменился после того, как вы посмотрели план");
     expect(screen.queryByTestId("pve-plan")).toBeNull();
     expect(passwordField().value).toBe("");
   });
@@ -146,14 +146,14 @@ describe("restricted user mode", () => {
     fillAdmin();
     review();
     await screen.findByTestId("pve-plan");
-    fireEvent.click(screen.getByRole("button", { name: "Create and save" }));
+    fireEvent.click(screen.getByRole("button", { name: "Создать и сохранить" }));
     const list = (await screen.findByTestId("pve-onboard-steps")).textContent ?? "";
-    expect(list).toContain("Role: done");
-    expect(list).toContain("User: done");
-    expect(list).toContain("Permission: failed");
-    expect(screen.getByTestId("pve-onboard-error").textContent).toContain("setup incomplete");
+    expect(list).toContain("Роль: сделано");
+    expect(list).toContain("Пользователь: сделано");
+    expect(list).toContain("Право: не удалось");
+    expect(screen.getByTestId("pve-onboard-error").textContent).toContain("настройка не завершена");
     expect(passwordField().value).toBe("");
-    fireEvent.click(screen.getByRole("button", { name: "Keep the connection and close" }));
+    fireEvent.click(screen.getByRole("button", { name: "Оставить подключение и закрыть" }));
     expect(onDone).toHaveBeenCalledWith("kept-profile");
   });
 
@@ -163,7 +163,7 @@ describe("restricted user mode", () => {
     fillAdmin();
     review();
     await screen.findByTestId("pve-plan");
-    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    fireEvent.click(screen.getByRole("button", { name: "Назад" }));
     expect(screen.queryByTestId("pve-plan")).toBeNull();
     expect(a.onboardApply).not.toHaveBeenCalled();
   });
@@ -172,8 +172,8 @@ describe("restricted user mode", () => {
     const a = api();
     render(<PveOnboarding api={a} onDone={vi.fn()} onCancel={vi.fn()} />);
     review();
-    expect((await screen.findAllByRole("alert"))[0]?.textContent).toContain("host");
-    fireEvent.change(screen.getByLabelText("Host"), { target: { value: "pve.test" } });
+    expect((await screen.findAllByRole("alert"))[0]?.textContent).toContain("адрес сервера Proxmox");
+    fireEvent.change(screen.getByLabelText("Адрес"), { target: { value: "pve.test" } });
     review();
     await waitFor(() => expect(screen.getAllByRole("alert").some((e) => e.textContent?.includes("administrator"))).toBe(true));
     expect(a.onboardPlan).not.toHaveBeenCalled();
@@ -188,7 +188,7 @@ describe("restricted user mode", () => {
     const cert = await screen.findByTestId("pve-onboard-cert");
     expect(cert.textContent).toContain(FP);
     expect(passwordField().value).toBe("");
-    fireEvent.click(screen.getByRole("button", { name: "Trust this certificate" }));
+    fireEvent.click(screen.getByRole("button", { name: "Доверять этому сертификату" }));
     fireEvent.change(passwordField(), { target: { value: ADMIN_PW } });
     review();
     await screen.findByTestId("pve-plan");
@@ -209,7 +209,7 @@ describe("restricted user mode", () => {
     const onCancel = vi.fn();
     render(<PveOnboarding api={a} onDone={vi.fn()} onCancel={onCancel} />);
     fillAdmin();
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Отмена" }));
     expect(onCancel).toHaveBeenCalled();
     expect(passwordField().value).toBe("");
     expect(a.onboardPlan).not.toHaveBeenCalled();
@@ -218,7 +218,7 @@ describe("restricted user mode", () => {
 
 describe("connect as is mode", () => {
   function choose() {
-    fireEvent.click(screen.getByLabelText(/Connect as is/));
+    fireEvent.click(screen.getByLabelText(/Подключиться как есть/));
   }
 
   it("saves a login for this connection and creates nothing in Proxmox", async () => {
@@ -226,10 +226,10 @@ describe("connect as is mode", () => {
     const onDone = vi.fn();
     render(<PveOnboarding api={a} onDone={onDone} onCancel={vi.fn()} />);
     choose();
-    fireEvent.change(screen.getByLabelText("Host"), { target: { value: "pve.test" } });
-    fireEvent.change(screen.getByLabelText("User (name@realm)"), { target: { value: "me@pve" } });
-    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "pw-1234567" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save connection" }));
+    fireEvent.change(screen.getByLabelText("Адрес"), { target: { value: "pve.test" } });
+    fireEvent.change(screen.getByLabelText("Пользователь (name@realm)"), { target: { value: "me@pve" } });
+    fireEvent.change(screen.getByLabelText("Пароль"), { target: { value: "pw-1234567" } });
+    fireEvent.click(screen.getByRole("button", { name: "Сохранить подключение" }));
     await waitFor(() => expect(onDone).toHaveBeenCalledWith("as-is-profile"));
     expect(a.onboardConnect).toHaveBeenCalledWith({ host: "pve.test", port: 8006, trust: null, name: "Proxmox", authMode: "ticket", user: "me@pve", secret: "pw-1234567" });
     expect(a.onboardPlan).not.toHaveBeenCalled();
@@ -240,11 +240,11 @@ describe("connect as is mode", () => {
     const a = api();
     render(<PveOnboarding api={a} onDone={vi.fn()} onCancel={vi.fn()} />);
     choose();
-    fireEvent.change(screen.getByLabelText("Host"), { target: { value: "pve.test" } });
-    fireEvent.change(screen.getByLabelText("Sign in with"), { target: { value: "token" } });
-    fireEvent.change(screen.getByLabelText("API token id (user@realm!name)"), { target: { value: "me@pve!rh" } });
-    fireEvent.change(screen.getByLabelText("API token secret"), { target: { value: "tok" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save connection" }));
+    fireEvent.change(screen.getByLabelText("Адрес"), { target: { value: "pve.test" } });
+    fireEvent.change(screen.getByLabelText("Способ входа"), { target: { value: "token" } });
+    fireEvent.change(screen.getByLabelText("Идентификатор токена API (user@realm!name)"), { target: { value: "me@pve!rh" } });
+    fireEvent.change(screen.getByLabelText("Секрет токена API"), { target: { value: "tok" } });
+    fireEvent.click(screen.getByRole("button", { name: "Сохранить подключение" }));
     await waitFor(() => expect(a.onboardConnect).toHaveBeenCalledWith(expect.objectContaining({ authMode: "token", user: "me@pve!rh", secret: "tok" })));
   });
 });

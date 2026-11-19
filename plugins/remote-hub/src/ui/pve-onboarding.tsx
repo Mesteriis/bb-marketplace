@@ -21,31 +21,31 @@ type Mode = "restricted" | "as_is";
 const USER_ID = /^[A-Za-z0-9._-]{1,64}@pve$/;
 
 const ROLE_TEXT: Record<PvePlan["role"], string> = {
-  create: "will be created",
-  keep: "already exists with exactly these privileges; it stays as it is",
-  differs: "exists with other privileges",
+  create: "будет создана",
+  keep: "уже существует ровно с этими правами; остаётся как есть",
+  differs: "существует с другими правами",
 };
 const USER_TEXT: Record<PvePlan["user"], string> = {
-  create: "will be created with a generated password",
-  rotate_password: "was created by Remote Hub before; its password will be replaced by a new generated one",
-  name_taken: "already exists and was not created by Remote Hub; nothing will be written. Choose another name",
+  create: "будет создан со сгенерированным паролем",
+  rotate_password: "создан Remote Hub раньше; его пароль будет заменён новым сгенерированным",
+  name_taken: "уже существует и создан не Remote Hub; ничего записано не будет. Выберите другое имя",
 };
 const ACL_TEXT: Record<PvePlan["acl"], string> = {
-  create: "will be added",
-  keep: "already exists; it stays as it is",
+  create: "будет добавлено",
+  keep: "уже существует; остаётся как есть",
 };
 const STEP_TEXT: Record<PveSteps[keyof PveSteps], string> = {
-  done: "done",
-  kept: "already in place",
-  failed: "failed",
-  not_attempted: "not attempted",
-  unknown: "unknown (the request was sent and no answer came; check in Proxmox)",
+  done: "сделано",
+  kept: "уже было",
+  failed: "не удалось",
+  not_attempted: "не выполнялось",
+  unknown: "неизвестно (запрос отправлен, ответа нет; проверьте в Proxmox)",
 };
 const FAILURE_TEXT: Record<string, string> = {
-  plan_changed: "Proxmox changed after you reviewed the plan. Nothing was written. Enter the password again to review the current state.",
-  plan_required: "The plan was not confirmed. Review it first.",
-  name_taken: "That user already exists and was not created by Remote Hub. Choose another user name.",
-  role_differs: "The role exists with other privileges. Confirm replacing it in the review, or leave it.",
+  plan_changed: "Proxmox изменился после того, как вы посмотрели план. Ничего не записано. Введите пароль ещё раз, чтобы увидеть текущее состояние.",
+  plan_required: "План не подтверждён. Сначала просмотрите его.",
+  name_taken: "Такой пользователь уже существует и создан не Remote Hub. Выберите другое имя.",
+  role_differs: "Роль существует с другими правами. Подтвердите замену в плане или оставьте как есть.",
 };
 
 const portOf = (text: string): number | null => (/^\d{1,5}$/.test(text.trim()) && Number(text) >= 1 && Number(text) <= 65535 ? Number(text) : null);
@@ -80,8 +80,8 @@ export function PveOnboarding(props: PveOnboardingProps) {
 
   const endpoint = () => {
     const p = portOf(port);
-    if (host.trim() === "") return "Enter the Proxmox host name or address.";
-    if (p === null) return "The port is a number from 1 to 65535.";
+    if (host.trim() === "") return "Введите имя или адрес сервера Proxmox.";
+    if (p === null) return "Порт — число от 1 до 65535.";
     return { host: host.trim(), port: p };
   };
 
@@ -111,8 +111,8 @@ export function PveOnboarding(props: PveOnboardingProps) {
     run(async () => {
       const ep = endpoint();
       if (typeof ep === "string") return setProblem(ep);
-      if (adminUser.trim() === "" || adminPassword === "") return setProblem("Enter the administrator's user and password.");
-      if (!USER_ID.test(userId.trim())) return setProblem("The new user is name@pve: letters, digits, dot, dash or underscore, then @pve.");
+      if (adminUser.trim() === "" || adminPassword === "") return setProblem("Введите пользователя и пароль администратора.");
+      if (!USER_ID.test(userId.trim())) return setProblem("Новый пользователь — имя@pve: буквы, цифры, точка, дефис или подчёркивание, затем @pve.");
       const answer = await api.onboardPlan(adminInput(ep, trust));
       if (answer.ok) {
         setReplaceRole(false);
@@ -124,7 +124,7 @@ export function PveOnboarding(props: PveOnboardingProps) {
     run(async () => {
       const ep = endpoint();
       if (typeof ep === "string") return setProblem(ep);
-      if (adminPassword === "") return setProblem("Enter the administrator's password again: it is used for each step and never kept.");
+      if (adminPassword === "") return setProblem("Введите пароль администратора ещё раз: он нужен на каждом шаге и нигде не хранится.");
       const answer = await api.onboardApply({ ...adminInput(ep, trust), name: name.trim() === "" ? "Proxmox" : name.trim(), planDigest: confirmed.digest, replaceRole });
       if (answer.ok) {
         forget();
@@ -140,7 +140,7 @@ export function PveOnboarding(props: PveOnboardingProps) {
     run(async () => {
       const ep = endpoint();
       if (typeof ep === "string") return setProblem(ep);
-      if (user.trim() === "" || secret === "") return setProblem("Enter the user (or token id) and the password (or token secret).");
+      if (user.trim() === "" || secret === "") return setProblem("Введите пользователя (или идентификатор токена) и пароль (или секрет токена).");
       const answer = await api.onboardConnect({ ...ep, trust, name: name.trim() === "" ? "Proxmox" : name.trim(), authMode, user: user.trim(), secret });
       if (answer.ok) {
         forget();
@@ -154,7 +154,7 @@ export function PveOnboarding(props: PveOnboardingProps) {
     if (failure?.fingerprint == null) return;
     setTrust({ mode: "pin", fingerprint: failure.fingerprint });
     setFailure(null);
-    setNotice("Certificate trusted for this server. Enter the password again to continue.");
+    setNotice("Сертификату этого сервера теперь доверяем. Введите пароль ещё раз, чтобы продолжить.");
   };
 
   const certificateFailure = failure !== null && failure.fingerprint !== null && (failure.code === "tls_untrusted" || failure.code === "cert_changed");
@@ -164,7 +164,7 @@ export function PveOnboarding(props: PveOnboardingProps) {
   return (
     <form
       className="rh-editor rh-pve-onboarding"
-      aria-label="Add Proxmox"
+      aria-label="Добавить Proxmox"
       onSubmit={(event) => {
         event.preventDefault();
         if (working) return;
@@ -174,115 +174,115 @@ export function PveOnboarding(props: PveOnboardingProps) {
         else void connectAsIs();
       }}
     >
-      <fieldset aria-label="Proxmox server" disabled={locked}>
-        <legend>Proxmox server</legend>
+      <fieldset aria-label="Сервер Proxmox" disabled={locked}>
+        <legend>Сервер Proxmox</legend>
         <label>
-          Name
+          Название
           <input value={name} onChange={(e) => setName(e.target.value)} />
         </label>
         <label>
-          Host
+          Адрес
           <input value={host} onChange={(e) => setHost(e.target.value)} placeholder="pve.example.com" />
         </label>
         <label>
-          Port
+          Порт
           <input value={port} onChange={(e) => setPort(e.target.value)} />
         </label>
         <label className="rh-check">
           <input type="radio" name="pve-mode" checked={mode === "restricted"} onChange={() => setMode("restricted")} />
-          Create a restricted user for Remote Hub (recommended)
+          Создать для Remote Hub пользователя с урезанными правами (рекомендуется)
         </label>
         <label className="rh-check">
           <input type="radio" name="pve-mode" checked={mode === "as_is"} onChange={() => setMode("as_is")} />
-          Connect as is, with a login or API token I already have
+          Подключиться как есть, с моим логином или токеном API
         </label>
       </fieldset>
 
       {mode === "restricted" ? (
-        <fieldset aria-label="Administrator login" disabled={locked}>
-          <legend>Administrator login (used for this setup only, never stored)</legend>
+        <fieldset aria-label="Вход администратора" disabled={locked}>
+          <legend>Вход администратора (только для этой настройки, нигде не хранится)</legend>
           <label>
-            Administrator user
+            Пользователь-администратор
             <input value={adminUser} onChange={(e) => setAdminUser(e.target.value)} />
           </label>
           <label>
-            Administrator password
+            Пароль администратора
             <input type="password" autoComplete="off" value={adminPassword} onChange={(e) => setAdminPassword(e.target.value)} />
           </label>
           <label>
-            Permission path
+            Путь прав
             <input value={aclPath} onChange={(e) => setAclPath(e.target.value)} />
           </label>
           <label>
-            New user for Remote Hub
+            Новый пользователь для Remote Hub
             <input value={userId} onChange={(e) => setUserId(e.target.value)} />
           </label>
-          <p className="rh-hint">Use / for the whole cluster, or /pool/&lt;name&gt; to limit the new user to one resource pool. The user is always in the pve realm.</p>
+          <p className="rh-hint">Укажите / для всего кластера или /pool/&lt;имя&gt;, чтобы ограничить нового пользователя одним пулом ресурсов. Пользователь всегда в области pve.</p>
         </fieldset>
       ) : (
-        <fieldset aria-label="Login" disabled={working}>
-          <legend>Login saved for this connection</legend>
+        <fieldset aria-label="Вход" disabled={working}>
+          <legend>Вход, сохраняемый для этого подключения</legend>
           <label>
-            Sign in with
+            Способ входа
             <select value={authMode} onChange={(e) => setAuthMode(e.target.value as "ticket" | "token")}>
-              <option value="ticket">User and password</option>
-              <option value="token">API token</option>
+              <option value="ticket">Пользователь и пароль</option>
+              <option value="token">Токен API</option>
             </select>
           </label>
           <label>
-            {authMode === "token" ? "API token id (user@realm!name)" : "User (name@realm)"}
+            {authMode === "token" ? "Идентификатор токена API (user@realm!name)" : "Пользователь (name@realm)"}
             <input value={user} onChange={(e) => setUser(e.target.value)} />
           </label>
           <label>
-            {authMode === "token" ? "API token secret" : "Password"}
+            {authMode === "token" ? "Секрет токена API" : "Пароль"}
             <input type="password" autoComplete="off" value={secret} onChange={(e) => setSecret(e.target.value)} />
           </label>
-          <p className="rh-hint">Saved in the macOS Keychain for this connection only. Nothing is created in Proxmox. An API token may not be accepted for consoles on every Proxmox version.</p>
+          <p className="rh-hint">Сохраняется в Связке ключей macOS только для этого подключения. В Proxmox ничего не создаётся. Токен API подходит для консолей не на каждой версии Proxmox.</p>
         </fieldset>
       )}
 
       {plan !== null && (
-        <section aria-label="What will be created" data-testid="pve-plan">
-          <h3>What Remote Hub will create in Proxmox</h3>
+        <section aria-label="Что будет создано" data-testid="pve-plan">
+          <h3>Что Remote Hub создаст в Proxmox</h3>
           <ul>
             <li>
-              Role <strong>{PVE_PROVISION.role}</strong> with only {PVE_PROVISION.privileges.join(", ")}: {ROLE_TEXT[plan.role]}
-              {plan.role === "differs" && plan.rolePrivs !== null ? ` (now: ${plan.rolePrivs === "" ? "no privileges" : plan.rolePrivs})` : ""}.
+              Роль <strong>{PVE_PROVISION.role}</strong> только с правами {PVE_PROVISION.privileges.join(", ")}: {ROLE_TEXT[plan.role]}
+              {plan.role === "differs" && plan.rolePrivs !== null ? ` (сейчас: ${plan.rolePrivs === "" ? "без прав" : plan.rolePrivs})` : ""}.
             </li>
             <li>
-              User <strong>{plan.userId}</strong>: {USER_TEXT[plan.user]}.
+              Пользователь <strong>{plan.userId}</strong>: {USER_TEXT[plan.user]}.
             </li>
             <li>
-              Permission on <strong>{aclPath.trim()}</strong> giving that user that role: {ACL_TEXT[plan.acl]}.
+              Право на <strong>{aclPath.trim()}</strong>, дающее этому пользователю эту роль: {ACL_TEXT[plan.acl]}.
             </li>
           </ul>
           {plan.role === "differs" && (
             <label className="rh-check">
               <input type="checkbox" checked={replaceRole} onChange={(e) => setReplaceRole(e.target.checked)} />
-              Replace the role&apos;s privileges with the four above. This also narrows the role for everyone who holds it.
+              Заменить права роли на четыре указанных выше. Это сузит роль и для всех, у кого она есть.
             </label>
           )}
           {plan.user === "rotate_password" && (plan.extras.acl.length > 0 || plan.extras.groups.length > 0 || plan.extras.tokens.length > 0) && (
             <div data-testid="pve-plan-extras">
-              <p>This user already holds more than Remote Hub grants. None of it is removed:</p>
+              <p>У этого пользователя уже больше прав, чем выдаёт Remote Hub. Ничего из этого не убирается:</p>
               <ul>
                 {plan.extras.acl.map((g) => (
                   <li key={`${g.path}|${g.role}`}>
-                    Permission {g.role} on {g.path}
+                    Право {g.role} на {g.path}
                   </li>
                 ))}
                 {plan.extras.groups.map((g) => (
-                  <li key={`g|${g}`}>Member of group {g}</li>
+                  <li key={`g|${g}`}>Состоит в группе {g}</li>
                 ))}
                 {plan.extras.tokens.map((t) => (
-                  <li key={`t|${t}`}>API token {t}</li>
+                  <li key={`t|${t}`}>Токен API {t}</li>
                 ))}
               </ul>
             </div>
           )}
           <p className="rh-hint">
-            The administrator login is used for each step of this setup and is not stored; you will not be asked again after you confirm. The new password goes only to the macOS Keychain. To remove everything later, delete the user and the
-            role in Proxmox (<code>pveum user delete {plan.userId}</code>, <code>pveum role delete {PVE_PROVISION.role}</code>) and delete this connection here.
+            Вход администратора используется на каждом шаге настройки и не хранится; после подтверждения вас больше не спросят. Новый пароль попадает только в Связку ключей macOS. Чтобы потом всё убрать, удалите пользователя и
+            роль в Proxmox (<code>pveum user delete {plan.userId}</code>, <code>pveum role delete {PVE_PROVISION.role}</code>) и удалите это подключение здесь.
           </p>
         </section>
       )}
@@ -293,10 +293,10 @@ export function PveOnboarding(props: PveOnboardingProps) {
         <div className="rh-cert" data-testid="pve-onboard-cert">
           <p className="rh-error">{adviceFor(outcomeOfFailure(failure.code), null)}</p>
           <p>
-            Certificate fingerprint (SHA-256): <code>{failure.fingerprint}</code>
+            Отпечаток сертификата (SHA-256): <code>{failure.fingerprint}</code>
           </p>
           <button type="button" onClick={confirmCertificate}>
-            {failure.code === "cert_changed" ? "Trust the new certificate" : "Trust this certificate"}
+            {failure.code === "cert_changed" ? "Доверять новому сертификату" : "Доверять этому сертификату"}
           </button>
         </div>
       )}
@@ -305,16 +305,16 @@ export function PveOnboarding(props: PveOnboardingProps) {
           <p>{FAILURE_TEXT[failure.code] ?? adviceFor(outcomeOfFailure(failure.code), failure.message) ?? failure.message}</p>
           {failure.steps != null && (
             <ul data-testid="pve-onboard-steps">
-              <li>Role: {STEP_TEXT[failure.steps.role]}</li>
-              <li>User: {STEP_TEXT[failure.steps.user]}</li>
-              <li>Permission: {STEP_TEXT[failure.steps.acl]}</li>
+              <li>Роль: {STEP_TEXT[failure.steps.role]}</li>
+              <li>Пользователь: {STEP_TEXT[failure.steps.user]}</li>
+              <li>Право: {STEP_TEXT[failure.steps.acl]}</li>
             </ul>
           )}
           {failure.profileId !== undefined && (
             <p>
-              Setup is incomplete. The new login is already saved in a connection marked &quot;setup incomplete&quot;. Run the setup again to finish it.{" "}
+              Настройка не завершена. Новый вход уже сохранён в подключении с пометкой «настройка не завершена». Запустите настройку ещё раз, чтобы закончить.{" "}
               <button type="button" onClick={() => props.onDone(failure.profileId as string)}>
-                Keep the connection and close
+                Оставить подключение и закрыть
               </button>
             </p>
           )}
@@ -328,7 +328,7 @@ export function PveOnboarding(props: PveOnboardingProps) {
 
       <div className="rh-editor-actions">
         <button type="submit" disabled={working || blocked}>
-          {plan !== null ? "Create and save" : mode === "restricted" ? "Review what will be created" : "Save connection"}
+          {plan !== null ? "Создать и сохранить" : mode === "restricted" ? "Показать, что будет создано" : "Сохранить подключение"}
         </button>
         {plan !== null && (
           <button
@@ -339,7 +339,7 @@ export function PveOnboarding(props: PveOnboardingProps) {
               setReplaceRole(false);
             }}
           >
-            Back
+            Назад
           </button>
         )}
         <button
@@ -349,7 +349,7 @@ export function PveOnboarding(props: PveOnboardingProps) {
             props.onCancel();
           }}
         >
-          Cancel
+          Отмена
         </button>
       </div>
     </form>
