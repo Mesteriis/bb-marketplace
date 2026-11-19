@@ -82,8 +82,9 @@ function Count({ unread }: { unread: number }) {
   );
 }
 
+// scroll-mx: the tab in view stops short of the row's faded edge.
 const TAB_CLASS =
-  "flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-2 text-sm text-muted-foreground transition-colors hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring";
+  "flex h-7 shrink-0 scroll-mx-6 items-center gap-1.5 whitespace-nowrap rounded-md px-2 text-sm text-muted-foreground transition-colors hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring";
 
 export function InboxTabs(props: InboxTabsProps) {
   const { tabs, currentId, library } = props;
@@ -144,7 +145,7 @@ export function InboxTabs(props: InboxTabsProps) {
                   key={tab.id}
                   role="none"
                   ref={selected ? (el) => void (selectedRef.current = el) : undefined}
-                  className="flex shrink-0 items-center"
+                  className="flex shrink-0 scroll-mx-6 items-center"
                 >
                   <button
                     type="button"
