@@ -590,9 +590,11 @@ export function PveConsoles(props: PveConsolesProps) {
             note={<div className="px-3">{notes(t)}</div>}
             actions={
               <>
-                <Button type="button" size="sm" variant="ghost" disabled={!canReconnect(t)} onClick={() => reconnect(t)}>
-                  {tx("session.reconnect")}
-                </Button>
+                {canReconnect(t) && (
+                  <Button type="button" size="sm" variant="outline" onClick={() => reconnect(t)}>
+                    {tx("session.reconnect")}
+                  </Button>
+                )}
                 <Button type="button" size="sm" variant="ghost" disabled={t.state === "disconnected" || t.state === "restored" || (t.handle === null && t.state !== "reconnecting")} onClick={() => disconnect(t)}>
                   {tx("session.disconnect")}
                 </Button>

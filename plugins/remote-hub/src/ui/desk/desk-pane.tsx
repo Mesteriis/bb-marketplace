@@ -40,16 +40,16 @@ export function DeskPane({ session, actions, onClose, note, children }: DeskPane
       className={cn("min-h-0 min-w-0 flex-col overflow-hidden rounded-lg border bg-background", order === -1 ? "hidden" : "flex", focused && desk.shown.length > 1 ? "border-ring" : "border-border")}
     >
       <header className="flex h-9 shrink-0 items-center gap-2 border-b border-border px-3 text-sm">
-        <strong className="truncate font-semibold">{session.title}</strong>
-        <span className="truncate text-muted-foreground">{session.detail}</span>
+        <strong className="max-w-[45%] shrink-0 truncate font-semibold" title={session.title}>{session.title}</strong>
+        <span className="min-w-0 truncate text-muted-foreground">{session.detail}</span>
         <SessionStatus session={session} />
-        {session.state === "active" && (
+        {session.state === "active" && session.owner === "agent" && (
           <span className="shrink-0 rounded-full bg-secondary px-2 py-0.5 text-xs text-muted-foreground" data-testid="desk-pane-owner">
-            {tx(session.owner === "agent" ? "session.drivenByAgent" : "session.drivenByYou")}
+            {tx("session.drivenByAgent")}
           </span>
         )}
         <span className="flex-1" />
-        {actions}
+        <span className="flex shrink-0 items-center">{actions}</span>
       </header>
       {note}
       <div ref={body} className="relative flex min-h-0 flex-1 flex-col">
