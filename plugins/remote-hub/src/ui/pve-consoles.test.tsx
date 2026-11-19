@@ -414,6 +414,111 @@ describe("PveConsoles: reconnecting, restoring and moved guests", () => {
     expect(screen.getByTestId("pve-console").textContent).toContain("container web #101 on pve2");
   });
 
+  describe("work that began before Disconnect, Reconnect or Close tab", () => {
+    type Opened = PveConsoleOpened;
+    const okOpen = (n: number): Opened => ({ ok: true, generation: "a".repeat(32), sessionId: n, kind: "pve", node: "pve1" });
+    /** The first open completes at once; later ones wait for `settle`. */
+    function deferredApi() {
+      const log: string[] = [];
+      const pending: Array<(v: Opened) => void> = [];
+      let n = 0;
+      const api: PveConsolesApi = {
+        open: vi.fn(async () => {
+          n += 1;
+          log.push("open");
+          if (n === 1) return okOpen(1);
+          return await new Promise<Opened>((r) => pending.push(r));
+        }),
+        attach: vi.fn(async (h) => (log.push("attach " + h.sessionId), { token: "tok-" + h.sessionId, wsUrl: "ws://x" })),
+        close: vi.fn(async (h) => void log.push("close " + h.sessionId)),
+      };
+      return { api, log, pending };
+    }
+    async function lostAndAttempting(api: PveConsolesApi) {
+      await active(api);
+      act(() => lastTerminal().onStateChange?.("closed", LOST));
+      await advance(1000); // attempt 1 is now opening and never answers on its own
+    }
+
+    it("probe A: a late SUCCESS after Disconnect is closed, never adopted", async () => {
+      const { api, log, pending } = deferredApi();
+      await lostAndAttempting(api);
+      fireEvent.click(screen.getByRole("button", { name: "Disconnect" }));
+      await act(async () => pending[0]!(okOpen(2)));
+      await advance(0);
+      expect(log).toContain("close 2");
+      expect(log).not.toContain("attach 2");
+      expect(state()).toBe("disconnected");
+    });
+
+    it("probe B: a late RETRYABLE failure after Disconnect schedules nothing", async () => {
+      const { api, pending } = deferredApi();
+      await lostAndAttempting(api);
+      fireEvent.click(screen.getByRole("button", { name: "Disconnect" }));
+      await act(async () => pending[0]!({ ok: false, code: "unreachable", message: "", fingerprint: null }));
+      await advance(120_000);
+      expect(api.open).toHaveBeenCalledTimes(2);
+      expect(state()).toBe("disconnected");
+    });
+
+    it("Disconnect then Reconnect while the old open is pending leaves exactly one console", async () => {
+      const { api, log, pending } = deferredApi();
+      await lostAndAttempting(api);
+      fireEvent.click(screen.getByRole("button", { name: "Disconnect" }));
+      fireEvent.click(screen.getByRole("button", { name: "Reconnect" }));
+      await advance(0);
+      expect(pending).toHaveLength(2);
+      await act(async () => pending[0]!(okOpen(2))); // the old open finishes late
+      await act(async () => pending[1]!(okOpen(3)));
+      await advance(0);
+      expect(log).toContain("close 2");
+      expect(log).toContain("attach 3");
+      expect(log).not.toContain("attach 2");
+      expect(log.filter((l) => l.startsWith("attach"))).toEqual(["attach 1", "attach 3"]);
+    });
+
+    it("an attempt closes the lost console and waits for that close before it opens the next one", async () => {
+      const { api, log } = deferredApi();
+      let releaseClose!: () => void;
+      (api.close as ReturnType<typeof vi.fn>).mockImplementation(async (h: { sessionId: number }) => {
+        log.push("close " + h.sessionId);
+        await new Promise<void>((r) => (releaseClose = r));
+        log.push("closed " + h.sessionId);
+      });
+      await active(api);
+      act(() => lastTerminal().onStateChange?.("closed", LOST));
+      await advance(1000);
+      expect(log.filter((l) => l !== "attach 1")).toEqual(["open", "close 1"]); // the open waits for the close
+      releaseClose();
+      await advance(0);
+      expect(log.filter((l) => l !== "attach 1")).toEqual(["open", "close 1", "closed 1", "open"]);
+    });
+
+    it("a console whose attach failed is closed, and the tab says so", async () => {
+      const { api, log } = deferredApi();
+      (api.attach as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("no socket"));
+      render(<PveConsoles api={api} launch={launch(1, { console: "lxc", vmid: 101 })} />);
+      await advance(0);
+      expect(log).toContain("close 1");
+      expect(state()).toBe("error");
+      expect(screen.getByTestId("pve-console-reason").textContent).toContain("no socket");
+    });
+
+    it("events of a console that was replaced are ignored", async () => {
+      const { api, pending } = deferredApi();
+      await active(api);
+      const oldTerminal = lastTerminal();
+      fireEvent.click(screen.getByRole("button", { name: "Disconnect" }));
+      fireEvent.click(screen.getByRole("button", { name: "Reconnect" }));
+      await advance(0);
+      await act(async () => pending[0]!(okOpen(5)));
+      await advance(0);
+      const before = state();
+      act(() => oldTerminal.onConsole?.({ state: "lost", reason: { code: "remote_closed", text: "x", fingerprint: null } }));
+      expect(state()).toBe(before);
+    });
+  });
+
   describe("the tab list", () => {
     const row = (id: string, over: Record<string, unknown> = {}) => ({ id, profileId: "p1", console: "lxc" as const, node: "pve1", vmid: 101, title: "web", ...over });
     const ID1 = "11111111-1111-4111-8111-111111111111";

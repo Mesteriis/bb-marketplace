@@ -131,6 +131,10 @@ export function PveConsoles(props: PveConsolesProps) {
   const tabsRef = useRef<Tab[]>([]);
   tabsRef.current = tabs;
   const episodes = useRef(new Map<number, Episode>());
+  // One counter per tab, bumped by Disconnect, Reconnect and Close tab: work that began before is stale. A console a stale open
+  // produces is closed, never adopted, and a stale failure schedules nothing.
+  const tokens = useRef(new Map<number, number>());
+  const bump = (id: number): void => void tokens.current.set(id, (tokens.current.get(id) ?? 0) + 1);
   const terminalApis = useRef(new Map<number, MutableRefObject<TerminalApi | null>>());
 
   const patch = useCallback((id: number, change: Partial<Tab> | ((t: Tab) => Partial<Tab>)) => {
@@ -161,10 +165,13 @@ export function PveConsoles(props: PveConsolesProps) {
   const start = useCallback(
     async (id: number, launch: PveConsoleLaunch, attemptNo: number) => {
       const automatic = attemptNo > 0;
+      const mine = tokens.current.get(id) ?? 0;
+      const stale = (): boolean => (tokens.current.get(id) ?? 0) !== mine || closedTabs.current.has(id);
       const earlier = tabsRef.current.find((t) => t.id === id)?.node ?? null;
       if (automatic) patch(id, { state: "reconnecting", attempt: attemptNo, reason: null });
       else patch(id, { state: "opening", reason: null, handle: null, attach: null, kind: null, owner: HUMAN_CONTROL, attempt: 0, notice: null });
       const failed = (code: string, text: string, fingerprint: string | null): void => {
+        if (stale()) return;
         const decision = automatic ? decideReconnect(attemptNo, code, Math.random()) : null;
         if (decision !== null && decision.action === "wait") {
           scheduleRef.current(id, launch, decision.attempt, decision.delayMs);
@@ -183,8 +190,9 @@ export function PveConsoles(props: PveConsolesProps) {
         failed("open_failed", e instanceof Error ? e.message : String(e), null);
         return;
       }
-      if (closedTabs.current.has(id)) {
-        if (opened.ok) void apiRef.current.close({ generation: opened.generation, sessionId: opened.sessionId }).catch(() => undefined);
+      if (stale()) {
+        // Disconnect, Reconnect or Close tab came while this was opening: what opened is closed, not adopted.
+        if (opened.ok && launch.adopt === undefined) void apiRef.current.close({ generation: opened.generation, sessionId: opened.sessionId }).catch(() => undefined);
         return;
       }
       if (!opened.ok) {
@@ -198,8 +206,14 @@ export function PveConsoles(props: PveConsolesProps) {
       if (current !== undefined) remember({ ...current, node });
       try {
         const attach = await apiRef.current.attach(handle);
+        if (stale()) {
+          if (launch.adopt === undefined) void apiRef.current.close(handle).catch(() => undefined);
+          return;
+        }
         patch(id, (t) => (t.handle === handle ? { attach } : {}));
       } catch (e) {
+        // A console whose view could not be attached is closed: nobody would ever see it.
+        if (launch.adopt === undefined) void apiRef.current.close(handle).catch(() => undefined);
         failed("attach_failed", e instanceof Error ? e.message : String(e), null);
       }
     },
@@ -213,15 +227,19 @@ export function PveConsoles(props: PveConsolesProps) {
       if (e.timer !== null) clearTimeout(e.timer);
       e.made = attempt - 1;
       patch(id, { state: "reconnecting", attempt });
+      const scheduled = tokens.current.get(id) ?? 0;
       e.timer = setTimeout(() => {
         e.timer = null;
         const t = tabsRef.current.find((x) => x.id === id);
-        if (t === undefined || t.state !== "reconnecting" || closedTabs.current.has(id)) return;
-        // The lost console is closed first (it may still hold an engine), then a new one is opened: a fresh login, the guest's
-        // node read again, a new console ticket and websocket.
-        if (t.handle !== null) void apiRef.current.close(t.handle).catch(() => undefined);
+        if (t === undefined || t.state !== "reconnecting" || closedTabs.current.has(id) || (tokens.current.get(id) ?? 0) !== scheduled) return;
         e.made = attempt;
-        void start(id, launch, attempt);
+        // The lost console is closed first and the close is awaited (it may still hold an engine), then a new one is opened: a
+        // fresh login, the guest's node read again, a new console ticket and websocket.
+        void (async () => {
+          if (t.handle !== null) await apiRef.current.close(t.handle).catch(() => undefined);
+          if ((tokens.current.get(id) ?? 0) !== scheduled || closedTabs.current.has(id)) return;
+          await start(id, launch, attempt);
+        })();
       }, delayMs);
     },
     [patch, start],
@@ -298,16 +316,24 @@ export function PveConsoles(props: PveConsolesProps) {
   };
 
   const disconnect = (tab: Tab): void => {
+    bump(tab.id);
     stopEpisode(tab.id);
     closeQuietly(tab.handle);
     patch(tab.id, { state: "disconnected", reason: null, attempt: 0 });
   };
   const reconnect = (tab: Tab): void => {
+    bump(tab.id);
     stopEpisode(tab.id);
-    closeQuietly(tab.handle);
-    void start(tab.id, tab.launch, 0);
+    const mine = tokens.current.get(tab.id) ?? 0;
+    // Close, then open: the old console is gone before the new one starts.
+    void (async () => {
+      if (tab.handle !== null) await apiRef.current.close(tab.handle).catch(() => undefined);
+      if ((tokens.current.get(tab.id) ?? 0) !== mine || closedTabs.current.has(tab.id)) return;
+      await start(tab.id, tab.launch, 0);
+    })();
   };
   const closeTab = (tab: Tab): void => {
+    bump(tab.id);
     stopEpisode(tab.id);
     closedTabs.current.add(tab.id);
     terminalApis.current.delete(tab.id);
@@ -351,7 +377,10 @@ export function PveConsoles(props: PveConsolesProps) {
     }
   };
 
+  /** Events of a console that was replaced (Reconnect, an attempt) are ignored: only the tab's current console speaks for it. */
+  const superseded = (tab: Tab): boolean => tabsRef.current.find((t) => t.id === tab.id)?.handle !== tab.handle;
   const onTerminalState = (tab: Tab) => (next: SshTerminalState, info?: SshExitInfo) => {
+    if (superseded(tab)) return;
     if (next === "closed" && info !== undefined) {
       if (endStateOf(info.reason) === "disconnected") patch(tab.id, (t) => (t.state === "error" || t.state === "reconnecting" ? {} : { state: "disconnected", reason: null }));
       else lost(tab, info.reason);
@@ -360,6 +389,7 @@ export function PveConsoles(props: PveConsolesProps) {
     }
   };
   const onConsole = (tab: Tab) => (event: { state: string; reason: Tab["reason"] }) => {
+    if (superseded(tab)) return;
     const state = event.state as PveConsoleState;
     const now = tabsRef.current.find((t) => t.id === tab.id);
     if (now === undefined || now.state === "disconnected" || now.state === "reconnecting") return;
@@ -379,11 +409,14 @@ export function PveConsoles(props: PveConsolesProps) {
     }
   };
   const onEnded = (tab: Tab) => (info: { code: string; text: string }) => {
+    if (superseded(tab)) return;
     const state = info.code === "vnc_not_resumable" || info.code === "vnc_view_taken" || info.code === "viewer_unavailable" || info.code === "vnc_auth_failed" ? "error" : endStateOf(info.code);
     // The most specific reason seen so far is kept: a bare socket close (websocket_error) never replaces a real one.
     patch(tab.id, (t) => (t.state === "disconnected" || (t.reason !== null && (t.state === "error" || (info.code === "websocket_error" && t.state === "lost"))) ? {} : { state, reason: state === "disconnected" ? null : { code: info.code, text: info.text, fingerprint: null } }));
   };
-  const onControl = (tab: Tab) => (message: ControlMessage) => patch(tab.id, (t) => ({ owner: nextControl(t.owner, message) }));
+  const onControl = (tab: Tab) => (message: ControlMessage) => {
+    if (!superseded(tab)) patch(tab.id, (t) => ({ owner: nextControl(t.owner, message) }));
+  };
   const apiRefFor = (id: number): MutableRefObject<TerminalApi | null> => {
     let r = terminalApis.current.get(id);
     if (r === undefined) {
