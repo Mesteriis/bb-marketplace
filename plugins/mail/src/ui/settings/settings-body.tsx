@@ -96,7 +96,12 @@ export function SettingsBody(props: MailSettingsProps & { section: SettingsSecti
   if (section === "templates") {
     return (
       <div className="flex flex-col gap-4">
-        <TemplatesSection templates={props.templates} onSave={props.onSaveTemplate} onDelete={props.onDeleteTemplate} />
+        <TemplatesSection
+          templates={props.templates}
+          onSave={props.onSaveTemplate}
+          onDelete={props.onDeleteTemplate}
+          {...(props.templateFiles !== undefined ? { files: props.templateFiles } : {})}
+        />
         {props.settings !== undefined ? <TypingSettings port={props.settings} /> : null}
       </div>
     );

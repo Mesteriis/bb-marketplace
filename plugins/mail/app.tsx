@@ -169,6 +169,7 @@ import { dropAction, dropRefusal, readMovePayload } from "./src/ui/drag-move.ts"
 import { SaveSearchDialog, type SavedSearchEdit } from "./src/ui/saved-searches.tsx";
 import type { InboxTabView } from "./src/ui/inbox-tabs.tsx";
 import type { TypingOptions } from "./src/ui/editor-typing.ts";
+import { uploadFile } from "./src/ui/attachments-input.tsx";
 import { parsePairs } from "./src/core/autocorrect.ts";
 import type { InboxTabsPort } from "./src/ui/settings/tabs-settings.tsx";
 import { TAB_NAME_MAX } from "./src/core/inbox-tabs.ts";
@@ -2012,6 +2013,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       save: (input) => rpc.call("compose_save", input),
       send: (input) => rpc.call("compose_send", input),
       pgpCheck: (from, recipients) => rpc.call("pgp_check", { from, recipients }),
+      applyTemplate: (input) => rpc.call("template_apply", input),
       discard: async (draftId) => {
         await rpc.call("compose_discard", { draftId });
       },
@@ -3112,6 +3114,25 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       onDeleteTemplate={async (id) => {
         await rpc.call("template_delete", { id });
         await loadTemplates();
+      }}
+      templateFiles={{
+        // The bytes travel as a draft's do; only the first and the last call name the template.
+        add: async (templateId, file) => {
+          await uploadFile(
+            {
+              begin: ({ draftId, ...rest }) => rpc.call("template_file_begin", { templateId: draftId, ...rest }),
+              chunk: (input) => rpc.call("compose_attachment_chunk", input),
+              finish: async (input) => (await rpc.call("template_file_finish", input)).file as never,
+            },
+            templateId,
+            file,
+          );
+          await loadTemplates();
+        },
+        remove: async (templateId, fileId) => {
+          await rpc.call("template_file_remove", { templateId, fileId });
+          await loadTemplates();
+        },
       }}
       onOpenSmtp={(accountId) => {
           setSmtpAccountId(accountId);

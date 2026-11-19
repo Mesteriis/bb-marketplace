@@ -1002,6 +1002,8 @@ export const presendIssueSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("new_recipients"), addresses: z.array(z.string()) }),
   z.object({ kind: z.literal("bb_files"), count: z.number().int(), origins: z.array(z.string()) }),
   z.object({ kind: z.literal("looks_secret"), count: z.number().int() }),
+  /** Typing speed. */
+  z.object({ kind: z.literal("placeholder_left") }),
   /** Slice 3i. */
   z.object({ kind: z.literal("reply_to_elsewhere"), addresses: z.array(z.string()) }),
 ]);

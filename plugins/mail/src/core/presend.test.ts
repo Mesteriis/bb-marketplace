@@ -268,6 +268,12 @@ describe("presendIssues: slice 3g kinds", () => {
     expect(presendIssues({ ...base, kind: "reply", doc: docFromLines(["Thanks"], [`token ${TOKEN}`]) })).toEqual([]);
   });
 
+  it("says when a template's {first_name} was left in the text or the subject, not in a quote", () => {
+    expect(presendIssues({ ...base, doc: docFromLines(["Hi {first_name},"]) })).toEqual([{ kind: "placeholder_left" }]);
+    expect(presendIssues({ ...base, subject: "For {First_Name}" })).toEqual([{ kind: "placeholder_left" }]);
+    expect(presendIssues({ ...base, kind: "reply", doc: docFromLines(["Thanks"], ["Hi {first_name},"]) })).toEqual([]);
+  });
+
   it("puts the new kinds after the 3d ones", () => {
     const issues = presendIssues({ ...base, subject: "", doc: docFromLines([`attached ${TOKEN}`]), bbOrigins: ["project api"] });
     expect(issues.map((i) => i.kind)).toEqual(["attachment_mentioned", "empty_subject", "bb_files", "looks_secret"]);

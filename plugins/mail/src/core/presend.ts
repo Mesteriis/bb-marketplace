@@ -2,6 +2,7 @@
 // "Before you send" and the agent card lists. Slice 3g adds files attached
 // from BB and text that looks like it holds a secret. Nothing here refuses a
 // send. Pure.
+import { hasVariable } from "./snippets.ts";
 import { renderDoc, type ComposeBlock, type ComposeDoc } from "./compose-doc.ts";
 import { forwardSubject, replySubject } from "./compose-subjects.ts";
 import type { ComposeKind } from "./model.ts";
@@ -17,6 +18,8 @@ export type PresendIssue =
   | { kind: "bb_files"; count: number; origins: string[] }
   /** Slice 3g: values redaction would hide in the owner's own text. */
   | { kind: "looks_secret"; count: number }
+  /** Typing speed: a template's `{first_name}` is still in the text or the subject. */
+  | { kind: "placeholder_left" }
   /** Slice 3i: a reply still goes to the source's Reply-To that points away from its sender (ASCII addresses). */
   | { kind: "reply_to_elsewhere"; addresses: string[] };
 
@@ -175,6 +178,7 @@ export function presendIssues(input: PresendInput): PresendIssue[] {
   if (origins.length > 0) issues.push({ kind: "bb_files", count: origins.length, origins: [...new Set(origins)] });
   const hidden = hiddenTotal(redactSecrets(ownText(input.doc, input.kind)).counts);
   if (hidden > 0) issues.push({ kind: "looks_secret", count: hidden });
+  if (hasVariable(input.subject) || hasVariable(ownText(input.doc, input.kind))) issues.push({ kind: "placeholder_left" });
   return issues;
 }
 

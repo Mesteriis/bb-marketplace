@@ -38,6 +38,7 @@ import {
 } from "./attachments-input.tsx";
 import { ComposeEditor, ownerRange, replaceOwnerRange, type EditorDoc } from "./compose-editor.tsx";
 import { NO_TYPING, type TypingOptions } from "./editor-typing.ts";
+import { fillBlocks, fillVariables, firstNameOf, mergeRecipients } from "../core/snippets.ts";
 import { Checkbox } from "@/components/ui/checkbox";
 import type { AiJobPorts } from "./ai-job.ts";
 import { ImproveDialog, ImproveMenu, type DraftMode, type ImproveRequest } from "./improve-dialog.tsx";
@@ -104,6 +105,8 @@ export interface ComposerPorts {
   check?(input: { draftId: string; baseRevision: number }): Promise<{ issues: PresendIssue[] }>;
   /** Slice 3k: whether From has an OpenPGP key, and the recipients Mail has no key for. Absent: no OpenPGP row. */
   pgpCheck?(from: string, recipients: string[]): Promise<{ canSign: boolean; missing: string[] }>;
+  /** Typing speed: attaches a template's files to the draft; `leftOut` names what the message has no room for. */
+  applyTemplate?(input: { draftId: string; templateId: string }): Promise<{ attached: ComposeAttachment[]; leftOut: string[] }>;
 }
 
 export interface ComposerProps {
@@ -748,6 +751,7 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
         return () => within(`input[role="combobox"][aria-label="${tx(field)}"]`)?.focus();
       }
       case "bb_files":
+      case "placeholder_left":
       case "looks_secret":
         // The dialog closes; the owner checks the attachments or the text.
         return undefined;
@@ -788,10 +792,39 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
       .run();
   };
 
+  /** Typing speed: files of the last template that the message had no room for. */
+  const [templateLeftOut, setTemplateLeftOut] = useState<string[]>([]);
+  /**
+   * A template goes in at the cursor and fills what it carries: an empty
+   * subject, recipients the draft does not have yet, `{first_name}` (the
+   * first To recipient's, counting the template's own), and its files.
+   */
   const insertTemplate = (template: TemplateView) => {
     setTemplatesOpen(false);
     if (editor === null) return;
-    editor.chain().focus().insertContent(template.doc.content ?? []).run();
+    const nextTo = mergeRecipients(to.chips, template.to ?? [], [...cc.chips, ...bcc.chips]);
+    const nextCc = mergeRecipients(cc.chips, template.cc ?? [], [...nextTo, ...bcc.chips]);
+    const nextBcc = mergeRecipients(bcc.chips, template.bcc ?? [], [...nextTo, ...nextCc]);
+    if (nextTo.length !== to.chips.length) setTo({ ...to, chips: nextTo });
+    if (nextCc.length !== cc.chips.length) setCc({ ...cc, chips: nextCc });
+    if (nextBcc.length !== bcc.chips.length) setBcc({ ...bcc, chips: nextBcc });
+    if (nextCc.length > 0 || nextBcc.length > 0) setShowCopies(true);
+    const first = nextTo[0] === undefined ? undefined : parseAddress(nextTo[0]);
+    const firstName = firstNameOf(first?.ok === true ? first.value : undefined);
+    const ownSubject = (template.subject ?? "").trim();
+    if (subject.trim() === "" && ownSubject !== "") setSubject(fillVariables(ownSubject, firstName));
+    editor.chain().focus().insertContent(fillBlocks((template.doc.content ?? []) as { type: string }[], firstName)).run();
+    changed();
+    setTemplateLeftOut([]);
+    const apply = portsRef.current.applyTemplate;
+    if ((template.files?.length ?? 0) === 0 || apply === undefined) return;
+    apply({ draftId: draft.id, templateId: template.id }).then(
+      ({ attached, leftOut }) => {
+        if (attached.length > 0) setAttachments((prev) => [...prev, ...attached]);
+        setTemplateLeftOut(leftOut);
+      },
+      (error: unknown) => setTemplateLeftOut([messageOf(error)]),
+    );
   };
 
   const [bbMenuOpen, setBbMenuOpen] = useState(false);
@@ -1004,6 +1037,12 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
           {chosen.missing
             ? tx("This sending address is no longer set up for the account; choose another From.")
             : sendCheckText(chosen.sendCheck)}
+        </p>
+      ) : null}
+      {templateLeftOut.length > 0 ? (
+        <p role="status" className="flex items-start gap-1 border-b border-border px-3 py-1.5 text-xs text-destructive">
+          <Icon name="TriangleAlert" fallback="Info" className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+          {tx("No room in this message for: {p1}", { p1: templateLeftOut.join(", ") })}
         </p>
       ) : null}
       {keptSignature !== null ? (

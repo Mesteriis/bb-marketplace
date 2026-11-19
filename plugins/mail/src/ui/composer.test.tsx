@@ -681,6 +681,51 @@ describe("Composer: identities, signatures, checks and templates (slice 3d)", ()
     { id: "tpl-2", name: "Follow-up", doc: { type: "doc", content: [p("Following up, invented.")] }, updatedAt: "2026-11-10T09:00:00.000Z" },
   ];
 
+  it("a template fills the subject, recipients, the first name and its files; a typed subject stays", async () => {
+    const applyTemplate = vi.fn(async () => ({
+      attached: [{ id: "att-t", fileName: "price.pdf", mimeType: "application/pdf", size: 10, origin: null }],
+      leftOut: ["huge.pdf"],
+    }));
+    const carrying = {
+      id: "t-carry",
+      name: "Offer",
+      doc: { type: "doc" as const, content: [p("Hi {first_name}, the offer is attached.")] },
+      updatedAt: "2026-11-19T10:00:00.000Z",
+      subject: "Offer for {first_name}",
+      to: ["Should Not Duplicate <ADA@example.com>"],
+      cc: ["team@example.org"],
+      bcc: [],
+      files: [{ id: "f1", name: "price.pdf", mimeType: "application/pdf", size: 10 }],
+    };
+    const ports = { ...fakePorts(), applyTemplate };
+    mount({ templates: [carrying], draft: draft({ subject: "", to: [{ name: "Ada Lovelace", address: "ada@example.com" }] }) }, ports);
+    fireEvent.click(screen.getByRole("button", { name: /^Templates/ }));
+    fireEvent.keyDown(await screen.findByRole("combobox", { name: "Find a template" }), { key: "Enter" });
+    expect(theEditor().getText()).toContain("Hi Ada, the offer is attached.");
+    expect((screen.getByRole("textbox", { name: "Subject" }) as HTMLInputElement).value).toBe("Offer for Ada");
+    await waitFor(() => expect(applyTemplate).toHaveBeenCalledWith({ draftId: "draft-1", templateId: "t-carry" }));
+    expect(await screen.findByText("price.pdf")).toBeTruthy();
+    expect(await screen.findByText("No room in this message for: huge.pdf")).toBeTruthy();
+    // The draft saves with the address it already had once, and the template's copy recipient.
+    fireEvent.blur(subject(), { relatedTarget: document.body });
+    await waitFor(() => expect(ports.save).toHaveBeenCalled());
+    expect(ports.save.mock.calls.at(-1)![0]).toMatchObject({
+      to: ["Ada Lovelace <ada@example.com>"],
+      cc: ["team@example.org"],
+      bcc: [],
+      subject: "Offer for Ada",
+    });
+  });
+
+  it("a template never replaces a subject the owner typed, and a template without extras asks for nothing", async () => {
+    const applyTemplate = vi.fn(async () => ({ attached: [], leftOut: [] }));
+    mount({ templates: [{ ...TEMPLATES[0]!, subject: "From the template" }], draft: draft({ subject: "Mine" }) }, { ...fakePorts(), applyTemplate } as ReturnType<typeof fakePorts>);
+    fireEvent.click(screen.getByRole("button", { name: /^Templates/ }));
+    fireEvent.keyDown(await screen.findByRole("combobox", { name: "Find a template" }), { key: "Enter" });
+    expect((screen.getByRole("textbox", { name: "Subject" }) as HTMLInputElement).value).toBe("Mine");
+    expect(applyTemplate).not.toHaveBeenCalled();
+  });
+
   it("Templates inserts the chosen template at the cursor; Manage templates… opens settings", async () => {
     const onManageTemplates = vi.fn();
     mount({ templates: TEMPLATES, onManageTemplates, draft: draft({ doc: { type: "doc", content: [p("Hello"), p("Bye")] } }) });

@@ -15,7 +15,25 @@ import { dateLocale, tx } from "../i18n/index.ts";
 import type { SettingsSectionId } from "./sections.ts";
 import { type SettingsPgpPorts } from "../pgp-settings.tsx";
 
-export type TemplateView = { id: string; name: string; doc: EditorDoc; updatedAt: string };
+/** A file kept with a template (typing speed). */
+export type TemplateFileView = { id: string; name: string; mimeType: string; size: number };
+export type TemplateView = {
+  id: string;
+  name: string;
+  doc: EditorDoc;
+  updatedAt: string;
+  /** Typing speed: what the template fills beside the body. */
+  subject?: string | null;
+  to?: string[];
+  cc?: string[];
+  bcc?: string[];
+  files?: TemplateFileView[];
+};
+/** Adding and removing a saved template's files; each rejects with the reason. */
+export interface TemplateFilesPort {
+  add: (templateId: string, file: File) => Promise<void>;
+  remove: (templateId: string, fileId: string) => Promise<void>;
+}
 export type SuggestionView = { address: string; count: number; lastDate: string };
 export type IdentityKey = { accountId: string; address: string };
 /** @deprecated the page's section ids; kept as a name for callers. */
@@ -106,7 +124,9 @@ export interface MailSettingsProps {
   onUpdate: (input: IdentityKey & { displayName?: string | null; signature?: EditorDoc | null }) => Promise<void>;
   onRemove: (input: IdentityKey) => Promise<void>;
   onDismiss: (input: IdentityKey) => Promise<void>;
-  onSaveTemplate: (input: { id?: string; name: string; doc: EditorDoc }) => Promise<void>;
+  onSaveTemplate: (input: { id?: string; name: string; doc: EditorDoc; subject?: string; to?: string[]; cc?: string[]; bcc?: string[] }) => Promise<void>;
+  /** Typing speed: a template's files; absent: no files in the form. */
+  templateFiles?: TemplateFilesPort;
   onDeleteTemplate: (id: string) => Promise<void>;
   onOpenSmtp: (accountId: string) => void;
   /** The plugin's settings for the rows that save on change; absent: those rows are not shown. */

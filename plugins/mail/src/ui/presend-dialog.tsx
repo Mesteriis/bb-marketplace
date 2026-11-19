@@ -39,6 +39,8 @@ export function presendIssueText(issue: PresendIssue): { text: string; fix: stri
       };
     case "looks_secret":
       return { text: tx("The text looks like it holds a password, token or code ({count})", { count: issue.count }), fix: "Check the text" };
+    case "placeholder_left":
+      return { text: tx("{first_name} from a template is still in the message."), fix: "Check the text" };
     case "reply_to_elsewhere":
       return { text: tx("Reply-To differs from the sender: {p1}", { p1: issue.addresses.join(", ") }), fix: "Check recipients" };
   }
