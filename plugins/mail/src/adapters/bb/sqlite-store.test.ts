@@ -832,7 +832,7 @@ describe("slice-2 migrations (SQLite)", () => {
          VALUES ('acc_1', 'owner@example.org', 'imap.example.org', 993, 'owner', 'sealed', 'other', ?)`,
       ).run("2026-01-01T00:00:00.000Z");
       db.transaction(() => MIGRATIONS.slice(19).forEach((statement) => db.exec(statement)))();
-      expect(MIGRATIONS).toHaveLength(22);
+      expect(MIGRATIONS).toHaveLength(23);
       expect(createSqliteStore(db).getAccount("acc_1")).toMatchObject({ authKind: "password", grantedScopes: [], passwordSealed: "sealed" });
     });
   });
@@ -898,7 +898,7 @@ describe("slice-2 migrations (SQLite)", () => {
       db.transaction(() => MIGRATIONS.slice(0, 20).forEach((statement) => db.exec(statement)))();
       seedLegacyAccount(db);
       db.transaction(() => MIGRATIONS.slice(20).forEach((statement) => db.exec(statement)))();
-      expect(MIGRATIONS).toHaveLength(22);
+      expect(MIGRATIONS).toHaveLength(23);
       expect(createSqliteStore(db).listPluginGrants()).toEqual([]);
       const columns = db.prepare<[], { name: string }>("SELECT name FROM pragma_table_info('compose_drafts')").all();
       expect(columns.map((column) => column.name)).toContain("prepared_by");
@@ -3787,10 +3787,47 @@ describe.each(storeKinds)("slice-3d store semantics (%s)", (_kind, make) => {
   });
 
   describe("templates", () => {
+    it("a template keeps its subject and recipients; a save without them leaves them as they were", () => {
+      const extras = { subject: "Invoice", to: ["Ada <ada@example.com>"], cc: [], bcc: ["boss@example.org"] };
+      s.saveTemplate({ id: null, name: "Bill", nameKey: "bill", doc: TEMPLATE_DOC, extras }, "tpl_1", T0);
+      expect(s.listTemplates()[0]).toMatchObject({ id: "tpl_1", ...extras });
+      s.saveTemplate({ id: "tpl_1", name: "Billing", nameKey: "billing", doc: TEMPLATE_DOC }, "tpl_x", later(1));
+      expect(s.listTemplates()[0]).toMatchObject({ name: "Billing", ...extras });
+      s.saveTemplate({ id: "tpl_1", name: "Billing", nameKey: "billing", doc: TEMPLATE_DOC, extras: { subject: null, to: [], cc: [], bcc: [] } }, "tpl_x", later(2));
+      expect(s.listTemplates()[0]).toMatchObject({ subject: null, to: [], cc: [], bcc: [] });
+      s.saveTemplate({ id: null, name: "Plain", nameKey: "plain", doc: TEMPLATE_DOC }, "tpl_2", T0);
+      expect(s.getTemplateByKey("plain")).toMatchObject({ subject: null, to: [], cc: [], bcc: [] });
+    });
+
+    it("a template's files: added, listed without bytes, read with them, limited, and gone with the template", () => {
+      s.saveTemplate({ id: null, name: "Bill", nameKey: "bill", doc: TEMPLATE_DOC }, "tpl_1", T0);
+      const file = (id: string, size: number) => ({ id, name: `${id}.pdf`, mimeType: "application/pdf", size, sha256: "a".repeat(64), data: new Uint8Array(size).fill(7) });
+      expect(s.addTemplateFile("tpl_1", file("f1", 3), T0)).toBe("added");
+      expect(s.addTemplateFile("tpl_1", file("f2", 4), T0)).toBe("added");
+      expect(s.addTemplateFile("tpl_gone", file("f9", 1), T0)).toBe("unknown");
+      expect(s.listTemplates()[0]!.files).toEqual([
+        { id: "f1", name: "f1.pdf", mimeType: "application/pdf", size: 3 },
+        { id: "f2", name: "f2.pdf", mimeType: "application/pdf", size: 4 },
+      ]);
+      expect(s.templateFiles("tpl_1").map((f) => [f.id, [...f.data]])).toEqual([["f1", [7, 7, 7]], ["f2", [7, 7, 7, 7]]]);
+      for (const id of ["f3", "f4", "f5"]) expect(s.addTemplateFile("tpl_1", file(id, 1), T0)).toBe("added");
+      expect(s.addTemplateFile("tpl_1", file("f6", 1), T0)).toBe("full");
+      expect(s.removeTemplateFile("tpl_1", "f5")).toBe(true);
+      expect(s.removeTemplateFile("tpl_1", "f5")).toBe(false);
+      expect(s.addTemplateFile("tpl_1", file("big", 10 * 1024 * 1024), T0)).toBe("full");
+      s.deleteTemplate("tpl_1");
+      expect(s.templateFiles("tpl_1")).toEqual([]);
+    });
+
     it("save inserts, rename keeps the id, a duplicate key conflicts, an unknown id creates it", () => {
       expect(s.saveTemplate({ id: null, name: "Thanks", nameKey: "thanks", doc: TEMPLATE_DOC }, "tpl_1", T0)).toEqual({ id: "tpl_1" });
       expect(s.saveTemplate({ id: "tpl_1", name: "Thank you", nameKey: "thank you", doc: TEMPLATE_DOC }, "tpl_x", later(1))).toEqual({ id: "tpl_1" });
       expect(s.getTemplateByKey("thank you")).toEqual({
+        subject: null,
+        to: [],
+        cc: [],
+        bcc: [],
+        files: [],
         id: "tpl_1",
         name: "Thank you",
         nameKey: "thank you",
@@ -3890,7 +3927,7 @@ describe("slice-3e migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(9).forEach((s) => old.exec(s)))();
 
-    expect(MIGRATIONS).toHaveLength(22);
+    expect(MIGRATIONS).toHaveLength(23);
     const migrated = createSqliteStore(old);
     expect(migrated.getUnsubscribeInfo(ids[0]!)).toEqual({ ...INFO, listKey: "id:weekly.example.com" });
     expect(migrated.getUnsubscribeInfo(ids[1]!)?.listKey).toBe("from:news@example.com");
@@ -4538,7 +4575,7 @@ describe("slice-3f migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(10).forEach((s) => old.exec(s)))();
 
-    expect(MIGRATIONS).toHaveLength(22);
+    expect(MIGRATIONS).toHaveLength(23);
     const migrated = createSqliteStore(old);
     migrated.assignThreads("acc_1", new Map());
     expect(migrated.listThreads("acc_1", INBOX, null, 10).threads).toEqual([
@@ -5384,7 +5421,7 @@ describe("slice-3g migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(12).forEach((s) => old.exec(s)))();
 
-    expect(MIGRATIONS).toHaveLength(22);
+    expect(MIGRATIONS).toHaveLength(23);
     const runs = old.prepare("SELECT id, message_id, message_key, project_id FROM rule_runs ORDER BY id").all();
     expect(runs).toEqual([
       { id: "a1", message_id: messageId, message_key: expect.stringMatching(/^acc_1:/), project_id: "p_api" },
@@ -5969,7 +6006,7 @@ describe("slice-3h migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(13).forEach((s) => old.exec(s)))();
 
-    expect(MIGRATIONS).toHaveLength(22);
+    expect(MIGRATIONS).toHaveLength(23);
     const kinds = old.prepare("SELECT part_id, kind FROM attachments ORDER BY CAST(part_id AS INTEGER)").all() as {
       part_id: string;
       kind: string;
@@ -6639,7 +6676,7 @@ describe("slice-3i migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(14).forEach((statement) => old.exec(statement)))();
 
-    expect(MIGRATIONS).toHaveLength(22);
+    expect(MIGRATIONS).toHaveLength(23);
     const columns = (old.prepare("PRAGMA table_info(messages)").all() as { name: string }[]).map((c) => c.name);
     expect(columns).toEqual(expect.arrayContaining(["sender_check_json", "receipt_requested", "crypto"]));
     expect(old.prepare("SELECT sender_check_json, receipt_requested, crypto FROM messages").all()).toEqual([

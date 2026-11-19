@@ -21,6 +21,8 @@
 //   - a move re-homes the row (same id) to the destination; without a uid map
 //     the row waits detached there until that folder's sync reattaches it by
 //     Gmail id or Message-ID, or deletes it at the end of the round.
+import type { TemplateFileInfo } from "../../core/ports.ts";
+import { NO_EXTRAS, TEMPLATE_FILES_MAX, TEMPLATE_FILES_MAX_BYTES, type TemplateExtras } from "../../core/snippets.ts";
 import { fromShape } from "../../core/search.ts";
 import { randomBytes } from "node:crypto";
 import type Database from "better-sqlite3";
@@ -1069,6 +1071,21 @@ export const MIGRATIONS: string[] = [
     updated_at TEXT NOT NULL
   );
   `,
+  // 22: typing speed: what a template carries beside its text, and its files.
+  `
+  ALTER TABLE templates ADD COLUMN extras_json TEXT NOT NULL DEFAULT '{}';
+  CREATE TABLE template_files (
+    id TEXT PRIMARY KEY,
+    template_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    mime_type TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    sha256 TEXT NOT NULL,
+    data BLOB NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX template_files_template ON template_files(template_id, created_at, id);
+  `,
 ];
 
 const HTML_CAP = 1_000_000;
@@ -1389,6 +1406,7 @@ type TemplateRow = {
   name: string;
   name_key: string;
   doc_json: string;
+  extras_json: string;
   created_at: string;
   updated_at: string;
 };
@@ -1914,8 +1932,15 @@ function toAlias(row: IdentityRow): AliasRow {
   };
 }
 
-function toTemplate(row: TemplateRow): TemplateRecord {
+function extrasOf(json: string): TemplateExtras {
+  const stored = JSON.parse(json) as Partial<TemplateExtras>;
+  return { subject: stored.subject ?? null, to: stored.to ?? [], cc: stored.cc ?? [], bcc: stored.bcc ?? [] };
+}
+
+function toTemplate(row: TemplateRow, files: TemplateFileInfo[]): TemplateRecord {
   return {
+    ...extrasOf(row.extras_json),
+    files,
     id: row.id,
     name: row.name,
     nameKey: row.name_key,
@@ -5511,7 +5536,17 @@ export function createSqliteStore(db: Database.Database): MailStore {
     },
 
     listTemplates() {
-      return db.prepare<[], TemplateRow>("SELECT * FROM templates ORDER BY name_key, id").all().map(toTemplate);
+      const files = new Map<string, TemplateFileInfo[]>();
+      const rows = db
+        .prepare<[], TemplateFileInfo & { templateId: string }>(
+          "SELECT template_id AS templateId, id, name, mime_type AS mimeType, size FROM template_files ORDER BY created_at, rowid",
+        )
+        .all();
+      for (const { templateId, ...file } of rows) files.set(templateId, [...(files.get(templateId) ?? []), file]);
+      return db
+        .prepare<[], TemplateRow>("SELECT * FROM templates ORDER BY name_key, id")
+        .all()
+        .map((row) => toTemplate(row, files.get(row.id) ?? []));
     },
 
     saveTemplate(input, newId, nowIso) {
@@ -5524,10 +5559,11 @@ export function createSqliteStore(db: Database.Database): MailStore {
           input.id === null ? undefined : db.prepare<[string], TemplateRow>("SELECT * FROM templates WHERE id = ?").get(input.id);
         const doc = JSON.stringify(input.doc);
         if (existing) {
-          db.prepare("UPDATE templates SET name = ?, name_key = ?, doc_json = ?, updated_at = ? WHERE id = ?").run(
+          db.prepare("UPDATE templates SET name = ?, name_key = ?, doc_json = ?, extras_json = ?, updated_at = ? WHERE id = ?").run(
             input.name,
             input.nameKey,
             doc,
+            input.extras === undefined ? existing.extras_json : JSON.stringify(input.extras),
             nowIso,
             existing.id,
           );
@@ -5537,19 +5573,53 @@ export function createSqliteStore(db: Database.Database): MailStore {
         if (total >= TEMPLATES_MAX) throw new ComposeError("conflict", "There are too many templates");
         const id = input.id ?? newId;
         db.prepare(
-          "INSERT INTO templates (id, name, name_key, doc_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-        ).run(id, input.name, input.nameKey, doc, nowIso, nowIso);
+          "INSERT INTO templates (id, name, name_key, doc_json, extras_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ).run(id, input.name, input.nameKey, doc, JSON.stringify(input.extras ?? NO_EXTRAS), nowIso, nowIso);
         return { id };
       });
     },
 
     deleteTemplate(id) {
-      return db.prepare("DELETE FROM templates WHERE id = ?").run(id).changes === 1;
+      return atomic(() => {
+        db.prepare("DELETE FROM template_files WHERE template_id = ?").run(id);
+        return db.prepare("DELETE FROM templates WHERE id = ?").run(id).changes === 1;
+      });
     },
 
     getTemplateByKey(nameKey) {
       const row = db.prepare<[string], TemplateRow>("SELECT * FROM templates WHERE name_key = ?").get(nameKey);
-      return row ? toTemplate(row) : null;
+      if (!row) return null;
+      const files = db
+        .prepare<[string], TemplateFileInfo>("SELECT id, name, mime_type AS mimeType, size FROM template_files WHERE template_id = ? ORDER BY created_at, rowid")
+        .all(row.id);
+      return toTemplate(row, files);
+    },
+
+    addTemplateFile(templateId, file, nowIso) {
+      return atomic(() => {
+        if (db.prepare<[string], { id: string }>("SELECT id FROM templates WHERE id = ?").get(templateId) === undefined) return "unknown" as const;
+        const have = db
+          .prepare<[string], { n: number; bytes: number | null }>("SELECT count(*) AS n, sum(size) AS bytes FROM template_files WHERE template_id = ?")
+          .get(templateId)!;
+        if (have.n >= TEMPLATE_FILES_MAX || (have.bytes ?? 0) + file.size > TEMPLATE_FILES_MAX_BYTES) return "full" as const;
+        db.prepare(
+          "INSERT INTO template_files (id, template_id, name, mime_type, size, sha256, data, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ).run(file.id, templateId, file.name, file.mimeType, file.size, file.sha256, Buffer.from(file.data), nowIso);
+        return "added" as const;
+      });
+    },
+
+    removeTemplateFile(templateId, fileId) {
+      return db.prepare("DELETE FROM template_files WHERE template_id = ? AND id = ?").run(templateId, fileId).changes === 1;
+    },
+
+    templateFiles(templateId) {
+      return db
+        .prepare<[string], TemplateFileInfo & { sha256: string; data: Buffer }>(
+          "SELECT id, name, mime_type AS mimeType, size, sha256, data FROM template_files WHERE template_id = ? ORDER BY created_at, rowid",
+        )
+        .all(templateId)
+        .map((row) => ({ ...row, data: new Uint8Array(row.data) }));
     },
 
     // ---- Inbox triage (slice 3e) ----

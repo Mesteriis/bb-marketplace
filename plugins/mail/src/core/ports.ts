@@ -1,4 +1,5 @@
 // Ports: what the core needs from its host. Each host supplies adapters.
+import type { TemplateExtras } from "./snippets.ts";
 import type { ReplySource } from "./compose-reply.ts";
 import type {
   ComposeAttachment,
@@ -865,11 +866,18 @@ export interface MailStore {
   sentTexts(limit: number): string[];
   /** Insert (id null) or update by id; `conflict` when another template has the name key. */
   saveTemplate(
-    input: { id: string | null; name: string; nameKey: string; doc: ComposeDoc },
+    /** `extras` absent: an existing template keeps its subject and recipients (typing speed). */
+    input: { id: string | null; name: string; nameKey: string; doc: ComposeDoc; extras?: TemplateExtras },
     newId: string,
     nowIso: string,
   ): { id: string } | { conflict: true };
+  /** Deletes the template and its files. */
   deleteTemplate(id: string): boolean;
+  /** Typing speed: a file kept with a template. `full`: over 5 files or 10 MB together; `unknown`: no such template. */
+  addTemplateFile(templateId: string, file: TemplateFileInfo & { sha256: string; data: Uint8Array }, nowIso: string): "added" | "full" | "unknown";
+  removeTemplateFile(templateId: string, fileId: string): boolean;
+  /** A template's files with their bytes, in the order added. */
+  templateFiles(templateId: string): (TemplateFileInfo & { sha256: string; data: Uint8Array })[];
   getTemplateByKey(nameKey: string): TemplateRecord | null;
 
   // ---- Inbox triage (slice 3e) ----
@@ -1772,7 +1780,12 @@ export type TriageItemRecord = {
 };
 
 /** A stored template (slice 3d). Global, not per account. */
-export type TemplateRecord = {
+/** A file kept with a template, without its bytes. */
+export type TemplateFileInfo = { id: string; name: string; mimeType: string; size: number };
+
+export type TemplateRecord = TemplateExtras & {
+  /** The files the template attaches, in the order added. */
+  files: TemplateFileInfo[];
   id: string;
   name: string;
   nameKey: string;

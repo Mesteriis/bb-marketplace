@@ -12,6 +12,7 @@
 //   - thread, folder, badge and search counts count distinct dedup keys, and
 //     rows waiting to move out are hidden from their folder, the badge and
 //     search; moves re-home rows (same id), detaching them without a uid map.
+import type { TemplateFileInfo } from "../ports.ts";
 import { isCalendarPart } from "../calendar-invite.ts";
 import { NO_SENDER_SETS, TABS_MAX, TabsFullError, inSenderSet, type InboxTab, type SenderSets, type TabMatch } from "../inbox-tabs.ts";
 import type { PluginGrant, PluginRequest } from "../plugin-access.ts";
@@ -156,6 +157,7 @@ import { renamedPath } from "../folder-ops.ts";
 import { SAVED_SEARCHES_MAX } from "../saved-searches.ts";
 import { filenameMatches } from "../server-search.ts";
 import { fromShape } from "../search.ts";
+import { NO_EXTRAS, TEMPLATE_FILES_MAX, TEMPLATE_FILES_MAX_BYTES, type TemplateExtras } from "../snippets.ts";
 import { normalizeListId, type DevClass } from "../dev-notify.ts";
 import { RULES_MAX, RULE_READY_DAYS, RULE_RUNS_KEEP_DAYS, RULE_THREADS_KEEP_DAYS, capVerdict, type Rule } from "../mail-rules.ts";
 import { INCIDENT_KEEP_DAYS } from "../alerts.ts";
@@ -1859,7 +1861,7 @@ export class InMemoryMailStore implements MailStore {
   }
 
   saveTemplate(
-    input: { id: string | null; name: string; nameKey: string; doc: ComposeDoc },
+    input: { id: string | null; name: string; nameKey: string; doc: ComposeDoc; extras?: TemplateExtras },
     newId: string,
     nowIso: string,
   ): { id: string } | { conflict: true } {
@@ -1870,7 +1872,11 @@ export class InMemoryMailStore implements MailStore {
       throw new ComposeError("conflict", "There are too many templates");
     }
     const id = existing?.id ?? input.id ?? newId;
+    const kept: TemplateExtras = existing ?? NO_EXTRAS;
+    const extras = input.extras ?? { subject: kept.subject, to: kept.to, cc: kept.cc, bcc: kept.bcc };
     this.state.templates.set(id, {
+      ...structuredClone(extras),
+      files: existing?.files ?? [],
       id,
       name: input.name,
       nameKey: input.nameKey,
@@ -1882,7 +1888,33 @@ export class InMemoryMailStore implements MailStore {
   }
 
   deleteTemplate(id: string): boolean {
+    this.templateFileData.delete(id);
     return this.state.templates.delete(id);
+  }
+
+  private templateFileData = new Map<string, (TemplateFileInfo & { sha256: string; data: Uint8Array })[]>();
+
+  addTemplateFile(templateId: string, file: TemplateFileInfo & { sha256: string; data: Uint8Array }, _nowIso: string): "added" | "full" | "unknown" {
+    const template = this.state.templates.get(templateId);
+    if (template === undefined) return "unknown";
+    const have = this.templateFileData.get(templateId) ?? [];
+    if (have.length >= TEMPLATE_FILES_MAX || have.reduce((sum, f) => sum + f.size, 0) + file.size > TEMPLATE_FILES_MAX_BYTES) return "full";
+    this.templateFileData.set(templateId, [...have, { ...file, data: new Uint8Array(file.data) }]);
+    template.files = [...template.files, { id: file.id, name: file.name, mimeType: file.mimeType, size: file.size }];
+    return "added";
+  }
+
+  removeTemplateFile(templateId: string, fileId: string): boolean {
+    const have = this.templateFileData.get(templateId) ?? [];
+    if (!have.some((f) => f.id === fileId)) return false;
+    this.templateFileData.set(templateId, have.filter((f) => f.id !== fileId));
+    const template = this.state.templates.get(templateId);
+    if (template !== undefined) template.files = template.files.filter((f) => f.id !== fileId);
+    return true;
+  }
+
+  templateFiles(templateId: string): (TemplateFileInfo & { sha256: string; data: Uint8Array })[] {
+    return (this.templateFileData.get(templateId) ?? []).map((f) => ({ ...f, data: new Uint8Array(f.data) }));
   }
 
   getTemplateByKey(nameKey: string): TemplateRecord | null {
