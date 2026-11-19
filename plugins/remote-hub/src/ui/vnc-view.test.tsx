@@ -18,6 +18,8 @@ class FakeRfbServer {
   stage: "version" | "security" | "response" | "init" | "running" = "version";
   clientMessages: Array<{ type: number; bytes: number[] }> = [];
   authResponse: number[] | null = null;
+  /** Answer the VNC authentication with a failure (SecurityResult 1 and a reason). */
+  reject = false;
   textFromClient: string[] = [];
   constructor(private readonly sendBinary: (bytes: number[]) => void) {}
 
@@ -41,6 +43,12 @@ class FakeRfbServer {
       } else if (this.stage === "response") {
         if (this.buf.length < 16) return;
         this.authResponse = this.buf.splice(0, 16);
+        if (this.reject) {
+          const why = [...text("Authentication failed")];
+          this.sendBinary([...u32(1), ...u32(why.length), ...why]);
+          this.stage = "running";
+          return;
+        }
         this.sendBinary(u32(0)); // SecurityResult: ok
         this.stage = "init";
       } else if (this.stage === "init") {
@@ -227,6 +235,61 @@ describe("the graphical console view", () => {
     expect(all).not.toContain(PASSWORD);
     // a view message list holds only control and RFB bytes
     expect(s.server.textFromClient.every((t) => JSON.parse(t).type === "watch")).toBe(true);
+  });
+
+  /** What noVNC itself is holding as credentials right now. */
+  const heldBy = (rfb: RfbType | null): Record<string, unknown> => ((rfb as unknown as { _rfbCredentials: Record<string, unknown> })._rfbCredentials);
+
+  it("the password is taken out of the object noVNC holds once the security handshake is over", async () => {
+    const m = mount();
+    await startSession(m);
+    // noVNC took it while authenticating...
+    expect(m.states).toContain("authenticating");
+    // ...and after `connect` the object it keeps has no password in it
+    expect(Object.keys(heldBy(m.rfb()))).not.toContain("password");
+    expect(JSON.stringify(heldBy(m.rfb()))).not.toContain(PASSWORD);
+  });
+
+  it("a refused password is reported, and the password is not left in noVNC either", async () => {
+    const m = mount();
+    await flush();
+    const s = socket as FakeSocket;
+    s.server.reject = true;
+    await act(async () => {
+      s.open();
+      s.fromServerText({ type: "password", value: PASSWORD });
+      s.server.greeting();
+    });
+    await flush();
+    expect(m.ended.map((e) => e.code)).toContain("vnc_auth_failed");
+    expect(Object.keys(heldBy(m.rfb()))).not.toContain("password");
+  });
+
+  it("and the password never lingers when the socket closes before noVNC asked for it, on an error, or on unmount", async () => {
+    // closed before the credentials were requested: the greeting never came
+    const early = mount();
+    await flush();
+    const s = socket as FakeSocket;
+    await act(async () => {
+      s.open();
+      s.fromServerText({ type: "password", value: PASSWORD });
+      s.close(1006);
+    });
+    expect(Object.keys(heldBy(early.rfb()))).not.toContain("password");
+    cleanup();
+    // unmount in the middle of authentication (the challenge is answered by a server that never says "ok")
+    const mid = mount();
+    await flush();
+    const s2 = socket as FakeSocket;
+    await act(async () => {
+      s2.open();
+      s2.fromServerText({ type: "password", value: PASSWORD });
+      s2.server.greeting();
+    });
+    await flush();
+    const rfb = mid.rfb();
+    mid.view.unmount();
+    expect(Object.keys(heldBy(rfb))).not.toContain("password");
   });
 
   it("scales the remote screen into the pane and never resizes the guest", async () => {

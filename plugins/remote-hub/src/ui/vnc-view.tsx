@@ -71,12 +71,22 @@ export function VncView(props: VncViewProps) {
       },
     );
 
-    const giveCredentials = (): void => {
-      if (rfb === null || password === null || !wantsCredentials) return;
-      const p = password;
+    // noVNC keeps the object it is given (`_rfbCredentials`) and reads it only while it authenticates. We hand it an object we own
+    // and take the password out of it as soon as that is over, on every way out, so it does not sit in the viewer afterwards.
+    let held: { password?: string } | null = null;
+    const forgetPassword = (): void => {
       password = null;
       wantsCredentials = false;
-      rfb.sendCredentials({ password: p });
+      if (held !== null) delete held.password;
+      held = null;
+    };
+    const giveCredentials = (): void => {
+      if (rfb === null || password === null || !wantsCredentials) return;
+      const given: { password?: string } = { password };
+      password = null;
+      wantsCredentials = false;
+      held = given;
+      rfb.sendCredentials(given);
     };
 
     const releaseHeld = (): void => {
@@ -114,13 +124,16 @@ export function VncView(props: VncViewProps) {
           giveCredentials();
         });
         rfb.addEventListener("connect", () => {
+          forgetPassword(); // the security handshake is over
           say("ready");
           rfb?.focus({ preventScroll: true });
         });
         rfb.addEventListener("securityfailure", () => {
+          forgetPassword();
           report({ code: "vnc_auth_failed", text: "The console refused the VNC password. Disconnect and open it again." });
         });
         rfb.addEventListener("disconnect", () => {
+          forgetPassword();
           if (!disposed) say("ended");
         });
         say("waiting_frame");
@@ -153,7 +166,7 @@ export function VncView(props: VncViewProps) {
       } else if (msg.type === "console" && msg.state !== undefined) {
         propsRef.current.onConsole?.({ state: msg.state, reason: (msg.reason as PveConsoleInfo["reason"] | undefined) ?? null });
       } else if (msg.type === "closed") {
-        password = null;
+        forgetPassword();
         report({ code: typeof msg.reason === "string" ? msg.reason : (msg.code ?? "closed"), text: msg.text ?? "The console ended." });
       } else if (msg.type === "error") {
         report({ code: msg.code ?? "error", text: msg.text ?? "The console could not be shown." });
@@ -166,6 +179,7 @@ export function VncView(props: VncViewProps) {
       }
     };
     socket.onclose = (event) => {
+      forgetPassword();
       channel.deliverClose(event.code, event.reason);
       if (disposed) return;
       say("ended");
@@ -173,12 +187,13 @@ export function VncView(props: VncViewProps) {
       report({ code: "websocket_error", text: "The console connection broke (websocket error)." });
     };
     socket.onerror = () => {
+      forgetPassword();
       if (!disposed) report({ code: "websocket_error", text: "The console connection broke (websocket error)." });
     };
 
     return () => {
       disposed = true;
-      password = null;
+      forgetPassword();
       if (stopBeat !== null) stopBeat();
       container.removeEventListener("keydown", onKeyDown, true);
       container.removeEventListener("keyup", onKeyUp, true);
