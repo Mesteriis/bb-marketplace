@@ -20,6 +20,7 @@
 // Errors leaving this file are rebuilt from codes: imapflow errors can carry
 // server responses and the sent command, so their text is never passed on.
 import { AuthenticationFailure, ImapFlow } from "imapflow";
+import type { GoogleTokens } from "./google-tokens.ts";
 import type {
   FetchMessageObject,
   FetchQueryObject,
@@ -66,6 +67,8 @@ export interface ImapflowGatewayOptions {
   logger?: (line: string) => void;
   /** Builds the client of a session-less command (tests pass a stub); defaults to imapflow. */
   createClient?: (options: ImapFlowOptions) => ImapFlow;
+  /** Access tokens for Google accounts; without it such an account cannot connect. */
+  googleTokens?: GoogleTokens;
 }
 
 const MESSAGE_QUERY: FetchQueryObject = {
@@ -145,8 +148,19 @@ export function parseMail(source: Extract<RawEmail, string | ArrayBuffer | Array
 export function createImapflowGateway(options: ImapflowGatewayOptions = {}): ImapGateway {
   const log = options.logger ?? (() => {});
 
+  /**
+   * The access token a Google account signs in with; null for a password
+   * account. Throws GrantRevokedError, or TokenUnavailable when no token can
+   * be had now.
+   */
+  async function accessTokenFor(config: ImapConfig): Promise<string | null> {
+    if (config.authKind !== "google") return null;
+    if (options.googleTokens === undefined) throw new SafeImapError("TokenUnavailable");
+    return options.googleTokens.accessToken(config.password);
+  }
+
   async function connect(config: ImapConfig): Promise<ImapFlow> {
-    const imapflowOptions = toImapflowOptions(config);
+    const imapflowOptions = toImapflowOptions(config, await accessTokenFor(config));
     const client = options.createClient?.(imapflowOptions) ?? new ImapFlow(imapflowOptions);
     // An unhandled 'error' event would crash the host process.
     client.on("error", (error: unknown) => log(`imap connection error: ${describeImapError(error).message}`));
@@ -155,7 +169,10 @@ export function createImapflowGateway(options: ImapflowGatewayOptions = {}): Ima
       return client;
     } catch (error) {
       client.close();
-      throw describeImapError(error);
+      const mapped = describeImapError(error);
+      // A token the server refuses is not offered again: the next sign-in asks for a new one.
+      if (mapped instanceof ImapAuthError && config.authKind === "google") options.googleTokens?.forget(config.password);
+      throw mapped;
     }
   }
 
@@ -192,8 +209,16 @@ export function createImapflowGateway(options: ImapflowGatewayOptions = {}): Ima
     },
 
     async watchFolder(config, path, onChange, signal) {
+      let accessToken: string | null;
+      try {
+        accessToken = await accessTokenFor(config);
+      } catch (error) {
+        const mapped = describeImapError(error);
+        if (mapped instanceof ImapAuthError) return { kind: "auth" };
+        return { kind: "dropped", code: mapped instanceof SafeImapError ? mapped.code : "Unknown" };
+      }
       const client = new ImapFlow({
-        ...toImapflowOptions(config),
+        ...toImapflowOptions(config, accessToken),
         // A quiet socket while idling sends a recovery NOOP after this; one
         // that has not settled by the next timeout closes the connection, so
         // a dead peer is found in about 150 s (spec resolution 15).
@@ -894,12 +919,13 @@ const GREETING_TIMEOUT_MS = 15_000;
 const SOCKET_TIMEOUT_MS = 60_000;
 
 /** imapflow options for a config: TLS on every port, no library logging, bounded timeouts. */
-export function toImapflowOptions(config: ImapConfig): ImapFlowOptions {
+export function toImapflowOptions(config: ImapConfig, accessToken: string | null = null): ImapFlowOptions {
   return {
     host: config.host,
     port: config.port,
     secure: true,
-    auth: { user: config.user, pass: config.password },
+    // A Google account signs in with an access token (XOAUTH2); its refresh token never reaches imapflow.
+    auth: accessToken !== null ? { user: config.user, accessToken } : { user: config.user, pass: config.password },
     logger: false,
     disableAutoIdle: true,
     // Bounded waits, so a silent server cannot hold a sync round (or shutdown) for minutes.

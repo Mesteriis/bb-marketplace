@@ -2,7 +2,9 @@ import { Readable } from "node:stream";
 import PostalMime from "postal-mime";
 import type { Email } from "postal-mime";
 import { AuthenticationFailure } from "imapflow";
-import type { FetchMessageObject, ListResponse } from "imapflow";
+import type { FetchMessageObject, ImapFlow, ImapFlowOptions, ListResponse } from "imapflow";
+import type { GoogleTokens } from "./google-tokens.ts";
+import { GrantRevokedError } from "../../core/ports.ts";
 import imapflowFetch from "imapflow/lib/commands/fetch.js";
 import { compiler as imapCompiler, parser as imapParser } from "imapflow/lib/handler/imap-handler.js";
 import { EventEmitter } from "node:events";
@@ -246,6 +248,79 @@ describe("toFetchedMessage", () => {
       from: { name: "Invented Sender", address: "sender@example.org" },
       to: [{ name: "Owner", address: "owner@example.org" }],
     });
+  });
+});
+
+describe("Google accounts sign in with an access token", () => {
+  const googleConfig = {
+    host: "imap.gmail.com",
+    port: 993,
+    user: "owner@example.org",
+    password: "invented-refresh-token",
+    authKind: "google" as const,
+  };
+
+  function stubbed(tokens: Partial<GoogleTokens>) {
+    const seen: ImapFlowOptions[] = [];
+    const forgotten: string[] = [];
+    let connect: () => Promise<void> = async () => {};
+    const gateway = createImapflowGateway({
+      googleTokens: {
+        accessToken: async () => "a1",
+        exchangeCode: async () => ({ ok: false, reason: "other" }),
+        forget: (refreshToken) => void forgotten.push(refreshToken),
+        ...tokens,
+      },
+      createClient: (options) => {
+        seen.push(options);
+        return { on: () => undefined, connect: () => connect(), logout: async () => {}, close: () => {} } as unknown as ImapFlow;
+      },
+    });
+    return { gateway, seen, forgotten, failConnect: (error: unknown) => (connect = () => Promise.reject(error)) };
+  }
+
+  it("passes the access token, never the refresh token", async () => {
+    const asked: string[] = [];
+    const { gateway, seen } = stubbed({ accessToken: async (refreshToken) => (asked.push(refreshToken), "a1") });
+
+    expect(await gateway.test(googleConfig)).toEqual({ ok: true });
+
+    expect(asked).toEqual(["invented-refresh-token"]);
+    expect(seen[0]!.auth).toEqual({ user: "owner@example.org", accessToken: "a1" });
+    expect(JSON.stringify(seen[0])).not.toContain("invented-refresh-token");
+  });
+
+  it("a password account is untouched", async () => {
+    const { gateway, seen } = stubbed({ accessToken: async () => { throw new Error("must not be asked"); } });
+    await gateway.test({ ...googleConfig, authKind: "password", password: "invented-password" });
+    expect(seen[0]!.auth).toEqual({ user: "owner@example.org", pass: "invented-password" });
+  });
+
+  it("a revoked grant is the same error out of openFolder and an auth failure out of test", async () => {
+    const revoked = new GrantRevokedError();
+    const { gateway, seen } = stubbed({ accessToken: async () => { throw revoked; } });
+
+    expect(await gateway.test(googleConfig)).toEqual({ ok: false, reason: "Authentication failed", authFailed: true });
+    await expect(gateway.openFolder(googleConfig, "INBOX", { readOnly: true })).rejects.toBe(revoked);
+    expect(seen).toEqual([]);
+  });
+
+  it("an unreachable token endpoint is not an auth failure", async () => {
+    const { gateway } = stubbed({ accessToken: async () => { throw new SafeImapError("TokenUnavailable"); } });
+    expect(await gateway.test(googleConfig)).toEqual({ ok: false, reason: "IMAP error (TokenUnavailable)", authFailed: false });
+    await expect(gateway.listFolders(googleConfig)).rejects.toMatchObject({ code: "TokenUnavailable" });
+  });
+
+  it("without a token service a Google account cannot connect", async () => {
+    const gateway = createImapflowGateway({ createClient: () => { throw new Error("must not connect"); } });
+    expect(await gateway.test(googleConfig)).toEqual({ ok: false, reason: "IMAP error (TokenUnavailable)", authFailed: false });
+  });
+
+  it("forgets the cached token when the server refuses it", async () => {
+    const { gateway, forgotten, failConnect } = stubbed({});
+    failConnect(Object.assign(new Error("x"), { authenticationFailed: true, serverResponseCode: "AUTHENTICATIONFAILED" }));
+    expect(await gateway.test(googleConfig)).toMatchObject({ ok: false, authFailed: true });
+    expect(forgotten).toEqual(["invented-refresh-token"]);
   });
 });
 

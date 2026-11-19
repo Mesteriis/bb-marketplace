@@ -39,6 +39,8 @@ import {
 } from "./src/adapters/bb/downloads.ts";
 import { createAccountQueue } from "./src/adapters/bb/account-queue.ts";
 import { createImapflowGateway, parseMail } from "./src/adapters/bb/imapflow-gateway.ts";
+import { googleClient } from "./src/adapters/bb/google-oauth-client.ts";
+import { createGoogleTokens, type GoogleTokens } from "./src/adapters/bb/google-tokens.ts";
 import { MAKOSH_AI_PLUGIN_ID, createMakoshAiTranslator } from "./src/adapters/bb/makosh-ai-translator.ts";
 import { TranslateJobRefusal, TranslateJobs } from "./src/adapters/bb/translate-jobs.ts";
 import { AiJobRefusal, AiJobs, type AiFinished, type AiJobContext } from "./src/adapters/bb/ai-jobs.ts";
@@ -463,6 +465,8 @@ const READ_INSTRUCTIONS =
 
 export interface MailPluginOverrides {
   gateway?: ImapGateway;
+  /** Google access tokens (tests pass a fake; the default asks Google). */
+  googleTokens?: GoogleTokens;
   clock?: Clock;
   transport?: MailTransport;
   /** Slice 3k: the OpenPGP engine; tests may pass a counting one. */
@@ -1370,8 +1374,11 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       }
       return true;
     };
+    // One token service for IMAP, SMTP and the sign-in flow: a grant's access token is asked for once.
+    const googleTokens =
+      overrides.googleTokens ?? createGoogleTokens({ client: googleClient(), fetch: (...args) => fetch(...args), now: () => Date.now() });
     const gateway =
-      overrides.gateway ?? createImapflowGateway({ logger: (line) => bb.log.warn(line) });
+      overrides.gateway ?? createImapflowGateway({ logger: (line) => bb.log.warn(line), googleTokens });
     const publishChanged = (accountId: string | null) =>
       bb.realtime.publish(MAIL_CHANGED_CHANNEL, { accountId } satisfies MailChangedPayload);
     const syncDeps: SyncDeps = {
@@ -1381,7 +1388,7 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       clock,
       notifier: { mailChanged: publishChanged },
     };
-    const transport = overrides.transport ?? createSmtpTransport();
+    const transport = overrides.transport ?? createSmtpTransport({ googleTokens });
     const accountDeps: AccountDeps = {
       store,
       gateway,
