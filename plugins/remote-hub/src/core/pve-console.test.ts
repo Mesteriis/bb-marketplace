@@ -21,7 +21,7 @@ describe("console states and reasons", () => {
     for (const code of ["login_failed", "no_permission", "unreachable", "tls_untrusted", "cert_changed", "websocket_error", "guest_stopped", "guest_moved", "idle_timeout"]) {
       expect(reasonText(code)).not.toContain("The console ended (");
     }
-    expect(reasonText("login_failed")).toContain("ticket");
+    expect(reasonText("login_failed")).toContain("enter its password again");
     expect(reasonText("no_permission")).toContain("VM.Console");
     expect(reasonText("something_new")).toBe("The console ended (something_new).");
   });
