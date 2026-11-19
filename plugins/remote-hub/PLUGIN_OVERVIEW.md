@@ -3,7 +3,7 @@ guest discovery. Real SSH sessions run in xterm and RDP on a canvas, through a R
 
 ## What you get
 
-- One page, Remote Hub: Quick connect (SSH / RDP), saved profiles and the Proxmox guest list.
+- One page, Remote Hub (in Russian): BB's sidebar lists the connections and open sessions; the page shows one or two sessions.
 - Proxmox VE: Add Proxmox creates a restricted user (you confirm the plan; your admin login is used for this setup only, never stored) or saves a login or API token you have. The guest list shows each connection's outcome, search and links. Open a node shell, a container terminal or a VM's graphics (noVNC), several at once. A lost terminal reconnects itself (5 tries, 1-16 s, new console, scrollback kept); graphics never: Reconnect opens a new one. Tabs return after a restart as "not connected". Agents: container terminals, remote_reconnect; graphics only open, state, disconnect. No power buttons.
 - SSH: connect form (host, user, port), a real /usr/bin/ssh session on a
   helper-owned PTY, xterm.js rendering, resize, and a binary WebSocket with
@@ -12,8 +12,8 @@ guest discovery. Real SSH sessions run in xterm and RDP on a canvas, through a R
   validated strictly; when it is not trusted you see its fingerprint, subject,
   issuer and validity and accept it once, reject it, or trust it for good. A changed certificate is never accepted automatically. Sign-in uses NLA/CredSSP when offered.
   Quality per profile: Slow, Balanced, Best.
-- Saved profiles: a catalogue beside Quick connect with search, an SSH/RDP/PVE filter,
-  groups, tags, favourites and live status; an editor. A profile holds no password or key,
+- Saved profiles: a tree in the sidebar with search and groups (Proxmox opens to its
+  guests); an editor. A profile holds no password or key,
   only when it was last opened and recent failure codes.
 - Saved passwords and key passphrases live in the macOS Keychain, never in the
   profile, database, page or any log, and work only for the host, port, user
