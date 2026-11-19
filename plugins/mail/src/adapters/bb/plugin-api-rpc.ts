@@ -22,7 +22,9 @@ import {
 } from "../../core/plugin-access.ts";
 import {
   CURSOR_MESSAGE,
-  PLUGIN_CONTACTS_MAX,
+  INVITES_LIMIT_MESSAGE,
+  INVITE_READS_PER_HOUR,
+  QUERY_MESSAGE,
   UNKNOWN_MESSAGE,
   GRANT_ACCOUNT_MESSAGE,
   GRANT_GOOGLE_MESSAGE,
@@ -65,7 +67,10 @@ export type PluginReads = {
   ) => { refused: string } | { hits: MessageSummary[]; nextCursor: SearchCursor | null };
   /** One message when the owner shares it, with its redacted plain text. */
   read: (messageId: string) => { header: MessageHeader; subject: string; text: string; hiddenCount: number } | null;
-  contacts: (query: string, limit: number) => Contact[];
+  /** People of one account, read from that account's shared mail only. */
+  contacts: (query: string, limit: number, accountId: string) => Contact[];
+  /** Whether a stored message carries a calendar part. */
+  calendarPart: (messageId: string) => boolean;
   /** The message's header when the owner shares it. */
   shared: (messageId: string) => MessageHeader | null;
   /** The invitation a message carries, parsed; null when it holds none. */
@@ -132,6 +137,8 @@ export function createPluginApi(deps: PluginApiDeps) {
     }
   };
 
+  /** Per plugin, when it read an invitation in the last hour. */
+  const inviteReads = new Map<string, number[]>();
   const refusedAt = new Map<string, number>();
   /** The refusal for a missing right; logged once per plugin, method and hour. */
   function missing(pluginId: string, method: string, right: PluginRight): Error {
@@ -265,12 +272,9 @@ export function createPluginApi(deps: PluginApiDeps) {
     plugin_contacts_list: (input: { accountId: string; query: string; limit: number }, context: Context) => {
       const pluginId = callingPlugin(context);
       const accountId = granted(pluginId, "plugin_contacts_list", "contacts.read", input.accountId);
-      const account = store.getAccount(accountId);
-      const own = new Set([account?.email, account?.username].filter((a): a is string => typeof a === "string").map((a) => a.toLowerCase()));
+      if (input.query.trim() === "") throw refuse("invalid", QUERY_MESSAGE);
       const contacts = deps.reads
-        .contacts(input.query, PLUGIN_CONTACTS_MAX)
-        .filter((contact) => own.has(contact.ownerAccount.toLowerCase()))
-        .slice(0, input.limit)
+        .contacts(input.query, input.limit, accountId)
         .map((contact) => ({
           name: contact.name === null ? null : redactedSubject(contact.name),
           address: contact.address,
@@ -309,7 +313,29 @@ export function createPluginApi(deps: PluginApiDeps) {
         deps.log({ actor: "plugin", tool: "plugin_invites", outcome: "refused_invalid", refId: pluginRef(pluginId) });
         throw refuse("not_found", UNKNOWN_MESSAGE);
       }
-      const invite = await deps.reads.invite(header.id);
+      // A read signs in to the mail server: only for a message that carries an invitation, and not in bursts.
+      if (!deps.reads.calendarPart(header.id)) throw refuse("not_found", UNKNOWN_MESSAGE);
+      const nowMs = (deps.clockMs ?? Date.now)();
+      const recent = (inviteReads.get(pluginId) ?? []).filter((at) => nowMs - at < REFUSED_LOG_MS);
+      if (recent.length >= INVITE_READS_PER_HOUR) {
+        deps.log({ actor: "plugin", tool: "plugin_invites", outcome: "refused_caps", refId: pluginRef(pluginId) });
+        throw refuse("conflict", INVITES_LIMIT_MESSAGE);
+      }
+      inviteReads.set(pluginId, [...recent, nowMs]);
+      const read = await deps.reads.invite(header.id);
+      const hide = (text: string | null) => (text === null ? null : redactedSubject(text));
+      // The event's text and names are the sender's: secrets in them are hidden as in a message.
+      const invite =
+        read === null
+          ? null
+          : {
+              ...read,
+              summary: redactedSubject(read.summary),
+              location: hide(read.location),
+              description: hide(read.description),
+              organizer: read.organizer === null ? null : { ...read.organizer, name: hide(read.organizer.name) },
+              attendees: read.attendees.map((attendee) => ({ ...attendee, name: hide(attendee.name) })),
+            };
       done(pluginId, "plugin_invites", [header.id], invite === null ? 0 : 1);
       return { invite };
     },

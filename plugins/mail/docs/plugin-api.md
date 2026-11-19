@@ -101,15 +101,17 @@ bytes). A message outside your grant or outside what the owner shares is
 
 ### `plugin_contacts_list` — `contacts.read`
 
-Input `{ "accountId": "acc_…", "query": "", "limit": 100 }`, `limit` 1–200.
-People from mail headers, mailing lists and automated senders left out:
+Input `{ "accountId": "acc_…", "query": "ada", "limit": 100 }`, `limit`
+1–200. `query` is required: a name, an address or a topic of the mail
+exchanged; there is no list of everyone. People from the headers of that
+account's shared mail, mailing lists and automated senders left out:
 
 ```json
 { "contacts": [{ "name": "Ada", "address": "ada@example.com", "received": 12, "sent": 7, "lastAt": "2026-11-10T09:00:00.000Z" }] }
 ```
 
-A person who writes to two of the owner's accounts is listed under the one
-that exchanged mail with them last. There is no paging in version 1.
+Counts, names and matches come from the granted account only. There is no
+paging in version 1.
 
 ### `plugin_invites_list` — `invites.read`
 
@@ -122,8 +124,10 @@ threadId, date, from, subject }], "nextCursor": … }`.
 Input `{ "messageId": "m_…" }`. Mail fetches the message from the server and
 parses its invitation: `{ "invite": { method, uid, sequence, summary, start,
 end, organizer, attendees, … } }`, or `{ "invite": null }` when the part
-holds none. One call opens a session to the mail server: call it for the
-invitations you need, not for a whole list.
+holds none. Secrets in the event's text and names are hidden as in a
+message. Only a message that `plugin_invites_list` returns can be read. One
+call opens a session to the mail server: at most 30 an hour per plugin,
+then `conflict`.
 
 ### `plugin_mail_propose` — `mail.propose`
 
@@ -136,7 +140,7 @@ Input:
 Makes a draft of that account, marked "Prepared by <your plugin id>", with
 the account's signature under your text. Answer `{ "draftId": "…" }`. The
 letter is **not sent**: the owner opens it in Mail, edits it or not, and
-presses Send. New letters only in version 1 (no reply threading, no
+presses Send. The subject is one line. New letters only in version 1 (no reply threading, no
 attachments). At most 50 recipients and 20 letters a day per plugin.
 
 ## Refusals

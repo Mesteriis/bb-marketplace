@@ -65,18 +65,26 @@ describe("PluginAccessSection", () => {
     const row = await screen.findByRole("listitem", { name: "calendar" });
     fireEvent.click(within(row).getByRole("button", { name: "Allow…" }));
     const cell = (name: string) => within(row).getByRole("switch", { name }).getAttribute("aria-checked");
+    // With several mailboxes nothing is checked for the owner: which mailbox is theirs to pick.
+    expect(within(row).getAllByRole("switch").map((sw) => sw.getAttribute("aria-checked"))).not.toContain("true");
+    expect(within(row).getByText("Asks for: Read mail, Read invitations")).toBeTruthy();
+    fireEvent.click(within(row).getByRole("switch", { name: "Read mail, first@example.com" }));
+    fireEvent.click(within(row).getByRole("switch", { name: "Read invitations, first@example.com" }));
     expect(cell("Read mail, first@example.com")).toBe("true");
-    expect(cell("Read invitations, second@example.net")).toBe("true");
-    expect(cell("Read contacts, first@example.com")).toBe("false");
-    expect(calls).toEqual([]);
-    // The owner narrows it to one account before saving.
-    fireEvent.click(within(row).getByRole("switch", { name: "Read mail, second@example.net" }));
-    fireEvent.click(within(row).getByRole("switch", { name: "Read invitations, second@example.net" }));
     expect(calls).toEqual([]);
     fireEvent.click(within(row).getByRole("button", { name: "Save" }));
     await waitFor(() =>
       expect(calls).toEqual(["set calendar mail.read acc_1 true", "set calendar invites.read acc_1 true", "dismiss calendar"]),
     );
+  });
+
+  it("with one mailbox Allow… checks the asked rights for it", async () => {
+    const { port: p } = port({ plugins: [], requests: [{ ...request, rights: [...request.rights] }] });
+    render(<PluginAccessSection port={p} accounts={[accounts[0]!]} />);
+    const row = await screen.findByRole("listitem", { name: "calendar" });
+    fireEvent.click(within(row).getByRole("button", { name: "Allow\u2026" }));
+    expect(within(row).getByRole("switch", { name: "Read mail, first@example.com" }).getAttribute("aria-checked")).toBe("true");
+    expect(within(row).getByRole("switch", { name: "Read contacts, first@example.com" }).getAttribute("aria-checked")).toBe("false");
   });
 
   it("a plugin with access: switches show its grants and change one at a time", async () => {

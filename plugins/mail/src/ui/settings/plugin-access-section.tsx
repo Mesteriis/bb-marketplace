@@ -244,9 +244,12 @@ export function PluginAccessSection({
                         onClick={() =>
                           setAllowing({
                             pluginId: request.pluginId,
-                            // The asked rights for every account, as a start; Google keys are turned on one by one.
+                            // With one mailbox the asked rights start checked; with several, which mailbox is the owner's to pick.
+                            // Google keys are turned on one by one.
                             cells: new Set(
-                              request.rights.filter((right) => !isGoogleRight(right)).flatMap((right) => accounts.map((account) => cellKey(right, account.id))),
+                              accounts.length === 1
+                                ? request.rights.filter((right) => !isGoogleRight(right)).map((right) => cellKey(right, accounts[0]!.id))
+                                : [],
                             ),
                           })
                         }

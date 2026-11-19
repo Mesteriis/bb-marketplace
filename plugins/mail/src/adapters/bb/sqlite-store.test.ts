@@ -3128,6 +3128,18 @@ describe.each(storeKinds)("contacts (%s)", (_kind, make) => {
     expect(s.contacts("x", 1)).toHaveLength(1);
   });
 
+  it("contacts of one account count, name and match nothing from another account", () => {
+    received("anna@example.net", "2026-01-01T00:00:00.000Z", { from: { name: "Anna", address: "anna@example.net" } });
+    received("anna@example.net", "2026-05-01T00:00:00.000Z", { from: { name: "Anna Elsewhere", address: "anna@example.net" }, subject: "Invented merger" }, "acc_2");
+    received("anna@example.net", "2026-06-01T00:00:00.000Z", { subject: "Invented merger again" }, "acc_2");
+    expect(s.contacts("anna", 5, { scoped: true, accountId: "acc_1" })).toEqual([
+      { address: "anna@example.net", name: "Anna", ownerAccount: "owner@example.org", sentByOwner: 0, received: 1, lastDate: "2026-01-01T00:00:00.000Z" },
+    ]);
+    // A topic that exists only in the other account finds nobody here.
+    expect(s.contacts("merger", 5, { scoped: true, accountId: "acc_1" })).toEqual([]);
+    expect(s.contacts("merger", 5, { scoped: true, accountId: "acc_2" }).map((c) => [c.address, c.received])).toEqual([["anna@example.net", 2]]);
+  });
+
   it("the owner account is the account that exchanged mail with them most recently", () => {
     received("anna@example.net", "2026-01-01T00:00:00.000Z");
     received("anna@example.net", "2026-05-01T00:00:00.000Z", {}, "acc_2");

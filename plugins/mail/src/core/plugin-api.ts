@@ -5,6 +5,7 @@
 
 import { z } from "zod";
 
+import { noLineBreaks } from "./model.ts";
 import { PLUGIN_RIGHTS, type PluginRight } from "./plugin-access.ts";
 
 export const PLUGIN_API_VERSION = 1 as const;
@@ -38,6 +39,10 @@ export const PLUGIN_READ_CHARS = 100_000;
 export const PLUGIN_RECIPIENTS_MAX = 50;
 export const PLUGIN_LETTER_CHARS = 200_000;
 export const CURSOR_MESSAGE = "Unknown cursor";
+export const QUERY_MESSAGE = "Say who or what to look for";
+export const INVITES_LIMIT_MESSAGE = "Too many invitations read this hour";
+/** Each read of an invitation signs in to the mail server. */
+export const INVITE_READS_PER_HOUR = 30;
 export const UNKNOWN_MESSAGE = "Unknown message";
 
 const personSchema = z.object({ name: z.string().nullable(), address: z.string() });
@@ -102,7 +107,8 @@ export const pluginApiSchemas = {
   plugin_contacts_list: {
     input: z.object({
       accountId: z.string(),
-      query: z.string().max(PLUGIN_QUERY_MAX).default(""),
+      /** A name, an address or a topic: a list of everyone is not offered. */
+      query: z.string().min(1).max(PLUGIN_QUERY_MAX),
       limit: z.number().int().min(1).max(PLUGIN_CONTACTS_MAX).default(100),
     }),
     output: z.object({
@@ -132,7 +138,7 @@ export const pluginApiSchemas = {
       accountId: z.string(),
       to: z.array(z.string().max(320)).min(1).max(PLUGIN_RECIPIENTS_MAX),
       cc: z.array(z.string().max(320)).max(PLUGIN_RECIPIENTS_MAX).default([]),
-      subject: z.string().max(998),
+      subject: z.string().max(998).refine(noLineBreaks, { message: "Line breaks are not allowed" }),
       text: z.string().max(PLUGIN_LETTER_CHARS),
     }),
     output: z.object({ draftId: z.string() }),

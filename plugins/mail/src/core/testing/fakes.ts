@@ -1535,7 +1535,8 @@ export class InMemoryMailStore implements MailStore {
     return removed;
   }
 
-  contacts(query: string, limit: number, opts?: { scoped: boolean }): Contact[] {
+  contacts(query: string, limit: number, opts?: { scoped: boolean; accountId?: string }): Contact[] {
+    const only = opts?.accountId ?? null;
     const scoped = opts?.scoped === true;
     const words = queryWords(query);
     if (words.length === 0 || limit <= 0) return [];
@@ -1548,6 +1549,7 @@ export class InMemoryMailStore implements MailStore {
       return tb - ta;
     };
     const messages = this.contactRows()
+      .filter((row) => only === null || row.accountId === only)
       .filter((row) => !scoped || this.inAiScope(row))
       .sort(newestFirst)
       .slice(0, CONTACT_SCAN)
@@ -1555,12 +1557,14 @@ export class InMemoryMailStore implements MailStore {
         this.contactMessage(row, messageTextMask(row.message.subject, snippetOf(row.message), row.message.bodyText, words)),
       );
     const bulkSenders = new Set(
-      this.state.rows.filter((r) => this.bulkOf(r) === true).map((r) => r.message.from.address.trim().toLowerCase()),
+      this.state.rows
+        .filter((r) => (only === null || r.accountId === only) && this.bulkOf(r) === true)
+        .map((r) => r.message.from.address.trim().toLowerCase()),
     );
     const ranked = rankContacts(
       messages,
       words,
-      ownerAddressSets(this.listAccounts(), this.state.identities),
+      ownerAddressSets(this.listAccounts(), this.state.identities).filter((owner) => only === null || owner.id === only),
       bulkSenders,
       scoped ? Infinity : limit,
     );
@@ -2263,6 +2267,10 @@ export class InMemoryMailStore implements MailStore {
 
   pluginLastCalls(): Map<string, string> {
     return new Map();
+  }
+
+  hasCalendarPart(): boolean {
+    return false;
   }
 
   calendarMessages(): { id: string; date: string | null }[] {

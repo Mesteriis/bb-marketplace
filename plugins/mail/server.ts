@@ -3214,7 +3214,8 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         const rendered = renderMessageForAgentCounted(header, store.getBody(header.id), PLUGIN_READ_CHARS, folderNames(store)(header));
         return { header, subject: redactedSubject(header.subject), text: rendered.text, hiddenCount: rendered.hiddenCount };
       },
-      contacts: (query, limit) => store.contacts(query, limit, { scoped: true }),
+      contacts: (query, limit, accountId) => store.contacts(query, limit, { scoped: true, accountId }),
+      calendarPart: (messageId) => store.hasCalendarPart(messageId),
       shared: (messageId) => store.scopedMessage(messageId),
       invite: async (messageId) => (await readInvite(deps, messageId)).invite,
     },

@@ -781,7 +781,14 @@ export interface MailStore {
    * outside the AI scope is neither returned nor counted, excluded addresses
    * never return, and the topic match runs over redacted text.
    */
-  contacts(query: string, limit: number, opts?: { scoped: boolean }): Contact[];
+  /**
+   * `accountId` (the plugin API): only that account's messages are read,
+   * counted and matched, and only its addresses are the owner's: nothing of
+   * another account reaches the answer.
+   */
+  contacts(query: string, limit: number, opts?: { scoped: boolean; accountId?: string }): Contact[];
+  /** Whether a stored message carries a calendar part. */
+  hasCalendarPart(messageId: string): boolean;
   /** Per account, the latest personal mail received from and sent to any of the addresses (correspondenceOf); junk and trash left out. */
   correspondence(addresses: string[]): AccountCorrespondence[];
   getTranslation(messageId: string, targetLanguage: string): TranslationRecord | null;

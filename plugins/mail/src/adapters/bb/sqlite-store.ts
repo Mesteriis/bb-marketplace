@@ -4972,24 +4972,28 @@ export function createSqliteStore(db: Database.Database): MailStore {
       const scoped = opts?.scoped === true;
       if (scoped) freshScope();
       // The topic mask runs over redacted text (messageTextMask), so a secret never finds a contact.
+      // One account (the plugin API): every read below stays inside it.
+      const only = opts?.accountId ?? null;
       const rows = db
-        .prepare<[{ words: string; scan: number }], ContactRow>(
+        .prepare<[{ words: string; scan: number; only: string | null }], ContactRow>(
           `SELECT ${CONTACT_COLUMNS},
              mail_contact_mask(m.subject, m.snippet, substr(m.body_text, 1, ${CONTACT_BODY_CHARS}), @words) AS mask
            FROM ${MESSAGES_WITH_FOLDER}
            WHERE ${CONTACT_ROWS}${scoped ? ` AND ${IN_AI_SCOPE}` : ""}
+             AND (@only IS NULL OR m.account_id = @only)
            ORDER BY m.date IS NULL, m.date DESC, m.seq DESC LIMIT @scan`,
         )
-        .all({ words: JSON.stringify(words), scan: CONTACT_SCAN });
+        .all({ words: JSON.stringify(words), scan: CONTACT_SCAN, only });
       const bulkSenders = new Set(
         db
-          .prepare<[], { address: string }>(
-            "SELECT DISTINCT mail_lower(trim(from_address)) AS address FROM messages WHERE bulk = 1",
+          .prepare<[{ only: string | null }], { address: string }>(
+            "SELECT DISTINCT mail_lower(trim(from_address)) AS address FROM messages WHERE bulk = 1 AND (@only IS NULL OR account_id = @only)",
           )
-          .all()
+          .all({ only })
           .map((row) => row.address),
       );
-      const ranked = rankContacts(rows.map(toContactMessage), words, ownerAccounts(), bulkSenders, scoped ? Infinity : limit);
+      const owners = only === null ? ownerAccounts() : ownerAccounts().filter((owner) => owner.id === only);
+      const ranked = rankContacts(rows.map(toContactMessage), words, owners, bulkSenders, scoped ? Infinity : limit);
       return scoped ? ranked.filter((c) => !senderExcluded([c.address], aiScope)).slice(0, limit) : ranked;
     },
 
@@ -5856,6 +5860,11 @@ export function createSqliteStore(db: Database.Database): MailStore {
         )
         .all();
       return new Map(rows.filter((row) => row.ref_id.startsWith(PLUGIN_REF_PREFIX)).map((row) => [row.ref_id.slice(PLUGIN_REF_PREFIX.length), row.at]));
+    },
+    hasCalendarPart(messageId) {
+      return (
+        db.prepare<[string], { n: number }>("SELECT COUNT(*) AS n FROM attachments WHERE message_id = ? AND kind = 'calendar'").get(messageId)!.n > 0
+      );
     },
     calendarMessages(accountId, limit, cursor) {
       const after = cursor === null ? "" : "AND (COALESCE(m.date, '') < @date OR (COALESCE(m.date, '') = @date AND m.id < @id))";

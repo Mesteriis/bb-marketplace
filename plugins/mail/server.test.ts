@@ -5761,7 +5761,7 @@ describe("the plugin API reads", () => {
 
   it("a right for one thing does not open another, and an ungranted account is refused by name of the right", async () => {
     const { crm } = await loadGranted();
-    await expect(crm("plugin_contacts_list", { accountId: "acc_1" })).rejects.toMatchObject({
+    await expect(crm("plugin_contacts_list", { accountId: "acc_1", query: "ivy" })).rejects.toMatchObject({
       code: "forbidden",
       message: 'Makosh Mail: this plugin has no "contacts.read" access',
     });
@@ -5792,7 +5792,11 @@ describe("the plugin API reads", () => {
 
   it("contacts come from shared mail of the granted account", async () => {
     const { crm } = await loadGranted(["contacts.read"]);
-    const answer = (await crm("plugin_contacts_list", { accountId: "acc_1" })) as { contacts: { address: string }[] };
+    const answer = (await crm("plugin_contacts_list", { accountId: "acc_1", query: "ivy" })) as { contacts: { address: string }[] };
+    expect(answer.contacts.map((contact) => contact.address)).toEqual(["ivy@example.com"]);
+    // A list of everyone is not offered: an empty query is refused, not answered with nothing.
+    await expect(crm("plugin_contacts_list", { accountId: "acc_1" })).rejects.toThrow();
+    await expect(crm("plugin_contacts_list", { accountId: "acc_1", query: "  " })).rejects.toMatchObject({ code: "invalid" });
     const text = JSON.stringify(answer);
     expect(text).not.toContain("boss@excluded.example.net");
     for (const secret of secrets) expect(text).not.toContain(secret);
@@ -5831,6 +5835,12 @@ describe("the plugin API reads", () => {
     expect(JSON.stringify(rows)).not.toContain("ada@example.com");
   });
 
+  it("a subject with a line break is refused, as the composer refuses it", async () => {
+    const { host, crm } = await loadGranted(["mail.propose"]);
+    await expect(crm("plugin_mail_propose", { accountId: "acc_1", to: ["ada@example.com"], subject: "Hi\r\nBcc: x@example.com", text: "y" })).rejects.toThrow();
+    expect(host.bb.storage.database().prepare("SELECT COUNT(*) AS n FROM compose_drafts").get()).toEqual({ n: 0 });
+  });
+
   it("without the right a plugin prepares nothing", async () => {
     const { host, crm } = await loadGranted(["mail.read"]);
     await expect(crm("plugin_mail_propose", { accountId: "acc_1", to: ["ada@example.com"], subject: "x", text: "y" })).rejects.toMatchObject({ code: "forbidden" });
@@ -5842,7 +5852,7 @@ describe("the plugin API reads", () => {
     await crm("plugin_accounts_list", {});
     await crm("plugin_messages_search", { accountId: "acc_1", query: "Invented" });
     await crm("plugin_message_read", { messageId: messageIdAt(host, "INBOX", 1) });
-    for (let i = 0; i < 3; i++) await expect(crm("plugin_contacts_list", { accountId: "acc_1" })).rejects.toThrow();
+    for (let i = 0; i < 3; i++) await expect(crm("plugin_contacts_list", { accountId: "acc_1", query: "ivy" })).rejects.toThrow();
     const rows = agentLogRows(host).filter((row) => row.actor === "plugin");
     expect(rows.map((row) => `${row.tool}:${row.outcome}`)).toEqual([
       "plugin_accounts:ok",

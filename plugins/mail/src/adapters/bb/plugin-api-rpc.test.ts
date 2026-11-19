@@ -40,6 +40,7 @@ function setup(overrides: Partial<PluginReads> = {}, start = "2026-11-19T10:00:0
     read: () => null,
     contacts: () => [],
     shared: () => null,
+    calendarPart: () => false,
     invite: async () => null,
     ...overrides,
   };
@@ -187,5 +188,56 @@ describe("the owner's grants", () => {
     await expect(api.plugin_grant_revoke({ pluginId: "other" }, as("crm"))).rejects.toMatchObject({ code: "forbidden" });
     await expect(api.plugin_request_dismiss({ pluginId: "other" }, as("crm"))).rejects.toMatchObject({ code: "forbidden" });
     expect(store.listPluginGrants()).toEqual([]);
+  });
+});
+
+describe("reading an invitation", () => {
+  const header = { id: "m_1", accountId: "acc_1" } as never;
+  const invite = {
+    method: "request",
+    uid: "u1",
+    sequence: 0,
+    summary: "Invented sync, password: hunter2secret",
+    location: "Room 4, passcode 918273",
+    description: "Join with one-time code 554433",
+    start: null,
+    end: null,
+    organizer: { name: "Ada password: Qm7xR2pLk9", address: "ada@example.com" },
+    attendees: [{ name: "Bob token ghp_Zx81Kq7Lm2Np4Rt6Vw9Yb3Cd5Ef7Gh1Jk0Mn", address: "bob@example.net", status: "accepted", optional: false }],
+    attendeesTotal: 1,
+    recurring: false,
+    cancelled: false,
+    self: null,
+  } as never;
+
+  function granted(overrides: Partial<PluginReads>) {
+    const context = setup({ shared: () => header, calendarPart: () => true, invite: async () => invite, ...overrides });
+    context.store.setPluginGrant({ pluginId: "calendar", right: "invites.read", accountId: "acc_1", grantedAt: "2026-11-19T10:00:00.000Z" }, true);
+    return context;
+  }
+
+  it("hides secrets in the event's text and in people's names", async () => {
+    const { api } = granted({});
+    const text = JSON.stringify(await api.plugin_invite_read({ messageId: "m_1" }, as("calendar")));
+    for (const secret of ["hunter2secret", "Qm7xR2pLk9", "ghp_Zx81Kq7Lm2Np4Rt6Vw9Yb3Cd5Ef7Gh1Jk0Mn"]) expect(text).not.toContain(secret);
+    expect(text).toContain("Invented sync");
+    expect(text).toContain("ada@example.com");
+  });
+
+  it("does not go to the mail server for a message without a calendar part", async () => {
+    let fetched = 0;
+    const { api } = granted({ calendarPart: () => false, invite: async () => (fetched++, invite) });
+    await expect(api.plugin_invite_read({ messageId: "m_1" }, as("calendar"))).rejects.toMatchObject({ code: "not_found" });
+    expect(fetched).toBe(0);
+  });
+
+  it("reads at most 30 invitations an hour per plugin", async () => {
+    let fetched = 0;
+    const { api, clock } = granted({ invite: async () => (fetched++, invite) });
+    for (let i = 0; i < 30; i++) await api.plugin_invite_read({ messageId: "m_1" }, as("calendar"));
+    await expect(api.plugin_invite_read({ messageId: "m_1" }, as("calendar"))).rejects.toMatchObject({ code: "conflict" });
+    expect(fetched).toBe(30);
+    clock.now = new Date(clock.now.getTime() + 61 * 60_000);
+    await expect(api.plugin_invite_read({ messageId: "m_1" }, as("calendar"))).resolves.toBeTruthy();
   });
 });
