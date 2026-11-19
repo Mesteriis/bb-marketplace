@@ -3,10 +3,17 @@
 // the call; a client caller has none, so the API's own methods refuse it.
 import type { ExperimentalPluginRpcHandlerContext } from "@get-bb/plugin-sdk";
 
+import { pluginRef, type LogEntryInput, type LogTool } from "../../core/agent-log.ts";
+import { redactedSubject } from "../../core/agent-text.ts";
+import type { InviteView } from "../../core/calendar-invite.ts";
+import type { Contact } from "../../core/contacts.ts";
+import type { MessageHeader, MessageSummary, SearchCursor } from "../../core/model.ts";
 import {
   PLUGIN_ID_MAX,
   REQUESTS_PER_DAY,
   cleanRequest,
+  grantedAccounts,
+  hasRight,
   isGoogleRight,
   isPluginRight,
   overDailyLimit,
@@ -14,6 +21,9 @@ import {
   type PluginRight,
 } from "../../core/plugin-access.ts";
 import {
+  CURSOR_MESSAGE,
+  PLUGIN_CONTACTS_MAX,
+  UNKNOWN_MESSAGE,
   GRANT_ACCOUNT_MESSAGE,
   GRANT_GOOGLE_MESSAGE,
   GRANT_RIGHT_MESSAGE,
@@ -34,11 +44,65 @@ export type PluginApiDeps = {
   now: () => Date;
   /** Requests or grants changed; `request` is the plugin that has just asked, if one has. */
   announce: (request: string | null) => void;
-  /** Plugin id to the time of its last call (the activity log). */
-  lastCalls?: () => ReadonlyMap<string, string>;
+  /** One content-free row of the activity log. */
+  log: (entry: LogEntryInput) => void;
+  /** Milliseconds, as Date.now(): the hourly limit of refused-call rows. */
+  clockMs?: () => number;
+  /** The reads agents use: inside the owner's AI access, secrets hidden. */
+  reads: PluginReads;
 };
 
+export type PluginReads = {
+  /** A page of one account's search in Mail's syntax; `refused` when the text would match a secret. */
+  search: (
+    query: string,
+    accountId: string,
+    limit: number,
+    cursor: SearchCursor | null,
+  ) => { refused: string } | { hits: MessageSummary[]; nextCursor: SearchCursor | null };
+  /** One message when the owner shares it, with its redacted plain text. */
+  read: (messageId: string) => { header: MessageHeader; subject: string; text: string; hiddenCount: number } | null;
+  contacts: (query: string, limit: number) => Contact[];
+  /** The message's header when the owner shares it. */
+  shared: (messageId: string) => MessageHeader | null;
+  /** The invitation a message carries, parsed; null when it holds none. */
+  invite: (messageId: string) => Promise<InviteView | null>;
+};
+
+const REFUSED_LOG_MS = 60 * 60 * 1000;
+
+function encodeCursor(cursor: SearchCursor | null): string | null {
+  return cursor === null ? null : Buffer.from(JSON.stringify([cursor.date, cursor.id]), "utf8").toString("base64url");
+}
+
+/** A cursor carries a position only; one that does not parse is refused. */
+function decodeCursor(text: string | null | undefined): SearchCursor | null {
+  if (text == null) return null;
+  try {
+    const value: unknown = JSON.parse(Buffer.from(text, "base64url").toString("utf8"));
+    if (Array.isArray(value) && value.length === 2 && (value[0] === null || typeof value[0] === "string") && typeof value[1] === "string") {
+      return { date: value[0] as string | null, id: value[1] };
+    }
+  } catch {
+    // Falls through to the refusal.
+  }
+  throw refuse("invalid", CURSOR_MESSAGE);
+}
+
 type Context = ExperimentalPluginRpcHandlerContext;
+
+/** The log's name for each API method. */
+const TOOL_OF: Readonly<Record<string, LogTool>> = {
+  plugin_access_request: "plugin_request",
+  plugin_accounts_list: "plugin_accounts",
+  plugin_messages_search: "plugin_search",
+  plugin_message_read: "plugin_read",
+  plugin_contacts_list: "plugin_contacts",
+  plugin_invites_list: "plugin_invites",
+  plugin_invite_read: "plugin_invites",
+  plugin_mail_propose: "plugin_propose",
+  plugin_google_token: "plugin_token",
+};
 
 /** The verified id of the calling plugin; a client caller is refused. */
 export function callingPlugin(context: Context): string {
@@ -61,9 +125,38 @@ export function createPluginApi(deps: PluginApiDeps) {
       throw refuse("invalid", GRANT_RIGHT_MESSAGE);
     }
     if (!store.listPluginGrants().some((grant) => grant.pluginId === pluginId && grant.right === asked)) {
-      throw refuse("forbidden", missingRightMessage(asked));
+      throw missing(pluginId, method, asked);
     }
   };
+
+  const refusedAt = new Map<string, number>();
+  /** The refusal for a missing right; logged once per plugin, method and hour. */
+  function missing(pluginId: string, method: string, right: PluginRight): Error {
+    const key = `${pluginId}\n${method}`;
+    const nowMs = (deps.clockMs ?? Date.now)();
+    const last = refusedAt.get(key);
+    if (last === undefined || nowMs - last >= REFUSED_LOG_MS) {
+      refusedAt.set(key, nowMs);
+      if (refusedAt.size > 1000) refusedAt.clear();
+      deps.log({ actor: "plugin", tool: TOOL_OF[method] ?? "plugin_request", outcome: "refused_scope", refId: pluginRef(pluginId) });
+    }
+    return refuse("forbidden", missingRightMessage(right));
+  }
+
+  /** The account when the plugin holds the right for it; otherwise the refusal that names the right. */
+  function granted(pluginId: string, method: string, right: PluginRight, accountId: string): string {
+    if (!hasRight(store.listPluginGrants(), pluginId, right, accountId)) throw missing(pluginId, method, right);
+    return accountId;
+  }
+
+  const done = (pluginId: string, tool: LogTool, ids: readonly string[], count: number, hiddenCount = 0) =>
+    deps.log({ actor: "plugin", tool, outcome: count === 0 ? "empty" : "ok", messageIds: ids, count, hiddenCount, refId: pluginRef(pluginId) });
+
+  /** A name is the sender's own text: secrets in it are hidden like in a subject. */
+  const person = (address: { name: string | null; address: string }) => ({
+    name: address.name === null ? null : redactedSubject(address.name),
+    address: address.address,
+  });
 
   const grantOf = (input: { pluginId: string; right: string; accountId: string }): PluginGrant => {
     if (input.pluginId.length > PLUGIN_ID_MAX) throw refuse("invalid", PLUGIN_ID_MESSAGE);
@@ -94,14 +187,134 @@ export function createPluginApi(deps: PluginApiDeps) {
         throw refuse("conflict", REQUEST_LIMIT_MESSAGE);
       }
       store.putPluginRequest({ pluginId, rights: clean.rights, reason: clean.reason, askedAt: now.toISOString() });
+      deps.log({ actor: "plugin", tool: "plugin_request", outcome: "ok", count: clean.rights.length, refId: pluginRef(pluginId) });
       deps.announce(pluginId);
       return ok;
+    },
+
+    plugin_accounts_list: (_input: Record<string, never>, context: Context) => {
+      const pluginId = callingPlugin(context);
+      const mine = new Set(grantedAccounts(store.listPluginGrants(), pluginId, "mail.read"));
+      const accounts = store
+        .listAccounts()
+        .filter((account) => mine.has(account.id))
+        .map((account) => ({ id: account.id, email: account.email, displayName: account.displayName ?? null, provider: account.preset }));
+      done(pluginId, "plugin_accounts", [], accounts.length);
+      return { accounts };
+    },
+
+    plugin_messages_search: (
+      input: { accountId: string; query: string; limit: number; cursor?: string | null | undefined },
+      context: Context,
+    ) => {
+      const pluginId = callingPlugin(context);
+      const accountId = granted(pluginId, "plugin_messages_search", "mail.read", input.accountId);
+      const page = deps.reads.search(input.query, accountId, input.limit, decodeCursor(input.cursor));
+      if ("refused" in page) {
+        deps.log({ actor: "plugin", tool: "plugin_search", outcome: "refused_invalid", refId: pluginRef(pluginId) });
+        throw refuse("invalid", page.refused);
+      }
+      // The account is checked again on every row: a wider store answer must not widen the grant.
+      const hits = page.hits.filter((hit) => hit.accountId === accountId);
+      done(pluginId, "plugin_search", hits.map((hit) => hit.id), hits.length);
+      return {
+        messages: hits.map((hit) => ({
+          id: hit.id,
+          accountId: hit.accountId,
+          threadId: hit.threadId,
+          date: hit.date,
+          from: person(hit.from),
+          subject: redactedSubject(hit.subject),
+          snippet: "",
+        })),
+        nextCursor: encodeCursor(page.nextCursor),
+      };
+    },
+
+    plugin_message_read: (input: { messageId: string }, context: Context) => {
+      const pluginId = callingPlugin(context);
+      const read = deps.reads.read(input.messageId);
+      // An id outside the grant or the owner's sharing is unknown, not forbidden: existence is not disclosed.
+      if (read === null || !hasRight(store.listPluginGrants(), pluginId, "mail.read", read.header.accountId)) {
+        deps.log({ actor: "plugin", tool: "plugin_read", outcome: "refused_invalid", refId: pluginRef(pluginId) });
+        throw refuse("not_found", UNKNOWN_MESSAGE);
+      }
+      const { header } = read;
+      done(pluginId, "plugin_read", [header.id], 1, read.hiddenCount);
+      return {
+        id: header.id,
+        accountId: header.accountId,
+        threadId: header.threadId,
+        date: header.date,
+        from: person(header.from),
+        to: header.to.map(person),
+        cc: header.cc.map(person),
+        subject: read.subject,
+        text: read.text,
+        attachments: header.attachments.map((part) => ({
+          name: part.filename == null ? null : redactedSubject(part.filename),
+          size: part.size,
+          type: part.mimeType,
+        })),
+      };
+    },
+
+    plugin_contacts_list: (input: { accountId: string; query: string; limit: number }, context: Context) => {
+      const pluginId = callingPlugin(context);
+      const accountId = granted(pluginId, "plugin_contacts_list", "contacts.read", input.accountId);
+      const account = store.getAccount(accountId);
+      const own = new Set([account?.email, account?.username].filter((a): a is string => typeof a === "string").map((a) => a.toLowerCase()));
+      const contacts = deps.reads
+        .contacts(input.query, PLUGIN_CONTACTS_MAX)
+        .filter((contact) => own.has(contact.ownerAccount.toLowerCase()))
+        .slice(0, input.limit)
+        .map((contact) => ({
+          name: contact.name === null ? null : redactedSubject(contact.name),
+          address: contact.address,
+          received: contact.received,
+          sent: contact.sentByOwner,
+          lastAt: contact.lastDate,
+        }));
+      done(pluginId, "plugin_contacts", [], contacts.length);
+      return { contacts };
+    },
+
+    plugin_invites_list: (input: { accountId: string; limit: number; cursor?: string | null | undefined }, context: Context) => {
+      const pluginId = callingPlugin(context);
+      const accountId = granted(pluginId, "plugin_invites_list", "invites.read", input.accountId);
+      const rows = store.calendarMessages(accountId, input.limit, decodeCursor(input.cursor));
+      const last = rows.at(-1);
+      const headers = rows.map((row) => deps.reads.shared(row.id)).filter((header): header is MessageHeader => header !== null);
+      done(pluginId, "plugin_invites", headers.map((header) => header.id), headers.length);
+      return {
+        invites: headers.map((header) => ({
+          id: header.id,
+          accountId: header.accountId,
+          threadId: header.threadId,
+          date: header.date,
+          from: person(header.from),
+          subject: redactedSubject(header.subject),
+        })),
+        nextCursor: rows.length < input.limit || last === undefined ? null : encodeCursor({ date: last.date ?? "", id: last.id }),
+      };
+    },
+
+    plugin_invite_read: async (input: { messageId: string }, context: Context) => {
+      const pluginId = callingPlugin(context);
+      const header = deps.reads.shared(input.messageId);
+      if (header === null || !hasRight(store.listPluginGrants(), pluginId, "invites.read", header.accountId)) {
+        deps.log({ actor: "plugin", tool: "plugin_invites", outcome: "refused_invalid", refId: pluginRef(pluginId) });
+        throw refuse("not_found", UNKNOWN_MESSAGE);
+      }
+      const invite = await deps.reads.invite(header.id);
+      done(pluginId, "plugin_invites", [header.id], invite === null ? 0 : 1);
+      return { invite };
     },
 
     plugin_grants_list: (_input: Record<string, never>, _context?: Context) => {
       const grants = store.listPluginGrants();
       const requests = store.getPluginRequests();
-      const lastCalls = deps.lastCalls?.() ?? new Map<string, string>();
+      const lastCalls = store.pluginLastCalls();
       const ids = [...new Set(grants.map((grant) => grant.pluginId))].sort();
       return {
         plugins: ids.map((pluginId) => ({

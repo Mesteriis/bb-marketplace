@@ -5682,10 +5682,18 @@ function seedCanary(bb: BbPluginApi, scope: CanaryScope = {}): void {
   );
 }
 
-function loadCanary(settings: Record<string, string | number | boolean> = {}, scope: CanaryScope = {}) {
+function loadCanary(
+  settings: Record<string, string | number | boolean> = {},
+  scope: CanaryScope = {},
+  /** More mail, seeded before the server starts: a second store on a running server would replace its scope functions. */
+  more: (store: ReturnType<typeof createSqliteStore>) => void = () => {},
+) {
   return load({
     settings: { vaultKey: COMPOSE_KEY, agentTools: true, agentPropose: true, agentTriage: true, ...settings },
-    seed: (bb) => seedCanary(bb, scope),
+    seed: (bb) => {
+      seedCanary(bb, scope);
+      more(createSqliteStore(bb.storage.database()));
+    },
     server: composeServer,
     outboxIntervalMs: 5,
   });
@@ -5706,6 +5714,122 @@ function hasMessageAt(host: Host, folder: string, uid: number): boolean {
 function agentLogRows(host: Host): Record<string, unknown>[] {
   return host.bb.storage.database().prepare("SELECT * FROM agent_log ORDER BY seq").all() as Record<string, unknown>[];
 }
+
+describe("the plugin API reads", () => {
+  const asCrm = { experimental_caller: { kind: "plugin", pluginId: "crm" } } as const;
+  const secrets = Object.values(CANARY);
+
+  async function loadGranted(rights: string[] = ["mail.read"], more?: Parameters<typeof loadCanary>[2]) {
+    const host = await loadCanary({}, {}, more);
+    for (const right of rights) await call(host, "plugin_grant_set", { pluginId: "crm", right, accountId: "acc_1", on: true });
+    const crm = (method: string, input: unknown) => host.harness.behavior.callRpc(method, input, asCrm);
+    return { host, crm };
+  }
+
+  it("lists the granted account and nothing of its credentials", async () => {
+    const { crm } = await loadGranted();
+    const answer = (await crm("plugin_accounts_list", {})) as { accounts: Record<string, unknown>[] };
+    expect(answer.accounts.map((account) => account.id)).toEqual(["acc_1"]);
+    expect(Object.keys(answer.accounts[0]!).sort()).toEqual(["displayName", "email", "id", "provider"]);
+  });
+
+  it("search returns what the owner shares with agents, with secrets hidden", async () => {
+    const { crm } = await loadGranted();
+    const answer = (await crm("plugin_messages_search", { accountId: "acc_1" })) as { messages: { id: string; subject: string; from: { address: string } }[] };
+    const senders = answer.messages.map((message) => message.from.address);
+    expect(senders).toContain("ivy@example.com");
+    // The never-share domain and the folder outside the shared ones stay out.
+    expect(senders).not.toContain("boss@excluded.example.net");
+    expect(senders).not.toContain("quokka@example.com");
+    const text = JSON.stringify(answer);
+    for (const secret of secrets) expect(text).not.toContain(secret);
+  });
+
+  it("reads a shared message as redacted text and reads nothing else", async () => {
+    const { host, crm } = await loadGranted();
+    const shared = messageIdAt(host, "INBOX", 1);
+    const read = (await crm("plugin_message_read", { messageId: shared })) as { text: string; attachments: unknown[] };
+    expect(read.text).toContain("Invented note");
+    expect(read.attachments).toHaveLength(1);
+    const text = JSON.stringify(read);
+    for (const secret of secrets) expect(text).not.toContain(secret);
+    for (const key of ["refreshToken", "passwordSealed", "vaultKey", "sealed-password"]) expect(text).not.toContain(key);
+    for (const hidden of [messageIdAt(host, "INBOX", 2), messageIdAt(host, "Work", 1), "no-such-id"]) {
+      await expect(crm("plugin_message_read", { messageId: hidden })).rejects.toMatchObject({ code: "not_found", message: "Unknown message" });
+    }
+  });
+
+  it("a right for one thing does not open another, and an ungranted account is refused by name of the right", async () => {
+    const { crm } = await loadGranted();
+    await expect(crm("plugin_contacts_list", { accountId: "acc_1" })).rejects.toMatchObject({
+      code: "forbidden",
+      message: 'Makosh Mail: this plugin has no "contacts.read" access',
+    });
+    await expect(crm("plugin_invites_list", { accountId: "acc_1" })).rejects.toMatchObject({ code: "forbidden" });
+    await expect(crm("plugin_messages_search", { accountId: "acc_2" })).rejects.toMatchObject({
+      code: "forbidden",
+      message: 'Makosh Mail: this plugin has no "mail.read" access',
+    });
+    await expect(crm("plugin_messages_search", { accountId: "acc_1", limit: 101 })).rejects.toThrow();
+    await expect(crm("plugin_messages_search", { accountId: "acc_1", cursor: "not-a-cursor" })).rejects.toMatchObject({ code: "invalid" });
+  });
+
+  it("a revoked grant refuses the next page: a cursor is no proof of a right", async () => {
+    const { host, crm } = await loadGranted(["mail.read"], (store) =>
+      store.upsertMessages("acc_1", "INBOX", [
+        makeFetchedMessage(11, { subject: "Invented page one", date: "2026-11-11T09:00:00.000Z" }),
+        makeFetchedMessage(12, { subject: "Invented page two", date: "2026-11-12T09:00:00.000Z" }),
+      ]),
+    );
+    const first = (await crm("plugin_messages_search", { accountId: "acc_1", limit: 2 })) as { messages: unknown[]; nextCursor: string | null };
+    expect(first.messages).toHaveLength(2);
+    expect(first.nextCursor).toEqual(expect.any(String));
+    const second = (await crm("plugin_messages_search", { accountId: "acc_1", limit: 2, cursor: first.nextCursor })) as { messages: unknown[] };
+    expect(second.messages.length).toBeGreaterThan(0);
+    await call(host, "plugin_grant_set", { pluginId: "crm", right: "mail.read", accountId: "acc_1", on: false });
+    await expect(crm("plugin_messages_search", { accountId: "acc_1", limit: 2, cursor: first.nextCursor })).rejects.toMatchObject({ code: "forbidden" });
+  });
+
+  it("contacts come from shared mail of the granted account", async () => {
+    const { crm } = await loadGranted(["contacts.read"]);
+    const answer = (await crm("plugin_contacts_list", { accountId: "acc_1" })) as { contacts: { address: string }[] };
+    const text = JSON.stringify(answer);
+    expect(text).not.toContain("boss@excluded.example.net");
+    for (const secret of secrets) expect(text).not.toContain(secret);
+  });
+
+  it("invitations: only messages with a calendar part, only shared ones", async () => {
+    const part = [{ partId: "2", filename: "invite.ics", mimeType: "text/calendar", size: 10, isInline: false }];
+    const { host, crm } = await loadGranted(["invites.read"], (store) => {
+      store.upsertMessages("acc_1", "INBOX", [makeFetchedMessage(21, { subject: "Invented planning call", attachments: part })]);
+      store.upsertMessages("acc_1", "Work", [makeFetchedMessage(22, { messageId: "work-invite@example.org", subject: "Invented outside call", attachments: part })]);
+    });
+    const answer = (await crm("plugin_invites_list", { accountId: "acc_1" })) as { invites: { id: string; subject: string }[]; nextCursor: string | null };
+    expect(answer.invites.map((invite) => invite.subject)).toEqual(["Invented planning call"]);
+    expect(answer.nextCursor).toBeNull();
+    await expect(crm("plugin_invite_read", { messageId: messageIdAt(host, "Work", 22) })).rejects.toMatchObject({ code: "not_found" });
+  });
+
+  it("every call is logged by plugin, tool and count, without a subject, an address or text", async () => {
+    const { host, crm } = await loadGranted();
+    await crm("plugin_accounts_list", {});
+    await crm("plugin_messages_search", { accountId: "acc_1", query: "Invented" });
+    await crm("plugin_message_read", { messageId: messageIdAt(host, "INBOX", 1) });
+    for (let i = 0; i < 3; i++) await expect(crm("plugin_contacts_list", { accountId: "acc_1" })).rejects.toThrow();
+    const rows = agentLogRows(host).filter((row) => row.actor === "plugin");
+    expect(rows.map((row) => `${row.tool}:${row.outcome}`)).toEqual([
+      "plugin_accounts:ok",
+      "plugin_search:ok",
+      "plugin_read:ok",
+      "plugin_contacts:refused_scope",
+    ]);
+    expect(new Set(rows.map((row) => row.ref_id))).toEqual(new Set(["plugin:crm"]));
+    const text = JSON.stringify(rows);
+    for (const leaked of ["Invented", "ivy@example.com", ...secrets]) expect(text).not.toContain(leaked);
+    const listed = (await call(host, "plugin_grants_list", {})) as { plugins: { pluginId: string; lastCallAt: string | null }[] };
+    expect(listed.plugins).toEqual([expect.objectContaining({ pluginId: "crm", lastCallAt: expect.any(String) })]);
+  });
+});
 
 /** Runs a card tool (mail_propose, mail_triage), cancels its card if one opens, and returns the tool's answer. */
 async function runCardTool(host: Host, name: string, params: unknown): Promise<unknown> {

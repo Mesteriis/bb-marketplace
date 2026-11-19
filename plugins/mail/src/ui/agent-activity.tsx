@@ -24,6 +24,7 @@ const ACTORS: Record<LogActor, string> = {
   owner_ai: msg("You (AI)"),
   owner_bb: msg("You (BB)"),
   rule: msg("Mail rule"),
+  plugin: msg("Plugin"),
 };
 
 const TOOLS: Record<LogTool, string> = {
@@ -51,6 +52,14 @@ const TOOLS: Record<LogTool, string> = {
   patch_handoff: msg("Patch to an agent"),
   incident: msg("Incident thread"),
   rule_thread: msg("Rule thread"),
+  plugin_request: msg("Plugin: asked for access"),
+  plugin_accounts: msg("Plugin: listed mailboxes"),
+  plugin_search: msg("Plugin: searched mail"),
+  plugin_read: msg("Plugin: read an email"),
+  plugin_contacts: msg("Plugin: listed contacts"),
+  plugin_invites: msg("Plugin: read invitations"),
+  plugin_propose: msg("Plugin: prepared a letter"),
+  plugin_token: msg("Plugin: took a google key"),
 };
 
 const OUTCOMES: Record<LogOutcome, string> = {

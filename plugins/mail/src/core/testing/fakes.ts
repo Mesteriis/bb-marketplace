@@ -2247,6 +2247,14 @@ export class InMemoryMailStore implements MailStore {
     this.pluginRequests = this.pluginRequests.filter((request) => request.pluginId !== pluginId);
   }
 
+  pluginLastCalls(): Map<string, string> {
+    return new Map();
+  }
+
+  calendarMessages(): { id: string; date: string | null }[] {
+    return [];
+  }
+
   pluginRequestTimes(pluginId: string): string[] {
     return this.pluginAsked
       .filter((asked) => asked.pluginId === pluginId)

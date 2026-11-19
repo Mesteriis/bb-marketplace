@@ -116,12 +116,13 @@ import {
   type BbSettings,
   type RuleDeps,
 } from "./src/adapters/bb/bb-rpc.ts";
-import { createPluginApi, type PluginApi } from "./src/adapters/bb/plugin-api-rpc.ts";
+import { createPluginApi } from "./src/adapters/bb/plugin-api-rpc.ts";
 import { guardHandlers } from "./src/adapters/bb/plugin-guard.ts";
 import {
   PLUGIN_ACCESS_CHANNEL,
   PLUGIN_API_METHODS,
   PLUGIN_CALLER_MESSAGE,
+  PLUGIN_READ_CHARS,
   type PluginAccessPayload,
 } from "./src/core/plugin-api.ts";
 import { ruleThreadMetadata } from "./src/core/bb-text.ts";
@@ -297,6 +298,7 @@ import {
   type OutboxState,
   type QueueDeps,
   type MessageSummary,
+  type SearchCursor,
   type SecretVault,
   type SpecialUse,
   type SyncDeps,
@@ -1192,6 +1194,36 @@ function agentSearch(
   };
 }
 
+/** A page of a plugin's search in one account: screened and scoped like an agent's (agentSearch), with a cursor. */
+function pluginSearch(
+  store: MailStore,
+  raw: string,
+  accountId: string,
+  limit: number,
+  cursor: SearchCursor | null,
+  now: Date,
+): { refused: string } | { hits: MessageSummary[]; nextCursor: SearchCursor | null } {
+  const parsed = parseQuery(raw, now);
+  const values = [
+    parsed.text,
+    ...parsed.conditions.filter((condition) => SCREENED_FIELDS.has(condition.field)).map((condition) => condition.value),
+  ];
+  const refused = values.map((value) => agentSearchRefusal(value.trim())).find((answer) => answer !== null) ?? null;
+  if (refused !== null) return { refused };
+  const terms = [parsed.text.trim(), parsed.subject?.trim() ?? ""].filter((term) => term !== "");
+  const page = store.searchPage(parsed, accountId, limit, { scoped: true, cursor });
+  const hits =
+    terms.length === 0
+      ? page.hits
+      : page.hits.filter((hit) =>
+          hitStillMatches(
+            { subject: `${hit.subject}\n${hit.from.name ?? ""} ${hit.from.address}`, body: plainBodyText(store.getBody(hit.id)) },
+            terms,
+          ),
+        );
+  return { hits, nextCursor: page.nextCursor };
+}
+
 /** Operator values an agent's search is screened on, beside the free text (slice 3h). */
 const SCREENED_FIELDS: ReadonlySet<string> = new Set(["to", "cc", "subject", "filename", "list", "label"]);
 
@@ -1880,11 +1912,7 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
     const rpcDeps: RpcDeps = {
       googleSignIn,
       googleSignInOffered: googleClient() !== null,
-      pluginApi: createPluginApi({
-        store,
-        now: () => new Date(),
-        announce: (request) => bb.realtime.publish(PLUGIN_ACCESS_CHANNEL, { request } satisfies PluginAccessPayload),
-      }),
+      announcePluginAccess: (request) => bb.realtime.publish(PLUGIN_ACCESS_CHANNEL, { request } satisfies PluginAccessPayload),
       pageSettings: {
         get: () => pageSettingsOf(current),
         set: async (patch) => {
@@ -2004,8 +2032,8 @@ type RpcDeps = {
   /** Google sign-in flows, and whether the plugin has a client to offer them with. */
   googleSignIn: GoogleSignIn;
   googleSignInOffered: boolean;
-  /** The plugin API: its handlers and the grant check the guard runs before them. */
-  pluginApi: PluginApi;
+  /** Plugin requests or grants changed (the plugin API). */
+  announcePluginAccess: (request: string | null) => void;
   /** The settings page: the settings it shows, and a change of the writable ones. */
   pageSettings: { get: () => PageSettings; set: (patch: PageSettingsPatch) => Promise<PageSettings> };
   /** Slice 3g: BB projects and working trees, threads, Taskboard and the owner's settings for them. */
@@ -3169,6 +3197,26 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       return new Map();
     }
   };
+  // The plugin API reads what agents read: inside the owner's AI access, secrets hidden.
+  const pluginApi = createPluginApi({
+    store,
+    now: () => new Date(),
+    announce: deps.announcePluginAccess,
+    log: (entry) => void deps.agentLog(entry),
+    reads: {
+      search: (query, accountId, limit, cursor) => pluginSearch(store, query, accountId, limit, cursor, new Date()),
+      read: (messageId) => {
+        const stored = store.scopedMessage(messageId);
+        if (stored === null) return null;
+        const header = secureOne(stored);
+        const rendered = renderMessageForAgentCounted(header, store.getBody(header.id), PLUGIN_READ_CHARS, folderNames(store)(header));
+        return { header, subject: redactedSubject(header.subject), text: rendered.text, hiddenCount: rendered.hiddenCount };
+      },
+      contacts: (query, limit) => store.contacts(query, limit, { scoped: true }),
+      shared: (messageId) => store.scopedMessage(messageId),
+      invite: async (messageId) => (await readInvite(deps, messageId)).invite,
+    },
+  });
   // No method is published as discoverable, and none (message_action and the
   // image methods included) is exposed as a tool, CLI command or mention. They
   // are still reachable by anything that can call local plugin RPC as a client,
@@ -3982,10 +4030,10 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
           ? opened
           : { state: opened.state, text: null, html: null, attachments: [], signature: null };
       },
-      ...deps.pluginApi.handlers,
+      ...pluginApi.handlers,
     }, {
       api: new Set(PLUGIN_API_METHODS),
-      check: deps.pluginApi.check,
+      check: pluginApi.check,
       onRefused: (pluginId, method) => bb.log.warn(`plugin ${JSON.stringify(pluginId.slice(0, 128))} refused on ${method}`),
     }),
     { experimental_discoverable: false },

@@ -13,7 +13,8 @@ import {
   REQUEST_INVALID_MESSAGE,
   REQUEST_LIMIT_MESSAGE,
 } from "../../core/plugin-api.ts";
-import { createPluginApi } from "./plugin-api-rpc.ts";
+import type { LogEntryInput } from "../../core/agent-log.ts";
+import { createPluginApi, type PluginReads } from "./plugin-api-rpc.ts";
 import { guardHandlers } from "./plugin-guard.ts";
 import { MIGRATIONS, createSqliteStore } from "./sqlite-store.ts";
 
@@ -21,7 +22,7 @@ const signal = new AbortController().signal;
 const as = (pluginId: string): ExperimentalPluginRpcHandlerContext => ({ experimental_caller: { kind: "plugin", pluginId }, experimental_signal: signal });
 const owner: ExperimentalPluginRpcHandlerContext = { experimental_caller: { kind: "client" }, experimental_signal: signal };
 
-function setup(start = "2026-11-19T10:00:00.000Z") {
+function setup(overrides: Partial<PluginReads> = {}, start = "2026-11-19T10:00:00.000Z") {
   const db = new Database(":memory:");
   db.transaction(() => MIGRATIONS.forEach((statement) => db.exec(statement)))();
   const add = db.prepare(
@@ -33,9 +34,25 @@ function setup(start = "2026-11-19T10:00:00.000Z") {
   const store = createSqliteStore(db);
   const clock = { now: new Date(start) };
   const announced: (string | null)[] = [];
-  const api = createPluginApi({ store, now: () => clock.now, announce: (request) => announced.push(request) });
+  const logged: LogEntryInput[] = [];
+  const reads: PluginReads = {
+    search: () => ({ hits: [], nextCursor: null }),
+    read: () => null,
+    contacts: () => [],
+    shared: () => null,
+    invite: async () => null,
+    ...overrides,
+  };
+  const api = createPluginApi({
+    store,
+    now: () => clock.now,
+    announce: (request) => void announced.push(request),
+    log: (entry) => void logged.push(entry),
+    clockMs: () => clock.now.getTime(),
+    reads,
+  });
   const guarded = guardHandlers(api.handlers, { api: new Set(PLUGIN_API_METHODS), check: api.check });
-  return { store, clock, announced, api: guarded };
+  return { store, clock, announced, logged, api: guarded };
 }
 
 describe("asking for access", () => {

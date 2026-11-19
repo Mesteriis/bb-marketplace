@@ -68,6 +68,7 @@ import {
   type InboundRow,
   type SendCheck,
 } from "../../core/identities.ts";
+import { PLUGIN_REF_PREFIX } from "../../core/agent-log.ts";
 import { isPluginRight, type PluginRight } from "../../core/plugin-access.ts";
 import { OPEN_AI_SCOPE, inAiScope, senderExcluded, type AccountScope, type AiScope } from "../../core/ai-scope.ts";
 import { redactSecrets } from "../../core/redact.ts";
@@ -5834,6 +5835,26 @@ export function createSqliteStore(db: Database.Database): MailStore {
         .prepare<[string], { asked_at: string }>("SELECT asked_at FROM plugin_request_times WHERE plugin_id = ? ORDER BY asked_at DESC")
         .all(pluginId)
         .map((row) => row.asked_at);
+    },
+    pluginLastCalls() {
+      const rows = db
+        .prepare<[], { ref_id: string; at: string }>(
+          "SELECT ref_id, MAX(at) AS at FROM agent_log WHERE actor = 'plugin' AND ref_id IS NOT NULL GROUP BY ref_id",
+        )
+        .all();
+      return new Map(rows.filter((row) => row.ref_id.startsWith(PLUGIN_REF_PREFIX)).map((row) => [row.ref_id.slice(PLUGIN_REF_PREFIX.length), row.at]));
+    },
+    calendarMessages(accountId, limit, cursor) {
+      const after = cursor === null ? "" : "AND (COALESCE(m.date, '') < @date OR (COALESCE(m.date, '') = @date AND m.id < @id))";
+      return db
+        .prepare<[Record<string, unknown>], { id: string; date: string | null }>(
+          `SELECT m.id, m.date FROM messages m
+            WHERE m.account_id = @accountId
+              AND EXISTS (SELECT 1 FROM attachments a WHERE a.message_id = m.id AND a.kind = 'calendar')
+              ${after}
+            ORDER BY COALESCE(m.date, '') DESC, m.id DESC LIMIT @limit`,
+        )
+        .all({ accountId, limit, date: cursor?.date ?? "", id: cursor?.id ?? "" });
     },
     loadAiScope() {
       const accounts = new Map<string, AccountScope>();

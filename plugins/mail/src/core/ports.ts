@@ -979,6 +979,10 @@ export interface MailStore {
   dismissPluginRequest(pluginId: string): void;
   /** When a plugin asked, newest first, the last 30 days. */
   pluginRequestTimes(pluginId: string): string[];
+  /** Plugin id to the time of its last logged call. */
+  pluginLastCalls(): Map<string, string>;
+  /** Rows of an account that carry a calendar part, newest first, after `cursor`. */
+  calendarMessages(accountId: string, limit: number, cursor: SearchCursor | null): { id: string; date: string | null }[];
   /** Rebuilds the excluded conversations after a sync round (new rows may add one). */
   refreshExcludedThreads(): void;
   /** The message when one of its copies is inside the scope (that copy), else null: an out-of-scope id is unknown. */

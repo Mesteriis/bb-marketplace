@@ -524,8 +524,18 @@ export const archiveMessageSchema = archiveSummarySchema.extend({
 });
 export type ArchiveMessageView = z.infer<typeof archiveMessageSchema>;
 
-export const rpcSchemas = {
+/** The plugin API (plugin-api.ts), with the one method whose answer is this file's invitation view. */
+const pluginSchemas = {
   ...pluginApiSchemas,
+  /** One invitation of a message plugin_invites_list returned, parsed; null when the part holds none. */
+  plugin_invite_read: {
+    input: z.object({ messageId: z.string() }),
+    output: z.object({ invite: inviteViewSchema.nullable() }),
+  },
+};
+
+export const rpcSchemas = {
+  ...pluginSchemas,
   status_get: {
     input: z.null(),
     output: statusViewSchema,
@@ -1882,7 +1892,7 @@ export const SIGN_IN_METHODS = ["accounts_retry_sign_in"] as const satisfies rea
 
 /** The owner-only methods of the settings page. */
 /** The plugin API and the owner's methods for it (plugin-api.ts). */
-export const PLUGIN_METHODS = Object.keys(pluginApiSchemas) as readonly (keyof typeof pluginApiSchemas)[];
+export const PLUGIN_METHODS = Object.keys(pluginSchemas) as readonly (keyof typeof pluginSchemas)[];
 
 export const SETTINGS_METHODS = ["settings_get", "settings_set"] as const satisfies readonly (keyof typeof rpcSchemas)[];
 
