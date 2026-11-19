@@ -68,18 +68,18 @@ export interface AgentApi {
 }
 
 export const LEVEL_TEXT: Record<AgentLevel, string> = {
-  none: "No access",
-  observe: "Observe: read output and screenshots",
-  input: "Input: observe, connect (saved password only) and type",
-  exec: "Exec: input, and run commands on SSH sessions they opened (you see each command live)",
+  none: "Нет доступа",
+  observe: "Наблюдение: читать вывод и снимки экрана",
+  input: "Ввод: наблюдать, подключаться (только с сохранённым паролем) и печатать",
+  exec: "Команды: ввод и запуск команд в SSH-сессиях, которые агент открыл сам (каждую команду вы видите сразу)",
 };
 
 /** What the owner is told wherever a grant is set. */
 export const ACCESS_NOTE =
-  "Applies to agents in ANY thread of this BB. Levels are ordered: no access < observe < input < exec, and connecting is allowed from input up. " +
-  "Agents never get a saved password or key, and a new host key or a changed certificate is always your decision. " +
-  "But with Observe an agent can read everything the terminal prints (including what is already in its scrollback) and everything visible on the remote screen, including a secret shown there. " +
-  "These levels restrict the tools registered for agents; they are not a sandbox: an agent that can run shell commands as you can still reach this plugin.";
+  "Действует для агентов в ЛЮБОМ треде этого BB. Уровни идут по порядку: нет доступа < наблюдение < ввод < команды; подключаться можно начиная с ввода. " +
+  "Агенты никогда не получают сохранённый пароль или ключ, а новый ключ хоста или изменившийся сертификат — всегда ваше решение. " +
+  "Но при наблюдении агент читает всё, что печатает терминал (включая уже накопленную прокрутку), и всё, что видно на удалённом экране, в том числе показанный там секрет. " +
+  "Уровни ограничивают инструменты, выданные агентам; это не песочница: агент, который запускает команды от вашего имени, всё равно может добраться до плагина.";
 
 export interface AgentPanelProps {
   api: AgentApi;
@@ -88,9 +88,9 @@ export interface AgentPanelProps {
   onClose: () => void;
 }
 
-const outcomeText = (outcome: string | null): string => (outcome === null ? "unfinished (no outcome was recorded)" : outcome);
+const outcomeText = (outcome: string | null): string => (outcome === null ? "не завершён (итог не записан)" : outcome);
 const detailText = (r: AgentAuditView): string =>
-  r.detailMode === "text" ? "command: " + (r.detail ?? "") : r.detailMode === "length" ? "recorded as its length only" : "";
+  r.detailMode === "text" ? "команда: " + (r.detail ?? "") : r.detailMode === "length" ? "записана только длина" : "";
 
 export function AgentPanel({ api, profileNames, onClose }: AgentPanelProps) {
   const [grants, setGrants] = useState<AgentGrantView[] | null>(null);
@@ -128,39 +128,39 @@ export function AgentPanel({ api, profileNames, onClose }: AgentPanelProps) {
   const isChange = (r: AgentAuditView) => r.tool.startsWith("access.");
   const changes = (rows ?? []).filter(isChange).slice(0, 20);
   const activity = (rows ?? []).filter((r) => !isChange(r));
-  const name = (id: string | null) => (id === null ? "" : (profileNames.get(id) ?? "a deleted connection"));
+  const name = (id: string | null) => (id === null ? "" : (profileNames.get(id) ?? "удалённое подключение"));
 
   return (
-    <section aria-label="Agent activity" className="rh-import rh-agents">
+    <section aria-label="Активность агентов" className="rh-import rh-agents">
       <div className="rh-import-head">
-        <h2>Agent access and activity</h2>
+        <h2>Доступ и активность агентов</h2>
         <button type="button" onClick={onClose}>
-          Close
+          Закрыть
         </button>
       </div>
       {requireWatching !== null && (
         <div data-testid="watching-rule" className={requireWatching ? "rh-rule rh-rule-on" : "rh-rule rh-rule-off"}>
           <p>
-            <strong>Agents may act only while I am watching the session: {requireWatching ? "ON" : "OFF"}</strong>
+            <strong>Агенты действуют, только пока я смотрю сессию: {requireWatching ? "ВКЛ" : "ВЫКЛ"}</strong>
           </p>
           <p className="rh-hint">
             {requireWatching
-              ? "An agent's input and commands are refused unless you have that session's live view open and visible, and its control pauses when you stop looking."
-              : "An agent CAN act while nobody is looking. The banner, the live-view line in the agent's reply, the pointer and the live command list stay, and every call is still audited."}
+              ? "Ввод и команды агента отклоняются, пока у вас не открыт и не виден экран этой сессии; когда вы перестаёте смотреть, управление агента ставится на паузу."
+              : "Агент МОЖЕТ действовать, когда никто не смотрит. Баннер, карточка сессии в ответе агента, указатель и список команд остаются, и каждый вызов записывается."}
           </p>
           {!confirmOff && (
             <button type="button" onClick={() => (requireWatching ? setConfirmOff(true) : changeRule(true))}>
-              {requireWatching ? "Turn off" : "Turn on"}
+              {requireWatching ? "Выключить" : "Включить"}
             </button>
           )}
           {confirmOff && (
-            <div role="alertdialog" aria-label="Turn off the watching rule" className="rh-rule-confirm">
-              <p>With this off an agent can act while nobody is looking at the session. You will still see it afterwards, in the banner and in this list.</p>
+            <div role="alertdialog" aria-label="Выключить правило наблюдения" className="rh-rule-confirm">
+              <p>Без этого правила агент может действовать, когда на сессию никто не смотрит. Вы всё равно увидите это потом — в баннере и в этом списке.</p>
               <button type="button" onClick={() => changeRule(false)}>
-                Yes, let agents act unwatched
+                Да, разрешить агентам действовать без наблюдения
               </button>{" "}
               <button type="button" onClick={() => setConfirmOff(false)}>
-                Cancel
+                Отмена
               </button>
             </div>
           )}
@@ -170,16 +170,16 @@ export function AgentPanel({ api, profileNames, onClose }: AgentPanelProps) {
       {problem !== null && <p className="rh-error" role="alert">{problem}</p>}
       {message !== null && <p role="status" className="rh-hint">{message}</p>}
 
-      <h3>Access changes</h3>
-      <p className="rh-hint">Every change of a grant and every "revoke all" is recorded here, newest first.</p>
-      {rows !== null && changes.length === 0 && <p className="rh-hint">No grant has been changed yet.</p>}
-      <ul aria-label="Access changes">
+      <h3>Изменения доступа</h3>
+      <p className="rh-hint">Здесь записано каждое изменение доступа и каждый общий отзыв, сначала новые.</p>
+      {rows !== null && changes.length === 0 && <p className="rh-hint">Доступ ещё не менялся.</p>}
+      <ul aria-label="Изменения доступа">
         {changes.map((r) => (
           <li key={r.id} className="rh-profile">
             <div className="rh-profile-main">
-              <strong>{r.tool === "access.revoke_all" ? "Revoke all" : r.tool === "access.require_watching" ? "Watching rule" : "Set access"}</strong> <span className="rh-badge">{outcomeText(r.outcome)}</span>
+              <strong>{r.tool === "access.revoke_all" ? "Отозван весь доступ" : r.tool === "access.require_watching" ? "Правило наблюдения" : "Доступ изменён"}</strong> <span className="rh-badge">{outcomeText(r.outcome)}</span>
               <span className="rh-profile-endpoint">
-                {r.at} · by {r.threadId}
+                {r.at} · кем: {r.threadId}
                 {r.profileId !== null ? " · " + name(r.profileId) : ""}
                 {r.detail !== null ? " · " + r.detail : ""}
               </span>
@@ -188,25 +188,25 @@ export function AgentPanel({ api, profileNames, onClose }: AgentPanelProps) {
         ))}
       </ul>
 
-      <h3>Sessions agents opened or drive</h3>
-      <p className="rh-hint">A new host key, a changed key, a certificate or a login question on a session an agent opened is yours to answer here. An agent only learns that it is waiting for you.</p>
-      {agentSessions !== null && agentSessions.length === 0 && <p className="rh-hint">No agent has opened or is driving a session.</p>}
-      <ul aria-label="Agent sessions">
+      <h3>Сессии, которые агенты открыли или ведут</h3>
+      <p className="rh-hint">На новый ключ хоста, изменившийся ключ, сертификат или вопрос входа в сессии агента отвечаете вы — здесь. Агент узнаёт только, что ждёт вас.</p>
+      {agentSessions !== null && agentSessions.length === 0 && <p className="rh-hint">Ни один агент не открыл и не ведёт сессию.</p>}
+      <ul aria-label="Сессии агентов">
         {(agentSessions ?? []).map((s) => {
           const handle = { generation: s.generation, sessionId: s.sessionId };
-          const label = s.connectionId === null ? "a session" : name(s.connectionId);
+          const label = s.connectionId === null ? "сессия" : name(s.connectionId);
           return (
             <li key={`${s.generation}.${s.sessionId}`} className="rh-profile">
               <div className="rh-profile-main">
                 <strong>{label}</strong> <span className="rh-badge">{s.state}</span>
                 <span className="rh-profile-endpoint">
                   {s.kind}
-                  {s.openedByThread !== null ? (s.openedByArchivedThread ? ` · opened by an archived thread (${s.openedByThread})` : ` · opened by agent thread ${s.openedByThread}`) : ""}
+                  {s.openedByThread !== null ? (s.openedByArchivedThread ? ` · открыта архивным тредом (${s.openedByThread})` : ` · открыта тредом агента ${s.openedByThread}`) : ""}
                   {" · "}
                   {[
-                    s.holdUntil !== null ? `kept by you until ${new Date(s.holdUntil).toLocaleTimeString()}` : null,
-                    s.watching ? "you are watching" : s.watchingRequired ? "nobody is watching: an agent cannot act on it" : "nobody is watching (your setting lets an agent act anyway)",
-                    s.controlledBy === "agent" ? `driven by an agent (thread ${s.leaseThreadId ?? "?"}${s.leaseExpiresAt !== null ? ", until " + new Date(s.leaseExpiresAt).toLocaleTimeString() : ""})` : "driven by you",
+                    s.holdUntil !== null ? `удерживаете вы до ${new Date(s.holdUntil).toLocaleTimeString()}` : null,
+                    s.watching ? "вы смотрите" : s.watchingRequired ? "никто не смотрит: агент не может действовать" : "никто не смотрит (ваша настройка разрешает агенту действовать)",
+                    s.controlledBy === "agent" ? `управляет агент (тред ${s.leaseThreadId ?? "?"}${s.leaseExpiresAt !== null ? ", до " + new Date(s.leaseExpiresAt).toLocaleTimeString() : ""})` : "управляете вы",
                   ]
                     .filter((part): part is string => part !== null)
                     .join(" · ")}
@@ -214,22 +214,22 @@ export function AgentPanel({ api, profileNames, onClose }: AgentPanelProps) {
               </div>
               <div className="rh-profile-actions">
                 {s.controlledBy === "agent" && (
-                  <button type="button" aria-label={"Take control of " + label} onClick={() => act(() => api.takeover(handle))}>
-                    Take control
+                  <button type="button" aria-label={"Взять управление: " + label} onClick={() => act(() => api.takeover(handle))}>
+                    Взять управление
                   </button>
                 )}
                 {s.holdUntil !== null && (
-                  <button type="button" aria-label={"Let agents drive " + label + " again"} onClick={() => act(() => api.allowAgents(handle))}>
-                    Let agents drive again
+                  <button type="button" aria-label={"Снова разрешить агентам: " + label} onClick={() => act(() => api.allowAgents(handle))}>
+                    Снова разрешить агентам
                   </button>
                 )}
                 {s.state !== "closed" && (
-                  <button type="button" aria-label={"Disconnect " + label} onClick={() => act(() => api.disconnect(handle))}>
-                    Disconnect
+                  <button type="button" aria-label={"Отключить: " + label} onClick={() => act(() => api.disconnect(handle))}>
+                    Отключить
                   </button>
                 )}
               </div>
-              {(s.questions.length > 0 || s.certificate !== null) && s !== asking && <p className="rh-hint">A question is waiting for you on this session; it opens after the other one is answered.</p>}
+              {(s.questions.length > 0 || s.certificate !== null) && s !== asking && <p className="rh-hint">В этой сессии вас ждёт вопрос; он откроется после ответа на предыдущий.</p>}
               {s === asking && s.questions[0] !== undefined && (
                 <SshPromptDialog prompt={{ promptId: s.questions[0].promptId, text: s.questions[0].text, kind: s.questions[0].kind === "host_key" ? "confirm" : "secret" }} onAnswer={(promptId, answer) => act(() => api.answer(handle, promptId, answer))} />
               )}
@@ -239,20 +239,20 @@ export function AgentPanel({ api, profileNames, onClose }: AgentPanelProps) {
         })}
       </ul>
 
-      <h3>Connections agents may use</h3>
-      {grants !== null && grants.length === 0 && <p className="rh-hint">None. Agents cannot see or use any connection. Set access in a connection's editor.</p>}
-      <ul aria-label="Granted connections">
+      <h3>Подключения, разрешённые агентам</h3>
+      {grants !== null && grants.length === 0 && <p className="rh-hint">Нет ни одного. Агенты не видят и не используют подключения. Доступ задаётся в настройках подключения.</p>}
+      <ul aria-label="Разрешённые подключения">
         {(grants ?? []).map((g) => (
           <li key={g.profileId} className="rh-profile">
             <div className="rh-profile-main">
               <strong>{name(g.profileId)}</strong> <span className="rh-badge">{g.level}</span>
-              {g.recordCommands && <span className="rh-hint">commands are recorded in the activity list</span>}
+              {g.recordCommands && <span className="rh-hint">команды записываются в список активности</span>}
             </div>
             <div className="rh-profile-actions">
               <button
                 type="button"
                 disabled={busy}
-                aria-label={"Revoke access to " + name(g.profileId)}
+                aria-label={"Отозвать доступ: " + name(g.profileId)}
                 onClick={() => {
                   setBusy(true);
                   void api
@@ -262,7 +262,7 @@ export function AgentPanel({ api, profileNames, onClose }: AgentPanelProps) {
                     .finally(() => setBusy(false));
                 }}
               >
-                Revoke
+                Отозвать
               </button>
             </div>
           </li>
@@ -277,33 +277,33 @@ export function AgentPanel({ api, profileNames, onClose }: AgentPanelProps) {
             void api
               .revokeAll()
               .then(async (r) => {
-                setMessage(`Agent access was switched off for ${r.revoked} connection(s).`);
+                setMessage(`Доступ агентов выключен, подключений: ${r.revoked}.`);
                 await load();
               })
               .catch((e) => setProblem(errorTextFromMessage(e instanceof Error ? e.message : String(e))))
               .finally(() => setBusy(false));
           }}
         >
-          Revoke all agent access
+          Отозвать весь доступ агентов
         </button>
         <button type="button" disabled={busy} onClick={() => void load()}>
-          Refresh
+          Обновить
         </button>
       </div>
 
-      <h3>Recent agent activity</h3>
-      <p className="rh-hint">Newest first, the last 5000 calls are kept. A call is recorded before it runs; "unfinished" means it never reported an outcome.</p>
-      {rows !== null && activity.length === 0 && <p className="rh-hint">No agent has called a Remote Hub tool yet.</p>}
-      <ul aria-label="Agent activity list">
+      <h3>Недавняя активность агентов</h3>
+      <p className="rh-hint">Сначала новые, хранятся последние 5000 вызовов. Вызов записывается до выполнения; «не завершён» значит, что итог так и не пришёл.</p>
+      {rows !== null && activity.length === 0 && <p className="rh-hint">Агенты ещё не вызывали инструменты Remote Hub.</p>}
+      <ul aria-label="Список активности агентов">
         {activity.map((r) => (
           <li key={r.id} className="rh-profile">
             <div className="rh-profile-main">
               <strong>{r.tool}</strong> <span className="rh-badge">{outcomeText(r.outcome)}</span>
-              {r.count > 1 && <span className="rh-badge">{r.count} times</span>}
+              {r.count > 1 && <span className="rh-badge">×{r.count}</span>}
               <span className="rh-profile-endpoint">
-                {r.at} · thread {r.threadId} · project {r.projectId}
+                {r.at} · тред {r.threadId} · проект {r.projectId}
                 {r.profileId !== null ? " · " + name(r.profileId) : ""}
-                {r.sessionKey !== null ? " · session " + r.sessionKey : ""}
+                {r.sessionKey !== null ? " · сессия " + r.sessionKey : ""}
               </span>
               {detailText(r) !== "" && <span className="rh-hint">{detailText(r)}</span>}
             </div>

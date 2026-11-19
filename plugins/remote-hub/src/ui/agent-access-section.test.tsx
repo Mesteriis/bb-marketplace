@@ -28,10 +28,10 @@ describe("AgentAccessSection", () => {
   it("says what the grant means: any thread, the order of the levels, connect from input, host keys and certificates stay the owner's", async () => {
     render(<AgentAccessSection api={api()} profileId={P1} />);
     const section = await screen.findByLabelText("Доступ агентов");
-    expect(section.textContent).toContain("Applies to agents in ANY thread of this BB");
-    expect(section.textContent).toContain("no access < observe < input < exec");
-    expect(section.textContent).toContain("connecting is allowed from input up");
-    expect(section.textContent).toContain("a new host key or a changed certificate is always your decision");
+    expect(section.textContent).toContain("Действует для агентов в ЛЮБОМ треде этого BB");
+    expect(section.textContent).toContain("нет доступа < наблюдение < ввод < команды");
+    expect(section.textContent).toContain("подключаться можно начиная с ввода");
+    expect(section.textContent).toContain("новый ключ хоста или изменившийся сертификат — всегда ваше решение");
   });
 
   it("an unsaved profile has nothing to grant", () => {
