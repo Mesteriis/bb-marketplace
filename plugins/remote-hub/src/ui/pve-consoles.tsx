@@ -18,6 +18,11 @@ import { AgentStage } from "./agent-overlay.tsx";
 import type { PveConsoleOpened, PveConsoleRequest } from "./pve-api.ts";
 import { SshTerminal, type SshExitInfo, type SshTerminalState, type TerminalApi } from "./ssh-terminal.tsx";
 import { VncView } from "./vnc-view.tsx";
+import { Button } from "@/components/ui/button";
+import type { DeskSession, DeskSessionState } from "../core/desk.ts";
+import { useDeskStore } from "./desk/desk-context.tsx";
+import { DeskPane } from "./desk/desk-pane.tsx";
+import { tx } from "./i18n.ts";
 
 export interface PveConsolesApi {
   open(input: PveConsoleRequest & { profileId: string; cols: number; rows: number }): Promise<PveConsoleOpened>;
@@ -51,6 +56,8 @@ export interface PveConsolesProps {
   launch?: PveConsoleLaunch;
   /** The connection's current name, for tabs restored without it; null when it is not known. */
   connectionName?: (profileId: string) => string | null;
+  /** On the desk: every console is a desk pane (no tab strip), and the desk is kept in step with the consoles. */
+  desk?: boolean;
 }
 
 type TabState = PveConsoleState | "opening" | "reconnecting" | "restored";
@@ -105,6 +112,38 @@ const isGraphics = (t: Tab): boolean => (t.kind ?? (t.launch.request.console ===
 
 const uuid = (): string => (typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : "00000000-0000-4000-8000-" + Math.random().toString(16).slice(2).padEnd(12, "0").slice(0, 12));
 
+const DESK_STATE: Record<TabState, DeskSessionState> = {
+  opening: "connecting",
+  connecting: "connecting",
+  active: "active",
+  lost: "lost",
+  reconnecting: "reconnecting",
+  disconnected: "disconnected",
+  error: "error",
+  restored: "not_connected",
+};
+
+/** The desk's view of a console tab. */
+export function deskSessionOf(t: Tab, connectionName: string): DeskSession {
+  const r = t.launch.request;
+  const node = r.console === "node";
+  const title = node ? tx("pve.node", { name: r.node }) : t.launch.title !== "" ? t.launch.title : `#${r.vmid}`;
+  const what = node ? tx("kind.nodeShell") : `${r.console === "qemu" ? "VM" : "LXC"} ${r.vmid}`;
+  return {
+    id: t.uid,
+    kind: isGraphics(t) ? "pve-graphics" : "pve-terminal",
+    title,
+    detail: `${what} · ${connectionName}`,
+    target: node ? { type: "pve", profileId: t.launch.profileId, console: "node", node: r.node } : { type: "pve", profileId: t.launch.profileId, console: r.console, vmid: r.vmid },
+    state: DESK_STATE[t.state],
+    owner: t.owner.owner,
+    attempt: t.attempt,
+    reason: t.reason?.text ?? null,
+  };
+}
+
+export const isPveSession = (s: DeskSession): boolean => s.target.type === "pve";
+
 const rowOf = (t: Tab): PveConsoleTabRow => {
   const r = t.launch.request;
   // A guest is remembered by its VMID alone: its node is read again at every open, so none is kept.
@@ -121,6 +160,7 @@ interface Episode {
 
 export function PveConsoles(props: PveConsolesProps) {
   const { api } = props;
+  const deskStore = useDeskStore();
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [active, setActive] = useState<number | null>(null);
   const nextId = useRef(1);
@@ -133,6 +173,12 @@ export function PveConsoles(props: PveConsolesProps) {
   nameRef.current = props.connectionName;
   const tabsRef = useRef<Tab[]>([]);
   tabsRef.current = tabs;
+  // On the desk the consoles are the source of truth for their own sessions: the desk follows every change of the tabs.
+  const onDesk = props.desk === true;
+  useEffect(() => {
+    if (!onDesk) return;
+    deskStore.sync(isPveSession, tabs.map((t) => deskSessionOf(t, t.launch.connectionName !== "" ? t.launch.connectionName : (nameRef.current?.(t.launch.profileId) ?? ""))));
+  }, [onDesk, tabs, deskStore]);
   const episodes = useRef(new Map<number, Episode>());
   // One counter per tab, bumped by Disconnect, Reconnect and Close tab: work that began before is stale. A console a stale open
   // produces is closed, never adopted, and a stale failure schedules nothing.
@@ -462,35 +508,12 @@ export function PveConsoles(props: PveConsolesProps) {
     return r;
   };
 
-  if (tabs.length === 0) return <p className="rh-hint">No Proxmox console is open. Open one from a guest or node in the Proxmox list.</p>;
 
   const nameOf = (t: Tab): string => (t.launch.connectionName !== "" ? t.launch.connectionName : (props.connectionName?.(t.launch.profileId) ?? "connection"));
   const canReconnect = (t: Tab): boolean => t.state === "lost" || t.state === "error" || t.state === "disconnected" || t.state === "restored";
 
-  return (
-    <section className="rh-pve-consoles" aria-label="Proxmox consoles">
-      <div role="tablist" className="rh-tabs">
-        {tabs.map((t) => (
-          <button key={t.id} type="button" role="tab" aria-selected={active === t.id} onClick={() => setActive(t.id)} data-testid="pve-console-tab">
-            {nameOf(t)} · {where(t)} <span className="rh-badge">{labelOf(t)}</span>
-          </button>
-        ))}
-      </div>
-      {tabs.map((t) => (
-        <div key={t.id} hidden={active !== t.id} className="rh-pve-console" data-testid="pve-console" aria-label={`console ${where(t)}`}>
-          <div className="rh-live-head">
-            <strong>{nameOf(t)}</strong> · {where(t)} <span className="rh-status" data-testid="pve-console-state">{labelOf(t)}</span>
-            <ControlBadge control={t.owner} />
-            <button type="button" disabled={t.state === "disconnected" || t.state === "restored" || (t.handle === null && t.state !== "reconnecting")} onClick={() => disconnect(t)}>
-              Disconnect
-            </button>
-            <button type="button" disabled={!canReconnect(t)} onClick={() => reconnect(t)}>
-              Reconnect
-            </button>
-            <button type="button" onClick={() => closeTab(t)}>
-              Close tab
-            </button>
-          </div>
+  const notes = (t: Tab) => (
+    <>
           {t.reason !== null && (
             <p role="alert" className="rh-error" data-testid="pve-console-reason">
               {t.reason.text}
@@ -527,6 +550,10 @@ export function PveConsoles(props: PveConsolesProps) {
               {t.notice}
             </p>
           )}
+    </>
+  );
+  const stage = (t: Tab) => (
+    <>
           {t.attach !== null && t.handle !== null && t.state !== "disconnected" && (
             <AgentStage handle={t.handle} control={t.owner} onTakeover={async () => void (await apiRef.current.takeover?.(t.handle as SessionHandle))}>
               {t.kind === "vnc" ? (
@@ -548,6 +575,67 @@ export function PveConsoles(props: PveConsolesProps) {
               )}
             </AgentStage>
           )}
+    </>
+  );
+
+  if (props.desk === true) {
+    return (
+      <>
+        {tabs.map((t) => (
+          <DeskPane
+            key={t.id}
+            session={deskSessionOf(t, nameOf(t))}
+            onClose={() => closeTab(t)}
+            note={<div className="px-3">{notes(t)}</div>}
+            actions={
+              <>
+                <Button type="button" size="sm" variant="ghost" disabled={!canReconnect(t)} onClick={() => reconnect(t)}>
+                  {tx("session.reconnect")}
+                </Button>
+                <Button type="button" size="sm" variant="ghost" disabled={t.state === "disconnected" || t.state === "restored" || (t.handle === null && t.state !== "reconnecting")} onClick={() => disconnect(t)}>
+                  {tx("session.disconnect")}
+                </Button>
+                <Button type="button" size="sm" variant="ghost" onClick={() => closeTab(t)}>
+                  {tx("session.close")}
+                </Button>
+              </>
+            }
+          >
+            {stage(t)}
+          </DeskPane>
+        ))}
+      </>
+    );
+  }
+
+  if (tabs.length === 0) return <p className="rh-hint">No Proxmox console is open. Open one from a guest or node in the Proxmox list.</p>;
+
+  return (
+    <section className="rh-pve-consoles" aria-label="Proxmox consoles">
+      <div role="tablist" className="rh-tabs">
+        {tabs.map((t) => (
+          <button key={t.id} type="button" role="tab" aria-selected={active === t.id} onClick={() => setActive(t.id)} data-testid="pve-console-tab">
+            {nameOf(t)} · {where(t)} <span className="rh-badge">{labelOf(t)}</span>
+          </button>
+        ))}
+      </div>
+      {tabs.map((t) => (
+        <div key={t.id} hidden={active !== t.id} className="rh-pve-console" data-testid="pve-console" aria-label={`console ${where(t)}`}>
+          <div className="rh-live-head">
+            <strong>{nameOf(t)}</strong> · {where(t)} <span className="rh-status" data-testid="pve-console-state">{labelOf(t)}</span>
+            <ControlBadge control={t.owner} />
+            <button type="button" disabled={t.state === "disconnected" || t.state === "restored" || (t.handle === null && t.state !== "reconnecting")} onClick={() => disconnect(t)}>
+              Disconnect
+            </button>
+            <button type="button" disabled={!canReconnect(t)} onClick={() => reconnect(t)}>
+              Reconnect
+            </button>
+            <button type="button" onClick={() => closeTab(t)}>
+              Close tab
+            </button>
+          </div>
+          {notes(t)}
+          {stage(t)}
         </div>
       ))}
     </section>
