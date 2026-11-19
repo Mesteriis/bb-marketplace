@@ -420,6 +420,15 @@ fn open_qemu(h: &mut Helper, id: u64, c: PveConnect) -> Response {
 }
 
 #[test]
+fn the_liveness_check_counts_a_process_it_may_not_signal_as_alive_and_a_reaped_one_as_gone() {
+    assert!(pid_alive(1), "pid 1 exists even though it cannot be signalled from here (EPERM)");
+    let mut child = std::process::Command::new("/usr/bin/true").spawn().unwrap();
+    let pid = child.id();
+    child.wait().unwrap();
+    assert!(wait_pid_gone(pid, Duration::from_secs(2)));
+}
+
+#[test]
 fn twenty_consoles_opened_and_closed_leave_no_engine_process_and_no_socket_behind() {
     let w = world(default_state());
     let mut h = start(&[]);
