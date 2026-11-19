@@ -16,6 +16,8 @@ import { clientToFramebuffer, framebufferToElement, type FitMode } from "../core
 import { HeldKeys, keyEvents, mouseButtonEvent, mouseMoveEvent, mouseWheelEvent } from "../core/rdp-input-map.ts";
 import { parseUpdateChunk } from "../core/rdp-protocol.ts";
 import type { RdpCertPromptInfo } from "../core/rpc.ts";
+import { createPasteFallback } from "./paste-fallback.ts";
+import { MAX_PASTE_CHARS, isPasteShortcut, modifiersHeld, pasteAsRdpEvents } from "../core/paste.ts";
 import type { RdpViewInputEvent } from "../core/rdp-view-messages.ts";
 
 export type RdpCanvasEvent =
@@ -43,6 +45,14 @@ export interface RdpCanvasProps {
   onEvent: (event: RdpCanvasEvent) => void;
   handleRef?: Ref<RdpCanvasHandle>;
 }
+
+const PASTE_BATCH_MS = 20;
+const PASTE_CUT_TEXT = `Вставлены только первые ${MAX_PASTE_CHARS} символов.`;
+/** Left Control pressed and released. */
+const CTRL_TAP: readonly RdpViewInputEvent[] = [
+  { kind: "key", scancode: 0x1d, extended: false, down: true },
+  { kind: "key", scancode: 0x1d, extended: false, down: false },
+];
 
 function applyFit(canvas: HTMLCanvasElement, fit: FitMode): void {
   if (fit === "actual" && canvas.width > 0) {
@@ -266,6 +276,8 @@ export function RdpCanvas(props: RdpCanvasProps) {
             if (at !== null) {
               setPointer({ ...at, click: typeof ev.click === "string" ? ev.click : null, at: Date.now() });
               if (pointerTimer !== null) clearTimeout(pointerTimer);
+      if (pasteTimer !== null) clearTimeout(pasteTimer);
+      fallback.cancel();
               pointerTimer = setTimeout(() => setPointer(null), 4000);
             }
           }
@@ -344,12 +356,56 @@ export function RdpCanvas(props: RdpCanvasProps) {
         }
         return;
       }
+      // Paste: there is no clipboard channel, so Cmd+V (or Ctrl+Shift+V) TYPES the Mac's clipboard text. The V is not forwarded
+      // and the default is left alone, so the browser fires its paste event with the text.
+      if (isPasteShortcut(event) || (pasteArmed && event.code === "KeyV")) {
+        pasteArmed = down;
+        // The Command key already went out as the Windows key: another key pressed while it is held keeps its release from
+        // opening the Start menu. Left Control down and up does nothing else.
+        if (down && event.metaKey && !event.repeat) enqueue([...CTRL_TAP]);
+        if (down && !event.repeat) fallback.shortcut();
+        return;
+      }
       // Every key is the remote's while the canvas is focused.
       event.preventDefault();
       if (down) held.down(event.code);
       else held.up(event.code);
       const events = keyEvents(event, down);
       if (events.length > 0) enqueue(events);
+      modifiersDown = modifiersHeld(event);
+      typePending();
+    };
+    let pasteArmed = false;
+    let modifiersDown = false;
+    let pending: string | null = null;
+    let pasteTimer: ReturnType<typeof setTimeout> | null = null;
+    /** Types the waiting text once no modifier is held (typed under Command or Control it would be shortcuts on the remote). */
+    const typePending = (): void => {
+      if (pending === null || modifiersDown) return;
+      const { batches, truncated } = pasteAsRdpEvents(pending);
+      pending = null;
+      if (truncated) emit({ type: "notice", text: PASTE_CUT_TEXT });
+      let i = 0;
+      const step = (): void => {
+        pasteTimer = null;
+        if (disposed || i >= batches.length) return;
+        enqueue(batches[i++] as RdpViewInputEvent[]);
+        flushNow();
+        if (i < batches.length) pasteTimer = setTimeout(step, PASTE_BATCH_MS);
+      };
+      step();
+    };
+    const fallback = createPasteFallback((text) => {
+      pending = text;
+      typePending();
+    });
+    const onPaste = (event: ClipboardEvent): void => {
+      fallback.eventSeen();
+      const text = event.clipboardData?.getData("text/plain") ?? "";
+      event.preventDefault();
+      if (text === "") return;
+      pending = text;
+      typePending();
     };
     const onBlur = (): void => {
       // Send what is still queued FIRST (a queued key-up must never be dropped),
@@ -369,6 +425,7 @@ export function RdpCanvas(props: RdpCanvasProps) {
       ["wheel", onWheel as EventListener],
       ["keydown", onKey(true) as EventListener],
       ["keyup", onKey(false) as EventListener],
+      ["paste", onPaste as EventListener],
       ["blur", onBlur],
       ["contextmenu", onContextMenu],
     ];

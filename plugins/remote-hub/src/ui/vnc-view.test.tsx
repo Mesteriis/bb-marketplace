@@ -383,6 +383,36 @@ describe("the graphical console view", () => {
     ]);
   });
 
+  it("Cmd+V types the clipboard text: the V is not forwarded, and the text goes out only after Command is released", async () => {
+    const m = mount();
+    const s = await startSession(m);
+    const canvas = m.view.getByTestId("vnc-view").querySelector("canvas") as HTMLCanvasElement;
+    const paste = new Event("paste", { bubbles: true, cancelable: true }) as Event & { clipboardData: unknown };
+    paste.clipboardData = { getData: (type: string) => (type === "text/plain" ? "aB\n" : "") };
+    await act(async () => {
+      canvas.dispatchEvent(new KeyboardEvent("keydown", { code: "MetaLeft", key: "Meta", metaKey: true, bubbles: true }));
+      canvas.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyV", key: "v", metaKey: true, bubbles: true }));
+      canvas.dispatchEvent(paste);
+      canvas.dispatchEvent(new KeyboardEvent("keyup", { code: "KeyV", key: "v", metaKey: true, bubbles: true }));
+    });
+    expect(paste.defaultPrevented).toBe(true);
+    const typed = () => s.server.keyEvents().filter((k) => k.keysym < 0xffe0 || k.keysym === 0xffe1);
+    expect(typed()).toEqual([]);
+    await act(async () => {
+      canvas.dispatchEvent(new KeyboardEvent("keyup", { code: "MetaLeft", key: "Meta", bubbles: true }));
+    });
+    expect(typed()).toEqual([
+      { down: true, keysym: 0x61 },
+      { down: false, keysym: 0x61 },
+      { down: true, keysym: 0xffe1 },
+      { down: true, keysym: 0x42 },
+      { down: false, keysym: 0x42 },
+      { down: false, keysym: 0xffe1 },
+      { down: true, keysym: 0xff0d },
+      { down: false, keysym: 0xff0d },
+    ]);
+  });
+
   it("sends the owner's mouse clicks to the console as pointer events", async () => {
     const m = mount();
     const s = await startSession(m);

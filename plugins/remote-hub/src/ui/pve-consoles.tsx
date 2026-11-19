@@ -558,7 +558,7 @@ export function PveConsoles(props: PveConsolesProps) {
           {t.attach !== null && t.handle !== null && t.state !== "disconnected" && (
             <AgentStage handle={t.handle} control={t.owner} onTakeover={async () => void (await apiRef.current.takeover?.(t.handle as SessionHandle))}>
               {t.kind === "vnc" ? (
-                <VncView key={t.attach.token} onViewState={(v) => { if (v === "ready" && !superseded(t)) { shown.current.add(t.id); retriedOnce.current.delete(t.id); } }} wsUrl={t.attach.wsUrl} token={t.attach.token} onConsole={onConsole(t)} onEnded={onEnded(t)} onControl={onControl(t)} />
+                <VncView key={t.attach.token} onNotice={(text) => patch(t.id, { notice: text })} onViewState={(v) => { if (v === "ready" && !superseded(t)) { shown.current.add(t.id); retriedOnce.current.delete(t.id); } }} wsUrl={t.attach.wsUrl} token={t.attach.token} onConsole={onConsole(t)} onEnded={onEnded(t)} onControl={onControl(t)} />
               ) : (
                 <SshTerminal
                   key={t.attach.token}

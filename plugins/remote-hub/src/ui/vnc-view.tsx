@@ -6,6 +6,8 @@
 //    reopens the console to get a new one.
 //  - Modifier keys still held when the view loses focus or the tab hides are released in the guest.
 //  - Clipboard is not forwarded in either direction in this version.
+import { createPasteFallback } from "./paste-fallback.ts";
+import { MAX_PASTE_CHARS, isPasteShortcut, pasteAsKeysyms, type PasteKey } from "../core/paste.ts";
 import { useEffect, useRef } from "react";
 import type RfbType from "@novnc/novnc/core/rfb.js";
 import type { FeedEvent } from "../core/agent-feed.ts";
@@ -31,10 +33,17 @@ export interface VncViewProps {
   onEnded?: (info: { code: string; text: string }) => void;
   onControl?: (message: ControlMessage) => void;
   onAgent?: (event: FeedEvent) => void;
+  /** Something the owner should know that is not an error (a paste that was cut short). */
+  onNotice?: (text: string) => void;
   /** Test seam: where noVNC comes from. */
   loadRfb?: () => Promise<typeof RfbType>;
 }
 
+
+const XK_SHIFT_L = 0xffe1;
+const PASTE_KEYS_PER_TICK = 8;
+const PASTE_TICK_MS = 10;
+export const PASTE_CUT_TEXT = `Вставлены только первые ${MAX_PASTE_CHARS} символов.`;
 
 export function VncView(props: VncViewProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -115,13 +124,70 @@ export function VncView(props: VncViewProps) {
       tracker.releaseAll((keysym, code) => current.sendKey(keysym, code, false));
       current.blur();
     };
-    const onKeyDown = (e: KeyboardEvent): void => tracker.keyDown(e.code);
-    const onKeyUp = (e: KeyboardEvent): void => tracker.keyUp(e.code);
+    // Paste: a graphics console has no clipboard, so Cmd+V (or Ctrl+Shift+V) TYPES the Mac's clipboard text. The V itself is
+    // kept from noVNC; the text is typed once the modifiers are up, so the guest never sees it as a shortcut.
+    let pasteArmed = false;
+    let pending: string | null = null;
+    let pasteTimer: ReturnType<typeof setTimeout> | null = null;
+    const typePending = (): void => {
+      if (pending === null || tracker.pressed.length > 0 || rfb === null) return;
+      const { keys, truncated } = pasteAsKeysyms(pending);
+      pending = null;
+      if (truncated) propsRef.current.onNotice?.(PASTE_CUT_TEXT);
+      let i = 0;
+      const step = (): void => {
+        pasteTimer = null;
+        const current = rfb;
+        if (disposed || current === null) return;
+        // A few keys per tick: fast enough for a command line, slow enough for a console that reads its keyboard one key at a time.
+        for (let n = 0; n < PASTE_KEYS_PER_TICK && i < keys.length; n++, i++) {
+          const key = keys[i] as PasteKey;
+          if (key.shift) current.sendKey(XK_SHIFT_L, "ShiftLeft", true);
+          current.sendKey(key.keysym, null, true);
+          current.sendKey(key.keysym, null, false);
+          if (key.shift) current.sendKey(XK_SHIFT_L, "ShiftLeft", false);
+        }
+        if (i < keys.length) pasteTimer = setTimeout(step, PASTE_TICK_MS);
+      };
+      step();
+    };
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if (isPasteShortcut(e)) {
+        // Not forwarded; the default is left alone so the browser fires its paste event with the clipboard text.
+        pasteArmed = true;
+        if (!e.repeat) fallback.shortcut();
+        e.stopPropagation();
+        return;
+      }
+      tracker.keyDown(e.code);
+    };
+    const onKeyUp = (e: KeyboardEvent): void => {
+      if (pasteArmed && e.code === "KeyV") {
+        pasteArmed = false;
+        e.stopPropagation();
+        return;
+      }
+      tracker.keyUp(e.code);
+      typePending();
+    };
+    const fallback = createPasteFallback((text) => {
+      pending = text;
+      typePending();
+    });
+    const onPaste = (e: ClipboardEvent): void => {
+      fallback.eventSeen();
+      const text = e.clipboardData?.getData("text/plain") ?? "";
+      e.preventDefault();
+      if (text === "") return;
+      pending = text;
+      typePending();
+    };
     const onHidden = (): void => {
       if (document.visibilityState === "hidden") releaseHeld();
     };
     container.addEventListener("keydown", onKeyDown, true);
     container.addEventListener("keyup", onKeyUp, true);
+    container.addEventListener("paste", onPaste, true);
     container.addEventListener("focusout", releaseHeld);
     window.addEventListener("blur", releaseHeld);
     document.addEventListener("visibilitychange", onHidden);
@@ -221,6 +287,9 @@ export function VncView(props: VncViewProps) {
       if (stopBeat !== null) stopBeat();
       container.removeEventListener("keydown", onKeyDown, true);
       container.removeEventListener("keyup", onKeyUp, true);
+      container.removeEventListener("paste", onPaste, true);
+      if (pasteTimer !== null) clearTimeout(pasteTimer);
+      fallback.cancel();
       container.removeEventListener("focusout", releaseHeld);
       window.removeEventListener("blur", releaseHeld);
       document.removeEventListener("visibilitychange", onHidden);

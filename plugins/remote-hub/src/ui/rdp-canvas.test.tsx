@@ -107,3 +107,42 @@ describe("RdpCanvas shows what an agent does and says it is being looked at", ()
     expect(screen.queryByTestId("agent-pointer")).toBeNull();
   });
 });
+
+describe("RdpCanvas: pasting types the clipboard text", () => {
+  const inputs = (socket: FakeWebSocket) => socket.messages.filter((m) => m.type === "input").flatMap((m) => m.events as unknown[]);
+
+  it("Cmd+V does not send V, taps Control so Windows does not open Start, and types the text after Command is released", async () => {
+    vi.useFakeTimers();
+    render(<RdpCanvas wsUrl="ws://x/attach" token="t" fit="fit" label="desktop" onEvent={() => {}} />);
+    await act(async () => {});
+    const socket = FakeWebSocket.instances[0]!;
+    msg(socket, { type: "attached", state: "desktop_ready", prompt: null, desktop: { frameId: 1, width: 800, height: 400 } });
+    const canvas = screen.getByLabelText("desktop");
+    const paste = new Event("paste", { bubbles: true, cancelable: true }) as Event & { clipboardData: unknown };
+    paste.clipboardData = { getData: () => "dir\n" };
+    const v = new KeyboardEvent("keydown", { code: "KeyV", key: "v", metaKey: true, bubbles: true, cancelable: true });
+    act(() => {
+      canvas.dispatchEvent(new KeyboardEvent("keydown", { code: "MetaLeft", key: "Meta", metaKey: true, bubbles: true }));
+      canvas.dispatchEvent(v);
+      canvas.dispatchEvent(paste);
+      canvas.dispatchEvent(new KeyboardEvent("keyup", { code: "KeyV", key: "v", metaKey: true, bubbles: true }));
+      vi.advanceTimersByTime(50);
+    });
+    expect(v.defaultPrevented).toBe(false); // the browser must still fire its paste event
+    expect(inputs(socket)).toEqual([
+      { kind: "key", scancode: 0x5b, extended: true, down: true },
+      { kind: "key", scancode: 0x1d, extended: false, down: true },
+      { kind: "key", scancode: 0x1d, extended: false, down: false },
+    ]);
+    act(() => {
+      canvas.dispatchEvent(new KeyboardEvent("keyup", { code: "MetaLeft", key: "Meta", bubbles: true }));
+      vi.advanceTimersByTime(50);
+    });
+    expect(inputs(socket).slice(3)).toEqual([
+      { kind: "key", scancode: 0x5b, extended: true, down: false },
+      { kind: "unicode", text: "dir" },
+      { kind: "key", scancode: 0x1c, extended: false, down: true },
+      { kind: "key", scancode: 0x1c, extended: false, down: false },
+    ]);
+  });
+});

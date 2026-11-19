@@ -254,8 +254,8 @@ audit row or a log, and never travels back on the socket (`vnc-view.test.tsx` ch
 noVNC 1.6.0 is given a WebSocket-shaped channel (`src/ui/vnc-channel.ts`) instead of a URL. Behaviour covered by `vnc-view.test.tsx`
 (real noVNC against a fake RFB server: version, VNC authentication, ServerInit, a raw update): the first frame; scaling into the pane
 (`scaleViewport`, never `resizeSession`: the guest's resolution is not changed); the keyboard, the mouse, focus on click; modifier keys
-still held when the window blurs, the view loses focus or the tab hides are released in the guest (`vnc-modifiers.ts`). **Clipboard is not
-forwarded in either direction** in this version. noVNC is vendored unmodified in `vendor/novnc` (see its README); `npm run check:vendor`
+still held when the window blurs, the view loses focus or the tab hides are released in the guest (`vnc-modifiers.ts`). **There is no clipboard channel**: Cmd+V (or Ctrl+Shift+V) TYPES the Mac clipboard's text as key presses once the modifiers are released (US layout for
+shifted signs, at most 4096 characters, `core/paste.ts`); nothing is copied out of the guest. noVNC is vendored unmodified in `vendor/novnc` (see its README); `npm run check:vendor`
 guards it.
 
 ### Agents
