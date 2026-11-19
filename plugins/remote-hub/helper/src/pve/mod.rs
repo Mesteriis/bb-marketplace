@@ -7,6 +7,7 @@ pub mod api;
 pub mod engine;
 pub mod glue;
 pub mod manager;
+pub mod out_queue;
 pub mod protocol;
 pub mod provision;
 pub mod term;

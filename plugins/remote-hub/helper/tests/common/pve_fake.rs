@@ -15,7 +15,6 @@ use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use serde_json::{json, Value};
-use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
 use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_tungstenite::tungstenite::Message;
@@ -83,6 +82,8 @@ pub struct State {
     pub ws_open: u32,
     pub ws_closed: u32,
     pub ws_input: Vec<u8>,
+    /// The terminal side stops reading its socket (a transport that does not accept writes) while this is set.
+    pub ws_stall: bool,
     pub resizes: Vec<(u16, u16)>,
     pub pings: u32,
     pub ticket_lines: Vec<String>,
@@ -135,7 +136,11 @@ pub fn default_state() -> State {
 }
 
 pub async fn start_fake(state: State) -> Fake {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    // A small receive buffer, so a server that stops reading blocks the client's writes after a few hundred KiB, not megabytes.
+    let socket = tokio::net::TcpSocket::new_v4().unwrap();
+    socket.set_recv_buffer_size(4096).unwrap();
+    socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+    let listener = socket.listen(64).unwrap();
     let port = listener.local_addr().unwrap().port();
     let state = Arc::new(Mutex::new(state));
     let acceptor = tokio_rustls::TlsAcceptor::from(server_config());
@@ -498,7 +503,11 @@ async fn shell<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(mut ws: 
     let _ = ws.send(Message::text("OK")).await;
     let _ = ws.send(Message::binary(&b"root@ct101:~# "[..])).await;
     let mut buf: Vec<u8> = Vec::new();
-    while let Some(Ok(msg)) = ws.next().await {
+    loop {
+        while state.lock().unwrap().ws_stall {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let Some(Ok(msg)) = ws.next().await else { break };
         match msg {
             Message::Binary(b) => buf.extend_from_slice(&b),
             Message::Text(t) => buf.extend_from_slice(t.as_bytes()),

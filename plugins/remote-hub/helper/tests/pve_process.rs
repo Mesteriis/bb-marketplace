@@ -130,6 +130,80 @@ fn the_humans_keys_as_a_binary_stream_frame_reach_a_proxmox_terminal() {
     drop(w.rt);
 }
 
+fn set_owner(h: &mut Helper, id: u64, session_id: u32, owner: &str) -> Response {
+    h.send(&Request::SessionSetOwner { id, session_id, owner: owner.into() });
+    h.read_reply(id)
+}
+
+fn input_as(h: &mut Helper, id: u64, session_id: u32, data: &str, owner: Option<&str>) -> Response {
+    h.send(&Request::SessionInput { id, session_id, data: data.into(), owner: owner.map(str::to_string) });
+    h.read_reply(id)
+}
+
+#[test]
+fn only_the_current_driver_may_type_into_a_proxmox_terminal() {
+    let w = world(default_state());
+    let mut h = start(&[]);
+    let Response::SessionOpened { session_id, .. } = open_lxc(&mut h, 1, connect(w.fake.port, Some(PASSWORD), None, ca())) else { panic!("not opened") };
+    read_stream_until(&mut h, session_id, b"root@ct101:~# ");
+    assert!(matches!(set_owner(&mut h, 2, session_id, "agent:L1"), Response::SessionOwnerSet { .. }));
+    // the human (no tag) and an older lease are refused; the current lease is taken
+    assert!(matches!(input_as(&mut h, 3, session_id, "human\r", None), Response::Error { code, .. } if code == "stale_owner"));
+    assert!(matches!(input_as(&mut h, 4, session_id, "old\r", Some("agent:L0")), Response::Error { code, .. } if code == "stale_owner"));
+    assert!(matches!(input_as(&mut h, 5, session_id, "agent\r", Some("agent:L1")), Response::SessionInputAck { .. }));
+    read_stream_until(&mut h, session_id, b"agent\r");
+    // the human's keys on the stream path are dropped while the agent drives
+    use std::io::Write as _;
+    h.stdin.write_all(&encode_stream(session_id, 0, b"keys\r")).unwrap();
+    h.stdin.flush().unwrap();
+    assert!(matches!(set_owner(&mut h, 6, session_id, "human"), Response::SessionOwnerSet { .. }));
+    assert!(matches!(input_as(&mut h, 7, session_id, "back\r", None), Response::SessionInputAck { .. }));
+    read_stream_until(&mut h, session_id, b"back\r");
+    assert_eq!(w.fake.state.lock().unwrap().ws_input, b"agent\rback\r", "only the driver's bytes reached the console");
+    h.send(&Request::SessionClose { id: 8, session_id });
+    h.read_reply(8);
+    h.shutdown();
+    drop(w.rt);
+}
+
+#[test]
+fn a_hand_over_through_the_helper_waits_for_nothing_upstream_and_nothing_of_the_old_driver_is_written_after_it() {
+    let w = world(default_state());
+    let mut h = start(&[]);
+    let Response::SessionOpened { session_id, .. } = open_lxc(&mut h, 1, connect(w.fake.port, Some(PASSWORD), None, ca())) else { panic!("not opened") };
+    read_stream_until(&mut h, session_id, b"root@ct101:~# ");
+    assert!(matches!(set_owner(&mut h, 2, session_id, "agent:L1"), Response::SessionOwnerSet { .. }));
+    // the upstream stops reading and the agent keeps typing
+    w.fake.state.lock().unwrap().ws_stall = true;
+    let chunk = "a".repeat(16 * 1024);
+    let mut sent: u64 = 0;
+    for i in 0..40u64 {
+        assert!(matches!(input_as(&mut h, 10 + i, session_id, &chunk, Some("agent:L1")), Response::SessionInputAck { .. }));
+        sent += chunk.len() as u64;
+    }
+    std::thread::sleep(Duration::from_millis(400));
+    // the takeover (the human takes the console back, or the watcher left) is answered although the transport is blocked
+    let started = std::time::Instant::now();
+    let Response::SessionOwnerSet { dropped, .. } = set_owner(&mut h, 100, session_id, "human") else { panic!("not owner_set") };
+    assert!(started.elapsed() < Duration::from_secs(5), "the hand-over waited for a blocked transport: {:?}", started.elapsed());
+    assert!(dropped >= 64 * 1024, "most of what the agent typed was still queued: {dropped}");
+    // an old lease's late input is refused, the new driver's goes through
+    assert!(matches!(input_as(&mut h, 101, session_id, "late\r", Some("agent:L1")), Response::Error { code, .. } if code == "stale_owner"));
+    assert!(matches!(input_as(&mut h, 102, session_id, "NEW\r", None), Response::SessionInputAck { .. }));
+    w.fake.state.lock().unwrap().ws_stall = false;
+    read_stream_until(&mut h, session_id, b"NEW\r");
+    h.send(&Request::SessionClose { id: 103, session_id });
+    h.read_reply(103);
+    let st = w.fake.state.lock().unwrap();
+    assert!(st.ws_input.ends_with(b"NEW\r"));
+    assert!(!String::from_utf8_lossy(&st.ws_input).contains("late"));
+    let written = st.ws_input.len() as u64 - 4;
+    assert_eq!(written + dropped, sent, "written {written} + dropped {dropped} must be what the agent typed {sent}");
+    drop(st);
+    h.shutdown();
+    drop(w.rt);
+}
+
 #[test]
 fn a_binary_stream_frame_never_reaches_a_graphical_console() {
     let w = world(default_state());

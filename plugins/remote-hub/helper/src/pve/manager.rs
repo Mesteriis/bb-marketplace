@@ -7,6 +7,7 @@ use std::ffi::CString;
 use std::os::fd::RawFd;
 use std::time::{Duration, Instant};
 
+use super::out_queue::OutQueue;
 use super::protocol::{self as proto, GuestInfo, NodeInfo, ProvisionSteps, PveCommand, PveEvent, Take, UserExtras};
 use crate::ids::SessionIds;
 use crate::rdp::manager::{lift_fd, parse_status, set_cloexec, set_nonblocking, wait_pid, EngineExit};
@@ -35,6 +36,8 @@ pub enum Kind {
 pub enum PveFrame {
     State(String),
     Data { seq: u32, bytes: Vec<u8> },
+    /// A hand-over finished: the engine holds nothing of the previous driver. `request` is the helper request to answer.
+    OwnerSet { request: u64, dropped: u64 },
     Targets { version: Option<String>, nodes: Vec<NodeInfo>, guests: Vec<GuestInfo> },
     Error { code: String, message: String, fingerprint: Option<String>, steps: Option<ProvisionSteps> },
     /// The VNC password of a graphical console (only a vnc session may send it).
@@ -48,6 +51,8 @@ pub enum PveFrame {
 #[derive(Debug)]
 pub enum EnqueueError {
     UnknownSession,
+    /// The input is from someone who no longer drives this console.
+    StaleOwner,
     Dead,
     Overflow,
 }
@@ -70,7 +75,11 @@ struct Session {
     exit: Option<EngineExit>,
     fd: RawFd,
     read_buf: Vec<u8>,
-    write_buf: VecDeque<u8>,
+    write_buf: OutQueue,
+    /// Who drives this terminal now ("human" or an agent lease tag); input from anyone else is refused.
+    owner: String,
+    /// Hand-overs waiting for the engine's answer: (request id, helper-side input bytes dropped).
+    owner_waiters: VecDeque<(u64, u64)>,
     state: String,
     seq: u32,
     close_reason: Option<String>,
@@ -228,8 +237,8 @@ impl PveManager {
         }
         set_nonblocking(helper_fd);
         set_cloexec(helper_fd);
-        let mut write_buf = VecDeque::new();
-        write_buf.extend(proto::encode_control(open));
+        let mut write_buf = OutQueue::new();
+        write_buf.push_control(proto::encode_control(open));
         self.sessions.insert(
             id,
             Session {
@@ -239,6 +248,8 @@ impl PveManager {
                 fd: helper_fd,
                 read_buf: Vec::new(),
                 write_buf,
+                owner: "human".to_string(),
+                owner_waiters: VecDeque::new(),
                 state: "connecting".to_string(),
                 seq: 0,
                 close_reason: None,
@@ -280,7 +291,7 @@ impl PveManager {
         if s.fd < 0 {
             return Err(EnqueueError::Dead);
         }
-        s.write_buf.extend(proto::encode_control(cmd));
+        s.write_buf.push_control(proto::encode_control(cmd));
         Ok(())
     }
 
@@ -306,9 +317,42 @@ impl PveManager {
             return Err(EnqueueError::Overflow);
         }
         for chunk in bytes.chunks(64 * 1024) {
-            s.write_buf.extend(proto::encode_data(chunk));
+            s.write_buf.push_input(proto::encode_data(chunk));
         }
         Ok(())
+    }
+
+    /// Terminal input from `owner`: refused unless that is the console's current driver.
+    pub fn enqueue_input_from(&mut self, id: u32, owner: &str, bytes: &[u8]) -> Result<(), EnqueueError> {
+        let s = self.sessions.get(&id).filter(|s| s.kind == Kind::Terminal).ok_or(EnqueueError::UnknownSession)?;
+        if s.owner != owner {
+            return Err(EnqueueError::StaleOwner);
+        }
+        self.enqueue_input(id, bytes)
+    }
+
+    /// A new driver. What the previous one left queued is dropped here and, through the engine, upstream; the answer
+    /// (`PveFrame::OwnerSet`) comes once the engine has dropped its own, so after it nothing of the old driver can be written.
+    /// `Ok(Some(dropped))` answers now; `Ok(None)` waits for the engine.
+    pub fn set_owner(&mut self, id: u32, owner: &str, request: u64) -> Result<Option<u64>, EnqueueError> {
+        let s = self.sessions.get_mut(&id).filter(|s| s.kind == Kind::Terminal).ok_or(EnqueueError::UnknownSession)?;
+        let changed = s.owner != owner;
+        if !changed && s.owner_waiters.is_empty() {
+            return Ok(Some(0));
+        }
+        let dropped = if changed {
+            s.owner = owner.to_string();
+            s.write_buf.drop_unstarted_input()
+        } else {
+            0
+        };
+        if s.fd < 0 {
+            // The engine is gone: nothing more will be written.
+            return Ok(Some(dropped));
+        }
+        s.write_buf.push_control(proto::encode_control(&PveCommand::SetOwner { request }));
+        s.owner_waiters.push_back((request, dropped));
+        Ok(None)
     }
 
     pub fn resize(&mut self, id: u32, cols: u16, rows: u16) -> Result<(), EnqueueError> {
@@ -316,7 +360,7 @@ impl PveManager {
         if s.fd < 0 {
             return Err(EnqueueError::Dead);
         }
-        s.write_buf.extend(proto::encode_control(&PveCommand::Resize { cols, rows }));
+        s.write_buf.push_control(proto::encode_control(&PveCommand::Resize { cols, rows }));
         Ok(())
     }
 
@@ -330,7 +374,7 @@ impl PveManager {
         s.close_request = Some(request);
         s.ended_at.get_or_insert_with(Instant::now);
         if s.fd >= 0 {
-            s.write_buf.extend(proto::encode_control(&PveCommand::Close));
+            s.write_buf.push_control(proto::encode_control(&PveCommand::Close));
         }
         Ok(())
     }
@@ -338,8 +382,7 @@ impl PveManager {
     pub fn write_pending(&mut self, id: u32) {
         let Some(s) = self.sessions.get_mut(&id) else { return };
         while s.fd >= 0 && !s.write_buf.is_empty() {
-            let (a, b) = s.write_buf.as_slices();
-            let buf = if !a.is_empty() { a } else { b };
+            let buf = s.write_buf.front();
             let n = unsafe { libc::write(s.fd, buf.as_ptr() as *const libc::c_void, buf.len()) };
             if n < 0 {
                 let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
@@ -350,7 +393,7 @@ impl PveManager {
                 s.write_buf.clear();
                 return;
             }
-            s.write_buf.drain(..n as usize);
+            s.write_buf.advance(n as usize);
         }
     }
 
@@ -414,6 +457,19 @@ impl PveManager {
                         Ok(PveEvent::State { state }) => {
                             s.state = state.clone();
                             out.push(PveFrame::State(state));
+                        }
+                        Ok(PveEvent::OwnerSet { request, dropped }) => {
+                            // Only an answer to a hand-over we sent counts, and the engine answers them in order.
+                            match s.owner_waiters.front() {
+                                Some(&(want, ours)) if want == request => {
+                                    s.owner_waiters.pop_front();
+                                    out.push(PveFrame::OwnerSet { request, dropped: ours + dropped });
+                                }
+                                _ => {
+                                    Self::fail_protocol(s);
+                                    break;
+                                }
+                            }
                         }
                         Ok(PveEvent::Closed { reason }) => {
                             Self::set_reason(s, &reason);
@@ -485,6 +541,12 @@ impl PveManager {
                 break;
             }
             s.read_buf.extend_from_slice(&chunk[..n as usize]);
+        }
+        if s.fd < 0 {
+            // The engine is gone: nothing more will be written upstream, so hand-overs that waited for it are complete.
+            while let Some((request, dropped)) = s.owner_waiters.pop_front() {
+                out.push(PveFrame::OwnerSet { request, dropped });
+            }
         }
         out
     }

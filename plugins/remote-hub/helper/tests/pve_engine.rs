@@ -265,6 +265,68 @@ async fn an_lxc_terminal_reaches_first_output_echoes_input_resizes_and_closes() 
     assert!(st.requests.contains(&"GET /api2/json/nodes/pve1/lxc/101/vncwebsocket".to_string()));
 }
 
+/// Read frames until the hand-over `request` is answered; the bytes the console echoed meanwhile are ignored.
+async fn owner_set(d: &mut Drive, request: u64) -> u64 {
+    loop {
+        match d.next().await {
+            Got::Event(PveEvent::OwnerSet { request: r, dropped }) if r == request => return dropped,
+            Got::Eof => panic!("ended before the hand-over was answered"),
+            _ => {}
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_hand_over_is_answered_at_once_while_the_transport_is_blocked_and_drops_what_the_old_driver_queued() {
+    let fake = start_fake(default_state()).await;
+    let mut d = start_engine(&open(fake.port, ticket_auth(), ca_trust(), lxc("pve1", 101))).await;
+    d.until_state("open").await;
+    d.read_data(b"root@ct101:~# ").await;
+    // The upstream stops reading; the old driver types until the engine's writer is stuck.
+    fake.state.lock().unwrap().ws_stall = true;
+    let chunk = vec![b'o'; 16 * 1024];
+    let mut sent: u64 = 0;
+    for _ in 0..40 {
+        d.input(&chunk).await;
+        sent += chunk.len() as u64;
+    }
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    // The takeover is answered although the writer cannot move: nothing waits for the transport.
+    d.send(&PveCommand::SetOwner { request: 7 }).await;
+    let dropped = tokio::time::timeout(Duration::from_secs(3), owner_set(&mut d, 7)).await.expect("the hand-over waited for a blocked transport");
+    assert!(dropped > 0, "the queue held input of the old driver: {dropped}");
+    // The new driver types; the upstream reads again.
+    d.input(b"NEW\r").await;
+    fake.state.lock().unwrap().ws_stall = false;
+    d.read_data(b"NEW\r").await;
+    d.send(&PveCommand::Close).await;
+    let _ = d.all().await;
+    let st = fake.state.lock().unwrap();
+    let received_old = st.ws_input.len() as u64 - 4;
+    assert!(st.ws_input.ends_with(b"NEW\r"), "the new driver's input is last");
+    assert_eq!(received_old + dropped, sent, "every byte of the old driver was either written before the hand-over or dropped, none after: written {received_old}, dropped {dropped}, typed {sent}");
+    assert!(dropped >= 64 * 1024, "a blocked transport must have left most of it queued: dropped {dropped}");
+}
+
+#[tokio::test]
+async fn input_for_a_transport_that_never_reads_closes_the_console_instead_of_growing_without_limit() {
+    let fake = start_fake(default_state()).await;
+    let mut d = start_engine(&open(fake.port, ticket_auth(), ca_trust(), lxc("pve1", 101))).await;
+    d.until_state("open").await;
+    d.read_data(b"root@ct101:~# ").await;
+    fake.state.lock().unwrap().ws_stall = true;
+    let chunk = vec![b'o'; 16 * 1024];
+    for _ in 0..400 {
+        // the engine stops reading its commands only by ending; a failed write here means it already did
+        if d.wr.write_all(&encode_data(&chunk)).await.is_err() {
+            break;
+        }
+    }
+    let (events, _) = d.all().await;
+    assert_eq!(events.last(), Some(&PveEvent::Closed { reason: "upstream_stalled".into() }), "{events:?}");
+    assert_eq!(d.engine.await.unwrap(), 0);
+}
+
 #[tokio::test]
 async fn the_node_shell_uses_the_node_termproxy() {
     let fake = start_fake(default_state()).await;

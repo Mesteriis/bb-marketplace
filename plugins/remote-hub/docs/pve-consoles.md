@@ -223,6 +223,14 @@ including a temporary keychain), unit tests beside each module, `src/core/pve-pr
   upstream socket go with it). Inside the page the channel holds at most **1 MiB** for noVNC before noVNC installs its handler; past
   that, or when noVNC fails to load or start, the page tells the service and the console is closed with `viewer_failed`. No byte is ever
   dropped or reordered.
+- **Who may type into a terminal console (the driver).** A Proxmox terminal has one driver at a time, the same owner/lease tags as SSH
+  and RDP (`human`, or an agent's lease tag). Input from anyone else is refused (`stale_owner`; the human's keys on the stream path are
+  dropped). A change of driver (an agent takes the console, the owner takes it back, the watcher left) is a barrier: the helper drops the
+  input the previous driver still had queued, tells the engine, and answers only after the engine dropped its own queue. The engine writes
+  to Proxmox from its own task, so a transport that stopped accepting bytes does not delay the hand-over; the one message that may
+  already be in flight is the only thing of the old driver that can still reach the guest. An engine whose unsent input exceeds 1 MiB
+  closes the console as `upstream_stalled`. Covered by `pve_engine.rs` and `pve_process.rs` (blocked fake transport; written + dropped
+  equals typed).
 - **Platform limit (unchanged).** A caller that can use the owner-only RPCs (any shell-capable code on this machine running as the owner)
   can attach as the first view of a graphical console and so receive its password and bytes. That is the owner's own session; the plugin
   does not defend the owner against code running as the owner. Agents have no such route (see Agents).

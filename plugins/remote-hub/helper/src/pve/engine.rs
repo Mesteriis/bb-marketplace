@@ -90,6 +90,8 @@ pub fn run_engine() -> i32 {
 /// Commands the helper sends after `Open`.
 enum Cmd {
     Input(Vec<u8>),
+    /// A new driver: drop the input queued for the old one, then answer `OwnerSet`.
+    SetOwner(u64),
     Resize(u16, u16),
     Close,
 }
@@ -168,6 +170,7 @@ pub async fn serve(stream: tokio::net::UnixStream) -> i32 {
                 Some(&protocol::FRAME_CONTROL) => match serde_json::from_slice::<PveCommand>(&body[1..]) {
                     Ok(PveCommand::Resize { cols, rows }) => Cmd::Resize(cols, rows),
                     Ok(PveCommand::Close) => Cmd::Close,
+                    Ok(PveCommand::SetOwner { request }) => Cmd::SetOwner(request),
                     Ok(PveCommand::SaveAck { ok }) => {
                         let _ = ack_tx.send(ok).await;
                         continue;
@@ -467,6 +470,7 @@ async fn run_vnc(client: &Client, auth: &PveAuth, node: &str, vmid: u32, keepali
             cmd = cmds.recv() => match cmd {
                 Some(Cmd::Input(bytes)) => { if ws.send(Message::binary(bytes)).await.is_err() { break "websocket_error"; } }
                 Some(Cmd::Resize(..)) => {}
+                Some(Cmd::SetOwner(request)) => { out.event(&PveEvent::OwnerSet { request, dropped: 0 }).await; }
                 Some(Cmd::Close) | None => break "closed_by_user",
             },
             _ = ping.tick() => { if ws.send(Message::Ping(Vec::new().into())).await.is_err() { break "websocket_error"; } }
@@ -496,7 +500,7 @@ async fn run_terminal(
             return 0;
         }
     };
-    let (mut ws, rest) = match connected {
+    let (ws, rest) = match connected {
         Ok(v) => v,
         Err(e) => {
             out.error(&e).await;
@@ -510,9 +514,15 @@ async fn run_terminal(
     }
     let mut ping = tokio::time::interval(keepalive);
     ping.reset();
+    // Everything written upstream goes through one writer task, so a transport that stops accepting bytes never stops this loop
+    // from reading its commands: a hand-over (`SetOwner`) is still processed at once and drops what has not been written.
+    let (sink, mut stream) = ws.split();
+    let outbox = std::sync::Arc::new(Outbox::default());
+    let (failed_tx, mut failed_rx) = tokio::sync::oneshot::channel::<()>();
+    let writer = tokio::spawn(write_upstream(sink, outbox.clone(), failed_tx));
     let reason = loop {
         tokio::select! {
-            msg = ws.next() => match msg {
+            msg = stream.next() => match msg {
                 Some(Ok(Message::Binary(b))) => { if !out.data(&b).await { break "helper_gone"; } }
                 Some(Ok(Message::Text(t))) => { if !out.data(t.as_bytes()).await { break "helper_gone"; } }
                 Some(Ok(Message::Close(_))) | None => break "remote_closed",
@@ -521,25 +531,122 @@ async fn run_terminal(
             },
             cmd = cmds.recv() => match cmd {
                 Some(Cmd::Input(bytes)) => {
-                    let mut failed = false;
                     for m in term::encode_input(&bytes) {
-                        if ws.send(Message::binary(m)).await.is_err() { failed = true; break; }
+                        let payload = payload_len(&m);
+                        if !outbox.push(Message::binary(m), Some(payload)) { break; }
                     }
-                    if failed { break "websocket_error"; }
+                    if outbox.stalled() { break "upstream_stalled"; }
                 }
-                Some(Cmd::Resize(c, r)) => {
-                    if ws.send(Message::binary(term::encode_resize(c.clamp(1, 1000), r.clamp(1, 1000)))).await.is_err() { break "websocket_error"; }
+                Some(Cmd::SetOwner(request)) => {
+                    // After this answer nothing of the previous driver is written: the queue is emptied of input here, and the one
+                    // message the writer may already be sending is the only one that can still go.
+                    let dropped = outbox.drop_input();
+                    if !out.event(&PveEvent::OwnerSet { request, dropped }).await { break "helper_gone"; }
                 }
+                Some(Cmd::Resize(c, r)) => { outbox.push(Message::binary(term::encode_resize(c.clamp(1, 1000), r.clamp(1, 1000))), None); }
                 Some(Cmd::Close) | None => break "closed_by_user",
             },
-            _ = ping.tick() => {
-                if ws.send(Message::binary(term::PING)).await.is_err() { break "websocket_error"; }
-            }
+            _ = &mut failed_rx => break "websocket_error",
+            _ = ping.tick() => { outbox.push(Message::binary(term::PING), None); }
         }
     };
-    let _ = tokio::time::timeout(Duration::from_secs(2), ws.close(None)).await;
+    // A graceful close when the writer is idle; a writer stuck in a send is abandoned (the process exits right after).
+    outbox.stop();
+    if let Ok(Ok(mut sink)) = tokio::time::timeout(Duration::from_secs(2), writer).await {
+        let _ = tokio::time::timeout(Duration::from_secs(2), sink.close()).await;
+    }
     out.event(&PveEvent::Closed { reason: reason.to_string() }).await;
     0
+}
+
+/// Most bytes of input the engine holds for a transport that is not accepting writes; past it the console is closed
+/// (`upstream_stalled`) instead of letting the queue grow.
+const OUTBOX_LIMIT: usize = 1024 * 1024;
+
+#[derive(Default)]
+struct Outbox {
+    state: std::sync::Mutex<OutboxState>,
+    wake: tokio::sync::Notify,
+}
+
+#[derive(Default)]
+struct OutboxState {
+    /// A message and, for typed input, the payload bytes it carries.
+    queue: std::collections::VecDeque<(Message, Option<usize>)>,
+    input_bytes: usize,
+    input_payload: u64,
+    stopped: bool,
+}
+
+impl Outbox {
+    /// Queue a message; `false` when it was refused because the writer was stopped.
+    fn push(&self, m: Message, input: Option<usize>) -> bool {
+        let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if st.stopped {
+            return false;
+        }
+        if let Some(payload) = input {
+            st.input_bytes += m.len();
+            st.input_payload += payload as u64;
+        }
+        st.queue.push_back((m, input));
+        drop(st);
+        self.wake.notify_one();
+        true
+    }
+    fn stalled(&self) -> bool {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).input_bytes > OUTBOX_LIMIT
+    }
+    /// Drop every queued input message; returns the bytes dropped. Control messages (resize, ping) stay.
+    fn drop_input(&self) -> u64 {
+        let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let dropped = st.input_payload;
+        st.queue.retain(|(_, input)| input.is_none());
+        st.input_bytes = 0;
+        st.input_payload = 0;
+        dropped
+    }
+    fn stop(&self) {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).stopped = true;
+        self.wake.notify_one();
+    }
+    fn next(&self) -> Option<Option<Message>> {
+        let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if st.stopped {
+            return None;
+        }
+        Some(st.queue.pop_front().map(|(m, input)| {
+            if let Some(payload) = input {
+                st.input_bytes = st.input_bytes.saturating_sub(m.len());
+                st.input_payload = st.input_payload.saturating_sub(payload as u64);
+            }
+            m
+        }))
+    }
+}
+
+/// The typed bytes inside a `0:<len>:<data>` input message.
+fn payload_len(m: &[u8]) -> usize {
+    m.iter().enumerate().filter(|(_, c)| **c == b':').nth(1).map(|(i, _)| m.len() - i - 1).unwrap_or(0)
+}
+
+/// Writes the queue upstream in order until stopped; a failed write is reported once and ends the task.
+async fn write_upstream<S>(mut sink: S, outbox: std::sync::Arc<Outbox>, failed: tokio::sync::oneshot::Sender<()>) -> S
+where
+    S: futures_util::Sink<Message> + Unpin,
+{
+    loop {
+        match outbox.next() {
+            None => return sink,
+            Some(Some(m)) => {
+                if sink.send(m).await.is_err() {
+                    let _ = failed.send(());
+                    return sink;
+                }
+            }
+            Some(None) => outbox.wake.notified().await,
+        }
+    }
 }
 
 #[allow(dead_code)]

@@ -150,6 +150,7 @@ pub fn vnc_input(pve: &mut PveManager, id: u64, session_id: u32, data: &str) -> 
 pub fn enqueue_error(id: u64, session_id: u32, e: EnqueueError) -> Vec<u8> {
     match e {
         EnqueueError::UnknownSession => error(id, "session_not_found", format!("no pve session {session_id}")),
+        EnqueueError::StaleOwner => error(id, "stale_owner", "the input is from someone who no longer drives this console"),
         EnqueueError::Dead => error(id, "session_closed", "the pve console has ended"),
         EnqueueError::Overflow => error(id, "input_overflow", "too much pending input for this session; retry"),
     }
@@ -166,6 +167,7 @@ pub fn relay_frames(pve: &mut PveManager, outbox: &mut VecDeque<u8>, current_exe
                 }
             }
             PveFrame::VncPassword(password) => outbox.extend(protocol::encode_response(&Response::PveVncPassword { session_id, password })),
+            PveFrame::OwnerSet { request, dropped } => outbox.extend(protocol::encode_response(&Response::SessionOwnerSet { id: request, session_id, dropped, released: 0 })),
             PveFrame::Data { seq, bytes } => outbox.extend(protocol::encode_stream(session_id, seq, &bytes)),
             PveFrame::Targets { version, nodes, guests } => {
                 if let Some(id) = pve.job_request(session_id) {

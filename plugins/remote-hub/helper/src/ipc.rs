@@ -798,8 +798,12 @@ fn handle(
         }
         Request::SessionSetOwner { id, session_id, owner } => {
             if pve.contains(session_id) {
-                // A console has one writer at a time only in the sense of the control lease above it.
-                return Ok(protocol::encode_response(&Response::SessionOwnerSet { id, session_id, dropped: 0, released: 0 }));
+                return Ok(match pve.set_owner(session_id, &owner, id) {
+                    Ok(Some(dropped)) => protocol::encode_response(&Response::SessionOwnerSet { id, session_id, dropped, released: 0 }),
+                    // The engine answers when it holds nothing of the previous driver (the barrier); the reply is sent then.
+                    Ok(None) => Vec::new(),
+                    Err(e) => crate::pve::glue::enqueue_error(id, session_id, e),
+                });
             }
             if manager.contains(session_id) {
                 return Ok(match manager.set_owner(session_id, &owner) {
@@ -814,7 +818,7 @@ fn handle(
                 Err(e) => rdp_enqueue_error(id, session_id, e),
             })
         }
-        Request::SessionInput { id, session_id, data, .. } if pve.contains(session_id) => Ok(match pve.enqueue_input(session_id, data.as_bytes()) {
+        Request::SessionInput { id, session_id, data, owner } if pve.contains(session_id) => Ok(match pve.enqueue_input_from(session_id, owner.as_deref().unwrap_or("human"), data.as_bytes()) {
             Ok(()) => protocol::encode_response(&Response::SessionInputAck { id, session_id }),
             Err(e) => crate::pve::glue::enqueue_error(id, session_id, e),
         }),
@@ -1879,7 +1883,7 @@ pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
                     if guard.pve.contains(session_id) {
                         // A graphical console takes raw RFB only through `pve.vnc_input`.
                         if !guard.pve.is_vnc(session_id) {
-                            let _ = guard.pve.enqueue_input(session_id, &data);
+                            let _ = guard.pve.enqueue_input_from(session_id, "human", &data);
                         }
                     } else {
                         let _ = guard.manager.enqueue_input_from(session_id, "human", &data);

@@ -45,6 +45,7 @@ const REASON_TEXT: Record<string, string> = {
   no_credential: "This connection has no saved password or token yet.",
   websocket_error: "The console connection broke (websocket error).",
   remote_closed: "Proxmox closed the console.",
+  upstream_stalled: "Proxmox stopped accepting input for the console, so it was closed.",
   engine_exited: "The console process ended unexpectedly.",
   helper_exited: "The Remote Hub helper ended.",
   node_offline: "The node is not online.",

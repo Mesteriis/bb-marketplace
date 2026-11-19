@@ -13,6 +13,7 @@ export const RECONNECT_JITTER = 0.25;
 /** Reasons (an end reason or an open refusal) after which another attempt can succeed. */
 const RETRYABLE: ReadonlySet<string> = new Set([
   "remote_closed",
+  "upstream_stalled",
   "websocket_error",
   "engine_exited",
   "helper_exited",

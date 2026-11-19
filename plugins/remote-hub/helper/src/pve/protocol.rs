@@ -194,6 +194,8 @@ pub enum PveCommand {
         keepalive_secs: Option<u64>,
     },
     Resize { cols: u16, rows: u16 },
+    /// A new driver: input still queued in the engine for the previous one is dropped, then `OwnerSet { request }` answers.
+    SetOwner { request: u64 },
     /// Whether the helper saved the new password (the engine writes nothing more until it knows).
     SaveAck { ok: bool },
     Close,
@@ -251,6 +253,8 @@ pub enum PveEvent {
     NewPassword { password: Secret },
     /// A provision that was applied, step by step.
     Provisioned { steps: ProvisionSteps },
+    /// The answer to `SetOwner`: the engine holds no input of an earlier driver any more (`dropped` bytes were discarded).
+    OwnerSet { request: u64, dropped: u64 },
     Closed { reason: String },
 }
 
