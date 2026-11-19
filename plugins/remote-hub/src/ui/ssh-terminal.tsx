@@ -8,6 +8,7 @@ import { useEffect, useRef, type MutableRefObject } from "react";
 import type { SshAskpassEvent } from "../core/ssh-askpass-protocol.ts";
 import type { ControlMessage } from "./control-banner.tsx";
 import type { FeedEvent } from "../core/agent-feed.ts";
+import { writeCarriedHistory } from "./terminal-history.ts";
 import { startWatchBeat } from "./watch-beat.ts";
 
 export type SshTerminalState = "connecting" | "running" | "detached" | "closed" | "error";
@@ -77,7 +78,7 @@ export function SshTerminal(props: SshTerminalProps) {
     terminal.loadAddon(fit);
     terminal.open(container);
     fit.fit();
-    if (props.history !== undefined && props.history !== "") terminal.write(props.history);
+    writeCarriedHistory(terminal, props.history ?? "");
     const screenText = (): string => {
       const buffer = terminal.buffer.active;
       const lines: string[] = [];

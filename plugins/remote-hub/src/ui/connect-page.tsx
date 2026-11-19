@@ -243,6 +243,7 @@ export function ConnectPage(props: ConnectPageProps) {
           />
         )}
         {pveList !== null && !addingPve && props.pve !== undefined && !showCredentials && !showImport && !showAgents && editing === null && (
+          <div className={kind === "pve" ? "rh-pve-list rh-pve-list-with-consoles" : "rh-pve-list"}>
           <PveTargets
             key={pveList.key}
             api={props.pve}
@@ -264,6 +265,7 @@ export function ConnectPage(props: ConnectPageProps) {
               : {})}
             onClose={() => setPveList(null)}
           />
+          </div>
         )}
         {editing !== null && !showCredentials && !showImport && !showAgents && (
           <ProfileEditor
@@ -274,7 +276,7 @@ export function ConnectPage(props: ConnectPageProps) {
             onCancel={() => setEditing(null)}
           />
         )}
-        <div hidden={editing !== null || showCredentials || showImport || showAgents || addingPve || (pveList !== null && kind !== "pve")} className="rh-connect-sessions">
+        <div hidden={editing !== null || showCredentials || showImport || showAgents || addingPve || (pveList !== null && kind !== "pve")} className={pveList !== null && kind === "pve" ? "rh-connect-sessions rh-connect-sessions-beside-list" : "rh-connect-sessions"}>
           <div className="rh-kind" role="group" aria-label="connection kind">
             {api !== undefined && <span className="rh-quick">Quick connect</span>}
             <button type="button" aria-pressed={kind === "ssh"} onClick={() => setKind("ssh")}>

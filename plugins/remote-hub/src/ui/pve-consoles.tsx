@@ -517,6 +517,11 @@ export function PveConsoles(props: PveConsolesProps) {
               {`The console was lost. Attempt ${t.attempt} of ${RECONNECT_ATTEMPTS}: a new console is opened with a fresh login. Nothing typed before the loss is sent again.`}
             </p>
           )}
+          {t.history !== "" && t.kind !== "vnc" && (t.state === "connecting" || t.state === "active") && (
+            <p className="rh-hint" data-testid="pve-console-earlier">
+              The earlier output of this tab is in the scrollback above this screen: scroll up.
+            </p>
+          )}
           {t.notice !== null && (
             <p role="status" className="rh-notice" data-testid="pve-console-notice">
               {t.notice}

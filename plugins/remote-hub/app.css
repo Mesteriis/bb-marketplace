@@ -304,6 +304,25 @@
   min-height: 0;
 }
 
+/* The Proxmox guest list: it scrolls in its own area. With consoles open under it the list takes a bounded share of the pane and
+   the console area keeps a real height, so both are usable (at 1280x581 as in a large window). */
+.rh-pve-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+.rh-pve-list-with-consoles {
+  flex: 0 1 36%;
+  min-height: 96px;
+  border-bottom: 1px solid var(--border, #30363d);
+}
+
+.rh-connect-sessions-beside-list {
+  flex: 1 1 64%;
+  min-height: 300px;
+}
+
 .rh-connect-sessions[hidden] {
   display: none;
 }
