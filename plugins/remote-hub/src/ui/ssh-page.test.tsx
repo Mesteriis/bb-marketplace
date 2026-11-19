@@ -377,7 +377,7 @@ describe("SshPage and OpenSSH's questions / a saved secret", () => {
       socket.onmessage?.({ data: JSON.stringify({ type: "prompt", promptId: 7, text: "Are you sure you want to continue connecting (yes/no)?", kind: "confirm" }) });
     });
     expect(screen.getByTestId("ssh-prompt-text").textContent).toContain("continue connecting");
-    fireEvent.click(screen.getByText("Yes"), { detail: 1 });
+    fireEvent.click(screen.getByText("Да"), { detail: 1 });
     expect(socket.sent.filter((d) => typeof d === "string" && d.includes("prompt_answer"))).toEqual([
       JSON.stringify({ type: "prompt_answer", promptId: 7, answer: "yes" }),
     ]);
@@ -431,14 +431,14 @@ describe("SshPage and a typed answer to an ambiguous prompt", () => {
     await act(async () => {
       socket.onmessage?.({ data: JSON.stringify({ type: "prompt", promptId: 2, text: "Verification code: ", kind: "secret" }) });
     });
-    const input = screen.getByLabelText("Answer") as HTMLInputElement;
+    const input = screen.getByLabelText("Ответ") as HTMLInputElement;
     expect(input.type).toBe("password");
     fireEvent.change(input, { target: { value: "654321" } });
     fireEvent.keyDown(input, { key: "Enter" });
     expect(socket.sent.filter((d) => typeof d === "string" && d.includes("prompt_answer"))).toEqual([
       JSON.stringify({ type: "prompt_answer", promptId: 2, answer: "654321" }),
     ]);
-    expect(screen.queryByLabelText("Answer")).toBeNull();
+    expect(screen.queryByLabelText("Ответ")).toBeNull();
   });
 });
 
@@ -460,16 +460,16 @@ describe("SshPage host-key confirmation needs a deliberate yes (S9)", () => {
 
   it("a keyboard activation of Yes (click with no pointer) answers nothing; a pointer click does", async () => {
     const { answers } = await withPrompt();
-    fireEvent.click(screen.getByText("Yes")); // detail 0: Enter or Space on the focused button
+    fireEvent.click(screen.getByText("Да")); // detail 0: Enter or Space on the focused button
     expect(answers()).toEqual([]);
     expect(screen.getByRole("alertdialog")).toBeTruthy();
-    fireEvent.click(screen.getByText("Yes"), { detail: 1 });
+    fireEvent.click(screen.getByText("Да"), { detail: 1 });
     expect(answers()).toEqual([JSON.stringify({ type: "prompt_answer", promptId: 4, answer: "yes" })]);
   });
 
   it("typing yes and pressing Enter answers; anything else typed does not", async () => {
     const { answers } = await withPrompt();
-    const input = screen.getByLabelText("Type yes to continue");
+    const input = screen.getByLabelText("Введите yes, чтобы продолжить");
     fireEvent.change(input, { target: { value: "ye" } });
     fireEvent.keyDown(input, { key: "Enter" });
     expect(answers()).toEqual([]);

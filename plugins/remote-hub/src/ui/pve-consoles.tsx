@@ -96,10 +96,10 @@ const STATE_LABEL: Record<TabState, string> = {
 
 const labelOf = (t: Tab): string => (t.state === "reconnecting" ? `reconnecting (${t.attempt} of ${RECONNECT_ATTEMPTS})` : STATE_LABEL[t.state]);
 
-const NOT_SENT = "Not connected: what you type is not sent, and is not kept to be sent later.";
-const GRAPHICS_TEXT = "A graphical console cannot be resumed. Reconnect opens a NEW console; the screen you had is not restored.";
-const TERMINAL_TEXT = "Reconnect opens a NEW console. What was typed before the loss is not sent again.";
-const RESTORED_TEXT = "This tab was restored after a restart. It is not connected. Reconnect opens a new console.";
+const NOT_SENT = "Не подключено: то, что вы печатаете, не отправляется и не откладывается на потом.";
+const GRAPHICS_TEXT = "Графическую консоль нельзя возобновить. «Переподключить» открывает НОВУЮ консоль; прежний экран не восстанавливается.";
+const TERMINAL_TEXT = "«Переподключить» открывает НОВУЮ консоль. То, что было напечатано до обрыва, заново не отправляется.";
+const RESTORED_TEXT = "Эта сессия восстановлена после перезапуска. Она не подключена. «Переподключить» открывает новую консоль.";
 
 const where = (t: Tab): string => {
   const r = t.launch.request;
@@ -213,7 +213,7 @@ export function PveConsoles(props: PveConsolesProps) {
   const remember = (t: Tab): void =>
     void apiRef.current.tabs?.put(rowOf(t)).catch((e: unknown) => {
       // Never hidden: the tab works, but it will not come back after a restart, and the owner is told.
-      patch(t.id, { notice: `This tab could not be remembered for after a restart: ${e instanceof Error ? e.message : String(e)}` });
+      patch(t.id, { notice: `Эту сессию не удалось запомнить до перезапуска: ${e instanceof Error ? e.message : String(e)}` });
     });
 
   /**
@@ -238,7 +238,7 @@ export function PveConsoles(props: PveConsolesProps) {
         }
         stopEpisode(id);
         const gaveUp = decision !== null && decision.why === "gave_up";
-        patch(id, { state: "error", attempt: 0, reason: { code, text: gaveUp ? `Gave up after ${RECONNECT_ATTEMPTS} attempts. ${text}` : text, fingerprint } });
+        patch(id, { state: "error", attempt: 0, reason: { code, text: gaveUp ? `Попыток: ${RECONNECT_ATTEMPTS}, больше не пробую. ${text}` : text, fingerprint } });
       };
       let opened: PveConsoleOpened;
       try {
@@ -437,7 +437,7 @@ export function PveConsoles(props: PveConsolesProps) {
       scheduleRef.current(tab.id, now.launch, decision.attempt, decision.delayMs);
     } else {
       stopEpisode(tab.id);
-      patch(tab.id, { state: final, history, attempt: 0, reason: decision.why === "gave_up" ? { ...reason, text: `Gave up after ${RECONNECT_ATTEMPTS} attempts. ${reason.text}` } : reason });
+      patch(tab.id, { state: final, history, attempt: 0, reason: decision.why === "gave_up" ? { ...reason, text: `Попыток: ${RECONNECT_ATTEMPTS}, больше не пробую. ${reason.text}` } : reason });
     }
   };
 
@@ -483,7 +483,7 @@ export function PveConsoles(props: PveConsolesProps) {
     if (now === undefined || shown.current.has(tab.id) || !(code === "websocket_error" || code === "remote_closed") || now.state === "disconnected" || now.state === "error") return false;
     if (!retriedOnce.current.has(tab.id)) {
       retriedOnce.current.add(tab.id);
-      reconnect(now, "The graphical console was closed by Proxmox before it showed anything (its VNC proxy waits about ten seconds for the viewer). A new console was opened once, automatically.");
+      reconnect(now, "Proxmox закрыл графическую консоль раньше, чем она что-то показала (его прокси VNC ждёт экран около десяти секунд). Новая консоль открыта один раз автоматически.");
       return true;
     }
     patch(tab.id, { state: "lost", reason: { code: "vnc_start_timeout", text: reasonText("vnc_start_timeout"), fingerprint: null } });
@@ -537,12 +537,12 @@ export function PveConsoles(props: PveConsolesProps) {
           )}
           {t.state === "reconnecting" && (
             <p role="status" className="rh-hint" data-testid="pve-console-reconnecting">
-              {`The console was lost. Attempt ${t.attempt} of ${RECONNECT_ATTEMPTS}: a new console is opened with a fresh login. Nothing typed before the loss is sent again.`}
+              {`Консоль потеряна. Попытка ${t.attempt} из ${RECONNECT_ATTEMPTS}: открывается новая консоль с новым входом. Напечатанное до обрыва заново не отправляется.`}
             </p>
           )}
           {t.history !== "" && t.kind !== "vnc" && (t.state === "connecting" || t.state === "active") && (
             <p className="rh-hint" data-testid="pve-console-earlier">
-              The earlier output of this tab is in the scrollback above this screen: scroll up.
+              Прежний вывод этой сессии — в прокрутке над экраном: прокрутите вверх.
             </p>
           )}
           {t.notice !== null && (
@@ -608,10 +608,10 @@ export function PveConsoles(props: PveConsolesProps) {
     );
   }
 
-  if (tabs.length === 0) return <p className="rh-hint">No Proxmox console is open. Open one from a guest or node in the Proxmox list.</p>;
+  if (tabs.length === 0) return <p className="rh-hint">Консолей Proxmox не открыто. Откройте гостя или узел в списке Proxmox.</p>;
 
   return (
-    <section className="rh-pve-consoles" aria-label="Proxmox consoles">
+    <section className="rh-pve-consoles" aria-label="Консоли Proxmox">
       <div role="tablist" className="rh-tabs">
         {tabs.map((t) => (
           <button key={t.id} type="button" role="tab" aria-selected={active === t.id} onClick={() => setActive(t.id)} data-testid="pve-console-tab">
@@ -625,13 +625,13 @@ export function PveConsoles(props: PveConsolesProps) {
             <strong>{nameOf(t)}</strong> · {where(t)} <span className="rh-status" data-testid="pve-console-state">{labelOf(t)}</span>
             <ControlBadge control={t.owner} />
             <button type="button" disabled={t.state === "disconnected" || t.state === "restored" || (t.handle === null && t.state !== "reconnecting")} onClick={() => disconnect(t)}>
-              Disconnect
+              Отключить
             </button>
             <button type="button" disabled={!canReconnect(t)} onClick={() => reconnect(t)}>
-              Reconnect
+              Переподключить
             </button>
             <button type="button" onClick={() => closeTab(t)}>
-              Close tab
+              Закрыть вкладку
             </button>
           </div>
           {notes(t)}

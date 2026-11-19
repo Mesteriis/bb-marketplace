@@ -128,8 +128,8 @@ describe("PveConsoles", () => {
     act(() => lastTerminal().onStateChange?.("closed", { exitCode: null, signal: null, reason: "login_failed" }));
     expect(screen.getByTestId("pve-console-state").textContent).toBe("lost");
     expect(screen.getByTestId("pve-console-reason").textContent).toContain("enter its password again");
-    expect(screen.getByTestId("pve-console-new-console").textContent).toContain("NEW console");
-    fireEvent.click(screen.getByRole("button", { name: "Reconnect" }));
+    expect(screen.getByTestId("pve-console-new-console").textContent).toContain("НОВУЮ консоль");
+    fireEvent.click(screen.getByRole("button", { name: "Переподключить" }));
     await waitFor(() => expect(calls.open).toHaveLength(2));
     expect(calls.close).toEqual([{ generation: "a".repeat(32), sessionId: 1 }]);
     await waitFor(() => expect(screen.getAllByTestId("terminal").length).toBeGreaterThan(0));
@@ -141,16 +141,16 @@ describe("PveConsoles", () => {
     render(<PveConsoles api={api} launch={launch(1, { console: "lxc", vmid: 101 })} />);
     await screen.findByTestId("terminal");
     act(() => lastTerminal().onConsole?.({ state: "active", reason: null }));
-    expect((screen.getByRole("button", { name: "Reconnect" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Переподключить" }) as HTMLButtonElement).disabled).toBe(true);
     act(() => lastTerminal().onConsole?.({ state: "lost", reason: { code: "no_permission", text: "x", fingerprint: null } }));
-    expect((screen.getByRole("button", { name: "Reconnect" }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole("button", { name: "Переподключить" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("Disconnect closes at once and the state is disconnected, not lost; a later socket close does not turn it into lost", async () => {
     const { api, calls } = fakeApi();
     render(<PveConsoles api={api} launch={launch(1, { console: "lxc", vmid: 101 })} />);
     await screen.findByTestId("terminal");
-    fireEvent.click(screen.getByRole("button", { name: "Disconnect" }));
+    fireEvent.click(screen.getByRole("button", { name: "Отключить" }));
     expect(calls.close).toEqual([{ generation: "a".repeat(32), sessionId: 1 }]);
     expect(screen.getByTestId("pve-console-state").textContent).toBe("disconnected");
     expect(screen.queryByTestId("pve-console-reason")).toBeNull();
@@ -176,7 +176,7 @@ describe("PveConsoles", () => {
     act(() => props.onViewState?.("ready")); // a screen was shown: this is a loss, not a failed start
     act(() => props.onEnded?.({ code: "websocket_error", text: "The console connection broke (websocket error)." }));
     expect(screen.getByTestId("pve-console-state").textContent).toBe("lost");
-    expect((screen.getByRole("button", { name: "Reconnect" }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole("button", { name: "Переподключить" }) as HTMLButtonElement).disabled).toBe(false);
     // a specific reason that came first is not replaced by the generic one that follows it
     act(() => props.onConsole?.({ state: "lost", reason: { code: "remote_closed", text: "Proxmox closed the console.", fingerprint: null } }));
     act(() => props.onEnded?.({ code: "websocket_error", text: "The console connection broke (websocket error)." }));
@@ -191,7 +191,7 @@ describe("PveConsoles", () => {
     expect(calls.attach).toEqual([{ generation: "c".repeat(32), sessionId: 3 }]);
     const props = vncs[vncs.length - 1] as Record<string, (...a: unknown[]) => void>;
     act(() => props.onConsole?.({ state: "lost", reason: { code: "remote_closed", text: "x", fingerprint: null } }));
-    fireEvent.click(screen.getByRole("button", { name: "Reconnect" }));
+    fireEvent.click(screen.getByRole("button", { name: "Переподключить" }));
     await waitFor(() => expect(calls.open).toHaveLength(1));
   });
 
@@ -200,7 +200,7 @@ describe("PveConsoles", () => {
     const { api, calls } = fakeApi({ open: vi.fn(() => new Promise<PveConsoleOpened>((r) => (release = r as never))) });
     render(<PveConsoles api={api} launch={launch(1, { console: "lxc", vmid: 101 })} />);
     await screen.findByTestId("pve-console");
-    fireEvent.click(screen.getByRole("button", { name: "Close tab" }));
+    fireEvent.click(screen.getByRole("button", { name: "Закрыть вкладку" }));
     expect(screen.queryByTestId("pve-console")).toBeNull();
     await act(async () => release({ ok: true, generation: "a".repeat(32), sessionId: 9, kind: "pve" }));
     expect(calls.close).toEqual([{ generation: "a".repeat(32), sessionId: 9 }]);
@@ -249,7 +249,7 @@ describe("PveConsoles: reconnecting, restoring and moved guests", () => {
     act(() => lastTerminal().onStateChange?.("closed", LOST));
     expect(state()).toBe("reconnecting (1 of 5)");
     expect(note).toHaveBeenCalledWith(sep("connection lost"));
-    expect(screen.getByTestId("pve-console-reconnecting").textContent).toContain("Nothing typed before the loss is sent again");
+    expect(screen.getByTestId("pve-console-reconnecting").textContent).toContain("Напечатанное до обрыва заново не отправляется");
     await advance(999);
     expect(calls.open).toHaveLength(1);
     await advance(1);
@@ -270,7 +270,7 @@ describe("PveConsoles: reconnecting, restoring and moved guests", () => {
     act(() => lastTerminal().onStateChange?.("closed", LOST));
     expect((lastTerminal() as unknown as { inputEnabled: boolean }).inputEnabled).toBe(false);
     act(() => lastTerminal().onInputRefused?.());
-    expect(screen.getByTestId("pve-console-notice").textContent).toContain("not sent");
+    expect(screen.getByTestId("pve-console-notice").textContent).toContain("не отправляется");
     await advance(1000);
     await advance(0);
     act(() => lastTerminal().onConsole?.({ state: "active", reason: null }));
@@ -296,7 +296,7 @@ describe("PveConsoles: reconnecting, restoring and moved guests", () => {
       expect(calls).toBe(n + 1);
     }
     expect(state()).toBe("error");
-    expect(screen.getByTestId("pve-console-reason").textContent).toContain("Gave up after 5 attempts");
+    expect(screen.getByTestId("pve-console-reason").textContent).toContain("Попыток: 5, больше не пробую");
     expect(screen.getByTestId("pve-console-reason").textContent).toContain("did not answer");
     await advance(60_000);
     expect(calls).toBe(6); // no sixth attempt
@@ -344,7 +344,7 @@ describe("PveConsoles: reconnecting, restoring and moved guests", () => {
   it("no automatic attempt after Disconnect, an idle close or a close the owner asked for", async () => {
     const { api, calls } = fakeApi();
     await active(api);
-    fireEvent.click(screen.getByRole("button", { name: "Disconnect" }));
+    fireEvent.click(screen.getByRole("button", { name: "Отключить" }));
     act(() => lastTerminal().onStateChange?.("closed", { exitCode: null, signal: null, reason: "closed_by_user" }));
     await advance(120_000);
     expect(calls.open).toHaveLength(1);
@@ -363,7 +363,7 @@ describe("PveConsoles: reconnecting, restoring and moved guests", () => {
     await active(api);
     act(() => lastTerminal().onStateChange?.("closed", LOST));
     expect(state()).toBe("reconnecting (1 of 5)");
-    fireEvent.click(screen.getByRole("button", { name: "Disconnect" }));
+    fireEvent.click(screen.getByRole("button", { name: "Отключить" }));
     await advance(120_000);
     expect(calls.open).toHaveLength(1);
     expect(state()).toBe("disconnected");
@@ -396,8 +396,8 @@ describe("PveConsoles: reconnecting, restoring and moved guests", () => {
     act(() => props.onViewState?.("ready"));
     act(() => props.onConsole?.({ state: "lost", reason: { code: "remote_closed", text: "Proxmox closed the console.", fingerprint: null } }));
     expect(state()).toBe("lost");
-    expect(screen.getByTestId("pve-console-new-console").textContent).toContain("cannot be resumed");
-    expect(screen.getByTestId("pve-console-new-console").textContent).toContain("NEW console");
+    expect(screen.getByTestId("pve-console-new-console").textContent).toContain("нельзя возобновить");
+    expect(screen.getByTestId("pve-console-new-console").textContent).toContain("НОВУЮ консоль");
     await advance(120_000);
     expect(calls.open).toHaveLength(1);
   });
@@ -445,7 +445,7 @@ describe("PveConsoles: reconnecting, restoring and moved guests", () => {
     it("probe A: a late SUCCESS after Disconnect is closed, never adopted", async () => {
       const { api, log, pending } = deferredApi();
       await lostAndAttempting(api);
-      fireEvent.click(screen.getByRole("button", { name: "Disconnect" }));
+      fireEvent.click(screen.getByRole("button", { name: "Отключить" }));
       await act(async () => pending[0]!(okOpen(2)));
       await advance(0);
       expect(log).toContain("close 2");
@@ -456,7 +456,7 @@ describe("PveConsoles: reconnecting, restoring and moved guests", () => {
     it("probe B: a late RETRYABLE failure after Disconnect schedules nothing", async () => {
       const { api, pending } = deferredApi();
       await lostAndAttempting(api);
-      fireEvent.click(screen.getByRole("button", { name: "Disconnect" }));
+      fireEvent.click(screen.getByRole("button", { name: "Отключить" }));
       await act(async () => pending[0]!({ ok: false, code: "unreachable", message: "", fingerprint: null }));
       await advance(120_000);
       expect(api.open).toHaveBeenCalledTimes(2);
@@ -466,8 +466,8 @@ describe("PveConsoles: reconnecting, restoring and moved guests", () => {
     it("Disconnect then Reconnect while the old open is pending leaves exactly one console", async () => {
       const { api, log, pending } = deferredApi();
       await lostAndAttempting(api);
-      fireEvent.click(screen.getByRole("button", { name: "Disconnect" }));
-      fireEvent.click(screen.getByRole("button", { name: "Reconnect" }));
+      fireEvent.click(screen.getByRole("button", { name: "Отключить" }));
+      fireEvent.click(screen.getByRole("button", { name: "Переподключить" }));
       await advance(0);
       expect(pending).toHaveLength(2);
       await act(async () => pending[0]!(okOpen(2))); // the old open finishes late
@@ -510,8 +510,8 @@ describe("PveConsoles: reconnecting, restoring and moved guests", () => {
       const { api, pending } = deferredApi();
       await active(api);
       const oldTerminal = lastTerminal();
-      fireEvent.click(screen.getByRole("button", { name: "Disconnect" }));
-      fireEvent.click(screen.getByRole("button", { name: "Reconnect" }));
+      fireEvent.click(screen.getByRole("button", { name: "Отключить" }));
+      fireEvent.click(screen.getByRole("button", { name: "Переподключить" }));
       await advance(0);
       await act(async () => pending[0]!(okOpen(5)));
       await advance(0);
@@ -535,7 +535,7 @@ describe("PveConsoles: reconnecting, restoring and moved guests", () => {
       await act(async () => void (await vi.advanceTimersByTimeAsync(0)));
       expect(calls.open).toHaveLength(2);
       expect(calls.close).toEqual([{ generation: "a".repeat(32), sessionId: 1 }]);
-      expect(screen.getByTestId("pve-console-notice").textContent).toContain("A new console was opened once");
+      expect(screen.getByTestId("pve-console-notice").textContent).toContain("Новая консоль открыта один раз");
     });
 
     it("a second failure before any screen stops with the vnc_start_timeout text, not 'websocket error'", async () => {
@@ -592,7 +592,7 @@ describe("PveConsoles: reconnecting, restoring and moved guests", () => {
       const saved = tabs.put.mock.calls[0]![0] as Record<string, unknown>;
       expect(saved).toMatchObject({ profileId: "p1", console: "lxc", node: null, vmid: 101, title: "web" });
       expect(Object.keys(saved).sort()).toEqual(["console", "id", "node", "profileId", "title", "vmid"]);
-      fireEvent.click(screen.getByRole("button", { name: "Close tab" }));
+      fireEvent.click(screen.getByRole("button", { name: "Закрыть вкладку" }));
       expect(tabs.remove).toHaveBeenCalledWith(saved.id);
     });
 
@@ -613,7 +613,7 @@ describe("PveConsoles: reconnecting, restoring and moved guests", () => {
       broken.put.mockRejectedValue(new Error("a node shell names its node"));
       render(<PveConsoles api={fakeApi({ tabs: broken }).api} launch={launch(3, { console: "lxc", vmid: 102 })} />);
       await act(async () => void (await vi.advanceTimersByTimeAsync(0)));
-      expect(screen.getByTestId("pve-console-notice").textContent).toContain("could not be remembered");
+      expect(screen.getByTestId("pve-console-notice").textContent).toContain("не удалось запомнить");
     });
 
     it("tabs come back after a restart as 'not connected', open nothing, and Reconnect opens a new console", async () => {
@@ -623,13 +623,13 @@ describe("PveConsoles: reconnecting, restoring and moved guests", () => {
       await act(async () => void (await vi.advanceTimersByTimeAsync(0)));
       expect(screen.getAllByTestId("pve-console")).toHaveLength(2);
       expect(screen.getAllByTestId("pve-console-state").map((e) => e.textContent)).toEqual(["not connected", "not connected"]);
-      expect(screen.getAllByTestId("pve-console-restored")[0]!.textContent).toContain("not connected");
+      expect(screen.getAllByTestId("pve-console-restored")[0]!.textContent).toContain("не подключена");
       expect(screen.getAllByTestId("pve-console")[0]!.textContent).toContain("lab");
       expect(calls.open).toEqual([]);
       expect(calls.attach).toEqual([]);
       expect(screen.queryByTestId("terminal")).toBeNull();
-      expect((screen.getAllByRole("button", { name: "Disconnect" })[0] as HTMLButtonElement).disabled).toBe(true);
-      fireEvent.click(screen.getAllByRole("button", { name: "Reconnect" })[0]!);
+      expect((screen.getAllByRole("button", { name: "Отключить" })[0] as HTMLButtonElement).disabled).toBe(true);
+      fireEvent.click(screen.getAllByRole("button", { name: "Переподключить" })[0]!);
       await act(async () => void (await vi.advanceTimersByTimeAsync(0)));
       expect(calls.open).toEqual([{ console: "lxc", vmid: 101, profileId: "p1", cols: 80, rows: 24 }]);
       await act(async () => void (await vi.advanceTimersByTimeAsync(0)));
@@ -641,7 +641,7 @@ describe("PveConsoles: reconnecting, restoring and moved guests", () => {
       const { api } = fakeApi({ tabs });
       render(<PveConsoles api={api} />);
       await act(async () => void (await vi.advanceTimersByTimeAsync(0)));
-      fireEvent.click(screen.getByRole("button", { name: "Close tab" }));
+      fireEvent.click(screen.getByRole("button", { name: "Закрыть вкладку" }));
       expect(tabs.remove).toHaveBeenCalledWith(ID1);
       expect(screen.queryByTestId("pve-console")).toBeNull();
     });

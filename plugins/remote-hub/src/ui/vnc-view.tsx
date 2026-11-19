@@ -150,7 +150,7 @@ export function VncView(props: VncViewProps) {
         });
         rfb.addEventListener("securityfailure", () => {
           forgetPassword();
-          report({ code: "vnc_auth_failed", text: "The console refused the VNC password. Disconnect and open it again." });
+          report({ code: "vnc_auth_failed", text: "Консоль отклонила пароль VNC. Отключите её и откройте заново." });
         });
         rfb.addEventListener("disconnect", () => {
           forgetPassword();
@@ -162,7 +162,7 @@ export function VncView(props: VncViewProps) {
         if (disposed) return;
         viewerFailed = true; // the socket may not be open yet: it is told as soon as it is
         sendControl({ type: "viewer_failed" });
-        report({ code: "viewer_unavailable", text: "The graphical viewer could not be started." });
+        report({ code: "viewer_unavailable", text: "Не удалось запустить графический экран." });
       });
 
     let stopBeat: (() => void) | null = null;
@@ -191,9 +191,9 @@ export function VncView(props: VncViewProps) {
         propsRef.current.onConsole?.({ state: msg.state, reason: (msg.reason as PveConsoleInfo["reason"] | undefined) ?? null });
       } else if (msg.type === "closed") {
         forgetPassword();
-        report({ code: typeof msg.reason === "string" ? msg.reason : (msg.code ?? "closed"), text: msg.text ?? "The console ended." });
+        report({ code: typeof msg.reason === "string" ? msg.reason : (msg.code ?? "closed"), text: msg.text ?? "Консоль завершилась." });
       } else if (msg.type === "error") {
-        report({ code: msg.code ?? "error", text: msg.text ?? "The console could not be shown." });
+        report({ code: msg.code ?? "error", text: msg.text ?? "Не удалось показать консоль." });
       } else if (msg.type === "control" && (msg.owner === "human" || msg.owner === "agent")) {
         propsRef.current.onControl?.({ type: "control", owner: msg.owner, expiresAt: typeof msg.expiresAt === "number" ? msg.expiresAt : null });
       } else if (msg.type === "input_blocked") {
@@ -208,11 +208,11 @@ export function VncView(props: VncViewProps) {
       if (disposed) return;
       say("ended");
       // A socket that closes with no message of its own is a terminal outcome too: the console is gone.
-      report({ code: "websocket_error", text: "The console connection broke (websocket error)." });
+      report({ code: "websocket_error", text: "Соединение с консолью оборвалось (ошибка websocket)." });
     };
     socket.onerror = () => {
       forgetPassword();
-      if (!disposed) report({ code: "websocket_error", text: "The console connection broke (websocket error)." });
+      if (!disposed) report({ code: "websocket_error", text: "Соединение с консолью оборвалось (ошибка websocket)." });
     };
 
     return () => {

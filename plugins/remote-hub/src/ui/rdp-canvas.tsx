@@ -404,7 +404,7 @@ export function RdpCanvas(props: RdpCanvasProps) {
       />
       {pointer !== null ? (
         <div className={pointer.click !== null ? "rh-agent-pointer rh-agent-pointer-click" : "rh-agent-pointer"} data-testid="agent-pointer" style={{ left: pointer.left, top: pointer.top }}>
-          <span className="rh-agent-pointer-label">agent</span>
+          <span className="rh-agent-pointer-label">агент</span>
         </div>
       ) : null}
     </div>

@@ -91,7 +91,7 @@ describe("RdpCanvas shows what an agent does and says it is being looked at", ()
     expect(ring.style.left).toBe("200px");
     expect(ring.style.top).toBe("100px");
     expect(ring.className).toContain("rh-agent-pointer-click");
-    expect(ring.textContent).toBe("agent");
+    expect(ring.textContent).toBe("агент");
     act(() => void vi.advanceTimersByTime(4100));
     expect(screen.queryByTestId("agent-pointer")).toBeNull();
   });

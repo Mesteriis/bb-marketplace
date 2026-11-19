@@ -229,18 +229,18 @@ describe("AgentPanel: sessions agents opened or drive (stage 4b-1)", () => {
     const a = api({ sessionRows: [{ ...base, state: "connecting", questions: [{ kind: "host_key", promptId: 7, text: "Are you sure you want to continue connecting (yes/no)?" }] }] });
     mount(a);
     expect((await screen.findByTestId("ssh-prompt-text")).textContent).toContain("Are you sure you want to continue connecting");
-    fireEvent.change(screen.getByLabelText("Type yes to continue"), { target: { value: "yes" } });
-    fireEvent.keyDown(screen.getByLabelText("Type yes to continue"), { key: "Enter" });
+    fireEvent.change(screen.getByLabelText("Введите yes, чтобы продолжить"), { target: { value: "yes" } });
+    fireEvent.keyDown(screen.getByLabelText("Введите yes, чтобы продолжить"), { key: "Enter" });
     await waitFor(() => expect(a.answer).toHaveBeenCalledWith({ generation: GEN, sessionId: 4 }, 7, "yes"));
   });
 
   it("a login question (one-time code) is typed here, masked, and sent once", async () => {
     const a = api({ sessionRows: [{ ...base, questions: [{ kind: "login_prompt", promptId: 9, text: "One-time code:" }] }] });
     mount(a);
-    const field = (await screen.findByLabelText("Answer")) as HTMLInputElement;
+    const field = (await screen.findByLabelText("Ответ")) as HTMLInputElement;
     expect(field.type).toBe("password");
     fireEvent.change(field, { target: { value: "123456" } });
-    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    fireEvent.click(screen.getByRole("button", { name: "Отправить" }));
     await waitFor(() => expect(a.answer).toHaveBeenCalledWith({ generation: GEN, sessionId: 4 }, 9, "123456"));
   });
 

@@ -420,7 +420,7 @@ describe("the graphical console view", () => {
     await act(async () => {
       s.close(1006);
     });
-    expect(m.ended).toEqual([{ code: "websocket_error", text: "The console connection broke (websocket error)." }]);
+    expect(m.ended).toEqual([{ code: "websocket_error", text: "Соединение с консолью оборвалось (ошибка websocket)." }]);
     expect(m.states.at(-1)).toBe("ended");
   });
 
@@ -446,6 +446,6 @@ describe("the graphical console view", () => {
     const ended: Array<{ code: string }> = [];
     render(<VncView wsUrl="ws://x/attach" token="t" loadRfb={async () => { throw new Error("no"); }} onEnded={(e) => ended.push(e)} />);
     await flush();
-    expect(ended).toEqual([{ code: "viewer_unavailable", text: "The graphical viewer could not be started." }]);
+    expect(ended).toEqual([{ code: "viewer_unavailable", text: "Не удалось запустить графический экран." }]);
   });
 });

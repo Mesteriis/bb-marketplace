@@ -127,7 +127,7 @@ describe("a lost terminal console, with the real terminal component", () => {
     await act(async () => {
       last().text({ type: "console", state: "error", reason: { code: "no_permission", text: "x", fingerprint: null } });
     });
-    fireEvent.click(screen.getByRole("button", { name: "Reconnect" }));
+    fireEvent.click(screen.getByRole("button", { name: "Переподключить" }));
     await settle();
     await settle();
     expect(FakeSocket.all.length).toBe(2);
@@ -142,8 +142,8 @@ describe("a lost terminal console, with the real terminal component", () => {
       last().text({ type: "console", state: "active", reason: null });
       last().bytes("first-screen\r\n");
     });
-    fireEvent.click(screen.getByRole("button", { name: "Disconnect" }));
-    fireEvent.click(screen.getByRole("button", { name: "Reconnect" }));
+    fireEvent.click(screen.getByRole("button", { name: "Отключить" }));
+    fireEvent.click(screen.getByRole("button", { name: "Переподключить" }));
     await settle();
     await settle();
     const second = screens[screens.length - 1]!.text;
@@ -155,8 +155,8 @@ describe("a lost terminal console, with the real terminal component", () => {
       last().text({ type: "console", state: "active", reason: null });
       last().bytes("second-screen\r\n");
     });
-    fireEvent.click(screen.getByRole("button", { name: "Disconnect" }));
-    fireEvent.click(screen.getByRole("button", { name: "Reconnect" }));
+    fireEvent.click(screen.getByRole("button", { name: "Отключить" }));
+    fireEvent.click(screen.getByRole("button", { name: "Переподключить" }));
     await settle();
     await settle();
     const third = screens[screens.length - 1]!.text;

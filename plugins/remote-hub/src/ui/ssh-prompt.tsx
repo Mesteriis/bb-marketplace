@@ -51,17 +51,17 @@ export function SshPromptDialog(props: SshPromptDialogProps) {
         }
       }}
     >
-      <h3 id="rh-ssh-prompt-title">{confirm ? "SSH asks for a decision" : secret ? "SSH asks for an answer" : "SSH message"}</h3>
+      <h3 id="rh-ssh-prompt-title">{confirm ? "SSH ждёт решения" : secret ? "SSH ждёт ответа" : "Сообщение SSH"}</h3>
       <p id="rh-ssh-prompt-text" className="rh-ssh-prompt-text" data-testid="ssh-prompt-text">
         {prompt.text}
       </p>
       {confirm && (
         <label className="rh-ssh-prompt-type">
-          Or type yes and press Enter
+          Или введите yes и нажмите Enter
           <input
             type="text"
             autoComplete="off"
-            aria-label="Type yes to continue"
+            aria-label="Введите yes, чтобы продолжить"
             value={typed}
             onChange={(e) => setTyped(e.target.value)}
             onKeyDown={(e) => {
@@ -78,7 +78,7 @@ export function SshPromptDialog(props: SshPromptDialogProps) {
         <input
           type="password"
           autoComplete="off"
-          aria-label="Answer"
+          aria-label="Ответ"
           value={typed}
           onChange={(e) => setTyped(e.target.value)}
           onKeyDown={(e) => {
@@ -93,14 +93,14 @@ export function SshPromptDialog(props: SshPromptDialogProps) {
       <div className="rh-rdp-cert-actions">
         {secret ? (
           <button type="button" onClick={() => answer(typed)}>
-            Send
+            Отправить
           </button>
         ) : confirm ? (
           <>
             {/* A host-key "yes" needs a deliberate act: a pointer click, or typing yes. Enter or Space on a
                 focused button (a click event with no pointer, detail 0) answers nothing. */}
             <button type="button" onClick={(e) => (e.detail > 0 ? answer("yes") : undefined)}>
-              Yes
+              Да
             </button>
             <button type="button" onClick={() => answer("no")}>
               No
@@ -112,7 +112,7 @@ export function SshPromptDialog(props: SshPromptDialogProps) {
           </button>
         )}
         <button type="button" onClick={() => answer(null)}>
-          Cancel
+          Отмена
         </button>
       </div>
     </div>
