@@ -9,7 +9,8 @@ import { cn } from "@/lib/utils";
 import { tx } from "../i18n/index.ts";
 import { SettingsBody, availableSections } from "./settings-body.tsx";
 import type { MailSettingsProps } from "./shared.ts";
-import { SETTINGS_GROUPS, settingsSectionTitle, type SettingsSectionId } from "./sections.ts";
+import { SettingsSection } from "./primitives.tsx";
+import { SETTINGS_GROUPS, settingsSectionText, type SettingsSectionId } from "./sections.ts";
 
 export type SettingsPageProps = MailSettingsProps & {
   /** The section the address names. */
@@ -27,6 +28,7 @@ export function SettingsPage(props: SettingsPageProps) {
   })).filter((group) => group.sections.length > 0);
   // A section the page cannot show (its ports are missing) opens the first one that it can.
   const section = available.has(props.section) ? props.section : groups[0]!.sections[0]!.id;
+  const text = settingsSectionText(section);
 
   return (
     <section aria-label={tx("Mail settings")} className="@container flex min-h-0 flex-col gap-4">
@@ -91,8 +93,10 @@ export function SettingsPage(props: SettingsPageProps) {
           ))}
         </nav>
 
-        <div role="region" aria-label={tx(settingsSectionTitle(section))} className="min-w-0 max-w-2xl flex-1">
-          <SettingsBody {...props} section={section} />
+        <div role="region" aria-label={tx(text.title)} className="min-w-0 max-w-2xl flex-1">
+          <SettingsSection title={tx(text.title)} description={tx(text.description)}>
+            <SettingsBody {...props} section={section} />
+          </SettingsSection>
         </div>
       </div>
     </section>

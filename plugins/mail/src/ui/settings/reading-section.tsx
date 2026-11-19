@@ -1,9 +1,11 @@
+import { ReadingSettings, SearchSettings } from "./section-settings.tsx";
+import type { PageSettingsPort } from "./setting-controls.tsx";
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { tx } from "../i18n/index.ts";
 import { type AttachmentTextStatus, type SettingsSearchPorts, attachmentTextLine, messageOf } from "./shared.ts";
 
-export function SearchSection({ search, hint }: { search: SettingsSearchPorts; hint: string }) {
+export function SearchSection({ search, hint, settings }: { search: SettingsSearchPorts; hint: string; settings?: PageSettingsPort }) {
   const [status, setStatus] = useState<AttachmentTextStatus | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -34,12 +36,18 @@ export function SearchSection({ search, hint }: { search: SettingsSearchPorts; h
     <div className="flex flex-col gap-4 text-sm">
       <section className="flex flex-col gap-1">
         <h3 className="font-medium text-foreground">{tx("Search and older mail")}</h3>
-        <p className="text-muted-foreground">{tx("Load more days loads {historyStepDays} days at a time. Unopened server search results are kept {serverSearchKeepDays} days.", { historyStepDays: v.historyStepDays, serverSearchKeepDays: v.serverSearchKeepDays })}</p>
-        <p className="text-muted-foreground">
-          {v.indexAttachmentText
-            ? tx("Search inside attachments is on: text and PDF attachments are read on this computer, and only your own search uses them.")
-            : tx("Search inside attachments is off.")}
-        </p>
+        {settings !== undefined ? (
+          <SearchSettings port={settings} />
+        ) : (
+          <>
+            <p className="text-muted-foreground">{tx("Load more days loads {historyStepDays} days at a time. Unopened server search results are kept {serverSearchKeepDays} days.", { historyStepDays: v.historyStepDays, serverSearchKeepDays: v.serverSearchKeepDays })}</p>
+            <p className="text-muted-foreground">
+              {v.indexAttachmentText
+                ? tx("Search inside attachments is on: text and PDF attachments are read on this computer, and only your own search uses them.")
+                : tx("Search inside attachments is off.")}
+            </p>
+          </>
+        )}
         {v.indexAttachmentText && status !== null ? (
           <>
             <p className="text-muted-foreground">{attachmentTextLine(status)}</p>
@@ -64,14 +72,20 @@ export function SearchSection({ search, hint }: { search: SettingsSearchPorts; h
           ) : null}
         </div>
       </section>
-      <section className="flex flex-col gap-1">
-        <h3 className="font-medium text-foreground">{tx("Reading")}</h3>
-        <p className="text-muted-foreground">{tx("Show mail as: {p1}", { p1: v.mailView === "plain" ? "Plain text" : "Original" })}</p>
-        <p className="text-muted-foreground">{tx("Mail in dark mode: {p1}", { p1: v.darkMail === "adapt" ? "Adapt colors" : "Original colors" })}</p>
-        <p className="text-muted-foreground">{tx("Hide quoted text in replies: {p1}", { p1: v.hideQuotes ? "On" : "Off" })}</p>
-        <p className="text-muted-foreground">{tx("Remove tracking from links I open: {p1}", { p1: v.cleanLinks !== false ? "On" : "Off" })}</p>
-      </section>
-      <p className="text-xs text-muted-foreground">{hint}</p>
+      {settings !== undefined ? (
+        <ReadingSettings port={settings} />
+      ) : (
+        <>
+          <section className="flex flex-col gap-1">
+            <h3 className="font-medium text-foreground">{tx("Reading")}</h3>
+            <p className="text-muted-foreground">{tx("Show mail as: {p1}", { p1: v.mailView === "plain" ? tx("Plain text") : tx("Original") })}</p>
+            <p className="text-muted-foreground">{tx("Mail in dark mode: {p1}", { p1: v.darkMail === "adapt" ? tx("Adapt colors") : tx("Original colors") })}</p>
+            <p className="text-muted-foreground">{tx("Hide quoted text in replies: {p1}", { p1: v.hideQuotes ? tx("On") : tx("Off") })}</p>
+            <p className="text-muted-foreground">{tx("Remove tracking from links I open: {p1}", { p1: v.cleanLinks !== false ? tx("On") : tx("Off") })}</p>
+          </section>
+          <p className="text-xs text-muted-foreground">{tx(hint)}</p>
+        </>
+      )}
     </div>
   );
 }

@@ -2,12 +2,14 @@ import { useEffect, useState } from "react";
 import type { CategoryRuleView } from "../../core/model.ts";
 import { categoryLabel } from "../category-chips.tsx";
 import { Button } from "@/components/ui/button";
-import { tx } from "../i18n/index.ts";
+import { tx, txn } from "../i18n/index.ts";
+import { CategoriesSetting, ReminderSetting, TodaySettings, TranslateLanguageSetting } from "./section-settings.tsx";
+import type { PageSettingsPort } from "./setting-controls.tsx";
 import { type SettingsAiPorts, PLUGIN_SETTINGS_HINT, messageOf } from "./shared.ts";
 import { SectionHeading } from "./primitives.tsx";
 
 /** Categories, Today, reply reminders and AI settings (slice 3f). */
-export function AiFeaturesSection({ ai }: { ai: SettingsAiPorts }) {
+export function AiFeaturesSection({ ai, settings }: { ai: SettingsAiPorts; settings?: PageSettingsPort }) {
   const [rules, setRules] = useState<CategoryRuleView[] | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const { loadRules } = ai;
@@ -38,11 +40,17 @@ export function AiFeaturesSection({ ai }: { ai: SettingsAiPorts }) {
     <div className="flex flex-col gap-4">
       <section aria-label={tx("Categories")} className="flex flex-col gap-1">
         <SectionHeading>{tx("Categories")}</SectionHeading>
-        <p className="text-sm text-foreground">{ai.categoriesOn ? tx("On: mail is sorted into local labels.") : "Off."}</p>
-        <p className="text-xs text-muted-foreground">
-          {tx("Bills, Notifications, Personal and Newsletters live only in Makosh Mail; nothing is written to the mail server.")}{" "}
-          {PLUGIN_SETTINGS_HINT}
-        </p>
+        {settings !== undefined ? (
+          <CategoriesSetting port={settings} />
+        ) : (
+          <>
+            <p className="text-sm text-foreground">{ai.categoriesOn ? tx("On: mail is sorted into local labels.") : tx("Off.")}</p>
+            <p className="text-xs text-muted-foreground">
+              {tx("Bills, Notifications, Personal and Newsletters live only in Makosh Mail; nothing is written to the mail server.")}{" "}
+              {tx(PLUGIN_SETTINGS_HINT)}
+            </p>
+          </>
+        )}
         {ai.categoriesOn ? (
           rules === null ? null : rules.length === 0 ? (
             <p className="text-xs text-muted-foreground">{tx("No sender rules. Always for this sender in a conversation adds one.")}</p>
@@ -68,20 +76,33 @@ export function AiFeaturesSection({ ai }: { ai: SettingsAiPorts }) {
       </section>
       <section aria-label={tx("Today")} className="flex flex-col gap-1">
         <SectionHeading>{tx("Today")}</SectionHeading>
-        <p className="text-sm text-foreground">
-          {ai.morningDigest ? `On: the Today digest is ready at ${ai.digestTime}.` : tx("Off: the Today view still works when you open it.")}
-        </p>
-        <p className="text-xs text-muted-foreground">{PLUGIN_SETTINGS_HINT}</p>
+        {settings !== undefined ? (
+          <TodaySettings port={settings} />
+        ) : (
+          <>
+            <p className="text-sm text-foreground">
+              {ai.morningDigest ? tx("On: the Today digest is ready at {time}.", { time: ai.digestTime }) : tx("Off: the Today view still works when you open it.")}
+            </p>
+            <p className="text-xs text-muted-foreground">{tx(PLUGIN_SETTINGS_HINT)}</p>
+          </>
+        )}
       </section>
       <section aria-label={tx("Reply reminders")} className="flex flex-col gap-1">
         <SectionHeading>{tx("Reply reminders")}</SectionHeading>
-        <p className="text-sm text-foreground">{tx("Remind me after {p1} by default.", { p1: ai.reminderDays === 1 ? "1 day" : `${ai.reminderDays} days` })}</p>
-        <p className="text-xs text-muted-foreground">
-          {tx("A reminder turns due when no message answering yours (by In-Reply-To or References) arrives in time.")} {PLUGIN_SETTINGS_HINT}
-        </p>
+        {settings !== undefined ? (
+          <ReminderSetting port={settings} />
+        ) : (
+          <>
+            <p className="text-sm text-foreground">{txn(ai.reminderDays, "Remind me after {count} day by default.", "Remind me after {count} days by default.")}</p>
+            <p className="text-xs text-muted-foreground">
+              {tx("A reminder turns due when no message answering yours (by In-Reply-To or References) arrives in time.")} {tx(PLUGIN_SETTINGS_HINT)}
+            </p>
+          </>
+        )}
       </section>
       <section aria-label={tx("AI settings")} className="flex flex-col items-start gap-1">
         <SectionHeading>{tx("AI settings")}</SectionHeading>
+        {settings !== undefined ? <TranslateLanguageSetting port={settings} /> : null}
         <p className="text-xs text-muted-foreground">{tx("The Makosh AI provider and model every AI feature and translation uses.")}</p>
         <Button variant="outline" size="sm" onClick={ai.onOpenAiSettings}>
           {tx("AI settings\u2026")}

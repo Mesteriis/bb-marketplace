@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { PAGE_SETTING_DEFAULTS } from "./src/core/page-settings.ts";
 import { act, cleanup, createEvent, fireEvent, waitFor, within } from "@testing-library/react";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { useEffect, useMemo, useState } from "react";
@@ -4621,12 +4622,8 @@ describe("Slice 3f: Today, Tasks, Mail settings and day notices", () => {
     expect(slot.inspection.navigateCalls.at(-1)).toMatchObject({ path: "mail", options: { subPath: "tasks" } });
   });
 
-  it.each([
-    ["settings/ai_access", "Spam and Trash are never shared, whatever you choose here."],
-    ["settings/activity", "Nothing yet."],
-    ["settings/ai", "On: the Today digest is ready at 07:30."],
-  ])("the settings page at %s shows its section", async (subPath, text) => {
-    const slot = renderSlot({ component: MailWithSidebar }, { subPath }, {
+  const aiSettingsSlot = (subPath: string) =>
+    renderSlot({ component: MailWithSidebar }, { subPath }, {
       rpc: mailRpc({
         reminders_due: () => ({ reminders: [] }),
         identities_list: () => ({ identities: [] }),
@@ -4634,11 +4631,34 @@ describe("Slice 3f: Today, Tasks, Mail settings and day notices", () => {
         block_list: () => ({ rules: [] }),
         ai_scope_get: () => ({ accounts: [], senders: [] }),
         agent_log_list: () => ({ entries: [], next: null }),
+        settings_get: () => ({ ...PAGE_SETTING_DEFAULTS, morningDigest: true, digestTime: "07:30", agentTools: true }),
+        settings_set: (patch: Record<string, unknown>) => ({ ...PAGE_SETTING_DEFAULTS, morningDigest: true, digestTime: "07:30", ...patch }),
       }) as never,
       settings: { mailCategories: false, morningDigest: true, digestTime: "07:30" },
       composer: { scope: { kind: "new-thread", projectId: null } },
     });
-    expect(await slot.findByText(text)).toBeTruthy();
+
+  it("the settings page at settings/ai_access shows the agent switches read-only above what is shared", async () => {
+    const slot = aiSettingsSlot("settings/ai_access");
+    expect(await slot.findByText("Spam and Trash are never shared, whatever you choose here.")).toBeTruthy();
+    expect(await slot.findByText("Search and read mail in every thread")).toBeTruthy();
+    expect(slot.queryByRole("switch", { name: "Search and read mail in every thread" })).toBeNull();
+  });
+
+  it("the settings page at settings/activity shows the log", async () => {
+    expect(await aiSettingsSlot("settings/activity").findByText("Nothing yet.")).toBeTruthy();
+  });
+
+  it("the settings page at settings/ai changes a setting in place through settings_set", async () => {
+    const slot = aiSettingsSlot("settings/ai");
+    const digest = await slot.findByRole("switch", { name: "Daily Today digest" });
+    await waitFor(() => expect(digest.getAttribute("aria-checked")).toBe("true"));
+    expect((slot.getByLabelText("Digest time") as HTMLInputElement).value).toBe("07:30");
+    expect(slot.queryByText(/Change it in BB Settings/)).toBeNull();
+    fireEvent.click(digest);
+    await waitFor(() => expect(callsTo(slot as never, "settings_set").map((call) => call.input)).toEqual([{ morningDigest: false }]));
+    expect(await slot.findByText("Saved")).toBeTruthy();
+    expect(digest.getAttribute("aria-checked")).toBe("false");
   });
 });
 
@@ -4814,16 +4834,28 @@ describe("Slice 3g: views, BB surfaces and settings", () => {
     expect(callsTo(slot, "bb_thread_prepare")[0]?.input).toEqual({ messageId: "m-new", include: "message", projectId: "p-api", instruction: "Find the test" });
   });
 
-  it.each([
-    ["settings/bb", "Attachments saved to a project go to inbox-files/"],
-    ["settings/rules", "Off: no rule runs."],
-  ])("the settings page at %s shows its section", async (subPath, text) => {
-    const slot = renderWith(
-      mailRpc({ bindings_list: () => ({ bindings: [] }), identities_list: () => ({ identities: [] }), templates_list: () => ({ templates: [] }) }),
+  const bbSettingsSlot = (subPath: string) =>
+    renderWith(
+      mailRpc({
+        bindings_list: () => ({ bindings: [] }),
+        identities_list: () => ({ identities: [] }),
+        templates_list: () => ({ templates: [] }),
+        settings_get: () => ({ ...PAGE_SETTING_DEFAULTS, attachmentFolder: "inbox-files" }),
+      }),
       { attachmentFolder: "inbox-files" },
       subPath,
     );
-    expect(await slot.findByText(text)).toBeTruthy();
+
+  it("the settings page at settings/bb shows the folders as fields", async () => {
+    const slot = bbSettingsSlot("settings/bb");
+    const field = (await slot.findByLabelText("Folder for attachments saved into a project")) as HTMLInputElement;
+    await waitFor(() => expect(field.value).toBe("inbox-files"));
+  });
+
+  it("the settings page at settings/rules has the rules switch", async () => {
+    const slot = bbSettingsSlot("settings/rules");
+    const rules = await slot.findByRole("switch", { name: "Run my rules on new Inbox mail" });
+    await waitFor(() => expect(rules.getAttribute("aria-checked")).toBe("false"));
   });
 });
 

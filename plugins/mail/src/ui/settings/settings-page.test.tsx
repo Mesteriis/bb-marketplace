@@ -55,7 +55,7 @@ describe("settings sections", () => {
   });
 
   it("every group and section title has a Russian entry (the menu passes them to tx as values)", () => {
-    const titles = SETTINGS_GROUPS.flatMap((group) => [group.title, ...group.sections.map((section) => section.title)]);
+    const titles = SETTINGS_GROUPS.flatMap((group) => [group.title, ...group.sections.flatMap((section) => [section.title, section.description])]);
     // "BB" is a name: it reads the same in both languages and has no entry.
     expect(titles.filter((title) => !(title in RU))).toEqual(["BB"]);
   });
@@ -98,7 +98,9 @@ describe("SettingsPage", () => {
     ]);
     expect(within(menu).getByRole("link", { name: "Templates" }).getAttribute("aria-current")).toBe("page");
     expect(within(menu).getByRole("link", { name: "Inbox" }).getAttribute("aria-current")).toBeNull();
-    expect(within(page).getByRole("region", { name: "Templates" })).toBeTruthy();
+    const body = within(page).getByRole("region", { name: "Templates" });
+    expect(within(body).getByRole("heading", { level: 2, name: "Templates" })).toBeTruthy();
+    expect(within(body).getByText("Texts you insert into a message with one click.")).toBeTruthy();
   });
 
   it("lists only the sections it has ports for, and drops a group left empty", () => {

@@ -2,6 +2,8 @@
 // BB plugin setting, off by default; with it off, only the switch shows.
 // Rules are listed with their mode and project; Pause all turns every rule
 // off and can be undone.
+import { RulesSwitch } from "./settings/section-settings.tsx";
+import type { PageSettingsPort } from "./settings/setting-controls.tsx";
 import { useCallback, useEffect, useState } from "react";
 import type { RuleInput, RuleView } from "../core/contract.ts";
 import { Button } from "@/components/ui/button";
@@ -17,18 +19,26 @@ export interface RulesSettingsProps {
   notify: (text: string, action?: { label: string; run: () => void }) => void;
   /** Where the switch lives. */
   hint: string;
+  /** The page's settings: with them the switch is here. */
+  settings?: PageSettingsPort;
 }
 
-export function RulesSettings({ on, call, notify, hint }: RulesSettingsProps) {
+export function RulesSettings({ on, call, notify, hint, settings }: RulesSettingsProps) {
   return (
     <div className="flex flex-col gap-3">
       <section aria-label={tx("Mail rules switch")} className="flex flex-col gap-1">
-        <p className="text-sm text-foreground">
-          {on ? tx("On: your rules run on new Inbox mail.") : tx("Off: no rule runs.")}
-        </p>
-        <p className="text-xs text-muted-foreground">
-          {tx("Rules prepare agent threads from new Inbox mail for you to review, or start them if you chose that for a rule. Threads a rule starts have no mail tools.")} {hint}
-        </p>
+        {settings !== undefined ? (
+          <RulesSwitch port={settings} />
+        ) : (
+          <>
+            <p className="text-sm text-foreground">
+              {on ? tx("On: your rules run on new Inbox mail.") : tx("Off: no rule runs.")}
+            </p>
+            <p className="text-xs text-muted-foreground">
+              {tx("Rules prepare agent threads from new Inbox mail for you to review, or start them if you chose that for a rule. Threads a rule starts have no mail tools.")} {tx(hint)}
+            </p>
+          </>
+        )}
       </section>
       {on ? <RuleList call={call} notify={notify} /> : null}
     </div>

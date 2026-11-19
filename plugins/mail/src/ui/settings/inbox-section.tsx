@@ -1,3 +1,5 @@
+import { NotificationSettings } from "./section-settings.tsx";
+import type { PageSettingsPort } from "./setting-controls.tsx";
 import { useState } from "react";
 import type { Account, BlockRuleView } from "../../core/model.ts";
 import { Button } from "@/components/ui/button";
@@ -12,7 +14,9 @@ export function InboxSection({
   rules,
   onUnblock,
   onChangeSnoozeFolder,
+  settings,
 }: {
+  settings?: PageSettingsPort;
   accounts: readonly Account[];
   rules: readonly BlockRuleView[] | null;
   onUnblock: (id: string) => Promise<void>;
@@ -22,6 +26,7 @@ export function InboxSection({
   const [problem, setProblem] = useState<string | null>(null);
   return (
     <div className="flex flex-col gap-2">
+      {settings !== undefined ? <NotificationSettings port={settings} /> : null}
       <SectionHeading>{tx("Blocked senders")}</SectionHeading>
       <p className="text-xs text-muted-foreground">
         {tx("New mail from them moves to Spam in every account while BB runs. Mail already in Spam stays there.")}

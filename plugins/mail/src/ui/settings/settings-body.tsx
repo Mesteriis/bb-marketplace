@@ -10,6 +10,7 @@ import type { SettingsSectionId } from "./sections.ts";
 import { PgpSettings } from "../pgp-settings.tsx";
 import { PLUGIN_SETTINGS_HINT, type MailSettingsProps } from "./shared.ts";
 import { AccountsSection } from "./accounts-section.tsx";
+import { AgentSwitches } from "./section-settings.tsx";
 import { AddressesSection } from "./addresses-section.tsx";
 import { LocalDataSection } from "./local-data-section.tsx";
 import { AiFeaturesSection } from "./ai-features-section.tsx";
@@ -46,21 +47,28 @@ export function SettingsBody(props: MailSettingsProps & { section: SettingsSecti
       <AddressesSection key={account.id} {...props} account={account} onSelectAccount={setAccountId} />
     );
   }
-  if (section === "ai_access" && props.ai !== undefined) return <AiAccessSettings accounts={accounts} {...props.ai.scope} />;
+  if (section === "ai_access" && props.ai !== undefined) {
+    return (
+      <div className="flex flex-col gap-4">
+        {props.settings !== undefined ? <AgentSwitches port={props.settings} /> : null}
+        <AiAccessSettings accounts={accounts} {...props.ai.scope} />
+      </div>
+    );
+  }
   if (section === "activity" && props.ai !== undefined) return <AgentActivity {...props.ai.activity} />;
-  if (section === "ai" && props.ai !== undefined) return <AiFeaturesSection ai={props.ai} />;
+  if (section === "ai" && props.ai !== undefined) return <AiFeaturesSection ai={props.ai} settings={props.settings} />;
   if (section === "bb" && props.bb !== undefined) {
-    return <BbIntegrationSettings values={props.bb.values} call={props.bb.call} hint={PLUGIN_SETTINGS_HINT} />;
+    return <BbIntegrationSettings values={props.bb.values} call={props.bb.call} hint={PLUGIN_SETTINGS_HINT} settings={props.settings} />;
   }
   if (section === "rules" && props.bb !== undefined) {
-    return <RulesSettings on={props.bb.mailRules} call={props.bb.call} notify={props.bb.notify} hint={PLUGIN_SETTINGS_HINT} />;
+    return <RulesSettings on={props.bb.mailRules} call={props.bb.call} notify={props.bb.notify} hint={PLUGIN_SETTINGS_HINT} settings={props.settings} />;
   }
   if (section === "subscriptions" && props.subscriptions !== undefined) {
     return <SubscriptionsSettings ports={props.subscriptions} accounts={props.accounts} />;
   }
   if (section === "filters" && props.filters !== undefined) return <FiltersSettings ports={props.filters} accounts={props.accounts} />;
   if (section === "pgp" && props.pgp !== undefined) return <PgpSettings ports={props.pgp} identities={props.identities} />;
-  if (section === "reading" && props.search !== undefined) return <SearchSection search={props.search} hint={PLUGIN_SETTINGS_HINT} />;
+  if (section === "reading" && props.search !== undefined) return <SearchSection search={props.search} hint={PLUGIN_SETTINGS_HINT} settings={props.settings} />;
   if (section === "inbox" && props.onUnblock !== undefined) {
     return (
       <InboxSection
@@ -68,6 +76,7 @@ export function SettingsBody(props: MailSettingsProps & { section: SettingsSecti
         rules={props.blockRules ?? null}
         onUnblock={props.onUnblock}
         onChangeSnoozeFolder={props.onChangeSnoozeFolder}
+        settings={props.settings}
       />
     );
   }
