@@ -86,9 +86,8 @@ much of each kind waits.
   left, Move right, Remove.
 - When the tabs do not fit, the row scrolls sideways; under 480 px it is
   the same row, never a second line.
-- Keys: Tab and Shift+Tab move between tabs when the list has focus (as in
-  Superhuman), unless that collides with an existing key of the page; the
-  builder checks the key table and falls back to `]` and `[`.
+- Keys: `]` moves to the next tab and `[` to the previous one when the list
+  has focus (the owner's choice of 2026-11-19: Tab keeps moving focus).
 - Quick filters (unread, flagged, attachments) narrow the tab in view.
 - An empty tab says "Nothing in this tab." and keeps the tab row.
 
@@ -172,7 +171,6 @@ condition, order, remove, and the library.
 - One tab set for all accounts.
 - At most 12 tabs.
 - "Other" is offered in the library, not added by itself.
-- Tab and Shift+Tab as the keys, with `]` and `[` as the fallback.
 
 ## Left to the builder
 
