@@ -808,7 +808,7 @@
     {
       "id": "makosh-remote-hub",
       "displayName": "Remote Hub [Experimental]",
-      "description": "Experimental SSH/RDP manager with Proxmox VE guest discovery (strict TLS, Keychain secrets) through a Rust helper.",
+      "description": "Experimental SSH/RDP manager with Proxmox VE guest discovery and consoles (strict TLS, Keychain secrets) through a Rust helper.",
       "icon": {
         "url": "./plugins/remote-hub/assets/icon.svg"
       },
