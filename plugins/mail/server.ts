@@ -237,6 +237,7 @@ import {
   newRestoreTag,
   normalizeBlockValue,
   ownerParagraphs,
+  renderDoc,
   queryWords,
   summaryInput,
   summarySourceHash,
@@ -3264,7 +3265,12 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
     const now = Date.now();
     if (phrasesKept !== null && now - phrasesKept.at < PHRASES_FRESH_MS) return phrasesKept.phrases;
     const templates = store.listTemplates().map((template) => ownerParagraphs(template.doc).paragraphs.join("\n"));
-    phrasesKept = { at: now, phrases: buildPhrases(store.sentTexts(PHRASES_FROM_SENT), templates) };
+    // Every signature the owner sends with: a reply carries it above the quote, unmarked.
+    const signatures = store
+      .listAccounts()
+      .flatMap((account) => accountIdentities(store, account))
+      .flatMap((identity) => (identity.signature === null ? [] : [renderDoc({ type: "doc", content: identity.signature.content }).text]));
+    phrasesKept = { at: now, phrases: buildPhrases(store.sentTexts(PHRASES_FROM_SENT), templates, signatures) };
     return phrasesKept.phrases;
   };
   const inboxTabs = createInboxTabsRpc({ store, now: () => new Date(), newId: () => randomUUID() });
@@ -3739,7 +3745,11 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       // Typing speed. Never logged: the phrases are the owner's own words.
       phrases_list: () => ({ phrases: ownerPhrases() }),
       templates_list: owner("templates_list", () => ({ templates: listTemplateViews(store) })),
-      template_save: owner("template_save", (input) => saveTemplate(store, input, `tpl_${randomUUID()}`, nowIso())),
+      template_save: owner("template_save", (input) => {
+        // A template's sentences are phrases: the list is built again on the next ask.
+        phrasesKept = null;
+        return saveTemplate(store, input, `tpl_${randomUUID()}`, nowIso());
+      }),
       template_delete: owner("template_delete", ({ id }) => deleteTemplate(store, id)),
       // Typing speed: a template's files. The bytes arrive through compose_attachment_chunk, by upload id.
       template_file_begin: owner("template_file_begin", ({ templateId, fileName, mimeType, size }) => ({

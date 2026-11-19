@@ -2358,7 +2358,7 @@ export class InMemoryMailStore implements MailStore {
       .filter((r) => r.movePending === null && this.roleOf(r.accountId, r.folder) === "sent" && (r.message.bodyText ?? "") !== "")
       .sort((a, b) => (b.message.date ?? "").localeCompare(a.message.date ?? ""))
       .slice(0, limit)
-      .map((r) => r.message.bodyText ?? "");
+      .map((r) => (r.message.bodyText ?? "").slice(0, 8000));
   }
 
   tabUnreadCounts(scope: { accountId: string; folder: string } | { role: SpecialUse }, matches: readonly (TabMatch | null)[]): number[] {

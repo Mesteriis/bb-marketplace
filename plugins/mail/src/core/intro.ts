@@ -3,13 +3,16 @@
 // of the conversation. Pure.
 import { parseAddress } from "./compose-address.ts";
 
-const INTRO_WORDS = /(^|[^\p{L}])(e-?intro|intro|introduc\p{L}*|meet|connecting you|знаком\p{L}*|познаком\p{L}*|представля\p{L}*|представить)($|[^\p{L}])/iu;
+// "meet" alone is a meeting; it introduces someone only in "like you to meet", "please meet", "meet Ada".
+const INTRO_ANY_CASE =
+  /(^|[^\p{L}.\/])(e-?intro|intro|introduc\p{L}*|(like you to|want you to|please|pleased to) meet|connecting you|знакомьтесь|знакомлю|знакомство|познакомьтесь|познакомить|представляю вам|представляю тебе|хочу представить)($|[^\p{L}.\/])/iu;
+const MEET_A_NAME = /(^|[^\p{L}.\/])[Mm]eet \p{Lu}\p{Ll}+/u;
 /** How much of the text counts as its beginning. */
 const HEAD = 600;
 
 /** Whether a message reads like an introduction: the subject or the first lines say so. */
 export function looksLikeIntro(message: { subject: string; text: string }): boolean {
-  return INTRO_WORDS.test(message.subject) || INTRO_WORDS.test(message.text.slice(0, HEAD));
+  return [message.subject, message.text.slice(0, HEAD)].some((text) => INTRO_ANY_CASE.test(text) || MEET_A_NAME.test(text));
 }
 
 const keyOf = (recipient: string): string => {
@@ -30,7 +33,19 @@ export function moveSenderToBcc(
   const moved = draft.to.find((recipient) => keyOf(recipient) === wanted);
   if (moved === undefined) return null;
   const to = draft.to.filter((recipient) => keyOf(recipient) !== wanted);
-  if (to.length + draft.cc.length === 0) return null;
+  const cc = draft.cc.filter((recipient) => keyOf(recipient) !== wanted);
+  if (to.length + cc.length === 0) return null;
   const bcc = draft.bcc.some((recipient) => keyOf(recipient) === wanted) ? [...draft.bcc] : [...draft.bcc, moved];
-  return { to, cc: [...draft.cc], bcc };
+  return { to, cc, bcc };
+}
+
+/**
+ * The thank-you line. The people in the conversation read it, so it is in the
+ * conversation's language (Russian when the subject is), not the page's.
+ */
+export function introLine(firstName: string | null, subject: string): string {
+  if (/\p{Script=Cyrillic}/u.test(subject)) {
+    return firstName === null ? "Спасибо! (Переношу вас в скрытую копию.)" : `Спасибо, ${firstName}! (Переношу вас в скрытую копию.)`;
+  }
+  return firstName === null ? "Thank you! (Moving you to Bcc.)" : `Thank you, ${firstName}! (Moving you to Bcc.)`;
 }

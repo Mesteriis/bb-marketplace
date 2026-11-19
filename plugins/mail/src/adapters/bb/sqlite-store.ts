@@ -4095,7 +4095,8 @@ export function createSqliteStore(db: Database.Database): MailStore {
     sentTexts(limit) {
       return db
         .prepare<[number], { body_text: string }>(
-          `SELECT m.body_text FROM ${MESSAGES_WITH_FOLDER}
+          // The start of each message is enough for its own text, and bounds the work on long threads.
+          `SELECT substr(m.body_text, 1, 8000) AS body_text FROM ${MESSAGES_WITH_FOLDER}
            WHERE ${ROW_ROLE} = 'sent' AND m.body_text IS NOT NULL AND m.body_text <> '' AND m.move_pending IS NULL
            ORDER BY m.date DESC, m.seq DESC LIMIT ?`,
         )

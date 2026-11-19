@@ -1971,6 +1971,8 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
         // Quick quote: with text selected inside this message, a reply quotes only that.
         const quote = kind === "forward" || typeof document === "undefined" ? null : selectedQuote(document, message.id);
         const prepared = await rpc.call("compose_prepare", { kind, messageId: message.id, ...(quote !== null ? { quote } : {}) });
+        // Said aloud: the rest of the original is not in this reply.
+        if (quote !== null) toast(tx("Replying with only the selected text quoted"));
         const { draft } = await rpc.call("compose_open", { draftId: prepared.draftId });
         openComposer(draft, prepared.warning, prepared.dropped, latest.current.reading.threadId);
       } catch (error) {

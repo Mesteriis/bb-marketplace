@@ -39,7 +39,7 @@ import {
 import { ComposeEditor, ownerRange, replaceOwnerRange, type EditorDoc } from "./compose-editor.tsx";
 import { NO_TYPING, takeSnippet, type SnippetList, type TypingOptions } from "./editor-typing.ts";
 import { fillBlocks, fillVariables, firstNameOf, mergeRecipients } from "../core/snippets.ts";
-import { looksLikeIntro, moveSenderToBcc } from "../core/intro.ts";
+import { introLine, looksLikeIntro, moveSenderToBcc } from "../core/intro.ts";
 import { Checkbox } from "@/components/ui/checkbox";
 import type { AiJobPorts } from "./ai-job.ts";
 import { ImproveDialog, ImproveMenu, type DraftMode, type ImproveRequest } from "./improve-dialog.tsx";
@@ -251,6 +251,19 @@ const TITLES: Record<DraftView["kind"], string> = {
 
 function messageOf(error: unknown): string {
   return error instanceof Error && error.message ? error.message : tx("Something went wrong");
+}
+
+/** The start of the message a reply answers, as plain text: the draft's own text nodes, then the original's HTML without tags and styles. */
+function introText(draft: DraftView): string {
+  const words: string[] = [];
+  const walk = (node: { text?: unknown; content?: unknown }) => {
+    if (typeof node.text === "string") words.push(node.text);
+    if (Array.isArray(node.content)) for (const child of node.content) walk(child as { text?: unknown; content?: unknown });
+  };
+  walk(draft.doc as { content?: unknown });
+  const html = (draft.import?.html ?? "").replace(/<(style|script|head)[\s\S]*?<\/\1>/gi, " ").replace(/<[^>]*>/g, " ");
+  // The attribution line comes first in the draft; the original's words follow it.
+  return `${words.join(" ")} ${html}`.replace(/\s+/g, " ").replace(/^.{0,200}?wrote:\s*/i, "");
 }
 
 function fieldOf(addresses: readonly MailAddress[]): Field {
@@ -810,21 +823,24 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
   const introOffered =
     introMove !== null &&
     !introDismissed &&
-    looksLikeIntro({ subject: draft.subject, text: `${JSON.stringify(draft.doc).slice(0, 2_000)} ${(draft.import?.html ?? "").replace(/<[^>]*>/g, " ").slice(0, 2_000)}` });
+    // Not when the owner answers their own message: there is nobody to thank.
+    !accounts.some((owned) => owned.email.toLowerCase() === introSender?.address.toLowerCase()) &&
+    looksLikeIntro({ subject: draft.subject, text: introText(draft) });
   const moveIntroducer = () => {
     if (introMove === null || introSender === null) return;
     setTo({ ...to, chips: introMove.to });
     setCc({ ...cc, chips: introMove.cc });
     setBcc({ ...bcc, chips: introMove.bcc });
     setShowCopies(true);
-    const name = firstNameOf(introSender);
-    const line = name === null ? tx("Thank you! (Moving you to Bcc.)") : tx("Thank you, {p1}! (Moving you to Bcc.)", { p1: name });
+    const line = introLine(firstNameOf(introSender), draft.subject);
     editor?.chain().focus().insertContentAt(0, { type: "paragraph", content: [{ type: "text", text: line }] }).run();
     changed();
   };
 
   /** Typing speed: files of the last template that the message had no room for. */
   const [templateLeftOut, setTemplateLeftOut] = useState<string[]>([]);
+  /** Why a template's files could not be attached at all. */
+  const [templateFailed, setTemplateFailed] = useState<string | null>(null);
   /**
    * A template goes in at the cursor and fills what it carries: an empty
    * subject, recipients the draft does not have yet, `{first_name}` (the
@@ -847,6 +863,7 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
     editor.chain().focus().insertContent(fillBlocks((template.doc.content ?? []) as { type: string }[], firstName)).run();
     changed();
     setTemplateLeftOut([]);
+    setTemplateFailed(null);
     const apply = portsRef.current.applyTemplate;
     if ((template.files?.length ?? 0) === 0 || apply === undefined) return;
     apply({ draftId: draft.id, templateId: template.id }).then(
@@ -854,7 +871,7 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
         if (attached.length > 0) setAttachments((prev) => [...prev, ...attached]);
         setTemplateLeftOut(leftOut);
       },
-      (error: unknown) => setTemplateLeftOut([messageOf(error)]),
+      (error: unknown) => setTemplateFailed(messageOf(error)),
     );
   };
 
@@ -1092,6 +1109,11 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
             {tx("Not now")}
           </Button>
         </div>
+      ) : null}
+      {templateFailed !== null ? (
+        <p role="alert" className="border-b border-border px-3 py-1.5 text-xs text-destructive">
+          {tx("The template's files were not attached: {p1}", { p1: tx(templateFailed) })}
+        </p>
       ) : null}
       {templateLeftOut.length > 0 ? (
         <p role="status" className="flex items-start gap-1 border-b border-border px-3 py-1.5 text-xs text-destructive">

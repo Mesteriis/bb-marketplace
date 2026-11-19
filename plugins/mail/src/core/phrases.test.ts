@@ -30,6 +30,12 @@ describe("buildPhrases", () => {
     expect(buildPhrases([...thrice(quoted), ...thrice(signed)], [])).toEqual([]);
   });
 
+  it("never takes the owner's signature lines, a template's placeholder or an over-long sentence", () => {
+    const reply = "Works for me, thank you.\nOwner Example\nHead of Partnerships at Example Org\n\nOn Mon, Ada wrote:\n> Fine.";
+    expect(buildPhrases(thrice(reply), [], ["Owner Example\nHead of Partnerships at Example Org"])).toEqual(["Works for me, thank you."]);
+    expect(buildPhrases([], ["Hi {first_name}, thanks for writing.", `Word ${"x".repeat(200)} and ${"y".repeat(200)} here.`])).toEqual([]);
+  });
+
   it("takes phrases of three to twelve words, without numbers, addresses or links", () => {
     const texts = [
       ...thrice("Thank you."),
@@ -53,7 +59,8 @@ describe("buildPhrases", () => {
 
   it("keeps the spelling written most often, and at most 500 phrases", () => {
     expect(buildPhrases(["let me check and come back", "Let me check and come back", "Let me check and come back"], [])).toEqual(["Let me check and come back"]);
-    const many = Array.from({ length: 510 }, (_, i) => `Unique phrase number ${"x".repeat(i + 1)} here.`);
+    const letters = (i: number) => String.fromCharCode(97 + (i % 26)) + String.fromCharCode(97 + Math.floor(i / 26));
+    const many = Array.from({ length: 510 }, (_, i) => `Unique phrase named ${letters(i)} here.`);
     expect(buildPhrases([], many)).toHaveLength(500);
     expect(PHRASES_MAX).toBe(500);
   });

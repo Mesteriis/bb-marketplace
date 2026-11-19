@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { looksLikeIntro, moveSenderToBcc } from "./intro.ts";
+import { introLine, looksLikeIntro, moveSenderToBcc } from "./intro.ts";
 
 describe("looksLikeIntro", () => {
   it.each([
@@ -7,6 +7,7 @@ describe("looksLikeIntro", () => {
     ["Introduction", ""],
     ["Introducing you two", ""],
     ["Hello", "I'd like you to meet Bob, who runs the example team."],
+    ["Hello", "Please meet Ada from the example team."],
     ["Hello", "Connecting you with Ada."],
     ["Знакомство", ""],
     ["Привет", "Знакомьтесь, это Ада."],
@@ -18,6 +19,8 @@ describe("looksLikeIntro", () => {
   it.each([
     ["Invoice", "Please find the invoice."],
     ["Meeting notes", "The meeting went well."],
+    ["Lunch", "Can we meet on Tuesday? Or join https://meet.example.com/abc"],
+    ["Отчёт", "Это представляет интерес."],
     ["Introspection", "Thoughts on introspective tools."],
     ["Hello", `${"x".repeat(700)} intro`],
   ])("%s is not", (subject, text) => {
@@ -35,6 +38,17 @@ describe("moveSenderToBcc", () => {
       cc: ["bob@example.com"],
       bcc: ["boss@example.org", "ada@example.com"],
     });
+  });
+
+  it("takes the sender out of Cc too, and writes the line in the mail's language", () => {
+    expect(moveSenderToBcc({ to: ["ada@example.com", "bob@example.com"], cc: ["Ada <ADA@example.com>"], bcc: [] }, "ada@example.com")).toEqual({
+      to: ["bob@example.com"],
+      cc: [],
+      bcc: ["ada@example.com"],
+    });
+    expect(introLine("Ada", "Re: Intro: Ada <> Bob")).toBe("Thank you, Ada! (Moving you to Bcc.)");
+    expect(introLine(null, "Intro")).toBe("Thank you! (Moving you to Bcc.)");
+    expect(introLine("Ада", "Re: Знакомство")).toBe("Спасибо, Ада! (Переношу вас в скрытую копию.)");
   });
 
   it("does nothing a second time, for a sender who is not in To, or when nobody else is left", () => {

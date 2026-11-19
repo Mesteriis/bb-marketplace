@@ -49,6 +49,21 @@ describe("selectedQuote", () => {
     expect(selectedQuote(document, "m-1")).toHaveLength(20_000);
   });
 
+  it("ignores a selection in the message's header, and forgets a frame's selection once it was used", () => {
+    document.body.innerHTML = `<article data-message-id="m-1"><button data-mail-message-toggle=""><span id="h">Ada Lovelace</span></button><iframe></iframe></article>`;
+    select("h", 0, "h", 3);
+    expect(selectedQuote(document, "m-1")).toBeNull();
+    document.getSelection()!.removeAllRanges();
+    const inner = document.querySelector("iframe")!.contentDocument!;
+    inner.body.innerHTML = `<p id="x">Inside the frame text.</p>`;
+    const range = inner.createRange();
+    range.setStart(inner.getElementById("x")!.firstChild!, 0);
+    range.setEnd(inner.getElementById("x")!.firstChild!, 6);
+    inner.getSelection()!.addRange(range);
+    expect(selectedQuote(document, "m-1")).toBe("Inside");
+    expect(selectedQuote(document, "m-1")).toBeNull();
+  });
+
   it("reads the selection of the message's own frame", () => {
     document.body.innerHTML = `<article data-message-id="m-1"><iframe></iframe></article>`;
     const frame = document.querySelector("iframe")!;

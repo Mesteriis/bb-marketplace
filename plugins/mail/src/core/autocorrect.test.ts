@@ -14,12 +14,9 @@ describe("correctWord", () => {
     ["i", "I"],
     ["i'm", "I'm"],
     ["i'll", "I'll"],
-    ["THe", "The"],
-    ["HEllo", "Hello"],
     ["сдесь", "здесь"],
     ["Сделай", null],
     ["вообщем", "в общем"],
-    ["ПРивет", "Привет"],
   ])("%s -> %s", (word, expected) => {
     expect(fix(word)).toBe(expected);
   });
@@ -47,6 +44,29 @@ describe("correctWord", () => {
     expect(fix("Brb", { pairs })).toBe("Be right back");
     expect(fix("teh", { pairs })).toBe("TEH!");
     expect(fix("brb", { pairs, sentenceStart: true })).toBe("Be right back");
+  });
+
+  it("an owner's replacement written with capitals applies to exactly that spelling", () => {
+    const pairs = [{ from: "US", to: "United States" }, { from: "IT", to: "information technology" }, { from: "brb", to: "be right back" }];
+    expect(fix("us", { pairs })).toBeNull();
+    expect(fix("it", { pairs })).toBeNull();
+    expect(fix("It", { pairs, sentenceStart: true })).toBeNull();
+    expect(fix("US", { pairs })).toBe("United States");
+    expect(fix("IT", { pairs })).toBe("information technology");
+    expect(fix("Brb", { pairs })).toBe("Be right back");
+  });
+
+  it.each(["defiantly", "calender", "wont", "cant", "whit", "payed", "ненужно", "pls", "спс", "щас", "im", "publically", "cancelation"])(
+    "%s is a word or a chosen short form: left as typed",
+    (word) => {
+      expect(fix(word)).toBeNull();
+    },
+  );
+
+  it("two capitals are fixed only where a sentence starts; units and brands in a sentence stay", () => {
+    for (const word of ["MHz", "GHz", "MBps", "VMware", "BSc", "МВт", "ВКонтакте"]) expect(fix(word), word).toBeNull();
+    expect(fix("THe", { sentenceStart: true })).toBe("The");
+    expect(fix("HEllo", { sentenceStart: true })).toBe("Hello");
   });
 
   it("never fixes a word the owner restored", () => {

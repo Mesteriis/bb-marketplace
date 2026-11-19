@@ -70,6 +70,20 @@ describe("autocorrect in the editor", () => {
     expect(text(editor)).toBe("The ");
   });
 
+  it("does not capitalize after an abbreviation or the start of a host name, and fixes the first word after a line break", () => {
+    for (const typed of ["see e.g. the list ", "apples etc. and pears ", "т.е. это так ", "at 3 p.m. today "]) {
+      const { editor } = make();
+      type(editor, `Well, ${typed}`);
+      expect(text(editor)).toBe(`Well, ${typed}`);
+    }
+    const host = make();
+    type(host.editor, "github.com is down ");
+    expect(text(host.editor)).toBe("github.com is down ");
+    const broken = make({}, { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Hello" }, { type: "hardBreak" }] }] });
+    type(broken.editor, "teh cat ");
+    expect(text(broken.editor)).toBe("Hello\nThe cat ");
+  });
+
   it("uses the owner's replacements", () => {
     const { editor } = make({ pairs: [{ from: "brb", to: "be right back" }] });
     type(editor, "ok, brb.");
@@ -234,6 +248,14 @@ describe("picking a template with ;", () => {
     type(editor, " ");
     expect(last()).toBeNull();
     expect(text(editor)).toBe("a;b ;zzz ;th ");
+  });
+
+  it("Shift+Enter is a line break, not a pick", () => {
+    const { editor, picked } = open();
+    type(editor, ";th");
+    const event = new KeyboardEvent("keydown", { key: "Enter", shiftKey: true, bubbles: true, cancelable: true });
+    editor.view.someProp("handleKeyDown", (handle) => handle(editor.view, event));
+    expect(picked).toEqual([]);
   });
 
   it("without templates ; is only a character", () => {

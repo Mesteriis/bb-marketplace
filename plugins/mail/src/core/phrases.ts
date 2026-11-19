@@ -6,6 +6,8 @@
 export const PHRASES_MAX = 500;
 /** A phrase is written at least this often; a template's sentence counts as this many. */
 export const PHRASE_MIN_COUNT = 3;
+/** The longest phrase offered (the list's contract allows this much). */
+export const PHRASE_MAX_CHARS = 400;
 const WORDS_MIN = 3;
 const WORDS_MAX = 12;
 /** The grey text needs this much typed. */
@@ -47,7 +49,8 @@ function sentencesOf(text: string): string[] {
 }
 
 function isPhrase(sentence: string): boolean {
-  if (/[\d@]|:\/\//.test(sentence)) return false;
+  // No numbers, addresses, links or template placeholders; nothing the list's contract would refuse.
+  if (/[\d@{}]|:\/\//.test(sentence) || sentence.length > PHRASE_MAX_CHARS) return false;
   const words = sentence.split(" ").length;
   return words >= WORDS_MIN && words <= WORDS_MAX;
 }
@@ -57,7 +60,9 @@ function isPhrase(sentence: string): boolean {
  * at least 3 of the sent texts hold (a text counts once), plus every such
  * sentence of a template. Each in the spelling written most often.
  */
-export function buildPhrases(texts: readonly string[], templates: readonly string[]): string[] {
+export function buildPhrases(texts: readonly string[], templates: readonly string[], signatures: readonly string[] = []): string[] {
+  // A reply carries the signature above the quote with no mark before it: its lines are known, so they are left out.
+  const signed = new Set(signatures.flatMap((signature) => sentencesOf(signature)).map((line) => line.toLocaleLowerCase()));
   const found = new Map<string, { count: number; spellings: Map<string, number>; order: number }>();
   const add = (sentence: string, weight: number) => {
     const key = sentence.toLocaleLowerCase();
@@ -70,7 +75,7 @@ export function buildPhrases(texts: readonly string[], templates: readonly strin
     const seen = new Set<string>();
     for (const sentence of sentencesOf(ownText(text))) {
       const key = sentence.toLocaleLowerCase();
-      if (!isPhrase(sentence) || seen.has(key)) continue;
+      if (!isPhrase(sentence) || seen.has(key) || signed.has(key)) continue;
       seen.add(key);
       add(sentence, 1);
     }

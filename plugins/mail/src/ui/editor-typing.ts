@@ -44,6 +44,8 @@ const correctKey = new PluginKey<CorrectState>("makoshAutocorrect");
 const ENDS_WORD = /^[\s.,!?;:)\]}"»”]$/u;
 /** A sentence ended before this text (or the block starts here). */
 const SENTENCE_END = /(^|[.!?…]["')\]»”]*\s+)$/u;
+/** The text ends with an abbreviation and a space: a dotted one (e.g., p.m.) or a common one (etc., vs.). */
+const ABBREVIATION = /(^|[\s(])((\p{L}{1,3}\.){2,}|(etc|vs|approx|incl|excl|no|fig|mr|mrs|ms|dr|prof|inc|ltd|co|st|\u0441\u043c|\u0441\u0442\u0440|\u0440\u0443\u0431|\u0442\u044b\u0441|\u043c\u043b\u043d|\u043c\u043b\u0440\u0434|\u0443\u043b|\u0433|\u0438\u043c|\u0433\u0433)\.)\s+$/iu;
 /** A whole word of letters, with apostrophes inside. */
 const WORD = /^[\p{L}][\p{L}'’]*$/u;
 
@@ -55,23 +57,26 @@ function wordBefore(state: EditorState, pos: number): { start: number; word: str
   if ($pos.marks().some((mark) => mark.type.name === "link" || mark.type.name === "code")) return null;
   // Inline nodes count as one character, so offsets in this text are offsets in the block.
   const before = parent.textBetween(0, $pos.parentOffset, undefined, "￼");
-  const token = /\S+$/u.exec(before)?.[0] ?? "";
+  // A line break (an inline node) starts a word as a space does.
+  const token = /[^\s\ufffc]+$/u.exec(before)?.[0] ?? "";
   if (token === "") return null;
   // A leading bracket or quote is not part of the word; anything else odd (an address, a path) is left alone.
   const word = token.replace(/^[("'\[{«“]+/u, "");
   if (!WORD.test(word)) return null;
-  const lead = before.slice(0, before.length - word.length);
-  return { start: pos - word.length, word, sentenceStart: SENTENCE_END.test(lead.replace(/[("'\[{«“]+$/u, "")) };
+  const lead = before.slice(0, before.length - word.length).replace(/[("'\[{\u00ab\u201c]+$/u, "");
+  // After a line break, as at the block's start; never after an abbreviation (e.g., etc., p.m.).
+  const sentenceStart = /\ufffc\s*$/u.test(lead) || (SENTENCE_END.test(lead) && !ABBREVIATION.test(lead));
+  return { start: pos - word.length, word, sentenceStart };
 }
 
 function autocorrectPlugin(options: () => TypingOptions): Plugin<CorrectState> {
-  const fix = (view: EditorView, pos: number): { start: number; word: string; fixed: string } | null => {
+  const fix = (view: EditorView, pos: number, beforeDot = false): { start: number; word: string; fixed: string } | null => {
     const current = options();
     if (!current.autocorrect) return null;
     const found = wordBefore(view.state, pos);
     if (found === null) return null;
     const skip = correctKey.getState(view.state)?.skip ?? new Set<string>();
-    const fixed = correctWord(found.word, { sentenceStart: found.sentenceStart, pairs: current.pairs, skip });
+    const fixed = correctWord(found.word, { sentenceStart: found.sentenceStart && !beforeDot, pairs: current.pairs, skip });
     return fixed === null ? null : { start: found.start, word: found.word, fixed };
   };
   return new Plugin<CorrectState>({
@@ -90,7 +95,8 @@ function autocorrectPlugin(options: () => TypingOptions): Plugin<CorrectState> {
     props: {
       handleTextInput(view, from, to, text) {
         if (from !== to || !ENDS_WORD.test(text)) return false;
-        const found = fix(view, from);
+        // A dot may go on into a host name or an abbreviation (github.com, e.g.): only a slip is fixed before it, no capital.
+        const found = fix(view, from, text === ".");
         if (found === null) return false;
         const inserted = found.fixed + text;
         const tr = view.state.tr.insertText(inserted, found.start, from);
@@ -260,7 +266,8 @@ function snippetPlugin(options: () => TypingOptions): Plugin<SnippetState> {
     },
     props: {
       handleKeyDown(view, event) {
-        if (event.metaKey || event.ctrlKey || event.altKey) return false;
+        // With a modifier the key is someone else's (Shift+Enter is a line break).
+        if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return false;
         const current = options();
         const list = snippetsOf(view.state, current);
         if (list === null) return false;

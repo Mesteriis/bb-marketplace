@@ -14,7 +14,10 @@ export function selectedQuote(root: Document, messageId: string): string | null 
   let text = "";
   for (const frame of Array.from(holder.querySelectorAll("iframe"))) {
     try {
-      text = frame.contentDocument?.getSelection()?.toString() ?? "";
+      const selection = frame.contentDocument?.getSelection() ?? null;
+      text = selection?.toString() ?? "";
+      // Used once: a selection left in the frame must not shape the next reply too.
+      if (text.trim() !== "") selection?.removeAllRanges();
     } catch {
       text = "";
     }
@@ -22,7 +25,9 @@ export function selectedQuote(root: Document, messageId: string): string | null 
   }
   if (text.trim() === "") {
     const selection = root.getSelection();
-    const inside = (node: Node | null) => node !== null && holder.contains(node);
+    // Inside the message, and not in its header row (the sender's name is not a quote).
+    const header = (node: Node) => (node.nodeType === 1 ? (node as Element) : node.parentElement)?.closest("[data-mail-message-toggle]") ?? null;
+    const inside = (node: Node | null) => node !== null && holder.contains(node) && header(node) === null;
     if (selection === null || selection.isCollapsed || !inside(selection.anchorNode) || !inside(selection.focusNode)) return null;
     text = selection.toString();
   }
