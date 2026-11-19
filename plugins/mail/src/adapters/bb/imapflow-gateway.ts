@@ -19,7 +19,7 @@
 // (setLabels), and read-only UID SEARCH by Mail's criteria (searchServer).
 // Errors leaving this file are rebuilt from codes: imapflow errors can carry
 // server responses and the sent command, so their text is never passed on.
-import { ImapFlow } from "imapflow";
+import { AuthenticationFailure, ImapFlow } from "imapflow";
 import type {
   FetchMessageObject,
   FetchQueryObject,
@@ -957,6 +957,11 @@ export function describeImapError(error: unknown): Error {
     code?: unknown;
     tlsFailed?: unknown;
   };
+  // imapflow's own refusal to sign in (the connection closed first, the server
+  // offers no login): the server never judged the password.
+  if (error instanceof AuthenticationFailure && fields.response === undefined && fields.serverResponseCode === undefined) {
+    return new SafeImapError(error.message === "Already logged out" ? "NoConnection" : "LoginUnavailable");
+  }
   if (
     typeof fields.serverResponseCode === "string" &&
     TRANSIENT_LOGIN_CODES.has(fields.serverResponseCode)

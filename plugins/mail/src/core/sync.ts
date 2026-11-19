@@ -31,6 +31,7 @@
 // window), deleting what left the server. A reset also looks for `opened`
 // rows and clears history_since. Gmail sessions report X-GM-LABELS, which
 // are stored at every fetch and refreshed in the flag pass.
+import { AUTH_REFUSALS_TO_STOP, type AuthRefusals } from "./auth-refusals.ts";
 import type { AccountPreset, FetchedMessage, FlagChange, FlagIntent, Folder, RemoteFolder, SpecialUse } from "./model.ts";
 import {
   ImapAuthError,
@@ -67,6 +68,11 @@ export interface SyncDeps {
   vault: SecretVault;
   clock: Clock;
   notifier: ChangeNotifier;
+  /**
+   * Counts refused sign-ins, so one refusal does not stop an account whose
+   * password worked before (see auth-refusals.ts). Absent: the first stops it.
+   */
+  authRefusals?: AuthRefusals;
 }
 
 export interface SyncOptions {
@@ -294,6 +300,7 @@ export async function syncAccount(
       authFailed: false,
     });
     notifier.mailChanged(accountId);
+    deps.authRefusals?.accepted(accountId);
     return {
       status: "ok",
       ...totals,
@@ -306,8 +313,9 @@ export async function syncAccount(
       inserted,
     };
   } catch (error) {
-    const authFailed = error instanceof ImapAuthError;
-    const message = redact(describeError(error), password);
+    const authFailed = error instanceof ImapAuthError && refusalStops(deps, account);
+    const message =
+      error instanceof ImapAuthError && !authFailed ? LOGIN_REFUSED_ERROR : redact(describeError(error), password);
     try {
       if (progress.changed) rethreadIfStale(store, accountId);
       const roundError = [message, problemText(progress)].filter((t) => t !== null).join("; ");
@@ -322,6 +330,19 @@ export async function syncAccount(
     }
     return { status: "error", error: message, authFailed, ...cancelledField(progress) };
   }
+}
+
+/** A refused sign-in that does not stop the account yet; the next round tries again. */
+const LOGIN_REFUSED_ERROR = "Sync failed (LoginRefused)";
+
+/**
+ * True when this refused sign-in stops the account until the owner acts:
+ * always for an account that never synced, otherwise from the third refusal
+ * in a row when the refusals are counted.
+ */
+function refusalStops(deps: SyncDeps, account: { id: string; lastSyncAt: string | null; passwordSealed: string }): boolean {
+  if (deps.authRefusals === undefined || account.lastSyncAt === null) return true;
+  return deps.authRefusals.refused(account.id, account.passwordSealed) >= AUTH_REFUSALS_TO_STOP;
 }
 
 /**

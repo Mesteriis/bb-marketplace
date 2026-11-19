@@ -52,8 +52,17 @@ const NETWORK_CODES = new Set([
   "GreetingTimeout",
 ]);
 
-/** The server answered and asked to come back later. */
-const BUSY_CODES = new Set(["UNAVAILABLE", "INUSE", "LIMIT", "SERVERBUG", "ALERT", "LoginThrottled", "Throttled"]);
+/** The server answered and asked to come back later, or refused a sign-in that sync still retries. */
+const BUSY_CODES = new Set([
+  "UNAVAILABLE",
+  "INUSE",
+  "LIMIT",
+  "SERVERBUG",
+  "ALERT",
+  "LoginThrottled",
+  "Throttled",
+  "LoginRefused",
+]);
 
 const TLS_CODE = /TLS|SSL|CERT|ALTNAME|HANDSHAKE/i;
 

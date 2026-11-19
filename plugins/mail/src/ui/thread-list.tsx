@@ -315,6 +315,9 @@ function Row({
         data-row-key={rowKey}
         onClick={onSelect}
         aria-current={selected ? "true" : undefined}
+        // Inline: BB's page-wide `:focus-visible` outline is outside any layer and beats the class;
+        // the row clips it to two vertical lines. The row's background shows the focus instead.
+        style={{ outlineStyle: "none" }}
         className={cn(
           "flex min-w-0 flex-1 flex-col pr-1 text-left outline-none",
           compact ? "gap-0 py-1" : "gap-0.5 py-2",

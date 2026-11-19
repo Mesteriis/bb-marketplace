@@ -543,6 +543,11 @@ export const rpcSchemas = {
     input: z.object({ accountId: z.string().nullable() }),
     output: z.object({ started: z.boolean() }),
   },
+  /** One sign-in with the saved password for an account the server stopped (retry-sign-in.ts). */
+  accounts_retry_sign_in: {
+    input: z.object({ accountId: z.string() }),
+    output: z.object({ result: z.enum(["resumed", "refused", "unreachable", "unreadable"]) }),
+  },
   threads_list: {
     input: z.object({
       scope: threadScope,
@@ -1841,6 +1846,9 @@ export const SLICE_3H_METHODS = [
   "related_messages",
   "sender_card",
 ] as const satisfies readonly (keyof typeof rpcSchemas)[];
+
+/** The owner-only method that tries a stopped account's saved password again. */
+export const SIGN_IN_METHODS = ["accounts_retry_sign_in"] as const satisfies readonly (keyof typeof rpcSchemas)[];
 
 /** The five owner-only methods slice 3p adds. */
 export const SLICE_3P_METHODS = [

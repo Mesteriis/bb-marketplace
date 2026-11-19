@@ -23,6 +23,8 @@ describe("parseSyncProblems", () => {
     expect(codes("Sync failed (ENOTFOUND)")).toEqual(["network"]);
     expect(codes("Sync failed (ETIMEDOUT); Sync failed (ECONNRESET)")).toEqual(["network", "network"]);
     expect(codes("Sync failed (UNAVAILABLE)")).toEqual(["server_busy"]);
+    // A sign-in refused once for a password that worked before: retried, not a banner yet.
+    expect(codes("Sync failed (LoginRefused)")).toEqual(["server_busy"]);
     expect(codes("Sync failed (TLSFailed)")).toEqual(["tls"]);
     expect(codes("Sync failed (ERR_TLS_CERT_ALTNAME_INVALID)")).toEqual(["tls"]);
     expect(codes("Sync failed (SearchFailed)")).toEqual(["server"]);

@@ -281,6 +281,42 @@ describe("Mail page", () => {
     expect(slot.getByRole("button", { name: "Save" })).toBeTruthy();
   });
 
+  it("retries the saved password of a stopped account from its banner", async () => {
+    let stopped = true;
+    const slot = render(
+      mailRpc({
+        status_get: () =>
+          status({
+            accounts: [stopped ? { ...account, authFailed: true, lastError: "Authentication failed" } : account],
+          }),
+        accounts_retry_sign_in: () => {
+          stopped = false;
+          return { result: "resumed" };
+        },
+      }),
+    );
+
+    fireEvent.click(await slot.findByRole("button", { name: "Try the saved password" }));
+
+    await waitFor(() => expect(slot.queryByRole("alert")).toBeNull());
+    expect(callsTo(slot, "accounts_retry_sign_in").map((call) => call.input)).toEqual([{ accountId: "acc-1" }]);
+  });
+
+  it("keeps the banner when the server refuses the saved password again", async () => {
+    const slot = render(
+      mailRpc({
+        status_get: () => status({ accounts: [{ ...account, authFailed: true, lastError: "Authentication failed" }] }),
+        accounts_retry_sign_in: () => ({ result: "refused" }),
+      }),
+    );
+
+    fireEvent.click(await slot.findByRole("button", { name: "Try the saved password" }));
+
+    await waitFor(() => expect(callsTo(slot, "accounts_retry_sign_in")).toHaveLength(1));
+    expect(slot.getByRole("alert").textContent).toContain("The server refused the sign-in.");
+    expect(slot.getByRole("button", { name: "Update app password" })).toBeTruthy();
+  });
+
   it("tests and saves an account, then clears the password", async () => {
     const slot = render(
       mailRpc({

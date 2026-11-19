@@ -325,6 +325,8 @@ export interface MailPageProps {
   onStopImages: (message: MessageHeader) => void;
   accountForm: AccountFormRequest;
   onOpenAccountForm: (request: { initial?: AccountFormInitial }) => void;
+  /** One sign-in with the saved password for a stopped account; absent: not offered. */
+  onRetrySignIn?: (accountId: string) => Promise<void>;
   onCloseAccountForm: () => void;
   onTestAccount: (input: NewAccountInput) => Promise<{ ok: boolean; reason: string | null }>;
   onSaveAccount: (input: NewAccountInput) => Promise<void>;
@@ -561,6 +563,8 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
   }, []);
   const [focusedId, setFocusedId] = useState<string | null>(null);
   const [sheetOpen, setSheetOpen] = useState(false);
+  /** The stopped account whose saved password is being tried again. */
+  const [retryingSignIn, setRetryingSignIn] = useState<string | null>(null);
   const [moveTargets, setMoveTargets] = useState<string[] | null>(null);
   const [snoozeTargets, setSnoozeTargets] = useState<string[] | null>(null);
   const [blockMessage, setBlockMessage] = useState<string | null>(null);
@@ -1231,6 +1235,19 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
             {props.unified ? `${accountLabel(account)}: ` : ""}
             {accountProblemTexts(account).join(" ")}
           </span>
+          {account.authFailed && props.onRetrySignIn !== undefined ? (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={retryingSignIn !== null}
+              onClick={() => {
+                setRetryingSignIn(account.id);
+                void props.onRetrySignIn?.(account.id).finally(() => setRetryingSignIn(null));
+              }}
+            >
+              {retryingSignIn === account.id ? tx("Signing in\u2026") : tx("Try the saved password")}
+            </Button>
+          ) : null}
           {account.authFailed ? (
             <Button
               variant="outline"

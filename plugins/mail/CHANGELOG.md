@@ -379,6 +379,18 @@ All notable changes to Makosh Mail are recorded here. The format follows
 - `bb makosh-mail doctor` turns sync back on for an account that was
   stopped by a refused sign-in once the server accepts the saved password
   again.
+- One refused sign-in no longer stops an account whose password the server
+  has accepted before: sync tries again on its next rounds and stops the
+  account only after three refusals in a row. Until then the account shows
+  as offline, with a banner after 30 minutes without a good sync.
+- A connection that closed before the sign-in is no longer taken for a
+  refused password.
+- A stopped account comes back by itself: sync tries its saved password
+  again with the next full round, then 10 and 30 minutes after a refusal,
+  then once an hour, and turns the account on as soon as the server
+  accepts it.
+- The "update the app password" banner has **Try the saved password**: one
+  sign-in with the password Mail already has, without typing it again.
 
 ### Changed
 

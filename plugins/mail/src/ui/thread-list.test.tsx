@@ -71,6 +71,17 @@ function stubObserver() {
   return observers;
 }
 
+describe("the focused row", () => {
+  it("draws no outline of its own: BB's page-wide focus outline would show as two lines cut by the row", () => {
+    render(list({ focusedId: "th-1" }));
+    const button = screen.getByRole("button", { name: /Invented subject 1/ });
+    // Inline, because BB's `:focus-visible` rule is outside any layer and beats a utility class.
+    expect(button.style.outlineStyle).toBe("none");
+    // The row itself shows where the keys are.
+    expect(button.closest("li")!.className).toContain("bg-state-hover");
+  });
+});
+
 describe("big lists (slice 3j)", () => {
   it("lets the browser skip rows that are far from view, at the row's own height", () => {
     expect(offscreenRowStyle(false)).toEqual({ contentVisibility: "auto", containIntrinsicSize: "auto 68px" });

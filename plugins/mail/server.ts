@@ -252,6 +252,7 @@ import {
   roleFolders,
   rpcSchemas,
   testAccount,
+  retrySignIn,
   toPublicAccount,
   imapConfigOf,
   type Account,
@@ -3177,6 +3178,26 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         }
         deps.loop.wake(accountId);
         return { started: true };
+      },
+      accounts_retry_sign_in: async ({ accountId }, context) => {
+        refusePluginCaller(context);
+        const result = await retrySignIn(
+          {
+            store,
+            gateway: accountDeps.gateway,
+            vault: deps.vaultReady() ? accountDeps.vault : null,
+            run: (id, work) => composeDeps.queue.run(id, work),
+          },
+          accountId,
+        );
+        if (result === null) throw refuse("not_found", "Unknown account");
+        bb.log.info(`retry sign-in ${accountId}: ${result}`);
+        if (result === "resumed") {
+          publishChanged(accountId);
+          deps.idle.refresh();
+          deps.loop.wake(accountId);
+        }
+        return { result };
       },
       threads_list: ({ scope, cursor, limit, filter }) => {
         // Category filters and fields only while categories are on (slice 3f).

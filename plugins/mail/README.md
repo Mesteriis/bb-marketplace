@@ -992,7 +992,12 @@ bb makosh-mail backup /full/path/mail-backup.db
   because the server refused the sign-in, and the server accepts the saved
   password during this check, doctor turns the account's sync back on and
   says so: some servers refuse a good password for a while after many
-  sign-ins.
+  sign-ins. For the same reason sync stops an account that has synced
+  before only after three refused sign-ins in a row, and the banner of a
+  stopped account has **Try the saved password**, which does the same
+  sign-in from the page. Sync also tries a stopped account's saved
+  password by itself: with the next full round, 10 and 30 minutes after a
+  refusal, then once an hour.
 - **backup** writes a consistent copy of Mail's database to a new file that
   only you can read. The path must be absolute, its folder must exist, and
   Mail never writes over an existing file. The copy holds your mail text

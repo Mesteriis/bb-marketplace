@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { ImapAuthError } from "./ports.ts";
 import { INBOX, prepareMessage, syncAccount, type SyncDeps } from "./sync.ts";
+import { createAuthRefusals } from "./auth-refusals.ts";
 import { planSnoozes } from "./snooze.ts";
 import {
   FixedClock,
@@ -320,6 +321,55 @@ describe("syncAccount", () => {
     expect(store.getAccount(ACCOUNT_ID)?.lastError).toBeNull();
     expect(pendingSeen(store, INBOX)).toEqual([]);
     expect(gateway.mailbox.messages[0]!.seen).toBe(true);
+  });
+
+  it("one refused sign-in does not stop an account whose password worked before", async () => {
+    const { store, gateway, deps: base } = setup(mailbox(2));
+    const deps: SyncDeps = { ...base, authRefusals: createAuthRefusals() };
+    expect(await syncAccount(deps, ACCOUNT_ID, OPTIONS)).toMatchObject({ status: "ok" });
+    const syncedAt = store.getAccount(ACCOUNT_ID)!.lastSyncAt;
+    gateway.failOpen(new ImapAuthError());
+
+    const first = await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+
+    expect(first).toEqual({ status: "error", error: "Sync failed (LoginRefused)", authFailed: false });
+    expect(store.getAccount(ACCOUNT_ID)).toMatchObject({
+      lastError: "Sync failed (LoginRefused)",
+      authFailed: false,
+      lastSyncAt: syncedAt,
+    });
+
+    const second = await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    expect(second).toEqual({ status: "error", error: "Sync failed (LoginRefused)", authFailed: false });
+
+    const third = await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    expect(third).toEqual({ status: "error", error: "Authentication failed", authFailed: true });
+    expect(store.getAccount(ACCOUNT_ID)).toMatchObject({ lastError: "Authentication failed", authFailed: true });
+  });
+
+  it("an accepted sign-in forgets the refusals before it", async () => {
+    const { store, gateway, deps: base } = setup(mailbox(2));
+    const deps: SyncDeps = { ...base, authRefusals: createAuthRefusals() };
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    for (let round = 0; round < 2; round++) {
+      gateway.failOpen(new ImapAuthError());
+      await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+      await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+      gateway.failOpen(null);
+      expect(await syncAccount(deps, ACCOUNT_ID, OPTIONS)).toMatchObject({ status: "ok" });
+    }
+    expect(store.getAccount(ACCOUNT_ID)).toMatchObject({ lastError: null, authFailed: false });
+  });
+
+  it("a refused sign-in stops an account that never synced at once", async () => {
+    const { store, gateway, deps: base } = setup(mailbox(2));
+    const deps: SyncDeps = { ...base, authRefusals: createAuthRefusals() };
+    gateway.failOpen(new ImapAuthError());
+
+    const outcome = await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+
+    expect(outcome).toEqual({ status: "error", error: "Authentication failed", authFailed: true });
+    expect(store.getAccount(ACCOUNT_ID)).toMatchObject({ authFailed: true });
   });
 
   it("auth failure marks the account and stops retrying", async () => {

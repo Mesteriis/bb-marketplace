@@ -505,12 +505,11 @@ describe("makosh-mail server", () => {
     ).rejects.toThrow("Unknown message");
   });
 
-  it("sync_now does not start an account whose login was rejected", async () => {
-    const host = await load();
-    const { accountId } = await addAndSync(host);
+  /** An account the server refused before it ever synced: stopped at the first refusal. */
+  async function addStopped(host: Host): Promise<string> {
+    const account = (await host.harness.behavior.callRpc("accounts_add", NEW_ACCOUNT)) as { id: string };
     host.gateway.failOpen(new ImapAuthError());
     const service = host.harness.behavior.runService("sync");
-    await host.harness.behavior.callRpc("sync_now", { accountId });
     await vi.waitFor(async () => {
       const status = (await host.harness.behavior.callRpc("status_get", null)) as {
         accounts: { authFailed: boolean }[];
@@ -519,10 +518,56 @@ describe("makosh-mail server", () => {
     });
     service.controller.abort();
     await service.done;
+    return account.id;
+  }
+
+  it("sync_now does not start an account whose login was rejected", async () => {
+    const host = await load();
+    const accountId = await addStopped(host);
 
     await expect(host.harness.behavior.callRpc("sync_now", { accountId })).resolves.toEqual({
       started: false,
     });
+  });
+
+  it("one refused sign-in does not stop an account that has synced", async () => {
+    const host = await load();
+    const { accountId } = await addAndSync(host);
+    host.gateway.failOpen(new ImapAuthError());
+    const service = host.harness.behavior.runService("sync");
+    await host.harness.behavior.callRpc("sync_now", { accountId });
+    await vi.waitFor(async () => {
+      const status = (await host.harness.behavior.callRpc("status_get", null)) as {
+        accounts: { authFailed: boolean; lastError: string | null }[];
+      };
+      expect(status.accounts[0]).toMatchObject({ authFailed: false, lastError: "Sync failed (LoginRefused)" });
+    });
+    service.controller.abort();
+    await service.done;
+
+    await expect(host.harness.behavior.callRpc("sync_now", { accountId })).resolves.toEqual({ started: true });
+  });
+
+  it("accounts_retry_sign_in resumes a stopped account once the server accepts the saved password", async () => {
+    const host = await load();
+    const accountId = await addStopped(host);
+
+    await expect(host.harness.behavior.callRpc("accounts_retry_sign_in", { accountId })).resolves.toEqual({
+      result: "refused",
+    });
+    host.gateway.failOpen(null);
+    await expect(host.harness.behavior.callRpc("accounts_retry_sign_in", { accountId })).resolves.toEqual({
+      result: "resumed",
+    });
+
+    const status = (await host.harness.behavior.callRpc("status_get", null)) as {
+      accounts: { authFailed: boolean; lastError: string | null }[];
+    };
+    expect(status.accounts[0]).toMatchObject({ authFailed: false, lastError: null });
+    await expect(host.harness.behavior.callRpc("sync_now", { accountId })).resolves.toEqual({ started: true });
+    await expect(host.harness.behavior.callRpc("accounts_retry_sign_in", { accountId: "missing" })).rejects.toThrow(
+      "Unknown account",
+    );
   });
 
   it("refuses a sync interval above 1440 minutes", async () => {

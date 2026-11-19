@@ -1825,6 +1825,24 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     [rpc],
   );
 
+  /** The banner's retry: one sign-in with the saved password, then the status again. */
+  const retrySignIn = useCallback(
+    async (accountId: string) => {
+      try {
+        const { result } = await rpc.call("accounts_retry_sign_in", { accountId });
+        if (result === "resumed") toast.success(tx("The server accepted the saved password. Sync is on again."));
+        else if (result === "refused") {
+          toast.error(tx("The server refused the saved password again. Try later or update the app password."));
+        } else if (result === "unreachable") toast.error(tx("The mail server could not be reached. Try again later."));
+        else toast.error(tx("The saved password cannot be read. Enter it again."));
+      } catch (error) {
+        toast.error(tx("Could not sign in: {p1}", { p1: messageOf(error) }));
+      }
+      await loadStatus();
+    },
+    [loadStatus, rpc],
+  );
+
   const saveAccount = useCallback(
     async (input: NewAccountInput) => {
       const saved = await rpc.call("accounts_add", input);
@@ -4176,6 +4194,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       onStopImages={(message) => void stopImages(message)}
       accountForm={accountForm}
       onOpenAccountForm={setAccountForm}
+      onRetrySignIn={retrySignIn}
       onCloseAccountForm={() => setAccountForm(null)}
       onTestAccount={testAccount}
       onSaveAccount={saveAccount}

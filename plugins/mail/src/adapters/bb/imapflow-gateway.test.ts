@@ -1,6 +1,7 @@
 import { Readable } from "node:stream";
 import PostalMime from "postal-mime";
 import type { Email } from "postal-mime";
+import { AuthenticationFailure } from "imapflow";
 import type { FetchMessageObject, ListResponse } from "imapflow";
 import imapflowFetch from "imapflow/lib/commands/fetch.js";
 import { compiler as imapCompiler, parser as imapParser } from "imapflow/lib/handler/imap-handler.js";
@@ -370,6 +371,23 @@ describe("describeImapError", () => {
       response: "Use a separate app password",
     });
     expect(describeImapError(plain)).toBeInstanceOf(ImapAuthError);
+  });
+
+  it("does not blame the password when the library gave up before the server answered a login", () => {
+    // imapflow throws its AuthenticationFailure for a connection that closed before LOGIN.
+    const closed = describeImapError(new AuthenticationFailure("Already logged out"));
+    expect(closed).not.toBeInstanceOf(ImapAuthError);
+    expect(closed).toMatchObject({ code: "NoConnection", message: "IMAP error (NoConnection)" });
+    for (const text of ["Login is disabled", "No matching authentication method"]) {
+      const mapped = describeImapError(new AuthenticationFailure(text));
+      expect(mapped, text).not.toBeInstanceOf(ImapAuthError);
+      expect(mapped, text).toMatchObject({ code: "LoginUnavailable" });
+    }
+    // The same class with the server's own reply is a refusal (Exchange answers NAMESPACE this way).
+    const refused = Object.assign(new AuthenticationFailure("Authentication failed"), {
+      response: "User is authenticated but not connected",
+    });
+    expect(describeImapError(refused)).toBeInstanceOf(ImapAuthError);
   });
 
   it("builds messages from codes, never from the error text", () => {
