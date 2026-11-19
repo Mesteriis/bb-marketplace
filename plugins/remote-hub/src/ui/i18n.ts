@@ -14,6 +14,7 @@ const ru = {
   "sidebar.add.profile": "Подключение SSH или RDP",
   "sidebar.add.pve": "Proxmox VE",
   "sidebar.add.import": "Импорт",
+  "sidebar.edit": "Изменить",
   "sidebar.credentials": "Учётные данные",
   "sidebar.agents": "Активность агентов",
 
@@ -32,6 +33,7 @@ const ru = {
   "pve.refresh": "Обновить",
   "pve.needsApproval": "macOS не разрешил этой сборке читать сохранённый пароль",
   "pve.allow": "Разрешить доступ",
+  "pve.unreadable": "Список не прочитан ({code})",
 
   "session.connecting": "подключение",
   "session.active": "подключено",
