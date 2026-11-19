@@ -176,6 +176,30 @@ describe("createSyncLoop", () => {
     expect(notifier.changes).toContain("acc_1");
   });
 
+  it("never tries a revoked Google grant by itself", async () => {
+    const { store, scripted, deps } = setup();
+    store.saveAccount(account("acc_1", { authFailed: true, lastError: "Google sign-in expired", authKind: "google" }));
+    store.saveAccount(account("acc_2"));
+    const gateway = new OneBadUserGateway(scripted, "nobody@example.org");
+    const clock = new FixedClock(NOW);
+    const lines: string[] = [];
+    const loop = createSyncLoop({ ...deps, gateway, clock }, SETTINGS, { log: (line) => lines.push(line) });
+    const controller = new AbortController();
+    const done = loop.start(controller.signal);
+    const rounds = () => lines.filter((l) => l.startsWith("sync acc_2: ok")).length;
+
+    await vi.waitFor(() => expect(rounds()).toBe(1));
+    clock.set(new Date(NOW.getTime() + 10 * 60_000));
+    loop.wake(null);
+    await vi.waitFor(() => expect(rounds()).toBe(2), { timeout: 15_000 });
+    controller.abort();
+    await done;
+
+    expect(gateway.tests).toEqual([]);
+    expect(lines.some((l) => l.startsWith("sync acc_1"))).toBe(false);
+    expect(store.getAccount("acc_1")).toMatchObject({ authFailed: true, lastError: "Google sign-in expired" });
+  }, 20_000);
+
   it("tries a stopped account the server still refuses again only after a wait", async () => {
     const { store, scripted, deps } = setup();
     store.saveAccount(account("acc_1", { authFailed: true, lastError: "Authentication failed" }));

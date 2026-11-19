@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ImapAuthError } from "./ports.ts";
 import { retrySignIn, type RetrySignInDeps } from "./retry-sign-in.ts";
 import {
@@ -67,6 +67,17 @@ describe("retrySignIn", () => {
 
     expect(queued).toEqual([]);
     expect(store.getAccount(ACCOUNT_ID)).toMatchObject({ authFailed: false, lastError: "Sync failed (NoConnection)" });
+  });
+
+  it("does not try a revoked Google grant: only a new sign-in helps", async () => {
+    const { store, gateway, deps, queued } = setup({ authFailed: true, lastError: "Google sign-in expired" });
+    const test = vi.spyOn(gateway, "test");
+
+    expect(await retrySignIn(deps, ACCOUNT_ID)).toBe("sign_in_needed");
+
+    expect(test).not.toHaveBeenCalled();
+    expect(queued).toEqual([]);
+    expect(store.getAccount(ACCOUNT_ID)).toMatchObject({ authFailed: true, lastError: "Google sign-in expired" });
   });
 
   it("says so when the saved password cannot be read, and null for an unknown account", async () => {

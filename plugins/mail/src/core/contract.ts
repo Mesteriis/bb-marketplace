@@ -546,7 +546,7 @@ export const rpcSchemas = {
   /** One sign-in with the saved password for an account the server stopped (retry-sign-in.ts). */
   accounts_retry_sign_in: {
     input: z.object({ accountId: z.string() }),
-    output: z.object({ result: z.enum(["resumed", "refused", "unreachable", "unreadable"]) }),
+    output: z.object({ result: z.enum(["resumed", "refused", "unreachable", "unreadable", "sign_in_needed"]) }),
   },
   threads_list: {
     input: z.object({

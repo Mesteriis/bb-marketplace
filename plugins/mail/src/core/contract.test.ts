@@ -2045,9 +2045,9 @@ describe("retry sign-in contract", () => {
     expect(keysOf(rpcSchemas.accounts_retry_sign_in.output)).toEqual(["result"]);
   });
 
-  it("answers with one of four fixed results", () => {
+  it("answers with one of five fixed results", () => {
     const parses = (result: unknown) => rpcSchemas.accounts_retry_sign_in.output.safeParse({ result }).success;
-    for (const result of ["resumed", "refused", "unreachable", "unreadable"]) expect(parses(result), result).toBe(true);
+    for (const result of ["resumed", "refused", "unreachable", "unreadable", "sign_in_needed"]) expect(parses(result), result).toBe(true);
     expect(parses("Authentication failed")).toBe(false);
   });
 });

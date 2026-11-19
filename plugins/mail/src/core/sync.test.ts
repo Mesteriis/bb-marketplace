@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { ImapAuthError } from "./ports.ts";
+import { GrantRevokedError, ImapAuthError } from "./ports.ts";
 import { INBOX, prepareMessage, syncAccount, type SyncDeps } from "./sync.ts";
 import { createAuthRefusals } from "./auth-refusals.ts";
 import { planSnoozes } from "./snooze.ts";
@@ -370,6 +370,38 @@ describe("syncAccount", () => {
 
     expect(outcome).toEqual({ status: "error", error: "Authentication failed", authFailed: true });
     expect(store.getAccount(ACCOUNT_ID)).toMatchObject({ authFailed: true });
+  });
+
+  it("a revoked Google grant stops the account at once, with its own message", async () => {
+    const { store, gateway, deps: base } = setup(mailbox(2));
+    const deps: SyncDeps = { ...base, authRefusals: createAuthRefusals() };
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    gateway.failOpen(new GrantRevokedError());
+
+    const outcome = await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+
+    expect(outcome).toEqual({ status: "error", error: "Google sign-in expired", authFailed: true });
+    expect(store.getAccount(ACCOUNT_ID)).toMatchObject({ lastError: "Google sign-in expired", authFailed: true });
+  });
+
+  it("no access token now is an ordinary error and does not count as a refused sign-in", async () => {
+    const { store, gateway, deps: base } = setup(mailbox(2));
+    const deps: SyncDeps = { ...base, authRefusals: createAuthRefusals() };
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+
+    gateway.failOpen(imapError("TokenUnavailable"));
+    expect(await syncAccount(deps, ACCOUNT_ID, OPTIONS)).toEqual({
+      status: "error",
+      error: "Sync failed (TokenUnavailable)",
+      authFailed: false,
+    });
+    expect(store.getAccount(ACCOUNT_ID)).toMatchObject({ lastError: "Sync failed (TokenUnavailable)", authFailed: false });
+
+    // The refusals that follow are still the first and the second of three.
+    gateway.failOpen(new ImapAuthError());
+    expect(await syncAccount(deps, ACCOUNT_ID, OPTIONS)).toMatchObject({ error: "Sync failed (LoginRefused)", authFailed: false });
+    expect(await syncAccount(deps, ACCOUNT_ID, OPTIONS)).toMatchObject({ error: "Sync failed (LoginRefused)", authFailed: false });
+    expect(await syncAccount(deps, ACCOUNT_ID, OPTIONS)).toMatchObject({ error: "Authentication failed", authFailed: true });
   });
 
   it("auth failure marks the account and stops retrying", async () => {

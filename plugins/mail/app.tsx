@@ -1834,6 +1834,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
         else if (result === "refused") {
           toast.error(tx("The server refused the saved password again. Try later or update the app password."));
         } else if (result === "unreachable") toast.error(tx("The mail server could not be reached. Try again later."));
+        else if (result === "sign_in_needed") toast.error(tx("Google no longer accepts this sign-in. Sign in to Google again."));
         else toast.error(tx("The saved password cannot be read. Enter it again."));
       } catch (error) {
         toast.error(tx("Could not sign in: {p1}", { p1: messageOf(error) }));

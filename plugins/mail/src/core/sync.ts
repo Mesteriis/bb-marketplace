@@ -32,8 +32,10 @@
 // rows and clears history_since. Gmail sessions report X-GM-LABELS, which
 // are stored at every fetch and refreshed in the flag pass.
 import { AUTH_REFUSALS_TO_STOP, type AuthRefusals } from "./auth-refusals.ts";
+import { GRANT_REVOKED_ERROR } from "./sync-problems.ts";
 import type { AccountPreset, FetchedMessage, FlagChange, FlagIntent, Folder, RemoteFolder, SpecialUse } from "./model.ts";
 import {
+  GrantRevokedError,
   ImapAuthError,
   type ChangeNotifier,
   type Clock,
@@ -313,7 +315,9 @@ export async function syncAccount(
       inserted,
     };
   } catch (error) {
-    const authFailed = error instanceof ImapAuthError && refusalStops(deps, account);
+    // A revoked grant does not come back by waiting: it stops the account at once.
+    const authFailed =
+      error instanceof GrantRevokedError || (error instanceof ImapAuthError && refusalStops(deps, account));
     const message =
       error instanceof ImapAuthError && !authFailed ? LOGIN_REFUSED_ERROR : redact(describeError(error), password);
     try {
@@ -963,6 +967,7 @@ const SAFE_NAME = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
 
 /** Describes an error by its class and code only; messages may echo credentials. */
 function describeError(error: unknown): string {
+  if (error instanceof GrantRevokedError) return GRANT_REVOKED_ERROR;
   if (error instanceof ImapAuthError) return "Authentication failed";
   if (error instanceof SyncRoundError) return error.message;
   const code = (error as { code?: unknown } | null)?.code;
