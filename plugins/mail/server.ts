@@ -116,6 +116,8 @@ import {
   type BbSettings,
   type RuleDeps,
 } from "./src/adapters/bb/bb-rpc.ts";
+import { guardHandlers, type PluginCheck } from "./src/adapters/bb/plugin-guard.ts";
+import { PLUGIN_API_METHODS, PLUGIN_CALLER_MESSAGE } from "./src/core/plugin-api.ts";
 import { ruleThreadMetadata } from "./src/core/bb-text.ts";
 import { describeStructure, headerLines, readHeaders } from "./src/core/headers.ts";
 import {
@@ -946,18 +948,10 @@ function refuse(
   return new experimental_PluginRpcRefusal({ code, message });
 }
 
-export const PLUGIN_CALLER_MESSAGE = "Only the owner's Mail page can change mail or accounts.";
+export { PLUGIN_CALLER_MESSAGE };
 export const PASSWORD_NEEDED_MESSAGE = "This account needs its password re-entered";
 /** Role "all" (Gmail All Mail) stays under its account; All accounts does not merge it. */
 export const ALL_ROLE_MESSAGE = "All Mail is not a merged folder";
-
-/**
- * Writes refuse other plugins calling through bb.sdk.plugins.callRpc (the
- * host verifies that caller kind); every client caller is let through.
- */
-function refusePluginCaller(context: ExperimentalPluginRpcHandlerContext): void {
-  if (context.experimental_caller.kind === "plugin") throw refuse("forbidden", PLUGIN_CALLER_MESSAGE);
-}
 
 export const ACCOUNT_BUSY_MESSAGE = "A message is being sent";
 /** settings_set when BB does not take the change. */
@@ -1880,6 +1874,7 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
     const rpcDeps: RpcDeps = {
       googleSignIn,
       googleSignInOffered: googleClient() !== null,
+      pluginCheck: () => {},
       pageSettings: {
         get: () => pageSettingsOf(current),
         set: async (patch) => {
@@ -1999,6 +1994,8 @@ type RpcDeps = {
   /** Google sign-in flows, and whether the plugin has a client to offer them with. */
   googleSignIn: GoogleSignIn;
   googleSignInOffered: boolean;
+  /** The grant check of the plugin API: throws a refusal when the plugin may not make the call. */
+  pluginCheck: PluginCheck;
   /** The settings page: the settings it shows, and a change of the writable ones. */
   pageSettings: { get: () => PageSettings; set: (patch: PageSettingsPatch) => Promise<PageSettings> };
   /** Slice 3g: BB projects and working trees, threads, Taskboard and the owner's settings for them. */
@@ -3068,7 +3065,6 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
   /** Owner-only compose handler: plugin callers refused first, failures as fixed-text refusals. */
   function owner<I, O>(method: string, run: (input: I) => O | Promise<O>) {
     return async (input: I, context: ExperimentalPluginRpcHandlerContext): Promise<O> => {
-      refusePluginCaller(context);
       try {
         return await run(input);
       } catch (error) {
@@ -3079,7 +3075,6 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
   /** Owner-only translation handler: plugin callers refused first, failures as fixed-text refusals. */
   function translating<I, O>(method: string, run: (input: I) => O | Promise<O>) {
     return async (input: I, context: ExperimentalPluginRpcHandlerContext): Promise<O> => {
-      refusePluginCaller(context);
       try {
         return await run(input);
       } catch (error) {
@@ -3133,7 +3128,6 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
   /** A slice 3h method: plugin callers refused first; failures as fixed-text refusals, logged by kind only. */
   function owner3h<I, O>(method: string, run: (input: I) => O | Promise<O>) {
     return async (input: I, context: ExperimentalPluginRpcHandlerContext): Promise<O> => {
-      refusePluginCaller(context);
       try {
         return await run(input);
       } catch (error) {
@@ -3147,7 +3141,6 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
   const s3 = deps.slice3h;
   function ownerBb<I, O>(method: string, run: (input: I) => O | Promise<O>) {
     return async (input: I, context: ExperimentalPluginRpcHandlerContext): Promise<O> => {
-      refusePluginCaller(context);
       try {
         return await run(input);
       } catch (error) {
@@ -3169,10 +3162,11 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
   // No method is published as discoverable, and none (message_action and the
   // image methods included) is exposed as a tool, CLI command or mention. They
   // are still reachable by anything that can call local plugin RPC as a client,
-  // an agent with shell access included; other plugins are refused on writes.
+  // an agent with shell access included. Another plugin's server is refused on
+  // every method outside the plugin API (the guard), reads included.
   bb.rpc.register(
     rpcContract,
-    {
+    guardHandlers({
       status_get: async () => ({
         vaultReady: deps.vaultReady(),
         agentTools: deps.agentTools(),
@@ -3183,11 +3177,9 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         unreadCount: store.unreadCount(null),
       }),
       settings_get: (_input, context) => {
-        refusePluginCaller(context);
         return deps.pageSettings.get();
       },
       settings_set: async (patch, context) => {
-        refusePluginCaller(context);
         try {
           return await deps.pageSettings.set(patch);
         } catch {
@@ -3195,7 +3187,6 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         }
       },
       google_sign_in_start: async ({ email }, context) => {
-        refusePluginCaller(context);
         if (!deps.vaultReady()) throw refuse("conflict", NEEDS_KEY_MESSAGE);
         try {
           return await deps.googleSignIn.start({ email });
@@ -3204,12 +3195,10 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         }
       },
       google_sign_in_status: ({ flowId }, context) => {
-        refusePluginCaller(context);
         return deps.googleSignIn.status(flowId);
       },
       accounts_test: (input) => testAccount(accountDeps, input),
       accounts_add: async (input, context) => {
-        refusePluginCaller(context);
         if (!deps.vaultReady()) throw refuse("conflict", NEEDS_KEY_MESSAGE);
         let account: Account;
         try {
@@ -3224,7 +3213,6 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         return account;
       },
       accounts_remove: ({ accountId }, context) => {
-        refusePluginCaller(context);
         let removed: boolean;
         try {
           removed = removeAccount(accountDeps, accountId);
@@ -3250,7 +3238,6 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         return { started: true };
       },
       accounts_retry_sign_in: async ({ accountId }, context) => {
-        refusePluginCaller(context);
         const result = await retrySignIn(
           {
             store,
@@ -3316,7 +3303,6 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       // The only path that marks mail read: the owner opened it in the Mail page
       // (other plugins are refused, like on every write).
       message_open: ({ messageId }, context) => {
-        refusePluginCaller(context);
         const opened = store.markOpened(messageId);
         if (opened === null) throw refuse("not_found", "Unknown message");
         publishChanged(opened.accountId);
@@ -3342,7 +3328,6 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
           : { folders: store.listFolders(accountId), roles: [] },
       // Owner-clicked or hotkeyed moves and flag changes; the sync loop pushes them.
       message_action: (input, context) => {
-        refusePluginCaller(context);
         if (input.role === "all") throw refuse("invalid", ALL_ROLE_MESSAGE);
         const { groups, undo } = runMessageAction(deps, input);
         // The page's undoId: what this call queued becomes (or joins) the one undoable action.
@@ -3352,7 +3337,6 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       // Details panel: read-only session, BODY.PEEK, never \Seen; nothing is logged.
       // Owner only: it logs in to the server and shows headers no other RPC gives.
       message_source: async ({ messageId }, context) => {
-        refusePluginCaller(context);
         let fetched: Awaited<ReturnType<typeof fetchRawGuarded>>;
         try {
           fetched = await fetchRawGuarded(deps.rawDeps, messageId);
@@ -3377,7 +3361,6 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         };
       },
       download_ticket: ({ kind, messageId, partId }, context) => {
-        refusePluginCaller(context);
         try {
           checkRawRef(deps.rawDeps, messageId);
         } catch (error) {
@@ -3397,7 +3380,6 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         return { url: `${downloadUrl(bb.pluginId)}?t=${ticket}`, fileName };
       },
       images_allow_sender: ({ messageId }, context) => {
-        refusePluginCaller(context);
         const message = store.getMessage(messageId);
         if (message === null) throw refuse("not_found", "Unknown message");
         if (message.from.address.trim() === "") {
@@ -3407,7 +3389,6 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         return { address: message.from.address };
       },
       images_disallow_sender: ({ accountId, address }, context) => {
-        refusePluginCaller(context);
         return { removed: store.disallowImageSender(accountId, address) };
       },
       // Compose and send (slice 3b). Owner only: every handler refuses plugin
@@ -3624,7 +3605,6 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       action_undo: owner("action_undo", ({ undoId }) => runUndo(deps, undoId, (line) => bb.log.info(line))),
       // Slice 3e: wired in the server tasks; until then every call refuses.
       new_mail_get: ({ token }, context) => {
-        refusePluginCaller(context);
         const ids = deps.newMail.get(token);
         if (ids === null) throw refuse("not_found", NEW_MAIL_GONE_MESSAGE);
         const timeOf = (row: { date: string | null; fetchedAt: string }) => Date.parse(row.date ?? row.fetchedAt) || 0;
@@ -3639,7 +3619,6 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         return { items, more: rows.length - items.length };
       },
       unsubscribe_info: async ({ messageId }, context) => {
-        refusePluginCaller(context);
         return unsubscribeView(deps, messageId, (line) => bb.log.info(line));
       },
       // Slice 3n: the lists the stored mail comes from. Owner only; the list keys stay here.
@@ -3672,14 +3651,12 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       }),
       // Snooze (slice 3e): Inbox mail only, into the account's snooze folder.
       message_snooze: (input, context) => {
-        refusePluginCaller(context);
         if (input.role === "all") throw refuse("invalid", ALL_ROLE_MESSAGE);
         const { groups, undo, needsFolder } = runSnooze(deps, input);
         const undoable = input.undoId !== undefined && deps.undo.record(input.undoId, "snooze", undo);
         return { groups, undoable, needsFolder };
       },
       message_unsnooze: async ({ messageIds }, context) => {
-        refusePluginCaller(context);
         const at = nowIso();
         const accounts = new Set<string>();
         for (const id of new Set(messageIds)) {
@@ -3879,16 +3856,13 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       // Slice 3i (resolution 7): the old-row check, one read-only PEEK session per folder
       // through the account queue; Details' Check again passes force.
       sender_check_refresh: async ({ messageIds, force }, context) => {
-        refusePluginCaller(context);
         return deps.senderChecks.refresh({ messageIds, force });
       },
       // Slice 3k: OpenPGP. Every method refuses another plugin first; nothing here is a tool or a command.
       pgp_certs_list: (_input, context) => {
-        refusePluginCaller(context);
         return { certs: deps.pgp.list(), vaultReady: deps.vaultReady() };
       },
       pgp_cert_generate: async ({ accountId, address }, context) => {
-        refusePluginCaller(context);
         const account = store.getAccount(accountId);
         if (account === null) throw refuse("not_found", "Unknown account");
         const wanted = address.trim().toLowerCase();
@@ -3902,32 +3876,26 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         return { cert: made };
       },
       pgp_cert_import: async ({ armor, phrase }, context) => {
-        refusePluginCaller(context);
         return deps.pgp.importArmor(armor, phrase ?? null);
       },
       pgp_cert_import_message: async ({ messageId }, context) => {
-        refusePluginCaller(context);
         const fetched = await fetchRawGuarded(deps.rawDeps, messageId).catch((error: unknown) => {
           throw rawRefusal(error);
         });
         return deps.pgp.importFromMessage(fetched.raw);
       },
       pgp_cert_remove: ({ id }, context) => {
-        refusePluginCaller(context);
         return { ok: deps.pgp.remove(id) };
       },
       pgp_cert_export: async ({ id, phrase }, context) => {
-        refusePluginCaller(context);
         const exported = await deps.pgp.exportArmor(id, phrase ?? null);
         if (exported === null) throw refuse("not_found", PGP_UNKNOWN_MESSAGE);
         return exported;
       },
       pgp_check: ({ from, recipients }, context) => {
-        refusePluginCaller(context);
         return deps.pgp.check(from, recipients);
       },
       pgp_verify: async ({ messageId }, context) => {
-        refusePluginCaller(context);
         const fetched = await fetchRawGuarded(deps.rawDeps, messageId).catch((error: unknown) => {
           throw rawRefusal(error);
         });
@@ -3988,13 +3956,11 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       }),
       filter_delete: owner("filter_delete", ({ id }) => ({ ok: store.deleteMailFilter(id) })),
       invite_view: async ({ messageId }, context) => {
-        refusePluginCaller(context);
         const { invite, role } = await readInvite(deps, messageId);
         return { invite, answerable: inviteRefusal(invite, role) === null };
       },
       invite_reply: owner("invite_reply", (input) => replyToInvite(deps, input, log)),
       pgp_open: async ({ messageId }, context) => {
-        refusePluginCaller(context);
         const fetched = await fetchRawGuarded(deps.rawDeps, messageId).catch((error: unknown) => {
           throw rawRefusal(error);
         });
@@ -4006,7 +3972,11 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
           ? opened
           : { state: opened.state, text: null, html: null, attachments: [], signature: null };
       },
-    },
+    }, {
+      api: new Set(PLUGIN_API_METHODS),
+      check: deps.pluginCheck,
+      onRefused: (pluginId, method) => bb.log.warn(`plugin ${JSON.stringify(pluginId.slice(0, 128))} refused on ${method}`),
+    }),
     { experimental_discoverable: false },
   );
 }

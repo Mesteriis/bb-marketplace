@@ -36,6 +36,23 @@ import {
   NO_THREAD_MESSAGE,
 } from "./server.ts";
 import { BB_REFUSAL_TEXT, SLICE_3H_METHODS } from "./src/core/contract.ts";
+import { rpcSchemas } from "./src/core/contract.ts";
+import { PLUGIN_API_METHODS, PLUGIN_CALLER_MESSAGE as PLUGIN_API_CALLER_MESSAGE } from "./src/core/plugin-api.ts";
+
+/** The handler map as the server registers it, kept for the contract walk below. */
+const registered = vi.hoisted(() => ({ handlers: null as Record<string, (input: never, context: never) => unknown> | null }));
+vi.mock("./src/adapters/bb/plugin-guard.ts", async (original) => {
+  const real = await original<typeof import("./src/adapters/bb/plugin-guard.ts")>();
+  return {
+    ...real,
+    guardHandlers: ((handlers, opts) => {
+      const guarded = real.guardHandlers(handlers, opts);
+      registered.handlers = guarded as never;
+      return guarded;
+    }) as typeof real.guardHandlers,
+  };
+});
+
 import {
   FOLDER_REFUSAL_MESSAGES,
   LABELS_REFUSED_MESSAGE,
@@ -1234,7 +1251,7 @@ describe("makosh-mail server", () => {
     const call = (method: string, input: unknown) =>
       host.harness.behavior.callRpc(method, input, asPlugin);
 
-    const unreadBefore = ((await call("status_get", null)) as { unreadCount: number }).unreadCount;
+    const unreadBefore = ((await host.harness.behavior.callRpc("status_get", null)) as { unreadCount: number }).unreadCount;
     const calls = [
       call("message_open", { messageId }),
       call("message_action", { messageIds: [messageId], folder: "INBOX", action: "delete" }),
@@ -1259,9 +1276,9 @@ describe("makosh-mail server", () => {
     for (const result of calls) await expect(result).rejects.toThrow(PLUGIN_CALLER_MESSAGE);
 
     expect(movePending(host, messageId)).toBeNull();
-    expect(((await call("status_get", null)) as { unreadCount: number }).unreadCount).toBe(unreadBefore);
+    expect(((await host.harness.behavior.callRpc("status_get", null)) as { unreadCount: number }).unreadCount).toBe(unreadBefore);
     expect(sealedPasswords(host)).toEqual(["sealed-password"]);
-    const body = (await call("message_body", { messageId })) as MessageBody;
+    const body = (await host.harness.behavior.callRpc("message_body", { messageId })) as MessageBody;
     expect(body.remoteImagesAllowed).toBe(false);
   });
 
@@ -3364,6 +3381,33 @@ const SIGNATURE_DOC = { type: "doc", content: [para(SIGNATURE_TEXT)] };
 const TEMPLATE_DOC = { type: "doc", content: [para(TEMPLATE_TEXT)] };
 const POLISH_SECRETS = [ALIAS, SIGNATURE_TEXT, TEMPLATE_TEXT, TEMPLATE_NAME, "ana@example.com", SUBJECT, BODY_TEXT];
 const asPlugin = { experimental_caller: { kind: "plugin", pluginId: "other" } } as const;
+
+describe("the plugin guard over the whole contract", () => {
+  it("every method of the contract refuses a plugin caller unless it is in the plugin API", async () => {
+    await load();
+    const handlers = registered.handlers!;
+    expect(Object.keys(handlers).sort()).toEqual(Object.keys(rpcSchemas).sort());
+    const context = { ...asPlugin, experimental_signal: new AbortController().signal };
+    const open: string[] = [];
+    for (const method of Object.keys(rpcSchemas)) {
+      if (PLUGIN_API_METHODS.includes(method)) continue;
+      const outcome = await Promise.resolve()
+        .then(() => handlers[method]!({} as never, context as never))
+        .then(
+          () => "answered",
+          (error: { code?: string; message?: string }) => `${error.code}:${error.message}`,
+        );
+      if (outcome !== `forbidden:${PLUGIN_API_CALLER_MESSAGE}`) open.push(`${method} -> ${outcome}`);
+    }
+    expect(open).toEqual([]);
+  });
+
+  it("a read answers the owner's page and refuses another plugin through the host", async () => {
+    const host = await load();
+    await expect(host.harness.behavior.callRpc("status_get", null)).resolves.toMatchObject({ vaultReady: true });
+    await expect(host.harness.behavior.callRpc("status_get", null, asPlugin)).rejects.toMatchObject({ code: "forbidden" });
+  });
+});
 
 /** acc_1 as seedCompose, plus acc_2 (second@example.com) on another server. */
 function seedTwoComposeAccounts(bb: BbPluginApi): void {
@@ -8628,7 +8672,9 @@ describe("slice 3i: sender checks on the server", () => {
     db.prepare("UPDATE messages SET sender_check_json = ? WHERE id = ?").run(JSON.stringify(storedCheck("failed")), ids[0]);
     expect(await call(host, "sender_check_refresh", { messageIds: [ids[0]!], force: true })).toEqual({ refreshed: 1, failed: 0 });
     expect(JSON.parse(sqlStore(host).senderCheckRows([ids[0]!])[0]!.senderCheckJson!).state).toBe("unchecked");
-    expect(logText(host)).not.toContain("sender_check");
+    // No failure line; the refused plugin call above is logged by method name only.
+    expect(logText(host)).not.toContain("sender_check ");
+    expect(logText(host)).toContain("refused on sender_check_refresh");
   });
 
   it("sender_check_refresh skips a folder whose UIDVALIDITY changed and logs only the error kind of a failed fetch", async () => {
