@@ -984,3 +984,8 @@
 :is(.rh-root, .rh-page) fieldset {
   border-radius: 8px;
 }
+
+/* A terminal inside a desk pane keeps its text off the pane's border (the fit addon subtracts this padding). */
+[data-testid="desk-pane"] .rh-terminal .xterm {
+  padding: 8px 10px;
+}

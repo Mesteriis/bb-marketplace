@@ -152,7 +152,7 @@ export function HubSidebar(props: HubSidebarProps) {
   const hasPve = rows.some((r) => r.type === "profile" && r.protocol === "pve" && r.expanded);
   return (
     <nav className="rh-tokens flex h-full min-h-0 flex-col text-foreground" aria-label={tx("app.title")}>
-      <div className="flex h-[var(--rh-header)] shrink-0 items-center gap-2 px-3">
+      <div className="sticky top-0 z-10 flex h-[var(--rh-header)] shrink-0 items-center gap-2 bg-[var(--sidebar,var(--background))] px-3" data-testid="sidebar-head">
         <Input type="search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder={tx("sidebar.search")} aria-label={tx("sidebar.search")} className="h-8 flex-1" />
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
