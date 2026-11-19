@@ -74,6 +74,7 @@ import { addBounded, setBounded } from "./src/ui/bounded.ts";
 import {
   DEFAULT_FOLDER_PATH,
   inboxPath,
+  isInboxView,
   sameView,
   viewKey,
   viewPaths,
@@ -87,6 +88,7 @@ import {
   type ComposeKind,
   type ComposerState,
   type MailInboxPorts,
+  type MailTabsPorts,
   type ReadingState,
   type SearchState,
   type ThreadListState,
@@ -99,6 +101,7 @@ import {
   parseDraftSubPath,
   parseThreadSubPath,
   parseViewSubPath,
+  parseViewTab,
   pageSubPath,
   parsePageSubPath,
   parseSettingsSubPath,
@@ -110,6 +113,7 @@ import {
   type MailPageName,
   threadSubPath,
   viewSubPath,
+  viewTabSubPath,
   type ThreadLink,
 } from "./src/ui/routes.ts";
 import { NEW_MAIL_TOAST_MS, newMailToastPlan } from "./src/ui/new-mail-toasts.ts";
@@ -163,6 +167,8 @@ import type { RailCommand } from "./src/ui/mail-sidebar.tsx";
 import type { HistoryState } from "./src/ui/thread-list.tsx";
 import { dropAction, dropRefusal, readMovePayload } from "./src/ui/drag-move.ts";
 import { SaveSearchDialog, type SavedSearchEdit } from "./src/ui/saved-searches.tsx";
+import type { InboxTabView } from "./src/ui/inbox-tabs.tsx";
+import { TAB_NAME_MAX } from "./src/core/inbox-tabs.ts";
 import {
   DeleteFolderDialog,
   FolderNameDialog,
@@ -528,10 +534,7 @@ const mailPageLink = (() => {
       const state = shown;
       if (state === null) return false;
       if (typeof document !== "undefined" && document.visibilityState === "hidden") return false;
-      const view = state.view;
-      if (view.kind === "role") return view.role === "inbox";
-      const folder = (state.folders ?? []).find((f) => f.accountId === view.accountId && f.path === view.path);
-      return folder !== undefined ? folder.specialUse === "inbox" : view.path.toUpperCase() === "INBOX";
+      return isInboxView(state.view, state.folders);
     },
     /** False when no page took the command. */
     send(command: PageCommand): boolean {
@@ -592,15 +595,15 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
    * The view the subPath names (a conversation link keeps the view before
    * it), and a counter of subPath changes.
    */
-  const route = useRef({ subPath, serial: 0, view: parseViewSubPath(subPath) });
+  const route = useRef({ subPath, serial: 0, view: parseViewSubPath(subPath), tab: parseViewTab(subPath) });
   if (route.current.subPath !== subPath) {
+    const kept = parseThreadSubPath(subPath) !== null || parseDraftSubPath(subPath) !== null || parseSavedSearchSubPath(subPath) !== null;
     route.current = {
       subPath,
       serial: route.current.serial + 1,
-      view:
-        parseThreadSubPath(subPath) !== null || parseDraftSubPath(subPath) !== null || parseSavedSearchSubPath(subPath) !== null
-          ? route.current.view
-          : parseViewSubPath(subPath),
+      view: kept ? route.current.view : parseViewSubPath(subPath),
+      // Split Inbox: the Inbox tab of the view, kept with it.
+      tab: kept ? route.current.tab : parseViewTab(subPath),
     };
   }
   const routeView = route.current.view;
@@ -644,6 +647,9 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     return { kind: "folder", accountId: account.id, path: inboxPath(folders) ?? DEFAULT_FOLDER_PATH };
   })();
   const currentViewKey = viewKey(view);
+  /** Split Inbox: tabs sit over an Inbox only; the routed tab counts while its view is the one shown. */
+  const inboxShown = isInboxView(view, folders);
+  const routeTab = inboxShown && routeView !== null && sameView(routeView, view) ? route.current.tab : null;
   const searchAccount = unified ? null : (account?.id ?? null);
 
   // Latest values for callbacks that outlive a render (realtime, async results).
@@ -652,6 +658,8 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     searchAccount,
     unified,
     view,
+    tab: routeTab,
+    inbox: inboxShown,
     folders,
     list,
     search,
@@ -660,7 +668,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     subPath,
     unsubscribe: null as { messageId: string; info: UnsubscribeInfoView } | null,
   });
-  latest.current = { ...latest.current, scopeKey, searchAccount, unified, view, folders, list, search, reading, selection, subPath };
+  latest.current = { ...latest.current, scopeKey, searchAccount, unified, view, tab: routeTab, inbox: inboxShown, folders, list, search, reading, selection, subPath };
   /** Messages this page already marked opened, so message_open runs once each. */
   const opened = useRef(new Set<string>());
   /** The account of the conversation open in the reading pane. */
@@ -673,7 +681,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
    * picks something on the page.
    */
   const wantedLink = useRef<ThreadLink | null>(null);
-  const requests = useRef({ list: 0, search: 0, thread: 0, folders: 0, details: 0 });
+  const requests = useRef({ list: 0, search: 0, thread: 0, folders: 0, details: 0, tabs: 0 });
   /** Slice 3h: indexAttachmentText, read by the page's own search. */
   const searchAttachments = useRef(false);
   /** Slice 3h: folders the owner set to one row per message (this device; folder_prefs_set keeps the server's copy). */
@@ -742,11 +750,14 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
           const flags = filtersRef.current.get(viewKey(forView)) ?? NO_FILTER;
           const keep = openThreadId.current;
           const filter = filterActive(flags) ? { ...flags, ...(keep !== null ? { keep } : {}) } : undefined;
+          // Split Inbox: a tab the server no longer knows lists the whole Inbox.
+          const tabId = latest.current.tab;
           const page = await rpc.call("threads_list", {
             scope: scopeOf(forView),
             cursor,
             limit,
             ...(filter !== undefined ? { filter } : {}),
+            ...(tabId !== null ? { tabId } : {}),
           });
           if (token !== requests.current.list) return;
           threads.push(...page.threads);
@@ -777,6 +788,23 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     },
     [rpc],
   );
+
+  /**
+   * Split Inbox: the tabs and their unread counts for the Inbox shown. A
+   * failed load keeps the row as it was; the list reports a store that fails.
+   */
+  const [tabState, setTabState] = useState<{ key: string; tabs: InboxTabView[]; inboxUnread: number } | null>(null);
+  const loadTabs = useCallback(async () => {
+    const { scopeKey: key, view: forView, inbox } = latest.current;
+    if (key === null || !inbox) return;
+    const token = ++requests.current.tabs;
+    try {
+      const result = await rpc.call("inbox_tabs_list", { scope: scopeOf(forView) });
+      if (token === requests.current.tabs) setTabState({ key: viewKey(forView), tabs: result.tabs, inboxUnread: result.inboxUnread });
+    } catch {
+      // Kept as it was.
+    }
+  }, [rpc]);
 
   /** Slice 3h: a folder that is not grouped by conversation lists its messages (messages_list). */
   const loadMessages = useCallback(
@@ -1093,9 +1121,10 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       return;
     }
     void loadList(latest.current.view, "reset");
+    void loadTabs();
     const link = wantedLink.current;
     if (link !== null) selectThread(link.threadId, null, link.accountId);
-  }, [scopeKey, currentViewKey, loadList, runSearch, selectThread]);
+  }, [scopeKey, currentViewKey, routeTab, inboxShown, loadList, loadTabs, runSearch, selectThread]);
 
   useEffect(
     () => () => {
@@ -1116,8 +1145,9 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     if (key === null) return;
     void loadList(current, "refresh");
     void loadFolders(key);
+    void loadTabs();
     if (currentSearch.query !== "") void runSearch(currentSearch.query, forAccount);
-  }, [loadFolders, loadList, runSearch]);
+  }, [loadFolders, loadList, loadTabs, runSearch]);
 
   useDebouncedRealtime(MAIL_CHANGED_CHANNEL, (payloads) => {
     void loadStatus();
@@ -1158,6 +1188,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       // From the Today or Tasks page, the view the page sits on opens too.
       if (
         !sameView(next, current) ||
+        latest.current.tab !== null ||
         parsePageSubPath(latest.current.subPath) !== null ||
         parseSavedSearchSubPath(latest.current.subPath) !== null
       ) {
@@ -2182,6 +2213,63 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
   // ---- Inbox triage on the page (slice 3e): filters, unsubscribe, snooze, block ----
 
   const listFilter = filtersRef.current.get(currentViewKey) ?? NO_FILTER;
+
+  /** Split Inbox: the row's ports. The tab in view is the routed one while it still exists. */
+  const shownTabs = inboxShown && tabState !== null && tabState.key === currentViewKey ? tabState : null;
+  const tabPorts = useMemo((): MailTabsPorts => {
+    const tabs = shownTabs?.tabs ?? [];
+    const currentId = tabs.some((tab) => tab.id === routeTab) ? routeTab : null;
+    const open = (id: string | null) => navigate.toPluginPanel("mail", { subPath: viewTabSubPath(latest.current.view, id) });
+    const save = async (input: { id?: string; name: string; query: string }) => {
+      await rpc.call("inbox_tab_save", input);
+      await loadTabs();
+      if (input.id !== undefined && input.id === latest.current.tab) void loadList(latest.current.view, "reset");
+    };
+    const change = (call: Promise<unknown>, after?: () => void) => {
+      call.then(
+        () => {
+          after?.();
+          void loadTabs();
+        },
+        (error) => toast.error(tx("Could not change the tabs: {p1}", { p1: messageOf(error) })),
+      );
+    };
+    return {
+      shown: inboxShown,
+      tabs,
+      currentId,
+      inboxUnread: shownTabs?.inboxUnread ?? 0,
+      onSelect: (id) => {
+        if (id !== currentId) open(id);
+      },
+      onStep: (delta) => {
+        if (tabs.length === 0) return;
+        const order: (string | null)[] = [null, ...tabs.map((tab) => tab.id)];
+        open(order[(order.indexOf(currentId) + delta + order.length) % order.length] ?? null);
+      },
+      onAdd: (tab) => save(tab),
+      onRename: async (id, name) => {
+        const tab = tabs.find((t) => t.id === id);
+        if (tab !== undefined) await save({ id, name, query: tab.query });
+      },
+      onEdit: async (id, query) => {
+        const tab = tabs.find((t) => t.id === id);
+        if (tab !== undefined) await save({ id, name: tab.name, query });
+      },
+      onMove: (id, direction) => change(rpc.call("inbox_tab_move", { id, direction })),
+      onRemove: (id) =>
+        change(rpc.call("inbox_tab_delete", { id }), () => {
+          if (id === latest.current.tab) open(null);
+        }),
+      onSplitSender: ({ name, address }) => {
+        const tabName = (name?.trim() || address).slice(0, TAB_NAME_MAX);
+        save({ name: tabName, query: `from:${address}` }).then(
+          () => toast(tx("Added the tab {p1}", { p1: tabName })),
+          (error) => toast.error(tx("Could not add the tab: {p1}", { p1: messageOf(error) })),
+        );
+      },
+    };
+  }, [inboxShown, shownTabs, routeTab, navigate, rpc, loadTabs, loadList]);
   /** A toggle: the view keeps it while the page is open, and the list starts again. */
   const setListFilter = useCallback(
     (next: ListFilter) => {
@@ -4376,6 +4464,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       onUndo={() => void undo(lastUndo.current?.id ?? null, lastUndo.current?.moving ?? false)}
       listFilter={listFilter}
       onListFilter={setListFilter}
+      tabs={tabPorts}
       inbox={inboxPorts}
       ai={mailAi}
       bb={mailBb}

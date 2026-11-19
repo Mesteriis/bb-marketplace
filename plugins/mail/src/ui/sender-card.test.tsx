@@ -40,6 +40,17 @@ describe("SenderCardDialog", () => {
     expect(actions.onBlock).toHaveBeenCalled();
   });
 
+  it("offers a tab of the sender's mail only where the page gives the action", () => {
+    const base = { onSearch: vi.fn(), onFiles: vi.fn(), onOpenConversation: vi.fn() };
+    const { unmount } = render(<SenderCardDialog address="anna@example.org" card={card} error={null} actions={base} onClose={vi.fn()} />);
+    expect(screen.queryByRole("button", { name: "Split by this sender" })).toBeNull();
+    unmount();
+    const onSplit = vi.fn();
+    render(<SenderCardDialog address="anna@example.org" card={card} error={null} actions={{ ...base, onSplit }} onClose={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Split by this sender" }));
+    expect(onSplit).toHaveBeenCalledTimes(1);
+  });
+
   it("says when To was counted in recent mail only", () => {
     expect(senderSummary({ ...card, toCapped: true, firstDate: null })).toBe("48 from, 12 to (in recent mail)");
   });

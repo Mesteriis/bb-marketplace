@@ -112,6 +112,8 @@ import { SearchHelpButton, SearchNotes } from "./search-help.tsx";
 import { ServerSearchStrip, type ServerJobView } from "./server-search-strip.tsx";
 import { SAVED_SEARCH_GONE_TEXT } from "./saved-searches.tsx";
 import { SenderCardDialog } from "./sender-card.tsx";
+import { InboxTabs, type InboxTabView, type TabRequest } from "./inbox-tabs.tsx";
+import { TAB_LIBRARY, TAB_NAME_MAX } from "../core/inbox-tabs.ts";
 import { getLanguage, tx } from "./i18n/index.ts";
 
 export { ALL_ACCOUNTS };
@@ -215,6 +217,25 @@ export interface ComposerState {
 }
 
 export type ComposeKind = "reply" | "reply_all" | "forward";
+
+/** Split Inbox: the tabs over an Inbox view and the ways to make one from elsewhere. */
+export interface MailTabsPorts {
+  /** The view listed is an Inbox: the row (or the offer to split) shows. */
+  shown: boolean;
+  tabs: readonly InboxTabView[];
+  currentId: string | null;
+  inboxUnread: number;
+  onSelect: (id: string | null) => void;
+  /** `]` and `[`. */
+  onStep: (delta: 1 | -1) => void;
+  onAdd: (tab: { name: string; query: string }) => Promise<void>;
+  onRename: (id: string, name: string) => Promise<void>;
+  onEdit: (id: string, query: string) => Promise<void>;
+  onMove: (id: string, direction: "left" | "right") => void;
+  onRemove: (id: string) => void;
+  /** A tab of one sender's mail, made at once. */
+  onSplitSender: (sender: { name: string | null; address: string }) => void;
+}
 
 /** Inbox triage on the page (slice 3e): unsubscribe, snooze and block. */
 export interface MailInboxPorts {
@@ -371,6 +392,8 @@ export interface MailPageProps {
   /** The quick filters of the list shown (slice 3e); absent: no toggles. */
   listFilter?: ListFilter;
   onListFilter?: (next: ListFilter) => void;
+  /** Split Inbox: the Inbox tabs; absent: no tabs anywhere on the page. */
+  tabs?: MailTabsPorts;
   /** Unsubscribe, snooze and block (slice 3e); absent: none of them. */
   inbox?: MailInboxPorts;
   /** Summaries, Ask, tasks, categories and reply reminders (slice 3f); absent: none of them. */
@@ -596,6 +619,9 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
   /** Slice 3h: the message opened from a folder that is not grouped; it shows alone. */
   const [singleMessage, setSingleMessage] = useState<string | null>(null);
   /** Slice 3h: the sender card open, from a message of the conversation. */
+  /** Split Inbox: a tab dialog asked for from outside the row. */
+  const [tabAsk, setTabAsk] = useState<{ serial: number; request: TabRequest } | null>(null);
+  const askTab = (request: TabRequest) => setTabAsk((prev) => ({ serial: (prev?.serial ?? 0) + 1, request }));
   const [senderFor, setSenderFor] = useState<{ message: MessageHeader; card: SenderCard | null; error: string | null } | null>(null);
   /** Slice 3h: Expand all / Collapse all of the open conversation (quotes follow). */
   const [quotesAll, setQuotesAll] = useState<{ threadId: string; shown: boolean } | null>(null);
@@ -1128,6 +1154,10 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
         if (message !== null) bbUi.makeTaskFor(message);
         return;
       }
+      case "tab_next":
+      case "tab_previous":
+        if (!searching && props.tabs?.shown === true) props.tabs.onStep(command.kind === "tab_next" ? 1 : -1);
+        return;
       case "expand_all": {
         if (!threadOpen || selecting || reading.detail === null || reading3h === undefined) return;
         const allOpen = reading.detail.messages.every((m) => reading.expandedIds.has(m.id));
@@ -1325,12 +1355,34 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
               }
             />
           ) : null}
+          {props.tabs !== undefined ? (
+            <InboxTabs
+              tabs={!searching && props.tabs.shown ? props.tabs.tabs : []}
+              currentId={props.tabs.currentId}
+              inboxUnread={props.tabs.inboxUnread}
+              library={TAB_LIBRARY}
+              onSelect={props.tabs.onSelect}
+              onAdd={props.tabs.onAdd}
+              onRename={props.tabs.onRename}
+              onEdit={props.tabs.onEdit}
+              onMove={props.tabs.onMove}
+              onRemove={props.tabs.onRemove}
+              ask={tabAsk}
+            />
+          ) : null}
           {!searching && props.listFilter !== undefined && props.onListFilter !== undefined ? (
             <QuickFilters
               filter={props.listFilter}
               onChange={props.onListFilter}
               categories={ai?.categoriesOn === true}
               dev={props.bb?.devFilter === true}
+              trailing={
+                props.tabs !== undefined && props.tabs.shown && props.tabs.tabs.length === 0 ? (
+                  <Button variant="ghost" size="sm" className="h-6 px-2 text-xs text-muted-foreground" onClick={() => askTab({ kind: "library" })}>
+                    {tx("Split the Inbox\u2026")}
+                  </Button>
+                ) : null
+              }
             />
           ) : null}
           {!searching && ai !== undefined && ai.categoriesOn && list.threads.length > 0 ? (
@@ -1409,6 +1461,9 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
             }}
             onToggleChecked={toggleChecked}
             emptyName={model.title}
+            {...(props.tabs !== undefined
+              ? { onMakeTab: (query: string) => askTab({ kind: "new", name: query.slice(0, TAB_NAME_MAX), query }) }
+              : {})}
             dragAdvance={(ids) => {
               // A drag of a selection, or of other rows than the open one: nothing opens.
               if (selecting || reading.threadId === null || !ids.includes(reading.threadId)) return null;
@@ -1688,6 +1743,15 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
                   },
                 }
               : {}),
+            ...(senderFor !== null && props.tabs !== undefined
+              ? {
+                  onSplit: () => {
+                    const from = senderFor.message.from;
+                    setSenderFor(null);
+                    props.tabs?.onSplitSender({ name: from.name, address: from.address });
+                  },
+                }
+              : {}),
             ...(senderFor !== null && props.inbox !== undefined
               ? {
                   onBlock: () => {
@@ -1714,6 +1778,8 @@ function ListColumn(
     onOpenRow: (id: string) => void;
     onToggleChecked: (id: string, range: boolean) => void;
     emptyName: string;
+    /** Split Inbox: the new-tab dialog with the search as its condition; absent: no offer. */
+    onMakeTab?: (query: string) => void;
     /** Slice 3i: what opens if the dragged conversations are moved (see advanceFor). */
     dragAdvance: (ids: string[]) => (() => void) | null;
   },
@@ -1786,6 +1852,11 @@ function ListColumn(
           {saved === null ? (
             <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => s3.onSaveSearch(search.query)}>
               {tx("Save search")}
+            </Button>
+          ) : null}
+          {props.onMakeTab !== undefined ? (
+            <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => props.onMakeTab?.(search.query)}>
+              {tx("Make a tab")}
             </Button>
           ) : null}
         </div>

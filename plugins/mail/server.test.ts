@@ -5736,6 +5736,12 @@ describe("Inbox tabs (Split Inbox)", () => {
     expect(listed.tabs).toEqual([{ id: ivy, name: "Ivy", query: "from:ivy@example.com", unread: 1, broken: false }]);
   });
 
+  it("the list carries the unread conversations of the whole Inbox for the Inbox tab", async () => {
+    const host = await loadCanary();
+    const listed = (await call(host, "inbox_tabs_list", { scope })) as { inboxUnread: number };
+    expect(listed.inboxUnread).toBe(2);
+  });
+
   it("Other holds what no other tab does, and follows the tabs as they change", async () => {
     const host = await loadCanary();
     const everything = await subjects(host);

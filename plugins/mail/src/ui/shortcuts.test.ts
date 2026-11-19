@@ -223,6 +223,20 @@ describe("slice 3h keys", () => {
     expect(labels).toEqual(expect.arrayContaining(["g f", "l"]));
   });
 
+  it("] and [ walk the Inbox tabs, by position on another layout, never with Shift or while typing", () => {
+    expect(matchShortcut(key({ key: "]", code: "BracketRight" }), false)).toEqual({ kind: "tab_next" });
+    expect(matchShortcut(key({ key: "[", code: "BracketLeft" }), false)).toEqual({ kind: "tab_previous" });
+    expect(matchShortcut(key({ key: "\u044a", code: "BracketRight" }), false)).toEqual({ kind: "tab_next" });
+    expect(matchShortcut(key({ key: "\u0445", code: "BracketLeft" }), false)).toEqual({ kind: "tab_previous" });
+    expect(matchShortcut(key({ key: "}", code: "BracketRight", shiftKey: true }), false)).toBeNull();
+    expect(matchShortcut(key({ key: "{", code: "BracketLeft", shiftKey: true }), false)).toBeNull();
+    const input = document.createElement("input");
+    document.body.append(input);
+    expect(matchShortcut(key({ key: "]", code: "BracketRight", target: input }), false)).toBeNull();
+    input.remove();
+    expect(SHORTCUT_SHEET.flatMap((section) => section.entries.map((entry) => entry.keys.join(" ")))).toContain("] [");
+  });
+
   it("; toggles the conversation and Shift+P prints, never while typing", () => {
     expect(matchShortcut(key({ key: ";", code: "Semicolon" }), false)).toEqual({ kind: "expand_all" });
     expect(matchShortcut(key({ key: "\u0436", code: "Semicolon" }), false)).toEqual({ kind: "expand_all" });

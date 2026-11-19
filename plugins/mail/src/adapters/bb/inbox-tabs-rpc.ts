@@ -33,13 +33,16 @@ export function createInboxTabsRpc(deps: { store: MailStore; now: () => Date; ne
       const tabs = store.listInboxTabs();
       const now = deps.now();
       const matches = tabs.map((tab) => tabMatch(tab, tabs, now));
+      // The Inbox tab is the tab of no condition; its count comes with the others.
+      const whole: TabMatch = { kind: "all", conditions: [] };
       // Gmail's All Mail is never merged: no counts there.
       const counts =
         scope.kind === "all" && scope.role === "all"
-          ? matches.map(() => 0)
-          : store.tabUnreadCounts(scope.kind === "account" ? { accountId: scope.accountId, folder: scope.folder } : { role: scope.role }, matches);
+          ? [0, ...matches.map(() => 0)]
+          : store.tabUnreadCounts(scope.kind === "account" ? { accountId: scope.accountId, folder: scope.folder } : { role: scope.role }, [whole, ...matches]);
       return {
-        tabs: tabs.map((tab, i) => ({ id: tab.id, name: tab.name, query: tab.query, unread: counts[i] ?? 0, broken: matches[i] === null })),
+        inboxUnread: counts[0] ?? 0,
+        tabs: tabs.map((tab, i) => ({ id: tab.id, name: tab.name, query: tab.query, unread: counts[i + 1] ?? 0, broken: matches[i] === null })),
       };
     },
 

@@ -48,6 +48,9 @@ export type ShortcutCommand =
   | { kind: "labels" }
   | { kind: "expand_all" }
   | { kind: "print" }
+  /** `]` and `[`: the next and the previous Inbox tab (Split Inbox). */
+  | { kind: "tab_next" }
+  | { kind: "tab_previous" }
   | { kind: "go"; target: GoTarget };
 
 /** How long `g` waits for its second key. */
@@ -243,6 +246,9 @@ function matchKey(event: KeyLike, afterG: boolean, platform: KeyPlatform): KeyMa
   if (symbol(event, "!", "Digit1")) return { kind: "spam" };
   if (symbol(event, "?", "Slash")) return { kind: "sheet" };
   if (!event.shiftKey && (event.key === "/" || event.code === "Slash")) return { kind: "search" };
+  // Split Inbox: `]` and `[` walk the Inbox tabs; by position where the key types a letter.
+  if (event.key === "]" || (!event.shiftKey && event.code === "BracketRight")) return { kind: "tab_next" };
+  if (event.key === "[" || (!event.shiftKey && event.code === "BracketLeft")) return { kind: "tab_previous" };
   // Slice 3h: `;` expands or collapses the whole conversation.
   if (event.key === ";" || (!event.shiftKey && event.code === "Semicolon")) return { kind: "expand_all" };
 
@@ -436,6 +442,7 @@ export const SHORTCUT_SHEET: { title: string; entries: ShortcutEntry[] }[] = [
       { keys: ["o", msg("Enter")], label: msg("Open conversation") },
       { keys: ["u"], label: msg("Back to the list") },
       { keys: ["/"], label: msg("Search"), mac: [OPT, CMD, "F"] },
+      { keys: ["]", "["], label: msg("Next or previous Inbox tab") },
       { keys: ["g", "i"], label: msg("Go to Inbox") },
       { keys: ["g", "s"], label: msg("Go to Sent") },
       { keys: ["g", "d"], label: msg("Go to Drafts") },

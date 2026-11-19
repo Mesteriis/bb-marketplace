@@ -321,6 +321,19 @@ export function sameView(a: MailView, b: MailView): boolean {
 }
 
 /**
+ * Whether a view lists an Inbox: the merged Inbox, or a folder with the inbox
+ * role (before the account's folders are known, the path INBOX).
+ */
+export function isInboxView(
+  view: MailView,
+  folders: readonly { accountId: string; path: string; specialUse: string | null }[] | null,
+): boolean {
+  if (view.kind === "role") return view.role === "inbox";
+  const folder = (folders ?? []).find((f) => f.accountId === view.accountId && f.path === view.path);
+  return folder !== undefined ? folder.specialUse === "inbox" : view.path.toUpperCase() === "INBOX";
+}
+
+/**
  * Paths of an account's folders the view covers: the viewed folder, or every
  * folder of the role. Before an account's folders are known, a role Inbox
  * means "INBOX".

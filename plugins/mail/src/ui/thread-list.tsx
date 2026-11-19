@@ -102,6 +102,7 @@ export function QuickFilters({
   onChange,
   categories = false,
   dev = false,
+  trailing,
 }: {
   filter: ListFilter;
   onChange: (next: ListFilter) => void;
@@ -109,6 +110,8 @@ export function QuickFilters({
   categories?: boolean;
   /** Slice 3g: Hide dev notifications, with devNotifications on. */
   dev?: boolean;
+  /** A quiet action at the row's end (Split Inbox: "Split the Inbox..."). */
+  trailing?: ReactNode;
 }) {
   return (
     <div role="group" aria-label={tx("Quick filters")} className="flex shrink-0 flex-wrap items-center gap-1 border-b border-border px-3 py-1">
@@ -159,6 +162,7 @@ export function QuickFilters({
           }}
         />
       ) : null}
+      {trailing !== undefined && trailing !== null ? <span className="ml-auto flex items-center">{trailing}</span> : null}
     </div>
   );
 }

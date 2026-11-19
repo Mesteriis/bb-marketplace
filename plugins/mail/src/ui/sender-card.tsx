@@ -35,6 +35,8 @@ export interface SenderCardActions {
   onAlwaysShowImages?: () => void;
   onBlock?: () => void;
   onBindProject?: () => void;
+  /** Split Inbox: a tab of this sender's mail. */
+  onSplit?: () => void;
   onFiles: (address: string) => void;
   onOpenConversation: (thread: ThreadSummary) => void;
 }
@@ -92,6 +94,12 @@ export function SenderCardDialog({
                 <Button variant="ghost" size="sm" className="h-7" onClick={actions.onBindProject}>
                   <Icon name="Folder" aria-hidden />
                   {tx("Bind to a project\u2026")}
+                </Button>
+              ) : null}
+              {actions.onSplit !== undefined ? (
+                <Button variant="ghost" size="sm" className="h-7" onClick={actions.onSplit}>
+                  <Icon name="Columns3" fallback="Inbox" aria-hidden />
+                  {tx("Split by this sender")}
                 </Button>
               ) : null}
               {actions.onBlock !== undefined && !card.blocked ? (

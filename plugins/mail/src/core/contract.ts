@@ -613,6 +613,8 @@ export const rpcSchemas = {
   inbox_tabs_list: {
     input: z.object({ scope: threadScope }),
     output: z.object({
+      /** Unread conversations of the whole Inbox in the scope, for the Inbox tab. */
+      inboxUnread: z.number().int(),
       tabs: z.array(z.object({ id: z.string(), name: z.string(), query: z.string(), unread: z.number().int(), broken: z.boolean() })),
     }),
   },

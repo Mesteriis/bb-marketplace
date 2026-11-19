@@ -6209,3 +6209,96 @@ describe("slice 3j: the page in Russian", () => {
     expect(slot.getByRole("button", { name: "Sync now" })).toBeTruthy();
   });
 });
+
+describe("Split Inbox tabs", () => {
+  const TABS = {
+    inboxUnread: 5,
+    tabs: [
+      { id: "t-vip", name: "VIP", query: "from:vip", unread: 2, broken: false },
+      { id: "t-team", name: "Team", query: "from:team", unread: 0, broken: false },
+    ],
+  };
+  const tabsRpc = (overrides: Record<string, (input: never) => unknown> = {}) =>
+    folderRpc({ inbox_tabs_list: () => TABS, ...overrides });
+  const lastSubPath = (slot: ReturnType<typeof render>) =>
+    (slot.inspection.navigateCalls.at(-1) as { options?: { subPath?: string } } | undefined)?.options?.subPath;
+
+  it("shows the tabs over the Inbox and lists a tab's conversations from its address", async () => {
+    const slot = render(tabsRpc(), hostEncode("v/acc-1/INBOX/s/t-vip"));
+    const row = within(await slot.findByRole("tablist", { name: "Inbox tabs" }));
+    expect(row.getAllByRole("tab").map((el) => el.textContent)).toEqual(["Inbox5 unread", "VIP2 unread", "Team"]);
+    expect(row.getByRole("tab", { name: /^VIP/ }).getAttribute("aria-selected")).toBe("true");
+    expect(callsTo(slot, "threads_list").at(-1)?.input).toMatchObject({ scope: { kind: "account", folder: "INBOX" }, tabId: "t-vip" });
+    expect(callsTo(slot, "inbox_tabs_list").at(-1)?.input).toEqual({ scope: { kind: "account", accountId: "acc-1", folder: "INBOX" } });
+  });
+
+  it("the plain Inbox asks for no tab, and another folder shows no row", async () => {
+    const slot = render(tabsRpc());
+    await slot.findByRole("tablist", { name: "Inbox tabs" });
+    expect(callsTo(slot, "threads_list").at(-1)?.input).not.toHaveProperty("tabId");
+    await openFolder(slot, /Spam/);
+    await waitFor(() => expect(slot.queryByRole("tablist")).toBeNull());
+    expect(callsTo(slot, "threads_list").at(-1)?.input).not.toHaveProperty("tabId");
+  });
+
+  it("a click and the ] and [ keys walk the tabs through the address", async () => {
+    const slot = render(tabsRpc());
+    const row = within(await slot.findByRole("tablist", { name: "Inbox tabs" }));
+    fireEvent.click(row.getByRole("tab", { name: /^VIP/ }));
+    await waitFor(() => expect(lastSubPath(slot)).toBe("v/acc-1/INBOX/s/t-vip"));
+    await waitFor(() => expect(callsTo(slot, "threads_list").at(-1)?.input).toMatchObject({ tabId: "t-vip" }));
+    pageRoot(slot).focus();
+    press(pageRoot(slot), { key: "]", code: "BracketRight" });
+    await waitFor(() => expect(lastSubPath(slot)).toBe("v/acc-1/INBOX/s/t-team"));
+    press(pageRoot(slot), { key: "]", code: "BracketRight" });
+    await waitFor(() => expect(lastSubPath(slot)).toBe("v/acc-1/INBOX"));
+    press(pageRoot(slot), { key: "[", code: "BracketLeft" });
+    await waitFor(() => expect(lastSubPath(slot)).toBe("v/acc-1/INBOX/s/t-team"));
+    // The key's position works on a layout where it types a letter.
+    press(pageRoot(slot), { key: "х", code: "BracketLeft" });
+    await waitFor(() => expect(lastSubPath(slot)).toBe("v/acc-1/INBOX/s/t-vip"));
+  });
+
+  it("a deleted tab in the address shows the Inbox tab", async () => {
+    const slot = render(tabsRpc(), hostEncode("v/acc-1/INBOX/s/t-gone"));
+    const row = within(await slot.findByRole("tablist", { name: "Inbox tabs" }));
+    expect(row.getByRole("tab", { name: /^Inbox/ }).getAttribute("aria-selected")).toBe("true");
+    await slot.findByText("Lunch");
+  });
+
+  it("without tabs the Inbox offers to split it, and the library adds a tab", async () => {
+    let tabs: typeof TABS.tabs = [];
+    const slot = render(
+      tabsRpc({
+        inbox_tabs_list: () => ({ inboxUnread: 5, tabs }),
+        inbox_tab_save: ({ name, query }: { name: string; query: string }) => {
+          tabs = [{ id: "t-new", name, query, unread: 0, broken: false }];
+          return { tab: { id: "t-new", name, query } };
+        },
+      }),
+    );
+    fireEvent.click(await slot.findByRole("button", { name: "Split the Inbox…" }));
+    fireEvent.click(await slot.findByRole("button", { name: "Team" }));
+    await waitFor(() => expect(callsTo(slot, "inbox_tab_save").at(-1)?.input).toEqual({ name: "Team", query: "from:team" }));
+    const row = within(await slot.findByRole("tablist", { name: "Inbox tabs" }));
+    expect(row.getByRole("tab", { name: "Team" })).toBeTruthy();
+    expect(slot.queryByRole("button", { name: "Split the Inbox…" })).toBeNull();
+  });
+
+  it("removing the tab in view goes back to the Inbox tab", async () => {
+    const slot = render(tabsRpc({ inbox_tab_delete: () => ({ ok: true }) }), hostEncode("v/acc-1/INBOX/s/t-vip"));
+    fireEvent.click(await slot.findByRole("button", { name: "VIP options" }));
+    fireEvent.click(await slot.findByRole("button", { name: "Remove tab" }));
+    await waitFor(() => expect(callsTo(slot, "inbox_tab_delete").at(-1)?.input).toEqual({ id: "t-vip" }));
+    await waitFor(() => expect(lastSubPath(slot)).toBe("v/acc-1/INBOX"));
+  });
+
+  it("a search offers to make a tab from its text", async () => {
+    const slot = render(tabsRpc({ search: () => ({ hits: [], nextCursor: null, notes: [], attachmentMatches: [] }) }));
+    await slot.findByRole("tablist", { name: "Inbox tabs" });
+    fireEvent.change(await slot.findByLabelText("Search mail"), { target: { value: "from:ada@example.com" } });
+    fireEvent.submit(slot.getByRole("search"));
+    fireEvent.click(await slot.findByRole("button", { name: "Make a tab" }));
+    expect(((await slot.findByRole("textbox", { name: "Condition" })) as HTMLInputElement).value).toBe("from:ada@example.com");
+  });
+});

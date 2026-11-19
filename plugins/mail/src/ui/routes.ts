@@ -1,7 +1,8 @@
 // Locations inside the Mail page, as the subPath of its nav panel route.
 //
 // A view is `v/all/<role>` (a role merged across accounts) or
-// `v/<accountId>/<folder path>` (one account's folder). A conversation is
+// `v/<accountId>/<folder path>` (one account's folder); an Inbox tab adds
+// `/s/<tabId>` (Split Inbox). A conversation is
 // `t/<accountId>/<threadId>`. A draft to open in the composer (from an
 // agent's card) is `d/<draftId>`. Each id and path is percent-encoded
 // here, so an id holding `/` stays one segment. The host encodes every
@@ -60,17 +61,39 @@ export function viewSubPath(view: MailView): string {
     : `v/${encodeURIComponent(view.accountId)}/${encodeURIComponent(view.path)}`;
 }
 
-/** The view a panel subPath (as the host passes it) names; null for anything else. */
-export function parseViewSubPath(subPath: string): MailView | null {
+/** The word between a view and its Inbox tab: `v/all/inbox/s/<tabId>` (Split Inbox). */
+const TAB_SEGMENT = "s";
+
+/** The subPath of a view on one of its Inbox tabs; null is the Inbox tab, the view itself. */
+export function viewTabSubPath(view: MailView, tabId: string | null): string {
+  return tabId === null ? viewSubPath(view) : `${viewSubPath(view)}/${TAB_SEGMENT}/${encodeURIComponent(tabId)}`;
+}
+
+/** The segments of a view's subPath, with or without a tab; null for anything else. */
+function viewSegments(subPath: string): { accountId: string; second: string; tabId: string | null } | null {
   const segments = subPath.split("/");
-  if (segments.length !== 3 || segments[0] !== "v") return null;
+  if (segments[0] !== "v" || (segments.length !== 3 && segments.length !== 5)) return null;
   const accountId = decodeTwice(segments[1]!);
   const second = decodeTwice(segments[2]!);
   if (accountId === null || second === null) return null;
-  if (accountId === ALL_SEGMENT) {
-    return ROLE_SEGMENTS.has(second) ? { kind: "role", role: second as RoleName } : null;
+  if (segments.length === 3) return { accountId, second, tabId: null };
+  const tabId = decodeTwice(segments[4]!);
+  return segments[3] === TAB_SEGMENT && tabId !== null ? { accountId, second, tabId } : null;
+}
+
+/** The view a panel subPath (as the host passes it) names, with or without a tab; null for anything else. */
+export function parseViewSubPath(subPath: string): MailView | null {
+  const parts = viewSegments(subPath);
+  if (parts === null) return null;
+  if (parts.accountId === ALL_SEGMENT) {
+    return ROLE_SEGMENTS.has(parts.second) ? { kind: "role", role: parts.second as RoleName } : null;
   }
-  return { kind: "folder", accountId, path: second };
+  return { kind: "folder", accountId: parts.accountId, path: parts.second };
+}
+
+/** The Inbox tab a view's subPath names; null for the Inbox tab and for anything that is not a view. */
+export function parseViewTab(subPath: string): string | null {
+  return parseViewSubPath(subPath) === null ? null : (viewSegments(subPath)?.tabId ?? null);
 }
 
 /** The subPath, as an unencoded segment for `toPluginPanel`, of a draft to open in the composer. */
