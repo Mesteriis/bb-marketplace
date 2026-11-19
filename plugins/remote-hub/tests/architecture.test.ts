@@ -63,7 +63,9 @@ const core: Layer = {
 const ui: Layer = {
   directory: "src/ui",
   // @tsparticles/engine: a browser-only canvas library (like xterm), loaded lazily by agent-dots.ts; no host code.
-  packages: ["react", "@xterm/xterm", "@xterm/addon-fit", "@tsparticles/engine"],
+  // @novnc/novnc: the VNC client for Proxmox QEMU graphics, a browser-only library (like xterm) loaded lazily by vnc-view.tsx. It is
+  // vendored unmodified under vendor/novnc (the specifier is mapped there by tsconfig paths and the vitest alias); no host code.
+  packages: ["react", "@xterm/xterm", "@xterm/addon-fit", "@tsparticles/engine", "@novnc/novnc"],
   reachable: ["src/ui", "src/core"],
 };
 

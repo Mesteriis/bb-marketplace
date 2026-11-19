@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { Profile } from "../core/profile.ts";
 import { searchGuests, type PveConnectionView, type PveGuestView, type PveOutcome } from "../core/pve-targets.ts";
-import type { PveApi } from "./pve-api.ts";
+import type { PveApi, PveConsoleRequest } from "./pve-api.ts";
 
 export interface PveTargetsProps {
   api: PveApi;
@@ -14,6 +14,8 @@ export interface PveTargetsProps {
   /** Saved SSH and RDP profiles a guest can be linked to. */
   linkable: Profile[];
   onConnectProfile: (profileId: string) => void;
+  /** Opens a console of a guest or a node shell. Without it the console buttons stay off. */
+  onOpenConsole?: (open: { profileId: string; connectionName: string; request: PveConsoleRequest; title: string }) => void;
   onClose: () => void;
 }
 
@@ -36,13 +38,14 @@ function age(seconds: number): string {
   return `${Math.round(seconds / 3600)} h`;
 }
 
-/** The console is not wired in this release; the reason is shown in place of a button that would do nothing. */
-export const CONSOLE_PENDING_REASON = "Console sessions arrive in the next stage of Proxmox support.";
+/** Shown in place of a console button that cannot work because the page was built without console support. */
+export const CONSOLE_OFF_REASON = "Consoles are not available in this view.";
 
-function GuestCard(props: { guest: PveGuestView; linkable: Profile[]; onLink: (vmid: number, linkProfileId: string | null) => void; onConnectProfile: (id: string) => void }) {
+function GuestCard(props: { guest: PveGuestView; linkable: Profile[]; onLink: (vmid: number, linkProfileId: string | null) => void; onConnectProfile: (id: string) => void; onOpenConsole?: (() => void) | undefined }) {
   const { guest, linkable } = props;
   const linked = guest.linkedProfileId === null ? null : (linkable.find((p) => p.id === guest.linkedProfileId) ?? null);
-  const reason = guest.console.available ? CONSOLE_PENDING_REASON : (guest.console.reason ?? "unavailable");
+  const reason = guest.console.available ? (props.onOpenConsole === undefined ? CONSOLE_OFF_REASON : null) : (guest.console.reason ?? "unavailable");
+  const label = guest.kind === "qemu" ? "Open graphics" : "Open console";
   return (
     <li className="rh-guest" aria-label={guest.name || String(guest.vmid)} data-testid="pve-guest">
       <span className="rh-guest-title">
@@ -52,12 +55,14 @@ function GuestCard(props: { guest: PveGuestView; linkable: Profile[]; onLink: (v
         {guest.template ? "template" : guest.status} · node {guest.node}
       </span>
       <div className="rh-guest-actions">
-        <button type="button" disabled aria-label={"Open console of " + (guest.name || guest.vmid)} title={reason}>
-          Open console
+        <button type="button" disabled={reason !== null} aria-label={"Open console of " + (guest.name || guest.vmid)} title={reason ?? undefined} onClick={() => props.onOpenConsole?.()}>
+          {label}
         </button>
-        <span className="rh-hint" data-testid="pve-console-reason">
-          {reason}
-        </span>
+        {reason !== null && (
+          <span className="rh-hint" data-testid="pve-console-reason">
+            {reason}
+          </span>
+        )}
         <label>
           SSH or RDP profile
           <select
@@ -169,9 +174,36 @@ export function PveTargets(props: PveTargetsProps) {
             )}
             {c.outcome === "empty" && <p className="rh-hint">The account sees no virtual machines or containers.</p>}
             {guests.length === 0 && c.guests.length > 0 && <p className="rh-hint">No guest matches.</p>}
+            {props.onOpenConsole !== undefined && c.nodes.length > 0 && (
+              <div className="rh-pve-nodes" aria-label={"Nodes of " + c.profileName}>
+                {c.nodes.map((n) => (
+                  <button
+                    key={n.node}
+                    type="button"
+                    disabled={n.status !== "online"}
+                    title={n.status === "online" ? undefined : "The node is " + n.status}
+                    aria-label={"Open shell of node " + n.node}
+                    onClick={() => props.onOpenConsole?.({ profileId: c.profileId, connectionName: c.profileName, request: { console: "node", node: n.node }, title: n.node })}
+                  >
+                    Node shell: {n.node}
+                  </button>
+                ))}
+              </div>
+            )}
             <ul>
               {guests.map((g) => (
-                <GuestCard key={g.key} guest={g} linkable={props.linkable} onLink={(vmid, to) => void link(c.profileId, vmid, to)} onConnectProfile={props.onConnectProfile} />
+                <GuestCard
+                  key={g.key}
+                  guest={g}
+                  linkable={props.linkable}
+                  onLink={(vmid, to) => void link(c.profileId, vmid, to)}
+                  onConnectProfile={props.onConnectProfile}
+                  onOpenConsole={
+                    props.onOpenConsole === undefined
+                      ? undefined
+                      : () => props.onOpenConsole?.({ profileId: c.profileId, connectionName: c.profileName, request: { console: g.kind, vmid: g.vmid }, title: g.name })
+                  }
+                />
               ))}
             </ul>
           </section>

@@ -10,7 +10,7 @@
 import type { ExecFinishedMessage, ExecStateMessage } from "../../core/exec-protocol.ts";
 import type { CredentialBind } from "../../core/credential.ts";
 import type { RdpOptions } from "../../core/rdp-options.ts";
-import type { PveConnect, PveGuest, PveNode, PvePlan, PveSteps } from "../../core/pve-protocol.ts";
+import type { PveConnect, PveConsoleTarget, PveGuest, PveNode, PvePlan, PveSteps } from "../../core/pve-protocol.ts";
 import type { SshAskpassEvent } from "../../core/ssh-askpass-protocol.ts";
 import { checkHelperIntegrity, type IntegrityResult } from "./helper-integrity.ts";
 import { experimental_execHostFile, experimental_spawnHostProcess } from "@get-bb/plugin-sdk/process";
@@ -67,6 +67,12 @@ export class HelperRuntimeError extends Error {
 
 /** The helper refused one request; `code` is its stable error code
  *  (not_ready, session_not_found, fingerprint_mismatch, screenshot_too_large, ...). */
+/** What a Proxmox console reports about itself. `vnc_password` is delivered once to the one view and never logged. */
+export type PveSessionEvent =
+  | { type: "state"; state: string }
+  | { type: "error"; code: string; message: string; fingerprint: string | null }
+  | { type: "vnc_password"; password: string };
+
 /** A PVE request the helper refused or could not finish: the closed code, and the certificate the server presented (certificate refusals). */
 export class PveRequestFailure extends Error {
   readonly code: string;
@@ -274,12 +280,16 @@ export class HelperProcess {
   private readonly inputSeq = new Map<number, number>();
   private readonly echoSessions = new Set<number>();
   private readonly rdpSessions = new Set<number>();
+  /** Graphical PVE consoles: their stream frames are raw RFB, never terminal text (no scrollback, no byte credit). */
+  private readonly vncSessions = new Set<number>();
   private readonly screens = new Map<number, PendingScreenshot>();
   private readonly onExecFinishedCallbacks: Array<(event: ExecFinishedMessage) => void> = [];
   private readonly onSshAskpassCallbacks: Array<(sessionId: number, event: SshAskpassEvent) => void> = [];
   private readonly onRdpEventCallbacks: Array<(sessionId: number, event: RdpHelperEvent) => void> = [];
   private readonly onRdpUpdateCallbacks: Array<(sessionId: number, seq: number, payload: Uint8Array) => void> = [];
   private readonly onSessionClosedCallbacks: Array<(sessionId: number, info: { exitCode: number | null; signal: number | null; reason: string }) => void> = [];
+  private readonly onPveEventCallbacks: Array<(sessionId: number, event: PveSessionEvent) => void> = [];
+  private readonly onVncDataCallbacks: Array<(sessionId: number, data: Uint8Array) => void> = [];
   private readonly onSessionOutputCallbacks: Array<(sessionId: number, data: Uint8Array) => void> = [];
   private readonly onExitCallbacks: Array<() => void> = [];
   private buffer: Uint8Array = new Uint8Array(0);
@@ -427,6 +437,7 @@ export class HelperProcess {
     // write session.opened and the first update chunk into one stdout read, and
     // the chunk is handled in this same loop, before openRdp's continuation runs.
     if (resp.type === "session.opened" && resp.kind === "rdp") this.rdpSessions.add(resp.sessionId);
+    if (resp.type === "session.opened" && resp.kind === "vnc") this.vncSessions.add(resp.sessionId);
     const oneShotIndex = this.oneShots.findIndex((w) => w.predicate(resp));
     if (oneShotIndex >= 0) {
       const [waiter] = this.oneShots.splice(oneShotIndex, 1);
@@ -435,6 +446,7 @@ export class HelperProcess {
     }
     if (this.handleRdpControl(resp)) return;
     if (this.handleSshAskpassControl(resp)) return;
+    if (this.handlePveControl(resp)) return;
     if (resp.type === "exec.finished") {
       for (const cb of this.onExecFinishedCallbacks) cb(resp);
       return;
@@ -575,6 +587,10 @@ export class HelperProcess {
   }
 
   private handleStream(sessionId: number, seq: number, data: Uint8Array): void {
+    if (this.vncSessions.has(sessionId)) {
+      for (const cb of this.onVncDataCallbacks) cb(sessionId, data);
+      return;
+    }
     if (this.rdpSessions.has(sessionId)) {
       // A framebuffer update chunk: never part of the scrollback or the byte credit.
       for (const cb of this.onRdpUpdateCallbacks) cb(sessionId, seq, data);
@@ -614,6 +630,7 @@ export class HelperProcess {
     this.inputSeq.delete(sessionId);
     this.echoSessions.delete(sessionId);
     this.rdpSessions.delete(sessionId);
+    this.vncSessions.delete(sessionId);
   }
 
   private writeControl(message: ControlMessage): void {
@@ -792,6 +809,52 @@ export class HelperProcess {
     if (resp.type !== "session.opened") throw new Error("unexpected helper response: " + resp.type);
     if (this._status !== null) this._status.sessionCount += 1;
     return { generation: this.generation, sessionId: resp.sessionId };
+  }
+
+  /**
+   * Opens a Proxmox console. A node or LXC console is a terminal session (`kind` "pve"); a virtual machine's graphics is a
+   * `vnc` session whose stream frames are the raw RFB bytes. The secret is resolved by the helper from `connect.credentialRef`.
+   */
+  async openPve(connect: PveConnect, target: PveConsoleTarget, cols: number, rows: number): Promise<{ handle: SessionHandle; kind: "pve" | "vnc" }> {
+    const resp = await this.request({ type: "session.open_pve", connect, target, cols, rows } as RequestMessage);
+    if (resp.type === "error") throw new HelperRequestError(resp.code, resp.message);
+    if (resp.type !== "session.opened") throw new Error("unexpected helper response: " + resp.type);
+    if (this._status !== null) this._status.sessionCount += 1;
+    return { handle: { generation: this.generation, sessionId: resp.sessionId }, kind: resp.kind === "vnc" ? "vnc" : "pve" };
+  }
+
+  /** Raw RFB bytes from the view to a graphical console. */
+  async pveVncInput(handle: SessionHandle, data: Uint8Array): Promise<void> {
+    this.assertGeneration(handle);
+    const resp = await this.request({ type: "pve.vnc_input", sessionId: handle.sessionId, data: Buffer.from(data).toString("base64") } as RequestMessage);
+    if (resp.type === "error") throw new HelperRequestError(resp.code, resp.message);
+    if (resp.type !== "session.input_ack") throw new Error("unexpected helper response: " + resp.type);
+  }
+
+  /** Console state and error events (and the one-time VNC password) of PVE sessions. True when consumed. */
+  private handlePveControl(resp: ResponseMessage): boolean {
+    switch (resp.type) {
+      case "pve.state":
+        for (const cb of this.onPveEventCallbacks) cb(resp.sessionId, { type: "state", state: resp.state });
+        return true;
+      case "pve.error":
+        for (const cb of this.onPveEventCallbacks) cb(resp.sessionId, { type: "error", code: resp.code, message: resp.message, fingerprint: resp.fingerprint ?? null });
+        return true;
+      case "pve.vnc_password":
+        for (const cb of this.onPveEventCallbacks) cb(resp.sessionId, { type: "vnc_password", password: resp.password });
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  onPveEvent(cb: (sessionId: number, event: PveSessionEvent) => void): void {
+    this.onPveEventCallbacks.push(cb);
+  }
+
+  /** Raw RFB bytes of graphical consoles, as the helper sends them. */
+  onVncData(cb: (sessionId: number, data: Uint8Array) => void): void {
+    this.onVncDataCallbacks.push(cb);
   }
 
   /**

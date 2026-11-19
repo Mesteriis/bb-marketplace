@@ -11,11 +11,12 @@ import { AgentStage } from "./agent-overlay.tsx";
 import type { FeedEvent } from "../core/agent-feed.ts";
 import { CommandLog, applyExecEvent, type LoggedCommand } from "./command-log.tsx";
 import { RdpCanvas } from "./rdp-canvas.tsx";
+import { VncView } from "./vnc-view.tsx";
 import { SshTerminal } from "./ssh-terminal.tsx";
 
 export interface LiveSessionApi {
   /** The session if it is open, else null. */
-  find: (handle: SessionHandle) => Promise<{ generation: string; sessionId: number; kind: "echo" | "ssh" | "rdp"; state: "connecting" | "running" | "closed" } | null>;
+  find: (handle: SessionHandle) => Promise<{ generation: string; sessionId: number; kind: "echo" | "ssh" | "rdp" | "pve" | "vnc"; state: "connecting" | "running" | "closed" } | null>;
   attach: (handle: SessionHandle) => Promise<{ token: string; wsUrl: string }>;
   takeover: (handle: SessionHandle) => Promise<unknown>;
 }
@@ -24,7 +25,7 @@ export { parseSessionKey };
 
 export function LiveSession({ sessionKey, api }: { sessionKey: string; api: LiveSessionApi }) {
   const handle = parseSessionKey(sessionKey);
-  const [view, setView] = useState<{ kind: "ssh" | "rdp"; token: string; wsUrl: string } | { problem: string } | null>(null);
+  const [view, setView] = useState<{ kind: "ssh" | "rdp" | "pve" | "vnc"; token: string; wsUrl: string } | { problem: string } | null>(null);
   const [owner, setOwner] = useState<ControlView>(HUMAN_CONTROL);
   const onControl = useCallback((message: ControlMessage) => setOwner((cur) => nextControl(cur, message)), []);
   // The commands an agent runs on this session, as they happen (shown, not stored: this lives in the open view only).
@@ -80,15 +81,17 @@ export function LiveSession({ sessionKey, api }: { sessionKey: string; api: Live
         <ControlBadge control={owner} />
       </div>
       <AgentStage handle={handle} control={owner} onTakeover={async () => void (await api.takeover(handle))}>
-        {view.kind === "ssh" ? (
+        {view.kind === "ssh" || view.kind === "pve" ? (
           <SshTerminal wsUrl={view.wsUrl} token={view.token} onControl={onControl} onAgent={onAgent} />
+        ) : view.kind === "vnc" ? (
+          <VncView wsUrl={view.wsUrl} token={view.token} onControl={onControl} onAgent={onAgent} />
         ) : (
           <div className="rh-rdp-wrap">
             <RdpCanvas wsUrl={view.wsUrl} token={view.token} fit="fit" label="Remote desktop" onEvent={(e) => (e.type === "control" || e.type === "input_blocked" ? onControl(e as ControlMessage) : undefined)} />
           </div>
         )}
       </AgentStage>
-      {view.kind === "ssh" && <CommandLog commands={commands} />}
+      {(view.kind === "ssh" || view.kind === "pve") && <CommandLog commands={commands} />}
     </div>
   );
 }

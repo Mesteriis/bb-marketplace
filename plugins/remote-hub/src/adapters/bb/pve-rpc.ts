@@ -10,9 +10,12 @@ import { LOCAL_EXECUTION_HOST_ID, profileFieldsOf, type Profile, type ProfileFie
 import type { ProfileBook } from "../../core/profile-book.ts";
 import type { PvePlan, PveSteps } from "../../core/pve-protocol.ts";
 import { PVE_PROVISION, type PveConnect } from "../../core/pve-protocol.ts";
+import { resolveConsole, type ConsoleRequest } from "../../core/pve-console.ts";
+import type { SessionHandle } from "../../core/rpc.ts";
 import { pveTrustToWire, type PveProfileTrust } from "../../core/pve-trust.ts";
 import { PveDiscovery, type PveAnswer, type PveConnectionView } from "../../core/pve-targets.ts";
 import type { PveGuestLinkStore } from "./pve-sqlite.ts";
+import { HelperRequestError, HelperRuntimeError, HelperStartError } from "./helper-process.ts";
 import type { RemoteHubService } from "./service.ts";
 
 export class PveRpcError extends Error {
@@ -25,7 +28,7 @@ export class PveRpcError extends Error {
 }
 
 export interface PveRpcDeps {
-  service: Pick<RemoteHubService, "pve" | "credentialVault">;
+  service: Pick<RemoteHubService, "pve" | "credentialVault" | "pveOpen">;
   profiles: ProfileBook;
   credentials: CredentialBook;
   links: PveGuestLinkStore;
@@ -40,6 +43,9 @@ export type OnboardAdmin = OnboardEndpoint & { adminUser: string; adminPassword:
 /** What an apply or a plan answers: the plan, the steps taken, or the failure with what each step did and what exists now. */
 export type OnboardFailure = { ok: false; code: string; message: string; fingerprint: string | null; steps: PveSteps | null; profileId?: string };
 export type OnboardPlanAnswer = ({ ok: true } & PvePlan) | OnboardFailure;
+/** Opening a console: the session, or why not (a code from the console reasons, never a server's own words). */
+export type ConsoleOpenAnswer = { ok: true; handle: SessionHandle; kind: "pve" | "vnc" } | { ok: false; code: string; message: string; fingerprint: string | null };
+export type ConsoleOpenInput = ConsoleRequest & { profileId: string; cols: number; rows: number };
 export type OnboardApplyAnswer = { ok: true; profileId: string; userId: string; steps: PveSteps } | OnboardFailure;
 
 const OWNER = "owner RPC";
@@ -130,6 +136,41 @@ export function createPveRpc(deps: PveRpcDeps) {
     onProfileDeleted(profileId: string): void {
       links.dropProfile(profileId);
       discovery.forget(profileId);
+    },
+
+    /**
+     * Opens a console of a saved connection: the guest's node is looked up again in a FRESH read (never from the list on the
+     * page or a stale one), a stopped guest or a template is refused, and nothing is ever started. Used by the owner's page
+     * and by the agent tool alike.
+     */
+    async openConsole(input: ConsoleOpenInput): Promise<ConsoleOpenAnswer> {
+      const p = pveProfile(input.profileId);
+      if (connectOf(p) === null) return { ok: false, code: "no_credential", message: "This connection has no saved password or token yet.", fingerprint: null };
+      const what = input.console === "node" ? `node ${input.node}` : `${input.console} ${input.vmid}`;
+      return await audited(
+        "pve.console_open",
+        p.id,
+        `${p.host}:${p.port ?? DEFAULT_PVE_PORT} ${what}`,
+        async (): Promise<ConsoleOpenAnswer> => {
+          const [view] = await discovery.targets({ profileIds: [p.id], refresh: true });
+          if (view === undefined) return { ok: false, code: "not_found", message: "no such Proxmox connection", fingerprint: null };
+          // The connection may have been edited while Proxmox was read: what was read is not what would be opened.
+          const now = profiles.get(p.id);
+          const connect = now === null ? null : connectOf(now);
+          if (now === null || connect === null || now.updatedAt !== p.updatedAt) return { ok: false, code: "api_error", message: "The connection changed while it was being read. Try again.", fingerprint: null };
+          const resolved = resolveConsole(view, input);
+          if (!resolved.ok) return resolved;
+          try {
+            const opened = await service.pveOpen({ connect, target: resolved.target, cols: input.cols, rows: input.rows, profileId: p.id, connectionName: p.name, guestName: resolved.guestName });
+            return { ok: true, handle: opened.handle, kind: opened.kind };
+          } catch (error) {
+            if (error instanceof HelperRequestError) return { ok: false, code: error.code, message: error.message, fingerprint: null };
+            if (error instanceof HelperRuntimeError || error instanceof HelperStartError) return { ok: false, code: "helper_exited", message: error.message, fingerprint: null };
+            throw error;
+          }
+        },
+        (r) => (r.ok ? "ok" : r.code),
+      );
     },
 
     /** Every Proxmox connection (or the named ones), each with its own outcome. */

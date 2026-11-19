@@ -216,7 +216,7 @@ function ConnectTab({ subPath }: { subPath: string }) {
   return (
     <WithAgentContext>
       {watched !== null && <LiveSession sessionKey={`${watched.generation}.${watched.sessionId}`} api={liveApi} />}
-      <ConnectPage profiles={bridge.profiles} credentials={bridge.credentials} imports={bridge.imports} agents={bridge.agents} pve={bridge.pve} live={liveApi} ssh={bridge.ssh} rdp={bridge.rdp} />
+      <ConnectPage profiles={bridge.profiles} credentials={bridge.credentials} imports={bridge.imports} agents={bridge.agents} pve={bridge.pve} pveConsoles={bridge.pveConsoles} live={liveApi} ssh={bridge.ssh} rdp={bridge.rdp} />
     </WithAgentContext>
   );
 }

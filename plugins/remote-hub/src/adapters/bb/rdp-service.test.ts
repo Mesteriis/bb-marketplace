@@ -85,6 +85,8 @@ class FakeRdpHelper {
   }
   onSessionOutput(): void {}
   onSshAskpass(): void {}
+  onPveEvent(): void {}
+  onVncData(): void {}
   onExecFinished(): void {}
   onRdpEvent(cb: (sid: number, e: RdpHelperEvent) => void): void {
     this.eventCb.push(cb);

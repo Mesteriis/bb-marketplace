@@ -142,15 +142,29 @@ export const rdpInfoSchema = z.object({
   trace: z.array(z.string()),
 });
 
+export const pveConsoleInfoSchema = z.object({
+  profileId: z.string(),
+  connectionName: z.string(),
+  console: z.enum(["node", "lxc", "qemu"]),
+  node: z.string(),
+  vmid: z.number().int().nullable(),
+  guestName: z.string().nullable(),
+  state: z.enum(["connecting", "active", "lost", "disconnected", "error"]),
+  /** Why a console failed or was lost: fixed local text, never a server body. */
+  reason: z.object({ code: z.string(), text: z.string(), fingerprint: z.string().nullable() }).nullable(),
+});
+
 export const sessionInfoSchema = z.object({
   generation: z.string().regex(/^[0-9a-f]{32}$/),
   sessionId: sessionIdSchema,
-  kind: z.enum(["echo", "ssh", "rdp"]),
+  kind: z.enum(["echo", "ssh", "rdp", "pve", "vnc"]),
   state: z.enum(["connecting", "running", "closed"]),
   exitCode: z.number().int().nullable(),
   signal: z.number().int().nullable(),
   reason: z.string().nullable(),
   rdp: rdpInfoSchema.optional(),
+  /** A Proxmox console (kind pve or vnc): its target, state and failure reason. */
+  pve: pveConsoleInfoSchema.optional(),
   /** The saved profile the session was opened from, when it was. */
   profileId: z.string().uuid().optional(),
   /** The thread of the agent that opened the session through remote_connect, when one did. */
@@ -274,6 +288,27 @@ export const rpcSchemas = {
     input: z.object({ profileId: z.string().uuid(), vmid: z.number().int().min(100).max(999_999_999), linkProfileId: z.string().uuid().nullable() }).strict(),
     output: z.object({ linked: z.boolean() }),
   },
+  /**
+   * Opens a console of a saved Proxmox connection: a node shell or one guest's console, as a session. The guest's node is looked
+   * up again first; a stopped guest or a template is refused with its reason (nothing is started).
+   */
+  pve_console_open: {
+    input: z
+      .object({
+        profileId: z.string().uuid(),
+        console: z.enum(["node", "lxc", "qemu"]),
+        node: z.string().min(1).max(63).optional(),
+        vmid: z.number().int().min(100).max(999_999_999).optional(),
+        cols: sizeSchema.default(80),
+        rows: sizeSchema.default(24),
+      })
+      .strict()
+      .refine((i) => (i.console === "node" ? i.node !== undefined && i.vmid === undefined : i.vmid !== undefined && i.node === undefined), { message: "a node shell names its node; a guest console names its VMID" }),
+    output: z.union([
+      z.object({ ok: z.literal(true), generation: z.string().regex(/^[0-9a-f]{32}$/), sessionId: sessionIdSchema, kind: z.enum(["pve", "vnc"]) }),
+      z.object({ ok: z.literal(false), code: z.string(), message: z.string(), fingerprint: z.string().nullable() }),
+    ]),
+  },
   /** Mode 1, step 1: what would be created, what the user already holds, and the digest of the state the plan was computed from. Reads only. */
   pve_onboard_plan: {
     input: pveAdminSchema.strict(),
@@ -353,7 +388,7 @@ export const rpcSchemas = {
       z.object({
         generation: z.string(),
         sessionId: z.number().int(),
-        kind: z.enum(["echo", "ssh", "rdp"]),
+        kind: z.enum(["echo", "ssh", "rdp", "pve", "vnc"]),
         connectionId: z.string().nullable(),
         state: z.enum(["connecting", "running", "closed"]),
         openedByThread: z.string().nullable(),

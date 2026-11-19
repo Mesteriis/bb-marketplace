@@ -22,7 +22,7 @@ function setup() {
     execCancel: vi.fn(async () => state({ running: true, exitCode: null, reason: null })),
     execForget: vi.fn(async () => undefined),
     onExecFinished: (cb: (e: ExecFinishedMessage) => void) => void finished.push(cb),
-    onSessionClosed: () => {}, onExit: () => {}, onSessionOutput: () => {}, onSshAskpass: () => {}, onRdpEvent: () => {}, onRdpUpdate: () => {},
+    onSessionClosed: () => {}, onExit: () => {}, onSessionOutput: () => {}, onSshAskpass: () => {}, onPveEvent: () => {}, onVncData: () => {}, onRdpEvent: () => {}, onRdpUpdate: () => {},
     stop: () => {},
   };
   const service = createRemoteHubService({ startHelper: async () => helper as unknown as HelperProcess, env: { PATH: "/usr/bin" } });

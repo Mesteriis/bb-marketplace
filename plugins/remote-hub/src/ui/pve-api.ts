@@ -28,9 +28,15 @@ export interface PveAdminInput extends PveEndpointInput {
   userId: string;
 }
 
+export type PveConsoleRequest = { console: "node"; node: string } | { console: "lxc" | "qemu"; vmid: number };
+
+export type PveConsoleOpened = { ok: true; generation: string; sessionId: number; kind: "pve" | "vnc" } | { ok: false; code: string; message: string; fingerprint: string | null };
+
 export interface PveApi {
   targets(input: { profileIds?: string[]; refresh: boolean }): Promise<{ connections: PveConnectionView[] }>;
   pinTrust(profileId: string, fingerprint: string): Promise<unknown>;
+  /** Opens a console of a saved connection; the guest's node is looked up again first. */
+  openConsole(input: PveConsoleRequest & { profileId: string; cols: number; rows: number }): Promise<PveConsoleOpened>;
   linkGuest(profileId: string, vmid: number, linkProfileId: string | null): Promise<unknown>;
   onboardPlan(input: PveAdminInput): Promise<({ ok: true } & PvePlan) | PveFailure>;
   onboardApply(input: PveAdminInput & { name: string; planDigest: string; replaceRole: boolean }): Promise<{ ok: true; profileId: string; userId: string; steps: PveSteps } | PveFailure>;

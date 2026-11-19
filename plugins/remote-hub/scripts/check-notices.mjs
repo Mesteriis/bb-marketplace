@@ -3,7 +3,7 @@
 // covered when its name appears in the file either on its own or inside a prefix pattern written as `name_*` / `name-*`
 // (the file groups families such as icu_*), or as a family root like `windows*`.
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -25,12 +25,17 @@ const covered = (name) => {
 };
 const missingCrates = [...crates].filter((c) => !covered(c)).sort();
 
+// Vendored libraries are shipped code too: every directory under vendor/ must be named in the notices.
+const vendored = existsSync(join(root, "vendor")) ? readdirSync(join(root, "vendor")) : [];
+const missingVendored = vendored.filter((d) => !lower.includes(d.toLowerCase()));
+
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const missingNpm = Object.keys(pkg.dependencies ?? {}).filter((d) => !lower.includes(d.toLowerCase()));
 
-if (missingCrates.length + missingNpm.length > 0) {
+if (missingCrates.length + missingNpm.length + missingVendored.length > 0) {
   if (missingCrates.length > 0) console.error("crates linked into the helper but not in THIRD_PARTY_NOTICES.md:", missingCrates.join(", "));
   if (missingNpm.length > 0) console.error("production npm packages not in THIRD_PARTY_NOTICES.md:", missingNpm.join(", "));
+  if (missingVendored.length > 0) console.error("vendored libraries not in THIRD_PARTY_NOTICES.md:", missingVendored.join(", "));
   process.exit(1);
 }
-console.log(`notices cover ${crates.size} linked crates and ${Object.keys(pkg.dependencies ?? {}).length} production npm packages`);
+console.log(`notices cover ${crates.size} linked crates and ${Object.keys(pkg.dependencies ?? {}).length} production npm packages and ${vendored.length} vendored libraries`);

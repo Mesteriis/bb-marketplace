@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Profile } from "../core/profile.ts";
 import type { PveConnectionView, PveGuestView } from "../core/pve-targets.ts";
 import type { PveApi } from "./pve-api.ts";
-import { PveTargets, CONSOLE_PENDING_REASON } from "./pve-targets.tsx";
+import { PveTargets, CONSOLE_OFF_REASON } from "./pve-targets.tsx";
 
 afterEach(cleanup);
 
@@ -25,6 +25,7 @@ function api(connections: PveConnectionView[]): PveApi & { targets: ReturnType<t
     onboardPlan: vi.fn(),
     onboardApply: vi.fn(),
     onboardConnect: vi.fn(),
+    openConsole: vi.fn(),
   } as never;
 }
 
@@ -46,15 +47,32 @@ describe("PveTargets", () => {
     expect(within(sections[1]!).getByText("Proxmox refused the login.")).toBeTruthy();
   });
 
-  it("has no power buttons, and the console button is disabled with its reason (stopped guest, pending stage)", async () => {
+  it("has no power buttons; without console support the button is off with its reason, and a stopped guest says why", async () => {
     mount(api([conn("a", "env-a", { guests: [guest("a", { vmid: 101, name: "web" }), guest("a", { vmid: 102, name: "old", status: "stopped", console: { available: false, reason: "the guest is stopped; start it in Proxmox first (Remote Hub never starts guests)" } })] })]));
     const cards = await screen.findAllByTestId("pve-guest");
     for (const word of ["Start", "Stop", "Shutdown", "Reboot", "Migrate", "Snapshot", "Delete"]) expect(screen.queryByRole("button", { name: new RegExp(word, "i") })).toBeNull();
     const [web, old] = cards as [HTMLElement, HTMLElement];
     expect((within(web).getByRole("button", { name: /Open console of web/ }) as HTMLButtonElement).disabled).toBe(true);
-    expect(within(web).getByTestId("pve-console-reason").textContent).toBe(CONSOLE_PENDING_REASON);
+    expect(within(web).getByTestId("pve-console-reason").textContent).toBe(CONSOLE_OFF_REASON);
     expect((within(old).getByRole("button", { name: /Open console of old/ }) as HTMLButtonElement).disabled).toBe(true);
     expect(within(old).getByTestId("pve-console-reason").textContent).toContain("the guest is stopped");
+  });
+
+  it("with console support the buttons open a node shell, a container console and a VM's graphics; a stopped guest stays off", async () => {
+    const onOpenConsole = vi.fn();
+    const a = api([conn("a", "env-a", { nodes: [{ node: "pve1", status: "online" }, { node: "pve2", status: "offline" }], guests: [guest("a", { vmid: 101, name: "web" }), guest("a", { vmid: 200, name: "db", kind: "qemu", node: "pve1" }), guest("a", { vmid: 102, name: "old", status: "stopped", console: { available: false, reason: "stopped" } })] })]);
+    render(<PveTargets api={a} profileIds={null} linkable={[]} onConnectProfile={vi.fn()} onOpenConsole={onOpenConsole} onClose={vi.fn()} />);
+    const cards = await screen.findAllByTestId("pve-guest");
+    const [web, db, old] = cards as [HTMLElement, HTMLElement, HTMLElement];
+    fireEvent.click(within(web).getByRole("button", { name: /Open console of web/ }));
+    expect(onOpenConsole).toHaveBeenLastCalledWith({ profileId: "a", connectionName: "env-a", request: { console: "lxc", vmid: 101 }, title: "web" });
+    expect(within(db).getByRole("button", { name: /Open console of db/ }).textContent).toBe("Open graphics");
+    fireEvent.click(within(db).getByRole("button", { name: /Open console of db/ }));
+    expect(onOpenConsole).toHaveBeenLastCalledWith({ profileId: "a", connectionName: "env-a", request: { console: "qemu", vmid: 200 }, title: "db" });
+    expect((within(old).getByRole("button", { name: /Open console of old/ }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Open shell of node pve1" }));
+    expect(onOpenConsole).toHaveBeenLastCalledWith({ profileId: "a", connectionName: "env-a", request: { console: "node", node: "pve1" }, title: "pve1" });
+    expect((screen.getByRole("button", { name: "Open shell of node pve2" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("searches by name, id, node and type", async () => {

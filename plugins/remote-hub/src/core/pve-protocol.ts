@@ -35,6 +35,8 @@ export type PveConnect = z.infer<typeof pveConnectSchema>;
 export const pveConsoleTargetSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("node"), node: z.string().min(1).max(63) }),
   z.object({ kind: z.literal("lxc"), node: z.string().min(1).max(63), vmid: z.number().int().min(100).max(999_999_999) }),
+  /** Graphics of a virtual machine: the helper opens a `vnc` session and relays the raw RFB stream. */
+  z.object({ kind: z.literal("qemu"), node: z.string().min(1).max(63), vmid: z.number().int().min(100).max(999_999_999) }),
 ]);
 export type PveConsoleTarget = z.infer<typeof pveConsoleTargetSchema>;
 
@@ -48,10 +50,19 @@ export const openPveRequestSchema = z.object({
   rows: z.number().int().min(1).max(1000),
   keepaliveSecs: z.number().int().min(1).max(120).optional(),
 });
+/** Raw RFB bytes from the page's noVNC to a graphical console (base64: not text, so `session.input` cannot carry them). */
+export const pveVncInputRequestSchema = z.object({
+  type: z.literal("pve.vnc_input"),
+  id: idSchema,
+  sessionId: sessionIdSchema,
+  data: z.string().regex(/^[A-Za-z0-9+/]*={0,2}$/).max(256 * 1024),
+});
 export const pveTargetsRequestSchema = z.object({ type: z.literal("pve.targets"), id: idSchema, connect: pveConnectSchema });
 
 // ---- helper -> client ----
 export const pveStateSchema = z.object({ type: z.literal("pve.state"), sessionId: sessionIdSchema, state: z.string().min(1) });
+/** The short-lived VNC password of a graphical console: for the one view of that session, in memory, never logged. */
+export const pveVncPasswordSchema = z.object({ type: z.literal("pve.vnc_password"), sessionId: sessionIdSchema, password: z.string().min(1).max(64) });
 export const pveErrorSchema = z.object({
   type: z.literal("pve.error"),
   sessionId: sessionIdSchema,
@@ -149,5 +160,5 @@ export const pveProvisionedSchema = z.object({ type: z.literal("pve.provisioned"
 /** What mode 1 creates: fixed, and shown to the owner before anything is written. */
 export const PVE_PROVISION = { role: "RemoteHubConsole", user: "remotehub@pve", privileges: ["Sys.Audit", "Sys.Console", "VM.Audit", "VM.Console"] } as const;
 
-export const pveRequestSchemas = [openPveRequestSchema, pveTargetsRequestSchema, pveProvisionRequestSchema] as const;
-export const pveResponseSchemas = [pveStateSchema, pveErrorSchema, pveTargetsResultSchema, pveFailedSchema, pvePlanSchema, pveProvisionedSchema] as const;
+export const pveRequestSchemas = [openPveRequestSchema, pveTargetsRequestSchema, pveVncInputRequestSchema, pveProvisionRequestSchema] as const;
+export const pveResponseSchemas = [pveStateSchema, pveVncPasswordSchema, pveErrorSchema, pveTargetsResultSchema, pveFailedSchema, pvePlanSchema, pveProvisionedSchema] as const;

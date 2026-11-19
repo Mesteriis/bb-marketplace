@@ -25,6 +25,17 @@ Copyright (c) 2020 Matteo Bruni. MIT licence (the text below). Version 4.6.0 (th
 bundles), loaded lazily the first time an agent holds a session, to draw the dots of the agent overlay.
 Source: https://github.com/tsparticles/tsparticles
 
+## noVNC (vendored, unmodified)
+
+noVNC 1.6.0, Copyright (C) 2022 The noVNC authors. The core library is licensed under the Mozilla Public License 2.0; the files under
+`vendor/pako` are MIT-licensed, and `core/crypto/des.js` carries its own BSD-style notice. It draws the graphical console of a Proxmox
+QEMU guest. The copy in `vendor/novnc` is **vendored and not modified**: the ES-module sources `core/` and `vendor/pako/` of the git tag
+`v1.6.0` (commit a8dfd6a3ea3c74244f5ebdaa5a7f1023007a7820), with every per-file licence header, `LICENSE.txt`, `AUTHORS` and
+`docs/LICENSE.MPL-2.0` kept; `vendor/novnc/MANIFEST.sha256` and `npm run check:vendor` guard that no file changes. The MPL-2.0 text
+is in `vendor/novnc/docs/LICENSE.MPL-2.0`, and the source of these files is the upstream repository
+https://github.com/novnc/noVNC (MPL-2.0 requires that the source of the covered files stays available; it is this directory).
+There is no `REMOTE_HUB_CHANGES` file because there are no changes.
+
 ## MIT License
 
 Permission is hereby granted, free of charge, to any person obtaining a copy

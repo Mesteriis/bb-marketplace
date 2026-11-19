@@ -26,7 +26,7 @@ export interface AgentCallContext {
 export interface AgentSessionView {
   /** `<generation>.<sessionId>`: what the tools call a session id. */
   key: string;
-  kind: "echo" | "ssh" | "rdp";
+  kind: "echo" | "ssh" | "rdp" | "pve" | "vnc";
   state: "connecting" | "running" | "closed";
   profileId?: string;
   exitCode: number | null;

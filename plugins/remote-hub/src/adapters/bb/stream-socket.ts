@@ -16,6 +16,7 @@ import { OWNER_RPC } from "./rpc-handlers.ts";
 import type { WatcherBook } from "../../core/watchers.ts";
 import type { AgentFeed } from "../../core/agent-feed.ts";
 import { createRdpSocketHandlers } from "./rdp-socket.ts";
+import { createVncSocketHandlers } from "./vnc-socket.ts";
 import type { RemoteHubService } from "./service.ts";
 
 export interface StreamSocketDeps {
@@ -78,8 +79,16 @@ export function registerStreamSocket(bb: BbPluginApi, deps: StreamSocketDeps): v
     ) {
       return createRdpSocketHandlers(deps.service, binding, attachId, deps.watchers, deps.feed);
     }
+    // A graphical Proxmox console is a raw RFB relay with exactly one view: its own socket logic is in vnc-socket.ts.
+    if (
+      binding !== null &&
+      deps.service.sessionList().some((r) => r.generation === binding.generation && r.sessionId === binding.sessionId && r.kind === "vnc")
+    ) {
+      return createVncSocketHandlers(deps.service, binding, attachId, deps.watchers, deps.feed);
+    }
     let attached = false;
     let handle: SessionHandle | null = null;
+    let offConsole: (() => void) | null = null;
     let unsubscribe: (() => void) | null = null;
     let offExit: (() => void) | null = null;
     let offEnd: (() => void) | null = null;
@@ -167,6 +176,12 @@ export function registerStreamSocket(bb: BbPluginApi, deps: StreamSocketDeps): v
         offAskpass = deps.service.subscribeSshAskpass(handle!, (event) => {
           if (attached) guardSend(socket, JSON.stringify(event));
         });
+        // A Proxmox terminal also reports its own state (connecting, active, lost...) and why, for the view's header.
+        if (record?.pve !== undefined) {
+          offConsole = deps.service.subscribePveConsole(handle!, (event) => {
+            if (attached) guardSend(socket, JSON.stringify({ type: "console", state: event.state, reason: event.reason }));
+          });
+        }
         control = attachControlView(deps.service, handle!, (json) => guardSend(socket, json));
         offFeed = deps.feed?.subscribe(`${handle!.generation}.${handle!.sessionId}`, (event) => guardSend(socket, JSON.stringify({ type: "agent", event }))) ?? null;
         offEnd = deps.service.subscribeSessionEnd(handle!, (info) => {
@@ -299,6 +314,7 @@ export function registerStreamSocket(bb: BbPluginApi, deps: StreamSocketDeps): v
         if (offEnd !== null) offEnd();
         if (offAskpass !== null) offAskpass();
         if (offFeed !== null) offFeed();
+        if (offConsole !== null) offConsole();
         if (control !== null) control.off();
       },
       onError() {
@@ -313,6 +329,7 @@ export function registerStreamSocket(bb: BbPluginApi, deps: StreamSocketDeps): v
         if (offEnd !== null) offEnd();
         if (offAskpass !== null) offAskpass();
         if (offFeed !== null) offFeed();
+        if (offConsole !== null) offConsole();
         if (control !== null) control.off();
       },
     };

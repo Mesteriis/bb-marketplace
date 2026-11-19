@@ -6,13 +6,14 @@ import type { ExecStateMessage } from "../../core/exec-protocol.ts";
 import { AttachTokens, ATTACH_TOKEN_TTL_MS, type Clock } from "../../core/attach.ts";
 import { createCreditState, type CreditState } from "../../core/credit.ts";
 import { CredentialError, type CredentialBind, type CredentialVault } from "../../core/credential.ts";
-import type { PveConnect, PveSteps } from "../../core/pve-protocol.ts";
+import type { PveConnect, PveConsoleTarget, PveSteps } from "../../core/pve-protocol.ts";
+import { consoleStateOf, endStateOf, reasonText, VncRelay, type PveConsoleInfo, type VncAttachRefusal } from "../../core/pve-console.ts";
 import type { PveAnswer, PveProvisionAnswer } from "../../core/pve-targets.ts";
 import type { SshAskpassEvent } from "../../core/ssh-askpass-protocol.ts";
 import type { RdpOptions } from "../../core/rdp-options.ts";
 import type { KnownHostsOverlay } from "../../core/import-book.ts";
 import { buildSshExecSpawn, buildSshSpawn, type SshTarget } from "../../core/ssh-args.ts";
-import { HelperProcess, type HelperStatus, HelperRuntimeError, HelperRequestError, PveRequestFailure, type RdpHelperEvent } from "./helper-process.ts";
+import { HelperProcess, type HelperStatus, HelperRuntimeError, HelperRequestError, PveRequestFailure, type PveSessionEvent, type RdpHelperEvent } from "./helper-process.ts";
 import type { RdpInfo, RdpTarget, SessionHandle } from "../../core/rpc.ts";
 import { parseUpdateChunk, RDP_STATES, type RdpInputEvent } from "../../core/rdp-protocol.ts";
 import type { RdpDecision } from "../../core/rpc.ts";
@@ -26,9 +27,11 @@ export type SessionState = "connecting" | "running" | "closed";
 export interface SessionInfo {
   generation: string;
   sessionId: number;
-  kind: "echo" | "ssh" | "rdp";
+  kind: "echo" | "ssh" | "rdp" | "pve" | "vnc";
   target?: SshTarget;
   rdp?: RdpInfo;
+  /** A Proxmox console (a terminal `pve` or a graphical `vnc` one): what it is for, its state and why it failed. Never a secret. */
+  pve?: PveConsoleInfo;
   /** The saved profile this session was opened from. */
   profileId?: string;
   state: SessionState;
@@ -68,6 +71,37 @@ export interface RemoteHubServiceDeps {
   headlessDrain?: boolean;
   /** In-memory certificate trust; a fresh store per service when omitted. */
   trust?: RdpTrustStore;
+  /** A Proxmox console nobody is looking at and no agent drives is closed after this long (default 5 minutes). */
+  consoleIdleMs?: number;
+  /** How many bytes a graphical console may hold for a view that has not attached yet (default 256 KiB). */
+  vncBufferBytes?: number;
+}
+
+/** What the socket gives a graphical console's one view. */
+export interface VncViewSocket {
+  sendData(bytes: Uint8Array): void;
+  sendPassword(password: string): void;
+}
+
+export interface VncAttachment {
+  /** The view's keys and mouse, raw RFB. False when an agent holds the session. */
+  input(bytes: Uint8Array): Promise<boolean>;
+  detach(): void;
+}
+
+export interface PveConsoleEvent {
+  state: PveConsoleInfo["state"];
+  reason: PveConsoleInfo["reason"];
+}
+
+export interface PveOpenArgs {
+  connect: PveConnect;
+  target: PveConsoleTarget;
+  cols: number;
+  rows: number;
+  profileId: string;
+  connectionName: string;
+  guestName: string | null;
 }
 
 /** What a view receives from the service: binary update payloads and JSON events. */
@@ -113,6 +147,12 @@ export interface RemoteHubService {
   rdpAttach(handle: SessionHandle, viewId: string, sink: RdpViewSink): RdpAttachment;
   /** Test/inspection: the runtime view of one RDP session (never holds a password). */
   rdpInfo(handle: SessionHandle): RdpInfo | undefined;
+  /** Opens a Proxmox console: a terminal session (node, LXC) or a graphical one (QEMU). The record carries no secret. */
+  pveOpen(args: PveOpenArgs): Promise<{ handle: SessionHandle; kind: "pve" | "vnc" }>;
+  /** State and failure reason of a Proxmox console, replayed on subscribe. */
+  subscribePveConsole(handle: SessionHandle, cb: (event: PveConsoleEvent) => void): () => void;
+  /** The one view of a graphical console. Refused for a second view and for any view after the first one left (an RFB stream cannot be resumed). */
+  vncAttach(handle: SessionHandle, view: VncViewSocket): { ok: true; attachment: VncAttachment } | { ok: false; code: VncAttachRefusal };
   /** Proxmox VE: discovery and onboarding, through the helper. A refusal is an answer with a code, never a thrown secret. */
   pve: {
     targets(connect: PveConnect): Promise<PveAnswer>;
@@ -348,6 +388,17 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
   // A session that ended before its open call continued (any kind): applied when
   // the record is created, so an ended session is never shown as live.
   const earlyClosed = new Map<string, { exitCode: number | null; signal: number | null; reason: string }>();
+  // Proxmox consoles: events and raw bytes that arrive before the open call registered the record are kept like the above.
+  const earlyPveEvents = new Map<string, PveSessionEvent[]>();
+  const earlyVncData = new Map<string, Uint8Array[]>();
+  const EARLY_VNC_BYTES_MAX = 1024 * 1024;
+  const earlyVncBytes = new Map<string, number>();
+  const consoleListeners = new Map<string, Set<(event: PveConsoleEvent) => void>>();
+  const vncRelays = new Map<string, VncRelay>();
+  // Views attached to a Proxmox console, and the idle timers that close one nobody looks at (no view, no agent lease).
+  const viewCounts = new Map<string, number>();
+  const idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const CONSOLE_IDLE_MS = deps.consoleIdleMs ?? 5 * 60 * 1000;
   // Opens in flight. Everything that arrives for a session id with no record is
   // kept ONLY while an open is waiting (it can belong to it), never evicted while
   // that open is pending, and dropped when no open is pending any more. The number
@@ -367,6 +418,9 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
       earlyRdpUpdates.clear();
       earlyUpdateBytes.clear();
       earlyClosed.clear();
+      earlyPveEvents.clear();
+      earlyVncData.clear();
+      earlyVncBytes.clear();
     }
   };
   const execFinishedListeners = new Set<(event: { handle: ExecHandle; exitCode: number | null; signal: number | null; reason: string; refused: string | null }) => void>();
@@ -425,6 +479,10 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
       handoffs.delete(key);
       queuedOwner.delete(key);
       unconfirmedOwner.delete(key);
+      consoleListeners.delete(key);
+      vncRelays.delete(key);
+      viewCounts.delete(key);
+      clearIdle(key);
     }, EVICT_CLOSED_AFTER_MS);
   };
 
@@ -439,12 +497,151 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
     record.signal = info.signal;
     record.reason = info.reason;
     if (record.rdp !== undefined) record.rdp.state = "closed";
+    finishConsole(key, info.reason);
     maybeEvictClosed(key);
   };
 
   const rdpRecord = (key: string): SessionInfo | undefined => {
     const info = sessions.get(key);
     return info !== undefined && info.kind === "rdp" ? info : undefined;
+  };
+
+  const notifyConsole = (key: string): void => {
+    const info = sessions.get(key);
+    if (info?.pve === undefined) return;
+    const event: PveConsoleEvent = { state: info.pve.state, reason: info.pve.reason };
+    for (const cb of [...(consoleListeners.get(key) ?? [])]) {
+      try {
+        cb(event);
+      } catch {
+        // one listener's throw must not skip the others
+      }
+    }
+  };
+
+  /** A console ended (by the owner, by the other side, by the helper going away): its final state and reason, and nothing kept. */
+  const finishConsole = (key: string, reason: string): void => {
+    const info = sessions.get(key);
+    if (info?.pve === undefined) return;
+    clearIdle(key);
+    vncRelays.get(key)?.dispose();
+    vncRelays.delete(key);
+    if (info.pve.state !== "error") {
+      info.pve.state = endStateOf(reason);
+      info.pve.reason = info.pve.state === "lost" || reason === "idle_timeout" ? { code: reason, text: reasonText(reason), fingerprint: null } : null;
+    }
+    notifyConsole(key);
+  };
+
+  const handlePveEvent = (generation: string, sessionId: number, event: PveSessionEvent): void => {
+    const key = generation + ":" + sessionId;
+    const info = sessions.get(key);
+    if (info === undefined || info.pve === undefined) {
+      if (pendingOpens > 0) {
+        const list = earlyPveEvents.get(key) ?? [];
+        list.push(event);
+        earlyPveEvents.set(key, list);
+      }
+      return;
+    }
+    if (info.state === "closed") return;
+    if (event.type === "state") {
+      if (info.pve.state === "error") return;
+      info.pve.state = consoleStateOf(event.state);
+      if (event.state === "open") info.state = "running";
+      notifyConsole(key);
+    } else if (event.type === "error") {
+      info.pve.state = "error";
+      info.pve.reason = { code: event.code, text: reasonText(event.code), fingerprint: event.fingerprint };
+      notifyConsole(key);
+    } else {
+      vncRelays.get(key)?.setPassword(event.password);
+    }
+  };
+
+  const handleVncData = (generation: string, sessionId: number, data: Uint8Array): void => {
+    const key = generation + ":" + sessionId;
+    const relay = vncRelays.get(key);
+    if (relay === undefined) {
+      if (pendingOpens === 0) return;
+      const bytes = (earlyVncBytes.get(key) ?? 0) + data.byteLength;
+      if (bytes > EARLY_VNC_BYTES_MAX) return;
+      earlyVncBytes.set(key, bytes);
+      earlyVncData.set(key, [...(earlyVncData.get(key) ?? []), data]);
+      return;
+    }
+    if (relay.push(data) === "overflow") {
+      const info = sessions.get(key);
+      if (info !== undefined) void closeSession({ generation: info.generation, sessionId: info.sessionId }, "vnc_buffer_overflow").catch(() => {});
+    }
+  };
+
+  const consoleIdle = (key: string): boolean => {
+    const info = sessions.get(key);
+    if (info?.pve === undefined || info.state === "closed") return false;
+    if ((viewCounts.get(key) ?? 0) > 0) return false;
+    return deps.control?.state({ generation: info.generation, sessionId: info.sessionId }).owner !== "agent";
+  };
+  function clearIdle(key: string): void {
+    const timer = idleTimers.get(key);
+    if (timer !== undefined) clearTimeout(timer);
+    idleTimers.delete(key);
+  }
+  /** (Re)evaluates whether a console is idle: starts the timer once it is, stops it as soon as a view or an agent has it. */
+  const refreshIdle = (key: string): void => {
+    if (!consoleIdle(key)) {
+      clearIdle(key);
+      return;
+    }
+    if (idleTimers.has(key)) return;
+    const timer = setTimeout(() => {
+      idleTimers.delete(key);
+      const info = sessions.get(key);
+      if (info === undefined || !consoleIdle(key)) return;
+      void closeSession({ generation: info.generation, sessionId: info.sessionId }, "idle_timeout").catch(() => {});
+    }, CONSOLE_IDLE_MS);
+    timer.unref?.();
+    idleTimers.set(key, timer);
+  };
+  const viewAttached = (key: string): void => {
+    viewCounts.set(key, (viewCounts.get(key) ?? 0) + 1);
+    refreshIdle(key);
+  };
+  const viewDetached = (key: string): void => {
+    viewCounts.set(key, Math.max(0, (viewCounts.get(key) ?? 0) - 1));
+    refreshIdle(key);
+  };
+
+  const closeSession = async (handle: SessionHandle, reasonOverride?: string): Promise<{ exitCode: number | null; signal: number | null; reason: string }> => {
+    requireGeneration(handle);
+    const process = await start();
+    const helperInfo = await process.close(handle);
+    const info = reasonOverride === undefined ? helperInfo : { ...helperInfo, reason: reasonOverride };
+    const key = keyOf(handle);
+    const existing = sessions.get(key);
+    // An explicit close of a session that had already ended (the helper still
+    // answers it) must not announce the end a second time.
+    const alreadyEnded = existing?.state === "closed";
+    if (existing !== undefined && !alreadyEnded) {
+      existing.state = "closed";
+      existing.exitCode = info.exitCode;
+      existing.signal = info.signal;
+      existing.reason = info.reason;
+      if (existing.rdp !== undefined) existing.rdp.state = "closed";
+      finishConsole(key, info.reason);
+    }
+    const ends = alreadyEnded ? undefined : sessionEndListeners.get(key);
+    if (ends !== undefined) {
+      for (const cb of ends) {
+        try {
+          cb(info);
+        } catch {
+          // one listener's throw must not skip the others
+        }
+      }
+    }
+    maybeEvictClosed(key);
+    return info;
   };
 
   const broadcast = (runtime: RdpRuntime, event: Record<string, unknown>): void => {
@@ -609,6 +806,7 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
                   info.exitCode = null;
                   info.signal = null;
                   info.reason = "helper_exited";
+                  finishConsole(generation + ":" + info.sessionId, "helper_exited");
                 }
               }
               for (const key of Array.from(listeners.keys())) {
@@ -648,6 +846,7 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
               existing.signal = info.signal;
               existing.reason = info.reason;
               if (existing.rdp !== undefined) existing.rdp.state = "closed";
+              finishConsole(key, info.reason);
             } else {
               // Closed before the open call that will create the record continued.
               if (pendingOpens > 0) earlyClosed.set(key, info);
@@ -666,6 +865,8 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
             maybeEvictClosed(key);
           });
           started.onRdpEvent((sessionId, event) => handleRdpEvent(generation, sessionId, event));
+          started.onPveEvent((sessionId, event) => handlePveEvent(generation, sessionId, event));
+          started.onVncData((sessionId, data) => handleVncData(generation, sessionId, data));
           started.onSshAskpass((sessionId, event) => handleSshAskpass(generation, sessionId, event));
           started.onExecFinished((e) => {
             for (const cb of [...execFinishedListeners]) {
@@ -708,6 +909,7 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
   if (deps.control !== undefined) {
     const gate = deps.control;
     gate.onChange((handle) => {
+      refreshIdle(keyOf(handle));
       if (helper === null) return;
       queueSync(handle);
     });
@@ -911,6 +1113,90 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
         },
       };
     },
+    pveOpen: tracked(async (args) => {
+      const hp = await start();
+      const { handle, kind } = await hp.openPve(args.connect, args.target, args.cols, args.rows);
+      const key = keyOf(handle);
+      if (kind === "pve") await startDrain(hp, handle);
+      sessions.set(key, {
+        generation: handle.generation,
+        sessionId: handle.sessionId,
+        kind,
+        state: "connecting",
+        exitCode: null,
+        signal: null,
+        reason: null,
+        profileId: args.profileId,
+        // What the console is for; the connection's secret is not part of it.
+        pve: {
+          profileId: args.profileId,
+          connectionName: args.connectionName,
+          console: args.target.kind,
+          node: args.target.node,
+          vmid: args.target.kind === "node" ? null : args.target.vmid,
+          guestName: args.guestName,
+          state: "connecting",
+          reason: null,
+        },
+      });
+      if (kind === "vnc") vncRelays.set(key, new VncRelay(deps.vncBufferBytes ?? 256 * 1024));
+      const earlyEvents = earlyPveEvents.get(key);
+      earlyPveEvents.delete(key);
+      for (const event of earlyEvents ?? []) handlePveEvent(handle.generation, handle.sessionId, event);
+      const earlyBytes = earlyVncData.get(key);
+      earlyVncData.delete(key);
+      earlyVncBytes.delete(key);
+      for (const bytes of earlyBytes ?? []) handleVncData(handle.generation, handle.sessionId, bytes);
+      applyEarlyClosed(key);
+      refreshIdle(key);
+      return { handle, kind };
+    }),
+    subscribePveConsole(handle, cb) {
+      requireGeneration(handle);
+      const key = keyOf(handle);
+      const info = sessions.get(key);
+      if (info?.pve === undefined) throw new HelperRuntimeError("session_not_found", "not a Proxmox console");
+      let set = consoleListeners.get(key);
+      if (set === undefined) {
+        set = new Set();
+        consoleListeners.set(key, set);
+      }
+      set.add(cb);
+      cb({ state: info.pve.state, reason: info.pve.reason });
+      return () => {
+        set.delete(cb);
+      };
+    },
+    vncAttach(handle, view) {
+      requireGeneration(handle);
+      const key = keyOf(handle);
+      const info = sessions.get(key);
+      const relay = vncRelays.get(key);
+      if (info?.kind !== "vnc" || relay === undefined) throw new HelperRuntimeError("session_not_found", "unknown graphical console");
+      const attached = relay.attach({ data: (bytes) => view.sendData(bytes), password: (password) => view.sendPassword(password) });
+      if (!attached.ok) return attached;
+      viewAttached(key);
+      let done = false;
+      return {
+        ok: true,
+        attachment: {
+          async input(bytes) {
+            if (deps.control !== undefined && !deps.control.humanMayDrive(handle)) return false;
+            await handoff(handle);
+            if (ownerUnconfirmed(handle) || (deps.control !== undefined && !deps.control.humanMayDrive(handle))) return false;
+            const hp = await start();
+            await hp.pveVncInput(handle, bytes);
+            return true;
+          },
+          detach() {
+            if (done) return;
+            done = true;
+            relay.detach();
+            viewDetached(key);
+          },
+        },
+      };
+    },
     subscribeSshAskpass(handle, cb) {
       requireGeneration(handle);
       const state = askpassState(keyOf(handle));
@@ -964,35 +1250,7 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
     sessionList() {
       return Array.from(sessions.values());
     },
-    async sessionClose(handle) {
-      requireGeneration(handle);
-      const process = await start();
-      const info = await process.close(handle);
-      const key = keyOf(handle);
-      const existing = sessions.get(key);
-      // An explicit close of a session that had already ended (the helper still
-      // answers it) must not announce the end a second time.
-      const alreadyEnded = existing?.state === "closed";
-      if (existing !== undefined && !alreadyEnded) {
-        existing.state = "closed";
-        existing.exitCode = info.exitCode;
-        existing.signal = info.signal;
-        existing.reason = info.reason;
-        if (existing.rdp !== undefined) existing.rdp.state = "closed";
-      }
-      const ends = alreadyEnded ? undefined : sessionEndListeners.get(key);
-      if (ends !== undefined) {
-        for (const cb of ends) {
-          try {
-            cb(info);
-          } catch {
-            // one listener's throw must not skip the others
-          }
-        }
-      }
-      maybeEvictClosed(key);
-      return info;
-    },
+    sessionClose: (handle) => closeSession(handle),
     sessionAttach(handle) {
       requireGeneration(handle);
       return attachTokens.issue(handle.sessionId, handle.generation);
@@ -1029,9 +1287,16 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
         else buffer.push(data);
       };
       set.add(buffered);
+      const isConsole = sessions.get(key)?.pve !== undefined;
+      if (isConsole) viewAttached(key);
+      let cancelled = false;
       const cancel = (): void => {
         set.delete(buffered);
         if (set.size === 0) listeners.delete(key);
+        if (isConsole && !cancelled) {
+          cancelled = true;
+          viewDetached(key);
+        }
       };
       return {
         snapshot,
@@ -1142,6 +1407,9 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
       const info = sessions.get(key);
       if (info === undefined || info.state === "closed" || info.kind === "echo") return "never";
       if (info.kind === "rdp") return "ready";
+      // A Proxmox terminal is driven like any terminal once it is open; graphics have no agent input in this version.
+      if (info.kind === "vnc") return "never";
+      if (info.kind === "pve") return info.pve?.state === "active" ? "ready" : info.pve?.state === "connecting" ? "pending" : "never";
       if (!brokered.has(key)) return "never";
       const ask = askpassStates.get(key);
       if (ask === undefined) return "pending"; // nothing from the helper yet

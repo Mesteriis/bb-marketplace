@@ -1837,8 +1837,16 @@ pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
                     }
                 }
                 Ok(Some(IncomingFrame::Stream { session_id, data })) => {
-                    // Binary terminal input; overflow is dropped (backpressure).
-                    let _ = guard.manager.enqueue_input_from(session_id, "human", &data);
+                    // Binary terminal input; overflow is dropped (backpressure). Ids come from one allocator, so an id belongs
+                    // to the PTY manager or to the PVE manager (a Proxmox terminal), never both.
+                    if guard.pve.contains(session_id) {
+                        // A graphical console takes raw RFB only through `pve.vnc_input`.
+                        if !guard.pve.is_vnc(session_id) {
+                            let _ = guard.pve.enqueue_input(session_id, &data);
+                        }
+                    } else {
+                        let _ = guard.manager.enqueue_input_from(session_id, "human", &data);
+                    }
                 }
                 Ok(None) => break,
                 Err(FrameError::Invalid(message)) => {

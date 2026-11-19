@@ -66,6 +66,8 @@ class FakeHelper {
   onExit(): void {}
   onSessionClosed(): void {}
   onSessionOutput(): void {}
+  onPveEvent(): void {}
+  onVncData(): void {}
   onSshAskpass(cb: (sid: number, e: unknown) => void): void {
     this.askpassCb.push(cb);
   }

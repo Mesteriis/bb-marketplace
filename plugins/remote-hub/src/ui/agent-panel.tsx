@@ -31,7 +31,7 @@ export interface AgentAuditView {
 export interface AgentSessionView {
   generation: string;
   sessionId: number;
-  kind: "echo" | "ssh" | "rdp";
+  kind: "echo" | "ssh" | "rdp" | "pve" | "vnc";
   connectionId: string | null;
   state: "connecting" | "running" | "closed";
   openedByThread: string | null;

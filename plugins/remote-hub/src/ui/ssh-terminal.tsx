@@ -26,6 +26,8 @@ export interface SshTerminalProps {
   onAskpass?: (event: SshAskpassEvent) => void;
   /** Who drives the session (an agent may hold it), and that the user's input was dropped because of it. */
   onControl?: (message: ControlMessage) => void;
+  /** A Proxmox console's own state and the reason it failed (sent by the service for `pve` sessions). */
+  onConsole?: (event: { state: string; reason: { code: string; text: string; fingerprint: string | null } | null }) => void;
   /** What an agent just did on this session (a command it ran, ...), for the view to show. */
   onAgent?: (event: FeedEvent) => void;
   /** Filled with a function that sends a control message on the open socket. */
@@ -108,6 +110,9 @@ export function SshTerminal(props: SshTerminalProps) {
             signal: msg.signal ?? null,
             reason: msg.reason ?? "exited",
           });
+        } else if (msg.type === "console" && typeof (msg as { state?: unknown }).state === "string") {
+          const c = msg as unknown as { state: string; reason: { code: string; text: string; fingerprint: string | null } | null };
+          props.onConsole?.({ state: c.state, reason: c.reason ?? null });
         } else if (msg.type === "prompt" && typeof msg.promptId === "number" && typeof msg.text === "string") {
           props.onAskpass?.({ type: "prompt", promptId: msg.promptId, text: msg.text, kind: msg.kind ?? "none" });
         } else if (msg.type === "prompt_expired" && typeof msg.promptId === "number") {

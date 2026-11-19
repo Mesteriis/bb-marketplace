@@ -43,14 +43,15 @@
     "build:helper": "RUSTFLAGS=\"--remap-path-prefix=$HOME=/home/builder --remap-path-prefix=$PWD=/src $RUSTFLAGS\" cargo build --release --locked --target aarch64-apple-darwin --manifest-path helper/Cargo.toml && mkdir -p bin && cp helper/target/aarch64-apple-darwin/release/remote-hub-helper bin/remote-hub-helper && chmod +x bin/remote-hub-helper && node scripts/helper-sums.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "check": "npm run typecheck && npm run test",
+    "check": "npm run typecheck && npm run test && npm run check:vendor",
     "test:integration": "cargo build --features test-hooks --manifest-path helper/Cargo.toml && REMOTE_HUB_HELPER=\"$PWD/helper/target/debug/remote-hub-helper\" python3 tests/integration/ssh-docker.py && REMOTE_HUB_HELPER=\"$PWD/helper/target/debug/remote-hub-helper\" python3 tests/integration/rdp-docker.py && REMOTE_HUB_INTEGRATION=1 REMOTE_HUB_HELPER=helper/target/debug/remote-hub-helper vitest run tests/integration/ssh-service.test.ts tests/integration/rdp-probe.test.ts tests/integration/rdp-service.test.ts tests/integration/credential-leak.test.ts tests/integration/ssh-askpass.test.ts tests/integration/agent-control.test.ts",
     "helper:sums": "node scripts/helper-sums.mjs",
     "verify:helper": "node scripts/verify-helper.mjs",
     "check:dist": "node scripts/check-build-output.mjs",
     "check:release": "node scripts/check-build-output.mjs --release",
     "check:notices": "node scripts/gen-notices.mjs --check && node scripts/check-notices.mjs",
-    "build:clean-clone": "bash scripts/clean-clone-build.sh"
+    "build:clean-clone": "bash scripts/clean-clone-build.sh",
+    "check:vendor": "node scripts/check-vendor.mjs"
   },
   "dependencies": {
     "@tsparticles/engine": "4.6.0",

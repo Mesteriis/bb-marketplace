@@ -53,6 +53,8 @@ class FakeHelper {
   }
   onRdpEvent(): void {}
   onSshAskpass(): void {}
+  onPveEvent(): void {}
+  onVncData(): void {}
   onExecFinished(): void {}
   onRdpUpdate(): void {}
   onSessionClosed(cb: (sessionId: number, info: { exitCode: number | null; signal: number | null; reason: string }) => void): void {

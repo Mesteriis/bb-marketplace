@@ -5,6 +5,7 @@ import { ProfileBook, type ProfileStore } from "../../core/profile-book.ts";
 import type { Profile, ProfileFields } from "../../core/profile.ts";
 import type { PvePlan, PveSteps } from "../../core/pve-protocol.ts";
 import type { PveAnswer, PveProvisionAnswer } from "../../core/pve-targets.ts";
+import { HelperRequestError } from "./helper-process.ts";
 import { createPveRpc, PveRpcError } from "./pve-rpc.ts";
 import type { PveGuestLinkStore } from "./pve-sqlite.ts";
 
@@ -70,6 +71,7 @@ function world() {
   const credentials = new CredentialBook({ store: meta, vault, profiles: book, now: () => new Date("2026-11-18T10:00:00Z"), newId: () => `0b8e6f4a-5c2d-4e1b-9a37-1f2e3d4c5b${String(++n).padStart(2, "0")}` });
   const calls: Array<{ kind: string; arg: unknown }> = [];
   const state = {
+    openError: null as Error | null,
     skipSave: false,
     targets: (async () => ({ ok: true, version: "9.0.3", nodes: [], guests: [{ vmid: 100, name: "db", kind: "qemu", node: "pve1", status: "running", template: false }] })) as () => Promise<PveAnswer>,
     provision: (async (arg: ProvisionArg): Promise<PveProvisionAnswer> => (arg.dryRun ? { ok: true, kind: "plan", plan: PLAN } : { ok: true, kind: "applied", steps: DONE })) as (arg: ProvisionArg) => Promise<PveProvisionAnswer>,
@@ -90,6 +92,11 @@ function world() {
       },
     },
     credentialVault: vault,
+    pveOpen: async (args: Record<string, unknown>) => {
+      calls.push({ kind: "pveOpen", arg: args });
+      if (state.openError !== null) throw state.openError;
+      return { handle: { generation: "e".repeat(32), sessionId: 7 }, kind: (args.target as { kind: string }).kind === "qemu" ? ("vnc" as const) : ("pve" as const) };
+    },
   };
   const links = new MemLinks();
   const rows: AuditRow[] = [];
@@ -413,6 +420,89 @@ describe("onboarding mode 1: applying the confirmed plan", () => {
     const r = await w.rpc.onboardApply({ ...applyInput, port: 8443, trust: { mode: "pin", fingerprint: FP } });
     if (!r.ok) throw new Error("not ok");
     expect(w.book.get(r.profileId)).toMatchObject({ port: 8443, pveTrust: { mode: "pin", fingerprint: FP } });
+  });
+});
+
+describe("opening a console", () => {
+  const guests = (over: Record<string, unknown> = {}) => [
+    { vmid: 100, name: "db", kind: "qemu", node: "pve1", status: "running", template: false, ...over },
+    { vmid: 101, name: "ct", kind: "lxc", node: "pve2", status: "running", template: false },
+    { vmid: 102, name: "off", kind: "lxc", node: "pve1", status: "stopped", template: false },
+  ];
+  const nodes = [
+    { node: "pve1", status: "online" },
+    { node: "pve2", status: "online" },
+  ];
+  function readyWorld() {
+    const w = world();
+    const p = withRef(w);
+    w.state.targets = async () => ({ ok: true, version: "9.2.4", nodes, guests: guests() }) as PveAnswer;
+    return { w, p };
+  }
+
+  it("re-reads the guest's current node and opens with the saved credential, never a secret", async () => {
+    const { w, p } = readyWorld();
+    const r = await w.rpc.openConsole({ profileId: p.id, console: "lxc", vmid: 101, cols: 100, rows: 30 });
+    expect(r).toEqual({ ok: true, handle: { generation: "e".repeat(32), sessionId: 7 }, kind: "pve" });
+    const open = w.calls.find((c) => c.kind === "pveOpen")?.arg as { connect: { credentialRef: string; password?: string }; target: unknown; cols: number; guestName: string };
+    expect(open.target).toEqual({ kind: "lxc", node: "pve2", vmid: 101 });
+    expect(open.connect.credentialRef).toBe(REF1);
+    expect(open.connect.password).toBeUndefined();
+    expect(open).toMatchObject({ cols: 100, guestName: "ct" });
+    // a fresh read was made for it, even though a list may have been cached
+    expect(w.calls.filter((c) => c.kind === "targets")).toHaveLength(1);
+  });
+
+  it("a QEMU guest opens as a vnc session; a node shell as a pve one", async () => {
+    const { w, p } = readyWorld();
+    expect(await w.rpc.openConsole({ profileId: p.id, console: "qemu", vmid: 100, cols: 80, rows: 24 })).toMatchObject({ ok: true, kind: "vnc" });
+    expect(await w.rpc.openConsole({ profileId: p.id, console: "node", node: "pve1", cols: 80, rows: 24 })).toMatchObject({ ok: true, kind: "pve" });
+  });
+
+  it("a stopped guest is refused with its reason and nothing is opened", async () => {
+    const { w, p } = readyWorld();
+    expect(await w.rpc.openConsole({ profileId: p.id, console: "lxc", vmid: 102, cols: 80, rows: 24 })).toMatchObject({ ok: false, code: "guest_stopped" });
+    expect(w.calls.some((c) => c.kind === "pveOpen")).toBe(false);
+  });
+
+  it("a failed read is the reason, with the certificate a refusal showed, and nothing is opened from old data", async () => {
+    const { w, p } = readyWorld();
+    await w.rpc.targets({ refresh: true }); // a good list is now cached
+    w.state.targets = async () => ({ ok: false, code: "unreachable", message: "", fingerprint: null });
+    const r = await w.rpc.openConsole({ profileId: p.id, console: "lxc", vmid: 101, cols: 80, rows: 24 });
+    expect(r).toMatchObject({ ok: false, code: "unreachable" });
+    w.state.targets = async () => ({ ok: false, code: "tls_untrusted", message: "", fingerprint: FP });
+    expect(await w.rpc.openConsole({ profileId: p.id, console: "lxc", vmid: 101, cols: 80, rows: 24 })).toMatchObject({ ok: false, code: "tls_untrusted", fingerprint: FP });
+    expect(w.calls.some((c) => c.kind === "pveOpen")).toBe(false);
+  });
+
+  it("a connection without a credential, or edited while it was read, is refused", async () => {
+    const w = world();
+    const bare = w.book.save({ fields: PVE });
+    expect(await w.rpc.openConsole({ profileId: bare.id, console: "node", node: "pve1", cols: 80, rows: 24 })).toMatchObject({ ok: false, code: "no_credential" });
+    const { w: w2, p } = readyWorld();
+    w2.state.targets = async () => {
+      w2.book.save({ id: p.id, fields: { ...profileFields(w2.book.get(p.id)!), name: "renamed" } });
+      return { ok: true, version: "9.2.4", nodes, guests: guests() } as PveAnswer;
+    };
+    expect(await w2.rpc.openConsole({ profileId: p.id, console: "lxc", vmid: 101, cols: 80, rows: 24 })).toMatchObject({ ok: false, code: "api_error" });
+    expect(w2.calls.some((c) => c.kind === "pveOpen")).toBe(false);
+  });
+
+  it("a helper refusal at open is an answer with its code", async () => {
+    const { w, p } = readyWorld();
+    w.state.openError = new HelperRequestError("invalid_request", "bad target");
+    expect(await w.rpc.openConsole({ profileId: p.id, console: "lxc", vmid: 101, cols: 80, rows: 24 })).toMatchObject({ ok: false, code: "invalid_request" });
+  });
+
+  it("is audited with the endpoint and the target, and the outcome", async () => {
+    const { w, p } = readyWorld();
+    await w.rpc.openConsole({ profileId: p.id, console: "lxc", vmid: 101, cols: 80, rows: 24 });
+    await w.rpc.openConsole({ profileId: p.id, console: "lxc", vmid: 102, cols: 80, rows: 24 });
+    expect(w.rows.map((r) => [r.tool, r.detail, r.outcome])).toEqual([
+      ["pve.console_open", "pve.test:8006 lxc 101", "ok"],
+      ["pve.console_open", "pve.test:8006 lxc 102", "guest_stopped"],
+    ]);
   });
 });
 

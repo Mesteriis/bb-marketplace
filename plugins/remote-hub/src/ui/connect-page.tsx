@@ -19,8 +19,9 @@ import { useProfiles, type ProfilesApi } from "./use-profiles.ts";
 import type { PveApi } from "./pve-api.ts";
 import { PveOnboarding } from "./pve-onboarding.tsx";
 import { PveTargets } from "./pve-targets.tsx";
+import { PveConsoles, type PveConsoleLaunch, type PveConsolesApi } from "./pve-consoles.tsx";
 
-export type ConnectKind = "ssh" | "rdp";
+export type ConnectKind = "ssh" | "rdp" | "pve";
 
 export interface ConnectPageProps {
   ssh: SshPageProps;
@@ -38,6 +39,8 @@ export interface ConnectPageProps {
   live?: LiveSessionApi;
   /** Proxmox VE: adding a connection and listing its guests; without it there is no Proxmox screen. */
   pve?: PveApi;
+  /** Proxmox consoles (a node shell, a container terminal, a VM's graphics); without it the console buttons stay off. */
+  pveConsoles?: { attach: PveConsolesApi["attach"]; close: PveConsolesApi["close"]; takeover?: PveConsolesApi["takeover"] };
 }
 
 export function ConnectPage(props: ConnectPageProps) {
@@ -53,6 +56,7 @@ export function ConnectPage(props: ConnectPageProps) {
   // Proxmox: the guest list of one saved connection (or of all of them), and the Add Proxmox screen.
   const [pveList, setPveList] = useState<{ profileIds: string[] | null; key: number } | null>(null);
   const [addingPve, setAddingPve] = useState(false);
+  const [consoleLaunch, setConsoleLaunch] = useState<PveConsoleLaunch | undefined>(undefined);
   const nonce = useRef(0);
   const api = props.profiles;
   const data = useProfiles(api);
@@ -230,6 +234,15 @@ export function ConnectPage(props: ConnectPageProps) {
               const target = (data.profiles ?? []).find((p) => p.id === id);
               if (target !== undefined) connectProfile(target);
             }}
+            {...(props.pveConsoles !== undefined
+              ? {
+                  onOpenConsole: (open: Omit<PveConsoleLaunch, "nonce">) => {
+                    setConsoleLaunch({ ...open, nonce: ++nonce.current });
+                    setKind("pve");
+                    setPveList(null);
+                  },
+                }
+              : {})}
             onClose={() => setPveList(null)}
           />
         )}
@@ -251,6 +264,11 @@ export function ConnectPage(props: ConnectPageProps) {
             <button type="button" aria-pressed={kind === "rdp"} onClick={() => setKind("rdp")}>
               RDP
             </button>
+            {props.pveConsoles !== undefined && props.pve !== undefined && (
+              <button type="button" aria-pressed={kind === "pve"} onClick={() => setKind("pve")}>
+                Proxmox
+              </button>
+            )}
           </div>
           <div hidden={kind !== "ssh"} className="rh-kind-pane">
             <SshPage {...ssh} />
@@ -258,6 +276,14 @@ export function ConnectPage(props: ConnectPageProps) {
           <div hidden={kind !== "rdp"} className="rh-kind-pane">
             <RdpPage {...rdp} />
           </div>
+          {props.pveConsoles !== undefined && props.pve !== undefined && (
+            <div hidden={kind !== "pve"} className="rh-kind-pane">
+              <PveConsoles
+                api={{ open: props.pve.openConsole, attach: props.pveConsoles.attach, close: props.pveConsoles.close, ...(props.pveConsoles.takeover !== undefined ? { takeover: props.pveConsoles.takeover } : {}) }}
+                {...(consoleLaunch !== undefined ? { launch: consoleLaunch } : {})}
+              />
+            </div>
+          )}
         </div>
       </div>
       </div>

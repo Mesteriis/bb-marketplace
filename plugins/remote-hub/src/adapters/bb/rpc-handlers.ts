@@ -244,6 +244,12 @@ export function createRpcHandlers({ service, profiles, credentials, imports, age
         p.linkGuest(input.profileId, input.vmid, input.linkProfileId);
         return { linked: input.linkProfileId !== null };
       }),
+    pve_console_open: (input) =>
+      withPve(async (p) => {
+        const request = input.console === "node" ? ({ console: "node", node: input.node as string } as const) : ({ console: input.console, vmid: input.vmid as number } as const);
+        const answer = await p.openConsole({ ...request, profileId: input.profileId, cols: input.cols, rows: input.rows });
+        return answer.ok ? { ok: true as const, generation: answer.handle.generation, sessionId: answer.handle.sessionId, kind: answer.kind } : answer;
+      }),
     pve_onboard_plan: (input) => withPve((p) => p.onboardPlan(input)),
     pve_onboard_apply: (input) => withPve((p) => p.onboardApply(input)),
     pve_onboard_connect: (input) => withPve((p) => p.onboardConnect(input)),

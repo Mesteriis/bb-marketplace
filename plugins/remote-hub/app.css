@@ -996,3 +996,51 @@
 .rh-pve-onboarding code {
   overflow-wrap: anywhere;
 }
+
+/* Proxmox consoles: tabs, the header with state and reason, the terminal and the graphical view. */
+.rh-pve-consoles {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  height: 100%;
+  min-height: 0;
+}
+
+.rh-pve-consoles .rh-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.rh-pve-console {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.rh-pve-console[hidden] {
+  display: none;
+}
+
+.rh-pve-console .rh-live-head {
+  flex-wrap: wrap;
+}
+
+/* The graphical console fills its pane; noVNC scales the remote screen into it. */
+.rh-vnc {
+  flex: 1 1 auto;
+  min-height: 320px;
+  width: 100%;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 4px;
+  overflow: hidden;
+  background: #000;
+}
+
+.rh-pve-nodes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
