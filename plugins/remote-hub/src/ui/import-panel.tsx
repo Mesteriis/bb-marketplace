@@ -34,28 +34,28 @@ const FLAG_TEXT: Record<string, string> = {
 };
 
 const ACTION_TEXT = {
-  create: "New",
-  update: "Changed in the source",
-  unchanged: "Already imported",
-  conflict: "Changed here and in the source: left alone",
-  "deleted-locally": "Deleted here: not brought back",
-  skip: "Cannot be a profile",
+  create: "Новое",
+  update: "Изменено в источнике",
+  unchanged: "Уже импортировано",
+  conflict: "Изменено и здесь, и в источнике: не тронуто",
+  "deleted-locally": "Удалено здесь: не возвращается",
+  skip: "Не может быть подключением",
 } as const;
 
 const KIND_TEXT: Record<ImportSource["kind"], string> = {
-  "ssh-config": "SSH config",
-  hosts: "Hosts file",
-  "keys-dir": "Key files",
-  agent: "SSH agent",
-  "known-hosts": "Known hosts",
+  "ssh-config": "Конфигурация SSH",
+  hosts: "Файл hosts",
+  "keys-dir": "Файлы ключей",
+  agent: "Агент SSH",
+  "known-hosts": "Известные хосты",
 };
 
 function outcomeText(o: ImportOutcome): string {
-  const parts = [`${o.created} created`, `${o.updated} updated`, `${o.unchanged} unchanged`];
-  if (o.conflicts.length > 0) parts.push(`${o.conflicts.length} left alone (changed here and in the source)`);
-  if (o.deletedLocally.length > 0) parts.push(`${o.deletedLocally.length} not brought back (deleted here)`);
-  if (o.skipped.length > 0) parts.push(`${o.skipped.length} skipped`);
-  if (o.markedStale > 0) parts.push(`${o.markedStale} no longer in the source`);
+  const parts = [`создано: ${o.created}`, `обновлено: ${o.updated}`, `без изменений: ${o.unchanged}`];
+  if (o.conflicts.length > 0) parts.push(`не тронуто (изменено и здесь, и в источнике): ${o.conflicts.length}`);
+  if (o.deletedLocally.length > 0) parts.push(`не возвращено (удалено здесь): ${o.deletedLocally.length}`);
+  if (o.skipped.length > 0) parts.push(`пропущено: ${o.skipped.length}`);
+  if (o.markedStale > 0) parts.push(`больше нет в источнике: ${o.markedStale}`);
   return parts.join(", ") + ".";
 }
 
@@ -135,19 +135,19 @@ export function ImportPanel({ api, onImported, onClose }: ImportPanelProps) {
   const unregistered = suggestions.filter((s) => !registered.has(`${s.kind}\u0000${s.path ?? ""}`));
 
   return (
-    <section aria-label="Import" className="rh-import">
+    <section aria-label="Импорт" className="rh-import">
       <div className="rh-import-head">
-        <h2>Import</h2>
+        <h2>Импорт</h2>
         <button type="button" onClick={onClose}>
-          Close
+          Закрыть
         </button>
       </div>
-      <p className="rh-hint">Nothing is read until you switch a source on. Imported profiles keep their source and can be re-imported safely.</p>
+      <p className="rh-hint">Ничего не читается, пока вы не включите источник. Импортированные подключения помнят свой источник, и их можно безопасно импортировать повторно.</p>
       {problem !== null && <p role="alert" className="rh-error">{problem}</p>}
       {message !== null && <p role="status" className="rh-hint">{message}</p>}
 
-      {sources === null && <p className="rh-hint">Loading…</p>}
-      {sources !== null && sources.length === 0 && <p className="rh-hint">No sources yet. Add one below.</p>}
+      {sources === null && <p className="rh-hint">Загрузка…</p>}
+      {sources !== null && sources.length === 0 && <p className="rh-hint">Источников пока нет. Добавьте ниже.</p>}
       <ul>
         {(sources ?? []).map((s) => (
           <li key={s.id} aria-label={s.label} className="rh-profile">
@@ -158,21 +158,21 @@ export function ImportPanel({ api, onImported, onClose }: ImportPanelProps) {
               {s.path !== null && <span className="rh-profile-endpoint">{s.path}</span>}
               <label className="rh-check">
                 <input type="checkbox" checked={s.enabled} disabled={busy} onChange={(e) => void run(async () => { await api.set({ id: s.id, enabled: e.target.checked }); await reload(); if (!e.target.checked && scan?.sourceId === s.id) setScan(null); })} />
-                Read this source
+                Читать этот источник
               </label>
               {s.kind === "ssh-config" && s.enabled && (
                 <label className="rh-check">
                   <input type="checkbox" checked={s.useSshG} disabled={busy} onChange={(e) => void run(async () => { await api.set({ id: s.id, useSshG: e.target.checked }); await reload(); })} />
-                  Allow ssh -G for entries I choose. ssh will RUN local commands named in this config (Match exec) and may read files outside its directory; what it answers is true for this moment and network only.
+                  Разрешить ssh -G для выбранных мной записей. ssh ЗАПУСТИТ локальные команды, названные в этой конфигурации (Match exec), и может читать файлы вне её каталога; его ответ верен только для этого момента и этой сети.
                 </label>
               )}
             </div>
             <div className="rh-profile-actions">
-              <button type="button" disabled={busy || !s.enabled} aria-label={"Scan " + s.label} onClick={() => void doScan(s)}>
-                Scan
+              <button type="button" disabled={busy || !s.enabled} aria-label={"Просмотреть: " + s.label} onClick={() => void doScan(s)}>
+                Просмотреть
               </button>
-              <button type="button" disabled={busy} aria-label={"Remove " + s.label} onClick={() => void run(async () => { await api.remove(s.id); if (scan?.sourceId === s.id) setScan(null); await reload(); })}>
-                Remove
+              <button type="button" disabled={busy} aria-label={"Убрать: " + s.label} onClick={() => void run(async () => { await api.remove(s.id); if (scan?.sourceId === s.id) setScan(null); await reload(); })}>
+                Убрать
               </button>
             </div>
           </li>
@@ -181,18 +181,18 @@ export function ImportPanel({ api, onImported, onClose }: ImportPanelProps) {
 
       {unregistered.length > 0 && (
         <div>
-          <h3>Add a source</h3>
+          <h3>Добавить источник</h3>
           <ul>
             {unregistered.map((s) => (
               <li key={s.kind + (s.path ?? "")} className="rh-profile">
                 <div className="rh-profile-main">
                   <strong>{s.label}</strong>
                   {s.path !== null && <span className="rh-profile-endpoint">{s.path}</span>}
-                  <span className="rh-hint">Added switched off.</span>
+                  <span className="rh-hint">Добавляется выключенным.</span>
                 </div>
                 <div className="rh-profile-actions">
-                  <button type="button" disabled={busy} aria-label={"Add " + s.label} onClick={() => void run(async () => { await api.add(s); await reload(); })}>
-                    Add
+                  <button type="button" disabled={busy} aria-label={"Добавить: " + s.label} onClick={() => void run(async () => { await api.add(s); await reload(); })}>
+                    Добавить
                   </button>
                 </div>
               </li>
@@ -202,14 +202,14 @@ export function ImportPanel({ api, onImported, onClose }: ImportPanelProps) {
       )}
 
       {scan !== null && (scan.result.kind === "ssh-config" || scan.result.kind === "hosts") && (
-        <div aria-label="Scan result">
-          <h3>What an import would do</h3>
+        <div aria-label="Результат просмотра">
+          <h3>Что сделает импорт</h3>
           {scan.result.incomplete && (
             <p role="alert" className="rh-error">
-              Scan incomplete: part of the source could not be read faithfully. Entries that could be affected are not offered as resolved, and nothing is marked as gone.
+              Просмотр неполный: часть источника не удалось прочитать точно. Записи, которых это могло коснуться, не предлагаются как разобранные, и ничто не помечается исчезнувшим.
             </p>
           )}
-          {scan.result.items.length === 0 && <p className="rh-hint">Nothing importable in this source.</p>}
+          {scan.result.items.length === 0 && <p className="rh-hint">В этом источнике нечего импортировать.</p>}
           <ul>
             {scan.result.items.map((i) => (
               <li key={i.key} aria-label={i.name} className="rh-profile">
@@ -225,14 +225,14 @@ export function ImportPanel({ api, onImported, onClose }: ImportPanelProps) {
                     <br />
                     <span className="rh-profile-endpoint">{(i.username !== null ? i.username + "@" : "") + i.host + (i.port !== null ? ":" + i.port : "")}</span>
                     {i.skip !== null && <span className="rh-error rh-import-note">{i.skip}</span>}
-                    {!i.resolved && <span className="rh-hint rh-import-note">Uses your SSH config as it is; a password cannot be saved for it.</span>}
+                    {!i.resolved && <span className="rh-hint rh-import-note">Использует вашу конфигурацию SSH как есть; пароль для него сохранить нельзя.</span>}
                     {i.flags.length > 0 && <span className="rh-hint rh-import-note">{i.flags.map((f) => FLAG_TEXT[f] ?? f).join("; ")}</span>}
                   </span>
                 </label>
               </li>
             ))}
           </ul>
-          {scan.result.stale.length > 0 && <p className="rh-hint">No longer in the source: {scan.result.stale.join(", ")}.</p>}
+          {scan.result.stale.length > 0 && <p className="rh-hint">Больше нет в источнике: {scan.result.stale.join(", ")}.</p>}
           {scan.result.issues.map((t) => (
             <p key={t} className="rh-hint">{t}</p>
           ))}
@@ -247,11 +247,11 @@ export function ImportPanel({ api, onImported, onClose }: ImportPanelProps) {
                   const keys = r.items.filter((i) => !i.resolved && picked.has(i.key)).map((i) => i.key);
                   const next = await api.resolve(scan.sourceId, r.scanId, keys);
                   setScan({ sourceId: scan.sourceId, result: next });
-                  setMessage("ssh -G answered for the chosen entries. Review them again before importing.");
+                  setMessage("ssh -G ответил по выбранным записям. Просмотрите их ещё раз перед импортом.");
                 })
               }
             >
-              Resolve chosen unresolved entries with ssh -G
+              Разобрать выбранные записи через ssh -G
             </button>
           )}
           <button
@@ -268,19 +268,19 @@ export function ImportPanel({ api, onImported, onClose }: ImportPanelProps) {
               })
             }
           >
-            Import selected
+            Импортировать выбранное
           </button>
         </div>
       )}
 
       {scan !== null && scan.result.kind === "known-hosts" && (
-        <div aria-label="Scan result">
-          <h3>Host keys in this file</h3>
-          <p className="rh-hint">Ticked keys are added to the host keys Remote Hub trusts for saved-password SSH sessions. Nothing is trusted unless you tick it.</p>
-          {scan.result.items.length === 0 && <p className="rh-hint">No plain host keys in this file.</p>}
+        <div aria-label="Результат просмотра">
+          <h3>Ключи хостов в этом файле</h3>
+          <p className="rh-hint">Отмеченные ключи добавляются к тем, которым Remote Hub доверяет в SSH-сессиях с сохранённым паролем. Без вашей отметки не доверяется ничто.</p>
+          {scan.result.items.length === 0 && <p className="rh-hint">В этом файле нет ключей с открытыми именами хостов.</p>}
           <ul>
             {scan.result.items.map((i) => (
-              <li key={i.key} aria-label={i.hosts.join(", ") || "hashed host " + i.key} className="rh-profile">
+              <li key={i.key} aria-label={i.hosts.join(", ") || "хешированный хост " + i.key} className="rh-profile">
                 <label className="rh-check rh-profile-main">
                   <input
                     type="checkbox"
@@ -289,8 +289,8 @@ export function ImportPanel({ api, onImported, onClose }: ImportPanelProps) {
                     onChange={(e) => setPicked((cur) => { const next = new Set(cur); if (e.target.checked) next.add(i.key); else next.delete(i.key); return next; })}
                   />
                   <span>
-                    <strong>{i.hashed ? "(hashed host name)" : i.hosts.join(", ")}</strong> <span className="rh-badge">{i.keyType}</span>
-                    {i.trusted && <span className="rh-badge">already trusted</span>}
+                    <strong>{i.hashed ? "(имя хоста хешировано)" : i.hosts.join(", ")}</strong> <span className="rh-badge">{i.keyType}</span>
+                    {i.trusted && <span className="rh-badge">уже доверенный</span>}
                     <span className="rh-profile-endpoint rh-import-note">{i.fingerprint}</span>
                   </span>
                 </label>
@@ -307,23 +307,23 @@ export function ImportPanel({ api, onImported, onClose }: ImportPanelProps) {
               void run(async () => {
                 const reviewed = scan.result;
                 const result = await api.apply(scan.sourceId, [...picked], reviewed.kind === "known-hosts" ? reviewed.scanId : undefined);
-                setMessage(`${result.created} host key(s) trusted, ${result.unchanged} already trusted.`);
+                setMessage(`Добавлено доверенных ключей: ${result.created}, уже были: ${result.unchanged}.`);
                 await reloadTrusted();
                 const source = (sources ?? []).find((s) => s.id === scan.sourceId);
                 if (source !== undefined) await doScan(source, true);
               })
             }
           >
-            Trust selected host keys
+            Доверять выбранным ключам
           </button>
         </div>
       )}
 
       {scan !== null && scan.result.kind === "keys-dir" && (
-        <div aria-label="Scan result">
-          <h3>Public keys found</h3>
-          <p className="rh-hint">Only .pub files are read. Private key files are never opened; one that sits beside a public key is named, nothing more.</p>
-          {scan.result.keys.length === 0 && <p className="rh-hint">No public keys.</p>}
+        <div aria-label="Результат просмотра">
+          <h3>Найденные открытые ключи</h3>
+          <p className="rh-hint">Читаются только файлы .pub. Файлы закрытых ключей не открываются никогда; тот, что лежит рядом с открытым, только называется.</p>
+          {scan.result.keys.length === 0 && <p className="rh-hint">Открытых ключей нет.</p>}
           <ul>
             {scan.result.keys.map((k) => (
               <li key={k.publicPath} className="rh-profile">
@@ -331,7 +331,7 @@ export function ImportPanel({ api, onImported, onClose }: ImportPanelProps) {
                   <strong>{k.publicPath.split("/").pop()}</strong> <span className="rh-badge">{k.type}</span>
                   <span className="rh-profile-endpoint">{k.fingerprint}</span>
                   {k.comment !== "" && <span className="rh-hint">{k.comment}</span>}
-                  <span className="rh-hint">{k.privatePath !== null ? "Private file: " + k.privatePath : "No private file beside it"}</span>
+                  <span className="rh-hint">{k.privatePath !== null ? "Закрытый ключ: " + k.privatePath : "Закрытого ключа рядом нет"}</span>
                 </div>
               </li>
             ))}
@@ -339,34 +339,34 @@ export function ImportPanel({ api, onImported, onClose }: ImportPanelProps) {
         </div>
       )}
 
-      <div aria-label="Trusted host keys">
-        <h3>Host keys trusted for saved-password sessions</h3>
-        <p className="rh-hint">A saved-password SSH session asks about an unknown server the first time, and remembers your answer here. It does not read your own known_hosts file unless you add it above.</p>
-        {trusted !== null && trusted.length === 0 && <p className="rh-hint">None yet.</p>}
+      <div aria-label="Доверенные ключи хостов">
+        <h3>Ключи хостов, доверенные для сессий с сохранённым паролем</h3>
+        <p className="rh-hint">SSH-сессия с сохранённым паролем в первый раз спрашивает о незнакомом сервере и запоминает ваш ответ здесь. Ваш собственный known_hosts она не читает, пока вы не добавите его выше.</p>
+        {trusted !== null && trusted.length === 0 && <p className="rh-hint">Пока нет.</p>}
         <ul>
           {(trusted ?? []).map((t) => (
             <li key={t.key} className="rh-profile">
               <div className="rh-profile-main">
-                <strong>{t.hashed ? "(hashed host name)" : t.hosts.join(", ")}</strong> <span className="rh-badge">{t.keyType}</span>
+                <strong>{t.hashed ? "(имя хоста хешировано)" : t.hosts.join(", ")}</strong> <span className="rh-badge">{t.keyType}</span>
                 <span className="rh-profile-endpoint">{t.fingerprint}</span>
               </div>
               <div className="rh-profile-actions">
                 {!t.hashed && t.hosts[0] !== undefined && (
-                  <button type="button" disabled={busy} aria-label={"Forget " + t.hosts[0]} onClick={() => void run(async () => { await api.forget(t.hosts[0] as string); await reloadTrusted(); })}>
-                    Forget
+                  <button type="button" disabled={busy} aria-label={"Забыть: " + t.hosts[0]} onClick={() => void run(async () => { await api.forget(t.hosts[0] as string); await reloadTrusted(); })}>
+                    Забыть
                   </button>
                 )}
-                {t.hashed && <span className="rh-hint">Cannot be forgotten here: the host name is hashed, so it cannot be matched.</span>}
+                {t.hashed && <span className="rh-hint">Здесь забыть нельзя: имя хоста хешировано, и сопоставить его невозможно.</span>}
               </div>
             </li>
           ))}
         </ul>
       </div>
 
-      <div aria-label="Trusted RDP certificates">
-        <h3>RDP certificates you trust</h3>
-        <p className="rh-hint">Chosen with "Always trust this certificate". A different certificate on the same server that this Mac does not trust by itself is shown as changed and is never accepted automatically; one that this Mac trusts through its own root certificates is not asked about. A saved RDP password is sent only to the certificate it was first used with, and that first use is trust on first sight.</p>
-        {rdpCerts !== null && rdpCerts.length === 0 && <p className="rh-hint">None yet.</p>}
+      <div aria-label="Доверенные сертификаты RDP">
+        <h3>Сертификаты RDP, которым вы доверяете</h3>
+        <p className="rh-hint">Выбраны ответом «Всегда доверять этому сертификату». Другой сертификат на том же сервере, которому этот Mac сам не доверяет, показывается как изменившийся и никогда не принимается автоматически; о сертификате, которому Mac доверяет через свои корневые сертификаты, вопроса нет. Сохранённый пароль RDP отправляется только сертификату, с которым был использован впервые, и это первое использование — доверие с первого взгляда.</p>
+        {rdpCerts !== null && rdpCerts.length === 0 && <p className="rh-hint">Пока нет.</p>}
         <ul>
           {(rdpCerts ?? []).map((c) => (
             <li key={c.host + ":" + c.port + ":" + c.fingerprint} className="rh-profile">
@@ -375,8 +375,8 @@ export function ImportPanel({ api, onImported, onClose }: ImportPanelProps) {
                 <span className="rh-profile-endpoint">{c.fingerprint}</span>
               </div>
               <div className="rh-profile-actions">
-                <button type="button" disabled={busy} aria-label={"Forget certificate of " + c.host + ":" + c.port} onClick={() => void run(async () => { await api.forgetRdpCert(c.host, c.port, c.fingerprint); await reloadRdpCerts(); })}>
-                  Forget
+                <button type="button" disabled={busy} aria-label={"Забыть сертификат: " + c.host + ":" + c.port} onClick={() => void run(async () => { await api.forgetRdpCert(c.host, c.port, c.fingerprint); await reloadRdpCerts(); })}>
+                  Забыть
                 </button>
               </div>
             </li>
@@ -385,14 +385,14 @@ export function ImportPanel({ api, onImported, onClose }: ImportPanelProps) {
       </div>
 
       {scan !== null && scan.result.kind === "agent" && (
-        <div aria-label="Scan result">
-          <h3>Keys in the agent</h3>
-          {scan.result.keys.length === 0 && <p className="rh-hint">The agent holds no keys{scan.result.issues.length > 0 ? " (" + scan.result.issues.join("; ") + ")" : ""}.</p>}
+        <div aria-label="Результат просмотра">
+          <h3>Ключи в агенте SSH</h3>
+          {scan.result.keys.length === 0 && <p className="rh-hint">В агенте нет ключей{scan.result.issues.length > 0 ? " (" + scan.result.issues.join("; ") + ")" : ""}.</p>}
           <ul>
             {scan.result.keys.map((k) => (
               <li key={k.fingerprint} className="rh-profile">
                 <div className="rh-profile-main">
-                  <strong>{k.comment || "(no comment)"}</strong> <span className="rh-badge">{k.type} {k.bits}</span>
+                  <strong>{k.comment || "(без комментария)"}</strong> <span className="rh-badge">{k.type} {k.bits}</span>
                   <span className="rh-profile-endpoint">{k.fingerprint}</span>
                 </div>
               </li>
