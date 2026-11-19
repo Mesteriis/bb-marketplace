@@ -45,12 +45,17 @@ export const credentialStatusSchema = z.object({
   present: z.boolean(),
 });
 
-export const credentialRequestSchemas = [credentialSaveRequestSchema, credentialDeleteRequestSchema, credentialStatusRequestSchema] as const;
+/** The owner's "Allow access": one read of the item with macOS allowed to ask (a dialog may appear). Nothing comes back. */
+export const credentialAllowRequestSchema = z.object({ type: z.literal("credential.allow"), id: idSchema, ref: refSchema });
+
+export const credentialRequestSchemas = [credentialSaveRequestSchema, credentialDeleteRequestSchema, credentialStatusRequestSchema, credentialAllowRequestSchema] as const;
 export const credentialResponseSchemas = [credentialOkSchema, credentialStatusSchema] as const;
 
 /** Helper error codes for credential operations. */
 export const CREDENTIAL_ERROR_CODES = [
   "keychain_locked",
+  "keychain_needs_approval",
+  "allow_timed_out",
   "keychain_denied",
   "keychain_unavailable",
   "credential_missing",

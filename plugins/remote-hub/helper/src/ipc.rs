@@ -153,6 +153,7 @@ fn request_id(req: &Request) -> Option<u64> {
         | Request::CredentialSave { id, .. }
         | Request::CredentialDelete { id, .. }
         | Request::CredentialStatus { id, .. }
+        | Request::CredentialAllow { id, .. }
         | Request::KnownHostsList { id }
         | Request::KnownHostsAdd { id, .. }
         | Request::KnownHostsRemove { id, .. }
@@ -194,6 +195,8 @@ impl CredentialRefusal {
             CredentialRefusal::Mismatch => "this saved credential was saved for a different host, port, user or key",
             CredentialRefusal::Keychain(code) => match code.as_str() {
                 "keychain_locked" => crate::keychain::KeychainError::Locked.message(),
+                "keychain_needs_approval" => crate::keychain::KeychainError::NeedsApproval.message(),
+                "allow_timed_out" => "macOS did not get an answer to its dialog in time; try Allow access again",
                 "keychain_denied" => crate::keychain::KeychainError::Denied.message(),
                 "credential_missing" => crate::keychain::KeychainError::Missing.message(),
                 "credential_unbound" => crate::keychain::KeychainError::Unbound.message(),
@@ -268,6 +271,35 @@ pub(crate) fn keychain_child(
     secret: Option<&crate::secret::Secret>,
     bind: Option<&crate::binding::Bind>,
 ) -> Result<crate::keychain::OpReply, CredentialRefusal> {
+    keychain_child_timed(current_exe, op, reference, secret, bind, keychain_child_timeout(), "keychain_unavailable")
+}
+
+/// How long the owner's "Allow access" child may wait for the owner at macOS's own dialog. The helper's other sessions wait with it.
+const KEYCHAIN_ALLOW_TIMEOUT_MS: u64 = 60_000;
+
+fn keychain_allow_timeout() -> std::time::Duration {
+    #[cfg(feature = "test-hooks")]
+    if let Some(ms) = std::env::var("REMOTE_HUB_KEYCHAIN_ALLOW_TIMEOUT_MS").ok().and_then(|v| v.parse::<u64>().ok()) {
+        return std::time::Duration::from_millis(ms);
+    }
+    std::time::Duration::from_millis(KEYCHAIN_ALLOW_TIMEOUT_MS)
+}
+
+/// The owner's "Allow access": one read of the item in a `--keychain-op` child with user interaction ENABLED, so macOS may show
+/// its own dialog. Hard timeout (the child is killed); a timeout is `allow_timed_out`. Only an owner request reaches this.
+pub(crate) fn keychain_allow(current_exe: &str, reference: &str) -> Result<crate::keychain::OpReply, CredentialRefusal> {
+    keychain_child_timed(current_exe, "allow", reference, None, None, keychain_allow_timeout(), "allow_timed_out")
+}
+
+fn keychain_child_timed(
+    current_exe: &str,
+    op: &str,
+    reference: &str,
+    secret: Option<&crate::secret::Secret>,
+    bind: Option<&crate::binding::Bind>,
+    timeout: std::time::Duration,
+    timeout_code: &str,
+) -> Result<crate::keychain::OpReply, CredentialRefusal> {
     use std::io::{Read, Write};
     use std::os::fd::AsRawFd;
     use std::process::{Command, Stdio};
@@ -281,7 +313,8 @@ pub(crate) fn keychain_child(
     }
     let request = crate::keychain::OpRequest { op: op.to_string(), reference: reference.to_string(), secret: secret.cloned(), bind: bind.cloned() };
     let text = serde_json::to_string(&request).map_err(|_| unavailable())?;
-    let deadline = std::time::Instant::now() + keychain_child_timeout();
+    let deadline = std::time::Instant::now() + timeout;
+    let timed_out = || CredentialRefusal::Keychain(timeout_code.to_string());
     let mut child = Command::new(current_exe)
         .arg("--keychain-op")
         .stdin(Stdio::piped())
@@ -328,7 +361,7 @@ pub(crate) fn keychain_child(
     loop {
         if !wait_readable(stdout.as_raw_fd(), deadline) {
             end_keychain_child(child);
-            return Err(unavailable());
+            return Err(timed_out());
         }
         match stdout.read(&mut chunk) {
             Ok(0) => break,
@@ -358,7 +391,7 @@ pub(crate) fn keychain_child(
             Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(2)),
             _ => {
                 end_keychain_child(child);
-                return Err(unavailable());
+                return Err(timed_out());
             }
         }
     }
@@ -966,6 +999,10 @@ fn handle(
             &keychain_child(current_exe, "status", &reference, None, None)
                 .and_then(keychain_ok)
                 .map_or_else(|r| r.into_response(id), |reply| Response::CredentialStatus { id, present: reply.present.unwrap_or(false) }),
+        )),
+        // The owner's action: macOS may show its dialog in the child. The helper waits for it (up to 60 s) like for any keychain call.
+        Request::CredentialAllow { id, reference } => Ok(protocol::encode_response(
+            &keychain_allow(current_exe, &reference).and_then(keychain_ok).map_or_else(|r| r.into_response(id), |_| Response::CredentialOk { id }),
         )),
         Request::KnownHostsList { id } => Ok(protocol::encode_response(&match crate::known_hosts::read_lines() {
             Ok(lines) => Response::KnownHostsLines { id, lines },

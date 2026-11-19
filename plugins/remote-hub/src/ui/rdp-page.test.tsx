@@ -149,7 +149,7 @@ describe("RdpPage: a saved password (stage 3b-1)", () => {
     render(<RdpPage {...p} prefill={fill()} />);
     fireEvent.click(screen.getByText("Connect"));
     await flush();
-    expect(screen.getByText(/Keychain is locked or needs approval/)).toBeTruthy();
+    expect(screen.getByText(/login Keychain is locked/)).toBeTruthy();
     expect(screen.getByText(/Using the saved password/)).toBeTruthy();
   });
 

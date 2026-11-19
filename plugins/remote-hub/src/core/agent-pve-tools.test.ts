@@ -21,7 +21,7 @@ const profile = (id: string, protocol: "pve" | "ssh", name: string): Profile =>
   }) as Profile;
 
 const view = (profileId: string, name: string, over: Partial<PveConnectionView> = {}): PveConnectionView => ({
-  profileId, profileName: name, outcome: "ok", message: null, fingerprint: null, version: "9.0.3", nodes: [{ node: "pve1", status: "online" }],
+  profileId, profileName: name, credentialRef: null, outcome: "ok", message: null, fingerprint: null, version: "9.0.3", nodes: [{ node: "pve1", status: "online" }],
   guests: [
     { key: `${profileId}/100`, profileId, vmid: 100, name: "db", kind: "qemu", node: "pve1", status: "running", template: false, console: { available: true, reason: null }, linkedProfileId: SSH },
     { key: `${profileId}/101`, profileId, vmid: 101, name: "web", kind: "lxc", node: "pve1", status: "stopped", template: false, console: { available: false, reason: "the guest is stopped" }, linkedProfileId: null },

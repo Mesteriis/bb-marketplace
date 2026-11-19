@@ -3,7 +3,7 @@
 // metadata only; a password can be changed (typed once, sent, cleared) but is
 // never displayed.
 import { useState } from "react";
-import { errorTextFromMessage } from "../core/rdp-texts.ts";
+import { errorCodeText, errorTextFromMessage } from "../core/rdp-texts.ts";
 import type { CredentialItem, CredentialStateName } from "./use-credentials.ts";
 
 export interface CredentialsPanelProps {
@@ -11,6 +11,9 @@ export interface CredentialsPanelProps {
   items: CredentialItem[] | null;
   error: string | null;
   onCheck: (ref: string) => Promise<{ state: CredentialStateName }>;
+  /** "Allow access": macOS may show its own dialog for this item. */
+  onAllow?: (ref: string) => Promise<{ state: CredentialStateName }>;
+  onAllowAll?: () => Promise<Array<{ label: string; ok: boolean; code: string | null }>>;
   onChange: (ref: string, secret: string) => Promise<void>;
   onDelete: (ref: string) => Promise<void>;
   onRetry: () => void;
@@ -20,7 +23,8 @@ export interface CredentialsPanelProps {
 const STATE_TEXT: Record<CredentialStateName, string> = {
   present: "Found in the Keychain.",
   missing: "No longer in the Keychain: save the password again.",
-  locked: "The Keychain is locked or needs approval. Unlock it in Keychain Access.",
+  locked: "The login Keychain is locked (or macOS has not allowed this Remote Hub build to read it). Unlock it in Keychain Access, then use Allow access.",
+  needs_approval: "macOS has not allowed this Remote Hub build to read this password (the helper was updated). Press Allow access and choose Always Allow.",
   denied: "The Keychain refused access.",
   unavailable: "The Keychain is not available.",
 };
@@ -37,7 +41,7 @@ function kindText(item: CredentialItem): string {
   return item.bind.type === "endpoint" ? item.bind.protocol.toUpperCase() + " password" : "Password";
 }
 
-function Row(props: { item: CredentialItem; onCheck: CredentialsPanelProps["onCheck"]; onChange: CredentialsPanelProps["onChange"]; onDelete: CredentialsPanelProps["onDelete"] }) {
+function Row(props: { item: CredentialItem; onCheck: CredentialsPanelProps["onCheck"]; onAllow: CredentialsPanelProps["onAllow"]; onChange: CredentialsPanelProps["onChange"]; onDelete: CredentialsPanelProps["onDelete"] }) {
   const { item } = props;
   const [state, setState] = useState<string | null>(null);
   const [changing, setChanging] = useState(false);
@@ -81,6 +85,20 @@ function Row(props: { item: CredentialItem; onCheck: CredentialsPanelProps["onCh
             }
           >
             Check
+          </button>
+        )}
+        {item.orphaned !== true && props.onAllow !== undefined && (
+          <button
+            type="button"
+            disabled={busy}
+            title="macOS asks you once; choose Always Allow. Other sessions pause while its dialog is open."
+            onClick={() =>
+              void run(async () => {
+                setState(STATE_TEXT[(await props.onAllow!(item.ref)).state]);
+              })
+            }
+          >
+            Allow access
           </button>
         )}
         {!changing && item.orphaned !== true && (
@@ -141,6 +159,22 @@ function Row(props: { item: CredentialItem; onCheck: CredentialsPanelProps["onCh
 }
 
 export function CredentialsPanel(props: CredentialsPanelProps) {
+  const [walking, setWalking] = useState(false);
+  const [walked, setWalked] = useState<string | null>(null);
+  const allowAll = async () => {
+    if (props.onAllowAll === undefined) return;
+    setWalking(true);
+    setWalked(null);
+    try {
+      const results = await props.onAllowAll();
+      const failed = results.filter((r) => !r.ok);
+      setWalked(failed.length === 0 ? `Access allowed for ${results.length} saved credential${results.length === 1 ? "" : "s"}.` : failed.map((r) => `${r.label}: ${errorCodeText(r.code ?? "keychain_unavailable")}`).join(" "));
+    } catch (e) {
+      setWalked(errorTextFromMessage(e instanceof Error ? e.message : String(e)));
+    } finally {
+      setWalking(false);
+    }
+  };
   return (
     <section className="rh-credentials" aria-label="Saved credentials">
       <div className="rh-credentials-head">
@@ -150,6 +184,15 @@ export function CredentialsPanel(props: CredentialsPanelProps) {
         </button>
       </div>
       <p className="rh-hint">Passwords live in the macOS Keychain. This list shows what each one is for; it never shows the password.</p>
+      {props.onAllowAll !== undefined && (
+        <p>
+          <button type="button" disabled={walking} onClick={() => void allowAll()} title="One macOS dialog per saved credential; choose Always Allow. Other sessions pause while a dialog is open.">
+            Allow access for all saved credentials
+          </button>{" "}
+          <span className="rh-hint">After a Remote Hub update macOS asks once per saved credential.</span>
+        </p>
+      )}
+      {walked !== null && <p role="status" className="rh-hint">{walked}</p>}
       {props.items === null && props.error === null && <p className="rh-hint">Loading credentials…</p>}
       {props.error !== null && (
         <div>
@@ -163,7 +206,7 @@ export function CredentialsPanel(props: CredentialsPanelProps) {
       {props.items !== null && props.items.length > 0 && (
         <ul className="rh-credential-list">
           {props.items.map((item) => (
-            <Row key={item.ref} item={item} onCheck={props.onCheck} onChange={props.onChange} onDelete={props.onDelete} />
+            <Row key={item.ref} item={item} onCheck={props.onCheck} onAllow={props.onAllow} onChange={props.onChange} onDelete={props.onDelete} />
           ))}
         </ul>
       )}

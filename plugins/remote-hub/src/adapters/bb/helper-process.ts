@@ -1027,6 +1027,13 @@ export class HelperProcess {
     return resp.count;
   }
 
+  /** The owner's "Allow access": macOS may show its own dialog (the helper waits up to 60 s). Nothing comes back. */
+  async credentialAllow(ref: string): Promise<void> {
+    const resp = await this.request({ type: "credential.allow", ref } as RequestMessage, 75_000);
+    if (resp.type === "error") throw new HelperRequestError(resp.code, resp.message);
+    if (resp.type !== "credential.ok") throw new Error("unexpected helper response: " + resp.type);
+  }
+
   async credentialStatus(ref: string): Promise<boolean> {
     const resp = await this.request({ type: "credential.status", ref } as RequestMessage);
     if (resp.type === "error") throw new HelperRequestError(resp.code, resp.message);

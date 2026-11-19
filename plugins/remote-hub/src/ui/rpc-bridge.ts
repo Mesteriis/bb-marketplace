@@ -53,6 +53,8 @@ export function createConnectBridge(call: RpcCall, wsUrl: string): ConnectBridge
       update: (ref, secret) => send("credential_update", { ref, secret }),
       remove: (ref) => send<{ unlinked: number }>("credential_delete", { ref }),
       status: (ref) => send<{ state: CredentialStateName }>("credential_status", { ref }),
+      allow: (ref) => send<{ state: CredentialStateName }>("credential_allow", { ref }),
+      allowAll: () => send<{ results: Array<{ ref: string; label: string; ok: boolean; code: string | null }> }>("credential_allow_all", {}),
     },
     imports: {
       suggestions: () => send("import_suggestions"),

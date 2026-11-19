@@ -245,6 +245,13 @@ pub enum Request {
         #[serde(rename = "ref")]
         reference: String,
     },
+    /// The owner's "Allow access": one read of the item with macOS allowed to ask the owner (a dialog may appear). Never returns it.
+    #[serde(rename = "credential.allow")]
+    CredentialAllow {
+        id: u64,
+        #[serde(rename = "ref")]
+        reference: String,
+    },
     /// The helper-owned known_hosts overlay: its lines (no path crosses the wire).
     #[serde(rename = "known_hosts.list")]
     KnownHostsList { id: u64 },

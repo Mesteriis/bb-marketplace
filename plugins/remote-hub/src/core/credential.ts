@@ -32,7 +32,7 @@ export const credentialMetaSchema = z
 export { credentialBindSchema };
 export type CredentialBind = z.infer<typeof credentialBindSchema>;
 export type CredentialMeta = z.infer<typeof credentialMetaSchema>;
-export type CredentialState = "present" | "missing" | "locked" | "denied" | "unavailable";
+export type CredentialState = "present" | "missing" | "locked" | "needs_approval" | "denied" | "unavailable";
 
 export interface CredentialMetaStore {
   all(): CredentialMeta[];
@@ -79,6 +79,7 @@ export interface Endpoint {
 
 const STATE_OF_CODE: Record<string, CredentialState> = {
   keychain_locked: "locked",
+  keychain_needs_approval: "needs_approval",
   keychain_denied: "denied",
   keychain_unavailable: "unavailable",
   credential_missing: "missing",

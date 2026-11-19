@@ -546,3 +546,52 @@ fn an_unpinned_saved_password_waits_for_the_users_decision_and_a_rejection_never
     let sid = first_use_session(&mut f, 3, server.port);
     f.h().wait_state(sid, &format!("pw_sha256={SECRET_DIGEST}"));
 }
+
+// ---- G1: a locked keychain and an item this build may not read are told apart; "Allow access" is the owner's own action ----
+
+impl Fixture {
+    fn allow(&mut self, id: u64, reference: &str) -> Response {
+        self.h().send(&Request::CredentialAllow { id, reference: reference.into() });
+        self.h().read_reply(id)
+    }
+}
+
+#[test]
+fn an_item_this_build_may_not_read_is_needs_approval_not_locked() {
+    let mut f = Fixture::new("approval");
+    // An item created by ANOTHER application with an empty trusted-application list: exactly what a helper update leaves behind.
+    // The keychain is unlocked; macOS would have to ask, which the helper (interaction off) cannot.
+    let made = Command::new("/usr/bin/security")
+        .args(["add-generic-password", "-s", "remote-hub", "-a", REF, "-w", "x", "-T", ""])
+        .arg(&f.path)
+        .output()
+        .unwrap();
+    assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
+    assert_eq!(code(&f.status(1, REF)), "keychain_needs_approval");
+    // a locked keychain is still its own state
+    assert!(Command::new("/usr/bin/security").arg("lock-keychain").arg(&f.path).status().unwrap().success());
+    assert_eq!(code(&f.status(2, REF)), "keychain_locked");
+}
+
+#[test]
+fn allow_access_reads_one_item_in_the_child_and_never_returns_it() {
+    let mut f = Fixture::new("allow");
+    f.save(1, REF, SECRET);
+    let answer = f.allow(2, REF);
+    assert!(matches!(answer, Response::CredentialOk { .. }), "{answer:?}");
+    assert!(!format!("{answer:?}").contains(SECRET));
+    assert!(!f.h().stderr_text().contains(SECRET));
+    assert_eq!(code(&f.allow(3, "rh-cred:v1:local:00000000-0000-4000-8000-000000000000")), "credential_missing");
+    assert_eq!(code(&f.allow(4, "../login")), "invalid_credential_ref");
+}
+
+#[test]
+fn allow_access_has_a_hard_timeout_and_the_child_is_gone() {
+    // The child "waits for the owner" for a minute; the helper gives up after half a second and kills it.
+    let mut f = Fixture::with_env("allow-timeout", "credential", &[("REMOTE_HUB_KEYCHAIN_OP_FAKE", "stall"), ("REMOTE_HUB_KEYCHAIN_ALLOW_TIMEOUT_MS", "500"), ("REMOTE_HUB_TEST_ANY_PARENT", "1")]);
+    let started = std::time::Instant::now();
+    assert_eq!(code(&f.allow(1, REF)), "allow_timed_out");
+    assert!(started.elapsed() < std::time::Duration::from_secs(5), "the timeout is hard");
+    // an ordinary keychain call keeps its own short bound and code
+    assert_eq!(code(&f.status(2, REF)), "keychain_unavailable");
+}

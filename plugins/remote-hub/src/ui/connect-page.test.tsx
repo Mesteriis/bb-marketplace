@@ -207,6 +207,8 @@ function withCredentials(initial: Profile[], items: CredentialItem[] = []) {
     update: vi.fn(async (_ref: string, _secret: string) => ({ updated: true })),
     remove: vi.fn(async (_ref: string) => ({ unlinked: 1 })),
     status: vi.fn(async (_ref: string) => ({ state: "present" as const })),
+    allow: vi.fn(async (_ref: string) => ({ state: "present" as const })),
+    allowAll: vi.fn(async () => ({ results: [] as Array<{ ref: string; label: string; ok: boolean; code: string | null }> })),
   } satisfies CredentialsApi;
   cleanup();
   const ssh = { onSshOpen: vi.fn(), onAttach: vi.fn(), onClose: vi.fn() };
@@ -254,7 +256,7 @@ describe("ConnectPage: saving a password in the Keychain (stage 3b-1)", () => {
     ctx.credentials.save.mockRejectedValueOnce(new Error("keychain_locked: the Keychain is locked"));
     fireEvent.change(screen.getByLabelText("Password to save in the Keychain"), { target: { value: SECRET } });
     fireEvent.click(screen.getByText("Save"));
-    expect(await screen.findByText(/The profile was saved, but not the password: The Keychain is locked or needs approval/)).toBeTruthy();
+    expect(await screen.findByText(/The profile was saved, but not the password: The login Keychain is locked/)).toBeTruthy();
     expect(document.querySelector(".rh-editor")).not.toBeNull();
     fireEvent.change(screen.getByLabelText("Password to save in the Keychain"), { target: { value: SECRET } });
     fireEvent.click(screen.getByText("Save"));
@@ -300,7 +302,7 @@ describe("ConnectPage: saving a password in the Keychain (stage 3b-1)", () => {
     ctx.api.remove.mockImplementationOnce(async () => ({ deleted: true, credentialDeleted: false, credentialError: "keychain_locked" }) as never);
     fireEvent.click(await screen.findByRole("button", { name: "Delete Win" }));
     fireEvent.click(screen.getByRole("button", { name: "Confirm delete Win" }));
-    expect(await screen.findByText(/The profile was deleted, but its saved password was not: The Keychain is locked or needs approval/)).toBeTruthy();
+    expect(await screen.findByText(/The profile was deleted, but its saved password was not: The login Keychain is locked/)).toBeTruthy();
   });
 
   it("the Credentials screen opens from the catalogue, lists the credentials and closes", async () => {

@@ -194,6 +194,16 @@ export function ConnectPage(props: ConnectPageProps) {
             items={credentialData.items}
             error={credentialData.error}
             onCheck={(ref) => credentialsApi.status(ref)}
+            onAllow={async (ref) => {
+              const r = await credentialsApi.allow(ref);
+              await credentialData.reload();
+              return r;
+            }}
+            onAllowAll={async () => {
+              const { results } = await credentialsApi.allowAll();
+              await credentialData.reload();
+              return results;
+            }}
             onChange={async (ref, secret) => {
               await credentialsApi.update(ref, secret);
               await credentialData.reload();
@@ -230,6 +240,7 @@ export function ConnectPage(props: ConnectPageProps) {
             api={props.pve}
             profileIds={pveList.profileIds}
             linkable={(data.profiles ?? []).filter((p) => p.protocol === "ssh" || p.protocol === "rdp")}
+            {...(credentialsApi !== undefined ? { onAllowAccess: (ref: string) => credentialsApi.allow(ref) } : {})}
             onConnectProfile={(id) => {
               const target = (data.profiles ?? []).find((p) => p.id === id);
               if (target !== undefined) connectProfile(target);

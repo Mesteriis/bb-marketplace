@@ -13,7 +13,7 @@ const guest = (profileId: string, over: Partial<PveGuestView> & { vmid: number; 
   key: `${profileId}/${over.vmid}`, profileId, kind: "lxc", node: "pve1", status: "running", template: false, console: { available: true, reason: null }, linkedProfileId: null, ...over,
 });
 const conn = (profileId: string, name: string, over: Partial<PveConnectionView> = {}): PveConnectionView => ({
-  profileId, profileName: name, outcome: "ok", message: null, fingerprint: null, version: "9.0.3", nodes: [], guests: [], fetchedAt: "2026-11-18T12:00:00.000Z", stale: null, ...over,
+  profileId, profileName: name, credentialRef: null, outcome: "ok", message: null, fingerprint: null, version: "9.0.3", nodes: [], guests: [], fetchedAt: "2026-11-18T12:00:00.000Z", stale: null, ...over,
 });
 const ssh = { id: "ssh-1", name: "web shell", protocol: "ssh" } as unknown as Profile;
 
@@ -143,5 +143,27 @@ describe("PveTargets", () => {
     a.targets.mockRejectedValueOnce(new Error("helper is not running"));
     mount(a);
     expect(await screen.findByText("helper is not running")).toBeTruthy();
+  });
+
+  it("a connection whose saved password macOS has not let this build read gets an Allow access button that names its credential", async () => {
+    const onAllowAccess = vi.fn(async (_ref: string) => ({}));
+    const a = api([conn("a", "env-a", { outcome: "keychain_needs_approval", message: "macOS has not allowed this Remote Hub build", credentialRef: "rh-cred:v1:local:0b8e6f4a-5c2d-4e1b-9a37-1f2e3d4c5b01" })]);
+    mount(a, { onAllowAccess });
+    fireEvent.click(await screen.findByRole("button", { name: "Allow access" }));
+    await waitFor(() => expect(onAllowAccess).toHaveBeenCalledWith("rh-cred:v1:local:0b8e6f4a-5c2d-4e1b-9a37-1f2e3d4c5b01"));
+    // the list is read again afterwards
+    await waitFor(() => expect(a.targets).toHaveBeenCalledTimes(2));
+    expect((await screen.findByTestId("pve-outcome")).textContent).toBe("needs approval");
+  });
+
+  it("a locked Keychain shows its own outcome and no button; without the action there is no button either", async () => {
+    const locked = api([conn("a", "env-a", { outcome: "keychain_locked", message: "The login Keychain is locked.", credentialRef: "rh-cred:v1:local:0b8e6f4a-5c2d-4e1b-9a37-1f2e3d4c5b01" })]);
+    mount(locked, { onAllowAccess: vi.fn() });
+    expect((await screen.findByTestId("pve-outcome")).textContent).toBe("Keychain locked");
+    expect(screen.queryByRole("button", { name: "Allow access" })).toBeNull();
+    cleanup();
+    mount(api([conn("a", "env-a", { outcome: "keychain_needs_approval", message: "m", credentialRef: "rh-cred:v1:local:0b8e6f4a-5c2d-4e1b-9a37-1f2e3d4c5b01" })]));
+    await screen.findByTestId("pve-outcome");
+    expect(screen.queryByRole("button", { name: "Allow access" })).toBeNull();
   });
 });

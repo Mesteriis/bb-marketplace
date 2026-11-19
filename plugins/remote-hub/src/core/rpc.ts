@@ -207,6 +207,7 @@ const pveGuestViewSchema = z.object({
 export const pveConnectionViewSchema = z.object({
   profileId: z.string(),
   profileName: z.string(),
+  credentialRef: z.string().nullable(),
   outcome: z.enum(PVE_OUTCOMES),
   message: z.string().nullable(),
   fingerprint: z.string().nullable(),
@@ -482,7 +483,20 @@ export const rpcSchemas = {
   },
   credential_status: {
     input: z.object({ ref: z.string().max(96) }).strict(),
-    output: z.object({ state: z.enum(["present", "missing", "locked", "denied", "unavailable"]) }),
+    output: z.object({ state: z.enum(["present", "missing", "locked", "needs_approval", "denied", "unavailable"]) }),
+  },
+  /**
+   * The owner's "Allow access" for one saved credential: one read in the short-lived keychain child with macOS allowed to ask
+   * (its own dialog, "Always Allow"). Owner only; never an agent tool, never automatic.
+   */
+  credential_allow: {
+    input: z.object({ ref: z.string().max(96) }).strict(),
+    output: z.object({ state: z.enum(["present", "missing", "locked", "needs_approval", "denied", "unavailable"]) }),
+  },
+  /** The same for every saved credential, one by one (each shows macOS's own prompt); stops at a locked Keychain. */
+  credential_allow_all: {
+    input: z.object({}).strict(),
+    output: z.object({ results: z.array(z.object({ ref: z.string(), label: z.string(), ok: z.boolean(), code: z.string().nullable() })) }),
   },
   import_suggestions: {
     input: z.null(),

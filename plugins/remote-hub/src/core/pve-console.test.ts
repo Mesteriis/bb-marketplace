@@ -87,6 +87,7 @@ describe("resolveConsole (a fresh read decides what is opened)", () => {
   const view = (over: Partial<PveConnectionView> = {}): PveConnectionView => ({
     profileId: "p",
     profileName: "lab",
+    credentialRef: null,
     outcome: "ok",
     message: null,
     fingerprint: null,

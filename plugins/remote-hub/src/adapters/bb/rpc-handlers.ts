@@ -49,6 +49,8 @@ export function ownerOnly(handlers: RpcHandlers): RpcHandlers {
 export function credentialRefusal(error: CredentialError): experimental_PluginRpcRefusal {
   const codeOf: Record<string, "not_found" | "forbidden" | "conflict" | "invalid"> = {
     keychain_locked: "forbidden",
+    keychain_needs_approval: "forbidden",
+    allow_timed_out: "not_found",
     keychain_denied: "forbidden",
     credential_target_mismatch: "forbidden",
     keychain_unavailable: "not_found",
@@ -268,6 +270,28 @@ export function createRpcHandlers({ service, profiles, credentials, imports, age
         return { updated: true as const };
       }),
     credential_delete: (input) => withProfile(() => credentials.delete(input.ref)),
+    credential_allow: (input) =>
+      withProfile(async () => {
+        if (!credentials.list().some((c) => c.ref === input.ref)) throw new CredentialError("credential_unknown", "no such saved credential");
+        await service.credentialAllow(input.ref);
+        return { state: await credentials.status(input.ref) };
+      }),
+    credential_allow_all: () =>
+      withProfile(async () => {
+        const results: Array<{ ref: string; label: string; ok: boolean; code: string | null }> = [];
+        for (const c of credentials.list()) {
+          try {
+            await service.credentialAllow(c.ref);
+            results.push({ ref: c.ref, label: c.label, ok: true, code: null });
+          } catch (error) {
+            const code = error instanceof CredentialError ? error.code : "keychain_unavailable";
+            results.push({ ref: c.ref, label: c.label, ok: false, code });
+            // A locked Keychain refuses every item the same way: asking again would only repeat it.
+            if (code === "keychain_locked") break;
+          }
+        }
+        return { results };
+      }),
     credential_status: (input) => withProfile(async () => ({ state: await credentials.status(input.ref) })),
     profile_duplicate: (input) => withProfile(() => profiles.duplicate(input.id)),
     rdp_cert_decision: (input) =>

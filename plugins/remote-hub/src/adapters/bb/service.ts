@@ -168,6 +168,8 @@ export interface RemoteHubService {
   };
   /** The Keychain, through the helper. A refusal is a CredentialError carrying the helper's code. */
   credentialVault: CredentialVault;
+  /** The owner's "Allow access" for one saved credential (a macOS dialog may appear). A refusal is a CredentialError with the helper's code. */
+  credentialAllow(ref: string): Promise<void>;
   /** The helper-owned known_hosts overlay (saved-secret SSH sessions trust what is in it). */
   knownHosts: KnownHostsOverlay;
   sessionList(): SessionInfo[];
@@ -1242,6 +1244,7 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
         }
       },
     },
+    credentialAllow: async (ref) => viaVault(async (hp) => hp.credentialAllow(ref)),
     credentialVault: {
       save: async (ref, secret, bind) => viaVault(async (hp) => hp.credentialSave(ref, secret, bind)),
       delete: async (ref) => viaVault(async (hp) => hp.credentialDelete(ref)),

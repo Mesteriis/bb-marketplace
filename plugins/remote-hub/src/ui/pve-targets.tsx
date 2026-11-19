@@ -14,6 +14,8 @@ export interface PveTargetsProps {
   /** Saved SSH and RDP profiles a guest can be linked to. */
   linkable: Profile[];
   onConnectProfile: (profileId: string) => void;
+  /** "Allow access" for a connection whose saved password macOS has not let this helper build read; without it there is no button. */
+  onAllowAccess?: (credentialRef: string) => Promise<unknown>;
   /** Opens a console of a guest or a node shell. Without it the console buttons stay off. */
   onOpenConsole?: (open: { profileId: string; connectionName: string; request: PveConsoleRequest; title: string }) => void;
   onClose: () => void;
@@ -29,6 +31,8 @@ const OUTCOME_LABEL: Record<PveOutcome, string> = {
   cert_changed: "certificate changed",
   tfa_required: "second factor required",
   no_credential: "no saved password or token",
+  keychain_locked: "Keychain locked",
+  keychain_needs_approval: "needs approval",
   error: "error",
 };
 
@@ -125,6 +129,15 @@ export function PveTargets(props: PveTargetsProps) {
     }
   };
 
+  const allow = async (ref: string) => {
+    try {
+      await props.onAllowAccess?.(ref);
+      await load(true);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
   const link = async (profileId: string, vmid: number, linkProfileId: string | null) => {
     try {
       await api.linkGuest(profileId, vmid, linkProfileId);
@@ -162,6 +175,13 @@ export function PveTargets(props: PveTargetsProps) {
               </p>
             )}
             {c.message !== null && <p className="rh-error">{c.message}</p>}
+            {c.outcome === "keychain_needs_approval" && c.credentialRef !== null && props.onAllowAccess !== undefined && (
+              <p>
+                <button type="button" onClick={() => void allow(c.credentialRef as string)} title="macOS asks once; choose Always Allow. Other sessions pause while its dialog is open.">
+                  Allow access
+                </button>
+              </p>
+            )}
             {c.fingerprint !== null && (c.outcome === "tls_untrusted" || c.outcome === "cert_changed") && (
               <div className="rh-cert" data-testid="pve-cert">
                 <p>

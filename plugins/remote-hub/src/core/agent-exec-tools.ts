@@ -86,6 +86,7 @@ const COMMAND_ERRORS: Record<string, string> = {
   needs_saved_credential: "this connection has no saved credential",
   credential_target_mismatch: "the saved credential does not belong to this connection",
   keychain_locked: "the Keychain is locked",
+  keychain_needs_approval: "the owner has to allow this Remote Hub build to read the saved credential (Allow access on the Credentials screen)",
 };
 
 const EMPTY_STREAM: ExecStreamView = { start: 0, end: 0, data: new Uint8Array(), total: 0, truncated: false };

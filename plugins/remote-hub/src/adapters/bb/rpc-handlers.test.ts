@@ -395,3 +395,56 @@ class MemoryProfileStoreForOpened {
   remove() { return false; }
   nextOrder() { return 1; }
 }
+
+describe("Allow access (the owner's RPC)", () => {
+  async function withTwo() {
+    const t = setup();
+    const a = t.profiles.save({ fields: { ...RDP, name: "a" } });
+    const b = t.profiles.save({ fields: { ...RDP, name: "b", host: "b.example.test" } });
+    const one = await t.credentials.save({ profileId: a.id, secret: SECRET });
+    const two = await t.credentials.save({ profileId: b.id, secret: SECRET });
+    const allow = vi.fn(async (_ref: string) => undefined);
+    (t.service as unknown as { credentialAllow: typeof allow }).credentialAllow = allow;
+    return { ...t, allow, one: one.ref, two: two.ref };
+  }
+
+  it("allows exactly the named saved credential and answers with its state, never a secret", async () => {
+    const t = await withTwo();
+    const r = await t.handlers.credential_allow({ ref: t.one });
+    expect(r).toEqual({ state: "present" });
+    expect(t.allow.mock.calls).toEqual([[t.one]]);
+    expect(JSON.stringify(r)).not.toContain(SECRET);
+  });
+
+  it("refuses a reference that is not a saved credential, before the helper is asked", async () => {
+    const t = await withTwo();
+    await expect(t.handlers.credential_allow({ ref: "rh-cred:v1:local:00000000-0000-4000-8000-0000000000ff" })).rejects.toMatchObject({ message: expect.stringContaining("credential_unknown") });
+    expect(t.allow).not.toHaveBeenCalled();
+  });
+
+  it("a refusal keeps its code in front of the text", async () => {
+    const t = await withTwo();
+    t.allow.mockRejectedValueOnce(new CredentialError("keychain_denied", "keychain_denied"));
+    await expect(t.handlers.credential_allow({ ref: t.one })).rejects.toMatchObject({ message: expect.stringContaining("keychain_denied") });
+  });
+
+  it("all of them go one by one, a failure of one does not hide the others, and a locked Keychain stops the walk", async () => {
+    const t = await withTwo();
+    t.allow.mockRejectedValueOnce(new CredentialError("keychain_denied", "no"));
+    const walk = await t.handlers.credential_allow_all({});
+    expect(walk.results.map((r) => [r.label.length > 0, r.ok, r.code])).toEqual([[true, false, "keychain_denied"], [true, true, null]]);
+    expect(t.allow.mock.calls.map((c) => c[0])).toEqual([t.one, t.two]);
+    t.allow.mockClear();
+    t.allow.mockRejectedValueOnce(new CredentialError("keychain_locked", "locked"));
+    const stopped = await t.handlers.credential_allow_all({});
+    expect(stopped.results.map((r) => r.code)).toEqual(["keychain_locked"]);
+    expect(t.allow).toHaveBeenCalledTimes(1);
+  });
+
+  it("is the owner's page only: another plugin is refused", async () => {
+    const t = await withTwo();
+    await expect(t.handlers.credential_allow({ ref: t.one }, { experimental_caller: { kind: "plugin" } } as never)).rejects.toMatchObject({ message: expect.stringContaining("not for other plugins") });
+    await expect(t.handlers.credential_allow_all({}, { experimental_caller: { kind: "plugin" } } as never)).rejects.toBeTruthy();
+    expect(t.allow).not.toHaveBeenCalled();
+  });
+});

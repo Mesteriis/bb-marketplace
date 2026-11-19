@@ -99,7 +99,7 @@ describe("CredentialsPanel", () => {
     fireEvent.click(within(row).getByRole("button", { name: "Change password" }));
     fireEvent.change(within(row).getByLabelText("New password"), { target: { value: SECRET } });
     fireEvent.click(within(row).getByRole("button", { name: "Save new password" }));
-    expect(await within(row).findByText(/Keychain is locked or needs approval/)).toBeTruthy();
+    expect(await within(row).findByText(/login Keychain is locked/)).toBeTruthy();
     expect(within(row).getByLabelText("New password")).toBeTruthy();
   });
 
@@ -138,5 +138,50 @@ describe("CredentialsPanel", () => {
     expect(screen.getByText(/No saved passwords/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
     expect(empty.onClose).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("Allow access (macOS asks the owner)", () => {
+  it("a row's Allow access asks for exactly that item and shows the state afterwards", async () => {
+    const onAllow = vi.fn(async (_ref: string) => ({ state: "present" as const }));
+    mount({ onAllow });
+    const row = screen.getByRole("listitem", { name: "Windows jump" });
+    fireEvent.click(within(row).getByRole("button", { name: "Allow access" }));
+    await waitFor(() => expect(onAllow).toHaveBeenCalledWith(WIN.ref));
+    expect(await within(row).findByText("Found in the Keychain.")).toBeTruthy();
+    expect(onAllow).toHaveBeenCalledTimes(1);
+  });
+
+  it("a refusal or a timeout is shown with its own text, and a state that still needs approval says what to do", async () => {
+    const onAllow = vi.fn(async (_ref: string): Promise<{ state: "present" | "needs_approval" }> => {
+      throw new Error("allow_timed_out: macOS did not get an answer");
+    });
+    mount({ onAllow });
+    const row = screen.getByRole("listitem", { name: "Windows jump" });
+    fireEvent.click(within(row).getByRole("button", { name: "Allow access" }));
+    expect(await within(row).findByText(/did not get an answer to its dialog in time/)).toBeTruthy();
+    const check = vi.fn(async () => ({ state: "needs_approval" as const }));
+    cleanup();
+    mount({ onCheck: check, onAllow });
+    const again = screen.getByRole("listitem", { name: "Windows jump" });
+    fireEvent.click(within(again).getByRole("button", { name: "Check" }));
+    expect(await within(again).findByText(/Press Allow access and choose Always Allow/)).toBeTruthy();
+  });
+
+  it("without the action there is no button (agents and read-only views never get one)", () => {
+    mount();
+    expect(screen.queryByRole("button", { name: "Allow access" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Allow access for all/ })).toBeNull();
+  });
+
+  it("Allow access for all reports each credential that failed, by name", async () => {
+    const onAllowAll = vi.fn(async () => [
+      { label: "Windows jump", ok: true, code: null },
+      { label: "Build key", ok: false, code: "keychain_denied" },
+    ]);
+    mount({ onAllow: vi.fn(), onAllowAll });
+    fireEvent.click(screen.getByRole("button", { name: "Allow access for all saved credentials" }));
+    expect(await screen.findByText(/Build key: The Keychain refused access/)).toBeTruthy();
+    expect(onAllowAll).toHaveBeenCalledTimes(1);
   });
 });

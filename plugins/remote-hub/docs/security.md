@@ -106,6 +106,29 @@
 - **Limits.** A command runs as the saved user with that user's rights: exec is the power to act as that user. The
   helper's own bounds do not limit what the remote command does on the server.
 
+## After an update of the helper: macOS asks once per saved credential
+
+Saved passwords are Keychain items. macOS lets an application read an item without asking only if that application is in the item's
+trusted-application list, and an application is identified by its code signature. The helper binary is **not signed**, so every
+build looks like a different application: an item made by the previous build is not readable by the new one without the owner's
+approval. The long-lived helper runs with Keychain interaction **switched off for good** (a dialog would freeze its single event
+loop; an earlier incident hung a test for nine minutes), so the read fails with `errSecInteractionNotAllowed`.
+
+- The helper tells the two causes apart where the Security framework lets it (the keychain's unlock state): `keychain_locked` (the login
+  keychain is locked: unlock it) and `keychain_needs_approval` (unlocked, but this build may not read the item). If the state cannot be read
+  the answer is `keychain_locked` and its text names both remedies.
+- **Allow access** (the Credentials screen, per credential and for all of them; the Proxmox guest list banner) is the owner's own action
+  (`credential_allow`, `credential_allow_all`): ONE read of that item in the short-lived `--keychain-op` child, with interaction
+  ENABLED, so macOS shows its standard dialog and the owner can choose **Always Allow**. A hard 60 s timeout kills the child
+  (`allow_timed_out`). It is never an agent tool, never run automatically, and never run in the long-lived helper. While the dialog is
+  open the helper's other sessions wait (the helper is single-threaded), at most 60 s. "All" walks the items one by one, each with its
+  own dialog, and stops at a locked keychain. Afterwards the normal non-interactive read works for this helper build.
+- Signing the helper with a stable identity would remove these prompts after an update. That is the owner's decision and is not done.
+- Tests use a temporary keychain only: `an_item_this_build_may_not_read_is_needs_approval_not_locked` makes a real item with an empty
+  trusted-application list in that keychain (the real framework answers `keychain_needs_approval`, no dialog); the allow tests read an
+  item the helper itself created (no dialog) and a stalled child (timeout). No test opens a system dialog; the dialog itself is
+  verified only on the live install.
+
 ## Proxmox VE (stages 0 and 1)
 
 - The PVE engine (`--pve-engine`) is a separate process like the RDP engine: empty environment, the helper's stdio and stderr

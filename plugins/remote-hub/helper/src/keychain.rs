@@ -30,8 +30,11 @@ pub const SERVICE: &str = "remote-hub";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeychainError {
-    /// The keychain is locked, or the item needs an approval the helper may not ask for.
+    /// The login keychain is locked (or the lock state could not be read: the message then names both remedies).
     Locked,
+    /// The keychain is unlocked but macOS has not allowed THIS helper build to read the item (an item made by an earlier build
+    /// of the unsigned helper): only the owner's "Allow access" action, which lets macOS ask, can fix it.
+    NeedsApproval,
     /// The user (or the access control list) refused.
     Denied,
     /// No such item.
@@ -47,6 +50,7 @@ impl KeychainError {
     pub fn code(self) -> &'static str {
         match self {
             KeychainError::Locked => "keychain_locked",
+            KeychainError::NeedsApproval => "keychain_needs_approval",
             KeychainError::Denied => "keychain_denied",
             KeychainError::Missing => "credential_missing",
             KeychainError::Unavailable => "keychain_unavailable",
@@ -56,7 +60,8 @@ impl KeychainError {
 
     pub fn message(self) -> &'static str {
         match self {
-            KeychainError::Locked => "the Keychain is locked or needs approval; unlock it and try again",
+            KeychainError::Locked => "the login Keychain is locked, or macOS has not allowed this Remote Hub build to read the saved credential; unlock the Keychain, then use Allow access",
+            KeychainError::NeedsApproval => "macOS has not allowed this Remote Hub build to read the saved credential (the helper was updated); use Allow access and choose Always Allow",
             KeychainError::Denied => "the Keychain refused access to the saved credential",
             KeychainError::Missing => "the saved credential no longer exists in the Keychain",
             KeychainError::Unavailable => "the Keychain is not available",
@@ -161,6 +166,11 @@ impl Keychain {
             Ok(stored) if stored.magic == ENVELOPE_MAGIC && stored.v == 1 && stored.bind.is_valid() => Ok(Item { bind: stored.bind, secret: stored.secret }),
             _ => Err(KeychainError::Unbound),
         }
+    }
+
+    /// The owner's "Allow access": ONE read with interaction enabled. Never call this from the long-lived helper; `run_op` only.
+    pub fn allow(&self, account: &str) -> Result<(), KeychainError> {
+        imp::get_interactive(&self.target, account).map(|_| ())
     }
 
     /// Deleting something that is not there is Missing, so a caller can tell.
@@ -340,8 +350,32 @@ mod imp {
         validate_first(target)?;
         quiet()?;
         let keychain = open(target)?;
+        let (password, _item) = keychain.find_generic_password(SERVICE, account).map_err(|e| refine(&keychain, classify(e.code())))?;
+        Ok(password.to_vec())
+    }
+
+    /// One read of an item with user interaction ENABLED, so macOS may ask the owner (and offer "Always Allow"). Only the
+    /// short-lived `--keychain-op` child may call this (see `run_op`): the long-lived helper's switch stays off for good.
+    pub fn get_interactive(target: &Target, account: &str) -> Result<Vec<u8>, KeychainError> {
+        validate_first(target)?;
+        let keychain = open(target)?;
         let (password, _item) = keychain.find_generic_password(SERVICE, account).map_err(|e| classify(e.code()))?;
         Ok(password.to_vec())
+    }
+
+    /// Tells a locked keychain from an item this build may not read: both answer errSecInteractionNotAllowed.
+    fn refine(keychain: &SecKeychain, error: KeychainError) -> KeychainError {
+        use core_foundation::base::TCFType;
+        if error != KeychainError::Locked {
+            return error;
+        }
+        let mut status: u32 = 0;
+        let raw = keychain.as_concrete_TypeRef() as *mut std::ffi::c_void;
+        if unsafe { SecKeychainGetStatus(raw, &mut status) } != 0 {
+            return KeychainError::Locked; // cannot tell: the combined message names both remedies
+        }
+        // kSecUnlockStateStatus = 1: set while the keychain is unlocked.
+        if status & 1 != 0 { KeychainError::NeedsApproval } else { KeychainError::Locked }
     }
 
     pub fn delete(target: &Target, account: &str) -> Result<(), KeychainError> {
@@ -376,7 +410,6 @@ mod imp {
         fn SecKeychainItemDelete(item: *mut std::ffi::c_void) -> i32;
         #[cfg(feature = "test-hooks")]
         fn SecKeychainGetPath(keychain: *mut std::ffi::c_void, length: *mut u32, path: *mut std::ffi::c_char) -> i32;
-        #[cfg(feature = "test-hooks")]
         fn SecKeychainGetStatus(keychain: *mut std::ffi::c_void, status: *mut u32) -> i32;
     }
 }
@@ -388,6 +421,9 @@ mod imp {
         Err(KeychainError::Unavailable)
     }
     pub fn get(_: &Target, _: &str) -> Result<Vec<u8>, KeychainError> {
+        Err(KeychainError::Unavailable)
+    }
+    pub fn get_interactive(_: &Target, _: &str) -> Result<Vec<u8>, KeychainError> {
         Err(KeychainError::Unavailable)
     }
     pub fn delete(_: &Target, _: &str) -> Result<(), KeychainError> {
@@ -411,7 +447,7 @@ mod tests {
 
     #[test]
     fn messages_never_mention_a_secret_or_an_account() {
-        for e in [KeychainError::Locked, KeychainError::Denied, KeychainError::Missing, KeychainError::Unavailable] {
+        for e in [KeychainError::Locked, KeychainError::NeedsApproval, KeychainError::Denied, KeychainError::Missing, KeychainError::Unavailable] {
             assert!(!e.message().contains("rh-cred"));
         }
     }
@@ -546,7 +582,15 @@ pub fn run_op() -> i32 {
         return fake_op(&mode);
     }
     let Ok(request) = serde_json::from_str::<OpRequest>(&input) else { return 2 };
-    let reply = execute(&Keychain::from_env(), &request);
+    // The one operation that may show a macOS dialog; it exists only here, in the short-lived child, never in `execute`.
+    let reply = if request.op == "allow" {
+        match Keychain::from_env().allow(&request.reference) {
+            Ok(()) => OpReply { present: Some(true), ..OpReply::default() },
+            Err(e) => OpReply { error: Some(e.code().to_string()), ..OpReply::default() },
+        }
+    } else {
+        execute(&Keychain::from_env(), &request)
+    };
     let Ok(text) = serde_json::to_string(&reply) else { return 2 };
     let mut out = std::io::stdout();
     if out.write_all(text.as_bytes()).and_then(|()| out.flush()).is_err() {

@@ -15,7 +15,7 @@ export interface CredentialItem {
   usedBy: Array<{ id: string; name: string }>;
 }
 
-export type CredentialStateName = "present" | "missing" | "locked" | "denied" | "unavailable";
+export type CredentialStateName = "present" | "missing" | "locked" | "needs_approval" | "denied" | "unavailable";
 
 export interface CredentialsApi {
   list: () => Promise<CredentialItem[]>;
@@ -23,6 +23,9 @@ export interface CredentialsApi {
   update: (ref: string, secret: string) => Promise<unknown>;
   remove: (ref: string) => Promise<{ unlinked: number }>;
   status: (ref: string) => Promise<{ state: CredentialStateName }>;
+  /** The owner's "Allow access": macOS may show its own dialog. Resolves with the state afterwards. */
+  allow: (ref: string) => Promise<{ state: CredentialStateName }>;
+  allowAll: () => Promise<{ results: Array<{ ref: string; label: string; ok: boolean; code: string | null }> }>;
 }
 
 export function useCredentials(api: CredentialsApi | undefined, enabled: boolean) {

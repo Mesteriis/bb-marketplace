@@ -3,7 +3,7 @@
 // the last good list is served (with its age) only when the failure says nothing about the account itself.
 import { type PveGuest, type PveNode, type PvePlan, type PveSteps } from "./pve-protocol.ts";
 
-export const PVE_OUTCOMES = ["ok", "empty", "no_permission", "login_failed", "unreachable", "tls_untrusted", "cert_changed", "tfa_required", "no_credential", "error"] as const;
+export const PVE_OUTCOMES = ["ok", "empty", "no_permission", "login_failed", "unreachable", "tls_untrusted", "cert_changed", "tfa_required", "no_credential", "keychain_locked", "keychain_needs_approval", "error"] as const;
 export type PveOutcome = (typeof PVE_OUTCOMES)[number];
 
 /** What a discovery request produced: the lists, or a failure code (the helper's closed set) with the certificate it saw. */
@@ -35,6 +35,8 @@ export interface PveGuestView {
 export interface PveConnectionView {
   profileId: string;
   profileName: string;
+  /** The saved credential's reference (not a secret): what "Allow access" names. Null when none is saved. */
+  credentialRef: string | null;
   outcome: PveOutcome;
   /** What to tell the owner, with the action to take; null when the outcome is ok. */
   message: string | null;
@@ -67,6 +69,8 @@ const FAILURE_OUTCOME: Record<string, PveOutcome> = {
   cert_changed: "cert_changed",
   tfa_required: "tfa_required",
   no_credential: "no_credential",
+  keychain_locked: "keychain_locked",
+  keychain_needs_approval: "keychain_needs_approval",
 };
 
 export function outcomeOfFailure(code: string): PveOutcome {
@@ -81,6 +85,8 @@ const ADVICE: Record<Exclude<PveOutcome, "ok" | "empty">, string> = {
   cert_changed: "The server certificate is not the one you confirmed before. If you did not replace it, do not continue.",
   tfa_required: "This account asks for a second factor, which Remote Hub does not support. Use the restricted-user setup or an account without one.",
   no_credential: "This connection has no saved password or token yet. Add one in the connection's settings.",
+  keychain_locked: "The login Keychain is locked. Unlock it (open Keychain Access, or log in again), then refresh.",
+  keychain_needs_approval: "macOS has not allowed this Remote Hub build to read the saved password (the helper was updated). Press Allow access and choose Always Allow in macOS's dialog.",
   error: "Proxmox could not be read.",
 };
 
@@ -107,7 +113,7 @@ export function viewOf(args: {
   cached: PveCacheEntry | null;
   links: ReadonlyMap<number, string>;
   now: Date;
-}): { view: PveConnectionView; cache: PveCacheEntry | null } {
+}): { view: Omit<PveConnectionView, "credentialRef">; cache: PveCacheEntry | null } {
   const { profile, answer, cached, links, now } = args;
   const guestViews = (guests: PveGuest[]): PveGuestView[] =>
     guests.map((g) => ({
@@ -241,6 +247,7 @@ export class PveDiscovery {
         return {
           profileId: profile.id,
           profileName: now?.name ?? profile.name,
+          credentialRef: null,
           outcome: "error",
           message: "The connection changed while it was being read. Refresh to read it again.",
           fingerprint: null,
@@ -251,7 +258,9 @@ export class PveDiscovery {
           stale: null,
         };
       }
-      const { view, cache } = viewOf({ profile, answer, cached, links: this.deps.links(profile.id), now: this.deps.now() });
+      const made = viewOf({ profile, answer, cached, links: this.deps.links(profile.id), now: this.deps.now() });
+      const view: PveConnectionView = { ...made.view, credentialRef: profile.credentialRef };
+      const cache = made.cache;
       if (cache !== null) this.cache.set(profile.id, cache);
       this.views.set(profile.id, view);
       if (view.fingerprint !== null) this.presented.set(profile.id, { fingerprint: view.fingerprint, endpoint: profile.endpoint, revision: profile.revision });
