@@ -10,19 +10,33 @@ const session = (sessionId: number, kind: string, pve?: { console: "node" | "lxc
 describe("what an agent may see of a Proxmox console", () => {
   const sessions = [session(1, "ssh"), session(2, "pve", { console: "node" }), session(3, "pve", { console: "lxc" }), session(4, "pve", { console: "lxc" }), session(5, "vnc", { console: "qemu" })];
   const service = { sessionList: () => sessions, agentControl: () => "ready" } as never;
-  const keys = (opened: string[]) => agentPorts(service, { list: () => [], get: () => null } as never, (k) => opened.includes(k)).sessions.list().map((s) => s.key.split(".")[1]);
+  /** `opened`: session key -> the thread that opened it; `thread`: who is asking. */
+  const keys = (opened: Record<string, string>, thread = "thr_a") => agentPorts(service, { list: () => [], get: () => null } as never, (k) => opened[k]).sessions.list(thread).map((s) => s.key.split(".")[1]);
 
   it("never a node shell, whoever opened it; a container console only when an agent opened it; graphics are listed (no input anyway)", () => {
-    expect(keys([])).toEqual(["1", "5"]);
-    expect(keys([`${GEN}.3`])).toEqual(["1", "3", "5"]);
+    expect(keys({})).toEqual(["1", "5"]);
+    expect(keys({ [`${GEN}.3`]: "thr_a" })).toEqual(["1", "3", "5"]);
     // an agent "opening" a node shell is not a thing that exists, but if a registry ever said so it would still be hidden
-    expect(keys([`${GEN}.2`])).toEqual(["1", "5"]);
+    expect(keys({ [`${GEN}.2`]: "thr_a" })).toEqual(["1", "5"]);
+  });
+
+  it("a console another thread opened answers as a missing session, for every kind; the opener and the owner's bookkeeping still see it", () => {
+    const opened: Record<string, string> = { [`${GEN}.3`]: "thr_a", [`${GEN}.4`]: "thr_b", [`${GEN}.5`]: "thr_b", [`${GEN}.1`]: "thr_b" };
+    expect(keys(opened, "thr_a")).toEqual(["3"]);
+    expect(keys(opened, "thr_b")).toEqual(["1", "4", "5"]);
+    expect(keys(opened, "thr_c")).toEqual([]);
+    const all = agentPorts(service, { list: () => [], get: () => null } as never, (k) => opened[k]).sessions.list(null).map((s) => s.key.split(".")[1]);
+    expect(all).toEqual(["1", "2", "3", "4", "5"]);
   });
 
   it("the rule alone", () => {
-    expect(agentMayUse({ kind: "pve", pve: { console: "node" } }, () => true, "k")).toBe(false);
-    expect(agentMayUse({ kind: "pve", pve: { console: "lxc" } }, () => false, "k")).toBe(false);
-    expect(agentMayUse({ kind: "pve", pve: { console: "lxc" } }, () => true, "k")).toBe(true);
-    expect(agentMayUse({ kind: "ssh" }, () => false, "k")).toBe(true);
+    const by = (t: string | undefined) => () => t;
+    expect(agentMayUse({ kind: "pve", pve: { console: "node" } }, by("thr_a"), "k", "thr_a")).toBe(false);
+    expect(agentMayUse({ kind: "pve", pve: { console: "lxc" } }, by(undefined), "k", "thr_a")).toBe(false);
+    expect(agentMayUse({ kind: "pve", pve: { console: "lxc" } }, by("thr_a"), "k", "thr_a")).toBe(true);
+    expect(agentMayUse({ kind: "pve", pve: { console: "lxc" } }, by("thr_b"), "k", "thr_a")).toBe(false);
+    expect(agentMayUse({ kind: "ssh" }, by(undefined), "k", "thr_a")).toBe(true);
+    expect(agentMayUse({ kind: "ssh" }, by("thr_b"), "k", "thr_a")).toBe(false);
+    expect(agentMayUse({ kind: "pve", pve: { console: "node" } }, by(undefined), "k", null)).toBe(true);
   });
 });

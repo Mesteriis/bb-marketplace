@@ -46,7 +46,8 @@ export interface AgentSessionView {
 export interface AgentToolPorts {
   profiles: { list(): Profile[]; get(id: string): Profile | null };
   sessions: {
-    list(): AgentSessionView[];
+    /** The sessions `threadId` may see: a Proxmox console only if THAT thread opened it. `null`: the owner-side bookkeeping, all of them. */
+    list(threadId: string | null): AgentSessionView[];
     /** Terminal bytes from an offset (or the newest ones when `from` is null); null when the session is unknown. */
     read(key: string, from: number | null, max: number): ScrollbackRead | null;
     screenshot(key: string): Promise<{ png: string; frameId: number; width: number; height: number; timestamp: number }>;
@@ -204,8 +205,8 @@ export function createGate(deps: AgentToolDeps) {
   const noSession = () => new ToolError("session_not_found", "no such session, or it belongs to a connection agents may not use");
 
   /** The session and its profile id when the owner allows observing it; the same error for "missing" and "not allowed". */
-  function observableSession(key: string): AgentSessionView {
-    const session = ports.sessions.list().find((s) => s.key === key);
+  function observableSession(key: string, threadId: string): AgentSessionView {
+    const session = ports.sessions.list(threadId).find((s) => s.key === key);
     if (session === undefined || session.profileId === undefined || !access.check(session.profileId, "observe").ok) throw noSession();
     return session;
   }
@@ -259,7 +260,7 @@ export function createAgentTools(deps: AgentToolDeps): AgentToolDef[] {
           const profile = ports.profiles.get(params.connectionId);
           const check = access.check(params.connectionId, "observe");
           if (profile === null || !check.ok) throw denied();
-          const sessions = ports.sessions.list().filter((s) => s.profileId === profile.id).map(sessionRow);
+          const sessions = ports.sessions.list(ctx.threadId).filter((s) => s.profileId === profile.id).map(sessionRow);
           return { content: [json({ connection: viewOf(profile, check.grant.level), ...fitListKey("sessions", sessions) })] };
         }),
     }),
@@ -270,7 +271,7 @@ export function createAgentTools(deps: AgentToolDeps): AgentToolDef[] {
       execute: (_params, ctx) =>
         guarded("remote_sessions_list", ctx, { reserve: LIST_MAX_BYTES + DEFAULT_RESERVE_BYTES }, async () => {
           const rows = ports.sessions
-            .list()
+            .list(ctx.threadId)
             .filter((s) => s.profileId !== undefined && access.check(s.profileId, "observe").ok)
             .map(sessionRow);
           return { content: [json({ ...fitListKey("sessions", rows) })] };
@@ -282,7 +283,7 @@ export function createAgentTools(deps: AgentToolDeps): AgentToolDef[] {
       parameters: z.object({ sessionId: sessionIdSchema }).strict(),
       execute: (params, ctx) =>
         guarded("remote_session_status", ctx, { sessionKey: params.sessionId }, async () => {
-          const session = observableSession(params.sessionId);
+          const session = observableSession(params.sessionId, ctx.threadId);
           return { content: [json({ session: sessionRow(session) })] };
         }),
     }),
@@ -295,7 +296,7 @@ export function createAgentTools(deps: AgentToolDeps): AgentToolDef[] {
       parameters: z.object({ sessionId: sessionIdSchema, sinceOffset: z.number().int().min(0).optional(), maxBytes: z.number().int().min(1).max(TERMINAL_READ_MAX).optional() }).strict(),
       execute: (params, ctx) =>
         guarded("remote_terminal_read", ctx, { sessionKey: params.sessionId, reserve: (params.maxBytes ?? TERMINAL_READ_DEFAULT) + 2048 }, async () => {
-          const session = observableSession(params.sessionId);
+          const session = observableSession(params.sessionId, ctx.threadId);
           if (session.kind === "vnc") throw GRAPHICS_NO_TEXT;
           if (session.kind === "rdp") throw new ToolError("not_a_terminal", "this is a desktop session: use remote_rdp_screenshot");
           const read = ports.sessions.read(params.sessionId, params.sinceOffset ?? null, params.maxBytes ?? TERMINAL_READ_DEFAULT);
@@ -327,7 +328,7 @@ export function createAgentTools(deps: AgentToolDeps): AgentToolDef[] {
       parameters: z.object({ sessionId: sessionIdSchema, maxDimension: z.number().int().min(160).max(SCREENSHOT_MAX_DIM).optional() }).strict(),
       execute: (params, ctx) =>
         guarded("remote_rdp_screenshot", ctx, { sessionKey: params.sessionId, reserve: SCREENSHOT_RESERVE_BYTES }, async () => {
-          const session = observableSession(params.sessionId);
+          const session = observableSession(params.sessionId, ctx.threadId);
           if (session.kind === "vnc") throw GRAPHICS_NO_SCREENSHOT;
           if (session.kind !== "rdp") throw new ToolError("not_a_desktop", "this is a terminal session: use remote_terminal_read");
           if (session.rdp?.state !== "desktop_ready") throw new ToolError("desktop_not_ready", "the desktop is not shown yet (state " + (session.rdp?.state ?? "unknown") + ")");
@@ -340,7 +341,7 @@ export function createAgentTools(deps: AgentToolDeps): AgentToolDef[] {
             release();
           }
           // The capture took time: the owner may have revoked access meanwhile, and then nothing of it is returned.
-          observableSession(params.sessionId);
+          observableSession(params.sessionId, ctx.threadId);
           const fitted = ports.fitScreenshot(shot.png, { maxDim: params.maxDimension ?? SCREENSHOT_DEFAULT_DIM, maxBytes: SCREENSHOT_MAX_BYTES });
           const meta = {
             sessionId: params.sessionId,

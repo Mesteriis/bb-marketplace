@@ -17,18 +17,22 @@ function parseKey(key: string): { generation: string; sessionId: number } | null
  * opened by hand may have a password typed into it. Such sessions are not in the list at all, so every tool answers for them
  * exactly as for a session that does not exist.
  */
-export function agentMayUse(s: { kind: string; pve?: { console: string } | undefined }, openedByAgent: (key: string) => boolean, key: string): boolean {
+export function agentMayUse(s: { kind: string; pve?: { console: string } | undefined }, openedBy: (key: string) => string | undefined, key: string, threadId: string | null): boolean {
+  if (threadId === null) return true;
+  // A session another agent thread opened is not this thread's to see, read, drive or close: it answers as a missing one.
+  const owner = openedBy(key);
+  if (owner !== undefined && owner !== threadId) return false;
   if (s.kind !== "pve") return true;
   if (s.pve?.console !== "lxc") return false;
-  return openedByAgent(key);
+  return openedBy(key) === threadId;
 }
 
-export function agentPorts(service: RemoteHubService, profiles: ProfileBook, openedByAgent: (key: string) => boolean = () => false): AgentToolPorts {
+export function agentPorts(service: RemoteHubService, profiles: ProfileBook, openedBy: (key: string) => string | undefined = () => undefined): AgentToolPorts {
   return {
     profiles: { list: () => profiles.list(), get: (id) => profiles.get(id) },
     sessions: {
-      list: () =>
-        service.sessionList().filter((s) => agentMayUse(s, openedByAgent, `${s.generation}.${s.sessionId}`)).map(
+      list: (threadId) =>
+        service.sessionList().filter((s) => agentMayUse(s, openedBy, `${s.generation}.${s.sessionId}`, threadId)).map(
           (s): AgentSessionView => ({
             key: `${s.generation}.${s.sessionId}`,
             kind: s.kind,

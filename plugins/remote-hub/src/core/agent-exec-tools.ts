@@ -139,7 +139,7 @@ export function createExecTools(deps: AgentExecDeps): AgentToolDef[] {
     reconcile(c.sessionKey);
   });
 
-  const sessionOf = (key: string) => ports.sessions.list().find((s) => s.key === key);
+  const sessionOf = (key: string, threadId: string) => ports.sessions.list(threadId).find((s) => s.key === key);
   const mayAct = (key: string): boolean => !control.watchingRequired() || control.watching(key);
 
   /** Cancels a running command because authorization ended; what it prints afterwards is not returned to the agent. */
@@ -222,12 +222,12 @@ export function createExecTools(deps: AgentExecDeps): AgentToolDef[] {
         .strict()
         .refine((p) => new TextEncoder().encode(p.command).byteLength <= EXEC_COMMAND_MAX_BYTES && !p.command.includes("\0"), { message: `a command is at most ${EXEC_COMMAND_MAX_BYTES} bytes without a NUL` }),
       execute: (params, ctx) => {
-        const profileId = sessionOf(params.sessionId)?.profileId ?? null;
+        const profileId = sessionOf(params.sessionId, ctx.threadId)?.profileId ?? null;
         const record = profileId !== null && access.get(profileId).recordCommands;
         const bytes = new TextEncoder().encode(params.command).byteLength;
         return guarded("remote_ssh_exec", ctx, { sessionKey: params.sessionId, profileId, detailMode: record ? "text" : "length", detail: record ? params.command : `len ${bytes}` }, async () => {
           if (registry.isRetired(ctx.threadId)) throw new ToolError("thread_retired", "this thread has been archived or deleted");
-          const session = sessionOf(params.sessionId);
+          const session = sessionOf(params.sessionId, ctx.threadId);
           // The same answer for "missing", "not allowed" and "not yours": nothing is learnt about other sessions.
           if (session === undefined || session.profileId === undefined || !access.check(session.profileId, "exec").ok || registry.threadOf(session.key) !== ctx.threadId) throw noSession();
           if (session.kind !== "ssh") throw new ToolError("not_a_terminal", "commands run on SSH sessions; this is a desktop session");
@@ -265,7 +265,7 @@ export function createExecTools(deps: AgentExecDeps): AgentToolDef[] {
           // Authorization is checked again now that the run exists: a revoke, a closed session or a watcher that left while
           // it was starting ends it, and nothing about it is returned.
           // The session must still exist, be open and still be this thread's (the checks made before the start).
-          const now = sessionOf(session.key);
+          const now = sessionOf(session.key, ctx.threadId);
           const stillOurs = now !== undefined && now.state !== "closed" && now.control !== "never" && registry.threadOf(session.key) === ctx.threadId;
           if (pending.invalidated !== null) {
             // A revoke or a lost watcher happened while the start was in flight: the mark stays even if access is back.

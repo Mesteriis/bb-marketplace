@@ -107,7 +107,7 @@ export default function plugin(bb: BbPluginApi): void {
     access: agentAccess,
     audit: agentAudit,
     budget: new ToolBudget({ now: () => Date.now() }),
-    ports: agentPorts(service, profiles, (key) => registry.threadOf(key) !== undefined),
+    ports: agentPorts(service, profiles, (key) => registry.threadOf(key)),
     sessionExtras: controlSessionExtras(leases, controlPorts, registry),
   };
   const controlDeps = { ...toolDeps, leases, control: controlPorts, registry, feed };

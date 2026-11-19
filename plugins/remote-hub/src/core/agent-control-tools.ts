@@ -218,13 +218,14 @@ export function createControlTools(deps: AgentControlDeps): AgentToolDef[] {
   /** Opens in flight per thread: they count against the per-thread cap before they finish. */
   const opening = new Map<string, number>();
 
-  const sessionOf = (key: string): AgentSessionView | undefined => ports.sessions.list().find((s) => s.key === key);
+  /** The session as THIS thread may see it (`null`: the owner-side bookkeeping, which sees all). A console another thread opened is not found. */
+  const sessionOf = (key: string, threadId: string | null): AgentSessionView | undefined => ports.sessions.list(threadId).find((s) => s.key === key);
   /** For the owner's audit only: which connection a session belongs to, whatever the grant says. */
-  const profileOf = (key: string): string | null => sessionOf(key)?.profileId ?? null;
+  const profileOf = (key: string, threadId: string): string | null => sessionOf(key, threadId)?.profileId ?? null;
 
   /** The session and its profile when the owner allows driving it (input or above); the same error for missing and not allowed. */
-  function controllable(key: string, opts: { graphics?: "allow" } = {}): { session: AgentSessionView; profileId: string } {
-    const session = sessionOf(key);
+  function controllable(threadId: string, key: string, opts: { graphics?: "allow" } = {}): { session: AgentSessionView; profileId: string } {
+    const session = sessionOf(key, threadId);
     if (session === undefined || session.profileId === undefined || !access.check(session.profileId, "input").ok) throw noSession();
     // A virtual machine's graphics: an agent may open it, see its state and disconnect it, nothing else in this version.
     if (session.kind === "vnc") {
@@ -256,7 +257,7 @@ export function createControlTools(deps: AgentControlDeps): AgentToolDef[] {
   // A grant lowered below `input` ends the leases that depended on it.
   access.onChange(() => {
     leases.endWhere((key) => {
-      const profileId = sessionOf(key)?.profileId;
+      const profileId = sessionOf(key, null)?.profileId;
       return profileId === undefined || !access.check(profileId, "input").ok;
     }, "revoked");
   });
@@ -273,7 +274,7 @@ export function createControlTools(deps: AgentControlDeps): AgentToolDef[] {
     if (!mayAct(key)) throw NOT_WATCHING;
     try {
       const stillValid = () =>
-        ctx.signal?.aborted !== true && mayAct(key) && access.check(profileId, "input").ok && sessionOf(key)?.control === "ready" && leases.check(key, ctx.threadId, leaseId).ok && leases.owner(key).generation === generation;
+        ctx.signal?.aborted !== true && mayAct(key) && access.check(profileId, "input").ok && sessionOf(key, ctx.threadId)?.control === "ready" && leases.check(key, ctx.threadId, leaseId).ok && leases.owner(key).generation === generation;
       const outcome = await queue.run(key, stillValid, write);
       if (!outcome.ran && !mayAct(key)) throw NOT_WATCHING;
       if (!outcome.ran) throw new ToolError("lease_lost", "the owner took the session back, or the lease ended, before this input was sent; nothing was sent");
@@ -288,7 +289,7 @@ export function createControlTools(deps: AgentControlDeps): AgentToolDef[] {
    * the session is closed, not handed over.
    */
   async function openRegistered(ctx: AgentCallContext, profileId: string, consoleRequest: ConsoleRequest | undefined, reconnects = 0): Promise<string> {
-    const live = ports.sessions.list().filter((s) => s.state !== "closed" && openedBy.threadOf(s.key) === ctx.threadId).length;
+    const live = ports.sessions.list(ctx.threadId).filter((s) => s.state !== "closed" && openedBy.threadOf(s.key) === ctx.threadId).length;
     if (live + (opening.get(ctx.threadId) ?? 0) >= MAX_SESSIONS_PER_THREAD) throw new ToolError("too_many_sessions", `this thread already has ${MAX_SESSIONS_PER_THREAD} open sessions: disconnect one first`);
     opening.set(ctx.threadId, (opening.get(ctx.threadId) ?? 0) + 1);
     let sessionKey: string;
@@ -324,9 +325,9 @@ export function createControlTools(deps: AgentControlDeps): AgentToolDef[] {
         "Needs the owner's input level on that connection. The owner sees that an agent drives the session and can take it back at once; asking again while you hold it extends it. Cannot take a session another agent holds.",
       parameters: z.object({ sessionId: sessionIdSchema, seconds: z.number().int().min(LEASE_MIN_SECONDS).max(LEASE_MAX_SECONDS).optional() }).strict(),
       execute: (params, ctx) =>
-        guarded("remote_control_acquire", ctx, { sessionKey: params.sessionId, profileId: profileOf(params.sessionId) }, async () => {
+        guarded("remote_control_acquire", ctx, { sessionKey: params.sessionId, profileId: profileOf(params.sessionId, ctx.threadId) }, async () => {
           refuseRetired(ctx);
-          const { session } = controllable(params.sessionId);
+          const { session } = controllable(ctx.threadId, params.sessionId);
           let result = leases.acquire(params.sessionId, ctx.threadId, params.seconds);
           if (!result.ok && result.code === "already_held_by_you") {
             const owner = leases.owner(params.sessionId);
@@ -357,8 +358,8 @@ export function createControlTools(deps: AgentControlDeps): AgentToolDef[] {
       description: CANNOT + "Gives a session back to its owner. Cannot release a lease that is not yours.",
       parameters: z.object({ sessionId: sessionIdSchema, leaseId: leaseIdSchema }).strict(),
       execute: (params, ctx) =>
-        guarded("remote_control_release", ctx, { sessionKey: params.sessionId, profileId: profileOf(params.sessionId) }, async () => {
-          controllable(params.sessionId);
+        guarded("remote_control_release", ctx, { sessionKey: params.sessionId, profileId: profileOf(params.sessionId, ctx.threadId) }, async () => {
+          controllable(ctx.threadId, params.sessionId);
           const released = leases.release(params.sessionId, ctx.threadId, params.leaseId);
           if (!released.ok) throw new ToolError(released.code, released.code === "no_lease" ? "no lease is held on this session" : "this lease is not yours");
           return { content: [json({ sessionId: params.sessionId, released: true })] };
@@ -391,7 +392,7 @@ export function createControlTools(deps: AgentControlDeps): AgentToolDef[] {
           const consoleRequest = consoleRequestOf(profile.protocol, params);
           const sessionKey = await openRegistered(ctx, profile.id, consoleRequest);
           const waiting = control.waitingForOwner(sessionKey);
-          return { content: [json({ sessionId: sessionKey, connectionId: profile.id, state: sessionOf(sessionKey)?.state ?? "connecting", ...(waiting.length > 0 ? { waitingForOwner: waiting } : {}), watching: control.watching(sessionKey), watchingRequired: control.watchingRequired(), liveView: liveViewLine(sessionKey), instruction: LIVE_VIEW_INSTRUCTION })] };
+          return { content: [json({ sessionId: sessionKey, connectionId: profile.id, state: sessionOf(sessionKey, ctx.threadId)?.state ?? "connecting", ...(waiting.length > 0 ? { waitingForOwner: waiting } : {}), watching: control.watching(sessionKey), watchingRequired: control.watchingRequired(), liveView: liveViewLine(sessionKey), instruction: LIVE_VIEW_INSTRUCTION })] };
         }),
     }),
     def({
@@ -404,9 +405,9 @@ export function createControlTools(deps: AgentControlDeps): AgentToolDef[] {
         "A shell on a Proxmox node is never available to agents. remote_session_status shows the console state, the reason and how many times it was reopened.",
       parameters: z.object({ sessionId: sessionIdSchema }).strict(),
       execute: (params, ctx) =>
-        guarded("remote_reconnect", ctx, { sessionKey: params.sessionId, profileId: profileOf(params.sessionId) }, async () => {
+        guarded("remote_reconnect", ctx, { sessionKey: params.sessionId, profileId: profileOf(params.sessionId, ctx.threadId) }, async () => {
           refuseRetired(ctx);
-          const old = sessionOf(params.sessionId);
+          const old = sessionOf(params.sessionId, ctx.threadId);
           if (old === undefined || old.profileId === undefined || old.pve === undefined || (old.kind !== "pve" && old.kind !== "vnc")) throw noSession();
           if (openedBy.threadOf(old.key) !== ctx.threadId) throw new ToolError("not_opened_by_you", "this thread did not open this session");
           if (old.pve.console === "node") throw new ToolError("node_shell_owner_only", "a shell on a Proxmox node is only for the owner");
@@ -435,7 +436,7 @@ export function createControlTools(deps: AgentControlDeps): AgentToolDef[] {
                 connectionId: profile.id,
                 reconnects,
                 maxReconnects: RECONNECT_ATTEMPTS,
-                state: sessionOf(sessionKey)?.state ?? "connecting",
+                state: sessionOf(sessionKey, ctx.threadId)?.state ?? "connecting",
                 ...(waiting.length > 0 ? { waitingForOwner: waiting } : {}),
                 watching: control.watching(sessionKey),
                 watchingRequired: control.watchingRequired(),
@@ -452,8 +453,8 @@ export function createControlTools(deps: AgentControlDeps): AgentToolDef[] {
       description: CANNOT + "Closes a session this thread opened with remote_connect. Cannot close sessions the owner or another thread opened.",
       parameters: z.object({ sessionId: sessionIdSchema }).strict(),
       execute: (params, ctx) =>
-        guarded("remote_disconnect", ctx, { sessionKey: params.sessionId, profileId: profileOf(params.sessionId) }, async () => {
-          controllable(params.sessionId, { graphics: "allow" });
+        guarded("remote_disconnect", ctx, { sessionKey: params.sessionId, profileId: profileOf(params.sessionId, ctx.threadId) }, async () => {
+          controllable(ctx.threadId, params.sessionId, { graphics: "allow" });
           if (openedBy.threadOf(params.sessionId) !== ctx.threadId) throw new ToolError("not_opened_by_you", "this thread did not open this session");
           await control.disconnect(params.sessionId);
           leases.endSession(params.sessionId, "session_closed");
@@ -472,8 +473,8 @@ export function createControlTools(deps: AgentControlDeps): AgentToolDef[] {
         const bytes = terminalBytes(params.actions);
         if (bytes.length > TERMINAL_INPUT_MAX_BYTES) return errorResult("input_too_large", `more than ${TERMINAL_INPUT_MAX_BYTES} bytes in one call`);
         const detail = `len ${bytes.length}`;
-        return guarded("remote_terminal_input", ctx, { sessionKey: params.sessionId, profileId: profileOf(params.sessionId), detailMode: "length", detail }, async () => {
-          const { session, profileId } = controllable(params.sessionId);
+        return guarded("remote_terminal_input", ctx, { sessionKey: params.sessionId, profileId: profileOf(params.sessionId, ctx.threadId), detailMode: "length", detail }, async () => {
+          const { session, profileId } = controllable(ctx.threadId, params.sessionId);
           if (session.kind === "rdp") throw new ToolError("not_a_terminal", "this is a desktop session: use remote_rdp_input");
           await driven(params.sessionId, ctx, params.leaseId, profileId, () => control.terminalWrite(params.sessionId, bytes, ownerTag(params.leaseId)));
           deps.feed?.emit(params.sessionId, { kind: "typed", length: bytes.length });
@@ -494,8 +495,8 @@ export function createControlTools(deps: AgentControlDeps): AgentToolDef[] {
       execute: async (params, ctx) => {
         const actions = params.actions as RdpAction[];
         const detail = `len ${JSON.stringify(actions).length}`;
-        return guarded("remote_rdp_input", ctx, { sessionKey: params.sessionId, profileId: profileOf(params.sessionId), detailMode: "length", detail }, async () => {
-          const { session, profileId } = controllable(params.sessionId);
+        return guarded("remote_rdp_input", ctx, { sessionKey: params.sessionId, profileId: profileOf(params.sessionId, ctx.threadId), detailMode: "length", detail }, async () => {
+          const { session, profileId } = controllable(ctx.threadId, params.sessionId);
           if (session.kind !== "rdp") throw new ToolError("not_a_desktop", "this is a terminal session: use remote_terminal_input");
           const desktop = session.rdp?.desktop ?? null;
           if (session.rdp?.state !== "desktop_ready" || desktop === null) throw new ToolError("desktop_not_ready", "the desktop is not shown yet");
@@ -512,7 +513,7 @@ export function createControlTools(deps: AgentControlDeps): AgentToolDef[] {
           if (weight > MAX_RDP_EVENTS_PER_CALL) throw new ToolError("too_many_events", `these actions come to ${weight} key and pointer events; at most ${MAX_RDP_EVENTS_PER_CALL} per call`);
           await driven(params.sessionId, ctx, params.leaseId, profileId, async () => {
             // The size is checked again when this write's turn comes: a resize while it waited is a stale geometry, not a click somewhere else.
-            const now = sessionOf(params.sessionId)?.rdp?.desktop ?? null;
+            const now = sessionOf(params.sessionId, ctx.threadId)?.rdp?.desktop ?? null;
             if (positional && (now === null || now.width !== desktop.width || now.height !== desktop.height)) throw new ToolError("stale_geometry", "the desktop changed size while this input waited; take a new screenshot");
             await control.rdpWrite(params.sessionId, events.events, ownerTag(params.leaseId));
           });

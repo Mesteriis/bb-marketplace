@@ -80,7 +80,7 @@ function setup(opts: Setup = {}) {
     registry,
     ports: {
       profiles: { list: () => profiles, get: (id) => profiles.find((p) => p.id === id) ?? null },
-      sessions: { list: () => sessions, read: () => null, screenshot: async () => { throw new Error("n/a"); } },
+      sessions: { list: (tid) => (tid === null ? sessions : sessions.filter((x) => { const o = registry.threadOf(x.key); return o === undefined || o === tid; })), read: () => null, screenshot: async () => { throw new Error("n/a"); } },
       fitScreenshot: () => { throw new Error("n/a"); },
     },
     control: {
@@ -453,7 +453,7 @@ describe("remote_connect / remote_disconnect", () => {
     t.access.set(P_SSH, "input", false);
     const mine = t.data(await t.call("remote_connect", { connectionId: P_SSH })).sessionId as string;
     expect(t.textOf(await t.call("remote_disconnect", { sessionId: SSH_KEY }))).toContain("not_opened_by_you");
-    expect(t.textOf(await t.call("remote_disconnect", { sessionId: mine }, OTHER))).toContain("not_opened_by_you");
+    expect(t.textOf(await t.call("remote_disconnect", { sessionId: mine }, OTHER))).toContain("session_not_found");
     expect((await t.call("remote_disconnect", { sessionId: mine })).isError).toBeUndefined();
     expect(t.disconnected).toEqual([mine]);
   });
@@ -935,7 +935,7 @@ describe("remote_reconnect", () => {
   it("only the thread that opened the console may reopen it; an unknown id and a non-console session answer like a missing one", async () => {
     const t = ready();
     const old = await lostConsole(t);
-    expect(t.textOf(await t.call("remote_reconnect", { sessionId: old }, OTHER))).toContain("not_opened_by_you");
+    expect(t.textOf(await t.call("remote_reconnect", { sessionId: old }, OTHER))).toContain("session_not_found");
     expect(t.textOf(await t.call("remote_reconnect", { sessionId: `${GEN}.99` }))).toContain("session_not_found");
     t.sessions.push({ key: SSH_KEY, kind: "ssh", state: "closed", profileId: P_SSH, exitCode: 0, reason: null, control: "ready" });
     expect(t.textOf(await t.call("remote_reconnect", { sessionId: SSH_KEY }))).toContain("session_not_found");
@@ -1011,5 +1011,28 @@ describe("remote_reconnect", () => {
     row.pve = { console: "lxc", node: "pve1", vmid: 101, state: "active", reason: null };
     expect(extras(row)).toMatchObject({ reconnects: 1, maxReconnects: 5 });
     expect(extras({ key: SSH_KEY, kind: "ssh", state: "running", exitCode: null, reason: null, control: "ready" })).not.toHaveProperty("reconnects");
+  });
+});
+
+describe("one agent thread never reaches another thread's console", () => {
+  it("every control tool answers session_not_found for a console the other thread opened, and nothing is sent or closed", async () => {
+    const t = setup({ sessions: [] });
+    t.access.set(P_PVE, "input", false);
+    const key = t.data(await t.call("remote_connect", { connectionId: P_PVE, console: "lxc", vmid: 101 })).sessionId as string;
+    const lease = t.data(await t.call("remote_control_acquire", { sessionId: key })).leaseId as string;
+    const calls: Array<[string, Record<string, unknown>]> = [
+      ["remote_control_acquire", { sessionId: key }],
+      ["remote_control_release", { sessionId: key, leaseId: lease }],
+      ["remote_terminal_input", { sessionId: key, leaseId: lease, actions: [{ type: "text", text: "id" }] }],
+      ["remote_disconnect", { sessionId: key }],
+      ["remote_reconnect", { sessionId: key }],
+    ];
+    for (const [name, input] of calls) expect(t.textOf(await t.call(name, input, OTHER)), name).toContain("session_not_found");
+    expect(t.wrote).toEqual([]);
+    expect(t.disconnected).toEqual([]);
+    expect(t.opened).toHaveLength(1);
+    // the opener still has it
+    expect(t.registry.threadOf(key)).toBe("thr_a");
+    expect((await t.call("remote_disconnect", { sessionId: key })).isError).toBeUndefined();
   });
 });
