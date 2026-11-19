@@ -334,6 +334,21 @@ describe("testSmtp and setSmtp", () => {
     expect(store.getAccount("acc_x")!.smtp).toEqual(STORED_SMTP);
   });
 
+  it("a Google account takes no typed password: it would replace the grant", async () => {
+    const sealedGrant = new MarkingVault().seal("invented-refresh-token");
+    store.saveAccount(
+      makeStoredAccount({ id: "acc_g", email: "g@example.org", authKind: "google", passwordSealed: sealedGrant, smtp: STORED_SMTP }),
+    );
+    const typed = { ...settings, accountId: "acc_g", host: "smtp.example.org", password: "typed-app-password" };
+
+    expect(await testSmtp(deps, typed)).toEqual({ ok: false, reason: "This account signs in with Google and takes no password" });
+    expect(await setSmtp(deps, typed)).toEqual({ ok: false, reason: "This account signs in with Google and takes no password" });
+
+    expect(store.getAccount("acc_g")).toMatchObject({ passwordSealed: sealedGrant, authKind: "google" });
+    expect(gateway.sessions).toEqual([]);
+    expect(transport.verified).toEqual([]);
+  });
+
   it("reports an unknown account and a refused login without echoing anything", async () => {
     expect(await testSmtp(deps, { ...settings, accountId: "nope" })).toEqual({
       ok: false,

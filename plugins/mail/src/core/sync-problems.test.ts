@@ -3,6 +3,7 @@ import { DECRYPT_ERROR } from "../adapters/bb/sync-service.ts";
 import {
   DECRYPT_ERROR_TEXT,
   OFFLINE_QUIET_MS,
+  grantRevoked,
   isQuietlyOffline,
   parseSyncProblems,
   syncProblemText,
@@ -31,6 +32,12 @@ describe("parseSyncProblems", () => {
     expect(
       isQuietlyOffline({ lastError: "Google sign-in expired", lastSyncAt: "2026-11-19T12:00:00.000Z", authFailed: true }, Date.parse("2026-11-19T12:01:00.000Z")),
     ).toBe(false);
+    // The round's other problems follow the revoked grant in the same line.
+    expect(grantRevoked("Google sign-in expired; Archive: Sync failed (ECONNRESET)")).toBe(true);
+    expect(grantRevoked("Google sign-in expired")).toBe(true);
+    expect(grantRevoked("Authentication failed")).toBe(false);
+    expect(grantRevoked("Archive: Google sign-in expired")).toBe(false);
+    expect(grantRevoked(null)).toBe(false);
     // A sign-in refused once for a password that worked before: retried, not a banner yet.
     expect(codes("Sync failed (LoginRefused)")).toEqual(["server_busy"]);
     expect(codes("Sync failed (TLSFailed)")).toEqual(["tls"]);

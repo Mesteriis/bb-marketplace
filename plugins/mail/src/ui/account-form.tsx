@@ -365,7 +365,16 @@ export function AccountForm({ initial, title, onTest, onSave, onCancel, onGoogle
 
       <div className="flex justify-end gap-2">
         {onCancel !== undefined ? (
-          <Button type="button" variant="ghost" onClick={onCancel} disabled={busy !== null}>
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={() => {
+              waiting.current?.abort();
+              onCancel();
+            }}
+            // Google may never come back: the wait can always be left.
+            disabled={busy !== null && busy !== "google"}
+          >
             {tx("Cancel")}
           </Button>
         ) : null}

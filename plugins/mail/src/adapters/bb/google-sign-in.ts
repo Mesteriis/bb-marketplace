@@ -105,7 +105,8 @@ export function createGoogleSignIn(deps: GoogleSignInDeps): GoogleSignIn {
   }
 
   function prune(): void {
-    const pending = [...flows.values()].filter((flow) => flow.status.state === "pending");
+    // Only sign-ins still waiting for the browser: one that came back is being finished.
+    const pending = [...flows.values()].filter((flow) => flow.status.state === "pending" && !flow.used);
     while (pending.length >= PENDING_MAX) end(pending.shift()!, { state: "failed", reason: "timeout" });
     for (const [id, flow] of flows) {
       if (flows.size < KEPT_MAX) break;
@@ -203,7 +204,6 @@ export function createGoogleSignIn(deps: GoogleSignInDeps): GoogleSignIn {
 
     close() {
       for (const flow of flows.values()) end(flow, { state: "failed", reason: "timeout" });
-      flows.clear();
     },
   };
 }

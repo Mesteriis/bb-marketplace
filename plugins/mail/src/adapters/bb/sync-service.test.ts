@@ -178,7 +178,13 @@ describe("createSyncLoop", () => {
 
   it("never tries a revoked Google grant by itself", async () => {
     const { store, scripted, deps } = setup();
-    store.saveAccount(account("acc_1", { authFailed: true, lastError: "Google sign-in expired", authKind: "google" }));
+    store.saveAccount(
+      account("acc_1", {
+        authFailed: true,
+        lastError: "Google sign-in expired; Archive: Sync failed (ECONNRESET)",
+        authKind: "google",
+      }),
+    );
     store.saveAccount(account("acc_2"));
     const gateway = new OneBadUserGateway(scripted, "nobody@example.org");
     const clock = new FixedClock(NOW);
@@ -197,7 +203,10 @@ describe("createSyncLoop", () => {
 
     expect(gateway.tests).toEqual([]);
     expect(lines.some((l) => l.startsWith("sync acc_1"))).toBe(false);
-    expect(store.getAccount("acc_1")).toMatchObject({ authFailed: true, lastError: "Google sign-in expired" });
+    expect(store.getAccount("acc_1")).toMatchObject({
+      authFailed: true,
+      lastError: "Google sign-in expired; Archive: Sync failed (ECONNRESET)",
+    });
   }, 20_000);
 
   it("tries a stopped account the server still refuses again only after a wait", async () => {

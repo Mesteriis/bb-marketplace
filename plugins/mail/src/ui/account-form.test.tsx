@@ -115,6 +115,25 @@ describe("AccountForm with Google sign-in", () => {
     expect(onGoogleSignIn.mock.calls[1]![0]).toBe("owner@example.org");
   });
 
+  it("Cancel works while Google is awaited, and stops the wait", async () => {
+    let seen: AbortSignal | null = null;
+    const onCancel = vi.fn();
+    const onGoogleSignIn = vi.fn((_email: string | null, signal: AbortSignal) => {
+      seen = signal;
+      return new Promise<{ ok: true }>(() => undefined);
+    });
+    mountGmail({ onGoogleSignIn, onCancel });
+    fireEvent.click(screen.getByRole("button", { name: "Sign in with Google" }));
+    await waitFor(() => expect(seen).not.toBeNull());
+
+    const cancel = screen.getByRole("button", { name: "Cancel" }) as HTMLButtonElement;
+    expect(cancel.disabled).toBe(false);
+    fireEvent.click(cancel);
+
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    expect(seen!.aborted).toBe(true);
+  });
+
   it("stops waiting for Google when the form goes away", async () => {
     let seen: AbortSignal | null = null;
     const onGoogleSignIn = vi.fn((_email: string | null, signal: AbortSignal) => {

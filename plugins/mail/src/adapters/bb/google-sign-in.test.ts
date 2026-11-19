@@ -175,6 +175,31 @@ describe("createGoogleSignIn", () => {
     expect(await refusesConnections(first.url)).toBe(true);
   });
 
+  it("a sign-in the browser already came back for is not ended by newer ones or by close", async () => {
+    let release!: (reply: GoogleTokenReply) => void;
+    const held = new Promise<GoogleTokenReply>((resolve) => (release = resolve));
+    const saved: string[] = [];
+    const signIn = createGoogleSignIn({
+      client,
+      tokens: { accessToken: async () => "a1", exchangeCode: () => held, forget: () => undefined },
+      testSignIn: async () => "ok",
+      save: async (input) => (saved.push(input.email), { id: "acc_1" } as Account),
+    });
+    open.push(signIn);
+    const first = await signIn.start({ email: null });
+    await comeBack(first.url, { state: stateOf(first.url), code: "c1" });
+
+    await signIn.start({ email: null });
+    await signIn.start({ email: null });
+    await signIn.start({ email: null });
+    await signIn.start({ email: null });
+    expect(signIn.status(first.flowId)).toEqual({ state: "pending" });
+
+    release(granted("owner@example.org"));
+    await vi.waitFor(() => expect(signIn.status(first.flowId)).toEqual({ state: "done", accountId: "acc_1" }));
+    expect(saved).toEqual(["owner@example.org"]);
+  });
+
   it("an unknown flow reads as expired, and close ends what is waiting", async () => {
     const { signIn } = setup();
     expect(signIn.status("missing")).toEqual({ state: "failed", reason: "timeout" });

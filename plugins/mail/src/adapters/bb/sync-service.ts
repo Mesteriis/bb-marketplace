@@ -56,7 +56,7 @@ import {
   type SyncOptions,
   type SyncOutcome,
 } from "../../core/index.ts";
-import { GRANT_REVOKED_ERROR } from "../../core/sync-problems.ts";
+import { grantRevoked } from "../../core/sync-problems.ts";
 
 /** Stored on an account whose sealed password the current vault key cannot open. */
 export const DECRYPT_ERROR = "Cannot decrypt credential — re-enter the password";
@@ -229,7 +229,7 @@ export function createSyncLoop(
         if (account === null) return;
         if (account.authFailed) {
           // A full round tries the saved password again when a try is due; a revoked grant is never tried.
-          if (account.lastError === GRANT_REVOKED_ERROR) return;
+          if (grantRevoked(account.lastError)) return;
           if (syncOptions.only !== undefined || !(await resumed(account.id, account.passwordSealed))) return;
           account = guarded.store.getAccount(accountId);
           if (account === null || account.authFailed) return;

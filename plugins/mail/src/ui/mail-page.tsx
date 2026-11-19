@@ -29,7 +29,7 @@ import { Icon } from "@/components/ui/icon";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { AccountForm, type AccountFormInitial, type AccountFormProps } from "./account-form.tsx";
-import { GRANT_REVOKED_ERROR } from "../core/sync-problems.ts";
+import { grantRevoked } from "../core/sync-problems.ts";
 import { Composer, type ComposerPorts, type ComposeWarningKind } from "./composer.tsx";
 import type { TemplateView } from "./mail-settings.tsx";
 import { DetailsPanel, type DetailsState } from "./details-panel.tsx";
@@ -1239,7 +1239,7 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
             {props.unified ? `${accountLabel(account)}: ` : ""}
             {accountProblemTexts(account).join(" ")}
           </span>
-          {account.authFailed && props.onRetrySignIn !== undefined && account.lastError !== GRANT_REVOKED_ERROR ? (
+          {account.authFailed && props.onRetrySignIn !== undefined && !grantRevoked(account.lastError) ? (
             <Button
               variant="outline"
               size="sm"

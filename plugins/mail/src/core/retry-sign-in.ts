@@ -3,7 +3,7 @@
 // may retry without typing it again; an accepted sign-in clears the stop.
 import { imapConfigOf } from "./compose.ts";
 import type { ImapGateway, MailStore, SecretVault } from "./ports.ts";
-import { GRANT_REVOKED_ERROR } from "./sync-problems.ts";
+import { grantRevoked } from "./sync-problems.ts";
 
 /**
  * resumed: the server accepted the saved password, sync is on again.
@@ -28,7 +28,7 @@ export async function retrySignIn(deps: RetrySignInDeps, accountId: string): Pro
   const account = store.getAccount(accountId);
   if (account === null) return null;
   if (!account.authFailed) return "resumed";
-  if (account.lastError === GRANT_REVOKED_ERROR) return "sign_in_needed";
+  if (grantRevoked(account.lastError)) return "sign_in_needed";
   if (vault === null) return "unreadable";
   let config;
   try {

@@ -52,6 +52,7 @@ export class SmtpSettingsRefused extends Error {
 const PASSWORD_REQUIRED = "Enter the account password to use this SMTP server";
 export const ADDRESS_IS_ALIAS = "This address is already a sending address of another account; remove it there first";
 const PASSWORD_REFUSED = "The IMAP server refused this password";
+const GOOGLE_TAKES_NO_PASSWORD = "This account signs in with Google and takes no password";
 
 /** Thrown by removeAccount while a message of the account is being sent. */
 export class AccountBusyError extends Error {
@@ -254,6 +255,8 @@ async function checkSmtp(
   }
   if (preset !== null) settings = { ...settings, host: preset.host };
   const typed = input.password !== undefined && input.password !== "" ? input.password : null;
+  // A typed password becomes the account's credential; for a Google account that would replace its grant.
+  if (typed !== null && account.authKind === "google") return fail({ ok: false, reason: GOOGLE_TAKES_NO_PASSWORD });
   let password: string;
   if (typed !== null) {
     const imap = await runTest(deps.gateway, {

@@ -74,6 +74,14 @@ describe("retrySignIn", () => {
     const test = vi.spyOn(gateway, "test");
 
     expect(await retrySignIn(deps, ACCOUNT_ID)).toBe("sign_in_needed");
+    // The same when the round that found it also had a folder problem.
+    store.recordSyncResult(ACCOUNT_ID, {
+      lastSyncAt: SYNCED_AT,
+      lastError: "Google sign-in expired; Archive: Sync failed (ECONNRESET)",
+      authFailed: true,
+    });
+    expect(await retrySignIn(deps, ACCOUNT_ID)).toBe("sign_in_needed");
+    store.recordSyncResult(ACCOUNT_ID, { lastSyncAt: SYNCED_AT, lastError: "Google sign-in expired", authFailed: true });
 
     expect(test).not.toHaveBeenCalled();
     expect(queued).toEqual([]);

@@ -152,6 +152,15 @@ function sentencesOf(lastError: string): string[] {
   return sentences;
 }
 
+/**
+ * True when the account was stopped by a revoked Google grant. The round that
+ * found it may have added its folder problems to the same line, so the line
+ * is read as problems, not compared whole.
+ */
+export function grantRevoked(lastError: string | null): boolean {
+  return parseSyncProblems(lastError).some((p) => p.code === "grant_revoked" && p.folder === null);
+}
+
 /** How long a lost network stays a quiet "Offline" before it becomes a banner. */
 export const OFFLINE_QUIET_MS = 30 * 60_000;
 
