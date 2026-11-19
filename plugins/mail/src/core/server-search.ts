@@ -50,7 +50,20 @@ const DAY_MS = 86_400_000;
 
 /** What the list says about an operator the server did not use. */
 export function localOnlyText(field: SearchField): string {
+  // `is` and `has` are local only for the values Mail defines itself.
+  if (field === "sender") return "from:vip, from:team and from:known are not used on the server";
+  if (field === "is") return "is:dev and is:automated are not used on the server";
+  if (field === "has") return "has:invite is not used on the server";
   return `${field}: is not used on the server`;
+}
+
+/** A condition only Mail can judge: a sender set, the Dev and automated classes, an invitation. */
+function mailOnly(condition: SearchCondition): boolean {
+  return (
+    condition.field === "sender" ||
+    (condition.field === "is" && (condition.value === "dev" || condition.value === "automated")) ||
+    (condition.field === "has" && condition.value === "invite")
+  );
 }
 
 function stripped(value: string): string {
@@ -72,6 +85,7 @@ const GMAIL_IN: Readonly<Record<string, string>> = {
 
 /** One condition as a Gmail search term; null when it has none. */
 function gmailTerm(condition: SearchCondition): string | null {
+  if (mailOnly(condition)) return null;
   const sign = condition.negated ? "-" : "";
   const { field, value } = condition;
   switch (field) {
@@ -130,7 +144,8 @@ export function gmailRawOf(conditions: readonly SearchCondition[], text: string)
 function localOnlyOf(conditions: readonly SearchCondition[], gmail: boolean): SearchField[] {
   const fields: SearchField[] = [];
   for (const condition of conditions) {
-    const local = condition.field === "list" || condition.field === "category" || (!gmail && condition.field === "label");
+    const local =
+      mailOnly(condition) || condition.field === "list" || condition.field === "category" || (!gmail && condition.field === "label");
     if (local && !fields.includes(condition.field)) fields.push(condition.field);
   }
   return fields;
@@ -147,6 +162,7 @@ function criteriaOf(conditions: readonly SearchCondition[], text: string): Serve
   const phrase = text.replace(CONTROLS, "").trim();
   if (phrase !== "") criteria.text = phrase;
   for (const condition of conditions) {
+    if (mailOnly(condition)) continue;
     const { field, value, negated } = condition;
     switch (field) {
       case "from":
@@ -292,6 +308,7 @@ export type PostFilterRow = { hasAttachments: boolean; filenames: readonly strin
  */
 export function postFilter(row: PostFilterRow, parsed: ParsedQuery): boolean {
   for (const condition of parsed.conditions) {
+    if (mailOnly(condition)) continue;
     let match: boolean;
     switch (condition.field) {
       case "has":

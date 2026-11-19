@@ -35,6 +35,7 @@ import type { TemplateView } from "./settings/shared.ts";
 import { DetailsPanel, type DetailsState } from "./details-panel.tsx";
 import {
   EmptyFolder,
+  EmptyTab,
   LoadingState,
   NoSearchResults,
   NothingSelected,
@@ -1930,6 +1931,8 @@ function ListColumn(
     if (clean && (props.syncing || shown.some((a) => a.lastSyncAt === null))) {
       return <SyncingState />;
     }
+    // Split Inbox: an empty tab is not an empty Inbox.
+    if (props.tabs?.shown === true && props.tabs.currentId !== null) return <EmptyTab />;
     return (
       <>
         <EmptyFolder name={props.emptyName} />

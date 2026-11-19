@@ -3379,6 +3379,8 @@ export class InMemoryMailStore implements MailStore {
       .filter((r) => accountId === null || r.accountId === accountId)
       .filter((r) => r.movePending === null)
       .filter((r) => opts?.scoped !== true || this.inAiScope(r))
+      // A sender set is the owner's alone (see the SQLite store).
+      .filter(() => opts?.scoped !== true || !query.conditions.some((c) => c.field === "sender"))
       .filter((r) => text === "" || textHit(r) || (withAttachments && attachmentHit(r)))
       .filter((r) => this.matchesConditions(r, query.conditions));
     // Newest first, undated first, then id descending (the SQLite order).
@@ -4039,6 +4041,8 @@ export class InMemoryMailStore implements MailStore {
         );
       };
       switch (condition.field) {
+        case "text":
+          return has(m.subject, condition.value) || has(m.from.name, condition.value) || has(m.from.address, condition.value) || has(m.bodyText, condition.value);
         case "from":
           return has(m.from.address, condition.value) || has(m.from.name, condition.value);
         case "to":

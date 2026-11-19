@@ -1373,7 +1373,7 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
     }
     const clock: Clock = overrides.clock ?? { now: () => new Date() };
     // Inbox tabs and search: what from:vip and from:team match. Read again when the setting changes and
-    // after every sync round's notifier (an account or an alias may have been added).
+    // before a list or a search that may use them (an account or an alias may have been added).
     const installSenderSets = () => {
       try {
         const vip = parseImportantSenders(current.importantSenders);
@@ -2002,6 +2002,7 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       aiNonce: () => translateNonce((size) => new Uint8Array(randomBytes(size))),
       restoreTag: (parts) => newRestoreTag((size) => new Uint8Array(randomBytes(size)), parts),
       categoriesOn: () => current.mailCategories,
+      refreshSenderSets: installSenderSets,
       quietHours: () => current.quietHours,
       categoryUndo: new CategoryUndoBook(randomUUID),
       senderChecks,
@@ -2127,6 +2128,8 @@ type RpcDeps = {
   restoreTag: (parts: string[]) => string;
   /** The owner's "Sort mail into categories" setting. */
   categoriesOn: () => boolean;
+  /** Installs what from:vip and from:team match, from the settings and the accounts as they are now. */
+  refreshSenderSets: () => void;
   /** The owner's quiet hours: Today's notices wait them out (slice 3f). */
   quietHours: () => string;
   categoryUndo: CategoryUndoBook;
@@ -3347,12 +3350,16 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         }
         return { result };
       },
-      inbox_tabs_list: (input) => inboxTabs.list(input),
+      inbox_tabs_list: (input) => {
+        deps.refreshSenderSets();
+        return inboxTabs.list(input);
+      },
       inbox_tab_save: (input) => inboxTabs.save(input),
       inbox_tab_delete: (input) => inboxTabs.remove(input),
       inbox_tab_move: (input) => inboxTabs.move(input),
       threads_list: ({ scope, cursor, limit, filter, tabId }) => {
         // A tab that was removed lists the whole folder; a broken one lists nothing.
+        if (tabId !== undefined) deps.refreshSenderSets();
         const tab = inboxTabs.matchOf(tabId);
         // Category filters and fields only while categories are on (slice 3f).
         const categorized = filter !== undefined && filter.category !== undefined && !deps.categoriesOn() ? { ...filter, category: undefined } : filter;
@@ -3410,6 +3417,7 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       // Owner-only (slice 3h); attachment text only when the page asks (spec resolution 4).
       search: owner3h("search", ({ query, accountId, limit, cursor, attachments }) => {
         const parsed = parseQuery(query, composeDeps.clock.now());
+        if (parsed.conditions.some((c) => c.field === "sender")) deps.refreshSenderSets();
         const page = store.searchPage(parsed, accountId, limit, {
           cursor: decodeCursor(cursor),
           attachments: attachments === true,

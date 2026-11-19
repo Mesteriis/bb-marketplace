@@ -72,16 +72,16 @@ describe("InboxTabs", () => {
 
   it("a refused condition says why in the editor and stays open", async () => {
     const onAdd = vi.fn(async () => {
-      throw new Error("A tab's condition uses search operators only");
+      throw new Error("Unknown operator in the condition");
     });
     show({ onAdd });
     fireEvent.click(screen.getByRole("button", { name: "Add a tab" }));
     fireEvent.click(await screen.findByRole("button", { name: "Your own condition…" }));
     fireEvent.change(await screen.findByRole("textbox", { name: "Name" }), { target: { value: "Words" } });
-    fireEvent.change(screen.getByRole("textbox", { name: "Condition" }), { target: { value: "hello" } });
+    fireEvent.change(screen.getByRole("textbox", { name: "Condition" }), { target: { value: "foo:bar" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    expect((await screen.findByRole("alert")).textContent).toBe("A tab's condition uses search operators only");
-    expect(onAdd).toHaveBeenCalledWith({ name: "Words", query: "hello" });
+    expect((await screen.findByRole("alert")).textContent).toBe("Unknown operator in the condition");
+    expect(onAdd).toHaveBeenCalledWith({ name: "Words", query: "foo:bar" });
     expect(screen.getByRole("textbox", { name: "Condition" })).toBeTruthy();
   });
 

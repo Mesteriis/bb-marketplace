@@ -2221,16 +2221,21 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     const tabs = shownTabs?.tabs ?? [];
     const currentId = tabs.some((tab) => tab.id === routeTab) ? routeTab : null;
     const open = (id: string | null) => navigate.toPluginPanel("mail", { subPath: viewTabSubPath(latest.current.view, id) });
+    // Any change may move conversations in or out of the tab in view (its own condition, or Other's rest).
+    const relist = () => {
+      if (latest.current.tab !== null && latest.current.scopeKey !== null) void loadList(latest.current.view, "reset");
+    };
     const save = async (input: { id?: string; name: string; query: string }) => {
       await rpc.call("inbox_tab_save", input);
       await loadTabs();
-      if (input.id !== undefined && input.id === latest.current.tab) void loadList(latest.current.view, "reset");
+      relist();
     };
     const change = (call: Promise<unknown>, after?: () => void) => {
       call.then(
         () => {
           after?.();
           void loadTabs();
+          relist();
         },
         (error) => toast.error(tx("Could not change the tabs: {p1}", { p1: messageOf(error) })),
       );

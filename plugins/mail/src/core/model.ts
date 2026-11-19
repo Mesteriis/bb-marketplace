@@ -551,6 +551,8 @@ export const searchFieldSchema = z.enum([
   "from",
   /** A sender set, not a fragment: `vip`, `team` or `known` (written from:vip and so on). */
   "sender",
+  /** Free text as a condition. The parser never writes it (a query's text is its own part); an Inbox tab does, to match words beside its operators. */
+  "text",
   "to",
   "cc",
   "subject",

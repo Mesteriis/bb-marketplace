@@ -6285,6 +6285,27 @@ describe("Split Inbox tabs", () => {
     expect(slot.queryByRole("button", { name: "Split the Inbox…" })).toBeNull();
   });
 
+  it("an empty tab says so and keeps the row", async () => {
+    const slot = render(
+      tabsRpc({ threads_list: ({ tabId }: { tabId?: string }) => ({ threads: tabId === "t-vip" ? [] : [threadA, threadB], nextCursor: null }) }),
+      hostEncode("v/acc-1/INBOX/s/t-vip"),
+    );
+    expect(await slot.findByText("Nothing in this tab.")).toBeTruthy();
+    expect(slot.getByRole("tablist", { name: "Inbox tabs" })).toBeTruthy();
+  });
+
+  it("a change of the tabs lists the tab in view again (Other depends on the others)", async () => {
+    const slot = render(tabsRpc({ inbox_tab_save: () => ({ tab: { id: "t-new", name: "Other", query: "is:other" } }) }), hostEncode("v/acc-1/INBOX/s/t-vip"));
+    await slot.findByRole("tablist", { name: "Inbox tabs" });
+    await slot.findByText("Lunch");
+    const before = callsTo(slot, "threads_list").length;
+    fireEvent.click(slot.getByRole("button", { name: "Add a tab" }));
+    fireEvent.click(await slot.findByRole("button", { name: "Other" }));
+    await waitFor(() => expect(callsTo(slot, "inbox_tab_save")).toHaveLength(1));
+    await waitFor(() => expect(callsTo(slot, "threads_list").length).toBe(before + 1));
+    expect(callsTo(slot, "threads_list").at(-1)?.input).toMatchObject({ tabId: "t-vip" });
+  });
+
   it("removing the tab in view goes back to the Inbox tab", async () => {
     const slot = render(tabsRpc({ inbox_tab_delete: () => ({ ok: true }) }), hostEncode("v/acc-1/INBOX/s/t-vip"));
     fireEvent.click(await slot.findByRole("button", { name: "VIP options" }));

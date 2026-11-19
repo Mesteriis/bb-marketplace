@@ -452,8 +452,9 @@ of each kind waits.
   domain (GitHub, GitLab, Jira, Linear, Notion, Asana, Figma, Google Docs,
   Slack) and **Other**: the conversations that match none of your other
   tabs, recomputed as the tabs change.
-- **Your own condition…** makes a tab from search operators (see Search);
-  free text, `in:` and unknown operators are refused with the reason.
+- **Your own condition…** makes a tab from anything you can search by:
+  operators (see Search) and words. `in:` and unknown operators are refused
+  with the reason.
   **Make a tab** on a search opens the same dialog with the search as the
   condition; **Split by this sender** in a sender's card makes a tab of
   that address at once.

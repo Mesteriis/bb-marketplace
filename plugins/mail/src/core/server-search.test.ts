@@ -107,6 +107,23 @@ describe("planServerSearch: Gmail", () => {
     });
   });
 
+  it("keeps the operators only Mail knows off the server and says so", () => {
+    expect(planServerSearch(q("from:vip is:dev -is:automated has:invite subject:report"), { gmail: true }, GMAIL)).toEqual({
+      kind: "gmail",
+      runs: [{ folder: "[Gmail]/All Mail", raw: 'subject:"report"' }],
+      localOnly: ["sender", "is", "has"],
+    });
+    expect(planServerSearch(q("is:dev"), { gmail: true }, GMAIL)).toEqual({ kind: "refused", refused: "nothing_to_search", localOnly: ["is"] });
+    const plain = planServerSearch(q("is:automated -is:dev from:known has:invite report"), { gmail: false }, [
+      { accountId: "acc_1", path: "INBOX", name: "Inbox", specialUse: "inbox", selectable: true, unreadCount: 0, totalCount: 1, subscribed: true },
+    ] as never);
+    expect(plain).toMatchObject({ kind: "folders", runs: [{ path: "INBOX", criteria: { text: "report" } }], localOnly: ["is", "sender", "has"] });
+    expect(localOnlyText("sender")).toBe("from:vip, from:team and from:known are not used on the server");
+    expect(localOnlyText("is")).toBe("is:dev and is:automated are not used on the server");
+    expect(localOnlyText("has")).toBe("has:invite is not used on the server");
+    expect(localOnlyText("list")).toBe("list: is not used on the server");
+  });
+
   it("falls back to the folder list with gmailRaw when there is no All Mail", () => {
     const noAll = GMAIL.filter((f) => f.specialUse !== "all");
     const plan = planServerSearch(q("from:a@example.org"), { gmail: true }, noAll);
@@ -208,6 +225,9 @@ describe("postFilter", () => {
   });
 
   it("applies has:attachment and its negation", () => {
+    // has:invite is Mail's own: a server hit is not judged by it.
+    expect(postFilter(row({ hasAttachments: false, filenames: [] }), q("has:invite"))).toBe(true);
+    expect(postFilter(row(), q("-has:invite"))).toBe(true);
     expect(postFilter(row(), q("has:attachment"))).toBe(true);
     expect(postFilter(row({ hasAttachments: false, filenames: [] }), q("has:attachment"))).toBe(false);
     expect(postFilter(row({ hasAttachments: false, filenames: [] }), q("-has:attachment"))).toBe(true);

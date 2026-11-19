@@ -1703,6 +1703,15 @@ function tabConditionsOf(tab: TabMatch | null): SearchCondition[] {
 function conditionSql(condition: SearchCondition, params: unknown[]): string | null {
   const { field, value } = condition;
   switch (field) {
+    case "text": {
+      // An Inbox tab's free text, matched as search matches it: the full-text index, or fragments for a short word.
+      if (Array.from(value).length >= FTS_MIN_CHARS) {
+        params.push(ftsPhrase(value));
+        return "m.seq IN (SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?)";
+      }
+      params.push(likePattern(value), likePattern(value), likePattern(value));
+      return `(${LIKE("m.subject")} OR ${LIKE("m.from_name")} OR ${LIKE("m.from_address")})`;
+    }
     case "from":
       params.push(likePattern(value), likePattern(value));
       return `(${LIKE("m.from_address")} OR ${LIKE("m.from_name")})`;
@@ -3019,6 +3028,10 @@ export function createSqliteStore(db: Database.Database): MailStore {
     where.push("m.move_pending IS NULL");
     // Agent paths: rows outside the AI scope go before the dedup picks a copy.
     if (opts?.scoped === true) where.push(IN_AI_SCOPE);
+    // A sender set (from:vip, from:team, from:known) is the owner's alone: it is
+    // built from their settings and from Sent mail of every account, so a
+    // scoped reader could use it to ask about mail it may not see.
+    if (opts?.scoped === true && query.conditions.some((c) => c.field === "sender")) where.push("0");
 
     // Keyset after the cursor in the order below (spec resolution 17).
     const cursor = opts?.cursor ?? null;

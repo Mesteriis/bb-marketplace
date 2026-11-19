@@ -5736,8 +5736,21 @@ describe("Inbox tabs (Split Inbox)", () => {
     expect(listed.tabs).toEqual([{ id: ivy, name: "Ivy", query: "from:ivy@example.com", unread: 1, broken: false }]);
   });
 
+  it("the Team tab follows an account added after the start", async () => {
+    const host = await loadCanary();
+    const team = await save(host, "Team", "from:team");
+    expect(await subjects(host, team)).toEqual([]);
+    await host.harness.behavior.callRpc("accounts_add", { ...NEW_ACCOUNT, email: "me@excluded.example.net" });
+    expect(await subjects(host, team)).toEqual(["Invented excluded pelican note"]);
+    const listed = (await call(host, "inbox_tabs_list", { scope })) as { tabs: { unread: number }[] };
+    expect(listed.tabs.map((tab) => tab.unread)).toEqual([1]);
+  });
+
   it("the list carries the unread conversations of the whole Inbox for the Inbox tab", async () => {
     const host = await loadCanary();
+    // Without tabs nothing shows the number: it is not counted.
+    expect(await call(host, "inbox_tabs_list", { scope })).toEqual({ inboxUnread: 0, tabs: [] });
+    await save(host, "Dev", "is:dev");
     const listed = (await call(host, "inbox_tabs_list", { scope })) as { inboxUnread: number };
     expect(listed.inboxUnread).toBe(2);
   });
@@ -5754,9 +5767,14 @@ describe("Inbox tabs (Split Inbox)", () => {
     expect(await subjects(host, other)).toEqual(everything);
   });
 
-  it("refuses a condition that is not operators, a name of spaces and a thirteenth tab; nothing is stored", async () => {
+  it("a tab of free text lists the conversations with the words", async () => {
     const host = await loadCanary();
-    await expect(call(host, "inbox_tab_save", { name: "Words", query: "hello there" })).rejects.toMatchObject({ code: "invalid", message: "A tab's condition uses search operators only" });
+    const pelican = await save(host, "Pelican", "pelican");
+    expect(await subjects(host, pelican)).toEqual(["Invented excluded pelican note"]);
+  });
+
+  it("refuses an unknown operator, a bad value, a folder, a name of spaces and a thirteenth tab; nothing is stored", async () => {
+    const host = await loadCanary();
     await expect(call(host, "inbox_tab_save", { name: "Odd", query: "foo:bar" })).rejects.toMatchObject({ message: "Unknown operator in the condition" });
     await expect(call(host, "inbox_tab_save", { name: "Bad", query: "is:devops" })).rejects.toMatchObject({ message: "A value in the condition is not valid" });
     await expect(call(host, "inbox_tab_save", { name: "Folder", query: "in:trash" })).rejects.toMatchObject({ code: "invalid" });

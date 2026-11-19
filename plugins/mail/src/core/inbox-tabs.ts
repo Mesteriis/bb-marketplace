@@ -51,12 +51,12 @@ export type InboxTab = { id: string; name: string; query: string; position: numb
 /** What the store matches a tab by: every condition on one Inbox message, or no message matching any of the other tabs. */
 export type TabMatch = { kind: "all"; conditions: SearchCondition[] } | { kind: "none"; of: SearchCondition[][] };
 
-export type TabQueryProblem = "empty" | "free_text" | "unknown_operator" | "bad_value" | "too_long";
+export type TabQueryProblem = "empty" | "unknown_operator" | "bad_value" | "too_long";
 
 /**
- * A tab's condition as search conditions. A tab narrows the Inbox, so `in:`
- * has no meaning in it; free text would need the full-text index on every
- * listing, so a tab takes operators only.
+ * A tab's condition as search conditions: anything the owner can search by.
+ * Free text is one more condition (`text`), matched on the message as search
+ * matches it. A tab narrows the Inbox, so `in:` has no meaning in it.
  */
 export function tabConditions(query: string, now: Date): { ok: true; conditions: SearchCondition[] } | { ok: false; reason: TabQueryProblem } {
   const text = query.trim();
@@ -65,10 +65,12 @@ export function tabConditions(query: string, now: Date): { ok: true; conditions:
   const parsed = parseQuery(text, now);
   const note = parsed.notes[0];
   if (note !== undefined) return { ok: false, reason: note.kind };
-  if (parsed.text.trim() !== "") return { ok: false, reason: "free_text" };
   if (parsed.conditions.some((condition) => condition.field === "in")) return { ok: false, reason: "unknown_operator" };
-  if (parsed.conditions.length === 0) return { ok: false, reason: "empty" };
-  return { ok: true, conditions: parsed.conditions };
+  const words = parsed.text.replace(/[\u0000-\u001f\u007f]/g, "").trim();
+  const conditions: SearchCondition[] =
+    words === "" ? parsed.conditions : [...parsed.conditions, { field: "text", value: words, negated: false }];
+  if (conditions.length === 0) return { ok: false, reason: "empty" };
+  return { ok: true, conditions };
 }
 
 /** Whether a query can be saved as a tab. */

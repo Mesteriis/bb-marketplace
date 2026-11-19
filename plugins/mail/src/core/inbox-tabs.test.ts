@@ -16,9 +16,18 @@ describe("inbox tabs", () => {
     });
   });
 
-  it("refuses free text, an unknown operator, a bad value, a folder, nothing and too much", () => {
-    expect(tabConditions("hello", now)).toEqual({ ok: false, reason: "free_text" });
-    expect(tabConditions("from:vip hello", now)).toEqual({ ok: false, reason: "free_text" });
+  it("takes free text as one more condition, after the operators", () => {
+    expect(tabConditions("invoice", now)).toEqual({ ok: true, conditions: [{ field: "text", value: "invoice", negated: false }] });
+    expect(tabConditions("weekly from:vip report", now)).toEqual({
+      ok: true,
+      conditions: [
+        { field: "sender", value: "vip", negated: false },
+        { field: "text", value: "weekly report", negated: false },
+      ],
+    });
+  });
+
+  it("refuses an unknown operator, a bad value, a folder, nothing and too much", () => {
     expect(tabConditions("foo:bar", now)).toEqual({ ok: false, reason: "unknown_operator" });
     expect(tabConditions("is:devops", now)).toEqual({ ok: false, reason: "bad_value" });
     expect(tabConditions("in:trash", now)).toEqual({ ok: false, reason: "unknown_operator" });
@@ -27,7 +36,7 @@ describe("inbox tabs", () => {
   });
 
   it("Other matches what none of the other tabs holds, skipping a tab that no longer parses", () => {
-    const tabs = [tab("vip", "from:vip"), tab("broken", "nonsense words"), tab("dev", "is:dev"), tab("other", OTHER_QUERY)];
+    const tabs = [tab("vip", "from:vip"), tab("broken", "foo:bar"), tab("dev", "is:dev"), tab("other", OTHER_QUERY)];
     expect(tabMatch(tabs[3]!, tabs, now)).toEqual({
       kind: "none",
       of: [[{ field: "sender", value: "vip", negated: false }], [{ field: "is", value: "dev", negated: false }]],

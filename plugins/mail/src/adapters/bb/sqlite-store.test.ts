@@ -3247,6 +3247,17 @@ describe.each(storeKinds)("operators for Inbox tabs (%s)", (_kind, make) => {
     expect(found("-from:vip -is:automated -has:invite in:inbox")).toEqual(["colleague@example.org", "friend@gmail.com"]);
   });
 
+  it("a scoped read (an agent, another plugin) finds nothing by a sender set, in either sign", () => {
+    // The sets come from the owner's settings and from Sent mail of every account, shared or not.
+    const scoped = (query: string) => s.search(parseQuery(query), null, 50, { scoped: true }).map((hit) => hit.from.address).sort();
+    expect(scoped("in:inbox is:automated")).toEqual(["noreply@shop.example.net"]);
+    expect(scoped("from:known in:inbox")).toEqual([]);
+    expect(scoped("from:vip in:inbox")).toEqual([]);
+    expect(scoped("from:team in:inbox")).toEqual([]);
+    expect(scoped("-from:known in:inbox")).toEqual([]);
+    expect(scoped("-from:vip in:inbox")).toEqual([]);
+  });
+
   it("with empty sets from:vip and from:team find nobody", () => {
     s.setSenderSets({ vip: { addresses: new Set(), domains: new Set() }, team: new Set() });
     expect(found("from:vip in:inbox")).toEqual([]);
@@ -3286,6 +3297,42 @@ describe.each(storeKinds)("Inbox tabs (%s)", (_kind, make) => {
     put("Work", { from: { name: null, address: "boss@vip.example.com" }, subject: "outside the inbox", messageId: "work@example.org" });
     s.assignThreads("acc_1", new Map());
     s.setSenderSets({ vip: { addresses: new Set(), domains: new Set(["vip.example.com"]) }, team: new Set(["example.org"]) });
+  });
+
+  it("a tab of free text holds the conversations whose Inbox mail has the words, long or short", () => {
+    from("billing@example.net", { subject: "Quarterly invoice", bodyText: "Please find the pelican figures" });
+    from("zed@example.net", { subject: "qz" });
+    s.assignThreads("acc_1", new Map());
+    expect(subjects(all("invoice"))).toEqual(["Quarterly invoice"]);
+    expect(subjects(all("pelican"))).toEqual(["Quarterly invoice"]);
+    expect(subjects(all("qz"))).toEqual(["qz"]);
+    expect(subjects(all("invoice from:vip"))).toEqual([]);
+    expect(subjects(all("nowhere-to-be-found"))).toEqual([]);
+    expect(s.tabUnreadCounts({ accountId: "acc_1", folder: INBOX }, [all("invoice")])).toEqual([1]);
+    const other: TabMatch = { kind: "none", of: [[{ field: "text", value: "invoice", negated: false }]] };
+    expect(subjects(other)).not.toContain("Quarterly invoice");
+    expect(subjects(other)).toContain("qz");
+  });
+
+  it("a conversation with one matching Inbox message and one not is in the tab, shown whole", () => {
+    put(INBOX, { from: { name: null, address: "boss@vip.example.com" }, subject: "Budget", messageId: "budget-1@example.org" });
+    put(INBOX, { from: { name: null, address: "stranger@example.net" }, subject: "Re: Budget", messageId: "budget-2@example.org", inReplyTo: "budget-1@example.org", references: ["budget-1@example.org"] });
+    s.assignThreads("acc_1", buildThreads(s.threadingInputs("acc_1")));
+    const listed = s.listThreads("acc_1", INBOX, null, 50, undefined, all("from:vip")).threads.find((thread) => /Budget/.test(thread.subject));
+    expect(listed?.messageCount).toBe(2);
+    expect(s.listThreads("acc_1", INBOX, null, 50, undefined, all("from:stranger@example.net -has:attachment")).threads.map((t) => t.messageCount)).toEqual([2]);
+  });
+
+  it("pages a tab and narrows it by a quick filter", () => {
+    for (let i = 0; i < 5; i++) from("boss@vip.example.com", { subject: `vip ${i}`, date: new Date(Date.UTC(2026, 10, 10 + i)).toISOString() });
+    s.assignThreads("acc_1", new Map());
+    const first = s.listThreads("acc_1", INBOX, null, 4, undefined, all("from:vip"));
+    expect(first.threads).toHaveLength(4);
+    expect(first.nextCursor).not.toBeNull();
+    const second = s.listThreads("acc_1", INBOX, first.nextCursor, 4, undefined, all("from:vip"));
+    expect([...first.threads, ...second.threads].map((t) => t.subject).sort()).toEqual(["boss@vip.example.com", "vip 0", "vip 1", "vip 2", "vip 3", "vip 4"]);
+    expect(subjects(all("-from:vip"))).toHaveLength(3);
+    expect(s.listThreads("acc_1", INBOX, null, 50, { attachments: true }, all("-from:vip")).threads.map((t) => t.subject)).toEqual(["stranger@example.net"]);
   });
 
   it("without a tab the Inbox lists what it listed before", () => {
@@ -4491,6 +4538,46 @@ describe("slice-3f migration (SQLite)", () => {
     expect(columns("digests")).toContain("notified_at");
     expect(columns("reply_reminders")).toContain("notified_at");
   });
+
+  it(
+    "one page of an Inbox tab and the counts of twelve tabs stay fast at 5 000+ threads",
+    () => {
+      store.saveFolders("acc_1", FOLDERS_3F);
+      store.upsertMessages(
+        "acc_1",
+        INBOX,
+        Array.from({ length: 5_200 }, (_, i) =>
+          makeFetchedMessage(i + 1, {
+            messageId: `tab-perf-${i}@example.org`,
+            date: new Date(Date.UTC(2026, 9, 1) + i * 60_000).toISOString(),
+            from: { name: null, address: i % 13 === 0 ? `boss${i}@vip.example.com` : `person${i}@example.net` },
+            seen: i % 2 === 1,
+          }),
+        ),
+      );
+      store.assignThreads("acc_1", new Map());
+      store.setSenderSets({ vip: { addresses: new Set(), domains: new Set(["vip.example.com"]) }, team: new Set(["example.org"]) });
+      const vip: TabMatch = { kind: "all", conditions: [{ field: "sender", value: "vip", negated: false }] };
+      const other: TabMatch = { kind: "none", of: [vip.conditions] };
+      const first = store.listThreads("acc_1", INBOX, null, 50, undefined, vip);
+      const { value: page, ms } = timeOne(() => store.listThreads("acc_1", INBOX, first.nextCursor, 50, undefined, vip));
+      expect(ms).toBeLessThan(PAGE_MS);
+      expect(page.threads).toHaveLength(50);
+      const { value: rest, ms: otherMs } = timeOne(() => store.listThreads("acc_1", INBOX, null, 50, undefined, other));
+      expect(otherMs).toBeLessThan(PAGE_MS);
+      expect(rest.threads).toHaveLength(50);
+      const { value: merged, ms: mergedMs } = timeOne(() => store.listThreadsAll("inbox", null, 50, undefined, vip));
+      expect(mergedMs).toBeLessThan(PAGE_MS);
+      expect(merged.threads).toHaveLength(50);
+      // 400 of 5 200 are VIP (every 13th); the even ones are unread: 200 and 2 400.
+      const twelve = Array.from({ length: 6 }, () => [vip, other]).flat();
+      const { value: counts, ms: countMs } = timeOne(() => store.tabUnreadCounts({ accountId: "acc_1", folder: INBOX }, twelve));
+      expect(counts.slice(0, 2)).toEqual([200, 2_400]);
+      expect(store.tabUnreadCounts({ role: "inbox" }, [vip, other])).toEqual([200, 2_400]);
+      expect(countMs).toBeLessThan(PAGE_MS * 6);
+    },
+    SEEDING_TIMEOUT_MS,
+  );
 
   it(
     "one category-filter page stays fast at 5 000+ threads",

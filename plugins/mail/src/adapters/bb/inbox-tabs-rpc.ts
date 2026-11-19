@@ -8,7 +8,6 @@ import { refuse } from "./bb-rpc.ts";
 
 export const TAB_PROBLEM_TEXT: Record<TabQueryProblem, string> = {
   empty: "A tab needs a condition",
-  free_text: "A tab's condition uses search operators only",
   unknown_operator: "Unknown operator in the condition",
   bad_value: "A value in the condition is not valid",
   too_long: "The condition is too long",
@@ -31,6 +30,8 @@ export function createInboxTabsRpc(deps: { store: MailStore; now: () => Date; ne
 
     list({ scope }: { scope: TabScope }) {
       const tabs = store.listInboxTabs();
+      // Without tabs nothing shows a number: an owner who has none pays for no count.
+      if (tabs.length === 0) return { inboxUnread: 0, tabs: [] };
       const now = deps.now();
       const matches = tabs.map((tab) => tabMatch(tab, tabs, now));
       // The Inbox tab is the tab of no condition; its count comes with the others.

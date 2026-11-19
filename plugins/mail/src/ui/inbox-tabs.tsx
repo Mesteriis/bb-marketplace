@@ -355,7 +355,7 @@ export function TabEditDialog({
           <DialogDescription>
             {request?.kind === "rename"
               ? tx("The name shows on the tab.")
-              : tx("Search operators only, for example from:ada@example.com or category:newsletters -is:dev.")}
+              : tx("Anything you can search by, for example from:ada@example.com, category:newsletters -is:dev or a word.")}
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={(event) => void submit(event)} className="flex flex-col gap-3">
