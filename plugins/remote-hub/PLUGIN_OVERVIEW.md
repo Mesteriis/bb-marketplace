@@ -35,7 +35,7 @@ Passwords saved before bindings existed must be saved again. Helper unsigned. A 
 host, port, user and domain and, after its first accepted use, to that server
 certificate (trust on first sight): save it again to start over.
 One-time codes are always typed by you. macOS may ask to approve Keychain access. "Last opened" means the open succeeded, not that the login was accepted.
-Cmd+V types the clipboard (RDP, VM graphics). No remote resize, Kerberos. NLA, strict TLS and Proxmox are tested against fixtures. The helper is built with npm run build:helper (Rust, aarch64-apple-darwin).
+Cmd+V types the clipboard (RDP, VM). No remote resize, Kerberos. NLA, strict TLS and Proxmox are tested against fixtures. The helper is built with npm run build:helper (Rust, aarch64-apple-darwin).
 
 ## Source
 
