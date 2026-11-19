@@ -84,7 +84,9 @@ describe("PluginAccessSection", () => {
     render(<PluginAccessSection port={p} accounts={accounts} />);
     const block = await screen.findByRole("listitem", { name: "crm" });
     expect(within(block).getByText("Never called")).toBeTruthy();
-    expect(within(block).getAllByRole("row")).toHaveLength(7);
+    // The header and four rights: Google keys are not offered without a sign-in to run.
+    expect(within(block).getAllByRole("row")).toHaveLength(5);
+    expect(within(block).queryByText("Google Calendar key")).toBeNull();
     expect(within(block).getByRole("switch", { name: "Read mail, first@example.com" }).getAttribute("aria-checked")).toBe("true");
     fireEvent.click(within(block).getByRole("switch", { name: "Read contacts, second@example.net" }));
     await waitFor(() => expect(calls).toEqual(["set crm contacts.read acc_2 true"]));

@@ -36,12 +36,14 @@ const cellKey = (right: PluginRight, accountId: string) => `${right}\n${accountI
 /** Rights by accounts: one switch per cell. */
 function RightsTable({
   pluginId,
+  rights,
   accounts,
   on,
   busy,
   onToggle,
 }: {
   pluginId: string;
+  rights: readonly PluginRight[];
   accounts: readonly PluginAccessAccount[];
   on: ReadonlySet<string>;
   busy: boolean;
@@ -63,7 +65,7 @@ function RightsTable({
           </tr>
         </thead>
         <tbody>
-          {PLUGIN_RIGHTS.map((right) => (
+          {rights.map((right) => (
             <tr key={right} className="border-t border-border">
               <th scope="row" className="py-2 pr-3 text-left font-normal text-foreground">
                 {tx(RIGHT_LABEL[right])}
@@ -141,6 +143,9 @@ export function PluginAccessSection({
     }
   };
 
+  // Google keys are offered only where the page can run Google's consent for them.
+  const rights = PLUGIN_RIGHTS.filter((right) => onGoogleGrant !== undefined || !isGoogleRight(right));
+
   const note = (
     <p className="text-xs text-muted-foreground">
       {tx("This governs calls from other plugins' servers. A plugin's page runs with your own access, as everything you install in BB does.")}
@@ -192,6 +197,7 @@ export function PluginAccessSection({
                   {open ? (
                     <>
                       <RightsTable
+                        rights={rights}
                         pluginId={request.pluginId}
                         accounts={accounts}
                         on={allowing.cells}
@@ -272,6 +278,7 @@ export function PluginAccessSection({
                   </span>
                 </div>
                 <RightsTable
+                  rights={rights}
                   pluginId={plugin.pluginId}
                   accounts={accounts}
                   on={new Set(plugin.grants.map((grant) => cellKey(grant.right, grant.accountId)))}

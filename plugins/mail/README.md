@@ -1497,6 +1497,28 @@ search with `attachments: true`, which reads attachment text. Slice 3i adds
 (read-only) and stores the sender check. This is the accepted limit of
 slices 3c to 3i, and the skill tells agents not to.
 
+## Other plugins
+
+Another BB plugin gets nothing from Makosh Mail until you allow it. A
+plugin's server can call only the small plugin API
+([docs/plugin-api.md](docs/plugin-api.md)); every other method refuses it.
+
+- A plugin asks; the request waits in **Mail settings → Plugin access** and
+  shows as a count there. **Allow…** opens the rights it asked for, per mail
+  account; nothing is saved until you press **Save**. **Dismiss** grants
+  nothing.
+- Rights: read mail, read contacts, read invitations, propose letters. Each
+  is granted per account, and a new account is not covered by old grants.
+- A plugin reads only what you share with agents in **Agent access**, with
+  passwords, codes and tokens hidden.
+- A letter a plugin proposes is a draft marked "Prepared by …". Only your
+  **Send** in the composer sends it.
+- **Revoke all** takes everything a plugin has. The activity log shows each
+  call of a plugin: which plugin, what it did and how many items.
+
+This governs calls from other plugins' servers. A plugin's page runs with
+your own access in BB, as everything you install there does.
+
 ## Mail in the sidebar
 
 While the Mail page is open, BB's sidebar shows the mail rail instead of the

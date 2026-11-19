@@ -68,8 +68,8 @@ goes out over SMTP with TLS.
 `agentTools`. `mail_propose` (off) proposes mail on a card; only **Send**
 sends it. `mail_triage` (off) proposes inbox actions you tick.
 
-None of this stops an agent with shell access to the BB server: it can call
-the page's own methods. Sends still show Undo.
+An agent with a shell can still call the page's methods. Other plugins
+get nothing without your grant in **Plugin access**.
 
 ## What it changes on the server
 
