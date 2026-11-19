@@ -441,6 +441,14 @@ describe("Allow access (the owner's RPC)", () => {
     expect(t.allow).toHaveBeenCalledTimes(1);
   });
 
+  it("an unanswered macOS dialog stops the walk too: the next items are not asked", async () => {
+    const t = await withTwo();
+    t.allow.mockRejectedValueOnce(new CredentialError("allow_timed_out", "no answer"));
+    const stopped = await t.handlers.credential_allow_all({});
+    expect(stopped.results.map((r) => [r.ok, r.code])).toEqual([[false, "allow_timed_out"]]);
+    expect(t.allow).toHaveBeenCalledTimes(1);
+  });
+
   it("is the owner's page only: another plugin is refused", async () => {
     const t = await withTwo();
     await expect(t.handlers.credential_allow({ ref: t.one }, { experimental_caller: { kind: "plugin" } } as never)).rejects.toMatchObject({ message: expect.stringContaining("not for other plugins") });

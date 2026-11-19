@@ -424,6 +424,7 @@ fn twenty_consoles_opened_and_closed_leave_no_engine_process_and_no_socket_behin
     let w = world(default_state());
     let mut h = start(&[]);
     let before_fds = lsof_fds(h.pid()).len();
+    assert!(before_fds > 3, "lsof saw no descriptors of the helper: the leak check below would prove nothing ({before_fds})");
     assert!(children_of(h.pid()).is_empty());
     let mut pids = Vec::new();
     for i in 0..20u64 {
@@ -431,6 +432,7 @@ fn twenty_consoles_opened_and_closed_leave_no_engine_process_and_no_socket_behin
         let id = 100 + i * 10;
         let opened = if i % 3 == 2 { open_qemu(&mut h, id, connect(w.fake.port, Some(PASSWORD), None, ca())) } else { open_lxc(&mut h, id, connect(w.fake.port, Some(PASSWORD), None, ca())) };
         let Response::SessionOpened { session_id, pid, .. } = opened else { panic!("console {i} not opened: {opened:?}") };
+        assert!(pid > 1, "console {i} has no engine pid");
         pids.push(pid);
         if i % 3 == 2 {
             wait_state_open(&mut h, session_id);
@@ -495,7 +497,7 @@ fn the_service_stopping_or_the_plugin_reloading_closes_the_helper_pipe_and_ends_
     }
     // the plugin's process ends (a reload, a crash of BB): the helper's stdin reaches EOF; nothing else is sent
     let helper_pid = h.pid();
-    h.shutdown();
+    h.shutdown_gracefully(Duration::from_secs(5));
     assert!(wait_pid_gone(helper_pid, Duration::from_secs(5)), "the helper outlived its parent's pipe");
     for pid in &pids {
         assert!(wait_pid_gone(*pid, Duration::from_secs(5)), "engine {pid} outlived the helper");

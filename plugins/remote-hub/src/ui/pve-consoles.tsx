@@ -105,7 +105,8 @@ const uuid = (): string => (typeof crypto !== "undefined" && "randomUUID" in cry
 
 const rowOf = (t: Tab): PveConsoleTabRow => {
   const r = t.launch.request;
-  return { id: t.uid, profileId: t.launch.profileId, console: r.console, node: r.console === "node" ? r.node : t.node, vmid: r.console === "node" ? null : r.vmid, title: t.launch.title.slice(0, 120) };
+  // A guest is remembered by its VMID alone: its node is read again at every open, so none is kept.
+  return { id: t.uid, profileId: t.launch.profileId, console: r.console, node: r.console === "node" ? r.node : null, vmid: r.console === "node" ? null : r.vmid, title: t.launch.title.slice(0, 120) };
 };
 
 interface Episode {
@@ -156,7 +157,11 @@ export function PveConsoles(props: PveConsolesProps) {
     if (e.stable !== null) clearTimeout(e.stable);
     episodes.current.delete(id);
   };
-  const remember = (t: Tab): void => void apiRef.current.tabs?.put(rowOf(t)).catch(() => undefined);
+  const remember = (t: Tab): void =>
+    void apiRef.current.tabs?.put(rowOf(t)).catch((e: unknown) => {
+      // Never hidden: the tab works, but it will not come back after a restart, and the owner is told.
+      patch(t.id, { notice: `This tab could not be remembered for after a restart: ${e instanceof Error ? e.message : String(e)}` });
+    });
 
   /**
    * Opens (or re-opens) the console of tab `id`. `attemptNo` > 0 is an automatic attempt: a retryable failure schedules the next
@@ -203,7 +208,6 @@ export function PveConsoles(props: PveConsolesProps) {
       const node = opened.node === "" ? earlier : opened.node;
       const current = tabsRef.current.find((t) => t.id === id);
       patch(id, { handle, kind: opened.kind, node, state: "connecting", attach: null });
-      if (current !== undefined) remember({ ...current, node });
       try {
         const attach = await apiRef.current.attach(handle);
         if (stale()) {

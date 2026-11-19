@@ -537,6 +537,26 @@ describe("PveConsoles: reconnecting, restoring and moved guests", () => {
       expect(tabs.remove).toHaveBeenCalledWith(saved.id);
     });
 
+    it("the saved row of a guest never carries a node (the RPC refuses it), only a node shell does, and a failed save is shown", async () => {
+      const tabs = store();
+      const { api } = fakeApi({ tabs });
+      render(<PveConsoles api={api} launch={launch(1, { console: "lxc", vmid: 101 })} />);
+      await act(async () => void (await vi.advanceTimersByTimeAsync(0)));
+      expect(tabs.put).toHaveBeenCalledTimes(1); // no second save with the resolved node
+      expect((tabs.put.mock.calls[0]![0] as { node: unknown }).node).toBeNull();
+      cleanup();
+      const shell = store();
+      render(<PveConsoles api={fakeApi({ tabs: shell }).api} launch={launch(2, { console: "node", node: "pve1" }, "pve1")} />);
+      await act(async () => void (await vi.advanceTimersByTimeAsync(0)));
+      expect(shell.put).toHaveBeenCalledWith(expect.objectContaining({ console: "node", node: "pve1", vmid: null }));
+      cleanup();
+      const broken = store();
+      broken.put.mockRejectedValue(new Error("a node shell names its node"));
+      render(<PveConsoles api={fakeApi({ tabs: broken }).api} launch={launch(3, { console: "lxc", vmid: 102 })} />);
+      await act(async () => void (await vi.advanceTimersByTimeAsync(0)));
+      expect(screen.getByTestId("pve-console-notice").textContent).toContain("could not be remembered");
+    });
+
     it("tabs come back after a restart as 'not connected', open nothing, and Reconnect opens a new console", async () => {
       const tabs = store([row(ID1), row(ID2, { console: "qemu", vmid: 200, title: "db" })]);
       const { api, calls } = fakeApi({ tabs });

@@ -222,6 +222,21 @@ impl Helper {
         std::fs::read_to_string(&self.stderr_path).unwrap_or_default()
     }
 
+    /// Closes the helper's stdin and requires it to exit on its own within `limit`: no kill fallback, a hang is a failure.
+    pub fn shutdown_gracefully(mut self, limit: Duration) {
+        drop(self.stdin);
+        let start = Instant::now();
+        while start.elapsed() < limit {
+            if self.child.try_wait().unwrap().is_some() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        panic!("the helper did not exit within {limit:?} of its stdin closing (it needed the kill)");
+    }
+
     pub fn shutdown(mut self) {
         drop(self.stdin);
         let start = Instant::now();
@@ -263,8 +278,12 @@ pub fn closed_port() -> u16 {
     p
 }
 
+/// Alive unless the system says there is no such process: EPERM means it exists (and is somebody else's), not that it is gone.
 pub fn pid_alive(pid: u32) -> bool {
-    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+    if unsafe { libc::kill(pid as libc::pid_t, 0) } == 0 {
+        return true;
+    }
+    std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
 }
 
 pub fn wait_pid_gone(pid: u32, limit: Duration) -> bool {
@@ -296,6 +315,8 @@ pub fn rss_kb(pid: u32) -> i64 {
 /// (fd number, type, name) rows of `lsof -p`, numeric fds only.
 pub fn lsof_fds(pid: u32) -> Vec<(i32, String, String)> {
     let out = Command::new("lsof").args(["-p", &pid.to_string(), "-F", "ftn"]).output().expect("lsof");
+    // An lsof that failed would read as "no descriptors" and make every leak check pass: it must have worked.
+    assert!(out.status.success(), "lsof failed for {pid}: {}", String::from_utf8_lossy(&out.stderr));
     let text = String::from_utf8_lossy(&out.stdout).to_string();
     let mut rows = Vec::new();
     let (mut fd, mut ty, mut name): (Option<i32>, String, String) = (None, String::new(), String::new());

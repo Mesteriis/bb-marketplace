@@ -310,7 +310,7 @@ the human's keys on the same path as SSH), and to a `vnc` session it is refused 
 
 ### Restoring tabs
 
-The console tabs are remembered as **targets only** (connection id, kind, node, VMID, the guest's name) in the plugin's SQLite table
+The console tabs are remembered as **targets only** (connection id, kind, the node for a node shell only, the VMID for a guest, the guest's name; a guest's node is never kept: it is read at every open) in the plugin's SQLite table
 `pve_console_tabs`, through `pve_console_tab_put` / `_remove` / `_tabs_list`. No output, no ticket, no password and no session id is
 stored. After a BB restart or a page reload every remembered tab comes back as **not connected** with a Reconnect button; it opens
 nothing by itself and never looks live. Close tab forgets it. Tabs whose connection was deleted stay until closed.
@@ -329,13 +329,22 @@ remains, the fake saw 20 sockets opened and 20 closed, and the helper holds the 
 
 ### Agents
 
+- **A console belongs to the thread that opened it.** Every agent lookup (session list, status, read, lease, input, disconnect,
+  reconnect, session extras) is scoped to the asking thread: a session another agent thread opened answers exactly as a missing
+  one, whatever kind it is. Sessions the owner opened by hand keep the earlier rules (an owner-opened container console is hidden from
+  agents, graphics are listed for state only).
 - **`remote_reconnect({ sessionId })`** reopens a Proxmox container or VM console this thread opened with `remote_connect` after it
   ended. It is **always a new session id** (returned as `sessionId`; `previousSessionId` is the old one, which is forgotten; the lease
   ended with it); for graphics too. The same checks as `remote_connect` (connect level, saved credential, four sessions per thread). It
   is refused: while the console is still connected (`still_connected`); after `login_failed`, `tls_untrusted`, `cert_changed`,
   `tfa_required` or `no_credential` (`reconnect_refused`; repeating them could lock an account); after 5 reopenings in a row that each
-  held for less than 10 s (`reconnect_limit`); for a node shell (`node_shell_owner_only`); for a console another thread opened
+  were ACTIVE for less than 10 s (`reconnect_limit`; the active time is recorded by the service, failed reopens count too, and the
+  count stays on the old session until a reopen succeeds); while another call is already reopening the same session
+  (`reconnect_in_progress`; the old session is reserved before anything is awaited); for a node shell (`node_shell_owner_only`); for a console another thread opened
   (`not_opened_by_you`).
+- **A refused login protects the account.** After `login_failed`, `tfa_required`, `tls_untrusted`, `cert_changed` or `no_credential`
+  on an open, a reopen or a console that ended with one of them, agents get `connection_blocked` from `remote_connect` and
+  `remote_reconnect` for that connection (memory only) until the owner opens a console on it successfully.
 - **`remote_session_status`** (and the session list) of a console returns `proxmoxConsole`: `state`, `reason` (our fixed text),
   `reasonCode`, and `reconnects` / `maxReconnects` (reopenings in a row by `remote_reconnect`). The owner's page reconnects owner-opened
   tabs by itself; an agent's console does not reconnect on its own.

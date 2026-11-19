@@ -289,8 +289,9 @@ export function createRpcHandlers({ service, profiles, credentials, imports, age
           } catch (error) {
             const code = error instanceof CredentialError ? error.code : "keychain_unavailable";
             results.push({ ref: c.ref, label: c.label, ok: false, code });
-            // A locked Keychain refuses every item the same way: asking again would only repeat it.
-            if (code === "keychain_locked") break;
+            // A locked Keychain refuses every item the same way, and a dialog nobody answered will not be answered for the next
+            // item either (each would wait up to 60 s): the walk stops and the rest are left alone.
+            if (code === "keychain_locked" || code === "allow_timed_out") break;
           }
         }
         return { results };
