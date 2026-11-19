@@ -1443,7 +1443,13 @@ mod tests {
         desktop(&mut mgr, id, b, 800, 600);
         assert_eq!(mgr.set_owner(id, "agent:L1", 5).unwrap(), OwnerHandoff::Waiting);
         unsafe { libc::close(b) };
-        let frames = mgr.process_readable(id, usize::MAX);
+        // EOF is not instantaneous in a test binary: another test thread that forks a child while `b` is still open holds a copy of it
+        // until that child execs, and the engine's end only counts as closed once the last copy is gone. Poll, like the other EOF tests.
+        let mut frames = Vec::new();
+        wait_until(|| {
+            frames.extend(mgr.process_readable(id, usize::MAX));
+            frames.iter().any(|f| matches!(f, RdpFrame::OwnerSet { request: 5, .. }))
+        });
         assert!(frames.iter().any(|f| matches!(f, RdpFrame::OwnerSet { request: 5, .. })), "{frames:?}");
     }
 

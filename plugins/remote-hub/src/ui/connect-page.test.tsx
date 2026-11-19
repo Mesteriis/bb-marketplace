@@ -418,7 +418,10 @@ describe("ConnectPage with Proxmox", () => {
     await waitFor(() => expect(pve.openConsole).toHaveBeenCalledWith({ console: "lxc", vmid: 101, profileId: PID, cols: 80, rows: 24 }));
     expect(screen.getByRole("button", { name: "Proxmox", pressed: true })).toBeTruthy();
     // the guest list stays open and the console is shown with it
-    expect(screen.getByLabelText("Proxmox guests")).toBeTruthy();
+    // the list sits in its own bounded, scrolling area and the console area is marked to keep a real height (app.css; checked in a
+    // browser at 1280x581: list 210 px, terminal 283 px)
+    expect(screen.getByLabelText("Proxmox guests").closest(".rh-pve-list")?.classList.contains("rh-pve-list-with-consoles")).toBe(true);
+    expect(screen.getByLabelText("Proxmox consoles").closest(".rh-connect-sessions")?.classList.contains("rh-connect-sessions-beside-list")).toBe(true);
     const consoles = await screen.findByLabelText("Proxmox consoles");
     expect(consoles.closest(".rh-connect-sessions")?.hasAttribute("hidden")).toBe(false);
   });
