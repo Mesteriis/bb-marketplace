@@ -3272,7 +3272,7 @@ describe.each(storeKinds)("Inbox tabs (%s)", (_kind, make) => {
     return { kind: "all", conditions: read.conditions };
   };
   const subjects = (tab?: TabMatch | null) =>
-    s.listThreads("acc_1", INBOX, null, 50, undefined, tab as TabMatch | undefined).threads.map((thread) => thread.subject).sort();
+    s.listThreads("acc_1", INBOX, null, 50, undefined, tab).threads.map((thread) => thread.subject).sort();
 
   beforeEach(() => {
     uid = 0;

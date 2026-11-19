@@ -950,7 +950,7 @@ export class InMemoryMailStore implements MailStore {
     cursor: string | null,
     limit: number,
     filter?: ThreadFilter,
-    tab?: TabMatch,
+    tab?: TabMatch | null,
   ): { threads: ThreadSummary[]; nextCursor: string | null } {
     const inFolder = (r: Row) => r.accountId === accountId && r.folder === folder && r.movePending === null;
     const held = tab === undefined ? null : this.tabThreads(inFolder, tab);
@@ -966,7 +966,7 @@ export class InMemoryMailStore implements MailStore {
     cursor: string | null,
     limit: number,
     filter?: ThreadFilter,
-    tab?: TabMatch,
+    tab?: TabMatch | null,
   ): { threads: ThreadSummary[]; nextCursor: string | null } {
     if (role === "all") return { threads: [], nextCursor: null };
     const inRole = (r: Row) => r.movePending === null && this.roleOf(r.accountId, r.folder) === role;

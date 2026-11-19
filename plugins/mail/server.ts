@@ -119,6 +119,7 @@ import {
 import { createPluginApi, type GoogleKey } from "./src/adapters/bb/plugin-api-rpc.ts";
 import { proposePluginLetter } from "./src/core/plugin-propose.ts";
 import { teamDomains } from "./src/core/inbox-tabs.ts";
+import { createInboxTabsRpc } from "./src/adapters/bb/inbox-tabs-rpc.ts";
 import { GrantRevokedError } from "./src/core/ports.ts";
 import { guardHandlers } from "./src/adapters/bb/plugin-guard.ts";
 import {
@@ -3225,6 +3226,7 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       return new Map();
     }
   };
+  const inboxTabs = createInboxTabsRpc({ store, now: () => new Date(), newId: () => randomUUID() });
   // The plugin API reads what agents read: inside the owner's AI access, secrets hidden.
   const pluginApi = createPluginApi({
     store,
@@ -3345,17 +3347,23 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         }
         return { result };
       },
-      threads_list: ({ scope, cursor, limit, filter }) => {
+      inbox_tabs_list: (input) => inboxTabs.list(input),
+      inbox_tab_save: (input) => inboxTabs.save(input),
+      inbox_tab_delete: (input) => inboxTabs.remove(input),
+      inbox_tab_move: (input) => inboxTabs.move(input),
+      threads_list: ({ scope, cursor, limit, filter, tabId }) => {
+        // A tab that was removed lists the whole folder; a broken one lists nothing.
+        const tab = inboxTabs.matchOf(tabId);
         // Category filters and fields only while categories are on (slice 3f).
         const categorized = filter !== undefined && filter.category !== undefined && !deps.categoriesOn() ? { ...filter, category: undefined } : filter;
         // "Hide dev notifications" only while they are recognised (slice 3g).
         const shown = categorized !== undefined && categorized.notDev !== undefined && !deps.bbSettings().devNotifications ? { ...categorized, notDev: undefined } : categorized;
         const page =
           scope.kind === "account"
-            ? store.listThreads(scope.accountId, scope.folder, cursor, limit, shown)
+            ? store.listThreads(scope.accountId, scope.folder, cursor, limit, shown, tab)
             : scope.role === "all"
               ? null
-              : store.listThreadsAll(scope.role, cursor, limit, shown);
+              : store.listThreadsAll(scope.role, cursor, limit, shown, tab);
         if (page === null) throw refuse("invalid", ALL_ROLE_MESSAGE);
         return { ...page, threads: ai.withCategories(page.threads, scope.kind === "account" ? scope.folder : "INBOX") };
       },

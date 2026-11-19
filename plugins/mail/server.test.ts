@@ -5715,6 +5715,73 @@ function agentLogRows(host: Host): Record<string, unknown>[] {
   return host.bb.storage.database().prepare("SELECT * FROM agent_log ORDER BY seq").all() as Record<string, unknown>[];
 }
 
+describe("Inbox tabs (Split Inbox)", () => {
+  const scope = { kind: "account", accountId: "acc_1", folder: "INBOX" } as const;
+  const subjects = async (host: Host, tabId?: string) =>
+    ((await call(host, "threads_list", { scope, cursor: null, limit: 50, ...(tabId === undefined ? {} : { tabId }) })) as { threads: { subject: string }[] }).threads
+      .map((thread) => thread.subject)
+      .sort();
+  const save = async (host: Host, name: string, query: string) => ((await call(host, "inbox_tab_save", { name, query })) as { tab: { id: string } }).tab.id;
+
+  it("a saved tab lists its conversations and counts the unread ones; an unknown tab lists the whole Inbox", async () => {
+    const host = await loadCanary();
+    const everything = await subjects(host);
+    expect(everything.length).toBeGreaterThan(1);
+    const ivy = await save(host, "Ivy", "from:ivy@example.com");
+    const tabSubjects = await subjects(host, ivy);
+    expect(tabSubjects).toHaveLength(1);
+    expect(everything).toEqual(expect.arrayContaining(tabSubjects));
+    expect(await subjects(host, "no-such-tab")).toEqual(everything);
+    const listed = (await call(host, "inbox_tabs_list", { scope })) as { tabs: { id: string; name: string; unread: number; broken: boolean }[] };
+    expect(listed.tabs).toEqual([{ id: ivy, name: "Ivy", query: "from:ivy@example.com", unread: 1, broken: false }]);
+  });
+
+  it("Other holds what no other tab does, and follows the tabs as they change", async () => {
+    const host = await loadCanary();
+    const everything = await subjects(host);
+    const other = await save(host, "Other", "is:other");
+    expect(await subjects(host, other)).toEqual(everything);
+    const ivy = await save(host, "Ivy", "from:ivy@example.com");
+    const left = await subjects(host, other);
+    expect(left).toHaveLength(everything.length - 1);
+    await call(host, "inbox_tab_delete", { id: ivy });
+    expect(await subjects(host, other)).toEqual(everything);
+  });
+
+  it("refuses a condition that is not operators, a name of spaces and a thirteenth tab; nothing is stored", async () => {
+    const host = await loadCanary();
+    await expect(call(host, "inbox_tab_save", { name: "Words", query: "hello there" })).rejects.toMatchObject({ code: "invalid", message: "A tab's condition uses search operators only" });
+    await expect(call(host, "inbox_tab_save", { name: "Odd", query: "foo:bar" })).rejects.toMatchObject({ message: "Unknown operator in the condition" });
+    await expect(call(host, "inbox_tab_save", { name: "Bad", query: "is:devops" })).rejects.toMatchObject({ message: "A value in the condition is not valid" });
+    await expect(call(host, "inbox_tab_save", { name: "Folder", query: "in:trash" })).rejects.toMatchObject({ code: "invalid" });
+    await expect(call(host, "inbox_tab_save", { name: "   ", query: "is:dev" })).rejects.toMatchObject({ code: "invalid" });
+    await expect(call(host, "inbox_tab_save", { id: "gone", name: "X", query: "is:dev" })).rejects.toMatchObject({ code: "not_found" });
+    expect(((await call(host, "inbox_tabs_list", { scope })) as { tabs: unknown[] }).tabs).toEqual([]);
+    for (let i = 0; i < 12; i++) await save(host, `T${i}`, "is:dev");
+    await expect(call(host, "inbox_tab_save", { name: "T12", query: "is:dev" })).rejects.toMatchObject({ code: "conflict", message: "You have the most tabs Mail keeps (12)" });
+  });
+
+  it("renames and moves a tab; another plugin can do none of it", async () => {
+    const host = await loadCanary();
+    const a = await save(host, "A", "is:dev");
+    const b = await save(host, "B", "has:attachment");
+    await call(host, "inbox_tab_save", { id: a, name: "Dev", query: "is:dev" });
+    await call(host, "inbox_tab_move", { id: b, direction: "left" });
+    const names = async () => ((await call(host, "inbox_tabs_list", { scope })) as { tabs: { name: string }[] }).tabs.map((tab) => tab.name);
+    expect(await names()).toEqual(["B", "Dev"]);
+    const other = { experimental_caller: { kind: "plugin", pluginId: "other" } } as const;
+    for (const [method, input] of [
+      ["inbox_tabs_list", { scope }],
+      ["inbox_tab_save", { name: "X", query: "is:dev" }],
+      ["inbox_tab_delete", { id: a }],
+      ["inbox_tab_move", { id: a, direction: "left" }],
+    ] as const) {
+      await expect(host.harness.behavior.callRpc(method, input, other)).rejects.toMatchObject({ code: "forbidden" });
+    }
+    expect(await names()).toEqual(["B", "Dev"]);
+  });
+});
+
 describe("the plugin API reads", () => {
   const asCrm = { experimental_caller: { kind: "plugin", pluginId: "crm" } } as const;
   const secrets = Object.values(CANARY);

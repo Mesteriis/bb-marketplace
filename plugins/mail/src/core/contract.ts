@@ -1,5 +1,6 @@
 // The RPC contract between the Mail page and the server, as plain zod
 // schemas. server.ts wraps it with the SDK's defineRpcContract.
+import { TAB_NAME_MAX, TAB_QUERY_MAX } from "./inbox-tabs.ts";
 import { GOOGLE_EXTRA_SCOPES } from "./plugin-access.ts";
 import { pluginApiSchemas } from "./plugin-api.ts";
 import { z } from "zod";
@@ -600,11 +601,37 @@ export const rpcSchemas = {
       limit: z.number().int().min(1).max(100),
       /** Quick filters (slice 3e); absent: every thread. */
       filter: threadFilterSchema.optional(),
+      /** An Inbox tab (Split Inbox); an unknown id lists the whole folder. */
+      tabId: z.string().min(1).max(64).optional(),
     }),
     output: z.object({
       threads: z.array(threadSummarySchema),
       nextCursor: z.string().nullable(),
     }),
+  },
+  /** The owner's Inbox tabs in order, each with its unread conversations in the scope; `broken`: its condition no longer parses. */
+  inbox_tabs_list: {
+    input: z.object({ scope: threadScope }),
+    output: z.object({
+      tabs: z.array(z.object({ id: z.string(), name: z.string(), query: z.string(), unread: z.number().int(), broken: z.boolean() })),
+    }),
+  },
+  /** A new tab at the end (no id) or a tab's new name and condition. */
+  inbox_tab_save: {
+    input: z.object({
+      id: z.string().min(1).max(64).optional(),
+      name: z.string().min(1).max(TAB_NAME_MAX).refine(noLineBreaks, NO_LINE_BREAKS),
+      query: z.string().min(1).max(TAB_QUERY_MAX).refine(noLineBreaks, NO_LINE_BREAKS),
+    }),
+    output: z.object({ tab: z.object({ id: z.string(), name: z.string(), query: z.string() }) }),
+  },
+  inbox_tab_delete: {
+    input: z.object({ id: z.string().min(1).max(64) }),
+    output: z.object({ ok: z.literal(true) }),
+  },
+  inbox_tab_move: {
+    input: z.object({ id: z.string().min(1).max(64), direction: z.enum(["left", "right"]) }),
+    output: z.object({ ok: z.literal(true) }),
   },
   thread_get: {
     input: z.object({
@@ -1898,6 +1925,9 @@ export const SIGN_IN_METHODS = ["accounts_retry_sign_in"] as const satisfies rea
 /** The owner-only methods of the settings page. */
 /** The plugin API and the owner's methods for it (plugin-api.ts). */
 export const PLUGIN_METHODS = Object.keys(pluginSchemas) as readonly (keyof typeof pluginSchemas)[];
+
+/** The owner's methods for Inbox tabs (Split Inbox). */
+export const INBOX_TAB_METHODS = ["inbox_tabs_list", "inbox_tab_save", "inbox_tab_delete", "inbox_tab_move"] as const satisfies readonly (keyof typeof rpcSchemas)[];
 
 export const SETTINGS_METHODS = ["settings_get", "settings_set"] as const satisfies readonly (keyof typeof rpcSchemas)[];
 

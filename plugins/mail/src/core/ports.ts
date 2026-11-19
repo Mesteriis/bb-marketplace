@@ -504,7 +504,7 @@ export interface MailStore {
     limit: number,
     filter?: ThreadFilter,
     /** An Inbox tab: only conversations with a message in the folder that matches it. */
-    tab?: TabMatch,
+    tab?: TabMatch | null,
   ): { threads: ThreadSummary[]; nextCursor: string | null };
   /**
    * Threads of every account having a member not waiting to move in a folder
@@ -519,7 +519,7 @@ export interface MailStore {
     cursor: string | null,
     limit: number,
     filter?: ThreadFilter,
-    tab?: TabMatch,
+    tab?: TabMatch | null,
   ): { threads: ThreadSummary[]; nextCursor: string | null };
 
   // ---- Inbox tabs (Split Inbox) ----
