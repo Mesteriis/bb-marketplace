@@ -116,6 +116,8 @@ Final versions are the ones in `helper/Cargo.toml` and recorded in `THIRD_PARTY_
 (`"connecting" | "open" | "closing" | "closed"`), `send(Uint8Array)` and `close()` [src websock.js:42-47,254-301].
 The UI wraps our stream socket in such an object; the helper relays raw RFB bytes both ways. The RFB password is delivered to the UI's session only (`credentials` event), never in a URL.
 
+The results of the live run against a real Proxmox VE 9.2.4 are in [live-check-pve.md](live-check-pve.md).
+
 ## 6. Open questions for the live run (stage 1 coordinator)
 
 1. Does a token reach `…/lxc/{vmid}/termproxy` and `…/qemu/{vmid}/vncproxy` on the installed version? (We implement ticket login first; token is accepted for REST discovery.)
@@ -297,9 +299,10 @@ the human's keys on the same path as SSH), and to a `vnc` session it is refused 
 - **An expired ticket** is answered by exactly one new login and one repeat of the refused call inside the same open (engine
   `relogin_once!`, tickets only, never tokens); a second refusal is `login_failed` after two logins in total and stops. The text for it
   tells the owner to open the connection and enter the password again; nothing retries it.
-- **Scrollback.** The lost console's text stays on screen; a separator line "connection lost" is written where it broke, and the new
-  console's terminal starts with that text followed by "reconnected: a new console, nothing typed before is sent again". Only the last
-  2000 lines and plain text (colours are not kept).
+- **Scrollback.** A separator line "connection lost" is written where the console broke, and the new console's terminal starts with
+  the carried screen text followed by "reconnected: a new console, nothing typed before is sent again". Only the last 2000 lines and
+  plain text (colours are not kept). Known limit (live check, real PVE 9.2.4): after a reconnect only the "connection lost" and
+  "reconnected" lines were found in the scrollback; the earlier screen text was not, so the earlier output is not guaranteed to be kept.
 - **Input while not active** is refused: the terminal does not send it and the tab shows "Not connected: what you type is not sent, and is
   not kept to be sent later". It is never queued.
 - **Graphics** are never reattached (RFB cannot resume); a lost graphical console shows the reason and Reconnect, which opens a NEW
