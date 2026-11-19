@@ -250,6 +250,18 @@ export class ImapAuthError extends Error {
   }
 }
 
+/**
+ * Google no longer accepts an account's grant (revoked, expired, or the
+ * password changed): signing in again is the only way back, so the account
+ * stops at once and the saved credential is not tried again.
+ */
+export class GrantRevokedError extends ImapAuthError {
+  constructor() {
+    super();
+    this.name = "GrantRevokedError";
+  }
+}
+
 /** An SMTP server and its login, for one session. The password is dropped after it. */
 export interface SmtpConfig {
   host: string;
