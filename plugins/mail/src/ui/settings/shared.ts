@@ -1,5 +1,6 @@
 import type { PluginRight } from "../../core/plugin-access.ts";
 import type { PluginAccessPort } from "./plugin-access-section.tsx";
+import type { InboxTabsPort } from "./tabs-settings.tsx";
 import type { PageSettingsPort } from "./setting-controls.tsx";
 import type { Account, BlockRuleView, CategoryRuleView, IdentityView } from "../../core/model.ts";
 import { type AiAccessSettingsProps } from "../ai-access-settings.tsx";
@@ -123,6 +124,8 @@ export interface MailSettingsProps {
   onUnblock?: (id: string) => Promise<void>;
   /** Change… (or set up) an account's snooze folder. */
   onChangeSnoozeFolder?: (accountId: string) => void;
+  /** Split Inbox: the Tabs group of the Inbox section; absent: none. */
+  inboxTabs?: InboxTabsPort;
   /** AI access, Agent activity and AI features (slice 3f); absent: none of those tabs. */
   ai?: SettingsAiPorts;
   /** BB integration and Rules (slice 3g); absent: neither tab. */

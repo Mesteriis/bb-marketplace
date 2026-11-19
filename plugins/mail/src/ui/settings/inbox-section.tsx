@@ -7,16 +7,20 @@ import { accountLabel } from "../folder-list.tsx";
 import { tx } from "../i18n/index.ts";
 import { messageOf, formatDay } from "./shared.ts";
 import { SectionHeading } from "./primitives.tsx";
+import { TabsSettings, type InboxTabsPort } from "./tabs-settings.tsx";
 
-/** The Inbox tab (slice 3e): Blocked senders, and where each account's snoozed mail waits. */
+/** The Inbox section: the Inbox tabs (Split Inbox), Blocked senders, and where each account's snoozed mail waits (slice 3e). */
 export function InboxSection({
   accounts,
   rules,
   onUnblock,
   onChangeSnoozeFolder,
   settings,
+  tabs,
 }: {
   settings?: PageSettingsPort;
+  /** Split Inbox: the Tabs group; absent: none. */
+  tabs?: InboxTabsPort;
   accounts: readonly Account[];
   rules: readonly BlockRuleView[] | null;
   onUnblock: (id: string) => Promise<void>;
@@ -27,6 +31,7 @@ export function InboxSection({
   return (
     <div className="flex flex-col gap-2">
       {settings !== undefined ? <NotificationSettings port={settings} /> : null}
+      {tabs !== undefined ? <TabsSettings port={tabs} /> : null}
       <SectionHeading>{tx("Blocked senders")}</SectionHeading>
       <p className="text-xs text-muted-foreground">
         {tx("New mail from them moves to Spam in every account while BB runs. Mail already in Spam stays there.")}

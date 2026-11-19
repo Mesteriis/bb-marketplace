@@ -434,6 +434,42 @@ system keys on Windows and Linux, where the letters cover them):
   Enter on a focused link opens that link (through the link check below),
   never the cursor row.
 
+## Split Inbox
+
+Tabs over the Inbox, to look at one kind of mail at a time and see how much
+of each kind waits.
+
+- The first tab is always **Inbox**: everything. Each of your tabs shows
+  the Inbox conversations in which at least one Inbox message matches its
+  condition, with the number of unread ones. A conversation is in every tab
+  it matches. Tabs are a view: nothing moves on the mail server.
+- With no tabs the Inbox looks as before; **Split the Inbox…** at the end
+  of the quick filters opens the library. With tabs, **+** opens it.
+- **The library** adds a tab in one click: VIP (`from:vip`), Team
+  (`from:team`), People (`from:known`), Dev (`is:dev`), Newsletters
+  (`category:newsletters`), Notifications (`is:automated`), Calendar
+  (`has:invite`), Attachments (`has:attachment`), one per tool by sender
+  domain (GitHub, GitLab, Jira, Linear, Notion, Asana, Figma, Google Docs,
+  Slack) and **Other**: the conversations that match none of your other
+  tabs, recomputed as the tabs change.
+- **Your own condition…** makes a tab from search operators (see Search);
+  free text, `in:` and unknown operators are refused with the reason.
+  **Make a tab** on a search opens the same dialog with the search as the
+  condition; **Split by this sender** in a sender's card makes a tab of
+  that address at once.
+- A tab's menu (the **⋯** beside the tab in view, or a right click) has
+  Rename, Edit condition, Move left, Move right and Remove tab. Removing a
+  tab removes no mail.
+- `]` goes to the next tab and `[` to the previous one, around the ends.
+  The tab is part of the address (`v/all/inbox/s/<tab>`), so BB's back and
+  forward walk tabs; an address of a tab that was removed opens the Inbox
+  tab. The quick filters narrow the tab in view.
+- One set of at most 12 tabs for all accounts, the same in one account's
+  Inbox and in All accounts. **Mail settings → Inbox → Tabs** lists them
+  with rename, condition, order and remove.
+- A tab whose condition stopped working (an operator that is gone) is
+  marked, lists nothing and can be edited or removed.
+
 ## Inbox tools: new mail, unsubscribe, snooze, block, filters
 
 **Instant new mail.** While BB runs, each account keeps one more IMAP
@@ -835,8 +871,12 @@ new reads go to your own mail server only; the new writes are listed under
   `spam`, `archive`, `snoozed`, or a folder name), `account:`, `is:unread`,
   `is:read`, `is:flagged`, `larger:` / `smaller:` (`10K`, `2M`), `after:` /
   `before:` (`YYYY-MM-DD`), `newer_than:` / `older_than:` (`7d`, `2w`, `3m`,
-  `1y`), `list:`, `category:` and `label:`; a leading `-` negates one, values
-  with spaces are quoted. A value Mail cannot read stays text and the box
+  `1y`), `list:`, `category:` and `label:`; `from:vip` (your important
+  senders), `from:team` (the domains of your own addresses, public mail
+  domains left out), `from:known` (addresses you have written to), `is:dev`
+  (development notifications), `is:automated` (robots that are not mailing
+  lists) and `has:invite` (a calendar invitation); a leading `-` negates
+  one, values with spaces are quoted. A value Mail cannot read stays text and the box
   says so.
 - **Search on the server**, below the local hits, sends the query to your
   own mail server: on Gmail as one Gmail search on All Mail (on Trash or Spam

@@ -8,6 +8,16 @@ All notable changes to Makosh Mail are recorded here. The format follows
 
 ### Added
 
+- **Split Inbox**: tabs over the Inbox, each a search condition applied to
+  Inbox conversations, with unread counts, a library of ready tabs (VIP,
+  Team, People, Dev, Newsletters, Notifications, Calendar, Attachments,
+  nine tools, Other), `]` and `[` to switch, an address per tab
+  (`v/<view>/s/<tab>`) and a **Tabs** group in Mail settings → Inbox. A
+  conversation is in every tab it matches; at most 12 tabs, one set for all
+  accounts. New RPC methods `inbox_tabs_list`, `inbox_tab_save`,
+  `inbox_tab_delete`, `inbox_tab_move`; `threads_list` takes `tabId`.
+- Search operators `from:vip`, `from:team`, `from:known`, `is:dev`,
+  `is:automated` and `has:invite`, in search and saved searches too.
 - Mail settings are a page inside Mail (the gear in the mail rail, address
   `settings/<section>`): five groups in a side menu, fourteen sections, a
   section select in a narrow panel. The twelve-tab dialog is gone. Two new

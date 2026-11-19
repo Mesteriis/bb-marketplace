@@ -7,8 +7,8 @@ hand mail to BB projects, threads and Taskboard.
 - A **Mail** page with sanitized HTML. Every folder syncs on the BB server
   every 5 minutes, last 30 days; the Inbox within seconds (IDLE).
 - **All accounts** merges Inbox, Sent, Drafts, Spam, Archive and Trash.
-- Mark, flag, archive, delete or **Move to…** a selection; **Undo** or `z`;
-  filters; Gmail and Apple Mail keys (`?`).
+- Mark, flag, archive, delete or **Move to…** a selection; **Undo** (`z`);
+  filters; Inbox tabs; Gmail and Apple keys (`?`).
 - Remote images stay hidden until you allow them; trackers never load.
 - Warnings for a failed sender check, a foreign Reply-To or a lookalike
   domain; links lose tracking and open after a check; no read receipts.

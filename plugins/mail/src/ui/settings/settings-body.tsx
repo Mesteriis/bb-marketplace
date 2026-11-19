@@ -89,6 +89,7 @@ export function SettingsBody(props: MailSettingsProps & { section: SettingsSecti
         onUnblock={props.onUnblock}
         onChangeSnoozeFolder={props.onChangeSnoozeFolder}
         settings={props.settings}
+        {...(props.inboxTabs !== undefined ? { tabs: props.inboxTabs } : {})}
       />
     );
   }

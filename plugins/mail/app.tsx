@@ -168,6 +168,7 @@ import type { HistoryState } from "./src/ui/thread-list.tsx";
 import { dropAction, dropRefusal, readMovePayload } from "./src/ui/drag-move.ts";
 import { SaveSearchDialog, type SavedSearchEdit } from "./src/ui/saved-searches.tsx";
 import type { InboxTabView } from "./src/ui/inbox-tabs.tsx";
+import type { InboxTabsPort } from "./src/ui/settings/tabs-settings.tsx";
 import { TAB_NAME_MAX } from "./src/core/inbox-tabs.ts";
 import {
   DeleteFolderDialog,
@@ -2845,6 +2846,25 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
 
   // Slice 3k: OpenPGP keys in Mail settings.
   // Access of other plugins: requests wait in settings; a new one is announced once.
+  /** Split Inbox: the Tabs group of Mail settings; the row over the Inbox follows a change. */
+  const settingsTabs = useMemo<InboxTabsPort>(() => {
+    const done = () => void loadTabs();
+    return {
+      load: async () => (await rpc.call("inbox_tabs_list", { scope: { kind: "all", role: "inbox" } })).tabs,
+      save: async (input) => {
+        await rpc.call("inbox_tab_save", input);
+        done();
+      },
+      move: async (id, direction) => {
+        await rpc.call("inbox_tab_move", { id, direction });
+        done();
+      },
+      remove: async (id) => {
+        await rpc.call("inbox_tab_delete", { id });
+        done();
+      },
+    };
+  }, [rpc, loadTabs]);
   const [pluginAccessTick, setPluginAccessTick] = useState(0);
   /** The one Google sign-in started for a plugin key; a new click or leaving the page ends its wait. */
   const googleGrantRun = useRef<AbortController | null>(null);
@@ -3066,6 +3086,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
         await loadBlockRules();
       }}
       onChangeSnoozeFolder={changeSnoozeFolder}
+      inboxTabs={settingsTabs}
       onGoogleSwitch={
         googleSignInOffered
           ? (account) => {
