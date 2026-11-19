@@ -100,6 +100,11 @@
   gap: 0;
 }
 
+.rh-page.rh-embedded-rdp {
+  padding: 12px;
+}
+
+.rh-page.rh-embedded-rdp .rh-form[hidden],
 .rh-page.rh-embedded > [hidden] {
   display: none;
 }

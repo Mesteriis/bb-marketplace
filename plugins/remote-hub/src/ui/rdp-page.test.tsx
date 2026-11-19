@@ -76,11 +76,11 @@ const flush = () => act(async () => {
 
 async function connect(p: RdpPageProps, fill: Array<[string, string]> = []) {
   render(<RdpPage {...p} />);
-  type("host", "rdp.test");
-  type("user", "alice");
-  type("password", SECRET);
+  type("адрес", "rdp.test");
+  type("пользователь", "alice");
+  type("пароль", SECRET);
   for (const [label, value] of fill) type(label, value);
-  fireEvent.click(screen.getByText("Connect"));
+  fireEvent.click(screen.getByText("Подключить"));
   await flush();
   const socket = FakeWebSocket.instances[0];
   const say = (msg: unknown) => act(() => void socket?.onmessage?.({ data: JSON.stringify(msg) }));
@@ -106,9 +106,9 @@ describe("RdpPage: a saved password (stage 3b-1)", () => {
   it("shows no password field, connects with the reference and sends no password at all", async () => {
     const p = props();
     render(<RdpPage {...p} prefill={fill()} />);
-    expect(screen.queryByLabelText("password")).toBeNull();
-    expect(screen.getByText(/Using the saved password/)).toBeTruthy();
-    fireEvent.click(screen.getByText("Connect"));
+    expect(screen.queryByLabelText("пароль")).toBeNull();
+    expect(screen.getByText(/Используется сохранённый пароль/)).toBeTruthy();
+    fireEvent.click(screen.getByText("Подключить"));
     await flush();
     const target = p.calls.onRdpOpen.mock.calls[0]?.[0] as Record<string, unknown>;
     expect(target).toEqual({ host: "win.example.test", port: 3389, username: "admin", domain: "CORP", credentialRef: REF });
@@ -117,16 +117,16 @@ describe("RdpPage: a saved password (stage 3b-1)", () => {
     expect(p.calls.onRdpOpen.mock.calls[0]?.[2]).toBe(PID);
     // A saved connection uses its own stored quality: the page sends none and the control is disabled.
     expect(p.calls.onRdpOpen.mock.calls[0]?.[3]).toBeUndefined();
-    expect(screen.queryByLabelText("connection quality")).toBeNull();
-    expect(screen.getByText("Quality: from the saved connection")).toBeTruthy();
+    expect(screen.queryByLabelText("качество соединения")).toBeNull();
+    expect(screen.getByText("Качество: из сохранённого подключения")).toBeTruthy();
   });
 
   it("Use another password switches to a typed password and forgets the reference for this connect", async () => {
     const p = props();
     render(<RdpPage {...p} prefill={fill()} />);
-    fireEvent.click(screen.getByText("Use another password"));
-    type("password", SECRET);
-    fireEvent.click(screen.getByText("Connect"));
+    fireEvent.click(screen.getByText("Ввести другой пароль"));
+    type("пароль", SECRET);
+    fireEvent.click(screen.getByText("Подключить"));
     await flush();
     const target = p.calls.onRdpOpen.mock.calls[0]?.[0] as Record<string, unknown>;
     expect(target.password).toBe(SECRET);
@@ -136,9 +136,9 @@ describe("RdpPage: a saved password (stage 3b-1)", () => {
   it("editing the host drops the saved password mode (a credential is only for its own endpoint)", async () => {
     const p = props();
     render(<RdpPage {...p} prefill={fill()} />);
-    type("host", "other.example.test");
-    expect(screen.getByLabelText("password")).toBeTruthy();
-    expect(screen.queryByText(/Using the saved password/)).toBeNull();
+    type("адрес", "other.example.test");
+    expect(screen.getByLabelText("пароль")).toBeTruthy();
+    expect(screen.queryByText(/Используется сохранённый пароль/)).toBeNull();
   });
 
   it("a locked Keychain at open is shown as a plain explanation and the saved mode stays for a retry", async () => {
@@ -147,15 +147,15 @@ describe("RdpPage: a saved password (stage 3b-1)", () => {
     });
     const p = props({ onRdpOpen: onRdpOpen as never });
     render(<RdpPage {...p} prefill={fill()} />);
-    fireEvent.click(screen.getByText("Connect"));
+    fireEvent.click(screen.getByText("Подключить"));
     await flush();
     expect(screen.getByText(/login Keychain is locked/)).toBeTruthy();
-    expect(screen.getByText(/Using the saved password/)).toBeTruthy();
+    expect(screen.getByText(/Используется сохранённый пароль/)).toBeTruthy();
   });
 
   it("a prefill without a reference keeps the typed-password form", () => {
     render(<RdpPage {...props()} prefill={fill({ credentialRef: null })} />);
-    expect(screen.getByLabelText("password")).toBeTruthy();
+    expect(screen.getByLabelText("пароль")).toBeTruthy();
   });
 });
 
@@ -165,17 +165,17 @@ describe("RdpPage: one open at a time (P1)", () => {
     const onRdpOpen = vi.fn(() => new Promise<SessionHandle>((resolve) => (finish = resolve)));
     const p = props({ onRdpOpen: onRdpOpen as never });
     render(<RdpPage {...p} />);
-    type("host", "rdp.test");
-    type("user", "alice");
-    type("password", SECRET);
-    const form = screen.getByLabelText("host").closest("form") as HTMLFormElement;
+    type("адрес", "rdp.test");
+    type("пользователь", "alice");
+    type("пароль", SECRET);
+    const form = screen.getByLabelText("адрес").closest("form") as HTMLFormElement;
     fireEvent.submit(form);
     fireEvent.submit(form); // Enter pressed again, or a second click racing the disabled state
     await flush();
     expect(onRdpOpen).toHaveBeenCalledTimes(1);
     await act(async () => finish(HANDLE));
     await flush();
-    type("password", SECRET);
+    type("пароль", SECRET);
     fireEvent.submit(form);
     await flush();
     expect(onRdpOpen).toHaveBeenCalledTimes(2); // free again once the first open settled
@@ -208,14 +208,14 @@ describe("RdpPage: prefilled from a saved profile", () => {
   it("fills the endpoint, leaves the password empty and focused, and opens with the profile id and size", async () => {
     const p = props();
     render(<RdpPage {...p} prefill={fill()} />);
-    expect((screen.getByLabelText("host") as HTMLInputElement).value).toBe("win.example.test");
-    expect((screen.getByLabelText("port") as HTMLInputElement).value).toBe("3390");
-    expect((screen.getByLabelText("user") as HTMLInputElement).value).toBe("admin");
-    expect((screen.getByLabelText("domain") as HTMLInputElement).value).toBe("CORP");
-    expect((screen.getByLabelText("password") as HTMLInputElement).value).toBe("");
-    expect(document.activeElement).toBe(screen.getByLabelText("password"));
-    type("password", SECRET);
-    fireEvent.click(screen.getByText("Connect"));
+    expect((screen.getByLabelText("адрес") as HTMLInputElement).value).toBe("win.example.test");
+    expect((screen.getByLabelText("порт") as HTMLInputElement).value).toBe("3390");
+    expect((screen.getByLabelText("пользователь") as HTMLInputElement).value).toBe("admin");
+    expect((screen.getByLabelText("домен") as HTMLInputElement).value).toBe("CORP");
+    expect((screen.getByLabelText("пароль") as HTMLInputElement).value).toBe("");
+    expect(document.activeElement).toBe(screen.getByLabelText("пароль"));
+    type("пароль", SECRET);
+    fireEvent.click(screen.getByText("Подключить"));
     await flush();
     expect(p.calls.onRdpOpen.mock.calls).toEqual([
       [{ host: "win.example.test", port: 3390, username: "admin", password: SECRET, domain: "CORP" }, { width: 1920, height: 1080 }, PID, undefined],
@@ -225,8 +225,8 @@ describe("RdpPage: prefilled from a saved profile", () => {
   it("a profile without a desktop size uses the page default", async () => {
     const p = props();
     render(<RdpPage {...p} prefill={fill({ width: null, height: null })} />);
-    type("password", SECRET);
-    fireEvent.click(screen.getByText("Connect"));
+    type("пароль", SECRET);
+    fireEvent.click(screen.getByText("Подключить"));
     await flush();
     expect(p.calls.onRdpOpen.mock.calls[0]?.[1]).toEqual({ width: 1280, height: 800 });
   });
@@ -234,9 +234,9 @@ describe("RdpPage: prefilled from a saved profile", () => {
   it("editing the endpoint after the prefill ends the link: the open carries no profile id", async () => {
     const p = props();
     render(<RdpPage {...p} prefill={fill()} />);
-    type("host", "other.example.test");
-    type("password", SECRET);
-    fireEvent.click(screen.getByText("Connect"));
+    type("адрес", "other.example.test");
+    type("пароль", SECRET);
+    fireEvent.click(screen.getByText("Подключить"));
     await flush();
     expect(p.calls.onRdpOpen.mock.calls[0]?.[2]).toBeUndefined();
   });
@@ -244,25 +244,25 @@ describe("RdpPage: prefilled from a saved profile", () => {
   it("the prefill is applied once per nonce: a re-render does not wipe what the user typed", () => {
     const p = props();
     const view = render(<RdpPage {...p} prefill={fill()} />);
-    type("password", SECRET);
+    type("пароль", SECRET);
     view.rerender(<RdpPage {...p} prefill={fill()} />);
-    expect((screen.getByLabelText("password") as HTMLInputElement).value).toBe(SECRET);
+    expect((screen.getByLabelText("пароль") as HTMLInputElement).value).toBe(SECRET);
     view.rerender(<RdpPage {...p} prefill={fill({ nonce: 2, host: "second.example.test" })} />);
-    expect((screen.getByLabelText("host") as HTMLInputElement).value).toBe("second.example.test");
-    expect((screen.getByLabelText("password") as HTMLInputElement).value).toBe("");
+    expect((screen.getByLabelText("адрес") as HTMLInputElement).value).toBe("second.example.test");
+    expect((screen.getByLabelText("пароль") as HTMLInputElement).value).toBe("");
   });
 });
 
 describe("RdpPage: the form", () => {
   it("cannot connect without host and user, and the password field is a password field", () => {
     render(<RdpPage {...props()} />);
-    const connectButton = screen.getByText("Connect") as HTMLButtonElement;
+    const connectButton = screen.getByText("Подключить") as HTMLButtonElement;
     expect(connectButton.disabled).toBe(true);
-    type("host", "rdp.test");
+    type("адрес", "rdp.test");
     expect(connectButton.disabled).toBe(true);
-    type("user", "alice");
+    type("пользователь", "alice");
     expect(connectButton.disabled).toBe(false);
-    expect((screen.getByLabelText("password") as HTMLInputElement).type).toBe("password");
+    expect((screen.getByLabelText("пароль") as HTMLInputElement).type).toBe("password");
   });
 
   it("opens with the default port 3389, no domain, and the 1280x800 desktop", async () => {
@@ -276,15 +276,15 @@ describe("RdpPage: the form", () => {
   it("P2: Quick connect offers the three presets (Balanced preselected) and sends the chosen one; no advanced switches here", async () => {
     const p = props();
     render(<RdpPage {...p} />);
-    const select = screen.getByLabelText("connection quality") as HTMLSelectElement;
+    const select = screen.getByLabelText("качество соединения") as HTMLSelectElement;
     expect(select.value).toBe("balanced");
     expect(Array.from(select.options).map((o) => o.textContent)).toEqual(["Slow link", "Balanced (default)", "Best quality"]);
-    expect(screen.queryByLabelText("Colour depth")).toBeNull();
-    type("host", "rdp.test");
-    type("user", "alice");
-    type("password", SECRET);
+    expect(screen.queryByLabelText("Глубина цвета")).toBeNull();
+    type("адрес", "rdp.test");
+    type("пользователь", "alice");
+    type("пароль", SECRET);
     fireEvent.change(select, { target: { value: "slow" } });
-    fireEvent.click(screen.getByText("Connect"));
+    fireEvent.click(screen.getByText("Подключить"));
     await flush();
     expect(p.calls.onRdpOpen.mock.calls[0]?.[3]).toEqual({ compression: true, colorDepth: 16, wallpaper: false, fullWindowDrag: false, menuAnimations: false, fontSmoothing: true, desktopComposition: false, themes: false });
   });
@@ -298,10 +298,10 @@ describe("RdpPage: the form", () => {
   it("refuses a bad port without calling anything", async () => {
     const p = props();
     render(<RdpPage {...p} />);
-    type("host", "rdp.test");
-    type("user", "alice");
-    type("port", "99999");
-    fireEvent.click(screen.getByText("Connect"));
+    type("адрес", "rdp.test");
+    type("пользователь", "alice");
+    type("порт", "99999");
+    fireEvent.click(screen.getByText("Подключить"));
     await flush();
     expect(p.calls.onRdpOpen).not.toHaveBeenCalled();
     expect(screen.getByRole("alert").textContent).toBe("port must be a whole number from 1 to 65535");
@@ -310,12 +310,12 @@ describe("RdpPage: the form", () => {
   it("clears the password from the form at submit and never shows it again", async () => {
     const p = props();
     const { container } = render(<RdpPage {...p} />);
-    type("host", "rdp.test");
-    type("user", "alice");
-    type("password", SECRET);
-    expect((screen.getByLabelText("password") as HTMLInputElement).value).toBe(SECRET);
-    fireEvent.click(screen.getByText("Connect"));
-    expect((screen.getByLabelText("password") as HTMLInputElement).value).toBe(""); // cleared synchronously
+    type("адрес", "rdp.test");
+    type("пользователь", "alice");
+    type("пароль", SECRET);
+    expect((screen.getByLabelText("пароль") as HTMLInputElement).value).toBe(SECRET);
+    fireEvent.click(screen.getByText("Подключить"));
+    expect((screen.getByLabelText("пароль") as HTMLInputElement).value).toBe(""); // cleared synchronously
     await flush();
     const socket = FakeWebSocket.instances[0];
     await act(async () => void socket.onmessage?.({ data: JSON.stringify({ type: "state", state: "authenticating" }) }));
@@ -328,9 +328,9 @@ describe("RdpPage: the form", () => {
   it("shows an open failure with the helper's code turned into a sentence", async () => {
     const p = props({ onRdpOpen: vi.fn(async () => { throw new Error("rdp_open_failed: boom"); }) });
     render(<RdpPage {...p} />);
-    type("host", "rdp.test");
-    type("user", "alice");
-    fireEvent.click(screen.getByText("Connect"));
+    type("адрес", "rdp.test");
+    type("пользователь", "alice");
+    fireEvent.click(screen.getByText("Подключить"));
     await flush();
     expect(screen.getByTestId("rdp-state").textContent).toContain("error");
     expect(screen.getByRole("alert").textContent).toBe("the RDP session could not be started");
@@ -343,15 +343,15 @@ describe("RdpPage: states, texts and the certificate prompt", () => {
     const state = screen.getByTestId("rdp-state");
     expect(state.getAttribute("role")).toBe("status");
     expect(state.getAttribute("aria-live")).toBe("polite");
-    expect(state.textContent).toBe("state: connecting");
+    expect(state.textContent).toBe("состояние: connecting");
     await say({ type: "state", state: "tls" });
-    expect(state.textContent).toBe("state: securing the connection (TLS)");
+    expect(state.textContent).toBe("состояние: securing the connection (TLS)");
     await say({ type: "state", state: "authenticating" });
-    expect(state.textContent).toBe("state: authenticating");
+    expect(state.textContent).toBe("состояние: authenticating");
     await say({ type: "desktop", frameId: 1, width: 800, height: 600 });
     await say({ type: "state", state: "desktop_ready" });
-    expect(state.textContent).toBe("state: desktop ready");
-    expect(screen.getByText("desktop: 800x600")).toBeTruthy();
+    expect(state.textContent).toBe("состояние: desktop ready");
+    expect(screen.getByText("рабочий стол: 800×600")).toBeTruthy();
     expect(screen.getByText("alice@rdp.test:3389").tagName).toBe("STRONG");
   });
 
@@ -409,7 +409,7 @@ describe("RdpPage: states, texts and the certificate prompt", () => {
   ])("a session closed with %s says so", async (reason, text) => {
     const { say } = await connect(props());
     await say({ type: "closed", exitCode: null, signal: null, reason });
-    expect(screen.getByTestId("rdp-state").textContent).toBe("state: closed");
+    expect(screen.getByTestId("rdp-state").textContent).toBe("состояние: closed");
     expect(screen.getByTestId("rdp-exit").textContent).toBe(text);
   });
 
@@ -417,8 +417,8 @@ describe("RdpPage: states, texts and the certificate prompt", () => {
     const p = props();
     const { socket } = await connect(p);
     await act(async () => void socket.onclose?.({ code: 1006 }));
-    expect(screen.getByTestId("rdp-state").textContent).toBe("state: detached");
-    fireEvent.click(screen.getByText("Reattach"));
+    expect(screen.getByTestId("rdp-state").textContent).toBe("состояние: экран отсоединён");
+    fireEvent.click(screen.getByText("Показать снова"));
     await flush();
     expect(p.calls.onAttach.mock.calls).toEqual([[HANDLE], [HANDLE]]);
     expect(FakeWebSocket.instances.map((w) => w.url)).toEqual([
@@ -431,16 +431,16 @@ describe("RdpPage: states, texts and the certificate prompt", () => {
     const p = props();
     await connect(p);
     p.calls.onAttach.mockRejectedValueOnce(new Error("session_not_found: unknown"));
-    fireEvent.click(screen.getByText("Reattach"));
+    fireEvent.click(screen.getByText("Показать снова"));
     await flush();
-    expect(screen.getByTestId("rdp-state").textContent).toBe("state: detached");
+    expect(screen.getByTestId("rdp-state").textContent).toBe("состояние: экран отсоединён");
     expect(screen.getByRole("alert").textContent).toBe("the session is gone");
   });
 
   it("Disconnect closes the session and reports 'disconnected'", async () => {
     const p = props();
     await connect(p);
-    fireEvent.click(screen.getByText("Disconnect"));
+    fireEvent.click(screen.getByText("Отключить"));
     await flush();
     expect(p.calls.onClose.mock.calls).toEqual([[HANDLE]]);
     expect(screen.getByTestId("rdp-exit").textContent).toBe("disconnected");
@@ -457,16 +457,16 @@ describe("RdpPage: one session at a time on screen (N1, N4, N5)", () => {
     const { socket, say } = await connect(p);
     await say({ type: "desktop", frameId: 1, width: 800, height: 600 });
     await say({ type: "state", state: "desktop_ready" });
-    type("host", "other.test");
-    type("user", "bob");
-    fireEvent.click(screen.getByText("Connect"));
+    type("адрес", "other.test");
+    type("пользователь", "bob");
+    fireEvent.click(screen.getByText("Подключить"));
     await flush();
     // B is pending: the header and the canvas label still name A, and A keeps its handle.
     expect(screen.getByText("alice@rdp.test:3389").tagName).toBe("STRONG");
     expect(screen.queryByText("bob@other.test:3389")).toBeNull();
     expect(screen.getByRole("application").getAttribute("aria-label")).toBe("remote desktop alice@rdp.test:3389");
-    expect(screen.getByTestId("rdp-connecting").textContent).toBe("connecting to bob@other.test:3389…");
-    fireEvent.click(screen.getByText("Disconnect"));
+    expect(screen.getByTestId("rdp-connecting").textContent).toBe("подключение к bob@other.test:3389…");
+    fireEvent.click(screen.getByText("Отключить"));
     await flush();
     expect(p.calls.onClose.mock.calls).toEqual([[A]]);
     // B opens: now B is the session on screen, with its own handle and socket.
@@ -482,14 +482,14 @@ describe("RdpPage: one session at a time on screen (N1, N4, N5)", () => {
     const p = props();
     p.calls.onAttach.mockRejectedValueOnce(new Error("temporary: try again"));
     render(<RdpPage {...p} />);
-    type("host", "rdp.test");
-    type("user", "alice");
-    fireEvent.click(screen.getByText("Connect"));
+    type("адрес", "rdp.test");
+    type("пользователь", "alice");
+    fireEvent.click(screen.getByText("Подключить"));
     await flush();
-    expect(screen.getByTestId("rdp-state").textContent).toBe("state: detached");
-    expect((screen.getByText("Reattach") as HTMLButtonElement).disabled).toBe(false);
-    expect((screen.getByText("Disconnect") as HTMLButtonElement).disabled).toBe(false);
-    fireEvent.click(screen.getByText("Reattach"));
+    expect(screen.getByTestId("rdp-state").textContent).toBe("состояние: экран отсоединён");
+    expect((screen.getByText("Показать снова") as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByText("Отключить") as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(screen.getByText("Показать снова"));
     await flush();
     expect(p.calls.onAttach.mock.calls).toEqual([[HANDLE], [HANDLE]]);
     expect(FakeWebSocket.instances.length).toBe(1);
@@ -499,11 +499,11 @@ describe("RdpPage: one session at a time on screen (N1, N4, N5)", () => {
   it("N4: Disconnect works on a session whose attach never succeeded", async () => {
     const p = props({ onAttach: vi.fn(async () => { throw new Error("temporary"); }) });
     render(<RdpPage {...p} />);
-    type("host", "rdp.test");
-    type("user", "alice");
-    fireEvent.click(screen.getByText("Connect"));
+    type("адрес", "rdp.test");
+    type("пользователь", "alice");
+    fireEvent.click(screen.getByText("Подключить"));
     await flush();
-    fireEvent.click(screen.getByText("Disconnect"));
+    fireEvent.click(screen.getByText("Отключить"));
     await flush();
     expect(p.calls.onClose.mock.calls).toEqual([[HANDLE]]);
     expect(screen.getByTestId("rdp-exit").textContent).toBe("disconnected");
@@ -513,7 +513,7 @@ describe("RdpPage: one session at a time on screen (N1, N4, N5)", () => {
     let finish: (v: { reason: string }) => void = () => {};
     const p = props({ onClose: vi.fn(() => new Promise<{ reason: string }>((r) => (finish = r))) as never });
     const { say } = await connect(p);
-    fireEvent.click(screen.getByText("Disconnect"));
+    fireEvent.click(screen.getByText("Отключить"));
     await flush();
     await say({ type: "closed", exitCode: null, signal: null, reason: "engine_exited" });
     expect(screen.getByTestId("rdp-exit").textContent).toBe("the RDP engine stopped unexpectedly");
@@ -524,7 +524,7 @@ describe("RdpPage: one session at a time on screen (N1, N4, N5)", () => {
   it("N5: otherwise the service's own close reason is shown", async () => {
     const p = props({ onClose: vi.fn(async () => ({ reason: "server_disconnected" })) as never });
     await connect(p);
-    fireEvent.click(screen.getByText("Disconnect"));
+    fireEvent.click(screen.getByText("Отключить"));
     await flush();
     expect(screen.getByTestId("rdp-exit").textContent).toBe("the server ended the session");
   });
@@ -543,7 +543,7 @@ describe("RdpPage: the header buttons", () => {
   it("Ctrl+Alt+Del and Screenshot wait for the desktop; Ctrl+Alt+Del goes through the socket", async () => {
     const { socket, say } = await connect(props());
     const cad = screen.getByText("Ctrl+Alt+Del") as HTMLButtonElement;
-    const shot = screen.getByText("Screenshot") as HTMLButtonElement;
+    const shot = screen.getByText("Снимок экрана") as HTMLButtonElement;
     expect(cad.disabled).toBe(true);
     expect(shot.disabled).toBe(true);
     await say({ type: "desktop", frameId: 1, width: 800, height: 600 });
@@ -561,11 +561,11 @@ describe("RdpPage: the header buttons", () => {
     const { say } = await connect(p);
     await say({ type: "desktop", frameId: 1, width: 800, height: 600 });
     await say({ type: "state", state: "desktop_ready" });
-    fireEvent.click(screen.getByText("Screenshot"));
+    fireEvent.click(screen.getByText("Снимок экрана"));
     await flush();
     expect(p.calls.onSavePng.mock.calls).toEqual([["rdp-800x600-4.png", "QUJD"]]);
     p.calls.onScreenshot.mockRejectedValueOnce(new Error("screenshot_too_large: too big"));
-    fireEvent.click(screen.getByText("Screenshot"));
+    fireEvent.click(screen.getByText("Снимок экрана"));
     await flush();
     expect(screen.getByRole("alert").textContent).toBe("the screenshot is too large to send");
   });
@@ -576,7 +576,7 @@ describe("RdpPage: the header buttons", () => {
     expect(canvas.className).toContain("rh-rdp-fit");
     fireEvent.click(screen.getByText("1:1"));
     expect(canvas.className).toContain("rh-rdp-actual");
-    expect(screen.getByText("Fit")).toBeTruthy();
+    expect(screen.getByText("Вписать")).toBeTruthy();
   });
 
   it("shows the service's notice and an error code as a sentence", async () => {

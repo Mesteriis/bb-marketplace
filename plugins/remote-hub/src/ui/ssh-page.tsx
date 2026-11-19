@@ -217,19 +217,19 @@ export function SshPage(props: SshPageProps) {
   return (
     <div className={props.embedded === true ? "rh-page rh-embedded" : "rh-page"}>
       <div className="rh-form" hidden={props.embedded === true}>
-        <input placeholder="host" value={host} onChange={(e) => setHost(e.target.value)} />
-        <input placeholder="user" value={user} onChange={(e) => setUser(e.target.value)} />
-        <input placeholder="port" value={port} onChange={(e) => setPort(e.target.value)} className="rh-port" />
+        <input placeholder="адрес" value={host} onChange={(e) => setHost(e.target.value)} />
+        <input placeholder="пользователь" value={user} onChange={(e) => setUser(e.target.value)} />
+        <input placeholder="порт" value={port} onChange={(e) => setPort(e.target.value)} className="rh-port" />
         <button onClick={() => void connect()} disabled={host.length === 0 || state === "connecting"}>
-          Connect
+          Подключить
         </button>
         {handle !== null && (
           <>
             <button onClick={() => void disconnect()} disabled={state === "connecting"}>
-              Disconnect
+              Отключить
             </button>
             <button onClick={() => void reattach()} disabled={attach === null || state === "connecting"}>
-              Reattach
+              Показать снова
             </button>
           </>
         )}
@@ -237,11 +237,11 @@ export function SshPage(props: SshPageProps) {
       <div className="rh-header" hidden={props.embedded === true}>
         {target !== null && (
           <span>
-            target: <strong>{target.user ? target.user + "@" : ""}{target.host}{target.port ? ":" + target.port : ""}</strong>
+            адрес: <strong>{target.user ? target.user + "@" : ""}{target.host}{target.port ? ":" + target.port : ""}</strong>
           </span>
         )}
         <span data-testid="ssh-state">
-          state: <strong>{state}</strong>
+          состояние: <strong>{state}</strong>
         </span>
         {attach !== null && state !== "closed" && <ControlBadge control={owner} />}
         {state === "closed" && exit !== null && (

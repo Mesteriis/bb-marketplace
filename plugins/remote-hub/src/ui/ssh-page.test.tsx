@@ -95,8 +95,8 @@ async function connectAndRun() {
   const onAttach = vi.fn(async () => ({ token: "b".repeat(32), wsUrl: "ws://x" }));
   const onClose = vi.fn(async () => {});
   render(<SshPage onSshOpen={onSshOpen} onAttach={onAttach} onClose={onClose} />);
-  fireEvent.change(screen.getByPlaceholderText("host"), { target: { value: "example.com" } });
-  fireEvent.click(screen.getByText("Connect"));
+  fireEvent.change(screen.getByPlaceholderText("адрес"), { target: { value: "example.com" } });
+  fireEvent.click(screen.getByText("Подключить"));
   await act(async () => {
     await Promise.resolve();
     await Promise.resolve();
@@ -138,9 +138,9 @@ describe("SshPage opened from a saved profile", () => {
       await Promise.resolve();
     });
     expect(onSshOpen.mock.calls).toEqual([[launch(1).target, PID, undefined]]);
-    expect((screen.getByPlaceholderText("host") as HTMLInputElement).value).toBe("build.example.test");
-    expect((screen.getByPlaceholderText("user") as HTMLInputElement).value).toBe("ci");
-    expect((screen.getByPlaceholderText("port") as HTMLInputElement).value).toBe("2222");
+    expect((screen.getByPlaceholderText("адрес") as HTMLInputElement).value).toBe("build.example.test");
+    expect((screen.getByPlaceholderText("пользователь") as HTMLInputElement).value).toBe("ci");
+    expect((screen.getByPlaceholderText("порт") as HTMLInputElement).value).toBe("2222");
     view.rerender(<SshPage onSshOpen={onSshOpen} onAttach={onAttach} onClose={onClose} launch={launch(1)} />);
     await act(async () => {
       await Promise.resolve();
@@ -200,7 +200,7 @@ describe("SshPage overlapping opens (P1)", () => {
     expect(onAttach.mock.calls.map((c) => c[0])).toEqual([HB]); // never attached
     expect(tokens()).toEqual(["tok2"]); // only B's terminal
     expect(screen.getByText(/b\.example\.test/, { selector: "strong" })).toBeTruthy();
-    fireEvent.click(screen.getByText("Disconnect"));
+    fireEvent.click(screen.getByText("Отключить"));
     await settle();
     expect(onClose.mock.calls).toEqual([[HA], [HB]]); // Disconnect closed B
   });
@@ -251,8 +251,8 @@ describe("SshPage state transitions", () => {
     const onAttach = vi.fn();
     const onClose = vi.fn();
     render(<SshPage onSshOpen={onSshOpen} onAttach={onAttach} onClose={onClose} />);
-    fireEvent.change(screen.getByPlaceholderText("host"), { target: { value: "example.com" } });
-    fireEvent.click(screen.getByText("Connect"));
+    fireEvent.change(screen.getByPlaceholderText("адрес"), { target: { value: "example.com" } });
+    fireEvent.click(screen.getByText("Подключить"));
     await act(async () => {
       await Promise.resolve();
       await Promise.resolve();
@@ -289,14 +289,14 @@ describe("SshPage state transitions", () => {
   it("a rejected reattach shows error, not a stuck connecting state", async () => {
     const { onAttach } = await connectAndRun();
     onAttach.mockRejectedValueOnce(new Error("session_not_found"));
-    fireEvent.click(screen.getByText("Reattach"));
+    fireEvent.click(screen.getByText("Показать снова"));
     await act(async () => {
       await Promise.resolve();
       await Promise.resolve();
     });
     expect(screen.getByTestId("ssh-state").textContent).toContain("error");
     expect(screen.getByText("session_not_found")).toBeTruthy();
-    expect(screen.getByText("Connect").getAttribute("disabled")).toBeNull();
+    expect(screen.getByText("Подключить").getAttribute("disabled")).toBeNull();
   });
 
   it("a 4410 close is closed with helper_exited, not detached", async () => {
@@ -494,8 +494,8 @@ describe("SshPage: who drives the session (stage 4b-1)", () => {
     const onSshOpen = vi.fn(async () => handle);
     const onAttach = vi.fn(async () => ({ token: "b".repeat(32), wsUrl: "ws://x" }));
     render(<SshPage onSshOpen={onSshOpen} onAttach={onAttach} onClose={vi.fn(async () => {})} {...(onTakeover === undefined ? {} : { onTakeover })} />);
-    fireEvent.change(screen.getByPlaceholderText("host"), { target: { value: "example.com" } });
-    fireEvent.click(screen.getByText("Connect"));
+    fireEvent.change(screen.getByPlaceholderText("адрес"), { target: { value: "example.com" } });
+    fireEvent.click(screen.getByText("Подключить"));
     await act(async () => {
       await Promise.resolve();
       await Promise.resolve();

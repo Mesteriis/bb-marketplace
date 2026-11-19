@@ -360,6 +360,7 @@ export function HubPage(props: HubPageProps) {
             <RdpPage
               {...props.rdp}
               {...(rdpPrefill !== undefined ? { prefill: rdpPrefill } : {})}
+              embedded
               onStatus={onRdpStatus}
               actionsRef={rdpActions}
               onRdpOpen={async (target, size, profileId, options) => {

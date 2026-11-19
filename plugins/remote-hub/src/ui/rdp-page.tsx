@@ -65,6 +65,8 @@ export interface RdpPageProps {
   onTakeover?: (handle: SessionHandle) => Promise<void>;
   /** Save a PNG for the user; the browser download by default. */
   onSavePng?: (filename: string, base64: string) => void;
+  /** On the desk: the pane draws the title, state and Disconnect, so the form goes once the session is open. */
+  embedded?: boolean;
   /** Told about every change of state or driver, for the desk and BB's sidebar. */
   onStatus?: (status: RdpPageStatus) => void;
   /** Filled with the actions the desk pane offers for this session. */
@@ -326,29 +328,30 @@ export function RdpPage(props: RdpPageProps) {
   }, [actionsRef, disconnect]);
 
   return (
-    <div className="rh-page">
+    <div className={props.embedded === true ? "rh-page rh-embedded-rdp" : "rh-page"}>
       <div className="rh-rdp-main" inert={prompt !== null}>
         <form
           className="rh-form"
+          hidden={props.embedded === true && live}
           onSubmit={(event) => {
             event.preventDefault();
             void connect();
           }}
         >
-          <input aria-label="host" placeholder="host" value={host} onChange={(e) => edit(setHost)(e.target.value)} />
-          <input aria-label="port" placeholder="3389" value={port} onChange={(e) => edit(setPort)(e.target.value)} className="rh-port" />
-          <input aria-label="user" placeholder="user" value={username} onChange={(e) => edit(setUsername)(e.target.value)} />
+          <input aria-label="адрес" placeholder="адрес" value={host} onChange={(e) => edit(setHost)(e.target.value)} />
+          <input aria-label="порт" placeholder="3389" value={port} onChange={(e) => edit(setPort)(e.target.value)} className="rh-port" />
+          <input aria-label="пользователь" placeholder="пользователь" value={username} onChange={(e) => edit(setUsername)(e.target.value)} />
           {savedRef !== null ? (
             <span className="rh-saved">
-              Using the saved password (Keychain){" "}
+              Используется сохранённый пароль (Связка ключей){" "}
               <button type="button" onClick={() => setSavedRef(null)}>
-                Use another password
+                Ввести другой пароль
               </button>
             </span>
           ) : (
             <input
-              aria-label="password"
-              placeholder="password"
+              aria-label="пароль"
+              placeholder="пароль"
               type="password"
               autoComplete="off"
               ref={passwordInput}
@@ -356,13 +359,13 @@ export function RdpPage(props: RdpPageProps) {
               onChange={(e) => setPassword(e.target.value)}
             />
           )}
-          <input aria-label="domain" placeholder="domain (optional)" value={domain} onChange={(e) => edit(setDomain)(e.target.value)} />
+          <input aria-label="домен" placeholder="домен (необязательно)" value={domain} onChange={(e) => edit(setDomain)(e.target.value)} />
           {linked.current !== null ? (
             // A saved connection uses the quality stored with it (set in its editor); showing Quick connect's last choice
             // here would be wrong, so the selector is not shown.
-            <span className="rh-hint">Quality: from the saved connection</span>
+            <span className="rh-hint">Качество: из сохранённого подключения</span>
           ) : (
-            <select aria-label="connection quality" value={preset} onChange={(e) => setPreset(e.target.value as RdpPreset)}>
+            <select aria-label="качество соединения" value={preset} onChange={(e) => setPreset(e.target.value as RdpPreset)}>
               {(["slow", "balanced", "quality"] as const).map((name) => (
                 <option key={name} value={name}>
                   {PRESET_LABELS[name]}
@@ -371,15 +374,15 @@ export function RdpPage(props: RdpPageProps) {
             </select>
           )}
           <button type="submit" disabled={host === "" || username === "" || connecting !== null}>
-            Connect
+            Подключить
           </button>
           {view !== null && (
             <>
               <button type="button" onClick={() => void disconnect()} disabled={!live}>
-                Disconnect
+                Отключить
               </button>
               <button type="button" onClick={() => void reattach()} disabled={!live}>
-                Reattach
+                Показать снова
               </button>
             </>
           )}
@@ -387,30 +390,30 @@ export function RdpPage(props: RdpPageProps) {
         <div className="rh-header">
           {view !== null && (
             <span>
-              target: <strong>{view.endpoint}</strong>
+              адрес: <strong>{view.endpoint}</strong>
             </span>
           )}
           <span data-testid="rdp-state" role="status" aria-live="polite">
-            state: <strong>{view !== null && view.detached && state !== "closed" ? "detached" : stateText(state)}</strong>
+            состояние: <strong>{view !== null && view.detached && state !== "closed" ? "экран отсоединён" : stateText(state)}</strong>
           </span>
-          {connecting !== null && view !== null && <span data-testid="rdp-connecting">connecting to {connecting}…</span>}
+          {connecting !== null && view !== null && <span data-testid="rdp-connecting">подключение к {connecting}…</span>}
           {view !== null && view.attach !== null && view.state !== "closed" && <ControlBadge control={view.control} />}
           {view !== null && view.state === "closed" && view.closeReason !== null && <span data-testid="rdp-exit">{closeReasonText(view.closeReason)}</span>}
           {view?.desktop != null && (
             <span>
-              desktop: {view.desktop.width}x{view.desktop.height}
+              рабочий стол: {view.desktop.width}×{view.desktop.height}
             </span>
           )}
           {view !== null && (
             <>
               <button type="button" onClick={() => setFit(fit === "fit" ? "actual" : "fit")} aria-pressed={fit === "actual"}>
-                {fit === "fit" ? "1:1" : "Fit"}
+                {fit === "fit" ? "1:1" : "Вписать"}
               </button>
               <button type="button" onClick={() => canvasHandle.current?.sendCtrlAltDel()} disabled={!ready || view.attach === null}>
                 Ctrl+Alt+Del
               </button>
               <button type="button" onClick={() => void screenshot()} disabled={!ready}>
-                Screenshot
+                Снимок экрана
               </button>
             </>
           )}
@@ -441,7 +444,7 @@ export function RdpPage(props: RdpPageProps) {
               </div>
             </AgentStage>
             <p className="rh-hint">
-              Click the desktop to type into it. Keys go to the remote while it has focus (Tab and Escape too); press Ctrl+Alt+Shift+Escape or click outside it to leave.
+              Щёлкните по рабочему столу, чтобы печатать в нём. Пока он в фокусе, клавиши уходят на удалённую машину (включая Tab и Escape); чтобы выйти, нажмите Ctrl+Alt+Shift+Escape или щёлкните вне его.
             </p>
           </>
         )}
