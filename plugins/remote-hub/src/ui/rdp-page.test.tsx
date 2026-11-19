@@ -291,7 +291,7 @@ describe("RdpPage: the form", () => {
 
   it("passes a port and a domain through", async () => {
     const p = props();
-    await connect(p, [["port", "3390"], ["domain", "CORP"]]);
+    await connect(p, [["порт", "3390"], ["домен", "CORP"]]);
     expect(p.calls.onRdpOpen.mock.calls[0][0]).toEqual({ host: "rdp.test", port: 3390, username: "alice", password: SECRET, domain: "CORP" });
   });
 

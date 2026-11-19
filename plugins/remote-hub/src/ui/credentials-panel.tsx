@@ -21,24 +21,24 @@ export interface CredentialsPanelProps {
 }
 
 const STATE_TEXT: Record<CredentialStateName, string> = {
-  present: "Found in the Keychain.",
-  missing: "No longer in the Keychain: save the password again.",
-  locked: "The login Keychain is locked (or macOS has not allowed this Remote Hub build to read it). Unlock it in Keychain Access, then use Allow access.",
-  needs_approval: "macOS has not allowed this Remote Hub build to read this password (the helper was updated). Press Allow access and choose Always Allow.",
-  denied: "The Keychain refused access.",
-  unavailable: "The Keychain is not available.",
+  present: "Есть в Связке ключей.",
+  missing: "В Связке ключей его больше нет: сохраните пароль заново.",
+  locked: "Связка ключей «Вход» заблокирована (или macOS не разрешил этой сборке Remote Hub её читать). Разблокируйте её в «Связке ключей», затем нажмите «Разрешить доступ».",
+  needs_approval: "macOS не разрешил этой сборке Remote Hub читать этот пароль (помощник обновился). Нажмите «Разрешить доступ» и выберите «Всегда разрешать».",
+  denied: "Связка ключей отказала в доступе.",
+  unavailable: "Связка ключей недоступна.",
 };
 
 function bindText(item: CredentialItem): string {
-  if (item.orphaned === true) return "A save did not finish and its Keychain item could not be removed. Delete it to retry the cleanup.";
+  if (item.orphaned === true) return "Сохранение не завершилось, и запись в Связке ключей не удалось убрать. Удалите её, чтобы повторить очистку.";
   if (item.bind.type === "key") return item.bind.path;
   const b = item.bind;
   return (b.domain !== null ? b.domain + "\\" : "") + (b.user !== null ? b.user + "@" : "") + b.host + ":" + b.port;
 }
 
 function kindText(item: CredentialItem): string {
-  if (item.kind === "passphrase") return "Key passphrase";
-  return item.bind.type === "endpoint" ? item.bind.protocol.toUpperCase() + " password" : "Password";
+  if (item.kind === "passphrase") return "Парольная фраза ключа";
+  return item.bind.type === "endpoint" ? item.bind.protocol.toUpperCase() + ": пароль" : "Пароль";
 }
 
 function Row(props: { item: CredentialItem; onCheck: CredentialsPanelProps["onCheck"]; onAllow: CredentialsPanelProps["onAllow"]; onChange: CredentialsPanelProps["onChange"]; onDelete: CredentialsPanelProps["onDelete"] }) {
@@ -69,7 +69,7 @@ function Row(props: { item: CredentialItem; onCheck: CredentialsPanelProps["onCh
           <strong>{item.label}</strong> <span className="rh-badge">{kindText(item)}</span>
         </span>
         <span className="rh-profile-endpoint">{bindText(item)}</span>
-        <span className="rh-status">{item.usedBy.length > 0 ? "Used by: " + item.usedBy.map((u) => u.name).join(", ") : "Not used by any profile"}</span>
+        <span className="rh-status">{item.usedBy.length > 0 ? "Используют: " + item.usedBy.map((u) => u.name).join(", ") : "Не используется ни одним подключением"}</span>
         {state !== null && <span className="rh-status">{state}</span>}
         {problem !== null && <span className="rh-error">{problem}</span>}
       </div>
@@ -84,32 +84,32 @@ function Row(props: { item: CredentialItem; onCheck: CredentialsPanelProps["onCh
               })
             }
           >
-            Check
+            Проверить
           </button>
         )}
         {item.orphaned !== true && props.onAllow !== undefined && (
           <button
             type="button"
             disabled={busy}
-            title="macOS asks you once; choose Always Allow. Other sessions pause while its dialog is open."
+            title="macOS спросит один раз; выберите «Всегда разрешать». Пока открыт его диалог, остальные сессии на паузе."
             onClick={() =>
               void run(async () => {
                 setState(STATE_TEXT[(await props.onAllow!(item.ref)).state]);
               })
             }
           >
-            Allow access
+            Разрешить доступ
           </button>
         )}
         {!changing && item.orphaned !== true && (
           <button type="button" onClick={() => setChanging(true)}>
-            Change password
+            Сменить пароль
           </button>
         )}
         {changing && (
           <>
             <label>
-              New password
+              Новый пароль
               <input type="password" autoComplete="off" value={secret} onChange={(e) => setSecret(e.target.value)} />
             </label>
             <button
@@ -121,11 +121,11 @@ function Row(props: { item: CredentialItem; onCheck: CredentialsPanelProps["onCh
                 void run(async () => {
                   await props.onChange(item.ref, typed);
                   setChanging(false);
-                  setState("Password changed.");
+                  setState("Пароль изменён.");
                 });
               }}
             >
-              Save new password
+              Сохранить новый пароль
             </button>
             <button
               type="button"
@@ -134,23 +134,23 @@ function Row(props: { item: CredentialItem; onCheck: CredentialsPanelProps["onCh
                 setChanging(false);
               }}
             >
-              Cancel
+              Отмена
             </button>
           </>
         )}
         {confirming ? (
           <>
-            {item.usedBy.length > 0 && <span className="rh-hint">{item.usedBy.map((u) => u.name).join(", ")} will ask for a password again.</span>}
-            <button type="button" aria-label="Confirm delete" disabled={busy} onClick={() => void run(async () => props.onDelete(item.ref))}>
-              Delete?
+            {item.usedBy.length > 0 && <span className="rh-hint">Снова спросят пароль: {item.usedBy.map((u) => u.name).join(", ")}.</span>}
+            <button type="button" aria-label="Подтвердить удаление" disabled={busy} onClick={() => void run(async () => props.onDelete(item.ref))}>
+              Удалить?
             </button>
             <button type="button" onClick={() => setConfirming(false)}>
-              Keep
+              Оставить
             </button>
           </>
         ) : (
           <button type="button" onClick={() => setConfirming(true)}>
-            Delete
+            Удалить
           </button>
         )}
       </div>
@@ -168,7 +168,7 @@ export function CredentialsPanel(props: CredentialsPanelProps) {
     try {
       const results = await props.onAllowAll();
       const failed = results.filter((r) => !r.ok);
-      setWalked(failed.length === 0 ? `Access allowed for ${results.length} saved credential${results.length === 1 ? "" : "s"}.` : failed.map((r) => `${r.label}: ${errorCodeText(r.code ?? "keychain_unavailable")}`).join(" "));
+      setWalked(failed.length === 0 ? `Доступ разрешён, сохранённых записей: ${results.length}.` : failed.map((r) => `${r.label}: ${errorCodeText(r.code ?? "keychain_unavailable")}`).join(" "));
     } catch (e) {
       setWalked(errorTextFromMessage(e instanceof Error ? e.message : String(e)));
     } finally {
@@ -176,33 +176,33 @@ export function CredentialsPanel(props: CredentialsPanelProps) {
     }
   };
   return (
-    <section className="rh-credentials" aria-label="Saved credentials">
+    <section className="rh-credentials" aria-label="Сохранённые учётные данные">
       <div className="rh-credentials-head">
-        <h2>Credentials</h2>
+        <h2>Учётные данные</h2>
         <button type="button" onClick={props.onClose}>
-          Close
+          Закрыть
         </button>
       </div>
-      <p className="rh-hint">Passwords live in the macOS Keychain. This list shows what each one is for; it never shows the password.</p>
+      <p className="rh-hint">Пароли хранятся в Связке ключей macOS. Здесь видно, для чего каждый из них; сам пароль не показывается никогда.</p>
       {props.onAllowAll !== undefined && (
         <p>
-          <button type="button" disabled={walking} onClick={() => void allowAll()} title="One macOS dialog per saved credential; choose Always Allow. Other sessions pause while a dialog is open.">
-            Allow access for all saved credentials
+          <button type="button" disabled={walking} onClick={() => void allowAll()} title="По одному диалогу macOS на каждую запись; выберите «Всегда разрешать». Пока диалог открыт, остальные сессии на паузе.">
+            Разрешить доступ ко всем сохранённым записям
           </button>{" "}
-          <span className="rh-hint">After a Remote Hub update macOS asks once per saved credential.</span>
+          <span className="rh-hint">После обновления Remote Hub macOS спрашивает по разу на каждую запись.</span>
         </p>
       )}
       {walked !== null && <p role="status" className="rh-hint">{walked}</p>}
-      {props.items === null && props.error === null && <p className="rh-hint">Loading credentials…</p>}
+      {props.items === null && props.error === null && <p className="rh-hint">Загружаю учётные данные…</p>}
       {props.error !== null && (
         <div>
           <p className="rh-error">{props.error}</p>
           <button type="button" onClick={props.onRetry}>
-            Retry
+            Повторить
           </button>
         </div>
       )}
-      {props.items !== null && props.items.length === 0 && <p className="rh-hint">No saved passwords yet. Save one from a profile.</p>}
+      {props.items !== null && props.items.length === 0 && <p className="rh-hint">Сохранённых паролей пока нет. Сохранить можно в настройках подключения.</p>}
       {props.items !== null && props.items.length > 0 && (
         <ul className="rh-credential-list">
           {props.items.map((item) => (
