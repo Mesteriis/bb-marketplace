@@ -367,6 +367,7 @@ macro_rules! relogin_once {
 }
 
 /// Everything up to the first console byte. `Err(None)` means the helper asked to stop.
+#[allow(unused_assignments)]
 async fn connect_terminal(
     client: &Client,
     auth: &PveAuth,
@@ -425,6 +426,7 @@ type Ws = tokio_tungstenite::WebSocketStream<tokio_rustls::client::TlsStream<tok
 
 /// Everything up to the RFB server's greeting: the VNC proxy, the websocket, and the first bytes the server sends
 /// (a QEMU console speaks first). Returns the socket, the handshake password and those first bytes.
+#[allow(unused_assignments)]
 async fn connect_vnc(client: &Client, auth: &PveAuth, node: &str, vmid: u32, out: &Out) -> Result<(Ws, Secret, Vec<u8>), ApiError> {
     out.state("authenticating").await;
     let mut session: Session = client.authenticate(auth).await?;

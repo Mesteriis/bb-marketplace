@@ -366,6 +366,138 @@ fn shutting_the_helper_down_takes_its_engines_with_it() {
     drop(w.rt);
 }
 
+/// Processes whose parent is `parent` (the helper's engine children), by `ps`.
+fn children_of(parent: u32) -> Vec<u32> {
+    let out = std::process::Command::new("/bin/ps").args(["-A", "-o", "pid=,ppid="]).output().unwrap();
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| {
+            let mut it = l.split_whitespace().map(|n| n.parse::<u32>().ok());
+            match (it.next().flatten(), it.next().flatten()) {
+                (Some(pid), Some(ppid)) if ppid == parent => Some(pid),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+/// Waits (at most `limit`) until the fake PVE has no console socket open: every one opened has been closed.
+fn wait_no_upstream_sockets(w: &World, limit: Duration) -> (u32, u32) {
+    let start = std::time::Instant::now();
+    loop {
+        let (opened, closed) = {
+            let st = w.fake.state.lock().unwrap();
+            (st.ws_open + st.vnc_opened, st.ws_closed)
+        };
+        if opened == closed || start.elapsed() > limit {
+            return (opened, closed);
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+fn wait_state_open(h: &mut Helper, sid: u32) {
+    h.read_until(Duration::from_secs(20), |k, p| {
+        if k != FRAME_KIND_CONTROL {
+            return None;
+        }
+        match decode_response(p).ok()? {
+            Response::PveState { session_id, state } if session_id == sid && state == "open" => Some(()),
+            _ => None,
+        }
+    });
+}
+
+fn open_qemu(h: &mut Helper, id: u64, c: PveConnect) -> Response {
+    h.send(&Request::OpenPve { id, connect: c, target: ConsoleTarget::Qemu { node: "pve1".into(), vmid: 100 }, cols: 80, rows: 24, keepalive_secs: None });
+    h.read_reply(id)
+}
+
+#[test]
+fn twenty_consoles_opened_and_closed_leave_no_engine_process_and_no_socket_behind() {
+    let w = world(default_state());
+    let mut h = start(&[]);
+    let before_fds = lsof_fds(h.pid()).len();
+    assert!(children_of(h.pid()).is_empty());
+    let mut pids = Vec::new();
+    for i in 0..20u64 {
+        // fourteen container terminals and six virtual machine consoles
+        let id = 100 + i * 10;
+        let opened = if i % 3 == 2 { open_qemu(&mut h, id, connect(w.fake.port, Some(PASSWORD), None, ca())) } else { open_lxc(&mut h, id, connect(w.fake.port, Some(PASSWORD), None, ca())) };
+        let Response::SessionOpened { session_id, pid, .. } = opened else { panic!("console {i} not opened: {opened:?}") };
+        pids.push(pid);
+        if i % 3 == 2 {
+            wait_state_open(&mut h, session_id);
+        } else {
+            read_stream_until(&mut h, session_id, b"root@ct101:~# ");
+        }
+        h.send(&Request::SessionClose { id: id + 1, session_id });
+        assert!(matches!(h.read_reply(id + 1), Response::SessionClosed { .. }), "console {i}");
+    }
+    for pid in &pids {
+        assert!(wait_pid_gone(*pid, Duration::from_secs(5)), "engine {pid} outlived its console");
+    }
+    assert!(children_of(h.pid()).is_empty(), "children left: {:?}", children_of(h.pid()));
+    let (opened, closed) = wait_no_upstream_sockets(&w, Duration::from_secs(5));
+    assert_eq!((opened, closed), (20, 20), "every upstream console socket was opened once and closed once");
+    // the helper holds no more descriptors than before the first console
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(lsof_fds(h.pid()).len(), before_fds, "descriptors leaked: {:?}", lsof_fds(h.pid()));
+    h.shutdown();
+    drop(w.rt);
+}
+
+#[test]
+fn a_helper_that_dies_hard_leaves_no_engine_and_no_upstream_socket_within_five_seconds() {
+    let w = world(default_state());
+    let mut h = start(&[]);
+    let mut pids = Vec::new();
+    for (i, qemu) in [false, false, true].into_iter().enumerate() {
+        let id = 10 + i as u64;
+        let opened = if qemu { open_qemu(&mut h, id, connect(w.fake.port, Some(PASSWORD), None, ca())) } else { open_lxc(&mut h, id, connect(w.fake.port, Some(PASSWORD), None, ca())) };
+        let Response::SessionOpened { session_id, pid, .. } = opened else { panic!("not opened") };
+        pids.push(pid);
+        if qemu {
+            wait_state_open(&mut h, session_id);
+        } else {
+            read_stream_until(&mut h, session_id, b"root@ct101:~# ");
+        }
+    }
+    {
+        let st = w.fake.state.lock().unwrap();
+        assert_eq!(st.ws_open + st.vnc_opened, 3);
+    }
+    // no goodbye: the helper is killed
+    unsafe { libc::kill(h.pid() as libc::pid_t, libc::SIGKILL) };
+    let _ = h.child.wait();
+    for pid in &pids {
+        assert!(wait_pid_gone(*pid, Duration::from_secs(5)), "engine {pid} outlived the helper");
+    }
+    assert_eq!(wait_no_upstream_sockets(&w, Duration::from_secs(5)), (3, 3));
+    drop(w.rt);
+}
+
+#[test]
+fn the_service_stopping_or_the_plugin_reloading_closes_the_helper_pipe_and_ends_every_console_within_five_seconds() {
+    let w = world(default_state());
+    let mut h = start(&[]);
+    let mut pids = Vec::new();
+    for i in 0..3u64 {
+        let Response::SessionOpened { session_id, pid, .. } = open_lxc(&mut h, 20 + i, connect(w.fake.port, Some(PASSWORD), None, ca())) else { panic!("not opened") };
+        pids.push(pid);
+        read_stream_until(&mut h, session_id, b"root@ct101:~# ");
+    }
+    // the plugin's process ends (a reload, a crash of BB): the helper's stdin reaches EOF; nothing else is sent
+    let helper_pid = h.pid();
+    h.shutdown();
+    assert!(wait_pid_gone(helper_pid, Duration::from_secs(5)), "the helper outlived its parent's pipe");
+    for pid in &pids {
+        assert!(wait_pid_gone(*pid, Duration::from_secs(5)), "engine {pid} outlived the helper");
+    }
+    assert_eq!(wait_no_upstream_sockets(&w, Duration::from_secs(5)), (3, 3));
+    drop(w.rt);
+}
+
 #[test]
 fn the_password_is_in_no_argv_and_no_stderr() {
     let w = world(default_state());
