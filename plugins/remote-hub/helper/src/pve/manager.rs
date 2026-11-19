@@ -642,3 +642,75 @@ impl PveManager {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A terminal session whose engine end nobody reads, so queued bytes stay queued.
+    fn stalled_terminal(mgr: &mut PveManager) -> (u32, RawFd) {
+        let mut fds = [0 as RawFd; 2];
+        assert_eq!(unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr()) }, 0);
+        set_nonblocking(fds[0]);
+        let id = 1;
+        mgr.sessions.insert(
+            id,
+            Session {
+                kind: Kind::Terminal,
+                engine_pid: None,
+                exit: None,
+                fd: fds[0],
+                read_buf: Vec::new(),
+                write_buf: OutQueue::new(),
+                owner: "human".to_string(),
+                owner_waiters: VecDeque::new(),
+                state: "open".to_string(),
+                seq: 0,
+                close_reason: None,
+                ended_at: None,
+                reported_closed: false,
+                job_request: None,
+                close_request: None,
+                job_save: Vec::new(),
+                vnc: false,
+            },
+        );
+        (id, fds[1])
+    }
+
+    #[test]
+    fn a_change_of_driver_drops_the_input_the_previous_driver_queued_in_the_helper_and_refuses_the_old_tag() {
+        let mut mgr = PveManager::new();
+        let (id, peer) = stalled_terminal(&mut mgr);
+        mgr.enqueue_input_from(id, "human", b"abc").unwrap();
+        mgr.enqueue_input_from(id, "human", b"defg").unwrap();
+        let before = mgr.sessions[&id].write_buf.len();
+        assert_eq!(before, (5 + 3) + (5 + 4));
+        // no engine answer yet: the hand-over waits, and the old driver's input is already gone from the queue
+        assert_eq!(mgr.set_owner(id, "agent:L1", 9).unwrap(), None);
+        let control = proto::encode_control(&PveCommand::SetOwner { request: 9 }).len();
+        assert_eq!(mgr.sessions[&id].write_buf.len(), control, "only the hand-over frame is left to write");
+        assert!(matches!(mgr.enqueue_input_from(id, "human", b"x"), Err(EnqueueError::StaleOwner)));
+        mgr.enqueue_input_from(id, "agent:L1", b"ok").unwrap();
+        // the engine's answer reports what the helper dropped plus what the engine dropped
+        let mut reply = proto::encode_control(&PveEvent::OwnerSet { request: 9, dropped: 5 });
+        let n = unsafe { libc::write(peer, reply.as_mut_ptr() as *const libc::c_void, reply.len()) };
+        assert_eq!(n as usize, reply.len());
+        let frames = mgr.process_readable(id, 1 << 20);
+        assert!(matches!(frames.as_slice(), [PveFrame::OwnerSet { request: 9, dropped: 12 }]), "{frames:?}");
+        unsafe { libc::close(peer) };
+        mgr.terminate_all();
+    }
+
+    #[test]
+    fn an_answer_nobody_asked_for_is_a_protocol_violation() {
+        let mut mgr = PveManager::new();
+        let (id, peer) = stalled_terminal(&mut mgr);
+        let mut reply = proto::encode_control(&PveEvent::OwnerSet { request: 4, dropped: 0 });
+        unsafe { libc::write(peer, reply.as_mut_ptr() as *const libc::c_void, reply.len()) };
+        mgr.process_readable(id, 1 << 20);
+        assert_eq!(mgr.sessions[&id].close_reason.as_deref(), Some("protocol_error"));
+        unsafe { libc::close(peer) };
+        mgr.terminate_all();
+    }
+}
