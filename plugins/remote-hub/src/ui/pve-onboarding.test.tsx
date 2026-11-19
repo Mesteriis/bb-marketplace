@@ -175,7 +175,7 @@ describe("restricted user mode", () => {
     expect((await screen.findAllByRole("alert"))[0]?.textContent).toContain("адрес сервера Proxmox");
     fireEvent.change(screen.getByLabelText("Адрес"), { target: { value: "pve.test" } });
     review();
-    await waitFor(() => expect(screen.getAllByRole("alert").some((e) => e.textContent?.includes("administrator"))).toBe(true));
+    await waitFor(() => expect(screen.getAllByRole("alert").some((e) => e.textContent?.includes("администратора"))).toBe(true));
     expect(a.onboardPlan).not.toHaveBeenCalled();
   });
 

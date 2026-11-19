@@ -22,44 +22,44 @@ export interface PveTargetsProps {
 }
 
 const OUTCOME_LABEL: Record<PveOutcome, string> = {
-  ok: "connected",
-  empty: "no guests visible",
-  no_permission: "no permission",
-  login_failed: "login refused",
-  unreachable: "unreachable",
-  tls_untrusted: "certificate not trusted",
-  cert_changed: "certificate changed",
-  tfa_required: "second factor required",
-  no_credential: "no saved password or token",
-  keychain_locked: "Keychain locked",
-  keychain_needs_approval: "needs approval",
-  error: "error",
+  ok: "подключено",
+  empty: "гостей не видно",
+  no_permission: "нет прав",
+  login_failed: "вход отклонён",
+  unreachable: "недоступен",
+  tls_untrusted: "сертификат не доверенный",
+  cert_changed: "сертификат изменился",
+  tfa_required: "нужен второй фактор",
+  no_credential: "нет сохранённого пароля или токена",
+  keychain_locked: "Связка ключей заблокирована",
+  keychain_needs_approval: "нужно разрешение",
+  error: "ошибка",
 };
 
 function age(seconds: number): string {
-  if (seconds < 90) return `${seconds} s`;
-  if (seconds < 5400) return `${Math.round(seconds / 60)} min`;
-  return `${Math.round(seconds / 3600)} h`;
+  if (seconds < 90) return `${seconds} с`;
+  if (seconds < 5400) return `${Math.round(seconds / 60)} мин`;
+  return `${Math.round(seconds / 3600)} ч`;
 }
 
 /** Shown in place of a console button that cannot work because the page was built without console support. */
-export const CONSOLE_OFF_REASON = "Consoles are not available in this view.";
+export const CONSOLE_OFF_REASON = "Консоли в этом виде недоступны.";
 
 function GuestCard(props: { guest: PveGuestView; linkable: Profile[]; onLink: (vmid: number, linkProfileId: string | null) => void; onConnectProfile: (id: string) => void; onOpenConsole?: (() => void) | undefined }) {
   const { guest, linkable } = props;
   const linked = guest.linkedProfileId === null ? null : (linkable.find((p) => p.id === guest.linkedProfileId) ?? null);
-  const reason = guest.console.available ? (props.onOpenConsole === undefined ? CONSOLE_OFF_REASON : null) : (guest.console.reason ?? "unavailable");
-  const label = guest.kind === "qemu" ? "Open graphics" : "Open console";
+  const reason = guest.console.available ? (props.onOpenConsole === undefined ? CONSOLE_OFF_REASON : null) : (guest.console.reason ?? "недоступна");
+  const label = guest.kind === "qemu" ? "Открыть графику" : "Открыть консоль";
   return (
     <li className="rh-guest" aria-label={guest.name || String(guest.vmid)} data-testid="pve-guest">
       <span className="rh-guest-title">
-        <strong>{guest.name || "(unnamed)"}</strong> <span className="rh-badge">{guest.kind === "qemu" ? "VM" : "LXC"}</span> <span className="rh-guest-id">#{guest.vmid}</span>
+        <strong>{guest.name || "(без имени)"}</strong> <span className="rh-badge">{guest.kind === "qemu" ? "VM" : "LXC"}</span> <span className="rh-guest-id">#{guest.vmid}</span>
       </span>
       <span className="rh-status" data-testid="pve-guest-state">
-        {guest.template ? "template" : guest.status} · node {guest.node}
+        {guest.template ? "шаблон" : guest.status} · узел {guest.node}
       </span>
       <div className="rh-guest-actions">
-        <button type="button" disabled={reason !== null} aria-label={"Open console of " + (guest.name || guest.vmid)} title={reason ?? undefined} onClick={() => props.onOpenConsole?.()}>
+        <button type="button" disabled={reason !== null} aria-label={"Открыть консоль: " + (guest.name || guest.vmid)} title={reason ?? undefined} onClick={() => props.onOpenConsole?.()}>
           {label}
         </button>
         {reason !== null && (
@@ -68,13 +68,13 @@ function GuestCard(props: { guest: PveGuestView; linkable: Profile[]; onLink: (v
           </span>
         )}
         <label>
-          SSH or RDP profile
+          Подключение SSH или RDP
           <select
-            aria-label={"Linked profile of " + (guest.name || guest.vmid)}
+            aria-label={"Связанное подключение: " + (guest.name || guest.vmid)}
             value={guest.linkedProfileId ?? ""}
             onChange={(e) => props.onLink(guest.vmid, e.target.value === "" ? null : e.target.value)}
           >
-            <option value="">none</option>
+            <option value="">нет</option>
             {linkable.map((p) => (
               <option key={p.id} value={p.id}>
                 {p.name} ({p.protocol.toUpperCase()})
@@ -83,8 +83,8 @@ function GuestCard(props: { guest: PveGuestView; linkable: Profile[]; onLink: (v
           </select>
         </label>
         {linked !== null && (
-          <button type="button" aria-label={"Connect to " + (guest.name || guest.vmid) + " through " + linked.name} onClick={() => props.onConnectProfile(linked.id)}>
-            Connect through {linked.name}
+          <button type="button" aria-label={"Подключиться к " + (guest.name || guest.vmid) + " через " + linked.name} onClick={() => props.onConnectProfile(linked.id)}>
+            Подключиться через {linked.name}
           </button>
         )}
       </div>
@@ -148,19 +148,19 @@ export function PveTargets(props: PveTargetsProps) {
   };
 
   return (
-    <section className="rh-pve" aria-label="Proxmox guests">
+    <section className="rh-pve" aria-label="Гости Proxmox">
       <div className="rh-pve-tools">
-        <input aria-label="Search guests" placeholder="Search by name, id, node or type" value={query} onChange={(e) => setQuery(e.target.value)} />
+        <input aria-label="Поиск гостей" placeholder="Поиск по имени, номеру, узлу или типу" value={query} onChange={(e) => setQuery(e.target.value)} />
         <button type="button" disabled={busy} onClick={() => void load(true)}>
-          Refresh
+          Обновить
         </button>
         <button type="button" onClick={props.onClose}>
-          Close
+          Закрыть
         </button>
       </div>
       {error !== null && <p className="rh-error">{error}</p>}
-      {connections === null && error === null && <p className="rh-hint">Reading Proxmox…</p>}
-      {connections !== null && connections.length === 0 && <p className="rh-hint">No Proxmox connections yet. Add one with Add Proxmox.</p>}
+      {connections === null && error === null && <p className="rh-hint">Читаю Proxmox…</p>}
+      {connections !== null && connections.length === 0 && <p className="rh-hint">Подключений Proxmox пока нет. Добавьте через «+» → Proxmox VE.</p>}
       {(connections ?? []).map((c) => {
         const guests = searchGuests(c.guests, query);
         return (
@@ -171,41 +171,41 @@ export function PveTargets(props: PveTargetsProps) {
             </h3>
             {c.stale !== null && (
               <p className="rh-hint" data-testid="pve-stale">
-                Showing the last list read {age(c.stale.ageSeconds)} ago; the server cannot be reached now.
+                Показан последний список, прочитанный {age(c.stale.ageSeconds)} назад; сейчас сервер недоступен.
               </p>
             )}
             {c.message !== null && <p className="rh-error">{c.message}</p>}
             {c.outcome === "keychain_needs_approval" && c.credentialRef !== null && props.onAllowAccess !== undefined && (
               <p>
-                <button type="button" onClick={() => void allow(c.credentialRef as string)} title="macOS asks once; choose Always Allow. Other sessions pause while its dialog is open.">
-                  Allow access
+                <button type="button" onClick={() => void allow(c.credentialRef as string)} title="macOS спросит один раз; выберите «Всегда разрешать». Пока открыт его диалог, остальные сессии на паузе.">
+                  Разрешить доступ
                 </button>
               </p>
             )}
             {c.fingerprint !== null && (c.outcome === "tls_untrusted" || c.outcome === "cert_changed") && (
               <div className="rh-cert" data-testid="pve-cert">
                 <p>
-                  Certificate fingerprint (SHA-256): <code>{c.fingerprint}</code>
+                  Отпечаток сертификата (SHA-256): <code>{c.fingerprint}</code>
                 </p>
                 <button type="button" onClick={() => void pin(c.profileId, c.fingerprint as string)}>
-                  {c.outcome === "cert_changed" ? "Trust the new certificate" : "Trust this certificate"}
+                  {c.outcome === "cert_changed" ? "Доверять новому сертификату" : "Доверять этому сертификату"}
                 </button>
               </div>
             )}
-            {c.outcome === "empty" && <p className="rh-hint">The account sees no virtual machines or containers.</p>}
-            {guests.length === 0 && c.guests.length > 0 && <p className="rh-hint">No guest matches.</p>}
+            {c.outcome === "empty" && <p className="rh-hint">Учётная запись не видит ни виртуальных машин, ни контейнеров.</p>}
+            {guests.length === 0 && c.guests.length > 0 && <p className="rh-hint">Ни один гость не подходит.</p>}
             {props.onOpenConsole !== undefined && c.nodes.length > 0 && (
-              <div className="rh-pve-nodes" aria-label={"Nodes of " + c.profileName}>
+              <div className="rh-pve-nodes" aria-label={"Узлы: " + c.profileName}>
                 {c.nodes.map((n) => (
                   <button
                     key={n.node}
                     type="button"
                     disabled={n.status !== "online"}
-                    title={n.status === "online" ? undefined : "The node is " + n.status}
-                    aria-label={"Open shell of node " + n.node}
+                    title={n.status === "online" ? undefined : "Узел: " + n.status}
+                    aria-label={"Открыть оболочку узла " + n.node}
                     onClick={() => props.onOpenConsole?.({ profileId: c.profileId, connectionName: c.profileName, request: { console: "node", node: n.node }, title: n.node })}
                   >
-                    Node shell: {n.node}
+                    Оболочка узла: {n.node}
                   </button>
                 ))}
               </div>

@@ -41,9 +41,9 @@ describe("PveTargets", () => {
     mount(api([conn("a", "env-a", { guests: [guest("a", { vmid: 101, name: "web" })] }), conn("b", "env-b", { outcome: "login_failed", message: "Proxmox refused the login." })]));
     const sections = await screen.findAllByTestId("pve-connection");
     expect(sections).toHaveLength(2);
-    expect(within(sections[0]!).getByTestId("pve-outcome").textContent).toBe("connected");
+    expect(within(sections[0]!).getByTestId("pve-outcome").textContent).toBe("подключено");
     expect(within(sections[0]!).getByText("web")).toBeTruthy();
-    expect(within(sections[1]!).getByTestId("pve-outcome").textContent).toBe("login refused");
+    expect(within(sections[1]!).getByTestId("pve-outcome").textContent).toBe("вход отклонён");
     expect(within(sections[1]!).getByText("Proxmox refused the login.")).toBeTruthy();
   });
 
@@ -52,9 +52,9 @@ describe("PveTargets", () => {
     const cards = await screen.findAllByTestId("pve-guest");
     for (const word of ["Start", "Stop", "Shutdown", "Reboot", "Migrate", "Snapshot", "Delete"]) expect(screen.queryByRole("button", { name: new RegExp(word, "i") })).toBeNull();
     const [web, old] = cards as [HTMLElement, HTMLElement];
-    expect((within(web).getByRole("button", { name: /Open console of web/ }) as HTMLButtonElement).disabled).toBe(true);
+    expect((within(web).getByRole("button", { name: /Открыть консоль: web/ }) as HTMLButtonElement).disabled).toBe(true);
     expect(within(web).getByTestId("pve-console-reason").textContent).toBe(CONSOLE_OFF_REASON);
-    expect((within(old).getByRole("button", { name: /Open console of old/ }) as HTMLButtonElement).disabled).toBe(true);
+    expect((within(old).getByRole("button", { name: /Открыть консоль: old/ }) as HTMLButtonElement).disabled).toBe(true);
     expect(within(old).getByTestId("pve-console-reason").textContent).toContain("the guest is stopped");
   });
 
@@ -64,21 +64,21 @@ describe("PveTargets", () => {
     render(<PveTargets api={a} profileIds={null} linkable={[]} onConnectProfile={vi.fn()} onOpenConsole={onOpenConsole} onClose={vi.fn()} />);
     const cards = await screen.findAllByTestId("pve-guest");
     const [web, db, old] = cards as [HTMLElement, HTMLElement, HTMLElement];
-    fireEvent.click(within(web).getByRole("button", { name: /Open console of web/ }));
+    fireEvent.click(within(web).getByRole("button", { name: /Открыть консоль: web/ }));
     expect(onOpenConsole).toHaveBeenLastCalledWith({ profileId: "a", connectionName: "env-a", request: { console: "lxc", vmid: 101 }, title: "web" });
-    expect(within(db).getByRole("button", { name: /Open console of db/ }).textContent).toBe("Open graphics");
-    fireEvent.click(within(db).getByRole("button", { name: /Open console of db/ }));
+    expect(within(db).getByRole("button", { name: /Открыть консоль: db/ }).textContent).toBe("Открыть графику");
+    fireEvent.click(within(db).getByRole("button", { name: /Открыть консоль: db/ }));
     expect(onOpenConsole).toHaveBeenLastCalledWith({ profileId: "a", connectionName: "env-a", request: { console: "qemu", vmid: 200 }, title: "db" });
-    expect((within(old).getByRole("button", { name: /Open console of old/ }) as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.click(screen.getByRole("button", { name: "Open shell of node pve1" }));
+    expect((within(old).getByRole("button", { name: /Открыть консоль: old/ }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Открыть оболочку узла pve1" }));
     expect(onOpenConsole).toHaveBeenLastCalledWith({ profileId: "a", connectionName: "env-a", request: { console: "node", node: "pve1" }, title: "pve1" });
-    expect((screen.getByRole("button", { name: "Open shell of node pve2" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Открыть оболочку узла pve2" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("searches by name, id, node and type", async () => {
     mount(api([conn("a", "env-a", { guests: [guest("a", { vmid: 101, name: "web" }), guest("a", { vmid: 200, name: "db", kind: "qemu", node: "pve2" })] })]));
     await screen.findAllByTestId("pve-guest");
-    const search = screen.getByLabelText("Search guests");
+    const search = screen.getByLabelText("Поиск гостей");
     fireEvent.change(search, { target: { value: "db" } });
     expect(screen.getAllByTestId("pve-guest")).toHaveLength(1);
     fireEvent.change(search, { target: { value: "101" } });
@@ -86,7 +86,7 @@ describe("PveTargets", () => {
     fireEvent.change(search, { target: { value: "pve2" } });
     expect(screen.getByText("db")).toBeTruthy();
     fireEvent.change(search, { target: { value: "nothing" } });
-    expect(screen.getByText("No guest matches.")).toBeTruthy();
+    expect(screen.getByText("Ни один гость не подходит.")).toBeTruthy();
   });
 
   it("refresh asks again with refresh set", async () => {
@@ -94,7 +94,7 @@ describe("PveTargets", () => {
     mount(a);
     await screen.findByTestId("pve-connection");
     expect(a.targets).toHaveBeenLastCalledWith({ refresh: false });
-    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    fireEvent.click(screen.getByRole("button", { name: "Обновить" }));
     await waitFor(() => expect(a.targets).toHaveBeenLastCalledWith({ refresh: true }));
   });
 
@@ -103,38 +103,38 @@ describe("PveTargets", () => {
     mount(a);
     const cert = await screen.findByTestId("pve-cert");
     expect(cert.textContent).toContain(FP);
-    fireEvent.click(within(cert).getByRole("button", { name: "Trust this certificate" }));
+    fireEvent.click(within(cert).getByRole("button", { name: "Доверять этому сертификату" }));
     await waitFor(() => expect(a.pinTrust).toHaveBeenCalledWith("a", FP));
     await waitFor(() => expect(a.targets).toHaveBeenLastCalledWith({ refresh: true }));
   });
 
   it("a changed certificate says so in the button", async () => {
     mount(api([conn("a", "env-a", { outcome: "cert_changed", fingerprint: FP })]));
-    expect(await screen.findByRole("button", { name: "Trust the new certificate" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Доверять новому сертификату" })).toBeTruthy();
   });
 
   it("stale data says how old it is", async () => {
     mount(api([conn("a", "env-a", { outcome: "unreachable", stale: { ageSeconds: 120 }, guests: [guest("a", { vmid: 101, name: "web" })] })]));
-    expect((await screen.findByTestId("pve-stale")).textContent).toContain("2 min ago");
+    expect((await screen.findByTestId("pve-stale")).textContent).toContain("2 мин назад");
   });
 
   it("an empty list is stated, not shown as an error", async () => {
     mount(api([conn("a", "env-a", { outcome: "empty" })]));
-    expect(await screen.findByText("The account sees no virtual machines or containers.")).toBeTruthy();
+    expect(await screen.findByText("Учётная запись не видит ни виртуальных машин, ни контейнеров.")).toBeTruthy();
   });
 
   it("links a guest to an SSH profile the owner picks, and connects through it", async () => {
     const a = api([conn("a", "env-a", { guests: [guest("a", { vmid: 101, name: "web" })] })]);
     mount(a);
-    const select = (await screen.findByLabelText("Linked profile of web")) as HTMLSelectElement;
-    expect(Array.from(select.options).map((o) => o.textContent)).toEqual(["none", "web shell (SSH)"]);
+    const select = (await screen.findByLabelText("Связанное подключение: web")) as HTMLSelectElement;
+    expect(Array.from(select.options).map((o) => o.textContent)).toEqual(["нет", "web shell (SSH)"]);
     fireEvent.change(select, { target: { value: "ssh-1" } });
     await waitFor(() => expect(a.linkGuest).toHaveBeenCalledWith("a", 101, "ssh-1"));
   });
 
   it("a linked guest offers Connect through the linked profile", async () => {
     const { onConnectProfile } = mount(api([conn("a", "env-a", { guests: [guest("a", { vmid: 101, name: "web", linkedProfileId: "ssh-1" })] })]));
-    fireEvent.click(await screen.findByRole("button", { name: "Connect to web through web shell" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Подключиться к web через web shell" }));
     expect(onConnectProfile).toHaveBeenCalledWith("ssh-1");
   });
 
@@ -149,21 +149,21 @@ describe("PveTargets", () => {
     const onAllowAccess = vi.fn(async (_ref: string) => ({}));
     const a = api([conn("a", "env-a", { outcome: "keychain_needs_approval", message: "macOS has not allowed this Remote Hub build", credentialRef: "rh-cred:v1:local:0b8e6f4a-5c2d-4e1b-9a37-1f2e3d4c5b01" })]);
     mount(a, { onAllowAccess });
-    fireEvent.click(await screen.findByRole("button", { name: "Allow access" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Разрешить доступ" }));
     await waitFor(() => expect(onAllowAccess).toHaveBeenCalledWith("rh-cred:v1:local:0b8e6f4a-5c2d-4e1b-9a37-1f2e3d4c5b01"));
     // the list is read again afterwards
     await waitFor(() => expect(a.targets).toHaveBeenCalledTimes(2));
-    expect((await screen.findByTestId("pve-outcome")).textContent).toBe("needs approval");
+    expect((await screen.findByTestId("pve-outcome")).textContent).toBe("нужно разрешение");
   });
 
   it("a locked Keychain shows its own outcome and no button; without the action there is no button either", async () => {
     const locked = api([conn("a", "env-a", { outcome: "keychain_locked", message: "The login Keychain is locked.", credentialRef: "rh-cred:v1:local:0b8e6f4a-5c2d-4e1b-9a37-1f2e3d4c5b01" })]);
     mount(locked, { onAllowAccess: vi.fn() });
-    expect((await screen.findByTestId("pve-outcome")).textContent).toBe("Keychain locked");
-    expect(screen.queryByRole("button", { name: "Allow access" })).toBeNull();
+    expect((await screen.findByTestId("pve-outcome")).textContent).toBe("Связка ключей заблокирована");
+    expect(screen.queryByRole("button", { name: "Разрешить доступ" })).toBeNull();
     cleanup();
     mount(api([conn("a", "env-a", { outcome: "keychain_needs_approval", message: "m", credentialRef: "rh-cred:v1:local:0b8e6f4a-5c2d-4e1b-9a37-1f2e3d4c5b01" })]));
     await screen.findByTestId("pve-outcome");
-    expect(screen.queryByRole("button", { name: "Allow access" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Разрешить доступ" })).toBeNull();
   });
 });
