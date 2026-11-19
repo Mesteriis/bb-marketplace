@@ -168,6 +168,8 @@ import type { HistoryState } from "./src/ui/thread-list.tsx";
 import { dropAction, dropRefusal, readMovePayload } from "./src/ui/drag-move.ts";
 import { SaveSearchDialog, type SavedSearchEdit } from "./src/ui/saved-searches.tsx";
 import type { InboxTabView } from "./src/ui/inbox-tabs.tsx";
+import type { TypingOptions } from "./src/ui/editor-typing.ts";
+import { parsePairs } from "./src/core/autocorrect.ts";
 import type { InboxTabsPort } from "./src/ui/settings/tabs-settings.tsx";
 import { TAB_NAME_MAX } from "./src/core/inbox-tabs.ts";
 import {
@@ -2950,6 +2952,17 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
   );
   const pluginSettings = useSettings().values;
   cleanLinksOn.current = pluginSettings?.cleanLinks !== false;
+  // Typing speed: the composer's aids.
+  const pairsText = typeof pluginSettings?.autocorrectPairs === "string" ? pluginSettings.autocorrectPairs : "";
+  const typing = useMemo<TypingOptions>(
+    () => ({
+      autocorrect: pluginSettings?.autocorrect !== false,
+      pairs: parsePairs(pairsText),
+      autocomplete: pluginSettings?.autocomplete !== false,
+      phrases: [],
+    }),
+    [pluginSettings?.autocorrect, pluginSettings?.autocomplete, pairsText],
+  );
   // Slice 3h: the reading settings and the Search and reading tab.
   const readingSettings = {
     mailView: pluginSettings?.mailView === "plain" ? ("plain" as const) : ("original" as const),
@@ -4491,6 +4504,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       listFilter={listFilter}
       onListFilter={setListFilter}
       tabs={tabPorts}
+      typing={typing}
       inbox={inboxPorts}
       ai={mailAi}
       bb={mailBb}

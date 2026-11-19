@@ -739,6 +739,26 @@ function defineSettings(bb: BbPluginApi) {
       label: "Remove tracking from links I open",
       default: true,
     },
+    // Typing speed: the composer's aids. Everything stays on this computer.
+    autocorrect: {
+      type: "boolean",
+      label: "Fix common typing slips as I write",
+      description: "Backspace right after a fix puts back what you typed.",
+      default: true,
+    },
+    autocorrectPairs: {
+      type: "string",
+      label: "My own replacements",
+      description: "from => to, separated by semicolons: brb => be right back; omw => on my way.",
+      default: "",
+      experimental_schema: PAGE_SETTING_SCHEMAS.autocorrectPairs,
+    },
+    autocomplete: {
+      type: "boolean",
+      label: "Offer the rest of phrases I often write",
+      description: "From your own sent mail and templates, on this computer. Tab accepts.",
+      default: true,
+    },
   });
 }
 

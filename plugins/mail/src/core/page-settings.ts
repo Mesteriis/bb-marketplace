@@ -53,6 +53,12 @@ export const PAGE_SETTING_SCHEMAS = {
   readingPane: z.enum(["right", "bottom"]),
   language: z.enum(["auto", "ru", "en"]),
   cleanLinks: z.boolean(),
+  /** Typing speed: fix common slips as a word ends. */
+  autocorrect: z.boolean(),
+  /** The owner's own replacements: `from => to`, separated by `;` or new lines. */
+  autocorrectPairs: z.string().max(20_000),
+  /** Typing speed: offer the rest of a phrase the owner often writes. */
+  autocomplete: z.boolean(),
 } as const;
 
 /** Every setting the page shows. */
@@ -93,6 +99,9 @@ export const PAGE_SETTING_DEFAULTS: PageSettings = {
   readingPane: "right",
   language: "auto",
   cleanLinks: true,
+  autocorrect: true,
+  autocorrectPairs: "",
+  autocomplete: true,
 };
 
 /** The stored settings as the page shows them: each key checked, a value that does not fit replaced by its default. */

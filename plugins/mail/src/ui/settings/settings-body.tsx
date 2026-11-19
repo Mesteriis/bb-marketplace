@@ -10,7 +10,7 @@ import type { SettingsSectionId } from "./sections.ts";
 import { PgpSettings } from "../pgp-settings.tsx";
 import { PLUGIN_SETTINGS_HINT, type MailSettingsProps } from "./shared.ts";
 import { AccountsSection } from "./accounts-section.tsx";
-import { AgentSwitches } from "./section-settings.tsx";
+import { AgentSwitches, TypingSettings } from "./section-settings.tsx";
 import { AddressesSection } from "./addresses-section.tsx";
 import { LocalDataSection } from "./local-data-section.tsx";
 import { PluginAccessSection } from "./plugin-access-section.tsx";
@@ -94,7 +94,12 @@ export function SettingsBody(props: MailSettingsProps & { section: SettingsSecti
     );
   }
   if (section === "templates") {
-    return <TemplatesSection templates={props.templates} onSave={props.onSaveTemplate} onDelete={props.onDeleteTemplate} />;
+    return (
+      <div className="flex flex-col gap-4">
+        <TemplatesSection templates={props.templates} onSave={props.onSaveTemplate} onDelete={props.onDeleteTemplate} />
+        {props.settings !== undefined ? <TypingSettings port={props.settings} /> : null}
+      </div>
+    );
   }
   if (section === "local") return <LocalDataSection vaultReady={props.vaultReady !== false} onCopy={props.onCopy} />;
   return (

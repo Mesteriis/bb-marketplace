@@ -2092,7 +2092,7 @@ describe("settings page contract", () => {
     expect(SETTINGS_METHODS).toEqual(["settings_get", "settings_set"]);
     expect(Object.keys(rpcSchemas).filter((m) => !([...PLUGIN_METHODS, ...INBOX_TAB_METHODS] as readonly string[]).includes(m))).toHaveLength(180);
     expect(keysOf(rpcSchemas.settings_get.output)).not.toContain("vaultKey");
-    expect(keysOf(rpcSchemas.settings_get.output)).toHaveLength(32);
+    expect(keysOf(rpcSchemas.settings_get.output)).toHaveLength(35);
   });
 
   it("settings_set takes writable keys only", () => {

@@ -10,6 +10,7 @@ import StarterKit from "@tiptap/starter-kit";
 import { closeHistory } from "@tiptap/pm/history";
 import type { Node as PmNode } from "@tiptap/pm/model";
 import { cn } from "@/lib/utils";
+import { typingExtension, type TypingOptions } from "./editor-typing.ts";
 import { sanitizeEmailHtml } from "./sanitize.ts";
 import {
   SIGNATURE_CLASS,
@@ -70,7 +71,7 @@ export interface EditorFeatures {
 }
 
 /** The StarterKit as the composer uses it: the server's schema, nothing more. */
-export function composeExtensions(features: EditorFeatures = {}) {
+export function composeExtensions(features: EditorFeatures = {}, typing?: () => TypingOptions) {
   const lists = features.lists ?? true;
   const quotes = features.quotes ?? true;
   const signature = features.signature ?? true;
@@ -89,6 +90,8 @@ export function composeExtensions(features: EditorFeatures = {}) {
       link: { openOnClick: false, autolink: true, protocols: LINK_PROTOCOLS, defaultProtocol: "https" },
     }),
     ...(signature ? [SignatureDocument, SignatureNode] : []),
+    // Typing speed: autocorrect and the other aids, where the host gives their settings.
+    ...(typing !== undefined ? [typingExtension(typing)] : []),
   ];
 }
 
@@ -292,6 +295,8 @@ export interface ComposeEditorProps {
   label: string;
   /** Lists, quotes and the signature block; all on unless turned off. */
   features?: EditorFeatures;
+  /** Typing speed: the aids' settings, read on every key; absent: none of them. */
+  typing?: () => TypingOptions;
   className?: string;
 }
 
@@ -305,6 +310,7 @@ export function ComposeEditor({
   onLinkShortcut,
   label,
   features,
+  typing,
   className,
 }: ComposeEditorProps) {
   const handlers = useRef({ onChange, onFiles, onLinkShortcut, onImported });
@@ -314,7 +320,7 @@ export function ComposeEditor({
   const editorRef = useRef<Editor | null>(null);
 
   const editor = useEditor({
-    extensions: composeExtensions(features),
+    extensions: composeExtensions(features, typing),
     content: initialDoc,
     immediatelyRender: true,
     shouldRerenderOnTransaction: false,

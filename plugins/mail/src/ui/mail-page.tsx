@@ -113,6 +113,7 @@ import { SearchHelpButton, SearchNotes } from "./search-help.tsx";
 import { ServerSearchStrip, type ServerJobView } from "./server-search-strip.tsx";
 import { SAVED_SEARCH_GONE_TEXT } from "./saved-searches.tsx";
 import { SenderCardDialog } from "./sender-card.tsx";
+import type { TypingOptions } from "./editor-typing.ts";
 import { InboxTabs, type InboxTabView, type TabRequest } from "./inbox-tabs.tsx";
 import { TAB_LIBRARY, TAB_NAME_MAX } from "../core/inbox-tabs.ts";
 import { getLanguage, tx } from "./i18n/index.ts";
@@ -393,6 +394,8 @@ export interface MailPageProps {
   /** The quick filters of the list shown (slice 3e); absent: no toggles. */
   listFilter?: ListFilter;
   onListFilter?: (next: ListFilter) => void;
+  /** Typing speed: the composer's aids as the settings have them; absent: none. */
+  typing?: TypingOptions;
   /** Split Inbox: the Inbox tabs; absent: no tabs anywhere on the page. */
   tabs?: MailTabsPorts;
   /** Unsubscribe, snooze and block (slice 3e); absent: none of them. */
@@ -1219,6 +1222,7 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
         draft={composer.draft}
         accounts={status.accounts}
         ports={props.composerPorts}
+        {...(props.typing !== undefined ? { typing: props.typing } : {})}
         warning={composer.warning}
         dropped={composer.dropped}
         layout={wide ? "panel" : "page"}

@@ -4,7 +4,7 @@
 // request id per Send (reused when the call is retried), and on Escape
 // either closes or asks Save draft · Discard · Keep editing. Every RPC is an
 // injected port; nothing here knows the host.
-import { useEffect, useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode } from "react";
 import type { Editor } from "@tiptap/react";
 import type { Account, ComposeAttachment, DraftView, IdentityView, MailAddress } from "../core/model.ts";
 import type { PresendIssue } from "../core/presend.ts";
@@ -37,6 +37,7 @@ import {
   type UploadPort,
 } from "./attachments-input.tsx";
 import { ComposeEditor, ownerRange, replaceOwnerRange, type EditorDoc } from "./compose-editor.tsx";
+import { NO_TYPING, type TypingOptions } from "./editor-typing.ts";
 import { Checkbox } from "@/components/ui/checkbox";
 import type { AiJobPorts } from "./ai-job.ts";
 import { ImproveDialog, ImproveMenu, type DraftMode, type ImproveRequest } from "./improve-dialog.tsx";
@@ -106,6 +107,8 @@ export interface ComposerPorts {
 }
 
 export interface ComposerProps {
+  /** Typing speed: autocorrect and autocomplete as the settings have them; absent: none. */
+  typing?: TypingOptions;
   /** Slice 3i: Apple Mail's Shift+Command+D sends; absent: read from the platform. */
   mac?: boolean;
   draft: DraftView;
@@ -309,6 +312,10 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
   const { draft, ports, accounts } = props;
   const rootRef = useRef<HTMLElement | null>(null);
   const [editor, setEditor] = useState<Editor | null>(null);
+  // Typing speed: the editor reads the settings on every key, so a change applies without a new editor.
+  const typingRef = useRef<TypingOptions>(props.typing ?? NO_TYPING);
+  typingRef.current = props.typing ?? NO_TYPING;
+  const typingNow = useCallback(() => typingRef.current, []);
   const [linkOpen, setLinkOpen] = useState(false);
   const [from, setFrom] = useState<{ accountId: string; address: string | null }>({
     accountId: draft.accountId,
@@ -1124,6 +1131,7 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
             void save(false, true);
           }}
           onLinkShortcut={() => setLinkOpen(true)}
+          {...(props.typing !== undefined ? { typing: typingNow } : {})}
         />
         <AttachmentChips
           attachments={attachments}

@@ -71,6 +71,36 @@ export function AgentSwitches({ port }: Rows) {
   );
 }
 
+/** Typing speed: the composer's aids (in the Templates section). */
+export function TypingSettings({ port }: Rows) {
+  return (
+    <SettingsGroup title={tx("Typing")}>
+      <div className="flex flex-col">
+        <SwitchSetting
+          port={port}
+          name="autocorrect"
+          label={tx("Fix common typing slips as I write")}
+          hint={tx("Backspace right after a fix puts back what you typed.")}
+        />
+        <TextSetting
+          port={port}
+          name="autocorrectPairs"
+          wide
+          label={tx("My own replacements")}
+          hint={tx("from => to, separated by semicolons.")}
+          placeholder="brb => be right back; omw => on my way"
+        />
+        <SwitchSetting
+          port={port}
+          name="autocomplete"
+          label={tx("Offer the rest of phrases I often write")}
+          hint={tx("From your own sent mail and templates, on this computer. Tab accepts.")}
+        />
+      </div>
+    </SettingsGroup>
+  );
+}
+
 export function NotificationSettings({ port }: Rows) {
   return (
     <SettingsGroup title={tx("New mail notifications")}>
