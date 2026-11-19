@@ -122,6 +122,16 @@ describe("CredentialBook.save", () => {
     await expect(book.save({ profileId: p.id, secret: SECRET })).rejects.toMatchObject({ code: "credential_exists" });
   });
 
+  it("the Keychain's answer is a state: locked and needs_approval are told apart", async () => {
+    const { profiles, vault, book } = setup();
+    const p = profiles.save({ fields: RDP });
+    const { ref } = await book.save({ profileId: p.id, secret: SECRET });
+    for (const [code, state] of [["keychain_locked", "locked"], ["keychain_needs_approval", "needs_approval"], ["keychain_denied", "denied"], ["something_else", "unavailable"]] as const) {
+      vault.failWith = code;
+      expect(await book.status(ref), code).toBe(state);
+    }
+  });
+
   it("a vault failure stores nothing and links nothing; the code is the vault's", async () => {
     const { profiles, meta, vault, book } = setup();
     const p = profiles.save({ fields: RDP });
