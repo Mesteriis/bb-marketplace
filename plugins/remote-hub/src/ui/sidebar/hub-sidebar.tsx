@@ -35,6 +35,8 @@ export interface HubSidebarProps {
   onCredentials: () => void;
   onAgents: () => void;
   onAllow: (profileId: string) => void;
+  /** The connection's full guest list on the page (certificate confirmation, linked connections). */
+  onGuests: (profileId: string) => void;
   onRetry: () => void;
 }
 
@@ -138,11 +140,9 @@ export function HubSidebar(props: HubSidebarProps) {
         return (
           <div key={`e${r.profileId}`} className="flex flex-col gap-1.5 py-1 pl-7 pr-2 text-xs text-muted-foreground" role="status" data-testid="sidebar-problem">
             <span>{r.outcome === "keychain_needs_approval" ? tx("pve.needsApproval") : tx("pve.unreadable", { code: r.outcome })}</span>
-            {r.outcome === "keychain_needs_approval" && (
-              <Button type="button" size="sm" variant="outline" className="self-start" onClick={() => props.onAllow(r.profileId)}>
-                {tx("pve.allow")}
-              </Button>
-            )}
+            <Button type="button" size="sm" variant="outline" className="self-start" onClick={() => (r.outcome === "keychain_needs_approval" ? props.onAllow(r.profileId) : props.onGuests(r.profileId))}>
+              {tx(r.outcome === "keychain_needs_approval" ? "pve.allow" : "pve.details")}
+            </Button>
           </div>
         );
     }

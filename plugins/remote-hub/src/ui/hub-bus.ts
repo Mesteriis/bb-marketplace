@@ -8,6 +8,8 @@ export type HubCommand =
   | { type: "console"; profileId: string; connectionName: string; request: PveConsoleRequest; title: string }
   | { type: "edit"; profileId: string | null }
   | { type: "add-pve" }
+  /** The full guest list of one Proxmox connection: certificate confirmation, linked connections. */
+  | { type: "guests"; profileId: string }
   | { type: "credentials" }
   | { type: "import" }
   | { type: "agents" }

@@ -30,8 +30,8 @@ describe("SessionCard: the directive in a message is a card, never a live view",
     const a = api();
     render(<SessionCard sessionKey={KEY} api={a} />);
     await waitFor(() => expect(screen.getByTestId("session-card")).toBeTruthy());
-    expect(screen.getByTestId("session-card").textContent).toContain("terminal");
-    expect(screen.getByTestId("session-card").textContent).toContain("agent thread thr_open");
+    expect(screen.getByTestId("session-card").textContent).toContain("терминал");
+    expect(screen.getByTestId("session-card").textContent).toContain("тред агента thr_open");
     expect(a.describe).toHaveBeenCalledWith({ generation: GEN, sessionId: 4 });
     expect(a.watchInSplit).not.toHaveBeenCalled();
     expect(a.open).not.toHaveBeenCalled();
@@ -41,19 +41,19 @@ describe("SessionCard: the directive in a message is a card, never a live view",
   it("Watch in split uses the thread the SERVICE says holds or opened the session (the lease first)", async () => {
     const a = api({ describe: vi.fn(async () => view({ leaseThreadId: "thr_lease", controlledBy: "agent" })) });
     render(<SessionCard sessionKey={KEY} api={a} />);
-    await waitFor(() => screen.getByRole("button", { name: "Watch in split" }));
-    fireEvent.click(screen.getByRole("button", { name: "Watch in split" }));
+    await waitFor(() => screen.getByRole("button", { name: "Рядом с тредом" }));
+    fireEvent.click(screen.getByRole("button", { name: "Рядом с тредом" }));
     await waitFor(() => expect(a.watchInSplit).toHaveBeenCalledWith(KEY, "thr_lease"));
   });
 
   it("Open live view opens the page; and when splits are off a link to the thread is shown", async () => {
     const a = api({ watchInSplit: vi.fn(async () => ({ result: "fallback" as const })) });
     render(<SessionCard sessionKey={KEY} api={a} />);
-    await waitFor(() => screen.getByRole("button", { name: "Open live view" }));
-    fireEvent.click(screen.getByRole("button", { name: "Open live view" }));
+    await waitFor(() => screen.getByRole("button", { name: "Открыть сессию" }));
+    fireEvent.click(screen.getByRole("button", { name: "Открыть сессию" }));
     expect(a.open).toHaveBeenCalledWith(KEY);
-    fireEvent.click(screen.getByRole("button", { name: "Watch in split" }));
-    const link = await screen.findByRole("button", { name: "one click away" });
+    fireEvent.click(screen.getByRole("button", { name: "Рядом с тредом" }));
+    const link = await screen.findByRole("button", { name: "в один клик" });
     fireEvent.click(link);
     expect(a.openThread).toHaveBeenCalledWith("thr_open");
   });
@@ -61,10 +61,10 @@ describe("SessionCard: the directive in a message is a card, never a live view",
   it("refuses an id that is not generation.number, and says so for a closed or unknown session", async () => {
     const a = api();
     const { unmount } = render(<SessionCard sessionKey="../../etc" api={a} />);
-    expect(screen.getByRole("alert").textContent).toContain("not a session");
+    expect(screen.getByRole("alert").textContent).toContain("не сессия");
     expect(a.describe).not.toHaveBeenCalled();
     unmount();
     render(<SessionCard sessionKey={KEY} api={api({ describe: vi.fn(async () => null) })} />);
-    await waitFor(() => expect(screen.getByRole("status").textContent).toContain("no longer open"));
+    await waitFor(() => expect(screen.getByRole("status").textContent).toContain("уже закрыта"));
   });
 });

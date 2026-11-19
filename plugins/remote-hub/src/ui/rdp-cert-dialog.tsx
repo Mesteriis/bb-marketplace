@@ -55,47 +55,47 @@ export function RdpCertDialog(props: RdpCertDialogProps) {
         }
       }}
     >
-      <h3 id="rh-rdp-cert-title">Trust this server certificate?</h3>
+      <h3 id="rh-rdp-cert-title">Доверять сертификату этого сервера?</h3>
       <p id="rh-rdp-cert-reason" className={prompt.reason === "cert_changed" ? "rh-error" : undefined}>
         {promptReasonText(prompt.reason)}
       </p>
       {prompt.firstUse === true && (
         <p data-testid="rdp-cert-pins" className="rh-error">
-          Accepting this pins the saved password to this certificate: it will be sent to no other certificate. Save the password again to change that.
+          Согласие привяжет сохранённый пароль к этому сертификату: другому он отправлен не будет. Чтобы изменить это, сохраните пароль заново.
         </p>
       )}
       <dl className="rh-rdp-cert-fields">
-        <dt>server</dt>
+        <dt>сервер</dt>
         <dd>
           {prompt.host}:{prompt.port}
         </dd>
-        <dt>fingerprint (SHA-256)</dt>
+        <dt>отпечаток (SHA-256)</dt>
         <dd data-testid="rdp-cert-fingerprint" className="rh-rdp-fingerprint">
           {prompt.fingerprint}
         </dd>
-        <dt>subject</dt>
+        <dt>субъект</dt>
         <dd data-testid="rdp-cert-subject">{prompt.subject}</dd>
-        <dt>issuer</dt>
-        <dd data-testid="rdp-cert-issuer">{prompt.issuer === "" ? "(empty issuer)" : prompt.issuer}</dd>
-        <dt>valid</dt>
+        <dt>издатель</dt>
+        <dd data-testid="rdp-cert-issuer">{prompt.issuer === "" ? "(издатель не указан)" : prompt.issuer}</dd>
+        <dt>действует</dt>
         <dd data-testid="rdp-cert-valid">
-          {formatCertTime(prompt.notBefore)} to {formatCertTime(prompt.notAfter)}
+          {formatCertTime(prompt.notBefore)} — {formatCertTime(prompt.notAfter)}
         </dd>
       </dl>
       <div className="rh-rdp-cert-actions">
         <button type="button" onClick={() => decide("once")} disabled={disabled}>
-          Accept once
+          Принять один раз
         </button>
         <button type="button" onClick={() => decide("session_trust")} disabled={disabled}>
-          Trust for this BB run
+          Доверять до перезапуска BB
         </button>
         {prompt.reason !== "cert_changed" && (
           <button type="button" onClick={() => decide("always_trust")} disabled={disabled}>
-            Always trust this certificate
+            Всегда доверять этому сертификату
           </button>
         )}
         <button type="button" onClick={() => decide("reject")} disabled={disabled}>
-          Reject
+          Отклонить
         </button>
       </div>
     </div>

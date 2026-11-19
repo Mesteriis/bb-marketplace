@@ -109,57 +109,6 @@
   height: 100%;
 }
 
-/* One page font size for everything in the shell, so no button or field is larger than its neighbours. */
-.rh-shell {
-  display: flex;
-  height: 100%;
-  font-size: 13px;
-  background: var(--background, #0d1117);
-  color: var(--foreground, #c9d1d9);
-  font-family: var(--font-sans, system-ui, sans-serif);
-}
-
-.rh-connect {
-  display: flex;
-  flex-direction: column;
-  flex: 1 1 auto;
-  min-width: 0;
-  height: 100%;
-  background: var(--background, #0d1117);
-  color: var(--foreground, #c9d1d9);
-  font-family: var(--font-sans, system-ui, sans-serif);
-}
-
-.rh-kind {
-  display: flex;
-  gap: 4px;
-  padding: 12px 12px 0;
-}
-
-.rh-kind button {
-  background: transparent;
-  color: var(--foreground, #c9d1d9);
-  border: 1px solid var(--border, #30363d);
-  border-radius: 4px;
-  padding: 2px 12px;
-  cursor: pointer;
-  font: inherit;
-}
-
-.rh-kind button[aria-pressed="true"] {
-  background: var(--foreground, #c9d1d9);
-  color: var(--background, #0d1117);
-}
-
-.rh-kind-pane {
-  flex: 1 1 auto;
-  min-height: 0;
-}
-
-.rh-kind-pane[hidden] {
-  display: none;
-}
-
 /* RDP view. */
 .rh-header button {
   background: var(--foreground, #c9d1d9);
@@ -322,56 +271,6 @@
   gap: 8px;
 }
 
-.rh-connect-sessions {
-  display: flex;
-  flex-direction: column;
-  flex: 1 1 auto;
-  min-height: 0;
-}
-
-/* The Proxmox guest list: it scrolls in its own area. With consoles open under it the list takes a bounded share of the pane and
-   the console area keeps a real height, so both are usable (at 1280x581 as in a large window). */
-.rh-pve-list {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow: auto;
-}
-
-.rh-pve-list-with-consoles {
-  flex: 0 1 36%;
-  min-height: 96px;
-  border-bottom: 1px solid var(--border, #30363d);
-}
-
-.rh-connect-sessions-beside-list {
-  flex: 1 1 64%;
-  min-height: 300px;
-}
-
-.rh-connect-sessions[hidden] {
-  display: none;
-}
-
-.rh-quick {
-  align-self: center;
-  margin-right: 8px;
-  font-size: 12px;
-  color: var(--muted-foreground, #8b949e);
-}
-
-/* Profile catalogue. */
-.rh-catalogue {
-  flex: 0 0 300px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 12px;
-  overflow-y: auto;
-  border-right: 1px solid var(--border, #30363d);
-  box-sizing: border-box;
-}
-
-.rh-catalogue input,
 .rh-editor input,
 .rh-editor select {
   background: var(--surface-recessed-solid, #161b22);
@@ -382,7 +281,6 @@
   font: inherit;
 }
 
-.rh-catalogue button,
 .rh-editor button {
   background: transparent;
   color: var(--foreground, #c9d1d9);
@@ -393,40 +291,9 @@
   font: inherit;
 }
 
-.rh-catalogue button[aria-pressed="true"],
-.rh-catalogue .rh-new,
 .rh-editor button[type="submit"] {
   background: var(--foreground, #c9d1d9);
   color: var(--background, #0d1117);
-}
-
-.rh-catalogue-tools {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.rh-catalogue-tools .rh-kind {
-  padding: 0;
-  flex-wrap: wrap;
-}
-
-.rh-group h3 {
-  margin: 8px 0 4px;
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--muted-foreground, #8b949e);
-}
-
-.rh-group ul {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
 }
 
 .rh-profile {
@@ -466,17 +333,6 @@
 .rh-badge-agent {
   border-color: var(--primary, #d29922);
   color: var(--primary, #d29922);
-}
-
-.rh-control-notice {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-}
-
-.rh-control-notice p {
-  margin: 0;
 }
 
 .rh-profile-actions {

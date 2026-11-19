@@ -49,15 +49,15 @@ export function AgentBanner({ api }: { api: AgentBannerApi }) {
   }, [api, refresh]);
   if (rows.length === 0) return null;
   return (
-    <div className="rh-agent-banner" role="region" aria-label="Agents on remote sessions">
+    <div className="rh-agent-banner" role="region" aria-label="Агенты в удалённых сессиях">
       {rows.map((s) => {
         const key = `${s.generation}.${s.sessionId}`;
         const driving = s.controlledBy === "agent";
         return (
           <div key={key} role="status" className="rh-agent-banner-row" data-testid="agent-banner-row">
             <span>
-              {driving ? "An agent is driving" : "An agent opened"} a {s.kind === "rdp" ? "desktop" : "terminal"} session.{" "}
-              {s.watching ? "You are watching." : !s.watchingRequired ? "Nobody is watching, and your setting lets it act anyway." : driving ? "It is paused: nobody is watching it." : "It cannot act until you watch."}
+              {driving ? "Агент управляет сессией" : "Агент открыл сессию"} ({s.kind === "rdp" ? "рабочий стол" : "терминал"}).{" "}
+              {s.watching ? "Вы смотрите." : !s.watchingRequired ? "Никто не смотрит, но ваша настройка разрешает ему действовать." : driving ? "Он на паузе: никто не смотрит." : "Он не может действовать, пока вы не смотрите."}
             </span>
             <button
               type="button"
@@ -69,19 +69,19 @@ export function AgentBanner({ api }: { api: AgentBannerApi }) {
                 );
               }}
             >
-              Watch in split
+              Рядом с тредом
             </button>
             <button type="button" onClick={() => api.watch(key)}>
-              Watch
+              Смотреть
             </button>
             {noSplit.has(key) && agentThreadOf(s) !== null && (
               <button type="button" className="rh-link" onClick={() => api.openThread(agentThreadOf(s)!)}>
-                Splits are off here: open the agent's thread
+                Разделение здесь выключено: открыть тред агента
               </button>
             )}
             {driving && (
               <button type="button" onClick={() => void api.takeover({ generation: s.generation, sessionId: s.sessionId }).then(refresh, refresh)}>
-                Take control
+                Взять управление
               </button>
             )}
           </div>

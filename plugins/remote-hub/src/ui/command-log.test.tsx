@@ -52,11 +52,11 @@ describe("CommandLog", () => {
       { id: "c1", command: "make test", chunks: [{ stream: "stdout", text: "ok\n" }, { stream: "stderr", text: "<img src=x onerror=alert(1)>\n" }], truncated: true, running: false, exitCode: 1, reason: "exited" },
       { id: "c2", command: "sleep 99", chunks: [], truncated: false, running: true, exitCode: null, reason: null },
     ]} />);
-    const log = screen.getByLabelText("Commands an agent ran");
+    const log = screen.getByLabelText("Команды агента");
     expect(log.textContent).toContain("$ make test");
-    expect(log.textContent).toContain("exit 1");
-    expect(log.textContent).toContain("output cut");
-    expect(log.textContent).toContain("running…");
+    expect(log.textContent).toContain("код выхода 1");
+    expect(log.textContent).toContain("вывод обрезан");
+    expect(log.textContent).toContain("выполняется…");
     expect(log.textContent).toContain("<img src=x onerror=alert(1)>");
     expect(log.querySelector("img")).toBeNull();
     expect(screen.getByTestId("stderr-0").textContent).toContain("<img");
@@ -64,6 +64,6 @@ describe("CommandLog", () => {
 
   it("says plainly when a command was stopped rather than finished", () => {
     render(<CommandLog commands={[{ id: "c1", command: "sleep 99", chunks: [], truncated: false, running: false, exitCode: null, reason: "timeout" }]} />);
-    expect(screen.getByLabelText("Commands an agent ran").textContent).toContain("stopped: timeout");
+    expect(screen.getByLabelText("Команды агента").textContent).toContain("остановлена: timeout");
   });
 });

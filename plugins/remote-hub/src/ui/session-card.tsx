@@ -42,32 +42,32 @@ export function SessionCard({ sessionKey, api }: { sessionKey: string; api: Sess
   if (handle === null || key === null) {
     return (
       <p role="alert" className="rh-error">
-        This is not a session this plugin can show.
+        Это не сессия Remote Hub.
       </p>
     );
   }
-  if (info === "loading") return <p className="rh-notice">Looking for the session…</p>;
+  if (info === "loading") return <p className="rh-notice">Ищу сессию…</p>;
   if (info === "failed") {
     return (
       <p role="alert" className="rh-error">
-        Could not look up this session.
+        Не удалось найти эту сессию.
       </p>
     );
   }
   if (info === null || info.state === "closed") {
     return (
       <p role="status" className="rh-notice">
-        This session is no longer open.
+        Эта сессия уже закрыта.
       </p>
     );
   }
   const thread = agentThreadOf(info);
   return (
-    <div className="rh-session-card" role="group" aria-label="Live remote session" data-testid="session-card">
+    <div className="rh-session-card" role="group" aria-label="Удалённая сессия" data-testid="session-card">
       <p>
-        <strong>Live session</strong> — {info.kind === "rdp" ? "desktop" : info.kind === "vnc" ? "graphics" : "terminal"}
-        {thread !== null ? `, with agent thread ${thread}` : ""}.{" "}
-        {info.watching ? "You are watching it." : info.watchingRequired ? "The agent can act only while you watch it." : "Your setting lets the agent act without a watcher."}
+        <strong>Удалённая сессия</strong> — {info.kind === "rdp" ? "рабочий стол" : info.kind === "vnc" ? "графика" : "терминал"}
+        {thread !== null ? `, тред агента ${thread}` : ""}.{" "}
+        {info.watching ? "Вы смотрите её." : info.watchingRequired ? "Агент может действовать, только пока вы смотрите." : "Ваша настройка разрешает агенту действовать без наблюдателя."}
       </p>
       <div className="rh-session-card-actions">
         <button
@@ -77,17 +77,17 @@ export function SessionCard({ sessionKey, api }: { sessionKey: string; api: Sess
             void api.watchInSplit(key, thread).then((o) => setNotice(o.result === "fallback" ? "fallback" : null), () => undefined);
           }}
         >
-          Watch in split
+          Рядом с тредом
         </button>
         <button type="button" onClick={() => api.open(key)}>
-          Open live view
+          Открыть сессию
         </button>
       </div>
       {notice === "fallback" && thread !== null && (
         <p role="status" className="rh-notice">
-          This window cannot split. The live view is open; the agent's thread is{" "}
+          В этом окне нет разделения. Сессия открыта; тред агента —{" "}
           <button type="button" className="rh-link" onClick={() => api.openThread(thread)}>
-            one click away
+            в один клик
           </button>
           .
         </p>

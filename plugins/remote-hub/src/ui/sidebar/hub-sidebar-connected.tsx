@@ -110,6 +110,7 @@ export function HubSidebarConnected({ profiles: api, pve, allow, bus = defaultBu
           () => bus.send({ type: "credentials" }),
         );
       }}
+      onGuests={(profileId) => bus.send({ type: "guests", profileId })}
       onRetry={() => void reload()}
     />
   );

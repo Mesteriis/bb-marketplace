@@ -37,34 +37,34 @@ function mount(initial: ProfileFields | null = null) {
 describe("ProfileEditor", () => {
   it("has the Connection, Authentication and Source sections; no secret input for the agent", () => {
     const { container } = render(<ProfileEditor initial={null} onSave={async () => {}} onCancel={() => {}} />);
-    expect(screen.getByRole("group", { name: "Connection" })).toBeTruthy();
-    expect(screen.getByRole("group", { name: "Authentication" })).toBeTruthy();
-    expect(screen.getByRole("group", { name: "Source" })).toBeTruthy();
+    expect(screen.getByRole("group", { name: "Подключение" })).toBeTruthy();
+    expect(screen.getByRole("group", { name: "Вход" })).toBeTruthy();
+    expect(screen.getByRole("group", { name: "Источник" })).toBeTruthy();
     expect(container.querySelector('input[type="password"]')).toBeNull();
   });
 
   it("SSH password auth offers a password to keep in the Keychain; a key offers a passphrase only once a key file is named", () => {
     const { container } = render(<ProfileEditor initial={null} onSave={async () => {}} onCancel={() => {}} />);
-    fireEvent.change(screen.getByLabelText("Authentication type"), { target: { value: "password" } });
-    expect(screen.getByLabelText("Password to save in the Keychain")).toBeTruthy();
-    fireEvent.change(screen.getByLabelText("Authentication type"), { target: { value: "key" } });
+    fireEvent.change(screen.getByLabelText("Способ входа"), { target: { value: "password" } });
+    expect(screen.getByLabelText("Пароль для сохранения в Связке ключей")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Способ входа"), { target: { value: "key" } });
     expect(container.querySelector('input[type="password"]')).toBeNull();
-    type("Key file", "/Users/me/.ssh/id_test");
-    expect(screen.getByLabelText("Passphrase to save in the Keychain")).toBeTruthy();
+    type("Файл ключа", "/Users/me/.ssh/id_test");
+    expect(screen.getByLabelText("Парольная фраза для сохранения в Связке ключей")).toBeTruthy();
   });
 
   it("saves a new SSH key profile with exactly the typed values", async () => {
     const { onSave } = mount();
-    type("Name", "  build  ");
-    type("Host", "build.example.test");
-    type("Port", "2222");
-    type("User", "ci");
-    type("Group", "lab");
-    type("Tags", "linux, ci, linux");
-    fireEvent.change(screen.getByLabelText("Authentication type"), { target: { value: "key" } });
-    type("Key file", "/Users/dev/.ssh/id_ed25519");
-    fireEvent.click(screen.getByLabelText("Favorite"));
-    fireEvent.click(screen.getByText("Save"));
+    type("Название", "  build  ");
+    type("Адрес", "build.example.test");
+    type("Порт", "2222");
+    type("Пользователь", "ci");
+    type("Группа", "lab");
+    type("Метки", "linux, ci, linux");
+    fireEvent.change(screen.getByLabelText("Способ входа"), { target: { value: "key" } });
+    type("Файл ключа", "/Users/dev/.ssh/id_ed25519");
+    fireEvent.click(screen.getByLabelText("Избранное"));
+    fireEvent.click(screen.getByText("Сохранить"));
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
     expect(onSave.mock.calls[0]?.[0]).toEqual({
       name: "build",
@@ -88,94 +88,94 @@ describe("ProfileEditor", () => {
 
   it("refuses an invalid host with a message at the field and calls nothing", async () => {
     const { onSave } = mount();
-    type("Name", "x");
-    type("Host", "-oProxyCommand=evil");
-    fireEvent.click(screen.getByText("Save"));
+    type("Название", "x");
+    type("Адрес", "-oProxyCommand=evil");
+    fireEvent.click(screen.getByText("Сохранить"));
     expect((await screen.findAllByRole("alert")).some((a) => /host/i.test(a.textContent ?? ""))).toBe(true);
     expect(onSave).not.toHaveBeenCalled();
   });
 
   it("a port that is not a whole number is refused before saving", async () => {
     const { onSave } = mount();
-    type("Name", "x");
-    type("Host", "h.example.test");
-    type("Port", "22x");
-    fireEvent.click(screen.getByText("Save"));
-    expect((await screen.findAllByRole("alert")).some((a) => /port/i.test(a.textContent ?? ""))).toBe(true);
+    type("Название", "x");
+    type("Адрес", "h.example.test");
+    type("Порт", "22x");
+    fireEvent.click(screen.getByText("Сохранить"));
+    expect((await screen.findAllByRole("alert")).some((a) => /порт/i.test(a.textContent ?? ""))).toBe(true);
     expect(onSave).not.toHaveBeenCalled();
   });
 
   it("choosing RDP shows domain and desktop size, forces password sign-in and requires a user", async () => {
     const { onSave } = mount();
-    type("Name", "win");
-    type("Host", "win.example.test");
-    fireEvent.change(screen.getByLabelText("Protocol"), { target: { value: "rdp" } });
-    expect(screen.getByLabelText("Domain")).toBeTruthy();
-    expect(screen.getByLabelText("Desktop width")).toBeTruthy();
-    expect((screen.getByLabelText("Authentication type") as HTMLSelectElement).value).toBe("password");
-    expect(Array.from((screen.getByLabelText("Authentication type") as HTMLSelectElement).options).map((o) => o.value)).toEqual(["password"]);
-    fireEvent.click(screen.getByText("Save"));
+    type("Название", "win");
+    type("Адрес", "win.example.test");
+    fireEvent.change(screen.getByLabelText("Протокол"), { target: { value: "rdp" } });
+    expect(screen.getByLabelText("Домен")).toBeTruthy();
+    expect(screen.getByLabelText("Ширина рабочего стола")).toBeTruthy();
+    expect((screen.getByLabelText("Способ входа") as HTMLSelectElement).value).toBe("password");
+    expect(Array.from((screen.getByLabelText("Способ входа") as HTMLSelectElement).options).map((o) => o.value)).toEqual(["password"]);
+    fireEvent.click(screen.getByText("Сохранить"));
     expect((await screen.findAllByRole("alert")).some((a) => /user/i.test(a.textContent ?? ""))).toBe(true);
     expect(onSave).not.toHaveBeenCalled();
-    type("User", "admin");
-    type("Desktop width", "1920");
-    type("Desktop height", "1080");
-    fireEvent.click(screen.getByText("Save"));
+    type("Пользователь", "admin");
+    type("Ширина рабочего стола", "1920");
+    type("Высота рабочего стола", "1080");
+    fireEvent.click(screen.getByText("Сохранить"));
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
     expect(onSave.mock.calls[0]?.[0]).toMatchObject({ protocol: "rdp", username: "admin", authType: "password", rdpWidth: 1920, rdpHeight: 1080, domain: null });
   });
 
   it("P1: an RDP profile shows the Balanced default, saves a chosen preset, and the switches under Advanced make it Custom", async () => {
     const { onSave } = mount();
-    type("Name", "win");
-    type("Host", "win.example.test");
-    fireEvent.change(screen.getByLabelText("Protocol"), { target: { value: "rdp" } });
-    type("User", "admin");
-    const quality = screen.getByLabelText("Connection quality") as HTMLSelectElement;
+    type("Название", "win");
+    type("Адрес", "win.example.test");
+    fireEvent.change(screen.getByLabelText("Протокол"), { target: { value: "rdp" } });
+    type("Пользователь", "admin");
+    const quality = screen.getByLabelText("Качество соединения") as HTMLSelectElement;
     expect(quality.value).toBe("balanced");
     expect(Array.from(quality.options).map((o) => o.textContent)).toEqual(["Slow link", "Balanced (default)", "Best quality"]);
     fireEvent.change(quality, { target: { value: "slow" } });
-    fireEvent.click(screen.getByText("Save"));
+    fireEvent.click(screen.getByText("Сохранить"));
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
     expect(onSave.mock.calls[0]?.[0].rdpOptions).toEqual({ compression: true, colorDepth: 16, wallpaper: false, fullWindowDrag: false, menuAnimations: false, fontSmoothing: true, desktopComposition: false, themes: false });
     // Advanced: individual switches; leaving the presets shows "Custom".
-    fireEvent.click(screen.getByLabelText("Desktop wallpaper"));
-    expect((screen.getByLabelText("Connection quality") as HTMLSelectElement).value).toBe("custom");
-    fireEvent.change(screen.getByLabelText("Colour depth"), { target: { value: "24" } });
-    fireEvent.click(screen.getByText("Save"));
+    fireEvent.click(screen.getByLabelText("Обои рабочего стола"));
+    expect((screen.getByLabelText("Качество соединения") as HTMLSelectElement).value).toBe("custom");
+    fireEvent.change(screen.getByLabelText("Глубина цвета"), { target: { value: "24" } });
+    fireEvent.click(screen.getByText("Сохранить"));
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(2));
     expect(onSave.mock.calls[1]?.[0].rdpOptions).toEqual({ compression: true, colorDepth: 24, wallpaper: true, fullWindowDrag: false, menuAnimations: false, fontSmoothing: true, desktopComposition: false, themes: false });
   });
 
   it("P1: the six experience switches, compression and colour depth are all offered; an SSH profile has no such controls and saves none", async () => {
     const { onSave } = mount();
-    expect(screen.queryByLabelText("Connection quality")).toBeNull();
-    fireEvent.change(screen.getByLabelText("Protocol"), { target: { value: "rdp" } });
-    for (const label of ["Compress the update stream", "Desktop wallpaper", "Show window contents while dragging", "Menu and window animations", "Font smoothing", "Desktop composition", "Visual themes"]) {
+    expect(screen.queryByLabelText("Качество соединения")).toBeNull();
+    fireEvent.change(screen.getByLabelText("Протокол"), { target: { value: "rdp" } });
+    for (const label of ["Сжимать поток обновлений", "Обои рабочего стола", "Содержимое окна при перетаскивании", "Анимация меню и окон", "Сглаживание шрифтов", "Композиция рабочего стола", "Темы оформления"]) {
       expect(screen.getByLabelText(label), label).toBeTruthy();
     }
-    expect(Array.from((screen.getByLabelText("Colour depth") as HTMLSelectElement).options).map((o) => o.value)).toEqual(["32", "24", "16"]);
-    fireEvent.change(screen.getByLabelText("Protocol"), { target: { value: "ssh" } });
-    type("Name", "box");
-    type("Host", "box.example.test");
-    fireEvent.click(screen.getByText("Save"));
+    expect(Array.from((screen.getByLabelText("Глубина цвета") as HTMLSelectElement).options).map((o) => o.value)).toEqual(["32", "24", "16"]);
+    fireEvent.change(screen.getByLabelText("Протокол"), { target: { value: "ssh" } });
+    type("Название", "box");
+    type("Адрес", "box.example.test");
+    fireEvent.click(screen.getByText("Сохранить"));
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
     expect(onSave.mock.calls[0]?.[0].rdpOptions).toBeNull();
   });
 
   it("P1: editing a profile saved without options shows and keeps the default", async () => {
     const { onSave } = mount(EXISTING);
-    expect((screen.getByLabelText("Connection quality") as HTMLSelectElement).value).toBe("balanced");
-    fireEvent.click(screen.getByText("Save"));
+    expect((screen.getByLabelText("Качество соединения") as HTMLSelectElement).value).toBe("balanced");
+    fireEvent.click(screen.getByText("Сохранить"));
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
     expect(onSave.mock.calls[0]?.[0].rdpOptions).toMatchObject({ compression: true, colorDepth: 32 });
   });
 
   it("editing keeps the credential reference untouched and shows where the profile came from", async () => {
     const { onSave } = mount(EXISTING);
-    expect(screen.getByText(/created manually/i)).toBeTruthy();
-    type("Name", "win2");
-    fireEvent.click(screen.getByText("Save"));
+    expect(screen.getByText(/создано вручную/i)).toBeTruthy();
+    type("Название", "win2");
+    fireEvent.click(screen.getByText("Сохранить"));
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
     expect(onSave.mock.calls[0]?.[0]).toEqual({ ...EXISTING, name: "win2", rdpOptions: { compression: true, colorDepth: 32, wallpaper: false, fullWindowDrag: false, menuAnimations: false, fontSmoothing: true, desktopComposition: false, themes: true } });
   });
@@ -186,33 +186,33 @@ describe("ProfileEditor", () => {
     });
     const onCancel = vi.fn();
     render(<ProfileEditor initial={null} onSave={onSave} onCancel={onCancel} />);
-    type("Name", "x");
-    type("Host", "h.example.test");
-    fireEvent.click(screen.getByText("Save"));
+    type("Название", "x");
+    type("Адрес", "h.example.test");
+    fireEvent.click(screen.getByText("Сохранить"));
     expect(await screen.findByText("no such profile")).toBeTruthy();
-    expect((screen.getByText("Save") as HTMLButtonElement).disabled).toBe(false);
-    fireEvent.click(screen.getByText("Cancel"));
+    expect((screen.getByText("Сохранить") as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(screen.getByText("Отмена"));
     expect(onCancel).toHaveBeenCalledTimes(1);
   });
 });
 
 describe("ProfileEditor: the saved password (stage 3b-1, RDP)", () => {
   const SECRET = "S3cr3t-EDIT-1";
-  const passwordField = () => screen.getByLabelText("Password to save in the Keychain") as HTMLInputElement;
+  const passwordField = () => screen.getByLabelText("Пароль для сохранения в Связке ключей") as HTMLInputElement;
 
   it("an RDP profile offers a password field of type password; an SSH profile does not", () => {
     const { container } = render(<ProfileEditor initial={null} onSave={async () => {}} onCancel={() => {}} />);
     expect(container.querySelector('input[type="password"]')).toBeNull();
-    fireEvent.change(screen.getByLabelText("Protocol"), { target: { value: "rdp" } });
+    fireEvent.change(screen.getByLabelText("Протокол"), { target: { value: "rdp" } });
     expect(passwordField().type).toBe("password");
     expect(passwordField().autocomplete).toBe("off");
-    expect(screen.getByText(/Leave empty to type it each time/)).toBeTruthy();
+    expect(screen.getByText(/Оставьте пустым/)).toBeTruthy();
   });
 
   it("typing a password passes it as the save action, never inside the profile fields", async () => {
     const { onSave } = mount({ ...EXISTING, credentialRef: null });
     fireEvent.change(passwordField(), { target: { value: SECRET } });
-    fireEvent.click(screen.getByText("Save"));
+    fireEvent.click(screen.getByText("Сохранить"));
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
     expect((onSave.mock.calls[0] as unknown[])[1]).toEqual({ type: "save", secret: SECRET });
     expect(JSON.stringify((onSave.mock.calls[0] as unknown[])[0])).not.toContain(SECRET);
@@ -223,7 +223,7 @@ describe("ProfileEditor: the saved password (stage 3b-1, RDP)", () => {
     const onSave = vi.fn(() => new Promise<void>((resolve) => (finish = resolve)));
     render(<ProfileEditor initial={{ ...EXISTING, credentialRef: null }} onSave={onSave as never} onCancel={() => {}} />);
     fireEvent.change(passwordField(), { target: { value: SECRET } });
-    fireEvent.click(screen.getByText("Save"));
+    fireEvent.click(screen.getByText("Сохранить"));
     await waitFor(() => expect(onSave).toHaveBeenCalled());
     expect(passwordField().value).toBe("");
     finish();
@@ -231,33 +231,33 @@ describe("ProfileEditor: the saved password (stage 3b-1, RDP)", () => {
 
   it("with no password typed the action is keep", async () => {
     const { onSave } = mount({ ...EXISTING, credentialRef: null });
-    fireEvent.click(screen.getByText("Save"));
+    fireEvent.click(screen.getByText("Сохранить"));
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
     expect((onSave.mock.calls[0] as unknown[])[1]).toEqual({ type: "keep" });
   });
 
   it("a profile that already has a saved password says so, can replace it or remove it", async () => {
     const { onSave } = mount(EXISTING); // EXISTING has a credentialRef
-    expect(screen.getByText(/A password is saved in the Keychain/)).toBeTruthy();
-    fireEvent.click(screen.getByLabelText("Remove the saved password"));
-    fireEvent.click(screen.getByText("Save"));
+    expect(screen.getByText(/сохранён секрет: пароль/)).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("Удалить сохранённый секрет (пароль)"));
+    fireEvent.click(screen.getByText("Сохранить"));
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
     expect((onSave.mock.calls[0] as unknown[])[1]).toEqual({ type: "remove" });
   });
 
   it("replacing sends the new password; removing wins over a typed replacement being ignored by the checkbox", async () => {
     const { onSave } = mount(EXISTING);
-    fireEvent.change(screen.getByLabelText("Replace the saved password"), { target: { value: SECRET } });
-    fireEvent.click(screen.getByText("Save"));
+    fireEvent.change(screen.getByLabelText("Заменить сохранённый секрет (пароль)"), { target: { value: SECRET } });
+    fireEvent.click(screen.getByText("Сохранить"));
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
     expect((onSave.mock.calls[0] as unknown[])[1]).toEqual({ type: "save", secret: SECRET });
   });
 
   it("moving the endpoint of a profile with a saved password warns that the password will be forgotten", () => {
     mount(EXISTING);
-    expect(screen.queryByText(/will be forgotten/)).toBeNull();
-    type("Host", "other.example.test");
-    expect(screen.getByText(/saved password will be forgotten/)).toBeTruthy();
+    expect(screen.queryByText(/будет забыт/)).toBeNull();
+    type("Адрес", "other.example.test");
+    expect(screen.getByText(/будет забыт/)).toBeTruthy();
   });
 });
 
@@ -271,10 +271,10 @@ describe("a Proxmox profile in the editor", () => {
   it("shows the Proxmox port, user labels and the confirmed certificate, and saves it unchanged", async () => {
     const onSave = vi.fn(async () => {});
     render(<ProfileEditor initial={PVE_START as never} onSave={onSave} onCancel={vi.fn()} />);
-    expect(screen.getByLabelText("Port").getAttribute("placeholder")).toBe("8006");
-    expect(screen.getByLabelText("User (name@realm)")).toBeTruthy();
+    expect(screen.getByLabelText("Порт").getAttribute("placeholder")).toBe("8006");
+    expect(screen.getByLabelText("Пользователь (name@realm)")).toBeTruthy();
     expect(screen.getByTestId("pve-trust-text").textContent).toContain("B6:88:41:D8");
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    fireEvent.click(screen.getByRole("button", { name: "Сохранить" }));
     await waitFor(() => expect(onSave).toHaveBeenCalled());
     const [fields] = onSave.mock.calls[0] as unknown as [Record<string, unknown>];
     expect(fields).toMatchObject({ protocol: "pve", host: "pve.test", username: "remotehub@pve", authType: "password", pveTrust: PVE_START.pveTrust, identityFile: null, domain: null });
@@ -283,8 +283,8 @@ describe("a Proxmox profile in the editor", () => {
   it("forgetting the confirmed certificate saves the profile with system trust", async () => {
     const onSave = vi.fn(async () => {});
     render(<ProfileEditor initial={PVE_START as never} onSave={onSave} onCancel={vi.fn()} />);
-    fireEvent.click(screen.getByRole("button", { name: /Forget it/ }));
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    fireEvent.click(screen.getByRole("button", { name: /Забыть/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Сохранить" }));
     await waitFor(() => expect(onSave).toHaveBeenCalled());
     expect((onSave.mock.calls[0] as unknown as [{ pveTrust: unknown }])[0].pveTrust).toBeNull();
   });
@@ -292,16 +292,16 @@ describe("a Proxmox profile in the editor", () => {
   it("an API token profile asks for the token id and refuses a plain user", async () => {
     const onSave = vi.fn(async () => {});
     render(<ProfileEditor initial={{ ...PVE_START, authType: "token", username: "remotehub@pve", pveTrust: null } as never} onSave={onSave} onCancel={vi.fn()} />);
-    expect(screen.getByLabelText("API token id (user@realm!name)")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(screen.getByLabelText("Идентификатор токена API (user@realm!name)")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Сохранить" }));
     expect((await screen.findAllByRole("alert"))[0]?.textContent).toContain("token id");
     expect(onSave).not.toHaveBeenCalled();
   });
 
   it("choosing Proxmox for a new profile switches to password sign-in", () => {
     render(<ProfileEditor initial={null} onSave={vi.fn(async () => {})} onCancel={vi.fn()} />);
-    fireEvent.change(screen.getByLabelText("Protocol"), { target: { value: "pve" } });
-    expect((screen.getByLabelText("Authentication type") as HTMLSelectElement).value).toBe("password");
-    expect(screen.getByLabelText("Port").getAttribute("placeholder")).toBe("8006");
+    fireEvent.change(screen.getByLabelText("Протокол"), { target: { value: "pve" } });
+    expect((screen.getByLabelText("Способ входа") as HTMLSelectElement).value).toBe("password");
+    expect(screen.getByLabelText("Порт").getAttribute("placeholder")).toBe("8006");
   });
 });

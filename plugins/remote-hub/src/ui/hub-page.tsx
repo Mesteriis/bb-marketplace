@@ -8,7 +8,6 @@ import type { DeskSession, DeskSessionState } from "../core/desk.ts";
 import { profileFieldsOf, type Profile, type ProfileFields } from "../core/profile.ts";
 import { errorCodeText, errorTextFromMessage } from "../core/rdp-texts.ts";
 import { AgentPanel } from "./agent-panel.tsx";
-import type { ConnectPageProps } from "./connect-page.tsx";
 import { CredentialsPanel } from "./credentials-panel.tsx";
 import { useDesk } from "./desk-store.ts";
 import { Desk } from "./desk/desk.tsx";
@@ -22,12 +21,37 @@ import { PveConsoles, type PveConsoleLaunch } from "./pve-consoles.tsx";
 import { PveOnboarding } from "./pve-onboarding.tsx";
 import { RdpPage, type RdpPageStatus, type RdpPrefill } from "./rdp-page.tsx";
 import { SshPage, type SessionActions, type SshLaunch, type SshPageStatus } from "./ssh-page.tsx";
-import { useCredentials } from "./use-credentials.ts";
-import { useProfiles } from "./use-profiles.ts";
+import { PveTargets } from "./pve-targets.tsx";
+import type { PveApi } from "./pve-api.ts";
+import type { AgentApi } from "./agent-panel.tsx";
+import type { ImportApi } from "./import-panel.tsx";
+import type { PveConsolesApi } from "./pve-consoles.tsx";
+import type { RdpPageProps } from "./rdp-page.tsx";
+import type { SshPageProps } from "./ssh-page.tsx";
+import { useCredentials, type CredentialsApi } from "./use-credentials.ts";
+import { useProfiles, type ProfilesApi } from "./use-profiles.ts";
 
-export type HubPageProps = Omit<ConnectPageProps, "initialKind" | "live"> & { bus?: HubBus };
+export interface HubPageProps {
+  ssh: SshPageProps;
+  rdp: RdpPageProps;
+  /** Saved profiles; without it the page is the plain Quick connect form. */
+  profiles?: ProfilesApi;
+  /** Saved passwords (the Keychain); without it there is no Credentials screen and no way to save one. */
+  credentials?: CredentialsApi;
+  /** Sources to import profiles from (ssh config, hosts file, keys, agent); without it there is no Import screen. */
+  imports?: ImportApi;
+  /** Agent access and activity (stage 4a); without it there is no such section or screen. */
+  agents?: AgentApi;
+  /** Proxmox VE: adding a connection and listing its guests; without it there is no Proxmox screen. */
+  pve?: PveApi;
+  /** Proxmox consoles (a node shell, a container terminal, a VM's graphics); without it the console buttons stay off. */
+  /** A console an agent opened, to be viewed here (the Remote Hub page is where graphics have their one view). */
+  adoptConsole?: PveConsoleLaunch;
+  pveConsoles?: { attach: PveConsolesApi["attach"]; close: PveConsolesApi["close"]; takeover?: PveConsolesApi["takeover"]; preload?: PveConsolesApi["preload"]; tabs?: PveConsolesApi["tabs"] };
+  bus?: HubBus;
+}
 
-type Screen = { type: "edit"; profile: Profile | null; key: number } | { type: "credentials" } | { type: "import" } | { type: "agents" } | { type: "add-pve" };
+type Screen = { type: "edit"; profile: Profile | null; key: number } | { type: "credentials" } | { type: "import" } | { type: "agents" } | { type: "add-pve" } | { type: "guests"; profileId: string; key: number };
 
 const SSH_ID = "ssh";
 const RDP_ID = "rdp";
@@ -115,6 +139,9 @@ export function HubPage(props: HubPageProps) {
         return;
       case "add-pve":
         setScreen({ type: "add-pve" });
+        return;
+      case "guests":
+        setScreen({ type: "guests", profileId: command.profileId, key: ++nonce.current });
         return;
       default:
         setScreen({ type: command.type });
@@ -283,6 +310,21 @@ export function HubPage(props: HubPageProps) {
             )}
             {screen.type === "import" && props.imports !== undefined && <ImportPanel api={props.imports} onImported={() => void changed()} onClose={() => setScreen(null)} />}
             {screen.type === "agents" && props.agents !== undefined && <AgentPanel api={props.agents} profileNames={new Map((data.profiles ?? []).map((p) => [p.id, p.name]))} onClose={() => setScreen(null)} />}
+            {screen.type === "guests" && props.pve !== undefined && (
+              <PveTargets
+                key={screen.key}
+                api={props.pve}
+                profileIds={[screen.profileId]}
+                linkable={(data.profiles ?? []).filter((p) => p.protocol === "ssh" || p.protocol === "rdp")}
+                {...(credentialsApi !== undefined ? { onAllowAccess: (ref: string) => credentialsApi.allow(ref).finally(() => bus.changed()) } : {})}
+                onConnectProfile={(id) => run.current({ type: "connect", profileId: id })}
+                {...(props.pveConsoles !== undefined ? { onOpenConsole: (open: Omit<PveConsoleLaunch, "nonce">) => run.current({ type: "console", ...open }) } : {})}
+                onClose={() => {
+                  setScreen(null);
+                  bus.changed();
+                }}
+              />
+            )}
             {screen.type === "add-pve" && props.pve !== undefined && (
               <PveOnboarding
                 api={props.pve}

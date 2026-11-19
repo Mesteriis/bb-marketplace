@@ -41,11 +41,11 @@ export function applyExecEvent(list: LoggedCommand[], event: FeedEvent): LoggedC
 export function CommandLog({ commands }: { commands: LoggedCommand[] }) {
   if (commands.length === 0) return null;
   return (
-    <section aria-label="Commands an agent ran" className="rh-commands">
-      <h4>Commands an agent ran</h4>
+    <section aria-label="Команды агента" className="rh-commands">
+      <h4>Команды агента</h4>
       {commands.map((c, i) => (
         <div key={c.id} className="rh-command">
-          <pre className="rh-command-line">{c.command === null ? "(a command that started before this view opened)" : "$ " + c.command}</pre>
+          <pre className="rh-command-line">{c.command === null ? "(команда запущена до открытия этого экрана)" : "$ " + c.command}</pre>
           {c.chunks.length > 0 && (
             <pre className="rh-command-output">
               {c.chunks.map((chunk, j) => (
@@ -56,8 +56,8 @@ export function CommandLog({ commands }: { commands: LoggedCommand[] }) {
             </pre>
           )}
           <p className="rh-hint">
-            {c.running ? "running…" : c.exitCode !== null ? `exit ${c.exitCode}` : `stopped: ${c.reason ?? "ended"}`}
-            {c.truncated ? " · output cut here (the agent can read the rest)" : ""}
+            {c.running ? "выполняется…" : c.exitCode !== null ? `код выхода ${c.exitCode}` : `остановлена: ${c.reason ?? "завершена"}`}
+            {c.truncated ? " · вывод обрезан (агент может прочитать остальное)" : ""}
           </p>
         </div>
       ))}

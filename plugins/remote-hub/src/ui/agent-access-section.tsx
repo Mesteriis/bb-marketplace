@@ -47,24 +47,24 @@ export function AgentAccessSection({ api, profileId }: AgentAccessSectionProps) 
       .then((granted) => {
         setLevel(granted.level);
         setRecord(granted.recordCommands);
-        setMessage(granted.level === "none" ? "Agents can no longer use this connection." : `Agents may now use this connection at the "${granted.level}" level.`);
+        setMessage(granted.level === "none" ? "Агенты больше не могут пользоваться этим подключением." : `Агентам разрешено это подключение на уровне «${granted.level}».`);
       })
       .catch((e) => setProblem(errorTextFromMessage(e instanceof Error ? e.message : String(e))))
       .finally(() => setBusy(false));
   };
 
   return (
-    <fieldset aria-label="Agent access">
-      <legend>Agent access</legend>
+    <fieldset aria-label="Доступ агентов">
+      <legend>Доступ агентов</legend>
       <p className="rh-hint">{ACCESS_NOTE}</p>
       {profileId === null ? (
-        <p className="rh-hint">Save the connection first; then you can allow agents to use it.</p>
+        <p className="rh-hint">Сначала сохраните подключение; после этого можно разрешить агентам им пользоваться.</p>
       ) : (
         <>
           <label>
-            Level
+            Уровень
             <select
-              aria-label="Agent access level"
+              aria-label="Уровень доступа агентов"
               value={level}
               disabled={busy || !loaded}
               onChange={(e) => apply(e.target.value as AgentLevel, e.target.value === "exec" ? record : false)}
@@ -79,7 +79,7 @@ export function AgentAccessSection({ api, profileId }: AgentAccessSectionProps) 
           {level === "exec" && (
             <label className="rh-check">
               <input type="checkbox" checked={record} disabled={busy} onChange={(e) => apply("exec", e.target.checked)} />
-              Record the text of commands in the activity list (off: only the length)
+              Записывать текст команд в список активности (выключено: только длина)
             </label>
           )}
           {message !== null && <p role="status" className="rh-hint">{message}</p>}

@@ -20,7 +20,7 @@ function props(over: Partial<HubSidebarProps> = {}): HubSidebarProps {
     connections: { pve1: { outcome: "ok", nodes: ["pve"], guests: [{ vmid: 165, name: "rdp-ssh-test", kind: "lxc", node: "pve", status: "running", template: false, available: true }, { vmid: 152, name: "astra-linux", kind: "qemu", node: "pve", status: "stopped", template: false, available: false }] } },
     sessions: [],
     shown: [],
-    onFocusSession: vi.fn(), onCloseSession: vi.fn(), onExpand: vi.fn(), onConnect: vi.fn(), onConsole: vi.fn(), onEdit: vi.fn(), onAdd: vi.fn(), onCredentials: vi.fn(), onAgents: vi.fn(), onAllow: vi.fn(), onRetry: vi.fn(),
+    onFocusSession: vi.fn(), onCloseSession: vi.fn(), onExpand: vi.fn(), onConnect: vi.fn(), onConsole: vi.fn(), onEdit: vi.fn(), onAdd: vi.fn(), onCredentials: vi.fn(), onAgents: vi.fn(), onAllow: vi.fn(), onGuests: vi.fn(), onRetry: vi.fn(),
     ...over,
   };
 }
@@ -94,6 +94,15 @@ describe("HubSidebar", () => {
     expect(screen.getByTestId("sidebar-problem").textContent).toContain("macOS не разрешил этой сборке читать сохранённый пароль");
     fireEvent.click(screen.getByRole("button", { name: "Разрешить доступ" }));
     expect(p.onAllow).toHaveBeenCalledWith("pve1");
+  });
+
+  it("a connection whose certificate is not trusted leads to its guest list on the page", () => {
+    const p = props({ connections: { pve1: { outcome: "tls_untrusted", nodes: [], guests: [] } } });
+    render(<HubSidebar {...p} />);
+    fireEvent.click(screen.getByRole("button", { name: /^Proxmox/ }));
+    expect(screen.getByTestId("sidebar-problem").textContent).toContain("Список не прочитан (tls_untrusted)");
+    fireEvent.click(screen.getByRole("button", { name: "Подробнее" }));
+    expect(p.onGuests).toHaveBeenCalledWith("pve1");
   });
 
   it("says when nothing is saved and when a search finds nothing", () => {

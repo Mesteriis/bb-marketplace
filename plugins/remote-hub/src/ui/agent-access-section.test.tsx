@@ -27,7 +27,7 @@ function api(initial: Array<{ level: "observe" | "input" | "exec"; recordCommand
 describe("AgentAccessSection", () => {
   it("says what the grant means: any thread, the order of the levels, connect from input, host keys and certificates stay the owner's", async () => {
     render(<AgentAccessSection api={api()} profileId={P1} />);
-    const section = await screen.findByLabelText("Agent access");
+    const section = await screen.findByLabelText("Доступ агентов");
     expect(section.textContent).toContain("Applies to agents in ANY thread of this BB");
     expect(section.textContent).toContain("no access < observe < input < exec");
     expect(section.textContent).toContain("connecting is allowed from input up");
@@ -36,28 +36,28 @@ describe("AgentAccessSection", () => {
 
   it("an unsaved profile has nothing to grant", () => {
     render(<AgentAccessSection api={api()} profileId={null} />);
-    expect(screen.getByLabelText("Agent access").textContent).toContain("Save the connection first");
-    expect(screen.queryByLabelText("Agent access level")).toBeNull();
+    expect(screen.getByLabelText("Доступ агентов").textContent).toContain("Сначала сохраните подключение");
+    expect(screen.queryByLabelText("Уровень доступа агентов")).toBeNull();
   });
 
   it("starts at the current level and applies a change at once, without Save", async () => {
     const a = api([{ level: "observe", recordCommands: false }]);
     render(<AgentAccessSection api={a} profileId={P1} />);
-    const select = (await screen.findByLabelText("Agent access level")) as HTMLSelectElement;
+    const select = (await screen.findByLabelText("Уровень доступа агентов")) as HTMLSelectElement;
     await waitFor(() => expect(select.value).toBe("observe"));
     fireEvent.change(select, { target: { value: "none" } });
     await waitFor(() => expect(a.set).toHaveBeenCalledWith(P1, "none", false));
-    expect((await screen.findByRole("status")).textContent).toBe("Agents can no longer use this connection.");
+    expect((await screen.findByRole("status")).textContent).toBe("Агенты больше не могут пользоваться этим подключением.");
   });
 
   it("recording commands is offered only at exec, is off by default, and is sent explicitly", async () => {
     const a = api([{ level: "input", recordCommands: false }]);
     render(<AgentAccessSection api={a} profileId={P1} />);
-    const select = (await screen.findByLabelText("Agent access level")) as HTMLSelectElement;
+    const select = (await screen.findByLabelText("Уровень доступа агентов")) as HTMLSelectElement;
     await waitFor(() => expect(select.value).toBe("input"));
-    expect(screen.queryByLabelText(/Record the text of commands/)).toBeNull();
+    expect(screen.queryByLabelText(/Записывать текст команд/)).toBeNull();
     fireEvent.change(select, { target: { value: "exec" } });
-    const box = (await screen.findByLabelText(/Record the text of commands/)) as HTMLInputElement;
+    const box = (await screen.findByLabelText(/Записывать текст команд/)) as HTMLInputElement;
     expect(a.set).toHaveBeenLastCalledWith(P1, "exec", false);
     expect(box.checked).toBe(false);
     fireEvent.click(box);
@@ -70,7 +70,7 @@ describe("AgentAccessSection", () => {
       throw new Error("not_found: no such profile");
     });
     render(<AgentAccessSection api={a} profileId={P1} />);
-    const select = (await screen.findByLabelText("Agent access level")) as HTMLSelectElement;
+    const select = (await screen.findByLabelText("Уровень доступа агентов")) as HTMLSelectElement;
     await waitFor(() => expect(select.disabled).toBe(false));
     fireEvent.change(select, { target: { value: "observe" } });
     expect((await screen.findByRole("alert")).textContent).not.toBe("");

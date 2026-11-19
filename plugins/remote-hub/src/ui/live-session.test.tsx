@@ -58,10 +58,10 @@ describe("LiveSession", () => {
     const term = (globalThis as unknown as { __term: { onAgent: (e: unknown) => void } }).__term;
     act(() => term.onAgent({ kind: "exec", commandId: "c1", phase: "started", text: "df -h" }));
     act(() => term.onAgent({ kind: "exec", commandId: "c1", phase: "output", stream: "stdout", text: "Filesystem  Size\n" }));
-    expect(screen.getByLabelText("Commands an agent ran").textContent).toContain("$ df -h");
-    expect(screen.getByLabelText("Commands an agent ran").textContent).toContain("Filesystem  Size");
+    expect(screen.getByLabelText("Команды агента").textContent).toContain("$ df -h");
+    expect(screen.getByLabelText("Команды агента").textContent).toContain("Filesystem  Size");
     act(() => term.onAgent({ kind: "exec", commandId: "c1", phase: "finished", text: "", exitCode: 0, reason: "exited" }));
-    expect(screen.getByLabelText("Commands an agent ran").textContent).toContain("exit 0");
+    expect(screen.getByLabelText("Команды агента").textContent).toContain("код выхода 0");
   });
 
   it("shows the desktop for an RDP session", async () => {

@@ -360,7 +360,7 @@ describe("RdpPage: states, texts and the certificate prompt", () => {
     const { say } = await connect(p);
     await say({ type: "cert_prompt", prompt: PROMPT });
     expect(screen.getByRole("alertdialog")).toBeTruthy();
-    fireEvent.click(screen.getByText("Trust for this BB run"));
+    fireEvent.click(screen.getByText("Доверять до перезапуска BB"));
     await flush();
     expect(p.calls.onDecision.mock.calls).toEqual([[HANDLE, FP, "session_trust"]]);
     expect(screen.queryByRole("alertdialog")).toBeNull();
@@ -379,7 +379,7 @@ describe("RdpPage: states, texts and the certificate prompt", () => {
     const p = props({ onDecision: vi.fn(async () => { throw new Error("fingerprint_mismatch: the decision names a different certificate than the one presented"); }) });
     const { say } = await connect(p);
     await say({ type: "cert_prompt", prompt: PROMPT });
-    fireEvent.click(screen.getByText("Accept once"));
+    fireEvent.click(screen.getByText("Принять один раз"));
     await flush();
     expect(screen.getByRole("alert").textContent).toBe("the decision named a different certificate than the one shown");
     expect(screen.getByRole("alertdialog")).toBeTruthy();

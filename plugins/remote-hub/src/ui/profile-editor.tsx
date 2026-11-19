@@ -42,12 +42,12 @@ const BLANK: ProfileFields = {
 
 /** The six experience switches and what each one is called to the owner. */
 const EFFECT_SWITCHES: Array<[Exclude<keyof RdpOptions, "compression" | "colorDepth">, string]> = [
-  ["wallpaper", "Desktop wallpaper"],
-  ["fullWindowDrag", "Show window contents while dragging"],
-  ["menuAnimations", "Menu and window animations"],
-  ["fontSmoothing", "Font smoothing"],
-  ["desktopComposition", "Desktop composition"],
-  ["themes", "Visual themes"],
+  ["wallpaper", "Обои рабочего стола"],
+  ["fullWindowDrag", "Содержимое окна при перетаскивании"],
+  ["menuAnimations", "Анимация меню и окон"],
+  ["fontSmoothing", "Сглаживание шрифтов"],
+  ["desktopComposition", "Композиция рабочего стола"],
+  ["themes", "Темы оформления"],
 ];
 
 const orNull = (text: string): string | null => (text.trim() === "" ? null : text.trim());
@@ -59,17 +59,17 @@ function numberOrNull(text: string): number | null {
 }
 
 const FIELD_LABELS: Record<string, string> = {
-  name: "Name",
-  host: "Host",
-  port: "Port",
-  username: "User",
-  domain: "Domain",
-  identityFile: "Key file",
-  rdpWidth: "Desktop width",
-  authType: "Authentication type",
-  color: "Colour",
-  group: "Group",
-  tags: "Tags",
+  name: "Название",
+  host: "Адрес",
+  port: "Порт",
+  username: "Пользователь",
+  domain: "Домен",
+  identityFile: "Файл ключа",
+  rdpWidth: "Ширина рабочего стола",
+  authType: "Способ входа",
+  color: "Цвет",
+  group: "Группа",
+  tags: "Метки",
 };
 
 export function ProfileEditor(props: ProfileEditorProps) {
@@ -115,7 +115,7 @@ export function ProfileEditor(props: ProfileEditorProps) {
   // What a saved secret is for: a password, or the passphrase of the key file named above.
   const secretKind: "password" | "passphrase" | null =
     effectiveAuth === "password" || effectiveAuth === "token" ? "password" : effectiveAuth === "key" && orNull(identityFile) !== null ? "passphrase" : null;
-  const noun = secretKind === "passphrase" ? "passphrase" : effectiveAuth === "token" ? "API token secret" : "password";
+  const noun = secretKind === "passphrase" ? "парольная фраза" : effectiveAuth === "token" ? "секрет токена API" : "пароль";
 
   const choose = (next: ProfileFields["protocol"]) => {
     setProtocol(next);
@@ -177,14 +177,14 @@ export function ProfileEditor(props: ProfileEditorProps) {
         void save();
       }}
     >
-      <fieldset aria-label="Connection">
-        <legend>Connection</legend>
+      <fieldset aria-label="Подключение">
+        <legend>Подключение</legend>
         <label>
-          Name
+          Название
           <input value={name} onChange={(e) => setName(e.target.value)} />
         </label>
         <label>
-          Protocol
+          Протокол
           <select value={protocol} onChange={(e) => choose(e.target.value as ProfileFields["protocol"])}>
             <option value="ssh">SSH</option>
             <option value="rdp">RDP</option>
@@ -192,61 +192,61 @@ export function ProfileEditor(props: ProfileEditorProps) {
           </select>
         </label>
         <label>
-          Host
+          Адрес
           <input value={host} onChange={(e) => setHost(e.target.value)} />
         </label>
         <label>
-          Port
+          Порт
           <input value={port} onChange={(e) => setPort(e.target.value)} placeholder={rdp ? "3389" : pve ? "8006" : "22"} />
         </label>
         <label>
-          {pve ? (effectiveAuth === "token" ? "API token id (user@realm!name)" : "User (name@realm)") : "User"}
+          {pve ? (effectiveAuth === "token" ? "Идентификатор токена API (user@realm!name)" : "Пользователь (name@realm)") : "Пользователь"}
           <input value={username} onChange={(e) => setUsername(e.target.value)} />
         </label>
         {rdp && (
           <label>
-            Domain
+            Домен
             <input value={domain} onChange={(e) => setDomain(e.target.value)} />
           </label>
         )}
         <label>
-          Group
+          Группа
           <input value={group} onChange={(e) => setGroup(e.target.value)} />
         </label>
         <label>
-          Tags
-          <input value={tags} onChange={(e) => setTags(e.target.value)} placeholder="comma separated" />
+          Метки
+          <input value={tags} onChange={(e) => setTags(e.target.value)} placeholder="через запятую" />
         </label>
         <label className="rh-check">
           <input type="checkbox" checked={favorite} onChange={(e) => setFavorite(e.target.checked)} />
-          Favorite
+          Избранное
         </label>
       </fieldset>
 
-      <fieldset aria-label="Authentication">
-        <legend>Authentication</legend>
+      <fieldset aria-label="Вход">
+        <legend>Вход</legend>
         <label>
-          Authentication type
+          Способ входа
           <select value={effectiveAuth} onChange={(e) => setAuthType(e.target.value as ProfileFields["authType"])}>
             {rdp ? (
-              <option value="password">Password</option>
+              <option value="password">Пароль</option>
             ) : pve ? (
               <>
-                <option value="password">User and password (ticket)</option>
-                <option value="token">API token</option>
+                <option value="password">Пользователь и пароль (билет)</option>
+                <option value="token">Токен API</option>
               </>
             ) : (
               <>
-                <option value="agent">SSH agent / default keys</option>
-                <option value="key">Key file</option>
-                <option value="password">Password</option>
+                <option value="agent">Агент SSH / ключи по умолчанию</option>
+                <option value="key">Файл ключа</option>
+                <option value="password">Пароль</option>
               </>
             )}
           </select>
         </label>
         {!rdp && effectiveAuth === "key" && (
           <label>
-            Key file
+            Файл ключа
             <input value={identityFile} onChange={(e) => setIdentityFile(e.target.value)} placeholder="/Users/you/.ssh/id_ed25519" />
           </label>
         )}
@@ -254,20 +254,20 @@ export function ProfileEditor(props: ProfileEditorProps) {
           <>
             {hasSaved ? (
               <>
-                <p className="rh-hint">A {noun} is saved in the Keychain for this profile.</p>
+                <p className="rh-hint">Для этого подключения в Связке ключей сохранён секрет: {noun}.</p>
                 <label>
-                  Replace the saved {noun}
+                  Заменить сохранённый секрет ({noun})
                   <input type="password" autoComplete="off" value={secret} onChange={(e) => setSecret(e.target.value)} disabled={removeSaved} />
                 </label>
                 <label className="rh-check">
                   <input type="checkbox" checked={removeSaved} onChange={(e) => setRemoveSaved(e.target.checked)} />
-                  Remove the saved {noun}
+                  Удалить сохранённый секрет ({noun})
                 </label>
-                {endpointMoved && <p className="rh-error">Changing the host, port, user, domain or key file: the saved {noun} will be forgotten.</p>}
+                {endpointMoved && <p className="rh-error">Меняются адрес, порт, пользователь, домен или файл ключа: сохранённый секрет ({noun}) будет забыт.</p>}
               </>
             ) : (
               <label>
-                {secretKind === "passphrase" ? "Passphrase" : "Password"} to save in the Keychain
+                {secretKind === "passphrase" ? "Парольная фраза" : "Пароль"} для сохранения в Связке ключей
                 <input type="password" autoComplete="off" value={secret} onChange={(e) => setSecret(e.target.value)} />
               </label>
             )}
@@ -276,11 +276,11 @@ export function ProfileEditor(props: ProfileEditorProps) {
         <p className="rh-hint">
           {secretKind !== null
             ? hasSaved
-              ? `Connect uses the saved ${noun}; nothing is typed.`
-              : `Leave empty to type it each time you connect, or enter one to keep it in the Keychain.`
+              ? `При подключении используется сохранённый секрет (${noun}); вводить ничего не нужно.`
+              : `Оставьте пустым, чтобы вводить при каждом подключении, или введите, чтобы хранить в Связке ключей.`
             : effectiveAuth === "key"
-              ? "Enter the key file path to keep its passphrase in the Keychain; OpenSSH asks for it in the terminal otherwise."
-              : "OpenSSH uses its agent and default keys."}
+              ? "Укажите путь к файлу ключа, чтобы хранить его парольную фразу в Связке ключей; иначе OpenSSH спросит её в терминале."
+              : "OpenSSH использует свой агент и ключи по умолчанию."}
         </p>
       </fieldset>
 
@@ -288,15 +288,15 @@ export function ProfileEditor(props: ProfileEditorProps) {
         <fieldset aria-label="RDP">
           <legend>RDP</legend>
           <label>
-            Desktop width
+            Ширина рабочего стола
             <input value={width} onChange={(e) => setWidth(e.target.value)} placeholder="1280" />
           </label>
           <label>
-            Desktop height
+            Высота рабочего стола
             <input value={height} onChange={(e) => setHeight(e.target.value)} placeholder="800" />
           </label>
           <label>
-            Connection quality
+            Качество соединения
             <select
               value={presetOf(rdpOpts)}
               onChange={(e) => {
@@ -312,19 +312,19 @@ export function ProfileEditor(props: ProfileEditorProps) {
               {presetOf(rdpOpts) === "custom" && <option value="custom">{PRESET_LABELS.custom}</option>}
             </select>
           </label>
-          <p className="rh-hint">Fewer bytes on a slow link, more detail on a fast one. The server may ignore the effect switches.</p>
+          <p className="rh-hint">Меньше данных на медленной связи, больше деталей на быстрой. Сервер может не учитывать переключатели эффектов.</p>
           <details>
-            <summary>Advanced</summary>
+            <summary>Дополнительно</summary>
             <label className="rh-check">
               <input type="checkbox" checked={rdpOpts.compression} onChange={(e) => setRdpOpts({ ...rdpOpts, compression: e.target.checked })} />
-              Compress the update stream
+              Сжимать поток обновлений
             </label>
             <label>
-              Colour depth
+              Глубина цвета
               <select value={rdpOpts.colorDepth} onChange={(e) => setRdpOpts({ ...rdpOpts, colorDepth: Number(e.target.value) as RdpOptions["colorDepth"] })}>
                 {COLOR_DEPTHS.map((d) => (
                   <option key={d} value={d}>
-                    {d} bits per pixel
+                    {d} бит на пиксель
                   </option>
                 ))}
               </select>
@@ -340,18 +340,18 @@ export function ProfileEditor(props: ProfileEditorProps) {
       )}
 
       {pve && (
-        <fieldset aria-label="Certificate">
-          <legend>Certificate</legend>
+        <fieldset aria-label="Сертификат">
+          <legend>Сертификат</legend>
           <p className="rh-hint" data-testid="pve-trust-text">
             {pveTrust === null || pveTrust.mode === "system"
-              ? "The server certificate must be trusted by this Mac. If it is not, the guest list shows its fingerprint and asks you to confirm it."
+              ? "Сертификату сервера должен доверять этот Mac. Если это не так, в списке гостей появится его отпечаток с просьбой подтвердить."
               : pveTrust.mode === "pin"
-                ? "Only the certificate you confirmed is trusted: " + pveTrust.fingerprint
-                : "Only the certificate authority you supplied is trusted."}
+                ? "Доверие только подтверждённому вами сертификату: " + pveTrust.fingerprint
+                : "Доверие только указанному вами центру сертификации."}
           </p>
           {pveTrust !== null && pveTrust.mode !== "system" && (
             <button type="button" onClick={() => setPveTrust(null)}>
-              Forget it and use this Mac's trusted certificates
+              Забыть и доверять сертификатам этого Mac
             </button>
           )}
         </fieldset>
@@ -359,9 +359,9 @@ export function ProfileEditor(props: ProfileEditorProps) {
 
       {props.agentAccess !== undefined && <AgentAccessSection api={props.agentAccess.api} profileId={props.agentAccess.profileId} />}
 
-      <fieldset aria-label="Source">
-        <legend>Source</legend>
-        <p className="rh-hint">{props.initial === null ? "Created manually." : "Created manually in Remote Hub."}</p>
+      <fieldset aria-label="Источник">
+        <legend>Источник</legend>
+        <p className="rh-hint">{props.initial === null ? "Создано вручную." : "Создано вручную в Remote Hub."}</p>
       </fieldset>
 
       {issues.map((issue, i) => (
@@ -372,10 +372,10 @@ export function ProfileEditor(props: ProfileEditorProps) {
       {saveError !== null && <p className="rh-error">{saveError}</p>}
       <div className="rh-editor-actions">
         <button type="submit" disabled={saving}>
-          Save
+          Сохранить
         </button>
         <button type="button" onClick={props.onCancel}>
-          Cancel
+          Отмена
         </button>
       </div>
     </form>

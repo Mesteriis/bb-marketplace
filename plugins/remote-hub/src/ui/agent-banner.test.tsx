@@ -53,21 +53,21 @@ describe("AgentBanner", () => {
   it("an agent driving a session nobody watches says it is paused and offers Watch and Take control", async () => {
     const a = api([row({ controlledBy: "agent", leaseThreadId: "thr_a", watching: false })]);
     render(<AgentBanner api={a} />);
-    await waitFor(() => expect(screen.getByRole("status").textContent).toContain("paused"));
-    expect(screen.getByRole("status").textContent).toContain("nobody is watching");
-    fireEvent.click(screen.getByRole("button", { name: "Watch" }));
+    await waitFor(() => expect(screen.getByRole("status").textContent).toContain("на паузе"));
+    expect(screen.getByRole("status").textContent).toContain("никто не смотрит");
+    fireEvent.click(screen.getByRole("button", { name: "Смотреть" }));
     expect(a.watch).toHaveBeenCalledWith(`${GEN}.1`);
-    fireEvent.click(screen.getByRole("button", { name: "Take control" }));
+    fireEvent.click(screen.getByRole("button", { name: "Взять управление" }));
     await waitFor(() => expect(a.takeover).toHaveBeenCalledWith({ generation: GEN, sessionId: 1 }));
   });
 
   it("Watch in split passes the thread that holds the session; a refused split shows a way to the thread", async () => {
     const a = api([row({ controlledBy: "agent", leaseThreadId: "thr_lease", openedByThread: "thr_open" })], { watchInSplit: vi.fn(async () => ({ result: "fallback" as const })) });
     render(<AgentBanner api={a} />);
-    await waitFor(() => screen.getByRole("button", { name: "Watch in split" }));
-    fireEvent.click(screen.getByRole("button", { name: "Watch in split" }));
+    await waitFor(() => screen.getByRole("button", { name: "Рядом с тредом" }));
+    fireEvent.click(screen.getByRole("button", { name: "Рядом с тредом" }));
     await waitFor(() => expect(a.watchInSplit).toHaveBeenCalledWith(`${GEN}.1`, "thr_lease"));
-    fireEvent.click(await screen.findByRole("button", { name: /Splits are off here/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /Разделение здесь выключено/ }));
     expect(a.openThread).toHaveBeenCalledWith("thr_lease");
   });
 
@@ -76,23 +76,23 @@ describe("AgentBanner", () => {
     render(<AgentBanner api={a} />);
     await waitFor(() => expect(screen.getAllByRole("status")).toHaveLength(2));
     const text = screen.getAllByRole("status").map((r) => r.textContent).join(" | ");
-    expect(text).toContain("Nobody is watching, and your setting lets it act anyway");
-    expect(text).not.toContain("paused");
+    expect(text).toContain("Никто не смотрит, но ваша настройка разрешает ему действовать");
+    expect(text).not.toContain("на паузе");
     expect(text).not.toContain("cannot act until you watch");
   });
 
   it("while someone watches it says so and the pause note is gone", async () => {
     const a = api([row({ controlledBy: "agent", leaseThreadId: "thr_a", watching: true })]);
     render(<AgentBanner api={a} />);
-    await waitFor(() => expect(screen.getByRole("status").textContent).toContain("You are watching"));
-    expect(screen.getByRole("status").textContent).not.toContain("paused");
+    await waitFor(() => expect(screen.getByRole("status").textContent).toContain("Вы смотрите"));
+    expect(screen.getByRole("status").textContent).not.toContain("на паузе");
   });
 
   it("an agent that only opened a session is announced without a Take control button", async () => {
     const a = api([row({ openedByThread: "thr_b" })]);
     render(<AgentBanner api={a} />);
-    await waitFor(() => expect(screen.getByRole("status").textContent).toContain("opened"));
-    expect(screen.queryByRole("button", { name: "Take control" })).toBeNull();
+    await waitFor(() => expect(screen.getByRole("status").textContent).toContain("Агент открыл сессию"));
+    expect(screen.queryByRole("button", { name: "Взять управление" })).toBeNull();
   });
 
   it("refreshes when a signal arrives, without reading anything from it", async () => {

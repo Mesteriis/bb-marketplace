@@ -252,7 +252,7 @@ describe("AgentPanel: sessions agents opened or drive (stage 4b-1)", () => {
     mount(a);
     await screen.findByRole("alertdialog");
     expect(screen.getByRole("alertdialog").textContent).toContain(fp);
-    fireEvent.click(screen.getByRole("button", { name: /Reject/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Отклонить/ }));
     await waitFor(() => expect(a.decideCertificate).toHaveBeenCalledWith({ generation: GEN, sessionId: 4 }, fp, "reject"));
   });
 
