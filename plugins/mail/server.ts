@@ -504,7 +504,7 @@ function isVaultKey(value: string): boolean {
   }
 }
 
-/** A setting that is one bounded line (a provider or model id). */
+/** The plugin's settings as BB shows them; the page's bounds come from the shared schemas. */
 function defineSettings(bb: BbPluginApi) {
   return bb.settings.define({
     vaultKey: {
@@ -731,7 +731,6 @@ function defineSettings(bb: BbPluginApi) {
 export const ATTACHMENT_FOLDER_DEFAULT = "mail-attachments";
 export const PATCH_FOLDER_DEFAULT = "mail-patches";
 
-/** A project-relative folder setting, checked like a save's folder. */
 /** A folder setting, its default when the stored value is no longer valid. */
 function folderOr(value: string, fallback: string): string {
   return projectFolder(value).ok ? value : fallback;

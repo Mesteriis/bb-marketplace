@@ -127,7 +127,7 @@ import { TranslationSettings } from "./src/ui/translation-settings.tsx";
 import { type SettingsAiPorts, type SettingsSection, type TemplateView } from "./src/ui/settings/shared.ts";
 import { SettingsPage } from "./src/ui/settings/settings-page.tsx";
 import type { PageSettingsPort, SaveResult } from "./src/ui/settings/setting-controls.tsx";
-import type { PageSettings } from "./src/core/page-settings.ts";
+import { pageSettingsOf, pageSettingsPatchSchema, type PageSettings } from "./src/core/page-settings.ts";
 import type { LanguageTag } from "./src/core/translate.ts";
 import { filterActive, formatUntil, subjectOrPlaceholder, type ListFilter } from "./src/ui/thread-list.tsx";
 import {
@@ -2690,26 +2690,42 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
   );
   // The page's lists and settings load when it opens, by a click or by its address.
   const settingsShown = settingsSection !== null;
-  const [pageSettings, setPageSettings] = useState<PageSettings | null>(null);
+  const [loadedSettings, setLoadedSettings] = useState<PageSettings | null>(null);
   useEffect(() => {
     if (!settingsShown) return;
     void loadIdentities();
     void loadTemplates();
     void loadBlockRules();
-    rpc.call("settings_get", {}).then(setPageSettings, () => undefined);
+    rpc.call("settings_get", {}).then(setLoadedSettings, () => undefined);
   }, [settingsShown, loadBlockRules, loadIdentities, loadTemplates, rpc]);
+  // BB's live settings are the truth: they also change in BB's own plugin settings while
+  // the page is open. What the page has just written covers them until BB reports a change.
+  const liveSettings = useSettings().values as Record<string, unknown> | null | undefined;
+  const liveSignature = liveSettings == null ? null : JSON.stringify(liveSettings);
+  const [writtenSettings, setWrittenSettings] = useState<Partial<PageSettings>>({});
+  useEffect(() => setWrittenSettings({}), [liveSignature]);
+  const pageSettings = useMemo<PageSettings | null>(() => {
+    const base = liveSignature === null ? loadedSettings : pageSettingsOf(JSON.parse(liveSignature) as Record<string, unknown>);
+    return base === null ? null : { ...base, ...writtenSettings };
+  }, [liveSignature, loadedSettings, writtenSettings]);
   /** Writes of the settings page go one after another, in the order they were made. */
   const settingsWrites = useRef<Promise<unknown>>(Promise.resolve());
   const pageSettingsPort = useMemo<PageSettingsPort>(
     () => ({
       values: pageSettings,
       save: (patch) => {
+        // Refused here with a reason the owner can read; the server checks the same bounds again.
+        if (!pageSettingsPatchSchema.safeParse(patch).success) {
+          return Promise.resolve<SaveResult>({ ok: false, message: tx("This value is not allowed here.") });
+        }
         const write = settingsWrites.current.then(async (): Promise<SaveResult> => {
           try {
-            setPageSettings(await rpc.call("settings_set", patch));
+            const saved = await rpc.call("settings_set", patch);
+            setLoadedSettings(saved);
+            setWrittenSettings((prev) => ({ ...prev, ...patch }));
             return { ok: true };
           } catch (error) {
-            return { ok: false, message: messageOf(error) };
+            return { ok: false, message: tx(messageOf(error)) };
           }
         });
         settingsWrites.current = write;
@@ -4584,7 +4600,7 @@ function MailFolderSidebar(_props: PluginNavPanelProps) {
         }
       }}
       onOpenSettings={() => {
-        if (!mailPageLink.send({ kind: "settings" })) navigate.toPluginPanel("mail");
+        if (!mailPageLink.send({ kind: "settings" })) navigate.toPluginPanel("mail", { subPath: settingsSubPath() });
       }}
       onSelectPage={(page) => {
         if (!mailPageLink.send({ kind: "page", page })) navigate.toPluginPanel("mail", { subPath: pageSubPath(page) });

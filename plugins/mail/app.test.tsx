@@ -3680,6 +3680,20 @@ describe("Mail settings (slice 3d)", () => {
     expect(slot.queryByRole("dialog", { name: "Mail settings" })).toBeNull();
   });
 
+  it("opens without a credential key and says so in Local data", async () => {
+    const slot = render(settingsRpc({ status_get: () => status({ vaultReady: false, accounts: [] }) }), "settings/local");
+    const page = await slot.findByRole("region", { name: "Mail settings" });
+    expect(within(page).getByRole("alert").textContent).toContain("The credential key is not set");
+  });
+
+  it("opens without an account, and Add an account there opens the form", async () => {
+    const slot = render(settingsRpc({ status_get: () => status({ accounts: [], unreadCount: 0 }) }), "settings/accounts");
+    const page = await slot.findByRole("region", { name: "Mail settings" });
+    expect(within(page).getByText("No mail account yet.")).toBeTruthy();
+    fireEvent.click(within(page).getByRole("button", { name: "Add an account" }));
+    expect(await slot.findByLabelText("App password")).toBeTruthy();
+  });
+
   it("an unknown section in the address opens the first section, not a blank page", async () => {
     const slot = render(settingsRpc(), "settings/nope");
     const page = await slot.findByRole("region", { name: "Mail settings" });
@@ -4643,6 +4657,53 @@ describe("Slice 3f: Today, Tasks, Mail settings and day notices", () => {
     expect(await slot.findByText("Spam and Trash are never shared, whatever you choose here.")).toBeTruthy();
     expect(await slot.findByText("Search and read mail in every thread")).toBeTruthy();
     expect(slot.queryByRole("switch", { name: "Search and read mail in every thread" })).toBeNull();
+  });
+
+  it("shows BB's live settings, not an older answer of settings_get", async () => {
+    const slot = renderSlot({ component: MailWithSidebar }, { subPath: "settings/ai" }, {
+      rpc: mailRpc({
+        reminders_due: () => ({ reminders: [] }),
+        identities_list: () => ({ identities: [] }),
+        templates_list: () => ({ templates: [] }),
+        settings_get: () => ({ ...PAGE_SETTING_DEFAULTS, digestTime: "09:00", replyReminderDays: 9 }),
+      }) as never,
+      settings: { digestTime: "07:30", replyReminderDays: 4 },
+      composer: { scope: { kind: "new-thread", projectId: null } },
+    });
+    const time = (await slot.findByLabelText("Digest time")) as HTMLInputElement;
+    await waitFor(() => expect(callsTo(slot as never, "settings_get")).toHaveLength(1));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(time.value).toBe("07:30");
+    expect((slot.getByLabelText("Remind about a reply after") as HTMLInputElement).value).toBe("4");
+  });
+
+  it("a value out of range is refused in the row before anything is sent, and a refused write says so", async () => {
+    const slot = renderSlot({ component: MailWithSidebar }, { subPath: "settings/ai" }, {
+      rpc: mailRpc({
+        reminders_due: () => ({ reminders: [] }),
+        identities_list: () => ({ identities: [] }),
+        templates_list: () => ({ templates: [] }),
+        settings_get: () => PAGE_SETTING_DEFAULTS,
+        settings_set: () => {
+          throw new Error("BB did not save this setting");
+        },
+      }) as never,
+      settings: {},
+      composer: { scope: { kind: "new-thread", projectId: null } },
+    });
+    const days = (await slot.findByLabelText("Remind about a reply after")) as HTMLInputElement;
+    await waitFor(() => expect(days.disabled).toBe(false));
+    fireEvent.change(days, { target: { value: "99" } });
+    fireEvent.blur(days);
+    expect(await slot.findByText("This value is not allowed here.")).toBeTruthy();
+    expect(callsTo(slot as never, "settings_set")).toHaveLength(0);
+    expect(days.value).toBe("3");
+
+    fireEvent.change(days, { target: { value: "5" } });
+    fireEvent.blur(days);
+    expect(await slot.findByText("BB did not save this setting")).toBeTruthy();
+    expect(callsTo(slot as never, "settings_set")).toHaveLength(1);
+    await waitFor(() => expect(days.value).toBe("3"));
   });
 
   it("the settings page at settings/activity shows the log", async () => {

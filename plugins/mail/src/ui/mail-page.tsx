@@ -414,6 +414,23 @@ export function MailPage(props: MailPageProps) {
       </PageFrame>
     );
   }
+  const page =
+    props.page === undefined ? null : (
+      <div className="h-full min-h-0 flex-1 overflow-y-auto">
+        <div className={cn("mx-auto box-border w-full px-4 pb-6 pt-3 md:px-5 md:pt-4", props.pageWide === true ? "max-w-5xl" : "max-w-2xl")}>
+          {props.page}
+        </div>
+        {/* The settings page opens it; the mailbox, which also renders it, is not mounted on a page. */}
+        <SmtpDialog
+          account={status.accounts.find((a) => a.id === props.smtpAccountId) ?? null}
+          onClose={props.onCloseSmtp}
+          onTest={props.onTestSmtp}
+          onSave={props.onSaveSmtp}
+        />
+      </div>
+    );
+  // Settings open with no credential key and no account: that is where both are explained and set up.
+  if (page !== null && props.pageWide === true && accountForm === null) return page;
   if (!status.vaultReady) {
     return (
       <PageFrame>
@@ -444,22 +461,7 @@ export function MailPage(props: MailPageProps) {
       </PageFrame>
     );
   }
-  if (props.page !== undefined) {
-    return (
-      <div className="h-full min-h-0 flex-1 overflow-y-auto">
-        <div className={cn("mx-auto box-border w-full px-4 pb-6 pt-3 md:px-5 md:pt-4", props.pageWide === true ? "max-w-5xl" : "max-w-2xl")}>
-          {props.page}
-        </div>
-        {/* The settings page opens it; the mailbox, which also renders it, is not mounted on a page. */}
-        <SmtpDialog
-          account={status.accounts.find((a) => a.id === props.smtpAccountId) ?? null}
-          onClose={props.onCloseSmtp}
-          onTest={props.onTestSmtp}
-          onSave={props.onSaveSmtp}
-        />
-      </div>
-    );
-  }
+  if (page !== null) return page;
   return <Mailbox {...props} status={status} />;
 }
 
