@@ -154,6 +154,15 @@ export const pveConsoleInfoSchema = z.object({
   reason: z.object({ code: z.string(), text: z.string(), fingerprint: z.string().nullable() }).nullable(),
 });
 
+export const pveConsoleTabSchema = z.object({
+  id: z.string().uuid(),
+  profileId: z.string().uuid(),
+  console: z.enum(["node", "lxc", "qemu"]),
+  node: z.string().min(1).max(63).nullable(),
+  vmid: z.number().int().min(100).max(999_999_999).nullable(),
+  title: z.string().max(120),
+});
+
 export const sessionInfoSchema = z.object({
   generation: z.string().regex(/^[0-9a-f]{32}$/),
   sessionId: sessionIdSchema,
@@ -308,6 +317,19 @@ export const rpcSchemas = {
       z.object({ ok: z.literal(true), generation: z.string().regex(/^[0-9a-f]{32}$/), sessionId: sessionIdSchema, kind: z.enum(["pve", "vnc"]) }),
       z.object({ ok: z.literal(false), code: z.string(), message: z.string(), fingerprint: z.string().nullable() }),
     ]),
+  },
+  /** The console tabs the owner had open (targets only): restored after a restart as "not connected", never as live. */
+  pve_console_tabs_list: {
+    input: z.object({}).strict(),
+    output: z.object({ tabs: z.array(pveConsoleTabSchema) }),
+  },
+  pve_console_tab_put: {
+    input: pveConsoleTabSchema.strict(),
+    output: z.object({ saved: z.literal(true) }),
+  },
+  pve_console_tab_remove: {
+    input: z.object({ id: z.string().uuid() }).strict(),
+    output: z.object({ removed: z.boolean() }),
   },
   /** Mode 1, step 1: what would be created, what the user already holds, and the digest of the state the plan was computed from. Reads only. */
   pve_onboard_plan: {

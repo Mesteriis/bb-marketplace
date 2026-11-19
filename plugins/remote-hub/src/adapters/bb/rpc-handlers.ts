@@ -244,6 +244,13 @@ export function createRpcHandlers({ service, profiles, credentials, imports, age
         p.linkGuest(input.profileId, input.vmid, input.linkProfileId);
         return { linked: input.linkProfileId !== null };
       }),
+    pve_console_tabs_list: () => withPve((p) => ({ tabs: p.consoleTabs() })),
+    pve_console_tab_put: (input) =>
+      withPve((p) => {
+        p.saveConsoleTab(input);
+        return { saved: true as const };
+      }),
+    pve_console_tab_remove: (input) => withPve((p) => ({ removed: p.removeConsoleTab(input.id) })),
     pve_console_open: (input) =>
       withPve(async (p) => {
         const request = input.console === "node" ? ({ console: "node", node: input.node as string } as const) : ({ console: input.console, vmid: input.vmid as number } as const);

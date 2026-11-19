@@ -18,6 +18,12 @@ export interface SshExitInfo {
   reason: string;
 }
 
+/** What a page can do with the terminal it shows: read what is on screen, and write a line of its own (a separator). */
+export interface TerminalApi {
+  text(): string;
+  note(line: string): void;
+}
+
 export interface SshTerminalProps {
   wsUrl: string;
   token: string;
@@ -30,12 +36,21 @@ export interface SshTerminalProps {
   onConsole?: (event: { state: string; reason: { code: string; text: string; fingerprint: string | null } | null }) => void;
   /** What an agent just did on this session (a command it ran, ...), for the view to show. */
   onAgent?: (event: FeedEvent) => void;
+  /** Filled with the terminal's own API while it is mounted. */
+  apiRef?: MutableRefObject<TerminalApi | null>;
+  /** Written first, before any console output: the scrollback of a console that was lost, then a separator. */
+  history?: string;
+  /** False: what the user types is NOT sent; `onInputRefused` is told, so the page can say so. */
+  inputEnabled?: boolean;
+  onInputRefused?: () => void;
   /** Filled with a function that sends a control message on the open socket. */
   controlRef?: MutableRefObject<((msg: unknown) => void) | null>;
 }
 
 export function SshTerminal(props: SshTerminalProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const propsRef = useRef(props);
+  propsRef.current = props;
 
   useEffect(() => {
     const container = containerRef.current;
@@ -60,6 +75,19 @@ export function SshTerminal(props: SshTerminalProps) {
     terminal.loadAddon(fit);
     terminal.open(container);
     fit.fit();
+    if (props.history !== undefined && props.history !== "") terminal.write(props.history);
+    if (props.apiRef !== undefined) {
+      props.apiRef.current = {
+        text: () => {
+          const buffer = terminal.buffer.active;
+          const lines: string[] = [];
+          for (let i = Math.max(0, buffer.length - 2000); i < buffer.length; i++) lines.push(buffer.getLine(i)?.translateToString(true) ?? "");
+          while (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+          return lines.join("\r\n");
+        },
+        note: (line) => terminal.write(line),
+      };
+    }
 
     const socket = new WebSocket(props.wsUrl + "?attach=" + encodeURIComponent(props.token));
     socket.binaryType = "arraybuffer";
@@ -82,6 +110,10 @@ export function SshTerminal(props: SshTerminalProps) {
       // This view is being looked at: tell the service, so an agent may type into the session.
       stopBeat = startWatchBeat(sendControl, container);
       terminal.onData((data) => {
+        if (propsRef.current.inputEnabled === false) {
+          propsRef.current.onInputRefused?.();
+          return;
+        }
         if (socket.readyState === WebSocket.OPEN) {
           socket.send(new TextEncoder().encode(data));
         }
@@ -176,6 +208,7 @@ export function SshTerminal(props: SshTerminalProps) {
       if (stopBeat !== null) stopBeat();
       observer.disconnect();
       if (props.controlRef !== undefined && props.controlRef.current === sendControl) props.controlRef.current = null;
+      if (props.apiRef !== undefined) props.apiRef.current = null;
       if (socket.readyState === WebSocket.OPEN) sendControl({ type: "detach" });
       socket.close();
       terminal.dispose();

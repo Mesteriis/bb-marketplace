@@ -14,7 +14,7 @@ import { resolveConsole, type ConsoleRequest } from "../../core/pve-console.ts";
 import type { SessionHandle } from "../../core/rpc.ts";
 import { pveTrustToWire, type PveProfileTrust } from "../../core/pve-trust.ts";
 import { PveDiscovery, type PveAnswer, type PveConnectionView } from "../../core/pve-targets.ts";
-import type { PveGuestLinkStore } from "./pve-sqlite.ts";
+import type { PveConsoleTabRow, PveConsoleTabStore, PveGuestLinkStore } from "./pve-sqlite.ts";
 import { HelperRequestError, HelperRuntimeError, HelperStartError } from "./helper-process.ts";
 import type { RemoteHubService } from "./service.ts";
 
@@ -32,6 +32,7 @@ export interface PveRpcDeps {
   profiles: ProfileBook;
   credentials: CredentialBook;
   links: PveGuestLinkStore;
+  tabs?: PveConsoleTabStore | undefined;
   newId: () => string;
   now: () => Date;
   audit?: AgentAudit | undefined;
@@ -136,7 +137,21 @@ export function createPveRpc(deps: PveRpcDeps) {
     /** A deleted connection leaves no links and no cached lists behind. */
     onProfileDeleted(profileId: string): void {
       links.dropProfile(profileId);
+      deps.tabs?.dropProfile(profileId);
       discovery.forget(profileId);
+    },
+
+    /** The console tabs kept for the owner: targets of connections that still exist. */
+    consoleTabs(): PveConsoleTabRow[] {
+      return (deps.tabs?.list() ?? []).filter((t) => profiles.get(t.profileId)?.protocol === "pve");
+    },
+    saveConsoleTab(tab: PveConsoleTabRow): void {
+      pveProfile(tab.profileId);
+      if (tab.console === "node" ? tab.node === null || tab.vmid !== null : tab.vmid === null || tab.node !== null) throw new PveRpcError("invalid", "a node shell names its node; a guest console names its VMID");
+      deps.tabs?.put(tab, deps.now());
+    },
+    removeConsoleTab(id: string): boolean {
+      return deps.tabs?.remove(id) ?? false;
     },
 
     /**

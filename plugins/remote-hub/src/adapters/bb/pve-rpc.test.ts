@@ -7,7 +7,7 @@ import type { PvePlan, PveSteps } from "../../core/pve-protocol.ts";
 import type { PveAnswer, PveProvisionAnswer } from "../../core/pve-targets.ts";
 import { HelperRequestError } from "./helper-process.ts";
 import { createPveRpc, PveRpcError } from "./pve-rpc.ts";
-import type { PveGuestLinkStore } from "./pve-sqlite.ts";
+import type { PveConsoleTabRow, PveConsoleTabStore, PveGuestLinkStore } from "./pve-sqlite.ts";
 
 const FP = "B6:88:41:D8:62:DD:80:8C:E2:A8:39:E1:26:D1:66:00:9D:51:54:09:DD:16:E2:A7:CB:DF:0D:3B:E1:1D:43:2E";
 const OTHER_FP = "36:28:12:20:8A:0A:3D:00:92:3E:DB:13:8A:D2:BF:2F:AF:AE:CC:82:6B:4E:BD:24:81:4E:6A:25:F0:35:CD:99";
@@ -38,6 +38,18 @@ class MemLinks implements PveGuestLinkStore {
   dropProfile = (id: string) => {
     for (const [k, v] of [...this.rows]) if (k.startsWith(id + "|") || v === id) this.rows.delete(k);
   };
+}
+
+class MemTabs implements PveConsoleTabStore {
+  rows: PveConsoleTabRow[] = [];
+  list = () => [...this.rows];
+  put = (t: PveConsoleTabRow) => void (this.rows = [...this.rows.filter((r) => r.id !== t.id), t]);
+  remove = (id: string) => {
+    const n = this.rows.length;
+    this.rows = this.rows.filter((r) => r.id !== id);
+    return this.rows.length < n;
+  };
+  dropProfile = (id: string) => void (this.rows = this.rows.filter((r) => r.profileId !== id));
 }
 
 const PLAN: PvePlan = { role: "create", user: "create", acl: "create", userId: USER, rolePrivs: null, extras: { acl: [], groups: [], tokens: [] }, digest: DIGEST };
@@ -103,8 +115,9 @@ function world() {
   let rid = 0;
   const store: AuditStore = { begin: (r) => (rows.push({ ...r, id: ++rid, outcome: null }), rid), finish: (id, o) => void (rows.find((r) => r.id === id)!.outcome = o), collapse: () => false, list: (k) => [...rows].reverse().slice(0, k), prune: () => {} };
   const audit = new AgentAudit({ store, now: () => new Date("2026-11-18T10:00:00Z") });
-  const rpc = createPveRpc({ service: service as never, profiles: book, credentials, links, newId: () => "0b8e6f4a-5c2d-4e1b-9a37-1f2e3d4c5b77", now: () => new Date("2026-11-18T10:00:00Z"), audit });
-  return { rpc, book, meta, items, calls, state, links, rows, credentials };
+  const tabs = new MemTabs();
+  const rpc = createPveRpc({ service: service as never, profiles: book, credentials, links, tabs, newId: () => "0b8e6f4a-5c2d-4e1b-9a37-1f2e3d4c5b77", now: () => new Date("2026-11-18T10:00:00Z"), audit });
+  return { rpc, book, meta, items, calls, state, links, rows, credentials, tabs };
 }
 
 const PVE: ProfileFields = {
@@ -503,6 +516,32 @@ describe("opening a console", () => {
       ["pve.console_open", "pve.test:8006 lxc 101", "ok"],
       ["pve.console_open", "pve.test:8006 lxc 102", "guest_stopped"],
     ]);
+  });
+});
+
+describe("console tabs", () => {
+  const T = (id: string, profileId: string, over: Partial<PveConsoleTabRow> = {}): PveConsoleTabRow => ({ id, profileId, console: "lxc", node: null, vmid: 101, title: "web", ...over });
+
+  it("are kept as targets for Proxmox connections only, and validated", () => {
+    const w = world();
+    const p = w.book.save({ fields: PVE });
+    const ssh = w.book.save({ fields: SSH });
+    w.rpc.saveConsoleTab(T("t1", p.id));
+    w.rpc.saveConsoleTab(T("t2", p.id, { console: "node", node: "pve1", vmid: null, title: "pve1" }));
+    expect(w.rpc.consoleTabs().map((t) => t.id)).toEqual(["t1", "t2"]);
+    expect(() => w.rpc.saveConsoleTab(T("t3", ssh.id))).toThrow(/no such Proxmox connection/);
+    expect(() => w.rpc.saveConsoleTab(T("t4", p.id, { console: "node", node: null, vmid: null }))).toThrow(PveRpcError);
+    expect(() => w.rpc.saveConsoleTab(T("t5", p.id, { console: "lxc", node: "pve1", vmid: 101 }))).toThrow(PveRpcError);
+    expect(w.rpc.removeConsoleTab("t1")).toBe(true);
+    expect(w.rpc.consoleTabs().map((t) => t.id)).toEqual(["t2"]);
+  });
+
+  it("go with their connection when it is deleted", () => {
+    const w = world();
+    const p = w.book.save({ fields: PVE });
+    w.rpc.saveConsoleTab(T("t1", p.id));
+    w.rpc.onProfileDeleted(p.id);
+    expect(w.tabs.rows).toEqual([]);
   });
 });
 

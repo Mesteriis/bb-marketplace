@@ -12,7 +12,56 @@ export const PVE_MIGRATIONS: string[] = [
     PRIMARY KEY (pve_profile_id, vmid)
   );
   `,
+  // The console tabs the owner had open: targets only (connection, kind, node or VMID, a title), never a session, a ticket or a secret.
+  `
+  CREATE TABLE pve_console_tabs (
+    id TEXT PRIMARY KEY,
+    pve_profile_id TEXT NOT NULL,
+    console TEXT NOT NULL,
+    node TEXT,
+    vmid INTEGER,
+    title TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  `,
 ];
+
+/** A console tab as it is kept: where it pointed, not what it was connected to. */
+export interface PveConsoleTabRow {
+  id: string;
+  profileId: string;
+  console: "node" | "lxc" | "qemu";
+  node: string | null;
+  vmid: number | null;
+  title: string;
+}
+
+export const MAX_CONSOLE_TABS = 24;
+
+export interface PveConsoleTabStore {
+  list(): PveConsoleTabRow[];
+  /** Adds (or replaces) a tab; the oldest ones beyond the cap are dropped. */
+  put(tab: PveConsoleTabRow, now: Date): void;
+  remove(id: string): boolean;
+  dropProfile(profileId: string): void;
+}
+
+export function createSqlitePveConsoleTabs(db: Database.Database): PveConsoleTabStore {
+  const all = db.prepare("SELECT id, pve_profile_id, console, node, vmid, title FROM pve_console_tabs ORDER BY created_at, rowid");
+  const upsert = db.prepare("INSERT OR REPLACE INTO pve_console_tabs (id, pve_profile_id, console, node, vmid, title, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)");
+  const del = db.prepare("DELETE FROM pve_console_tabs WHERE id = ?");
+  const drop = db.prepare("DELETE FROM pve_console_tabs WHERE pve_profile_id = ?");
+  const trim = db.prepare("DELETE FROM pve_console_tabs WHERE id IN (SELECT id FROM pve_console_tabs ORDER BY created_at DESC, rowid DESC LIMIT -1 OFFSET ?)");
+  return {
+    list: () => (all.all() as Array<{ id: string; pve_profile_id: string; console: PveConsoleTabRow["console"]; node: string | null; vmid: number | null; title: string }>).map((r) => ({ id: r.id, profileId: r.pve_profile_id, console: r.console, node: r.node, vmid: r.vmid, title: r.title })),
+    put: (t, now) => {
+      upsert.run(t.id, t.profileId, t.console, t.node, t.vmid, t.title, now.toISOString());
+      trim.run(MAX_CONSOLE_TABS);
+    },
+    remove: (id) => del.run(id).changes > 0,
+    dropProfile: (id) => void drop.run(id),
+  };
+}
 
 export interface PveGuestLinkStore {
   /** The linked SSH/RDP profile of each guest of one PVE profile: vmid -> profile id. */
