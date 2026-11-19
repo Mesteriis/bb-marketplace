@@ -417,9 +417,22 @@ describe("ConnectPage with Proxmox", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Open console of web" }));
     await waitFor(() => expect(pve.openConsole).toHaveBeenCalledWith({ console: "lxc", vmid: 101, profileId: PID, cols: 80, rows: 24 }));
     expect(screen.getByRole("button", { name: "Proxmox", pressed: true })).toBeTruthy();
-    // the guest list is gone, the console tab is there
-    expect(screen.queryByLabelText("Proxmox guests")).toBeNull();
-    expect(await screen.findByLabelText("Proxmox consoles")).toBeTruthy();
+    // the guest list stays open and the console is shown with it
+    expect(screen.getByLabelText("Proxmox guests")).toBeTruthy();
+    const consoles = await screen.findByLabelText("Proxmox consoles");
+    expect(consoles.closest(".rh-connect-sessions")?.hasAttribute("hidden")).toBe(false);
+  });
+
+  it("a second console opens from the same, still open list", async () => {
+    const { pve } = withPve([PVE_PROFILE, SSH_PROFILE]);
+    pve.targets.mockResolvedValue(GUEST(null));
+    fireEvent.click(await screen.findByRole("button", { name: "Show guests of lab pve" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Open console of web" }));
+    await waitFor(() => expect(pve.openConsole).toHaveBeenCalledTimes(1));
+    fireEvent.click(await screen.findByRole("button", { name: "Open shell of node pve1" }));
+    await waitFor(() => expect(pve.openConsole).toHaveBeenCalledTimes(2));
+    expect(screen.getByLabelText("Proxmox guests")).toBeTruthy();
+    expect(screen.getAllByTestId("pve-console-tab")).toHaveLength(2);
   });
 
   it("a node shell button opens a node console", async () => {

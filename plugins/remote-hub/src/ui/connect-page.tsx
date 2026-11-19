@@ -257,8 +257,8 @@ export function ConnectPage(props: ConnectPageProps) {
               ? {
                   onOpenConsole: (open: Omit<PveConsoleLaunch, "nonce">) => {
                     setConsoleLaunch({ ...open, nonce: ++nonce.current });
+                    // The guest list stays open: the next console is one click away, not another trip through "Guests".
                     setKind("pve");
-                    setPveList(null);
                   },
                 }
               : {})}
@@ -274,7 +274,7 @@ export function ConnectPage(props: ConnectPageProps) {
             onCancel={() => setEditing(null)}
           />
         )}
-        <div hidden={editing !== null || showCredentials || showImport || showAgents || addingPve || pveList !== null} className="rh-connect-sessions">
+        <div hidden={editing !== null || showCredentials || showImport || showAgents || addingPve || (pveList !== null && kind !== "pve")} className="rh-connect-sessions">
           <div className="rh-kind" role="group" aria-label="connection kind">
             {api !== undefined && <span className="rh-quick">Quick connect</span>}
             <button type="button" aria-pressed={kind === "ssh"} onClick={() => setKind("ssh")}>
