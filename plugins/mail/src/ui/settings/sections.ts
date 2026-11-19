@@ -38,7 +38,7 @@ export const SETTINGS_GROUPS: readonly {
     id: "mail",
     title: "Mail",
     sections: [
-      { id: "inbox", title: "Inbox", description: "Notifications, blocked senders and where snoozed mail waits." },
+      { id: "inbox", title: "Inbox", description: "Notifications, Inbox tabs, blocked senders and where snoozed mail waits." },
       { id: "filters", title: "Filters", description: "Rules that sort new Inbox mail by themselves." },
       { id: "subscriptions", title: "Subscriptions", description: "The mailing lists in your mail, and unsubscribing from them." },
       { id: "templates", title: "Templates", description: "Texts you insert into a message with one click." },

@@ -2,7 +2,7 @@
 // tabs, a tab's menu and the dialog that names a tab or edits its
 // condition. The first tab is always the whole Inbox. The design system has
 // no dropdown, so the library and a tab's menu are dialogs.
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { TABS_MAX, TAB_NAME_MAX, TAB_QUERY_MAX } from "../core/inbox-tabs.ts";
 import { Button } from "@/components/ui/button";
 import {
@@ -94,6 +94,13 @@ export function InboxTabs(props: InboxTabsProps) {
     // Only a new serial opens a dialog; the request object may be rebuilt each render.
   }, [askSerial]);
 
+  // The tab in view, with its menu button, stays inside the visible part of a row that scrolls.
+  const selectedRef = useRef<HTMLElement | null>(null);
+  const shown = tabs.length;
+  useEffect(() => {
+    selectedRef.current?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+  }, [currentId, shown]);
+
   const menuTab = request?.kind === "menu" ? request.tab : null;
   const menuIndex = menuTab === null ? -1 : tabs.findIndex((tab) => tab.id === menuTab.id);
   const menuEntries: MenuEntry[] = [
@@ -117,11 +124,12 @@ export function InboxTabs(props: InboxTabsProps) {
           <div
             role="tablist"
             aria-label={tx("Inbox tabs")}
-            className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none]"
+            className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto pr-6 [mask-image:linear-gradient(to_right,black_calc(100%-1.5rem),transparent)] [scrollbar-width:none]"
           >
             <button
               type="button"
               role="tab"
+              ref={currentId === null ? (el) => void (selectedRef.current = el) : undefined}
               aria-selected={currentId === null}
               onClick={() => props.onSelect(null)}
               className={cn(TAB_CLASS, currentId === null && "bg-state-active font-medium text-foreground hover:bg-state-active")}
@@ -132,7 +140,12 @@ export function InboxTabs(props: InboxTabsProps) {
             {tabs.map((tab) => {
               const selected = tab.id === currentId;
               return (
-                <span key={tab.id} role="none" className="flex shrink-0 items-center">
+                <span
+                  key={tab.id}
+                  role="none"
+                  ref={selected ? (el) => void (selectedRef.current = el) : undefined}
+                  className="flex shrink-0 items-center"
+                >
                   <button
                     type="button"
                     role="tab"

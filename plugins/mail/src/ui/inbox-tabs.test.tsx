@@ -118,6 +118,22 @@ describe("InboxTabs", () => {
     expect(props.onRemove).toHaveBeenCalledWith("t-old");
   });
 
+  it("brings the tab in view, with its menu button, into the visible part of the row", () => {
+    const seen: string[] = [];
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = function (this: Element) {
+      seen.push(this.textContent ?? "");
+    };
+    try {
+      const { props, rerender } = show({ currentId: "t-team" });
+      expect(seen).toEqual(["Team"]);
+      rerender(<InboxTabs {...props} currentId="t-vip" />);
+      expect(seen).toEqual(["Team", "VIP2 unread"]);
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
+  });
+
   it("renders a name as text", () => {
     show({ tabs: [tab({ id: "t-x", name: "<img src=x onerror=alert(1)>" })] });
     expect(screen.getByRole("tab", { name: "<img src=x onerror=alert(1)>" })).toBeTruthy();
