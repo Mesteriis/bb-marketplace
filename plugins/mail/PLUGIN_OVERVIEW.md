@@ -81,7 +81,7 @@ one-click unsubscribe you confirmed.
 
 ## What it costs
 
-- An app password per account; Gmail needs 2-step verification.
+- An app password per account, or Google sign-in for Gmail.
 - Mail and encrypted credentials stay on the BB server.
 - Allowing images or unsubscribing tells senders you read the mail.
 - The page bundle is about 2.7 MB, mostly pdf.js and the editor.

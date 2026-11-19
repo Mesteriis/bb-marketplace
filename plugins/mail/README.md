@@ -23,7 +23,8 @@ after a 10-second Undo window. Agents cannot send on their own: with
 out only when you press **Send** on its card in that agent's thread.
 
 - Connects IMAP accounts with an app password: iCloud, Gmail or another
-  server, TLS only (port 993 by default).
+  server, TLS only (port 993 by default). A Gmail account can sign in with
+  Google instead, see [Google sign-in](#google-sign-in).
 - Syncs every folder of each account on the BB server every
   `syncIntervalMinutes` (default 5), covering the last `syncWindowDays`
   (default 30): system folders (Inbox, Sent, Drafts, Spam, Trash, Archive)
@@ -155,10 +156,37 @@ Account passwords are sealed with AES-256-GCM under the `vaultKey` secret
 setting, generated on first load. Mail and credentials stay on the machine
 that runs the BB server.
 
-Not yet: Gmail API or OAuth, scheduled send, system notifications, semantic
-search, export to mbox or .eml archives, writing categories or reminders to
+Not yet: Gmail API, OAuth for other providers, scheduled send, system
+notifications, semantic search, export to mbox or .eml archives, writing categories or reminders to
 the mail server, and S/MIME signing, checking and decryption (Mail only
 recognises such mail; OpenPGP works, see [OpenPGP](#openpgp)).
+
+## Google sign-in
+
+A Gmail account can sign in with Google instead of an app password. In the
+account form choose Gmail and press **Sign in with Google**: Google opens in
+the browser, asks to let Makosh Mail read and send your mail, and the form
+closes when the account is saved. An existing Gmail account switches in
+**Mail settings → Sending addresses → Switch to Google sign-in** and keeps
+its mail. The app password stays available ("Use an app password instead").
+
+- Sync and sending still use IMAP and SMTP; they sign in with a short-lived
+  access token. Mail keeps Google's refresh token encrypted with `vaultKey`,
+  where a password would be, and asks only for `openid`, `email` and
+  `https://mail.google.com/`.
+- The answer from Google comes back to `127.0.0.1` on this machine, on a
+  port that is open for that one sign-in and for five minutes at most.
+- When Google no longer accepts the grant (you removed the access, changed
+  your password, or did not use it for six months) the account stops with
+  "Sign in to Google again"; only a new sign-in resumes it.
+- The Google client ships with the plugin in `google-oauth-client.json`, so
+  every install shares it. Google has not verified it: the consent page
+  shows an "unverified app" warning, and Google caps such a client at 100
+  users in total. While its consent screen is in "Testing", only listed
+  test users can sign in and a grant lasts seven days. To use your own
+  Google Cloud desktop client, replace that file and rebuild.
+- A Workspace administrator can block third-party clients; such an account
+  keeps using an app password.
 
 ## Writing and sending
 

@@ -8,6 +8,14 @@ All notable changes to Makosh Mail are recorded here. The format follows
 
 ### Added
 
+- Google sign-in for Gmail accounts. **Sign in with Google** in the account
+  form opens Google in the browser; sync and sending then use an access
+  token over IMAP and SMTP instead of an app password. An existing Gmail
+  account switches in Mail settings and keeps its mail. A revoked grant
+  stops the account with "Sign in to Google again". The Google desktop
+  client ships with the plugin (`google-oauth-client.json`). New RPC
+  methods `google_sign_in_start` and `google_sign_in_status`; database
+  migration element 19 adds the credential kind of an account.
 - Local archive (slice 3p). `bb makosh-mail archive add <file>` reads an
   mbox file, an `.eml` file or a folder of `.eml` files into a local
   archive, apart from every mailbox and never uploaded. The **Local
