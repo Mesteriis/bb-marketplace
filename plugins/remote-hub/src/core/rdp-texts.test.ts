@@ -44,6 +44,8 @@ describe("rdp texts", () => {
       "рабочий стол готов",
     ]);
     expect(stateText("closed")).toBe("закрыто");
+    expect(stateText("idle")).toBe("не подключено");
+    expect(stateText("error")).toBe("ошибка");
     expect(stateText("brand_new")).toBe("brand_new");
   });
 

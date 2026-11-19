@@ -4,6 +4,10 @@
 
 export function stateText(state: string): string {
   switch (state) {
+    case "idle":
+      return "не подключено";
+    case "error":
+      return "ошибка";
     case "connecting":
       return "подключение";
     case "tls":
