@@ -456,7 +456,7 @@ describe("opening a console", () => {
   it("re-reads the guest's current node and opens with the saved credential, never a secret", async () => {
     const { w, p } = readyWorld();
     const r = await w.rpc.openConsole({ profileId: p.id, console: "lxc", vmid: 101, cols: 100, rows: 30 });
-    expect(r).toEqual({ ok: true, handle: { generation: "e".repeat(32), sessionId: 7 }, kind: "pve" });
+    expect(r).toEqual({ ok: true, handle: { generation: "e".repeat(32), sessionId: 7 }, kind: "pve", node: "pve2" });
     const open = w.calls.find((c) => c.kind === "pveOpen")?.arg as { connect: { credentialRef: string; password?: string }; target: unknown; cols: number; guestName: string };
     expect(open.target).toEqual({ kind: "lxc", node: "pve2", vmid: 101 });
     expect(open.connect.credentialRef).toBe(REF1);

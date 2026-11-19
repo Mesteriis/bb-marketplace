@@ -30,7 +30,7 @@ export interface PveAdminInput extends PveEndpointInput {
 
 export type PveConsoleRequest = { console: "node"; node: string } | { console: "lxc" | "qemu"; vmid: number };
 
-export type PveConsoleOpened = { ok: true; generation: string; sessionId: number; kind: "pve" | "vnc" } | { ok: false; code: string; message: string; fingerprint: string | null };
+export type PveConsoleOpened = { ok: true; generation: string; sessionId: number; kind: "pve" | "vnc"; /** The node the console was opened on (the guest may have moved since the list was read). */ node: string } | { ok: false; code: string; message: string; fingerprint: string | null };
 
 export interface PveApi {
   targets(input: { profileIds?: string[]; refresh: boolean }): Promise<{ connections: PveConnectionView[] }>;

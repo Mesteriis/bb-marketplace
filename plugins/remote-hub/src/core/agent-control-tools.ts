@@ -14,6 +14,7 @@ import { MAX_RDP_EVENTS_PER_CALL, SerialQueue, rdpActionsSchema, toRdpEvents, ty
 import { CANNOT, GRAPHICS_NO_INPUT, ToolError, connectionIdSchema, createGate, def, errorResult, json, sessionIdSchema, type AgentCallContext, type AgentSessionView, type AgentToolDef, type AgentToolDeps } from "./agent-tools.ts";
 import { LEASE_DEFAULT_SECONDS, LEASE_MAX_SECONDS, LEASE_MIN_SECONDS, type ControlLeases, type LeaseEnd } from "./control-lease.ts";
 import type { ConsoleRequest } from "./pve-console.ts";
+import { RECONNECT_ATTEMPTS, STABLE_AFTER_MS } from "./pve-reconnect.ts";
 import type { RdpInputEvent } from "./rdp-protocol.ts";
 
 /** What the adapter does for the control tools. */
@@ -57,6 +58,18 @@ export class AgentSessionRegistry {
   forget(sessionKey: string): void {
     this.opened.delete(sessionKey);
     this.closing.delete(sessionKey);
+    this.lineage.delete(sessionKey);
+  }
+  /** How many times in a row this console was reopened by remote_reconnect, and when this session was opened (memory only). */
+  private readonly lineage = new Map<string, { reconnects: number; openedAt: number }>();
+  setLineage(sessionKey: string, reconnects: number, openedAt: number): void {
+    this.lineage.set(sessionKey, { reconnects, openedAt });
+  }
+  reconnectsOf(sessionKey: string): number {
+    return this.lineage.get(sessionKey)?.reconnects ?? 0;
+  }
+  openedAtOf(sessionKey: string): number | undefined {
+    return this.lineage.get(sessionKey)?.openedAt;
   }
   /** A session whose close could not be confirmed: it stays registered (and counted) until it is. */
   markClosing(sessionKey: string): void {
@@ -153,7 +166,7 @@ function terminalBytes(actions: TerminalAction[]): Uint8Array {
 }
 
 /** More fields for a session's row in the read tools: who is driving it and whether the owner is being asked something. */
-export function controlSessionExtras(leases: ControlLeases, control: Pick<AgentControlPorts, "waitingForOwner" | "watching" | "watchingRequired">) {
+export function controlSessionExtras(leases: ControlLeases, control: Pick<AgentControlPorts, "waitingForOwner" | "watching" | "watchingRequired">, registry?: AgentSessionRegistry) {
   return (s: AgentSessionView): Record<string, unknown> => {
     const owner = leases.owner(s.key);
     const waiting = control.waitingForOwner(s.key);
@@ -163,11 +176,15 @@ export function controlSessionExtras(leases: ControlLeases, control: Pick<AgentC
       ...(waiting.length > 0 ? { waitingForOwner: waiting } : {}),
       watchedByOwner: control.watching(s.key),
       watchingRequired: control.watchingRequired(),
+      // A Proxmox console: how many times in a row it was reopened with remote_reconnect (each time a NEW session id).
+      ...(s.pve !== undefined && registry !== undefined ? { reconnects: registry.reconnectsOf(s.key), maxReconnects: RECONNECT_ATTEMPTS } : {}),
     };
   };
 }
 
 const CLOSE_CONFIRM_MS = 5000;
+/** End reasons a repeated open cannot change and may make worse (a refused login can lock an account): the owner fixes the connection. */
+const NO_AGENT_RETRY: ReadonlySet<string> = new Set(["login_failed", "tls_untrusted", "cert_changed", "tfa_required", "no_credential"]);
 
 /** The line the agent copies into its reply so BB shows the live session inline (a message directive this plugin renders). */
 export const liveViewLine = (sessionKey: string): string => `::remote-session{id="${sessionKey}"}`;
@@ -265,6 +282,39 @@ export function createControlTools(deps: AgentControlDeps): AgentToolDef[] {
     }
   }
 
+  /**
+   * Opens a connection for a thread and registers the session at once. The slot is taken BEFORE the open is awaited, and given
+   * back on every way out: parallel calls cannot all see room. If the grant, the thread or the call ended while it opened,
+   * the session is closed, not handed over.
+   */
+  async function openRegistered(ctx: AgentCallContext, profileId: string, consoleRequest: ConsoleRequest | undefined, reconnects = 0): Promise<string> {
+    const live = ports.sessions.list().filter((s) => s.state !== "closed" && openedBy.threadOf(s.key) === ctx.threadId).length;
+    if (live + (opening.get(ctx.threadId) ?? 0) >= MAX_SESSIONS_PER_THREAD) throw new ToolError("too_many_sessions", `this thread already has ${MAX_SESSIONS_PER_THREAD} open sessions: disconnect one first`);
+    opening.set(ctx.threadId, (opening.get(ctx.threadId) ?? 0) + 1);
+    let sessionKey: string;
+    try {
+      ({ sessionKey } = await control.connect(profileId, consoleRequest));
+      // Registered at once: whatever happens next, the session is accounted for until it is confirmed closed.
+      openedBy.mark(sessionKey, ctx.threadId);
+      openedBy.setLineage(sessionKey, reconnects, Date.now());
+      if (!access.check(profileId, "connect").ok || openedBy.isRetired(ctx.threadId) || ctx.signal?.aborted === true) {
+        try {
+          await Promise.race([control.disconnect(sessionKey), new Promise((_, reject) => setTimeout(() => reject(new Error("close timed out")), CLOSE_CONFIRM_MS).unref?.())]);
+        } catch {
+          openedBy.markClosing(sessionKey);
+          throw new ToolError("connect_cancelled", "the permission to connect ended while the connection was opening; the session could not be confirmed closed, it stays listed and Remote Hub keeps trying to close it");
+        }
+        openedBy.forget(sessionKey);
+        throw new ToolError("connect_cancelled", "the permission to connect ended while the connection was opening; it was closed");
+      }
+    } finally {
+      const left = (opening.get(ctx.threadId) ?? 1) - 1;
+      if (left > 0) opening.set(ctx.threadId, left);
+      else opening.delete(ctx.threadId);
+    }
+    return sessionKey;
+  }
+
   const tools: AgentToolDef[] = [
     def({
       name: "remote_control_acquire",
@@ -339,33 +389,62 @@ export function createControlTools(deps: AgentControlDeps): AgentToolDef[] {
           if (profile === null || !access.check(params.connectionId, "connect").ok) throw new ToolError("agent_access_denied", "the owner has not allowed agents to use this connection");
           if (profile.credentialRef === null) throw new ToolError("needs_saved_credential", "this connection has no saved credential; the owner must save one on the Remote Hub page first");
           const consoleRequest = consoleRequestOf(profile.protocol, params);
-          // The slot is taken BEFORE the open is awaited, and given back on every way out: parallel calls cannot all see room.
-          const live = ports.sessions.list().filter((s) => s.state !== "closed" && openedBy.threadOf(s.key) === ctx.threadId).length;
-          if (live + (opening.get(ctx.threadId) ?? 0) >= MAX_SESSIONS_PER_THREAD) throw new ToolError("too_many_sessions", `this thread already has ${MAX_SESSIONS_PER_THREAD} open sessions: disconnect one first`);
-          opening.set(ctx.threadId, (opening.get(ctx.threadId) ?? 0) + 1);
-          let sessionKey: string;
-          try {
-            ({ sessionKey } = await control.connect(profile.id, consoleRequest));
-            // Registered at once: whatever happens next, the session is accounted for until it is confirmed closed.
-            openedBy.mark(sessionKey, ctx.threadId);
-            // The open took time: if the grant, the thread or the call ended meanwhile, the session is closed, not handed over.
-            if (!access.check(profile.id, "connect").ok || openedBy.isRetired(ctx.threadId) || ctx.signal?.aborted === true) {
-              try {
-                await Promise.race([control.disconnect(sessionKey), new Promise((_, reject) => setTimeout(() => reject(new Error("close timed out")), CLOSE_CONFIRM_MS).unref?.())]);
-              } catch {
-                openedBy.markClosing(sessionKey);
-                throw new ToolError("connect_cancelled", "the permission to connect ended while the connection was opening; the session could not be confirmed closed, it stays listed and Remote Hub keeps trying to close it");
-              }
-              openedBy.forget(sessionKey);
-              throw new ToolError("connect_cancelled", "the permission to connect ended while the connection was opening; it was closed");
-            }
-          } finally {
-            const left = (opening.get(ctx.threadId) ?? 1) - 1;
-            if (left > 0) opening.set(ctx.threadId, left);
-            else opening.delete(ctx.threadId);
-          }
+          const sessionKey = await openRegistered(ctx, profile.id, consoleRequest);
           const waiting = control.waitingForOwner(sessionKey);
           return { content: [json({ sessionId: sessionKey, connectionId: profile.id, state: sessionOf(sessionKey)?.state ?? "connecting", ...(waiting.length > 0 ? { waitingForOwner: waiting } : {}), watching: control.watching(sessionKey), watchingRequired: control.watchingRequired(), liveView: liveViewLine(sessionKey), instruction: LIVE_VIEW_INSTRUCTION })] };
+        }),
+    }),
+    def({
+      name: "remote_reconnect",
+      description:
+        CANNOT +
+        "Opens a Proxmox container or virtual machine console again after one YOU opened with remote_connect was lost or ended. It is always a NEW console with a NEW session id (returned as sessionId; the old id is gone), opened with a fresh login and the guest's current node; nothing typed before is sent again, and the old terminal text is not carried over. " +
+        "The same checks as remote_connect apply (the owner's connect level, the saved credential, four sessions per thread). The new console has no lease: take control again with remote_control_acquire. " +
+        `It is refused while the console is still connected, after a login, certificate or second-factor refusal (the owner must fix the connection), and after ${RECONNECT_ATTEMPTS} reopenings in a row that did not hold for ${STABLE_AFTER_MS / 1000} seconds. ` +
+        "A shell on a Proxmox node is never available to agents. remote_session_status shows the console state, the reason and how many times it was reopened.",
+      parameters: z.object({ sessionId: sessionIdSchema }).strict(),
+      execute: (params, ctx) =>
+        guarded("remote_reconnect", ctx, { sessionKey: params.sessionId, profileId: profileOf(params.sessionId) }, async () => {
+          refuseRetired(ctx);
+          const old = sessionOf(params.sessionId);
+          if (old === undefined || old.profileId === undefined || old.pve === undefined || (old.kind !== "pve" && old.kind !== "vnc")) throw noSession();
+          if (openedBy.threadOf(old.key) !== ctx.threadId) throw new ToolError("not_opened_by_you", "this thread did not open this session");
+          if (old.pve.console === "node") throw new ToolError("node_shell_owner_only", "a shell on a Proxmox node is only for the owner");
+          const profile = ports.profiles.get(old.profileId);
+          if (profile === null || !access.check(old.profileId, "connect").ok) throw new ToolError("agent_access_denied", "the owner has not allowed agents to use this connection");
+          if (profile.credentialRef === null) throw new ToolError("needs_saved_credential", "this connection has no saved credential; the owner must save one on the Remote Hub page first");
+          if (old.state !== "closed") throw new ToolError("still_connected", "this console is still connected: use it, or remote_disconnect it first");
+          const code = old.pve.reasonCode ?? null;
+          if (code !== null && NO_AGENT_RETRY.has(code)) throw new ToolError("reconnect_refused", `the console ended with ${code}: ${old.pve.reason ?? "the owner has to fix the connection"} Reconnecting would only repeat it.`);
+          // A reopening that held for a while starts the count again; quick repeated losses count up to the cap.
+          const openedAt = openedBy.openedAtOf(old.key);
+          const held = openedAt !== undefined && Date.now() - openedAt >= STABLE_AFTER_MS;
+          const reconnects = held ? 1 : openedBy.reconnectsOf(old.key) + 1;
+          if (reconnects > RECONNECT_ATTEMPTS) throw new ToolError("reconnect_limit", `this console was reopened ${RECONNECT_ATTEMPTS} times in a row without holding; ask the owner to look at it`);
+          const request: ConsoleRequest = { console: old.pve.console, vmid: old.pve.vmid ?? 0 };
+          const sessionKey = await openRegistered(ctx, profile.id, request, reconnects);
+          // The old session is gone for this thread: its lease ended and its id no longer answers.
+          leases.endSession(old.key, "session_closed");
+          openedBy.forget(old.key);
+          const waiting = control.waitingForOwner(sessionKey);
+          return {
+            content: [
+              json({
+                sessionId: sessionKey,
+                previousSessionId: old.key,
+                connectionId: profile.id,
+                reconnects,
+                maxReconnects: RECONNECT_ATTEMPTS,
+                state: sessionOf(sessionKey)?.state ?? "connecting",
+                ...(waiting.length > 0 ? { waitingForOwner: waiting } : {}),
+                watching: control.watching(sessionKey),
+                watchingRequired: control.watchingRequired(),
+                liveView: liveViewLine(sessionKey),
+                instruction: LIVE_VIEW_INSTRUCTION,
+                note: "A NEW console with a new session id: nothing typed before is sent again and the old text is not carried over. Take control again before typing.",
+              }),
+            ],
+          };
         }),
     }),
     def({

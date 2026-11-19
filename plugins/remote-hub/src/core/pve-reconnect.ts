@@ -38,3 +38,19 @@ export function delayBefore(attempt: number, random: number): number {
 /** The line written into a console's scrollback where its connection was lost. */
 export const LOST_SEPARATOR = "\r\n\u001b[33m──── connection lost ────\u001b[0m\r\n";
 export const RECONNECTED_SEPARATOR = "\r\n\u001b[33m──── reconnected: a new console, nothing typed before is sent again ────\u001b[0m\r\n";
+
+export type ReconnectDecision = { action: "wait"; attempt: number; delayMs: number } | { action: "stop"; why: "not_retryable" | "gave_up" };
+
+/**
+ * What to do after a loss or a failed attempt with reason `code`, when `made` attempts have been made in this episode (0 right
+ * after the loss). `random` is in [0, 1).
+ */
+export function decideReconnect(made: number, code: string, random: number): ReconnectDecision {
+  if (!isRetryable(code)) return { action: "stop", why: "not_retryable" };
+  const next = made + 1;
+  if (next > RECONNECT_ATTEMPTS) return { action: "stop", why: "gave_up" };
+  return { action: "wait", attempt: next, delayMs: delayBefore(next, random) };
+}
+
+/** An attempt that held up for this long counts as a new connection: the next loss starts a fresh episode of attempts. */
+export const STABLE_AFTER_MS = 10_000;

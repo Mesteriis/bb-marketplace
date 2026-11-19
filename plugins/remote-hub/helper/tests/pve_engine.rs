@@ -328,6 +328,42 @@ async fn input_for_a_transport_that_never_reads_closes_the_console_instead_of_gr
 }
 
 #[tokio::test]
+async fn a_console_open_that_meets_an_expired_ticket_logs_in_again_once_and_opens() {
+    let mut st = default_state();
+    st.expire_next_uses = 1;
+    let fake = start_fake(st).await;
+    let mut d = start_engine(&open(fake.port, ticket_auth(), ca_trust(), lxc("pve1", 101))).await;
+    d.until_state("open").await;
+    d.read_data(b"root@ct101:~# ").await;
+    d.send(&PveCommand::Close).await;
+    let _ = d.all().await;
+    assert_eq!(fake.state.lock().unwrap().logins, 2, "one login, the refusal, one new login");
+}
+
+#[tokio::test]
+async fn a_ticket_that_is_refused_again_after_the_new_login_stops_with_login_failed_after_exactly_two_logins() {
+    let mut st = default_state();
+    st.expire_tickets = true;
+    let fake = start_fake(st).await;
+    let mut d = start_engine(&open(fake.port, ticket_auth(), ca_trust(), lxc("pve1", 101))).await;
+    let (events, _) = d.all().await;
+    assert!(events.iter().any(|e| matches!(e, PveEvent::Error { code, .. } if code == "login_failed")), "{events:?}");
+    assert_eq!(fake.state.lock().unwrap().logins, 2, "never a third attempt");
+}
+
+#[tokio::test]
+async fn a_graphical_console_open_also_logs_in_again_once() {
+    let mut st = default_state();
+    st.expire_next_uses = 1;
+    let fake = start_fake(st).await;
+    let mut d = start_engine(&open(fake.port, ticket_auth(), ca_trust(), qemu("pve1", 100))).await;
+    d.until_state("open").await;
+    d.send(&PveCommand::Close).await;
+    let _ = d.all().await;
+    assert_eq!(fake.state.lock().unwrap().logins, 2);
+}
+
+#[tokio::test]
 async fn the_node_shell_uses_the_node_termproxy() {
     let fake = start_fake(default_state()).await;
     let op = PveOp::Terminal { target: ConsoleTarget::Node { node: "pve2".into() }, cols: 120, rows: 40 };

@@ -45,7 +45,7 @@ export type OnboardAdmin = OnboardEndpoint & { adminUser: string; adminPassword:
 export type OnboardFailure = { ok: false; code: string; message: string; fingerprint: string | null; steps: PveSteps | null; profileId?: string };
 export type OnboardPlanAnswer = ({ ok: true } & PvePlan) | OnboardFailure;
 /** Opening a console: the session, or why not (a code from the console reasons, never a server's own words). */
-export type ConsoleOpenAnswer = { ok: true; handle: SessionHandle; kind: "pve" | "vnc" } | { ok: false; code: string; message: string; fingerprint: string | null };
+export type ConsoleOpenAnswer = { ok: true; handle: SessionHandle; kind: "pve" | "vnc"; /** The node it was opened on: the guest's node as read just now. */ node: string } | { ok: false; code: string; message: string; fingerprint: string | null };
 /** `audit: false` for an agent: its remote_connect call already has an audit row under its own thread, and this one would say "owner RPC". */
 export type ConsoleOpenInput = ConsoleRequest & { profileId: string; cols: number; rows: number; audit?: boolean };
 export type OnboardApplyAnswer = { ok: true; profileId: string; userId: string; steps: PveSteps } | OnboardFailure;
@@ -178,7 +178,7 @@ export function createPveRpc(deps: PveRpcDeps) {
           if (!resolved.ok) return resolved;
           try {
             const opened = await service.pveOpen({ connect, target: resolved.target, cols: input.cols, rows: input.rows, profileId: p.id, connectionName: p.name, guestName: resolved.guestName });
-            return { ok: true, handle: opened.handle, kind: opened.kind };
+            return { ok: true, handle: opened.handle, kind: opened.kind, node: resolved.target.node };
           } catch (error) {
             if (error instanceof HelperRequestError) return { ok: false, code: error.code, message: error.message, fingerprint: null };
             if (error instanceof HelperRuntimeError || error instanceof HelperStartError) return { ok: false, code: "helper_exited", message: error.message, fingerprint: null };

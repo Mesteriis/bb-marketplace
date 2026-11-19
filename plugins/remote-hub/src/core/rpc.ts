@@ -163,6 +163,8 @@ export const pveConsoleTabSchema = z.object({
   title: z.string().max(120),
 });
 
+export type PveConsoleTabRow = z.infer<typeof pveConsoleTabSchema>;
+
 export const sessionInfoSchema = z.object({
   generation: z.string().regex(/^[0-9a-f]{32}$/),
   sessionId: sessionIdSchema,
@@ -315,7 +317,7 @@ export const rpcSchemas = {
       .strict()
       .refine((i) => (i.console === "node" ? i.node !== undefined && i.vmid === undefined : i.vmid !== undefined && i.node === undefined), { message: "a node shell names its node; a guest console names its VMID" }),
     output: z.union([
-      z.object({ ok: z.literal(true), generation: z.string().regex(/^[0-9a-f]{32}$/), sessionId: sessionIdSchema, kind: z.enum(["pve", "vnc"]) }),
+      z.object({ ok: z.literal(true), generation: z.string().regex(/^[0-9a-f]{32}$/), sessionId: sessionIdSchema, kind: z.enum(["pve", "vnc"]), node: z.string() }),
       z.object({ ok: z.literal(false), code: z.string(), message: z.string(), fingerprint: z.string().nullable() }),
     ]),
   },

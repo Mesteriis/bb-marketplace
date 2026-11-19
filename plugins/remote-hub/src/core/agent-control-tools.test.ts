@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentFeed } from "./agent-feed.ts";
 import { AgentAccessBook, type AgentGrant } from "./agent-access.ts";
 import { AgentAudit, type AuditRow, type AuditStore } from "./agent-audit.ts";
@@ -100,7 +100,7 @@ function setup(opts: Setup = {}) {
         opened.push(p.id);
         consoles.push(console);
         const kind = p.protocol === "rdp" ? "rdp" : p.protocol === "pve" ? (console?.console === "qemu" ? "vnc" : "pve") : "ssh";
-        sessions.push({ key, kind, state: "connecting", profileId: p.id, exitCode: null, reason: null, control: kind === "vnc" ? "never" : "ready" });
+        sessions.push({ key, kind, state: "connecting", profileId: p.id, exitCode: null, reason: null, control: kind === "vnc" ? "never" : "ready", ...(console === undefined || console.console === "node" ? {} : { pve: { console: console.console, node: "pve1", vmid: console.vmid, state: "connecting", reason: null } }) });
         return { sessionKey: key };
       },
       disconnect: async (key) => {
@@ -153,14 +153,15 @@ async function until(cond: () => boolean): Promise<void> {
 }
 
 describe("the control tool set", () => {
-  it("has exactly six tools, each starting with what it cannot do, with strict schemas and no password anywhere", () => {
+  it("has exactly seven tools, each starting with what it cannot do, with strict schemas and no password anywhere", () => {
     const { tools } = setup();
-    expect(tools.map((t) => t.name)).toEqual(["remote_control_acquire", "remote_control_release", "remote_connect", "remote_disconnect", "remote_terminal_input", "remote_rdp_input"]);
+    expect(tools.map((t) => t.name)).toEqual(["remote_control_acquire", "remote_control_release", "remote_connect", "remote_reconnect", "remote_disconnect", "remote_terminal_input", "remote_rdp_input"]);
     for (const t of tools) expect(t.description.startsWith("Cannot get a saved password, passphrase or key"), t.name).toBe(true);
     const bad: Record<string, unknown> = {
       remote_control_acquire: { sessionId: SSH_KEY, password: "x" },
       remote_control_release: { sessionId: SSH_KEY, leaseId: "l", password: "x" },
       remote_connect: { connectionId: P_SSH, password: "x" },
+      remote_reconnect: { sessionId: SSH_KEY, password: "x" },
       remote_disconnect: { sessionId: SSH_KEY, password: "x" },
       remote_terminal_input: { sessionId: SSH_KEY, leaseId: "l", actions: [{ type: "text", text: "a" }], password: "x" },
       remote_rdp_input: { sessionId: RDP_KEY, leaseId: "l", actions: [{ type: "key", code: "Enter" }], password: "x" },
@@ -863,5 +864,152 @@ describe("Proxmox consoles through remote_connect", () => {
     expect(connect).toContain('"lxc" with `vmid`');
     expect(t.tool("remote_rdp_input").description).toContain("desktop (RDP)");
     expect(t.tool("remote_terminal_input").description).toContain("Proxmox node or container terminal");
+  });
+});
+
+
+describe("remote_reconnect", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  /** An agent opened a console; it then ended (`closed`) for `code`. */
+  async function lostConsole(t: ReturnType<typeof setup>, console: "lxc" | "qemu" = "lxc", code = "remote_closed", reason = "Proxmox closed the console.") {
+    const input = console === "lxc" ? { connectionId: P_PVE, console, vmid: 101 } : { connectionId: P_PVE, console, vmid: 200 };
+    const key = t.data(await t.call("remote_connect", input)).sessionId as string;
+    const row = t.sessions.find((x) => x.key === key)!;
+    row.state = "closed";
+    row.pve = { console, node: "pve1", vmid: console === "lxc" ? 101 : 200, state: "lost", reason, reasonCode: code };
+    return key;
+  }
+  const ready = () => {
+    const t = setup({ sessions: [] });
+    t.access.set(P_PVE, "input", false);
+    return t;
+  };
+
+  it("opens the same guest again as a NEW session with a new id, forgets the old one and says how often it was reopened", async () => {
+    const t = ready();
+    const old = await lostConsole(t);
+    t.sessions.find((x) => x.key === old)!.state = "running"; // the lease is taken while it is still alive
+    const lease = t.data(await t.call("remote_control_acquire", { sessionId: old })).leaseId as string;
+    t.sessions.find((x) => x.key === old)!.state = "closed";
+    const out = t.data(await t.call("remote_reconnect", { sessionId: old }));
+    expect(out).toMatchObject({ previousSessionId: old, connectionId: P_PVE, reconnects: 1, maxReconnects: 5 });
+    expect(out.sessionId).not.toBe(old);
+    expect(out.sessionId).toBe(`${GEN}.11`);
+    expect(out.liveView).toContain(out.sessionId);
+    expect(t.consoles).toEqual([{ console: "lxc", vmid: 101 }, { console: "lxc", vmid: 101 }]);
+    expect(t.registry.threadOf(old)).toBeUndefined();
+    expect(t.registry.threadOf(out.sessionId)).toBe("thr_a");
+    // the old lease died with the old session; nothing typed before travels to the new one
+    expect(t.textOf(await t.call("remote_terminal_input", { sessionId: old, leaseId: lease, actions: [{ type: "text", text: "x" }] }))).toContain("session_closed");
+    expect(t.wrote).toEqual([]);
+    expect(out.note).toContain("nothing typed before is sent again");
+  });
+
+  it("a virtual machine's graphics opens a new console and returns the new session id", async () => {
+    const t = ready();
+    const old = await lostConsole(t, "qemu");
+    const out = t.data(await t.call("remote_reconnect", { sessionId: old }));
+    expect(out.sessionId).not.toBe(old);
+    expect(t.consoles.at(-1)).toEqual({ console: "qemu", vmid: 200 });
+    expect(t.sessions.find((x) => x.key === out.sessionId)?.kind).toBe("vnc");
+  });
+
+  it("is refused while the console is still connected", async () => {
+    const t = ready();
+    const key = t.data(await t.call("remote_connect", { connectionId: P_PVE, console: "lxc", vmid: 101 })).sessionId as string;
+    expect(t.textOf(await t.call("remote_reconnect", { sessionId: key }))).toContain("still_connected");
+    expect(t.opened).toHaveLength(1);
+  });
+
+  it.each(["login_failed", "tls_untrusted", "cert_changed", "tfa_required", "no_credential"])("is refused after %s: the owner has to fix the connection, and nothing is retried", async (code) => {
+    const t = ready();
+    const old = await lostConsole(t, "lxc", code, "the fixed text");
+    const text = t.textOf(await t.call("remote_reconnect", { sessionId: old }));
+    expect(text).toContain("reconnect_refused");
+    expect(text).toContain(code);
+    expect(t.opened).toHaveLength(1);
+    expect(t.registry.threadOf(old)).toBe("thr_a");
+  });
+
+  it("only the thread that opened the console may reopen it; an unknown id and a non-console session answer like a missing one", async () => {
+    const t = ready();
+    const old = await lostConsole(t);
+    expect(t.textOf(await t.call("remote_reconnect", { sessionId: old }, OTHER))).toContain("not_opened_by_you");
+    expect(t.textOf(await t.call("remote_reconnect", { sessionId: `${GEN}.99` }))).toContain("session_not_found");
+    t.sessions.push({ key: SSH_KEY, kind: "ssh", state: "closed", profileId: P_SSH, exitCode: 0, reason: null, control: "ready" });
+    expect(t.textOf(await t.call("remote_reconnect", { sessionId: SSH_KEY }))).toContain("session_not_found");
+    expect(t.opened).toHaveLength(1);
+  });
+
+  it("needs the connect level and a saved credential, like remote_connect", async () => {
+    const t = ready();
+    const old = await lostConsole(t);
+    t.access.set(P_PVE, "observe", false);
+    expect(t.textOf(await t.call("remote_reconnect", { sessionId: old }))).toContain("agent_access_denied");
+    t.access.set(P_PVE, "input", false);
+    expect(t.data(await t.call("remote_reconnect", { sessionId: old })).reconnects).toBe(1);
+  });
+
+  it("a node shell can never be reopened for an agent", async () => {
+    const t = ready();
+    const old = await lostConsole(t);
+    const row = t.sessions.find((x) => x.key === old)!;
+    row.pve = { ...row.pve!, console: "node", vmid: null };
+    expect(t.textOf(await t.call("remote_reconnect", { sessionId: old }))).toContain("node_shell_owner_only");
+  });
+
+  it("the same refusals as remote_connect reach the agent as fixed text (a stopped guest is not started)", async () => {
+    const t = ready();
+    const old = await lostConsole(t);
+    t.refusePve(new ToolError("guest_stopped", "The guest is not running; Remote Hub never starts it."));
+    const text = t.textOf(await t.call("remote_reconnect", { sessionId: old }));
+    expect(text).toContain("guest_stopped");
+    expect(t.opened).toHaveLength(1);
+    expect(t.registry.threadOf(old)).toBe("thr_a");
+  });
+
+  it("five reopenings in a row that did not hold are the limit; one that held for ten seconds starts the count again", async () => {
+    const t = ready();
+    let clock = 5_000_000;
+    vi.spyOn(Date, "now").mockImplementation(() => clock);
+    let key = await lostConsole(t);
+    for (let n = 1; n <= 5; n++) {
+      const out = t.data(await t.call("remote_reconnect", { sessionId: key }));
+      expect(out.reconnects).toBe(n);
+      key = out.sessionId as string;
+      const row = t.sessions.find((x) => x.key === key)!;
+      row.state = "closed";
+      row.pve = { console: "lxc", node: "pve1", vmid: 101, state: "lost", reason: "x", reasonCode: "remote_closed" };
+      clock += 2000; // lost again two seconds after it opened
+    }
+    expect(t.textOf(await t.call("remote_reconnect", { sessionId: key }))).toContain("reconnect_limit");
+    clock += 10_000; // ...but a console that held starts a new count
+    expect(t.textOf(await t.call("remote_reconnect", { sessionId: key }))).not.toContain("reconnect_limit");
+  });
+
+  it("is audited under its own name, and a failure writes its outcome", async () => {
+    const t = ready();
+    const old = await lostConsole(t);
+    await t.call("remote_reconnect", { sessionId: old });
+    expect(t.rows.some((r) => r.tool === "remote_reconnect")).toBe(true);
+  });
+
+  it("the description says it is a new console, what is refused and that no power control exists", () => {
+    const d = ready().tool("remote_reconnect").description;
+    expect(d).toContain("NEW session id");
+    expect(d).toContain("never available to agents");
+    expect(d).not.toMatch(/\b(reboot|shutdown|power)\b/i);
+  });
+
+  it("a session row for a console shows how many times it was reopened; other sessions show nothing of the kind", async () => {
+    const t = ready();
+    const old = await lostConsole(t);
+    const out = t.data(await t.call("remote_reconnect", { sessionId: old }));
+    const extras = controlSessionExtras(t.leases, { waitingForOwner: () => [], watching: () => true, watchingRequired: () => true }, t.registry);
+    const row = t.sessions.find((x) => x.key === out.sessionId)!;
+    row.pve = { console: "lxc", node: "pve1", vmid: 101, state: "active", reason: null };
+    expect(extras(row)).toMatchObject({ reconnects: 1, maxReconnects: 5 });
+    expect(extras({ key: SSH_KEY, kind: "ssh", state: "running", exitCode: null, reason: null, control: "ready" })).not.toHaveProperty("reconnects");
   });
 });

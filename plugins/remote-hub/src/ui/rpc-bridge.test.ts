@@ -139,4 +139,22 @@ describe("the bridge's agent-control calls (stage 4b-1)", () => {
       { method: "agent_control_takeover", input: HANDLE },
     ]);
   });
+
+  it("the Proxmox console tab list goes through its three RPCs with plain JSON", async () => {
+    const calls: Array<{ method: string; input: unknown }> = [];
+    const bridge = createConnectBridge(async (method, input) => {
+      calls.push({ method, input });
+      if (method === "pve_console_tabs_list") return { tabs: [{ id: PID, profileId: PID, console: "node", node: "pve1", vmid: null, title: "" }] };
+      return {};
+    }, "ws://x");
+    const row = { id: PID, profileId: PID, console: "lxc" as const, node: null, vmid: 101, title: "web" };
+    expect(await bridge.pveConsoles.tabs.list()).toEqual([{ id: PID, profileId: PID, console: "node", node: "pve1", vmid: null, title: "" }]);
+    await bridge.pveConsoles.tabs.put(row);
+    await bridge.pveConsoles.tabs.remove(PID);
+    expect(calls).toEqual([
+      { method: "pve_console_tabs_list", input: {} },
+      { method: "pve_console_tab_put", input: row },
+      { method: "pve_console_tab_remove", input: { id: PID } },
+    ]);
+  });
 });

@@ -38,7 +38,7 @@ export function agentPorts(service: RemoteHubService, profiles: ProfileBook, ope
             reason: s.reason,
             control: service.agentControl(s),
             ...(s.rdp === undefined ? {} : { rdp: { state: s.rdp.state, desktop: s.rdp.desktop } }),
-            ...(s.pve === undefined ? {} : { pve: { console: s.pve.console, node: s.pve.node, vmid: s.pve.vmid, state: s.pve.state, reason: s.pve.reason?.text ?? null } }),
+            ...(s.pve === undefined ? {} : { pve: { console: s.pve.console, node: s.pve.node, vmid: s.pve.vmid, state: s.pve.state, reason: s.pve.reason?.text ?? null, reasonCode: s.pve.reason?.code ?? null } }),
           }),
         ),
       read: (key, from, max) => {

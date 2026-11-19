@@ -39,7 +39,7 @@ export interface AgentSessionView {
   control: "ready" | "pending" | "never";
   rdp?: { state: string; desktop: { frameId: number; width: number; height: number } | null };
   /** A Proxmox console (kind pve or vnc): what it is, its state and the fixed reason text of a failure. */
-  pve?: { console: "node" | "lxc" | "qemu"; node: string; vmid: number | null; state: string; reason: string | null };
+  pve?: { console: "node" | "lxc" | "qemu"; node: string; vmid: number | null; state: string; reason: string | null; /** The fixed code behind `reason`. */ reasonCode?: string | null };
 }
 
 
@@ -219,7 +219,7 @@ export function createGate(deps: AgentToolDeps) {
     closeReason: s.reason,
     agentControl: s.control,
     ...(s.rdp === undefined ? {} : { rdp: { state: s.rdp.state, desktop: s.rdp.desktop } }),
-    ...(s.pve === undefined ? {} : { proxmoxConsole: { console: s.pve.console, node: s.pve.node, vmid: s.pve.vmid, state: s.pve.state, ...(s.pve.reason === null ? {} : { reason: s.pve.reason }) } }),
+    ...(s.pve === undefined ? {} : { proxmoxConsole: { console: s.pve.console, node: s.pve.node, vmid: s.pve.vmid, state: s.pve.state, ...(s.pve.reason === null ? {} : { reason: s.pve.reason }), ...(s.pve.reasonCode == null ? {} : { reasonCode: s.pve.reasonCode }) } }),
     ...(deps.sessionExtras === undefined ? {} : deps.sessionExtras(s)),
   });
 

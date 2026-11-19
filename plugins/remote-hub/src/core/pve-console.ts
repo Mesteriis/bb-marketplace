@@ -27,7 +27,7 @@ export function consoleStateOf(helperState: string): PveConsoleState {
 }
 
 const REASON_TEXT: Record<string, string> = {
-  login_failed: "Proxmox refused the login or the console ticket (the ticket may have expired). Open the console again.",
+  login_failed: "Proxmox refused the login. Open the connection and enter its password again; Remote Hub does not retry a refused login on its own.",
   no_permission: "The account may not open this console. It needs VM.Console (guests) or Sys.Console (the node) in Proxmox.",
   unreachable: "The Proxmox endpoint did not answer. Check the address, the port and your network.",
   timeout: "Proxmox did not answer in time.",

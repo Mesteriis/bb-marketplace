@@ -36,6 +36,8 @@ pub struct State {
     /// (vmid, name, type, node, status, template)
     pub guests: Vec<(u32, String, String, String, String, bool)>,
     pub expire_tickets: bool,
+    /// The next this-many uses of a login ticket are refused as expired; later ones are accepted.
+    pub expire_next_uses: u32,
     pub forbid_console: bool,
     pub no_guest_privileges: bool,
     pub tfa: bool,
@@ -253,6 +255,10 @@ fn route(method: &Method, path: &str, form: &HashMap<String, String>, req: &Requ
         let auth = h("authorization");
         let csrf = h("csrfpreventiontoken");
         if let Some(c) = cookie.and_then(|c| c.strip_prefix("PVEAuthCookie=").map(unescape)) {
+            if st.expire_next_uses > 0 && st.tickets.contains(&c) {
+                st.expire_next_uses -= 1;
+                return json_resp(401, json!({"data": null, "message": "invalid PVE ticket"}));
+            }
             if st.expire_tickets || !st.tickets.contains(&c) {
                 return json_resp(401, json!({"data": null, "message": "invalid PVE ticket"}));
             }
@@ -438,8 +444,12 @@ async fn websocket(req: Request<Incoming>, state: Arc<Mutex<State>>, path: &str,
     let cookie = req.headers().get("cookie").and_then(|v| v.to_str().ok()).map(str::to_string);
     let key = req.headers().get("sec-websocket-key").and_then(|v| v.to_str().ok()).map(str::to_string);
     {
-        let st = state.lock().unwrap();
-        let cookie_ok = cookie
+        let mut st = state.lock().unwrap();
+        let expiring = st.expire_next_uses > 0;
+        if expiring {
+            st.expire_next_uses -= 1;
+        }
+        let cookie_ok = !expiring && cookie
             .as_deref()
             .and_then(|c| c.strip_prefix("PVEAuthCookie=").map(unescape))
             .is_some_and(|t| !st.expire_tickets && st.tickets.contains(&t));

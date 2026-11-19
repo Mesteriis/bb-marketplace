@@ -349,6 +349,23 @@ async fn run_provision(
     0
 }
 
+/// A call made with a login ticket that the server refuses (it expired, or was revoked) is answered with ONE new login and one
+/// repeat of that call; a second refusal ends the attempt as `login_failed`. A token is never retried, and nothing is retried
+/// twice: repeating a refused login is how an account gets locked.
+macro_rules! relogin_once {
+    ($client:expr, $auth:expr, $out:expr, $session:ident, $relogged:ident, $call:expr) => {
+        match $call {
+            Err(ApiError::LoginFailed) if !$relogged && matches!($auth, PveAuth::Ticket { .. }) => {
+                $relogged = true;
+                $out.state("authenticating").await;
+                $session = $client.authenticate($auth).await?;
+                $call?
+            }
+            other => other?,
+        }
+    };
+}
+
 /// Everything up to the first console byte. `Err(None)` means the helper asked to stop.
 async fn connect_terminal(
     client: &Client,
@@ -358,17 +375,18 @@ async fn connect_terminal(
     out: &Out,
 ) -> Result<(tokio_tungstenite::WebSocketStream<tokio_rustls::client::TlsStream<tokio::net::TcpStream>>, Vec<u8>), ApiError> {
     out.state("authenticating").await;
-    let session: Session = client.authenticate(auth).await?;
+    let mut session: Session = client.authenticate(auth).await?;
+    let mut relogged = false;
     out.state("creating_console").await;
     let (node, kind) = match target {
         ConsoleTarget::Node { node } => (node.as_str(), ConsoleKind::Node),
         ConsoleTarget::Lxc { node, vmid } => (node.as_str(), ConsoleKind::Lxc(*vmid)),
         ConsoleTarget::Qemu { .. } => return Err(ApiError::Invalid("a graphical console is not a terminal")),
     };
-    let proxy = client.termproxy(&session, &api::proxy_path(node, kind)?).await?;
+    let proxy = relogin_once!(client, auth, out, session, relogged, client.termproxy(&session, &api::proxy_path(node, kind)?).await);
     out.state("connecting").await;
     let path = api::websocket_path(node, kind, proxy.port, proxy.ticket.expose())?;
-    let mut ws = client.websocket(&session, &path).await?;
+    let mut ws = relogin_once!(client, auth, out, session, relogged, client.websocket(&session, &path).await);
     ws.send(Message::text(String::from_utf8_lossy(&term::ticket_line(&proxy.user, proxy.ticket.expose())).to_string()))
         .await
         .map_err(|_| ApiError::Unreachable("websocket closed".to_string()))?;
@@ -409,13 +427,14 @@ type Ws = tokio_tungstenite::WebSocketStream<tokio_rustls::client::TlsStream<tok
 /// (a QEMU console speaks first). Returns the socket, the handshake password and those first bytes.
 async fn connect_vnc(client: &Client, auth: &PveAuth, node: &str, vmid: u32, out: &Out) -> Result<(Ws, Secret, Vec<u8>), ApiError> {
     out.state("authenticating").await;
-    let session: Session = client.authenticate(auth).await?;
+    let mut session: Session = client.authenticate(auth).await?;
+    let mut relogged = false;
     out.state("creating_console").await;
     let kind = ConsoleKind::Qemu(vmid);
-    let proxy = client.vncproxy(&session, &api::proxy_path(node, kind)?).await?;
+    let proxy = relogin_once!(client, auth, out, session, relogged, client.vncproxy(&session, &api::proxy_path(node, kind)?).await);
     out.state("connecting").await;
     let path = api::websocket_path(node, kind, proxy.port, proxy.ticket.expose())?;
-    let mut ws = client.websocket(&session, &path).await?;
+    let mut ws = relogin_once!(client, auth, out, session, relogged, client.websocket(&session, &path).await);
     out.state("waiting_for_console").await;
     let first = tokio::time::timeout(OK_TIMEOUT, async {
         loop {

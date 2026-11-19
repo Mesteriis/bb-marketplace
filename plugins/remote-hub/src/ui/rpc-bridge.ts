@@ -5,7 +5,7 @@
 // applies the strict check. Host-free: the caller is injected.
 import { omitUndefined } from "../core/json-wire.ts";
 import type { Profile, ProfileInput } from "../core/profile.ts";
-import type { RdpDecision, SessionHandle, SessionInfo, SshTarget } from "../core/rpc.ts";
+import type { PveConsoleTabRow, RdpDecision, SessionHandle, SessionInfo, SshTarget } from "../core/rpc.ts";
 import type { RdpAttach, RdpConnectTarget, RdpPageProps, RdpScreenshotResult } from "./rdp-page.tsx";
 import type { SshAttach, SshPageProps } from "./ssh-page.tsx";
 import type { CredentialItem, CredentialsApi, CredentialStateName } from "./use-credentials.ts";
@@ -24,7 +24,7 @@ export interface ConnectBridge {
   imports: ImportApi;
   agents: AgentApi;
   pve: PveApi;
-  pveConsoles: { attach: PveConsolesApi["attach"]; close: PveConsolesApi["close"]; takeover: NonNullable<PveConsolesApi["takeover"]> };
+  pveConsoles: { attach: PveConsolesApi["attach"]; close: PveConsolesApi["close"]; takeover: NonNullable<PveConsolesApi["takeover"]>; tabs: NonNullable<PveConsolesApi["tabs"]> };
   ssh: Pick<SshPageProps, "onSshOpen" | "onAttach" | "onClose" | "onTakeover">;
   rdp: Pick<RdpPageProps, "onRdpOpen" | "onAttach" | "onClose" | "onDecision" | "onScreenshot" | "onTakeover">;
 }
@@ -104,6 +104,11 @@ export function createConnectBridge(call: RpcCall, wsUrl: string): ConnectBridge
       },
       takeover: async (handle) => {
         await send("agent_control_takeover", handle);
+      },
+      tabs: {
+        list: async () => (await send<{ tabs: PveConsoleTabRow[] }>("pve_console_tabs_list", {})).tabs,
+        put: async (row) => void (await send("pve_console_tab_put", row)),
+        remove: async (id) => void (await send("pve_console_tab_remove", { id })),
       },
     },
     ssh: {
