@@ -8,6 +8,15 @@ All notable changes to Makosh Mail are recorded here. The format follows
 
 ### Added
 
+- Mail settings are a page inside Mail (the gear in the mail rail, address
+  `settings/<section>`): five groups in a side menu, fourteen sections, a
+  section select in a narrow panel. The twelve-tab dialog is gone. Two new
+  sections: **Mailboxes and sign-in** (how each account signs in, replace a
+  password, switch to Google, SMTP settings, the settings of sync) and
+  **Local data**. About thirty settings now change on the page instead of
+  BB's plugin settings, saved as you change them; the three switches that
+  widen what agents may do are shown there and still change only in BB's
+  plugin settings. New RPC methods `settings_get` and `settings_set`.
 - Google sign-in for Gmail accounts. **Sign in with Google** in the account
   form opens Google in the browser; sync and sending then use an access
   token over IMAP and SMTP instead of an app password. An existing Gmail

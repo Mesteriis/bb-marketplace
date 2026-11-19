@@ -167,7 +167,7 @@ A Gmail account can sign in with Google instead of an app password. In the
 account form choose Gmail and press **Sign in with Google**: Google opens in
 the browser, asks to let Makosh Mail read and send your mail, and the form
 closes when the account is saved. An existing Gmail account switches in
-**Mail settings → Sending addresses → Switch to Google sign-in** and keeps
+**Mail settings → Mailboxes and sign-in → Switch to Google sign-in** and keeps
 its mail. The app password stays available ("Use an app password instead").
 
 - Sync and sending still use IMAP and SMTP; they sign in with a short-lived
@@ -265,11 +265,28 @@ itself; for any other server (even smtp.<same domain>) the dialog asks for the
 account password, which the IMAP server must accept first, and which is
 stored only when both servers accept it.
 
+## Mail settings
+
+**Mail settings** (the gear at the bottom of the mail rail) is a page inside
+Mail with a menu of five groups: **Accounts** (Mailboxes and sign-in,
+Addresses and signatures), **Mail** (Inbox, Filters, Subscriptions,
+Templates, Reading and search), **AI and agents** (AI features, Agent
+access, Activity log), **BB** (Integration, Rules) and **Security**
+(Encryption, Local data). Every section has an address, `settings/<section>`,
+so BB's back and forward work; in a narrow panel the menu is a select.
+
+A setting on the page is saved when you change it: a switch on click, a
+number or text when you press Enter or leave the field. A change BB refuses
+goes back to the saved value and the row says why. The same settings stay
+in BB Settings → Plugins → Makosh Mail. Three switches change only there,
+so that nothing but your own click can widen what agents may do with mail:
+`agentTools`, `agentPropose` and `agentTriage`; Agent access shows their
+state. The credential key is not on the page.
+
 ## Sending addresses, signatures and templates
 
-**Mail settings** (the gear at the bottom of the mail rail) lists each
-account's **Sending addresses**: the account's own address first, then the
-aliases you added.
+**Addresses and signatures** lists each account's sending addresses: the
+account's own address first, then the aliases you added.
 
 - **Add address** takes an address and an optional name. **Suggestions**
   lists addresses that look like yours, from mail that reached you with none
@@ -799,9 +816,9 @@ path, project name, title or prompt. What a thread's agent does with that
 text goes to its model provider, as with Hand to agent.
 
 Settings: `devNotifications`, `mailRules`, `attachmentFolder`,
-`patchFolder` and `taskTarget` are BB plugin settings (BB Settings →
-Plugins → Makosh Mail); Mail settings shows them under **BB integration**
-and **Rules**, with the binding rules.
+`patchFolder` and `taskTarget` change in Mail settings under **Integration**
+and **Rules**, next to the binding rules, or in BB Settings → Plugins →
+Makosh Mail.
 
 ## Search, older mail, folders and attachments
 
@@ -1277,7 +1294,7 @@ open the message and stores nothing.
 Mail signs and encrypts with OpenPGP (PGP/MIME, RFC 3156) between people
 who exchanged keys. Everything happens on this computer.
 
-- **Your key.** Mail settings → **Encryption (OpenPGP)** → **Make a key**
+- **Your key.** Mail settings → **Encryption** → **Make a key**
   next to a sending address makes a Curve25519 key pair for it. The private
   half is stored in Mail's database sealed with the same credential key as
   your passwords (`vaultKey`), and is unsealed on the server for one
@@ -1362,7 +1379,7 @@ reach any agent or model path.
 
 ### AI access
 
-Mail settings → **AI access** sets what agents and AI features may read: per
+Mail settings → **Agent access** sets what agents and AI features may read: per
 account **All folders**, **Chosen folders…** (a picker; a folder that no
 longer exists is shown as "not found" and shares nothing) or **None**. Spam
 and Trash are never shared. On Gmail a message is shared when any of its
@@ -1376,7 +1393,7 @@ A change applies to agents at once.
 
 ### Agent activity
 
-Mail settings → **Agent activity** is a local action log, always on: every
+Mail settings → **Activity log** is a local action log, always on: every
 agent tool call, mention, Hand to agent, CLI command in a thread and AI call
 you start writes one row (when, who, which tool, the outcome, how many
 items, how many values were hidden, the BB thread, the message ids, and for
