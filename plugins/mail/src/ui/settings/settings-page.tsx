@@ -85,6 +85,11 @@ export function SettingsPage(props: SettingsPageProps) {
                       )}
                     >
                       {tx(item.title)}
+                      {item.id === "plugin_access" && (props.pluginAccess?.waiting ?? 0) > 0 ? (
+                        <span className="ml-1.5 rounded-full bg-primary px-1.5 py-0.5 text-xs font-medium text-primary-foreground">
+                          {props.pluginAccess?.waiting}
+                        </span>
+                      ) : null}
                     </a>
                   </li>
                 ))}

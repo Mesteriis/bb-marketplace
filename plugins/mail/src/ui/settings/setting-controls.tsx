@@ -66,13 +66,14 @@ function useSetting<K extends WritableKey>(port: PageSettingsPort, name: K) {
 type RowText = { label: string; hint?: string };
 
 /** An on/off control: a real switch for the keyboard and screen readers. */
-export function Switch({ id, checked, disabled, describedBy, onChange }: { id: string; checked: boolean; disabled?: boolean; describedBy?: string; onChange: (next: boolean) => void }) {
+export function Switch({ id, checked, disabled, describedBy, label, onChange }: { id: string; checked: boolean; disabled?: boolean; describedBy?: string; /** For a switch with no label element (a table cell). */ label?: string; onChange: (next: boolean) => void }) {
   return (
     <button
       id={id}
       type="button"
       role="switch"
       aria-checked={checked}
+      aria-label={label}
       aria-describedby={describedBy}
       disabled={disabled}
       onClick={() => onChange(!checked)}

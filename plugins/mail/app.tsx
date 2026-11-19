@@ -185,6 +185,8 @@ import type { SettingsSearchPorts } from "./src/ui/settings/shared.ts";
 import { browserPdfEngine } from "./src/adapters/bb/pdf-page.ts";
 import type { RuleRunView } from "./src/core/contract.ts";
 import { resolveLanguage, setLanguage, tx, type Language } from "./src/ui/i18n/index.ts";
+import { PLUGIN_ACCESS_CHANNEL, type PluginAccessPayload } from "./src/core/plugin-api.ts";
+import type { PluginAccessPort } from "./src/ui/settings/plugin-access-section.tsx";
 
 // The channel name is checked against the core constant without importing it
 // at runtime: a value import of the core would bundle its zod schemas.
@@ -2753,6 +2755,39 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
   // ---- Slice 3f: plugin settings the page reads, and Mail settings' AI tabs ----
 
   // Slice 3k: OpenPGP keys in Mail settings.
+  // Access of other plugins: requests wait in settings; a new one is announced once.
+  const [pluginAccessTick, setPluginAccessTick] = useState(0);
+  const [pluginRequests, setPluginRequests] = useState(0);
+  const settingsPluginAccess = useMemo<PluginAccessPort>(() => {
+    const save = async (work: () => Promise<unknown>): Promise<SaveResult> => {
+      try {
+        await work();
+        return { ok: true };
+      } catch (error) {
+        return { ok: false, message: tx(messageOf(error)) };
+      }
+    };
+    return {
+      load: async () => {
+        const view = await rpc.call("plugin_grants_list", {});
+        setPluginRequests(view.requests.length);
+        return view;
+      },
+      setGrant: (pluginId, right, accountId, on) => save(() => rpc.call("plugin_grant_set", { pluginId, right, accountId, on })),
+      revoke: (pluginId) => save(() => rpc.call("plugin_grant_revoke", { pluginId })),
+      dismiss: (pluginId) => save(() => rpc.call("plugin_request_dismiss", { pluginId })),
+    };
+  }, [rpc]);
+  useRealtime(PLUGIN_ACCESS_CHANNEL, (payload) => {
+    setPluginAccessTick((n) => n + 1);
+    const asked = (payload as PluginAccessPayload | null)?.request;
+    if (typeof asked !== "string") return;
+    setPluginRequests((n) => Math.max(n, 1));
+    toast(tx("{plugin} asks for access to mail. Open Mail settings to decide.", { plugin: asked.slice(0, 60) }), {
+      id: "plugin-access-request",
+      action: { label: tx("Open"), onClick: () => openSettings("plugin_access") },
+    });
+  });
   const settingsPgp = useMemo<SettingsPgpPorts>(
     () => ({
       list: () => rpc.call("pgp_certs_list", {}),
@@ -2957,6 +2992,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       }}
       search={settingsSearch}
       pgp={settingsPgp}
+      pluginAccess={{ port: settingsPluginAccess, reloadKey: pluginAccessTick, waiting: pluginRequests }}
       filters={settingsFilters}
       subscriptions={settingsSubscriptions}
     />

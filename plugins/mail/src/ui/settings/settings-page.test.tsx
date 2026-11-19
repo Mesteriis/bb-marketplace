@@ -44,11 +44,11 @@ function mount(props: MailSettingsProps = everything, section: Parameters<typeof
 }
 
 describe("settings sections", () => {
-  it("are five groups of fourteen sections in the agreed order", () => {
+  it("are five groups of fifteen sections in the agreed order", () => {
     expect(SETTINGS_GROUPS.map((group) => [group.title, group.sections.map((section) => section.title)])).toEqual([
       ["Accounts", ["Mailboxes and sign-in", "Addresses and signatures"]],
       ["Mail", ["Inbox", "Filters", "Subscriptions", "Templates", "Reading and search"]],
-      ["AI and agents", ["AI features", "Agent access", "Activity log"]],
+      ["AI and agents", ["AI features", "Agent access", "Plugin access", "Activity log"]],
       ["BB", ["Integration", "Rules"]],
       ["Security", ["Encryption", "Local data"]],
     ]);

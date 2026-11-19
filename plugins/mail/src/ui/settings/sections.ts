@@ -1,4 +1,4 @@
-// The settings page's map: five groups, fourteen sections, in the order the
+// The settings page's map: five groups, fifteen sections, in the order the
 // menu shows them. Titles are tx() keys. A section is listed only while the
 // page has what it needs (see settings-page.tsx `available`).
 
@@ -12,6 +12,7 @@ export type SettingsSectionId =
   | "reading"
   | "ai"
   | "ai_access"
+  | "plugin_access"
   | "activity"
   | "bb"
   | "rules"
@@ -50,6 +51,7 @@ export const SETTINGS_GROUPS: readonly {
     sections: [
       { id: "ai", title: "AI features", description: "Categories, the Today digest, reply reminders and translation. They run on your click." },
       { id: "ai_access", title: "Agent access", description: "Which mail agents and AI features may see." },
+      { id: "plugin_access", title: "Plugin access", description: "Which other plugins may read mail and what each may do." },
       { id: "activity", title: "Activity log", description: "What agents and AI features did with your mail." },
     ],
   },

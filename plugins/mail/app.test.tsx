@@ -3680,6 +3680,26 @@ describe("Mail settings (slice 3d)", () => {
     expect(slot.queryByRole("dialog", { name: "Mail settings" })).toBeNull();
   });
 
+  it("at settings/plugin_access loads the plugins and their requests, and a grant goes through the owner's method", async () => {
+    const slot = render(
+      settingsRpc({
+        plugin_grants_list: () => ({
+          plugins: [{ pluginId: "crm", grants: [], lastCallAt: null }],
+          requests: [{ pluginId: "calendar", rights: ["mail.read"], reason: "Calendar sync", askedAt: "2026-11-19T10:00:00.000Z" }],
+        }),
+        plugin_grant_set: () => ({ ok: true }),
+      }),
+      "settings/plugin_access",
+    );
+    const page = await slot.findByRole("region", { name: "Mail settings" });
+    const crm = await within(page).findByRole("listitem", { name: "crm" });
+    expect(within(page).getByText("Calendar sync")).toBeTruthy();
+    const first = within(crm).getAllByRole("switch")[0]!;
+    fireEvent.click(first);
+    await waitFor(() => expect(callsTo(slot, "plugin_grant_set")).toHaveLength(1));
+    expect(callsTo(slot, "plugin_grant_set")[0]!.input).toMatchObject({ pluginId: "crm", right: "mail.read", on: true });
+  });
+
   it("opens without a credential key and says so in Local data", async () => {
     const slot = render(settingsRpc({ status_get: () => status({ vaultReady: false, accounts: [] }) }), "settings/local");
     const page = await slot.findByRole("region", { name: "Mail settings" });

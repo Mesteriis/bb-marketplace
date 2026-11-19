@@ -13,6 +13,7 @@ import { AccountsSection } from "./accounts-section.tsx";
 import { AgentSwitches } from "./section-settings.tsx";
 import { AddressesSection } from "./addresses-section.tsx";
 import { LocalDataSection } from "./local-data-section.tsx";
+import { PluginAccessSection } from "./plugin-access-section.tsx";
 import { AiFeaturesSection } from "./ai-features-section.tsx";
 import { InboxSection } from "./inbox-section.tsx";
 import { SearchSection } from "./reading-section.tsx";
@@ -28,6 +29,7 @@ export function availableSections(props: MailSettingsProps): ReadonlySet<Setting
   if (props.bb !== undefined) ids.push("bb", "rules");
   if (props.search !== undefined) ids.push("reading");
   if (props.pgp !== undefined) ids.push("pgp");
+  if (props.pluginAccess !== undefined) ids.push("plugin_access");
   return new Set(ids);
 }
 
@@ -53,6 +55,16 @@ export function SettingsBody(props: MailSettingsProps & { section: SettingsSecti
         {props.settings !== undefined ? <AgentSwitches port={props.settings} /> : null}
         <AiAccessSettings accounts={accounts} {...props.ai.scope} />
       </div>
+    );
+  }
+  if (section === "plugin_access" && props.pluginAccess !== undefined) {
+    return (
+      <PluginAccessSection
+        port={props.pluginAccess.port}
+        accounts={accounts.map((a) => ({ id: a.id, email: a.email, google: a.authKind === "google" }))}
+        onGoogleGrant={props.pluginAccess.onGoogleGrant}
+        reloadKey={props.pluginAccess.reloadKey}
+      />
     );
   }
   if (section === "activity" && props.ai !== undefined) return <AgentActivity {...props.ai.activity} />;

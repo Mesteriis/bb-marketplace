@@ -1,3 +1,5 @@
+import type { PluginRight } from "../../core/plugin-access.ts";
+import type { PluginAccessPort } from "./plugin-access-section.tsx";
 import type { PageSettingsPort } from "./setting-controls.tsx";
 import type { Account, BlockRuleView, CategoryRuleView, IdentityView } from "../../core/model.ts";
 import { type AiAccessSettingsProps } from "../ai-access-settings.tsx";
@@ -130,6 +132,15 @@ export interface MailSettingsProps {
   /** OpenPGP keys (slice 3k); absent: no tab. */
   pgp?: SettingsPgpPorts;
   /** Filters over new Inbox mail (slice 3m); absent: no tab. */
+  /** Access of other plugins (the plugin API); absent: no section. */
+  pluginAccess?: {
+    port: PluginAccessPort;
+    onGoogleGrant?: (pluginId: string, right: PluginRight, accountId: string) => void;
+    /** Changes when requests or grants changed elsewhere. */
+    reloadKey: number;
+    /** Requests waiting for the owner: shown next to the section's name. */
+    waiting: number;
+  };
   filters?: SettingsFilterPorts;
   /** The mailing lists of the stored mail (slice 3n); absent: no tab. */
   subscriptions?: SettingsSubscriptionPorts;
