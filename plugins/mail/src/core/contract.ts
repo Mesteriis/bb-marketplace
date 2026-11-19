@@ -1,6 +1,7 @@
 // The RPC contract between the Mail page and the server, as plain zod
 // schemas. server.ts wraps it with the SDK's defineRpcContract.
 import { z } from "zod";
+import { pageSettingsPatchSchema, pageSettingsSchema } from "./page-settings.ts";
 import { composeDocInputSchema } from "./compose-doc.ts";
 import {
   accountSchema,
@@ -547,6 +548,16 @@ export const rpcSchemas = {
   accounts_retry_sign_in: {
     input: z.object({ accountId: z.string() }),
     output: z.object({ result: z.enum(["resumed", "refused", "unreachable", "unreadable", "sign_in_needed"]) }),
+  },
+  /** The plugin's settings as the settings page shows them (page-settings.ts); never the credential key. */
+  settings_get: {
+    input: z.object({}),
+    output: pageSettingsSchema,
+  },
+  /** A change from the settings page: writable keys only, each within its bounds. Answers with the settings after it. */
+  settings_set: {
+    input: pageSettingsPatchSchema,
+    output: pageSettingsSchema,
   },
   /** Starts a Google sign-in: opens the loopback listener and gives the consent page to open (google-sign-in.ts). */
   google_sign_in_start: {
@@ -1866,6 +1877,9 @@ export const SLICE_3H_METHODS = [
 
 /** The owner-only method that tries a stopped account's saved password again. */
 export const SIGN_IN_METHODS = ["accounts_retry_sign_in"] as const satisfies readonly (keyof typeof rpcSchemas)[];
+
+/** The owner-only methods of the settings page. */
+export const SETTINGS_METHODS = ["settings_get", "settings_set"] as const satisfies readonly (keyof typeof rpcSchemas)[];
 
 /** The owner-only methods of Google sign-in. */
 export const GOOGLE_METHODS = ["google_sign_in_start", "google_sign_in_status"] as const satisfies readonly (keyof typeof rpcSchemas)[];

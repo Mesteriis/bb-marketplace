@@ -256,6 +256,13 @@ import {
   rpcSchemas,
   testAccount,
   retrySignIn,
+  DIGEST_TIME_PATTERN,
+  PAGE_SETTING_SCHEMAS,
+  QUIET_HOURS_PATTERN,
+  SYNC_INTERVAL_MAX,
+  pageSettingsOf,
+  type PageSettings,
+  type PageSettingsPatch,
   saveGoogleAccount,
   PRESETS,
   toPublicAccount,
@@ -374,7 +381,6 @@ const TOOL_SEARCH_DEFAULT = 10;
 const MENTION_LIMIT = 20;
 const RECIPIENT_SUGGESTIONS = 10;
 const QUERY_MAX = 500;
-const SYNC_INTERVAL_MAX = 1440;
 /** Settled proposals are purged on load and then once a day. */
 const PURGE_INTERVAL_MS = 24 * 60 * 60 * 1000;
 /** Translation jobs over their caps or unpolled are swept this often. */
@@ -499,10 +505,6 @@ function isVaultKey(value: string): boolean {
 }
 
 /** A setting that is one bounded line (a provider or model id). */
-function settingLine(max: number) {
-  return z.string().max(max).refine((value) => !/[\u0000\r\n]/.test(value), "Must be one line");
-}
-
 function defineSettings(bb: BbPluginApi) {
   return bb.settings.define({
     vaultKey: {
@@ -517,14 +519,14 @@ function defineSettings(bb: BbPluginApi) {
       type: "number",
       label: "Sync interval (minutes)",
       default: 5,
-      experimental_schema: z.number().int().min(1).max(SYNC_INTERVAL_MAX),
+      experimental_schema: PAGE_SETTING_SCHEMAS.syncIntervalMinutes,
     },
     syncWindowDays: {
       type: "number",
       label: "Sync window (days)",
       description: "How many days of mail to keep in sync, in every folder.",
       default: 30,
-      experimental_schema: z.number().int().min(1),
+      experimental_schema: PAGE_SETTING_SCHEMAS.syncWindowDays,
     },
     agentTools: {
       type: "boolean",
@@ -547,14 +549,14 @@ function defineSettings(bb: BbPluginApi) {
       label: "AI provider (Makosh AI)",
       description: "A Makosh AI provider id. Empty: the first available one.",
       default: "",
-      experimental_schema: settingLine(64),
+      experimental_schema: PAGE_SETTING_SCHEMAS.translateProvider,
     },
     translateModel: {
       type: "string",
       label: "AI model",
       description: "A model id of that provider. Empty: the first model it lists.",
       default: "",
-      experimental_schema: settingLine(200),
+      experimental_schema: PAGE_SETTING_SCHEMAS.translateModel,
     },
     translateLanguage: {
       type: "select",
@@ -581,7 +583,7 @@ function defineSettings(bb: BbPluginApi) {
       description:
         "Addresses or domains, separated by commas. They notify during quiet hours, and even when you never wrote to them.",
       default: "",
-      experimental_schema: z.string().max(20_000),
+      experimental_schema: PAGE_SETTING_SCHEMAS.importantSenders,
     },
     notifyImportantOnly: {
       type: "boolean",
@@ -593,7 +595,7 @@ function defineSettings(bb: BbPluginApi) {
       label: "Quiet hours",
       description: "HH:MM\u2013HH:MM in this computer's time, e.g. 22:00\u201308:00. Empty: off.",
       default: "",
-      experimental_schema: z.string().regex(QUIET_HOURS_PATTERN, "Must be HH:MM-HH:MM, or empty"),
+      experimental_schema: PAGE_SETTING_SCHEMAS.quietHours,
     },
     agentTriage: {
       type: "boolean",
@@ -616,13 +618,13 @@ function defineSettings(bb: BbPluginApi) {
       label: "Today digest time (this computer's time)",
       description: "HH:MM, e.g. 08:00.",
       default: "08:00",
-      experimental_schema: z.string().regex(DIGEST_TIME_PATTERN, "Must be HH:MM"),
+      experimental_schema: PAGE_SETTING_SCHEMAS.digestTime,
     },
     replyReminderDays: {
       type: "number",
       label: "Default days for reply reminders",
       default: 3,
-      experimental_schema: z.number().int().min(1).max(30),
+      experimental_schema: PAGE_SETTING_SCHEMAS.replyReminderDays,
     },
     // Slice 3g.
     devNotifications: {
@@ -642,13 +644,13 @@ function defineSettings(bb: BbPluginApi) {
       label: "Folder for attachments saved into a project",
       description: "Relative to the project's folder; no folder that starts with a dot.",
       default: ATTACHMENT_FOLDER_DEFAULT,
-      experimental_schema: projectFolderSetting(),
+      experimental_schema: PAGE_SETTING_SCHEMAS.attachmentFolder,
     },
     patchFolder: {
       type: "string",
       label: "Folder for patches saved into a project",
       default: PATCH_FOLDER_DEFAULT,
-      experimental_schema: projectFolderSetting(),
+      experimental_schema: PAGE_SETTING_SCHEMAS.patchFolder,
     },
     taskTarget: {
       type: "select",
@@ -662,13 +664,13 @@ function defineSettings(bb: BbPluginApi) {
       type: "number",
       label: "Days loaded by \"Load more days\"",
       default: 30,
-      experimental_schema: z.number().int().min(7).max(365),
+      experimental_schema: PAGE_SETTING_SCHEMAS.historyStepDays,
     },
     serverSearchKeepDays: {
       type: "number",
       label: "Keep unopened server search results (days)",
       default: 14,
-      experimental_schema: z.number().int().min(1).max(90),
+      experimental_schema: PAGE_SETTING_SCHEMAS.serverSearchKeepDays,
     },
     indexAttachmentText: {
       type: "boolean",
@@ -730,20 +732,13 @@ export const ATTACHMENT_FOLDER_DEFAULT = "mail-attachments";
 export const PATCH_FOLDER_DEFAULT = "mail-patches";
 
 /** A project-relative folder setting, checked like a save's folder. */
-function projectFolderSetting() {
-  return z.string().refine((value) => projectFolder(value).ok, "Must be a folder inside the project, not starting with a dot");
-}
-
 /** A folder setting, its default when the stored value is no longer valid. */
 function folderOr(value: string, fallback: string): string {
   return projectFolder(value).ok ? value : fallback;
 }
 
-/** The digest time setting: HH:MM on a 24-hour clock. */
-export const DIGEST_TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
 
-/** The quiet-hours setting: a range that may cross midnight (equal ends mean off), or empty. */
-export const QUIET_HOURS_PATTERN = /^(?:([01]\d|2[0-3]):[0-5]\d[-\u2013]([01]\d|2[0-3]):[0-5]\d)?$/;
+export { DIGEST_TIME_PATTERN, QUIET_HOURS_PATTERN };
 
 /** Spam-seen rows older than this are pruned at start (spec resolution 17). */
 const SPAM_SEEN_KEEP_MS = 180 * 86_400_000;
@@ -966,6 +961,8 @@ function refusePluginCaller(context: ExperimentalPluginRpcHandlerContext): void 
 }
 
 export const ACCOUNT_BUSY_MESSAGE = "A message is being sent";
+/** settings_set when BB does not take the change. */
+export const SETTINGS_REFUSED_MESSAGE = "BB did not save this setting";
 /** google_sign_in_start when the plugin has no usable client or the listener cannot open. */
 export const GOOGLE_UNAVAILABLE_MESSAGE = "Google sign-in is not available";
 /** new_mail_get for an unknown or expired token. */
@@ -1884,6 +1881,14 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
     const rpcDeps: RpcDeps = {
       googleSignIn,
       googleSignInOffered: googleClient() !== null,
+      pageSettings: {
+        get: () => pageSettingsOf(current),
+        set: async (patch) => {
+          await settings.experimental_set(patch);
+          current = await settings.get();
+          return pageSettingsOf(current);
+        },
+      },
       projects: projectDirectory,
       bbThreads,
       taskTarget,
@@ -1995,6 +2000,8 @@ type RpcDeps = {
   /** Google sign-in flows, and whether the plugin has a client to offer them with. */
   googleSignIn: GoogleSignIn;
   googleSignInOffered: boolean;
+  /** The settings page: the settings it shows, and a change of the writable ones. */
+  pageSettings: { get: () => PageSettings; set: (patch: PageSettingsPatch) => Promise<PageSettings> };
   /** Slice 3g: BB projects and working trees, threads, Taskboard and the owner's settings for them. */
   projects: ProjectDirectory;
   bbThreads: BbThreads;
@@ -3176,6 +3183,18 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         googleSignIn: deps.googleSignInOffered,
         unreadCount: store.unreadCount(null),
       }),
+      settings_get: (_input, context) => {
+        refusePluginCaller(context);
+        return deps.pageSettings.get();
+      },
+      settings_set: async (patch, context) => {
+        refusePluginCaller(context);
+        try {
+          return await deps.pageSettings.set(patch);
+        } catch {
+          throw refuse("invalid", SETTINGS_REFUSED_MESSAGE);
+        }
+      },
       google_sign_in_start: async ({ email }, context) => {
         refusePluginCaller(context);
         if (!deps.vaultReady()) throw refuse("conflict", NEEDS_KEY_MESSAGE);

@@ -11,6 +11,7 @@ export * from "./auth-refusals.ts";
 export * from "./retry-sign-in.ts";
 export * from "./sign-in-resume.ts";
 export * from "./google-oauth.ts";
+export * from "./page-settings.ts";
 export * from "./search.ts";
 export * from "./agent-text.ts";
 export * from "./accounts.ts";

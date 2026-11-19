@@ -548,6 +548,34 @@ describe("makosh-mail server", () => {
     await expect(host.harness.behavior.callRpc("sync_now", { accountId })).resolves.toEqual({ started: true });
   });
 
+  it("settings_get shows the page's settings without the credential key, and settings_set changes writable ones", async () => {
+    const host = await load();
+    const before = (await host.harness.behavior.callRpc("settings_get", {})) as Record<string, unknown>;
+    expect(Object.keys(before)).toHaveLength(32);
+    expect("vaultKey" in before).toBe(false);
+    expect(before).toMatchObject({ hideQuotes: true, syncIntervalMinutes: 5, agentTools: false });
+
+    const after = (await host.harness.behavior.callRpc("settings_set", { hideQuotes: false, syncIntervalMinutes: 15 })) as Record<string, unknown>;
+    expect(after).toMatchObject({ hideQuotes: false, syncIntervalMinutes: 15 });
+    await expect(host.harness.behavior.callRpc("settings_get", {})).resolves.toMatchObject({ hideQuotes: false, syncIntervalMinutes: 15 });
+  });
+
+  it("settings_set refuses the agent switches, the credential key and other plugins", async () => {
+    const host = await load();
+    for (const patch of [{ agentTools: true }, { agentPropose: true }, { agentTriage: true }, { vaultKey: "invented" }, { replyReminderDays: 99 }, {}]) {
+      await expect(host.harness.behavior.callRpc("settings_set", patch), JSON.stringify(patch)).rejects.toThrow();
+    }
+    await expect(host.harness.behavior.callRpc("settings_get", {})).resolves.toMatchObject({
+      agentTools: false,
+      agentPropose: false,
+      agentTriage: false,
+      replyReminderDays: 3,
+    });
+    const asPlugin = { experimental_caller: { kind: "plugin", pluginId: "other" } } as const;
+    await expect(host.harness.behavior.callRpc("settings_get", {}, asPlugin)).rejects.toThrow();
+    await expect(host.harness.behavior.callRpc("settings_set", { hideQuotes: false }, asPlugin)).rejects.toThrow();
+  });
+
   it("offers Google sign-in, starts a flow for the owner only, and reads an unknown flow as expired", async () => {
     const host = await load();
     const status = (await host.harness.behavior.callRpc("status_get", null)) as { googleSignIn?: boolean };
