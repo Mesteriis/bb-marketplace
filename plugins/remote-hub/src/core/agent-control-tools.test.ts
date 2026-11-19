@@ -4,7 +4,7 @@ import { AgentAccessBook, type AgentGrant } from "./agent-access.ts";
 import { AgentAudit, type AuditRow, type AuditStore } from "./agent-audit.ts";
 import { AgentSessionRegistry, controlSessionExtras, createControlTools } from "./agent-control-tools.ts";
 import { ToolBudget } from "./agent-budget.ts";
-import type { AgentSessionView, AgentToolDef, ToolResult } from "./agent-tools.ts";
+import { ToolError, type AgentSessionView, type AgentToolDef, type ToolResult } from "./agent-tools.ts";
 import { ControlLeases } from "./control-lease.ts";
 import type { Profile } from "./profile.ts";
 import type { RdpInputEvent } from "./rdp-protocol.ts";
@@ -12,6 +12,7 @@ import type { RdpInputEvent } from "./rdp-protocol.ts";
 const P_SSH = "11111111-2222-4333-8444-555555555551";
 const P_RDP = "11111111-2222-4333-8444-555555555552";
 const P_NOSECRET = "11111111-2222-4333-8444-555555555553";
+const P_PVE = "11111111-2222-4333-8444-555555555554";
 const GEN = "0123456789abcdef0123456789abcdef";
 const SSH_KEY = `${GEN}.1`;
 const RDP_KEY = `${GEN}.2`;
@@ -31,7 +32,7 @@ interface Setup {
 }
 
 function setup(opts: Setup = {}) {
-  const profiles = [profile(P_SSH), profile(P_RDP, { protocol: "rdp", username: "u", port: 3389, rdpWidth: 800, rdpHeight: 600 }), profile(P_NOSECRET, { credentialRef: null })];
+  const profiles = [profile(P_SSH), profile(P_RDP, { protocol: "rdp", username: "u", port: 3389, rdpWidth: 800, rdpHeight: 600 }), profile(P_NOSECRET, { credentialRef: null }), profile(P_PVE, { protocol: "pve", port: 8006, username: "remotehub@pve", authType: "password" })];
   const grants = new Map<string, AgentGrant>();
   const access = new AgentAccessBook({
     store: { all: () => [...grants.values()], get: (id) => grants.get(id) ?? null, put: (g) => void grants.set(g.profileId, g), remove: (id) => grants.delete(id), clear: () => { const n = grants.size; grants.clear(); return n; } },
@@ -60,6 +61,8 @@ function setup(opts: Setup = {}) {
   const gates: { terminal: Array<() => void>; rdp: Array<() => void> } = { terminal: [], rdp: [] };
   let hold = false;
   const opened: string[] = [];
+  const consoles: unknown[] = [];
+  let pveRefusal: ToolError | null = null;
   let connectGate: Promise<void> | null = null;
   const disconnected: string[] = [];
   let failDisconnect = false;
@@ -89,12 +92,15 @@ function setup(opts: Setup = {}) {
         if (hold) await new Promise<void>((r) => gates.rdp.push(r));
         rdpSent.push({ key, events, owner });
       },
-      connect: async (profileId) => {
+      connect: async (profileId, console) => {
         if (connectGate !== null) await connectGate;
         const p = profiles.find((x) => x.id === profileId)!;
+        if (p.protocol === "pve" && pveRefusal !== null) throw pveRefusal;
         const key = `${GEN}.${10 + opened.length}`;
         opened.push(p.id);
-        sessions.push({ key, kind: p.protocol === "rdp" ? "rdp" : "ssh", state: "connecting", profileId: p.id, exitCode: null, reason: null, control: "ready" });
+        consoles.push(console);
+        const kind = p.protocol === "rdp" ? "rdp" : p.protocol === "pve" ? (console?.console === "qemu" ? "vnc" : "pve") : "ssh";
+        sessions.push({ key, kind, state: "connecting", profileId: p.id, exitCode: null, reason: null, control: kind === "vnc" ? "never" : "ready" });
         return { sessionKey: key };
       },
       disconnect: async (key) => {
@@ -117,6 +123,8 @@ function setup(opts: Setup = {}) {
   const data = (r: ToolResult) => JSON.parse(textOf(r)) as Record<string, any>;
   return {
     setFailDisconnect: (v: boolean) => void (failDisconnect = v),
+    consoles,
+    refusePve: (e: ToolError | null) => void (pveRefusal = e),
     setWatching: (v: boolean) => void (watched = v),
     setRequired: (v: boolean) => void (required = v),
     feedSeen, registry, access, rows, leases, sessions, wrote, rdpSent, tools, tool, call, textOf, data, opened, disconnected, waiting,
@@ -773,5 +781,76 @@ describe("agents are never hidden: input needs a watcher", () => {
     const extras = (watching: boolean) => controlSessionExtras(t.leases, { waitingForOwner: () => [], watching: () => watching, watchingRequired: () => true })(view);
     expect(extras(true)).toMatchObject({ watchedByOwner: true });
     expect(extras(false)).toMatchObject({ watchedByOwner: false });
+  });
+});
+
+describe("Proxmox consoles through remote_connect", () => {
+  it("a Proxmox connection needs a console; the others refuse one", async () => {
+    const t = setup({ sessions: [] });
+    t.access.set(P_PVE, "input", false);
+    t.access.set(P_SSH, "input", false);
+    expect(t.textOf(await t.call("remote_connect", { connectionId: P_PVE }))).toContain("console_required");
+    expect(t.textOf(await t.call("remote_connect", { connectionId: P_PVE, console: "lxc" }))).toContain("invalid_target");
+    expect(t.textOf(await t.call("remote_connect", { connectionId: P_PVE, console: "node", node: "pve1", vmid: 101 }))).toContain("invalid_target");
+    expect(t.textOf(await t.call("remote_connect", { connectionId: P_PVE, console: "lxc", vmid: 101, node: "pve1" }))).toContain("invalid_target");
+    expect(t.textOf(await t.call("remote_connect", { connectionId: P_SSH, console: "lxc", vmid: 101 }))).toContain("not_a_proxmox_connection");
+    expect(t.opened).toEqual([]);
+  });
+
+  it("opens a container terminal, a node shell and a VM's graphics under the same access model (input level, saved credential)", async () => {
+    const t = setup({ sessions: [] });
+    t.access.set(P_PVE, "observe", false);
+    expect(t.textOf(await t.call("remote_connect", { connectionId: P_PVE, console: "lxc", vmid: 101 }))).toContain("agent_access_denied");
+    t.access.set(P_PVE, "input", false);
+    expect(t.data(await t.call("remote_connect", { connectionId: P_PVE, console: "lxc", vmid: 101 })).sessionId).toBe(`${GEN}.10`);
+    await t.call("remote_connect", { connectionId: P_PVE, console: "node", node: "pve1" });
+    await t.call("remote_connect", { connectionId: P_PVE, console: "qemu", vmid: 200 });
+    expect(t.consoles).toEqual([{ console: "lxc", vmid: 101 }, { console: "node", node: "pve1" }, { console: "qemu", vmid: 200 }]);
+  });
+
+  it("a refusal (stopped guest...) reaches the agent as our own fixed text", async () => {
+    const t = setup({ sessions: [] });
+    t.access.set(P_PVE, "input", false);
+    t.refusePve(new ToolError("guest_stopped", "The guest is not running; Remote Hub never starts it."));
+    const text = t.textOf(await t.call("remote_connect", { connectionId: P_PVE, console: "lxc", vmid: 101 }));
+    expect(text).toContain("guest_stopped");
+    expect(t.opened).toEqual([]);
+  });
+
+  it("a container terminal is driven like any terminal: lease, then typed input", async () => {
+    const t = setup({ sessions: [] });
+    t.access.set(P_PVE, "input", false);
+    const key = t.data(await t.call("remote_connect", { connectionId: P_PVE, console: "lxc", vmid: 101 })).sessionId as string;
+    const lease = t.data(await t.call("remote_control_acquire", { sessionId: key })).leaseId as string;
+    await t.call("remote_terminal_input", { sessionId: key, leaseId: lease, actions: [{ type: "text", text: "ls" }, { type: "key", key: "Enter" }] });
+    expect(t.wrote.map((w) => w.data)).toEqual(["ls\r"]);
+  });
+
+  it("graphics: an agent can open and disconnect, but has no lease, no typing and no clicking", async () => {
+    const t = setup({ sessions: [] });
+    t.access.set(P_PVE, "input", false);
+    const key = t.data(await t.call("remote_connect", { connectionId: P_PVE, console: "qemu", vmid: 200 })).sessionId as string;
+    expect(t.textOf(await t.call("remote_control_acquire", { sessionId: key }))).toContain("graphics_no_input");
+    expect(t.textOf(await t.call("remote_terminal_input", { sessionId: key, leaseId: "l", actions: [{ type: "text", text: "a" }] }))).toContain("graphics_no_input");
+    expect(t.textOf(await t.call("remote_rdp_input", { sessionId: key, leaseId: "l", actions: [{ type: "key", code: "Enter" }] }))).toContain("graphics_no_input");
+    expect(t.wrote).toEqual([]);
+    expect(t.rdpSent).toEqual([]);
+    expect((await t.call("remote_disconnect", { sessionId: key })).isError).toBeUndefined();
+    expect(t.disconnected).toEqual([key]);
+  });
+
+  it("graphics of a session the agent may not use answer like a missing one", async () => {
+    const t = setup({ sessions: [{ key: `${GEN}.9`, kind: "vnc", state: "running", profileId: P_PVE, exitCode: null, reason: null, control: "never" }] });
+    t.access.set(P_PVE, "observe", false);
+    expect(t.textOf(await t.call("remote_control_acquire", { sessionId: `${GEN}.9` }))).toContain("session_not_found");
+  });
+
+  it("the tool texts say what graphics cannot do", () => {
+    const t = setup();
+    const connect = t.tool("remote_connect").description;
+    expect(connect).toContain("NO screenshot and NO input");
+    expect(connect).toContain('"lxc" with `vmid`');
+    expect(t.tool("remote_rdp_input").description).toContain("desktop (RDP)");
+    expect(t.tool("remote_terminal_input").description).toContain("Proxmox node or container terminal");
   });
 });

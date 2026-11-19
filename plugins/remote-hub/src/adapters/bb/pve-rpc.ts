@@ -45,7 +45,8 @@ export type OnboardFailure = { ok: false; code: string; message: string; fingerp
 export type OnboardPlanAnswer = ({ ok: true } & PvePlan) | OnboardFailure;
 /** Opening a console: the session, or why not (a code from the console reasons, never a server's own words). */
 export type ConsoleOpenAnswer = { ok: true; handle: SessionHandle; kind: "pve" | "vnc" } | { ok: false; code: string; message: string; fingerprint: string | null };
-export type ConsoleOpenInput = ConsoleRequest & { profileId: string; cols: number; rows: number };
+/** `audit: false` for an agent: its remote_connect call already has an audit row under its own thread, and this one would say "owner RPC". */
+export type ConsoleOpenInput = ConsoleRequest & { profileId: string; cols: number; rows: number; audit?: boolean };
 export type OnboardApplyAnswer = { ok: true; profileId: string; userId: string; steps: PveSteps } | OnboardFailure;
 
 const OWNER = "owner RPC";
@@ -93,8 +94,8 @@ export function createPveRpc(deps: PveRpcDeps) {
     now: deps.now,
   });
 
-  const audited = async <T>(tool: string, profileId: string | null, detail: string, run: () => Promise<T>, outcomeOf: (r: T) => string): Promise<T> => {
-    const ticket = deps.audit?.begin({ threadId: OWNER, projectId: "", tool, profileId, detail });
+  const audited = async <T>(tool: string | null, profileId: string | null, detail: string, run: () => Promise<T>, outcomeOf: (r: T) => string): Promise<T> => {
+    const ticket = tool === null ? undefined : deps.audit?.begin({ threadId: OWNER, projectId: "", tool, profileId, detail });
     try {
       const result = await run();
       ticket?.finish(outcomeOf(result));
@@ -148,7 +149,7 @@ export function createPveRpc(deps: PveRpcDeps) {
       if (connectOf(p) === null) return { ok: false, code: "no_credential", message: "This connection has no saved password or token yet.", fingerprint: null };
       const what = input.console === "node" ? `node ${input.node}` : `${input.console} ${input.vmid}`;
       return await audited(
-        "pve.console_open",
+        input.audit === false ? null : "pve.console_open",
         p.id,
         `${p.host}:${p.port ?? DEFAULT_PVE_PORT} ${what}`,
         async (): Promise<ConsoleOpenAnswer> => {

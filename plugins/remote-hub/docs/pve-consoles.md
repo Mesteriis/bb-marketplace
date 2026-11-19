@@ -181,3 +181,64 @@ Behaviour decided here:
 
 Tests: `helper/tests/pve_engine.rs` (28, engine in-process against the fake PVE), `helper/tests/pve_process.rs` (10, through the real helper binary,
 including a temporary keychain), unit tests beside each module, `src/core/pve-protocol.test.ts`. None of this touches a real PVE.
+
+## 8. Stage 2: consoles
+
+### Session policy (what the plugin does with a console's lifetime)
+
+- **Opening.** The owner opens a console from a guest card or a node button (`pve_console_open`); an agent opens one with
+  `remote_connect` and its `console` parameter. Both go through `openConsole` (`src/adapters/bb/pve-rpc.ts`): a FRESH read of the
+  connection (never the list on the page, never a stale one), the guest's *current* node, then the helper. A stopped guest, a template,
+  a missing guest, a guest of the wrong kind and an offline node are refused with their own reason (`guest_stopped`, `guest_is_template`,
+  `guest_not_found`, `unsupported_console`, `node_offline`); nothing is ever started. A connection that was edited while Proxmox was read
+  is refused too (`api_error`, try again).
+- **Kinds.** A node shell and a container terminal are sessions of kind `pve` (terminal: the same attach socket, scrollback, credit,
+  resize, xterm view, lease, watching rule and overlay as SSH). A QEMU guest's graphics is kind `vnc`: raw RFB bytes relayed both
+  ways by the helper without looking inside.
+- **States** (header of every tab): `connecting`, `active`, `lost` (the other side closed it, the websocket broke, the helper ended),
+  `disconnected` (the owner's Disconnect or the idle close), `error` (refused or failed to open) — with the concrete reason as fixed local
+  text (no permission, endpoint unreachable, ticket expired or refused, websocket error, unsupported console, certificate: the
+  fingerprint is shown and must be confirmed on the connection first). A server's own words never reach the page.
+- **Several at once; tabs and re-rendering.** Every tab stays mounted (hidden when inactive). Switching tabs or re-rendering mounts nothing
+  again, opens no second upstream connection and closes no backend session (covered by `pve-consoles.test.tsx`).
+- **Attached-less sessions and the idle timeout.** Closing the page or a view does not close the console. A console with no attached view
+  and no agent lease is closed by the service after **5 minutes** (`consoleIdleMs`, reason `idle_timeout`, shown as `disconnected`); a view
+  attaching or an agent taking a lease stops the clock, and it starts again when the last one leaves. Only Proxmox consoles have this
+  rule; SSH and RDP sessions are unchanged. An explicit **Disconnect** closes at once.
+- **Reconnect** opens a NEW console for the same target and closes the old one; it is offered only when the console is not connecting or
+  active. Automatic retries with backoff and an agent reconnect tool are not in this stage.
+- **Graphics have exactly one view, ever.** An RFB stream cannot be resumed, so the first view to attach owns it; a second view while the
+  first is attached is refused (`vnc_view_taken`), and so is any view after the first left (`vnc_not_resumable`: disconnect and open it
+  again). The page keeps the view mounted for as long as its tab exists. Bytes the console sends before its view attaches (the 12-byte
+  greeting) are held up to 256 KiB; beyond that the console is closed.
+
+### Where the VNC password lives, and for how long
+
+The helper's engine creates the VNC proxy and receives the one-time `password`. It goes helper → `pve.vnc_password` event → the service's
+memory (`VncRelay`) → **one text message on the attach socket to the one view** → noVNC's `sendCredentials`, once. It is held: in the
+engine until sent; in the service until delivered or the session ends (whichever is first; a view that detaches drops it); in the page
+inside one closure variable until noVNC asks for it. It is never in a URL, localStorage, React state, an RPC result, the session list, an
+audit row or a log, and never travels back on the socket (`vnc-view.test.tsx` checks the bytes the view sends).
+
+### The graphical view
+
+noVNC 1.6.0 is given a WebSocket-shaped channel (`src/ui/vnc-channel.ts`) instead of a URL. Behaviour covered by `vnc-view.test.tsx`
+(real noVNC against a fake RFB server: version, VNC authentication, ServerInit, a raw update): the first frame; scaling into the pane
+(`scaleViewport`, never `resizeSession`: the guest's resolution is not changed); the keyboard, the mouse, focus on click; modifier keys
+still held when the window blurs, the view loses focus or the tab hides are released in the guest (`vnc-modifiers.ts`). **Clipboard is not
+forwarded in either direction** in this version. noVNC is vendored unmodified in `vendor/novnc` (see its README); `npm run check:vendor`
+guards it.
+
+### Agents
+
+`remote_connect` takes `console`, `node` or `vmid`. Node and container terminals work with `remote_terminal_read` and `remote_terminal_input`,
+the control lease, the watching rule and the overlay with no special cases. For a QEMU guest an agent may open, see the state
+(`remote_sessions_list` → `proxmoxConsole`) and `remote_disconnect`; there is NO screenshot (`graphics_no_screenshot`), NO text
+(`graphics_not_readable`) and NO input (`graphics_no_input`) in this version, said in the tool descriptions, the skill and here. The three
+remote-desktop rules of the skill apply to these consoles.
+
+### Helper changes of this stage
+
+QEMU `vncproxy` with `websocket=1` and the raw relay (`engine.rs::run_vnc`); `pve.vnc_input` (base64) for the view's RFB bytes;
+`pve.vnc_password`; a binary stream frame addressed to a `pve` terminal session is routed to the PVE manager (a Proxmox terminal takes
+the human's keys on the same path as SSH), and to a `vnc` session it is refused (graphics take input only through `pve.vnc_input`).

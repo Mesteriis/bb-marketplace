@@ -405,3 +405,27 @@ describe("Z8: a read that starts at the oldest retained byte", () => {
   });
 });
 
+
+describe("Proxmox consoles in the read tools", () => {
+  const vnc = (): AgentSessionView[] => [
+    { key: `${GEN}.1`, kind: "vnc", state: "running", profileId: P_OPEN, exitCode: null, reason: null, control: "never", pve: { console: "qemu", node: "pve1", vmid: 200, state: "active", reason: null } },
+    { key: `${GEN}.2`, kind: "pve", state: "running", profileId: P_OPEN, exitCode: null, reason: null, control: "ready", pve: { console: "lxc", node: "pve1", vmid: 101, state: "lost", reason: "Proxmox closed the console." } },
+  ];
+
+  it("lists a console with what it is, its state and the fixed reason text, and nothing secret", async () => {
+    const t = setup({ sessions: vnc() });
+    t.access.set(P_OPEN, "observe", false);
+    const rows = JSON.parse(textOf(await t.call("remote_sessions_list", {}))).sessions as Array<Record<string, unknown>>;
+    expect(rows[0]).toMatchObject({ kind: "vnc", proxmoxConsole: { console: "qemu", node: "pve1", vmid: 200, state: "active" } });
+    expect(rows[1]).toMatchObject({ kind: "pve", proxmoxConsole: { state: "lost", reason: "Proxmox closed the console." } });
+    expect(JSON.stringify(rows)).not.toMatch(/password|ticket|rh-cred/);
+  });
+
+  it("there is no text and no screenshot of a virtual machine's graphics, and the answer says so", async () => {
+    const t = setup({ sessions: vnc() });
+    t.access.set(P_OPEN, "observe", false);
+    expect(textOf(await t.call("remote_terminal_read", { sessionId: `${GEN}.1` }))).toContain("graphics_not_readable");
+    expect(textOf(await t.call("remote_rdp_screenshot", { sessionId: `${GEN}.1` }))).toContain("graphics_no_screenshot");
+    expect(t.calls).toEqual([]);
+  });
+});

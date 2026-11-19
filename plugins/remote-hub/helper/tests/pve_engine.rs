@@ -292,6 +292,167 @@ async fn a_console_the_account_may_not_open_is_no_permission() {
     assert_eq!(fake.state.lock().unwrap().ws_open, 0);
 }
 
+fn qemu(node: &str, vmid: u32) -> PveOp {
+    PveOp::Terminal { target: ConsoleTarget::Qemu { node: node.into(), vmid }, cols: 80, rows: 24 }
+}
+
+/// Reads exactly `n` console bytes, whatever the chunking.
+async fn read_n(d: &mut Drive, n: usize) -> Vec<u8> {
+    let mut got = Vec::new();
+    while got.len() < n {
+        match d.next().await {
+            Got::Data(b) => got.extend(b),
+            Got::Eof => panic!("ended after {} of {n} bytes", got.len()),
+            _ => {}
+        }
+    }
+    got
+}
+
+#[tokio::test]
+async fn a_qemu_console_hands_over_its_password_then_relays_raw_rfb_both_ways() {
+    let fake = start_fake(default_state()).await;
+    let mut d = start_engine(&open(fake.port, ticket_auth(), ca_trust(), qemu("pve1", 100))).await;
+    // The password event comes first, then the open state, then the server's greeting: it speaks first.
+    let mut password = None;
+    loop {
+        match d.next().await {
+            Got::Event(PveEvent::VncPassword { password: p }) => password = Some(p.expose().to_string()),
+            Got::Event(PveEvent::State { state }) if state == "open" => break,
+            Got::Eof => panic!("ended early"),
+            _ => {}
+        }
+    }
+    assert_eq!(password.as_deref(), fake.state.lock().unwrap().vnc_password.as_deref());
+    assert_eq!(read_n(&mut d, 12).await, b"RFB 003.008\n");
+    // The client's turn, byte for byte: version, security type 2 (VNC authentication), the 16-byte answer, ClientInit.
+    d.input(b"RFB 003.008\n").await;
+    assert_eq!(read_n(&mut d, 2).await, [1, 2]);
+    d.input(&[2]).await;
+    assert_eq!(read_n(&mut d, 16).await, [7u8; 16]);
+    let answer: Vec<u8> = (1u8..=16).collect();
+    d.input(&answer).await;
+    assert_eq!(read_n(&mut d, 4).await, [0, 0, 0, 0]);
+    d.input(&[1]).await;
+    let init = read_n(&mut d, 4 + 16 + 4 + 4).await;
+    assert_eq!(&init[..4], [0, 2, 0, 1], "a 2 x 1 desktop");
+    assert_eq!(&init[24..], b"fake");
+    // A FramebufferUpdateRequest, and the raw update comes back untouched.
+    d.input(&[3, 0, 0, 0, 0, 0, 0, 2, 0, 1]).await;
+    let update = read_n(&mut d, 4 + 8 + 4 + 8).await;
+    assert_eq!(update, [0, 0, 0, 1, 0, 0, 0, 0, 0, 2, 0, 1, 0, 0, 0, 0, 0x10, 0x20, 0x30, 0, 0x40, 0x50, 0x60, 0]);
+    d.send(&PveCommand::Close).await;
+    let (events, _) = d.all().await;
+    assert_eq!(events, vec![PveEvent::Closed { reason: "closed_by_user".into() }]);
+    assert_eq!(d.engine.await.unwrap(), 0);
+    let st = fake.state.lock().unwrap();
+    assert_eq!(st.vnc_response, answer);
+    let mut sent = b"RFB 003.008\n".to_vec();
+    sent.push(2);
+    sent.extend(&answer);
+    sent.push(1);
+    sent.extend([3, 0, 0, 0, 0, 0, 0, 2, 0, 1]);
+    assert_eq!(st.vnc_input, sent, "the helper put nothing of its own into the stream");
+    assert!(st.requests.contains(&"POST /api2/json/nodes/pve1/qemu/100/vncproxy".to_string()));
+    assert!(st.requests.contains(&"GET /api2/json/nodes/pve1/qemu/100/vncwebsocket".to_string()));
+    // The websocket is a plain RFB channel: there is no ticket line and no terminal framing.
+    assert!(st.ticket_lines.is_empty());
+}
+
+#[tokio::test]
+async fn the_vnc_password_is_in_exactly_one_event_and_nowhere_else() {
+    let fake = start_fake(default_state()).await;
+    let mut d = start_engine(&open(fake.port, ticket_auth(), ca_trust(), qemu("pve1", 100))).await;
+    d.until_state("open").await;
+    d.send(&PveCommand::Close).await;
+    let (events, data) = d.all().await;
+    let pw = fake.state.lock().unwrap().vnc_password.clone().expect("issued");
+    let text = format!("{events:?}");
+    assert!(!text.contains(&pw), "the password's Debug form is redacted: {text}");
+    assert!(!String::from_utf8_lossy(&data).contains(&pw));
+}
+
+#[tokio::test]
+async fn a_vm_console_the_account_may_not_open_is_no_permission() {
+    let mut st = default_state();
+    st.forbid_console = true;
+    let fake = start_fake(st).await;
+    let mut d = start_engine(&open(fake.port, ticket_auth(), ca_trust(), qemu("pve1", 100))).await;
+    let (events, _) = d.all().await;
+    assert!(matches!(&events[0], PveEvent::Error { code, .. } if code == "no_permission"), "{events:?}");
+    assert_eq!(events[1], PveEvent::Closed { reason: "error".into() });
+    assert_eq!(fake.state.lock().unwrap().vnc_opened, 0);
+}
+
+#[tokio::test]
+async fn a_console_socket_the_server_refuses_with_403_is_no_permission_and_a_token_is_not_used_for_graphics() {
+    let mut st = default_state();
+    st.refuse_ws_ticket = true;
+    let fake = start_fake(st).await;
+    let mut d = start_engine(&open(fake.port, ticket_auth(), ca_trust(), qemu("pve1", 100))).await;
+    let (events, _) = d.all().await;
+    // the fake refuses the upgrade with 403, which is a missing privilege; a 401 would be login_failed
+    assert!(matches!(&events[0], PveEvent::Error { code, .. } if code == "no_permission"), "{events:?}");
+    let fake = start_fake(default_state()).await;
+    let auth = PveAuth::Token { token_id: TOKEN_ID.into(), secret: Secret::new(TOKEN_SECRET) };
+    let mut d = start_engine(&open(fake.port, auth, ca_trust(), qemu("pve1", 100))).await;
+    let (events, _) = d.all().await;
+    assert!(matches!(&events[0], PveEvent::Error { code, .. } if code == "login_failed"), "{events:?}");
+}
+
+#[tokio::test]
+async fn a_stopped_unknown_or_moved_guest_is_an_api_error_with_only_the_status() {
+    let mut st = default_state();
+    st.guests.push((103, "vm-off".into(), "qemu".into(), "pve1".into(), "stopped".into(), false));
+    let fake = start_fake(st).await;
+    // stopped; no such guest; the right guest on the wrong node (it moved to pve1 and the request still names pve2)
+    for (node, vmid) in [("pve1", 103u32), ("pve1", 999), ("pve2", 100)] {
+        let mut d = start_engine(&open(fake.port, ticket_auth(), ca_trust(), qemu(node, vmid))).await;
+        let (events, _) = d.all().await;
+        match &events[0] {
+            PveEvent::Error { code, message, .. } => {
+                assert_eq!(code, "api_error", "{node}/{vmid}");
+                assert_eq!(message, "PVE answered 500");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    assert_eq!(fake.state.lock().unwrap().vnc_opened, 0);
+}
+
+#[tokio::test]
+async fn the_server_hanging_up_mid_session_is_remote_closed() {
+    let mut st = default_state();
+    st.vnc_drop_after_update = true;
+    let fake = start_fake(st).await;
+    let mut d = start_engine(&open(fake.port, ticket_auth(), ca_trust(), qemu("pve1", 100))).await;
+    d.until_state("open").await;
+    read_n(&mut d, 12).await;
+    d.input(b"RFB 003.008\n").await;
+    read_n(&mut d, 2).await;
+    d.input(&[2]).await;
+    read_n(&mut d, 16).await;
+    d.input(&[9u8; 16]).await;
+    read_n(&mut d, 4).await;
+    d.input(&[1]).await;
+    read_n(&mut d, 28).await;
+    d.input(&[3, 0, 0, 0, 0, 0, 0, 2, 0, 1]).await;
+    let (events, _) = d.all().await;
+    assert_eq!(events, vec![PveEvent::Closed { reason: "remote_closed".into() }]);
+}
+
+#[tokio::test]
+async fn closing_a_vm_console_while_the_server_is_slow_ends_at_once() {
+    let mut st = default_state();
+    st.delay_ok_ms = 0;
+    let fake = start_fake(st).await;
+    let mut d = start_engine(&open(fake.port, ticket_auth(), ca_trust(), qemu("pve1", 100))).await;
+    d.send(&PveCommand::Close).await;
+    let (events, _) = d.all().await;
+    assert!(matches!(events.last(), Some(PveEvent::Closed { .. })), "{events:?}");
+    assert_eq!(d.engine.await.unwrap(), 0);
+}
+
 #[tokio::test]
 async fn a_token_reaches_discovery_but_not_a_console_that_needs_a_ticket() {
     let fake = start_fake(default_state()).await;

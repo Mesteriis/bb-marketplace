@@ -10,7 +10,7 @@ use common::*;
 use pve_fake::*;
 use remote_hub_helper::binding::Bind;
 use remote_hub_helper::keychain::create_at;
-use remote_hub_helper::protocol::{decode_response, PveConnect, PveSave, Request, Response, FRAME_KIND_CONTROL, FRAME_KIND_STREAM};
+use remote_hub_helper::protocol::{decode_response, encode_stream, PveConnect, PveSave, Request, Response, FRAME_KIND_CONTROL, FRAME_KIND_STREAM};
 use remote_hub_helper::pve::protocol::{ConsoleTarget, Trust};
 use remote_hub_helper::secret::Secret;
 
@@ -108,6 +108,85 @@ fn a_console_opens_echoes_resizes_and_closes_through_the_helper() {
         assert_eq!(st.ws_input, b"ls\rx");
         assert_eq!(st.resizes, vec![(80, 24), (100, 30)]);
     }
+    h.shutdown();
+    drop(w.rt);
+}
+
+#[test]
+fn the_humans_keys_as_a_binary_stream_frame_reach_a_proxmox_terminal() {
+    let w = world(default_state());
+    let mut h = start(&[]);
+    let Response::SessionOpened { session_id, .. } = open_lxc(&mut h, 1, connect(w.fake.port, Some(PASSWORD), None, ca())) else { panic!("not opened") };
+    read_stream_until(&mut h, session_id, b"root@ct101:~# ");
+    // the same path SSH uses for the human's keys: not a session.input request
+    use std::io::Write as _;
+    h.stdin.write_all(&encode_stream(session_id, 0, b"pwd\r")).unwrap();
+    h.stdin.flush().unwrap();
+    read_stream_until(&mut h, session_id, b"pwd\r");
+    assert_eq!(w.fake.state.lock().unwrap().ws_input, b"pwd\r");
+    h.send(&Request::SessionClose { id: 2, session_id });
+    h.read_reply(2);
+    h.shutdown();
+    drop(w.rt);
+}
+
+#[test]
+fn a_binary_stream_frame_never_reaches_a_graphical_console() {
+    let w = world(default_state());
+    let mut h = start(&[]);
+    h.send(&Request::OpenPve { id: 1, connect: connect(w.fake.port, Some(PASSWORD), None, ca()), target: ConsoleTarget::Qemu { node: "pve1".into(), vmid: 100 }, cols: 80, rows: 24, keepalive_secs: None });
+    let Response::SessionOpened { session_id, kind, .. } = h.read_reply(1) else { panic!("not opened") };
+    assert_eq!(kind, "vnc");
+    // the console's greeting arrives first; then text-style input as a stream frame must be dropped, not relayed as RFB
+    read_stream_until(&mut h, session_id, b"RFB 003.008");
+    use std::io::Write as _;
+    h.stdin.write_all(&encode_stream(session_id, 0, b"not-rfb-bytes")).unwrap();
+    h.stdin.flush().unwrap();
+    // raw RFB goes through pve.vnc_input, which does reach the console
+    h.send(&Request::PveVncInput { id: 2, session_id, data: "UkZCIDAwMy4wMDgK".into() });
+    assert!(matches!(h.read_reply(2), Response::SessionInputAck { .. }));
+    let mut got = Vec::new();
+    for _ in 0..200 {
+        got = w.fake.state.lock().unwrap().vnc_input.clone();
+        if !got.is_empty() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert_eq!(got, b"RFB 003.008\n", "only the vnc_input bytes reached the console");
+    h.send(&Request::SessionClose { id: 3, session_id });
+    h.read_reply(3);
+    h.shutdown();
+    drop(w.rt);
+}
+
+#[test]
+fn the_vnc_password_reaches_the_client_once_and_is_in_no_argv_and_no_stderr() {
+    let w = world(default_state());
+    let mut h = start(&[]);
+    h.send(&Request::OpenPve { id: 1, connect: connect(w.fake.port, Some(PASSWORD), None, ca()), target: ConsoleTarget::Qemu { node: "pve1".into(), vmid: 100 }, cols: 80, rows: 24, keepalive_secs: None });
+    let Response::SessionOpened { session_id, pid, .. } = h.read_reply(1) else { panic!("not opened") };
+    let mut password = None;
+    let mut greeting = Vec::new();
+    h.read_until(Duration::from_secs(20), |k, p| {
+        if k == FRAME_KIND_CONTROL {
+            if let Ok(Response::PveVncPassword { session_id: s, password: pw }) = decode_response(p) {
+                assert_eq!(s, session_id);
+                password = Some(pw.expose().to_string());
+            }
+        } else if k == FRAME_KIND_STREAM && p.len() >= 8 && u32::from_le_bytes([p[0], p[1], p[2], p[3]]) == session_id {
+            greeting.extend_from_slice(&p[8..]);
+        }
+        (password.is_some() && greeting.ends_with(b"RFB 003.008\n")).then_some(())
+    });
+    let issued = w.fake.state.lock().unwrap().vnc_password.clone().expect("the fake issued one");
+    assert_eq!(password.as_deref(), Some(issued.as_str()));
+    // not in the engine's command line, nor in the helper's stderr
+    let args = std::process::Command::new("ps").args(["-ww", "-o", "args=", "-p", &pid.to_string()]).output().unwrap();
+    assert!(!String::from_utf8_lossy(&args.stdout).contains(&issued));
+    assert!(!h.stderr_text().contains(&issued));
+    h.send(&Request::SessionClose { id: 2, session_id });
+    h.read_reply(2);
     h.shutdown();
     drop(w.rt);
 }

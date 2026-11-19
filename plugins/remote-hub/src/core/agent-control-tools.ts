@@ -11,8 +11,9 @@
 import { pointerOf, type AgentFeed } from "./agent-feed.ts";
 import { z } from "zod";
 import { MAX_RDP_EVENTS_PER_CALL, SerialQueue, rdpActionsSchema, toRdpEvents, type RdpAction } from "./agent-input.ts";
-import { CANNOT, ToolError, connectionIdSchema, createGate, def, errorResult, json, sessionIdSchema, type AgentCallContext, type AgentSessionView, type AgentToolDef, type AgentToolDeps } from "./agent-tools.ts";
+import { CANNOT, GRAPHICS_NO_INPUT, ToolError, connectionIdSchema, createGate, def, errorResult, json, sessionIdSchema, type AgentCallContext, type AgentSessionView, type AgentToolDef, type AgentToolDeps } from "./agent-tools.ts";
 import { LEASE_DEFAULT_SECONDS, LEASE_MAX_SECONDS, LEASE_MIN_SECONDS, type ControlLeases, type LeaseEnd } from "./control-lease.ts";
+import type { ConsoleRequest } from "./pve-console.ts";
 import type { RdpInputEvent } from "./rdp-protocol.ts";
 
 /** What the adapter does for the control tools. */
@@ -24,7 +25,7 @@ export interface AgentControlPorts {
   terminalWrite(sessionKey: string, data: Uint8Array, owner: string): Promise<void>;
   rdpWrite(sessionKey: string, events: RdpInputEvent[], owner: string): Promise<void>;
   /** Opens a saved connection with its saved credential. Never asks the agent for a secret. */
-  connect(profileId: string): Promise<{ sessionKey: string }>;
+  connect(profileId: string, console?: ConsoleRequest): Promise<{ sessionKey: string }>;
   disconnect(sessionKey: string): Promise<void>;
   /** The kinds of question the owner has to answer on this session (no text, no fingerprints). */
   waitingForOwner(sessionKey: string): Array<"host_key" | "certificate" | "login_prompt">;
@@ -177,6 +178,21 @@ export const NOT_WATCHING = new ToolError(
   "Nobody has this session's live view open and visible, so nothing was sent. Put the liveView line in your reply (the owner sees the session there, or on the Remote Hub page) and try again once the owner is watching."
 );
 
+/** The console a remote_connect asks for: required for a Proxmox connection, and for no other kind. */
+function consoleRequestOf(protocol: string, p: { console?: "node" | "lxc" | "qemu" | undefined; node?: string | undefined; vmid?: number | undefined }): ConsoleRequest | undefined {
+  if (protocol !== "pve") {
+    if (p.console !== undefined || p.node !== undefined || p.vmid !== undefined) throw new ToolError("not_a_proxmox_connection", "console, node and vmid are only for Proxmox connections");
+    return undefined;
+  }
+  if (p.console === undefined) throw new ToolError("console_required", 'a Proxmox connection needs `console`: "node" with `node`, "lxc" or "qemu" with `vmid`');
+  if (p.console === "node") {
+    if (p.node === undefined || p.vmid !== undefined) throw new ToolError("invalid_target", "a node shell names its node and no vmid");
+    return { console: "node", node: p.node };
+  }
+  if (p.vmid === undefined || p.node !== undefined) throw new ToolError("invalid_target", "a guest console names its vmid and no node (the node is looked up)");
+  return { console: p.console, vmid: p.vmid };
+}
+
 export function createControlTools(deps: AgentControlDeps): AgentToolDef[] {
   const { access, leases, control, ports } = deps;
   const { guarded, noSession } = createGate(deps);
@@ -191,9 +207,15 @@ export function createControlTools(deps: AgentControlDeps): AgentToolDef[] {
   const profileOf = (key: string): string | null => sessionOf(key)?.profileId ?? null;
 
   /** The session and its profile when the owner allows driving it (input or above); the same error for missing and not allowed. */
-  function controllable(key: string): { session: AgentSessionView; profileId: string } {
+  function controllable(key: string, opts: { graphics?: "allow" } = {}): { session: AgentSessionView; profileId: string } {
     const session = sessionOf(key);
     if (session === undefined || session.profileId === undefined || !access.check(session.profileId, "input").ok) throw noSession();
+    // A virtual machine's graphics: an agent may open it, see its state and disconnect it, nothing else in this version.
+    if (session.kind === "vnc") {
+      if (opts.graphics !== "allow") throw GRAPHICS_NO_INPUT;
+      if (session.state === "closed") throw new ToolError("session_closed", "this session has ended");
+      return { session, profileId: session.profileId };
+    }
     // A terminal session that is not an askpass session shows its questions in the terminal: it answers exactly like a
     // missing one, so nothing is learnt about sessions the owner opened by hand.
     if (session.control === "never") throw noSession();
@@ -298,23 +320,33 @@ export function createControlTools(deps: AgentControlDeps): AgentToolDef[] {
       description:
         CANNOT +
         "Opens a saved connection the owner allowed at the input level or above, using its SAVED credential; connections without one are refused. There is no password, host or approval parameter. " +
+        "A Proxmox connection also needs `console`: \"node\" with `node` (a shell on that node), \"lxc\" with `vmid` (a container's terminal) or \"qemu\" with `vmid` (a virtual machine's graphics). The guest's node is looked up again; a stopped guest or a template is refused and is never started. " +
+        "Node and container consoles are terminals: read them with remote_terminal_read and type with remote_terminal_input. A virtual machine's graphics you can open, see the state of and disconnect, but you get NO screenshot and NO input for it in this version; the owner sees it. " +
         "A new host key, a changed key or a certificate is decided by the owner on the Remote Hub page: the result then says waitingForOwner and the session stays connecting until the owner answers. " +
         `At most ${MAX_SESSIONS_PER_THREAD} open sessions per thread. ` +
         "On a desktop: no launching programs through Start/Run/Win+R unless the owner asked in this conversation; on a security/EDR block stop all input and report (see the skill).",
-      parameters: z.object({ connectionId: connectionIdSchema }).strict(),
+      parameters: z
+        .object({
+          connectionId: connectionIdSchema,
+          console: z.enum(["node", "lxc", "qemu"]).optional(),
+          node: z.string().min(1).max(63).optional(),
+          vmid: z.number().int().min(100).max(999_999_999).optional(),
+        })
+        .strict(),
       execute: (params, ctx) =>
         guarded("remote_connect", ctx, { profileId: params.connectionId }, async () => {
           refuseRetired(ctx);
           const profile = ports.profiles.get(params.connectionId);
           if (profile === null || !access.check(params.connectionId, "connect").ok) throw new ToolError("agent_access_denied", "the owner has not allowed agents to use this connection");
           if (profile.credentialRef === null) throw new ToolError("needs_saved_credential", "this connection has no saved credential; the owner must save one on the Remote Hub page first");
+          const consoleRequest = consoleRequestOf(profile.protocol, params);
           // The slot is taken BEFORE the open is awaited, and given back on every way out: parallel calls cannot all see room.
           const live = ports.sessions.list().filter((s) => s.state !== "closed" && openedBy.threadOf(s.key) === ctx.threadId).length;
           if (live + (opening.get(ctx.threadId) ?? 0) >= MAX_SESSIONS_PER_THREAD) throw new ToolError("too_many_sessions", `this thread already has ${MAX_SESSIONS_PER_THREAD} open sessions: disconnect one first`);
           opening.set(ctx.threadId, (opening.get(ctx.threadId) ?? 0) + 1);
           let sessionKey: string;
           try {
-            ({ sessionKey } = await control.connect(profile.id));
+            ({ sessionKey } = await control.connect(profile.id, consoleRequest));
             // Registered at once: whatever happens next, the session is accounted for until it is confirmed closed.
             openedBy.mark(sessionKey, ctx.threadId);
             // The open took time: if the grant, the thread or the call ended meanwhile, the session is closed, not handed over.
@@ -343,7 +375,7 @@ export function createControlTools(deps: AgentControlDeps): AgentToolDef[] {
       parameters: z.object({ sessionId: sessionIdSchema }).strict(),
       execute: (params, ctx) =>
         guarded("remote_disconnect", ctx, { sessionKey: params.sessionId, profileId: profileOf(params.sessionId) }, async () => {
-          controllable(params.sessionId);
+          controllable(params.sessionId, { graphics: "allow" });
           if (openedBy.threadOf(params.sessionId) !== ctx.threadId) throw new ToolError("not_opened_by_you", "this thread did not open this session");
           await control.disconnect(params.sessionId);
           leases.endSession(params.sessionId, "session_closed");
@@ -355,8 +387,8 @@ export function createControlTools(deps: AgentControlDeps): AgentToolDef[] {
       name: "remote_terminal_input",
       description:
         CANNOT +
-        "Types into a terminal session you hold the lease on: plain text (no control characters) and named keys (Enter, Tab, Escape, Backspace, arrows, Home, End, Ctrl-C/D/Z/L), in order. " +
-        `At most ${TERMINAL_INPUT_MAX_BYTES} bytes per call. Cannot send raw bytes or escape sequences, and cannot type into a desktop session. The audit keeps the length of what you send, not the text.`,
+        "Types into a terminal session (SSH, or a Proxmox node or container terminal) you hold the lease on: plain text (no control characters) and named keys (Enter, Tab, Escape, Backspace, arrows, Home, End, Ctrl-C/D/Z/L), in order. " +
+        `At most ${TERMINAL_INPUT_MAX_BYTES} bytes per call. Cannot send raw bytes or escape sequences, and cannot type into a desktop session or a Proxmox virtual machine's graphics. The audit keeps the length of what you send, not the text.`,
       parameters: z.object({ sessionId: sessionIdSchema, leaseId: leaseIdSchema, actions: z.array(terminalActionSchema).min(1).max(40) }).strict(),
       execute: async (params, ctx) => {
         const bytes = terminalBytes(params.actions);

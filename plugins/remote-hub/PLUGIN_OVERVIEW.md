@@ -4,7 +4,7 @@ guest discovery. Real SSH sessions run in xterm and RDP on a canvas, through a R
 ## What you get
 
 - A page with a helper status line and echo console, and an SSH / RDP switch.
-- Proxmox VE: Add Proxmox creates a restricted user (reviewed and confirmed by you; your admin login is used for this setup only, never stored) or saves a login or API token you have. The guest list shows each connection's own outcome (no permission, login refused, unreachable, certificate to confirm, stale), search, and links a guest to your SSH/RDP profile. No power buttons; no consoles yet.
+- Proxmox VE: Add Proxmox creates a restricted user (you confirm the plan; your admin login is used for this setup only, never stored) or saves a login or API token you have. The guest list shows each connection's own outcome, search, and guest links. Open a node shell, a container terminal or a VM's graphics (noVNC), several at once; agents get terminals; for graphics only open, state, disconnect. No power buttons.
 - SSH: connect form (host, user, port), a real /usr/bin/ssh session on a
   helper-owned PTY, xterm.js rendering, resize, and a binary WebSocket with
   attach/detach and a bounded scrollback snapshot on re-attach.

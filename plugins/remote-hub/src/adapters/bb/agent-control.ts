@@ -9,6 +9,8 @@ import type { ControlLeases } from "../../core/control-lease.ts";
 import type { WatcherBook } from "../../core/watchers.ts";
 import type { AgentSettings } from "../../core/agent-settings.ts";
 import type { Profile } from "../../core/profile.ts";
+import { reasonText, type ConsoleRequest } from "../../core/pve-console.ts";
+import type { ConsoleOpenAnswer, ConsoleOpenInput } from "./pve-rpc.ts";
 import type { RpcHandlers } from "./rpc-handlers.ts";
 import type { ControlGate, ControlView, RemoteHubService } from "./service.ts";
 
@@ -94,11 +96,13 @@ export interface AgentControlPortDeps {
   profiles: { get(id: string): Profile | null };
   /** The same handlers the page uses: they check that the saved credential belongs to this endpoint. */
   handlers: Pick<RpcHandlers, "ssh_open" | "rdp_open">;
+  /** Opens a Proxmox console (the same path as the owner's page): the guest's node is looked up again, a stopped guest is refused. */
+  pveOpen?: (input: ConsoleOpenInput) => Promise<ConsoleOpenAnswer>;
   watchers: WatcherBook;
   settings: AgentSettings;
 }
 
-export function agentControlPorts({ service, profiles, handlers, watchers, settings }: AgentControlPortDeps): AgentControlPorts {
+export function agentControlPorts({ service, profiles, handlers, pveOpen, watchers, settings }: AgentControlPortDeps): AgentControlPorts {
   return {
     watching: (key) => watchers.watching(key),
     watchingRequired: () => settings.requireWatching(),
@@ -106,10 +110,17 @@ export function agentControlPorts({ service, profiles, handlers, watchers, setti
     onRuleChange: (cb) => settings.onChange(cb),
     terminalWrite: async (key, data, owner) => lostLeaseAsToolError(() => service.agentTerminalInput(handleOf(key), data, owner)),
     rdpWrite: async (key, events, owner) => lostLeaseAsToolError(() => service.agentRdpInput(handleOf(key), events, owner)),
-    async connect(profileId) {
+    async connect(profileId, console: ConsoleRequest | undefined) {
       const p = profiles.get(profileId);
       if (p === null || p.credentialRef === null) throw new ToolError("connection_incomplete", "this connection cannot be opened by an agent");
       try {
+        if (p.protocol === "pve") {
+          if (pveOpen === undefined || console === undefined) throw new ToolError("connection_incomplete", "this connection cannot be opened by an agent");
+          const opened = await pveOpen({ ...console, profileId: p.id, cols: 120, rows: 32, audit: false });
+          // The agent is told our own fixed text for the reason, never a server's words or a certificate.
+          if (!opened.ok) throw new ToolError(opened.code, reasonText(opened.code));
+          return { sessionKey: keyOf(opened.handle) };
+        }
         if (p.protocol === "ssh") {
           const h = await handlers.ssh_open({ target: profileToSshTarget(p), cols: 120, rows: 32, profileId: p.id, credentialRef: p.credentialRef });
           return { sessionKey: keyOf(h) };
