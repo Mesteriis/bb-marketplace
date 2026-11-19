@@ -60,6 +60,7 @@ import type { SignatureDoc } from "./compose-signature.ts";
 import type { AliasRow, InboundRow, SendCheck } from "./identities.ts";
 import type { UndoRow } from "./undo.ts";
 import type { AccountScope, AiScope } from "./ai-scope.ts";
+import type { PluginGrant, PluginRequest } from "./plugin-access.ts";
 import type { LogEntry, LogOutcome } from "./agent-log.ts";
 import type { Category, CategoryRule, CategorySource, PreviousLabel } from "./categories.ts";
 import type { AiCategoryAnswer } from "./ai-input.ts";
@@ -965,6 +966,19 @@ export interface MailStore {
     senders: { kind: "address" | "domain"; value: string }[],
     nowIso: string,
   ): void;
+
+  // ---- Plugin access (the plugin API): what the owner lets other plugins have ----
+  listPluginGrants(): PluginGrant[];
+  /** Adds the grant (keeping the first grant's time) or removes it. */
+  setPluginGrant(grant: PluginGrant, on: boolean): void;
+  /** Every grant of a plugin, its request and its cached state. */
+  revokePluginGrants(pluginId: string): void;
+  getPluginRequests(): PluginRequest[];
+  /** A plugin's pending request, replacing its earlier one; its time is also kept for the daily limit. */
+  putPluginRequest(request: PluginRequest): void;
+  dismissPluginRequest(pluginId: string): void;
+  /** When a plugin asked, newest first, the last 30 days. */
+  pluginRequestTimes(pluginId: string): string[];
   /** Rebuilds the excluded conversations after a sync round (new rows may add one). */
   refreshExcludedThreads(): void;
   /** The message when one of its copies is inside the scope (that copy), else null: an out-of-scope id is unknown. */

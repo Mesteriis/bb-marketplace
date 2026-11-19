@@ -831,8 +831,76 @@ describe("slice-2 migrations (SQLite)", () => {
          VALUES ('acc_1', 'owner@example.org', 'imap.example.org', 993, 'owner', 'sealed', 'other', ?)`,
       ).run("2026-01-01T00:00:00.000Z");
       db.transaction(() => MIGRATIONS.slice(19).forEach((statement) => db.exec(statement)))();
-      expect(MIGRATIONS).toHaveLength(20);
+      expect(MIGRATIONS).toHaveLength(21);
       expect(createSqliteStore(db).getAccount("acc_1")).toMatchObject({ authKind: "password", grantedScopes: [], passwordSealed: "sealed" });
+    });
+  });
+
+  describe("plugin access", () => {
+    const at = "2026-11-19T10:00:00.000Z";
+    const later = "2026-11-19T11:00:00.000Z";
+    const open = () => {
+      const db = new Database(":memory:");
+      db.transaction(() => MIGRATIONS.forEach((statement) => db.exec(statement)))();
+      seedLegacyAccount(db);
+      return { db, store: createSqliteStore(db) };
+    };
+
+    it("a grant is set once, listed, and removed", () => {
+      const { store } = open();
+      const grant = { pluginId: "crm", right: "mail.read", accountId: "acc_1", grantedAt: at } as const;
+      store.setPluginGrant(grant, true);
+      store.setPluginGrant({ ...grant, grantedAt: later }, true);
+      expect(store.listPluginGrants()).toEqual([grant]);
+      store.setPluginGrant(grant, false);
+      expect(store.listPluginGrants()).toEqual([]);
+    });
+
+    it("removing an account removes its grants and leaves the others", () => {
+      const { db, store } = open();
+      db.prepare(
+        `INSERT INTO accounts (id, email, host, port, username, password_sealed, preset, created_at)
+         VALUES ('acc_2', 'second@example.net', 'imap.example.net', 993, 'second', 'sealed', 'other', ?)`,
+      ).run(at);
+      store.setPluginGrant({ pluginId: "crm", right: "mail.read", accountId: "acc_1", grantedAt: at }, true);
+      store.setPluginGrant({ pluginId: "crm", right: "mail.read", accountId: "acc_2", grantedAt: at }, true);
+      store.deleteAccount("acc_1");
+      expect(store.listPluginGrants().map((grant) => grant.accountId)).toEqual(["acc_2"]);
+    });
+
+    it("a plugin has one pending request; both times are kept for the limit", () => {
+      const { store } = open();
+      store.putPluginRequest({ pluginId: "calendar", rights: ["mail.read"], reason: "First", askedAt: at });
+      store.putPluginRequest({ pluginId: "calendar", rights: ["invites.read", "mail.propose"], reason: "Second", askedAt: later });
+      expect(store.getPluginRequests()).toEqual([
+        { pluginId: "calendar", rights: ["invites.read", "mail.propose"], reason: "Second", askedAt: later },
+      ]);
+      expect(store.pluginRequestTimes("calendar")).toEqual([later, at]);
+      expect(store.pluginRequestTimes("crm")).toEqual([]);
+      store.dismissPluginRequest("calendar");
+      expect(store.getPluginRequests()).toEqual([]);
+      expect(store.pluginRequestTimes("calendar")).toEqual([later, at]);
+    });
+
+    it("revoking a plugin drops its grants and its request, not another plugin's", () => {
+      const { store } = open();
+      store.setPluginGrant({ pluginId: "crm", right: "mail.read", accountId: "acc_1", grantedAt: at }, true);
+      store.setPluginGrant({ pluginId: "calendar", right: "invites.read", accountId: "acc_1", grantedAt: at }, true);
+      store.putPluginRequest({ pluginId: "crm", rights: ["contacts.read"], reason: "", askedAt: at });
+      store.revokePluginGrants("crm");
+      expect(store.listPluginGrants().map((grant) => grant.pluginId)).toEqual(["calendar"]);
+      expect(store.getPluginRequests()).toEqual([]);
+    });
+
+    it("element 20 on a database from before it adds the tables and the draft column", () => {
+      const db = new Database(":memory:");
+      db.transaction(() => MIGRATIONS.slice(0, 20).forEach((statement) => db.exec(statement)))();
+      seedLegacyAccount(db);
+      db.transaction(() => MIGRATIONS.slice(20).forEach((statement) => db.exec(statement)))();
+      expect(MIGRATIONS).toHaveLength(21);
+      expect(createSqliteStore(db).listPluginGrants()).toEqual([]);
+      const columns = db.prepare<[], { name: string }>("SELECT name FROM pragma_table_info('compose_drafts')").all();
+      expect(columns.map((column) => column.name)).toContain("prepared_by");
     });
   });
 
@@ -3598,7 +3666,7 @@ describe("slice-3e migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(9).forEach((s) => old.exec(s)))();
 
-    expect(MIGRATIONS).toHaveLength(20);
+    expect(MIGRATIONS).toHaveLength(21);
     const migrated = createSqliteStore(old);
     expect(migrated.getUnsubscribeInfo(ids[0]!)).toEqual({ ...INFO, listKey: "id:weekly.example.com" });
     expect(migrated.getUnsubscribeInfo(ids[1]!)?.listKey).toBe("from:news@example.com");
@@ -4246,7 +4314,7 @@ describe("slice-3f migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(10).forEach((s) => old.exec(s)))();
 
-    expect(MIGRATIONS).toHaveLength(20);
+    expect(MIGRATIONS).toHaveLength(21);
     const migrated = createSqliteStore(old);
     migrated.assignThreads("acc_1", new Map());
     expect(migrated.listThreads("acc_1", INBOX, null, 10).threads).toEqual([
@@ -5052,7 +5120,7 @@ describe("slice-3g migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(12).forEach((s) => old.exec(s)))();
 
-    expect(MIGRATIONS).toHaveLength(20);
+    expect(MIGRATIONS).toHaveLength(21);
     const runs = old.prepare("SELECT id, message_id, message_key, project_id FROM rule_runs ORDER BY id").all();
     expect(runs).toEqual([
       { id: "a1", message_id: messageId, message_key: expect.stringMatching(/^acc_1:/), project_id: "p_api" },
@@ -5637,7 +5705,7 @@ describe("slice-3h migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(13).forEach((s) => old.exec(s)))();
 
-    expect(MIGRATIONS).toHaveLength(20);
+    expect(MIGRATIONS).toHaveLength(21);
     const kinds = old.prepare("SELECT part_id, kind FROM attachments ORDER BY CAST(part_id AS INTEGER)").all() as {
       part_id: string;
       kind: string;
@@ -6307,7 +6375,7 @@ describe("slice-3i migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(14).forEach((statement) => old.exec(statement)))();
 
-    expect(MIGRATIONS).toHaveLength(20);
+    expect(MIGRATIONS).toHaveLength(21);
     const columns = (old.prepare("PRAGMA table_info(messages)").all() as { name: string }[]).map((c) => c.name);
     expect(columns).toEqual(expect.arrayContaining(["sender_check_json", "receipt_requested", "crypto"]));
     expect(old.prepare("SELECT sender_check_json, receipt_requested, crypto FROM messages").all()).toEqual([

@@ -12,6 +12,7 @@
 //   - thread, folder, badge and search counts count distinct dedup keys, and
 //     rows waiting to move out are hidden from their folder, the badge and
 //     search; moves re-home rows (same id), detaching them without a uid map.
+import type { PluginGrant, PluginRequest } from "../plugin-access.ts";
 import type { ReplySource } from "../compose-reply.ts";
 import type {
   ComposeAttachment,
@@ -2212,6 +2213,46 @@ export class InMemoryMailStore implements MailStore {
 
   getAiScope(): AiScope {
     return this.aiScope;
+  }
+
+  private pluginGrants: PluginGrant[] = [];
+  private pluginRequests: PluginRequest[] = [];
+  private pluginAsked: { pluginId: string; askedAt: string }[] = [];
+
+  listPluginGrants(): PluginGrant[] {
+    return this.pluginGrants.map((grant) => ({ ...grant }));
+  }
+
+  setPluginGrant(grant: PluginGrant, on: boolean): void {
+    const same = (g: PluginGrant) => g.pluginId === grant.pluginId && g.right === grant.right && g.accountId === grant.accountId;
+    if (!on) this.pluginGrants = this.pluginGrants.filter((g) => !same(g));
+    else if (!this.pluginGrants.some(same)) this.pluginGrants.push({ ...grant });
+  }
+
+  revokePluginGrants(pluginId: string): void {
+    this.pluginGrants = this.pluginGrants.filter((grant) => grant.pluginId !== pluginId);
+    this.pluginRequests = this.pluginRequests.filter((request) => request.pluginId !== pluginId);
+  }
+
+  getPluginRequests(): PluginRequest[] {
+    return this.pluginRequests.map((request) => ({ ...request, rights: [...request.rights] }));
+  }
+
+  putPluginRequest(request: PluginRequest): void {
+    this.pluginRequests = [...this.pluginRequests.filter((r) => r.pluginId !== request.pluginId), { ...request, rights: [...request.rights] }];
+    this.pluginAsked.push({ pluginId: request.pluginId, askedAt: request.askedAt });
+  }
+
+  dismissPluginRequest(pluginId: string): void {
+    this.pluginRequests = this.pluginRequests.filter((request) => request.pluginId !== pluginId);
+  }
+
+  pluginRequestTimes(pluginId: string): string[] {
+    return this.pluginAsked
+      .filter((asked) => asked.pluginId === pluginId)
+      .map((asked) => asked.askedAt)
+      .sort()
+      .reverse();
   }
 
   loadAiScope(): AiScope {

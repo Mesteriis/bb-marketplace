@@ -68,6 +68,7 @@ import {
   type InboundRow,
   type SendCheck,
 } from "../../core/identities.ts";
+import { isPluginRight, type PluginRight } from "../../core/plugin-access.ts";
 import { OPEN_AI_SCOPE, inAiScope, senderExcluded, type AccountScope, type AiScope } from "../../core/ai-scope.ts";
 import { redactSecrets } from "../../core/redact.ts";
 import { AGENT_LOG_IDS_MAX, AGENT_LOG_KEEP_DAYS, AGENT_LOG_ROWS_MAX, type LogEntry } from "../../core/agent-log.ts";
@@ -1027,6 +1028,31 @@ export const MIGRATIONS: string[] = [
   `
   ALTER TABLE accounts ADD COLUMN auth_kind TEXT NOT NULL DEFAULT 'password';
   ALTER TABLE accounts ADD COLUMN granted_scopes TEXT NOT NULL DEFAULT '';
+  `,
+  // 20: plugin access. A grant is one plugin, one right, one account; a
+  // plugin has at most one pending request, and the times it asked are kept
+  // for the daily limit. A draft says which plugin prepared it. No
+  // REFERENCES: deletes are explicit (deleteAccount).
+  `
+  CREATE TABLE plugin_grants (
+    plugin_id TEXT NOT NULL,
+    right TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    granted_at TEXT NOT NULL,
+    PRIMARY KEY (plugin_id, right, account_id)
+  );
+  CREATE TABLE plugin_requests (
+    plugin_id TEXT PRIMARY KEY,
+    rights_json TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    asked_at TEXT NOT NULL
+  );
+  CREATE TABLE plugin_request_times (
+    plugin_id TEXT NOT NULL,
+    asked_at TEXT NOT NULL
+  );
+  CREATE INDEX plugin_request_times_plugin ON plugin_request_times(plugin_id, asked_at);
+  ALTER TABLE compose_drafts ADD COLUMN prepared_by TEXT;
   `,
 ];
 
@@ -3334,6 +3360,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
         ).run(id);
         db.prepare("DELETE FROM folders WHERE account_id = ?").run(id);
         db.prepare("DELETE FROM image_senders WHERE account_id = ?").run(id);
+        db.prepare("DELETE FROM plugin_grants WHERE account_id = ?").run(id);
         db.prepare(
           "DELETE FROM translations WHERE message_id IN (SELECT id FROM messages WHERE account_id = ?)",
         ).run(id);
@@ -5745,6 +5772,69 @@ export function createSqliteStore(db: Database.Database): MailStore {
       return aiScope;
     },
 
+    listPluginGrants() {
+      return db
+        .prepare<[], { plugin_id: string; right: string; account_id: string; granted_at: string }>(
+          "SELECT plugin_id, right, account_id, granted_at FROM plugin_grants ORDER BY plugin_id, right, account_id",
+        )
+        .all()
+        .filter((row) => isPluginRight(row.right))
+        .map((row) => ({ pluginId: row.plugin_id, right: row.right as PluginRight, accountId: row.account_id, grantedAt: row.granted_at }));
+    },
+    setPluginGrant(grant, on) {
+      if (on) {
+        db.prepare(
+          "INSERT INTO plugin_grants (plugin_id, right, account_id, granted_at) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING",
+        ).run(grant.pluginId, grant.right, grant.accountId, grant.grantedAt);
+      } else {
+        db.prepare("DELETE FROM plugin_grants WHERE plugin_id = ? AND right = ? AND account_id = ?").run(
+          grant.pluginId,
+          grant.right,
+          grant.accountId,
+        );
+      }
+    },
+    revokePluginGrants(pluginId) {
+      atomic(() => {
+        db.prepare("DELETE FROM plugin_grants WHERE plugin_id = ?").run(pluginId);
+        db.prepare("DELETE FROM plugin_requests WHERE plugin_id = ?").run(pluginId);
+      });
+    },
+    getPluginRequests() {
+      return db
+        .prepare<[], { plugin_id: string; rights_json: string; reason: string; asked_at: string }>(
+          "SELECT plugin_id, rights_json, reason, asked_at FROM plugin_requests ORDER BY asked_at, plugin_id",
+        )
+        .all()
+        .map((row) => ({
+          pluginId: row.plugin_id,
+          rights: (JSON.parse(row.rights_json) as string[]).filter(isPluginRight),
+          reason: row.reason,
+          askedAt: row.asked_at,
+        }));
+    },
+    putPluginRequest(request) {
+      atomic(() => {
+        db.prepare(
+          `INSERT INTO plugin_requests (plugin_id, rights_json, reason, asked_at) VALUES (?, ?, ?, ?)
+           ON CONFLICT(plugin_id) DO UPDATE SET rights_json = excluded.rights_json, reason = excluded.reason, asked_at = excluded.asked_at`,
+        ).run(request.pluginId, JSON.stringify(request.rights), request.reason, request.askedAt);
+        db.prepare("INSERT INTO plugin_request_times (plugin_id, asked_at) VALUES (?, ?)").run(request.pluginId, request.askedAt);
+        // Only the last days matter to the limit; the table stays small.
+        db.prepare("DELETE FROM plugin_request_times WHERE asked_at < ?").run(
+          new Date(Date.parse(request.askedAt) - 30 * 24 * 60 * 60 * 1000).toISOString(),
+        );
+      });
+    },
+    dismissPluginRequest(pluginId) {
+      db.prepare("DELETE FROM plugin_requests WHERE plugin_id = ?").run(pluginId);
+    },
+    pluginRequestTimes(pluginId) {
+      return db
+        .prepare<[string], { asked_at: string }>("SELECT asked_at FROM plugin_request_times WHERE plugin_id = ? ORDER BY asked_at DESC")
+        .all(pluginId)
+        .map((row) => row.asked_at);
+    },
     loadAiScope() {
       const accounts = new Map<string, AccountScope>();
       const rows = db
