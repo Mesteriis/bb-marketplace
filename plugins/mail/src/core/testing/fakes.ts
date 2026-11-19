@@ -13,7 +13,7 @@
 //     rows waiting to move out are hidden from their folder, the badge and
 //     search; moves re-home rows (same id), detaching them without a uid map.
 import { isCalendarPart } from "../calendar-invite.ts";
-import { NO_SENDER_SETS, inSenderSet, type SenderSets } from "../inbox-tabs.ts";
+import { NO_SENDER_SETS, TABS_MAX, TabsFullError, inSenderSet, type InboxTab, type SenderSets, type TabMatch } from "../inbox-tabs.ts";
 import type { PluginGrant, PluginRequest } from "../plugin-access.ts";
 import type { ReplySource } from "../compose-reply.ts";
 import type {
@@ -950,8 +950,11 @@ export class InMemoryMailStore implements MailStore {
     cursor: string | null,
     limit: number,
     filter?: ThreadFilter,
+    tab?: TabMatch,
   ): { threads: ThreadSummary[]; nextCursor: string | null } {
-    const all = this.threadSummaries(accountId, folder, filter);
+    const inFolder = (r: Row) => r.accountId === accountId && r.folder === folder && r.movePending === null;
+    const held = tab === undefined ? null : this.tabThreads(inFolder, tab);
+    const all = this.threadSummaries(accountId, folder, filter).filter((thread) => held === null || held.has(thread.id));
     const offset = cursor === null ? 0 : Number(cursor);
     const threads = all.slice(offset, offset + limit);
     const next = offset + threads.length;
@@ -963,9 +966,11 @@ export class InMemoryMailStore implements MailStore {
     cursor: string | null,
     limit: number,
     filter?: ThreadFilter,
+    tab?: TabMatch,
   ): { threads: ThreadSummary[]; nextCursor: string | null } {
     if (role === "all") return { threads: [], nextCursor: null };
     const inRole = (r: Row) => r.movePending === null && this.roleOf(r.accountId, r.folder) === role;
+    const held = tab === undefined ? null : this.tabThreads(inRole, tab);
     const listed = new Set(this.state.rows.filter(this.member(inRole, filter)).map((r) => r.threadId));
     const groups = new Map<string, Row[]>();
     for (const row of this.state.rows) {
@@ -976,6 +981,7 @@ export class InMemoryMailStore implements MailStore {
     }
     // Newest first, undated last, then id descending (the SQLite keyset order).
     const all = [...groups.entries()]
+      .filter(([id]) => held === null || held.has(id))
       .map(([id, rows]) => this.summarize(id, rows, inRole))
       .sort((a, b) => {
         const byDate = (timeOf(b.lastDate) ?? -Infinity) - (timeOf(a.lastDate) ?? -Infinity);
@@ -2270,6 +2276,56 @@ export class InMemoryMailStore implements MailStore {
 
   pluginLastCalls(): Map<string, string> {
     return new Map();
+  }
+
+  /** The conversations of a scope that an Inbox tab holds. */
+  private tabThreads(inScope: (r: Row) => boolean, tab: TabMatch | null): Set<string> {
+    const rows = this.state.rows.filter(inScope);
+    if (tab === null) return new Set();
+    if (tab.kind === "all") return new Set(rows.filter((r) => this.matchesConditions(r, tab.conditions)).map((r) => r.threadId));
+    const taken = new Set(rows.filter((r) => tab.of.some((conditions) => this.matchesConditions(r, conditions))).map((r) => r.threadId));
+    return new Set(rows.map((r) => r.threadId).filter((id) => !taken.has(id)));
+  }
+
+  private inboxTabs: InboxTab[] = [];
+
+  listInboxTabs(): InboxTab[] {
+    return [...this.inboxTabs].sort((a, b) => a.position - b.position).map((tab) => ({ ...tab }));
+  }
+
+  saveInboxTab(tab: { id: string; name: string; query: string }): InboxTab {
+    const existing = this.inboxTabs.find((t) => t.id === tab.id);
+    if (existing !== undefined) {
+      existing.name = tab.name;
+      existing.query = tab.query;
+      return { ...existing };
+    }
+    if (this.inboxTabs.length >= TABS_MAX) throw new TabsFullError();
+    const created = { ...tab, position: Math.max(-1, ...this.inboxTabs.map((t) => t.position)) + 1 };
+    this.inboxTabs.push(created);
+    return { ...created };
+  }
+
+  deleteInboxTab(id: string): void {
+    this.inboxTabs = this.inboxTabs.filter((tab) => tab.id !== id);
+  }
+
+  moveInboxTab(id: string, direction: -1 | 1): void {
+    const tabs = [...this.inboxTabs].sort((a, b) => a.position - b.position);
+    const at = tabs.findIndex((tab) => tab.id === id);
+    const other = tabs[at + direction];
+    if (at < 0 || other === undefined) return;
+    const position = tabs[at]!.position;
+    tabs[at]!.position = other.position;
+    other.position = position;
+  }
+
+  tabUnreadCounts(scope: { accountId: string; folder: string } | { role: SpecialUse }, matches: readonly (TabMatch | null)[]): number[] {
+    const inScope = (r: Row) =>
+      r.movePending === null &&
+      ("accountId" in scope ? r.accountId === scope.accountId && r.folder === scope.folder : this.roleOf(r.accountId, r.folder) === scope.role);
+    const unread = new Set(this.state.rows.filter((r) => inScope(r) && !r.isRead).map((r) => r.threadId));
+    return matches.map((match) => (match === null ? 0 : [...this.tabThreads(inScope, match)].filter((id) => unread.has(id)).length));
   }
 
   private senderSets: SenderSets = NO_SENDER_SETS;

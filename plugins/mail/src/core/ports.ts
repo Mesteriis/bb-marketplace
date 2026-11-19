@@ -60,7 +60,7 @@ import type { SignatureDoc } from "./compose-signature.ts";
 import type { AliasRow, InboundRow, SendCheck } from "./identities.ts";
 import type { UndoRow } from "./undo.ts";
 import type { AccountScope, AiScope } from "./ai-scope.ts";
-import type { SenderSets } from "./inbox-tabs.ts";
+import type { InboxTab, SenderSets, TabMatch } from "./inbox-tabs.ts";
 import type { PluginGrant, PluginRequest } from "./plugin-access.ts";
 import type { LogEntry, LogOutcome } from "./agent-log.ts";
 import type { Category, CategoryRule, CategorySource, PreviousLabel } from "./categories.ts";
@@ -503,6 +503,8 @@ export interface MailStore {
     cursor: string | null,
     limit: number,
     filter?: ThreadFilter,
+    /** An Inbox tab: only conversations with a message in the folder that matches it. */
+    tab?: TabMatch,
   ): { threads: ThreadSummary[]; nextCursor: string | null };
   /**
    * Threads of every account having a member not waiting to move in a folder
@@ -517,7 +519,18 @@ export interface MailStore {
     cursor: string | null,
     limit: number,
     filter?: ThreadFilter,
+    tab?: TabMatch,
   ): { threads: ThreadSummary[]; nextCursor: string | null };
+
+  // ---- Inbox tabs (Split Inbox) ----
+  listInboxTabs(): InboxTab[];
+  /** Creates the tab at the end (TabsFullError past TABS_MAX) or changes its name and condition. */
+  saveInboxTab(tab: { id: string; name: string; query: string }, nowIso: string): InboxTab;
+  deleteInboxTab(id: string): void;
+  /** Swaps the tab with its neighbour; nothing at an end. */
+  moveInboxTab(id: string, direction: -1 | 1): void;
+  /** Unread conversations per match in the scope, in order; 0 for a null match. */
+  tabUnreadCounts(scope: { accountId: string; folder: string } | { role: SpecialUse }, matches: readonly (TabMatch | null)[]): number[];
   /**
    * Exactly inbox, sent, drafts, junk, archive, trash in that order, zeros
    * included. Counts are distinct unread / total dedup keys (per account)

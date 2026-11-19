@@ -69,7 +69,7 @@ import {
   type SendCheck,
 } from "../../core/identities.ts";
 import { PLUGIN_REF_PREFIX } from "../../core/agent-log.ts";
-import { NO_SENDER_SETS, inSenderSet, type SenderSets } from "../../core/inbox-tabs.ts";
+import { NO_SENDER_SETS, TABS_MAX, TabsFullError, inSenderSet, type SenderSets, type TabMatch } from "../../core/inbox-tabs.ts";
 import { isPluginRight, type PluginRight } from "../../core/plugin-access.ts";
 import { OPEN_AI_SCOPE, inAiScope, senderExcluded, type AccountScope, type AiScope } from "../../core/ai-scope.ts";
 import { redactSecrets } from "../../core/redact.ts";
@@ -1057,6 +1057,17 @@ export const MIGRATIONS: string[] = [
   CREATE INDEX plugin_request_times_plugin ON plugin_request_times(plugin_id, asked_at);
   ALTER TABLE compose_drafts ADD COLUMN prepared_by TEXT;
   `,
+  // 21: Inbox tabs (Split Inbox): a name and a search condition, in the owner's order.
+  `
+  CREATE TABLE inbox_tabs (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    query TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  `,
 ];
 
 const HTML_CAP = 1_000_000;
@@ -1560,6 +1571,11 @@ function toContactMessage(row: ContactRow): ContactMessage {
 const MESSAGES_WITH_FOLDER = `messages m LEFT JOIN folders f
   ON f.account_id = m.account_id AND f.path = m.folder`;
 
+/** The membership rows of one account's folder, over alias m; a condition is appended with AND. */
+const ACCOUNT_FOLDER_ROWS = "FROM messages m WHERE m.account_id = @accountId AND m.folder = @folder AND m.move_pending IS NULL";
+/** The membership rows of a merged role, over alias m. */
+const ROLE_ROWS = `FROM ${MESSAGES_WITH_FOLDER} WHERE m.move_pending IS NULL AND ${ROW_ROLE} = @role`;
+
 /** Oldest first; an undated message sorts after every dated one. */
 const OLDEST_FIRST = "date IS NULL, date, id";
 
@@ -1676,6 +1692,12 @@ const FOLDER_NAMED = `(mail_lower(m.folder) = mail_lower(?) OR m.folder IN (
   SELECT nf.path FROM folders nf WHERE nf.account_id = m.account_id AND mail_lower(nf.name) = mail_lower(?)))`;
 
 const IN_ROLES: ReadonlySet<string> = new Set(["inbox", "sent", "drafts", "junk", "trash", "archive", "all"]);
+
+/** Every condition a tab's match reads (to know whether it asks for from:known). */
+function tabConditionsOf(tab: TabMatch | null): SearchCondition[] {
+  if (tab === null) return [];
+  return tab.kind === "all" ? tab.conditions : tab.of.flat();
+}
 
 /** One condition as SQL over alias m, its parameters pushed in order; null when it adds nothing. */
 function conditionSql(condition: SearchCondition, params: unknown[]): string | null {
@@ -1949,6 +1971,44 @@ export function hardenDatabase(db: Database.Database): { pragma: boolean; fts: b
  * 20): every requested flag on the same row, or the kept thread's row.
  * Empty when nothing narrows the list.
  */
+/**
+ * A tab's conditions as one SQL condition over alias m with named parameters
+ * (the conversation lists bind by name). Null when the conditions add nothing.
+ */
+function namedConditions(conditions: readonly SearchCondition[], prefix: string, params: Record<string, unknown>): string | null {
+  const positional: unknown[] = [];
+  const parts = conditionsSql(conditions, positional);
+  if (parts.length === 0) return null;
+  let index = 0;
+  const sql = parts.join(" AND ").replace(/\?/g, () => {
+    const name = `${prefix}${index}`;
+    params[name] = positional[index];
+    index += 1;
+    return `@${name}`;
+  });
+  return `(${sql})`;
+}
+
+/**
+ * The conversation condition of an Inbox tab. `rows` is the scope's membership
+ * rows over alias m ("FROM … WHERE …", no trailing condition). `all`: a member
+ * row matches every condition. `none`: no member row matches any of the other
+ * tabs. Returns SQL to AND onto the list's WHERE over `threads.id`.
+ */
+function tabCondition(tab: TabMatch | null | undefined, rows: string, params: Record<string, unknown>): string {
+  if (tab === undefined) return "";
+  // A tab whose condition no longer parses holds nothing.
+  if (tab === null) return " AND 0";
+  if (tab.kind === "all") {
+    const sql = namedConditions(tab.conditions, "tab", params);
+    return sql === null ? "" : ` AND threads.id IN (SELECT m.thread_id ${rows} AND ${sql})`;
+  }
+  const ors = tab.of
+    .map((conditions, i) => namedConditions(conditions, `tab${i}_`, params))
+    .filter((sql): sql is string => sql !== null);
+  return ors.length === 0 ? "" : ` AND threads.id NOT IN (SELECT m.thread_id ${rows} AND (${ors.join(" OR ")}))`;
+}
+
 function filterCondition(filter: ThreadFilter | undefined): string {
   const flags = [
     filter?.unread === true ? "m.is_read = 0" : null,
@@ -2817,7 +2877,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
    */
   function labelLookup(query: {
     latest: string;
-    params: Record<string, string>;
+    params: Record<string, unknown>;
   }): (threadId: string) => { category: Category | null; suggestion: AiCategoryAnswer | null } {
     const statement = db
       .prepare<[Record<string, unknown>], { category: Category | null; suggestion: AiCategoryAnswer | null }>(
@@ -2845,7 +2905,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
     snoozed: string;
     /** The thread's rows in scope, alias l, for @threadId (slice 3f): the latest one's label and suggestion. */
     latest: string;
-    params: Record<string, string>;
+    params: Record<string, unknown>;
     cursor: string | null;
     limit: number;
   }): { threads: ThreadSummary[]; nextCursor: string | null } {
@@ -3890,14 +3950,17 @@ export function createSqliteStore(db: Database.Database): MailStore {
       });
     },
 
-    listThreads(accountId, folder, cursor, limit, filter) {
+    listThreads(accountId, folder, cursor, limit, filter, tab) {
+      const tabParams: Record<string, unknown> = {};
+      if (tab !== undefined) freshKnown(tabConditionsOf(tab));
+      const tabSql = tabCondition(tab, ACCOUNT_FOLDER_ROWS, tabParams);
       // Whole (account-wide) threads with a row in the folder that is not
       // waiting to move out. An uncorrelated IN list is built once from the
       // (account_id, folder, move_pending) index, so the cost stays linear;
       // the quick filters narrow that same list (spec resolution 20).
       return pageThreads({
         where: `account_id = @accountId AND threads.id IN (SELECT m.thread_id FROM messages m
-          WHERE m.account_id = @accountId AND m.folder = @folder AND m.move_pending IS NULL${filterCondition(filter)})`,
+          WHERE m.account_id = @accountId AND m.folder = @folder AND m.move_pending IS NULL${filterCondition(filter)})${tabSql}`,
         flagged: `EXISTS (SELECT 1 FROM messages f
           WHERE f.thread_id = threads.id AND f.account_id = @accountId AND f.folder = @folder
             AND f.move_pending IS NULL AND f.is_flagged = 1)`,
@@ -3905,22 +3968,25 @@ export function createSqliteStore(db: Database.Database): MailStore {
           WHERE s.thread_id = threads.id AND s.account_id = @accountId AND s.folder = @folder)`,
         latest: `messages l WHERE l.thread_id = @threadId AND l.account_id = @accountId AND l.folder = @folder
           AND l.move_pending IS NULL`,
-        params: { accountId, folder, ...filterParams(filter) },
+        params: { accountId, folder, ...filterParams(filter), ...tabParams },
         cursor,
         limit,
       });
     },
 
-    listThreadsAll(role, cursor, limit, filter) {
+    listThreadsAll(role, cursor, limit, filter, tab) {
       // Gmail's All Mail is never merged (server refuses the role too).
       if (role === "all") return { threads: [], nextCursor: null };
+      const tabParams: Record<string, unknown> = {};
+      if (tab !== undefined) freshKnown(tabConditionsOf(tab));
+      const tabSql = tabCondition(tab, ROLE_ROWS, tabParams);
       // Thread ids are globally unique (threads.id is the primary key), so the
       // membership list needs no account match. The unary + keeps SQLite from
       // driving the query by the id autoindex: it scans threads_last_date in
       // (last_date DESC, id DESC) order without a temp B-tree.
       return pageThreads({
         where: `+threads.id IN (SELECT m.thread_id FROM ${MESSAGES_WITH_FOLDER}
-          WHERE m.move_pending IS NULL AND ${ROW_ROLE} = @role${filterCondition(filter)})`,
+          WHERE m.move_pending IS NULL AND ${ROW_ROLE} = @role${filterCondition(filter)})${tabSql}`,
         flagged: `EXISTS (SELECT 1 FROM ${MESSAGES_WITH_FOLDER}
           WHERE m.thread_id = threads.id AND m.move_pending IS NULL AND m.is_flagged = 1
             AND ${ROW_ROLE} = @role)`,
@@ -3929,9 +3995,63 @@ export function createSqliteStore(db: Database.Database): MailStore {
         latest: `messages l LEFT JOIN folders lf ON lf.account_id = l.account_id AND lf.path = l.folder
           WHERE l.thread_id = @threadId AND l.move_pending IS NULL
             AND (CASE WHEN lf.special_use IS NOT NULL THEN lf.special_use WHEN upper(l.folder) = 'INBOX' THEN 'inbox' END) = @role`,
-        params: { role, ...filterParams(filter) },
+        params: { role, ...filterParams(filter), ...tabParams },
         cursor,
         limit,
+      });
+    },
+
+    listInboxTabs() {
+      return db
+        .prepare<[], { id: string; name: string; query: string; position: number }>(
+          "SELECT id, name, query, position FROM inbox_tabs ORDER BY position, id",
+        )
+        .all();
+    },
+    saveInboxTab(tab, nowIso) {
+      return atomic(() => {
+        const existing = db.prepare<[string], { position: number }>("SELECT position FROM inbox_tabs WHERE id = ?").get(tab.id);
+        if (existing === undefined) {
+          const { n, last } = db.prepare<[], { n: number; last: number | null }>("SELECT count(*) AS n, max(position) AS last FROM inbox_tabs").get()!;
+          if (n >= TABS_MAX) throw new TabsFullError();
+          const position = (last ?? -1) + 1;
+          db.prepare("INSERT INTO inbox_tabs (id, name, query, position, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)").run(
+            tab.id, tab.name, tab.query, position, nowIso, nowIso,
+          );
+          return { ...tab, position };
+        }
+        db.prepare("UPDATE inbox_tabs SET name = ?, query = ?, updated_at = ? WHERE id = ?").run(tab.name, tab.query, nowIso, tab.id);
+        return { ...tab, position: existing.position };
+      });
+    },
+    deleteInboxTab(id) {
+      db.prepare("DELETE FROM inbox_tabs WHERE id = ?").run(id);
+    },
+    moveInboxTab(id, direction) {
+      atomic(() => {
+        const tabs = db.prepare<[], { id: string; position: number }>("SELECT id, position FROM inbox_tabs ORDER BY position, id").all();
+        const at = tabs.findIndex((tab) => tab.id === id);
+        const other = tabs[at + direction];
+        if (at < 0 || other === undefined) return;
+        const set = db.prepare("UPDATE inbox_tabs SET position = ? WHERE id = ?");
+        set.run(other.position, id);
+        set.run(tabs[at]!.position, other.id);
+      });
+    },
+    tabUnreadCounts(scope, matches) {
+      const rows = "accountId" in scope ? ACCOUNT_FOLDER_ROWS : ROLE_ROWS;
+      const base: Record<string, unknown> = "accountId" in scope ? { accountId: scope.accountId, folder: scope.folder } : { role: scope.role };
+      return matches.map((match) => {
+        if (match === null) return 0;
+        freshKnown(tabConditionsOf(match));
+        const params = { ...base };
+        const tabSql = tabCondition(match, rows, params);
+        const row = db
+          .prepare<[Record<string, unknown>], { n: number }>(
+            `SELECT count(*) AS n FROM (SELECT DISTINCT m.thread_id AS id ${rows} AND m.is_read = 0) threads WHERE 1${tabSql}`,
+          )
+          .get(params);
+        return row?.n ?? 0;
       });
     },
 

@@ -1,3 +1,4 @@
+import { TabsFullError, tabConditions, type TabMatch } from "../../core/inbox-tabs.ts";
 import { createHash } from "node:crypto";
 import Database from "better-sqlite3";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -831,7 +832,7 @@ describe("slice-2 migrations (SQLite)", () => {
          VALUES ('acc_1', 'owner@example.org', 'imap.example.org', 993, 'owner', 'sealed', 'other', ?)`,
       ).run("2026-01-01T00:00:00.000Z");
       db.transaction(() => MIGRATIONS.slice(19).forEach((statement) => db.exec(statement)))();
-      expect(MIGRATIONS).toHaveLength(21);
+      expect(MIGRATIONS).toHaveLength(22);
       expect(createSqliteStore(db).getAccount("acc_1")).toMatchObject({ authKind: "password", grantedScopes: [], passwordSealed: "sealed" });
     });
   });
@@ -897,7 +898,7 @@ describe("slice-2 migrations (SQLite)", () => {
       db.transaction(() => MIGRATIONS.slice(0, 20).forEach((statement) => db.exec(statement)))();
       seedLegacyAccount(db);
       db.transaction(() => MIGRATIONS.slice(20).forEach((statement) => db.exec(statement)))();
-      expect(MIGRATIONS).toHaveLength(21);
+      expect(MIGRATIONS).toHaveLength(22);
       expect(createSqliteStore(db).listPluginGrants()).toEqual([]);
       const columns = db.prepare<[], { name: string }>("SELECT name FROM pragma_table_info('compose_drafts')").all();
       expect(columns.map((column) => column.name)).toContain("prepared_by");
@@ -3253,6 +3254,87 @@ describe.each(storeKinds)("operators for Inbox tabs (%s)", (_kind, make) => {
   });
 });
 
+describe.each(storeKinds)("Inbox tabs (%s)", (_kind, make) => {
+  let s: MailStore;
+  let uid = 0;
+  const at = "2026-11-19T10:00:00.000Z";
+  const now = new Date(at);
+  const put = (folder: string, overrides: Parameters<typeof makeFetchedMessage>[1]) => {
+    uid++;
+    s.upsertMessages("acc_1", folder, [
+      makeFetchedMessage(uid, { messageId: `tab-${uid}@example.org`, bulkHeaders: PERSONAL_HEADERS, to: [{ name: null, address: "owner@example.org" }], ...overrides }),
+    ]);
+  };
+  const from = (address: string, overrides: Parameters<typeof makeFetchedMessage>[1] = {}) => put(INBOX, { from: { name: null, address }, subject: address, ...overrides });
+  const all = (query: string): TabMatch => {
+    const read = tabConditions(query, now);
+    if (!read.ok) throw new Error(read.reason);
+    return { kind: "all", conditions: read.conditions };
+  };
+  const subjects = (tab?: TabMatch | null) =>
+    s.listThreads("acc_1", INBOX, null, 50, undefined, tab as TabMatch | undefined).threads.map((thread) => thread.subject).sort();
+
+  beforeEach(() => {
+    uid = 0;
+    s = make();
+    s.saveAccount(makeStoredAccount());
+    s.saveFolders("acc_1", [remoteFolder(INBOX, "inbox"), remoteFolder(SENT, "sent"), remoteFolder("Work", null)]);
+    from("boss@vip.example.com");
+    from("colleague@example.org");
+    from("noreply@shop.example.net");
+    from("stranger@example.net", { attachments: [{ partId: "2", filename: "plan.pdf", mimeType: "application/pdf", size: 10, isInline: false }] });
+    put("Work", { from: { name: null, address: "boss@vip.example.com" }, subject: "outside the inbox", messageId: "work@example.org" });
+    s.assignThreads("acc_1", new Map());
+    s.setSenderSets({ vip: { addresses: new Set(), domains: new Set(["vip.example.com"]) }, team: new Set(["example.org"]) });
+  });
+
+  it("without a tab the Inbox lists what it listed before", () => {
+    expect(subjects()).toEqual(["boss@vip.example.com", "colleague@example.org", "noreply@shop.example.net", "stranger@example.net"]);
+  });
+
+  it("a tab holds the conversations with a matching Inbox message, and nothing from other folders", () => {
+    expect(subjects(all("from:vip"))).toEqual(["boss@vip.example.com"]);
+    expect(subjects(all("has:attachment -from:team"))).toEqual(["stranger@example.net"]);
+    expect(s.listThreadsAll("inbox", null, 50, undefined, all("from:vip")).threads.map((thread) => thread.subject)).toEqual(["boss@vip.example.com"]);
+  });
+
+  it("Other holds exactly the conversations in none of the other tabs", () => {
+    const conditionsOf = (query: string) => (tabConditions(query, now) as Extract<ReturnType<typeof tabConditions>, { ok: true }>).conditions;
+    const other: TabMatch = { kind: "none", of: [conditionsOf("from:vip"), conditionsOf("is:automated")] };
+    expect(subjects(other)).toEqual(["colleague@example.org", "stranger@example.net"]);
+    expect(subjects({ kind: "none", of: [] })).toEqual(["boss@vip.example.com", "colleague@example.org", "noreply@shop.example.net", "stranger@example.net"]);
+  });
+
+  it("a tab over something that no longer exists is empty, and a broken tab holds nothing", () => {
+    expect(subjects(all("category:bills"))).toEqual([]);
+    expect(subjects(null)).toEqual([]);
+  });
+
+  it("counts unread conversations per tab, 0 for a broken one", () => {
+    // Every seeded message is unread; one more, already read, joins the team.
+    from("reader@example.org", { seen: true });
+    s.assignThreads("acc_1", new Map());
+    expect(s.tabUnreadCounts({ accountId: "acc_1", folder: INBOX }, [all("from:vip"), all("from:team"), null, { kind: "none", of: [] }])).toEqual([1, 1, 0, 4]);
+    expect(s.tabUnreadCounts({ role: "inbox" }, [all("from:team")])).toEqual([1]);
+  });
+
+  it("keeps tabs in the owner's order, at most twelve, and moves them between neighbours", () => {
+    for (const id of ["a", "b", "c"]) s.saveInboxTab({ id, name: id.toUpperCase(), query: "from:vip" }, at);
+    expect(s.listInboxTabs().map((tab) => `${tab.id}${tab.position}`)).toEqual(["a0", "b1", "c2"]);
+    s.moveInboxTab("c", -1);
+    s.moveInboxTab("a", -1);
+    expect(s.listInboxTabs().map((tab) => tab.id)).toEqual(["a", "c", "b"]);
+    s.moveInboxTab("b", 1);
+    s.saveInboxTab({ id: "c", name: "Renamed", query: "is:dev" }, at);
+    expect(s.listInboxTabs().map((tab) => `${tab.id}:${tab.name}:${tab.query}`)).toEqual(["a:A:from:vip", "c:Renamed:is:dev", "b:B:from:vip"]);
+    s.deleteInboxTab("a");
+    for (let i = 0; i < 10; i++) s.saveInboxTab({ id: `t${i}`, name: `T${i}`, query: "is:dev" }, at);
+    expect(s.listInboxTabs()).toHaveLength(12);
+    expect(() => s.saveInboxTab({ id: "one-more", name: "X", query: "is:dev" }, at)).toThrow(TabsFullError);
+    expect(s.listInboxTabs()).toHaveLength(12);
+  });
+});
+
 describe.each(storeKinds)("bulk backfill store methods (%s)", (_kind, make) => {
   let s: MailStore;
   const STATE = { uidValidity: 7, lastUid: 9, syncedSince: EPOCH };
@@ -3733,7 +3815,7 @@ describe("slice-3e migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(9).forEach((s) => old.exec(s)))();
 
-    expect(MIGRATIONS).toHaveLength(21);
+    expect(MIGRATIONS).toHaveLength(22);
     const migrated = createSqliteStore(old);
     expect(migrated.getUnsubscribeInfo(ids[0]!)).toEqual({ ...INFO, listKey: "id:weekly.example.com" });
     expect(migrated.getUnsubscribeInfo(ids[1]!)?.listKey).toBe("from:news@example.com");
@@ -4381,7 +4463,7 @@ describe("slice-3f migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(10).forEach((s) => old.exec(s)))();
 
-    expect(MIGRATIONS).toHaveLength(21);
+    expect(MIGRATIONS).toHaveLength(22);
     const migrated = createSqliteStore(old);
     migrated.assignThreads("acc_1", new Map());
     expect(migrated.listThreads("acc_1", INBOX, null, 10).threads).toEqual([
@@ -5187,7 +5269,7 @@ describe("slice-3g migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(12).forEach((s) => old.exec(s)))();
 
-    expect(MIGRATIONS).toHaveLength(21);
+    expect(MIGRATIONS).toHaveLength(22);
     const runs = old.prepare("SELECT id, message_id, message_key, project_id FROM rule_runs ORDER BY id").all();
     expect(runs).toEqual([
       { id: "a1", message_id: messageId, message_key: expect.stringMatching(/^acc_1:/), project_id: "p_api" },
@@ -5772,7 +5854,7 @@ describe("slice-3h migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(13).forEach((s) => old.exec(s)))();
 
-    expect(MIGRATIONS).toHaveLength(21);
+    expect(MIGRATIONS).toHaveLength(22);
     const kinds = old.prepare("SELECT part_id, kind FROM attachments ORDER BY CAST(part_id AS INTEGER)").all() as {
       part_id: string;
       kind: string;
@@ -6442,7 +6524,7 @@ describe("slice-3i migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(14).forEach((statement) => old.exec(statement)))();
 
-    expect(MIGRATIONS).toHaveLength(21);
+    expect(MIGRATIONS).toHaveLength(22);
     const columns = (old.prepare("PRAGMA table_info(messages)").all() as { name: string }[]).map((c) => c.name);
     expect(columns).toEqual(expect.arrayContaining(["sender_check_json", "receipt_requested", "crypto"]));
     expect(old.prepare("SELECT sender_check_json, receipt_requested, crypto FROM messages").all()).toEqual([
