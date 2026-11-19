@@ -7,7 +7,8 @@ import { Icon } from "@/components/ui/icon";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { tx } from "../i18n/index.ts";
-import { SettingsBody, availableSections, type MailSettingsProps } from "../mail-settings.tsx";
+import { SettingsBody, availableSections } from "./settings-body.tsx";
+import type { MailSettingsProps } from "./shared.ts";
 import { SETTINGS_GROUPS, settingsSectionTitle, type SettingsSectionId } from "./sections.ts";
 
 export type SettingsPageProps = MailSettingsProps & {

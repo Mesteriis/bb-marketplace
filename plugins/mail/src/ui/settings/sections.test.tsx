@@ -2,11 +2,11 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { installTestPluginRuntime } from "@get-bb/plugin-sdk/testing/app";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Account, IdentityView } from "../core/model.ts";
+import type { Account, IdentityView } from "../../core/model.ts";
 import { useState } from "react";
-import { sendCheckText, type MailSettingsProps, type TemplateView } from "./mail-settings.tsx";
-import { SettingsPage } from "./settings/settings-page.tsx";
-import type { SettingsSectionId } from "./settings/sections.ts";
+import { sendCheckText, type MailSettingsProps, type TemplateView } from "./shared.ts";
+import { SettingsPage } from "./settings-page.tsx";
+import type { SettingsSectionId } from "./sections.ts";
 
 installTestPluginRuntime();
 afterEach(cleanup);
@@ -380,7 +380,8 @@ describe("MailSettings: AI features (slice 3f)", () => {
 
 describe("Search and reading (slice 3h)", () => {
   it("shows the attachment text status, retries failed files and removes the text", async () => {
-    const { SearchSection, attachmentTextLine } = await import("./mail-settings.tsx");
+    const { SearchSection } = await import("./reading-section.tsx");
+    const { attachmentTextLine } = await import("./shared.ts");
     const status = { indexed: 1240, skipped: 10, failed: 8, pending: 2, running: true, full: false };
     const retry = vi.fn(async () => {});
     const clear = vi.fn(async () => {});
@@ -405,7 +406,7 @@ describe("Search and reading (slice 3h)", () => {
   });
 
   it("says when the index is full", async () => {
-    const { SearchSection } = await import("./mail-settings.tsx");
+    const { SearchSection } = await import("./reading-section.tsx");
     render(
       <SearchSection
         hint="hint"

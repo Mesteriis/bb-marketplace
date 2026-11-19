@@ -124,7 +124,7 @@ import {
   type TranslationState,
 } from "./src/ui/translation-block.tsx";
 import { TranslationSettings } from "./src/ui/translation-settings.tsx";
-import { type SettingsAiPorts, type SettingsSection, type TemplateView } from "./src/ui/mail-settings.tsx";
+import { type SettingsAiPorts, type SettingsSection, type TemplateView } from "./src/ui/settings/shared.ts";
 import { SettingsPage } from "./src/ui/settings/settings-page.tsx";
 import type { LanguageTag } from "./src/core/translate.ts";
 import { filterActive, formatUntil, subjectOrPlaceholder, type ListFilter } from "./src/ui/thread-list.tsx";
@@ -178,7 +178,7 @@ import { cleanLink, type CleanLink } from "./src/core/link-clean.ts";
 import { addressDomain } from "./src/core/sender-basics.ts";
 import { buildKnownDomains } from "./src/core/sender-disguise.ts";
 import { LinkDialog } from "./src/ui/link-status.tsx";
-import type { SettingsSearchPorts } from "./src/ui/mail-settings.tsx";
+import type { SettingsSearchPorts } from "./src/ui/settings/shared.ts";
 // The page-side pdf.js engine: pdf.js loads lazily, in a blob: worker only.
 import { browserPdfEngine } from "./src/adapters/bb/pdf-page.ts";
 import type { RuleRunView } from "./src/core/contract.ts";

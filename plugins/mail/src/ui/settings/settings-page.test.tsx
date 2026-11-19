@@ -2,7 +2,7 @@
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { installTestPluginRuntime } from "@get-bb/plugin-sdk/testing/app";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { MailSettingsProps } from "../mail-settings.tsx";
+import type { MailSettingsProps } from "./shared.ts";
 import { RU } from "../i18n/ru.ts";
 import { SETTINGS_GROUPS, settingsSectionOf } from "./sections.ts";
 import { SettingsPage } from "./settings-page.tsx";

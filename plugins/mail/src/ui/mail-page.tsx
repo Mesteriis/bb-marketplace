@@ -31,7 +31,7 @@ import { cn } from "@/lib/utils";
 import { AccountForm, type AccountFormInitial, type AccountFormProps } from "./account-form.tsx";
 import { grantRevoked } from "../core/sync-problems.ts";
 import { Composer, type ComposerPorts, type ComposeWarningKind } from "./composer.tsx";
-import type { TemplateView } from "./mail-settings.tsx";
+import type { TemplateView } from "./settings/shared.ts";
 import { DetailsPanel, type DetailsState } from "./details-panel.tsx";
 import {
   EmptyFolder,

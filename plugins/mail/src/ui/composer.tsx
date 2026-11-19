@@ -45,7 +45,7 @@ import { ComposeToolbar } from "./compose-toolbar.tsx";
 import { accountLabel } from "./folder-list.tsx";
 import { chipText, MAX_CHIP_LENGTH, MIN_CHIP_LENGTH, RecipientInput, addChips, splitTyped } from "./recipient-input.tsx";
 import { isMacPlatform, stopEscape } from "./shortcuts.ts";
-import { sendCheckText, type TemplateView } from "./mail-settings.tsx";
+import { sendCheckText, type TemplateView } from "./settings/shared.ts";
 import { PresendDialog } from "./presend-dialog.tsx";
 import { BbFilePicker, type FilePickRequest } from "./bb-file-picker.tsx";
 import type { BbCall } from "./bb-ports.ts";
