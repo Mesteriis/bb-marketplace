@@ -403,11 +403,11 @@ describe("SshPage and OpenSSH's questions / a saved secret", () => {
     await act(async () => {
       socket.onmessage?.({ data: JSON.stringify({ type: "credential_rejected" }) });
     });
-    expect(screen.getByTestId("ssh-credential-notice").textContent).toContain("refused the saved password");
+    expect(screen.getByTestId("ssh-credential-notice").textContent).toContain("отклонил сохранённый пароль");
     await act(async () => {
       socket.onmessage?.({ data: JSON.stringify({ type: "credential_failed", code: "keychain_locked" }) });
     });
-    expect(screen.getByTestId("ssh-credential-notice").textContent).toContain("Keychain is locked");
+    expect(screen.getByTestId("ssh-credential-notice").textContent).toContain("Связка ключей «Вход» заблокирована");
   });
 
   it("a stale answer (prompt_gone) does not turn the session into an error", async () => {
@@ -484,7 +484,7 @@ describe("SshPage host-key confirmation needs a deliberate yes (S9)", () => {
       socket.onmessage?.({ data: JSON.stringify({ type: "prompt_expired", promptId: 4 }) });
     });
     expect(screen.queryByRole("alertdialog")).toBeNull();
-    expect(screen.getByTestId("ssh-credential-notice").textContent).toContain("not answered in time");
+    expect(screen.getByTestId("ssh-credential-notice").textContent).toContain("не ответили вовремя");
   });
 });
 

@@ -17,7 +17,7 @@ const RID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const stored = (over: Partial<Profile> & { id: string; name: string }): Profile =>
   ({ executionHostId: "local", origin: "manual", createdAt: "2026-11-18T10:00:00.000Z", updatedAt: "2026-11-18T10:00:00.000Z", lastOpenedAt: null, recentErrors: [], protocol: "ssh", group: null, tags: [], favorite: false, color: null, host: "h.example.test", port: null, username: "root", domain: null, authType: "agent", identityFile: null, credentialRef: null, rdpWidth: null, rdpHeight: null, ...over }) as Profile;
 
-function setup() {
+function setup(credentials?: { save: ReturnType<typeof vi.fn> }) {
   const bus = createHubBus();
   const store = createDeskStore();
   const profiles = [stored({ id: SID, name: "web" }), stored({ id: RID, name: "win", protocol: "rdp", username: "admin" })];
@@ -29,7 +29,7 @@ function setup() {
   bus.onChanged(changed);
   render(
     <DeskContext.Provider value={store}>
-      <HubPage ssh={ssh as never} rdp={rdp as never} profiles={api as never} bus={bus} />
+      <HubPage ssh={ssh as never} rdp={rdp as never} profiles={api as never} {...(credentials !== undefined ? { credentials: { list: vi.fn(async () => []), update: vi.fn(), remove: vi.fn(), status: vi.fn(), allow: vi.fn(), allowAll: vi.fn(), ...credentials } as never } : {})} bus={bus} />
     </DeskContext.Provider>,
   );
   return { bus, store, api, ssh, changed };
@@ -84,5 +84,36 @@ describe("HubPage", () => {
     await waitFor(() => expect(api.remove).toHaveBeenCalledWith(SID, true));
     await waitFor(() => expect(changed).toHaveBeenCalledTimes(1));
     expect(screen.queryByTestId("hub-screen")).toBeNull();
+  });
+
+  const fillNew = (bus: ReturnType<typeof createHubBus>) => {
+    act(() => bus.send({ type: "edit", profileId: null }));
+    fireEvent.change(screen.getByLabelText("Название"), { target: { value: "db" } });
+    fireEvent.change(screen.getByLabelText("Адрес"), { target: { value: "db.example.test" } });
+    fireEvent.change(screen.getByLabelText("Способ входа"), { target: { value: "password" } });
+    fireEvent.change(screen.getByLabelText("Пароль для сохранения в Связке ключей"), { target: { value: "s3cret" } });
+    fireEvent.click(screen.getByRole("button", { name: "Сохранить" }));
+  };
+
+  it("saves the connection first, then its password under the new connection's id; the password is not in the connection", async () => {
+    const save = vi.fn(async () => ({ ref: "cred-1" }));
+    const { bus, api, changed } = setup({ save });
+    api.save.mockResolvedValue(stored({ id: "new-id", name: "db" }));
+    fillNew(bus);
+    await waitFor(() => expect(save).toHaveBeenCalledWith({ profileId: "new-id", secret: "s3cret" }));
+    expect(JSON.stringify(api.save.mock.calls[0])).not.toContain("s3cret");
+    await waitFor(() => expect(screen.queryByTestId("hub-screen")).toBeNull());
+    expect(changed).toHaveBeenCalledTimes(1);
+  });
+
+  it("a password that could not be saved keeps the editor open and says the connection was saved without it", async () => {
+    const save = vi.fn(async () => {
+      throw new Error("keychain_denied: no");
+    });
+    const { bus, api } = setup({ save });
+    api.save.mockResolvedValue(stored({ id: "new-id", name: "db" }));
+    fillNew(bus);
+    expect(await screen.findByText("Подключение сохранено, пароль — нет: Связка ключей отказала в доступе к сохранённому паролю.")).toBeTruthy();
+    expect(screen.getByTestId("hub-screen")).toBeTruthy();
   });
 });

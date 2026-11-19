@@ -99,7 +99,7 @@ describe("CredentialsPanel", () => {
     fireEvent.click(within(row).getByRole("button", { name: "Сменить пароль" }));
     fireEvent.change(within(row).getByLabelText("Новый пароль"), { target: { value: SECRET } });
     fireEvent.click(within(row).getByRole("button", { name: "Сохранить новый пароль" }));
-    expect(await within(row).findByText(/Keychain is locked/)).toBeTruthy();
+    expect(await within(row).findByText(/Связка ключей «Вход» заблокирована/)).toBeTruthy();
     expect(within(row).getByLabelText("Новый пароль")).toBeTruthy();
   });
 
@@ -159,7 +159,7 @@ describe("Allow access (macOS asks the owner)", () => {
     mount({ onAllow });
     const row = screen.getByRole("listitem", { name: "Windows jump" });
     fireEvent.click(within(row).getByRole("button", { name: "Разрешить доступ" }));
-    expect(await within(row).findByText(/did not get an answer to its dialog in time/)).toBeTruthy();
+    expect(await within(row).findByText(/не дождался ответа на свой диалог/)).toBeTruthy();
     const check = vi.fn(async () => ({ state: "needs_approval" as const }));
     cleanup();
     mount({ onCheck: check, onAllow });
@@ -181,7 +181,7 @@ describe("Allow access (macOS asks the owner)", () => {
     ]);
     mount({ onAllow: vi.fn(), onAllowAll });
     fireEvent.click(screen.getByRole("button", { name: "Разрешить доступ ко всем сохранённым записям" }));
-    expect(await screen.findByText(/Build key: The Keychain refused access/)).toBeTruthy();
+    expect(await screen.findByText(/Build key: Связка ключей отказала в доступе/)).toBeTruthy();
     expect(onAllowAll).toHaveBeenCalledTimes(1);
   });
 });

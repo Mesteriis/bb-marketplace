@@ -7,43 +7,43 @@ describe("rdp texts", () => {
     for (const reason of [...RDP_CLOSED_REASONS, "helper_exited", "exited"]) {
       expect(closeReasonText(reason), reason).not.toMatch(/^closed: /);
     }
-    expect(closeReasonText("auth_failed")).toBe("sign-in failed: check the user name, password and domain");
-    expect(closeReasonText("killed_by_close")).toBe("disconnected");
-    expect(closeReasonText("server_disconnected")).toBe("the server ended the session");
-    expect(closeReasonText("network_error")).toBe("network error: the server is unreachable or the connection dropped");
-    expect(closeReasonText("engine_exited")).toBe("the RDP engine stopped unexpectedly");
-    expect(closeReasonText("cert_rejected")).toBe("the server certificate was rejected");
-    expect(closeReasonText("something_new")).toBe("closed: something_new");
-    expect(closeReasonText(null)).toBe("the session ended");
+    expect(closeReasonText("auth_failed")).toBe("вход не удался: проверьте пользователя, пароль и домен");
+    expect(closeReasonText("killed_by_close")).toBe("отключено");
+    expect(closeReasonText("server_disconnected")).toBe("сервер завершил сессию");
+    expect(closeReasonText("network_error")).toBe("ошибка сети: сервер недоступен или соединение оборвалось");
+    expect(closeReasonText("engine_exited")).toBe("движок RDP неожиданно остановился");
+    expect(closeReasonText("cert_rejected")).toBe("сертификат сервера отклонён");
+    expect(closeReasonText("something_new")).toBe("закрыто: something_new");
+    expect(closeReasonText(null)).toBe("сессия завершилась");
   });
 
   it("has a text for every helper error code the TS layer expects, and passes unknown codes through", () => {
     for (const code of RDP_ERROR_CODES) expect(errorCodeText(code), code).not.toBe(code);
-    expect(errorCodeText("not_ready")).toBe("the desktop is not ready yet");
-    expect(errorCodeText("screenshot_too_large")).toBe("the screenshot is too large to send");
-    expect(errorCodeText("session_closed")).toBe("the session has ended");
+    expect(errorCodeText("not_ready")).toBe("рабочий стол ещё не готов");
+    expect(errorCodeText("screenshot_too_large")).toBe("снимок экрана слишком велик для отправки");
+    expect(errorCodeText("session_closed")).toBe("сессия завершилась");
     expect(errorCodeText("mystery")).toBe("mystery");
   });
 
   it("reads the code the RPC layer puts in front of a helper refusal", () => {
-    expect(errorTextFromMessage("not_ready: the desktop is not ready yet")).toBe("the desktop is not ready yet");
-    expect(errorTextFromMessage("screenshot_too_large: too big")).toBe("the screenshot is too large to send");
-    expect(errorTextFromMessage("keychain_locked: the Keychain is locked")).toMatch(/login Keychain is locked/);
-    expect(errorTextFromMessage("credential_target_mismatch: x")).toMatch(/different host or user/);
-    expect(errorTextFromMessage("credential_missing: gone")).toMatch(/no longer in the Keychain/);
+    expect(errorTextFromMessage("not_ready: the desktop is not ready yet")).toBe("рабочий стол ещё не готов");
+    expect(errorTextFromMessage("screenshot_too_large: too big")).toBe("снимок экрана слишком велик для отправки");
+    expect(errorTextFromMessage("keychain_locked: the Keychain is locked")).toMatch(/Связка ключей «Вход» заблокирована/);
+    expect(errorTextFromMessage("credential_target_mismatch: x")).toMatch(/другому хосту или пользователю/);
+    expect(errorTextFromMessage("credential_missing: gone")).toMatch(/больше нет в Связке ключей/);
     expect(errorTextFromMessage("connection refused")).toBe("connection refused");
     expect(errorTextFromMessage("whatever: text")).toBe("whatever: text");
   });
 
   it("has a text for every state", () => {
     expect(RDP_STATES.map(stateText)).toEqual([
-      "connecting",
-      "securing the connection (TLS)",
-      "waiting for your decision on the server certificate",
-      "authenticating",
-      "desktop ready",
+      "подключение",
+      "защита соединения (TLS)",
+      "ждёт вашего решения о сертификате сервера",
+      "вход",
+      "рабочий стол готов",
     ]);
-    expect(stateText("closed")).toBe("closed");
+    expect(stateText("closed")).toBe("закрыто");
     expect(stateText("brand_new")).toBe("brand_new");
   });
 
@@ -55,11 +55,11 @@ describe("rdp texts", () => {
 
   it("explains every prompt reason, cert_changed in capitals for the difference", () => {
     expect(promptReasonText("cert_changed")).toBe(
-      "this is a DIFFERENT certificate than the one you trusted for this host and port. A saved password is not sent to it. If the server really got a new certificate, accept it once, or forget the old one (Import screen, RDP certificates you trust) and trust the new one.",
+      "это ДРУГОЙ сертификат, не тот, которому вы доверяли для этого хоста и порта. Сохранённый пароль ему не отправляется. Если сервер действительно получил новый сертификат, примите его один раз или забудьте старый (экран «Импорт», «Сертификаты RDP, которым вы доверяете») и доверьтесь новому.",
     );
-    expect(promptReasonText("untrusted_root")).toBe("the certificate is not signed by a root this Mac trusts");
-    expect(promptReasonText("hostname_mismatch")).toBe("the certificate was issued for a different host name");
-    expect(promptReasonText("expired")).toBe("the certificate is expired or not yet valid");
-    expect(promptReasonText("zzz")).toBe("the certificate could not be validated (zzz)");
+    expect(promptReasonText("untrusted_root")).toBe("сертификат не подписан корневым сертификатом, которому доверяет этот Mac");
+    expect(promptReasonText("hostname_mismatch")).toBe("сертификат выдан для другого имени хоста");
+    expect(promptReasonText("expired")).toBe("срок действия сертификата истёк или ещё не начался");
+    expect(promptReasonText("zzz")).toBe("сертификат не удалось проверить (zzz)");
   });
 });

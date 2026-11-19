@@ -5,76 +5,76 @@
 export function stateText(state: string): string {
   switch (state) {
     case "connecting":
-      return "connecting";
+      return "подключение";
     case "tls":
-      return "securing the connection (TLS)";
+      return "защита соединения (TLS)";
     case "cert_prompt":
-      return "waiting for your decision on the server certificate";
+      return "ждёт вашего решения о сертификате сервера";
     case "authenticating":
-      return "authenticating";
+      return "вход";
     case "desktop_ready":
-      return "desktop ready";
+      return "рабочий стол готов";
     case "closed":
-      return "closed";
+      return "закрыто";
     default:
       return state;
   }
 }
 
 const CLOSE_REASONS: Record<string, string> = {
-  auth_failed: "sign-in failed: check the user name, password and domain",
-  cert_rejected: "the server certificate was rejected",
-  cert_changed: "the server certificate is not the one that was expected",
-  tls_error: "the secure connection (TLS) could not be set up",
-  protocol_error: "the RDP session broke the protocol",
-  network_error: "network error: the server is unreachable or the connection dropped",
-  timeout: "the connection timed out",
-  killed_by_close: "disconnected",
-  engine_exited: "the RDP engine stopped unexpectedly",
-  helper_shutdown: "the Remote Hub helper shut down",
-  helper_exited: "the Remote Hub helper exited",
-  server_disconnected: "the server ended the session",
-  exited: "the session ended",
+  auth_failed: "вход не удался: проверьте пользователя, пароль и домен",
+  cert_rejected: "сертификат сервера отклонён",
+  cert_changed: "сертификат сервера не тот, что ожидался",
+  tls_error: "не удалось установить защищённое соединение (TLS)",
+  protocol_error: "сессия RDP нарушила протокол",
+  network_error: "ошибка сети: сервер недоступен или соединение оборвалось",
+  timeout: "время ожидания соединения истекло",
+  killed_by_close: "отключено",
+  engine_exited: "движок RDP неожиданно остановился",
+  helper_shutdown: "помощник Remote Hub завершил работу",
+  helper_exited: "помощник Remote Hub завершился",
+  server_disconnected: "сервер завершил сессию",
+  exited: "сессия завершилась",
 };
 
 export function closeReasonText(reason: string | null): string {
-  if (reason === null) return "the session ended";
-  return CLOSE_REASONS[reason] ?? "closed: " + reason;
+  if (reason === null) return "сессия завершилась";
+  return CLOSE_REASONS[reason] ?? "закрыто: " + reason;
 }
 
 const ERROR_CODES: Record<string, string> = {
-  not_ready: "the desktop is not ready yet",
-  session_closed: "the session has ended",
-  session_not_found: "the session is gone",
-  screenshot_too_large: "the screenshot is too large to send",
-  screenshot_busy: "a screenshot is already being taken",
-  fingerprint_mismatch: "the decision named a different certificate than the one shown",
-  no_pending_prompt: "there is no certificate decision to make",
-  rdp_input_overflow: "input is arriving faster than the session takes it; some was dropped",
-  rdp_invalid_geometry: "the desktop size is not allowed",
-  rdp_open_failed: "the RDP session could not be started",
-  response_too_large: "the answer was too large to send",
-  bad_control: "the page sent a message the service did not understand",
-  protocol_error: "the helper answered out of order",
-  helper_exited: "the Remote Hub helper exited",
-  keychain_locked: "The login Keychain is locked, or macOS has not allowed this Remote Hub build to read the saved password. Unlock the Keychain (Keychain Access, or log in again), then use Allow access on the Credentials screen.",
-  keychain_needs_approval: "macOS has not allowed this Remote Hub build to read the saved password (the helper was updated). Open Credentials and press Allow access, then choose Always Allow in macOS's dialog.",
-  allow_timed_out: "macOS did not get an answer to its dialog in time. Press Allow access again.",
-  keychain_denied: "The Keychain refused access to the saved password.",
-  keychain_unavailable: "The Keychain is not available on this Mac.",
-  credential_missing: "The saved password is no longer in the Keychain. Edit the profile to save it again.",
-  profile_needs_config: "This profile goes through your SSH configuration (a proxy or a Match rule), so a password cannot be saved for it.",
-  credential_unbound: "This saved password was stored by an older version and has no host binding. Edit the profile and save it again.",
-  invalid_bind: "The saved password could not be tied to its host.",
-  credential_unknown: "That saved password does not exist any more.",
-  credential_target_mismatch: "That saved password belongs to a different host or user, so it was not used.",
-  credential_exists: "This profile already has a saved password; replace it instead.",
-  credential_not_applicable: "This profile does not use a stored password.",
-  ssh_credential_rejected: "The server refused the saved password or passphrase. It was tried once and not again. Edit the profile to save the right one.",
-  prompt_expired: "The question was not answered in time and was refused.",
-  prompt_gone: "That question is no longer open.",
-  empty_secret: "Type a password first.",
-  invalid_credential_source: "Use either a saved password or a typed one, not both.",
+  not_ready: "рабочий стол ещё не готов",
+  session_closed: "сессия завершилась",
+  session_not_found: "сессии больше нет",
+  screenshot_too_large: "снимок экрана слишком велик для отправки",
+  screenshot_busy: "снимок экрана уже делается",
+  fingerprint_mismatch: "решение относится не к тому сертификату, который показан",
+  no_pending_prompt: "решения о сертификате сейчас не требуется",
+  rdp_input_overflow: "ввод приходит быстрее, чем сессия его принимает; часть отброшена",
+  rdp_invalid_geometry: "такой размер рабочего стола не допускается",
+  rdp_open_failed: "не удалось запустить сессию RDP",
+  response_too_large: "ответ слишком велик для отправки",
+  bad_control: "страница отправила сообщение, которое служба не поняла",
+  protocol_error: "помощник ответил не по порядку",
+  helper_exited: "помощник Remote Hub завершился",
+  keychain_locked: "Связка ключей «Вход» заблокирована, или macOS не разрешил этой сборке Remote Hub читать сохранённый пароль. Разблокируйте связку (в «Связке ключей» или войдя заново), затем нажмите «Разрешить доступ» на экране «Учётные данные».",
+  keychain_needs_approval: "macOS не разрешил этой сборке Remote Hub читать сохранённый пароль (помощник обновился). Откройте «Учётные данные», нажмите «Разрешить доступ» и выберите «Всегда разрешать» в диалоге macOS.",
+  allow_timed_out: "macOS не дождался ответа на свой диалог. Нажмите «Разрешить доступ» ещё раз.",
+  keychain_denied: "Связка ключей отказала в доступе к сохранённому паролю.",
+  keychain_unavailable: "Связка ключей на этом Mac недоступна.",
+  credential_missing: "Сохранённого пароля больше нет в Связке ключей. Откройте настройки подключения и сохраните его заново.",
+  profile_needs_config: "Это подключение идёт через вашу конфигурацию SSH (прокси или правило Match), поэтому пароль для него сохранить нельзя.",
+  credential_unbound: "Этот пароль сохранён старой версией и не привязан к хосту. Откройте настройки подключения и сохраните его заново.",
+  invalid_bind: "Сохранённый пароль не удалось привязать к его хосту.",
+  credential_unknown: "Такого сохранённого пароля больше нет.",
+  credential_target_mismatch: "Этот сохранённый пароль принадлежит другому хосту или пользователю, поэтому не использован.",
+  credential_exists: "У этого подключения уже есть сохранённый пароль; замените его.",
+  credential_not_applicable: "Это подключение не использует сохранённый пароль.",
+  ssh_credential_rejected: "Сервер отклонил сохранённый пароль или парольную фразу. Попытка была одна, повторов нет. Сохраните верный в настройках подключения.",
+  prompt_expired: "На вопрос не ответили вовремя, и он отклонён.",
+  prompt_gone: "Этот вопрос уже закрыт.",
+  empty_secret: "Сначала введите пароль.",
+  invalid_credential_source: "Используйте либо сохранённый пароль, либо введённый, но не оба.",
 };
 
 export function errorCodeText(code: string): string {
@@ -97,14 +97,14 @@ export function formatCertTime(value: string): string {
 }
 
 const PROMPT_REASONS: Record<string, string> = {
-  untrusted_root: "the certificate is not signed by a root this Mac trusts",
-  hostname_mismatch: "the certificate was issued for a different host name",
-  expired: "the certificate is expired or not yet valid",
-  other: "the certificate could not be validated",
-  first_use: "this is the first use of the saved password",
-  cert_changed: "this is a DIFFERENT certificate than the one you trusted for this host and port. A saved password is not sent to it. If the server really got a new certificate, accept it once, or forget the old one (Import screen, RDP certificates you trust) and trust the new one.",
+  untrusted_root: "сертификат не подписан корневым сертификатом, которому доверяет этот Mac",
+  hostname_mismatch: "сертификат выдан для другого имени хоста",
+  expired: "срок действия сертификата истёк или ещё не начался",
+  other: "сертификат не удалось проверить",
+  first_use: "это первое использование сохранённого пароля",
+  cert_changed: "это ДРУГОЙ сертификат, не тот, которому вы доверяли для этого хоста и порта. Сохранённый пароль ему не отправляется. Если сервер действительно получил новый сертификат, примите его один раз или забудьте старый (экран «Импорт», «Сертификаты RDP, которым вы доверяете») и доверьтесь новому.",
 };
 
 export function promptReasonText(reason: string): string {
-  return PROMPT_REASONS[reason] ?? "the certificate could not be validated (" + reason + ")";
+  return PROMPT_REASONS[reason] ?? "сертификат не удалось проверить (" + reason + ")";
 }

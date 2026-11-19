@@ -26,7 +26,7 @@ describe("RdpCertDialog", () => {
     expect(screen.getByTestId("rdp-cert-subject").textContent).toBe("CN=rdp-test");
     expect(screen.getByTestId("rdp-cert-issuer").textContent).toBe("CN=Corp Issuing CA");
     expect(screen.getByTestId("rdp-cert-valid").textContent).toBe("2026-11-17 02:28:54 UTC — 2027-11-17 02:28:54 UTC");
-    expect(screen.getByText("the certificate is not signed by a root this Mac trusts")).toBeTruthy();
+    expect(screen.getByText("сертификат не подписан корневым сертификатом, которому доверяет этот Mac")).toBeTruthy();
   });
 
   it("shows the empty-subject text as the service gives it and an empty issuer as such", () => {
@@ -37,11 +37,11 @@ describe("RdpCertDialog", () => {
 
   it("states cert_changed prominently", () => {
     render(<RdpCertDialog prompt={{ ...PROMPT, reason: "cert_changed" }} onDecide={() => {}} />);
-    const reason = screen.getByText(/^this is a DIFFERENT certificate than the one you trusted for this host and port\. A saved password is not sent to it\./);
+    const reason = screen.getByText(/^это ДРУГОЙ сертификат, не тот, которому вы доверяли для этого хоста и порта\. Сохранённый пароль ему не отправляется\./);
     expect(reason.className).toContain("rh-error");
     // A changed certificate is never offered "for good": the old one has to be forgotten first.
     expect(screen.queryByText("Всегда доверять этому сертификату")).toBeNull();
-    expect(screen.getByText(/forget the old one \(Import screen, RDP certificates you trust\)/)).toBeTruthy();
+    expect(screen.getByText(/забудьте старый \(экран «Импорт», «Сертификаты RDP, которым вы доверяете»\)/)).toBeTruthy();
   });
 
   it("every decision carries the PRESENTED fingerprint", () => {
@@ -113,7 +113,7 @@ describe("RdpCertDialog first use of a saved password (X1)", () => {
   it("says that accepting pins the saved password to this certificate, only for a first use", () => {
     const { rerender } = render(<RdpCertDialog prompt={{ ...PROMPT, reason: "first_use", firstUse: true }} onDecide={() => {}} />);
     expect(screen.getByTestId("rdp-cert-pins").textContent).toContain("привяжет сохранённый пароль к этому сертификату");
-    expect(screen.getByText("this is the first use of the saved password")).toBeTruthy();
+    expect(screen.getByText("это первое использование сохранённого пароля")).toBeTruthy();
     rerender(<RdpCertDialog prompt={PROMPT} onDecide={() => {}} />);
     expect(screen.queryByTestId("rdp-cert-pins")).toBeNull();
   });

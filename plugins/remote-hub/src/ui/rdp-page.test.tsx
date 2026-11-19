@@ -149,7 +149,7 @@ describe("RdpPage: a saved password (stage 3b-1)", () => {
     render(<RdpPage {...p} prefill={fill()} />);
     fireEvent.click(screen.getByText("Подключить"));
     await flush();
-    expect(screen.getByText(/login Keychain is locked/)).toBeTruthy();
+    expect(screen.getByText(/Связка ключей «Вход» заблокирована/)).toBeTruthy();
     expect(screen.getByText(/Используется сохранённый пароль/)).toBeTruthy();
   });
 
@@ -333,7 +333,7 @@ describe("RdpPage: the form", () => {
     fireEvent.click(screen.getByText("Подключить"));
     await flush();
     expect(screen.getByTestId("rdp-state").textContent).toContain("error");
-    expect(screen.getByRole("alert").textContent).toBe("the RDP session could not be started");
+    expect(screen.getByRole("alert").textContent).toBe("не удалось запустить сессию RDP");
   });
 });
 
@@ -343,14 +343,14 @@ describe("RdpPage: states, texts and the certificate prompt", () => {
     const state = screen.getByTestId("rdp-state");
     expect(state.getAttribute("role")).toBe("status");
     expect(state.getAttribute("aria-live")).toBe("polite");
-    expect(state.textContent).toBe("состояние: connecting");
+    expect(state.textContent).toBe("состояние: подключение");
     await say({ type: "state", state: "tls" });
-    expect(state.textContent).toBe("состояние: securing the connection (TLS)");
+    expect(state.textContent).toBe("состояние: защита соединения (TLS)");
     await say({ type: "state", state: "authenticating" });
-    expect(state.textContent).toBe("состояние: authenticating");
+    expect(state.textContent).toBe("состояние: вход");
     await say({ type: "desktop", frameId: 1, width: 800, height: 600 });
     await say({ type: "state", state: "desktop_ready" });
-    expect(state.textContent).toBe("состояние: desktop ready");
+    expect(state.textContent).toBe("состояние: рабочий стол готов");
     expect(screen.getByText("рабочий стол: 800×600")).toBeTruthy();
     expect(screen.getByText("alice@rdp.test:3389").tagName).toBe("STRONG");
   });
@@ -381,7 +381,7 @@ describe("RdpPage: states, texts and the certificate prompt", () => {
     await say({ type: "cert_prompt", prompt: PROMPT });
     fireEvent.click(screen.getByText("Принять один раз"));
     await flush();
-    expect(screen.getByRole("alert").textContent).toBe("the decision named a different certificate than the one shown");
+    expect(screen.getByRole("alert").textContent).toBe("решение относится не к тому сертификату, который показан");
     expect(screen.getByRole("alertdialog")).toBeTruthy();
   });
 
@@ -399,17 +399,17 @@ describe("RdpPage: states, texts and the certificate prompt", () => {
   });
 
   it.each([
-    ["auth_failed", "sign-in failed: check the user name, password and domain"],
-    ["cert_rejected", "the server certificate was rejected"],
-    ["server_disconnected", "the server ended the session"],
-    ["network_error", "network error: the server is unreachable or the connection dropped"],
-    ["engine_exited", "the RDP engine stopped unexpectedly"],
-    ["killed_by_close", "disconnected"],
-    ["helper_exited", "the Remote Hub helper exited"],
+    ["auth_failed", "вход не удался: проверьте пользователя, пароль и домен"],
+    ["cert_rejected", "сертификат сервера отклонён"],
+    ["server_disconnected", "сервер завершил сессию"],
+    ["network_error", "ошибка сети: сервер недоступен или соединение оборвалось"],
+    ["engine_exited", "движок RDP неожиданно остановился"],
+    ["killed_by_close", "отключено"],
+    ["helper_exited", "помощник Remote Hub завершился"],
   ])("a session closed with %s says so", async (reason, text) => {
     const { say } = await connect(props());
     await say({ type: "closed", exitCode: null, signal: null, reason });
-    expect(screen.getByTestId("rdp-state").textContent).toBe("состояние: closed");
+    expect(screen.getByTestId("rdp-state").textContent).toBe("состояние: закрыто");
     expect(screen.getByTestId("rdp-exit").textContent).toBe(text);
   });
 
@@ -434,7 +434,7 @@ describe("RdpPage: states, texts and the certificate prompt", () => {
     fireEvent.click(screen.getByText("Показать снова"));
     await flush();
     expect(screen.getByTestId("rdp-state").textContent).toBe("состояние: экран отсоединён");
-    expect(screen.getByRole("alert").textContent).toBe("the session is gone");
+    expect(screen.getByRole("alert").textContent).toBe("сессии больше нет");
   });
 
   it("Disconnect closes the session and reports 'disconnected'", async () => {
@@ -443,7 +443,7 @@ describe("RdpPage: states, texts and the certificate prompt", () => {
     fireEvent.click(screen.getByText("Отключить"));
     await flush();
     expect(p.calls.onClose.mock.calls).toEqual([[HANDLE]]);
-    expect(screen.getByTestId("rdp-exit").textContent).toBe("disconnected");
+    expect(screen.getByTestId("rdp-exit").textContent).toBe("отключено");
   });
 });
 
@@ -506,7 +506,7 @@ describe("RdpPage: one session at a time on screen (N1, N4, N5)", () => {
     fireEvent.click(screen.getByText("Отключить"));
     await flush();
     expect(p.calls.onClose.mock.calls).toEqual([[HANDLE]]);
-    expect(screen.getByTestId("rdp-exit").textContent).toBe("disconnected");
+    expect(screen.getByTestId("rdp-exit").textContent).toBe("отключено");
   });
 
   it("N5: a reason the session already ended with is not replaced when Disconnect resolves", async () => {
@@ -516,9 +516,9 @@ describe("RdpPage: one session at a time on screen (N1, N4, N5)", () => {
     fireEvent.click(screen.getByText("Отключить"));
     await flush();
     await say({ type: "closed", exitCode: null, signal: null, reason: "engine_exited" });
-    expect(screen.getByTestId("rdp-exit").textContent).toBe("the RDP engine stopped unexpectedly");
+    expect(screen.getByTestId("rdp-exit").textContent).toBe("движок RDP неожиданно остановился");
     await act(async () => finish({ reason: "killed_by_close" }));
-    expect(screen.getByTestId("rdp-exit").textContent).toBe("the RDP engine stopped unexpectedly");
+    expect(screen.getByTestId("rdp-exit").textContent).toBe("движок RDP неожиданно остановился");
   });
 
   it("N5: otherwise the service's own close reason is shown", async () => {
@@ -526,7 +526,7 @@ describe("RdpPage: one session at a time on screen (N1, N4, N5)", () => {
     await connect(p);
     fireEvent.click(screen.getByText("Отключить"));
     await flush();
-    expect(screen.getByTestId("rdp-exit").textContent).toBe("the server ended the session");
+    expect(screen.getByTestId("rdp-exit").textContent).toBe("сервер завершил сессию");
   });
 
   it("the rest of the page is inert while the certificate dialog is open", async () => {
@@ -567,7 +567,7 @@ describe("RdpPage: the header buttons", () => {
     p.calls.onScreenshot.mockRejectedValueOnce(new Error("screenshot_too_large: too big"));
     fireEvent.click(screen.getByText("Снимок экрана"));
     await flush();
-    expect(screen.getByRole("alert").textContent).toBe("the screenshot is too large to send");
+    expect(screen.getByRole("alert").textContent).toBe("снимок экрана слишком велик для отправки");
   });
 
   it("Fit and 1:1 toggle the mode of the canvas", async () => {
@@ -582,7 +582,7 @@ describe("RdpPage: the header buttons", () => {
   it("shows the service's notice and an error code as a sentence", async () => {
     const { say } = await connect(props());
     await say({ type: "error", code: "not_ready" });
-    expect(screen.getByRole("alert").textContent).toBe("the desktop is not ready yet");
+    expect(screen.getByRole("alert").textContent).toBe("рабочий стол ещё не готов");
   });
 });
 
