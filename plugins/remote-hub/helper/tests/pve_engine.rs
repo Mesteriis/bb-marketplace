@@ -277,12 +277,12 @@ async fn owner_set(d: &mut Drive, request: u64) -> u64 {
 }
 
 #[tokio::test]
-async fn a_hand_over_is_answered_at_once_while_the_transport_is_blocked_and_drops_what_the_old_driver_queued() {
+async fn a_hand_over_is_answered_only_after_the_old_drivers_message_in_flight_has_been_written_and_nothing_of_the_old_driver_follows() {
     let fake = start_fake(default_state()).await;
     let mut d = start_engine(&open(fake.port, ticket_auth(), ca_trust(), lxc("pve1", 101))).await;
     d.until_state("open").await;
     d.read_data(b"root@ct101:~# ").await;
-    // The upstream stops reading; the old driver types until the engine's writer is stuck.
+    // The upstream stops reading; the old driver types until the engine's writer is suspended inside a send.
     fake.state.lock().unwrap().ws_stall = true;
     let chunk = vec![b'o'; 16 * 1024];
     let mut sent: u64 = 0;
@@ -291,21 +291,44 @@ async fn a_hand_over_is_answered_at_once_while_the_transport_is_blocked_and_drop
         sent += chunk.len() as u64;
     }
     tokio::time::sleep(Duration::from_millis(400)).await;
-    // The takeover is answered although the writer cannot move: nothing waits for the transport.
     d.send(&PveCommand::SetOwner { request: 7 }).await;
-    let dropped = tokio::time::timeout(Duration::from_secs(3), owner_set(&mut d, 7)).await.expect("the hand-over waited for a blocked transport");
-    assert!(dropped > 0, "the queue held input of the old driver: {dropped}");
-    // The new driver types; the upstream reads again.
-    d.input(b"NEW\r").await;
+    // The answer must NOT come while the old message is still inside the send...
+    let early = tokio::time::timeout(Duration::from_millis(600), owner_set(&mut d, 7)).await;
+    assert!(early.is_err(), "the hand-over was answered while an old message was still being written");
+    // ...and comes once the transport takes it.
     fake.state.lock().unwrap().ws_stall = false;
+    let dropped = tokio::time::timeout(Duration::from_secs(3), owner_set(&mut d, 7)).await.expect("the hand-over was never answered");
+    assert!(dropped > 0, "the queue held input of the old driver: {dropped}");
+    let at_answer = fake.state.lock().unwrap().ws_input.len();
+    d.input(b"NEW\r").await;
     d.read_data(b"NEW\r").await;
     d.send(&PveCommand::Close).await;
     let _ = d.all().await;
     let st = fake.state.lock().unwrap();
-    let received_old = st.ws_input.len() as u64 - 4;
     assert!(st.ws_input.ends_with(b"NEW\r"), "the new driver's input is last");
-    assert_eq!(received_old + dropped, sent, "every byte of the old driver was either written before the hand-over or dropped, none after: written {received_old}, dropped {dropped}, typed {sent}");
-    assert!(dropped >= 64 * 1024, "a blocked transport must have left most of it queued: dropped {dropped}");
+    // Order, not totals: after NEW nothing else, and everything before NEW is the old driver's, none of it dropped bytes.
+    let received_old = st.ws_input.len() as u64 - 4;
+    assert!(st.ws_input[..st.ws_input.len() - 4].iter().all(|b| *b == b'o'));
+    assert_eq!(received_old + dropped, sent, "written {received_old} + dropped {dropped} must be typed {sent}");
+    assert!(at_answer as u64 <= received_old + 16 * 1024 * 2, "bytes of the old driver kept arriving long after the answer");
+}
+
+#[tokio::test]
+async fn a_hand_over_that_cannot_finish_the_old_message_closes_the_console_instead_of_answering() {
+    let fake = start_fake(default_state()).await;
+    let mut d = start_engine(&open(fake.port, ticket_auth(), ca_trust(), lxc("pve1", 101))).await;
+    d.until_state("open").await;
+    d.read_data(b"root@ct101:~# ").await;
+    fake.state.lock().unwrap().ws_stall = true;
+    let chunk = vec![b'o'; 16 * 1024];
+    for _ in 0..40 {
+        d.input(&chunk).await;
+    }
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    d.send(&PveCommand::SetOwner { request: 7 }).await;
+    let (events, _) = d.all().await;
+    assert!(!events.iter().any(|e| matches!(e, PveEvent::OwnerSet { .. })), "answered with an old message in flight: {events:?}");
+    assert_eq!(events.last(), Some(&PveEvent::Closed { reason: "upstream_stalled".into() }));
 }
 
 #[tokio::test]

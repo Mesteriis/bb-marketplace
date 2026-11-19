@@ -562,6 +562,9 @@ async fn run_terminal(
                     // After this answer nothing of the previous driver is written: the queue is emptied of input here, and the one
                     // message the writer may already be sending is the only one that can still go.
                     let dropped = outbox.drop_input();
+                    // ...but a message of the old driver may be inside the writer's send right now. It is answered only when none is:
+                    // the send gets a short deadline; a transport that holds it longer is closed (retryable) instead of answered.
+                    if !outbox.wait_no_input_in_flight(HANDOVER_DEADLINE).await { break "upstream_stalled"; }
                     if !out.event(&PveEvent::OwnerSet { request, dropped }).await { break "helper_gone"; }
                 }
                 Some(Cmd::Resize(c, r)) => { outbox.push(Message::binary(term::encode_resize(c.clamp(1, 1000), r.clamp(1, 1000))), None); }
@@ -580,6 +583,9 @@ async fn run_terminal(
     0
 }
 
+/// How long a hand-over waits for the old driver's message that is already being written.
+const HANDOVER_DEADLINE: Duration = Duration::from_secs(2);
+
 /// Most bytes of input the engine holds for a transport that is not accepting writes; past it the console is closed
 /// (`upstream_stalled`) instead of letting the queue grow.
 const OUTBOX_LIMIT: usize = 1024 * 1024;
@@ -596,6 +602,8 @@ struct OutboxState {
     queue: std::collections::VecDeque<(Message, Option<usize>)>,
     input_bytes: usize,
     input_payload: u64,
+    /// An input message was taken by the writer and its send has not finished.
+    input_in_flight: bool,
     stopped: bool,
 }
 
@@ -627,6 +635,23 @@ impl Outbox {
         st.input_payload = 0;
         dropped
     }
+    /// The writer finished the message it took.
+    fn sent(&self) {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).input_in_flight = false;
+    }
+    /// True once no input message is inside a send; false when `limit` passed first.
+    async fn wait_no_input_in_flight(&self, limit: Duration) -> bool {
+        let deadline = tokio::time::Instant::now() + limit;
+        loop {
+            if !self.state.lock().unwrap_or_else(|e| e.into_inner()).input_in_flight {
+                return true;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
     fn stop(&self) {
         self.state.lock().unwrap_or_else(|e| e.into_inner()).stopped = true;
         self.wake.notify_one();
@@ -637,6 +662,7 @@ impl Outbox {
             return None;
         }
         Some(st.queue.pop_front().map(|(m, input)| {
+            st.input_in_flight = input.is_some();
             if let Some(payload) = input {
                 st.input_bytes = st.input_bytes.saturating_sub(m.len());
                 st.input_payload = st.input_payload.saturating_sub(payload as u64);
@@ -664,6 +690,7 @@ where
                     let _ = failed.send(());
                     return sink;
                 }
+                outbox.sent();
             }
             Some(None) => outbox.wake.notified().await,
         }

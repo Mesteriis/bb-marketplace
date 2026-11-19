@@ -198,6 +198,8 @@ export interface RemoteHubService {
   ): () => void;
   /** The human's keys. False when they were dropped because an agent holds the session. */
   sessionTerminalInput(handle: SessionHandle, data: Uint8Array): Promise<boolean>;
+  /** Resolves once the helper has confirmed the session's current driver (the barrier of a change of driver), or has ended the session. */
+  ownerSettled(handle: SessionHandle): Promise<void>;
   /** An agent holding the lease types; `owner` is its lease tag. Refused (lease_lost) once that lease is not the driver. */
   agentTerminalInput(handle: SessionHandle, data: Uint8Array, owner: string): Promise<void>;
   /** An agent holding the lease sends desktop input. */
@@ -1383,6 +1385,9 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
       const process = await start();
       process.writeInput(handle.sessionId, data);
       return true;
+    },
+    async ownerSettled(handle) {
+      await handoff(handle);
     },
     async agentTerminalInput(handle, data, owner) {
       requireGeneration(handle);

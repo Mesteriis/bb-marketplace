@@ -167,7 +167,7 @@ fn only_the_current_driver_may_type_into_a_proxmox_terminal() {
 }
 
 #[test]
-fn a_hand_over_through_the_helper_waits_for_nothing_upstream_and_nothing_of_the_old_driver_is_written_after_it() {
+fn a_hand_over_through_the_helper_is_answered_after_the_message_in_flight_and_nothing_of_the_old_driver_is_written_after_it() {
     let w = world(default_state());
     let mut h = start(&[]);
     let Response::SessionOpened { session_id, .. } = open_lxc(&mut h, 1, connect(w.fake.port, Some(PASSWORD), None, ca())) else { panic!("not opened") };
@@ -182,15 +182,21 @@ fn a_hand_over_through_the_helper_waits_for_nothing_upstream_and_nothing_of_the_
         sent += chunk.len() as u64;
     }
     std::thread::sleep(Duration::from_millis(400));
-    // the takeover (the human takes the console back, or the watcher left) is answered although the transport is blocked
+    // the transport takes the in-flight message again after 700 ms; the takeover must not be answered before that
+    let state = w.fake.state.clone();
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(700));
+        state.lock().unwrap().ws_stall = false;
+    });
     let started = std::time::Instant::now();
     let Response::SessionOwnerSet { dropped, .. } = set_owner(&mut h, 100, session_id, "human") else { panic!("not owner_set") };
-    assert!(started.elapsed() < Duration::from_secs(5), "the hand-over waited for a blocked transport: {:?}", started.elapsed());
+    release.join().unwrap();
+    assert!(started.elapsed() >= Duration::from_millis(250), "answered while an old message was still being written: {:?}", started.elapsed());
+    assert!(started.elapsed() < Duration::from_secs(6), "{:?}", started.elapsed());
     assert!(dropped >= 64 * 1024, "most of what the agent typed was still queued: {dropped}");
     // an old lease's late input is refused, the new driver's goes through
     assert!(matches!(input_as(&mut h, 101, session_id, "late\r", Some("agent:L1")), Response::Error { code, .. } if code == "stale_owner"));
     assert!(matches!(input_as(&mut h, 102, session_id, "NEW\r", None), Response::SessionInputAck { .. }));
-    w.fake.state.lock().unwrap().ws_stall = false;
     read_stream_until(&mut h, session_id, b"NEW\r");
     h.send(&Request::SessionClose { id: 103, session_id });
     h.read_reply(103);

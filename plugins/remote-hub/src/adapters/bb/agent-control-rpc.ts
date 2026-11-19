@@ -42,6 +42,13 @@ export function createAgentControlRpc({ service, leases, registry, audit, watche
       if (owner.kind === "human") return { tookOver: false };
       const ticket = audit.begin({ threadId: OWNER_RPC, projectId: "", tool: "control.takeover", sessionKey: key, detail: `from ${owner.threadId}` });
       leases.takeover(key);
+      // The takeover is done when the helper has confirmed the new driver: nothing of the agent can be written after this returns.
+      try {
+        await service.ownerSettled(handle);
+      } catch (error) {
+        ticket.finish("error");
+        throw error;
+      }
       ticket.finish("ok");
       return { tookOver: true };
     },

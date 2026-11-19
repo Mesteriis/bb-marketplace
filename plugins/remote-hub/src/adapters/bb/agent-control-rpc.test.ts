@@ -41,6 +41,7 @@ function setup() {
     ownerQuestions: (h: { sessionId: number }) => (h.sessionId === 1 ? ["host_key"] : h.sessionId === 2 ? ["certificate"] : []),
     sshPendingPrompts: (h: { sessionId: number }) => (h.sessionId === 1 ? [{ promptId: 7, text: "Are you sure you want to continue connecting (yes/no/[fingerprint])?", kind: "confirm" }] : []),
     sshPromptAnswer: vi.fn(async () => undefined),
+    ownerSettled: vi.fn(async (_h: unknown) => undefined),
   };
   const watchers = new WatcherBook({ now: () => 1_000_000 });
   let saved: boolean | null = null;
@@ -56,6 +57,26 @@ describe("agent_control_takeover", () => {
     expect(await rpc.agent_control_takeover(H1)).toEqual({ tookOver: true });
     expect(leases.owner(K1).kind).toBe("human");
     expect(rows.map((r) => [r.tool, r.threadId, r.sessionKey, r.detail, r.outcome])).toEqual([["control.takeover", "owner RPC", K1, "from thr_a", "ok"]]);
+  });
+
+  it("returns only after the helper confirmed the new driver (the barrier), and fails visibly when it could not be confirmed", async () => {
+    const { rpc, rows, leases, service } = setup();
+    leases.acquire(K1, "thr_a", 60);
+    let release!: () => void;
+    service.ownerSettled.mockImplementationOnce(() => new Promise<undefined>((r) => (release = () => r(undefined))));
+    let done = false;
+    const call = rpc.agent_control_takeover(H1).then((r) => ((done = true), r));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(done).toBe(false);
+    expect(service.ownerSettled).toHaveBeenCalledWith(H1);
+    release();
+    expect(await call).toEqual({ tookOver: true });
+    const failing = setup();
+    failing.leases.acquire(K1, "thr_a", 60);
+    failing.service.ownerSettled.mockRejectedValueOnce(new Error("helper gone"));
+    await expect(failing.rpc.agent_control_takeover(H1)).rejects.toThrow("helper gone");
+    expect(failing.rows.at(-1)?.outcome).toBe("error");
+    expect(rows.at(-1)?.outcome).toBe("ok");
   });
 
   it("with nothing to take it answers false and changes nothing (the page may click twice)", async () => {
