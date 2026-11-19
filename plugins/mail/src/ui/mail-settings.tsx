@@ -209,6 +209,8 @@ export interface MailSettingsProps {
   onSaveTemplate: (input: { id?: string; name: string; doc: EditorDoc }) => Promise<void>;
   onDeleteTemplate: (id: string) => Promise<void>;
   onOpenSmtp: (accountId: string) => void;
+  /** Switches a Gmail account that uses an app password to Google sign-in; absent: not offered. */
+  onGoogleSwitch?: (account: Account) => void;
   /** Blocked senders (slice 3e); null while they load. Absent: no Inbox tab. */
   blockRules?: readonly BlockRuleView[] | null;
   onUnblock?: (id: string) => Promise<void>;
@@ -479,6 +481,13 @@ function AddressesSection(
           <span className="truncate text-sm font-medium text-foreground">{accountLabel(account)}</span>
         )}
         <span className="flex-1" />
+        {account.authKind === "google" ? (
+          <span className="text-xs text-muted-foreground">{tx("Signed in with Google")}</span>
+        ) : account.preset === "gmail" && props.onGoogleSwitch !== undefined ? (
+          <Button variant="link" size="sm" className="h-7 px-1" onClick={() => props.onGoogleSwitch?.(account)}>
+            {tx("Switch to Google sign-in")}
+          </Button>
+        ) : null}
         <Button variant="link" size="sm" className="h-7 px-1" onClick={() => props.onOpenSmtp(account.id)}>
           {tx("SMTP settings\u2026")}
         </Button>

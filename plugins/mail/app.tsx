@@ -40,6 +40,8 @@ import {
   type PluginTimelineRendererProps,
 } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
+import type { GoogleSignInOutcome } from "./src/ui/account-form.tsx";
+import { googleSignInFailureText } from "./src/ui/google-sign-in-text.ts";
 import type { rpcContract } from "./server.ts";
 import type {
   AttachmentMeta,
@@ -200,6 +202,8 @@ const TRANSLATE_MISSING = "Translation needs the Makosh AI plugin";
 const PAGE_SIZE = 50;
 const MAX_PAGE = 100;
 const SEARCH_LIMIT = 50;
+/** How often the page asks how a Google sign-in stands while the browser has it. */
+const GOOGLE_SIGN_IN_POLL_MS = 1_000;
 const SYNC_INDICATOR_MS = 60_000;
 /** message_action takes at most this many ids per call; larger batches go in sequence. */
 const ACTION_CHUNK = 200;
@@ -553,6 +557,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
 
   const [status, setStatus] = useState<StatusView | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
+  const googleSignInOffered = status?.googleSignIn === true;
   /**
    * An account id or ALL_ACCOUNTS, with the route it was chosen on; null
    * until the owner chooses (All accounts when several).
@@ -1844,6 +1849,30 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     [loadStatus, rpc],
   );
 
+  /**
+   * Sign in with Google from the account form: the server opens its listener,
+   * Google opens in the browser, and the status is asked once a second until
+   * the account is saved, the sign-in fails or the form goes away.
+   */
+  const googleSignIn = useCallback(
+    async (email: string | null, signal: AbortSignal): Promise<GoogleSignInOutcome> => {
+      const { flowId, url } = await rpc.call("google_sign_in_start", { email });
+      if (!navigate.openUrl(url)) return { ok: false, message: tx("This link cannot be opened here.") };
+      for (;;) {
+        await new Promise((resolve) => setTimeout(resolve, GOOGLE_SIGN_IN_POLL_MS));
+        if (signal.aborted) return { ok: false, message: "" };
+        const flow = await rpc.call("google_sign_in_status", { flowId });
+        if (flow.state === "pending") continue;
+        if (flow.state === "failed") return { ok: false, message: googleSignInFailureText(flow.reason) };
+        selectAccount(flow.accountId);
+        setAccountForm(null);
+        await loadStatus();
+        return { ok: true };
+      }
+    },
+    [loadStatus, navigate, rpc, selectAccount],
+  );
+
   const saveAccount = useCallback(
     async (input: NewAccountInput) => {
       const saved = await rpc.call("accounts_add", input);
@@ -2861,6 +2890,14 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
         await loadBlockRules();
       }}
       onChangeSnoozeFolder={changeSnoozeFolder}
+      onGoogleSwitch={
+        googleSignInOffered
+          ? (account) => {
+              setSettings((prev) => ({ ...prev, open: false }));
+              setAccountForm({ initial: { preset: "gmail", email: account.email, signIn: "google" } });
+            }
+          : undefined
+      }
       ai={settingsAi}
       bb={{
         call: bbCall,
@@ -4196,6 +4233,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       accountForm={accountForm}
       onOpenAccountForm={setAccountForm}
       onRetrySignIn={retrySignIn}
+      onGoogleSignIn={googleSignIn}
       onCloseAccountForm={() => setAccountForm(null)}
       onTestAccount={testAccount}
       onSaveAccount={saveAccount}

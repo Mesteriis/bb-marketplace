@@ -246,10 +246,11 @@ function mailRpc(overrides: Record<string, (input: never) => unknown> = {}) {
   };
 }
 
-function render(rpc: Record<string, unknown>, subPath = "") {
+function render(rpc: Record<string, unknown>, subPath = "", host: { openUrl?: (url: string) => boolean } = {}) {
   return renderSlot({ component: MailWithSidebar }, { subPath }, {
     rpc: rpc as never,
     composer: { scope: { kind: "new-thread", projectId: null } },
+    ...host,
   });
 }
 
@@ -315,6 +316,101 @@ describe("Mail page", () => {
     await waitFor(() => expect(callsTo(slot, "accounts_retry_sign_in")).toHaveLength(1));
     expect(slot.getByRole("alert").textContent).toContain("The server refused the sign-in.");
     expect(slot.getByRole("button", { name: "Update app password" })).toBeTruthy();
+  });
+
+  describe("Google sign-in", () => {
+    const revoked: Account = {
+      ...account,
+      preset: "gmail",
+      authKind: "google",
+      authFailed: true,
+      lastError: "Google sign-in expired",
+    };
+
+    it("a revoked grant offers only a new Google sign-in, which opens Google and waits for the account", async () => {
+      let signedIn = false;
+      let polls = 0;
+      const slot = render(
+        mailRpc({
+          status_get: () =>
+            status({ googleSignIn: true, accounts: [signedIn ? { ...revoked, authFailed: false, lastError: null } : revoked] }),
+          google_sign_in_start: () => ({ flowId: "flow-1", url: "https://accounts.google.com/o/oauth2/v2/auth?state=invented" }),
+          google_sign_in_status: () => {
+            polls += 1;
+            if (polls < 2) return { state: "pending" };
+            signedIn = true;
+            return { state: "done", accountId: "acc-1" };
+          },
+        }),
+        "",
+        { openUrl: () => true },
+      );
+
+      const banner = await slot.findByRole("alert");
+      expect(banner.textContent).toContain("Google no longer accepts this sign-in.");
+      expect(slot.queryByRole("button", { name: "Try the saved password" })).toBeNull();
+      expect(slot.queryByRole("button", { name: "Update app password" })).toBeNull();
+      fireEvent.click(slot.getByRole("button", { name: "Sign in to Google" }));
+      expect(slot.queryByLabelText("App password")).toBeNull();
+      fireEvent.click(await slot.findByRole("button", { name: "Sign in with Google" }));
+
+      await waitFor(() =>
+        expect(slot.inspection.navigateCalls).toContainEqual({
+          method: "openUrl",
+          url: "https://accounts.google.com/o/oauth2/v2/auth?state=invented",
+        }),
+      );
+      expect(callsTo(slot, "google_sign_in_start").map((call) => call.input)).toEqual([{ email: "owner@example.org" }]);
+      expect(await slot.findByRole("button", { name: "Waiting for Google\u2026" })).toBeTruthy();
+      await waitFor(
+        () => expect(callsTo(slot, "google_sign_in_status").map((call) => call.input)).toEqual([{ flowId: "flow-1" }, { flowId: "flow-1" }]),
+        { timeout: 6000 },
+      );
+      // The form closes and the account's banner goes with the stop.
+      await waitFor(() => expect(slot.queryByRole("button", { name: "Waiting for Google\u2026" })).toBeNull());
+      await waitFor(() => expect(slot.queryByRole("alert")).toBeNull());
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+      expect(callsTo(slot, "google_sign_in_status")).toHaveLength(2);
+    }, 10_000);
+
+    it("says why a sign-in failed and stops asking", async () => {
+      const slot = render(
+        mailRpc({
+          status_get: () => status({ googleSignIn: true, accounts: [revoked] }),
+          google_sign_in_start: () => ({ flowId: "flow-1", url: "https://accounts.google.com/o/oauth2/v2/auth?state=invented" }),
+          google_sign_in_status: () => ({ state: "failed", reason: "mismatch" }),
+        }),
+        "",
+        { openUrl: () => true },
+      );
+      fireEvent.click(await slot.findByRole("button", { name: "Sign in to Google" }));
+      fireEvent.click(await slot.findByRole("button", { name: "Sign in with Google" }));
+
+      expect(await slot.findByText("That Google account is a different address.", {}, { timeout: 4000 })).toBeTruthy();
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+      expect(callsTo(slot, "google_sign_in_status")).toHaveLength(1);
+      expect(slot.getByRole("button", { name: "Sign in with Google" })).toBeTruthy();
+    }, 10_000);
+
+    it("says so when BB cannot open the Google page, and asks nothing more", async () => {
+      const slot = render(
+        mailRpc({
+          status_get: () => status({ googleSignIn: true, accounts: [revoked] }),
+          google_sign_in_start: () => ({ flowId: "flow-1", url: "https://accounts.google.com/o/oauth2/v2/auth?state=invented" }),
+          google_sign_in_status: () => ({ state: "pending" }),
+        }),
+      );
+      fireEvent.click(await slot.findByRole("button", { name: "Sign in to Google" }));
+      fireEvent.click(await slot.findByRole("button", { name: "Sign in with Google" }));
+      expect(await slot.findByText("This link cannot be opened here.")).toBeTruthy();
+      expect(callsTo(slot, "google_sign_in_status")).toHaveLength(0);
+    });
+
+    it("without a client in the plugin a stopped Google account says so and offers nothing to press", async () => {
+      const slot = render(mailRpc({ status_get: () => status({ accounts: [revoked] }) }));
+      expect((await slot.findByRole("alert")).textContent).toContain("Google no longer accepts this sign-in.");
+      expect(slot.queryByRole("button", { name: "Sign in to Google" })).toBeNull();
+    });
   });
 
   it("tests and saves an account, then clears the password", async () => {

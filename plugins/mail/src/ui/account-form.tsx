@@ -1,7 +1,7 @@
 // Connects an IMAP account. The app password lives only in the input element:
 // it is read when Test or Save runs, never kept in React state, and the field
 // is cleared once the account is saved.
-import { useId, useRef, useState, type ComponentType, type FormEvent, type ReactNode } from "react";
+import { useId, useRef, useState, type ComponentType, type FormEvent, type ReactNode, useEffect } from "react";
 import type { AccountPreset, NewAccountInput, SmtpSecurity } from "../core/index.ts";
 // presets.ts directly: the core index would pull its zod schemas into the app bundle.
 import { PRESETS } from "../core/presets.ts";
@@ -24,7 +24,12 @@ export interface AccountFormInitial {
   email: string;
   host?: string;
   port?: number;
+  /** "google": open on Google sign-in (a reconnect of a Google account, or a switch to it). */
+  signIn?: "google";
 }
+
+/** How a Google sign-in ended, as a sentence for the form when it failed. */
+export type GoogleSignInOutcome = { ok: true } | { ok: false; message: string };
 
 export interface AccountFormProps {
   /** Prefills the form, e.g. to replace the app password of an account. */
@@ -34,6 +39,12 @@ export interface AccountFormProps {
   /** Resolves once the account is saved; rejects with a message the owner can act on. */
   onSave: (input: NewAccountInput) => Promise<void>;
   onCancel?: () => void;
+  /**
+   * Signs in to Google in the browser for this address (null: any account)
+   * and resolves when the account is saved or the sign-in failed; it gives
+   * up when the signal aborts. Absent: only app passwords are offered.
+   */
+  onGoogleSignIn?: (email: string | null, signal: AbortSignal) => Promise<GoogleSignInOutcome>;
   /** Renders a link to a provider page, e.g. BB's UrlLink. */
   ExternalLink: ComponentType<{ href: string; className?: string; children?: ReactNode }>;
 }
@@ -44,7 +55,7 @@ function messageOf(error: unknown): string {
   return error instanceof Error && error.message ? error.message : tx("Something went wrong");
 }
 
-export function AccountForm({ initial, title, onTest, onSave, onCancel, ExternalLink }: AccountFormProps) {
+export function AccountForm({ initial, title, onTest, onSave, onCancel, onGoogleSignIn, ExternalLink }: AccountFormProps) {
   const id = useId();
   const passwordRef = useRef<HTMLInputElement | null>(null);
   const [preset, setPreset] = useState<AccountPreset>(initial?.preset ?? "icloud");
@@ -55,7 +66,15 @@ export function AccountForm({ initial, title, onTest, onSave, onCancel, External
   const [smtpSecurity, setSmtpSecurity] = useState<SmtpSecurity>("tls");
   const [smtpPort, setSmtpPort] = useState(String(defaultSmtpPort("tls")));
   const [smtpUsername, setSmtpUsername] = useState("");
-  const [busy, setBusy] = useState<"test" | "save" | null>(null);
+  const [busy, setBusy] = useState<"test" | "save" | "google" | null>(null);
+  // Replacing an app password opens on the password; everything else Gmail opens on Google.
+  const [byPassword, setByPassword] = useState(
+    initial !== undefined && initial.email !== "" && initial.signIn !== "google",
+  );
+  const google = onGoogleSignIn !== undefined && preset === "gmail";
+  const withGoogle = google && !byPassword;
+  const waiting = useRef<AbortController | null>(null);
+  useEffect(() => () => waiting.current?.abort(), []);
   const [outcome, setOutcome] = useState<Outcome>(null);
   const appPasswordUrl = PRESETS[preset].appPasswordUrl;
 
@@ -111,8 +130,27 @@ export function AccountForm({ initial, title, onTest, onSave, onCancel, External
     }
   }
 
+  async function signInWithGoogle() {
+    if (onGoogleSignIn === undefined) return;
+    const controller = new AbortController();
+    waiting.current?.abort();
+    waiting.current = controller;
+    setBusy("google");
+    setOutcome(null);
+    try {
+      const result = await onGoogleSignIn(email.trim() === "" ? null : email.trim(), controller.signal);
+      if (controller.signal.aborted) return;
+      setOutcome(result.ok ? { kind: "ok", message: tx("Signed in with Google.") } : { kind: "error", message: result.message });
+    } catch (error) {
+      if (!controller.signal.aborted) setOutcome({ kind: "error", message: messageOf(error) });
+    } finally {
+      if (!controller.signal.aborted) setBusy(null);
+    }
+  }
+
   async function save(event: FormEvent) {
     event.preventDefault();
+    if (withGoogle) return;
     const input = readInput();
     if (input === null) return;
     setBusy("save");
@@ -140,7 +178,9 @@ export function AccountForm({ initial, title, onTest, onSave, onCancel, External
           {title}
         </h2>
         <p className="text-sm text-muted-foreground">
-          {tx("Mail signs in over IMAP with an app password, not your account password.")}
+          {withGoogle
+            ? tx("Google opens in your browser and asks to let Makosh Mail read and send your mail. No password is typed here.")
+            : tx("Mail signs in over IMAP with an app password, not your account password.")}
         </p>
       </div>
 
@@ -175,17 +215,53 @@ export function AccountForm({ initial, title, onTest, onSave, onCancel, External
         />
       </div>
 
-      <div className="flex flex-col gap-1.5">
-        <label htmlFor={`${id}-password`} className="text-sm font-medium text-foreground">
-          {tx("App password")}
-        </label>
-        <Input id={`${id}-password`} ref={passwordRef} type="password" autoComplete="off" />
-        {appPasswordUrl !== null ? (
-          <ExternalLink href={appPasswordUrl} className="text-xs text-primary underline-offset-4 hover:underline">
-            {tx("Create an app password for")} {PRESETS[preset].label}
-          </ExternalLink>
-        ) : null}
-      </div>
+      {withGoogle ? (
+        <div className="flex flex-col items-start gap-1.5">
+          <Button type="button" onClick={() => void signInWithGoogle()} disabled={busy !== null}>
+            {busy === "google" ? tx("Waiting for Google\u2026") : tx("Sign in with Google")}
+          </Button>
+          <Button
+            type="button"
+            variant="link"
+            size="sm"
+            className="h-auto px-0 text-xs"
+            onClick={() => {
+              waiting.current?.abort();
+              setBusy(null);
+              setOutcome(null);
+              setByPassword(true);
+            }}
+          >
+            {tx("Use an app password instead")}
+          </Button>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor={`${id}-password`} className="text-sm font-medium text-foreground">
+            {tx("App password")}
+          </label>
+          <Input id={`${id}-password`} ref={passwordRef} type="password" autoComplete="off" />
+          {appPasswordUrl !== null ? (
+            <ExternalLink href={appPasswordUrl} className="text-xs text-primary underline-offset-4 hover:underline">
+              {tx("Create an app password for")} {PRESETS[preset].label}
+            </ExternalLink>
+          ) : null}
+          {google ? (
+            <Button
+              type="button"
+              variant="link"
+              size="sm"
+              className="h-auto self-start px-0 text-xs"
+              onClick={() => {
+                setOutcome(null);
+                setByPassword(false);
+              }}
+            >
+              {tx("Sign in with Google instead")}
+            </Button>
+          ) : null}
+        </div>
+      )}
 
       {preset === "other" ? (
         <div className="flex gap-3">
@@ -293,12 +369,16 @@ export function AccountForm({ initial, title, onTest, onSave, onCancel, External
             {tx("Cancel")}
           </Button>
         ) : null}
-        <Button type="button" variant="outline" onClick={test} disabled={busy !== null}>
-          {busy === "test" ? tx("Testing\u2026") : tx("Test")}
-        </Button>
-        <Button type="submit" disabled={busy !== null}>
-          {busy === "save" ? tx("Saving\u2026") : tx("Save")}
-        </Button>
+        {withGoogle ? null : (
+          <>
+            <Button type="button" variant="outline" onClick={test} disabled={busy !== null}>
+              {busy === "test" ? tx("Testing\u2026") : tx("Test")}
+            </Button>
+            <Button type="submit" disabled={busy !== null}>
+              {busy === "save" ? tx("Saving\u2026") : tx("Save")}
+            </Button>
+          </>
+        )}
       </div>
     </form>
   );

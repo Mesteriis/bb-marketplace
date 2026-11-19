@@ -29,6 +29,7 @@ import { Icon } from "@/components/ui/icon";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { AccountForm, type AccountFormInitial, type AccountFormProps } from "./account-form.tsx";
+import { GRANT_REVOKED_ERROR } from "../core/sync-problems.ts";
 import { Composer, type ComposerPorts, type ComposeWarningKind } from "./composer.tsx";
 import type { TemplateView } from "./mail-settings.tsx";
 import { DetailsPanel, type DetailsState } from "./details-panel.tsx";
@@ -327,6 +328,8 @@ export interface MailPageProps {
   onOpenAccountForm: (request: { initial?: AccountFormInitial }) => void;
   /** One sign-in with the saved password for a stopped account; absent: not offered. */
   onRetrySignIn?: (accountId: string) => Promise<void>;
+  /** Google sign-in for the account form; offered only while the status says the plugin has a client. */
+  onGoogleSignIn?: AccountFormProps["onGoogleSignIn"];
   onCloseAccountForm: () => void;
   onTestAccount: (input: NewAccountInput) => Promise<{ ok: boolean; reason: string | null }>;
   onSaveAccount: (input: NewAccountInput) => Promise<void>;
@@ -432,6 +435,7 @@ export function MailPage(props: MailPageProps) {
           initial={accountForm?.initial}
           onTest={props.onTestAccount}
           onSave={props.onSaveAccount}
+          onGoogleSignIn={status.googleSignIn === true ? props.onGoogleSignIn : undefined}
           onCancel={first ? undefined : props.onCloseAccountForm}
           ExternalLink={props.ExternalLink}
         />
@@ -1235,7 +1239,7 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
             {props.unified ? `${accountLabel(account)}: ` : ""}
             {accountProblemTexts(account).join(" ")}
           </span>
-          {account.authFailed && props.onRetrySignIn !== undefined ? (
+          {account.authFailed && props.onRetrySignIn !== undefined && account.lastError !== GRANT_REVOKED_ERROR ? (
             <Button
               variant="outline"
               size="sm"
@@ -1245,10 +1249,26 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
                 void props.onRetrySignIn?.(account.id).finally(() => setRetryingSignIn(null));
               }}
             >
-              {retryingSignIn === account.id ? tx("Signing in\u2026") : tx("Try the saved password")}
+              {retryingSignIn === account.id
+                ? tx("Signing in\u2026")
+                : account.authKind === "google"
+                  ? tx("Try again")
+                  : tx("Try the saved password")}
             </Button>
           ) : null}
-          {account.authFailed ? (
+          {account.authFailed && account.authKind === "google" ? (
+            status.googleSignIn === true && props.onGoogleSignIn !== undefined ? (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() =>
+                  props.onOpenAccountForm({ initial: { preset: "gmail", email: account.email, signIn: "google" } })
+                }
+              >
+                {tx("Sign in to Google")}
+              </Button>
+            ) : null
+          ) : account.authFailed ? (
             <Button
               variant="outline"
               size="sm"

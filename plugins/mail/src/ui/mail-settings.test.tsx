@@ -76,6 +76,27 @@ function mount(overrides: Partial<MailSettingsProps> = {}) {
 
 const rows = () => within(screen.getByRole("list", { name: "Sending addresses" })).getAllByRole("listitem");
 
+describe("MailSettings: Google sign-in of an account", () => {
+  it("offers the switch to a Gmail account that uses an app password", () => {
+    const onGoogleSwitch = vi.fn();
+    mount({ accounts: [{ ...account, preset: "gmail" }], onGoogleSwitch });
+    fireEvent.click(screen.getByRole("button", { name: "Switch to Google sign-in" }));
+    expect(onGoogleSwitch).toHaveBeenCalledWith(expect.objectContaining({ id: account.id, preset: "gmail" }));
+  });
+
+  it("says a Google account is signed in with Google, and offers nothing elsewhere", () => {
+    mount({ accounts: [{ ...account, preset: "gmail", authKind: "google" }], onGoogleSwitch: vi.fn() });
+    expect(screen.getByText("Signed in with Google")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Switch to Google sign-in" })).toBeNull();
+    cleanup();
+    mount({ accounts: [{ ...account, preset: "icloud" }], onGoogleSwitch: vi.fn() });
+    expect(screen.queryByRole("button", { name: "Switch to Google sign-in" })).toBeNull();
+    cleanup();
+    mount({ accounts: [{ ...account, preset: "gmail" }] });
+    expect(screen.queryByRole("button", { name: "Switch to Google sign-in" })).toBeNull();
+  });
+});
+
 describe("MailSettings: sending addresses", () => {
   it("lists the own address first, then the aliases, with their names, signature and send state", async () => {
     mount();
