@@ -19,12 +19,6 @@ All notable changes to Makosh Mail are recorded here. The format follows
 - Search operators `from:vip`, `from:team`, `from:known`, `is:dev`,
   `is:automated`, `is:newsletter` and `has:invite`, in search and saved
   searches too.
-
-### Changed
-
-- `from:` with a whole address (`from:ada@example.com`) matches that address
-  only, and with a domain (`from:example.com`) the domain and its
-  subdomains; before, both matched any address containing the text.
 - Mail settings are a page inside Mail (the gear in the mail rail, address
   `settings/<section>`): five groups in a side menu, fourteen sections, a
   section select in a narrow panel. The twelve-tab dialog is gone. Two new
@@ -428,6 +422,9 @@ All notable changes to Makosh Mail are recorded here. The format follows
 
 ### Changed
 
+- `from:` with a whole address (`from:ada@example.com`) matches that address
+  only, and with a domain (`from:example.com`) the domain and its
+  subdomains; before, both matched any address containing the text.
 - Translation settings are now **AI settings**; `translateProvider` and
   `translateModel` keep their keys with the labels "AI provider (Makosh AI)"
   and "AI model". Translation sends redacted text and restores the hidden
