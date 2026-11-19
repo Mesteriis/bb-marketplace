@@ -37,7 +37,7 @@ import {
   type UploadPort,
 } from "./attachments-input.tsx";
 import { ComposeEditor, ownerRange, replaceOwnerRange, type EditorDoc } from "./compose-editor.tsx";
-import { NO_TYPING, type TypingOptions } from "./editor-typing.ts";
+import { NO_TYPING, takeSnippet, type SnippetList, type TypingOptions } from "./editor-typing.ts";
 import { fillBlocks, fillVariables, firstNameOf, mergeRecipients } from "../core/snippets.ts";
 import { Checkbox } from "@/components/ui/checkbox";
 import type { AiJobPorts } from "./ai-job.ts";
@@ -316,8 +316,17 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
   const rootRef = useRef<HTMLElement | null>(null);
   const [editor, setEditor] = useState<Editor | null>(null);
   // Typing speed: the editor reads the settings on every key, so a change applies without a new editor.
-  const typingRef = useRef<TypingOptions>(props.typing ?? NO_TYPING);
-  typingRef.current = props.typing ?? NO_TYPING;
+  // Typing a `;` and a few letters lists the templates under the toolbar; Enter, Tab or a click takes one.
+  const [snippetList, setSnippetList] = useState<SnippetList | null>(null);
+  const pickSnippet = useRef<(id: string) => void>(() => {});
+  const typingOf = (): TypingOptions => ({
+    ...(props.typing ?? NO_TYPING),
+    snippets: props.templates ?? [],
+    onSnippets: setSnippetList,
+    onPickSnippet: (id) => pickSnippet.current(id),
+  });
+  const typingRef = useRef<TypingOptions>(typingOf());
+  typingRef.current = typingOf();
   const typingNow = useCallback(() => typingRef.current, []);
   const [linkOpen, setLinkOpen] = useState(false);
   const [from, setFrom] = useState<{ accountId: string; address: string | null }>({
@@ -827,6 +836,11 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
     );
   };
 
+  pickSnippet.current = (id) => {
+    const template = props.templates?.find((item) => item.id === id);
+    if (template !== undefined) insertTemplate(template);
+  };
+
   const [bbMenuOpen, setBbMenuOpen] = useState(false);
   const [bbPick, setBbPick] = useState<FilePickRequest | null>(null);
 
@@ -1154,6 +1168,28 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
           />
         ) : null}
       </div>
+      {snippetList !== null && editor !== null ? (
+        <ul role="listbox" aria-label={tx("Templates for ;{p1}", { p1: snippetList.query })} className="flex shrink-0 flex-col border-b border-border px-1 py-1">
+          {snippetList.items.map((item, index) => (
+            <li
+              key={item.id}
+              role="option"
+              aria-selected={index === snippetList.highlight}
+              // The editor keeps the focus and its cursor: the pick happens on the press, not after a blur.
+              onMouseDown={(event) => {
+                event.preventDefault();
+                takeSnippet(editor.view, item.id, typingRef.current);
+              }}
+              className={cn(
+                "cursor-default truncate rounded-md px-2 py-1 text-sm text-foreground",
+                index === snippetList.highlight ? "bg-state-active" : "hover:bg-state-hover",
+              )}
+            >
+              {item.name}
+            </li>
+          ))}
+        </ul>
+      ) : null}
       <div className="min-h-0 flex-1 overflow-y-auto">
         <ComposeEditor
           label={tx("Message")}
@@ -1170,7 +1206,7 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
             void save(false, true);
           }}
           onLinkShortcut={() => setLinkOpen(true)}
-          {...(props.typing !== undefined ? { typing: typingNow } : {})}
+          typing={typingNow}
         />
         <AttachmentChips
           attachments={attachments}

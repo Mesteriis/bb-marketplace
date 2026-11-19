@@ -726,6 +726,21 @@ describe("Composer: identities, signatures, checks and templates (slice 3d)", ()
     expect(applyTemplate).not.toHaveBeenCalled();
   });
 
+  it("; and a few letters list the templates; a press on one puts it in place of the typed text", async () => {
+    mount({ templates: TEMPLATES, draft: draft({ doc: { type: "doc", content: [p("Hello")] } }) });
+    const ed = theEditor();
+    act(() => {
+      ed.chain().focus("end").insertContent(" ;foll").run();
+    });
+    const list = await screen.findByRole("listbox", { name: "Templates for ;foll" });
+    const options = Array.from(list.querySelectorAll('[role="option"]'));
+    expect(options.map((o) => o.textContent)).toEqual(["Follow-up"]);
+    fireEvent.mouseDown(options[0]!);
+    expect(ed.getText()).toContain("Following up, invented.");
+    expect(ed.getText()).not.toContain(";foll");
+    await waitFor(() => expect(screen.queryByRole("listbox", { name: /Templates for/ })).toBeNull());
+  });
+
   it("Templates inserts the chosen template at the cursor; Manage templates… opens settings", async () => {
     const onManageTemplates = vi.fn();
     mount({ templates: TEMPLATES, onManageTemplates, draft: draft({ doc: { type: "doc", content: [p("Hello"), p("Bye")] } }) });

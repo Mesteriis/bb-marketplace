@@ -2,7 +2,7 @@
 import { Editor } from "@tiptap/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { composeExtensions } from "./compose-editor.tsx";
-import { typingExtension, type TypingOptions } from "./editor-typing.ts";
+import { typingExtension, type SnippetList, type TypingOptions } from "./editor-typing.ts";
 
 const editors: Editor[] = [];
 afterEach(() => {
@@ -172,5 +172,75 @@ describe("the grey rest of a phrase", () => {
     type(mid.editor, "Let me know if tail");
     mid.editor.commands.setTextSelection(15);
     expect(ghost(mid.editor)).toBeNull();
+  });
+});
+
+describe("picking a template with ;", () => {
+  const snippets = [
+    { id: "t-thanks", name: "Thanks" },
+    { id: "t-follow", name: "Follow-up" },
+    { id: "t-offer", name: "Offer and thanks" },
+  ];
+  function open() {
+    const lists: (SnippetList | null)[] = [];
+    const picked: string[] = [];
+    const made = make({ autocorrect: false, snippets, onSnippets: (list) => lists.push(list), onPickSnippet: (id) => picked.push(id) });
+    return { ...made, lists, picked, last: () => lists.at(-1) ?? null };
+  }
+
+  it("opens at a word's start, filters by the letters typed and Enter takes the highlighted one", () => {
+    const { editor, picked, last } = open();
+    type(editor, "Hello ;");
+    expect(last()?.items.map((item) => item.name)).toEqual(["Thanks", "Follow-up", "Offer and thanks"]);
+    type(editor, "than");
+    expect(last()).toEqual({ query: "than", items: [snippets[0], snippets[2]], highlight: 0 });
+    expect(press(editor, "ArrowDown")).toBe(true);
+    expect(last()?.highlight).toBe(1);
+    expect(press(editor, "Enter")).toBe(true);
+    expect(picked).toEqual(["t-offer"]);
+    expect(text(editor)).toBe("Hello ");
+    expect(last()).toBeNull();
+  });
+
+  it("Tab takes too; Escape closes and keeps the text, and typing on does not reopen it", () => {
+    const first = open();
+    type(first.editor, ";foll");
+    expect(press(first.editor, "Tab")).toBe(true);
+    expect(first.picked).toEqual(["t-follow"]);
+    expect(text(first.editor)).toBe("");
+
+    const second = open();
+    type(second.editor, ";th");
+    expect(press(second.editor, "Escape")).toBe(true);
+    expect(second.last()).toBeNull();
+    type(second.editor, "a");
+    expect(second.last()).toBeNull();
+    expect(text(second.editor)).toBe(";tha");
+    // Enter is the editor's own again: a new line, nothing picked.
+    press(second.editor, "Enter");
+    expect(second.picked).toEqual([]);
+    expect(second.editor.state.doc.childCount).toBe(2);
+  });
+
+  it("opens nothing inside a word, closes on a space or when nothing matches, and leaves the keys alone then", () => {
+    const { editor, lists, last } = open();
+    type(editor, "a;b");
+    expect(lists).toEqual([]);
+    type(editor, " ;zzz");
+    expect(last()).toBeNull();
+    expect(press(editor, "Tab")).toBe(false);
+    type(editor, " ;th");
+    expect(last()?.items).toHaveLength(2);
+    type(editor, " ");
+    expect(last()).toBeNull();
+    expect(text(editor)).toBe("a;b ;zzz ;th ");
+  });
+
+  it("without templates ; is only a character", () => {
+    const { editor } = make({ autocorrect: false });
+    type(editor, ";th");
+    expect(press(editor, "Tab")).toBe(false);
+    expect(press(editor, "Escape")).toBe(false);
+    expect(text(editor)).toBe(";th");
   });
 });

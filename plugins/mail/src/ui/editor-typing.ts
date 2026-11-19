@@ -15,6 +15,19 @@ export interface TypingOptions {
   pairs: readonly Correction[];
   autocomplete: boolean;
   phrases: readonly string[];
+  /** The templates `;` picks from; absent or empty: `;` is only a character. */
+  snippets?: readonly { id: string; name: string }[];
+  /** The list `;text` shows now, or null when it closes. */
+  onSnippets?: (list: SnippetList | null) => void;
+  /** A template was picked; its `;text` is already gone and the cursor is where it was. */
+  onPickSnippet?: (id: string) => void;
+}
+
+/** What `;text` offers: the templates whose name holds the text, and the one Enter takes. */
+export interface SnippetList {
+  query: string;
+  items: { id: string; name: string }[];
+  highlight: number;
 }
 
 /** Every aid off. */
@@ -176,6 +189,102 @@ function ghostPlugin(options: () => TypingOptions): Plugin<GhostState> {
   });
 }
 
+type SnippetState = { highlight: number; dismissedAt: number | null };
+type SnippetMeta = { highlight?: number; dismissedAt?: number | null };
+const snippetKey = new PluginKey<SnippetState>("makoshSnippet");
+const SNIPPETS_SHOWN = 8;
+
+/** `;text` right before the cursor, with `;` at a word's start. */
+function triggerBefore(state: EditorState): { from: number; query: string } | null {
+  const { $from, empty } = state.selection;
+  const parent = $from.parent;
+  if (!empty || !parent.isTextblock || parent.type.spec.code === true) return null;
+  if ($from.marks().some((mark) => mark.type.name === "link" || mark.type.name === "code")) return null;
+  const before = parent.textBetween(0, $from.parentOffset, undefined, "\ufffc");
+  const found = /(?:^|\s);([^\s;]{0,30})$/u.exec(before);
+  return found === null ? null : { from: $from.pos - found[1]!.length - 1, query: found[1]! };
+}
+
+/** The list `;text` shows now and where the text starts; null when there is nothing to pick. */
+export function snippetsOf(state: EditorState, options: TypingOptions): (SnippetList & { from: number }) | null {
+  const all = options.snippets ?? [];
+  if (all.length === 0) return null;
+  const trigger = triggerBefore(state);
+  const own = snippetKey.getState(state);
+  if (trigger === null || own?.dismissedAt === trigger.from) return null;
+  const wanted = trigger.query.toLocaleLowerCase();
+  const items = all.filter((item) => item.name.toLocaleLowerCase().includes(wanted)).slice(0, SNIPPETS_SHOWN);
+  if (items.length === 0) return null;
+  return { from: trigger.from, query: trigger.query, items, highlight: Math.min(own?.highlight ?? 0, items.length - 1) };
+}
+
+/** Takes a template from the list: its `;text` goes, then the host inserts it. */
+export function takeSnippet(view: EditorView, id: string, options: TypingOptions): void {
+  const list = snippetsOf(view.state, options);
+  if (list === null) return;
+  view.dispatch(view.state.tr.delete(list.from, view.state.selection.from));
+  options.onPickSnippet?.(id);
+}
+
+function snippetPlugin(options: () => TypingOptions): Plugin<SnippetState> {
+  // What the host was last told; a closed list is "null".
+  let told = "null";
+  return new Plugin<SnippetState>({
+    key: snippetKey,
+    state: {
+      init: () => ({ highlight: 0, dismissedAt: null }),
+      apply(tr, value, _old, next) {
+        const meta = tr.getMeta(snippetKey) as SnippetMeta | undefined;
+        if (meta !== undefined) return { ...value, ...meta };
+        if (!tr.docChanged && !tr.selectionSet) return value;
+        // Typing narrows the list from its top; a closed list forgets where it was dismissed.
+        const trigger = triggerBefore(next);
+        return { highlight: 0, dismissedAt: trigger !== null && value.dismissedAt === trigger.from ? value.dismissedAt : null };
+      },
+    },
+    view() {
+      return {
+        update(view) {
+          const current = options();
+          const list = snippetsOf(view.state, current);
+          const shown = list === null ? null : { query: list.query, items: list.items, highlight: list.highlight };
+          const key = JSON.stringify(shown);
+          if (key === told) return;
+          told = key;
+          current.onSnippets?.(shown);
+        },
+        destroy() {
+          if (told !== "null") options().onSnippets?.(null);
+        },
+      };
+    },
+    props: {
+      handleKeyDown(view, event) {
+        if (event.metaKey || event.ctrlKey || event.altKey) return false;
+        const current = options();
+        const list = snippetsOf(view.state, current);
+        if (list === null) return false;
+        if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+          const step = event.key === "ArrowDown" ? 1 : -1;
+          const meta: SnippetMeta = { highlight: (list.highlight + step + list.items.length) % list.items.length };
+          view.dispatch(view.state.tr.setMeta(snippetKey, meta));
+          return true;
+        }
+        if (event.key === "Enter" || event.key === "Tab") {
+          takeSnippet(view, list.items[list.highlight]!.id, current);
+          return true;
+        }
+        if (event.key === "Escape") {
+          const meta: SnippetMeta = { dismissedAt: list.from };
+          view.dispatch(view.state.tr.setMeta(snippetKey, meta));
+          return true;
+        }
+        return false;
+      },
+    },
+  });
+}
+
 /** The typing aids as one editor extension; `options` is read on every key. */
 export function typingExtension(options: () => TypingOptions) {
   return Extension.create({
@@ -183,7 +292,8 @@ export function typingExtension(options: () => TypingOptions) {
     // Before the editor's own keys, so Backspace can undo a fix.
     priority: 1000,
     addProseMirrorPlugins() {
-      return [autocorrectPlugin(options), ghostPlugin(options)];
+      // The `;` list takes its keys first; then autocorrect (Backspace, Enter), then the grey text (Tab, Escape).
+      return [snippetPlugin(options), autocorrectPlugin(options), ghostPlugin(options)];
     },
   });
 }
