@@ -11,7 +11,7 @@
 // message to that view, never in a URL, an RPC result or a log.
 import { z } from "zod";
 import type { AgentFeed } from "../../core/agent-feed.ts";
-import { reasonText } from "../../core/pve-console.ts";
+import { reasonText, VNC_VIEW_BACKLOG_BYTES } from "../../core/pve-console.ts";
 import type { SessionHandle } from "../../core/rpc.ts";
 import type { WatcherBook } from "../../core/watchers.ts";
 import { attachControlView } from "./control-notice.ts";
@@ -28,7 +28,14 @@ export interface VncSocketLike {
   close(code?: number, reason?: string): void;
 }
 
-const messageSchema = z.discriminatedUnion("type", [z.object({ type: z.literal("detach") }), z.object({ type: z.literal("watch"), visible: z.boolean() })]);
+const messageSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("detach") }),
+  z.object({ type: z.literal("watch"), visible: z.boolean() }),
+  // The view consumed this many console bytes (noVNC has them): the credit that bounds what is in flight to it.
+  z.object({ type: z.literal("ack"), bytes: z.number().int().min(1).max(2_147_483_647) }),
+  // The viewer could not start or stopped working: the console is closed (nothing can be shown, and a stream cannot be resumed).
+  z.object({ type: z.literal("viewer_failed") }),
+]);
 
 function safeJson(text: string): unknown {
   try {
@@ -46,6 +53,9 @@ export function createVncSocketHandlers(
   feed?: AgentFeed,
 ) {
   let attachment: VncAttachment | null = null;
+  // Bytes sent to the view and not yet acknowledged. Past the limit the console is closed: dropping bytes would corrupt the stream.
+  let outstanding = 0;
+  let tooSlow = false;
   let handle: SessionHandle | null = null;
   let offExit: (() => void) | null = null;
   let offEnd: (() => void) | null = null;
@@ -102,7 +112,18 @@ export function createVncSocketHandlers(
       let attached: ReturnType<RemoteHubService["vncAttach"]>;
       try {
         attached = service.vncAttach(handle, {
-          sendData: (bytes) => send(socket, bytes),
+          sendData: (bytes) => {
+            outstanding += bytes.byteLength;
+            if (outstanding > VNC_VIEW_BACKLOG_BYTES) {
+              // Stop sending at once (nothing is queued behind it) and close the console; the attachment may not exist yet.
+              if (!tooSlow) {
+                tooSlow = true;
+                attachment?.fail("viewer_too_slow");
+              }
+              return;
+            }
+            send(socket, bytes);
+          },
           sendPassword: (value) => send(socket, JSON.stringify({ type: "password", value })),
         });
       } catch {
@@ -115,6 +136,7 @@ export function createVncSocketHandlers(
         return;
       }
       attachment = attached.attachment;
+      if (tooSlow) attachment.fail("viewer_too_slow");
       offExit = service.onHelperExit(() => close(socket, WS_GENERATION_STALE, "helper exited"));
       offEnd = service.subscribeSessionEnd(handle, (info) => {
         send(socket, JSON.stringify({ type: "closed", reason: info.reason, text: reasonText(info.reason) }));
@@ -144,8 +166,11 @@ export function createVncSocketHandlers(
         send(socket, JSON.stringify({ type: "error", code: "bad_control" }));
         return;
       }
-      if (result.data.type === "detach") close(socket, 1000, "detach");
-      else watchers?.beat(`${handle.generation}.${handle.sessionId}`, attachId, result.data.visible);
+      const message = result.data;
+      if (message.type === "detach") close(socket, 1000, "detach");
+      else if (message.type === "ack") outstanding = Math.max(0, outstanding - message.bytes);
+      else if (message.type === "viewer_failed") attachment.fail("viewer_failed");
+      else watchers?.beat(`${handle.generation}.${handle.sessionId}`, attachId, message.visible);
     },
     onClose(): void {
       teardown();

@@ -237,6 +237,47 @@ describe("the graphical console view", () => {
     expect(s.server.textFromClient.every((t) => JSON.parse(t).type === "watch")).toBe(true);
   });
 
+  const controls = (s: FakeSocket) => s.sent.filter((x): x is string => typeof x === "string").map((x) => JSON.parse(x) as { type: string; bytes?: number });
+
+  it("a viewer that never starts is reported to the service when the bytes pile up past the channel limit, and nothing more is kept", async () => {
+    const ended: Array<{ code: string; text: string }> = [];
+    render(<VncView wsUrl="ws://x/attach" token="tok-1" loadRfb={() => new Promise(() => {})} onEnded={(e) => ended.push(e)} />);
+    await flush();
+    const s = socket as FakeSocket;
+    await act(async () => {
+      s.open();
+      for (let i = 0; i < 3; i++) s.fromServer(new Uint8Array(512 * 1024));
+    });
+    // 512 KiB + 512 KiB fit in the 1 MiB window; the third does not
+    expect(controls(s).filter((c) => c.type === "viewer_failed")).toHaveLength(1);
+    expect(ended).toEqual([{ code: "viewer_failed", text: expect.stringContaining("viewer failed") }]);
+  });
+
+  it("a viewer whose library fails to load tells the service at once", async () => {
+    const ended: Array<{ code: string; text: string }> = [];
+    render(<VncView wsUrl="ws://x/attach" token="tok-1" loadRfb={() => Promise.reject(new Error("boom"))} onEnded={(e) => ended.push(e)} />);
+    await flush();
+    const s = socket as FakeSocket;
+    await act(async () => s.open());
+    await flush();
+    expect(ended[0]).toMatchObject({ code: "viewer_unavailable" });
+    expect(controls(s).some((c) => c.type === "viewer_failed")).toBe(true);
+  });
+
+  it("acknowledges the bytes noVNC consumed, in steps, so the service can send more", async () => {
+    const m = mount();
+    const s = await startSession(m);
+    expect(controls(s).some((c) => c.type === "ack")).toBe(false); // the handshake is far below one step
+    await act(async () => {
+      // an RFB message of an unknown type would end the session; a valid empty bell (type 2) is one byte each
+      s.fromServer(new Uint8Array(300 * 1024).fill(2));
+    });
+    await flush();
+    const acks = controls(s).filter((c) => c.type === "ack");
+    expect(acks.length).toBeGreaterThanOrEqual(1);
+    expect(acks.every((c) => (c.bytes ?? 0) >= 256 * 1024)).toBe(true);
+  });
+
   /** What noVNC itself is holding as credentials right now. */
   const heldBy = (rfb: RfbType | null): Record<string, unknown> => ((rfb as unknown as { _rfbCredentials: Record<string, unknown> })._rfbCredentials);
 

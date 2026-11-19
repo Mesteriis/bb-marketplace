@@ -65,7 +65,10 @@ class FakeHelper {
     for (const cb of this.pveCb) cb(sid, e);
   }
   data(sid: number, ...bytes: number[]) {
-    for (const cb of this.vncCb) cb(sid, Uint8Array.from(bytes));
+    this.dataBytes(sid, Uint8Array.from(bytes));
+  }
+  dataBytes(sid: number, bytes: Uint8Array) {
+    for (const cb of this.vncCb) cb(sid, bytes);
   }
   ended(sid: number, reason: string) {
     for (const cb of this.closedCb) cb(sid, { exitCode: null, signal: null, reason });
@@ -453,6 +456,44 @@ describe("the attach socket of a graphical console", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(helper.closes).toEqual([1]);
     expect(record(handle).reason).toBe("view_closed");
+  });
+
+  it("a view that stops reading is cut off at the backlog limit and the console is closed viewer_too_slow, never thinned out", async () => {
+    const { helper, service, attach, record } = wired();
+    const { handle } = await service.pveOpen(args("qemu"));
+    const { socket } = await attach(handle);
+    const chunk = new Uint8Array(1024 * 1024).fill(7);
+    for (let i = 0; i < 6; i++) helper.dataBytes(handle.sessionId, chunk);
+    await vi.advanceTimersByTimeAsync(0);
+    // four 1 MiB chunks fit in the 4 MiB window; the fifth does not, so nothing is sent after it and nothing is queued
+    expect(binaries(socket)).toHaveLength(4);
+    expect(helper.closes).toEqual([1]);
+    expect(record(handle)).toMatchObject({ state: "closed", reason: "viewer_too_slow" });
+  });
+
+  it("acknowledged bytes make room again: a view that keeps up is never cut off", async () => {
+    const { helper, service, attach, record } = wired();
+    const { handle } = await service.pveOpen(args("qemu"));
+    const { socket, handlers } = await attach(handle);
+    const chunk = new Uint8Array(1024 * 1024).fill(7);
+    for (let i = 0; i < 12; i++) {
+      helper.dataBytes(handle.sessionId, chunk);
+      handlers.onMessage(socket, JSON.stringify({ type: "ack", bytes: chunk.length }));
+    }
+    await vi.advanceTimersByTimeAsync(0);
+    expect(binaries(socket)).toHaveLength(12);
+    expect(helper.closes).toEqual([]);
+    expect(record(handle).state).not.toBe("closed");
+  });
+
+  it("a viewer that reports it failed closes the console viewer_failed", async () => {
+    const { helper, service, attach, record } = wired();
+    const { handle } = await service.pveOpen(args("qemu"));
+    const { socket, handlers } = await attach(handle);
+    handlers.onMessage(socket, JSON.stringify({ type: "viewer_failed" }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(helper.closes).toEqual([1]);
+    expect(record(handle)).toMatchObject({ state: "closed", reason: "viewer_failed" });
   });
 
   it("rejects an invalid control message and takes a detach", async () => {

@@ -211,6 +211,21 @@ including a temporary keychain), unit tests beside each module, `src/core/pve-pr
   first is attached is refused (`vnc_view_taken`), and so is any view after the first left (`vnc_not_resumable`: disconnect and open it
   again). The page keeps the view mounted for as long as its tab exists. Bytes the console sends before its view attaches (the 12-byte
   greeting) are held up to 256 KiB; beyond that the console is closed.
+- **The view's lifetime is the console's lifetime.** When the one view detaches (the tab is closed, the page unmounts or reloads, the
+  socket drops) the console is closed at once with `view_closed`: nothing could attach to it afterwards, so keeping it would only leave an
+  idle guest session open. The VNC password is dropped from the service's memory after the view took it and whenever the console closes.
+  The 5-minute idle rule therefore concerns terminal consoles and consoles that have never had a view.
+- **A hidden tab counts as attached.** A tab that is merely not selected, or a BB window that is in the background, still has its view
+  mounted and keeps beating; the idle clock runs only when **no page at all** holds the console's tab.
+- **Back-pressure on the graphics stream.** RFB cannot be thinned out, so a view that cannot keep up closes the console instead of
+  letting memory grow. The service lets **4 MiB** of console bytes be in flight to the view; the view acknowledges what noVNC consumed in
+  steps of 256 KiB, and a view that falls more than 4 MiB behind gets the console closed with `viewer_too_slow` (the engine child and the
+  upstream socket go with it). Inside the page the channel holds at most **1 MiB** for noVNC before noVNC installs its handler; past
+  that, or when noVNC fails to load or start, the page tells the service and the console is closed with `viewer_failed`. No byte is ever
+  dropped or reordered.
+- **Platform limit (unchanged).** A caller that can use the owner-only RPCs (any shell-capable code on this machine running as the owner)
+  can attach as the first view of a graphical console and so receive its password and bytes. That is the owner's own session; the plugin
+  does not defend the owner against code running as the owner. Agents have no such route (see Agents).
 
 ### Where the VNC password lives, and for how long
 

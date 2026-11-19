@@ -49,6 +49,8 @@ const REASON_TEXT: Record<string, string> = {
   helper_exited: "The Remote Hub helper ended.",
   node_offline: "The node is not online.",
   idle_timeout: "Closed because nobody was looking at it.",
+  viewer_too_slow: "The viewer could not keep up with the console, so the console was closed (a graphics stream is never thinned out). Open it again.",
+  viewer_failed: "The graphical viewer failed to start or stopped working, so the console was closed. Open it again.",
   view_closed: "The graphical view was closed, so the console was closed with it. Open it again to get a new one.",
   vnc_buffer_overflow: "The console sent data before a view attached, so it was closed.",
   vnc_view_taken: "This console is already open in another view.",
@@ -71,6 +73,11 @@ export interface VncViewSink {
   /** The one-time password for the view's RFB authentication. */
   password(password: string): void;
 }
+
+/** Unacknowledged console bytes a graphical view may have outstanding on its socket; beyond that the console is closed, never thinned out. */
+export const VNC_VIEW_BACKLOG_BYTES = 4 * 1024 * 1024;
+/** What the page's channel holds for noVNC before noVNC installs its handler; beyond that the viewer has failed. */
+export const VNC_CHANNEL_BACKLOG_BYTES = 1024 * 1024;
 
 export type VncAttachRefusal = "vnc_view_taken" | "vnc_not_resumable";
 

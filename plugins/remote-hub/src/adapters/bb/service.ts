@@ -87,6 +87,8 @@ export interface VncAttachment {
   /** The view's keys and mouse, raw RFB. False when an agent holds the session. */
   input(bytes: Uint8Array): Promise<boolean>;
   detach(): void;
+  /** The view cannot go on (too slow, failed to start): the console is closed with this reason. A stream is never thinned out. */
+  fail(reason: "viewer_too_slow" | "viewer_failed"): void;
 }
 
 export interface PveConsoleEvent {
@@ -1189,6 +1191,10 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
             const hp = await start();
             await hp.pveVncInput(handle, bytes);
             return true;
+          },
+          fail(reason) {
+            const info = sessions.get(key);
+            if (info !== undefined && info.state !== "closed") void closeSession(handle, reason).catch(() => {});
           },
           detach() {
             if (done) return;

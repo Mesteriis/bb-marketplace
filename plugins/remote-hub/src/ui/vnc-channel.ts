@@ -21,13 +21,22 @@ export class VncChannel {
   private state: VncChannelState = "connecting";
   /** Bytes that arrived before noVNC set `onmessage`; handed over in order as soon as it does. */
   private queue: Uint8Array[] = [];
+  private queuedBytes = 0;
   private opened = false;
   private closeRequested = false;
+  private overflowed = false;
 
   constructor(
     private readonly out: (bytes: Uint8Array) => void,
     /** noVNC called `close()`: the page tears the socket down. */
     private readonly onCloseRequested: () => void,
+    private readonly limits: {
+      /** Most bytes held for noVNC before it installs its handler; past it `onOverflow` fires once and nothing more is kept. */
+      maxQueuedBytes: number;
+      onOverflow: () => void;
+      /** Bytes handed to noVNC (the credit that lets the service send more). */
+      onConsumed: (bytes: number) => void;
+    },
   ) {}
 
   get onopen(): (() => void) | null {
@@ -80,8 +89,17 @@ export class VncChannel {
 
   /** Raw RFB bytes from the console. */
   deliver(bytes: Uint8Array): void {
-    if (this.state === "closed") return;
+    if (this.state === "closed" || this.overflowed) return;
+    if (this.queuedBytes + bytes.byteLength > this.limits.maxQueuedBytes && this.handler === null) {
+      // The viewer is not taking bytes. Dropping some would corrupt the stream, so the console is closed instead.
+      this.overflowed = true;
+      this.queue = [];
+      this.queuedBytes = 0;
+      this.limits.onOverflow();
+      return;
+    }
     this.queue.push(bytes);
+    this.queuedBytes += bytes.byteLength;
     this.flush();
   }
 
@@ -103,9 +121,11 @@ export class VncChannel {
     if (this.handler === null || !this.opened) return;
     while (this.queue.length > 0 && this.handler !== null) {
       const next = this.queue.shift() as Uint8Array;
+      this.queuedBytes -= next.byteLength;
       const copy = new Uint8Array(next.byteLength);
       copy.set(next);
       this.handler({ data: copy.buffer });
+      this.limits.onConsumed(next.byteLength);
     }
   }
 }

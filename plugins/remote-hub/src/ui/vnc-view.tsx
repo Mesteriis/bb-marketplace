@@ -9,7 +9,10 @@
 import { useEffect, useRef } from "react";
 import type RfbType from "@novnc/novnc/core/rfb.js";
 import type { FeedEvent } from "../core/agent-feed.ts";
-import type { PveConsoleInfo } from "../core/pve-console.ts";
+import { reasonText, VNC_CHANNEL_BACKLOG_BYTES, type PveConsoleInfo } from "../core/pve-console.ts";
+
+/** The view tells the service how much it consumed in steps of this size (the service allows 4 MiB in flight). */
+const ACK_EVERY_BYTES = 256 * 1024;
 import type { ControlMessage } from "./control-banner.tsx";
 import { VncChannel } from "./vnc-channel.ts";
 import { ModifierTracker } from "./vnc-modifiers.ts";
@@ -61,6 +64,8 @@ export function VncView(props: VncViewProps) {
     const sendControl = (message: unknown): void => {
       if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
     };
+    let consumed = 0;
+    let viewerFailed = false;
     const channel = new VncChannel(
       (bytes) => {
         if (socket.readyState === WebSocket.OPEN) socket.send(bytes);
@@ -68,6 +73,21 @@ export function VncView(props: VncViewProps) {
       () => {
         if (socket.readyState === WebSocket.OPEN) sendControl({ type: "detach" });
         socket.close();
+      },
+      {
+        maxQueuedBytes: VNC_CHANNEL_BACKLOG_BYTES,
+        // The viewer cannot keep up or never started: the console is closed (a stream is never thinned out).
+        onOverflow: () => {
+          sendControl({ type: "viewer_failed" });
+          report({ code: "viewer_failed", text: reasonText("viewer_failed") });
+        },
+        onConsumed: (bytes) => {
+          consumed += bytes;
+          if (consumed >= ACK_EVERY_BYTES) {
+            sendControl({ type: "ack", bytes: consumed });
+            consumed = 0;
+          }
+        },
       },
     );
 
@@ -139,12 +159,16 @@ export function VncView(props: VncViewProps) {
         say("waiting_frame");
       })
       .catch(() => {
-        if (!disposed) report({ code: "viewer_unavailable", text: "The graphical viewer could not be started." });
+        if (disposed) return;
+        viewerFailed = true; // the socket may not be open yet: it is told as soon as it is
+        sendControl({ type: "viewer_failed" });
+        report({ code: "viewer_unavailable", text: "The graphical viewer could not be started." });
       });
 
     let stopBeat: (() => void) | null = null;
     socket.onopen = () => {
       if (disposed) return;
+      if (viewerFailed) sendControl({ type: "viewer_failed" });
       stopBeat = startWatchBeat(sendControl, container);
       channel.deliverOpen();
     };
