@@ -1,0 +1,173 @@
+import type { ExperimentalPluginRpcHandlerContext } from "@get-bb/plugin-sdk";
+import Database from "better-sqlite3";
+import { describe, expect, it } from "vitest";
+
+import {
+  GRANT_ACCOUNT_MESSAGE,
+  GRANT_GOOGLE_MESSAGE,
+  GRANT_RIGHT_MESSAGE,
+  PLUGIN_API_METHODS,
+  PLUGIN_ID_MESSAGE,
+  PLUGIN_ONLY_MESSAGE,
+  PLUGIN_OWNER_METHODS,
+  REQUEST_INVALID_MESSAGE,
+  REQUEST_LIMIT_MESSAGE,
+} from "../../core/plugin-api.ts";
+import { createPluginApi } from "./plugin-api-rpc.ts";
+import { guardHandlers } from "./plugin-guard.ts";
+import { MIGRATIONS, createSqliteStore } from "./sqlite-store.ts";
+
+const signal = new AbortController().signal;
+const as = (pluginId: string): ExperimentalPluginRpcHandlerContext => ({ experimental_caller: { kind: "plugin", pluginId }, experimental_signal: signal });
+const owner: ExperimentalPluginRpcHandlerContext = { experimental_caller: { kind: "client" }, experimental_signal: signal };
+
+function setup(start = "2026-11-19T10:00:00.000Z") {
+  const db = new Database(":memory:");
+  db.transaction(() => MIGRATIONS.forEach((statement) => db.exec(statement)))();
+  const add = db.prepare(
+    `INSERT INTO accounts (id, email, host, port, username, password_sealed, preset, created_at)
+     VALUES (?, ?, 'imap.example.com', 993, ?, 'sealed', 'other', '2026-01-01T00:00:00.000Z')`,
+  );
+  add.run("acc_1", "first@example.com", "first");
+  add.run("acc_2", "second@example.net", "second");
+  const store = createSqliteStore(db);
+  const clock = { now: new Date(start) };
+  const announced: (string | null)[] = [];
+  const api = createPluginApi({ store, now: () => clock.now, announce: (request) => announced.push(request) });
+  const guarded = guardHandlers(api.handlers, { api: new Set(PLUGIN_API_METHODS), check: api.check });
+  return { store, clock, announced, api: guarded };
+}
+
+describe("asking for access", () => {
+  it("a plugin with nothing sees the version, no grants and no request", async () => {
+    const { api } = setup();
+    expect(await api.plugin_access_info({}, as("calendar"))).toEqual({ apiVersion: 1, grants: [], request: null });
+  });
+
+  it("a request is kept, announced once and shown back to the plugin, not to another", async () => {
+    const { api, announced } = setup();
+    expect(await api.plugin_access_request({ rights: ["mail.read", "invites.read"], reason: "Calendar sync" }, as("calendar"))).toEqual({ ok: true });
+    expect(announced).toEqual(["calendar"]);
+    expect(await api.plugin_access_info({}, as("calendar"))).toEqual({
+      apiVersion: 1,
+      grants: [],
+      request: { rights: ["mail.read", "invites.read"], reason: "Calendar sync", askedAt: "2026-11-19T10:00:00.000Z" },
+    });
+    expect(await api.plugin_access_info({}, as("crm"))).toMatchObject({ request: null });
+  });
+
+  it("asking gives nothing by itself", async () => {
+    const { api, store } = setup();
+    await api.plugin_access_request({ rights: ["mail.read"], reason: "" }, as("calendar"));
+    expect(store.listPluginGrants()).toEqual([]);
+  });
+
+  it("the sixth request within 24 hours is refused, kept out and not announced", async () => {
+    const { api, clock, announced, store } = setup();
+    for (let i = 0; i < 5; i++) {
+      clock.now = new Date(Date.parse("2026-11-19T10:00:00.000Z") + i * 60_000);
+      await api.plugin_access_request({ rights: ["mail.read"], reason: `r${i}` }, as("calendar"));
+    }
+    clock.now = new Date("2026-11-19T11:00:00.000Z");
+    await expect(api.plugin_access_request({ rights: ["mail.read"], reason: "r5" }, as("calendar"))).rejects.toMatchObject({
+      code: "conflict",
+      message: REQUEST_LIMIT_MESSAGE,
+    });
+    expect(announced).toHaveLength(5);
+    expect(store.getPluginRequests()[0]!.reason).toBe("r4");
+    // Another plugin is not held by this one's limit; the next day neither is.
+    await expect(api.plugin_access_request({ rights: ["mail.read"], reason: "" }, as("crm"))).resolves.toEqual({ ok: true });
+    clock.now = new Date("2026-11-20T10:05:00.000Z");
+    await expect(api.plugin_access_request({ rights: ["mail.read"], reason: "next day" }, as("calendar"))).resolves.toEqual({ ok: true });
+  });
+
+  it("an unknown right refuses the whole request", async () => {
+    const { api, store, announced } = setup();
+    await expect(api.plugin_access_request({ rights: ["mail.read", "mail.delete"], reason: "x" }, as("calendar"))).rejects.toMatchObject({
+      code: "invalid",
+      message: REQUEST_INVALID_MESSAGE,
+    });
+    await expect(api.plugin_access_request({ rights: [], reason: "x" }, as("calendar"))).rejects.toMatchObject({ code: "invalid" });
+    expect(store.getPluginRequests()).toEqual([]);
+    expect(announced).toEqual([]);
+  });
+
+  it("a very long plugin id is refused; one that looks like markup is kept as text", async () => {
+    const { api, store } = setup();
+    await expect(api.plugin_access_request({ rights: ["mail.read"], reason: "" }, as("p".repeat(300)))).rejects.toMatchObject({
+      code: "invalid",
+      message: PLUGIN_ID_MESSAGE,
+    });
+    await api.plugin_access_request({ rights: ["mail.read"], reason: "" }, as("<img src=x>"));
+    expect(store.getPluginRequests().map((request) => request.pluginId)).toEqual(["<img src=x>"]);
+  });
+
+  it("a client caller is refused on the plugins' own methods", async () => {
+    const { api } = setup();
+    await expect(api.plugin_access_info({}, owner)).rejects.toMatchObject({ code: "forbidden", message: PLUGIN_ONLY_MESSAGE });
+    await expect(api.plugin_access_request({ rights: ["mail.read"], reason: "" }, owner)).rejects.toMatchObject({ code: "forbidden" });
+  });
+});
+
+describe("the owner's grants", () => {
+  it("a grant is set, listed with its plugin and seen by that plugin", async () => {
+    const { api, announced } = setup();
+    expect(await api.plugin_grant_set({ pluginId: "crm", right: "mail.read", accountId: "acc_1", on: true }, owner)).toEqual({ ok: true });
+    expect(await api.plugin_grants_list({}, owner)).toEqual({
+      plugins: [{ pluginId: "crm", grants: [{ right: "mail.read", accountId: "acc_1", grantedAt: "2026-11-19T10:00:00.000Z" }], lastCallAt: null }],
+      requests: [],
+    });
+    expect(await api.plugin_access_info({}, as("crm"))).toMatchObject({ grants: [{ right: "mail.read", accountId: "acc_1" }] });
+    expect(announced).toEqual([null]);
+    await api.plugin_grant_set({ pluginId: "crm", right: "mail.read", accountId: "acc_1", on: false }, owner);
+    expect(await api.plugin_grants_list({}, owner)).toEqual({ plugins: [], requests: [] });
+  });
+
+  it("lists a request with its plugin, and dismissing it grants nothing", async () => {
+    const { api, store } = setup();
+    await api.plugin_access_request({ rights: ["contacts.read"], reason: "People" }, as("crm"));
+    expect(await api.plugin_grants_list({}, owner)).toEqual({
+      plugins: [],
+      requests: [{ pluginId: "crm", rights: ["contacts.read"], reason: "People", askedAt: "2026-11-19T10:00:00.000Z" }],
+    });
+    await api.plugin_request_dismiss({ pluginId: "crm" }, owner);
+    expect(await api.plugin_grants_list({}, owner)).toEqual({ plugins: [], requests: [] });
+    expect(store.listPluginGrants()).toEqual([]);
+  });
+
+  it("revoke takes everything a plugin has and asked for", async () => {
+    const { api } = setup();
+    await api.plugin_grant_set({ pluginId: "crm", right: "mail.read", accountId: "acc_1", on: true }, owner);
+    await api.plugin_grant_set({ pluginId: "crm", right: "contacts.read", accountId: "acc_2", on: true }, owner);
+    await api.plugin_access_request({ rights: ["invites.read"], reason: "" }, as("crm"));
+    await api.plugin_grant_revoke({ pluginId: "crm" }, owner);
+    expect(await api.plugin_access_info({}, as("crm"))).toEqual({ apiVersion: 1, grants: [], request: null });
+  });
+
+  it("refuses an unknown account, an unknown right and a Google key from here", async () => {
+    const { api, store } = setup();
+    await expect(api.plugin_grant_set({ pluginId: "crm", right: "mail.read", accountId: "acc_9", on: true }, owner)).rejects.toMatchObject({
+      code: "not_found",
+      message: GRANT_ACCOUNT_MESSAGE,
+    });
+    await expect(api.plugin_grant_set({ pluginId: "crm", right: "mail.delete", accountId: "acc_1", on: true }, owner)).rejects.toMatchObject({
+      code: "invalid",
+      message: GRANT_RIGHT_MESSAGE,
+    });
+    await expect(api.plugin_grant_set({ pluginId: "crm", right: "google.calendar", accountId: "acc_1", on: true }, owner)).rejects.toMatchObject({
+      code: "invalid",
+      message: GRANT_GOOGLE_MESSAGE,
+    });
+    expect(store.listPluginGrants()).toEqual([]);
+  });
+
+  it("a plugin cannot grant, revoke, list or dismiss", async () => {
+    const { api, store } = setup();
+    expect([...PLUGIN_OWNER_METHODS].sort()).toEqual(["plugin_grant_revoke", "plugin_grant_set", "plugin_grants_list", "plugin_request_dismiss"]);
+    await expect(api.plugin_grant_set({ pluginId: "crm", right: "mail.read", accountId: "acc_1", on: true }, as("crm"))).rejects.toMatchObject({ code: "forbidden" });
+    await expect(api.plugin_grants_list({}, as("crm"))).rejects.toMatchObject({ code: "forbidden" });
+    await expect(api.plugin_grant_revoke({ pluginId: "other" }, as("crm"))).rejects.toMatchObject({ code: "forbidden" });
+    await expect(api.plugin_request_dismiss({ pluginId: "other" }, as("crm"))).rejects.toMatchObject({ code: "forbidden" });
+    expect(store.listPluginGrants()).toEqual([]);
+  });
+});

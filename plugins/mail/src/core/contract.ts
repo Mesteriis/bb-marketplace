@@ -1,5 +1,6 @@
 // The RPC contract between the Mail page and the server, as plain zod
 // schemas. server.ts wraps it with the SDK's defineRpcContract.
+import { pluginApiSchemas } from "./plugin-api.ts";
 import { z } from "zod";
 import { pageSettingsPatchSchema, pageSettingsSchema } from "./page-settings.ts";
 import { composeDocInputSchema } from "./compose-doc.ts";
@@ -524,6 +525,7 @@ export const archiveMessageSchema = archiveSummarySchema.extend({
 export type ArchiveMessageView = z.infer<typeof archiveMessageSchema>;
 
 export const rpcSchemas = {
+  ...pluginApiSchemas,
   status_get: {
     input: z.null(),
     output: statusViewSchema,
@@ -1879,6 +1881,9 @@ export const SLICE_3H_METHODS = [
 export const SIGN_IN_METHODS = ["accounts_retry_sign_in"] as const satisfies readonly (keyof typeof rpcSchemas)[];
 
 /** The owner-only methods of the settings page. */
+/** The plugin API and the owner's methods for it (plugin-api.ts). */
+export const PLUGIN_METHODS = Object.keys(pluginApiSchemas) as readonly (keyof typeof pluginApiSchemas)[];
+
 export const SETTINGS_METHODS = ["settings_get", "settings_set"] as const satisfies readonly (keyof typeof rpcSchemas)[];
 
 /** The owner-only methods of Google sign-in. */

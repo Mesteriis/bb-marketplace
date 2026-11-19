@@ -116,8 +116,14 @@ import {
   type BbSettings,
   type RuleDeps,
 } from "./src/adapters/bb/bb-rpc.ts";
-import { guardHandlers, type PluginCheck } from "./src/adapters/bb/plugin-guard.ts";
-import { PLUGIN_API_METHODS, PLUGIN_CALLER_MESSAGE } from "./src/core/plugin-api.ts";
+import { createPluginApi, type PluginApi } from "./src/adapters/bb/plugin-api-rpc.ts";
+import { guardHandlers } from "./src/adapters/bb/plugin-guard.ts";
+import {
+  PLUGIN_ACCESS_CHANNEL,
+  PLUGIN_API_METHODS,
+  PLUGIN_CALLER_MESSAGE,
+  type PluginAccessPayload,
+} from "./src/core/plugin-api.ts";
 import { ruleThreadMetadata } from "./src/core/bb-text.ts";
 import { describeStructure, headerLines, readHeaders } from "./src/core/headers.ts";
 import {
@@ -1874,7 +1880,11 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
     const rpcDeps: RpcDeps = {
       googleSignIn,
       googleSignInOffered: googleClient() !== null,
-      pluginCheck: () => {},
+      pluginApi: createPluginApi({
+        store,
+        now: () => new Date(),
+        announce: (request) => bb.realtime.publish(PLUGIN_ACCESS_CHANNEL, { request } satisfies PluginAccessPayload),
+      }),
       pageSettings: {
         get: () => pageSettingsOf(current),
         set: async (patch) => {
@@ -1994,8 +2004,8 @@ type RpcDeps = {
   /** Google sign-in flows, and whether the plugin has a client to offer them with. */
   googleSignIn: GoogleSignIn;
   googleSignInOffered: boolean;
-  /** The grant check of the plugin API: throws a refusal when the plugin may not make the call. */
-  pluginCheck: PluginCheck;
+  /** The plugin API: its handlers and the grant check the guard runs before them. */
+  pluginApi: PluginApi;
   /** The settings page: the settings it shows, and a change of the writable ones. */
   pageSettings: { get: () => PageSettings; set: (patch: PageSettingsPatch) => Promise<PageSettings> };
   /** Slice 3g: BB projects and working trees, threads, Taskboard and the owner's settings for them. */
@@ -3972,9 +3982,10 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
           ? opened
           : { state: opened.state, text: null, html: null, attachments: [], signature: null };
       },
+      ...deps.pluginApi.handlers,
     }, {
       api: new Set(PLUGIN_API_METHODS),
-      check: deps.pluginCheck,
+      check: deps.pluginApi.check,
       onRefused: (pluginId, method) => bb.log.warn(`plugin ${JSON.stringify(pluginId.slice(0, 128))} refused on ${method}`),
     }),
     { experimental_discoverable: false },

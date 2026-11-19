@@ -3402,6 +3402,21 @@ describe("the plugin guard over the whole contract", () => {
     expect(open).toEqual([]);
   });
 
+  it("through the host a plugin asks for access, the owner grants it, and nothing else opens", async () => {
+    const host = await load();
+    const asCalendar = { experimental_caller: { kind: "plugin", pluginId: "calendar" } } as const;
+    const call = host.harness.behavior.callRpc;
+    expect(await call("plugin_access_info", {}, asCalendar)).toEqual({ apiVersion: 1, grants: [], request: null });
+    expect(await call("plugin_access_request", { rights: ["mail.read"], reason: "Calendar sync" }, asCalendar)).toEqual({ ok: true });
+    expect(await call("plugin_grants_list", {})).toMatchObject({ plugins: [], requests: [{ pluginId: "calendar", rights: ["mail.read"] }] });
+    await expect(call("plugin_grants_list", {}, asCalendar)).rejects.toMatchObject({ code: "forbidden" });
+    await expect(call("plugin_grant_set", { pluginId: "calendar", right: "mail.read", accountId: "acc_1", on: true }, asCalendar)).rejects.toMatchObject({
+      code: "forbidden",
+    });
+    await expect(call("status_get", null, asCalendar)).rejects.toMatchObject({ code: "forbidden" });
+    await expect(call("plugin_access_info", {})).rejects.toMatchObject({ code: "forbidden" });
+  });
+
   it("a read answers the owner's page and refuses another plugin through the host", async () => {
     const host = await load();
     await expect(host.harness.behavior.callRpc("status_get", null)).resolves.toMatchObject({ vaultReady: true });
