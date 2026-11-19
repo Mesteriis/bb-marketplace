@@ -114,12 +114,13 @@ describe("planServerSearch: Gmail", () => {
       localOnly: ["sender", "is", "has"],
     });
     expect(planServerSearch(q("is:dev"), { gmail: true }, GMAIL)).toEqual({ kind: "refused", refused: "nothing_to_search", localOnly: ["is"] });
+    expect(planServerSearch(q("is:newsletter"), { gmail: true }, GMAIL)).toEqual({ kind: "refused", refused: "nothing_to_search", localOnly: ["is"] });
     const plain = planServerSearch(q("is:automated -is:dev from:known has:invite report"), { gmail: false }, [
       { accountId: "acc_1", path: "INBOX", name: "Inbox", specialUse: "inbox", selectable: true, unreadCount: 0, totalCount: 1, subscribed: true },
     ] as never);
     expect(plain).toMatchObject({ kind: "folders", runs: [{ path: "INBOX", criteria: { text: "report" } }], localOnly: ["is", "sender", "has"] });
     expect(localOnlyText("sender")).toBe("from:vip, from:team and from:known are not used on the server");
-    expect(localOnlyText("is")).toBe("is:dev and is:automated are not used on the server");
+    expect(localOnlyText("is")).toBe("is:dev, is:automated and is:newsletter are not used on the server");
     expect(localOnlyText("has")).toBe("has:invite is not used on the server");
     expect(localOnlyText("list")).toBe("list: is not used on the server");
   });

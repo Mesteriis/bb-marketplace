@@ -2855,7 +2855,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
   const settingsTabs = useMemo<InboxTabsPort>(() => {
     const done = () => void loadTabs();
     return {
-      load: async () => (await rpc.call("inbox_tabs_list", { scope: { kind: "all", role: "inbox" } })).tabs,
+      load: async () => (await rpc.call("inbox_tabs_list", { scope: { kind: "all", role: "inbox" }, counts: false })).tabs,
       save: async (input) => {
         await rpc.call("inbox_tab_save", input);
         done();

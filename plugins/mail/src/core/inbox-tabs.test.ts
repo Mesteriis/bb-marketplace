@@ -55,4 +55,8 @@ describe("inbox tabs", () => {
   it("the team is the owner's own domains without public mail", () => {
     expect([...teamDomains(["owner@Example.org", "me@gmail.com", "alias@corp.example.net", "broken"])].sort()).toEqual(["corp.example.net", "example.org"]);
   });
+
+  it("the library's Newsletters tab holds mailing lists too, and needs no categories", () => {
+    expect(TAB_LIBRARY.find((entry) => entry.id === "newsletters")?.query).toBe("is:newsletter");
+  });
 });

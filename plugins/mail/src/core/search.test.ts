@@ -268,6 +268,10 @@ describe("parseQuery: operators for Inbox tabs", () => {
   });
 
   it("notes a value that is none of them", () => {
+    expect(parseQuery("is:newsletter -is:Newsletter").conditions).toEqual([
+      { field: "is", value: "newsletter", negated: false },
+      { field: "is", value: "newsletter", negated: true },
+    ]);
     expect(parseQuery("is:devops has:invites").notes).toEqual([
       { kind: "bad_value", term: "is:devops" },
       { kind: "bad_value", term: "has:invites" },

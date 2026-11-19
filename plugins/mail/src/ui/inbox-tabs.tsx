@@ -2,7 +2,7 @@
 // tabs, a tab's menu and the dialog that names a tab or edits its
 // condition. The first tab is always the whole Inbox. The design system has
 // no dropdown, so the library and a tab's menu are dialogs.
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { TABS_MAX, TAB_NAME_MAX, TAB_QUERY_MAX } from "../core/inbox-tabs.ts";
 import { Button } from "@/components/ui/button";
 import {
@@ -96,7 +96,20 @@ export function InboxTabs(props: InboxTabsProps) {
   }, [askSerial]);
 
   // The tab in view, with its menu button, stays inside the visible part of a row that scrolls.
-  const selectedRef = useRef<HTMLElement | null>(null);
+  const selectedRef = useRef<HTMLButtonElement | null>(null);
+  const current = tabs.find((tab) => tab.id === currentId);
+  /** Arrows, Home and End move the focus along the tabs (a click or Enter selects). */
+  const onRowKey = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    const step = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : null;
+    if (step === null && event.key !== "Home" && event.key !== "End") return;
+    const all = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('[role="tab"]'));
+    const at = all.indexOf(document.activeElement as HTMLElement);
+    if (at === -1) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const next = step === null ? (event.key === "Home" ? 0 : all.length - 1) : (at + step + all.length) % all.length;
+    all[next]?.focus();
+  };
   const shown = tabs.length;
   useEffect(() => {
     selectedRef.current?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
@@ -125,13 +138,15 @@ export function InboxTabs(props: InboxTabsProps) {
           <div
             role="tablist"
             aria-label={tx("Inbox tabs")}
+            onKeyDown={onRowKey}
             className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto pr-6 [mask-image:linear-gradient(to_right,black_calc(100%-1.5rem),transparent)] [scrollbar-width:none]"
           >
             <button
               type="button"
               role="tab"
-              ref={currentId === null ? (el) => void (selectedRef.current = el) : undefined}
+              ref={currentId === null ? selectedRef : undefined}
               aria-selected={currentId === null}
+              tabIndex={currentId === null ? 0 : -1}
               onClick={() => props.onSelect(null)}
               className={cn(TAB_CLASS, currentId === null && "bg-state-active font-medium text-foreground hover:bg-state-active")}
             >
@@ -141,48 +156,44 @@ export function InboxTabs(props: InboxTabsProps) {
             {tabs.map((tab) => {
               const selected = tab.id === currentId;
               return (
-                <span
+                <button
                   key={tab.id}
-                  role="none"
-                  ref={selected ? (el) => void (selectedRef.current = el) : undefined}
-                  className="flex shrink-0 scroll-mx-6 items-center"
+                  type="button"
+                  role="tab"
+                  ref={selected ? selectedRef : undefined}
+                  aria-selected={selected}
+                  tabIndex={selected ? 0 : -1}
+                  title={tab.broken ? tx("This tab's condition no longer works") : tab.query}
+                  onClick={() => props.onSelect(tab.id)}
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    setRequest({ kind: "menu", tab });
+                  }}
+                  className={cn(TAB_CLASS, selected && "bg-state-active font-medium text-foreground hover:bg-state-active")}
                 >
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={selected}
-                    title={tab.broken ? tx("This tab's condition no longer works") : tab.query}
-                    onClick={() => props.onSelect(tab.id)}
-                    onContextMenu={(event) => {
-                      event.preventDefault();
-                      setRequest({ kind: "menu", tab });
-                    }}
-                    className={cn(TAB_CLASS, selected && "bg-state-active font-medium text-foreground hover:bg-state-active")}
-                  >
-                    <span className="max-w-40 truncate">{tab.name}</span>
-                    {tab.broken ? (
-                      <>
-                        <Icon name="AlertTriangle" className="size-3.5 text-warning" aria-hidden />
-                        <span className="sr-only">{tx("condition no longer works")}</span>
-                      </>
-                    ) : (
-                      <Count unread={tab.unread} />
-                    )}
-                  </button>
-                  {selected ? (
-                    <button
-                      type="button"
-                      aria-label={tx("{p1} options", { p1: tab.name })}
-                      onClick={() => setRequest({ kind: "menu", tab })}
-                      className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"
-                    >
-                      <Icon name="MoreHorizontal" fallback="Info" className="size-4" aria-hidden />
-                    </button>
-                  ) : null}
-                </span>
+                  <span className="max-w-40 truncate">{tab.name}</span>
+                  {tab.broken ? (
+                    <>
+                      <Icon name="AlertTriangle" className="size-3.5 text-warning" aria-hidden />
+                      <span className="sr-only">{tx("condition no longer works")}</span>
+                    </>
+                  ) : (
+                    <Count unread={tab.unread} />
+                  )}
+                </button>
               );
             })}
           </div>
+          {current !== undefined ? (
+            <button
+              type="button"
+              aria-label={tx("{p1} options", { p1: current.name })}
+              onClick={() => setRequest({ kind: "menu", tab: current })}
+              className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"
+            >
+              <Icon name="MoreHorizontal" fallback="Info" className="size-4" aria-hidden />
+            </button>
+          ) : null}
           <Button
             variant="ghost"
             size="sm"

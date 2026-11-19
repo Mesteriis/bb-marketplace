@@ -30,7 +30,7 @@ export const SEARCH_OPERATORS: readonly { example: string; meaning: string }[] =
   { example: "list:news.example.org", meaning: msg("A mailing list") },
   { example: "category:bills", meaning: msg("A Mail category") },
   { example: "from:vip", meaning: msg("Your important senders; from:team is your own domains, from:known is people you wrote to") },
-  { example: "is:dev", meaning: msg("Development notifications; is:automated is robots that are not mailing lists") },
+  { example: "is:dev", meaning: msg("Development notifications; is:automated is robots, is:newsletter is mailing lists") },
   { example: "has:invite", meaning: msg("Messages with a calendar invitation") },
   { example: "account:work", meaning: msg("One account") },
   { example: "-in:trash", meaning: msg("A leading - leaves matches out") },

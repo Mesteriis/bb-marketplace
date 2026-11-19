@@ -173,6 +173,9 @@ function readOperator(token: Token, now: Date | undefined): Read {
           return make("is", "dev");
         case "automated":
           return make("is", "automated");
+        case "newsletter":
+        case "newsletters":
+          return make("is", "newsletter");
         default:
           return { note: "bad_value" };
       }
@@ -253,4 +256,16 @@ const SPACE = /^\s$/u;
 /** Any Unicode whitespace, including NBSP and the ideographic space. */
 function isSpace(char: string): boolean {
   return SPACE.test(char);
+}
+
+/**
+ * How a `from:` value is matched: a whole address matches that address, a
+ * domain matches its addresses and those of its subdomains (or the words in
+ * a display name), anything else is a fragment of the address or the name.
+ */
+export function fromShape(value: string): "address" | "domain" | "fragment" {
+  const text = value.trim();
+  if (/^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/.test(text)) return "address";
+  if (/^[a-z0-9-]+(\.[a-z0-9-]+)+$/i.test(text)) return "domain";
+  return "fragment";
 }

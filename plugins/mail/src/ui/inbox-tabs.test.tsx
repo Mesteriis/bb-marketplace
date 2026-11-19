@@ -134,6 +134,25 @@ describe("InboxTabs", () => {
     }
   });
 
+  it("keeps only tabs in the tab list, and arrows move the focus along it", () => {
+    show({ currentId: "t-vip" });
+    const list = screen.getByRole("tablist", { name: "Inbox tabs" });
+    expect(within(list).queryAllByRole("button")).toEqual([]);
+    const [inbox, vip, team] = within(list).getAllByRole("tab") as [HTMLElement, HTMLElement, HTMLElement];
+    expect([inbox, vip, team].map((el) => el.tabIndex)).toEqual([-1, 0, -1]);
+    vip.focus();
+    fireEvent.keyDown(vip, { key: "ArrowRight" });
+    expect(document.activeElement).toBe(team);
+    fireEvent.keyDown(team, { key: "ArrowRight" });
+    expect(document.activeElement).toBe(inbox);
+    fireEvent.keyDown(inbox, { key: "ArrowLeft" });
+    expect(document.activeElement).toBe(team);
+    fireEvent.keyDown(team, { key: "Home" });
+    expect(document.activeElement).toBe(inbox);
+    fireEvent.keyDown(inbox, { key: "End" });
+    expect(document.activeElement).toBe(team);
+  });
+
   it("renders a name as text", () => {
     show({ tabs: [tab({ id: "t-x", name: "<img src=x onerror=alert(1)>" })] });
     expect(screen.getByRole("tab", { name: "<img src=x onerror=alert(1)>" })).toBeTruthy();

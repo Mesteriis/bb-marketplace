@@ -155,6 +155,7 @@ import { ownerLabels } from "../labels.ts";
 import { renamedPath } from "../folder-ops.ts";
 import { SAVED_SEARCHES_MAX } from "../saved-searches.ts";
 import { filenameMatches } from "../server-search.ts";
+import { fromShape } from "../search.ts";
 import { normalizeListId, type DevClass } from "../dev-notify.ts";
 import { RULES_MAX, RULE_READY_DAYS, RULE_RUNS_KEEP_DAYS, RULE_THREADS_KEEP_DAYS, capVerdict, type Rule } from "../mail-rules.ts";
 import { INCIDENT_KEEP_DAYS } from "../alerts.ts";
@@ -4043,8 +4044,14 @@ export class InMemoryMailStore implements MailStore {
       switch (condition.field) {
         case "text":
           return has(m.subject, condition.value) || has(m.from.name, condition.value) || has(m.from.address, condition.value) || has(m.bodyText, condition.value);
-        case "from":
+        case "from": {
+          const shape = fromShape(condition.value);
+          const address = m.from.address.toLowerCase();
+          const wanted = condition.value.trim().toLowerCase();
+          if (shape === "address") return address === wanted;
+          if (shape === "domain") return address.endsWith(`@${wanted}`) || address.endsWith(`.${wanted}`) || has(m.from.name, condition.value);
           return has(m.from.address, condition.value) || has(m.from.name, condition.value);
+        }
         case "to":
           return addresses(m.to);
         case "cc":
@@ -4071,7 +4078,10 @@ export class InMemoryMailStore implements MailStore {
           return m.attachments.some((a) => !a.isInline && filenameMatches(a.filename ?? "", condition.value));
         case "is":
           if (condition.value === "dev") return (row.dev ?? null) !== null;
-          if (condition.value === "automated") return isAutomatedAddress(m.from.address) || (this.bulkOf(row) === true && (row.listId ?? "") === "");
+          if (condition.value === "automated") return (row.listId ?? "") === "" && (isAutomatedAddress(m.from.address) || this.bulkOf(row) === true);
+          if (condition.value === "newsletter") {
+            return (row.listId ?? "") !== "" || this.state.categories.get(stateKey(row.accountId, row.dedupKey))?.category === "newsletters";
+          }
           return condition.value === "unread" ? !row.isRead : row.isFlagged;
         case "larger":
           return m.size > Number(condition.value);

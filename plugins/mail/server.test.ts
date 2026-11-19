@@ -5736,6 +5736,23 @@ describe("Inbox tabs (Split Inbox)", () => {
     expect(listed.tabs).toEqual([{ id: ivy, name: "Ivy", query: "from:ivy@example.com", unread: 1, broken: false }]);
   });
 
+  it("a tab whose condition stopped working can be renamed as it is, and the list without counts counts nothing", async () => {
+    const host = await loadCanary();
+    const id = await save(host, "Dev", "is:dev");
+    // An operator that is gone, as an older version may have stored it.
+    host.bb.storage.database().prepare("UPDATE inbox_tabs SET query = 'gone:operator' WHERE id = ?").run(id);
+    await call(host, "inbox_tab_save", { id, name: "Old dev", query: "gone:operator" });
+    await expect(call(host, "inbox_tab_save", { id, name: "Old dev", query: "also:gone" })).rejects.toMatchObject({ code: "invalid" });
+    const ivy = await save(host, "Ivy", "from:ivy@example.com");
+    expect(await call(host, "inbox_tabs_list", { scope, counts: false })).toEqual({
+      inboxUnread: 0,
+      tabs: [
+        { id, name: "Old dev", query: "gone:operator", unread: 0, broken: true },
+        { id: ivy, name: "Ivy", query: "from:ivy@example.com", unread: 0, broken: false },
+      ],
+    });
+  });
+
   it("the Team tab follows an account added after the start", async () => {
     const host = await loadCanary();
     const team = await save(host, "Team", "from:team");

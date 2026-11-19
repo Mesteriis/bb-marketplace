@@ -611,7 +611,7 @@ export const rpcSchemas = {
   },
   /** The owner's Inbox tabs in order, each with its unread conversations in the scope; `broken`: its condition no longer parses. */
   inbox_tabs_list: {
-    input: z.object({ scope: threadScope }),
+    input: z.object({ scope: threadScope, /** false: names and conditions only (Mail settings); every number is 0. */ counts: z.boolean().optional() }),
     output: z.object({
       /** Unread conversations of the whole Inbox in the scope, for the Inbox tab. */
       inboxUnread: z.number().int(),

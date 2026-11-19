@@ -447,7 +447,7 @@ of each kind waits.
   of the quick filters opens the library. With tabs, **+** opens it.
 - **The library** adds a tab in one click: VIP (`from:vip`), Team
   (`from:team`), People (`from:known`), Dev (`is:dev`), Newsletters
-  (`category:newsletters`), Notifications (`is:automated`), Calendar
+  (`is:newsletter`), Notifications (`is:automated`), Calendar
   (`has:invite`), Attachments (`has:attachment`), one per tool by sender
   domain (GitHub, GitLab, Jira, Linear, Notion, Asana, Figma, Google Docs,
   Slack) and **Other**: the conversations that match none of your other
@@ -458,7 +458,8 @@ of each kind waits.
   **Make a tab** on a search opens the same dialog with the search as the
   condition; **Split by this sender** in a sender's card makes a tab of
   that address at once.
-- A tab's menu (the **⋯** beside the tab in view, or a right click) has
+- A tab's menu (the **⋯** at the end of the row for the tab in view, or a
+  right click on any tab) has
   Rename, Edit condition, Move left, Move right and Remove tab. Removing a
   tab removes no mail.
 - `]` goes to the next tab and `[` to the previous one, around the ends.
@@ -469,7 +470,8 @@ of each kind waits.
   Inbox and in All accounts. **Mail settings → Inbox → Tabs** lists them
   with rename, condition, order and remove.
 - A tab whose condition stopped working (an operator that is gone) is
-  marked, lists nothing and can be edited or removed.
+  marked, lists nothing and can be renamed, edited or removed.
+- In the row, the arrow keys, Home and End move the focus between tabs.
 
 ## Inbox tools: new mail, unsubscribe, snooze, block, filters
 
@@ -876,7 +878,10 @@ new reads go to your own mail server only; the new writes are listed under
   senders), `from:team` (the domains of your own addresses, public mail
   domains left out), `from:known` (addresses you have written to), `is:dev`
   (development notifications), `is:automated` (robots that are not mailing
-  lists) and `has:invite` (a calendar invitation); a leading `-` negates
+  lists), `is:newsletter` (mailing lists and the Newsletters category) and
+  `has:invite` (a calendar invitation). `from:` with a whole address matches
+  that address only, with a domain its addresses and those of its
+  subdomains, with anything else a fragment of the address or the name; a leading `-` negates
   one, values with spaces are quoted. A value Mail cannot read stays text and the box
   says so.
 - **Search on the server**, below the local hits, sends the query to your

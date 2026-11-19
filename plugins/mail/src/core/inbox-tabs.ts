@@ -101,7 +101,7 @@ export const TAB_LIBRARY: readonly { id: string; name: string; query: string }[]
   { id: "team", name: "Team", query: "from:team" },
   { id: "people", name: "People", query: "from:known" },
   { id: "dev", name: "Dev", query: "is:dev" },
-  { id: "newsletters", name: "Newsletters", query: "category:newsletters" },
+  { id: "newsletters", name: "Newsletters", query: "is:newsletter" },
   { id: "notifications", name: "Notifications", query: "is:automated" },
   { id: "calendar", name: "Calendar", query: "has:invite" },
   { id: "attachments", name: "Attachments", query: "has:attachment" },

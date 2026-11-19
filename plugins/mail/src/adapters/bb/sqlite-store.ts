@@ -21,6 +21,7 @@
 //   - a move re-homes the row (same id) to the destination; without a uid map
 //     the row waits detached there until that folder's sync reattaches it by
 //     Gmail id or Message-ID, or deletes it at the end of the round.
+import { fromShape } from "../../core/search.ts";
 import { randomBytes } from "node:crypto";
 import type Database from "better-sqlite3";
 import type {
@@ -1712,9 +1713,20 @@ function conditionSql(condition: SearchCondition, params: unknown[]): string | n
       params.push(likePattern(value), likePattern(value), likePattern(value));
       return `(${LIKE("m.subject")} OR ${LIKE("m.from_name")} OR ${LIKE("m.from_address")})`;
     }
-    case "from":
+    case "from": {
+      const shape = fromShape(value);
+      if (shape === "address") {
+        params.push(value.trim());
+        return "mail_lower(m.from_address) = mail_lower(?)";
+      }
+      if (shape === "domain") {
+        const escaped = value.trim().replace(/[\\%_]/g, (c) => `\\${c}`);
+        params.push(`%@${escaped}`, `%.${escaped}`, likePattern(value));
+        return `(${LIKE("m.from_address")} OR ${LIKE("m.from_address")} OR ${LIKE("m.from_name")})`;
+      }
       params.push(likePattern(value), likePattern(value));
       return `(${LIKE("m.from_address")} OR ${LIKE("m.from_name")})`;
+    }
     case "to":
       params.push(likePattern(value));
       return LIKE("m.to_json");
@@ -1744,8 +1756,12 @@ function conditionSql(condition: SearchCondition, params: unknown[]): string | n
     }
     case "is":
       if (value === "dev") return "(m.dev_source IS NOT NULL AND m.dev_source <> '')";
-      // A sender that is a machine by its address, or bulk mail that is not a mailing list.
-      if (value === "automated") return "(mail_automated(m.from_address) = 1 OR (m.bulk = 1 AND COALESCE(m.list_id, '') = ''))";
+      // A machine by its address, or bulk mail; never a mailing list (that is is:newsletter).
+      if (value === "automated") return "(COALESCE(m.list_id, '') = '' AND (mail_automated(m.from_address) = 1 OR m.bulk = 1))";
+      // A mailing list, or what the owner or AI filed under Newsletters.
+      if (value === "newsletter") {
+        return "(COALESCE(m.list_id, '') <> '' OR (m.account_id, m.dedup_key) IN (SELECT account_id, dedup_key FROM message_categories WHERE category = 'newsletters'))";
+      }
       return value === "unread" ? "m.is_read = 0" : "m.is_flagged = 1";
     case "larger":
       params.push(Number(value));

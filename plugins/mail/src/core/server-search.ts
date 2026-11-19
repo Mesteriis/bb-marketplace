@@ -52,7 +52,7 @@ const DAY_MS = 86_400_000;
 export function localOnlyText(field: SearchField): string {
   // `is` and `has` are local only for the values Mail defines itself.
   if (field === "sender") return "from:vip, from:team and from:known are not used on the server";
-  if (field === "is") return "is:dev and is:automated are not used on the server";
+  if (field === "is") return "is:dev, is:automated and is:newsletter are not used on the server";
   if (field === "has") return "has:invite is not used on the server";
   return `${field}: is not used on the server`;
 }
@@ -61,7 +61,7 @@ export function localOnlyText(field: SearchField): string {
 function mailOnly(condition: SearchCondition): boolean {
   return (
     condition.field === "sender" ||
-    (condition.field === "is" && (condition.value === "dev" || condition.value === "automated")) ||
+    (condition.field === "is" && (condition.value === "dev" || condition.value === "automated" || condition.value === "newsletter")) ||
     (condition.field === "has" && condition.value === "invite")
   );
 }

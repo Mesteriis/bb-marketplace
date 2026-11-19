@@ -3247,6 +3247,34 @@ describe.each(storeKinds)("operators for Inbox tabs (%s)", (_kind, make) => {
     expect(found("-from:vip -is:automated -has:invite in:inbox")).toEqual(["colleague@example.org", "friend@gmail.com"]);
   });
 
+  it("is:newsletter takes mailing lists and the Newsletters category; is:automated leaves mailing lists out", () => {
+    from("digest@lists.example.net", { bulkHeaders: LIST_HEADERS });
+    from("noreply@lists.example.net", { bulkHeaders: LIST_HEADERS });
+    from("promo@shop.example.net", { bulkHeaders: { listId: null, listUnsubscribe: "<mailto:u@shop.example.net>", precedence: "bulk", autoSubmitted: null } });
+    from("weekly@writer.example.net");
+    const weekly = s.search(parseQuery("from:weekly@writer.example.net"), null, 5)[0]!;
+    s.setCategories([weekly.id], "newsletters", "owner", "2026-11-19T10:00:00.000Z");
+    expect(found("is:newsletter in:inbox")).toEqual(["digest@lists.example.net", "noreply@lists.example.net", "weekly@writer.example.net"]);
+    expect(found("is:automated in:inbox")).toEqual(["noreply@shop.example.net", "promo@shop.example.net"]);
+    expect(found("-is:newsletter is:automated in:inbox")).toEqual(["noreply@shop.example.net", "promo@shop.example.net"]);
+  });
+
+  it("from: with a whole address or a domain matches that sender only; a fragment still matches inside", () => {
+    from("bob@example.com");
+    from("jimbob@example.com");
+    from("bob@example.com.evil.example.net");
+    from("Bob@Example.com", { subject: "capitals" });
+    from("notify@github.com");
+    from("notify@mail.github.com");
+    from("spoof@notgithub.com");
+    from("someone@example.org", { from: { name: "bob@example.com via Relay", address: "someone@example.org" } });
+    expect(found("from:bob@example.com in:inbox")).toEqual(["Bob@Example.com", "bob@example.com"]);
+    expect(found("from:github.com in:inbox")).toEqual(["notify@github.com", "notify@mail.github.com"]);
+    expect(found("from:bob in:inbox")).toEqual(["Bob@Example.com", "bob@example.com", "bob@example.com.evil.example.net", "jimbob@example.com", "someone@example.org"]);
+    expect(found("-from:bob@example.com from:bob in:inbox")).toEqual(["bob@example.com.evil.example.net", "jimbob@example.com", "someone@example.org"]);
+  });
+
+
   it("a scoped read (an agent, another plugin) finds nothing by a sender set, in either sign", () => {
     // The sets come from the owner's settings and from Sent mail of every account, shared or not.
     const scoped = (query: string) => s.search(parseQuery(query), null, 50, { scoped: true }).map((hit) => hit.from.address).sort();
