@@ -3711,6 +3711,20 @@ describe("sending polish: compose_check", () => {
     expectNoLeak(host, ["ana@example.com", "attached"]);
   });
 
+  it("a reply with the selection quotes only that; a selection over 20 000 characters is refused", async () => {
+    const host = await loadCompose();
+    sqlStore(host).upsertMessages("acc_1", "INBOX", [
+      makeFetchedMessage(5, { from: { name: null, address: "ana@example.com" }, subject: "Invented question", bodyText: "Invented long original with pelicans and herons" }),
+    ]);
+    const messageId = messageIdAt(host, "INBOX", 5);
+    const { draftId } = (await call(host, "compose_prepare", { kind: "reply", messageId, quote: "pelicans" })) as { draftId: string };
+    const { draft } = (await call(host, "compose_open", { draftId })) as { draft: { doc: unknown; import: unknown } };
+    expect(JSON.stringify(draft.doc)).toContain("pelicans");
+    expect(JSON.stringify(draft.doc)).not.toContain("herons");
+    expect(draft.import).toBeNull();
+    await expect(call(host, "compose_prepare", { kind: "reply", messageId, quote: "x".repeat(20_001) })).rejects.toThrow();
+  });
+
   it("a reply is checked against its conversation only", async () => {
     const host = await loadCompose();
     sqlStore(host).upsertMessages("acc_1", "INBOX", [

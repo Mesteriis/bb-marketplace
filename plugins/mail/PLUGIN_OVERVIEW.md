@@ -58,9 +58,9 @@ does. **AI access** limits agents and AI to chosen accounts and folders.
 
 ## Writing and sending
 
-**Compose**, **Reply**, **Forward** with rich text, attachments up to 25 MB,
-signatures and templates. **Send** waits 10 seconds with **Undo**, then
-goes out over SMTP with TLS.
+**Compose**, **Reply**, **Forward** with rich text, files up to 25 MB,
+signatures, templates, autocorrect. **Send** waits 10 seconds with **Undo**,
+then goes out over SMTP (TLS).
 
 ## Agent access
 

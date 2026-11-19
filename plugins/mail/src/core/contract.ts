@@ -2,6 +2,7 @@
 // schemas. server.ts wraps it with the SDK's defineRpcContract.
 import { TAB_NAME_MAX, TAB_QUERY_MAX } from "./inbox-tabs.ts";
 import { PHRASES_MAX } from "./phrases.ts";
+import { QUOTE_MAX } from "./compose-reply.ts";
 import { TEMPLATE_FILES_MAX_BYTES, TEMPLATE_RECIPIENTS_MAX } from "./snippets.ts";
 import { GOOGLE_EXTRA_SCOPES } from "./plugin-access.ts";
 import { pluginApiSchemas } from "./plugin-api.ts";
@@ -781,7 +782,12 @@ export const rpcSchemas = {
   },
   /** A reply, reply-all or forward draft of a stored message. */
   compose_prepare: {
-    input: z.object({ kind: z.enum(["reply", "reply_all", "forward"]), messageId: idInput }),
+    input: z.object({
+      kind: z.enum(["reply", "reply_all", "forward"]),
+      messageId: idInput,
+      /** Quick quote (typing speed): the text selected in the message; a reply quotes only that. */
+      quote: z.string().max(QUOTE_MAX).optional(),
+    }),
     output: z.object({
       draftId: z.string(),
       warning: composeWarning,

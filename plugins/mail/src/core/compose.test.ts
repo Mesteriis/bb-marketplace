@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { renderDoc } from "./compose-doc.ts";
 import {
   ATTACHMENT_CAP_BYTES,
   ComposeError,
@@ -107,6 +108,26 @@ describe("prepareCompose", () => {
       importHtml: { html: "<p>Original</p>", into: "quote" },
     });
     expect(JSON.stringify(draft.doc)).toContain("Anna <anna@example.org> wrote:");
+  });
+
+  it("a reply with a quote quotes exactly that text under the attribution, and none of the original's HTML", async () => {
+    const id = stored({ from: addr("anna@example.org", "Anna"), subject: "Garden", messageId: "m1@example.org", bodyHtml: "<p>Original with much more text</p>" });
+    const result = await prepareCompose(h.deps, { kind: "reply", messageId: id, quote: "  just this part\nand this line  " });
+    const draft = h.store.getDraft(result.draftId)!;
+    expect(draft.importHtml).toBeNull();
+    const text = renderDoc(draft.doc).text;
+    const quoted = text.split("\n").filter((line) => line.startsWith(">") && line.trim() !== ">");
+    expect(quoted).toEqual(["> just this part", "> and this line"]);
+    expect(text.indexOf("Anna <anna@example.org> wrote:")).toBeLessThan(text.indexOf("> just this part"));
+    expect(text).not.toContain("much more text");
+  });
+
+  it("a blank quote, and a quote on a forward, change nothing", async () => {
+    const id = stored({ from: addr("anna@example.org", "Anna"), subject: "Garden", messageId: "m1@example.org", bodyHtml: "<p>Original</p>" });
+    const blank = await prepareCompose(h.deps, { kind: "reply", messageId: id, quote: "   \n " });
+    expect(h.store.getDraft(blank.draftId)!.importHtml).toMatchObject({ html: "<p>Original</p>", into: "quote" });
+    const forward = await prepareCompose(h.deps, { kind: "forward", messageId: id, quote: "just this" });
+    expect(h.store.getDraft(forward.draftId)!.importHtml).toMatchObject({ into: "quote" });
   });
 
   it("reads Reply-To from the server for a row stored before it was kept", async () => {

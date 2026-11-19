@@ -170,6 +170,7 @@ import { SaveSearchDialog, type SavedSearchEdit } from "./src/ui/saved-searches.
 import type { InboxTabView } from "./src/ui/inbox-tabs.tsx";
 import type { TypingOptions } from "./src/ui/editor-typing.ts";
 import { uploadFile } from "./src/ui/attachments-input.tsx";
+import { selectedQuote } from "./src/ui/quick-quote.ts";
 import { parsePairs } from "./src/core/autocorrect.ts";
 import type { InboxTabsPort } from "./src/ui/settings/tabs-settings.tsx";
 import { TAB_NAME_MAX } from "./src/core/inbox-tabs.ts";
@@ -1967,7 +1968,9 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
   const reply = useCallback(
     async (kind: ComposeKind, message: MessageHeader) => {
       try {
-        const prepared = await rpc.call("compose_prepare", { kind, messageId: message.id });
+        // Quick quote: with text selected inside this message, a reply quotes only that.
+        const quote = kind === "forward" || typeof document === "undefined" ? null : selectedQuote(document, message.id);
+        const prepared = await rpc.call("compose_prepare", { kind, messageId: message.id, ...(quote !== null ? { quote } : {}) });
         const { draft } = await rpc.call("compose_open", { draftId: prepared.draftId });
         openComposer(draft, prepared.warning, prepared.dropped, latest.current.reading.threadId);
       } catch (error) {

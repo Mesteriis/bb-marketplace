@@ -23,6 +23,7 @@ import {
   replyRecipients,
   threadingHeaders,
   type ReplySource,
+  QUOTE_MAX,
 } from "./compose-reply.ts";
 import { forwardSubject, replySubject } from "./compose-subjects.ts";
 import { normalizeMessageId } from "./headers.ts";
@@ -240,7 +241,8 @@ export function planInviteReply(
  */
 export async function planCompose(
   deps: Pick<ComposeDeps, "store" | "newId" | "reader">,
-  input: { kind: "reply" | "reply_all" | "forward"; messageId: string },
+  /** `quote` (typing speed): the text the owner selected; a reply quotes only that. */
+  input: { kind: "reply" | "reply_all" | "forward"; messageId: string; quote?: string | undefined },
 ): Promise<ComposePlan> {
   const source = deps.store.replySource(input.messageId);
   if (source === null) throw new ComposeError("not_found");
@@ -287,8 +289,12 @@ export async function planCompose(
   const body = deps.store.getBody(input.messageId);
   const html = original?.html ?? body?.html ?? null;
   const text = body?.text ?? null;
+  // Quick quote: the selection as plain text is the whole quote of a reply; a forward always carries the original.
+  const picked = input.kind === "forward" ? "" : (input.quote ?? "").replace(/\r\n?/g, "\n").trim().slice(0, QUOTE_MAX);
   let doc: ComposeDoc;
-  if (html !== null) {
+  if (picked !== "") {
+    doc = docFromLines(["", ...header], splitLines(picked));
+  } else if (html !== null) {
     doc = docFromLines(["", ...header]);
   } else {
     const lines = text === null || text === "" ? undefined : splitLines(text);
@@ -310,7 +316,7 @@ export async function planCompose(
     doc,
     fromAddress: fromAddressOf(identity),
     serverCopy: null,
-    importHtml: html === null ? null : { html, into: "quote", stripSignature },
+    importHtml: html === null || picked !== "" ? null : { html, into: "quote", stripSignature },
     attachments: input.kind === "forward" && original !== null ? original.attachments : [],
     warning,
     dropped,
@@ -377,7 +383,7 @@ export function newCompose(deps: ComposeDeps, accountId: string, fromAddress: st
  */
 export async function prepareCompose(
   deps: ComposeDeps,
-  input: { kind: "reply" | "reply_all" | "forward"; messageId: string },
+  input: { kind: "reply" | "reply_all" | "forward"; messageId: string; quote?: string | undefined },
 ): Promise<{ draftId: string; warning: ComposeWarning; dropped: string[] }> {
   const plan = await planCompose(deps, input);
   const { draftId, warning, dropped } = await createComposeDraft(deps, plan, { origin: "owner", proposalId: null });

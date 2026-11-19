@@ -39,6 +39,7 @@ import {
 import { ComposeEditor, ownerRange, replaceOwnerRange, type EditorDoc } from "./compose-editor.tsx";
 import { NO_TYPING, takeSnippet, type SnippetList, type TypingOptions } from "./editor-typing.ts";
 import { fillBlocks, fillVariables, firstNameOf, mergeRecipients } from "../core/snippets.ts";
+import { looksLikeIntro, moveSenderToBcc } from "../core/intro.ts";
 import { Checkbox } from "@/components/ui/checkbox";
 import type { AiJobPorts } from "./ai-job.ts";
 import { ImproveDialog, ImproveMenu, type DraftMode, type ImproveRequest } from "./improve-dialog.tsx";
@@ -801,6 +802,27 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
       .run();
   };
 
+  // Instant intro: in a reply whose first recipient is the original's sender and that has someone else to write to.
+  const introSender = draft.kind === "reply" || draft.kind === "reply_all" ? (draft.to[0] ?? null) : null;
+  const introMove =
+    introSender === null ? null : moveSenderToBcc({ to: to.chips, cc: cc.chips, bcc: bcc.chips }, introSender.address);
+  const [introDismissed, setIntroDismissed] = useState(false);
+  const introOffered =
+    introMove !== null &&
+    !introDismissed &&
+    looksLikeIntro({ subject: draft.subject, text: `${JSON.stringify(draft.doc).slice(0, 2_000)} ${(draft.import?.html ?? "").replace(/<[^>]*>/g, " ").slice(0, 2_000)}` });
+  const moveIntroducer = () => {
+    if (introMove === null || introSender === null) return;
+    setTo({ ...to, chips: introMove.to });
+    setCc({ ...cc, chips: introMove.cc });
+    setBcc({ ...bcc, chips: introMove.bcc });
+    setShowCopies(true);
+    const name = firstNameOf(introSender);
+    const line = name === null ? tx("Thank you! (Moving you to Bcc.)") : tx("Thank you, {p1}! (Moving you to Bcc.)", { p1: name });
+    editor?.chain().focus().insertContentAt(0, { type: "paragraph", content: [{ type: "text", text: line }] }).run();
+    changed();
+  };
+
   /** Typing speed: files of the last template that the message had no room for. */
   const [templateLeftOut, setTemplateLeftOut] = useState<string[]>([]);
   /**
@@ -910,6 +932,13 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
       event.preventDefault();
       event.stopPropagation();
       void send();
+      return;
+    }
+    // Mod+Shift+I: answering an introduction, the introducer goes to Bcc with a thank-you line.
+    if ((event.metaKey || event.ctrlKey) && event.shiftKey && !event.altKey && event.code === "KeyI" && introMove !== null) {
+      event.preventDefault();
+      event.stopPropagation();
+      moveIntroducer();
       return;
     }
     // Mod+Alt+T: the template picker (Alt+T and Alt+Shift+T are BB's model picker).
@@ -1052,6 +1081,17 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
             ? tx("This sending address is no longer set up for the account; choose another From.")
             : sendCheckText(chosen.sendCheck)}
         </p>
+      ) : null}
+      {introOffered ? (
+        <div role="status" className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-1.5 text-xs text-muted-foreground">
+          <span className="min-w-0 flex-1">{tx("This looks like an introduction.")}</span>
+          <Button variant="outline" size="sm" className="h-6 px-2 text-xs" onClick={moveIntroducer}>
+            {tx("Move sender to Bcc")}
+          </Button>
+          <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => setIntroDismissed(true)}>
+            {tx("Not now")}
+          </Button>
+        </div>
       ) : null}
       {templateLeftOut.length > 0 ? (
         <p role="status" className="flex items-start gap-1 border-b border-border px-3 py-1.5 text-xs text-destructive">

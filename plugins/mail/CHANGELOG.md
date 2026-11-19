@@ -8,6 +8,17 @@ All notable changes to Makosh Mail are recorded here. The format follows
 
 ### Added
 
+- **Typing speed** in the composer: templates carry a subject, To/Cc/Bcc
+  and files and fill `{first_name}`; `;` and a few letters pick a template
+  in the body; autocorrect (your own replacements, common English and
+  Russian slips, sentence capitals; Backspace undoes a fix); autocomplete
+  of phrases from your own sent mail and templates as grey text (Tab);
+  a reply quotes only the text you selected; Ctrl/Cmd+Shift+I moves the
+  introducer to Bcc with a thank-you line. Settings `autocorrect`,
+  `autocorrectPairs`, `autocomplete`. New RPC methods `phrases_list`,
+  `template_file_begin`, `template_file_finish`, `template_file_remove`,
+  `template_apply`; `template_save` takes `subject`, `to`, `cc`, `bcc`;
+  `compose_prepare` takes `quote`.
 - **Split Inbox**: tabs over the Inbox, each a search condition applied to
   Inbox conversations, with unread counts, a library of ready tabs (VIP,
   Team, People, Dev, Newsletters, Notifications, Calendar, Attachments,

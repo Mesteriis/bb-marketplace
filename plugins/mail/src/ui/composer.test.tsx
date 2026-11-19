@@ -726,6 +726,46 @@ describe("Composer: identities, signatures, checks and templates (slice 3d)", ()
     expect(applyTemplate).not.toHaveBeenCalled();
   });
 
+  it("answering an introduction: the offer moves the introducer to Bcc and thanks them, once", async () => {
+    const intro = draft({
+      kind: "reply_all",
+      subject: "Re: Intro: Ada <> Owner",
+      to: [{ name: "Carol Connector", address: "carol@example.com" }, { name: "Ada", address: "ada@example.com" }],
+      doc: { type: "doc", content: [p("")] },
+    });
+    const { ports } = mount({ draft: intro });
+    expect(await screen.findByText("This looks like an introduction.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Move sender to Bcc" }));
+    expect(theEditor().getText().startsWith("Thank you, Carol! (Moving you to Bcc.)")).toBe(true);
+    // Nothing is left to offer: the sender is no longer in To.
+    expect(screen.queryByText("This looks like an introduction.")).toBeNull();
+    fireEvent.blur(subject(), { relatedTarget: document.body });
+    await waitFor(() => expect(ports.save).toHaveBeenCalled());
+    expect(ports.save.mock.calls.at(-1)![0]).toMatchObject({ to: ["Ada <ada@example.com>"], bcc: ["Carol Connector <carol@example.com>"] });
+    // The key does nothing a second time.
+    fireEvent.keyDown(subject(), { key: "I", code: "KeyI", metaKey: true, shiftKey: true });
+    expect(theEditor().getText().match(/Moving you to Bcc/g)).toHaveLength(1);
+  });
+
+  it("a plain reply gets no offer, but the key still moves the sender; a reply to one person offers nothing and moves nothing", async () => {
+    const plain = draft({
+      kind: "reply_all",
+      subject: "Re: Invoice",
+      to: [{ name: null, address: "info@example.com" }, { name: "Ada", address: "ada@example.com" }],
+      doc: { type: "doc", content: [p("")] },
+    });
+    mount({ draft: plain });
+    expect(screen.queryByText("This looks like an introduction.")).toBeNull();
+    fireEvent.keyDown(subject(), { key: "I", code: "KeyI", ctrlKey: true, shiftKey: true });
+    expect(theEditor().getText().startsWith("Thank you! (Moving you to Bcc.)")).toBe(true);
+    cleanup();
+
+    mount({ draft: draft({ kind: "reply", subject: "Re: Intro", to: [{ name: "Carol", address: "carol@example.com" }] }) });
+    expect(screen.queryByText("This looks like an introduction.")).toBeNull();
+    fireEvent.keyDown(subject(), { key: "I", code: "KeyI", metaKey: true, shiftKey: true });
+    expect(theEditor().getText()).not.toContain("Moving you to Bcc");
+  });
+
   it("; and a few letters list the templates; a press on one puts it in place of the typed text", async () => {
     mount({ templates: TEMPLATES, draft: draft({ doc: { type: "doc", content: [p("Hello")] } }) });
     const ed = theEditor();

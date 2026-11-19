@@ -323,6 +323,51 @@ account's own address first, then the aliases you added.
   list; Enter inserts the template at the cursor. Alt+T and Alt+Shift+T stay
   BB's model picker.
 
+## Typing speed
+
+Five things that save keystrokes in the composer. Everything is computed on
+this computer; nothing you type is sent anywhere for them.
+
+- **Templates as snippets.** A template (Mail settings → Templates) can
+  carry, beside its text, a subject, To/Cc/Bcc and up to 5 files (10 MB
+  together, added after the template is saved). Inserting it puts the text
+  at the cursor, fills an empty subject, adds the recipients the draft does
+  not have yet and attaches the files; a file the message has no room for
+  is named in a note and left out. `{first_name}` in the text or the
+  subject becomes the first To recipient's first name (the display name's
+  first word, else the address before a dot; a role address such as
+  `info@` gives none). A `{first_name}` left in is flagged by the pre-send
+  check.
+- **`;` picks a template.** Type `;` at a word's start and a few letters
+  of the name: the matching templates are listed under the toolbar. Arrows
+  move, Enter, Tab or a click inserts (the `;text` is replaced), Escape
+  closes and keeps what you typed.
+- **Autocorrect** (`autocorrect`, on by default) fixes a word as it ends:
+  your own replacements (`autocorrectPairs`, `from => to` separated by
+  semicolons), about 200 common English and 60 Russian slips, a lone `i`,
+  two capitals at a word's start (`THe`), and the first letter of a
+  sentence. Never inside a code block, a link, an address or a path.
+  **Backspace right after a fix puts back what you typed**, and that word
+  is left alone for the rest of the draft.
+- **Autocomplete** (`autocomplete`, on by default) offers the rest of a
+  phrase you often write as grey text after the cursor, at the end of a
+  paragraph, once you have typed two words and eight characters of it. Tab
+  takes it, Escape hides it for the sentence, any other key keeps typing.
+  The phrases are sentences of 3 to 12 words that at least three of your
+  newest 2 000 sent messages hold (quoted text and everything under a
+  signature mark left out; numbers, addresses and links never), plus the
+  sentences of your templates; at most 500, rebuilt at most every ten
+  minutes. They never reach an agent, another plugin or the log.
+- **Quick quote.** Select text inside one message and reply (the button or
+  `r` / `a`): the reply quotes only the selection, under the usual "wrote:"
+  line. A selection across two messages, or none, is an ordinary reply.
+- **Instant intro.** In a reply with the original's sender and someone else
+  in it, Ctrl+Shift+I (Shift+Command+I on a Mac) moves the sender to Bcc and
+  starts the message with "Thank you, <first name>! (Moving you to Bcc.)".
+  When the original reads like an introduction (the subject or first lines
+  say intro, introducing, meet, знакомьтесь, представляю) the composer
+  offers it in a line above the body; nothing moves by itself.
+
 ## Before you send
 
 Send saves the draft and runs these checks; none of them blocks a send:
