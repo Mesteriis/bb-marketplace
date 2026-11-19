@@ -15,13 +15,6 @@ import { AiAccessSettings, type AiAccessSettingsProps } from "./ai-access-settin
 import { AgentActivity, type AgentActivityProps } from "./agent-activity.tsx";
 import { categoryLabel } from "./category-chips.tsx";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { Icon } from "@/components/ui/icon";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -37,12 +30,14 @@ import { FiltersSettings, type SettingsFilterPorts } from "./filters-settings.ts
 import { SubscriptionsSettings, type SettingsSubscriptionPorts } from "./subscriptions-settings.tsx";
 import type { BbCall } from "./bb-ports.ts";
 import { dateLocale, tx } from "./i18n/index.ts";
+import type { SettingsSectionId } from "./settings/sections.ts";
 
 export type TemplateView = { id: string; name: string; doc: EditorDoc; updatedAt: string };
 export type SuggestionView = { address: string; count: number; lastDate: string };
 export type IdentityKey = { accountId: string; address: string };
 import { PgpSettings, type SettingsPgpPorts } from "./pgp-settings.tsx";
-export type SettingsSection = "addresses" | "templates" | "inbox" | "ai_access" | "activity" | "ai" | "bb" | "rules" | "search" | "pgp" | "filters" | "subscriptions";
+/** @deprecated the page's section ids; kept as a name for callers. */
+export type SettingsSection = SettingsSectionId;
 
 /** attachment_text_status (slice 3h). */
 export interface AttachmentTextStatus {
@@ -193,10 +188,6 @@ export const TEMPLATE_TOOLS: readonly ToolId[] = [
 ];
 
 export interface MailSettingsProps {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  /** The section shown when the dialog opens. */
-  section?: SettingsSection;
   accounts: readonly Account[];
   /** Every account's identities (identities_list with accountId null). */
   identities: readonly IdentityView[];
@@ -273,119 +264,65 @@ function formatDay(iso: string): string {
   return date.toLocaleDateString(dateLocale(), { day: "numeric", month: "short", year: "numeric" });
 }
 
-export function MailSettings(props: MailSettingsProps) {
-  const { open, onOpenChange, accounts } = props;
-  const [section, setSection] = useState<SettingsSection>(props.section ?? "addresses");
-  const [accountId, setAccountId] = useState<string | null>(accounts[0]?.id ?? null);
+/** Which sections the page can show with the ports it was given. */
+export function availableSections(props: MailSettingsProps): ReadonlySet<SettingsSectionId> {
+  const ids: SettingsSectionId[] = ["accounts", "addresses", "templates", "local"];
+  if (props.onUnblock !== undefined) ids.push("inbox");
+  if (props.filters !== undefined) ids.push("filters");
+  if (props.subscriptions !== undefined) ids.push("subscriptions");
+  if (props.ai !== undefined) ids.push("ai", "ai_access", "activity");
+  if (props.bb !== undefined) ids.push("bb", "rules");
+  if (props.search !== undefined) ids.push("reading");
+  if (props.pgp !== undefined) ids.push("pgp");
+  return new Set(ids);
+}
 
-  useEffect(() => {
-    if (open) setSection(props.section ?? "addresses");
-  }, [open, props.section]);
+/** One section of the settings page; a section the page cannot show falls back to the first. */
+export function SettingsBody(props: MailSettingsProps & { section: SettingsSectionId }) {
+  const { accounts, section } = props;
+  const [accountId, setAccountId] = useState<string | null>(accounts[0]?.id ?? null);
   useEffect(() => {
     if (accountId === null || !accounts.some((a) => a.id === accountId)) setAccountId(accounts[0]?.id ?? null);
   }, [accountId, accounts]);
-
   const account = accounts.find((a) => a.id === accountId) ?? null;
 
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[85vh] max-w-2xl flex-col gap-3" onEscapeKeyDown={stopEscape}>
-        <DialogHeader>
-          <DialogTitle>{tx("Mail settings")}</DialogTitle>
-          <DialogDescription>
-            {tx("Sending addresses, signatures and templates. They are kept on this computer.")}
-          </DialogDescription>
-        </DialogHeader>
-        <div role="tablist" aria-label={tx("Settings")} className="flex shrink-0 gap-1 border-b border-border">
-          {(
-            [
-              ["addresses", "Sending addresses"],
-              ["templates", "Templates"],
-              ...(props.onUnblock !== undefined ? ([["inbox", "Inbox"]] as const) : []),
-              ...(props.filters !== undefined ? ([["filters", "Filters"]] as const) : []),
-              ...(props.subscriptions !== undefined ? ([["subscriptions", "Subscriptions"]] as const) : []),
-              ...(props.ai !== undefined
-                ? ([
-                    ["ai_access", "AI access"],
-                    ["activity", "Agent activity"],
-                    ["ai", "AI features"],
-                  ] as const)
-                : []),
-              ...(props.bb !== undefined
-                ? ([
-                    ["bb", "BB integration"],
-                    ["rules", "Rules"],
-                  ] as const)
-                : []),
-              ...(props.search !== undefined ? ([["search", "Search and reading"]] as const) : []),
-              ...(props.pgp !== undefined ? ([["pgp", "Encryption (OpenPGP)"]] as const) : []),
-            ] as const
-          ).map(([id, label]) => (
-            <button
-              key={id}
-              type="button"
-              role="tab"
-              aria-selected={section === id}
-              onClick={() => setSection(id)}
-              className={cn(
-                "-mb-px border-b-2 px-2 py-1.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-                section === id
-                  ? "border-primary font-medium text-foreground"
-                  : "border-transparent text-muted-foreground hover:text-foreground",
-              )}
-            >
-              {tx(label)}
-            </button>
-          ))}
-        </div>
-        <div role="tabpanel" className="min-h-0 flex-1 overflow-y-auto pr-1">
-          {section === "addresses" ? (
-            account === null ? (
-              <p className="text-sm text-muted-foreground">{tx("No mail account yet.")}</p>
-            ) : (
-              <AddressesSection
-                key={account.id}
-                {...props}
-                account={account}
-                onSelectAccount={setAccountId}
-              />
-            )
-          ) : section === "ai_access" && props.ai !== undefined ? (
-            <AiAccessSettings accounts={accounts} {...props.ai.scope} />
-          ) : section === "activity" && props.ai !== undefined ? (
-            <AgentActivity {...props.ai.activity} />
-          ) : section === "ai" && props.ai !== undefined ? (
-            <AiFeaturesSection ai={props.ai} />
-          ) : section === "bb" && props.bb !== undefined ? (
-            <BbIntegrationSettings values={props.bb.values} call={props.bb.call} hint={PLUGIN_SETTINGS_HINT} />
-          ) : section === "rules" && props.bb !== undefined ? (
-            <RulesSettings on={props.bb.mailRules} call={props.bb.call} notify={props.bb.notify} hint={PLUGIN_SETTINGS_HINT} />
-          ) : section === "subscriptions" && props.subscriptions !== undefined ? (
-            <SubscriptionsSettings ports={props.subscriptions} accounts={props.accounts} />
-          ) : section === "filters" && props.filters !== undefined ? (
-            <FiltersSettings ports={props.filters} accounts={props.accounts} />
-          ) : section === "pgp" && props.pgp !== undefined ? (
-            <PgpSettings ports={props.pgp} identities={props.identities} />
-          ) : section === "search" && props.search !== undefined ? (
-            <SearchSection search={props.search} hint={PLUGIN_SETTINGS_HINT} />
-          ) : section === "inbox" && props.onUnblock !== undefined ? (
-            <InboxSection
-              accounts={accounts}
-              rules={props.blockRules ?? null}
-              onUnblock={props.onUnblock}
-              onChangeSnoozeFolder={props.onChangeSnoozeFolder}
-            />
-          ) : (
-            <TemplatesSection
-              templates={props.templates}
-              onSave={props.onSaveTemplate}
-              onDelete={props.onDeleteTemplate}
-            />
-          )}
-        </div>
-      </DialogContent>
-    </Dialog>
-  );
+  if (section === "addresses") {
+    return account === null ? (
+      <p className="text-sm text-muted-foreground">{tx("No mail account yet.")}</p>
+    ) : (
+      <AddressesSection key={account.id} {...props} account={account} onSelectAccount={setAccountId} />
+    );
+  }
+  if (section === "ai_access" && props.ai !== undefined) return <AiAccessSettings accounts={accounts} {...props.ai.scope} />;
+  if (section === "activity" && props.ai !== undefined) return <AgentActivity {...props.ai.activity} />;
+  if (section === "ai" && props.ai !== undefined) return <AiFeaturesSection ai={props.ai} />;
+  if (section === "bb" && props.bb !== undefined) {
+    return <BbIntegrationSettings values={props.bb.values} call={props.bb.call} hint={PLUGIN_SETTINGS_HINT} />;
+  }
+  if (section === "rules" && props.bb !== undefined) {
+    return <RulesSettings on={props.bb.mailRules} call={props.bb.call} notify={props.bb.notify} hint={PLUGIN_SETTINGS_HINT} />;
+  }
+  if (section === "subscriptions" && props.subscriptions !== undefined) {
+    return <SubscriptionsSettings ports={props.subscriptions} accounts={props.accounts} />;
+  }
+  if (section === "filters" && props.filters !== undefined) return <FiltersSettings ports={props.filters} accounts={props.accounts} />;
+  if (section === "pgp" && props.pgp !== undefined) return <PgpSettings ports={props.pgp} identities={props.identities} />;
+  if (section === "reading" && props.search !== undefined) return <SearchSection search={props.search} hint={PLUGIN_SETTINGS_HINT} />;
+  if (section === "inbox" && props.onUnblock !== undefined) {
+    return (
+      <InboxSection
+        accounts={accounts}
+        rules={props.blockRules ?? null}
+        onUnblock={props.onUnblock}
+        onChangeSnoozeFolder={props.onChangeSnoozeFolder}
+      />
+    );
+  }
+  if (section === "templates") {
+    return <TemplatesSection templates={props.templates} onSave={props.onSaveTemplate} onDelete={props.onDeleteTemplate} />;
+  }
+  // "accounts" and "local" get their sections in a later step of the plan.
+  return <p className="text-sm text-muted-foreground">{tx("This section is being set up.")}</p>;
 }
 
 function SectionHeading({ children, action }: { children: ReactNode; action?: ReactNode }) {

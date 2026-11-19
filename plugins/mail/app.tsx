@@ -101,6 +101,8 @@ import {
   parseViewSubPath,
   pageSubPath,
   parsePageSubPath,
+  parseSettingsSubPath,
+  settingsSubPath,
   parseProjectSubPath,
   parseSavedSearchSubPath,
   projectSubPath,
@@ -122,7 +124,8 @@ import {
   type TranslationState,
 } from "./src/ui/translation-block.tsx";
 import { TranslationSettings } from "./src/ui/translation-settings.tsx";
-import { MailSettings, type SettingsAiPorts, type SettingsSection, type TemplateView } from "./src/ui/mail-settings.tsx";
+import { type SettingsAiPorts, type SettingsSection, type TemplateView } from "./src/ui/mail-settings.tsx";
+import { SettingsPage } from "./src/ui/settings/settings-page.tsx";
 import type { LanguageTag } from "./src/core/translate.ts";
 import { filterActive, formatUntil, subjectOrPlaceholder, type ListFilter } from "./src/ui/thread-list.tsx";
 import {
@@ -2644,10 +2647,8 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
 
   // ---- Mail settings: sending addresses, signatures, templates (slice 3d) ----
 
-  const [settings, setSettings] = useState<{ open: boolean; section: SettingsSection }>({
-    open: false,
-    section: "addresses",
-  });
+  /** The settings section the address names; null on every other page. */
+  const settingsSection = parseSettingsSubPath(subPath);
   const [identities, setIdentities] = useState<IdentityView[]>([]);
   const [templates, setTemplates] = useState<TemplateView[]>([]);
   const loadIdentities = useCallback(async () => {
@@ -2680,14 +2681,19 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     }
   }, [rpc]);
   const openSettings = useCallback(
-    (section: SettingsSection) => {
-      setSettings({ open: true, section });
-      void loadIdentities();
-      void loadTemplates();
-      void loadBlockRules();
+    (section?: SettingsSection) => {
+      navigate.toPluginPanel("mail", { subPath: settingsSubPath(section) });
     },
-    [loadBlockRules, loadIdentities, loadTemplates],
+    [navigate],
   );
+  // The page's lists load when it opens, by a click or by its address.
+  const settingsShown = settingsSection !== null;
+  useEffect(() => {
+    if (!settingsShown) return;
+    void loadIdentities();
+    void loadTemplates();
+    void loadBlockRules();
+  }, [settingsShown, loadBlockRules, loadIdentities, loadTemplates]);
   /** Mail settings' Change… for an account's snooze folder. */
   const [settingsFolder, setSettingsFolder] = useState<SnoozeFolderRequest | null>(null);
   const settingsFolders = useAccountFolders(settingsFolder?.accountId ?? null);
@@ -2695,7 +2701,6 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     (accountId: string) => {
       const target = accounts.find((a) => a.id === accountId);
       if (target === undefined) return;
-      setSettings((prev) => ({ ...prev, open: false }));
       setSettingsFolder({
         accountId,
         accountLabel: target.email,
@@ -2815,7 +2820,6 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
   const digestTime = typeof pluginSettings?.digestTime === "string" ? pluginSettings.digestTime : "08:00";
   const openConversation = useCallback(
     (accountId: string, threadId: string) => {
-      setSettings((prev) => ({ ...prev, open: false }));
       navigate.toPluginPanel("mail", { subPath: threadSubPath(accountId, threadId) });
     },
     [navigate],
@@ -2842,17 +2846,16 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
         await rpc.call("category_rule_remove", { id });
       },
       onOpenAiSettings: () => {
-        setSettings((prev) => ({ ...prev, open: false }));
-        setTranslateSettingsOpen(true);
+          setTranslateSettingsOpen(true);
       },
     }),
     [categoriesOn, digestTime, morningDigest, openConversation, reminderDaysSetting, rpc],
   );
-  const settingsDialog = (
-    <MailSettings
-      open={settings.open}
-      section={settings.section}
-      onOpenChange={(open) => setSettings((prev) => ({ ...prev, open }))}
+  const settingsContent = settingsSection === null ? undefined : (
+    <SettingsPage
+      section={settingsSection}
+      onSection={(section) => navigate.toPluginPanel("mail", { subPath: settingsSubPath(section) })}
+      onBack={() => navigate.toPluginPanel("mail", { subPath: viewSubPath(latest.current.view) })}
       accounts={accounts}
       identities={identities}
       templates={templates}
@@ -2881,8 +2884,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
         await loadTemplates();
       }}
       onOpenSmtp={(accountId) => {
-        setSettings((prev) => ({ ...prev, open: false }));
-        setSmtpAccountId(accountId);
+          setSmtpAccountId(accountId);
       }}
       blockRules={blockRules}
       onUnblock={async (id) => {
@@ -2893,8 +2895,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       onGoogleSwitch={
         googleSignInOffered
           ? (account) => {
-              setSettings((prev) => ({ ...prev, open: false }));
-              setAccountForm({ initial: { preset: "gmail", email: account.email, signIn: "google" } });
+                      setAccountForm({ initial: { preset: "gmail", email: account.email, signIn: "google" } });
             }
           : undefined
       }
@@ -3911,7 +3912,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
   );
   const archiveContent =
     shownPage === "archive" ? <ArchiveViewPage ports={archivePorts} onOpenLink={openLink} refresh={archiveRefresh} /> : undefined;
-  const shownContent = pageContent ?? filesContent ?? archiveContent;
+  const shownContent = pageContent ?? filesContent ?? archiveContent ?? settingsContent;
 
   // Reading (#50, #54, #62, #83, #86, #89).
   const codeTheme = experimental_useCodeTheme();
@@ -4124,7 +4125,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
             pages: {
               today: pageCounts.today,
               tasks: pageCounts.tasks,
-              current: shownPage,
+              current: shownPage === "settings" ? null : shownPage,
               ...(bbSettings.devNotifications ? { dev: pageCounts.dev } : {}),
               projects: true,
               files: true,
@@ -4155,7 +4156,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
         setFocusRequest((n) => n + 1);
         return;
       case "settings":
-        openSettings("addresses");
+        openSettings();
         return;
       case "thread":
         navigate.toPluginPanel("mail", { subPath: threadSubPath(command.link.accountId, command.link.threadId) });
@@ -4264,7 +4265,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       ai={mailAi}
       bb={mailBb}
       slice3h={slice3hPorts}
-      {...(shownContent !== undefined ? { page: shownContent } : {})}
+      {...(shownContent !== undefined ? { page: shownContent, pageWide: settingsContent !== undefined } : {})}
     />
     <LinkDialog
       link={linkAsk}
@@ -4320,7 +4321,6 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       clear={clearTranslations}
       onSaved={translateSettingsSaved}
     />
-    {settingsDialog}
     {slice3hDialogs}
     </>
   );

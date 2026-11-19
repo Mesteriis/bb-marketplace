@@ -3,7 +3,10 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { installTestPluginRuntime } from "@get-bb/plugin-sdk/testing/app";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Account, IdentityView } from "../core/model.ts";
-import { MailSettings, sendCheckText, type MailSettingsProps, type TemplateView } from "./mail-settings.tsx";
+import { useState } from "react";
+import { sendCheckText, type MailSettingsProps, type TemplateView } from "./mail-settings.tsx";
+import { SettingsPage } from "./settings/settings-page.tsx";
+import type { SettingsSectionId } from "./settings/sections.ts";
 
 installTestPluginRuntime();
 afterEach(cleanup);
@@ -53,10 +56,14 @@ const TEMPLATES: TemplateView[] = [
   { id: "tpl-1", name: "Thanks", doc: { type: "doc", content: [paragraph("Thank you, invented text.")] }, updatedAt: "2026-11-10T09:00:00.000Z" },
 ];
 
-function mount(overrides: Partial<MailSettingsProps> = {}) {
+/** The page with its section kept as the address would keep it. */
+function Page({ start, ...props }: MailSettingsProps & { start: SettingsSectionId }) {
+  const [section, setSection] = useState<SettingsSectionId>(start);
+  return <SettingsPage {...props} section={section} onSection={setSection} onBack={() => undefined} />;
+}
+
+function mount({ section = "addresses", ...overrides }: Partial<MailSettingsProps> & { section?: SettingsSectionId } = {}) {
   const props: MailSettingsProps = {
-    open: true,
-    onOpenChange: vi.fn(),
     accounts: [account],
     identities: IDENTITIES,
     templates: TEMPLATES,
@@ -70,7 +77,7 @@ function mount(overrides: Partial<MailSettingsProps> = {}) {
     onOpenSmtp: vi.fn(),
     ...overrides,
   };
-  render(<MailSettings {...props} />);
+  render(<Page {...props} start={section} />);
   return props;
 }
 
@@ -219,7 +226,7 @@ describe("MailSettings: sending addresses", () => {
 });
 
 describe("MailSettings: templates", () => {
-  const toTemplates = () => fireEvent.click(screen.getByRole("tab", { name: "Templates" }));
+  const toTemplates = () => fireEvent.click(screen.getByRole("link", { name: "Templates" }));
 
   it("creates a template with a name and text, without a quote button", async () => {
     const props = mount();
@@ -282,9 +289,9 @@ describe("MailSettings: Inbox (slice 3e)", () => {
     { id: "rule-2", kind: "domain" as const, value: "spam.example.net", createdAt: "2026-11-14T09:00:00.000Z" },
   ];
 
-  it("has no Inbox tab without the ports", () => {
+  it("has no Inbox section without the ports", () => {
     mount();
-    expect(screen.queryByRole("tab", { name: "Inbox" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Inbox" })).toBeNull();
   });
 
   it("lists blocked senders with kind and date; Unblock asks first and says Spam stays", async () => {
@@ -364,9 +371,10 @@ describe("MailSettings: AI features (slice 3f)", () => {
     expect(ports.loadRules).not.toHaveBeenCalled();
   });
 
-  it("no AI tabs without the AI ports", () => {
+  it("no AI sections without the AI ports", () => {
     mount();
-    expect(screen.queryByRole("tab", { name: "AI access" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Agent access" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "AI features" })).toBeNull();
   });
 });
 

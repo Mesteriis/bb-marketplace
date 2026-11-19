@@ -3672,10 +3672,32 @@ describe("Mail settings (slice 3d)", () => {
       ...overrides,
     });
 
-  it("the gear in the rail opens the dialog; Add address calls identity_add and reloads the list", async () => {
+  it("the gear in the rail goes to the settings page, and no dialog opens", async () => {
     const slot = render(settingsRpc());
     fireEvent.click(await folderRail(slot).findByRole("button", { name: "Mail settings" }));
-    const dialog = await slot.findByRole("dialog", { name: "Mail settings" });
+    expect(slot.inspection.navigateCalls.at(-1)).toMatchObject({ path: "mail", options: { subPath: "settings" } });
+    expect(slot.queryByRole("dialog", { name: "Mail settings" })).toBeNull();
+  });
+
+  it("an unknown section in the address opens the first section, not a blank page", async () => {
+    const slot = render(settingsRpc(), "settings/nope");
+    const page = await slot.findByRole("region", { name: "Mail settings" });
+    expect(within(page).getByRole("link", { name: "Mailboxes and sign-in" }).getAttribute("aria-current")).toBe("page");
+  });
+
+  it("a menu item and Mail navigate by address", async () => {
+    const slot = render(settingsRpc(), "settings/addresses");
+    const page = await slot.findByRole("region", { name: "Mail settings" });
+    fireEvent.click(within(page).getByRole("link", { name: "Templates" }));
+    expect(slot.inspection.navigateCalls.at(-1)).toMatchObject({ path: "mail", options: { subPath: "settings/templates" } });
+    fireEvent.click(within(page).getByRole("button", { name: "Mail" }));
+    expect(slot.inspection.navigateCalls.at(-1)).toMatchObject({ path: "mail" });
+    expect(String((slot.inspection.navigateCalls.at(-1) as { options?: { subPath?: string } }).options?.subPath ?? "")).not.toContain("settings");
+  });
+
+  it("the page lists the addresses; Add address calls identity_add and reloads the list", async () => {
+    const slot = render(settingsRpc(), "settings/addresses");
+    const dialog = await slot.findByRole("region", { name: "Mail settings" });
     expect(await within(dialog).findByText("Own address")).toBeTruthy();
     expect(callsTo(slot, "identities_list").at(-1)?.input).toEqual({ accountId: null });
     await waitFor(() => expect(callsTo(slot, "identity_suggestions")[0]?.input).toEqual({ accountId: "acc-1" }));
@@ -3688,12 +3710,10 @@ describe("Mail settings (slice 3d)", () => {
     await waitFor(() => expect(callsTo(slot, "identities_list").length).toBeGreaterThan(before));
   });
 
-  it("SMTP settings… closes it and opens the account's SMTP dialog", async () => {
-    const slot = render(settingsRpc());
-    fireEvent.click(await folderRail(slot).findByRole("button", { name: "Mail settings" }));
-    const dialog = await slot.findByRole("dialog", { name: "Mail settings" });
-    fireEvent.click(within(dialog).getByRole("button", { name: "SMTP settings…" }));
-    await waitFor(() => expect(slot.queryByRole("dialog", { name: "Mail settings" })).toBeNull());
+  it("SMTP settings… opens the account's SMTP dialog over the page", async () => {
+    const slot = render(settingsRpc(), "settings/addresses");
+    const dialog = await slot.findByRole("region", { name: "Mail settings" });
+    fireEvent.click(await within(dialog).findByRole("button", { name: "SMTP settings…" }));
     expect(await slot.findByRole("dialog", { name: /SMTP/ })).toBeTruthy();
   });
 });
@@ -4223,10 +4243,9 @@ describe("New-mail toasts, settings and agent triage (slice 3e)", () => {
           return { ok: true };
         },
       }),
+      "settings/inbox",
     );
-    fireEvent.click(await folderRail(slot).findByRole("button", { name: "Mail settings" }));
-    const dialog = within(await slot.findByRole("dialog", { name: "Mail settings" }));
-    fireEvent.click(dialog.getByRole("tab", { name: "Inbox" }));
+    const dialog = within(await slot.findByRole("region", { name: "Mail settings" }));
     fireEvent.click(await dialog.findByRole("button", { name: "Unblock promo@shop.example.com" }));
     await act(async () => {
       fireEvent.click(within(dialog.getByRole("alertdialog")).getByRole("button", { name: "Unblock" }));
@@ -4253,10 +4272,9 @@ describe("New-mail toasts, settings and agent triage (slice 3e)", () => {
         }),
         snooze_folder_use: () => ({ ok: true }),
       }),
+      "settings/inbox",
     );
-    fireEvent.click(await folderRail(slot).findByRole("button", { name: "Mail settings" }));
-    const dialog = within(await slot.findByRole("dialog", { name: "Mail settings" }));
-    fireEvent.click(dialog.getByRole("tab", { name: "Inbox" }));
+    const dialog = within(await slot.findByRole("region", { name: "Mail settings" }));
     fireEvent.click(dialog.getByRole("button", { name: "Change the snoozed folder of owner@example.org" }));
     const picker = within(await slot.findByRole("dialog", { name: "Snoozed folder" }));
     const list = within(await picker.findByRole("list", { name: "Folders" }));
@@ -4603,8 +4621,12 @@ describe("Slice 3f: Today, Tasks, Mail settings and day notices", () => {
     expect(slot.inspection.navigateCalls.at(-1)).toMatchObject({ path: "mail", options: { subPath: "tasks" } });
   });
 
-  it("Mail settings has AI access, Agent activity and AI features", async () => {
-    const slot = renderSlot({ component: MailWithSidebar }, { subPath: "" }, {
+  it.each([
+    ["settings/ai_access", "Spam and Trash are never shared, whatever you choose here."],
+    ["settings/activity", "Nothing yet."],
+    ["settings/ai", "On: the Today digest is ready at 07:30."],
+  ])("the settings page at %s shows its section", async (subPath, text) => {
+    const slot = renderSlot({ component: MailWithSidebar }, { subPath }, {
       rpc: mailRpc({
         reminders_due: () => ({ reminders: [] }),
         identities_list: () => ({ identities: [] }),
@@ -4616,13 +4638,7 @@ describe("Slice 3f: Today, Tasks, Mail settings and day notices", () => {
       settings: { mailCategories: false, morningDigest: true, digestTime: "07:30" },
       composer: { scope: { kind: "new-thread", projectId: null } },
     });
-    fireEvent.click(await slot.findByRole("button", { name: "Mail settings" }));
-    fireEvent.click(await slot.findByRole("tab", { name: "AI access" }));
-    expect(await slot.findByText("Spam and Trash are never shared, whatever you choose here.")).toBeTruthy();
-    fireEvent.click(slot.getByRole("tab", { name: "Agent activity" }));
-    expect(await slot.findByText("Nothing yet.")).toBeTruthy();
-    fireEvent.click(slot.getByRole("tab", { name: "AI features" }));
-    expect(await slot.findByText("On: the Today digest is ready at 07:30.")).toBeTruthy();
+    expect(await slot.findByText(text)).toBeTruthy();
   });
 });
 
@@ -4798,16 +4814,16 @@ describe("Slice 3g: views, BB surfaces and settings", () => {
     expect(callsTo(slot, "bb_thread_prepare")[0]?.input).toEqual({ messageId: "m-new", include: "message", projectId: "p-api", instruction: "Find the test" });
   });
 
-  it("Mail settings show BB integration and Rules", async () => {
-    const slot = renderWith(mailRpc({ bindings_list: () => ({ bindings: [] }), identities_list: () => ({ identities: [] }), templates_list: () => ({ templates: [] }) }), {
-      attachmentFolder: "inbox-files",
-    });
-    await slot.findByRole("button", { name: /Quarterly plan/ });
-    fireEvent.click(slot.getByRole("button", { name: /Mail settings|Settings/ }));
-    fireEvent.click(await slot.findByRole("tab", { name: "BB integration" }));
-    expect(await slot.findByText("Attachments saved to a project go to inbox-files/")).toBeTruthy();
-    fireEvent.click(slot.getByRole("tab", { name: "Rules" }));
-    expect(slot.getByText("Off: no rule runs.")).toBeTruthy();
+  it.each([
+    ["settings/bb", "Attachments saved to a project go to inbox-files/"],
+    ["settings/rules", "Off: no rule runs."],
+  ])("the settings page at %s shows its section", async (subPath, text) => {
+    const slot = renderWith(
+      mailRpc({ bindings_list: () => ({ bindings: [] }), identities_list: () => ({ identities: [] }), templates_list: () => ({ templates: [] }) }),
+      { attachmentFolder: "inbox-files" },
+      subPath,
+    );
+    expect(await slot.findByText(text)).toBeTruthy();
   });
 });
 

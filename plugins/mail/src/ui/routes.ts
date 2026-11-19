@@ -9,6 +9,7 @@
 // so parsing undoes both layers. Ids without reserved characters (the usual
 // case) pass through both layers unchanged.
 
+import { settingsSectionOf, type SettingsSectionId } from "./settings/sections.ts";
 import type { MailView, RoleName } from "./folder-list.tsx";
 
 export interface ThreadLink {
@@ -85,7 +86,7 @@ export function parseDraftSubPath(subPath: string): string | null {
 }
 
 /** The Today and Tasks pages of the rail (slice 3f), Dev and Projects (slice 3g), Files (slice 3h), Archive (slice 3p). */
-export type MailPageName = "today" | "tasks" | "dev" | "projects" | "files" | "archive";
+export type MailPageName = "today" | "tasks" | "dev" | "projects" | "files" | "archive" | "settings";
 
 /** The subPath of a rail page; Projects is `p` (one project is `p/<projectId>`). */
 export function pageSubPath(page: MailPageName): string {
@@ -96,7 +97,24 @@ export function pageSubPath(page: MailPageName): string {
 export function parsePageSubPath(subPath: string): MailPageName | null {
   if (subPath === "today" || subPath === "tasks" || subPath === "dev" || subPath === "files" || subPath === "archive") return subPath;
   if (subPath === "p" || parseProjectSubPath(subPath) !== null) return "projects";
+  if (parseSettingsSubPath(subPath) !== null) return "settings";
   return null;
+}
+
+/** The subPath of the settings page, or of one of its sections. */
+export function settingsSubPath(section?: SettingsSectionId): string {
+  return section === undefined ? "settings" : `settings/${section}`;
+}
+
+/**
+ * The settings section a panel subPath names; null when it is not a settings
+ * address. A missing or unknown section opens the first one, so an old or
+ * mistyped link never shows a blank page.
+ */
+export function parseSettingsSubPath(subPath: string): SettingsSectionId | null {
+  const segments = subPath.split("/");
+  if (segments[0] !== "settings" || segments.length > 2) return null;
+  return settingsSectionOf(segments[1]);
 }
 
 /** The subPath, as unencoded segments for `toPluginPanel`, of one project's mail (slice 3g). */

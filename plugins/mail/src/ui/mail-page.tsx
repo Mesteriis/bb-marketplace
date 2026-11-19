@@ -377,6 +377,8 @@ export interface MailPageProps {
   ai?: MailAiPorts;
   /** The Today or Tasks page (slice 3f), shown instead of the list and the conversation. */
   page?: ReactNode;
+  /** The page needs more room than a reading page (settings: a menu beside its content). */
+  pageWide?: boolean;
   /** Slice 3g: the BB integration; absent: none of it. */
   bb?: MailBbPorts;
   /** Slice 3h: search, older mail, saved searches, labels, drag and Files; absent: none of it. */
@@ -445,7 +447,16 @@ export function MailPage(props: MailPageProps) {
   if (props.page !== undefined) {
     return (
       <div className="h-full min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto box-border w-full max-w-2xl px-4 pb-6 pt-3 md:px-5 md:pt-4">{props.page}</div>
+        <div className={cn("mx-auto box-border w-full px-4 pb-6 pt-3 md:px-5 md:pt-4", props.pageWide === true ? "max-w-5xl" : "max-w-2xl")}>
+          {props.page}
+        </div>
+        {/* The settings page opens it; the mailbox, which also renders it, is not mounted on a page. */}
+        <SmtpDialog
+          account={status.accounts.find((a) => a.id === props.smtpAccountId) ?? null}
+          onClose={props.onCloseSmtp}
+          onTest={props.onTestSmtp}
+          onSave={props.onSaveSmtp}
+        />
       </div>
     );
   }

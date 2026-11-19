@@ -163,3 +163,21 @@ describe("Files and saved searches (slice 3h)", () => {
     expect(parseViewSubPath("s/ss-1")).toBeNull();
   });
 });
+
+describe("settings addresses", () => {
+  it("name the page and its section, and fall back to the first section", async () => {
+    const { parsePageSubPath, parseSettingsSubPath, settingsSubPath } = await import("./routes.ts");
+    expect(settingsSubPath()).toBe("settings");
+    expect(settingsSubPath("ai")).toBe("settings/ai");
+    expect(parseSettingsSubPath("settings")).toBe("accounts");
+    expect(parseSettingsSubPath("settings/ai")).toBe("ai");
+    expect(parseSettingsSubPath("settings/nope")).toBe("accounts");
+    expect(parseSettingsSubPath("settings/search")).toBe("reading");
+    expect(parseSettingsSubPath("settings/ai/extra")).toBeNull();
+    expect(parseSettingsSubPath("today")).toBeNull();
+    expect(parseSettingsSubPath("")).toBeNull();
+    expect(parsePageSubPath("settings/ai")).toBe("settings");
+    expect(parsePageSubPath("settings")).toBe("settings");
+  });
+});
+
