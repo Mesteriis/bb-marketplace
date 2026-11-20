@@ -50,7 +50,7 @@ const ABBREVIATION = /(^|[\s(])((\p{L}{1,3}\.){2,}|(etc|vs|approx|incl|excl|no|f
 const WORD = /^[\p{L}][\p{L}'’]*$/u;
 
 /** The word that ends at the cursor, when autocorrect may touch it. */
-function wordBefore(state: EditorState, pos: number): { start: number; word: string; sentenceStart: boolean } | null {
+function wordBefore(state: EditorState, pos: number, pairs: readonly Correction[] = []): { start: number; word: string; sentenceStart: boolean } | null {
   const $pos = state.doc.resolve(pos);
   const parent = $pos.parent;
   if (!parent.isTextblock || parent.type.spec.code === true) return null;
@@ -62,7 +62,9 @@ function wordBefore(state: EditorState, pos: number): { start: number; word: str
   if (token === "") return null;
   // A leading bracket or quote is not part of the word; anything else odd (an address, a path) is left alone.
   const word = token.replace(/^[("'\[{«“]+/u, "");
-  if (!WORD.test(word)) return null;
+  // The owner's own replacement may have digits or signs on its left side (b4, w/): then the whole token is the word.
+  const own = pairs.some((pair) => pair.from === word || (pair.from === pair.from.toLocaleLowerCase() && pair.from === word.toLocaleLowerCase()));
+  if (!WORD.test(word) && !own) return null;
   const lead = before.slice(0, before.length - word.length).replace(/[("'\[{\u00ab\u201c]+$/u, "");
   // After a line break, as at the block's start; never after an abbreviation (e.g., etc., p.m.).
   const sentenceStart = /\ufffc\s*$/u.test(lead) || (SENTENCE_END.test(lead) && !ABBREVIATION.test(lead));
@@ -73,7 +75,7 @@ function autocorrectPlugin(options: () => TypingOptions): Plugin<CorrectState> {
   const fix = (view: EditorView, pos: number, beforeDot = false): { start: number; word: string; fixed: string } | null => {
     const current = options();
     if (!current.autocorrect) return null;
-    const found = wordBefore(view.state, pos);
+    const found = wordBefore(view.state, pos, current.pairs);
     if (found === null) return null;
     const skip = correctKey.getState(view.state)?.skip ?? new Set<string>();
     const fixed = correctWord(found.word, { sentenceStart: found.sentenceStart && !beforeDot, pairs: current.pairs, skip });

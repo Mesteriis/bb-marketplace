@@ -10,6 +10,15 @@ describe("firstNameOf", () => {
     [{ name: "", address: "linus_t@example.com" }, "Linus"],
     [{ name: "ada@example.com", address: "ada@example.com" }, "Ada"],
     [{ name: null, address: "info@example.com" }, null],
+    // "Surname, Name" and a Russian surname written first.
+    [{ name: "Smith, John", address: "js@example.com" }, "John"],
+    [{ name: "\u0418\u0432\u0430\u043d\u043e\u0432 \u0418\u0432\u0430\u043d", address: "ii@example.com" }, "\u0418\u0432\u0430\u043d"],
+    [{ name: "\u041f\u0435\u0442\u0440\u043e\u0432\u0430 \u0410\u043d\u043d\u0430 \u0421\u0435\u0440\u0433\u0435\u0435\u0432\u043d\u0430", address: "pa@example.com" }, "\u0410\u043d\u043d\u0430"],
+    [{ name: "\u0418\u0432\u0430\u043d \u0418\u0432\u0430\u043d\u043e\u0432", address: "ii@example.com" }, "\u0418\u0432\u0430\u043d"],
+    [{ name: "\u041a\u043e\u043d\u0441\u0442\u0430\u043d\u0442\u0438\u043d \u041f\u0435\u0442\u0440\u043e\u0432", address: "kp@example.com" }, "\u041a\u043e\u043d\u0441\u0442\u0430\u043d\u0442\u0438\u043d"],
+    // A name's own capitals are kept.
+    [{ name: "McKenzie Lee", address: "ml@example.com" }, "McKenzie"],
+    [{ name: "ANNA SMITH", address: "as@example.com" }, "Anna"],
     [{ name: null, address: "x1@example.com" }, null],
     [undefined, null],
   ])("%j -> %s", (recipient, expected) => {

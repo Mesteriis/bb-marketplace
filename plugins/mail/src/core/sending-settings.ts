@@ -210,7 +210,10 @@ export function applyTemplate(store: MailStore, draftId: string, templateId: str
   if (!store.listTemplates().some((row) => row.id === templateId)) throw new IdentityRefusal("not_found", UNKNOWN_TEMPLATE_TEXT);
   const attached: ComposeAttachment[] = [];
   const leftOut: string[] = [];
+  // A file the draft already carries (the template applied a second time) is not attached again.
+  const present = new Set(store.listAttachments(draftId).map((a) => `${a.fileName}\u0000${a.size}\u0000${a.mimeType}`));
   for (const file of store.templateFiles(templateId)) {
+    if (present.has(`${file.name}\u0000${file.size}\u0000${file.mimeType}`)) continue;
     if (file.size > attachmentRoom(store, draftId)) {
       leftOut.push(file.name);
       continue;

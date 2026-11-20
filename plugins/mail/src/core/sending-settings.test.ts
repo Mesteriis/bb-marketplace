@@ -63,5 +63,10 @@ describe("applyTemplate", () => {
     expect(applied.leftOut).toEqual(["big.pdf"]);
     expect(applied.attached.map((a) => [a.fileName, a.size])).toEqual([["small.pdf", 16]]);
     expect(h.store.listAttachments(draftId).map((a) => a.fileName)).toEqual(["fill.bin", "small.pdf"]);
+    // The same template again: its file is already there and is not attached a second time.
+    const again = applyTemplate(h.store, draftId, "tpl_1");
+    expect(again.attached).toEqual([]);
+    expect(again.leftOut).toEqual(["big.pdf"]);
+    expect(h.store.listAttachments(draftId).map((a) => a.fileName)).toEqual(["fill.bin", "small.pdf"]);
   });
 });

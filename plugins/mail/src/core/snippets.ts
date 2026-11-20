@@ -53,13 +53,36 @@ export function normalizeExtras(input: Partial<Record<keyof TemplateExtras, unkn
 /** Local parts that name a role, not a person. */
 const ROLES = new Set(["info", "hello", "hi", "contact", "sales", "support", "team", "admin", "office", "mail", "noreply", "no-reply", "billing", "help"]);
 
-const capital = (word: string) => word[0]!.toLocaleUpperCase() + word.slice(1).toLocaleLowerCase();
+/** A name as written when it has capitals of its own (McKenzie); a word all in one case gets one capital. */
+const capital = (word: string) =>
+  word === word.toLocaleLowerCase() || word === word.toLocaleUpperCase() ? word[0]!.toLocaleUpperCase() + word.slice(1).toLocaleLowerCase() : word;
 
-/** A recipient's first name: the display name's first word, else the local part up to a dot or underscore; null for a role or a code. */
+/** How Russian surnames and patronymics end; used only to tell "Surname Name" from "Name Surname". */
+const RU_SURNAME = /(\u043e\u0432|\u0435\u0432|\u0451\u0432|\u0438\u043d|\u044b\u043d|\u043e\u0432\u0430|\u0435\u0432\u0430|\u0451\u0432\u0430|\u0438\u043d\u0430|\u044b\u043d\u0430|\u0441\u043a\u0438\u0439|\u0441\u043a\u0430\u044f|\u0446\u043a\u0438\u0439|\u0446\u043a\u0430\u044f|\u0435\u043d\u043a\u043e|\u0447\u0443\u043a|\u044e\u043a)$/iu;
+const RU_PATRONYMIC = /(\u043e\u0432\u0438\u0447|\u0435\u0432\u0438\u0447|\u044c\u0438\u0447|\u0438\u0447|\u043e\u0432\u043d\u0430|\u0435\u0432\u043d\u0430|\u0438\u0447\u043d\u0430|\u0438\u043d\u0438\u0447\u043d\u0430)$/iu;
+
+/** The given name among a display name's words: after a comma ("Smith, John"), or second when a Russian surname stands first. */
+function givenWord(name: string): string {
+  const comma = name.indexOf(",");
+  if (comma !== -1) {
+    const after = name.slice(comma + 1).trim().split(/\s+/)[0] ?? "";
+    if (after !== "") return after;
+  }
+  const words = name.replace(/,/g, " ").trim().split(/\s+/);
+  const [first, second, third] = words;
+  if (first !== undefined && second !== undefined && /^[\u0400-\u04ff-]+$/u.test(first) && /^[\u0400-\u04ff-]+$/u.test(second)) {
+    // "Surname Name Patronymic", or "Surname Name" where only the first word ends like a surname.
+    if (third !== undefined && RU_PATRONYMIC.test(third)) return second;
+    if (third === undefined && RU_SURNAME.test(first) && !RU_SURNAME.test(second)) return second;
+  }
+  return first ?? "";
+}
+
+/** A recipient's first name: the display name's given word, else the local part up to a dot or underscore; null for a role or a code. */
 export function firstNameOf(recipient: { name: string | null; address: string } | undefined): string | null {
   if (recipient === undefined) return null;
   const name = (recipient.name ?? "").trim();
-  const fromName = name !== "" && !name.includes("@") ? name.split(/\s+/)[0]! : null;
+  const fromName = name !== "" && !name.includes("@") ? givenWord(name) : null;
   const word = fromName ?? recipient.address.split("@")[0]!.split(/[._+-]/)[0]!;
   if (!/^\p{L}{2,}$/u.test(word) || (fromName === null && ROLES.has(word.toLowerCase()))) return null;
   return capital(word);

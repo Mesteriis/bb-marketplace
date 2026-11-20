@@ -136,7 +136,7 @@ export function TemplatesSection({
                       setProblem(null);
                       onDelete(template.id).then(
                         () => setRemoving(null),
-                        (error: unknown) => setProblem(messageOf(error, "Could not delete the template.")),
+                        (error: unknown) => setProblem(messageOf(error, tx("Could not delete the template."))),
                       );
                     }}
                   >
@@ -186,7 +186,7 @@ function TemplateEditor({
   const fileChange = (work: Promise<void>) => {
     setFileBusy(true);
     setProblem(null);
-    work.catch((error: unknown) => setProblem(messageOf(error, "Could not change the template's files."))).finally(() => setFileBusy(false));
+    work.catch((error: unknown) => setProblem(messageOf(error, tx("Could not change the template's files.")))).finally(() => setFileBusy(false));
   };
   const [doc, setDoc] = useState<EditorDoc>(edit.doc);
   const [busy, setBusy] = useState(false);
@@ -209,7 +209,7 @@ function TemplateEditor({
         bcc: addressesOf(bcc),
       });
     } catch (error) {
-      setProblem(messageOf(error, "Could not save the template."));
+      setProblem(messageOf(error, tx("Could not save the template.")));
     } finally {
       setBusy(false);
     }

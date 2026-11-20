@@ -90,6 +90,16 @@ describe("autocorrect in the editor", () => {
     expect(text(editor)).toBe("Ok, be right back.");
   });
 
+  it("an owner's replacement may have digits or signs on its left side", () => {
+    const { editor } = make({ pairs: [{ from: "b4", to: "before" }, { from: "w/", to: "with" }, { from: "2moro", to: "tomorrow" }] });
+    type(editor, "see you b4 lunch w/ ann 2moro.");
+    expect(text(editor)).toBe("See you before lunch with ann tomorrow.");
+    // A number or a path that only contains such a left side is left alone.
+    const plain = make({ pairs: [{ from: "b4", to: "before" }] });
+    type(plain.editor, "room ab4 and b42 ");
+    expect(text(plain.editor)).toBe("Room ab4 and b42 ");
+  });
+
   it("changes nothing in a code block, inside a link, in an address or with the setting off", () => {
     const code = make({}, { type: "doc", content: [{ type: "codeBlock", content: [{ type: "text", text: "x" }] }] });
     type(code.editor, " teh ");
