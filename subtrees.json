@@ -45,7 +45,7 @@
       "upstreamRevision": "fc12842e87495f2a6370dbc0d21893e49b27a258",
       "fork": "https://github.com/Mesteriis/smsunarto-bb-plugins.git",
       "branch": "marketplace/agent-instructions",
-      "commit": "492ab00e170271ea22e8e6ba8cc8fcb226255f8a",
+      "commit": "ae3d37bca8c36103f11f63ebd2b00947530e2e72",
       "remote": "plugin-agent-instructions",
       "upstreamRemote": "upstream-agent-instructions"
     },
@@ -657,7 +657,7 @@
       "upstreamRevision": "fc12842e87495f2a6370dbc0d21893e49b27a258",
       "fork": "https://github.com/Mesteriis/smsunarto-bb-plugins.git",
       "branch": "marketplace/scott-secrets",
-      "commit": "da4ad7e45fdd8d88645d3fa27c48200b102ed119",
+      "commit": "8023dfdf27b9849804cf6a48f6e5d977a64a576b",
       "remote": "plugin-scott-secrets",
       "upstreamRemote": "upstream-scott-secrets"
     },
@@ -705,7 +705,7 @@
       "upstreamRevision": "fc12842e87495f2a6370dbc0d21893e49b27a258",
       "fork": "https://github.com/Mesteriis/smsunarto-bb-plugins.git",
       "branch": "marketplace/source-control",
-      "commit": "971e7ea80a9d128c6871b2c76e144051f96250f6",
+      "commit": "0c81985e9969b267de964d1a14f406eb68fb1b64",
       "remote": "plugin-source-control",
       "upstreamRemote": "upstream-source-control"
     },
