@@ -4,6 +4,7 @@
 // messages show sender, date and snippet; an expanded one shows its body.
 // The toolbar acts on the conversation's messages in the folder (or role)
 // being viewed; each message has its own flag, Details and downloads.
+import { AiLine } from "./ai-label-chips.tsx";
 import { ReplyDraftStrip, type ReplyDraftPorts } from "./reply-draft-strip.tsx";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import type {
@@ -604,6 +605,7 @@ function MessageItem({
           {r3?.invite !== undefined && message.attachments.some(isCalendarPart) ? (
             <InviteCard messageId={message.id} ports={r3.invite} />
           ) : null}
+          <AiLine summary={message.aiSummary} labels={message.aiLabels} />
           {r3?.replyDraft !== undefined ? <ReplyDraftStrip messageId={message.id} ports={r3.replyDraft} /> : null}
           {r3?.pgp !== undefined && security.crypto?.kind === "pgp_signed" ? (
             <PgpPanel messageId={message.id} mode="signed" ports={r3.pgp} />

@@ -1,4 +1,5 @@
 import type { PluginRight } from "../../core/plugin-access.ts";
+import type { AiLabelPorts } from "./sorting-settings.tsx";
 import type { PluginAccessPort } from "./plugin-access-section.tsx";
 import type { InboxTabsPort } from "./tabs-settings.tsx";
 import type { PageSettingsPort } from "./setting-controls.tsx";
@@ -97,6 +98,8 @@ export interface SettingsAiPorts {
   removeRule: (id: string) => Promise<void>;
   /** AI settings: provider, model and translation (the former Translation settings). */
   onOpenAiSettings: () => void;
+  /** AI sorts the inbox: the owner's AI labels; absent: the Sorting group is not shown. */
+  labels?: AiLabelPorts;
 }
 
 /** Where the switches of plugin settings live: BB's own settings page. */

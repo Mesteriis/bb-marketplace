@@ -6,6 +6,7 @@ import { tx, txn } from "../i18n/index.ts";
 import { CategoriesSetting, ReminderSetting, TodaySettings, TranslateLanguageSetting, WritingSettings } from "./section-settings.tsx";
 import type { PageSettingsPort } from "./setting-controls.tsx";
 import { type SettingsAiPorts, PLUGIN_SETTINGS_HINT, messageOf } from "./shared.ts";
+import { SortingSettings } from "./sorting-settings.tsx";
 import { SectionHeading } from "./primitives.tsx";
 
 /** Categories, Today, reply reminders and AI settings (slice 3f). */
@@ -101,6 +102,7 @@ export function AiFeaturesSection({ ai, settings }: { ai: SettingsAiPorts; setti
         )}
       </section>
       {settings !== undefined ? <WritingSettings port={settings} /> : null}
+      {settings !== undefined && ai.labels !== undefined ? <SortingSettings port={settings} labels={ai.labels} /> : null}
       <section aria-label={tx("AI settings")} className="flex flex-col items-start gap-1">
         <SectionHeading>{tx("AI settings")}</SectionHeading>
         {settings !== undefined ? <TranslateLanguageSetting port={settings} /> : null}

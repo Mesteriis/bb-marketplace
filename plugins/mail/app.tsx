@@ -3057,6 +3057,18 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     },
     [navigate],
   );
+  /** AI sorts the inbox: the owner's AI labels. Its own memo, so a settings change does not reload the list. */
+  const aiLabelPorts = useMemo<NonNullable<SettingsAiPorts["labels"]>>(
+    () => ({
+      list: async () => (await rpc.call("ai_labels_list", {})).labels,
+      save: async (input) => (await rpc.call("ai_label_save", input)).label,
+      remove: async (id) => {
+        await rpc.call("ai_label_delete", { id });
+      },
+      move: async (id, direction) => (await rpc.call("ai_label_move", { id, direction })).labels,
+    }),
+    [rpc],
+  );
   const settingsAi = useMemo<SettingsAiPorts>(
     () => ({
       scope: {
@@ -3075,6 +3087,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       digestTime,
       reminderDays: reminderDaysSetting,
       loadRules: async () => (await rpc.call("category_rules_list", {})).rules,
+      labels: aiLabelPorts,
       removeRule: async (id) => {
         await rpc.call("category_rule_remove", { id });
       },
@@ -3082,7 +3095,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
           setTranslateSettingsOpen(true);
       },
     }),
-    [categoriesOn, digestTime, morningDigest, openConversation, reminderDaysSetting, rpc],
+    [aiLabelPorts, categoriesOn, digestTime, morningDigest, openConversation, reminderDaysSetting, rpc],
   );
   const settingsContent = settingsSection === null ? undefined : (
     <SettingsPage

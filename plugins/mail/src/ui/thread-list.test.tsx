@@ -47,6 +47,19 @@ function list(overrides: Partial<Parameters<typeof ThreadList>[0]> = {}) {
   );
 }
 
+describe("ThreadList: AI sorts the inbox", () => {
+  it("shows the model's line in place of the snippet (the snippet one hover away) and the AI labels, two and a count", () => {
+    vi.stubGlobal("IntersectionObserver", class { observe() {} unobserve() {} disconnect() {} });
+    render(list({ threads: [{ ...thread(1), aiSummary: "A vendor offers widgets.", aiLabels: ["Pitch", "Invoice", "Team"] }, thread(2)] }));
+    const line = screen.getByText("A vendor offers widgets.");
+    expect(line.getAttribute("title")).toBe("Invented preview 1");
+    expect(screen.queryByText("Invented preview 1")).toBeNull();
+    expect(screen.getByText("Invented preview 2")).toBeTruthy();
+    expect(screen.getAllByLabelText("AI labels")).toHaveLength(1);
+    expect(screen.getByLabelText("AI labels").textContent).toBe("PitchInvoice+1");
+  });
+});
+
 /** A stand-in observer the test fires by hand. */
 function stubObserver() {
   const observers: { fire: (isIntersecting: boolean) => void; options: IntersectionObserverInit | undefined; disconnected: boolean }[] = [];

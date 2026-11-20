@@ -29,6 +29,7 @@ export const SEARCH_OPERATORS: readonly { example: string; meaning: string }[] =
   { example: "label:Travel", meaning: msg("A Gmail label") },
   { example: "list:news.example.org", meaning: msg("A mailing list") },
   { example: "category:bills", meaning: msg("A Mail category") },
+  { example: "ai:pitch", meaning: msg("One of your AI labels") },
   { example: "from:vip", meaning: msg("Your important senders; from:team is your own domains, from:known is people you wrote to") },
   { example: "is:dev", meaning: msg("Development notifications; is:automated is robots, is:newsletter is mailing lists") },
   { example: "has:invite", meaning: msg("Messages with a calendar invitation") },
