@@ -57,7 +57,7 @@ const ROLES = new Set(["info", "hello", "hi", "contact", "sales", "support", "te
 const capital = (word: string) =>
   word === word.toLocaleLowerCase() || word === word.toLocaleUpperCase() ? word[0]!.toLocaleUpperCase() + word.slice(1).toLocaleLowerCase() : word;
 
-/** How Russian surnames and patronymics end; used only to tell "Surname Name" from "Name Surname". */
+/** How Russian surnames and patronymics end; used only to see which of two words is the surname. */
 const RU_SURNAME = /(\u043e\u0432|\u0435\u0432|\u0451\u0432|\u0438\u043d|\u044b\u043d|\u043e\u0432\u0430|\u0435\u0432\u0430|\u0451\u0432\u0430|\u0438\u043d\u0430|\u044b\u043d\u0430|\u0441\u043a\u0438\u0439|\u0441\u043a\u0430\u044f|\u0446\u043a\u0438\u0439|\u0446\u043a\u0430\u044f|\u0435\u043d\u043a\u043e|\u0447\u0443\u043a|\u044e\u043a)$/iu;
 const RU_PATRONYMIC = /(\u043e\u0432\u0438\u0447|\u0435\u0432\u0438\u0447|\u044c\u0438\u0447|\u0438\u0447|\u043e\u0432\u043d\u0430|\u0435\u0432\u043d\u0430|\u0438\u0447\u043d\u0430|\u0438\u043d\u0438\u0447\u043d\u0430)$/iu;
 
