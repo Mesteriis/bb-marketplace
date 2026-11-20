@@ -5527,6 +5527,9 @@ function aiResultView(store: MailStore, finished: AiFinished): NonNullable<AiRes
       return { kind: "draft", ...base, ...output.value };
     case "write":
       return { kind: "write", ...base, paragraphs: output.value.paragraphs, linksRemoved: output.value.linksRemoved, unknown: output.value.unknown };
+    case "sort":
+      // Sorting is started by new mail and read by the server alone: the page never polls it.
+      throw refuse("not_found", UNKNOWN_AI_JOB_MESSAGE);
   }
 }
 

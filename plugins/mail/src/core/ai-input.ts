@@ -17,7 +17,7 @@ import { isAttribution } from "./quotes.ts";
 // Kinds, caps and rates
 // ---------------------------------------------------------------------------
 
-export const AI_KINDS = ["summary", "ask", "tasks", "categories", "digest", "draft", "write", "autodraft"] as const;
+export const AI_KINDS = ["summary", "ask", "tasks", "categories", "digest", "draft", "write", "autodraft", "sort"] as const;
 export type AiKind = (typeof AI_KINDS)[number];
 
 /** Owner-click calls per kind per hour. */
@@ -31,6 +31,8 @@ export const AI_RATES: Record<AiKind, number> = {
   write: 30,
   // Not an owner click: replies drafted for new mail (AI writes mail); the day cap is the queue's.
   autodraft: 10,
+  // Not an owner click either: one call sorts up to ten new messages (AI sorts the inbox).
+  sort: 20,
 };
 
 /** max_tokens per model call (spec resolution 9); ask has two calls. */
@@ -44,6 +46,7 @@ export const AI_MAX_OUTPUT_TOKENS = {
   draft: 4_096,
   write: 4_096,
   autodraft: 4_096,
+  sort: 2_048,
 } as const;
 
 /** Characters of framed input per kind. */
@@ -57,6 +60,7 @@ export const AI_INPUT_CAPS: Record<AiKind, number> = {
   // The conversation frame only; the owner's block and the voice samples have their own limits (ai-write.ts).
   write: 30_000,
   autodraft: 20_000,
+  sort: 30_000,
 };
 
 /** Part of the summary cache key: a prompt change re-runs cached summaries. */
@@ -320,6 +324,22 @@ export function conversationFrame(
 ): { framed: string; parts: AiBuild["parts"]; hidden: number; truncated: number } {
   if (messages.length === 0) return { framed: "", parts: [], hidden: 0, truncated: 0 };
   const capped = capParts(messages, newestFirst(messages.length), cap, cap, nonce);
+  const built = finish("", messages, capped, { nonce });
+  return { framed: built.input, parts: built.parts, hidden: capped.hidden, truncated: capped.truncated };
+}
+
+/**
+ * A list of unrelated emails for a builder outside this module (AI sorts
+ * the inbox): in the given order, the sender as name and domain, each body
+ * cut to `bodyChars` after redaction, within `cap`.
+ */
+export function listFrame(
+  messages: readonly AiSourceMessage[],
+  cap: number,
+  bodyChars: number,
+  nonce: string,
+): { framed: string; parts: AiBuild["parts"]; hidden: number; truncated: number } {
+  const capped = capParts(messages, inOrder(messages.length), cap, bodyChars, nonce, true);
   const built = finish("", messages, capped, { nonce });
   return { framed: built.input, parts: built.parts, hidden: capped.hidden, truncated: capped.truncated };
 }
@@ -756,4 +776,4 @@ export function summarySourceHash(ids: readonly string[], contentHashes: readonl
 }
 
 // Shared with the builders and parsers of other modules (ai-write.ts).
-export { JSON_ONLY as AI_JSON_ONLY, items as aiItems, parseWith as aiParseWith, text as aiText };
+export { JSON_ONLY as AI_JSON_ONLY, citation as aiCitation, items as aiItems, parseWith as aiParseWith, text as aiText };

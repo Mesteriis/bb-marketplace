@@ -1437,7 +1437,7 @@ describe("slice-3f contract", () => {
   it("offers every AI kind through ai_start", () => {
     // An auto draft is started by new mail, never by a call.
     expect([...AI_START_KINDS].sort()).toEqual(["ask", "categories", "digest", "draft", "summary", "tasks", "write"]);
-    expect(AI_KINDS.filter((kind) => !AI_START_KINDS.includes(kind))).toEqual(["autodraft"]);
+    expect(AI_KINDS.filter((kind) => !AI_START_KINDS.includes(kind))).toEqual(["autodraft", "sort"]);
     const write = { kind: "write", draftId: "d", revision: 1, instruction: "say yes", paragraphs: [] };
     expect(parses("ai_start", write)).toBe(true);
     expect(parses("ai_start", { ...write, instruction: "" })).toBe(false);

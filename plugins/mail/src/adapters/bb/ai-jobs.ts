@@ -25,6 +25,7 @@ import {
   type SummaryResult,
   type TaskSuggestion,
 } from "../../core/ai-input.ts";
+import { parseSort, type AiLabel, type SortItem } from "../../core/ai-sort.ts";
 import { parseWrite, removeForeignLinks } from "../../core/ai-write.ts";
 import { restoreSecrets } from "../../core/redact.ts";
 import { TranslateError, type Translator } from "../../core/translate.ts";
@@ -49,7 +50,9 @@ export type AiOutput =
   | { kind: "digest"; value: { items: { n: number; gist: string }[] } }
   | { kind: "draft"; value: { paragraphs: string[]; unknown: number; missing: number } }
   /** Write and auto drafts (AI writes mail); `reply` false only for an auto draft that needs no answer. */
-  | { kind: "write"; value: { reply: boolean; paragraphs: string[]; linksRemoved: number; unknown: number } };
+  | { kind: "write"; value: { reply: boolean; paragraphs: string[]; linksRemoved: number; unknown: number } }
+  /** AI sorts the inbox: one line and the owner's label ids per message sent. */
+  | { kind: "sort"; value: { items: SortItem[] } };
 
 /** A finished job: the checked answer, the parts the plugin sent (for citations) and the notes. */
 export type AiFinished = {
@@ -96,8 +99,10 @@ export type AiJobContext = {
   maxChars?: number;
   /** Write and auto drafts: the links the answer may hold (the owner wrote them). */
   allowedLinks?: readonly string[];
-  /** Auto drafts: nobody polls this job, so it is not cancelled for lack of polling. */
+  /** Auto drafts and sorting: nobody polls this job, so it is not cancelled for lack of polling. */
   unattended?: boolean;
+  /** Sorting: the owner's labels the answer may name. */
+  labels?: readonly AiLabel[];
   /** Called once with the finished result (cache a summary, store suggestions). */
   onDone?: (finished: AiFinished) => void;
 };
@@ -375,6 +380,10 @@ export class AiJobs {
           },
           dropped: parsed.dropped,
         };
+      }
+      case "sort": {
+        const parsed = readable(parseSort(raw, n, ctx.labels ?? []));
+        return { output: { kind: "sort", value: parsed.value }, dropped: parsed.dropped };
       }
       case "ask":
         throw new AiError("failed");

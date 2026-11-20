@@ -52,14 +52,14 @@ function message(id: string, body: string, overrides: Partial<AiSourceMessage> =
 
 describe("constants", () => {
   it("lists the kinds with rates, caps and output limits", () => {
-    expect(AI_KINDS).toEqual(["summary", "ask", "tasks", "categories", "digest", "draft", "write", "autodraft"]);
-    expect(AI_RATES).toEqual({ summary: 30, tasks: 30, ask: 20, categories: 10, digest: 10, draft: 30, write: 30, autodraft: 10 });
+    expect(AI_KINDS).toEqual(["summary", "ask", "tasks", "categories", "digest", "draft", "write", "autodraft", "sort"]);
+    expect(AI_RATES).toEqual({ summary: 30, tasks: 30, ask: 20, categories: 10, digest: 10, draft: 30, write: 30, autodraft: 10, sort: 20 });
     expect(AI_INPUT_CAPS.write).toBe(30_000);
     expect(AI_INPUT_CAPS.autodraft).toBe(20_000);
     expect(AI_INPUT_CAPS.draft).toBe(8_000);
     expect(AI_INPUT_CAPS.summary).toBe(60_000);
     expect(AI_MAX_OUTPUT_TOKENS).toEqual({
-      summary: 4_096, askPlan: 512, askAnswer: 2_048, tasks: 2_048, categories: 2_048, digest: 4_096, draft: 4_096, write: 4_096, autodraft: 4_096,
+      summary: 4_096, askPlan: 512, askAnswer: 2_048, tasks: 2_048, categories: 2_048, digest: 4_096, draft: 4_096, write: 4_096, autodraft: 4_096, sort: 2_048,
     });
   });
 

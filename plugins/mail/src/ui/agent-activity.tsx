@@ -48,6 +48,8 @@ const TOOLS: Record<LogTool, string> = {
   ai_draft: msg("Improve"),
   ai_write: msg("Write with AI"),
   ai_autodraft: msg("Drafted reply"),
+  ai_sort: msg("Sorted new mail"),
+  ai_archive: msg("Archived by a label"),
   bb_thread: msg("BB thread"),
   bb_task: msg("Task"),
   project_save: msg("Saved to a project"),
