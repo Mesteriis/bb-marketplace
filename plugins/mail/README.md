@@ -1546,10 +1546,33 @@ wrong; check the cited messages".
   put back in what you apply; the dialog notes one the model changed or
   dropped.
 
+- **Write with AI** in the composer (the toolbar button or Ctrl/Cmd+J):
+  say in a few words what the message should say (up to 500 characters) and
+  a model writes the body; in a reply it also reads the conversation you
+  answer. The text is shown first; **Insert** puts it in place of your own
+  text in one step (one Undo) and only if you did not change it meanwhile.
+  Mail settings → AI features → **Writing** holds: **Write in my voice**
+  (on: up to five pieces of your own sent text, 600 characters each, first
+  those sent to the same person), **My instructions for AI writing** (up to
+  2 000 characters) and **Facts AI may use** (up to 6 000 characters). A
+  link you did not write yourself (in the request, the instructions or the
+  facts) never stays in the text: it becomes `[link removed]` and the
+  dialog counts them.
+- **Draft replies to new mail** (off by default, same settings group): for
+  each new Inbox message from someone you have written to, addressed to
+  you (To, not Cc), not bulk or a mailing list and inside AI access, a
+  model drafts a reply. **Reply drafted** appears under the message with
+  its first lines, **Use** (opens an ordinary reply with the text in it)
+  and **Dismiss**. Nothing is sent and nothing is saved on the mail server
+  until you act. At most 10 an hour and 50 a day; a draft is forgotten when
+  you use or dismiss it, when you answer in the conversation, when the
+  message is deleted, or after 14 days. Each call is a row in the agent log.
+
 ### What goes to your AI provider
 
-Only on your click, only through Makosh AI, only mail in AI access, only
-redacted text framed as untrusted data:
+Only through Makosh AI, only mail in AI access, only redacted text framed
+as untrusted data; on your click, except replies drafted for new mail when
+you turned that on:
 
 - Summarize: subjects, sender display names (the address when there is no
   name), dates and bodies without quotes of the conversation, newest first
@@ -1562,6 +1585,10 @@ redacted text framed as untrusted data:
 - Today's Summarize: the latest message of up to 30 conversations, 500
   characters each.
 - Improve: your own text of the draft and your instruction.
+- Write with AI and drafted replies: your request, your instructions and
+  facts, your own text of the draft, the voice samples (your own sent text
+  without quotes and signatures, only when **Write in my voice** is on), and
+  the conversation being answered as for Summarize.
 - Translation: the message's subject and text.
 - New thread, Make a task through Taskboard (its **Take into work**), incident,
   patch and rule threads (slice 3g): the text goes into a BB thread or a

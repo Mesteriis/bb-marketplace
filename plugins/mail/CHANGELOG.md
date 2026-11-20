@@ -8,6 +8,18 @@ All notable changes to Makosh Mail are recorded here. The format follows
 
 ### Added
 
+- **AI writes mail**: **Write with AI** in the composer (toolbar button,
+  Ctrl/Cmd+J) writes the body from a few words, in a reply reading the
+  conversation; **Insert** replaces your own text in one step. It follows
+  your instructions, uses your facts and matches your voice from your own
+  sent text. A link you did not write is replaced by `[link removed]`.
+  **Draft replies to new mail** (off by default) drafts a reply to each new
+  Inbox message from people you write to; **Reply drafted** under the
+  message offers Use and Dismiss; at most 10 an hour and 50 a day; nothing
+  is sent without you. Settings `aiVoice`, `aiAutoDrafts`,
+  `aiInstructions`, `aiKnowledge`. `ai_start` takes kind `write`; new RPC
+  methods `reply_draft_get`, `reply_draft_dismiss`. Storage migration 23
+  (`reply_drafts`).
 - **Typing speed** in the composer: templates carry a subject, To/Cc/Bcc
   and files and fill `{first_name}`; `;` and a few letters pick a template
   in the body; autocorrect (your own replacements, common English and
