@@ -1,7 +1,8 @@
 // Ask AI with actions: a proposed action as the page runs it. The model
 // names cited messages by number; here the numbers become the stored
-// messages the plugin sent. An `act` keeps only messages that are in an
-// Inbox now; an action left without a message is dropped.
+// messages the plugin sent, and only those the answer cites (the owner
+// sees them listed as its sources). An `act` keeps only messages that are
+// in an Inbox now; an action left without a message is dropped.
 import type { AiBuild } from "./ai-input.ts";
 import type { AskAction } from "./ask-actions.ts";
 import type { AskActionView } from "./model.ts";
@@ -12,8 +13,10 @@ export function askActionViews(
   actions: readonly AskAction[],
   parts: AiBuild["parts"],
   nowIso: string,
+  /** The numbers the answer cites: an action touches only messages the owner sees listed under the answer. */
+  sources: readonly number[],
 ): AskActionView[] {
-  const idOf = (n: number) => parts.find((part) => part.n === n)?.messageId ?? null;
+  const idOf = (n: number) => (sources.includes(n) ? parts.find((part) => part.n === n)?.messageId ?? null : null);
   const out: AskActionView[] = [];
   for (const action of actions) {
     switch (action.type) {
@@ -29,6 +32,7 @@ export function askActionViews(
         if (header === null) break;
         out.push({
           type: "reply",
+          n: action.message,
           messageId: header.id,
           accountId: header.accountId,
           threadId: header.threadId,

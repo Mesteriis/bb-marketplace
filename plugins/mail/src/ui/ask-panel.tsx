@@ -101,7 +101,7 @@ function AskActions({ actions, ports }: { actions: readonly AskActionView[]; por
                       void run(index, () => (action.type === "reply" ? ports.reply(action) : ports.compose(action.paragraphs.map(shownText))), true)
                     }
                   >
-                    {action.type === "reply" ? tx("Reply with this") : tx("Write this message")}
+                    {action.type === "reply" ? tx("Reply to message {n} with this", { n: action.n }) : tx("Write this message")}
                   </Button>
                 </>
               ) : null}
@@ -135,6 +135,34 @@ export interface AskPanelProps {
   /** Ask AI with actions: how a proposed action runs; absent: none is offered. */
   actions?: AskActionPorts;
   pollMs?: number;
+}
+
+/**
+ * Runs an act over its Inbox messages as one batch with one Undo. What was
+ * done is recorded and the list refreshed even when part was refused (a
+ * message that moved since the answer); the refused part is said aside.
+ * Throws only when nothing was done.
+ */
+export async function runAskAct(
+  rpc: {
+    call: (
+      method: "message_action",
+      input: { messageIds: string[]; action: "archive" | "mark_read" | "flag"; role: "inbox"; undoId: string },
+    ) => Promise<{ groups: { queued: number; error: string | null }[]; undoable?: boolean | undefined }>;
+  },
+  action: Extract<AskActionView, { type: "act" }>,
+  page: { recordUndo: (undoId: string, action: "archive" | "mark_read" | "flag", count: number, destination: null, inbox: true) => void; refresh: () => void; warn: (text: string) => void },
+  newId: () => string = () => crypto.randomUUID(),
+): Promise<void> {
+  const undoId = newId();
+  const messageIds = action.groups.flatMap((group) => group.messageIds).slice(0, 200);
+  const result = await rpc.call("message_action", { messageIds, action: action.action, role: "inbox", undoId });
+  const queued = result.groups.reduce((sum, group) => sum + group.queued, 0);
+  const refused = [...new Set(result.groups.map((group) => group.error).filter((error): error is string => error !== null))];
+  if (queued === 0) throw new Error(refused[0] ?? "Nothing was changed");
+  if (result.undoable === true) page.recordUndo(undoId, action.action, queued, null, true);
+  for (const error of refused) page.warn(error);
+  page.refresh();
 }
 
 /** The cited sources in the order the answer lists them, unknown numbers left out. */

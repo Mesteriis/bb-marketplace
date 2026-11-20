@@ -1251,6 +1251,8 @@ export const askActionViewSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("search"), query: z.string() }),
   z.object({
     type: z.literal("reply"),
+    /** The cited message's number in the answer's sources. */
+    n: z.number().int().min(1),
     messageId: z.string(),
     accountId: z.string(),
     threadId: z.string().nullable(),

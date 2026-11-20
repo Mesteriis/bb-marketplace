@@ -7,6 +7,7 @@
 // This file is the BB adapter: it owns RPC, realtime refreshes, navigation and
 // the composer, and hands plain data and callbacks to the host-agnostic page
 // in src/ui.
+import { runAskAct } from "./src/ui/ask-panel.tsx";
 import type { SettingsPgpPorts } from "./src/ui/pgp-settings.tsx";
 import type { SettingsFilterPorts } from "./src/ui/filters-settings.tsx";
 import { ArchiveViewPage, type ArchivePorts } from "./src/ui/archive-view.tsx";
@@ -3333,16 +3334,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
           const { draft, warning } = await rpc.call("compose_open", { draftId });
           openComposer(draft, warning, [], null, paragraphs);
         },
-        act: async (action) => {
-          for (const group of action.groups) {
-            const undoId = crypto.randomUUID();
-            const result = await rpc.call("message_action", { messageIds: group.messageIds.slice(0, 200), action: action.action, role: "inbox", undoId });
-            const refused = result.groups.map((g) => g.error).find((error): error is string => error !== null);
-            if (refused !== undefined) throw new Error(refused);
-            if (result.undoable) recordUndo(undoId, action.action, group.messageIds.length, null, true);
-          }
-          refreshAfterChange();
-        },
+        act: (action) => runAskAct(rpc, action, { recordUndo, refresh: refreshAfterChange, warn: (text) => toast.error(text) }),
       },
       onCategoryAccept: (messageIds) => {
         rpc

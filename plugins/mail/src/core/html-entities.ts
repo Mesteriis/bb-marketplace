@@ -94,6 +94,21 @@ const INVISIBLE = /[\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff\u
 /** Control characters other than tab, line feed and carriage return. */
 const CONTROLS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g;
 
+/**
+ * Everything a reader cannot see: format characters, tag characters,
+ * variation selectors, line and paragraph separators and the fillers that
+ * render as nothing. The same set the page strips before it shows model or
+ * agent text (agent-send-card.tsx); text a model wrote is cleaned with it
+ * before links are judged, so a hidden character cannot split a link in
+ * two and let it through.
+ */
+const HIDDEN = /[\p{Cf}\u{E0000}-\u{E007F}\u{FE00}-\u{FE0F}\u{E0100}-\u{E01EF}\u2028\u2029\u3164\u115F\u1160\uFFA0\u034F\u17B4\u17B5\u180B-\u180F]/gu;
+
+/** Removes every character a reader cannot see (see HIDDEN). */
+export function removeHidden(text: string): string {
+  return text.replace(HIDDEN, "");
+}
+
 /** Removes zero-width, bidi and other invisible formatting characters. */
 export function removeInvisible(text: string): string {
   return text.replace(INVISIBLE, "");

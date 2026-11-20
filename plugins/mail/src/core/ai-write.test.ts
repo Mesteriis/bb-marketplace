@@ -207,6 +207,15 @@ describe("removeForeignLinks", () => {
     });
   });
 
+  it("removes hidden characters first, so one inside a host or an address cannot carry a link through", () => {
+    const tag = String.fromCodePoint(0xe0020);
+    const selector = "\ufe0f";
+    expect(removeForeignLinks([`Pay at evil${tag}.com/pay now`, `Write to ivy@evil${selector}.com`, `Hidden ${String.fromCodePoint(0xe0031, 0xe0032)}text\u3164 stays out`], [])).toEqual({
+      paragraphs: [`Pay at ${LINK_REMOVED} now`, `Write to ${LINK_REMOVED}`, "Hidden text stays out"],
+      removed: 2,
+    });
+  });
+
   it("keeps the owner's own link and address in any case of the host, and file names", () => {
     expect(removeForeignLinks(["See HTTP://WWW.Example.com/pricing/ and write to Ann@Example.com about report.pdf."], ["example.com/pricing", "ann@example.com"])).toEqual({
       paragraphs: ["See HTTP://WWW.Example.com/pricing/ and write to Ann@Example.com about report.pdf."],

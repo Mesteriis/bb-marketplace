@@ -5576,7 +5576,7 @@ function aiResultView(store: MailStore, finished: AiFinished): NonNullable<AiRes
     case "summary":
       return { kind: "summary", ...base, ...output.value };
     case "ask":
-      return { kind: "ask", ...base, ...output.value, actions: askActionViews(store, output.value.actions, finished.parts, finished.createdAt) };
+      return { kind: "ask", ...base, ...output.value, actions: askActionViews(store, output.value.actions, finished.parts, finished.createdAt, output.value.sources) };
     case "tasks":
       return {
         kind: "tasks",

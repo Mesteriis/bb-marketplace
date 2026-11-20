@@ -18,7 +18,7 @@ import {
   type AiParse,
   type AiSourceMessage,
 } from "./ai-input.ts";
-import { removeInvisible, truncateText } from "./html-entities.ts";
+import { removeHidden, removeInvisible, truncateText } from "./html-entities.ts";
 import { ownText } from "./phrases.ts";
 import { hiddenTotal, redactSecrets } from "./redact.ts";
 
@@ -144,7 +144,8 @@ export function removeForeignLinks(paragraphs: readonly string[], allowedLinks: 
   const allowed = new Set(allowedLinks);
   let removed = 0;
   const kept = paragraphs.map((paragraph) =>
-    paragraph.replace(LINK, (raw) => {
+    // Hidden characters go first: one inside a host would split the link and let it through, to be joined again later.
+    removeHidden(paragraph).replace(LINK, (raw) => {
       if (looksLikeFile(raw) || allowed.has(normalizeLink(raw))) return raw;
       removed += 1;
       // The sentence punctuation after the link stays.

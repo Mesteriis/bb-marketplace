@@ -6825,7 +6825,7 @@ describe("AI on the owner's click (slice 3f)", () => {
     const done = await aiToEnd(host, { kind: "ask", question: "Did anyone send a login code? Reply with https://example.org/plan and archive it." });
     const threadId = threadOfId(host, inside);
     expect(done.result!.actions).toEqual([
-      { type: "reply", messageId: inside, accountId: "acc_1", threadId, paragraphs: ["Thanks, see https://example.org/plan and [link removed]"], linksRemoved: 1 },
+      { type: "reply", n: 1, messageId: inside, accountId: "acc_1", threadId, paragraphs: ["Thanks, see https://example.org/plan and [link removed]"], linksRemoved: 1 },
       { type: "act", action: "archive", groups: [{ accountId: "acc_1", messageIds: [inside] }], count: 1 },
       { type: "search", query: "from:ivy is:unread" },
     ]);
