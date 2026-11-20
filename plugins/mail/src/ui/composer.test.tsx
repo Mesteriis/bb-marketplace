@@ -353,6 +353,42 @@ describe("Composer", () => {
     expect(body()).not.toContain("Drafted by AI.");
   });
 
+  it("dictation: the button records, Stop turns the recording into text at the cursor, the microphone is released", async () => {
+    const track = { stopped: false, stop() { this.stopped = true; } };
+    const transcribe = vi.fn(async () => "Hello Ann,\n\nTuesday works.");
+    const ports = { ...fakePorts(), transcribe };
+    mount(
+      {
+        dictationDevice: {
+          microphone: async () => ({ getTracks: () => [track] }) as unknown as MediaStream,
+          record: () => ({ stop: async () => new Blob(["sound"]) }),
+        },
+      },
+      ports as never,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Dictate" }));
+    const stop = await screen.findByRole("button", { name: "Stop" });
+    expect(screen.getByText("Recording 0:00")).toBeTruthy();
+    fireEvent.click(stop);
+    await waitFor(() => expect(document.querySelector(".ProseMirror")!.textContent).toContain("Tuesday works."));
+    expect(document.querySelectorAll(".ProseMirror p")[0]!.textContent).toBe("Hello Ann,");
+    expect(transcribe).toHaveBeenCalledTimes(1);
+    expect(track.stopped).toBe(true);
+    expect(screen.getByRole("button", { name: "Dictate" })).toBeTruthy();
+  });
+
+  it("dictation: no microphone button without a voice port; a refused microphone says why", async () => {
+    mount();
+    expect(screen.queryByRole("button", { name: "Dictate" })).toBeNull();
+    cleanup();
+    mount(
+      { dictationDevice: { microphone: async () => Promise.reject(new Error("denied")), record: () => ({ stop: async () => new Blob([]) }) } },
+      { ...fakePorts(), transcribe: vi.fn(async () => "x") } as never,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Dictate" }));
+    expect((await screen.findByRole("alert")).textContent).toBe("The microphone is not available. Allow it for BB and try again.");
+  });
+
   it("starts with the queued banner while a send of the draft is queued", () => {
     mount({ draft: draft({ queued: true }) });
     expect(screen.getByRole("alert").textContent).toMatch(/send of this draft is queued/);

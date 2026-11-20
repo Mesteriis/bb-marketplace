@@ -221,6 +221,31 @@ export function replaceOwnerRange(editor: Editor, paragraphs: readonly string[])
   editor.view.dispatch(tr);
 }
 
+/**
+ * Puts plain paragraphs at the selection (dictation): the first continues
+ * the line the cursor is on, each next one starts a new paragraph. One
+ * editor step, so one Undo takes the whole dictation back.
+ */
+export function insertParagraphs(editor: Editor, paragraphs: readonly string[]): void {
+  const texts = paragraphs.filter((paragraph) => paragraph !== "");
+  if (texts.length === 0) return;
+  if (texts.length === 1) {
+    // Plain text at the selection; never a string through insertContent, which would read it as HTML.
+    editor.view.dispatch(closeHistory(editor.state.tr.insertText(texts[0]!)));
+  } else {
+    editor
+      .chain()
+      // Its own Undo step, apart from what was typed just before.
+      .command(({ tr }) => {
+        closeHistory(tr);
+        return true;
+      })
+      .insertContent(texts.map((text) => ({ type: "paragraph", content: [{ type: "text", text }] })))
+      .run();
+  }
+  editor.commands.focus();
+}
+
 /** A fence line that opens a code block: ``` with an optional language word. */
 const FENCE_OPEN = /^```([a-z0-9+#-]{0,20})$/i;
 

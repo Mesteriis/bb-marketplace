@@ -3,7 +3,7 @@ import { act, cleanup, render } from "@testing-library/react";
 import { installTestPluginRuntime } from "@get-bb/plugin-sdk/testing/app";
 import type { Editor } from "@tiptap/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanEditorHtml, ComposeEditor, fencedPaste, ownerParagraphsOf, ownerRange, replaceOwnerRange, type EditorDoc } from "./compose-editor.tsx";
+import { cleanEditorHtml, ComposeEditor, fencedPaste, insertParagraphs, ownerParagraphsOf, ownerRange, replaceOwnerRange, type EditorDoc } from "./compose-editor.tsx";
 import { htmlFitsDoc, normalizeDoc, ownerParagraphs, renderDoc } from "../core/compose-doc.ts";
 
 installTestPluginRuntime();
@@ -99,6 +99,30 @@ describe("ComposeEditor: a drafted reply the owner chose to use", () => {
     expect(imports).toEqual([]);
     expect(docs.length).toBeGreaterThan(0);
     expect(ownerParagraphs(normalizeDoc(docs.at(-1)! as never)).paragraphs).toEqual(["Hello Ada,"]);
+  });
+});
+
+describe("insertParagraphs (dictation)", () => {
+  it("continues the line at the cursor with one paragraph and adds the rest as paragraphs; one Undo takes it back", () => {
+    const { editor } = mount({ initialDoc: { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Hi. " }] }] } });
+    act(() => {
+      editor().commands.focus("end");
+      insertParagraphs(editor(), ["Thanks for the plan."]);
+    });
+    expect(editor().getText()).toBe("Hi. Thanks for the plan.");
+    act(() => {
+      insertParagraphs(editor(), ["First.", "", "Second."]);
+    });
+    const texts = editor().getText({ blockSeparator: "|" }).split("|");
+    expect(texts.filter((text) => text !== "")).toEqual(["Hi. Thanks for the plan.", "First.", "Second."]);
+    act(() => {
+      editor().commands.undo();
+    });
+    expect(editor().getText()).toBe("Hi. Thanks for the plan.");
+    act(() => {
+      insertParagraphs(editor(), []);
+    });
+    expect(editor().getText()).toBe("Hi. Thanks for the plan.");
   });
 });
 

@@ -8,6 +8,8 @@ All notable changes to Makosh Mail are recorded here. The format follows
 
 ### Added
 
+- **Dictation**: a Dictate button in the composer records, BB's voice
+  service turns the recording into text, the text goes in at the cursor.
 - **Smart send**: Send later offers the hour the recipient usually
   writes. **Insights** in the sender card: when they write, how fast each
   side answers, who else is on their mail. Counted locally, no model. New

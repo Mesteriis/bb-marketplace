@@ -36,7 +36,7 @@ import {
   type PendingUpload,
   type UploadPort,
 } from "./attachments-input.tsx";
-import { ComposeEditor, ownerRange, replaceOwnerRange, type EditorDoc } from "./compose-editor.tsx";
+import { ComposeEditor, ownerRange, insertParagraphs, replaceOwnerRange, type EditorDoc } from "./compose-editor.tsx";
 import { NO_TYPING, takeSnippet, type SnippetList, type TypingOptions } from "./editor-typing.ts";
 import { fillBlocks, fillVariables, firstNameOf, mergeRecipients } from "../core/snippets.ts";
 import { introLine, looksLikeIntro, moveSenderToBcc } from "../core/intro.ts";
@@ -44,6 +44,8 @@ import { Checkbox } from "@/components/ui/checkbox";
 import type { AiJobPorts } from "./ai-job.ts";
 import { ImproveDialog, ImproveMenu, type DraftMode, type ImproveRequest } from "./improve-dialog.tsx";
 import { WriteDialog, type WriteInput } from "./write-dialog.tsx";
+import { browserDictation, useDictation, type DictationDeps } from "./dictation.ts";
+import { dictatedParagraphs } from "../core/dictation-text.ts";
 import { daysText } from "./reminder-strip.tsx";
 import { ComposeToolbar } from "./compose-toolbar.tsx";
 import { accountLabel } from "./folder-list.tsx";
@@ -111,6 +113,8 @@ export interface ComposerPorts {
   applyTemplate?(input: { draftId: string; templateId: string }): Promise<{ attached: ComposeAttachment[]; leftOut: string[] }>;
   /** Smart send: the time the saved draft's first recipient usually writes; null from too little mail. Absent: not offered. */
   smartSend?(draftId: string): Promise<SmartSendTime | null>;
+  /** Dictation: BB's voice service turns a recording into text. Absent: no microphone button. */
+  transcribe?(audio: Blob, signal: AbortSignal): Promise<string>;
 }
 
 export interface ComposerProps {
@@ -121,6 +125,8 @@ export interface ComposerProps {
   draft: DraftView;
   /** AI writes mail: a drafted reply the owner chose to use, put in as the owner's text once. */
   initialOwn?: readonly string[];
+  /** Dictation: the microphone and recorder; absent: the browser's (tests inject fakes). */
+  dictationDevice?: Pick<DictationDeps, "microphone" | "record">;
   accounts: readonly Account[];
   ports: ComposerPorts;
   /** From compose_prepare or compose_open. */
@@ -738,6 +744,14 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
       hasMarks: range.hasMarks,
     });
   };
+  /** Dictation: the text goes in where the cursor is now, as paragraphs. */
+  const dictation = useDictation({
+    ...(props.dictationDevice ?? browserDictation),
+    transcribe: (audio, signal) => (props.ports.transcribe === undefined ? Promise.reject(new Error("no voice service")) : props.ports.transcribe(audio, signal)),
+    onText: (text) => {
+      if (editor !== null) insertParagraphs(editor, dictatedParagraphs(text));
+    },
+  });
   /** Write: the draft is saved first, as for Improve; null when it could not be. */
   const prepareWrite = async (instruction: string): Promise<WriteInput | null> => {
     if (editor === null || conflictRef.current !== null) return null;
@@ -1245,6 +1259,9 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
                 improveDisabledReason: props.improve.disabledReason,
                 onWrite: () => setWriteOpen(true),
               }
+            : {})}
+          {...(props.ports.transcribe !== undefined
+            ? { dictation: { state: dictation.state, onToggle: dictation.toggle, onCancel: dictation.cancel, onRetry: dictation.retry } }
             : {})}
         />
         {improveOpen && props.improve !== undefined ? (

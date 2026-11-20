@@ -1611,15 +1611,27 @@ wrong; check the cited messages".
   counted while BB runs; a restart or a plugin reload starts them again). The line
   and labels are kept 90 days.
 
+### Dictation
+
+**Dictate** in the composer's toolbar records from the microphone; **Stop**
+turns the recording into text with the voice service you chose in BB's
+settings and puts it where the cursor is (a blank pause-separated part
+becomes its own paragraph; one Undo takes the dictation back). **Cancel**
+throws the recording away. A recording ends by itself after 5 minutes. The
+audio goes only to BB's voice service — whether that is on this computer
+or a cloud service is BB's setting, not Mail's — and is not kept; a failed
+transcription can be tried once more. Without a voice service in BB the
+button says the recording could not be turned into text.
+
 ### Smart send and sender insights
 
 Counted from the mail stored on this computer; no model and nothing from
 outside.
 
 - **Smart send**: Send later offers one more time, first in the list: the
-  hour the first To recipient usually writes to you (their mail of the
-  last 180 days, at least five messages), on the days they write, at least
-  an hour from now. The row says why ("Ann usually writes around 09:00").
+  hour the first To recipient usually writes to the sending account
+  (their mail of the last 180 days, at least five messages), on the days
+  they write, at least an hour from now. The row says why ("Ann usually writes around 09:00").
   Hours are on your clock.
 - **Insights** in the sender card: the three hours they usually write in
   and whether only on weekdays; how long they take to answer you and you

@@ -32,6 +32,7 @@ import {
   useRealtime,
   useRealtimeConnectionState,
   useRpc,
+  useSdk,
   useSettings,
   type ExperimentalBadge,
   type ExperimentalThreadInfoProps,
@@ -569,6 +570,7 @@ function useMailLanguage(): Language {
 function MailPanel({ subPath }: PluginNavPanelProps) {
   useMailLanguage();
   const rpc = useRpc<typeof rpcContract>();
+  const sdk = useSdk();
   const navigate = useBbNavigate();
   const composer = useComposer();
 
@@ -2024,6 +2026,8 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       pgpCheck: (from, recipients) => rpc.call("pgp_check", { from, recipients }),
       applyTemplate: (input) => rpc.call("template_apply", input),
       smartSend: async (draftId) => (await rpc.call("smart_send_time", { draftId })).suggestion,
+      // Dictation: BB's own voice service, the one the owner chose in BB's settings.
+      transcribe: async (audio, signal) => (await sdk.system.transcribeVoice({ file: audio, signal })).text,
       discard: async (draftId) => {
         await rpc.call("compose_discard", { draftId });
       },

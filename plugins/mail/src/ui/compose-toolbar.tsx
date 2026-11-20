@@ -1,6 +1,7 @@
 // The composer's formatting toolbar: bold, italic, underline, lists, link,
 // quote, code block and clear formatting. One tab stop with arrow-key (roving) focus,
 // like a native toolbar; each button names its shortcut.
+import type { DictationState } from "./dictation.ts";
 import { useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { useEditorState, type Editor } from "@tiptap/react";
 import { Button } from "@/components/ui/button";
@@ -60,6 +61,72 @@ export function linkHref(typed: string): string | null {
   }
 }
 
+/** "0:07" for seconds of a recording. */
+export function recordingTime(seconds: number): string {
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+/** The microphone: press to record, press again to turn the recording into text at the cursor. */
+function DictateButton({
+  state,
+  onToggle,
+  onCancel,
+  onRetry,
+  editorReady,
+}: {
+  state: DictationState;
+  onToggle: () => void;
+  onCancel: () => void;
+  onRetry: () => void;
+  editorReady: boolean;
+}) {
+  const recording = state.status === "recording";
+  return (
+    <span className="ml-auto inline-flex items-center gap-1">
+      {state.status === "failed" ? (
+        <span role="alert" className="max-w-56 truncate text-xs text-destructive" title={tx(state.message)}>
+          {tx(state.message)}
+        </span>
+      ) : null}
+      {state.status === "failed" && state.retry ? (
+        <Button type="button" variant="ghost" size="sm" className="h-7 px-2" onMouseDown={(event) => event.preventDefault()} onClick={onRetry}>
+          {tx("Try again")}
+        </Button>
+      ) : null}
+      {state.status === "transcribing" ? (
+        <span role="status" className="text-xs text-muted-foreground">
+          {tx("Turning speech into text\u2026")}
+        </span>
+      ) : null}
+      {recording ? (
+        <span role="status" className="text-xs tabular-nums text-destructive">
+          {tx("Recording {time}", { time: recordingTime(state.seconds) })}
+        </span>
+      ) : null}
+      <span className="inline-flex" title={recording ? tx("Stop and insert the text") : tx("Dictate: record, then the text is inserted at the cursor")}>
+        <Button
+          type="button"
+          variant={recording ? "outline" : "ghost"}
+          size="sm"
+          className="h-7 px-2"
+          aria-pressed={recording}
+          disabled={!editorReady || state.status === "transcribing"}
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={onToggle}
+        >
+          <Icon name={recording ? "Square" : "Mic"} fallback="Bot" aria-hidden />
+          {recording ? tx("Stop") : tx("Dictate")}
+        </Button>
+      </span>
+      {recording || state.status === "transcribing" || state.status === "failed" ? (
+        <Button type="button" variant="ghost" size="sm" className="h-7 px-2" onMouseDown={(event) => event.preventDefault()} onClick={onCancel}>
+          {tx("Cancel")}
+        </Button>
+      ) : null}
+    </span>
+  );
+}
+
 export interface ComposeToolbarProps {
   editor: Editor | null;
   /** The link field is open (the toolbar's Link button or Cmd/Ctrl+K). */
@@ -77,6 +144,8 @@ export interface ComposeToolbarProps {
   improveDisabledReason?: string | null;
   /** Write with AI (the composer only): opens its dialog; off for the same reason as Improve. */
   onWrite?: () => void;
+  /** Dictation (the composer only): its state and the button's press; absent: no microphone. */
+  dictation?: { state: DictationState; onToggle: () => void; onCancel: () => void; onRetry: () => void };
   className?: string;
 }
 
@@ -91,6 +160,7 @@ export function ComposeToolbar({
   improveOpen,
   improveDisabledReason = null,
   onWrite,
+  dictation,
   className,
 }: ComposeToolbarProps) {
   const mod = modKeyLabel();
@@ -196,8 +266,9 @@ export function ComposeToolbar({
             );
           })}
         </div>
+        {dictation !== undefined ? <DictateButton editorReady={editor !== null} {...dictation} /> : null}
         {onWrite !== undefined ? (
-          <span title={improveDisabledReason ?? `${tx("Write with AI")} (${mod}+J)`} className="ml-auto inline-flex">
+          <span title={improveDisabledReason ?? `${tx("Write with AI")} (${mod}+J)`} className={dictation !== undefined ? "inline-flex" : "ml-auto inline-flex"}>
             <Button
               type="button"
               variant="ghost"
