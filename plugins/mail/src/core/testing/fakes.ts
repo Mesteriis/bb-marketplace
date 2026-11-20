@@ -2417,8 +2417,16 @@ export class InMemoryMailStore implements MailStore {
     return kept;
   }
 
-  openCursor(): number {
-    return this.openCursorValue;
+  private openScope = "";
+
+  openFeed(): { scope: string; cursor: number } {
+    return { scope: this.openScope, cursor: this.openCursorValue };
+  }
+
+  resetOpenFeed(scope: string): void {
+    this.openEvents.clear();
+    this.openScope = scope;
+    this.openCursorValue = 0;
   }
 
   setOpenCursor(seq: number): void {

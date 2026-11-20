@@ -17,12 +17,17 @@ describe("read statuses: pure parts", () => {
     const pixel = pixelHtml("https://makosh.example.org", TOKEN);
     expect(pixel).toBe(`<img src="https://makosh.example.org/o/${TOKEN}.gif" width="1" height="1" alt="" style="border:0;width:1px;height:1px">`);
     expect(withPixel("<p>Hello</p>", pixel)).toBe(`<p>Hello</p>${pixel}`);
+    expect(withPixel("<html><body><p>Hello</p></body></html>", pixel)).toBe(`<html><body><p>Hello</p>${pixel}</body></html>`);
+    expect(withPixel("<HTML><BODY>a</BODY></HTML>", pixel)).toBe(`<HTML><BODY>a${pixel}</BODY></HTML>`);
   });
 
   it("the feed is read strictly: wrong shapes and wrong tokens are dropped, an unknown kind becomes unknown", () => {
     expect(parseOpenFeed("nope")).toBeNull();
     expect(parseOpenFeed({ events: "x", next: 1 })).toBeNull();
-    expect(parseOpenFeed({ events: [], next: -1 })).toBeNull();
+    expect(parseOpenFeed({ events: [], next: -1, epoch: "epoch-one", last: 0 })).toBeNull();
+    expect(parseOpenFeed({ events: [], next: 0, last: 0 })).toBeNull();
+    expect(parseOpenFeed({ events: [], next: 0, epoch: "<b>", last: 0 })).toBeNull();
+    expect(parseOpenFeed({ events: [], next: 0, epoch: "epoch-one" })).toBeNull();
     expect(
       parseOpenFeed({
         events: [
@@ -34,6 +39,8 @@ describe("read statuses: pure parts", () => {
           null,
         ],
         next: 5,
+        epoch: "epoch-one",
+        last: 9,
       }),
     ).toEqual({
       events: [
@@ -41,6 +48,9 @@ describe("read statuses: pure parts", () => {
         { seq: 5, token: TOKEN, at: "2026-11-20T11:00:00.000Z", kind: "unknown" },
       ],
       next: 5,
+      epoch: "epoch-one",
+      last: 9,
+      top: 5,
     });
   });
 

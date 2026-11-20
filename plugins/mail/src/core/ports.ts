@@ -549,9 +549,11 @@ export interface MailStore {
   saveSentTracking(row: SentTracking): void;
   /** Keeps the opens whose token is one of ours and whose number is new; returns how many were kept. */
   saveOpenEvents(events: readonly OpenEvent[]): number;
-  /** The feed's sequence number read so far (0 at first). */
-  openCursor(): number;
+  /** Which feed was read (its address and store id; "" at first) and its sequence number read so far. */
+  openFeed(): { scope: string; cursor: number };
   setOpenCursor(seq: number): void;
+  /** Another feed, or one whose numbers started over: every kept open goes and reading starts at 0. */
+  resetOpenFeed(scope: string): void;
   /** By local message id, for messages whose Message-ID is tracked: their opens, oldest first (empty: not opened). */
   messageOpens(messageIds: string[]): Map<string, { at: string; kind: string }[]>;
   /** Drops tracking rows made before `beforeIso` and their opens. */

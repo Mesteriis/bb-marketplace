@@ -3465,9 +3465,9 @@ describe.each(storeKinds)("read statuses (%s)", (_kind, make) => {
     s.saveAccount(makeStoredAccount());
     s.upsertMessages("acc_1", "INBOX", [makeFetchedMessage(1), makeFetchedMessage(2)]);
     const [first, second] = s.localFolderIndex("acc_1", "INBOX", "1970-01-01T00:00:00.000Z").sort((a, b) => a.uid - b.uid).map((row) => row.id);
-    expect(s.openCursor()).toBe(0);
+    expect(s.openFeed()).toEqual({ scope: "", cursor: 0 });
     s.setOpenCursor(41);
-    expect(s.openCursor()).toBe(41);
+    expect(s.openFeed()).toEqual({ scope: "", cursor: 41 });
     s.saveSentTracking({ token: T1, accountId: "acc_1", rfcMessageId: "msg-1@example.org", createdAt: "2026-08-01T00:00:00.000Z" });
     s.saveSentTracking({ token: T2, accountId: "acc_1", rfcMessageId: "msg-2@example.org", createdAt: "2026-11-01T00:00:00.000Z" });
     s.saveOpenEvents([{ seq: 1, token: T1, at: "2026-08-02T00:00:00.000Z", kind: "desktop" }, { seq: 2, token: T2, at: "2026-11-02T00:00:00.000Z", kind: "desktop" }]);
@@ -3475,6 +3475,11 @@ describe.each(storeKinds)("read statuses (%s)", (_kind, make) => {
     expect([...s.messageOpens([first!, second!])]).toEqual([[second, [{ at: "2026-11-02T00:00:00.000Z", kind: "desktop" }]]]);
     // The dropped token's opens are not taken back.
     expect(s.saveOpenEvents([{ seq: 9, token: T1, at: "2026-11-20T00:00:00.000Z", kind: "desktop" }])).toBe(0);
+    // Another feed: the opens go, the tokens stay, and the same numbers can come again.
+    s.resetOpenFeed("https://makosh.example.org epoch-two");
+    expect(s.openFeed()).toEqual({ scope: "https://makosh.example.org epoch-two", cursor: 0 });
+    expect([...s.messageOpens([second!])]).toEqual([[second, []]]);
+    expect(s.saveOpenEvents([{ seq: 2, token: T2, at: "2026-11-03T00:00:00.000Z", kind: "mobile" }])).toBe(1);
   });
 });
 

@@ -2447,7 +2447,7 @@ describe("compose and send", () => {
   it("read statuses: with the endpoint's keys set, the sent message carries the signed image; an open read from the feed shows under it", async () => {
     const TRACK = "track-key-for-tests-0123456789abcdef";
     const FEED = "feed-key-for-tests-0123456789abcdefg";
-    const feed: { events: unknown[]; next: number } = { events: [], next: 0 };
+    const feed = { events: [] as unknown[], next: 0, epoch: "epoch-one-0001", last: 0 };
     const asked: string[] = [];
     const host = await load({
       settings: { vaultKey: COMPOSE_KEY, readStatusOrigin: "https://makosh.example.org", readStatusTrackKey: TRACK, readStatusFeedKey: FEED },
@@ -2456,7 +2456,7 @@ describe("compose and send", () => {
       outboxIntervalMs: 5,
       readStatusFetch: async (url, init) => {
         asked.push(`${url} ${init.headers.Authorization}`);
-        return { status: 200, json: async () => feed };
+        return { status: 200, text: async () => JSON.stringify(feed) };
       },
     });
     const service = host.harness.behavior.runService("sync");

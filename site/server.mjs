@@ -16,7 +16,17 @@ const need = (name) => {
 };
 const trackKey = need("MAKOSH_TRACK_KEY");
 const apiKey = need("MAKOSH_API_KEY");
-const store = new OpenStore(env.MAKOSH_DATA_FILE ?? "/data/opens.jsonl");
+if (trackKey === apiKey) {
+  console.error("MAKOSH_TRACK_KEY and MAKOSH_API_KEY must be different secrets");
+  process.exit(1);
+}
+const store = new OpenStore(env.MAKOSH_DATA_FILE ?? "/data/opens.jsonl", (line) => console.error(line));
+try {
+  store.checkWritable();
+} catch (error) {
+  console.error(`the data file cannot be written (${error instanceof Error && "code" in error ? error.code : "error"})`);
+  process.exit(1);
+}
 store.prune(new Date());
 setInterval(() => store.prune(new Date()), 6 * 3_600_000).unref();
 

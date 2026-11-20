@@ -5,6 +5,7 @@
 import { createHmac, randomBytes } from "node:crypto";
 import type { Clock, MailStore } from "../../core/ports.ts";
 import {
+  READ_STATUS_FEED_CHARS,
   READ_STATUS_KEEP_DAYS,
   READ_STATUS_PAGES,
   READ_STATUS_POLL_MS,
@@ -31,7 +32,8 @@ export function createReadStatus(deps: {
   store: MailStore;
   clock: Clock;
   settings: () => ReadStatusSettings;
-  fetch: (url: string, init: { headers: Record<string, string>; signal: AbortSignal }) => Promise<{ status: number; json(): Promise<unknown> }>;
+  /** The answer's status and its text, cut by the caller at READ_STATUS_FEED_CHARS. */
+  fetch: (url: string, init: { headers: Record<string, string>; signal: AbortSignal }) => Promise<{ status: number; text(): Promise<string> }>;
   /** A fresh token id; random by default. */
   newId?: () => string;
   log: (line: string) => void;
@@ -74,7 +76,7 @@ export function createReadStatus(deps: {
       let kept = 0;
       try {
         for (let page = 0; page < READ_STATUS_PAGES; page += 1) {
-          const cursor = store.openCursor();
+          const { scope, cursor } = store.openFeed();
           const answer = await deps.fetch(`${ready.origin}/api/events?after=${cursor}&limit=500`, {
             headers: { Authorization: `Bearer ${ready.feedKey}`, Accept: "application/json" },
             signal: AbortSignal.timeout(FEED_TIMEOUT_MS),
@@ -83,8 +85,21 @@ export function createReadStatus(deps: {
             log(`read statuses: the endpoint answered ${answer.status}`);
             break;
           }
-          const feed = parseOpenFeed(await answer.json());
+          const text = await answer.text();
+          const feed = text.length > READ_STATUS_FEED_CHARS ? null : parseOpenFeed(JSON.parse(text) as unknown);
           if (feed === null) {
+            log("read statuses: the endpoint's answer was not understood");
+            break;
+          }
+          const feedScope = `${ready.origin} ${feed.epoch}`;
+          if (feedScope !== scope || feed.last < cursor) {
+            // Another endpoint, or one whose numbers started over: what was read before no longer
+            // lines up, so the kept opens go and the feed is read again from its start.
+            store.resetOpenFeed(feedScope);
+            continue;
+          }
+          // Where to go on from must follow from the answer itself: the last event's number, or no move at all.
+          if (feed.next !== (feed.top === 0 ? cursor : feed.top) || feed.next > feed.last) {
             log("read statuses: the endpoint's answer was not understood");
             break;
           }

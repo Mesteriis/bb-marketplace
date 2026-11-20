@@ -1138,8 +1138,8 @@ export const MIGRATIONS: string[] = [
     kind TEXT NOT NULL
   );
   CREATE INDEX open_events_token ON open_events(token, at);
-  CREATE TABLE read_status_state (id INTEGER PRIMARY KEY CHECK (id = 1), cursor INTEGER NOT NULL);
-  INSERT INTO read_status_state (id, cursor) VALUES (1, 0);
+  CREATE TABLE read_status_state (id INTEGER PRIMARY KEY CHECK (id = 1), scope TEXT NOT NULL, cursor INTEGER NOT NULL);
+  INSERT INTO read_status_state (id, scope, cursor) VALUES (1, '', 0);
   `,
 ];
 
@@ -4210,8 +4210,15 @@ export function createSqliteStore(db: Database.Database): MailStore {
       return db.transaction(() => events.reduce((kept, event) => kept + insert.run(event.seq, event.token, event.at, event.kind, event.token).changes, 0))();
     },
 
-    openCursor() {
-      return db.prepare<[], { cursor: number }>("SELECT cursor FROM read_status_state WHERE id = 1").get()?.cursor ?? 0;
+    openFeed() {
+      return db.prepare<[], { scope: string; cursor: number }>("SELECT scope, cursor FROM read_status_state WHERE id = 1").get() ?? { scope: "", cursor: 0 };
+    },
+
+    resetOpenFeed(scope) {
+      db.transaction(() => {
+        db.prepare("DELETE FROM open_events").run();
+        db.prepare("UPDATE read_status_state SET scope = ?, cursor = 0 WHERE id = 1").run(scope);
+      })();
     },
 
     setOpenCursor(seq) {

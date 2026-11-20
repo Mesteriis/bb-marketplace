@@ -47,6 +47,8 @@ export function createApp(deps) {
     } catch {
       return text(400, "Bad request\n");
     }
+    // Node reads "\\" in a path as "/"; the proxy in front does not, so such a path is not served.
+    if ((request.url ?? "").includes("\\")) return text(404, "Not found\n");
     if (request.method !== "GET" && request.method !== "HEAD") {
       response.setHeader("Allow", "GET, HEAD");
       return text(405, "Method not allowed\n");

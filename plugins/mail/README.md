@@ -1642,8 +1642,13 @@ IP address — and Makosh Mail reads those notes every five minutes.
   `MAKOSH_API_KEY`). Without both keys nothing is added to your mail.
 - The switch **Show when mail I send is opened** (Mail settings →
   Templates → Typing, on by default) turns it off for all mail.
-- Never added to signed or encrypted mail, to mail only to yourself, to
-  an invitation answer, or to mail an agent proposed.
+- Never added to signed or encrypted mail, to mail that goes only to
+  your own addresses (any connected account or sending address), to an
+  invitation answer or an unsubscribe request, or to mail an agent
+  proposed.
+- If the endpoint's data is lost or you point Mail at another endpoint,
+  Mail notices (the feed names its store), drops the opens it kept and
+  reads the new feed from the start.
 - An open is a hint, not a proof. Gmail and Yahoo fetch images through
   their own servers, Apple Mail may fetch them before anyone reads, many
   programs never fetch them, and your own Sent copy opened in another

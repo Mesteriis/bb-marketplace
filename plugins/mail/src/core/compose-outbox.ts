@@ -14,7 +14,7 @@ import {
   ComposeError,
   MAX_RECIPIENTS,
   imapConfigOf,
-  outgoingOf,
+  outgoingOf, ownAddresses,
   removeServerCopy,
   requireAccount,
   roleFolder,
@@ -296,9 +296,11 @@ export async function queueSend(
   }
   // Read statuses: the owner's own mail to someone else, in the clear (a protected body must not change),
   // and not an invitation answer. The token is issued last, so a refused send leaves none behind.
-  const toOthers = envelopeTo.some((address) => address.toLowerCase() !== message.from.address.toLowerCase());
+  // An ordinary message only: an invitation answer or an unsubscribe request goes to a program.
+  const own = new Set([message.from.address, ...ownAddresses(deps.store)].map((address) => address.toLowerCase()));
+  const toOthers = envelopeTo.some((address) => !own.has(address.toLowerCase()));
   const tracked =
-    input.origin === "owner" && input.track !== false && !wantsPgp && toOthers && draft.purpose !== "invite_reply"
+    input.origin === "owner" && input.track !== false && !wantsPgp && toOthers && (draft.purpose ?? null) === null
       ? (deps.tracker?.issue() ?? null)
       : null;
   const built = await deps.builder.build(tracked === null ? message : { ...message, html: withPixel(message.html, tracked.html) });
@@ -333,7 +335,8 @@ export async function queueSend(
     input.baseRevision,
     );
     if (tracked !== null && !("conflict" in result) && result.created) {
-      deps.store.saveSentTracking({ token: tracked.token, accountId: account.id, rfcMessageId: draft.messageId, createdAt: now.toISOString() });
+      // Kept 90 days from the time the message goes out, not from the time a later send was queued.
+      deps.store.saveSentTracking({ token: tracked.token, accountId: account.id, rfcMessageId: draft.messageId, createdAt: scheduled ? message.date : now.toISOString() });
     }
     if (input.remind !== undefined && !("conflict" in result) && result.created) {
       const created = deps.store.createReminder({

@@ -13,8 +13,11 @@ endpoint that Makosh Mail's read statuses use. Node standard library only.
 
 A token is `<id>.<sig>`: `id` is 16–32 base64url characters, `sig` the
 first 16 base64url characters of HMAC-SHA256(`MAKOSH_TRACK_KEY`, `id`).
-Opens are kept 90 days, at most 100 per token; the same token and client
-kind inside a minute is one open.
+Opens are kept 90 days, at most 100 per token and 50 000 in all; the same
+token and client kind inside a minute is one open. The feed answers
+`{ events, next, epoch, last }`: `epoch` is a random id of the store (kept
+in `<data file>.state` with the highest number given), so numbers are never
+reused and a reader that sees another epoch starts over.
 
 Environment: `MAKOSH_TRACK_KEY`, `MAKOSH_API_KEY` (32+ characters each),
 `MAKOSH_DATA_FILE`, `MAKOSH_ORIGIN`, `MAKOSH_CONTACT_EMAIL`,

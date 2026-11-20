@@ -73,7 +73,7 @@ export function homePage(site, catalog) {
 </section>
 <section class="prose">
 <h2>What it is</h2>
-<p>BB runs coding agents in projects and threads. Makosh adds the things work arrives through: an inbox, a messenger, a task board. Each plugin is a separate package you install from this marketplace; none of them needs an account with us, and there is no Makosh server that holds your data.</p>
+<p>BB runs coding agents in projects and threads. Makosh adds the things work arrives through: an inbox, a messenger, a task board. Each plugin is a separate package you install from this marketplace; none of them needs an account with us, and there is no Makosh server that holds your mail, messages or tasks.</p>
 <ul>
 <li><strong>Local first.</strong> Mail and messages are synced to a database on your computer. Sign-in tokens are kept in an encrypted local vault.</li>
 <li><strong>Agents by permission.</strong> Agent access is off until you turn it on, limited to the accounts and folders you choose, and every hand-over is written to a local log you can read.</li>
@@ -152,6 +152,7 @@ export function privacyPage(site) {
 <li>We do not operate a service that stores your mail, messages, contacts, tasks or sign-in tokens. They stay on your computer.</li>
 <li>We do not sell data, show ads, or use your data to train AI models.</li>
 <li>Data leaves your computer only to the mail and messaging services you connected, and to the AI provider you configured when you use an AI feature.</li>
+<li>One optional feature involves this website: <a href="#opens">read statuses</a>. It is inactive until you set it up with your own keys, and the server then learns only that an image with a random token was fetched and when — no Google user data, no addresses, subjects, text or message identifiers.</li>
 </ul>
 
 <h2>Data the plugins handle on your computer</h2>
@@ -170,14 +171,14 @@ export function privacyPage(site) {
 </ul>
 <p><strong>How it is used.</strong> Only to provide the mail client you see: to show, search, organize, write and send your mail. <strong>Where it is stored.</strong> On your computer, in the app's local database; the token in the encrypted local vault. <strong>Who it is shared with.</strong> Nobody, with one exception you control: when you use an AI feature (for example Translate, Summarize, or drafting a reply) the text needed for that request — subject, sender name, dates and message text, with codes, passwords and card numbers replaced — is sent to the AI provider you configured in BB, to produce the result you asked for. Automatic AI features are off until you turn them on, and you can limit AI to chosen accounts and folders or turn it off entirely.</p>
 <div class="callout">
-<p>Makosh Mail's use and transfer of information received from Google APIs adheres to the <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>, including the Limited Use requirements. In particular: Google user data is used only to provide and improve the user-facing features of the mail client; it is not transferred to others except as needed to provide those features at your request, to comply with law, or as part of a merger with your consent; it is not used for advertising; it is not used to train generalized AI or machine-learning models; and no human reads it, because it never reaches the developer.</p>
+<p>Makosh Mail's use and transfer of information received from Google APIs adheres to the <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>, including the Limited Use requirements. In particular: Google user data is used only to provide and improve the user-facing features of the mail client; it is not transferred to others except as needed to provide those features at your request, to comply with law, or as part of a merger with your consent; it is not used for advertising; it is not used to train generalized AI or machine-learning models; and no human other than you reads it: the developer operates no service that receives your mail, your contacts or your Google tokens.</p>
 </div>
 
 <h2 id="opens">Read statuses (optional)</h2>
-<p>If you turn on read statuses in Makosh Mail, a message you send can carry a tiny image whose address is on this website. When the recipient's mail program fetches it, this server records: a random token that identifies the sent message only to your own app, the time, and a coarse kind of client (for example "mobile" or "Gmail image proxy"). It does not store the recipient's IP address, their full browser identification, any email address, subject or text, and it sets no cookies. Records are deleted after 90 days. Your app downloads them with a secret key; nobody else can.</p>
+<p>If you turn on read statuses in Makosh Mail, a message you send can carry a tiny image whose address is on this website. When the recipient's mail program fetches it, this server records: a random token that identifies the sent message only to your own app, the time, and a coarse kind of client (for example "mobile" or "Gmail image proxy"). It does not store the recipient's IP address, their full browser identification, any email address, subject or text, and it sets no cookies. Records are deleted after 90 days. Your app downloads them with a secret key; nobody else can. The image is never added to signed or encrypted mail, and the feature can be turned off in Mail settings.</p>
 
 <h2>This website</h2>
-<p>The site has no accounts, cookies, analytics or third-party scripts. The web server keeps ordinary access logs (time, address requested, IP address) for up to 14 days to keep the service running and safe; requests for read-status images are not written to those logs.</p>
+<p>The site has no accounts, cookies, analytics or third-party scripts. The web server keeps ordinary access logs (time, address requested, IP address) for a few days, at most 14, to keep the service running and safe; requests for read-status images are left out of those logs.</p>
 
 <h2>Keeping and deleting</h2>
 <p>Everything the plugins keep is in BB's data folder on your computer. Removing an account in a plugin deletes its local data and its stored secrets; uninstalling the plugin and deleting its data folder removes the rest. For a Google account you can also revoke access in your <a href="https://myaccount.google.com/permissions">Google Account</a>. To have read-status records removed before 90 days, contact us with the tokens from your app.</p>

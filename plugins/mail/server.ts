@@ -9,7 +9,7 @@
 // account goes out through toPublicAccount, and log lines carry account ids
 // and outcome codes only.
 import { createReadStatus, type ReadStatus } from "./src/adapters/bb/read-status.ts";
-import { READ_STATUS_ORIGIN } from "./src/core/read-status.ts";
+import { READ_STATUS_FEED_CHARS, READ_STATUS_ORIGIN } from "./src/core/read-status.ts";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
   PluginCliError,
@@ -511,7 +511,7 @@ export interface MailPluginOverrides {
   /** Google access tokens (tests pass a fake; the default asks Google). */
   googleTokens?: GoogleTokens;
   /** Read statuses: the HTTP call to the owner's endpoint (tests pass a fake). */
-  readStatusFetch?: (url: string, init: { headers: Record<string, string>; signal: AbortSignal }) => Promise<{ status: number; json(): Promise<unknown> }>;
+  readStatusFetch?: (url: string, init: { headers: Record<string, string>; signal: AbortSignal }) => Promise<{ status: number; text(): Promise<string> }>;
   clock?: Clock;
   transport?: MailTransport;
   /** Slice 3k: the OpenPGP engine; tests may pass a counting one. */
@@ -1831,7 +1831,7 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
         trackKey: current.readStatusTrackKey,
         feedKey: current.readStatusFeedKey,
       }),
-      fetch: overrides.readStatusFetch ?? ((url, init) => fetch(url, init)),
+      fetch: overrides.readStatusFetch ?? cappedFetch,
       log: (line) => bb.log.info(line),
     });
     const queueDeps: QueueDeps = {
@@ -6327,6 +6327,37 @@ function createDayRpc(
   }
 
   return { today, dueReminders, dismiss, setReminder, snooze, dismissReminder, notice, setScope, logList };
+}
+
+/**
+ * An HTTP GET whose answer is read only up to a bound (read statuses): an
+ * endpoint that sends without end cannot fill the plugin's memory. Redirects
+ * are not followed: the feed has none, and its key must go nowhere else.
+ */
+async function cappedFetch(
+  url: string,
+  init: { headers: Record<string, string>; signal: AbortSignal },
+): Promise<{ status: number; text(): Promise<string> }> {
+  const response = await fetch(url, { ...init, redirect: "error" });
+  return {
+    status: response.status,
+    async text() {
+      if (response.body === null) return "";
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let out = "";
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        out += decoder.decode(value, { stream: true });
+        if (out.length > READ_STATUS_FEED_CHARS) {
+          await reader.cancel().catch(() => {});
+          break;
+        }
+      }
+      return out;
+    },
+  };
 }
 
 const jsonOption = { json: { type: "boolean", description: "Emit machine-readable JSON" } } as const;

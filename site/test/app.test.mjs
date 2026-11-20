@@ -68,7 +68,9 @@ test("a signed token is recorded once with a coarse client kind; anything else g
     assert.deepEqual(Buffer.from(await bad.arrayBuffer()), PIXEL);
   }
   await fetch(`${base}/o/${TOKEN}.gif`, { method: "HEAD" });
-  assert.deepEqual(await events(), { events: [{ seq: 1, token: TOKEN, at: "2026-11-20T10:00:00.000Z", kind: "mobile" }], next: 1 });
+  assert.deepEqual(await events(), { events: [{ seq: 1, token: TOKEN, at: "2026-11-20T10:00:00.000Z", kind: "mobile" }], next: 1, epoch: store.epoch, last: 1 });
+  // A backslash path is not served: the proxy in front would not treat it as the image.
+  assert.equal((await fetch(`${base}/o%5c${TOKEN}.gif`)).status, 404);
   assert.equal(JSON.stringify(await events()).includes("203.0.113.9"), false);
 });
 
@@ -77,5 +79,5 @@ test("the feed needs the key, pages after a number and refuses nonsense", async 
   assert.equal((await fetch(`${base}/api/events`, { headers: { Authorization: `Bearer ${TRACK}` } })).status, 401);
   assert.equal((await fetch(`${base}/api/events?after=-1`, { headers: { Authorization: `Bearer ${API}` } })).status, 400);
   assert.equal((await fetch(`${base}/api/events?after=abc`, { headers: { Authorization: `Bearer ${API}` } })).status, 400);
-  assert.deepEqual(await events("?after=1"), { events: [], next: 1 });
+  assert.deepEqual(await events("?after=1"), { events: [], next: 1, epoch: store.epoch, last: 1 });
 });

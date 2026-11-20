@@ -31,26 +31,46 @@ export function pixelHtml(origin: string, token: string): string {
   return `<img src="${origin}/o/${token}.gif" width="1" height="1" alt="" style="border:0;width:1px;height:1px">`;
 }
 
-/** The body with the image at its end. */
+/** The body with the image as its last element: inside the document when it has a closing body tag. */
 export function withPixel(html: string, pixel: string): string {
-  return `${html}${pixel}`;
+  const at = html.toLowerCase().lastIndexOf("</body>");
+  return at === -1 ? `${html}${pixel}` : `${html.slice(0, at)}${pixel}${html.slice(at)}`;
 }
 
+/** The most characters of one feed answer that are read. */
+export const READ_STATUS_FEED_CHARS = 2_000_000;
+const EPOCH = /^[A-Za-z0-9_-]{8,64}$/;
+
+export type OpenFeed = {
+  events: OpenEvent[];
+  next: number;
+  /** The endpoint's store id; another one means its numbers started over. */
+  epoch: string;
+  /** The highest number the endpoint has given. */
+  last: number;
+  /** The highest number among the events of this answer, readable or not (0 when none). */
+  top: number;
+};
+
 /** What the feed answered, kept only when it has the expected shape; anything else is dropped. */
-export function parseOpenFeed(body: unknown): { events: OpenEvent[]; next: number } | null {
+export function parseOpenFeed(body: unknown): OpenFeed | null {
   if (body === null || typeof body !== "object") return null;
-  const { events, next } = body as { events?: unknown; next?: unknown };
+  const { events, next, epoch, last } = body as { events?: unknown; next?: unknown; epoch?: unknown; last?: unknown };
   if (!Array.isArray(events) || typeof next !== "number" || !Number.isSafeInteger(next) || next < 0) return null;
+  if (typeof epoch !== "string" || !EPOCH.test(epoch)) return null;
+  if (typeof last !== "number" || !Number.isSafeInteger(last) || last < 0) return null;
   const kept: OpenEvent[] = [];
+  let top = 0;
   for (const raw of events) {
     if (raw === null || typeof raw !== "object") continue;
     const { seq, token, at, kind } = raw as Record<string, unknown>;
     if (typeof seq !== "number" || !Number.isSafeInteger(seq) || seq < 1) continue;
+    if (seq > top) top = seq;
     if (typeof token !== "string" || !TOKEN.test(token)) continue;
     if (typeof at !== "string" || Number.isNaN(Date.parse(at))) continue;
     kept.push({ seq, token, at: new Date(at).toISOString(), kind: typeof kind === "string" && KINDS.has(kind) ? kind : "unknown" });
   }
-  return { events: kept, next };
+  return { events: kept, next, epoch, last, top };
 }
 
 /** What the page shows for a tracked message: opens by something that is not plainly a machine. */
