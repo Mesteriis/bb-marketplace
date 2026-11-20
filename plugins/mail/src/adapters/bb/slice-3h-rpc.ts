@@ -15,6 +15,8 @@
 //   nothing (spec resolution 10).
 // - Logs carry account ids, counts and outcome codes: never a query, a
 //   folder or label name, a file name or an excerpt.
+import { ownAddresses } from "../../core/compose.ts";
+import { RHYTHM_DAYS, RHYTHM_MESSAGES, senderInsights } from "../../core/sender-rhythm.ts";
 import {
   ATTACHMENT_TEXT_TOTAL_MAX,
   RELATED_BODY_CHARS,
@@ -815,6 +817,10 @@ export function createSlice3hRpc(deps: Slice3hDeps) {
       imagesAllowed,
       blocked,
       projectId: binding?.projectId ?? null,
+      insights: senderInsights(
+        store.senderExchange(address, input.accountId, new Date(now().getTime() - RHYTHM_DAYS * 86_400_000).toISOString(), RHYTHM_MESSAGES),
+        new Set(ownAddresses(store).map((own) => own.trim().toLowerCase())),
+      ),
     };
   }
 

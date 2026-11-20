@@ -3372,6 +3372,41 @@ describe.each(storeKinds)("AI labels and sorted messages (%s)", (_kind, make) =>
   });
 });
 
+describe.each(storeKinds)("the mail between the owner and one address (%s)", (_kind, make) => {
+  it("gives each way newest first, each message once, without Spam, other people's mail and mail before the date", () => {
+    const s = make();
+    s.saveAccount(makeStoredAccount());
+    const folder = (path: string, specialUse: "inbox" | "sent" | "junk" | "archive") => ({ path, name: path, delimiter: "/", specialUse, selectable: true, subscribed: true });
+    s.saveFolders("acc_1", [folder("INBOX", "inbox"), folder("Sent", "sent"), folder("Junk", "junk"), folder("Archive", "archive")]);
+    const ann = { name: "Ann", address: "ann@example.com" };
+    const owner = { name: null, address: "owner@example.org" };
+    const put = (folderPath: string, uid: number, overrides: Parameters<typeof makeFetchedMessage>[1]) =>
+      s.upsertMessages("acc_1", folderPath, [makeFetchedMessage(uid, { messageId: `x-${uid}@example.org`, ...overrides })]);
+    put("INBOX", 1, { from: ann, to: [owner], cc: [{ name: null, address: "bob@example.com" }], date: "2026-11-10T10:00:00.000Z", inReplyTo: "x-20@example.org" });
+    put("Archive", 2, { from: { name: null, address: "ANN@example.com" }, to: [owner], date: "2026-11-12T10:00:00.000Z" });
+    // The same message in two folders counts once.
+    put("Archive", 3, { messageId: "x-1@example.org", from: ann, to: [owner], cc: [{ name: null, address: "bob@example.com" }], date: "2026-11-10T10:00:00.000Z", inReplyTo: "x-20@example.org" });
+    put("Junk", 4, { from: ann, to: [owner], date: "2026-11-13T10:00:00.000Z" });
+    put("INBOX", 5, { from: { name: null, address: "dan@example.net" }, to: [owner], date: "2026-11-14T10:00:00.000Z" });
+    put("INBOX", 6, { from: ann, to: [owner], date: "2026-01-01T10:00:00.000Z" });
+    put("Sent", 20, { from: owner, to: [ann], date: "2026-11-09T10:00:00.000Z" });
+    put("Sent", 21, { from: owner, to: [{ name: null, address: "dan@example.net" }], cc: [{ name: null, address: "Ann@Example.com" }], date: "2026-11-11T10:00:00.000Z", inReplyTo: "x-1@example.org" });
+    put("Sent", 22, { from: owner, to: [{ name: null, address: "joann@example.com" }], date: "2026-11-15T10:00:00.000Z" });
+    expect(s.senderExchange("ann@example.com", null, "2026-06-01T00:00:00.000Z", 500)).toEqual({
+      incoming: [
+        { date: "2026-11-12T10:00:00.000Z", messageId: "x-2@example.org", inReplyTo: null, others: ["owner@example.org"] },
+        { date: "2026-11-10T10:00:00.000Z", messageId: "x-1@example.org", inReplyTo: "x-20@example.org", others: ["owner@example.org", "bob@example.com"] },
+      ],
+      outgoing: [
+        { date: "2026-11-11T10:00:00.000Z", messageId: "x-21@example.org", inReplyTo: "x-1@example.org" },
+        { date: "2026-11-09T10:00:00.000Z", messageId: "x-20@example.org", inReplyTo: null },
+      ],
+    });
+    expect(s.senderExchange("ann@example.com", null, "2026-06-01T00:00:00.000Z", 1).incoming).toHaveLength(1);
+    expect(s.senderExchange("ann@example.com", "acc_other", "2026-06-01T00:00:00.000Z", 500)).toEqual({ incoming: [], outgoing: [] });
+  });
+});
+
 describe.each(storeKinds)("voice texts (%s)", (_kind, make) => {
   it("gives the newest sent texts inside AI access, and those sent to one address", () => {
     const s = make();

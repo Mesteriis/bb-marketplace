@@ -100,6 +100,8 @@ import { createSyncLoop, type SyncLoop } from "./src/adapters/bb/sync-service.ts
 import { createIdleSupervisor, type IdleSupervisor } from "./src/adapters/bb/idle-service.ts";
 import { NewMailBook } from "./src/adapters/bb/new-mail-book.ts";
 import { linksOf, writeInput } from "./src/core/ai-write.ts";
+import { RHYTHM_DAYS, RHYTHM_MESSAGES, smartSendTime } from "./src/core/sender-rhythm.ts";
+import { validSendAt } from "./src/core/send-later.ts";
 import { askActionViews } from "./src/core/ask-action-views.ts";
 import { writeSource, type WriteSettings } from "./src/core/write-source.ts";
 import { createReplyDrafts, type ReplyDrafts } from "./src/adapters/bb/reply-drafts.ts";
@@ -3910,6 +3912,19 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         return { file };
       }),
       template_file_remove: owner("template_file_remove", ({ templateId, fileId }) => ({ removed: store.removeTemplateFile(templateId, fileId) })),
+      // Smart Send: counted from the mail with the draft's first recipient; no model, nothing leaves the computer.
+      smart_send_time: owner("smart_send_time", ({ draftId }) => {
+        const first = ownerDraft(draftId).to[0];
+        if (first === undefined) return { suggestion: null };
+        const at = composeDeps.clock.now();
+        const found = smartSendTime(
+          store.senderExchange(first.address, null, new Date(at.getTime() - RHYTHM_DAYS * 86_400_000).toISOString(), RHYTHM_MESSAGES),
+          at,
+        );
+        if (found === null || !validSendAt(found.at, at)) return { suggestion: null };
+        const name = first.name !== null && first.name.trim() !== "" ? first.name : first.address;
+        return { suggestion: { at: found.at, hour: found.hour, name } };
+      }),
       template_apply: owner("template_apply", ({ draftId, templateId }) => {
         ownerDraft(draftId);
         return applyTemplate(store, draftId, templateId);

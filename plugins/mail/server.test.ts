@@ -5955,6 +5955,62 @@ describe("typing speed: the owner's phrases", () => {
   });
 });
 
+describe("Smart Send and sender insights", () => {
+  const ANN = "ann@example.com";
+  /** Six messages from Ann, each at the same time of day on six days running, ending two days before the tests' clock. */
+  const seedAnn = (store: ReturnType<typeof createSqliteStore>) => {
+    for (let i = 0; i < 6; i++) {
+      store.upsertMessages("acc_1", "INBOX", [
+        makeFetchedMessage(300 + i, {
+          messageId: `ann-${i}@example.com`,
+          from: { name: "Ann", address: ANN },
+          to: [{ name: null, address: "owner@example.org" }],
+          date: new Date(Date.parse("2026-11-12T07:20:00.000Z") - i * 86_400_000).toISOString(),
+        }),
+      ]);
+    }
+  };
+  const draftTo = async (host: Host, to: string[]) => {
+    const { draftId } = (await call(host, "compose_new", { accountId: "acc_1" })) as { draftId: string };
+    await call(host, "compose_save", { draftId, baseRevision: 1, accountId: "acc_1", to, cc: [], bcc: [], subject: "Invented", doc: { type: "doc", content: [para("Hello")] } });
+    return draftId;
+  };
+
+  it("suggests the hour the first recipient usually writes, at least an hour ahead; nothing from too little mail; the owner's alone", async () => {
+    const host = await loadCanary({}, {}, seedAnn);
+    const draftId = await draftTo(host, [`Ann <${ANN}>`]);
+    const { suggestion } = (await call(host, "smart_send_time", { draftId })) as { suggestion: { at: string; hour: number; name: string } | null };
+    // The hour is read on the server's own clock, as the owner sees it.
+    const usual = new Date("2026-11-12T07:20:00.000Z").getHours();
+    expect(suggestion).toMatchObject({ hour: usual, name: "Ann" });
+    const at = new Date(suggestion!.at);
+    expect(at.getHours()).toBe(usual);
+    expect(at.getMinutes()).toBe(0);
+    expect(at.getTime() - NOW.getTime()).toBeGreaterThanOrEqual(3_600_000);
+    expect(at.getTime() - NOW.getTime()).toBeLessThan(8 * 86_400_000);
+
+    const stranger = await draftTo(host, ["stranger@example.net"]);
+    expect(await call(host, "smart_send_time", { draftId: stranger })).toEqual({ suggestion: null });
+    const nobody = await draftTo(host, []);
+    expect(await call(host, "smart_send_time", { draftId: nobody })).toEqual({ suggestion: null });
+    const other = { experimental_caller: { kind: "plugin", pluginId: "other" } } as const;
+    await expect(host.harness.behavior.callRpc("smart_send_time", { draftId }, other)).rejects.toMatchObject({ code: "forbidden" });
+    expect(host.harness.inspection.logEntries.map((e) => e.message).join("\n")).not.toContain(ANN);
+  });
+
+  it("the sender card carries insights for someone with enough mail and none for the rest", async () => {
+    const host = await loadCanary({}, {}, seedAnn);
+    const card = (await call(host, "sender_card", { address: ANN, accountId: null })) as { insights: Record<string, unknown> | null };
+    const usual = new Date("2026-11-12T07:20:00.000Z").getHours();
+    expect(card.insights).toMatchObject({ theirReplyMinutes: null, ownReplyMinutes: null, mostWith: [] });
+    const from = card.insights!.usualFrom as number;
+    expect(usual).toBeGreaterThanOrEqual(from);
+    expect(usual).toBeLessThan(from + 3);
+    const few = (await call(host, "sender_card", { address: "ivy@example.com", accountId: null })) as { insights: unknown };
+    expect(few.insights).toBeNull();
+  });
+});
+
 describe("Inbox tabs (Split Inbox)", () => {
   const scope = { kind: "account", accountId: "acc_1", folder: "INBOX" } as const;
   const subjects = async (host: Host, tabId?: string) =>

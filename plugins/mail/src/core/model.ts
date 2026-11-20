@@ -661,6 +661,20 @@ export const senderCardSchema = z.object({
   imagesAllowed: z.boolean(),
   blocked: z.boolean(),
   projectId: z.string().nullable(),
+  /** Sender insights, counted from stored mail; null (or absent) from too little of it. */
+  insights: z
+    .object({
+      /** Median minutes they take to answer the owner; null from fewer than three answers. */
+      theirReplyMinutes: z.number().int().min(0).nullable(),
+      ownReplyMinutes: z.number().int().min(0).nullable(),
+      /** The three hours they usually write in, on the owner's clock. */
+      usualFrom: z.number().int().min(0).max(23),
+      usualTo: z.number().int().min(1).max(24),
+      weekdaysOnly: z.boolean(),
+      mostWith: z.array(z.object({ address: z.string(), count: z.number().int().min(1) })).max(3),
+    })
+    .nullable()
+    .optional(),
 });
 export type SenderCard = z.infer<typeof senderCardSchema>;
 

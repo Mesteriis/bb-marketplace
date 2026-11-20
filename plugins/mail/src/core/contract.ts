@@ -1092,6 +1092,13 @@ export const rpcSchemas = {
     input: z.object({ templateId: idInput, fileId: idInput }),
     output: z.object({ removed: z.boolean() }),
   },
+  /** Smart Send: when the draft's first To recipient usually writes, as a send time; null from too little mail. */
+  smart_send_time: {
+    input: z.object({ draftId: idInput }),
+    output: z.object({
+      suggestion: z.object({ at: z.string(), hour: z.number().int().min(0).max(23), name: z.string() }).nullable(),
+    }),
+  },
   /** Attaches a template's files to a draft; `leftOut` names the ones the message has no room for. */
   template_apply: {
     input: z.object({ draftId: idInput, templateId: idInput }),
@@ -2055,6 +2062,9 @@ export const AI_SORT_METHODS = ["ai_labels_list", "ai_label_save", "ai_label_del
 
 /** AI writes mail: the reply drafted for a new message (owner only; refused to plugins, never a tool). */
 export const AI_WRITE_METHODS = ["reply_draft_get", "reply_draft_dismiss"] as const satisfies readonly (keyof typeof rpcSchemas)[];
+
+/** Smart Send: the time the draft's first recipient usually writes (owner only; counted locally, no model). */
+export const SMART_SEND_METHODS = ["smart_send_time"] as const satisfies readonly (keyof typeof rpcSchemas)[];
 
 export const TYPING_METHODS = ["phrases_list", "template_file_begin", "template_file_finish", "template_file_remove", "template_apply"] as const satisfies readonly (keyof typeof rpcSchemas)[];
 

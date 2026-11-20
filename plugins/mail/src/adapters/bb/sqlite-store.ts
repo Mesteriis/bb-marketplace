@@ -7188,6 +7188,39 @@ export function createSqliteStore(db: Database.Database): MailStore {
       return pageFiles(filter, cursor, limit);
     },
 
+    senderExchange(address, accountId, sinceIso, limit) {
+      const params = { address, accountId, since: sinceIso, limit, pattern: likePattern(`"${address}"`) };
+      type Row = { date: string; message_id: string | null; in_reply_to: string | null; to_json: string; cc_json: string };
+      const lower = address.trim().toLowerCase();
+      const incoming = db
+        .prepare<[typeof params], Row>(
+          `SELECT m.date, m.message_id, m.in_reply_to, m.to_json, m.cc_json FROM messages m
+           WHERE m.from_address = @address COLLATE NOCASE AND (@accountId IS NULL OR m.account_id = @accountId)
+             AND m.move_pending IS NULL AND m.date IS NOT NULL AND m.date >= @since AND ${NOT_JUNK_OR_TRASH}
+           GROUP BY m.account_id, m.dedup_key ORDER BY m.date DESC LIMIT @limit`,
+        )
+        .all(params)
+        .map((row) => ({
+          date: row.date,
+          messageId: row.message_id,
+          inReplyTo: row.in_reply_to,
+          others: [...(JSON.parse(row.to_json) as MailAddress[]), ...(JSON.parse(row.cc_json) as MailAddress[])].map((a) => a.address),
+        }));
+      const outgoing = db
+        .prepare<[typeof params], Row>(
+          `SELECT m.date, m.message_id, m.in_reply_to, m.to_json, m.cc_json FROM ${MESSAGES_WITH_FOLDER}
+           WHERE ${ROW_ROLE} = 'sent' AND (@accountId IS NULL OR m.account_id = @accountId)
+             AND m.move_pending IS NULL AND m.date IS NOT NULL AND m.date >= @since
+             AND (mail_lower(m.to_json) LIKE mail_lower(@pattern) ESCAPE '\\' OR mail_lower(m.cc_json) LIKE mail_lower(@pattern) ESCAPE '\\')
+           GROUP BY m.account_id, m.dedup_key ORDER BY m.date DESC LIMIT @limit`,
+        )
+        .all(params)
+        // The pattern is a fragment match: the address itself must be among the recipients.
+        .filter((row) => [...(JSON.parse(row.to_json) as MailAddress[]), ...(JSON.parse(row.cc_json) as MailAddress[])].some((a) => a.address.trim().toLowerCase() === lower))
+        .map((row) => ({ date: row.date, messageId: row.message_id, inReplyTo: row.in_reply_to }));
+      return { incoming, outgoing };
+    },
+
     senderStats(address, accountId) {
       const params = { address, accountId };
       const account = accountId === null ? "" : " AND m.account_id = @accountId";

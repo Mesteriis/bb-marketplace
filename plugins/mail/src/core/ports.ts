@@ -1,4 +1,5 @@
 // Ports: what the core needs from its host. Each host supplies adapters.
+import type { Exchange } from "./sender-rhythm.ts";
 import type { ReplyDraftRecord } from "./auto-drafts.ts";
 import type { AiLabel, MessageAi } from "./ai-sort.ts";
 import type { TemplateExtras } from "./snippets.ts";
@@ -1353,6 +1354,13 @@ export interface MailStore {
   filesList(filter: FilesFilter, cursor: string | null, limit: number): { files: FileRow[]; nextCursor: string | null };
   /** The stored counts and lists of the sender card (the server adds images, block and project). */
   senderStats(address: string, accountId: string | null): SenderStats;
+  /**
+   * Smart Send and sender insights: the dated mail between the owner and
+   * one address since `sinceIso`, newest `limit` each way, each message
+   * once. Incoming: from the address, outside Spam and Trash. Outgoing:
+   * rows of a Sent folder addressed (To or Cc) to it.
+   */
+  senderExchange(address: string, accountId: string | null, sinceIso: string, limit: number): Exchange;
   /** At most RELATED_CANDIDATES_MAX local candidates for the message and its terms. */
   relatedCandidates(messageId: string, terms: readonly string[]): RelatedCandidate[];
   /** Summaries of the ids (any order; missing ids left out). */

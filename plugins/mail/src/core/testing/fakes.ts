@@ -12,6 +12,7 @@
 //   - thread, folder, badge and search counts count distinct dedup keys, and
 //     rows waiting to move out are hidden from their folder, the badge and
 //     search; moves re-home rows (same id), detaching them without a uid map.
+import type { Exchange } from "../sender-rhythm.ts";
 import type { ReplyDraftRecord } from "../auto-drafts.ts";
 import type { TemplateFileInfo } from "../ports.ts";
 import { isCalendarPart } from "../calendar-invite.ts";
@@ -3852,6 +3853,37 @@ export class InMemoryMailStore implements MailStore {
     const page = files.slice(offset, offset + limit).map(({ order: _order, ...file }) => file);
     const next = offset + page.length;
     return { files: page, nextCursor: next < files.length ? String(next) : null };
+  }
+
+  senderExchange(address: string, accountId: string | null, sinceIso: string, limit: number): Exchange {
+    const lower = address.trim().toLowerCase();
+    const usable = (r: Row) => r.movePending === null && (accountId === null || r.accountId === accountId) && r.message.date !== null && r.message.date >= sinceIso;
+    const once = (rows: Row[]) => {
+      const seen = new Set<string>();
+      return rows
+        .sort((a, b) => (b.message.date ?? "").localeCompare(a.message.date ?? ""))
+        .filter((r) => {
+          const key = `${r.accountId}\u0000${r.dedupKey}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        })
+        .slice(0, limit);
+    };
+    const incoming = once(
+      this.state.rows.filter((r) => usable(r) && r.message.from.address.toLowerCase() === lower && !["junk", "trash"].includes(this.roleOf(r.accountId, r.folder) ?? "")),
+    ).map((r) => ({
+      date: r.message.date!,
+      messageId: r.message.messageId,
+      inReplyTo: r.message.inReplyTo,
+      others: [...r.message.to, ...r.message.cc].map((a) => a.address),
+    }));
+    const outgoing = once(
+      this.state.rows.filter(
+        (r) => usable(r) && this.roleOf(r.accountId, r.folder) === "sent" && [...r.message.to, ...r.message.cc].some((a) => a.address.trim().toLowerCase() === lower),
+      ),
+    ).map((r) => ({ date: r.message.date!, messageId: r.message.messageId, inReplyTo: r.message.inReplyTo }));
+    return { incoming, outgoing };
   }
 
   senderStats(address: string, accountId: string | null): SenderStats {
