@@ -1,48 +1,62 @@
-// Auto drafts (AI writes mail): the queue between new mail and the AI job
-// runner. One model call at a time, through the same runner as the owner's
-// clicks (kind `autodraft`, its hourly rate there, the daily cap here).
-// A busy runner makes the queue wait; a refusal that will repeat (the rate,
-// a missing gateway, a refused sign-in, a used-up quota) empties it until
-// new mail arrives. A failed draft is dropped: one log line, no mail data.
-import { AUTO_DRAFT_QUEUE, AUTO_DRAFT_RETRY_MS, type DraftBudget, type ReplyDraftRecord } from "../../core/auto-drafts.ts";
-import type { WriteBuild } from "../../core/ai-write.ts";
-import type { AiErrorKind, Clock } from "../../core/index.ts";
-import { AI_JOB_MAX_MS, AiJobRefusal, type AiJobs } from "./ai-jobs.ts";
+// The queue between new mail and the AI job runner for work nobody
+// clicked: auto drafts (one message a call) and sorting (ten a call). One
+// model call at a time per queue, through the same runner as the owner's
+// clicks (the kind's hourly rate there, the daily cap here). A busy runner
+// makes the queue wait; a refusal that will repeat (the rate, a missing
+// gateway, a refused sign-in, a used-up quota) empties it until new mail
+// arrives. A failed call is dropped: one log line, no mail data.
+import type { AiBuild } from "../../core/ai-input.ts";
+import type { AiErrorKind } from "../../core/index.ts";
+import { AI_JOB_MAX_MS, AiJobRefusal, type AiFinished, type AiJobContext, type AiJobs } from "./ai-jobs.ts";
 
-/** Failures that the next message would meet too. */
+/** How long the queue waits when the job runner is busy. */
+export const UNATTENDED_RETRY_MS = 30_000;
+
+/** Failures that the next call would meet too. */
 const STOPS: ReadonlySet<AiErrorKind> = new Set(["gateway_missing", "pool_unavailable", "provider_unknown", "model_unknown", "auth", "quota"]);
 
-export type AutoDraftQueueDeps = {
-  /** The aiAutoDrafts setting, read before every call. */
+export type UnattendedQueueDeps<Made> = {
+  kind: "autodraft" | "sort";
+  /** The words of this queue's log lines ("auto draft", "sort"). */
+  label: string;
+  /** Messages per call. */
+  batch: number;
+  /** Most messages waiting; past it the oldest waiting ones are dropped. */
+  limit: number;
+  /** The feature's setting, read before every call. */
   enabled: () => boolean;
-  /** The request for a message; null when it no longer qualifies (gone, moved, outside AI access). */
-  build: (messageId: string) => { built: WriteBuild; tag: string; accountId: string } | null;
+  /**
+   * The request for the next messages; null when none of them qualifies any
+   * more (gone, moved, outside AI access). `ids` are those the request covers.
+   */
+  build: (ids: readonly string[]) => { built: AiBuild; context: Partial<AiJobContext>; ids: string[]; made: Made } | null;
   jobs: Pick<AiJobs, "start" | "settled" | "poll" | "finished" | "cancel">;
   /** The owner's provider and model settings. */
   context: () => { provider: string; model: string };
-  keep: (draft: ReplyDraftRecord) => void;
+  /** The finished call's result, to keep. */
+  done: (made: Made, finished: AiFinished) => void;
   /** The agent log's row for one call: what was sent, never its text. */
-  logCall: (built: WriteBuild) => void;
-  budget: DraftBudget;
-  clock: Clock;
+  logCall: (built: AiBuild) => void;
+  /** The daily cap. */
+  budget: { left(): boolean; take(): boolean };
   /** Runs `run` after `ms`; the answer cancels it. */
   schedule: (run: () => void, ms: number) => () => void;
   log: (line: string) => void;
 };
 
-export class AutoDraftQueue {
+export class UnattendedAiQueue<Made> {
   private waiting: string[] = [];
   private running: Promise<void> | null = null;
   private cancelRetry: (() => void) | null = null;
   private disposed = false;
 
-  constructor(private readonly deps: AutoDraftQueueDeps) {}
+  constructor(private readonly deps: UnattendedQueueDeps<Made>) {}
 
-  /** New messages that qualify, oldest first. Past the limit the oldest waiting ones are dropped. */
+  /** New messages that qualify, oldest first. */
   offer(ids: readonly string[]): void {
     if (this.disposed || !this.deps.enabled()) return;
     for (const id of ids) if (!this.waiting.includes(id)) this.waiting.push(id);
-    if (this.waiting.length > AUTO_DRAFT_QUEUE) this.waiting.splice(0, this.waiting.length - AUTO_DRAFT_QUEUE);
+    if (this.waiting.length > this.deps.limit) this.waiting.splice(0, this.waiting.length - this.deps.limit);
     this.wake();
   }
 
@@ -80,66 +94,51 @@ export class AutoDraftQueue {
         this.waiting = [];
         return;
       }
-      const messageId = this.waiting[0]!;
-      let made: ReturnType<AutoDraftQueueDeps["build"]>;
+      const next = this.waiting.slice(0, deps.batch);
+      let made: ReturnType<UnattendedQueueDeps<Made>["build"]>;
       try {
-        made = deps.build(messageId);
+        made = deps.build(next);
       } catch {
         made = null;
       }
       if (made === null) {
-        this.waiting.shift();
+        this.waiting.splice(0, next.length);
         continue;
       }
       let jobId: string;
       try {
-        ({ jobId } = deps.jobs.start("autodraft", made.built, {
-          ...deps.context(),
-          tag: made.tag,
-          allowedLinks: made.built.allowedLinks,
-          unattended: true,
-        }));
+        ({ jobId } = deps.jobs.start(deps.kind, made.built, { ...deps.context(), ...made.context, unattended: true }));
       } catch (error) {
         if (error instanceof AiJobRefusal && error.code === "busy") {
           // The owner's own requests go first: try again later.
           this.cancelRetry = deps.schedule(() => {
             this.cancelRetry = null;
             this.wake();
-          }, AUTO_DRAFT_RETRY_MS);
+          }, UNATTENDED_RETRY_MS);
           return;
         }
         this.waiting = [];
-        deps.log(`auto draft: stopped (${error instanceof AiJobRefusal ? error.code : "failed"})`);
+        deps.log(`${deps.label}: stopped (${error instanceof AiJobRefusal ? error.code : "failed"})`);
         return;
       }
-      this.waiting.shift();
+      this.waiting.splice(0, next.length);
       deps.budget.take();
       deps.logCall(made.built);
       // Nobody polls this job, so nothing else would end a call that never answers.
       const giveUp = deps.schedule(() => deps.jobs.cancel(jobId), AI_JOB_MAX_MS);
       await deps.jobs.settled(jobId);
       giveUp();
-      const finished = deps.jobs.finished(jobId, "autodraft");
+      const finished = deps.jobs.finished(jobId, deps.kind);
       if (finished === null) {
         const error = deps.jobs.poll(jobId)?.error ?? "failed";
-        deps.log(`auto draft: not written (${error})`);
+        deps.log(`${deps.label}: not done (${error})`);
         if (STOPS.has(error)) this.waiting = [];
         continue;
       }
-      const output = finished.output;
-      if (output.kind !== "write" || !output.value.reply || output.value.paragraphs.length === 0) continue;
       try {
-        deps.keep({
-          messageId,
-          accountId: made.accountId,
-          paragraphs: output.value.paragraphs,
-          linksRemoved: output.value.linksRemoved,
-          provider: finished.provider,
-          model: finished.model,
-          createdAt: deps.clock.now().toISOString(),
-        });
+        deps.done(made.made, finished);
       } catch {
-        deps.log("auto draft: not kept");
+        deps.log(`${deps.label}: not kept`);
       }
     }
   }

@@ -5,14 +5,14 @@
 // writes to the mail server.
 import type { AiBuild } from "../../core/ai-input.ts";
 import { writeInput, type WriteBuild } from "../../core/ai-write.ts";
-import { REPLY_DRAFT_PREVIEW, REPLY_DRAFTS_MAX, DraftBudget, eligible, replyDraftStale, type AutoDraftRow } from "../../core/auto-drafts.ts";
+import { AUTO_DRAFT_QUEUE, REPLY_DRAFT_PREVIEW, REPLY_DRAFTS_MAX, DraftBudget, eligible, replyDraftStale, type AutoDraftRow } from "../../core/auto-drafts.ts";
 import { ownAddresses } from "../../core/compose.ts";
 import { truncateText } from "../../core/html-entities.ts";
 import type { LogEntryInput } from "../../core/agent-log.ts";
 import type { Clock, MailStore } from "../../core/index.ts";
 import { conversationUpTo, voiceFor, type WriteSettings } from "../../core/write-source.ts";
 import type { AiJobs } from "./ai-jobs.ts";
-import { AutoDraftQueue } from "./auto-draft-queue.ts";
+import { UnattendedAiQueue } from "./unattended-ai-queue.ts";
 
 export type ReplyDraftsDeps = {
   store: MailStore;
@@ -121,14 +121,36 @@ export function createReplyDrafts(deps: ReplyDraftsDeps) {
     return { built, tag, accountId };
   };
 
-  const queue = new AutoDraftQueue({
+  const queue = new UnattendedAiQueue<{ messageId: string; accountId: string }>({
+    kind: "autodraft",
+    label: "auto draft",
+    batch: 1,
+    limit: AUTO_DRAFT_QUEUE,
     enabled: deps.enabled,
-    build,
+    build: (ids) => {
+      const messageId = ids[0];
+      const made = messageId === undefined ? null : build(messageId);
+      if (made === null || messageId === undefined) return null;
+      return { built: made.built, context: { tag: made.tag, allowedLinks: made.built.allowedLinks }, ids: [messageId], made: { messageId, accountId: made.accountId } };
+    },
     jobs: deps.jobs,
     context: deps.aiContext,
-    keep: (draft) => {
-      store.saveReplyDraft(draft, REPLY_DRAFTS_MAX);
-      deps.onKept(draft.accountId);
+    done: (made, finished) => {
+      const output = finished.output;
+      if (output.kind !== "write" || !output.value.reply || output.value.paragraphs.length === 0) return;
+      store.saveReplyDraft(
+        {
+          messageId: made.messageId,
+          accountId: made.accountId,
+          paragraphs: output.value.paragraphs,
+          linksRemoved: output.value.linksRemoved,
+          provider: finished.provider,
+          model: finished.model,
+          createdAt: nowIso(),
+        },
+        REPLY_DRAFTS_MAX,
+      );
+      deps.onKept(made.accountId);
     },
     logCall: (built) => {
       const { provider, model } = deps.aiContext();
@@ -144,7 +166,6 @@ export function createReplyDrafts(deps: ReplyDraftsDeps) {
       });
     },
     budget: new DraftBudget(clock),
-    clock,
     schedule: deps.schedule,
     log: deps.log,
   });

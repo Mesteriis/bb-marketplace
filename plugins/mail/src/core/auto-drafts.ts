@@ -7,8 +7,6 @@ import type { SpecialUse } from "./model.ts";
 export const AUTO_DRAFTS_PER_DAY = 50;
 /** Most messages waiting for a draft; past it the oldest waiting one is dropped. */
 export const AUTO_DRAFT_QUEUE = 20;
-/** How long the queue waits when the job runner is busy. */
-export const AUTO_DRAFT_RETRY_MS = 30_000;
 /** Most kept drafts. */
 export const REPLY_DRAFTS_MAX = 200;
 export const REPLY_DRAFT_DAYS = 14;
@@ -67,16 +65,19 @@ export function eligible(row: AutoDraftRow, ctx: { own: ReadonlySet<string>; sen
   return row.to.some((address) => ctx.own.has(lower(address)));
 }
 
-/** The daily cap: at most AUTO_DRAFTS_PER_DAY in any 24 hours. */
+/** A daily cap: at most `perDay` in any 24 hours (auto drafts: AUTO_DRAFTS_PER_DAY). */
 export class DraftBudget {
   private readonly taken: number[] = [];
-  constructor(private readonly clock: { now(): Date }) {}
+  constructor(
+    private readonly clock: { now(): Date },
+    private readonly perDay: number = AUTO_DRAFTS_PER_DAY,
+  ) {}
 
   /** Whether one more may start today. */
   left(): boolean {
     const now = this.clock.now().getTime();
     while (this.taken.length > 0 && this.taken[0]! <= now - DAY_MS) this.taken.shift();
-    return this.taken.length < AUTO_DRAFTS_PER_DAY;
+    return this.taken.length < this.perDay;
   }
 
   /** Takes one; false when the day's drafts are used up. */
