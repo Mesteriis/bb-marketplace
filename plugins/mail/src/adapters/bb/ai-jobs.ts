@@ -273,7 +273,13 @@ export class AiJobs {
         parts = answerBuild.parts;
         notes = { ...answerBuild.notes, hidden: answerBuild.notes.hidden + built.notes.hidden };
         const parsed = readable(parseAskAnswer(await this.call(job, answerBuild, AI_MAX_OUTPUT_TOKENS.askAnswer, providerId, model), parts.length));
-        output = { kind: "ask", value: parsed.value };
+        // Drafted text passes the link rule: only links the owner wrote in the question stay.
+        const actions = parsed.value.actions.map((action) => {
+          if (action.type !== "reply" && action.type !== "compose") return action;
+          const checked = removeForeignLinks(action.paragraphs, ctx.allowedLinks ?? []);
+          return { ...action, paragraphs: checked.paragraphs, linksRemoved: checked.removed };
+        });
+        output = { kind: "ask", value: { ...parsed.value, actions } };
         dropped = plan.dropped + parsed.dropped;
       } else {
         const raw = await this.call(job, built, AI_MAX_OUTPUT_TOKENS[job.kind], providerId, model);

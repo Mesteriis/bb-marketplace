@@ -6,6 +6,7 @@
 // keys, clamp strings, drop bad items and citations outside 1..n, and never
 // return raw output (resolution 13).
 import { htmlToText } from "./agent-text.ts";
+import { ASK_ACTIONS_TASK, parseAskActions, type AskAction } from "./ask-actions.ts";
 import { CATEGORIES } from "./categories.ts";
 import { sha256Hex } from "./compose.ts";
 import { removeControls, removeInvisible, truncateText } from "./html-entities.ts";
@@ -401,7 +402,7 @@ export function askAnswerInput(
   return finish(
     "Answer the owner's question from the emails below only. Return " +
       '{"answer":"...","sources":[n],"found":true}: an answer of at most 2000 characters, the numbers n of the ' +
-      "emails it relies on (at most 10), and found false when the emails do not answer it.",
+      `emails it relies on (at most 10), and found false when the emails do not answer it. ${ASK_ACTIONS_TASK}`,
     list,
     capped,
     options,
@@ -686,12 +687,16 @@ export function parseAskPlan(output: string): AiParse<{ queries: string[] }> {
   }));
 }
 
-export type AskAnswer = { answer: string; sources: number[]; found: boolean };
+/** `actions`: what the owner could do next (Ask AI with actions); buttons only, none without an answer. */
+export type AskAnswer = { answer: string; sources: number[]; found: boolean; actions: AskAction[] };
 
 export function parseAskAnswer(output: string, n: number): AiParse<AskAnswer> {
-  return parseWith(output, (o) => {
+  return parseWith(output, (o, tally) => {
     const answer = text(o.answer, 2_000, true) ?? "";
-    return { answer, sources: citations(o.sources, n, 10), found: o.found === true && answer !== "" };
+    const found = o.found === true && answer !== "";
+    const proposed = parseAskActions(o.actions, n);
+    tally.dropped += proposed.dropped;
+    return { answer, sources: citations(o.sources, n, 10), found, actions: found ? proposed.actions : [] };
   });
 }
 

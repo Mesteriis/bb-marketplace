@@ -281,8 +281,19 @@ describe("parsers", () => {
     const plan = parseAskPlan('{"queries":["from:ann invoice","a\\nb",7,"c","d"]}');
     expect(plan).toEqual({ ok: true, value: { queries: ["from:ann invoice", "a b", "c"] }, dropped: 1 });
     const answer = parseAskAnswer('{"answer":"On Friday.","sources":[3,1,4],"found":true}', 3);
-    expect(answer).toEqual({ ok: true, value: { answer: "On Friday.", sources: [3, 1], found: true }, dropped: 0 });
-    expect(parseAskAnswer("{}", 3)).toEqual({ ok: true, value: { answer: "", sources: [], found: false }, dropped: 0 });
+    expect(answer).toEqual({ ok: true, value: { answer: "On Friday.", sources: [3, 1], found: true, actions: [] }, dropped: 0 });
+    expect(parseAskAnswer("{}", 3)).toEqual({ ok: true, value: { answer: "", sources: [], found: false, actions: [] }, dropped: 0 });
+    // Actions come with an answer only; what is not a known action is counted.
+    expect(
+      parseAskAnswer('{"answer":"Two invoices.","sources":[1],"found":true,"actions":[{"type":"act","action":"archive","messages":[1,2]},{"type":"act","action":"delete","messages":[1]}]}', 3),
+    ).toEqual({
+      ok: true,
+      value: { answer: "Two invoices.", sources: [1], found: true, actions: [{ type: "act", action: "archive", messages: [1, 2] }] },
+      dropped: 1,
+    });
+    expect(parseAskAnswer('{"answer":"","found":false,"actions":[{"type":"search","query":"invoice"}]}', 3).ok).toBe(true);
+    const none = parseAskAnswer('{"answer":"","found":false,"actions":[{"type":"search","query":"invoice"}]}', 3);
+    expect(none.ok && none.value.actions).toEqual([]);
   });
 
   it("drops tasks without a title or a valid message", () => {

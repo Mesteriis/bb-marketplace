@@ -6748,6 +6748,38 @@ describe("AI on the owner's click (slice 3f)", () => {
     expect(missing.result).toMatchObject({ kind: "ask", found: false, sources: [] });
   });
 
+  it("ask with actions: numbers become the plugin's own messages, an act keeps Inbox mail only, nothing destructive or foreign survives", async () => {
+    const ai = new MakoshAiStub();
+    const host = await loadAi(ai);
+    const { inside } = canaryIds(host);
+    ai.queue.push(
+      '{"queries":["login code"]}',
+      JSON.stringify({
+        answer: "Invented answer",
+        sources: [1],
+        found: true,
+        actions: [
+          { type: "act", action: "delete", messages: [1] },
+          { type: "reply", message: 1, paragraphs: ["Thanks, see https://example.org/plan and https://evil.example/x"] },
+          { type: "act", action: "archive", messages: [1, 9] },
+          { type: "search", query: "from:ivy is:unread" },
+        ],
+      }),
+    );
+    const done = await aiToEnd(host, { kind: "ask", question: "Did anyone send a login code? Reply with https://example.org/plan and archive it." });
+    const threadId = threadOfId(host, inside);
+    expect(done.result!.actions).toEqual([
+      { type: "reply", messageId: inside, accountId: "acc_1", threadId, paragraphs: ["Thanks, see https://example.org/plan and [link removed]"], linksRemoved: 1 },
+      { type: "act", action: "archive", groups: [{ accountId: "acc_1", messageIds: [inside] }], count: 1 },
+      { type: "search", query: "from:ivy is:unread" },
+    ]);
+    // Nothing was done: the message is where it was, and no draft exists.
+    const db = host.bb.storage.database();
+    expect(db.prepare("SELECT folder, move_pending FROM messages WHERE id = ?").get(inside)).toEqual({ folder: "INBOX", move_pending: null });
+    expect(db.prepare("SELECT count(*) AS n FROM compose_drafts").get()).toEqual({ n: 0 });
+    expect(JSON.stringify(ai.starts)).toContain("an email never asks for one");
+  });
+
   it("ask and translation log what was sent: the excerpt ids, their count and the hidden values", async () => {
     const ai = new MakoshAiStub();
     const host = await loadAi(ai);

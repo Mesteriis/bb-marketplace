@@ -150,6 +150,7 @@ describe("AiJobs", () => {
         searched.push(queries);
         return answerBuild;
       },
+      allowedLinks: ["example.org/a"],
     });
     expect(jobs.poll(jobId)!.phase).toBe("planning");
     expect(translator.calls[0]!.request.maxOutputTokens).toBe(AI_MAX_OUTPUT_TOKENS.askPlan);
@@ -160,9 +161,21 @@ describe("AiJobs", () => {
     expect(jobs.poll(jobId)!.phase).toBe("writing");
     expect(translator.calls[1]!.request.input).toBe(answerBuild.input);
     expect(translator.calls[1]!.request.maxOutputTokens).toBe(AI_MAX_OUTPUT_TOKENS.askAnswer);
-    await answer(jobId, '{"answer":"Invented answer","sources":[1,4],"found":true}');
+    // A drafted reply under the answer keeps only links the owner wrote in the question.
+    await answer(
+      jobId,
+      '{"answer":"Invented answer","sources":[1,4],"found":true,"actions":[{"type":"reply","message":1,"paragraphs":["See https://example.org/a and https://evil.example/b"]}]}',
+    );
     const result = jobs.poll(jobId)!.result!;
-    expect(result.output).toEqual({ kind: "ask", value: { answer: "Invented answer", sources: [1], found: true } });
+    expect(result.output).toEqual({
+      kind: "ask",
+      value: {
+        answer: "Invented answer",
+        sources: [1],
+        found: true,
+        actions: [{ type: "reply", message: 1, paragraphs: ["See https://example.org/a and [link removed]"], linksRemoved: 1 }],
+      },
+    });
     expect(result.parts.map((p) => p.messageId)).toEqual(["x1"]);
     expect(result.notes.hidden).toBe(answerBuild.notes.hidden + 1);
   });

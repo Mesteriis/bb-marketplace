@@ -1232,6 +1232,28 @@ const aiResultBase = {
   createdAt: z.string(),
 };
 
+/** One action under an Ask answer, as the page runs it. Message ids come from the plugin's own citations, never from the model. */
+export const askActionViewSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("search"), query: z.string() }),
+  z.object({
+    type: z.literal("reply"),
+    messageId: z.string(),
+    accountId: z.string(),
+    threadId: z.string().nullable(),
+    paragraphs: z.array(z.string()),
+    linksRemoved: z.number().int().min(0),
+  }),
+  z.object({ type: z.literal("compose"), paragraphs: z.array(z.string()), linksRemoved: z.number().int().min(0) }),
+  z.object({
+    type: z.literal("act"),
+    action: z.enum(["archive", "mark_read", "flag"]),
+    /** Cited messages now in an Inbox, by account. */
+    groups: z.array(z.object({ accountId: z.string(), messageIds: z.array(z.string()) })),
+    count: z.number().int().min(1),
+  }),
+]);
+export type AskActionView = z.infer<typeof askActionViewSchema>;
+
 /** One finished AI result, text only (rendered as plain text, never HTML). */
 export const aiResultViewSchema = z.discriminatedUnion("kind", [
   z.object({
@@ -1247,6 +1269,8 @@ export const aiResultViewSchema = z.discriminatedUnion("kind", [
     answer: z.string(),
     sources: z.array(z.number().int()),
     found: z.boolean(),
+    /** Ask AI with actions: what the owner could do next; each is a button, nothing runs by itself. */
+    actions: z.array(askActionViewSchema).optional(),
   }),
   z.object({
     kind: z.literal("tasks"),

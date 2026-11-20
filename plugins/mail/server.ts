@@ -99,7 +99,8 @@ import { SNIFF_BYTES, VIEW_CAPS, sniffType, viewableAs } from "./src/core/file-k
 import { createSyncLoop, type SyncLoop } from "./src/adapters/bb/sync-service.ts";
 import { createIdleSupervisor, type IdleSupervisor } from "./src/adapters/bb/idle-service.ts";
 import { NewMailBook } from "./src/adapters/bb/new-mail-book.ts";
-import { writeInput } from "./src/core/ai-write.ts";
+import { linksOf, writeInput } from "./src/core/ai-write.ts";
+import { askActionViews } from "./src/core/ask-action-views.ts";
 import { writeSource, type WriteSettings } from "./src/core/write-source.ts";
 import { createReplyDrafts, type ReplyDrafts } from "./src/adapters/bb/reply-drafts.ts";
 import { AiSortRefusal, createAiSort, type AiSort } from "./src/adapters/bb/ai-sort.ts";
@@ -5560,7 +5561,7 @@ function aiResultView(store: MailStore, finished: AiFinished): NonNullable<AiRes
     case "summary":
       return { kind: "summary", ...base, ...output.value };
     case "ask":
-      return { kind: "ask", ...base, ...output.value };
+      return { kind: "ask", ...base, ...output.value, actions: askActionViews(store, output.value.actions, finished.parts, finished.createdAt) };
     case "tasks":
       return {
         kind: "tasks",
@@ -5817,7 +5818,8 @@ function createAiRpc(deps: RpcDeps, ownerDraft: (draftId: string) => DraftRecord
           if (seq === null) pending = { ids, hidden };
           else deps.agentLogSources(seq, ids, hidden);
         };
-        return startJob("ask", plan, { search: askSearch(input.question, input.accountId ?? null, today, sent) }, (logged) => {
+        // Text the model drafts under the answer may keep only links the owner wrote in the question.
+        return startJob("ask", plan, { search: askSearch(input.question, input.accountId ?? null, today, sent), allowedLinks: linksOf(input.question) }, (logged) => {
           seq = logged;
           if (seq !== null && pending !== null) deps.agentLogSources(seq, pending.ids, pending.hidden);
         });
