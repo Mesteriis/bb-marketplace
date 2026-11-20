@@ -8,6 +8,10 @@ All notable changes to Makosh Mail are recorded here. The format follows
 
 ### Added
 
+- **Smart send**: Send later offers the hour the recipient usually
+  writes. **Insights** in the sender card: when they write, how fast each
+  side answers, who else is on their mail. Counted locally, no model. New
+  RPC method `smart_send_time`; `sender_card` carries `insights`.
 - **Ask with actions**: under an answer the model may offer up to three
   buttons — show a search, reply or write with drafted text, archive / mark
   read / flag cited Inbox messages (with Undo). Nothing runs without your

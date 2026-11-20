@@ -2023,6 +2023,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       send: (input) => rpc.call("compose_send", input),
       pgpCheck: (from, recipients) => rpc.call("pgp_check", { from, recipients }),
       applyTemplate: (input) => rpc.call("template_apply", input),
+      smartSend: async (draftId) => (await rpc.call("smart_send_time", { draftId })).suggestion,
       discard: async (draftId) => {
         await rpc.call("compose_discard", { draftId });
       },

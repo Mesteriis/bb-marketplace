@@ -1611,6 +1611,22 @@ wrong; check the cited messages".
   counted while BB runs; a restart or a plugin reload starts them again). The line
   and labels are kept 90 days.
 
+### Smart send and sender insights
+
+Counted from the mail stored on this computer; no model and nothing from
+outside.
+
+- **Smart send**: Send later offers one more time, first in the list: the
+  hour the first To recipient usually writes to you (their mail of the
+  last 180 days, at least five messages), on the days they write, at least
+  an hour from now. The row says why ("Ann usually writes around 09:00").
+  Hours are on your clock.
+- **Insights** in the sender card: the three hours they usually write in
+  and whether only on weekdays; how long they take to answer you and you
+  them (the median, from messages that answer one another, at least three);
+  who else is most often on their mail to you. With too little mail the
+  card says nothing.
+
 ### What goes to your AI provider
 
 Only through Makosh AI, only mail in AI access, only redacted text framed

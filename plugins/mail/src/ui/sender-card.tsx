@@ -1,6 +1,7 @@
 // The sender card (slice 3h, #86): who someone is in this mailbox, from the
 // stored mail only. Its actions reuse earlier slices: search from the
 // sender, always show their images, block, bind to a project, their files.
+import { shownText } from "./agent-send-card.tsx";
 import type { SenderCard as SenderCardView, ThreadSummary } from "../core/index.ts";
 import { Button } from "@/components/ui/button";
 import {
@@ -28,6 +29,27 @@ export function senderSummary(card: SenderCardView): string {
   if (card.firstDate !== null) parts.push(`since ${formatDay(card.firstDate)}`);
   if (card.lastDate !== null) parts.push(`last ${formatListDate(card.lastDate)}`);
   return parts.join(" \u00b7 ");
+}
+
+/** "25 min", "3 h", "2 d" for a number of minutes. */
+export function durationText(minutes: number): string {
+  if (minutes < 60) return tx("{count} min", { count: Math.max(1, minutes) });
+  if (minutes < 48 * 60) return tx("{count} h", { count: Math.round(minutes / 60) });
+  return tx("{count} d", { count: Math.round(minutes / 1440) });
+}
+
+/** What the card says about how someone writes, counted from the stored mail. */
+export function insightLines(insights: NonNullable<SenderCardView["insights"]>): string[] {
+  const hour = (value: number) => `${String(value % 24).padStart(2, "0")}:00`;
+  const lines = [
+    insights.weekdaysOnly
+      ? tx("Usually writes {from}\u2013{to}, on weekdays", { from: hour(insights.usualFrom), to: hour(insights.usualTo) })
+      : tx("Usually writes {from}\u2013{to}", { from: hour(insights.usualFrom), to: hour(insights.usualTo) }),
+  ];
+  if (insights.theirReplyMinutes !== null) lines.push(tx("Answers you in about {time}", { time: durationText(insights.theirReplyMinutes) }));
+  if (insights.ownReplyMinutes !== null) lines.push(tx("You answer in about {time}", { time: durationText(insights.ownReplyMinutes) }));
+  if (insights.mostWith.length > 0) lines.push(tx("Often with: {people}", { people: insights.mostWith.map((person) => shownText(person.address)).join(", ") }));
+  return lines;
 }
 
 export interface SenderCardActions {
@@ -74,6 +96,13 @@ export function SenderCardDialog({
         ) : (
           <div className="flex flex-col gap-3">
             <p className="text-sm text-muted-foreground">{senderSummary(card)}</p>
+            {card.insights != null ? (
+              <ul aria-label={tx("Insights")} className="flex flex-col gap-0.5 text-xs text-muted-foreground">
+                {insightLines(card.insights).map((line) => (
+                  <li key={line}>{line}</li>
+                ))}
+              </ul>
+            ) : null}
             {card.blocked ? <p className="text-xs text-muted-foreground">{tx("Blocked: their mail goes to Spam.")}</p> : null}
             <div className="flex flex-wrap gap-1">
               <Button variant="outline" size="sm" className="h-7" onClick={() => actions.onSearch(card.address)}>

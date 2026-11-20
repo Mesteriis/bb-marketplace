@@ -55,7 +55,7 @@ import { BbFilePicker, type FilePickRequest } from "./bb-file-picker.tsx";
 import type { BbCall } from "./bb-ports.ts";
 import { findSignature, signatureKey } from "./signature-node.ts";
 import { TemplatesPopover } from "./templates-popover.tsx";
-import { SendLaterMenu } from "./send-later-menu.tsx";
+import { SendLaterMenu, type SmartSendTime } from "./send-later-menu.tsx";
 import { msg, tx } from "./i18n/index.ts";
 
 /** Typing rests this long before the draft is saved. */
@@ -109,6 +109,8 @@ export interface ComposerPorts {
   pgpCheck?(from: string, recipients: string[]): Promise<{ canSign: boolean; missing: string[] }>;
   /** Typing speed: attaches a template's files to the draft; `leftOut` names what the message has no room for. */
   applyTemplate?(input: { draftId: string; templateId: string }): Promise<{ attached: ComposeAttachment[]; leftOut: string[] }>;
+  /** Smart send: the time the saved draft's first recipient usually writes; null from too little mail. Absent: not offered. */
+  smartSend?(draftId: string): Promise<SmartSendTime | null>;
 }
 
 export interface ComposerProps {
@@ -1343,6 +1345,15 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
         <SendLaterMenu
           open={laterOpen}
           onOpenChange={setLaterOpen}
+          {...(props.ports.smartSend !== undefined
+            ? {
+                smart: async () => {
+                  // The server reads the saved draft's recipients.
+                  if (dirty() && (await save(false)) !== "saved") return null;
+                  return props.ports.smartSend!(draft.id);
+                },
+              }
+            : {})}
           onPick={(at) => {
             setLaterOpen(false);
             void send(at);
