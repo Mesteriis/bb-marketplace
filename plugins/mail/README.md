@@ -1513,6 +1513,14 @@ wrong; check the cited messages".
   question into searches, the plugin runs them locally over mail in AI
   access, and the model answers from the excerpts with links to the cited
   messages, or "Not found in your mail". Nothing is kept after you close it.
+  Under an answer the model may offer up to three things to do next, each a
+  button that does nothing until you press it: **Show these messages** (a
+  search it wrote, run in the search box), **Reply with this** or **Write
+  this message** (an ordinary reply or new message with drafted text in it;
+  links and addresses you did not write in the question are removed), and
+  **Archive / Mark read / Flag N messages** over cited messages that are in
+  an Inbox, with the usual Undo. It cannot offer to delete, send, forward
+  or mark as spam. There is no web search.
 - **Find tasks** (`Shift+T`): tasks and due dates found in the conversation,
   each with the quote it came from; a quote that is not in the message is
   flagged and left unticked. **Keep** saves the ticked ones to the **Tasks**

@@ -8,6 +8,11 @@ All notable changes to Makosh Mail are recorded here. The format follows
 
 ### Added
 
+- **Ask with actions**: under an answer the model may offer up to three
+  buttons — show a search, reply or write with drafted text, archive / mark
+  read / flag cited Inbox messages (with Undo). Nothing runs without your
+  click; nothing destructive can be offered. The `ask` result carries
+  `actions`.
 - **AI sorts the inbox** (off by default): one line and your own AI
   labels for each new Inbox message; a label can archive automatically
   (never mail from people you write to, flagged or warned mail; at most 50

@@ -53,7 +53,7 @@ import { BlockDialog, type BlockCheck, type BlockChoice } from "./block-dialog.t
 import { MoveDialog } from "./move-dialog.tsx";
 import type { AiJobPorts } from "./ai-job.ts";
 import type { AiCitation } from "./ai-text.tsx";
-import { AskPanel, ASK_QUESTION_MAX } from "./ask-panel.tsx";
+import { AskPanel, ASK_QUESTION_MAX, type AskActionPorts } from "./ask-panel.tsx";
 import { CategoryChip, type Category } from "./category-chips.tsx";
 import { RemindDialog, ReminderStrip } from "./reminder-strip.tsx";
 import { useBbDialogs, type MailBbPorts } from "./bb-dialogs.tsx";
@@ -266,6 +266,8 @@ export interface MailAiPorts {
   keepTasks: (jobId: string, picks: TaskPick[]) => Promise<number>;
   /** Opens a conversation by its link (a cited message of another conversation). */
   onOpenConversation: (accountId: string, threadId: string) => void;
+  /** Ask AI with actions: how the buttons under an answer run; absent: none is offered. */
+  askActions?: Omit<AskActionPorts, "search">;
   /** mailCategories is on: chips, filters and the page actions show. */
   categoriesOn: boolean;
   onCategorySet: (messageIds: string[], category: Category | null) => void;
@@ -619,6 +621,11 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
   const [summaryFor, setSummaryFor] = useState<{ threadId: string; serial: number } | null>(null);
   const [tasksFor, setTasksFor] = useState<{ kind: "tasks"; threadId: string; folder?: string } | null>(null);
   const [askMode, setAskMode] = useState(false);
+  /** An action under an Ask answer: the box leaves Ask and runs the search the model wrote. */
+  const showSearch = (query: string) => {
+    setAskMode(false);
+    props.onSearch(query);
+  };
   const [asked, setAsked] = useState<{ question: string; serial: number } | null>(null);
   const [highlight, setHighlight] = useState<{ messageId: string; serial: number } | null>(null);
   const [remindMessage, setRemindMessage] = useState<string | null>(null);
@@ -1452,6 +1459,7 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
               {...(!props.unified && props.account !== null ? { accountId: props.account.id } : {})}
               onOpen={(citation) => ai.onOpenConversation(citation.accountId, citation.threadId)}
               onClose={() => setAsked(null)}
+              {...(ai.askActions !== undefined ? { actions: { ...ai.askActions, search: showSearch } } : {})}
             />
           ) : null}
           {!searching && props.slice3h?.savedSearch === "missing" ? (

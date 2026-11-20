@@ -3319,6 +3319,31 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
           })
           .catch((error: unknown) => toast.error(tx("Could not change the category: {p1}", { p1: messageOf(error) })));
       },
+      // Ask AI with actions: each runs only on the owner's click, through what Mail already does.
+      askActions: {
+        reply: async (action) => {
+          const prepared = await rpc.call("compose_prepare", { kind: "reply", messageId: action.messageId });
+          const { draft } = await rpc.call("compose_open", { draftId: prepared.draftId });
+          openComposer(draft, prepared.warning, prepared.dropped, action.threadId, action.paragraphs);
+        },
+        compose: async (paragraphs) => {
+          const from = account?.id ?? accounts[0]?.id;
+          if (from === undefined) throw new Error("Add an account first");
+          const { draftId } = await rpc.call("compose_new", { accountId: from });
+          const { draft, warning } = await rpc.call("compose_open", { draftId });
+          openComposer(draft, warning, [], null, paragraphs);
+        },
+        act: async (action) => {
+          for (const group of action.groups) {
+            const undoId = crypto.randomUUID();
+            const result = await rpc.call("message_action", { messageIds: group.messageIds.slice(0, 200), action: action.action, role: "inbox", undoId });
+            const refused = result.groups.map((g) => g.error).find((error): error is string => error !== null);
+            if (refused !== undefined) throw new Error(refused);
+            if (result.undoable) recordUndo(undoId, action.action, group.messageIds.length, null, true);
+          }
+          refreshAfterChange();
+        },
+      },
       onCategoryAccept: (messageIds) => {
         rpc
           .call("category_accept", { messageIds })
@@ -3392,6 +3417,8 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       },
     }),
     [
+      account,
+      accounts,
       aiJobs,
       categoriesOn,
       dueReminders,
@@ -3399,6 +3426,9 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       latestMessages,
       loadReminders,
       navigate,
+      openComposer,
+      recordUndo,
+      refreshAfterChange,
       reloadAfterLabel,
       reminderDaysSetting,
       rpc,
