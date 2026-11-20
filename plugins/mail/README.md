@@ -1646,8 +1646,10 @@ tools: `mail_accounts`, `mail_search`, `mail_read`. Each one runs
 `bb makosh-mail … --assistant --json` (arguments as an array, no shell, 30
 seconds, 1 MB), and that mode answers as it answers BB's agents: only mail
 inside AI access, secrets hidden, the untrusted-text notice, one row in
-Agent activity per call (actor "Assistant outside BB"), at most 60 calls an
-hour while BB runs. With `mcpAccess` off it answers nothing, account names
+Agent activity per answered call (actor "Assistant outside BB"; a refusal
+is logged once an hour), at most 60 calls an hour, counted from the last
+start of BB or reload of the plugin. `mail_accounts` gives a mailbox's id,
+address and name only. With `mcpAccess` off it answers nothing, account names
 included. It cannot send, propose, move or delete. BB must be running.
 `--assistant` narrows a command; it is not a barrier against a program
 that can already run `bb` as you — your own terminal reads all mail.

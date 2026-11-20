@@ -24,7 +24,8 @@ import { appendFileSync } from "node:fs";
 const argv = process.argv.slice(2);
 appendFileSync(${JSON.stringify(argvLog)}, JSON.stringify(argv) + "\\n");
 if (argv[1] === "read" && argv[2] === "missing") { process.stderr.write("unknown message 'missing'\\n"); process.exit(1); }
-if (argv[1] === "read" && argv[2] === "slow") { setTimeout(() => {}, 60000); }
+if (argv[1] === "read" && argv[2] === "big") { process.stdout.write("x".repeat(2 * 1024 * 1024)); }
+else if (argv[1] === "read" && argv[2] === "long") { process.stdout.write("y".repeat(300000) + "\\n"); }
 else process.stdout.write(JSON.stringify({ ran: argv[1] }) + "\\n");
 `,
   );
@@ -105,6 +106,31 @@ describe("makosh-mail-mcp.mjs", () => {
     const noBb = await talk([call(1, "mail_accounts", {})], join(dir, "no-such-bb"));
     expect((noBb[0]!.result as { isError: boolean; content: { text: string }[] }).isError).toBe(true);
     expect((noBb[0]!.result as { content: { text: string }[] }).content[0]!.text).toContain("MAKOSH_MAIL_BB");
+  });
+
+  it("an answer over the limit is a fixed error; a long answer is whole even when stdin closes at once", async () => {
+    const big = await talk([call(1, "mail_read", { messageId: "big" })]);
+    expect(big[0]!.result).toEqual({ content: [{ type: "text", text: "The answer was too large." }], isError: true });
+    const long = await talk([call(1, "mail_read", { messageId: "long" })]);
+    expect((long[0]!.result as { content: { text: string }[] }).content[0]!.text).toBe("y".repeat(300000));
+  });
+
+  it("answers with a protocol version it speaks, refuses an id that is not a string or a number, and counts the space of a dash query", async () => {
+    writeFileSync(argvLog, "");
+    const answers = await talk([
+      { jsonrpc: "2.0", id: "a", method: "initialize", params: { protocolVersion: "1999-01-01" } },
+      { jsonrpc: "2.0", id: { x: 1 }, method: "ping" },
+      { jsonrpc: "2.0", id: null, method: "ping" },
+      call(4, "mail_search", { query: `-${"x".repeat(499)}` }),
+      call(5, "mail_search", { query: `-${"x".repeat(498)}` }),
+    ]);
+    expect((answers[0]!.result as { protocolVersion: string }).protocolVersion).toBe("2025-06-18");
+    expect(answers[0]!.id).toBe("a");
+    expect(answers[1]).toEqual({ jsonrpc: "2.0", id: null, error: { code: -32600, message: "Invalid request" } });
+    expect(answers[2]).toEqual({ jsonrpc: "2.0", id: null, error: { code: -32600, message: "Invalid request" } });
+    expect((answers[3]!.result as { isError?: boolean }).isError).toBe(true);
+    expect((answers[4]!.result as { isError?: boolean }).isError).toBeUndefined();
+    expect(ranArgv().map((argv) => argv[2]!.length)).toEqual([500]);
   });
 
   it("answers a line that is not JSON or not a request with a JSON-RPC error and keeps going", async () => {

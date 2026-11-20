@@ -925,11 +925,8 @@ describe("makosh-mail server", () => {
       expect(result.stdout).not.toContain("owner@example.org");
     }
     const log = (await call(host, "agent_log_list", { limit: 10 })) as { entries: { actor: string; tool: string; outcome: string }[] };
-    expect(log.entries.map((entry) => [entry.actor, entry.tool, entry.outcome])).toEqual([
-      ["mcp", "cli_read", "refused_off"],
-      ["mcp", "cli_search", "refused_off"],
-      ["mcp", "cli_accounts", "refused_off"],
-    ]);
+    // One row for the hour, however many times the refused call is repeated.
+    expect(log.entries.map((entry) => [entry.actor, entry.tool, entry.outcome])).toEqual([["mcp", "cli_accounts", "refused_off"]]);
   });
 
   it("assistant mode with mcpAccess on answers as to an agent and logs every call as mcp; agentTools stays off", async () => {
@@ -941,6 +938,8 @@ describe("makosh-mail server", () => {
     const read = await host.harness.behavior.runCli(["read", messageId, "--assistant", "--json"]);
 
     expect([accounts.exitCode, search.exitCode, read.exitCode]).toEqual([0, 0, 0]);
+    // A mailbox by name only: no server, sign-in name or sync error.
+    expect(Object.keys((JSON.parse(accounts.stdout) as { accounts: object[] }).accounts[0]!).sort()).toEqual(["authFailed", "displayName", "email", "id", "lastSyncAt"]);
     expect(accounts.stdout).toContain("owner@example.org");
     expect((JSON.parse(search.stdout) as { hits: { id: string }[] }).hits.map((hit) => hit.id)).toEqual([messageId]);
     expect((JSON.parse(read.stdout) as { text: string }).text).toContain("garden fence");
@@ -953,6 +952,10 @@ describe("makosh-mail server", () => {
     // The switch for outside assistants does not open mail to BB's own threads.
     const inThread = await host.harness.behavior.runCli(["read", messageId], { threadId: "thread-1" });
     expect(inThread.stderr).toContain(AGENT_MAIL_OFF_MESSAGE);
+    // The flag inside a thread whose agents have no mail access: refused, and the attempt is in the log as mcp.
+    const flagged = await host.harness.behavior.runCli(["read", messageId, "--assistant", "--json"], { threadId: "thread-1" });
+    expect(flagged.exitCode).toBe(1);
+    expect(flagged.stdout).not.toContain("garden fence");
   });
 
   it("assistant mode keeps to AI access: an account shared with nobody reads as unknown and searches as empty", async () => {
@@ -978,11 +981,12 @@ describe("makosh-mail server", () => {
       expect((await host.harness.behavior.runCli(["accounts", "--assistant", "--json"])).exitCode).toBe(0);
     }
     const over = await host.harness.behavior.runCli(["accounts", "--assistant", "--json"]);
+    for (let index = 0; index < 5; index += 1) await host.harness.behavior.runCli(["accounts", "--assistant", "--json"]);
 
     expect(over.exitCode).toBe(1);
     expect(over.stderr).toContain(MCP_LIMIT_MESSAGE);
-    const log = (await call(host, "agent_log_list", { limit: 1 })) as { entries: { actor: string; outcome: string }[] };
-    expect(log.entries[0]).toMatchObject({ actor: "mcp", outcome: "refused_caps" });
+    const log = (await call(host, "agent_log_list", { limit: 3 })) as { entries: { actor: string; outcome: string }[] };
+    expect(log.entries.map((entry) => entry.outcome)).toEqual(["refused_caps", "ok", "ok"]);
   });
 
   it("cli read works without a thread when agentTools is off", async () => {

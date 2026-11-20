@@ -571,7 +571,7 @@ function defineSettings(bb: BbPluginApi) {
       type: "boolean",
       label: "Let assistants outside BB search and read mail (MCP)",
       description:
-        "Off: the local MCP server answers nothing. On: an assistant you connect it to searches and reads mail inside AI access, secrets hidden, every call in the agent log; it cannot send or change anything.",
+        "Off: the local MCP server answers nothing. On: an assistant you connect it to searches and reads mail inside AI access, secrets hidden, its calls in the agent log; it cannot send or change anything.",
       default: false,
     },
     agentPropose: {
@@ -6356,15 +6356,26 @@ function registerCli(bb: BbPluginApi, store: MailStore, deps: CliDeps): void {
    * machine's user did not have.
    */
   const assistantCalls: number[] = [];
+  /**
+   * A refusal is logged once an hour per kind: a caller that repeats a
+   * refused call cannot fill the log and push its own reads out of it.
+   */
+  const refusalLogged: Partial<Record<"refused_off" | "refused_caps", number>> = {};
+  const logRefusal = (tool: "cli_accounts" | "cli_search" | "cli_read", outcome: "refused_off" | "refused_caps", now: number) => {
+    const last = refusalLogged[outcome];
+    if (last !== undefined && now - last < 3_600_000 && now >= last) return;
+    refusalLogged[outcome] = now;
+    agentLog({ actor: "mcp", tool, outcome });
+  };
   const requireAssistant = (tool: "cli_accounts" | "cli_search" | "cli_read") => {
+    const now = deps.now().getTime();
     if (!deps.mcpAccess()) {
-      agentLog({ actor: "mcp", tool, outcome: "refused_off" });
+      logRefusal(tool, "refused_off", now);
       throw new PluginCliError(MCP_ACCESS_OFF_MESSAGE, { code: "mcp_access_off" });
     }
-    const now = deps.now().getTime();
     while (assistantCalls.length > 0 && assistantCalls[0]! <= now - 3_600_000) assistantCalls.shift();
     if (assistantCalls.length >= MCP_CALLS_PER_HOUR) {
-      agentLog({ actor: "mcp", tool, outcome: "refused_caps" });
+      logRefusal(tool, "refused_caps", now);
       throw new PluginCliError(MCP_LIMIT_MESSAGE, { code: "mcp_limit" });
     }
     assistantCalls.push(now);
@@ -6378,15 +6389,22 @@ function registerCli(bb: BbPluginApi, store: MailStore, deps: CliDeps): void {
           summary: "List connected accounts and their sync state",
           options: { ...jsonOption, ...assistantOption },
           run: ({ options }, ctx) => {
-            requireMailAccess(ctx);
             if (options.assistant) requireAssistant("cli_accounts");
+            requireMailAccess(ctx);
             // An account with AI access "none" is shown by id, label and state only (spec resolution 16).
             const scope = store.getAiScope();
             const accounts = store.listAccounts().map((stored) => {
               const account = toPublicAccount(stored);
               return scope.accounts.get(account.id)?.mode === "none" ? hiddenAccount(account) : account;
             });
-            if (options.assistant) agentLog({ actor: "mcp", tool: "cli_accounts", outcome: "ok", count: accounts.length });
+            if (options.assistant) {
+              agentLog({ actor: "mcp", tool: "cli_accounts", outcome: "ok", count: accounts.length });
+              // An outside assistant gets what it needs to name a mailbox, not servers, sign-in names or sync errors (they hold folder names).
+              const brief = accounts.map(({ id, email, displayName, authFailed, lastSyncAt }) => ({ id, email, displayName, authFailed, lastSyncAt }));
+              if (options.json) return { exitCode: 0, stdout: json({ accounts: brief }) };
+              const briefLines = accounts.length > 0 ? accounts.map((account) => describeAccount({ ...account, lastError: null })) : ["No accounts connected."];
+              return { exitCode: 0, stdout: `${briefLines.join("\n")}\n` };
+            }
             if (options.json) return { exitCode: 0, stdout: json({ accounts }) };
             const lines =
               accounts.length > 0 ? accounts.map(describeAccount) : ["No accounts connected."];
@@ -6416,8 +6434,8 @@ function registerCli(bb: BbPluginApi, store: MailStore, deps: CliDeps): void {
             ...assistantOption,
           },
           run: ({ positionals, options }, ctx) => {
-            requireMailAccess(ctx);
             if (options.assistant) requireAssistant("cli_search");
+            requireMailAccess(ctx);
             const actor = options.assistant ? "mcp" : "cli";
             const inThread = ctx.threadId !== undefined || options.assistant === true;
             const query = positionals.query.join(" ").slice(0, QUERY_MAX);
@@ -6464,8 +6482,8 @@ function registerCli(bb: BbPluginApi, store: MailStore, deps: CliDeps): void {
             ...assistantOption,
           },
           run: ({ positionals, options }, ctx) => {
-            requireMailAccess(ctx);
             if (options.assistant) requireAssistant("cli_read");
+            requireMailAccess(ctx);
             const actor = options.assistant ? "mcp" : "cli";
             const { messageId } = positionals;
             const inThread = ctx.threadId !== undefined || options.assistant === true;

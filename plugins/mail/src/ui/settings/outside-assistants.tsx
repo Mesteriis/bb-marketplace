@@ -31,7 +31,7 @@ export function OutsideAssistants({ port, saveServerFile }: { port: PageSettings
       <div className="flex flex-col">
         <ReadOnlySetting
           label={tx("Search and read mail through the local MCP server")}
-          hint={tx("Only mail inside AI access, with secrets hidden; every call is in Agent activity. It cannot send or change anything.")}
+          hint={tx("Only mail inside AI access, with secrets hidden; its calls are in Agent activity. It cannot send or change anything.")}
           on={port.values === null ? null : port.values.mcpAccess}
         />
       </div>
