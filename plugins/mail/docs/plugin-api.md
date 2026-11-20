@@ -66,6 +66,9 @@ Input `{}`. The accounts you hold `mail.read` for:
 { "accounts": [{ "id": "acc_…", "email": "owner@example.com", "displayName": null, "provider": "gmail" }] }
 ```
 
+An account the owner shares with no AI is listed by `id` only: `email` is
+`""` and `displayName` is `null`.
+
 ### `plugin_messages_search` — `mail.read`
 
 Input:
@@ -141,7 +144,8 @@ Makes a draft of that account, marked "Prepared by <your plugin id>", with
 the account's signature under your text. Answer `{ "draftId": "…" }`. The
 letter is **not sent**: the owner opens it in Mail, edits it or not, and
 presses Send. The subject is one line. New letters only in version 1 (no reply threading, no
-attachments). At most 50 recipients and 20 letters a day per plugin.
+attachments). At most 50 recipients and 20 letters in 24 hours per plugin;
+the count is kept while Mail runs and starts again when it restarts.
 
 ### `plugin_google_token` — `google.calendar` or `google.contacts`
 
@@ -156,10 +160,14 @@ one service (`…/auth/calendar` or `…/auth/contacts`). It cannot read mail.
 It lives about an hour; ask again when `expiresAt` is near, not on every
 request. Keep it in memory only: never store or log it. The owner can grant
 this only for a mailbox that signs in with Google and whose sign-in holds
-the service; otherwise the call is refused with `invalid`. `conflict` means
-Google gave no key now (try later) or no longer accepts the sign-in (the
-owner must sign in again). A key already handed out keeps working for up to
-an hour after the owner revokes the right.
+the service; otherwise the call is refused with `invalid`, and Mail switches
+the right off for that mailbox, so the owner has to grant it again after
+signing in with the service. `conflict` means Google gave no key now (try
+later), no longer accepts the sign-in (the owner must sign in again), or you
+asked more than 60 times in an hour: "Too many key requests in the last
+hour; keep a key until it expires". Calls that arrive together share one
+request to Google. A key already handed out keeps working for up to an hour
+after the owner revokes the right.
 
 ## Refusals
 
@@ -168,7 +176,7 @@ an hour after the owner revokes the right.
 | `forbidden` | a method outside this API; a missing right: `Makosh Mail: this plugin has no "<right>" access` |
 | `not_found` | an unknown or unshared message, an unknown account |
 | `invalid` | input outside the limits, an unknown cursor, an unknown right, a bad address |
-| `conflict` | a daily or hourly limit; Google gave no key now, or no longer accepts the sign-in |
+| `conflict` | a daily or hourly limit (letters, invitations, keys); Google gave no key now, or no longer accepts the sign-in |
 
 Treat `forbidden` with a right's name as "ask the owner", not as an error
 to retry.

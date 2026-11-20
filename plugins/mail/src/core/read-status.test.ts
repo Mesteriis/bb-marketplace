@@ -63,6 +63,16 @@ describe("read statuses: pure parts", () => {
     expect(trackExcepted(["x@mail.example.net"], list)).toBe(true);
     expect(trackExcepted(["x@notexample.net"], list)).toBe(false);
     expect(trackExcepted([], list)).toBe(false);
+    expect(list.unknown).toEqual(["not an address"]);
+    // As people write them: with a name, with a wildcard, with a trailing dot, in another script.
+    const more = parseTrackExceptions('"Ann" <ann@example.com>, *.example.net, example.org., boss@\u043f\u0440\u0438\u043c\u0435\u0440.\u0440\u0444, \u0442\u0435\u0441\u0442.\u0440\u0444');
+    expect([...more.addresses]).toEqual(["ann@example.com", "boss@xn--e1afmkfd.xn--p1ai"]);
+    expect([...more.domains]).toEqual(["example.net", "example.org", "xn--e1aybc.xn--p1ai"]);
+    expect(more.unknown).toEqual([]);
+    expect(trackExcepted(["Boss <BOSS@\u043f\u0440\u0438\u043c\u0435\u0440.\u0440\u0444>"], more)).toBe(true);
+    expect(trackExcepted(["boss@xn--e1afmkfd.xn--p1ai"], more)).toBe(true);
+    expect(trackExcepted(["<x@example.org>"], more)).toBe(true);
+    expect(trackExcepted(["x@\u0442\u0435\u0441\u0442.\u0440\u0444"], more)).toBe(true);
   });
 
   it("the page counts opens that are not plainly a machine and says the latest", () => {

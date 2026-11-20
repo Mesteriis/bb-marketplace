@@ -3502,6 +3502,8 @@ describe.each(storeKinds)("read statuses by conversation (%s)", (_kind, make) =>
     s.upsertMessages("acc_1", "INBOX", [
       makeFetchedMessage(9, { from: { name: "Ann", address: "ann@example.com" }, subject: "Re: Opened and answered", inReplyTo: "<msg-2@example.org>", references: ["<msg-2@example.org>"], date: "2026-11-12T10:00:00.000Z" }),
     ]);
+    // The first one is also stored in a second folder, as Gmail keeps Sent mail in All Mail.
+    s.upsertMessages("acc_1", "Archive", [sent(1, "Opened, no answer", "2026-11-10T09:00:00.000Z")]);
     s.assignThreads("acc_1", buildThreads(s.threadingInputs("acc_1")));
     for (const [token, uid] of [[T1, 1], [T2, 2], [T3, 3]] as const) {
       s.saveSentTracking({ token, accountId: "acc_1", rfcMessageId: `<msg-${uid}@example.org>`, createdAt: "2026-11-10T09:00:00.000Z" });

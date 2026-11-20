@@ -61,19 +61,29 @@ const capital = (word: string) =>
 const RU_SURNAME = /(\u043e\u0432|\u0435\u0432|\u0451\u0432|\u0438\u043d|\u044b\u043d|\u043e\u0432\u0430|\u0435\u0432\u0430|\u0451\u0432\u0430|\u0438\u043d\u0430|\u044b\u043d\u0430|\u0441\u043a\u0438\u0439|\u0441\u043a\u0430\u044f|\u0446\u043a\u0438\u0439|\u0446\u043a\u0430\u044f|\u0435\u043d\u043a\u043e|\u0447\u0443\u043a|\u044e\u043a)$/iu;
 const RU_PATRONYMIC = /(\u043e\u0432\u0438\u0447|\u0435\u0432\u0438\u0447|\u044c\u0438\u0447|\u0438\u0447|\u043e\u0432\u043d\u0430|\u0435\u0432\u043d\u0430|\u0438\u0447\u043d\u0430|\u0438\u043d\u0438\u0447\u043d\u0430)$/iu;
 
+/** Given names that end like a surname: they are never taken for one. */
+const RU_GIVEN = new Set(
+  "\u0438\u0440\u0438\u043d\u0430 \u043c\u0430\u0440\u0438\u043d\u0430 \u0435\u043a\u0430\u0442\u0435\u0440\u0438\u043d\u0430 \u043f\u043e\u043b\u0438\u043d\u0430 \u0430\u043b\u0438\u043d\u0430 \u043d\u0438\u043d\u0430 \u043a\u0440\u0438\u0441\u0442\u0438\u043d\u0430 \u043a\u0430\u0440\u0438\u043d\u0430 \u0430\u0440\u0438\u043d\u0430 \u0433\u0430\u043b\u0438\u043d\u0430 \u0440\u0435\u0433\u0438\u043d\u0430 \u0430\u043d\u0433\u0435\u043b\u0438\u043d\u0430 \u0430\u043d\u0442\u043e\u043d\u0438\u043d\u0430 \u0430\u043b\u044c\u0431\u0438\u043d\u0430 \u0432\u0430\u043b\u0435\u043d\u0442\u0438\u043d\u0430 \u0434\u0438\u043d\u0430 \u0437\u0430\u0440\u0438\u043d\u0430 \u043b\u0438\u043d\u0430 \u0444\u0430\u0438\u043d\u0430 \u0441\u0430\u0431\u0438\u043d\u0430 \u044d\u0432\u0435\u043b\u0438\u043d\u0430 \u044d\u043b\u0438\u043d\u0430 \u0430\u0434\u0435\u043b\u0438\u043d\u0430 \u0432\u0430\u0441\u0438\u043b\u0438\u043d\u0430 \u0441\u0442\u0430\u043d\u0438\u0441\u043b\u0430\u0432\u0430 \u043a\u043e\u043d\u0441\u0442\u0430\u043d\u0442\u0438\u043d \u0432\u0430\u043b\u0435\u043d\u0442\u0438\u043d \u0432\u0435\u043d\u0438\u0430\u043c\u0438\u043d \u043c\u0430\u0440\u0442\u0438\u043d \u0430\u0432\u0433\u0443\u0441\u0442\u0438\u043d \u0443\u0441\u0442\u0438\u043d \u0435\u0432\u0430 \u0441\u0435\u0432\u0430 \u043b\u0435\u0432 \u044f\u043a\u043e\u0432".split(" "),
+);
+/** Words after a comma that are a degree, a suffix or a company form, not a name. */
+const NOT_A_NAME = /^(phd|md|mba|esq|jr|sr|ii|iii|iv|inc|llc|ltd|gmbh|corp|co|\u043e\u043e\u043e|\u0438\u043f|\u0437\u0430\u043e|\u043e\u0430\u043e|\u043f\u0430\u043e|\u0430\u043e)\.?$/iu;
+
 /** The given name among a display name's words: after a comma ("Smith, John"), or second when a Russian surname stands first. */
-function givenWord(name: string): string {
+function givenWord(fullName: string): string {
+  let name = fullName;
   const comma = name.indexOf(",");
   if (comma !== -1) {
     const after = name.slice(comma + 1).trim().split(/\s+/)[0] ?? "";
-    if (after !== "") return after;
+    // "Smith, John", not "John Smith, PhD" or "Name, COMPANY".
+    if (after !== "" && !NOT_A_NAME.test(after) && !(after.length > 1 && after === after.toLocaleUpperCase() && after !== after.toLocaleLowerCase())) return after;
+    name = name.slice(0, comma);
   }
   const words = name.replace(/,/g, " ").trim().split(/\s+/);
   const [first, second, third] = words;
   if (first !== undefined && second !== undefined && /^[\u0400-\u04ff-]+$/u.test(first) && /^[\u0400-\u04ff-]+$/u.test(second)) {
     // "Surname Name Patronymic", or "Surname Name" where only the first word ends like a surname.
     if (third !== undefined && RU_PATRONYMIC.test(third)) return second;
-    if (third === undefined && RU_SURNAME.test(first) && !RU_SURNAME.test(second)) return second;
+    if (third === undefined && RU_SURNAME.test(first) && !RU_GIVEN.has(first.toLocaleLowerCase()) && !RU_SURNAME.test(second)) return second;
   }
   return first ?? "";
 }

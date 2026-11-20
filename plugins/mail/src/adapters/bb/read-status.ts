@@ -124,7 +124,7 @@ export function createReadStatus(deps: {
 
     /** The conversations with their opens, for those someone opened: the list's mark. */
     withThreads<T extends { id: string }>(threads: T[]): (T & { opens?: OpenView })[] {
-      if (threads.length === 0) return threads;
+      if (threads.length === 0 || !deps.settings().on) return threads;
       const found = store.threadOpens(threads.map((thread) => thread.id));
       if (found.size === 0) return threads;
       return threads.map((thread) => {

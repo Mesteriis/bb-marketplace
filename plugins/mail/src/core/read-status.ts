@@ -97,25 +97,58 @@ export const READ_STATUS_TODAY_ROWS = 20;
 
 export type TrackExceptions = { addresses: ReadonlySet<string>; domains: ReadonlySet<string> };
 
-const ADDRESS = /^[^\s@,;]+@[a-z0-9.-]+\.[a-z]{2,}$/;
+const ADDRESS = /^[^\s@,;<>"]+@[a-z0-9.-]+\.[a-z0-9-]{2,}$/;
 const DOMAIN = /^[a-z0-9-]+(\.[a-z0-9-]+)+$/;
 
-/** The owner's list of recipients never to track: addresses and domains (with or without "@"), one a line or separated by commas or semicolons. */
-export function parseTrackExceptions(text: string): TrackExceptions {
+/** A host name in the form mail servers use (punycode for other scripts), without a trailing dot; "" when it is not one. */
+function asciiHost(host: string): string {
+  const plain = host.trim().toLowerCase().replace(/\.$/, "");
+  if (plain === "" || /[\s/@:?#\\]/.test(plain)) return "";
+  try {
+    return new URL(`http://${plain}`).hostname;
+  } catch {
+    return "";
+  }
+}
+
+/** An address as it is compared: out of "Name <addr>", lower case, its host in the mail servers' form; "" when it is not one. */
+function plainAddress(value: string): string {
+  const inner = /<([^<>]+)>/.exec(value)?.[1] ?? value;
+  const address = inner.trim().toLowerCase();
+  const at = address.lastIndexOf("@");
+  if (at <= 0) return "";
+  const host = asciiHost(address.slice(at + 1));
+  return host === "" ? "" : `${address.slice(0, at)}@${host}`;
+}
+
+/**
+ * The owner's list of recipients never to track: addresses (also as "Name <addr>") and domains (with or
+ * without "@" or "*."), one a line or separated by commas or semicolons. What is neither is in `unknown`.
+ */
+export function parseTrackExceptions(text: string): TrackExceptions & { unknown: string[] } {
   const addresses = new Set<string>();
   const domains = new Set<string>();
+  const unknown: string[] = [];
   for (const raw of text.split(/[\n,;]/)) {
-    const entry = raw.trim().toLowerCase();
-    if (ADDRESS.test(entry)) addresses.add(entry);
-    else if (DOMAIN.test(entry.replace(/^@/, ""))) domains.add(entry.replace(/^@/, ""));
+    const entry = raw.trim();
+    if (entry === "") continue;
+    const address = plainAddress(entry);
+    if (ADDRESS.test(address)) {
+      addresses.add(address);
+      continue;
+    }
+    const domain = asciiHost(entry.toLowerCase().replace(/^(\*\.|@)/, ""));
+    if (DOMAIN.test(domain)) domains.add(domain);
+    else unknown.push(entry);
   }
-  return { addresses, domains };
+  return { addresses, domains, unknown };
 }
 
 /** True when one of the recipients is an excepted address, or at an excepted domain or under one. */
 export function trackExcepted(recipients: readonly string[], list: TrackExceptions): boolean {
   return recipients.some((recipient) => {
-    const address = recipient.trim().toLowerCase();
+    const address = plainAddress(recipient);
+    if (address === "") return false;
     if (list.addresses.has(address)) return true;
     const host = address.slice(address.lastIndexOf("@") + 1);
     return [...list.domains].some((domain) => host === domain || host.endsWith(`.${domain}`));

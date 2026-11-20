@@ -123,11 +123,11 @@ const TOOL_OF: Readonly<Record<string, LogTool>> = {
   plugin_google_token: "plugin_token",
 };
 
-/** The verified id of the calling plugin; a client caller is refused. */
 /** Google keys one plugin may ask for in an hour. */
 export const GOOGLE_KEYS_PER_HOUR = 60;
 export const GOOGLE_KEY_LIMIT_MESSAGE = "Too many key requests in the last hour; keep a key until it expires";
 
+/** The verified id of the calling plugin; a client caller is refused. */
 export function callingPlugin(context: Context): string {
   const caller = context.experimental_caller;
   if (caller.kind !== "plugin") throw refuse("forbidden", PLUGIN_ONLY_MESSAGE);

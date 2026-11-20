@@ -2454,9 +2454,18 @@ export class InMemoryMailStore implements MailStore {
   threadOpens(threadIds: string[]): Map<string, { at: string; kind: string }[]> {
     const out = new Map<string, { at: string; kind: string }[]>();
     for (const threadId of threadIds) {
-      const found = this.messageOpens(this.state.rows.filter((r) => r.threadId === threadId && r.message.messageId !== null).map((r) => r.id));
-      if (found.size === 0) continue;
-      out.set(threadId, [...found.values()].flat().sort((a, b) => a.at.localeCompare(b.at)));
+      const ids = new Set(
+        this.state.rows.filter((r) => r.threadId === threadId && r.message.messageId !== null).map((r) => normalizeMessageId(r.message.messageId!)),
+      );
+      const tokens = new Set([...this.sentTracking.values()].filter((row) => ids.has(row.rfcMessageId)).map((row) => row.token));
+      if (tokens.size === 0) continue;
+      out.set(
+        threadId,
+        [...this.openEvents.values()]
+          .filter((event) => tokens.has(event.token))
+          .sort((a, b) => a.at.localeCompare(b.at) || a.seq - b.seq)
+          .map(({ at, kind }) => ({ at, kind })),
+      );
     }
     return out;
   }
@@ -2472,7 +2481,7 @@ export class InMemoryMailStore implements MailStore {
         .sort((a, b) => (b.message.date ?? "").localeCompare(a.message.date ?? ""))[0];
       if (sent === undefined || sent.message.date === null) continue;
       const date = sent.message.date;
-      if (this.state.rows.some((r) => r.threadId === sent.threadId && r.message.date !== null && r.message.date > date)) continue;
+      if (this.state.rows.some((r) => r.threadId === sent.threadId && (r.message.date === null || r.message.date > date))) continue;
       const first = sent.message.to[0];
       out.push({
         accountId: tracked.accountId,

@@ -16,6 +16,14 @@ describe("firstNameOf", () => {
     [{ name: "\u041f\u0435\u0442\u0440\u043e\u0432\u0430 \u0410\u043d\u043d\u0430 \u0421\u0435\u0440\u0433\u0435\u0435\u0432\u043d\u0430", address: "pa@example.com" }, "\u0410\u043d\u043d\u0430"],
     [{ name: "\u0418\u0432\u0430\u043d \u0418\u0432\u0430\u043d\u043e\u0432", address: "ii@example.com" }, "\u0418\u0432\u0430\u043d"],
     [{ name: "\u041a\u043e\u043d\u0441\u0442\u0430\u043d\u0442\u0438\u043d \u041f\u0435\u0442\u0440\u043e\u0432", address: "kp@example.com" }, "\u041a\u043e\u043d\u0441\u0442\u0430\u043d\u0442\u0438\u043d"],
+    // Given names that end like a surname stay given names; a degree or a company after a comma is not a name.
+    [{ name: "\u0418\u0440\u0438\u043d\u0430 \u041a\u0438\u043c", address: "ik@example.com" }, "\u0418\u0440\u0438\u043d\u0430"],
+    [{ name: "\u041a\u043e\u043d\u0441\u0442\u0430\u043d\u0442\u0438\u043d \u0428\u043e\u0439\u0433\u0443", address: "ks@example.com" }, "\u041a\u043e\u043d\u0441\u0442\u0430\u043d\u0442\u0438\u043d"],
+    [{ name: "\u0415\u0432\u0430 \u0411\u0440\u0430\u0443\u043d", address: "eb@example.com" }, "\u0415\u0432\u0430"],
+    [{ name: "\u041b\u0435\u0432 \u0422\u043e\u043b\u0441\u0442\u043e\u0439", address: "lt@example.com" }, "\u041b\u0435\u0432"],
+    [{ name: "John Smith, PhD", address: "js@example.com" }, "John"],
+    [{ name: "Jane Doe, MD", address: "jd@example.com" }, "Jane"],
+    [{ name: "\u0418\u0432\u0430\u043d\u043e\u0432 \u0418\u0432\u0430\u043d, \u041e\u041e\u041e \u0420\u043e\u043c\u0430\u0448\u043a\u0430", address: "ii@example.com" }, "\u0418\u0432\u0430\u043d"],
     // A name's own capitals are kept.
     [{ name: "McKenzie Lee", address: "ml@example.com" }, "McKenzie"],
     [{ name: "ANNA SMITH", address: "as@example.com" }, "Anna"],

@@ -64,8 +64,8 @@ function wordBefore(state: EditorState, pos: number, pairs: readonly Correction[
   // A leading bracket or quote is not part of the word; anything else odd (an address, a path) is left alone.
   const word = token.replace(/^[("'\[{«“]+/u, "");
   // The owner's own replacement may have digits or signs on its left side (b4, w/): then the whole token is the word.
-  const own = pairs.some((pair) => pair.from === word || (pair.from === pair.from.toLocaleLowerCase() && pair.from === word.toLocaleLowerCase()));
-  if (!WORD.test(word) && !own) return null;
+  // Such a token must be typed exactly as the owner wrote it: "B4" in "Vitamin B4" is not their "b4".
+  if (!WORD.test(word) && !pairs.some((pair) => pair.from === word)) return null;
   const lead = before.slice(0, before.length - word.length).replace(/[("'\[{\u00ab\u201c]+$/u, "");
   // After a line break, as at the block's start; never after an abbreviation (e.g., etc., p.m.).
   const sentenceStart = /\ufffc\s*$/u.test(lead) || (SENTENCE_END.test(lead) && !ABBREVIATION.test(lead));

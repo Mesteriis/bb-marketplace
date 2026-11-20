@@ -4242,12 +4242,24 @@ export function createSqliteStore(db: Database.Database): MailStore {
     },
 
     threadOpens(threadIds) {
-      const members = db.prepare<[string], { id: string }>("SELECT id FROM messages WHERE thread_id = ? AND message_id IS NOT NULL");
+      const members = db.prepare<[string], { message_id: string }>("SELECT DISTINCT message_id FROM messages WHERE thread_id = ? AND message_id IS NOT NULL");
+      const tokens = db.prepare<[string], { token: string }>("SELECT token FROM sent_tracking WHERE rfc_message_id = ?");
+      const opens = db.prepare<[string], { at: string; kind: string; seq: number }>("SELECT at, kind, seq FROM open_events WHERE token = ?");
       const out = new Map<string, { at: string; kind: string }[]>();
       for (const threadId of threadIds) {
-        const found = this.messageOpens(members.all(threadId).map((row) => row.id));
+        // Each token once: the same message is often stored in several folders (Sent and All Mail).
+        const found = new Set<string>();
+        for (const row of new Set(members.all(threadId).map((member) => normalizeMessageId(member.message_id)))) {
+          for (const tracked of tokens.all(row)) found.add(tracked.token);
+        }
         if (found.size === 0) continue;
-        out.set(threadId, [...found.values()].flat().sort((a, b) => a.at.localeCompare(b.at)));
+        out.set(
+          threadId,
+          [...found]
+            .flatMap((token) => opens.all(token))
+            .sort((x, y) => x.at.localeCompare(y.at) || x.seq - y.seq)
+            .map(({ at, kind }) => ({ at, kind })),
+        );
       }
       return out;
     },
@@ -4264,7 +4276,8 @@ export function createSqliteStore(db: Database.Database): MailStore {
       const message = db.prepare<[string, string, string], { thread_id: string; subject: string; date: string | null; to_json: string }>(
         "SELECT thread_id, subject, date, to_json FROM messages WHERE account_id = ? AND message_id IN (?, ?) ORDER BY date DESC LIMIT 1",
       );
-      const later = db.prepare<[string, string], { n: number }>("SELECT count(*) AS n FROM messages WHERE thread_id = ? AND date > ?");
+      // A message without a date counts as later: it is not the tracked one, and an answer must not be missed.
+      const later = db.prepare<[string, string], { n: number }>("SELECT count(*) AS n FROM messages WHERE thread_id = ? AND (date > ? OR date IS NULL)");
       const out: OpenedUnanswered[] = [];
       for (const row of tracked) {
         const seen = opens.get(row.token);

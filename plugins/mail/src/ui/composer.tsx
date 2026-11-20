@@ -875,12 +875,9 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
   const introMove =
     introSender === null ? null : moveSenderToBcc({ to: to.chips, cc: cc.chips, bcc: bcc.chips }, introSender.address);
   const [introDismissed, setIntroDismissed] = useState(false);
-  const introOffered =
-    introMove !== null &&
-    !introDismissed &&
-    // Not when the owner answers their own message: there is nobody to thank.
-    !accounts.some((owned) => owned.email.toLowerCase() === introSender?.address.toLowerCase()) &&
-    looksLikeIntro({ subject: draft.subject, text: introText(draft) });
+  // Not when the owner answers their own message: there is nobody to thank.
+  const introToSelf = accounts.some((owned) => owned.email.toLowerCase() === introSender?.address.toLowerCase());
+  const introOffered = introMove !== null && !introDismissed && !introToSelf && looksLikeIntro({ subject: draft.subject, text: introText(draft) });
   const moveIntroducer = () => {
     if (introMove === null || introSender === null) return;
     setTo({ ...to, chips: introMove.to });
@@ -930,7 +927,8 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
         setTemplateFailed(messageOf(error));
         // Some of the files may have been attached before the failure: show what the draft now holds.
         void portsRef.current.reload(draft.id).then(
-          (fresh) => setAttachments(fresh.attachments),
+          // Added to what the page shows, never replacing it: an upload may have finished meanwhile.
+          (fresh) => setAttachments((prev) => [...prev, ...fresh.attachments.filter((file) => !prev.some((shown) => shown.id === file.id))]),
           () => undefined,
         );
       },
@@ -1248,7 +1246,7 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
           <FieldRow label={tx("Bcc")}>
             <RecipientInput label={tx("Bcc")} chips={bcc.chips} text={bcc.text} onChange={setField(setBcc)} suggest={(p) => portsRef.current.suggest(p)} marked={marked} />
             {/* The command by a button too (the key may be taken by developer tools); the offer line has its own while it shows. */}
-            {introMove !== null && !introOffered ? (
+            {introMove !== null && !introOffered && !introToSelf ? (
               <Button variant="ghost" size="sm" className="h-7 shrink-0 px-2" aria-description={tx("Thank the sender and move them to Bcc")} onClick={moveIntroducer}>
                 {tx("Move sender to Bcc")}
               </Button>
