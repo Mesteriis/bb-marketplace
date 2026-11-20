@@ -115,6 +115,8 @@ export interface ComposerPorts {
   smartSend?(draftId: string): Promise<SmartSendTime | null>;
   /** Dictation: BB's voice service turns a recording into text. Absent: no microphone button. */
   transcribe?(audio: Blob, signal: AbortSignal): Promise<string>;
+  /** Whether BB has a voice service chosen; absent: taken as yes. */
+  voiceReady?(): Promise<boolean>;
 }
 
 export interface ComposerProps {
@@ -747,6 +749,7 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
   /** Dictation: the text goes in where the cursor is now, as paragraphs. */
   const dictation = useDictation({
     ...(props.dictationDevice ?? browserDictation),
+    ...(props.ports.voiceReady !== undefined ? { ready: () => props.ports.voiceReady!() } : {}),
     transcribe: (audio, signal) => (props.ports.transcribe === undefined ? Promise.reject(new Error("no voice service")) : props.ports.transcribe(audio, signal)),
     onText: (text) => {
       if (editor !== null) insertParagraphs(editor, dictatedParagraphs(text));
@@ -1022,6 +1025,11 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
     if (event.key === "Escape" && !event.defaultPrevented) {
       event.preventDefault();
       event.stopPropagation();
+      // Escape first ends a dictation (the recording, its transcription or its error), then closes.
+      if (dictation.state.status !== "idle") {
+        dictation.cancel();
+        return;
+      }
       if (dirty() || [to, cc, bcc].some((f) => f.text.trim() !== "")) setEscapeOpen(true);
       else void close();
     }

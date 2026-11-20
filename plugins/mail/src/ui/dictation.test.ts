@@ -74,7 +74,7 @@ describe("Dictation", () => {
     expect(dictation.current()).toEqual({ status: "idle" });
     expect(tracks.map((t) => t.stopped)).toEqual([true]);
     expect(ticks).toEqual([]);
-    expect(states.map((s) => s.status)).toEqual(["recording", "recording", "transcribing", "transcribing", "idle"]);
+    expect(states.map((s) => s.status)).toEqual(["starting", "recording", "recording", "transcribing", "transcribing", "idle"]);
   });
 
   it("cancel throws the recording away: nothing is sent, the microphone is released", async () => {
@@ -152,5 +152,90 @@ describe("Dictation", () => {
     await settle();
     expect(texts).toEqual([]);
     expect(slow.current()).toEqual({ status: "idle" });
+  });
+
+  it("waits in 'starting' while the browser asks: a second press asks nothing more, Cancel releases the late stream", async () => {
+    let asked = 0;
+    let give: (stream: MediaStream) => void = () => {};
+    const made = makeStream();
+    const pending = new Dictation({
+      microphone: () => {
+        asked++;
+        return new Promise<MediaStream>((resolve) => (give = resolve));
+      },
+      record: () => ({ stop: async () => audio }),
+      transcribe: async () => "x",
+      onText: (text) => texts.push(text),
+    });
+    void pending.toggle();
+    await settle();
+    expect(pending.current()).toEqual({ status: "starting" });
+    void pending.toggle();
+    await settle();
+    expect(asked).toBe(1);
+    pending.cancel();
+    expect(pending.current()).toEqual({ status: "idle" });
+    give(made.stream);
+    await settle();
+    expect(made.track.stopped).toBe(true);
+    expect(pending.current()).toEqual({ status: "idle" });
+  });
+
+  it("with no voice service in BB it says so and never asks for the microphone", async () => {
+    let asked = 0;
+    const off = new Dictation({
+      ready: async () => false,
+      microphone: async () => {
+        asked++;
+        return makeStream().stream;
+      },
+      record: () => ({ stop: async () => audio }),
+      transcribe: async () => "x",
+      onText: () => {},
+    });
+    await off.toggle();
+    expect(off.current()).toEqual({ status: "failed", message: "Dictation needs a voice service: choose one in BB's settings.", retry: false });
+    expect(asked).toBe(0);
+  });
+
+  it("when BB cannot say whether a voice service is set, recording goes on", async () => {
+    const unknown = new Dictation({
+      ready: async () => Promise.reject(new Error("no config")),
+      microphone: async () => makeStream().stream,
+      record: () => ({ stop: async () => audio }),
+      transcribe: async () => "x",
+      onText: () => {},
+      every: () => () => {},
+    });
+    await unknown.toggle();
+    expect(unknown.current()).toEqual({ status: "recording", seconds: 0 });
+  });
+
+  it("a recorder that cannot start or cannot stop releases the microphone and says why", async () => {
+    const first = makeStream();
+    const noStart = new Dictation({
+      microphone: async () => first.stream,
+      record: () => {
+        throw new Error("unsupported");
+      },
+      transcribe: async () => "x",
+      onText: () => {},
+    });
+    await noStart.toggle();
+    expect(noStart.current()).toEqual({ status: "failed", message: DICTATION_TEXT.microphone, retry: false });
+    expect(first.track.stopped).toBe(true);
+
+    const second = makeStream();
+    const noStop = new Dictation({
+      microphone: async () => second.stream,
+      record: () => ({ stop: async () => Promise.reject(new Error("broken")) }),
+      transcribe: async () => "x",
+      onText: () => {},
+      every: () => () => {},
+    });
+    await noStop.toggle();
+    await noStop.toggle();
+    expect(noStop.current()).toEqual({ status: "failed", message: DICTATION_TEXT.failed, retry: false });
+    expect(second.track.stopped).toBe(true);
   });
 });

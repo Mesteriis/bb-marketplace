@@ -81,8 +81,14 @@ function DictateButton({
   editorReady: boolean;
 }) {
   const recording = state.status === "recording";
+  const busy = recording || state.status === "starting" || state.status === "transcribing";
+  // Said once per state: a clock that changes every second would be read out every second.
+  const spoken = recording ? tx("Recording") : state.status === "transcribing" ? tx("Turning speech into text\u2026") : "";
   return (
-    <span className="ml-auto inline-flex items-center gap-1">
+    <span className="ml-auto inline-flex flex-wrap items-center gap-1">
+      <span role="status" data-testid="dictation-status" className="sr-only">
+        {spoken}
+      </span>
       {state.status === "failed" ? (
         <span role="alert" className="max-w-56 truncate text-xs text-destructive" title={tx(state.message)}>
           {tx(state.message)}
@@ -94,13 +100,13 @@ function DictateButton({
         </Button>
       ) : null}
       {state.status === "transcribing" ? (
-        <span role="status" className="text-xs text-muted-foreground">
+        <span aria-hidden className="text-xs text-muted-foreground">
           {tx("Turning speech into text\u2026")}
         </span>
       ) : null}
       {recording ? (
-        <span role="status" className="text-xs tabular-nums text-destructive">
-          {tx("Recording {time}", { time: recordingTime(state.seconds) })}
+        <span aria-hidden className="text-xs tabular-nums text-destructive">
+          {recordingTime(state.seconds)}
         </span>
       ) : null}
       <span className="inline-flex" title={recording ? tx("Stop and insert the text") : tx("Dictate: record, then the text is inserted at the cursor")}>
@@ -110,7 +116,7 @@ function DictateButton({
           size="sm"
           className="h-7 px-2"
           aria-pressed={recording}
-          disabled={!editorReady || state.status === "transcribing"}
+          disabled={!editorReady || state.status === "transcribing" || state.status === "starting"}
           onMouseDown={(event) => event.preventDefault()}
           onClick={onToggle}
         >
@@ -118,7 +124,7 @@ function DictateButton({
           {recording ? tx("Stop") : tx("Dictate")}
         </Button>
       </span>
-      {recording || state.status === "transcribing" || state.status === "failed" ? (
+      {busy || state.status === "failed" ? (
         <Button type="button" variant="ghost" size="sm" className="h-7 px-2" onMouseDown={(event) => event.preventDefault()} onClick={onCancel}>
           {tx("Cancel")}
         </Button>
@@ -230,7 +236,7 @@ export function ComposeToolbar({
 
   return (
     <div className={cn("flex flex-col", className)}>
-      <div className="flex items-center gap-1">
+      <div className="flex flex-wrap items-center gap-1">
         <div
           role="toolbar"
           aria-label={tx("Formatting")}
@@ -287,7 +293,7 @@ export function ComposeToolbar({
         ) : null}
         {onImprove !== undefined ? (
           // A disabled button shows no tooltip of its own: the wrapper carries the reason.
-          <span title={improveDisabledReason ?? undefined} className={onWrite !== undefined ? "inline-flex" : "ml-auto inline-flex"}>
+          <span title={improveDisabledReason ?? undefined} className={onWrite !== undefined || dictation !== undefined ? "inline-flex" : "ml-auto inline-flex"}>
             <Button
               type="button"
               variant="ghost"
@@ -310,7 +316,7 @@ export function ComposeToolbar({
             type="button"
             variant="ghost"
             size="sm"
-            className={cn("h-7 px-2", onImprove === undefined && "ml-auto")}
+            className={cn("h-7 px-2", onImprove === undefined && onWrite === undefined && dictation === undefined && "ml-auto")}
             aria-label={tx("Templates ({mod}{p1}T)", { mod, p1: mod === "⌘" ? "⌥" : "Alt+" })}
             aria-keyshortcuts="Control+Alt+T Meta+Alt+T"
             aria-expanded={templatesOpen === true}

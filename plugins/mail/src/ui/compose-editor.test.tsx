@@ -113,8 +113,7 @@ describe("insertParagraphs (dictation)", () => {
     act(() => {
       insertParagraphs(editor(), ["First.", "", "Second."]);
     });
-    const texts = editor().getText({ blockSeparator: "|" }).split("|");
-    expect(texts.filter((text) => text !== "")).toEqual(["Hi. Thanks for the plan.", "First.", "Second."]);
+    expect(editor().getText({ blockSeparator: "|" })).toBe("Hi. Thanks for the plan.First.|Second.");
     act(() => {
       editor().commands.undo();
     });
@@ -123,6 +122,52 @@ describe("insertParagraphs (dictation)", () => {
       insertParagraphs(editor(), []);
     });
     expect(editor().getText()).toBe("Hi. Thanks for the plan.");
+  });
+});
+
+describe("insertParagraphs: where the text lands", () => {
+  it("in the middle of a line: the first part continues it, the last is followed by the rest; the cursor ends after the dictation", () => {
+    const { editor } = mount({ initialDoc: { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Hi. rest" }] }] } });
+    act(() => {
+      editor().commands.setTextSelection(5);
+      insertParagraphs(editor(), ["First.", "Second."]);
+    });
+    expect(editor().getText({ blockSeparator: "|" })).toBe("Hi. First.|Second.rest");
+    act(() => {
+      editor().view.dispatch(editor().state.tr.insertText("!"));
+    });
+    expect(editor().getText({ blockSeparator: "|" })).toBe("Hi. First.|Second.!rest");
+    act(() => {
+      editor().commands.undo();
+      editor().commands.undo();
+    });
+    expect(editor().getText({ blockSeparator: "|" })).toBe("Hi. rest");
+  });
+
+  it("at the end of a link the dictated text is not part of the link", () => {
+    const { editor } = mount({
+      initialDoc: {
+        type: "doc",
+        content: [{ type: "paragraph", content: [{ type: "text", text: "site", marks: [{ type: "link", attrs: { href: "https://example.com/" } }] }] }],
+      },
+    });
+    act(() => {
+      editor().commands.focus("end");
+      insertParagraphs(editor(), [" more"]);
+    });
+    expect(editor().getHTML()).toContain(">site</a> more");
+  });
+
+  it("does not take the focus from a field the owner moved to", () => {
+    const { editor } = mount({});
+    const field = document.createElement("input");
+    document.body.append(field);
+    field.focus();
+    act(() => {
+      insertParagraphs(editor(), ["Late text."]);
+    });
+    expect(document.activeElement).toBe(field);
+    field.remove();
   });
 });
 

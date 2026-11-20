@@ -187,6 +187,7 @@ import { HistoryForgetDialog, type ForgetRequest } from "./src/ui/history-forget
 import { LabelsDialog, type LabelsRequest } from "./src/ui/labels-dialog.tsx";
 import { FILES_PAGE, FilesView, type FilesFilter } from "./src/ui/files-view.tsx";
 import { AttachmentViewer, viewerShows, type ViewerHost, type ViewRequest } from "./src/ui/attachment-viewer.tsx";
+import { dictationFile } from "./src/core/dictation-text.ts";
 import { MCP_SERVER_FILE_NAME, MCP_SERVER_SOURCE } from "./src/core/mcp-server-source.ts";
 import { printDocument, printFileName, printHtml, type PrintMessage } from "./src/ui/print.ts";
 // Slice 3i: the link checks import zod-free core modules only (no zod in the page bundle).
@@ -2028,7 +2029,11 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       applyTemplate: (input) => rpc.call("template_apply", input),
       smartSend: async (draftId) => (await rpc.call("smart_send_time", { draftId })).suggestion,
       // Dictation: BB's own voice service, the one the owner chose in BB's settings.
-      transcribe: async (audio, signal) => (await sdk.system.transcribeVoice({ file: audio, signal })).text,
+      transcribe: async (audio, signal) => {
+        const { name, type } = dictationFile(audio.type);
+        return (await sdk.system.transcribeVoice({ file: new File([audio], name, { type }), signal })).text;
+      },
+      voiceReady: async () => (await sdk.system.config()).voiceTranscriptionEnabled,
       discard: async (draftId) => {
         await rpc.call("compose_discard", { draftId });
       },

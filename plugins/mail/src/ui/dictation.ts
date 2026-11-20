@@ -11,6 +11,8 @@ export const DICTATION_MAX_MS = 5 * 60_000;
 
 export type DictationState =
   | { status: "idle" }
+  /** Waiting for BB's answer about the voice service and for the browser's microphone prompt. */
+  | { status: "starting" }
   | { status: "recording"; seconds: number }
   | { status: "transcribing" }
   /** `retry`: the recording is still held and can be sent again. */
@@ -23,6 +25,8 @@ export interface DictationRecorder {
 }
 
 export interface DictationDeps {
+  /** Whether BB has a voice service to transcribe with; absent or failing: taken as yes. */
+  ready?: () => Promise<boolean>;
   /** Asks for the microphone; rejects when there is none or the owner refused. */
   microphone: () => Promise<MediaStream>;
   /** Starts recording the stream. */
@@ -38,6 +42,7 @@ export interface DictationDeps {
 
 export const DICTATION_TEXT = {
   microphone: "The microphone is not available. Allow it for BB and try again.",
+  off: "Dictation needs a voice service: choose one in BB's settings.",
   failed: "The recording could not be turned into text.",
   empty: "Nothing was heard.",
 } as const;
@@ -75,7 +80,7 @@ export class Dictation {
   /** The button: starts from idle or a failure, stops and transcribes while recording. */
   async toggle(): Promise<void> {
     if (this.state.status === "recording") return this.finish();
-    if (this.state.status === "transcribing") return;
+    if (this.state.status === "transcribing" || this.state.status === "starting") return;
     await this.start();
   }
 
@@ -122,6 +127,14 @@ export class Dictation {
   private async start(): Promise<void> {
     const run = ++this.run;
     this.kept = null;
+    this.set({ status: "starting" });
+    // Nothing is recorded that could not be turned into text.
+    const ready = this.deps.ready === undefined ? true : await this.deps.ready().catch(() => true);
+    if (run !== this.run) return;
+    if (!ready) {
+      this.set({ status: "failed", message: DICTATION_TEXT.off, retry: false });
+      return;
+    }
     let stream: MediaStream;
     try {
       stream = await this.deps.microphone();
@@ -234,6 +247,7 @@ export function useDictation(deps: DictationDeps): { state: DictationState; togg
         microphone: () => latest.current.microphone(),
         record: (stream) => latest.current.record(stream),
         transcribe: (audio, signal) => latest.current.transcribe(audio, signal),
+        ...(deps.ready !== undefined ? { ready: () => latest.current.ready?.() ?? Promise.resolve(true) } : {}),
         onText: (text) => latest.current.onText(text),
         ...(deps.every !== undefined ? { every: deps.every } : {}),
         ...(deps.now !== undefined ? { now: deps.now } : {}),

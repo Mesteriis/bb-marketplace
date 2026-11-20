@@ -368,7 +368,7 @@ describe("Composer", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "Dictate" }));
     const stop = await screen.findByRole("button", { name: "Stop" });
-    expect(screen.getByText("Recording 0:00")).toBeTruthy();
+    expect(screen.getByText("0:00")).toBeTruthy();
     fireEvent.click(stop);
     await waitFor(() => expect(document.querySelector(".ProseMirror")!.textContent).toContain("Tuesday works."));
     expect(document.querySelectorAll(".ProseMirror p")[0]!.textContent).toBe("Hello Ann,");
@@ -387,6 +387,59 @@ describe("Composer", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "Dictate" }));
     expect((await screen.findByRole("alert")).textContent).toBe("The microphone is not available. Allow it for BB and try again.");
+  });
+
+  it("dictation: Escape while recording throws the recording away and keeps the composer open", async () => {
+    const track = { stopped: false, stop() { this.stopped = true; } };
+    const transcribe = vi.fn(async () => "x");
+    const { onClose } = mount(
+      {
+        dictationDevice: {
+          microphone: async () => ({ getTracks: () => [track] }) as unknown as MediaStream,
+          record: () => ({ stop: async () => new Blob(["sound"]) }),
+        },
+      },
+      { ...fakePorts(), transcribe } as never,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Dictate" }));
+    await screen.findByRole("button", { name: "Stop" });
+    fireEvent.keyDown(subject(), { key: "Escape" });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Dictate" })).toBeTruthy());
+    expect(track.stopped).toBe(true);
+    expect(transcribe).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+  });
+
+  it("dictation: the screen reader hears the state once, not every second", async () => {
+    mount(
+      {
+        dictationDevice: {
+          microphone: async () => ({ getTracks: () => [] }) as unknown as MediaStream,
+          record: () => ({ stop: async () => new Blob(["sound"]) }),
+        },
+      },
+      { ...fakePorts(), transcribe: vi.fn(async () => "x") } as never,
+    );
+    const live = () => screen.getByTestId("dictation-status");
+    expect(live().getAttribute("role")).toBe("status");
+    expect(live().textContent).toBe("");
+    fireEvent.click(screen.getByRole("button", { name: "Dictate" }));
+    await screen.findByRole("button", { name: "Stop" });
+    expect(live().textContent).toBe("Recording");
+    expect(screen.getByText("0:00").getAttribute("aria-hidden")).toBe("true");
+  });
+
+  it("dictation: with no voice service in BB the button says why and the microphone is not asked", async () => {
+    const microphone = vi.fn(async () => ({ getTracks: () => [] }) as unknown as MediaStream);
+    mount(
+      { dictationDevice: { microphone, record: () => ({ stop: async () => new Blob(["sound"]) }) } },
+      { ...fakePorts(), transcribe: vi.fn(async () => "x"), voiceReady: async () => false } as never,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Dictate" }));
+    expect((await screen.findByRole("alert")).textContent).toBe("Dictation needs a voice service: choose one in BB's settings.");
+    expect(microphone).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
   });
 
   it("starts with the queued banner while a send of the draft is queued", () => {

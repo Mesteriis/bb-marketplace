@@ -9,6 +9,7 @@ import { useEffect, useRef } from "react";
 import { EditorContent, useEditor, type Editor, type JSONContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { closeHistory } from "@tiptap/pm/history";
+import { TextSelection } from "@tiptap/pm/state";
 import type { Node as PmNode } from "@tiptap/pm/model";
 import { cn } from "@/lib/utils";
 import { typingExtension, type TypingOptions } from "./editor-typing.ts";
@@ -223,27 +224,35 @@ export function replaceOwnerRange(editor: Editor, paragraphs: readonly string[])
 
 /**
  * Puts plain paragraphs at the selection (dictation): the first continues
- * the line the cursor is on, each next one starts a new paragraph. One
- * editor step, so one Undo takes the whole dictation back.
+ * the line the cursor is on, each next one starts a new paragraph, and what
+ * stood after the cursor follows the last. One editor step, so one Undo
+ * takes the whole dictation back. The text is never a link, even when the
+ * cursor stood at the end of one. Inside a quote, a signature or a code
+ * block it lands where typing would.
  */
 export function insertParagraphs(editor: Editor, paragraphs: readonly string[]): void {
   const texts = paragraphs.filter((paragraph) => paragraph !== "");
   if (texts.length === 0) return;
-  if (texts.length === 1) {
-    // Plain text at the selection; never a string through insertContent, which would read it as HTML.
-    editor.view.dispatch(closeHistory(editor.state.tr.insertText(texts[0]!)));
-  } else {
-    editor
-      .chain()
-      // Its own Undo step, apart from what was typed just before.
-      .command(({ tr }) => {
-        closeHistory(tr);
-        return true;
-      })
-      .insertContent(texts.map((text) => ({ type: "paragraph", content: [{ type: "text", text }] })))
-      .run();
-  }
-  editor.commands.focus();
+  // Plain text through the transaction; never a string through insertContent, which would read it as HTML.
+  const tr = closeHistory(editor.state.tr);
+  const link = editor.schema.marks.link;
+  texts.forEach((text, index) => {
+    if (index > 0) {
+      const at = tr.selection.from;
+      tr.split(at);
+      // Past the end of the split-off line and into the new one.
+      tr.setSelection(TextSelection.near(tr.doc.resolve(at + 2)));
+    }
+    const from = tr.selection.from;
+    tr.insertText(text);
+    if (link !== undefined) tr.removeMark(from, tr.selection.from, link);
+  });
+  if (link !== undefined) tr.removeStoredMark(link);
+  editor.view.dispatch(tr);
+  // The transcript may arrive seconds later: a field the owner moved to keeps the focus.
+  const active = editor.view.dom.ownerDocument.activeElement;
+  const elsewhere = active instanceof HTMLElement && !editor.view.dom.contains(active) && /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName);
+  if (!elsewhere) editor.commands.focus();
 }
 
 /** A fence line that opens a code block: ``` with an optional language word. */

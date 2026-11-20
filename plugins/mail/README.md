@@ -1615,13 +1615,16 @@ wrong; check the cited messages".
 
 **Dictate** in the composer's toolbar records from the microphone; **Stop**
 turns the recording into text with the voice service you chose in BB's
-settings and puts it where the cursor is (a blank pause-separated part
-becomes its own paragraph; one Undo takes the dictation back). **Cancel**
+settings and puts it where the cursor is: the first part continues the
+line, a part after a pause starts a new paragraph, one Undo takes the
+dictation back, and the text is never part of a link. **Cancel** or Escape
 throws the recording away. A recording ends by itself after 5 minutes. The
 audio goes only to BB's voice service — whether that is on this computer
 or a cloud service is BB's setting, not Mail's — and is not kept; a failed
 transcription can be tried once more. Without a voice service in BB the
-button says the recording could not be turned into text.
+button says so and nothing is recorded. A composer that moves between the
+docked and the wide layout (a resize, another conversation) drops a
+dictation in progress; the microphone is released.
 
 ### Assistants outside BB (MCP)
 
