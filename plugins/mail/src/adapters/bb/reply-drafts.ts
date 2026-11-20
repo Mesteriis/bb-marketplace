@@ -27,6 +27,8 @@ export type ReplyDraftsDeps = {
   withNonce: <T extends AiBuild>(build: (nonce: string) => T) => T;
   restoreTag: (parts: string[]) => string;
   agentLog: (entry: LogEntryInput) => unknown;
+  /** The stored sender check failed, or Mail warns about the sender (a stored header does not carry these). */
+  suspicious: (messageId: string) => boolean;
   /** A draft was kept for a message of this account: the page reloads. */
   onKept: (accountId: string) => void;
   schedule: (run: () => void, ms: number) => () => void;
@@ -83,7 +85,7 @@ export function createReplyDrafts(deps: ReplyDraftsDeps) {
       to: header.to.map((address) => address.address),
       hasBody: body !== null && ((body.text ?? "").trim() !== "" || (body.html ?? "").trim() !== ""),
       inAiScope: header.inAiScope,
-      suspicious: header.senderCheck?.state === "failed" || (header.warnings ?? []).length > 0,
+      suspicious: deps.suspicious(messageId),
       // A row synced before Reply-To was stored says nothing about it: treated as an unknown address.
       replyTo: source === null ? [] : source.replyToKnown ? source.replyTo.map((address) => address.address) : ["unknown"],
       answered: answeredSince(header.threadId, header.folder, header.date),

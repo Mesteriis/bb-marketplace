@@ -1839,10 +1839,16 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       const page = pageSettingsOf(current);
       return { voice: page.aiVoice, personal: page.aiInstructions, facts: page.aiKnowledge };
     };
+    /** The stored sender check failed, or Mail warns about the sender: AI leaves such mail alone. */
+    const suspicious = (messageId: string): boolean => {
+      const view = senderChecks.views([messageId]).get(messageId);
+      return view !== undefined && (view.senderCheck.state === "failed" || view.warnings.length > 0);
+    };
     const madeReplyDrafts = createReplyDrafts({
       store,
       clock,
       enabled: () => pageSettingsOf(current).aiAutoDrafts,
+      suspicious,
       writeSettings,
       aiContext: () => ({ provider: current.translateProvider, model: current.translateModel }),
       jobs: aiJobs,

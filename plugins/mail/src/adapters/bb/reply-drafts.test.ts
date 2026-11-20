@@ -13,6 +13,7 @@ let clock: FixedClock;
 let enabled: boolean;
 let started: { input: string; unattended: boolean | undefined }[];
 let drafts: ReplyDrafts;
+let warned: Set<string>;
 
 /** The stored id of the INBOX message with this Message-ID (read from the fake's rows). */
 const idOf = (messageId: string) =>
@@ -28,6 +29,7 @@ beforeEach(() => {
   clock = new FixedClock(new Date(NOW));
   enabled = true;
   started = [];
+  warned = new Set();
   asked = false;
   // The owner wrote to Ann before.
   store.upsertMessages("acc_1", "Sent", [
@@ -51,6 +53,7 @@ beforeEach(() => {
     jobs,
     withNonce: (build) => build("0123456789abcdef"),
     restoreTag: () => "k3f9",
+    suspicious: (messageId) => warned.has(messageId),
     agentLog: () => null,
     onKept: () => {},
     schedule: () => () => {},
@@ -97,6 +100,14 @@ describe("createReplyDrafts", () => {
     ]);
     store.assignThreads("acc_1", buildThreads(store.threadingInputs("acc_1")));
     drafts.offer([idOf("in-1@example.com"), idOf("ask@example.com")]);
+    await drafts.queue.idle();
+    expect(started).toEqual([]);
+  });
+
+  it("leaves alone a message Mail warns about", async () => {
+    inbox(1, { from: { name: "Ann", address: ANN }, bodyText: "Invented: Tuesday?" });
+    warned.add(idAt(1));
+    drafts.offer([idAt(1)]);
     await drafts.queue.idle();
     expect(started).toEqual([]);
   });
