@@ -1,6 +1,13 @@
 // The RPC contract between the Mail page and the server, as plain zod
 // schemas. server.ts wraps it with the SDK's defineRpcContract.
+import { TAB_NAME_MAX, TAB_QUERY_MAX } from "./inbox-tabs.ts";
+import { PHRASES_MAX } from "./phrases.ts";
+import { QUOTE_MAX } from "./compose-reply.ts";
+import { TEMPLATE_FILES_MAX_BYTES, TEMPLATE_RECIPIENTS_MAX } from "./snippets.ts";
+import { GOOGLE_EXTRA_SCOPES } from "./plugin-access.ts";
+import { pluginApiSchemas } from "./plugin-api.ts";
 import { z } from "zod";
+import { pageSettingsPatchSchema, pageSettingsSchema } from "./page-settings.ts";
 import { composeDocInputSchema } from "./compose-doc.ts";
 import {
   accountSchema,
@@ -145,6 +152,9 @@ const reminderDaysInput = z.number().int().min(1).max(30);
 const cursorInput = z.string().min(1).max(256);
 
 /** What ai_start takes: one strict variant per request (two for tasks: one message or a conversation). */
+/** One of the owner's AI labels (AI sorts the inbox). */
+const aiLabelSchema = z.object({ id: z.string(), name: z.string(), description: z.string(), autoArchive: z.boolean() });
+
 const aiStartInput = z.union([
   z.strictObject({ kind: z.literal("summary"), threadId: idInput, folder: idInput.optional(), force: z.boolean().optional() }),
   z.strictObject({ kind: z.literal("tasks"), messageId: idInput }),
@@ -158,6 +168,14 @@ const aiStartInput = z.union([
     revision: z.number().int().min(0),
     mode: draftModeSchema,
     instruction: z.string().min(1).max(200).refine(noLineBreaks, NO_LINE_BREAKS).optional(),
+    paragraphs: z.array(z.string().max(8_000)).max(500),
+  }),
+  /** AI writes mail: the body written from a few words; `paragraphs` is the owner's own text as on screen. */
+  z.strictObject({
+    kind: z.literal("write"),
+    draftId: idInput,
+    revision: z.number().int().min(0),
+    instruction: z.string().min(1).max(500).refine(noLineBreaks, NO_LINE_BREAKS),
     paragraphs: z.array(z.string().max(8_000)).max(500),
   }),
 ]);
@@ -522,7 +540,21 @@ export const archiveMessageSchema = archiveSummarySchema.extend({
 });
 export type ArchiveMessageView = z.infer<typeof archiveMessageSchema>;
 
+/** The plugin API (plugin-api.ts), with the one method whose answer is this file's invitation view. */
+const pluginSchemas = {
+  ...pluginApiSchemas,
+  /** One invitation of a message plugin_invites_list returned, parsed; null when the part holds none. */
+  plugin_invite_read: {
+    input: z.object({ messageId: z.string() }),
+    output: z.object({ invite: inviteViewSchema.nullable() }),
+  },
+};
+
+const templateFileSchema = z.object({ id: z.string(), name: z.string(), mimeType: z.string(), size: z.number().int() });
+const templateRecipients = z.array(z.string().min(1).max(400).refine(noLineBreaks, NO_LINE_BREAKS)).max(TEMPLATE_RECIPIENTS_MAX);
+
 export const rpcSchemas = {
+  ...pluginSchemas,
   status_get: {
     input: z.null(),
     output: statusViewSchema,
@@ -543,6 +575,42 @@ export const rpcSchemas = {
     input: z.object({ accountId: z.string().nullable() }),
     output: z.object({ started: z.boolean() }),
   },
+  /** One sign-in with the saved password for an account the server stopped (retry-sign-in.ts). */
+  accounts_retry_sign_in: {
+    input: z.object({ accountId: z.string() }),
+    output: z.object({ result: z.enum(["resumed", "refused", "unreachable", "unreadable", "sign_in_needed"]) }),
+  },
+  /** The plugin's settings as the settings page shows them (page-settings.ts); never the credential key. */
+  settings_get: {
+    input: z.object({}),
+    output: pageSettingsSchema,
+  },
+  /** A change from the settings page: writable keys only, each within its bounds. Answers with the settings after it. */
+  settings_set: {
+    input: pageSettingsPatchSchema,
+    output: pageSettingsSchema,
+  },
+  /** Starts a Google sign-in: opens the loopback listener and gives the consent page to open (google-sign-in.ts). */
+  google_sign_in_start: {
+    input: z.object({
+      email: z.string().min(3).max(320).nullable(),
+      /** More Google services for this sign-in (plugin keys); never anything but these. */
+      extraScopes: z.array(z.enum(GOOGLE_EXTRA_SCOPES)).max(GOOGLE_EXTRA_SCOPES.length).optional(),
+    }),
+    output: z.object({ flowId: z.string(), url: z.string() }),
+  },
+  /** How a Google sign-in stands; an unknown flow reads as failed with "timeout". */
+  google_sign_in_status: {
+    input: z.object({ flowId: z.string().min(1).max(64) }),
+    output: z.discriminatedUnion("state", [
+      z.object({ state: z.literal("pending") }),
+      z.object({ state: z.literal("done"), accountId: z.string() }),
+      z.object({
+        state: z.literal("failed"),
+        reason: z.enum(["denied", "timeout", "mismatch", "no_refresh_token", "refused", "unreachable", "alias", "error"]),
+      }),
+    ]),
+  },
   threads_list: {
     input: z.object({
       scope: threadScope,
@@ -550,11 +618,48 @@ export const rpcSchemas = {
       limit: z.number().int().min(1).max(100),
       /** Quick filters (slice 3e); absent: every thread. */
       filter: threadFilterSchema.optional(),
+      /** An Inbox tab (Split Inbox); an unknown id lists the whole folder. */
+      tabId: z.string().min(1).max(64).optional(),
     }),
     output: z.object({
       threads: z.array(threadSummarySchema),
       nextCursor: z.string().nullable(),
     }),
+  },
+  /**
+   * Typing speed: the phrases the owner writes often (their own sent mail and
+   * templates), most frequent first, for the composer's grey text. The
+   * owner's page only; never part of a log, an agent's read or a plugin's.
+   */
+  phrases_list: {
+    input: z.object({}),
+    output: z.object({ phrases: z.array(z.string().max(400)).max(PHRASES_MAX) }),
+  },
+  /** The owner's Inbox tabs in order, each with its unread conversations in the scope; `broken`: its condition no longer parses. */
+  inbox_tabs_list: {
+    input: z.object({ scope: threadScope, /** false: names and conditions only (Mail settings); every number is 0. */ counts: z.boolean().optional() }),
+    output: z.object({
+      /** Unread conversations of the whole Inbox in the scope, for the Inbox tab. */
+      inboxUnread: z.number().int(),
+      tabs: z.array(z.object({ id: z.string(), name: z.string(), query: z.string(), unread: z.number().int(), broken: z.boolean() })),
+    }),
+  },
+  /** A new tab at the end (no id) or a tab's new name and condition. */
+  inbox_tab_save: {
+    input: z.object({
+      id: z.string().min(1).max(64).optional(),
+      name: z.string().min(1).max(TAB_NAME_MAX).refine(noLineBreaks, NO_LINE_BREAKS),
+      query: z.string().min(1).max(TAB_QUERY_MAX).refine(noLineBreaks, NO_LINE_BREAKS),
+    }),
+    output: z.object({ tab: z.object({ id: z.string(), name: z.string(), query: z.string() }) }),
+  },
+  inbox_tab_delete: {
+    input: z.object({ id: z.string().min(1).max(64) }),
+    output: z.object({ ok: z.literal(true) }),
+  },
+  inbox_tab_move: {
+    input: z.object({ id: z.string().min(1).max(64), direction: z.enum(["left", "right"]) }),
+    output: z.object({ ok: z.literal(true) }),
   },
   thread_get: {
     input: z.object({
@@ -688,7 +793,12 @@ export const rpcSchemas = {
   },
   /** A reply, reply-all or forward draft of a stored message. */
   compose_prepare: {
-    input: z.object({ kind: z.enum(["reply", "reply_all", "forward"]), messageId: idInput }),
+    input: z.object({
+      kind: z.enum(["reply", "reply_all", "forward"]),
+      messageId: idInput,
+      /** Quick quote (typing speed): the text selected in the message; a reply quotes only that. */
+      quote: z.string().max(QUOTE_MAX).optional(),
+    }),
     output: z.object({
       draftId: z.string(),
       warning: composeWarning,
@@ -775,6 +885,8 @@ export const rpcSchemas = {
       protect: z.object({ sign: z.boolean(), encrypt: z.boolean() }).optional(),
       /** Slice 3l, "Send later": the time to send, one minute to a year ahead. */
       sendAt: z.iso.datetime().optional(),
+      /** Read statuses: false leaves the image out of this message. */
+      track: z.boolean().optional(),
     }),
     output: z.object({ outboxId: z.string(), sendAfter: z.string() }),
   },
@@ -935,14 +1047,64 @@ export const rpcSchemas = {
     input: z.object({}),
     output: z.object({
       templates: z.array(
-        z.object({ id: z.string(), name: z.string(), doc: composeDocInputSchema, updatedAt: z.string() }),
+        z.object({
+          id: z.string(),
+          name: z.string(),
+          doc: composeDocInputSchema,
+          updatedAt: z.string(),
+          /** Typing speed: what the template fills beside the body. */
+          subject: z.string().nullable(),
+          to: z.array(z.string()),
+          cc: z.array(z.string()),
+          bcc: z.array(z.string()),
+          files: z.array(templateFileSchema),
+        }),
       ),
     }),
   },
   /** Insert (no id) or update; `conflict` on a duplicate name. */
   template_save: {
-    input: z.object({ id: idInput.optional(), name: templateNameInput, doc: composeDocInputSchema }),
+    input: z.object({
+      id: idInput.optional(),
+      name: templateNameInput,
+      doc: composeDocInputSchema,
+      /** Typing speed. None of the four named: an existing template keeps what it has. */
+      subject: z.string().max(400).refine(noLineBreaks, NO_LINE_BREAKS).optional(),
+      to: templateRecipients.optional(),
+      cc: templateRecipients.optional(),
+      bcc: templateRecipients.optional(),
+    }),
     output: z.object({ id: z.string() }),
+  },
+  /** A file to keep with a template; its bytes go through compose_attachment_chunk. */
+  template_file_begin: {
+    input: z.object({
+      templateId: idInput,
+      fileName: z.string().min(1).max(255).refine(noLineBreaks, NO_LINE_BREAKS),
+      mimeType: z.string().min(1).max(127).refine(noLineBreaks, NO_LINE_BREAKS),
+      size: z.number().int().min(1).max(TEMPLATE_FILES_MAX_BYTES),
+    }),
+    output: z.object({ uploadId: z.string() }),
+  },
+  template_file_finish: {
+    input: z.object({ uploadId: idInput, sha256: z.string().regex(/^[0-9a-f]{64}$/) }),
+    output: z.object({ file: templateFileSchema }),
+  },
+  template_file_remove: {
+    input: z.object({ templateId: idInput, fileId: idInput }),
+    output: z.object({ removed: z.boolean() }),
+  },
+  /** Smart Send: when the draft's first To recipient usually writes, as a send time; null from too little mail. */
+  smart_send_time: {
+    input: z.object({ draftId: idInput }),
+    output: z.object({
+      suggestion: z.object({ at: z.string(), hour: z.number().int().min(0).max(23), name: z.string() }).nullable(),
+    }),
+  },
+  /** Attaches a template's files to a draft; `leftOut` names the ones the message has no room for. */
+  template_apply: {
+    input: z.object({ draftId: idInput, templateId: idInput }),
+    output: z.object({ attached: z.array(composeAttachmentSchema), leftOut: z.array(z.string()) }),
   },
   template_delete: {
     input: z.object({ id: idInput }),
@@ -1102,6 +1264,50 @@ export const rpcSchemas = {
   // refuses plugin callers, none is discoverable, none is a tool, CLI or
   // mention. Model calls start only here, on the owner's click. ----
 
+  /** AI sorts the inbox: the owner's labels, in their order. */
+  ai_labels_list: {
+    input: z.object({}),
+    output: z.object({ labels: z.array(aiLabelSchema) }),
+  },
+  /** Insert (no id) or update. Refusals: invalid (name, description), conflict (name taken, twelve already), not_found. */
+  ai_label_save: {
+    input: z.strictObject({
+      id: idInput.optional(),
+      name: z.string().min(1).max(100),
+      description: z.string().min(1).max(1_000),
+      autoArchive: z.boolean(),
+    }),
+    output: z.object({ label: aiLabelSchema }),
+  },
+  ai_label_delete: {
+    input: z.object({ id: idInput }),
+    output: z.object({ ok: z.literal(true) }),
+  },
+  ai_label_move: {
+    input: z.object({ id: idInput, direction: z.union([z.literal(-1), z.literal(1)]) }),
+    output: z.object({ labels: z.array(aiLabelSchema) }),
+  },
+  /** AI writes mail: the reply drafted for a message, or null; a draft no longer wanted is deleted by this read. */
+  reply_draft_get: {
+    input: z.object({ messageId: idInput }),
+    output: z.object({
+      draft: z
+        .object({
+          paragraphs: z.array(z.string()),
+          preview: z.string(),
+          linksRemoved: z.number().int().min(0),
+          provider: z.string(),
+          model: z.string(),
+          createdAt: z.string(),
+        })
+        .nullable(),
+    }),
+  },
+  /** Use and Dismiss: the kept draft is deleted (the page already holds its text for Use). */
+  reply_draft_dismiss: {
+    input: z.object({ messageId: idInput }),
+    output: z.object({ ok: z.literal(true) }),
+  },
   /** A cached summary, or a job to poll. Refusals: out_of_scope, rate_limited, conflict, not_found, AI error kinds. */
   ai_start: {
     input: aiStartInput,
@@ -1200,6 +1406,19 @@ export const rpcSchemas = {
       }),
       /** Slice 3g: rule runs ready to start. */
       rulesReady: z.number().int().min(0),
+      /** Read statuses: sent mail of the last two weeks that was opened and not answered. */
+      opened: z
+        .array(
+          z.object({
+            accountId: z.string(),
+            threadId: z.string(),
+            subject: z.string(),
+            to: mailAddressSchema.nullable(),
+            count: z.number().int(),
+            lastAt: z.string(),
+          }),
+        )
+        .optional(),
     }),
   },
   /** "No reply needed": by the conversation's latest message. */
@@ -1841,6 +2060,33 @@ export const SLICE_3H_METHODS = [
   "related_messages",
   "sender_card",
 ] as const satisfies readonly (keyof typeof rpcSchemas)[];
+
+/** The owner-only method that tries a stopped account's saved password again. */
+export const SIGN_IN_METHODS = ["accounts_retry_sign_in"] as const satisfies readonly (keyof typeof rpcSchemas)[];
+
+/** The owner-only methods of the settings page. */
+/** The plugin API and the owner's methods for it (plugin-api.ts). */
+export const PLUGIN_METHODS = Object.keys(pluginSchemas) as readonly (keyof typeof pluginSchemas)[];
+
+/** The owner's methods for Inbox tabs (Split Inbox). */
+export const INBOX_TAB_METHODS = ["inbox_tabs_list", "inbox_tab_save", "inbox_tab_delete", "inbox_tab_move"] as const satisfies readonly (keyof typeof rpcSchemas)[];
+
+/** The owner's methods of the typing-speed project. */
+/** AI sorts the inbox: the owner's AI labels (owner only; refused to plugins, never a tool). */
+export const AI_SORT_METHODS = ["ai_labels_list", "ai_label_save", "ai_label_delete", "ai_label_move"] as const satisfies readonly (keyof typeof rpcSchemas)[];
+
+/** AI writes mail: the reply drafted for a new message (owner only; refused to plugins, never a tool). */
+export const AI_WRITE_METHODS = ["reply_draft_get", "reply_draft_dismiss"] as const satisfies readonly (keyof typeof rpcSchemas)[];
+
+/** Smart Send: the time the draft's first recipient usually writes (owner only; counted locally, no model). */
+export const SMART_SEND_METHODS = ["smart_send_time"] as const satisfies readonly (keyof typeof rpcSchemas)[];
+
+export const TYPING_METHODS = ["phrases_list", "template_file_begin", "template_file_finish", "template_file_remove", "template_apply"] as const satisfies readonly (keyof typeof rpcSchemas)[];
+
+export const SETTINGS_METHODS = ["settings_get", "settings_set"] as const satisfies readonly (keyof typeof rpcSchemas)[];
+
+/** The owner-only methods of Google sign-in. */
+export const GOOGLE_METHODS = ["google_sign_in_start", "google_sign_in_status"] as const satisfies readonly (keyof typeof rpcSchemas)[];
 
 /** The five owner-only methods slice 3p adds. */
 export const SLICE_3P_METHODS = [

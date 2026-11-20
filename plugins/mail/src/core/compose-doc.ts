@@ -3,6 +3,7 @@
 // server never takes HTML from the page; it renders HTML itself from the
 // normalized document, so only the whitelisted tags below can come out.
 import { z } from "zod";
+import { isAttribution } from "./quotes.ts";
 
 /** A node as the page sends it: generic, checked for shape, size and depth only. */
 export type DocNodeInput = {
@@ -153,6 +154,29 @@ export function normalizeDoc(input: DocNodeInput): ComposeDoc {
   return { type: "doc", content: content.length > 0 ? content : [{ type: "paragraph" }] };
 }
 
+const FORWARDED_MARK = /^-{5,}\s*Forwarded message\s*-{5,}$/i;
+const FORWARDED_FIELD = /^(?:From|Date|Subject|To|Cc):\s/;
+
+/**
+ * How many leading blocks are the owner's own: those before the first
+ * blockquote or signature, without the lines Mail wrote above the quote
+ * (a reply's "On ..., X wrote:" line, a forward's header block). Those
+ * lines carry the other side's name, address and subject: they are never
+ * sent as the owner's text and never replaced.
+ */
+export function ownerBlocksEnd(blocks: readonly { type: string; text: string }[]): number {
+  let end = blocks.findIndex((block) => block.type === "blockquote" || block.type === "signature");
+  if (end < 0) end = blocks.length;
+  const paragraph = (index: number) => (blocks[index]?.type === "paragraph" ? blocks[index]!.text.trim() : null);
+  const last = paragraph(end - 1);
+  if (last === null) return end;
+  if (isAttribution(last)) return end - 1;
+  // A forward: the mark, then header fields only, right up to the quote.
+  let at = end - 1;
+  while (at >= 0 && FORWARDED_FIELD.test(paragraph(at) ?? "")) at--;
+  return at >= 0 && at < end - 1 && FORWARDED_MARK.test(paragraph(at) ?? "") ? at : end;
+}
+
 /**
  * The owner's own text as Improve sends it (slice 3f, spec resolution 8):
  * the blocks before the first blockquote or signature node, one string per
@@ -171,7 +195,9 @@ export function ownerParagraphs(doc: ComposeDoc): { paragraphs: string[]; marks:
         return inline.text;
       })
       .join("");
-  for (const block of doc.content) {
+  const plain = (paragraph: ComposeParagraph) => (paragraph.content ?? []).map((inline) => (inline.type === "hardBreak" ? "\n" : inline.text)).join("");
+  const end = ownerBlocksEnd(doc.content.map((block) => ({ type: block.type, text: block.type === "paragraph" ? plain(block) : "" })));
+  for (const block of doc.content.slice(0, end)) {
     if (block.type === "blockquote" || block.type === "signature") break;
     if (block.type === "paragraph") paragraphs.push(text(block));
     else if (block.type === "codeBlock") {

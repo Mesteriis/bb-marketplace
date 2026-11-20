@@ -21,6 +21,10 @@
 //   - a move re-homes the row (same id) to the destination; without a uid map
 //     the row waits detached there until that folder's sync reattaches it by
 //     Gmail id or Message-ID, or deletes it at the end of the round.
+import type { OpenedUnanswered } from "../../core/read-status.ts";
+import type { TemplateFileInfo } from "../../core/ports.ts";
+import { NO_EXTRAS, TEMPLATE_FILES_MAX, TEMPLATE_FILES_MAX_BYTES, type TemplateExtras } from "../../core/snippets.ts";
+import { fromShape } from "../../core/search.ts";
 import { randomBytes } from "node:crypto";
 import type Database from "better-sqlite3";
 import type {
@@ -68,10 +72,15 @@ import {
   type InboundRow,
   type SendCheck,
 } from "../../core/identities.ts";
+import { PLUGIN_REF_PREFIX } from "../../core/agent-log.ts";
+import { NO_SENDER_SETS, TABS_MAX, TabsFullError, inSenderSet, type SenderSets, type TabMatch } from "../../core/inbox-tabs.ts";
+import { isPluginRight, type PluginRight } from "../../core/plugin-access.ts";
 import { OPEN_AI_SCOPE, inAiScope, senderExcluded, type AccountScope, type AiScope } from "../../core/ai-scope.ts";
 import { redactSecrets } from "../../core/redact.ts";
 import { AGENT_LOG_IDS_MAX, AGENT_LOG_KEEP_DAYS, AGENT_LOG_ROWS_MAX, type LogEntry } from "../../core/agent-log.ts";
 import type { AiCategoryAnswer } from "../../core/ai-input.ts";
+import { AiLabelRefusal, LABELS_MAX, labelKey, type MessageAi } from "../../core/ai-sort.ts";
+import { VOICE_SCAN } from "../../core/ai-write.ts";
 import {
   CATEGORY_RULES_MAX,
   type Category,
@@ -143,6 +152,7 @@ import {
   queryWords,
   rankContacts,
   type ContactMessage,
+  isAutomatedAddress,
 } from "../../core/contacts.ts";
 import {
   capInlineParts,
@@ -1021,6 +1031,117 @@ export const MIGRATIONS: string[] = [
     VALUES ('delete', old.seq, old.subject, old.from_name, old.from_address, old.body_text);
   END;
   `,
+  // 19: Google sign-in. An account says how it signs in; for 'google' the
+  // sealed credential is the grant's refresh token, and the scopes Google
+  // granted are kept space-separated.
+  `
+  ALTER TABLE accounts ADD COLUMN auth_kind TEXT NOT NULL DEFAULT 'password';
+  ALTER TABLE accounts ADD COLUMN granted_scopes TEXT NOT NULL DEFAULT '';
+  `,
+  // 20: plugin access. A grant is one plugin, one right, one account; a
+  // plugin has at most one pending request, and the times it asked are kept
+  // for the daily limit. A draft says which plugin prepared it. No
+  // REFERENCES: deletes are explicit (deleteAccount).
+  `
+  CREATE TABLE plugin_grants (
+    plugin_id TEXT NOT NULL,
+    right TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    granted_at TEXT NOT NULL,
+    PRIMARY KEY (plugin_id, right, account_id)
+  );
+  CREATE TABLE plugin_requests (
+    plugin_id TEXT PRIMARY KEY,
+    rights_json TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    asked_at TEXT NOT NULL
+  );
+  CREATE TABLE plugin_request_times (
+    plugin_id TEXT NOT NULL,
+    asked_at TEXT NOT NULL
+  );
+  CREATE INDEX plugin_request_times_plugin ON plugin_request_times(plugin_id, asked_at);
+  ALTER TABLE compose_drafts ADD COLUMN prepared_by TEXT;
+  `,
+  // 21: Inbox tabs (Split Inbox): a name and a search condition, in the owner's order.
+  `
+  CREATE TABLE inbox_tabs (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    query TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  `,
+  // 22: typing speed: what a template carries beside its text, and its files.
+  `
+  ALTER TABLE templates ADD COLUMN extras_json TEXT NOT NULL DEFAULT '{}';
+  CREATE TABLE template_files (
+    id TEXT PRIMARY KEY,
+    template_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    mime_type TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    sha256 TEXT NOT NULL,
+    data BLOB NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX template_files_template ON template_files(template_id, created_at, id);
+  `,
+  // 23: AI writes mail: a reply drafted for a new message, kept until the owner uses or dismisses it.
+  `
+  CREATE TABLE reply_drafts (
+    message_id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    paragraphs_json TEXT NOT NULL,
+    links_removed INTEGER NOT NULL,
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX reply_drafts_created ON reply_drafts(created_at);
+  `,
+  // 24: AI sorts the inbox: the owner's labels, and one line and label ids per sorted message (keyed like categories).
+  `
+  CREATE TABLE ai_labels (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    name_key TEXT NOT NULL UNIQUE,
+    description TEXT NOT NULL,
+    auto_archive INTEGER NOT NULL,
+    position INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE message_ai (
+    account_id TEXT NOT NULL,
+    dedup_key TEXT NOT NULL,
+    summary TEXT,
+    labels_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (account_id, dedup_key)
+  );
+  CREATE INDEX message_ai_created ON message_ai(created_at);
+  `,
+  // 25: read statuses: the token of a sent message, the opens the owner's endpoint recorded, and how far its feed was read.
+  `
+  CREATE TABLE sent_tracking (
+    token TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    rfc_message_id TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX sent_tracking_mid ON sent_tracking(rfc_message_id);
+  CREATE TABLE open_events (
+    seq INTEGER PRIMARY KEY,
+    token TEXT NOT NULL,
+    at TEXT NOT NULL,
+    kind TEXT NOT NULL
+  );
+  CREATE INDEX open_events_token ON open_events(token, at);
+  CREATE TABLE read_status_state (id INTEGER PRIMARY KEY CHECK (id = 1), scope TEXT NOT NULL, cursor INTEGER NOT NULL);
+  INSERT INTO read_status_state (id, scope, cursor) VALUES (1, '', 0);
+  `,
 ];
 
 const HTML_CAP = 1_000_000;
@@ -1167,6 +1288,8 @@ type AccountRow = {
   last_sync_at: string | null;
   last_error: string | null;
   auth_failed: number;
+  auth_kind: string;
+  granted_scopes: string;
   smtp_host: string | null;
   smtp_port: number | null;
   smtp_security: SmtpSecurity | null;
@@ -1197,6 +1320,7 @@ type MessageRow = {
 type HeaderRow = MessageRow & { to_json: string; cc_json: string; uid: number | null };
 
 type DraftRow = {
+  prepared_by?: string | null;
   id: string;
   account_id: string;
   kind: ComposeKind;
@@ -1338,6 +1462,7 @@ type TemplateRow = {
   name: string;
   name_key: string;
   doc_json: string;
+  extras_json: string;
   created_at: string;
   updated_at: string;
 };
@@ -1521,6 +1646,11 @@ function toContactMessage(row: ContactRow): ContactMessage {
 const MESSAGES_WITH_FOLDER = `messages m LEFT JOIN folders f
   ON f.account_id = m.account_id AND f.path = m.folder`;
 
+/** The membership rows of one account's folder, over alias m; a condition is appended with AND. */
+const ACCOUNT_FOLDER_ROWS = "FROM messages m WHERE m.account_id = @accountId AND m.folder = @folder AND m.move_pending IS NULL";
+/** The membership rows of a merged role, over alias m. */
+const ROLE_ROWS = `FROM ${MESSAGES_WITH_FOLDER} WHERE m.move_pending IS NULL AND ${ROW_ROLE} = @role`;
+
 /** Oldest first; an undated message sorts after every dated one. */
 const OLDEST_FIRST = "date IS NULL, date, id";
 
@@ -1638,13 +1768,39 @@ const FOLDER_NAMED = `(mail_lower(m.folder) = mail_lower(?) OR m.folder IN (
 
 const IN_ROLES: ReadonlySet<string> = new Set(["inbox", "sent", "drafts", "junk", "trash", "archive", "all"]);
 
+/** Every condition a tab's match reads (to know whether it asks for from:known). */
+function tabConditionsOf(tab: TabMatch | null): SearchCondition[] {
+  if (tab === null) return [];
+  return tab.kind === "all" ? tab.conditions : tab.of.flat();
+}
+
 /** One condition as SQL over alias m, its parameters pushed in order; null when it adds nothing. */
 function conditionSql(condition: SearchCondition, params: unknown[]): string | null {
   const { field, value } = condition;
   switch (field) {
-    case "from":
+    case "text": {
+      // An Inbox tab's free text, matched as search matches it: the full-text index, or fragments for a short word.
+      if (Array.from(value).length >= FTS_MIN_CHARS) {
+        params.push(ftsPhrase(value));
+        return "m.seq IN (SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?)";
+      }
+      params.push(likePattern(value), likePattern(value), likePattern(value));
+      return `(${LIKE("m.subject")} OR ${LIKE("m.from_name")} OR ${LIKE("m.from_address")})`;
+    }
+    case "from": {
+      const shape = fromShape(value);
+      if (shape === "address") {
+        params.push(value.trim());
+        return "mail_lower(m.from_address) = mail_lower(?)";
+      }
+      if (shape === "domain") {
+        const escaped = value.trim().replace(/[\\%_]/g, (c) => `\\${c}`);
+        params.push(`%@${escaped}`, `%.${escaped}`, likePattern(value));
+        return `(${LIKE("m.from_address")} OR ${LIKE("m.from_address")} OR ${LIKE("m.from_name")})`;
+      }
       params.push(likePattern(value), likePattern(value));
       return `(${LIKE("m.from_address")} OR ${LIKE("m.from_name")})`;
+    }
     case "to":
       params.push(likePattern(value));
       return LIKE("m.to_json");
@@ -1657,7 +1813,14 @@ function conditionSql(condition: SearchCondition, params: unknown[]): string | n
     case "list":
       params.push(likePattern(value));
       return LIKE("m.list_id");
+    case "sender":
+      // The owner's sent mail (rows of a Sent folder and accepted recipients) names the people they know.
+      if (value === "known") return "mail_known_sender(m.from_address) = 1";
+      if (value !== "vip" && value !== "team") return null;
+      params.push(value);
+      return "mail_sender_set(?, m.from_address) = 1";
     case "has":
+      if (value === "invite") return "EXISTS (SELECT 1 FROM attachments ia WHERE ia.message_id = m.id AND ia.kind = 'calendar')";
       return "m.has_attachments = 1";
     case "filename": {
       // No dot: an extension (filename:pdf is *.pdf); else a fragment.
@@ -1666,6 +1829,13 @@ function conditionSql(condition: SearchCondition, params: unknown[]): string | n
       return `EXISTS (SELECT 1 FROM attachments fa WHERE fa.message_id = m.id AND fa.is_inline = 0 AND ${LIKE("fa.filename")})`;
     }
     case "is":
+      if (value === "dev") return "(m.dev_source IS NOT NULL AND m.dev_source <> '')";
+      // A machine by its address, or bulk mail; never a mailing list (that is is:newsletter).
+      if (value === "automated") return "(COALESCE(m.list_id, '') = '' AND (mail_automated(m.from_address) = 1 OR m.bulk = 1))";
+      // A mailing list, or what the owner or AI filed under Newsletters.
+      if (value === "newsletter") {
+        return "(COALESCE(m.list_id, '') <> '' OR (m.account_id, m.dedup_key) IN (SELECT account_id, dedup_key FROM message_categories WHERE category = 'newsletters'))";
+      }
       return value === "unread" ? "m.is_read = 0" : "m.is_flagged = 1";
     case "larger":
       params.push(Number(value));
@@ -1680,6 +1850,11 @@ function conditionSql(condition: SearchCondition, params: unknown[]): string | n
       params.push(date);
       return field === "after" ? "m.date >= ?" : "m.date < ?";
     }
+    case "ai":
+      // One of the owner's AI labels by name; an unknown name matches nothing.
+      params.push(labelKey(value));
+      return `(m.account_id, m.dedup_key) IN (SELECT ma.account_id, ma.dedup_key FROM message_ai ma, json_each(ma.labels_json) je
+          JOIN ai_labels al ON al.id = je.value WHERE al.name_key = ?)`;
     case "category":
       params.push(value.toLowerCase());
       return "(m.account_id, m.dedup_key) IN (SELECT account_id, dedup_key FROM message_categories WHERE category = ?)";
@@ -1743,7 +1918,9 @@ function toAccount(row: AccountRow): StoredAccount {
     lastSyncAt: row.last_sync_at,
     lastError: row.last_error,
     authFailed: row.auth_failed === 1,
+    authKind: row.auth_kind === "google" ? "google" : "password",
     passwordSealed: row.password_sealed,
+    grantedScopes: row.granted_scopes === "" ? [] : row.granted_scopes.split(" "),
     smtp:
       row.smtp_host !== null && row.smtp_port !== null && row.smtp_security !== null
         ? {
@@ -1790,6 +1967,7 @@ function toDraft(row: DraftRow): DraftRecord {
           }
         : null,
     origin: row.origin,
+    preparedBy: row.prepared_by ?? null,
     proposalId: row.proposal_id,
     purpose: row.purpose,
     fromAddress: row.from_address,
@@ -1815,8 +1993,15 @@ function toAlias(row: IdentityRow): AliasRow {
   };
 }
 
-function toTemplate(row: TemplateRow): TemplateRecord {
+function extrasOf(json: string): TemplateExtras {
+  const stored = JSON.parse(json) as Partial<TemplateExtras>;
+  return { subject: stored.subject ?? null, to: stored.to ?? [], cc: stored.cc ?? [], bcc: stored.bcc ?? [] };
+}
+
+function toTemplate(row: TemplateRow, files: TemplateFileInfo[]): TemplateRecord {
   return {
+    ...extrasOf(row.extras_json),
+    files,
     id: row.id,
     name: row.name,
     nameKey: row.name_key,
@@ -1897,6 +2082,44 @@ export function hardenDatabase(db: Database.Database): { pragma: boolean; fts: b
  * 20): every requested flag on the same row, or the kept thread's row.
  * Empty when nothing narrows the list.
  */
+/**
+ * A tab's conditions as one SQL condition over alias m with named parameters
+ * (the conversation lists bind by name). Null when the conditions add nothing.
+ */
+function namedConditions(conditions: readonly SearchCondition[], prefix: string, params: Record<string, unknown>): string | null {
+  const positional: unknown[] = [];
+  const parts = conditionsSql(conditions, positional);
+  if (parts.length === 0) return null;
+  let index = 0;
+  const sql = parts.join(" AND ").replace(/\?/g, () => {
+    const name = `${prefix}${index}`;
+    params[name] = positional[index];
+    index += 1;
+    return `@${name}`;
+  });
+  return `(${sql})`;
+}
+
+/**
+ * The conversation condition of an Inbox tab. `rows` is the scope's membership
+ * rows over alias m ("FROM … WHERE …", no trailing condition). `all`: a member
+ * row matches every condition. `none`: no member row matches any of the other
+ * tabs. Returns SQL to AND onto the list's WHERE over `threads.id`.
+ */
+function tabCondition(tab: TabMatch | null | undefined, rows: string, params: Record<string, unknown>): string {
+  if (tab === undefined) return "";
+  // A tab whose condition no longer parses holds nothing.
+  if (tab === null) return " AND 0";
+  if (tab.kind === "all") {
+    const sql = namedConditions(tab.conditions, "tab", params);
+    return sql === null ? "" : ` AND threads.id IN (SELECT m.thread_id ${rows} AND ${sql})`;
+  }
+  const ors = tab.of
+    .map((conditions, i) => namedConditions(conditions, `tab${i}_`, params))
+    .filter((sql): sql is string => sql !== null);
+  return ors.length === 0 ? "" : ` AND threads.id NOT IN (SELECT m.thread_id ${rows} AND (${ors.join(" OR ")}))`;
+}
+
 function filterCondition(filter: ThreadFilter | undefined): string {
   const flags = [
     filter?.unread === true ? "m.is_read = 0" : null,
@@ -2356,6 +2579,37 @@ export function createSqliteStore(db: Database.Database): MailStore {
       return [];
     }
   };
+  // Inbox tabs: the sender sets of from:vip and from:team, and the people the owner wrote to (from:known).
+  let senderSets: SenderSets = NO_SENDER_SETS;
+  let known: { at: number; addresses: Set<string> } | null = null;
+  const KNOWN_FRESH_MS = 60_000;
+  /**
+   * Reads the people the owner wrote to before a statement that asks for them runs: a SQL function cannot
+   * query the connection that is executing it.
+   */
+  const freshKnown = (conditions: readonly SearchCondition[]): void => {
+    if (!conditions.some((condition) => condition.field === "sender" && condition.value === "known")) return;
+    const now = Date.now();
+    if (known !== null && now - known.at < KNOWN_FRESH_MS) return;
+    const addresses = new Set<string>();
+    for (const row of db.prepare<[], { address: string }>("SELECT address FROM sent_recipients").iterate()) {
+      addresses.add(row.address.trim().toLowerCase());
+    }
+    const sent = db
+      .prepare<[], { to_json: string; cc_json: string }>(`SELECT m.to_json, m.cc_json FROM ${MESSAGES_WITH_FOLDER} WHERE ${ROW_ROLE} = 'sent'`)
+      .iterate();
+    for (const row of sent) {
+      for (const address of [...addressesOf(row.to_json), ...addressesOf(row.cc_json)]) addresses.add(address.trim().toLowerCase());
+    }
+    known = { at: now, addresses };
+  };
+  db.function("mail_sender_set", { deterministic: false }, (kind: unknown, from: unknown) =>
+    (kind === "vip" || kind === "team") && inSenderSet(senderSets, kind, String(from ?? "")) ? 1 : 0,
+  );
+  db.function("mail_known_sender", { deterministic: false }, (from: unknown) =>
+    known !== null && known.addresses.has(String(from ?? "").trim().toLowerCase()) ? 1 : 0,
+  );
+  db.function("mail_automated", { deterministic: true }, (from: unknown) => (isAutomatedAddress(String(from ?? "")) ? 1 : 0));
   db.function("mail_sender_excluded", { deterministic: false }, (from: unknown, to: unknown, cc: unknown) =>
     senderExcluded([String(from ?? ""), ...addressesOf(to), ...addressesOf(cc)], aiScope) ? 1 : 0,
   );
@@ -2734,7 +2988,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
    */
   function labelLookup(query: {
     latest: string;
-    params: Record<string, string>;
+    params: Record<string, unknown>;
   }): (threadId: string) => { category: Category | null; suggestion: AiCategoryAnswer | null } {
     const statement = db
       .prepare<[Record<string, unknown>], { category: Category | null; suggestion: AiCategoryAnswer | null }>(
@@ -2762,7 +3016,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
     snoozed: string;
     /** The thread's rows in scope, alias l, for @threadId (slice 3f): the latest one's label and suggestion. */
     latest: string;
-    params: Record<string, string>;
+    params: Record<string, unknown>;
     cursor: string | null;
     limit: number;
   }): { threads: ThreadSummary[]; nextCursor: string | null } {
@@ -2870,11 +3124,16 @@ export function createSqliteStore(db: Database.Database): MailStore {
       where.push("m.account_id = ?");
       params.push(accountId);
     }
+    freshKnown(query.conditions);
     where.push(...conditionsSql(query.conditions, params));
     // A row waiting to move out is hidden until the move completes.
     where.push("m.move_pending IS NULL");
     // Agent paths: rows outside the AI scope go before the dedup picks a copy.
     if (opts?.scoped === true) where.push(IN_AI_SCOPE);
+    // A sender set (from:vip, from:team, from:known) is the owner's alone: it is
+    // built from their settings and from Sent mail of every account, so a
+    // scoped reader could use it to ask about mail it may not see.
+    if (opts?.scoped === true && query.conditions.some((c) => c.field === "sender")) where.push("0");
 
     // Keyset after the cursor in the order below (spec resolution 17).
     const cursor = opts?.cursor ?? null;
@@ -3265,10 +3524,12 @@ export function createSqliteStore(db: Database.Database): MailStore {
       db.prepare(
         `INSERT INTO accounts (id, email, display_name, host, port, username, password_sealed,
            preset, created_at, last_sync_at, last_error, auth_failed,
-           smtp_host, smtp_port, smtp_security, smtp_username, sent_copy, signature_json, snooze_folder)
+           smtp_host, smtp_port, smtp_security, smtp_username, sent_copy, signature_json, snooze_folder,
+           auth_kind, granted_scopes)
          VALUES (@id, @email, @displayName, @host, @port, @username, @passwordSealed,
            @preset, @createdAt, @lastSyncAt, @lastError, @authFailed,
-           @smtpHost, @smtpPort, @smtpSecurity, @smtpUsername, @sentCopy, @signature, @snoozeFolder)
+           @smtpHost, @smtpPort, @smtpSecurity, @smtpUsername, @sentCopy, @signature, @snoozeFolder,
+           @authKind, @grantedScopes)
          ON CONFLICT(id) DO UPDATE SET email = excluded.email,
            display_name = excluded.display_name, host = excluded.host, port = excluded.port,
            username = excluded.username, password_sealed = excluded.password_sealed,
@@ -3277,7 +3538,8 @@ export function createSqliteStore(db: Database.Database): MailStore {
            auth_failed = excluded.auth_failed, smtp_host = excluded.smtp_host,
            smtp_port = excluded.smtp_port, smtp_security = excluded.smtp_security,
            smtp_username = excluded.smtp_username, sent_copy = excluded.sent_copy,
-           signature_json = excluded.signature_json, snooze_folder = excluded.snooze_folder`,
+           signature_json = excluded.signature_json, snooze_folder = excluded.snooze_folder,
+           auth_kind = excluded.auth_kind, granted_scopes = excluded.granted_scopes`,
       ).run({
         id: account.id,
         email: account.email,
@@ -3298,6 +3560,8 @@ export function createSqliteStore(db: Database.Database): MailStore {
         sentCopy: account.sentCopy,
         signature: account.signature === null ? null : JSON.stringify(account.signature),
         snoozeFolder: account.snoozeFolder,
+        authKind: account.authKind,
+        grantedScopes: account.grantedScopes.join(" "),
       });
     },
 
@@ -3318,6 +3582,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
         ).run(id);
         db.prepare("DELETE FROM folders WHERE account_id = ?").run(id);
         db.prepare("DELETE FROM image_senders WHERE account_id = ?").run(id);
+        db.prepare("DELETE FROM plugin_grants WHERE account_id = ?").run(id);
         db.prepare(
           "DELETE FROM translations WHERE message_id IN (SELECT id FROM messages WHERE account_id = ?)",
         ).run(id);
@@ -3800,14 +4065,17 @@ export function createSqliteStore(db: Database.Database): MailStore {
       });
     },
 
-    listThreads(accountId, folder, cursor, limit, filter) {
+    listThreads(accountId, folder, cursor, limit, filter, tab) {
+      const tabParams: Record<string, unknown> = {};
+      if (tab !== undefined) freshKnown(tabConditionsOf(tab));
+      const tabSql = tabCondition(tab, ACCOUNT_FOLDER_ROWS, tabParams);
       // Whole (account-wide) threads with a row in the folder that is not
       // waiting to move out. An uncorrelated IN list is built once from the
       // (account_id, folder, move_pending) index, so the cost stays linear;
       // the quick filters narrow that same list (spec resolution 20).
       return pageThreads({
         where: `account_id = @accountId AND threads.id IN (SELECT m.thread_id FROM messages m
-          WHERE m.account_id = @accountId AND m.folder = @folder AND m.move_pending IS NULL${filterCondition(filter)})`,
+          WHERE m.account_id = @accountId AND m.folder = @folder AND m.move_pending IS NULL${filterCondition(filter)})${tabSql}`,
         flagged: `EXISTS (SELECT 1 FROM messages f
           WHERE f.thread_id = threads.id AND f.account_id = @accountId AND f.folder = @folder
             AND f.move_pending IS NULL AND f.is_flagged = 1)`,
@@ -3815,22 +4083,25 @@ export function createSqliteStore(db: Database.Database): MailStore {
           WHERE s.thread_id = threads.id AND s.account_id = @accountId AND s.folder = @folder)`,
         latest: `messages l WHERE l.thread_id = @threadId AND l.account_id = @accountId AND l.folder = @folder
           AND l.move_pending IS NULL`,
-        params: { accountId, folder, ...filterParams(filter) },
+        params: { accountId, folder, ...filterParams(filter), ...tabParams },
         cursor,
         limit,
       });
     },
 
-    listThreadsAll(role, cursor, limit, filter) {
+    listThreadsAll(role, cursor, limit, filter, tab) {
       // Gmail's All Mail is never merged (server refuses the role too).
       if (role === "all") return { threads: [], nextCursor: null };
+      const tabParams: Record<string, unknown> = {};
+      if (tab !== undefined) freshKnown(tabConditionsOf(tab));
+      const tabSql = tabCondition(tab, ROLE_ROWS, tabParams);
       // Thread ids are globally unique (threads.id is the primary key), so the
       // membership list needs no account match. The unary + keeps SQLite from
       // driving the query by the id autoindex: it scans threads_last_date in
       // (last_date DESC, id DESC) order without a temp B-tree.
       return pageThreads({
         where: `+threads.id IN (SELECT m.thread_id FROM ${MESSAGES_WITH_FOLDER}
-          WHERE m.move_pending IS NULL AND ${ROW_ROLE} = @role${filterCondition(filter)})`,
+          WHERE m.move_pending IS NULL AND ${ROW_ROLE} = @role${filterCondition(filter)})${tabSql}`,
         flagged: `EXISTS (SELECT 1 FROM ${MESSAGES_WITH_FOLDER}
           WHERE m.thread_id = threads.id AND m.move_pending IS NULL AND m.is_flagged = 1
             AND ${ROW_ROLE} = @role)`,
@@ -3839,9 +4110,303 @@ export function createSqliteStore(db: Database.Database): MailStore {
         latest: `messages l LEFT JOIN folders lf ON lf.account_id = l.account_id AND lf.path = l.folder
           WHERE l.thread_id = @threadId AND l.move_pending IS NULL
             AND (CASE WHEN lf.special_use IS NOT NULL THEN lf.special_use WHEN upper(l.folder) = 'INBOX' THEN 'inbox' END) = @role`,
-        params: { role, ...filterParams(filter) },
+        params: { role, ...filterParams(filter), ...tabParams },
         cursor,
         limit,
+      });
+    },
+
+    listAiLabels() {
+      return db
+        .prepare<[], { id: string; name: string; description: string; auto_archive: number }>(
+          "SELECT id, name, description, auto_archive FROM ai_labels ORDER BY position, id",
+        )
+        .all()
+        .map((row) => ({ id: row.id, name: row.name, description: row.description, autoArchive: row.auto_archive === 1 }));
+    },
+    saveAiLabel(label, nowIso) {
+      atomic(() => {
+        const key = labelKey(label.name);
+        const taken = db.prepare<[string, string], { id: string }>("SELECT id FROM ai_labels WHERE name_key = ? AND id <> ?").get(key, label.id);
+        if (taken !== undefined) throw new AiLabelRefusal("name_taken");
+        const existing = db.prepare<[string], { id: string }>("SELECT id FROM ai_labels WHERE id = ?").get(label.id);
+        if (existing === undefined) {
+          const { n, last } = db.prepare<[], { n: number; last: number | null }>("SELECT count(*) AS n, max(position) AS last FROM ai_labels").get()!;
+          if (n >= LABELS_MAX) throw new AiLabelRefusal("full");
+          db.prepare("INSERT INTO ai_labels (id, name, name_key, description, auto_archive, position, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)").run(
+            label.id, label.name, key, label.description, label.autoArchive ? 1 : 0, (last ?? -1) + 1, nowIso,
+          );
+          return;
+        }
+        db.prepare("UPDATE ai_labels SET name = ?, name_key = ?, description = ?, auto_archive = ? WHERE id = ?").run(
+          label.name, key, label.description, label.autoArchive ? 1 : 0, label.id,
+        );
+      });
+    },
+    deleteAiLabel(id) {
+      return db.prepare("DELETE FROM ai_labels WHERE id = ?").run(id).changes > 0;
+    },
+    moveAiLabel(id, direction) {
+      atomic(() => {
+        const labels = db.prepare<[], { id: string; position: number }>("SELECT id, position FROM ai_labels ORDER BY position, id").all();
+        const at = labels.findIndex((label) => label.id === id);
+        const other = labels[at + direction];
+        if (at < 0 || other === undefined) return;
+        const set = db.prepare("UPDATE ai_labels SET position = ? WHERE id = ?");
+        set.run(other.position, id);
+        set.run(labels[at]!.position, other.id);
+      });
+    },
+    saveMessageAi(rows, nowIso, keepSinceIso) {
+      atomic(() => {
+        const put = db.prepare(
+          `INSERT OR REPLACE INTO message_ai (account_id, dedup_key, summary, labels_json, created_at)
+           SELECT account_id, dedup_key, ?, ?, ? FROM messages WHERE id = ?`,
+        );
+        for (const row of rows) put.run(row.summary, JSON.stringify(row.labelIds), nowIso, row.messageId);
+        db.prepare("DELETE FROM message_ai WHERE created_at < ?").run(keepSinceIso);
+      });
+    },
+    messageAi(messageIds) {
+      const known = new Set(db.prepare<[], { id: string }>("SELECT id FROM ai_labels").all().map((row) => row.id));
+      const get = db.prepare<[string], { summary: string | null; labels_json: string }>(
+        `SELECT ma.summary, ma.labels_json FROM messages m
+         JOIN message_ai ma ON ma.account_id = m.account_id AND ma.dedup_key = m.dedup_key WHERE m.id = ?`,
+      );
+      const out = new Map<string, MessageAi>();
+      for (const id of messageIds) {
+        const row = get.get(id);
+        if (row !== undefined) out.set(id, { summary: row.summary, labelIds: (JSON.parse(row.labels_json) as string[]).filter((label) => known.has(label)) });
+      }
+      return out;
+    },
+    threadAi(threadIds) {
+      const known = new Set(db.prepare<[], { id: string }>("SELECT id FROM ai_labels").all().map((row) => row.id));
+      const get = db.prepare<[string], { summary: string | null; labels_json: string }>(
+        `SELECT ma.summary, ma.labels_json FROM messages m
+         JOIN message_ai ma ON ma.account_id = m.account_id AND ma.dedup_key = m.dedup_key
+         WHERE m.thread_id = ? ORDER BY m.date IS NULL DESC, m.date DESC, m.id DESC LIMIT 1`,
+      );
+      const out = new Map<string, MessageAi>();
+      for (const id of threadIds) {
+        const row = get.get(id);
+        if (row !== undefined) out.set(id, { summary: row.summary, labelIds: (JSON.parse(row.labels_json) as string[]).filter((label) => known.has(label)) });
+      }
+      return out;
+    },
+
+    saveSentTracking(row) {
+      db.prepare(`INSERT OR REPLACE INTO sent_tracking (token, account_id, rfc_message_id, created_at) VALUES (?, ?, ?, ?)`).run(
+        row.token,
+        row.accountId,
+        normalizeMessageId(row.rfcMessageId),
+        row.createdAt,
+      );
+    },
+
+    saveOpenEvents(events) {
+      const insert = db.prepare(
+        `INSERT OR IGNORE INTO open_events (seq, token, at, kind) SELECT ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM sent_tracking WHERE token = ?)`,
+      );
+      return db.transaction(() => events.reduce((kept, event) => kept + insert.run(event.seq, event.token, event.at, event.kind, event.token).changes, 0))();
+    },
+
+    openFeed() {
+      return db.prepare<[], { scope: string; cursor: number }>("SELECT scope, cursor FROM read_status_state WHERE id = 1").get() ?? { scope: "", cursor: 0 };
+    },
+
+    resetOpenFeed(scope) {
+      db.transaction(() => {
+        db.prepare("DELETE FROM open_events").run();
+        db.prepare("UPDATE read_status_state SET scope = ?, cursor = 0 WHERE id = 1").run(scope);
+      })();
+    },
+
+    setOpenCursor(seq) {
+      db.prepare("UPDATE read_status_state SET cursor = ? WHERE id = 1").run(seq);
+    },
+
+    messageOpens(messageIds) {
+      const header = db.prepare<[string], { message_id: string | null }>("SELECT message_id FROM messages WHERE id = ?");
+      const tokens = db.prepare<[string], { token: string }>("SELECT token FROM sent_tracking WHERE rfc_message_id = ?");
+      const opens = db.prepare<[string], { at: string; kind: string }>("SELECT at, kind FROM open_events WHERE token = ? ORDER BY at, seq");
+      const out = new Map<string, { at: string; kind: string }[]>();
+      for (const id of messageIds) {
+        const rfc = header.get(id)?.message_id ?? null;
+        if (rfc === null) continue;
+        const found = tokens.all(normalizeMessageId(rfc));
+        if (found.length === 0) continue;
+        out.set(id, found.flatMap((row) => opens.all(row.token)).sort((a, b) => a.at.localeCompare(b.at)));
+      }
+      return out;
+    },
+
+    threadOpens(threadIds) {
+      const members = db.prepare<[string], { message_id: string }>("SELECT DISTINCT message_id FROM messages WHERE thread_id = ? AND message_id IS NOT NULL");
+      const tokens = db.prepare<[string], { token: string }>("SELECT token FROM sent_tracking WHERE rfc_message_id = ?");
+      const opens = db.prepare<[string], { at: string; kind: string; seq: number }>("SELECT at, kind, seq FROM open_events WHERE token = ?");
+      const out = new Map<string, { at: string; kind: string }[]>();
+      for (const threadId of threadIds) {
+        // Each token once: the same message is often stored in several folders (Sent and All Mail).
+        const found = new Set<string>();
+        for (const row of new Set(members.all(threadId).map((member) => normalizeMessageId(member.message_id)))) {
+          for (const tracked of tokens.all(row)) found.add(tracked.token);
+        }
+        if (found.size === 0) continue;
+        out.set(
+          threadId,
+          [...found]
+            .flatMap((token) => opens.all(token))
+            .sort((x, y) => x.at.localeCompare(y.at) || x.seq - y.seq)
+            .map(({ at, kind }) => ({ at, kind })),
+        );
+      }
+      return out;
+    },
+
+    openedUnanswered(sinceIso, limit) {
+      const tracked = db
+        .prepare<[string], { token: string; account_id: string; rfc_message_id: string }>(
+          "SELECT token, account_id, rfc_message_id FROM sent_tracking WHERE created_at >= ? ORDER BY created_at DESC LIMIT 500",
+        )
+        .all(sinceIso);
+      const opens = db.prepare<[string], { n: number; last: string | null }>(
+        "SELECT count(*) AS n, max(at) AS last FROM open_events WHERE token = ? AND kind <> 'machine'",
+      );
+      const message = db.prepare<[string, string, string], { thread_id: string; subject: string; date: string | null; to_json: string }>(
+        "SELECT thread_id, subject, date, to_json FROM messages WHERE account_id = ? AND message_id IN (?, ?) ORDER BY date DESC LIMIT 1",
+      );
+      // A message without a date counts as later: it is not the tracked one, and an answer must not be missed.
+      const later = db.prepare<[string, string], { n: number }>("SELECT count(*) AS n FROM messages WHERE thread_id = ? AND (date > ? OR date IS NULL)");
+      const out: OpenedUnanswered[] = [];
+      for (const row of tracked) {
+        const seen = opens.get(row.token);
+        if (seen === undefined || seen.n === 0 || seen.last === null) continue;
+        const sent = message.get(row.account_id, row.rfc_message_id, `<${row.rfc_message_id}>`);
+        if (sent === undefined || sent.date === null || later.get(sent.thread_id, sent.date)!.n > 0) continue;
+        const to = (JSON.parse(sent.to_json) as { name: string | null; address: string }[])[0] ?? null;
+        out.push({ accountId: row.account_id, threadId: sent.thread_id, subject: sent.subject, to, count: seen.n, lastAt: seen.last });
+      }
+      return out.sort((a, b) => b.lastAt.localeCompare(a.lastAt)).slice(0, limit);
+    },
+
+    pruneTracking(beforeIso) {
+      db.transaction(() => {
+        db.prepare("DELETE FROM open_events WHERE token IN (SELECT token FROM sent_tracking WHERE created_at < ?)").run(beforeIso);
+        db.prepare("DELETE FROM sent_tracking WHERE created_at < ?").run(beforeIso);
+      })();
+    },
+
+    saveReplyDraft(draft, max) {
+      db.prepare(
+        `INSERT OR REPLACE INTO reply_drafts (message_id, account_id, paragraphs_json, links_removed, provider, model, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ).run(draft.messageId, draft.accountId, JSON.stringify(draft.paragraphs), draft.linksRemoved, draft.provider, draft.model, draft.createdAt);
+      db.prepare(
+        `DELETE FROM reply_drafts WHERE message_id NOT IN (SELECT message_id FROM reply_drafts ORDER BY created_at DESC, message_id LIMIT ?)`,
+      ).run(max);
+    },
+
+    getReplyDraft(messageId) {
+      const row = db
+        .prepare<[string], { account_id: string; paragraphs_json: string; links_removed: number; provider: string; model: string; created_at: string }>(
+          `SELECT account_id, paragraphs_json, links_removed, provider, model, created_at FROM reply_drafts WHERE message_id = ?`,
+        )
+        .get(messageId);
+      if (row === undefined) return null;
+      return {
+        messageId,
+        accountId: row.account_id,
+        paragraphs: JSON.parse(row.paragraphs_json) as string[],
+        linksRemoved: row.links_removed,
+        provider: row.provider,
+        model: row.model,
+        createdAt: row.created_at,
+      };
+    },
+
+    deleteReplyDraft(messageId) {
+      return db.prepare(`DELETE FROM reply_drafts WHERE message_id = ?`).run(messageId).changes > 0;
+    },
+
+    listInboxTabs() {
+      return db
+        .prepare<[], { id: string; name: string; query: string; position: number }>(
+          "SELECT id, name, query, position FROM inbox_tabs ORDER BY position, id",
+        )
+        .all();
+    },
+    saveInboxTab(tab, nowIso) {
+      return atomic(() => {
+        const existing = db.prepare<[string], { position: number }>("SELECT position FROM inbox_tabs WHERE id = ?").get(tab.id);
+        if (existing === undefined) {
+          const { n, last } = db.prepare<[], { n: number; last: number | null }>("SELECT count(*) AS n, max(position) AS last FROM inbox_tabs").get()!;
+          if (n >= TABS_MAX) throw new TabsFullError();
+          const position = (last ?? -1) + 1;
+          db.prepare("INSERT INTO inbox_tabs (id, name, query, position, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)").run(
+            tab.id, tab.name, tab.query, position, nowIso, nowIso,
+          );
+          return { ...tab, position };
+        }
+        db.prepare("UPDATE inbox_tabs SET name = ?, query = ?, updated_at = ? WHERE id = ?").run(tab.name, tab.query, nowIso, tab.id);
+        return { ...tab, position: existing.position };
+      });
+    },
+    deleteInboxTab(id) {
+      db.prepare("DELETE FROM inbox_tabs WHERE id = ?").run(id);
+    },
+    moveInboxTab(id, direction) {
+      atomic(() => {
+        const tabs = db.prepare<[], { id: string; position: number }>("SELECT id, position FROM inbox_tabs ORDER BY position, id").all();
+        const at = tabs.findIndex((tab) => tab.id === id);
+        const other = tabs[at + direction];
+        if (at < 0 || other === undefined) return;
+        const set = db.prepare("UPDATE inbox_tabs SET position = ? WHERE id = ?");
+        set.run(other.position, id);
+        set.run(tabs[at]!.position, other.id);
+      });
+    },
+    sentTexts(limit) {
+      return db
+        .prepare<[number], { body_text: string }>(
+          // The start of each message is enough for its own text, and bounds the work on long threads.
+          `SELECT substr(m.body_text, 1, 8000) AS body_text FROM ${MESSAGES_WITH_FOLDER}
+           WHERE ${ROW_ROLE} = 'sent' AND m.body_text IS NOT NULL AND m.body_text <> '' AND m.move_pending IS NULL
+           ORDER BY m.date DESC, m.seq DESC LIMIT ?`,
+        )
+        .all(limit)
+        .map((row) => row.body_text);
+    },
+
+    voiceTexts(to, limit) {
+      const wanted = to === null ? null : to.trim().toLowerCase();
+      const rows = db
+        .prepare<[number], { body_text: string; to_json: string }>(
+          `SELECT substr(m.body_text, 1, 8000) AS body_text, m.to_json FROM ${MESSAGES_WITH_FOLDER}
+           WHERE ${ROW_ROLE} = 'sent' AND m.body_text IS NOT NULL AND m.body_text <> '' AND m.move_pending IS NULL AND ${IN_AI_SCOPE}
+           ORDER BY m.date DESC, m.seq DESC LIMIT ?`,
+        )
+        .all(wanted === null ? limit : VOICE_SCAN);
+      const kept = wanted === null
+        ? rows
+        : rows.filter((row) => (JSON.parse(row.to_json) as MailAddress[]).some((a) => a.address.trim().toLowerCase() === wanted));
+      return kept.slice(0, limit).map((row) => row.body_text);
+    },
+
+    tabUnreadCounts(scope, matches) {
+      const rows = "accountId" in scope ? ACCOUNT_FOLDER_ROWS : ROLE_ROWS;
+      const base: Record<string, unknown> = "accountId" in scope ? { accountId: scope.accountId, folder: scope.folder } : { role: scope.role };
+      return matches.map((match) => {
+        if (match === null) return 0;
+        freshKnown(tabConditionsOf(match));
+        const params = { ...base };
+        const tabSql = tabCondition(match, rows, params);
+        const row = db
+          .prepare<[Record<string, unknown>], { n: number }>(
+            `SELECT count(*) AS n FROM (SELECT DISTINCT m.thread_id AS id ${rows} AND m.is_read = 0) threads WHERE 1${tabSql}`,
+          )
+          .get(params);
+        return row?.n ?? 0;
       });
     },
 
@@ -4407,6 +4972,17 @@ export function createSqliteStore(db: Database.Database): MailStore {
       atomic(() => deleteDraftRows(id));
     },
 
+    markDraftPreparedBy(draftId, pluginId) {
+      db.prepare("UPDATE compose_drafts SET prepared_by = ? WHERE id = ?").run(pluginId, draftId);
+    },
+    pluginDraftTimes(pluginId) {
+      return db
+        .prepare<[string, string], { created_at: string }>(
+          "SELECT created_at FROM compose_drafts WHERE prepared_by = ? AND created_at > ? ORDER BY created_at DESC",
+        )
+        .all(pluginId, new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString())
+        .map((row) => row.created_at);
+    },
     listDrafts(accountId) {
       return db
         .prepare<[string], DraftRow>(
@@ -4915,24 +5491,28 @@ export function createSqliteStore(db: Database.Database): MailStore {
       const scoped = opts?.scoped === true;
       if (scoped) freshScope();
       // The topic mask runs over redacted text (messageTextMask), so a secret never finds a contact.
+      // One account (the plugin API): every read below stays inside it.
+      const only = opts?.accountId ?? null;
       const rows = db
-        .prepare<[{ words: string; scan: number }], ContactRow>(
+        .prepare<[{ words: string; scan: number; only: string | null }], ContactRow>(
           `SELECT ${CONTACT_COLUMNS},
              mail_contact_mask(m.subject, m.snippet, substr(m.body_text, 1, ${CONTACT_BODY_CHARS}), @words) AS mask
            FROM ${MESSAGES_WITH_FOLDER}
            WHERE ${CONTACT_ROWS}${scoped ? ` AND ${IN_AI_SCOPE}` : ""}
+             AND (@only IS NULL OR m.account_id = @only)
            ORDER BY m.date IS NULL, m.date DESC, m.seq DESC LIMIT @scan`,
         )
-        .all({ words: JSON.stringify(words), scan: CONTACT_SCAN });
+        .all({ words: JSON.stringify(words), scan: CONTACT_SCAN, only });
       const bulkSenders = new Set(
         db
-          .prepare<[], { address: string }>(
-            "SELECT DISTINCT mail_lower(trim(from_address)) AS address FROM messages WHERE bulk = 1",
+          .prepare<[{ only: string | null }], { address: string }>(
+            "SELECT DISTINCT mail_lower(trim(from_address)) AS address FROM messages WHERE bulk = 1 AND (@only IS NULL OR account_id = @only)",
           )
-          .all()
+          .all({ only })
           .map((row) => row.address),
       );
-      const ranked = rankContacts(rows.map(toContactMessage), words, ownerAccounts(), bulkSenders, scoped ? Infinity : limit);
+      const owners = only === null ? ownerAccounts() : ownerAccounts().filter((owner) => owner.id === only);
+      const ranked = rankContacts(rows.map(toContactMessage), words, owners, bulkSenders, scoped ? Infinity : limit);
       return scoped ? ranked.filter((c) => !senderExcluded([c.address], aiScope)).slice(0, limit) : ranked;
     },
 
@@ -5246,7 +5826,17 @@ export function createSqliteStore(db: Database.Database): MailStore {
     },
 
     listTemplates() {
-      return db.prepare<[], TemplateRow>("SELECT * FROM templates ORDER BY name_key, id").all().map(toTemplate);
+      const files = new Map<string, TemplateFileInfo[]>();
+      const rows = db
+        .prepare<[], TemplateFileInfo & { templateId: string }>(
+          "SELECT template_id AS templateId, id, name, mime_type AS mimeType, size FROM template_files ORDER BY created_at, rowid",
+        )
+        .all();
+      for (const { templateId, ...file } of rows) files.set(templateId, [...(files.get(templateId) ?? []), file]);
+      return db
+        .prepare<[], TemplateRow>("SELECT * FROM templates ORDER BY name_key, id")
+        .all()
+        .map((row) => toTemplate(row, files.get(row.id) ?? []));
     },
 
     saveTemplate(input, newId, nowIso) {
@@ -5259,10 +5849,11 @@ export function createSqliteStore(db: Database.Database): MailStore {
           input.id === null ? undefined : db.prepare<[string], TemplateRow>("SELECT * FROM templates WHERE id = ?").get(input.id);
         const doc = JSON.stringify(input.doc);
         if (existing) {
-          db.prepare("UPDATE templates SET name = ?, name_key = ?, doc_json = ?, updated_at = ? WHERE id = ?").run(
+          db.prepare("UPDATE templates SET name = ?, name_key = ?, doc_json = ?, extras_json = ?, updated_at = ? WHERE id = ?").run(
             input.name,
             input.nameKey,
             doc,
+            input.extras === undefined ? existing.extras_json : JSON.stringify(input.extras),
             nowIso,
             existing.id,
           );
@@ -5272,19 +5863,53 @@ export function createSqliteStore(db: Database.Database): MailStore {
         if (total >= TEMPLATES_MAX) throw new ComposeError("conflict", "There are too many templates");
         const id = input.id ?? newId;
         db.prepare(
-          "INSERT INTO templates (id, name, name_key, doc_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-        ).run(id, input.name, input.nameKey, doc, nowIso, nowIso);
+          "INSERT INTO templates (id, name, name_key, doc_json, extras_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ).run(id, input.name, input.nameKey, doc, JSON.stringify(input.extras ?? NO_EXTRAS), nowIso, nowIso);
         return { id };
       });
     },
 
     deleteTemplate(id) {
-      return db.prepare("DELETE FROM templates WHERE id = ?").run(id).changes === 1;
+      return atomic(() => {
+        db.prepare("DELETE FROM template_files WHERE template_id = ?").run(id);
+        return db.prepare("DELETE FROM templates WHERE id = ?").run(id).changes === 1;
+      });
     },
 
     getTemplateByKey(nameKey) {
       const row = db.prepare<[string], TemplateRow>("SELECT * FROM templates WHERE name_key = ?").get(nameKey);
-      return row ? toTemplate(row) : null;
+      if (!row) return null;
+      const files = db
+        .prepare<[string], TemplateFileInfo>("SELECT id, name, mime_type AS mimeType, size FROM template_files WHERE template_id = ? ORDER BY created_at, rowid")
+        .all(row.id);
+      return toTemplate(row, files);
+    },
+
+    addTemplateFile(templateId, file, nowIso) {
+      return atomic(() => {
+        if (db.prepare<[string], { id: string }>("SELECT id FROM templates WHERE id = ?").get(templateId) === undefined) return "unknown" as const;
+        const have = db
+          .prepare<[string], { n: number; bytes: number | null }>("SELECT count(*) AS n, sum(size) AS bytes FROM template_files WHERE template_id = ?")
+          .get(templateId)!;
+        if (have.n >= TEMPLATE_FILES_MAX || (have.bytes ?? 0) + file.size > TEMPLATE_FILES_MAX_BYTES) return "full" as const;
+        db.prepare(
+          "INSERT INTO template_files (id, template_id, name, mime_type, size, sha256, data, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ).run(file.id, templateId, file.name, file.mimeType, file.size, file.sha256, Buffer.from(file.data), nowIso);
+        return "added" as const;
+      });
+    },
+
+    removeTemplateFile(templateId, fileId) {
+      return db.prepare("DELETE FROM template_files WHERE template_id = ? AND id = ?").run(templateId, fileId).changes === 1;
+    },
+
+    templateFiles(templateId) {
+      return db
+        .prepare<[string], TemplateFileInfo & { sha256: string; data: Buffer }>(
+          "SELECT id, name, mime_type AS mimeType, size, sha256, data FROM template_files WHERE template_id = ? ORDER BY created_at, rowid",
+        )
+        .all(templateId)
+        .map((row) => ({ ...row, data: new Uint8Array(row.data) }));
     },
 
     // ---- Inbox triage (slice 3e) ----
@@ -5729,6 +6354,98 @@ export function createSqliteStore(db: Database.Database): MailStore {
       return aiScope;
     },
 
+    listPluginGrants() {
+      return db
+        .prepare<[], { plugin_id: string; right: string; account_id: string; granted_at: string }>(
+          "SELECT plugin_id, right, account_id, granted_at FROM plugin_grants ORDER BY plugin_id, right, account_id",
+        )
+        .all()
+        .filter((row) => isPluginRight(row.right))
+        .map((row) => ({ pluginId: row.plugin_id, right: row.right as PluginRight, accountId: row.account_id, grantedAt: row.granted_at }));
+    },
+    setPluginGrant(grant, on) {
+      if (on) {
+        db.prepare(
+          "INSERT INTO plugin_grants (plugin_id, right, account_id, granted_at) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING",
+        ).run(grant.pluginId, grant.right, grant.accountId, grant.grantedAt);
+      } else {
+        db.prepare("DELETE FROM plugin_grants WHERE plugin_id = ? AND right = ? AND account_id = ?").run(
+          grant.pluginId,
+          grant.right,
+          grant.accountId,
+        );
+      }
+    },
+    revokePluginGrants(pluginId) {
+      atomic(() => {
+        db.prepare("DELETE FROM plugin_grants WHERE plugin_id = ?").run(pluginId);
+        db.prepare("DELETE FROM plugin_requests WHERE plugin_id = ?").run(pluginId);
+      });
+    },
+    getPluginRequests() {
+      return db
+        .prepare<[], { plugin_id: string; rights_json: string; reason: string; asked_at: string }>(
+          "SELECT plugin_id, rights_json, reason, asked_at FROM plugin_requests ORDER BY asked_at, plugin_id",
+        )
+        .all()
+        .map((row) => ({
+          pluginId: row.plugin_id,
+          rights: (JSON.parse(row.rights_json) as string[]).filter(isPluginRight),
+          reason: row.reason,
+          askedAt: row.asked_at,
+        }));
+    },
+    putPluginRequest(request) {
+      atomic(() => {
+        db.prepare(
+          `INSERT INTO plugin_requests (plugin_id, rights_json, reason, asked_at) VALUES (?, ?, ?, ?)
+           ON CONFLICT(plugin_id) DO UPDATE SET rights_json = excluded.rights_json, reason = excluded.reason, asked_at = excluded.asked_at`,
+        ).run(request.pluginId, JSON.stringify(request.rights), request.reason, request.askedAt);
+        db.prepare("INSERT INTO plugin_request_times (plugin_id, asked_at) VALUES (?, ?)").run(request.pluginId, request.askedAt);
+        // Only the last days matter to the limit; the table stays small.
+        db.prepare("DELETE FROM plugin_request_times WHERE asked_at < ?").run(
+          new Date(Date.parse(request.askedAt) - 30 * 24 * 60 * 60 * 1000).toISOString(),
+        );
+      });
+    },
+    dismissPluginRequest(pluginId) {
+      db.prepare("DELETE FROM plugin_requests WHERE plugin_id = ?").run(pluginId);
+    },
+    pluginRequestTimes(pluginId) {
+      return db
+        .prepare<[string], { asked_at: string }>("SELECT asked_at FROM plugin_request_times WHERE plugin_id = ? ORDER BY asked_at DESC")
+        .all(pluginId)
+        .map((row) => row.asked_at);
+    },
+    pluginLastCalls() {
+      const rows = db
+        .prepare<[], { ref_id: string; at: string }>(
+          "SELECT ref_id, MAX(at) AS at FROM agent_log WHERE actor = 'plugin' AND ref_id IS NOT NULL GROUP BY ref_id",
+        )
+        .all();
+      return new Map(rows.filter((row) => row.ref_id.startsWith(PLUGIN_REF_PREFIX)).map((row) => [row.ref_id.slice(PLUGIN_REF_PREFIX.length), row.at]));
+    },
+    setSenderSets(sets) {
+      senderSets = sets;
+      known = null;
+    },
+    hasCalendarPart(messageId) {
+      return (
+        db.prepare<[string], { n: number }>("SELECT COUNT(*) AS n FROM attachments WHERE message_id = ? AND kind = 'calendar'").get(messageId)!.n > 0
+      );
+    },
+    calendarMessages(accountId, limit, cursor) {
+      const after = cursor === null ? "" : "AND (COALESCE(m.date, '') < @date OR (COALESCE(m.date, '') = @date AND m.id < @id))";
+      return db
+        .prepare<[Record<string, unknown>], { id: string; date: string | null }>(
+          `SELECT m.id, m.date FROM messages m
+            WHERE m.account_id = @accountId
+              AND EXISTS (SELECT 1 FROM attachments a WHERE a.message_id = m.id AND a.kind = 'calendar')
+              ${after}
+            ORDER BY COALESCE(m.date, '') DESC, m.id DESC LIMIT @limit`,
+        )
+        .all({ accountId, limit, date: cursor?.date ?? "", id: cursor?.id ?? "" });
+    },
     loadAiScope() {
       const accounts = new Map<string, AccountScope>();
       const rows = db
@@ -6591,6 +7308,42 @@ export function createSqliteStore(db: Database.Database): MailStore {
 
     filesList(filter, cursor, limit) {
       return pageFiles(filter, cursor, limit);
+    },
+
+    senderExchange(address, accountId, sinceIso, limit) {
+      const params = { address, accountId, since: sinceIso, limit, pattern: likePattern(`"${address}"`) };
+      type Row = { date: string; message_id: string | null; in_reply_to: string | null; to_json: string; cc_json: string };
+      const lower = address.trim().toLowerCase();
+      const incoming = db
+        .prepare<[typeof params], Row>(
+          `SELECT m.date, m.message_id, m.in_reply_to, m.to_json, m.cc_json FROM messages m
+           WHERE m.from_address = @address COLLATE NOCASE AND (@accountId IS NULL OR m.account_id = @accountId)
+             AND m.move_pending IS NULL AND m.date IS NOT NULL AND m.date >= @since AND ${NOT_JUNK_OR_TRASH}
+           GROUP BY m.account_id, m.dedup_key ORDER BY m.date DESC LIMIT @limit`,
+        )
+        .all(params)
+        .map((row) => ({
+          date: row.date,
+          messageId: row.message_id,
+          inReplyTo: row.in_reply_to,
+          others: [...(JSON.parse(row.to_json) as MailAddress[]), ...(JSON.parse(row.cc_json) as MailAddress[])].map((a) => a.address),
+        }));
+      const outgoing = db
+        .prepare<[typeof params], Row>(
+          // To/Cc have no index: as the sender card's counts, only the newest SENDER_TO_SCAN stored rows are looked through.
+          `SELECT m.date, m.message_id, m.in_reply_to, m.to_json, m.cc_json
+           FROM (SELECT * FROM messages s WHERE (@accountId IS NULL OR s.account_id = @accountId) ORDER BY s.seq DESC LIMIT ${SENDER_TO_SCAN}) m
+           LEFT JOIN folders f ON f.account_id = m.account_id AND f.path = m.folder
+           WHERE ${ROW_ROLE} = 'sent'
+             AND m.move_pending IS NULL AND m.date IS NOT NULL AND m.date >= @since
+             AND (mail_lower(m.to_json) LIKE mail_lower(@pattern) ESCAPE '\\' OR mail_lower(m.cc_json) LIKE mail_lower(@pattern) ESCAPE '\\')
+           GROUP BY m.account_id, m.dedup_key ORDER BY m.date DESC LIMIT @limit`,
+        )
+        .all(params)
+        // The pattern is a fragment match: the address itself must be among the recipients.
+        .filter((row) => [...(JSON.parse(row.to_json) as MailAddress[]), ...(JSON.parse(row.cc_json) as MailAddress[])].some((a) => a.address.trim().toLowerCase() === lower))
+        .map((row) => ({ date: row.date, messageId: row.message_id, inReplyTo: row.in_reply_to }));
+      return { incoming, outgoing };
     },
 
     senderStats(address, accountId) {

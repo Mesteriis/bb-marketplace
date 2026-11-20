@@ -51,6 +51,10 @@ const smtpUsernameInput = z.string().min(1).max(320).refine(noLineBreaks, {
 });
 
 /** A connected account as the UI sees it. Never carries a credential. */
+/** How an account signs in: an app password, or a Google grant (its refresh token is the sealed credential). */
+export const authKindSchema = z.enum(["password", "google"]);
+export type AuthKind = z.infer<typeof authKindSchema>;
+
 export const accountSchema = z.object({
   id: z.string(),
   email: z.string(),
@@ -64,6 +68,8 @@ export const accountSchema = z.object({
   lastSyncAt: z.string().nullable(),
   lastError: z.string().nullable(),
   authFailed: z.boolean(),
+  /** Absent means "password". */
+  authKind: authKindSchema.optional(),
   /** The account has an SMTP server, so it can send. */
   smtpConfigured: z.boolean(),
   /** The folder snoozed mail waits in (slice 3e), for Mail settings; null until there is one. */
@@ -286,6 +292,11 @@ export const messageHeaderSchema = messageSummarySchema.extend({
   agentSubject: z.string(),
   /** Inside the AI access scope: AI buttons and Hand to agent are enabled. */
   inAiScope: z.boolean(),
+  /** AI sorts the inbox: the one line about this message and its AI labels' names; the server adds them. */
+  aiSummary: z.string().nullable().optional(),
+  aiLabels: z.array(z.string()).optional(),
+  /** Read statuses: for a sent message that carries the image, how often it was opened and when last; the server adds it. */
+  opens: z.object({ count: z.number().int(), lastAt: z.string().nullable() }).optional(),
   /** Slice 3g: repository, PR, issue and CI links of the body (computed when read, not stored). */
   devLinks: z.array(devLinkViewSchema),
   /** Slice 3g: the local dev class, or null. */
@@ -333,6 +344,12 @@ export const threadSummarySchema = z.object({
   categorySuggestion: categorySchema.nullable(),
   /** Slice 3g: the conversation's project (the owner's binding, else the first matching binding rule); null when none. */
   projectId: z.string().nullable(),
+  /** AI sorts the inbox: the one line about the conversation's newest sorted message; the server adds it to lists. */
+  aiSummary: z.string().nullable().optional(),
+  /** AI sorts the inbox: the names of that message's AI labels. */
+  aiLabels: z.array(z.string()).optional(),
+  /** Read statuses: a sent message of the conversation was opened; the server adds it to lists. */
+  opens: z.object({ count: z.number().int(), lastAt: z.string().nullable() }).optional(),
 });
 export type ThreadSummary = z.infer<typeof threadSummarySchema>;
 
@@ -396,15 +413,23 @@ export const statusViewSchema = z.object({
   agentTools: z.boolean(),
   /** The mail_propose tool is offered to agents (off by default). */
   agentPropose: z.boolean(),
+  /** Read statuses are on and the endpoint's keys are set: sent mail carries the image. */
+  readStatuses: z.boolean().optional(),
   translate: z.object({ gateway: translateGatewaySchema }),
   accounts: z.array(accountSchema),
+  /** The plugin has a usable Google client, so "Sign in with Google" can be offered; absent means no. */
+  googleSignIn: z.boolean().optional(),
   unreadCount: z.number().int(),
 });
 export type StatusView = z.infer<typeof statusViewSchema>;
 
 /** An account as the store keeps it. Never leaves the server. */
-export type StoredAccount = Omit<Account, "smtpConfigured"> & {
+export type StoredAccount = Omit<Account, "smtpConfigured" | "authKind"> & {
+  authKind: AuthKind;
+  /** The sealed app password, or the sealed refresh token of a Google account. */
   passwordSealed: string;
+  /** The scopes Google granted; empty for a password account. */
+  grantedScopes: string[];
   smtp: StoredSmtp | null;
   sentCopy: SentCopyPolicy;
   /** The own address's signature (slice 3d); null = none. */
@@ -537,6 +562,10 @@ export type RawRef = {
 /** The operators a search condition may carry (slice 3h). */
 export const searchFieldSchema = z.enum([
   "from",
+  /** A sender set, not a fragment: `vip`, `team` or `known` (written from:vip and so on). */
+  "sender",
+  /** Free text as a condition. The parser never writes it (a query's text is its own part); an Inbox tab does, to match words beside its operators. */
+  "text",
   "to",
   "cc",
   "subject",
@@ -552,6 +581,8 @@ export const searchFieldSchema = z.enum([
   "list",
   "category",
   "label",
+  /** One of the owner's AI labels, by name (AI sorts the inbox). */
+  "ai",
 ]);
 export type SearchField = z.infer<typeof searchFieldSchema>;
 
@@ -636,6 +667,20 @@ export const senderCardSchema = z.object({
   imagesAllowed: z.boolean(),
   blocked: z.boolean(),
   projectId: z.string().nullable(),
+  /** Sender insights, counted from stored mail; null (or absent) from too little of it. */
+  insights: z
+    .object({
+      /** Median minutes they take to answer the owner; null from fewer than three answers. */
+      theirReplyMinutes: z.number().int().min(0).nullable(),
+      ownReplyMinutes: z.number().int().min(0).nullable(),
+      /** The three hours they usually write in, on the owner's clock. */
+      usualFrom: z.number().int().min(0).max(23),
+      usualTo: z.number().int().min(1).max(24),
+      weekdaysOnly: z.boolean(),
+      mostWith: z.array(z.object({ address: z.string(), count: z.number().int().min(1) })).max(3),
+    })
+    .nullable()
+    .optional(),
 });
 export type SenderCard = z.infer<typeof senderCardSchema>;
 
@@ -747,6 +792,8 @@ export const draftViewSchema = z.object({
     .nullable(),
   /** "agent": started by an agent proposal the owner opened in Mail (the composer's badge). */
   origin: draftOriginSchema,
+  /** The plugin that prepared the draft through the plugin API; null otherwise. */
+  preparedBy: z.string().nullable().default(null),
   /** The identity the draft sends from; null = the account's own address. */
   fromAddress: z.string().nullable(),
 });
@@ -888,6 +935,8 @@ export type DraftPurpose = "unsubscribe" | "invite_reply";
 
 /** A compose_drafts row. Starts at revision 1; every save bumps it. */
 export type DraftRecord = NewDraft & {
+  /** The plugin that prepared this draft through the plugin API; null for the owner's and agents' drafts. */
+  preparedBy: string | null;
   purpose: DraftPurpose | null;
   revision: number;
   /** Where the copy in Drafts stands: "saved" with a serverCopy, else none, failed or local_only. */
@@ -982,6 +1031,8 @@ export const presendIssueSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("new_recipients"), addresses: z.array(z.string()) }),
   z.object({ kind: z.literal("bb_files"), count: z.number().int(), origins: z.array(z.string()) }),
   z.object({ kind: z.literal("looks_secret"), count: z.number().int() }),
+  /** Typing speed. */
+  z.object({ kind: z.literal("placeholder_left") }),
   /** Slice 3i. */
   z.object({ kind: z.literal("reply_to_elsewhere"), addresses: z.array(z.string()) }),
 ]);
@@ -1201,6 +1252,30 @@ const aiResultBase = {
   createdAt: z.string(),
 };
 
+/** One action under an Ask answer, as the page runs it. Message ids come from the plugin's own citations, never from the model. */
+export const askActionViewSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("search"), query: z.string() }),
+  z.object({
+    type: z.literal("reply"),
+    /** The cited message's number in the answer's sources. */
+    n: z.number().int().min(1),
+    messageId: z.string(),
+    accountId: z.string(),
+    threadId: z.string().nullable(),
+    paragraphs: z.array(z.string()),
+    linksRemoved: z.number().int().min(0),
+  }),
+  z.object({ type: z.literal("compose"), paragraphs: z.array(z.string()), linksRemoved: z.number().int().min(0) }),
+  z.object({
+    type: z.literal("act"),
+    action: z.enum(["archive", "mark_read", "flag"]),
+    /** Cited messages now in an Inbox, by account. */
+    groups: z.array(z.object({ accountId: z.string(), messageIds: z.array(z.string()) })),
+    count: z.number().int().min(1),
+  }),
+]);
+export type AskActionView = z.infer<typeof askActionViewSchema>;
+
 /** One finished AI result, text only (rendered as plain text, never HTML). */
 export const aiResultViewSchema = z.discriminatedUnion("kind", [
   z.object({
@@ -1216,6 +1291,8 @@ export const aiResultViewSchema = z.discriminatedUnion("kind", [
     answer: z.string(),
     sources: z.array(z.number().int()),
     found: z.boolean(),
+    /** Ask AI with actions: what the owner could do next; each is a button, nothing runs by itself. */
+    actions: z.array(askActionViewSchema).optional(),
   }),
   z.object({
     kind: z.literal("tasks"),
@@ -1250,6 +1327,15 @@ export const aiResultViewSchema = z.discriminatedUnion("kind", [
     unknown: z.number().int().min(0),
     /** Hidden values the answer dropped. */
     missing: z.number().int().min(0),
+  }),
+  /** AI writes mail: a message written from the owner's request. */
+  z.object({
+    kind: z.literal("write"),
+    ...aiResultBase,
+    paragraphs: z.array(z.string()),
+    /** Links the owner did not write, replaced in the text. */
+    linksRemoved: z.number().int().min(0),
+    unknown: z.number().int().min(0),
   }),
 ]);
 export type AiResultView = z.infer<typeof aiResultViewSchema>;

@@ -23,7 +23,8 @@ after a 10-second Undo window. Agents cannot send on their own: with
 out only when you press **Send** on its card in that agent's thread.
 
 - Connects IMAP accounts with an app password: iCloud, Gmail or another
-  server, TLS only (port 993 by default).
+  server, TLS only (port 993 by default). A Gmail account can sign in with
+  Google instead, see [Google sign-in](#google-sign-in).
 - Syncs every folder of each account on the BB server every
   `syncIntervalMinutes` (default 5), covering the last `syncWindowDays`
   (default 30): system folders (Inbox, Sent, Drafts, Spam, Trash, Archive)
@@ -155,10 +156,37 @@ Account passwords are sealed with AES-256-GCM under the `vaultKey` secret
 setting, generated on first load. Mail and credentials stay on the machine
 that runs the BB server.
 
-Not yet: Gmail API or OAuth, scheduled send, system notifications, semantic
-search, export to mbox or .eml archives, writing categories or reminders to
+Not yet: Gmail API, OAuth for other providers, scheduled send, system
+notifications, semantic search, export to mbox or .eml archives, writing categories or reminders to
 the mail server, and S/MIME signing, checking and decryption (Mail only
 recognises such mail; OpenPGP works, see [OpenPGP](#openpgp)).
+
+## Google sign-in
+
+A Gmail account can sign in with Google instead of an app password. In the
+account form choose Gmail and press **Sign in with Google**: Google opens in
+the browser, asks to let Makosh Mail read and send your mail, and the form
+closes when the account is saved. An existing Gmail account switches in
+**Mail settings → Mailboxes and sign-in → Switch to Google sign-in** and keeps
+its mail. The app password stays available ("Use an app password instead").
+
+- Sync and sending still use IMAP and SMTP; they sign in with a short-lived
+  access token. Mail keeps Google's refresh token encrypted with `vaultKey`,
+  where a password would be, and asks only for `openid`, `email` and
+  `https://mail.google.com/`.
+- The answer from Google comes back to `127.0.0.1` on this machine, on a
+  port that is open for that one sign-in and for five minutes at most.
+- When Google no longer accepts the grant (you removed the access, changed
+  your password, or did not use it for six months) the account stops with
+  "Sign in to Google again"; only a new sign-in resumes it.
+- The Google client ships with the plugin in `google-oauth-client.json`, so
+  every install shares it. Google has not verified it: the consent page
+  shows an "unverified app" warning, and Google caps such a client at 100
+  users in total. While its consent screen is in "Testing", only listed
+  test users can sign in and a grant lasts seven days. To use your own
+  Google Cloud desktop client, replace that file and rebuild.
+- A Workspace administrator can block third-party clients; such an account
+  keeps using an app password.
 
 ## Writing and sending
 
@@ -237,11 +265,28 @@ itself; for any other server (even smtp.<same domain>) the dialog asks for the
 account password, which the IMAP server must accept first, and which is
 stored only when both servers accept it.
 
+## Mail settings
+
+**Mail settings** (the gear at the bottom of the mail rail) is a page inside
+Mail with a menu of five groups: **Accounts** (Mailboxes and sign-in,
+Addresses and signatures), **Mail** (Inbox, Filters, Subscriptions,
+Templates, Reading and search), **AI and agents** (AI features, Agent
+access, Activity log), **BB** (Integration, Rules) and **Security**
+(Encryption, Local data). Every section has an address, `settings/<section>`,
+so BB's back and forward work; in a narrow panel the menu is a select.
+
+A setting on the page is saved when you change it: a switch on click, a
+number or text when you press Enter or leave the field. A change BB refuses
+goes back to the saved value and the row says why. The same settings stay
+in BB Settings → Plugins → Makosh Mail. Three switches change only there,
+so that nothing but your own click can widen what agents may do with mail:
+`agentTools`, `agentPropose` and `agentTriage`; Agent access shows their
+state. The credential key is not on the page.
+
 ## Sending addresses, signatures and templates
 
-**Mail settings** (the gear at the bottom of the mail rail) lists each
-account's **Sending addresses**: the account's own address first, then the
-aliases you added.
+**Addresses and signatures** lists each account's sending addresses: the
+account's own address first, then the aliases you added.
 
 - **Add address** takes an address and an optional name. **Suggestions**
   lists addresses that look like yours, from mail that reached you with none
@@ -277,6 +322,51 @@ aliases you added.
   to 200. In the composer **Templates** or Cmd/Ctrl+Alt+T opens a filtered
   list; Enter inserts the template at the cursor. Alt+T and Alt+Shift+T stay
   BB's model picker.
+
+## Typing speed
+
+Five things that save keystrokes in the composer. Everything is computed on
+this computer; nothing you type is sent anywhere for them.
+
+- **Templates as snippets.** A template (Mail settings → Templates) can
+  carry, beside its text, a subject, To/Cc/Bcc and up to 5 files (10 MB
+  together, added after the template is saved). Inserting it puts the text
+  at the cursor, fills an empty subject, adds the recipients the draft does
+  not have yet and attaches the files; a file the message has no room for
+  is named in a note and left out. `{first_name}` in the text or the
+  subject becomes the first To recipient's first name (the display name's
+  first word, else the address before a dot; a role address such as
+  `info@` gives none). A `{first_name}` left in is flagged by the pre-send
+  check.
+- **`;` picks a template.** Type `;` at a word's start and a few letters
+  of the name: the matching templates are listed under the toolbar. Arrows
+  move, Enter, Tab or a click inserts (the `;text` is replaced), Escape
+  closes and keeps what you typed.
+- **Autocorrect** (`autocorrect`, on by default) fixes a word as it ends:
+  your own replacements (`autocorrectPairs`, `from => to` separated by
+  semicolons), about 200 common English and 60 Russian slips, a lone `i`,
+  two capitals at a word's start (`THe`), and the first letter of a
+  sentence. Never inside a code block, a link, an address or a path.
+  **Backspace right after a fix puts back what you typed**, and that word
+  is left alone for the rest of the draft.
+- **Autocomplete** (`autocomplete`, on by default) offers the rest of a
+  phrase you often write as grey text after the cursor, at the end of a
+  paragraph, once you have typed two words and eight characters of it. Tab
+  takes it, Escape hides it for the sentence, any other key keeps typing.
+  The phrases are sentences of 3 to 12 words that at least three of your
+  newest 2 000 sent messages hold (quoted text and everything under a
+  signature mark left out; numbers, addresses and links never), plus the
+  sentences of your templates; at most 500, rebuilt at most every ten
+  minutes. They never reach an agent, another plugin or the log.
+- **Quick quote.** Select text inside one message and reply (the button or
+  `r` / `a`): the reply quotes only the selection, under the usual "wrote:"
+  line. A selection across two messages, or none, is an ordinary reply.
+- **Instant intro.** In a reply with the original's sender and someone else
+  in it, Ctrl+Shift+I (Shift+Command+I on a Mac) moves the sender to Bcc and
+  starts the message with "Thank you, <first name>! (Moving you to Bcc.)".
+  When the original reads like an introduction (the subject or first lines
+  say intro, introducing, meet, знакомьтесь, представляю) the composer
+  offers it in a line above the body; nothing moves by itself.
 
 ## Before you send
 
@@ -388,6 +478,45 @@ system keys on Windows and Linux, where the letters cover them):
   Space, Tab, arrows, Page Up/Down, Home and End stay with the message:
   Enter on a focused link opens that link (through the link check below),
   never the cursor row.
+
+## Split Inbox
+
+Tabs over the Inbox, to look at one kind of mail at a time and see how much
+of each kind waits.
+
+- The first tab is always **Inbox**: everything. Each of your tabs shows
+  the Inbox conversations in which at least one Inbox message matches its
+  condition, with the number of unread ones. A conversation is in every tab
+  it matches. Tabs are a view: nothing moves on the mail server.
+- With no tabs the Inbox looks as before; **Split the Inbox…** at the end
+  of the quick filters opens the library. With tabs, **+** opens it.
+- **The library** adds a tab in one click: VIP (`from:vip`), Team
+  (`from:team`), People (`from:known`), Dev (`is:dev`), Newsletters
+  (`is:newsletter`), Notifications (`is:automated`), Calendar
+  (`has:invite`), Attachments (`has:attachment`), one per tool by sender
+  domain (GitHub, GitLab, Jira, Linear, Notion, Asana, Figma, Google Docs,
+  Slack) and **Other**: the conversations that match none of your other
+  tabs, recomputed as the tabs change.
+- **Your own condition…** makes a tab from anything you can search by:
+  operators (see Search) and words. `in:` and unknown operators are refused
+  with the reason.
+  **Make a tab** on a search opens the same dialog with the search as the
+  condition; **Split by this sender** in a sender's card makes a tab of
+  that address at once.
+- A tab's menu (the **⋯** at the end of the row for the tab in view, or a
+  right click on any tab) has
+  Rename, Edit condition, Move left, Move right and Remove tab. Removing a
+  tab removes no mail.
+- `]` goes to the next tab and `[` to the previous one, around the ends.
+  The tab is part of the address (`v/all/inbox/s/<tab>`), so BB's back and
+  forward walk tabs; an address of a tab that was removed opens the Inbox
+  tab. The quick filters narrow the tab in view.
+- One set of at most 12 tabs for all accounts, the same in one account's
+  Inbox and in All accounts. **Mail settings → Inbox → Tabs** lists them
+  with rename, condition, order and remove.
+- A tab whose condition stopped working (an operator that is gone) is
+  marked, lists nothing and can be renamed, edited or removed.
+- In the row, the arrow keys, Home and End move the focus between tabs.
 
 ## Inbox tools: new mail, unsubscribe, snooze, block, filters
 
@@ -771,9 +900,9 @@ path, project name, title or prompt. What a thread's agent does with that
 text goes to its model provider, as with Hand to agent.
 
 Settings: `devNotifications`, `mailRules`, `attachmentFolder`,
-`patchFolder` and `taskTarget` are BB plugin settings (BB Settings →
-Plugins → Makosh Mail); Mail settings shows them under **BB integration**
-and **Rules**, with the binding rules.
+`patchFolder` and `taskTarget` change in Mail settings under **Integration**
+and **Rules**, next to the binding rules, or in BB Settings → Plugins →
+Makosh Mail.
 
 ## Search, older mail, folders and attachments
 
@@ -790,8 +919,15 @@ new reads go to your own mail server only; the new writes are listed under
   `spam`, `archive`, `snoozed`, or a folder name), `account:`, `is:unread`,
   `is:read`, `is:flagged`, `larger:` / `smaller:` (`10K`, `2M`), `after:` /
   `before:` (`YYYY-MM-DD`), `newer_than:` / `older_than:` (`7d`, `2w`, `3m`,
-  `1y`), `list:`, `category:` and `label:`; a leading `-` negates one, values
-  with spaces are quoted. A value Mail cannot read stays text and the box
+  `1y`), `list:`, `category:` and `label:`; `from:vip` (your important
+  senders), `from:team` (the domains of your own addresses, public mail
+  domains left out), `from:known` (addresses you have written to), `is:dev`
+  (development notifications), `is:automated` (robots that are not mailing
+  lists), `is:newsletter` (mailing lists and the Newsletters category) and
+  `has:invite` (a calendar invitation). `from:` with a whole address matches
+  that address only, with a domain its addresses and those of its
+  subdomains, with anything else a fragment of the address or the name; a leading `-` negates
+  one, values with spaces are quoted. A value Mail cannot read stays text and the box
   says so.
 - **Search on the server**, below the local hits, sends the query to your
   own mail server: on Gmail as one Gmail search on All Mail (on Trash or Spam
@@ -992,7 +1128,12 @@ bb makosh-mail backup /full/path/mail-backup.db
   because the server refused the sign-in, and the server accepts the saved
   password during this check, doctor turns the account's sync back on and
   says so: some servers refuse a good password for a while after many
-  sign-ins.
+  sign-ins. For the same reason sync stops an account that has synced
+  before only after three refused sign-ins in a row, and the banner of a
+  stopped account has **Try the saved password**, which does the same
+  sign-in from the page. Sync also tries a stopped account's saved
+  password by itself: with the next full round, 10 and 30 minutes after a
+  refusal, then once an hour.
 - **backup** writes a consistent copy of Mail's database to a new file that
   only you can read. The path must be absolute, its folder must exist, and
   Mail never writes over an existing file. The copy holds your mail text
@@ -1244,7 +1385,7 @@ open the message and stores nothing.
 Mail signs and encrypts with OpenPGP (PGP/MIME, RFC 3156) between people
 who exchanged keys. Everything happens on this computer.
 
-- **Your key.** Mail settings → **Encryption (OpenPGP)** → **Make a key**
+- **Your key.** Mail settings → **Encryption** → **Make a key**
   next to a sending address makes a Curve25519 key pair for it. The private
   half is stored in Mail's database sealed with the same credential key as
   your passwords (`vaultKey`), and is unsealed on the server for one
@@ -1329,7 +1470,7 @@ reach any agent or model path.
 
 ### AI access
 
-Mail settings → **AI access** sets what agents and AI features may read: per
+Mail settings → **Agent access** sets what agents and AI features may read: per
 account **All folders**, **Chosen folders…** (a picker; a folder that no
 longer exists is shown as "not found" and shares nothing) or **None**. Spam
 and Trash are never shared. On Gmail a message is shared when any of its
@@ -1343,7 +1484,7 @@ A change applies to agents at once.
 
 ### Agent activity
 
-Mail settings → **Agent activity** is a local action log, always on: every
+Mail settings → **Activity log** is a local action log, always on: every
 agent tool call, mention, Hand to agent, CLI command in a thread and AI call
 you start writes one row (when, who, which tool, the outcome, how many
 items, how many values were hidden, the BB thread, the message ids, and for
@@ -1372,6 +1513,14 @@ wrong; check the cited messages".
   question into searches, the plugin runs them locally over mail in AI
   access, and the model answers from the excerpts with links to the cited
   messages, or "Not found in your mail". Nothing is kept after you close it.
+  Under an answer the model may offer up to three things to do next, each a
+  button that does nothing until you press it: **Show these messages** (a
+  search it wrote, run in the search box), **Reply with this** or **Write
+  this message** (an ordinary reply or new message with drafted text in it;
+  links and addresses you did not write in the question are removed), and
+  **Archive / Mark read / Flag N messages** over cited messages that are in
+  an Inbox, with the usual Undo. It cannot offer to delete, send, forward
+  or mark as spam. There is no web search.
 - **Find tasks** (`Shift+T`): tasks and due dates found in the conversation,
   each with the quote it came from; a quote that is not in the message is
   flagged and left unticked. **Keep** saves the ticked ones to the **Tasks**
@@ -1405,10 +1554,168 @@ wrong; check the cited messages".
   put back in what you apply; the dialog notes one the model changed or
   dropped.
 
+- **Write with AI** in the composer (the toolbar button or Ctrl/Cmd+J):
+  say in a few words what the message should say (up to 500 characters) and
+  a model writes the body; in a reply it also reads the conversation you
+  answer. The text is shown first; **Insert** puts it in place of your own
+  text in one step (one Undo) and only if you did not change it meanwhile.
+  Mail settings → AI features → **Writing** holds: **Write in my voice**
+  (on: up to five pieces of your own sent text, 600 characters each, first
+  those sent to the same person), **My instructions for AI writing** (up to
+  2 000 characters) and **Facts AI may use** (up to 6 000 characters). A
+  link or an email address you did not write yourself (in the request, the
+  instructions, the facts or your own text of the draft) does not stay in
+  the text: it becomes `[link removed]` and the dialog counts them. A link
+  is anything a mail program would make clickable: with or without
+  `https://`, a bare site name, a name in any script. The line Mail writes
+  above a quote ("On …, X wrote:", the forwarded-message block) is not your
+  text: it is never sent to the model and stays where it is on Insert.
+- **Draft replies to new mail** (off by default, same settings group): for
+  each new Inbox message from someone you have written to, addressed to
+  you (To, not Cc), not bulk or a mailing list and inside AI access, a
+  model drafts a reply. Left alone: a message Mail warns about (a failed
+  sender check, a lookalike domain, a disguised name), one whose reply
+  would go to an address you never wrote to, and one you already answered.
+  Hidden values from your instructions and facts are never put back into a
+  drafted reply. **Reply drafted** appears under the message with
+  its first lines, **Use** (opens an ordinary reply with the text in it)
+  and **Dismiss**. Nothing is sent and nothing is saved on the mail server
+  until you act. At most 10 an hour and 50 a day (counted while BB runs; a
+  restart starts the count again); a draft is forgotten when you use or
+  dismiss it, when you answer in the conversation, when the message is
+  deleted or leaves AI access, when you turn the setting off, or after 14
+  days. Each call is a row in the agent log.
+
+- **Sort new mail with AI** (off by default; Mail settings → AI features →
+  **Sorting**): for each new Inbox message inside AI access a model writes
+  one line (at most 140 characters) and picks from your own **AI labels**.
+  A label is a name (up to 30 characters) and, in your words, what belongs
+  under it (up to 300); at most 12. The line replaces the snippet in the
+  conversation list (the snippet is one hover away) and stands above the
+  open message; the labels are chips beside it. Find mail with
+  `ai:<label>` (`ai:"needs reply"`, `-ai:pitch`), also as an Inbox tab.
+  Labels live in Mail only; nothing is written to the mail server, and
+  agents and other plugins cannot search by them. A message cannot invent a
+  label: only names you defined are kept. Mail with a sender warning gets
+  labels but no line.
+  **Archive automatically** on a label moves new mail that gets it from
+  the Inbox to Archive (the ordinary Archive action, logged in Agent
+  activity). Always left in the Inbox: mail from someone you have written
+  to, flagged mail, mail with a sender warning, and an account without an
+  Archive folder, and a message you have already opened. Before a message
+  that was sorted together with others is archived, the model is asked
+  about it once more, alone, so one email cannot decide for its
+  neighbours. Turning the label's switch or the setting off also stops
+  archives of a call already running. At most 50 automatic archives an
+  hour, 20 model calls an hour and 100 a day, ten messages a call (all
+  counted while BB runs; a restart or a plugin reload starts them again). The line
+  and labels are kept 90 days.
+
+### Dictation
+
+**Dictate** in the composer's toolbar records from the microphone; **Stop**
+turns the recording into text with the voice service you chose in BB's
+settings and puts it where the cursor is: the first part continues the
+line, a part after a pause starts a new paragraph, one Undo takes the
+dictation back, and the text is never part of a link. **Cancel** or Escape
+throws the recording away. A recording ends by itself after 5 minutes. The
+audio goes only to BB's voice service — whether that is on this computer
+or a cloud service is BB's setting, not Mail's — and is not kept; a failed
+transcription can be tried once more. Without a voice service in BB the
+button says so and nothing is recorded. A composer that moves between the
+docked and the wide layout (a resize, another conversation) drops a
+dictation in progress; the microphone is released.
+
+### Read statuses
+
+Under a message you sent, Makosh Mail can show "Opened 3 times · last …"
+or "Not opened yet". It works through **your own** public endpoint (the
+Makosh site, `site/` in this repository): the message carries a 1×1 image
+whose address holds a random token signed with a key only you and your
+endpoint have; when the recipient's mail program fetches the image, the
+endpoint notes the token, the time and a coarse kind of client — never an
+IP address — and Makosh Mail reads those notes every five minutes.
+
+- Set up once in BB Settings → Plugins → Makosh Mail: `readStatusOrigin`
+  (the endpoint's https address), `readStatusTrackKey` and
+  `readStatusFeedKey` (the endpoint's `MAKOSH_TRACK_KEY` and
+  `MAKOSH_API_KEY`). Without both keys nothing is added to your mail.
+- The switch **Show when mail I send is opened** (Mail settings →
+  Templates → Typing, on by default) turns it off for all mail.
+- Never added to signed or encrypted mail, to mail that goes only to
+  your own addresses (any connected account or sending address), to an
+  invitation answer or an unsubscribe request, or to mail an agent
+  proposed.
+- If the endpoint's data is lost or you point Mail at another endpoint,
+  Mail notices (the feed names its store), drops the opens it kept and
+  reads the new feed from the start.
+- An open is a hint, not a proof. Gmail and Yahoo fetch images through
+  their own servers, Apple Mail may fetch them before anyone reads, many
+  programs never fetch them, and your own Sent copy opened in another
+  mail program counts too. Opens that are plainly a machine are left out.
+- Opens are kept 90 days, on your endpoint and on this computer. Agents
+  and AI get no part of them.
+
+The composer has a box **Show when opened** beside Send, ticked by
+default; untick it to leave the image out of one message.
+
+- **Never show opens for** (the same settings group): addresses and
+  domains, separated by commas; mail with any such recipient, hidden
+  copies included, goes without the image.
+- The conversation list marks a conversation **Opened** when someone
+  opened a sent message of it, and Today lists **Opened, no reply yet**:
+  sent mail of the last two weeks that was opened and is still the last
+  message of its conversation.
+
+### Assistants outside BB (MCP)
+
+An assistant that is not a BB agent (Claude Desktop, Cursor, another MCP
+client on this computer) can search and read mail through a small local
+MCP server. Off by default.
+
+1. Turn on `mcpAccess` in BB Settings → Plugins → Makosh Mail (or
+   `bb plugin config makosh-mail set mcpAccess true`). The page shows the
+   switch and cannot change it.
+2. Mail settings → AI access → **Save the server file…** saves
+   `makosh-mail-mcp.mjs` (also in this package under `mcp/`).
+3. Point the assistant at it: command `node`, argument the file's path.
+   Node.js and `bb` must be on the assistant's PATH; `MAKOSH_MAIL_BB` can
+   hold the full path of `bb`.
+
+The server speaks MCP over stdio, opens no port and has three read-only
+tools: `mail_accounts`, `mail_search`, `mail_read`. Each one runs
+`bb makosh-mail … --assistant --json` (arguments as an array, no shell, 30
+seconds, 1 MB), and that mode answers as it answers BB's agents: only mail
+inside AI access, secrets hidden, the untrusted-text notice, one row in
+Agent activity per answered call (actor "Assistant outside BB"; a refusal
+is logged once an hour), at most 60 calls an hour, counted from the last
+start of BB or reload of the plugin. `mail_accounts` gives a mailbox's id,
+address and name only. With `mcpAccess` off it answers nothing, account names
+included. It cannot send, propose, move or delete. BB must be running.
+`--assistant` narrows a command; it is not a barrier against a program
+that can already run `bb` as you — your own terminal reads all mail.
+
+### Smart send and sender insights
+
+Counted from the mail stored on this computer; no model and nothing from
+outside.
+
+- **Smart send**: Send later offers one more time, first in the list: the
+  hour the first To recipient usually writes to the sending account
+  (their mail of the last 180 days, at least five messages), on the days
+  they write, at least an hour from now. The row says why ("Ann usually writes around 09:00").
+  Hours are on your clock.
+- **Insights** in the sender card: the three hours they usually write in
+  and whether only on weekdays; how long they take to answer you and you
+  them (the median, from messages that answer one another, at least three);
+  who else is most often on their mail to you. With too little mail the
+  card says nothing.
+
 ### What goes to your AI provider
 
-Only on your click, only through Makosh AI, only mail in AI access, only
-redacted text framed as untrusted data:
+Only through Makosh AI, only mail in AI access, only redacted text framed
+as untrusted data; on your click, except replies drafted for new mail when
+you turned that on:
 
 - Summarize: subjects, sender display names (the address when there is no
   name), dates and bodies without quotes of the conversation, newest first
@@ -1421,6 +1728,13 @@ redacted text framed as untrusted data:
 - Today's Summarize: the latest message of up to 30 conversations, 500
   characters each.
 - Improve: your own text of the draft and your instruction.
+- Sorting: your AI labels (names and descriptions) and, for each new
+  message, the sender's name and domain, the subject and the first 600
+  characters of the body without quotes.
+- Write with AI and drafted replies: your request, your instructions and
+  facts, your own text of the draft, the voice samples (your own sent text
+  without quotes and signatures, only when **Write in my voice** is on), and
+  the conversation being answered as for Summarize.
 - Translation: the message's subject and text.
 - New thread, Make a task through Taskboard (its **Take into work**), incident,
   patch and rule threads (slice 3g): the text goes into a BB thread or a
@@ -1446,6 +1760,33 @@ search with `attachments: true`, which reads attachment text. Slice 3i adds
 `sender_check_refresh`, which fetches header fields from your mail server
 (read-only) and stores the sender check. This is the accepted limit of
 slices 3c to 3i, and the skill tells agents not to.
+
+## Other plugins
+
+Another BB plugin gets nothing from Makosh Mail until you allow it. A
+plugin's server can call only the small plugin API
+([docs/plugin-api.md](docs/plugin-api.md)); every other method refuses it.
+
+- A plugin asks; the request waits in **Mail settings → Plugin access** and
+  shows as a count there. **Allow…** opens the rights it asked for, per mail
+  account; nothing is saved until you press **Save**. **Dismiss** grants
+  nothing.
+- Rights: read mail, read contacts, read invitations, propose letters. Each
+  is granted per account, and a new account is not covered by old grants.
+- Google keys: for a mailbox signed in with Google, a plugin can be given a
+  one-hour key for Google Calendar or Google Contacts alone. The key cannot
+  read mail, and Mail's own sign-in never leaves it. Turning the right on
+  for the first time asks you to sign in to Google again with that service
+  added.
+- A plugin reads only what you share with agents in **Agent access**, with
+  passwords, codes and tokens hidden.
+- A letter a plugin proposes is a draft marked "Prepared by …". Only your
+  **Send** in the composer sends it.
+- **Revoke all** takes everything a plugin has. The activity log shows each
+  call of a plugin: which plugin, what it did and how many items.
+
+This governs calls from other plugins' servers. A plugin's page runs with
+your own access in BB, as everything you install there does.
 
 ## Mail in the sidebar
 

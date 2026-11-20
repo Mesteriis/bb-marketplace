@@ -6,8 +6,110 @@ All notable changes to Makosh Mail are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Typing speed: Undo takes back a fix as a step of its own; **Move sender
+  to Bcc** is also a button beside Bcc; a template whose files fail to
+  attach midway shows what was attached.
+- Plugin access: twenty proposals a day whatever became of the earlier
+  ones; a Google key is fetched once for calls that arrive together, sixty
+  an hour, one log row in ten minutes; a mailbox that lost the Google
+  service turns the key's switch off; the sign-in started from Plugin
+  access leaves the owner where they are.
+
 ### Added
 
+- **Read statuses, the rest**: exceptions by address and domain (setting
+  `readStatusExceptions`), the **Opened** mark in the conversation list
+  (`opens` on a conversation), **Opened, no reply yet** in Today
+  (`today_get` carries `opened`).
+- **Read statuses**: mail you send can carry a 1×1 image of your own
+  endpoint (`site/`); the open count and the last open show under the
+  sent message. Settings `readStatuses` (on), `readStatusOrigin`,
+  `readStatusTrackKey`, `readStatusFeedKey`; nothing is added until both
+  keys are set. `compose_send` takes `track`; a message carries `opens`.
+  Storage migration 25 (`sent_tracking`, `open_events`,
+  `read_status_state`).
+- **MCP for assistants outside BB** (off by default): a local stdio MCP
+  server file (`mcp/makosh-mail-mcp.mjs`, saved from Mail settings → AI
+  access) with read-only tools `mail_accounts`, `mail_search`,
+  `mail_read`. It runs the CLI's new `--assistant` mode: AI access only,
+  secrets hidden, logged with actor `mcp`, 60 calls an hour. Setting
+  `mcpAccess`, changed only in BB's plugin settings.
+- **Dictation**: a Dictate button in the composer records, BB's voice
+  service turns the recording into text, the text goes in at the cursor.
+- **Smart send**: Send later offers the hour the recipient usually
+  writes. **Insights** in the sender card: when they write, how fast each
+  side answers, who else is on their mail. Counted locally, no model. New
+  RPC method `smart_send_time`; `sender_card` carries `insights`.
+- **Ask with actions**: under an answer the model may offer up to three
+  buttons — show a search, reply or write with drafted text, archive / mark
+  read / flag cited Inbox messages (with Undo). Nothing runs without your
+  click; nothing destructive can be offered. The `ask` result carries
+  `actions`.
+- **AI sorts the inbox** (off by default): one line and your own AI
+  labels for each new Inbox message; a label can archive automatically
+  (never mail from people you write to, flagged or warned mail; at most 50
+  an hour). The line replaces the snippet in the list; `ai:<label>` in
+  search and Inbox tabs. Setting `aiSort`; Mail settings → AI features →
+  Sorting. New RPC methods `ai_labels_list`, `ai_label_save`,
+  `ai_label_delete`, `ai_label_move`; conversations and messages carry
+  `aiSummary` and `aiLabels`. Storage migration 24 (`ai_labels`,
+  `message_ai`).
+- **AI writes mail**: **Write with AI** in the composer (toolbar button,
+  Ctrl/Cmd+J) writes the body from a few words, in a reply reading the
+  conversation; **Insert** replaces your own text in one step. It follows
+  your instructions, uses your facts and matches your voice from your own
+  sent text. A link or address you did not write is replaced by
+  `[link removed]`. The line above a quote ("On …, X wrote:", the forwarded
+  header) is no longer part of your own text for Improve and Write: it is
+  not sent to the model and not replaced.
+  **Draft replies to new mail** (off by default) drafts a reply to each new
+  Inbox message from people you write to; **Reply drafted** under the
+  message offers Use and Dismiss; at most 10 an hour and 50 a day; nothing
+  is sent without you. Settings `aiVoice`, `aiAutoDrafts`,
+  `aiInstructions`, `aiKnowledge`. `ai_start` takes kind `write`; new RPC
+  methods `reply_draft_get`, `reply_draft_dismiss`. Storage migration 23
+  (`reply_drafts`).
+- **Typing speed** in the composer: templates carry a subject, To/Cc/Bcc
+  and files and fill `{first_name}`; `;` and a few letters pick a template
+  in the body; autocorrect (your own replacements, common English and
+  Russian slips, sentence capitals; Backspace undoes a fix); autocomplete
+  of phrases from your own sent mail and templates as grey text (Tab);
+  a reply quotes only the text you selected; Ctrl/Cmd+Shift+I moves the
+  introducer to Bcc with a thank-you line. Settings `autocorrect`,
+  `autocorrectPairs`, `autocomplete`. New RPC methods `phrases_list`,
+  `template_file_begin`, `template_file_finish`, `template_file_remove`,
+  `template_apply`; `template_save` takes `subject`, `to`, `cc`, `bcc`;
+  `compose_prepare` takes `quote`.
+- **Split Inbox**: tabs over the Inbox, each a search condition applied to
+  Inbox conversations, with unread counts, a library of ready tabs (VIP,
+  Team, People, Dev, Newsletters, Notifications, Calendar, Attachments,
+  nine tools, Other), `]` and `[` to switch, an address per tab
+  (`v/<view>/s/<tab>`) and a **Tabs** group in Mail settings → Inbox. A
+  conversation is in every tab it matches; at most 12 tabs, one set for all
+  accounts. New RPC methods `inbox_tabs_list`, `inbox_tab_save`,
+  `inbox_tab_delete`, `inbox_tab_move`; `threads_list` takes `tabId`.
+- Search operators `from:vip`, `from:team`, `from:known`, `is:dev`,
+  `is:automated`, `is:newsletter` and `has:invite`, in search and saved
+  searches too.
+- Mail settings are a page inside Mail (the gear in the mail rail, address
+  `settings/<section>`): five groups in a side menu, fourteen sections, a
+  section select in a narrow panel. The twelve-tab dialog is gone. Two new
+  sections: **Mailboxes and sign-in** (how each account signs in, replace a
+  password, switch to Google, SMTP settings, the settings of sync) and
+  **Local data**. About thirty settings now change on the page instead of
+  BB's plugin settings, saved as you change them; the three switches that
+  widen what agents may do are shown there and still change only in BB's
+  plugin settings. New RPC methods `settings_get` and `settings_set`.
+- Google sign-in for Gmail accounts. **Sign in with Google** in the account
+  form opens Google in the browser; sync and sending then use an access
+  token over IMAP and SMTP instead of an app password. An existing Gmail
+  account switches in Mail settings and keeps its mail. A revoked grant
+  stops the account with "Sign in to Google again". The Google desktop
+  client ships with the plugin (`google-oauth-client.json`). New RPC
+  methods `google_sign_in_start` and `google_sign_in_status`; database
+  migration element 19 adds the credential kind of an account.
 - Local archive (slice 3p). `bb makosh-mail archive add <file>` reads an
   mbox file, an `.eml` file or a folder of `.eml` files into a local
   archive, apart from every mailbox and never uploaded. The **Local
@@ -379,9 +481,24 @@ All notable changes to Makosh Mail are recorded here. The format follows
 - `bb makosh-mail doctor` turns sync back on for an account that was
   stopped by a refused sign-in once the server accepts the saved password
   again.
+- One refused sign-in no longer stops an account whose password the server
+  has accepted before: sync tries again on its next rounds and stops the
+  account only after three refusals in a row. Until then the account shows
+  as offline, with a banner after 30 minutes without a good sync.
+- A connection that closed before the sign-in is no longer taken for a
+  refused password.
+- A stopped account comes back by itself: sync tries its saved password
+  again with the next full round, then 10 and 30 minutes after a refusal,
+  then once an hour, and turns the account on as soon as the server
+  accepts it.
+- The "update the app password" banner has **Try the saved password**: one
+  sign-in with the password Mail already has, without typing it again.
 
 ### Changed
 
+- `from:` with a whole address (`from:ada@example.com`) matches that address
+  only, and with a domain (`from:example.com`) the domain and its
+  subdomains; before, both matched any address containing the text.
 - Translation settings are now **AI settings**; `translateProvider` and
   `translateModel` keep their keys with the labels "AI provider (Makosh AI)"
   and "AI model". Translation sends redacted text and restores the hidden

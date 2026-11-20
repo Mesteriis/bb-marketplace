@@ -19,6 +19,8 @@ import {
   type SmtpCommand,
   type SmtpConfig,
 } from "../../core/index.ts";
+import { GrantRevokedError } from "../../core/ports.ts";
+import type { GoogleTokens } from "./google-tokens.ts";
 
 const CONNECTION_TIMEOUT_MS = 15_000;
 const GREETING_TIMEOUT_MS = 15_000;
@@ -127,12 +129,53 @@ function abortError(): Error {
   return Object.assign(new Error("Aborted"), { code: "EABORT" });
 }
 
-export function createSmtpTransport(options: { factory?: SmtpConnectionFactory } = {}): MailTransport {
+/** nodemailer's XOAUTH2 login for one access token; a second try after a refusal is declined. */
+function xoauth2Login(user: string, accessToken: string): unknown {
+  return {
+    type: "OAuth2",
+    method: "XOAUTH2",
+    user,
+    oauth2: {
+      getToken: (isRetry: boolean, callback: (error: Error | null, token?: string) => void) =>
+        isRetry ? callback(new Error("Token refused")) : callback(null, accessToken),
+      buildXOAuth2Token: (token: string) =>
+        Buffer.from(`user=${user}\u0001auth=Bearer ${token}\u0001\u0001`, "utf8").toString("base64"),
+    },
+  };
+}
+
+export function createSmtpTransport(
+  options: { factory?: SmtpConnectionFactory; googleTokens?: GoogleTokens } = {},
+): MailTransport {
   const factory = options.factory ?? defaultFactory;
 
+  /**
+   * What the connection logs in with: the password, or for a Google account
+   * an access token. A revoked grant is an auth failure; no token now is a
+   * connection failure, so the Outbox tries again later.
+   */
+  async function loginFor(config: SmtpConfig): Promise<unknown> {
+    if (config.authKind !== "google") return { user: config.username, pass: config.password };
+    try {
+      if (options.googleTokens === undefined) throw new Error("No token service");
+      return xoauth2Login(config.username, await options.googleTokens.accessToken(config.password));
+    } catch (error) {
+      throw new SendError(error instanceof GrantRevokedError ? "auth" : "connect", false, null);
+    }
+  }
+
   /** Connects, logs in, runs `then` and closes; every failure goes through mapSendError. */
-  function session<T>(
+  async function session<T>(
     config: SmtpConfig,
+    signal: AbortSignal | null,
+    then: (connection: SmtpConnectionLike, done: (error: Error | null, result?: T) => void, started: () => void) => void,
+  ): Promise<T> {
+    return connected(config, await loginFor(config), signal, then);
+  }
+
+  function connected<T>(
+    config: SmtpConfig,
+    auth: unknown,
     signal: AbortSignal | null,
     then: (connection: SmtpConnectionLike, done: (error: Error | null, result?: T) => void, started: () => void) => void,
   ): Promise<T> {
@@ -161,12 +204,11 @@ export function createSmtpTransport(options: { factory?: SmtpConnectionFactory }
         return;
       }
       signal?.addEventListener("abort", onAbort, { once: true });
-      const auth = { user: config.username, pass: config.password };
       try {
         connection.connect((error) => {
           if (error) return finish(error);
           if (settled) return;
-          connection.login(auth, (loginError) => {
+          connection.login(auth as { user: string; pass: string }, (loginError) => {
             if (loginError) return finish(loginError);
             if (settled) return;
             then(connection, finish, () => {

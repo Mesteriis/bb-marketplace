@@ -2,7 +2,7 @@ import { createServer, type Server, type Socket } from "node:net";
 import type { AddressInfo } from "node:net";
 import SMTPConnection from "nodemailer/lib/smtp-connection";
 import { afterEach, describe, expect, it } from "vitest";
-import { SendError, classifySendError, type SmtpConfig } from "../../core/index.ts";
+import { GrantRevokedError, SendError, classifySendError, type SmtpConfig } from "../../core/index.ts";
 import {
   createSmtpTransport,
   mapSendError,
@@ -176,6 +176,48 @@ describe("createSmtpTransport against a local server", () => {
         never(),
       ),
     ).resolves.toEqual({ accepted: ["ana@example.com"], rejected: ["bad@example.com"] });
+  });
+
+  it("a Google account logs in with XOAUTH2 and its access token, never the refresh token", async () => {
+    const { port, recorded } = await fakeServer();
+    const asked: string[] = [];
+    const transport = createSmtpTransport({
+      factory: localFactory(port),
+      googleTokens: {
+        accessToken: async (refreshToken) => (asked.push(refreshToken), "a1"),
+        narrowToken: async () => Promise.reject(new Error("not used")),
+        exchangeCode: async () => ({ ok: false, reason: "other" }),
+        forget: () => undefined,
+      },
+    });
+
+    await transport.verify({ ...config(), password: "invented-refresh-token", authKind: "google" });
+
+    expect(asked).toEqual(["invented-refresh-token"]);
+    const auth = recorded.lines.filter((l) => l.startsWith("AUTH"));
+    expect(auth).toHaveLength(1);
+    expect(auth[0]!.startsWith("AUTH XOAUTH2 ")).toBe(true);
+    expect(Buffer.from(auth[0]!.slice("AUTH XOAUTH2 ".length), "base64").toString("utf8")).toBe(
+      "user=owner@example.org\u0001auth=Bearer a1\u0001\u0001",
+    );
+    const everything = recorded.lines.join("\n");
+    expect(everything).not.toContain("invented-refresh-token");
+    expect(everything).not.toContain(Buffer.from("invented-refresh-token").toString("base64"));
+  });
+
+  it("a revoked grant is an auth failure and an unreachable token endpoint a connection failure, before anything connects", async () => {
+    const { port, recorded } = await fakeServer();
+    const failing = (error: Error) =>
+      createSmtpTransport({
+        factory: localFactory(port),
+        googleTokens: { accessToken: async () => { throw error; }, narrowToken: async () => Promise.reject(new Error("not used")), exchangeCode: async () => ({ ok: false, reason: "other" }), forget: () => undefined },
+      });
+    const google = { ...config(), password: "invented-refresh-token", authKind: "google" as const };
+
+    expect((await sendError(failing(new GrantRevokedError()).verify(google))).kind).toBe("auth");
+    expect((await sendError(failing(Object.assign(new Error("x"), { code: "TokenUnavailable" })).verify(google))).kind).toBe("connect");
+    expect((await sendError(createSmtpTransport({ factory: localFactory(port) }).verify(google))).kind).toBe("connect");
+    expect(recorded.lines).toEqual([]);
   });
 
   it("verify logs in and sends nothing", async () => {

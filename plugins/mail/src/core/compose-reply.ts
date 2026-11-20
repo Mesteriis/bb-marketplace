@@ -88,6 +88,9 @@ export function threadingHeaders(source: ReplySource): {
   return { inReplyTo: messageId, references };
 }
 
+/** Quick quote: the most of a selection a reply quotes. */
+export const QUOTE_MAX = 20_000;
+
 /** Plain-text lines above the quoted original: the attribution line, or the forwarded-message block. */
 export function quoteHeaderText(source: ReplySource, kind: ReplyKind | "forward"): string[] {
   const date = formatDate(source.date);

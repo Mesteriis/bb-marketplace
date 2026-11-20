@@ -3,6 +3,7 @@ import { DECRYPT_ERROR } from "../adapters/bb/sync-service.ts";
 import {
   DECRYPT_ERROR_TEXT,
   OFFLINE_QUIET_MS,
+  grantRevoked,
   isQuietlyOffline,
   parseSyncProblems,
   syncProblemText,
@@ -23,6 +24,22 @@ describe("parseSyncProblems", () => {
     expect(codes("Sync failed (ENOTFOUND)")).toEqual(["network"]);
     expect(codes("Sync failed (ETIMEDOUT); Sync failed (ECONNRESET)")).toEqual(["network", "network"]);
     expect(codes("Sync failed (UNAVAILABLE)")).toEqual(["server_busy"]);
+    expect(codes("Sync failed (TokenUnavailable)")).toEqual(["network"]);
+    expect(codes("Google sign-in expired")).toEqual(["grant_revoked"]);
+    expect(syncProblemText(parseSyncProblems("Google sign-in expired")[0]!)).toBe(
+      "Google no longer accepts this sign-in. Sign in to Google again.",
+    );
+    expect(
+      isQuietlyOffline({ lastError: "Google sign-in expired", lastSyncAt: "2026-11-19T12:00:00.000Z", authFailed: true }, Date.parse("2026-11-19T12:01:00.000Z")),
+    ).toBe(false);
+    // The round's other problems follow the revoked grant in the same line.
+    expect(grantRevoked("Google sign-in expired; Archive: Sync failed (ECONNRESET)")).toBe(true);
+    expect(grantRevoked("Google sign-in expired")).toBe(true);
+    expect(grantRevoked("Authentication failed")).toBe(false);
+    expect(grantRevoked("Archive: Google sign-in expired")).toBe(false);
+    expect(grantRevoked(null)).toBe(false);
+    // A sign-in refused once for a password that worked before: retried, not a banner yet.
+    expect(codes("Sync failed (LoginRefused)")).toEqual(["server_busy"]);
     expect(codes("Sync failed (TLSFailed)")).toEqual(["tls"]);
     expect(codes("Sync failed (ERR_TLS_CERT_ALTNAME_INVALID)")).toEqual(["tls"]);
     expect(codes("Sync failed (SearchFailed)")).toEqual(["server"]);

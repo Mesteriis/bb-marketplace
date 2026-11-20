@@ -8,6 +8,8 @@
 // No credential (password, sealed password, vault key) leaves this file: every
 // account goes out through toPublicAccount, and log lines carry account ids
 // and outcome codes only.
+import { createReadStatus, type ReadStatus } from "./src/adapters/bb/read-status.ts";
+import { READ_STATUS_FEED_CHARS, READ_STATUS_ORIGIN } from "./src/core/read-status.ts";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
   PluginCliError,
@@ -39,6 +41,9 @@ import {
 } from "./src/adapters/bb/downloads.ts";
 import { createAccountQueue } from "./src/adapters/bb/account-queue.ts";
 import { createImapflowGateway, parseMail } from "./src/adapters/bb/imapflow-gateway.ts";
+import { googleClient } from "./src/adapters/bb/google-oauth-client.ts";
+import { createGoogleTokens, type GoogleTokens } from "./src/adapters/bb/google-tokens.ts";
+import { createGoogleSignIn, type GoogleSignIn } from "./src/adapters/bb/google-sign-in.ts";
 import { MAKOSH_AI_PLUGIN_ID, createMakoshAiTranslator } from "./src/adapters/bb/makosh-ai-translator.ts";
 import { TranslateJobRefusal, TranslateJobs } from "./src/adapters/bb/translate-jobs.ts";
 import { AiJobRefusal, AiJobs, type AiFinished, type AiJobContext } from "./src/adapters/bb/ai-jobs.ts";
@@ -96,6 +101,14 @@ import { SNIFF_BYTES, VIEW_CAPS, sniffType, viewableAs } from "./src/core/file-k
 import { createSyncLoop, type SyncLoop } from "./src/adapters/bb/sync-service.ts";
 import { createIdleSupervisor, type IdleSupervisor } from "./src/adapters/bb/idle-service.ts";
 import { NewMailBook } from "./src/adapters/bb/new-mail-book.ts";
+import { linksOf, writeInput } from "./src/core/ai-write.ts";
+import { RHYTHM_DAYS, RHYTHM_MESSAGES, smartSendTime } from "./src/core/sender-rhythm.ts";
+import { validSendAt } from "./src/core/send-later.ts";
+import { askActionViews } from "./src/core/ask-action-views.ts";
+import { writeSource, type WriteSettings } from "./src/core/write-source.ts";
+import { createReplyDrafts, type ReplyDrafts } from "./src/adapters/bb/reply-drafts.ts";
+import { AiSortRefusal, createAiSort, type AiSort } from "./src/adapters/bb/ai-sort.ts";
+import { UnattendedGate } from "./src/adapters/bb/unattended-ai-queue.ts";
 import { createSnoozeClock, type SnoozeClock } from "./src/adapters/bb/snooze-clock.ts";
 import { ONE_CLICK_TOTAL_MS, UnsubscribeRate, createOneClickPoster } from "./src/adapters/bb/one-click.ts";
 import { createVault, generateVaultKey } from "./src/adapters/bb/vault.ts";
@@ -113,6 +126,26 @@ import {
   type BbSettings,
   type RuleDeps,
 } from "./src/adapters/bb/bb-rpc.ts";
+import { createPluginApi, type GoogleKey } from "./src/adapters/bb/plugin-api-rpc.ts";
+import { proposePluginLetter } from "./src/core/plugin-propose.ts";
+import { teamDomains } from "./src/core/inbox-tabs.ts";
+import { buildPhrases } from "./src/core/phrases.ts";
+
+/** The owner's phrases come from this many of the newest sent messages, and are rebuilt this often at most. */
+const PHRASES_FROM_SENT = 2_000;
+const PHRASES_FRESH_MS = 10 * 60_000;
+/** The key of a template's upload in the upload book, where a draft's id goes for a draft. */
+const TEMPLATE_UPLOAD = "template:";
+import { createInboxTabsRpc } from "./src/adapters/bb/inbox-tabs-rpc.ts";
+import { GrantRevokedError } from "./src/core/ports.ts";
+import { guardHandlers } from "./src/adapters/bb/plugin-guard.ts";
+import {
+  PLUGIN_ACCESS_CHANNEL,
+  PLUGIN_API_METHODS,
+  PLUGIN_CALLER_MESSAGE,
+  PLUGIN_READ_CHARS,
+  type PluginAccessPayload,
+} from "./src/core/plugin-api.ts";
 import { ruleThreadMetadata } from "./src/core/bb-text.ts";
 import { describeStructure, headerLines, readHeaders } from "./src/core/headers.ts";
 import {
@@ -120,6 +153,8 @@ import {
   addIdentity,
   checkDraft,
   deleteTemplate,
+  applyTemplate,
+  templateFileRoom,
   dismissIdentity,
   identitySuggestions,
   listIdentityViews,
@@ -212,6 +247,7 @@ import {
   newRestoreTag,
   normalizeBlockValue,
   ownerParagraphs,
+  renderDoc,
   queryWords,
   summaryInput,
   summarySourceHash,
@@ -252,6 +288,16 @@ import {
   roleFolders,
   rpcSchemas,
   testAccount,
+  retrySignIn,
+  DIGEST_TIME_PATTERN,
+  PAGE_SETTING_SCHEMAS,
+  QUIET_HOURS_PATTERN,
+  SYNC_INTERVAL_MAX,
+  pageSettingsOf,
+  type PageSettings,
+  type PageSettingsPatch,
+  saveGoogleAccount,
+  PRESETS,
   toPublicAccount,
   imapConfigOf,
   type Account,
@@ -276,6 +322,7 @@ import {
   type OutboxState,
   type QueueDeps,
   type MessageSummary,
+  type SearchCursor,
   type SecretVault,
   type SpecialUse,
   type SyncDeps,
@@ -368,7 +415,6 @@ const TOOL_SEARCH_DEFAULT = 10;
 const MENTION_LIMIT = 20;
 const RECIPIENT_SUGGESTIONS = 10;
 const QUERY_MAX = 500;
-const SYNC_INTERVAL_MAX = 1440;
 /** Settled proposals are purged on load and then once a day. */
 const PURGE_INTERVAL_MS = 24 * 60 * 60 * 1000;
 /** Translation jobs over their caps or unpolled are swept this often. */
@@ -462,6 +508,10 @@ const READ_INSTRUCTIONS =
 
 export interface MailPluginOverrides {
   gateway?: ImapGateway;
+  /** Google access tokens (tests pass a fake; the default asks Google). */
+  googleTokens?: GoogleTokens;
+  /** Read statuses: the HTTP call to the owner's endpoint (tests pass a fake). */
+  readStatusFetch?: (url: string, init: { headers: Record<string, string>; signal: AbortSignal }) => Promise<{ status: number; text(): Promise<string> }>;
   clock?: Clock;
   transport?: MailTransport;
   /** Slice 3k: the OpenPGP engine; tests may pass a counting one. */
@@ -490,11 +540,7 @@ function isVaultKey(value: string): boolean {
   }
 }
 
-/** A setting that is one bounded line (a provider or model id). */
-function settingLine(max: number) {
-  return z.string().max(max).refine((value) => !/[\u0000\r\n]/.test(value), "Must be one line");
-}
-
+/** The plugin's settings as BB shows them; the page's bounds come from the shared schemas. */
 function defineSettings(bb: BbPluginApi) {
   return bb.settings.define({
     vaultKey: {
@@ -509,20 +555,27 @@ function defineSettings(bb: BbPluginApi) {
       type: "number",
       label: "Sync interval (minutes)",
       default: 5,
-      experimental_schema: z.number().int().min(1).max(SYNC_INTERVAL_MAX),
+      experimental_schema: PAGE_SETTING_SCHEMAS.syncIntervalMinutes,
     },
     syncWindowDays: {
       type: "number",
       label: "Sync window (days)",
       description: "How many days of mail to keep in sync, in every folder.",
       default: 30,
-      experimental_schema: z.number().int().min(1),
+      experimental_schema: PAGE_SETTING_SCHEMAS.syncWindowDays,
     },
     agentTools: {
       type: "boolean",
       label: "Let agents search and read mail in every thread",
       description:
         "Off: no thread gets the mail tools or skill. Mentions and Hand to agent still give an agent the message you picked.",
+      default: false,
+    },
+    mcpAccess: {
+      type: "boolean",
+      label: "Let assistants outside BB search and read mail (MCP)",
+      description:
+        "Off: the local MCP server answers nothing. On: an assistant you connect it to searches and reads mail inside AI access, secrets hidden, its calls in the agent log; it cannot send or change anything.",
       default: false,
     },
     agentPropose: {
@@ -539,14 +592,14 @@ function defineSettings(bb: BbPluginApi) {
       label: "AI provider (Makosh AI)",
       description: "A Makosh AI provider id. Empty: the first available one.",
       default: "",
-      experimental_schema: settingLine(64),
+      experimental_schema: PAGE_SETTING_SCHEMAS.translateProvider,
     },
     translateModel: {
       type: "string",
       label: "AI model",
       description: "A model id of that provider. Empty: the first model it lists.",
       default: "",
-      experimental_schema: settingLine(200),
+      experimental_schema: PAGE_SETTING_SCHEMAS.translateModel,
     },
     translateLanguage: {
       type: "select",
@@ -573,7 +626,7 @@ function defineSettings(bb: BbPluginApi) {
       description:
         "Addresses or domains, separated by commas. They notify during quiet hours, and even when you never wrote to them.",
       default: "",
-      experimental_schema: z.string().max(20_000),
+      experimental_schema: PAGE_SETTING_SCHEMAS.importantSenders,
     },
     notifyImportantOnly: {
       type: "boolean",
@@ -585,7 +638,7 @@ function defineSettings(bb: BbPluginApi) {
       label: "Quiet hours",
       description: "HH:MM\u2013HH:MM in this computer's time, e.g. 22:00\u201308:00. Empty: off.",
       default: "",
-      experimental_schema: z.string().regex(QUIET_HOURS_PATTERN, "Must be HH:MM-HH:MM, or empty"),
+      experimental_schema: PAGE_SETTING_SCHEMAS.quietHours,
     },
     agentTriage: {
       type: "boolean",
@@ -608,13 +661,13 @@ function defineSettings(bb: BbPluginApi) {
       label: "Today digest time (this computer's time)",
       description: "HH:MM, e.g. 08:00.",
       default: "08:00",
-      experimental_schema: z.string().regex(DIGEST_TIME_PATTERN, "Must be HH:MM"),
+      experimental_schema: PAGE_SETTING_SCHEMAS.digestTime,
     },
     replyReminderDays: {
       type: "number",
       label: "Default days for reply reminders",
       default: 3,
-      experimental_schema: z.number().int().min(1).max(30),
+      experimental_schema: PAGE_SETTING_SCHEMAS.replyReminderDays,
     },
     // Slice 3g.
     devNotifications: {
@@ -634,13 +687,13 @@ function defineSettings(bb: BbPluginApi) {
       label: "Folder for attachments saved into a project",
       description: "Relative to the project's folder; no folder that starts with a dot.",
       default: ATTACHMENT_FOLDER_DEFAULT,
-      experimental_schema: projectFolderSetting(),
+      experimental_schema: PAGE_SETTING_SCHEMAS.attachmentFolder,
     },
     patchFolder: {
       type: "string",
       label: "Folder for patches saved into a project",
       default: PATCH_FOLDER_DEFAULT,
-      experimental_schema: projectFolderSetting(),
+      experimental_schema: PAGE_SETTING_SCHEMAS.patchFolder,
     },
     taskTarget: {
       type: "select",
@@ -654,13 +707,13 @@ function defineSettings(bb: BbPluginApi) {
       type: "number",
       label: "Days loaded by \"Load more days\"",
       default: 30,
-      experimental_schema: z.number().int().min(7).max(365),
+      experimental_schema: PAGE_SETTING_SCHEMAS.historyStepDays,
     },
     serverSearchKeepDays: {
       type: "number",
       label: "Keep unopened server search results (days)",
       default: 14,
-      experimental_schema: z.number().int().min(1).max(90),
+      experimental_schema: PAGE_SETTING_SCHEMAS.serverSearchKeepDays,
     },
     indexAttachmentText: {
       type: "boolean",
@@ -715,27 +768,109 @@ function defineSettings(bb: BbPluginApi) {
       label: "Remove tracking from links I open",
       default: true,
     },
+    // Typing speed: the composer's aids. Everything stays on this computer.
+    autocorrect: {
+      type: "boolean",
+      label: "Fix common typing slips as I write",
+      description: "Backspace right after a fix puts back what you typed.",
+      default: true,
+    },
+    autocorrectPairs: {
+      type: "string",
+      label: "My own replacements",
+      description: "from => to, separated by semicolons: brb => be right back; omw => on my way.",
+      default: "",
+      experimental_schema: PAGE_SETTING_SCHEMAS.autocorrectPairs,
+    },
+    autocomplete: {
+      type: "boolean",
+      label: "Offer the rest of phrases I often write",
+      description: "From your own sent mail and templates, on this computer. Tab accepts.",
+      default: true,
+    },
+    readStatuses: {
+      type: "boolean",
+      label: "Show when mail I send is opened",
+      description:
+        "Puts a tiny image from your own endpoint into mail you send; when the recipient's mail program fetches it, the message shows as opened. Needs the endpoint's two keys below; never in signed or encrypted mail.",
+      default: true,
+    },
+    readStatusExceptions: {
+      type: "string",
+      label: "Never show opens for",
+      description: "Addresses and domains, separated by commas: mail to any of them goes without the image.",
+      default: "",
+      experimental_schema: PAGE_SETTING_SCHEMAS.readStatusExceptions,
+    },
+    readStatusOrigin: {
+      type: "string",
+      label: "Read-status endpoint",
+      description: "The https address of your own endpoint (the Makosh site).",
+      default: READ_STATUS_ORIGIN,
+      experimental_schema: z.string().max(200),
+    },
+    readStatusTrackKey: {
+      type: "string",
+      label: "Read-status signing key",
+      description: "MAKOSH_TRACK_KEY of the endpoint. Empty: no image is added.",
+      secret: true,
+      default: "",
+      experimental_schema: z.string().max(200),
+    },
+    readStatusFeedKey: {
+      type: "string",
+      label: "Read-status feed key",
+      description: "MAKOSH_API_KEY of the endpoint. Empty: opens are not read.",
+      secret: true,
+      default: "",
+      experimental_schema: z.string().max(200),
+    },
+    aiVoice: {
+      type: "boolean",
+      label: "Write in my voice",
+      description: "When AI writes a message, it is shown a few pieces of your own sent mail to match your tone.",
+      default: true,
+    },
+    aiAutoDrafts: {
+      type: "boolean",
+      label: "Draft replies to new mail",
+      description: "Uses your AI provider for every new message from people you write to; at most 50 a day. Nothing is sent without you.",
+      default: false,
+    },
+    aiSort: {
+      type: "boolean",
+      label: "Sort new mail with AI",
+      description: "One line and your own AI labels for every new Inbox message; a label can archive automatically. Uses your AI provider; at most 100 calls a day.",
+      default: false,
+    },
+    aiInstructions: {
+      type: "string",
+      label: "My instructions for AI writing",
+      description: "For example: sign as Alex; answer in the language of the message.",
+      default: "",
+      experimental_schema: PAGE_SETTING_SCHEMAS.aiInstructions,
+    },
+    aiKnowledge: {
+      type: "string",
+      label: "Facts AI may use",
+      description: "Prices, addresses, working hours, links. AI adds no other facts or links.",
+      default: "",
+      experimental_schema: PAGE_SETTING_SCHEMAS.aiKnowledge,
+    },
   });
 }
 
+export const AI_LABEL_SEARCH_REFUSAL = "ai: labels are the owner's own and are not searchable here";
 export const ATTACHMENT_FOLDER_DEFAULT = "mail-attachments";
 export const PATCH_FOLDER_DEFAULT = "mail-patches";
-
-/** A project-relative folder setting, checked like a save's folder. */
-function projectFolderSetting() {
-  return z.string().refine((value) => projectFolder(value).ok, "Must be a folder inside the project, not starting with a dot");
-}
 
 /** A folder setting, its default when the stored value is no longer valid. */
 function folderOr(value: string, fallback: string): string {
   return projectFolder(value).ok ? value : fallback;
 }
 
-/** The digest time setting: HH:MM on a 24-hour clock. */
-export const DIGEST_TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
 
-/** The quiet-hours setting: a range that may cross midnight (equal ends mean off), or empty. */
-export const QUIET_HOURS_PATTERN = /^(?:([01]\d|2[0-3]):[0-5]\d[-\u2013]([01]\d|2[0-3]):[0-5]\d)?$/;
+export { DIGEST_TIME_PATTERN, QUIET_HOURS_PATTERN };
 
 /** Spam-seen rows older than this are pruned at start (spec resolution 17). */
 const SPAM_SEEN_KEEP_MS = 180 * 86_400_000;
@@ -752,6 +887,8 @@ type NewMailDeps = {
   /** Slice 3l: the owner's important senders, and whether only they notify. */
   importantSenders: () => string;
   importantOnly: () => boolean;
+  /** AI writes mail: the round's new Inbox messages that stayed there. */
+  autoDrafts: (ids: string[]) => void;
   log: (line: string) => void;
 };
 
@@ -935,6 +1072,11 @@ function afterRound(
   } catch (error) {
     deps.log(`notify ${accountId}: failed (${errorKind(error)})`);
   }
+  try {
+    deps.autoDrafts(fresh.filter((id) => !moved.has(id)));
+  } catch (error) {
+    deps.log(`auto draft ${accountId}: failed (${errorKind(error)})`);
+  }
 }
 
 function refuse(
@@ -944,20 +1086,16 @@ function refuse(
   return new experimental_PluginRpcRefusal({ code, message });
 }
 
-export const PLUGIN_CALLER_MESSAGE = "Only the owner's Mail page can change mail or accounts.";
+export { PLUGIN_CALLER_MESSAGE };
 export const PASSWORD_NEEDED_MESSAGE = "This account needs its password re-entered";
 /** Role "all" (Gmail All Mail) stays under its account; All accounts does not merge it. */
 export const ALL_ROLE_MESSAGE = "All Mail is not a merged folder";
 
-/**
- * Writes refuse other plugins calling through bb.sdk.plugins.callRpc (the
- * host verifies that caller kind); every client caller is let through.
- */
-function refusePluginCaller(context: ExperimentalPluginRpcHandlerContext): void {
-  if (context.experimental_caller.kind === "plugin") throw refuse("forbidden", PLUGIN_CALLER_MESSAGE);
-}
-
 export const ACCOUNT_BUSY_MESSAGE = "A message is being sent";
+/** settings_set when BB does not take the change. */
+export const SETTINGS_REFUSED_MESSAGE = "BB did not save this setting";
+/** google_sign_in_start when the plugin has no usable client or the listener cannot open. */
+export const GOOGLE_UNAVAILABLE_MESSAGE = "Google sign-in is not available";
 /** new_mail_get for an unknown or expired token. */
 export const NEW_MAIL_GONE_MESSAGE = "This notification has expired";
 /** Fixed texts of translation refusals. */
@@ -1171,6 +1309,8 @@ function agentSearch(
     parsed.text,
     ...parsed.conditions.filter((condition) => SCREENED_FIELDS.has(condition.field)).map((condition) => condition.value),
   ];
+  // The owner's AI labels are theirs alone: an agent or a plugin does not search by them.
+  if (parsed.conditions.some((condition) => condition.field === "ai")) return { refused: AI_LABEL_SEARCH_REFUSAL };
   const refused = values.map((value) => agentSearchRefusal(value.trim())).find((answer) => answer !== null) ?? null;
   if (refused !== null) return { refused };
   const terms = [parsed.text.trim(), parsed.subject?.trim() ?? ""].filter((term) => term !== "");
@@ -1184,6 +1324,38 @@ function agentSearch(
       ),
     ),
   };
+}
+
+/** A page of a plugin's search in one account: screened and scoped like an agent's (agentSearch), with a cursor. */
+function pluginSearch(
+  store: MailStore,
+  raw: string,
+  accountId: string,
+  limit: number,
+  cursor: SearchCursor | null,
+  now: Date,
+): { refused: string } | { hits: MessageSummary[]; nextCursor: SearchCursor | null } {
+  const parsed = parseQuery(raw, now);
+  const values = [
+    parsed.text,
+    ...parsed.conditions.filter((condition) => SCREENED_FIELDS.has(condition.field)).map((condition) => condition.value),
+  ];
+  // The owner's AI labels are theirs alone: an agent or a plugin does not search by them.
+  if (parsed.conditions.some((condition) => condition.field === "ai")) return { refused: AI_LABEL_SEARCH_REFUSAL };
+  const refused = values.map((value) => agentSearchRefusal(value.trim())).find((answer) => answer !== null) ?? null;
+  if (refused !== null) return { refused };
+  const terms = [parsed.text.trim(), parsed.subject?.trim() ?? ""].filter((term) => term !== "");
+  const page = store.searchPage(parsed, accountId, limit, { scoped: true, cursor });
+  const hits =
+    terms.length === 0
+      ? page.hits
+      : page.hits.filter((hit) =>
+          hitStillMatches(
+            { subject: `${hit.subject}\n${hit.from.name ?? ""} ${hit.from.address}`, body: plainBodyText(store.getBody(hit.id)) },
+            terms,
+          ),
+        );
+  return { hits, nextCursor: page.nextCursor };
 }
 
 /** Operator values an agent's search is screened on, beside the free text (slice 3h). */
@@ -1330,6 +1502,17 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       bb.log.warn(`snippet repair failed (${errorKind(error)})`);
     }
     const clock: Clock = overrides.clock ?? { now: () => new Date() };
+    // Inbox tabs and search: what from:vip and from:team match. Read again when the setting changes and
+    // before a list or a search that may use them (an account or an alias may have been added).
+    const installSenderSets = () => {
+      try {
+        const vip = parseImportantSenders(current.importantSenders);
+        store.setSenderSets({ vip: { addresses: vip.addresses, domains: new Set(vip.domains) }, team: teamDomains(ownAddresses(store)) });
+      } catch (error) {
+        bb.log.warn(`sender sets: failed (${errorKind(error)})`);
+      }
+    };
+    installSenderSets();
     // The AI access scope agent paths read (slice 3f); the installed scope starts open.
     try {
       store.setAiScope(store.loadAiScope());
@@ -1369,8 +1552,11 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       }
       return true;
     };
+    // One token service for IMAP, SMTP and the sign-in flow: a grant's access token is asked for once.
+    const googleTokens =
+      overrides.googleTokens ?? createGoogleTokens({ client: googleClient(), fetch: (...args) => fetch(...args), now: () => Date.now() });
     const gateway =
-      overrides.gateway ?? createImapflowGateway({ logger: (line) => bb.log.warn(line) });
+      overrides.gateway ?? createImapflowGateway({ logger: (line) => bb.log.warn(line), googleTokens });
     const publishChanged = (accountId: string | null) =>
       bb.realtime.publish(MAIL_CHANGED_CHANNEL, { accountId } satisfies MailChangedPayload);
     const syncDeps: SyncDeps = {
@@ -1380,7 +1566,7 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       clock,
       notifier: { mailChanged: publishChanged },
     };
-    const transport = overrides.transport ?? createSmtpTransport();
+    const transport = overrides.transport ?? createSmtpTransport({ googleTokens });
     const accountDeps: AccountDeps = {
       store,
       gateway,
@@ -1418,8 +1604,20 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       quietHours: () => current.quietHours,
       importantSenders: () => current.importantSenders,
       importantOnly: () => current.notifyImportantOnly,
+      // Made below, once the AI job runner exists. Sorting first: its labels may archive what a draft would answer.
+      autoDrafts: (ids) => {
+        // Each on its own: a failure of one does not skip the other.
+        try {
+          aiSort?.offer(ids);
+        } catch (error) {
+          bb.log.info(`sort: failed (${errorKind(error)})`);
+        }
+        replyDrafts?.offer(ids);
+      },
       log: (line) => bb.log.info(line),
     };
+    let replyDrafts: ReplyDrafts | null = null;
+    let aiSort: AiSort | null = null;
 
     /**
      * Hosts of the BB projects' remotes, refreshed with the daily purge (and
@@ -1471,6 +1669,10 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
             bb.log.warn(`outbox: waiting sends not released (${errorKind(error)})`);
           }
           afterRound(newMailDeps, accountId, outcome, only);
+          // Read statuses: new opens from the owner's endpoint (at most every five minutes).
+          void readStatus.poll().then((kept) => {
+            if (kept > 0) publishChanged(null);
+          });
           // Category rules and reply reminders over the round's new rows (slice 3f).
           afterRoundAi({ store, clock, categoriesOn: () => current.mailCategories, log: (line) => bb.log.info(line) }, accountId, outcome);
           // Mail rules over the round's genuinely new Inbox rows (slice 3g); a spawn runs after this returns.
@@ -1627,12 +1829,26 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       newId: randomUUID,
       log: (line) => bb.log.info(line),
     });
+    const readStatus = createReadStatus({
+      store,
+      clock,
+      settings: () => ({
+        on: pageSettingsOf(current).readStatuses,
+        origin: current.readStatusOrigin,
+        trackKey: current.readStatusTrackKey,
+        feedKey: current.readStatusFeedKey,
+        exceptions: pageSettingsOf(current).readStatusExceptions,
+      }),
+      fetch: overrides.readStatusFetch ?? cappedFetch,
+      log: (line) => bb.log.info(line),
+    });
     const queueDeps: QueueDeps = {
       ...composeDeps,
       notifier: outboxNotifier,
       rate: new SendRateLimit(clock),
       undone: new UndoneSends(clock),
       protect: (mime, request) => pgp.protect(mime, request),
+      tracker: { issue: (recipients) => readStatus.issue(recipients) },
     };
     const worker = createOutboxWorker(
       {
@@ -1710,6 +1926,76 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
         if (state === "ok" || state === "gateway_missing" || state === "pool_unavailable") translateGateway.report(state);
       },
     });
+    const writeSettings = (): WriteSettings => {
+      const page = pageSettingsOf(current);
+      return { voice: page.aiVoice, personal: page.aiInstructions, facts: page.aiKnowledge };
+    };
+    /** The stored sender check failed, or Mail warns about the sender: AI leaves such mail alone. */
+    const suspicious = (messageId: string): boolean => {
+      const view = senderChecks.views([messageId]).get(messageId);
+      return view !== undefined && (view.senderCheck.state === "failed" || view.warnings.length > 0);
+    };
+    // One unattended call at a time: the owner's clicks always find a free slot.
+    const unattendedGate = new UnattendedGate();
+    const madeReplyDrafts = createReplyDrafts({
+      gate: unattendedGate,
+      store,
+      clock,
+      enabled: () => pageSettingsOf(current).aiAutoDrafts,
+      suspicious,
+      writeSettings,
+      aiContext: () => ({ provider: current.translateProvider, model: current.translateModel }),
+      jobs: aiJobs,
+      withNonce: (build) => {
+        for (let attempt = 0; ; attempt++) {
+          try {
+            return build(translateNonce((size) => new Uint8Array(randomBytes(size))));
+          } catch (error) {
+            if (!(error instanceof NonceCollision) || attempt >= 5) throw error;
+          }
+        }
+      },
+      restoreTag: (parts) => newRestoreTag((size) => new Uint8Array(randomBytes(size)), parts),
+      agentLog: agentLog.log,
+      onKept: publishChanged,
+      schedule: (run, ms) => {
+        const timer = setTimeout(run, ms);
+        return () => clearTimeout(timer);
+      },
+      log: (line) => bb.log.info(line),
+    });
+    replyDrafts = madeReplyDrafts;
+    const madeAiSort = createAiSort({
+      gate: unattendedGate,
+      store,
+      clock,
+      enabled: () => pageSettingsOf(current).aiSort,
+      aiContext: () => ({ provider: current.translateProvider, model: current.translateModel }),
+      jobs: aiJobs,
+      withNonce: (build) => {
+        for (let attempt = 0; ; attempt++) {
+          try {
+            return build(translateNonce((size) => new Uint8Array(randomBytes(size))));
+          } catch (error) {
+            if (!(error instanceof NonceCollision) || attempt >= 5) throw error;
+          }
+        }
+      },
+      suspicious,
+      agentLog: agentLog.log,
+      onChanged: publishChanged,
+      wake: (accountId) => loop.wake(accountId),
+      newId: randomUUID,
+      schedule: (run, ms) => {
+        const timer = setTimeout(run, ms);
+        return () => clearTimeout(timer);
+      },
+      log: (line) => bb.log.info(line),
+    });
+    aiSort = madeAiSort;
+    bb.onDispose(() => madeAiSort.dispose());
+    // Disposers run in order: the queue stops, then a call already running ends with the job runner.
+    bb.onDispose(() => madeReplyDrafts.queue.dispose());
     bb.onDispose(() => aiJobs.dispose());
 
     // The day clock (slice 3f): Today's digest and due reminders; tokens only on realtime.
@@ -1804,6 +2090,7 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
     // in that state, but sync starts at once.
     settings.onChange((next, prev) => {
       current = next;
+      installSenderSets();
       const wasReady = vault !== null;
       vault = openVault(next.vaultKey);
       if (!wasReady && vault !== null) {
@@ -1847,7 +2134,50 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       messages: { needsKey: NEEDS_KEY_MESSAGE, passwordNeeded: PASSWORD_NEEDED_MESSAGE },
       log: (line) => bb.log.info(line),
     });
+    const googleSignIn = createGoogleSignIn({
+      client: googleClient(),
+      tokens: googleTokens,
+      testSignIn: async (email, refreshToken) => {
+        const preset = PRESETS.gmail;
+        const result = await gateway
+          .test({ host: preset.host!, port: preset.port, user: email, password: refreshToken, authKind: "google" })
+          .catch(() => null);
+        if (result === null) return "unreachable";
+        return result.ok ? "ok" : result.authFailed ? "refused" : "unreachable";
+      },
+      save: async (input) => {
+        const account = await saveGoogleAccount(accountDeps, input);
+        publishChanged(account.id);
+        loop.wake(account.id);
+        idle.refresh();
+        bb.log.info(`google sign-in ${account.id}: saved`);
+        return account;
+      },
+    });
+    bb.onDispose(() => googleSignIn.close());
     const rpcDeps: RpcDeps = {
+      googleSignIn,
+      googleSignInOffered: googleClient() !== null,
+      pluginGoogleKey: async (accountId, scope) => {
+        const account = store.getAccount(accountId);
+        if (account === null || account.authKind !== "google") return { ok: false, reason: "not_google" };
+        if (!account.grantedScopes.includes(scope)) return { ok: false, reason: "scope" };
+        try {
+          const refreshToken = sealer.open(account.passwordSealed);
+          return { ok: true, ...(await googleTokens.narrowToken(refreshToken, scope)) };
+        } catch (error) {
+          return { ok: false, reason: error instanceof GrantRevokedError ? "revoked" : "unavailable" };
+        }
+      },
+      announcePluginAccess: (request) => bb.realtime.publish(PLUGIN_ACCESS_CHANNEL, { request } satisfies PluginAccessPayload),
+      pageSettings: {
+        get: () => pageSettingsOf(current),
+        set: async (patch) => {
+          await settings.experimental_set(patch);
+          current = await settings.get();
+          return pageSettingsOf(current);
+        },
+      },
       projects: projectDirectory,
       bbThreads,
       taskTarget,
@@ -1901,7 +2231,12 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       aiJobs,
       aiNonce: () => translateNonce((size) => new Uint8Array(randomBytes(size))),
       restoreTag: (parts) => newRestoreTag((size) => new Uint8Array(randomBytes(size)), parts),
+      writeSettings,
+      replyDrafts: madeReplyDrafts,
+      aiSort: madeAiSort,
+      readStatus,
       categoriesOn: () => current.mailCategories,
+      refreshSenderSets: installSenderSets,
       quietHours: () => current.quietHours,
       categoryUndo: new CategoryUndoBook(randomUUID),
       senderChecks,
@@ -1939,6 +2274,7 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       publishChanged,
       vaultReady: () => vault !== null,
       agentTools: () => current.agentTools,
+      mcpAccess: () => current.mcpAccess,
       agentLog: agentLog.log,
       secure: secureOne,
       doctor: () => ({
@@ -1956,6 +2292,15 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
 }
 
 type RpcDeps = {
+  /** Google sign-in flows, and whether the plugin has a client to offer them with. */
+  googleSignIn: GoogleSignIn;
+  googleSignInOffered: boolean;
+  /** A Google access token of an account narrowed to one scope (the plugin API). */
+  pluginGoogleKey: (accountId: string, scope: string) => Promise<GoogleKey>;
+  /** Plugin requests or grants changed (the plugin API). */
+  announcePluginAccess: (request: string | null) => void;
+  /** The settings page: the settings it shows, and a change of the writable ones. */
+  pageSettings: { get: () => PageSettings; set: (patch: PageSettingsPatch) => Promise<PageSettings> };
   /** Slice 3g: BB projects and working trees, threads, Taskboard and the owner's settings for them. */
   projects: ProjectDirectory;
   bbThreads: BbThreads;
@@ -2016,8 +2361,15 @@ type RpcDeps = {
   aiNonce: () => string;
   /** A restore tag absent from every part. */
   restoreTag: (parts: string[]) => string;
+  /** AI writes mail: the owner's voice switch, instructions and facts. */
+  writeSettings: () => WriteSettings;
+  replyDrafts: Pick<ReplyDrafts, "get" | "dismiss">;
+  aiSort: Pick<AiSort, "labels" | "withThreads" | "withMessages">;
+  readStatus: Pick<ReadStatus, "withMessages" | "withThreads" | "unanswered" | "ready">;
   /** The owner's "Sort mail into categories" setting. */
   categoriesOn: () => boolean;
+  /** Installs what from:vip and from:team match, from the settings and the accounts as they are now. */
+  refreshSenderSets: () => void;
   /** The owner's quiet hours: Today's notices wait them out (slice 3f). */
   quietHours: () => string;
   categoryUndo: CategoryUndoBook;
@@ -3023,7 +3375,6 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
   /** Owner-only compose handler: plugin callers refused first, failures as fixed-text refusals. */
   function owner<I, O>(method: string, run: (input: I) => O | Promise<O>) {
     return async (input: I, context: ExperimentalPluginRpcHandlerContext): Promise<O> => {
-      refusePluginCaller(context);
       try {
         return await run(input);
       } catch (error) {
@@ -3034,7 +3385,6 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
   /** Owner-only translation handler: plugin callers refused first, failures as fixed-text refusals. */
   function translating<I, O>(method: string, run: (input: I) => O | Promise<O>) {
     return async (input: I, context: ExperimentalPluginRpcHandlerContext): Promise<O> => {
-      refusePluginCaller(context);
       try {
         return await run(input);
       } catch (error) {
@@ -3088,7 +3438,6 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
   /** A slice 3h method: plugin callers refused first; failures as fixed-text refusals, logged by kind only. */
   function owner3h<I, O>(method: string, run: (input: I) => O | Promise<O>) {
     return async (input: I, context: ExperimentalPluginRpcHandlerContext): Promise<O> => {
-      refusePluginCaller(context);
       try {
         return await run(input);
       } catch (error) {
@@ -3102,7 +3451,6 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
   const s3 = deps.slice3h;
   function ownerBb<I, O>(method: string, run: (input: I) => O | Promise<O>) {
     return async (input: I, context: ExperimentalPluginRpcHandlerContext): Promise<O> => {
-      refusePluginCaller(context);
       try {
         return await run(input);
       } catch (error) {
@@ -3121,24 +3469,85 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       return new Map();
     }
   };
+  // The owner's phrases for the composer's grey text: from Sent mail and templates, at most once in ten minutes.
+  let phrasesKept: { at: number; phrases: string[] } | null = null;
+  const ownerPhrases = (): string[] => {
+    const now = Date.now();
+    if (phrasesKept !== null && now - phrasesKept.at < PHRASES_FRESH_MS) return phrasesKept.phrases;
+    const templates = store.listTemplates().map((template) => ownerParagraphs(template.doc).paragraphs.join("\n"));
+    // Every signature the owner sends with: a reply carries it above the quote, unmarked.
+    const signatures = store
+      .listAccounts()
+      .flatMap((account) => accountIdentities(store, account))
+      .flatMap((identity) => (identity.signature === null ? [] : [renderDoc({ type: "doc", content: identity.signature.content }).text]));
+    phrasesKept = { at: now, phrases: buildPhrases(store.sentTexts(PHRASES_FROM_SENT), templates, signatures) };
+    return phrasesKept.phrases;
+  };
+  const inboxTabs = createInboxTabsRpc({ store, now: () => new Date(), newId: () => randomUUID() });
+  // The plugin API reads what agents read: inside the owner's AI access, secrets hidden.
+  const pluginApi = createPluginApi({
+    store,
+    now: () => new Date(),
+    announce: deps.announcePluginAccess,
+    log: (entry) => void deps.agentLog(entry),
+    propose: (pluginId, letter) => proposePluginLetter(composeDeps, pluginId, letter),
+    googleKey: deps.pluginGoogleKey,
+    reads: {
+      search: (query, accountId, limit, cursor) => pluginSearch(store, query, accountId, limit, cursor, new Date()),
+      read: (messageId) => {
+        const stored = store.scopedMessage(messageId);
+        if (stored === null) return null;
+        const header = secureOne(stored);
+        const rendered = renderMessageForAgentCounted(header, store.getBody(header.id), PLUGIN_READ_CHARS, folderNames(store)(header));
+        return { header, subject: redactedSubject(header.subject), text: rendered.text, hiddenCount: rendered.hiddenCount };
+      },
+      contacts: (query, limit, accountId) => store.contacts(query, limit, { scoped: true, accountId }),
+      calendarPart: (messageId) => store.hasCalendarPart(messageId),
+      shared: (messageId) => store.scopedMessage(messageId),
+      invite: async (messageId) => (await readInvite(deps, messageId)).invite,
+    },
+  });
   // No method is published as discoverable, and none (message_action and the
   // image methods included) is exposed as a tool, CLI command or mention. They
   // are still reachable by anything that can call local plugin RPC as a client,
-  // an agent with shell access included; other plugins are refused on writes.
+  // an agent with shell access included. Another plugin's server is refused on
+  // every method outside the plugin API (the guard), reads included.
   bb.rpc.register(
     rpcContract,
-    {
+    guardHandlers({
       status_get: async () => ({
         vaultReady: deps.vaultReady(),
         agentTools: deps.agentTools(),
         agentPropose: deps.agentPropose(),
+        readStatuses: deps.readStatus.ready(),
         translate: { gateway: await deps.gateway.status() },
         accounts: store.listAccounts().map(toPublicAccount),
+        googleSignIn: deps.googleSignInOffered,
         unreadCount: store.unreadCount(null),
       }),
+      settings_get: (_input, context) => {
+        return deps.pageSettings.get();
+      },
+      settings_set: async (patch, context) => {
+        try {
+          return await deps.pageSettings.set(patch);
+        } catch {
+          throw refuse("invalid", SETTINGS_REFUSED_MESSAGE);
+        }
+      },
+      google_sign_in_start: async ({ email, extraScopes }, context) => {
+        if (!deps.vaultReady()) throw refuse("conflict", NEEDS_KEY_MESSAGE);
+        try {
+          return await deps.googleSignIn.start({ email, ...(extraScopes === undefined ? {} : { extraScopes }) });
+        } catch {
+          throw refuse("conflict", GOOGLE_UNAVAILABLE_MESSAGE);
+        }
+      },
+      google_sign_in_status: ({ flowId }, context) => {
+        return deps.googleSignIn.status(flowId);
+      },
       accounts_test: (input) => testAccount(accountDeps, input),
       accounts_add: async (input, context) => {
-        refusePluginCaller(context);
         if (!deps.vaultReady()) throw refuse("conflict", NEEDS_KEY_MESSAGE);
         let account: Account;
         try {
@@ -3153,7 +3562,6 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         return account;
       },
       accounts_remove: ({ accountId }, context) => {
-        refusePluginCaller(context);
         let removed: boolean;
         try {
           removed = removeAccount(accountDeps, accountId);
@@ -3178,26 +3586,55 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         deps.loop.wake(accountId);
         return { started: true };
       },
-      threads_list: ({ scope, cursor, limit, filter }) => {
+      accounts_retry_sign_in: async ({ accountId }, context) => {
+        const result = await retrySignIn(
+          {
+            store,
+            gateway: accountDeps.gateway,
+            vault: deps.vaultReady() ? accountDeps.vault : null,
+            run: (id, work) => composeDeps.queue.run(id, work),
+          },
+          accountId,
+        );
+        if (result === null) throw refuse("not_found", "Unknown account");
+        bb.log.info(`retry sign-in ${accountId}: ${result}`);
+        if (result === "resumed") {
+          publishChanged(accountId);
+          deps.idle.refresh();
+          deps.loop.wake(accountId);
+        }
+        return { result };
+      },
+      inbox_tabs_list: (input) => {
+        deps.refreshSenderSets();
+        return inboxTabs.list(input);
+      },
+      inbox_tab_save: (input) => inboxTabs.save(input),
+      inbox_tab_delete: (input) => inboxTabs.remove(input),
+      inbox_tab_move: (input) => inboxTabs.move(input),
+      threads_list: ({ scope, cursor, limit, filter, tabId }) => {
+        // A tab that was removed lists the whole folder; a broken one lists nothing.
+        if (tabId !== undefined) deps.refreshSenderSets();
+        const tab = inboxTabs.matchOf(tabId);
         // Category filters and fields only while categories are on (slice 3f).
         const categorized = filter !== undefined && filter.category !== undefined && !deps.categoriesOn() ? { ...filter, category: undefined } : filter;
         // "Hide dev notifications" only while they are recognised (slice 3g).
         const shown = categorized !== undefined && categorized.notDev !== undefined && !deps.bbSettings().devNotifications ? { ...categorized, notDev: undefined } : categorized;
         const page =
           scope.kind === "account"
-            ? store.listThreads(scope.accountId, scope.folder, cursor, limit, shown)
+            ? store.listThreads(scope.accountId, scope.folder, cursor, limit, shown, tab)
             : scope.role === "all"
               ? null
-              : store.listThreadsAll(scope.role, cursor, limit, shown);
+              : store.listThreadsAll(scope.role, cursor, limit, shown, tab);
         if (page === null) throw refuse("invalid", ALL_ROLE_MESSAGE);
-        return { ...page, threads: ai.withCategories(page.threads, scope.kind === "account" ? scope.folder : "INBOX") };
+        return { ...page, threads: deps.readStatus.withThreads(deps.aiSort.withThreads(ai.withCategories(page.threads, scope.kind === "account" ? scope.folder : "INBOX"))) };
       },
       thread_get: async ({ threadId, folder }) => {
         const thread = store.getThread(threadId, folder);
         if (thread === null) throw refuse("not_found", "Unknown thread");
         const detail = await bbRpc.threadDetail(thread);
         // Slice 3i: the sender check, disguise warnings, receipt request and crypto kind.
-        return { ...detail, messages: deps.senderChecks.secure(detail.messages) };
+        return { ...detail, messages: deps.readStatus.withMessages(deps.aiSort.withMessages(deps.senderChecks.secure(detail.messages))) };
       },
       // cid: images come inline as data: URLs, so the page fetches nothing for them.
       message_body: ({ messageId }) => {
@@ -3225,7 +3662,6 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       // The only path that marks mail read: the owner opened it in the Mail page
       // (other plugins are refused, like on every write).
       message_open: ({ messageId }, context) => {
-        refusePluginCaller(context);
         const opened = store.markOpened(messageId);
         if (opened === null) throw refuse("not_found", "Unknown message");
         publishChanged(opened.accountId);
@@ -3236,6 +3672,7 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       // Owner-only (slice 3h); attachment text only when the page asks (spec resolution 4).
       search: owner3h("search", ({ query, accountId, limit, cursor, attachments }) => {
         const parsed = parseQuery(query, composeDeps.clock.now());
+        if (parsed.conditions.some((c) => c.field === "sender")) deps.refreshSenderSets();
         const page = store.searchPage(parsed, accountId, limit, {
           cursor: decodeCursor(cursor),
           attachments: attachments === true,
@@ -3251,7 +3688,6 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
           : { folders: store.listFolders(accountId), roles: [] },
       // Owner-clicked or hotkeyed moves and flag changes; the sync loop pushes them.
       message_action: (input, context) => {
-        refusePluginCaller(context);
         if (input.role === "all") throw refuse("invalid", ALL_ROLE_MESSAGE);
         const { groups, undo } = runMessageAction(deps, input);
         // The page's undoId: what this call queued becomes (or joins) the one undoable action.
@@ -3261,7 +3697,6 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       // Details panel: read-only session, BODY.PEEK, never \Seen; nothing is logged.
       // Owner only: it logs in to the server and shows headers no other RPC gives.
       message_source: async ({ messageId }, context) => {
-        refusePluginCaller(context);
         let fetched: Awaited<ReturnType<typeof fetchRawGuarded>>;
         try {
           fetched = await fetchRawGuarded(deps.rawDeps, messageId);
@@ -3286,7 +3721,6 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         };
       },
       download_ticket: ({ kind, messageId, partId }, context) => {
-        refusePluginCaller(context);
         try {
           checkRawRef(deps.rawDeps, messageId);
         } catch (error) {
@@ -3306,7 +3740,6 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         return { url: `${downloadUrl(bb.pluginId)}?t=${ticket}`, fileName };
       },
       images_allow_sender: ({ messageId }, context) => {
-        refusePluginCaller(context);
         const message = store.getMessage(messageId);
         if (message === null) throw refuse("not_found", "Unknown message");
         if (message.from.address.trim() === "") {
@@ -3316,7 +3749,6 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         return { address: message.from.address };
       },
       images_disallow_sender: ({ accountId, address }, context) => {
-        refusePluginCaller(context);
         return { removed: store.disallowImageSender(accountId, address) };
       },
       // Compose and send (slice 3b). Owner only: every handler refuses plugin
@@ -3521,9 +3953,54 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         suggestions: identitySuggestions(store, accountId),
       })),
       identity_dismiss: owner("identity_dismiss", (input) => dismissIdentity(store, input, nowIso())),
+      // Typing speed. Never logged: the phrases are the owner's own words.
+      phrases_list: () => ({ phrases: ownerPhrases() }),
       templates_list: owner("templates_list", () => ({ templates: listTemplateViews(store) })),
-      template_save: owner("template_save", (input) => saveTemplate(store, input, `tpl_${randomUUID()}`, nowIso())),
+      template_save: owner("template_save", (input) => {
+        // A template's sentences are phrases: the list is built again on the next ask.
+        phrasesKept = null;
+        return saveTemplate(store, input, `tpl_${randomUUID()}`, nowIso());
+      }),
       template_delete: owner("template_delete", ({ id }) => deleteTemplate(store, id)),
+      // Typing speed: a template's files. The bytes arrive through compose_attachment_chunk, by upload id.
+      template_file_begin: owner("template_file_begin", ({ templateId, fileName, mimeType, size }) => ({
+        uploadId: deps.uploads.begin(`${TEMPLATE_UPLOAD}${templateId}`, { fileName, mimeType, size }, templateFileRoom(store, templateId)),
+      })),
+      template_file_finish: owner("template_file_finish", ({ uploadId, sha256 }) => {
+        const upload = deps.uploads.finish(uploadId, sha256);
+        if (!upload.draftId.startsWith(TEMPLATE_UPLOAD)) throw new ComposeError("not_found");
+        const templateId = upload.draftId.slice(TEMPLATE_UPLOAD.length);
+        const file = {
+          id: `tfile_${randomUUID()}`,
+          name: sanitizeFileName(upload.fileName, "attachment"),
+          mimeType: safeContentType(upload.mimeType),
+          size: upload.size,
+        };
+        const added = store.addTemplateFile(templateId, { ...file, sha256: upload.sha256, data: upload.data }, nowIso());
+        if (added === "unknown") throw new ComposeError("not_found");
+        if (added === "full") throw new ComposeError("too_large");
+        return { file };
+      }),
+      template_file_remove: owner("template_file_remove", ({ templateId, fileId }) => ({ removed: store.removeTemplateFile(templateId, fileId) })),
+      // Smart Send: counted from the mail with the draft's first recipient; no model, nothing leaves the computer.
+      smart_send_time: owner("smart_send_time", ({ draftId }) => {
+        const draft = ownerDraft(draftId);
+        const first = draft.to[0];
+        if (first === undefined) return { suggestion: null };
+        const at = composeDeps.clock.now();
+        const found = smartSendTime(
+          // The sending account's mail only: a message that reached two of the owner's accounts counts once.
+          store.senderExchange(first.address, draft.accountId, new Date(at.getTime() - RHYTHM_DAYS * 86_400_000).toISOString(), RHYTHM_MESSAGES),
+          at,
+        );
+        if (found === null || !validSendAt(found.at, at)) return { suggestion: null };
+        const name = first.name !== null && first.name.trim() !== "" ? first.name : first.address;
+        return { suggestion: { at: found.at, hour: found.hour, name } };
+      }),
+      template_apply: owner("template_apply", ({ draftId, templateId }) => {
+        ownerDraft(draftId);
+        return applyTemplate(store, draftId, templateId);
+      }),
       // Advisory only: the page sends anyway when this fails in any way.
       compose_check: owner("compose_check", async ({ draftId, baseRevision }) => {
         const draft = ownerDraft(draftId);
@@ -3533,7 +4010,6 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       action_undo: owner("action_undo", ({ undoId }) => runUndo(deps, undoId, (line) => bb.log.info(line))),
       // Slice 3e: wired in the server tasks; until then every call refuses.
       new_mail_get: ({ token }, context) => {
-        refusePluginCaller(context);
         const ids = deps.newMail.get(token);
         if (ids === null) throw refuse("not_found", NEW_MAIL_GONE_MESSAGE);
         const timeOf = (row: { date: string | null; fetchedAt: string }) => Date.parse(row.date ?? row.fetchedAt) || 0;
@@ -3548,7 +4024,6 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         return { items, more: rows.length - items.length };
       },
       unsubscribe_info: async ({ messageId }, context) => {
-        refusePluginCaller(context);
         return unsubscribeView(deps, messageId, (line) => bb.log.info(line));
       },
       // Slice 3n: the lists the stored mail comes from. Owner only; the list keys stay here.
@@ -3581,14 +4056,12 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       }),
       // Snooze (slice 3e): Inbox mail only, into the account's snooze folder.
       message_snooze: (input, context) => {
-        refusePluginCaller(context);
         if (input.role === "all") throw refuse("invalid", ALL_ROLE_MESSAGE);
         const { groups, undo, needsFolder } = runSnooze(deps, input);
         const undoable = input.undoId !== undefined && deps.undo.record(input.undoId, "snooze", undo);
         return { groups, undoable, needsFolder };
       },
       message_unsnooze: async ({ messageIds }, context) => {
-        refusePluginCaller(context);
         const at = nowIso();
         const accounts = new Set<string>();
         for (const id of new Set(messageIds)) {
@@ -3667,6 +4140,13 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       triage_status: owner("triage_status", ({ batchId }) => triageStatus(deps, batchId)),
       // Agent and mail (slice 3f): owner only; the server tasks fill these in.
       // Slice 3f: AI on the owner's click, kept tasks and local categories.
+      // AI sorts the inbox: the owner's labels. A refusal keeps its fixed text.
+      ai_labels_list: owner("ai_labels_list", () => deps.aiSort.labels.list()),
+      ai_label_save: owner("ai_label_save", (input) => sortRefusals(() => deps.aiSort.labels.save(input))),
+      ai_label_delete: owner("ai_label_delete", ({ id }) => sortRefusals(() => deps.aiSort.labels.remove(id))),
+      ai_label_move: owner("ai_label_move", ({ id, direction }) => deps.aiSort.labels.move(id, direction)),
+      reply_draft_get: owner("reply_draft_get", ({ messageId }) => deps.replyDrafts.get(messageId)),
+      reply_draft_dismiss: owner("reply_draft_dismiss", ({ messageId }) => deps.replyDrafts.dismiss(messageId)),
       ai_start: owner("ai_start", (input) => ai.start(input)),
       ai_poll: owner("ai_poll", ({ jobId }) => ai.poll(jobId)),
       ai_cancel: owner("ai_cancel", ({ jobId }) => ({ cancelled: deps.aiJobs.cancel(jobId) })),
@@ -3698,7 +4178,7 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       }),
       category_rules_list: owner("category_rules_list", () => ({ rules: store.listCategoryRules() })),
       // Slice 3f: Today, reply reminders, day notices, AI access and the agent log.
-      today_get: owner("today_get", () => day.today()),
+      today_get: owner("today_get", () => ({ ...day.today(), opened: deps.readStatus.unanswered() })),
       reply_dismiss: owner("reply_dismiss", ({ threadId }) => day.dismiss(threadId)),
       reminder_set: owner("reminder_set", ({ messageId, days }) => day.setReminder(messageId, days)),
       reminder_snooze: owner("reminder_snooze", ({ id, days }) => day.snooze(id, days)),
@@ -3788,16 +4268,13 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       // Slice 3i (resolution 7): the old-row check, one read-only PEEK session per folder
       // through the account queue; Details' Check again passes force.
       sender_check_refresh: async ({ messageIds, force }, context) => {
-        refusePluginCaller(context);
         return deps.senderChecks.refresh({ messageIds, force });
       },
       // Slice 3k: OpenPGP. Every method refuses another plugin first; nothing here is a tool or a command.
       pgp_certs_list: (_input, context) => {
-        refusePluginCaller(context);
         return { certs: deps.pgp.list(), vaultReady: deps.vaultReady() };
       },
       pgp_cert_generate: async ({ accountId, address }, context) => {
-        refusePluginCaller(context);
         const account = store.getAccount(accountId);
         if (account === null) throw refuse("not_found", "Unknown account");
         const wanted = address.trim().toLowerCase();
@@ -3811,32 +4288,26 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         return { cert: made };
       },
       pgp_cert_import: async ({ armor, phrase }, context) => {
-        refusePluginCaller(context);
         return deps.pgp.importArmor(armor, phrase ?? null);
       },
       pgp_cert_import_message: async ({ messageId }, context) => {
-        refusePluginCaller(context);
         const fetched = await fetchRawGuarded(deps.rawDeps, messageId).catch((error: unknown) => {
           throw rawRefusal(error);
         });
         return deps.pgp.importFromMessage(fetched.raw);
       },
       pgp_cert_remove: ({ id }, context) => {
-        refusePluginCaller(context);
         return { ok: deps.pgp.remove(id) };
       },
       pgp_cert_export: async ({ id, phrase }, context) => {
-        refusePluginCaller(context);
         const exported = await deps.pgp.exportArmor(id, phrase ?? null);
         if (exported === null) throw refuse("not_found", PGP_UNKNOWN_MESSAGE);
         return exported;
       },
       pgp_check: ({ from, recipients }, context) => {
-        refusePluginCaller(context);
         return deps.pgp.check(from, recipients);
       },
       pgp_verify: async ({ messageId }, context) => {
-        refusePluginCaller(context);
         const fetched = await fetchRawGuarded(deps.rawDeps, messageId).catch((error: unknown) => {
           throw rawRefusal(error);
         });
@@ -3897,13 +4368,11 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       }),
       filter_delete: owner("filter_delete", ({ id }) => ({ ok: store.deleteMailFilter(id) })),
       invite_view: async ({ messageId }, context) => {
-        refusePluginCaller(context);
         const { invite, role } = await readInvite(deps, messageId);
         return { invite, answerable: inviteRefusal(invite, role) === null };
       },
       invite_reply: owner("invite_reply", (input) => replyToInvite(deps, input, log)),
       pgp_open: async ({ messageId }, context) => {
-        refusePluginCaller(context);
         const fetched = await fetchRawGuarded(deps.rawDeps, messageId).catch((error: unknown) => {
           throw rawRefusal(error);
         });
@@ -3915,7 +4384,12 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
           ? opened
           : { state: opened.state, text: null, html: null, attachments: [], signature: null };
       },
-    },
+      ...pluginApi.handlers,
+    }, {
+      api: new Set(PLUGIN_API_METHODS),
+      check: pluginApi.check,
+      onRefused: (pluginId, method) => bb.log.warn(`plugin ${JSON.stringify(pluginId.slice(0, 128))} refused on ${method}`),
+    }),
     { experimental_discoverable: false },
   );
 }
@@ -5122,7 +5596,7 @@ type AiStartInput = z.output<(typeof rpcSchemas)["ai_start"]["input"]>;
 type AiResultViewOut = z.output<(typeof rpcSchemas)["ai_poll"]["output"]>["result"];
 
 /** A builder over a fresh nonce, re-drawn while a part holds it. */
-function withNonce(deps: RpcDeps, build: (nonce: string) => AiBuild): AiBuild {
+function withNonce<T extends AiBuild>(deps: RpcDeps, build: (nonce: string) => T): T {
   for (let attempt = 0; ; attempt++) {
     try {
       return build(deps.aiNonce());
@@ -5174,7 +5648,7 @@ function aiResultView(store: MailStore, finished: AiFinished): NonNullable<AiRes
     case "summary":
       return { kind: "summary", ...base, ...output.value };
     case "ask":
-      return { kind: "ask", ...base, ...output.value };
+      return { kind: "ask", ...base, ...output.value, actions: askActionViews(store, output.value.actions, finished.parts, finished.createdAt, output.value.sources) };
     case "tasks":
       return {
         kind: "tasks",
@@ -5206,6 +5680,11 @@ function aiResultView(store: MailStore, finished: AiFinished): NonNullable<AiRes
       };
     case "draft":
       return { kind: "draft", ...base, ...output.value };
+    case "write":
+      return { kind: "write", ...base, paragraphs: output.value.paragraphs, linksRemoved: output.value.linksRemoved, unknown: output.value.unknown };
+    case "sort":
+      // Sorting is started by new mail and read by the server alone: the page never polls it.
+      throw refuse("not_found", UNKNOWN_AI_JOB_MESSAGE);
   }
 }
 
@@ -5228,6 +5707,16 @@ function cachedSummaryView(row: AiResultRecord, stale: boolean): NonNullable<AiR
     questions: result.questions,
     deadlines: result.deadlines,
   };
+}
+
+/** A label method's refusal as the page reads it. */
+function sortRefusals<T>(run: () => T): T {
+  try {
+    return run();
+  } catch (error) {
+    if (error instanceof AiSortRefusal) throw refuse(error.code, error.message);
+    throw error;
+  }
 }
 
 /** An AI call refused before the model: out of scope, unknown, or the draft changed. */
@@ -5416,7 +5905,8 @@ function createAiRpc(deps: RpcDeps, ownerDraft: (draftId: string) => DraftRecord
           if (seq === null) pending = { ids, hidden };
           else deps.agentLogSources(seq, ids, hidden);
         };
-        return startJob("ask", plan, { search: askSearch(input.question, input.accountId ?? null, today, sent) }, (logged) => {
+        // Text the model drafts under the answer may keep only links the owner wrote in the question.
+        return startJob("ask", plan, { search: askSearch(input.question, input.accountId ?? null, today, sent), allowedLinks: linksOf(input.question) }, (logged) => {
           seq = logged;
           if (seq !== null && pending !== null) deps.agentLogSources(seq, pending.ids, pending.hidden);
         });
@@ -5484,6 +5974,17 @@ function createAiRpc(deps: RpcDeps, ownerDraft: (draftId: string) => DraftRecord
           }),
         );
         return startJob("draft", built, { tag, maxChars: Math.max(1, 2 * length) });
+      }
+      case "write": {
+        const draft = ownerDraft(input.draftId);
+        if (draft.revision !== input.revision) throw aiRefusal("conflict", DRAFT_CHANGED_MESSAGE);
+        const stored = ownerParagraphs(draft.doc).paragraphs;
+        if (stored.length !== input.paragraphs.length || stored.some((p, i) => p !== input.paragraphs[i])) throw aiRefusal("conflict", DRAFT_CHANGED_MESSAGE);
+        const source = writeSource(store, deps.writeSettings(), draft, stored);
+        if (source === "out_of_scope") throw outOfScope("write");
+        const tag = deps.restoreTag([...stored, input.instruction, source.personal, source.facts]);
+        const built = withNonce(deps, (nonce) => writeInput({ mode: "write", instruction: input.instruction, ...source.request }, { nonce, tag, leftOut: source.leftOut }));
+        return startJob("write", built, { tag, allowedLinks: built.allowedLinks });
       }
     }
   }
@@ -5837,7 +6338,49 @@ function createDayRpc(
   return { today, dueReminders, dismiss, setReminder, snooze, dismissReminder, notice, setScope, logList };
 }
 
+/**
+ * An HTTP GET whose answer is read only up to a bound (read statuses): an
+ * endpoint that sends without end cannot fill the plugin's memory. Redirects
+ * are not followed: the feed has none, and its key must go nowhere else.
+ */
+async function cappedFetch(
+  url: string,
+  init: { headers: Record<string, string>; signal: AbortSignal },
+): Promise<{ status: number; text(): Promise<string> }> {
+  const response = await fetch(url, { ...init, redirect: "error" });
+  return {
+    status: response.status,
+    async text() {
+      if (response.body === null) return "";
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let out = "";
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        out += decoder.decode(value, { stream: true });
+        if (out.length > READ_STATUS_FEED_CHARS) {
+          await reader.cancel().catch(() => {});
+          break;
+        }
+      }
+      return out;
+    },
+  };
+}
+
 const jsonOption = { json: { type: "boolean", description: "Emit machine-readable JSON" } } as const;
+const assistantOption = {
+  assistant: {
+    type: "boolean",
+    description: "Answer as to an assistant outside BB (used by the MCP server): AI access only, secrets hidden, logged; needs mcpAccess",
+  },
+} as const;
+
+export const MCP_ACCESS_OFF_MESSAGE =
+  "Mail access for assistants outside BB is off. The owner can enable it with: bb plugin config makosh-mail set mcpAccess true";
+export const MCP_CALLS_PER_HOUR = 60;
+export const MCP_LIMIT_MESSAGE = "Too many mail requests from the assistant in the last hour (60); try again later.";
 
 type CliDeps = {
   /** A BB thread started by a mail rule (slice 3g): the CLI answers no mail there. */
@@ -5847,6 +6390,8 @@ type CliDeps = {
   publishChanged: (accountId: string | null) => void;
   vaultReady: () => boolean;
   agentTools: () => boolean;
+  /** Outside assistants (the MCP server file, `--assistant`) may search and read. */
+  mcpAccess: () => boolean;
   agentLog: AgentLog;
   /** The clock for relative dates in queries (newer_than, older_than). */
   now: () => Date;
@@ -5894,6 +6439,40 @@ function registerCli(bb: BbPluginApi, store: MailStore, deps: CliDeps): void {
       throw new PluginCliError(AGENT_MAIL_OFF_MESSAGE, { code: "agent_mail_access_off" });
     }
   };
+  /**
+   * `--assistant`: the caller is an assistant outside BB (the MCP server file).
+   * It answers nothing, account names included, until the owner turns
+   * mcpAccess on; then it is treated as an agent thread is (AI access, hidden
+   * values, a log row with actor `mcp`), at most 60 calls an hour per run of
+   * the BB server. The flag only narrows: the owner's own terminal already
+   * reads everything, so a caller gains nothing by leaving it out that the
+   * machine's user did not have.
+   */
+  const assistantCalls: number[] = [];
+  /**
+   * A refusal is logged once an hour per kind: a caller that repeats a
+   * refused call cannot fill the log and push its own reads out of it.
+   */
+  const refusalLogged: Partial<Record<"refused_off" | "refused_caps", number>> = {};
+  const logRefusal = (tool: "cli_accounts" | "cli_search" | "cli_read", outcome: "refused_off" | "refused_caps", now: number) => {
+    const last = refusalLogged[outcome];
+    if (last !== undefined && now - last < 3_600_000 && now >= last) return;
+    refusalLogged[outcome] = now;
+    agentLog({ actor: "mcp", tool, outcome });
+  };
+  const requireAssistant = (tool: "cli_accounts" | "cli_search" | "cli_read") => {
+    const now = deps.now().getTime();
+    if (!deps.mcpAccess()) {
+      logRefusal(tool, "refused_off", now);
+      throw new PluginCliError(MCP_ACCESS_OFF_MESSAGE, { code: "mcp_access_off" });
+    }
+    while (assistantCalls.length > 0 && assistantCalls[0]! <= now - 3_600_000) assistantCalls.shift();
+    if (assistantCalls.length >= MCP_CALLS_PER_HOUR) {
+      logRefusal(tool, "refused_caps", now);
+      throw new PluginCliError(MCP_LIMIT_MESSAGE, { code: "mcp_limit" });
+    }
+    assistantCalls.push(now);
+  };
   bb.cli.register(
     defineCli({
       name: "makosh-mail",
@@ -5901,8 +6480,9 @@ function registerCli(bb: BbPluginApi, store: MailStore, deps: CliDeps): void {
       commands: {
         accounts: cliCommand({
           summary: "List connected accounts and their sync state",
-          options: jsonOption,
+          options: { ...jsonOption, ...assistantOption },
           run: ({ options }, ctx) => {
+            if (options.assistant) requireAssistant("cli_accounts");
             requireMailAccess(ctx);
             // An account with AI access "none" is shown by id, label and state only (spec resolution 16).
             const scope = store.getAiScope();
@@ -5910,6 +6490,14 @@ function registerCli(bb: BbPluginApi, store: MailStore, deps: CliDeps): void {
               const account = toPublicAccount(stored);
               return scope.accounts.get(account.id)?.mode === "none" ? hiddenAccount(account) : account;
             });
+            if (options.assistant) {
+              agentLog({ actor: "mcp", tool: "cli_accounts", outcome: "ok", count: accounts.length });
+              // An outside assistant gets what it needs to name a mailbox, not servers, sign-in names or sync errors (they hold folder names).
+              const brief = accounts.map(({ id, email, displayName, authFailed, lastSyncAt }) => ({ id, email, displayName, authFailed, lastSyncAt }));
+              if (options.json) return { exitCode: 0, stdout: json({ accounts: brief }) };
+              const briefLines = accounts.length > 0 ? accounts.map((account) => describeAccount({ ...account, lastError: null })) : ["No accounts connected."];
+              return { exitCode: 0, stdout: `${briefLines.join("\n")}\n` };
+            }
             if (options.json) return { exitCode: 0, stdout: json({ accounts }) };
             const lines =
               accounts.length > 0 ? accounts.map(describeAccount) : ["No accounts connected."];
@@ -5936,10 +6524,13 @@ function registerCli(bb: BbPluginApi, store: MailStore, deps: CliDeps): void {
               description: "Hits to return (1-50)",
             },
             ...jsonOption,
+            ...assistantOption,
           },
           run: ({ positionals, options }, ctx) => {
+            if (options.assistant) requireAssistant("cli_search");
             requireMailAccess(ctx);
-            const inThread = ctx.threadId !== undefined;
+            const actor = options.assistant ? "mcp" : "cli";
+            const inThread = ctx.threadId !== undefined || options.assistant === true;
             const query = positionals.query.join(" ").slice(0, QUERY_MAX);
             // Inside an agent thread: the scope, the refusal and the post-filter of
             // mail_search, and a log row; the owner's terminal is not logged (spec resolution 16).
@@ -5947,14 +6538,14 @@ function registerCli(bb: BbPluginApi, store: MailStore, deps: CliDeps): void {
               ? agentSearch(store, query, options.account ?? null, options.limit, deps.now())
               : { hits: store.search(parseQuery(query, deps.now()), options.account ?? null, options.limit) };
             if ("refused" in found) {
-              agentLog({ actor: "cli", tool: "cli_search", outcome: "refused_invalid", threadId: ctx.threadId });
+              agentLog({ actor, tool: "cli_search", outcome: "refused_invalid", threadId: ctx.threadId });
               throw new PluginCliError(found.refused, { code: "search_refused" });
             }
             const { hits } = found;
             const rendered = options.json ? agentHitsCounted(hits, folderNames(store)) : searchText(store, hits);
             if (inThread) {
               agentLog({
-                actor: "cli",
+                actor,
                 tool: "cli_search",
                 outcome: hits.length === 0 ? "empty" : "ok",
                 threadId: ctx.threadId,
@@ -5981,17 +6572,20 @@ function registerCli(bb: BbPluginApi, store: MailStore, deps: CliDeps): void {
               description: "Truncate the text to this many characters (1000-20000)",
             },
             ...jsonOption,
+            ...assistantOption,
           },
           run: ({ positionals, options }, ctx) => {
+            if (options.assistant) requireAssistant("cli_read");
             requireMailAccess(ctx);
+            const actor = options.assistant ? "mcp" : "cli";
             const { messageId } = positionals;
-            const inThread = ctx.threadId !== undefined;
+            const inThread = ctx.threadId !== undefined || options.assistant === true;
             const read = readForAgent(store, deps.secure, messageId, options["max-chars"], inThread);
             if (inThread) {
               agentLog(
                 read.found
-                  ? { actor: "cli", tool: "cli_read", outcome: "ok", threadId: ctx.threadId, messageIds: [read.id], count: 1, hiddenCount: read.hiddenCount }
-                  : { actor: "cli", tool: "cli_read", outcome: unknownOutcome(read), threadId: ctx.threadId },
+                  ? { actor, tool: "cli_read", outcome: "ok", threadId: ctx.threadId, messageIds: [read.id], count: 1, hiddenCount: read.hiddenCount }
+                  : { actor, tool: "cli_read", outcome: unknownOutcome(read), threadId: ctx.threadId },
               );
             }
             if (!read.found) {

@@ -36,7 +36,7 @@ import {
 } from "./compose-outbox.ts";
 import type { SendErrorKind } from "./model.ts";
 import { SendError } from "./ports.ts";
-import { composeHarness, imapError, makeFetchedMessage } from "./testing/fakes.ts";
+import { composeHarness, imapError, makeFetchedMessage, makeStoredAccount } from "./testing/fakes.ts";
 
 let h: ReturnType<typeof composeHarness>;
 let rate: SendRateLimit;
@@ -84,6 +84,66 @@ async function drain(): Promise<void> {
 }
 
 const states = () => h.notifier.events.map((e) => e.state);
+
+describe("queueSend: read statuses", () => {
+  const PIXEL = '<img src="https://makosh.example.org/o/tok.gif" width="1" height="1" alt="">';
+  const tracker = () => {
+    const issued: string[] = [];
+    const asked: string[][] = [];
+    return { issued, asked, issue: (recipients: readonly string[]) => (asked.push([...recipients]), issued.push("tok"), { token: "tok", html: PIXEL }) };
+  };
+
+  it("an owner's send carries the image at the end of the body and remembers the token by Message-ID", async () => {
+    const t = tracker();
+    const draft = await readyDraft();
+    const saved = h.store.getDraft(draft.draftId)!;
+    const remembered: unknown[] = [];
+    const save = h.store.saveSentTracking.bind(h.store);
+    h.store.saveSentTracking = (row) => (remembered.push(row), save(row));
+    await queueSend({ ...deps, tracker: t }, { ...draft, requestId: requestId(), origin: "owner" });
+    expect(h.builder.built[0]!.html.replace(/<\/body>\s*<\/html>\s*$/i, "").endsWith(PIXEL)).toBe(true);
+    expect(h.builder.built[0]!.text).not.toContain("makosh.example.org");
+    expect(remembered).toEqual([{ token: "tok", accountId: "acc_1", rfcMessageId: saved.messageId, createdAt: h.clock.now().toISOString() }]);
+    // The tracker is told who the message goes to (hidden copies too), to apply the owner's exceptions.
+    expect(t.asked).toEqual([["bob@example.com", "hidden@example.net"]]);
+  });
+
+  it("no image when the owner said no, for an agent's send, for mail only to oneself, and for encrypted or signed mail", async () => {
+    const t = tracker();
+    const withTracker = { ...deps, tracker: t, protect: async (mime: Uint8Array) => mime };
+    await queueSend(withTracker, { ...(await readyDraft()), requestId: requestId(), origin: "owner", track: false });
+    await queueSend(withTracker, { ...(await readyDraft()), requestId: requestId(), origin: "agent" });
+    await queueSend(withTracker, { ...(await readyDraft({ to: ["owner@example.org"], bcc: [] })), requestId: requestId(), origin: "owner" });
+    await queueSend(withTracker, { ...(await readyDraft({ bcc: [] })), requestId: requestId(), origin: "owner", protect: { sign: true, encrypt: false } });
+    // Mail to another of the owner's own accounts, and a message that goes to a program.
+    h.store.saveAccount(makeStoredAccount({ id: "acc_2", email: "second@example.org", username: "second@example.org" }));
+    await queueSend(withTracker, { ...(await readyDraft({ to: ["second@example.org"], bcc: [] })), requestId: requestId(), origin: "owner" });
+    for (const purpose of ["unsubscribe", "invite_reply"] as const) {
+      const draft = await readyDraft({ bcc: [] });
+      const stored = h.store.getDraft(draft.draftId)!;
+      const get = h.store.getDraft.bind(h.store);
+      h.store.getDraft = (id) => (id === draft.draftId ? { ...stored, purpose } : get(id));
+      await queueSend(withTracker, { ...draft, requestId: requestId(), origin: "owner" });
+      h.store.getDraft = get;
+    }
+    expect(t.issued).toEqual([]);
+    for (const built of h.builder.built) expect(built.html).not.toContain("makosh.example.org");
+  });
+
+  it("a repeated request does not issue a second token, and a refused send keeps none", async () => {
+    const t = tracker();
+    const draft = await readyDraft();
+    const id = requestId();
+    await queueSend({ ...deps, tracker: t }, { ...draft, requestId: id, origin: "owner" });
+    await queueSend({ ...deps, tracker: t }, { ...draft, requestId: id, origin: "owner" });
+    expect(t.issued).toEqual(["tok"]);
+    // A refusal that comes late (the send cap) still leaves no token behind.
+    const none = tracker();
+    const capped = { ...deps, tracker: none, rate: { take: () => false } as unknown as SendRateLimit };
+    await expect(queueSend(capped, { ...(await readyDraft()), requestId: requestId(), origin: "owner" })).rejects.toThrow("Too many messages");
+    expect(none.issued).toEqual([]);
+  });
+});
 
 describe("queueSend", () => {
   it("queues one row for the same requestId sent twice, building the MIME once", async () => {
@@ -336,6 +396,7 @@ describe("runOutboxOnce", () => {
       security: "tls",
       username: "owner@example.org",
       password: "invented-password",
+      authKind: "password",
     });
     expect(text(smtp.raw)).not.toContain("Bcc:");
     expect(smtp.raw).toEqual(h.store.outboxPayload(id) ?? smtp.raw);

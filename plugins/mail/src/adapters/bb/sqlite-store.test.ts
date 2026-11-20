@@ -1,3 +1,4 @@
+import { TabsFullError, tabConditions, type TabMatch } from "../../core/inbox-tabs.ts";
 import { createHash } from "node:crypto";
 import Database from "better-sqlite3";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -707,6 +708,18 @@ function bytes(length: number, fill: number): Uint8Array {
   return new Uint8Array(length).fill(fill);
 }
 
+/**
+ * The account of makeStoredAccount() in a database that is not fully
+ * migrated: written as SQL, because the store's own saveAccount names the
+ * columns of the newest schema.
+ */
+function seedLegacyAccount(db: Database.Database): void {
+  db.prepare(
+    `INSERT INTO accounts (id, email, host, port, username, password_sealed, preset, created_at)
+     VALUES ('acc_1', 'owner@example.org', 'imap.example.org', 993, 'owner@example.org', 'sealed-password', 'other', '2026-01-01T00:00:00.000Z')`,
+  ).run();
+}
+
 describe("slice-2 migrations (SQLite)", () => {
   it("migrations append and backfill dedup keys of slice-1 rows", () => {
     const old = new Database(":memory:");
@@ -798,6 +811,98 @@ describe("slice-2 migrations (SQLite)", () => {
       // Element 18 (slice 3p: local archives).
       "484e585d5c158287c94e3370663b0c697d3fcdd065de9a9decbc1ca1e054e3a7",
     ]);
+  });
+
+  describe("credential kind (migration 19)", () => {
+    it("keeps an account's kind and granted scopes", () => {
+      const db = new Database(":memory:");
+      db.transaction(() => MIGRATIONS.forEach((statement) => db.exec(statement)))();
+      const s = createSqliteStore(db);
+      s.saveAccount(makeStoredAccount({ authKind: "google", grantedScopes: ["openid", "email"] }));
+      expect(s.getAccount("acc_1")).toMatchObject({ authKind: "google", grantedScopes: ["openid", "email"] });
+      s.saveAccount(makeStoredAccount({ id: "acc_2", email: "second@example.org" }));
+      expect(s.getAccount("acc_2")).toMatchObject({ authKind: "password", grantedScopes: [] });
+    });
+
+    it("an account from before the migration is a password account", () => {
+      const db = new Database(":memory:");
+      db.transaction(() => MIGRATIONS.slice(0, 19).forEach((statement) => db.exec(statement)))();
+      db.prepare(
+        `INSERT INTO accounts (id, email, host, port, username, password_sealed, preset, created_at)
+         VALUES ('acc_1', 'owner@example.org', 'imap.example.org', 993, 'owner', 'sealed', 'other', ?)`,
+      ).run("2026-01-01T00:00:00.000Z");
+      db.transaction(() => MIGRATIONS.slice(19).forEach((statement) => db.exec(statement)))();
+      expect(MIGRATIONS).toHaveLength(26);
+      expect(createSqliteStore(db).getAccount("acc_1")).toMatchObject({ authKind: "password", grantedScopes: [], passwordSealed: "sealed" });
+    });
+  });
+
+  describe("plugin access", () => {
+    const at = "2026-11-19T10:00:00.000Z";
+    const later = "2026-11-19T11:00:00.000Z";
+    const open = () => {
+      const db = new Database(":memory:");
+      db.transaction(() => MIGRATIONS.forEach((statement) => db.exec(statement)))();
+      seedLegacyAccount(db);
+      return { db, store: createSqliteStore(db) };
+    };
+
+    it("a grant is set once, listed, and removed", () => {
+      const { store } = open();
+      const grant = { pluginId: "crm", right: "mail.read", accountId: "acc_1", grantedAt: at } as const;
+      store.setPluginGrant(grant, true);
+      store.setPluginGrant({ ...grant, grantedAt: later }, true);
+      expect(store.listPluginGrants()).toEqual([grant]);
+      store.setPluginGrant(grant, false);
+      expect(store.listPluginGrants()).toEqual([]);
+    });
+
+    it("removing an account removes its grants and leaves the others", () => {
+      const { db, store } = open();
+      db.prepare(
+        `INSERT INTO accounts (id, email, host, port, username, password_sealed, preset, created_at)
+         VALUES ('acc_2', 'second@example.net', 'imap.example.net', 993, 'second', 'sealed', 'other', ?)`,
+      ).run(at);
+      store.setPluginGrant({ pluginId: "crm", right: "mail.read", accountId: "acc_1", grantedAt: at }, true);
+      store.setPluginGrant({ pluginId: "crm", right: "mail.read", accountId: "acc_2", grantedAt: at }, true);
+      store.deleteAccount("acc_1");
+      expect(store.listPluginGrants().map((grant) => grant.accountId)).toEqual(["acc_2"]);
+    });
+
+    it("a plugin has one pending request; both times are kept for the limit", () => {
+      const { store } = open();
+      store.putPluginRequest({ pluginId: "calendar", rights: ["mail.read"], reason: "First", askedAt: at });
+      store.putPluginRequest({ pluginId: "calendar", rights: ["invites.read", "mail.propose"], reason: "Second", askedAt: later });
+      expect(store.getPluginRequests()).toEqual([
+        { pluginId: "calendar", rights: ["invites.read", "mail.propose"], reason: "Second", askedAt: later },
+      ]);
+      expect(store.pluginRequestTimes("calendar")).toEqual([later, at]);
+      expect(store.pluginRequestTimes("crm")).toEqual([]);
+      store.dismissPluginRequest("calendar");
+      expect(store.getPluginRequests()).toEqual([]);
+      expect(store.pluginRequestTimes("calendar")).toEqual([later, at]);
+    });
+
+    it("revoking a plugin drops its grants and its request, not another plugin's", () => {
+      const { store } = open();
+      store.setPluginGrant({ pluginId: "crm", right: "mail.read", accountId: "acc_1", grantedAt: at }, true);
+      store.setPluginGrant({ pluginId: "calendar", right: "invites.read", accountId: "acc_1", grantedAt: at }, true);
+      store.putPluginRequest({ pluginId: "crm", rights: ["contacts.read"], reason: "", askedAt: at });
+      store.revokePluginGrants("crm");
+      expect(store.listPluginGrants().map((grant) => grant.pluginId)).toEqual(["calendar"]);
+      expect(store.getPluginRequests()).toEqual([]);
+    });
+
+    it("element 20 on a database from before it adds the tables and the draft column", () => {
+      const db = new Database(":memory:");
+      db.transaction(() => MIGRATIONS.slice(0, 20).forEach((statement) => db.exec(statement)))();
+      seedLegacyAccount(db);
+      db.transaction(() => MIGRATIONS.slice(20).forEach((statement) => db.exec(statement)))();
+      expect(MIGRATIONS).toHaveLength(26);
+      expect(createSqliteStore(db).listPluginGrants()).toEqual([]);
+      const columns = db.prepare<[], { name: string }>("SELECT name FROM pragma_table_info('compose_drafts')").all();
+      expect(columns.map((column) => column.name)).toContain("prepared_by");
+    });
   });
 
   describe("local archives (slice 3p)", () => {
@@ -2163,6 +2268,7 @@ describe.each(storeKinds)("slice-3b store semantics (%s)", (_kind, make) => {
       const created = s.createDraft(newDraft({ importHtml: { html: "<p>q</p>", into: "quote" }, references: ["<r@example.org>"] }));
       expect(created).toEqual({
         ...newDraft({ importHtml: { html: "<p>q</p>", into: "quote" }, references: ["<r@example.org>"] }),
+        preparedBy: null,
         revision: 1,
         serverState: "none",
         updatedAt: T0,
@@ -2199,6 +2305,7 @@ describe.each(storeKinds)("slice-3b store semantics (%s)", (_kind, make) => {
       s.renewMessageId("d_1", "<fresh@example.org>");
       expect(s.getDraft("d_1")).toEqual({
         ...newDraft({ messageId: "<fresh@example.org>" }),
+        preparedBy: null,
         revision: 1,
         serverState: "none",
         updatedAt: T0,
@@ -3022,6 +3129,18 @@ describe.each(storeKinds)("contacts (%s)", (_kind, make) => {
     expect(s.contacts("x", 1)).toHaveLength(1);
   });
 
+  it("contacts of one account count, name and match nothing from another account", () => {
+    received("anna@example.net", "2026-01-01T00:00:00.000Z", { from: { name: "Anna", address: "anna@example.net" } });
+    received("anna@example.net", "2026-05-01T00:00:00.000Z", { from: { name: "Anna Elsewhere", address: "anna@example.net" }, subject: "Invented merger" }, "acc_2");
+    received("anna@example.net", "2026-06-01T00:00:00.000Z", { subject: "Invented merger again" }, "acc_2");
+    expect(s.contacts("anna", 5, { scoped: true, accountId: "acc_1" })).toEqual([
+      { address: "anna@example.net", name: "Anna", ownerAccount: "owner@example.org", sentByOwner: 0, received: 1, lastDate: "2026-01-01T00:00:00.000Z" },
+    ]);
+    // A topic that exists only in the other account finds nobody here.
+    expect(s.contacts("merger", 5, { scoped: true, accountId: "acc_1" })).toEqual([]);
+    expect(s.contacts("merger", 5, { scoped: true, accountId: "acc_2" }).map((c) => [c.address, c.received])).toEqual([["anna@example.net", 2]]);
+  });
+
   it("the owner account is the account that exchanged mail with them most recently", () => {
     received("anna@example.net", "2026-01-01T00:00:00.000Z");
     received("anna@example.net", "2026-05-01T00:00:00.000Z", {}, "acc_2");
@@ -3079,6 +3198,480 @@ describe("bulk mark (SQLite)", () => {
       { id: "m_b", bulk: null },
     ]);
     expect(createSqliteStore(old).contacts("accounting", 5).map((c) => c.address)).toEqual(["anna@example.net"]);
+  });
+});
+
+describe.each(storeKinds)("operators for Inbox tabs (%s)", (_kind, make) => {
+  let s: MailStore;
+  let uid = 0;
+  const put = (folder: string, overrides: Parameters<typeof makeFetchedMessage>[1]) => {
+    uid++;
+    s.upsertMessages("acc_1", folder, [
+      makeFetchedMessage(uid, { messageId: `tab-${uid}@example.org`, bulkHeaders: PERSONAL_HEADERS, to: [{ name: null, address: "owner@example.org" }], ...overrides }),
+    ]);
+  };
+  const from = (address: string, overrides: Parameters<typeof makeFetchedMessage>[1] = {}) =>
+    put(INBOX, { from: { name: null, address }, subject: address, ...overrides });
+  const found = (query: string) => s.search(parseQuery(query), null, 50).map((hit) => hit.from.address).sort();
+
+  beforeEach(() => {
+    uid = 0;
+    s = make();
+    s.saveAccount(makeStoredAccount());
+    s.saveFolders("acc_1", [remoteFolder(INBOX, "inbox"), remoteFolder(SENT, "sent")]);
+    from("boss@vip.example.com");
+    from("anna@partner.example.net");
+    from("colleague@example.org");
+    from("friend@gmail.com");
+    from("noreply@shop.example.net");
+    from("planner@events.example.net", { attachments: [{ partId: "2", filename: "invite.ics", mimeType: "text/calendar", size: 10, isInline: false }] });
+    put(SENT, { from: { name: null, address: "owner@example.org" }, to: [{ name: null, address: "Friend@Gmail.com" }], subject: "sent" });
+    s.setSenderSets({
+      vip: { addresses: new Set(["anna@partner.example.net"]), domains: new Set(["vip.example.com"]) },
+      team: new Set(["example.org"]),
+    });
+  });
+
+  it("from:vip takes the important addresses and domains", () => {
+    expect(found("from:vip in:inbox")).toEqual(["anna@partner.example.net", "boss@vip.example.com"]);
+  });
+
+  it("from:team takes the owner's own domain, and from:known the people the owner wrote to", () => {
+    expect(found("from:team in:inbox")).toEqual(["colleague@example.org"]);
+    expect(found("from:known in:inbox")).toEqual(["friend@gmail.com"]);
+  });
+
+  it("is:automated takes no-reply senders, has:invite the calendar parts, and a minus turns each around", () => {
+    expect(found("is:automated in:inbox")).toEqual(["noreply@shop.example.net"]);
+    expect(found("has:invite in:inbox")).toEqual(["planner@events.example.net"]);
+    expect(found("-from:vip -is:automated -has:invite in:inbox")).toEqual(["colleague@example.org", "friend@gmail.com"]);
+  });
+
+  it("is:newsletter takes mailing lists and the Newsletters category; is:automated leaves mailing lists out", () => {
+    from("digest@lists.example.net", { bulkHeaders: LIST_HEADERS });
+    from("noreply@lists.example.net", { bulkHeaders: LIST_HEADERS });
+    from("promo@shop.example.net", { bulkHeaders: { listId: null, listUnsubscribe: "<mailto:u@shop.example.net>", precedence: "bulk", autoSubmitted: null } });
+    from("weekly@writer.example.net");
+    const weekly = s.search(parseQuery("from:weekly@writer.example.net"), null, 5)[0]!;
+    s.setCategories([weekly.id], "newsletters", "owner", "2026-11-19T10:00:00.000Z");
+    expect(found("is:newsletter in:inbox")).toEqual(["digest@lists.example.net", "noreply@lists.example.net", "weekly@writer.example.net"]);
+    expect(found("is:automated in:inbox")).toEqual(["noreply@shop.example.net", "promo@shop.example.net"]);
+    expect(found("-is:newsletter is:automated in:inbox")).toEqual(["noreply@shop.example.net", "promo@shop.example.net"]);
+  });
+
+  it("from: with a whole address or a domain matches that sender only; a fragment still matches inside", () => {
+    from("bob@example.com");
+    from("jimbob@example.com");
+    from("bob@example.com.evil.example.net");
+    from("Bob@Example.com", { subject: "capitals" });
+    from("notify@github.com");
+    from("notify@mail.github.com");
+    from("spoof@notgithub.com");
+    from("someone@example.org", { from: { name: "bob@example.com via Relay", address: "someone@example.org" } });
+    expect(found("from:bob@example.com in:inbox")).toEqual(["Bob@Example.com", "bob@example.com"]);
+    expect(found("from:github.com in:inbox")).toEqual(["notify@github.com", "notify@mail.github.com"]);
+    expect(found("from:bob in:inbox")).toEqual(["Bob@Example.com", "bob@example.com", "bob@example.com.evil.example.net", "jimbob@example.com", "someone@example.org"]);
+    expect(found("-from:bob@example.com from:bob in:inbox")).toEqual(["bob@example.com.evil.example.net", "jimbob@example.com", "someone@example.org"]);
+  });
+
+
+  it("a scoped read (an agent, another plugin) finds nothing by a sender set, in either sign", () => {
+    // The sets come from the owner's settings and from Sent mail of every account, shared or not.
+    const scoped = (query: string) => s.search(parseQuery(query), null, 50, { scoped: true }).map((hit) => hit.from.address).sort();
+    expect(scoped("in:inbox is:automated")).toEqual(["noreply@shop.example.net"]);
+    expect(scoped("from:known in:inbox")).toEqual([]);
+    expect(scoped("from:vip in:inbox")).toEqual([]);
+    expect(scoped("from:team in:inbox")).toEqual([]);
+    expect(scoped("-from:known in:inbox")).toEqual([]);
+    expect(scoped("-from:vip in:inbox")).toEqual([]);
+  });
+
+  it("with empty sets from:vip and from:team find nobody", () => {
+    s.setSenderSets({ vip: { addresses: new Set(), domains: new Set() }, team: new Set() });
+    expect(found("from:vip in:inbox")).toEqual([]);
+    expect(found("from:team in:inbox")).toEqual([]);
+  });
+});
+
+describe.each(storeKinds)("AI labels and sorted messages (%s)", (_kind, make) => {
+  const NOW_AI = "2026-11-20T10:00:00.000Z";
+  const KEEP = "2026-08-22T10:00:00.000Z";
+  const label = (id: string, name: string, autoArchive = false) => ({ id, name, description: `What ${name} means.`, autoArchive });
+  const seeded = () => {
+    const s = make();
+    s.saveAccount(makeStoredAccount());
+    s.saveFolders("acc_1", [
+      { path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true, subscribed: true },
+      { path: "Archive", name: "Archive", delimiter: "/", specialUse: "archive", selectable: true, subscribed: true },
+    ]);
+    const put = (uid: number, subject: string, date: string, folder = "INBOX") =>
+      s.upsertMessages("acc_1", folder, [makeFetchedMessage(uid, { messageId: `ai-${uid}@example.org`, subject, date, bodyText: `Body of ${subject}` })]);
+    put(1, "Invented offer", "2026-11-18T10:00:00.000Z");
+    put(2, "Invented bill", "2026-11-19T10:00:00.000Z");
+    put(3, "Invented hello", "2026-11-20T09:00:00.000Z");
+    const idOfSubject = (subject: string) => s.search(parseQuery(`subject:"${subject}"`), null, 5)[0]!.id;
+    return { s, put, idOfSubject };
+  };
+
+  it("keeps the owner's labels in order; a name is unique whatever its case; twelve at most", () => {
+    const { s } = seeded();
+    s.saveAiLabel(label("l1", "Pitch", true), NOW_AI);
+    s.saveAiLabel(label("l2", "Invoice"), NOW_AI);
+    expect(s.listAiLabels()).toEqual([label("l1", "Pitch", true), label("l2", "Invoice")]);
+    expect(() => s.saveAiLabel(label("l3", "PITCH"), NOW_AI)).toThrow("Another AI label has this name");
+    s.saveAiLabel({ ...label("l1", "Cold pitch"), description: "Changed." }, NOW_AI);
+    s.moveAiLabel("l2", -1);
+    s.moveAiLabel("l2", -1);
+    expect(s.listAiLabels()).toEqual([label("l2", "Invoice"), { id: "l1", name: "Cold pitch", description: "Changed.", autoArchive: false }]);
+    for (let i = 3; i <= 12; i++) s.saveAiLabel(label(`l${i}`, `Label ${i}`), NOW_AI);
+    expect(() => s.saveAiLabel(label("l13", "One more"), NOW_AI)).toThrow("You have the most AI labels");
+    expect(s.deleteAiLabel("l12")).toBe(true);
+    expect(s.deleteAiLabel("l12")).toBe(false);
+    expect(s.listAiLabels()).toHaveLength(11);
+  });
+
+  it("keeps a line and labels per message, finds them with ai:, and forgets a deleted label", () => {
+    const { s, idOfSubject } = seeded();
+    s.saveAiLabel(label("l1", "Pitch"), NOW_AI);
+    s.saveAiLabel(label("l2", "Needs reply"), NOW_AI);
+    const [offer, bill, hello] = [idOfSubject("Invented offer"), idOfSubject("Invented bill"), idOfSubject("Invented hello")];
+    s.saveMessageAi(
+      [
+        { messageId: offer, summary: "A vendor offers widgets.", labelIds: ["l1"] },
+        { messageId: bill, summary: null, labelIds: ["l1", "l2"] },
+        { messageId: "no-such-message", summary: "Ignored", labelIds: [] },
+      ],
+      NOW_AI,
+      KEEP,
+    );
+    expect(s.messageAi([offer, bill, hello])).toEqual(
+      new Map([
+        [offer, { summary: "A vendor offers widgets.", labelIds: ["l1"] }],
+        [bill, { summary: null, labelIds: ["l1", "l2"] }],
+      ]),
+    );
+    const found = (query: string) => s.search(parseQuery(query), null, 50).map((row) => row.subject).sort();
+    expect(found("ai:pitch")).toEqual(["Invented bill", "Invented offer"]);
+    expect(found('ai:"needs reply"')).toEqual(["Invented bill"]);
+    expect(found("-ai:pitch")).toEqual(["Invented hello"]);
+    expect(found("ai:unknown")).toEqual([]);
+    s.deleteAiLabel("l1");
+    expect(found("ai:pitch")).toEqual([]);
+    expect(s.messageAi([bill]).get(bill)).toEqual({ summary: null, labelIds: ["l2"] });
+  });
+
+  it("gives a conversation the line of its newest sorted message and drops rows older than the limit", () => {
+    const { s, idOfSubject } = seeded();
+    const offer = idOfSubject("Invented offer");
+    const threadOf = (id: string) => s.getMessage(id)!.threadId!;
+    s.saveMessageAi([{ messageId: offer, summary: "Old line.", labelIds: [] }], "2026-08-01T10:00:00.000Z", "2026-05-01T10:00:00.000Z");
+    expect(s.threadAi([threadOf(offer), "no-such-thread"])).toEqual(new Map([[threadOf(offer), { summary: "Old line.", labelIds: [] }]]));
+    const bill = idOfSubject("Invented bill");
+    s.saveMessageAi([{ messageId: bill, summary: "New line.", labelIds: [] }], NOW_AI, KEEP);
+    expect(s.messageAi([offer, bill])).toEqual(new Map([[bill, { summary: "New line.", labelIds: [] }]]));
+  });
+});
+
+describe.each(storeKinds)("the mail between the owner and one address (%s)", (_kind, make) => {
+  it("gives each way newest first, each message once, without Spam, other people's mail and mail before the date", () => {
+    const s = make();
+    s.saveAccount(makeStoredAccount());
+    const folder = (path: string, specialUse: "inbox" | "sent" | "junk" | "archive") => ({ path, name: path, delimiter: "/", specialUse, selectable: true, subscribed: true });
+    s.saveFolders("acc_1", [folder("INBOX", "inbox"), folder("Sent", "sent"), folder("Junk", "junk"), folder("Archive", "archive")]);
+    const ann = { name: "Ann", address: "ann@example.com" };
+    const owner = { name: null, address: "owner@example.org" };
+    const put = (folderPath: string, uid: number, overrides: Parameters<typeof makeFetchedMessage>[1]) =>
+      s.upsertMessages("acc_1", folderPath, [makeFetchedMessage(uid, { messageId: `x-${uid}@example.org`, ...overrides })]);
+    put("INBOX", 1, { from: ann, to: [owner], cc: [{ name: null, address: "bob@example.com" }], date: "2026-11-10T10:00:00.000Z", inReplyTo: "x-20@example.org" });
+    put("Archive", 2, { from: { name: null, address: "ANN@example.com" }, to: [owner], date: "2026-11-12T10:00:00.000Z" });
+    // The same message in two folders counts once.
+    put("Archive", 3, { messageId: "x-1@example.org", from: ann, to: [owner], cc: [{ name: null, address: "bob@example.com" }], date: "2026-11-10T10:00:00.000Z", inReplyTo: "x-20@example.org" });
+    put("Junk", 4, { from: ann, to: [owner], date: "2026-11-13T10:00:00.000Z" });
+    put("INBOX", 5, { from: { name: null, address: "dan@example.net" }, to: [owner], date: "2026-11-14T10:00:00.000Z" });
+    put("INBOX", 6, { from: ann, to: [owner], date: "2026-01-01T10:00:00.000Z" });
+    put("Sent", 20, { from: owner, to: [ann], date: "2026-11-09T10:00:00.000Z" });
+    put("Sent", 21, { from: owner, to: [{ name: null, address: "dan@example.net" }], cc: [{ name: null, address: "Ann@Example.com" }], date: "2026-11-11T10:00:00.000Z", inReplyTo: "x-1@example.org" });
+    put("Sent", 22, { from: owner, to: [{ name: null, address: "joann@example.com" }], date: "2026-11-15T10:00:00.000Z" });
+    expect(s.senderExchange("ann@example.com", null, "2026-06-01T00:00:00.000Z", 500)).toEqual({
+      incoming: [
+        { date: "2026-11-12T10:00:00.000Z", messageId: "x-2@example.org", inReplyTo: null, others: ["owner@example.org"] },
+        { date: "2026-11-10T10:00:00.000Z", messageId: "x-1@example.org", inReplyTo: "x-20@example.org", others: ["owner@example.org", "bob@example.com"] },
+      ],
+      outgoing: [
+        { date: "2026-11-11T10:00:00.000Z", messageId: "x-21@example.org", inReplyTo: "x-1@example.org" },
+        { date: "2026-11-09T10:00:00.000Z", messageId: "x-20@example.org", inReplyTo: null },
+      ],
+    });
+    expect(s.senderExchange("ann@example.com", null, "2026-06-01T00:00:00.000Z", 1).incoming).toHaveLength(1);
+    expect(s.senderExchange("ann@example.com", "acc_other", "2026-06-01T00:00:00.000Z", 500)).toEqual({ incoming: [], outgoing: [] });
+  });
+});
+
+describe.each(storeKinds)("voice texts (%s)", (_kind, make) => {
+  it("gives the newest sent texts inside AI access, and those sent to one address", () => {
+    const s = make();
+    s.saveAccount(makeStoredAccount());
+    s.saveFolders("acc_1", [
+      { path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true, subscribed: true },
+      { path: "Sent", name: "Sent", delimiter: "/", specialUse: "sent", selectable: true, subscribed: true },
+    ]);
+    const sent = (uid: number, to: string, bodyText: string | null, date: string) =>
+      s.upsertMessages("acc_1", "Sent", [
+        makeFetchedMessage(uid, { messageId: `v-${uid}@example.org`, from: { name: null, address: "owner@example.org" }, to: [{ name: null, address: to }], bodyText, date }),
+      ]);
+    sent(1, "ann@example.com", "First to Ann.", "2026-11-01T10:00:00.000Z");
+    sent(2, "bob@example.net", "To Bob.", "2026-11-02T10:00:00.000Z");
+    sent(3, "Ann@Example.com", "Second to Ann.", "2026-11-03T10:00:00.000Z");
+    sent(4, "eve@excluded.example.net", "To an excluded domain.", "2026-11-04T10:00:00.000Z");
+    sent(5, "ann@example.com", null, "2026-11-05T10:00:00.000Z");
+    s.upsertMessages("acc_1", "INBOX", [makeFetchedMessage(9, { bodyText: "Someone else's text.", date: "2026-11-06T10:00:00.000Z" })]);
+    s.setAiScope({ accounts: new Map(), senders: { addresses: new Set(), domains: new Set(["excluded.example.net"]) } });
+    expect(s.voiceTexts(null, 10)).toEqual(["Second to Ann.", "To Bob.", "First to Ann."]);
+    expect(s.voiceTexts(null, 2)).toEqual(["Second to Ann.", "To Bob."]);
+    expect(s.voiceTexts("ANN@example.com", 10)).toEqual(["Second to Ann.", "First to Ann."]);
+    expect(s.voiceTexts("nobody@example.com", 10)).toEqual([]);
+    s.setAiScope({ accounts: new Map([["acc_1", { mode: "none" }]]), senders: { addresses: new Set(), domains: new Set() } });
+    expect(s.voiceTexts(null, 10)).toEqual([]);
+  });
+});
+
+describe.each(storeKinds)("read statuses (%s)", (_kind, make) => {
+  const T1 = "abcdefghijklmnop.Nf8gINmCVZOx9whO";
+  const T2 = "qrstuvwxyzabcdef.Nf8gINmCVZOx9whO";
+
+  it("keeps opens only for our tokens, once per number, and gives them by the message that carries the token", () => {
+    const s = make();
+    s.saveAccount(makeStoredAccount());
+    s.upsertMessages("acc_1", "INBOX", [makeFetchedMessage(1), makeFetchedMessage(2), makeFetchedMessage(3, { messageId: null })]);
+    const [first, second, third] = s.localFolderIndex("acc_1", "INBOX", "1970-01-01T00:00:00.000Z").sort((a, b) => a.uid - b.uid).map((row) => row.id);
+    s.saveSentTracking({ token: T1, accountId: "acc_1", rfcMessageId: "<msg-1@example.org>", createdAt: "2026-11-20T08:00:00.000Z" });
+    s.saveSentTracking({ token: T2, accountId: "acc_1", rfcMessageId: "msg-2@example.org", createdAt: "2026-11-20T08:00:00.000Z" });
+    expect(
+      s.saveOpenEvents([
+        { seq: 2, token: T1, at: "2026-11-20T11:00:00.000Z", kind: "mobile" },
+        { seq: 1, token: T1, at: "2026-11-20T10:00:00.000Z", kind: "gmail-proxy" },
+        { seq: 3, token: "zzzzzzzzzzzzzzzz.Nf8gINmCVZOx9whO", at: "2026-11-20T12:00:00.000Z", kind: "desktop" },
+      ]),
+    ).toBe(2);
+    expect(s.saveOpenEvents([{ seq: 2, token: T1, at: "2026-11-20T11:00:00.000Z", kind: "mobile" }])).toBe(0);
+    expect([...s.messageOpens([first!, second!, third!, "missing"])]).toEqual([
+      [first, [{ at: "2026-11-20T10:00:00.000Z", kind: "gmail-proxy" }, { at: "2026-11-20T11:00:00.000Z", kind: "mobile" }]],
+      [second, []],
+    ]);
+  });
+
+  it("remembers how far the feed was read, and forgets tracking older than the bound with its opens", () => {
+    const s = make();
+    s.saveAccount(makeStoredAccount());
+    s.upsertMessages("acc_1", "INBOX", [makeFetchedMessage(1), makeFetchedMessage(2)]);
+    const [first, second] = s.localFolderIndex("acc_1", "INBOX", "1970-01-01T00:00:00.000Z").sort((a, b) => a.uid - b.uid).map((row) => row.id);
+    expect(s.openFeed()).toEqual({ scope: "", cursor: 0 });
+    s.setOpenCursor(41);
+    expect(s.openFeed()).toEqual({ scope: "", cursor: 41 });
+    s.saveSentTracking({ token: T1, accountId: "acc_1", rfcMessageId: "msg-1@example.org", createdAt: "2026-08-01T00:00:00.000Z" });
+    s.saveSentTracking({ token: T2, accountId: "acc_1", rfcMessageId: "msg-2@example.org", createdAt: "2026-11-01T00:00:00.000Z" });
+    s.saveOpenEvents([{ seq: 1, token: T1, at: "2026-08-02T00:00:00.000Z", kind: "desktop" }, { seq: 2, token: T2, at: "2026-11-02T00:00:00.000Z", kind: "desktop" }]);
+    s.pruneTracking("2026-08-22T00:00:00.000Z");
+    expect([...s.messageOpens([first!, second!])]).toEqual([[second, [{ at: "2026-11-02T00:00:00.000Z", kind: "desktop" }]]]);
+    // The dropped token's opens are not taken back.
+    expect(s.saveOpenEvents([{ seq: 9, token: T1, at: "2026-11-20T00:00:00.000Z", kind: "desktop" }])).toBe(0);
+    // Another feed: the opens go, the tokens stay, and the same numbers can come again.
+    s.resetOpenFeed("https://makosh.example.org epoch-two");
+    expect(s.openFeed()).toEqual({ scope: "https://makosh.example.org epoch-two", cursor: 0 });
+    expect([...s.messageOpens([second!])]).toEqual([[second, []]]);
+    expect(s.saveOpenEvents([{ seq: 2, token: T2, at: "2026-11-03T00:00:00.000Z", kind: "mobile" }])).toBe(1);
+  });
+});
+
+describe.each(storeKinds)("read statuses by conversation (%s)", (_kind, make) => {
+  const T1 = "abcdefghijklmnop.Nf8gINmCVZOx9whO";
+  const T2 = "qrstuvwxyzabcdef.Nf8gINmCVZOx9whO";
+  const T3 = "ghijklmnopqrstuv.Nf8gINmCVZOx9whO";
+
+  it("gives a conversation's opens, and the sent messages that were opened and got no answer", () => {
+    const s = make();
+    s.saveAccount(makeStoredAccount());
+    const sent = (uid: number, subject: string, date: string) =>
+      makeFetchedMessage(uid, { from: { name: null, address: "owner@example.org" }, to: [{ name: "Ann", address: "ann@example.com" }], subject, date });
+    s.upsertMessages("acc_1", "Sent", [
+      sent(1, "Opened, no answer", "2026-11-10T09:00:00.000Z"),
+      sent(2, "Opened and answered", "2026-11-11T09:00:00.000Z"),
+      sent(3, "Never opened", "2026-11-12T09:00:00.000Z"),
+    ]);
+    // Ann answered the second one.
+    s.upsertMessages("acc_1", "INBOX", [
+      makeFetchedMessage(9, { from: { name: "Ann", address: "ann@example.com" }, subject: "Re: Opened and answered", inReplyTo: "<msg-2@example.org>", references: ["<msg-2@example.org>"], date: "2026-11-12T10:00:00.000Z" }),
+    ]);
+    // The first one is also stored in a second folder, as Gmail keeps Sent mail in All Mail.
+    s.upsertMessages("acc_1", "Archive", [sent(1, "Opened, no answer", "2026-11-10T09:00:00.000Z")]);
+    s.assignThreads("acc_1", buildThreads(s.threadingInputs("acc_1")));
+    for (const [token, uid] of [[T1, 1], [T2, 2], [T3, 3]] as const) {
+      s.saveSentTracking({ token, accountId: "acc_1", rfcMessageId: `<msg-${uid}@example.org>`, createdAt: "2026-11-10T09:00:00.000Z" });
+    }
+    s.saveOpenEvents([
+      { seq: 1, token: T1, at: "2026-11-10T12:00:00.000Z", kind: "desktop" },
+      { seq: 2, token: T1, at: "2026-11-11T12:00:00.000Z", kind: "machine" },
+      { seq: 3, token: T2, at: "2026-11-11T12:00:00.000Z", kind: "mobile" },
+    ]);
+    const sentIds = s.localFolderIndex("acc_1", "Sent", "1970-01-01T00:00:00.000Z");
+    const threadOf = (uid: number) => s.getMessage(sentIds.find((row) => row.uid === uid)!.id)!.threadId;
+    const first = threadOf(1);
+    const third = threadOf(3);
+    expect([...s.threadOpens([first, third, "missing"])]).toEqual([
+      [first, [{ at: "2026-11-10T12:00:00.000Z", kind: "desktop" }, { at: "2026-11-11T12:00:00.000Z", kind: "machine" }]],
+      [third, []],
+    ]);
+    expect(s.openedUnanswered("2026-11-01T00:00:00.000Z", 10)).toEqual([
+      { accountId: "acc_1", threadId: first, subject: "Opened, no answer", to: { name: "Ann", address: "ann@example.com" }, count: 1, lastAt: "2026-11-10T12:00:00.000Z" },
+    ]);
+    // Older than the window: nothing.
+    expect(s.openedUnanswered("2026-11-10T09:00:00.001Z", 10)).toEqual([]);
+  });
+});
+
+describe.each(storeKinds)("drafted replies (%s)", (_kind, make) => {
+  const draft = (messageId: string, createdAt: string, paragraphs = ["Invented reply."]) => ({
+    messageId,
+    accountId: "acc_1",
+    paragraphs,
+    linksRemoved: 1,
+    provider: "provider-x",
+    model: "model-y",
+    createdAt,
+  });
+
+  it("keeps one draft per message, replaces it, deletes it once, and drops the oldest past the limit", () => {
+    const s = make();
+    expect(s.getReplyDraft("m1")).toBeNull();
+    s.saveReplyDraft(draft("m1", "2026-11-20T08:00:00.000Z"), 2);
+    s.saveReplyDraft(draft("m2", "2026-11-20T09:00:00.000Z"), 2);
+    expect(s.getReplyDraft("m1")).toEqual(draft("m1", "2026-11-20T08:00:00.000Z"));
+    s.saveReplyDraft(draft("m1", "2026-11-20T10:00:00.000Z", ["Second", "version"]), 2);
+    expect(s.getReplyDraft("m1")?.paragraphs).toEqual(["Second", "version"]);
+    s.saveReplyDraft(draft("m3", "2026-11-20T11:00:00.000Z"), 2);
+    expect(s.getReplyDraft("m2")).toBeNull();
+    expect(s.getReplyDraft("m1")).not.toBeNull();
+    expect(s.getReplyDraft("m3")).not.toBeNull();
+    expect(s.deleteReplyDraft("m3")).toBe(true);
+    expect(s.deleteReplyDraft("m3")).toBe(false);
+    expect(s.getReplyDraft("m3")).toBeNull();
+  });
+});
+
+describe.each(storeKinds)("Inbox tabs (%s)", (_kind, make) => {
+  let s: MailStore;
+  let uid = 0;
+  const at = "2026-11-19T10:00:00.000Z";
+  const now = new Date(at);
+  const put = (folder: string, overrides: Parameters<typeof makeFetchedMessage>[1]) => {
+    uid++;
+    s.upsertMessages("acc_1", folder, [
+      makeFetchedMessage(uid, { messageId: `tab-${uid}@example.org`, bulkHeaders: PERSONAL_HEADERS, to: [{ name: null, address: "owner@example.org" }], ...overrides }),
+    ]);
+  };
+  const from = (address: string, overrides: Parameters<typeof makeFetchedMessage>[1] = {}) => put(INBOX, { from: { name: null, address }, subject: address, ...overrides });
+  const all = (query: string): TabMatch => {
+    const read = tabConditions(query, now);
+    if (!read.ok) throw new Error(read.reason);
+    return { kind: "all", conditions: read.conditions };
+  };
+  const subjects = (tab?: TabMatch | null) =>
+    s.listThreads("acc_1", INBOX, null, 50, undefined, tab).threads.map((thread) => thread.subject).sort();
+
+  beforeEach(() => {
+    uid = 0;
+    s = make();
+    s.saveAccount(makeStoredAccount());
+    s.saveFolders("acc_1", [remoteFolder(INBOX, "inbox"), remoteFolder(SENT, "sent"), remoteFolder("Work", null)]);
+    from("boss@vip.example.com");
+    from("colleague@example.org");
+    from("noreply@shop.example.net");
+    from("stranger@example.net", { attachments: [{ partId: "2", filename: "plan.pdf", mimeType: "application/pdf", size: 10, isInline: false }] });
+    put("Work", { from: { name: null, address: "boss@vip.example.com" }, subject: "outside the inbox", messageId: "work@example.org" });
+    s.assignThreads("acc_1", new Map());
+    s.setSenderSets({ vip: { addresses: new Set(), domains: new Set(["vip.example.com"]) }, team: new Set(["example.org"]) });
+  });
+
+  it("a tab of free text holds the conversations whose Inbox mail has the words, long or short", () => {
+    from("billing@example.net", { subject: "Quarterly invoice", bodyText: "Please find the pelican figures" });
+    from("zed@example.net", { subject: "qz" });
+    s.assignThreads("acc_1", new Map());
+    expect(subjects(all("invoice"))).toEqual(["Quarterly invoice"]);
+    expect(subjects(all("pelican"))).toEqual(["Quarterly invoice"]);
+    expect(subjects(all("qz"))).toEqual(["qz"]);
+    expect(subjects(all("invoice from:vip"))).toEqual([]);
+    expect(subjects(all("nowhere-to-be-found"))).toEqual([]);
+    expect(s.tabUnreadCounts({ accountId: "acc_1", folder: INBOX }, [all("invoice")])).toEqual([1]);
+    const other: TabMatch = { kind: "none", of: [[{ field: "text", value: "invoice", negated: false }]] };
+    expect(subjects(other)).not.toContain("Quarterly invoice");
+    expect(subjects(other)).toContain("qz");
+  });
+
+  it("a conversation with one matching Inbox message and one not is in the tab, shown whole", () => {
+    put(INBOX, { from: { name: null, address: "boss@vip.example.com" }, subject: "Budget", messageId: "budget-1@example.org" });
+    put(INBOX, { from: { name: null, address: "stranger@example.net" }, subject: "Re: Budget", messageId: "budget-2@example.org", inReplyTo: "budget-1@example.org", references: ["budget-1@example.org"] });
+    s.assignThreads("acc_1", buildThreads(s.threadingInputs("acc_1")));
+    const listed = s.listThreads("acc_1", INBOX, null, 50, undefined, all("from:vip")).threads.find((thread) => /Budget/.test(thread.subject));
+    expect(listed?.messageCount).toBe(2);
+    expect(s.listThreads("acc_1", INBOX, null, 50, undefined, all("from:stranger@example.net -has:attachment")).threads.map((t) => t.messageCount)).toEqual([2]);
+  });
+
+  it("pages a tab and narrows it by a quick filter", () => {
+    for (let i = 0; i < 5; i++) from("boss@vip.example.com", { subject: `vip ${i}`, date: new Date(Date.UTC(2026, 10, 10 + i)).toISOString() });
+    s.assignThreads("acc_1", new Map());
+    const first = s.listThreads("acc_1", INBOX, null, 4, undefined, all("from:vip"));
+    expect(first.threads).toHaveLength(4);
+    expect(first.nextCursor).not.toBeNull();
+    const second = s.listThreads("acc_1", INBOX, first.nextCursor, 4, undefined, all("from:vip"));
+    expect([...first.threads, ...second.threads].map((t) => t.subject).sort()).toEqual(["boss@vip.example.com", "vip 0", "vip 1", "vip 2", "vip 3", "vip 4"]);
+    expect(subjects(all("-from:vip"))).toHaveLength(3);
+    expect(s.listThreads("acc_1", INBOX, null, 50, { attachments: true }, all("-from:vip")).threads.map((t) => t.subject)).toEqual(["stranger@example.net"]);
+  });
+
+  it("without a tab the Inbox lists what it listed before", () => {
+    expect(subjects()).toEqual(["boss@vip.example.com", "colleague@example.org", "noreply@shop.example.net", "stranger@example.net"]);
+  });
+
+  it("a tab holds the conversations with a matching Inbox message, and nothing from other folders", () => {
+    expect(subjects(all("from:vip"))).toEqual(["boss@vip.example.com"]);
+    expect(subjects(all("has:attachment -from:team"))).toEqual(["stranger@example.net"]);
+    expect(s.listThreadsAll("inbox", null, 50, undefined, all("from:vip")).threads.map((thread) => thread.subject)).toEqual(["boss@vip.example.com"]);
+  });
+
+  it("Other holds exactly the conversations in none of the other tabs", () => {
+    const conditionsOf = (query: string) => (tabConditions(query, now) as Extract<ReturnType<typeof tabConditions>, { ok: true }>).conditions;
+    const other: TabMatch = { kind: "none", of: [conditionsOf("from:vip"), conditionsOf("is:automated")] };
+    expect(subjects(other)).toEqual(["colleague@example.org", "stranger@example.net"]);
+    expect(subjects({ kind: "none", of: [] })).toEqual(["boss@vip.example.com", "colleague@example.org", "noreply@shop.example.net", "stranger@example.net"]);
+  });
+
+  it("a tab over something that no longer exists is empty, and a broken tab holds nothing", () => {
+    expect(subjects(all("category:bills"))).toEqual([]);
+    expect(subjects(null)).toEqual([]);
+  });
+
+  it("counts unread conversations per tab, 0 for a broken one", () => {
+    // Every seeded message is unread; one more, already read, joins the team.
+    from("reader@example.org", { seen: true });
+    s.assignThreads("acc_1", new Map());
+    expect(s.tabUnreadCounts({ accountId: "acc_1", folder: INBOX }, [all("from:vip"), all("from:team"), null, { kind: "none", of: [] }])).toEqual([1, 1, 0, 4]);
+    expect(s.tabUnreadCounts({ role: "inbox" }, [all("from:team")])).toEqual([1]);
+  });
+
+  it("keeps tabs in the owner's order, at most twelve, and moves them between neighbours", () => {
+    for (const id of ["a", "b", "c"]) s.saveInboxTab({ id, name: id.toUpperCase(), query: "from:vip" }, at);
+    expect(s.listInboxTabs().map((tab) => `${tab.id}${tab.position}`)).toEqual(["a0", "b1", "c2"]);
+    s.moveInboxTab("c", -1);
+    s.moveInboxTab("a", -1);
+    expect(s.listInboxTabs().map((tab) => tab.id)).toEqual(["a", "c", "b"]);
+    s.moveInboxTab("b", 1);
+    s.saveInboxTab({ id: "c", name: "Renamed", query: "is:dev" }, at);
+    expect(s.listInboxTabs().map((tab) => `${tab.id}:${tab.name}:${tab.query}`)).toEqual(["a:A:from:vip", "c:Renamed:is:dev", "b:B:from:vip"]);
+    s.deleteInboxTab("a");
+    for (let i = 0; i < 10; i++) s.saveInboxTab({ id: `t${i}`, name: `T${i}`, query: "is:dev" }, at);
+    expect(s.listInboxTabs()).toHaveLength(12);
+    expect(() => s.saveInboxTab({ id: "one-more", name: "X", query: "is:dev" }, at)).toThrow(TabsFullError);
+    expect(s.listInboxTabs()).toHaveLength(12);
   });
 });
 
@@ -3459,10 +4052,47 @@ describe.each(storeKinds)("slice-3d store semantics (%s)", (_kind, make) => {
   });
 
   describe("templates", () => {
+    it("a template keeps its subject and recipients; a save without them leaves them as they were", () => {
+      const extras = { subject: "Invoice", to: ["Ada <ada@example.com>"], cc: [], bcc: ["boss@example.org"] };
+      s.saveTemplate({ id: null, name: "Bill", nameKey: "bill", doc: TEMPLATE_DOC, extras }, "tpl_1", T0);
+      expect(s.listTemplates()[0]).toMatchObject({ id: "tpl_1", ...extras });
+      s.saveTemplate({ id: "tpl_1", name: "Billing", nameKey: "billing", doc: TEMPLATE_DOC }, "tpl_x", later(1));
+      expect(s.listTemplates()[0]).toMatchObject({ name: "Billing", ...extras });
+      s.saveTemplate({ id: "tpl_1", name: "Billing", nameKey: "billing", doc: TEMPLATE_DOC, extras: { subject: null, to: [], cc: [], bcc: [] } }, "tpl_x", later(2));
+      expect(s.listTemplates()[0]).toMatchObject({ subject: null, to: [], cc: [], bcc: [] });
+      s.saveTemplate({ id: null, name: "Plain", nameKey: "plain", doc: TEMPLATE_DOC }, "tpl_2", T0);
+      expect(s.getTemplateByKey("plain")).toMatchObject({ subject: null, to: [], cc: [], bcc: [] });
+    });
+
+    it("a template's files: added, listed without bytes, read with them, limited, and gone with the template", () => {
+      s.saveTemplate({ id: null, name: "Bill", nameKey: "bill", doc: TEMPLATE_DOC }, "tpl_1", T0);
+      const file = (id: string, size: number) => ({ id, name: `${id}.pdf`, mimeType: "application/pdf", size, sha256: "a".repeat(64), data: new Uint8Array(size).fill(7) });
+      expect(s.addTemplateFile("tpl_1", file("f1", 3), T0)).toBe("added");
+      expect(s.addTemplateFile("tpl_1", file("f2", 4), T0)).toBe("added");
+      expect(s.addTemplateFile("tpl_gone", file("f9", 1), T0)).toBe("unknown");
+      expect(s.listTemplates()[0]!.files).toEqual([
+        { id: "f1", name: "f1.pdf", mimeType: "application/pdf", size: 3 },
+        { id: "f2", name: "f2.pdf", mimeType: "application/pdf", size: 4 },
+      ]);
+      expect(s.templateFiles("tpl_1").map((f) => [f.id, [...f.data]])).toEqual([["f1", [7, 7, 7]], ["f2", [7, 7, 7, 7]]]);
+      for (const id of ["f3", "f4", "f5"]) expect(s.addTemplateFile("tpl_1", file(id, 1), T0)).toBe("added");
+      expect(s.addTemplateFile("tpl_1", file("f6", 1), T0)).toBe("full");
+      expect(s.removeTemplateFile("tpl_1", "f5")).toBe(true);
+      expect(s.removeTemplateFile("tpl_1", "f5")).toBe(false);
+      expect(s.addTemplateFile("tpl_1", file("big", 10 * 1024 * 1024), T0)).toBe("full");
+      s.deleteTemplate("tpl_1");
+      expect(s.templateFiles("tpl_1")).toEqual([]);
+    });
+
     it("save inserts, rename keeps the id, a duplicate key conflicts, an unknown id creates it", () => {
       expect(s.saveTemplate({ id: null, name: "Thanks", nameKey: "thanks", doc: TEMPLATE_DOC }, "tpl_1", T0)).toEqual({ id: "tpl_1" });
       expect(s.saveTemplate({ id: "tpl_1", name: "Thank you", nameKey: "thank you", doc: TEMPLATE_DOC }, "tpl_x", later(1))).toEqual({ id: "tpl_1" });
       expect(s.getTemplateByKey("thank you")).toEqual({
+        subject: null,
+        to: [],
+        cc: [],
+        bcc: [],
+        files: [],
         id: "tpl_1",
         name: "Thank you",
         nameKey: "thank you",
@@ -3550,7 +4180,7 @@ describe("slice-3e migration (SQLite)", () => {
     const old = new Database(":memory:");
     old.transaction(() => MIGRATIONS.slice(0, 9).forEach((s) => old.exec(s)))();
     const legacy = createSqliteStore(old);
-    legacy.saveAccount(makeStoredAccount());
+    seedLegacyAccount(old);
     legacy.upsertMessages("acc_1", INBOX, [
       makeFetchedMessage(1, { unsubscribe: INFO }),
       makeFetchedMessage(2, { unsubscribe: { ...INFO, listKey: "news@example.com" } }),
@@ -3562,7 +4192,7 @@ describe("slice-3e migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(9).forEach((s) => old.exec(s)))();
 
-    expect(MIGRATIONS).toHaveLength(19);
+    expect(MIGRATIONS).toHaveLength(26);
     const migrated = createSqliteStore(old);
     expect(migrated.getUnsubscribeInfo(ids[0]!)).toEqual({ ...INFO, listKey: "id:weekly.example.com" });
     expect(migrated.getUnsubscribeInfo(ids[1]!)?.listKey).toBe("from:news@example.com");
@@ -4205,12 +4835,12 @@ describe("slice-3f migration (SQLite)", () => {
     const old = new Database(":memory:");
     old.transaction(() => MIGRATIONS.slice(0, 10).forEach((s) => old.exec(s)))();
     const legacy = createSqliteStore(old);
-    legacy.saveAccount(makeStoredAccount());
+    seedLegacyAccount(old);
     legacy.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1)]);
 
     old.transaction(() => MIGRATIONS.slice(10).forEach((s) => old.exec(s)))();
 
-    expect(MIGRATIONS).toHaveLength(19);
+    expect(MIGRATIONS).toHaveLength(26);
     const migrated = createSqliteStore(old);
     migrated.assignThreads("acc_1", new Map());
     expect(migrated.listThreads("acc_1", INBOX, null, 10).threads).toEqual([
@@ -4238,6 +4868,46 @@ describe("slice-3f migration (SQLite)", () => {
     expect(columns("digests")).toContain("notified_at");
     expect(columns("reply_reminders")).toContain("notified_at");
   });
+
+  it(
+    "one page of an Inbox tab and the counts of twelve tabs stay fast at 5 000+ threads",
+    () => {
+      store.saveFolders("acc_1", FOLDERS_3F);
+      store.upsertMessages(
+        "acc_1",
+        INBOX,
+        Array.from({ length: 5_200 }, (_, i) =>
+          makeFetchedMessage(i + 1, {
+            messageId: `tab-perf-${i}@example.org`,
+            date: new Date(Date.UTC(2026, 9, 1) + i * 60_000).toISOString(),
+            from: { name: null, address: i % 13 === 0 ? `boss${i}@vip.example.com` : `person${i}@example.net` },
+            seen: i % 2 === 1,
+          }),
+        ),
+      );
+      store.assignThreads("acc_1", new Map());
+      store.setSenderSets({ vip: { addresses: new Set(), domains: new Set(["vip.example.com"]) }, team: new Set(["example.org"]) });
+      const vip: TabMatch = { kind: "all", conditions: [{ field: "sender", value: "vip", negated: false }] };
+      const other: TabMatch = { kind: "none", of: [vip.conditions] };
+      const first = store.listThreads("acc_1", INBOX, null, 50, undefined, vip);
+      const { value: page, ms } = timeOne(() => store.listThreads("acc_1", INBOX, first.nextCursor, 50, undefined, vip));
+      expect(ms).toBeLessThan(PAGE_MS);
+      expect(page.threads).toHaveLength(50);
+      const { value: rest, ms: otherMs } = timeOne(() => store.listThreads("acc_1", INBOX, null, 50, undefined, other));
+      expect(otherMs).toBeLessThan(PAGE_MS);
+      expect(rest.threads).toHaveLength(50);
+      const { value: merged, ms: mergedMs } = timeOne(() => store.listThreadsAll("inbox", null, 50, undefined, vip));
+      expect(mergedMs).toBeLessThan(PAGE_MS);
+      expect(merged.threads).toHaveLength(50);
+      // 400 of 5 200 are VIP (every 13th); the even ones are unread: 200 and 2 400.
+      const twelve = Array.from({ length: 6 }, () => [vip, other]).flat();
+      const { value: counts, ms: countMs } = timeOne(() => store.tabUnreadCounts({ accountId: "acc_1", folder: INBOX }, twelve));
+      expect(counts.slice(0, 2)).toEqual([200, 2_400]);
+      expect(store.tabUnreadCounts({ role: "inbox" }, [vip, other])).toEqual([200, 2_400]);
+      expect(countMs).toBeLessThan(PAGE_MS * 6);
+    },
+    SEEDING_TIMEOUT_MS,
+  );
 
   it(
     "one category-filter page stays fast at 5 000+ threads",
@@ -4962,7 +5632,7 @@ describe("slice-3g migration (SQLite)", () => {
     const old = new Database(":memory:");
     old.transaction(() => MIGRATIONS.slice(0, 11).forEach((s) => old.exec(s)))();
     const legacy = createSqliteStore(old);
-    legacy.saveAccount(makeStoredAccount());
+    seedLegacyAccount(old);
     legacy.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1)]);
 
     old.transaction(() => MIGRATIONS.slice(11).forEach((s) => old.exec(s)))();
@@ -5000,7 +5670,7 @@ describe("slice-3g migration (SQLite)", () => {
     const old = new Database(":memory:");
     old.transaction(() => MIGRATIONS.slice(0, 12).forEach((s) => old.exec(s)))();
     const legacy = createSqliteStore(old);
-    legacy.saveAccount(makeStoredAccount());
+    seedLegacyAccount(old);
     legacy.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1)]);
     const messageId = idOf(legacy, 1);
     old.prepare(
@@ -5016,7 +5686,7 @@ describe("slice-3g migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(12).forEach((s) => old.exec(s)))();
 
-    expect(MIGRATIONS).toHaveLength(19);
+    expect(MIGRATIONS).toHaveLength(26);
     const runs = old.prepare("SELECT id, message_id, message_key, project_id FROM rule_runs ORDER BY id").all();
     expect(runs).toEqual([
       { id: "a1", message_id: messageId, message_key: expect.stringMatching(/^acc_1:/), project_id: "p_api" },
@@ -5579,7 +6249,7 @@ describe("slice-3h migration (SQLite)", () => {
     const old = new Database(":memory:");
     old.transaction(() => MIGRATIONS.slice(0, 13).forEach((s) => old.exec(s)))();
     const legacy = createSqliteStore(old);
-    legacy.saveAccount(makeStoredAccount());
+    seedLegacyAccount(old);
     const arms: [string, string | null, string][] = [
       ["application/pdf", "a.bin", "pdf"],
       ["application/octet-stream", "scan.PDF", "pdf"],
@@ -5601,7 +6271,7 @@ describe("slice-3h migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(13).forEach((s) => old.exec(s)))();
 
-    expect(MIGRATIONS).toHaveLength(19);
+    expect(MIGRATIONS).toHaveLength(26);
     const kinds = old.prepare("SELECT part_id, kind FROM attachments ORDER BY CAST(part_id AS INTEGER)").all() as {
       part_id: string;
       kind: string;
@@ -6266,12 +6936,12 @@ describe("slice-3i migration (SQLite)", () => {
     const old = new Database(":memory:");
     old.transaction(() => MIGRATIONS.slice(0, 14).forEach((statement) => old.exec(statement)))();
     const legacy = createSqliteStore(old);
-    legacy.saveAccount(makeStoredAccount());
+    seedLegacyAccount(old);
     legacy.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1)]);
 
     old.transaction(() => MIGRATIONS.slice(14).forEach((statement) => old.exec(statement)))();
 
-    expect(MIGRATIONS).toHaveLength(19);
+    expect(MIGRATIONS).toHaveLength(26);
     const columns = (old.prepare("PRAGMA table_info(messages)").all() as { name: string }[]).map((c) => c.name);
     expect(columns).toEqual(expect.arrayContaining(["sender_check_json", "receipt_requested", "crypto"]));
     expect(old.prepare("SELECT sender_check_json, receipt_requested, crypto FROM messages").all()).toEqual([

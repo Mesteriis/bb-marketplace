@@ -6,6 +6,7 @@
 // turns `sending` into `unknown`, and the only automatic retry is the
 // idempotent Sent-copy APPEND (search by Message-ID first, 3 tries with
 // backoff).
+import { withPixel } from "./read-status.ts";
 import { parseAddress } from "./compose-address.ts";
 import { bccHeaderLine, insertBccHeader } from "./compose-bcc.ts";
 import {
@@ -13,7 +14,7 @@ import {
   ComposeError,
   MAX_RECIPIENTS,
   imapConfigOf,
-  outgoingOf,
+  outgoingOf, ownAddresses,
   removeServerCopy,
   requireAccount,
   roleFolder,
@@ -192,6 +193,8 @@ export type QueueDeps = ComposeDeps & {
   undone: UndoneSends;
   /** Slice 3k: the built message signed and/or encrypted; throws ComposeError with a PGP_SEND_TEXT. */
   protect?: (mime: Uint8Array, request: ProtectRequest) => Promise<Uint8Array>;
+  /** Read statuses: a new token and its image, or null when they are off or not set up. */
+  tracker?: { issue(recipients: readonly string[]): { token: string; html: string } | null };
 };
 export type OutboxDeps = ComposeDeps & {
   notifier: OutboxNotifier;
@@ -246,6 +249,8 @@ export async function queueSend(
      * ahead. It is the message's Date too. Only the owner's composer asks.
      */
     sendAt?: string;
+    /** Read statuses: false leaves the image out of this message. Only the owner's own send carries one. */
+    track?: boolean;
   },
 ): Promise<{ outboxId: string; sendAfter: string; reminder?: boolean }> {
   if (deps.undone.has(input.requestId)) throw new ComposeError("undone");
@@ -289,7 +294,16 @@ export async function queueSend(
     // Each recipient's key id is visible in an encrypted message: a hidden copy would not stay hidden.
     if (input.protect!.encrypt && message.bcc.length > 0) throw new ComposeError("invalid", PGP_SEND_TEXT.bcc);
   }
-  const built = await deps.builder.build(message);
+  // Read statuses: the owner's own mail to someone else, in the clear (a protected body must not change),
+  // and not an invitation answer. The token is issued last, so a refused send leaves none behind.
+  // An ordinary message only: an invitation answer or an unsubscribe request goes to a program.
+  const own = new Set([message.from.address, ...ownAddresses(deps.store)].map((address) => address.toLowerCase()));
+  const toOthers = envelopeTo.some((address) => !own.has(address.toLowerCase()));
+  const tracked =
+    input.origin === "owner" && input.track !== false && !wantsPgp && toOthers && (draft.purpose ?? null) === null
+      ? (deps.tracker?.issue(envelopeTo) ?? null)
+      : null;
+  const built = await deps.builder.build(tracked === null ? message : { ...message, html: withPixel(message.html, tracked.html) });
   const mime = wantsPgp
     ? await deps.protect!(built, {
         sign: input.protect!.sign,
@@ -320,6 +334,10 @@ export async function queueSend(
     },
     input.baseRevision,
     );
+    if (tracked !== null && !("conflict" in result) && result.created) {
+      // Kept 90 days from the time the message goes out, not from the time a later send was queued.
+      deps.store.saveSentTracking({ token: tracked.token, accountId: account.id, rfcMessageId: draft.messageId, createdAt: scheduled ? message.date : now.toISOString() });
+    }
     if (input.remind !== undefined && !("conflict" in result) && result.created) {
       const created = deps.store.createReminder({
         id: input.remind.id,
@@ -652,6 +670,7 @@ export function smtpConfigOf(account: StoredAccount, deps: Pick<ComposeDeps, "va
     security: account.smtp.security,
     username: account.smtp.username ?? account.username,
     password: deps.vault.open(account.passwordSealed),
+    authKind: account.authKind,
   };
 }
 

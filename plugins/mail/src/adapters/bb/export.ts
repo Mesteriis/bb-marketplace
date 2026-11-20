@@ -98,7 +98,7 @@ export async function exportFolder(deps: ExportDeps, input: ExportInput): Promis
   let session: Awaited<ReturnType<ImapGateway["openFolder"]>>;
   let uids: number[];
   try {
-    const config = { host: account.host, port: account.port, user: account.username, password: deps.vault.open(account.passwordSealed) };
+    const config = { host: account.host, port: account.port, user: account.username, password: deps.vault.open(account.passwordSealed), authKind: account.authKind };
     session = await deps.gateway.openFolder(config, input.folder, { readOnly: true });
   } catch (error) {
     throw new ExportRefused(error instanceof ImapAuthError ? "password" : "connection");

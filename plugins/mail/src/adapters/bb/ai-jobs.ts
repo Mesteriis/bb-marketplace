@@ -25,6 +25,8 @@ import {
   type SummaryResult,
   type TaskSuggestion,
 } from "../../core/ai-input.ts";
+import { parseSort, type AiLabel, type SortItem } from "../../core/ai-sort.ts";
+import { parseWrite, removeForeignLinks } from "../../core/ai-write.ts";
 import { restoreSecrets } from "../../core/redact.ts";
 import { TranslateError, type Translator } from "../../core/translate.ts";
 import type { AiErrorKind, Clock } from "../../core/index.ts";
@@ -46,7 +48,11 @@ export type AiOutput =
   | { kind: "tasks"; value: { tasks: TaskSuggestion[] } }
   | { kind: "categories"; value: { items: { n: number; category: AiCategoryAnswer }[] } }
   | { kind: "digest"; value: { items: { n: number; gist: string }[] } }
-  | { kind: "draft"; value: { paragraphs: string[]; unknown: number; missing: number } };
+  | { kind: "draft"; value: { paragraphs: string[]; unknown: number; missing: number } }
+  /** Write and auto drafts (AI writes mail); `reply` false only for an auto draft that needs no answer. */
+  | { kind: "write"; value: { reply: boolean; paragraphs: string[]; linksRemoved: number; unknown: number } }
+  /** AI sorts the inbox: one line and the owner's label ids per message sent. */
+  | { kind: "sort"; value: { items: SortItem[] } };
 
 /** A finished job: the checked answer, the parts the plugin sent (for citations) and the notes. */
 export type AiFinished = {
@@ -91,6 +97,12 @@ export type AiJobContext = {
   tag?: string;
   /** Draft only: most characters the answer may hold (2x the input). */
   maxChars?: number;
+  /** Write and auto drafts: the links the answer may hold (the owner wrote them). */
+  allowedLinks?: readonly string[];
+  /** Auto drafts and sorting: nobody polls this job, so it is not cancelled for lack of polling. */
+  unattended?: boolean;
+  /** Sorting: the owner's labels the answer may name. */
+  labels?: readonly AiLabel[];
   /** Called once with the finished result (cache a summary, store suggestions). */
   onDone?: (finished: AiFinished) => void;
 };
@@ -115,8 +127,9 @@ type Job = {
   gatewayMessage?: string;
   provider?: string;
   model?: string;
-  /** Draft only, until the job ends. */
+  /** Draft, write and auto draft only, until the job ends. */
   restore: Map<string, string> | null;
+  unattended: boolean;
   startedAt: number;
   polledAt: number;
   endedAt: number | null;
@@ -147,7 +160,8 @@ export class AiJobs {
       kind,
       state: "running",
       phase: kind === "ask" ? "planning" : "writing",
-      restore: kind === "draft" ? built.restore ?? new Map() : null,
+      restore: kind === "draft" || kind === "write" || kind === "autodraft" ? built.restore ?? new Map() : null,
+      unattended: ctx.unattended === true,
       startedAt: now,
       polledAt: now,
       endedAt: null,
@@ -196,7 +210,7 @@ export class AiJobs {
     const now = this.now();
     for (const job of [...this.jobs.values()]) {
       if (job.state === "running") {
-        if (now - job.polledAt >= AI_JOB_IDLE_MS) this.stop(job, "cancelled");
+        if (!job.unattended && now - job.polledAt >= AI_JOB_IDLE_MS) this.stop(job, "cancelled");
         else if (now - job.startedAt >= AI_JOB_MAX_MS) this.stop(job, "failed");
       } else if (now - Math.max(job.polledAt, job.endedAt ?? 0) >= AI_JOB_KEEP_MS) {
         this.jobs.delete(job.id);
@@ -259,7 +273,13 @@ export class AiJobs {
         parts = answerBuild.parts;
         notes = { ...answerBuild.notes, hidden: answerBuild.notes.hidden + built.notes.hidden };
         const parsed = readable(parseAskAnswer(await this.call(job, answerBuild, AI_MAX_OUTPUT_TOKENS.askAnswer, providerId, model), parts.length));
-        output = { kind: "ask", value: parsed.value };
+        // Drafted text passes the link rule: only links the owner wrote in the question stay.
+        const actions = parsed.value.actions.map((action) => {
+          if (action.type !== "reply" && action.type !== "compose") return action;
+          const checked = removeForeignLinks(action.paragraphs, ctx.allowedLinks ?? []);
+          return { ...action, paragraphs: checked.paragraphs, linksRemoved: checked.removed };
+        });
+        output = { kind: "ask", value: { ...parsed.value, actions } };
         dropped = plan.dropped + parsed.dropped;
       } else {
         const raw = await this.call(job, built, AI_MAX_OUTPUT_TOKENS[job.kind], providerId, model);
@@ -345,6 +365,31 @@ export class AiJobs {
           },
           dropped: parsed.dropped,
         };
+      }
+      case "write":
+      case "autodraft": {
+        const parsed = readable(parseWrite(raw));
+        // A draft for someone else's message never gets the owner's hidden values back: the placeholders stay.
+        const restore = job.kind === "write" ? job.restore ?? new Map<string, string>() : new Map<string, string>();
+        const restored = restoreSecrets(parsed.value.paragraphs.join("\u0000"), restore, ctx.tag ?? "");
+        // Links are judged on the final text, so the owner's own link that held a hidden value compares as written.
+        const checked = removeForeignLinks(parsed.value.paragraphs.length === 0 ? [] : restored.text.split("\u0000"), ctx.allowedLinks ?? []);
+        return {
+          output: {
+            kind: "write",
+            value: {
+              reply: parsed.value.reply,
+              paragraphs: checked.paragraphs,
+              linksRemoved: checked.removed,
+              unknown: job.kind === "write" ? restored.unknown : 0,
+            },
+          },
+          dropped: parsed.dropped,
+        };
+      }
+      case "sort": {
+        const parsed = readable(parseSort(raw, n, ctx.labels ?? []));
+        return { output: { kind: "sort", value: parsed.value }, dropped: parsed.dropped };
       }
       case "ask":
         throw new AiError("failed");

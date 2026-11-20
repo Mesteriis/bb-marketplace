@@ -1,4 +1,9 @@
 // Ports: what the core needs from its host. Each host supplies adapters.
+import type { OpenEvent, OpenedUnanswered, SentTracking } from "./read-status.ts";
+import type { Exchange } from "./sender-rhythm.ts";
+import type { ReplyDraftRecord } from "./auto-drafts.ts";
+import type { AiLabel, MessageAi } from "./ai-sort.ts";
+import type { TemplateExtras } from "./snippets.ts";
 import type { ReplySource } from "./compose-reply.ts";
 import type {
   ComposeAttachment,
@@ -41,6 +46,7 @@ import type {
   FileRow,
   KeptState,
   SearchCursor,
+  AuthKind,
 } from "./model.ts";
 import type { ServerCriteria } from "./server-search.ts";
 import type { AttachmentCandidate } from "./attachment-text.ts";
@@ -59,6 +65,8 @@ import type { SignatureDoc } from "./compose-signature.ts";
 import type { AliasRow, InboundRow, SendCheck } from "./identities.ts";
 import type { UndoRow } from "./undo.ts";
 import type { AccountScope, AiScope } from "./ai-scope.ts";
+import type { InboxTab, SenderSets, TabMatch } from "./inbox-tabs.ts";
+import type { PluginGrant, PluginRequest } from "./plugin-access.ts";
 import type { LogEntry, LogOutcome } from "./agent-log.ts";
 import type { Category, CategoryRule, CategorySource, PreviousLabel } from "./categories.ts";
 import type { AiCategoryAnswer } from "./ai-input.ts";
@@ -78,7 +86,10 @@ export interface ImapConfig {
   host: string;
   port: number;
   user: string;
+  /** The app password; for a Google account, its refresh token. */
   password: string;
+  /** Absent means "password". */
+  authKind?: AuthKind;
 }
 
 export type ImapTestResult =
@@ -246,13 +257,28 @@ export class ImapAuthError extends Error {
   }
 }
 
+/**
+ * Google no longer accepts an account's grant (revoked, expired, or the
+ * password changed): signing in again is the only way back, so the account
+ * stops at once and the saved credential is not tried again.
+ */
+export class GrantRevokedError extends ImapAuthError {
+  constructor() {
+    super();
+    this.name = "GrantRevokedError";
+  }
+}
+
 /** An SMTP server and its login, for one session. The password is dropped after it. */
 export interface SmtpConfig {
   host: string;
   port: number;
   security: SmtpSecurity;
   username: string;
+  /** The app password; for a Google account, its refresh token. */
   password: string;
+  /** Absent means "password". */
+  authKind?: AuthKind;
 }
 
 /** What the server accepted. No response text: it is never kept or logged. */
@@ -482,6 +508,8 @@ export interface MailStore {
     cursor: string | null,
     limit: number,
     filter?: ThreadFilter,
+    /** An Inbox tab: only conversations with a message in the folder that matches it. */
+    tab?: TabMatch | null,
   ): { threads: ThreadSummary[]; nextCursor: string | null };
   /**
    * Threads of every account having a member not waiting to move in a folder
@@ -496,7 +524,59 @@ export interface MailStore {
     cursor: string | null,
     limit: number,
     filter?: ThreadFilter,
+    tab?: TabMatch | null,
   ): { threads: ThreadSummary[]; nextCursor: string | null };
+
+  // ---- Inbox tabs (Split Inbox) ----
+  listInboxTabs(): InboxTab[];
+  /** AI sorts the inbox: the owner's labels, in their order. */
+  listAiLabels(): AiLabel[];
+  /** Insert (id not stored yet) at the end, or update by id. Throws AiLabelRefusal: name_taken (case folded), full. */
+  saveAiLabel(label: AiLabel, nowIso: string): void;
+  deleteAiLabel(id: string): boolean;
+  moveAiLabel(id: string, direction: -1 | 1): void;
+  /**
+   * Keeps what a sort said about messages, by (account, dedup key) like
+   * categories, so it follows a message between folders; rows made before
+   * `keepSinceIso` are deleted. Unknown message ids are skipped.
+   */
+  saveMessageAi(rows: { messageId: string; summary: string | null; labelIds: string[] }[], nowIso: string, keepSinceIso: string): void;
+  /** By message id; label ids that no longer exist are left out. */
+  messageAi(messageIds: string[]): Map<string, MessageAi>;
+  /** By thread id: the newest message of the thread that was sorted. */
+  threadAi(threadIds: string[]): Map<string, MessageAi>;
+  /** Read statuses: the token a sent message carries, by its RFC Message-ID (normalized). */
+  saveSentTracking(row: SentTracking): void;
+  /** Keeps the opens whose token is one of ours and whose number is new; returns how many were kept. */
+  saveOpenEvents(events: readonly OpenEvent[]): number;
+  /** Which feed was read (its address and store id; "" at first) and its sequence number read so far. */
+  openFeed(): { scope: string; cursor: number };
+  setOpenCursor(seq: number): void;
+  /** Another feed, or one whose numbers started over: every kept open goes and reading starts at 0. */
+  resetOpenFeed(scope: string): void;
+  /** By local message id, for messages whose Message-ID is tracked: their opens, oldest first (empty: not opened). */
+  messageOpens(messageIds: string[]): Map<string, { at: string; kind: string }[]>;
+  /** By conversation, for those that hold a tracked message: the opens of all its tracked messages, oldest first. */
+  threadOpens(threadIds: string[]): Map<string, { at: string; kind: string }[]>;
+  /**
+   * Tracked messages made since `sinceIso` that someone opened (a plain machine does not count) and that are
+   * still the newest message of their conversation: nobody answered. Newest open first, at most `limit`.
+   */
+  openedUnanswered(sinceIso: string, limit: number): OpenedUnanswered[];
+  /** Drops tracking rows made before `beforeIso` and their opens. */
+  pruneTracking(beforeIso: string): void;
+  /** AI writes mail: keeps a drafted reply (replacing the message's earlier one); past `max` rows the oldest go. */
+  saveReplyDraft(draft: ReplyDraftRecord, max: number): void;
+  getReplyDraft(messageId: string): ReplyDraftRecord | null;
+  /** False when there was none. */
+  deleteReplyDraft(messageId: string): boolean;
+  /** Creates the tab at the end (TabsFullError past TABS_MAX) or changes its name and condition. */
+  saveInboxTab(tab: { id: string; name: string; query: string }, nowIso: string): InboxTab;
+  deleteInboxTab(id: string): void;
+  /** Swaps the tab with its neighbour; nothing at an end. */
+  moveInboxTab(id: string, direction: -1 | 1): void;
+  /** Unread conversations per match in the scope, in order; 0 for a null match. */
+  tabUnreadCounts(scope: { accountId: string; folder: string } | { role: SpecialUse }, matches: readonly (TabMatch | null)[]): number[];
   /**
    * Exactly inbox, sent, drafts, junk, archive, trash in that order, zeros
    * included. Counts are distinct unread / total dedup keys (per account)
@@ -606,6 +686,10 @@ export interface MailStore {
   /** Cascades to its attachments. */
   deleteDraft(id: string): void;
   listDrafts(accountId: string): DraftRecord[];
+  /** Marks a draft as prepared by a plugin (the plugin API); the mark stays through saves. */
+  markDraftPreparedBy(draftId: string, pluginId: string): void;
+  /** When a plugin's drafts were prepared, newest first, the last 30 days. */
+  pluginDraftTimes(pluginId: string): string[];
   /** The draft whose server copy is (folder, uid) of the account, or null. */
   draftForServerCopy(accountId: string, folder: string, uid: number): string | null;
   /** The "new" draft continuing that foreign Drafts message (messages.id), or null. */
@@ -757,7 +841,16 @@ export interface MailStore {
    * outside the AI scope is neither returned nor counted, excluded addresses
    * never return, and the topic match runs over redacted text.
    */
-  contacts(query: string, limit: number, opts?: { scoped: boolean }): Contact[];
+  /**
+   * `accountId` (the plugin API): only that account's messages are read,
+   * counted and matched, and only its addresses are the owner's: nothing of
+   * another account reaches the answer.
+   */
+  contacts(query: string, limit: number, opts?: { scoped: boolean; accountId?: string }): Contact[];
+  /** Installs what `from:vip` and `from:team` match (read at start and when the setting or the accounts change). */
+  setSenderSets(sets: SenderSets): void;
+  /** Whether a stored message carries a calendar part. */
+  hasCalendarPart(messageId: string): boolean;
   /** Per account, the latest personal mail received from and sent to any of the addresses (correspondenceOf); junk and trash left out. */
   correspondence(addresses: string[]): AccountCorrespondence[];
   getTranslation(messageId: string, targetLanguage: string): TranslationRecord | null;
@@ -814,13 +907,28 @@ export interface MailStore {
   cancelMove(ids: string[], folder: string, destination: string): string[];
   /** Every template, by name key. */
   listTemplates(): TemplateRecord[];
+  /** Typing speed: the plain text of the newest sent messages that have one, newest first (the owner's phrases come from it). */
+  sentTexts(limit: number): string[];
+  /**
+   * AI writes mail: the plain text of the newest sent messages inside AI
+   * access, newest first; with `to`, only those addressed (To) to that
+   * address, looked for among the newest VOICE_SCAN sent messages.
+   */
+  voiceTexts(to: string | null, limit: number): string[];
   /** Insert (id null) or update by id; `conflict` when another template has the name key. */
   saveTemplate(
-    input: { id: string | null; name: string; nameKey: string; doc: ComposeDoc },
+    /** `extras` absent: an existing template keeps its subject and recipients (typing speed). */
+    input: { id: string | null; name: string; nameKey: string; doc: ComposeDoc; extras?: TemplateExtras },
     newId: string,
     nowIso: string,
   ): { id: string } | { conflict: true };
+  /** Deletes the template and its files. */
   deleteTemplate(id: string): boolean;
+  /** Typing speed: a file kept with a template. `full`: over 5 files or 10 MB together; `unknown`: no such template. */
+  addTemplateFile(templateId: string, file: TemplateFileInfo & { sha256: string; data: Uint8Array }, nowIso: string): "added" | "full" | "unknown";
+  removeTemplateFile(templateId: string, fileId: string): boolean;
+  /** A template's files with their bytes, in the order added. */
+  templateFiles(templateId: string): (TemplateFileInfo & { sha256: string; data: Uint8Array })[];
   getTemplateByKey(nameKey: string): TemplateRecord | null;
 
   // ---- Inbox triage (slice 3e) ----
@@ -946,6 +1054,23 @@ export interface MailStore {
     senders: { kind: "address" | "domain"; value: string }[],
     nowIso: string,
   ): void;
+
+  // ---- Plugin access (the plugin API): what the owner lets other plugins have ----
+  listPluginGrants(): PluginGrant[];
+  /** Adds the grant (keeping the first grant's time) or removes it. */
+  setPluginGrant(grant: PluginGrant, on: boolean): void;
+  /** Every grant of a plugin, its request and its cached state. */
+  revokePluginGrants(pluginId: string): void;
+  getPluginRequests(): PluginRequest[];
+  /** A plugin's pending request, replacing its earlier one; its time is also kept for the daily limit. */
+  putPluginRequest(request: PluginRequest): void;
+  dismissPluginRequest(pluginId: string): void;
+  /** When a plugin asked, newest first, the last 30 days. */
+  pluginRequestTimes(pluginId: string): string[];
+  /** Plugin id to the time of its last logged call. */
+  pluginLastCalls(): Map<string, string>;
+  /** Rows of an account that carry a calendar part, newest first, after `cursor`. */
+  calendarMessages(accountId: string, limit: number, cursor: SearchCursor | null): { id: string; date: string | null }[];
   /** Rebuilds the excluded conversations after a sync round (new rows may add one). */
   refreshExcludedThreads(): void;
   /** The message when one of its copies is inside the scope (that copy), else null: an out-of-scope id is unknown. */
@@ -1250,6 +1375,14 @@ export interface MailStore {
   filesList(filter: FilesFilter, cursor: string | null, limit: number): { files: FileRow[]; nextCursor: string | null };
   /** The stored counts and lists of the sender card (the server adds images, block and project). */
   senderStats(address: string, accountId: string | null): SenderStats;
+  /**
+   * Smart Send and sender insights: the dated mail between the owner and
+   * one address since `sinceIso`, newest `limit` each way, each message
+   * once. Incoming: from the address, outside Spam and Trash. Outgoing:
+   * rows of a Sent folder addressed (To or Cc) to it, among the most
+   * recently stored mail (To and Cc have no index).
+   */
+  senderExchange(address: string, accountId: string | null, sinceIso: string, limit: number): Exchange;
   /** At most RELATED_CANDIDATES_MAX local candidates for the message and its terms. */
   relatedCandidates(messageId: string, terms: readonly string[]): RelatedCandidate[];
   /** Summaries of the ids (any order; missing ids left out). */
@@ -1706,7 +1839,12 @@ export type TriageItemRecord = {
 };
 
 /** A stored template (slice 3d). Global, not per account. */
-export type TemplateRecord = {
+/** A file kept with a template, without its bytes. */
+export type TemplateFileInfo = { id: string; name: string; mimeType: string; size: number };
+
+export type TemplateRecord = TemplateExtras & {
+  /** The files the template attaches, in the order added. */
+  files: TemplateFileInfo[];
   id: string;
   name: string;
   nameKey: string;

@@ -7,8 +7,8 @@ import { useId, useMemo, useState, type KeyboardEvent } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import type { TemplateView } from "./mail-settings.tsx";
-import { docPreview } from "./mail-settings.tsx";
+import type { TemplateView } from "./settings/shared.ts";
+import { docPreview } from "./settings/shared.ts";
 import { tx } from "./i18n/index.ts";
 
 export interface TemplatesPopoverProps {

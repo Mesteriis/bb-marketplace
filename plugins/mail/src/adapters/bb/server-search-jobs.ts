@@ -320,7 +320,7 @@ export function createServerJobs(deps: ServerJobsDeps): ServerJobs {
     }
     const settings = deps.settings();
     return {
-      config: { host: account.host, port: account.port, user: account.username, password },
+      config: { host: account.host, port: account.port, user: account.username, password, authKind: account.authKind },
       context: {
         preset: account.preset,
         classifyDev: settings.classify === true,

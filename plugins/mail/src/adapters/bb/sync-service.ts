@@ -43,6 +43,9 @@
 import {
   backfillBulk,
   backfillUnsubscribe,
+  createAuthRefusals,
+  createSignInResume,
+  retrySignIn,
   devBackfill,
   syncAccount,
   type BackfillCursors,
@@ -53,6 +56,7 @@ import {
   type SyncOptions,
   type SyncOutcome,
 } from "../../core/index.ts";
+import { grantRevoked } from "../../core/sync-problems.ts";
 
 /** Stored on an account whose sealed password the current vault key cannot open. */
 export const DECRYPT_ERROR = "Cannot decrypt credential — re-enter the password";
@@ -122,6 +126,10 @@ export function createSyncLoop(
   /** Date.now() when the last full round finished; null before the first. */
   let lastFullAt: number | null = null;
   let cutSleep: (() => void) | null = null;
+  /** Refused sign-ins in a row per account; kept across restarts of the loop in this process. */
+  const authRefusals = createAuthRefusals();
+  /** When a stopped account's saved password is tried again; kept like the refusals. */
+  const signInResume = createSignInResume();
   /** Date.now() when the last round started, and whether it was itself the extra one. */
   let lastStartAt: number | null = null;
   let lastWasExtra = false;
@@ -163,7 +171,8 @@ export function createSyncLoop(
   }
 
   async function start(signal: AbortSignal): Promise<void> {
-    const guarded = guardAfterAbort(deps, signal);
+    // One refused sign-in does not stop an account whose password worked before.
+    const guarded = guardAfterAbort({ ...deps, authRefusals: deps.authRefusals ?? authRefusals }, signal);
     /** Where each folder's backfill goes on below; for the life of this loop. */
     const cursors: BackfillCursors = new Map();
     const aborted = new Promise<void>((resolve) => {
@@ -189,11 +198,43 @@ export function createSyncLoop(
       }
     }
 
+    /**
+     * One sign-in with a stopped account's saved password, when it is due
+     * (sign-in-resume.ts). True when the server accepted it and the stop is
+     * cleared. Runs inside the account's queue task, like the round.
+     */
+    async function resumed(accountId: string, passwordSealed: string): Promise<boolean> {
+      const nowMs = guarded.clock.now().getTime();
+      if (!signInResume.due(accountId, passwordSealed, nowMs)) return false;
+      const result = await retrySignIn(
+        { store: guarded.store, gateway: guarded.gateway, vault: guarded.vault, run: (_id, work) => work() },
+        accountId,
+      );
+      if (signal.aborted) return false;
+      if (result !== "resumed") {
+        signInResume.failed(accountId, passwordSealed, nowMs);
+        log(`sync ${accountId}: sign-in ${result === "refused" ? "refused again" : "could not be tried"}`);
+        return false;
+      }
+      authRefusals.accepted(accountId);
+      guarded.notifier.mailChanged(accountId);
+      log(`sync ${accountId}: sign-in works again, sync resumed`);
+      return true;
+    }
+
     async function syncOneNow(accountId: string, syncOptions: SyncOptions): Promise<void> {
       if (signal.aborted) return;
       try {
-        const account = guarded.store.getAccount(accountId);
-        if (account === null || account.authFailed) return;
+        let account = guarded.store.getAccount(accountId);
+        if (account === null) return;
+        if (account.authFailed) {
+          // A full round tries the saved password again when a try is due; a revoked grant is never tried.
+          if (grantRevoked(account.lastError)) return;
+          if (syncOptions.only !== undefined || !(await resumed(account.id, account.passwordSealed))) return;
+          account = guarded.store.getAccount(accountId);
+          if (account === null || account.authFailed) return;
+        }
+        signInResume.clear(accountId);
         if (!canOpen(account.passwordSealed)) {
           guarded.store.recordSyncResult(accountId, {
             lastSyncAt: account.lastSyncAt,

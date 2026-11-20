@@ -7,6 +7,7 @@
 
 export type SyncProblemCode =
   | "auth_failed"
+  | "grant_revoked"
   | "credential_unreadable"
   | "network"
   | "server_busy"
@@ -50,12 +51,26 @@ const NETWORK_CODES = new Set([
   "SocketTimeout",
   "ConnectTimeout",
   "GreetingTimeout",
+  // Google's token endpoint did not answer: no access token for this round.
+  "TokenUnavailable",
 ]);
 
-/** The server answered and asked to come back later. */
-const BUSY_CODES = new Set(["UNAVAILABLE", "INUSE", "LIMIT", "SERVERBUG", "ALERT", "LoginThrottled", "Throttled"]);
+/** The server answered and asked to come back later, or refused a sign-in that sync still retries. */
+const BUSY_CODES = new Set([
+  "UNAVAILABLE",
+  "INUSE",
+  "LIMIT",
+  "SERVERBUG",
+  "ALERT",
+  "LoginThrottled",
+  "Throttled",
+  "LoginRefused",
+]);
 
 const TLS_CODE = /TLS|SSL|CERT|ALTNAME|HANDSHAKE/i;
+
+/** Stored on a Google account whose grant Google no longer accepts; only a new sign-in clears it. */
+export const GRANT_REVOKED_ERROR = "Google sign-in expired";
 
 export const DECRYPT_ERROR_TEXT = "Cannot decrypt credential — re-enter the password";
 
@@ -78,6 +93,7 @@ function problem(code: SyncProblemCode, patch: Partial<SyncProblem> = {}): SyncP
 /** One sentence of `lastError` as a problem. */
 function parseSentence(sentence: string): SyncProblem {
   if (sentence === "Authentication failed") return problem("auth_failed");
+  if (sentence === GRANT_REVOKED_ERROR) return problem("grant_revoked");
   if (sentence === DECRYPT_ERROR_TEXT) return problem("credential_unreadable");
   if (sentence === "Sync failed") return problem("server");
 
@@ -136,6 +152,15 @@ function sentencesOf(lastError: string): string[] {
   return sentences;
 }
 
+/**
+ * True when the account was stopped by a revoked Google grant. The round that
+ * found it may have added its folder problems to the same line, so the line
+ * is read as problems, not compared whole.
+ */
+export function grantRevoked(lastError: string | null): boolean {
+  return parseSyncProblems(lastError).some((p) => p.code === "grant_revoked" && p.folder === null);
+}
+
 /** How long a lost network stays a quiet "Offline" before it becomes a banner. */
 export const OFFLINE_QUIET_MS = 30 * 60_000;
 
@@ -162,6 +187,8 @@ export function syncProblemText(p: SyncProblem): string {
   switch (p.code) {
     case "auth_failed":
       return `${where}The server refused the sign-in. Update the app password.`;
+    case "grant_revoked":
+      return "Google no longer accepts this sign-in. Sign in to Google again.";
     case "credential_unreadable":
       return "The saved password cannot be read. Enter it again.";
     case "network":

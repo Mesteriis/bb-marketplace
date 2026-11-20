@@ -2,7 +2,8 @@
 // evening, Tomorrow morning, Tomorrow afternoon, Monday morning) and Pick a
 // date and time. The composer sends the chosen moment as UTC ISO; the server
 // checks the range again.
-import { useEffect, useState, type FormEvent } from "react";
+import { shownText } from "./agent-send-card.tsx";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { sendLaterPresets, validSendAt, type SendLaterPresetId } from "../core/send-later.ts";
 import { Button } from "@/components/ui/button";
 import {
@@ -34,10 +35,43 @@ export interface SendLaterMenuProps {
   onOpenChange: (open: boolean) => void;
   /** The chosen moment, as UTC ISO. */
   onPick: (at: string) => void;
+  /** Smart send: the time the first recipient usually writes, asked when the menu opens; absent or null: no such row. */
+  smart?: () => Promise<SmartSendTime | null>;
   now?: () => Date;
 }
 
-export function SendLaterMenu({ open, onOpenChange, onPick, now = () => new Date() }: SendLaterMenuProps) {
+/** A send time taken from when the recipient usually writes. */
+export interface SmartSendTime {
+  at: string;
+  hour: number;
+  name: string;
+}
+
+/** "09:00" for an hour of the day. */
+export function hourText(hour: number): string {
+  return `${String(hour).padStart(2, "0")}:00`;
+}
+
+export function SendLaterMenu({ open, onOpenChange, onPick, smart, now = () => new Date() }: SendLaterMenuProps) {
+  const [suggested, setSuggested] = useState<SmartSendTime | null>(null);
+  const asked = useRef(smart);
+  asked.current = smart;
+  useEffect(() => {
+    setSuggested(null);
+    if (!open || asked.current === undefined) return;
+    let live = true;
+    asked.current().then(
+      (found) => {
+        // A time that passed while the menu was closed, or closer than a minute, is not offered.
+        if (live && found !== null && validSendAt(found.at, now())) setSuggested(found);
+      },
+      // The row is an offer: without an answer the menu is as it always was.
+      () => {},
+    );
+    return () => {
+      live = false;
+    };
+  }, [open]);
   const [picking, setPicking] = useState(false);
   const [value, setValue] = useState("");
   const [problem, setProblem] = useState<string | null>(null);
@@ -73,6 +107,20 @@ export function SendLaterMenu({ open, onOpenChange, onPick, now = () => new Date
           </DialogDescription>
         </DialogHeader>
         <ul aria-label={tx("Send times")} className="flex flex-col gap-px">
+          {suggested !== null && validSendAt(suggested.at, at) ? (
+            // Checked again at every render: a menu left open does not offer a time that has come too close.
+            <li>
+              <button type="button" onClick={() => onPick(suggested.at)} className={`${row} h-auto min-h-8 py-1`}>
+                <span className="flex min-w-0 flex-1 flex-col">
+                  <span className="truncate">{tx("Smart send")}</span>
+                  <span className="truncate text-xs text-muted-foreground">
+                    {tx("{name} usually writes around {time}", { name: shownText(suggested.name), time: hourText(suggested.hour) })}
+                  </span>
+                </span>
+                <span className="shrink-0 text-xs text-muted-foreground">{formatUntil(suggested.at, at)}</span>
+              </button>
+            </li>
+          ) : null}
           {sendLaterPresets(at).map((preset) => (
             <li key={preset.id}>
               <button type="button" onClick={() => onPick(preset.at.toISOString())} className={row}>

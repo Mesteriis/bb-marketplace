@@ -28,6 +28,7 @@ type HashedAttachment = ComposeAttachment & { sha256: string };
 
 function draft(overrides: Partial<DraftRecord> = {}): DraftRecord {
   return {
+    preparedBy: null,
     id: "d1",
     kind: "reply",
     accountId: "acc_1",

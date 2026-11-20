@@ -2,8 +2,12 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { installTestPluginRuntime } from "@get-bb/plugin-sdk/testing/app";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Account, IdentityView } from "../core/model.ts";
-import { MailSettings, sendCheckText, type MailSettingsProps, type TemplateView } from "./mail-settings.tsx";
+import type { Account, IdentityView } from "../../core/model.ts";
+import { PAGE_SETTING_DEFAULTS } from "../../core/page-settings.ts";
+import { useState } from "react";
+import { sendCheckText, type MailSettingsProps, type TemplateView } from "./shared.ts";
+import { SettingsPage } from "./settings-page.tsx";
+import type { SettingsSectionId } from "./sections.ts";
 
 installTestPluginRuntime();
 afterEach(cleanup);
@@ -53,10 +57,14 @@ const TEMPLATES: TemplateView[] = [
   { id: "tpl-1", name: "Thanks", doc: { type: "doc", content: [paragraph("Thank you, invented text.")] }, updatedAt: "2026-11-10T09:00:00.000Z" },
 ];
 
-function mount(overrides: Partial<MailSettingsProps> = {}) {
+/** The page with its section kept as the address would keep it. */
+function Page({ start, ...props }: MailSettingsProps & { start: SettingsSectionId }) {
+  const [section, setSection] = useState<SettingsSectionId>(start);
+  return <SettingsPage {...props} section={section} onSection={setSection} onBack={() => undefined} />;
+}
+
+function mount({ section = "addresses", ...overrides }: Partial<MailSettingsProps> & { section?: SettingsSectionId } = {}) {
   const props: MailSettingsProps = {
-    open: true,
-    onOpenChange: vi.fn(),
     accounts: [account],
     identities: IDENTITIES,
     templates: TEMPLATES,
@@ -70,11 +78,117 @@ function mount(overrides: Partial<MailSettingsProps> = {}) {
     onOpenSmtp: vi.fn(),
     ...overrides,
   };
-  render(<MailSettings {...props} />);
+  render(<Page {...props} start={section} />);
   return props;
 }
 
 const rows = () => within(screen.getByRole("list", { name: "Sending addresses" })).getAllByRole("listitem");
+
+describe("Mailboxes and sign-in", () => {
+  const gmail = { ...account, preset: "gmail" as const };
+  const box = () => within(screen.getByRole("list", { name: "Mailboxes" })).getByRole("listitem");
+
+  it("shows each mailbox with its provider and how it signs in", () => {
+    mount({ section: "accounts", accounts: [gmail] });
+    expect(box().textContent).toContain("owner@example.org");
+    expect(box().textContent).toContain("Gmail · App password");
+    cleanup();
+    mount({ section: "accounts", accounts: [{ ...gmail, authKind: "google" }] });
+    expect(box().textContent).toContain("Gmail · Signed in with Google");
+  });
+
+  it("a password account can replace its password; a Gmail one can switch to Google when that is offered", () => {
+    const onGoogleSwitch = vi.fn();
+    const onReplacePassword = vi.fn();
+    mount({ section: "accounts", accounts: [gmail], onGoogleSwitch, onReplacePassword });
+    fireEvent.click(within(box()).getByRole("button", { name: "Replace app password" }));
+    expect(onReplacePassword).toHaveBeenCalledWith(expect.objectContaining({ id: account.id }));
+    fireEvent.click(within(box()).getByRole("button", { name: "Switch to Google sign-in" }));
+    expect(onGoogleSwitch).toHaveBeenCalledWith(expect.objectContaining({ id: account.id, preset: "gmail" }));
+    cleanup();
+    mount({ section: "accounts", accounts: [gmail], onReplacePassword });
+    expect(screen.queryByRole("button", { name: "Switch to Google sign-in" })).toBeNull();
+    cleanup();
+    mount({ section: "accounts", accounts: [{ ...account, preset: "icloud" }], onGoogleSwitch, onReplacePassword });
+    expect(screen.queryByRole("button", { name: "Switch to Google sign-in" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Replace app password" })).toBeTruthy();
+  });
+
+  it("a Google account offers no password, and a new sign-in only when it is stopped", () => {
+    const onGoogleSwitch = vi.fn();
+    mount({ section: "accounts", accounts: [{ ...gmail, authKind: "google" }], onGoogleSwitch, onReplacePassword: vi.fn() });
+    expect(screen.queryByRole("button", { name: "Replace app password" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Sign in to Google" })).toBeNull();
+    // A working Google account can renew its sign-in at any time: Google ends a test app's sign-in after 7 days.
+    fireEvent.click(screen.getByRole("button", { name: "Renew Google sign-in" }));
+    expect(onGoogleSwitch).toHaveBeenCalledTimes(1);
+    onGoogleSwitch.mockClear();
+    expect(screen.getByText("Google ends a sign-in 7 days after you gave it while the Makosh app is in testing; renewing starts the 7 days again.")).toBeTruthy();
+    cleanup();
+    mount({
+      section: "accounts",
+      accounts: [{ ...gmail, authKind: "google", authFailed: true, lastError: "Google sign-in expired" }],
+      onGoogleSwitch,
+    });
+    expect(within(box()).getByRole("alert").textContent).toBe("Google no longer accepts this sign-in. Sign in to Google again.");
+    fireEvent.click(within(box()).getByRole("button", { name: "Sign in to Google" }));
+    expect(onGoogleSwitch).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens SMTP settings and Add an account, and gives the remove command to copy", () => {
+    const onAddAccount = vi.fn();
+    const onCopy = vi.fn();
+    const props = mount({ section: "accounts", onAddAccount, onCopy });
+    fireEvent.click(within(box()).getByRole("button", { name: "SMTP settings…" }));
+    expect(props.onOpenSmtp).toHaveBeenCalledWith("acc-1");
+    fireEvent.click(screen.getByRole("button", { name: "Add an account" }));
+    expect(onAddAccount).toHaveBeenCalledTimes(1);
+    expect(box().textContent).toContain("bb makosh-mail remove acc-1");
+    fireEvent.click(within(box()).getByRole("button", { name: "Copy the command that removes owner@example.org" }));
+    expect(onCopy).toHaveBeenCalledWith("bb makosh-mail remove acc-1");
+  });
+
+  it("without accounts says so and still offers Add an account", () => {
+    const onAddAccount = vi.fn();
+    mount({ section: "accounts", accounts: [], onAddAccount });
+    expect(screen.getByText("No mail account yet.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Add an account" })).toBeTruthy();
+  });
+
+  it("sync settings save through the page's settings", async () => {
+    const save = vi.fn(async () => ({ ok: true as const }));
+    mount({ section: "accounts", settings: { values: PAGE_SETTING_DEFAULTS, save } });
+    expect((screen.getByLabelText("Check for mail every") as HTMLInputElement).value).toBe("5");
+    expect((screen.getByLabelText("Keep in sync the last") as HTMLInputElement).value).toBe("30");
+    fireEvent.click(screen.getByRole("switch", { name: "Instant new mail" }));
+    expect(save).toHaveBeenCalledWith({ instantMail: false });
+    cleanup();
+    mount({ section: "accounts" });
+    expect(screen.queryByLabelText("Check for mail every")).toBeNull();
+  });
+});
+
+describe("Local data", () => {
+  it("says where mail is kept, that the key is set, and gives the commands to copy", () => {
+    const onCopy = vi.fn();
+    mount({ section: "local", vaultReady: true, onCopy });
+    expect(screen.getByText(/stay on the computer that runs BB/)).toBeTruthy();
+    expect(screen.getByText(/The credential key is set/)).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
+    const commands = within(screen.getByRole("list", { name: "Terminal commands" })).getAllByRole("listitem");
+    expect(commands.map((item) => item.querySelector("code")!.textContent)).toEqual([
+      "bb makosh-mail doctor",
+      "bb makosh-mail backup /absolute/path/mail-backup.db",
+    ]);
+    fireEvent.click(screen.getByRole("button", { name: "Copy bb makosh-mail doctor" }));
+    expect(onCopy).toHaveBeenCalledWith("bb makosh-mail doctor");
+  });
+
+  it("says when the credential key is missing", () => {
+    mount({ section: "local", vaultReady: false });
+    expect(screen.getByRole("alert").textContent).toContain("The credential key is not set");
+  });
+});
 
 describe("MailSettings: sending addresses", () => {
   it("lists the own address first, then the aliases, with their names, signature and send state", async () => {
@@ -190,15 +304,15 @@ describe("MailSettings: sending addresses", () => {
     expect(props.onAdd).not.toHaveBeenCalled();
   });
 
-  it("links to the account's SMTP dialog", () => {
-    const props = mount();
-    fireEvent.click(screen.getByRole("button", { name: "SMTP settings…" }));
-    expect(props.onOpenSmtp).toHaveBeenCalledWith("acc-1");
+  it("has no sign-in or SMTP links: they live in Mailboxes and sign-in", () => {
+    mount();
+    expect(screen.queryByRole("button", { name: "SMTP settings…" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Switch to Google sign-in" })).toBeNull();
   });
 });
 
 describe("MailSettings: templates", () => {
-  const toTemplates = () => fireEvent.click(screen.getByRole("tab", { name: "Templates" }));
+  const toTemplates = () => fireEvent.click(screen.getByRole("link", { name: "Templates" }));
 
   it("creates a template with a name and text, without a quote button", async () => {
     const props = mount();
@@ -238,6 +352,11 @@ describe("MailSettings: templates", () => {
       id: "tpl-1",
       name: "Thanks a lot",
       doc: expect.objectContaining({ type: "doc" }),
+      // Typing speed: a plain template saves with nothing beside its text.
+      subject: "",
+      to: [],
+      cc: [],
+      bcc: [],
     });
     expect(screen.queryByRole("form", { name: "Edit Thanks" })).toBeNull();
   });
@@ -261,9 +380,9 @@ describe("MailSettings: Inbox (slice 3e)", () => {
     { id: "rule-2", kind: "domain" as const, value: "spam.example.net", createdAt: "2026-11-14T09:00:00.000Z" },
   ];
 
-  it("has no Inbox tab without the ports", () => {
+  it("has no Inbox section without the ports", () => {
     mount();
-    expect(screen.queryByRole("tab", { name: "Inbox" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Inbox" })).toBeNull();
   });
 
   it("lists blocked senders with kind and date; Unblock asks first and says Spam stays", async () => {
@@ -343,15 +462,17 @@ describe("MailSettings: AI features (slice 3f)", () => {
     expect(ports.loadRules).not.toHaveBeenCalled();
   });
 
-  it("no AI tabs without the AI ports", () => {
+  it("no AI sections without the AI ports", () => {
     mount();
-    expect(screen.queryByRole("tab", { name: "AI access" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Agent access" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "AI features" })).toBeNull();
   });
 });
 
 describe("Search and reading (slice 3h)", () => {
   it("shows the attachment text status, retries failed files and removes the text", async () => {
-    const { SearchSection, attachmentTextLine } = await import("./mail-settings.tsx");
+    const { SearchSection } = await import("./reading-section.tsx");
+    const { attachmentTextLine } = await import("./shared.ts");
     const status = { indexed: 1240, skipped: 10, failed: 8, pending: 2, running: true, full: false };
     const retry = vi.fn(async () => {});
     const clear = vi.fn(async () => {});
@@ -376,7 +497,7 @@ describe("Search and reading (slice 3h)", () => {
   });
 
   it("says when the index is full", async () => {
-    const { SearchSection } = await import("./mail-settings.tsx");
+    const { SearchSection } = await import("./reading-section.tsx");
     render(
       <SearchSection
         hint="hint"

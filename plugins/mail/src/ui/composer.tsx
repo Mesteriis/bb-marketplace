@@ -4,7 +4,7 @@
 // request id per Send (reused when the call is retried), and on Escape
 // either closes or asks Save draft · Discard · Keep editing. Every RPC is an
 // injected port; nothing here knows the host.
-import { useEffect, useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode } from "react";
 import type { Editor } from "@tiptap/react";
 import type { Account, ComposeAttachment, DraftView, IdentityView, MailAddress } from "../core/model.ts";
 import type { PresendIssue } from "../core/presend.ts";
@@ -36,22 +36,28 @@ import {
   type PendingUpload,
   type UploadPort,
 } from "./attachments-input.tsx";
-import { ComposeEditor, ownerRange, replaceOwnerRange, type EditorDoc } from "./compose-editor.tsx";
+import { ComposeEditor, ownerRange, insertParagraphs, replaceOwnerRange, type EditorDoc } from "./compose-editor.tsx";
+import { NO_TYPING, takeSnippet, type SnippetList, type TypingOptions } from "./editor-typing.ts";
+import { fillBlocks, fillVariables, firstNameOf, mergeRecipients } from "../core/snippets.ts";
+import { introLine, looksLikeIntro, moveSenderToBcc } from "../core/intro.ts";
 import { Checkbox } from "@/components/ui/checkbox";
 import type { AiJobPorts } from "./ai-job.ts";
 import { ImproveDialog, ImproveMenu, type DraftMode, type ImproveRequest } from "./improve-dialog.tsx";
+import { WriteDialog, type WriteInput } from "./write-dialog.tsx";
+import { browserDictation, useDictation, type DictationDeps } from "./dictation.ts";
+import { dictatedParagraphs } from "../core/dictation-text.ts";
 import { daysText } from "./reminder-strip.tsx";
 import { ComposeToolbar } from "./compose-toolbar.tsx";
 import { accountLabel } from "./folder-list.tsx";
 import { chipText, MAX_CHIP_LENGTH, MIN_CHIP_LENGTH, RecipientInput, addChips, splitTyped } from "./recipient-input.tsx";
 import { isMacPlatform, stopEscape } from "./shortcuts.ts";
-import { sendCheckText, type TemplateView } from "./mail-settings.tsx";
+import { sendCheckText, type TemplateView } from "./settings/shared.ts";
 import { PresendDialog } from "./presend-dialog.tsx";
 import { BbFilePicker, type FilePickRequest } from "./bb-file-picker.tsx";
 import type { BbCall } from "./bb-ports.ts";
 import { findSignature, signatureKey } from "./signature-node.ts";
 import { TemplatesPopover } from "./templates-popover.tsx";
-import { SendLaterMenu } from "./send-later-menu.tsx";
+import { SendLaterMenu, type SmartSendTime } from "./send-later-menu.tsx";
 import { msg, tx } from "./i18n/index.ts";
 
 /** Typing rests this long before the draft is saved. */
@@ -89,6 +95,8 @@ export interface ComposerPorts {
     protect?: { sign: boolean; encrypt: boolean };
     /** Slice 3l, "Send later": the time to send, UTC ISO. */
     sendAt?: string;
+    /** Read statuses: false leaves the image out of this message. */
+    track?: boolean;
   }): Promise<{
     outboxId: string;
     sendAfter: string;
@@ -103,12 +111,28 @@ export interface ComposerPorts {
   check?(input: { draftId: string; baseRevision: number }): Promise<{ issues: PresendIssue[] }>;
   /** Slice 3k: whether From has an OpenPGP key, and the recipients Mail has no key for. Absent: no OpenPGP row. */
   pgpCheck?(from: string, recipients: string[]): Promise<{ canSign: boolean; missing: string[] }>;
+  /** Typing speed: attaches a template's files to the draft; `leftOut` names what the message has no room for. */
+  applyTemplate?(input: { draftId: string; templateId: string }): Promise<{ attached: ComposeAttachment[]; leftOut: string[] }>;
+  /** Smart send: the time the saved draft's first recipient usually writes; null from too little mail. Absent: not offered. */
+  smartSend?(draftId: string): Promise<SmartSendTime | null>;
+  /** Dictation: BB's voice service turns a recording into text. Absent: no microphone button. */
+  transcribe?(audio: Blob, signal: AbortSignal): Promise<string>;
+  /** Read statuses are on and set up: the composer offers to leave the image out of one message. */
+  trackOpens?: boolean;
+  /** Whether BB has a voice service chosen; absent: taken as yes. */
+  voiceReady?(): Promise<boolean>;
 }
 
 export interface ComposerProps {
+  /** Typing speed: autocorrect and autocomplete as the settings have them; absent: none. */
+  typing?: TypingOptions;
   /** Slice 3i: Apple Mail's Shift+Command+D sends; absent: read from the platform. */
   mac?: boolean;
   draft: DraftView;
+  /** AI writes mail: a drafted reply the owner chose to use, put in as the owner's text once. */
+  initialOwn?: readonly string[];
+  /** Dictation: the microphone and recorder; absent: the browser's (tests inject fakes). */
+  dictationDevice?: Pick<DictationDeps, "microphone" | "record">;
   accounts: readonly Account[];
   ports: ComposerPorts;
   /** From compose_prepare or compose_open. */
@@ -246,6 +270,19 @@ function messageOf(error: unknown): string {
   return error instanceof Error && error.message ? error.message : tx("Something went wrong");
 }
 
+/** The start of the message a reply answers, as plain text: the draft's own text nodes, then the original's HTML without tags and styles. */
+function introText(draft: DraftView): string {
+  const words: string[] = [];
+  const walk = (node: { text?: unknown; content?: unknown }) => {
+    if (typeof node.text === "string") words.push(node.text);
+    if (Array.isArray(node.content)) for (const child of node.content) walk(child as { text?: unknown; content?: unknown });
+  };
+  walk(draft.doc as { content?: unknown });
+  const html = (draft.import?.html ?? "").replace(/<(style|script|head)[\s\S]*?<\/\1>/gi, " ").replace(/<[^>]*>/g, " ");
+  // The attribution line comes first in the draft; the original's words follow it.
+  return `${words.join(" ")} ${html}`.replace(/\s+/g, " ").replace(/^.{0,200}?wrote:\s*/i, "");
+}
+
 function fieldOf(addresses: readonly MailAddress[]): Field {
   return { chips: addresses.map(chipText), text: "" };
 }
@@ -297,6 +334,8 @@ export function Composer(props: ComposerProps) {
     <ComposerBody
       key={`${shown.draft.id}:${shown.generation}`}
       {...props}
+      // A drafted reply goes in once: a Reload or a new draft starts from what is stored.
+      {...(shown.generation > 0 ? { initialOwn: undefined } : {})}
       draft={shown.draft}
       onReloaded={(next) =>
         setShown((prev) => ({ from: prev.from, draft: next, generation: prev.generation + 1 }))
@@ -309,6 +348,19 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
   const { draft, ports, accounts } = props;
   const rootRef = useRef<HTMLElement | null>(null);
   const [editor, setEditor] = useState<Editor | null>(null);
+  // Typing speed: the editor reads the settings on every key, so a change applies without a new editor.
+  // Typing a `;` and a few letters lists the templates under the toolbar; Enter, Tab or a click takes one.
+  const [snippetList, setSnippetList] = useState<SnippetList | null>(null);
+  const pickSnippet = useRef<(id: string) => void>(() => {});
+  const typingOf = (): TypingOptions => ({
+    ...(props.typing ?? NO_TYPING),
+    snippets: props.templates ?? [],
+    onSnippets: setSnippetList,
+    onPickSnippet: (id) => pickSnippet.current(id),
+  });
+  const typingRef = useRef<TypingOptions>(typingOf());
+  typingRef.current = typingOf();
+  const typingNow = useCallback(() => typingRef.current, []);
   const [linkOpen, setLinkOpen] = useState(false);
   const [from, setFrom] = useState<{ accountId: string; address: string | null }>({
     accountId: draft.accountId,
@@ -321,7 +373,13 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
   /** Slice 3f: Improve's menu and request, and the reply reminder beside Send. */
   const [improveOpen, setImproveOpen] = useState(false);
   const [improveRequest, setImproveRequest] = useState<ImproveRequest | null>(null);
+  /** AI writes mail: the Write dialog, and the owner's range as it was sent with the last request. */
+  const [writeOpen, setWriteOpen] = useState(false);
+  const writeSent = useRef<string[] | null>(null);
   const [remind, setRemind] = useState(false);
+  const [track, setTrack] = useState(true);
+  const trackRef = useRef(track);
+  trackRef.current = track;
   const remindRef = useRef(remind);
   // Slice 3k: OpenPGP for this message. Both start off; the choice is not kept with the draft.
   const [pgpSign, setPgpSign] = useState(false);
@@ -601,6 +659,7 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
       ...(remindAfterDays !== undefined ? { remindAfterDays } : {}),
       ...(protect.sign || protect.encrypt ? { protect } : {}),
       ...(sendAtRef.current !== null ? { sendAt: sendAtRef.current } : {}),
+      ...(portsRef.current.trackOpens === true && !trackRef.current ? { track: false } : {}),
     };
     let outbox: { outboxId: string; sendAfter: string };
     try {
@@ -695,6 +754,35 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
       hasMarks: range.hasMarks,
     });
   };
+  /** Dictation: the text goes in where the cursor is now, as paragraphs. */
+  const dictation = useDictation({
+    ...(props.dictationDevice ?? browserDictation),
+    ...(props.ports.voiceReady !== undefined ? { ready: () => props.ports.voiceReady!() } : {}),
+    transcribe: (audio, signal) => (props.ports.transcribe === undefined ? Promise.reject(new Error("no voice service")) : props.ports.transcribe(audio, signal)),
+    onText: (text) => {
+      if (editor !== null) insertParagraphs(editor, dictatedParagraphs(text));
+    },
+  });
+  /** Write: the draft is saved first, as for Improve; null when it could not be. */
+  const prepareWrite = async (instruction: string): Promise<WriteInput | null> => {
+    if (editor === null || conflictRef.current !== null) return null;
+    if (dirty()) {
+      const outcome = await save(false);
+      if (outcome !== "saved") return null;
+    }
+    const range = ownerRange(editor);
+    writeSent.current = range.paragraphs;
+    return { kind: "write", draftId: draft.id, revision: revision.current, instruction, paragraphs: range.paragraphs };
+  };
+  /** Insert: only while the owner's range is still what was sent. */
+  const insertWritten = (paragraphs: string[]): boolean => {
+    const sent = writeSent.current;
+    if (editor === null || sent === null) return false;
+    const now = ownerRange(editor).paragraphs;
+    if (now.length !== sent.length || now.some((p, i) => p !== sent[i])) return false;
+    replaceOwnerRange(editor, paragraphs);
+    return true;
+  };
   /** Apply: only while the owner's range is still what was sent. */
   const applyImprove = (paragraphs: string[]): boolean => {
     const sent = improveRequest?.input.paragraphs;
@@ -741,6 +829,7 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
         return () => within(`input[role="combobox"][aria-label="${tx(field)}"]`)?.focus();
       }
       case "bb_files":
+      case "placeholder_left":
       case "looks_secret":
         // The dialog closes; the owner checks the attachments or the text.
         return undefined;
@@ -781,10 +870,74 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
       .run();
   };
 
+  // Instant intro: in a reply whose first recipient is the original's sender and that has someone else to write to.
+  const introSender = draft.kind === "reply" || draft.kind === "reply_all" ? (draft.to[0] ?? null) : null;
+  const introMove =
+    introSender === null ? null : moveSenderToBcc({ to: to.chips, cc: cc.chips, bcc: bcc.chips }, introSender.address);
+  const [introDismissed, setIntroDismissed] = useState(false);
+  // Not when the owner answers their own message: there is nobody to thank.
+  const introToSelf = accounts.some((owned) => owned.email.toLowerCase() === introSender?.address.toLowerCase());
+  const introOffered = introMove !== null && !introDismissed && !introToSelf && looksLikeIntro({ subject: draft.subject, text: introText(draft) });
+  const moveIntroducer = () => {
+    if (introMove === null || introSender === null) return;
+    setTo({ ...to, chips: introMove.to });
+    setCc({ ...cc, chips: introMove.cc });
+    setBcc({ ...bcc, chips: introMove.bcc });
+    setShowCopies(true);
+    const line = introLine(firstNameOf(introSender), draft.subject);
+    editor?.chain().focus().insertContentAt(0, { type: "paragraph", content: [{ type: "text", text: line }] }).run();
+    changed();
+  };
+
+  /** Typing speed: files of the last template that the message had no room for. */
+  const [templateLeftOut, setTemplateLeftOut] = useState<string[]>([]);
+  /** Why a template's files could not be attached at all. */
+  const [templateFailed, setTemplateFailed] = useState<string | null>(null);
+  /**
+   * A template goes in at the cursor and fills what it carries: an empty
+   * subject, recipients the draft does not have yet, `{first_name}` (the
+   * first To recipient's, counting the template's own), and its files.
+   */
   const insertTemplate = (template: TemplateView) => {
     setTemplatesOpen(false);
     if (editor === null) return;
-    editor.chain().focus().insertContent(template.doc.content ?? []).run();
+    const nextTo = mergeRecipients(to.chips, template.to ?? [], [...cc.chips, ...bcc.chips]);
+    const nextCc = mergeRecipients(cc.chips, template.cc ?? [], [...nextTo, ...bcc.chips]);
+    const nextBcc = mergeRecipients(bcc.chips, template.bcc ?? [], [...nextTo, ...nextCc]);
+    if (nextTo.length !== to.chips.length) setTo({ ...to, chips: nextTo });
+    if (nextCc.length !== cc.chips.length) setCc({ ...cc, chips: nextCc });
+    if (nextBcc.length !== bcc.chips.length) setBcc({ ...bcc, chips: nextBcc });
+    if (nextCc.length > 0 || nextBcc.length > 0) setShowCopies(true);
+    const first = nextTo[0] === undefined ? undefined : parseAddress(nextTo[0]);
+    const firstName = firstNameOf(first?.ok === true ? first.value : undefined);
+    const ownSubject = (template.subject ?? "").trim();
+    if (subject.trim() === "" && ownSubject !== "") setSubject(fillVariables(ownSubject, firstName));
+    editor.chain().focus().insertContent(fillBlocks((template.doc.content ?? []) as { type: string }[], firstName)).run();
+    changed();
+    setTemplateLeftOut([]);
+    setTemplateFailed(null);
+    const apply = portsRef.current.applyTemplate;
+    if ((template.files?.length ?? 0) === 0 || apply === undefined) return;
+    apply({ draftId: draft.id, templateId: template.id }).then(
+      ({ attached, leftOut }) => {
+        if (attached.length > 0) setAttachments((prev) => [...prev, ...attached]);
+        setTemplateLeftOut(leftOut);
+      },
+      (error: unknown) => {
+        setTemplateFailed(messageOf(error));
+        // Some of the files may have been attached before the failure: show what the draft now holds.
+        void portsRef.current.reload(draft.id).then(
+          // Added to what the page shows, never replacing it: an upload may have finished meanwhile.
+          (fresh) => setAttachments((prev) => [...prev, ...fresh.attachments.filter((file) => !prev.some((shown) => shown.id === file.id))]),
+          () => undefined,
+        );
+      },
+    );
+  };
+
+  pickSnippet.current = (id) => {
+    const template = props.templates?.find((item) => item.id === id);
+    if (template !== undefined) insertTemplate(template);
   };
 
   const [bbMenuOpen, setBbMenuOpen] = useState(false);
@@ -858,6 +1011,23 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
       void send();
       return;
     }
+    // Mod+J: Write with AI.
+    if (
+      (event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey && event.code === "KeyJ" &&
+      props.improve !== undefined && props.improve.disabledReason === null
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+      setWriteOpen(true);
+      return;
+    }
+    // Mod+Shift+I: answering an introduction, the introducer goes to Bcc with a thank-you line.
+    if ((event.metaKey || event.ctrlKey) && event.shiftKey && !event.altKey && event.code === "KeyI" && introMove !== null) {
+      event.preventDefault();
+      event.stopPropagation();
+      moveIntroducer();
+      return;
+    }
     // Mod+Alt+T: the template picker (Alt+T and Alt+Shift+T are BB's model picker).
     if ((event.metaKey || event.ctrlKey) && event.altKey && event.code === "KeyT" && props.templates !== undefined) {
       event.preventDefault();
@@ -868,6 +1038,11 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
     if (event.key === "Escape" && !event.defaultPrevented) {
       event.preventDefault();
       event.stopPropagation();
+      // Escape first ends a dictation (the recording, its transcription or its error), then closes.
+      if (dictation.state.status !== "idle") {
+        dictation.cancel();
+        return;
+      }
       if (dirty() || [to, cc, bcc].some((f) => f.text.trim() !== "")) setEscapeOpen(true);
       else void close();
     }
@@ -915,6 +1090,12 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
           </Button>
         ) : null}
         <h2 className="min-w-0 flex-1 truncate px-1 text-sm font-semibold text-foreground">{tx(TITLES[draft.kind])}</h2>
+        {typeof draft.preparedBy === "string" ? (
+          <span className="flex min-w-0 shrink items-center gap-1 rounded-sm bg-secondary px-1.5 py-0.5 text-xs text-secondary-foreground">
+            <Icon name="Plug" fallback="Mail" className="size-3.5 shrink-0" aria-hidden />
+            <span className="truncate">{tx("Prepared by {plugin}", { plugin: draft.preparedBy })}</span>
+          </span>
+        ) : null}
         {draft.origin === "agent" ? (
           <span className="flex shrink-0 items-center gap-1 rounded-sm bg-secondary px-1.5 py-0.5 text-xs text-secondary-foreground">
             <Icon name="Bot" fallback="Mail" className="size-3.5" aria-hidden />
@@ -993,6 +1174,28 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
             : sendCheckText(chosen.sendCheck)}
         </p>
       ) : null}
+      {introOffered ? (
+        <div role="status" className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-1.5 text-xs text-muted-foreground">
+          <span className="min-w-0 flex-1">{tx("This looks like an introduction.")}</span>
+          <Button variant="outline" size="sm" className="h-6 px-2 text-xs" onClick={moveIntroducer}>
+            {tx("Move sender to Bcc")}
+          </Button>
+          <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => setIntroDismissed(true)}>
+            {tx("Not now")}
+          </Button>
+        </div>
+      ) : null}
+      {templateFailed !== null ? (
+        <p role="alert" className="border-b border-border px-3 py-1.5 text-xs text-destructive">
+          {tx("The template's files were not attached: {p1}", { p1: tx(templateFailed) })}
+        </p>
+      ) : null}
+      {templateLeftOut.length > 0 ? (
+        <p role="status" className="flex items-start gap-1 border-b border-border px-3 py-1.5 text-xs text-destructive">
+          <Icon name="TriangleAlert" fallback="Info" className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+          {tx("No room in this message for: {p1}", { p1: templateLeftOut.join(", ") })}
+        </p>
+      ) : null}
       {keptSignature !== null ? (
         <div role="status" className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-1.5 text-xs text-muted-foreground">
           <span>{tx("Kept your edited signature")}</span>
@@ -1042,6 +1245,12 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
           </FieldRow>
           <FieldRow label={tx("Bcc")}>
             <RecipientInput label={tx("Bcc")} chips={bcc.chips} text={bcc.text} onChange={setField(setBcc)} suggest={(p) => portsRef.current.suggest(p)} marked={marked} />
+            {/* The command by a button too (the key may be taken by developer tools); the offer line has its own while it shows. */}
+            {introMove !== null && !introOffered && !introToSelf ? (
+              <Button variant="ghost" size="sm" className="h-7 shrink-0 px-2" aria-description={tx("Thank the sender and move them to Bcc")} onClick={moveIntroducer}>
+                {tx("Move sender to Bcc")}
+              </Button>
+            ) : null}
           </FieldRow>
         </>
       ) : null}
@@ -1075,7 +1284,11 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
                 onImprove: () => setImproveOpen((open) => !open),
                 improveOpen,
                 improveDisabledReason: props.improve.disabledReason,
+                onWrite: () => setWriteOpen(true),
               }
+            : {})}
+          {...(props.ports.transcribe !== undefined
+            ? { dictation: { state: dictation.state, onToggle: dictation.toggle, onCancel: dictation.cancel, onRetry: dictation.retry } }
             : {})}
         />
         {improveOpen && props.improve !== undefined ? (
@@ -1102,11 +1315,34 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
           />
         ) : null}
       </div>
+      {snippetList !== null && editor !== null ? (
+        <ul role="listbox" aria-label={tx("Templates for ;{p1}", { p1: snippetList.query })} className="flex shrink-0 flex-col border-b border-border px-1 py-1">
+          {snippetList.items.map((item, index) => (
+            <li
+              key={item.id}
+              role="option"
+              aria-selected={index === snippetList.highlight}
+              // The editor keeps the focus and its cursor: the pick happens on the press, not after a blur.
+              onMouseDown={(event) => {
+                event.preventDefault();
+                takeSnippet(editor.view, item.id, typingRef.current);
+              }}
+              className={cn(
+                "cursor-default truncate rounded-md px-2 py-1 text-sm text-foreground",
+                index === snippetList.highlight ? "bg-state-active" : "hover:bg-state-hover",
+              )}
+            >
+              {item.name}
+            </li>
+          ))}
+        </ul>
+      ) : null}
       <div className="min-h-0 flex-1 overflow-y-auto">
         <ComposeEditor
           label={tx("Message")}
           initialDoc={draft.doc as EditorDoc}
           importFrom={draft.import}
+          {...(props.initialOwn !== undefined ? { initialOwn: props.initialOwn } : {})}
           onChange={(next) => {
             doc.current = next;
             changed();
@@ -1118,6 +1354,7 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
             void save(false, true);
           }}
           onLinkShortcut={() => setLinkOpen(true)}
+          typing={typingNow}
         />
         <AttachmentChips
           attachments={attachments}
@@ -1152,6 +1389,15 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
         <SendLaterMenu
           open={laterOpen}
           onOpenChange={setLaterOpen}
+          {...(props.ports.smartSend !== undefined
+            ? {
+                smart: async () => {
+                  // The server reads the saved draft's recipients.
+                  if (dirty() && (await save(false)) !== "saved") return null;
+                  return props.ports.smartSend!(draft.id);
+                },
+              }
+            : {})}
           onPick={(at) => {
             setLaterOpen(false);
             void send(at);
@@ -1217,6 +1463,12 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
             {tx("Remind me if no reply in {p1}", { p1: daysText(props.reminderDays) })}
           </label>
         ) : null}
+        {props.ports.trackOpens === true ? (
+          <label className="flex items-center gap-1.5 text-xs text-muted-foreground" title={tx("A tiny image from your own endpoint. Never in signed or encrypted mail.")}>
+            <Checkbox aria-label={tx("Show when this message is opened")} checked={track} onCheckedChange={(checked) => setTrack(checked === true)} />
+            {tx("Show when opened")}
+          </label>
+        ) : null}
         {pgpState !== null ? (
           <span role="group" aria-label={tx("OpenPGP")} className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
             <label className="flex items-center gap-1.5">
@@ -1260,6 +1512,18 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
         ) : null}
       </div>
 
+      {props.improve !== undefined ? (
+        <WriteDialog
+          open={writeOpen}
+          ports={props.improve.jobs}
+          prepare={prepareWrite}
+          onInsert={insertWritten}
+          onClose={() => {
+            setWriteOpen(false);
+            editor?.commands.focus();
+          }}
+        />
+      ) : null}
       {props.improve !== undefined ? (
         <ImproveDialog
           request={improveRequest}

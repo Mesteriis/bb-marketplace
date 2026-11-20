@@ -3,6 +3,7 @@
 // what came in since yesterday that link to the filtered Inbox. Summarize
 // is the only model call, on the owner's click; each gist shows under its
 // row as plain text.
+import { openedText } from "./open-line.tsx";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import type { TodayView as TodayData } from "../core/contract.ts";
 import type { ReminderView, TaskView } from "../core/model.ts";
@@ -185,6 +186,25 @@ export function TodayView(props: TodayViewProps) {
           </ul>
         )}
       </Section>
+
+      {data.opened !== undefined && data.opened.length > 0 ? (
+        <Section title={tx("Opened, no reply yet")}>
+          <ul className="flex flex-col divide-y divide-border rounded-md border border-border">
+            {data.opened.map((row) => (
+              <li key={`${row.accountId} ${row.threadId}`} className="flex flex-wrap items-center gap-2 px-3 py-2 text-sm">
+                <span className="min-w-0 flex-1 truncate">
+                  <span className="text-foreground">{row.to !== null ? addressLabel(row.to) : tx("Unknown recipient")}</span>
+                  <span className="text-muted-foreground">{` \u00b7 ${subjectOrPlaceholder(row.subject)}`}</span>
+                </span>
+                <span className="text-xs text-muted-foreground">{openedText(row)}</span>
+                <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => props.onOpen(row.accountId, row.threadId)}>
+                  {tx("Open")}
+                </Button>
+              </li>
+            ))}
+          </ul>
+        </Section>
+      ) : null}
 
       <Section title={tx("Waiting for a reply")}>
         {data.waiting.length === 0 ? (

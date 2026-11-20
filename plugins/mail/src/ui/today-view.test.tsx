@@ -70,6 +70,27 @@ function mount(overrides: Partial<Parameters<typeof TodayView>[0]> = {}) {
   return { ...props, calls: fake.calls };
 }
 
+describe("TodayView: opened, no reply yet", () => {
+  it("lists sent mail that was opened and not answered, and opens the conversation; without any there is no section", async () => {
+    const props = mount({
+      load: vi.fn(async () => ({
+        ...DATA,
+        opened: [{ accountId: "acc-1", threadId: "th-9", subject: "Offer", to: { name: "Cy Example", address: "cy@example.org" }, count: 3, lastAt: "2026-11-16T08:00:00.000Z" }],
+      })),
+    });
+    const section = await screen.findByRole("region", { name: "Opened, no reply yet" });
+    expect(within(section).getByText("Cy Example")).toBeTruthy();
+    expect(within(section).getByText(/Offer/)).toBeTruthy();
+    expect(within(section).getByText(/Opened 3 times/)).toBeTruthy();
+    fireEvent.click(within(section).getByRole("button", { name: "Open" }));
+    expect(props.onOpen).toHaveBeenCalledWith("acc-1", "th-9");
+    cleanup();
+    mount();
+    await screen.findByRole("region", { name: "Needs a reply" });
+    expect(screen.queryByRole("region", { name: "Opened, no reply yet" })).toBeNull();
+  });
+});
+
 describe("TodayView", () => {
   it("shows the four sections and acts on each", async () => {
     const props = mount();

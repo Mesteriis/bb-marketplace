@@ -7,8 +7,8 @@ hand mail to BB projects, threads and Taskboard.
 - A **Mail** page with sanitized HTML. Every folder syncs on the BB server
   every 5 minutes, last 30 days; the Inbox within seconds (IDLE).
 - **All accounts** merges Inbox, Sent, Drafts, Spam, Archive and Trash.
-- Mark, flag, archive, delete or **Move to…** a selection; **Undo** or `z`;
-  filters; Gmail and Apple Mail keys (`?`).
+- Mark, flag, archive, delete or **Move to…** a selection; **Undo** (`z`);
+  filters; Inbox tabs; Gmail and Apple keys (`?`).
 - Remote images stay hidden until you allow them; trackers never load.
 - Warnings for a failed sender check, a foreign Reply-To or a lookalike
   domain; links lose tracking and open after a check; no read receipts.
@@ -30,11 +30,11 @@ Toasts for new mail from people you write to. **Unsubscribe** asks first.
 
 ## AI on your click
 
-Through Makosh AI only: **Translate**, **Summarize**, **Ask** your mail,
-**Find tasks**, local **categories**, **Today**, **reply reminders** and
-**Improve** for your draft. Nothing a model says acts without your click.
-The provider gets subjects, sender names, dates and unquoted bodies of the
-mail involved; never addresses, attachments or HTML.
+**Translate**, **Summarize**, **Ask**, **Find tasks**, **categories**,
+**Today**, **reply reminders**, **Improve**, **Write with AI**. Off by
+default: reply drafts and AI labels for new mail. Nothing is sent
+without you. Makosh AI gets subjects, names, dates, unquoted bodies;
+never addresses or files.
 
 ## BB integration
 
@@ -54,13 +54,14 @@ mail involved; never addresses, attachments or HTML.
 Codes, passwords, tokens and card numbers become `[hidden …]` before any
 agent, model or BB thread sees them (a heuristic); encrypted mail never
 does. **AI access** limits agents and AI to chosen accounts and folders.
-**Agent activity** logs every hand-off locally, ids and counts only.
+**Agent activity** logs every hand-off, ids only. Outside
+assistants read the same over local MCP (off by default).
 
 ## Writing and sending
 
-**Compose**, **Reply**, **Forward** with rich text, attachments up to 25 MB,
-signatures and templates. **Send** waits 10 seconds with **Undo**, then
-goes out over SMTP with TLS.
+**Compose**, **Reply**, **Forward**: rich text, files up to 25 MB,
+signatures, templates. **Send** waits 10 seconds with **Undo**. With
+your own endpoint: when sent mail was read.
 
 ## Agent access
 
@@ -68,8 +69,8 @@ goes out over SMTP with TLS.
 `agentTools`. `mail_propose` (off) proposes mail on a card; only **Send**
 sends it. `mail_triage` (off) proposes inbox actions you tick.
 
-None of this stops an agent with shell access to the BB server: it can call
-the page's own methods. Sends still show Undo.
+An agent with a shell can still call the page's methods. Other plugins
+get nothing without your grant in **Plugin access**.
 
 ## What it changes on the server
 
@@ -81,7 +82,7 @@ one-click unsubscribe you confirmed.
 
 ## What it costs
 
-- An app password per account; Gmail needs 2-step verification.
+- An app password per account, or Google sign-in for Gmail.
 - Mail and encrypted credentials stay on the BB server.
 - Allowing images or unsubscribing tells senders you read the mail.
 - The page bundle is about 2.7 MB, mostly pdf.js and the editor.

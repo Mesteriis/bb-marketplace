@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { installTestPluginRuntime } from "@get-bb/plugin-sdk/testing/app";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { sendLaterPresets, validSendAt } from "../core/send-later.ts";
@@ -13,6 +13,64 @@ function labels() {
     .getAllByRole("button")
     .map((b) => b.firstElementChild?.textContent ?? b.textContent);
 }
+
+describe("SendLaterMenu: smart send", () => {
+  const now = new Date(2026, 10, 17, 10, 15);
+  const at = new Date(2026, 10, 18, 9, 0).toISOString();
+
+  it("offers the time the recipient usually writes first, says why, and picks it", async () => {
+    const onPick = vi.fn();
+    const smart = vi.fn(async () => ({ at, hour: 9, name: "Ann" }));
+    render(<SendLaterMenu open onOpenChange={vi.fn()} onPick={onPick} smart={smart} now={() => now} />);
+    const row = await screen.findByRole("button", { name: /Smart send/ });
+    expect(row.textContent).toContain("Ann usually writes around 09:00");
+    // The first row of the list, above "In an hour".
+    expect(labels().slice(0, 2)).toEqual(["Smart sendAnn usually writes around 09:00", "In an hour"]);
+    fireEvent.click(row);
+    expect(onPick).toHaveBeenCalledWith(at);
+    expect(smart).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows no such row without a suggestion, for a time that has passed, or when asking fails", async () => {
+    for (const smart of [async () => null, async () => ({ at: new Date(2026, 10, 17, 9, 0).toISOString(), hour: 9, name: "Ann" }), async () => Promise.reject(new Error("offline"))]) {
+      const asked = vi.fn(smart);
+      render(<SendLaterMenu open onOpenChange={vi.fn()} onPick={vi.fn()} smart={asked} now={() => now} />);
+      await waitFor(() => expect(asked).toHaveBeenCalledTimes(1));
+      // Long enough for the answer to be shown, as the control below proves.
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      });
+      expect(screen.queryByRole("button", { name: /Smart send/ })).toBeNull();
+      expect(labels()[0]).toBe("In an hour");
+      cleanup();
+    }
+  });
+
+  it("the same wait is long enough for a good suggestion to show (the control of the test above)", async () => {
+    const asked = vi.fn(async () => ({ at, hour: 9, name: "Ann" }));
+    render(<SendLaterMenu open onOpenChange={vi.fn()} onPick={vi.fn()} smart={asked} now={() => now} />);
+    await waitFor(() => expect(asked).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+    expect(screen.queryByRole("button", { name: /Smart send/ })).not.toBeNull();
+  });
+
+  it("a suggestion that came too close while the menu stayed open is no longer offered", async () => {
+    let clock = now;
+    const view = render(<SendLaterMenu open onOpenChange={vi.fn()} onPick={vi.fn()} smart={async () => ({ at, hour: 9, name: "Ann" })} now={() => clock} />);
+    await screen.findByRole("button", { name: /Smart send/ });
+    clock = new Date(new Date(at).getTime() - 30_000);
+    view.rerender(<SendLaterMenu open onOpenChange={vi.fn()} onPick={vi.fn()} smart={async () => ({ at, hour: 9, name: "Ann" })} now={() => clock} />);
+    expect(screen.queryByRole("button", { name: /Smart send/ })).toBeNull();
+  });
+
+  it("does not ask while the menu is closed", () => {
+    const smart = vi.fn(async () => null);
+    render(<SendLaterMenu open={false} onOpenChange={vi.fn()} onPick={vi.fn()} smart={smart} now={() => now} />);
+    expect(smart).not.toHaveBeenCalled();
+  });
+});
 
 describe("SendLaterMenu (slice 3l)", () => {
   it("a weekday morning offers every preset; a pick sends the local time as UTC ISO", () => {

@@ -6,6 +6,7 @@
 // keys, clamp strings, drop bad items and citations outside 1..n, and never
 // return raw output (resolution 13).
 import { htmlToText } from "./agent-text.ts";
+import { ASK_ACTIONS_TASK, parseAskActions, type AskAction } from "./ask-actions.ts";
 import { CATEGORIES } from "./categories.ts";
 import { sha256Hex } from "./compose.ts";
 import { removeControls, removeInvisible, truncateText } from "./html-entities.ts";
@@ -17,7 +18,7 @@ import { isAttribution } from "./quotes.ts";
 // Kinds, caps and rates
 // ---------------------------------------------------------------------------
 
-export const AI_KINDS = ["summary", "ask", "tasks", "categories", "digest", "draft"] as const;
+export const AI_KINDS = ["summary", "ask", "tasks", "categories", "digest", "draft", "write", "autodraft", "sort"] as const;
 export type AiKind = (typeof AI_KINDS)[number];
 
 /** Owner-click calls per kind per hour. */
@@ -28,6 +29,11 @@ export const AI_RATES: Record<AiKind, number> = {
   categories: 10,
   digest: 10,
   draft: 30,
+  write: 30,
+  // Not an owner click: replies drafted for new mail (AI writes mail); the day cap is the queue's.
+  autodraft: 10,
+  // Not an owner click either: one call sorts up to ten new messages (AI sorts the inbox).
+  sort: 20,
 };
 
 /** max_tokens per model call (spec resolution 9); ask has two calls. */
@@ -39,6 +45,9 @@ export const AI_MAX_OUTPUT_TOKENS = {
   categories: 2_048,
   digest: 4_096,
   draft: 4_096,
+  write: 4_096,
+  autodraft: 4_096,
+  sort: 2_048,
 } as const;
 
 /** Characters of framed input per kind. */
@@ -49,6 +58,10 @@ export const AI_INPUT_CAPS: Record<AiKind, number> = {
   categories: 30_000,
   digest: 30_000,
   draft: 8_000,
+  // The conversation frame only; the owner's block and the voice samples have their own limits (ai-write.ts).
+  write: 30_000,
+  autodraft: 20_000,
+  sort: 30_000,
 };
 
 /** Part of the summary cache key: a prompt change re-runs cached summaries. */
@@ -179,16 +192,19 @@ class Tally {
  */
 export function aiPart(
   message: AiSourceMessage,
-  options: { n: number; bodyChars: number; fromDomainOnly?: boolean },
+  options: { n: number; bodyChars: number; fromDomainOnly?: boolean; subjectChars?: number },
 ): { part: AiPart; hidden: number; cut: boolean } {
   const tally = new Tally();
-  const name = message.from.name !== null && message.from.name.trim() !== "" ? message.from.name : null;
+  const given = message.from.name !== null && message.from.name.trim() !== "" ? message.from.name : null;
+  // A display name that is an address would send the address where only the name and domain may go.
+  const name = options.fromDomainOnly === true && given !== null && given.includes("@") ? null : given;
   const domain = message.from.address.slice(message.from.address.lastIndexOf("@") + 1);
   const fromRaw = options.fromDomainOnly === true
     ? name !== null ? `${name} (${domain})` : domain
     : name ?? message.from.address;
   const from = oneLine(tally.take(redactSecrets(removeInvisible(fromRaw))));
-  const subject = oneLine(tally.take(redactSecrets(removeInvisible(message.subject))));
+  const wholeSubject = oneLine(tally.take(redactSecrets(removeInvisible(message.subject))));
+  const subject = options.subjectChars === undefined ? wholeSubject : truncateText(wholeSubject, options.subjectChars);
   const full = tally.take(redactSecrets(stripQuoted(plainBody(message.body)), { context: message.subject }));
   const cut = full.length > options.bodyChars;
   return {
@@ -253,12 +269,13 @@ function capParts(
   bodyChars: number,
   nonce: string,
   fromDomainOnly = false,
+  subjectChars?: number,
 ): { kept: { index: number; part: AiPart }[]; hidden: number; truncated: number } {
   const kept: { index: number; part: AiPart; hidden: number }[] = [];
   let used = 0;
   let truncated = 0;
   for (const index of order) {
-    const built = aiPart(messages[index]!, { n: 0, bodyChars, fromDomainOnly });
+    const built = aiPart(messages[index]!, { n: 0, bodyChars, fromDomainOnly, ...(subjectChars === undefined ? {} : { subjectChars }) });
     const size = framePart(built.part, nonce).length + 2;
     if (used + size <= cap) {
       kept.push({ index, part: built.part, hidden: built.hidden });
@@ -298,6 +315,39 @@ function finish(
     parts: capped.kept.map((k) => ({ n: k.part.n, messageId: messages[k.index]!.id, text: `${k.part.subject}\n${k.part.body}` })),
     notes: { hidden: capped.hidden, leftOut: options.leftOut ?? 0, truncated: capped.truncated },
   };
+}
+
+/**
+ * A conversation for a builder outside this module (AI writes mail): the
+ * framed emails within `cap` (the newest kept first), the parts and what
+ * was hidden or dropped. An empty conversation gives an empty frame.
+ */
+export function conversationFrame(
+  messages: readonly AiSourceMessage[],
+  cap: number,
+  nonce: string,
+): { framed: string; parts: AiBuild["parts"]; hidden: number; truncated: number } {
+  if (messages.length === 0) return { framed: "", parts: [], hidden: 0, truncated: 0 };
+  const capped = capParts(messages, newestFirst(messages.length), cap, cap, nonce);
+  const built = finish("", messages, capped, { nonce });
+  return { framed: built.input, parts: built.parts, hidden: capped.hidden, truncated: capped.truncated };
+}
+
+/**
+ * A list of unrelated emails for a builder outside this module (AI sorts
+ * the inbox): in the given order, the sender as name and domain, each body
+ * cut to `bodyChars` after redaction, within `cap`.
+ */
+export function listFrame(
+  messages: readonly AiSourceMessage[],
+  cap: number,
+  bodyChars: number,
+  nonce: string,
+  subjectChars?: number,
+): { framed: string; parts: AiBuild["parts"]; hidden: number; truncated: number } {
+  const capped = capParts(messages, inOrder(messages.length), cap, bodyChars, nonce, true, subjectChars);
+  const built = finish("", messages, capped, { nonce });
+  return { framed: built.input, parts: built.parts, hidden: capped.hidden, truncated: capped.truncated };
 }
 
 const newestFirst = (count: number) => Array.from({ length: count }, (_, i) => count - 1 - i);
@@ -352,7 +402,7 @@ export function askAnswerInput(
   return finish(
     "Answer the owner's question from the emails below only. Return " +
       '{"answer":"...","sources":[n],"found":true}: an answer of at most 2000 characters, the numbers n of the ' +
-      "emails it relies on (at most 10), and found false when the emails do not answer it.",
+      `emails it relies on (at most 10), and found false when the emails do not answer it. ${ASK_ACTIONS_TASK}`,
     list,
     capped,
     options,
@@ -637,12 +687,16 @@ export function parseAskPlan(output: string): AiParse<{ queries: string[] }> {
   }));
 }
 
-export type AskAnswer = { answer: string; sources: number[]; found: boolean };
+/** `actions`: what the owner could do next (Ask AI with actions); buttons only, none without an answer. */
+export type AskAnswer = { answer: string; sources: number[]; found: boolean; actions: AskAction[] };
 
 export function parseAskAnswer(output: string, n: number): AiParse<AskAnswer> {
-  return parseWith(output, (o) => {
+  return parseWith(output, (o, tally) => {
     const answer = text(o.answer, 2_000, true) ?? "";
-    return { answer, sources: citations(o.sources, n, 10), found: o.found === true && answer !== "" };
+    const found = o.found === true && answer !== "";
+    const proposed = parseAskActions(o.actions, n);
+    tally.dropped += proposed.dropped;
+    return { answer, sources: citations(o.sources, n, 10), found, actions: found ? proposed.actions : [] };
   });
 }
 
@@ -730,3 +784,6 @@ export function evidenceFound(evidence: string, redactedSource: string): boolean
 export function summarySourceHash(ids: readonly string[], contentHashes: readonly string[]): Promise<string> {
   return sha256Hex(new TextEncoder().encode(JSON.stringify([AI_PROMPT_VERSION, ids, contentHashes])));
 }
+
+// Shared with the builders and parsers of other modules (ai-write.ts).
+export { JSON_ONLY as AI_JSON_ONLY, citation as aiCitation, items as aiItems, parseWith as aiParseWith, text as aiText };

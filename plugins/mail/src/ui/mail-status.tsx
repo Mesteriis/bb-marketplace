@@ -40,6 +40,8 @@ export function problemShown(p: SyncProblem): string {
   switch (p.code) {
     case "auth_failed":
       return where + tx("The server refused the sign-in. Update the app password.");
+    case "grant_revoked":
+      return tx("Google no longer accepts this sign-in. Sign in to Google again.");
     case "credential_unreadable":
       return tx("The saved password cannot be read. Enter it again.");
     case "network":

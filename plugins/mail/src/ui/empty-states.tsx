@@ -85,6 +85,11 @@ export function EmptyFolder({ name }: { name: string }) {
   );
 }
 
+/** Split Inbox: the tab in view holds no conversation. */
+export function EmptyTab() {
+  return <EmptyState icon="MailOpen" title={tx("Nothing in this tab.")} />;
+}
+
 export function NoSearchResults({ query }: { query: string }) {
   return <EmptyState icon="Search" title={tx("No messages match \u201c{query}\u201d", { query })} />;
 }

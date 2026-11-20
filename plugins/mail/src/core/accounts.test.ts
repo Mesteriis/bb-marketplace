@@ -1,10 +1,13 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { imapConfigOf } from "./compose.ts";
+import { smtpConfigOf } from "./compose-outbox.ts";
 import type { NewAccountInput } from "./model.ts";
 import { ImapAuthError, SendError, type ImapConfig, type ImapGateway, type SecretVault } from "./ports.ts";
 import {
   AccountBusyError,
   addAccount,
   removeAccount,
+  saveGoogleAccount,
   setSmtp,
   SmtpSettingsRefused,
   testAccount,
@@ -134,6 +137,7 @@ describe("addAccount", () => {
       lastSyncAt: null,
       lastError: null,
       authFailed: false,
+      authKind: "password",
       smtpConfigured: true,
       snoozeFolder: null,
     });
@@ -194,6 +198,84 @@ describe("addAccount", () => {
   });
 });
 
+describe("saveGoogleAccount", () => {
+  const grant = { email: "Owner@Example.org", refreshToken: "invented-refresh-token", scopes: ["openid", "email", "https://mail.google.com/"] };
+
+  it("creates a Gmail account whose sealed credential is the refresh token, without connecting", async () => {
+    const account = await saveGoogleAccount(deps, grant);
+
+    expect(account).toMatchObject({
+      id: "acc_new_1",
+      email: "owner@example.org",
+      preset: "gmail",
+      host: "imap.gmail.com",
+      port: 993,
+      username: "owner@example.org",
+      authKind: "google",
+      authFailed: false,
+      smtpConfigured: true,
+    });
+    const stored = store.getAccount("acc_new_1")!;
+    expect(stored.passwordSealed).toBe(new MarkingVault().seal("invented-refresh-token"));
+    expect(stored.grantedScopes).toEqual(["openid", "email", "https://mail.google.com/"]);
+    expect(stored.smtp).toEqual({ host: "smtp.gmail.com", port: 465, security: "tls", username: null });
+    expect(stored.sentCopy).toBe("server");
+    expect(gateway.sessions).toEqual([]);
+  });
+
+  it("switches the account with the same address and keeps its id, history and settings", async () => {
+    store.saveAccount(
+      makeStoredAccount({
+        id: "acc_7",
+        preset: "gmail",
+        host: "imap.gmail.com",
+        displayName: "Owner",
+        createdAt: "2026-01-02T00:00:00.000Z",
+        lastSyncAt: "2026-11-14T09:00:00.000Z",
+        lastError: "Authentication failed",
+        authFailed: true,
+        snoozeFolder: "Snoozed",
+      }),
+    );
+
+    const account = await saveGoogleAccount(deps, grant);
+
+    expect(account).toMatchObject({ id: "acc_7", authKind: "google", authFailed: false, lastError: null, displayName: "Owner" });
+    expect(store.listAccounts()).toHaveLength(1);
+    expect(store.getAccount("acc_7")).toMatchObject({
+      createdAt: "2026-01-02T00:00:00.000Z",
+      lastSyncAt: "2026-11-14T09:00:00.000Z",
+      snoozeFolder: "Snoozed",
+      passwordSealed: new MarkingVault().seal("invented-refresh-token"),
+    });
+  });
+
+  it("refuses an address that is an active alias of another account", async () => {
+    store.saveAccount(makeStoredAccount({ id: "acc_9", email: "first@example.net", username: "first@example.net" }));
+    store.upsertIdentity({ accountId: "acc_9", address: "owner@example.org", displayName: null }, "2026-11-14T09:00:00.000Z");
+    await expect(saveGoogleAccount(deps, grant)).rejects.toThrow(
+      "This address is already a sending address of another account; remove it there first",
+    );
+    expect(store.listAccounts().map((a) => a.id)).toEqual(["acc_9"]);
+  });
+});
+
+describe("credential kind in connection settings", () => {
+  it("imapConfigOf and smtpConfigOf carry the account's kind", async () => {
+    await saveGoogleAccount(deps, { email: "owner@example.org", refreshToken: "invented-refresh-token", scopes: [] });
+    const stored = store.getAccount("acc_new_1")!;
+    expect(imapConfigOf(stored, deps.vault)).toEqual({
+      host: "imap.gmail.com",
+      port: 993,
+      user: "owner@example.org",
+      password: "invented-refresh-token",
+      authKind: "google",
+    });
+    expect(smtpConfigOf(stored, deps)).toMatchObject({ username: "owner@example.org", password: "invented-refresh-token", authKind: "google" });
+    expect(imapConfigOf(makeStoredAccount(), { seal: (p) => p, open: (s) => s })).toMatchObject({ authKind: "password" });
+  });
+});
+
 describe("addAccount: SMTP", () => {
   it("fills SMTP from the iCloud and Gmail presets without testing it", async () => {
     await addAccount(deps, input());
@@ -247,9 +329,24 @@ describe("testSmtp and setSmtp", () => {
   it("tests with the stored password and the IMAP username by default", async () => {
     expect(await testSmtp(deps, settings)).toEqual({ ok: true, reason: null });
     expect(transport.verified).toEqual([
-      { host: "smtp.example.org", port: 587, security: "starttls", username: "imap-login", password: PASSWORD },
+      { host: "smtp.example.org", port: 587, security: "starttls", username: "imap-login", password: PASSWORD, authKind: "password" },
     ]);
     expect(store.getAccount("acc_x")!.smtp).toEqual(STORED_SMTP);
+  });
+
+  it("a Google account takes no typed password: it would replace the grant", async () => {
+    const sealedGrant = new MarkingVault().seal("invented-refresh-token");
+    store.saveAccount(
+      makeStoredAccount({ id: "acc_g", email: "g@example.org", authKind: "google", passwordSealed: sealedGrant, smtp: STORED_SMTP }),
+    );
+    const typed = { ...settings, accountId: "acc_g", host: "smtp.example.org", password: "typed-app-password" };
+
+    expect(await testSmtp(deps, typed)).toEqual({ ok: false, reason: "This account signs in with Google and takes no password" });
+    expect(await setSmtp(deps, typed)).toEqual({ ok: false, reason: "This account signs in with Google and takes no password" });
+
+    expect(store.getAccount("acc_g")).toMatchObject({ passwordSealed: sealedGrant, authKind: "google" });
+    expect(gateway.sessions).toEqual([]);
+    expect(transport.verified).toEqual([]);
   });
 
   it("reports an unknown account and a refused login without echoing anything", async () => {
@@ -416,7 +513,7 @@ describe("toPublicAccount", () => {
     const account = toPublicAccount(stored);
     expect("passwordSealed" in account).toBe(false);
     expect(JSON.stringify(account)).not.toContain("sealed-secret");
-    const { passwordSealed: _omitted, smtp: _smtp, sentCopy: _sentCopy, signature: _signature, ...rest } = stored;
+    const { passwordSealed: _omitted, smtp: _smtp, sentCopy: _sentCopy, signature: _signature, grantedScopes: _scopes, ...rest } = stored;
     // The snooze folder's path shows in Mail settings (slice 3e).
     expect(account).toEqual({ ...rest, smtpConfigured: false });
   });

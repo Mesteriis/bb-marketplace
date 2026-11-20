@@ -12,7 +12,7 @@ import { subjectOrPlaceholder } from "./thread-list.tsx";
 import { dateLocale, msg, tx } from "./i18n/index.ts";
 
 export const LOG_PAGE = 50;
-export const TERMINAL_NOT_LOGGED = "Commands in your own terminal are not logged.";
+export const TERMINAL_NOT_LOGGED = msg("Commands in your own terminal are not logged.");
 export const MESSAGE_GONE = "no longer in Makosh Mail";
 const ALL_THREADS = "all";
 
@@ -24,6 +24,8 @@ const ACTORS: Record<LogActor, string> = {
   owner_ai: msg("You (AI)"),
   owner_bb: msg("You (BB)"),
   rule: msg("Mail rule"),
+  plugin: msg("Plugin"),
+  mcp: msg("Assistant outside BB"),
 };
 
 const TOOLS: Record<LogTool, string> = {
@@ -38,6 +40,7 @@ const TOOLS: Record<LogTool, string> = {
   handoff: msg("Handed an email over"),
   cli_search: msg("Searched mail (command)"),
   cli_read: msg("Read an email (command)"),
+  cli_accounts: msg("Listed accounts (command)"),
   ai_translate: msg("Translation"),
   ai_summary: msg("Summary"),
   ai_ask: msg("Ask"),
@@ -45,12 +48,24 @@ const TOOLS: Record<LogTool, string> = {
   ai_categories: msg("Suggested categories"),
   ai_digest: msg("Today summary"),
   ai_draft: msg("Improve"),
+  ai_write: msg("Write with AI"),
+  ai_autodraft: msg("Drafted reply"),
+  ai_sort: msg("Sorted new mail"),
+  ai_archive: msg("Archived by a label"),
   bb_thread: msg("BB thread"),
   bb_task: msg("Task"),
   project_save: msg("Saved to a project"),
   patch_handoff: msg("Patch to an agent"),
   incident: msg("Incident thread"),
   rule_thread: msg("Rule thread"),
+  plugin_request: msg("Plugin: asked for access"),
+  plugin_accounts: msg("Plugin: listed mailboxes"),
+  plugin_search: msg("Plugin: searched mail"),
+  plugin_read: msg("Plugin: read an email"),
+  plugin_contacts: msg("Plugin: listed contacts"),
+  plugin_invites: msg("Plugin: read invitations"),
+  plugin_propose: msg("Plugin: prepared a letter"),
+  plugin_token: msg("Plugin: took a Google key"),
 };
 
 const OUTCOMES: Record<LogOutcome, string> = {
@@ -150,7 +165,7 @@ export function AgentActivity({ load, clear, onOpen }: AgentActivityProps) {
   return (
     <div className="flex flex-col gap-3">
       <p className="text-sm text-muted-foreground">
-        {tx("What agents and AI features did with your mail, kept on this computer for 90 days. The log keeps ids and counts, never a query, subject or text.")} {TERMINAL_NOT_LOGGED}
+        {tx("What agents and AI features did with your mail, kept on this computer for 90 days. The log keeps ids and counts, never a query, subject or text.")} {tx(TERMINAL_NOT_LOGGED)}
       </p>
       <div className="flex flex-wrap items-center gap-2">
         <Select value={thread} onValueChange={setThread}>

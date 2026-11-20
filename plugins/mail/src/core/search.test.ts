@@ -240,3 +240,41 @@ describe("parseQuery: slice 3h operators", () => {
     });
   });
 });
+
+describe("parseQuery: operators for Inbox tabs", () => {
+  const cond = (raw: string) => parseQuery(raw).conditions;
+
+  it("reads the sender sets, dev, automated and invite, and their negations", () => {
+    expect(cond("from:vip from:Team from:KNOWN is:dev is:automated has:invite")).toEqual([
+      { field: "sender", value: "vip", negated: false },
+      { field: "sender", value: "team", negated: false },
+      { field: "sender", value: "known", negated: false },
+      { field: "is", value: "dev", negated: false },
+      { field: "is", value: "automated", negated: false },
+      { field: "has", value: "invite", negated: false },
+    ]);
+    expect(cond("-from:vip -is:dev -has:invite")).toEqual([
+      { field: "sender", value: "vip", negated: true },
+      { field: "is", value: "dev", negated: true },
+      { field: "has", value: "invite", negated: true },
+    ]);
+  });
+
+  it("keeps an address that only contains such a word as an ordinary sender", () => {
+    expect(cond("from:vipclient@example.com from:team@example.org")).toEqual([
+      { field: "from", value: "vipclient@example.com", negated: false },
+      { field: "from", value: "team@example.org", negated: false },
+    ]);
+  });
+
+  it("notes a value that is none of them", () => {
+    expect(parseQuery("is:newsletter -is:Newsletter").conditions).toEqual([
+      { field: "is", value: "newsletter", negated: false },
+      { field: "is", value: "newsletter", negated: true },
+    ]);
+    expect(parseQuery("is:devops has:invites").notes).toEqual([
+      { kind: "bad_value", term: "is:devops" },
+      { kind: "bad_value", term: "has:invites" },
+    ]);
+  });
+});

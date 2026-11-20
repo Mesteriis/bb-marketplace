@@ -3,6 +3,8 @@
 // recognised, and the binding rules. The values are BB plugin settings,
 // shown here read-only with where to change them; an invalid folder says
 // why (the server then uses the default).
+import { IntegrationSettings } from "./settings/section-settings.tsx";
+import type { PageSettingsPort } from "./settings/setting-controls.tsx";
 import { useCallback, useEffect, useState } from "react";
 import type { BindingView } from "../core/contract.ts";
 import { PROJECT_PATH_REFUSAL_TEXT, projectFolder } from "../core/project-paths.ts";
@@ -36,9 +38,22 @@ export interface BbIntegrationSettingsProps {
   call: BbCall;
   /** Where the plugin settings live. */
   hint: string;
+  /** The page's settings: with them the values change here, without them they are only shown. */
+  settings?: PageSettingsPort;
 }
 
-export function BbIntegrationSettings({ values, call, hint }: BbIntegrationSettingsProps) {
+export function BbIntegrationSettings({ values, call, hint, settings }: BbIntegrationSettingsProps) {
+  if (settings !== undefined) {
+    return (
+      <div className="flex flex-col gap-4">
+        <IntegrationSettings port={settings} />
+        <p className="text-xs text-muted-foreground">
+          {tx("Inside the project's own folder. Mail writes only new files there, never into .git or a folder that starts with a dot, and never opens or runs them.")}
+        </p>
+        <Bindings call={call} />
+      </div>
+    );
+  }
   const folders: [string, string, string][] = [
     ["Attachments saved to a project go to", values.attachmentFolder, "mail-attachments"],
     ["Patches saved to a project go to", values.patchFolder, "mail-patches"],
@@ -69,7 +84,7 @@ export function BbIntegrationSettings({ values, call, hint }: BbIntegrationSetti
             : tx("Dev notifications: off.")}
         </p>
       </section>
-      <p className="text-xs text-muted-foreground">{hint}</p>
+      <p className="text-xs text-muted-foreground">{tx(hint)}</p>
       <Bindings call={call} />
     </div>
   );

@@ -47,6 +47,29 @@ function list(overrides: Partial<Parameters<typeof ThreadList>[0]> = {}) {
   );
 }
 
+describe("ThreadList: read statuses", () => {
+  it("marks a conversation whose sent message was opened, with how often and when", () => {
+    vi.stubGlobal("IntersectionObserver", class { observe() {} unobserve() {} disconnect() {} });
+    render(list({ threads: [{ ...thread(1), opens: { count: 2, lastAt: "2026-11-20T14:05:00.000Z" } }, thread(2)] }));
+    const marks = screen.getAllByLabelText("Opened");
+    expect(marks).toHaveLength(1);
+    expect(marks[0]!.getAttribute("title")).toMatch(/^Opened 2 times \u00b7 last /);
+  });
+});
+
+describe("ThreadList: AI sorts the inbox", () => {
+  it("shows the model's line in place of the snippet (the snippet one hover away) and the AI labels, two and a count", () => {
+    vi.stubGlobal("IntersectionObserver", class { observe() {} unobserve() {} disconnect() {} });
+    render(list({ threads: [{ ...thread(1), aiSummary: "A vendor offers widgets.", aiLabels: ["Pitch", "Invoice", "Team"] }, thread(2)] }));
+    const line = screen.getByText("A vendor offers widgets.");
+    expect(line.getAttribute("title")).toBe("Invented preview 1");
+    expect(screen.queryByText("Invented preview 1")).toBeNull();
+    expect(screen.getByText("Invented preview 2")).toBeTruthy();
+    expect(screen.getAllByLabelText("AI labels")).toHaveLength(1);
+    expect(screen.getByLabelText("AI labels").textContent).toBe("PitchInvoice+1");
+  });
+});
+
 /** A stand-in observer the test fires by hand. */
 function stubObserver() {
   const observers: { fire: (isIntersecting: boolean) => void; options: IntersectionObserverInit | undefined; disconnected: boolean }[] = [];
@@ -70,6 +93,17 @@ function stubObserver() {
   vi.stubGlobal("IntersectionObserver", Stub);
   return observers;
 }
+
+describe("the focused row", () => {
+  it("draws no outline of its own: BB's page-wide focus outline would show as two lines cut by the row", () => {
+    render(list({ focusedId: "th-1" }));
+    const button = screen.getByRole("button", { name: /Invented subject 1/ });
+    // Inline, because BB's `:focus-visible` rule is outside any layer and beats a utility class.
+    expect(button.style.outlineStyle).toBe("none");
+    // The row itself shows where the keys are.
+    expect(button.closest("li")!.className).toContain("bg-state-hover");
+  });
+});
 
 describe("big lists (slice 3j)", () => {
   it("lets the browser skip rows that are far from view, at the row's own height", () => {

@@ -2,12 +2,14 @@
 // bold, and the quick filters above them (slice 3e). Slice 3h: rows drag
 // onto rail folders, message rows carry Gmail label chips and the "from the
 // server" mark, and a folder's end offers Load more days.
+import { OpenedMark } from "./open-line.tsx";
 import { createContext, useContext, useEffect, useRef, type CSSProperties, type DragEvent, type ReactNode } from "react";
 import type { AttachmentMatch, MailAddress, MessageSummary, ThreadSummary } from "../core/index.ts";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
+import { AiLabelChips } from "./ai-label-chips.tsx";
 import { CategoryFilters, RowCategory, categoryLabel, type Category } from "./category-chips.tsx";
 import { dragLabel, writeMovePayload } from "./drag-move.ts";
 import { LabelChips } from "./label-chips.tsx";
@@ -102,6 +104,7 @@ export function QuickFilters({
   onChange,
   categories = false,
   dev = false,
+  trailing,
 }: {
   filter: ListFilter;
   onChange: (next: ListFilter) => void;
@@ -109,6 +112,8 @@ export function QuickFilters({
   categories?: boolean;
   /** Slice 3g: Hide dev notifications, with devNotifications on. */
   dev?: boolean;
+  /** A quiet action at the row's end (Split Inbox: "Split the Inbox..."). */
+  trailing?: ReactNode;
 }) {
   return (
     <div role="group" aria-label={tx("Quick filters")} className="flex shrink-0 flex-wrap items-center gap-1 border-b border-border px-3 py-1">
@@ -159,6 +164,7 @@ export function QuickFilters({
           }}
         />
       ) : null}
+      {trailing !== undefined && trailing !== null ? <span className="ml-auto flex items-center">{trailing}</span> : null}
     </div>
   );
 }
@@ -195,6 +201,11 @@ interface RowProps {
   count?: number;
   subject: string;
   snippet: string;
+  /** AI sorts the inbox: the one line shown in place of the snippet, and the AI labels. */
+  aiSummary?: string | null | undefined;
+  aiLabels?: readonly string[] | undefined;
+  /** Read statuses: a sent message of the conversation was opened. */
+  opens?: { count: number; lastAt: string | null } | undefined;
   /** Short account label, shown in All accounts. */
   marker: string | null;
   /** When a snoozed conversation comes back (slice 3e). */
@@ -269,6 +280,9 @@ function Row({
   count,
   subject,
   snippet,
+  aiSummary,
+  aiLabels,
+  opens,
   marker,
   snoozedUntil = null,
   category,
@@ -282,6 +296,7 @@ function Row({
   onDragEnd,
 }: RowProps) {
   const label = subjectOrPlaceholder(subject);
+  const aiLine = (aiSummary ?? "").trim();
   // Search rows stay comfortable: their matches are the point.
   const compact = useContext(ListDensityContext) === "compact" && matches.length === 0 && !fromServer;
   return (
@@ -315,6 +330,9 @@ function Row({
         data-row-key={rowKey}
         onClick={onSelect}
         aria-current={selected ? "true" : undefined}
+        // Inline: BB's page-wide `:focus-visible` outline is outside any layer and beats the class;
+        // the row clips it to two vertical lines. The row's background shows the focus instead.
+        style={{ outlineStyle: "none" }}
         className={cn(
           "flex min-w-0 flex-1 flex-col pr-1 text-left outline-none",
           compact ? "gap-0 py-1" : "gap-0.5 py-2",
@@ -340,6 +358,8 @@ function Row({
             </span>
           ) : null}
           {category !== undefined ? <RowCategory category={category.category} suggestion={category.suggestion} /> : null}
+          {aiLabels !== undefined ? <AiLabelChips labels={aiLabels} /> : null}
+          <OpenedMark opens={opens} />
           {count !== undefined && count > 1 ? (
             <span className="shrink-0 text-xs text-muted-foreground">{count}</span>
           ) : null}
@@ -353,7 +373,14 @@ function Row({
           {unread ? <span className="sr-only">{tx("Unread:")} </span> : null}
           {label}
         </span>
-        {compact ? null : <span className="truncate pl-3.5 text-xs text-muted-foreground">{snippet}</span>}
+        {compact ? null : aiLine !== "" ? (
+          // The model's line says what the message is about; the snippet stays one hover away.
+          <span title={snippet} className="truncate pl-3.5 text-xs text-muted-foreground">
+            {aiLine}
+          </span>
+        ) : (
+          <span className="truncate pl-3.5 text-xs text-muted-foreground">{snippet}</span>
+        )}
         {labels.length > 0 || fromServer ? (
           <span className="flex min-w-0 items-center gap-1 pl-3.5">
             {fromServer ? (
@@ -484,6 +511,9 @@ export function ThreadList({
             count={thread.messageCount}
             subject={thread.subject}
             snippet={thread.snippet}
+            aiSummary={thread.aiSummary}
+            aiLabels={thread.aiLabels}
+            opens={thread.opens}
             marker={marker(thread.accountId)}
             snoozedUntil={thread.snoozedUntil}
             {...(categories ? { category: { category: thread.category, suggestion: thread.categorySuggestion } } : {})}

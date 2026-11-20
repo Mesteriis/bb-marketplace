@@ -4,7 +4,7 @@ import { installTestPluginRuntime } from "@get-bb/plugin-sdk/testing/app";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RelatedHit, SenderCard } from "../core/index.ts";
 import { RelatedMail, relatedReasonText } from "./related-mail.tsx";
-import { SenderCardDialog, senderSummary } from "./sender-card.tsx";
+import { SenderCardDialog, durationText, insightLines, senderSummary } from "./sender-card.tsx";
 
 installTestPluginRuntime();
 afterEach(cleanup);
@@ -24,6 +24,29 @@ const card: SenderCard = {
   projectId: null,
 };
 
+describe("sender insights", () => {
+  const insights = { theirReplyMinutes: 95, ownReplyMinutes: 20, usualFrom: 8, usualTo: 11, weekdaysOnly: true, mostWith: [{ address: "bob@example.com", count: 4 }, { address: "cat@example.net", count: 2 }] };
+
+  it("says when they write, how fast each side answers and who else is on the mail", () => {
+    expect(insightLines(insights)).toEqual([
+      "Usually writes 08:00\u201311:00, on weekdays",
+      "Answers you in about 2 h",
+      "You answer in about 20 min",
+      "Often with: bob@example.com, cat@example.net",
+    ]);
+    expect(insightLines({ ...insights, theirReplyMinutes: null, ownReplyMinutes: null, weekdaysOnly: false, usualFrom: 21, usualTo: 24, mostWith: [] })).toEqual(["Usually writes 21:00\u201300:00"]);
+    expect([durationText(0), durationText(59), durationText(60), durationText(47 * 60), durationText(48 * 60), durationText(5 * 1440)]).toEqual(["1 min", "59 min", "1 h", "47 h", "2 d", "5 d"]);
+  });
+
+  it("the card shows the block only when there are insights", () => {
+    const actions = { onSearch: vi.fn(), onFiles: vi.fn(), onOpenConversation: vi.fn() };
+    const view = render(<SenderCardDialog address="anna@example.org" card={{ ...card, insights }} error={null} actions={actions} onClose={vi.fn()} />);
+    expect(screen.getByRole("list", { name: "Insights" }).textContent).toContain("Answers you in about 2 h");
+    view.rerender(<SenderCardDialog address="anna@example.org" card={{ ...card, insights: null }} error={null} actions={actions} onClose={vi.fn()} />);
+    expect(screen.queryByRole("list", { name: "Insights" })).toBeNull();
+  });
+});
+
 describe("SenderCardDialog", () => {
   it("summarizes the sender and runs its actions", () => {
     const actions = { onSearch: vi.fn(), onFiles: vi.fn(), onOpenConversation: vi.fn(), onAlwaysShowImages: vi.fn(), onBlock: vi.fn() };
@@ -38,6 +61,17 @@ describe("SenderCardDialog", () => {
     expect(actions.onAlwaysShowImages).toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Block\u2026" }));
     expect(actions.onBlock).toHaveBeenCalled();
+  });
+
+  it("offers a tab of the sender's mail only where the page gives the action", () => {
+    const base = { onSearch: vi.fn(), onFiles: vi.fn(), onOpenConversation: vi.fn() };
+    const { unmount } = render(<SenderCardDialog address="anna@example.org" card={card} error={null} actions={base} onClose={vi.fn()} />);
+    expect(screen.queryByRole("button", { name: "Split by this sender" })).toBeNull();
+    unmount();
+    const onSplit = vi.fn();
+    render(<SenderCardDialog address="anna@example.org" card={card} error={null} actions={{ ...base, onSplit }} onClose={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Split by this sender" }));
+    expect(onSplit).toHaveBeenCalledTimes(1);
   });
 
   it("says when To was counted in recent mail only", () => {

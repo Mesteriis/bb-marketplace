@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { PAGE_SETTING_DEFAULTS } from "./src/core/page-settings.ts";
 import { act, cleanup, createEvent, fireEvent, waitFor, within } from "@testing-library/react";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { useEffect, useMemo, useState } from "react";
@@ -246,10 +247,11 @@ function mailRpc(overrides: Record<string, (input: never) => unknown> = {}) {
   };
 }
 
-function render(rpc: Record<string, unknown>, subPath = "") {
+function render(rpc: Record<string, unknown>, subPath = "", host: { openUrl?: (url: string) => boolean } = {}) {
   return renderSlot({ component: MailWithSidebar }, { subPath }, {
     rpc: rpc as never,
     composer: { scope: { kind: "new-thread", projectId: null } },
+    ...host,
   });
 }
 
@@ -279,6 +281,137 @@ describe("Mail page", () => {
     expect(password.type).toBe("password");
     expect(slot.getByRole("button", { name: "Test" })).toBeTruthy();
     expect(slot.getByRole("button", { name: "Save" })).toBeTruthy();
+  });
+
+  it("retries the saved password of a stopped account from its banner", async () => {
+    let stopped = true;
+    const slot = render(
+      mailRpc({
+        status_get: () =>
+          status({
+            accounts: [stopped ? { ...account, authFailed: true, lastError: "Authentication failed" } : account],
+          }),
+        accounts_retry_sign_in: () => {
+          stopped = false;
+          return { result: "resumed" };
+        },
+      }),
+    );
+
+    fireEvent.click(await slot.findByRole("button", { name: "Try the saved password" }));
+
+    await waitFor(() => expect(slot.queryByRole("alert")).toBeNull());
+    expect(callsTo(slot, "accounts_retry_sign_in").map((call) => call.input)).toEqual([{ accountId: "acc-1" }]);
+  });
+
+  it("keeps the banner when the server refuses the saved password again", async () => {
+    const slot = render(
+      mailRpc({
+        status_get: () => status({ accounts: [{ ...account, authFailed: true, lastError: "Authentication failed" }] }),
+        accounts_retry_sign_in: () => ({ result: "refused" }),
+      }),
+    );
+
+    fireEvent.click(await slot.findByRole("button", { name: "Try the saved password" }));
+
+    await waitFor(() => expect(callsTo(slot, "accounts_retry_sign_in")).toHaveLength(1));
+    expect(slot.getByRole("alert").textContent).toContain("The server refused the sign-in.");
+    expect(slot.getByRole("button", { name: "Update app password" })).toBeTruthy();
+  });
+
+  describe("Google sign-in", () => {
+    const revoked: Account = {
+      ...account,
+      preset: "gmail",
+      authKind: "google",
+      authFailed: true,
+      lastError: "Google sign-in expired",
+    };
+
+    it("a revoked grant offers only a new Google sign-in, which opens Google and waits for the account", async () => {
+      let signedIn = false;
+      let polls = 0;
+      const slot = render(
+        mailRpc({
+          status_get: () =>
+            status({ googleSignIn: true, accounts: [signedIn ? { ...revoked, authFailed: false, lastError: null } : revoked] }),
+          google_sign_in_start: () => ({ flowId: "flow-1", url: "https://accounts.google.com/o/oauth2/v2/auth?state=invented" }),
+          google_sign_in_status: () => {
+            polls += 1;
+            if (polls < 2) return { state: "pending" };
+            signedIn = true;
+            return { state: "done", accountId: "acc-1" };
+          },
+        }),
+        "",
+        { openUrl: () => true },
+      );
+
+      const banner = await slot.findByRole("alert");
+      expect(banner.textContent).toContain("Google no longer accepts this sign-in.");
+      expect(slot.queryByRole("button", { name: "Try the saved password" })).toBeNull();
+      expect(slot.queryByRole("button", { name: "Update app password" })).toBeNull();
+      fireEvent.click(slot.getByRole("button", { name: "Sign in to Google" }));
+      expect(slot.queryByLabelText("App password")).toBeNull();
+      fireEvent.click(await slot.findByRole("button", { name: "Sign in with Google" }));
+
+      await waitFor(() =>
+        expect(slot.inspection.navigateCalls).toContainEqual({
+          method: "openUrl",
+          url: "https://accounts.google.com/o/oauth2/v2/auth?state=invented",
+        }),
+      );
+      expect(callsTo(slot, "google_sign_in_start").map((call) => call.input)).toEqual([{ email: "owner@example.org" }]);
+      expect(await slot.findByRole("button", { name: "Waiting for Google\u2026" })).toBeTruthy();
+      await waitFor(
+        () => expect(callsTo(slot, "google_sign_in_status").map((call) => call.input)).toEqual([{ flowId: "flow-1" }, { flowId: "flow-1" }]),
+        { timeout: 6000 },
+      );
+      // The form closes and the account's banner goes with the stop.
+      await waitFor(() => expect(slot.queryByRole("button", { name: "Waiting for Google\u2026" })).toBeNull());
+      await waitFor(() => expect(slot.queryByRole("alert")).toBeNull());
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+      expect(callsTo(slot, "google_sign_in_status")).toHaveLength(2);
+    }, 10_000);
+
+    it("says why a sign-in failed and stops asking", async () => {
+      const slot = render(
+        mailRpc({
+          status_get: () => status({ googleSignIn: true, accounts: [revoked] }),
+          google_sign_in_start: () => ({ flowId: "flow-1", url: "https://accounts.google.com/o/oauth2/v2/auth?state=invented" }),
+          google_sign_in_status: () => ({ state: "failed", reason: "mismatch" }),
+        }),
+        "",
+        { openUrl: () => true },
+      );
+      fireEvent.click(await slot.findByRole("button", { name: "Sign in to Google" }));
+      fireEvent.click(await slot.findByRole("button", { name: "Sign in with Google" }));
+
+      expect(await slot.findByText("That Google account is a different address.", {}, { timeout: 4000 })).toBeTruthy();
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+      expect(callsTo(slot, "google_sign_in_status")).toHaveLength(1);
+      expect(slot.getByRole("button", { name: "Sign in with Google" })).toBeTruthy();
+    }, 10_000);
+
+    it("says so when BB cannot open the Google page, and asks nothing more", async () => {
+      const slot = render(
+        mailRpc({
+          status_get: () => status({ googleSignIn: true, accounts: [revoked] }),
+          google_sign_in_start: () => ({ flowId: "flow-1", url: "https://accounts.google.com/o/oauth2/v2/auth?state=invented" }),
+          google_sign_in_status: () => ({ state: "pending" }),
+        }),
+      );
+      fireEvent.click(await slot.findByRole("button", { name: "Sign in to Google" }));
+      fireEvent.click(await slot.findByRole("button", { name: "Sign in with Google" }));
+      expect(await slot.findByText("This link cannot be opened here.")).toBeTruthy();
+      expect(callsTo(slot, "google_sign_in_status")).toHaveLength(0);
+    });
+
+    it("without a client in the plugin a stopped Google account says so and offers nothing to press", async () => {
+      const slot = render(mailRpc({ status_get: () => status({ accounts: [revoked] }) }));
+      expect((await slot.findByRole("alert")).textContent).toContain("Google no longer accepts this sign-in.");
+      expect(slot.queryByRole("button", { name: "Sign in to Google" })).toBeNull();
+    });
   });
 
   it("tests and saves an account, then clears the password", async () => {
@@ -2846,6 +2979,7 @@ describe("Mail in BB's sidebar", () => {
 
 function draftView(overrides: Partial<DraftView> = {}): DraftView {
   return {
+    preparedBy: null,
     id: "d-1",
     accountId: "acc-1",
     kind: "new",
@@ -3540,10 +3674,66 @@ describe("Mail settings (slice 3d)", () => {
       ...overrides,
     });
 
-  it("the gear in the rail opens the dialog; Add address calls identity_add and reloads the list", async () => {
+  it("the gear in the rail goes to the settings page, and no dialog opens", async () => {
     const slot = render(settingsRpc());
     fireEvent.click(await folderRail(slot).findByRole("button", { name: "Mail settings" }));
-    const dialog = await slot.findByRole("dialog", { name: "Mail settings" });
+    expect(slot.inspection.navigateCalls.at(-1)).toMatchObject({ path: "mail", options: { subPath: "settings" } });
+    expect(slot.queryByRole("dialog", { name: "Mail settings" })).toBeNull();
+  });
+
+  it("at settings/plugin_access loads the plugins and their requests, and a grant goes through the owner's method", async () => {
+    const slot = render(
+      settingsRpc({
+        plugin_grants_list: () => ({
+          plugins: [{ pluginId: "crm", grants: [], lastCallAt: null }],
+          requests: [{ pluginId: "calendar", rights: ["mail.read"], reason: "Calendar sync", askedAt: "2026-11-19T10:00:00.000Z" }],
+        }),
+        plugin_grant_set: () => ({ ok: true }),
+      }),
+      "settings/plugin_access",
+    );
+    const page = await slot.findByRole("region", { name: "Mail settings" });
+    const crm = await within(page).findByRole("listitem", { name: "crm" });
+    expect(within(page).getByText("Calendar sync")).toBeTruthy();
+    const first = within(crm).getAllByRole("switch")[0]!;
+    fireEvent.click(first);
+    await waitFor(() => expect(callsTo(slot, "plugin_grant_set")).toHaveLength(1));
+    expect(callsTo(slot, "plugin_grant_set")[0]!.input).toMatchObject({ pluginId: "crm", right: "mail.read", on: true });
+  });
+
+  it("opens without a credential key and says so in Local data", async () => {
+    const slot = render(settingsRpc({ status_get: () => status({ vaultReady: false, accounts: [] }) }), "settings/local");
+    const page = await slot.findByRole("region", { name: "Mail settings" });
+    expect(within(page).getByRole("alert").textContent).toContain("The credential key is not set");
+  });
+
+  it("opens without an account, and Add an account there opens the form", async () => {
+    const slot = render(settingsRpc({ status_get: () => status({ accounts: [], unreadCount: 0 }) }), "settings/accounts");
+    const page = await slot.findByRole("region", { name: "Mail settings" });
+    expect(within(page).getByText("No mail account yet.")).toBeTruthy();
+    fireEvent.click(within(page).getByRole("button", { name: "Add an account" }));
+    expect(await slot.findByLabelText("App password")).toBeTruthy();
+  });
+
+  it("an unknown section in the address opens the first section, not a blank page", async () => {
+    const slot = render(settingsRpc(), "settings/nope");
+    const page = await slot.findByRole("region", { name: "Mail settings" });
+    expect(within(page).getByRole("link", { name: "Mailboxes and sign-in" }).getAttribute("aria-current")).toBe("page");
+  });
+
+  it("a menu item and Mail navigate by address", async () => {
+    const slot = render(settingsRpc(), "settings/addresses");
+    const page = await slot.findByRole("region", { name: "Mail settings" });
+    fireEvent.click(within(page).getByRole("link", { name: "Templates" }));
+    expect(slot.inspection.navigateCalls.at(-1)).toMatchObject({ path: "mail", options: { subPath: "settings/templates" } });
+    fireEvent.click(within(page).getByRole("button", { name: "Mail" }));
+    expect(slot.inspection.navigateCalls.at(-1)).toMatchObject({ path: "mail" });
+    expect(String((slot.inspection.navigateCalls.at(-1) as { options?: { subPath?: string } }).options?.subPath ?? "")).not.toContain("settings");
+  });
+
+  it("the page lists the addresses; Add address calls identity_add and reloads the list", async () => {
+    const slot = render(settingsRpc(), "settings/addresses");
+    const dialog = await slot.findByRole("region", { name: "Mail settings" });
     expect(await within(dialog).findByText("Own address")).toBeTruthy();
     expect(callsTo(slot, "identities_list").at(-1)?.input).toEqual({ accountId: null });
     await waitFor(() => expect(callsTo(slot, "identity_suggestions")[0]?.input).toEqual({ accountId: "acc-1" }));
@@ -3556,12 +3746,10 @@ describe("Mail settings (slice 3d)", () => {
     await waitFor(() => expect(callsTo(slot, "identities_list").length).toBeGreaterThan(before));
   });
 
-  it("SMTP settings… closes it and opens the account's SMTP dialog", async () => {
-    const slot = render(settingsRpc());
-    fireEvent.click(await folderRail(slot).findByRole("button", { name: "Mail settings" }));
-    const dialog = await slot.findByRole("dialog", { name: "Mail settings" });
-    fireEvent.click(within(dialog).getByRole("button", { name: "SMTP settings…" }));
-    await waitFor(() => expect(slot.queryByRole("dialog", { name: "Mail settings" })).toBeNull());
+  it("SMTP settings… opens the account's SMTP dialog over the page", async () => {
+    const slot = render(settingsRpc(), "settings/accounts");
+    const dialog = await slot.findByRole("region", { name: "Mail settings" });
+    fireEvent.click(await within(dialog).findByRole("button", { name: "SMTP settings…" }));
     expect(await slot.findByRole("dialog", { name: /SMTP/ })).toBeTruthy();
   });
 });
@@ -4091,10 +4279,9 @@ describe("New-mail toasts, settings and agent triage (slice 3e)", () => {
           return { ok: true };
         },
       }),
+      "settings/inbox",
     );
-    fireEvent.click(await folderRail(slot).findByRole("button", { name: "Mail settings" }));
-    const dialog = within(await slot.findByRole("dialog", { name: "Mail settings" }));
-    fireEvent.click(dialog.getByRole("tab", { name: "Inbox" }));
+    const dialog = within(await slot.findByRole("region", { name: "Mail settings" }));
     fireEvent.click(await dialog.findByRole("button", { name: "Unblock promo@shop.example.com" }));
     await act(async () => {
       fireEvent.click(within(dialog.getByRole("alertdialog")).getByRole("button", { name: "Unblock" }));
@@ -4121,10 +4308,9 @@ describe("New-mail toasts, settings and agent triage (slice 3e)", () => {
         }),
         snooze_folder_use: () => ({ ok: true }),
       }),
+      "settings/inbox",
     );
-    fireEvent.click(await folderRail(slot).findByRole("button", { name: "Mail settings" }));
-    const dialog = within(await slot.findByRole("dialog", { name: "Mail settings" }));
-    fireEvent.click(dialog.getByRole("tab", { name: "Inbox" }));
+    const dialog = within(await slot.findByRole("region", { name: "Mail settings" }));
     fireEvent.click(dialog.getByRole("button", { name: "Change the snoozed folder of owner@example.org" }));
     const picker = within(await slot.findByRole("dialog", { name: "Snoozed folder" }));
     const list = within(await picker.findByRole("list", { name: "Folders" }));
@@ -4471,8 +4657,8 @@ describe("Slice 3f: Today, Tasks, Mail settings and day notices", () => {
     expect(slot.inspection.navigateCalls.at(-1)).toMatchObject({ path: "mail", options: { subPath: "tasks" } });
   });
 
-  it("Mail settings has AI access, Agent activity and AI features", async () => {
-    const slot = renderSlot({ component: MailWithSidebar }, { subPath: "" }, {
+  const aiSettingsSlot = (subPath: string) =>
+    renderSlot({ component: MailWithSidebar }, { subPath }, {
       rpc: mailRpc({
         reminders_due: () => ({ reminders: [] }),
         identities_list: () => ({ identities: [] }),
@@ -4480,17 +4666,81 @@ describe("Slice 3f: Today, Tasks, Mail settings and day notices", () => {
         block_list: () => ({ rules: [] }),
         ai_scope_get: () => ({ accounts: [], senders: [] }),
         agent_log_list: () => ({ entries: [], next: null }),
+        settings_get: () => ({ ...PAGE_SETTING_DEFAULTS, morningDigest: true, digestTime: "07:30", agentTools: true }),
+        settings_set: (patch: Record<string, unknown>) => ({ ...PAGE_SETTING_DEFAULTS, morningDigest: true, digestTime: "07:30", ...patch }),
       }) as never,
       settings: { mailCategories: false, morningDigest: true, digestTime: "07:30" },
       composer: { scope: { kind: "new-thread", projectId: null } },
     });
-    fireEvent.click(await slot.findByRole("button", { name: "Mail settings" }));
-    fireEvent.click(await slot.findByRole("tab", { name: "AI access" }));
+
+  it("the settings page at settings/ai_access shows the agent switches read-only above what is shared", async () => {
+    const slot = aiSettingsSlot("settings/ai_access");
     expect(await slot.findByText("Spam and Trash are never shared, whatever you choose here.")).toBeTruthy();
-    fireEvent.click(slot.getByRole("tab", { name: "Agent activity" }));
-    expect(await slot.findByText("Nothing yet.")).toBeTruthy();
-    fireEvent.click(slot.getByRole("tab", { name: "AI features" }));
-    expect(await slot.findByText("On: the Today digest is ready at 07:30.")).toBeTruthy();
+    expect(await slot.findByText("Search and read mail in every thread")).toBeTruthy();
+    expect(slot.queryByRole("switch", { name: "Search and read mail in every thread" })).toBeNull();
+  });
+
+  it("shows BB's live settings, not an older answer of settings_get", async () => {
+    const slot = renderSlot({ component: MailWithSidebar }, { subPath: "settings/ai" }, {
+      rpc: mailRpc({
+        reminders_due: () => ({ reminders: [] }),
+        identities_list: () => ({ identities: [] }),
+        templates_list: () => ({ templates: [] }),
+        settings_get: () => ({ ...PAGE_SETTING_DEFAULTS, digestTime: "09:00", replyReminderDays: 9 }),
+      }) as never,
+      settings: { digestTime: "07:30", replyReminderDays: 4 },
+      composer: { scope: { kind: "new-thread", projectId: null } },
+    });
+    const time = (await slot.findByLabelText("Digest time")) as HTMLInputElement;
+    await waitFor(() => expect(callsTo(slot as never, "settings_get")).toHaveLength(1));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(time.value).toBe("07:30");
+    expect((slot.getByLabelText("Remind about a reply after") as HTMLInputElement).value).toBe("4");
+  });
+
+  it("a value out of range is refused in the row before anything is sent, and a refused write says so", async () => {
+    const slot = renderSlot({ component: MailWithSidebar }, { subPath: "settings/ai" }, {
+      rpc: mailRpc({
+        reminders_due: () => ({ reminders: [] }),
+        identities_list: () => ({ identities: [] }),
+        templates_list: () => ({ templates: [] }),
+        settings_get: () => PAGE_SETTING_DEFAULTS,
+        settings_set: () => {
+          throw new Error("BB did not save this setting");
+        },
+      }) as never,
+      settings: {},
+      composer: { scope: { kind: "new-thread", projectId: null } },
+    });
+    const days = (await slot.findByLabelText("Remind about a reply after")) as HTMLInputElement;
+    await waitFor(() => expect(days.disabled).toBe(false));
+    fireEvent.change(days, { target: { value: "99" } });
+    fireEvent.blur(days);
+    expect(await slot.findByText("This value is not allowed here.")).toBeTruthy();
+    expect(callsTo(slot as never, "settings_set")).toHaveLength(0);
+    expect(days.value).toBe("3");
+
+    fireEvent.change(days, { target: { value: "5" } });
+    fireEvent.blur(days);
+    expect(await slot.findByText("BB did not save this setting")).toBeTruthy();
+    expect(callsTo(slot as never, "settings_set")).toHaveLength(1);
+    await waitFor(() => expect(days.value).toBe("3"));
+  });
+
+  it("the settings page at settings/activity shows the log", async () => {
+    expect(await aiSettingsSlot("settings/activity").findByText("Nothing yet.")).toBeTruthy();
+  });
+
+  it("the settings page at settings/ai changes a setting in place through settings_set", async () => {
+    const slot = aiSettingsSlot("settings/ai");
+    const digest = await slot.findByRole("switch", { name: "Daily Today digest" });
+    await waitFor(() => expect(digest.getAttribute("aria-checked")).toBe("true"));
+    expect((slot.getByLabelText("Digest time") as HTMLInputElement).value).toBe("07:30");
+    expect(slot.queryByText(/Change it in BB Settings/)).toBeNull();
+    fireEvent.click(digest);
+    await waitFor(() => expect(callsTo(slot as never, "settings_set").map((call) => call.input)).toEqual([{ morningDigest: false }]));
+    expect(await slot.findByText("Saved")).toBeTruthy();
+    expect(digest.getAttribute("aria-checked")).toBe("false");
   });
 });
 
@@ -4666,16 +4916,28 @@ describe("Slice 3g: views, BB surfaces and settings", () => {
     expect(callsTo(slot, "bb_thread_prepare")[0]?.input).toEqual({ messageId: "m-new", include: "message", projectId: "p-api", instruction: "Find the test" });
   });
 
-  it("Mail settings show BB integration and Rules", async () => {
-    const slot = renderWith(mailRpc({ bindings_list: () => ({ bindings: [] }), identities_list: () => ({ identities: [] }), templates_list: () => ({ templates: [] }) }), {
-      attachmentFolder: "inbox-files",
-    });
-    await slot.findByRole("button", { name: /Quarterly plan/ });
-    fireEvent.click(slot.getByRole("button", { name: /Mail settings|Settings/ }));
-    fireEvent.click(await slot.findByRole("tab", { name: "BB integration" }));
-    expect(await slot.findByText("Attachments saved to a project go to inbox-files/")).toBeTruthy();
-    fireEvent.click(slot.getByRole("tab", { name: "Rules" }));
-    expect(slot.getByText("Off: no rule runs.")).toBeTruthy();
+  const bbSettingsSlot = (subPath: string) =>
+    renderWith(
+      mailRpc({
+        bindings_list: () => ({ bindings: [] }),
+        identities_list: () => ({ identities: [] }),
+        templates_list: () => ({ templates: [] }),
+        settings_get: () => ({ ...PAGE_SETTING_DEFAULTS, attachmentFolder: "inbox-files" }),
+      }),
+      { attachmentFolder: "inbox-files" },
+      subPath,
+    );
+
+  it("the settings page at settings/bb shows the folders as fields", async () => {
+    const slot = bbSettingsSlot("settings/bb");
+    const field = (await slot.findByLabelText("Folder for attachments saved into a project")) as HTMLInputElement;
+    await waitFor(() => expect(field.value).toBe("inbox-files"));
+  });
+
+  it("the settings page at settings/rules has the rules switch", async () => {
+    const slot = bbSettingsSlot("settings/rules");
+    const rules = await slot.findByRole("switch", { name: "Run my rules on new Inbox mail" });
+    await waitFor(() => expect(rules.getAttribute("aria-checked")).toBe("false"));
   });
 });
 
@@ -5945,5 +6207,119 @@ describe("slice 3j: the page in Russian", () => {
     await slot.findByText("Tickets");
     expect(pageRoot(slot as never).getAttribute("lang")).toBe("en");
     expect(slot.getByRole("button", { name: "Sync now" })).toBeTruthy();
+  });
+});
+
+describe("Split Inbox tabs", () => {
+  const TABS = {
+    inboxUnread: 5,
+    tabs: [
+      { id: "t-vip", name: "VIP", query: "from:vip", unread: 2, broken: false },
+      { id: "t-team", name: "Team", query: "from:team", unread: 0, broken: false },
+    ],
+  };
+  const tabsRpc = (overrides: Record<string, (input: never) => unknown> = {}) =>
+    folderRpc({ inbox_tabs_list: () => TABS, ...overrides });
+  const lastSubPath = (slot: ReturnType<typeof render>) =>
+    (slot.inspection.navigateCalls.at(-1) as { options?: { subPath?: string } } | undefined)?.options?.subPath;
+
+  it("shows the tabs over the Inbox and lists a tab's conversations from its address", async () => {
+    const slot = render(tabsRpc(), hostEncode("v/acc-1/INBOX/s/t-vip"));
+    const row = within(await slot.findByRole("tablist", { name: "Inbox tabs" }));
+    expect(row.getAllByRole("tab").map((el) => el.textContent)).toEqual(["Inbox5 unread", "VIP2 unread", "Team"]);
+    expect(row.getByRole("tab", { name: /^VIP/ }).getAttribute("aria-selected")).toBe("true");
+    expect(callsTo(slot, "threads_list").at(-1)?.input).toMatchObject({ scope: { kind: "account", folder: "INBOX" }, tabId: "t-vip" });
+    expect(callsTo(slot, "inbox_tabs_list").at(-1)?.input).toEqual({ scope: { kind: "account", accountId: "acc-1", folder: "INBOX" } });
+  });
+
+  it("the plain Inbox asks for no tab, and another folder shows no row", async () => {
+    const slot = render(tabsRpc());
+    await slot.findByRole("tablist", { name: "Inbox tabs" });
+    expect(callsTo(slot, "threads_list").at(-1)?.input).not.toHaveProperty("tabId");
+    await openFolder(slot, /Spam/);
+    await waitFor(() => expect(slot.queryByRole("tablist")).toBeNull());
+    expect(callsTo(slot, "threads_list").at(-1)?.input).not.toHaveProperty("tabId");
+  });
+
+  it("a click and the ] and [ keys walk the tabs through the address", async () => {
+    const slot = render(tabsRpc());
+    const row = within(await slot.findByRole("tablist", { name: "Inbox tabs" }));
+    fireEvent.click(row.getByRole("tab", { name: /^VIP/ }));
+    await waitFor(() => expect(lastSubPath(slot)).toBe("v/acc-1/INBOX/s/t-vip"));
+    await waitFor(() => expect(callsTo(slot, "threads_list").at(-1)?.input).toMatchObject({ tabId: "t-vip" }));
+    pageRoot(slot).focus();
+    press(pageRoot(slot), { key: "]", code: "BracketRight" });
+    await waitFor(() => expect(lastSubPath(slot)).toBe("v/acc-1/INBOX/s/t-team"));
+    press(pageRoot(slot), { key: "]", code: "BracketRight" });
+    await waitFor(() => expect(lastSubPath(slot)).toBe("v/acc-1/INBOX"));
+    press(pageRoot(slot), { key: "[", code: "BracketLeft" });
+    await waitFor(() => expect(lastSubPath(slot)).toBe("v/acc-1/INBOX/s/t-team"));
+    // The key's position works on a layout where it types a letter.
+    press(pageRoot(slot), { key: "х", code: "BracketLeft" });
+    await waitFor(() => expect(lastSubPath(slot)).toBe("v/acc-1/INBOX/s/t-vip"));
+  });
+
+  it("a deleted tab in the address shows the Inbox tab", async () => {
+    const slot = render(tabsRpc(), hostEncode("v/acc-1/INBOX/s/t-gone"));
+    const row = within(await slot.findByRole("tablist", { name: "Inbox tabs" }));
+    expect(row.getByRole("tab", { name: /^Inbox/ }).getAttribute("aria-selected")).toBe("true");
+    await slot.findByText("Lunch");
+  });
+
+  it("without tabs the Inbox offers to split it, and the library adds a tab", async () => {
+    let tabs: typeof TABS.tabs = [];
+    const slot = render(
+      tabsRpc({
+        inbox_tabs_list: () => ({ inboxUnread: 5, tabs }),
+        inbox_tab_save: ({ name, query }: { name: string; query: string }) => {
+          tabs = [{ id: "t-new", name, query, unread: 0, broken: false }];
+          return { tab: { id: "t-new", name, query } };
+        },
+      }),
+    );
+    fireEvent.click(await slot.findByRole("button", { name: "Split the Inbox…" }));
+    fireEvent.click(await slot.findByRole("button", { name: "Team" }));
+    await waitFor(() => expect(callsTo(slot, "inbox_tab_save").at(-1)?.input).toEqual({ name: "Team", query: "from:team" }));
+    const row = within(await slot.findByRole("tablist", { name: "Inbox tabs" }));
+    expect(row.getByRole("tab", { name: "Team" })).toBeTruthy();
+    expect(slot.queryByRole("button", { name: "Split the Inbox…" })).toBeNull();
+  });
+
+  it("an empty tab says so and keeps the row", async () => {
+    const slot = render(
+      tabsRpc({ threads_list: ({ tabId }: { tabId?: string }) => ({ threads: tabId === "t-vip" ? [] : [threadA, threadB], nextCursor: null }) }),
+      hostEncode("v/acc-1/INBOX/s/t-vip"),
+    );
+    expect(await slot.findByText("Nothing in this tab.")).toBeTruthy();
+    expect(slot.getByRole("tablist", { name: "Inbox tabs" })).toBeTruthy();
+  });
+
+  it("a change of the tabs lists the tab in view again (Other depends on the others)", async () => {
+    const slot = render(tabsRpc({ inbox_tab_save: () => ({ tab: { id: "t-new", name: "Other", query: "is:other" } }) }), hostEncode("v/acc-1/INBOX/s/t-vip"));
+    await slot.findByRole("tablist", { name: "Inbox tabs" });
+    await slot.findByText("Lunch");
+    const before = callsTo(slot, "threads_list").length;
+    fireEvent.click(slot.getByRole("button", { name: "Add a tab" }));
+    fireEvent.click(await slot.findByRole("button", { name: "Other" }));
+    await waitFor(() => expect(callsTo(slot, "inbox_tab_save")).toHaveLength(1));
+    await waitFor(() => expect(callsTo(slot, "threads_list").length).toBe(before + 1));
+    expect(callsTo(slot, "threads_list").at(-1)?.input).toMatchObject({ tabId: "t-vip" });
+  });
+
+  it("removing the tab in view goes back to the Inbox tab", async () => {
+    const slot = render(tabsRpc({ inbox_tab_delete: () => ({ ok: true }) }), hostEncode("v/acc-1/INBOX/s/t-vip"));
+    fireEvent.click(await slot.findByRole("button", { name: "VIP options" }));
+    fireEvent.click(await slot.findByRole("button", { name: "Remove tab" }));
+    await waitFor(() => expect(callsTo(slot, "inbox_tab_delete").at(-1)?.input).toEqual({ id: "t-vip" }));
+    await waitFor(() => expect(lastSubPath(slot)).toBe("v/acc-1/INBOX"));
+  });
+
+  it("a search offers to make a tab from its text", async () => {
+    const slot = render(tabsRpc({ search: () => ({ hits: [], nextCursor: null, notes: [], attachmentMatches: [] }) }));
+    await slot.findByRole("tablist", { name: "Inbox tabs" });
+    fireEvent.change(await slot.findByLabelText("Search mail"), { target: { value: "from:ada@example.com" } });
+    fireEvent.submit(slot.getByRole("search"));
+    fireEvent.click(await slot.findByRole("button", { name: "Make a tab" }));
+    expect(((await slot.findByRole("textbox", { name: "Condition" })) as HTMLInputElement).value).toBe("from:ada@example.com");
   });
 });

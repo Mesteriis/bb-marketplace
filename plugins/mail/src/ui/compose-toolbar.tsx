@@ -1,6 +1,7 @@
 // The composer's formatting toolbar: bold, italic, underline, lists, link,
 // quote, code block and clear formatting. One tab stop with arrow-key (roving) focus,
 // like a native toolbar; each button names its shortcut.
+import type { DictationState } from "./dictation.ts";
 import { useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { useEditorState, type Editor } from "@tiptap/react";
 import { Button } from "@/components/ui/button";
@@ -60,6 +61,78 @@ export function linkHref(typed: string): string | null {
   }
 }
 
+/** "0:07" for seconds of a recording. */
+export function recordingTime(seconds: number): string {
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+/** The microphone: press to record, press again to turn the recording into text at the cursor. */
+function DictateButton({
+  state,
+  onToggle,
+  onCancel,
+  onRetry,
+  editorReady,
+}: {
+  state: DictationState;
+  onToggle: () => void;
+  onCancel: () => void;
+  onRetry: () => void;
+  editorReady: boolean;
+}) {
+  const recording = state.status === "recording";
+  const busy = recording || state.status === "starting" || state.status === "transcribing";
+  // Said once per state: a clock that changes every second would be read out every second.
+  const spoken = recording ? tx("Recording") : state.status === "transcribing" ? tx("Turning speech into text\u2026") : "";
+  return (
+    <span className="ml-auto inline-flex flex-wrap items-center gap-1">
+      <span role="status" data-testid="dictation-status" className="sr-only">
+        {spoken}
+      </span>
+      {state.status === "failed" ? (
+        <span role="alert" className="max-w-56 truncate text-xs text-destructive" title={tx(state.message)}>
+          {tx(state.message)}
+        </span>
+      ) : null}
+      {state.status === "failed" && state.retry ? (
+        <Button type="button" variant="ghost" size="sm" className="h-7 px-2" onMouseDown={(event) => event.preventDefault()} onClick={onRetry}>
+          {tx("Try again")}
+        </Button>
+      ) : null}
+      {state.status === "transcribing" ? (
+        <span aria-hidden className="text-xs text-muted-foreground">
+          {tx("Turning speech into text\u2026")}
+        </span>
+      ) : null}
+      {recording ? (
+        <span aria-hidden className="text-xs tabular-nums text-destructive">
+          {recordingTime(state.seconds)}
+        </span>
+      ) : null}
+      <span className="inline-flex" title={recording ? tx("Stop and insert the text") : tx("Dictate: record, then the text is inserted at the cursor")}>
+        <Button
+          type="button"
+          variant={recording ? "outline" : "ghost"}
+          size="sm"
+          className="h-7 px-2"
+          aria-pressed={recording}
+          disabled={!editorReady || state.status === "transcribing" || state.status === "starting"}
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={onToggle}
+        >
+          <Icon name={recording ? "Square" : "Mic"} fallback="Bot" aria-hidden />
+          {recording ? tx("Stop") : tx("Dictate")}
+        </Button>
+      </span>
+      {busy || state.status === "failed" ? (
+        <Button type="button" variant="ghost" size="sm" className="h-7 px-2" onMouseDown={(event) => event.preventDefault()} onClick={onCancel}>
+          {tx("Cancel")}
+        </Button>
+      ) : null}
+    </span>
+  );
+}
+
 export interface ComposeToolbarProps {
   editor: Editor | null;
   /** The link field is open (the toolbar's Link button or Cmd/Ctrl+K). */
@@ -75,6 +148,10 @@ export interface ComposeToolbarProps {
   improveOpen?: boolean;
   /** Why Improve is off (Makosh AI is missing), or null. */
   improveDisabledReason?: string | null;
+  /** Write with AI (the composer only): opens its dialog; off for the same reason as Improve. */
+  onWrite?: () => void;
+  /** Dictation (the composer only): its state and the button's press; absent: no microphone. */
+  dictation?: { state: DictationState; onToggle: () => void; onCancel: () => void; onRetry: () => void };
   className?: string;
 }
 
@@ -88,6 +165,8 @@ export function ComposeToolbar({
   onImprove,
   improveOpen,
   improveDisabledReason = null,
+  onWrite,
+  dictation,
   className,
 }: ComposeToolbarProps) {
   const mod = modKeyLabel();
@@ -157,7 +236,7 @@ export function ComposeToolbar({
 
   return (
     <div className={cn("flex flex-col", className)}>
-      <div className="flex items-center gap-1">
+      <div className="flex flex-wrap items-center gap-1">
         <div
           role="toolbar"
           aria-label={tx("Formatting")}
@@ -193,9 +272,28 @@ export function ComposeToolbar({
             );
           })}
         </div>
+        {dictation !== undefined ? <DictateButton editorReady={editor !== null} {...dictation} /> : null}
+        {onWrite !== undefined ? (
+          <span title={improveDisabledReason ?? `${tx("Write with AI")} (${mod}+J)`} className={dictation !== undefined ? "inline-flex" : "ml-auto inline-flex"}>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2"
+              aria-description={improveDisabledReason ?? undefined}
+              aria-keyshortcuts="Control+J Meta+J"
+              disabled={editor === null || improveDisabledReason !== null}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={onWrite}
+            >
+              <Icon name="PenLine" fallback="Bot" aria-hidden />
+              {tx("Write with AI")}
+            </Button>
+          </span>
+        ) : null}
         {onImprove !== undefined ? (
           // A disabled button shows no tooltip of its own: the wrapper carries the reason.
-          <span title={improveDisabledReason ?? undefined} className="ml-auto inline-flex">
+          <span title={improveDisabledReason ?? undefined} className={onWrite !== undefined || dictation !== undefined ? "inline-flex" : "ml-auto inline-flex"}>
             <Button
               type="button"
               variant="ghost"
@@ -218,7 +316,7 @@ export function ComposeToolbar({
             type="button"
             variant="ghost"
             size="sm"
-            className={cn("h-7 px-2", onImprove === undefined && "ml-auto")}
+            className={cn("h-7 px-2", onImprove === undefined && onWrite === undefined && dictation === undefined && "ml-auto")}
             aria-label={tx("Templates ({mod}{p1}T)", { mod, p1: mod === "⌘" ? "⌥" : "Alt+" })}
             aria-keyshortcuts="Control+Alt+T Meta+Alt+T"
             aria-expanded={templatesOpen === true}

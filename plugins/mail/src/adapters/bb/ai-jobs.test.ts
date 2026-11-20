@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { AI_MAX_OUTPUT_TOKENS, AI_RATES, draftInput, summaryInput, type AiBuild } from "../../core/ai-input.ts";
 import { TranslateError, type TranslateProvider, type Translator } from "../../core/translate.ts";
 import { FixedClock } from "../../core/testing/fakes.ts";
+import { writeInput } from "../../core/ai-write.ts";
 import { AI_JOB_IDLE_MS, AI_JOB_KEEP_MS, AI_JOB_MAX_MS, AiJobRefusal, AiJobs } from "./ai-jobs.ts";
 
 type Pending = {
@@ -149,6 +150,7 @@ describe("AiJobs", () => {
         searched.push(queries);
         return answerBuild;
       },
+      allowedLinks: ["example.org/a"],
     });
     expect(jobs.poll(jobId)!.phase).toBe("planning");
     expect(translator.calls[0]!.request.maxOutputTokens).toBe(AI_MAX_OUTPUT_TOKENS.askPlan);
@@ -159,9 +161,21 @@ describe("AiJobs", () => {
     expect(jobs.poll(jobId)!.phase).toBe("writing");
     expect(translator.calls[1]!.request.input).toBe(answerBuild.input);
     expect(translator.calls[1]!.request.maxOutputTokens).toBe(AI_MAX_OUTPUT_TOKENS.askAnswer);
-    await answer(jobId, '{"answer":"Invented answer","sources":[1,4],"found":true}');
+    // A drafted reply under the answer keeps only links the owner wrote in the question.
+    await answer(
+      jobId,
+      '{"answer":"Invented answer","sources":[1,4],"found":true,"actions":[{"type":"reply","message":1,"paragraphs":["See https://example.org/a and https://evil.example/b"]}]}',
+    );
     const result = jobs.poll(jobId)!.result!;
-    expect(result.output).toEqual({ kind: "ask", value: { answer: "Invented answer", sources: [1], found: true } });
+    expect(result.output).toEqual({
+      kind: "ask",
+      value: {
+        answer: "Invented answer",
+        sources: [1],
+        found: true,
+        actions: [{ type: "reply", message: 1, paragraphs: ["See https://example.org/a and [link removed]"], linksRemoved: 1 }],
+      },
+    });
     expect(result.parts.map((p) => p.messageId)).toEqual(["x1"]);
     expect(result.notes.hidden).toBe(answerBuild.notes.hidden + 1);
   });
@@ -186,6 +200,58 @@ describe("AiJobs", () => {
     const result = jobs.poll(jobId)!.result!;
     expect(result.output).toEqual({ kind: "digest", value: { items: [{ n: 1, gist: "Invented gist" }] } });
     expect(result.notes.unreadItems).toBe(2);
+  });
+
+  it("write: puts the owner's hidden value back, replaces a link the owner did not write, and an unattended job outlives the idle time", async () => {
+    const built = writeInput(
+      { mode: "write", instruction: "send the code 482913 and https://example.org/a", own: [], personal: "", facts: "", voice: [], conversation: [] },
+      { nonce: NONCE, tag: "k3f9" },
+    );
+    expect(built.input).not.toContain("482913");
+    const placeholder = [...built.restore!.keys()][0]!;
+    const jobId = await started("write", built, { tag: "k3f9", allowedLinks: built.allowedLinks });
+    await answer(jobId, JSON.stringify({ reply: true, paragraphs: [`Code ${placeholder}: https://example.org/a or https://example.net/b`] }));
+    expect(jobs.holdsRestore(jobId)).toBe(false);
+    expect(jobs.poll(jobId)!.result!.output).toEqual({
+      kind: "write",
+      value: { reply: true, paragraphs: ["Code 482913: https://example.org/a or [link removed]"], linksRemoved: 1, unknown: 0 },
+    });
+    expect(lines.join("\n")).not.toContain("482913");
+
+    const auto = writeInput(
+      { mode: "autodraft", own: [], personal: "", facts: "", voice: [], conversation: [message("m1", "Invented question?")] },
+      { nonce: NONCE, tag: "k3f9" },
+    );
+    const { jobId: unattended } = jobs.start("autodraft", auto, { ...ctx, tag: "k3f9", unattended: true });
+    await tick();
+    advance(AI_JOB_IDLE_MS);
+    jobs.sweep();
+    await answer(unattended, '{"reply":false}');
+    expect(jobs.finished(unattended, "autodraft")!.output).toEqual({ kind: "write", value: { reply: false, paragraphs: [], linksRemoved: 0, unknown: 0 } });
+  });
+
+  it("write: the owner's own link that holds a hidden value comes back whole; an auto draft never gets hidden values back", async () => {
+    const fakeToken = ["ghp", "Zx81Kq7Lm2Np4Rt6Vw9Yb3Cd5Ef7Gh1Jk0Mn"].join("_"); // Joined so no token-format literal sits in the source.
+    const link = `https://drive.example.com/file?token=${fakeToken}`;
+    const request = { own: [], personal: "", facts: `Docs: ${link}`, voice: [], conversation: [message("m1", "Invented question?")] };
+    const built = writeInput({ mode: "write", instruction: "send the docs", ...request }, { nonce: NONCE, tag: "k3f9" });
+    expect(built.input).not.toContain(fakeToken);
+    const placeholder = [...built.restore!.keys()][0]!;
+    const asModelSaw = `https://drive.example.com/file?token=${placeholder}`;
+    const jobId = await started("write", built, { tag: "k3f9", allowedLinks: built.allowedLinks });
+    await answer(jobId, JSON.stringify({ reply: true, paragraphs: [`The docs: ${asModelSaw}`] }));
+    expect(jobs.poll(jobId)!.result!.output).toEqual({
+      kind: "write",
+      value: { reply: true, paragraphs: [`The docs: ${link}`], linksRemoved: 0, unknown: 0 },
+    });
+
+    const auto = writeInput({ mode: "autodraft", ...request }, { nonce: NONCE, tag: "k3f9" });
+    const { jobId: autoId } = jobs.start("autodraft", auto, { ...ctx, tag: "k3f9", allowedLinks: auto.allowedLinks, unattended: true });
+    await tick();
+    await answer(autoId, JSON.stringify({ reply: true, paragraphs: [`Their facts say ${[...auto.restore!.keys()][0]!} here`] }));
+    const output = jobs.finished(autoId, "autodraft")!.output;
+    expect(JSON.stringify(output)).not.toContain(fakeToken);
+    expect(output).toMatchObject({ kind: "write", value: { reply: true, unknown: 0 } });
   });
 
   it("restores a draft's own placeholders, counts unknown and missing ones, and drops the map at every end", async () => {

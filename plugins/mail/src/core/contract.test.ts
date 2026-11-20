@@ -19,6 +19,15 @@ import {
   SLICE_3M_METHODS,
   SLICE_3N_METHODS,
   SLICE_3P_METHODS,
+  SIGN_IN_METHODS,
+  GOOGLE_METHODS,
+  SETTINGS_METHODS,
+  PLUGIN_METHODS,
+  INBOX_TAB_METHODS,
+  TYPING_METHODS,
+  AI_WRITE_METHODS,
+  AI_SORT_METHODS,
+  SMART_SEND_METHODS,
 } from "./contract.ts";
 import {
   accountSchema,
@@ -220,6 +229,9 @@ describe("rpcSchemas", () => {
         "accounts_test",
         "accounts_add",
         "accounts_remove",
+        ...SIGN_IN_METHODS,
+        ...GOOGLE_METHODS,
+        ...SETTINGS_METHODS, ...PLUGIN_METHODS, ...INBOX_TAB_METHODS, ...TYPING_METHODS, ...AI_WRITE_METHODS, ...AI_SORT_METHODS, ...SMART_SEND_METHODS,
         "sync_now",
         "threads_list",
         "thread_get",
@@ -528,7 +540,7 @@ describe("slice-3b contract", () => {
 
   it("adds exactly 19 methods to the 17 before it", () => {
     expect(COMPOSE_METHODS).toHaveLength(19);
-    const later: readonly string[] = [...SLICE_3C_METHODS, ...SLICE_3D_METHODS, ...SLICE_3E_METHODS, ...SLICE_3F_METHODS, ...SLICE_3G_METHODS, ...SLICE_3H_METHODS, ...SLICE_3I_METHODS, ...SLICE_3K_METHODS, ...SLICE_3L_METHODS, ...SLICE_3M_METHODS, ...SLICE_3N_METHODS, ...SLICE_3P_METHODS];
+    const later: readonly string[] = [...SLICE_3C_METHODS, ...SLICE_3D_METHODS, ...SLICE_3E_METHODS, ...SLICE_3F_METHODS, ...SLICE_3G_METHODS, ...SLICE_3H_METHODS, ...SLICE_3I_METHODS, ...SLICE_3K_METHODS, ...SLICE_3L_METHODS, ...SLICE_3M_METHODS, ...SLICE_3N_METHODS, ...SLICE_3P_METHODS, ...SIGN_IN_METHODS, ...GOOGLE_METHODS, ...SETTINGS_METHODS, ...PLUGIN_METHODS, ...INBOX_TAB_METHODS, ...TYPING_METHODS, ...AI_WRITE_METHODS, ...AI_SORT_METHODS, ...SMART_SEND_METHODS];
     expect(Object.keys(rpcSchemas).filter((m) => !later.includes(m))).toHaveLength(36);
   });
 
@@ -839,7 +851,7 @@ describe("slice-3c contract", () => {
 
   it("adds exactly 8 methods to the 36 before it", () => {
     expect(SLICE_3C_METHODS).toHaveLength(8);
-    const later: readonly string[] = [...SLICE_3D_METHODS, ...SLICE_3E_METHODS, ...SLICE_3F_METHODS, ...SLICE_3G_METHODS, ...SLICE_3H_METHODS, ...SLICE_3I_METHODS, ...SLICE_3K_METHODS, ...SLICE_3L_METHODS, ...SLICE_3M_METHODS, ...SLICE_3N_METHODS, ...SLICE_3P_METHODS];
+    const later: readonly string[] = [...SLICE_3D_METHODS, ...SLICE_3E_METHODS, ...SLICE_3F_METHODS, ...SLICE_3G_METHODS, ...SLICE_3H_METHODS, ...SLICE_3I_METHODS, ...SLICE_3K_METHODS, ...SLICE_3L_METHODS, ...SLICE_3M_METHODS, ...SLICE_3N_METHODS, ...SLICE_3P_METHODS, ...SIGN_IN_METHODS, ...GOOGLE_METHODS, ...SETTINGS_METHODS, ...PLUGIN_METHODS, ...INBOX_TAB_METHODS, ...TYPING_METHODS, ...AI_WRITE_METHODS, ...AI_SORT_METHODS, ...SMART_SEND_METHODS];
     expect(Object.keys(rpcSchemas).filter((m) => !later.includes(m))).toHaveLength(44);
     expect(COMPOSE_METHODS).toHaveLength(19);
   });
@@ -913,7 +925,9 @@ describe("slice-3c contract", () => {
     }
     for (const [name, method] of Object.entries(rpcSchemas)) {
       const tokens = keysOf(method.output as z.ZodType).filter((key) => /token/i.test(key));
-      expect(tokens, name).toEqual(name === "proposal_view" || name === "triage_view" ? ["viewToken"] : []);
+      // One method hands out a token on purpose: a Google key narrowed to one service, to a plugin the owner granted.
+      const allowed = name === "proposal_view" || name === "triage_view" ? ["viewToken"] : name === "plugin_google_token" ? ["accessToken"] : [];
+      expect(tokens, name).toEqual(allowed);
     }
   });
 
@@ -1077,7 +1091,7 @@ describe("slice-3d contract", () => {
 
   it("adds exactly 11 methods to the 44 before it", () => {
     expect(SLICE_3D_METHODS).toHaveLength(11);
-    const later: readonly string[] = [...SLICE_3E_METHODS, ...SLICE_3F_METHODS, ...SLICE_3G_METHODS, ...SLICE_3H_METHODS, ...SLICE_3I_METHODS, ...SLICE_3K_METHODS, ...SLICE_3L_METHODS, ...SLICE_3M_METHODS, ...SLICE_3N_METHODS, ...SLICE_3P_METHODS];
+    const later: readonly string[] = [...SLICE_3E_METHODS, ...SLICE_3F_METHODS, ...SLICE_3G_METHODS, ...SLICE_3H_METHODS, ...SLICE_3I_METHODS, ...SLICE_3K_METHODS, ...SLICE_3L_METHODS, ...SLICE_3M_METHODS, ...SLICE_3N_METHODS, ...SLICE_3P_METHODS, ...SIGN_IN_METHODS, ...GOOGLE_METHODS, ...SETTINGS_METHODS, ...PLUGIN_METHODS, ...INBOX_TAB_METHODS, ...TYPING_METHODS, ...AI_WRITE_METHODS, ...AI_SORT_METHODS, ...SMART_SEND_METHODS];
     expect(Object.keys(rpcSchemas).filter((m) => !later.includes(m))).toHaveLength(55);
     expect(COMPOSE_METHODS).toHaveLength(19);
     expect(SLICE_3C_METHODS).toHaveLength(8);
@@ -1178,7 +1192,19 @@ describe("slice-3d contract", () => {
     ).toBe(true);
     expect(
       outputs("templates_list", {
-        templates: [{ id: "t_1", name: "Thanks", doc: DOC, updatedAt: "2026-11-15T10:00:00.000Z" }],
+        templates: [
+          {
+            id: "t_1",
+            name: "Thanks",
+            doc: DOC,
+            updatedAt: "2026-11-15T10:00:00.000Z",
+            subject: null,
+            to: ["ada@example.com"],
+            cc: [],
+            bcc: [],
+            files: [{ id: "f_1", name: "a.pdf", mimeType: "application/pdf", size: 3 }],
+          },
+        ],
       }),
     ).toBe(true);
     expect(outputs("template_save", { id: "t_1" })).toBe(true);
@@ -1256,7 +1282,7 @@ describe("slice-3e contract", () => {
 
   it("adds exactly 14 methods to the 55 before it", () => {
     expect(SLICE_3E_METHODS).toHaveLength(14);
-    const later: readonly string[] = [...SLICE_3F_METHODS, ...SLICE_3G_METHODS, ...SLICE_3H_METHODS, ...SLICE_3I_METHODS, ...SLICE_3K_METHODS, ...SLICE_3L_METHODS, ...SLICE_3M_METHODS, ...SLICE_3N_METHODS, ...SLICE_3P_METHODS];
+    const later: readonly string[] = [...SLICE_3F_METHODS, ...SLICE_3G_METHODS, ...SLICE_3H_METHODS, ...SLICE_3I_METHODS, ...SLICE_3K_METHODS, ...SLICE_3L_METHODS, ...SLICE_3M_METHODS, ...SLICE_3N_METHODS, ...SLICE_3P_METHODS, ...SIGN_IN_METHODS, ...GOOGLE_METHODS, ...SETTINGS_METHODS, ...PLUGIN_METHODS, ...INBOX_TAB_METHODS, ...TYPING_METHODS, ...AI_WRITE_METHODS, ...AI_SORT_METHODS, ...SMART_SEND_METHODS];
     expect(Object.keys(rpcSchemas).filter((m) => !later.includes(m))).toHaveLength(69);
     expect(COMPOSE_METHODS).toHaveLength(19);
     expect(SLICE_3C_METHODS).toHaveLength(8);
@@ -1402,7 +1428,7 @@ describe("slice-3f contract", () => {
 
   it("adds exactly 24 methods to the 69 before it", () => {
     expect(SLICE_3F_METHODS).toHaveLength(24);
-    const later: readonly string[] = [...SLICE_3G_METHODS, ...SLICE_3H_METHODS, ...SLICE_3I_METHODS, ...SLICE_3K_METHODS, ...SLICE_3L_METHODS, ...SLICE_3M_METHODS, ...SLICE_3N_METHODS, ...SLICE_3P_METHODS];
+    const later: readonly string[] = [...SLICE_3G_METHODS, ...SLICE_3H_METHODS, ...SLICE_3I_METHODS, ...SLICE_3K_METHODS, ...SLICE_3L_METHODS, ...SLICE_3M_METHODS, ...SLICE_3N_METHODS, ...SLICE_3P_METHODS, ...SIGN_IN_METHODS, ...GOOGLE_METHODS, ...SETTINGS_METHODS, ...PLUGIN_METHODS, ...INBOX_TAB_METHODS, ...TYPING_METHODS, ...AI_WRITE_METHODS, ...AI_SORT_METHODS, ...SMART_SEND_METHODS];
     expect(Object.keys(rpcSchemas).filter((m) => !later.includes(m))).toHaveLength(93);
     expect(COMPOSE_METHODS).toHaveLength(19);
     expect(SLICE_3C_METHODS).toHaveLength(8);
@@ -1411,7 +1437,15 @@ describe("slice-3f contract", () => {
   });
 
   it("offers every AI kind through ai_start", () => {
-    expect([...AI_START_KINDS].sort()).toEqual([...AI_KINDS].sort());
+    // An auto draft is started by new mail, never by a call.
+    expect([...AI_START_KINDS].sort()).toEqual(["ask", "categories", "digest", "draft", "summary", "tasks", "write"]);
+    expect(AI_KINDS.filter((kind) => !AI_START_KINDS.includes(kind))).toEqual(["autodraft", "sort"]);
+    const write = { kind: "write", draftId: "d", revision: 1, instruction: "say yes", paragraphs: [] };
+    expect(parses("ai_start", write)).toBe(true);
+    expect(parses("ai_start", { ...write, instruction: "" })).toBe(false);
+    expect(parses("ai_start", { ...write, instruction: "x".repeat(501) })).toBe(false);
+    expect(parses("ai_start", { ...write, instruction: "two\nlines" })).toBe(false);
+    expect(parses("ai_start", { ...write, kind: "autodraft" })).toBe(false);
   });
 
   it("takes each ai_start variant and refuses unknown kinds and extra keys", () => {
@@ -1574,7 +1608,7 @@ describe("slice-3g contract", () => {
     // 31 at the build, then incident_prepare and patch_handoff_prepare (review C5).
     expect(SLICE_3G_METHODS).toHaveLength(33);
     expect(
-      Object.keys(rpcSchemas).filter((m) => !([...SLICE_3H_METHODS, ...SLICE_3I_METHODS, ...SLICE_3K_METHODS, ...SLICE_3L_METHODS, ...SLICE_3M_METHODS, ...SLICE_3N_METHODS, ...SLICE_3P_METHODS] as readonly string[]).includes(m)),
+      Object.keys(rpcSchemas).filter((m) => !([...SLICE_3H_METHODS, ...SLICE_3I_METHODS, ...SLICE_3K_METHODS, ...SLICE_3L_METHODS, ...SLICE_3M_METHODS, ...SLICE_3N_METHODS, ...SLICE_3P_METHODS, ...SIGN_IN_METHODS, ...GOOGLE_METHODS, ...SETTINGS_METHODS, ...PLUGIN_METHODS, ...INBOX_TAB_METHODS, ...TYPING_METHODS, ...AI_WRITE_METHODS, ...AI_SORT_METHODS, ...SMART_SEND_METHODS] as readonly string[]).includes(m)),
     ).toHaveLength(126);
     expect(COMPOSE_METHODS).toHaveLength(19);
     expect(SLICE_3C_METHODS).toHaveLength(8);
@@ -1716,7 +1750,7 @@ describe("slice 3h contract", () => {
     expect(SLICE_3H_METHODS).toHaveLength(28);
     expect(new Set(SLICE_3H_METHODS).size).toBe(28);
     expect(
-      Object.keys(rpcSchemas).filter((m) => !([...SLICE_3I_METHODS, ...SLICE_3K_METHODS, ...SLICE_3L_METHODS, ...SLICE_3M_METHODS, ...SLICE_3N_METHODS, ...SLICE_3P_METHODS] as readonly string[]).includes(m)),
+      Object.keys(rpcSchemas).filter((m) => !([...SLICE_3I_METHODS, ...SLICE_3K_METHODS, ...SLICE_3L_METHODS, ...SLICE_3M_METHODS, ...SLICE_3N_METHODS, ...SLICE_3P_METHODS, ...SIGN_IN_METHODS, ...GOOGLE_METHODS, ...SETTINGS_METHODS, ...PLUGIN_METHODS, ...INBOX_TAB_METHODS, ...TYPING_METHODS, ...AI_WRITE_METHODS, ...AI_SORT_METHODS, ...SMART_SEND_METHODS] as readonly string[]).includes(m)),
     ).toHaveLength(154);
     for (const method of SLICE_3H_METHODS) expect(earlier as readonly string[], method).not.toContain(method);
     expect(SLICE_3G_METHODS).toHaveLength(33);
@@ -1808,7 +1842,7 @@ describe("slice 3i contract", () => {
   it("adds exactly one method to the 154 before it", () => {
     expect(SLICE_3I_METHODS).toEqual(["sender_check_refresh"]);
     expect(
-      Object.keys(rpcSchemas).filter((m) => !([...SLICE_3K_METHODS, ...SLICE_3L_METHODS, ...SLICE_3M_METHODS, ...SLICE_3N_METHODS, ...SLICE_3P_METHODS] as readonly string[]).includes(m)),
+      Object.keys(rpcSchemas).filter((m) => !([...SLICE_3K_METHODS, ...SLICE_3L_METHODS, ...SLICE_3M_METHODS, ...SLICE_3N_METHODS, ...SLICE_3P_METHODS, ...SIGN_IN_METHODS, ...GOOGLE_METHODS, ...SETTINGS_METHODS, ...PLUGIN_METHODS, ...INBOX_TAB_METHODS, ...TYPING_METHODS, ...AI_WRITE_METHODS, ...AI_SORT_METHODS, ...SMART_SEND_METHODS] as readonly string[]).includes(m)),
     ).toHaveLength(155);
   });
 
@@ -1905,7 +1939,7 @@ describe("slice 3k contract (OpenPGP)", () => {
     expect(SLICE_3K_METHODS).toHaveLength(9);
     expect(new Set(SLICE_3K_METHODS).size).toBe(9);
     expect(
-      Object.keys(rpcSchemas).filter((m) => !([...SLICE_3L_METHODS, ...SLICE_3M_METHODS, ...SLICE_3N_METHODS, ...SLICE_3P_METHODS] as readonly string[]).includes(m)),
+      Object.keys(rpcSchemas).filter((m) => !([...SLICE_3L_METHODS, ...SLICE_3M_METHODS, ...SLICE_3N_METHODS, ...SLICE_3P_METHODS, ...SIGN_IN_METHODS, ...GOOGLE_METHODS, ...SETTINGS_METHODS, ...PLUGIN_METHODS, ...INBOX_TAB_METHODS, ...TYPING_METHODS, ...AI_WRITE_METHODS, ...AI_SORT_METHODS, ...SMART_SEND_METHODS] as readonly string[]).includes(m)),
     ).toHaveLength(164);
   });
 
@@ -1943,7 +1977,7 @@ describe("slice 3l contract (Send later, calendar invitations)", () => {
   it("adds exactly two methods to the 164 before it", () => {
     expect(SLICE_3L_METHODS).toEqual(["invite_view", "invite_reply"]);
     expect(
-      Object.keys(rpcSchemas).filter((m) => !([...SLICE_3M_METHODS, ...SLICE_3N_METHODS, ...SLICE_3P_METHODS] as readonly string[]).includes(m)),
+      Object.keys(rpcSchemas).filter((m) => !([...SLICE_3M_METHODS, ...SLICE_3N_METHODS, ...SLICE_3P_METHODS, ...SIGN_IN_METHODS, ...GOOGLE_METHODS, ...SETTINGS_METHODS, ...PLUGIN_METHODS, ...INBOX_TAB_METHODS, ...TYPING_METHODS, ...AI_WRITE_METHODS, ...AI_SORT_METHODS, ...SMART_SEND_METHODS] as readonly string[]).includes(m)),
     ).toHaveLength(166);
     for (const method of SLICE_3L_METHODS) {
       expect(keysOf(rpcSchemas[method].output).filter((name) => SECRET_KEY.test(name)), method).toEqual([]);
@@ -1984,7 +2018,7 @@ describe("slice 3m contract (filters)", () => {
   it("adds exactly three methods to the 166 before it", () => {
     expect(SLICE_3M_METHODS).toEqual(["filters_list", "filter_save", "filter_delete"]);
     expect(
-      Object.keys(rpcSchemas).filter((m) => !([...SLICE_3N_METHODS, ...SLICE_3P_METHODS] as readonly string[]).includes(m)),
+      Object.keys(rpcSchemas).filter((m) => !([...SLICE_3N_METHODS, ...SLICE_3P_METHODS, ...SIGN_IN_METHODS, ...GOOGLE_METHODS, ...SETTINGS_METHODS, ...PLUGIN_METHODS, ...INBOX_TAB_METHODS, ...TYPING_METHODS, ...AI_WRITE_METHODS, ...AI_SORT_METHODS, ...SMART_SEND_METHODS] as readonly string[]).includes(m)),
     ).toHaveLength(169);
     for (const method of SLICE_3M_METHODS) {
       expect(keysOf(rpcSchemas[method].output).filter((name) => SECRET_KEY.test(name)), method).toEqual([]);
@@ -2007,7 +2041,7 @@ describe("slice 3m contract (filters)", () => {
 describe("slice 3n contract (subscriptions overview)", () => {
   it("adds one method to the 169 before it, and its output never carries a list key", () => {
     expect(SLICE_3N_METHODS).toEqual(["subscriptions_list"]);
-    expect(Object.keys(rpcSchemas).filter((m) => !(SLICE_3P_METHODS as readonly string[]).includes(m))).toHaveLength(170);
+    expect(Object.keys(rpcSchemas).filter((m) => !([...SLICE_3P_METHODS, ...SIGN_IN_METHODS, ...GOOGLE_METHODS, ...SETTINGS_METHODS, ...PLUGIN_METHODS, ...INBOX_TAB_METHODS, ...TYPING_METHODS, ...AI_WRITE_METHODS, ...AI_SORT_METHODS, ...SMART_SEND_METHODS] as readonly string[]).includes(m))).toHaveLength(170);
     const keys = keysOf(rpcSchemas.subscriptions_list.output);
     expect(keys.filter((name) => SECRET_KEY.test(name))).toEqual([]);
     expect(keys).not.toContain("listKey");
@@ -2019,7 +2053,7 @@ describe("slice 3n contract (subscriptions overview)", () => {
 describe("slice 3p contract (local archive)", () => {
   it("adds five methods to the 170 before it, none naming a credential", () => {
     expect(SLICE_3P_METHODS).toHaveLength(5);
-    expect(Object.keys(rpcSchemas)).toHaveLength(175);
+    expect(Object.keys(rpcSchemas).filter((m) => !([...SIGN_IN_METHODS, ...GOOGLE_METHODS, ...SETTINGS_METHODS, ...PLUGIN_METHODS, ...INBOX_TAB_METHODS, ...TYPING_METHODS, ...AI_WRITE_METHODS, ...AI_SORT_METHODS, ...SMART_SEND_METHODS] as readonly string[]).includes(m))).toHaveLength(175);
     for (const method of SLICE_3P_METHODS) {
       expect(keysOf(rpcSchemas[method].output).filter((name) => SECRET_KEY.test(name)), method).toEqual([]);
     }
@@ -2032,5 +2066,64 @@ describe("slice 3p contract (local archive)", () => {
     expect(parses({ archiveId: null, query: "x".repeat(201), cursor: null })).toBe(false);
     expect(parses({ archiveId: null, query: "", cursor: { date: "x".repeat(41), id: "1" } })).toBe(false);
     expect(parses({ archiveId: null, query: "" })).toBe(false);
+  });
+});
+
+describe("retry sign-in contract", () => {
+  it("adds one method to the 175 before it, and it carries no credential", () => {
+    expect(SIGN_IN_METHODS).toEqual(["accounts_retry_sign_in"]);
+    expect(Object.keys(rpcSchemas).filter((m) => !([...GOOGLE_METHODS, ...SETTINGS_METHODS, ...PLUGIN_METHODS, ...INBOX_TAB_METHODS, ...TYPING_METHODS, ...AI_WRITE_METHODS, ...AI_SORT_METHODS, ...SMART_SEND_METHODS] as readonly string[]).includes(m))).toHaveLength(176);
+    expect(keysOf(rpcSchemas.accounts_retry_sign_in.input)).toEqual(["accountId"]);
+    expect(keysOf(rpcSchemas.accounts_retry_sign_in.output)).toEqual(["result"]);
+  });
+
+  it("answers with one of five fixed results", () => {
+    const parses = (result: unknown) => rpcSchemas.accounts_retry_sign_in.output.safeParse({ result }).success;
+    for (const result of ["resumed", "refused", "unreachable", "unreadable", "sign_in_needed"]) expect(parses(result), result).toBe(true);
+    expect(parses("Authentication failed")).toBe(false);
+  });
+});
+
+describe("Google sign-in contract", () => {
+  it("adds two methods to the 176 before it, and neither carries a token, a code or the client", () => {
+    expect(GOOGLE_METHODS).toEqual(["google_sign_in_start", "google_sign_in_status"]);
+    expect(Object.keys(rpcSchemas).filter((m) => !([...SETTINGS_METHODS, ...PLUGIN_METHODS, ...INBOX_TAB_METHODS, ...TYPING_METHODS, ...AI_WRITE_METHODS, ...AI_SORT_METHODS, ...SMART_SEND_METHODS] as readonly string[]).includes(m))).toHaveLength(178);
+    expect(keysOf(rpcSchemas.google_sign_in_start.input)).toEqual(["email", "extraScopes"]);
+    const start = (input: unknown) => rpcSchemas.google_sign_in_start.input.safeParse(input).success;
+    expect(start({ email: null, extraScopes: ["https://www.googleapis.com/auth/calendar"] })).toBe(true);
+    // Nothing but the two plugin-key services can be added to a sign-in; mail is never asked for through here.
+    expect(start({ email: null, extraScopes: ["https://mail.google.com/"] })).toBe(false);
+    expect(start({ email: null, extraScopes: ["https://www.googleapis.com/auth/drive"] })).toBe(false);
+    expect(keysOf(rpcSchemas.google_sign_in_start.output)).toEqual(["flowId", "url"]);
+    expect(keysOf(rpcSchemas.google_sign_in_status.input)).toEqual(["flowId"]);
+  });
+
+  it("reads a flow as pending, done or failed with a fixed reason", () => {
+    const parses = (value: unknown) => rpcSchemas.google_sign_in_status.output.safeParse(value).success;
+    expect(parses({ state: "pending" })).toBe(true);
+    expect(parses({ state: "done", accountId: "acc_1" })).toBe(true);
+    expect(parses({ state: "failed", reason: "mismatch" })).toBe(true);
+    expect(parses({ state: "failed", reason: "Token has been expired or revoked." })).toBe(false);
+    expect(parses({ state: "done" })).toBe(false);
+    expect(rpcSchemas.google_sign_in_start.input.safeParse({ email: null }).success).toBe(true);
+    expect(rpcSchemas.google_sign_in_start.input.safeParse({ email: "x".repeat(321) }).success).toBe(false);
+    expect(rpcSchemas.google_sign_in_start.input.safeParse({}).success).toBe(false);
+  });
+});
+
+describe("settings page contract", () => {
+  it("adds two methods to the 178 before it; neither names the credential key", () => {
+    expect(SETTINGS_METHODS).toEqual(["settings_get", "settings_set"]);
+    expect(Object.keys(rpcSchemas).filter((m) => !([...PLUGIN_METHODS, ...INBOX_TAB_METHODS, ...TYPING_METHODS, ...AI_WRITE_METHODS, ...AI_SORT_METHODS, ...SMART_SEND_METHODS] as readonly string[]).includes(m))).toHaveLength(180);
+    expect(keysOf(rpcSchemas.settings_get.output)).not.toContain("vaultKey");
+    expect(keysOf(rpcSchemas.settings_get.output)).toHaveLength(43);
+  });
+
+  it("settings_set takes writable keys only", () => {
+    const parses = (input: unknown) => rpcSchemas.settings_set.input.safeParse(input).success;
+    expect(parses({ hideQuotes: false })).toBe(true);
+    expect(parses({ agentTools: true })).toBe(false);
+    expect(parses({ vaultKey: "x" })).toBe(false);
+    expect(parses({})).toBe(false);
   });
 });

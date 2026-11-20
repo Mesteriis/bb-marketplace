@@ -70,3 +70,7 @@ f81be6949714e6ada7717f58f0456e78cc13ce94:test/proc-name.test.mjs:github-pat:41
 # of the speech service they call, the same value every open client of that service ships.
 3b5961367901ce836750e167fc30d49cdcf57adb:synth.ts:generic-api-key:42
 431e9a6856acc6cabfc18c63bce0b20ca359793f:synth.ts:generic-api-key:37
+
+# Makosh Mail: the Google desktop client shipped on purpose (not confidential for this client type):
+# docs/superpowers/specs/2026-11-19-mail-google-oauth-design.md
+plugins/mail/google-oauth-client.json:generic-api-key:1

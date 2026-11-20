@@ -35,6 +35,7 @@ const account: Account = {
 
 function draft(overrides: Partial<DraftView> = {}): DraftView {
   return {
+    preparedBy: null,
     id: "draft-1",
     accountId: "acc-1",
     kind: "new",
@@ -157,6 +158,15 @@ describe("Composer", () => {
     document.dispatchEvent(new Event("visibilitychange"));
     await waitFor(() => expect(ports.save).toHaveBeenCalledTimes(2));
     Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+  });
+
+  it("says which plugin prepared a draft, as text, and nothing for the owner's own", () => {
+    mount({ draft: draft({ preparedBy: "<b>calendar</b>" }) });
+    expect(screen.getByText("Prepared by <b>calendar</b>")).toBeTruthy();
+    expect(document.querySelector("b")).toBeNull();
+    cleanup();
+    mount();
+    expect(screen.queryByText(/Prepared by/)).toBeNull();
   });
 
   it("marks a draft an agent started, and only that one", () => {
@@ -328,6 +338,108 @@ describe("Composer", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Reload" }));
     await waitFor(() => expect(subject().value).toBe("From the other window"));
     expect(screen.queryByText(/changed in another window/)).toBeNull();
+  });
+
+  it("a drafted reply goes in once: a Reload shows the stored draft, not the drafted text again", async () => {
+    const ports = fakePorts();
+    mount({ initialOwn: ["Drafted by AI."] }, ports);
+    const body = () => document.querySelector(".ProseMirror")!.textContent ?? "";
+    await waitFor(() => expect(body()).toContain("Drafted by AI."));
+    ports.save.mockResolvedValue({ conflict: true, revision: 7 });
+    fireEvent.change(subject(), { target: { value: "Mine" } });
+    fireEvent.blur(subject(), { relatedTarget: document.body });
+    fireEvent.click(await screen.findByRole("button", { name: "Reload" }));
+    await waitFor(() => expect(subject().value).toBe("From the other window"));
+    expect(body()).not.toContain("Drafted by AI.");
+  });
+
+  it("dictation: the button records, Stop turns the recording into text at the cursor, the microphone is released", async () => {
+    const track = { stopped: false, stop() { this.stopped = true; } };
+    const transcribe = vi.fn(async () => "Hello Ann,\n\nTuesday works.");
+    const ports = { ...fakePorts(), transcribe };
+    mount(
+      {
+        dictationDevice: {
+          microphone: async () => ({ getTracks: () => [track] }) as unknown as MediaStream,
+          record: () => ({ stop: async () => new Blob(["sound"]) }),
+        },
+      },
+      ports as never,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Dictate" }));
+    const stop = await screen.findByRole("button", { name: "Stop" });
+    expect(screen.getByText("0:00")).toBeTruthy();
+    fireEvent.click(stop);
+    await waitFor(() => expect(document.querySelector(".ProseMirror")!.textContent).toContain("Tuesday works."));
+    expect(document.querySelectorAll(".ProseMirror p")[0]!.textContent).toBe("Hello Ann,");
+    expect(transcribe).toHaveBeenCalledTimes(1);
+    expect(track.stopped).toBe(true);
+    expect(screen.getByRole("button", { name: "Dictate" })).toBeTruthy();
+  });
+
+  it("dictation: no microphone button without a voice port; a refused microphone says why", async () => {
+    mount();
+    expect(screen.queryByRole("button", { name: "Dictate" })).toBeNull();
+    cleanup();
+    mount(
+      { dictationDevice: { microphone: async () => Promise.reject(new Error("denied")), record: () => ({ stop: async () => new Blob([]) }) } },
+      { ...fakePorts(), transcribe: vi.fn(async () => "x") } as never,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Dictate" }));
+    expect((await screen.findByRole("alert")).textContent).toBe("The microphone is not available. Allow it for BB and try again.");
+  });
+
+  it("dictation: Escape while recording throws the recording away and keeps the composer open", async () => {
+    const track = { stopped: false, stop() { this.stopped = true; } };
+    const transcribe = vi.fn(async () => "x");
+    const { onClose } = mount(
+      {
+        dictationDevice: {
+          microphone: async () => ({ getTracks: () => [track] }) as unknown as MediaStream,
+          record: () => ({ stop: async () => new Blob(["sound"]) }),
+        },
+      },
+      { ...fakePorts(), transcribe } as never,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Dictate" }));
+    await screen.findByRole("button", { name: "Stop" });
+    fireEvent.keyDown(subject(), { key: "Escape" });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Dictate" })).toBeTruthy());
+    expect(track.stopped).toBe(true);
+    expect(transcribe).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+  });
+
+  it("dictation: the screen reader hears the state once, not every second", async () => {
+    mount(
+      {
+        dictationDevice: {
+          microphone: async () => ({ getTracks: () => [] }) as unknown as MediaStream,
+          record: () => ({ stop: async () => new Blob(["sound"]) }),
+        },
+      },
+      { ...fakePorts(), transcribe: vi.fn(async () => "x") } as never,
+    );
+    const live = () => screen.getByTestId("dictation-status");
+    expect(live().getAttribute("role")).toBe("status");
+    expect(live().textContent).toBe("");
+    fireEvent.click(screen.getByRole("button", { name: "Dictate" }));
+    await screen.findByRole("button", { name: "Stop" });
+    expect(live().textContent).toBe("Recording");
+    expect(screen.getByText("0:00").getAttribute("aria-hidden")).toBe("true");
+  });
+
+  it("dictation: with no voice service in BB the button says why and the microphone is not asked", async () => {
+    const microphone = vi.fn(async () => ({ getTracks: () => [] }) as unknown as MediaStream);
+    mount(
+      { dictationDevice: { microphone, record: () => ({ stop: async () => new Blob(["sound"]) }) } },
+      { ...fakePorts(), transcribe: vi.fn(async () => "x"), voiceReady: async () => false } as never,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Dictate" }));
+    expect((await screen.findByRole("alert")).textContent).toBe("Dictation needs a voice service: choose one in BB's settings.");
+    expect(microphone).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
   });
 
   it("starts with the queued banner while a send of the draft is queued", () => {
@@ -671,6 +783,125 @@ describe("Composer: identities, signatures, checks and templates (slice 3d)", ()
     { id: "tpl-2", name: "Follow-up", doc: { type: "doc", content: [p("Following up, invented.")] }, updatedAt: "2026-11-10T09:00:00.000Z" },
   ];
 
+  it("a template fills the subject, recipients, the first name and its files; a typed subject stays", async () => {
+    const applyTemplate = vi.fn(async () => ({
+      attached: [{ id: "att-t", fileName: "price.pdf", mimeType: "application/pdf", size: 10, origin: null }],
+      leftOut: ["huge.pdf"],
+    }));
+    const carrying = {
+      id: "t-carry",
+      name: "Offer",
+      doc: { type: "doc" as const, content: [p("Hi {first_name}, the offer is attached.")] },
+      updatedAt: "2026-11-19T10:00:00.000Z",
+      subject: "Offer for {first_name}",
+      to: ["Should Not Duplicate <ADA@example.com>"],
+      cc: ["team@example.org"],
+      bcc: [],
+      files: [{ id: "f1", name: "price.pdf", mimeType: "application/pdf", size: 10 }],
+    };
+    const ports = { ...fakePorts(), applyTemplate };
+    mount({ templates: [carrying], draft: draft({ subject: "", to: [{ name: "Ada Lovelace", address: "ada@example.com" }] }) }, ports);
+    fireEvent.click(screen.getByRole("button", { name: /^Templates/ }));
+    fireEvent.keyDown(await screen.findByRole("combobox", { name: "Find a template" }), { key: "Enter" });
+    expect(theEditor().getText()).toContain("Hi Ada, the offer is attached.");
+    expect((screen.getByRole("textbox", { name: "Subject" }) as HTMLInputElement).value).toBe("Offer for Ada");
+    await waitFor(() => expect(applyTemplate).toHaveBeenCalledWith({ draftId: "draft-1", templateId: "t-carry" }));
+    expect(await screen.findByText("price.pdf")).toBeTruthy();
+    expect(await screen.findByText("No room in this message for: huge.pdf")).toBeTruthy();
+    // The draft saves with the address it already had once, and the template's copy recipient.
+    fireEvent.blur(subject(), { relatedTarget: document.body });
+    await waitFor(() => expect(ports.save).toHaveBeenCalled());
+    expect(ports.save.mock.calls.at(-1)![0]).toMatchObject({
+      to: ["Ada Lovelace <ada@example.com>"],
+      cc: ["team@example.org"],
+      bcc: [],
+      subject: "Offer for Ada",
+    });
+  });
+
+  it("a template never replaces a subject the owner typed, and a template without extras asks for nothing", async () => {
+    const applyTemplate = vi.fn(async () => ({ attached: [], leftOut: [] }));
+    mount({ templates: [{ ...TEMPLATES[0]!, subject: "From the template" }], draft: draft({ subject: "Mine" }) }, { ...fakePorts(), applyTemplate } as ReturnType<typeof fakePorts>);
+    fireEvent.click(screen.getByRole("button", { name: /^Templates/ }));
+    fireEvent.keyDown(await screen.findByRole("combobox", { name: "Find a template" }), { key: "Enter" });
+    expect((screen.getByRole("textbox", { name: "Subject" }) as HTMLInputElement).value).toBe("Mine");
+    expect(applyTemplate).not.toHaveBeenCalled();
+  });
+
+  it("a template whose files fail to attach midway shows what the draft now holds", async () => {
+    const applyTemplate = vi.fn(async () => Promise.reject(new Error("Attachments are over the size limit")));
+    const ports = { ...fakePorts(), applyTemplate };
+    ports.reload.mockResolvedValue(draft({ attachments: [{ id: "att-1", fileName: "first.pdf", mimeType: "application/pdf", size: 10, origin: null }] }));
+    const carrying = { ...TEMPLATES[0]!, id: "t-files", files: [{ id: "f1", name: "first.pdf", mimeType: "application/pdf", size: 10 }, { id: "f2", name: "second.pdf", mimeType: "application/pdf", size: 10 }] };
+    mount({ templates: [carrying] }, ports as never);
+    fireEvent.click(screen.getByRole("button", { name: /^Templates/ }));
+    fireEvent.keyDown(await screen.findByRole("combobox", { name: "Find a template" }), { key: "Enter" });
+    expect(await screen.findByText("first.pdf")).toBeTruthy();
+    expect(ports.reload).toHaveBeenCalledWith("draft-1");
+  });
+
+  it("answering an introduction: the offer moves the introducer to Bcc and thanks them, once", async () => {
+    const intro = draft({
+      kind: "reply_all",
+      subject: "Re: Intro: Ada <> Owner",
+      to: [{ name: "Carol Connector", address: "carol@example.com" }, { name: "Ada", address: "ada@example.com" }],
+      doc: { type: "doc", content: [p("")] },
+    });
+    const { ports } = mount({ draft: intro });
+    expect(await screen.findByText("This looks like an introduction.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Move sender to Bcc" }));
+    expect(theEditor().getText().startsWith("Thank you, Carol! (Moving you to Bcc.)")).toBe(true);
+    // Nothing is left to offer: the sender is no longer in To.
+    expect(screen.queryByText("This looks like an introduction.")).toBeNull();
+    fireEvent.blur(subject(), { relatedTarget: document.body });
+    await waitFor(() => expect(ports.save).toHaveBeenCalled());
+    expect(ports.save.mock.calls.at(-1)![0]).toMatchObject({ to: ["Ada <ada@example.com>"], bcc: ["Carol Connector <carol@example.com>"] });
+    // The key does nothing a second time.
+    fireEvent.keyDown(subject(), { key: "I", code: "KeyI", metaKey: true, shiftKey: true });
+    expect(theEditor().getText().match(/Moving you to Bcc/g)).toHaveLength(1);
+  });
+
+  it("a plain reply gets no offer, but the key still moves the sender; a reply to one person offers nothing and moves nothing", async () => {
+    const plain = draft({
+      kind: "reply_all",
+      subject: "Re: Invoice",
+      to: [{ name: null, address: "info@example.com" }, { name: "Ada", address: "ada@example.com" }],
+      doc: { type: "doc", content: [p("")] },
+    });
+    mount({ draft: plain });
+    expect(screen.queryByText("This looks like an introduction.")).toBeNull();
+    fireEvent.keyDown(subject(), { key: "I", code: "KeyI", ctrlKey: true, shiftKey: true });
+    expect(theEditor().getText().startsWith("Thank you! (Moving you to Bcc.)")).toBe(true);
+    cleanup();
+
+    // The same command by a button beside Bcc, for where the key is taken.
+    mount({ draft: plain });
+    fireEvent.click(screen.getByRole("button", { name: "Cc Bcc" }));
+    fireEvent.click(screen.getByRole("button", { name: "Move sender to Bcc" }));
+    expect(theEditor().getText().startsWith("Thank you! (Moving you to Bcc.)")).toBe(true);
+    cleanup();
+
+    mount({ draft: draft({ kind: "reply", subject: "Re: Intro", to: [{ name: "Carol", address: "carol@example.com" }] }) });
+    expect(screen.queryByText("This looks like an introduction.")).toBeNull();
+    fireEvent.keyDown(subject(), { key: "I", code: "KeyI", metaKey: true, shiftKey: true });
+    expect(theEditor().getText()).not.toContain("Moving you to Bcc");
+  });
+
+  it("; and a few letters list the templates; a press on one puts it in place of the typed text", async () => {
+    mount({ templates: TEMPLATES, draft: draft({ doc: { type: "doc", content: [p("Hello")] } }) });
+    const ed = theEditor();
+    act(() => {
+      ed.chain().focus("end").insertContent(" ;foll").run();
+    });
+    const list = await screen.findByRole("listbox", { name: "Templates for ;foll" });
+    const options = Array.from(list.querySelectorAll('[role="option"]'));
+    expect(options.map((o) => o.textContent)).toEqual(["Follow-up"]);
+    fireEvent.mouseDown(options[0]!);
+    expect(ed.getText()).toContain("Following up, invented.");
+    expect(ed.getText()).not.toContain(";foll");
+    await waitFor(() => expect(screen.queryByRole("listbox", { name: /Templates for/ })).toBeNull());
+  });
+
   it("Templates inserts the chosen template at the cursor; Manage templates… opens settings", async () => {
     const onManageTemplates = vi.fn();
     mount({ templates: TEMPLATES, onManageTemplates, draft: draft({ doc: { type: "doc", content: [p("Hello"), p("Bye")] } }) });
@@ -742,6 +973,28 @@ describe("Composer: Improve and reply reminders (slice 3f)", () => {
   type EditorLike = { getJSON: () => { content?: unknown[] }; commands: { insertContentAt: (at: number, text: string) => boolean } };
   const editorOf = () => (document.querySelector(".ProseMirror") as unknown as { editor: EditorLike }).editor;
 
+  it("read statuses: the box is offered only when they are set up, starts ticked, and unticking sends track: false", async () => {
+    mount();
+    expect(screen.queryByRole("checkbox", { name: "Show when this message is opened" })).toBeNull();
+    cleanup();
+    const ports = { ...fakePorts(), trackOpens: true };
+    mount({}, ports as never);
+    addRecipient();
+    const box = screen.getByRole("checkbox", { name: "Show when this message is opened" });
+    expect(box.getAttribute("aria-checked")).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(ports.send).toHaveBeenCalledTimes(1));
+    expect(ports.send.mock.calls[0]![0]).not.toHaveProperty("track");
+    cleanup();
+    const again = { ...fakePorts(), trackOpens: true };
+    mount({}, again as never);
+    addRecipient();
+    fireEvent.click(screen.getByRole("checkbox", { name: "Show when this message is opened" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(again.send).toHaveBeenCalledTimes(1));
+    expect(again.send.mock.calls[0]![0]).toMatchObject({ track: false });
+  });
+
   it("the reminder checkbox starts unticked and sends remindAfterDays when ticked", async () => {
     const ports = fakePorts();
     mount({ reminderDays: 4 }, ports);
@@ -798,6 +1051,55 @@ describe("Composer: Improve and reply reminders (slice 3f)", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Apply" }));
     expect((await screen.findByRole("alert")).textContent).toBe("The draft changed while the AI worked. Improve it again.");
+    expect(JSON.stringify(editorOf().getJSON())).toContain("Dear Hello Ada,");
+  });
+
+  it("Write with AI sends the request with the owner's range; Insert replaces it and keeps the quote; Ctrl+J opens it", async () => {
+    const jobs = {
+      start: vi.fn(async () => ({ jobId: "job-1" })),
+      poll: vi.fn(async () => ({
+        state: "done" as const,
+        result: { ...DRAFT_RESULT, kind: "write" as const, paragraphs: ["Hi Ada,", "Tuesday works."], linksRemoved: 0, unknown: 0 },
+      })),
+      cancel: vi.fn(async () => ({ cancelled: true })),
+    };
+    mount({ draft: draft({ doc: DOC }), improve: { jobs, disabledReason: null } });
+    fireEvent.keyDown(document.querySelector(".ProseMirror")!, { key: "j", code: "KeyJ", ctrlKey: true });
+    fireEvent.change(await screen.findByLabelText("What should the message say?"), { target: { value: "agree to Tuesday" } });
+    fireEvent.click(screen.getByRole("button", { name: "Write" }));
+    await screen.findByLabelText("Written text");
+    expect(jobs.start.mock.calls[0]).toEqual([
+      { kind: "write", draftId: "draft-1", revision: 1, instruction: "agree to Tuesday", paragraphs: ["Hello Ada,", "I would like to send the plan today."] },
+    ]);
+    fireEvent.click(screen.getByRole("button", { name: "Insert" }));
+    await waitFor(() => expect(screen.queryByLabelText("Written text")).toBeNull());
+    const content = editorOf().getJSON().content!;
+    expect(content.slice(0, 2)).toEqual([
+      { type: "paragraph", content: [text("Hi Ada,")] },
+      { type: "paragraph", content: [text("Tuesday works.")] },
+    ]);
+    expect(content[2]).toEqual(DOC.content[2]);
+  });
+
+  it("an edit while the AI wrote refuses Insert", async () => {
+    const jobs = {
+      start: vi.fn(async () => ({ jobId: "job-1" })),
+      poll: vi.fn(async () => ({
+        state: "done" as const,
+        result: { ...DRAFT_RESULT, kind: "write" as const, paragraphs: ["Hi Ada,"], linksRemoved: 0, unknown: 0 },
+      })),
+      cancel: vi.fn(async () => ({ cancelled: true })),
+    };
+    mount({ draft: draft({ doc: DOC }), improve: { jobs, disabledReason: null } });
+    fireEvent.click(screen.getByRole("button", { name: "Write with AI" }));
+    fireEvent.change(await screen.findByLabelText("What should the message say?"), { target: { value: "agree" } });
+    fireEvent.click(screen.getByRole("button", { name: "Write" }));
+    await screen.findByLabelText("Written text");
+    act(() => {
+      editorOf().commands.insertContentAt(1, "Dear ");
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Insert" }));
+    expect((await screen.findByRole("alert")).textContent).toBe("The draft changed while the AI worked. Write it again.");
     expect(JSON.stringify(editorOf().getJSON())).toContain("Dear Hello Ada,");
   });
 

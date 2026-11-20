@@ -4,12 +4,15 @@
 // HTML that comes in (a quoted original, a continued draft, a paste) goes
 // through the email sanitizer with remote images off and loses every image
 // and style before TipTap parses it, so the editor never loads anything.
+import { ownerBlocksEnd } from "../core/compose-doc.ts";
 import { useEffect, useRef } from "react";
 import { EditorContent, useEditor, type Editor, type JSONContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { closeHistory } from "@tiptap/pm/history";
+import { TextSelection } from "@tiptap/pm/state";
 import type { Node as PmNode } from "@tiptap/pm/model";
 import { cn } from "@/lib/utils";
+import { typingExtension, type TypingOptions } from "./editor-typing.ts";
 import { sanitizeEmailHtml } from "./sanitize.ts";
 import {
   SIGNATURE_CLASS,
@@ -70,7 +73,7 @@ export interface EditorFeatures {
 }
 
 /** The StarterKit as the composer uses it: the server's schema, nothing more. */
-export function composeExtensions(features: EditorFeatures = {}) {
+export function composeExtensions(features: EditorFeatures = {}, typing?: () => TypingOptions) {
   const lists = features.lists ?? true;
   const quotes = features.quotes ?? true;
   const signature = features.signature ?? true;
@@ -89,6 +92,8 @@ export function composeExtensions(features: EditorFeatures = {}) {
       link: { openOnClick: false, autolink: true, protocols: LINK_PROTOCOLS, defaultProtocol: "https" },
     }),
     ...(signature ? [SignatureDocument, SignatureNode] : []),
+    // Typing speed: autocorrect and the other aids, where the host gives their settings.
+    ...(typing !== undefined ? [typingExtension(typing)] : []),
   ];
 }
 
@@ -159,7 +164,11 @@ export function ownerParagraphsOf(doc: JSONContent): { paragraphs: string[]; has
     return (node.content ?? []).map(inline).join("");
   };
   const text = (paragraph: JSONContent) => (paragraph.content ?? []).map(inline).join("");
-  for (const block of doc.content ?? []) {
+  const blocks = doc.content ?? [];
+  // The lines Mail wrote above a quote (attribution, forwarded header) are not the owner's.
+  const plain = (node: JSONContent): string => (node.type === "hardBreak" ? "\n" : node.type === "text" ? node.text ?? "" : (node.content ?? []).map(plain).join(""));
+  const end = ownerBlocksEnd(blocks.map((block) => ({ type: block.type ?? "", text: block.type === "paragraph" ? plain(block) : "" })));
+  for (const block of blocks.slice(0, end)) {
     if (block.type === "blockquote" || block.type === "signature") break;
     if (block.type === "paragraph") paragraphs.push(text(block));
     else if (block.type === "codeBlock") {
@@ -172,7 +181,7 @@ export function ownerParagraphsOf(doc: JSONContent): { paragraphs: string[]; has
 }
 
 export interface OwnerRange {
-  /** Document positions of the range: from the start to the first quote or signature. */
+  /** Document positions of the range: from the start to the first quote, signature or line Mail wrote above the quote. */
   from: number;
   to: number;
   paragraphs: string[];
@@ -182,15 +191,13 @@ export interface OwnerRange {
 /** The owner's range of the composer's document now. */
 export function ownerRange(editor: Editor): OwnerRange {
   const doc = editor.state.doc;
-  let to = doc.content.size;
-  let found = false;
+  const blocks: { type: string; text: string; offset: number }[] = [];
   doc.forEach((node: PmNode, offset: number) => {
-    if (found) return;
-    if (node.type.name === "blockquote" || node.type.name === "signature") {
-      to = offset;
-      found = true;
-    }
+    blocks.push({ type: node.type.name, text: node.type.name === "paragraph" ? node.textContent : "", offset });
   });
+  // The range ends before the quote or signature, and before the lines Mail wrote above the quote.
+  const end = ownerBlocksEnd(blocks);
+  const to = end < blocks.length ? blocks[end]!.offset : doc.content.size;
   return { from: 0, to, ...ownerParagraphsOf(editor.getJSON()) };
 }
 
@@ -213,6 +220,39 @@ export function replaceOwnerRange(editor: Editor, paragraphs: readonly string[])
   });
   const tr = closeHistory(state.tr.replaceWith(0, to, nodes));
   editor.view.dispatch(tr);
+}
+
+/**
+ * Puts plain paragraphs at the selection (dictation): the first continues
+ * the line the cursor is on, each next one starts a new paragraph, and what
+ * stood after the cursor follows the last. One editor step, so one Undo
+ * takes the whole dictation back. The text is never a link, even when the
+ * cursor stood at the end of one. Inside a quote, a signature or a code
+ * block it lands where typing would.
+ */
+export function insertParagraphs(editor: Editor, paragraphs: readonly string[]): void {
+  const texts = paragraphs.filter((paragraph) => paragraph !== "");
+  if (texts.length === 0) return;
+  // Plain text through the transaction; never a string through insertContent, which would read it as HTML.
+  const tr = closeHistory(editor.state.tr);
+  const link = editor.schema.marks.link;
+  texts.forEach((text, index) => {
+    if (index > 0) {
+      const at = tr.selection.from;
+      tr.split(at);
+      // Past the end of the split-off line and into the new one.
+      tr.setSelection(TextSelection.near(tr.doc.resolve(at + 2)));
+    }
+    const from = tr.selection.from;
+    tr.insertText(text);
+    if (link !== undefined) tr.removeMark(from, tr.selection.from, link);
+  });
+  if (link !== undefined) tr.removeStoredMark(link);
+  editor.view.dispatch(tr);
+  // The transcript may arrive seconds later: a field the owner moved to keeps the focus.
+  const active = editor.view.dom.ownerDocument.activeElement;
+  const elsewhere = active instanceof HTMLElement && !editor.view.dom.contains(active) && /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName);
+  if (!elsewhere) editor.commands.focus();
 }
 
 /** A fence line that opens a code block: ``` with an optional language word. */
@@ -277,6 +317,8 @@ export interface ComposeEditorProps {
   initialDoc: EditorDoc;
   /** HTML to load once after the editor starts (DraftView.import), or null. */
   importFrom: { html: string; into: "quote" | "body"; stripSignature?: boolean } | null;
+  /** Text to put in place of the owner's own range once, after the import (a drafted reply the owner chose to use). */
+  initialOwn?: readonly string[];
   onChange: (doc: EditorDoc) => void;
   /** Files pasted or dropped into the editor. */
   onFiles: (files: File[]) => void;
@@ -292,12 +334,15 @@ export interface ComposeEditorProps {
   label: string;
   /** Lists, quotes and the signature block; all on unless turned off. */
   features?: EditorFeatures;
+  /** Typing speed: the aids' settings, read on every key; absent: none of them. */
+  typing?: () => TypingOptions;
   className?: string;
 }
 
 export function ComposeEditor({
   initialDoc,
   importFrom,
+  initialOwn,
   onChange,
   onFiles,
   onReady,
@@ -305,6 +350,7 @@ export function ComposeEditor({
   onLinkShortcut,
   label,
   features,
+  typing,
   className,
 }: ComposeEditorProps) {
   const handlers = useRef({ onChange, onFiles, onLinkShortcut, onImported });
@@ -314,7 +360,7 @@ export function ComposeEditor({
   const editorRef = useRef<Editor | null>(null);
 
   const editor = useEditor({
-    extensions: composeExtensions(features),
+    extensions: composeExtensions(features, typing),
     content: initialDoc,
     immediatelyRender: true,
     shouldRerenderOnTransaction: false,
@@ -390,12 +436,18 @@ export function ComposeEditor({
       importing.current = true;
       try {
         importHtml(editor, importFrom.html, importFrom.into, importFrom.stripSignature === true);
+        // Part of the same load: the first save keeps the quote and the text together.
+        if (initialOwn !== undefined && initialOwn.length > 0) replaceOwnerRange(editor, initialOwn);
       } finally {
         importing.current = false;
       }
       handlers.current.onImported?.(editor.getJSON());
+    } else if (!imported.current && initialOwn !== undefined && initialOwn.length > 0) {
+      // No quote to load: the text is an edit, saved like one.
+      imported.current = true;
+      replaceOwnerRange(editor, initialOwn);
     }
-    // onReady and importFrom are read once per editor.
+    // onReady, importFrom and initialOwn are read once per editor.
   }, [editor]);
 
   return <EditorContent editor={editor} className={cn("min-h-0", className)} />;

@@ -3,16 +3,126 @@
 // over mail inside AI access and sends the excerpts. The answer is model
 // text; the cited messages are the plugin's own links. Nothing is kept
 // after the panel closes.
-import { useEffect } from "react";
-import type { AiResultView } from "../core/model.ts";
+import { useEffect, useState } from "react";
+import type { AiResultView, AskActionView } from "../core/model.ts";
+import { Button } from "@/components/ui/button";
+import { shownText } from "./agent-send-card.tsx";
 import { useAiJob, type AiJobPorts } from "./ai-job.ts";
 import { AiAction, AiFailure, AiFrame, AiNotesList, AiText, CitationChips, aiLabel, phaseText, type AiCitation } from "./ai-text.tsx";
-import { tx } from "./i18n/index.ts";
+import { tx, txn } from "./i18n/index.ts";
 
 type AskResult = Extract<AiResultView, { kind: "ask" }>;
 
 export const ASK_QUESTION_MAX = 500;
 export const ASK_NOT_FOUND = "Not found in your mail.";
+
+/** What runs when the owner presses an action under the answer (Ask AI with actions). */
+export interface AskActionPorts {
+  /** Puts the query into the search box and runs it. */
+  search: (query: string) => void;
+  /** Opens a reply to the cited message with the drafted text in it. */
+  reply: (action: Extract<AskActionView, { type: "reply" }>) => Promise<void> | void;
+  /** Opens a new message with the drafted text in it. */
+  compose: (paragraphs: string[]) => Promise<void> | void;
+  /** Archive, mark read or flag the cited Inbox messages, with the ordinary Undo. */
+  act: (action: Extract<AskActionView, { type: "act" }>) => Promise<void> | void;
+}
+
+const DRAFT_PREVIEW = 240;
+
+/** The label of an act button. */
+export function actLabel(action: Extract<AskActionView, { type: "act" }>): string {
+  switch (action.action) {
+    case "archive":
+      return txn(action.count, "Archive {count} message", "Archive {count} messages");
+    case "mark_read":
+      return txn(action.count, "Mark {count} message read", "Mark {count} messages read");
+    case "flag":
+      return txn(action.count, "Flag {count} message", "Flag {count} messages");
+  }
+}
+
+function AskActions({ actions, ports }: { actions: readonly AskActionView[]; ports: AskActionPorts }) {
+  const [done, setDone] = useState<ReadonlySet<number>>(new Set());
+  const [busy, setBusy] = useState<number | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
+  const run = async (index: number, work: () => Promise<void> | void, once: boolean) => {
+    if (busy !== null || done.has(index)) return;
+    setBusy(index);
+    setProblem(null);
+    try {
+      await work();
+      if (once) setDone((prev) => new Set(prev).add(index));
+    } catch (error) {
+      setProblem(error instanceof Error && error.message !== "" ? error.message : "The action could not be done");
+    } finally {
+      setBusy(null);
+    }
+  };
+  const preview = (paragraphs: readonly string[]) => {
+    const text = shownText(paragraphs.join(" ")).replace(/\s+/g, " ").trim();
+    return text.length > DRAFT_PREVIEW ? `${text.slice(0, DRAFT_PREVIEW)}\u2026` : text;
+  };
+  return (
+    <div role="group" aria-label={tx("What you can do next")} className="flex flex-col gap-1.5 border-t border-border pt-2">
+      <h3 className="text-xs font-medium text-muted-foreground">{tx("What you can do next")}</h3>
+      <ul className="flex flex-col gap-1.5">
+        {actions.map((action, index) => {
+          const off = busy !== null || done.has(index);
+          return (
+            <li key={index} className="flex flex-col items-start gap-1">
+              {action.type === "search" ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-auto min-h-7 max-w-full whitespace-normal break-words text-left"
+                  disabled={off}
+                  aria-label={`${tx("Show these messages")}: ${shownText(action.query)}`}
+                  onClick={() => void run(index, () => ports.search(action.query), false)}
+                >
+                  {tx("Show these messages")}
+                  <span className="ml-1 font-mono text-xs text-muted-foreground">{shownText(action.query)}</span>
+                </Button>
+              ) : null}
+              {action.type === "reply" || action.type === "compose" ? (
+                <>
+                  <p className="break-words rounded-md border border-border bg-muted/40 px-2 py-1 text-xs text-foreground">{preview(action.paragraphs)}</p>
+                  {action.linksRemoved > 0 ? (
+                    <p className="text-xs text-muted-foreground">
+                      {txn(action.linksRemoved, "{count} link you did not write was removed.", "{count} links you did not write were removed.")}
+                    </p>
+                  ) : null}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7"
+                    disabled={off}
+                    onClick={() =>
+                      void run(index, () => (action.type === "reply" ? ports.reply(action) : ports.compose(action.paragraphs.map(shownText))), true)
+                    }
+                  >
+                    {action.type === "reply" ? tx("Reply to message {n} with this", { n: action.n }) : tx("Write this message")}
+                  </Button>
+                </>
+              ) : null}
+              {action.type === "act" ? (
+                <Button variant="outline" size="sm" className="h-7" disabled={off} onClick={() => void run(index, () => ports.act(action), true)}>
+                  {actLabel(action)}
+                </Button>
+              ) : null}
+            </li>
+          );
+        })}
+      </ul>
+      {problem !== null ? (
+        <p role="alert" className="text-xs text-destructive">
+          {tx(problem)}
+        </p>
+      ) : null}
+      <p className="text-xs text-muted-foreground">{tx("AI can be wrong; check before you act.")}</p>
+    </div>
+  );
+}
 
 export interface AskPanelProps {
   ports: AiJobPorts;
@@ -22,7 +132,37 @@ export interface AskPanelProps {
   /** Opens the conversation of a cited message. */
   onOpen: (citation: AiCitation) => void;
   onClose: () => void;
+  /** Ask AI with actions: how a proposed action runs; absent: none is offered. */
+  actions?: AskActionPorts;
   pollMs?: number;
+}
+
+/**
+ * Runs an act over its Inbox messages as one batch with one Undo. What was
+ * done is recorded and the list refreshed even when part was refused (a
+ * message that moved since the answer); the refused part is said aside.
+ * Throws only when nothing was done.
+ */
+export async function runAskAct(
+  rpc: {
+    call: (
+      method: "message_action",
+      input: { messageIds: string[]; action: "archive" | "mark_read" | "flag"; role: "inbox"; undoId: string },
+    ) => Promise<{ groups: { queued: number; error: string | null }[]; undoable?: boolean | undefined }>;
+  },
+  action: Extract<AskActionView, { type: "act" }>,
+  page: { recordUndo: (undoId: string, action: "archive" | "mark_read" | "flag", count: number, destination: null, inbox: true) => void; refresh: () => void; warn: (text: string) => void },
+  newId: () => string = () => crypto.randomUUID(),
+): Promise<void> {
+  const undoId = newId();
+  const messageIds = action.groups.flatMap((group) => group.messageIds).slice(0, 200);
+  const result = await rpc.call("message_action", { messageIds, action: action.action, role: "inbox", undoId });
+  const queued = result.groups.reduce((sum, group) => sum + group.queued, 0);
+  const refused = [...new Set(result.groups.map((group) => group.error).filter((error): error is string => error !== null))];
+  if (queued === 0) throw new Error(refused[0] ?? "Nothing was changed");
+  if (result.undoable === true) page.recordUndo(undoId, action.action, queued, null, true);
+  for (const error of refused) page.warn(error);
+  page.refresh();
 }
 
 /** The cited sources in the order the answer lists them, unknown numbers left out. */
@@ -35,7 +175,7 @@ export function askSources(result: AskResult): AiCitation[] {
   return out;
 }
 
-export function AskPanel({ ports, question, accountId, onOpen, onClose, pollMs }: AskPanelProps) {
+export function AskPanel({ ports, question, accountId, onOpen, onClose, actions, pollMs }: AskPanelProps) {
   const job = useAiJob(ports, pollMs);
   const { run, state } = job;
   useEffect(() => {
@@ -91,6 +231,9 @@ export function AskPanel({ ports, question, accountId, onOpen, onClose, pollMs }
               ))}
             </ul>
           </div>
+        ) : null}
+        {result !== null && result.found && actions !== undefined && (result.actions ?? []).length > 0 ? (
+          <AskActions actions={result.actions ?? []} ports={actions} />
         ) : null}
         {result !== null ? <AiNotesList notes={result.notes} /> : null}
       </AiFrame>

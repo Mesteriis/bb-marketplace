@@ -12,6 +12,13 @@
 //   - thread, folder, badge and search counts count distinct dedup keys, and
 //     rows waiting to move out are hidden from their folder, the badge and
 //     search; moves re-home rows (same id), detaching them without a uid map.
+import type { Exchange } from "../sender-rhythm.ts";
+import type { ReplyDraftRecord } from "../auto-drafts.ts";
+import type { OpenEvent, OpenedUnanswered, SentTracking } from "../read-status.ts";
+import type { TemplateFileInfo } from "../ports.ts";
+import { isCalendarPart } from "../calendar-invite.ts";
+import { NO_SENDER_SETS, TABS_MAX, TabsFullError, inSenderSet, type InboxTab, type SenderSets, type TabMatch } from "../inbox-tabs.ts";
+import type { PluginGrant, PluginRequest } from "../plugin-access.ts";
 import type { ReplySource } from "../compose-reply.ts";
 import type {
   ComposeAttachment,
@@ -76,6 +83,7 @@ import {
   type AccountCorrespondence,
   type Contact,
   type ContactMessage,
+  isAutomatedAddress,
 } from "../contacts.ts";
 import type { ComposeDoc } from "../compose-doc.ts";
 import type { SignatureDoc } from "../compose-signature.ts";
@@ -151,12 +159,16 @@ import { ownerLabels } from "../labels.ts";
 import { renamedPath } from "../folder-ops.ts";
 import { SAVED_SEARCHES_MAX } from "../saved-searches.ts";
 import { filenameMatches } from "../server-search.ts";
+import { fromShape } from "../search.ts";
+import { NO_EXTRAS, TEMPLATE_FILES_MAX, TEMPLATE_FILES_MAX_BYTES, type TemplateExtras } from "../snippets.ts";
 import { normalizeListId, type DevClass } from "../dev-notify.ts";
 import { RULES_MAX, RULE_READY_DAYS, RULE_RUNS_KEEP_DAYS, RULE_THREADS_KEEP_DAYS, capVerdict, type Rule } from "../mail-rules.ts";
 import { INCIDENT_KEEP_DAYS } from "../alerts.ts";
 import { UNKNOWN_PROJECT_DAYS } from "../projects.ts";
 import { groupDevRows, pageDevGroups } from "../dev-groups.ts";
 import { OPEN_AI_SCOPE, inAiScope, senderExcluded, type AccountScope, type AiScope } from "../ai-scope.ts";
+import { AiLabelRefusal, LABELS_MAX, labelKey, type AiLabel, type MessageAi } from "../ai-sort.ts";
+import { VOICE_SCAN } from "../ai-write.ts";
 import { AGENT_LOG_IDS_MAX, AGENT_LOG_KEEP_DAYS, AGENT_LOG_ROWS_MAX, type LogEntry, type LogOutcome } from "../agent-log.ts";
 import type { AiCategoryAnswer } from "../ai-input.ts";
 import { CATEGORY_RULES_MAX, type Category, type CategoryRule, type CategorySource, type PreviousLabel } from "../categories.ts";
@@ -181,7 +193,9 @@ export function makeStoredAccount(overrides: Partial<StoredAccount> = {}): Store
     lastSyncAt: null,
     lastError: null,
     authFailed: false,
+    authKind: "password",
     passwordSealed: "sealed-password",
+    grantedScopes: [],
     smtp: null,
     sentCopy: "append",
     signature: null,
@@ -944,8 +958,11 @@ export class InMemoryMailStore implements MailStore {
     cursor: string | null,
     limit: number,
     filter?: ThreadFilter,
+    tab?: TabMatch | null,
   ): { threads: ThreadSummary[]; nextCursor: string | null } {
-    const all = this.threadSummaries(accountId, folder, filter);
+    const inFolder = (r: Row) => r.accountId === accountId && r.folder === folder && r.movePending === null;
+    const held = tab === undefined ? null : this.tabThreads(inFolder, tab);
+    const all = this.threadSummaries(accountId, folder, filter).filter((thread) => held === null || held.has(thread.id));
     const offset = cursor === null ? 0 : Number(cursor);
     const threads = all.slice(offset, offset + limit);
     const next = offset + threads.length;
@@ -957,9 +974,11 @@ export class InMemoryMailStore implements MailStore {
     cursor: string | null,
     limit: number,
     filter?: ThreadFilter,
+    tab?: TabMatch | null,
   ): { threads: ThreadSummary[]; nextCursor: string | null } {
     if (role === "all") return { threads: [], nextCursor: null };
     const inRole = (r: Row) => r.movePending === null && this.roleOf(r.accountId, r.folder) === role;
+    const held = tab === undefined ? null : this.tabThreads(inRole, tab);
     const listed = new Set(this.state.rows.filter(this.member(inRole, filter)).map((r) => r.threadId));
     const groups = new Map<string, Row[]>();
     for (const row of this.state.rows) {
@@ -970,6 +989,7 @@ export class InMemoryMailStore implements MailStore {
     }
     // Newest first, undated last, then id descending (the SQLite keyset order).
     const all = [...groups.entries()]
+      .filter(([id]) => held === null || held.has(id))
       .map(([id, rows]) => this.summarize(id, rows, inRole))
       .sort((a, b) => {
         const byDate = (timeOf(b.lastDate) ?? -Infinity) - (timeOf(a.lastDate) ?? -Infinity);
@@ -1051,6 +1071,7 @@ export class InMemoryMailStore implements MailStore {
   createDraft(input: NewDraft): DraftRecord {
     const record: DraftRecord = {
       ...structuredClone(input),
+      preparedBy: null,
       purpose: input.purpose ?? null,
       revision: 1,
       serverState: input.serverCopy === null ? "none" : "saved",
@@ -1058,6 +1079,19 @@ export class InMemoryMailStore implements MailStore {
     };
     this.state.drafts.set(record.id, record);
     return structuredClone(record);
+  }
+
+  markDraftPreparedBy(draftId: string, pluginId: string): void {
+    const draft = this.state.drafts.get(draftId);
+    if (draft) draft.preparedBy = pluginId;
+  }
+
+  pluginDraftTimes(pluginId: string): string[] {
+    return [...this.state.drafts.values()]
+      .filter((draft) => draft.preparedBy === pluginId)
+      .map((draft) => draft.createdAt)
+      .sort()
+      .reverse();
   }
 
   getDraft(id: string): DraftRecord | null {
@@ -1518,7 +1552,8 @@ export class InMemoryMailStore implements MailStore {
     return removed;
   }
 
-  contacts(query: string, limit: number, opts?: { scoped: boolean }): Contact[] {
+  contacts(query: string, limit: number, opts?: { scoped: boolean; accountId?: string }): Contact[] {
+    const only = opts?.accountId ?? null;
     const scoped = opts?.scoped === true;
     const words = queryWords(query);
     if (words.length === 0 || limit <= 0) return [];
@@ -1531,6 +1566,7 @@ export class InMemoryMailStore implements MailStore {
       return tb - ta;
     };
     const messages = this.contactRows()
+      .filter((row) => only === null || row.accountId === only)
       .filter((row) => !scoped || this.inAiScope(row))
       .sort(newestFirst)
       .slice(0, CONTACT_SCAN)
@@ -1538,12 +1574,14 @@ export class InMemoryMailStore implements MailStore {
         this.contactMessage(row, messageTextMask(row.message.subject, snippetOf(row.message), row.message.bodyText, words)),
       );
     const bulkSenders = new Set(
-      this.state.rows.filter((r) => this.bulkOf(r) === true).map((r) => r.message.from.address.trim().toLowerCase()),
+      this.state.rows
+        .filter((r) => (only === null || r.accountId === only) && this.bulkOf(r) === true)
+        .map((r) => r.message.from.address.trim().toLowerCase()),
     );
     const ranked = rankContacts(
       messages,
       words,
-      ownerAddressSets(this.listAccounts(), this.state.identities),
+      ownerAddressSets(this.listAccounts(), this.state.identities).filter((owner) => only === null || owner.id === only),
       bulkSenders,
       scoped ? Infinity : limit,
     );
@@ -1828,7 +1866,7 @@ export class InMemoryMailStore implements MailStore {
   }
 
   saveTemplate(
-    input: { id: string | null; name: string; nameKey: string; doc: ComposeDoc },
+    input: { id: string | null; name: string; nameKey: string; doc: ComposeDoc; extras?: TemplateExtras },
     newId: string,
     nowIso: string,
   ): { id: string } | { conflict: true } {
@@ -1839,7 +1877,11 @@ export class InMemoryMailStore implements MailStore {
       throw new ComposeError("conflict", "There are too many templates");
     }
     const id = existing?.id ?? input.id ?? newId;
+    const kept: TemplateExtras = existing ?? NO_EXTRAS;
+    const extras = input.extras ?? { subject: kept.subject, to: kept.to, cc: kept.cc, bcc: kept.bcc };
     this.state.templates.set(id, {
+      ...structuredClone(extras),
+      files: existing?.files ?? [],
       id,
       name: input.name,
       nameKey: input.nameKey,
@@ -1851,7 +1893,33 @@ export class InMemoryMailStore implements MailStore {
   }
 
   deleteTemplate(id: string): boolean {
+    this.templateFileData.delete(id);
     return this.state.templates.delete(id);
+  }
+
+  private templateFileData = new Map<string, (TemplateFileInfo & { sha256: string; data: Uint8Array })[]>();
+
+  addTemplateFile(templateId: string, file: TemplateFileInfo & { sha256: string; data: Uint8Array }, _nowIso: string): "added" | "full" | "unknown" {
+    const template = this.state.templates.get(templateId);
+    if (template === undefined) return "unknown";
+    const have = this.templateFileData.get(templateId) ?? [];
+    if (have.length >= TEMPLATE_FILES_MAX || have.reduce((sum, f) => sum + f.size, 0) + file.size > TEMPLATE_FILES_MAX_BYTES) return "full";
+    this.templateFileData.set(templateId, [...have, { ...file, data: new Uint8Array(file.data) }]);
+    template.files = [...template.files, { id: file.id, name: file.name, mimeType: file.mimeType, size: file.size }];
+    return "added";
+  }
+
+  removeTemplateFile(templateId: string, fileId: string): boolean {
+    const have = this.templateFileData.get(templateId) ?? [];
+    if (!have.some((f) => f.id === fileId)) return false;
+    this.templateFileData.set(templateId, have.filter((f) => f.id !== fileId));
+    const template = this.state.templates.get(templateId);
+    if (template !== undefined) template.files = template.files.filter((f) => f.id !== fileId);
+    return true;
+  }
+
+  templateFiles(templateId: string): (TemplateFileInfo & { sha256: string; data: Uint8Array })[] {
+    return (this.templateFileData.get(templateId) ?? []).map((f) => ({ ...f, data: new Uint8Array(f.data) }));
   }
 
   getTemplateByKey(nameKey: string): TemplateRecord | null {
@@ -2210,6 +2278,333 @@ export class InMemoryMailStore implements MailStore {
 
   getAiScope(): AiScope {
     return this.aiScope;
+  }
+
+  private pluginGrants: PluginGrant[] = [];
+  private pluginRequests: PluginRequest[] = [];
+  private pluginAsked: { pluginId: string; askedAt: string }[] = [];
+
+  listPluginGrants(): PluginGrant[] {
+    return this.pluginGrants.map((grant) => ({ ...grant }));
+  }
+
+  setPluginGrant(grant: PluginGrant, on: boolean): void {
+    const same = (g: PluginGrant) => g.pluginId === grant.pluginId && g.right === grant.right && g.accountId === grant.accountId;
+    if (!on) this.pluginGrants = this.pluginGrants.filter((g) => !same(g));
+    else if (!this.pluginGrants.some(same)) this.pluginGrants.push({ ...grant });
+  }
+
+  revokePluginGrants(pluginId: string): void {
+    this.pluginGrants = this.pluginGrants.filter((grant) => grant.pluginId !== pluginId);
+    this.pluginRequests = this.pluginRequests.filter((request) => request.pluginId !== pluginId);
+  }
+
+  getPluginRequests(): PluginRequest[] {
+    return this.pluginRequests.map((request) => ({ ...request, rights: [...request.rights] }));
+  }
+
+  putPluginRequest(request: PluginRequest): void {
+    this.pluginRequests = [...this.pluginRequests.filter((r) => r.pluginId !== request.pluginId), { ...request, rights: [...request.rights] }];
+    this.pluginAsked.push({ pluginId: request.pluginId, askedAt: request.askedAt });
+  }
+
+  dismissPluginRequest(pluginId: string): void {
+    this.pluginRequests = this.pluginRequests.filter((request) => request.pluginId !== pluginId);
+  }
+
+  pluginLastCalls(): Map<string, string> {
+    return new Map();
+  }
+
+  /** The conversations of a scope that an Inbox tab holds. */
+  private tabThreads(inScope: (r: Row) => boolean, tab: TabMatch | null): Set<string> {
+    const rows = this.state.rows.filter(inScope);
+    if (tab === null) return new Set();
+    if (tab.kind === "all") return new Set(rows.filter((r) => this.matchesConditions(r, tab.conditions)).map((r) => r.threadId));
+    const taken = new Set(rows.filter((r) => tab.of.some((conditions) => this.matchesConditions(r, conditions))).map((r) => r.threadId));
+    return new Set(rows.map((r) => r.threadId).filter((id) => !taken.has(id)));
+  }
+
+  private aiLabels: (AiLabel & { position: number })[] = [];
+  private aiByKey = new Map<string, MessageAi & { createdAt: string }>();
+
+  listAiLabels(): AiLabel[] {
+    return [...this.aiLabels].sort((a, b) => a.position - b.position).map(({ position: _position, ...label }) => ({ ...label }));
+  }
+
+  saveAiLabel(label: AiLabel): void {
+    if (this.aiLabels.some((l) => l.id !== label.id && labelKey(l.name) === labelKey(label.name))) throw new AiLabelRefusal("name_taken");
+    const existing = this.aiLabels.find((l) => l.id === label.id);
+    if (existing !== undefined) {
+      Object.assign(existing, label);
+      return;
+    }
+    if (this.aiLabels.length >= LABELS_MAX) throw new AiLabelRefusal("full");
+    this.aiLabels.push({ ...label, position: Math.max(-1, ...this.aiLabels.map((l) => l.position)) + 1 });
+  }
+
+  deleteAiLabel(id: string): boolean {
+    const before = this.aiLabels.length;
+    this.aiLabels = this.aiLabels.filter((label) => label.id !== id);
+    return this.aiLabels.length < before;
+  }
+
+  moveAiLabel(id: string, direction: -1 | 1): void {
+    const labels = [...this.aiLabels].sort((a, b) => a.position - b.position);
+    const at = labels.findIndex((label) => label.id === id);
+    const other = labels[at + direction];
+    if (at < 0 || other === undefined) return;
+    const position = labels[at]!.position;
+    labels[at]!.position = other.position;
+    other.position = position;
+  }
+
+  saveMessageAi(rows: { messageId: string; summary: string | null; labelIds: string[] }[], nowIso: string, keepSinceIso: string): void {
+    for (const item of rows) {
+      const row = this.state.rows.find((r) => r.id === item.messageId);
+      if (row !== undefined) this.aiByKey.set(stateKey(row.accountId, row.dedupKey), { summary: item.summary, labelIds: [...item.labelIds], createdAt: nowIso });
+    }
+    for (const [key, value] of this.aiByKey) if (value.createdAt < keepSinceIso) this.aiByKey.delete(key);
+  }
+
+  private aiView(row: Row): MessageAi | null {
+    const found = this.aiByKey.get(stateKey(row.accountId, row.dedupKey));
+    if (found === undefined) return null;
+    const known = new Set(this.aiLabels.map((label) => label.id));
+    return { summary: found.summary, labelIds: found.labelIds.filter((id) => known.has(id)) };
+  }
+
+  messageAi(messageIds: string[]): Map<string, MessageAi> {
+    const out = new Map<string, MessageAi>();
+    for (const id of messageIds) {
+      const row = this.state.rows.find((r) => r.id === id);
+      const view = row === undefined ? null : this.aiView(row);
+      if (view !== null) out.set(id, view);
+    }
+    return out;
+  }
+
+  threadAi(threadIds: string[]): Map<string, MessageAi> {
+    const out = new Map<string, MessageAi>();
+    for (const threadId of threadIds) {
+      const newest = this.state.rows
+        .filter((r) => r.threadId === threadId && this.aiView(r) !== null)
+        .sort((a, b) => {
+          const [x, y] = [a.message.date, b.message.date];
+          if (x === null || y === null) return x === y ? b.id.localeCompare(a.id) : x === null ? -1 : 1;
+          return y.localeCompare(x) || b.id.localeCompare(a.id);
+        })[0];
+      if (newest !== undefined) out.set(threadId, this.aiView(newest)!);
+    }
+    return out;
+  }
+
+  private sentTracking = new Map<string, SentTracking>();
+  private openEvents = new Map<number, OpenEvent>();
+  private openCursorValue = 0;
+
+  saveSentTracking(row: SentTracking): void {
+    this.sentTracking.set(row.token, { ...row, rfcMessageId: normalizeMessageId(row.rfcMessageId) });
+  }
+
+  saveOpenEvents(events: readonly OpenEvent[]): number {
+    let kept = 0;
+    for (const event of events) {
+      if (!this.sentTracking.has(event.token) || this.openEvents.has(event.seq)) continue;
+      this.openEvents.set(event.seq, { ...event });
+      kept += 1;
+    }
+    return kept;
+  }
+
+  private openScope = "";
+
+  openFeed(): { scope: string; cursor: number } {
+    return { scope: this.openScope, cursor: this.openCursorValue };
+  }
+
+  resetOpenFeed(scope: string): void {
+    this.openEvents.clear();
+    this.openScope = scope;
+    this.openCursorValue = 0;
+  }
+
+  setOpenCursor(seq: number): void {
+    this.openCursorValue = seq;
+  }
+
+  messageOpens(messageIds: string[]): Map<string, { at: string; kind: string }[]> {
+    const out = new Map<string, { at: string; kind: string }[]>();
+    for (const id of messageIds) {
+      const rfc = this.state.rows.find((r) => r.id === id)?.message.messageId ?? null;
+      if (rfc === null) continue;
+      const tokens = [...this.sentTracking.values()].filter((row) => row.rfcMessageId === normalizeMessageId(rfc)).map((row) => row.token);
+      if (tokens.length === 0) continue;
+      out.set(
+        id,
+        [...this.openEvents.values()]
+          .filter((event) => tokens.includes(event.token))
+          .sort((a, b) => a.at.localeCompare(b.at) || a.seq - b.seq)
+          .map(({ at, kind }) => ({ at, kind })),
+      );
+    }
+    return out;
+  }
+
+  threadOpens(threadIds: string[]): Map<string, { at: string; kind: string }[]> {
+    const out = new Map<string, { at: string; kind: string }[]>();
+    for (const threadId of threadIds) {
+      const ids = new Set(
+        this.state.rows.filter((r) => r.threadId === threadId && r.message.messageId !== null).map((r) => normalizeMessageId(r.message.messageId!)),
+      );
+      const tokens = new Set([...this.sentTracking.values()].filter((row) => ids.has(row.rfcMessageId)).map((row) => row.token));
+      if (tokens.size === 0) continue;
+      out.set(
+        threadId,
+        [...this.openEvents.values()]
+          .filter((event) => tokens.has(event.token))
+          .sort((a, b) => a.at.localeCompare(b.at) || a.seq - b.seq)
+          .map(({ at, kind }) => ({ at, kind })),
+      );
+    }
+    return out;
+  }
+
+  openedUnanswered(sinceIso: string, limit: number): OpenedUnanswered[] {
+    const out: OpenedUnanswered[] = [];
+    for (const tracked of this.sentTracking.values()) {
+      if (tracked.createdAt < sinceIso) continue;
+      const events = [...this.openEvents.values()].filter((event) => event.token === tracked.token && event.kind !== "machine");
+      if (events.length === 0) continue;
+      const sent = this.state.rows
+        .filter((r) => r.accountId === tracked.accountId && r.message.messageId !== null && normalizeMessageId(r.message.messageId) === tracked.rfcMessageId)
+        .sort((a, b) => (b.message.date ?? "").localeCompare(a.message.date ?? ""))[0];
+      if (sent === undefined || sent.message.date === null) continue;
+      const date = sent.message.date;
+      if (this.state.rows.some((r) => r.threadId === sent.threadId && (r.message.date === null || r.message.date > date))) continue;
+      const first = sent.message.to[0];
+      out.push({
+        accountId: tracked.accountId,
+        threadId: sent.threadId,
+        subject: sent.message.subject,
+        to: first === undefined ? null : { name: first.name, address: first.address },
+        count: events.length,
+        lastAt: events.reduce((latest, event) => (event.at > latest ? event.at : latest), ""),
+      });
+    }
+    return out.sort((a, b) => b.lastAt.localeCompare(a.lastAt)).slice(0, limit);
+  }
+
+  pruneTracking(beforeIso: string): void {
+    for (const [token, row] of this.sentTracking) {
+      if (row.createdAt >= beforeIso) continue;
+      this.sentTracking.delete(token);
+      for (const [seq, event] of this.openEvents) if (event.token === token) this.openEvents.delete(seq);
+    }
+  }
+
+  private replyDrafts = new Map<string, ReplyDraftRecord>();
+
+  saveReplyDraft(draft: ReplyDraftRecord, max: number): void {
+    this.replyDrafts.set(draft.messageId, { ...draft, paragraphs: [...draft.paragraphs] });
+    const newest = [...this.replyDrafts.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.messageId.localeCompare(b.messageId));
+    for (const old of newest.slice(max)) this.replyDrafts.delete(old.messageId);
+  }
+
+  getReplyDraft(messageId: string): ReplyDraftRecord | null {
+    const found = this.replyDrafts.get(messageId);
+    return found === undefined ? null : { ...found, paragraphs: [...found.paragraphs] };
+  }
+
+  deleteReplyDraft(messageId: string): boolean {
+    return this.replyDrafts.delete(messageId);
+  }
+
+  private inboxTabs: InboxTab[] = [];
+
+  listInboxTabs(): InboxTab[] {
+    return [...this.inboxTabs].sort((a, b) => a.position - b.position).map((tab) => ({ ...tab }));
+  }
+
+  saveInboxTab(tab: { id: string; name: string; query: string }): InboxTab {
+    const existing = this.inboxTabs.find((t) => t.id === tab.id);
+    if (existing !== undefined) {
+      existing.name = tab.name;
+      existing.query = tab.query;
+      return { ...existing };
+    }
+    if (this.inboxTabs.length >= TABS_MAX) throw new TabsFullError();
+    const created = { ...tab, position: Math.max(-1, ...this.inboxTabs.map((t) => t.position)) + 1 };
+    this.inboxTabs.push(created);
+    return { ...created };
+  }
+
+  deleteInboxTab(id: string): void {
+    this.inboxTabs = this.inboxTabs.filter((tab) => tab.id !== id);
+  }
+
+  moveInboxTab(id: string, direction: -1 | 1): void {
+    const tabs = [...this.inboxTabs].sort((a, b) => a.position - b.position);
+    const at = tabs.findIndex((tab) => tab.id === id);
+    const other = tabs[at + direction];
+    if (at < 0 || other === undefined) return;
+    const position = tabs[at]!.position;
+    tabs[at]!.position = other.position;
+    other.position = position;
+  }
+
+  sentTexts(limit: number): string[] {
+    return this.state.rows
+      .filter((r) => r.movePending === null && this.roleOf(r.accountId, r.folder) === "sent" && (r.message.bodyText ?? "") !== "")
+      .sort((a, b) => (b.message.date ?? "").localeCompare(a.message.date ?? ""))
+      .slice(0, limit)
+      .map((r) => (r.message.bodyText ?? "").slice(0, 8000));
+  }
+
+  voiceTexts(to: string | null, limit: number): string[] {
+    const wanted = to === null ? null : to.trim().toLowerCase();
+    return this.state.rows
+      .filter((r) => r.movePending === null && this.roleOf(r.accountId, r.folder) === "sent" && (r.message.bodyText ?? "") !== "" && this.inAiScope(r))
+      .sort((a, b) => (b.message.date ?? "").localeCompare(a.message.date ?? ""))
+      .slice(0, wanted === null ? limit : VOICE_SCAN)
+      .filter((r) => wanted === null || r.message.to.some((a) => a.address.trim().toLowerCase() === wanted))
+      .slice(0, limit)
+      .map((r) => (r.message.bodyText ?? "").slice(0, 8000));
+  }
+
+  tabUnreadCounts(scope: { accountId: string; folder: string } | { role: SpecialUse }, matches: readonly (TabMatch | null)[]): number[] {
+    const inScope = (r: Row) =>
+      r.movePending === null &&
+      ("accountId" in scope ? r.accountId === scope.accountId && r.folder === scope.folder : this.roleOf(r.accountId, r.folder) === scope.role);
+    const unread = new Set(this.state.rows.filter((r) => inScope(r) && !r.isRead).map((r) => r.threadId));
+    return matches.map((match) => (match === null ? 0 : [...this.tabThreads(inScope, match)].filter((id) => unread.has(id)).length));
+  }
+
+  private senderSets: SenderSets = NO_SENDER_SETS;
+
+  setSenderSets(sets: SenderSets): void {
+    this.senderSets = sets;
+  }
+
+  /** Accepted recipients of sends, where this fake keeps them; none otherwise. */
+  private sentRecipientAddresses(): Set<string> {
+    return new Set();
+  }
+
+  hasCalendarPart(): boolean {
+    return false;
+  }
+
+  calendarMessages(): { id: string; date: string | null }[] {
+    return [];
+  }
+
+  pluginRequestTimes(pluginId: string): string[] {
+    return this.pluginAsked
+      .filter((asked) => asked.pluginId === pluginId)
+      .map((asked) => asked.askedAt)
+      .sort()
+      .reverse();
   }
 
   loadAiScope(): AiScope {
@@ -3236,6 +3631,8 @@ export class InMemoryMailStore implements MailStore {
       .filter((r) => accountId === null || r.accountId === accountId)
       .filter((r) => r.movePending === null)
       .filter((r) => opts?.scoped !== true || this.inAiScope(r))
+      // A sender set is the owner's alone (see the SQLite store).
+      .filter(() => opts?.scoped !== true || !query.conditions.some((c) => c.field === "sender"))
       .filter((r) => text === "" || textHit(r) || (withAttachments && attachmentHit(r)))
       .filter((r) => this.matchesConditions(r, query.conditions));
     // Newest first, undated first, then id descending (the SQLite order).
@@ -3561,6 +3958,37 @@ export class InMemoryMailStore implements MailStore {
     const page = files.slice(offset, offset + limit).map(({ order: _order, ...file }) => file);
     const next = offset + page.length;
     return { files: page, nextCursor: next < files.length ? String(next) : null };
+  }
+
+  senderExchange(address: string, accountId: string | null, sinceIso: string, limit: number): Exchange {
+    const lower = address.trim().toLowerCase();
+    const usable = (r: Row) => r.movePending === null && (accountId === null || r.accountId === accountId) && r.message.date !== null && r.message.date >= sinceIso;
+    const once = (rows: Row[]) => {
+      const seen = new Set<string>();
+      return rows
+        .sort((a, b) => (b.message.date ?? "").localeCompare(a.message.date ?? ""))
+        .filter((r) => {
+          const key = `${r.accountId}\u0000${r.dedupKey}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        })
+        .slice(0, limit);
+    };
+    const incoming = once(
+      this.state.rows.filter((r) => usable(r) && r.message.from.address.toLowerCase() === lower && !["junk", "trash"].includes(this.roleOf(r.accountId, r.folder) ?? "")),
+    ).map((r) => ({
+      date: r.message.date!,
+      messageId: r.message.messageId,
+      inReplyTo: r.message.inReplyTo,
+      others: [...r.message.to, ...r.message.cc].map((a) => a.address),
+    }));
+    const outgoing = once(
+      this.state.rows.filter(
+        (r) => usable(r) && this.roleOf(r.accountId, r.folder) === "sent" && [...r.message.to, ...r.message.cc].some((a) => a.address.trim().toLowerCase() === lower),
+      ),
+    ).map((r) => ({ date: r.message.date!, messageId: r.message.messageId, inReplyTo: r.message.inReplyTo }));
+    return { incoming, outgoing };
   }
 
   senderStats(address: string, accountId: string | null): SenderStats {
@@ -3896,8 +4324,16 @@ export class InMemoryMailStore implements MailStore {
         );
       };
       switch (condition.field) {
-        case "from":
+        case "text":
+          return has(m.subject, condition.value) || has(m.from.name, condition.value) || has(m.from.address, condition.value) || has(m.bodyText, condition.value);
+        case "from": {
+          const shape = fromShape(condition.value);
+          const address = m.from.address.toLowerCase();
+          const wanted = condition.value.trim().toLowerCase();
+          if (shape === "address") return address === wanted;
+          if (shape === "domain") return address.endsWith(`@${wanted}`) || address.endsWith(`.${wanted}`) || has(m.from.name, condition.value);
           return has(m.from.address, condition.value) || has(m.from.name, condition.value);
+        }
         case "to":
           return addresses(m.to);
         case "cc":
@@ -3906,11 +4342,28 @@ export class InMemoryMailStore implements MailStore {
           return has(m.subject, condition.value);
         case "list":
           return has(row.listId, condition.value);
+        case "sender": {
+          if (condition.value === "known") {
+            const address = m.from.address.trim().toLowerCase();
+            return (
+              this.state.rows.some(
+                (r) => this.roleOf(r.accountId, r.folder) === "sent" && [...r.message.to, ...r.message.cc].some((a) => a.address.trim().toLowerCase() === address),
+              ) || this.sentRecipientAddresses().has(address)
+            );
+          }
+          return (condition.value === "vip" || condition.value === "team") && inSenderSet(this.senderSets, condition.value, m.from.address);
+        }
         case "has":
+          if (condition.value === "invite") return m.attachments.some((a) => isCalendarPart({ mimeType: a.mimeType, filename: a.filename ?? null }));
           return m.attachments.some((a) => !a.isInline);
         case "filename":
           return m.attachments.some((a) => !a.isInline && filenameMatches(a.filename ?? "", condition.value));
         case "is":
+          if (condition.value === "dev") return (row.dev ?? null) !== null;
+          if (condition.value === "automated") return (row.listId ?? "") === "" && (isAutomatedAddress(m.from.address) || this.bulkOf(row) === true);
+          if (condition.value === "newsletter") {
+            return (row.listId ?? "") !== "" || this.state.categories.get(stateKey(row.accountId, row.dedupKey))?.category === "newsletters";
+          }
           return condition.value === "unread" ? !row.isRead : row.isFlagged;
         case "larger":
           return m.size > Number(condition.value);
@@ -3922,6 +4375,10 @@ export class InMemoryMailStore implements MailStore {
           if (time === null) return false;
           const at = Date.parse(condition.value);
           return condition.field === "after" ? time >= at : time < at;
+        }
+        case "ai": {
+          const label = this.aiLabels.find((l) => labelKey(l.name) === labelKey(condition.value));
+          return label !== undefined && (this.aiByKey.get(stateKey(row.accountId, row.dedupKey))?.labelIds.includes(label.id) ?? false);
         }
         case "category":
           return this.state.categories.get(stateKey(row.accountId, row.dedupKey))?.category === condition.value.toLowerCase();

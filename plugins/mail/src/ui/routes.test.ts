@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { draftSubPath, parseDraftSubPath, parseThreadSubPath, parseViewSubPath, threadSubPath, viewSubPath } from "./routes.ts";
+import { draftSubPath, parseDraftSubPath, parseThreadSubPath, parseViewSubPath, parseViewTab, threadSubPath, viewSubPath, viewTabSubPath } from "./routes.ts";
 
 /** What the host does to a subPath before the panel receives it. */
 const hostEncode = (subPath: string) => subPath.split("/").map(encodeURIComponent).join("/");
@@ -161,5 +161,52 @@ describe("Files and saved searches (slice 3h)", () => {
     for (const other of ["", "s", "s/", "s/a/b", "x/ss-1", "files"]) expect(parseSavedSearchSubPath(other)).toBeNull();
     expect(parsePageSubPath("s/ss-1")).toBeNull();
     expect(parseViewSubPath("s/ss-1")).toBeNull();
+  });
+});
+
+describe("settings addresses", () => {
+  it("name the page and its section, and fall back to the first section", async () => {
+    const { parsePageSubPath, parseSettingsSubPath, settingsSubPath } = await import("./routes.ts");
+    expect(settingsSubPath()).toBe("settings");
+    expect(settingsSubPath("ai")).toBe("settings/ai");
+    expect(parseSettingsSubPath("settings")).toBe("accounts");
+    expect(parseSettingsSubPath("settings/ai")).toBe("ai");
+    expect(parseSettingsSubPath("settings/nope")).toBe("accounts");
+    expect(parseSettingsSubPath("settings/search")).toBe("reading");
+    expect(parseSettingsSubPath("settings/ai/extra")).toBeNull();
+    expect(parseSettingsSubPath("today")).toBeNull();
+    expect(parseSettingsSubPath("")).toBeNull();
+    expect(parsePageSubPath("settings/ai")).toBe("settings");
+    expect(parsePageSubPath("settings")).toBe("settings");
+  });
+});
+
+
+describe("view subPath with an Inbox tab", () => {
+  it("adds the tab after the view", () => {
+    expect(viewTabSubPath({ kind: "role", role: "inbox" }, "tab-1")).toBe("v/all/inbox/s/tab-1");
+    expect(viewTabSubPath({ kind: "folder", accountId: "acc-1", path: "INBOX" }, "tab-1")).toBe("v/acc-1/INBOX/s/tab-1");
+    expect(viewTabSubPath({ kind: "role", role: "inbox" }, null)).toBe("v/all/inbox");
+  });
+
+  it("round-trips the view and the tab, an id with reserved characters too", () => {
+    const view = { kind: "folder", accountId: "acc-1", path: "[Gmail]/Spam" } as const;
+    const subPath = hostEncode(viewTabSubPath(view, "a/b c"));
+    expect(subPath.split("/")).toHaveLength(5);
+    expect(parseViewSubPath(subPath)).toEqual(view);
+    expect(parseViewTab(subPath)).toBe("a/b c");
+  });
+
+  it("a view without a tab names none", () => {
+    expect(parseViewTab("v/all/inbox")).toBeNull();
+    expect(parseViewTab("t/acc-1/th-a")).toBeNull();
+    expect(parseViewTab("")).toBeNull();
+  });
+
+  it("refuses another word in the tab's place, and an empty tab", () => {
+    expect(parseViewSubPath("v/all/inbox/x/tab-1")).toBeNull();
+    expect(parseViewTab("v/all/inbox/x/tab-1")).toBeNull();
+    expect(parseViewSubPath("v/all/inbox/s/")).toBeNull();
+    expect(parseViewSubPath("v/all/inbox/s/tab-1/more")).toBeNull();
   });
 });

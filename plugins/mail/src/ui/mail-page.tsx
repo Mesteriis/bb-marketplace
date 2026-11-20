@@ -29,11 +29,13 @@ import { Icon } from "@/components/ui/icon";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { AccountForm, type AccountFormInitial, type AccountFormProps } from "./account-form.tsx";
+import { grantRevoked } from "../core/sync-problems.ts";
 import { Composer, type ComposerPorts, type ComposeWarningKind } from "./composer.tsx";
-import type { TemplateView } from "./mail-settings.tsx";
+import type { TemplateView } from "./settings/shared.ts";
 import { DetailsPanel, type DetailsState } from "./details-panel.tsx";
 import {
   EmptyFolder,
+  EmptyTab,
   LoadingState,
   NoSearchResults,
   NothingSelected,
@@ -51,7 +53,7 @@ import { BlockDialog, type BlockCheck, type BlockChoice } from "./block-dialog.t
 import { MoveDialog } from "./move-dialog.tsx";
 import type { AiJobPorts } from "./ai-job.ts";
 import type { AiCitation } from "./ai-text.tsx";
-import { AskPanel, ASK_QUESTION_MAX } from "./ask-panel.tsx";
+import { AskPanel, ASK_QUESTION_MAX, type AskActionPorts } from "./ask-panel.tsx";
 import { CategoryChip, type Category } from "./category-chips.tsx";
 import { RemindDialog, ReminderStrip } from "./reminder-strip.tsx";
 import { useBbDialogs, type MailBbPorts } from "./bb-dialogs.tsx";
@@ -111,6 +113,9 @@ import { SearchHelpButton, SearchNotes } from "./search-help.tsx";
 import { ServerSearchStrip, type ServerJobView } from "./server-search-strip.tsx";
 import { SAVED_SEARCH_GONE_TEXT } from "./saved-searches.tsx";
 import { SenderCardDialog } from "./sender-card.tsx";
+import type { TypingOptions } from "./editor-typing.ts";
+import { InboxTabs, type InboxTabView, type TabRequest } from "./inbox-tabs.tsx";
+import { TAB_LIBRARY, TAB_NAME_MAX } from "../core/inbox-tabs.ts";
 import { getLanguage, tx } from "./i18n/index.ts";
 
 export { ALL_ACCOUNTS };
@@ -211,9 +216,30 @@ export interface ComposerState {
   dropped: string[];
   /** The conversation a reply or forward came from: it docks under it in two columns. */
   dockThreadId: string | null;
+  /** AI writes mail: a drafted reply the owner chose to use. */
+  initialOwn?: readonly string[];
 }
 
 export type ComposeKind = "reply" | "reply_all" | "forward";
+
+/** Split Inbox: the tabs over an Inbox view and the ways to make one from elsewhere. */
+export interface MailTabsPorts {
+  /** The view listed is an Inbox: the row (or the offer to split) shows. */
+  shown: boolean;
+  tabs: readonly InboxTabView[];
+  currentId: string | null;
+  inboxUnread: number;
+  onSelect: (id: string | null) => void;
+  /** `]` and `[`. */
+  onStep: (delta: 1 | -1) => void;
+  onAdd: (tab: { name: string; query: string }) => Promise<void>;
+  onRename: (id: string, name: string) => Promise<void>;
+  onEdit: (id: string, query: string) => Promise<void>;
+  onMove: (id: string, direction: "left" | "right") => void;
+  onRemove: (id: string) => void;
+  /** A tab of one sender's mail, made at once. */
+  onSplitSender: (sender: { name: string | null; address: string }) => void;
+}
 
 /** Inbox triage on the page (slice 3e): unsubscribe, snooze and block. */
 export interface MailInboxPorts {
@@ -240,6 +266,8 @@ export interface MailAiPorts {
   keepTasks: (jobId: string, picks: TaskPick[]) => Promise<number>;
   /** Opens a conversation by its link (a cited message of another conversation). */
   onOpenConversation: (accountId: string, threadId: string) => void;
+  /** Ask AI with actions: how the buttons under an answer run; absent: none is offered. */
+  askActions?: Omit<AskActionPorts, "search">;
   /** mailCategories is on: chips, filters and the page actions show. */
   categoriesOn: boolean;
   onCategorySet: (messageIds: string[], category: Category | null) => void;
@@ -325,6 +353,10 @@ export interface MailPageProps {
   onStopImages: (message: MessageHeader) => void;
   accountForm: AccountFormRequest;
   onOpenAccountForm: (request: { initial?: AccountFormInitial }) => void;
+  /** One sign-in with the saved password for a stopped account; absent: not offered. */
+  onRetrySignIn?: (accountId: string) => Promise<void>;
+  /** Google sign-in for the account form; offered only while the status says the plugin has a client. */
+  onGoogleSignIn?: AccountFormProps["onGoogleSignIn"];
   onCloseAccountForm: () => void;
   onTestAccount: (input: NewAccountInput) => Promise<{ ok: boolean; reason: string | null }>;
   onSaveAccount: (input: NewAccountInput) => Promise<void>;
@@ -366,12 +398,18 @@ export interface MailPageProps {
   /** The quick filters of the list shown (slice 3e); absent: no toggles. */
   listFilter?: ListFilter;
   onListFilter?: (next: ListFilter) => void;
+  /** Typing speed: the composer's aids as the settings have them; absent: none. */
+  typing?: TypingOptions;
+  /** Split Inbox: the Inbox tabs; absent: no tabs anywhere on the page. */
+  tabs?: MailTabsPorts;
   /** Unsubscribe, snooze and block (slice 3e); absent: none of them. */
   inbox?: MailInboxPorts;
   /** Summaries, Ask, tasks, categories and reply reminders (slice 3f); absent: none of them. */
   ai?: MailAiPorts;
   /** The Today or Tasks page (slice 3f), shown instead of the list and the conversation. */
   page?: ReactNode;
+  /** The page needs more room than a reading page (settings: a menu beside its content). */
+  pageWide?: boolean;
   /** Slice 3g: the BB integration; absent: none of it. */
   bb?: MailBbPorts;
   /** Slice 3h: search, older mail, saved searches, labels, drag and Files; absent: none of it. */
@@ -407,6 +445,23 @@ export function MailPage(props: MailPageProps) {
       </PageFrame>
     );
   }
+  const page =
+    props.page === undefined ? null : (
+      <div className="h-full min-h-0 flex-1 overflow-y-auto">
+        <div className={cn("mx-auto box-border w-full px-4 pb-6 pt-3 md:px-5 md:pt-4", props.pageWide === true ? "max-w-5xl" : "max-w-2xl")}>
+          {props.page}
+        </div>
+        {/* The settings page opens it; the mailbox, which also renders it, is not mounted on a page. */}
+        <SmtpDialog
+          account={status.accounts.find((a) => a.id === props.smtpAccountId) ?? null}
+          onClose={props.onCloseSmtp}
+          onTest={props.onTestSmtp}
+          onSave={props.onSaveSmtp}
+        />
+      </div>
+    );
+  // Settings open with no credential key and no account: that is where both are explained and set up.
+  if (page !== null && props.pageWide === true && accountForm === null) return page;
   if (!status.vaultReady) {
     return (
       <PageFrame>
@@ -430,19 +485,14 @@ export function MailPage(props: MailPageProps) {
           initial={accountForm?.initial}
           onTest={props.onTestAccount}
           onSave={props.onSaveAccount}
+          onGoogleSignIn={status.googleSignIn === true ? props.onGoogleSignIn : undefined}
           onCancel={first ? undefined : props.onCloseAccountForm}
           ExternalLink={props.ExternalLink}
         />
       </PageFrame>
     );
   }
-  if (props.page !== undefined) {
-    return (
-      <div className="h-full min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto box-border w-full max-w-2xl px-4 pb-6 pt-3 md:px-5 md:pt-4">{props.page}</div>
-      </div>
-    );
-  }
+  if (page !== null) return page;
   return <Mailbox {...props} status={status} />;
 }
 
@@ -561,6 +611,8 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
   }, []);
   const [focusedId, setFocusedId] = useState<string | null>(null);
   const [sheetOpen, setSheetOpen] = useState(false);
+  /** The stopped account whose saved password is being tried again. */
+  const [retryingSignIn, setRetryingSignIn] = useState<string | null>(null);
   const [moveTargets, setMoveTargets] = useState<string[] | null>(null);
   const [snoozeTargets, setSnoozeTargets] = useState<string[] | null>(null);
   const [blockMessage, setBlockMessage] = useState<string | null>(null);
@@ -569,12 +621,20 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
   const [summaryFor, setSummaryFor] = useState<{ threadId: string; serial: number } | null>(null);
   const [tasksFor, setTasksFor] = useState<{ kind: "tasks"; threadId: string; folder?: string } | null>(null);
   const [askMode, setAskMode] = useState(false);
+  /** An action under an Ask answer: the box leaves Ask and runs the search the model wrote. */
+  const showSearch = (query: string) => {
+    setAskMode(false);
+    props.onSearch(query);
+  };
   const [asked, setAsked] = useState<{ question: string; serial: number } | null>(null);
   const [highlight, setHighlight] = useState<{ messageId: string; serial: number } | null>(null);
   const [remindMessage, setRemindMessage] = useState<string | null>(null);
   /** Slice 3h: the message opened from a folder that is not grouped; it shows alone. */
   const [singleMessage, setSingleMessage] = useState<string | null>(null);
   /** Slice 3h: the sender card open, from a message of the conversation. */
+  /** Split Inbox: a tab dialog asked for from outside the row. */
+  const [tabAsk, setTabAsk] = useState<{ serial: number; request: TabRequest } | null>(null);
+  const askTab = (request: TabRequest) => setTabAsk((prev) => ({ serial: (prev?.serial ?? 0) + 1, request }));
   const [senderFor, setSenderFor] = useState<{ message: MessageHeader; card: SenderCard | null; error: string | null } | null>(null);
   /** Slice 3h: Expand all / Collapse all of the open conversation (quotes follow). */
   const [quotesAll, setQuotesAll] = useState<{ threadId: string; shown: boolean } | null>(null);
@@ -1107,6 +1167,10 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
         if (message !== null) bbUi.makeTaskFor(message);
         return;
       }
+      case "tab_next":
+      case "tab_previous":
+        if (!searching && props.tabs?.shown === true) props.tabs.onStep(command.kind === "tab_next" ? 1 : -1);
+        return;
       case "expand_all": {
         if (!threadOpen || selecting || reading.detail === null || reading3h === undefined) return;
         const allOpen = reading.detail.messages.every((m) => reading.expandedIds.has(m.id));
@@ -1165,8 +1229,10 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
       <Composer
         key={composer.draft.id}
         draft={composer.draft}
+        {...(composer.initialOwn !== undefined ? { initialOwn: composer.initialOwn } : {})}
         accounts={status.accounts}
         ports={props.composerPorts}
+        {...(props.typing !== undefined ? { typing: props.typing } : {})}
         warning={composer.warning}
         dropped={composer.dropped}
         layout={wide ? "panel" : "page"}
@@ -1231,7 +1297,36 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
             {props.unified ? `${accountLabel(account)}: ` : ""}
             {accountProblemTexts(account).join(" ")}
           </span>
-          {account.authFailed ? (
+          {account.authFailed && props.onRetrySignIn !== undefined && !grantRevoked(account.lastError) ? (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={retryingSignIn !== null}
+              onClick={() => {
+                setRetryingSignIn(account.id);
+                void props.onRetrySignIn?.(account.id).finally(() => setRetryingSignIn(null));
+              }}
+            >
+              {retryingSignIn === account.id
+                ? tx("Signing in\u2026")
+                : account.authKind === "google"
+                  ? tx("Try again")
+                  : tx("Try the saved password")}
+            </Button>
+          ) : null}
+          {account.authFailed && account.authKind === "google" ? (
+            status.googleSignIn === true && props.onGoogleSignIn !== undefined ? (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() =>
+                  props.onOpenAccountForm({ initial: { preset: "gmail", email: account.email, signIn: "google" } })
+                }
+              >
+                {tx("Sign in to Google")}
+              </Button>
+            ) : null
+          ) : account.authFailed ? (
             <Button
               variant="outline"
               size="sm"
@@ -1275,12 +1370,34 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
               }
             />
           ) : null}
+          {props.tabs !== undefined ? (
+            <InboxTabs
+              tabs={!searching && props.tabs.shown ? props.tabs.tabs : []}
+              currentId={props.tabs.currentId}
+              inboxUnread={props.tabs.inboxUnread}
+              library={TAB_LIBRARY}
+              onSelect={props.tabs.onSelect}
+              onAdd={props.tabs.onAdd}
+              onRename={props.tabs.onRename}
+              onEdit={props.tabs.onEdit}
+              onMove={props.tabs.onMove}
+              onRemove={props.tabs.onRemove}
+              ask={tabAsk}
+            />
+          ) : null}
           {!searching && props.listFilter !== undefined && props.onListFilter !== undefined ? (
             <QuickFilters
               filter={props.listFilter}
               onChange={props.onListFilter}
               categories={ai?.categoriesOn === true}
               dev={props.bb?.devFilter === true}
+              trailing={
+                props.tabs !== undefined && props.tabs.shown && props.tabs.tabs.length === 0 ? (
+                  <Button variant="ghost" size="sm" className="h-6 px-2 text-xs text-muted-foreground" onClick={() => askTab({ kind: "library" })}>
+                    {tx("Split the Inbox\u2026")}
+                  </Button>
+                ) : null
+              }
             />
           ) : null}
           {!searching && ai !== undefined && ai.categoriesOn && list.threads.length > 0 ? (
@@ -1342,6 +1459,7 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
               {...(!props.unified && props.account !== null ? { accountId: props.account.id } : {})}
               onOpen={(citation) => ai.onOpenConversation(citation.accountId, citation.threadId)}
               onClose={() => setAsked(null)}
+              {...(ai.askActions !== undefined ? { actions: { ...ai.askActions, search: showSearch } } : {})}
             />
           ) : null}
           {!searching && props.slice3h?.savedSearch === "missing" ? (
@@ -1359,6 +1477,9 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
             }}
             onToggleChecked={toggleChecked}
             emptyName={model.title}
+            {...(props.tabs !== undefined
+              ? { onMakeTab: (query: string) => askTab({ kind: "new", name: query.slice(0, TAB_NAME_MAX), query }) }
+              : {})}
             dragAdvance={(ids) => {
               // A drag of a selection, or of other rows than the open one: nothing opens.
               if (selecting || reading.threadId === null || !ids.includes(reading.threadId)) return null;
@@ -1638,6 +1759,15 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
                   },
                 }
               : {}),
+            ...(senderFor !== null && props.tabs !== undefined
+              ? {
+                  onSplit: () => {
+                    const from = senderFor.message.from;
+                    setSenderFor(null);
+                    props.tabs?.onSplitSender({ name: from.name, address: from.address });
+                  },
+                }
+              : {}),
             ...(senderFor !== null && props.inbox !== undefined
               ? {
                   onBlock: () => {
@@ -1664,6 +1794,8 @@ function ListColumn(
     onOpenRow: (id: string) => void;
     onToggleChecked: (id: string, range: boolean) => void;
     emptyName: string;
+    /** Split Inbox: the new-tab dialog with the search as its condition; absent: no offer. */
+    onMakeTab?: (query: string) => void;
     /** Slice 3i: what opens if the dragged conversations are moved (see advanceFor). */
     dragAdvance: (ids: string[]) => (() => void) | null;
   },
@@ -1738,6 +1870,11 @@ function ListColumn(
               {tx("Save search")}
             </Button>
           ) : null}
+          {props.onMakeTab !== undefined ? (
+            <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => props.onMakeTab?.(search.query)}>
+              {tx("Make a tab")}
+            </Button>
+          ) : null}
         </div>
         {serverHere !== null && serverHere.error !== null ? (
           <p role="alert" className="border-b border-border px-3 py-1 text-xs text-destructive">
@@ -1809,6 +1946,8 @@ function ListColumn(
     if (clean && (props.syncing || shown.some((a) => a.lastSyncAt === null))) {
       return <SyncingState />;
     }
+    // Split Inbox: an empty tab is not an empty Inbox.
+    if (props.tabs?.shown === true && props.tabs.currentId !== null) return <EmptyTab />;
     return (
       <>
         <EmptyFolder name={props.emptyName} />

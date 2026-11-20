@@ -3,7 +3,7 @@ import { act, cleanup, render } from "@testing-library/react";
 import { installTestPluginRuntime } from "@get-bb/plugin-sdk/testing/app";
 import type { Editor } from "@tiptap/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanEditorHtml, ComposeEditor, fencedPaste, ownerParagraphsOf, ownerRange, replaceOwnerRange, type EditorDoc } from "./compose-editor.tsx";
+import { cleanEditorHtml, ComposeEditor, fencedPaste, insertParagraphs, ownerParagraphsOf, ownerRange, replaceOwnerRange, type EditorDoc } from "./compose-editor.tsx";
 import { htmlFitsDoc, normalizeDoc, ownerParagraphs, renderDoc } from "../core/compose-doc.ts";
 
 installTestPluginRuntime();
@@ -78,6 +78,98 @@ function mount(props: Partial<Parameters<typeof ComposeEditor>[0]> = {}) {
   );
   return { view, docs, imports, files, editor: () => editor! };
 }
+
+describe("ComposeEditor: a drafted reply the owner chose to use", () => {
+  it("goes in with the quote as one load: saved once, the quote kept after it", () => {
+    const { docs, imports } = mount({
+      initialDoc: { type: "doc", content: [{ type: "paragraph" }, { type: "paragraph", content: [{ type: "text", text: "Ada wrote:" }] }] },
+      importFrom: { html: "<p>Made-up original</p>", into: "quote" },
+      initialOwn: ["Hello Ada,", "Tuesday works."],
+    });
+    expect(imports).toHaveLength(1);
+    expect(docs).toEqual([]);
+    expect(ownerParagraphs(normalizeDoc(imports[0]! as never)).paragraphs).toEqual(["Hello Ada,", "Tuesday works."]);
+    // The attribution line stays between the text and the quote.
+    const top = (imports[0]!.content ?? []).map((node) => (node.type === "paragraph" ? (node.content ?? []).map((n) => n.text ?? "").join("") : node.type));
+    expect(top.slice(0, 4)).toEqual(["Hello Ada,", "Tuesday works.", "Ada wrote:", "blockquote"]);
+  });
+
+  it("without a quote it is an edit, so the composer saves it", () => {
+    const { docs, imports } = mount({ initialOwn: ["Hello Ada,"] });
+    expect(imports).toEqual([]);
+    expect(docs.length).toBeGreaterThan(0);
+    expect(ownerParagraphs(normalizeDoc(docs.at(-1)! as never)).paragraphs).toEqual(["Hello Ada,"]);
+  });
+});
+
+describe("insertParagraphs (dictation)", () => {
+  it("continues the line at the cursor with one paragraph and adds the rest as paragraphs; one Undo takes it back", () => {
+    const { editor } = mount({ initialDoc: { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Hi. " }] }] } });
+    act(() => {
+      editor().commands.focus("end");
+      insertParagraphs(editor(), ["Thanks for the plan."]);
+    });
+    expect(editor().getText()).toBe("Hi. Thanks for the plan.");
+    act(() => {
+      insertParagraphs(editor(), ["First.", "", "Second."]);
+    });
+    expect(editor().getText({ blockSeparator: "|" })).toBe("Hi. Thanks for the plan.First.|Second.");
+    act(() => {
+      editor().commands.undo();
+    });
+    expect(editor().getText()).toBe("Hi. Thanks for the plan.");
+    act(() => {
+      insertParagraphs(editor(), []);
+    });
+    expect(editor().getText()).toBe("Hi. Thanks for the plan.");
+  });
+});
+
+describe("insertParagraphs: where the text lands", () => {
+  it("in the middle of a line: the first part continues it, the last is followed by the rest; the cursor ends after the dictation", () => {
+    const { editor } = mount({ initialDoc: { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Hi. rest" }] }] } });
+    act(() => {
+      editor().commands.setTextSelection(5);
+      insertParagraphs(editor(), ["First.", "Second."]);
+    });
+    expect(editor().getText({ blockSeparator: "|" })).toBe("Hi. First.|Second.rest");
+    act(() => {
+      editor().view.dispatch(editor().state.tr.insertText("!"));
+    });
+    expect(editor().getText({ blockSeparator: "|" })).toBe("Hi. First.|Second.!rest");
+    act(() => {
+      editor().commands.undo();
+      editor().commands.undo();
+    });
+    expect(editor().getText({ blockSeparator: "|" })).toBe("Hi. rest");
+  });
+
+  it("at the end of a link the dictated text is not part of the link", () => {
+    const { editor } = mount({
+      initialDoc: {
+        type: "doc",
+        content: [{ type: "paragraph", content: [{ type: "text", text: "site", marks: [{ type: "link", attrs: { href: "https://example.com/" } }] }] }],
+      },
+    });
+    act(() => {
+      editor().commands.focus("end");
+      insertParagraphs(editor(), [" more"]);
+    });
+    expect(editor().getHTML()).toContain(">site</a> more");
+  });
+
+  it("does not take the focus from a field the owner moved to", () => {
+    const { editor } = mount({});
+    const field = document.createElement("input");
+    document.body.append(field);
+    field.focus();
+    act(() => {
+      insertParagraphs(editor(), ["Late text."]);
+    });
+    expect(document.activeElement).toBe(field);
+    field.remove();
+  });
+});
 
 describe("cleanEditorHtml", () => {
   it("keeps text and safe links, and drops scripts, styles, images and remote loads", () => {

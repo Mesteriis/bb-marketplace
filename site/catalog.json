@@ -1,0 +1,585 @@
+{
+ "plugins": [
+  {
+   "id": "makosh-ai",
+   "name": "Makosh AI [Experimental]",
+   "description": "Streams Claude Messages and Codex Responses to BB plugins through the existing Account Pooler.",
+   "author": "Mesteriis",
+   "own": true
+  },
+  {
+   "id": "makosh-mail",
+   "name": "Makosh Mail [Experimental]",
+   "description": "Reads, searches, files and sends iCloud, Gmail and IMAP mail; sender warnings; AI on click; mail to BB threads and tasks; agent log.",
+   "author": "Mesteriis",
+   "own": true
+  },
+  {
+   "id": "makosh-navigation",
+   "name": "Makosh Navigation",
+   "description": "Customizable BB navigation with nested groups, icons, separators and a settings editor with autosave.",
+   "author": "Mesteriis",
+   "own": true
+  },
+  {
+   "id": "makosh-sidebar",
+   "name": "Makosh Sidebar [Experimental]",
+   "description": "Project tree with hiding, recent activity sorting and an Active section for running threads and unread results.",
+   "author": "Mesteriis",
+   "own": true
+  },
+  {
+   "id": "makosh-taskboard",
+   "name": "Makosh Taskboard [Experimental]",
+   "description": "Assigned tasks in List, real Jira project Kanban boards, development threads, worklogs and agent time-tracking tools.",
+   "author": "Mesteriis",
+   "own": true
+  },
+  {
+   "id": "makosh-telegram",
+   "name": "Makosh Telegram [Experimental]",
+   "description": "Telegram via TDLib on macOS. QR sign-in, chats and media. AI reads enabled chats. Agent sends require BB confirmation.",
+   "author": "Mesteriis",
+   "own": true
+  },
+  {
+   "id": "action-topbar",
+   "name": "Action Topbar",
+   "description": "Mirror open thread-panel tabs in a compact topbar with a searchable + launcher.",
+   "author": "MateoCerquetella",
+   "own": false
+  },
+  {
+   "id": "agent-icons",
+   "name": "Agent Icons",
+   "description": "Give each BB agent provider its own icon and colour: built-in glyphs or your own SVG sets, synced across devices.",
+   "author": "ponomr",
+   "own": false
+  },
+  {
+   "id": "agent-instructions",
+   "name": "Agent instructions",
+   "description": "Manage global and project instructions, skills, references, and plugin prompts.",
+   "author": "smsunarto",
+   "own": false
+  },
+  {
+   "id": "agent-plugins",
+   "name": "Agent Plugins",
+   "description": "Install Agent Plugins (skills + MCP) once; flow to every provider.",
+   "author": "patleeman",
+   "own": false
+  },
+  {
+   "id": "agent-traces",
+   "name": "Agent Traces",
+   "description": "See where an agent's time goes: a waterfall of every turn's commands, tool calls, and subagents.",
+   "author": "charpeni",
+   "own": false
+  },
+  {
+   "id": "agentation",
+   "name": "Agentation",
+   "description": "Point at any part of the bb UI — including plugin surfaces — and turn it into structured AFS 1.1 feedback that bb agents can read, answer, and resolve.",
+   "author": "smsunarto",
+   "own": false
+  },
+  {
+   "id": "ai-usage",
+   "name": "AI Usage",
+   "description": "Shows your team's Claude Code, Codex and Grok subscriptions: what is left of each limit, when it runs out, who used it, and what it costs. Installs ai-usage on this machine when it is missing.",
+   "author": "neoromantic",
+   "own": false
+  },
+  {
+   "id": "android-emulator",
+   "name": "Android Emulator",
+   "description": "See and control Android emulators on your bb hosts from a thread panel, with agent commands for the same device.",
+   "author": "nicolay-i",
+   "own": false
+  },
+  {
+   "id": "animation",
+   "name": "Animation",
+   "description": "Play technical diagrams as a sequence of beats, then export a looping HTML page.",
+   "author": "MacHatter1",
+   "own": false
+  },
+  {
+   "id": "app-preview",
+   "name": "App Preview",
+   "description": "Detect the app in a thread worktree, launch the detected start recipe, and list, share, or kill listening ports on this machine. Start may install dependencies and run repository scripts. Share exposes a port over BB Connect. Kill sends SIGTERM/SIGKILL. A setting chooses whether you open the in-app browser yourself, or agents open it when the app is ready.",
+   "author": "hungv47",
+   "own": false
+  },
+  {
+   "id": "automation-groups",
+   "name": "Autopilots",
+   "description": "Organize scheduled work into folders and control groups together.",
+   "author": "dmitriikapustin",
+   "own": false
+  },
+  {
+   "id": "autorouter",
+   "name": "Autorouter",
+   "description": "Route new threads by task difficulty, live provider quota, and benchmark cost.",
+   "author": "jjcm",
+   "own": false
+  },
+  {
+   "id": "steel-browser",
+   "name": "BB Surf",
+   "description": "Operate self-hosted Steel browser sessions from BB.",
+   "author": "MateoCerquetella",
+   "own": false
+  },
+  {
+   "id": "beautiful-chat",
+   "name": "Beautiful Chat",
+   "description": "Restyles BB's chat — composer, messages, work rows, loading states — in BeautifulUI's design language, using your active theme's colors.",
+   "author": "diip3sh",
+   "own": false
+  },
+  {
+   "id": "codex-realtime",
+   "name": "ChatGPT Realtime Connection",
+   "description": "Run Voice Mode on your ChatGPT subscription instead of an OpenAI API key, using the sign-in `codex login` already keeps on this Mac.",
+   "author": "gpambrozio",
+   "own": false
+  },
+  {
+   "id": "cua-driver",
+   "name": "Computer Use",
+   "description": "Gives bb agents desktop and browser control, powered by Cua Driver from Cua AI, with per-provider routing.",
+   "author": "juanbermudez",
+   "own": false
+  },
+  {
+   "id": "context-health",
+   "name": "Context Health",
+   "description": "Inspect thread context usage, skills, instructions and conversation content.",
+   "author": "MacHatter1",
+   "own": false
+  },
+  {
+   "id": "copy-session-id",
+   "name": "Copy Session ID",
+   "description": "Add Copy session ID to thread context menus in the left sidebar.",
+   "author": "patleeman",
+   "own": false
+  },
+  {
+   "id": "desktop-browser-agent",
+   "name": "Desktop & Browser Agent",
+   "description": "Computer use for bb agents: desktop apps and browser windows through Cua Driver from Cua AI, and your own Chrome, Edge or Brave tabs through a browser extension, with per-provider routing.",
+   "author": "qwadrox",
+   "own": false
+  },
+  {
+   "id": "dev-servers",
+   "name": "Dev Servers",
+   "description": "Supervise persistent machine servers and discover thread dev servers.",
+   "author": "darknoon",
+   "own": false
+  },
+  {
+   "id": "dictation-shortcuts",
+   "name": "Dictation Shortcuts",
+   "description": "Hold Space to dictate with BB native voice input; Enter finishes, Escape cancels, with button and modifier hints.",
+   "author": "architawr",
+   "own": false
+  },
+  {
+   "id": "diff-review",
+   "name": "Diff Review",
+   "description": "Comment on a thread's changes line by line, then send the comments to its agent, which fixes the code and answers each one.",
+   "author": "gpambrozio",
+   "own": false
+  },
+  {
+   "id": "docker",
+   "name": "Docker",
+   "description": "Manage containers, images, volumes, and networks from the bb sidebar.",
+   "author": "grikomsn",
+   "own": false
+  },
+  {
+   "id": "file-gateway",
+   "name": "File Gateway",
+   "description": "Browse BB machines and FTP/SFTP sites, add remote file mentions to chats, and let agents read or download the right file.",
+   "author": "VKirill",
+   "own": false
+  },
+  {
+   "id": "firstmate-crew",
+   "name": "FirstMate Crew",
+   "description": "Hand one agent your to-do list and it runs a crew of worker threads, each in its own git worktree, until the work lands.",
+   "author": "gpambrozio",
+   "own": false
+  },
+  {
+   "id": "genui",
+   "name": "Generative UI",
+   "description": "Lets agents answer with interactive UI rendered inline in chat.",
+   "author": "smsunarto",
+   "own": false
+  },
+  {
+   "id": "gigaam",
+   "name": "GigaAM Voice Input",
+   "description": "Offline Russian voice input powered by GigaAM v3. Installs and runs the model on your own machine; CPU only, no API keys.",
+   "author": "AiXenix",
+   "own": false
+  },
+  {
+   "id": "git-history",
+   "name": "Git History",
+   "description": "Browse the complete Git history of a project from a bb right panel.",
+   "author": "yusuf8834",
+   "own": false
+  },
+  {
+   "id": "gitea",
+   "name": "Gitea",
+   "description": "Gitea issues and pull requests inside BB, backed by the Gitea tea CLI.",
+   "author": "Nick-Motion",
+   "own": false
+  },
+  {
+   "id": "github-actions",
+   "name": "GitHub Actions",
+   "description": "Live GitHub Actions runs for your projects: start any workflow with inputs, watch job logs, rerun failures, hand them to an agent, or send them to BB threads.",
+   "author": "pers0na2dev",
+   "own": false
+  },
+  {
+   "id": "gh-copilot",
+   "name": "GitHub Copilot",
+   "description": "Adds GitHub Copilot CLI to bb as an ACP coding-agent provider.",
+   "author": "ai-ecoverse",
+   "own": false
+  },
+  {
+   "id": "bb-github-pr-dashboard",
+   "name": "GitHub PR Dashboard",
+   "description": "Track your GitHub PRs and review requests in one tab: why each is stuck, changed files, replies, and alerts.",
+   "author": "ahsan7162",
+   "own": false
+  },
+  {
+   "id": "handoff",
+   "name": "Handoff",
+   "description": "Move a session between agents and machines, in both directions — hand off a bb thread to another provider (and optionally another enrolled machine, carrying uncommitted work), or adopt an outside Claude Code / Codex / Gemini CLI / OpenCode / Pi session, local or remote, as a bb thread.",
+   "author": "vburojevic",
+   "own": false
+  },
+  {
+   "id": "hooks",
+   "name": "Hooks",
+   "description": "Run your own shell commands or webhooks on thread events, and gate message dispatch with custom policy.",
+   "author": "MacHatter1",
+   "own": false
+  },
+  {
+   "id": "hotspot",
+   "name": "Hotspot",
+   "description": "Records when your Mac runs hot and names the BB thread that caused it.",
+   "author": "Hazihell",
+   "own": false
+  },
+  {
+   "id": "image-preview",
+   "name": "Image Preview",
+   "description": "Turn chat images into compact previews with an accessible click-to-expand lightbox.",
+   "author": "Dwite",
+   "own": false
+  },
+  {
+   "id": "impromptu-ui",
+   "name": "Impromptu UI",
+   "description": "Turns your agent's walls of text into interfaces you can click.",
+   "author": "danielbachhuber",
+   "own": false
+  },
+  {
+   "id": "inline-review",
+   "name": "Inline Review",
+   "description": "Review exact assistant passages and send one clear feedback batch to the same thread.",
+   "author": "rdanhau",
+   "own": false
+  },
+  {
+   "id": "kodaforge",
+   "name": "KodaForge",
+   "description": "Edit, run and debug your project inside BB, with agent chat, threads and workflows open beside the code. A Monaco code editor with tabs, split editors, quick open (⌘P), find in files, and search and replace with a preview. Language servers (LSP) for Python and TypeScript give completion, go to definition, find references, rename and a Problems panel. Debug Python with breakpoints, pick the Python environment (venv, uv, Poetry, conda), run Makefile and npm tasks, and work in split terminals that survive restarts. Source control stages, diffs, commits, stashes, pulls and pushes with git. The Agent Network maps the agents and MCP servers working on your project, and in App mode the agents, tools, MCP servers, models and skills your code builds. Install the language servers (pyright or basedpyright, typescript-language-server) and debugpy yourself.",
+   "author": "Kodaks94",
+   "own": false
+  },
+  {
+   "id": "markdown-editor",
+   "name": "Markdown Editor",
+   "description": "Edit markdown files in the tab bb opens them in, preview the result, and save with Cmd+S without overwriting an agent's edits.",
+   "author": "danielbachhuber",
+   "own": false
+  },
+  {
+   "id": "mcp-hub",
+   "name": "MCP Hub",
+   "description": "One host-level and project-level source of truth for MCP servers, materialized into Kimi Code, Claude Code, OpenCode, Cursor and Codex.",
+   "author": "fgbm",
+   "own": false
+  },
+  {
+   "id": "meetings",
+   "name": "Meetings",
+   "description": "Record Zoom, Google Meet, Telemost and Jitsi with local transcription, summary templates, action items and MCP.",
+   "author": "AiXenix",
+   "own": false
+  },
+  {
+   "id": "memory-explorer",
+   "name": "Memory Explorer",
+   "description": "See what your agents remember: BB memory as a searchable table and a zoomable link graph, with a detail drawer for each memory.",
+   "author": "d-asensio",
+   "own": false
+  },
+  {
+   "id": "model-pricing",
+   "name": "Model Pricing",
+   "description": "Compare what every AI model costs per million tokens, across Anthropic, OpenAI, Fireworks AI, Ollama Cloud and OpenRouter, in one table.",
+   "author": "gpambrozio",
+   "own": false
+  },
+  {
+   "id": "next-prompt",
+   "name": "Next Prompt",
+   "description": "Suggests the next prompt you are likely to type after each finished turn.",
+   "author": "CrazyCoder",
+   "own": false
+  },
+  {
+   "id": "notifications-pro",
+   "name": "Notifications Pro",
+   "description": "Desktop OS notifications, Dock badge, and an in-app notification center for thread attention and assigned tasks.",
+   "author": "kr3t3n",
+   "own": false
+  },
+  {
+   "id": "wikilinks",
+   "name": "Obsidian at Home",
+   "description": "Edit Markdown notes in BB with wikilinks, recursive previews, contextual backlinks, and queryable thinking trails.",
+   "author": "classicrob",
+   "own": false
+  },
+  {
+   "id": "account-pool-balanced",
+   "name": "OXI Account Pool",
+   "description": "Balance provider accounts, track quotas and switch to reserve accounts for BB agents.",
+   "author": "OXI-717",
+   "own": false
+  },
+  {
+   "id": "plan-progress",
+   "name": "Plan Progress",
+   "description": "Live progress bars above the message box: the agent plans stages and steps, and the bar fills as it works.",
+   "author": "mrsu-smirnov",
+   "own": false
+  },
+  {
+   "id": "plannotator",
+   "name": "Plannotator",
+   "description": "Review plans in Plannotator inside BB and send decisions to agents as new thread messages.",
+   "author": "patleeman",
+   "own": false
+  },
+  {
+   "id": "at-plugin",
+   "name": "Plugin Finder",
+   "description": "Mention installed and Community plugins in bb conversations.",
+   "author": "brsbl",
+   "own": false
+  },
+  {
+   "id": "plugin-updates",
+   "name": "Plugin Updates",
+   "description": "Shows which plugins have updates, including releases outside their version range, and installs them.",
+   "author": "frankieshakes",
+   "own": false
+  },
+  {
+   "id": "prompt-shaper",
+   "name": "Prompt Improver",
+   "description": "Adds an Improve prompt action to the composer that sends your rough draft to a hidden helper agent, which follows your editable rewrite instructions to rewrite it into a clear, complete prompt and returns it in place for review before you send.",
+   "author": "brsbl",
+   "own": false
+  },
+  {
+   "id": "read-aloud-local",
+   "name": "Read Aloud",
+   "description": "Speak any chat message with streaming neural TTS, with pause and stop.",
+   "author": "csells",
+   "own": false
+  },
+  {
+   "id": "launchd-jobs",
+   "name": "Scheduled Jobs",
+   "description": "Run shell commands on your Mac on a cron schedule or a fixed interval, as launchd jobs that keep running while bb is closed. macOS only.",
+   "author": "gpambrozio",
+   "own": false
+  },
+  {
+   "id": "scott-secrets",
+   "name": "Secrets",
+   "description": "Request credentials into dotenv files, and run approved sudo commands without retyping the password.",
+   "author": "smsunarto",
+   "own": false
+  },
+  {
+   "id": "session-history",
+   "name": "Session History",
+   "description": "Browse past Claude, Codex and Qwen sessions with their original titles, and continue conversations directly in BB.",
+   "author": "neonick",
+   "own": false
+  },
+  {
+   "id": "skills",
+   "name": "Skills",
+   "description": "See every skill a thread's agent can use, where each one comes from and what it says, and add one to the chat from the panel or composer.",
+   "author": "gpambrozio",
+   "own": false
+  },
+  {
+   "id": "skills-sync",
+   "name": "Skills Sync",
+   "description": "Sync installed agent skills against upstream git repositories, showing what is new, deprecated, cleanly updatable, and locally modified.",
+   "author": "Hazihell",
+   "own": false
+  },
+  {
+   "id": "source-control",
+   "name": "Source Control",
+   "description": "Each thread's branch and pull request as one Change: checkout state from its host, pull request state from GitHub.",
+   "author": "smsunarto",
+   "own": false
+  },
+  {
+   "id": "specs",
+   "name": "Specs",
+   "description": "Spec documents any project can read, annotate, discuss, and update.",
+   "author": "peteabu",
+   "own": false
+  },
+  {
+   "id": "sql",
+   "name": "SQL",
+   "description": "Postgres in bb: browse all databases, schema-aware completion, controlled write/DDL (Agent write / Allow DDL on by default for new connections).",
+   "author": "yazydzhi",
+   "own": false
+  },
+  {
+   "id": "subagents",
+   "name": "Subagents",
+   "description": "Inspect native subagents and child threads that belong to the current chat.",
+   "author": "imyeskela",
+   "own": false
+  },
+  {
+   "id": "team",
+   "name": "Team",
+   "description": "Agent teams with a shared task tracker, reusable roles, safe session handoffs, review gates and finite execution budgets.",
+   "author": "kirei4ik",
+   "own": false
+  },
+  {
+   "id": "terminal-jobs",
+   "name": "Terminal jobs",
+   "description": "Runs durable terminal jobs and sends completion notices.",
+   "author": "ryanbbrown",
+   "own": false
+  },
+  {
+   "id": "terminals",
+   "name": "Terminals",
+   "description": "Open shells in tabs on any machine connected to bb, in its home folder, and find them still running when you come back.",
+   "author": "gpambrozio",
+   "own": false
+  },
+  {
+   "id": "thread-images",
+   "name": "Thread Images",
+   "description": "Shows the images an agent opens: in the chat and in a gallery in the thread context card.",
+   "author": "kartollikaa",
+   "own": false
+  },
+  {
+   "id": "tokenomics",
+   "name": "Tokenomics",
+   "description": "See what your threads cost in tokens and time, how each turn compared with Claude's forecast, and whether your limits will last.",
+   "author": "danielbachhuber",
+   "own": false
+  },
+  {
+   "id": "ultragoal",
+   "name": "UltraGoal",
+   "description": "Provider-neutral durable UltraGoals for Codex, Cursor, OpenCode, Claude Code, and Pi, with scheduled workers, verification, and defect remediation.",
+   "author": "braedonsaunders",
+   "own": false
+  },
+  {
+   "id": "unified-inbox",
+   "name": "Unified Inbox",
+   "description": "One inbox for Gmail, WhatsApp, Messages, and LinkedIn on this machine.",
+   "author": "robertsinke",
+   "own": false
+  },
+  {
+   "id": "visual-workflows",
+   "name": "Visual Workflows",
+   "description": "Design visual agent workflows with independent step profiles and inspect every run.",
+   "author": "dmitriikapustin",
+   "own": false
+  },
+  {
+   "id": "voice-mode",
+   "name": "Voice Mode",
+   "description": "Start a hands-free voice chat from an empty composer. The voice model hands work to the thread's agent and tells you when it's done; talk over it any time to interrupt.",
+   "author": "steveafrost",
+   "own": false
+  },
+  {
+   "id": "wiki",
+   "name": "Wiki",
+   "description": "Search and write a personal wiki of Markdown notes from BB threads.",
+   "author": "himynameisjonas",
+   "own": false
+  },
+  {
+   "id": "workspaces",
+   "name": "Workspaces",
+   "description": "Group related repositories and launch isolated multi-repo threads.",
+   "author": "wishcreator",
+   "own": false
+  },
+  {
+   "id": "worktree-ports",
+   "name": "Worktree Ports",
+   "description": "Live listening ports per worktree, with one click to open them.",
+   "author": "to-infinity-labs",
+   "own": false
+  },
+  {
+   "id": "ru",
+   "name": "Русский язык",
+   "description": "Перевод навигации, меню и настроек BB на русский.",
+   "author": "nick8cyber",
+   "own": false
+  },
+  {
+   "id": "next-step",
+   "name": "Следующий шаг",
+   "description": "Подсказка следующего сообщения после ответа Codex. Tab — принять, Esc — скрыть.",
+   "author": "rutracker152",
+   "own": false
+  }
+ ]
+}

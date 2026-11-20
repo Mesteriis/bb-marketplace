@@ -176,7 +176,7 @@ async function backfillPass<R extends PassRow>(
     } catch {
       return outcome;
     }
-    const config = { host: account.host, port: account.port, user: account.username, password };
+    const config = { host: account.host, port: account.port, user: account.username, password, authKind: account.authKind };
 
     for (const folder of store.listFolders(accountId)) {
       if (aborted() || left <= 0) break;

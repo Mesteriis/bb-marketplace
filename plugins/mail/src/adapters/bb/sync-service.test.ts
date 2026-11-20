@@ -20,8 +20,13 @@ class OneBadUserGateway implements ImapGateway {
   constructor(
     private readonly inner: ScriptedImapGateway,
     private readonly badUser: string,
+    /** The user whose sign-in the server refuses. */
+    private readonly refusedUser: string | null = null,
   ) {}
-  test() {
+  readonly tests: string[] = [];
+  async test(config: ImapConfig) {
+    this.tests.push(config.user);
+    if (config.user === this.refusedUser) return { ok: false as const, reason: "refused", authFailed: true };
     return this.inner.test();
   }
   listFolders(config: ImapConfig) {
@@ -119,7 +124,7 @@ describe("createSyncLoop", () => {
     const loop = createSyncLoop(
       {
         ...deps,
-        gateway: new OneBadUserGateway(scripted, "acc_bad@example.org"),
+        gateway: new OneBadUserGateway(scripted, "acc_bad@example.org", "acc_locked@example.org"),
         vault: {
           seal: (plain) => vault.seal(plain),
           open: (sealed) => {
@@ -147,11 +152,93 @@ describe("createSyncLoop", () => {
     expect(getAccount("acc_sealed")?.lastError).toBe(DECRYPT_ERROR);
     expect(notifier.changes).toContain("acc_sealed");
     expect(getAccount("acc_good")?.lastError).toBeNull();
-    // The auth-failed account is skipped: no session was opened with its user.
+    // The server still refuses the stopped account: it stays stopped and no session was opened with its user.
+    expect(getAccount("acc_locked")?.authFailed).toBe(true);
     expect(scripted.sessions.some((s) => s.config.user === "acc_locked@example.org")).toBe(false);
     expect(lines.join("\n")).not.toContain("sealed-password");
     expect(lines.join("\n")).not.toContain("not-openable");
   });
+
+  it("signs a stopped account in again with the saved password by itself, and syncs it", async () => {
+    const { store, notifier, deps } = setup();
+    store.saveAccount(account("acc_1", { authFailed: true, lastError: "Authentication failed" }));
+    const lines: string[] = [];
+    const loop = createSyncLoop(deps, SETTINGS, { log: (line) => lines.push(line) });
+    const controller = new AbortController();
+    const done = loop.start(controller.signal);
+
+    await vi.waitFor(() => expect(lines.some((l) => l.startsWith("sync acc_1: ok"))).toBe(true));
+    controller.abort();
+    await done;
+
+    expect(store.getAccount("acc_1")).toMatchObject({ authFailed: false, lastError: null });
+    expect(lines).toContain("sync acc_1: sign-in works again, sync resumed");
+    expect(notifier.changes).toContain("acc_1");
+  });
+
+  it("never tries a revoked Google grant by itself", async () => {
+    const { store, scripted, deps } = setup();
+    store.saveAccount(
+      account("acc_1", {
+        authFailed: true,
+        lastError: "Google sign-in expired; Archive: Sync failed (ECONNRESET)",
+        authKind: "google",
+      }),
+    );
+    store.saveAccount(account("acc_2"));
+    const gateway = new OneBadUserGateway(scripted, "nobody@example.org");
+    const clock = new FixedClock(NOW);
+    const lines: string[] = [];
+    const loop = createSyncLoop({ ...deps, gateway, clock }, SETTINGS, { log: (line) => lines.push(line) });
+    const controller = new AbortController();
+    const done = loop.start(controller.signal);
+    const rounds = () => lines.filter((l) => l.startsWith("sync acc_2: ok")).length;
+
+    await vi.waitFor(() => expect(rounds()).toBe(1));
+    clock.set(new Date(NOW.getTime() + 10 * 60_000));
+    loop.wake(null);
+    await vi.waitFor(() => expect(rounds()).toBe(2), { timeout: 15_000 });
+    controller.abort();
+    await done;
+
+    expect(gateway.tests).toEqual([]);
+    expect(lines.some((l) => l.startsWith("sync acc_1"))).toBe(false);
+    expect(store.getAccount("acc_1")).toMatchObject({
+      authFailed: true,
+      lastError: "Google sign-in expired; Archive: Sync failed (ECONNRESET)",
+    });
+  }, 20_000);
+
+  it("tries a stopped account the server still refuses again only after a wait", async () => {
+    const { store, scripted, deps } = setup();
+    store.saveAccount(account("acc_1", { authFailed: true, lastError: "Authentication failed" }));
+    store.saveAccount(account("acc_2"));
+    const gateway = new OneBadUserGateway(scripted, "nobody@example.org", "acc_1@example.org");
+    const clock = new FixedClock(NOW);
+    const lines: string[] = [];
+    const loop = createSyncLoop({ ...deps, gateway, clock }, SETTINGS, { log: (line) => lines.push(line) });
+    const controller = new AbortController();
+    const done = loop.start(controller.signal);
+    const rounds = () => lines.filter((l) => l.startsWith("sync acc_2: ok")).length;
+
+    await vi.waitFor(() => expect(rounds()).toBe(1));
+    expect(gateway.tests).toEqual(["acc_1@example.org"]);
+    expect(lines).toContain("sync acc_1: sign-in refused again");
+
+    // Nine minutes later: too early for the next try.
+    clock.set(new Date(NOW.getTime() + 9 * 60_000));
+    loop.wake(null);
+    await vi.waitFor(() => expect(rounds()).toBe(2));
+    expect(gateway.tests).toEqual(["acc_1@example.org"]);
+
+    clock.set(new Date(NOW.getTime() + 10 * 60_000));
+    loop.wake(null);
+    await vi.waitFor(() => expect(gateway.tests).toEqual(["acc_1@example.org", "acc_1@example.org"]), { timeout: 15_000 });
+    controller.abort();
+    await done;
+
+    expect(store.getAccount("acc_1")).toMatchObject({ authFailed: true, lastError: "Authentication failed" });
+  }, 20_000);
 
   it("logs how many reads and flag changes were pushed, without message content", async () => {
     const { store, deps } = setup();

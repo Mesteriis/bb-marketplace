@@ -7,6 +7,7 @@
 // This file is the BB adapter: it owns RPC, realtime refreshes, navigation and
 // the composer, and hands plain data and callbacks to the host-agnostic page
 // in src/ui.
+import { runAskAct } from "./src/ui/ask-panel.tsx";
 import type { SettingsPgpPorts } from "./src/ui/pgp-settings.tsx";
 import type { SettingsFilterPorts } from "./src/ui/filters-settings.tsx";
 import { ArchiveViewPage, type ArchivePorts } from "./src/ui/archive-view.tsx";
@@ -31,6 +32,7 @@ import {
   useRealtime,
   useRealtimeConnectionState,
   useRpc,
+  useSdk,
   useSettings,
   type ExperimentalBadge,
   type ExperimentalThreadInfoProps,
@@ -40,6 +42,8 @@ import {
   type PluginTimelineRendererProps,
 } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
+import type { GoogleSignInOutcome } from "./src/ui/account-form.tsx";
+import { googleSignInFailureText } from "./src/ui/google-sign-in-text.ts";
 import type { rpcContract } from "./server.ts";
 import type {
   AttachmentMeta,
@@ -72,6 +76,7 @@ import { addBounded, setBounded } from "./src/ui/bounded.ts";
 import {
   DEFAULT_FOLDER_PATH,
   inboxPath,
+  isInboxView,
   sameView,
   viewKey,
   viewPaths,
@@ -85,6 +90,7 @@ import {
   type ComposeKind,
   type ComposerState,
   type MailInboxPorts,
+  type MailTabsPorts,
   type ReadingState,
   type SearchState,
   type ThreadListState,
@@ -97,8 +103,11 @@ import {
   parseDraftSubPath,
   parseThreadSubPath,
   parseViewSubPath,
+  parseViewTab,
   pageSubPath,
   parsePageSubPath,
+  parseSettingsSubPath,
+  settingsSubPath,
   parseProjectSubPath,
   parseSavedSearchSubPath,
   projectSubPath,
@@ -106,6 +115,7 @@ import {
   type MailPageName,
   threadSubPath,
   viewSubPath,
+  viewTabSubPath,
   type ThreadLink,
 } from "./src/ui/routes.ts";
 import { NEW_MAIL_TOAST_MS, newMailToastPlan } from "./src/ui/new-mail-toasts.ts";
@@ -120,7 +130,10 @@ import {
   type TranslationState,
 } from "./src/ui/translation-block.tsx";
 import { TranslationSettings } from "./src/ui/translation-settings.tsx";
-import { MailSettings, type SettingsAiPorts, type SettingsSection, type TemplateView } from "./src/ui/mail-settings.tsx";
+import { type SettingsAiPorts, type SettingsSection, type TemplateView } from "./src/ui/settings/shared.ts";
+import { SettingsPage } from "./src/ui/settings/settings-page.tsx";
+import type { PageSettingsPort, SaveResult } from "./src/ui/settings/setting-controls.tsx";
+import { pageSettingsOf, pageSettingsPatchSchema, type PageSettings } from "./src/core/page-settings.ts";
 import type { LanguageTag } from "./src/core/translate.ts";
 import { filterActive, formatUntil, subjectOrPlaceholder, type ListFilter } from "./src/ui/thread-list.tsx";
 import {
@@ -156,6 +169,13 @@ import type { RailCommand } from "./src/ui/mail-sidebar.tsx";
 import type { HistoryState } from "./src/ui/thread-list.tsx";
 import { dropAction, dropRefusal, readMovePayload } from "./src/ui/drag-move.ts";
 import { SaveSearchDialog, type SavedSearchEdit } from "./src/ui/saved-searches.tsx";
+import type { InboxTabView } from "./src/ui/inbox-tabs.tsx";
+import type { TypingOptions } from "./src/ui/editor-typing.ts";
+import { uploadFile } from "./src/ui/attachments-input.tsx";
+import { selectedQuote } from "./src/ui/quick-quote.ts";
+import { parsePairs } from "./src/core/autocorrect.ts";
+import type { InboxTabsPort } from "./src/ui/settings/tabs-settings.tsx";
+import { TAB_NAME_MAX } from "./src/core/inbox-tabs.ts";
 import {
   DeleteFolderDialog,
   FolderNameDialog,
@@ -167,17 +187,22 @@ import { HistoryForgetDialog, type ForgetRequest } from "./src/ui/history-forget
 import { LabelsDialog, type LabelsRequest } from "./src/ui/labels-dialog.tsx";
 import { FILES_PAGE, FilesView, type FilesFilter } from "./src/ui/files-view.tsx";
 import { AttachmentViewer, viewerShows, type ViewerHost, type ViewRequest } from "./src/ui/attachment-viewer.tsx";
+import { dictationFile } from "./src/core/dictation-text.ts";
+import { MCP_SERVER_FILE_NAME, MCP_SERVER_SOURCE } from "./src/core/mcp-server-source.ts";
 import { printDocument, printFileName, printHtml, type PrintMessage } from "./src/ui/print.ts";
 // Slice 3i: the link checks import zod-free core modules only (no zod in the page bundle).
 import { cleanLink, type CleanLink } from "./src/core/link-clean.ts";
 import { addressDomain } from "./src/core/sender-basics.ts";
 import { buildKnownDomains } from "./src/core/sender-disguise.ts";
 import { LinkDialog } from "./src/ui/link-status.tsx";
-import type { SettingsSearchPorts } from "./src/ui/mail-settings.tsx";
+import type { SettingsSearchPorts } from "./src/ui/settings/shared.ts";
 // The page-side pdf.js engine: pdf.js loads lazily, in a blob: worker only.
 import { browserPdfEngine } from "./src/adapters/bb/pdf-page.ts";
 import type { RuleRunView } from "./src/core/contract.ts";
 import { resolveLanguage, setLanguage, tx, type Language } from "./src/ui/i18n/index.ts";
+import { PLUGIN_ACCESS_CHANNEL, type PluginAccessPayload } from "./src/core/plugin-api.ts";
+import { GOOGLE_EXTRA_SCOPES, GOOGLE_RIGHT_SCOPE, isGoogleRight, type PluginRight } from "./src/core/plugin-access.ts";
+import type { PluginAccessPort } from "./src/ui/settings/plugin-access-section.tsx";
 
 // The channel name is checked against the core constant without importing it
 // at runtime: a value import of the core would bundle its zod schemas.
@@ -200,6 +225,8 @@ const TRANSLATE_MISSING = "Translation needs the Makosh AI plugin";
 const PAGE_SIZE = 50;
 const MAX_PAGE = 100;
 const SEARCH_LIMIT = 50;
+/** How often the page asks how a Google sign-in stands while the browser has it. */
+const GOOGLE_SIGN_IN_POLL_MS = 1_000;
 const SYNC_INDICATOR_MS = 60_000;
 /** message_action takes at most this many ids per call; larger batches go in sequence. */
 const ACTION_CHUNK = 200;
@@ -516,10 +543,7 @@ const mailPageLink = (() => {
       const state = shown;
       if (state === null) return false;
       if (typeof document !== "undefined" && document.visibilityState === "hidden") return false;
-      const view = state.view;
-      if (view.kind === "role") return view.role === "inbox";
-      const folder = (state.folders ?? []).find((f) => f.accountId === view.accountId && f.path === view.path);
-      return folder !== undefined ? folder.specialUse === "inbox" : view.path.toUpperCase() === "INBOX";
+      return isInboxView(state.view, state.folders);
     },
     /** False when no page took the command. */
     send(command: PageCommand): boolean {
@@ -548,11 +572,13 @@ function useMailLanguage(): Language {
 function MailPanel({ subPath }: PluginNavPanelProps) {
   useMailLanguage();
   const rpc = useRpc<typeof rpcContract>();
+  const sdk = useSdk();
   const navigate = useBbNavigate();
   const composer = useComposer();
 
   const [status, setStatus] = useState<StatusView | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
+  const googleSignInOffered = status?.googleSignIn === true;
   /**
    * An account id or ALL_ACCOUNTS, with the route it was chosen on; null
    * until the owner chooses (All accounts when several).
@@ -571,6 +597,8 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
   const bbLink = useRealtimeConnectionState();
   const [accountForm, setAccountForm] = useState<AccountFormRequest>(null);
   const [mailComposer, setComposer] = useState<ComposerState | null>(null);
+  /** Counts mail-changed refreshes: the drafted-reply strip reads again. */
+  const [mailVersion, setMailVersion] = useState(0);
   const [outbox, setOutbox] = useState<OutboxRow[]>([]);
   const [outboxPending, setOutboxPending] = useState<ReadonlySet<string>>(new Set());
   const [smtpAccountId, setSmtpAccountId] = useState<string | null>(null);
@@ -579,15 +607,15 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
    * The view the subPath names (a conversation link keeps the view before
    * it), and a counter of subPath changes.
    */
-  const route = useRef({ subPath, serial: 0, view: parseViewSubPath(subPath) });
+  const route = useRef({ subPath, serial: 0, view: parseViewSubPath(subPath), tab: parseViewTab(subPath) });
   if (route.current.subPath !== subPath) {
+    const kept = parseThreadSubPath(subPath) !== null || parseDraftSubPath(subPath) !== null || parseSavedSearchSubPath(subPath) !== null;
     route.current = {
       subPath,
       serial: route.current.serial + 1,
-      view:
-        parseThreadSubPath(subPath) !== null || parseDraftSubPath(subPath) !== null || parseSavedSearchSubPath(subPath) !== null
-          ? route.current.view
-          : parseViewSubPath(subPath),
+      view: kept ? route.current.view : parseViewSubPath(subPath),
+      // Split Inbox: the Inbox tab of the view, kept with it.
+      tab: kept ? route.current.tab : parseViewTab(subPath),
     };
   }
   const routeView = route.current.view;
@@ -631,6 +659,9 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     return { kind: "folder", accountId: account.id, path: inboxPath(folders) ?? DEFAULT_FOLDER_PATH };
   })();
   const currentViewKey = viewKey(view);
+  /** Split Inbox: tabs sit over an Inbox only; the routed tab counts while its view is the one shown. */
+  const inboxShown = isInboxView(view, folders);
+  const routeTab = inboxShown && routeView !== null && sameView(routeView, view) ? route.current.tab : null;
   const searchAccount = unified ? null : (account?.id ?? null);
 
   // Latest values for callbacks that outlive a render (realtime, async results).
@@ -639,6 +670,8 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     searchAccount,
     unified,
     view,
+    tab: routeTab,
+    inbox: inboxShown,
     folders,
     list,
     search,
@@ -647,7 +680,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     subPath,
     unsubscribe: null as { messageId: string; info: UnsubscribeInfoView } | null,
   });
-  latest.current = { ...latest.current, scopeKey, searchAccount, unified, view, folders, list, search, reading, selection, subPath };
+  latest.current = { ...latest.current, scopeKey, searchAccount, unified, view, tab: routeTab, inbox: inboxShown, folders, list, search, reading, selection, subPath };
   /** Messages this page already marked opened, so message_open runs once each. */
   const opened = useRef(new Set<string>());
   /** The account of the conversation open in the reading pane. */
@@ -660,7 +693,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
    * picks something on the page.
    */
   const wantedLink = useRef<ThreadLink | null>(null);
-  const requests = useRef({ list: 0, search: 0, thread: 0, folders: 0, details: 0 });
+  const requests = useRef({ list: 0, search: 0, thread: 0, folders: 0, details: 0, tabs: 0 });
   /** Slice 3h: indexAttachmentText, read by the page's own search. */
   const searchAttachments = useRef(false);
   /** Slice 3h: folders the owner set to one row per message (this device; folder_prefs_set keeps the server's copy). */
@@ -729,11 +762,14 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
           const flags = filtersRef.current.get(viewKey(forView)) ?? NO_FILTER;
           const keep = openThreadId.current;
           const filter = filterActive(flags) ? { ...flags, ...(keep !== null ? { keep } : {}) } : undefined;
+          // Split Inbox: a tab the server no longer knows lists the whole Inbox.
+          const tabId = latest.current.tab;
           const page = await rpc.call("threads_list", {
             scope: scopeOf(forView),
             cursor,
             limit,
             ...(filter !== undefined ? { filter } : {}),
+            ...(tabId !== null ? { tabId } : {}),
           });
           if (token !== requests.current.list) return;
           threads.push(...page.threads);
@@ -764,6 +800,23 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     },
     [rpc],
   );
+
+  /**
+   * Split Inbox: the tabs and their unread counts for the Inbox shown. A
+   * failed load keeps the row as it was; the list reports a store that fails.
+   */
+  const [tabState, setTabState] = useState<{ key: string; tabs: InboxTabView[]; inboxUnread: number } | null>(null);
+  const loadTabs = useCallback(async () => {
+    const { scopeKey: key, view: forView, inbox } = latest.current;
+    if (key === null || !inbox) return;
+    const token = ++requests.current.tabs;
+    try {
+      const result = await rpc.call("inbox_tabs_list", { scope: scopeOf(forView) });
+      if (token === requests.current.tabs) setTabState({ key: viewKey(forView), tabs: result.tabs, inboxUnread: result.inboxUnread });
+    } catch {
+      // Kept as it was.
+    }
+  }, [rpc]);
 
   /** Slice 3h: a folder that is not grouped by conversation lists its messages (messages_list). */
   const loadMessages = useCallback(
@@ -1080,9 +1133,10 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       return;
     }
     void loadList(latest.current.view, "reset");
+    void loadTabs();
     const link = wantedLink.current;
     if (link !== null) selectThread(link.threadId, null, link.accountId);
-  }, [scopeKey, currentViewKey, loadList, runSearch, selectThread]);
+  }, [scopeKey, currentViewKey, routeTab, inboxShown, loadList, loadTabs, runSearch, selectThread]);
 
   useEffect(
     () => () => {
@@ -1103,8 +1157,9 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     if (key === null) return;
     void loadList(current, "refresh");
     void loadFolders(key);
+    void loadTabs();
     if (currentSearch.query !== "") void runSearch(currentSearch.query, forAccount);
-  }, [loadFolders, loadList, runSearch]);
+  }, [loadFolders, loadList, loadTabs, runSearch]);
 
   useDebouncedRealtime(MAIL_CHANGED_CHANNEL, (payloads) => {
     void loadStatus();
@@ -1123,6 +1178,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     if (!touched) return;
     stopSyncing();
     refreshAfterChange();
+    setMailVersion((version) => version + 1);
     // A thread still opening loads fresh data anyway; refreshing it now would
     // supersede the open and drop which message to expand.
     if (currentReading.threadId !== null && !currentReading.loading) {
@@ -1145,6 +1201,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       // From the Today or Tasks page, the view the page sits on opens too.
       if (
         !sameView(next, current) ||
+        latest.current.tab !== null ||
         parsePageSubPath(latest.current.subPath) !== null ||
         parseSavedSearchSubPath(latest.current.subPath) !== null
       ) {
@@ -1825,6 +1882,57 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     [rpc],
   );
 
+  /** The banner's retry: one sign-in with the saved password, then the status again. */
+  const retrySignIn = useCallback(
+    async (accountId: string) => {
+      try {
+        const { result } = await rpc.call("accounts_retry_sign_in", { accountId });
+        if (result === "resumed") toast.success(tx("The server accepted the saved password. Sync is on again."));
+        else if (result === "refused") {
+          toast.error(tx("The server refused the saved password again. Try later or update the app password."));
+        } else if (result === "unreachable") toast.error(tx("The mail server could not be reached. Try again later."));
+        else if (result === "sign_in_needed") toast.error(tx("Google no longer accepts this sign-in. Sign in to Google again."));
+        else toast.error(tx("The saved password cannot be read. Enter it again."));
+      } catch (error) {
+        toast.error(tx("Could not sign in: {p1}", { p1: messageOf(error) }));
+      }
+      await loadStatus();
+    },
+    [loadStatus, rpc],
+  );
+
+  /**
+   * Sign in with Google from the account form: the server opens its listener,
+   * Google opens in the browser, and the status is asked once a second until
+   * the account is saved, the sign-in fails or the form goes away.
+   */
+  const googleSignIn = useCallback(
+    async (
+      email: string | null,
+      signal: AbortSignal,
+      extraScopes?: (typeof GOOGLE_EXTRA_SCOPES)[number][],
+      /** False for a sign-in started elsewhere than the account form (Plugin access): the owner stays where they are. */
+      focusAccount = true,
+    ): Promise<GoogleSignInOutcome> => {
+      const { flowId, url } = await rpc.call("google_sign_in_start", extraScopes === undefined ? { email } : { email, extraScopes });
+      if (!navigate.openUrl(url)) return { ok: false, message: tx("This link cannot be opened here.") };
+      for (;;) {
+        await new Promise((resolve) => setTimeout(resolve, GOOGLE_SIGN_IN_POLL_MS));
+        if (signal.aborted) return { ok: false, message: "" };
+        const flow = await rpc.call("google_sign_in_status", { flowId });
+        if (flow.state === "pending") continue;
+        if (flow.state === "failed") return { ok: false, message: googleSignInFailureText(flow.reason) };
+        if (focusAccount) {
+          selectAccount(flow.accountId);
+          setAccountForm(null);
+        }
+        await loadStatus();
+        return { ok: true };
+      }
+    },
+    [loadStatus, navigate, rpc, selectAccount],
+  );
+
   const saveAccount = useCallback(
     async (input: NewAccountInput) => {
       const saved = await rpc.call("accounts_add", input);
@@ -1839,8 +1947,8 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
   // ---- Compose and send (slice 3b) ----
 
   const openComposer = useCallback(
-    (draft: DraftView, warning: ComposeWarningKind, dropped: string[], dockThreadId: string | null) => {
-      setComposer({ draft, warning, dropped, dockThreadId });
+    (draft: DraftView, warning: ComposeWarningKind, dropped: string[], dockThreadId: string | null, initialOwn?: readonly string[]) => {
+      setComposer({ draft, warning, dropped, dockThreadId, ...(initialOwn !== undefined ? { initialOwn } : {}) });
     },
     [],
   );
@@ -1876,7 +1984,11 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
   const reply = useCallback(
     async (kind: ComposeKind, message: MessageHeader) => {
       try {
-        const prepared = await rpc.call("compose_prepare", { kind, messageId: message.id });
+        // Quick quote: with text selected inside this message, a reply quotes only that.
+        const quote = kind === "forward" || typeof document === "undefined" ? null : selectedQuote(document, message.id);
+        const prepared = await rpc.call("compose_prepare", { kind, messageId: message.id, ...(quote !== null ? { quote } : {}) });
+        // Said aloud: the rest of the original is not in this reply.
+        if (quote !== null) toast(tx("Replying with only the selected text quoted"));
         const { draft } = await rpc.call("compose_open", { draftId: prepared.draftId });
         openComposer(draft, prepared.warning, prepared.dropped, latest.current.reading.threadId);
       } catch (error) {
@@ -1922,6 +2034,15 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       save: (input) => rpc.call("compose_save", input),
       send: (input) => rpc.call("compose_send", input),
       pgpCheck: (from, recipients) => rpc.call("pgp_check", { from, recipients }),
+      applyTemplate: (input) => rpc.call("template_apply", input),
+      smartSend: async (draftId) => (await rpc.call("smart_send_time", { draftId })).suggestion,
+      // Dictation: BB's own voice service, the one the owner chose in BB's settings.
+      transcribe: async (audio, signal) => {
+        const { name, type } = dictationFile(audio.type);
+        return (await sdk.system.transcribeVoice({ file: new File([audio], name, { type }), signal })).text;
+      },
+      voiceReady: async () => (await sdk.system.config()).voiceTranscriptionEnabled,
+      trackOpens: status?.readStatuses === true,
       discard: async (draftId) => {
         await rpc.call("compose_discard", { draftId });
       },
@@ -1937,7 +2058,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       reload: async (draftId) => (await rpc.call("compose_open", { draftId })).draft,
       check: (input) => rpc.call("compose_check", input),
     }),
-    [rpc],
+    [rpc, sdk, status?.readStatuses],
   );
 
   const loadOutbox = useCallback(async (): Promise<OutboxRow[] | null> => {
@@ -2126,6 +2247,68 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
   // ---- Inbox triage on the page (slice 3e): filters, unsubscribe, snooze, block ----
 
   const listFilter = filtersRef.current.get(currentViewKey) ?? NO_FILTER;
+
+  /** Split Inbox: the row's ports. The tab in view is the routed one while it still exists. */
+  const shownTabs = inboxShown && tabState !== null && tabState.key === currentViewKey ? tabState : null;
+  const tabPorts = useMemo((): MailTabsPorts => {
+    const tabs = shownTabs?.tabs ?? [];
+    const currentId = tabs.some((tab) => tab.id === routeTab) ? routeTab : null;
+    const open = (id: string | null) => navigate.toPluginPanel("mail", { subPath: viewTabSubPath(latest.current.view, id) });
+    // Any change may move conversations in or out of the tab in view (its own condition, or Other's rest).
+    const relist = () => {
+      if (latest.current.tab !== null && latest.current.scopeKey !== null) void loadList(latest.current.view, "reset");
+    };
+    const save = async (input: { id?: string; name: string; query: string }) => {
+      await rpc.call("inbox_tab_save", input);
+      await loadTabs();
+      relist();
+    };
+    const change = (call: Promise<unknown>, after?: () => void) => {
+      call.then(
+        () => {
+          after?.();
+          void loadTabs();
+          relist();
+        },
+        (error) => toast.error(tx("Could not change the tabs: {p1}", { p1: messageOf(error) })),
+      );
+    };
+    return {
+      shown: inboxShown,
+      tabs,
+      currentId,
+      inboxUnread: shownTabs?.inboxUnread ?? 0,
+      onSelect: (id) => {
+        if (id !== currentId) open(id);
+      },
+      onStep: (delta) => {
+        if (tabs.length === 0) return;
+        const order: (string | null)[] = [null, ...tabs.map((tab) => tab.id)];
+        open(order[(order.indexOf(currentId) + delta + order.length) % order.length] ?? null);
+      },
+      onAdd: (tab) => save(tab),
+      onRename: async (id, name) => {
+        const tab = tabs.find((t) => t.id === id);
+        if (tab !== undefined) await save({ id, name, query: tab.query });
+      },
+      onEdit: async (id, query) => {
+        const tab = tabs.find((t) => t.id === id);
+        if (tab !== undefined) await save({ id, name: tab.name, query });
+      },
+      onMove: (id, direction) => change(rpc.call("inbox_tab_move", { id, direction })),
+      onRemove: (id) =>
+        change(rpc.call("inbox_tab_delete", { id }), () => {
+          if (id === latest.current.tab) open(null);
+        }),
+      onSplitSender: ({ name, address }) => {
+        const tabName = (name?.trim() || address).slice(0, TAB_NAME_MAX);
+        save({ name: tabName, query: `from:${address}` }).then(
+          () => toast(tx("Added the tab {p1}", { p1: tabName })),
+          (error) => toast.error(tx("Could not add the tab: {p1}", { p1: messageOf(error) })),
+        );
+      },
+    };
+  }, [inboxShown, shownTabs, routeTab, navigate, rpc, loadTabs, loadList]);
   /** A toggle: the view keeps it while the page is open, and the list starts again. */
   const setListFilter = useCallback(
     (next: ListFilter) => {
@@ -2596,10 +2779,8 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
 
   // ---- Mail settings: sending addresses, signatures, templates (slice 3d) ----
 
-  const [settings, setSettings] = useState<{ open: boolean; section: SettingsSection }>({
-    open: false,
-    section: "addresses",
-  });
+  /** The settings section the address names; null on every other page. */
+  const settingsSection = parseSettingsSubPath(subPath);
   const [identities, setIdentities] = useState<IdentityView[]>([]);
   const [templates, setTemplates] = useState<TemplateView[]>([]);
   const loadIdentities = useCallback(async () => {
@@ -2632,13 +2813,56 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     }
   }, [rpc]);
   const openSettings = useCallback(
-    (section: SettingsSection) => {
-      setSettings({ open: true, section });
-      void loadIdentities();
-      void loadTemplates();
-      void loadBlockRules();
+    (section?: SettingsSection) => {
+      navigate.toPluginPanel("mail", { subPath: settingsSubPath(section) });
     },
-    [loadBlockRules, loadIdentities, loadTemplates],
+    [navigate],
+  );
+  // The page's lists and settings load when it opens, by a click or by its address.
+  const settingsShown = settingsSection !== null;
+  const [loadedSettings, setLoadedSettings] = useState<PageSettings | null>(null);
+  useEffect(() => {
+    if (!settingsShown) return;
+    void loadIdentities();
+    void loadTemplates();
+    void loadBlockRules();
+    rpc.call("settings_get", {}).then(setLoadedSettings, () => undefined);
+  }, [settingsShown, loadBlockRules, loadIdentities, loadTemplates, rpc]);
+  // BB's live settings are the truth: they also change in BB's own plugin settings while
+  // the page is open. What the page has just written covers them until BB reports a change.
+  const liveSettings = useSettings().values as Record<string, unknown> | null | undefined;
+  const liveSignature = liveSettings == null ? null : JSON.stringify(liveSettings);
+  const [writtenSettings, setWrittenSettings] = useState<Partial<PageSettings>>({});
+  useEffect(() => setWrittenSettings({}), [liveSignature]);
+  const pageSettings = useMemo<PageSettings | null>(() => {
+    const base = liveSignature === null ? loadedSettings : pageSettingsOf(JSON.parse(liveSignature) as Record<string, unknown>);
+    return base === null ? null : { ...base, ...writtenSettings };
+  }, [liveSignature, loadedSettings, writtenSettings]);
+  /** Writes of the settings page go one after another, in the order they were made. */
+  const settingsWrites = useRef<Promise<unknown>>(Promise.resolve());
+  const pageSettingsPort = useMemo<PageSettingsPort>(
+    () => ({
+      values: pageSettings,
+      save: (patch) => {
+        // Refused here with a reason the owner can read; the server checks the same bounds again.
+        if (!pageSettingsPatchSchema.safeParse(patch).success) {
+          return Promise.resolve<SaveResult>({ ok: false, message: tx("This value is not allowed here.") });
+        }
+        const write = settingsWrites.current.then(async (): Promise<SaveResult> => {
+          try {
+            const saved = await rpc.call("settings_set", patch);
+            setLoadedSettings(saved);
+            setWrittenSettings((prev) => ({ ...prev, ...patch }));
+            return { ok: true };
+          } catch (error) {
+            return { ok: false, message: tx(messageOf(error)) };
+          }
+        });
+        settingsWrites.current = write;
+        return write;
+      },
+    }),
+    [pageSettings, rpc],
   );
   /** Mail settings' Change… for an account's snooze folder. */
   const [settingsFolder, setSettingsFolder] = useState<SnoozeFolderRequest | null>(null);
@@ -2647,7 +2871,6 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     (accountId: string) => {
       const target = accounts.find((a) => a.id === accountId);
       if (target === undefined) return;
-      setSettings((prev) => ({ ...prev, open: false }));
       setSettingsFolder({
         accountId,
         accountLabel: target.email,
@@ -2660,6 +2883,69 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
   // ---- Slice 3f: plugin settings the page reads, and Mail settings' AI tabs ----
 
   // Slice 3k: OpenPGP keys in Mail settings.
+  // Access of other plugins: requests wait in settings; a new one is announced once.
+  /** Split Inbox: the Tabs group of Mail settings; the row over the Inbox follows a change. */
+  const settingsTabs = useMemo<InboxTabsPort>(() => {
+    const done = () => void loadTabs();
+    return {
+      load: async () => (await rpc.call("inbox_tabs_list", { scope: { kind: "all", role: "inbox" }, counts: false })).tabs,
+      save: async (input) => {
+        await rpc.call("inbox_tab_save", input);
+        done();
+      },
+      move: async (id, direction) => {
+        await rpc.call("inbox_tab_move", { id, direction });
+        done();
+      },
+      remove: async (id) => {
+        await rpc.call("inbox_tab_delete", { id });
+        done();
+      },
+    };
+  }, [rpc, loadTabs]);
+  const [pluginAccessTick, setPluginAccessTick] = useState(0);
+  /** The one Google sign-in started for a plugin key; a new click or leaving the page ends its wait. */
+  const googleGrantRun = useRef<AbortController | null>(null);
+  useEffect(() => () => googleGrantRun.current?.abort(), []);
+  const [pluginRequests, setPluginRequests] = useState(0);
+  const settingsPluginAccess = useMemo<PluginAccessPort>(() => {
+    const save = async (work: () => Promise<unknown>): Promise<SaveResult> => {
+      try {
+        await work();
+        return { ok: true };
+      } catch (error) {
+        return { ok: false, message: tx(messageOf(error)) };
+      }
+    };
+    return {
+      load: async () => {
+        const view = await rpc.call("plugin_grants_list", {});
+        setPluginRequests(view.requests.length);
+        return view;
+      },
+      setGrant: (pluginId, right, accountId, on) => save(() => rpc.call("plugin_grant_set", { pluginId, right, accountId, on })),
+      revoke: (pluginId) => save(() => rpc.call("plugin_grant_revoke", { pluginId })),
+      dismiss: (pluginId) => save(() => rpc.call("plugin_request_dismiss", { pluginId })),
+    };
+  }, [rpc]);
+  useRealtime(PLUGIN_ACCESS_CHANNEL, (payload) => {
+    setPluginAccessTick((n) => n + 1);
+    const asked = (payload as PluginAccessPayload | null)?.request;
+    if (typeof asked !== "string") return;
+    setPluginRequests((n) => Math.max(n, 1));
+    toast(tx("{plugin} asks for access to mail. Open Mail settings to decide.", { plugin: asked.slice(0, 60) }), {
+      id: "plugin-access-request",
+      action: { label: tx("Open"), onClick: () => openSettings("plugin_access") },
+    });
+  });
+  const saveMcpServerFile = useCallback(async () => {
+    try {
+      await experimental_saveFile({ fileName: MCP_SERVER_FILE_NAME, blob: new Blob([MCP_SERVER_SOURCE], { type: "text/javascript" }) });
+      return true;
+    } catch {
+      return false;
+    }
+  }, []);
   const settingsPgp = useMemo<SettingsPgpPorts>(
     () => ({
       list: () => rpc.call("pgp_certs_list", {}),
@@ -2705,6 +2991,35 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
   );
   const pluginSettings = useSettings().values;
   cleanLinksOn.current = pluginSettings?.cleanLinks !== false;
+  // Typing speed: the owner's phrases for the grey text, read when a composer opens (the server keeps them ten minutes).
+  const [phrases, setPhrases] = useState<readonly string[]>([]);
+  const composerOpen = mailComposer !== null;
+  const autocompleteOn = pluginSettings?.autocomplete !== false;
+  useEffect(() => {
+    if (!composerOpen || !autocompleteOn) return;
+    let live = true;
+    rpc.call("phrases_list", {}).then(
+      (result) => {
+        if (live) setPhrases(result.phrases);
+      },
+      // Without phrases there is no grey text; nothing else depends on them.
+      () => {},
+    );
+    return () => {
+      live = false;
+    };
+  }, [composerOpen, autocompleteOn, rpc]);
+  // Typing speed: the composer's aids.
+  const pairsText = typeof pluginSettings?.autocorrectPairs === "string" ? pluginSettings.autocorrectPairs : "";
+  const typing = useMemo<TypingOptions>(
+    () => ({
+      autocorrect: pluginSettings?.autocorrect !== false,
+      pairs: parsePairs(pairsText),
+      autocomplete: pluginSettings?.autocomplete !== false,
+      phrases,
+    }),
+    [pluginSettings?.autocorrect, pluginSettings?.autocomplete, pairsText, phrases],
+  );
   // Slice 3h: the reading settings and the Search and reading tab.
   const readingSettings = {
     mailView: pluginSettings?.mailView === "plain" ? ("plain" as const) : ("original" as const),
@@ -2767,10 +3082,21 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
   const digestTime = typeof pluginSettings?.digestTime === "string" ? pluginSettings.digestTime : "08:00";
   const openConversation = useCallback(
     (accountId: string, threadId: string) => {
-      setSettings((prev) => ({ ...prev, open: false }));
       navigate.toPluginPanel("mail", { subPath: threadSubPath(accountId, threadId) });
     },
     [navigate],
+  );
+  /** AI sorts the inbox: the owner's AI labels. Its own memo, so a settings change does not reload the list. */
+  const aiLabelPorts = useMemo<NonNullable<SettingsAiPorts["labels"]>>(
+    () => ({
+      list: async () => (await rpc.call("ai_labels_list", {})).labels,
+      save: async (input) => (await rpc.call("ai_label_save", input)).label,
+      remove: async (id) => {
+        await rpc.call("ai_label_delete", { id });
+      },
+      move: async (id, direction) => (await rpc.call("ai_label_move", { id, direction })).labels,
+    }),
+    [rpc],
   );
   const settingsAi = useMemo<SettingsAiPorts>(
     () => ({
@@ -2790,21 +3116,28 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       digestTime,
       reminderDays: reminderDaysSetting,
       loadRules: async () => (await rpc.call("category_rules_list", {})).rules,
+      labels: aiLabelPorts,
       removeRule: async (id) => {
         await rpc.call("category_rule_remove", { id });
       },
       onOpenAiSettings: () => {
-        setSettings((prev) => ({ ...prev, open: false }));
-        setTranslateSettingsOpen(true);
+          setTranslateSettingsOpen(true);
       },
     }),
-    [categoriesOn, digestTime, morningDigest, openConversation, reminderDaysSetting, rpc],
+    [aiLabelPorts, categoriesOn, digestTime, morningDigest, openConversation, reminderDaysSetting, rpc],
   );
-  const settingsDialog = (
-    <MailSettings
-      open={settings.open}
-      section={settings.section}
-      onOpenChange={(open) => setSettings((prev) => ({ ...prev, open }))}
+  const settingsContent = settingsSection === null ? undefined : (
+    <SettingsPage
+      section={settingsSection}
+      onSection={(section) => navigate.toPluginPanel("mail", { subPath: settingsSubPath(section) })}
+      onBack={() => navigate.toPluginPanel("mail", { subPath: viewSubPath(latest.current.view) })}
+      settings={pageSettingsPort}
+      vaultReady={status?.vaultReady !== false}
+      onAddAccount={() => setAccountForm({})}
+      onReplacePassword={(account) =>
+        setAccountForm({ initial: { preset: account.preset, email: account.email, host: account.host, port: account.port } })
+      }
+      onCopy={(text) => void copy(text)}
       accounts={accounts}
       identities={identities}
       templates={templates}
@@ -2832,9 +3165,27 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
         await rpc.call("template_delete", { id });
         await loadTemplates();
       }}
+      templateFiles={{
+        // The bytes travel as a draft's do; only the first and the last call name the template.
+        add: async (templateId, file) => {
+          await uploadFile(
+            {
+              begin: ({ draftId, ...rest }) => rpc.call("template_file_begin", { templateId: draftId, ...rest }),
+              chunk: (input) => rpc.call("compose_attachment_chunk", input),
+              finish: async (input) => (await rpc.call("template_file_finish", input)).file as never,
+            },
+            templateId,
+            file,
+          );
+          await loadTemplates();
+        },
+        remove: async (templateId, fileId) => {
+          await rpc.call("template_file_remove", { templateId, fileId });
+          await loadTemplates();
+        },
+      }}
       onOpenSmtp={(accountId) => {
-        setSettings((prev) => ({ ...prev, open: false }));
-        setSmtpAccountId(accountId);
+          setSmtpAccountId(accountId);
       }}
       blockRules={blockRules}
       onUnblock={async (id) => {
@@ -2842,6 +3193,14 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
         await loadBlockRules();
       }}
       onChangeSnoozeFolder={changeSnoozeFolder}
+      inboxTabs={settingsTabs}
+      onGoogleSwitch={
+        googleSignInOffered
+          ? (account) => {
+                      setAccountForm({ initial: { preset: "gmail", email: account.email, signIn: "google" } });
+            }
+          : undefined
+      }
       ai={settingsAi}
       bb={{
         call: bbCall,
@@ -2853,6 +3212,36 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       }}
       search={settingsSearch}
       pgp={settingsPgp}
+      saveMcpServerFile={saveMcpServerFile}
+      pluginAccess={{
+        port: settingsPluginAccess,
+        reloadKey: pluginAccessTick,
+        waiting: pluginRequests,
+        ...(googleSignInOffered
+          ? {
+              onGoogleGrant: (pluginId: string, right: PluginRight, accountId: string) => {
+                const account = status?.accounts.find((a) => a.id === accountId);
+                if (account === undefined || !isGoogleRight(right)) return;
+                // The mailbox signs in again with this service added. The owner's click was for the key, so it is
+                // turned on right after; Mail refuses it when Google did not give the service (the owner unticked it).
+                googleGrantRun.current?.abort();
+                const run = new AbortController();
+                googleGrantRun.current = run;
+                void googleSignIn(account.email, run.signal, [GOOGLE_RIGHT_SCOPE[right]], false)
+                  .then(async (outcome) => {
+                    if (!outcome.ok) {
+                      if (outcome.message !== "") toast(outcome.message);
+                      return;
+                    }
+                    const granted = await settingsPluginAccess.setGrant(pluginId, right, accountId, true);
+                    toast(granted.ok ? tx("Signed in to Google; the key is on.") : tx("Google did not give this access, so the key stays off."));
+                  })
+                  .catch(() => toast(tx("Google sign-in did not finish.")))
+                  .finally(() => setPluginAccessTick((n) => n + 1));
+              },
+            }
+          : {}),
+      }}
       filters={settingsFilters}
       subscriptions={settingsSubscriptions}
     />
@@ -2960,6 +3349,22 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
           })
           .catch((error: unknown) => toast.error(tx("Could not change the category: {p1}", { p1: messageOf(error) })));
       },
+      // Ask AI with actions: each runs only on the owner's click, through what Mail already does.
+      askActions: {
+        reply: async (action) => {
+          const prepared = await rpc.call("compose_prepare", { kind: "reply", messageId: action.messageId });
+          const { draft } = await rpc.call("compose_open", { draftId: prepared.draftId });
+          openComposer(draft, prepared.warning, prepared.dropped, action.threadId, action.paragraphs);
+        },
+        compose: async (paragraphs) => {
+          const from = account?.id ?? accounts[0]?.id;
+          if (from === undefined) throw new Error("Add an account first");
+          const { draftId } = await rpc.call("compose_new", { accountId: from });
+          const { draft, warning } = await rpc.call("compose_open", { draftId });
+          openComposer(draft, warning, [], null, paragraphs);
+        },
+        act: (action) => runAskAct(rpc, action, { recordUndo, refresh: refreshAfterChange, warn: (text) => toast.error(text) }),
+      },
       onCategoryAccept: (messageIds) => {
         rpc
           .call("category_accept", { messageIds })
@@ -3033,6 +3438,8 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       },
     }),
     [
+      account,
+      accounts,
       aiJobs,
       categoriesOn,
       dueReminders,
@@ -3040,6 +3447,9 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       latestMessages,
       loadReminders,
       navigate,
+      openComposer,
+      recordUndo,
+      refreshAfterChange,
       reloadAfterLabel,
       reminderDaysSetting,
       rpc,
@@ -3855,7 +4265,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
   );
   const archiveContent =
     shownPage === "archive" ? <ArchiveViewPage ports={archivePorts} onOpenLink={openLink} refresh={archiveRefresh} /> : undefined;
-  const shownContent = pageContent ?? filesContent ?? archiveContent;
+  const shownContent = pageContent ?? filesContent ?? archiveContent ?? settingsContent;
 
   // Reading (#50, #54, #62, #83, #86, #89).
   const codeTheme = experimental_useCodeTheme();
@@ -3976,6 +4386,19 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
           void loadOutbox();
         },
       },
+      // AI writes mail: the reply drafted for a message. Use opens an ordinary reply with the text in it.
+      replyDraft: {
+        version: mailVersion,
+        get: async (messageId) => (await rpc.call("reply_draft_get", { messageId })).draft,
+        use: async (messageId, paragraphs) => {
+          const prepared = await rpc.call("compose_prepare", { kind: "reply", messageId });
+          const { draft } = await rpc.call("compose_open", { draftId: prepared.draftId });
+          openComposer(draft, prepared.warning, prepared.dropped, latest.current.reading.threadId, paragraphs);
+        },
+        dismiss: async (messageId) => {
+          await rpc.call("reply_draft_dismiss", { messageId });
+        },
+      },
       viewable: (attachment) => viewerShows(attachment.kind, attachment.mimeType),
       onView: (_message, attachment) =>
         setViewing({
@@ -4068,7 +4491,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
             pages: {
               today: pageCounts.today,
               tasks: pageCounts.tasks,
-              current: shownPage,
+              current: shownPage === "settings" ? null : shownPage,
               ...(bbSettings.devNotifications ? { dev: pageCounts.dev } : {}),
               projects: true,
               files: true,
@@ -4099,7 +4522,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
         setFocusRequest((n) => n + 1);
         return;
       case "settings":
-        openSettings("addresses");
+        openSettings();
         return;
       case "thread":
         navigate.toPluginPanel("mail", { subPath: threadSubPath(command.link.accountId, command.link.threadId) });
@@ -4176,6 +4599,8 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       onStopImages={(message) => void stopImages(message)}
       accountForm={accountForm}
       onOpenAccountForm={setAccountForm}
+      onRetrySignIn={retrySignIn}
+      onGoogleSignIn={googleSignIn}
       onCloseAccountForm={() => setAccountForm(null)}
       onTestAccount={testAccount}
       onSaveAccount={saveAccount}
@@ -4202,11 +4627,13 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       onUndo={() => void undo(lastUndo.current?.id ?? null, lastUndo.current?.moving ?? false)}
       listFilter={listFilter}
       onListFilter={setListFilter}
+      tabs={tabPorts}
+      typing={typing}
       inbox={inboxPorts}
       ai={mailAi}
       bb={mailBb}
       slice3h={slice3hPorts}
-      {...(shownContent !== undefined ? { page: shownContent } : {})}
+      {...(shownContent !== undefined ? { page: shownContent, pageWide: settingsContent !== undefined } : {})}
     />
     <LinkDialog
       link={linkAsk}
@@ -4262,7 +4689,6 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       clear={clearTranslations}
       onSaved={translateSettingsSaved}
     />
-    {settingsDialog}
     {slice3hDialogs}
     </>
   );
@@ -4495,7 +4921,7 @@ function MailFolderSidebar(_props: PluginNavPanelProps) {
         }
       }}
       onOpenSettings={() => {
-        if (!mailPageLink.send({ kind: "settings" })) navigate.toPluginPanel("mail");
+        if (!mailPageLink.send({ kind: "settings" })) navigate.toPluginPanel("mail", { subPath: settingsSubPath() });
       }}
       onSelectPage={(page) => {
         if (!mailPageLink.send({ kind: "page", page })) navigate.toPluginPanel("mail", { subPath: pageSubPath(page) });

@@ -7,14 +7,15 @@
 // rules; their ref_id is a BB thread, Taskboard task or rule id, never a path,
 // project name, title or prompt.
 
-export const LOG_ACTORS = ["agent", "mention", "handoff", "cli", "owner_ai", "owner_bb", "rule"] as const;
+export const LOG_ACTORS = ["agent", "mention", "handoff", "cli", "owner_ai", "owner_bb", "rule", "plugin", "mcp"] as const;
 export type LogActor = (typeof LOG_ACTORS)[number];
 
 export const LOG_TOOLS = [
   "search", "read", "contacts", "inbox", "propose", "templates", "triage", "mention", "handoff",
-  "cli_search", "cli_read",
-  "ai_translate", "ai_summary", "ai_ask", "ai_tasks", "ai_categories", "ai_digest", "ai_draft",
+  "cli_search", "cli_read", "cli_accounts",
+  "ai_translate", "ai_summary", "ai_ask", "ai_tasks", "ai_categories", "ai_digest", "ai_draft", "ai_write", "ai_autodraft", "ai_sort", "ai_archive",
   "bb_thread", "bb_task", "project_save", "patch_handoff", "incident", "rule_thread",
+  "plugin_request", "plugin_accounts", "plugin_search", "plugin_read", "plugin_contacts", "plugin_invites", "plugin_propose", "plugin_token",
 ] as const;
 export type LogTool = (typeof LOG_TOOLS)[number];
 
@@ -64,6 +65,10 @@ export type LogEntryInput = {
 const wholeCount = (value: number | undefined) =>
   value === undefined || !Number.isFinite(value) ? 0 : Math.max(0, Math.floor(value));
 
+/** The ref of a plugin's rows: which plugin called. */
+export const PLUGIN_REF_PREFIX = "plugin:";
+export const pluginRef = (pluginId: string): string => `${PLUGIN_REF_PREFIX}${pluginId}`;
+
 /** A log row: ids de-duplicated and capped, provider and model kept for owner_ai only, mentions without a thread. */
 export function logEntry(input: LogEntryInput, now: Date): LogEntry {
   const ids = [...new Set(input.messageIds ?? [])].slice(0, AGENT_LOG_IDS_MAX);
@@ -96,6 +101,7 @@ export const LOG_TOOL_LABEL: Record<LogTool, string> = {
   handoff: "Handed an email to the agent",
   cli_search: "Searched mail (CLI)",
   cli_read: "Read an email (CLI)",
+  cli_accounts: "Listed accounts (CLI)",
   ai_translate: "Translated an email",
   ai_summary: "Summarized a conversation",
   ai_ask: "Answered a question about your mail",
@@ -103,12 +109,24 @@ export const LOG_TOOL_LABEL: Record<LogTool, string> = {
   ai_categories: "Suggested categories",
   ai_digest: "Summarized Today",
   ai_draft: "Improved your draft",
+  ai_write: "Wrote a message for you",
+  ai_autodraft: "Drafted a reply to new mail",
+  ai_sort: "Sorted new mail",
+  ai_archive: "Archived mail by an AI label",
   bb_thread: "Started a BB thread",
   bb_task: "Made a task",
   project_save: "Saved files to a project",
   patch_handoff: "Handed a patch to an agent",
   incident: "Opened or updated an incident thread",
   rule_thread: "Mail rule",
+  plugin_request: "Plugin: asked for access",
+  plugin_accounts: "Plugin: listed mailboxes",
+  plugin_search: "Plugin: searched mail",
+  plugin_read: "Plugin: read an email",
+  plugin_contacts: "Plugin: listed contacts",
+  plugin_invites: "Plugin: read invitations",
+  plugin_propose: "Plugin: prepared a letter",
+  plugin_token: "Plugin: took a Google key",
 };
 
 export const LOG_OUTCOME_LABEL: Record<LogOutcome, string> = {
