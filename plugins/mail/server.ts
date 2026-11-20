@@ -102,6 +102,7 @@ import { NewMailBook } from "./src/adapters/bb/new-mail-book.ts";
 import { writeInput } from "./src/core/ai-write.ts";
 import { writeSource, type WriteSettings } from "./src/core/write-source.ts";
 import { createReplyDrafts, type ReplyDrafts } from "./src/adapters/bb/reply-drafts.ts";
+import { AiSortRefusal, createAiSort, type AiSort } from "./src/adapters/bb/ai-sort.ts";
 import { createSnoozeClock, type SnoozeClock } from "./src/adapters/bb/snooze-clock.ts";
 import { ONE_CLICK_TOTAL_MS, UnsubscribeRate, createOneClickPoster } from "./src/adapters/bb/one-click.ts";
 import { createVault, generateVaultKey } from "./src/adapters/bb/vault.ts";
@@ -782,6 +783,12 @@ function defineSettings(bb: BbPluginApi) {
       type: "boolean",
       label: "Draft replies to new mail",
       description: "Uses your AI provider for every new message from people you write to; at most 50 a day. Nothing is sent without you.",
+      default: false,
+    },
+    aiSort: {
+      type: "boolean",
+      label: "Sort new mail with AI",
+      description: "One line and your own AI labels for every new Inbox message; a label can archive automatically. Uses your AI provider; at most 100 calls a day.",
       default: false,
     },
     aiInstructions: {
@@ -1540,11 +1547,15 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       quietHours: () => current.quietHours,
       importantSenders: () => current.importantSenders,
       importantOnly: () => current.notifyImportantOnly,
-      // Made below, once the AI job runner exists.
-      autoDrafts: (ids) => replyDrafts?.offer(ids),
+      // Made below, once the AI job runner exists. Sorting first: its labels may archive what a draft would answer.
+      autoDrafts: (ids) => {
+        aiSort?.offer(ids);
+        replyDrafts?.offer(ids);
+      },
       log: (line) => bb.log.info(line),
     };
     let replyDrafts: ReplyDrafts | null = null;
+    let aiSort: AiSort | null = null;
 
     /**
      * Hosts of the BB projects' remotes, refreshed with the daily purge (and
@@ -1871,6 +1882,34 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       log: (line) => bb.log.info(line),
     });
     replyDrafts = madeReplyDrafts;
+    const madeAiSort = createAiSort({
+      store,
+      clock,
+      enabled: () => pageSettingsOf(current).aiSort,
+      aiContext: () => ({ provider: current.translateProvider, model: current.translateModel }),
+      jobs: aiJobs,
+      withNonce: (build) => {
+        for (let attempt = 0; ; attempt++) {
+          try {
+            return build(translateNonce((size) => new Uint8Array(randomBytes(size))));
+          } catch (error) {
+            if (!(error instanceof NonceCollision) || attempt >= 5) throw error;
+          }
+        }
+      },
+      suspicious,
+      agentLog: agentLog.log,
+      onChanged: publishChanged,
+      wake: (accountId) => loop.wake(accountId),
+      newId: randomUUID,
+      schedule: (run, ms) => {
+        const timer = setTimeout(run, ms);
+        return () => clearTimeout(timer);
+      },
+      log: (line) => bb.log.info(line),
+    });
+    aiSort = madeAiSort;
+    bb.onDispose(() => madeAiSort.queue.dispose());
     // Disposers run in order: the queue stops, then a call already running ends with the job runner.
     bb.onDispose(() => madeReplyDrafts.queue.dispose());
     bb.onDispose(() => aiJobs.dispose());
@@ -2110,6 +2149,7 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       restoreTag: (parts) => newRestoreTag((size) => new Uint8Array(randomBytes(size)), parts),
       writeSettings,
       replyDrafts: madeReplyDrafts,
+      aiSort: madeAiSort,
       categoriesOn: () => current.mailCategories,
       refreshSenderSets: installSenderSets,
       quietHours: () => current.quietHours,
@@ -2238,6 +2278,7 @@ type RpcDeps = {
   /** AI writes mail: the owner's voice switch, instructions and facts. */
   writeSettings: () => WriteSettings;
   replyDrafts: Pick<ReplyDrafts, "get" | "dismiss">;
+  aiSort: Pick<AiSort, "labels" | "withThreads" | "withMessages">;
   /** The owner's "Sort mail into categories" setting. */
   categoriesOn: () => boolean;
   /** Installs what from:vip and from:team match, from the settings and the accounts as they are now. */
@@ -3498,14 +3539,14 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
               ? null
               : store.listThreadsAll(scope.role, cursor, limit, shown, tab);
         if (page === null) throw refuse("invalid", ALL_ROLE_MESSAGE);
-        return { ...page, threads: ai.withCategories(page.threads, scope.kind === "account" ? scope.folder : "INBOX") };
+        return { ...page, threads: deps.aiSort.withThreads(ai.withCategories(page.threads, scope.kind === "account" ? scope.folder : "INBOX")) };
       },
       thread_get: async ({ threadId, folder }) => {
         const thread = store.getThread(threadId, folder);
         if (thread === null) throw refuse("not_found", "Unknown thread");
         const detail = await bbRpc.threadDetail(thread);
         // Slice 3i: the sender check, disguise warnings, receipt request and crypto kind.
-        return { ...detail, messages: deps.senderChecks.secure(detail.messages) };
+        return { ...detail, messages: deps.aiSort.withMessages(deps.senderChecks.secure(detail.messages)) };
       },
       // cid: images come inline as data: URLs, so the page fetches nothing for them.
       message_body: ({ messageId }) => {
@@ -3996,6 +4037,11 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       triage_status: owner("triage_status", ({ batchId }) => triageStatus(deps, batchId)),
       // Agent and mail (slice 3f): owner only; the server tasks fill these in.
       // Slice 3f: AI on the owner's click, kept tasks and local categories.
+      // AI sorts the inbox: the owner's labels. A refusal keeps its fixed text.
+      ai_labels_list: owner("ai_labels_list", () => deps.aiSort.labels.list()),
+      ai_label_save: owner("ai_label_save", (input) => sortRefusals(() => deps.aiSort.labels.save(input))),
+      ai_label_delete: owner("ai_label_delete", ({ id }) => sortRefusals(() => deps.aiSort.labels.remove(id))),
+      ai_label_move: owner("ai_label_move", ({ id, direction }) => deps.aiSort.labels.move(id, direction)),
       reply_draft_get: owner("reply_draft_get", ({ messageId }) => deps.replyDrafts.get(messageId)),
       reply_draft_dismiss: owner("reply_draft_dismiss", ({ messageId }) => deps.replyDrafts.dismiss(messageId)),
       ai_start: owner("ai_start", (input) => ai.start(input)),
@@ -5558,6 +5604,16 @@ function cachedSummaryView(row: AiResultRecord, stale: boolean): NonNullable<AiR
     questions: result.questions,
     deadlines: result.deadlines,
   };
+}
+
+/** A label method's refusal as the page reads it. */
+function sortRefusals<T>(run: () => T): T {
+  try {
+    return run();
+  } catch (error) {
+    if (error instanceof AiSortRefusal) throw refuse(error.code, error.message);
+    throw error;
+  }
 }
 
 /** An AI call refused before the model: out of scope, unknown, or the draft changed. */

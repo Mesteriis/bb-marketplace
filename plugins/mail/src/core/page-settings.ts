@@ -67,6 +67,8 @@ export const PAGE_SETTING_SCHEMAS = {
   aiInstructions: z.string().max(2_000),
   /** AI writes mail: facts the model may use. */
   aiKnowledge: z.string().max(6_000),
+  /** AI sorts the inbox: one line and the owner's AI labels for each new message. */
+  aiSort: z.boolean(),
 } as const;
 
 /** Every setting the page shows. */
@@ -114,6 +116,7 @@ export const PAGE_SETTING_DEFAULTS: PageSettings = {
   aiAutoDrafts: false,
   aiInstructions: "",
   aiKnowledge: "",
+  aiSort: false,
 };
 
 /** The stored settings as the page shows them: each key checked, a value that does not fit replaced by its default. */

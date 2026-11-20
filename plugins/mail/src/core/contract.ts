@@ -152,6 +152,9 @@ const reminderDaysInput = z.number().int().min(1).max(30);
 const cursorInput = z.string().min(1).max(256);
 
 /** What ai_start takes: one strict variant per request (two for tasks: one message or a conversation). */
+/** One of the owner's AI labels (AI sorts the inbox). */
+const aiLabelSchema = z.object({ id: z.string(), name: z.string(), description: z.string(), autoArchive: z.boolean() });
+
 const aiStartInput = z.union([
   z.strictObject({ kind: z.literal("summary"), threadId: idInput, folder: idInput.optional(), force: z.boolean().optional() }),
   z.strictObject({ kind: z.literal("tasks"), messageId: idInput }),
@@ -1252,6 +1255,29 @@ export const rpcSchemas = {
   // refuses plugin callers, none is discoverable, none is a tool, CLI or
   // mention. Model calls start only here, on the owner's click. ----
 
+  /** AI sorts the inbox: the owner's labels, in their order. */
+  ai_labels_list: {
+    input: z.object({}),
+    output: z.object({ labels: z.array(aiLabelSchema) }),
+  },
+  /** Insert (no id) or update. Refusals: invalid (name, description), conflict (name taken, twelve already), not_found. */
+  ai_label_save: {
+    input: z.strictObject({
+      id: idInput.optional(),
+      name: z.string().min(1).max(100),
+      description: z.string().min(1).max(1_000),
+      autoArchive: z.boolean(),
+    }),
+    output: z.object({ label: aiLabelSchema }),
+  },
+  ai_label_delete: {
+    input: z.object({ id: idInput }),
+    output: z.object({ ok: z.literal(true) }),
+  },
+  ai_label_move: {
+    input: z.object({ id: idInput, direction: z.union([z.literal(-1), z.literal(1)]) }),
+    output: z.object({ labels: z.array(aiLabelSchema) }),
+  },
   /** AI writes mail: the reply drafted for a message, or null; a draft no longer wanted is deleted by this read. */
   reply_draft_get: {
     input: z.object({ messageId: idInput }),
@@ -2024,6 +2050,9 @@ export const PLUGIN_METHODS = Object.keys(pluginSchemas) as readonly (keyof type
 export const INBOX_TAB_METHODS = ["inbox_tabs_list", "inbox_tab_save", "inbox_tab_delete", "inbox_tab_move"] as const satisfies readonly (keyof typeof rpcSchemas)[];
 
 /** The owner's methods of the typing-speed project. */
+/** AI sorts the inbox: the owner's AI labels (owner only; refused to plugins, never a tool). */
+export const AI_SORT_METHODS = ["ai_labels_list", "ai_label_save", "ai_label_delete", "ai_label_move"] as const satisfies readonly (keyof typeof rpcSchemas)[];
+
 /** AI writes mail: the reply drafted for a new message (owner only; refused to plugins, never a tool). */
 export const AI_WRITE_METHODS = ["reply_draft_get", "reply_draft_dismiss"] as const satisfies readonly (keyof typeof rpcSchemas)[];
 
