@@ -89,7 +89,8 @@ describe("queueSend: read statuses", () => {
   const PIXEL = '<img src="https://makosh.example.org/o/tok.gif" width="1" height="1" alt="">';
   const tracker = () => {
     const issued: string[] = [];
-    return { issued, issue: () => (issued.push("tok"), { token: "tok", html: PIXEL }) };
+    const asked: string[][] = [];
+    return { issued, asked, issue: (recipients: readonly string[]) => (asked.push([...recipients]), issued.push("tok"), { token: "tok", html: PIXEL }) };
   };
 
   it("an owner's send carries the image at the end of the body and remembers the token by Message-ID", async () => {
@@ -103,6 +104,8 @@ describe("queueSend: read statuses", () => {
     expect(h.builder.built[0]!.html.replace(/<\/body>\s*<\/html>\s*$/i, "").endsWith(PIXEL)).toBe(true);
     expect(h.builder.built[0]!.text).not.toContain("makosh.example.org");
     expect(remembered).toEqual([{ token: "tok", accountId: "acc_1", rfcMessageId: saved.messageId, createdAt: h.clock.now().toISOString() }]);
+    // The tracker is told who the message goes to (hidden copies too), to apply the owner's exceptions.
+    expect(t.asked).toEqual([["bob@example.com", "hidden@example.net"]]);
   });
 
   it("no image when the owner said no, for an agent's send, for mail only to oneself, and for encrypted or signed mail", async () => {

@@ -1406,6 +1406,19 @@ export const rpcSchemas = {
       }),
       /** Slice 3g: rule runs ready to start. */
       rulesReady: z.number().int().min(0),
+      /** Read statuses: sent mail of the last two weeks that was opened and not answered. */
+      opened: z
+        .array(
+          z.object({
+            accountId: z.string(),
+            threadId: z.string(),
+            subject: z.string(),
+            to: mailAddressSchema.nullable(),
+            count: z.number().int(),
+            lastAt: z.string(),
+          }),
+        )
+        .optional(),
     }),
   },
   /** "No reply needed": by the conversation's latest message. */

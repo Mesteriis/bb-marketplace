@@ -576,7 +576,7 @@ describe("makosh-mail server", () => {
   it("settings_get shows the page's settings without the credential key, and settings_set changes writable ones", async () => {
     const host = await load();
     const before = (await host.harness.behavior.callRpc("settings_get", {})) as Record<string, unknown>;
-    expect(Object.keys(before)).toHaveLength(42);
+    expect(Object.keys(before)).toHaveLength(43);
     expect("vaultKey" in before).toBe(false);
     expect(before).toMatchObject({ hideQuotes: true, syncIntervalMinutes: 5, agentTools: false });
 

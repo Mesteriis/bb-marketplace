@@ -14,7 +14,7 @@
 //     search; moves re-home rows (same id), detaching them without a uid map.
 import type { Exchange } from "../sender-rhythm.ts";
 import type { ReplyDraftRecord } from "../auto-drafts.ts";
-import type { OpenEvent, SentTracking } from "../read-status.ts";
+import type { OpenEvent, OpenedUnanswered, SentTracking } from "../read-status.ts";
 import type { TemplateFileInfo } from "../ports.ts";
 import { isCalendarPart } from "../calendar-invite.ts";
 import { NO_SENDER_SETS, TABS_MAX, TabsFullError, inSenderSet, type InboxTab, type SenderSets, type TabMatch } from "../inbox-tabs.ts";
@@ -2449,6 +2449,41 @@ export class InMemoryMailStore implements MailStore {
       );
     }
     return out;
+  }
+
+  threadOpens(threadIds: string[]): Map<string, { at: string; kind: string }[]> {
+    const out = new Map<string, { at: string; kind: string }[]>();
+    for (const threadId of threadIds) {
+      const found = this.messageOpens(this.state.rows.filter((r) => r.threadId === threadId && r.message.messageId !== null).map((r) => r.id));
+      if (found.size === 0) continue;
+      out.set(threadId, [...found.values()].flat().sort((a, b) => a.at.localeCompare(b.at)));
+    }
+    return out;
+  }
+
+  openedUnanswered(sinceIso: string, limit: number): OpenedUnanswered[] {
+    const out: OpenedUnanswered[] = [];
+    for (const tracked of this.sentTracking.values()) {
+      if (tracked.createdAt < sinceIso) continue;
+      const events = [...this.openEvents.values()].filter((event) => event.token === tracked.token && event.kind !== "machine");
+      if (events.length === 0) continue;
+      const sent = this.state.rows
+        .filter((r) => r.accountId === tracked.accountId && r.message.messageId !== null && normalizeMessageId(r.message.messageId) === tracked.rfcMessageId)
+        .sort((a, b) => (b.message.date ?? "").localeCompare(a.message.date ?? ""))[0];
+      if (sent === undefined || sent.message.date === null) continue;
+      const date = sent.message.date;
+      if (this.state.rows.some((r) => r.threadId === sent.threadId && r.message.date !== null && r.message.date > date)) continue;
+      const first = sent.message.to[0];
+      out.push({
+        accountId: tracked.accountId,
+        threadId: sent.threadId,
+        subject: sent.message.subject,
+        to: first === undefined ? null : { name: first.name, address: first.address },
+        count: events.length,
+        lastAt: events.reduce((latest, event) => (event.at > latest ? event.at : latest), ""),
+      });
+    }
+    return out.sort((a, b) => b.lastAt.localeCompare(a.lastAt)).slice(0, limit);
   }
 
   pruneTracking(beforeIso: string): void {

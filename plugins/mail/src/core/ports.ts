@@ -1,5 +1,5 @@
 // Ports: what the core needs from its host. Each host supplies adapters.
-import type { OpenEvent, SentTracking } from "./read-status.ts";
+import type { OpenEvent, OpenedUnanswered, SentTracking } from "./read-status.ts";
 import type { Exchange } from "./sender-rhythm.ts";
 import type { ReplyDraftRecord } from "./auto-drafts.ts";
 import type { AiLabel, MessageAi } from "./ai-sort.ts";
@@ -556,6 +556,13 @@ export interface MailStore {
   resetOpenFeed(scope: string): void;
   /** By local message id, for messages whose Message-ID is tracked: their opens, oldest first (empty: not opened). */
   messageOpens(messageIds: string[]): Map<string, { at: string; kind: string }[]>;
+  /** By conversation, for those that hold a tracked message: the opens of all its tracked messages, oldest first. */
+  threadOpens(threadIds: string[]): Map<string, { at: string; kind: string }[]>;
+  /**
+   * Tracked messages made since `sinceIso` that someone opened (a plain machine does not count) and that are
+   * still the newest message of their conversation: nobody answered. Newest open first, at most `limit`.
+   */
+  openedUnanswered(sinceIso: string, limit: number): OpenedUnanswered[];
   /** Drops tracking rows made before `beforeIso` and their opens. */
   pruneTracking(beforeIso: string): void;
   /** AI writes mail: keeps a drafted reply (replacing the message's earlier one); past `max` rows the oldest go. */

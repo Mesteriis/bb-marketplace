@@ -21,6 +21,7 @@
 //   - a move re-homes the row (same id) to the destination; without a uid map
 //     the row waits detached there until that folder's sync reattaches it by
 //     Gmail id or Message-ID, or deletes it at the end of the round.
+import type { OpenedUnanswered } from "../../core/read-status.ts";
 import type { TemplateFileInfo } from "../../core/ports.ts";
 import { NO_EXTRAS, TEMPLATE_FILES_MAX, TEMPLATE_FILES_MAX_BYTES, type TemplateExtras } from "../../core/snippets.ts";
 import { fromShape } from "../../core/search.ts";
@@ -4238,6 +4239,42 @@ export function createSqliteStore(db: Database.Database): MailStore {
         out.set(id, found.flatMap((row) => opens.all(row.token)).sort((a, b) => a.at.localeCompare(b.at)));
       }
       return out;
+    },
+
+    threadOpens(threadIds) {
+      const members = db.prepare<[string], { id: string }>("SELECT id FROM messages WHERE thread_id = ? AND message_id IS NOT NULL");
+      const out = new Map<string, { at: string; kind: string }[]>();
+      for (const threadId of threadIds) {
+        const found = this.messageOpens(members.all(threadId).map((row) => row.id));
+        if (found.size === 0) continue;
+        out.set(threadId, [...found.values()].flat().sort((a, b) => a.at.localeCompare(b.at)));
+      }
+      return out;
+    },
+
+    openedUnanswered(sinceIso, limit) {
+      const tracked = db
+        .prepare<[string], { token: string; account_id: string; rfc_message_id: string }>(
+          "SELECT token, account_id, rfc_message_id FROM sent_tracking WHERE created_at >= ? ORDER BY created_at DESC LIMIT 500",
+        )
+        .all(sinceIso);
+      const opens = db.prepare<[string], { n: number; last: string | null }>(
+        "SELECT count(*) AS n, max(at) AS last FROM open_events WHERE token = ? AND kind <> 'machine'",
+      );
+      const message = db.prepare<[string, string, string], { thread_id: string; subject: string; date: string | null; to_json: string }>(
+        "SELECT thread_id, subject, date, to_json FROM messages WHERE account_id = ? AND message_id IN (?, ?) ORDER BY date DESC LIMIT 1",
+      );
+      const later = db.prepare<[string, string], { n: number }>("SELECT count(*) AS n FROM messages WHERE thread_id = ? AND date > ?");
+      const out: OpenedUnanswered[] = [];
+      for (const row of tracked) {
+        const seen = opens.get(row.token);
+        if (seen === undefined || seen.n === 0 || seen.last === null) continue;
+        const sent = message.get(row.account_id, row.rfc_message_id, `<${row.rfc_message_id}>`);
+        if (sent === undefined || sent.date === null || later.get(sent.thread_id, sent.date)!.n > 0) continue;
+        const to = (JSON.parse(sent.to_json) as { name: string | null; address: string }[])[0] ?? null;
+        out.push({ accountId: row.account_id, threadId: sent.thread_id, subject: sent.subject, to, count: seen.n, lastAt: seen.last });
+      }
+      return out.sort((a, b) => b.lastAt.localeCompare(a.lastAt)).slice(0, limit);
     },
 
     pruneTracking(beforeIso) {

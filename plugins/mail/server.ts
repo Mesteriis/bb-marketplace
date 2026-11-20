@@ -795,6 +795,13 @@ function defineSettings(bb: BbPluginApi) {
         "Puts a tiny image from your own endpoint into mail you send; when the recipient's mail program fetches it, the message shows as opened. Needs the endpoint's two keys below; never in signed or encrypted mail.",
       default: true,
     },
+    readStatusExceptions: {
+      type: "string",
+      label: "Never show opens for",
+      description: "Addresses and domains, separated by commas: mail to any of them goes without the image.",
+      default: "",
+      experimental_schema: PAGE_SETTING_SCHEMAS.readStatusExceptions,
+    },
     readStatusOrigin: {
       type: "string",
       label: "Read-status endpoint",
@@ -1830,6 +1837,7 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
         origin: current.readStatusOrigin,
         trackKey: current.readStatusTrackKey,
         feedKey: current.readStatusFeedKey,
+        exceptions: pageSettingsOf(current).readStatusExceptions,
       }),
       fetch: overrides.readStatusFetch ?? cappedFetch,
       log: (line) => bb.log.info(line),
@@ -1840,7 +1848,7 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       rate: new SendRateLimit(clock),
       undone: new UndoneSends(clock),
       protect: (mime, request) => pgp.protect(mime, request),
-      tracker: { issue: () => readStatus.issue() },
+      tracker: { issue: (recipients) => readStatus.issue(recipients) },
     };
     const worker = createOutboxWorker(
       {
@@ -2357,7 +2365,7 @@ type RpcDeps = {
   writeSettings: () => WriteSettings;
   replyDrafts: Pick<ReplyDrafts, "get" | "dismiss">;
   aiSort: Pick<AiSort, "labels" | "withThreads" | "withMessages">;
-  readStatus: Pick<ReadStatus, "withMessages" | "ready">;
+  readStatus: Pick<ReadStatus, "withMessages" | "withThreads" | "unanswered" | "ready">;
   /** The owner's "Sort mail into categories" setting. */
   categoriesOn: () => boolean;
   /** Installs what from:vip and from:team match, from the settings and the accounts as they are now. */
@@ -3619,7 +3627,7 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
               ? null
               : store.listThreadsAll(scope.role, cursor, limit, shown, tab);
         if (page === null) throw refuse("invalid", ALL_ROLE_MESSAGE);
-        return { ...page, threads: deps.aiSort.withThreads(ai.withCategories(page.threads, scope.kind === "account" ? scope.folder : "INBOX")) };
+        return { ...page, threads: deps.readStatus.withThreads(deps.aiSort.withThreads(ai.withCategories(page.threads, scope.kind === "account" ? scope.folder : "INBOX"))) };
       },
       thread_get: async ({ threadId, folder }) => {
         const thread = store.getThread(threadId, folder);
@@ -4170,7 +4178,7 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       }),
       category_rules_list: owner("category_rules_list", () => ({ rules: store.listCategoryRules() })),
       // Slice 3f: Today, reply reminders, day notices, AI access and the agent log.
-      today_get: owner("today_get", () => day.today()),
+      today_get: owner("today_get", () => ({ ...day.today(), opened: deps.readStatus.unanswered() })),
       reply_dismiss: owner("reply_dismiss", ({ threadId }) => day.dismiss(threadId)),
       reminder_set: owner("reminder_set", ({ messageId, days }) => day.setReminder(messageId, days)),
       reminder_snooze: owner("reminder_snooze", ({ id, days }) => day.snooze(id, days)),

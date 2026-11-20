@@ -926,7 +926,14 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
         if (attached.length > 0) setAttachments((prev) => [...prev, ...attached]);
         setTemplateLeftOut(leftOut);
       },
-      (error: unknown) => setTemplateFailed(messageOf(error)),
+      (error: unknown) => {
+        setTemplateFailed(messageOf(error));
+        // Some of the files may have been attached before the failure: show what the draft now holds.
+        void portsRef.current.reload(draft.id).then(
+          (fresh) => setAttachments(fresh.attachments),
+          () => undefined,
+        );
+      },
     );
   };
 
@@ -1240,6 +1247,12 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
           </FieldRow>
           <FieldRow label={tx("Bcc")}>
             <RecipientInput label={tx("Bcc")} chips={bcc.chips} text={bcc.text} onChange={setField(setBcc)} suggest={(p) => portsRef.current.suggest(p)} marked={marked} />
+            {/* The command by a button too (the key may be taken by developer tools); the offer line has its own while it shows. */}
+            {introMove !== null && !introOffered ? (
+              <Button variant="ghost" size="sm" className="h-7 shrink-0 px-2" aria-description={tx("Thank the sender and move them to Bcc")} onClick={moveIntroducer}>
+                {tx("Move sender to Bcc")}
+              </Button>
+            ) : null}
           </FieldRow>
         </>
       ) : null}

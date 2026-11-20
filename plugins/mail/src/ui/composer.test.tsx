@@ -828,6 +828,18 @@ describe("Composer: identities, signatures, checks and templates (slice 3d)", ()
     expect(applyTemplate).not.toHaveBeenCalled();
   });
 
+  it("a template whose files fail to attach midway shows what the draft now holds", async () => {
+    const applyTemplate = vi.fn(async () => Promise.reject(new Error("Attachments are over the size limit")));
+    const ports = { ...fakePorts(), applyTemplate };
+    ports.reload.mockResolvedValue(draft({ attachments: [{ id: "att-1", fileName: "first.pdf", mimeType: "application/pdf", size: 10, origin: null }] }));
+    const carrying = { ...TEMPLATES[0]!, id: "t-files", files: [{ id: "f1", name: "first.pdf", mimeType: "application/pdf", size: 10 }, { id: "f2", name: "second.pdf", mimeType: "application/pdf", size: 10 }] };
+    mount({ templates: [carrying] }, ports as never);
+    fireEvent.click(screen.getByRole("button", { name: /^Templates/ }));
+    fireEvent.keyDown(await screen.findByRole("combobox", { name: "Find a template" }), { key: "Enter" });
+    expect(await screen.findByText("first.pdf")).toBeTruthy();
+    expect(ports.reload).toHaveBeenCalledWith("draft-1");
+  });
+
   it("answering an introduction: the offer moves the introducer to Bcc and thanks them, once", async () => {
     const intro = draft({
       kind: "reply_all",
@@ -859,6 +871,13 @@ describe("Composer: identities, signatures, checks and templates (slice 3d)", ()
     mount({ draft: plain });
     expect(screen.queryByText("This looks like an introduction.")).toBeNull();
     fireEvent.keyDown(subject(), { key: "I", code: "KeyI", ctrlKey: true, shiftKey: true });
+    expect(theEditor().getText().startsWith("Thank you! (Moving you to Bcc.)")).toBe(true);
+    cleanup();
+
+    // The same command by a button beside Bcc, for where the key is taken.
+    mount({ draft: plain });
+    fireEvent.click(screen.getByRole("button", { name: "Cc Bcc" }));
+    fireEvent.click(screen.getByRole("button", { name: "Move sender to Bcc" }));
     expect(theEditor().getText().startsWith("Thank you! (Moving you to Bcc.)")).toBe(true);
     cleanup();
 

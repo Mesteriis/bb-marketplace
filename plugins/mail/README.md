@@ -1659,8 +1659,13 @@ IP address — and Makosh Mail reads those notes every five minutes.
 The composer has a box **Show when opened** beside Send, ticked by
 default; untick it to leave the image out of one message.
 
-Not built: exceptions by address, a mark in the conversation list and a
-row in Today.
+- **Never show opens for** (the same settings group): addresses and
+  domains, separated by commas; mail with any such recipient, hidden
+  copies included, goes without the image.
+- The conversation list marks a conversation **Opened** when someone
+  opened a sent message of it, and Today lists **Opened, no reply yet**:
+  sent mail of the last two weeks that was opened and is still the last
+  message of its conversation.
 
 ### Assistants outside BB (MCP)
 

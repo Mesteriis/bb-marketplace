@@ -194,7 +194,7 @@ export type QueueDeps = ComposeDeps & {
   /** Slice 3k: the built message signed and/or encrypted; throws ComposeError with a PGP_SEND_TEXT. */
   protect?: (mime: Uint8Array, request: ProtectRequest) => Promise<Uint8Array>;
   /** Read statuses: a new token and its image, or null when they are off or not set up. */
-  tracker?: { issue(): { token: string; html: string } | null };
+  tracker?: { issue(recipients: readonly string[]): { token: string; html: string } | null };
 };
 export type OutboxDeps = ComposeDeps & {
   notifier: OutboxNotifier;
@@ -301,7 +301,7 @@ export async function queueSend(
   const toOthers = envelopeTo.some((address) => !own.has(address.toLowerCase()));
   const tracked =
     input.origin === "owner" && input.track !== false && !wantsPgp && toOthers && (draft.purpose ?? null) === null
-      ? (deps.tracker?.issue() ?? null)
+      ? (deps.tracker?.issue(envelopeTo) ?? null)
       : null;
   const built = await deps.builder.build(tracked === null ? message : { ...message, html: withPixel(message.html, tracked.html) });
   const mime = wantsPgp

@@ -1907,7 +1907,13 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
    * the account is saved, the sign-in fails or the form goes away.
    */
   const googleSignIn = useCallback(
-    async (email: string | null, signal: AbortSignal, extraScopes?: (typeof GOOGLE_EXTRA_SCOPES)[number][]): Promise<GoogleSignInOutcome> => {
+    async (
+      email: string | null,
+      signal: AbortSignal,
+      extraScopes?: (typeof GOOGLE_EXTRA_SCOPES)[number][],
+      /** False for a sign-in started elsewhere than the account form (Plugin access): the owner stays where they are. */
+      focusAccount = true,
+    ): Promise<GoogleSignInOutcome> => {
       const { flowId, url } = await rpc.call("google_sign_in_start", extraScopes === undefined ? { email } : { email, extraScopes });
       if (!navigate.openUrl(url)) return { ok: false, message: tx("This link cannot be opened here.") };
       for (;;) {
@@ -1916,8 +1922,10 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
         const flow = await rpc.call("google_sign_in_status", { flowId });
         if (flow.state === "pending") continue;
         if (flow.state === "failed") return { ok: false, message: googleSignInFailureText(flow.reason) };
-        selectAccount(flow.accountId);
-        setAccountForm(null);
+        if (focusAccount) {
+          selectAccount(flow.accountId);
+          setAccountForm(null);
+        }
         await loadStatus();
         return { ok: true };
       }
@@ -3219,7 +3227,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
                 googleGrantRun.current?.abort();
                 const run = new AbortController();
                 googleGrantRun.current = run;
-                void googleSignIn(account.email, run.signal, [GOOGLE_RIGHT_SCOPE[right]])
+                void googleSignIn(account.email, run.signal, [GOOGLE_RIGHT_SCOPE[right]], false)
                   .then(async (outcome) => {
                     if (!outcome.ok) {
                       if (outcome.message !== "") toast(outcome.message);

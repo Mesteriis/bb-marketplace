@@ -63,6 +63,17 @@ describe("autocorrect in the editor", () => {
     expect(text(editor)).toBe("See teh and teh ");
   });
 
+  it("Undo takes back what was typed after a fix, then the fix by itself", () => {
+    const { editor } = make();
+    type(editor, "we saw ");
+    type(editor, "teh cat");
+    expect(text(editor)).toBe("We saw the cat");
+    editor.commands.undo();
+    expect(text(editor)).toBe("We saw the ");
+    editor.commands.undo();
+    expect(text(editor)).toBe("We saw teh");
+  });
+
   it("a key in between ends the chance to undo", () => {
     const { editor } = make();
     type(editor, "teh x");

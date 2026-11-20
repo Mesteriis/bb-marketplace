@@ -2,6 +2,7 @@
 // bold, and the quick filters above them (slice 3e). Slice 3h: rows drag
 // onto rail folders, message rows carry Gmail label chips and the "from the
 // server" mark, and a folder's end offers Load more days.
+import { OpenedMark } from "./open-line.tsx";
 import { createContext, useContext, useEffect, useRef, type CSSProperties, type DragEvent, type ReactNode } from "react";
 import type { AttachmentMatch, MailAddress, MessageSummary, ThreadSummary } from "../core/index.ts";
 import { Button } from "@/components/ui/button";
@@ -203,6 +204,8 @@ interface RowProps {
   /** AI sorts the inbox: the one line shown in place of the snippet, and the AI labels. */
   aiSummary?: string | null | undefined;
   aiLabels?: readonly string[] | undefined;
+  /** Read statuses: a sent message of the conversation was opened. */
+  opens?: { count: number; lastAt: string | null } | undefined;
   /** Short account label, shown in All accounts. */
   marker: string | null;
   /** When a snoozed conversation comes back (slice 3e). */
@@ -279,6 +282,7 @@ function Row({
   snippet,
   aiSummary,
   aiLabels,
+  opens,
   marker,
   snoozedUntil = null,
   category,
@@ -355,6 +359,7 @@ function Row({
           ) : null}
           {category !== undefined ? <RowCategory category={category.category} suggestion={category.suggestion} /> : null}
           {aiLabels !== undefined ? <AiLabelChips labels={aiLabels} /> : null}
+          <OpenedMark opens={opens} />
           {count !== undefined && count > 1 ? (
             <span className="shrink-0 text-xs text-muted-foreground">{count}</span>
           ) : null}
@@ -508,6 +513,7 @@ export function ThreadList({
             snippet={thread.snippet}
             aiSummary={thread.aiSummary}
             aiLabels={thread.aiLabels}
+            opens={thread.opens}
             marker={marker(thread.accountId)}
             snoozedUntil={thread.snoozedUntil}
             {...(categories ? { category: { category: thread.category, suggestion: thread.categorySuggestion } } : {})}

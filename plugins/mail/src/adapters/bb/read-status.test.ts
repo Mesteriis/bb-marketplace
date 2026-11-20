@@ -19,7 +19,7 @@ let status: ReturnType<typeof createReadStatus>;
 beforeEach(() => {
   store = new InMemoryMailStore();
   clock = new FixedClock(new Date("2026-11-20T10:00:00.000Z"));
-  settings = { on: true, origin: "https://makosh.example.org", trackKey: TRACK, feedKey: FEED };
+  settings = { on: true, origin: "https://makosh.example.org", trackKey: TRACK, feedKey: FEED, exceptions: "" };
   asked = [];
   answers = [];
   lines = [];
@@ -51,7 +51,7 @@ describe("read statuses: the host side", () => {
 
   it("issues nothing when off, without both keys, or with an address that is not a plain https origin", () => {
     for (const change of [{ on: false }, { trackKey: "short" }, { feedKey: "" }, { origin: "http://makosh.example.org" }, { origin: "https://x.example.org/a" }]) {
-      settings = { on: true, origin: "https://makosh.example.org", trackKey: TRACK, feedKey: FEED, ...change };
+      settings = { on: true, origin: "https://makosh.example.org", trackKey: TRACK, feedKey: FEED, exceptions: "", ...change };
       expect(status.issue(), JSON.stringify(change)).toBeNull();
       expect(status.ready()).toBe(false);
     }
@@ -157,6 +157,39 @@ describe("read statuses: the host side", () => {
     store.resetOpenFeed(SCOPE);
     await Promise.all([status.poll(), status.poll()]);
     expect(asked).toHaveLength(1);
+  });
+
+  it("issues nothing for a message with a recipient the owner excepted", () => {
+    settings = { ...settings, exceptions: "boss@example.com, example.net" };
+    expect(status.issue(["ann@example.com"])).not.toBeNull();
+    expect(status.issue(["ann@example.com", "boss@example.com"])).toBeNull();
+    expect(status.issue(["someone@example.net"])).toBeNull();
+    // Still set up: the composer's box is offered.
+    expect(status.ready()).toBe(true);
+  });
+
+  it("marks a conversation only when someone opened it, and lists what was opened and not answered for Today", () => {
+    store.saveAccount(makeStoredAccount());
+    store.upsertMessages("acc_1", "Sent", [
+      makeFetchedMessage(1, { from: { name: null, address: "owner@example.org" }, to: [{ name: "Ann", address: "ann@example.com" }], subject: "Plan", date: "2026-11-19T09:00:00.000Z" }),
+      makeFetchedMessage(2, { from: { name: null, address: "owner@example.org" }, subject: "Other", date: "2026-11-19T10:00:00.000Z" }),
+    ]);
+    const ids = store.localFolderIndex("acc_1", "Sent", "1970-01-01T00:00:00.000Z");
+    const threadOf = (uid: number) => store.getMessage(ids.find((row) => row.uid === uid)!.id)!.threadId;
+    const [t1, t2] = [signedToken(TRACK, "aaaaaaaaaaaaaaaaaaaa"), signedToken(TRACK, "bbbbbbbbbbbbbbbbbbbb")];
+    store.saveSentTracking({ token: t1, accountId: "acc_1", rfcMessageId: "msg-1@example.org", createdAt: "2026-11-19T09:00:00.000Z" });
+    store.saveSentTracking({ token: t2, accountId: "acc_1", rfcMessageId: "msg-2@example.org", createdAt: "2026-11-19T10:00:00.000Z" });
+    store.saveOpenEvents([{ seq: 1, token: t1, at: "2026-11-19T12:00:00.000Z", kind: "mobile" }]);
+    expect(status.withThreads([{ id: threadOf(1) }, { id: threadOf(2) }, { id: "none" }])).toEqual([
+      { id: threadOf(1), opens: { count: 1, lastAt: "2026-11-19T12:00:00.000Z" } },
+      { id: threadOf(2) },
+      { id: "none" },
+    ]);
+    expect(status.unanswered()).toEqual([
+      { accountId: "acc_1", threadId: threadOf(1), subject: "Plan", to: { name: "Ann", address: "ann@example.com" }, count: 1, lastAt: "2026-11-19T12:00:00.000Z" },
+    ]);
+    settings = { ...settings, on: false };
+    expect(status.unanswered()).toEqual([]);
   });
 
   it("does not ask the endpoint when read statuses are off", async () => {

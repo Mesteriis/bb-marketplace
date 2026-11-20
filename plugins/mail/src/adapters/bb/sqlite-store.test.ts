@@ -3483,6 +3483,50 @@ describe.each(storeKinds)("read statuses (%s)", (_kind, make) => {
   });
 });
 
+describe.each(storeKinds)("read statuses by conversation (%s)", (_kind, make) => {
+  const T1 = "abcdefghijklmnop.Nf8gINmCVZOx9whO";
+  const T2 = "qrstuvwxyzabcdef.Nf8gINmCVZOx9whO";
+  const T3 = "ghijklmnopqrstuv.Nf8gINmCVZOx9whO";
+
+  it("gives a conversation's opens, and the sent messages that were opened and got no answer", () => {
+    const s = make();
+    s.saveAccount(makeStoredAccount());
+    const sent = (uid: number, subject: string, date: string) =>
+      makeFetchedMessage(uid, { from: { name: null, address: "owner@example.org" }, to: [{ name: "Ann", address: "ann@example.com" }], subject, date });
+    s.upsertMessages("acc_1", "Sent", [
+      sent(1, "Opened, no answer", "2026-11-10T09:00:00.000Z"),
+      sent(2, "Opened and answered", "2026-11-11T09:00:00.000Z"),
+      sent(3, "Never opened", "2026-11-12T09:00:00.000Z"),
+    ]);
+    // Ann answered the second one.
+    s.upsertMessages("acc_1", "INBOX", [
+      makeFetchedMessage(9, { from: { name: "Ann", address: "ann@example.com" }, subject: "Re: Opened and answered", inReplyTo: "<msg-2@example.org>", references: ["<msg-2@example.org>"], date: "2026-11-12T10:00:00.000Z" }),
+    ]);
+    s.assignThreads("acc_1", buildThreads(s.threadingInputs("acc_1")));
+    for (const [token, uid] of [[T1, 1], [T2, 2], [T3, 3]] as const) {
+      s.saveSentTracking({ token, accountId: "acc_1", rfcMessageId: `<msg-${uid}@example.org>`, createdAt: "2026-11-10T09:00:00.000Z" });
+    }
+    s.saveOpenEvents([
+      { seq: 1, token: T1, at: "2026-11-10T12:00:00.000Z", kind: "desktop" },
+      { seq: 2, token: T1, at: "2026-11-11T12:00:00.000Z", kind: "machine" },
+      { seq: 3, token: T2, at: "2026-11-11T12:00:00.000Z", kind: "mobile" },
+    ]);
+    const sentIds = s.localFolderIndex("acc_1", "Sent", "1970-01-01T00:00:00.000Z");
+    const threadOf = (uid: number) => s.getMessage(sentIds.find((row) => row.uid === uid)!.id)!.threadId;
+    const first = threadOf(1);
+    const third = threadOf(3);
+    expect([...s.threadOpens([first, third, "missing"])]).toEqual([
+      [first, [{ at: "2026-11-10T12:00:00.000Z", kind: "desktop" }, { at: "2026-11-11T12:00:00.000Z", kind: "machine" }]],
+      [third, []],
+    ]);
+    expect(s.openedUnanswered("2026-11-01T00:00:00.000Z", 10)).toEqual([
+      { accountId: "acc_1", threadId: first, subject: "Opened, no answer", to: { name: "Ann", address: "ann@example.com" }, count: 1, lastAt: "2026-11-10T12:00:00.000Z" },
+    ]);
+    // Older than the window: nothing.
+    expect(s.openedUnanswered("2026-11-10T09:00:00.001Z", 10)).toEqual([]);
+  });
+});
+
 describe.each(storeKinds)("drafted replies (%s)", (_kind, make) => {
   const draft = (messageId: string, createdAt: string, paragraphs = ["Invented reply."]) => ({
     messageId,

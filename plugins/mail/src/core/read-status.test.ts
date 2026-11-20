@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { openView, parseOpenFeed, pixelHtml, readStatusOrigin, withPixel } from "./read-status.ts";
+import { openView, parseOpenFeed, parseTrackExceptions, pixelHtml, readStatusOrigin, trackExcepted, withPixel } from "./read-status.ts";
 
 const TOKEN = "abcdefghijklmnop.Nf8gINmCVZOx9whO";
 
@@ -52,6 +52,17 @@ describe("read statuses: pure parts", () => {
       last: 9,
       top: 5,
     });
+  });
+
+  it("exceptions are addresses and domains, one a line or separated by commas; a recipient under one stops the image", () => {
+    const list = parseTrackExceptions(" Ann@Example.com, example.net\n@example.org ; not an address ;; sub.example.co.uk ");
+    expect([...list.addresses]).toEqual(["ann@example.com"]);
+    expect([...list.domains]).toEqual(["example.net", "example.org", "sub.example.co.uk"]);
+    expect(trackExcepted(["bob@example.com"], list)).toBe(false);
+    expect(trackExcepted(["bob@example.com", "ANN@example.com"], list)).toBe(true);
+    expect(trackExcepted(["x@mail.example.net"], list)).toBe(true);
+    expect(trackExcepted(["x@notexample.net"], list)).toBe(false);
+    expect(trackExcepted([], list)).toBe(false);
   });
 
   it("the page counts opens that are not plainly a machine and says the latest", () => {

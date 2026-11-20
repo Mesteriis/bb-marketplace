@@ -14,6 +14,17 @@ export const READ_STATUS_PAGES = 10;
 export type OpenEvent = { seq: number; token: string; at: string; kind: string };
 export type OpenView = { count: number; lastAt: string | null };
 
+/** A sent message that was opened and not answered (Today). */
+export type OpenedUnanswered = {
+  accountId: string;
+  threadId: string;
+  subject: string;
+  /** The first To recipient. */
+  to: { name: string | null; address: string } | null;
+  count: number;
+  lastAt: string;
+};
+
 export type SentTracking = { token: string; accountId: string; rfcMessageId: string; createdAt: string };
 
 const ORIGIN = /^https:\/\/[a-z0-9.-]+(:\d{1,5})?$/;
@@ -78,4 +89,35 @@ export function openView(events: readonly { at: string; kind: string }[]): OpenV
   const real = events.filter((event) => event.kind !== "machine");
   const lastAt = real.reduce<string | null>((latest, event) => (latest === null || event.at > latest ? event.at : latest), null);
   return { count: real.length, lastAt };
+}
+
+/** Read-status exceptions cover this many days of Today's "opened, no reply yet". */
+export const READ_STATUS_TODAY_DAYS = 14;
+export const READ_STATUS_TODAY_ROWS = 20;
+
+export type TrackExceptions = { addresses: ReadonlySet<string>; domains: ReadonlySet<string> };
+
+const ADDRESS = /^[^\s@,;]+@[a-z0-9.-]+\.[a-z]{2,}$/;
+const DOMAIN = /^[a-z0-9-]+(\.[a-z0-9-]+)+$/;
+
+/** The owner's list of recipients never to track: addresses and domains (with or without "@"), one a line or separated by commas or semicolons. */
+export function parseTrackExceptions(text: string): TrackExceptions {
+  const addresses = new Set<string>();
+  const domains = new Set<string>();
+  for (const raw of text.split(/[\n,;]/)) {
+    const entry = raw.trim().toLowerCase();
+    if (ADDRESS.test(entry)) addresses.add(entry);
+    else if (DOMAIN.test(entry.replace(/^@/, ""))) domains.add(entry.replace(/^@/, ""));
+  }
+  return { addresses, domains };
+}
+
+/** True when one of the recipients is an excepted address, or at an excepted domain or under one. */
+export function trackExcepted(recipients: readonly string[], list: TrackExceptions): boolean {
+  return recipients.some((recipient) => {
+    const address = recipient.trim().toLowerCase();
+    if (list.addresses.has(address)) return true;
+    const host = address.slice(address.lastIndexOf("@") + 1);
+    return [...list.domains].some((domain) => host === domain || host.endsWith(`.${domain}`));
+  });
 }

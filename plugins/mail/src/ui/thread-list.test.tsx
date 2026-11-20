@@ -47,6 +47,16 @@ function list(overrides: Partial<Parameters<typeof ThreadList>[0]> = {}) {
   );
 }
 
+describe("ThreadList: read statuses", () => {
+  it("marks a conversation whose sent message was opened, with how often and when", () => {
+    vi.stubGlobal("IntersectionObserver", class { observe() {} unobserve() {} disconnect() {} });
+    render(list({ threads: [{ ...thread(1), opens: { count: 2, lastAt: "2026-11-20T14:05:00.000Z" } }, thread(2)] }));
+    const marks = screen.getAllByLabelText("Opened");
+    expect(marks).toHaveLength(1);
+    expect(marks[0]!.getAttribute("title")).toMatch(/^Opened 2 times \u00b7 last /);
+  });
+});
+
 describe("ThreadList: AI sorts the inbox", () => {
   it("shows the model's line in place of the snippet (the snippet one hover away) and the AI labels, two and a count", () => {
     vi.stubGlobal("IntersectionObserver", class { observe() {} unobserve() {} disconnect() {} });

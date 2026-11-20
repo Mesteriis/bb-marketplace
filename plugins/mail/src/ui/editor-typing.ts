@@ -3,6 +3,7 @@
 // typed), and the grey rest of a phrase the owner often writes (Tab takes
 // it). The rules live in src/core; this file only reads the text around
 // the cursor and applies what they return.
+import { closeHistory } from "@tiptap/pm/history";
 import { Extension } from "@tiptap/react";
 import { Plugin, PluginKey, type EditorState } from "@tiptap/pm/state";
 import { Decoration, DecorationSet, type EditorView } from "@tiptap/pm/view";
@@ -103,7 +104,9 @@ function autocorrectPlugin(options: () => TypingOptions): Plugin<CorrectState> {
         const inserted = found.fixed + text;
         const tr = view.state.tr.insertText(inserted, found.start, from);
         const meta: CorrectMeta = { undo: { from: found.start, to: found.start + inserted.length, typed: found.word + text, word: found.word } };
-        view.dispatch(tr.setMeta(correctKey, meta));
+        // The fix is an Undo step of its own: not joined to the letters before it, nor to those typed right after.
+        view.dispatch(closeHistory(tr).setMeta(correctKey, meta));
+        view.dispatch(closeHistory(view.state.tr).setMeta(correctKey, meta));
         return true;
       },
       handleKeyDown(view, event) {

@@ -9,14 +9,19 @@ import {
   READ_STATUS_KEEP_DAYS,
   READ_STATUS_PAGES,
   READ_STATUS_POLL_MS,
+  READ_STATUS_TODAY_DAYS,
+  READ_STATUS_TODAY_ROWS,
   openView,
   parseOpenFeed,
+  parseTrackExceptions,
+  trackExcepted,
+  type OpenedUnanswered,
   pixelHtml,
   readStatusOrigin,
   type OpenView,
 } from "../../core/read-status.ts";
 
-export type ReadStatusSettings = { on: boolean; origin: string; trackKey: string; feedKey: string };
+export type ReadStatusSettings = { on: boolean; origin: string; trackKey: string; feedKey: string; /** Recipients never to track. */ exceptions: string };
 
 const KEY_MIN = 32;
 const FEED_TIMEOUT_MS = 15_000;
@@ -55,9 +60,10 @@ export function createReadStatus(deps: {
     ready: (): boolean => setup() !== null,
 
     /** A token and its image for one sent message; null when off or not set up. */
-    issue(): { token: string; html: string } | null {
+    issue(recipients: readonly string[] = []): { token: string; html: string } | null {
       const ready = setup();
       if (ready === null) return null;
+      if (trackExcepted(recipients, parseTrackExceptions(deps.settings().exceptions))) return null;
       const token = signedToken(ready.trackKey, newId());
       return { token, html: pixelHtml(ready.origin, token) };
     },
@@ -114,6 +120,23 @@ export function createReadStatus(deps: {
         polling = false;
       }
       return kept;
+    },
+
+    /** The conversations with their opens, for those someone opened: the list's mark. */
+    withThreads<T extends { id: string }>(threads: T[]): (T & { opens?: OpenView })[] {
+      if (threads.length === 0) return threads;
+      const found = store.threadOpens(threads.map((thread) => thread.id));
+      if (found.size === 0) return threads;
+      return threads.map((thread) => {
+        const view = openView(found.get(thread.id) ?? []);
+        return view.count === 0 ? thread : { ...thread, opens: view };
+      });
+    },
+
+    /** Today: sent mail of the last two weeks that was opened and not answered. Nothing while read statuses are off. */
+    unanswered(): OpenedUnanswered[] {
+      if (!deps.settings().on) return [];
+      return store.openedUnanswered(new Date(clock.now().getTime() - READ_STATUS_TODAY_DAYS * 86_400_000).toISOString(), READ_STATUS_TODAY_ROWS);
     },
 
     /** The messages with their opens, for those that carry a token. */

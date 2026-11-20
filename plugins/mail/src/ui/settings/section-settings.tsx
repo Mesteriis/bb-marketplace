@@ -102,6 +102,14 @@ export function TypingSettings({ port }: Rows) {
           label={tx("Show when mail I send is opened")}
           hint={tx("A tiny image from your own endpoint in mail you send. An open is a hint, not a proof: some mail services fetch images by themselves, many programs never do. Never in signed or encrypted mail.")}
         />
+        <TextSetting
+          port={port}
+          name="readStatusExceptions"
+          wide
+          label={tx("Never show opens for")}
+          hint={tx("Addresses and domains, separated by commas: mail to any of them goes without the image.")}
+          placeholder="boss@example.com, example.org"
+        />
       </div>
     </SettingsGroup>
   );

@@ -6,8 +6,23 @@ All notable changes to Makosh Mail are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Typing speed: Undo takes back a fix as a step of its own; **Move sender
+  to Bcc** is also a button beside Bcc; a template whose files fail to
+  attach midway shows what was attached.
+- Plugin access: twenty proposals a day whatever became of the earlier
+  ones; a Google key is fetched once for calls that arrive together, sixty
+  an hour, one log row in ten minutes; a mailbox that lost the Google
+  service turns the key's switch off; the sign-in started from Plugin
+  access leaves the owner where they are.
+
 ### Added
 
+- **Read statuses, the rest**: exceptions by address and domain (setting
+  `readStatusExceptions`), the **Opened** mark in the conversation list
+  (`opens` on a conversation), **Opened, no reply yet** in Today
+  (`today_get` carries `opened`).
 - **Read statuses**: mail you send can carry a 1×1 image of your own
   endpoint (`site/`); the open count and the last open show under the
   sent message. Settings `readStatuses` (on), `readStatusOrigin`,

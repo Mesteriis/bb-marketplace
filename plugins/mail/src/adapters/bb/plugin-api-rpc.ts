@@ -9,6 +9,7 @@ import type { InviteView } from "../../core/calendar-invite.ts";
 import type { Contact } from "../../core/contacts.ts";
 import type { MessageHeader, MessageSummary, SearchCursor } from "../../core/model.ts";
 import {
+  PROPOSALS_PER_DAY,
   GOOGLE_RIGHT_SCOPE,
   PLUGIN_ID_MAX,
   REQUESTS_PER_DAY,
@@ -123,6 +124,10 @@ const TOOL_OF: Readonly<Record<string, LogTool>> = {
 };
 
 /** The verified id of the calling plugin; a client caller is refused. */
+/** Google keys one plugin may ask for in an hour. */
+export const GOOGLE_KEYS_PER_HOUR = 60;
+export const GOOGLE_KEY_LIMIT_MESSAGE = "Too many key requests in the last hour; keep a key until it expires";
+
 export function callingPlugin(context: Context): string {
   const caller = context.experimental_caller;
   if (caller.kind !== "plugin") throw refuse("forbidden", PLUGIN_ONLY_MESSAGE);
@@ -145,6 +150,21 @@ export function createPluginApi(deps: PluginApiDeps) {
     if (!store.listPluginGrants().some((grant) => grant.pluginId === pluginId && grant.right === asked)) {
       throw missing(pluginId, method, asked);
     }
+  };
+
+  /**
+   * Per plugin, when it proposed a letter in this run of the server. The stored count sees only drafts that
+   * still exist, so a plugin whose letters were sent or discarded could propose without end.
+   */
+  const proposedAt = new Map<string, number[]>();
+  /** Per plugin, when it asked for a Google key in the last hour; and the keys being fetched right now. */
+  const keyAskedAt = new Map<string, number[]>();
+  const keyInFlight = new Map<string, ReturnType<PluginApiDeps["googleKey"]>>();
+  const keyLoggedAt = new Map<string, number>();
+  const recent = (book: Map<string, number[]>, key: string, sinceMs: number): number[] => {
+    const kept = (book.get(key) ?? []).filter((at) => at > sinceMs);
+    book.set(key, kept);
+    return kept;
   };
 
   /** Per plugin, when it read an invitation in the last hour. */
@@ -362,7 +382,10 @@ export function createPluginApi(deps: PluginApiDeps) {
     ) => {
       const pluginId = callingPlugin(context);
       const accountId = granted(pluginId, "plugin_mail_propose", "mail.propose", input.accountId);
-      const result = await deps.propose(pluginId, { ...input, accountId });
+      const nowMs = deps.now().getTime();
+      const today = recent(proposedAt, pluginId, nowMs - 86_400_000);
+      const result = today.length >= PROPOSALS_PER_DAY ? ({ ok: false, reason: "limit" } as const) : await deps.propose(pluginId, { ...input, accountId });
+      if (result.ok) today.push(nowMs);
       if (!result.ok) {
         deps.log({ actor: "plugin", tool: "plugin_propose", outcome: result.reason === "limit" ? "refused_caps" : "refused_invalid", refId: pluginRef(pluginId) });
         throw refuse(result.reason === "limit" ? "conflict" : result.reason === "account" ? "not_found" : "invalid", PROPOSE_REFUSAL_TEXT[result.reason]);
@@ -376,9 +399,35 @@ export function createPluginApi(deps: PluginApiDeps) {
       const pluginId = callingPlugin(context);
       if (!isGoogleRight(input.right)) throw refuse("invalid", GRANT_RIGHT_MESSAGE);
       const accountId = granted(pluginId, "plugin_google_token", input.right, input.accountId);
-      const key = await deps.googleKey(accountId, GOOGLE_RIGHT_SCOPE[input.right]);
+      const nowMs = (deps.clockMs ?? Date.now)();
+      const slot = `${pluginId}\n${accountId}\n${input.right}`;
+      // A key lives about an hour: a plugin that asks far more often is told to keep the one it has.
+      const asked = recent(keyAskedAt, pluginId, nowMs - 3_600_000);
+      if (asked.length >= GOOGLE_KEYS_PER_HOUR) throw refuse("conflict", GOOGLE_KEY_LIMIT_MESSAGE);
+      asked.push(nowMs);
+      // Calls that arrive together share one request to Google.
+      let pending = keyInFlight.get(slot);
+      if (pending === undefined) {
+        pending = deps.googleKey(accountId, GOOGLE_RIGHT_SCOPE[input.right]).finally(() => keyInFlight.delete(slot));
+        keyInFlight.set(slot, pending);
+      }
+      const key = await pending;
+      // One log row per plugin, mailbox, service and outcome in ten minutes, not one per call.
+      const logOnce = (outcome: "ok" | "failed") => {
+        const last = keyLoggedAt.get(`${slot}\n${outcome}`);
+        if (last !== undefined && nowMs - last < 600_000 && nowMs >= last) return;
+        if (keyLoggedAt.size > 1000) keyLoggedAt.clear();
+        keyLoggedAt.set(`${slot}\n${outcome}`, nowMs);
+        deps.log({ actor: "plugin", tool: "plugin_token", outcome, ...(outcome === "ok" ? { count: 1 } : {}), refId: pluginRef(pluginId) });
+      };
       if (!key.ok) {
-        deps.log({ actor: "plugin", tool: "plugin_token", outcome: "failed", refId: pluginRef(pluginId) });
+        logOnce("failed");
+        // The mailbox no longer has this Google service (signed in again without it, or not with Google at all):
+        // the key's switch goes off, so the settings show what is true.
+        if (key.reason === "not_google" || key.reason === "scope") {
+          store.setPluginGrant({ pluginId, right: input.right, accountId, grantedAt: deps.now().toISOString() }, false);
+          deps.announce(null);
+        }
         throw refuse(
           key.reason === "not_google" || key.reason === "scope" ? "invalid" : "conflict",
           key.reason === "not_google"
@@ -391,7 +440,7 @@ export function createPluginApi(deps: PluginApiDeps) {
         );
       }
       // The log says a key was taken and by whom; never the key.
-      deps.log({ actor: "plugin", tool: "plugin_token", outcome: "ok", count: 1, refId: pluginRef(pluginId) });
+      logOnce("ok");
       return { accessToken: key.accessToken, expiresAt: new Date(key.expiresAt).toISOString(), scope: key.scope };
     },
 

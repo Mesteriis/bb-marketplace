@@ -348,6 +348,8 @@ export const threadSummarySchema = z.object({
   aiSummary: z.string().nullable().optional(),
   /** AI sorts the inbox: the names of that message's AI labels. */
   aiLabels: z.array(z.string()).optional(),
+  /** Read statuses: a sent message of the conversation was opened; the server adds it to lists. */
+  opens: z.object({ count: z.number().int(), lastAt: z.string().nullable() }).optional(),
 });
 export type ThreadSummary = z.infer<typeof threadSummarySchema>;
 

@@ -16,6 +16,7 @@ import {
 import type { LogEntryInput } from "../../core/agent-log.ts";
 import { createPluginApi, type GoogleKey, type PluginReads } from "./plugin-api-rpc.ts";
 import { guardHandlers } from "./plugin-guard.ts";
+import { GOOGLE_KEY_LIMIT_MESSAGE, type PluginApiDeps } from "./plugin-api-rpc.ts";
 import { MIGRATIONS, createSqliteStore } from "./sqlite-store.ts";
 
 const signal = new AbortController().signal;
@@ -48,6 +49,7 @@ function setup(
     invite: async () => null,
     ...overrides,
   };
+  const proposer: { run: PluginApiDeps["propose"] } = { run: async () => ({ ok: false, reason: "account" }) };
   const api = createPluginApi({
     store,
     now: () => clock.now,
@@ -55,11 +57,11 @@ function setup(
     log: (entry) => void logged.push(entry),
     clockMs: () => clock.now.getTime(),
     reads,
-    propose: async () => ({ ok: false, reason: "account" }),
+    propose: async (...args) => proposer.run(...args),
     googleKey: async (accountId, scope) => googleKey(accountId, scope),
   });
   const guarded = guardHandlers(api.handlers, { api: new Set(PLUGIN_API_METHODS), check: api.check });
-  return { store, clock, announced, logged, api: guarded, sql: (statement: string) => void db.exec(statement) };
+  return { store, clock, announced, logged, proposer, api: guarded, sql: (statement: string) => void db.exec(statement) };
 }
 
 describe("asking for access", () => {
@@ -304,5 +306,51 @@ describe("Google keys", () => {
       store.setPluginGrant({ pluginId: "calendar", right: "google.calendar", accountId: "acc_1", grantedAt: "2026-11-19T10:00:00.000Z" }, true);
       await expect(api.plugin_google_token({ accountId: "acc_1", right: "google.calendar" }, as("calendar"))).rejects.toMatchObject({ code });
     }
+  });
+});
+
+describe("plugin API: leftovers", () => {
+  const asPlugin = { experimental_caller: { kind: "plugin", pluginId: "crm" }, experimental_signal: new AbortController().signal } as const;
+
+  it("twenty proposals a day, also when every earlier letter was sent or discarded", async () => {
+    const h = setup();
+    h.store.setPluginGrant({ pluginId: "crm", right: "mail.propose", accountId: "acc_1", grantedAt: "2026-11-19T09:00:00.000Z" }, true);
+    let made = 0;
+    // The store never holds a draft: as if each one was sent at once.
+    h.proposer.run = async () => ({ ok: true, draftId: `d_${++made}` });
+    const letter = { accountId: "acc_1", to: ["ann@example.com"], cc: [], subject: "Invented", text: "Invented" };
+    for (let i = 0; i < 20; i++) await h.api.plugin_mail_propose(letter as never, asPlugin as never);
+    await expect(h.api.plugin_mail_propose(letter as never, asPlugin as never)).rejects.toMatchObject({ code: "conflict" });
+    expect(made).toBe(20);
+    expect(h.logged.at(-1)).toMatchObject({ tool: "plugin_propose", outcome: "refused_caps" });
+    // A day later the plugin may propose again.
+    h.clock.now = new Date(h.clock.now.getTime() + 86_400_001);
+    await h.api.plugin_mail_propose(letter as never, asPlugin as never);
+    expect(made).toBe(21);
+  });
+
+  it("a Google key: calls that arrive together share one request, the log gets one row, sixty an hour at most", async () => {
+    let fetched = 0;
+    const h = setup({}, "2026-11-19T10:00:00.000Z", async () => {
+      fetched += 1;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return { ok: true, accessToken: "key", expiresAt: Date.parse("2026-11-19T11:00:00.000Z"), scope: "scope" };
+    });
+    h.store.setPluginGrant({ pluginId: "crm", right: "google.calendar", accountId: "acc_1", grantedAt: "2026-11-19T09:00:00.000Z" }, true);
+    const ask = () => h.api.plugin_google_token({ accountId: "acc_1", right: "google.calendar" } as never, asPlugin as never);
+    await Promise.all([ask(), ask(), ask()]);
+    expect(fetched).toBe(1);
+    expect(h.logged.filter((entry) => entry.tool === "plugin_token")).toHaveLength(1);
+    for (let i = 0; i < 57; i++) await ask();
+    await expect(ask()).rejects.toMatchObject({ code: "conflict", message: GOOGLE_KEY_LIMIT_MESSAGE });
+    expect(h.logged.filter((entry) => entry.tool === "plugin_token")).toHaveLength(1);
+  });
+
+  it("a mailbox that lost the Google service turns the key's switch off", async () => {
+    const h = setup({}, "2026-11-19T10:00:00.000Z", async () => ({ ok: false, reason: "scope" }));
+    h.store.setPluginGrant({ pluginId: "crm", right: "google.calendar", accountId: "acc_1", grantedAt: "2026-11-19T09:00:00.000Z" }, true);
+    await expect(h.api.plugin_google_token({ accountId: "acc_1", right: "google.calendar" } as never, asPlugin as never)).rejects.toMatchObject({ code: "invalid" });
+    expect(h.store.listPluginGrants()).toEqual([]);
+    expect(h.announced).toContain(null);
   });
 });
