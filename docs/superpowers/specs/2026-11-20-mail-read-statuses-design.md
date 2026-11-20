@@ -1,9 +1,9 @@
-# Makosh Mail: read statuses — design (draft, waits for one decision)
+# Makosh Mail: read statuses — design
 
-Date: 2026-11-20. Status: **not approved** — the owner decided on
-2026-11-19 that read statuses are wanted and on by default, but the way a
-"read" reaches this computer is the owner's choice (below). Ninth of nine
-projects that bring Superhuman Mail's features to Makosh Mail.
+Date: 2026-11-20. Status: the way is decided (the owner, 2026-11-20:
+their own public endpoint at `makosh.sh-inc.dev`, on their server); the
+endpoint is built and running (`site/`), the plugin side is not built yet.
+Ninth of nine projects that bring Superhuman Mail's features to Makosh Mail.
 
 ## Intent
 
@@ -54,7 +54,18 @@ such address. Three ways:
   the owner sends to themselves, plain-text-only messages.
 - Agents and AI get no part of this: not a tool, not in agent text.
 
-## Not decided here
+## The endpoint as built
+
+`site/` in this repository, running at `https://makosh.sh-inc.dev`:
+`GET /o/<token>.gif` and `GET /api/events?after=N` with a bearer key. A
+token is `<id>.<sig>`: 16–32 base64url characters and the first 16
+base64url characters of HMAC-SHA256(track key, id); only signed tokens
+are recorded, the image is the same for every request. Kept per open:
+sequence number, token, time, coarse client kind; never an IP address.
+90 days, 100 opens a token. The plugin needs two secrets (the track key
+and the feed key), kept in its vault and entered once by the owner.
+
+## Superseded: what was undecided
 
 Whether the recommended endpoint is a Cloudflare Worker or a container
 on the owner's server; its domain; who deploys it.
