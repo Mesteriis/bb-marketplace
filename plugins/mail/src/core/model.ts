@@ -411,6 +411,8 @@ export const statusViewSchema = z.object({
   agentTools: z.boolean(),
   /** The mail_propose tool is offered to agents (off by default). */
   agentPropose: z.boolean(),
+  /** Read statuses are on and the endpoint's keys are set: sent mail carries the image. */
+  readStatuses: z.boolean().optional(),
   translate: z.object({ gateway: translateGatewaySchema }),
   accounts: z.array(accountSchema),
   /** The plugin has a usable Google client, so "Sign in with Google" can be offered; absent means no. */

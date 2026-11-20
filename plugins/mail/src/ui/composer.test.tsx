@@ -954,6 +954,28 @@ describe("Composer: Improve and reply reminders (slice 3f)", () => {
   type EditorLike = { getJSON: () => { content?: unknown[] }; commands: { insertContentAt: (at: number, text: string) => boolean } };
   const editorOf = () => (document.querySelector(".ProseMirror") as unknown as { editor: EditorLike }).editor;
 
+  it("read statuses: the box is offered only when they are set up, starts ticked, and unticking sends track: false", async () => {
+    mount();
+    expect(screen.queryByRole("checkbox", { name: "Show when this message is opened" })).toBeNull();
+    cleanup();
+    const ports = { ...fakePorts(), trackOpens: true };
+    mount({}, ports as never);
+    addRecipient();
+    const box = screen.getByRole("checkbox", { name: "Show when this message is opened" });
+    expect(box.getAttribute("aria-checked")).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(ports.send).toHaveBeenCalledTimes(1));
+    expect(ports.send.mock.calls[0]![0]).not.toHaveProperty("track");
+    cleanup();
+    const again = { ...fakePorts(), trackOpens: true };
+    mount({}, again as never);
+    addRecipient();
+    fireEvent.click(screen.getByRole("checkbox", { name: "Show when this message is opened" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(again.send).toHaveBeenCalledTimes(1));
+    expect(again.send.mock.calls[0]![0]).toMatchObject({ track: false });
+  });
+
   it("the reminder checkbox starts unticked and sends remindAfterDays when ticked", async () => {
     const ports = fakePorts();
     mount({ reminderDays: 4 }, ports);

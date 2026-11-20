@@ -14,20 +14,36 @@ export type PluginCheck = (pluginId: string, method: string, input: unknown) => 
 export type GuardOptions = {
   api: ReadonlySet<string>;
   check: PluginCheck;
-  /** A plugin refused on a method outside the API: its id and the method, nothing else. */
+  /** A plugin refused on a method outside the API: its id and the method, nothing else; told once an hour per plugin and method. */
   onRefused?: (pluginId: string, method: string) => void;
+  /** Milliseconds, as Date.now(). */
+  clockMs?: () => number;
 };
+
+/** A refused call is reported once in this long per plugin and method: a plugin that retries cannot flood the log. */
+export const GUARD_REFUSED_LOG_MS = 3_600_000;
 
 type Handler = (input: never, context: ExperimentalPluginRpcHandlerContext) => unknown;
 
 export function guardHandlers<H extends Record<string, Handler>>(handlers: H, opts: GuardOptions): H {
   const guarded: Record<string, Handler> = {};
+  const reportedAt = new Map<string, number>();
+  const report = (pluginId: string, method: string) => {
+    if (opts.onRefused === undefined) return;
+    const key = `${pluginId}\n${method}`;
+    const now = (opts.clockMs ?? Date.now)();
+    const last = reportedAt.get(key);
+    if (last !== undefined && now - last < GUARD_REFUSED_LOG_MS && now >= last) return;
+    if (reportedAt.size > 1000) reportedAt.clear();
+    reportedAt.set(key, now);
+    opts.onRefused(pluginId, method);
+  };
   for (const [method, handler] of Object.entries(handlers)) {
     guarded[method] = async (input, context) => {
       const caller = context.experimental_caller;
       if (caller.kind === "plugin") {
         if (!opts.api.has(method)) {
-          opts.onRefused?.(caller.pluginId, method);
+          report(caller.pluginId, method);
           throw refuse("forbidden", PLUGIN_CALLER_MESSAGE);
         }
         opts.check(caller.pluginId, method, input);

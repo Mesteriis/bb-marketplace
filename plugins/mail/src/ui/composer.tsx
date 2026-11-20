@@ -95,6 +95,8 @@ export interface ComposerPorts {
     protect?: { sign: boolean; encrypt: boolean };
     /** Slice 3l, "Send later": the time to send, UTC ISO. */
     sendAt?: string;
+    /** Read statuses: false leaves the image out of this message. */
+    track?: boolean;
   }): Promise<{
     outboxId: string;
     sendAfter: string;
@@ -115,6 +117,8 @@ export interface ComposerPorts {
   smartSend?(draftId: string): Promise<SmartSendTime | null>;
   /** Dictation: BB's voice service turns a recording into text. Absent: no microphone button. */
   transcribe?(audio: Blob, signal: AbortSignal): Promise<string>;
+  /** Read statuses are on and set up: the composer offers to leave the image out of one message. */
+  trackOpens?: boolean;
   /** Whether BB has a voice service chosen; absent: taken as yes. */
   voiceReady?(): Promise<boolean>;
 }
@@ -373,6 +377,9 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
   const [writeOpen, setWriteOpen] = useState(false);
   const writeSent = useRef<string[] | null>(null);
   const [remind, setRemind] = useState(false);
+  const [track, setTrack] = useState(true);
+  const trackRef = useRef(track);
+  trackRef.current = track;
   const remindRef = useRef(remind);
   // Slice 3k: OpenPGP for this message. Both start off; the choice is not kept with the draft.
   const [pgpSign, setPgpSign] = useState(false);
@@ -652,6 +659,7 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
       ...(remindAfterDays !== undefined ? { remindAfterDays } : {}),
       ...(protect.sign || protect.encrypt ? { protect } : {}),
       ...(sendAtRef.current !== null ? { sendAt: sendAtRef.current } : {}),
+      ...(portsRef.current.trackOpens === true && !trackRef.current ? { track: false } : {}),
     };
     let outbox: { outboxId: string; sendAfter: string };
     try {
@@ -1442,6 +1450,12 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
               onCheckedChange={(checked) => setRemind(checked === true)}
             />
             {tx("Remind me if no reply in {p1}", { p1: daysText(props.reminderDays) })}
+          </label>
+        ) : null}
+        {props.ports.trackOpens === true ? (
+          <label className="flex items-center gap-1.5 text-xs text-muted-foreground" title={tx("A tiny image from your own endpoint. Never in signed or encrypted mail.")}>
+            <Checkbox aria-label={tx("Show when this message is opened")} checked={track} onCheckedChange={(checked) => setTrack(checked === true)} />
+            {tx("Show when opened")}
           </label>
         ) : null}
         {pgpState !== null ? (

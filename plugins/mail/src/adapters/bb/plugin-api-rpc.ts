@@ -215,10 +215,16 @@ export function createPluginApi(deps: PluginApiDeps) {
     plugin_accounts_list: (_input: Record<string, never>, context: Context) => {
       const pluginId = callingPlugin(context);
       const mine = new Set(grantedAccounts(store.listPluginGrants(), pluginId, "mail.read"));
+      const scope = store.getAiScope();
       const accounts = store
         .listAccounts()
         .filter((account) => mine.has(account.id))
-        .map((account) => ({ id: account.id, email: account.email, displayName: account.displayName ?? null, provider: account.preset }));
+        // An account the owner shares with no AI is named by id only, as it is to agents.
+        .map((account) =>
+          scope.accounts.get(account.id)?.mode === "none"
+            ? { id: account.id, email: "", displayName: null, provider: account.preset }
+            : { id: account.id, email: account.email, displayName: account.displayName ?? null, provider: account.preset },
+        );
       done(pluginId, "plugin_accounts", [], accounts.length);
       return { accounts };
     },

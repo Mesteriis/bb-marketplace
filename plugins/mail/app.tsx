@@ -2034,6 +2034,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
         return (await sdk.system.transcribeVoice({ file: new File([audio], name, { type }), signal })).text;
       },
       voiceReady: async () => (await sdk.system.config()).voiceTranscriptionEnabled,
+      trackOpens: status?.readStatuses === true,
       discard: async (draftId) => {
         await rpc.call("compose_discard", { draftId });
       },
@@ -2049,7 +2050,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       reload: async (draftId) => (await rpc.call("compose_open", { draftId })).draft,
       check: (input) => rpc.call("compose_check", input),
     }),
-    [rpc],
+    [rpc, sdk, status?.readStatuses],
   );
 
   const loadOutbox = useCallback(async (): Promise<OutboxRow[] | null> => {

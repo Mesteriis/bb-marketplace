@@ -6276,6 +6276,14 @@ describe("the plugin API reads", () => {
     const answer = (await crm("plugin_accounts_list", {})) as { accounts: Record<string, unknown>[] };
     expect(answer.accounts.map((account) => account.id)).toEqual(["acc_1"]);
     expect(Object.keys(answer.accounts[0]!).sort()).toEqual(["displayName", "email", "id", "provider"]);
+    expect(answer.accounts[0]!.email).toBe("owner@example.org");
+  });
+
+  it("an account shared with no AI is listed by id only", async () => {
+    const { host, crm } = await loadGranted();
+    await call(host, "ai_scope_set", { accounts: [{ accountId: "acc_1", mode: "none" }], senders: [] });
+    const answer = (await crm("plugin_accounts_list", {})) as { accounts: Record<string, unknown>[] };
+    expect(answer.accounts).toEqual([{ id: "acc_1", email: "", displayName: null, provider: answer.accounts[0]!.provider }]);
   });
 
   it("search returns what the owner shares with agents, with secrets hidden", async () => {

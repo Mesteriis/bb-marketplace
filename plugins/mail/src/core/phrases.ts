@@ -20,9 +20,15 @@ const ENDS_OWN_TEXT: readonly RegExp[] = [
   /^-- ?$/,
   /^On .{1,200} wrote:$/i,
   /.{1,200}\s(пишет|написал|написала|писал|писала)(\(а\))?:$/i,
+  // French, German, Spanish and Italian mail programs, and Gmail's Russian date form ("пн, 2 нояб. 2026 г. в 10:00, Ada <...>:").
+  /^Le .{1,200}\sa écrit\s?:$/i,
+  /^Am .{1,200}\sschrieb\s.{1,200}:$/i,
+  /^El .{1,200}\sescribió\s?:$/i,
+  /^Il .{1,200}\sha scritto\s?:$/i,
+  /^.{1,80}\d{4}\s?г\.\s?в\s\d{1,2}:\d{2},\s.{1,200}:$/i,
   /^-{2,}\s*(Original Message|Forwarded message|Пересылаемое сообщение|Исходное сообщение)/i,
   /^Begin forwarded message:/i,
-  /^(From|От|Sent|Отправлено):\s/i,
+  /^(From|От|Sent|Отправлено|De|Von|Envoyé|Gesendet):\s/i,
 ];
 
 /** The owner's own text of a sent message: everything above the first quote, forwarded header or signature mark. */

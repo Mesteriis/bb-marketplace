@@ -126,7 +126,7 @@ export const LOG_TOOL_LABEL: Record<LogTool, string> = {
   plugin_contacts: "Plugin: listed contacts",
   plugin_invites: "Plugin: read invitations",
   plugin_propose: "Plugin: prepared a letter",
-  plugin_token: "Plugin: took a google key",
+  plugin_token: "Plugin: took a Google key",
 };
 
 export const LOG_OUTCOME_LABEL: Record<LogOutcome, string> = {

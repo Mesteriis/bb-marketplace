@@ -65,7 +65,7 @@ const TOOLS: Record<LogTool, string> = {
   plugin_contacts: msg("Plugin: listed contacts"),
   plugin_invites: msg("Plugin: read invitations"),
   plugin_propose: msg("Plugin: prepared a letter"),
-  plugin_token: msg("Plugin: took a google key"),
+  plugin_token: msg("Plugin: took a Google key"),
 };
 
 const OUTCOMES: Record<LogOutcome, string> = {

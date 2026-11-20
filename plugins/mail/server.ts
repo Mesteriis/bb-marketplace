@@ -2357,7 +2357,7 @@ type RpcDeps = {
   writeSettings: () => WriteSettings;
   replyDrafts: Pick<ReplyDrafts, "get" | "dismiss">;
   aiSort: Pick<AiSort, "labels" | "withThreads" | "withMessages">;
-  readStatus: Pick<ReadStatus, "withMessages">;
+  readStatus: Pick<ReadStatus, "withMessages" | "ready">;
   /** The owner's "Sort mail into categories" setting. */
   categoriesOn: () => boolean;
   /** Installs what from:vip and from:team match, from the settings and the accounts as they are now. */
@@ -3511,6 +3511,7 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         vaultReady: deps.vaultReady(),
         agentTools: deps.agentTools(),
         agentPropose: deps.agentPropose(),
+        readStatuses: deps.readStatus.ready(),
         translate: { gateway: await deps.gateway.status() },
         accounts: store.listAccounts().map(toPublicAccount),
         googleSignIn: deps.googleSignInOffered,

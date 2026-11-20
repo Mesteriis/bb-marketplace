@@ -28,6 +28,21 @@ describe("guardHandlers", () => {
     expect(refused).toEqual(["calendar:threads_list", "calendar:message_action"]);
   });
 
+  it("reports a refused plugin once an hour per method, however often it retries", async () => {
+    let now = 1_000_000;
+    const refused: string[] = [];
+    const guarded = guardHandlers(
+      { threads_list: handler(async () => "rows"), message_action: handler(async () => "done") },
+      { api: new Set(), check: () => {}, onRefused: (pluginId, method) => refused.push(`${pluginId}:${method}`), clockMs: () => now },
+    );
+    for (let i = 0; i < 50; i++) await expect(guarded.threads_list({} as never, plugin)).rejects.toMatchObject({ code: "forbidden" });
+    await expect(guarded.message_action({} as never, plugin)).rejects.toMatchObject({ code: "forbidden" });
+    expect(refused).toEqual(["calendar:threads_list", "calendar:message_action"]);
+    now += 3_600_000;
+    await expect(guarded.threads_list({} as never, plugin)).rejects.toMatchObject({ code: "forbidden" });
+    expect(refused).toEqual(["calendar:threads_list", "calendar:message_action", "calendar:threads_list"]);
+  });
+
   it("lets a client caller through unchanged", async () => {
     const guarded = guardHandlers(
       { threads_list: handler(async () => "rows"), sync_now: handler(() => "sync") },

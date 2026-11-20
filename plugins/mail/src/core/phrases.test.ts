@@ -25,6 +25,18 @@ describe("buildPhrases", () => {
   });
 
   it("never takes a phrase from quoted text or from under the signature mark", () => {
+    for (const line of [
+      "Le lun. 2 nov. 2026 à 10:00, Ada <ada@example.com> a écrit :",
+      "Am Mo., 2. Nov. 2026 um 10:00 Uhr schrieb Ada <ada@example.com>:",
+      "El lun, 2 nov 2026 a las 10:00, Ada (<ada@example.com>) escribió:",
+      "Il giorno lun 2 nov 2026 alle ore 10:00 Ada <ada@example.com> ha scritto:",
+      "пн, 2 нояб. 2026 г. в 10:00, Ada <ada@example.com>:",
+      "Von: Ada <ada@example.com>",
+    ]) {
+      expect(ownText(`Sounds good to me.\n\n${line}\nTheir private phrase goes here.`), line).toBe("Sounds good to me.");
+    }
+    // An ordinary line that ends with a colon is the owner's own.
+    expect(ownText("Here is the list:\nfirst\nsecond")).toBe("Here is the list:\nfirst\nsecond");
     const quoted = "Agreed.\n\nOn Mon, Ada wrote:\n> Their private phrase goes here.";
     const signed = "Agreed.\n-- \nOwner of the example org";
     expect(buildPhrases([...thrice(quoted), ...thrice(signed)], [])).toEqual([]);

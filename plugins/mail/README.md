@@ -1656,8 +1656,11 @@ IP address — and Makosh Mail reads those notes every five minutes.
 - Opens are kept 90 days, on your endpoint and on this computer. Agents
   and AI get no part of them.
 
-Not built: a per-message switch in the composer, exceptions by address,
-a mark in the conversation list and a row in Today.
+The composer has a box **Show when opened** beside Send, ticked by
+default; untick it to leave the image out of one message.
+
+Not built: exceptions by address, a mark in the conversation list and a
+row in Today.
 
 ### Assistants outside BB (MCP)
 
