@@ -25,6 +25,8 @@ export const PAGE_SETTING_SCHEMAS = {
   syncWindowDays: z.number().int().min(1),
   agentTools: z.boolean(),
   agentPropose: z.boolean(),
+  /** Outside assistants (the local MCP server) may search and read mail inside AI access. */
+  mcpAccess: z.boolean(),
   translateProvider: line(64),
   translateModel: line(200),
   translateLanguage: z.enum(languageTags),
@@ -81,6 +83,7 @@ export const PAGE_SETTING_DEFAULTS: PageSettings = {
   syncWindowDays: 30,
   agentTools: false,
   agentPropose: false,
+  mcpAccess: false,
   translateProvider: "",
   translateModel: "",
   translateLanguage: "ru",
@@ -130,9 +133,9 @@ export function pageSettingsOf(stored: Record<string, unknown>): PageSettings {
 }
 
 /** Shown on the page, changed only in BB's plugin settings: they widen what agents may do with mail. */
-export const PAGE_SETTINGS_READ_ONLY = ["agentTools", "agentPropose", "agentTriage"] as const;
+export const PAGE_SETTINGS_READ_ONLY = ["agentTools", "agentPropose", "agentTriage", "mcpAccess"] as const;
 
-const { agentTools: _tools, agentPropose: _propose, agentTriage: _triage, ...WRITABLE } = PAGE_SETTING_SCHEMAS;
+const { agentTools: _tools, agentPropose: _propose, agentTriage: _triage, mcpAccess: _mcp, ...WRITABLE } = PAGE_SETTING_SCHEMAS;
 
 /** A change from the page: some of the writable keys, at least one, nothing else. */
 export const pageSettingsPatchSchema = z

@@ -158,6 +158,8 @@ export interface MailSettingsProps {
   /** OpenPGP keys (slice 3k); absent: no tab. */
   pgp?: SettingsPgpPorts;
   /** Filters over new Inbox mail (slice 3m); absent: no tab. */
+  /** Saves the MCP server file for assistants outside BB; absent: no Save button. */
+  saveMcpServerFile?: () => Promise<boolean>;
   /** Access of other plugins (the plugin API); absent: no section. */
   pluginAccess?: {
     port: PluginAccessPort;

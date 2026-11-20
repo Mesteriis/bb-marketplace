@@ -1,0 +1,4 @@
+# SDD ledger — plan: docs/superpowers/plans/2026-11-20-mail-mcp.md
+Spec: docs/superpowers/specs/2026-11-20-mail-mcp-design.md (approved in advance; my reading)
+Design rulings: stdio only, read-only (accounts, search, read), off by default (mcpAccess); the server file shells out to the bb CLI's new --assistant mode, which reuses the agent paths; no network endpoint, no writing from outside BB.
+Tasks 1-4 built (2026-11-20). Rulings: mcpAccess is read-only on the page like the agent switches (changed only in BB's plugin settings); the server file is a real file plugins/mail/mcp/makosh-mail-mcp.mjs, embedded as text by scripts/embed-mail-mcp.mjs (a test compares them); a query starting with "-" is passed with a leading space so it is never an option; the 60/hour cap is per run of the BB server; new log tool cli_accounts. Check: 239 files, 5097 tests; build ok; manifests ok. Not verified: a real MCP client against the running BB (needs deploy go-ahead).

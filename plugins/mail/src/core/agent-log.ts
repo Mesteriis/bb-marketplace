@@ -7,12 +7,12 @@
 // rules; their ref_id is a BB thread, Taskboard task or rule id, never a path,
 // project name, title or prompt.
 
-export const LOG_ACTORS = ["agent", "mention", "handoff", "cli", "owner_ai", "owner_bb", "rule", "plugin"] as const;
+export const LOG_ACTORS = ["agent", "mention", "handoff", "cli", "owner_ai", "owner_bb", "rule", "plugin", "mcp"] as const;
 export type LogActor = (typeof LOG_ACTORS)[number];
 
 export const LOG_TOOLS = [
   "search", "read", "contacts", "inbox", "propose", "templates", "triage", "mention", "handoff",
-  "cli_search", "cli_read",
+  "cli_search", "cli_read", "cli_accounts",
   "ai_translate", "ai_summary", "ai_ask", "ai_tasks", "ai_categories", "ai_digest", "ai_draft", "ai_write", "ai_autodraft", "ai_sort", "ai_archive",
   "bb_thread", "bb_task", "project_save", "patch_handoff", "incident", "rule_thread",
   "plugin_request", "plugin_accounts", "plugin_search", "plugin_read", "plugin_contacts", "plugin_invites", "plugin_propose", "plugin_token",
@@ -101,6 +101,7 @@ export const LOG_TOOL_LABEL: Record<LogTool, string> = {
   handoff: "Handed an email to the agent",
   cli_search: "Searched mail (CLI)",
   cli_read: "Read an email (CLI)",
+  cli_accounts: "Listed accounts (CLI)",
   ai_translate: "Translated an email",
   ai_summary: "Summarized a conversation",
   ai_ask: "Answered a question about your mail",

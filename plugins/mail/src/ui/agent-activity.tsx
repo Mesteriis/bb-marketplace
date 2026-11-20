@@ -25,6 +25,7 @@ const ACTORS: Record<LogActor, string> = {
   owner_bb: msg("You (BB)"),
   rule: msg("Mail rule"),
   plugin: msg("Plugin"),
+  mcp: msg("Assistant outside BB"),
 };
 
 const TOOLS: Record<LogTool, string> = {
@@ -39,6 +40,7 @@ const TOOLS: Record<LogTool, string> = {
   handoff: msg("Handed an email over"),
   cli_search: msg("Searched mail (command)"),
   cli_read: msg("Read an email (command)"),
+  cli_accounts: msg("Listed accounts (command)"),
   ai_translate: msg("Translation"),
   ai_summary: msg("Summary"),
   ai_ask: msg("Ask"),

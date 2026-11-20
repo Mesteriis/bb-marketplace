@@ -13,6 +13,8 @@ import {
 import { describe, expect, it, vi } from "vitest";
 import {
   AGENT_MAIL_OFF_MESSAGE,
+  MCP_ACCESS_OFF_MESSAGE,
+  MCP_LIMIT_MESSAGE,
   createMailPlugin,
   NEEDS_KEY_MESSAGE,
   PASSWORD_NEEDED_MESSAGE,
@@ -569,7 +571,7 @@ describe("makosh-mail server", () => {
   it("settings_get shows the page's settings without the credential key, and settings_set changes writable ones", async () => {
     const host = await load();
     const before = (await host.harness.behavior.callRpc("settings_get", {})) as Record<string, unknown>;
-    expect(Object.keys(before)).toHaveLength(40);
+    expect(Object.keys(before)).toHaveLength(41);
     expect("vaultKey" in before).toBe(false);
     expect(before).toMatchObject({ hideQuotes: true, syncIntervalMinutes: 5, agentTools: false });
 
@@ -580,13 +582,14 @@ describe("makosh-mail server", () => {
 
   it("settings_set refuses the agent switches, the credential key and other plugins", async () => {
     const host = await load();
-    for (const patch of [{ agentTools: true }, { agentPropose: true }, { agentTriage: true }, { vaultKey: "invented" }, { replyReminderDays: 99 }, {}]) {
+    for (const patch of [{ agentTools: true }, { agentPropose: true }, { agentTriage: true }, { mcpAccess: true }, { vaultKey: "invented" }, { replyReminderDays: 99 }, {}]) {
       await expect(host.harness.behavior.callRpc("settings_set", patch), JSON.stringify(patch)).rejects.toThrow();
     }
     await expect(host.harness.behavior.callRpc("settings_get", {})).resolves.toMatchObject({
       agentTools: false,
       agentPropose: false,
       agentTriage: false,
+      mcpAccess: false,
       replyReminderDays: 3,
     });
     const asPlugin = { experimental_caller: { kind: "plugin", pluginId: "other" } } as const;
@@ -903,6 +906,83 @@ describe("makosh-mail server", () => {
 
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("garden fence");
+  });
+
+  it("assistant mode (MCP) gives nothing while mcpAccess is off: no mail, no account names, a log row", async () => {
+    const host = await load();
+    const { messageId } = await addAndSync(host);
+
+    const results = [
+      await host.harness.behavior.runCli(["accounts", "--assistant", "--json"]),
+      await host.harness.behavior.runCli(["search", "quarterly", "--assistant", "--json"]),
+      await host.harness.behavior.runCli(["read", messageId, "--assistant", "--json"]),
+    ];
+
+    for (const result of results) {
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toContain(MCP_ACCESS_OFF_MESSAGE);
+      expect(result.stdout).not.toContain("garden fence");
+      expect(result.stdout).not.toContain("owner@example.org");
+    }
+    const log = (await call(host, "agent_log_list", { limit: 10 })) as { entries: { actor: string; tool: string; outcome: string }[] };
+    expect(log.entries.map((entry) => [entry.actor, entry.tool, entry.outcome])).toEqual([
+      ["mcp", "cli_read", "refused_off"],
+      ["mcp", "cli_search", "refused_off"],
+      ["mcp", "cli_accounts", "refused_off"],
+    ]);
+  });
+
+  it("assistant mode with mcpAccess on answers as to an agent and logs every call as mcp; agentTools stays off", async () => {
+    const host = await load({ settings: { vaultKey: generateVaultKey(), mcpAccess: true } });
+    const { messageId } = await addAndSync(host);
+
+    const accounts = await host.harness.behavior.runCli(["accounts", "--assistant", "--json"]);
+    const search = await host.harness.behavior.runCli(["search", "quarterly", "--assistant", "--json"]);
+    const read = await host.harness.behavior.runCli(["read", messageId, "--assistant", "--json"]);
+
+    expect([accounts.exitCode, search.exitCode, read.exitCode]).toEqual([0, 0, 0]);
+    expect(accounts.stdout).toContain("owner@example.org");
+    expect((JSON.parse(search.stdout) as { hits: { id: string }[] }).hits.map((hit) => hit.id)).toEqual([messageId]);
+    expect((JSON.parse(read.stdout) as { text: string }).text).toContain("garden fence");
+    const log = (await call(host, "agent_log_list", { limit: 10 })) as { entries: { actor: string; tool: string; outcome: string }[] };
+    expect(log.entries.map((entry) => [entry.actor, entry.tool, entry.outcome])).toEqual([
+      ["mcp", "cli_read", "ok"],
+      ["mcp", "cli_search", "ok"],
+      ["mcp", "cli_accounts", "ok"],
+    ]);
+    // The switch for outside assistants does not open mail to BB's own threads.
+    const inThread = await host.harness.behavior.runCli(["read", messageId], { threadId: "thread-1" });
+    expect(inThread.stderr).toContain(AGENT_MAIL_OFF_MESSAGE);
+  });
+
+  it("assistant mode keeps to AI access: an account shared with nobody reads as unknown and searches as empty", async () => {
+    const host = await load({ settings: { vaultKey: generateVaultKey(), mcpAccess: true } });
+    const { messageId, accountId } = await addAndSync(host);
+    await call(host, "ai_scope_set", { accounts: [{ accountId, mode: "none" }], senders: [] });
+
+    const search = await host.harness.behavior.runCli(["search", "quarterly", "--assistant", "--json"]);
+    const read = await host.harness.behavior.runCli(["read", messageId, "--assistant", "--json"]);
+    const accounts = await host.harness.behavior.runCli(["accounts", "--assistant", "--json"]);
+
+    expect((JSON.parse(search.stdout) as { hits: unknown[] }).hits).toEqual([]);
+    expect(read.exitCode).toBe(1);
+    expect(read.stdout).not.toContain("garden fence");
+    expect(accounts.stdout).not.toContain("owner@example.org");
+  });
+
+  it("assistant mode stops at 60 calls an hour", async () => {
+    const host = await load({ settings: { vaultKey: generateVaultKey(), mcpAccess: true } });
+    await addAndSync(host);
+
+    for (let index = 0; index < 60; index += 1) {
+      expect((await host.harness.behavior.runCli(["accounts", "--assistant", "--json"])).exitCode).toBe(0);
+    }
+    const over = await host.harness.behavior.runCli(["accounts", "--assistant", "--json"]);
+
+    expect(over.exitCode).toBe(1);
+    expect(over.stderr).toContain(MCP_LIMIT_MESSAGE);
+    const log = (await call(host, "agent_log_list", { limit: 1 })) as { entries: { actor: string; outcome: string }[] };
+    expect(log.entries[0]).toMatchObject({ actor: "mcp", outcome: "refused_caps" });
   });
 
   it("cli read works without a thread when agentTools is off", async () => {

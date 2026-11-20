@@ -1623,6 +1623,32 @@ or a cloud service is BB's setting, not Mail's — and is not kept; a failed
 transcription can be tried once more. Without a voice service in BB the
 button says the recording could not be turned into text.
 
+### Assistants outside BB (MCP)
+
+An assistant that is not a BB agent (Claude Desktop, Cursor, another MCP
+client on this computer) can search and read mail through a small local
+MCP server. Off by default.
+
+1. Turn on `mcpAccess` in BB Settings → Plugins → Makosh Mail (or
+   `bb plugin config makosh-mail set mcpAccess true`). The page shows the
+   switch and cannot change it.
+2. Mail settings → AI access → **Save the server file…** saves
+   `makosh-mail-mcp.mjs` (also in this package under `mcp/`).
+3. Point the assistant at it: command `node`, argument the file's path.
+   Node.js and `bb` must be on the assistant's PATH; `MAKOSH_MAIL_BB` can
+   hold the full path of `bb`.
+
+The server speaks MCP over stdio, opens no port and has three read-only
+tools: `mail_accounts`, `mail_search`, `mail_read`. Each one runs
+`bb makosh-mail … --assistant --json` (arguments as an array, no shell, 30
+seconds, 1 MB), and that mode answers as it answers BB's agents: only mail
+inside AI access, secrets hidden, the untrusted-text notice, one row in
+Agent activity per call (actor "Assistant outside BB"), at most 60 calls an
+hour while BB runs. With `mcpAccess` off it answers nothing, account names
+included. It cannot send, propose, move or delete. BB must be running.
+`--assistant` narrows a command; it is not a barrier against a program
+that can already run `bb` as you — your own terminal reads all mail.
+
 ### Smart send and sender insights
 
 Counted from the mail stored on this computer; no model and nothing from

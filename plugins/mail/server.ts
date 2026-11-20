@@ -567,6 +567,13 @@ function defineSettings(bb: BbPluginApi) {
         "Off: no thread gets the mail tools or skill. Mentions and Hand to agent still give an agent the message you picked.",
       default: false,
     },
+    mcpAccess: {
+      type: "boolean",
+      label: "Let assistants outside BB search and read mail (MCP)",
+      description:
+        "Off: the local MCP server answers nothing. On: an assistant you connect it to searches and reads mail inside AI access, secrets hidden, every call in the agent log; it cannot send or change anything.",
+      default: false,
+    },
     agentPropose: {
       type: "boolean",
       label: "Let agents propose mail for you to send",
@@ -2207,6 +2214,7 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       publishChanged,
       vaultReady: () => vault !== null,
       agentTools: () => current.agentTools,
+      mcpAccess: () => current.mcpAccess,
       agentLog: agentLog.log,
       secure: secureOne,
       doctor: () => ({
@@ -6269,6 +6277,17 @@ function createDayRpc(
 }
 
 const jsonOption = { json: { type: "boolean", description: "Emit machine-readable JSON" } } as const;
+const assistantOption = {
+  assistant: {
+    type: "boolean",
+    description: "Answer as to an assistant outside BB (used by the MCP server): AI access only, secrets hidden, logged; needs mcpAccess",
+  },
+} as const;
+
+export const MCP_ACCESS_OFF_MESSAGE =
+  "Mail access for assistants outside BB is off. The owner can enable it with: bb plugin config makosh-mail set mcpAccess true";
+export const MCP_CALLS_PER_HOUR = 60;
+export const MCP_LIMIT_MESSAGE = "Too many mail requests from the assistant in the last hour (60); try again later.";
 
 type CliDeps = {
   /** A BB thread started by a mail rule (slice 3g): the CLI answers no mail there. */
@@ -6278,6 +6297,8 @@ type CliDeps = {
   publishChanged: (accountId: string | null) => void;
   vaultReady: () => boolean;
   agentTools: () => boolean;
+  /** Outside assistants (the MCP server file, `--assistant`) may search and read. */
+  mcpAccess: () => boolean;
   agentLog: AgentLog;
   /** The clock for relative dates in queries (newer_than, older_than). */
   now: () => Date;
@@ -6325,6 +6346,29 @@ function registerCli(bb: BbPluginApi, store: MailStore, deps: CliDeps): void {
       throw new PluginCliError(AGENT_MAIL_OFF_MESSAGE, { code: "agent_mail_access_off" });
     }
   };
+  /**
+   * `--assistant`: the caller is an assistant outside BB (the MCP server file).
+   * It answers nothing, account names included, until the owner turns
+   * mcpAccess on; then it is treated as an agent thread is (AI access, hidden
+   * values, a log row with actor `mcp`), at most 60 calls an hour per run of
+   * the BB server. The flag only narrows: the owner's own terminal already
+   * reads everything, so a caller gains nothing by leaving it out that the
+   * machine's user did not have.
+   */
+  const assistantCalls: number[] = [];
+  const requireAssistant = (tool: "cli_accounts" | "cli_search" | "cli_read") => {
+    if (!deps.mcpAccess()) {
+      agentLog({ actor: "mcp", tool, outcome: "refused_off" });
+      throw new PluginCliError(MCP_ACCESS_OFF_MESSAGE, { code: "mcp_access_off" });
+    }
+    const now = deps.now().getTime();
+    while (assistantCalls.length > 0 && assistantCalls[0]! <= now - 3_600_000) assistantCalls.shift();
+    if (assistantCalls.length >= MCP_CALLS_PER_HOUR) {
+      agentLog({ actor: "mcp", tool, outcome: "refused_caps" });
+      throw new PluginCliError(MCP_LIMIT_MESSAGE, { code: "mcp_limit" });
+    }
+    assistantCalls.push(now);
+  };
   bb.cli.register(
     defineCli({
       name: "makosh-mail",
@@ -6332,15 +6376,17 @@ function registerCli(bb: BbPluginApi, store: MailStore, deps: CliDeps): void {
       commands: {
         accounts: cliCommand({
           summary: "List connected accounts and their sync state",
-          options: jsonOption,
+          options: { ...jsonOption, ...assistantOption },
           run: ({ options }, ctx) => {
             requireMailAccess(ctx);
+            if (options.assistant) requireAssistant("cli_accounts");
             // An account with AI access "none" is shown by id, label and state only (spec resolution 16).
             const scope = store.getAiScope();
             const accounts = store.listAccounts().map((stored) => {
               const account = toPublicAccount(stored);
               return scope.accounts.get(account.id)?.mode === "none" ? hiddenAccount(account) : account;
             });
+            if (options.assistant) agentLog({ actor: "mcp", tool: "cli_accounts", outcome: "ok", count: accounts.length });
             if (options.json) return { exitCode: 0, stdout: json({ accounts }) };
             const lines =
               accounts.length > 0 ? accounts.map(describeAccount) : ["No accounts connected."];
@@ -6367,10 +6413,13 @@ function registerCli(bb: BbPluginApi, store: MailStore, deps: CliDeps): void {
               description: "Hits to return (1-50)",
             },
             ...jsonOption,
+            ...assistantOption,
           },
           run: ({ positionals, options }, ctx) => {
             requireMailAccess(ctx);
-            const inThread = ctx.threadId !== undefined;
+            if (options.assistant) requireAssistant("cli_search");
+            const actor = options.assistant ? "mcp" : "cli";
+            const inThread = ctx.threadId !== undefined || options.assistant === true;
             const query = positionals.query.join(" ").slice(0, QUERY_MAX);
             // Inside an agent thread: the scope, the refusal and the post-filter of
             // mail_search, and a log row; the owner's terminal is not logged (spec resolution 16).
@@ -6378,14 +6427,14 @@ function registerCli(bb: BbPluginApi, store: MailStore, deps: CliDeps): void {
               ? agentSearch(store, query, options.account ?? null, options.limit, deps.now())
               : { hits: store.search(parseQuery(query, deps.now()), options.account ?? null, options.limit) };
             if ("refused" in found) {
-              agentLog({ actor: "cli", tool: "cli_search", outcome: "refused_invalid", threadId: ctx.threadId });
+              agentLog({ actor, tool: "cli_search", outcome: "refused_invalid", threadId: ctx.threadId });
               throw new PluginCliError(found.refused, { code: "search_refused" });
             }
             const { hits } = found;
             const rendered = options.json ? agentHitsCounted(hits, folderNames(store)) : searchText(store, hits);
             if (inThread) {
               agentLog({
-                actor: "cli",
+                actor,
                 tool: "cli_search",
                 outcome: hits.length === 0 ? "empty" : "ok",
                 threadId: ctx.threadId,
@@ -6412,17 +6461,20 @@ function registerCli(bb: BbPluginApi, store: MailStore, deps: CliDeps): void {
               description: "Truncate the text to this many characters (1000-20000)",
             },
             ...jsonOption,
+            ...assistantOption,
           },
           run: ({ positionals, options }, ctx) => {
             requireMailAccess(ctx);
+            if (options.assistant) requireAssistant("cli_read");
+            const actor = options.assistant ? "mcp" : "cli";
             const { messageId } = positionals;
-            const inThread = ctx.threadId !== undefined;
+            const inThread = ctx.threadId !== undefined || options.assistant === true;
             const read = readForAgent(store, deps.secure, messageId, options["max-chars"], inThread);
             if (inThread) {
               agentLog(
                 read.found
-                  ? { actor: "cli", tool: "cli_read", outcome: "ok", threadId: ctx.threadId, messageIds: [read.id], count: 1, hiddenCount: read.hiddenCount }
-                  : { actor: "cli", tool: "cli_read", outcome: unknownOutcome(read), threadId: ctx.threadId },
+                  ? { actor, tool: "cli_read", outcome: "ok", threadId: ctx.threadId, messageIds: [read.id], count: 1, hiddenCount: read.hiddenCount }
+                  : { actor, tool: "cli_read", outcome: unknownOutcome(read), threadId: ctx.threadId },
               );
             }
             if (!read.found) {

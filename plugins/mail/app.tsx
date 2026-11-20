@@ -187,6 +187,7 @@ import { HistoryForgetDialog, type ForgetRequest } from "./src/ui/history-forget
 import { LabelsDialog, type LabelsRequest } from "./src/ui/labels-dialog.tsx";
 import { FILES_PAGE, FilesView, type FilesFilter } from "./src/ui/files-view.tsx";
 import { AttachmentViewer, viewerShows, type ViewerHost, type ViewRequest } from "./src/ui/attachment-viewer.tsx";
+import { MCP_SERVER_FILE_NAME, MCP_SERVER_SOURCE } from "./src/core/mcp-server-source.ts";
 import { printDocument, printFileName, printHtml, type PrintMessage } from "./src/ui/print.ts";
 // Slice 3i: the link checks import zod-free core modules only (no zod in the page bundle).
 import { cleanLink, type CleanLink } from "./src/core/link-clean.ts";
@@ -2923,6 +2924,14 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       action: { label: tx("Open"), onClick: () => openSettings("plugin_access") },
     });
   });
+  const saveMcpServerFile = useCallback(async () => {
+    try {
+      await experimental_saveFile({ fileName: MCP_SERVER_FILE_NAME, blob: new Blob([MCP_SERVER_SOURCE], { type: "text/javascript" }) });
+      return true;
+    } catch {
+      return false;
+    }
+  }, []);
   const settingsPgp = useMemo<SettingsPgpPorts>(
     () => ({
       list: () => rpc.call("pgp_certs_list", {}),
@@ -3189,6 +3198,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       }}
       search={settingsSearch}
       pgp={settingsPgp}
+      saveMcpServerFile={saveMcpServerFile}
       pluginAccess={{
         port: settingsPluginAccess,
         reloadKey: pluginAccessTick,

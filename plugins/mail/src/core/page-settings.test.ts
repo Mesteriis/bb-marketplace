@@ -12,9 +12,9 @@ const ok = (patch: unknown) => pageSettingsPatchSchema.safeParse(patch).success;
 
 describe("page settings", () => {
   it("covers the 32 settings of the page and never the credential key", () => {
-    expect(Object.keys(PAGE_SETTING_SCHEMAS)).toHaveLength(40);
+    expect(Object.keys(PAGE_SETTING_SCHEMAS)).toHaveLength(41);
     expect("vaultKey" in PAGE_SETTING_SCHEMAS).toBe(false);
-    expect(PAGE_SETTINGS_READ_ONLY).toEqual(["agentTools", "agentPropose", "agentTriage"]);
+    expect(PAGE_SETTINGS_READ_ONLY).toEqual(["agentTools", "agentPropose", "agentTriage", "mcpAccess"]);
   });
 
   it("accepts a change of writable keys within their bounds", () => {
@@ -64,7 +64,7 @@ describe("page settings", () => {
     expect(shown.replyReminderDays).toBe(3);
     expect(shown.listDensity).toBe("comfortable");
     expect("vaultKey" in shown).toBe(false);
-    expect(Object.keys(pageSettingsOf({}))).toHaveLength(40);
+    expect(Object.keys(pageSettingsOf({}))).toHaveLength(41);
   });
 
   it("the full schema needs every key", () => {

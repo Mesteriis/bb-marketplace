@@ -30,12 +30,11 @@ Toasts for new mail from people you write to. **Unsubscribe** asks first.
 
 ## AI on your click
 
-Via Makosh AI: **Translate**, **Summarize**, **Ask**, **Find
-tasks**, **categories**, **Today**, **reply reminders**, **Improve**,
-**Write with AI**. Off by default: drafted replies and AI labels for
-new mail (one can archive). Nothing is sent without your click.
-The provider gets subjects, names, dates, unquoted bodies; never
-addresses or files.
+**Translate**, **Summarize**, **Ask**, **Find tasks**, **categories**,
+**Today**, **reply reminders**, **Improve**, **Write with AI**. Off by
+default: reply drafts and AI labels for new mail. Nothing is sent
+without you. Makosh AI gets subjects, names, dates, unquoted bodies;
+never addresses or files.
 
 ## BB integration
 
@@ -55,7 +54,8 @@ addresses or files.
 Codes, passwords, tokens and card numbers become `[hidden …]` before any
 agent, model or BB thread sees them (a heuristic); encrypted mail never
 does. **AI access** limits agents and AI to chosen accounts and folders.
-**Agent activity** logs every hand-off locally, ids and counts only.
+**Agent activity** logs every hand-off, ids only. Outside
+assistants read the same over local MCP (off by default).
 
 ## Writing and sending
 

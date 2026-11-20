@@ -11,6 +11,7 @@ import { PgpSettings } from "../pgp-settings.tsx";
 import { PLUGIN_SETTINGS_HINT, type MailSettingsProps } from "./shared.ts";
 import { AccountsSection } from "./accounts-section.tsx";
 import { AgentSwitches, TypingSettings } from "./section-settings.tsx";
+import { OutsideAssistants } from "./outside-assistants.tsx";
 import { AddressesSection } from "./addresses-section.tsx";
 import { LocalDataSection } from "./local-data-section.tsx";
 import { PluginAccessSection } from "./plugin-access-section.tsx";
@@ -53,6 +54,7 @@ export function SettingsBody(props: MailSettingsProps & { section: SettingsSecti
     return (
       <div className="flex flex-col gap-4">
         {props.settings !== undefined ? <AgentSwitches port={props.settings} /> : null}
+        {props.settings !== undefined ? <OutsideAssistants port={props.settings} saveServerFile={props.saveMcpServerFile} /> : null}
         <AiAccessSettings accounts={accounts} {...props.ai.scope} />
       </div>
     );

@@ -8,6 +8,12 @@ All notable changes to Makosh Mail are recorded here. The format follows
 
 ### Added
 
+- **MCP for assistants outside BB** (off by default): a local stdio MCP
+  server file (`mcp/makosh-mail-mcp.mjs`, saved from Mail settings → AI
+  access) with read-only tools `mail_accounts`, `mail_search`,
+  `mail_read`. It runs the CLI's new `--assistant` mode: AI access only,
+  secrets hidden, logged with actor `mcp`, 60 calls an hour. Setting
+  `mcpAccess`, changed only in BB's plugin settings.
 - **Dictation**: a Dictate button in the composer records, BB's voice
   service turns the recording into text, the text goes in at the cursor.
 - **Smart send**: Send later offers the hour the recipient usually
