@@ -1,3 +1,4 @@
+import { useTelegramLocale } from "./i18n/index.tsx";
 import { useEffect, useState } from "react";
 import type { JoinRequestPage } from "../core/contract.ts";
 
@@ -7,6 +8,7 @@ export type JoinRequestActions = {
 };
 
 export function ChatJoinRequests({ chatId, actions }: { chatId: string; actions: JoinRequestActions }) {
+  const { t: tr } = useTelegramLocale();
   const [open, setOpen] = useState(false);
   const [text, setText] = useState("");
   const [query, setQuery] = useState("");
@@ -55,7 +57,7 @@ export function ChatJoinRequests({ chatId, actions }: { chatId: string; actions:
   }
 
   return <details onToggle={(event) => { setOpen(event.currentTarget.open); setConfirm(undefined); }}>
-    <summary>Join requests</summary>
+    <summary>{tr("Join requests")}</summary>
     {open && <>
       <form className="mtg-composer" onSubmit={(event) => {
         event.preventDefault();
@@ -63,32 +65,32 @@ export function ChatJoinRequests({ chatId, actions }: { chatId: string; actions:
         setQuery(text.trim());
         setRevision((value) => value + 1);
       }}>
-        <input type="search" aria-label="Find a join request" placeholder="Find a request" value={text} maxLength={128}
+        <input type="search" aria-label={tr("Find a join request")} placeholder={tr("Find a request")} value={text} maxLength={128}
           onChange={(event) => setText(event.target.value)} />
-        <button type="submit" className="mtg-action" disabled={busy}>Find</button>
+        <button type="submit" className="mtg-action" disabled={busy}>{tr("Find")}</button>
       </form>
-      {page === undefined && !error && <p role="status">Loading join requests…</p>}
-      {page === null && <p>Join requests are unavailable for your role.</p>}
-      {page && !page.requests.length && !page.next && <p>No pending join requests.</p>}
-      {error && <p role="alert">{error} <button type="button" className="mtg-action"
-        onClick={() => setRevision((value) => value + 1)}>Refresh</button></p>}
-      {!!page?.requests.length && <ul className="mtg-scheduled-list" aria-label="Pending join requests">
+      {page === undefined && !error && <p role="status">{tr("Loading join requests…")}</p>}
+      {page === null && <p>{tr("Join requests are unavailable for your role.")}</p>}
+      {page && !page.requests.length && !page.next && <p>{tr("No pending join requests.")}</p>}
+      {error && <p role="alert">{tr(error)} <button type="button" className="mtg-action"
+        onClick={() => setRevision((value) => value + 1)}>{tr("Refresh")}</button></p>}
+      {!!page?.requests.length && <ul className="mtg-scheduled-list" aria-label={tr("Pending join requests")}>
         {page.requests.map((row) => <li key={row.userId}>
           <bdi>{row.name}</bdi>
           {row.bio && <p>{row.bio}</p>}
           {confirm?.userId === row.userId ? <>
             <button type="button" className="mtg-action" disabled={busy} onClick={() => void submit()}>
-              {confirm.approve ? "Confirm approval" : "Confirm decline"}
+              {confirm.approve ? tr("Confirm approval") : tr("Confirm decline")}
             </button>
-            <button type="button" className="mtg-action" disabled={busy} onClick={() => setConfirm(undefined)}>Cancel</button>
+            <button type="button" className="mtg-action" disabled={busy} onClick={() => setConfirm(undefined)}>{tr("Cancel")}</button>
           </> : <>
-            <button type="button" className="mtg-action" disabled={busy} onClick={() => setConfirm({ userId: row.userId, approve: true })}>Approve</button>
-            <button type="button" className="mtg-action" disabled={busy} onClick={() => setConfirm({ userId: row.userId, approve: false })}>Decline</button>
+            <button type="button" className="mtg-action" disabled={busy} onClick={() => setConfirm({ userId: row.userId, approve: true })}>{tr("Approve")}</button>
+            <button type="button" className="mtg-action" disabled={busy} onClick={() => setConfirm({ userId: row.userId, approve: false })}>{tr("Decline")}</button>
           </>}
         </li>)}
       </ul>}
       {page?.next && <button type="button" className="mtg-action" disabled={busy}
-        onClick={() => { if (page.next) void more(page.next); }}>Load more requests</button>}
+        onClick={() => { if (page.next) void more(page.next); }}>{tr("Load more requests")}</button>}
     </>}
   </details>;
 }

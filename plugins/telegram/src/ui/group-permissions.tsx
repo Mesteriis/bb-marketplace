@@ -1,3 +1,4 @@
+import { useTelegramLocale } from "./i18n/index.tsx";
 import { useEffect, useState } from "react";
 import { groupPermissionLabels, type GroupPermission, type GroupPermissionChange, type GroupPermissionsView } from "../core/contract.ts";
 
@@ -9,6 +10,7 @@ export type GroupPermissionActions = {
 const fields = Object.keys(groupPermissionLabels) as GroupPermission[];
 
 export function GroupPermissions({ chatId, actions }: { chatId: string; actions: GroupPermissionActions }) {
+  const { t: tr } = useTelegramLocale();
   const [open, setOpen] = useState(false);
   const [loaded, setLoaded] = useState<GroupPermissionsView | null>();
   const [draft, setDraft] = useState<GroupPermissionsView["values"]>({});
@@ -58,23 +60,23 @@ export function GroupPermissions({ chatId, actions }: { chatId: string; actions:
   }
 
   return <details onToggle={(event) => setOpen(event.currentTarget.open)}>
-    <summary>Member permissions</summary>
+    <summary>{tr("Member permissions")}</summary>
     {open && <>
-      {loaded === undefined && !error && <p role="status">Loading permissions…</p>}
-      {loaded === null && <p>Member permissions are unavailable.</p>}
+      {loaded === undefined && !error && <p role="status">{tr("Loading permissions…")}</p>}
+      {loaded === null && <p>{tr("Member permissions are unavailable.")}</p>}
       {loaded && <form onSubmit={(event) => { event.preventDefault(); void save(); }}>
         <fieldset disabled={!loaded.editable || busy}>
-          <legend>Default permissions</legend>
+          <legend>{tr("Default permissions")}</legend>
           {fields.map((key) => typeof draft[key] === "boolean" && <label key={key}>
             <input type="checkbox" checked={draft[key]} onChange={(event) =>
-              setDraft((previous) => ({ ...previous, [key]: event.target.checked }))} /> {groupPermissionLabels[key]}
+              setDraft((previous) => ({ ...previous, [key]: event.target.checked }))} /> {tr(groupPermissionLabels[key])}
           </label>)}
         </fieldset>
-        {loaded.editable && <button type="submit" className="mtg-action" disabled={busy || changes.length === 0}>Save permissions</button>}
+        {loaded.editable && <button type="submit" className="mtg-action" disabled={busy || changes.length === 0}>{tr("Save permissions")}</button>}
       </form>}
-      {error && <p role="alert">{error} <button type="button" className="mtg-action" disabled={busy}
-        onClick={() => setRevision((value) => value + 1)}>Reload permissions</button></p>}
-      {status && <p role="status">{status}</p>}
+      {error && <p role="alert">{tr(error)} <button type="button" className="mtg-action" disabled={busy}
+        onClick={() => setRevision((value) => value + 1)}>{tr("Reload permissions")}</button></p>}
+      {status && <p role="status">{tr(status)}</p>}
     </>}
   </details>;
 }

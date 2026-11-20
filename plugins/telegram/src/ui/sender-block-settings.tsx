@@ -1,3 +1,4 @@
+import { useTelegramLocale } from "./i18n/index.tsx";
 import { useEffect, useState } from "react";
 import type { SenderBlockState } from "../core/contract.ts";
 
@@ -7,6 +8,7 @@ export type SenderBlockActions = {
 };
 
 export function SenderBlockSettings({ chatId, actions }: { chatId: string; actions: SenderBlockActions }) {
+  const { t: tr } = useTelegramLocale();
   const [open, setOpen] = useState(false);
   const [value, setValue] = useState<SenderBlockState | null>();
   const [confirm, setConfirm] = useState<{ next: SenderBlockState; label: string }>();
@@ -48,25 +50,25 @@ export function SenderBlockSettings({ chatId, actions }: { chatId: string; actio
   }
 
   return <details onToggle={(event) => { setOpen(event.currentTarget.open); setConfirm(undefined); }}>
-    <summary>Blocking</summary>
+    <summary>{tr("Blocking")}</summary>
     {open && <>
-      {value === undefined && !error && <p role="status">Loading block status…</p>}
-      {value === null && <p>Blocking is unavailable for this chat.</p>}
+      {value === undefined && !error && <p role="status">{tr("Loading block status…")}</p>}
+      {value === null && <p>{tr("Blocking is unavailable for this chat.")}</p>}
       {value && <>
-        <p role="status">{blocked ? "User is blocked." : value === "stories" ? "User is blocked from seeing your stories." : "User is not blocked."}</p>
+        <p role="status">{blocked ? tr("User is blocked.") : value === "stories" ? tr("User is blocked from seeing your stories.") : tr("User is not blocked.")}</p>
         {confirm ? <>
           <button type="button" className="mtg-action" disabled={busy} onClick={() => void submit()}>{confirm.label}</button>
-          <button type="button" className="mtg-action" disabled={busy} onClick={() => setConfirm(undefined)}>Cancel</button>
+          <button type="button" className="mtg-action" disabled={busy} onClick={() => setConfirm(undefined)}>{tr("Cancel")}</button>
         </> : <>
           <button type="button" className="mtg-action" disabled={busy}
-            onClick={() => setConfirm({ next: blocked ? "none" : "main", label: blocked ? "Confirm unblock" : "Confirm block" })}>{action} user</button>
+            onClick={() => setConfirm({ next: blocked ? "none" : "main", label: blocked ? "Confirm unblock" : "Confirm block" })}>{action}{tr(" user")}</button>
           {!blocked && <button type="button" className="mtg-action" disabled={busy} onClick={() => setConfirm(value === "stories"
             ? { next: "none", label: "Confirm showing stories" }
-            : { next: "stories", label: "Confirm hiding stories" })}>{value === "stories" ? "Show stories to user" : "Hide stories from user"}</button>}
+            : { next: "stories", label: "Confirm hiding stories" })}>{value === "stories" ? tr("Show stories to user") : tr("Hide stories from user")}</button>}
         </>}
       </>}
-      {error && <p role="alert">{error} <button type="button" className="mtg-action"
-        onClick={() => setRevision((current) => current + 1)}>Reload block status</button></p>}
+      {error && <p role="alert">{tr(error)} <button type="button" className="mtg-action"
+        onClick={() => setRevision((current) => current + 1)}>{tr("Reload block status")}</button></p>}
     </>}
   </details>;
 }

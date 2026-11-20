@@ -1,3 +1,4 @@
+import { useTelegramLocale } from "./i18n/index.tsx";
 import { useEffect, useState } from "react";
 import { autoDeleteDays, type ChatAutoDelete } from "../core/contract.ts";
 
@@ -7,6 +8,7 @@ export type AutoDeleteActions = {
 };
 
 export function AutoDeleteTimer({ actions, chat = false }: { actions: AutoDeleteActions; chat?: boolean }) {
+  const { t: tr } = useTelegramLocale();
   const timer = chat ? "chat timer" : "default timer";
   const [open, setOpen] = useState(false);
   const [current, setCurrent] = useState<ChatAutoDelete | null>();
@@ -26,7 +28,7 @@ export function AutoDeleteTimer({ actions, chat = false }: { actions: AutoDelete
       if (!active) return;
       setCurrent(setting);
       setDraft(String(setting?.days ?? ""));
-    }, () => { if (active) setError(`Could not load the ${timer}.`); });
+    }, () => { if (active) setError(tr("Could not load the {0}.", [timer])); });
     return () => { active = false; };
   }, [actions, open, revision, timer]);
 
@@ -44,7 +46,7 @@ export function AutoDeleteTimer({ actions, chat = false }: { actions: AutoDelete
         setNotice(chat ? "Chat timer saved." : "Default timer saved.");
       } else {
         setCurrent(undefined);
-        setError(result === "changed" ? `The ${timer} changed in Telegram.` : "Telegram did not accept the timer.");
+        setError(result === "changed" ? tr("The {0} changed in Telegram.", [timer]) : "Telegram did not accept the timer.");
       }
     } catch {
       setCurrent(undefined);
@@ -60,23 +62,23 @@ export function AutoDeleteTimer({ actions, chat = false }: { actions: AutoDelete
     setConfirm(false);
     setNotice("");
   }}>
-    <summary>{chat ? "Auto-delete messages" : "Auto-delete in new chats"}</summary>
+    <summary>{chat ? tr("Auto-delete messages") : tr("Auto-delete in new chats")}</summary>
     {open && <>
-      {current === undefined && !error && <p role="status">Loading {timer}…</p>}
-      {current === null && <p>Auto-delete is unavailable for this chat.</p>}
-      {current && !current.editable && <p>{current.days ? `Auto-delete after ${current.days} days.` : "Auto-delete is off."} Changing the timer requires permission in Telegram.</p>}
+      {current === undefined && !error && <p role="status">{tr("Loading ")}{timer}…</p>}
+      {current === null && <p>{tr("Auto-delete is unavailable for this chat.")}</p>}
+      {current && !current.editable && <p>{current.days ? tr("Auto-delete after {0} days.", [current.days]) : tr("Auto-delete is off.")}{tr(" Changing the timer requires permission in Telegram.")}</p>}
       {current?.editable && <form onSubmit={(event) => { event.preventDefault(); if (changed && !busy) setConfirm(true); }}>
-        <p>{chat ? "Telegram applies this timer to new messages in this chat." : "Telegram applies this timer to new chats."} Set it to 0 to turn it off.</p>
-        <label>Auto-delete after (days) <input type="number" min={0} max={365} step={1} required value={draft}
+        <p>{chat ? tr("Telegram applies this timer to new messages in this chat.") : tr("Telegram applies this timer to new chats.")}{tr(" Set it to 0 to turn it off.")}</p>
+        <label>{tr("Auto-delete after (days) ")}<input type="number" min={0} max={365} step={1} required value={draft}
           disabled={busy || confirm} onChange={(event) => { setDraft(event.currentTarget.value); setNotice(""); }} /></label>
         {confirm ? <>
-          <button type="button" className="mtg-action" disabled={busy} onClick={() => void save()}>Confirm {timer}</button>
-          <button type="button" className="mtg-action" disabled={busy} onClick={() => setConfirm(false)}>Cancel</button>
-        </> : <button type="submit" className="mtg-action" disabled={busy || !changed}>Save {timer}</button>}
+          <button type="button" className="mtg-action" disabled={busy} onClick={() => void save()}>{tr("Confirm ")}{timer}</button>
+          <button type="button" className="mtg-action" disabled={busy} onClick={() => setConfirm(false)}>{tr("Cancel")}</button>
+        </> : <button type="submit" className="mtg-action" disabled={busy || !changed}>{tr("Save ")}{timer}</button>}
       </form>}
-      {error && <p role="alert">{error} <button type="button" className="mtg-action"
-        onClick={() => setRevision((value) => value + 1)}>Reload {timer}</button></p>}
-      {notice && <p role="status">{notice}</p>}
+      {error && <p role="alert">{tr(error)} <button type="button" className="mtg-action"
+        onClick={() => setRevision((value) => value + 1)}>{tr("Reload ")}{timer}</button></p>}
+      {notice && <p role="status">{tr(notice)}</p>}
     </>}
   </details>;
 }

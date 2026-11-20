@@ -1,0 +1,176 @@
+diff --git a/td/generate/scheme/td_api.tl b/td/generate/scheme/td_api.tl
+index 2b7ec96..b425173 100644
+--- a/td/generate/scheme/td_api.tl
++++ b/td/generate/scheme/td_api.tl
+@@ -2818,6 +2818,13 @@ communityAddChatRequests total_count:int32 requests:vector<communityAddChatReque
+ communityMemberChats owned_chat_ids:vector<int53> joined_chat_ids:vector<int53> = CommunityMemberChats;
+ 
+ 
++//@description Contains one page of users and chats banned across a community
++//@total_count Approximate number of banned members
++//@members Users and chat senders banned across the community
++//@next_offset Offset for the next page, or -1 when there are no more results
++makoshCommunityBannedMembers total_count:int32 members:vector<ChatMember> next_offset:int32 = MakoshCommunityBannedMembers;
++
++
+ //@description Contains description of user rating
+ //@level The level of the user; may be negative
+ //@is_maximum_level_reached True, if the maximum level is reached
+@@ -12937,6 +12944,12 @@ toggleCommunityMemberIsBanned community_id:int53 member_id:MessageSender is_bann
+ //@member_id Identifier of the member
+ getCommunityMemberChats community_id:int53 member_id:MessageSender = CommunityMemberChats;
+ 
++//@description Returns a community-wide banned member page. Requires administrator privileges in the community
++//@community_id Identifier of the community
++//@offset Number of participants to skip
++//@limit Maximum number of participants to return, from 1 to 100
++makoshGetCommunityBannedMembers community_id:int53 offset:int32 limit:int32 = MakoshCommunityBannedMembers;
++
+ //@description Deletes a community; requires owner privileges @community_id Identifier of the community
+ deleteCommunity community_id:int53 = Ok;
+ 
+diff --git a/td/telegram/CommunityManager.cpp b/td/telegram/CommunityManager.cpp
+index 5c3ac50..3864d6e 100644
+--- a/td/telegram/CommunityManager.cpp
++++ b/td/telegram/CommunityManager.cpp
+@@ -48,6 +48,7 @@
+ #include "td/utils/tl_helpers.h"
+ #include "td/utils/utf8.h"
+ 
++#include <limits>
+ #include <tuple>
+ 
+ namespace td {
+@@ -571,6 +572,62 @@ class ToggleCommunityParticipantBannedQuery final : public Td::ResultHandler {
+   }
+ };
+ 
++class GetMakoshCommunityBannedMembersQuery final : public Td::ResultHandler {
++  Promise<td_api::object_ptr<td_api::makoshCommunityBannedMembers>> promise_;
++  int32 offset_ = 0;
++  int32 limit_ = 0;
++
++ public:
++  explicit GetMakoshCommunityBannedMembersQuery(
++      Promise<td_api::object_ptr<td_api::makoshCommunityBannedMembers>> &&promise)
++      : promise_(std::move(promise)) {
++  }
++
++  void send(telegram_api::object_ptr<telegram_api::InputChannel> input_community, int32 offset, int32 limit) {
++    offset_ = offset;
++    limit_ = limit;
++    send_query(G()->net_query_creator().create(telegram_api::channels_getParticipants(
++        std::move(input_community), telegram_api::make_object<telegram_api::channelParticipantsKicked>(string()),
++        offset, limit, 0)));
++  }
++
++  void on_result(BufferSlice packet) final {
++    auto result = fetch_result<telegram_api::channels_getParticipants>(packet);
++    if (result.is_error()) {
++      return on_error(result.move_as_error());
++    }
++    auto response = result.move_as_ok();
++    if (response->get_id() != telegram_api::channels_channelParticipants::ID) {
++      return on_error(Status::Error(500, "Unexpected community participants response"));
++    }
++    auto page = telegram_api::move_object_as<telegram_api::channels_channelParticipants>(response);
++    if (page->participants_.size() > static_cast<size_t>(limit_)) {
++      return on_error(Status::Error(500, "Invalid community participants page size"));
++    }
++    const auto total_count = max(0, page->count_);
++    const auto consumed = offset_ + static_cast<int32>(page->participants_.size());
++    const auto next_offset =
++        !page->participants_.empty() && consumed <= std::numeric_limits<int32>::max() - limit_ ? consumed : -1;
++    td_->user_manager_->on_get_users(std::move(page->users_), "GetMakoshCommunityBannedMembersQuery");
++    td_->chat_manager_->on_get_chats(std::move(page->chats_), "GetMakoshCommunityBannedMembersQuery");
++
++    vector<td_api::object_ptr<td_api::chatMember>> members;
++    members.reserve(page->participants_.size());
++    for (auto &entry : page->participants_) {
++      DialogParticipant participant(std::move(entry), ChannelType::Megagroup);
++      if (participant.is_valid() && participant.status_.is_banned()) {
++        members.push_back(td_->chat_manager_->get_chat_member_object(participant, "GetMakoshCommunityBannedMembersQuery"));
++      }
++    }
++    promise_.set_value(
++        td_api::make_object<td_api::makoshCommunityBannedMembers>(total_count, std::move(members), next_offset));
++  }
++
++  void on_error(Status status) final {
++    promise_.set_error(std::move(status));
++  }
++};
++
+ class GetCommunityParticipantJoinedChatsQuery final : public Td::ResultHandler {
+   Promise<td_api::object_ptr<td_api::communityMemberChats>> promise_;
+ 
+@@ -2139,6 +2196,23 @@ void CommunityManager::get_community_participant_dialogs(
+       ->send(community_id, std::move(input_peer));
+ }
+ 
++void CommunityManager::get_makosh_community_banned_members(
++    CommunityId community_id, int32 offset, int32 limit,
++    Promise<td_api::object_ptr<td_api::makoshCommunityBannedMembers>> &&promise) {
++  if (offset < 0 || limit < 1 || limit > 100 || offset > std::numeric_limits<int32>::max() - limit) {
++    return promise.set_error(400, "Invalid banned members page");
++  }
++  auto input_community = get_input_community(community_id);
++  if (input_community == nullptr) {
++    return promise.set_error(400, "Community not found");
++  }
++  if (!get_community_status(community_id).is_administrator()) {
++    return promise.set_error(403, "Community administrator rights required");
++  }
++  td_->create_handler<GetMakoshCommunityBannedMembersQuery>(std::move(promise))
++      ->send(std::move(input_community), offset, limit);
++}
++
+ void CommunityManager::delete_community(CommunityId community_id, Promise<Unit> &&promise) {
+   auto *c = get_community(community_id);
+   if (c == nullptr) {
+diff --git a/td/telegram/CommunityManager.h b/td/telegram/CommunityManager.h
+index 45721a1..b0a75d9 100644
+--- a/td/telegram/CommunityManager.h
++++ b/td/telegram/CommunityManager.h
+@@ -115,6 +115,10 @@ class CommunityManager final : public Actor {
+   void get_community_participant_dialogs(CommunityId community_id, DialogId participant_dialog_id,
+                                          Promise<td_api::object_ptr<td_api::communityMemberChats>> &&promise);
+ 
++  void get_makosh_community_banned_members(
++      CommunityId community_id, int32 offset, int32 limit,
++      Promise<td_api::object_ptr<td_api::makoshCommunityBannedMembers>> &&promise);
++
+   void delete_community(CommunityId community_id, Promise<Unit> &&promise);
+ 
+   FileSourceId get_community_full_file_source_id(CommunityId community_id);
+diff --git a/td/telegram/Requests.cpp b/td/telegram/Requests.cpp
+index d1746ad..9e52d13 100644
+--- a/td/telegram/Requests.cpp
++++ b/td/telegram/Requests.cpp
+@@ -3555,6 +3555,13 @@ void Requests::on_request(uint64 id, const td_api::getCommunityMemberChats &requ
+                                                              std::move(promise));
+ }
+ 
++void Requests::on_request(uint64 id, const td_api::makoshGetCommunityBannedMembers &request) {
++  CHECK_IS_USER();
++  CREATE_REQUEST_PROMISE();
++  td_->community_manager_->get_makosh_community_banned_members(
++      CommunityId(request.community_id_), request.offset_, request.limit_, std::move(promise));
++}
++
+ void Requests::on_request(uint64 id, const td_api::deleteCommunity &request) {
+   CHECK_IS_USER();
+   CREATE_OK_REQUEST_PROMISE();
+diff --git a/td/telegram/Requests.h b/td/telegram/Requests.h
+index 1acf323..29c297a 100644
+--- a/td/telegram/Requests.h
++++ b/td/telegram/Requests.h
+@@ -496,6 +496,8 @@ class Requests {
+ 
+   void on_request(uint64 id, const td_api::getCommunityMemberChats &request);
+ 
++  void on_request(uint64 id, const td_api::makoshGetCommunityBannedMembers &request);
++
+   void on_request(uint64 id, const td_api::deleteCommunity &request);
+ 
+   void on_request(uint64 id, td_api::searchPublicChat &request);

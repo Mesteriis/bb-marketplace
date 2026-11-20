@@ -1,3 +1,4 @@
+import { useTelegramLocale } from "./i18n/index.tsx";
 import { NotificationSoundSelect } from "./notification-sound-select.tsx";
 import { useEffect, useState } from "react";
 import { reactionNotificationAudience, type ReactionNotifications, type ReactionNotificationOptions } from "../core/contract.ts";
@@ -12,6 +13,7 @@ const fields = Object.keys(controls) as (keyof typeof controls)[];
 const labels = { none: "Nobody", contacts: "Contacts", all: "Everyone" } as const;
 
 export function ReactionNotificationSettings({ actions }: { actions: ReactionNotificationActions }) {
+  const { t: tr } = useTelegramLocale();
   const [open, setOpen] = useState(false);
   const [original, setOriginal] = useState<ReactionNotificationOptions | null>();
   const [draft, setDraft] = useState<ReactionNotificationOptions>();
@@ -55,29 +57,29 @@ export function ReactionNotificationSettings({ actions }: { actions: ReactionNot
   }
 
   return <details onToggle={(event) => setOpen(event.currentTarget.open)}>
-    <summary>Reaction and poll notifications</summary>
+    <summary>{tr("Reaction and poll notifications")}</summary>
     {open && <form onSubmit={(event) => { event.preventDefault(); void save(); }}>
-      {original === undefined && !error && <p role="status">Loading reaction notifications…</p>}
-      {original === null && <p>Telegram has not supplied reaction notification settings.</p>}
+      {original === undefined && !error && <p role="status">{tr("Loading reaction notifications…")}</p>}
+      {original === null && <p>{tr("Telegram has not supplied reaction notification settings.")}</p>}
       {original && draft && <fieldset disabled={busy}>
-        <legend>Who can trigger a notification</legend>
+        <legend>{tr("Who can trigger a notification")}</legend>
         {fields.map((field) => draft[field] === undefined ? null : <label key={field}>{controls[field]} <select
           value={draft[field]} onChange={(event) => {
             const next = reactionNotificationAudience.safeParse(event.currentTarget.value);
             if (next.success) setDraft({ ...draft, [field]: next.data });
           }}>
-          {reactionNotificationAudience.options.map((value) => <option key={value} value={value}>{labels[value]}</option>)}
+          {reactionNotificationAudience.options.map((value) => <option key={value} value={value}>{tr(labels[value])}</option>)}
         </select></label>)}
         <label><input type="checkbox" checked={draft.preview}
-          onChange={(event) => setDraft({ ...draft, preview: event.currentTarget.checked })} /> Show reaction preview</label>
+          onChange={(event) => setDraft({ ...draft, preview: event.currentTarget.checked })} />{tr(" Show reaction preview")}</label>
         {draft.sound !== undefined && <NotificationSoundSelect value={draft.sound} current={original.sound}
           sounds={draft.savedSounds} change={(sound) => setDraft({ ...draft, sound })} />}
-        <button type="submit" className="mtg-action" disabled={!changed}>Save reaction notifications</button>
+        <button type="submit" className="mtg-action" disabled={!changed}>{tr("Save reaction notifications")}</button>
       </fieldset>}
-      {notice && <p role="status">{notice}</p>}
-      {error && <p role="alert">{error}</p>}
+      {notice && <p role="status">{tr(notice)}</p>}
+      {error && <p role="alert">{tr(error)}</p>}
       {(error || original === null) && <button type="button" className="mtg-action"
-        onClick={() => setRevision((value) => value + 1)}>Reload reaction notifications</button>}
+        onClick={() => setRevision((value) => value + 1)}>{tr("Reload reaction notifications")}</button>}
     </form>}
   </details>;
 }

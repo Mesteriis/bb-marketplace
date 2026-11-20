@@ -1316,7 +1316,7 @@
     {
       "id": "makosh-telegram",
       "displayName": "Makosh Telegram [Experimental]",
-      "description": "Sign in with a QR code, read chats, and send text in BB through TDLib on macOS. Agent requests require approval.",
+      "description": "Telegram via TDLib on macOS. QR sign-in, chats and media. AI reads enabled chats. Agent sends require BB confirmation.",
       "icon": "MessagesSquare",
       "author": {
         "name": "Mesteriis",

@@ -1,11 +1,20 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { documentDeliveryTimeoutMs, type ForumTopicTarget, type MediaSendOptions, type SendResult } from "../../core/contract.ts";
+import { documentDeliveryTimeoutMs, type AlbumUpload, type QuickReplyAlbumUpload, type QuickReplyDocumentUpload, type QuickReplyDocumentResult, type WelcomeMediaUpload, type WelcomeRichUpload, type RichMessageUpload, type PollUpload, type LivePhotoUpload, type ForumTopicTarget, type AttachmentSendDelivery, type MediaReply, type DocumentSendOptions, type SendResult, type TelegramUploadProgress } from "../../core/contract.ts";
+import type { ChannelInboxAlbumUpload, ChannelInboxAttachmentKind, ChannelInboxReply, RichMessageEditUpload } from "../../core/contract.ts";
 import type { createTelegram } from "./telegram.ts";
 
-type Session = Pick<ReturnType<typeof createTelegram>, "status" | "sendDocumentStream">;
-type Upload = { id: string; name: string; caption: string; size: number; topic?: ForumTopicTarget; replyTo?: string; video?: true; options?: MediaSendOptions };
+type Session = Pick<ReturnType<typeof createTelegram>, "status" | "sendDocumentStream"> & Partial<Pick<ReturnType<typeof createTelegram>, "sendAlbumStream" | "sendPollStream" | "sendLivePhotoStream" | "sendRichMessageStream" | "editRichMessageStream" | "replaceAttachmentStream" | "addQuickReplyDocumentStream" | "addQuickReplyAlbumStream" | "saveWelcomeMediaStream" | "saveWelcomeRichStream" | "sendChannelInboxAttachmentStream" | "sendChannelInboxAlbumStream">>;
+type Upload = QuickReplyDocumentUploadTicket | { shortcutAlbum: QuickReplyAlbumUpload; size: number } | { welcome: WelcomeMediaUpload; size: number }
+  | { welcomeRich: WelcomeRichUpload; size: number } | { richEdit: RichMessageEditUpload; size: number }
+  | { poll: PollUpload; size: number } | { livePhoto: LivePhotoUpload; size: number }
+  | { inboxAlbum: ChannelInboxAlbumUpload; size: number } | ChatUpload;
+type QuickReplyDocumentUploadTicket = { shortcut: QuickReplyDocumentUpload; size: number };
+type ChatUpload = { id: string; name: string; caption: string; size: number; topic?: ForumTopicTarget; replyTo?: ChannelInboxReply; reply?: MediaReply; video?: true;
+  inbox?: { channelId: string; topicId: string; kind?: ChannelInboxAttachmentKind };
+  options?: DocumentSendOptions; delivery?: AttachmentSendDelivery; album?: AlbumUpload; rich?: RichMessageUpload;
+  replacement?: Parameters<NonNullable<Session["replaceAttachmentStream"]>>[4] };
 type Ticket = Upload & {
   current: Session;
   timer?: ReturnType<typeof setTimeout>;
@@ -14,7 +23,10 @@ type Ticket = Upload & {
   lastChunk?: { offset: number; hash: string };
   busy: boolean;
   sealed?: boolean;
-  outcome?: SendResult;
+  dispatchStarted?: boolean;
+  controller: AbortController;
+  outcome?: SendResult | QuickReplyDocumentResult | { state: "unavailable" };
+  progress?: () => Promise<TelegramUploadProgress | null>;
   cancelled: boolean;
 };
 const route = "/document-upload";
@@ -62,6 +74,7 @@ export function registerDocumentUploads(bb: Pick<BbPluginApi, "http" | "pluginId
     tickets.delete(token);
     if (cancel) {
       ticket.cancelled = true;
+      ticket.controller.abort();
       void ticket.writer?.abort().catch(() => {});
     }
   }
@@ -71,19 +84,22 @@ export function registerDocumentUploads(bb: Pick<BbPluginApi, "http" | "pluginId
     ticket.timer.unref?.();
   }
 
-  bb.http.route("GET", route, (context) => {
+  bb.http.route("GET", route, async (context) => {
     const token = context.req.query("ticket") ?? "";
     const ticket = tickets.get(token);
     context.header("Cache-Control", "no-store");
     if (!ticket?.sealed || ticket.cancelled || session() !== ticket.current) return context.json({ state: "unknown" }, 404);
-    return context.json(ticket.outcome ?? { state: "pending" });
+    if (ticket.outcome) return context.json(ticket.outcome);
+    const progress = await ticket.progress?.().catch(() => null);
+    if (ticket.cancelled || session() !== ticket.current) return context.json({ state: "unknown" }, 404);
+    return context.json(ticket.outcome ?? { state: "pending", canCancel: !ticket.dispatchStarted, ...(progress ? { progress } : {}) });
   }, { auth: "local" });
 
   bb.http.route("DELETE", route, (context) => {
     const token = context.req.query("ticket") ?? "";
     const ticket = tickets.get(token);
     if (!ticket || session() !== ticket.current) return context.json({ cancelled: false }, 404);
-    if (ticket.sealed) return context.json({ cancelled: false }, 409);
+    if (ticket.dispatchStarted || ticket.outcome) return context.json({ cancelled: false }, 409);
     remove(token, ticket, true);
     return context.json({ cancelled: true });
   }, { auth: "local" });
@@ -119,9 +135,47 @@ export function registerDocumentUploads(bb: Pick<BbPluginApi, "http" | "pluginId
         const stream = new TransformStream<Uint8Array>();
         const writer = stream.writable.getWriter();
         ticket.writer = writer;
-        const videoArgs: [video?: true, options?: MediaSendOptions] = ticket.video
-          ? ticket.options ? [true, ticket.options] : [true] : [];
-        void ticket.current.sendDocumentStream(ticket.id, ticket.name, ticket.caption, ticket.size, stream.readable, active, ticket.topic, ticket.replyTo, ...videoArgs)
+        const lifecycle = { signal: ticket.controller.signal,
+          onPendingUpload: (read: NonNullable<Ticket["progress"]>) => { if (active()) ticket.progress = read; },
+          onDispatch: () => { ticket.dispatchStarted = true; },
+        };
+        const work = "shortcut" in ticket
+          ? ticket.current.addQuickReplyDocumentStream?.(ticket.shortcut, stream.readable, active, lifecycle)
+            ?? Promise.resolve({ state: "failed" } as const)
+          : "shortcutAlbum" in ticket
+          ? ticket.current.addQuickReplyAlbumStream?.(ticket.shortcutAlbum, stream.readable, active, lifecycle)
+            ?? Promise.resolve({ state: "failed" } as const)
+          : "welcome" in ticket
+          ? ticket.current.saveWelcomeMediaStream?.(ticket.welcome, stream.readable, active, lifecycle)
+            ?? Promise.resolve({ state: "failed" } as const)
+          : "welcomeRich" in ticket
+          ? ticket.current.saveWelcomeRichStream?.(ticket.welcomeRich, stream.readable, active, lifecycle)
+            ?? Promise.resolve({ state: "failed" } as const)
+          : "richEdit" in ticket
+          ? ticket.current.editRichMessageStream?.(ticket.richEdit, stream.readable, active, lifecycle)
+            ?? Promise.resolve({ state: "failed" } as const)
+          : "livePhoto" in ticket
+          ? ticket.current.sendLivePhotoStream?.(ticket.livePhoto, stream.readable, active, lifecycle)
+            ?? Promise.resolve({ state: "failed" } as const)
+          : "poll" in ticket
+          ? ticket.current.sendPollStream?.(ticket.poll, stream.readable, active, lifecycle) ?? Promise.resolve({ state: "failed" } as const)
+          : "inboxAlbum" in ticket
+          ? ticket.current.sendChannelInboxAlbumStream?.(ticket.inboxAlbum, stream.readable, active, lifecycle)
+            ?? Promise.resolve({ state: "failed" } as const)
+          : ticket.inbox
+          ? ticket.current.sendChannelInboxAttachmentStream?.(ticket.inbox.channelId, ticket.id, ticket.inbox.topicId, ticket.name,
+            ticket.caption, ticket.size, stream.readable, active, lifecycle, ticket.replyTo, ticket.inbox.kind, ticket.options?.captionFormat)
+            ?? Promise.resolve({ state: "failed" } as const)
+          : ticket.replacement
+          ? ticket.current.replaceAttachmentStream?.(ticket.id, ticket.name, ticket.size, stream.readable, ticket.replacement,
+            active, lifecycle) ?? Promise.resolve({ state: "failed" } as const)
+          : ticket.rich
+          ? ticket.current.sendRichMessageStream?.(ticket.rich, stream.readable, active, lifecycle) ?? Promise.resolve({ state: "failed" } as const)
+          : ticket.album
+          ? ticket.current.sendAlbumStream?.(ticket.album, stream.readable, active, lifecycle) ?? Promise.resolve({ state: "failed" } as const)
+          : ticket.current.sendDocumentStream(ticket.id, ticket.name, ticket.caption, ticket.size, stream.readable,
+            active, ticket.topic, ticket.reply ?? ticket.replyTo, ticket.video, ticket.options, ticket.delivery, lifecycle);
+        void work
           .catch((): SendResult => ({ state: "unknown" }))
           .then((outcome) => {
             if (ticket.cancelled) return;
@@ -156,7 +210,7 @@ export function registerDocumentUploads(bb: Pick<BbPluginApi, "http" | "pluginId
     issue(current: Session, input: Upload) {
       if (tickets.size >= 32) throw new Error("Too many document uploads.");
       const token = randomBytes(32).toString("base64url");
-      const ticket: Ticket = { ...input, current, offset: 0, busy: false, cancelled: false };
+      const ticket: Ticket = { ...input, current, offset: 0, busy: false, cancelled: false, controller: new AbortController() };
       tickets.set(token, ticket);
       refresh(token, ticket);
       return { url: `/api/v1/plugins/${bb.pluginId}/http${route}?ticket=${token}` };

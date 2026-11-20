@@ -48,9 +48,29 @@ export function findTdjsonLibrary(override: string | undefined, exists: (path: s
 
 export type TdObject = { "@type": string; [key: string]: unknown };
 
+export class TdTimeoutError extends Error {
+  constructor() {
+    super("TDLib request timed out");
+  }
+}
+
 export class TdError extends Error {
-  constructor(readonly code: number) {
+  readonly unsupportedMethod: boolean;
+  readonly communityRequestCreated: boolean;
+  readonly preparedMessageError?: "ID_EXPIRED" | "ID_INVALID";
+  readonly rpcErrorName?: string;
+
+  constructor(readonly code: number, nativeMessage?: unknown) {
     super("Telegram rejected the request");
+    this.unsupportedMethod = code === 400 && typeof nativeMessage === "string"
+      && /^Failed to parse JSON object as TDLib request: Unknown class "[A-Za-z][A-Za-z0-9]*"$/.test(nativeMessage);
+    this.communityRequestCreated = nativeMessage === "COMMUNITY_REQUEST_CREATED";
+    if (code >= 400 && code < 500 && typeof nativeMessage === "string" && /^[A-Z][A-Z0-9_]{1,127}$/.test(nativeMessage)) {
+      this.rpcErrorName = nativeMessage;
+    }
+    if (code === 400 && (nativeMessage === "ID_EXPIRED" || nativeMessage === "ID_INVALID")) {
+      this.preparedMessageError = nativeMessage;
+    }
   }
 }
 
@@ -90,14 +110,14 @@ export function connectTdJson(library: string, onUpdate: (event: TdObject) => vo
       if (signal?.aborted) return Promise.reject(new Error("TDLib request cancelled"));
       const id = ++next;
       return new Promise((resolve, reject) => {
-        const timer = setTimeout(() => finish(new Error("TDLib request timed out")), timeoutMs);
+        const timer = setTimeout(() => finish(new TdTimeoutError()), timeoutMs);
         const abort = () => finish(new Error("TDLib request cancelled"));
         function finish(result: TdObject | Error) {
           signal?.removeEventListener("abort", abort);
           clearTimeout(timer);
           pending.delete(id);
           if (result instanceof Error) reject(result);
-          else if (result["@type"] === "error") reject(new TdError(Number(result.code)));
+          else if (result["@type"] === "error") reject(new TdError(Number(result.code), result.message));
           else resolve(result);
         }
         pending.set(id, finish);

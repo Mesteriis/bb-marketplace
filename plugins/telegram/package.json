@@ -8,7 +8,7 @@
   },
   "bb": {
     "name": "Makosh Telegram [Experimental]",
-    "description": "Sign in with a QR code, read chats, and send text in BB through TDLib on macOS. Agent requests require approval.",
+    "description": "Telegram via TDLib on macOS. QR sign-in, chats and media. AI reads enabled chats. Agent sends require BB confirmation.",
     "branding": {
       "icon": "MessagesSquare"
     },
@@ -16,8 +16,15 @@
     "app": "./app.tsx"
   },
   "dependencies": {
+    "@radix-ui/react-slot": "^1.5.0",
+    "@zip.js/zip.js": "2.20.0",
+    "jsqr": "1.4.0",
+    "katex": "0.18.10",
+    "lottie-web": "5.13.0",
     "lucide-react": "^0.577.0",
     "qrcode.react": "^4.2.0",
+    "react-markdown": "10.1.0",
+    "remark-gfm": "4.0.1",
     "zod": "^4.6.7"
   },
   "devDependencies": {
@@ -30,15 +37,18 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "better-sqlite3": "^12.0.0",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
     "cron-parser": "^5.5.0",
     "hono": "^4.11.9",
     "jsdom": "^26.1.0",
+    "tailwind-merge": "^3.7.0",
     "typescript": "^5.7.0",
     "vitest": "^5.1.0"
   },
   "private": true,
   "license": "MIT",
-  "description": "Sign in with a QR code, read chats, and send text in BB through TDLib on macOS. Agent requests require approval.",
+  "description": "Telegram via TDLib on macOS. QR sign-in, chats and media. AI reads enabled chats. Agent sends require BB confirmation.",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Mesteriis/makosh-bb.git",

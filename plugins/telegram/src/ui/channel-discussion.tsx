@@ -1,9 +1,11 @@
+import { useTelegramLocale } from "./i18n/index.tsx";
 import { submitComposerOnEnter } from "./composer-keys.ts";
-import { useEffect, useState, type ComponentProps } from "react";
+import { useEffect, useRef, useState, type ComponentProps } from "react";
 import type { DiscussionPage, SendResult } from "../core/contract.ts";
 import { MessageTimestamp } from "./message-timestamp.tsx";
 import { MessageContent } from "./message-content.tsx";
 import { MessageAuthor, type AvatarLoader } from "./avatar.tsx";
+import { useSentTextMotion } from "./sent-text-motion.ts";
 
 export type ChannelDiscussionLoader = (id: string, messageId: string, before?: string) => Promise<DiscussionPage>;
 type Media = Pick<ComponentProps<typeof MessageContent>, "loadPhoto" | "loadMedia" | "loadVideoStream" | "transcribeVoice" | "saveDocument" | "mediaCollection">;
@@ -16,6 +18,7 @@ export function ChannelDiscussion({ chatId, postId, load, send, close, loadAvata
   close: () => void;
   loadAvatar?: AvatarLoader;
 }) {
+  const { t: tr } = useTelegramLocale();
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [sendStatus, setSendStatus] = useState("");
@@ -23,6 +26,9 @@ export function ChannelDiscussion({ chatId, postId, load, send, close, loadAvata
   const [revision, setRevision] = useState(0);
   const [error, setError] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
+  const panel = useRef<HTMLElement>(null);
+  const input = useRef<HTMLTextAreaElement>(null);
+  const captureSendMotion = useSentTextMotion(`${chatId}:${postId}`);
 
   useEffect(() => {
     let active = true;
@@ -54,6 +60,7 @@ export function ChannelDiscussion({ chatId, postId, load, send, close, loadAvata
   async function submit() {
     const text = draft.trim();
     if (!send || !page || !text || sending) return;
+    const animateSent = captureSendMotion(input.current, panel.current);
     const { chat, root } = page;
     setSending(true);
     setSendStatus("");
@@ -64,36 +71,37 @@ export function ChannelDiscussion({ chatId, postId, load, send, close, loadAvata
         setPage((previous) => previous && previous.root === root && previous.chat.id === chat.id
           && !previous.messages.some(({ id }) => id === sent.id) ? { ...previous, messages: [...previous.messages, sent] } : previous);
         setDraft((previous) => previous.trim() === text ? "" : previous);
+        animateSent?.(sent);
       } else setSendStatus(result.state === "failed" ? "Telegram rejected the comment. Check that you can post in the discussion group."
         : "Delivery unconfirmed. Refresh the discussion before retrying.");
     } catch { setSendStatus("Delivery unconfirmed. Refresh the discussion before retrying."); }
     finally { setSending(false); }
   }
 
-  return <section className="mtg-conversation-search" aria-label="Channel comments">
-    <button type="button" autoFocus className="mtg-action" onClick={close}>Back to channel</button>
-    {page && !error && <button type="button" className="mtg-action" disabled={loadingOlder} onClick={() => setRevision((value) => value + 1)}>Refresh comments</button>}
-    {!page && !error && <p role="status">Loading comments…</p>}
-    {error && <p role="alert">Could not load comments. <button type="button" className="mtg-action"
-      onClick={() => setRevision((value) => value + 1)}>Refresh</button></p>}
+  return <section ref={panel} className="mtg-conversation-search" aria-label={tr("Channel comments")}>
+    <button type="button" autoFocus className="mtg-action" onClick={close}>{tr("Back to channel")}</button>
+    {page && !error && <button type="button" className="mtg-action" disabled={loadingOlder} onClick={() => setRevision((value) => value + 1)}>{tr("Refresh comments")}</button>}
+    {!page && !error && <p role="status">{tr("Loading comments…")}</p>}
+    {error && <p role="alert">{tr("Could not load comments. ")}<button type="button" className="mtg-action"
+      onClick={() => setRevision((value) => value + 1)}>{tr("Refresh")}</button></p>}
     {page && <>
       <h3>{page.chat.name}</h3>
       {page.before && <button type="button" className="mtg-action" disabled={loadingOlder}
-        onClick={() => void more()}>Load earlier comments</button>}
-      {!page.messages.length && !page.before && <p>No comments.</p>}
-      {!!page.messages.length && <ol aria-label="Comments">{page.messages.map((message) => <li key={message.id}>
+        onClick={() => void more()}>{tr("Load earlier comments")}</button>}
+      {!page.messages.length && !page.before && <p>{tr("No comments.")}</p>}
+      {!!page.messages.length && <ol aria-label={tr("Comments")}>{page.messages.map((message) => <li key={message.id} data-message-id={message.id}>
         <MessageAuthor message={message} chat={page.chat} load={loadAvatar} />
         <div className="mtg-message-time"><MessageTimestamp message={message} /></div>
         <MessageContent chatId={page.chat.id} message={message} {...media} />
       </li>)}</ol>}
       {send && <form className="mtg-composer" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
-        <textarea rows={1} onKeyDown={submitComposerOnEnter} aria-label="Write a comment" placeholder="Write a comment" maxLength={4096} value={draft}
+        <textarea ref={input} rows={1} onKeyDown={submitComposerOnEnter} aria-label={tr("Write a comment")} placeholder={tr("Write a comment")} maxLength={4096} value={draft}
           onChange={(event) => setDraft(event.target.value)} />
         <button type="submit" className="mtg-action" disabled={sending || !draft.trim()}>
-          {sending ? "Sending…" : "Send comment"}
+          {sending ? tr("Sending…") : tr("Send comment")}
         </button>
       </form>}
-      {sendStatus && <p role="alert">{sendStatus}</p>}
+      {sendStatus && <p role="alert">{tr(sendStatus)}</p>}
     </>}
   </section>;
 }

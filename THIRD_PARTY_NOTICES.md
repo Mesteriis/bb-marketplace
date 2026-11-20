@@ -14,6 +14,9 @@ Name the source, the revision, the license, and the paths it landed in.
   `plugins/mail/hooks/`.
 - Also `plugins/remote-hub/components/ui/`, `plugins/remote-hub/lib/`,
   `plugins/remote-hub/hooks/` from tag `desktop-v0.50.1`.
+- The same registry at tag `desktop-v0.50.1` supplies Button, Card, Input,
+  Textarea and their helpers in `plugins/telegram/components/ui/` and
+  `plugins/telegram/lib/utils.ts`.
 - License: MIT, Copyright (c) 2026 Michael Yong.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -33,6 +36,65 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## KaTeX
+
+- Source: <https://github.com/KaTeX/KaTeX>, npm package `katex@0.18.10`.
+- Path: bundled into the Makosh Telegram app for Instant View formulas.
+- License: MIT. See the [KaTeX license](https://github.com/KaTeX/KaTeX/blob/v0.18.10/LICENSE).
+
+## jsQR
+
+- Source: <https://github.com/cozmo/jsQR>, npm package `jsqr@1.4.0`.
+- Path: bundled into the Makosh Telegram app to decode Mini App camera
+  frames locally when the browser's QR detector is unavailable.
+- License: Apache-2.0. The full license is reproduced under "Velo" below.
+
+## react-markdown and remark-gfm
+
+- Sources: <https://github.com/remarkjs/react-markdown>, npm package
+  `react-markdown@10.1.0`, and <https://github.com/remarkjs/remark-gfm>,
+  npm package `remark-gfm@4.0.1`.
+- Path: bundled into the Makosh Telegram app for Markdown attachment previews.
+- License: MIT. See the [react-markdown license](https://github.com/remarkjs/react-markdown/blob/10.1.0/license)
+  and [remark-gfm license](https://github.com/remarkjs/remark-gfm/blob/4.0.1/license).
+
+## zip.js
+
+- Source: <https://github.com/gildas-lormeau/zip.js>, npm package `@zip.js/zip.js@2.20.0`.
+- Path: bundled into the Makosh Telegram app to assemble ZIP attachments.
+- License: BSD-3-Clause. See the [zip.js license](https://github.com/gildas-lormeau/zip.js/blob/v2.20.0/LICENSE).
+
+```text
+BSD 3-Clause License
+
+Copyright (c) 2023, Gildas Lormeau
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its
+   contributors may be used to endorse or promote products derived from
+   this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
 
 ## Velo
 
@@ -276,6 +338,27 @@ The dark chat layout and chat row/avatar styles in Makosh Telegram are adapted
 from [Fardgram](https://github.com/amirrezamortazavifard/Fardgram/tree/4ccf7c5b32a78206779e0981af1743b86c399c11).
 The upstream MIT license is included in `plugins/telegram/licenses/Fardgram-MIT.txt`.
 
+## TDLib community patches
+
+- Source: [TDLib commit 03220f6](https://github.com/tdlib/td/tree/03220f6b3043c6fd7785fbf0901d63f19ad19974).
+- Paths: `plugins/telegram/tdlib/0001-community-banned-members.patch`,
+  `plugins/telegram/tdlib/0002-folder-communities.patch` and
+  `plugins/telegram/tdlib/0003-edit-folder-communities.patch`.
+- Copyright Aliaksei Levin and Arseny Smirnov. The Boost Software License,
+  Version 1.0, is included in `plugins/telegram/licenses/TDLib-Boost-1.0.txt`.
+
+## NTgCalls
+
+Makosh Telegram can use [NTgCalls 3.0.7](https://github.com/pytgcalls/ntgcalls/tree/v3.0.7)
+as a separately installed macOS audio runtime. It runs in a subprocess and is
+not bundled in the plugin. The upstream wheel ships its license and notices.
+The [upstream license](https://github.com/pytgcalls/ntgcalls/blob/v3.0.7/LICENSE)
+is LGPL-3.0.
+
+The same runtime can use [Pillow 13.0.0](https://github.com/python-pillow/Pillow/tree/13.0.0)
+to convert preview frames to JPEG. Pillow is installed separately under its
+[upstream license](https://github.com/python-pillow/Pillow/blob/13.0.0/LICENSE).
+
 ## Tree Sidebar
 
 - Source: https://github.com/chadbailey59/bb-plugin-tree-sidebar
@@ -328,6 +411,35 @@ See [the import inventory](subtrees.json) for per-package upstream sources and m
 
 The source repository, directory, pinned revision, maintained fork and branch for every imported plugin are recorded in [subtrees.json](subtrees.json). Each plugin keeps its original package license and notices; the root MIT license does not relicense these packages. Root-level upstream notices are preserved under [licenses](licenses/). Local configuration, credentials and runtime data are excluded.
 
+
+## Lottie web Canvas player
+
+- Source: <https://github.com/airbnb/lottie-web>, npm version `5.13.0`.
+- Paths: Canvas light player bundled by `plugins/telegram/src/ui/tgs-sticker.tsx`.
+- License: MIT.
+
+The MIT License (MIT)
+
+Copyright (c) 2015 Bodymovin
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
 ## OpenPGP.js (openpgp)
 
 - Source: <https://github.com/openpgpjs/openpgpjs>, npm `openpgp` 6.3.2, an
@@ -340,3 +452,11 @@ The source repository, directory, pinned revision, maintained fork and branch fo
   package at the version above; `plugins/mail` builds its bundle from that
   package with `npm ci && npm run build`, so a changed copy of the library
   can be put in its place and the plugin rebuilt.
+
+## Material Icon Theme
+
+- Source: <https://github.com/material-extensions/vscode-material-icon-theme/tree/3929c5487ca03352f31cfba675b367448449094d/icons>.
+- Paths: `plugins/telegram/src/ui/document-icon-assets.ts`. The original SVG
+  artwork is embedded as local data URLs for document cards.
+- License: MIT, Copyright (c) 2025 Material Extensions.
+  See `plugins/telegram/licenses/material-icon-theme-MIT.txt`.

@@ -14,11 +14,11 @@ function harness(now = Date.now) {
     ({ state: authorize?.() ? "sent" : "failed" }));
   const chatById = vi.fn().mockResolvedValue({ id: "-43", name: "Exact fixture", subtitle: "Group" });
   const publicChat = vi.fn().mockResolvedValue({ id: "-43", name: "Exact fixture", subtitle: "Group" });
-  const forumTopicName = vi.fn(async () => "Fixture topic");
+  const agentPostingTopic = vi.fn(async (_chatId: string, id: number) => ({ id, name: "Fixture topic" }));
   const status = vi.fn(() => ({ state: "ready" }));
   const current = { status, chats: async () => [
     { id: "42", name: "Fixture group", subtitle: "Group", messages: [{ text: "private fixture" }] },
-  ], sendText, chatById, publicChat, forumTopicName, postingAllowed: async () => true };
+  ], sendText, chatById, publicChat, agentPostingTopic, postingAllowed: async () => true };
   const enabled = vi.fn().mockResolvedValue(true);
   const tokens = createReplyTokens(now);
   registerAgentSend(bb, enabled, () => current as never, tokens, undefined, undefined, () => readPermission.signal);

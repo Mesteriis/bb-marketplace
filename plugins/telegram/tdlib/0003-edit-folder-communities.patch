@@ -1,0 +1,135 @@
+diff --git a/td/generate/scheme/td_api.tl b/td/generate/scheme/td_api.tl
+index 654d139..910edef 100644
+--- a/td/generate/scheme/td_api.tl
++++ b/td/generate/scheme/td_api.tl
+@@ -3978,6 +3978,10 @@ makoshChatFolderPinnedPeer id:int53 is_community:Bool = MakoshChatFolderPinnedPe
+ //@pinned_peers Ordered pinned chats and communities
+ makoshChatFolderCommunities community_ids:vector<int53> pinned_peers:vector<MakoshChatFolderPinnedPeer> = MakoshChatFolderCommunities;
+ 
++//@description The result of queuing a community folder membership change
++//@applied True if the local membership matches the requested value
++makoshChatFolderCommunityChange applied:Bool = MakoshChatFolderCommunityChange;
++
+ //@description Contains basic information about a chat folder
+ //@id Unique chat folder identifier
+ //@name The name of the folder
+@@ -14629,6 +14633,13 @@ getChatFolder chat_folder_id:int32 = ChatFolder;
+ //@chat_folder_id Chat folder identifier
+ makoshGetChatFolderCommunities chat_folder_id:int32 = MakoshChatFolderCommunities;
+ 
++//@description Queues a change to explicit community membership in one chat folder
++//@chat_folder_id Chat folder identifier
++//@community_id Community identifier
++//@expected_included Expected current folder membership. The result has applied set to false if it has changed
++//@included Pass true to add the community, or false to remove it
++makoshSetChatFolderCommunity chat_folder_id:int32 community_id:int53 expected_included:Bool included:Bool = MakoshChatFolderCommunityChange;
++
+ //@description Creates new chat folder. Returns information about the created chat folder. There can be up to getOption("chat_folder_count_max") chat folders, but the limit can be increased with Telegram Premium
+ //@folder The new chat folder
+ createChatFolder folder:chatFolder = ChatFolderInfo;
+diff --git a/td/telegram/DialogFilterManager.cpp b/td/telegram/DialogFilterManager.cpp
+index 275d195..ff1535c 100644
+--- a/td/telegram/DialogFilterManager.cpp
++++ b/td/telegram/DialogFilterManager.cpp
+@@ -9,6 +9,7 @@
+ #include "td/telegram/AccessRights.h"
+ #include "td/telegram/AuthManager.h"
+ #include "td/telegram/ChatManager.h"
++#include "td/telegram/CommunityManager.h"
+ #include "td/telegram/DialogFilter.h"
+ #include "td/telegram/DialogFilter.hpp"
+ #include "td/telegram/DialogFilterInviteLink.h"
+@@ -944,6 +945,46 @@ void DialogFilterManager::on_load_recommended_dialog_filters(
+   promise.set_value(td_api::make_object<td_api::recommendedChatFolders>(std::move(chat_folders)));
+ }
+ 
++void DialogFilterManager::set_makosh_chat_folder_community(
++    DialogFilterId dialog_filter_id, CommunityId community_id, bool expected_included, bool included,
++    Promise<td_api::object_ptr<td_api::makoshChatFolderCommunityChange>> &&promise) {
++  const auto *old_filter = get_dialog_filter(dialog_filter_id);
++  if (old_filter == nullptr) {
++    return promise.set_error(400, "Chat folder not found");
++  }
++  auto community = td_->community_manager_->get_community_object(community_id);
++  auto dialog_id = community_id.get_fake_dialog_id();
++  if (community == nullptr || !community->have_access_ || !DialogFilter::is_community_dialog_id(dialog_id)
++      || community->status_->get_id() == td_api::communityMemberStatusLeft::ID
++      || community->status_->get_id() == td_api::communityMemberStatusBanned::ID) {
++    return promise.set_error(400, "Community unavailable");
++  }
++  if (old_filter->is_dialog_included(dialog_id) != expected_included) {
++    return promise.set_value(td_api::make_object<td_api::makoshChatFolderCommunityChange>(false));
++  }
++  if (expected_included == included) {
++    return promise.set_value(td_api::make_object<td_api::makoshChatFolderCommunityChange>(true));
++  }
++
++  auto new_filter = make_unique<DialogFilter>(*old_filter);
++  if (included) {
++    if (!community->are_chats_collapsed_) {
++      return promise.set_error(400, "Only collapsed communities can be added to folders");
++    }
++    auto peer = td_->community_manager_->get_input_peer(community_id);
++    if (peer == nullptr) {
++      return promise.set_error(400, "Community unavailable");
++    }
++    new_filter->include_dialog(InputDialogId(peer));
++  } else {
++    new_filter->remove_dialog_id(dialog_id);
++  }
++  TRY_STATUS_PROMISE(promise, new_filter->check_limits());
++  new_filter->sort_input_dialog_ids(td_, "set_makosh_chat_folder_community");
++  do_edit_dialog_filter(std::move(new_filter), true, "set_makosh_chat_folder_community");
++  promise.set_value(td_api::make_object<td_api::makoshChatFolderCommunityChange>(true));
++}
++
+ void DialogFilterManager::get_makosh_chat_folder_communities(
+     DialogFilterId dialog_filter_id, Promise<td_api::object_ptr<td_api::makoshChatFolderCommunities>> &&promise) {
+   const auto *dialog_filter = get_dialog_filter(dialog_filter_id);
+diff --git a/td/telegram/DialogFilterManager.h b/td/telegram/DialogFilterManager.h
+index d240448..e4e0046 100644
+--- a/td/telegram/DialogFilterManager.h
++++ b/td/telegram/DialogFilterManager.h
+@@ -67,6 +67,10 @@ class DialogFilterManager final : public Actor {
+ 
+   void remove_community_from_dialog_filters(CommunityId community_id);
+ 
++  void set_makosh_chat_folder_community(DialogFilterId dialog_filter_id, CommunityId community_id,
++                                        bool expected_included, bool included,
++                                        Promise<td_api::object_ptr<td_api::makoshChatFolderCommunityChange>> &&promise);
++
+   void get_makosh_chat_folder_communities(
+       DialogFilterId dialog_filter_id, Promise<td_api::object_ptr<td_api::makoshChatFolderCommunities>> &&promise);
+ 
+diff --git a/td/telegram/Requests.cpp b/td/telegram/Requests.cpp
+index 65e9092..96761db 100644
+--- a/td/telegram/Requests.cpp
++++ b/td/telegram/Requests.cpp
+@@ -5746,6 +5746,14 @@ void Requests::on_request(uint64 id, const td_api::addChatToList &request) {
+                                              std::move(promise));
+ }
+ 
++void Requests::on_request(uint64 id, const td_api::makoshSetChatFolderCommunity &request) {
++  CHECK_IS_USER();
++  CREATE_REQUEST_PROMISE();
++  td_->dialog_filter_manager_->set_makosh_chat_folder_community(
++      DialogFilterId(request.chat_folder_id_), CommunityId(request.community_id_), request.expected_included_,
++      request.included_, std::move(promise));
++}
++
+ void Requests::on_request(uint64 id, const td_api::makoshGetChatFolderCommunities &request) {
+   CHECK_IS_USER();
+   CREATE_REQUEST_PROMISE();
+diff --git a/td/telegram/Requests.h b/td/telegram/Requests.h
+index 08b8aeb..2449b48 100644
+--- a/td/telegram/Requests.h
++++ b/td/telegram/Requests.h
+@@ -1062,6 +1062,8 @@ class Requests {
+ 
+   void on_request(uint64 id, const td_api::addChatToList &request);
+ 
++  void on_request(uint64 id, const td_api::makoshSetChatFolderCommunity &request);
++
+   void on_request(uint64 id, const td_api::makoshGetChatFolderCommunities &request);
+ 
+   void on_request(uint64 id, const td_api::getChatFolder &request);

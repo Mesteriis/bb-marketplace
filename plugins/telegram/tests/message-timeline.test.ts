@@ -1,6 +1,26 @@
 import { expect, test } from "vitest";
 import type { Message } from "../src/core/demo.ts";
 import { groupMessageTimeline } from "../src/core/message-timeline.ts";
+import { prependHistory } from "../src/core/history-refresh.ts";
+
+test("prepends each earlier message once and keeps the latest unread boundary", () => {
+  const message = (id: string, text = id): Message => ({ id, text, time: "", author: "Fixture" });
+  const older = { messages: [message("18"), message("18"), message("19"), message("20", "stale")], before: "18", readInbox: 10 };
+  const latest = { messages: [message("20"), message("21")], before: "20", readInbox: 19, unreadCount: 2 };
+  expect(prependHistory(latest, older)).toEqual({
+    messages: ["18", "19", "20", "21"].map((id) => message(id)), before: "18", readInbox: 19, unreadCount: 2,
+  });
+});
+
+test("merges overlapping earlier history in order and stops a cursor that did not move backward", () => {
+  const item = (id: string): Message => ({ id, text: id, time: "", author: "Fixture" });
+  const previous = { messages: [item("20"), item("24")], before: "20" };
+  const older = { messages: [item("17"), item("20"), item("23")], before: "20" };
+  const merged = prependHistory(previous, older);
+  expect(merged.messages.map(({ id }) => id)).toEqual(["17", "20", "23", "24"]);
+  expect(merged.before).toBeNull();
+  expect(prependHistory(previous, { messages: [], before: "22" }).before).toBeNull();
+});
 
 test("adds one divider per local day without splitting albums or repeating a prepended date", () => {
   const firstDay = new Date(2026, 10, 14, 23, 59);

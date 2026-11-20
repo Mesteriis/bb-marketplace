@@ -1,3 +1,4 @@
+import { useTelegramLocale } from "./i18n/index.tsx";
 import { useEffect, useState } from "react";
 import type { ChannelSignatures, ChannelSignatureView } from "../core/contract.ts";
 
@@ -7,6 +8,7 @@ export type ChannelSignatureActions = {
 };
 
 export function ChannelSignaturesPanel({ chatId, actions }: { chatId: string; actions: ChannelSignatureActions }) {
+  const { t: tr } = useTelegramLocale();
   const [open, setOpen] = useState(false);
   const [current, setCurrent] = useState<ChannelSignatureView | null>();
   const [draft, setDraft] = useState<ChannelSignatures>();
@@ -49,20 +51,20 @@ export function ChannelSignaturesPanel({ chatId, actions }: { chatId: string; ac
   }
 
   return <details onToggle={(event) => setOpen(event.currentTarget.open)}>
-    <summary>Post signatures</summary>
+    <summary>{tr("Post signatures")}</summary>
     {open && <form onSubmit={(event) => { event.preventDefault(); void save(); }}>
-      {current === undefined && !error && <p role="status">Loading post signatures…</p>}
-      {current === null && <p role="status">Telegram does not provide signature settings for this channel.</p>}
+      {current === undefined && !error && <p role="status">{tr("Loading post signatures…")}</p>}
+      {current === null && <p role="status">{tr("Telegram does not provide signature settings for this channel.")}</p>}
       {current && draft && <>
         <label><input type="checkbox" checked={draft.sign} disabled={busy || !current.editable}
-          onChange={(event) => { setSaved(false); setDraft({ ...draft, sign: event.target.checked }); }} /> Sign posts</label>
+          onChange={(event) => { setSaved(false); setDraft({ ...draft, sign: event.target.checked }); }} />{tr(" Sign posts")}</label>
         <label><input type="checkbox" checked={draft.showProfile} disabled={busy || !current.editable}
-          onChange={(event) => { setSaved(false); setDraft({ ...draft, showProfile: event.target.checked }); }} /> Show author profiles</label>
-        {current.editable && <button type="submit" className="mtg-action" disabled={busy || !changed}>Save post signatures</button>}
+          onChange={(event) => { setSaved(false); setDraft({ ...draft, showProfile: event.target.checked }); }} />{tr(" Show author profiles")}</label>
+        {current.editable && <button type="submit" className="mtg-action" disabled={busy || !changed}>{tr("Save post signatures")}</button>}
       </>}
-      {error && <p role="alert">{error} <button type="button" className="mtg-action" disabled={busy}
-        onClick={() => setRevision((value) => value + 1)}>Reload settings</button></p>}
-      {saved && <p role="status">Post signatures saved.</p>}
+      {error && <p role="alert">{tr(error)} <button type="button" className="mtg-action" disabled={busy}
+        onClick={() => setRevision((value) => value + 1)}>{tr("Reload settings")}</button></p>}
+      {saved && <p role="status">{tr("Post signatures saved.")}</p>}
     </form>}
   </details>;
 }
