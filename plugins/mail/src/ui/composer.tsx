@@ -43,6 +43,7 @@ import { introLine, looksLikeIntro, moveSenderToBcc } from "../core/intro.ts";
 import { Checkbox } from "@/components/ui/checkbox";
 import type { AiJobPorts } from "./ai-job.ts";
 import { ImproveDialog, ImproveMenu, type DraftMode, type ImproveRequest } from "./improve-dialog.tsx";
+import { WriteDialog, type WriteInput } from "./write-dialog.tsx";
 import { daysText } from "./reminder-strip.tsx";
 import { ComposeToolbar } from "./compose-toolbar.tsx";
 import { accountLabel } from "./folder-list.tsx";
@@ -354,6 +355,9 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
   /** Slice 3f: Improve's menu and request, and the reply reminder beside Send. */
   const [improveOpen, setImproveOpen] = useState(false);
   const [improveRequest, setImproveRequest] = useState<ImproveRequest | null>(null);
+  /** AI writes mail: the Write dialog, and the owner's range as it was sent with the last request. */
+  const [writeOpen, setWriteOpen] = useState(false);
+  const writeSent = useRef<string[] | null>(null);
   const [remind, setRemind] = useState(false);
   const remindRef = useRef(remind);
   // Slice 3k: OpenPGP for this message. Both start off; the choice is not kept with the draft.
@@ -728,6 +732,26 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
       hasMarks: range.hasMarks,
     });
   };
+  /** Write: the draft is saved first, as for Improve; null when it could not be. */
+  const prepareWrite = async (instruction: string): Promise<WriteInput | null> => {
+    if (editor === null || conflictRef.current !== null) return null;
+    if (dirty()) {
+      const outcome = await save(false);
+      if (outcome !== "saved") return null;
+    }
+    const range = ownerRange(editor);
+    writeSent.current = range.paragraphs;
+    return { kind: "write", draftId: draft.id, revision: revision.current, instruction, paragraphs: range.paragraphs };
+  };
+  /** Insert: only while the owner's range is still what was sent. */
+  const insertWritten = (paragraphs: string[]): boolean => {
+    const sent = writeSent.current;
+    if (editor === null || sent === null) return false;
+    const now = ownerRange(editor).paragraphs;
+    if (now.length !== sent.length || now.some((p, i) => p !== sent[i])) return false;
+    replaceOwnerRange(editor, paragraphs);
+    return true;
+  };
   /** Apply: only while the owner's range is still what was sent. */
   const applyImprove = (paragraphs: string[]): boolean => {
     const sent = improveRequest?.input.paragraphs;
@@ -949,6 +973,16 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
       event.preventDefault();
       event.stopPropagation();
       void send();
+      return;
+    }
+    // Mod+J: Write with AI.
+    if (
+      (event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey && event.code === "KeyJ" &&
+      props.improve !== undefined && props.improve.disabledReason === null
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+      setWriteOpen(true);
       return;
     }
     // Mod+Shift+I: answering an introduction, the introducer goes to Bcc with a thank-you line.
@@ -1203,6 +1237,7 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
                 onImprove: () => setImproveOpen((open) => !open),
                 improveOpen,
                 improveDisabledReason: props.improve.disabledReason,
+                onWrite: () => setWriteOpen(true),
               }
             : {})}
         />
@@ -1411,6 +1446,18 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
         ) : null}
       </div>
 
+      {props.improve !== undefined ? (
+        <WriteDialog
+          open={writeOpen}
+          ports={props.improve.jobs}
+          prepare={prepareWrite}
+          onInsert={insertWritten}
+          onClose={() => {
+            setWriteOpen(false);
+            editor?.commands.focus();
+          }}
+        />
+      ) : null}
       {props.improve !== undefined ? (
         <ImproveDialog
           request={improveRequest}

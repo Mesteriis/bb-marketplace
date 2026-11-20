@@ -14,6 +14,7 @@ import {
   RulesSwitch,
   SearchSettings,
   TodaySettings,
+  WritingSettings,
 } from "./section-settings.tsx";
 import type { PageSettingsPort } from "./setting-controls.tsx";
 import type { SettingsAiPorts } from "./shared.ts";
@@ -46,6 +47,27 @@ const aiPorts = {
 } as unknown as SettingsAiPorts;
 
 describe("rows of the sections", () => {
+  it("Writing: the voice and auto drafts switches and the two long texts save their own key", () => {
+    const { port: p, save } = port({ aiInstructions: "Sign as Alex." });
+    render(<WritingSettings port={p} />);
+    expect(screen.getByRole("switch", { name: "Write in my voice" }).getAttribute("aria-checked")).toBe("true");
+    expect(screen.getByRole("switch", { name: "Draft replies to new mail" }).getAttribute("aria-checked")).toBe("false");
+    fireEvent.click(screen.getByRole("switch", { name: "Draft replies to new mail" }));
+    expect(save).toHaveBeenLastCalledWith({ aiAutoDrafts: true });
+    const instructions = screen.getByLabelText("My instructions for AI writing") as HTMLTextAreaElement;
+    expect(instructions.value).toBe("Sign as Alex.");
+    expect(instructions.maxLength).toBe(2_000);
+    fireEvent.change(instructions, { target: { value: "Sign as Alex.\nBe brief." } });
+    fireEvent.blur(instructions);
+    expect(save).toHaveBeenLastCalledWith({ aiInstructions: "Sign as Alex.\nBe brief." });
+    const facts = screen.getByLabelText("Facts AI may use") as HTMLTextAreaElement;
+    fireEvent.change(facts, { target: { value: "typed by mistake" } });
+    fireEvent.keyDown(facts, { key: "Escape" });
+    fireEvent.blur(facts);
+    expect(facts.value).toBe("");
+    expect(save).toHaveBeenCalledTimes(2);
+  });
+
   it("AI features: switches, the digest time and the reminder days save their own key", () => {
     const { port: p, save } = port({ morningDigest: true, digestTime: "07:30" });
     render(

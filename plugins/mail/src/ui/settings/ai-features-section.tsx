@@ -3,7 +3,7 @@ import type { CategoryRuleView } from "../../core/model.ts";
 import { categoryLabel } from "../category-chips.tsx";
 import { Button } from "@/components/ui/button";
 import { tx, txn } from "../i18n/index.ts";
-import { CategoriesSetting, ReminderSetting, TodaySettings, TranslateLanguageSetting } from "./section-settings.tsx";
+import { CategoriesSetting, ReminderSetting, TodaySettings, TranslateLanguageSetting, WritingSettings } from "./section-settings.tsx";
 import type { PageSettingsPort } from "./setting-controls.tsx";
 import { type SettingsAiPorts, PLUGIN_SETTINGS_HINT, messageOf } from "./shared.ts";
 import { SectionHeading } from "./primitives.tsx";
@@ -100,6 +100,7 @@ export function AiFeaturesSection({ ai, settings }: { ai: SettingsAiPorts; setti
           </>
         )}
       </section>
+      {settings !== undefined ? <WritingSettings port={settings} /> : null}
       <section aria-label={tx("AI settings")} className="flex flex-col items-start gap-1">
         <SectionHeading>{tx("AI settings")}</SectionHeading>
         {settings !== undefined ? <TranslateLanguageSetting port={settings} /> : null}

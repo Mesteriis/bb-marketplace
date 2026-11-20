@@ -247,6 +247,55 @@ export function TextSetting({
   );
 }
 
+/** A text of several lines (the owner's instructions for AI): saved when the field is left; Escape puts the saved text back. */
+export function LongTextSetting({
+  port,
+  name,
+  label,
+  hint,
+  maxLength,
+  placeholder,
+}: RowText & { port: PageSettingsPort; name: KeysOf<string>; maxLength: number; placeholder?: string }) {
+  const setting = useSetting(port, name);
+  const saved = typeof setting.value === "string" ? setting.value : "";
+  const [draft, setDraft] = useState<string | null>(null);
+  const commit = () => {
+    if (draft === null) return;
+    const text = draft;
+    setDraft(null);
+    if (text !== saved) void setting.change(text as never);
+  };
+  return (
+    <SettingRow
+      className="@md:flex-col @md:items-stretch @md:gap-2"
+      label={label}
+      hint={hint}
+      note={setting.loading ? tx("Loading…") : setting.note}
+      problem={setting.problem}
+      control={({ id, describedBy }) => (
+        <textarea
+          id={id}
+          aria-describedby={describedBy}
+          rows={4}
+          maxLength={maxLength}
+          disabled={setting.loading}
+          placeholder={placeholder}
+          className="min-h-20 w-full min-w-0 flex-1 rounded-md border border-input bg-transparent px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50"
+          value={draft ?? saved}
+          onChange={(event) => setDraft(event.target.value)}
+          onBlur={commit}
+          onKeyDown={(event) => {
+            if (event.key === "Escape" && draft !== null) {
+              event.stopPropagation();
+              setDraft(null);
+            }
+          }}
+        />
+      )}
+    />
+  );
+}
+
 /** A setting the page shows and never changes: its state, and the way to BB's own settings. */
 export function ReadOnlySetting({ label, hint, on, onOpenBbSettings }: RowText & { on: boolean | null; onOpenBbSettings?: () => void }) {
   return (

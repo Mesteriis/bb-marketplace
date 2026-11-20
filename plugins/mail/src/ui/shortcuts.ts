@@ -447,6 +447,7 @@ export const SHORTCUT_SHEET: { title: string; entries: ShortcutEntry[] }[] = [
       { keys: ["Tab"], label: msg("In a message you write: take the grey rest of a phrase") },
       // The composer's own key, not one of the page's Apple Mail chords: the label names the Mac form.
       { keys: ["Ctrl", msg("Shift"), "I"], label: msg("In a reply: move the sender to Bcc with a thank-you (Command on a Mac)") },
+      { keys: ["Ctrl", "J"], label: msg("In a message: write it with AI from a few words (Command on a Mac)") },
       { keys: ["g", "i"], label: msg("Go to Inbox") },
       { keys: ["g", "s"], label: msg("Go to Sent") },
       { keys: ["g", "d"], label: msg("Go to Drafts") },

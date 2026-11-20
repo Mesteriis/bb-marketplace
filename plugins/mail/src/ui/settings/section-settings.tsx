@@ -4,7 +4,7 @@
 import { SUPPORTED_LANGUAGES } from "../../core/translate.ts";
 import { tx } from "../i18n/index.ts";
 import { SettingsGroup } from "./primitives.tsx";
-import { NumberSetting, ReadOnlySetting, SelectSetting, SwitchSetting, TextSetting, type PageSettingsPort } from "./setting-controls.tsx";
+import { LongTextSetting, NumberSetting, ReadOnlySetting, SelectSetting, SwitchSetting, TextSetting, type PageSettingsPort } from "./setting-controls.tsx";
 
 type Rows = { port: PageSettingsPort };
 
@@ -95,6 +95,42 @@ export function TypingSettings({ port }: Rows) {
           name="autocomplete"
           label={tx("Offer the rest of phrases I often write")}
           hint={tx("From your own sent mail and templates, on this computer. Tab accepts.")}
+        />
+      </div>
+    </SettingsGroup>
+  );
+}
+
+/** AI writes mail: the voice, auto drafts, and the owner's instructions and facts (in the AI features section). */
+export function WritingSettings({ port }: Rows) {
+  return (
+    <SettingsGroup title={tx("Writing")}>
+      <div className="flex flex-col">
+        <SwitchSetting
+          port={port}
+          name="aiVoice"
+          label={tx("Write in my voice")}
+          hint={tx("When AI writes a message, it is shown a few pieces of your own sent mail to match your tone.")}
+        />
+        <SwitchSetting
+          port={port}
+          name="aiAutoDrafts"
+          label={tx("Draft replies to new mail")}
+          hint={tx("Uses your AI provider for every new message from people you write to; at most 50 a day. Nothing is sent without you.")}
+        />
+        <LongTextSetting
+          port={port}
+          name="aiInstructions"
+          maxLength={2_000}
+          label={tx("My instructions for AI writing")}
+          hint={tx("For example: sign as Alex; answer in the language of the message.")}
+        />
+        <LongTextSetting
+          port={port}
+          name="aiKnowledge"
+          maxLength={6_000}
+          label={tx("Facts AI may use")}
+          hint={tx("Prices, addresses, working hours, links. AI adds no other facts or links.")}
         />
       </div>
     </SettingsGroup>

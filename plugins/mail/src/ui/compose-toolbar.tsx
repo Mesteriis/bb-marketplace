@@ -75,6 +75,8 @@ export interface ComposeToolbarProps {
   improveOpen?: boolean;
   /** Why Improve is off (Makosh AI is missing), or null. */
   improveDisabledReason?: string | null;
+  /** Write with AI (the composer only): opens its dialog; off for the same reason as Improve. */
+  onWrite?: () => void;
   className?: string;
 }
 
@@ -88,6 +90,7 @@ export function ComposeToolbar({
   onImprove,
   improveOpen,
   improveDisabledReason = null,
+  onWrite,
   className,
 }: ComposeToolbarProps) {
   const mod = modKeyLabel();
@@ -193,9 +196,27 @@ export function ComposeToolbar({
             );
           })}
         </div>
+        {onWrite !== undefined ? (
+          <span title={improveDisabledReason ?? `${tx("Write with AI")} (${mod}+J)`} className="ml-auto inline-flex">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2"
+              aria-description={improveDisabledReason ?? undefined}
+              aria-keyshortcuts="Control+J Meta+J"
+              disabled={editor === null || improveDisabledReason !== null}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={onWrite}
+            >
+              <Icon name="PenLine" fallback="Bot" aria-hidden />
+              {tx("Write with AI")}
+            </Button>
+          </span>
+        ) : null}
         {onImprove !== undefined ? (
           // A disabled button shows no tooltip of its own: the wrapper carries the reason.
-          <span title={improveDisabledReason ?? undefined} className="ml-auto inline-flex">
+          <span title={improveDisabledReason ?? undefined} className={onWrite !== undefined ? "inline-flex" : "ml-auto inline-flex"}>
             <Button
               type="button"
               variant="ghost"

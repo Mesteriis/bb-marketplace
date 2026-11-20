@@ -911,6 +911,55 @@ describe("Composer: Improve and reply reminders (slice 3f)", () => {
     expect(JSON.stringify(editorOf().getJSON())).toContain("Dear Hello Ada,");
   });
 
+  it("Write with AI sends the request with the owner's range; Insert replaces it and keeps the quote; Ctrl+J opens it", async () => {
+    const jobs = {
+      start: vi.fn(async () => ({ jobId: "job-1" })),
+      poll: vi.fn(async () => ({
+        state: "done" as const,
+        result: { ...DRAFT_RESULT, kind: "write" as const, paragraphs: ["Hi Ada,", "Tuesday works."], linksRemoved: 0, unknown: 0 },
+      })),
+      cancel: vi.fn(async () => ({ cancelled: true })),
+    };
+    mount({ draft: draft({ doc: DOC }), improve: { jobs, disabledReason: null } });
+    fireEvent.keyDown(document.querySelector(".ProseMirror")!, { key: "j", code: "KeyJ", ctrlKey: true });
+    fireEvent.change(await screen.findByLabelText("What should the message say?"), { target: { value: "agree to Tuesday" } });
+    fireEvent.click(screen.getByRole("button", { name: "Write" }));
+    await screen.findByLabelText("Written text");
+    expect(jobs.start.mock.calls[0]).toEqual([
+      { kind: "write", draftId: "draft-1", revision: 1, instruction: "agree to Tuesday", paragraphs: ["Hello Ada,", "I would like to send the plan today."] },
+    ]);
+    fireEvent.click(screen.getByRole("button", { name: "Insert" }));
+    await waitFor(() => expect(screen.queryByLabelText("Written text")).toBeNull());
+    const content = editorOf().getJSON().content!;
+    expect(content.slice(0, 2)).toEqual([
+      { type: "paragraph", content: [text("Hi Ada,")] },
+      { type: "paragraph", content: [text("Tuesday works.")] },
+    ]);
+    expect(content[2]).toEqual(DOC.content[2]);
+  });
+
+  it("an edit while the AI wrote refuses Insert", async () => {
+    const jobs = {
+      start: vi.fn(async () => ({ jobId: "job-1" })),
+      poll: vi.fn(async () => ({
+        state: "done" as const,
+        result: { ...DRAFT_RESULT, kind: "write" as const, paragraphs: ["Hi Ada,"], linksRemoved: 0, unknown: 0 },
+      })),
+      cancel: vi.fn(async () => ({ cancelled: true })),
+    };
+    mount({ draft: draft({ doc: DOC }), improve: { jobs, disabledReason: null } });
+    fireEvent.click(screen.getByRole("button", { name: "Write with AI" }));
+    fireEvent.change(await screen.findByLabelText("What should the message say?"), { target: { value: "agree" } });
+    fireEvent.click(screen.getByRole("button", { name: "Write" }));
+    await screen.findByLabelText("Written text");
+    act(() => {
+      editorOf().commands.insertContentAt(1, "Dear ");
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Insert" }));
+    expect((await screen.findByRole("alert")).textContent).toBe("The draft changed while the AI worked. Write it again.");
+    expect(JSON.stringify(editorOf().getJSON())).toContain("Dear Hello Ada,");
+  });
+
   it("Improve is off with the reason without Makosh AI", () => {
     mount({ improve: { jobs: improvePorts(), disabledReason: "AI features need the Makosh AI plugin" } });
     const button = screen.getByRole("button", { name: /Improve/ }) as HTMLButtonElement;
