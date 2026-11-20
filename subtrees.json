@@ -74,18 +74,6 @@
       "upstreamRemote": "upstream-agent-traces"
     },
     {
-      "id": "agentation",
-      "prefix": "plugins/agentation",
-      "upstream": "https://github.com/smsunarto/bb-plugins.git",
-      "upstreamSubdir": "plugins/agentation",
-      "upstreamRevision": "c1fe661c414f12ff16106642338f37c45b01285d",
-      "fork": "https://github.com/Mesteriis/smsunarto-bb-plugins.git",
-      "branch": "marketplace/agentation",
-      "commit": "c52b5fd3bbc4cc532363d4ebef41ff29a7e41bd1",
-      "remote": "plugin-agentation",
-      "upstreamRemote": "upstream-agentation"
-    },
-    {
       "id": "ai-usage",
       "prefix": "plugins/ai-usage",
       "upstream": "https://github.com/neoromantic/ai-usage.git",

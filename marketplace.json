@@ -122,26 +122,6 @@
       }
     },
     {
-      "id": "agentation",
-      "displayName": "Agentation",
-      "description": "Point at any part of the bb UI \u2014 including plugin surfaces \u2014 and turn it into structured AFS 1.1 feedback that bb agents can read, answer, and resolve.",
-      "icon": {
-        "url": "./plugins/agentation/assets/icon.svg"
-      },
-      "author": {
-        "name": "smsunarto",
-        "github": "smsunarto",
-        "url": "https://github.com/smsunarto"
-      },
-      "source": {
-        "git": {
-          "url": "https://github.com/Mesteriis/bb-marketplace.git",
-          "subdir": "plugins/agentation",
-          "ref": "main"
-        }
-      }
-    },
-    {
       "id": "ai-usage",
       "displayName": "AI Usage",
       "description": "Shows your team's Claude Code, Codex and Grok subscriptions: what is left of each limit, when it runs out, who used it, and what it costs. Installs ai-usage on this machine when it is missing.",

@@ -43,6 +43,13 @@
    "own": true
   },
   {
+   "id": "makosh-remote-hub",
+   "name": "Remote Hub [Experimental]",
+   "description": "Experimental SSH/RDP manager with Proxmox VE guest discovery and consoles (strict TLS, Keychain secrets) through a Rust helper.",
+   "author": "Mesteriis",
+   "own": true
+  },
+  {
    "id": "action-topbar",
    "name": "Action Topbar",
    "description": "Mirror open thread-panel tabs in a compact topbar with a searchable + launcher.",
@@ -75,13 +82,6 @@
    "name": "Agent Traces",
    "description": "See where an agent's time goes: a waterfall of every turn's commands, tool calls, and subagents.",
    "author": "charpeni",
-   "own": false
-  },
-  {
-   "id": "agentation",
-   "name": "Agentation",
-   "description": "Point at any part of the bb UI — including plugin surfaces — and turn it into structured AFS 1.1 feedback that bb agents can read, answer, and resolve.",
-   "author": "smsunarto",
    "own": false
   },
   {
@@ -332,7 +332,7 @@
   {
    "id": "meetings",
    "name": "Meetings",
-   "description": "Record Zoom, Google Meet, Telemost and Jitsi with local transcription, summary templates, action items and MCP.",
+   "description": "Record Zoom, Google Meet, Telemost and Jitsi (bot on Linux, or local recording on macOS Apple silicon) with local transcription, summary templates, action items and MCP.",
    "author": "AiXenix",
    "own": false
   },

@@ -28,10 +28,6 @@
       "source": "./plugins/agent-traces"
     },
     {
-      "name": "agentation",
-      "source": "./plugins/agentation"
-    },
-    {
       "name": "ai-usage",
       "source": "./plugins/ai-usage"
     },

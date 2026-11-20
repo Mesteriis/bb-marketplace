@@ -61,7 +61,6 @@ The monorepo shared dependencies needed by the Scott Sunarto packages are vendor
 | agent-instructions | path:/Users/avm/projects/Personal/bb-smsunarto-plugins/plugins/agent-instructions | ./plugins/agent-instructions |
 | agent-plugins | git:https://github.com/patleeman/bb-plugins.git@semver:agent-plugins/:^0.3.0 | BB managed catalog |
 | agent-traces | git:https://github.com/charpeni/bb-plugins.git@semver:agent-traces/:^1.0.0 | BB managed catalog |
-| agentation | git:https://github.com/smsunarto/bb-plugins.git@semver:agentation/:^0.2.1 | ./plugins/agentation |
 | ai-usage | npm:@goodit/bb-plugin-ai-usage@>=0.12.0 <1.0.0 | BB managed catalog |
 | android-emulator | git:https://github.com/nicolay-i/bb-plugin-android-emulator.git@semver:^0.1.1 | BB managed catalog |
 | animation | git:https://github.com/MacHatter1/bb-plugin-animation.git@semver:^0.3.0 | ./plugins/animation |
