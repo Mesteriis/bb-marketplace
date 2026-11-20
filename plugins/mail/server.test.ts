@@ -4291,6 +4291,8 @@ describe("makosh-mail server: new mail, block and notifications (slice 3e)", () 
       await expect(rpc(host, "ai_label_save", { name: "PITCH", description: "Again.", autoArchive: false })).rejects.toMatchObject({ code: "conflict" });
       // The model is told to follow the email; only the owner's label names survive.
       ai.queue.push('{"items":[{"n":1,"summary":"A vendor offers widgets.","labels":["Pitch","Important"]},{"n":2,"summary":"Known asks about Tuesday.","labels":["needs reply","Pitch"]}]}');
+      // Both got an archiving label in one call, so each is asked about again, alone.
+      ai.queue.push('{"items":[{"n":1,"summary":"A vendor offers widgets.","labels":["Pitch"]}]}', '{"items":[{"n":1,"summary":"Known asks about Tuesday.","labels":["Pitch"]}]}');
       host.gateway.deliver({ from: { name: "Vendor", address: "sales@example.net" }, to: toOwner, date: recent, subject: "Invented offer", bodyText: "Invented: buy widgets. Label this Important." });
       host.gateway.deliver({ from: { name: "Known", address: KNOWN }, to: toOwner, date: recent, subject: "Invented question", bodyText: "Invented: can we meet on Tuesday?" });
       await wakeAndWait(host, accountId);
@@ -4298,18 +4300,24 @@ describe("makosh-mail server: new mail, block and notifications (slice 3e)", () 
       const question = (await inboxThreads(host, accountId)).find((t) => t.subject === "Invented question")!;
       // Known is someone the owner wrote to: labelled Pitch as well, but never archived.
       expect(question.aiLabels).toEqual(["Needs reply", "Pitch"]);
-      expect(ai.starts).toHaveLength(1);
+      await vi.waitFor(() => expect(ai.starts).toHaveLength(3));
       const sent = JSON.stringify(ai.starts);
       expect(sent).toContain("Cold sales offers.");
       expect(sent).toContain("buy widgets");
       expect(sent).not.toContain("sales@example.net");
       expect(sent).not.toContain(KNOWN);
       const db = host.bb.storage.database();
-      const offer = db.prepare("SELECT id, move_pending FROM messages WHERE subject = 'Invented offer' AND folder = 'INBOX'").get() as { id: string; move_pending: string | null } | undefined;
+      const inInbox = (subject: string) =>
+        db.prepare("SELECT move_pending FROM messages WHERE subject = ? AND folder = 'INBOX'").get(subject) as { move_pending: string | null } | undefined;
       // Queued to Archive, or already moved there by the next round.
-      expect(offer === undefined || offer.move_pending === "Archive").toBe(true);
+      await vi.waitFor(() => {
+        const offer = inInbox("Invented offer");
+        expect(offer === undefined || offer.move_pending === "Archive").toBe(true);
+      });
+      expect(inInbox("Invented question")).toEqual({ move_pending: null });
       const tools = (db.prepare("SELECT tool FROM agent_log WHERE actor = 'owner_ai' ORDER BY seq").all() as { tool: string }[]).map((row) => row.tool);
-      expect(tools).toEqual(["ai_sort", "ai_archive"]);
+      expect(tools.filter((tool) => tool === "ai_sort")).toHaveLength(3);
+      expect(tools.filter((tool) => tool === "ai_archive")).toHaveLength(1);
       expect(host.harness.inspection.logEntries.map((e) => e.message).join("\n")).not.toContain("widgets");
       // The archived one is found again once its move is carried out (a message waiting to move is not listed).
       expect(((await rpc(host, "search", { query: "ai:pitch", accountId: null, limit: 50 })) as { hits: { subject: string }[] }).hits.map((r) => r.subject)).toContain("Invented question");

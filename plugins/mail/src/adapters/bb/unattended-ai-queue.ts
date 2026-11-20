@@ -12,6 +12,26 @@ import { AI_JOB_MAX_MS, AiJobRefusal, type AiFinished, type AiJobContext, type A
 /** How long the queue waits when the job runner is busy. */
 export const UNATTENDED_RETRY_MS = 30_000;
 
+/**
+ * One unattended call at a time across every queue: the owner's own
+ * requests always find a free slot of the job runner's two.
+ */
+export class UnattendedGate {
+  private tail: Promise<void> = Promise.resolve();
+
+  /** Waits its turn; the answer gives the turn back. */
+  async acquire(): Promise<() => void> {
+    let release!: () => void;
+    const mine = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const before = this.tail;
+    this.tail = before.then(() => mine);
+    await before;
+    return release;
+  }
+}
+
 /** Failures that the next call would meet too. */
 const STOPS: ReadonlySet<AiErrorKind> = new Set(["gateway_missing", "pool_unavailable", "provider_unknown", "model_unknown", "auth", "quota"]);
 
@@ -39,6 +59,8 @@ export type UnattendedQueueDeps<Made> = {
   logCall: (built: AiBuild) => void;
   /** The daily cap. */
   budget: { left(): boolean; take(): boolean };
+  /** Shared by the queues of one server: at most one unattended call runs. Absent: this queue alone. */
+  gate?: UnattendedGate;
   /** Runs `run` after `ms`; the answer cancels it. */
   schedule: (run: () => void, ms: number) => () => void;
   log: (line: string) => void;
@@ -84,15 +106,31 @@ export class UnattendedAiQueue<Made> {
     this.cancelRetry = null;
     this.running = this.pump().finally(() => {
       this.running = null;
+      // Offered after the pump saw an empty list and before it ended: not left behind.
+      if (this.waiting.length > 0 && this.cancelRetry === null) this.wake();
     });
   }
 
   private async pump(): Promise<void> {
     const { deps } = this;
     while (this.waiting.length > 0 && !this.disposed) {
+      const release = deps.gate === undefined ? () => {} : await deps.gate.acquire();
+      try {
+        if (!(await this.step())) return;
+      } finally {
+        release();
+      }
+    }
+  }
+
+  /** One call, start to end; false stops the pump (emptied, or waiting for a free slot). */
+  private async step(): Promise<boolean> {
+    const { deps } = this;
+    if (this.waiting.length === 0 || this.disposed) return false;
+    {
       if (!deps.enabled() || !deps.budget.left()) {
         this.waiting = [];
-        return;
+        return false;
       }
       const next = this.waiting.slice(0, deps.batch);
       let made: ReturnType<UnattendedQueueDeps<Made>["build"]>;
@@ -103,7 +141,7 @@ export class UnattendedAiQueue<Made> {
       }
       if (made === null) {
         this.waiting.splice(0, next.length);
-        continue;
+        return true;
       }
       let jobId: string;
       try {
@@ -115,11 +153,11 @@ export class UnattendedAiQueue<Made> {
             this.cancelRetry = null;
             this.wake();
           }, UNATTENDED_RETRY_MS);
-          return;
+          return false;
         }
         this.waiting = [];
         deps.log(`${deps.label}: stopped (${error instanceof AiJobRefusal ? error.code : "failed"})`);
-        return;
+        return false;
       }
       this.waiting.splice(0, next.length);
       deps.budget.take();
@@ -133,13 +171,14 @@ export class UnattendedAiQueue<Made> {
         const error = deps.jobs.poll(jobId)?.error ?? "failed";
         deps.log(`${deps.label}: not done (${error})`);
         if (STOPS.has(error)) this.waiting = [];
-        continue;
+        return true;
       }
       try {
         deps.done(made.made, finished);
       } catch {
         deps.log(`${deps.label}: not kept`);
       }
+      return true;
     }
   }
 }

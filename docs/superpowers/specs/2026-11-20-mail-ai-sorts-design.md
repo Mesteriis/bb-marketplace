@@ -132,3 +132,19 @@ the queue with batches; both stores (migration 24 from schema 23, the
 `ai:` operator, the 90-day cleanup); the server round end to end with a
 model stub; settings and chips with fake ports; another plugin refused on
 every new method.
+
+## Changes after the independent review (2026-11-20)
+
+- One unattended call at a time across auto drafts and sorting (a shared
+  gate), so the owner's own requests always find a free slot.
+- A message that shared its call with others is asked about again, alone,
+  before it is archived; only that second answer archives. A message alone
+  in its call needs no second question.
+- After a call the setting and the labels are read again: turned off, or
+  the label unmarked or deleted meanwhile, nothing is archived (turned
+  off: nothing is kept either). A message the owner has opened stays.
+- Mail that Mail warns about gets labels but no line.
+- The subject is cut to 300 characters; a sender name that is an address
+  is not sent (domain only).
+- `ai:` is refused in the searches of agents and plugins.
+- The archive bound and the call caps are counted per run of the server.

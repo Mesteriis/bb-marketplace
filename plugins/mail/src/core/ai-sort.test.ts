@@ -72,6 +72,18 @@ describe("sortInput", () => {
     expect(sortInput([message(1, "Hello")], [], { nonce: NONCE }).input.startsWith(`<<<LABELS ${NONCE}>>>\n{"labels":[]}`)).toBe(true);
   });
 
+  it("cuts a huge subject so the whole batch still fits, and never sends an address given as the sender's name", () => {
+    const built = sortInput(
+      [message(1, "first", { subject: "s".repeat(40_000) }), message(2, "second", { from: { name: "bob@corp.example", address: "bob@corp.example" } }), message(3, "third")],
+      LABELS,
+      { nonce: NONCE },
+    );
+    expect(built.parts.map((part) => part.messageId)).toEqual(["m1", "m2", "m3"]);
+    expect(built.input.length).toBeLessThan(2_000);
+    expect(built.input).toContain("From: corp.example\n");
+    expect(built.input).not.toContain("bob@corp.example");
+  });
+
   it("refuses an empty batch", () => {
     expect(() => sortInput([], LABELS, { nonce: NONCE })).toThrow(AiError);
   });

@@ -103,6 +103,7 @@ import { writeInput } from "./src/core/ai-write.ts";
 import { writeSource, type WriteSettings } from "./src/core/write-source.ts";
 import { createReplyDrafts, type ReplyDrafts } from "./src/adapters/bb/reply-drafts.ts";
 import { AiSortRefusal, createAiSort, type AiSort } from "./src/adapters/bb/ai-sort.ts";
+import { UnattendedGate } from "./src/adapters/bb/unattended-ai-queue.ts";
 import { createSnoozeClock, type SnoozeClock } from "./src/adapters/bb/snooze-clock.ts";
 import { ONE_CLICK_TOTAL_MS, UnsubscribeRate, createOneClickPoster } from "./src/adapters/bb/one-click.ts";
 import { createVault, generateVaultKey } from "./src/adapters/bb/vault.ts";
@@ -808,6 +809,7 @@ function defineSettings(bb: BbPluginApi) {
   });
 }
 
+export const AI_LABEL_SEARCH_REFUSAL = "ai: labels are the owner's own and are not searchable here";
 export const ATTACHMENT_FOLDER_DEFAULT = "mail-attachments";
 export const PATCH_FOLDER_DEFAULT = "mail-patches";
 
@@ -1256,6 +1258,8 @@ function agentSearch(
     parsed.text,
     ...parsed.conditions.filter((condition) => SCREENED_FIELDS.has(condition.field)).map((condition) => condition.value),
   ];
+  // The owner's AI labels are theirs alone: an agent or a plugin does not search by them.
+  if (parsed.conditions.some((condition) => condition.field === "ai")) return { refused: AI_LABEL_SEARCH_REFUSAL };
   const refused = values.map((value) => agentSearchRefusal(value.trim())).find((answer) => answer !== null) ?? null;
   if (refused !== null) return { refused };
   const terms = [parsed.text.trim(), parsed.subject?.trim() ?? ""].filter((term) => term !== "");
@@ -1285,6 +1289,8 @@ function pluginSearch(
     parsed.text,
     ...parsed.conditions.filter((condition) => SCREENED_FIELDS.has(condition.field)).map((condition) => condition.value),
   ];
+  // The owner's AI labels are theirs alone: an agent or a plugin does not search by them.
+  if (parsed.conditions.some((condition) => condition.field === "ai")) return { refused: AI_LABEL_SEARCH_REFUSAL };
   const refused = values.map((value) => agentSearchRefusal(value.trim())).find((answer) => answer !== null) ?? null;
   if (refused !== null) return { refused };
   const terms = [parsed.text.trim(), parsed.subject?.trim() ?? ""].filter((term) => term !== "");
@@ -1549,7 +1555,12 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       importantOnly: () => current.notifyImportantOnly,
       // Made below, once the AI job runner exists. Sorting first: its labels may archive what a draft would answer.
       autoDrafts: (ids) => {
-        aiSort?.offer(ids);
+        // Each on its own: a failure of one does not skip the other.
+        try {
+          aiSort?.offer(ids);
+        } catch (error) {
+          bb.log.info(`sort: failed (${errorKind(error)})`);
+        }
         replyDrafts?.offer(ids);
       },
       log: (line) => bb.log.info(line),
@@ -1855,7 +1866,10 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       const view = senderChecks.views([messageId]).get(messageId);
       return view !== undefined && (view.senderCheck.state === "failed" || view.warnings.length > 0);
     };
+    // One unattended call at a time: the owner's clicks always find a free slot.
+    const unattendedGate = new UnattendedGate();
     const madeReplyDrafts = createReplyDrafts({
+      gate: unattendedGate,
       store,
       clock,
       enabled: () => pageSettingsOf(current).aiAutoDrafts,
@@ -1883,6 +1897,7 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
     });
     replyDrafts = madeReplyDrafts;
     const madeAiSort = createAiSort({
+      gate: unattendedGate,
       store,
       clock,
       enabled: () => pageSettingsOf(current).aiSort,
@@ -1909,7 +1924,7 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       log: (line) => bb.log.info(line),
     });
     aiSort = madeAiSort;
-    bb.onDispose(() => madeAiSort.queue.dispose());
+    bb.onDispose(() => madeAiSort.dispose());
     // Disposers run in order: the queue stops, then a call already running ends with the job runner.
     bb.onDispose(() => madeReplyDrafts.queue.dispose());
     bb.onDispose(() => aiJobs.dispose());

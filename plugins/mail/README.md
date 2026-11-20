@@ -1586,14 +1586,21 @@ wrong; check the cited messages".
   conversation list (the snippet is one hover away) and stands above the
   open message; the labels are chips beside it. Find mail with
   `ai:<label>` (`ai:"needs reply"`, `-ai:pitch`), also as an Inbox tab.
-  Labels live in Mail only; nothing is written to the mail server. A
-  message cannot label itself: only names you defined are kept.
+  Labels live in Mail only; nothing is written to the mail server, and
+  agents and other plugins cannot search by them. A message cannot invent a
+  label: only names you defined are kept. Mail with a sender warning gets
+  labels but no line.
   **Archive automatically** on a label moves new mail that gets it from
   the Inbox to Archive (the ordinary Archive action, logged in Agent
   activity). Always left in the Inbox: mail from someone you have written
   to, flagged mail, mail with a sender warning, and an account without an
-  Archive folder. At most 50 automatic archives an hour, 20 model calls an
-  hour and 100 a day, ten messages a call (counted while BB runs). The line
+  Archive folder, and a message you have already opened. Before a message
+  that was sorted together with others is archived, the model is asked
+  about it once more, alone, so one email cannot decide for its
+  neighbours. Turning the label's switch or the setting off also stops
+  archives of a call already running. At most 50 automatic archives an
+  hour, 20 model calls an hour and 100 a day, ten messages a call (all
+  counted while BB runs; a restart or a plugin reload starts them again). The line
   and labels are kept 90 days.
 
 ### What goes to your AI provider

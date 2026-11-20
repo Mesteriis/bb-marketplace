@@ -177,7 +177,7 @@ export function SortingSettings({ port, labels: ports }: { port: PageSettingsPor
             <Button type="submit" size="sm" disabled={!ready || busy}>
               {tx("Save label")}
             </Button>
-            <Button type="button" variant="ghost" size="sm" onClick={() => setDraft(null)}>
+            <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => setDraft(null)}>
               {tx("Cancel")}
             </Button>
           </div>

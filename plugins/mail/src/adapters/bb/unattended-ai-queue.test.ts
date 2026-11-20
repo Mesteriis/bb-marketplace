@@ -5,7 +5,7 @@ import { DraftBudget } from "../../core/auto-drafts.ts";
 import { FixedClock } from "../../core/testing/fakes.ts";
 import { TranslateError, type TranslateProvider, type Translator } from "../../core/translate.ts";
 import { AiJobs } from "./ai-jobs.ts";
-import { UNATTENDED_RETRY_MS, UnattendedAiQueue } from "./unattended-ai-queue.ts";
+import { UNATTENDED_RETRY_MS, UnattendedAiQueue, UnattendedGate } from "./unattended-ai-queue.ts";
 
 type Pending = {
   request: Parameters<Translator["translate"]>[0];
@@ -245,6 +245,65 @@ describe("UnattendedAiQueue", () => {
     expect(calls).toEqual([["a1", "a2", "a3"], ["a7"]]);
     expect(done).toEqual([["a1", "a2", "a3"], ["a7"]]);
     expect(lines).toEqual([]);
+  });
+
+  it("queues that share a gate run one call at a time, so the owner always finds a free slot", async () => {
+    const gate = new UnattendedGate();
+    const make = (label: string) =>
+      new UnattendedAiQueue<string>({
+        kind: "sort",
+        label,
+        batch: 1,
+        limit: 20,
+        enabled: () => true,
+        build: (ids) => ({ built: summaryInput([source(ids[0]!)], { nonce: NONCE }), context: { labels: [] }, ids: [ids[0]!], made: ids[0]! }),
+        jobs,
+        context: () => ({ provider: "", model: "" }),
+        done: () => {},
+        logCall: () => {},
+        budget: new DraftBudget(clock, 100),
+        schedule: () => () => {},
+        log: (line) => lines.push(line),
+        gate,
+      });
+    const [first, second] = [make("one"), make("two")];
+    first.offer(["a1"]);
+    second.offer(["b1"]);
+    await tick();
+    expect(translator.calls).toHaveLength(1);
+    // The owner's own request still starts.
+    expect(() => jobs.start("summary", summaryInput([source("x1")], { nonce: NONCE }), { provider: "", model: "" })).not.toThrow();
+    await tick();
+    expect(translator.calls).toHaveLength(2);
+    translator.calls[0]!.onText('{"items":[]}');
+    translator.calls[0]!.resolve("complete");
+    await tick();
+    expect(translator.calls).toHaveLength(3);
+    expect(translator.calls[2]!.request.input).toContain("Invented question in b1?");
+    translator.calls[2]!.onText('{"items":[]}');
+    translator.calls[2]!.resolve("complete");
+    await first.idle();
+    await second.idle();
+    expect(lines).toEqual([]);
+  });
+
+  it("a message offered just as the queue runs dry is not left behind", async () => {
+    queue.offer(["m1"]);
+    await tick();
+    const call = translator.calls.at(-1)!;
+    call.onText('{"reply":false}');
+    call.resolve("complete");
+    // Offered at every step of the queue's winding down.
+    for (let i = 0; i < 40; i++) {
+      await Promise.resolve();
+      queue.offer([`late-${i}`]);
+      if (translator.calls.length > 1) break;
+    }
+    await tick();
+    expect(translator.calls.length).toBeGreaterThan(1);
+    expect(queue.size()).toBeLessThan(40);
+    queue.dispose();
+    await jobs.dispose();
   });
 
   it("holds at most twenty waiting, dropping the oldest", async () => {

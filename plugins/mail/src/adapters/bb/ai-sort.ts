@@ -21,7 +21,7 @@ import { ownAddresses } from "../../core/compose.ts";
 import type { Clock, MailStore, MessageHeader, ThreadSummary } from "../../core/index.ts";
 import { sourceMessageOf } from "../../core/write-source.ts";
 import type { AiJobs } from "./ai-jobs.ts";
-import { UnattendedAiQueue } from "./unattended-ai-queue.ts";
+import { UnattendedAiQueue, type UnattendedGate } from "./unattended-ai-queue.ts";
 
 /** Model calls a day (each sorts up to SORT_BATCH messages). */
 export const SORT_CALLS_PER_DAY = 100;
@@ -54,6 +54,8 @@ export type AiSortDeps = {
   newId: () => string;
   schedule: (run: () => void, ms: number) => () => void;
   log: (line: string) => void;
+  /** Shared with the other unattended queues: one call at a time. */
+  gate?: UnattendedGate;
 };
 
 /** A refusal of a label method with fixed text. */
@@ -97,7 +99,8 @@ export function createAiSort(deps: AiSortDeps) {
     for (const id of ids) {
       if (archived.length >= AUTO_ARCHIVES_PER_HOUR) break;
       const header = qualifies(id);
-      if (header === null || header.isFlagged || deps.suspicious(id)) continue;
+      // A message the owner has opened meanwhile stays where they saw it.
+      if (header === null || header.isFlagged || header.isRead || deps.suspicious(id)) continue;
       if (store.addressesSentTo([header.from.address]).has(lower(header.from.address))) continue;
       const account = store.getAccount(header.accountId);
       if (account === null) continue;
@@ -114,7 +117,59 @@ export function createAiSort(deps: AiSortDeps) {
     }
   };
 
-  const queue = new UnattendedAiQueue<{ ids: string[]; labels: AiLabel[] }>({
+  const budget = new DraftBudget(clock, SORT_CALLS_PER_DAY);
+  const logCall = (built: AiBuild) => {
+    const { provider, model } = deps.aiContext();
+    deps.agentLog({
+      actor: "owner_ai",
+      tool: "ai_sort",
+      outcome: "ok",
+      messageIds: built.parts.map((part) => part.messageId),
+      count: built.parts.length,
+      hiddenCount: built.notes.hidden,
+      provider,
+      model,
+    });
+  };
+  /** The ids of the labels that archive, as the owner has them now (not as they were when the call started). */
+  const archivingNow = () => new Set(store.listAiLabels().filter((label) => label.autoArchive).map((label) => label.id));
+
+  /**
+   * Before a message that shared its call with others is archived, the
+   * model is asked about it alone: text in one email of a batch could
+   * otherwise decide the fate of its neighbours. Only a second answer that
+   * also names an archiving label archives.
+   */
+  const confirm = new UnattendedAiQueue<{ messageId: string }>({
+    kind: "sort",
+    label: "sort check",
+    batch: 1,
+    limit: SORT_QUEUE,
+    enabled: deps.enabled,
+    build: (ids) => {
+      const messageId = ids[0];
+      const header = messageId === undefined ? null : qualifies(messageId);
+      if (header === null || messageId === undefined) return null;
+      const labels = store.listAiLabels();
+      const built = deps.withNonce((nonce) => sortInput([sourceMessageOf(store, header)], labels, { nonce }));
+      return { built, context: { labels }, ids: [messageId], made: { messageId } };
+    },
+    jobs: deps.jobs,
+    context: deps.aiContext,
+    done: (made, finished) => {
+      const output = finished.output;
+      if (output.kind !== "sort" || !deps.enabled()) return;
+      const auto = archivingNow();
+      if (output.value.items.some((item) => item.n === 1 && item.labelIds.some((id) => auto.has(id)))) autoArchive([made.messageId]);
+    },
+    logCall,
+    budget,
+    schedule: deps.schedule,
+    log: deps.log,
+    ...(deps.gate === undefined ? {} : { gate: deps.gate }),
+  });
+
+  const queue = new UnattendedAiQueue<{ ids: string[] }>({
     kind: "sort",
     label: "sort",
     batch: SORT_BATCH,
@@ -126,41 +181,35 @@ export function createAiSort(deps: AiSortDeps) {
       const labels = store.listAiLabels();
       const built = deps.withNonce((nonce) => sortInput(headers.map((header) => sourceMessageOf(store, header)), labels, { nonce }));
       // The frame numbers 1..n follow `parts`: a message cut by the cap is not among them.
-      return { built, context: { labels }, ids: [...ids], made: { ids: built.parts.map((part) => part.messageId), labels } };
+      return { built, context: { labels }, ids: [...ids], made: { ids: built.parts.map((part) => part.messageId) } };
     },
     jobs: deps.jobs,
     context: deps.aiContext,
     done: (made, finished) => {
       const output = finished.output;
-      if (output.kind !== "sort") return;
+      // Turned off while the call ran: nothing is kept and nothing is archived.
+      if (output.kind !== "sort" || !deps.enabled()) return;
       const rows = output.value.items.flatMap((item) => {
         const messageId = made.ids[item.n - 1];
-        return messageId === undefined ? [] : [{ messageId, summary: item.summary, labelIds: item.labelIds }];
+        // A line a model wrote about mail Mail warns about would speak in Mail's voice: such mail gets labels only.
+        return messageId === undefined ? [] : [{ messageId, summary: deps.suspicious(messageId) ? null : item.summary, labelIds: item.labelIds }];
       });
       if (rows.length === 0) return;
       const now = clock.now();
       store.saveMessageAi(rows, now.toISOString(), new Date(now.getTime() - MESSAGE_AI_DAYS * DAY_MS).toISOString());
-      const auto = new Set(made.labels.filter((label) => label.autoArchive).map((label) => label.id));
-      autoArchive(rows.filter((row) => row.labelIds.some((id) => auto.has(id))).map((row) => row.messageId));
+      const auto = archivingNow();
+      const wanted = rows.filter((row) => row.labelIds.some((id) => auto.has(id))).map((row) => row.messageId);
+      // Alone in its call, a message decided only about itself; otherwise it is asked about again, alone.
+      if (made.ids.length === 1) autoArchive(wanted);
+      else confirm.offer(wanted);
       const accounts = new Set(rows.map((row) => store.getMessage(row.messageId)?.accountId).filter((id): id is string => id !== undefined));
       for (const accountId of accounts) deps.onChanged(accountId);
     },
-    logCall: (built) => {
-      const { provider, model } = deps.aiContext();
-      deps.agentLog({
-        actor: "owner_ai",
-        tool: "ai_sort",
-        outcome: "ok",
-        messageIds: built.parts.map((part) => part.messageId),
-        count: built.parts.length,
-        hiddenCount: built.notes.hidden,
-        provider,
-        model,
-      });
-    },
-    budget: new DraftBudget(clock, SORT_CALLS_PER_DAY),
+    logCall,
+    budget,
     schedule: deps.schedule,
     log: deps.log,
+    ...(deps.gate === undefined ? {} : { gate: deps.gate }),
   });
 
   const names = () => new Map(store.listAiLabels().map((label) => [label.id, label.name]));
@@ -225,6 +274,12 @@ export function createAiSort(deps: AiSortDeps) {
     },
 
     queue,
+    /** The queue of the second, solo question before an archive. */
+    confirm,
+    dispose(): void {
+      queue.dispose();
+      confirm.dispose();
+    },
   };
 }
 

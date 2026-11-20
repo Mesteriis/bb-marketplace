@@ -191,16 +191,19 @@ class Tally {
  */
 export function aiPart(
   message: AiSourceMessage,
-  options: { n: number; bodyChars: number; fromDomainOnly?: boolean },
+  options: { n: number; bodyChars: number; fromDomainOnly?: boolean; subjectChars?: number },
 ): { part: AiPart; hidden: number; cut: boolean } {
   const tally = new Tally();
-  const name = message.from.name !== null && message.from.name.trim() !== "" ? message.from.name : null;
+  const given = message.from.name !== null && message.from.name.trim() !== "" ? message.from.name : null;
+  // A display name that is an address would send the address where only the name and domain may go.
+  const name = options.fromDomainOnly === true && given !== null && given.includes("@") ? null : given;
   const domain = message.from.address.slice(message.from.address.lastIndexOf("@") + 1);
   const fromRaw = options.fromDomainOnly === true
     ? name !== null ? `${name} (${domain})` : domain
     : name ?? message.from.address;
   const from = oneLine(tally.take(redactSecrets(removeInvisible(fromRaw))));
-  const subject = oneLine(tally.take(redactSecrets(removeInvisible(message.subject))));
+  const wholeSubject = oneLine(tally.take(redactSecrets(removeInvisible(message.subject))));
+  const subject = options.subjectChars === undefined ? wholeSubject : truncateText(wholeSubject, options.subjectChars);
   const full = tally.take(redactSecrets(stripQuoted(plainBody(message.body)), { context: message.subject }));
   const cut = full.length > options.bodyChars;
   return {
@@ -265,12 +268,13 @@ function capParts(
   bodyChars: number,
   nonce: string,
   fromDomainOnly = false,
+  subjectChars?: number,
 ): { kept: { index: number; part: AiPart }[]; hidden: number; truncated: number } {
   const kept: { index: number; part: AiPart; hidden: number }[] = [];
   let used = 0;
   let truncated = 0;
   for (const index of order) {
-    const built = aiPart(messages[index]!, { n: 0, bodyChars, fromDomainOnly });
+    const built = aiPart(messages[index]!, { n: 0, bodyChars, fromDomainOnly, ...(subjectChars === undefined ? {} : { subjectChars }) });
     const size = framePart(built.part, nonce).length + 2;
     if (used + size <= cap) {
       kept.push({ index, part: built.part, hidden: built.hidden });
@@ -338,8 +342,9 @@ export function listFrame(
   cap: number,
   bodyChars: number,
   nonce: string,
+  subjectChars?: number,
 ): { framed: string; parts: AiBuild["parts"]; hidden: number; truncated: number } {
-  const capped = capParts(messages, inOrder(messages.length), cap, bodyChars, nonce, true);
+  const capped = capParts(messages, inOrder(messages.length), cap, bodyChars, nonce, true, subjectChars);
   const built = finish("", messages, capped, { nonce });
   return { framed: built.input, parts: built.parts, hidden: capped.hidden, truncated: capped.truncated };
 }

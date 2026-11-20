@@ -12,7 +12,7 @@ import type { LogEntryInput } from "../../core/agent-log.ts";
 import type { Clock, MailStore } from "../../core/index.ts";
 import { conversationUpTo, voiceFor, type WriteSettings } from "../../core/write-source.ts";
 import type { AiJobs } from "./ai-jobs.ts";
-import { UnattendedAiQueue } from "./unattended-ai-queue.ts";
+import { UnattendedAiQueue, type UnattendedGate } from "./unattended-ai-queue.ts";
 
 export type ReplyDraftsDeps = {
   store: MailStore;
@@ -33,6 +33,8 @@ export type ReplyDraftsDeps = {
   onKept: (accountId: string) => void;
   schedule: (run: () => void, ms: number) => () => void;
   log: (line: string) => void;
+  /** Shared with the other unattended queues: one call at a time. */
+  gate?: UnattendedGate;
 };
 
 /** The kept draft as the page shows it. */
@@ -170,6 +172,7 @@ export function createReplyDrafts(deps: ReplyDraftsDeps) {
     budget: new DraftBudget(clock),
     schedule: deps.schedule,
     log: deps.log,
+    ...(deps.gate === undefined ? {} : { gate: deps.gate }),
   });
 
   return {

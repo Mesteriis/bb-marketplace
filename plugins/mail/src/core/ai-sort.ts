@@ -28,6 +28,8 @@ export const LABEL_DESCRIPTION_CHARS = 300;
 /** Messages per model call. */
 export const SORT_BATCH = 10;
 export const SORT_BODY_CHARS = 600;
+/** A subject is cut to this, so ten messages always fit one call. */
+export const SORT_SUBJECT_CHARS = 300;
 export const SORT_SUMMARY_CHARS = 140;
 export const SORT_LABELS_PER_MESSAGE = 3;
 
@@ -91,7 +93,7 @@ export function sortInput(messages: readonly AiSourceMessage[], labels: readonly
   });
   const nonce = options.nonce;
   if (nonce === "" || owner.includes(nonce)) throw new NonceCollision();
-  const frame = listFrame(list, AI_INPUT_CAPS.sort, SORT_BODY_CHARS, nonce);
+  const frame = listFrame(list, AI_INPUT_CAPS.sort, SORT_BODY_CHARS, nonce, SORT_SUBJECT_CHARS);
   return {
     instructions:
       `${AI_PREAMBLE}\n\nEach email below is new in the owner's inbox. For each, write one line (at most ` +
