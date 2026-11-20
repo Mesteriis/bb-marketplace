@@ -32,9 +32,10 @@ Toasts for new mail from people you write to. **Unsubscribe** asks first.
 
 Via Makosh AI: **Translate**, **Summarize**, **Ask**, **Find
 tasks**, **categories**, **Today**, **reply reminders**, **Improve**,
-**Write with AI** (in your voice). Drafted replies to new mail are off
-by default. Nothing is sent without your click. The provider gets
-subjects, names, dates and unquoted bodies; never addresses or files.
+**Write with AI**. Off by default: drafted replies and AI labels for
+new mail (one can archive). Nothing is sent without your click.
+The provider gets subjects, names, dates, unquoted bodies; never
+addresses or files.
 
 ## BB integration
 

@@ -1578,6 +1578,24 @@ wrong; check the cited messages".
   deleted or leaves AI access, when you turn the setting off, or after 14
   days. Each call is a row in the agent log.
 
+- **Sort new mail with AI** (off by default; Mail settings → AI features →
+  **Sorting**): for each new Inbox message inside AI access a model writes
+  one line (at most 140 characters) and picks from your own **AI labels**.
+  A label is a name (up to 30 characters) and, in your words, what belongs
+  under it (up to 300); at most 12. The line replaces the snippet in the
+  conversation list (the snippet is one hover away) and stands above the
+  open message; the labels are chips beside it. Find mail with
+  `ai:<label>` (`ai:"needs reply"`, `-ai:pitch`), also as an Inbox tab.
+  Labels live in Mail only; nothing is written to the mail server. A
+  message cannot label itself: only names you defined are kept.
+  **Archive automatically** on a label moves new mail that gets it from
+  the Inbox to Archive (the ordinary Archive action, logged in Agent
+  activity). Always left in the Inbox: mail from someone you have written
+  to, flagged mail, mail with a sender warning, and an account without an
+  Archive folder. At most 50 automatic archives an hour, 20 model calls an
+  hour and 100 a day, ten messages a call (counted while BB runs). The line
+  and labels are kept 90 days.
+
 ### What goes to your AI provider
 
 Only through Makosh AI, only mail in AI access, only redacted text framed
@@ -1595,6 +1613,9 @@ you turned that on:
 - Today's Summarize: the latest message of up to 30 conversations, 500
   characters each.
 - Improve: your own text of the draft and your instruction.
+- Sorting: your AI labels (names and descriptions) and, for each new
+  message, the sender's name and domain, the subject and the first 600
+  characters of the body without quotes.
 - Write with AI and drafted replies: your request, your instructions and
   facts, your own text of the draft, the voice samples (your own sent text
   without quotes and signatures, only when **Write in my voice** is on), and

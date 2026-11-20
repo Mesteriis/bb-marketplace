@@ -8,6 +8,15 @@ All notable changes to Makosh Mail are recorded here. The format follows
 
 ### Added
 
+- **AI sorts the inbox** (off by default): one line and your own AI
+  labels for each new Inbox message; a label can archive automatically
+  (never mail from people you write to, flagged or warned mail; at most 50
+  an hour). The line replaces the snippet in the list; `ai:<label>` in
+  search and Inbox tabs. Setting `aiSort`; Mail settings → AI features →
+  Sorting. New RPC methods `ai_labels_list`, `ai_label_save`,
+  `ai_label_delete`, `ai_label_move`; conversations and messages carry
+  `aiSummary` and `aiLabels`. Storage migration 24 (`ai_labels`,
+  `message_ai`).
 - **AI writes mail**: **Write with AI** in the composer (toolbar button,
   Ctrl/Cmd+J) writes the body from a few words, in a reply reading the
   conversation; **Insert** replaces your own text in one step. It follows
