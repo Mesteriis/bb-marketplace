@@ -61,6 +61,8 @@ export const PAGE_SETTING_SCHEMAS = {
   autocorrectPairs: z.string().max(20_000),
   /** Typing speed: offer the rest of a phrase the owner often writes. */
   autocomplete: z.boolean(),
+  /** Read statuses: mail the owner sends carries the image of their endpoint. */
+  readStatuses: z.boolean(),
   /** AI writes mail: show the model pieces of the owner's own sent text, to match the voice. */
   aiVoice: z.boolean(),
   /** AI writes mail: draft a reply to each new message from people the owner writes to. */
@@ -115,6 +117,7 @@ export const PAGE_SETTING_DEFAULTS: PageSettings = {
   autocorrect: true,
   autocorrectPairs: "",
   autocomplete: true,
+  readStatuses: true,
   aiVoice: true,
   aiAutoDrafts: false,
   aiInstructions: "",

@@ -96,6 +96,12 @@ export function TypingSettings({ port }: Rows) {
           label={tx("Offer the rest of phrases I often write")}
           hint={tx("From your own sent mail and templates, on this computer. Tab accepts.")}
         />
+        <SwitchSetting
+          port={port}
+          name="readStatuses"
+          label={tx("Show when mail I send is opened")}
+          hint={tx("A tiny image from your own endpoint in mail you send. An open is a hint, not a proof: some mail services fetch images by themselves, many programs never do. Never in signed or encrypted mail.")}
+        />
       </div>
     </SettingsGroup>
   );

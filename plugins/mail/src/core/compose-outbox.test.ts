@@ -85,6 +85,50 @@ async function drain(): Promise<void> {
 
 const states = () => h.notifier.events.map((e) => e.state);
 
+describe("queueSend: read statuses", () => {
+  const PIXEL = '<img src="https://makosh.example.org/o/tok.gif" width="1" height="1" alt="">';
+  const tracker = () => {
+    const issued: string[] = [];
+    return { issued, issue: () => (issued.push("tok"), { token: "tok", html: PIXEL }) };
+  };
+
+  it("an owner's send carries the image at the end of the body and remembers the token by Message-ID", async () => {
+    const t = tracker();
+    const draft = await readyDraft();
+    const saved = h.store.getDraft(draft.draftId)!;
+    const remembered: unknown[] = [];
+    const save = h.store.saveSentTracking.bind(h.store);
+    h.store.saveSentTracking = (row) => (remembered.push(row), save(row));
+    await queueSend({ ...deps, tracker: t }, { ...draft, requestId: requestId(), origin: "owner" });
+    expect(h.builder.built[0]!.html.endsWith(PIXEL)).toBe(true);
+    expect(h.builder.built[0]!.text).not.toContain("makosh.example.org");
+    expect(remembered).toEqual([{ token: "tok", accountId: "acc_1", rfcMessageId: saved.messageId, createdAt: h.clock.now().toISOString() }]);
+  });
+
+  it("no image when the owner said no, for an agent's send, for mail only to oneself, and for encrypted or signed mail", async () => {
+    const t = tracker();
+    const withTracker = { ...deps, tracker: t, protect: async (mime: Uint8Array) => mime };
+    await queueSend(withTracker, { ...(await readyDraft()), requestId: requestId(), origin: "owner", track: false });
+    await queueSend(withTracker, { ...(await readyDraft()), requestId: requestId(), origin: "agent" });
+    await queueSend(withTracker, { ...(await readyDraft({ to: ["owner@example.org"], bcc: [] })), requestId: requestId(), origin: "owner" });
+    await queueSend(withTracker, { ...(await readyDraft({ bcc: [] })), requestId: requestId(), origin: "owner", protect: { sign: true, encrypt: false } });
+    expect(t.issued).toEqual([]);
+    for (const built of h.builder.built) expect(built.html).not.toContain("makosh.example.org");
+  });
+
+  it("a repeated request does not issue a second token, and a refused send keeps none", async () => {
+    const t = tracker();
+    const draft = await readyDraft();
+    const id = requestId();
+    await queueSend({ ...deps, tracker: t }, { ...draft, requestId: id, origin: "owner" });
+    await queueSend({ ...deps, tracker: t }, { ...draft, requestId: id, origin: "owner" });
+    expect(t.issued).toEqual(["tok"]);
+    const none = tracker();
+    await expect(queueSend({ ...deps, tracker: none }, { ...(await readyDraft()), baseRevision: 99, requestId: requestId(), origin: "owner" })).rejects.toThrow();
+    expect(none.issued).toEqual([]);
+  });
+});
+
 describe("queueSend", () => {
   it("queues one row for the same requestId sent twice, building the MIME once", async () => {
     const draft = await readyDraft();

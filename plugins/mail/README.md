@@ -1626,6 +1626,34 @@ button says so and nothing is recorded. A composer that moves between the
 docked and the wide layout (a resize, another conversation) drops a
 dictation in progress; the microphone is released.
 
+### Read statuses
+
+Under a message you sent, Makosh Mail can show "Opened 3 times · last …"
+or "Not opened yet". It works through **your own** public endpoint (the
+Makosh site, `site/` in this repository): the message carries a 1×1 image
+whose address holds a random token signed with a key only you and your
+endpoint have; when the recipient's mail program fetches the image, the
+endpoint notes the token, the time and a coarse kind of client — never an
+IP address — and Makosh Mail reads those notes every five minutes.
+
+- Set up once in BB Settings → Plugins → Makosh Mail: `readStatusOrigin`
+  (the endpoint's https address), `readStatusTrackKey` and
+  `readStatusFeedKey` (the endpoint's `MAKOSH_TRACK_KEY` and
+  `MAKOSH_API_KEY`). Without both keys nothing is added to your mail.
+- The switch **Show when mail I send is opened** (Mail settings →
+  Templates → Typing, on by default) turns it off for all mail.
+- Never added to signed or encrypted mail, to mail only to yourself, to
+  an invitation answer, or to mail an agent proposed.
+- An open is a hint, not a proof. Gmail and Yahoo fetch images through
+  their own servers, Apple Mail may fetch them before anyone reads, many
+  programs never fetch them, and your own Sent copy opened in another
+  mail program counts too. Opens that are plainly a machine are left out.
+- Opens are kept 90 days, on your endpoint and on this computer. Agents
+  and AI get no part of them.
+
+Not built: a per-message switch in the composer, exceptions by address,
+a mark in the conversation list and a row in Today.
+
 ### Assistants outside BB (MCP)
 
 An assistant that is not a BB agent (Claude Desktop, Cursor, another MCP

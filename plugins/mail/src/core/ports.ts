@@ -1,4 +1,5 @@
 // Ports: what the core needs from its host. Each host supplies adapters.
+import type { OpenEvent, SentTracking } from "./read-status.ts";
 import type { Exchange } from "./sender-rhythm.ts";
 import type { ReplyDraftRecord } from "./auto-drafts.ts";
 import type { AiLabel, MessageAi } from "./ai-sort.ts";
@@ -544,6 +545,17 @@ export interface MailStore {
   messageAi(messageIds: string[]): Map<string, MessageAi>;
   /** By thread id: the newest message of the thread that was sorted. */
   threadAi(threadIds: string[]): Map<string, MessageAi>;
+  /** Read statuses: the token a sent message carries, by its RFC Message-ID (normalized). */
+  saveSentTracking(row: SentTracking): void;
+  /** Keeps the opens whose token is one of ours and whose number is new; returns how many were kept. */
+  saveOpenEvents(events: readonly OpenEvent[]): number;
+  /** The feed's sequence number read so far (0 at first). */
+  openCursor(): number;
+  setOpenCursor(seq: number): void;
+  /** By local message id, for messages whose Message-ID is tracked: their opens, oldest first (empty: not opened). */
+  messageOpens(messageIds: string[]): Map<string, { at: string; kind: string }[]>;
+  /** Drops tracking rows made before `beforeIso` and their opens. */
+  pruneTracking(beforeIso: string): void;
   /** AI writes mail: keeps a drafted reply (replacing the message's earlier one); past `max` rows the oldest go. */
   saveReplyDraft(draft: ReplyDraftRecord, max: number): void;
   getReplyDraft(messageId: string): ReplyDraftRecord | null;

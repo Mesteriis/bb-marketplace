@@ -59,9 +59,9 @@ assistants read the same over local MCP (off by default).
 
 ## Writing and sending
 
-**Compose**, **Reply**, **Forward** with rich text, files up to 25 MB,
-signatures, templates, autocorrect. **Send** waits 10 seconds with **Undo**,
-then goes out over SMTP (TLS).
+**Compose**, **Reply**, **Forward**: rich text, files up to 25 MB,
+signatures, templates. **Send** waits 10 seconds with **Undo**. With
+your own endpoint: when sent mail was read.
 
 ## Agent access
 

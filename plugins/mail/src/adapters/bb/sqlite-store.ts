@@ -1122,6 +1122,25 @@ export const MIGRATIONS: string[] = [
   );
   CREATE INDEX message_ai_created ON message_ai(created_at);
   `,
+  // 25: read statuses: the token of a sent message, the opens the owner's endpoint recorded, and how far its feed was read.
+  `
+  CREATE TABLE sent_tracking (
+    token TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    rfc_message_id TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX sent_tracking_mid ON sent_tracking(rfc_message_id);
+  CREATE TABLE open_events (
+    seq INTEGER PRIMARY KEY,
+    token TEXT NOT NULL,
+    at TEXT NOT NULL,
+    kind TEXT NOT NULL
+  );
+  CREATE INDEX open_events_token ON open_events(token, at);
+  CREATE TABLE read_status_state (id INTEGER PRIMARY KEY CHECK (id = 1), cursor INTEGER NOT NULL);
+  INSERT INTO read_status_state (id, cursor) VALUES (1, 0);
+  `,
 ];
 
 const HTML_CAP = 1_000_000;
@@ -4173,6 +4192,52 @@ export function createSqliteStore(db: Database.Database): MailStore {
         if (row !== undefined) out.set(id, { summary: row.summary, labelIds: (JSON.parse(row.labels_json) as string[]).filter((label) => known.has(label)) });
       }
       return out;
+    },
+
+    saveSentTracking(row) {
+      db.prepare(`INSERT OR REPLACE INTO sent_tracking (token, account_id, rfc_message_id, created_at) VALUES (?, ?, ?, ?)`).run(
+        row.token,
+        row.accountId,
+        normalizeMessageId(row.rfcMessageId),
+        row.createdAt,
+      );
+    },
+
+    saveOpenEvents(events) {
+      const insert = db.prepare(
+        `INSERT OR IGNORE INTO open_events (seq, token, at, kind) SELECT ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM sent_tracking WHERE token = ?)`,
+      );
+      return db.transaction(() => events.reduce((kept, event) => kept + insert.run(event.seq, event.token, event.at, event.kind, event.token).changes, 0))();
+    },
+
+    openCursor() {
+      return db.prepare<[], { cursor: number }>("SELECT cursor FROM read_status_state WHERE id = 1").get()?.cursor ?? 0;
+    },
+
+    setOpenCursor(seq) {
+      db.prepare("UPDATE read_status_state SET cursor = ? WHERE id = 1").run(seq);
+    },
+
+    messageOpens(messageIds) {
+      const header = db.prepare<[string], { message_id: string | null }>("SELECT message_id FROM messages WHERE id = ?");
+      const tokens = db.prepare<[string], { token: string }>("SELECT token FROM sent_tracking WHERE rfc_message_id = ?");
+      const opens = db.prepare<[string], { at: string; kind: string }>("SELECT at, kind FROM open_events WHERE token = ? ORDER BY at, seq");
+      const out = new Map<string, { at: string; kind: string }[]>();
+      for (const id of messageIds) {
+        const rfc = header.get(id)?.message_id ?? null;
+        if (rfc === null) continue;
+        const found = tokens.all(normalizeMessageId(rfc));
+        if (found.length === 0) continue;
+        out.set(id, found.flatMap((row) => opens.all(row.token)).sort((a, b) => a.at.localeCompare(b.at)));
+      }
+      return out;
+    },
+
+    pruneTracking(beforeIso) {
+      db.transaction(() => {
+        db.prepare("DELETE FROM open_events WHERE token IN (SELECT token FROM sent_tracking WHERE created_at < ?)").run(beforeIso);
+        db.prepare("DELETE FROM sent_tracking WHERE created_at < ?").run(beforeIso);
+      })();
     },
 
     saveReplyDraft(draft, max) {

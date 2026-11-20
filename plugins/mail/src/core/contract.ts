@@ -885,6 +885,8 @@ export const rpcSchemas = {
       protect: z.object({ sign: z.boolean(), encrypt: z.boolean() }).optional(),
       /** Slice 3l, "Send later": the time to send, one minute to a year ahead. */
       sendAt: z.iso.datetime().optional(),
+      /** Read statuses: false leaves the image out of this message. */
+      track: z.boolean().optional(),
     }),
     output: z.object({ outboxId: z.string(), sendAfter: z.string() }),
   },

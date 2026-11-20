@@ -14,6 +14,7 @@
 //     search; moves re-home rows (same id), detaching them without a uid map.
 import type { Exchange } from "../sender-rhythm.ts";
 import type { ReplyDraftRecord } from "../auto-drafts.ts";
+import type { OpenEvent, SentTracking } from "../read-status.ts";
 import type { TemplateFileInfo } from "../ports.ts";
 import { isCalendarPart } from "../calendar-invite.ts";
 import { NO_SENDER_SETS, TABS_MAX, TabsFullError, inSenderSet, type InboxTab, type SenderSets, type TabMatch } from "../inbox-tabs.ts";
@@ -2396,6 +2397,58 @@ export class InMemoryMailStore implements MailStore {
       if (newest !== undefined) out.set(threadId, this.aiView(newest)!);
     }
     return out;
+  }
+
+  private sentTracking = new Map<string, SentTracking>();
+  private openEvents = new Map<number, OpenEvent>();
+  private openCursorValue = 0;
+
+  saveSentTracking(row: SentTracking): void {
+    this.sentTracking.set(row.token, { ...row, rfcMessageId: normalizeMessageId(row.rfcMessageId) });
+  }
+
+  saveOpenEvents(events: readonly OpenEvent[]): number {
+    let kept = 0;
+    for (const event of events) {
+      if (!this.sentTracking.has(event.token) || this.openEvents.has(event.seq)) continue;
+      this.openEvents.set(event.seq, { ...event });
+      kept += 1;
+    }
+    return kept;
+  }
+
+  openCursor(): number {
+    return this.openCursorValue;
+  }
+
+  setOpenCursor(seq: number): void {
+    this.openCursorValue = seq;
+  }
+
+  messageOpens(messageIds: string[]): Map<string, { at: string; kind: string }[]> {
+    const out = new Map<string, { at: string; kind: string }[]>();
+    for (const id of messageIds) {
+      const rfc = this.state.rows.find((r) => r.id === id)?.message.messageId ?? null;
+      if (rfc === null) continue;
+      const tokens = [...this.sentTracking.values()].filter((row) => row.rfcMessageId === normalizeMessageId(rfc)).map((row) => row.token);
+      if (tokens.length === 0) continue;
+      out.set(
+        id,
+        [...this.openEvents.values()]
+          .filter((event) => tokens.includes(event.token))
+          .sort((a, b) => a.at.localeCompare(b.at) || a.seq - b.seq)
+          .map(({ at, kind }) => ({ at, kind })),
+      );
+    }
+    return out;
+  }
+
+  pruneTracking(beforeIso: string): void {
+    for (const [token, row] of this.sentTracking) {
+      if (row.createdAt >= beforeIso) continue;
+      this.sentTracking.delete(token);
+      for (const [seq, event] of this.openEvents) if (event.token === token) this.openEvents.delete(seq);
+    }
   }
 
   private replyDrafts = new Map<string, ReplyDraftRecord>();

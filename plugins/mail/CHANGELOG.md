@@ -8,6 +8,13 @@ All notable changes to Makosh Mail are recorded here. The format follows
 
 ### Added
 
+- **Read statuses**: mail you send can carry a 1×1 image of your own
+  endpoint (`site/`); the open count and the last open show under the
+  sent message. Settings `readStatuses` (on), `readStatusOrigin`,
+  `readStatusTrackKey`, `readStatusFeedKey`; nothing is added until both
+  keys are set. `compose_send` takes `track`; a message carries `opens`.
+  Storage migration 25 (`sent_tracking`, `open_events`,
+  `read_status_state`).
 - **MCP for assistants outside BB** (off by default): a local stdio MCP
   server file (`mcp/makosh-mail-mcp.mjs`, saved from Mail settings → AI
   access) with read-only tools `mail_accounts`, `mail_search`,

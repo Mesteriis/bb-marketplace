@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import {
   experimental_PluginRpcCallError,
   type BbPluginApi,
@@ -13,6 +14,7 @@ import {
 import { describe, expect, it, vi } from "vitest";
 import {
   AGENT_MAIL_OFF_MESSAGE,
+  type MailPluginOverrides,
   MCP_ACCESS_OFF_MESSAGE,
   MCP_LIMIT_MESSAGE,
   createMailPlugin,
@@ -143,6 +145,8 @@ type LoadOptions = {
   poster?: UnsubscribePoster;
   queue?: ReturnType<typeof createAccountQueue>;
   undoWaitMs?: number;
+  /** Read statuses: the owner's endpoint. */
+  readStatusFetch?: NonNullable<MailPluginOverrides["readStatusFetch"]>;
 };
 
 /**
@@ -200,6 +204,7 @@ async function load(options: LoadOptions = {}) {
     transport,
     outboxIntervalMs: options.outboxIntervalMs,
     ...(options.poster === undefined ? {} : { poster: options.poster }),
+    ...(options.readStatusFetch === undefined ? {} : { readStatusFetch: options.readStatusFetch }),
     ...(options.queue === undefined ? {} : { queue: options.queue }),
     ...(options.undoWaitMs === undefined ? {} : { undoWaitMs: options.undoWaitMs }),
   })(bb);
@@ -571,7 +576,7 @@ describe("makosh-mail server", () => {
   it("settings_get shows the page's settings without the credential key, and settings_set changes writable ones", async () => {
     const host = await load();
     const before = (await host.harness.behavior.callRpc("settings_get", {})) as Record<string, unknown>;
-    expect(Object.keys(before)).toHaveLength(41);
+    expect(Object.keys(before)).toHaveLength(42);
     expect("vaultKey" in before).toBe(false);
     expect(before).toMatchObject({ hideQuotes: true, syncIntervalMinutes: 5, agentTools: false });
 
@@ -2437,6 +2442,58 @@ describe("compose and send", () => {
     expect(host.transport.sent).toHaveLength(1);
     const parsed = await parseMail(host.transport.sent[0]!.raw);
     expect(new Date(String(parsed.date)).toISOString()).toBe(new Date(Math.floor(Date.parse(sendAt) / 1000) * 1000).toISOString());
+  });
+
+  it("read statuses: with the endpoint's keys set, the sent message carries the signed image; an open read from the feed shows under it", async () => {
+    const TRACK = "track-key-for-tests-0123456789abcdef";
+    const FEED = "feed-key-for-tests-0123456789abcdefg";
+    const feed: { events: unknown[]; next: number } = { events: [], next: 0 };
+    const asked: string[] = [];
+    const host = await load({
+      settings: { vaultKey: COMPOSE_KEY, readStatusOrigin: "https://makosh.example.org", readStatusTrackKey: TRACK, readStatusFeedKey: FEED },
+      seed: (bb) => seedCompose(bb),
+      server: composeServer,
+      outboxIntervalMs: 5,
+      readStatusFetch: async (url, init) => {
+        asked.push(`${url} ${init.headers.Authorization}`);
+        return { status: 200, json: async () => feed };
+      },
+    });
+    const service = host.harness.behavior.runService("sync");
+    const { draftId, revision } = await savedDraft(host);
+    await call(host, "compose_send", { draftId, baseRevision: revision, requestId: REQUEST_ID });
+    host.clock.set(new Date(NOW.getTime() + UNDO_MS));
+    await vi.waitFor(() => expect(outboxStates(host)).toContain("done"));
+    await vi.waitFor(() => expect(asked.length).toBeGreaterThan(0));
+    service.controller.abort();
+    await service.done;
+
+    const raw = new TextDecoder().decode(host.transport.sent[0]!.raw).replace(/=\r?\n/g, "");
+    const token = /https:\/\/makosh\.example\.org\/o\/([A-Za-z0-9_-]{20}\.[A-Za-z0-9_-]{16})\.gif/.exec(raw)?.[1];
+    expect(token).toBeDefined();
+    // The signature is the endpoint's own rule: HMAC-SHA256 of the id under the shared key.
+    const [id, sig] = token!.split(".");
+    expect(sig).toBe(createHmac("sha256", TRACK).update(id!).digest("base64url").slice(0, 16));
+    // The round asked the feed with the feed key, never with the signing key.
+    expect(asked[0]).toBe(`https://makosh.example.org/api/events?after=0&limit=500 Bearer ${FEED}`);
+  });
+
+  it("read statuses: without the keys, with the switch off, or with track: false, nothing is added", async () => {
+    for (const [settings, send] of [
+      [{}, {}],
+      [{ readStatusTrackKey: "track-key-for-tests-0123456789abcdef", readStatusFeedKey: "feed-key-for-tests-0123456789abcdefg", readStatuses: false }, {}],
+      [{ readStatusTrackKey: "track-key-for-tests-0123456789abcdef", readStatusFeedKey: "feed-key-for-tests-0123456789abcdefg" }, { track: false }],
+    ] as const) {
+      const host = await load({ settings: { vaultKey: COMPOSE_KEY, ...settings }, seed: (bb) => seedCompose(bb), server: composeServer, outboxIntervalMs: 5 });
+      const service = host.harness.behavior.runService("sync");
+      const { draftId, revision } = await savedDraft(host);
+      await call(host, "compose_send", { draftId, baseRevision: revision, requestId: REQUEST_ID, ...send });
+      host.clock.set(new Date(NOW.getTime() + UNDO_MS));
+      await vi.waitFor(() => expect(outboxStates(host)).toContain("done"));
+      service.controller.abort();
+      await service.done;
+      expect(new TextDecoder().decode(host.transport.sent[0]!.raw), JSON.stringify(settings)).not.toContain("/o/");
+    }
   });
 
   it("realtime carries ids and states only; logs carry no content or secret", async () => {

@@ -8,6 +8,8 @@
 // No credential (password, sealed password, vault key) leaves this file: every
 // account goes out through toPublicAccount, and log lines carry account ids
 // and outcome codes only.
+import { createReadStatus, type ReadStatus } from "./src/adapters/bb/read-status.ts";
+import { READ_STATUS_ORIGIN } from "./src/core/read-status.ts";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
   PluginCliError,
@@ -508,6 +510,8 @@ export interface MailPluginOverrides {
   gateway?: ImapGateway;
   /** Google access tokens (tests pass a fake; the default asks Google). */
   googleTokens?: GoogleTokens;
+  /** Read statuses: the HTTP call to the owner's endpoint (tests pass a fake). */
+  readStatusFetch?: (url: string, init: { headers: Record<string, string>; signal: AbortSignal }) => Promise<{ status: number; json(): Promise<unknown> }>;
   clock?: Clock;
   transport?: MailTransport;
   /** Slice 3k: the OpenPGP engine; tests may pass a counting one. */
@@ -783,6 +787,36 @@ function defineSettings(bb: BbPluginApi) {
       label: "Offer the rest of phrases I often write",
       description: "From your own sent mail and templates, on this computer. Tab accepts.",
       default: true,
+    },
+    readStatuses: {
+      type: "boolean",
+      label: "Show when mail I send is opened",
+      description:
+        "Puts a tiny image from your own endpoint into mail you send; when the recipient's mail program fetches it, the message shows as opened. Needs the endpoint's two keys below; never in signed or encrypted mail.",
+      default: true,
+    },
+    readStatusOrigin: {
+      type: "string",
+      label: "Read-status endpoint",
+      description: "The https address of your own endpoint (the Makosh site).",
+      default: READ_STATUS_ORIGIN,
+      experimental_schema: z.string().max(200),
+    },
+    readStatusTrackKey: {
+      type: "string",
+      label: "Read-status signing key",
+      description: "MAKOSH_TRACK_KEY of the endpoint. Empty: no image is added.",
+      secret: true,
+      default: "",
+      experimental_schema: z.string().max(200),
+    },
+    readStatusFeedKey: {
+      type: "string",
+      label: "Read-status feed key",
+      description: "MAKOSH_API_KEY of the endpoint. Empty: opens are not read.",
+      secret: true,
+      default: "",
+      experimental_schema: z.string().max(200),
     },
     aiVoice: {
       type: "boolean",
@@ -1628,6 +1662,10 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
             bb.log.warn(`outbox: waiting sends not released (${errorKind(error)})`);
           }
           afterRound(newMailDeps, accountId, outcome, only);
+          // Read statuses: new opens from the owner's endpoint (at most every five minutes).
+          void readStatus.poll().then((kept) => {
+            if (kept > 0) publishChanged(null);
+          });
           // Category rules and reply reminders over the round's new rows (slice 3f).
           afterRoundAi({ store, clock, categoriesOn: () => current.mailCategories, log: (line) => bb.log.info(line) }, accountId, outcome);
           // Mail rules over the round's genuinely new Inbox rows (slice 3g); a spawn runs after this returns.
@@ -1784,12 +1822,25 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       newId: randomUUID,
       log: (line) => bb.log.info(line),
     });
+    const readStatus = createReadStatus({
+      store,
+      clock,
+      settings: () => ({
+        on: pageSettingsOf(current).readStatuses,
+        origin: current.readStatusOrigin,
+        trackKey: current.readStatusTrackKey,
+        feedKey: current.readStatusFeedKey,
+      }),
+      fetch: overrides.readStatusFetch ?? ((url, init) => fetch(url, init)),
+      log: (line) => bb.log.info(line),
+    });
     const queueDeps: QueueDeps = {
       ...composeDeps,
       notifier: outboxNotifier,
       rate: new SendRateLimit(clock),
       undone: new UndoneSends(clock),
       protect: (mime, request) => pgp.protect(mime, request),
+      tracker: { issue: () => readStatus.issue() },
     };
     const worker = createOutboxWorker(
       {
@@ -2175,6 +2226,7 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       writeSettings,
       replyDrafts: madeReplyDrafts,
       aiSort: madeAiSort,
+      readStatus,
       categoriesOn: () => current.mailCategories,
       refreshSenderSets: installSenderSets,
       quietHours: () => current.quietHours,
@@ -2305,6 +2357,7 @@ type RpcDeps = {
   writeSettings: () => WriteSettings;
   replyDrafts: Pick<ReplyDrafts, "get" | "dismiss">;
   aiSort: Pick<AiSort, "labels" | "withThreads" | "withMessages">;
+  readStatus: Pick<ReadStatus, "withMessages">;
   /** The owner's "Sort mail into categories" setting. */
   categoriesOn: () => boolean;
   /** Installs what from:vip and from:team match, from the settings and the accounts as they are now. */
@@ -3572,7 +3625,7 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         if (thread === null) throw refuse("not_found", "Unknown thread");
         const detail = await bbRpc.threadDetail(thread);
         // Slice 3i: the sender check, disguise warnings, receipt request and crypto kind.
-        return { ...detail, messages: deps.aiSort.withMessages(deps.senderChecks.secure(detail.messages)) };
+        return { ...detail, messages: deps.readStatus.withMessages(deps.aiSort.withMessages(deps.senderChecks.secure(detail.messages))) };
       },
       // cid: images come inline as data: URLs, so the page fetches nothing for them.
       message_body: ({ messageId }) => {

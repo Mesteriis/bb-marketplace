@@ -295,6 +295,8 @@ export const messageHeaderSchema = messageSummarySchema.extend({
   /** AI sorts the inbox: the one line about this message and its AI labels' names; the server adds them. */
   aiSummary: z.string().nullable().optional(),
   aiLabels: z.array(z.string()).optional(),
+  /** Read statuses: for a sent message that carries the image, how often it was opened and when last; the server adds it. */
+  opens: z.object({ count: z.number().int(), lastAt: z.string().nullable() }).optional(),
   /** Slice 3g: repository, PR, issue and CI links of the body (computed when read, not stored). */
   devLinks: z.array(devLinkViewSchema),
   /** Slice 3g: the local dev class, or null. */
