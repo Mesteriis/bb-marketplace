@@ -1,3 +1,4 @@
+import { useTelegramLocale } from "./i18n/index.tsx";
 import { useState } from "react";
 import type { FolderTagsState } from "../core/contract.ts";
 
@@ -7,6 +8,7 @@ export type FolderTagsActions = {
 };
 
 export function FolderTags({ actions, disabled }: { actions: FolderTagsActions; disabled: boolean }) {
+  const { t: tr } = useTelegramLocale();
   const [current, setCurrent] = useState<FolderTagsState | null>();
   const [draft, setDraft] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -48,18 +50,18 @@ export function FolderTags({ actions, disabled }: { actions: FolderTagsActions; 
   return <details onToggle={(event) => {
     if (event.currentTarget.open && current === undefined) void load();
   }}>
-    <summary>Folder tags</summary>
-    {current === null && <p>Folder tags are unavailable for this Telegram connection.</p>}
+    <summary>{tr("Folder tags")}</summary>
+    {current === null && <p>{tr("Folder tags are unavailable for this Telegram connection.")}</p>}
     {current && <>
       <label><input type="checkbox" checked={draft} disabled={disabled || busy || !current.editable}
-        onChange={(event) => { setDraft(event.currentTarget.checked); setNotice(""); }} /> Enable Telegram folder tags</label>
-      {!current.editable && <p>Changing folder tags requires Telegram Premium.</p>}
+        onChange={(event) => { setDraft(event.currentTarget.checked); setNotice(""); }} />{tr(" Enable Telegram folder tags")}</label>
+      {!current.editable && <p>{tr("Changing folder tags requires Telegram Premium.")}</p>}
       {current.editable && <button type="button" className="mtg-action"
-        disabled={disabled || busy || draft === current.enabled} onClick={() => void save()}>Save folder tags</button>}
+        disabled={disabled || busy || draft === current.enabled} onClick={() => void save()}>{tr("Save folder tags")}</button>}
     </>}
-    {busy && <p role="status">Updating folder tags…</p>}
-    {notice && <p role="status">{notice}</p>}
+    {busy && <p role="status">{tr("Updating folder tags…")}</p>}
+    {notice && <p role="status">{tr(notice)}</p>}
     {!current && notice && <button type="button" className="mtg-action" disabled={disabled || busy}
-      onClick={() => void load()}>Reload folder tags</button>}
+      onClick={() => void load()}>{tr("Reload folder tags")}</button>}
   </details>;
 }

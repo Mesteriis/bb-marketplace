@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
-import { fireEvent, waitFor } from "@testing-library/react";
+import { act, fireEvent, waitFor } from "@testing-library/react";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { expect, test, vi } from "vitest";
 import { agentFindChatsTool, agentHistoryTool, registerAgentHistory, registerAgentRead } from "../src/adapters/bb/agent-read.ts";
 import { registerAgentSend } from "../src/adapters/bb/agent-send.ts";
+import { approvalRenderer } from "../src/core/agent-approval.ts";
 import { createApprovalQueue } from "../src/adapters/bb/approval-queue.ts";
 import { createReplyTokens } from "../src/adapters/bb/reply-tokens.ts";
 import type { connectTdJson, TdObject } from "../src/adapters/bb/tdjson.ts";
@@ -80,6 +81,51 @@ test("finds a group, reads all authors without approval and requires approval to
     await session.close();
     await host.lifecycle.dispose();
   }
+});
+
+test.each([undefined, 17])("shows the account and topic %s on the send form and rejects an account switch", async (forumTopicId) => {
+  const { bb, harness: host } = createFakePluginHost({ pluginId: "makosh-telegram" });
+  const app = await loadPluginApp(() => import("../app.tsx"));
+  const recipient = { id: "42", name: "Fixture recipient", subtitle: "Direct message" };
+  const account = () => ({
+    status: () => ({ state: "ready" }),
+    chatById: async () => recipient,
+    agentPostingTopic: async () => ({ id: 17, name: "Fixture bot topic" }),
+    sendText: vi.fn(),
+  });
+  const personal = account();
+  const work = account();
+  let current = personal;
+  let label = "Personal fixture";
+  registerAgentSend(bb, async () => true, () => current as unknown as ReturnType<typeof createTelegram>,
+    undefined, undefined, undefined, undefined, () => label);
+  try {
+    const sending = host.behavior.callAgentTool("makosh_telegram_request_send", {
+      text: "Fixture message", recipientId: recipient.id,
+      ...(forumTopicId !== undefined && { forumTopicId }),
+    }, { threadId: "fixture-account-switch" });
+    const interaction = await waitFor(() => {
+      expect(host.inspection.pendingInteractions).toHaveLength(1);
+      return host.inspection.pendingInteractions[0]!;
+    });
+    const renderer = app.pendingInteractions.find(({ id }) => id === interaction.rendererId)!;
+    const form = renderSlot(renderer, {
+      interaction: { id: interaction.id, threadId: interaction.threadId, title: interaction.title,
+        payload: interaction.payload, createdAt: Date.now(), expiresAt: Date.now() + 120_000 },
+      submit: async (value) => { host.behavior.submitInteraction(interaction.id, value); },
+      cancel: async () => { host.behavior.cancelInteraction(interaction.id); },
+    });
+    try {
+      expect(form.getByText("Personal fixture")).toBeTruthy();
+      if (forumTopicId !== undefined) expect(form.getByText("Fixture bot topic · ID 17")).toBeTruthy();
+      current = work;
+      label = "Work fixture";
+      fireEvent.click(form.getByRole("button", { name: "Confirm send" }));
+      await expect(sending).resolves.toContain("Telegram session or settings changed");
+      expect(personal.sendText).not.toHaveBeenCalled();
+      expect(work.sendText).not.toHaveBeenCalled();
+    } finally { form.unmount(); }
+  } finally { await host.lifecycle.dispose(); }
 });
 
 test.each([false, true])("BB forms authorize owner-authored notes and the exact reply token (batch=%s)", async (batch) => {
@@ -310,4 +356,54 @@ test("preselects Saved Messages without submitting the agent draft", async () =>
     fireEvent.click(form.getByRole("button", { name: "Confirm send" }));
     expect(submit).toHaveBeenCalledExactlyOnceWith({ id: "42" });
   } finally { form.lifecycle.unmount(); }
+});
+
+test("disables confirmation at the approval deadline without disabling cancellation", async () => {
+  const app = await loadPluginApp(() => import("../app.tsx"));
+  const renderer = app.pendingInteractions.find(({ id }) => id === "telegram-send-review");
+  if (!renderer) throw new Error("Expected an agent-send form");
+  vi.useFakeTimers();
+  const submit = vi.fn(async () => {});
+  const cancel = vi.fn(async () => {});
+  const form = renderSlot(renderer, {
+    interaction: {
+      id: "expiry", threadId: "fixture", title: "Approve Telegram message",
+      createdAt: Date.now(), expiresAt: Date.now() + 10,
+      payload: { text: "Draft fixture", recipients: [{ id: "42", name: "Saved Messages", kind: "Direct message" }] },
+    },
+    submit, cancel,
+  });
+  try {
+    const confirm = form.getByRole("button", { name: "Confirm send" }) as HTMLButtonElement;
+    expect(confirm.disabled).toBe(false);
+    act(() => vi.advanceTimersByTime(10));
+    expect(confirm.disabled).toBe(true);
+    fireEvent.click(confirm);
+    expect(submit).not.toHaveBeenCalled();
+    fireEvent.click(form.getByRole("button", { name: "Cancel" }));
+    expect(cancel).toHaveBeenCalledOnce();
+  } finally {
+    form.lifecycle.unmount();
+    vi.useRealTimers();
+  }
+});
+
+test("shows the voice-note transcript in the normal send confirmation", async () => {
+  const app = await loadPluginApp(() => import("../app.tsx"));
+  const renderer = app.pendingInteractions.find(({ id }) => id === approvalRenderer)!;
+  const submit = vi.fn(async () => {});
+  const form = renderSlot(renderer, {
+    interaction: { id: "fixture-voice", threadId: "fixture-thread", title: "Approve Telegram message",
+      payload: { text: "Fixture reply", replyKind: "voice", replyPreview: "Fixture local transcript",
+        recipients: [{ id: "-42", name: "Fixture group", kind: "Group" }] },
+      createdAt: Date.now(), expiresAt: Date.now() + 120_000 },
+    submit, cancel: vi.fn(async () => {}),
+  });
+  try {
+    expect(form.getByText("Replying to a voice note")).toBeTruthy();
+    expect(form.getByText("Fixture local transcript")).toBeTruthy();
+    expect(submit).not.toHaveBeenCalled();
+    fireEvent.click(form.getByRole("button", { name: "Confirm send" }));
+    await waitFor(() => expect(submit).toHaveBeenCalledExactlyOnceWith({ id: "-42" }));
+  } finally { form.unmount(); }
 });

@@ -1,3 +1,4 @@
+import { useTelegramLocale } from "./i18n/index.tsx";
 import { useState } from "react";
 import type { FolderInviteEditor, ManagedFolderInvite } from "../core/contract.ts";
 import type { FolderInviteActions } from "./folder-invites.tsx";
@@ -9,6 +10,7 @@ export function EditFolderInviteChats({ id, url, actions, disabled, saved }: {
   disabled: boolean;
   saved: (link: ManagedFolderInvite) => void;
 }) {
+  const { t: tr } = useTelegramLocale();
   const [editor, setEditor] = useState<FolderInviteEditor | null>();
   const [ids, setIds] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
@@ -43,11 +45,11 @@ export function EditFolderInviteChats({ id, url, actions, disabled, saved }: {
   }
 
   return <details>
-    <summary>Edit shared chats</summary>
-    <button type="button" className="mtg-action" disabled={disabled || busy} onClick={() => void load()}>Load shared chats</button>
-    {editor === null && <p>Telegram no longer offers all of the chats on this link for sharing.</p>}
+    <summary>{tr("Edit shared chats")}</summary>
+    <button type="button" className="mtg-action" disabled={disabled || busy} onClick={() => void load()}>{tr("Load shared chats")}</button>
+    {editor === null && <p>{tr("Telegram no longer offers all of the chats on this link for sharing.")}</p>}
     {editor && <fieldset disabled={disabled || busy}>
-      <legend>Chats accessible through this link</legend>
+      <legend>{tr("Chats accessible through this link")}</legend>
       {editor.choices.map(({ id: chatId, title }) => <label key={chatId} className="mtg-folder-invite-chat">
         <input type="checkbox" checked={ids.includes(chatId)} onChange={(event) => {
           const checked = event.currentTarget.checked;
@@ -55,10 +57,10 @@ export function EditFolderInviteChats({ id, url, actions, disabled, saved }: {
         }} /> {title}
       </label>)}
       {editor.choices.some(({ id: chatId, upgradesGroup }) => upgradesGroup && ids.includes(chatId))
-        && <p>Telegram will convert selected basic groups to supergroups when it updates the link.</p>}
-      <button type="button" className="mtg-action" disabled={!changed || !ids.length} onClick={() => void save()}>Save shared chats</button>
+        && <p>{tr("Telegram will convert selected basic groups to supergroups when it updates the link.")}</p>}
+      <button type="button" className="mtg-action" disabled={!changed || !ids.length} onClick={() => void save()}>{tr("Save shared chats")}</button>
     </fieldset>}
-    {busy && <p role="status">Updating shared chats…</p>}
-    {notice && <p role="status">{notice}</p>}
+    {busy && <p role="status">{tr("Updating shared chats…")}</p>}
+    {notice && <p role="status">{tr(notice)}</p>}
   </details>;
 }

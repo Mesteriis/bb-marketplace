@@ -25,6 +25,10 @@ export function createPrivateHistory(db: Database.Database, sessionKey: string) 
   const mark = db.prepare(`UPDATE telegram_private_history SET retained = COALESCE(retained, ?)
     WHERE account = ? AND chat = ? AND message_id = ?`);
   const remove = db.prepare("DELETE FROM telegram_private_history WHERE account = ? AND chat = ? AND message_id = ?");
+  const scan = db.prepare<[string, string, number], Pick<Row, "message_id" | "snapshot">>(`
+    SELECT message_id, snapshot FROM telegram_private_history WHERE account = ? AND chat = ? AND message_id > ?
+    ORDER BY message_id LIMIT 256
+  `);
   const purge = db.prepare("DELETE FROM telegram_private_history WHERE account = ?");
   const read = db.prepare<[string, string, number, number], Row>(`
     SELECT message_id, snapshot, retained, media IS NOT NULL AS has_media FROM telegram_private_history
@@ -87,6 +91,24 @@ export function createPrivateHistory(db: Database.Database, sessionKey: string) 
       return row && open(account, chat, row);
     },
     remove: (account: string, chat: string, id: string) => { remove.run(account, chat, Number(id)); },
+    removeDateRange: db.transaction((account: string, chat: string, start: number, end: number) => {
+      const ids: string[] = [];
+      let cursor = 0;
+      for (;;) {
+        const rows = scan.all(account, chat, cursor);
+        if (!rows.length) break;
+        for (const { message_id, snapshot } of rows) {
+          const id = String(message_id);
+          const copy: Message = JSON.parse(unseal(snapshot, aad(account, chat, id)).toString("utf8"));
+          if (typeof copy.timestamp === "number" && copy.timestamp >= start && copy.timestamp <= end) {
+            remove.run(account, chat, message_id);
+            ids.push(id);
+          }
+          cursor = message_id;
+        }
+      }
+      return ids;
+    }),
     purge: (account: string) => { purge.run(account); },
     page(account: string, chat: string, before: number, floor: number): Message[] {
       return read.all(account, chat, before || Number.MAX_SAFE_INTEGER + 1, floor).map((row) => open(account, chat, row));

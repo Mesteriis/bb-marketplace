@@ -1,16 +1,19 @@
+import { useTelegramLocale } from "./i18n/index.tsx";
 import { Shield } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { AgentAccess, RuntimeInfo } from "../core/contract.ts";
 
-export function AgentAccessPanel({ read, readRuntime, change, disconnect, signOut }: {
+export function AgentAccessPanel({ read, readRuntime, change, disconnect, signOut, inline = false }: {
+  inline?: boolean;
   read: () => Promise<AgentAccess>;
   readRuntime?: () => Promise<RuntimeInfo>;
   disconnect: () => Promise<void>;
   signOut?: () => Promise<void>;
   change: (capability: Exclude<keyof AgentAccess, "history">, enabled: boolean) => Promise<AgentAccess>;
 }) {
+  const { t: tr } = useTelegramLocale();
   const dialog = useRef<HTMLDialogElement>(null);
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(inline);
   const [runtime, setRuntime] = useState<RuntimeInfo | null>();
   const [config, setConfig] = useState<AgentAccess>();
   const [busy, setBusy] = useState(false);
@@ -71,38 +74,38 @@ export function AgentAccessPanel({ read, readRuntime, change, disconnect, signOu
     } finally { setBusy(false); }
   }
 
-  return <>
-    <button type="button" onClick={() => { dialog.current?.showModal(); setOpen(true); }}>
-      <Shield size={20} aria-hidden="true" />Agents
-    </button>
-    <dialog ref={dialog} className="mtg-agent-settings" aria-label="Telegram agent access" onClose={() => setOpen(false)}>
-      <strong>Telegram agent access</strong>
+  const content = <>
+      {inline ? <h3>{tr("Telegram agent access")}</h3> : <strong>{tr("Telegram agent access")}</strong>}
       {config ? <>
-        <label><input type="checkbox" checked={config.read} disabled={busy}
-          onChange={(event) => void update("read", event.target.checked)} /> Request my original messages</label>
-        <p>Only the messages you approve individually are shared with the model provider.</p>
-        <p>Open Chat details to allow agents to search and read that conversation.</p>
+        <p>{tr("In Chat details, allow agents to search and read that conversation without a confirmation dialog.")}</p>
         <label><input type="checkbox" checked={config.send} disabled={busy}
-          onChange={(event) => void update("send", event.target.checked)} /> Propose messages and replies</label>
-      </> : !error && <p role="status">Loading settings…</p>}
-      {error && <p role="alert">Could not load or save agent access.</p>}
+          onChange={(event) => void update("send", event.target.checked)} />{tr(" Propose messages and replies")}</label>
+      </> : !error && <p role="status">{tr("Loading settings…")}</p>}
+      {error && <p role="alert">{tr("Could not load or save agent access.")}</p>}
       {runtime && <div>
         <p>TDLib <bdi>{runtime.tdlibVersion}</bdi></p>
         {runtime.tdlibVersion === "1.8.0"
-          ? <p>Update TDLib to use forum topics and uploads larger than 2000 MiB.</p>
-          : runtime.premium !== undefined && <p>{runtime.premium ? "Telegram Premium upload limit is 4 GB per file."
-            : "Telegram upload limit is 2 GB per file."}</p>}
+          ? <p>{tr("Update TDLib to use forum topics, uploads larger than 2000 MiB, chat boosts, emoji status options and rich message translation.")}</p>
+          : runtime.premium !== undefined && <p>{runtime.premium ? tr("Telegram Premium upload limit is 4 GB per file.")
+            : tr("Telegram upload limit is 2 GB per file.")}</p>}
       </div>}
-      {runtime === null && <p role="status">TDLib version unavailable.</p>}
-      {confirmSignOut && <p>Signing out ends this Telegram session, clears its local cache and requires a new QR sign-in.</p>}
-      {signOutFailed && <p role="alert">Telegram did not confirm sign-out.</p>}
+      {runtime === null && <p role="status">{tr("TDLib version unavailable.")}</p>}
+      {confirmSignOut && <p>{tr("Signing out ends this Telegram session, clears its local cache and requires a new QR sign-in.")}</p>}
+      {signOutFailed && <p role="alert">{tr("Telegram did not confirm sign-out.")}</p>}
       <div className="mtg-agent-settings-actions">
         {signOut && (confirmSignOut
-          ? <button type="button" className="mtg-action" disabled={busy} onClick={() => void endSession()}>Confirm sign-out</button>
-          : <button type="button" className="mtg-action" disabled={busy} onClick={() => setConfirmSignOut(true)}>Sign out of Telegram</button>)}
-        <button type="button" className="mtg-action" disabled={busy} onClick={() => void stopConnection()}>Disconnect Telegram</button>
-        <button type="button" className="mtg-action" onClick={() => dialog.current?.close()}>Done</button>
+          ? <button type="button" className="mtg-action" disabled={busy} onClick={() => void endSession()}>{tr("Confirm sign-out")}</button>
+          : <button type="button" className="mtg-action" disabled={busy} onClick={() => setConfirmSignOut(true)}>{tr("Sign out of Telegram")}</button>)}
+        <button type="button" className="mtg-action" disabled={busy} onClick={() => void stopConnection()}>{tr("Disconnect Telegram")}</button>
+        {!inline && <button type="button" className="mtg-action" onClick={() => dialog.current?.close()}>{tr("Done")}</button>}
       </div>
+  </>;
+  if (inline) return content;
+  return <>
+    <button type="button" onClick={() => { dialog.current?.showModal(); setOpen(true); }}>
+      <Shield size={20} aria-hidden="true" />{tr("Agents")}</button>
+    <dialog ref={dialog} className="mtg-agent-settings" aria-label={tr("Telegram agent access")} onClose={() => setOpen(false)}>
+      {content}
     </dialog>
   </>;
 }

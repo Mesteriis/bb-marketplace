@@ -1,7 +1,7 @@
-import type { StyledRange } from "./contract.ts";
+import type { RichStyledRange } from "./contract.ts";
 import type { Message } from "./demo.ts";
 
-export function spoilerRanges(text: string, styles: readonly StyledRange[] = []) {
+export function spoilerRanges(text: string, styles: readonly RichStyledRange[] = []) {
   const ranges = styles
     .filter(({ style, offset, length }) => style === "spoiler" && Number.isSafeInteger(offset)
       && Number.isSafeInteger(length) && offset >= 0 && offset < text.length && length > 0)
@@ -16,14 +16,16 @@ export function spoilerRanges(text: string, styles: readonly StyledRange[] = [])
   return merged;
 }
 
-export function previewMessageText(message?: Message) {
-  if (!message) return undefined;
-  const { text, styles } = message;
+export function maskSpoilers(text: string, styles: readonly RichStyledRange[] = [], placeholder = "[Spoiler]") {
   let cursor = 0;
   const preview = spoilerRanges(text, styles).map(({ start, end }) => {
-    const part = text.slice(cursor, start) + "[Spoiler]";
+    const part = text.slice(cursor, start) + placeholder;
     cursor = end;
     return part;
   });
   return preview.join("") + text.slice(cursor);
+}
+
+export function previewMessageText(message?: Message) {
+  if (message) return maskSpoilers(message.text, message.styles);
 }

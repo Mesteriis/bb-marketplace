@@ -1,3 +1,4 @@
+import { useTelegramLocale } from "./i18n/index.tsx";
 import { useEffect, useState } from "react";
 import type { ArchiveSettings, ArchiveSettingsView } from "../core/contract.ts";
 
@@ -7,6 +8,7 @@ export type ArchivePrivacyActions = {
 };
 
 export function ArchivePrivacy({ actions }: { actions: ArchivePrivacyActions }) {
+  const { t: tr } = useTelegramLocale();
   const [open, setOpen] = useState(false);
   const [original, setOriginal] = useState<ArchiveSettingsView>();
   const [draft, setDraft] = useState<ArchiveSettings>();
@@ -55,22 +57,22 @@ export function ArchivePrivacy({ actions }: { actions: ArchivePrivacyActions }) 
   }
 
   return <details onToggle={(event) => { setOpen(event.currentTarget.open); setNotice(""); }}>
-    <summary>Archive behavior</summary>
+    <summary>{tr("Archive behavior")}</summary>
     {open && <>
-      {!original && !error && <p role="status">Loading archive settings…</p>}
+      {!original && !error && <p role="status">{tr("Loading archive settings…")}</p>}
       {original && draft && <form onSubmit={(event) => { event.preventDefault(); void save(); }}>
         <label><input type="checkbox" checked={draft.muteUnknown} disabled={busy || (!original.canMuteUnknown && !original.muteUnknown)}
-          onChange={(event) => setDraft({ ...draft, muteUnknown: event.currentTarget.checked })} /> Archive and mute new chats from non-contacts</label>
-        {!original.canMuteUnknown && !original.muteUnknown && <p>Telegram has disabled this option for your account.</p>}
+          onChange={(event) => setDraft({ ...draft, muteUnknown: event.currentTarget.checked })} />{tr(" Archive and mute new chats from non-contacts")}</label>
+        {!original.canMuteUnknown && !original.muteUnknown && <p>{tr("Telegram has disabled this option for your account.")}</p>}
         <label><input type="checkbox" checked={draft.keepUnmuted} disabled={busy}
-          onChange={(event) => setDraft({ ...draft, keepUnmuted: event.currentTarget.checked })} /> Keep unmuted chats in Archive</label>
+          onChange={(event) => setDraft({ ...draft, keepUnmuted: event.currentTarget.checked })} />{tr(" Keep unmuted chats in Archive")}</label>
         <label><input type="checkbox" checked={draft.keepFolderChats} disabled={busy || draft.keepUnmuted}
-          onChange={(event) => setDraft({ ...draft, keepFolderChats: event.currentTarget.checked })} /> Keep chats from folders in Archive</label>
-        <button type="submit" className="mtg-action" disabled={busy || !changed}>Save archive settings</button>
+          onChange={(event) => setDraft({ ...draft, keepFolderChats: event.currentTarget.checked })} />{tr(" Keep chats from folders in Archive")}</label>
+        <button type="submit" className="mtg-action" disabled={busy || !changed}>{tr("Save archive settings")}</button>
       </form>}
-      {error && <p role="alert">{error} <button type="button" className="mtg-action" disabled={busy}
-        onClick={() => setReload((current) => current + 1)}>Reload archive settings</button></p>}
-      {notice && <p role="status">{notice}</p>}
+      {error && <p role="alert">{tr(error)} <button type="button" className="mtg-action" disabled={busy}
+        onClick={() => setReload((current) => current + 1)}>{tr("Reload archive settings")}</button></p>}
+      {notice && <p role="status">{tr(notice)}</p>}
     </>}
   </details>;
 }

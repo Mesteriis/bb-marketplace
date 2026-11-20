@@ -1,3 +1,4 @@
+import { useTelegramLocale } from "./i18n/index.tsx";
 import { useState } from "react";
 import type { FolderInvite } from "../core/contract.ts";
 
@@ -8,6 +9,7 @@ export type FolderUpdatesActions = {
 };
 
 export function FolderUpdates({ id, actions, disabled }: { id: number; actions: FolderUpdatesActions; disabled: boolean }) {
+  const { t: tr } = useTelegramLocale();
   const [preview, setPreview] = useState<FolderInvite | null>();
   const [selected, setSelected] = useState<string[]>([]);
   const [confirmDismiss, setConfirmDismiss] = useState(false);
@@ -38,13 +40,13 @@ export function FolderUpdates({ id, actions, disabled }: { id: number; actions: 
   }
 
   return <details onToggle={(event) => { if (!event.currentTarget.open) setConfirmDismiss(false); }}>
-    <summary>New chats from the owner</summary>
-    <button type="button" className="mtg-action" disabled={disabled || busy} onClick={() => void check()}>Check for new chats</button>
-    {preview === null && <p>Folder updates are unavailable.</p>}
-    {preview?.chats.length === 0 && <p>No new chats to add.</p>}
+    <summary>{tr("New chats from the owner")}</summary>
+    <button type="button" className="mtg-action" disabled={disabled || busy} onClick={() => void check()}>{tr("Check for new chats")}</button>
+    {preview === null && <p>{tr("Folder updates are unavailable.")}</p>}
+    {preview?.chats.length === 0 && <p>{tr("No new chats to add.")}</p>}
     {!!preview?.chats.length && <fieldset disabled={disabled || busy}>
-      <legend>New chats to add</legend>
-      <p>Telegram joins the selected chats if you haven’t joined them yet.</p>
+      <legend>{tr("New chats to add")}</legend>
+      <p>{tr("Telegram joins the selected chats if you haven’t joined them yet.")}</p>
       {preview.chats.map(({ id: chatId, title }) => <label key={chatId} className="mtg-folder-invite-chat">
         <input type="checkbox" checked={selected.includes(chatId)} onChange={(event) => {
           const checked = event.currentTarget.checked;
@@ -52,15 +54,15 @@ export function FolderUpdates({ id, actions, disabled }: { id: number; actions: 
         }} /> {title}
       </label>)}
       {confirmDismiss ? <>
-        <p>Hide these suggestions for this folder?</p>
-        <button type="button" className="mtg-action" onClick={() => void apply(true)}>Confirm hide</button>
-        <button type="button" className="mtg-action" onClick={() => setConfirmDismiss(false)}>Keep suggestions</button>
+        <p>{tr("Hide these suggestions for this folder?")}</p>
+        <button type="button" className="mtg-action" onClick={() => void apply(true)}>{tr("Confirm hide")}</button>
+        <button type="button" className="mtg-action" onClick={() => setConfirmDismiss(false)}>{tr("Keep suggestions")}</button>
       </> : <>
-        <button type="button" className="mtg-action" disabled={!selected.length} onClick={() => void apply(false)}>Add selected new chats</button>
-        <button type="button" className="mtg-action" onClick={() => setConfirmDismiss(true)}>Hide suggestions</button>
+        <button type="button" className="mtg-action" disabled={!selected.length} onClick={() => void apply(false)}>{tr("Add selected new chats")}</button>
+        <button type="button" className="mtg-action" onClick={() => setConfirmDismiss(true)}>{tr("Hide suggestions")}</button>
       </>}
     </fieldset>}
-    {busy && <p role="status">Checking Telegram folder updates…</p>}
-    {notice && <p role="status">{notice}</p>}
+    {busy && <p role="status">{tr("Checking Telegram folder updates…")}</p>}
+    {notice && <p role="status">{tr(notice)}</p>}
   </details>;
 }

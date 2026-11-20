@@ -1,4 +1,15 @@
 import { z } from "zod";
+import type { AccountHistoryGrant } from "./contract.ts";
+
+export function historyChatsForAccount(grants: readonly AccountHistoryGrant[], accountId: string) {
+  return [...new Set(grants.find((entry) => entry.accountId === accountId)?.chatIds)].sort();
+}
+
+export function replaceAccountHistoryGrants(grants: readonly AccountHistoryGrant[], accountId: string, chatIds: string[]) {
+  const updated = grants.filter((entry) => entry.accountId !== accountId);
+  if (chatIds.length) updated.push({ accountId, chatIds });
+  return updated;
+}
 
 export const readRenderer = "telegram-read-review";
 export const maxReadMessages = 5;

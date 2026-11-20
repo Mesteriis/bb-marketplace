@@ -1,3 +1,4 @@
+import { useTelegramLocale } from "./i18n/index.tsx";
 import { useEffect, useState } from "react";
 import { slowModeDelays, type SlowModeDelay, type SlowModeView } from "../core/contract.ts";
 
@@ -12,6 +13,7 @@ const labels: Record<SlowModeDelay, string> = {
 };
 
 export function GroupSlowMode({ chatId, actions }: { chatId: string; actions: SlowModeActions }) {
+  const { t: tr } = useTelegramLocale();
   const [open, setOpen] = useState(false);
   const [view, setView] = useState<SlowModeView | null>();
   const [delay, setDelay] = useState<SlowModeDelay>(0);
@@ -51,22 +53,22 @@ export function GroupSlowMode({ chatId, actions }: { chatId: string; actions: Sl
   }
 
   return <details onToggle={(event) => setOpen(event.currentTarget.open)}>
-    <summary>Slow mode</summary>
+    <summary>{tr("Slow mode")}</summary>
     {open && <>
-      {view === undefined && !error && <p role="status">Loading slow mode…</p>}
-      {view === null && <p>Slow mode is unavailable in this chat.</p>}
+      {view === undefined && !error && <p role="status">{tr("Loading slow mode…")}</p>}
+      {view === null && <p>{tr("Slow mode is unavailable in this chat.")}</p>}
       {view && <form onSubmit={(event) => { event.preventDefault(); void save(); }}>
-        <label>Delay between messages <select disabled={busy || !view.editable} value={delay} onChange={(event) => {
+        <label>{tr("Delay between messages ")}<select disabled={busy || !view.editable} value={delay} onChange={(event) => {
           const selected = slowModeDelays.find((value) => value === Number(event.target.value));
           if (selected !== undefined) setDelay(selected);
         }}>
-          {slowModeDelays.map((value) => <option key={value} value={value}>{labels[value]}</option>)}
+          {slowModeDelays.map((value) => <option key={value} value={value}>{tr(labels[value])}</option>)}
         </select></label>
-        {view.editable && <button type="submit" className="mtg-action" disabled={busy || delay === view.delay}>Save slow mode</button>}
+        {view.editable && <button type="submit" className="mtg-action" disabled={busy || delay === view.delay}>{tr("Save slow mode")}</button>}
       </form>}
-      {error && <p role="alert">{error} <button type="button" className="mtg-action" disabled={busy}
-        onClick={() => setRevision((value) => value + 1)}>Reload slow mode</button></p>}
-      {notice && <p role="status">{notice}</p>}
+      {error && <p role="alert">{tr(error)} <button type="button" className="mtg-action" disabled={busy}
+        onClick={() => setRevision((value) => value + 1)}>{tr("Reload slow mode")}</button></p>}
+      {notice && <p role="status">{tr(notice)}</p>}
     </>}
   </details>;
 }

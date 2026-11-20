@@ -2,9 +2,9 @@ import { mkdir, mkdtemp, open, readdir, rm, stat, writeFile } from "node:fs/prom
 import { join } from "node:path";
 import { maxPhotoBytes, maxPhotoEdge } from "../../core/contract.ts";
 
-export function inspectJpeg(base64: string) {
-  const bytes = Buffer.from(base64, "base64");
-  if (bytes.length > maxPhotoBytes || bytes.toString("base64") !== base64
+export function inspectJpeg(input: string | Buffer, maxEdge = maxPhotoEdge) {
+  const bytes = typeof input === "string" ? Buffer.from(input, "base64") : input;
+  if (bytes.length > maxPhotoBytes || (typeof input === "string" && bytes.toString("base64") !== input)
     || bytes[0] !== 0xff || bytes[1] !== 0xd8
     || bytes[bytes.length - 2] !== 0xff || bytes[bytes.length - 1] !== 0xd9) return;
   for (let pos = 2; pos + 4 < bytes.length;) {
@@ -18,7 +18,7 @@ export function inspectJpeg(base64: string) {
       if (size < 8) return;
       const height = bytes.readUInt16BE(pos + 3);
       const width = bytes.readUInt16BE(pos + 5);
-      return width > 0 && height > 0 && width <= maxPhotoEdge && height <= maxPhotoEdge ? { bytes, width, height } : undefined;
+      return width > 0 && height > 0 && width <= maxEdge && height <= maxEdge ? { bytes, width, height } : undefined;
     }
     pos += size;
   }
@@ -49,6 +49,35 @@ async function writeUpload(path: string, { body, size }: Upload) {
     reader.releaseLock();
     await file.close();
   }
+}
+
+export function readUploadParts(body: ReadableStream<Uint8Array>) {
+  const reader = body.getReader();
+  let remainder: Uint8Array | undefined;
+  return {
+    take(size: number): Upload {
+      let left = size;
+      const part = new ReadableStream<Uint8Array>({
+        async pull(controller) {
+          if (!left) { controller.close(); return; }
+          const bytes = remainder ?? (await reader.read()).value;
+          if (!bytes) { controller.error(new Error("Incomplete attachment upload.")); return; }
+          const count = Math.min(bytes.length, left);
+          left -= count;
+          remainder = count === bytes.length ? undefined : bytes.subarray(count);
+          controller.enqueue(bytes.subarray(0, count));
+        },
+      }, { highWaterMark: 0 });
+      return { body: part, size };
+    },
+    async complete() {
+      if (remainder || !(await reader.read()).done) throw new Error("Unexpected bytes after the attachment upload.");
+    },
+    async close() {
+      await reader.cancel().catch(() => {});
+      reader.releaseLock();
+    },
+  };
 }
 
 export async function stageAttachment(sessionDirectory: string, bytes: Buffer | Upload, name: string, kind: "photo" | "document") {

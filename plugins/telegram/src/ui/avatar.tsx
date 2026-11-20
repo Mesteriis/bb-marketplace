@@ -1,8 +1,18 @@
+import { useTelegramLocale } from "./i18n/index.tsx";
 import { useEffect, useRef, useState } from "react";
 import type { TelegramPhoto } from "../core/contract.ts";
 import type { Chat, Message } from "../core/demo.ts";
 
 export type AvatarLoader = (id: string, fileId: number, user?: boolean) => Promise<TelegramPhoto>;
+
+export async function decodeAvatar(photo: TelegramPhoto): Promise<TelegramPhoto> {
+  const image = new Image();
+  if (typeof image.decode === "function") {
+    image.src = `data:${photo.mime};base64,${photo.base64}`;
+    await image.decode();
+  }
+  return photo;
+}
 
 export function Avatar({ chat, load, user }: { chat: Pick<Chat, "id" | "color" | "initials" | "avatarJpeg" | "avatarFileId">; load?: AvatarLoader; user?: boolean }) {
   const target = useRef<HTMLSpanElement>(null);
@@ -12,7 +22,7 @@ export function Avatar({ chat, load, user }: { chat: Pick<Chat, "id" | "color" |
   useEffect(() => {
     const element = target.current;
     if (!load || fileId === undefined || !element) return;
-    const retryDelays = [350, 1200];
+    const retryDelays = [350, 1200, 5000, 15000, 30000];
     let active = true;
     let visible = false;
     let loading = false;
@@ -34,8 +44,8 @@ export function Avatar({ chat, load, user }: { chat: Pick<Chat, "id" | "color" |
       });
     };
     const observer = typeof IntersectionObserver === "function" ? new IntersectionObserver((entries) => {
-      if (!active || !entries.length) return;
-      const next = entries.some((entry) => entry.isIntersecting);
+      const next = entries.at(-1)?.isIntersecting;
+      if (!active || next === undefined) return;
       if (next === visible) return;
       visible = next;
       if (visible) {
@@ -46,12 +56,25 @@ export function Avatar({ chat, load, user }: { chat: Pick<Chat, "id" | "color" |
         retry = undefined;
       }
     }) : undefined;
+    const reconnect = () => {
+      if (!visible || loaded) return;
+      clearTimeout(retry);
+      retry = undefined;
+      retries = 0;
+      fetchAvatar();
+    };
+    window.addEventListener("online", reconnect);
     if (observer) observer.observe(element);
     else {
       visible = true;
       fetchAvatar();
     }
-    return () => { active = false; clearTimeout(retry); observer?.disconnect(); };
+    return () => {
+      active = false;
+      clearTimeout(retry);
+      observer?.disconnect();
+      window.removeEventListener("online", reconnect);
+    };
   }, [avatarKey, chat.id, fileId, load, user]);
   const [broken, setBroken] = useState<string>();
   const preview = chat.avatarJpeg ? `data:image/jpeg;base64,${chat.avatarJpeg}` : undefined;
@@ -69,6 +92,7 @@ export function MessageAuthor({ message, chat, load, search }: {
   load?: AvatarLoader;
   search?: (button: HTMLButtonElement) => void;
 }) {
+  const { t: tr } = useTelegramLocale();
   const profile = message.authorAvatar;
   const contact = !profile && !message.outgoing && chat?.subtitle === "Direct message" ? chat : undefined;
   const id = profile?.id ?? contact?.id ?? "";
@@ -79,8 +103,8 @@ export function MessageAuthor({ message, chat, load, search }: {
       chat={{ id, avatarFileId: fileId, avatarJpeg: profile?.preview ?? contact?.avatarJpeg,
         color: chat?.color ?? "#246dbd", initials }} />
     {search
-      ? <button type="button" className="mtg-author-search" title="Search messages by this author"
-        aria-label={`Search messages by ${message.author}`} onClick={(event) => search(event.currentTarget)}>
+      ? <button type="button" className="mtg-author-search" title={tr("Search messages by this author")}
+        aria-label={tr("Search messages by {0}", [message.author])} onClick={(event) => search(event.currentTarget)}>
         <strong><bdi>{message.author}</bdi></strong>
       </button>
       : <strong><bdi>{message.author}</bdi></strong>}

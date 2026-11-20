@@ -1,4 +1,6 @@
-export type MessageLink = { offset: number; length: number; url: string; hidden?: boolean };
+import type { LocationPoint } from "./contract.ts";
+
+export type MessageLink = { offset: number; length: number; url: string; hidden?: boolean; instantView?: true };
 
 export function textWebLinks(text: string): URL[] {
   const links: URL[] = [];
@@ -21,4 +23,17 @@ export function webLink(value: string): URL | undefined {
   } catch {
     return;
   }
+}
+
+export function articleContactLink(value: string): URL | undefined {
+  if (/[\s\p{Cc}\p{Cf}]/u.test(value)) return;
+  if (/^mailto:[a-z0-9.!$&'*+=^_`{|}~-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+$/i.test(value) && value.length <= 261) {
+    return new URL(value);
+  }
+  if (/^tel:\+?[0-9]{3,32}$/.test(value)) return new URL(value);
+}
+
+
+export function openStreetMapLink({ latitude, longitude }: LocationPoint, zoom = 16): string {
+  return `https://www.openstreetmap.org/?mlat=${latitude}&mlon=${longitude}#map=${zoom}/${latitude}/${longitude}`;
 }

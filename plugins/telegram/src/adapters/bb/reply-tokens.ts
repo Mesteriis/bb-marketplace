@@ -1,12 +1,12 @@
 import { randomUUID } from "node:crypto";
-import type { createTelegram } from "./telegram.ts";
+import type { createTelegram, SpeechReplyProof } from "./telegram.ts";
 
 type ReplyTarget = {
   session: ReturnType<typeof createTelegram>;
   threadId: string;
   source?: "history";
   chat: { id: string; name: string; subtitle: string; senderKey?: string };
-  message: { id: string; text: string; forumTopicId?: number };
+  message: { id: string; text: string; forumTopicId?: number; speech?: SpeechReplyProof };
 };
 
 export function createReplyTokens(now = Date.now) {

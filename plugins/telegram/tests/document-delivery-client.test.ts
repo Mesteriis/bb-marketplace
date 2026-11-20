@@ -41,3 +41,19 @@ test("stops polling after five consecutive temporary failures", async () => {
   await expect(result).resolves.toEqual({ state: "unknown" });
   expect(fetch).toHaveBeenCalledTimes(5);
 });
+
+test("continues watching delivery if cancellation loses the dispatch race", async () => {
+  vi.useFakeTimers();
+  const sent = { state: "sent", message: { id: "1", author: "Fixture", time: "", text: "Fixture" } };
+  const fetch = vi.fn().mockResolvedValueOnce(Response.json({ state: "pending", canCancel: true }))
+    .mockResolvedValueOnce(Response.json(sent));
+  vi.stubGlobal("fetch", fetch);
+  const controller = new AbortController();
+  const request = vi.fn(async () => false);
+  const progress = vi.fn(() => controller.abort());
+  const result = waitForDocumentDelivery(url, progress, { signal: controller.signal, request });
+  await vi.advanceTimersByTimeAsync(2000);
+  await expect(result).resolves.toEqual(sent);
+  expect(request).toHaveBeenCalledOnce();
+  expect(progress).toHaveBeenCalledWith(undefined, true);
+});

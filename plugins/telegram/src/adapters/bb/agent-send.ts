@@ -4,6 +4,7 @@ import { isSavedMessagesQuery, publicChatReference } from "../../core/public-cha
 import { forumTopicId } from "../../core/contract.ts";
 import { approvalRenderer, decisionSchema, draftSchema } from "../../core/agent-approval.ts";
 import { approvalDeadline, approvalTimeoutMs, createApprovalQueue } from "./approval-queue.ts";
+import type { TelegramToolRegistrar } from "./agent-cli.ts";
 import type { createReplyTokens } from "./reply-tokens.ts";
 import type { createTelegram } from "./telegram.ts";
 
@@ -12,18 +13,20 @@ export const agentSendTool = "makosh_telegram_request_send";
 type Session = ReturnType<typeof createTelegram>;
 
 export function registerAgentSend(
-  bb: Pick<BbPluginApi, "agents" | "ui">,
+  bb: Pick<BbPluginApi, "ui"> & { agents: { registerTool: TelegramToolRegistrar } },
   enabled: () => Promise<boolean>,
   session: () => Session | undefined,
   replyTokens?: ReturnType<typeof createReplyTokens>,
   permissionSignal?: () => AbortSignal,
   approvals = createApprovalQueue(),
   replyPermissionSignal?: () => AbortSignal,
+  accountLabel?: () => string | undefined,
+  allowedReplyChats?: (session: Session) => Promise<readonly string[]>,
 ) {
   bb.agents.registerTool({
     name: agentSendTool,
     instructions: "Wait for the user to answer the BB confirmation form. Never submit or cancel the form on their behalf.",
-    description: "Propose a plain-text Telegram message. Optionally suggest a recipient name, public @username or t.me link, Saved Messages, or an exact chat ID copied from BB. The user chooses the destination and confirms the exact text in BB. Use forumTopicId with recipientId to propose a new message in an exact forum topic. Use a replyToken returned by an approved read to propose a reply in the same chat. This tool does not return chat names or messages.",
+    description: "Propose a plain-text Telegram message. Optionally suggest a recipient name, public @username or t.me link, Saved Messages, or an exact chat ID copied from BB. The user chooses the destination and confirms the exact text in BB. Use forumTopicId with recipientId to propose a new message in an exact forum or bot topic. Use a replyToken returned by an allowed read to propose a reply in the same chat. This tool does not return chat names or messages.",
     parameters: draftSchema.extend({
       recipientQuery: z.string().trim().min(2).max(128).optional(),
       recipientId: z.string().regex(/^-?[1-9]\d{0,15}$/).optional(),
@@ -45,6 +48,9 @@ export function registerAgentSend(
       try {
         const target = replyToken ? replyTokens?.lookup(replyToken, current, threadId) : undefined;
         if (replyToken && (recipientQuery || recipientId || !target)) return "The Telegram reply target is invalid or expired. Nothing was sent.";
+        const historyReplyAllowed = async () => target?.source !== "history" || !allowedReplyChats
+          || (await allowedReplyChats(current)).includes(target.chat.id);
+        if (!await historyReplyAllowed() || signal.aborted) return "Telegram reply access changed. Nothing was sent.";
         const username = publicChatReference(recipientQuery);
         if (username === null) return "Use a public Telegram @username or a t.me username link. Nothing was sent.";
         const exact = recipientId ? await current.chatById(recipientId) : username ? await current.publicChat(username) : undefined;
@@ -52,9 +58,8 @@ export function registerAgentSend(
         if (recipientId && exact?.id !== recipientId) return "The referenced Telegram recipient is unavailable. Nothing was sent.";
         const topicChat = target?.chat ?? exact;
         const topicId = target?.message.forumTopicId ?? forumTopicId;
-        const topicName = topicChat?.subtitle === "Group" && topicId !== undefined
-          ? await current.forumTopicName(topicChat.id, topicId).catch(() => undefined) : undefined;
-        const topic = topicId !== undefined && topicName ? { id: topicId, name: topicName } : undefined;
+        const topic = topicChat && topicId !== undefined
+          ? await current.agentPostingTopic(topicChat.id, topicId, signal).catch(() => undefined) : undefined;
         if (topicId !== undefined && !topic) return "The Telegram forum topic is unavailable. Nothing was sent.";
         const chats = target ? [target.chat] : exact ? [exact] : recipientQuery
           ? isSavedMessagesQuery(recipientQuery) ? [await current.saved()] : await current.search(recipientQuery)
@@ -82,10 +87,21 @@ export function registerAgentSend(
         if (!await enabled() || signal.aborted || session() !== current || current.status().state !== "ready") {
           return "Telegram session or settings changed. Nothing was sent.";
         }
+        const speech = target?.message.speech;
+        if (speech && !await current.speechReplyAvailable(target.chat.id, target.message.id, speech, topicId, signal).catch(() => false)) {
+          return "The Telegram speech note changed or is unavailable. Nothing was sent.";
+        }
+        if (signal.aborted) return "Telegram reply access changed. Nothing was sent.";
         const review = approvalDeadline(signal);
+        const label = accountLabel?.();
         const result = await bb.ui.requestInput({
           threadId, rendererId: approvalRenderer, title: "Approve Telegram message",
-          timeoutMs: approvalTimeoutMs, payload: { text, recipients: recipients.map(({ senderKey: _, ...recipient }) => recipient), ...(exact ? { showRecipientId: true } : {}), ...(target ? { replyPreview: target.message.text } : {}), ...(topic ? { forumTopic: topic } : {}) },
+          timeoutMs: approvalTimeoutMs, payload: {
+            text, recipients: recipients.map(({ senderKey: _, ...recipient }) => recipient),
+            ...(label ? { accountLabel: label } : {}), ...(exact ? { showRecipientId: true } : {}),
+            ...(target ? { replyPreview: target.message.text } : {}), ...(speech ? { replyKind: speech.kind } : {}),
+            ...(topic ? { forumTopic: topic } : {}),
+          },
           describeSubmission: () => ({ title: "Reviewed Telegram message" }),
         }, { signal: review.signal });
         if (result.outcome !== "submitted") return "Telegram request cancelled. Nothing was sent.";
@@ -95,10 +111,11 @@ export function registerAgentSend(
           return "Telegram approval was invalid. Nothing was sent.";
         }
         if (!review.active()) return "Telegram approval expired or was revoked. Nothing was sent.";
-        if (!await enabled() || !review.active() || session() !== current || current.status().state !== "ready") {
+        if (!await enabled() || !await historyReplyAllowed() || !review.active() || session() !== current || current.status().state !== "ready") {
           return "Telegram session or settings changed. Nothing was sent.";
         }
         let rejectedBeforeDispatch = false;
+        let authorizedDispatch = false;
         // TDLib checks the reply and posting rights asynchronously. Recheck
         // the live authorization after those checks, at the actual send.
         const authorizeDispatch = () => {
@@ -106,14 +123,16 @@ export function registerAgentSend(
           const validReply = active && (!target || (replyToken && replyTokens?.lookup(replyToken, current, threadId)
             && replyTokens.consume(replyToken)));
           rejectedBeforeDispatch = !validReply;
-          return !!validReply;
+          authorizedDispatch = !!validReply;
+          return authorizedDispatch;
         };
         const sender = { key: recipient.senderKey, name: recipient.name, kind: recipient.kind };
         const context: [typeof topic?, "history"?] = target?.source === "history" ? [topic, "history"] : topic ? [topic] : [];
-        const sent = await current.sendText(recipient.id, text, target?.message.id, target?.message.text,
+        const sent = await current.sendText(recipient.id, text, target?.message.id, speech ?? target?.message.text,
           authorizeDispatch, sender, ...context);
         if (rejectedBeforeDispatch) return "Telegram approval expired or was revoked. Nothing was sent.";
         if (sent.state === "sent") return "Telegram confirmed the message was sent.";
+        if (!authorizedDispatch && topic) return "The approved Telegram topic or reply is no longer available. Nothing was sent.";
         if (sent.state === "failed") return "Telegram rejected the message.";
         return "Telegram did not confirm delivery. Check the conversation before retrying.";
       } catch {

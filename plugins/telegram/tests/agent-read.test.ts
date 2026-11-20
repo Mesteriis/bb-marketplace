@@ -1,6 +1,7 @@
 import type { BbPluginApi, PluginAgentToolContext } from "@get-bb/plugin-sdk";
 import { expect, test, vi } from "vitest";
-import { agentFindChatsTool, agentFindTopicsTool, agentHistoryTool, registerAgentHistory, registerAgentRead } from "../src/adapters/bb/agent-read.ts";
+import { agentFindChatsTool, agentFindTopicsTool, agentSearchMessagesTool, agentHistoryTool, registerAgentHistory, registerAgentRead } from "../src/adapters/bb/agent-read.ts";
+import { createReplyTokens } from "../src/adapters/bb/reply-tokens.ts";
 
 test("reads a dated page without a form and withholds results if access was revoked", async () => {
   let execute!: (_: { chatId: string; dateFrom: string; dateTo: string; before?: string; forumTopicId?: number }, context: Pick<PluginAgentToolContext, "signal">) => Promise<string>;
@@ -11,7 +12,8 @@ test("reads a dated page without a form and withholds results if access was revo
     messages: [{ id: "9", date: 1794787200, author: "Fixture sender", text: "Fixture text" }], before: "9",
   });
   const permission = new AbortController();
-  const session = { status: () => ({ state: "ready" }), historyInDateRange };
+  let state = "ready";
+  const session = { status: () => ({ state }), historyInDateRange, canShareAgentHistory: async () => true };
   const enabled = vi.fn().mockResolvedValue([]);
   registerAgentHistory(bb, enabled, () => session as never, () => permission.signal);
   const run = (chatId = "-42", forumTopicId?: number) => execute({ chatId, forumTopicId, dateFrom: "2026-11-02", dateTo: "2026-11-15" },
@@ -31,6 +33,12 @@ test("reads a dated page without a form and withholds results if access was revo
   expect(historyInDateRange).toHaveBeenCalledWith("-42", {
     from: Date.parse("2026-11-02") / 1000, until: Date.parse("2026-11-16") / 1000,
   }, undefined, expect.any(AbortSignal), 17);
+  enabled.mockResolvedValueOnce(["-42"]).mockImplementationOnce(async () => {
+    state = "connecting";
+    return ["-42"];
+  });
+  await expect(run()).resolves.toBe("Telegram history access changed. No messages were shared.");
+  state = "ready";
   historyInDateRange.mockImplementationOnce(async () => {
     permission.abort();
     return { messages: [{ text: "Withheld fixture" }] };
@@ -38,24 +46,70 @@ test("reads a dated page without a form and withholds results if access was revo
   await expect(run()).resolves.toBe("Telegram history access changed. No messages were shared.");
 });
 
-test("only finds topics in granted groups and never shares drafts or revoked results", async () => {
-  let execute!: (input: { chatId: string; query?: string }, context: Pick<PluginAgentToolContext, "signal">) => Promise<string>;
+test("paginates topics only in granted groups and withholds drafts, hidden topics and revoked results", async () => {
+  let execute!: (input: { chatId: string; query?: string; cursor?: string }, context: Pick<PluginAgentToolContext, "signal" | "threadId">) => Promise<string>;
   const bb = { agents: { registerTool: (tool: { name: string; execute: typeof execute }) => {
     if (tool.name === agentFindTopicsTool) execute = tool.execute;
   } } } as unknown as BbPluginApi;
-  const topics = [{ id: 17, name: "Fixture topic", closed: false, draft: "Private draft" }];
-  const forumTopics = vi.fn().mockResolvedValue(topics);
-  const session = { status: () => ({ state: "ready" }), forumTopics };
+  const topics = [{ id: 17, name: "Fixture topic", closed: false, draft: "Private draft" },
+    { id: 1, name: "Fixture hidden topic", hidden: true }];
+  const nextNative = { date: 100, message: 99, topic: 17 };
+  const forumTopicPage = vi.fn().mockResolvedValueOnce({ topics, next: nextNative })
+    .mockResolvedValue({ topics: [], next: null });
+  const session = { status: () => ({ state: "ready" }), forumTopicPage, canShareAgentHistory: async () => true };
   let granted = ["-42"];
   const controller = new AbortController();
   registerAgentHistory(bb, async () => granted, () => session as never, () => controller.signal);
-  const run = (chatId: string) => execute({ chatId, query: "Fixture" }, { signal: controller.signal });
+  const run = (chatId: string, cursor?: string, threadId = "fixture") =>
+    execute({ chatId, query: "Fixture", cursor }, { signal: controller.signal, threadId });
   await expect(run("-43")).resolves.toContain("AI access is disabled");
-  expect(forumTopics).not.toHaveBeenCalled();
-  expect(JSON.parse(await run("-42"))).toEqual({ topics: [{ forumTopicId: 17, name: "Fixture topic", closed: false }] });
-  expect(forumTopics).toHaveBeenCalledExactlyOnceWith("-42", "Fixture", expect.any(AbortSignal), true);
-  forumTopics.mockImplementationOnce(async () => { granted = []; return topics; });
+  expect(forumTopicPage).not.toHaveBeenCalled();
+  const first = JSON.parse(await run("-42"));
+  expect(first).toEqual({ topics: [{ forumTopicId: 17, name: "Fixture topic", closed: false }], next: expect.any(String) });
+  expect(forumTopicPage).toHaveBeenCalledExactlyOnceWith("-42", "Fixture", undefined, expect.any(AbortSignal), true);
+  await expect(run("-42", first.next, "another")).resolves.toContain("does not match");
+  expect(JSON.parse(await run("-42", first.next))).toEqual({ topics: [], next: null });
+  expect(forumTopicPage).toHaveBeenLastCalledWith("-42", "Fixture", nextNative, expect.any(AbortSignal), true);
+  forumTopicPage.mockImplementationOnce(async () => { granted = []; return { topics, next: null }; });
   await expect(run("-42")).resolves.toContain("access changed");
+});
+
+test("message search confines its cursor to the granted chat, query, topic, dates, session and BB thread", async () => {
+  type Input = { chatId: string; forumTopicId?: number; query: string; dateFrom: string; dateTo: string; cursor?: string };
+  let execute!: (input: Input, context: Pick<PluginAgentToolContext, "threadId" | "signal">) => Promise<string>;
+  const bb = { agents: { registerTool: (tool: { name: string; execute: typeof execute }) => {
+    if (tool.name === agentSearchMessagesTool) execute = tool.execute;
+  } } } as unknown as BbPluginApi;
+  const searchAgentMessages = vi.fn().mockResolvedValue({ messages: [], before: "50" });
+  let session = { status: () => ({ state: "ready" }), searchAgentMessages, canShareAgentHistory: async () => true };
+  let permission = new AbortController();
+  registerAgentHistory(bb, async () => ["-42", "-43"], () => session as never, () => permission.signal);
+  const input = { chatId: "-42", forumTopicId: 17, query: "Fixture", dateFrom: "2026-11-02", dateTo: "2026-11-15" };
+  const run = (request: Input = input, threadId = "fixture") => execute(request, { threadId, signal: new AbortController().signal });
+  await expect(run({ ...input, chatId: "-44" })).resolves.toContain("AI access is disabled");
+  expect(searchAgentMessages).not.toHaveBeenCalled();
+  const first = JSON.parse(await run());
+  expect(first).toEqual({ messages: [], next: expect.stringMatching(/^[a-f\d-]{36}$/) });
+  const subsequent = { ...input, cursor: first.next };
+  for (const changed of [{ chatId: "-43" }, { forumTopicId: 18 }, { query: "Other" }, { dateTo: "2026-11-16" }]) {
+    await expect(run({ ...subsequent, ...changed })).resolves.toContain("does not match");
+  }
+  await expect(run(subsequent, "another")).resolves.toContain("does not match");
+  expect(searchAgentMessages).toHaveBeenCalledOnce();
+  await run(subsequent);
+  expect(searchAgentMessages).toHaveBeenLastCalledWith("-42", "Fixture", expect.any(Object), "50", 17, expect.any(AbortSignal));
+  const original = session;
+  session = { ...original };
+  await expect(run(subsequent)).resolves.toContain("does not match");
+  session = original;
+  searchAgentMessages.mockImplementationOnce(async () => {
+    permission.abort();
+    permission = new AbortController();
+    return { messages: [{ excerpt: "Fixture private result" }], before: null };
+  });
+  await expect(run()).resolves.toBe("Telegram history access changed. No messages were shared.");
+  await expect(run(subsequent)).resolves.toContain("does not match");
+  expect(searchAgentMessages).toHaveBeenCalledTimes(3);
 });
 
 test("only accepts a search cursor for its original query, thread and chat permissions", async () => {
@@ -69,7 +123,8 @@ test("only accepts a search cursor for its original query, thread and chat permi
     .mockResolvedValueOnce({ chats: [], next: null });
   const session = { status: () => ({ state: "ready" }), findRelatedChats };
   let grants = ["-44"];
-  registerAgentHistory(bb, async () => grants, () => session as never, () => new AbortController().signal);
+  const permission = new AbortController();
+  registerAgentHistory(bb, async () => grants, () => session as never, () => permission.signal);
   const input = { query: "Fixture", dateFrom: "2026-11-02", dateTo: "2026-11-15" };
   const run = (request: Input, threadId = "fixture") => execute(request, { threadId, signal: new AbortController().signal });
   const { next } = JSON.parse(await run(input));
@@ -82,6 +137,73 @@ test("only accepts a search cursor for its original query, thread and chat permi
   grants = ["-44"];
   expect(JSON.parse(await run({ ...input, cursor: next }))).toEqual({ chats: [], next: null });
   expect(findRelatedChats).toHaveBeenLastCalledWith("Fixture", expect.any(Object), ["-44"], rawCursor, expect.any(AbortSignal));
+});
+
+test("continues agent history only with a cursor issued for the same chat, topic, dates and thread", async () => {
+  type Input = { chatId: string; dateFrom: string; dateTo: string; before?: string; forumTopicId?: number };
+  let execute!: (input: Input, context: Pick<PluginAgentToolContext, "signal" | "threadId">) => Promise<string>;
+  const bb = { agents: { registerTool: (tool: { name: string; execute: typeof execute }) => {
+    if (tool.name === agentHistoryTool) execute = tool.execute;
+  } } } as unknown as BbPluginApi;
+  const historyInDateRange = vi.fn().mockResolvedValueOnce({ messages: [], before: "20" })
+    .mockResolvedValueOnce({ messages: [{ id: "12", text: "Older fixture" }], before: "12" })
+    .mockResolvedValueOnce({ messages: [], before: null });
+  const session = { status: () => ({ state: "ready" }), historyInDateRange, canShareAgentHistory: async () => true };
+  let permission = new AbortController();
+  registerAgentHistory(bb, async () => ["-42", "-43"], () => session as never, () => permission.signal);
+  const input = { chatId: "-42", forumTopicId: 17, dateFrom: "2026-11-02", dateTo: "2026-11-15" };
+  const run = (request: Input, threadId = "fixture") => execute(request, { threadId, signal: new AbortController().signal });
+  await expect(run({ ...input, before: "50" })).resolves.toContain("does not match");
+  expect(historyInDateRange).not.toHaveBeenCalled();
+  const first = JSON.parse(await run(input));
+  expect(first).toEqual({ messages: [], before: "20" });
+  const second = { ...input, before: first.before };
+  for (const request of [{ ...second, chatId: "-43" }, { ...second, forumTopicId: 18 },
+    { ...second, dateFrom: "2026-11-03" }, { ...second, dateTo: "2026-11-16" }]) {
+    await expect(run(request)).resolves.toContain("does not match");
+  }
+  await expect(run(second, "different")).resolves.toContain("does not match");
+  expect(historyInDateRange).toHaveBeenCalledOnce();
+  const last = JSON.parse(await run(second));
+  expect(last).toEqual({ messages: [{ id: "12", text: "Older fixture" }], before: "12" });
+  expect(historyInDateRange).toHaveBeenLastCalledWith("-42", expect.any(Object), "20", expect.any(AbortSignal), 17);
+  permission.abort();
+  permission = new AbortController();
+  await expect(run({ ...input, before: last.before })).resolves.toContain("does not match");
+  expect(historyInDateRange).toHaveBeenCalledTimes(2);
+});
+
+test("rechecks content protection after resolving grant and reply metadata and publishes only verified pages", async () => {
+  type Input = { chatId: string; dateFrom: string; dateTo: string; before?: string };
+  let execute!: (input: Input, context: Pick<PluginAgentToolContext, "signal" | "threadId">) => Promise<string>;
+  const bb = { agents: { registerTool: (tool: { name: string; execute: typeof execute }) => {
+    if (tool.name === agentHistoryTool) execute = tool.execute;
+  } } } as unknown as BbPluginApi;
+  const permission = new AbortController();
+  const tokens = createReplyTokens();
+  const issue = vi.spyOn(tokens, "issue");
+  const chat = { id: "-42", name: "Fixture group", subtitle: "Group" };
+  let protect = false;
+  const historyInDateRange = vi.fn(async () => ({ messages: [{ id: "20", text: "Fixture reply" }], before: "20" }));
+  const session = {
+    status: () => ({ state: "ready" }), historyInDateRange,
+    chatById: async () => { protect = true; return chat; },
+    canShareAgentHistory: vi.fn(async () => !protect),
+  };
+  registerAgentHistory(bb, async () => [chat.id], () => session as never, () => permission.signal, tokens);
+  const input = { chatId: chat.id, dateFrom: "2026-11-02", dateTo: "2026-11-15" };
+  const run = (request: Input = input) => execute(request, { threadId: "fixture", signal: new AbortController().signal });
+  await expect(run()).resolves.toBe("Telegram history access changed. No messages were shared.");
+  expect(issue).not.toHaveBeenCalled();
+  protect = false;
+  await expect(run({ ...input, before: "20" })).resolves.toContain("does not match");
+  expect(historyInDateRange).toHaveBeenCalledOnce();
+  session.chatById = async () => chat;
+  const page = JSON.parse(await run());
+  expect(page.messages).toEqual([{ id: "20", text: "Fixture reply", replyToken: expect.any(String) }]);
+  expect(page.before).toBe("20");
+  expect(issue).toHaveBeenCalledOnce();
+  expect(session.canShareAgentHistory).toHaveBeenCalledWith(chat.id, expect.any(AbortSignal));
 });
 
 type ReadInput = { maxMessages?: number; messageLink?: string; chatQuery?: string; chatId?: string; forumTopicId?: number; textQuery?: string; messageId?: string; dateFrom?: string; dateTo?: string };
