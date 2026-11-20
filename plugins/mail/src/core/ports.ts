@@ -1358,7 +1358,8 @@ export interface MailStore {
    * Smart Send and sender insights: the dated mail between the owner and
    * one address since `sinceIso`, newest `limit` each way, each message
    * once. Incoming: from the address, outside Spam and Trash. Outgoing:
-   * rows of a Sent folder addressed (To or Cc) to it.
+   * rows of a Sent folder addressed (To or Cc) to it, among the most
+   * recently stored mail (To and Cc have no index).
    */
   senderExchange(address: string, accountId: string | null, sinceIso: string, limit: number): Exchange;
   /** At most RELATED_CANDIDATES_MAX local candidates for the message and its terms. */

@@ -7208,8 +7208,11 @@ export function createSqliteStore(db: Database.Database): MailStore {
         }));
       const outgoing = db
         .prepare<[typeof params], Row>(
-          `SELECT m.date, m.message_id, m.in_reply_to, m.to_json, m.cc_json FROM ${MESSAGES_WITH_FOLDER}
-           WHERE ${ROW_ROLE} = 'sent' AND (@accountId IS NULL OR m.account_id = @accountId)
+          // To/Cc have no index: as the sender card's counts, only the newest SENDER_TO_SCAN stored rows are looked through.
+          `SELECT m.date, m.message_id, m.in_reply_to, m.to_json, m.cc_json
+           FROM (SELECT * FROM messages s WHERE (@accountId IS NULL OR s.account_id = @accountId) ORDER BY s.seq DESC LIMIT ${SENDER_TO_SCAN}) m
+           LEFT JOIN folders f ON f.account_id = m.account_id AND f.path = m.folder
+           WHERE ${ROW_ROLE} = 'sent'
              AND m.move_pending IS NULL AND m.date IS NOT NULL AND m.date >= @since
              AND (mail_lower(m.to_json) LIKE mail_lower(@pattern) ESCAPE '\\' OR mail_lower(m.cc_json) LIKE mail_lower(@pattern) ESCAPE '\\')
            GROUP BY m.account_id, m.dedup_key ORDER BY m.date DESC LIMIT @limit`,

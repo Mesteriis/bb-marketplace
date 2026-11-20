@@ -45,6 +45,18 @@ describe("smartSendTime", () => {
     expect(smartSendTime({ incoming: [], outgoing: [] }, NOW, UTC_TIME)).toBeNull();
   });
 
+  it("passes over a day whose clock skips the usual hour", () => {
+    // A clock that jumps from 09:00 to 10:00 on Monday the 23rd, as summer time does.
+    const skipping = {
+      parts: UTC_TIME.parts,
+      at: (base: Date, dayOffset: number, hour: number) => {
+        const at = UTC_TIME.at(base, dayOffset, hour);
+        return at.toISOString() === "2026-11-23T09:00:00.000Z" ? new Date("2026-11-23T10:00:00.000Z") : at;
+      },
+    };
+    expect(smartSendTime(MORNINGS, NOW, skipping)).toEqual({ at: "2026-11-24T09:00:00.000Z", hour: 9 });
+  });
+
   it("takes the earlier hour of a tie", () => {
     const tie: Exchange = {
       incoming: ["2026-11-16T15:00:00.000Z", "2026-11-17T15:00:00.000Z", "2026-11-18T11:00:00.000Z", "2026-11-19T11:00:00.000Z", "2026-11-12T08:00:00.000Z"].map((d) => incoming(d)),
@@ -95,6 +107,23 @@ describe("senderInsights", () => {
       outgoing: [outgoing("2026-11-10T10:00:00.000Z", { messageId: "o1" }), outgoing("2026-11-11T10:00:00.000Z", { messageId: "o2" }), outgoing("2026-11-12T10:00:00.000Z", { messageId: "o3" })],
     };
     expect(senderInsights(exchange, OWN, UTC_TIME)).toMatchObject({ theirReplyMinutes: null, ownReplyMinutes: null, mostWith: [] });
+  });
+
+  it("matches an answer to its message whatever the brackets and spaces around the ids", () => {
+    const exchange: Exchange = {
+      incoming: [
+        ...MORNINGS.incoming,
+        incoming("2026-11-10T10:30:00.000Z", { inReplyTo: "<o1@example.org>" }),
+        incoming("2026-11-11T10:30:00.000Z", { inReplyTo: " o2@example.org " }),
+        incoming("2026-11-12T10:30:00.000Z", { inReplyTo: "< o3@example.org >" }),
+      ],
+      outgoing: [
+        outgoing("2026-11-10T10:00:00.000Z", { messageId: "o1@example.org" }),
+        outgoing("2026-11-11T10:00:00.000Z", { messageId: "<o2@example.org>" }),
+        outgoing("2026-11-12T10:00:00.000Z", { messageId: "<o3@example.org>" }),
+      ],
+    };
+    expect(senderInsights(exchange, OWN, UTC_TIME)?.theirReplyMinutes).toBe(30);
   });
 
   it("says nothing from fewer than five messages", () => {

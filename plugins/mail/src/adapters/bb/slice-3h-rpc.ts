@@ -819,7 +819,8 @@ export function createSlice3hRpc(deps: Slice3hDeps) {
       projectId: binding?.projectId ?? null,
       insights: senderInsights(
         store.senderExchange(address, input.accountId, new Date(now().getTime() - RHYTHM_DAYS * 86_400_000).toISOString(), RHYTHM_MESSAGES),
-        new Set(ownAddresses(store).map((own) => own.trim().toLowerCase())),
+        // Left out of "often with": the owner's addresses and the person's own.
+        new Set([...ownAddresses(store), address].map((own) => own.trim().toLowerCase())),
       ),
     };
   }

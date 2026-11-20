@@ -107,7 +107,8 @@ export function SendLaterMenu({ open, onOpenChange, onPick, smart, now = () => n
           </DialogDescription>
         </DialogHeader>
         <ul aria-label={tx("Send times")} className="flex flex-col gap-px">
-          {suggested !== null ? (
+          {suggested !== null && validSendAt(suggested.at, at) ? (
+            // Checked again at every render: a menu left open does not offer a time that has come too close.
             <li>
               <button type="button" onClick={() => onPick(suggested.at)} className={`${row} h-auto min-h-8 py-1`}>
                 <span className="flex min-w-0 flex-1 flex-col">

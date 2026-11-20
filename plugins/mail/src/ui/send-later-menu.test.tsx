@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { installTestPluginRuntime } from "@get-bb/plugin-sdk/testing/app";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { sendLaterPresets, validSendAt } from "../core/send-later.ts";
@@ -36,11 +36,33 @@ describe("SendLaterMenu: smart send", () => {
       const asked = vi.fn(smart);
       render(<SendLaterMenu open onOpenChange={vi.fn()} onPick={vi.fn()} smart={asked} now={() => now} />);
       await waitFor(() => expect(asked).toHaveBeenCalledTimes(1));
-      await Promise.resolve();
+      // Long enough for the answer to be shown, as the control below proves.
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      });
       expect(screen.queryByRole("button", { name: /Smart send/ })).toBeNull();
       expect(labels()[0]).toBe("In an hour");
       cleanup();
     }
+  });
+
+  it("the same wait is long enough for a good suggestion to show (the control of the test above)", async () => {
+    const asked = vi.fn(async () => ({ at, hour: 9, name: "Ann" }));
+    render(<SendLaterMenu open onOpenChange={vi.fn()} onPick={vi.fn()} smart={asked} now={() => now} />);
+    await waitFor(() => expect(asked).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+    expect(screen.queryByRole("button", { name: /Smart send/ })).not.toBeNull();
+  });
+
+  it("a suggestion that came too close while the menu stayed open is no longer offered", async () => {
+    let clock = now;
+    const view = render(<SendLaterMenu open onOpenChange={vi.fn()} onPick={vi.fn()} smart={async () => ({ at, hour: 9, name: "Ann" })} now={() => clock} />);
+    await screen.findByRole("button", { name: /Smart send/ });
+    clock = new Date(new Date(at).getTime() - 30_000);
+    view.rerender(<SendLaterMenu open onOpenChange={vi.fn()} onPick={vi.fn()} smart={async () => ({ at, hour: 9, name: "Ann" })} now={() => clock} />);
+    expect(screen.queryByRole("button", { name: /Smart send/ })).toBeNull();
   });
 
   it("does not ask while the menu is closed", () => {

@@ -3914,11 +3914,13 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       template_file_remove: owner("template_file_remove", ({ templateId, fileId }) => ({ removed: store.removeTemplateFile(templateId, fileId) })),
       // Smart Send: counted from the mail with the draft's first recipient; no model, nothing leaves the computer.
       smart_send_time: owner("smart_send_time", ({ draftId }) => {
-        const first = ownerDraft(draftId).to[0];
+        const draft = ownerDraft(draftId);
+        const first = draft.to[0];
         if (first === undefined) return { suggestion: null };
         const at = composeDeps.clock.now();
         const found = smartSendTime(
-          store.senderExchange(first.address, null, new Date(at.getTime() - RHYTHM_DAYS * 86_400_000).toISOString(), RHYTHM_MESSAGES),
+          // The sending account's mail only: a message that reached two of the owner's accounts counts once.
+          store.senderExchange(first.address, draft.accountId, new Date(at.getTime() - RHYTHM_DAYS * 86_400_000).toISOString(), RHYTHM_MESSAGES),
           at,
         );
         if (found === null || !validSendAt(found.at, at)) return { suggestion: null };

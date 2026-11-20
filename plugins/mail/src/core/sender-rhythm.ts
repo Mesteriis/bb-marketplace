@@ -2,6 +2,7 @@
 // writes, how fast they and the owner answer one another, and who they
 // write with — counted from the mail between the owner and one address.
 // No model and nothing from outside the mailbox.
+import { normalizeMessageId } from "./headers.ts";
 
 export const RHYTHM_DAYS = 180;
 export const RHYTHM_MESSAGES = 500;
@@ -79,9 +80,11 @@ export function smartSendTime(exchange: Exchange, now: Date, time: TimeReader = 
   for (let day = 0; day <= 7; day++) {
     const candidate = time.at(now, day, rhythm.hour);
     if (candidate.getTime() - now.getTime() < AHEAD_MS) continue;
-    const { weekday } = time.parts(candidate);
+    const { weekday, hour } = time.parts(candidate);
+    // A day whose clock skips that hour (summer time starts) is passed over: the label would name another hour.
+    if (hour !== rhythm.hour) continue;
     if (rhythm.weekdaysOnly && (weekday === 0 || weekday === 6)) continue;
-    return { at: candidate.toISOString(), hour: rhythm.hour };
+    return { at: candidate.toISOString(), hour };
   }
   return null;
 }
@@ -98,14 +101,15 @@ function replyMinutes(
   answers: readonly { date: string; inReplyTo: string | null }[],
   asked: readonly { date: string; messageId: string | null }[],
 ): number[] {
+  // Ids are compared as the rest of Mail compares them: without angle brackets and outer spaces.
   const sentAt = new Map<string, number>();
   for (const message of asked) {
     const at = Date.parse(message.date);
-    if (message.messageId !== null && !Number.isNaN(at)) sentAt.set(message.messageId, at);
+    if (message.messageId !== null && !Number.isNaN(at)) sentAt.set(normalizeMessageId(message.messageId), at);
   }
   const out: number[] = [];
   for (const answer of answers) {
-    const from = answer.inReplyTo === null ? undefined : sentAt.get(answer.inReplyTo);
+    const from = answer.inReplyTo === null ? undefined : sentAt.get(normalizeMessageId(answer.inReplyTo));
     const at = Date.parse(answer.date);
     if (from === undefined || Number.isNaN(at) || at < from || at - from > PAIR_MAX_MS) continue;
     out.push((at - from) / 60_000);
@@ -125,7 +129,10 @@ export type SenderInsights = {
   mostWith: { address: string; count: number }[];
 };
 
-/** What the sender card says about someone; null from too little mail. */
+/**
+ * What the sender card says about someone; null from too little mail.
+ * `own`: the owner's addresses and the person's own, left out of "most with".
+ */
 export function senderInsights(exchange: Exchange, own: ReadonlySet<string>, time: TimeReader = LOCAL_TIME): SenderInsights | null {
   const rhythm = rhythmOf(exchange, time);
   if (rhythm === null) return null;
