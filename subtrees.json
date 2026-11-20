@@ -525,7 +525,7 @@
       "upstreamRevision": "641c6b719c3491e7c617969a7c42426f8d70f4cd",
       "fork": "https://github.com/Mesteriis/bb-plugin-meetings.git",
       "branch": "marketplace/meetings",
-      "commit": "e3417cfdb6f47a5e92886dea3ce7e18265819d39",
+      "commit": "e39954f30d68f8128328406871f42d2c86f29410",
       "remote": "plugin-meetings",
       "upstreamRemote": "upstream-meetings"
     },
