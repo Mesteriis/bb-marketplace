@@ -1,0 +1,100 @@
+/* Makosh site: tokens, then base, then the few parts the four pages share. */
+:root {
+  --ink: #16181d;
+  --ink-soft: #4a5160;
+  --ink-faint: #737b8c;
+  --paper: #fbfaf7;
+  --card: #ffffff;
+  --line: #e4e1d8;
+  --accent: #a3341f;
+  --accent-soft: #f6e9e4;
+  --focus: #1f5fa3;
+  --radius: 10px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-12: 48px;
+  --space-16: 64px;
+  --measure: 68ch;
+  --wide: 1080px;
+  --font: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+  --font-ui: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --text-sm: 0.875rem;
+  --text-md: 1.0625rem;
+  --text-lg: 1.375rem;
+  --text-xl: clamp(2rem, 5vw, 3.25rem);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink: #ecebe6;
+    --ink-soft: #b9bcc4;
+    --ink-faint: #8d919c;
+    --paper: #14151a;
+    --card: #1c1e25;
+    --line: #2e313b;
+    --accent: #f08a6f;
+    --accent-soft: #33211c;
+    --focus: #8fc1f5;
+  }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font: var(--text-md)/1.6 var(--font);
+}
+a { color: var(--accent); text-underline-offset: 3px; }
+a:hover { text-decoration-thickness: 2px; }
+a:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; border-radius: 3px; }
+h1, h2, h3 { line-height: 1.15; margin: 0; font-weight: 600; text-wrap: balance; }
+h1 { font-size: var(--text-xl); letter-spacing: -0.02em; }
+h2 { font-size: var(--text-lg); margin-top: var(--space-12); }
+h3 { font-size: var(--text-md); }
+p, ul, ol { margin: var(--space-4) 0 0; }
+ul, ol { padding-left: 1.25em; }
+li + li { margin-top: var(--space-2); }
+code { font: 0.9em var(--font-mono); background: var(--accent-soft); padding: 1px 5px; border-radius: 4px; }
+
+.shell { max-width: var(--wide); margin: 0 auto; padding: 0 var(--space-6); }
+.top {
+  display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between;
+  gap: var(--space-3) var(--space-6);
+  padding: var(--space-6) 0; border-bottom: 1px solid var(--line);
+  font-family: var(--font-ui); font-size: var(--text-sm);
+}
+.brand { font: 600 var(--text-lg)/1 var(--font); color: var(--ink); text-decoration: none; letter-spacing: -0.01em; }
+.nav { display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-6); list-style: none; margin: 0; padding: 0; }
+.nav li + li { margin-top: 0; }
+.nav a { color: var(--ink-soft); text-decoration: none; }
+.nav a:hover, .nav a[aria-current="page"] { color: var(--ink); text-decoration: underline; }
+
+.hero { padding: var(--space-16) 0 var(--space-8); max-width: var(--measure); }
+.lede { font-size: var(--text-lg); color: var(--ink-soft); line-height: 1.45; margin-top: var(--space-6); }
+.prose { max-width: var(--measure); padding-bottom: var(--space-16); }
+.measure { max-width: var(--measure); }
+.tail { margin: var(--space-6) 0 var(--space-16); }
+.note { font-family: var(--font-ui); font-size: var(--text-sm); color: var(--ink-faint); }
+.callout { border-left: 3px solid var(--accent); background: var(--accent-soft); padding: var(--space-4) var(--space-6); border-radius: 0 var(--radius) var(--radius) 0; margin-top: var(--space-6); }
+.callout p:first-child { margin-top: 0; }
+
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: var(--space-4); margin: var(--space-6) 0 0; padding: 0; list-style: none; }
+.grid li + li { margin-top: 0; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: var(--space-4) var(--space-6) var(--space-6); height: 100%; }
+.card p { margin-top: var(--space-2); font-family: var(--font-ui); font-size: var(--text-sm); color: var(--ink-soft); line-height: 1.5; }
+.card .measure { max-width: var(--measure); }
+.tail { margin: var(--space-6) 0 var(--space-16); }
+.note { margin-top: var(--space-3); }
+.card.own { border-color: var(--accent); }
+
+.foot { border-top: 1px solid var(--line); padding: var(--space-8) 0 var(--space-12); font-family: var(--font-ui); font-size: var(--text-sm); color: var(--ink-faint); display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-6); }
+.foot a { color: var(--ink-soft); }
+@media (max-width: 520px) {
+  .shell { padding: 0 var(--space-4); }
+  .hero { padding-top: var(--space-12); }
+}

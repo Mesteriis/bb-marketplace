@@ -1,0 +1,39 @@
+# makosh.sh-inc.dev: the Makosh site and the read-status endpoint.
+# Lives in LXC 136 (utility) at /opt/utility/stacks/makosh-site; the public
+# name is published by nginx on LXC 112. Secrets are in .env next to this
+# file (0600), made on the host and never printed.
+name: makosh-site
+services:
+  site:
+    image: node:24-alpine@sha256:116b800c3754b440ee0aa3ed2f20f5bf3d99a554bfd9adeea09ea8017f6e85f5
+    command: ["node", "/app/server.mjs"]
+    user: "1000:1000"
+    working_dir: /app
+    env_file: .env
+    environment:
+      PORT: "8080"
+      MAKOSH_DATA_FILE: /data/opens.jsonl
+      MAKOSH_ORIGIN: https://makosh.sh-inc.dev
+      NODE_ENV: production
+    volumes:
+      - ./app:/app:ro
+      - ./data:/data
+    ports:
+      - "10.34.10.34:18760:8080"
+    read_only: true
+    tmpfs:
+      - /tmp:size=8m
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 128m
+    cpus: 0.25
+    pids_limit: 64
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options: { max-size: "5m", max-file: "3" }
