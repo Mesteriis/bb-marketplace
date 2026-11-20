@@ -1087,6 +1087,19 @@ export const MIGRATIONS: string[] = [
   );
   CREATE INDEX template_files_template ON template_files(template_id, created_at, id);
   `,
+  // 23: AI writes mail: a reply drafted for a new message, kept until the owner uses or dismisses it.
+  `
+  CREATE TABLE reply_drafts (
+    message_id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    paragraphs_json TEXT NOT NULL,
+    links_removed INTEGER NOT NULL,
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX reply_drafts_created ON reply_drafts(created_at);
+  `,
 ];
 
 const HTML_CAP = 1_000_000;
@@ -4054,6 +4067,38 @@ export function createSqliteStore(db: Database.Database): MailStore {
         cursor,
         limit,
       });
+    },
+
+    saveReplyDraft(draft, max) {
+      db.prepare(
+        `INSERT OR REPLACE INTO reply_drafts (message_id, account_id, paragraphs_json, links_removed, provider, model, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ).run(draft.messageId, draft.accountId, JSON.stringify(draft.paragraphs), draft.linksRemoved, draft.provider, draft.model, draft.createdAt);
+      db.prepare(
+        `DELETE FROM reply_drafts WHERE message_id NOT IN (SELECT message_id FROM reply_drafts ORDER BY created_at DESC, message_id LIMIT ?)`,
+      ).run(max);
+    },
+
+    getReplyDraft(messageId) {
+      const row = db
+        .prepare<[string], { account_id: string; paragraphs_json: string; links_removed: number; provider: string; model: string; created_at: string }>(
+          `SELECT account_id, paragraphs_json, links_removed, provider, model, created_at FROM reply_drafts WHERE message_id = ?`,
+        )
+        .get(messageId);
+      if (row === undefined) return null;
+      return {
+        messageId,
+        accountId: row.account_id,
+        paragraphs: JSON.parse(row.paragraphs_json) as string[],
+        linksRemoved: row.links_removed,
+        provider: row.provider,
+        model: row.model,
+        createdAt: row.created_at,
+      };
+    },
+
+    deleteReplyDraft(messageId) {
+      return db.prepare(`DELETE FROM reply_drafts WHERE message_id = ?`).run(messageId).changes > 0;
     },
 
     listInboxTabs() {

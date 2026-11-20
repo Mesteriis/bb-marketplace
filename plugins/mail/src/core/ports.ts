@@ -1,4 +1,5 @@
 // Ports: what the core needs from its host. Each host supplies adapters.
+import type { ReplyDraftRecord } from "./auto-drafts.ts";
 import type { TemplateExtras } from "./snippets.ts";
 import type { ReplySource } from "./compose-reply.ts";
 import type {
@@ -525,6 +526,11 @@ export interface MailStore {
 
   // ---- Inbox tabs (Split Inbox) ----
   listInboxTabs(): InboxTab[];
+  /** AI writes mail: keeps a drafted reply (replacing the message's earlier one); past `max` rows the oldest go. */
+  saveReplyDraft(draft: ReplyDraftRecord, max: number): void;
+  getReplyDraft(messageId: string): ReplyDraftRecord | null;
+  /** False when there was none. */
+  deleteReplyDraft(messageId: string): boolean;
   /** Creates the tab at the end (TabsFullError past TABS_MAX) or changes its name and condition. */
   saveInboxTab(tab: { id: string; name: string; query: string }, nowIso: string): InboxTab;
   deleteInboxTab(id: string): void;

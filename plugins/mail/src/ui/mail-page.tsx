@@ -216,6 +216,8 @@ export interface ComposerState {
   dropped: string[];
   /** The conversation a reply or forward came from: it docks under it in two columns. */
   dockThreadId: string | null;
+  /** AI writes mail: a drafted reply the owner chose to use. */
+  initialOwn?: readonly string[];
 }
 
 export type ComposeKind = "reply" | "reply_all" | "forward";
@@ -1220,6 +1222,7 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
       <Composer
         key={composer.draft.id}
         draft={composer.draft}
+        {...(composer.initialOwn !== undefined ? { initialOwn: composer.initialOwn } : {})}
         accounts={status.accounts}
         ports={props.composerPorts}
         {...(props.typing !== undefined ? { typing: props.typing } : {})}

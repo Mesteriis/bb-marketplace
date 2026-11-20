@@ -79,6 +79,29 @@ function mount(props: Partial<Parameters<typeof ComposeEditor>[0]> = {}) {
   return { view, docs, imports, files, editor: () => editor! };
 }
 
+describe("ComposeEditor: a drafted reply the owner chose to use", () => {
+  it("goes in with the quote as one load: saved once, the quote kept after it", () => {
+    const { docs, imports } = mount({
+      initialDoc: { type: "doc", content: [{ type: "paragraph" }, { type: "paragraph", content: [{ type: "text", text: "Ada wrote:" }] }] },
+      importFrom: { html: "<p>Made-up original</p>", into: "quote" },
+      initialOwn: ["Hello Ada,", "Tuesday works."],
+    });
+    expect(imports).toHaveLength(1);
+    expect(docs).toEqual([]);
+    expect(ownerParagraphs(normalizeDoc(imports[0]! as never)).paragraphs).toEqual(["Hello Ada,", "Tuesday works."]);
+    const text = JSON.stringify(imports[0]);
+    expect(text).toContain("blockquote");
+    expect(text.indexOf("Tuesday works.")).toBeLessThan(text.indexOf("Made-up original"));
+  });
+
+  it("without a quote it is an edit, so the composer saves it", () => {
+    const { docs, imports } = mount({ initialOwn: ["Hello Ada,"] });
+    expect(imports).toEqual([]);
+    expect(docs.length).toBeGreaterThan(0);
+    expect(ownerParagraphs(normalizeDoc(docs.at(-1)! as never)).paragraphs).toEqual(["Hello Ada,"]);
+  });
+});
+
 describe("cleanEditorHtml", () => {
   it("keeps text and safe links, and drops scripts, styles, images and remote loads", () => {
     const clean = cleanEditorHtml(HOSTILE);

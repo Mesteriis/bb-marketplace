@@ -12,6 +12,7 @@
 //   - thread, folder, badge and search counts count distinct dedup keys, and
 //     rows waiting to move out are hidden from their folder, the badge and
 //     search; moves re-home rows (same id), detaching them without a uid map.
+import type { ReplyDraftRecord } from "../auto-drafts.ts";
 import type { TemplateFileInfo } from "../ports.ts";
 import { isCalendarPart } from "../calendar-invite.ts";
 import { NO_SENDER_SETS, TABS_MAX, TabsFullError, inSenderSet, type InboxTab, type SenderSets, type TabMatch } from "../inbox-tabs.ts";
@@ -2319,6 +2320,23 @@ export class InMemoryMailStore implements MailStore {
     if (tab.kind === "all") return new Set(rows.filter((r) => this.matchesConditions(r, tab.conditions)).map((r) => r.threadId));
     const taken = new Set(rows.filter((r) => tab.of.some((conditions) => this.matchesConditions(r, conditions))).map((r) => r.threadId));
     return new Set(rows.map((r) => r.threadId).filter((id) => !taken.has(id)));
+  }
+
+  private replyDrafts = new Map<string, ReplyDraftRecord>();
+
+  saveReplyDraft(draft: ReplyDraftRecord, max: number): void {
+    this.replyDrafts.set(draft.messageId, { ...draft, paragraphs: [...draft.paragraphs] });
+    const newest = [...this.replyDrafts.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.messageId.localeCompare(b.messageId));
+    for (const old of newest.slice(max)) this.replyDrafts.delete(old.messageId);
+  }
+
+  getReplyDraft(messageId: string): ReplyDraftRecord | null {
+    const found = this.replyDrafts.get(messageId);
+    return found === undefined ? null : { ...found, paragraphs: [...found.paragraphs] };
+  }
+
+  deleteReplyDraft(messageId: string): boolean {
+    return this.replyDrafts.delete(messageId);
   }
 
   private inboxTabs: InboxTab[] = [];

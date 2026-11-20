@@ -101,6 +101,7 @@ import { createIdleSupervisor, type IdleSupervisor } from "./src/adapters/bb/idl
 import { NewMailBook } from "./src/adapters/bb/new-mail-book.ts";
 import { writeInput } from "./src/core/ai-write.ts";
 import { writeSource, type WriteSettings } from "./src/core/write-source.ts";
+import { createReplyDrafts, type ReplyDrafts } from "./src/adapters/bb/reply-drafts.ts";
 import { createSnoozeClock, type SnoozeClock } from "./src/adapters/bb/snooze-clock.ts";
 import { ONE_CLICK_TOTAL_MS, UnsubscribeRate, createOneClickPoster } from "./src/adapters/bb/one-click.ts";
 import { createVault, generateVaultKey } from "./src/adapters/bb/vault.ts";
@@ -826,6 +827,8 @@ type NewMailDeps = {
   /** Slice 3l: the owner's important senders, and whether only they notify. */
   importantSenders: () => string;
   importantOnly: () => boolean;
+  /** AI writes mail: the round's new Inbox messages that stayed there. */
+  autoDrafts: (ids: string[]) => void;
   log: (line: string) => void;
 };
 
@@ -1008,6 +1011,11 @@ function afterRound(
     );
   } catch (error) {
     deps.log(`notify ${accountId}: failed (${errorKind(error)})`);
+  }
+  try {
+    deps.autoDrafts(fresh.filter((id) => !moved.has(id)));
+  } catch (error) {
+    deps.log(`auto draft ${accountId}: failed (${errorKind(error)})`);
   }
 }
 
@@ -1532,8 +1540,11 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       quietHours: () => current.quietHours,
       importantSenders: () => current.importantSenders,
       importantOnly: () => current.notifyImportantOnly,
+      // Made below, once the AI job runner exists.
+      autoDrafts: (ids) => replyDrafts?.offer(ids),
       log: (line) => bb.log.info(line),
     };
+    let replyDrafts: ReplyDrafts | null = null;
 
     /**
      * Hosts of the BB projects' remotes, refreshed with the daily purge (and
@@ -1824,6 +1835,38 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
         if (state === "ok" || state === "gateway_missing" || state === "pool_unavailable") translateGateway.report(state);
       },
     });
+    const writeSettings = (): WriteSettings => {
+      const page = pageSettingsOf(current);
+      return { voice: page.aiVoice, personal: page.aiInstructions, facts: page.aiKnowledge };
+    };
+    const madeReplyDrafts = createReplyDrafts({
+      store,
+      clock,
+      enabled: () => pageSettingsOf(current).aiAutoDrafts,
+      writeSettings,
+      aiContext: () => ({ provider: current.translateProvider, model: current.translateModel }),
+      jobs: aiJobs,
+      withNonce: (build) => {
+        for (let attempt = 0; ; attempt++) {
+          try {
+            return build(translateNonce((size) => new Uint8Array(randomBytes(size))));
+          } catch (error) {
+            if (!(error instanceof NonceCollision) || attempt >= 5) throw error;
+          }
+        }
+      },
+      restoreTag: (parts) => newRestoreTag((size) => new Uint8Array(randomBytes(size)), parts),
+      agentLog: agentLog.log,
+      onKept: publishChanged,
+      schedule: (run, ms) => {
+        const timer = setTimeout(run, ms);
+        return () => clearTimeout(timer);
+      },
+      log: (line) => bb.log.info(line),
+    });
+    replyDrafts = madeReplyDrafts;
+    // Disposers run in order: the queue stops, then a call already running ends with the job runner.
+    bb.onDispose(() => madeReplyDrafts.queue.dispose());
     bb.onDispose(() => aiJobs.dispose());
 
     // The day clock (slice 3f): Today's digest and due reminders; tokens only on realtime.
@@ -2059,10 +2102,8 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       aiJobs,
       aiNonce: () => translateNonce((size) => new Uint8Array(randomBytes(size))),
       restoreTag: (parts) => newRestoreTag((size) => new Uint8Array(randomBytes(size)), parts),
-      writeSettings: () => {
-        const page = pageSettingsOf(current);
-        return { voice: page.aiVoice, personal: page.aiInstructions, facts: page.aiKnowledge };
-      },
+      writeSettings,
+      replyDrafts: madeReplyDrafts,
       categoriesOn: () => current.mailCategories,
       refreshSenderSets: installSenderSets,
       quietHours: () => current.quietHours,
@@ -2190,6 +2231,7 @@ type RpcDeps = {
   restoreTag: (parts: string[]) => string;
   /** AI writes mail: the owner's voice switch, instructions and facts. */
   writeSettings: () => WriteSettings;
+  replyDrafts: Pick<ReplyDrafts, "get" | "dismiss">;
   /** The owner's "Sort mail into categories" setting. */
   categoriesOn: () => boolean;
   /** Installs what from:vip and from:team match, from the settings and the accounts as they are now. */
@@ -3948,6 +3990,8 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       triage_status: owner("triage_status", ({ batchId }) => triageStatus(deps, batchId)),
       // Agent and mail (slice 3f): owner only; the server tasks fill these in.
       // Slice 3f: AI on the owner's click, kept tasks and local categories.
+      reply_draft_get: owner("reply_draft_get", ({ messageId }) => deps.replyDrafts.get(messageId)),
+      reply_draft_dismiss: owner("reply_draft_dismiss", ({ messageId }) => deps.replyDrafts.dismiss(messageId)),
       ai_start: owner("ai_start", (input) => ai.start(input)),
       ai_poll: owner("ai_poll", ({ jobId }) => ai.poll(jobId)),
       ai_cancel: owner("ai_cancel", ({ jobId }) => ({ cancelled: deps.aiJobs.cancel(jobId) })),

@@ -1931,8 +1931,8 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
   // ---- Compose and send (slice 3b) ----
 
   const openComposer = useCallback(
-    (draft: DraftView, warning: ComposeWarningKind, dropped: string[], dockThreadId: string | null) => {
-      setComposer({ draft, warning, dropped, dockThreadId });
+    (draft: DraftView, warning: ComposeWarningKind, dropped: string[], dockThreadId: string | null, initialOwn?: readonly string[]) => {
+      setComposer({ draft, warning, dropped, dockThreadId, ...(initialOwn !== undefined ? { initialOwn } : {}) });
     },
     [],
   );
@@ -4317,6 +4317,18 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
           const queued = await rpc.call("invite_reply", { messageId, answer, requestId: crypto.randomUUID() });
           showUndo(queued.outboxId, queued.sendAfter, "owner", "invite_reply");
           void loadOutbox();
+        },
+      },
+      // AI writes mail: the reply drafted for a message. Use opens an ordinary reply with the text in it.
+      replyDraft: {
+        get: async (messageId) => (await rpc.call("reply_draft_get", { messageId })).draft,
+        use: async (messageId, paragraphs) => {
+          const prepared = await rpc.call("compose_prepare", { kind: "reply", messageId });
+          const { draft } = await rpc.call("compose_open", { draftId: prepared.draftId });
+          openComposer(draft, prepared.warning, prepared.dropped, latest.current.reading.threadId, paragraphs);
+        },
+        dismiss: async (messageId) => {
+          await rpc.call("reply_draft_dismiss", { messageId });
         },
       },
       viewable: (attachment) => viewerShows(attachment.kind, attachment.mimeType),

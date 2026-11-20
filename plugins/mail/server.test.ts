@@ -4197,10 +4197,13 @@ describe("makosh-mail server: new mail, block and notifications (slice 3e)", () 
       archive?: Partial<FetchedMessage>[];
       junk?: Partial<FetchedMessage>[];
       folders?: string[];
+      /** A Makosh AI stub, for the auto drafts. */
+      sdk?: unknown;
     } = {},
   ) {
     const host = await load({
       settings: { vaultKey: generateVaultKey(), ...options.settings },
+      ...(options.sdk !== undefined ? { sdk: options.sdk as never } : {}),
       server: (gateway) => {
         gateway.addFolder({ path: "Sent", specialUse: "sent" });
         gateway.addFolder({ path: "Junk", specialUse: "junk" });
@@ -4248,6 +4251,68 @@ describe("makosh-mail server: new mail, block and notifications (slice 3e)", () 
     for (const bad of ["22:00", "24:00-08:00", "22:00 - 08:00", "10pm-8am"]) {
       await expect(host.harness.behavior.setSettings({ quietHours: bad })).rejects.toThrow();
     }
+  });
+
+  describe("AI writes mail: auto drafts", () => {
+    const toOwner = [{ name: null, address: "owner@example.org" }];
+    const idOf = (host: Host, subject: string) =>
+      (host.bb.storage.database().prepare("SELECT id FROM messages WHERE subject = ? AND folder = 'INBOX'").get(subject) as { id: string }).id;
+    const draftOf = async (host: Host, messageId: string) =>
+      ((await host.harness.behavior.callRpc("reply_draft_get", { messageId })) as { draft: Record<string, unknown> | null }).draft;
+
+    it("drafts a reply to new mail from someone the owner wrote to; the owner reads it, uses or dismisses it, and nothing is sent", async () => {
+      const ai = new MakoshAiStub();
+      ai.queue.push('{"reply":true,"paragraphs":["Invented drafted answer.","See https://evil.example/x"]}');
+      const { host, accountId } = await started({ settings: { aiAutoDrafts: true, aiInstructions: "Sign as Alex." }, sdk: ai.sdk() });
+      const gateway = host.gateway;
+      gateway.deliver({ from: { name: "Known", address: KNOWN }, to: toOwner, date: recent, subject: "Invented question", bodyText: "Invented: can we meet on Tuesday?" });
+      gateway.deliver({ from: { name: "Stranger", address: "stranger@example.com" }, to: toOwner, date: recent, subject: "Invented stranger", bodyText: "Invented offer." });
+      gateway.deliver({ from: { name: "Known", address: KNOWN }, to: [{ name: null, address: "team@example.com" }], cc: toOwner, date: recent, subject: "Invented copy", bodyText: "Invented FYI." });
+      gateway.deliver({
+        from: { name: "Known", address: KNOWN },
+        to: toOwner,
+        date: recent,
+        subject: "Invented list",
+        bodyText: "Invented news.",
+        bulkHeaders: { listId: "<news.example.com>", listUnsubscribe: "<mailto:u@example.com>", precedence: "bulk", autoSubmitted: null },
+      });
+      await wakeAndWait(host, accountId);
+      const id = idOf(host, "Invented question");
+      await vi.waitFor(async () => expect(await draftOf(host, id)).not.toBeNull());
+      expect(await draftOf(host, id)).toMatchObject({
+        paragraphs: ["Invented drafted answer.", "See [link removed]"],
+        preview: "Invented drafted answer. See [link removed]",
+        linksRemoved: 1,
+      });
+      // One call, for the one message that qualifies; it carries the message and the owner's instructions.
+      expect(ai.starts).toHaveLength(1);
+      const sent = JSON.stringify(ai.starts);
+      expect(sent).toContain("can we meet on Tuesday?");
+      expect(sent).toContain("Sign as Alex.");
+      expect(sent).not.toContain("Invented offer.");
+      for (const subject of ["Invented stranger", "Invented copy", "Invented list"]) expect(await draftOf(host, idOf(host, subject))).toBeNull();
+      const rows = host.bb.storage.database().prepare("SELECT actor, outcome, message_ids_json FROM agent_log WHERE tool = 'ai_autodraft'").all();
+      expect(rows).toEqual([{ actor: "owner_ai", outcome: "ok", message_ids_json: JSON.stringify([id]) }]);
+      expect(host.harness.inspection.logEntries.map((e) => e.message).join("\n")).not.toContain("Tuesday");
+      // Nothing was sent or queued, and no compose draft was made.
+      expect(host.bb.storage.database().prepare("SELECT count(*) AS n FROM compose_drafts").get()).toEqual({ n: 0 });
+
+      const other = { experimental_caller: { kind: "plugin", pluginId: "other" } } as const;
+      await expect(host.harness.behavior.callRpc("reply_draft_get", { messageId: id }, other)).rejects.toMatchObject({ code: "forbidden" });
+      await expect(host.harness.behavior.callRpc("reply_draft_dismiss", { messageId: id }, other)).rejects.toMatchObject({ code: "forbidden" });
+      expect(await host.harness.behavior.callRpc("reply_draft_dismiss", { messageId: id })).toEqual({ ok: true });
+      expect(await draftOf(host, id)).toBeNull();
+    });
+
+    it("is off by default: no model call for new mail", async () => {
+      const ai = new MakoshAiStub();
+      const { host, accountId } = await started({ sdk: ai.sdk() });
+      host.gateway.deliver({ from: { name: "Known", address: KNOWN }, to: toOwner, date: recent, subject: "Invented question", bodyText: "Invented: can we meet?" });
+      await wakeAndWait(host, accountId);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(ai.starts).toEqual([]);
+      expect(await draftOf(host, idOf(host, "Invented question"))).toBeNull();
+    });
   });
 
   it("toasts new unread Inbox mail from someone the owner wrote to, publishing only a token", async () => {

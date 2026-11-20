@@ -1252,6 +1252,27 @@ export const rpcSchemas = {
   // refuses plugin callers, none is discoverable, none is a tool, CLI or
   // mention. Model calls start only here, on the owner's click. ----
 
+  /** AI writes mail: the reply drafted for a message, or null; a draft no longer wanted is deleted by this read. */
+  reply_draft_get: {
+    input: z.object({ messageId: idInput }),
+    output: z.object({
+      draft: z
+        .object({
+          paragraphs: z.array(z.string()),
+          preview: z.string(),
+          linksRemoved: z.number().int().min(0),
+          provider: z.string(),
+          model: z.string(),
+          createdAt: z.string(),
+        })
+        .nullable(),
+    }),
+  },
+  /** Use and Dismiss: the kept draft is deleted (the page already holds its text for Use). */
+  reply_draft_dismiss: {
+    input: z.object({ messageId: idInput }),
+    output: z.object({ ok: z.literal(true) }),
+  },
   /** A cached summary, or a job to poll. Refusals: out_of_scope, rate_limited, conflict, not_found, AI error kinds. */
   ai_start: {
     input: aiStartInput,
@@ -2003,6 +2024,9 @@ export const PLUGIN_METHODS = Object.keys(pluginSchemas) as readonly (keyof type
 export const INBOX_TAB_METHODS = ["inbox_tabs_list", "inbox_tab_save", "inbox_tab_delete", "inbox_tab_move"] as const satisfies readonly (keyof typeof rpcSchemas)[];
 
 /** The owner's methods of the typing-speed project. */
+/** AI writes mail: the reply drafted for a new message (owner only; refused to plugins, never a tool). */
+export const AI_WRITE_METHODS = ["reply_draft_get", "reply_draft_dismiss"] as const satisfies readonly (keyof typeof rpcSchemas)[];
+
 export const TYPING_METHODS = ["phrases_list", "template_file_begin", "template_file_finish", "template_file_remove", "template_apply"] as const satisfies readonly (keyof typeof rpcSchemas)[];
 
 export const SETTINGS_METHODS = ["settings_get", "settings_set"] as const satisfies readonly (keyof typeof rpcSchemas)[];

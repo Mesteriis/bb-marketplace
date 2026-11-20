@@ -832,7 +832,7 @@ describe("slice-2 migrations (SQLite)", () => {
          VALUES ('acc_1', 'owner@example.org', 'imap.example.org', 993, 'owner', 'sealed', 'other', ?)`,
       ).run("2026-01-01T00:00:00.000Z");
       db.transaction(() => MIGRATIONS.slice(19).forEach((statement) => db.exec(statement)))();
-      expect(MIGRATIONS).toHaveLength(23);
+      expect(MIGRATIONS).toHaveLength(24);
       expect(createSqliteStore(db).getAccount("acc_1")).toMatchObject({ authKind: "password", grantedScopes: [], passwordSealed: "sealed" });
     });
   });
@@ -898,7 +898,7 @@ describe("slice-2 migrations (SQLite)", () => {
       db.transaction(() => MIGRATIONS.slice(0, 20).forEach((statement) => db.exec(statement)))();
       seedLegacyAccount(db);
       db.transaction(() => MIGRATIONS.slice(20).forEach((statement) => db.exec(statement)))();
-      expect(MIGRATIONS).toHaveLength(23);
+      expect(MIGRATIONS).toHaveLength(24);
       expect(createSqliteStore(db).listPluginGrants()).toEqual([]);
       const columns = db.prepare<[], { name: string }>("SELECT name FROM pragma_table_info('compose_drafts')").all();
       expect(columns.map((column) => column.name)).toContain("prepared_by");
@@ -3293,6 +3293,35 @@ describe.each(storeKinds)("operators for Inbox tabs (%s)", (_kind, make) => {
   });
 });
 
+describe.each(storeKinds)("drafted replies (%s)", (_kind, make) => {
+  const draft = (messageId: string, createdAt: string, paragraphs = ["Invented reply."]) => ({
+    messageId,
+    accountId: "acc_1",
+    paragraphs,
+    linksRemoved: 1,
+    provider: "provider-x",
+    model: "model-y",
+    createdAt,
+  });
+
+  it("keeps one draft per message, replaces it, deletes it once, and drops the oldest past the limit", () => {
+    const s = make();
+    expect(s.getReplyDraft("m1")).toBeNull();
+    s.saveReplyDraft(draft("m1", "2026-11-20T08:00:00.000Z"), 2);
+    s.saveReplyDraft(draft("m2", "2026-11-20T09:00:00.000Z"), 2);
+    expect(s.getReplyDraft("m1")).toEqual(draft("m1", "2026-11-20T08:00:00.000Z"));
+    s.saveReplyDraft(draft("m1", "2026-11-20T10:00:00.000Z", ["Second", "version"]), 2);
+    expect(s.getReplyDraft("m1")?.paragraphs).toEqual(["Second", "version"]);
+    s.saveReplyDraft(draft("m3", "2026-11-20T11:00:00.000Z"), 2);
+    expect(s.getReplyDraft("m2")).toBeNull();
+    expect(s.getReplyDraft("m1")).not.toBeNull();
+    expect(s.getReplyDraft("m3")).not.toBeNull();
+    expect(s.deleteReplyDraft("m3")).toBe(true);
+    expect(s.deleteReplyDraft("m3")).toBe(false);
+    expect(s.getReplyDraft("m3")).toBeNull();
+  });
+});
+
 describe.each(storeKinds)("Inbox tabs (%s)", (_kind, make) => {
   let s: MailStore;
   let uid = 0;
@@ -3927,7 +3956,7 @@ describe("slice-3e migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(9).forEach((s) => old.exec(s)))();
 
-    expect(MIGRATIONS).toHaveLength(23);
+    expect(MIGRATIONS).toHaveLength(24);
     const migrated = createSqliteStore(old);
     expect(migrated.getUnsubscribeInfo(ids[0]!)).toEqual({ ...INFO, listKey: "id:weekly.example.com" });
     expect(migrated.getUnsubscribeInfo(ids[1]!)?.listKey).toBe("from:news@example.com");
@@ -4575,7 +4604,7 @@ describe("slice-3f migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(10).forEach((s) => old.exec(s)))();
 
-    expect(MIGRATIONS).toHaveLength(23);
+    expect(MIGRATIONS).toHaveLength(24);
     const migrated = createSqliteStore(old);
     migrated.assignThreads("acc_1", new Map());
     expect(migrated.listThreads("acc_1", INBOX, null, 10).threads).toEqual([
@@ -5421,7 +5450,7 @@ describe("slice-3g migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(12).forEach((s) => old.exec(s)))();
 
-    expect(MIGRATIONS).toHaveLength(23);
+    expect(MIGRATIONS).toHaveLength(24);
     const runs = old.prepare("SELECT id, message_id, message_key, project_id FROM rule_runs ORDER BY id").all();
     expect(runs).toEqual([
       { id: "a1", message_id: messageId, message_key: expect.stringMatching(/^acc_1:/), project_id: "p_api" },
@@ -6006,7 +6035,7 @@ describe("slice-3h migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(13).forEach((s) => old.exec(s)))();
 
-    expect(MIGRATIONS).toHaveLength(23);
+    expect(MIGRATIONS).toHaveLength(24);
     const kinds = old.prepare("SELECT part_id, kind FROM attachments ORDER BY CAST(part_id AS INTEGER)").all() as {
       part_id: string;
       kind: string;
@@ -6676,7 +6705,7 @@ describe("slice-3i migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(14).forEach((statement) => old.exec(statement)))();
 
-    expect(MIGRATIONS).toHaveLength(23);
+    expect(MIGRATIONS).toHaveLength(24);
     const columns = (old.prepare("PRAGMA table_info(messages)").all() as { name: string }[]).map((c) => c.name);
     expect(columns).toEqual(expect.arrayContaining(["sender_check_json", "receipt_requested", "crypto"]));
     expect(old.prepare("SELECT sender_check_json, receipt_requested, crypto FROM messages").all()).toEqual([

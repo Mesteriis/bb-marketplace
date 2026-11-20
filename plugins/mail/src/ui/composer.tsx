@@ -117,6 +117,8 @@ export interface ComposerProps {
   /** Slice 3i: Apple Mail's Shift+Command+D sends; absent: read from the platform. */
   mac?: boolean;
   draft: DraftView;
+  /** AI writes mail: a drafted reply the owner chose to use, put in as the owner's text once. */
+  initialOwn?: readonly string[];
   accounts: readonly Account[];
   ports: ComposerPorts;
   /** From compose_prepare or compose_open. */
@@ -1292,6 +1294,7 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
           label={tx("Message")}
           initialDoc={draft.doc as EditorDoc}
           importFrom={draft.import}
+          {...(props.initialOwn !== undefined ? { initialOwn: props.initialOwn } : {})}
           onChange={(next) => {
             doc.current = next;
             changed();

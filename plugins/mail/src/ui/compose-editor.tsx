@@ -280,6 +280,8 @@ export interface ComposeEditorProps {
   initialDoc: EditorDoc;
   /** HTML to load once after the editor starts (DraftView.import), or null. */
   importFrom: { html: string; into: "quote" | "body"; stripSignature?: boolean } | null;
+  /** Text to put in place of the owner's own range once, after the import (a drafted reply the owner chose to use). */
+  initialOwn?: readonly string[];
   onChange: (doc: EditorDoc) => void;
   /** Files pasted or dropped into the editor. */
   onFiles: (files: File[]) => void;
@@ -303,6 +305,7 @@ export interface ComposeEditorProps {
 export function ComposeEditor({
   initialDoc,
   importFrom,
+  initialOwn,
   onChange,
   onFiles,
   onReady,
@@ -396,12 +399,18 @@ export function ComposeEditor({
       importing.current = true;
       try {
         importHtml(editor, importFrom.html, importFrom.into, importFrom.stripSignature === true);
+        // Part of the same load: the first save keeps the quote and the text together.
+        if (initialOwn !== undefined && initialOwn.length > 0) replaceOwnerRange(editor, initialOwn);
       } finally {
         importing.current = false;
       }
       handlers.current.onImported?.(editor.getJSON());
+    } else if (!imported.current && initialOwn !== undefined && initialOwn.length > 0) {
+      // No quote to load: the text is an edit, saved like one.
+      imported.current = true;
+      replaceOwnerRange(editor, initialOwn);
     }
-    // onReady and importFrom are read once per editor.
+    // onReady, importFrom and initialOwn are read once per editor.
   }, [editor]);
 
   return <EditorContent editor={editor} className={cn("min-h-0", className)} />;
