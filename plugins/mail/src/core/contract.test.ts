@@ -1434,7 +1434,15 @@ describe("slice-3f contract", () => {
   });
 
   it("offers every AI kind through ai_start", () => {
-    expect([...AI_START_KINDS].sort()).toEqual([...AI_KINDS].sort());
+    // An auto draft is started by new mail, never by a call.
+    expect([...AI_START_KINDS].sort()).toEqual(["ask", "categories", "digest", "draft", "summary", "tasks", "write"]);
+    expect(AI_KINDS.filter((kind) => !AI_START_KINDS.includes(kind))).toEqual(["autodraft"]);
+    const write = { kind: "write", draftId: "d", revision: 1, instruction: "say yes", paragraphs: [] };
+    expect(parses("ai_start", write)).toBe(true);
+    expect(parses("ai_start", { ...write, instruction: "" })).toBe(false);
+    expect(parses("ai_start", { ...write, instruction: "x".repeat(501) })).toBe(false);
+    expect(parses("ai_start", { ...write, instruction: "two\nlines" })).toBe(false);
+    expect(parses("ai_start", { ...write, kind: "autodraft" })).toBe(false);
   });
 
   it("takes each ai_start variant and refuses unknown kinds and extra keys", () => {
@@ -2105,7 +2113,7 @@ describe("settings page contract", () => {
     expect(SETTINGS_METHODS).toEqual(["settings_get", "settings_set"]);
     expect(Object.keys(rpcSchemas).filter((m) => !([...PLUGIN_METHODS, ...INBOX_TAB_METHODS, ...TYPING_METHODS] as readonly string[]).includes(m))).toHaveLength(180);
     expect(keysOf(rpcSchemas.settings_get.output)).not.toContain("vaultKey");
-    expect(keysOf(rpcSchemas.settings_get.output)).toHaveLength(35);
+    expect(keysOf(rpcSchemas.settings_get.output)).toHaveLength(39);
   });
 
   it("settings_set takes writable keys only", () => {

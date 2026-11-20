@@ -17,7 +17,7 @@ import { isAttribution } from "./quotes.ts";
 // Kinds, caps and rates
 // ---------------------------------------------------------------------------
 
-export const AI_KINDS = ["summary", "ask", "tasks", "categories", "digest", "draft"] as const;
+export const AI_KINDS = ["summary", "ask", "tasks", "categories", "digest", "draft", "write", "autodraft"] as const;
 export type AiKind = (typeof AI_KINDS)[number];
 
 /** Owner-click calls per kind per hour. */
@@ -28,6 +28,9 @@ export const AI_RATES: Record<AiKind, number> = {
   categories: 10,
   digest: 10,
   draft: 30,
+  write: 30,
+  // Not an owner click: replies drafted for new mail (AI writes mail); the day cap is the queue's.
+  autodraft: 10,
 };
 
 /** max_tokens per model call (spec resolution 9); ask has two calls. */
@@ -39,6 +42,8 @@ export const AI_MAX_OUTPUT_TOKENS = {
   categories: 2_048,
   digest: 4_096,
   draft: 4_096,
+  write: 4_096,
+  autodraft: 4_096,
 } as const;
 
 /** Characters of framed input per kind. */
@@ -49,6 +54,9 @@ export const AI_INPUT_CAPS: Record<AiKind, number> = {
   categories: 30_000,
   digest: 30_000,
   draft: 8_000,
+  // The conversation frame only; the owner's block and the voice samples have their own limits (ai-write.ts).
+  write: 30_000,
+  autodraft: 20_000,
 };
 
 /** Part of the summary cache key: a prompt change re-runs cached summaries. */
@@ -298,6 +306,22 @@ function finish(
     parts: capped.kept.map((k) => ({ n: k.part.n, messageId: messages[k.index]!.id, text: `${k.part.subject}\n${k.part.body}` })),
     notes: { hidden: capped.hidden, leftOut: options.leftOut ?? 0, truncated: capped.truncated },
   };
+}
+
+/**
+ * A conversation for a builder outside this module (AI writes mail): the
+ * framed emails within `cap` (the newest kept first), the parts and what
+ * was hidden or dropped. An empty conversation gives an empty frame.
+ */
+export function conversationFrame(
+  messages: readonly AiSourceMessage[],
+  cap: number,
+  nonce: string,
+): { framed: string; parts: AiBuild["parts"]; hidden: number; truncated: number } {
+  if (messages.length === 0) return { framed: "", parts: [], hidden: 0, truncated: 0 };
+  const capped = capParts(messages, newestFirst(messages.length), cap, cap, nonce);
+  const built = finish("", messages, capped, { nonce });
+  return { framed: built.input, parts: built.parts, hidden: capped.hidden, truncated: capped.truncated };
 }
 
 const newestFirst = (count: number) => Array.from({ length: count }, (_, i) => count - 1 - i);
@@ -730,3 +754,6 @@ export function evidenceFound(evidence: string, redactedSource: string): boolean
 export function summarySourceHash(ids: readonly string[], contentHashes: readonly string[]): Promise<string> {
   return sha256Hex(new TextEncoder().encode(JSON.stringify([AI_PROMPT_VERSION, ids, contentHashes])));
 }
+
+// Shared with the builders and parsers of other modules (ai-write.ts).
+export { JSON_ONLY as AI_JSON_ONLY, items as aiItems, parseWith as aiParseWith, text as aiText };

@@ -59,6 +59,14 @@ export const PAGE_SETTING_SCHEMAS = {
   autocorrectPairs: z.string().max(20_000),
   /** Typing speed: offer the rest of a phrase the owner often writes. */
   autocomplete: z.boolean(),
+  /** AI writes mail: show the model pieces of the owner's own sent text, to match the voice. */
+  aiVoice: z.boolean(),
+  /** AI writes mail: draft a reply to each new message from people the owner writes to. */
+  aiAutoDrafts: z.boolean(),
+  /** AI writes mail: the owner's standing instructions. */
+  aiInstructions: z.string().max(2_000),
+  /** AI writes mail: facts the model may use. */
+  aiKnowledge: z.string().max(6_000),
 } as const;
 
 /** Every setting the page shows. */
@@ -102,6 +110,10 @@ export const PAGE_SETTING_DEFAULTS: PageSettings = {
   autocorrect: true,
   autocorrectPairs: "",
   autocomplete: true,
+  aiVoice: true,
+  aiAutoDrafts: false,
+  aiInstructions: "",
+  aiKnowledge: "",
 };
 
 /** The stored settings as the page shows them: each key checked, a value that does not fit replaced by its default. */

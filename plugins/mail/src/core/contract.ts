@@ -167,6 +167,14 @@ const aiStartInput = z.union([
     instruction: z.string().min(1).max(200).refine(noLineBreaks, NO_LINE_BREAKS).optional(),
     paragraphs: z.array(z.string().max(8_000)).max(500),
   }),
+  /** AI writes mail: the body written from a few words; `paragraphs` is the owner's own text as on screen. */
+  z.strictObject({
+    kind: z.literal("write"),
+    draftId: idInput,
+    revision: z.number().int().min(0),
+    instruction: z.string().min(1).max(500).refine(noLineBreaks, NO_LINE_BREAKS),
+    paragraphs: z.array(z.string().max(8_000)).max(500),
+  }),
 ]);
 
 /** The kinds ai_start offers, read from its input union (the canary test runs each). */

@@ -78,6 +78,7 @@ import { OPEN_AI_SCOPE, inAiScope, senderExcluded, type AccountScope, type AiSco
 import { redactSecrets } from "../../core/redact.ts";
 import { AGENT_LOG_IDS_MAX, AGENT_LOG_KEEP_DAYS, AGENT_LOG_ROWS_MAX, type LogEntry } from "../../core/agent-log.ts";
 import type { AiCategoryAnswer } from "../../core/ai-input.ts";
+import { VOICE_SCAN } from "../../core/ai-write.ts";
 import {
   CATEGORY_RULES_MAX,
   type Category,
@@ -4102,6 +4103,21 @@ export function createSqliteStore(db: Database.Database): MailStore {
         )
         .all(limit)
         .map((row) => row.body_text);
+    },
+
+    voiceTexts(to, limit) {
+      const wanted = to === null ? null : to.trim().toLowerCase();
+      const rows = db
+        .prepare<[number], { body_text: string; to_json: string }>(
+          `SELECT substr(m.body_text, 1, 8000) AS body_text, m.to_json FROM ${MESSAGES_WITH_FOLDER}
+           WHERE ${ROW_ROLE} = 'sent' AND m.body_text IS NOT NULL AND m.body_text <> '' AND m.move_pending IS NULL AND ${IN_AI_SCOPE}
+           ORDER BY m.date DESC, m.seq DESC LIMIT ?`,
+        )
+        .all(wanted === null ? limit : VOICE_SCAN);
+      const kept = wanted === null
+        ? rows
+        : rows.filter((row) => (JSON.parse(row.to_json) as MailAddress[]).some((a) => a.address.trim().toLowerCase() === wanted));
+      return kept.slice(0, limit).map((row) => row.body_text);
     },
 
     tabUnreadCounts(scope, matches) {

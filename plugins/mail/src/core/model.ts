@@ -1273,6 +1273,15 @@ export const aiResultViewSchema = z.discriminatedUnion("kind", [
     /** Hidden values the answer dropped. */
     missing: z.number().int().min(0),
   }),
+  /** AI writes mail: a message written from the owner's request. */
+  z.object({
+    kind: z.literal("write"),
+    ...aiResultBase,
+    paragraphs: z.array(z.string()),
+    /** Links the owner did not write, replaced in the text. */
+    linksRemoved: z.number().int().min(0),
+    unknown: z.number().int().min(0),
+  }),
 ]);
 export type AiResultView = z.infer<typeof aiResultViewSchema>;
 

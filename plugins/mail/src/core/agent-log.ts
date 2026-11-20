@@ -13,7 +13,7 @@ export type LogActor = (typeof LOG_ACTORS)[number];
 export const LOG_TOOLS = [
   "search", "read", "contacts", "inbox", "propose", "templates", "triage", "mention", "handoff",
   "cli_search", "cli_read",
-  "ai_translate", "ai_summary", "ai_ask", "ai_tasks", "ai_categories", "ai_digest", "ai_draft",
+  "ai_translate", "ai_summary", "ai_ask", "ai_tasks", "ai_categories", "ai_digest", "ai_draft", "ai_write", "ai_autodraft",
   "bb_thread", "bb_task", "project_save", "patch_handoff", "incident", "rule_thread",
   "plugin_request", "plugin_accounts", "plugin_search", "plugin_read", "plugin_contacts", "plugin_invites", "plugin_propose", "plugin_token",
 ] as const;
@@ -108,6 +108,8 @@ export const LOG_TOOL_LABEL: Record<LogTool, string> = {
   ai_categories: "Suggested categories",
   ai_digest: "Summarized Today",
   ai_draft: "Improved your draft",
+  ai_write: "Wrote a message for you",
+  ai_autodraft: "Drafted a reply to new mail",
   bb_thread: "Started a BB thread",
   bb_task: "Made a task",
   project_save: "Saved files to a project",

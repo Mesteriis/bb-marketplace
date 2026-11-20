@@ -864,6 +864,12 @@ export interface MailStore {
   listTemplates(): TemplateRecord[];
   /** Typing speed: the plain text of the newest sent messages that have one, newest first (the owner's phrases come from it). */
   sentTexts(limit: number): string[];
+  /**
+   * AI writes mail: the plain text of the newest sent messages inside AI
+   * access, newest first; with `to`, only those addressed (To) to that
+   * address, looked for among the newest VOICE_SCAN sent messages.
+   */
+  voiceTexts(to: string | null, limit: number): string[];
   /** Insert (id null) or update by id; `conflict` when another template has the name key. */
   saveTemplate(
     /** `extras` absent: an existing template keeps its subject and recipients (typing speed). */

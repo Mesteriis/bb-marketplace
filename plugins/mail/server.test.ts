@@ -5,6 +5,7 @@ import {
   type PluginInteractionRequest,
   type PluginInteractionResult,
 } from "@get-bb/plugin-sdk";
+import { ownerParagraphs, type ComposeDoc } from "./src/core/compose-doc.ts";
 import {
   createFakePluginHost,
   makePluginAgentConfigurationContext,
@@ -568,7 +569,7 @@ describe("makosh-mail server", () => {
   it("settings_get shows the page's settings without the credential key, and settings_set changes writable ones", async () => {
     const host = await load();
     const before = (await host.harness.behavior.callRpc("settings_get", {})) as Record<string, unknown>;
-    expect(Object.keys(before)).toHaveLength(35);
+    expect(Object.keys(before)).toHaveLength(39);
     expect("vaultKey" in before).toBe(false);
     expect(before).toMatchObject({ hideQuotes: true, syncIntervalMinutes: 5, agentTools: false });
 
@@ -6395,6 +6396,102 @@ async function canaryDraft(host: Host) {
   return { draftId, revision: saved.revision, paragraphs: [text] };
 }
 
+/** A reply to a stored message, as Write sends it: the draft's revision and the owner's own paragraphs. */
+async function replyDraft(host: Host, messageId: string) {
+  const { draftId } = (await call(host, "compose_prepare", { kind: "reply", messageId })) as { draftId: string };
+  const { draft } = (await call(host, "compose_open", { draftId })) as { draft: { revision: number; doc: ComposeDoc } };
+  return { draftId, revision: draft.revision, paragraphs: ownerParagraphs(draft.doc).paragraphs };
+}
+
+/** The model inputs of every started stream, as one text. */
+const modelInputs = (ai: MakoshAiStub) => JSON.stringify(ai.starts);
+
+describe("AI writes mail: Write", () => {
+  const seedSent = (store: ReturnType<typeof createSqliteStore>) => {
+    const sent = (uid: number, to: string, bodyText: string) =>
+      store.upsertMessages("acc_1", "Sent", [
+        makeFetchedMessage(200 + uid, {
+          messageId: `voice-${uid}@example.org`,
+          from: { name: null, address: "owner@example.org" },
+          to: [{ name: null, address: to }],
+          bodyText,
+        }),
+      ]);
+    sent(1, "ivy@example.com", "Invented heron greeting for Ivy.\n\nOn Mon, Ivy wrote:\n> Their quoted pelican line.");
+    sent(2, "someone@example.net", "Invented otter note to someone else.");
+    sent(3, "blocked@excluded.example.net", "Invented walrus note to an excluded domain.");
+  };
+  const loadWrite = (ai: MakoshAiStub, settings: Record<string, string | number | boolean> = {}) =>
+    load({
+      settings: { vaultKey: COMPOSE_KEY, agentTools: true, agentPropose: true, agentTriage: true, ...settings },
+      seed: (bb) => {
+        seedCanary(bb);
+        seedSent(createSqliteStore(bb.storage.database()));
+      },
+      server: composeServer,
+      outboxIntervalMs: 5,
+      sdk: ai.sdk() as never,
+    });
+
+  it("a reply sends the request, the settings, the voice and the in-scope conversation; a link the owner did not write is replaced", async () => {
+    const ai = new MakoshAiStub();
+    const host = await loadWrite(ai, { aiInstructions: "Sign as Alex.", aiKnowledge: "Prices: https://example.org/prices" });
+    const reply = await replyDraft(host, canaryIds(host).inside);
+    ai.queue.push('{"reply":true,"paragraphs":["See https://example.org/prices and https://evil.example/pay.","Alex"]}');
+    const done = await aiToEnd(host, { kind: "write", draftId: reply.draftId, revision: reply.revision, instruction: "send the prices", paragraphs: reply.paragraphs });
+    expect(done.result).toMatchObject({
+      kind: "write",
+      paragraphs: ["See https://example.org/prices and [link removed].", "Alex"],
+      linksRemoved: 1,
+      unknown: 0,
+    });
+    const inputs = modelInputs(ai);
+    expect(inputs).toContain("send the prices");
+    expect(inputs).toContain("Sign as Alex.");
+    expect(inputs).toContain("Invented heron greeting for Ivy.");
+    expect(inputs).toContain("Invented otter note to someone else.");
+    expect(inputs).toContain("Invented note");
+    // Quoted text of a sent message, mail to an excluded domain and the canaries stay on this computer.
+    expect(inputs).not.toContain("pelican");
+    expect(inputs).not.toContain("walrus");
+    for (const canary of CANARIES) expect(inputs, `model input ${canary}`).not.toContain(canary);
+    const row = agentLogRows(host).filter((r) => r.tool === "ai_write");
+    expect(row).toHaveLength(1);
+    expect(row[0]).toMatchObject({ actor: "owner_ai", outcome: "ok", result_count: 1, message_ids_json: JSON.stringify([canaryIds(host).inside]) });
+    expect(JSON.stringify(row)).not.toContain("send the prices");
+  });
+
+  it("with the voice off no sent text is sent; a new message has no conversation", async () => {
+    const ai = new MakoshAiStub();
+    const host = await loadWrite(ai, { aiVoice: false });
+    const draft = await canaryDraft(host);
+    ai.queue.push('{"reply":true,"paragraphs":["Invented body."]}');
+    const done = await aiToEnd(host, { kind: "write", draftId: draft.draftId, revision: draft.revision, instruction: "say hello", paragraphs: draft.paragraphs });
+    expect(done.result).toMatchObject({ kind: "write", paragraphs: ["Invented body."], linksRemoved: 0 });
+    const inputs = modelInputs(ai);
+    expect(inputs).not.toContain("VOICE");
+    expect(inputs).not.toContain("heron");
+    expect(inputs).not.toContain("EMAIL");
+  });
+
+  it("refuses a reply to mail outside AI access and a changed draft before any model call", async () => {
+    const ai = new MakoshAiStub();
+    const host = await loadWrite(ai);
+    const outside = await replyDraft(host, canaryIds(host).outside);
+    await expect(
+      call(host, "ai_start", { kind: "write", draftId: outside.draftId, revision: outside.revision, instruction: "answer", paragraphs: outside.paragraphs }),
+    ).rejects.toThrow("Outside AI access");
+    const reply = await replyDraft(host, canaryIds(host).inside);
+    const input = { kind: "write", draftId: reply.draftId, revision: reply.revision, instruction: "answer", paragraphs: reply.paragraphs };
+    await expect(call(host, "ai_start", { ...input, revision: reply.revision + 1 })).rejects.toThrow("The draft changed");
+    await expect(call(host, "ai_start", { ...input, paragraphs: ["Something else"] })).rejects.toThrow("The draft changed");
+    await expect(call(host, "ai_start", { ...input, instruction: "two\nlines" })).rejects.toThrow();
+    const other = { experimental_caller: { kind: "plugin", pluginId: "other" } } as const;
+    await expect(host.harness.behavior.callRpc("ai_start", input, other)).rejects.toMatchObject({ code: "forbidden" });
+    expect(ai.starts).toEqual([]);
+  });
+});
+
 const SUMMARY_ANSWER = '{"decisions":[{"text":"Invented decision","messages":[1]}],"questions":[],"deadlines":[]}';
 
 describe("AI on the owner's click (slice 3f)", () => {
@@ -6403,6 +6500,7 @@ describe("AI on the owner's click (slice 3f)", () => {
     const host = await loadAi(ai);
     const ids = canaryIds(host);
     const draft = await canaryDraft(host);
+    const reply = await replyDraft(host, ids.inside);
     const fixtures: Record<string, { input: Record<string, unknown>; answers: string[] }[]> = {
       summary: [{ input: { kind: "summary", threadId: threadOfId(host, ids.inside) }, answers: [SUMMARY_ANSWER] }],
       tasks: [
@@ -6421,6 +6519,12 @@ describe("AI on the owner's click (slice 3f)", () => {
         {
           input: { kind: "draft", draftId: draft.draftId, revision: draft.revision, mode: "fix", paragraphs: draft.paragraphs },
           answers: ["__echo__"],
+        },
+      ],
+      write: [
+        {
+          input: { kind: "write", draftId: reply.draftId, revision: reply.revision, instruction: `Tell them the code ${CANARY.subject}`, paragraphs: reply.paragraphs },
+          answers: ['{"reply":true,"paragraphs":["Invented reply."]}'],
         },
       ],
     };
@@ -6456,7 +6560,7 @@ describe("AI on the owner's click (slice 3f)", () => {
     // The owner_ai rows carry the setting values and no content.
     const rows = agentLogRows(host).filter((row) => row.actor === "owner_ai");
     expect(new Set(rows.map((row) => row.tool))).toEqual(
-      new Set(["ai_summary", "ai_tasks", "ai_ask", "ai_categories", "ai_digest", "ai_draft", "ai_translate"]),
+      new Set(["ai_summary", "ai_tasks", "ai_ask", "ai_categories", "ai_digest", "ai_draft", "ai_write", "ai_translate"]),
     );
     expect(rows.every((row) => row.provider === "" && row.model === "")).toBe(true);
     expect(owner.length).toBeGreaterThan(0);

@@ -164,6 +164,7 @@ import { INCIDENT_KEEP_DAYS } from "../alerts.ts";
 import { UNKNOWN_PROJECT_DAYS } from "../projects.ts";
 import { groupDevRows, pageDevGroups } from "../dev-groups.ts";
 import { OPEN_AI_SCOPE, inAiScope, senderExcluded, type AccountScope, type AiScope } from "../ai-scope.ts";
+import { VOICE_SCAN } from "../ai-write.ts";
 import { AGENT_LOG_IDS_MAX, AGENT_LOG_KEEP_DAYS, AGENT_LOG_ROWS_MAX, type LogEntry, type LogOutcome } from "../agent-log.ts";
 import type { AiCategoryAnswer } from "../ai-input.ts";
 import { CATEGORY_RULES_MAX, type Category, type CategoryRule, type CategorySource, type PreviousLabel } from "../categories.ts";
@@ -2357,6 +2358,17 @@ export class InMemoryMailStore implements MailStore {
     return this.state.rows
       .filter((r) => r.movePending === null && this.roleOf(r.accountId, r.folder) === "sent" && (r.message.bodyText ?? "") !== "")
       .sort((a, b) => (b.message.date ?? "").localeCompare(a.message.date ?? ""))
+      .slice(0, limit)
+      .map((r) => (r.message.bodyText ?? "").slice(0, 8000));
+  }
+
+  voiceTexts(to: string | null, limit: number): string[] {
+    const wanted = to === null ? null : to.trim().toLowerCase();
+    return this.state.rows
+      .filter((r) => r.movePending === null && this.roleOf(r.accountId, r.folder) === "sent" && (r.message.bodyText ?? "") !== "" && this.inAiScope(r))
+      .sort((a, b) => (b.message.date ?? "").localeCompare(a.message.date ?? ""))
+      .slice(0, wanted === null ? limit : VOICE_SCAN)
+      .filter((r) => wanted === null || r.message.to.some((a) => a.address.trim().toLowerCase() === wanted))
       .slice(0, limit)
       .map((r) => (r.message.bodyText ?? "").slice(0, 8000));
   }

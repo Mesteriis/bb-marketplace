@@ -99,6 +99,8 @@ import { SNIFF_BYTES, VIEW_CAPS, sniffType, viewableAs } from "./src/core/file-k
 import { createSyncLoop, type SyncLoop } from "./src/adapters/bb/sync-service.ts";
 import { createIdleSupervisor, type IdleSupervisor } from "./src/adapters/bb/idle-service.ts";
 import { NewMailBook } from "./src/adapters/bb/new-mail-book.ts";
+import { writeInput } from "./src/core/ai-write.ts";
+import { writeSource, type WriteSettings } from "./src/core/write-source.ts";
 import { createSnoozeClock, type SnoozeClock } from "./src/adapters/bb/snooze-clock.ts";
 import { ONE_CLICK_TOTAL_MS, UnsubscribeRate, createOneClickPoster } from "./src/adapters/bb/one-click.ts";
 import { createVault, generateVaultKey } from "./src/adapters/bb/vault.ts";
@@ -768,6 +770,32 @@ function defineSettings(bb: BbPluginApi) {
       label: "Offer the rest of phrases I often write",
       description: "From your own sent mail and templates, on this computer. Tab accepts.",
       default: true,
+    },
+    aiVoice: {
+      type: "boolean",
+      label: "Write in my voice",
+      description: "When AI writes a message, it is shown a few pieces of your own sent mail to match your tone.",
+      default: true,
+    },
+    aiAutoDrafts: {
+      type: "boolean",
+      label: "Draft replies to new mail",
+      description: "Uses your AI provider for every new message from people you write to; at most 50 a day. Nothing is sent without you.",
+      default: false,
+    },
+    aiInstructions: {
+      type: "string",
+      label: "My instructions for AI writing",
+      description: "For example: sign as Alex; answer in the language of the message.",
+      default: "",
+      experimental_schema: PAGE_SETTING_SCHEMAS.aiInstructions,
+    },
+    aiKnowledge: {
+      type: "string",
+      label: "Facts AI may use",
+      description: "Prices, addresses, working hours, links. AI adds no other facts or links.",
+      default: "",
+      experimental_schema: PAGE_SETTING_SCHEMAS.aiKnowledge,
     },
   });
 }
@@ -2031,6 +2059,10 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       aiJobs,
       aiNonce: () => translateNonce((size) => new Uint8Array(randomBytes(size))),
       restoreTag: (parts) => newRestoreTag((size) => new Uint8Array(randomBytes(size)), parts),
+      writeSettings: () => {
+        const page = pageSettingsOf(current);
+        return { voice: page.aiVoice, personal: page.aiInstructions, facts: page.aiKnowledge };
+      },
       categoriesOn: () => current.mailCategories,
       refreshSenderSets: installSenderSets,
       quietHours: () => current.quietHours,
@@ -2156,6 +2188,8 @@ type RpcDeps = {
   aiNonce: () => string;
   /** A restore tag absent from every part. */
   restoreTag: (parts: string[]) => string;
+  /** AI writes mail: the owner's voice switch, instructions and facts. */
+  writeSettings: () => WriteSettings;
   /** The owner's "Sort mail into categories" setting. */
   categoriesOn: () => boolean;
   /** Installs what from:vip and from:team match, from the settings and the accounts as they are now. */
@@ -5363,7 +5397,7 @@ type AiStartInput = z.output<(typeof rpcSchemas)["ai_start"]["input"]>;
 type AiResultViewOut = z.output<(typeof rpcSchemas)["ai_poll"]["output"]>["result"];
 
 /** A builder over a fresh nonce, re-drawn while a part holds it. */
-function withNonce(deps: RpcDeps, build: (nonce: string) => AiBuild): AiBuild {
+function withNonce<T extends AiBuild>(deps: RpcDeps, build: (nonce: string) => T): T {
   for (let attempt = 0; ; attempt++) {
     try {
       return build(deps.aiNonce());
@@ -5447,6 +5481,8 @@ function aiResultView(store: MailStore, finished: AiFinished): NonNullable<AiRes
       };
     case "draft":
       return { kind: "draft", ...base, ...output.value };
+    case "write":
+      return { kind: "write", ...base, paragraphs: output.value.paragraphs, linksRemoved: output.value.linksRemoved, unknown: output.value.unknown };
   }
 }
 
@@ -5725,6 +5761,17 @@ function createAiRpc(deps: RpcDeps, ownerDraft: (draftId: string) => DraftRecord
           }),
         );
         return startJob("draft", built, { tag, maxChars: Math.max(1, 2 * length) });
+      }
+      case "write": {
+        const draft = ownerDraft(input.draftId);
+        if (draft.revision !== input.revision) throw aiRefusal("conflict", DRAFT_CHANGED_MESSAGE);
+        const stored = ownerParagraphs(draft.doc).paragraphs;
+        if (stored.length !== input.paragraphs.length || stored.some((p, i) => p !== input.paragraphs[i])) throw aiRefusal("conflict", DRAFT_CHANGED_MESSAGE);
+        const source = writeSource(store, deps.writeSettings(), draft, stored);
+        if (source === "out_of_scope") throw outOfScope("write");
+        const tag = deps.restoreTag([...stored, input.instruction, source.personal, source.facts]);
+        const built = withNonce(deps, (nonce) => writeInput({ mode: "write", instruction: input.instruction, ...source.request }, { nonce, tag, leftOut: source.leftOut }));
+        return startJob("write", built, { tag, allowedLinks: built.allowedLinks });
       }
     }
   }

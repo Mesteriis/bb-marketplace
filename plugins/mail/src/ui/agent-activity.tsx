@@ -46,6 +46,8 @@ const TOOLS: Record<LogTool, string> = {
   ai_categories: msg("Suggested categories"),
   ai_digest: msg("Today summary"),
   ai_draft: msg("Improve"),
+  ai_write: msg("Write with AI"),
+  ai_autodraft: msg("Drafted reply"),
   bb_thread: msg("BB thread"),
   bb_task: msg("Task"),
   project_save: msg("Saved to a project"),
