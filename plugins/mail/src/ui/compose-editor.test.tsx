@@ -89,9 +89,9 @@ describe("ComposeEditor: a drafted reply the owner chose to use", () => {
     expect(imports).toHaveLength(1);
     expect(docs).toEqual([]);
     expect(ownerParagraphs(normalizeDoc(imports[0]! as never)).paragraphs).toEqual(["Hello Ada,", "Tuesday works."]);
-    const text = JSON.stringify(imports[0]);
-    expect(text).toContain("blockquote");
-    expect(text.indexOf("Tuesday works.")).toBeLessThan(text.indexOf("Made-up original"));
+    // The attribution line stays between the text and the quote.
+    const top = (imports[0]!.content ?? []).map((node) => (node.type === "paragraph" ? (node.content ?? []).map((n) => n.text ?? "").join("") : node.type));
+    expect(top.slice(0, 4)).toEqual(["Hello Ada,", "Tuesday works.", "Ada wrote:", "blockquote"]);
   });
 
   it("without a quote it is an edit, so the composer saves it", () => {

@@ -25,7 +25,7 @@ import {
   type SummaryResult,
   type TaskSuggestion,
 } from "../../core/ai-input.ts";
-import { parseWrite } from "../../core/ai-write.ts";
+import { parseWrite, removeForeignLinks } from "../../core/ai-write.ts";
 import { restoreSecrets } from "../../core/redact.ts";
 import { TranslateError, type Translator } from "../../core/translate.ts";
 import type { AiErrorKind, Clock } from "../../core/index.ts";
@@ -357,16 +357,20 @@ export class AiJobs {
       }
       case "write":
       case "autodraft": {
-        const parsed = readable(parseWrite(raw, ctx.allowedLinks ?? []));
-        const restored = restoreSecrets(parsed.value.paragraphs.join("\u0000"), job.restore ?? new Map(), ctx.tag ?? "");
+        const parsed = readable(parseWrite(raw));
+        // A draft for someone else's message never gets the owner's hidden values back: the placeholders stay.
+        const restore = job.kind === "write" ? job.restore ?? new Map<string, string>() : new Map<string, string>();
+        const restored = restoreSecrets(parsed.value.paragraphs.join("\u0000"), restore, ctx.tag ?? "");
+        // Links are judged on the final text, so the owner's own link that held a hidden value compares as written.
+        const checked = removeForeignLinks(parsed.value.paragraphs.length === 0 ? [] : restored.text.split("\u0000"), ctx.allowedLinks ?? []);
         return {
           output: {
             kind: "write",
             value: {
               reply: parsed.value.reply,
-              paragraphs: parsed.value.paragraphs.length === 0 ? [] : restored.text.split("\u0000"),
-              linksRemoved: parsed.value.linksRemoved,
-              unknown: restored.unknown,
+              paragraphs: checked.paragraphs,
+              linksRemoved: checked.removed,
+              unknown: job.kind === "write" ? restored.unknown : 0,
             },
           },
           dropped: parsed.dropped,

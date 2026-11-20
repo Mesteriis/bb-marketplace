@@ -12,7 +12,10 @@ All notable changes to Makosh Mail are recorded here. The format follows
   Ctrl/Cmd+J) writes the body from a few words, in a reply reading the
   conversation; **Insert** replaces your own text in one step. It follows
   your instructions, uses your facts and matches your voice from your own
-  sent text. A link you did not write is replaced by `[link removed]`.
+  sent text. A link or address you did not write is replaced by
+  `[link removed]`. The line above a quote ("On …, X wrote:", the forwarded
+  header) is no longer part of your own text for Improve and Write: it is
+  not sent to the model and not replaced.
   **Draft replies to new mail** (off by default) drafts a reply to each new
   Inbox message from people you write to; **Reply drafted** under the
   message offers Use and Dismiss; at most 10 an hour and 50 a day; nothing

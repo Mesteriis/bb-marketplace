@@ -72,39 +72,86 @@ export function voiceSamples(toRecipient: readonly string[], newest: readonly st
 // Links
 // ---------------------------------------------------------------------------
 
-/** A scheme link, a www link, or a domain followed by a path. Addresses (a@b) are not links. */
-const LINK = /(?<![@\w.-])(?:https?:\/\/|www\.)[^\s<>"'`]+|(?<![@\w.-])(?:[a-z0-9-]+\.)+[a-z]{2,}\/[^\s<>"'`]*/giu;
-const TRAILING = /[.,;:!?)\]}»”]+$/u;
+// What mail programs turn into something to click: a link with a scheme
+// (also a broken one, "https:/host"), "//host", an address, a host name
+// with or without a port, path, query or fragment (Latin, any other script
+// or punycode; a full-width dot counts as a dot), and an IP address with a
+// port or path. A name that ends like a file ("report.pdf") is not a link.
+const DOT = "[.。．｡]";
+const LABEL = "[\\p{L}\\p{N}](?:[\\p{L}\\p{N}-]*[\\p{L}\\p{N}])?";
+const HOST = `(?:${LABEL}${DOT})+(?:xn--[a-z0-9-]+|\\p{L}{2,})`;
+const REST = "[^\\s<>\"'`]*";
+const LINK = new RegExp(
+  "(?<![\\p{L}\\p{N}@._%+-])(?:" +
+    `(?:https?|ftp|file|data|javascript|tel|sms|mailto):[^\\s<>"'\`]+` +
+    `|//${HOST}${REST}` +
+    `|[\\p{L}\\p{N}._%+-]+@${HOST}` +
+    `|${HOST}(?::\\d{1,5})?(?:[/?#]${REST})?` +
+    `|\\d{1,3}(?:\\.\\d{1,3}){3}(?::\\d{1,5}${REST}|[/?#]${REST})` +
+    ")",
+  "giu",
+);
+const TRAILING = /[.,;:!?)\]}»”。]+$/u;
+/** Endings of file names: "report.pdf" and "Node.js" are words, not links. */
+const FILE_ENDINGS = new Set([
+  "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "csv", "json", "xml", "html", "htm", "md", "js", "ts", "tsx", "jsx", "py", "rb",
+  "go", "rs", "java", "css", "zip", "rar", "gz", "png", "jpg", "jpeg", "gif", "svg", "webp", "mp3", "mp4", "mov", "eml", "ics", "exe", "dmg", "log",
+]);
 
-/** A link as compared: no scheme, no www, host in lower case, no trailing slash or sentence punctuation. */
+/** A bare name that ends like a file, with nothing after it: not a link. */
+function looksLikeFile(raw: string): boolean {
+  const bare = raw.replace(TRAILING, "");
+  if (/[/?#:@]/.test(bare)) return false;
+  return FILE_ENDINGS.has(bare.slice(bare.lastIndexOf(".") + 1).toLowerCase());
+}
+
+/**
+ * A link as compared: no scheme, no slashes before the host, no www, the
+ * host (and an address) in lower case with plain dots, no trailing slash
+ * or sentence punctuation. A different host, port, path, query or
+ * fragment is a different link.
+ */
 function normalizeLink(raw: string): string {
-  const bare = raw.replace(TRAILING, "").replace(/^https?:\/\//i, "").replace(/^www\./i, "");
+  const bare = raw
+    .replace(TRAILING, "")
+    .replace(/^[a-z][a-z0-9+.-]*:(?!\d)\/*/i, "")
+    .replace(/^\/+/, "")
+    .replace(/^www\./i, "");
   const slash = bare.search(/[/?#]/);
-  const host = (slash < 0 ? bare : bare.slice(0, slash)).toLowerCase();
+  const host = (slash < 0 ? bare : bare.slice(0, slash)).toLowerCase().replace(/[。．｡]/g, ".");
   const rest = slash < 0 ? "" : bare.slice(slash);
   return `${host}${rest}`.replace(/\/$/, "");
 }
 
-/** The links of a text, normalized, in order, without repeats. */
+/** The links and addresses of a text, normalized, in order, without repeats. */
 export function linksOf(text: string): string[] {
   const out: string[] = [];
   for (const match of text.matchAll(LINK)) {
+    if (looksLikeFile(match[0])) continue;
     const link = normalizeLink(match[0]);
     if (link !== "" && !out.includes(link)) out.push(link);
   }
   return out;
 }
 
-/** The text with every link outside `allowed` replaced; `removed` counts them. */
-function keepAllowedLinks(text: string, allowed: ReadonlySet<string>): { text: string; removed: number } {
+/**
+ * The paragraphs with every link and address outside `allowedLinks`
+ * replaced by LINK_REMOVED; `removed` counts them. Run over the final
+ * text, after hidden values are put back, so a link of the owner's that
+ * held one compares as the owner wrote it.
+ */
+export function removeForeignLinks(paragraphs: readonly string[], allowedLinks: readonly string[]): { paragraphs: string[]; removed: number } {
+  const allowed = new Set(allowedLinks);
   let removed = 0;
-  const kept = text.replace(LINK, (raw) => {
-    if (allowed.has(normalizeLink(raw))) return raw;
-    removed += 1;
-    // The sentence punctuation after the link stays.
-    return `${LINK_REMOVED}${TRAILING.exec(raw)?.[0] ?? ""}`;
-  });
-  return { text: kept, removed };
+  const kept = paragraphs.map((paragraph) =>
+    paragraph.replace(LINK, (raw) => {
+      if (looksLikeFile(raw) || allowed.has(normalizeLink(raw))) return raw;
+      removed += 1;
+      // The sentence punctuation after the link stays.
+      return `${LINK_REMOVED}${TRAILING.exec(raw)?.[0] ?? ""}`;
+    }),
+  );
+  return { paragraphs: kept, removed };
 }
 
 // ---------------------------------------------------------------------------
@@ -199,15 +246,11 @@ export function writeInput(request: WriteRequest, options: { nonce: string; tag:
 
 /**
  * The written paragraphs: at most WRITE_ANSWER_CHARS in all (what goes past
- * is dropped and counted), links outside `allowedLinks` replaced. `reply`
- * false (auto drafts) keeps nothing. Unreadable without any text.
+ * is dropped and counted). `reply` false (auto drafts) keeps nothing.
+ * Unreadable without any text. Links are checked by removeForeignLinks,
+ * after the hidden values are put back.
  */
-export function parseWrite(
-  output: string,
-  allowedLinks: readonly string[],
-): AiParse<{ reply: boolean; paragraphs: string[]; linksRemoved: number }> {
-  const allowed = new Set(allowedLinks);
-  let linksRemoved = 0;
+export function parseWrite(output: string): AiParse<{ reply: boolean; paragraphs: string[] }> {
   const parsed = aiParseWith(output, (object, tally) => {
     if (object.reply === false) return { reply: false, paragraphs: [] as string[] };
     let room = WRITE_ANSWER_CHARS;
@@ -216,13 +259,11 @@ export function parseWrite(
       if (value === null || room <= 0) return null;
       const kept = truncateText(value, room);
       room -= kept.length;
-      const { text, removed } = keepAllowedLinks(kept, allowed);
-      linksRemoved += removed;
-      return text;
+      return kept;
     }, tally);
     return { reply: true, paragraphs };
   });
   if (!parsed.ok) return parsed;
   if (parsed.value.reply && parsed.value.paragraphs.every((paragraph) => paragraph.trim() === "")) return { ok: false, error: "unreadable" };
-  return { ok: true, value: { ...parsed.value, linksRemoved }, dropped: parsed.dropped };
+  return parsed;
 }

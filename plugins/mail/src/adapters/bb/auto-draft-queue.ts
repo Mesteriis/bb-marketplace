@@ -7,7 +7,7 @@
 import { AUTO_DRAFT_QUEUE, AUTO_DRAFT_RETRY_MS, type DraftBudget, type ReplyDraftRecord } from "../../core/auto-drafts.ts";
 import type { WriteBuild } from "../../core/ai-write.ts";
 import type { AiErrorKind, Clock } from "../../core/index.ts";
-import { AiJobRefusal, type AiJobs } from "./ai-jobs.ts";
+import { AI_JOB_MAX_MS, AiJobRefusal, type AiJobs } from "./ai-jobs.ts";
 
 /** Failures that the next message would meet too. */
 const STOPS: ReadonlySet<AiErrorKind> = new Set(["gateway_missing", "pool_unavailable", "provider_unknown", "model_unknown", "auth", "quota"]);
@@ -17,7 +17,7 @@ export type AutoDraftQueueDeps = {
   enabled: () => boolean;
   /** The request for a message; null when it no longer qualifies (gone, moved, outside AI access). */
   build: (messageId: string) => { built: WriteBuild; tag: string; accountId: string } | null;
-  jobs: Pick<AiJobs, "start" | "settled" | "poll" | "finished">;
+  jobs: Pick<AiJobs, "start" | "settled" | "poll" | "finished" | "cancel">;
   /** The owner's provider and model settings. */
   context: () => { provider: string; model: string };
   keep: (draft: ReplyDraftRecord) => void;
@@ -115,7 +115,10 @@ export class AutoDraftQueue {
       this.waiting.shift();
       deps.budget.take();
       deps.logCall(made.built);
+      // Nobody polls this job, so nothing else would end a call that never answers.
+      const giveUp = deps.schedule(() => deps.jobs.cancel(jobId), AI_JOB_MAX_MS);
       await deps.jobs.settled(jobId);
+      giveUp();
       const finished = deps.jobs.finished(jobId, "autodraft");
       if (finished === null) {
         const error = deps.jobs.poll(jobId)?.error ?? "failed";

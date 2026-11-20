@@ -65,6 +65,21 @@ describe("ReplyDraftStrip", () => {
     expect(get).toHaveBeenLastCalledWith("m-2");
   });
 
+  it("reads again when stored mail changed: a draft made meanwhile appears, one no longer wanted goes", async () => {
+    let stored: ReplyDraftShown | null = null;
+    const get = vi.fn(async () => stored);
+    const make = (version: number) => ({ get, use: vi.fn(), dismiss: vi.fn(async () => {}), version });
+    const view = render(<ReplyDraftStrip messageId="m-1" ports={make(1)} />);
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(1));
+    expect(screen.queryByLabelText("Reply drafted")).toBeNull();
+    stored = DRAFT;
+    view.rerender(<ReplyDraftStrip messageId="m-1" ports={make(2)} />);
+    await screen.findByLabelText("Reply drafted");
+    stored = null;
+    view.rerender(<ReplyDraftStrip messageId="m-1" ports={make(3)} />);
+    await waitFor(() => expect(screen.queryByLabelText("Reply drafted")).toBeNull());
+  });
+
   it("Dismiss forgets the draft; removed links are said; model text stays text", async () => {
     const ports = mount({ ...DRAFT, preview: HOSTILE, linksRemoved: 2 });
     const strip = await screen.findByLabelText("Reply drafted");

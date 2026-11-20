@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { AiError, type AiSourceMessage } from "./ai-input.ts";
-import { LINK_REMOVED, WRITE_ANSWER_CHARS, linksOf, parseWrite, voiceSamples, writeInput, type WriteRequest } from "./ai-write.ts";
+import { LINK_REMOVED, WRITE_ANSWER_CHARS, linksOf, parseWrite, removeForeignLinks, voiceSamples, writeInput, type WriteRequest } from "./ai-write.ts";
 
 const NONCE = "n0nce";
 const TAG = "t4g";
@@ -137,56 +137,80 @@ describe("writeInput", () => {
 });
 
 describe("linksOf", () => {
-  it("finds scheme links, www links and a domain with a path; not file names or addresses", () => {
-    expect(linksOf("Go to https://example.com/a?b=1, or www.example.org. Also example.net/x and report.pdf, me@example.com")).toEqual([
+  it("finds scheme links, www links, bare hosts and addresses; not file names", () => {
+    expect(linksOf("Go to https://example.com/a?b=1, or www.example.org. Also example.net/x, example.net and report.pdf, Node.js, me@example.com")).toEqual([
       "example.com/a?b=1",
       "example.org",
       "example.net/x",
+      "example.net",
+      "me@example.com",
     ]);
+  });
+
+  it("does not take ordinary words with dots for links", () => {
+    expect(linksOf("See you at 10.30, e.g. on Tuesday. Version v1.2 of the 3.5mm plan, i.e. the U.S. one.")).toEqual([]);
   });
 });
 
 describe("parseWrite", () => {
   it("reads the paragraphs", () => {
-    expect(parseWrite('{"reply":true,"paragraphs":["Hi Ann,","Tuesday works.\\nSee you."]}', [])).toEqual({
+    expect(parseWrite('{"reply":true,"paragraphs":["Hi Ann,","Tuesday works.\\nSee you."]}')).toEqual({
       ok: true,
-      value: { reply: true, paragraphs: ["Hi Ann,", "Tuesday works.\nSee you."], linksRemoved: 0 },
+      value: { reply: true, paragraphs: ["Hi Ann,", "Tuesday works.\nSee you."] },
       dropped: 0,
     });
   });
 
   it("keeps nothing when no reply is needed", () => {
-    expect(parseWrite('{"reply":false,"paragraphs":["ignored"]}', [])).toEqual({
-      ok: true,
-      value: { reply: false, paragraphs: [], linksRemoved: 0 },
-      dropped: 0,
-    });
-  });
-
-  it("replaces a link the owner did not write and keeps one the owner wrote", () => {
-    const parsed = parseWrite(
-      '{"paragraphs":["Pay at https://evil.example/pay now.","Prices: https://example.com/pricing, or example.com/other"]}',
-      ["example.com/pricing"],
-    );
-    expect(parsed).toEqual({
-      ok: true,
-      value: {
-        reply: true,
-        paragraphs: [`Pay at ${LINK_REMOVED} now.`, `Prices: https://example.com/pricing, or ${LINK_REMOVED}`],
-        linksRemoved: 2,
-      },
-      dropped: 0,
-    });
+    expect(parseWrite('{"reply":false,"paragraphs":["ignored"]}')).toEqual({ ok: true, value: { reply: false, paragraphs: [] }, dropped: 0 });
   });
 
   it("cuts the answer at its limit and counts what was dropped", () => {
-    const parsed = parseWrite(JSON.stringify({ paragraphs: ["a".repeat(WRITE_ANSWER_CHARS), "second"] }), []);
+    const parsed = parseWrite(JSON.stringify({ paragraphs: ["a".repeat(WRITE_ANSWER_CHARS), "second"] }));
     expect(parsed.ok && parsed.value.paragraphs).toEqual(["a".repeat(8_000)]);
     expect(parsed.ok && parsed.dropped).toBe(1);
   });
 
   it("is unreadable without JSON or without any text", () => {
-    expect(parseWrite("Sure! Here is the email.", [])).toEqual({ ok: false, error: "unreadable" });
-    expect(parseWrite('{"reply":true,"paragraphs":["  "]}', [])).toEqual({ ok: false, error: "unreadable" });
+    expect(parseWrite("Sure! Here is the email.")).toEqual({ ok: false, error: "unreadable" });
+    expect(parseWrite('{"reply":true,"paragraphs":["  "]}')).toEqual({ ok: false, error: "unreadable" });
+  });
+});
+
+describe("removeForeignLinks", () => {
+  it("replaces a link the owner did not write and keeps one the owner wrote", () => {
+    expect(
+      removeForeignLinks(["Pay at https://evil.example/pay now.", "Prices: https://example.com/pricing, or example.com/other"], ["example.com/pricing"]),
+    ).toEqual({ paragraphs: [`Pay at ${LINK_REMOVED} now.`, `Prices: https://example.com/pricing, or ${LINK_REMOVED}`], removed: 2 });
+  });
+
+  it.each([
+    ["a bare host", "evil.example"],
+    ["a host with a port", "evil.com:8080/path"],
+    ["a host with a query", "evil.com?x=1"],
+    ["a host with a fragment", "evil.com#frag"],
+    ["an IP address with a path", "1.2.3.4/pay"],
+    ["a host in another script", "пример.рф/путь"],
+    ["a punycode host", "xn--e1afmkfd.xn--p1ai/x"],
+    ["a mailto link", "mailto:a@evil.example"],
+    ["an address", "billing@evil.example"],
+    ["a scheme with one slash", "https:/evil.example"],
+    ["a link without a scheme", "//evil.example"],
+    ["a full-width dot", "evil。com/x"],
+    ["an upper-case scheme", "HTTPS://EVIL.EXAMPLE/pay"],
+    ["the owner's host as a user name", "https://example.com@evil.example/pay"],
+    ["another path on the owner's host", "https://example.com/other"],
+  ])("replaces %s", (_name, link) => {
+    expect(removeForeignLinks([`Go to ${link} today`], ["example.com", "example.com/pricing"])).toEqual({
+      paragraphs: [`Go to ${LINK_REMOVED} today`],
+      removed: 1,
+    });
+  });
+
+  it("keeps the owner's own link and address in any case of the host, and file names", () => {
+    expect(removeForeignLinks(["See HTTP://WWW.Example.com/pricing/ and write to Ann@Example.com about report.pdf."], ["example.com/pricing", "ann@example.com"])).toEqual({
+      paragraphs: ["See HTTP://WWW.Example.com/pricing/ and write to Ann@Example.com about report.pdf."],
+      removed: 0,
+    });
   });
 });

@@ -184,6 +184,22 @@ describe("AutoDraftQueue", () => {
     expect(lines.at(-1)).toBe("auto draft: not written (quota)");
   });
 
+  it("gives up on a call that never answers after five minutes and goes on", async () => {
+    queue.offer(["m1", "m2"]);
+    await tick();
+    const giveUp = timers.find((timer) => timer.ms === 5 * 60 * 1000)!;
+    expect(giveUp.cancelled).toBe(false);
+    giveUp.run();
+    await tick();
+    expect(translator.calls).toHaveLength(2);
+    await answer('{"reply":true,"paragraphs":["Invented."]}');
+    await queue.idle();
+    expect(kept.map((draft) => draft.messageId)).toEqual(["m2"]);
+    expect(lines).toEqual(["auto draft: not written (cancelled)"]);
+    // A call that ended leaves no timer behind.
+    expect(timers.filter((timer) => timer.ms === 5 * 60 * 1000).map((timer) => timer.cancelled)).toEqual([true, true]);
+  });
+
   it("holds at most twenty waiting, dropping the oldest", async () => {
     queue.offer(Array.from({ length: 25 }, (_, i) => `m${i}`));
     await tick();

@@ -4,6 +4,7 @@
 // HTML that comes in (a quoted original, a continued draft, a paste) goes
 // through the email sanitizer with remote images off and loses every image
 // and style before TipTap parses it, so the editor never loads anything.
+import { ownerBlocksEnd } from "../core/compose-doc.ts";
 import { useEffect, useRef } from "react";
 import { EditorContent, useEditor, type Editor, type JSONContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
@@ -162,7 +163,11 @@ export function ownerParagraphsOf(doc: JSONContent): { paragraphs: string[]; has
     return (node.content ?? []).map(inline).join("");
   };
   const text = (paragraph: JSONContent) => (paragraph.content ?? []).map(inline).join("");
-  for (const block of doc.content ?? []) {
+  const blocks = doc.content ?? [];
+  // The lines Mail wrote above a quote (attribution, forwarded header) are not the owner's.
+  const plain = (node: JSONContent): string => (node.type === "hardBreak" ? "\n" : node.type === "text" ? node.text ?? "" : (node.content ?? []).map(plain).join(""));
+  const end = ownerBlocksEnd(blocks.map((block) => ({ type: block.type ?? "", text: block.type === "paragraph" ? plain(block) : "" })));
+  for (const block of blocks.slice(0, end)) {
     if (block.type === "blockquote" || block.type === "signature") break;
     if (block.type === "paragraph") paragraphs.push(text(block));
     else if (block.type === "codeBlock") {
@@ -175,7 +180,7 @@ export function ownerParagraphsOf(doc: JSONContent): { paragraphs: string[]; has
 }
 
 export interface OwnerRange {
-  /** Document positions of the range: from the start to the first quote or signature. */
+  /** Document positions of the range: from the start to the first quote, signature or line Mail wrote above the quote. */
   from: number;
   to: number;
   paragraphs: string[];
@@ -185,15 +190,13 @@ export interface OwnerRange {
 /** The owner's range of the composer's document now. */
 export function ownerRange(editor: Editor): OwnerRange {
   const doc = editor.state.doc;
-  let to = doc.content.size;
-  let found = false;
+  const blocks: { type: string; text: string; offset: number }[] = [];
   doc.forEach((node: PmNode, offset: number) => {
-    if (found) return;
-    if (node.type.name === "blockquote" || node.type.name === "signature") {
-      to = offset;
-      found = true;
-    }
+    blocks.push({ type: node.type.name, text: node.type.name === "paragraph" ? node.textContent : "", offset });
   });
+  // The range ends before the quote or signature, and before the lines Mail wrote above the quote.
+  const end = ownerBlocksEnd(blocks);
+  const to = end < blocks.length ? blocks[end]!.offset : doc.content.size;
   return { from: 0, to, ...ownerParagraphsOf(editor.getJSON()) };
 }
 

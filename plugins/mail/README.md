@@ -1555,18 +1555,28 @@ wrong; check the cited messages".
   (on: up to five pieces of your own sent text, 600 characters each, first
   those sent to the same person), **My instructions for AI writing** (up to
   2 000 characters) and **Facts AI may use** (up to 6 000 characters). A
-  link you did not write yourself (in the request, the instructions or the
-  facts) never stays in the text: it becomes `[link removed]` and the
-  dialog counts them.
+  link or an email address you did not write yourself (in the request, the
+  instructions, the facts or your own text of the draft) does not stay in
+  the text: it becomes `[link removed]` and the dialog counts them. A link
+  is anything a mail program would make clickable: with or without
+  `https://`, a bare site name, a name in any script. The line Mail writes
+  above a quote ("On …, X wrote:", the forwarded-message block) is not your
+  text: it is never sent to the model and stays where it is on Insert.
 - **Draft replies to new mail** (off by default, same settings group): for
   each new Inbox message from someone you have written to, addressed to
   you (To, not Cc), not bulk or a mailing list and inside AI access, a
-  model drafts a reply. **Reply drafted** appears under the message with
+  model drafts a reply. Left alone: a message Mail warns about (a failed
+  sender check, a lookalike domain, a disguised name), one whose reply
+  would go to an address you never wrote to, and one you already answered.
+  Hidden values from your instructions and facts are never put back into a
+  drafted reply. **Reply drafted** appears under the message with
   its first lines, **Use** (opens an ordinary reply with the text in it)
   and **Dismiss**. Nothing is sent and nothing is saved on the mail server
-  until you act. At most 10 an hour and 50 a day; a draft is forgotten when
-  you use or dismiss it, when you answer in the conversation, when the
-  message is deleted, or after 14 days. Each call is a row in the agent log.
+  until you act. At most 10 an hour and 50 a day (counted while BB runs; a
+  restart starts the count again); a draft is forgotten when you use or
+  dismiss it, when you answer in the conversation, when the message is
+  deleted or leaves AI access, when you turn the setting off, or after 14
+  days. Each call is a row in the agent log.
 
 ### What goes to your AI provider
 

@@ -320,6 +320,8 @@ export function Composer(props: ComposerProps) {
     <ComposerBody
       key={`${shown.draft.id}:${shown.generation}`}
       {...props}
+      // A drafted reply goes in once: a Reload or a new draft starts from what is stored.
+      {...(shown.generation > 0 ? { initialOwn: undefined } : {})}
       draft={shown.draft}
       onReloaded={(next) =>
         setShown((prev) => ({ from: prev.from, draft: next, generation: prev.generation + 1 }))

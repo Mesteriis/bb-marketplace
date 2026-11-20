@@ -6516,6 +6516,9 @@ describe("AI writes mail: Write", () => {
     expect(inputs).toContain("Invented heron greeting for Ivy.");
     expect(inputs).toContain("Invented otter note to someone else.");
     expect(inputs).toContain("Invented note");
+    // The line Mail wrote above the quote is not the owner's text: no address of the sender, no "wrote:" line.
+    expect(inputs).not.toContain("ivy@example.com");
+    expect(inputs).not.toContain("wrote:");
     // Quoted text of a sent message, mail to an excluded domain and the canaries stay on this computer.
     expect(inputs).not.toContain("pelican");
     expect(inputs).not.toContain("walrus");

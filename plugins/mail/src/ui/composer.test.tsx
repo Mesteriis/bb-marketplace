@@ -340,6 +340,19 @@ describe("Composer", () => {
     expect(screen.queryByText(/changed in another window/)).toBeNull();
   });
 
+  it("a drafted reply goes in once: a Reload shows the stored draft, not the drafted text again", async () => {
+    const ports = fakePorts();
+    mount({ initialOwn: ["Drafted by AI."] }, ports);
+    const body = () => document.querySelector(".ProseMirror")!.textContent ?? "";
+    await waitFor(() => expect(body()).toContain("Drafted by AI."));
+    ports.save.mockResolvedValue({ conflict: true, revision: 7 });
+    fireEvent.change(subject(), { target: { value: "Mine" } });
+    fireEvent.blur(subject(), { relatedTarget: document.body });
+    fireEvent.click(await screen.findByRole("button", { name: "Reload" }));
+    await waitFor(() => expect(subject().value).toBe("From the other window"));
+    expect(body()).not.toContain("Drafted by AI.");
+  });
+
   it("starts with the queued banner while a send of the draft is queued", () => {
     mount({ draft: draft({ queued: true }) });
     expect(screen.getByRole("alert").textContent).toMatch(/send of this draft is queued/);

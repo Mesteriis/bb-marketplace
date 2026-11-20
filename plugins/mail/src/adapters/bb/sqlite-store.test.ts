@@ -3293,6 +3293,34 @@ describe.each(storeKinds)("operators for Inbox tabs (%s)", (_kind, make) => {
   });
 });
 
+describe.each(storeKinds)("voice texts (%s)", (_kind, make) => {
+  it("gives the newest sent texts inside AI access, and those sent to one address", () => {
+    const s = make();
+    s.saveAccount(makeStoredAccount());
+    s.saveFolders("acc_1", [
+      { path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true, subscribed: true },
+      { path: "Sent", name: "Sent", delimiter: "/", specialUse: "sent", selectable: true, subscribed: true },
+    ]);
+    const sent = (uid: number, to: string, bodyText: string | null, date: string) =>
+      s.upsertMessages("acc_1", "Sent", [
+        makeFetchedMessage(uid, { messageId: `v-${uid}@example.org`, from: { name: null, address: "owner@example.org" }, to: [{ name: null, address: to }], bodyText, date }),
+      ]);
+    sent(1, "ann@example.com", "First to Ann.", "2026-11-01T10:00:00.000Z");
+    sent(2, "bob@example.net", "To Bob.", "2026-11-02T10:00:00.000Z");
+    sent(3, "Ann@Example.com", "Second to Ann.", "2026-11-03T10:00:00.000Z");
+    sent(4, "eve@excluded.example.net", "To an excluded domain.", "2026-11-04T10:00:00.000Z");
+    sent(5, "ann@example.com", null, "2026-11-05T10:00:00.000Z");
+    s.upsertMessages("acc_1", "INBOX", [makeFetchedMessage(9, { bodyText: "Someone else's text.", date: "2026-11-06T10:00:00.000Z" })]);
+    s.setAiScope({ accounts: new Map(), senders: { addresses: new Set(), domains: new Set(["excluded.example.net"]) } });
+    expect(s.voiceTexts(null, 10)).toEqual(["Second to Ann.", "To Bob.", "First to Ann."]);
+    expect(s.voiceTexts(null, 2)).toEqual(["Second to Ann.", "To Bob."]);
+    expect(s.voiceTexts("ANN@example.com", 10)).toEqual(["Second to Ann.", "First to Ann."]);
+    expect(s.voiceTexts("nobody@example.com", 10)).toEqual([]);
+    s.setAiScope({ accounts: new Map([["acc_1", { mode: "none" }]]), senders: { addresses: new Set(), domains: new Set() } });
+    expect(s.voiceTexts(null, 10)).toEqual([]);
+  });
+});
+
 describe.each(storeKinds)("drafted replies (%s)", (_kind, make) => {
   const draft = (messageId: string, createdAt: string, paragraphs = ["Invented reply."]) => ({
     messageId,

@@ -217,6 +217,30 @@ describe("AiJobs", () => {
     expect(jobs.finished(unattended, "autodraft")!.output).toEqual({ kind: "write", value: { reply: false, paragraphs: [], linksRemoved: 0, unknown: 0 } });
   });
 
+  it("write: the owner's own link that holds a hidden value comes back whole; an auto draft never gets hidden values back", async () => {
+    const fakeToken = ["ghp", "Zx81Kq7Lm2Np4Rt6Vw9Yb3Cd5Ef7Gh1Jk0Mn"].join("_"); // Joined so no token-format literal sits in the source.
+    const link = `https://drive.example.com/file?token=${fakeToken}`;
+    const request = { own: [], personal: "", facts: `Docs: ${link}`, voice: [], conversation: [message("m1", "Invented question?")] };
+    const built = writeInput({ mode: "write", instruction: "send the docs", ...request }, { nonce: NONCE, tag: "k3f9" });
+    expect(built.input).not.toContain(fakeToken);
+    const placeholder = [...built.restore!.keys()][0]!;
+    const asModelSaw = `https://drive.example.com/file?token=${placeholder}`;
+    const jobId = await started("write", built, { tag: "k3f9", allowedLinks: built.allowedLinks });
+    await answer(jobId, JSON.stringify({ reply: true, paragraphs: [`The docs: ${asModelSaw}`] }));
+    expect(jobs.poll(jobId)!.result!.output).toEqual({
+      kind: "write",
+      value: { reply: true, paragraphs: [`The docs: ${link}`], linksRemoved: 0, unknown: 0 },
+    });
+
+    const auto = writeInput({ mode: "autodraft", ...request }, { nonce: NONCE, tag: "k3f9" });
+    const { jobId: autoId } = jobs.start("autodraft", auto, { ...ctx, tag: "k3f9", allowedLinks: auto.allowedLinks, unattended: true });
+    await tick();
+    await answer(autoId, JSON.stringify({ reply: true, paragraphs: [`Their facts say ${[...auto.restore!.keys()][0]!} here`] }));
+    const output = jobs.finished(autoId, "autodraft")!.output;
+    expect(JSON.stringify(output)).not.toContain(fakeToken);
+    expect(output).toMatchObject({ kind: "write", value: { reply: true, unknown: 0 } });
+  });
+
   it("restores a draft's own placeholders, counts unknown and missing ones, and drops the map at every end", async () => {
     const fakeToken = ["ghp", "Zx81Kq7Lm2Np4Rt6Vw9Yb3Cd5Ef7Gh1Jk0Mn"].join("_"); // Joined so no token-format literal sits in the source.
     const built = draftInput([`Code 482913 and token ${fakeToken}`], { mode: "fix" }, { nonce: NONCE, tag: "k3f9" });

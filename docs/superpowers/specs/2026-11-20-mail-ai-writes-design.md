@@ -153,3 +153,26 @@ the eligibility rule and caps with a fake clock; the job runner's new
 kinds; server methods against the in-memory store and SQLite (migration
 23 from the previous schema); the dialog and the strip with the fake
 ports; another plugin refused on every new method.
+
+## Changes after the independent review (2026-11-20)
+
+- The lines Mail writes above a quote (a reply's "On …, X wrote:", a
+  forward's header block) are not the owner's text: not sent as "written",
+  not a source of allowed links, not replaced by Insert, Apply or Use. This
+  also holds for Improve.
+- A link is anything a mail program makes clickable: any scheme, `//host`,
+  a bare host (any script, punycode, a full-width dot), a host with a port,
+  query or fragment, an IP address with a port or path, and an email
+  address. Names ending like a file are not links. Allowed are those in the
+  owner's request, instructions, facts and own text of the draft. Links are
+  judged after hidden values are put back.
+- Auto drafts also leave alone: a message Mail warns about (failed sender
+  check, any disguise warning), one whose Reply-To holds an address the
+  owner never wrote to, and one the owner already answered. Hidden values
+  are never put back into an auto draft.
+- A kept draft is also dropped when its message left AI access or the
+  setting was turned off. An auto-draft call that never answers is
+  cancelled after five minutes. The strip reads again on every mail change.
+- A drafted reply the owner chose to use goes into the composer once; a
+  Reload shows the stored draft.
+- The hourly and daily caps are counted per run of the BB server.

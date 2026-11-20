@@ -42,18 +42,28 @@ export type AutoDraftRow = {
   to: readonly string[];
   hasBody: boolean;
   inAiScope: boolean;
+  /** The sender check failed, or Mail warns about the sender (a Reply-To elsewhere, a lookalike domain, a disguised name). */
+  suspicious: boolean;
+  /** Reply-To addresses; a reply goes there, not to From. */
+  replyTo: readonly string[];
+  /** The owner has already written in the conversation after this message. */
+  answered: boolean;
 };
 
 /**
  * Whether a reply is drafted: in the Inbox, inside AI access, with a body,
  * not bulk, a list or automated, not the owner's own, from someone the owner
- * has written to, and addressed (To) to the owner.
+ * has written to, and addressed (To) to the owner. A message Mail warns
+ * about, one whose reply would go to an address the owner never wrote to,
+ * and one the owner has answered are left alone.
  */
 export function eligible(row: AutoDraftRow, ctx: { own: ReadonlySet<string>; sentTo: ReadonlySet<string> }): boolean {
   if (row.folderRole !== "inbox" || !row.inAiScope || !row.hasBody) return false;
   if (row.listed || isBulkRow(row.bulk, row.fromAddress)) return false;
   const from = lower(row.fromAddress);
   if (ctx.own.has(from) || !ctx.sentTo.has(from)) return false;
+  if (row.suspicious || row.answered) return false;
+  if (row.replyTo.some((address) => !ctx.sentTo.has(lower(address)))) return false;
   return row.to.some((address) => ctx.own.has(lower(address)));
 }
 
@@ -78,16 +88,16 @@ export class DraftBudget {
 }
 
 /**
- * Whether a kept draft is no longer wanted: its message is gone (null) or
- * in Trash or Spam, the owner answered in the conversation after the draft
+ * Whether a kept draft is no longer wanted: its message is gone (null), in
+ * Trash or Spam or no longer inside AI access, the owner answered in the conversation after the draft
  * was made, or it is REPLY_DRAFT_DAYS old.
  */
 export function replyDraftStale(
   draft: { createdAt: string },
-  message: { folderRole: SpecialUse | null; ownerRepliedAt: string | null } | null,
+  message: { folderRole: SpecialUse | null; ownerRepliedAt: string | null; inAiScope: boolean } | null,
   now: Date,
 ): boolean {
-  if (message === null || message.folderRole === "trash" || message.folderRole === "junk") return true;
+  if (message === null || message.folderRole === "trash" || message.folderRole === "junk" || !message.inAiScope) return true;
   const made = Date.parse(draft.createdAt);
   if (message.ownerRepliedAt !== null && Date.parse(message.ownerRepliedAt) > made) return true;
   return now.getTime() - made >= REPLY_DRAFT_DAYS * DAY_MS;

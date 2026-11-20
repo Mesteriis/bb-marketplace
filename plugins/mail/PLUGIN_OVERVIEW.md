@@ -30,12 +30,11 @@ Toasts for new mail from people you write to. **Unsubscribe** asks first.
 
 ## AI on your click
 
-Through Makosh AI only: **Translate**, **Summarize**, **Ask**, **Find
+Via Makosh AI: **Translate**, **Summarize**, **Ask**, **Find
 tasks**, **categories**, **Today**, **reply reminders**, **Improve**,
-**Write with AI** (a message from a few words, in your voice). Replies
-drafted for new mail are off by default. Nothing is sent without your
-click. The provider gets subjects, sender names, dates and unquoted
-bodies; never addresses or attachments.
+**Write with AI** (in your voice). Drafted replies to new mail are off
+by default. Nothing is sent without your click. The provider gets
+subjects, names, dates and unquoted bodies; never addresses or files.
 
 ## BB integration
 
@@ -44,7 +43,8 @@ bodies; never addresses or attachments.
 - **Save to project…** writes attachments into a project, never
   overwriting without asking; **Attach from BB** picks files.
 - **Email the result** drafts a thread's answer.
-- **Dev** groups GitHub, CI and monitoring mail.
+- **Dev** groups GitHub, CI and monitoring mail; code and diffs use BB's
+  highlighter.
 - Patches go to an agent in a worktree; alerts open one incident thread.
 - **Mail rules** (off) prepare threads, or start capped ones in a
   worktree.

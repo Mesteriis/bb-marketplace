@@ -21,16 +21,21 @@ export interface ReplyDraftPorts {
   /** Opens a reply to the message with the paragraphs as the owner's text. */
   use: (messageId: string, paragraphs: string[]) => Promise<void> | void;
   dismiss: (messageId: string) => Promise<void>;
+  /** Changes when stored mail changed: the strip reads again (a draft made, or no longer wanted, while the message is open). */
+  version?: number;
 }
 
 export function ReplyDraftStrip({ messageId, ports }: { messageId: string; ports: ReplyDraftPorts }) {
   const [draft, setDraft] = useState<ReplyDraftShown | null>(null);
   // The page makes its ports anew on every render: the read follows the message, not the ports' identity.
+  const shownFor = useRef<string | null>(null);
   const latest = useRef(ports);
   latest.current = ports;
   useEffect(() => {
     let live = true;
-    setDraft(null);
+    // Another message: what was shown is not its draft. The same message read again keeps the strip until the answer.
+    if (shownFor.current !== messageId) setDraft(null);
+    shownFor.current = messageId;
     latest.current.get(messageId).then(
       (found) => {
         if (live) setDraft(found);
@@ -41,7 +46,7 @@ export function ReplyDraftStrip({ messageId, ports }: { messageId: string; ports
     return () => {
       live = false;
     };
-  }, [messageId]);
+  }, [messageId, ports.version]);
   if (draft === null) return null;
   const done = () => {
     setDraft(null);

@@ -8,6 +8,7 @@ import {
   normalizeDoc,
   renderDoc,
   type ComposeDoc,
+  ownerBlocksEnd,
   ownerParagraphs,
 } from "./compose-doc.ts";
 
@@ -503,7 +504,54 @@ describe("signature block", () => {
   });
 });
 
+describe("ownerBlocksEnd: the lines above a quote are not the owner's", () => {
+  const para = (text: string) => ({ type: "paragraph", text });
+  const quote = { type: "blockquote", text: "" };
+  const signature = { type: "signature", text: "" };
+
+  it("ends at the quote or the signature when nothing introduces it", () => {
+    expect(ownerBlocksEnd([para("Hi"), para("Bye"), quote])).toBe(2);
+    expect(ownerBlocksEnd([para("Hi"), signature, quote])).toBe(1);
+    expect(ownerBlocksEnd([para("Hi"), para("Bye")])).toBe(2);
+  });
+
+  it("leaves the attribution line of a reply out", () => {
+    expect(ownerBlocksEnd([para(""), para("On 2 Nov 2026, Ann Example <ann@example.com> wrote:"), quote])).toBe(1);
+    expect(ownerBlocksEnd([para("Hi"), para("Ann <ann@example.com> wrote:"), signature])).toBe(1);
+    // Not right above the quote: the owner's own sentence.
+    expect(ownerBlocksEnd([para("As Ann wrote:"), para("fine"), quote])).toBe(2);
+  });
+
+  it("leaves the forwarded-message block out, with or without a quote after it", () => {
+    const header = [
+      para("---------- Forwarded message ----------"),
+      para("From: Ann Example <ann@example.com>"),
+      para("Date: 2 Nov 2026"),
+      para("Subject: Invented https://evil.example/pay"),
+      para("To: owner@example.org"),
+      para("Cc: team@example.com"),
+    ];
+    expect(ownerBlocksEnd([para("See below"), ...header, quote])).toBe(1);
+    expect(ownerBlocksEnd([para("See below"), ...header, signature])).toBe(1);
+    expect(ownerBlocksEnd([para(""), ...header])).toBe(1);
+    // A line of the owner's inside the block ends it: everything up to the quote is the owner's again.
+    expect(ownerBlocksEnd([header[0]!, header[1]!, para("my note"), quote])).toBe(3);
+  });
+});
+
 describe("ownerParagraphs (slice 3f)", () => {
+  it("does not take the attribution line or the forwarded-message block", () => {
+    const p = (value: string) => ({ type: "paragraph" as const, content: value === "" ? [] : [{ type: "text" as const, text: value }] });
+    const quoted = { type: "blockquote" as const, content: [p("Made-up original")] };
+    expect(ownerParagraphs({ type: "doc", content: [p("Hi Ann,"), p("On 2 Nov 2026, Ann <ann@example.com> wrote:"), quoted] }).paragraphs).toEqual(["Hi Ann,"]);
+    expect(
+      ownerParagraphs({
+        type: "doc",
+        content: [p(""), p("---------- Forwarded message ----------"), p("From: Ann <ann@example.com>"), p("Subject: Invented"), quoted],
+      }).paragraphs,
+    ).toEqual([""]);
+  });
+
   it("takes the text before the quote or signature: hardBreak lines and list items as lines, marks reported", () => {
     const text = (value: string, marks?: { type: "bold" }[]) => ({ type: "text" as const, text: value, ...(marks ? { marks } : {}) });
     const doc = {

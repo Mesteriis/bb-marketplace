@@ -22,7 +22,7 @@ export type ReplyDraftsDeps = {
   writeSettings: () => WriteSettings;
   /** The owner's AI provider and model settings. */
   aiContext: () => { provider: string; model: string };
-  jobs: Pick<AiJobs, "start" | "settled" | "poll" | "finished">;
+  jobs: Pick<AiJobs, "start" | "settled" | "poll" | "finished" | "cancel">;
   /** A builder over a fresh nonce, re-drawn while the input holds it. */
   withNonce: <T extends AiBuild>(build: (nonce: string) => T) => T;
   restoreTag: (parts: string[]) => string;
@@ -51,12 +51,29 @@ export function createReplyDrafts(deps: ReplyDraftsDeps) {
   const nowIso = () => clock.now().toISOString();
   const own = () => new Set(ownAddresses(store).map(lower));
 
+  /** When the owner last wrote in the message's conversation; null: never. */
+  const ownerRepliedAt = (threadId: string | null, folder: string): string | null => {
+    const thread = threadId === null ? null : store.getThread(threadId, folder);
+    if (thread === null) return null;
+    const mine = own();
+    let latest: string | null = null;
+    for (const message of thread.messages) {
+      if (message.date !== null && mine.has(lower(message.from.address)) && (latest === null || message.date > latest)) latest = message.date;
+    }
+    return latest;
+  };
+  const answeredSince = (threadId: string | null, folder: string, date: string | null): boolean => {
+    const replied = ownerRepliedAt(threadId, folder);
+    return replied !== null && date !== null && replied > date;
+  };
+
   /** The stored facts of one message the rule reads; null when it is gone. */
   const rowOf = (messageId: string): (AutoDraftRow & { accountId: string }) | null => {
     const header = store.getMessage(messageId);
     const notify = store.notifyRows([messageId], nowIso())[0];
     if (header === null || notify === undefined || notify.movePending !== null) return null;
     const body = store.getBody(messageId);
+    const source = store.replySource(messageId);
     return {
       accountId: header.accountId,
       folderRole: notify.folderRole,
@@ -66,13 +83,17 @@ export function createReplyDrafts(deps: ReplyDraftsDeps) {
       to: header.to.map((address) => address.address),
       hasBody: body !== null && ((body.text ?? "").trim() !== "" || (body.html ?? "").trim() !== ""),
       inAiScope: header.inAiScope,
+      suspicious: header.senderCheck?.state === "failed" || (header.warnings ?? []).length > 0,
+      // A row synced before Reply-To was stored says nothing about it: treated as an unknown address.
+      replyTo: source === null ? [] : source.replyToKnown ? source.replyTo.map((address) => address.address) : ["unknown"],
+      answered: answeredSince(header.threadId, header.folder, header.date),
     };
   };
 
   const qualifies = (messageId: string): string | null => {
     const row = rowOf(messageId);
     if (row === null) return null;
-    return eligible(row, { own: own(), sentTo: store.addressesSentTo([row.fromAddress]) }) ? row.accountId : null;
+    return eligible(row, { own: own(), sentTo: store.addressesSentTo([row.fromAddress, ...row.replyTo]) }) ? row.accountId : null;
   };
 
   /** The request for one message, checked again when its turn comes. */
@@ -128,18 +149,6 @@ export function createReplyDrafts(deps: ReplyDraftsDeps) {
     log: deps.log,
   });
 
-  /** When the owner last wrote in the message's conversation; null: never. */
-  const ownerRepliedAt = (threadId: string | null, folder: string): string | null => {
-    const thread = threadId === null ? null : store.getThread(threadId, folder);
-    if (thread === null) return null;
-    const mine = own();
-    let latest: string | null = null;
-    for (const message of thread.messages) {
-      if (message.date !== null && mine.has(lower(message.from.address)) && (latest === null || message.date > latest)) latest = message.date;
-    }
-    return latest;
-  };
-
   return {
     /** A round's new Inbox messages that block rules and filters left: those that qualify wait for a draft. */
     offer(ids: readonly string[]): void {
@@ -156,8 +165,9 @@ export function createReplyDrafts(deps: ReplyDraftsDeps) {
       const message =
         header === null || notify === undefined
           ? null
-          : { folderRole: notify.folderRole, ownerRepliedAt: ownerRepliedAt(header.threadId, header.folder) };
-      if (replyDraftStale(draft, message, clock.now())) {
+          : { folderRole: notify.folderRole, ownerRepliedAt: ownerRepliedAt(header.threadId, header.folder), inAiScope: header.inAiScope };
+      // Turned off: what was drafted before is not offered any more.
+      if (!deps.enabled() || replyDraftStale(draft, message, clock.now())) {
         store.deleteReplyDraft(messageId);
         return { draft: null };
       }

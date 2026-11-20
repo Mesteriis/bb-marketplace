@@ -592,6 +592,8 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
   const bbLink = useRealtimeConnectionState();
   const [accountForm, setAccountForm] = useState<AccountFormRequest>(null);
   const [mailComposer, setComposer] = useState<ComposerState | null>(null);
+  /** Counts mail-changed refreshes: the drafted-reply strip reads again. */
+  const [mailVersion, setMailVersion] = useState(0);
   const [outbox, setOutbox] = useState<OutboxRow[]>([]);
   const [outboxPending, setOutboxPending] = useState<ReadonlySet<string>>(new Set());
   const [smtpAccountId, setSmtpAccountId] = useState<string | null>(null);
@@ -1171,6 +1173,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     if (!touched) return;
     stopSyncing();
     refreshAfterChange();
+    setMailVersion((version) => version + 1);
     // A thread still opening loads fresh data anyway; refreshing it now would
     // supersede the open and drop which message to expand.
     if (currentReading.threadId !== null && !currentReading.loading) {
@@ -4321,6 +4324,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       },
       // AI writes mail: the reply drafted for a message. Use opens an ordinary reply with the text in it.
       replyDraft: {
+        version: mailVersion,
         get: async (messageId) => (await rpc.call("reply_draft_get", { messageId })).draft,
         use: async (messageId, paragraphs) => {
           const prepared = await rpc.call("compose_prepare", { kind: "reply", messageId });
