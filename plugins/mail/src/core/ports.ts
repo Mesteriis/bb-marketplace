@@ -1,5 +1,6 @@
 // Ports: what the core needs from its host. Each host supplies adapters.
 import type { ReplyDraftRecord } from "./auto-drafts.ts";
+import type { AiLabel, MessageAi } from "./ai-sort.ts";
 import type { TemplateExtras } from "./snippets.ts";
 import type { ReplySource } from "./compose-reply.ts";
 import type {
@@ -526,6 +527,22 @@ export interface MailStore {
 
   // ---- Inbox tabs (Split Inbox) ----
   listInboxTabs(): InboxTab[];
+  /** AI sorts the inbox: the owner's labels, in their order. */
+  listAiLabels(): AiLabel[];
+  /** Insert (id not stored yet) at the end, or update by id. Throws AiLabelRefusal: name_taken (case folded), full. */
+  saveAiLabel(label: AiLabel, nowIso: string): void;
+  deleteAiLabel(id: string): boolean;
+  moveAiLabel(id: string, direction: -1 | 1): void;
+  /**
+   * Keeps what a sort said about messages, by (account, dedup key) like
+   * categories, so it follows a message between folders; rows made before
+   * `keepSinceIso` are deleted. Unknown message ids are skipped.
+   */
+  saveMessageAi(rows: { messageId: string; summary: string | null; labelIds: string[] }[], nowIso: string, keepSinceIso: string): void;
+  /** By message id; label ids that no longer exist are left out. */
+  messageAi(messageIds: string[]): Map<string, MessageAi>;
+  /** By thread id: the newest message of the thread that was sorted. */
+  threadAi(threadIds: string[]): Map<string, MessageAi>;
   /** AI writes mail: keeps a drafted reply (replacing the message's earlier one); past `max` rows the oldest go. */
   saveReplyDraft(draft: ReplyDraftRecord, max: number): void;
   getReplyDraft(messageId: string): ReplyDraftRecord | null;

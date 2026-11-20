@@ -832,7 +832,7 @@ describe("slice-2 migrations (SQLite)", () => {
          VALUES ('acc_1', 'owner@example.org', 'imap.example.org', 993, 'owner', 'sealed', 'other', ?)`,
       ).run("2026-01-01T00:00:00.000Z");
       db.transaction(() => MIGRATIONS.slice(19).forEach((statement) => db.exec(statement)))();
-      expect(MIGRATIONS).toHaveLength(24);
+      expect(MIGRATIONS).toHaveLength(25);
       expect(createSqliteStore(db).getAccount("acc_1")).toMatchObject({ authKind: "password", grantedScopes: [], passwordSealed: "sealed" });
     });
   });
@@ -898,7 +898,7 @@ describe("slice-2 migrations (SQLite)", () => {
       db.transaction(() => MIGRATIONS.slice(0, 20).forEach((statement) => db.exec(statement)))();
       seedLegacyAccount(db);
       db.transaction(() => MIGRATIONS.slice(20).forEach((statement) => db.exec(statement)))();
-      expect(MIGRATIONS).toHaveLength(24);
+      expect(MIGRATIONS).toHaveLength(25);
       expect(createSqliteStore(db).listPluginGrants()).toEqual([]);
       const columns = db.prepare<[], { name: string }>("SELECT name FROM pragma_table_info('compose_drafts')").all();
       expect(columns.map((column) => column.name)).toContain("prepared_by");
@@ -3293,6 +3293,85 @@ describe.each(storeKinds)("operators for Inbox tabs (%s)", (_kind, make) => {
   });
 });
 
+describe.each(storeKinds)("AI labels and sorted messages (%s)", (_kind, make) => {
+  const NOW_AI = "2026-11-20T10:00:00.000Z";
+  const KEEP = "2026-08-22T10:00:00.000Z";
+  const label = (id: string, name: string, autoArchive = false) => ({ id, name, description: `What ${name} means.`, autoArchive });
+  const seeded = () => {
+    const s = make();
+    s.saveAccount(makeStoredAccount());
+    s.saveFolders("acc_1", [
+      { path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true, subscribed: true },
+      { path: "Archive", name: "Archive", delimiter: "/", specialUse: "archive", selectable: true, subscribed: true },
+    ]);
+    const put = (uid: number, subject: string, date: string, folder = "INBOX") =>
+      s.upsertMessages("acc_1", folder, [makeFetchedMessage(uid, { messageId: `ai-${uid}@example.org`, subject, date, bodyText: `Body of ${subject}` })]);
+    put(1, "Invented offer", "2026-11-18T10:00:00.000Z");
+    put(2, "Invented bill", "2026-11-19T10:00:00.000Z");
+    put(3, "Invented hello", "2026-11-20T09:00:00.000Z");
+    const idOfSubject = (subject: string) => s.search(parseQuery(`subject:"${subject}"`), null, 5)[0]!.id;
+    return { s, put, idOfSubject };
+  };
+
+  it("keeps the owner's labels in order; a name is unique whatever its case; twelve at most", () => {
+    const { s } = seeded();
+    s.saveAiLabel(label("l1", "Pitch", true), NOW_AI);
+    s.saveAiLabel(label("l2", "Invoice"), NOW_AI);
+    expect(s.listAiLabels()).toEqual([label("l1", "Pitch", true), label("l2", "Invoice")]);
+    expect(() => s.saveAiLabel(label("l3", "PITCH"), NOW_AI)).toThrow("Another AI label has this name");
+    s.saveAiLabel({ ...label("l1", "Cold pitch"), description: "Changed." }, NOW_AI);
+    s.moveAiLabel("l2", -1);
+    s.moveAiLabel("l2", -1);
+    expect(s.listAiLabels()).toEqual([label("l2", "Invoice"), { id: "l1", name: "Cold pitch", description: "Changed.", autoArchive: false }]);
+    for (let i = 3; i <= 12; i++) s.saveAiLabel(label(`l${i}`, `Label ${i}`), NOW_AI);
+    expect(() => s.saveAiLabel(label("l13", "One more"), NOW_AI)).toThrow("You have the most AI labels");
+    expect(s.deleteAiLabel("l12")).toBe(true);
+    expect(s.deleteAiLabel("l12")).toBe(false);
+    expect(s.listAiLabels()).toHaveLength(11);
+  });
+
+  it("keeps a line and labels per message, finds them with ai:, and forgets a deleted label", () => {
+    const { s, idOfSubject } = seeded();
+    s.saveAiLabel(label("l1", "Pitch"), NOW_AI);
+    s.saveAiLabel(label("l2", "Needs reply"), NOW_AI);
+    const [offer, bill, hello] = [idOfSubject("Invented offer"), idOfSubject("Invented bill"), idOfSubject("Invented hello")];
+    s.saveMessageAi(
+      [
+        { messageId: offer, summary: "A vendor offers widgets.", labelIds: ["l1"] },
+        { messageId: bill, summary: null, labelIds: ["l1", "l2"] },
+        { messageId: "no-such-message", summary: "Ignored", labelIds: [] },
+      ],
+      NOW_AI,
+      KEEP,
+    );
+    expect(s.messageAi([offer, bill, hello])).toEqual(
+      new Map([
+        [offer, { summary: "A vendor offers widgets.", labelIds: ["l1"] }],
+        [bill, { summary: null, labelIds: ["l1", "l2"] }],
+      ]),
+    );
+    const found = (query: string) => s.search(parseQuery(query), null, 50).map((row) => row.subject).sort();
+    expect(found("ai:pitch")).toEqual(["Invented bill", "Invented offer"]);
+    expect(found('ai:"needs reply"')).toEqual(["Invented bill"]);
+    expect(found("-ai:pitch")).toEqual(["Invented hello"]);
+    expect(found("ai:unknown")).toEqual([]);
+    s.deleteAiLabel("l1");
+    expect(found("ai:pitch")).toEqual([]);
+    expect(s.messageAi([bill]).get(bill)).toEqual({ summary: null, labelIds: ["l2"] });
+  });
+
+  it("gives a conversation the line of its newest sorted message and drops rows older than the limit", () => {
+    const { s, idOfSubject } = seeded();
+    const offer = idOfSubject("Invented offer");
+    const threadOf = (id: string) => s.getMessage(id)!.threadId!;
+    s.saveMessageAi([{ messageId: offer, summary: "Old line.", labelIds: [] }], "2026-08-01T10:00:00.000Z", "2026-05-01T10:00:00.000Z");
+    expect(s.threadAi([threadOf(offer), "no-such-thread"])).toEqual(new Map([[threadOf(offer), { summary: "Old line.", labelIds: [] }]]));
+    const bill = idOfSubject("Invented bill");
+    s.saveMessageAi([{ messageId: bill, summary: "New line.", labelIds: [] }], NOW_AI, KEEP);
+    expect(s.messageAi([offer, bill])).toEqual(new Map([[bill, { summary: "New line.", labelIds: [] }]]));
+  });
+});
+
 describe.each(storeKinds)("voice texts (%s)", (_kind, make) => {
   it("gives the newest sent texts inside AI access, and those sent to one address", () => {
     const s = make();
@@ -3984,7 +4063,7 @@ describe("slice-3e migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(9).forEach((s) => old.exec(s)))();
 
-    expect(MIGRATIONS).toHaveLength(24);
+    expect(MIGRATIONS).toHaveLength(25);
     const migrated = createSqliteStore(old);
     expect(migrated.getUnsubscribeInfo(ids[0]!)).toEqual({ ...INFO, listKey: "id:weekly.example.com" });
     expect(migrated.getUnsubscribeInfo(ids[1]!)?.listKey).toBe("from:news@example.com");
@@ -4632,7 +4711,7 @@ describe("slice-3f migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(10).forEach((s) => old.exec(s)))();
 
-    expect(MIGRATIONS).toHaveLength(24);
+    expect(MIGRATIONS).toHaveLength(25);
     const migrated = createSqliteStore(old);
     migrated.assignThreads("acc_1", new Map());
     expect(migrated.listThreads("acc_1", INBOX, null, 10).threads).toEqual([
@@ -5478,7 +5557,7 @@ describe("slice-3g migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(12).forEach((s) => old.exec(s)))();
 
-    expect(MIGRATIONS).toHaveLength(24);
+    expect(MIGRATIONS).toHaveLength(25);
     const runs = old.prepare("SELECT id, message_id, message_key, project_id FROM rule_runs ORDER BY id").all();
     expect(runs).toEqual([
       { id: "a1", message_id: messageId, message_key: expect.stringMatching(/^acc_1:/), project_id: "p_api" },
@@ -6063,7 +6142,7 @@ describe("slice-3h migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(13).forEach((s) => old.exec(s)))();
 
-    expect(MIGRATIONS).toHaveLength(24);
+    expect(MIGRATIONS).toHaveLength(25);
     const kinds = old.prepare("SELECT part_id, kind FROM attachments ORDER BY CAST(part_id AS INTEGER)").all() as {
       part_id: string;
       kind: string;
@@ -6733,7 +6812,7 @@ describe("slice-3i migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(14).forEach((statement) => old.exec(statement)))();
 
-    expect(MIGRATIONS).toHaveLength(24);
+    expect(MIGRATIONS).toHaveLength(25);
     const columns = (old.prepare("PRAGMA table_info(messages)").all() as { name: string }[]).map((c) => c.name);
     expect(columns).toEqual(expect.arrayContaining(["sender_check_json", "receipt_requested", "crypto"]));
     expect(old.prepare("SELECT sender_check_json, receipt_requested, crypto FROM messages").all()).toEqual([

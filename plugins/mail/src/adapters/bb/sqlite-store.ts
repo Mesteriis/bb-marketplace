@@ -78,6 +78,7 @@ import { OPEN_AI_SCOPE, inAiScope, senderExcluded, type AccountScope, type AiSco
 import { redactSecrets } from "../../core/redact.ts";
 import { AGENT_LOG_IDS_MAX, AGENT_LOG_KEEP_DAYS, AGENT_LOG_ROWS_MAX, type LogEntry } from "../../core/agent-log.ts";
 import type { AiCategoryAnswer } from "../../core/ai-input.ts";
+import { AiLabelRefusal, LABELS_MAX, labelKey, type MessageAi } from "../../core/ai-sort.ts";
 import { VOICE_SCAN } from "../../core/ai-write.ts";
 import {
   CATEGORY_RULES_MAX,
@@ -1100,6 +1101,27 @@ export const MIGRATIONS: string[] = [
   );
   CREATE INDEX reply_drafts_created ON reply_drafts(created_at);
   `,
+  // 24: AI sorts the inbox: the owner's labels, and one line and label ids per sorted message (keyed like categories).
+  `
+  CREATE TABLE ai_labels (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    name_key TEXT NOT NULL UNIQUE,
+    description TEXT NOT NULL,
+    auto_archive INTEGER NOT NULL,
+    position INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE message_ai (
+    account_id TEXT NOT NULL,
+    dedup_key TEXT NOT NULL,
+    summary TEXT,
+    labels_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (account_id, dedup_key)
+  );
+  CREATE INDEX message_ai_created ON message_ai(created_at);
+  `,
 ];
 
 const HTML_CAP = 1_000_000;
@@ -1808,6 +1830,11 @@ function conditionSql(condition: SearchCondition, params: unknown[]): string | n
       params.push(date);
       return field === "after" ? "m.date >= ?" : "m.date < ?";
     }
+    case "ai":
+      // One of the owner's AI labels by name; an unknown name matches nothing.
+      params.push(labelKey(value));
+      return `(m.account_id, m.dedup_key) IN (SELECT ma.account_id, ma.dedup_key FROM message_ai ma, json_each(ma.labels_json) je
+          JOIN ai_labels al ON al.id = je.value WHERE al.name_key = ?)`;
     case "category":
       params.push(value.toLowerCase());
       return "(m.account_id, m.dedup_key) IN (SELECT account_id, dedup_key FROM message_categories WHERE category = ?)";
@@ -4067,6 +4094,85 @@ export function createSqliteStore(db: Database.Database): MailStore {
         cursor,
         limit,
       });
+    },
+
+    listAiLabels() {
+      return db
+        .prepare<[], { id: string; name: string; description: string; auto_archive: number }>(
+          "SELECT id, name, description, auto_archive FROM ai_labels ORDER BY position, id",
+        )
+        .all()
+        .map((row) => ({ id: row.id, name: row.name, description: row.description, autoArchive: row.auto_archive === 1 }));
+    },
+    saveAiLabel(label, nowIso) {
+      atomic(() => {
+        const key = labelKey(label.name);
+        const taken = db.prepare<[string, string], { id: string }>("SELECT id FROM ai_labels WHERE name_key = ? AND id <> ?").get(key, label.id);
+        if (taken !== undefined) throw new AiLabelRefusal("name_taken");
+        const existing = db.prepare<[string], { id: string }>("SELECT id FROM ai_labels WHERE id = ?").get(label.id);
+        if (existing === undefined) {
+          const { n, last } = db.prepare<[], { n: number; last: number | null }>("SELECT count(*) AS n, max(position) AS last FROM ai_labels").get()!;
+          if (n >= LABELS_MAX) throw new AiLabelRefusal("full");
+          db.prepare("INSERT INTO ai_labels (id, name, name_key, description, auto_archive, position, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)").run(
+            label.id, label.name, key, label.description, label.autoArchive ? 1 : 0, (last ?? -1) + 1, nowIso,
+          );
+          return;
+        }
+        db.prepare("UPDATE ai_labels SET name = ?, name_key = ?, description = ?, auto_archive = ? WHERE id = ?").run(
+          label.name, key, label.description, label.autoArchive ? 1 : 0, label.id,
+        );
+      });
+    },
+    deleteAiLabel(id) {
+      return db.prepare("DELETE FROM ai_labels WHERE id = ?").run(id).changes > 0;
+    },
+    moveAiLabel(id, direction) {
+      atomic(() => {
+        const labels = db.prepare<[], { id: string; position: number }>("SELECT id, position FROM ai_labels ORDER BY position, id").all();
+        const at = labels.findIndex((label) => label.id === id);
+        const other = labels[at + direction];
+        if (at < 0 || other === undefined) return;
+        const set = db.prepare("UPDATE ai_labels SET position = ? WHERE id = ?");
+        set.run(other.position, id);
+        set.run(labels[at]!.position, other.id);
+      });
+    },
+    saveMessageAi(rows, nowIso, keepSinceIso) {
+      atomic(() => {
+        const put = db.prepare(
+          `INSERT OR REPLACE INTO message_ai (account_id, dedup_key, summary, labels_json, created_at)
+           SELECT account_id, dedup_key, ?, ?, ? FROM messages WHERE id = ?`,
+        );
+        for (const row of rows) put.run(row.summary, JSON.stringify(row.labelIds), nowIso, row.messageId);
+        db.prepare("DELETE FROM message_ai WHERE created_at < ?").run(keepSinceIso);
+      });
+    },
+    messageAi(messageIds) {
+      const known = new Set(db.prepare<[], { id: string }>("SELECT id FROM ai_labels").all().map((row) => row.id));
+      const get = db.prepare<[string], { summary: string | null; labels_json: string }>(
+        `SELECT ma.summary, ma.labels_json FROM messages m
+         JOIN message_ai ma ON ma.account_id = m.account_id AND ma.dedup_key = m.dedup_key WHERE m.id = ?`,
+      );
+      const out = new Map<string, MessageAi>();
+      for (const id of messageIds) {
+        const row = get.get(id);
+        if (row !== undefined) out.set(id, { summary: row.summary, labelIds: (JSON.parse(row.labels_json) as string[]).filter((label) => known.has(label)) });
+      }
+      return out;
+    },
+    threadAi(threadIds) {
+      const known = new Set(db.prepare<[], { id: string }>("SELECT id FROM ai_labels").all().map((row) => row.id));
+      const get = db.prepare<[string], { summary: string | null; labels_json: string }>(
+        `SELECT ma.summary, ma.labels_json FROM messages m
+         JOIN message_ai ma ON ma.account_id = m.account_id AND ma.dedup_key = m.dedup_key
+         WHERE m.thread_id = ? ORDER BY m.date IS NULL DESC, m.date DESC, m.id DESC LIMIT 1`,
+      );
+      const out = new Map<string, MessageAi>();
+      for (const id of threadIds) {
+        const row = get.get(id);
+        if (row !== undefined) out.set(id, { summary: row.summary, labelIds: (JSON.parse(row.labels_json) as string[]).filter((label) => known.has(label)) });
+      }
+      return out;
     },
 
     saveReplyDraft(draft, max) {

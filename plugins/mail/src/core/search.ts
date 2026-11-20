@@ -34,6 +34,7 @@ const PLAIN_FIELDS: ReadonlySet<string> = new Set([
   "list",
   "category",
   "label",
+  "ai",
 ]);
 
 /** `from:` values that name a set of senders (Inbox tabs): important senders, the owner's own domains, people written to. */

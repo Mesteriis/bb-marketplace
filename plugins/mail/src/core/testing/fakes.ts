@@ -165,6 +165,7 @@ import { INCIDENT_KEEP_DAYS } from "../alerts.ts";
 import { UNKNOWN_PROJECT_DAYS } from "../projects.ts";
 import { groupDevRows, pageDevGroups } from "../dev-groups.ts";
 import { OPEN_AI_SCOPE, inAiScope, senderExcluded, type AccountScope, type AiScope } from "../ai-scope.ts";
+import { AiLabelRefusal, LABELS_MAX, labelKey, type AiLabel, type MessageAi } from "../ai-sort.ts";
 import { VOICE_SCAN } from "../ai-write.ts";
 import { AGENT_LOG_IDS_MAX, AGENT_LOG_KEEP_DAYS, AGENT_LOG_ROWS_MAX, type LogEntry, type LogOutcome } from "../agent-log.ts";
 import type { AiCategoryAnswer } from "../ai-input.ts";
@@ -2322,6 +2323,80 @@ export class InMemoryMailStore implements MailStore {
     return new Set(rows.map((r) => r.threadId).filter((id) => !taken.has(id)));
   }
 
+  private aiLabels: (AiLabel & { position: number })[] = [];
+  private aiByKey = new Map<string, MessageAi & { createdAt: string }>();
+
+  listAiLabels(): AiLabel[] {
+    return [...this.aiLabels].sort((a, b) => a.position - b.position).map(({ position: _position, ...label }) => ({ ...label }));
+  }
+
+  saveAiLabel(label: AiLabel): void {
+    if (this.aiLabels.some((l) => l.id !== label.id && labelKey(l.name) === labelKey(label.name))) throw new AiLabelRefusal("name_taken");
+    const existing = this.aiLabels.find((l) => l.id === label.id);
+    if (existing !== undefined) {
+      Object.assign(existing, label);
+      return;
+    }
+    if (this.aiLabels.length >= LABELS_MAX) throw new AiLabelRefusal("full");
+    this.aiLabels.push({ ...label, position: Math.max(-1, ...this.aiLabels.map((l) => l.position)) + 1 });
+  }
+
+  deleteAiLabel(id: string): boolean {
+    const before = this.aiLabels.length;
+    this.aiLabels = this.aiLabels.filter((label) => label.id !== id);
+    return this.aiLabels.length < before;
+  }
+
+  moveAiLabel(id: string, direction: -1 | 1): void {
+    const labels = [...this.aiLabels].sort((a, b) => a.position - b.position);
+    const at = labels.findIndex((label) => label.id === id);
+    const other = labels[at + direction];
+    if (at < 0 || other === undefined) return;
+    const position = labels[at]!.position;
+    labels[at]!.position = other.position;
+    other.position = position;
+  }
+
+  saveMessageAi(rows: { messageId: string; summary: string | null; labelIds: string[] }[], nowIso: string, keepSinceIso: string): void {
+    for (const item of rows) {
+      const row = this.state.rows.find((r) => r.id === item.messageId);
+      if (row !== undefined) this.aiByKey.set(stateKey(row.accountId, row.dedupKey), { summary: item.summary, labelIds: [...item.labelIds], createdAt: nowIso });
+    }
+    for (const [key, value] of this.aiByKey) if (value.createdAt < keepSinceIso) this.aiByKey.delete(key);
+  }
+
+  private aiView(row: Row): MessageAi | null {
+    const found = this.aiByKey.get(stateKey(row.accountId, row.dedupKey));
+    if (found === undefined) return null;
+    const known = new Set(this.aiLabels.map((label) => label.id));
+    return { summary: found.summary, labelIds: found.labelIds.filter((id) => known.has(id)) };
+  }
+
+  messageAi(messageIds: string[]): Map<string, MessageAi> {
+    const out = new Map<string, MessageAi>();
+    for (const id of messageIds) {
+      const row = this.state.rows.find((r) => r.id === id);
+      const view = row === undefined ? null : this.aiView(row);
+      if (view !== null) out.set(id, view);
+    }
+    return out;
+  }
+
+  threadAi(threadIds: string[]): Map<string, MessageAi> {
+    const out = new Map<string, MessageAi>();
+    for (const threadId of threadIds) {
+      const newest = this.state.rows
+        .filter((r) => r.threadId === threadId && this.aiView(r) !== null)
+        .sort((a, b) => {
+          const [x, y] = [a.message.date, b.message.date];
+          if (x === null || y === null) return x === y ? b.id.localeCompare(a.id) : x === null ? -1 : 1;
+          return y.localeCompare(x) || b.id.localeCompare(a.id);
+        })[0];
+      if (newest !== undefined) out.set(threadId, this.aiView(newest)!);
+    }
+    return out;
+  }
+
   private replyDrafts = new Map<string, ReplyDraftRecord>();
 
   saveReplyDraft(draft: ReplyDraftRecord, max: number): void {
@@ -4163,6 +4238,10 @@ export class InMemoryMailStore implements MailStore {
           if (time === null) return false;
           const at = Date.parse(condition.value);
           return condition.field === "after" ? time >= at : time < at;
+        }
+        case "ai": {
+          const label = this.aiLabels.find((l) => labelKey(l.name) === labelKey(condition.value));
+          return label !== undefined && (this.aiByKey.get(stateKey(row.accountId, row.dedupKey))?.labelIds.includes(label.id) ?? false);
         }
         case "category":
           return this.state.categories.get(stateKey(row.accountId, row.dedupKey))?.category === condition.value.toLowerCase();

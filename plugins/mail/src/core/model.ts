@@ -292,6 +292,9 @@ export const messageHeaderSchema = messageSummarySchema.extend({
   agentSubject: z.string(),
   /** Inside the AI access scope: AI buttons and Hand to agent are enabled. */
   inAiScope: z.boolean(),
+  /** AI sorts the inbox: the one line about this message and its AI labels' names; the server adds them. */
+  aiSummary: z.string().nullable().optional(),
+  aiLabels: z.array(z.string()).optional(),
   /** Slice 3g: repository, PR, issue and CI links of the body (computed when read, not stored). */
   devLinks: z.array(devLinkViewSchema),
   /** Slice 3g: the local dev class, or null. */
@@ -339,6 +342,10 @@ export const threadSummarySchema = z.object({
   categorySuggestion: categorySchema.nullable(),
   /** Slice 3g: the conversation's project (the owner's binding, else the first matching binding rule); null when none. */
   projectId: z.string().nullable(),
+  /** AI sorts the inbox: the one line about the conversation's newest sorted message; the server adds it to lists. */
+  aiSummary: z.string().nullable().optional(),
+  /** AI sorts the inbox: the names of that message's AI labels. */
+  aiLabels: z.array(z.string()).optional(),
 });
 export type ThreadSummary = z.infer<typeof threadSummarySchema>;
 
@@ -568,6 +575,8 @@ export const searchFieldSchema = z.enum([
   "list",
   "category",
   "label",
+  /** One of the owner's AI labels, by name (AI sorts the inbox). */
+  "ai",
 ]);
 export type SearchField = z.infer<typeof searchFieldSchema>;
 

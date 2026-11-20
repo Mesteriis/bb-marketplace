@@ -54,6 +54,7 @@ export function localOnlyText(field: SearchField): string {
   if (field === "sender") return "from:vip, from:team and from:known are not used on the server";
   if (field === "is") return "is:dev, is:automated and is:newsletter are not used on the server";
   if (field === "has") return "has:invite is not used on the server";
+  if (field === "ai") return "ai: labels live in Mail and are not used on the server";
   return `${field}: is not used on the server`;
 }
 
@@ -61,6 +62,7 @@ export function localOnlyText(field: SearchField): string {
 function mailOnly(condition: SearchCondition): boolean {
   return (
     condition.field === "sender" ||
+    condition.field === "ai" ||
     (condition.field === "is" && (condition.value === "dev" || condition.value === "automated" || condition.value === "newsletter")) ||
     (condition.field === "has" && condition.value === "invite")
   );

@@ -41,6 +41,19 @@ export type AiLabel = {
   autoArchive: boolean;
 };
 
+/** A label could not be kept: its name is another label's, or the owner has LABELS_MAX already. */
+export class AiLabelRefusal extends Error {
+  constructor(readonly code: "name_taken" | "full") {
+    super(code === "full" ? "You have the most AI labels Mail keeps; remove one first" : "Another AI label has this name");
+    this.name = "AiLabelRefusal";
+  }
+}
+
+/** What Mail keeps about one sorted message. */
+export type MessageAi = { summary: string | null; labelIds: string[] };
+/** Sorted results older than this are deleted when new ones are written. */
+export const MESSAGE_AI_DAYS = 90;
+
 /** What the model said about one message sent. */
 export type SortItem = { n: number; summary: string | null; labelIds: string[] };
 
