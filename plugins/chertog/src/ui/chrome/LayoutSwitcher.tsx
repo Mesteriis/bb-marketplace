@@ -265,6 +265,7 @@ export function LayoutSwitcher(props: LayoutSwitcherProps) {
         <button
           ref={popover.triggerRef}
           type="button"
+          data-focus-return
           data-toolbar-item
           className={`${classes.button} max-w-56`}
           aria-haspopup="dialog"

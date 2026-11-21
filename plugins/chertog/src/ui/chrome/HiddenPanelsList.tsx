@@ -30,6 +30,7 @@ export function HiddenPanelsList({ panels, onShow, onClose }: HiddenPanelsListPr
       <button
         ref={popover.triggerRef}
         type="button"
+        data-focus-return
         data-toolbar-item
         className={classes.ghostButton}
         aria-haspopup="dialog"
