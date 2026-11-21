@@ -2,7 +2,7 @@
 // field filters all of them. An item that is already open in this layout
 // focuses its tile instead of opening a second view, and at the tile limit a
 // new tile becomes a question: a tab in the group, or a place the user picks.
-import { type KeyboardEvent, useId, useRef, useState } from "react";
+import { type KeyboardEvent, useEffect, useId, useRef, useState } from "react";
 import { classes, moveByArrows, usePendingFocus } from "./primitives.tsx";
 import { chromeStrings } from "./strings.ts";
 import type { ContentChoice, ContentItem, ContentPlacement, ContentSection, ContentTarget } from "./types.ts";
@@ -53,13 +53,20 @@ export function ContentPicker(props: ContentPickerProps) {
 
   const query = search.trim().toLocaleLowerCase();
   const atLimit = target === "new-tile" && tileCount >= tileLimit;
-  // The sections can change while the question is open. An item that is gone
-  // ends the question; one that got opened meanwhile is focused, not doubled.
-  const pendingItem =
-    pendingChoice === null
-      ? undefined
-      : sections.find((section) => section.providerId === pendingChoice.providerId)?.items.find((item) => item.id === pendingChoice.itemId);
+  // The sections can change while the question is open. It stands only while
+  // its provider is ready and still lists the item: a provider that is
+  // loading, missing or denied offers nothing, whatever items it carries. An
+  // item that got opened meanwhile is focused, not doubled.
+  const pendingSection =
+    pendingChoice === null ? undefined : sections.find((section) => section.providerId === pendingChoice.providerId && section.state === "ready");
+  const pendingItem = pendingSection?.items.find((item) => item.id === pendingChoice?.itemId);
   const pending = pendingChoice !== null && pendingItem !== undefined ? { providerId: pendingChoice.providerId, item: pendingItem } : null;
+  const pendingIsStale = pendingChoice !== null && pending === null;
+  // A question that lost its ground is forgotten, so it cannot come back
+  // by itself when the provider answers again.
+  useEffect(() => {
+    if (pendingIsStale) setPending(null);
+  }, [pendingIsStale]);
 
   function choose(providerId: string, item: ContentItem) {
     if (item.openInTileId !== undefined) return props.onFocusExisting(item.openInTileId);

@@ -286,6 +286,28 @@ describe("ContentPicker: the sections change while the limit question is open", 
     expect(onFocusExisting).not.toHaveBeenCalled();
   });
 
+  it.each(["denied", "missing", "loading"] as const)(
+    "ends the question when the provider becomes %s, even if its items are still listed",
+    async (state) => {
+      const { user, onOpen, onFocusExisting, update } = open();
+
+      await user.click(item(/Исполнитель/));
+      update([{ ...SECTIONS[0], state }, ...SECTIONS.slice(1)]);
+
+      expect(screen.queryByRole("group", { name: "Свободных мест нет" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Открыть вкладкой в группе" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Выбрать место…" })).toBeNull();
+      expect(within(screen.getByRole("region", { name: "Треды" })).queryAllByRole("button")).toEqual([]);
+
+      // The provider answering again does not bring the old question back.
+      update(SECTIONS);
+      expect(screen.queryByRole("group", { name: "Свободных мест нет" })).toBeNull();
+      expect(titles()).toEqual(["Исполнитель", "Ревьюер", "Черновик релиза"]);
+      expect(onOpen).not.toHaveBeenCalled();
+      expect(onFocusExisting).not.toHaveBeenCalled();
+    },
+  );
+
   it("names the item by its current title", async () => {
     const { user, update } = open();
 
