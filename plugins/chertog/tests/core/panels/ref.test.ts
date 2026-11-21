@@ -47,16 +47,37 @@ describe("panelRefSchema", () => {
     expect(panelRefSchema.safeParse({ provider: "remote-hub", params: { [name]: "x" } }).success).toBe(false);
   });
 
-  it.each([["text"], ["draft"], ["body"], ["message"], ["content"], ["caption"]])(
+  it.each([
+    ["text"],
+    ["draft"],
+    ["body"],
+    ["message"],
+    ["content"],
+    ["caption"],
+    ["messageText"],
+    ["previewText"],
+    ["draft_text"],
+    ["reply-body"],
+    ["lastMessage"],
+    ["quotedMessages"],
+    ["TEXT"],
+    ["snippet"],
+    ["transcript"],
+    ["subject"],
+    ["replyQuote"],
+  ])(
     "rejects the correspondence parameter %s",
     (name) => {
       expect(panelRefSchema.safeParse({ provider: "telegram", params: { [name]: "hello" } }).success).toBe(false);
     },
   );
 
-  it("keeps identifiers whose name only mentions a message", () => {
-    expect(panelRefSchema.safeParse({ provider: "telegram", params: { messageId: 42 } }).success).toBe(true);
-  });
+  it.each([["messageId"], ["message_id"], ["contextId"], ["textureId"], ["bodyguard"]])(
+    "keeps the identifier %s, which only resembles a correspondence name",
+    (name) => {
+      expect(panelRefSchema.safeParse({ provider: "telegram", params: { [name]: 42 } }).success).toBe(true);
+    },
+  );
 
   it.each([
     ["a meeting link with a passcode", "https://zoom.example/j/123?pwd=abc"],

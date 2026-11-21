@@ -23,8 +23,26 @@ const PROVIDER_TYPE = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 /** Parameter names that hold a credential, anywhere in the name. */
 const SECRET_NAME = /password|passcode|passwd|passphrase|pwd|secret|token|credential|cookie|api[-_]?key|authorization/i;
 
-/** Parameter names that hold correspondence rather than an identifier. */
-const CONTENT_NAME = /^(?:text|draft|body|message|content|caption)$/i;
+/** Words that mark a parameter as correspondence wherever they stand in its name. */
+const CONTENT_WORDS = new Set(["text", "draft", "body", "content", "caption", "snippet", "quote", "transcript", "subject"]);
+
+/** Words that mark correspondence only as the last word: `lastMessage`, but not `messageId`. */
+const CONTENT_LAST_WORDS = new Set(["message", "messages"]);
+
+/** Splits `messageText`, `draft_text` or `reply-body` into lowercase words. */
+function nameWords(name: string): string[] {
+  return name
+    .split(/[^A-Za-z0-9]+|(?<=[a-z0-9])(?=[A-Z])/)
+    .filter((word) => word !== "")
+    .map((word) => word.toLowerCase());
+}
+
+/** Whether a parameter name says it holds correspondence rather than an identifier. */
+function isContentName(name: string): boolean {
+  const words = nameWords(name);
+  const last = words[words.length - 1];
+  return words.some((word) => CONTENT_WORDS.has(word)) || (last !== undefined && CONTENT_LAST_WORDS.has(last));
+}
 
 /** Query and fragment parameters that carry a secret inside a link. */
 const SECRET_LINK_PARAM = /^(?:tk|sig|signature|key|auth|code)$/i;
@@ -47,7 +65,7 @@ const paramNameSchema = z
   .min(1)
   .max(MAX_NAME_LENGTH)
   .refine((name) => !SECRET_NAME.test(name), "A panel reference must not carry credentials")
-  .refine((name) => !CONTENT_NAME.test(name), "A panel reference must not carry correspondence");
+  .refine((name) => !isContentName(name), "A panel reference must not carry correspondence");
 
 const paramTextSchema = z
   .string()

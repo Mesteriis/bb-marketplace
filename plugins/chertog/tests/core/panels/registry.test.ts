@@ -499,6 +499,57 @@ describe("closing the last view of a session", () => {
     expect(zoom.releases).toEqual(["panel-1"]);
   });
 
+  it("warns for the only confirmed view while a second view is still loading", async () => {
+    const { registry, zoom } = setupCall();
+    zoom.multipleViews = true;
+    await openSettled(registry, call);
+    const pending = deferred<PanelOpenOutcome>();
+    zoom.openResult = () => pending.promise;
+    registry.open(call, { newView: true });
+
+    expect(await registry.close("panel-1")).toEqual({ status: "needs-confirmation", warning: "ends-session" });
+    pending.resolve({ status: "access-denied" });
+
+    expect(registry.get("panel-1")?.state).toBe("live");
+    expect(zoom.releases).toEqual([]);
+  });
+
+  it("closes a loading view without a warning while another view is confirmed live", async () => {
+    const { registry, zoom } = setupCall();
+    zoom.multipleViews = true;
+    await openSettled(registry, call);
+    const pending = deferred<PanelOpenOutcome>();
+    zoom.openResult = () => pending.promise;
+    registry.open(call, { newView: true });
+
+    expect(await registry.close("panel-2")).toEqual({ status: "closed", release: "done" });
+    expect(zoom.releases).toEqual(["panel-2"]);
+  });
+
+  it("warns before releasing a view whose open had an unknown outcome", async () => {
+    const { registry, zoom } = setupCall();
+    zoom.openResult = async () => ({ status: "unknown" });
+    await openSettled(registry, call);
+
+    expect(await registry.close("panel-1")).toEqual({ status: "needs-confirmation", warning: "ends-session" });
+    expect(zoom.releases).toEqual([]);
+    expect(registry.get("panel-1")).toMatchObject({ state: "lost", unknownOutcome: "open" });
+
+    expect(await registry.close("panel-1", { confirmEndsSession: true })).toEqual({ status: "closed", release: "done" });
+    expect(zoom.releases).toEqual(["panel-1"]);
+  });
+
+  it("does not count a view with an unknown outcome as a second confirmed view", async () => {
+    const { registry, zoom } = setupCall();
+    zoom.multipleViews = true;
+    await openSettled(registry, call);
+    zoom.openResult = async () => ({ status: "unknown" });
+    await openSettled(registry, call, true);
+
+    expect(await registry.close("panel-1")).toEqual({ status: "needs-confirmation", warning: "ends-session" });
+    expect(zoom.releases).toEqual([]);
+  });
+
   it("does not warn when the session has already ended", async () => {
     const { registry, zoom } = setupCall();
     await openSettled(registry, call);
@@ -522,6 +573,52 @@ describe("ending the session", () => {
     expect(threads.endSessions).toEqual(["panel-1"]);
     expect(registry.get("panel-1")).toMatchObject({ state: "session-ended", unknownOutcome: null });
     expect(threads.releases).toEqual([]);
+  });
+
+  it("ends every view of the same session and leaves other sessions live", async () => {
+    const { registry, threads } = setup();
+    threads.multipleViews = true;
+    threads.openResult = async () => ({ status: "live", addressee: "thread:thr_a" });
+    await openSettled(registry, threadA);
+    await openSettled(registry, threadA, true);
+    threads.openResult = async () => ({ status: "live", addressee: "thread:thr_b" });
+    await openSettled(registry, threadB);
+
+    expect(await registry.endSession("panel-1")).toEqual({ status: "ended" });
+
+    expect(registry.get("panel-2")).toMatchObject({ state: "session-ended", addressee: null });
+    expect(registry.addresseeOf("panel-2")).toBeNull();
+    expect(registry.get("panel-3")).toMatchObject({ state: "live", addressee: "thread:thr_b" });
+    expect(threads.endSessions).toEqual(["panel-1"]);
+    expect(await registry.endSession("panel-2")).toEqual({ status: "not-live" });
+    expect(threads.endSessions).toEqual(["panel-1"]);
+  });
+
+  it("does not show a view that was loading when the session ended as live", async () => {
+    const { registry, threads } = setup();
+    threads.multipleViews = true;
+    await openSettled(registry, threadA);
+    const pending = deferred<PanelOpenOutcome>();
+    threads.openResult = () => pending.promise;
+    const second = registry.open(threadA, { newView: true });
+
+    await registry.endSession("panel-1");
+    pending.resolve({ status: "live", addressee: "thread:thr_a" });
+
+    expect(second.ok && (await second.settled)).toMatchObject({ instanceId: "panel-2", state: "session-ended", addressee: null });
+    expect(registry.addresseeOf("panel-2")).toBeNull();
+  });
+
+  it("leaves the other views as they are after an unknown answer", async () => {
+    const { registry, threads } = setup();
+    threads.multipleViews = true;
+    await openSettled(registry, threadA);
+    await openSettled(registry, threadA, true);
+    threads.endSessionResult = async () => "unknown";
+
+    await registry.endSession("panel-1");
+
+    expect(registry.get("panel-2")).toMatchObject({ state: "live", unknownOutcome: null });
   });
 
   it("is refused for a panel that is not live", async () => {

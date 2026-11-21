@@ -268,10 +268,9 @@ export class PanelRegistry {
     if (this.entries.get(instanceId) !== entry) return { status: outcome };
     if (outcome === "unknown") {
       entry.unknownOutcome = "end-session";
-    } else if (entry.state === "live") {
-      entry.state = "session-ended";
-      entry.addressee = null;
+    } else {
       entry.unknownOutcome = null;
+      this.markSessionEnded(entry);
     }
     this.notify();
     return { status: outcome };
@@ -382,11 +381,32 @@ export class PanelRegistry {
     if (changed) this.notify();
   }
 
+  /**
+   * The session is over for every view of it, not only for the one the user
+   * acted in: no view of an ended session stays live or keeps an addressee.
+   * A view still loading is ended too, and its late answer is ignored.
+   */
+  private markSessionEnded(ended: Entry): void {
+    for (const entry of this.entries.values()) {
+      if (entry.key !== ended.key || entry.view !== ended.view || !holdsSession(entry)) continue;
+      entry.state = "session-ended";
+      entry.addressee = null;
+      entry.attempt += 1;
+    }
+  }
+
+  /**
+   * Whether releasing this view may end the session. The view counts when it
+   * is live, loading or was opened with an unknown outcome: in each case a
+   * session may stand behind it. Another view keeps the session only when
+   * the provider confirmed it live; a loading or unknown one may never be.
+   */
   private closingEndsSession(entry: Entry): boolean {
-    if (entry.view === null || !holdsSession(entry)) return false;
+    if (entry.view === null) return false;
+    if (!holdsSession(entry) && entry.unknownOutcome !== "open") return false;
     if (!entry.view.endsSessionOnLastClose(entry.ref)) return false;
     for (const other of this.entries.values()) {
-      if (other !== entry && other.key === entry.key && holdsSession(other)) return false;
+      if (other !== entry && other.key === entry.key && other.state === "live") return false;
     }
     return true;
   }
