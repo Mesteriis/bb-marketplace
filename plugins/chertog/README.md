@@ -1,12 +1,13 @@
 # Chertog
 
-Chertog (Чертог) is a plugin for [BB](https://github.com/get-bb/bb) that is
-planned to turn BB's Home into a tiling workspace with named layouts. The
-implementation brief is [docs/spec.md](./docs/spec.md).
+Chertog (Чертог) is a plugin for [BB](https://github.com/get-bb/bb): a tiling
+workspace with named layouts whose panels stay alive while they are
+rearranged. The implementation brief is [docs/spec.md](./docs/spec.md). See
+[PLUGIN_OVERVIEW.md](./PLUGIN_OVERVIEW.md) for what it does today.
 
-This directory currently holds the package scaffold only. The plugin loads in
-BB and registers nothing. See [PLUGIN_OVERVIEW.md](./PLUGIN_OVERVIEW.md) for
-what it does today.
+This version is stage A of the brief in one window: existing BB threads and a
+controlled test frame in tiles, two or more named layouts, saving through the
+plugin's RPC.
 
 ## Names
 
@@ -15,13 +16,62 @@ The package is `bb-plugin-chertog` and the plugin id BB derives from it is
 `bb-plugin-makosh-<name>` convention in
 [docs/architecture.md](../../docs/architecture.md).
 
+## What it registers in BB
+
+| Surface | What it is |
+| --- | --- |
+| `navPanel` `chertog-home`, route `/plugins/chertog/home` | The workspace: toolbar and tile surface on the whole route. No `experimental_sidebar`, so BB's thread list stays. |
+| `experimental_appOverlay` `chertog-live-panels` | The parent of live panels for the life of the window. See below. |
+| `homepageSection` `chertog-home-redirect` | Sends an accidental arrival on the stock Home to the route ([docs/home-redirect.md](./docs/home-redirect.md)). Off until the setting below is declared. |
+| Command `focus-tile-composer` | Focuses the composer of the thread in the focused tile. |
+| Command `end-panel-session` | Ends the session of the focused panel. The only way a session is ended. |
+| RPC `load_workspace`, `save_workspace` | The workspace document in the plugin's key-value storage. |
+| HTTP `GET /fixtures/live-frame.html` | The controlled frame page for acceptance. |
+
+### Why live panels live in the overlay
+
+BB unmounts a nav panel when the user leaves its route and mounts a new one on
+return (observed on BB 0.50.1: a marker made at mount changed after a visit to
+the new thread screen, the overlay's did not). A panel inside the route would
+lose its DOM on every visit to a thread. So the route draws tile chrome only
+and reports the rectangle of its surface and of each content area; the
+overlay, mounted once per window, places the panel containers there and hides
+them while no route is on screen.
+
+The overlay has no z-index and takes no pointer events outside the panel
+containers. BB's palette and dialogs are drawn above it and the sidebar is
+outside the measured rectangle. Because the overlay is above the route, the
+route makes two concessions: a panel steps aside while the menu of its tile is
+open, and panels turn translucent while a tile is dragged so the drop preview
+shows.
+
+### Settings
+
+A window reads two boolean settings through `useSettings()`. The server does
+not declare them yet, so both read as off.
+
+| Key | Meaning | Until declared |
+| --- | --- | --- |
+| `homeRedirect` | "Открывать Чертог вместо штатного Домой", on by default | no redirect; the Home section draws nothing |
+| `acceptanceFixture` | "Тестовая панель для приёмки", off by default | the content picker does not offer the test panel |
+
+### Addressee of a command
+
+A command for the chosen tile looks in `useComposers()` for a composer with
+`scope.kind === "thread"` and the tile's exact `threadId`, and acts only when
+there is exactly one. The tile and the composer are fixed before any
+asynchronous work and checked again after it. Nothing is chosen by the DOM,
+the address bar or the last focus.
+
 ## Layout
 
 | Path | Holds |
 | --- | --- |
-| `src/core/` | Domain types, ports and application logic. No host code. Empty for now. |
-| `src/ui/` | React components that take data and callbacks through props. No host code. Empty for now. |
-| `src/adapters/bb/` | BB's implementations of the core's ports. Empty for now. |
+| `src/core/` | Layout tree, panel registry, workspace document, Home redirect rule, wire schemas. No host code. |
+| `src/ui/` | Tile surface, live host layer, workspace chrome. React with props only. No host code. |
+| `src/adapters/bb/app/` | The window side: workspace controller and session, the `bb-thread` and `fixture-frame` sources, the route and the live layer, registration. |
+| `src/adapters/bb/home/` | The Home redirect section. |
+| `src/adapters/bb/server/` | The workspace store, its RPC and the fixture route. |
 | `server.ts`, `app.tsx` | Composition for BB. |
 | `tests/architecture.test.ts` | Fails the build when `src/core` or `src/ui` imports host code. |
 
@@ -32,3 +82,16 @@ npm install
 npm run check   # typecheck and tests
 npm run build   # bb plugin build
 ```
+
+The isolated stand for a run in a real BB is described in
+[docs/e2e-stand.md](./docs/e2e-stand.md). Do not install a development build
+into a working BB.
+
+## Not verified
+
+- BB Desktop: the stand is the web surface of BB 0.50.1.
+- `ThreadChat` in tiles with real threads: two chats in one window, drafts,
+  scroll, the command for the chosen tile. The stand has no project and no
+  signed-in provider.
+- The redirect of the stock Home and the test panel in a running BB: both
+  wait for the settings.

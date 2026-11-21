@@ -1600,7 +1600,7 @@
     {
       "id": "chertog",
       "displayName": "Chertog [Experimental]",
-      "description": "Tiling workspace for BB Home. Package scaffold only: it loads in BB and adds no pages, commands or settings yet.",
+      "description": "Tiling workspace for BB: existing threads side by side in tiles and tabs, with named layouts that keep panels alive as you move them.",
       "icon": {
         "url": "./plugins/chertog/assets/icon.svg"
       },

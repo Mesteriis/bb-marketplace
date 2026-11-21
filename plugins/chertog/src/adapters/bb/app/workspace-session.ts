@@ -1,0 +1,407 @@
+// One window's workspace session: the document controller, the registry of
+// live panels and the sources of panel content, kept for the life of the
+// window. The session maps the panels of the document to live instances and
+// keeps three actions apart: removing a panel from the layout hides its
+// instance, closing releases it, and ending a session is asked for by name.
+import {
+  activateTab,
+  findGroup,
+  findGroupOfPanel,
+  listGroups,
+  splitGroup,
+  type WorkspaceState,
+} from "../../../core/layout/index.ts";
+import { PanelRegistry, type Clock, type Diagnostics, type PanelInstance, type PanelRef } from "../../../core/panels/index.ts";
+import {
+  activeLayout,
+  addPanelToGroup,
+  applyLayoutOperation,
+  changeActiveLayout,
+  deleteLayout,
+  duplicateLayout,
+  panelIdOfRef,
+  placedPanelIds,
+  registerPanel,
+  removePanelFromLayout,
+  renameLayout,
+  switchLayout,
+  type IdRename,
+  type WorkspaceChange,
+  type WorkspaceChangeRefusal,
+  type WorkspaceDocument,
+} from "../../../core/workspace/index.ts";
+import type { ContentChoice, ContentSection, HiddenPanelEntry } from "../../../ui/chrome/index.ts";
+import type { PanelLabel, TileSurfaceChange } from "../../../ui/tiles/index.ts";
+import { Listeners, type ContentSource, type PanelStateText } from "./content-sources.ts";
+import { appStrings } from "./strings.ts";
+import { refOfPanel, WorkspaceController, type WorkspaceRpcPort } from "./workspace-controller.ts";
+
+/** How many tiles a layout may have; BB's own split has the same limit. */
+export const TILE_LIMIT = 8;
+
+/** The layout a workspace starts with. One id for every window, so two first entries merge into one layout. */
+export const FIRST_LAYOUT = { layoutId: "layout-main", name: appStrings.firstLayoutName } as const;
+
+export interface WorkspaceSessionOptions {
+  readonly rpc: WorkspaceRpcPort;
+  readonly sources: readonly ContentSource[];
+  /** A new id with the given prefix, unique in this workspace: `panel-…`, `layout-…`, `view-…`. */
+  newId(prefix: "panel" | "layout" | "view"): string;
+  readonly clock?: Clock;
+  readonly diagnostics: Diagnostics;
+}
+
+/** Where picked content goes: a new tile beside the focused one, or a tab of a given tile. */
+export type ContentDestination = { readonly kind: "new-tile" } | { readonly kind: "group"; readonly groupId: string };
+
+export type CloseOutcome =
+  | "closed"
+  /** Nothing was closed: this is the last view and closing ends the session. */
+  | "needs-confirmation";
+
+/** What a tile shows in place of live content. */
+export interface PanelView {
+  readonly instance: PanelInstance;
+  /** The reference as the document keeps it; the instance withholds its parameters until the provider checked them. */
+  readonly ref: PanelRef;
+  readonly source: ContentSource | undefined;
+  readonly title: string;
+  readonly stateText: PanelStateText | null;
+}
+
+function applied(document: WorkspaceDocument): WorkspaceChange {
+  return { ok: true, document };
+}
+
+export class WorkspaceSession {
+  readonly registry: PanelRegistry;
+  readonly controller: WorkspaceController;
+  readonly sources: readonly ContentSource[];
+  private readonly newId: WorkspaceSessionOptions["newId"];
+  /** The live instance of a panel of the document, by panel id. */
+  private readonly instances = new Map<string, string>();
+  /** Panels whose reference the provider refused to open. */
+  private readonly refused = new Set<string>();
+  private readonly listeners = new Listeners();
+  private version = 0;
+  private syncing = false;
+
+  constructor(options: WorkspaceSessionOptions) {
+    this.newId = options.newId;
+    this.sources = options.sources;
+    this.registry = new PanelRegistry({
+      clock: options.clock ?? { now: () => Date.now() },
+      ids: { nextId: () => options.newId("view") },
+      diagnostics: options.diagnostics,
+    });
+    this.controller = new WorkspaceController({
+      rpc: options.rpc,
+      first: FIRST_LAYOUT,
+      livePanelIds: () => this.livePanelIds(),
+      onPanelsRenamed: (renames) => this.renamePanels(renames),
+    });
+    for (const source of options.sources) {
+      this.registry.registerProvider(source.provider);
+      source.connect?.(this.registry);
+      source.subscribe(() => this.touch());
+    }
+    this.registry.subscribe(() => this.touch());
+    this.controller.subscribe(() => {
+      this.sync();
+      this.touch();
+    });
+  }
+
+  /** Changes with everything the views read: the document, the registry and the sources. */
+  getVersion = (): number => this.version;
+
+  subscribe = this.listeners.subscribe;
+
+  // ----- what the views read -----
+
+  document(): WorkspaceDocument | null {
+    return this.controller.getSnapshot().document;
+  }
+
+  sourceOf(providerType: string): ContentSource | undefined {
+    return this.sources.find((source) => source.provider.type === providerType);
+  }
+
+  instanceOfPanel(panelId: string): PanelInstance | null {
+    const instanceId = this.instances.get(panelId);
+    return instanceId === undefined ? null : this.registry.get(instanceId);
+  }
+
+  panelOfInstance(instanceId: string): string | null {
+    for (const [panelId, mapped] of this.instances) {
+      if (mapped === instanceId) return panelId;
+    }
+    return null;
+  }
+
+  /** The panels of the document that have a live instance in this window. */
+  livePanelIds(): ReadonlySet<string> {
+    const live = new Set<string>();
+    for (const [panelId, instanceId] of this.instances) {
+      if (this.registry.get(instanceId) !== null) live.add(panelId);
+    }
+    return live;
+  }
+
+  /**
+   * The label of a panel: the provider's own title, asked for by the stored
+   * reference each time, or a neutral caption by the provider's kind until
+   * the provider knows the panel.
+   */
+  labelOf(panelId: string): PanelLabel {
+    const document = this.document();
+    const ref = document === null ? null : refOfPanel(document, panelId);
+    const source = ref === null ? undefined : this.sourceOf(ref.provider);
+    const known = ref === null || source === undefined ? null : source.label(ref);
+    const label: PanelLabel = known ?? { title: source?.neutralLabel ?? appStrings.panelNeutral };
+    if (this.refused.has(panelId)) return { ...label, status: { tone: "error", label: appStrings.openFailed } };
+    const state = this.instanceOfPanel(panelId)?.state;
+    if (state === undefined || state === "live" || state === "loading") return label;
+    return { ...label, status: { tone: "error", label: appStrings.hiddenState[state] } };
+  }
+
+  labels(): Record<string, PanelLabel> {
+    const document = this.document();
+    return document === null ? {} : Object.fromEntries(Object.keys(document.panels).map((panelId) => [panelId, this.labelOf(panelId)]));
+  }
+
+  /** What the content of an instance needs to draw itself, or `null` once the instance is closed. */
+  viewOf(instanceId: string): PanelView | null {
+    const instance = this.registry.get(instanceId);
+    const panelId = this.panelOfInstance(instanceId);
+    const document = this.document();
+    const ref = panelId === null || document === null ? null : refOfPanel(document, panelId);
+    if (instance === null || panelId === null || ref === null) return null;
+    const source = this.sourceOf(ref.provider);
+    return {
+      instance,
+      ref,
+      source,
+      title: this.labelOf(panelId).title,
+      stateText: source?.stateText(instance.state, ref) ?? null,
+    };
+  }
+
+  /** The sections of the content picker. An item the open layout already places carries the panel to show instead. */
+  contentSections(): ContentSection[] {
+    const document = this.document();
+    const placed = document === null ? new Set<string>() : new Set(placedPanelIds(activeLayout(document)));
+    return this.sources
+      .filter((source) => source.offered())
+      .map((source) => {
+        const section = source.section();
+        return {
+          providerId: source.provider.type,
+          title: source.sectionTitle,
+          state: section.state,
+          items: section.items.map((item) => {
+            const ref = source.stableRefOf(item.id);
+            const panelId = ref === null || document === null ? undefined : panelIdOfRef(document, ref);
+            // The picker hands this value back unchanged; the panel says both which tile and which tab.
+            return panelId !== undefined && placed.has(panelId) ? { ...item, openInTileId: panelId } : item;
+          }),
+        };
+      });
+  }
+
+  /** Every instance the open layout does not place: hidden, and still held. */
+  hiddenPanels(): HiddenPanelEntry[] {
+    const document = this.document();
+    if (document === null) return [];
+    const placed = new Set(placedPanelIds(activeLayout(document)));
+    return this.registry.list().flatMap((instance) => {
+      const panelId = this.panelOfInstance(instance.instanceId);
+      if (panelId === null || placed.has(panelId)) return [];
+      const label = this.labelOf(panelId);
+      const context = instance.state === "live" ? label.context : appStrings.hiddenState[instance.state];
+      return [{ instanceId: instance.instanceId, title: label.title, ...(context === undefined ? {} : { context }) }];
+    });
+  }
+
+  /** The instance shown in the focused tile of the open layout. */
+  focusedInstance(): PanelInstance | null {
+    const document = this.document();
+    if (document === null) return null;
+    const workspace = activeLayout(document).workspace;
+    const panelId = findGroup(workspace.root, workspace.focusedGroupId)?.activeTab ?? null;
+    return panelId === null ? null : this.instanceOfPanel(panelId);
+  }
+
+  // ----- layout -----
+
+  /** A change the tile surface asked for: a drop, or the state after a focus move, a resize, maximize or a removal. */
+  applySurfaceChange(change: TileSurfaceChange): void {
+    if (change.kind === "operation") {
+      this.controller.change((document) => applyLayoutOperation(document, change.operation));
+    } else {
+      this.controller.change((document) => changeActiveLayout(document, () => change.state));
+    }
+  }
+
+  changeLayout(change: (workspace: WorkspaceState) => WorkspaceState): void {
+    this.controller.change((document) => changeActiveLayout(document, change));
+  }
+
+  switchLayout(layoutId: string): void {
+    this.controller.change((document) => switchLayout(document, layoutId));
+  }
+
+  /** A new layout that starts as a copy of the open one and becomes the open one. */
+  createLayoutFromCurrent(name: string): void {
+    this.controller.change((document) => duplicateLayout(document, document.activeLayoutId, this.newId("layout"), name));
+  }
+
+  duplicateLayout(layoutId: string, name: string): void {
+    this.controller.change((document) => duplicateLayout(document, layoutId, this.newId("layout"), name));
+  }
+
+  renameLayout(layoutId: string, name: string): void {
+    this.controller.change((document) => renameLayout(document, layoutId, name));
+  }
+
+  deleteLayout(layoutId: string): void {
+    this.controller.change((document, live) => deleteLayout(document, layoutId, live));
+  }
+
+  // ----- content -----
+
+  /**
+   * Places the chosen content in the open layout. Content the layout already
+   * shows is brought to the front instead; content that is hidden and live
+   * comes back as the same instance.
+   */
+  openContent(choice: Pick<ContentChoice, "providerId" | "itemId" | "placement">, destination: ContentDestination): WorkspaceChangeRefusal | null {
+    const ref = this.sourceOf(choice.providerId)?.refOf(choice.itemId) ?? null;
+    if (ref === null) return "unknown-panel";
+    return this.controller.change((document) => {
+      const existing = panelIdOfRef(document, ref);
+      const panelId = existing ?? this.newId("panel");
+      const workspace = activeLayout(document).workspace;
+      if (findGroupOfPanel(workspace.root, panelId) !== undefined) {
+        return changeActiveLayout(document, (current) => activateTab(current, panelId));
+      }
+      const known = existing === undefined ? registerPanel(document, panelId, { ref }) : applied(document);
+      if (!known.ok) return known;
+      if (destination.kind === "group") return addPanelToGroup(known.document, destination.groupId, panelId);
+      if (choice.placement === "tab") return addPanelToGroup(known.document, workspace.focusedGroupId, panelId);
+      return changeActiveLayout(known.document, (current) => splitGroup(current, current.focusedGroupId, "right", panelId));
+    });
+  }
+
+  /** Shows the tab of a panel the open layout places and focuses its tile. */
+  focusPanel(panelId: string): void {
+    this.changeLayout((workspace) => activateTab(workspace, panelId));
+  }
+
+  /** Brings a hidden instance back as a tab of the focused tile. */
+  showHidden(instanceId: string): void {
+    const panelId = this.panelOfInstance(instanceId);
+    if (panelId === null) return;
+    this.controller.change((document) => addPanelToGroup(document, activeLayout(document).workspace.focusedGroupId, panelId));
+  }
+
+  // ----- the three actions -----
+
+  /** Removes the panel from the open layout. Its instance stays as live as it was and is listed among the hidden panels. */
+  removeFromLayout(panelId: string): void {
+    this.controller.change((document, live) => removePanelFromLayout(document, panelId, live));
+  }
+
+  /**
+   * Closes the panel: releases its view once and takes it out of the open
+   * layout. When the registry warns that this ends the session, nothing
+   * happens until the user confirms.
+   */
+  async closePanel(panelId: string, options: { confirmEndsSession?: boolean } = {}): Promise<CloseOutcome> {
+    const instanceId = this.instances.get(panelId);
+    if (instanceId !== undefined) {
+      const result = await this.registry.close(instanceId, options);
+      if (result.status === "needs-confirmation") return "needs-confirmation";
+      if (this.instances.get(panelId) === instanceId) this.instances.delete(panelId);
+    }
+    this.refused.delete(panelId);
+    this.controller.change((document, live) => {
+      const placed = placedPanelIds(activeLayout(document)).includes(panelId);
+      return placed ? removePanelFromLayout(document, panelId, live) : applied(document);
+    });
+    return "closed";
+  }
+
+  closeInstance(instanceId: string, options: { confirmEndsSession?: boolean } = {}): Promise<CloseOutcome> {
+    const panelId = this.panelOfInstance(instanceId);
+    return panelId === null ? Promise.resolve("closed") : this.closePanel(panelId, options);
+  }
+
+  /** Ends the session of a live panel through its provider. Runs only on the user's explicit action. */
+  endSession(instanceId: string): ReturnType<PanelRegistry["endSession"]> {
+    return this.registry.endSession(instanceId);
+  }
+
+  /** Asks the provider again for a panel that is not live. One call per click of the user. */
+  retry(instanceId: string): void {
+    this.registry.retryOpen(instanceId);
+  }
+
+  // ----- keeping the registry in step with the document -----
+
+  private touch(): void {
+    this.version += 1;
+    this.listeners.notify();
+  }
+
+  private renamePanels(renames: readonly IdRename[]): void {
+    for (const { from, to } of renames) {
+      const instanceId = this.instances.get(from);
+      if (instanceId === undefined) continue;
+      this.instances.delete(from);
+      this.instances.set(to, instanceId);
+    }
+  }
+
+  /**
+   * After every change of the document: a panel is opened the first time its
+   * tab is shown, and an instance is marked placed or hidden by whether the
+   * open layout places its panel. Nothing is closed here.
+   */
+  private sync(): void {
+    const document = this.document();
+    if (document === null || this.syncing) return;
+    this.syncing = true;
+    try {
+      for (const [panelId, instanceId] of this.instances) {
+        if (this.registry.get(instanceId) === null) this.instances.delete(panelId);
+      }
+      const layout = activeLayout(document);
+      const taken = new Set(this.instances.values());
+      for (const group of listGroups(layout.workspace.root)) {
+        const panelId = group.activeTab;
+        if (panelId === null || this.instances.has(panelId) || this.refused.has(panelId)) continue;
+        const ref = refOfPanel(document, panelId);
+        if (ref === null) continue;
+        const opened = this.registry.open(ref);
+        // One reference is one instance: a second panel id for it would show the same view twice.
+        if (!opened.ok || taken.has(opened.instance.instanceId)) {
+          this.refused.add(panelId);
+          continue;
+        }
+        this.instances.set(panelId, opened.instance.instanceId);
+        taken.add(opened.instance.instanceId);
+      }
+      const placed = new Set(placedPanelIds(layout));
+      for (const [panelId, instanceId] of this.instances) {
+        if (placed.has(panelId)) this.registry.returnToLayout(instanceId);
+        else this.registry.removeFromLayout(instanceId);
+      }
+      for (const panelId of this.refused) {
+        if (!Object.hasOwn(document.panels, panelId)) this.refused.delete(panelId);
+      }
+    } finally {
+      this.syncing = false;
+    }
+  }
+}
