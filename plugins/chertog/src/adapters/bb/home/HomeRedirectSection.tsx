@@ -6,6 +6,8 @@ import { useEffect, useState, type ComponentType } from "react";
 import { createHomeRedirectController } from "./controller.ts";
 import { readHomeArrivalFacts } from "./facts.ts";
 import { newThreadPass } from "./new-thread.ts";
+import { showsOpenChertogButton } from "./section-view.ts";
+import type { HomeRedirectDecision } from "../../../core/home/index.ts";
 
 export interface HomeRedirectSectionOptions {
   /** `path` of the Chertog `navPanel`, as registered. */
@@ -15,7 +17,7 @@ export interface HomeRedirectSectionOptions {
    * has not delivered settings. Null keeps the stock Home.
    */
   useRedirectEnabled: () => boolean | null;
-  /** Text of the button shown when the visit stays on the stock screen. */
+  /** Text of the button shown when the setting is on and the visit stays on the stock screen. */
   openLabel: string;
 }
 
@@ -23,9 +25,9 @@ export interface HomeRedirectSectionOptions {
  * Build the component for `app.slots.homepageSection`. Call it once per
  * plugin app: the returned component shares one visit across its mounts.
  *
- * It redirects an accidental arrival with `replace`, and on a visit that
- * stays (setting off, Chertog's New thread action, a project, a split) it
- * shows one button that opens Chertog.
+ * It redirects an accidental arrival with `replace`. With the setting on, a
+ * visit that stays (Chertog's New thread action, a project, a split) shows
+ * one button that opens Chertog. With the setting off it draws nothing.
  */
 export function createHomeRedirectSection(options: HomeRedirectSectionOptions): ComponentType<PluginHomepageSectionProps> {
   const { panelPath, useRedirectEnabled, openLabel } = options;
@@ -36,19 +38,18 @@ export function createHomeRedirectSection(options: HomeRedirectSectionOptions): 
     const navigate = useBbNavigate();
     const splitLayout = useSidebarSplitLayout();
     const split = splitLayout !== null;
-    const [stays, setStays] = useState(false);
+    const [decision, setDecision] = useState<HomeRedirectDecision | null>(null);
 
     useEffect(() => controller.mount(), []);
 
     useEffect(() => {
       const facts = readHomeArrivalFacts({ enabled, projectId, splitLayout });
-      const decision = controller.observe(facts, navigate);
-      if (decision.action === "stay") setStays(true);
+      setDecision(controller.observe(facts, navigate));
       // The layout object changes with every pane resize; only whether a
       // split exists matters here.
     }, [enabled, projectId, split, navigate]);
 
-    if (!stays) return null;
+    if (!showsOpenChertogButton(enabled, decision)) return null;
     return (
       <button
         type="button"
