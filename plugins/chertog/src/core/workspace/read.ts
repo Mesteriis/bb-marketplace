@@ -20,18 +20,33 @@ import {
  */
 export type MigrationChain = Readonly<Record<number, (old: Readonly<Record<string, unknown>>) => Record<string, unknown>>>;
 
-/** No stored version precedes version 1. A step is added here together with every new version. */
-export const WORKSPACE_MIGRATIONS: MigrationChain = {};
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Version 1 kept a title beside every reference. A title is provider text and
+ * may quote anything, so version 2 does not store it: the step takes the
+ * field away, whatever it holds, and leaves the rest of the panel to be read.
+ */
+function withoutPanelTitles(old: Readonly<Record<string, unknown>>): Record<string, unknown> {
+  if (!isRecord(old.panels)) return { ...old };
+  const panels = Object.entries(old.panels).map(([panelId, panel]) => {
+    if (!isRecord(panel)) return [panelId, panel];
+    const { title: _title, ...kept } = panel;
+    return [panelId, kept];
+  });
+  return { ...old, panels: Object.fromEntries(panels) };
+}
+
+/** The steps to the current version. A step is added here together with every new version. */
+export const WORKSPACE_MIGRATIONS: MigrationChain = { 1: withoutPanelTitles };
 
 export type MigrationResult =
   | { readonly status: "current"; readonly document: Readonly<Record<string, unknown>> }
   | { readonly status: "migrated"; readonly from: number; readonly document: Readonly<Record<string, unknown>> }
   | { readonly status: "newer"; readonly schemaVersion: number }
   | { readonly status: "corrupt"; readonly reason: string };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 /**
  * Brings a stored document to the wanted version, one step at a time. The

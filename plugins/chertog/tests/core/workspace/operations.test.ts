@@ -6,7 +6,6 @@ import {
   activeLayout,
   addLayoutFromTemplate,
   addPanelToGroup,
-  captionFrom,
   changeActiveLayout,
   createLayout,
   deleteLayout,
@@ -17,7 +16,6 @@ import {
   registerPanel,
   removePanelFromLayout,
   renameLayout,
-  setPanelTitle,
   switchLayout,
   workspaceDocumentSchema,
 } from "../../../src/core/workspace/index.ts";
@@ -56,8 +54,43 @@ describe("named layouts", () => {
     ["a name of 65 characters", "layout-call", "я".repeat(65), "invalid-name"],
     ["a name with a line break", "layout-call", "Со\nзвон", "invalid-name"],
     ["a name with a link that has a password", "layout-call", "Созвон https://zoom.example/j/812?pwd=fixture", "invalid-name"],
+    ["the name Authorization=Bearer synthetic-test-value", "layout-call", "Authorization=Bearer synthetic-test-value", "invalid-name"],
+    ["the name Authorization: Bearer synthetic-test-value", "layout-call", "Authorization: Bearer synthetic-test-value", "invalid-name"],
+    ["the name authorization synthetic-test-value", "layout-call", "authorization synthetic-test-value", "invalid-name"],
+    ["the name BEARER synthetic-test-value", "layout-call", "BEARER synthetic-test-value", "invalid-name"],
+    ["the name Bearer:synthetic-test-value", "layout-call", "Bearer:synthetic-test-value", "invalid-name"],
+    ["the name B-e-a-r-e-r synthetic-test-value", "layout-call", "B-e-a-r-e-r synthetic-test-value", "invalid-name"],
+    ["the name Basic YTpi", "layout-call", "Basic YTpi", "invalid-name"],
+    ["the name basic:YTpi", "layout-call", "basic:YTpi", "invalid-name"],
+    ["the name BASIC  a", "layout-call", "BASIC  a", "invalid-name"],
+    ["the name Basic layout", "layout-call", "Basic layout", "invalid-name"],
+    ["the name Fix token refresh", "layout-call", "Fix token refresh", "invalid-name"],
+    ["the name Вход api key synthetic", "layout-call", "Вход api key synthetic", "invalid-name"],
+    ["the name accessToken synthetic", "layout-call", "accessToken synthetic", "invalid-name"],
+    ["the name Пароль hunter2", "layout-call", "Пароль hunter2", "invalid-name"],
+    ["the name root:hunter2@build-1", "layout-call", "root:hunter2@build-1", "invalid-name"],
+    ["the name Сборка %41", "layout-call", "Сборка %41", "invalid-name"],
+    ["the name Сборка &#65;", "layout-call", "Сборка &#65;", "invalid-name"],
+    ["the name Bearer synthetic-test-value", "layout-call", "Bearer synthetic-test-value", "invalid-name"],
   ])("does not create a layout with %s", (_name, id, name, reason) => {
     expect(createLayout(stageADocument(), id, name)).toEqual({ ok: false, reason });
+  });
+
+  it.each([["Разработка"], ["Ревью"], ["Q&A (черновик)"], ["Fix 50% CPU usage"], ["Дизайн №2"], ["build-1: логи, часть 2/3"], ["Basic"], ["C# & F#"]])(
+    "accepts the name %s as it is typed",
+    (name) => {
+      expect(done(createLayout(stageADocument(), "layout-call", name)).layouts[2].name).toBe(name);
+    },
+  );
+
+  it("refuses a name with a credential marker as a whole: nothing of it is stored", () => {
+    const before = stageADocument();
+    for (const name of ["Authorization=Bearer synthetic-test-value", "Basic YTpi"]) {
+      expect(createLayout(before, "layout-call", name)).toEqual({ ok: false, reason: "invalid-name" });
+      expect(renameLayout(before, "layout-dev", name)).toEqual({ ok: false, reason: "invalid-name" });
+      expect(duplicateLayout(before, "layout-dev", "layout-call", name)).toEqual({ ok: false, reason: "invalid-name" });
+    }
+    expect(before).toEqual(stageADocument());
   });
 
   it("accepts a name of 64 characters", () => {
@@ -148,11 +181,11 @@ describe("panels", () => {
     expect(hiddenPanels(after)).toEqual([]);
   });
 
-  it("adds a new panel with its reference and title", () => {
+  it("adds a new panel with its reference", () => {
     const expected = stageAJson();
-    expected.panels.terminal = { ref: { provider: "remote-ssh", params: { connectionId: "build-1" } }, title: "build-1" };
+    expected.panels.terminal = { ref: { provider: "remote-ssh", params: { connectionId: "build-1" } } };
     expected.layouts[1].workspace.root.children[1] = { kind: "group", id: "group-2", tabs: ["thread-a", "terminal"], activeTab: "terminal" };
-    const panel = { ref: { provider: "remote-ssh", params: { connectionId: "build-1" } }, title: " build-1 " };
+    const panel = { ref: { provider: "remote-ssh", params: { connectionId: "build-1" } } };
     expect(done(addPanelToGroup(stageADocument(), "group-2", "terminal", panel))).toEqual(expected);
   });
 
@@ -160,57 +193,24 @@ describe("panels", () => {
     ["a panel already in the layout", "group-1", "thread-a", undefined, "already-placed"],
     ["an unknown group", "group-9", "thread-b", undefined, "unknown-group"],
     ["an unknown panel without a reference", "group-1", "terminal", undefined, "unknown-panel"],
-    ["a reference with a password", "group-1", "terminal", { ref: { provider: "remote-ssh", params: { password: "hunter2" } }, title: "SSH" }, "invalid-panel"],
-    ["a reference with an instance id", "group-1", "terminal", { ref: { provider: "remote-ssh", params: {}, instanceId: "panel-3" }, title: "SSH" }, "invalid-panel"],
-    ["a reference with an instance id among its parameters", "group-1", "terminal", { ref: { provider: "remote-ssh", params: { instanceId: "live-1" } }, title: "SSH" }, "invalid-panel"],
-    ["a title with a link that has a password", "group-1", "terminal", { ref: { provider: "remote-ssh", params: {} }, title: "https://zoom.example/j/812?pwd=fixture" }, "invalid-panel"],
-    ["a title with a marked token", "group-1", "terminal", { ref: { provider: "remote-ssh", params: {} }, title: "Authorization: Bearer synthetic-test-value" }, "invalid-panel"],
-    ["an empty title", "group-1", "terminal", { ref: { provider: "remote-ssh", params: {} }, title: " " }, "invalid-panel"],
-    ["a title of 121 characters", "group-1", "terminal", { ref: { provider: "remote-ssh", params: {} }, title: "я".repeat(121) }, "invalid-panel"],
-    ["a panel id with a space", "group-1", "my terminal", { ref: { provider: "remote-ssh", params: {} }, title: "SSH" }, "invalid-id"],
-    ["another reference under an id in use", "group-1", "thread-b", { ref: { provider: "bb-thread", params: { threadId: "thr_c" } }, title: "Тред C" }, "panel-conflict"],
+    ["a reference with a password", "group-1", "terminal", { ref: { provider: "remote-ssh", params: { password: "hunter2" } } }, "invalid-panel"],
+    ["a reference with an instance id", "group-1", "terminal", { ref: { provider: "remote-ssh", params: {}, instanceId: "panel-3" } }, "invalid-panel"],
+    ["a reference with an instance id among its parameters", "group-1", "terminal", { ref: { provider: "remote-ssh", params: { instanceId: "live-1" } } }, "invalid-panel"],
+    ["a panel id with a space", "group-1", "my terminal", { ref: { provider: "remote-ssh", params: {} } }, "invalid-id"],
+    ["another reference under an id in use", "group-1", "thread-b", { ref: { provider: "bb-thread", params: { threadId: "thr_c" } } }, "panel-conflict"],
   ])("does not add %s", (_name, groupId, panelId, panel, reason) => {
     expect(addPanelToGroup(stageADocument(), groupId, panelId, panel as never)).toEqual({ ok: false, reason });
   });
 
   it("registering a known reference again keeps the stored entry", () => {
     const document = stageADocument();
-    const again = registerPanel(document, "thread-b", { ref: { provider: "bb-thread", params: { threadId: "thr_b" } }, title: "Другое имя" });
+    const again = registerPanel(document, "thread-b", { ref: { provider: "bb-thread", params: { threadId: "thr_b" } } });
     expect(done(again)).toBe(document);
   });
 
   it("finds the panel id of a reference", () => {
     expect(panelIdOfRef(stageADocument(), { provider: "bb-thread", params: { threadId: "thr_b" } })).toBe("thread-b");
     expect(panelIdOfRef(stageADocument(), { provider: "bb-thread", params: { threadId: "thr_c" } })).toBeUndefined();
-  });
-
-  it("retitles a panel", () => {
-    const expected = stageAJson();
-    expected.panels["thread-a"].title = "Починка сборки";
-    expect(done(setPanelTitle(stageADocument(), "thread-a", "Починка сборки"))).toEqual(expected);
-    expect(setPanelTitle(stageADocument(), "thread-x", "Имя")).toEqual({ ok: false, reason: "unknown-panel" });
-    expect(setPanelTitle(stageADocument(), "thread-a", "")).toEqual({ ok: false, reason: "invalid-panel" });
-    expect(setPanelTitle(stageADocument(), "thread-a", "Созвон https://zoom.example/j/812?pwd=fixture")).toEqual({ ok: false, reason: "invalid-panel" });
-    expect(setPanelTitle(stageADocument(), "thread-a", "Документация https://docs.example/guide")).toEqual({ ok: false, reason: "invalid-panel" });
-  });
-
-  it("makes a caption out of a title a provider reports, without the words a caption may not carry", () => {
-    expect(captionFrom("  Созвон   https://zoom.example/j/812?pwd=fixture сегодня ", "title")).toBe("Созвон сегодня");
-    expect(captionFrom("[сборка](https://root:hunter2@build-1) упала", "title")).toBe("упала");
-    expect(captionFrom("Пароль: hunter2", "title")).toBeNull();
-    expect(captionFrom("Сервер пароль: hunter2", "title")).toBe("Сервер");
-    expect(captionFrom("root:hunter2@build-1", "title")).toBeNull();
-    expect(captionFrom("Fix 50% CPU\nusage", "title")).toBe("Fix 50% CPU usage");
-    expect(captionFrom("я".repeat(130), "title")).toBe("я".repeat(120));
-    expect(captionFrom("я".repeat(70), "name")).toBe("я".repeat(64));
-    expect(captionFrom("   ", "name")).toBeNull();
-    expect(captionFrom("Authorization: Bearer synthetic-test-value", "title")).toBeNull();
-    expect(captionFrom("Сборка BEARER synthetic-test-value", "title")).toBe("Сборка");
-    expect(captionFrom("Fix token refresh", "title")).toBe("Fix");
-    expect(captionFrom("Вход api key synthetic-test-value", "title")).toBe("Вход");
-    expect(captionFrom("Вход Basic dXNlcjpzM2Ny сегодня", "title")).toBe("Вход");
-    expect(captionFrom("Basic layout №2", "title")).toBe("Basic layout №2");
-    expect(done(setPanelTitle(stageADocument(), "thread-a", captionFrom("Тред https://x.example/?page=1 A", "title") ?? "Тред")).panels["thread-a"].title).toBe("Тред A");
   });
 
   it("removing a panel no layout shows any more forgets its reference", () => {
@@ -237,7 +237,7 @@ describe("panels", () => {
   it("removing a panel keeps its reference while a live instance uses it, until it is dropped", () => {
     const onDev = done(switchLayout(stageADocument(), "layout-dev"));
     const hidden = done(removePanelFromLayout(onDev, "thread-b", new Set(["thread-b"])));
-    expect(hiddenPanels(hidden)).toEqual([{ panelId: "thread-b", ref: { provider: "bb-thread", params: { threadId: "thr_b" } }, title: "Тред B" }]);
+    expect(hiddenPanels(hidden)).toEqual([{ panelId: "thread-b", ref: { provider: "bb-thread", params: { threadId: "thr_b" } } }]);
     expect(dropUnusedPanels(hidden, new Set(["thread-b"]))).toBe(hidden);
     expect(Object.keys(dropUnusedPanels(hidden, NO_LIVE_PANELS).panels)).toEqual(["thread-a", "frame"]);
   });
@@ -263,15 +263,15 @@ describe("layout templates", () => {
   const CALL: LayoutTemplate = {
     name: "Созвон",
     panels: {
-      call: { ref: { provider: "zoom-meeting", params: { meetingId: "81234567890" } }, title: "Созвон" },
-      "thread-a": { ref: { provider: "bb-thread", params: { threadId: "thr_a" } }, title: "Заметки" },
+      call: { ref: { provider: "zoom-meeting", params: { meetingId: "81234567890" } } },
+      "thread-a": { ref: { provider: "bb-thread", params: { threadId: "thr_a" } } },
     },
     workspace: splitGroup(createWorkspace(["call"]), "group-1", "right", "thread-a"),
   };
 
   it("adds a preset as data: its layout and references, without opening it", () => {
     const expected = stageAJson();
-    expected.panels.call = { ref: { provider: "zoom-meeting", params: { meetingId: "81234567890" } }, title: "Созвон" };
+    expected.panels.call = { ref: { provider: "zoom-meeting", params: { meetingId: "81234567890" } } };
     expected.layouts.push({
       id: "layout-call",
       name: "Созвон",
@@ -294,14 +294,14 @@ describe("layout templates", () => {
     const after = done(addLayoutFromTemplate(stageADocument(), "layout-call", CALL));
     expect(after).toEqual(expected);
     expect(after.activeLayoutId).toBe("layout-review");
-    expect(after.panels["thread-a"].title).toBe("Тред A");
+    expect(after.panels).toEqual({ ...stageADocument().panels, call: { ref: { provider: "zoom-meeting", params: { meetingId: "81234567890" } } } });
   });
 
   it.each([
     ["an id in use", "layout-dev", CALL, "layout-exists"],
-    ["a panel id that already names another reference", "layout-call", { ...CALL, panels: { ...CALL.panels, "thread-a": { ref: { provider: "bb-thread", params: { threadId: "thr_z" } }, title: "Z" } } }, "panel-conflict"],
+    ["a panel id that already names another reference", "layout-call", { ...CALL, panels: { ...CALL.panels, "thread-a": { ref: { provider: "bb-thread", params: { threadId: "thr_z" } } } } }, "panel-conflict"],
     ["a tile for a panel it does not describe", "layout-call", { ...CALL, panels: { call: CALL.panels.call } }, "unknown-panel"],
-    ["a reference with a token", "layout-call", { ...CALL, panels: { ...CALL.panels, call: { ref: { provider: "zoom-meeting", params: { token: "t" } }, title: "Созвон" } } }, "invalid-panel"],
+    ["a reference with a token", "layout-call", { ...CALL, panels: { ...CALL.panels, call: { ref: { provider: "zoom-meeting", params: { token: "t" } } } } }, "invalid-panel"],
     ["a broken tree", "layout-call", { ...CALL, workspace: { ...CALL.workspace, focusedGroupId: "group-8" } }, "invalid-layout"],
     ["an empty name", "layout-call", { ...CALL, name: "" }, "invalid-name"],
   ])("does not add a template with %s", (_name, id, template, reason) => {

@@ -7,8 +7,8 @@ import type { MigrationChain } from "../../../src/core/workspace/index.ts";
 import { stageADocument, stageAJson } from "./fixtures.ts";
 
 describe("readWorkspaceDocument", () => {
-  it("has schema version 1", () => {
-    expect(SCHEMA_VERSION).toBe(1);
+  it("has schema version 2", () => {
+    expect(SCHEMA_VERSION).toBe(2);
   });
 
   it("reports storage without a document as empty", () => {
@@ -26,8 +26,8 @@ describe("readWorkspaceDocument", () => {
   });
 
   it("reports a newer version without a document to save over it", () => {
-    const raw = { ...stageAJson(), schemaVersion: 2, zones: [{ display: "second" }] };
-    expect(readWorkspaceDocument(raw)).toEqual({ status: "newer", schemaVersion: 2 });
+    const raw = { ...stageAJson(), schemaVersion: 3, zones: [{ display: "second" }] };
+    expect(readWorkspaceDocument(raw)).toEqual({ status: "newer", schemaVersion: 3 });
   });
 
   it.each([
@@ -123,14 +123,13 @@ describe("readWorkspaceDocument", () => {
 
   it("keeps the reference and the place of a panel whose provider is not installed", () => {
     const raw = stageAJson();
-    raw.panels.call = { ref: { provider: "zoom-meeting", params: { meetingId: "81234567890" } }, title: "Созвон" };
+    raw.panels.call = { ref: { provider: "zoom-meeting", params: { meetingId: "81234567890" } } };
     raw.layouts[1].workspace.root.children[1] = { kind: "group", id: "group-2", tabs: ["thread-a", "call"], activeTab: "call" };
     const result = readWorkspaceDocument(raw);
     expect(result).toEqual({ status: "ok", document: raw, migratedFrom: null, dropped: [] });
     if (result.status !== "ok") return;
     expect(result.document.panels.call).toEqual({
       ref: { provider: "zoom-meeting", params: { meetingId: "81234567890" } },
-      title: "Созвон",
     });
     expect(result.document.layouts.map((layout) => layout.name)).toEqual(["Разработка", "Ревью"]);
   });
@@ -138,41 +137,22 @@ describe("readWorkspaceDocument", () => {
 
 /** Panels a document must never hold, with the reason the reader gives for leaving each out. */
 const SECRET_PANELS: [name: string, panel: unknown, reason: string][] = [
-  ["a token", { ref: { provider: "bb-thread", params: { threadId: "thr_b", accessToken: "tok-1" } }, title: "Тред B" }, "ref.params.accessToken: A panel reference must not carry credentials"],
-  ["a password", { ref: { provider: "remote-ssh", params: { host: "build-1", password: "hunter2" } }, title: "SSH" }, "ref.params.password: A panel reference must not carry credentials"],
-  ["message text", { ref: { provider: "telegram-chat", params: { chatId: "42", draftText: "Привет" } }, title: "Чат" }, "ref.params.draftText: A panel reference must not carry correspondence"],
-  ["a meeting link with a password", { ref: { provider: "zoom-meeting", params: { link: "https://zoom.example/j/812?pwd=abc" } }, title: "Созвон" }, "ref.params.link: A panel reference must not carry a link with a secret"],
-  ["an instance id", { ref: { provider: "bb-thread", params: { threadId: "thr_b" }, instanceId: "panel-7" }, title: "Тред B" }, 'ref: Unrecognized key: "instanceId"'],
-  ["an instance id among the parameters", { ref: { provider: "bb-thread", params: { threadId: "thr_b", instanceId: "panel-7" } }, title: "Тред B" }, "ref.params.instanceId: A panel reference must not carry a live handle"],
-  ["a WebContents id among the parameters", { ref: { provider: "bb-thread", params: { threadId: "thr_b", webContentsId: 7 } }, title: "Тред B" }, "ref.params.webContentsId: A panel reference must not carry a live handle"],
-  ["a process id among the parameters", { ref: { provider: "remote-ssh", params: { host: "build-1", pid: 4242 } }, title: "SSH" }, "ref.params.pid: A panel reference must not carry a live handle"],
-  ["a PTY handle among the parameters", { ref: { provider: "remote-ssh", params: { host: "build-1", pty_handle: "pty-3" } }, title: "SSH" }, "ref.params.pty_handle: A panel reference must not carry a live handle"],
-  ["a title with a link that has a password", { ref: { provider: "zoom-meeting", params: { meetingId: "812" } }, title: "Созвон https://zoom.example/j/812?pwd=abc" }, "title: A title must not carry a link or credentials"],
-  ["a title with an encoded link that has a password", { ref: { provider: "zoom-meeting", params: { meetingId: "812" } }, title: "Созвон (https://zoom.example/j/812%3Fpwd%3Dabc)" }, "title: A title must not carry a link or credentials"],
-  ["a title with a link that has a login", { ref: { provider: "remote-ssh", params: { host: "build-1" } }, title: "ssh://root:hunter2@build-1" }, "title: A title must not carry a link or credentials"],
-  ["a title with a bracketed link that has a login", { ref: { provider: "remote-ssh", params: { host: "build-1" } }, title: "Сборка (ssh://root:hunter2@build-1)" }, "title: A title must not carry a link or credentials"],
-  ["a title with credentials in a Markdown link", { ref: { provider: "remote-ssh", params: { host: "build-1" } }, title: "[сборка](https://root:hunter2@build-1)" }, "title: A title must not carry a link or credentials"],
-  ["a title with a fully encoded link with credentials", { ref: { provider: "remote-ssh", params: { host: "build-1" } }, title: "https%3A%2F%2Froot%3Ahunter2%40build-1" }, "title: A title must not carry a link or credentials"],
-  ["a title with a twice encoded link", { ref: { provider: "remote-ssh", params: { host: "build-1" } }, title: "https%253A%252F%252Froot%253Ahunter2%2540build-1" }, "title: A title must not carry a link or credentials"],
-  ["a title with credentials and no scheme", { ref: { provider: "remote-ssh", params: { host: "build-1" } }, title: "root:hunter2@build-1" }, "title: A title must not carry a link or credentials"],
-  ["a title with credentials behind HTML entities", { ref: { provider: "remote-ssh", params: { host: "build-1" } }, title: "root&#58;hunter2&commat;build-1" }, "title: A title must not carry a link or credentials"],
-  ["a title with a full-width at sign", { ref: { provider: "remote-ssh", params: { host: "build-1" } }, title: "root:hunter2＠build-1" }, "title: A title must not carry a link or credentials"],
-  ["a title with a key and its value", { ref: { provider: "remote-ssh", params: { host: "build-1" } }, title: "token=hunter2" }, "title: A title must not carry a link or credentials"],
-  ["a title with a named password", { ref: { provider: "remote-ssh", params: { host: "build-1" } }, title: "Пароль: hunter2" }, "title: A title must not carry a link or credentials"],
-  ["a title with an escaped character", { ref: { provider: "remote-ssh", params: { host: "build-1" } }, title: "root:hunter2\\u0040build-1" }, "title: A title must not carry a link or credentials"],
-  ["a process handle in capitals among the parameters", { ref: { provider: "remote-ssh", params: { host: "build-1", PIDHandle: 4242 } }, title: "SSH" }, "ref.params.PIDHandle: A panel reference must not carry a live handle"],
-  ["a lowercase instance id among the parameters", { ref: { provider: "remote-ssh", params: { host: "build-1", instanceid: "panel-7" } }, title: "SSH" }, "ref.params.instanceid: A panel reference must not carry a live handle"],
-  ["a PTY id in capitals among the parameters", { ref: { provider: "remote-ssh", params: { host: "build-1", PTYID: "pty-3" } }, title: "SSH" }, "ref.params.PTYID: A panel reference must not carry a live handle"],
-  ["a process id with a prefix among the parameters", { ref: { provider: "remote-ssh", params: { host: "build-1", shellPid: 4242 } }, title: "SSH" }, "ref.params.shellPid: A panel reference must not carry a live handle"],
-  ["a socket among the parameters", { ref: { provider: "remote-ssh", params: { host: "build-1", socketFd: 4242 } }, title: "SSH" }, "ref.params.socketFd: A panel reference must not carry a live handle"],
-  ["a title with an Authorization header", { ref: { provider: "remote-ssh", params: { host: "build-1" } }, title: "Authorization: Bearer synthetic-test-value" }, "title: A title must not carry a link or credentials"],
-  ["a title with a bearer marker in capitals", { ref: { provider: "remote-ssh", params: { host: "build-1" } }, title: "BEARER synthetic-test-value" }, "title: A title must not carry a link or credentials"],
-  ["a title with a basic credential", { ref: { provider: "remote-ssh", params: { host: "build-1" } }, title: "Basic dXNlcjpzM2Ny" }, "title: A title must not carry a link or credentials"],
-  ["a title with a token marker without a colon", { ref: { provider: "remote-ssh", params: { host: "build-1" } }, title: "token synthetic-test-value" }, "title: A title must not carry a link or credentials"],
-  ["a title with an API key marker", { ref: { provider: "remote-ssh", params: { host: "build-1" } }, title: "Api Key synthetic-test-value" }, "title: A title must not carry a link or credentials"],
-  ["a title with an access token marker in one word", { ref: { provider: "remote-ssh", params: { host: "build-1" } }, title: "accessToken synthetic-test-value" }, "title: A title must not carry a link or credentials"],
-  ["a title with a cookie marker", { ref: { provider: "remote-ssh", params: { host: "build-1" } }, title: "Cookie session-synthetic" }, "title: A title must not carry a link or credentials"],
-  ["an instance id beside the reference", { ref: { provider: "bb-thread", params: { threadId: "thr_b" } }, title: "Тред B", instanceId: "panel-7" }, 'Unrecognized key: "instanceId"'],
+  ["a token", { ref: { provider: "bb-thread", params: { threadId: "thr_b", accessToken: "tok-1" } } }, "ref.params.accessToken: A panel reference must not carry credentials"],
+  ["a password", { ref: { provider: "remote-ssh", params: { host: "build-1", password: "hunter2" } } }, "ref.params.password: A panel reference must not carry credentials"],
+  ["message text", { ref: { provider: "telegram-chat", params: { chatId: "42", draftText: "Привет" } } }, "ref.params.draftText: A panel reference must not carry correspondence"],
+  ["a meeting link with a password", { ref: { provider: "zoom-meeting", params: { link: "https://zoom.example/j/812?pwd=abc" } } }, "ref.params.link: A panel reference must not carry a link with a secret"],
+  ["an instance id", { ref: { provider: "bb-thread", params: { threadId: "thr_b" }, instanceId: "panel-7" } }, 'ref: Unrecognized key: "instanceId"'],
+  ["an instance id among the parameters", { ref: { provider: "bb-thread", params: { threadId: "thr_b", instanceId: "panel-7" } } }, "ref.params.instanceId: A panel reference must not carry a live handle"],
+  ["a WebContents id among the parameters", { ref: { provider: "bb-thread", params: { threadId: "thr_b", webContentsId: 7 } } }, "ref.params.webContentsId: A panel reference must not carry a live handle"],
+  ["a process id among the parameters", { ref: { provider: "remote-ssh", params: { host: "build-1", pid: 4242 } } }, "ref.params.pid: A panel reference must not carry a live handle"],
+  ["a PTY handle among the parameters", { ref: { provider: "remote-ssh", params: { host: "build-1", pty_handle: "pty-3" } } }, "ref.params.pty_handle: A panel reference must not carry a live handle"],
+  ["a process handle in capitals among the parameters", { ref: { provider: "remote-ssh", params: { host: "build-1", PIDHandle: 4242 } } }, "ref.params.PIDHandle: A panel reference must not carry a live handle"],
+  ["a lowercase instance id among the parameters", { ref: { provider: "remote-ssh", params: { host: "build-1", instanceid: "panel-7" } } }, "ref.params.instanceid: A panel reference must not carry a live handle"],
+  ["a PTY id in capitals among the parameters", { ref: { provider: "remote-ssh", params: { host: "build-1", PTYID: "pty-3" } } }, "ref.params.PTYID: A panel reference must not carry a live handle"],
+  ["a process id with a prefix among the parameters", { ref: { provider: "remote-ssh", params: { host: "build-1", shellPid: 4242 } } }, "ref.params.shellPid: A panel reference must not carry a live handle"],
+  ["a socket among the parameters", { ref: { provider: "remote-ssh", params: { host: "build-1", socketFd: 4242 } } }, "ref.params.socketFd: A panel reference must not carry a live handle"],
+  ["a title beside the reference", { ref: { provider: "bb-thread", params: { threadId: "thr_b" } }, title: "panel-7" }, 'Unrecognized key: "title"'],
+  ["an instance id beside the reference", { ref: { provider: "bb-thread", params: { threadId: "thr_b" } }, instanceId: "panel-7" }, 'Unrecognized key: "instanceId"'],
 ];
 
 describe("secrets and live handles", () => {
@@ -189,11 +169,11 @@ describe("secrets and live handles", () => {
     expect(result).toEqual({
       status: "ok",
       document: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         revision: 0,
         panels: {
-          "thread-a": { ref: { provider: "bb-thread", params: { threadId: "thr_a" } }, title: "Тред A" },
-          frame: { ref: { provider: "chertog-frame", params: { frameId: "live-frame" } }, title: "Живая панель" },
+          "thread-a": { ref: { provider: "bb-thread", params: { threadId: "thr_a" } } },
+          frame: { ref: { provider: "chertog-frame", params: { frameId: "live-frame" } } },
         },
         layouts: [
           {
@@ -227,7 +207,7 @@ describe("secrets and live handles", () => {
 
   it("drops a panel whose id is not an identifier, without repeating the id", () => {
     const raw = stageAJson();
-    raw.panels["my secret note"] = { ref: { provider: "bb-thread", params: { threadId: "thr_c" } }, title: "Тред C" };
+    raw.panels["my secret note"] = { ref: { provider: "bb-thread", params: { threadId: "thr_c" } } };
     expect(readWorkspaceDocument(raw)).toEqual({
       status: "ok",
       document: stageADocument(),
@@ -262,16 +242,77 @@ describe("identifiers that only look like live handles", () => {
       expect(result.status === "ok" && result.dropped).toEqual([]);
     },
   );
+});
 
-  it.each([["Тред A"], ["Fix 50% CPU usage"], ["Q&A (черновик)"], ["build-1: логи, часть 2/3"], ["Что дальше?"], ["C# & F#"], ["Basic layout"], ["Basic v2"], ["Basic Authentication"], ["Дизайн №2"]])(
-    "keeps the title %s",
-    (title) => {
-      const raw = stageAJson();
-      raw.panels.frame.title = title;
-      const result = readWorkspaceDocument(raw);
-      expect(result.status === "ok" && result.document.panels.frame.title).toBe(title);
-    },
-  );
+describe("a document of schema version 1, which kept a title with every panel", () => {
+  /** The stage A document as version 1 stored it. */
+  function versionOne(): any {
+    const raw = stageAJson();
+    raw.schemaVersion = 1;
+    raw.revision = 6;
+    raw.panels["thread-a"].title = "Тред A";
+    raw.panels["thread-b"].title = "Тред B";
+    raw.panels.frame.title = "Живая панель";
+    return raw;
+  }
+
+  it("is read with both layouts and every reference, without the titles and without a report", () => {
+    expect(readWorkspaceDocument(versionOne())).toEqual({
+      status: "ok",
+      document: { ...stageADocument(), revision: 6 },
+      migratedFrom: 1,
+      dropped: [],
+    });
+  });
+
+  it.each([
+    ["Authorization=Bearer synthetic-test-value"],
+    ["Basic YTpi"],
+    ["https://root:hunter2@build-1"],
+    [""],
+    ["я".repeat(500)],
+  ])("drops the title %s silently and keeps its panel", (title) => {
+    const raw = versionOne();
+    raw.panels["thread-b"].title = title;
+    const result = readWorkspaceDocument(raw);
+    expect(result).toEqual({ status: "ok", document: { ...stageADocument(), revision: 6 }, migratedFrom: 1, dropped: [] });
+    expect(JSON.stringify(result)).not.toMatch(/title|synthetic|YTpi|hunter2/);
+  });
+
+  it("drops a title that is not a string as well", () => {
+    const raw = versionOne();
+    raw.panels.frame.title = { text: "synthetic-test-value" };
+    expect(readWorkspaceDocument(raw)).toEqual({ status: "ok", document: { ...stageADocument(), revision: 6 }, migratedFrom: 1, dropped: [] });
+  });
+
+  it("still judges the rest of a version 1 panel", () => {
+    const raw = versionOne();
+    raw.panels["thread-b"].ref.params.accessToken = "tok-1";
+    const result = readWorkspaceDocument(raw);
+    expect(result.status === "ok" && result.dropped).toEqual([
+      { kind: "panel", panelId: "thread-b", reason: "ref.params.accessToken: A panel reference must not carry credentials" },
+    ]);
+    expect(result.status === "ok" && result.migratedFrom).toBe(1);
+  });
+
+  it("drops a version 1 panel that is not an object and keeps the rest", () => {
+    const raw = versionOne();
+    raw.panels["thread-b"] = null;
+    const result = readWorkspaceDocument(raw);
+    expect(result.status).toBe("ok");
+    if (result.status !== "ok") return;
+    expect(result.migratedFrom).toBe(1);
+    expect(result.dropped).toEqual([{ kind: "panel", panelId: "thread-b", reason: "Invalid input: expected object, received null" }]);
+    expect(Object.keys(result.document.panels)).toEqual(["thread-a", "frame"]);
+    expect(result.document.layouts.map((layout) => layout.name)).toEqual(["Разработка", "Ревью"]);
+  });
+
+  it("reports a version 1 document whose panels are not a record as corrupt", () => {
+    expect(readWorkspaceDocument({ ...versionOne(), panels: "?" })).toEqual({
+      status: "corrupt",
+      reason: "panels: Invalid input: expected record, received string",
+    });
+  });
 });
 
 describe("migrateToVersion", () => {

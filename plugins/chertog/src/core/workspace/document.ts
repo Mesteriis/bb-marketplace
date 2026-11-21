@@ -1,6 +1,6 @@
 // The workspace document: what Chertog stores about one workspace. It keeps
 // the long-lived references of the panels and the named layouts that place
-// them. It never keeps a live handle (an instance id, a process, a DOM node)
+// them, and no panel title. It never keeps a live handle (an instance id, a process, a DOM node)
 // and, through `panelRefSchema`, never keeps credentials, correspondence,
 // tokens or links with a password.
 import { z } from "zod";
@@ -10,13 +10,15 @@ import { panelRefSchema } from "../panels/index.ts";
 import type { PanelRef } from "../panels/index.ts";
 
 /** The version this code writes. A change of the stored shape raises it and adds a step to the migration chain. */
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
-/** A panel the workspace knows: how to find it again and what to call it in a tab. */
+/**
+ * A panel the workspace knows: how to find it again. The document keeps no
+ * title for it: a title comes from the provider, may quote anything, and is
+ * asked for live by the reference each time the panel is shown.
+ */
 export interface WorkspacePanel {
   readonly ref: PanelRef;
-  /** The caption of the tab and the tile header. A name, not content. */
-  readonly title: string;
 }
 
 /** One named arrangement: the tree with its own focus and maximized tile. */
@@ -42,7 +44,6 @@ export interface WorkspaceDocument {
 }
 
 const MAX_NAME_LENGTH = 64;
-const MAX_TITLE_LENGTH = 120;
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
 const NODE_ID = /^(group|split)-([1-9][0-9]*)$/;
@@ -60,71 +61,31 @@ function isCaption(text: string, maxLength: number): boolean {
 export const idSchema = z.string().regex(ID);
 
 /** A link, an address or a `key=value` pair, in plain form or behind percent, HTML or backslash escapes. */
-const UNSAFE_WORD = /:\/\/|[@=\\]|%[0-9a-f]{2}|&#|&[a-z][a-z0-9]*;/i;
+const UNSAFE_TEXT = /:\/\/|[@=\\]|%[0-9a-f]{2}|&#|&[a-z][a-z0-9]*;/i;
 
 /**
- * A word that marks what follows as a credential, in any case and inside a
- * longer word: `Authorization`, `Bearer`, `accessToken`, `api key`, `пароль`.
+ * Words that mark a credential, matched in the name with everything but
+ * letters and digits taken out, so `Authorization=Bearer`, `api key` and
+ * `B-e-a-r-e-r` are all found. `basic` counts when anything follows it.
  */
-const SECRET_MARKER = /authorization|bearer|passw|passcode|passphrase|pwd|secret|token|api[-_ ]?key|credential|cookie|пароль|токен/i;
-
-/** `Basic` before an encoded credential. `Basic layout` is a name; `Basic dXNlcjpwdw` is not. */
-const BASIC_SCHEME = /basic\s+(\S+)/gi;
-
-function isEncodedCredential(word: string): boolean {
-  return word.length >= 8 && /^[A-Za-z0-9+/_.~-]+$/.test(word) && /\d|[a-z][A-Z]/.test(word);
-}
-
-/** Whether the text names a credential: a marker word, or the `Basic` scheme with its value. */
-function hasMarkedSecret(plain: string): boolean {
-  if (SECRET_MARKER.test(plain)) return true;
-  return [...plain.matchAll(BASIC_SCHEME)].some((match) => isEncodedCredential(match[1]));
-}
+const SECRET_MARKER = /authorization|bearer|passw|passcode|passphrase|pwd|secret|token|apikey|credential|cookie|пароль|токен|basic./;
 
 /**
- * Whether a caption may be stored. A caption is a name a person reads, so it
- * holds no link at all, no address with `@`, no `key=value` pair, no escape
- * sequence that could hide one of them, and no word that marks a credential.
- * Lookalike characters such as a full-width `＠` count as their plain form.
+ * Whether a layout name may be stored. The user types it, so it is judged as
+ * a whole and refused as a whole: no link, no address with `@`, no
+ * `key=value` pair, no escape sequence that could hide one of them, and no
+ * word that marks a credential. Lookalike characters such as a full-width
+ * `＠` count as their plain form.
  */
-function isSafeCaption(text: string): boolean {
-  const plain = text.normalize("NFKC");
-  return !UNSAFE_WORD.test(plain) && !hasMarkedSecret(plain);
-}
-
-/**
- * A caption made from text a provider reports, such as a thread or a page
- * title: on one line, without the words a caption may not carry, cut to the
- * length of a panel title or a layout name. A word that marks a credential
- * ends the caption, because what follows it may be the credential. `null`
- * when nothing is left.
- */
-export function captionFrom(text: string, kind: "title" | "name"): string | null {
-  const kept: string[] = [];
-  for (const word of text.split(/[\s\u0000-\u001f\u007f]+/)) {
-    const plain = word.normalize("NFKC");
-    if (word === "" || UNSAFE_WORD.test(plain)) continue;
-    const previous = kept.length === 0 ? "" : kept[kept.length - 1].normalize("NFKC");
-    if (hasMarkedSecret(previous + " " + plain)) {
-      // A marker of two words, `api key` or `Basic` with its value: the first word goes too.
-      if (!SECRET_MARKER.test(plain) || (/^basic$/i.test(previous) && isEncodedCredential(plain))) kept.pop();
-      break;
-    }
-    kept.push(word);
-  }
-  const caption = kept.join(" ").slice(0, kind === "title" ? MAX_TITLE_LENGTH : MAX_NAME_LENGTH).trim();
-  return caption !== "" && isSafeCaption(caption) ? caption : null;
+function isSafeName(name: string): boolean {
+  const plain = name.normalize("NFKC");
+  return !UNSAFE_TEXT.test(plain) && !SECRET_MARKER.test(plain.toLowerCase().replace(/[^\p{L}\p{N}]/gu, ""));
 }
 
 export const layoutNameSchema = z
   .string()
   .refine((name) => isCaption(name, MAX_NAME_LENGTH), "A name is 1 to 64 characters without line breaks")
-  .refine((name) => isSafeCaption(name), "A name must not carry a link or credentials");
-
-const panelTitleSchema = z
-  .string()
-  .refine((title) => isCaption(title, MAX_TITLE_LENGTH), "A title is 1 to 120 characters without line breaks")
-  .refine((title) => isSafeCaption(title), "A title must not carry a link or credentials");
+  .refine((name) => isSafeName(name), "A name must not carry a link or credentials");
 
 /** Words that mark a parameter as a handle of something running now, wherever and in whatever case they stand in its name. */
 const LIVE_HANDLE_WORD = /instance|handle|process|socket|descriptor|webcontents|domnode/;
@@ -152,11 +113,10 @@ const storedPanelRefSchema = panelRefSchema.superRefine((ref, context) => {
 
 /**
  * Unknown fields are refused, and so is a parameter that names a live handle:
- * an instance id cannot ride along with a reference or inside it.
+ * neither an instance id nor a title can ride along with a reference.
  */
 export const workspacePanelSchema: z.ZodType<WorkspacePanel> = z.strictObject({
   ref: storedPanelRefSchema,
-  title: panelTitleSchema,
 });
 
 const nodeIdSchema = z.string().regex(NODE_ID);

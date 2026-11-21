@@ -19,9 +19,9 @@ import {
 import type { WorkspaceChange, WorkspaceDocument, WorkspacePanel } from "../../../src/core/workspace/index.ts";
 import { stageADocument, stageAJson } from "./fixtures.ts";
 
-const THREAD_A: WorkspacePanel = { ref: { provider: "bb-thread", params: { threadId: "thr_a" } }, title: "Тред A" };
-const THREAD_B: WorkspacePanel = { ref: { provider: "bb-thread", params: { threadId: "thr_b" } }, title: "Тред B" };
-const FRAME: WorkspacePanel = { ref: { provider: "chertog-frame", params: { frameId: "live-frame" } }, title: "Живая панель" };
+const THREAD_A: WorkspacePanel = { ref: { provider: "bb-thread", params: { threadId: "thr_a" } } };
+const THREAD_B: WorkspacePanel = { ref: { provider: "bb-thread", params: { threadId: "thr_b" } } };
+const FRAME: WorkspacePanel = { ref: { provider: "chertog-frame", params: { frameId: "live-frame" } } };
 
 const NO_LIVE_PANELS: ReadonlySet<string> = new Set();
 
@@ -57,7 +57,7 @@ describe("stage A: the layouts «Разработка» and «Ревью»", () 
   it("lists thread B as hidden in «Ревью» and nothing as hidden in «Разработка»", () => {
     const review = buildStageA();
     expect(hiddenPanels(review)).toEqual([
-      { panelId: "thread-b", ref: { provider: "bb-thread", params: { threadId: "thr_b" } }, title: "Тред B" },
+      { panelId: "thread-b", ref: { provider: "bb-thread", params: { threadId: "thr_b" } } },
     ]);
     const development = done(switchLayout(review, "layout-dev"));
     expect(development.activeLayoutId).toBe("layout-dev");

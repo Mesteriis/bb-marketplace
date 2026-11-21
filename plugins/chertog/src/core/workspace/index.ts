@@ -4,7 +4,6 @@
 export type { NamedLayout, WorkspaceDocument, WorkspacePanel } from "./document.ts";
 export {
   activeLayout,
-  captionFrom,
   initialDocument,
   namedLayoutSchema,
   placedPanelIds,
@@ -32,7 +31,6 @@ export {
   registerPanel,
   removePanelFromLayout,
   renameLayout,
-  setPanelTitle,
   switchLayout,
 } from "./operations.ts";
 

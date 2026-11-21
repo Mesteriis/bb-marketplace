@@ -57,10 +57,9 @@ function cleanName(name: string): string | null {
   return parsed.success ? parsed.data : null;
 }
 
-/** The panel as it is stored, with its title trimmed, or `null` when the schema refuses it. */
+/** The panel as it is stored, or `null` when the schema refuses it. */
 function cleanPanel(panel: WorkspacePanel): WorkspacePanel | null {
-  if (typeof panel?.title !== "string") return null;
-  const parsed = workspacePanelSchema.safeParse({ ...panel, title: panel.title.trim() });
+  const parsed = workspacePanelSchema.safeParse(panel);
   return parsed.success ? parsed.data : null;
 }
 
@@ -184,19 +183,10 @@ export function registerPanel(document: WorkspaceDocument, panelId: string, pane
   return applied({ ...document, panels: { ...document.panels, [panelId]: cleaned } });
 }
 
-export function setPanelTitle(document: WorkspaceDocument, panelId: string, title: string): WorkspaceChange {
-  if (!hasPanel(document.panels, panelId)) return refused("unknown-panel");
-  const current = document.panels[panelId];
-  const cleaned = cleanPanel({ ref: current.ref, title });
-  if (cleaned === null) return refused("invalid-panel");
-  if (cleaned.title === current.title) return applied(document);
-  return applied({ ...document, panels: { ...document.panels, [panelId]: cleaned } });
-}
-
 /**
  * Adds a panel to a group of the open layout as its last tab, active and
  * focused. A panel the document already knows needs no `panel`; a new one
- * brings its reference and title.
+ * brings its reference.
  */
 export function addPanelToGroup(document: WorkspaceDocument, groupId: string, panelId: string, panel?: WorkspacePanel): WorkspaceChange {
   let known = document;
@@ -231,7 +221,7 @@ export function hiddenPanels(document: WorkspaceDocument): ListedPanel[] {
   const placed = new Set(placedPanelIds(activeLayout(document)));
   return Object.entries(document.panels)
     .filter(([panelId]) => !placed.has(panelId))
-    .map(([panelId, panel]) => ({ panelId, ref: panel.ref, title: panel.title }));
+    .map(([panelId, panel]) => ({ panelId, ref: panel.ref }));
 }
 
 /**

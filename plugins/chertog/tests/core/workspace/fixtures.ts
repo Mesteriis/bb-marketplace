@@ -10,12 +10,12 @@ import { decideSave, readWorkspaceDocument } from "../../../src/core/workspace/i
  */
 export function stageADocument(): WorkspaceDocument {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     revision: 0,
     panels: {
-      "thread-a": { ref: { provider: "bb-thread", params: { threadId: "thr_a" } }, title: "Тред A" },
-      "thread-b": { ref: { provider: "bb-thread", params: { threadId: "thr_b" } }, title: "Тред B" },
-      frame: { ref: { provider: "chertog-frame", params: { frameId: "live-frame" } }, title: "Живая панель" },
+      "thread-a": { ref: { provider: "bb-thread", params: { threadId: "thr_a" } } },
+      "thread-b": { ref: { provider: "bb-thread", params: { threadId: "thr_b" } } },
+      frame: { ref: { provider: "chertog-frame", params: { frameId: "live-frame" } } },
     },
     layouts: [
       {
