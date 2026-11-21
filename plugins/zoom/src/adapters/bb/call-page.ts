@@ -5,6 +5,7 @@
 //
 // Messages (all `{ type: "zoom-call:…" }`):
 //   page → parent: ready | failed {message} | joined | ended | error {code, message}
+//                  | media-error {kind: camera|microphone|screen, name, message}
 //   parent → page: join {call} | leave
 
 /** Pinned so a Zoom release cannot change the code the page runs. Update with the SDK notes. */
@@ -27,6 +28,42 @@ export const CALL_PAGE_CSP = [
   "media-src https: blob:",
   "font-src https: data:",
 ].join("; ");
+
+/**
+ * Runs before Zoom's scripts: tells the parent why the browser refused the
+ * camera, microphone or screen, which Zoom's own UI does not explain. The
+ * refusal still reaches the SDK unchanged.
+ */
+export const MEDIA_REPORT_SCRIPT = `
+(function () {
+  var media = navigator.mediaDevices;
+  if (!media) return;
+  function report(kind, error) {
+    window.parent.postMessage({
+      type: "zoom-call:media-error",
+      kind: kind,
+      name: String((error && error.name) || "Error"),
+      message: String((error && error.message) || "").slice(0, 200)
+    }, "*");
+  }
+  function wrap(method, kindOf) {
+    var original = media[method];
+    media[method] = function (constraints) {
+      var kind = kindOf(constraints);
+      var result;
+      if (typeof original !== "function") {
+        result = Promise.reject(new DOMException("Screen capture is not available here", "NotSupportedError"));
+      } else {
+        try { result = Promise.resolve(original.call(media, constraints)); } catch (error) { result = Promise.reject(error); }
+      }
+      result.catch(function (error) { report(kind, error); });
+      return result;
+    };
+  }
+  wrap("getUserMedia", function (constraints) { return constraints && constraints.video ? "camera" : "microphone"; });
+  wrap("getDisplayMedia", function () { return "screen"; });
+})();
+`;
 
 /** Runs on the call page. Exported so tests can execute it against a stand-in SDK. */
 export const CALL_PAGE_SCRIPT = `
@@ -114,6 +151,7 @@ export function callPageHtml(): string {
 </head>
 <body>
 <div id="meetingSDKElement"></div>
+<script>${MEDIA_REPORT_SCRIPT}</script>
 ${scripts}
 <script>${CALL_PAGE_SCRIPT}</script>
 </body>

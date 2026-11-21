@@ -10,6 +10,8 @@ describe("call page", () => {
 
   it("loads the pinned Meeting SDK scripts in Zoom's documented order", () => {
     const sources = [...html.matchAll(/<script src="([^"]+)"><\/script>/g)].map((match) => match[1]);
+    // The media report must be installed before Zoom's code can keep a reference to getUserMedia.
+    expect(html.indexOf("zoom-call:media-error")).toBeLessThan(html.indexOf("source.zoom.us"));
     expect(sources).toEqual([
       "https://source.zoom.us/6.10.0/lib/vendor/react.min.js",
       "https://source.zoom.us/6.10.0/lib/vendor/react-dom.min.js",

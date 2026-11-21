@@ -22,6 +22,28 @@ interface CallPanelProps {
   openExternal: (url: string) => void;
 }
 
+const MEDIA_KINDS = ["camera", "microphone", "screen"] as const;
+type MediaKind = (typeof MEDIA_KINDS)[number];
+
+/** What to tell the user when the browser refused a device, by the error's name. */
+export function mediaProblemText(kind: string, name: string): string {
+  if (kind === "screen") {
+    return `Демонстрация экрана недоступна: BB не даёт встроенным страницам захватывать экран (${name}). Откройте встречу в приложении Zoom.`;
+  }
+  const device = kind === "camera" ? "Камера недоступна" : "Микрофон недоступен";
+  const pane = kind === "camera" ? "Камера" : "Микрофон";
+  if (name === "NotAllowedError" || name === "SecurityError") {
+    return `${device} (${name}). Проверьте доступ: Системные настройки → Конфиденциальность и безопасность → ${pane} → bb.`;
+  }
+  if (name === "NotFoundError") return `${device} (${name}): устройство не найдено.`;
+  if (name === "NotReadableError") return `${device} (${name}): ${kind === "camera" ? "её" : "его"} занимает другое приложение.`;
+  return `${device} (${name}).`;
+}
+
+function isMediaKind(value: unknown): value is MediaKind {
+  return typeof value === "string" && (MEDIA_KINDS as readonly string[]).includes(value);
+}
+
 function text(value: unknown, fallback: string): string {
   if (typeof value === "number" && Number.isFinite(value)) return String(value);
   return typeof value === "string" && value !== "" ? value.slice(0, 300) : fallback;
@@ -30,6 +52,7 @@ function text(value: unknown, fallback: string): string {
 export function CallPanel({ call, callPageUrl, title, onClose, openExternal }: CallPanelProps) {
   const frame = useRef<HTMLIFrameElement>(null);
   const [phase, setPhase] = useState<Phase>({ kind: "loading" });
+  const [mediaProblem, setMediaProblem] = useState<string | null>(null);
 
   useEffect(() => {
     const timeout = window.setTimeout(() => {
@@ -41,7 +64,7 @@ export function CallPanel({ call, callPageUrl, title, onClose, openExternal }: C
       if (target == null || event.source !== target) return;
       const data: unknown = event.data;
       if (typeof data !== "object" || data === null) return;
-      const message = data as { type?: unknown; message?: unknown; code?: unknown };
+      const message = data as { type?: unknown; message?: unknown; code?: unknown; kind?: unknown; name?: unknown };
       if (message.type === "zoom-call:ready") {
         setPhase({ kind: "joining" });
         // The message goes to this one window, whichever origin the host gave the call page.
@@ -53,6 +76,8 @@ export function CallPanel({ call, callPageUrl, title, onClose, openExternal }: C
         setPhase({ kind: "joined" });
       } else if (message.type === "zoom-call:ended") {
         onClose();
+      } else if (message.type === "zoom-call:media-error") {
+        if (isMediaKind(message.kind)) setMediaProblem(mediaProblemText(message.kind, text(message.name, "Error").slice(0, 40)));
       } else if (message.type === "zoom-call:failed") {
         setPhase({ kind: "failed", message: text(message.message, "Не удалось загрузить Zoom") });
       } else if (message.type === "zoom-call:error") {
@@ -89,6 +114,16 @@ export function CallPanel({ call, callPageUrl, title, onClose, openExternal }: C
           {phase.kind === "joined" ? "Выйти" : "Закрыть"}
         </Button>
       </header>
+      {mediaProblem !== null && phase.kind !== "failed" && (
+        <div className="flex items-start gap-2 border-b border-border px-4 py-2 text-sm">
+          <p role="status" className="min-w-0 flex-1">
+            {mediaProblem}
+          </p>
+          <Button size="sm" variant="ghost" onClick={() => setMediaProblem(null)}>
+            Скрыть
+          </Button>
+        </div>
+      )}
       {phase.kind === "failed" ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center">
           <p role="alert" className="max-w-md text-sm text-destructive">

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CallPanel } from "./call-panel.tsx";
+import { CallPanel, mediaProblemText } from "./call-panel.tsx";
 
 afterEach(cleanup);
 
@@ -85,5 +85,40 @@ describe("CallPanel", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("media problems", () => {
+  it("explains a refused screen capture and keeps the call open", () => {
+    const { say } = setup();
+    say({ type: "zoom-call:joined" });
+    say({ type: "zoom-call:media-error", kind: "screen", name: "NotSupportedError", message: "Not supported" });
+    expect(screen.getByRole("status").textContent).toBe(
+      "Демонстрация экрана недоступна: BB не даёт встроенным страницам захватывать экран (NotSupportedError). Откройте встречу в приложении Zoom.",
+    );
+    expect(screen.getByTitle("Звонок Zoom")).toBeTruthy();
+  });
+
+  it("can be dismissed", () => {
+    const { say } = setup();
+    say({ type: "zoom-call:media-error", kind: "camera", name: "NotAllowedError", message: "Permission denied" });
+    act(() => screen.getByRole("button", { name: "Скрыть" }).click());
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it.each([
+    ["camera", "NotAllowedError", "Камера недоступна (NotAllowedError). Проверьте доступ: Системные настройки → Конфиденциальность и безопасность → Камера → bb."],
+    ["microphone", "NotAllowedError", "Микрофон недоступен (NotAllowedError). Проверьте доступ: Системные настройки → Конфиденциальность и безопасность → Микрофон → bb."],
+    ["camera", "NotFoundError", "Камера недоступна (NotFoundError): устройство не найдено."],
+    ["camera", "NotReadableError", "Камера недоступна (NotReadableError): её занимает другое приложение."],
+    ["microphone", "AbortError", "Микрофон недоступен (AbortError)."],
+  ])("describes %s with %s", (kind, name, text) => {
+    expect(mediaProblemText(kind, name)).toBe(text);
+  });
+
+  it("ignores a report with an unknown kind", () => {
+    const { say } = setup();
+    say({ type: "zoom-call:media-error", kind: "telepathy", name: "X" });
+    expect(screen.queryByRole("status")).toBeNull();
   });
 });
