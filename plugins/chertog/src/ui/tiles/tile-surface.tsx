@@ -148,7 +148,10 @@ export function TileSurface(props: TileSurfaceProps) {
     <div
       ref={surface}
       data-chertog-surface={geometry?.mode ?? "unmeasured"}
+      // Focusable from code only: a gesture parks the keyboard here when it was inside a frame.
+      tabIndex={-1}
       style={{
+        outline: "none",
         position: "relative",
         width: "100%",
         height: "100%",
