@@ -43,6 +43,13 @@
    "own": true
   },
   {
+   "id": "makosh-zoom",
+   "name": "Makosh Zoom [Experimental]",
+   "description": "Zoom client: a calendar of your Zoom meetings, scheduling and instant meetings, and joining a call inside BB.",
+   "author": "Mesteriis",
+   "own": true
+  },
+  {
    "id": "makosh-remote-hub",
    "name": "Remote Hub [Experimental]",
    "description": "Experimental SSH/RDP manager with Proxmox VE guest discovery and consoles (strict TLS, Keychain secrets) through a Rust helper.",

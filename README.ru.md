@@ -40,6 +40,7 @@ node scripts/configure-subtree-remotes.mjs
 | [Makosh Sidebar [Experimental]](plugins/sidebar)<br>`makosh-sidebar` | Project tree with a configurable root, recent activity sorting, reversible hiding, and running threads visible in collapsed groups. | [Mesteriis](https://github.com/Mesteriis/bb-marketplace/tree/main/plugins/sidebar) |
 | [Makosh Taskboard [Experimental]](plugins/taskboard)<br>`makosh-taskboard` | Local task CRUD plus Jira Cloud and Server/Data Center boards in one focused List and Kanban view. | [Mesteriis](https://github.com/Mesteriis/bb-marketplace/tree/main/plugins/taskboard) |
 | [Makosh Telegram [Experimental]](plugins/telegram)<br>`makosh-telegram` | Sign in with a QR code, read chats, and send text in BB through TDLib on macOS. Agent requests require approval. | [Mesteriis](https://github.com/Mesteriis/bb-marketplace/tree/main/plugins/telegram) |
+| [Makosh Zoom [Experimental]](plugins/zoom)<br>`makosh-zoom` | Zoom client: a calendar of your Zoom meetings, scheduling and instant meetings, and joining a call inside BB. | [Mesteriis](https://github.com/Mesteriis/bb-marketplace/tree/main/plugins/zoom) |
 
 ### Независимые плагины
 

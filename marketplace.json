@@ -1312,6 +1312,26 @@
       }
     },
     {
+      "id": "makosh-zoom",
+      "displayName": "Makosh Zoom [Experimental]",
+      "description": "Zoom client: a calendar of your Zoom meetings, scheduling and instant meetings, and joining a call inside BB.",
+      "icon": {
+        "url": "./plugins/zoom/assets/icon.svg"
+      },
+      "author": {
+        "name": "Mesteriis",
+        "github": "Mesteriis",
+        "url": "https://github.com/Mesteriis"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/zoom",
+          "ref": "main"
+        }
+      }
+    },
+    {
       "id": "terminal-jobs",
       "displayName": "Terminal jobs",
       "description": "Runs durable terminal jobs and sends completion notices.",

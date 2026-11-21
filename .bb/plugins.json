@@ -280,6 +280,10 @@
       "source": "./plugins/telegram"
     },
     {
+      "name": "zoom",
+      "source": "./plugins/zoom"
+    },
+    {
       "name": "terminal-jobs",
       "source": "./plugins/terminal-jobs"
     },
