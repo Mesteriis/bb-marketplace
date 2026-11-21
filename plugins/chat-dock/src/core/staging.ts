@@ -20,11 +20,26 @@ export interface Staging {
   /** The user edited the preview: keep the source, change the text. */
   edit(text: string): void;
   clear(): void;
+  /** True while a transfer of the staged text to a page has no known outcome. */
+  transferring(): boolean;
+  /**
+   * Reserve the staged text for one transfer. False when another transfer is
+   * still unresolved: the caller must not send. One per loaded plugin, so a
+   * reopened panel or another tab's panel sees the same reservation.
+   */
+  beginTransfer(): boolean;
+  /** The transfer's outcome is known. `mayBeInDraft` drops the text that was sent. */
+  endTransfer(sent: string, mayBeInDraft: boolean): void;
 }
 
 export function createStaging(): Staging {
   const listeners = new Set<() => void>();
   let current: StagedContext | null = null;
+  let inFlight = false;
+
+  function notify(): void {
+    for (const listener of [...listeners]) listener();
+  }
 
   function set(next: StagedContext | null): void {
     current = next;
@@ -51,6 +66,19 @@ export function createStaging(): Staging {
     },
     clear() {
       if (current !== null) set(null);
+    },
+    transferring: () => inFlight,
+    beginTransfer() {
+      if (inFlight) return false;
+      inFlight = true;
+      notify();
+      return true;
+    },
+    endTransfer(sent, mayBeInDraft) {
+      inFlight = false;
+      // A text picked while the page was answering is a new one: keep it.
+      if (mayBeInDraft && current !== null && current.text === sent) current = null;
+      notify();
     },
   };
 }

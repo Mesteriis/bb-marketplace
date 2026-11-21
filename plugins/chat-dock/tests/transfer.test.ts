@@ -79,7 +79,9 @@ describe.each<EditorKind>(["textarea", "contenteditable"])("transfer into a %s e
     expect(session.getState()).toEqual({ kind: "unbound", refusal: "conversation-changed" });
     await session.confirm(TEXT);
 
-    expect(evaluations).toHaveLength(1);
+    // The bind, then the withdrawal of its permission; no write was sent.
+    expect(evaluations).toHaveLength(2);
+    expect(evaluations.filter((expression) => expression.includes("line one"))).toEqual([]);
     expect(fixture.draft(PATH_A)).toBe("draft A");
     expect(fixture.draft(PATH_B)).toBe("draft B");
     expect(copied).toEqual([]);
@@ -209,7 +211,7 @@ describe("choosing a conversation", () => {
     session.hostUrlChanged(URL_A + "#same-conversation");
     expect(session.getState()).toEqual({ kind: "binding" });
     session.hostUrlChanged(URL_B);
-    answer({ top: true, origin: "https://chatgpt.com", path: PATH_A });
+    answer({ top: true, origin: "https://chatgpt.com", path: PATH_A, tracked: true });
     await binding;
 
     expect(session.getState()).toEqual({ kind: "unbound", refusal: "conversation-changed" });
@@ -222,7 +224,7 @@ describe("an unknown result", () => {
     const page: PagePort = {
       evaluate(expression) {
         calls.push(expression);
-        if (calls.length === 1) return Promise.resolve({ top: true, origin: "https://chatgpt.com", path: PATH_A });
+        if (calls.length === 1) return Promise.resolve({ top: true, origin: "https://chatgpt.com", path: PATH_A, tracked: true });
         return new Promise(() => {});
       },
     };
@@ -239,7 +241,7 @@ describe("an unknown result", () => {
   });
 
   it("treats a malformed answer as unknown, not as success", async () => {
-    const answers: unknown[] = [{ top: true, origin: "https://chatgpt.com", path: PATH_A }, { status: "inserted" }];
+    const answers: unknown[] = [{ top: true, origin: "https://chatgpt.com", path: PATH_A, tracked: true }, { status: "inserted" }];
     const page: PagePort = { evaluate: async () => answers.shift() };
     const { session } = rig("textarea", {}, page);
 
@@ -259,7 +261,8 @@ describe("cancelling and copying", () => {
     await session.confirm(TEXT);
     await session.copy(TEXT);
 
-    expect(evaluations).toHaveLength(1);
+    expect(evaluations).toHaveLength(2);
+    expect(evaluations.filter((expression) => expression.includes("line one"))).toEqual([]);
     expect(copied).toEqual([]);
     expect(fixture.draft(PATH_A)).toBe("draft");
   });
@@ -294,7 +297,7 @@ describe("a session dropped while the page is answering", () => {
   it("still reports that the editor took the text", async () => {
     let answer: (value: unknown) => void = () => {};
     const answers: Array<Promise<unknown>> = [
-      Promise.resolve({ top: true, origin: "https://chatgpt.com", path: PATH_A }),
+      Promise.resolve({ top: true, origin: "https://chatgpt.com", path: PATH_A, tracked: true }),
       new Promise((resolve) => (answer = resolve)),
     ];
     const page: PagePort = { evaluate: () => answers.shift() ?? Promise.reject(new Error("extra call")) };
@@ -310,7 +313,7 @@ describe("a session dropped while the page is answering", () => {
 
   it("reports an unknown result when no answer comes", async () => {
     const answers: Array<Promise<unknown>> = [
-      Promise.resolve({ top: true, origin: "https://chatgpt.com", path: PATH_A }),
+      Promise.resolve({ top: true, origin: "https://chatgpt.com", path: PATH_A, tracked: true }),
       new Promise(() => {}),
     ];
     const page: PagePort = { evaluate: () => answers.shift() ?? Promise.reject(new Error("extra call")) };
@@ -321,5 +324,80 @@ describe("a session dropped while the page is answering", () => {
     session.dispose();
 
     expect(await writing).toBe("unknown");
+  });
+});
+
+describe("review findings", () => {
+  it("refuses when the page switches the conversation from its own focus handler", async () => {
+    const { fixture, session } = rig("contenteditable", { [PATH_A]: "draft A", [PATH_B]: "draft B" });
+    fixture.editor().tabIndex = 0;
+    fixture.editor().addEventListener("focus", () => fixture.go(PATH_B));
+
+    await session.bind(URL_A);
+    expect(await session.confirm(MARKER)).toBe("refused");
+
+    expect(session.getState()).toEqual({ kind: "unbound", refusal: "conversation-changed" });
+    expect(fixture.draft(PATH_A)).toBe("draft A");
+    expect(fixture.draft(PATH_B)).toBe("draft B");
+  });
+
+  it("refuses after the tab went to another conversation and came back", async () => {
+    const { fixture, session, beforeEvaluate } = rig("textarea", { [PATH_A]: "draft A", [PATH_B]: "draft B" });
+
+    await session.bind(URL_A);
+    beforeEvaluate.run = () => {
+      fixture.go(PATH_B);
+      fixture.go(PATH_A);
+    };
+    expect(await session.confirm(MARKER)).toBe("refused");
+
+    expect(session.getState()).toEqual({ kind: "unbound", refusal: "conversation-changed" });
+    expect(fixture.draft(PATH_A)).toBe("draft A");
+    expect(fixture.draft(PATH_B)).toBe("draft B");
+  });
+
+  it("withdraws the page's permission when the session is dropped", async () => {
+    const { fixture, session, evaluations } = rig("textarea", { [PATH_A]: "draft" });
+
+    await session.bind(URL_A);
+    session.dispose();
+    await Promise.resolve();
+
+    expect((globalThis as unknown as { __bbChatDock?: unknown }).__bbChatDock).toBeUndefined();
+    expect(evaluations).toHaveLength(2);
+    expect(fixture.draft(PATH_A)).toBe("draft");
+  });
+
+  it("refuses to choose a conversation on a page that cannot report navigations", async () => {
+    const { session } = rig("textarea", { [PATH_A]: "draft" });
+    delete (globalThis as unknown as { navigation?: unknown }).navigation;
+
+    await session.bind(URL_A);
+
+    expect(session.getState()).toEqual({ kind: "unbound", refusal: "navigation-untracked" });
+  });
+});
+
+describe("an editor that answers unclearly", () => {
+  it("is reported as unknown and gets no second attempt", async () => {
+    const { fixture, session } = rig("contenteditable", { [PATH_A]: "draft" });
+    const commands: string[] = [];
+    let pastes = 0;
+    fixture.editor().addEventListener("paste", () => (pastes += 1));
+    (document as unknown as { execCommand?: unknown }).execCommand = (command: string) => {
+      commands.push(command);
+      return false;
+    };
+
+    try {
+      await session.bind(URL_A);
+      expect(await session.confirm(MARKER)).toBe("unknown");
+    } finally {
+      delete (document as unknown as { execCommand?: unknown }).execCommand;
+    }
+
+    expect(session.getState().kind).toBe("unknown");
+    expect(commands).toEqual(["insertText"]);
+    expect(pastes).toBe(0);
   });
 });

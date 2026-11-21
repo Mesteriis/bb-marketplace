@@ -41,6 +41,10 @@ class FakeClipboardEvent extends Event {
 
 export function mountFixture(kind: EditorKind, drafts: Record<string, string> = {}): Fixture {
   const scope = globalThis as unknown as Record<string, unknown>;
+  // jsdom has no Navigation API; the fixture reports its own navigations the
+  // way a browser does, with `currententrychange`.
+  const navigation = new EventTarget();
+  scope.navigation = navigation;
   const hadTransfer = "DataTransfer" in scope;
   const hadClipboard = "ClipboardEvent" in scope;
   if (!hadTransfer) scope.DataTransfer = FakeDataTransfer;
@@ -83,6 +87,7 @@ export function mountFixture(kind: EditorKind, drafts: Record<string, string> = 
       stored.set(location.pathname, read());
       history.pushState(null, "", path);
       show(stored.get(path) ?? "");
+      navigation.dispatchEvent(new Event("currententrychange"));
     },
     draft(path) {
       return path === location.pathname ? read() : (stored.get(path) ?? "");
@@ -98,6 +103,7 @@ export function mountFixture(kind: EditorKind, drafts: Record<string, string> = 
     dispose() {
       form.remove();
       delete (globalThis as unknown as { __bbChatDock?: unknown }).__bbChatDock;
+      delete scope.navigation;
       if (!hadTransfer) delete scope.DataTransfer;
       if (!hadClipboard) delete scope.ClipboardEvent;
     },

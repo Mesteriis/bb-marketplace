@@ -1,24 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { CONSENT_KEY, createConsent, type ConsentStorage } from "../src/core/consent.ts";
+import { createConsent } from "../src/core/consent.ts";
 import { createStaging } from "../src/core/staging.ts";
 import { describeTarget, isChatGptUrl, targetFromUrl } from "../src/core/target.ts";
-
-function memoryStorage(): ConsentStorage & { data: Map<string, string>; fireExternal(): void; watchers(): number } {
-  const data = new Map<string, string>();
-  const watchers = new Set<() => void>();
-  return {
-    data,
-    get: (key) => data.get(key) ?? null,
-    set: (key, value) => void data.set(key, value),
-    remove: (key) => void data.delete(key),
-    onExternalChange(listener) {
-      watchers.add(listener);
-      return () => void watchers.delete(listener);
-    },
-    fireExternal: () => watchers.forEach((watcher) => watcher()),
-    watchers: () => watchers.size,
-  };
-}
 
 describe("conversation targets", () => {
   it("accepts a conversation and a project conversation", () => {
@@ -51,53 +34,28 @@ describe("conversation targets", () => {
 });
 
 describe("embedded-mode consent", () => {
-  it("is off until granted and off again after withdrawal", () => {
-    const storage = memoryStorage();
-    const consent = createConsent(storage);
+  it("is off until granted, off again after withdrawal, and tells subscribers once per change", () => {
+    const consent = createConsent();
+    let notified = 0;
+    const unsubscribe = consent.subscribe(() => (notified += 1));
 
     expect(consent.granted()).toBe(false);
     consent.grant();
+    consent.grant();
     expect(consent.granted()).toBe(true);
-    expect(storage.data.get(CONSENT_KEY)).toBe("granted");
     consent.withdraw();
     expect(consent.granted()).toBe(false);
-    expect(storage.data.has(CONSENT_KEY)).toBe(false);
-  });
-
-  it("follows another window while subscribed and stops watching after", () => {
-    const storage = memoryStorage();
-    const consent = createConsent(storage);
-    let notified = 0;
-    expect(storage.watchers()).toBe(0);
-    const unsubscribe = consent.subscribe(() => (notified += 1));
-    expect(storage.watchers()).toBe(1);
-
-    storage.data.set(CONSENT_KEY, "granted");
-    storage.fireExternal();
-    expect(consent.granted()).toBe(true);
-    expect(notified).toBe(1);
+    expect(notified).toBe(2);
 
     unsubscribe();
-    expect(storage.watchers()).toBe(0);
-    storage.fireExternal();
-    expect(notified).toBe(1);
+    consent.grant();
+    expect(notified).toBe(2);
   });
 
-  it("stays off when storage throws", () => {
-    const consent = createConsent({
-      get: () => {
-        throw new Error("blocked");
-      },
-      set: () => {
-        throw new Error("blocked");
-      },
-      remove: () => {},
-      onExternalChange: () => () => {},
-    });
+  it("starts off in every new instance: nothing is stored", () => {
+    createConsent().grant();
 
-    consent.grant();
-
-    expect(consent.granted()).toBe(false);
+    expect(createConsent().granted()).toBe(false);
   });
 });
 
@@ -120,5 +78,25 @@ describe("staged context", () => {
     staging.edit("typed");
 
     expect(staging.get()).toEqual({ text: "typed", source: { kind: "manual" } });
+  });
+
+  it("reserves one transfer at a time and drops only the text that was sent", () => {
+    const staging = createStaging();
+    staging.stage({ text: "first", source: { kind: "manual" } });
+
+    expect(staging.beginTransfer()).toBe(true);
+    expect(staging.beginTransfer()).toBe(false);
+    expect(staging.transferring()).toBe(true);
+    staging.stage({ text: "picked meanwhile", source: { kind: "manual" } });
+    staging.endTransfer("first", true);
+
+    expect(staging.transferring()).toBe(false);
+    expect(staging.get()?.text).toBe("picked meanwhile");
+    expect(staging.beginTransfer()).toBe(true);
+    staging.endTransfer("picked meanwhile", false);
+    expect(staging.get()?.text).toBe("picked meanwhile");
+    expect(staging.beginTransfer()).toBe(true);
+    staging.endTransfer("picked meanwhile", true);
+    expect(staging.get()).toBeNull();
   });
 });

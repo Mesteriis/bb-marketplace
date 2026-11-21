@@ -12,7 +12,6 @@ import {
   type PluginNavPanelProps,
 } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
-import { createLocalConsentStorage } from "./src/adapters/bb/consent-storage.ts";
 import { createConsent } from "./src/core/consent.ts";
 import { createStaging } from "./src/core/staging.ts";
 import { CHATGPT_ORIGIN } from "./src/core/target.ts";
@@ -25,10 +24,11 @@ declare const __BB_PLUGIN_ID__: string | undefined;
 
 // One per loaded copy of the plugin, in memory only. BB may keep this module
 // across a disable or a reload, so the `lifetime` content script below clears
-// the staged text when the plugin's UI is taken down.
+// the staged text and turns the embedded mode off when the plugin's UI is
+// taken down.
 const services: DockServices = {
   staging: createStaging(),
-  consent: createConsent(createLocalConsentStorage()),
+  consent: createConsent(),
   copyText: (text) => experimental_copyToClipboard({ text }),
   notify(kind, message) {
     if (kind === "error") toast.error(message);
@@ -74,7 +74,10 @@ export default definePluginApp((app) => {
   // disable, stop, removal, reload and window teardown.
   app.contentScripts.register({
     id: "lifetime",
-    mount: () => () => services.staging.clear(),
+    mount: () => () => {
+      services.staging.clear();
+      services.consent.withdraw();
+    },
   });
 
   app.slots.navPanel({

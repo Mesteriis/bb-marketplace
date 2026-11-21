@@ -7,6 +7,10 @@ export function useStaged(staging: Staging): StagedContext | null {
   return useSyncExternalStore(staging.subscribe, staging.get, staging.get);
 }
 
+export function useTransferring(staging: Staging): boolean {
+  return useSyncExternalStore(staging.subscribe, staging.transferring, staging.transferring);
+}
+
 export function useConsent(consent: Consent): boolean {
   return useSyncExternalStore(consent.subscribe, consent.granted, consent.granted);
 }

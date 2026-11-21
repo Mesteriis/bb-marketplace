@@ -7,7 +7,7 @@ ChatGPT. You always send the message yourself.
   it stages the exact text you highlighted.
 - A **ChatGPT** page in the sidebar with the staged text, its source, a field
   to edit it, and **Скопировать контекст**. This manual mode is the default.
-- An opt-in embedded mode. With it on, Browser tabs on `https://chatgpt.com`
+- An opt-in embedded mode, kept only until the plugin reloads or BB restarts. With it on, Browser tabs on `https://chatgpt.com`
   get a toolbar control that shows the text and the open conversation and
   appends the text to that conversation's draft.
 

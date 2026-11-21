@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
-import { createConsent, type ConsentStorage } from "../src/core/consent.ts";
+import { createConsent } from "../src/core/consent.ts";
 import { createStaging } from "../src/core/staging.ts";
 import type { PagePort } from "../src/core/transfer.ts";
 import { DockPage } from "../src/ui/dock-page.tsx";
@@ -20,22 +20,12 @@ afterEach(() => {
   fixture = null;
 });
 
-function memoryStorage(): ConsentStorage {
-  const data = new Map<string, string>();
-  return {
-    get: (key) => data.get(key) ?? null,
-    set: (key, value) => void data.set(key, value),
-    remove: (key) => void data.delete(key),
-    onExternalChange: () => () => {},
-  };
-}
-
 function makeServices(): DockServices & { copied: string[]; notes: string[] } {
   const copied: string[] = [];
   const notes: string[] = [];
   return {
     staging: createStaging(),
-    consent: createConsent(memoryStorage()),
+    consent: createConsent(),
     async copyText(text) {
       copied.push(text);
       return true;
@@ -177,7 +167,7 @@ describe("the Browser toolbar control", () => {
   it("tells the user the result when the toolbar is gone before the page answers", async () => {
     let answer: (value: unknown) => void = () => {};
     const answers: Array<Promise<unknown>> = [
-      Promise.resolve({ top: true, origin: "https://chatgpt.com", path: PATH_A }),
+      Promise.resolve({ top: true, origin: "https://chatgpt.com", path: PATH_A, tracked: true }),
       new Promise((resolve) => (answer = resolve)),
     ];
     const slowPage: PagePort = { evaluate: () => answers.shift() ?? Promise.reject(new Error("extra call")) };
@@ -300,7 +290,7 @@ describe("the Browser toolbar control", () => {
   it("clears the staged text and tells the user when the panel is closed during the write", async () => {
     let answer: (value: unknown) => void = () => {};
     const answers: Array<Promise<unknown>> = [
-      Promise.resolve({ top: true, origin: "https://chatgpt.com", path: PATH_A }),
+      Promise.resolve({ top: true, origin: "https://chatgpt.com", path: PATH_A, tracked: true }),
       new Promise((resolve) => (answer = resolve)),
     ];
     const slowPage: PagePort = { evaluate: () => answers.shift() ?? Promise.reject(new Error("extra call")) };
@@ -319,5 +309,42 @@ describe("the Browser toolbar control", () => {
     expect(services.staging.get()).toBeNull();
     expect(services.notes).toEqual(["Текст передан в поле ввода ChatGPT. Проверьте черновик."]);
     expect(services.copied).toEqual([]);
+  });
+
+  it("does not let a reopened panel send the same text while the first write is unanswered", async () => {
+    fixture = mountFixture("textarea", { [PATH_A]: "draft" });
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => (release = resolve));
+    let writes = 0;
+    const page: PagePort = {
+      async evaluate(expression) {
+        const result = evaluateInDocument(expression);
+        if (expression.includes(MARKER) && (writes += 1) === 1) await held;
+        return result;
+      },
+    };
+    const services = makeServices();
+    services.consent.grant();
+    services.staging.stage({ text: MARKER, source: { kind: "manual" } });
+    render(toolbar(services, URL_A, page));
+
+    fireEvent.click(screen.getByRole("button", { name: "Вставить в ChatGPT…" }));
+    await settle();
+    fireEvent.click(screen.getByRole("button", { name: "Вставить в черновик" }));
+    fireEvent.click(screen.getByRole("button", { name: "Отмена" }));
+    fireEvent.click(screen.getByRole("button", { name: "Вставить в ChatGPT…" }));
+    await settle();
+
+    const again = screen.getByRole("button", { name: "Вставить в черновик" }) as HTMLButtonElement;
+    expect(again.disabled).toBe(true);
+    expect(screen.getByRole("alert").textContent).toContain("Предыдущая передача ещё не завершена");
+    fireEvent.click(again);
+    await settle();
+    release();
+    await settle();
+
+    expect(fixture.draft(PATH_A)).toBe("draft" + MARKER);
+    expect(writes).toBe(1);
+    expect(services.staging.get()).toBeNull();
   });
 });

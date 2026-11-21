@@ -3,7 +3,14 @@
 // changes, and writes at most once. Every step that starts a write or a copy
 // is a method the UI calls from a user's own action; nothing here runs on a
 // timer or retries.
-import { bindExpression, parseBindReport, parseWriteReport, writeExpression, type WriteStatus } from "./page-script.ts";
+import {
+  bindExpression,
+  parseBindReport,
+  parseWriteReport,
+  revokeExpression,
+  writeExpression,
+  type WriteStatus,
+} from "./page-script.ts";
 import { sameTarget, targetFromUrl, type ConversationTarget, type TargetRefusal } from "./target.ts";
 
 /** Script access to the tab's top-level document. */
@@ -24,9 +31,11 @@ export type Refusal =
   | "page-unavailable"
   /** The document does not match the address the host reports. */
   | "address-mismatch"
+  /** The page cannot report its own navigations, so a changed conversation could go unseen. */
+  | "navigation-untracked"
   /** The conversation changed after it was chosen. */
   | "conversation-changed"
-  | Exclude<WriteStatus, "handed-off">
+  | Exclude<WriteStatus, "handed-off" | "unconfirmed">
   | "empty-text"
   | "text-too-long";
 
@@ -114,8 +123,17 @@ export function createTransfer(options: TransferOptions): TransferSession {
     for (const listener of [...listeners]) listener();
   }
 
-  function refuse(refusal: Refusal): void {
+  // Best effort: the page drops the permission it holds. A write already on
+  // its way cannot be recalled; its outcome is still reported by `confirm`.
+  function revoke(): void {
+    const held = nonce;
     nonce = null;
+    if (held === null || options.page === null) return;
+    options.page.evaluate(revokeExpression({ nonce: held })).catch(() => {});
+  }
+
+  function refuse(refusal: Refusal): void {
+    revoke();
     pending = null;
     epoch += 1;
     set({ kind: "unbound", refusal });
@@ -140,7 +158,7 @@ export function createTransfer(options: TransferOptions): TransferSession {
 
       const attempt = (epoch += 1);
       const candidate = options.newNonce();
-      nonce = null;
+      revoke();
       pending = wanted.target;
       set({ kind: "binding" });
       let answer: unknown;
@@ -153,6 +171,7 @@ export function createTransfer(options: TransferOptions): TransferSession {
       const report = answer === TIMED_OUT ? null : parseBindReport(answer);
       if (report === null) return refuse("page-unavailable");
       if (!report.top) return refuse("not-top");
+      if (!report.tracked) return refuse("navigation-untracked");
       if (report.origin !== wanted.target.origin || report.path !== wanted.target.path) {
         return refuse("address-mismatch");
       }
@@ -200,7 +219,7 @@ export function createTransfer(options: TransferOptions): TransferSession {
       // From here the outcome is reported even to a dropped session: the page
       // may have taken the text whether or not anyone is still listening.
       const report = answer === TIMED_OUT ? null : parseWriteReport(answer);
-      if (report === null) {
+      if (report === null || report.status === "unconfirmed") {
         set({ kind: "unknown", target });
         return "unknown";
       }
@@ -219,7 +238,7 @@ export function createTransfer(options: TransferOptions): TransferSession {
 
     dispose() {
       disposed = true;
-      nonce = null;
+      revoke();
       pending = null;
       epoch += 1;
       listeners.clear();
@@ -233,6 +252,7 @@ const REFUSAL_TEXT: Record<Refusal, string> = {
   "no-conversation": "Во вкладке нет существующей беседы: это новый чат, вход или другая страница ChatGPT.",
   "page-unavailable": "Этот клиент BB не даёт доступа к странице вкладки. Автовставка работает только в BB Desktop.",
   "address-mismatch": "Страница во вкладке не совпадает с адресом, который показывает BB.",
+  "navigation-untracked": "Страница не сообщает о своих переходах, поэтому смену беседы нельзя заметить.",
   "conversation-changed": "Беседа во вкладке сменилась после выбора. Текст никуда не вставлен.",
   "binding-lost": "Страница была перезагружена или заменена после выбора беседы. Текст никуда не вставлен.",
   "not-top": "Редактор находится не в основном документе вкладки. Текст никуда не вставлен.",

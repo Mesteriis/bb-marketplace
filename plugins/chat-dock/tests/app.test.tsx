@@ -5,7 +5,6 @@
 import { fireEvent } from "@testing-library/react";
 import { loadPluginApp, mountPluginContentScripts, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CONSENT_KEY } from "../src/core/consent.ts";
 
 // jsdom cannot produce a trusted event, and `isTrusted` cannot be forged, so
 // this file alone treats dispatched clicks as the user's. The guard itself is
@@ -19,7 +18,6 @@ const MARKER = "SYNTHETIC-MARKER-app-3e1f";
 const URL_A = "https://chatgpt.com/c/aaaaaaaa-0000-4000-8000-00000000000a";
 
 afterEach(() => {
-  localStorage.clear();
   document.body.innerHTML = "";
 });
 
@@ -53,9 +51,9 @@ describe("the BB entry", () => {
     second.lifecycle.unmount();
   });
 
-  it("scripts the Browser page only in the isolated world", async () => {
-    localStorage.setItem(CONSENT_KEY, "granted");
+  it("scripts the Browser page only in the isolated world, and only after the mode is turned on", async () => {
     const app = await loadPluginApp(() => import("../app.tsx"));
+    const scripts = await mountPluginContentScripts(app, { pluginId: "chat-dock", generation: 2 });
     const worlds: Array<string | undefined> = [];
     const page = {
       evaluate: async (_expression: string, options?: { world?: string }) => {
@@ -64,18 +62,26 @@ describe("the BB entry", () => {
       },
       onMessage: () => () => {},
     };
-    const slot = renderSlot(app.browserToolbarActions[0]!, {
-      threadId: "thr_1",
-      tabId: "tab_1",
-      url: URL_A,
-      isCompactViewport: false,
-      experimental_page: page,
-    });
+    const props = { threadId: "thr_1", tabId: "tab_1", url: URL_A, isCompactViewport: false, experimental_page: page };
 
+    const before = renderSlot(app.browserToolbarActions[0]!, props);
+    expect(before.queryByRole("button", { name: "Вставить в ChatGPT…" })).toBeNull();
+    before.lifecycle.unmount();
+
+    const panel = renderSlot(app.navPanels[0]!, { subPath: "" });
+    fireEvent.click(panel.getByRole("button", { name: "Я понимаю риск: включить встроенный режим" }));
+    panel.lifecycle.unmount();
+
+    const slot = renderSlot(app.browserToolbarActions[0]!, props);
     fireEvent.click(slot.getByRole("button", { name: "Вставить в ChatGPT…" }));
     await slot.findByRole("dialog");
-
     expect(worlds).toEqual(["isolated"]);
     slot.lifecycle.unmount();
+
+    // Taking the plugin's UI down turns the mode off again.
+    await scripts.lifecycle.dispose();
+    const after = renderSlot(app.browserToolbarActions[0]!, props);
+    expect(after.queryByRole("button", { name: "Вставить в ChatGPT…" })).toBeNull();
+    after.lifecycle.unmount();
   });
 });

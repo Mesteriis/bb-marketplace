@@ -5,7 +5,7 @@
 import { useEffect, useId, useMemo, useRef, useState, type MouseEvent } from "react";
 import { createPortal } from "react-dom";
 import { describeTarget, isChatGptUrl } from "../core/target.ts";
-import { createTransfer, describeRefusal, type PagePort, type TransferSession } from "../core/transfer.ts";
+import { createTransfer, describeRefusal, type PagePort, type TransferSession, type WriteOutcome } from "../core/transfer.ts";
 import { ContextPreview } from "./context-preview.tsx";
 import {
   BUTTON_GHOST,
@@ -15,7 +15,7 @@ import {
   type DockServices,
   type IsUserAction,
 } from "./services.ts";
-import { useConsent, useStaged, useTransferState } from "./use-store.ts";
+import { useConsent, useStaged, useTransferState, useTransferring } from "./use-store.ts";
 
 interface ToolbarActionProps {
   services: DockServices;
@@ -40,6 +40,7 @@ export function ToolbarAction({
   const { staging, consent, copyText, notify } = services;
   const embedded = useConsent(consent);
   const staged = useStaged(staging);
+  const transferring = useTransferring(staging);
   const [session, setSession] = useState<TransferSession | null>(null);
   const state = useTransferState(session);
   const titleId = useId();
@@ -109,11 +110,17 @@ export function ToolbarAction({
 
   async function insert(event: MouseEvent) {
     if (!isUserAction(event) || session === null || staged === null) return;
+    // One transfer at a time for the whole plugin: a panel reopened while the
+    // page is still answering cannot send the same text again.
+    if (!staging.beginTransfer()) return;
     const used = session;
-    const outcome = await used.confirm(staged.text);
-    // The staged text is dropped once it may be in a draft, so it cannot be
-    // inserted a second time by reopening the panel.
-    if (outcome === "handed-off" || outcome === "unknown") staging.clear();
+    const sent = staged.text;
+    let outcome: WriteOutcome = "unknown";
+    try {
+      outcome = await used.confirm(sent);
+    } finally {
+      staging.endTransfer(sent, outcome === "handed-off" || outcome === "unknown");
+    }
     if (mountedRef.current && sessionRef.current === used) return;
     // The panel was closed, or the tab's toolbar went away, while the page
     // was answering: say what happened.
@@ -186,11 +193,17 @@ export function ToolbarAction({
                   : "Автовставка недоступна. " + describeRefusal(state.refusal) + " Можно скопировать текст и вставить его вручную.")}
             </p>
 
-            {!finished && <ContextPreview staging={staging} disabled={busy} />}
+            {transferring && state.kind !== "writing" && (
+              <p role="alert" className="text-xs leading-relaxed">
+                Предыдущая передача ещё не завершена. Дождитесь её результата: до этого вставка недоступна.
+              </p>
+            )}
+
+            {!finished && <ContextPreview staging={staging} disabled={busy || transferring} />}
 
             <div className="flex flex-wrap items-center gap-2">
               {state.kind === "ready" && (
-                <button type="button" className={BUTTON_PRIMARY} disabled={!hasText} onClick={insert}>
+                <button type="button" className={BUTTON_PRIMARY} disabled={!hasText || transferring} onClick={insert}>
                   Вставить в черновик
                 </button>
               )}
