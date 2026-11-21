@@ -1,7 +1,8 @@
 // The provider port: what Chertog requires from whoever owns a kind of panel
 // (BB threads, Telegram, Zoom, Remote Hub, …). The names are Chertog's own
 // vocabulary, not methods of the BB SDK; an adapter maps them to a provider.
-import type { PanelRef } from "./ref.ts";
+import type { z } from "zod";
+import type { PanelParam, PanelRef } from "./ref.ts";
 
 /**
  * How far a provider supports one capability. `partial` works with a stated
@@ -64,6 +65,12 @@ export interface PanelProvider {
   readonly capabilities: PanelCapabilities;
   /** Whether one session may have several views open at once. */
   readonly multipleViews: boolean;
+  /**
+   * The exact parameters a reference of this provider may carry. It must
+   * refuse unknown parameters, so nothing but the declared identifiers is
+   * saved with a layout or reaches `open`. Parameters may be optional.
+   */
+  readonly paramsSchema: z.ZodType<Readonly<Record<string, PanelParam | undefined>>>;
 
   /**
    * Opens a view for the instance. Called again for the same instance only

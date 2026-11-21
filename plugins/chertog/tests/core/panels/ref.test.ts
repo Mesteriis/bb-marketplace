@@ -101,6 +101,31 @@ describe("panelRefSchema", () => {
     expect(panelRefSchema.safeParse({ provider: "telegram", params: { chatId: "x".repeat(512) } }).success).toBe(true);
   });
 
+  it.each([
+    ["a sentence", "see you at five"],
+    ["a tab-separated value", "a\tb"],
+    ["a non-breaking space", "a\u00a0b"],
+    ["a leading space", " thr_a"],
+  ])("rejects %s as a value, since identifiers have no whitespace", (_name, value) => {
+    expect(panelRefSchema.safeParse({ provider: "bb-thread", params: { threadId: "thr_a", note: value } }).success).toBe(
+      false,
+    );
+  });
+
+  it("accepts a path whose spaces are percent-encoded", () => {
+    expect(panelRefSchema.safeParse({ provider: "markdown-editor", params: { path: "docs/My%20Notes.md" } }).success).toBe(
+      true,
+    );
+  });
+
+  it("rejects more parameters than a reference needs", () => {
+    const names = ["a", "b", "c", "d", "e", "f", "g", "h", "i"];
+    const nine = Object.fromEntries(names.map((name) => [name, 1]));
+    const eight = Object.fromEntries(names.slice(0, 8).map((name) => [name, 1]));
+    expect(panelRefSchema.safeParse({ provider: "bb-thread", params: nine }).success).toBe(false);
+    expect(panelRefSchema.safeParse({ provider: "bb-thread", params: eight }).success).toBe(true);
+  });
+
   it("rejects a multi-line value", () => {
     expect(panelRefSchema.safeParse({ provider: "telegram", params: { chatId: "a\nb" } }).success).toBe(false);
   });

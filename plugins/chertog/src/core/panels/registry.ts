@@ -48,7 +48,7 @@ export type PanelOpenResult =
 
 export type PanelRetryResult =
   | { readonly ok: true; readonly instance: PanelInstance; readonly settled: Promise<PanelInstance | null> }
-  | { readonly ok: false; readonly reason: "not-open" | "busy" | "already-live" | "provider-missing" };
+  | { readonly ok: false; readonly reason: "not-open" | "busy" | "already-live" | "provider-missing" | "invalid-ref" };
 
 export interface PanelCloseOptions {
   /** The user has seen the warning and still wants to close. */
@@ -120,13 +120,19 @@ export class PanelRegistry {
    * Opens a reference for placing in the layout. The same reference yields
    * the same instance and no second provider call, unless `newView` is set
    * and the provider declares several views. A hidden instance is reused and
-   * counts as placed again.
+   * counts as placed again. A reference with parameters its provider does
+   * not declare is refused; while the provider is missing only the general
+   * rules of `panelRefSchema` can be applied, and such a kept reference is
+   * refused once the provider appears.
    */
   open(ref: PanelRef, options: PanelOpenOptions = {}): PanelOpenResult {
     const parsed = panelRefSchema.safeParse(ref);
     if (!parsed.success) return { ok: false, reason: "invalid-ref" };
     const key = panelRefKey(parsed.data);
     const provider = this.providers.get(parsed.data.provider);
+    if (provider !== undefined && !provider.paramsSchema.safeParse(parsed.data.params).success) {
+      return { ok: false, reason: "invalid-ref" };
+    }
 
     if (options.newView === true) {
       if (provider === undefined || !provider.multipleViews) return { ok: false, reason: "multiple-views-unsupported" };
@@ -176,6 +182,7 @@ export class PanelRegistry {
     if (entry.state === "live") return { ok: false, reason: "already-live" };
     const provider = this.providers.get(entry.ref.provider);
     if (provider === undefined) return { ok: false, reason: "provider-missing" };
+    if (!provider.paramsSchema.safeParse(entry.ref.params).success) return { ok: false, reason: "invalid-ref" };
     this.attemptOpen(entry, provider);
     this.notify();
     return { ok: true, instance: this.snapshot(entry), settled: entry.settled };
@@ -258,30 +265,42 @@ export class PanelRegistry {
     if (entry.state !== "live" || entry.view === null) return { status: "not-live" };
     if (entry.endingSession) return { status: "busy" };
     entry.endingSession = true;
+    const provider = entry.view;
     let outcome: "ended" | "unknown";
     try {
-      outcome = (await entry.view.endSession(instanceId)) === "ended" ? "ended" : "unknown";
+      outcome = (await provider.endSession(instanceId)) === "ended" ? "ended" : "unknown";
     } catch {
       outcome = "unknown";
     }
     entry.endingSession = false;
-    if (this.entries.get(instanceId) !== entry) return { status: outcome };
-    if (outcome === "unknown") {
+    const stillOpen = this.entries.get(instanceId) === entry;
+    if (outcome === "ended") {
+      // The session is over for its other views even if this one was closed
+      // while the provider was answering.
+      if (stillOpen) entry.unknownOutcome = null;
+      this.markSessionEnded(entry.key, provider);
+      this.notify();
+    } else if (stillOpen) {
       entry.unknownOutcome = "end-session";
-    } else {
-      entry.unknownOutcome = null;
-      this.markSessionEnded(entry);
+      this.notify();
     }
-    this.notify();
     return { status: outcome };
   }
 
-  /** The provider tells that a live panel stopped being live. False if the panel is not live. */
+  /**
+   * The provider tells that a live panel stopped being live. False if the
+   * panel is not live. `session-ended` is about the session, so it ends
+   * every view of it; `access-denied` and `lost` are about this view only.
+   */
   report(instanceId: string, state: "session-ended" | "access-denied" | "lost"): boolean {
     const entry = this.entries.get(instanceId);
     if (entry === undefined || entry.state !== "live") return false;
-    entry.state = state;
-    entry.addressee = null;
+    if (state === "session-ended") {
+      this.markSessionEnded(entry.key, entry.view);
+    } else {
+      entry.state = state;
+      entry.addressee = null;
+    }
     this.notify();
     return true;
   }
@@ -352,8 +371,10 @@ export class PanelRegistry {
     if (outcome.status === "live") {
       entry.state = "live";
       entry.addressee = outcome.addressee;
-    } else if (outcome.status === "session-ended" || outcome.status === "access-denied") {
-      entry.state = outcome.status;
+    } else if (outcome.status === "session-ended") {
+      this.markSessionEnded(entry.key, provider);
+    } else if (outcome.status === "access-denied") {
+      entry.state = "access-denied";
     } else {
       entry.state = "lost";
       entry.unknownOutcome = outcome.status === "lost" ? null : "open";
@@ -386,9 +407,9 @@ export class PanelRegistry {
    * acted in: no view of an ended session stays live or keeps an addressee.
    * A view still loading is ended too, and its late answer is ignored.
    */
-  private markSessionEnded(ended: Entry): void {
+  private markSessionEnded(key: string, provider: PanelProvider | null): void {
     for (const entry of this.entries.values()) {
-      if (entry.key !== ended.key || entry.view !== ended.view || !holdsSession(entry)) continue;
+      if (entry.key !== key || entry.view !== provider || !holdsSession(entry)) continue;
       entry.state = "session-ended";
       entry.addressee = null;
       entry.attempt += 1;

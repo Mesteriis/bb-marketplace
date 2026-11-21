@@ -17,6 +17,7 @@ export interface PanelRef {
 
 const MAX_NAME_LENGTH = 64;
 const MAX_VALUE_LENGTH = 512;
+const MAX_PARAMS = 8;
 
 const PROVIDER_TYPE = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 
@@ -49,7 +50,11 @@ const SECRET_LINK_PARAM = /^(?:tk|sig|signature|key|auth|code)$/i;
 
 const LINK_USER_INFO = /^[a-z][a-z0-9+.-]*:\/\/[^/?#]*@/i;
 const LINK_PARAM = /[?&#;]([^=&#;]*)=/g;
-const CONTROL_CHARACTER = /[\u0000-\u001f\u007f]/;
+/**
+ * An identifier, a path or a link has no whitespace; prose does. A path with
+ * spaces is stored percent-encoded.
+ */
+const WHITESPACE_OR_CONTROL = /[\s\u0000-\u001f\u007f]/;
 
 function hasSecretInLink(value: string): boolean {
   if (LINK_USER_INFO.test(value)) return true;
@@ -70,16 +75,22 @@ const paramNameSchema = z
 const paramTextSchema = z
   .string()
   .max(MAX_VALUE_LENGTH)
-  .refine((value) => !CONTROL_CHARACTER.test(value), "A panel reference value must be a single line")
+  .refine((value) => !WHITESPACE_OR_CONTROL.test(value), "A panel reference value must be an identifier without whitespace")
   .refine((value) => !hasSecretInLink(value), "A panel reference must not carry a link with a secret");
 
 /**
  * Validates a panel reference read from storage or built by a caller.
  * Unknown top-level fields are refused, so a live handle cannot ride along.
+ * This schema does not know which parameters a provider uses: it bounds
+ * their number, names and shape. The provider's own `paramsSchema` refuses
+ * every parameter the provider does not declare; the registry applies it
+ * before it hands a reference to the provider.
  */
 export const panelRefSchema: z.ZodType<PanelRef> = z.strictObject({
   provider: z.string().max(MAX_NAME_LENGTH).regex(PROVIDER_TYPE),
-  params: z.record(paramNameSchema, z.union([paramTextSchema, z.number(), z.boolean()])),
+  params: z
+    .record(paramNameSchema, z.union([paramTextSchema, z.number(), z.boolean()]))
+    .refine((params) => Object.keys(params).length <= MAX_PARAMS, "A panel reference has too many parameters"),
 });
 
 /**

@@ -1,5 +1,6 @@
 // Test doubles for the panel registry: a provider that counts every call the
 // registry makes, a fixed clock and a sequential id generator.
+import { z } from "zod";
 import type {
   Clock,
   IdGenerator,
@@ -7,6 +8,7 @@ import type {
   PanelEndSessionOutcome,
   PanelOpenOutcome,
   PanelOpenRequest,
+  PanelParam,
   PanelProvider,
   PanelRef,
 } from "../../../src/core/panels/index.ts";
@@ -50,7 +52,18 @@ export class FakeProvider implements PanelProvider {
   releaseResult: () => void | Promise<void> = () => undefined;
   endSessionResult: () => Promise<PanelEndSessionOutcome> = async () => "ended";
 
-  constructor(readonly type: string) {}
+  /**
+   * `paramNames` are the only parameters this provider's references may
+   * carry; each is an optional string.
+   */
+  readonly paramsSchema: z.ZodType<Readonly<Record<string, PanelParam | undefined>>>;
+
+  constructor(
+    readonly type: string,
+    paramNames: readonly string[] = ["threadId", "meeting"],
+  ) {
+    this.paramsSchema = z.strictObject(Object.fromEntries(paramNames.map((name) => [name, z.string().optional()])));
+  }
 
   open(request: PanelOpenRequest): Promise<PanelOpenOutcome> {
     this.opens.push(request.instanceId);
