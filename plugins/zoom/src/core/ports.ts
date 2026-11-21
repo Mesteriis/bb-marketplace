@@ -5,10 +5,17 @@ export interface Clock {
   now(): number;
 }
 
-/** The owner's Zoom app (General app, user-managed). Null until both are set. */
+/** The owner's Zoom app (General app, user-managed). Null until the ID and secret are set. */
 export interface AppCredentials {
+  /** Signs the Meeting SDK JWT together with the secret. */
   readonly clientId: string;
   readonly clientSecret: string;
+  /**
+   * The app's Public client ID ("Use public client OAuth"). When set, sign-in
+   * runs as a PKCE public client: Zoom allows a loopback redirect
+   * (http://127.0.0.1) only for those. Null signs in with the ID and secret.
+   */
+  readonly publicClientId: string | null;
 }
 
 export interface AppCredentialsSource {

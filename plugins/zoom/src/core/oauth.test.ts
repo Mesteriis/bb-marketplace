@@ -17,7 +17,7 @@ const NOW = 1_700_000_000_000;
 const VERIFIER = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
 const CHALLENGE = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
 
-function setup(options: { replies?: Reply[]; tokens?: MemoryTokenStore; configured?: boolean } = {}) {
+function setup(options: { replies?: Reply[]; tokens?: MemoryTokenStore; configured?: boolean; publicClientId?: string } = {}) {
   const http = scriptedFetch(...(options.replies ?? []));
   const clock = new FakeClock(NOW);
   const tokens = options.tokens ?? new MemoryTokenStore();
@@ -28,7 +28,9 @@ function setup(options: { replies?: Reply[]; tokens?: MemoryTokenStore; configur
     pending,
     fetch: http.fetch,
     random: fixedRandom("state-1", VERIFIER),
-    credentials: credentials(options.configured === false ? null : { clientId: "cid", clientSecret: "secret" }),
+    credentials: credentials(
+      options.configured === false ? null : { clientId: "cid", clientSecret: "secret", publicClientId: options.publicClientId ?? null },
+    ),
   });
   return { oauth, http, clock, tokens, pending };
 }
@@ -214,5 +216,49 @@ describe("disconnect", () => {
     const { oauth } = setup({ tokens, replies: [new Error("offline")] });
     await oauth.disconnect();
     expect(tokens.tokens).toBeNull();
+  });
+});
+
+describe("public client (PKCE without a secret)", () => {
+  const PUBLIC = { publicClientId: "pub" };
+  const FORM_ONLY = { "content-type": "application/x-www-form-urlencoded" };
+
+  it("asks for consent with the public client ID", async () => {
+    const { oauth } = setup(PUBLIC);
+    const { authorizeUrl } = await oauth.beginLogin(REDIRECT);
+    expect(new URL(authorizeUrl).searchParams.get("client_id")).toBe("pub");
+    expect(new URL(authorizeUrl).searchParams.get("code_challenge")).toBe(CHALLENGE);
+  });
+
+  it("exchanges the code with client_id in the body and no Authorization header", async () => {
+    const { oauth, http } = setup({ ...PUBLIC, replies: [tokenReply("access-1", "refresh-1")] });
+    await oauth.beginLogin(REDIRECT);
+    await oauth.completeLogin({ code: "the-code", state: "state-1" });
+    expect(http.calls[0]!.request).toEqual({
+      method: "POST",
+      headers: FORM_ONLY,
+      body:
+        "grant_type=authorization_code&code=the-code" +
+        "&redirect_uri=http%3A%2F%2F127.0.0.1%3A38886%2Fapi%2Fv1%2Fplugins%2Fmakosh-zoom%2Fhttp%2Foauth%2Fcallback" +
+        `&code_verifier=${VERIFIER}&client_id=pub`,
+    });
+  });
+
+  it("refreshes with client_id in the body and no Authorization header", async () => {
+    const tokens = new MemoryTokenStore({ accessToken: "access-old", refreshToken: "refresh-old", expiresAt: NOW });
+    const { oauth, http } = setup({ ...PUBLIC, tokens, replies: [tokenReply("access-new", "refresh-new")] });
+    expect(await oauth.accessToken()).toBe("access-new");
+    expect(http.calls[0]!.request).toEqual({
+      method: "POST",
+      headers: FORM_ONLY,
+      body: "grant_type=refresh_token&refresh_token=refresh-old&client_id=pub",
+    });
+  });
+
+  it("revokes with client_id in the body and no Authorization header", async () => {
+    const tokens = new MemoryTokenStore({ accessToken: "access-old", refreshToken: "r", expiresAt: NOW + 1 });
+    const { oauth, http } = setup({ ...PUBLIC, tokens, replies: [{ status: 200, body: { status: "success" } }] });
+    await oauth.disconnect();
+    expect(http.calls[0]!.request).toEqual({ method: "POST", headers: FORM_ONLY, body: "token=access-old&client_id=pub" });
   });
 });

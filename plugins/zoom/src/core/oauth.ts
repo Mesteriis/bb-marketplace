@@ -88,16 +88,18 @@ export function createOAuth(deps: OAuthDeps): OAuth {
     return value;
   }
 
-  async function post(url: string, app: AppCredentials, body: string): Promise<HttpResponse> {
-    try {
-      return await deps.fetch(url, {
-        method: "POST",
-        headers: {
+  /** A confidential client authenticates with Basic; a public client names itself in the body. */
+  async function post(url: string, app: AppCredentials, fields: Record<string, string>): Promise<HttpResponse> {
+    const isPublic = app.publicClientId !== null;
+    const headers: Record<string, string> = isPublic
+      ? { "content-type": "application/x-www-form-urlencoded" }
+      : {
           authorization: `Basic ${btoa(`${app.clientId}:${app.clientSecret}`)}`,
           "content-type": "application/x-www-form-urlencoded",
-        },
-        body,
-      });
+        };
+    const body = form(app.publicClientId !== null ? { ...fields, client_id: app.publicClientId } : fields);
+    try {
+      return await deps.fetch(url, { method: "POST", headers, body });
     } catch {
       throw new DomainError("network", "Нет связи с Zoom");
     }
@@ -105,7 +107,7 @@ export function createOAuth(deps: OAuthDeps): OAuth {
 
   async function refresh(current: StoredTokens): Promise<string> {
     const app = await requireCredentials();
-    const response = await post(TOKEN_URL, app, form({ grant_type: "refresh_token", refresh_token: current.refreshToken }));
+    const response = await post(TOKEN_URL, app, { grant_type: "refresh_token", refresh_token: current.refreshToken });
     if (response.status === 400 || response.status === 401) {
       await deps.tokens.clear();
       throw new DomainError("auth_expired", "Вход в Zoom истёк. Подключите аккаунт заново");
@@ -125,7 +127,7 @@ export function createOAuth(deps: OAuthDeps): OAuth {
       await deps.pending.put({ state, verifier, redirectUri, createdAt: deps.clock.now() });
       const query = form({
         response_type: "code",
-        client_id: app.clientId,
+        client_id: app.publicClientId ?? app.clientId,
         redirect_uri: redirectUri,
         state,
         code_challenge: await pkceChallenge(verifier),
@@ -146,12 +148,12 @@ export function createOAuth(deps: OAuthDeps): OAuth {
       const response = await post(
         TOKEN_URL,
         app,
-        form({
+        {
           grant_type: "authorization_code",
           code: callback.code,
           redirect_uri: login.redirectUri,
           code_verifier: login.verifier,
-        }),
+        },
       );
       const tokens = response.status === 200 ? parseTokens(await response.text(), deps.clock.now()) : null;
       if (tokens === null) {
@@ -182,7 +184,7 @@ export function createOAuth(deps: OAuthDeps): OAuth {
       if (current === null) return;
       try {
         const app = await requireCredentials();
-        await post(REVOKE_URL, app, form({ token: current.accessToken }));
+        await post(REVOKE_URL, app, { token: current.accessToken });
       } catch {
         // Revoking is best effort: the local copy is removed either way.
       }

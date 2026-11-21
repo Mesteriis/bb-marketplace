@@ -39,6 +39,13 @@ export default async function plugin(bb: BbPluginApi) {
       description: "Client ID of your Zoom General app (user-managed) with Meeting SDK enabled.",
       default: "",
     },
+    publicClientId: {
+      type: "string",
+      label: "Zoom Public client ID",
+      description:
+        "Public client ID of the same app (Basic information → Use public client OAuth). Needed when BB is open on http://127.0.0.1; leave empty for an https address.",
+      default: "",
+    },
     clientSecret: {
       type: "string",
       label: "Zoom Client Secret",
@@ -62,9 +69,11 @@ export default async function plugin(bb: BbPluginApi) {
 
   const credentials: AppCredentialsSource = {
     async get() {
-      const { clientId, clientSecret } = await settings.get();
+      const { clientId, clientSecret, publicClientId } = await settings.get();
       const id = clientId.trim();
-      return id === "" || clientSecret === undefined || clientSecret === "" ? null : { clientId: id, clientSecret };
+      const publicId = publicClientId.trim();
+      if (id === "" || clientSecret === undefined || clientSecret === "") return null;
+      return { clientId: id, clientSecret, publicClientId: publicId === "" ? null : publicId };
     },
   };
   const clock = { now: () => Date.now() };

@@ -17,13 +17,16 @@ Nothing else: no chat, recordings, transcription, agent tools or CLI.
 ## Setup
 
 The plugin uses your own Zoom app. Create a **General app** (user-managed) in
-the Zoom App Marketplace, enable Meeting SDK in it, add the redirect URL the
-plugin's page shows, and add the scopes `meeting:read:list_meetings`,
-`meeting:write:meeting`, `user:read:user` and `user:read:token`. Put its Client
-ID and Client Secret into the plugin settings, then press **Войти через Zoom**.
+the Zoom App Marketplace, enable Meeting SDK in it, and add the scopes
+`meeting:read:list_meetings`, `meeting:write:meeting`, `user:read:user` and
+`user:read:token`. Register the redirect URL the plugin's page shows, put the
+app's Client ID and Client Secret into the plugin settings, then press
+**Войти через Zoom**.
 
-BB must be open on `https://…` or on `http://127.0.0.1:<port>`: Zoom accepts
-no other redirect address.
+BB must be open on `https://…` or on `http://127.0.0.1:<port>`. For a
+`127.0.0.1` address Zoom needs **Use public client OAuth** turned on, the URL
+in **PKCE OAuth Redirect URL**, and the app's Public client ID in the plugin
+settings.
 
 ## Limits
 

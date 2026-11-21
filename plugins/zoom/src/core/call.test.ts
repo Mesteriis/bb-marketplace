@@ -8,7 +8,7 @@ const NOW = 1_700_000_030_000;
 function deps(configured = true) {
   return {
     clock: new FakeClock(NOW),
-    credentials: credentials(configured ? { clientId: "cid", clientSecret: "secret" } : null),
+    credentials: credentials(configured ? { clientId: "cid", clientSecret: "secret", publicClientId: null } : null),
     api: { zak: async () => "zak-1", profile: async () => ({ displayName: "Иван" }) },
   };
 }

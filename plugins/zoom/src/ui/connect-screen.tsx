@@ -34,6 +34,9 @@ export function ConnectScreen({ api, origin, configured, onConnect, onRecheck, c
     };
   }, [api, origin]);
 
+  // Zoom takes a loopback address only from a PKCE public client, in its own field.
+  const loopback = redirect.uri?.startsWith("http://127.0.0.1") ?? false;
+
   return (
     <div className="mx-auto flex h-full max-w-xl flex-col justify-center gap-5 overflow-auto p-6">
       <div>
@@ -48,7 +51,9 @@ export function ConnectScreen({ api, origin, configured, onConnect, onRecheck, c
           (User-managed), и включите в нём Meeting SDK.
         </li>
         <li>
-          Добавьте этот адрес в OAuth Redirect URL и в OAuth Allow List:
+          {loopback
+            ? "В Basic information включите Use public client OAuth и вставьте этот адрес в поле PKCE OAuth Redirect URL:"
+            : "Вставьте этот адрес в OAuth Redirect URL и в OAuth Allow List:"}
           {redirect.uri !== null && (
             <code className="mt-1 block select-all break-all rounded-md border border-border bg-secondary px-2 py-1.5 text-xs">
               {redirect.uri}
@@ -71,7 +76,7 @@ export function ConnectScreen({ api, origin, configured, onConnect, onRecheck, c
           </span>
         </li>
         <li>
-          Вставьте Client ID и Client Secret в настройки плагина Makosh Zoom.
+          Вставьте Client ID и Client Secret{loopback ? ", а также Public client ID" : ""} в настройки плагина Makosh Zoom.
           {!configured && <span className="mt-1 block text-muted-foreground">Сейчас они не заданы.</span>}
         </li>
       </ol>

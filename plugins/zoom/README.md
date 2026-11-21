@@ -12,11 +12,16 @@ and its limits.
    **Develop → Build App → General App**, and keep it **User-managed**.
 2. Under **Embed**, turn on **Meeting SDK**.
 3. Open the plugin's page in BB. It shows the redirect URL for the address BB
-   is open on. Add it to **OAuth Redirect URL** and to **OAuth Allow List**.
+   is open on.
+   - For `http://127.0.0.1…`: under **Basic information** turn on **Use public
+     client OAuth** and put the URL into **PKCE OAuth Redirect URL**. Zoom
+     rejects a loopback address in the ordinary redirect field.
+   - For `https://…`: add it to **OAuth Redirect URL** and **OAuth Allow List**.
 4. Under **Scopes**, add `meeting:read:list_meetings`,
    `meeting:write:meeting`, `user:read:user` and `user:read:token`.
 5. Copy the Client ID and Client Secret into the plugin settings
-   (Settings → Installed plugins → Makosh Zoom).
+   (Settings → Installed plugins → Makosh Zoom). With a `127.0.0.1` address,
+   copy the **Public client ID** too.
 6. Press **Войти через Zoom** on the plugin's page and approve the app.
 
 ## Settings
@@ -24,6 +29,7 @@ and its limits.
 | Setting | Meaning |
 | --- | --- |
 | Zoom Client ID | Client ID of your Zoom app. |
+| Zoom Public client ID | Public client ID of the same app. When set, sign-in runs as a PKCE public client without the secret. |
 | Zoom Client Secret | Its Client Secret. Secret; never sent to the browser. |
 | Token encryption key | Generated on first load. Changing it disconnects the account. |
 
