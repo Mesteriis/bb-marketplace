@@ -27,7 +27,17 @@ export async function signMeetingSdkJwt(input: SignatureInput): Promise<string> 
   const header = base64Url(encoder.encode(JSON.stringify({ alg: "HS256", typ: "JWT" })));
   const payload = base64Url(
     encoder.encode(
-      JSON.stringify({ appKey: input.clientId, mn: input.meetingNumber, role: input.role, iat, exp, tokenExp: exp }),
+      JSON.stringify({
+        appKey: input.clientId,
+        mn: input.meetingNumber,
+        role: input.role,
+        iat,
+        exp,
+        tokenExp: exp,
+        // The call page is not cross-origin isolated, so it has no SharedArrayBuffer;
+        // Zoom then sends and shows video only in WebRTC mode.
+        video_webrtc_mode: 1,
+      }),
     ),
   );
   const key = await crypto.subtle.importKey(

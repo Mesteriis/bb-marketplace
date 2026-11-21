@@ -33,6 +33,7 @@ describe("prepareCall", () => {
       iat: 1_700_000_000,
       exp: 1_700_007_200,
       tokenExp: 1_700_007_200,
+      video_webrtc_mode: 1,
     });
   });
 
