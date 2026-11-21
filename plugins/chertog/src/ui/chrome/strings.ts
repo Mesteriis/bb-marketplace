@@ -17,6 +17,8 @@ export const chromeStrings = {
     remove: (name: string) => `Удалить «${name}»`,
     removeLastHint: "Единственную раскладку удалить нельзя",
     renameField: (name: string) => `Новое имя раскладки «${name}»`,
+    duplicateField: (name: string) => `Имя копии раскладки «${name}»`,
+    presetField: (name: string) => `Имя раскладки из пресета «${name}»`,
     renameSave: "Сохранить",
     renameCancel: "Отмена",
     removeQuestion: (name: string) => `Удалить раскладку «${name}»? Панели останутся открытыми.`,
@@ -33,6 +35,7 @@ export const chromeStrings = {
     errorEmpty: "Введите имя раскладки",
     errorTooLong: (limit: number) => `Имя не длиннее ${limit} символов`,
     errorDuplicate: "Раскладка с таким именем уже есть",
+    errorNoFreeName: "Не удалось подобрать свободное имя. Введите своё.",
   },
   saveStatus: {
     saved: "Сохранено",

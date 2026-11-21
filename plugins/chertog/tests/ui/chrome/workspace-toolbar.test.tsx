@@ -1,6 +1,6 @@
 // The strip above the surface: the switcher, "add panel" and the hidden
 // panels in one toolbar.
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { WorkspaceToolbar, type ContentChoice, type ContentSection } from "../../../src/ui/chrome/index.ts";
@@ -213,5 +213,85 @@ describe("WorkspaceToolbar", () => {
     expect(document.activeElement).toBe(screen.getByRole("button", { name: "Скрытые панели: 1" }));
     await user.keyboard("{ArrowLeft}{ArrowLeft}");
     expect(document.activeElement).toBe(screen.getByRole("button", { name: "Раскладка: Разработка" }));
+  });
+});
+
+describe("WorkspaceToolbar: the focused control disappears from the picker dialog", () => {
+  const unused = () => {
+    throw new Error("This callback is not part of the test");
+  };
+  function open(tileCount: number) {
+    const onOpen = vi.fn<(choice: ContentChoice) => void>();
+    const toolbar = (sections: ContentSection[]) => (
+      <WorkspaceToolbar
+        layouts={{
+          layouts: [{ id: "l1", name: "Разработка" }],
+          activeLayoutId: "l1",
+          presets: [],
+          saveStatus: "saved",
+          onSwitch: unused,
+          onCreateFromCurrent: unused,
+          onCreateFromPreset: unused,
+          onRename: unused,
+          onDuplicate: unused,
+          onDelete: unused,
+          onReload: unused,
+        }}
+        content={{ sections, tileCount, tileLimit: 8, onOpen, onFocusExisting: unused }}
+        hiddenPanels={{ panels: [], onShow: unused, onClose: unused }}
+      />
+    );
+    const view = render(toolbar(SECTIONS));
+    const denied: ContentSection[] = [{ ...SECTIONS[0], state: "denied" }];
+    return { user: userEvent.setup(), onOpen, deny: () => view.rerender(toolbar(denied)) };
+  }
+  const dialog = () => screen.getByRole("dialog", { name: "Добавить панель" });
+
+  it("keeps the focus in the dialog when the limit question goes away, and Escape still closes it", async () => {
+    const { user, onOpen, deny } = open(8);
+    const add = screen.getByRole("button", { name: "Добавить панель" });
+
+    await user.click(add);
+    await user.click(screen.getByRole("button", { name: /Исполнитель/ }));
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Открыть вкладкой в группе" }));
+    deny();
+
+    await waitFor(() => expect(document.activeElement).toBe(dialog()));
+    expect(screen.queryByRole("group", { name: "Свободных мест нет" })).toBeNull();
+
+    await user.keyboard("{Escape}");
+    expect(pickerDialog()).toBeNull();
+    expect(document.activeElement).toBe(add);
+    expect(onOpen).not.toHaveBeenCalled();
+  });
+
+  it("keeps Tab inside the dialog after the focused control went away", async () => {
+    const { user, deny } = open(8);
+
+    await user.click(screen.getByRole("button", { name: "Добавить панель" }));
+    await user.click(screen.getByRole("button", { name: /Исполнитель/ }));
+    deny();
+    await waitFor(() => expect(document.activeElement).toBe(dialog()));
+
+    const search = screen.getByRole("searchbox", { name: "Поиск" });
+    await user.tab();
+    expect(document.activeElement).toBe(search);
+    await user.tab();
+    expect(document.activeElement).toBe(search);
+    await user.tab({ shift: true });
+    expect(document.activeElement).toBe(search);
+    expect(dialog().contains(document.activeElement)).toBe(true);
+  });
+
+  it("keeps the focus in the dialog when the focused item's provider loses access", async () => {
+    const { user, deny } = open(3);
+
+    await user.click(screen.getByRole("button", { name: "Добавить панель" }));
+    screen.getByRole("button", { name: /Исполнитель/ }).focus();
+    deny();
+
+    await waitFor(() => expect(document.activeElement).toBe(dialog()));
+    await user.keyboard("{Escape}");
+    expect(pickerDialog()).toBeNull();
   });
 });

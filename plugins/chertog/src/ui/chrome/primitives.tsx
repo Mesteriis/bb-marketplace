@@ -24,7 +24,7 @@ export const classes = {
   dangerButton: `${buttonBase} bg-destructive text-destructive-foreground hover:bg-destructive/90`,
   input: `h-7 min-w-0 flex-1 rounded-md border border-input bg-transparent px-2 text-xs text-foreground placeholder:text-muted-foreground ${focusRing}`,
   popover:
-    "absolute top-full z-50 mt-1 flex max-h-[70vh] w-80 max-w-[calc(100vw-1rem)] flex-col gap-2 overflow-auto rounded-md border border-border bg-background p-2 text-sm text-foreground shadow-sm",
+    "absolute top-full z-50 mt-1 flex max-h-[70vh] w-80 max-w-[calc(100vw-1rem)] flex-col gap-2 overflow-auto rounded-md border border-border bg-background p-2 text-sm text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
   sectionHeading: "px-1 text-xs font-medium text-muted-foreground",
   error: "px-1 text-xs text-destructive",
   muted: "px-1 text-xs text-muted-foreground",
@@ -78,14 +78,38 @@ export function usePendingFocus(containerRef: RefObject<HTMLElement | null>) {
 }
 
 /**
+ * Keeps the focus inside a dialog or popover when the element that had it
+ * is removed by a re-render (a row another window deleted, a question whose
+ * provider went away). The browser then leaves the focus on the page body,
+ * where Escape and the focus trap no longer reach; it is put on the
+ * container instead, which activates nothing on a pending Enter.
+ */
+function useKeepFocusInside(containerRef: RefObject<HTMLElement | null>, active: boolean): void {
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!active || container === null) return;
+    const observer = new MutationObserver(() => {
+      const focused = document.activeElement;
+      if (focused === null || focused === document.body) container.focus();
+    });
+    observer.observe(container, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, [active, containerRef]);
+}
+
+/**
  * Open state of a popover under a trigger button. Escape closes it and
  * returns focus to the trigger; a press outside, or focus moving outside,
- * closes it and leaves focus where it went.
+ * closes it and leaves focus where it went. `panelRef` goes on the popover
+ * itself, which must be focusable (`tabIndex={-1}`): it takes the focus when
+ * the focused control inside it disappears.
  */
 export function usePopover() {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  useKeepFocusInside(panelRef, open);
 
   const close = useCallback(() => {
     setOpen(false);
@@ -112,7 +136,7 @@ export function usePopover() {
     if (event.relatedTarget instanceof Node && rootRef.current?.contains(event.relatedTarget) === false) setOpen(false);
   };
 
-  return { open, setOpen, close, rootRef, triggerRef, onKeyDown, onBlur };
+  return { open, setOpen, close, rootRef, triggerRef, panelRef, onKeyDown, onBlur };
 }
 
 interface ModalProps {
@@ -132,6 +156,7 @@ interface ModalProps {
  */
 export function Modal({ labelledBy, describedBy, onDismiss, className, children }: ModalProps) {
   const dialogRef = useRef<HTMLDivElement>(null);
+  useKeepFocusInside(dialogRef, true);
 
   useEffect(() => {
     const source = document.activeElement instanceof HTMLElement ? document.activeElement : null;

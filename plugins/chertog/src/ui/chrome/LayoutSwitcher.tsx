@@ -44,28 +44,47 @@ function checkName(raw: string, layouts: readonly LayoutEntry[], limit: number, 
   return { name, error: null };
 }
 
-/** The first candidate no layout uses. The base is shortened so that the suffix fits the limit. */
-function freeName(layouts: readonly LayoutEntry[], limit: number, candidate: (number: number) => { base: string; suffix: string }): string {
-  for (let number = 1; ; number += 1) {
-    const { base, suffix } = candidate(number);
-    const name = base.slice(0, Math.max(limit - suffix.length, 1)).trimEnd() + suffix;
-    if (!layouts.some((layout) => sameName(layout.name, name))) return name;
+/**
+ * The first numbered candidate that passes the same check as a typed name,
+ * or `null` when none does. The base is cut so that the whole name fits the
+ * limit; a suffix that leaves no room for the base ends the search, because
+ * the suffixes only get longer.
+ */
+function freeName(base: string, layouts: readonly LayoutEntry[], limit: number, suffixOf: (number: number) => string): string | null {
+  // One more candidate than there are layouts: they cannot all be taken.
+  for (let number = 1; number <= layouts.length + 1; number += 1) {
+    const suffix = suffixOf(number);
+    const room = limit - suffix.length;
+    if (room < 1) return null;
+    const stem = base.trim().slice(0, room).trimEnd();
+    if (stem === "") return null;
+    const checked = checkName(stem + suffix, layouts, limit);
+    if (checked.name !== null) return checked.name;
   }
+  return null;
 }
 
-function copyName(source: string, layouts: readonly LayoutEntry[], limit: number): string {
-  return freeName(layouts, limit, (number) => ({ base: source, suffix: text.copyName("", number) }));
+function copyName(source: string, layouts: readonly LayoutEntry[], limit: number): string | null {
+  return freeName(source, layouts, limit, (number) => text.copyName("", number));
 }
 
-function presetName(preset: string, layouts: readonly LayoutEntry[], limit: number): string {
-  return freeName(layouts, limit, (number) => ({ base: preset, suffix: number === 1 ? "" : text.numberedName("", number) }));
+function presetName(preset: string, layouts: readonly LayoutEntry[], limit: number): string | null {
+  return freeName(preset, layouts, limit, (number) => (number === 1 ? "" : text.numberedName("", number)));
 }
 
 /**
- * The row being renamed or asked about. It names the layout by id, never by
- * its place in the list: another window can add or remove rows meanwhile.
+ * The row being renamed, given a copy name, or asked about. It names the
+ * layout by id, never by its place in the list: another window can add or
+ * remove rows meanwhile. `duplicate` is the name form shown when no copy name
+ * could be generated within the limit.
  */
-type RowMode = { kind: "rename"; layoutId: string; value: string; error: string | null } | { kind: "delete"; layoutId: string } | null;
+type RowMode =
+  | { kind: "rename" | "duplicate"; layoutId: string; value: string; error: string | null }
+  | { kind: "delete"; layoutId: string }
+  | null;
+
+/** The name form of a preset whose name could not be generated within the limit. */
+type PresetMode = { presetId: string; value: string; error: string | null } | null;
 
 const rowControl = (layoutId: string, selector: string) => (container: HTMLElement) =>
   Array.from(container.querySelectorAll<HTMLElement>("[data-row-id]"))
@@ -73,6 +92,59 @@ const rowControl = (layoutId: string, selector: string) => (container: HTMLEleme
     ?.querySelector<HTMLElement>(selector);
 
 const rowAction = (layoutId: string, action: string) => rowControl(layoutId, `[data-action="${action}"]`);
+
+const presetControl = (presetId: string, selector: string) => (container: HTMLElement) =>
+  Array.from(container.querySelectorAll<HTMLElement>("[data-preset-id]"))
+    .find((row) => row.dataset.presetId === presetId)
+    ?.querySelector<HTMLElement>(selector);
+
+interface NameFormProps {
+  label: string;
+  value: string;
+  error: string | null;
+  errorId: string;
+  limit: number;
+  onChange: (value: string) => void;
+  onSubmit: () => void;
+  onCancel: () => void;
+}
+
+/** One line to type a layout name in, with the reason it was refused under it. */
+function NameForm({ label, value, error, errorId, limit, onChange, onSubmit, onCancel }: NameFormProps) {
+  return (
+    <form
+      className="flex flex-col gap-1"
+      noValidate
+      onSubmit={(event) => {
+        event.preventDefault();
+        onSubmit();
+      }}
+    >
+      <div className="flex items-center gap-1">
+        <input
+          className={classes.input}
+          aria-label={label}
+          aria-invalid={error !== null}
+          aria-describedby={error !== null ? errorId : undefined}
+          maxLength={limit}
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+        />
+        <button type="submit" className={classes.primaryButton}>
+          {text.renameSave}
+        </button>
+        <button type="button" className={classes.button} onClick={onCancel}>
+          {text.renameCancel}
+        </button>
+      </div>
+      {error !== null && (
+        <p id={errorId} role="alert" className={classes.error}>
+          {error}
+        </p>
+      )}
+    </form>
+  );
+}
 
 export function LayoutSwitcher(props: LayoutSwitcherProps) {
   const { layouts, activeLayoutId, presets, saveStatus } = props;
@@ -85,7 +157,9 @@ export function LayoutSwitcher(props: LayoutSwitcherProps) {
   const [storedRowMode, setRowMode] = useState<RowMode>(null);
   // A row whose layout is gone has nothing left to rename or delete.
   const rowMode = storedRowMode !== null && layouts.some((layout) => layout.id === storedRowMode.layoutId) ? storedRowMode : null;
-  const ids = { create: useId(), createError: useId(), rowError: useId(), rowNote: useId() };
+  const [storedPresetMode, setPresetMode] = useState<PresetMode>(null);
+  const presetMode = storedPresetMode !== null && presets.some((preset) => preset.id === storedPresetMode.presetId) ? storedPresetMode : null;
+  const ids = { create: useId(), createError: useId(), rowError: useId(), rowNote: useId(), presetError: useId() };
 
   const active = layouts.find((layout) => layout.id === activeLayoutId);
 
@@ -93,6 +167,7 @@ export function LayoutSwitcher(props: LayoutSwitcherProps) {
     setNewName("");
     setCreateError(null);
     setRowMode(null);
+    setPresetMode(null);
   }
 
   function toggle() {
@@ -124,13 +199,43 @@ export function LayoutSwitcher(props: LayoutSwitcherProps) {
     closeAfter(() => props.onCreateFromCurrent(name));
   }
 
-  function submitRename(event: FormEvent, layout: LayoutEntry) {
-    event.preventDefault();
-    if (rowMode?.kind !== "rename") return;
-    const checked = checkName(rowMode.value, layouts, limit, layout.id);
+  function submitRowName(layout: LayoutEntry) {
+    if (rowMode === null || rowMode.kind === "delete") return;
+    const renaming = rowMode.kind === "rename";
+    const checked = checkName(rowMode.value, layouts, limit, renaming ? layout.id : undefined);
     if (checked.name === null) return setRowMode({ ...rowMode, error: checked.error });
-    if (checked.name !== layout.name) props.onRename(layout.id, checked.name);
-    leaveRow(layout.id, "switch");
+    if (!renaming) props.onDuplicate(layout.id, checked.name);
+    else if (checked.name !== layout.name) props.onRename(layout.id, checked.name);
+    leaveRow(layout.id, renaming ? "switch" : "duplicate");
+  }
+
+  function duplicate(layout: LayoutEntry) {
+    const name = copyName(layout.name, layouts, limit);
+    if (name !== null) return props.onDuplicate(layout.id, name);
+    setPresetMode(null);
+    setRowMode({ kind: "duplicate", layoutId: layout.id, value: layout.name.trim().slice(0, limit), error: text.errorNoFreeName });
+    requestFocus(rowControl(layout.id, "input"));
+  }
+
+  function createFromPreset(preset: LayoutPresetEntry) {
+    const name = presetName(preset.name, layouts, limit);
+    if (name !== null) return closeAfter(() => props.onCreateFromPreset(preset.id, name));
+    setRowMode(null);
+    setPresetMode({ presetId: preset.id, value: preset.name.trim().slice(0, limit).trimEnd(), error: text.errorNoFreeName });
+    requestFocus(presetControl(preset.id, "input"));
+  }
+
+  function submitPresetName(preset: LayoutPresetEntry) {
+    if (presetMode === null) return;
+    const checked = checkName(presetMode.value, layouts, limit);
+    if (checked.name === null) return setPresetMode({ ...presetMode, error: checked.error });
+    const name = checked.name;
+    closeAfter(() => props.onCreateFromPreset(preset.id, name));
+  }
+
+  function leavePreset(presetId: string) {
+    setPresetMode(null);
+    requestFocus(presetControl(presetId, "button"));
   }
 
   function leaveRow(layoutId: string, focusAction: string) {
@@ -140,9 +245,14 @@ export function LayoutSwitcher(props: LayoutSwitcherProps) {
 
   function onPopoverKeyDown(event: KeyboardEvent) {
     if (event.key === "Escape" && rowMode !== null) {
-      // Escape leaves the rename or the delete question first, and the list on the next press.
+      // Escape leaves the name form or the delete question first, and the list on the next press.
       event.stopPropagation();
-      leaveRow(rowMode.layoutId, rowMode.kind === "rename" ? "rename" : "delete");
+      leaveRow(rowMode.layoutId, rowMode.kind);
+      return;
+    }
+    if (event.key === "Escape" && presetMode !== null) {
+      event.stopPropagation();
+      leavePreset(presetMode.presetId);
       return;
     }
     if (event.key === "Escape") reset();
@@ -167,7 +277,7 @@ export function LayoutSwitcher(props: LayoutSwitcherProps) {
         </button>
 
         {popover.open && (
-          <div role="dialog" aria-label={text.popoverLabel} className={`${classes.popover} left-0`}>
+          <div ref={popover.panelRef} role="dialog" tabIndex={-1} aria-label={text.popoverLabel} className={`${classes.popover} left-0`}>
             <ul
               ref={listRef}
               aria-label={text.listLabel}
@@ -178,31 +288,17 @@ export function LayoutSwitcher(props: LayoutSwitcherProps) {
             >
               {layouts.map((layout) => (
                 <li key={layout.id} data-row-id={layout.id} className="flex min-h-7 flex-col gap-1">
-                  {rowMode?.kind === "rename" && rowMode.layoutId === layout.id ? (
-                    <form className="flex flex-col gap-1" noValidate onSubmit={(event) => submitRename(event, layout)}>
-                      <div className="flex items-center gap-1">
-                        <input
-                          className={classes.input}
-                          aria-label={text.renameField(layout.name)}
-                          aria-invalid={rowMode.error !== null}
-                          aria-describedby={rowMode.error !== null ? ids.rowError : undefined}
-                          maxLength={limit}
-                          value={rowMode.value}
-                          onChange={(event) => setRowMode({ ...rowMode, value: event.target.value, error: null })}
-                        />
-                        <button type="submit" className={classes.primaryButton}>
-                          {text.renameSave}
-                        </button>
-                        <button type="button" className={classes.button} onClick={() => leaveRow(layout.id, "rename")}>
-                          {text.renameCancel}
-                        </button>
-                      </div>
-                      {rowMode.error !== null && (
-                        <p id={ids.rowError} role="alert" className={classes.error}>
-                          {rowMode.error}
-                        </p>
-                      )}
-                    </form>
+                  {rowMode !== null && rowMode.kind !== "delete" && rowMode.layoutId === layout.id ? (
+                    <NameForm
+                      label={rowMode.kind === "rename" ? text.renameField(layout.name) : text.duplicateField(layout.name)}
+                      value={rowMode.value}
+                      error={rowMode.error}
+                      errorId={ids.rowError}
+                      limit={limit}
+                      onChange={(value) => setRowMode({ ...rowMode, value, error: null })}
+                      onSubmit={() => submitRowName(layout)}
+                      onCancel={() => leaveRow(layout.id, rowMode.kind)}
+                    />
                   ) : rowMode?.kind === "delete" && rowMode.layoutId === layout.id ? (
                     <div role="group" aria-labelledby={ids.rowNote} className="flex flex-col gap-1 rounded-md bg-secondary p-1.5">
                       <p id={ids.rowNote} className="text-xs">
@@ -244,6 +340,7 @@ export function LayoutSwitcher(props: LayoutSwitcherProps) {
                         aria-label={text.rename(layout.name)}
                         title={text.rename(layout.name)}
                         onClick={() => {
+                          setPresetMode(null);
                           setRowMode({ kind: "rename", layoutId: layout.id, value: layout.name, error: null });
                           requestFocus(rowControl(layout.id, "input"));
                         }}
@@ -252,10 +349,11 @@ export function LayoutSwitcher(props: LayoutSwitcherProps) {
                       </button>
                       <button
                         type="button"
+                        data-action="duplicate"
                         className={classes.iconButton}
                         aria-label={text.duplicate(layout.name)}
                         title={text.duplicate(layout.name)}
-                        onClick={() => props.onDuplicate(layout.id, copyName(layout.name, layouts, limit))}
+                        onClick={() => duplicate(layout)}
                       >
                         <Icon name="copy" />
                       </button>
@@ -267,6 +365,7 @@ export function LayoutSwitcher(props: LayoutSwitcherProps) {
                         title={layouts.length === 1 ? text.removeLastHint : text.remove(layout.name)}
                         disabled={layouts.length === 1}
                         onClick={() => {
+                          setPresetMode(null);
                           setRowMode({ kind: "delete", layoutId: layout.id });
                           requestFocus(rowAction(layout.id, "cancel-delete"));
                         }}
@@ -314,22 +413,32 @@ export function LayoutSwitcher(props: LayoutSwitcherProps) {
                 <p className={classes.sectionHeading}>{text.presetsHeading}</p>
                 <ul className="flex flex-col gap-0.5">
                   {presets.map((preset) => (
-                    <li key={preset.id}>
-                      <button
-                        type="button"
-                        className={`flex min-h-7 w-full flex-col items-start rounded-md px-2 py-1 text-left text-xs hover:bg-state-hover ${classes.focusRing}`}
-                        aria-label={text.presetCreate(preset.name)}
-                        onClick={() => {
-                          const name = presetName(preset.name, layouts, limit);
-                          closeAfter(() => props.onCreateFromPreset(preset.id, name));
-                        }}
-                      >
-                        <span className="flex items-center gap-1">
-                          <Icon name="plus" />
-                          {preset.name}
-                        </span>
-                        {preset.description !== undefined && <span className="text-muted-foreground">{preset.description}</span>}
-                      </button>
+                    <li key={preset.id} data-preset-id={preset.id}>
+                      {presetMode?.presetId === preset.id ? (
+                        <NameForm
+                          label={text.presetField(preset.name)}
+                          value={presetMode.value}
+                          error={presetMode.error}
+                          errorId={ids.presetError}
+                          limit={limit}
+                          onChange={(value) => setPresetMode({ ...presetMode, value, error: null })}
+                          onSubmit={() => submitPresetName(preset)}
+                          onCancel={() => leavePreset(preset.id)}
+                        />
+                      ) : (
+                        <button
+                          type="button"
+                          className={`flex min-h-7 w-full flex-col items-start rounded-md px-2 py-1 text-left text-xs hover:bg-state-hover ${classes.focusRing}`}
+                          aria-label={text.presetCreate(preset.name)}
+                          onClick={() => createFromPreset(preset)}
+                        >
+                          <span className="flex items-center gap-1">
+                            <Icon name="plus" />
+                            {preset.name}
+                          </span>
+                          {preset.description !== undefined && <span className="text-muted-foreground">{preset.description}</span>}
+                        </button>
+                      )}
                     </li>
                   ))}
                 </ul>

@@ -1,6 +1,6 @@
 // The layout switcher, driven the way a user drives it: every expectation
 // names the callback and the arguments the action must produce.
-import { render, screen, within } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
@@ -553,5 +553,232 @@ describe("LayoutSwitcher: presets and layouts change while the list is open", ()
 
     expect(calls.onCreateFromCurrent).not.toHaveBeenCalled();
     expect(screen.getByRole("alert").textContent).toBe("Раскладка с таким именем уже есть");
+  });
+});
+
+describe("LayoutSwitcher: generated names keep to the length limit", () => {
+  const AUTO_NAME_ERROR = "Не удалось подобрать свободное имя. Введите своё.";
+
+  function setup(layouts: LayoutEntry[], maxNameLength: number, presets: LayoutPresetEntry[] = []) {
+    const calls = spies();
+    render(
+      <LayoutSwitcher
+        layouts={layouts}
+        activeLayoutId={layouts[0].id}
+        presets={presets}
+        saveStatus="saved"
+        maxNameLength={maxNameLength}
+        {...calls}
+      />,
+    );
+    return { user: userEvent.setup(), calls };
+  }
+  const openList = (user: ReturnType<typeof userEvent.setup>) => user.click(screen.getByRole("button", { name: /^Раскладка: / }));
+
+  it("shortens the source name so that the copy suffix fits", async () => {
+    const { user, calls } = setup(
+      [
+        { id: "l1", name: "Разработка" },
+        { id: "l2", name: "Разр (копия)" },
+      ],
+      12,
+    );
+
+    await openList(user);
+    await user.click(screen.getByRole("button", { name: "Дублировать «Разработка»" }));
+
+    expect(calls.onDuplicate).toHaveBeenCalledTimes(1);
+    expect(calls.onDuplicate).toHaveBeenLastCalledWith("l1", "Ра (копия 2)");
+  });
+
+  it("does not leave a space before the suffix when the cut ends on one", async () => {
+    const { user, calls } = setup([{ id: "l1", name: "Аб вг" }], 11);
+
+    await openList(user);
+    await user.click(screen.getByRole("button", { name: "Дублировать «Аб вг»" }));
+
+    expect(calls.onDuplicate).toHaveBeenLastCalledWith("l1", "Аб (копия)");
+  });
+
+  it("asks for a name instead of duplicating under one that is too long", async () => {
+    const { user, calls } = setup([{ id: "l1", name: "Тест" }], 4);
+
+    await openList(user);
+    await user.click(screen.getByRole("button", { name: "Дублировать «Тест»" }));
+
+    expect(calls.onDuplicate).not.toHaveBeenCalled();
+    const field = screen.getByRole<HTMLInputElement>("textbox", { name: "Имя копии раскладки «Тест»" });
+    expect(document.activeElement).toBe(field);
+    expect(field.value).toBe("Тест");
+    expect(field.getAttribute("maxlength")).toBe("4");
+    expect(screen.getByRole("alert").textContent).toBe(AUTO_NAME_ERROR);
+
+    // The same checks as for a typed name: the source's own name is taken.
+    await user.keyboard("{Enter}");
+    expect(screen.getByRole("alert").textContent).toBe("Раскладка с таким именем уже есть");
+    await user.clear(field);
+    await user.keyboard("{Enter}");
+    expect(screen.getByRole("alert").textContent).toBe("Введите имя раскладки");
+    expect(calls.onDuplicate).not.toHaveBeenCalled();
+
+    await user.type(field, "Т2{Enter}");
+    expect(calls.onDuplicate).toHaveBeenCalledTimes(1);
+    expect(calls.onDuplicate).toHaveBeenLastCalledWith("l1", "Т2");
+    expect(screen.queryByRole("textbox", { name: "Имя копии раскладки «Тест»" })).toBeNull();
+  });
+
+  it("Escape leaves the copy-name form without duplicating", async () => {
+    const { user, calls } = setup([{ id: "l1", name: "Тест" }], 4);
+
+    await openList(user);
+    await user.click(screen.getByRole("button", { name: "Дублировать «Тест»" }));
+    await user.keyboard("{Escape}");
+
+    expect(screen.queryByRole("textbox", { name: "Имя копии раскладки «Тест»" })).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Дублировать «Тест»" }));
+    expect(calls.onDuplicate).not.toHaveBeenCalled();
+  });
+
+  it("cuts a preset name to the limit and numbers it within the limit", async () => {
+    const preset = [{ id: "call", name: "Созвон" }];
+    const first = setup([{ id: "l1", name: "Тест" }], 4, preset);
+    await openList(first.user);
+    await first.user.click(screen.getByRole("button", { name: "Создать из пресета «Созвон»" }));
+    expect(first.calls.onCreateFromPreset).toHaveBeenLastCalledWith("call", "Созв");
+    cleanup();
+
+    const second = setup(
+      [
+        { id: "l1", name: "Тест" },
+        { id: "l2", name: "Созв" },
+      ],
+      4,
+      preset,
+    );
+    await openList(second.user);
+    await second.user.click(screen.getByRole("button", { name: "Создать из пресета «Созвон»" }));
+    expect(second.calls.onCreateFromPreset).toHaveBeenCalledTimes(1);
+    expect(second.calls.onCreateFromPreset).toHaveBeenLastCalledWith("call", "Со 2");
+  });
+
+  it("asks for a name when no preset name fits the limit", async () => {
+    const { user, calls } = setup([{ id: "l1", name: "С" }], 1, [{ id: "call", name: "Созвон" }]);
+
+    await openList(user);
+    await user.click(screen.getByRole("button", { name: "Создать из пресета «Созвон»" }));
+
+    expect(calls.onCreateFromPreset).not.toHaveBeenCalled();
+    const field = screen.getByRole<HTMLInputElement>("textbox", { name: "Имя раскладки из пресета «Созвон»" });
+    expect(document.activeElement).toBe(field);
+    expect(field.value).toBe("С");
+    expect(screen.getByRole("alert").textContent).toBe(AUTO_NAME_ERROR);
+
+    await user.keyboard("{Enter}");
+    expect(screen.getByRole("alert").textContent).toBe("Раскладка с таким именем уже есть");
+    expect(calls.onCreateFromPreset).not.toHaveBeenCalled();
+
+    await user.clear(field);
+    await user.type(field, "Я{Enter}");
+    expect(calls.onCreateFromPreset).toHaveBeenCalledTimes(1);
+    expect(calls.onCreateFromPreset).toHaveBeenLastCalledWith("call", "Я");
+    expect(screen.queryByRole("dialog", { name: "Раскладки" })).toBeNull();
+  });
+
+  it("Escape leaves the preset-name form without creating", async () => {
+    const { user, calls } = setup([{ id: "l1", name: "С" }], 1, [{ id: "call", name: "Созвон" }]);
+
+    await openList(user);
+    await user.click(screen.getByRole("button", { name: "Создать из пресета «Созвон»" }));
+    await user.keyboard("{Escape}");
+
+    expect(screen.queryByRole("textbox", { name: "Имя раскладки из пресета «Созвон»" })).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Создать из пресета «Созвон»" }));
+    expect(screen.getByRole("dialog", { name: "Раскладки" })).toBeTruthy();
+    expect(calls.onCreateFromPreset).not.toHaveBeenCalled();
+  });
+
+  it.each([1, 2, 3, 4, 7, 8, 9, 10, 11, 12, 16])(
+    "at a limit of %i every generated name is trimmed, not empty, within the limit and unused",
+    async (limit) => {
+      const layouts: LayoutEntry[] = [
+        { id: "l1", name: "Разработка и ревью".slice(0, limit).trim() },
+        { id: "l2", name: "Со" .slice(0, limit) },
+      ];
+      const { user, calls } = setup(layouts, limit, [{ id: "call", name: "Созвон с командой" }]);
+      const taken = layouts.map((layout) => layout.name.toLocaleLowerCase());
+      const acceptable = (name: string) =>
+        name.length >= 1 && name.length <= limit && name === name.trim() && !taken.includes(name.toLocaleLowerCase());
+
+      await openList(user);
+      await user.click(screen.getByRole("button", { name: `Дублировать «${layouts[0].name}»` }));
+      for (const [, name] of calls.onDuplicate.mock.calls) expect(name).toSatisfy(acceptable);
+      if (calls.onDuplicate.mock.calls.length === 0) {
+        expect(screen.getByRole("textbox", { name: `Имя копии раскладки «${layouts[0].name}»` })).toBeTruthy();
+        await user.keyboard("{Escape}");
+      }
+
+      await user.click(screen.getByRole("button", { name: "Создать из пресета «Созвон с командой»" }));
+      for (const [, name] of calls.onCreateFromPreset.mock.calls) expect(name).toSatisfy(acceptable);
+      if (calls.onCreateFromPreset.mock.calls.length === 0) {
+        expect(screen.getByRole("textbox", { name: "Имя раскладки из пресета «Созвон с командой»" })).toBeTruthy();
+      }
+    },
+  );
+});
+
+describe("LayoutSwitcher: the focused control disappears from the list", () => {
+  const base = (calls: ReturnType<typeof spies>) => ({ activeLayoutId: "l1", saveStatus: "saved" as const, ...calls });
+  const LAYOUTS: LayoutEntry[] = [
+    { id: "l1", name: "Основная" },
+    { id: "l2", name: "Ревью" },
+  ];
+
+  it("keeps the focus in the list when another window removes the focused layout, and Escape still closes it", async () => {
+    const user = userEvent.setup();
+    const calls = spies();
+    const view = render(<LayoutSwitcher {...base(calls)} layouts={LAYOUTS} presets={[]} />);
+    const trigger = screen.getByRole("button", { name: "Раскладка: Основная" });
+
+    await user.click(trigger);
+    screen.getByRole("button", { name: "Ревью" }).focus();
+    view.rerender(<LayoutSwitcher {...base(calls)} layouts={[LAYOUTS[0]]} presets={[]} />);
+
+    await waitFor(() => expect(document.activeElement).toBe(popover()));
+    await user.keyboard("{Enter}");
+    expect(calls.onSwitch).not.toHaveBeenCalled();
+
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "Раскладки" })).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it("keeps the focus in the list when the focused preset is withdrawn", async () => {
+    const user = userEvent.setup();
+    const calls = spies();
+    const view = render(<LayoutSwitcher {...base(calls)} layouts={LAYOUTS} presets={PRESETS} />);
+
+    await user.click(screen.getByRole("button", { name: "Раскладка: Основная" }));
+    screen.getByRole("button", { name: "Создать из пресета «Созвон»" }).focus();
+    view.rerender(<LayoutSwitcher {...base(calls)} layouts={LAYOUTS} presets={[]} />);
+
+    await waitFor(() => expect(document.activeElement).toBe(popover()));
+    await user.tab();
+    expect(popover().contains(document.activeElement)).toBe(true);
+    expect(calls.onCreateFromPreset).not.toHaveBeenCalled();
+  });
+
+  it("keeps the focus in the list when the layout whose delete question is open goes away", async () => {
+    const user = userEvent.setup();
+    const calls = spies();
+    const view = render(<LayoutSwitcher {...base(calls)} layouts={LAYOUTS} presets={[]} />);
+
+    await user.click(screen.getByRole("button", { name: "Раскладка: Основная" }));
+    await user.click(screen.getByRole("button", { name: "Удалить «Ревью»" }));
+    view.rerender(<LayoutSwitcher {...base(calls)} layouts={[LAYOUTS[0]]} presets={[]} />);
+
+    await waitFor(() => expect(document.activeElement).toBe(popover()));
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "Раскладки" })).toBeNull();
+    expect(calls.onDelete).not.toHaveBeenCalled();
   });
 });
