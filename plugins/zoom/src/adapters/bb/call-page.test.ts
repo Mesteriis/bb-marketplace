@@ -23,7 +23,8 @@ describe("call page", () => {
 
   it("allows scripts and connections to Zoom only and embedding by BB only", () => {
     expect(CALL_PAGE_CSP).toContain("default-src 'none'");
-    expect(CALL_PAGE_CSP).toContain("frame-ancestors 'self'");
+    expect(CALL_PAGE_CSP).toContain("frame-ancestors http://127.0.0.1:* http://localhost:*");
+    expect(CALL_PAGE_CSP).toContain("form-action 'none'");
     expect(CALL_PAGE_CSP).toContain(
       "script-src 'unsafe-inline' 'unsafe-eval' https://zoom.us https://*.zoom.us https://dmogdx0jrul3u.cloudfront.net blob:",
     );

@@ -9,7 +9,8 @@ import { definePluginApp, useBbNavigate, useRealtime, useRpc, type PluginNavPane
 import { toast } from "sonner";
 import type { rpcContract } from "./server.ts";
 import { useZoomApi } from "./src/adapters/bb/use-zoom-api.ts";
-import { CALL_PAGE_PATH, CHANNEL_ACCOUNT_CHANGED } from "./src/core/contract.ts";
+import { CHANNEL_ACCOUNT_CHANGED } from "./src/core/contract.ts";
+import { callPageUrlFor } from "./src/core/redirect.ts";
 import type { Notify } from "./src/ui/api.ts";
 import { ZoomPage } from "./src/ui/zoom-page.tsx";
 
@@ -37,7 +38,7 @@ function ZoomPanel(_props: PluginNavPanelProps) {
   );
 
   return (
-    <ZoomPage api={api} origin={window.location.origin} callPageUrl={CALL_PAGE_PATH} openExternal={openExternal} refreshKey={refreshKey} notify={notify} />
+    <ZoomPage api={api} origin={window.location.origin} callPageUrl={callPageUrlFor(window.location.origin)} openExternal={openExternal} refreshKey={refreshKey} notify={notify} />
   );
 }
 

@@ -90,8 +90,25 @@ describe("ZoomPage", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Войти: Планёрка" }));
     const frame = (await screen.findByTitle("Звонок Zoom")) as HTMLIFrameElement;
     expect(frame.getAttribute("src")).toBe("/call-page");
-    expect(frame.getAttribute("sandbox")).toBe("allow-scripts allow-forms allow-popups allow-modals");
+    expect(frame.getAttribute("sandbox")).toBe("allow-scripts allow-same-origin allow-forms allow-popups allow-modals");
     expect(api.prepareCall).toHaveBeenCalledWith({ link: "https://us02web.zoom.us/j/1111111111?pwd=p1111111111", asHost: true });
+  });
+
+  it("opens the meeting in the Zoom app when BB has no separate origin for the call page", async () => {
+    const api = {
+      status: vi.fn(async () => CONNECTED),
+      redirectUri: vi.fn(async () => ""),
+      beginLogin: vi.fn(async () => ({ authorizeUrl: "" })),
+      disconnect: vi.fn(async () => undefined),
+      listMeetings: vi.fn(async () => [meeting("1111111111", "Планёрка", "2026-11-23T10:00:00Z")]),
+      createMeeting: vi.fn(),
+      prepareCall: vi.fn(async () => PREPARED),
+    } as unknown as ZoomPageApi;
+    const openExternal = vi.fn();
+    render(<ZoomPage api={api} origin="https://bb.example.net" callPageUrl={null} openExternal={openExternal} refreshKey={0} now={() => NOW} timeZone="UTC" />);
+    fireEvent.click(await screen.findByRole("button", { name: "Войти: Планёрка" }));
+    await waitFor(() => expect(openExternal).toHaveBeenCalledWith("https://zoom.us/j/1111111111?pwd=p1"));
+    expect(screen.queryByTitle("Звонок Zoom")).toBeNull();
   });
 
   it("joins a pasted link as a participant and refuses a foreign link", async () => {

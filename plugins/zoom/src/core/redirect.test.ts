@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DomainError } from "./errors.ts";
-import { redirectUriFor } from "./redirect.ts";
+import { callPageUrlFor, redirectUriFor } from "./redirect.ts";
 
 describe("redirectUriFor", () => {
   it("uses the loopback address BB is open on", () => {
@@ -32,4 +32,18 @@ describe("redirectUriFor", () => {
       expect((error as DomainError).code).toBe("invalid_input");
     }
   });
+});
+
+describe("callPageUrlFor", () => {
+  it("serves the call page from the other loopback name, so it gets an origin of its own", () => {
+    expect(callPageUrlFor("http://127.0.0.1:38886")).toBe("http://localhost:38886/api/v1/plugins/makosh-zoom/http/call");
+    expect(callPageUrlFor("http://localhost:38886")).toBe("http://127.0.0.1:38886/api/v1/plugins/makosh-zoom/http/call");
+  });
+
+  it.each(["https://bb.example.net", "http://192.168.1.5:38886", "not a url", ""])(
+    "has no separate origin to offer for %j",
+    (origin) => {
+      expect(callPageUrlFor(origin)).toBeNull();
+    },
+  );
 });

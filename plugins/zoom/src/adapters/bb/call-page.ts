@@ -1,5 +1,5 @@
-// The call page: a standalone document the plugin serves and BB shows in a
-// sandboxed iframe. Zoom's Meeting SDK (component view) injects a global
+// The call page: a standalone document the plugin serves and BB shows in an
+// iframe on a loopback origin of its own (never BB's origin). Zoom's Meeting SDK (component view) injects a global
 // stylesheet and needs React 18, so it gets a document of its own. The page
 // holds no secrets: the parent posts the signature and ZAK for one meeting.
 //
@@ -16,7 +16,9 @@ const VENDOR = ["react", "react-dom", "redux", "redux-thunk", "react-redux", "lo
 export const CALL_PAGE_CSP = [
   "default-src 'none'",
   "base-uri 'none'",
-  "frame-ancestors 'self'",
+  // BB embeds the page from the other loopback name (see callPageUrlFor).
+  "frame-ancestors http://127.0.0.1:* http://localhost:*",
+  "form-action 'none'",
   "worker-src blob:",
   "style-src 'unsafe-inline' https://zoom.us https://*.zoom.us",
   "script-src 'unsafe-inline' 'unsafe-eval' https://zoom.us https://*.zoom.us https://dmogdx0jrul3u.cloudfront.net blob:",

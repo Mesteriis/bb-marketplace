@@ -18,7 +18,7 @@ const TICK_MS = 30_000;
 interface CalendarScreenProps {
   api: ZoomPageApi;
   displayName: string | null;
-  callPageUrl: string;
+  callPageUrl: string | null;
   openExternal: (url: string) => void;
   notify: Notify;
   now: () => number;
@@ -64,14 +64,20 @@ export function CalendarScreen({ api, displayName, callPageUrl, openExternal, no
       setJoining(key);
       setJoinError(null);
       try {
-        setActive({ call: await api.prepareCall({ link, asHost }), title });
+        const call = await api.prepareCall({ link, asHost });
+        if (callPageUrl === null) {
+          openExternal(call.fallbackUrl);
+          notify("info", "Звонок внутри BB работает только при локальном адресе BB. Открываю встречу в Zoom");
+        } else {
+          setActive({ call, title });
+        }
       } catch (error) {
         setJoinError(messageOf(error));
       } finally {
         setJoining(null);
       }
     },
-    [api],
+    [api, callPageUrl, openExternal, notify],
   );
 
   const closeCall = useCallback(() => {
@@ -98,7 +104,7 @@ export function CalendarScreen({ api, displayName, callPageUrl, openExternal, no
     }
   }
 
-  if (active !== null) {
+  if (active !== null && callPageUrl !== null) {
     return <CallPanel call={active.call} title={active.title === "" ? "Встреча Zoom" : active.title} callPageUrl={callPageUrl} onClose={closeCall} openExternal={openExternal} />;
   }
 

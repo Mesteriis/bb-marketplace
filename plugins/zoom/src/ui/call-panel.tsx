@@ -1,5 +1,5 @@
-// Hosts one call. Zoom's Meeting SDK runs in a sandboxed iframe on the
-// plugin's call page; this panel hands it the meeting over postMessage and
+// Hosts one call. Zoom's Meeting SDK runs in an iframe on the plugin's call
+// page, which the host serves from an origin other than its own; this panel hands it the meeting over postMessage and
 // reacts to what it reports. Messages are accepted only from that iframe.
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -44,7 +44,7 @@ export function CallPanel({ call, callPageUrl, title, onClose, openExternal }: C
       const message = data as { type?: unknown; message?: unknown; code?: unknown };
       if (message.type === "zoom-call:ready") {
         setPhase({ kind: "joining" });
-        // The sandboxed page has an opaque origin, so the target cannot be named; the message goes to this one window.
+        // The message goes to this one window, whichever origin the host gave the call page.
         target.postMessage(
           { type: "zoom-call:join", call: { signature: call.signature, meetingNumber: call.meetingNumber, passcode: call.passcode, userName: call.userName, zak: call.zak } },
           "*",
@@ -110,7 +110,7 @@ export function CallPanel({ call, callPageUrl, title, onClose, openExternal }: C
           src={callPageUrl}
           title="Звонок Zoom"
           className="min-h-0 w-full flex-1 border-0 bg-black"
-          sandbox="allow-scripts allow-forms allow-popups allow-modals"
+          sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
           allow="camera *; microphone *; display-capture *; autoplay *; fullscreen *"
           referrerPolicy="no-referrer"
         />

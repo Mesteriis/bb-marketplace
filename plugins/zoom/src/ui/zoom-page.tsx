@@ -10,8 +10,8 @@ export interface ZoomPageProps {
   api: ZoomPageApi;
   /** The address BB is open on; the OAuth redirect is built from it. */
   origin: string;
-  /** Where the call page is served. */
-  callPageUrl: string;
+  /** Where the call page is served; null when the host has no separate origin for it, and meetings open in the Zoom app. */
+  callPageUrl: string | null;
   /** Opens a link outside the page (the consent screen, the Zoom app). */
   openExternal: (url: string) => void;
   /** Changes when the host learns the account was connected or disconnected. */

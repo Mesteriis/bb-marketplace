@@ -66,5 +66,3 @@ export const rpcSchemas = {
 
 /** Realtime channel: the account was connected or disconnected. */
 export const CHANNEL_ACCOUNT_CHANGED = "account.changed";
-/** The call page route under the plugin's HTTP root. */
-export const CALL_PAGE_PATH = "/api/v1/plugins/makosh-zoom/http/call";
