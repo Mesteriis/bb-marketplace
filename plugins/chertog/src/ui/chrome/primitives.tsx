@@ -127,7 +127,8 @@ interface ModalProps {
 /**
  * A modal dialog. Focus starts on the `[data-autofocus]` element (or the
  * first control), Tab cycles inside, and when the dialog goes away focus
- * returns to the element that had it before.
+ * returns to the element that had it before. Focus that the outcome itself
+ * moved elsewhere (to a tile, say) stays there.
  */
 export function Modal({ labelledBy, describedBy, onDismiss, className, children }: ModalProps) {
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -140,7 +141,9 @@ export function Modal({ labelledBy, describedBy, onDismiss, className, children 
       first.focus();
     }
     return () => {
-      if (source?.isConnected) source.focus();
+      const active = document.activeElement;
+      const leftBehind = active === null || active === document.body || dialog?.contains(active) === true;
+      if (leftBehind && source?.isConnected) source.focus();
     };
   }, []);
 

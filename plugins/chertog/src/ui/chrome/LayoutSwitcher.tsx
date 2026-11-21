@@ -61,10 +61,18 @@ function presetName(preset: string, layouts: readonly LayoutEntry[], limit: numb
   return freeName(layouts, limit, (number) => ({ base: preset, suffix: number === 1 ? "" : text.numberedName("", number) }));
 }
 
-type RowMode = { kind: "rename"; index: number; value: string; error: string | null } | { kind: "delete"; index: number } | null;
+/**
+ * The row being renamed or asked about. It names the layout by id, never by
+ * its place in the list: another window can add or remove rows meanwhile.
+ */
+type RowMode = { kind: "rename"; layoutId: string; value: string; error: string | null } | { kind: "delete"; layoutId: string } | null;
 
-const rowControl = (index: number, action: string) => (container: HTMLElement) =>
-  container.querySelector<HTMLElement>(`[data-row="${index}"] [data-action="${action}"]`);
+const rowControl = (layoutId: string, selector: string) => (container: HTMLElement) =>
+  Array.from(container.querySelectorAll<HTMLElement>("[data-row-id]"))
+    .find((row) => row.dataset.rowId === layoutId)
+    ?.querySelector<HTMLElement>(selector);
+
+const rowAction = (layoutId: string, action: string) => rowControl(layoutId, `[data-action="${action}"]`);
 
 export function LayoutSwitcher(props: LayoutSwitcherProps) {
   const { layouts, activeLayoutId, presets, saveStatus } = props;
@@ -74,7 +82,9 @@ export function LayoutSwitcher(props: LayoutSwitcherProps) {
   const listRef = useRef<HTMLUListElement>(null);
   const [newName, setNewName] = useState("");
   const [createError, setCreateError] = useState<string | null>(null);
-  const [rowMode, setRowMode] = useState<RowMode>(null);
+  const [storedRowMode, setRowMode] = useState<RowMode>(null);
+  // A row whose layout is gone has nothing left to rename or delete.
+  const rowMode = storedRowMode !== null && layouts.some((layout) => layout.id === storedRowMode.layoutId) ? storedRowMode : null;
   const ids = { create: useId(), createError: useId(), rowError: useId(), rowNote: useId() };
 
   const active = layouts.find((layout) => layout.id === activeLayoutId);
@@ -120,19 +130,19 @@ export function LayoutSwitcher(props: LayoutSwitcherProps) {
     const checked = checkName(rowMode.value, layouts, limit, layout.id);
     if (checked.name === null) return setRowMode({ ...rowMode, error: checked.error });
     if (checked.name !== layout.name) props.onRename(layout.id, checked.name);
-    leaveRow(rowMode.index, "switch");
+    leaveRow(layout.id, "switch");
   }
 
-  function leaveRow(index: number, focusAction: string) {
+  function leaveRow(layoutId: string, focusAction: string) {
     setRowMode(null);
-    requestFocus(rowControl(index, focusAction));
+    requestFocus(rowAction(layoutId, focusAction));
   }
 
   function onPopoverKeyDown(event: KeyboardEvent) {
     if (event.key === "Escape" && rowMode !== null) {
       // Escape leaves the rename or the delete question first, and the list on the next press.
       event.stopPropagation();
-      leaveRow(rowMode.index, rowMode.kind === "rename" ? "rename" : "delete");
+      leaveRow(rowMode.layoutId, rowMode.kind === "rename" ? "rename" : "delete");
       return;
     }
     if (event.key === "Escape") reset();
@@ -166,9 +176,9 @@ export function LayoutSwitcher(props: LayoutSwitcherProps) {
                 if (rowMode === null) moveByArrows(event, listRef.current);
               }}
             >
-              {layouts.map((layout, index) => (
-                <li key={layout.id} data-row={index} className="flex min-h-7 flex-col gap-1">
-                  {rowMode?.kind === "rename" && rowMode.index === index ? (
+              {layouts.map((layout) => (
+                <li key={layout.id} data-row-id={layout.id} className="flex min-h-7 flex-col gap-1">
+                  {rowMode?.kind === "rename" && rowMode.layoutId === layout.id ? (
                     <form className="flex flex-col gap-1" noValidate onSubmit={(event) => submitRename(event, layout)}>
                       <div className="flex items-center gap-1">
                         <input
@@ -183,7 +193,7 @@ export function LayoutSwitcher(props: LayoutSwitcherProps) {
                         <button type="submit" className={classes.primaryButton}>
                           {text.renameSave}
                         </button>
-                        <button type="button" className={classes.button} onClick={() => leaveRow(index, "rename")}>
+                        <button type="button" className={classes.button} onClick={() => leaveRow(layout.id, "rename")}>
                           {text.renameCancel}
                         </button>
                       </div>
@@ -193,13 +203,13 @@ export function LayoutSwitcher(props: LayoutSwitcherProps) {
                         </p>
                       )}
                     </form>
-                  ) : rowMode?.kind === "delete" && rowMode.index === index ? (
+                  ) : rowMode?.kind === "delete" && rowMode.layoutId === layout.id ? (
                     <div role="group" aria-labelledby={ids.rowNote} className="flex flex-col gap-1 rounded-md bg-secondary p-1.5">
                       <p id={ids.rowNote} className="text-xs">
                         {text.removeQuestion(layout.name)}
                       </p>
                       <div className="flex justify-end gap-1">
-                        <button type="button" data-action="cancel-delete" className={classes.button} onClick={() => leaveRow(index, "delete")}>
+                        <button type="button" data-action="cancel-delete" className={classes.button} onClick={() => leaveRow(layout.id, "delete")}>
                           {text.removeCancel}
                         </button>
                         <button
@@ -234,8 +244,8 @@ export function LayoutSwitcher(props: LayoutSwitcherProps) {
                         aria-label={text.rename(layout.name)}
                         title={text.rename(layout.name)}
                         onClick={() => {
-                          setRowMode({ kind: "rename", index, value: layout.name, error: null });
-                          requestFocus((container) => container.querySelector<HTMLElement>(`[data-row="${index}"] input`));
+                          setRowMode({ kind: "rename", layoutId: layout.id, value: layout.name, error: null });
+                          requestFocus(rowControl(layout.id, "input"));
                         }}
                       >
                         <Icon name="pencil" />
@@ -257,8 +267,8 @@ export function LayoutSwitcher(props: LayoutSwitcherProps) {
                         title={layouts.length === 1 ? text.removeLastHint : text.remove(layout.name)}
                         disabled={layouts.length === 1}
                         onClick={() => {
-                          setRowMode({ kind: "delete", index });
-                          requestFocus(rowControl(index, "cancel-delete"));
+                          setRowMode({ kind: "delete", layoutId: layout.id });
+                          requestFocus(rowAction(layout.id, "cancel-delete"));
                         }}
                       >
                         <Icon name="trash" />

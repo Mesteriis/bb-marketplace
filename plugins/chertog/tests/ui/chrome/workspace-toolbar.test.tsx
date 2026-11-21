@@ -117,6 +117,47 @@ describe("WorkspaceToolbar", () => {
     expect(pickerDialog()).toBeNull();
   });
 
+  it("leaves the focus on the tile that onFocusExisting focused", async () => {
+    const user = userEvent.setup();
+    const unused = () => {
+      throw new Error("This callback is not part of the test");
+    };
+    render(
+      <>
+        <WorkspaceToolbar
+          layouts={{
+            layouts: [{ id: "l1", name: "Разработка" }],
+            activeLayoutId: "l1",
+            presets: [],
+            saveStatus: "saved",
+            onSwitch: unused,
+            onCreateFromCurrent: unused,
+            onCreateFromPreset: unused,
+            onRename: unused,
+            onDuplicate: unused,
+            onDelete: unused,
+            onReload: unused,
+          }}
+          content={{
+            sections: SECTIONS,
+            tileCount: 3,
+            tileLimit: 8,
+            onOpen: unused,
+            onFocusExisting: () => screen.getByRole("textbox", { name: "Тайл Ревьюер" }).focus(),
+          }}
+          hiddenPanels={{ panels: [], onShow: unused, onClose: unused }}
+        />
+        <input aria-label="Тайл Ревьюер" />
+      </>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Добавить панель" }));
+    await user.click(screen.getByRole("button", { name: /Ревьюер/ }));
+
+    expect(pickerDialog()).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "Тайл Ревьюер" }));
+  });
+
   it("at the limit asks where to put the panel; cancelling twice leaves everything as it was", async () => {
     const { user, calls } = setup(8);
     const add = screen.getByRole("button", { name: "Добавить панель" });

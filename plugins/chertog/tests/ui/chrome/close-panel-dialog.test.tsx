@@ -137,4 +137,36 @@ describe("ClosePanelDialog", () => {
     expect(screen.getByRole("button", { name: "Скрыть панель" }).getAttribute("data-variant")).toBe("primary");
     expect(screen.getByRole("button", { name: "Отмена" }).getAttribute("data-variant")).toBe("neutral");
   });
+
+  it("leaves the focus where an outcome put it", async () => {
+    const user = userEvent.setup();
+    function Moving() {
+      const [open, setOpen] = useState(false);
+      const close = () => setOpen(false);
+      return (
+        <>
+          <button type="button" onClick={() => setOpen(true)}>
+            Закрыть панель
+          </button>
+          <input aria-label="Соседний тайл" />
+          <ClosePanelDialog
+            open={open}
+            panelTitle="Zoom: Планёрка"
+            onHide={() => {
+              screen.getByRole("textbox", { name: "Соседний тайл" }).focus();
+              close();
+            }}
+            onCloseAndEnd={close}
+            onCancel={close}
+          />
+        </>
+      );
+    }
+    render(<Moving />);
+
+    await user.click(screen.getByRole("button", { name: "Закрыть панель" }));
+    await user.click(screen.getByRole("button", { name: "Скрыть панель" }));
+
+    expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "Соседний тайл" }));
+  });
 });

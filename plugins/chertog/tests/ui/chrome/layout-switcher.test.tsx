@@ -429,3 +429,65 @@ describe("LayoutSwitcher: keyboard", () => {
     expect(screen.queryByRole("dialog", { name: "Раскладки" })).toBeNull();
   });
 });
+
+describe("LayoutSwitcher: the list changes while a row is being edited", () => {
+  const THREE: LayoutEntry[] = [
+    { id: "a", name: "Альфа" },
+    { id: "b", name: "Бета" },
+    { id: "c", name: "Гамма" },
+  ];
+  const props = (calls: ReturnType<typeof spies>, layouts: LayoutEntry[]) => ({
+    layouts,
+    activeLayoutId: "c",
+    presets: [],
+    saveStatus: "saved" as const,
+    ...calls,
+  });
+
+  it("the delete question stays with its layout when another window removes a row above it", async () => {
+    const user = userEvent.setup();
+    const calls = spies();
+    const view = render(<LayoutSwitcher {...props(calls, THREE)} />);
+
+    await user.click(screen.getByRole("button", { name: "Раскладка: Гамма" }));
+    await user.click(screen.getByRole("button", { name: "Удалить «Бета»" }));
+    view.rerender(<LayoutSwitcher {...props(calls, THREE.slice(1))} />);
+
+    expect(screen.getByRole("group", { name: "Удалить раскладку «Бета»? Панели останутся открытыми." })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Удалить" }));
+
+    expect(calls.onDelete).toHaveBeenCalledTimes(1);
+    expect(calls.onDelete).toHaveBeenLastCalledWith("b");
+  });
+
+  it("drops the delete question when its layout is gone, and deletes nothing", async () => {
+    const user = userEvent.setup();
+    const calls = spies();
+    const view = render(<LayoutSwitcher {...props(calls, THREE)} />);
+
+    await user.click(screen.getByRole("button", { name: "Раскладка: Гамма" }));
+    await user.click(screen.getByRole("button", { name: "Удалить «Бета»" }));
+    view.rerender(<LayoutSwitcher {...props(calls, [THREE[0], THREE[2]])} />);
+
+    expect(screen.queryByRole("button", { name: "Удалить" })).toBeNull();
+    expect(screen.queryByRole("group")).toBeNull();
+    expect(screen.getByRole("button", { name: "Удалить «Гамма»" })).toBeTruthy();
+    expect(calls.onDelete).not.toHaveBeenCalled();
+  });
+
+  it("the rename stays with its layout when a row above it is removed", async () => {
+    const user = userEvent.setup();
+    const calls = spies();
+    const view = render(<LayoutSwitcher {...props(calls, THREE)} />);
+
+    await user.click(screen.getByRole("button", { name: "Раскладка: Гамма" }));
+    await user.click(screen.getByRole("button", { name: "Переименовать «Бета»" }));
+    view.rerender(<LayoutSwitcher {...props(calls, THREE.slice(1))} />);
+    const field = screen.getByRole("textbox", { name: "Новое имя раскладки «Бета»" });
+    await user.clear(field);
+    await user.type(field, "Дельта{Enter}");
+
+    expect(calls.onRename).toHaveBeenCalledTimes(1);
+    expect(calls.onRename).toHaveBeenLastCalledWith("b", "Дельта");
+  });
+});

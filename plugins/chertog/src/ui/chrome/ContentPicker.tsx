@@ -29,9 +29,10 @@ export interface ContentPickerProps {
   onFocusExisting: (tileId: string) => void;
 }
 
+/** The item the limit question is about, by id: its entry is read from the current sections each time. */
 interface PendingChoice {
   providerId: string;
-  item: ContentItem;
+  itemId: string;
 }
 
 function matches(item: ContentItem, query: string): boolean {
@@ -45,18 +46,25 @@ export function ContentPicker(props: ContentPickerProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const requestFocus = usePendingFocus(rootRef);
   const [search, setSearch] = useState("");
-  const [pending, setPending] = useState<PendingChoice | null>(null);
+  const [pendingChoice, setPending] = useState<PendingChoice | null>(null);
   const generatedHeadingId = useId();
   const headingId = props.headingId ?? generatedHeadingId;
   const ids = { base: useId(), limit: useId() };
 
   const query = search.trim().toLocaleLowerCase();
   const atLimit = target === "new-tile" && tileCount >= tileLimit;
+  // The sections can change while the question is open. An item that is gone
+  // ends the question; one that got opened meanwhile is focused, not doubled.
+  const pendingItem =
+    pendingChoice === null
+      ? undefined
+      : sections.find((section) => section.providerId === pendingChoice.providerId)?.items.find((item) => item.id === pendingChoice.itemId);
+  const pending = pendingChoice !== null && pendingItem !== undefined ? { providerId: pendingChoice.providerId, item: pendingItem } : null;
 
   function choose(providerId: string, item: ContentItem) {
     if (item.openInTileId !== undefined) return props.onFocusExisting(item.openInTileId);
     if (atLimit) {
-      setPending({ providerId, item });
+      setPending({ providerId, itemId: item.id });
       requestFocus((container) => container.querySelector<HTMLElement>("[data-limit-default]"));
       return;
     }
@@ -66,6 +74,7 @@ export function ContentPicker(props: ContentPickerProps) {
   function place(placement: ContentPlacement) {
     if (pending === null) return;
     setPending(null);
+    if (pending.item.openInTileId !== undefined) return props.onFocusExisting(pending.item.openInTileId);
     props.onOpen({ providerId: pending.providerId, itemId: pending.item.id, placement });
   }
 

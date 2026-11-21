@@ -242,3 +242,56 @@ describe("ContentPicker: keyboard", () => {
     expect(onFocusExisting).not.toHaveBeenCalled();
   });
 });
+
+describe("ContentPicker: the sections change while the limit question is open", () => {
+  const withFirst = (change: (items: ContentSection["items"]) => ContentSection["items"]): ContentSection[] => [
+    { ...SECTIONS[0], items: change(SECTIONS[0].items) },
+    ...SECTIONS.slice(1),
+  ];
+
+  function open() {
+    const onOpen = vi.fn<(choice: ContentChoice) => void>();
+    const onFocusExisting = vi.fn<(tileId: string) => void>();
+    const picker = (sections: ContentSection[]) => (
+      <ContentPicker target="new-tile" sections={sections} tileCount={8} tileLimit={8} onOpen={onOpen} onFocusExisting={onFocusExisting} />
+    );
+    const view = render(picker(SECTIONS));
+    return { user: userEvent.setup(), onOpen, onFocusExisting, update: (sections: ContentSection[]) => view.rerender(picker(sections)) };
+  }
+
+  it.each(["Открыть вкладкой в группе", "Выбрать место…"])(
+    "«%s» focuses the tile when the item got opened meanwhile, instead of opening a duplicate",
+    async (button) => {
+      const { user, onOpen, onFocusExisting, update } = open();
+
+      await user.click(item(/Исполнитель/));
+      update(withFirst((items) => items.map((entry) => (entry.id === "t1" ? { ...entry, openInTileId: "tile-9" } : entry))));
+      await user.click(screen.getByRole("button", { name: button }));
+
+      expect(onFocusExisting).toHaveBeenCalledTimes(1);
+      expect(onFocusExisting).toHaveBeenLastCalledWith("tile-9");
+      expect(onOpen).not.toHaveBeenCalled();
+    },
+  );
+
+  it("returns to the list when the item is gone, and opens nothing", async () => {
+    const { user, onOpen, onFocusExisting, update } = open();
+
+    await user.click(item(/Исполнитель/));
+    update(withFirst((items) => items.filter((entry) => entry.id !== "t1")));
+
+    expect(screen.queryByRole("group", { name: "Свободных мест нет" })).toBeNull();
+    expect(titles()).toEqual(["Ревьюер", "Черновик релиза"]);
+    expect(onOpen).not.toHaveBeenCalled();
+    expect(onFocusExisting).not.toHaveBeenCalled();
+  });
+
+  it("names the item by its current title", async () => {
+    const { user, update } = open();
+
+    await user.click(item(/Исполнитель/));
+    update(withFirst((items) => items.map((entry) => (entry.id === "t1" ? { ...entry, title: "Исполнитель 2" } : entry))));
+
+    expect(screen.getByRole("group", { name: "Свободных мест нет" }).textContent).toContain("«Исполнитель 2»");
+  });
+});
