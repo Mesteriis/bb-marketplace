@@ -105,8 +105,8 @@ describe.each<EditorKind>(["textarea", "contenteditable"])("transfer into a %s e
     const { fixture, session, evaluations } = rig(kind, { [PATH_A]: "draft" });
 
     await session.bind(URL_A);
-    await Promise.all([session.confirm(MARKER), session.confirm(MARKER)]);
-    await session.confirm(MARKER);
+    expect(await Promise.all([session.confirm(MARKER), session.confirm(MARKER)])).toEqual(["handed-off", "ignored"]);
+    expect(await session.confirm(MARKER)).toBe("ignored");
 
     expect(fixture.draft(PATH_A)).toBe("draft" + MARKER);
     expect(evaluations).toHaveLength(2);
@@ -287,5 +287,39 @@ describe("cancelling and copying", () => {
 
     expect(session.getState()).toEqual({ kind: "unbound", refusal: "text-too-long" });
     expect(fixture.draft(PATH_A)).toBe("draft");
+  });
+});
+
+describe("a session dropped while the page is answering", () => {
+  it("still reports that the editor took the text", async () => {
+    let answer: (value: unknown) => void = () => {};
+    const answers: Array<Promise<unknown>> = [
+      Promise.resolve({ top: true, origin: "https://chatgpt.com", path: PATH_A }),
+      new Promise((resolve) => (answer = resolve)),
+    ];
+    const page: PagePort = { evaluate: () => answers.shift() ?? Promise.reject(new Error("extra call")) };
+    const { session } = rig("textarea", {}, page);
+
+    await session.bind(URL_A);
+    const writing = session.confirm(TEXT);
+    session.dispose();
+    answer({ status: "handed-off" });
+
+    expect(await writing).toBe("handed-off");
+  });
+
+  it("reports an unknown result when no answer comes", async () => {
+    const answers: Array<Promise<unknown>> = [
+      Promise.resolve({ top: true, origin: "https://chatgpt.com", path: PATH_A }),
+      new Promise(() => {}),
+    ];
+    const page: PagePort = { evaluate: () => answers.shift() ?? Promise.reject(new Error("extra call")) };
+    const { session } = rig("textarea", {}, page);
+
+    await session.bind(URL_A);
+    const writing = session.confirm(TEXT);
+    session.dispose();
+
+    expect(await writing).toBe("unknown");
   });
 });

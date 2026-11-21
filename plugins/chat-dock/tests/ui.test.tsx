@@ -222,4 +222,28 @@ describe("the Browser toolbar control", () => {
     expect(fixture.draft(PATH_A)).toBe("draft");
     expect(services.staging.get()?.text).toBe(MARKER);
   });
+
+  it("clears the staged text and tells the user when the panel is closed during the write", async () => {
+    let answer: (value: unknown) => void = () => {};
+    const answers: Array<Promise<unknown>> = [
+      Promise.resolve({ top: true, origin: "https://chatgpt.com", path: PATH_A }),
+      new Promise((resolve) => (answer = resolve)),
+    ];
+    const slowPage: PagePort = { evaluate: () => answers.shift() ?? Promise.reject(new Error("extra call")) };
+    const services = makeServices();
+    services.consent.grant();
+    services.staging.stage({ text: MARKER, source: { kind: "manual" } });
+    render(toolbar(services, URL_A, slowPage));
+
+    fireEvent.click(screen.getByRole("button", { name: "Вставить в ChatGPT…" }));
+    await settle();
+    fireEvent.click(screen.getByRole("button", { name: "Вставить в черновик" }));
+    fireEvent.click(screen.getByRole("button", { name: "Отмена" }));
+    answer({ status: "handed-off" });
+    await settle();
+
+    expect(services.staging.get()).toBeNull();
+    expect(services.notes).toEqual(["Текст передан в поле ввода ChatGPT. Проверьте черновик."]);
+    expect(services.copied).toEqual([]);
+  });
 });

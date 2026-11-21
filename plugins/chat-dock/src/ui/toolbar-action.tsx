@@ -47,6 +47,8 @@ export function ToolbarAction({
   const panelRef = useRef<HTMLDivElement>(null);
   const urlRef = useRef(url);
   urlRef.current = url;
+  const sessionRef = useRef<TransferSession | null>(null);
+  sessionRef.current = session;
 
   const clipboard = useMemo(() => ({ writeText: copyText }), [copyText]);
   const onChatGpt = isChatGptUrl(url);
@@ -100,8 +102,17 @@ export function ToolbarAction({
 
   async function insert(event: MouseEvent) {
     if (!isUserAction(event) || session === null || staged === null) return;
-    await session.confirm(staged.text);
-    if (session.getState().kind === "handed-off") staging.clear();
+    const used = session;
+    const outcome = await used.confirm(staged.text);
+    // The staged text is dropped once it may be in a draft, so it cannot be
+    // inserted a second time by reopening the panel.
+    if (outcome === "handed-off" || outcome === "unknown") staging.clear();
+    if (sessionRef.current === used) return;
+    // The panel was closed while the page was answering: say what happened.
+    if (outcome === "handed-off") notify("info", "Текст передан в поле ввода ChatGPT. Проверьте черновик.");
+    if (outcome === "unknown") {
+      notify("error", "Результат вставки неизвестен: страница не ответила. Проверьте черновик перед повтором.");
+    }
   }
 
   async function copy(event: MouseEvent) {
