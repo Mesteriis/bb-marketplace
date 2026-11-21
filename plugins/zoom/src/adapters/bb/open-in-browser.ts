@@ -1,6 +1,6 @@
 // Opens a page of this BB server in the machine's default browser. BB's own
 // windows cannot capture the screen, so a call that needs screen sharing
-// them runs there. Only loopback addresses are opened.
+// runs there. Only loopback addresses are opened.
 import { execFile } from "node:child_process";
 
 type Run = (command: string, args: string[]) => Promise<void>;
