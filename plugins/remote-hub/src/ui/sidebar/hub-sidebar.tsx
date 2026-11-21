@@ -103,7 +103,7 @@ export function HubSidebar(props: HubSidebarProps) {
               onClick={() => (r.protocol === "pve" ? toggle(r.id) : props.onConnect(r.id))}
             >
               {r.protocol === "pve" && <Icon name={r.expanded ? "ChevronDown" : "ChevronRight"} className="size-3 shrink-0 text-muted-foreground" />}
-              <Icon name={r.protocol === "pve" ? "Server" : r.protocol === "rdp" ? "Monitor" : "Terminal"} className="size-4 shrink-0 text-muted-foreground" />
+              <Icon name={r.protocol === "pve" ? "ComputerTerminal01" : r.protocol === "rdp" ? "ComputerTerminal01" : "Terminal"} className="size-4 shrink-0 text-muted-foreground" />
               <span className="min-w-0 flex-1 truncate">{r.name}</span>
               <span className={TRAIL}>
                 <ProtocolTag protocol={r.protocol} />

@@ -52,7 +52,7 @@ export function sessionKindLabel(kind: DeskSessionKind): string {
 }
 
 export function SessionIcon({ kind, className }: { kind: DeskSessionKind; className?: string }) {
-  return <Icon name={kind === "ssh" || kind === "pve-terminal" ? "Terminal" : "Monitor"} className={className} />;
+  return <Icon name={kind === "ssh" || kind === "pve-terminal" ? "Terminal" : "ComputerTerminal01"} className={className} />;
 }
 
 export function SessionStatus({ session }: { session: Pick<DeskSession, "state" | "attempt" | "owner"> }) {
