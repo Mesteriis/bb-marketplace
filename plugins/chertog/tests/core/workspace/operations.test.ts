@@ -164,6 +164,7 @@ describe("panels", () => {
     ["a reference with an instance id", "group-1", "terminal", { ref: { provider: "remote-ssh", params: {}, instanceId: "panel-3" }, title: "SSH" }, "invalid-panel"],
     ["a reference with an instance id among its parameters", "group-1", "terminal", { ref: { provider: "remote-ssh", params: { instanceId: "live-1" } }, title: "SSH" }, "invalid-panel"],
     ["a title with a link that has a password", "group-1", "terminal", { ref: { provider: "remote-ssh", params: {} }, title: "https://zoom.example/j/812?pwd=fixture" }, "invalid-panel"],
+    ["a title with a marked token", "group-1", "terminal", { ref: { provider: "remote-ssh", params: {} }, title: "Authorization: Bearer synthetic-test-value" }, "invalid-panel"],
     ["an empty title", "group-1", "terminal", { ref: { provider: "remote-ssh", params: {} }, title: " " }, "invalid-panel"],
     ["a title of 121 characters", "group-1", "terminal", { ref: { provider: "remote-ssh", params: {} }, title: "я".repeat(121) }, "invalid-panel"],
     ["a panel id with a space", "group-1", "my terminal", { ref: { provider: "remote-ssh", params: {} }, title: "SSH" }, "invalid-id"],
@@ -197,12 +198,19 @@ describe("panels", () => {
     expect(captionFrom("  Созвон   https://zoom.example/j/812?pwd=fixture сегодня ", "title")).toBe("Созвон сегодня");
     expect(captionFrom("[сборка](https://root:hunter2@build-1) упала", "title")).toBe("упала");
     expect(captionFrom("Пароль: hunter2", "title")).toBeNull();
+    expect(captionFrom("Сервер пароль: hunter2", "title")).toBe("Сервер");
     expect(captionFrom("root:hunter2@build-1", "title")).toBeNull();
     expect(captionFrom("Fix 50% CPU\nusage", "title")).toBe("Fix 50% CPU usage");
     expect(captionFrom("я".repeat(130), "title")).toBe("я".repeat(120));
     expect(captionFrom("я".repeat(70), "name")).toBe("я".repeat(64));
     expect(captionFrom("   ", "name")).toBeNull();
-    expect(done(setPanelTitle(stageADocument(), "thread-a", captionFrom("Тред https://x.example/?token=1 A", "title") ?? "Тред")).panels["thread-a"].title).toBe("Тред A");
+    expect(captionFrom("Authorization: Bearer synthetic-test-value", "title")).toBeNull();
+    expect(captionFrom("Сборка BEARER synthetic-test-value", "title")).toBe("Сборка");
+    expect(captionFrom("Fix token refresh", "title")).toBe("Fix");
+    expect(captionFrom("Вход api key synthetic-test-value", "title")).toBe("Вход");
+    expect(captionFrom("Вход Basic dXNlcjpzM2Ny сегодня", "title")).toBe("Вход");
+    expect(captionFrom("Basic layout №2", "title")).toBe("Basic layout №2");
+    expect(done(setPanelTitle(stageADocument(), "thread-a", captionFrom("Тред https://x.example/?page=1 A", "title") ?? "Тред")).panels["thread-a"].title).toBe("Тред A");
   });
 
   it("removing a panel no layout shows any more forgets its reference", () => {

@@ -165,6 +165,13 @@ const SECRET_PANELS: [name: string, panel: unknown, reason: string][] = [
   ["a PTY id in capitals among the parameters", { ref: { provider: "remote-ssh", params: { host: "build-1", PTYID: "pty-3" } }, title: "SSH" }, "ref.params.PTYID: A panel reference must not carry a live handle"],
   ["a process id with a prefix among the parameters", { ref: { provider: "remote-ssh", params: { host: "build-1", shellPid: 4242 } }, title: "SSH" }, "ref.params.shellPid: A panel reference must not carry a live handle"],
   ["a socket among the parameters", { ref: { provider: "remote-ssh", params: { host: "build-1", socketFd: 4242 } }, title: "SSH" }, "ref.params.socketFd: A panel reference must not carry a live handle"],
+  ["a title with an Authorization header", { ref: { provider: "remote-ssh", params: { host: "build-1" } }, title: "Authorization: Bearer synthetic-test-value" }, "title: A title must not carry a link or credentials"],
+  ["a title with a bearer marker in capitals", { ref: { provider: "remote-ssh", params: { host: "build-1" } }, title: "BEARER synthetic-test-value" }, "title: A title must not carry a link or credentials"],
+  ["a title with a basic credential", { ref: { provider: "remote-ssh", params: { host: "build-1" } }, title: "Basic dXNlcjpzM2Ny" }, "title: A title must not carry a link or credentials"],
+  ["a title with a token marker without a colon", { ref: { provider: "remote-ssh", params: { host: "build-1" } }, title: "token synthetic-test-value" }, "title: A title must not carry a link or credentials"],
+  ["a title with an API key marker", { ref: { provider: "remote-ssh", params: { host: "build-1" } }, title: "Api Key synthetic-test-value" }, "title: A title must not carry a link or credentials"],
+  ["a title with an access token marker in one word", { ref: { provider: "remote-ssh", params: { host: "build-1" } }, title: "accessToken synthetic-test-value" }, "title: A title must not carry a link or credentials"],
+  ["a title with a cookie marker", { ref: { provider: "remote-ssh", params: { host: "build-1" } }, title: "Cookie session-synthetic" }, "title: A title must not carry a link or credentials"],
   ["an instance id beside the reference", { ref: { provider: "bb-thread", params: { threadId: "thr_b" } }, title: "Тред B", instanceId: "panel-7" }, 'Unrecognized key: "instanceId"'],
 ];
 
@@ -215,7 +222,7 @@ describe("secrets and live handles", () => {
       migratedFrom: null,
       dropped: [{ kind: "panel", panelId: "thread-b", reason }],
     });
-    expect(JSON.stringify(result)).not.toMatch(/tok-1|hunter2|Привет|pwd|panel-7|4242|pty-3/);
+    expect(JSON.stringify(result)).not.toMatch(/tok-1|hunter2|Привет|pwd|panel-7|4242|pty-3|synthetic|dXNlcjpzM2Ny/);
   });
 
   it("drops a panel whose id is not an identifier, without repeating the id", () => {
@@ -256,7 +263,7 @@ describe("identifiers that only look like live handles", () => {
     },
   );
 
-  it.each([["Тред A"], ["Fix 50% CPU usage"], ["Q&A (черновик)"], ["build-1: логи, часть 2/3"], ["Что дальше?"], ["C# & F#"]])(
+  it.each([["Тред A"], ["Fix 50% CPU usage"], ["Q&A (черновик)"], ["build-1: логи, часть 2/3"], ["Что дальше?"], ["C# & F#"], ["Basic layout"], ["Basic v2"], ["Basic Authentication"], ["Дизайн №2"]])(
     "keeps the title %s",
     (title) => {
       const raw = stageAJson();

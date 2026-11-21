@@ -62,31 +62,57 @@ export const idSchema = z.string().regex(ID);
 /** A link, an address or a `key=value` pair, in plain form or behind percent, HTML or backslash escapes. */
 const UNSAFE_WORD = /:\/\/|[@=\\]|%[0-9a-f]{2}|&#|&[a-z][a-z0-9]*;/i;
 
-/** A secret named in words: `password: …`, `токен: …`. */
-const NAMED_SECRET = /(?:password|passwd|passcode|passphrase|pwd|secret|token|api[-_ ]?key|пароль|токен)\s*:/i;
+/**
+ * A word that marks what follows as a credential, in any case and inside a
+ * longer word: `Authorization`, `Bearer`, `accessToken`, `api key`, `пароль`.
+ */
+const SECRET_MARKER = /authorization|bearer|passw|passcode|passphrase|pwd|secret|token|api[-_ ]?key|credential|cookie|пароль|токен/i;
+
+/** `Basic` before an encoded credential. `Basic layout` is a name; `Basic dXNlcjpwdw` is not. */
+const BASIC_SCHEME = /basic\s+(\S+)/gi;
+
+function isEncodedCredential(word: string): boolean {
+  return word.length >= 8 && /^[A-Za-z0-9+/_.~-]+$/.test(word) && /\d|[a-z][A-Z]/.test(word);
+}
+
+/** Whether the text names a credential: a marker word, or the `Basic` scheme with its value. */
+function hasMarkedSecret(plain: string): boolean {
+  if (SECRET_MARKER.test(plain)) return true;
+  return [...plain.matchAll(BASIC_SCHEME)].some((match) => isEncodedCredential(match[1]));
+}
 
 /**
  * Whether a caption may be stored. A caption is a name a person reads, so it
  * holds no link at all, no address with `@`, no `key=value` pair, no escape
- * sequence that could hide one of them, and no secret named in words.
+ * sequence that could hide one of them, and no word that marks a credential.
  * Lookalike characters such as a full-width `＠` count as their plain form.
  */
 function isSafeCaption(text: string): boolean {
   const plain = text.normalize("NFKC");
-  return !UNSAFE_WORD.test(plain) && !NAMED_SECRET.test(plain);
+  return !UNSAFE_WORD.test(plain) && !hasMarkedSecret(plain);
 }
 
 /**
  * A caption made from text a provider reports, such as a thread or a page
  * title: on one line, without the words a caption may not carry, cut to the
- * length of a panel title or a layout name. `null` when nothing is left or
- * the text names a secret.
+ * length of a panel title or a layout name. A word that marks a credential
+ * ends the caption, because what follows it may be the credential. `null`
+ * when nothing is left.
  */
 export function captionFrom(text: string, kind: "title" | "name"): string | null {
-  // A secret named in words cannot be cut out: which words are its value is unknown.
-  if (NAMED_SECRET.test(text.normalize("NFKC"))) return null;
-  const words = text.split(/[\s\u0000-\u001f\u007f]+/).filter((word) => word !== "" && isSafeCaption(word));
-  const caption = words.join(" ").slice(0, kind === "title" ? MAX_TITLE_LENGTH : MAX_NAME_LENGTH).trim();
+  const kept: string[] = [];
+  for (const word of text.split(/[\s\u0000-\u001f\u007f]+/)) {
+    const plain = word.normalize("NFKC");
+    if (word === "" || UNSAFE_WORD.test(plain)) continue;
+    const previous = kept.length === 0 ? "" : kept[kept.length - 1].normalize("NFKC");
+    if (hasMarkedSecret(previous + " " + plain)) {
+      // A marker of two words, `api key` or `Basic` with its value: the first word goes too.
+      if (!SECRET_MARKER.test(plain) || (/^basic$/i.test(previous) && isEncodedCredential(plain))) kept.pop();
+      break;
+    }
+    kept.push(word);
+  }
+  const caption = kept.join(" ").slice(0, kind === "title" ? MAX_TITLE_LENGTH : MAX_NAME_LENGTH).trim();
   return caption !== "" && isSafeCaption(caption) ? caption : null;
 }
 

@@ -151,6 +151,8 @@ describe("decideSave", () => {
     ["an instance id among the parameters of a reference", (document: any) => (document.panels.frame.ref.params.instanceId = "live-1"), "panels.frame.ref.params.instanceId: A panel reference must not carry a live handle"],
     ["a link with a password in a title", (document: any) => (document.panels.frame.title = "https://zoom.example/j/812?pwd=fixture"), "panels.frame.title: A title must not carry a link or credentials"],
     ["a link with a password in a layout name", (document: any) => (document.layouts[0].name = "https://zoom.example/j/812?pwd=fixture"), "layouts.0.name: A name must not carry a link or credentials"],
+    ["a marked token in a title", (document: any) => (document.panels.frame.title = "Authorization: Bearer synthetic-test-value"), "panels.frame.title: A title must not carry a link or credentials"],
+    ["a marked token in a layout name", (document: any) => (document.layouts[0].name = "bearer synthetic-test-value"), "layouts.0.name: A name must not carry a link or credentials"],
     ["a live handle", (document: any) => (document.panels.frame.instanceId = "panel-2"), 'panels.frame: Unrecognized key: "instanceId"'],
     ["a tile for a panel without a reference", (document: any) => delete document.panels.frame, "layouts.0.workspace: the panel frame has no reference"],
     ["an active layout that does not exist", (document: any) => (document.activeLayoutId = "layout-x"), "activeLayoutId: the active layout layout-x does not exist"],
@@ -415,6 +417,69 @@ describe("two windows saving one workspace", () => {
     ]);
     expect(merged.document.panels["p".repeat(62) + "-2"].ref.params).toEqual({ threadId: "thr_3" });
     expect(merged.document.panels["p".repeat(62) + "-3"].ref.params).toEqual({ threadId: "thr_4" });
+    expect(decideSave(theirs, merged.document, 2).status).toBe("saved");
+  });
+
+  it("two windows that opened different threads under one panel id in one group keep both placements", () => {
+    const base = { ...stageADocument(), revision: 1 };
+    const threadC = { ref: { provider: "bb-thread", params: { threadId: "thr_c" } }, title: "Тред C" };
+    const threadD = { ref: { provider: "bb-thread", params: { threadId: "thr_d" } }, title: "Тред D" };
+    // Both windows have «Ревью» open and add `panel-1` to its group-1: the trees are equal, the threads are not.
+    const theirs = { ...done(addPanelToGroup(base, "group-1", "panel-1", threadC)), revision: 2 };
+    const mine = done(addPanelToGroup(base, "group-1", "panel-1", threadD));
+    expect(mine.layouts[1]).toEqual(theirs.layouts[1]);
+
+    const expected = stageAJson();
+    expected.revision = 2;
+    expected.panels["panel-1"] = { ref: { provider: "bb-thread", params: { threadId: "thr_c" } }, title: "Тред C" };
+    expected.panels["panel-1-2"] = { ref: { provider: "bb-thread", params: { threadId: "thr_d" } }, title: "Тред D" };
+    expected.layouts[1].workspace.root.children[0] = { kind: "group", id: "group-1", tabs: ["frame", "panel-1"], activeTab: "panel-1" };
+    expected.layouts[1].workspace.focusedGroupId = "group-1";
+    expected.layouts.push({
+      id: "layout-review-2",
+      name: "Ревью",
+      workspace: {
+        root: {
+          kind: "split",
+          id: "split-3",
+          direction: "row",
+          children: [
+            { kind: "group", id: "group-1", tabs: ["frame", "panel-1-2"], activeTab: "panel-1-2" },
+            { kind: "group", id: "group-2", tabs: ["thread-a"], activeTab: "thread-a" },
+          ],
+          sizes: [0.5, 0.5],
+        },
+        focusedGroupId: "group-1",
+        maximizedGroupId: null,
+        nextNodeId: 4,
+      },
+    });
+    expected.activeLayoutId = "layout-review-2";
+    const merged = mergeDocuments(base, mine, theirs, NO_LIVE_PANELS);
+    expect(merged).toEqual({
+      document: expected,
+      renamedLayouts: [{ from: "layout-review", to: "layout-review-2" }],
+      renamedPanels: [{ from: "panel-1", to: "panel-1-2" }],
+    });
+    expect(decideSave(theirs, merged.document, 2).status).toBe("saved");
+  });
+
+  it("a clashing panel id this window did not touch keeps this window's meaning where this window placed it", () => {
+    // Both windows started with `panel-1` for thread C in «Ревью»; storage now uses the id for thread D.
+    const threadC = { ref: { provider: "bb-thread", params: { threadId: "thr_c" } }, title: "Тред C" };
+    const threadD = { ref: { provider: "bb-thread", params: { threadId: "thr_d" } }, title: "Тред D" };
+    const base = { ...done(addPanelToGroup(stageADocument(), "group-1", "panel-1", threadC)), revision: 1 };
+    const theirs = { ...base, panels: { ...base.panels, "panel-1": threadD }, revision: 2 };
+    const mine = done(renameLayout(base, "layout-dev", "Сборка"));
+    const merged = mergeDocuments(base, mine, theirs, NO_LIVE_PANELS);
+    // This window did not change «Ревью», so the stored layout and the stored meaning of the id stand.
+    expect(merged.renamedLayouts).toEqual([]);
+    expect(merged.renamedPanels).toEqual([]);
+    expect(merged.document.layouts.map((layout) => [layout.id, layout.name, placedPanelIds(layout)])).toEqual([
+      ["layout-dev", "Сборка", ["thread-a", "thread-b", "frame"]],
+      ["layout-review", "Ревью", ["frame", "panel-1", "thread-a"]],
+    ]);
+    expect(merged.document.panels["panel-1"]).toEqual(threadD);
     expect(decideSave(theirs, merged.document, 2).status).toBe("saved");
   });
 
