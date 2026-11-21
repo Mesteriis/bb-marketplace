@@ -11,14 +11,29 @@ const pluginRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 /** What the scanner reports for an import whose target is not a string literal. */
 const NON_LITERAL = "<non-literal>";
 
+/** `.tsx` is parsed as TSX and `.ts` as TypeScript: `<T>(value: T) => value` is JSX in one and a generic in the other. */
+function scriptKind(fileName: string): ts.ScriptKind {
+  return fileName.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
+}
+
+/** How many syntax errors the file has. A tree with errors may be missing imports, so it is never trusted. */
+function syntaxErrors(source: string, fileName: string): number {
+  const result = ts.transpileModule(source, {
+    fileName,
+    reportDiagnostics: true,
+    compilerOptions: { target: ts.ScriptTarget.ESNext, module: ts.ModuleKind.ESNext, jsx: ts.JsxEmit.Preserve },
+  });
+  return (result.diagnostics ?? []).length;
+}
+
 /**
  * Every module specifier a source file imports, in source order. Reads the
  * TypeScript syntax tree, so comments, line breaks and quoting style between
  * the keyword and the specifier cannot hide an import, and import-like text
  * inside comments and strings is not counted.
  */
-function importSpecifiers(source: string): string[] {
-  const file = ts.createSourceFile("module.tsx", source, ts.ScriptTarget.Latest, false, ts.ScriptKind.TSX);
+function importSpecifiers(source: string, fileName: string): string[] {
+  const file = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, false, scriptKind(fileName));
   const found: string[] = [];
   const literal = (node: ts.Node | undefined): string =>
     node !== undefined && ts.isStringLiteralLike(node) ? node.text : NON_LITERAL;
@@ -73,11 +88,14 @@ function isAllowed(layer: Layer, file: string, specifier: string): boolean {
 }
 
 function violations(layer: Layer): string[] {
-  return sourceFiles(resolve(pluginRoot, layer.directory)).flatMap((file) =>
-    importSpecifiers(readFileSync(file, "utf8"))
+  return sourceFiles(resolve(pluginRoot, layer.directory)).flatMap((file) => {
+    const source = readFileSync(file, "utf8");
+    const name = relative(pluginRoot, file);
+    if (syntaxErrors(source, file) > 0) return [name + " has syntax errors and cannot be checked"];
+    return importSpecifiers(source, file)
       .filter((specifier) => !isAllowed(layer, file, specifier))
-      .map((specifier) => relative(pluginRoot, file) + " imports \"" + specifier + "\""),
-  );
+      .map((specifier) => name + " imports \"" + specifier + "\"");
+  });
 }
 
 const core: Layer = { directory: "src/core", packages: ["zod"], reachable: ["src/core"] };
@@ -109,7 +127,7 @@ describe("import scanner", () => {
       'const e = await import("pkg-e");',
       'const f = require("pkg-f");',
     ].join("\n");
-    expect(importSpecifiers(source)).toEqual(["pkg-a", "./b.ts", "pkg-c", "pkg-d", "pkg-e", "pkg-f"]);
+    expect(importSpecifiers(source, "module.ts")).toEqual(["pkg-a", "./b.ts", "pkg-c", "pkg-d", "pkg-e", "pkg-f"]);
   });
 
   it("finds specifiers behind comments, line breaks and template literals", () => {
@@ -125,7 +143,7 @@ describe("import scanner", () => {
       'const e = import(`node:os`);',
       'export { f } from\n"@tauri-apps/api";',
     ].join("\n");
-    expect(importSpecifiers(source)).toEqual([
+    expect(importSpecifiers(source, "module.ts")).toEqual([
       "node:fs",
       "node:path",
       "electron",
@@ -138,14 +156,38 @@ describe("import scanner", () => {
 
   it("finds import-equals and type-only import() specifiers", () => {
     const source = ['import fs = require("node:fs");', 'type Api = import("@get-bb/plugin-sdk").BbPluginApi;'].join("\n");
-    expect(importSpecifiers(source)).toEqual(["node:fs", "@get-bb/plugin-sdk"]);
+    expect(importSpecifiers(source, "module.ts")).toEqual(["node:fs", "@get-bb/plugin-sdk"]);
   });
 
   it("reports an import whose target is computed, so it cannot pass as allowed", () => {
     const source = ['const name = "node:" + "fs";', "const a = import(name);", "const b = require(name);"].join("\n");
-    expect(importSpecifiers(source)).toEqual(["<non-literal>", "<non-literal>"]);
+    expect(importSpecifiers(source, "module.ts")).toEqual(["<non-literal>", "<non-literal>"]);
     expect(isAllowed(core, resolve(pluginRoot, "src/core/model.ts"), "<non-literal>")).toBe(false);
     expect(isAllowed(ui, resolve(pluginRoot, "src/ui/page.tsx"), "<non-literal>")).toBe(false);
+  });
+
+  it("parses a .ts file as TypeScript, where a generic arrow function is not JSX", () => {
+    const source = [
+      "export const identity = <T>(value: T) => value;",
+      'export const fs = import(/* deferred */ "node:fs");',
+    ].join("\n");
+    expect(importSpecifiers(source, "module.ts")).toEqual(["node:fs"]);
+    expect(syntaxErrors(source, "module.ts")).toBe(0);
+  });
+
+  it("parses a .tsx file as TSX and finds imports after JSX", () => {
+    const source = [
+      "export const view = <section>import nothing</section>;",
+      'export const sdk = import("@get-bb/plugin-sdk/app");',
+    ].join("\n");
+    expect(importSpecifiers(source, "module.tsx")).toEqual(["@get-bb/plugin-sdk/app"]);
+    expect(syntaxErrors(source, "module.tsx")).toBe(0);
+  });
+
+  it("counts syntax errors, so a file the scanner cannot read is never passed as clean", () => {
+    const source = "export const identity = <T>(value: T) => value;";
+    expect(syntaxErrors(source, "module.tsx")).toBeGreaterThan(0);
+    expect(syntaxErrors("export const broken = ;", "module.ts")).toBeGreaterThan(0);
   });
 
   it("ignores import-like text inside comments and strings", () => {
@@ -155,7 +197,7 @@ describe("import scanner", () => {
       'const c = "import(\'node:path\')";',
       'const url = "https://example.test/x"; // trailing',
     ].join("\n");
-    expect(importSpecifiers(source)).toEqual([]);
+    expect(importSpecifiers(source, "module.ts")).toEqual([]);
   });
 });
 
