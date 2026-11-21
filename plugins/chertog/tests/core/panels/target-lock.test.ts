@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { PanelRegistry, runForTarget, type PanelRef, type PanelTarget } from "../../../src/core/panels/index.ts";
-import { deferred, FakeClock, FakeProvider, SequentialIds } from "./fakes.ts";
+import { deferred, FakeClock, FakeDiagnostics, FakeProvider, SequentialIds } from "./fakes.ts";
 
 const threadA: PanelRef = { provider: "bb-thread", params: { threadId: "thr_a" } };
 
 async function setup() {
-  const registry = new PanelRegistry({ clock: new FakeClock(0), ids: new SequentialIds() });
+  const registry = new PanelRegistry({ clock: new FakeClock(0), ids: new SequentialIds(), diagnostics: new FakeDiagnostics() });
   const threads = new FakeProvider("bb-thread");
   threads.openResult = async () => ({ status: "live", addressee: "thread:thr_a" });
   registry.registerProvider(threads);

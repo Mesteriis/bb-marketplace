@@ -3,6 +3,7 @@
 import { z } from "zod";
 import type {
   Clock,
+  Diagnostics,
   IdGenerator,
   PanelCapabilities,
   PanelEndSessionOutcome,
@@ -98,5 +99,13 @@ export class SequentialIds implements IdGenerator {
   nextId(): string {
     this.count += 1;
     return "panel-" + this.count;
+  }
+}
+
+/** Keeps every failure the registry reports, as `[where, message]`. */
+export class FakeDiagnostics implements Diagnostics {
+  readonly failures: Array<[string, string]> = [];
+  failure(where: string, error: unknown): void {
+    this.failures.push([where, error instanceof Error ? error.message : String(error)]);
   }
 }

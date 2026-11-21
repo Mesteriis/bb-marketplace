@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { PanelRegistry, type PanelInstance, type PanelOpenOutcome, type PanelRef } from "../../../src/core/panels/index.ts";
-import { deferred, FakeClock, FakeProvider, SequentialIds } from "./fakes.ts";
+import { deferred, FakeClock, FakeDiagnostics, FakeProvider, SequentialIds } from "./fakes.ts";
 
 const threadA: PanelRef = { provider: "bb-thread", params: { threadId: "thr_a" } };
 const threadB: PanelRef = { provider: "bb-thread", params: { threadId: "thr_b" } };
@@ -8,10 +8,11 @@ const call: PanelRef = { provider: "zoom", params: { meeting: "standup" } };
 
 function setup() {
   const clock = new FakeClock(1000);
-  const registry = new PanelRegistry({ clock, ids: new SequentialIds() });
+  const diagnostics = new FakeDiagnostics();
+  const registry = new PanelRegistry({ clock, ids: new SequentialIds(), diagnostics });
   const threads = new FakeProvider("bb-thread");
   registry.registerProvider(threads);
-  return { clock, registry, threads };
+  return { clock, diagnostics, registry, threads };
 }
 
 /** Opens a reference and waits for the provider's answer. */
@@ -133,7 +134,7 @@ describe("opening", () => {
   });
 
   it("refuses an id the generator has already issued", async () => {
-    const registry = new PanelRegistry({ clock: new FakeClock(0), ids: { nextId: () => "same" } });
+    const registry = new PanelRegistry({ clock: new FakeClock(0), ids: { nextId: () => "same" }, diagnostics: new FakeDiagnostics() });
     registry.registerProvider(new FakeProvider("bb-thread"));
     await openSettled(registry, threadA);
 
@@ -259,7 +260,7 @@ describe("missing provider", () => {
   });
 
   it("keeps showing checked parameters after the provider goes away", async () => {
-    const registry = new PanelRegistry({ clock: new FakeClock(0), ids: new SequentialIds() });
+    const registry = new PanelRegistry({ clock: new FakeClock(0), ids: new SequentialIds(), diagnostics: new FakeDiagnostics() });
     const unregister = registry.registerProvider(new FakeProvider("zoom"));
     await openSettled(registry, call);
 
@@ -312,7 +313,7 @@ describe("missing provider", () => {
   });
 
   it("marks live panels lost when their provider goes away and keeps their references", async () => {
-    const registry = new PanelRegistry({ clock: new FakeClock(0), ids: new SequentialIds() });
+    const registry = new PanelRegistry({ clock: new FakeClock(0), ids: new SequentialIds(), diagnostics: new FakeDiagnostics() });
     const zoom = new FakeProvider("zoom");
     const unregister = registry.registerProvider(zoom);
     await openSettled(registry, call);
@@ -323,7 +324,7 @@ describe("missing provider", () => {
   });
 
   it("keeps a never-opened panel waiting when a provider comes and goes without being asked", async () => {
-    const registry = new PanelRegistry({ clock: new FakeClock(0), ids: new SequentialIds() });
+    const registry = new PanelRegistry({ clock: new FakeClock(0), ids: new SequentialIds(), diagnostics: new FakeDiagnostics() });
     await openSettled(registry, call);
     const before = new FakeProvider("zoom");
     registry.registerProvider(before)();
@@ -338,7 +339,7 @@ describe("missing provider", () => {
   });
 
   it("leaves a panel that was live lost after its provider returns, until an explicit retry", async () => {
-    const registry = new PanelRegistry({ clock: new FakeClock(0), ids: new SequentialIds() });
+    const registry = new PanelRegistry({ clock: new FakeClock(0), ids: new SequentialIds(), diagnostics: new FakeDiagnostics() });
     const before = new FakeProvider("zoom");
     const unregister = registry.registerProvider(before);
     await openSettled(registry, call);
@@ -357,7 +358,7 @@ describe("missing provider", () => {
   });
 
   it("ignores the answer of a provider that went away while opening", async () => {
-    const registry = new PanelRegistry({ clock: new FakeClock(0), ids: new SequentialIds() });
+    const registry = new PanelRegistry({ clock: new FakeClock(0), ids: new SequentialIds(), diagnostics: new FakeDiagnostics() });
     const zoom = new FakeProvider("zoom");
     const pending = deferred<PanelOpenOutcome>();
     zoom.openResult = () => pending.promise;
@@ -377,7 +378,7 @@ describe("missing provider", () => {
   });
 
   it("does not unregister a newer provider through an old handle", async () => {
-    const registry = new PanelRegistry({ clock: new FakeClock(0), ids: new SequentialIds() });
+    const registry = new PanelRegistry({ clock: new FakeClock(0), ids: new SequentialIds(), diagnostics: new FakeDiagnostics() });
     const unregisterOld = registry.registerProvider(new FakeProvider("zoom"));
     unregisterOld();
     const current = new FakeProvider("zoom");
@@ -531,7 +532,7 @@ describe("closing", () => {
 
 describe("closing the last view of a session", () => {
   function setupCall() {
-    const registry = new PanelRegistry({ clock: new FakeClock(0), ids: new SequentialIds() });
+    const registry = new PanelRegistry({ clock: new FakeClock(0), ids: new SequentialIds(), diagnostics: new FakeDiagnostics() });
     const zoom = new FakeProvider("zoom");
     zoom.endsSession = true;
     registry.registerProvider(zoom);
@@ -905,5 +906,155 @@ describe("snapshots and subscription", () => {
     await openSettled(registry, threadB);
 
     expect(seen).toEqual(["loading", "live", "live:hidden", ""]);
+  });
+});
+
+describe("a subscriber that throws", () => {
+  /** Subscribes a listener that throws on every change and one that counts them. */
+  function withFailingSubscriber() {
+    const context = setup();
+    const seen: string[] = [];
+    context.registry.subscribe(() => {
+      throw new Error("render failed");
+    });
+    context.registry.subscribe(() => {
+      seen.push(context.registry.list().map((item) => item.state + (item.placed ? "" : ":hidden")).join(","));
+    });
+    return { ...context, seen };
+  }
+
+  it("does not stop a close: the view is released exactly once", async () => {
+    const { diagnostics, registry, seen, threads } = withFailingSubscriber();
+    await openSettled(registry, threadA);
+
+    expect(await registry.close("panel-1")).toEqual({ status: "closed", release: "done" });
+    expect(await registry.close("panel-1")).toEqual({ status: "not-open" });
+
+    expect(threads.releases).toEqual(["panel-1"]);
+    expect(registry.list()).toEqual([]);
+    expect(seen).toEqual(["loading", "live", ""]);
+    expect(diagnostics.failures).toEqual([
+      ["panel-registry-subscriber", "render failed"],
+      ["panel-registry-subscriber", "render failed"],
+      ["panel-registry-subscriber", "render failed"],
+    ]);
+  });
+
+  it("does not stop an open: the provider is asked once and the panel turns live", async () => {
+    const { diagnostics, registry, seen, threads } = withFailingSubscriber();
+
+    const opened = registry.open(threadA);
+
+    expect(opened.ok && opened.instance).toMatchObject({ instanceId: "panel-1", state: "loading" });
+    expect(opened.ok && (await opened.settled)).toMatchObject({ instanceId: "panel-1", state: "live" });
+    expect(threads.opens).toEqual(["panel-1"]);
+    expect(seen).toEqual(["loading", "live"]);
+    expect(diagnostics.failures).toHaveLength(2);
+  });
+
+  it("does not stop a provider report", async () => {
+    const { diagnostics, registry, seen } = withFailingSubscriber();
+    await openSettled(registry, threadA);
+
+    expect(registry.report("panel-1", "session-ended")).toBe(true);
+
+    expect(registry.get("panel-1")).toMatchObject({ state: "session-ended", addressee: null });
+    expect(seen).toEqual(["loading", "live", "session-ended"]);
+    expect(diagnostics.failures).toHaveLength(3);
+  });
+
+  it("does not stop hiding, returning or a change of addressee", async () => {
+    const { registry, seen } = withFailingSubscriber();
+    await openSettled(registry, threadA);
+
+    expect(registry.removeFromLayout("panel-1")).toBe(true);
+    expect(registry.returnToLayout("panel-1")).toBe(true);
+    expect(registry.setAddressee("panel-1", "thread:thr_a")).toBe(true);
+
+    expect(registry.get("panel-1")).toMatchObject({ placed: true, addressee: "thread:thr_a" });
+    expect(seen).toEqual(["loading", "live", "live:hidden", "live", "live"]);
+  });
+
+  it("does not stop the end of a session", async () => {
+    const { registry, seen, threads } = withFailingSubscriber();
+    await openSettled(registry, threadA);
+
+    expect(await registry.endSession("panel-1")).toEqual({ status: "ended" });
+
+    expect(threads.endSessions).toEqual(["panel-1"]);
+    expect(registry.get("panel-1")?.state).toBe("session-ended");
+    expect(seen).toEqual(["loading", "live", "session-ended"]);
+  });
+
+  it("does not stop a retry, a provider appearing or a provider going away", async () => {
+    const diagnostics = new FakeDiagnostics();
+    const registry = new PanelRegistry({ clock: new FakeClock(0), ids: new SequentialIds(), diagnostics });
+    registry.subscribe(() => {
+      throw new Error("render failed");
+    });
+    await openSettled(registry, call);
+    const zoom = new FakeProvider("zoom");
+
+    const unregister = registry.registerProvider(zoom);
+    expect(registry.get("panel-1")?.paramsVerified).toBe(true);
+    await openSettled(registry, call);
+    unregister();
+    expect(registry.get("panel-1")?.state).toBe("lost");
+    registry.registerProvider(zoom);
+    const retried = registry.retryOpen("panel-1");
+
+    expect(retried.ok && (await retried.settled)).toMatchObject({ instanceId: "panel-1", state: "live" });
+    expect(zoom.opens).toEqual(["panel-1", "panel-1"]);
+  });
+
+  it("releases the view even when the diagnostics port itself throws", async () => {
+    const registry = new PanelRegistry({
+      clock: new FakeClock(0),
+      ids: new SequentialIds(),
+      diagnostics: {
+        failure: () => {
+          throw new Error("log is full");
+        },
+      },
+    });
+    const threads = new FakeProvider("bb-thread");
+    registry.registerProvider(threads);
+    registry.subscribe(() => {
+      throw new Error("render failed");
+    });
+    await openSettled(registry, threadA);
+
+    expect(await registry.close("panel-1")).toEqual({ status: "closed", release: "done" });
+    expect(threads.releases).toEqual(["panel-1"]);
+  });
+
+  it("reports a failed release to diagnostics", async () => {
+    const { diagnostics, registry, threads } = setup();
+    await openSettled(registry, threadA);
+    threads.releaseResult = () => {
+      throw new Error("view already gone");
+    };
+
+    await registry.close("panel-1");
+
+    expect(diagnostics.failures).toEqual([["panel-provider-release", "view already gone"]]);
+  });
+
+  it("reports a failed open and a failed end of session to diagnostics", async () => {
+    const { diagnostics, registry, threads } = setup();
+    await openSettled(registry, threadA);
+    threads.endSessionResult = async () => {
+      throw new Error("transport closed");
+    };
+    await registry.endSession("panel-1");
+    threads.openResult = async () => {
+      throw new Error("no route");
+    };
+    await openSettled(registry, threadB);
+
+    expect(diagnostics.failures).toEqual([
+      ["panel-provider-end-session", "transport closed"],
+      ["panel-provider-open", "no route"],
+    ]);
   });
 });

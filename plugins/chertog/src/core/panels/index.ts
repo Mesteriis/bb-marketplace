@@ -1,6 +1,6 @@
 // Chertog panels: the long-lived panel reference, the provider port, the
 // registry of live instances and the target lock for addressed actions.
-export type { Clock, IdGenerator } from "./ports.ts";
+export type { Clock, Diagnostics, IdGenerator } from "./ports.ts";
 export type {
   PanelCapabilities,
   PanelCapabilityLevel,

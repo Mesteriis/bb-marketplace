@@ -3,7 +3,7 @@
 // removing from the layout hides an instance and keeps it live, closing
 // releases its view exactly once, and ending the session happens only on an
 // explicit call and is carried out by the provider.
-import type { Clock, IdGenerator } from "./ports.ts";
+import type { Clock, Diagnostics, IdGenerator } from "./ports.ts";
 import type { PanelProvider, PanelState } from "./provider.ts";
 import { panelRefKey, panelRefSchema, type PanelRef } from "./ref.ts";
 
@@ -106,13 +106,15 @@ function holdsSession(entry: Entry): boolean {
 export class PanelRegistry {
   private readonly clock: Clock;
   private readonly ids: IdGenerator;
+  private readonly diagnostics: Diagnostics;
   private readonly providers = new Map<string, PanelProvider>();
   private readonly entries = new Map<string, Entry>();
   private readonly listeners = new Set<() => void>();
 
-  constructor(ports: { clock: Clock; ids: IdGenerator }) {
+  constructor(ports: { clock: Clock; ids: IdGenerator; diagnostics: Diagnostics }) {
     this.clock = ports.clock;
     this.ids = ports.ids;
+    this.diagnostics = ports.diagnostics;
   }
 
   /**
@@ -267,14 +269,28 @@ export class PanelRegistry {
     const provider = entry.view;
     entry.view = null;
     entry.attempt += 1;
-    this.notify();
-    if (provider === null) return { status: "closed", release: "not-needed" };
-    try {
-      await provider.release(instanceId);
-      return { status: "closed", release: "done" };
-    } catch {
-      return { status: "closed", release: "failed" };
+    if (provider === null) {
+      this.notify();
+      return { status: "closed", release: "not-needed" };
     }
+    // The release starts before anyone is told about the close, so nothing a
+    // subscriber does can leave the view behind.
+    let releasing: void | Promise<void> = undefined;
+    let failed = false;
+    try {
+      releasing = provider.release(instanceId);
+    } catch (error) {
+      failed = true;
+      this.reportFailure("panel-provider-release", error);
+    }
+    this.notify();
+    try {
+      await releasing;
+    } catch (error) {
+      failed = true;
+      this.reportFailure("panel-provider-release", error);
+    }
+    return { status: "closed", release: failed ? "failed" : "done" };
   }
 
   /**
@@ -292,8 +308,9 @@ export class PanelRegistry {
     let outcome: "ended" | "unknown";
     try {
       outcome = (await provider.endSession(instanceId)) === "ended" ? "ended" : "unknown";
-    } catch {
+    } catch (error) {
       outcome = "unknown";
+      this.reportFailure("panel-provider-end-session", error);
     }
     entry.endingSession = false;
     const stillOpen = this.entries.get(instanceId) === entry;
@@ -345,7 +362,11 @@ export class PanelRegistry {
     return entry !== undefined && entry.state === "live" ? entry.addressee : null;
   }
 
-  /** Calls the listener after every change. Returns the function that stops it. */
+  /**
+   * Calls the listener after every change. Returns the function that stops
+   * it. A listener that throws is reported to diagnostics and does not
+   * affect the registry or the other listeners.
+   */
   subscribe(listener: () => void): () => void {
     this.listeners.add(listener);
     return () => {
@@ -391,8 +412,9 @@ export class PanelRegistry {
     let outcome: Awaited<ReturnType<PanelProvider["open"]>>;
     try {
       outcome = await provider.open({ instanceId: entry.instanceId, ref: entry.ref });
-    } catch {
+    } catch (error) {
       outcome = { status: "unknown" };
+      this.reportFailure("panel-provider-open", error);
     }
     if (this.entries.get(entry.instanceId) !== entry) return null;
     if (entry.attempt !== attempt) return this.snapshot(entry);
@@ -481,7 +503,27 @@ export class PanelRegistry {
     });
   }
 
+  /**
+   * Tells every subscriber about a change. A subscriber that throws is
+   * reported and skipped: it stops neither the other subscribers nor the
+   * registry operation that caused the change.
+   */
   private notify(): void {
-    for (const listener of [...this.listeners]) listener();
+    for (const listener of [...this.listeners]) {
+      try {
+        listener();
+      } catch (error) {
+        this.reportFailure("panel-registry-subscriber", error);
+      }
+    }
+  }
+
+  /** Hands a failure to diagnostics; a failing diagnostics port must not break the registry either. */
+  private reportFailure(where: string, error: unknown): void {
+    try {
+      this.diagnostics.failure(where, error);
+    } catch {
+      // Nothing is left to report to.
+    }
   }
 }
