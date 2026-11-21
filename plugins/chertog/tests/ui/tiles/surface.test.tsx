@@ -209,3 +209,98 @@ describe("layers", () => {
     expect(header(container, "group-1").style.height).toBe("32px");
   });
 });
+
+describe("a gesture started while the keyboard is inside a frame", () => {
+  // Key presses inside an iframe go to its own document and never reach the
+  // surface, so the test sends Escape to whatever holds the focus, as a
+  // keyboard does, instead of to the body.
+  function setup() {
+    const calls = newCalls(threeTiles());
+    const { container } = render(
+      <Harness calls={calls} size={SIZE}>
+        <iframe title="live panel" />
+      </Harness>,
+    );
+    const frame = container.querySelector("iframe") as HTMLIFrameElement;
+    frame.focus();
+    expect(document.activeElement).toBe(frame);
+    return { calls, container, frame, surface: container.firstElementChild as HTMLElement };
+  }
+
+  const pressEscape = (): boolean => fireEvent.keyDown(document.activeElement as Element, { key: "Escape" });
+
+  it("takes the keyboard for a divider drag, so Escape cancels it, and gives the focus back", () => {
+    const { calls, container, frame, surface } = setup();
+    const bar = divider(container, "split-3#0");
+    fireEvent.pointerDown(bar, { pointerId: 1, button: 0, clientX: 602, clientY: 300 });
+    expect(document.activeElement).toBe(surface);
+    fireEvent.pointerMove(bar, { pointerId: 1, clientX: 682, clientY: 300 });
+    expect(drawn(container)["group-1"]).toBe("0px 0px 680px 800px");
+
+    const frameFocused = vi.spyOn(frame, "focus");
+    pressEscape();
+    expect(drawn(container)).toEqual(THREE_TILES_DRAWN);
+    expect(shields(container)).toEqual([]);
+    expect(frameFocused).toHaveBeenCalledTimes(1);
+    expect(document.activeElement).toBe(frame);
+
+    fireEvent.pointerUp(bar, { pointerId: 1, button: 0, clientX: 682, clientY: 300 });
+    expect(calls.changes).toEqual([]);
+    expect(drawn(container)).toEqual(THREE_TILES_DRAWN);
+  });
+
+  it("takes the keyboard when a header drag starts, not on the press", () => {
+    const { calls, container, frame, surface } = setup();
+    const handle = header(container, "group-1");
+    fireEvent.pointerDown(handle, { pointerId: 1, button: 0, clientX: 300, clientY: 10 });
+    expect(document.activeElement).toBe(frame);
+    fireEvent.pointerMove(handle, { pointerId: 1, clientX: 904, clientY: 200 });
+    expect(document.activeElement).toBe(surface);
+    expect(preview(container)).toBe("604px 0px 600px 398px");
+
+    pressEscape();
+    expect(preview(container)).toBeNull();
+    expect(shields(container)).toEqual([]);
+    expect(document.activeElement).toBe(frame);
+    fireEvent.pointerUp(handle, { pointerId: 1, button: 0, clientX: 904, clientY: 200 });
+    expect(calls.changes).toEqual([]);
+  });
+
+  it("gives the focus back after a confirmed gesture too", () => {
+    const { calls, container, frame } = setup();
+    const bar = divider(container, "split-3#0");
+    fireEvent.pointerDown(bar, { pointerId: 1, button: 0, clientX: 602, clientY: 300 });
+    fireEvent.pointerMove(bar, { pointerId: 1, clientX: 682, clientY: 300 });
+    fireEvent.pointerUp(bar, { pointerId: 1, button: 0, clientX: 682, clientY: 300 });
+    expect(calls.changes).toHaveLength(1);
+    expect(document.activeElement).toBe(frame);
+  });
+
+  it("focuses the field of a same-origin frame again: the browser forgets it when the focus leaves the frame", () => {
+    const { container, frame } = setup();
+    const inside = frame.contentDocument as Document;
+    const field = inside.body.appendChild(inside.createElement("input"));
+    field.focus();
+    expect(inside.activeElement).toBe(field);
+    const refocused = vi.spyOn(field, "focus");
+
+    const bar = divider(container, "split-3#0");
+    fireEvent.pointerDown(bar, { pointerId: 1, button: 0, clientX: 602, clientY: 300 });
+    fireEvent.pointerMove(bar, { pointerId: 1, clientX: 682, clientY: 300 });
+    expect(refocused).not.toHaveBeenCalled();
+    pressEscape();
+    expect(refocused).toHaveBeenCalledTimes(1);
+    expect(drawn(container)).toEqual(THREE_TILES_DRAWN);
+  });
+
+  it("leaves the focus alone when it is not in a frame", () => {
+    const { container } = render(<Harness calls={newCalls(threeTiles())} size={SIZE} />);
+    const tab = container.querySelector('[data-panel-id="a"] [role="tab"]') as HTMLElement;
+    tab.focus();
+    const bar = divider(container, "split-3#0");
+    fireEvent.pointerDown(bar, { pointerId: 1, button: 0, clientX: 602, clientY: 300 });
+    expect(document.activeElement).toBe(tab);
+    fireEvent.pointerUp(bar, { pointerId: 1, button: 0, clientX: 602, clientY: 300 });
+    expect(document.activeElement).toBe(tab);
+  });
+});

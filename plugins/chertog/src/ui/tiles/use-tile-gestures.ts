@@ -41,6 +41,25 @@ interface DragGesture extends Held {
 
 type Gesture = ResizeGesture | DragGesture;
 
+/** An element of this document or of a frame's: the two have different `HTMLElement` classes. */
+type Focusable = Pick<HTMLElement, "focus" | "isConnected">;
+
+/** The focused element inside a frame, when the frame lets this document look. */
+function focusedInside(frame: HTMLElement): Focusable | null {
+  try {
+    const inside = (frame as Partial<HTMLIFrameElement>).contentDocument?.activeElement;
+    // The body is what a document reports when nothing in it is focused.
+    if (inside === null || inside === undefined || inside === inside.ownerDocument.body || !("focus" in inside)) return null;
+    return inside as unknown as Focusable;
+  } catch {
+    // Another origin: its document is not ours to read.
+    return null;
+  }
+}
+
+/** Elements that hold a document or a view of their own and take the keyboard with it. */
+const FRAME_TAGS: ReadonlySet<string> = new Set(["IFRAME", "WEBVIEW", "OBJECT", "EMBED"]);
+
 export interface TileGesturesInput {
   readonly state: WorkspaceState;
   readonly bounds: Rect;
@@ -85,6 +104,28 @@ export function useTileGestures(input: TileGesturesInput): TileGestures {
   // React has rendered the previous one.
   const current = useRef<Gesture | null>(null);
 
+  // What had the keyboard before the gesture took it; see `takeKeyboard`.
+  const keyboardOwner = useRef<{ frame: HTMLElement; inner: Focusable | null } | null>(null);
+
+  /**
+   * A frame keeps its key presses to itself: while the focus is inside an
+   * iframe, Escape never reaches this document. So a gesture that starts with
+   * the focus in a frame moves it to the surface, and `end` gives it back.
+   *
+   * A browser forgets which element of the frame was focused once the focus
+   * leaves it. For a frame of the same origin that element is remembered here
+   * and focused again. A frame of another origin gets the focus back as a
+   * whole: its text and selection are untouched, but its field is no longer
+   * focused until the user clicks it.
+   */
+  const takeKeyboard = (): void => {
+    const root = surface.current;
+    const active = root?.ownerDocument.activeElement;
+    if (root === null || !(active instanceof HTMLElement) || !FRAME_TAGS.has(active.tagName)) return;
+    keyboardOwner.current = { frame: active, inner: focusedInside(active) };
+    root.focus({ preventScroll: true });
+  };
+
   const set = (next: Gesture | null): void => {
     current.current = next;
     setGesture(next);
@@ -96,6 +137,12 @@ export function useTileGestures(input: TileGesturesInput): TileGestures {
     if (held === null) return;
     set(null);
     if (held.element.hasPointerCapture(held.pointerId)) held.element.releasePointerCapture(held.pointerId);
+    const owner = keyboardOwner.current;
+    keyboardOwner.current = null;
+    // Only if the focus is still where the gesture put it: the user may have moved on.
+    if (owner !== null && owner.frame.isConnected && owner.frame.ownerDocument.activeElement === surface.current) {
+      (owner.inner?.isConnected === true ? owner.inner : owner.frame).focus({ preventScroll: true });
+    }
   };
 
   const held = (event: SurfacePointerEvent): Gesture | null => {
@@ -124,6 +171,7 @@ export function useTileGestures(input: TileGesturesInput): TileGestures {
     if (start === null) return;
     // No text selection and no focus change while the divider is held.
     event.preventDefault();
+    takeKeyboard();
     set({ ...start, kind: "resize", splitId, index, axis, origin: axis === "row" ? event.clientX : event.clientY, draft: state });
   };
 
@@ -143,6 +191,7 @@ export function useTileGestures(input: TileGesturesInput): TileGestures {
     if (!moving.active) {
       const travelled = Math.hypot(event.clientX - moving.start.x, event.clientY - moving.start.y);
       if (!canDrag || travelled < DRAG_THRESHOLD) return;
+      takeKeyboard();
     }
     set({ ...moving, active: true, point: surfacePoint(event) });
   };
