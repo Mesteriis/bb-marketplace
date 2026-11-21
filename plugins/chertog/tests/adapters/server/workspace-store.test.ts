@@ -303,7 +303,7 @@ describe("a stored document the reader left parts out of", () => {
       "set workspace/backup/2026-11-21T12:00:00.000Z",
       "set workspace/document",
     ]);
-    expect(log.lines).toEqual(["warn workspace: the stored original is kept aside before a save over it; parts left out: 1; copies kept: 1"]);
+    expect(log.lines).toEqual(["warn workspace: the stored original is kept aside before a save over it; parts left out: 1; stored schema version: current; copies kept: 1"]);
   });
 
   it("is copied once: the next save finds a whole document", async () => {
@@ -376,6 +376,72 @@ describe("a stored document the reader left parts out of", () => {
   });
 });
 
+describe("a stored document of an older version", () => {
+  /** Stage A as version 1 stored it: every panel carries the caption of its tab. */
+  function stageAVersion1(revision: number): any {
+    const stored = stageAJson();
+    stored.schemaVersion = 1;
+    stored.revision = revision;
+    stored.panels["thread-a"].title = "Тред A";
+    stored.panels["thread-b"].title = "Тред B";
+    stored.panels.frame.title = "Живая панель";
+    return stored;
+  }
+
+  it("is read through the migration, saved as the current version, and kept aside as it was", async () => {
+    const kv = new FakeKv();
+    kv.seed(DOCUMENT_KEY, stageAVersion1(4));
+    const { log, store } = rig(kv);
+
+    const read = await store.load();
+    expect(read).toEqual({ status: "ok", document: { ...stageADocument(), revision: 4 }, migratedFrom: 1, dropped: [] });
+    if (read.status !== "ok") throw new Error("unreachable");
+    // Reading alone rewrites nothing: storage still holds version 1.
+    expect(kv.keys()).toEqual([DOCUMENT_KEY]);
+    expect(kv.value(DOCUMENT_KEY)).toEqual(stageAVersion1(4));
+
+    const result = await store.save(read.document, 4);
+    expect(result).toEqual({ status: "saved", document: { ...stageADocument(), revision: 5 } });
+
+    const now = kv.value(DOCUMENT_KEY) as { schemaVersion: number; panels: Record<string, object> };
+    expect(now).toEqual({ ...stageADocument(), revision: 5 });
+    expect(now.schemaVersion).toBe(2);
+    expect(Object.values(now.panels).map((panel) => Object.keys(panel))).toEqual([["ref"], ["ref"], ["ref"]]);
+
+    expect(kv.keys()).toEqual(["workspace/backup/2026-11-21T12:00:00.000Z", DOCUMENT_KEY]);
+    expect(kv.value("workspace/backup/2026-11-21T12:00:00.000Z")).toEqual(stageAVersion1(4));
+    expect(kv.calls.filter((call) => call.startsWith("set "))).toEqual([
+      "set workspace/backup/2026-11-21T12:00:00.000Z",
+      "set workspace/document",
+    ]);
+    expect(log.lines).toEqual([
+      "warn workspace: the stored original is kept aside before a save over it; parts left out: 0; stored schema version: 1; copies kept: 1",
+    ]);
+    expect(log.lines.join("\n")).not.toContain("Тред");
+  });
+
+  it("is copied once: the next save finds the current version", async () => {
+    const kv = new FakeKv();
+    kv.seed(DOCUMENT_KEY, stageAVersion1(4));
+    const { store } = rig(kv, clockOf(NOON, "2026-11-21T12:05:00.000Z"));
+
+    expect((await store.save({ ...stageADocument(), revision: 4 }, 4)).status).toBe("saved");
+    expect((await store.save({ ...stageADocument(), revision: 5 }, 5)).status).toBe("saved");
+    expect(kv.keys()).toEqual(["workspace/backup/2026-11-21T12:00:00.000Z", DOCUMENT_KEY]);
+    expect(await store.load()).toEqual({ status: "ok", document: { ...stageADocument(), revision: 6 }, migratedFrom: null, dropped: [] });
+  });
+
+  it("is not copied by a save that is refused", async () => {
+    const kv = new FakeKv();
+    kv.seed(DOCUMENT_KEY, stageAVersion1(4));
+    const { store } = rig(kv);
+
+    expect(await store.save(stageADocument(), 3)).toEqual({ status: "conflict", current: { ...stageADocument(), revision: 4 } });
+    expect(kv.keys()).toEqual([DOCUMENT_KEY]);
+    expect(kv.value(DOCUMENT_KEY)).toEqual(stageAVersion1(4));
+  });
+});
+
 describe("a stored document this code must not replace", () => {
   it("reports an unreadable document and refuses to save over it", async () => {
     const kv = new FakeKv();
@@ -397,14 +463,14 @@ describe("a stored document this code must not replace", () => {
 
   it("reports a document of a newer version and refuses to save over it", async () => {
     const kv = new FakeKv();
-    const newer = { ...stageAJson(), schemaVersion: 2, revision: 9, tags: ["новое поле"] };
+    const newer = { ...stageAJson(), schemaVersion: 999, revision: 9, tags: ["новое поле"] };
     kv.seed(DOCUMENT_KEY, newer);
     const { store } = rig(kv);
 
-    expect(await store.load()).toEqual({ status: "newer", schemaVersion: 2 });
+    expect(await store.load()).toEqual({ status: "newer", schemaVersion: 999 });
     expect(await store.save({ ...stageADocument(), revision: 9 }, 9)).toEqual({
       status: "rejected",
-      reason: "Storage holds a workspace written by a newer version of the plugin (schema version 2)",
+      reason: "Storage holds a workspace written by a newer version of the plugin (schema version 999)",
     });
     expect(kv.keys()).toEqual([DOCUMENT_KEY]);
     expect(kv.value(DOCUMENT_KEY)).toEqual(newer);
@@ -427,7 +493,7 @@ describe("what the adapter touches", () => {
 
     const touched = kv.calls.map((call) => call.slice(call.indexOf(" ") + 1));
     expect(touched.filter((key) => !key.startsWith("workspace/"))).toEqual([]);
-    expect(log.lines).toEqual(["warn workspace: the stored original is kept aside before a save over it; parts left out: 1; copies kept: 1"]);
+    expect(log.lines).toEqual(["warn workspace: the stored original is kept aside before a save over it; parts left out: 1; stored schema version: current; copies kept: 1"]);
     const logged = log.lines.join("\n");
     for (const content of ["hunter2", "Разработка", "Ревью", "thr_a", "live-frame"]) {
       expect(logged).not.toContain(content);

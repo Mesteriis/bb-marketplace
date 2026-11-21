@@ -30,9 +30,10 @@ export function createKvWorkspaceStore({ kv, now, log }: KvWorkspaceStoreDeps): 
 
   /**
    * Copies the stored original under a dated key and drops the copies beyond
-   * the limit. The log line carries counts only, never a part of the document.
+   * the limit. The log line carries counts and versions only, never a part of
+   * the document.
    */
-  async function keepAside(original: unknown, partsLeftOut: number): Promise<void> {
+  async function keepAside(original: unknown, partsLeftOut: number, migratedFrom: number | null): Promise<void> {
     const existing = await kv.list(BACKUP_PREFIX);
     const dated = BACKUP_PREFIX + now().toISOString();
     let key = dated;
@@ -45,6 +46,8 @@ export function createKvWorkspaceStore({ kv, now, log }: KvWorkspaceStoreDeps): 
     log.warn(
       "workspace: the stored original is kept aside before a save over it; parts left out: " +
         partsLeftOut +
+        "; stored schema version: " +
+        (migratedFrom ?? "current") +
         "; copies kept: " +
         (copies.length - excess.length),
     );
@@ -71,8 +74,11 @@ export function createKvWorkspaceStore({ kv, now, log }: KvWorkspaceStoreDeps): 
       return { status: "rejected", reason: "The workspace takes " + bytes + " bytes and storage keeps at most " + MAX_DOCUMENT_BYTES };
     }
 
-    // This write stores the document without the parts the reader left out, so the original goes aside first.
-    if (stored.status === "ok" && stored.dropped.length > 0) await keepAside(original, stored.dropped.length);
+    // This write replaces what the reader could not carry over: the parts it left out, and the shape
+    // of an older version, which a migration may have dropped fields of. The original goes aside first.
+    if (stored.status === "ok" && (stored.dropped.length > 0 || stored.migratedFrom !== null)) {
+      await keepAside(original, stored.dropped.length, stored.migratedFrom);
+    }
     await kv.set(DOCUMENT_KEY, result.document);
     return result;
   }
