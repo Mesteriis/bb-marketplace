@@ -36,3 +36,11 @@
 .makosh-sidebar .additional-plans{border-top:1px solid var(--border);padding-top:4px}.makosh-sidebar .additional-plans>div{margin-top:6px}.makosh-sidebar .additional-plan-title{font-size:11px;font-weight:500;overflow-wrap:anywhere}
 .makosh-sidebar .plan-track{height:10px}.makosh-sidebar .plan-mark{top:4px}.makosh-sidebar .stage-mark{top:2px;height:6px}
 .makosh-sidebar .active-groups>.thread-branch{padding:2px 0 4px;margin-bottom:2px}.makosh-sidebar .section-toggle{padding:4px 8px}
+
+/* Keep timing visible on pointer/keyboard inspection without adding a row. */
+.makosh-sidebar .progress-clock{display:none;white-space:nowrap;font-variant-numeric:tabular-nums;color:var(--foreground)}
+.makosh-sidebar .thread-progress>summary:hover .progress-clock,.makosh-sidebar .thread-progress>summary:focus-within .progress-clock{display:inline}
+.makosh-sidebar .plan-head{position:absolute;top:2px;width:6px;height:6px;transform:translateX(-50%);border-radius:50%;background:var(--foreground);box-shadow:0 0 0 2px color-mix(in srgb,var(--plan-color) 50%,transparent)}
+.makosh-sidebar .plan-head:focus-visible,.makosh-sidebar .plan-mark:focus-visible{outline:1px solid var(--foreground);outline-offset:1px}
+.makosh-sidebar .step-duration{margin-left:auto;font-variant-numeric:tabular-nums;white-space:nowrap;color:var(--muted-foreground)}
+.makosh-sidebar .step-duration+.step-state{margin-left:0}

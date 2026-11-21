@@ -23,3 +23,15 @@ test('own plans are available without another installed plugin; migration never 
   expect(await harness.behavior.callRpc('attention',null)).toEqual({entries:[],incomplete:false});
  } finally {await harness.lifecycle.dispose();}
 });
+
+test('sidebar RPC restores auto-hidden history and preserves timing across reload',async()=>{
+ const {bb,harness}=createFakePluginHost({pluginId:'makosh-sidebar'});let current=harness;
+ try {
+  await plugin(bb);
+  const timed={...bar,state:'done',hidden:'auto',endedAt:20,stages:[{name:'First',steps:[{title:'One',status:'done',startedAt:1,endedAt:20}]}]};
+  await harness.behavior.callRpc('progress_import',{entries:[{key:'bars:history-test',value:[timed]}]});
+  current=(await harness.lifecycle.reload(plugin)).harness;
+  const result=await current.behavior.callRpc('progress',{threadIds:['history-test']}) as {entries:{plans:unknown[]}[]};
+  expect(result.entries[0]?.plans[0]).toMatchObject({createdAt:1,endedAt:20,hidden:'auto',stages:[{steps:[{startedAt:1,endedAt:20}]}]});
+ } finally {await current.lifecycle.dispose();}
+});

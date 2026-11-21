@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
-import {afterEach,expect,test} from 'vitest';
-import {cleanup,fireEvent,render,waitFor} from '@testing-library/react';
+import {afterEach,expect,test,vi} from 'vitest';
+import {act,cleanup,fireEvent,render,waitFor} from '@testing-library/react';
 import {PlanStrip,ThreadProgress} from '../src/ui/thread-progress';
-import {planProgress,visiblePlans,type Plan} from '../src/core/progress';
+import {aggregateProgress,planProgress,progressMarks,sidebarPlans,visiblePlans,type Plan} from '../src/core/progress';
 import {migrationEntry,sameRecord} from '../src/core/planning/migration';
 afterEach(cleanup);
 const plan=(overrides:Partial<Plan>={}):Plan=>({id:'plan',title:'Проверить изменение',state:'running',updatedAt:1,stages:[{name:'Проверка',steps:[{title:'Подготовка',status:'done'},{title:'Тесты',status:'active'},{title:'Отчёт',status:'pending'}]}],...overrides});
@@ -54,4 +54,37 @@ test('migration validates state and keys and compares JSON independent of object
  expect(migrationEntry.safeParse({key:'bars:thread-test',value:[{...full,state:'invented'}]}).success).toBe(false);
  expect(sameRecord({a:1,b:[2,3]},{b:[2,3],a:1})).toBe(true);
  expect(sameRecord([1,2],[2,1])).toBe(false);
+});
+
+test('aggregate sums deepest planned branches without counting coordinator plans twice',()=>{
+ const aggregate=aggregateProgress([
+  {id:'coordinator',parentThreadId:null,title:'Coordinator',plans:[plan({stages:[{name:'Coordination',steps:[{title:'Wait',status:'pending'}]}]})]},
+  {id:'worker',parentThreadId:'coordinator',title:'Worker',plans:[plan()]},
+  {id:'review',parentThreadId:null,title:'Review',plans:[plan({stages:[{name:'Review',steps:[{title:'Review',status:'done'}]}],state:'done'})]},
+ ])!;
+ expect(planProgress(aggregate)).toMatchObject({done:2,total:4,percent:50});
+ expect(aggregate.stages.map(s=>s.name).join(' ')).not.toContain('Coordination');
+ expect(aggregateProgress([{id:'missing',parentThreadId:null,title:'Missing',plans:[]}])).toMatchObject({state:'running',note:'Без плана: 1',stages:[]});
+});
+test('completed auto-hidden phases remain in history and totals; manual hiding is respected',()=>{
+ const history=[plan({id:'phase1',state:'done',hidden:'auto'}),plan({id:'phase2',state:'done',hidden:'auto'}),plan({id:'phase3'}),plan({id:'manual',hidden:'manual'})];
+ expect(sidebarPlans(history).map(p=>p.id)).toEqual(['phase3','phase1','phase2']);
+ const total=aggregateProgress([{id:'worker',parentThreadId:null,title:'Worker',plans:sidebarPlans(history)}])!;
+ expect(planProgress(total)).toMatchObject({done:3,total:9});
+ const slot=render(<ThreadProgress plans={sidebarPlans(history)}/>);
+ expect(slot.getByLabelText('Ещё планов: 2')).toBeTruthy();
+});
+test('step and stage markers retain original elapsed time; current marker ticks and freezes on completion',async()=>{
+ vi.useFakeTimers();vi.setSystemTime(10000);
+ try {
+  const timed=plan({createdAt:1000,stages:[{name:'Stage 1',steps:[{title:'Read',status:'done',startedAt:1000,endedAt:4000}]},{name:'Stage 2',steps:[{title:'Build',status:'active',startedAt:4000},{title:'Report',status:'pending'}]}]});
+  expect(progressMarks(timed)[0]).toMatchObject({label:'Stage 1 · 3s',isStage:true});
+  const slot=render(<PlanStrip plan={timed}/>);
+  expect(slot.getByRole('img',{name:'Всего: 9s · Шаг: 6s'})).toBeTruthy();
+  await act(async()=>{await vi.advanceTimersByTimeAsync(1000);});
+  expect(slot.getByRole('img',{name:'Всего: 10s · Шаг: 7s'})).toBeTruthy();
+  slot.rerender(<PlanStrip plan={{...timed,state:'done',endedAt:11000,stages:timed.stages.map(stage=>({...stage,steps:stage.steps.map(step=>({...step,status:'done',endedAt:11000}))}))}}/>);
+  await act(async()=>{await vi.advanceTimersByTimeAsync(5000);});
+  expect(slot.getByRole('img',{name:'Всего: 10s'})).toBeTruthy();
+ } finally {cleanup();vi.useRealTimers();}
 });

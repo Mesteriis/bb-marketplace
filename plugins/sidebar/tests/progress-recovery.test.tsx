@@ -53,3 +53,13 @@ test('a successful empty response clears a deliberately removed plan instead of 
  act(()=>mock.changed?.());await flush();
  expect(slot.container.textContent).toBe('|fresh');
 });
+
+test('parent aggregate advances from child polling while the parent agent is idle and survives remount',async()=>{
+ let done=false;
+ mock.call.mockImplementation(async(name:string,input:{threadIds:string[]})=>name==='attention'?{entries:[],incomplete:false}:{availability:'ready',failedThreadIds:[],entries:input.threadIds.map(threadId=>({threadId,plans:threadId==='child'?[{...plan,stages:[{name:'Work',steps:[{title:'One',status:done?'done':'active'},{title:'Two',status:done?'done':'pending'}]}]}]:[]}))});
+ function Parent(){const result=useThreadPlans('idle-parent',[{id:'child',parentThreadId:'idle-parent',title:'Child'}]);return <div>{result.plans[0]?.stages.flatMap(s=>s.steps).filter(s=>s.status==='done').length}</div>;}
+ let slot=render(<ProgressProvider><Parent/></ProgressProvider>);await flush();
+ expect(slot.container.textContent).toBe('0');done=true;await flush(5000);
+ expect(slot.container.textContent).toBe('2');slot.unmount();
+ slot=render(<ProgressProvider><Parent/></ProgressProvider>);await flush();expect(slot.container.textContent).toBe('2');
+});

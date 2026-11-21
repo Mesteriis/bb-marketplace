@@ -75,7 +75,7 @@ function Sidebar({ activeThreadId, onNavigate }: PluginThreadListProps) {
         const summary=children.length?`Субтреды ${children.length}${running?` · в работе ${running}`:''}${unread?` · новые ${unread}`:''}${waiting?` · ждут ответа ${waiting}`:''}${errors?` · ошибки ${errors}`:''}`:undefined;
         const parent=thread.parentThreadId?byId.get(thread.parentThreadId):null;
         const context=depth===0?projects.find(p=>p.id===thread.projectId)?.name:!node&&parent?.parentThreadId?parent.displayTitle:undefined;
-        return <ThreadRow thread={thread} depth={depth} context={context} summary={summary} active={activeThreadId === thread.id} muted={muted} onNavigate={onNavigate} toggleControl={toggleControl}/>;
+        return <ThreadRow thread={thread} depth={depth} context={context} summary={summary} descendants={children.map(t=>({id:t.id,parentThreadId:t.parentThreadId,title:byId.get(t.id)?.displayTitle??t.title??t.id}))} active={activeThreadId === thread.id} muted={muted} onNavigate={onNavigate} toggleControl={toggleControl}/>;
     };
     const renderThread = (node: ThreadNode, depth: number): React.ReactNode => omitThreadIds([node],shownIds).map(remaining=><ThreadBranch key={remaining.thread.id} node={remaining} depth={depth} renderRow={renderRow}/>);
     return <div className="makosh-sidebar">
@@ -126,7 +126,8 @@ function Branch({ node, depth, hidden, threadLimit, renderThread, onNavigate }: 
     return <div>{project ? <ContextMenu.Root><ContextMenu.Trigger asChild>{row}</ContextMenu.Trigger><ContextMenu.Portal><ContextMenu.Content className="makosh-sidebar-menu"><ContextMenu.Item onSelect={() => change('projects', project.id)}>{muted ? 'Вернуть' : 'Скрыть'}</ContextMenu.Item><ContextMenu.Item onSelect={() => { navigate.toCompose({ projectId: project.id }); onNavigate(); }}>Новый чат</ContextMenu.Item></ContextMenu.Content></ContextMenu.Portal></ContextMenu.Root> : row}
  {open ? <><ThreadListLimit rows={node.threads.map(n => renderThread(n, depth + 1))} limit={threadLimit} depth={depth+1}/>{node.children.map(child => <Branch key={child.key} node={child} depth={depth + 1} hidden={hidden} threadLimit={threadLimit} renderThread={renderThread} onNavigate={onNavigate}/>)}</> : branchRunning(node).map(thread=>renderThread({thread,children:[]},depth+1))}</div>;
 }
-function ThreadRow({ thread, depth, active, muted, onNavigate, toggleControl,context,summary }: {
+function ThreadRow({ thread, depth, active, muted, onNavigate, toggleControl,context,summary,descendants=[] }: {
+    descendants?:{id:string;parentThreadId:string|null;title:string}[];
     context?:string;summary?:string;
     toggleControl: React.ReactNode;
     thread: PluginSidebarThread;
@@ -136,7 +137,7 @@ function ThreadRow({ thread, depth, active, muted, onNavigate, toggleControl,con
     onNavigate: () => void;
 }) {
     const navigate = useBbNavigate();
-    const {plans,failed}=useThreadPlans(thread.id);
+    const {plans,failed}=useThreadPlans(thread.id,descendants);
     const {values}=useSettings();
     const plan=plans[0];
     const planAttention=plan?.state==='needs_input'||plan?.state==='error';

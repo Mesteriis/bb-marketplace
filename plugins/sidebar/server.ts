@@ -2,7 +2,7 @@ import { defineRpcContract, type BbPluginApi } from '@get-bb/plugin-sdk';
 import { z } from 'zod';
 import {progressSchema} from './src/core/progress';
 import registerPlanning from './src/adapters/bb/planning/server';
-import {visiblePlans} from './src/core/progress';
+import {sidebarPlans} from './src/core/progress';
 import {migrationEntry,migrationKey} from './src/core/planning/migration';
 export const contract = defineRpcContract({
     paths: { input: z.null(), output: z.array(z.object({ id: z.string(), name: z.string(), path: z.string().nullable() })) },
@@ -25,7 +25,7 @@ export default async function plugin(bb: BbPluginApi) {
             const entries=[];
             const failedThreadIds=[];
             for(const threadId of new Set(threadIds)) {
-                try {entries.push({threadId,plans:visiblePlans(await planning.readBars(threadId))});}
+                try {entries.push({threadId,plans:sidebarPlans(await planning.readBars(threadId))});}
                 catch {failedThreadIds.push(threadId);}
             }
             return {availability:'ready' as const,entries,failedThreadIds};

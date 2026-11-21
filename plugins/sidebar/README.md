@@ -48,15 +48,14 @@ Sidebar включает собственный движок Plan Progress: `pla
 
 В строке треда показаны текущий этап/шаг, число завершённых шагов и компактная
 полоска. Нажмите её подпись, чтобы открыть этапы и шаги. Несколько планов
-раскрываются через счётчик «+N» в строке прогресса; вопросы и ошибки идут первыми. Скрытые планы
-не выводятся в строке, но могут быть восстановлены в полоске над вводом.
-Проценты разных планов и субтредов не складываются. «План готов» относится
+раскрываются через счётчик «+N» в строке прогресса; вопросы и ошибки идут первыми. Завершённые автоматически скрытые планы доступны в истории; ручное скрытие сохраняется.
+У родителя основной прогресс рассчитывается по шагам субтредов. «План готов» относится
 только к плану, а не к завершению треда; счётчик шагов сохраняет реальные статусы.
 Для вопроса/ошибки примечание видно сразу в подписи.
 
 Полоски используют исходные точечную волну, мерцание и плавное изменение ширины
 Plan Progress. Настройка **Effects** отключает волну и мерцание; `prefers-reduced-motion` также отключает переходы и вращение индикатора.
-Sidebar получает данные только для отрисованных строк, пакетами до 25 тредов,
+Sidebar получает данные для отрисованных строк, их потомков и активных веток, пакетами до 25 тредов,
 обновляет их по собственным realtime-событиям и раз в 5 секунд, приостанавливая
 опрос в скрытой вкладке. Ошибка чтения показана явно; она не означает отсутствие
 плана. Вопросы и ошибки планов поднимают тред в «Сейчас», даже если он прочитан и не выполняется. Индекс строится при загрузке из первых 2000 сохранённых тредов и обновляется при изменении планов; неполное покрытие обозначается явно.
@@ -98,3 +97,7 @@ RPC `progress_import` принимает только ограниченные �
 Branch activity includes running descendants and the host's background agents, commands, workflows and plan mode, without changing the host execution status. This keeps the parent in **Сейчас / В работе** while its subtree works, including when folded.
 
 Progress polling retains the last successful plan on transport or per-thread failures, marks it stale, and retries every five seconds. A request times out after ten seconds; realtime notifications coalesce instead of cancelling in-flight reads. The attention index cannot block plan reads. Active descendants stay observed while folded. Sidebar polling rechecks the actual thread status after reload and restores the existing automatic reminder for a verified active turn when work-call thresholds are reached; its durable once-per-turn budget still applies. It never creates artificial steps or completion percentages.
+
+Parents display **Общий прогресс субтредов**: completed/skipped steps divided by all known steps from descendant plans. A coordinator's plans are excluded when a deeper descendant has plans, so the same delegated work is not counted twice. All saved plans of each contributing thread are included, including auto-hidden completions; manually hidden plans stay excluded. Missing plans are reported instead of assuming completion. The aggregate is derived on each polling/realtime update and restored from stored child plans after reload, even when the parent agent is idle. Expand the aggregate for its thread/plan/stage breakdown and the parent's own chronological plan history.
+
+The sidebar now retains original plan/step timestamps. Progress marks expose completed step/stage duration; the head dot exposes total and current-step elapsed time. Hover/focus also reveals the clock, and expanded steps show their duration. Time is wall-clock elapsed time including waits, not model CPU time; unknown timestamps remain unknown.

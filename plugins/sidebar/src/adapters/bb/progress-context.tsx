@@ -1,7 +1,7 @@
 import {createContext,useCallback,useContext,useEffect,useMemo,useRef,useState,type ReactNode} from 'react';
 import {useRpc,useRealtime} from '@get-bb/plugin-sdk/app';
 import type {contract} from '../../../server';
-import type {Plan,ProgressResult} from '../../core/progress';
+import {aggregateProgress,type Plan,type ProgressResult,type ProgressThread} from '../../core/progress';
 
 type Entry={plans:Plan[];failed:boolean};
 // A hung transport must not stop the recovery loop forever.
@@ -69,10 +69,12 @@ export function ProgressProvider({children}:{children:ReactNode}) {
  const value=useMemo(()=>({register,entries,availability,attention,incomplete}),[register,entries,availability,attention,incomplete]);
  return <Context.Provider value={value}>{children}</Context.Provider>;
 }
-export function useThreadPlans(id:string) {
+export function useThreadPlans(id:string,descendants:readonly Omit<ProgressThread,'plans'>[]=[]) {
  const {register,entries,availability}=useContext(Context);
  useEffect(()=>register(id),[register,id]);
- return {plans:entries[id]?.plans??[],failed:entries[id]?.failed??false,availability};
+ useObserveThreadPlans(descendants.map(t=>t.id));
+ const aggregate=aggregateProgress(descendants.map(t=>({...t,plans:entries[t.id]?.plans??[]})));
+ return {plans:aggregate?[aggregate,...[...(entries[id]?.plans??[])].sort((a,b)=>(a.createdAt??a.updatedAt)-(b.createdAt??b.updatedAt)||a.id.localeCompare(b.id))]:entries[id]?.plans??[],failed:entries[id]?.failed||descendants.some(t=>entries[t.id]?.failed),availability};
 }
 export function ProgressNotice() {
  const {availability,incomplete}=useContext(Context);
