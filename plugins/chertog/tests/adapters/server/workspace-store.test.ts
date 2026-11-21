@@ -508,6 +508,26 @@ describe("a stored document the reader left parts out of", () => {
     for (const key of foreign) expect(kv.value(key)).toBe("kept by hand");
   });
 
+  it("does not take a key with an impossible date for a copy of its own", async () => {
+    const kv = new FakeKv();
+    kv.seed("workspace/backup/000000-2026-99-99T99:99:99.999Z", "kept by hand");
+    const { store } = rig(kv);
+    for (const revision of [0, 1, 2, 3, 4, 5, 6]) {
+      kv.seed(DOCUMENT_KEY, damagedStageA(revision));
+      expect((await store.save({ ...stageADocument(), revision }, revision)).status).toBe("saved");
+    }
+    expect(kv.keys()).toEqual([
+      "workspace/backup/000000-2026-99-99T99:99:99.999Z",
+      "workspace/backup/000003-2026-11-21T12:00:00.000Z",
+      "workspace/backup/000004-2026-11-21T12:00:00.000Z",
+      "workspace/backup/000005-2026-11-21T12:00:00.000Z",
+      "workspace/backup/000006-2026-11-21T12:00:00.000Z",
+      "workspace/backup/000007-2026-11-21T12:00:00.000Z",
+      DOCUMENT_KEY,
+    ]);
+    expect(kv.value("workspace/backup/000000-2026-99-99T99:99:99.999Z")).toBe("kept by hand");
+  });
+
   it("gives two copies of one instant different keys", async () => {
     const kv = new FakeKv();
     const { store } = rig(kv);

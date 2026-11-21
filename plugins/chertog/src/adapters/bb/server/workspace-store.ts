@@ -19,12 +19,16 @@ const MAX_DOCUMENT_BYTES = 256 * 1024;
 const MAX_BACKUPS = 5;
 
 /** The whole name the store gives a copy: a number, then an ISO instant. Nothing else under the prefix is its own. */
-const BACKUP_KEY = /^([0-9]{6,15})-[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$/;
+const BACKUP_KEY = /^([0-9]{6,15})-([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z)$/;
 
 /** The number of a copy this store wrote, `null` for a key under the prefix it did not write. */
 function backupNumber(key: string): number | null {
   const match = BACKUP_KEY.exec(key.slice(BACKUP_PREFIX.length));
-  return match === null ? null : Number(match[1]);
+  if (match === null) return null;
+  // The instant must be one a clock can give: it reads as a date and writes back as itself.
+  const instant = new Date(match[2]);
+  if (Number.isNaN(instant.getTime()) || instant.toISOString() !== match[2]) return null;
+  return Number(match[1]);
 }
 
 /** Whether two values of plain JSON data are equal, whatever the order of their keys. */
