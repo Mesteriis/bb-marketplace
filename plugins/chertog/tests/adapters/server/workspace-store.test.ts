@@ -57,7 +57,12 @@ function documentOfBytes(target: number): WorkspaceDocument {
     panels: { ...panels, [key(9998)]: filler("x".repeat(first)), [key(9999)]: filler("x".repeat(second)) },
   });
   const stored = (document: WorkspaceDocument): number => utf8Bytes({ ...document, revision: 1 });
-  while (stored(withTails(120, 120)) < target) {
+  // Keys have one width, so every Latin filler adds the same number of bytes: measure one and add the rest by count.
+  const before = stored(withTails(120, 120));
+  panels[key(count)] = filler("x".repeat(120));
+  count += 1;
+  const perFiller = stored(withTails(120, 120)) - before;
+  for (let missing = Math.ceil((target - before) / perFiller) - 1; missing > 0; missing -= 1) {
     panels[key(count)] = filler("x".repeat(120));
     count += 1;
   }
@@ -195,7 +200,7 @@ describe("what is refused", () => {
     });
     expect(await store.save(inTitle, 0)).toEqual({
       status: "rejected",
-      reason: "panels.frame.title: A title must not carry a link with a secret",
+      reason: "panels.frame.title: A title must not carry a link or credentials",
     });
     expect(kv.keys()).toEqual([]);
   });
