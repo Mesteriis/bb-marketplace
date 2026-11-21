@@ -15,11 +15,11 @@ test('errors and questions precede recent plans; hidden plans do not leak into r
  expect(visiblePlans(plans).map(p=>p.id)).toEqual(['error','question','plan']);
  expect(plans.map(p=>p.id)).toEqual(['plan','question','error','hidden']);
 });
-test('collapsed plan shows its progress; opening reveals stages without navigation',()=>{
+test('collapsed plan shows its progress; opening reveals stages without navigation',async()=>{
  const slot=render(<PlanStrip plan={plan()}/>);
  expect(slot.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('33');
  fireEvent.click(slot.getByText('Проверка → Тесты'));
- expect(slot.getByText('Подготовка')).toBeTruthy();
+ expect(await slot.findByText('Подготовка')).toBeTruthy();
  expect(slot.getByText('Не начат')).toBeTruthy();
 });
 test('filling changes only when real steps change, and preserves original effects',()=>{
@@ -45,7 +45,9 @@ test('one disclosure keeps the status and additional plans reachable without ano
  fireEvent.click(slot.getByText('Проверка → Тесты',{selector:'.progress-caption'}));
  await waitFor(()=>expect(slot.getAllByRole('progressbar')).toHaveLength(2));
  expect(slot.getByText('Второй план',{selector:'.additional-plan-title'})).toBeTruthy();
- expect(slot.getAllByText('Подготовка')).toHaveLength(2);
+ expect(slot.getAllByText('Подготовка')).toHaveLength(1);
+ fireEvent.click(slot.getByText('Проверка → Тесты',{selector:'.additional-plans .progress-caption'}));
+ await waitFor(()=>expect(slot.getAllByText('Подготовка')).toHaveLength(2));
 });
 test('migration validates state and keys and compares JSON independent of object order',()=>{
  const full={...plan(),kind:'plan',createdAt:1};
@@ -72,7 +74,11 @@ test('completed auto-hidden phases remain in history and totals; manual hiding i
  const total=aggregateProgress([{id:'worker',parentThreadId:null,title:'Worker',plans:sidebarPlans(history)}])!;
  expect(planProgress(total)).toMatchObject({done:3,total:9});
  const slot=render(<ThreadProgress plans={sidebarPlans(history)}/>);
+ expect(slot.queryByLabelText('Ещё планов: 2')).toBeNull();
+ fireEvent.click(slot.getByRole('button',{name:'Показать готовые'}));
  expect(slot.getByLabelText('Ещё планов: 2')).toBeTruthy();
+ fireEvent.click(slot.getByRole('button',{name:'Скрыть готовые'}));
+ expect(slot.queryByLabelText('Ещё планов: 2')).toBeNull();
 });
 test('step and stage markers retain original elapsed time; current marker ticks and freezes on completion',async()=>{
  vi.useFakeTimers();vi.setSystemTime(10000);
@@ -87,4 +93,39 @@ test('step and stage markers retain original elapsed time; current marker ticks 
   await act(async()=>{await vi.advanceTimersByTimeAsync(5000);});
   expect(slot.getByRole('img',{name:'Всего: 10s'})).toBeTruthy();
  } finally {cleanup();vi.useRealTimers();}
+});
+
+test('completed-only plans are hidden by default and the button reveals them without changing progress',()=>{
+ const slot=render(<ThreadProgress plans={[plan({state:'done'})]}/>);
+ expect(slot.queryByRole('progressbar')).toBeNull();
+ fireEvent.click(slot.getByRole('button',{name:'Показать готовые'}));
+ expect(slot.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('33');
+ fireEvent.click(slot.getByRole('button',{name:'Скрыть готовые'}));
+ expect(slot.queryByRole('progressbar')).toBeNull();
+});
+test('large closed histories are not mounted, and timer ticks do not rebuild their step list',async()=>{
+ vi.useFakeTimers();vi.setSystemTime(10000);
+ try {
+  let reads=0;
+  const steps=Array.from({length:200},(_,i)=>({get title(){reads++;return 'Step '+i;},status:'active' as const,startedAt:1000}));
+  const slot=render(<PlanStrip plan={plan({createdAt:1000,stages:[{name:'Large',steps}]})}/>);
+  expect(slot.container.querySelectorAll('li')).toHaveLength(0);
+  const details=slot.container.querySelector('details')!;details.open=true;fireEvent(details,new Event('toggle'));
+  expect(slot.container.querySelectorAll('li')).toHaveLength(200);
+  const before=reads;
+  await act(async()=>{await vi.advanceTimersByTimeAsync(2000);});
+  expect(reads).toBe(before);
+  expect(slot.getByRole('img',{name:'Всего: 11s · Шаг: 11s'})).toBeTruthy();
+  details.open=false;fireEvent(details,new Event('toggle'));expect(slot.container.querySelectorAll('li')).toHaveLength(0);
+ } finally {cleanup();vi.useRealTimers();}
+});
+test('completed stages can be revealed without changing the aggregate percentage',async()=>{
+ const p=plan({stages:[{name:'Finished stage',steps:[{title:'Closed work',status:'done'}]},{name:'Current stage',steps:[{title:'Open work',status:'active'}]}]});
+ const slot=render(<ThreadProgress plans={[p]}/>);
+ fireEvent.click(slot.getByText('Current stage → Open work'));
+ expect(await slot.findByText('Open work')).toBeTruthy();
+ expect(slot.queryByText('Closed work')).toBeNull();
+ fireEvent.click(slot.getByRole('button',{name:'Показать готовые'}));
+ expect(slot.getByText('Closed work')).toBeTruthy();
+ expect(slot.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('50');
 });

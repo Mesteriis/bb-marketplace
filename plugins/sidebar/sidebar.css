@@ -44,3 +44,7 @@
 .makosh-sidebar .plan-head:focus-visible,.makosh-sidebar .plan-mark:focus-visible{outline:1px solid var(--foreground);outline-offset:1px}
 .makosh-sidebar .step-duration{margin-left:auto;font-variant-numeric:tabular-nums;white-space:nowrap;color:var(--muted-foreground)}
 .makosh-sidebar .step-duration+.step-state{margin-left:0}
+
+.makosh-sidebar .completed-plans-toggle{display:block;background:none;border:0;padding:1px 0;color:var(--muted-foreground);font:inherit;font-size:10px;line-height:18px;cursor:pointer}
+.makosh-sidebar .completed-plans-toggle:hover{color:var(--foreground);text-decoration:underline}
+.makosh-sidebar .completed-plans-toggle:focus-visible{outline:1px solid var(--foreground);outline-offset:2px}

@@ -73,8 +73,12 @@ export function useThreadPlans(id:string,descendants:readonly Omit<ProgressThrea
  const {register,entries,availability}=useContext(Context);
  useEffect(()=>register(id),[register,id]);
  useObserveThreadPlans(descendants.map(t=>t.id));
- const aggregate=aggregateProgress(descendants.map(t=>({...t,plans:entries[t.id]?.plans??[]})));
- return {plans:aggregate?[aggregate,...[...(entries[id]?.plans??[])].sort((a,b)=>(a.createdAt??a.updatedAt)-(b.createdAt??b.updatedAt)||a.id.localeCompare(b.id))]:entries[id]?.plans??[],failed:entries[id]?.failed||descendants.some(t=>entries[t.id]?.failed),availability};
+ const descendantsKey=JSON.stringify(descendants);
+ const plans=useMemo(()=>{
+  const aggregate=aggregateProgress(descendants.map(t=>({...t,plans:entries[t.id]?.plans??[]})));
+  return aggregate?[aggregate,...[...(entries[id]?.plans??[])].sort((a,b)=>(a.createdAt??a.updatedAt)-(b.createdAt??b.updatedAt)||a.id.localeCompare(b.id))]:entries[id]?.plans??[];
+ },[id,descendantsKey,entries]);
+ return {plans,failed:entries[id]?.failed||descendants.some(t=>entries[t.id]?.failed),availability};
 }
 export function ProgressNotice() {
  const {availability,incomplete}=useContext(Context);
