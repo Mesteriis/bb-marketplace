@@ -95,6 +95,12 @@ interface Entry {
   view: PanelProvider | null;
   /** Number of the current open attempt; an answer to an older one is ignored. */
   attempt: number;
+  /**
+   * The participation in the provider's session this view belongs to. Views
+   * of one reference share it while the session lasts; a view opened after
+   * the session is over, or after every earlier view is gone, starts a new one.
+   */
+  generation: number;
   endingSession: boolean;
   settled: Promise<PanelInstance | null>;
 }
@@ -110,6 +116,7 @@ export class PanelRegistry {
   private readonly providers = new Map<string, PanelProvider>();
   private readonly entries = new Map<string, Entry>();
   private readonly listeners = new Set<() => void>();
+  private lastGeneration = 0;
 
   constructor(ports: { clock: Clock; ids: IdGenerator; diagnostics: Diagnostics }) {
     this.clock = ports.clock;
@@ -181,6 +188,7 @@ export class PanelRegistry {
       hiddenAt: null,
       view: null,
       attempt: 0,
+      generation: 0,
       endingSession: false,
       settled: Promise.resolve(null),
     };
@@ -305,6 +313,14 @@ export class PanelRegistry {
     if (entry.endingSession) return { status: "busy" };
     entry.endingSession = true;
     const provider = entry.view;
+    // The answer is about the participation that exists now: the views that
+    // hold it at this moment, loading ones included. A view opened later is
+    // not part of what the provider was asked to end.
+    const generation = entry.generation;
+    const asked = new Set<string>();
+    for (const other of this.entries.values()) {
+      if (other.generation === generation && holdsSession(other)) asked.add(other.instanceId);
+    }
     let outcome: "ended" | "unknown";
     try {
       outcome = (await provider.endSession(instanceId)) === "ended" ? "ended" : "unknown";
@@ -318,7 +334,7 @@ export class PanelRegistry {
       // The session is over for its other views even if this one was closed
       // while the provider was answering.
       if (stillOpen) entry.unknownOutcome = null;
-      this.markSessionEnded(entry.key, provider);
+      this.markSessionEnded(generation, asked);
       this.notify();
     } else if (stillOpen) {
       entry.unknownOutcome = "end-session";
@@ -336,7 +352,7 @@ export class PanelRegistry {
     const entry = this.entries.get(instanceId);
     if (entry === undefined || entry.state !== "live") return false;
     if (state === "session-ended") {
-      this.markSessionEnded(entry.key, entry.view);
+      this.markSessionEnded(entry.generation);
     } else {
       entry.state = state;
       entry.addressee = null;
@@ -400,6 +416,7 @@ export class PanelRegistry {
   }
 
   private attemptOpen(entry: Entry, provider: PanelProvider): void {
+    entry.generation = this.generationToJoin(entry, provider);
     entry.state = "loading";
     entry.addressee = null;
     entry.unknownOutcome = null;
@@ -422,7 +439,7 @@ export class PanelRegistry {
       entry.state = "live";
       entry.addressee = outcome.addressee;
     } else if (outcome.status === "session-ended") {
-      this.markSessionEnded(entry.key, provider);
+      this.markSessionEnded(entry.generation);
     } else if (outcome.status === "access-denied") {
       entry.state = "access-denied";
     } else {
@@ -453,17 +470,33 @@ export class PanelRegistry {
   }
 
   /**
-   * The session is over for every view of it, not only for the one the user
-   * acted in: no view of an ended session stays live or keeps an addressee.
-   * A view still loading is ended too, and its late answer is ignored.
+   * The session is over for every view of that participation, not only for
+   * the one the user acted in: none of them stays live or keeps an addressee.
+   * A view still loading is ended too, and its late answer is ignored. With
+   * `only`, the end applies to those instances alone.
    */
-  private markSessionEnded(key: string, provider: PanelProvider | null): void {
+  private markSessionEnded(generation: number, only?: ReadonlySet<string>): void {
     for (const entry of this.entries.values()) {
-      if (entry.key !== key || entry.view !== provider || !holdsSession(entry)) continue;
+      if (entry.generation !== generation || !holdsSession(entry)) continue;
+      if (only !== undefined && !only.has(entry.instanceId)) continue;
       entry.state = "session-ended";
       entry.addressee = null;
       entry.attempt += 1;
     }
+  }
+
+  /**
+   * The participation a view about to be opened belongs to: the one another
+   * view of the same reference and provider still holds, or a new one.
+   */
+  private generationToJoin(opening: Entry, provider: PanelProvider): number {
+    for (const entry of this.entries.values()) {
+      if (entry !== opening && entry.key === opening.key && entry.view === provider && holdsSession(entry)) {
+        return entry.generation;
+      }
+    }
+    this.lastGeneration += 1;
+    return this.lastGeneration;
   }
 
   /**

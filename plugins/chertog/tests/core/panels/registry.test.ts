@@ -767,6 +767,78 @@ describe("ending the session", () => {
     expect(registry.addresseeOf("panel-2")).toBeNull();
   });
 
+  it("does not end a view of the same reference opened after the initiator was closed", async () => {
+    const { registry, threads } = setup();
+    threads.openResult = async () => ({ status: "live", addressee: "thread:thr_a" });
+    await openSettled(registry, threadA);
+    const ending = deferred<"ended">();
+    threads.endSessionResult = () => ending.promise;
+
+    const result = registry.endSession("panel-1");
+    await registry.close("panel-1");
+    const reopened = await openSettled(registry, threadA);
+    ending.resolve("ended");
+
+    expect(await result).toEqual({ status: "ended" });
+    expect(reopened).toMatchObject({ instanceId: "panel-2", state: "live" });
+    expect(registry.get("panel-2")).toMatchObject({ state: "live", addressee: "thread:thr_a", unknownOutcome: null });
+    expect(registry.addresseeOf("panel-2")).toBe("thread:thr_a");
+  });
+
+  it("does not end a view that was opened again after the request", async () => {
+    const { registry, threads } = setup();
+    threads.openResult = async () => ({ status: "live", addressee: "thread:thr_a" });
+    await openSettled(registry, threadA);
+    const ending = deferred<"ended">();
+    threads.endSessionResult = () => ending.promise;
+
+    const result = registry.endSession("panel-1");
+    registry.report("panel-1", "lost");
+    const retried = registry.retryOpen("panel-1");
+    if (retried.ok) await retried.settled;
+    ending.resolve("ended");
+    await result;
+
+    expect(registry.get("panel-1")).toMatchObject({ state: "live", addressee: "thread:thr_a" });
+  });
+
+  it("does not end a second view opened and confirmed live after the request", async () => {
+    const { registry, threads } = setup();
+    threads.multipleViews = true;
+    threads.openResult = async () => ({ status: "live", addressee: "thread:thr_a" });
+    await openSettled(registry, threadA);
+    const ending = deferred<"ended">();
+    threads.endSessionResult = () => ending.promise;
+
+    const result = registry.endSession("panel-1");
+    await openSettled(registry, threadA, true);
+    ending.resolve("ended");
+    await result;
+
+    expect(registry.get("panel-1")).toMatchObject({ state: "session-ended", addressee: null });
+    expect(registry.get("panel-2")).toMatchObject({ state: "live", addressee: "thread:thr_a" });
+  });
+
+  it("ends a view that was still loading when the end was requested", async () => {
+    const { registry, threads } = setup();
+    threads.multipleViews = true;
+    await openSettled(registry, threadA);
+    const pending = deferred<PanelOpenOutcome>();
+    threads.openResult = () => pending.promise;
+    const second = registry.open(threadA, { newView: true });
+    const ending = deferred<"ended">();
+    threads.endSessionResult = () => ending.promise;
+
+    const result = registry.endSession("panel-1");
+    await registry.close("panel-1");
+    ending.resolve("ended");
+    await result;
+    pending.resolve({ status: "live", addressee: "thread:thr_a" });
+
+    expect(second.ok && (await second.settled)).toMatchObject({ instanceId: "panel-2", state: "session-ended", addressee: null });
+    expect(registry.addresseeOf("panel-2")).toBeNull();
+  });
+
   it("does not turn a panel closed during the call into an ended one", async () => {
     const { registry, threads } = setup();
     await openSettled(registry, threadA);
@@ -810,6 +882,44 @@ describe("provider reports", () => {
     expect(registry.addresseeOf("panel-2")).toBeNull();
     expect(third.ok && (await third.settled)).toMatchObject({ instanceId: "panel-3", state: "session-ended", addressee: null });
     expect(registry.get("panel-4")).toMatchObject({ state: "live", addressee: "thread:thr_b" });
+  });
+
+  it("does not let a report for an old participation end a view that joined a new one", async () => {
+    const { registry, threads } = setup();
+    threads.multipleViews = true;
+    threads.openResult = async () => ({ status: "live", addressee: "thread:thr_a" });
+    await openSettled(registry, threadA);
+    await openSettled(registry, threadA, true);
+    registry.report("panel-1", "session-ended");
+    const retried = registry.retryOpen("panel-1");
+    if (retried.ok) await retried.settled;
+    const pending = deferred<PanelOpenOutcome>();
+    threads.openResult = () => pending.promise;
+    const stale = registry.retryOpen("panel-2");
+
+    pending.resolve({ status: "session-ended" });
+    if (stale.ok) await stale.settled;
+
+    expect(registry.get("panel-2")).toMatchObject({ state: "session-ended", addressee: null });
+    expect(registry.get("panel-1")).toMatchObject({ state: "session-ended" });
+  });
+
+  it("starts a new participation for a reference opened after its session ended", async () => {
+    const { registry, threads } = setup();
+    threads.multipleViews = true;
+    threads.openResult = async () => ({ status: "live", addressee: "thread:thr_a" });
+    await openSettled(registry, threadA);
+    await openSettled(registry, threadA, true);
+    registry.report("panel-1", "session-ended");
+    const retried = registry.retryOpen("panel-1");
+    if (retried.ok) await retried.settled;
+    const third = await openSettled(registry, threadA, true);
+
+    expect(registry.report("panel-1", "session-ended")).toBe(true);
+
+    expect(registry.get("panel-2")).toMatchObject({ state: "session-ended" });
+    expect(third.instanceId).toBe("panel-3");
+    expect(registry.get("panel-3")).toMatchObject({ state: "session-ended", addressee: null });
   });
 
   it.each([["access-denied"], ["lost"]] as const)("keeps the other views live when one view reports %s", async (state) => {
