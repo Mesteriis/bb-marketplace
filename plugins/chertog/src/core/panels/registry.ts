@@ -14,7 +14,14 @@ import { panelRefKey, panelRefSchema, type PanelRef } from "./ref.ts";
  */
 export interface PanelInstance {
   readonly instanceId: string;
+  /**
+   * The reference the instance was opened from. Its parameters are given out
+   * only after the provider's own schema accepted them; until then `params`
+   * is empty, because nothing has confirmed they are plain identifiers.
+   */
   readonly ref: PanelRef;
+  /** Whether the provider has checked the parameters, so that `ref` carries them. */
+  readonly paramsVerified: boolean;
   readonly state: PanelState;
   /** False while the instance is removed from the layout but still held. */
   readonly placed: boolean;
@@ -71,9 +78,14 @@ export interface PanelEndSessionResult {
 
 interface Entry {
   readonly instanceId: string;
+  /** The full reference. Handed to the provider, and to callers only once verified. */
   readonly ref: PanelRef;
+  /** The reference without its parameters, given out while they are unverified. */
+  readonly withheldRef: PanelRef;
   readonly key: string;
   readonly openedAt: number;
+  /** Whether the provider's schema has accepted the parameters. */
+  verified: boolean;
   state: PanelState;
   placed: boolean;
   addressee: string | null;
@@ -113,6 +125,14 @@ export class PanelRegistry {
       throw new Error('Panel provider "' + provider.type + '" is already registered');
     }
     this.providers.set(provider.type, provider);
+    let changed = false;
+    for (const entry of this.entries.values()) {
+      if (entry.verified || entry.ref.provider !== provider.type) continue;
+      if (!provider.paramsSchema.safeParse(entry.ref.params).success) continue;
+      entry.verified = true;
+      changed = true;
+    }
+    if (changed) this.notify();
     return () => this.unregisterProvider(provider);
   }
 
@@ -121,9 +141,9 @@ export class PanelRegistry {
    * the same instance and no second provider call, unless `newView` is set
    * and the provider declares several views. A hidden instance is reused and
    * counts as placed again. A reference with parameters its provider does
-   * not declare is refused; while the provider is missing only the general
-   * rules of `panelRefSchema` can be applied, and such a kept reference is
-   * refused once the provider appears.
+   * not declare is refused. While the provider is missing the reference is
+   * kept so that it can be opened later, but its parameters are held opaque:
+   * they are not given out until the provider appears and accepts them.
    */
   open(ref: PanelRef, options: PanelOpenOptions = {}): PanelOpenResult {
     const parsed = panelRefSchema.safeParse(ref);
@@ -148,8 +168,10 @@ export class PanelRegistry {
     const entry: Entry = {
       instanceId,
       ref: Object.freeze({ provider: parsed.data.provider, params: Object.freeze({ ...parsed.data.params }) }),
+      withheldRef: Object.freeze({ provider: parsed.data.provider, params: Object.freeze({}) }),
       key,
       openedAt: this.clock.now(),
+      verified: provider !== undefined,
       state: "provider-missing",
       placed: true,
       addressee: null,
@@ -183,6 +205,7 @@ export class PanelRegistry {
     const provider = this.providers.get(entry.ref.provider);
     if (provider === undefined) return { ok: false, reason: "provider-missing" };
     if (!provider.paramsSchema.safeParse(entry.ref.params).success) return { ok: false, reason: "invalid-ref" };
+    entry.verified = true;
     this.attemptOpen(entry, provider);
     this.notify();
     return { ok: true, instance: this.snapshot(entry), settled: entry.settled };
@@ -332,6 +355,11 @@ export class PanelRegistry {
 
   private reuse(entry: Entry, provider: PanelProvider | undefined): PanelOpenResult {
     let changed = false;
+    // The caller checked the reference against the provider's schema.
+    if (provider !== undefined && !entry.verified) {
+      entry.verified = true;
+      changed = true;
+    }
     if (!entry.placed) {
       entry.placed = true;
       entry.hiddenAt = null;
@@ -442,7 +470,8 @@ export class PanelRegistry {
   private snapshot(entry: Entry): PanelInstance {
     return Object.freeze({
       instanceId: entry.instanceId,
-      ref: entry.ref,
+      ref: entry.verified ? entry.ref : entry.withheldRef,
+      paramsVerified: entry.verified,
       state: entry.state,
       placed: entry.placed,
       addressee: entry.addressee,

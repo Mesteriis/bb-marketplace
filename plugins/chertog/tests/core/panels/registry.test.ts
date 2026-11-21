@@ -35,6 +35,7 @@ describe("opening", () => {
       instance: {
         instanceId: "panel-1",
         ref: { provider: "bb-thread", params: { threadId: "thr_a" } },
+        paramsVerified: true,
         state: "loading",
         placed: true,
         addressee: null,
@@ -214,12 +215,60 @@ describe("missing provider", () => {
 
     const instance = await openSettled(registry, call);
 
-    expect(instance).toMatchObject({
-      instanceId: "panel-1",
-      ref: { provider: "zoom", params: { meeting: "standup" } },
+    expect(instance).toMatchObject({ instanceId: "panel-1", state: "provider-missing" });
+    expect(registry.list().map((item) => item.instanceId)).toEqual(["panel-1"]);
+  });
+
+  it("does not give out parameters no provider has checked", async () => {
+    const { registry } = setup();
+    const unchecked = { provider: "zoom", params: { meeting: "standup", note: "Привет!" } };
+
+    const instance = await openSettled(registry, unchecked);
+
+    expect(instance.ref).toEqual({ provider: "zoom", params: {} });
+    expect(instance.paramsVerified).toBe(false);
+    expect(registry.get("panel-1")?.ref).toEqual({ provider: "zoom", params: {} });
+    expect(JSON.stringify(registry.list())).not.toContain("Привет!");
+    expect(JSON.stringify(registry.list())).not.toContain("standup");
+    expect(JSON.stringify(registry.hiddenLive())).not.toContain("Привет!");
+  });
+
+  it("still tells apart kept references of a missing provider by their parameters", async () => {
+    const { registry } = setup();
+
+    const first = await openSettled(registry, { provider: "zoom", params: { meeting: "standup" } });
+    const same = await openSettled(registry, { provider: "zoom", params: { meeting: "standup" } });
+    const other = await openSettled(registry, { provider: "zoom", params: { meeting: "retro" } });
+
+    expect([first.instanceId, same.instanceId, other.instanceId]).toEqual(["panel-1", "panel-1", "panel-2"]);
+  });
+
+  it("gives out the parameters once the provider has appeared and checked them", async () => {
+    const { registry } = setup();
+    await openSettled(registry, call);
+    const zoom = new FakeProvider("zoom");
+
+    registry.registerProvider(zoom);
+
+    expect(registry.get("panel-1")).toMatchObject({
       state: "provider-missing",
+      paramsVerified: true,
+      ref: { provider: "zoom", params: { meeting: "standup" } },
     });
-    expect(registry.list().map((item) => item.ref)).toEqual([{ provider: "zoom", params: { meeting: "standup" } }]);
+    expect(zoom.opens).toEqual([]);
+  });
+
+  it("keeps showing checked parameters after the provider goes away", async () => {
+    const registry = new PanelRegistry({ clock: new FakeClock(0), ids: new SequentialIds() });
+    const unregister = registry.registerProvider(new FakeProvider("zoom"));
+    await openSettled(registry, call);
+
+    unregister();
+
+    expect(registry.get("panel-1")).toMatchObject({
+      paramsVerified: true,
+      ref: { provider: "zoom", params: { meeting: "standup" } },
+    });
   });
 
   it("opens the kept reference once the provider appears, under the same instance id", async () => {
@@ -249,10 +298,9 @@ describe("missing provider", () => {
     });
     expect(registry.retryOpen("panel-1")).toEqual({ ok: false, reason: "invalid-ref" });
     expect(zoom.opens).toEqual([]);
-    expect(registry.get("panel-1")).toMatchObject({
-      state: "provider-missing",
-      ref: { provider: "zoom", params: { meeting: "standup", note: "hello" } },
-    });
+    expect(registry.get("panel-1")).toMatchObject({ state: "provider-missing", paramsVerified: false });
+    expect(registry.get("panel-1")?.ref).toEqual({ provider: "zoom", params: {} });
+    expect(JSON.stringify(registry.list())).not.toContain("hello");
   });
 
   it("closes a panel whose provider never appeared without releasing anything", async () => {

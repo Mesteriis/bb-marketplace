@@ -90,6 +90,35 @@ describe("panelRefSchema", () => {
     expect(panelRefSchema.safeParse({ provider: "zoom", params: { url } }).success).toBe(false);
   });
 
+  it.each([
+    ["an encoded letter in the parameter name", "https://zoom.example/j/123?p%77d=abc"],
+    ["a fully encoded parameter name", "https://zoom.example/j/123?%70%77%64=abc"],
+    ["a twice-encoded parameter name", "https://zoom.example/j/123?p%2577d=abc"],
+    ["a three-times-encoded parameter name", "https://zoom.example/j/123?p%252577d=abc"],
+    ["an encoded separator before the name", "https://zoom.example/j/123?room=1%26pwd=abc"],
+    ["an encoded equals sign", "https://zoom.example/j/123?pwd%3Dabc"],
+    ["a whole encoded link in a value", "https://host.example/go?next=https%3A%2F%2Fzoom.example%2Fj%2F1%3Fpwd%3Dabc"],
+    ["a twice-encoded link in a value", "https://host.example/go?next=https%253A%252F%252Fz.example%252Fj%253Fpwd%253Dabc"],
+    ["an encoded short token name", "https://zoom.example/j/123?t%6b=abc"],
+    ["a padded parameter name", "https://zoom.example/j/123?%20tk=abc"],
+    ["encoded user credentials", "ssh:%2F%2Froot:hunter2%40host.example"],
+    ["an encoded at sign after credentials", "ssh://root:hunter2%40host.example"],
+    ["encoding nested too deep to check", "https://z.example/?p%2525252525252577d=abc"],
+  ])("rejects a link with %s", (_name, url) => {
+    expect(panelRefSchema.safeParse({ provider: "zoom", params: { url } }).success).toBe(false);
+  });
+
+  it.each([["p%77d"], ["a.b"], ["a b"], ["1st"], ["тема"]])("rejects the parameter name %s, which is not a plain identifier", (name) => {
+    expect(panelRefSchema.safeParse({ provider: "zoom", params: { [name]: "x" } }).success).toBe(false);
+  });
+
+  it("accepts a link with harmless encoded characters", () => {
+    expect(
+      panelRefSchema.safeParse({ provider: "iframe", params: { url: "https://host.example/open?room=a%2Fb&name=100%25" } })
+        .success,
+    ).toBe(true);
+  });
+
   it("accepts a link without credentials", () => {
     expect(
       panelRefSchema.safeParse({ provider: "iframe", params: { url: "https://host.example/open?room=1" } }).success,

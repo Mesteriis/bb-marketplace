@@ -56,19 +56,50 @@ const LINK_PARAM = /[?&#;]([^=&#;]*)=/g;
  */
 const WHITESPACE_OR_CONTROL = /[\s\u0000-\u001f\u007f]/;
 
-function hasSecretInLink(value: string): boolean {
+/** A parameter name is a plain identifier, so nothing can hide in it behind an encoding. */
+const PARAM_NAME = /^[A-Za-z][A-Za-z0-9_-]*$/;
+
+const PERCENT_ESCAPE = /%([0-9a-f]{2})/gi;
+const MAX_DECODE_ROUNDS = 5;
+
+/**
+ * The value as written and after each round of percent-decoding, since a
+ * link reader decodes names and values and a link may be encoded again
+ * inside another one. Null when the value is still encoded after the last
+ * round: it cannot be checked, so it is refused.
+ */
+function decodedForms(value: string): string[] | null {
+  const forms = [value];
+  let current = value;
+  for (let round = 0; round <= MAX_DECODE_ROUNDS; round += 1) {
+    const next = current.replace(PERCENT_ESCAPE, (_escape, hex: string) => String.fromCharCode(Number.parseInt(hex, 16)));
+    if (next === current) return forms;
+    if (round === MAX_DECODE_ROUNDS) return null;
+    forms.push(next);
+    current = next;
+  }
+  return null;
+}
+
+function hasSecretInPlainLink(value: string): boolean {
   if (LINK_USER_INFO.test(value)) return true;
   for (const match of value.matchAll(LINK_PARAM)) {
-    const name = match[1] ?? "";
+    const name = (match[1] ?? "").trim();
     if (SECRET_NAME.test(name) || SECRET_LINK_PARAM.test(name)) return true;
   }
   return false;
+}
+
+function hasSecretInLink(value: string): boolean {
+  const forms = decodedForms(value);
+  return forms === null || forms.some(hasSecretInPlainLink);
 }
 
 const paramNameSchema = z
   .string()
   .min(1)
   .max(MAX_NAME_LENGTH)
+  .regex(PARAM_NAME)
   .refine((name) => !SECRET_NAME.test(name), "A panel reference must not carry credentials")
   .refine((name) => !isContentName(name), "A panel reference must not carry correspondence");
 
