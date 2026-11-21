@@ -27,6 +27,7 @@ export interface AiLabelPorts {
 export const LABEL_NAME_MAX = 30;
 export const LABEL_DESCRIPTION_MAX = 300;
 
+/** The form open now. While it is open, Edit on the other labels waits: it would throw away what was typed. */
 type Draft = { id: string | null; name: string; description: string; autoArchive: boolean };
 const EMPTY: Draft = { id: null, name: "", description: "", autoArchive: false };
 
@@ -132,7 +133,7 @@ export function SortingSettings({ port, labels: ports }: { port: PageSettingsPor
                 >
                   {"↓"}
                 </Button>
-                <Button variant="ghost" size="sm" className="h-7 px-2" disabled={busy} aria-label={`${tx("Edit")}: ${label.name}`} onClick={() => setDraft({ ...label })}>
+                <Button variant="ghost" size="sm" className="h-7 px-2" disabled={busy || draft !== null} aria-label={`${tx("Edit")}: ${label.name}`} onClick={() => setDraft({ ...label })}>
                   {tx("Edit")}
                 </Button>
                 <Button variant="ghost" size="sm" className="h-7 px-2" disabled={busy} aria-label={`${tx("Remove")}: ${label.name}`} onClick={() => remove(label.id)}>

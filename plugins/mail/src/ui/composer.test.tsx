@@ -887,6 +887,25 @@ describe("Composer: identities, signatures, checks and templates (slice 3d)", ()
     expect(theEditor().getText()).not.toContain("Moving you to Bcc");
   });
 
+  it("Send later counts an address still being typed: it is saved as a recipient before the time is asked", async () => {
+    const order: string[] = [];
+    const ports = fakePorts();
+    ports.save.mockImplementation(async (input) => {
+      order.push(`save ${input.to.join(",")}`);
+      return { revision: 2, updatedAt: "2026-11-15T10:00:01.000Z" } as never;
+    });
+    const smartSend = vi.fn(async () => {
+      order.push("smart");
+      return null;
+    });
+    mount({}, { ...ports, smartSend } as ReturnType<typeof fakePorts>);
+    fireEvent.change(screen.getByRole("combobox", { name: "To" }), { target: { value: "ada@example.com" } });
+    fireEvent.click(screen.getByRole("button", { name: /Send later/ }));
+    await waitFor(() => expect(smartSend).toHaveBeenCalledWith("draft-1"));
+    // A later autosave may follow; what matters is what was saved before the time was asked.
+    expect(order.slice(0, 2)).toEqual(["save ada@example.com", "smart"]);
+  });
+
   it("; and a few letters list the templates; a press on one puts it in place of the typed text", async () => {
     mount({ templates: TEMPLATES, draft: draft({ doc: { type: "doc", content: [p("Hello")] } }) });
     const ed = theEditor();

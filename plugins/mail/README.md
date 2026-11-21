@@ -1581,8 +1581,9 @@ wrong; check the cited messages".
   drafted reply. **Reply drafted** appears under the message with
   its first lines, **Use** (opens an ordinary reply with the text in it)
   and **Dismiss**. Nothing is sent and nothing is saved on the mail server
-  until you act. At most 10 an hour and 50 a day (counted while BB runs; a
-  restart starts the count again); a draft is forgotten when you use or
+  until you act. At most 10 an hour and 50 a day. The day's count is read
+  from the activity log, so a restart does not start it again (clearing
+  the log does); the hour's count restarts with BB. A draft is forgotten when you use or
   dismiss it, when you answer in the conversation, when the message is
   deleted or leaves AI access, when you turn the setting off, or after 14
   days. Each call is a row in the agent log.
@@ -1608,8 +1609,10 @@ wrong; check the cited messages".
   about it once more, alone, so one email cannot decide for its
   neighbours. Turning the label's switch or the setting off also stops
   archives of a call already running. At most 50 automatic archives an
-  hour, 20 model calls an hour and 100 a day, ten messages a call (all
-  counted while BB runs; a restart or a plugin reload starts them again). The line
+  hour, 20 model calls an hour and 100 a day, ten messages a call. The
+  archives of the hour and the calls of the day are read from the activity
+  log, so a restart or a plugin reload does not start them again (clearing
+  the log does); the calls of the hour restart with BB. The line
   and labels are kept 90 days.
 
 ### Dictation

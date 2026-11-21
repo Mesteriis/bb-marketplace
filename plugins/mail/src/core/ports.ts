@@ -1078,6 +1078,8 @@ export interface MailStore {
 
   /** Appends one content-free row; returns its seq. */
   appendAgentLog(entry: LogEntry): number;
+  /** The time and count of one tool's rows since a moment, oldest first (the bounds of unattended AI read them at start). */
+  agentLogSince(tool: LogEntry["tool"], sinceIso: string): { at: string; count: number }[];
   /** Moves every row of a proposal or triage batch to its final outcome and count; returns how many changed. */
   updateAgentLog(refId: string, outcome: LogOutcome, count: number): number;
   /** Records what a row's later step sent (Ask's excerpts): ids (capped), their count and the hidden values; returns how many changed. */

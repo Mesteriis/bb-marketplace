@@ -67,11 +67,15 @@ export function eligible(row: AutoDraftRow, ctx: { own: ReadonlySet<string>; sen
 
 /** A daily cap: at most `perDay` in any 24 hours (auto drafts: AUTO_DRAFTS_PER_DAY). */
 export class DraftBudget {
-  private readonly taken: number[] = [];
+  private readonly taken: number[];
   constructor(
     private readonly clock: { now(): Date },
     private readonly perDay: number = AUTO_DRAFTS_PER_DAY,
-  ) {}
+    /** The times of what was taken before this run (from the activity log), so a restart does not start the day again. */
+    before: readonly number[] = [],
+  ) {
+    this.taken = [...before].sort((a, b) => a - b);
+  }
 
   /** Whether one more may start today. */
   left(): boolean {

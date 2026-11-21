@@ -73,7 +73,20 @@ export function createAiSort(deps: AiSortDeps) {
   const { store, clock } = deps;
   const nowIso = () => clock.now().toISOString();
   const own = () => new Set(ownAddresses(store).map(lower));
-  const archived: number[] = [];
+  /** What earlier runs logged for a tool inside a window, as times (a row of N counts N times when `each`). */
+  const loggedTimes = (tool: "ai_sort" | "ai_archive", windowMs: number, each: boolean): number[] => {
+    try {
+      return store
+        .agentLogSince(tool, new Date(clock.now().getTime() - windowMs).toISOString())
+        .flatMap((row) => Array.from({ length: each ? Math.max(0, Math.min(row.count, AUTO_ARCHIVES_PER_HOUR)) : 1 }, () => Date.parse(row.at)))
+        .filter((time) => Number.isFinite(time));
+    } catch {
+      // A log that cannot be read leaves the bounds as a fresh run's.
+      return [];
+    }
+  };
+  // The bounds outlive a restart: what the activity log holds of the last hour and day counts.
+  const archived: number[] = loggedTimes("ai_archive", HOUR_MS, true);
 
   /** New in the Inbox, still there, inside AI access, with a body, not the owner's own. */
   const qualifies = (messageId: string): MessageHeader | null => {
@@ -117,7 +130,7 @@ export function createAiSort(deps: AiSortDeps) {
     }
   };
 
-  const budget = new DraftBudget(clock, SORT_CALLS_PER_DAY);
+  const budget = new DraftBudget(clock, SORT_CALLS_PER_DAY, loggedTimes("ai_sort", 24 * HOUR_MS, false));
   const logCall = (built: AiBuild) => {
     const { provider, model } = deps.aiContext();
     deps.agentLog({

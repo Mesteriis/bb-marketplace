@@ -1392,7 +1392,8 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
           {...(props.ports.smartSend !== undefined
             ? {
                 smart: async () => {
-                  // The server reads the saved draft's recipients.
+                  // The server reads the saved draft's recipients; an address still being typed is one of them.
+                  commitAll();
                   if (dirty() && (await save(false)) !== "saved") return null;
                   return props.ports.smartSend!(draft.id);
                 },

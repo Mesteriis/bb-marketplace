@@ -2588,7 +2588,8 @@ export class InMemoryMailStore implements MailStore {
 
   /** Accepted recipients of sends, where this fake keeps them; none otherwise. */
   private sentRecipientAddresses(): Set<string> {
-    return new Set();
+    // Keys are `<account id>\u0000<address>`: every accepted recipient of a send.
+    return new Set([...this.state.sentRecipients.keys()].map((key) => key.slice(key.indexOf("\u0000") + 1)));
   }
 
   hasCalendarPart(): boolean {
@@ -2691,6 +2692,13 @@ export class InMemoryMailStore implements MailStore {
     const seq = this.state.nextLogSeq++;
     this.state.agentLog.push({ ...entry, messageIds: entry.messageIds.slice(0, AGENT_LOG_IDS_MAX), seq });
     return seq;
+  }
+
+  agentLogSince(tool: LogEntry["tool"], sinceIso: string): { at: string; count: number }[] {
+    return this.state.agentLog
+      .filter((row) => row.tool === tool && row.at >= sinceIso)
+      .sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : a.seq - b.seq))
+      .map((row) => ({ at: row.at, count: row.count }));
   }
 
   setAgentLogSources(seq: number, messageIds: readonly string[], count: number, hiddenCount: number): number {
