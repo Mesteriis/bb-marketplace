@@ -48,7 +48,12 @@ function isContentName(name: string): boolean {
 /** Query and fragment parameters that carry a secret inside a link. */
 const SECRET_LINK_PARAM = /^(?:tk|sig|signature|key|auth|code)$/i;
 
-const LINK_USER_INFO = /^[a-z][a-z0-9+.-]*:\/\/[^/?#]*@/i;
+/**
+ * User name or password before a host: `//user:pass@host`, wherever it
+ * stands in the value, since a link may be nested in the path, a parameter
+ * or the fragment of another one. A link reader takes `\` for `/`.
+ */
+const LINK_USER_INFO = /[/\\]{2}[^/\\?#]*@/;
 const LINK_PARAM = /[?&#;]([^=&#;]*)=/g;
 /**
  * An identifier, a path or a link has no whitespace; prose does. A path with

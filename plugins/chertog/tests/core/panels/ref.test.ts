@@ -108,6 +108,30 @@ describe("panelRefSchema", () => {
     expect(panelRefSchema.safeParse({ provider: "zoom", params: { url } }).success).toBe(false);
   });
 
+  it.each([
+    ["written plainly in a parameter", "https://host.example/go?next=https://user:pass@inner.example/x"],
+    ["encoded once", "https://host.example/go?next=https%3A%2F%2Fuser%3Apass%40inner.example%2Fx"],
+    ["encoded twice", "https://host.example/go?next=https%253A%252F%252Fuser%253Apass%2540inner.example%252Fx"],
+    ["with only a user name, encoded once", "https://host.example/go?next=https%3A%2F%2Fuser%40inner.example"],
+    ["in the fragment", "https://host.example/go#https://user:pass@inner.example"],
+    ["in the path", "https://host.example/redirect/ssh://root:hunter2@inner.example"],
+    ["without a scheme", "https://host.example/go?next=//user:pass@inner.example/x"],
+    ["without a scheme, encoded once", "https://host.example/go?next=%2F%2Fuser%3Apass%40inner.example"],
+    ["with backslashes for slashes", "https://host.example/go?next=https:\\\\user:pass@inner.example"],
+    ["after text that is not a link", "see:ssh://root:hunter2@inner.example"],
+  ])("rejects user credentials in a nested link %s", (_name, url) => {
+    expect(panelRefSchema.safeParse({ provider: "iframe", params: { url } }).success).toBe(false);
+  });
+
+  it.each([
+    ["an at sign in a parameter value", "https://host.example/open?contact=team@host.example"],
+    ["an at sign in the path", "https://host.example/users/@team/rooms"],
+    ["a nested link without credentials", "https://host.example/go?next=https%3A%2F%2Finner.example%2Fx"],
+    ["a doubled slash in the path", "https://host.example/a//b"],
+  ])("accepts a link with %s", (_name, url) => {
+    expect(panelRefSchema.safeParse({ provider: "iframe", params: { url } }).success).toBe(true);
+  });
+
   it.each([["p%77d"], ["a.b"], ["a b"], ["1st"], ["тема"]])("rejects the parameter name %s, which is not a plain identifier", (name) => {
     expect(panelRefSchema.safeParse({ provider: "zoom", params: { [name]: "x" } }).success).toBe(false);
   });
