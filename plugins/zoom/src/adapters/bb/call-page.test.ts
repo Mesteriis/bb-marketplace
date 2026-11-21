@@ -67,6 +67,12 @@ describe("call page served with a call (ticket link)", () => {
     expect(callPageHtml()).toContain("#meetingSDKElement { min-height: 100%; justify-content: center; }");
   });
 
+  it("leaves participant tiles see-through: Zoom plays the video in an element underneath them", () => {
+    const css = callPageHtml().split("<style>")[1]!.split("</style>")[0]!;
+    const tileRules = css.split("}").filter((rule) => rule.includes(".zoom-MuiListItem-root") && !rule.includes(":hover"));
+    expect(tileRules.filter((rule) => /background/.test(rule.split("{")[1] ?? ""))).toEqual([]);
+  });
+
   it("carries no call when embedded in BB", () => {
     expect(callPageHtml()).not.toContain("window.__ZOOM_CALL__ =");
   });

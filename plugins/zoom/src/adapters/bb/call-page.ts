@@ -211,7 +211,8 @@ body > .zoom-MuiMenu-root .zoom-MuiPaper-root {
   background-color: var(--bb-card) !important; color: var(--bb-foreground) !important;
   background-image: none !important; box-shadow: none !important; border: 1px solid var(--bb-border);
 }
-.zoom-MuiListItem-root { background-color: var(--bb-muted) !important; color: var(--bb-foreground) !important; }
+/* No background on participant tiles: they lie over the <video> Zoom plays, and a fill hides it. */
+.zoom-MuiListItem-root { color: var(--bb-foreground) !important; }
 .zoom-MuiTypography-root, .zoom-MuiInputBase-root, .zoom-MuiFormLabel-root, .zoom-MuiTab-root { color: inherit !important; font-family: var(--bb-font) !important; }
 .zoom-MuiButtonBase-root { font-family: var(--bb-font) !important; }
 .zoom-MuiTooltip-tooltip {
