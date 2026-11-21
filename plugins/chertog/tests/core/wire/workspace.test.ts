@@ -28,7 +28,7 @@ describe("load_workspace", () => {
 
   it("returns each of the four read results", () => {
     const dropped = [
-      { kind: "layout", id: "layout-review", name: "Ревью", reason: "workspace: the focused group group-9 is not in the tree" },
+      { kind: "layout", id: "layout-review", name: "Ревью", reason: "the layout is damaged" },
       { kind: "panel", panelId: null, reason: "The panel id is not an identifier" },
     ];
     const results = [
@@ -80,7 +80,7 @@ describe("save_workspace", () => {
       { status: "saved", document: { ...stageADocument(), revision: 1 } },
       { status: "conflict", current: { ...stageADocument(), revision: 4 } },
       { status: "conflict", current: null },
-      { status: "rejected", reason: "panels.thread-a.ref.params.token: A panel reference must not carry credentials" },
+      { status: "rejected", reason: "the document carries a credential" },
     ];
     for (const result of results) expect(saveWorkspaceOutputSchema.parse(result)).toEqual(result);
   });

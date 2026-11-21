@@ -20,12 +20,23 @@ function rig(kv: FakeKv = new FakeKv(), now: () => Date = clockOf(NOON)): Rig {
   return { kv, log, store: createKvWorkspaceStore({ kv, now, log }) };
 }
 
-/** The stage A document with the frame's tab renamed: a change a window made. */
-function renamedFrame(title: string, revision: number): WorkspaceDocument {
+/** The stage A document with its first layout renamed: a change a window made. */
+function renamedLayout(name: string, revision: number): WorkspaceDocument {
   const document = stageAJson();
-  document.panels.frame.title = title;
+  document.layouts[0].name = name;
   document.revision = revision;
   return document;
+}
+
+/**
+ * What a refused save must look like, whatever words the core chose: nothing
+ * but a status and a reason, and the reason does not quote the secret.
+ */
+function expectRejected(result: unknown, secret: string): void {
+  expect(result).toEqual({ status: "rejected", reason: expect.any(String) });
+  const reason = (result as { reason: string }).reason;
+  expect(reason).not.toBe("");
+  expect(reason).not.toContain(secret);
 }
 
 /** Stage A at the given revision whose "Ревью" layout focuses a tile it does not have. */
@@ -42,12 +53,14 @@ function utf8Bytes(value: unknown): number {
 
 /**
  * A valid document that takes exactly `target` bytes of JSON once it is
- * stored at revision 1. A hundred of its titles are Cyrillic, two bytes a
- * letter, so the count of characters is well below the count of bytes.
+ * stored at revision 1. It is filled with panels that differ from the
+ * fixture's frame panel by one reference parameter. A hundred of those values
+ * are Cyrillic, two bytes a letter, so the document has far fewer characters
+ * than bytes.
  */
 function documentOfBytes(target: number): WorkspaceDocument {
   const base = stageADocument();
-  const filler = (title: string): WorkspacePanel => ({ ref: { provider: "chertog-frame", params: { frameId: "live-frame" } }, title });
+  const filler = (frameId: string): WorkspacePanel => ({ ...base.panels.frame, ref: { provider: "chertog-frame", params: { frameId } } });
   const key = (index: number): string => "p" + String(index).padStart(4, "0");
   const panels: Record<string, WorkspacePanel> = { ...base.panels };
   let count = 0;
@@ -108,24 +121,24 @@ describe("restart", () => {
   it("continues the revisions of the earlier run", async () => {
     const kv = new FakeKv();
     await rig(kv).store.save(stageADocument(), 0);
-    const result = await rig(kv).store.save(renamedFrame("Живая панель 2", 1), 1);
-    expect(result).toEqual({ status: "saved", document: renamedFrame("Живая панель 2", 2) });
-    expect(await rig(kv).store.load()).toEqual({ status: "ok", document: renamedFrame("Живая панель 2", 2), migratedFrom: null, dropped: [] });
+    const result = await rig(kv).store.save(renamedLayout("Разработка 2", 1), 1);
+    expect(result).toEqual({ status: "saved", document: renamedLayout("Разработка 2", 2) });
+    expect(await rig(kv).store.load()).toEqual({ status: "ok", document: renamedLayout("Разработка 2", 2), migratedFrom: null, dropped: [] });
   });
 });
 
 describe("two windows", () => {
   it("refuses the save made from a stale revision and returns what storage holds", async () => {
     const { kv, store } = rig();
-    expect((await store.save(renamedFrame("Окно A", 0), 0)).status).toBe("saved");
+    expect((await store.save(renamedLayout("Окно A", 0), 0)).status).toBe("saved");
 
-    const late = await store.save(renamedFrame("Окно B", 0), 0);
-    expect(late).toEqual({ status: "conflict", current: renamedFrame("Окно A", 1) });
-    expect(kv.value(DOCUMENT_KEY)).toEqual(renamedFrame("Окно A", 1));
+    const late = await store.save(renamedLayout("Окно B", 0), 0);
+    expect(late).toEqual({ status: "conflict", current: renamedLayout("Окно A", 1) });
+    expect(kv.value(DOCUMENT_KEY)).toEqual(renamedLayout("Окно A", 1));
 
-    const retried = await store.save(renamedFrame("Окно B", 1), 1);
-    expect(retried).toEqual({ status: "saved", document: renamedFrame("Окно B", 2) });
-    expect(kv.value(DOCUMENT_KEY)).toEqual(renamedFrame("Окно B", 2));
+    const retried = await store.save(renamedLayout("Окно B", 1), 1);
+    expect(retried).toEqual({ status: "saved", document: renamedLayout("Окно B", 2) });
+    expect(kv.value(DOCUMENT_KEY)).toEqual(renamedLayout("Окно B", 2));
   });
 
   it("answers a conflict with nothing when a window saves from a revision storage never had", async () => {
@@ -136,20 +149,20 @@ describe("two windows", () => {
 
   it("lets exactly one of two simultaneous saves through", async () => {
     const { kv, store } = rig();
-    const results = await Promise.all([store.save(renamedFrame("Окно A", 0), 0), store.save(renamedFrame("Окно B", 0), 0)]);
+    const results = await Promise.all([store.save(renamedLayout("Окно A", 0), 0), store.save(renamedLayout("Окно B", 0), 0)]);
     expect(results).toEqual([
-      { status: "saved", document: renamedFrame("Окно A", 1) },
-      { status: "conflict", current: renamedFrame("Окно A", 1) },
+      { status: "saved", document: renamedLayout("Окно A", 1) },
+      { status: "conflict", current: renamedLayout("Окно A", 1) },
     ]);
-    expect(kv.value(DOCUMENT_KEY)).toEqual(renamedFrame("Окно A", 1));
+    expect(kv.value(DOCUMENT_KEY)).toEqual(renamedLayout("Окно A", 1));
     // The second save did not read before the first one wrote.
     expect(kv.calls).toEqual(["get workspace/document", "set workspace/document", "get workspace/document"]);
   });
 
   it("lets exactly one of eight simultaneous saves through", async () => {
     const { kv, store } = rig();
-    const titles = ["Окно 1", "Окно 2", "Окно 3", "Окно 4", "Окно 5", "Окно 6", "Окно 7", "Окно 8"];
-    const results = await Promise.all(titles.map((title) => store.save(renamedFrame(title, 0), 0)));
+    const names = ["Окно 1", "Окно 2", "Окно 3", "Окно 4", "Окно 5", "Окно 6", "Окно 7", "Окно 8"];
+    const results = await Promise.all(names.map((name) => store.save(renamedLayout(name, 0), 0)));
     expect(results.map((result) => result.status)).toEqual([
       "saved",
       "conflict",
@@ -160,48 +173,41 @@ describe("two windows", () => {
       "conflict",
       "conflict",
     ]);
-    expect(kv.value(DOCUMENT_KEY)).toEqual(renamedFrame("Окно 1", 1));
+    expect(kv.value(DOCUMENT_KEY)).toEqual(renamedLayout("Окно 1", 1));
   });
 
   it("keeps serving saves after one of them failed in storage", async () => {
     const { kv, store } = rig();
     kv.failNextSetOf = DOCUMENT_KEY;
-    const [failed, next] = await Promise.allSettled([store.save(renamedFrame("Окно A", 0), 0), store.save(renamedFrame("Окно B", 0), 0)]);
+    const [failed, next] = await Promise.allSettled([store.save(renamedLayout("Окно A", 0), 0), store.save(renamedLayout("Окно B", 0), 0)]);
     expect(failed.status).toBe("rejected");
     if (failed.status !== "rejected") throw new Error("unreachable");
     expect(failed.reason).toEqual(new Error("the storage is full"));
-    expect(next).toEqual({ status: "fulfilled", value: { status: "saved", document: renamedFrame("Окно B", 1) } });
-    expect(kv.value(DOCUMENT_KEY)).toEqual(renamedFrame("Окно B", 1));
+    expect(next).toEqual({ status: "fulfilled", value: { status: "saved", document: renamedLayout("Окно B", 1) } });
+    expect(kv.value(DOCUMENT_KEY)).toEqual(renamedLayout("Окно B", 1));
   });
 });
 
 describe("what is refused", () => {
-  it("rejects a document with a credential and stores nothing", async () => {
+  it("rejects a reference parameter that names a credential and stores nothing", async () => {
     const { kv, log, store } = rig();
     const document = stageAJson();
     document.panels["thread-a"].ref.params.token = "hunter2";
 
-    const result = await store.save(document, 0);
-    expect(result).toEqual({ status: "rejected", reason: "panels.thread-a.ref.params.token: A panel reference must not carry credentials" });
+    expectRejected(await store.save(document, 0), "hunter2");
     expect(kv.keys()).toEqual([]);
     expect(log.lines).toEqual([]);
   });
 
-  it("rejects a link with a password in a reference and in a title, without quoting it", async () => {
+  it("rejects a link with a password in a reference and in a layout name, without quoting it", async () => {
     const { kv, store } = rig();
     const inRef = stageAJson();
     inRef.panels.frame.ref.params.url = "https://user:hunter2@example.test/";
-    const inTitle = stageAJson();
-    inTitle.panels.frame.title = "Стенд https://user:hunter2@example.test/";
+    const inName = stageAJson();
+    inName.layouts[0].name = "https://user:hunter2@example.test/";
 
-    expect(await store.save(inRef, 0)).toEqual({
-      status: "rejected",
-      reason: "panels.frame.ref.params.url: A panel reference must not carry a link with a secret",
-    });
-    expect(await store.save(inTitle, 0)).toEqual({
-      status: "rejected",
-      reason: "panels.frame.title: A title must not carry a link or credentials",
-    });
+    expectRejected(await store.save(inRef, 0), "hunter2");
+    expectRejected(await store.save(inName, 0), "hunter2");
     expect(kv.keys()).toEqual([]);
   });
 
@@ -212,7 +218,7 @@ describe("what is refused", () => {
     document.revision = 1;
     document.panels["thread-a"].ref.params.password = "hunter2";
 
-    expect((await store.save(document, 1)).status).toBe("rejected");
+    expectRejected(await store.save(document, 1), "hunter2");
     expect(kv.value(DOCUMENT_KEY)).toEqual({ ...stageADocument(), revision: 1 });
   });
 
@@ -252,7 +258,7 @@ describe("a panel of a provider that is not installed", () => {
   it("is stored and read back where it was", async () => {
     const kv = new FakeKv();
     const document = stageAJson();
-    document.panels.room = { ref: { provider: "not-installed-provider", params: { roomId: "room-7" } }, title: "Комната 7" };
+    document.panels.room = { ...document.panels.frame, ref: { provider: "not-installed-provider", params: { roomId: "room-7" } } };
     document.layouts[1].workspace.root.children[1].tabs = ["thread-a", "room"];
 
     expect((await rig(kv).store.save(document, 0)).status).toBe("saved");
@@ -260,10 +266,7 @@ describe("a panel of a provider that is not installed", () => {
     const read = await rig(kv).store.load();
     if (read.status !== "ok") throw new Error("the document was not read: " + read.status);
     expect(read.dropped).toEqual([]);
-    expect(read.document.panels.room).toEqual({
-      ref: { provider: "not-installed-provider", params: { roomId: "room-7" } },
-      title: "Комната 7",
-    });
+    expect(read.document.panels.room.ref).toEqual({ provider: "not-installed-provider", params: { roomId: "room-7" } });
     expect(read.document.layouts[1].workspace.root).toEqual({
       kind: "split",
       id: "split-3",
@@ -285,9 +288,7 @@ describe("a stored document the reader left parts out of", () => {
 
     const read = await store.load();
     if (read.status !== "ok") throw new Error("the document was not read: " + read.status);
-    expect(read.dropped).toEqual([
-      { kind: "layout", id: "layout-review", name: "Ревью", reason: "workspace: the focused group group-9 is not in the tree" },
-    ]);
+    expect(read.dropped).toEqual([{ kind: "layout", id: "layout-review", name: "Ревью", reason: expect.any(String) }]);
     expect(read.document.layouts.map((layout) => layout.id)).toEqual(["layout-dev"]);
     // Reading alone moves nothing.
     expect(kv.keys()).toEqual([DOCUMENT_KEY]);
@@ -382,15 +383,13 @@ describe("a stored document this code must not replace", () => {
     kv.seed(DOCUMENT_KEY, unreadable);
     const { log, store } = rig(kv);
 
-    expect(await store.load()).toEqual({ status: "corrupt", reason: "layouts: Invalid input: expected array, received string" });
-    expect(await store.save({ ...stageADocument(), revision: 2 }, 2)).toEqual({
-      status: "rejected",
-      reason: "Storage holds a workspace that cannot be read: layouts: Invalid input: expected array, received string",
-    });
-    expect(await store.save(stageADocument(), 0)).toEqual({
-      status: "rejected",
-      reason: "Storage holds a workspace that cannot be read: layouts: Invalid input: expected array, received string",
-    });
+    const read = await store.load();
+    expect(read).toEqual({ status: "corrupt", reason: expect.any(String) });
+    if (read.status !== "corrupt") throw new Error("unreachable");
+    // Whatever revision the save names, the answer is the refusal, with the reader's reason after the store's own words.
+    const refusal = { status: "rejected", reason: "Storage holds a workspace that cannot be read: " + read.reason };
+    expect(await store.save({ ...stageADocument(), revision: 2 }, 2)).toEqual(refusal);
+    expect(await store.save(stageADocument(), 0)).toEqual(refusal);
     expect(kv.keys()).toEqual([DOCUMENT_KEY]);
     expect(kv.value(DOCUMENT_KEY)).toEqual(unreadable);
     expect(log.lines).toEqual([]);
@@ -430,7 +429,7 @@ describe("what the adapter touches", () => {
     expect(touched.filter((key) => !key.startsWith("workspace/"))).toEqual([]);
     expect(log.lines).toEqual(["warn workspace: the stored original is kept aside before a save over it; parts left out: 1; copies kept: 1"]);
     const logged = log.lines.join("\n");
-    for (const content of ["hunter2", "Разработка", "Ревью", "Тред A", "thr_a", "Живая панель", "live-frame"]) {
+    for (const content of ["hunter2", "Разработка", "Ревью", "thr_a", "live-frame"]) {
       expect(logged).not.toContain(content);
     }
   });

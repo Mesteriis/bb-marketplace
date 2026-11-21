@@ -81,10 +81,9 @@ describe("workspace RPC", () => {
     const { handlers, kv, log } = loaded();
     const document = stageAJson();
     document.panels["thread-b"].ref.params.cookie = "hunter2";
-    expect(await call(handlers, "save_workspace", { document, expectedRevision: 0 })).toEqual({
-      status: "rejected",
-      reason: "panels.thread-b.ref.params.cookie: A panel reference must not carry credentials",
-    });
+    const result = await call(handlers, "save_workspace", { document, expectedRevision: 0 });
+    expect(result).toEqual({ status: "rejected", reason: expect.any(String) });
+    expect((result as { reason: string }).reason).not.toContain("hunter2");
     expect(kv.keys()).toEqual([]);
     expect(log.lines).toEqual([]);
   });
