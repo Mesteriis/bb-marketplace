@@ -1596,6 +1596,26 @@
           "ref": "main"
         }
       }
+    },
+    {
+      "id": "chertog",
+      "displayName": "Chertog [Experimental]",
+      "description": "Tiling workspace for BB Home. Package scaffold only: it loads in BB and adds no pages, commands or settings yet.",
+      "icon": {
+        "url": "./plugins/chertog/assets/icon.svg"
+      },
+      "author": {
+        "name": "Mesteriis",
+        "github": "Mesteriis",
+        "url": "https://github.com/Mesteriis"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/chertog",
+          "ref": "main"
+        }
+      }
     }
   ]
 }

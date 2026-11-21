@@ -1,0 +1,56 @@
+{
+  "name": "bb-plugin-chertog",
+  "version": "0.1.0",
+  "description": "Tiling workspace for BB Home. Package scaffold only: it loads in BB and adds no pages, commands or settings yet.",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "author": "Mesteriis",
+  "homepage": "https://github.com/Mesteriis/makosh-bb/tree/main/plugins/chertog#readme",
+  "bugs": {
+    "url": "https://github.com/Mesteriis/makosh-bb/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Mesteriis/makosh-bb.git",
+    "directory": "plugins/chertog"
+  },
+  "keywords": [
+    "bb-plugin",
+    "chertog",
+    "workspace",
+    "tiling",
+    "layout"
+  ],
+  "engines": {
+    "bb": ">=0.49",
+    "bbPluginSdk": ">=0.6.132"
+  },
+  "bb": {
+    "name": "Chertog [Experimental]",
+    "description": "Tiling workspace for BB Home. Package scaffold only: it loads in BB and adds no pages, commands or settings yet.",
+    "branding": {
+      "icon": "./assets/icon.svg"
+    },
+    "server": "./server.ts",
+    "app": "./app.tsx"
+  },
+  "scripts": {
+    "build": "bb plugin build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "check": "npm run typecheck && npm run test"
+  },
+  "devDependencies": {
+    "@get-bb/plugin-sdk": "0.6.132",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "hono": "^4.13.19",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "typescript": "^5.7.0",
+    "vitest": "^5.1.0"
+  }
+}
