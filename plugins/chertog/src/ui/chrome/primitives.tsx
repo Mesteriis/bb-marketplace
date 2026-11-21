@@ -142,7 +142,7 @@ export function usePopover() {
 interface ModalProps {
   labelledBy: string;
   describedBy?: string;
-  /** Escape and a press on the backdrop. */
+  /** Escape and a press on the backdrop, once it is released there. */
   onDismiss: () => void;
   className?: string;
   children: ReactNode;
@@ -185,6 +185,7 @@ function rememberFocusReturn(): () => HTMLElement | null {
  */
 export function Modal({ labelledBy, describedBy, onDismiss, className, children }: ModalProps) {
   const dialogRef = useRef<HTMLDivElement>(null);
+  const pressedBackdrop = useRef(false);
   useKeepFocusInside(dialogRef, true);
 
   useEffect(() => {
@@ -225,11 +226,23 @@ export function Modal({ labelledBy, describedBy, onDismiss, className, children 
     }
   };
 
+  // A press on the backdrop dismisses when it is released there, not when it
+  // starts: a dialog removed in the middle of a press loses the returned
+  // focus to the press itself, which moves it to whatever lies under the
+  // pointer, usually the page body. The press also takes no focus out of the
+  // dialog while it lasts, and one that began inside the dialog (a drag that
+  // ends on the backdrop) dismisses nothing.
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
-      onPointerDown={(event) => {
-        if (event.target === event.currentTarget) onDismiss();
+      onMouseDown={(event) => {
+        pressedBackdrop.current = event.target === event.currentTarget;
+        if (pressedBackdrop.current) event.preventDefault();
+      }}
+      onClick={(event) => {
+        const pressed = pressedBackdrop.current;
+        pressedBackdrop.current = false;
+        if (pressed && event.target === event.currentTarget) onDismiss();
       }}
     >
       <div
