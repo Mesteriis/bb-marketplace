@@ -159,6 +159,9 @@ export function createTransfer(options: TransferOptions): TransferSession {
       const attempt = (epoch += 1);
       const candidate = options.newNonce();
       revoke();
+      // Held from now on, so that a timeout, a refusal or a dropped session
+      // withdraws the mark even when the page sets it late.
+      nonce = candidate;
       pending = wanted.target;
       set({ kind: "binding" });
       let answer: unknown;
@@ -175,7 +178,6 @@ export function createTransfer(options: TransferOptions): TransferSession {
       if (report.origin !== wanted.target.origin || report.path !== wanted.target.path) {
         return refuse("address-mismatch");
       }
-      nonce = candidate;
       pending = null;
       set({ kind: "ready", target: wanted.target });
     },

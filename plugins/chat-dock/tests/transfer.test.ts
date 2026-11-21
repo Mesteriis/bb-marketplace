@@ -401,3 +401,74 @@ describe("an editor that answers unclearly", () => {
     expect(pastes).toBe(0);
   });
 });
+
+describe("re-review findings", () => {
+  it("withdraws a choice still in flight when the session is dropped", async () => {
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => (release = resolve));
+    const evaluations: string[] = [];
+    // The page runs expressions in the order they were sent, the first one late.
+    let queue: Promise<unknown> = held;
+    const page: PagePort = {
+      evaluate(expression) {
+        evaluations.push(expression);
+        const run = queue.then(() => evaluateInDocument(expression));
+        queue = run.catch(() => {});
+        return run;
+      },
+    };
+    const { session } = rig("textarea", { [PATH_A]: "draft" }, page);
+
+    const binding = session.bind(URL_A);
+    session.dispose();
+    release();
+    await binding;
+    await queue;
+
+    expect(evaluations).toHaveLength(2);
+    expect((globalThis as unknown as { __bbChatDock?: unknown }).__bbChatDock).toBeUndefined();
+  });
+
+  it("withdraws the mark of a choice that timed out", async () => {
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => (release = resolve));
+    let queue: Promise<unknown> = held;
+    const page: PagePort = {
+      evaluate(expression) {
+        const run = queue.then(() => evaluateInDocument(expression));
+        queue = run.catch(() => {});
+        return run;
+      },
+    };
+    const { session } = rig("textarea", { [PATH_A]: "draft" }, page);
+
+    await session.bind(URL_A);
+    expect(session.getState()).toEqual({ kind: "unbound", refusal: "page-unavailable" });
+    release();
+    await queue;
+    await queue;
+
+    expect((globalThis as unknown as { __bbChatDock?: unknown }).__bbChatDock).toBeUndefined();
+  });
+
+  it("treats a paste the editor took without cancelling as unknown, not as a refusal", async () => {
+    const { fixture, session } = rig("contenteditable", { [PATH_A]: "draft" });
+    const editor = fixture.editor();
+    // Runs first and takes the text itself, without preventDefault.
+    editor.addEventListener(
+      "paste",
+      (event) => {
+        event.stopImmediatePropagation();
+        const data = (event as unknown as { clipboardData: { getData(type: string): string } }).clipboardData;
+        editor.textContent = (editor.textContent ?? "") + data.getData("text/plain");
+      },
+      { capture: true },
+    );
+
+    await session.bind(URL_A);
+    expect(await session.confirm(MARKER)).toBe("unknown");
+
+    expect(session.getState().kind).toBe("unknown");
+    expect(fixture.draft(PATH_A)).toBe("draft" + MARKER);
+  });
+});

@@ -156,7 +156,9 @@ export function writeInPage(args: WriteArgs): WriteReport {
     const data = new DataTransfer();
     data.setData("text/plain", args.text);
     const paste = new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true });
-    return { status: editor.dispatchEvent(paste) ? "editor-rejected" : "handed-off" };
+    // A handler may take the text without cancelling the event, so an
+    // uncancelled paste is not proof that nothing was written.
+    return { status: editor.dispatchEvent(paste) ? "unconfirmed" : "handed-off" };
   }
   return { status: "editor-rejected" };
 }

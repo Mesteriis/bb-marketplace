@@ -75,7 +75,8 @@ describe("the BB entry", () => {
     const slot = renderSlot(app.browserToolbarActions[0]!, props);
     fireEvent.click(slot.getByRole("button", { name: "Вставить в ChatGPT…" }));
     await slot.findByRole("dialog");
-    expect(worlds).toEqual(["isolated"]);
+    // The choice, then the withdrawal after the fake page's unusable answer.
+    expect(worlds).toEqual(["isolated", "isolated"]);
     slot.lifecycle.unmount();
 
     // Taking the plugin's UI down turns the mode off again.
