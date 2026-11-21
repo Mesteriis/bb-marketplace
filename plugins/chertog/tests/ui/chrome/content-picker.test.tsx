@@ -317,3 +317,55 @@ describe("ContentPicker: the sections change while the limit question is open", 
     expect(screen.getByRole("group", { name: "Свободных мест нет" }).textContent).toContain("«Исполнитель 2»");
   });
 });
+
+describe("ContentPicker: a provider that is not ready offers nothing", () => {
+  function open(target: ContentTarget) {
+    const onOpen = vi.fn<(choice: ContentChoice) => void>();
+    const onFocusExisting = vi.fn<(tileId: string) => void>();
+    const picker = (sections: ContentSection[]) => (
+      <ContentPicker target={target} sections={sections} tileCount={3} tileLimit={8} onOpen={onOpen} onFocusExisting={onFocusExisting} />
+    );
+    const view = render(picker(SECTIONS));
+    return { user: userEvent.setup(), onOpen, onFocusExisting, update: (sections: ContentSection[]) => view.rerender(picker(sections)) };
+  }
+
+  const cases = (["empty-tile", "tab", "new-tile"] as const).flatMap((target) =>
+    (["denied", "missing", "loading"] as const).map((state) => [target, state] as const),
+  );
+
+  it.each(cases)("%s: an item under focus cannot be chosen once its provider becomes %s", async (target, state) => {
+    const { user, onOpen, onFocusExisting, update } = open(target);
+
+    item(/Исполнитель/).focus();
+    update([{ ...SECTIONS[0], state }, ...SECTIONS.slice(1)]);
+    await user.keyboard("{Enter}");
+
+    expect(within(screen.getByRole("region", { name: "Треды" })).queryAllByRole("button")).toEqual([]);
+    expect(screen.queryByRole("button", { name: /Исполнитель/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Ревьюер/ })).toBeNull();
+    expect(onOpen).not.toHaveBeenCalled();
+    expect(onFocusExisting).not.toHaveBeenCalled();
+  });
+
+  it("shows the provider's state in place of its items", () => {
+    const { update } = open("empty-tile");
+
+    update([{ ...SECTIONS[0], state: "denied" }, ...SECTIONS.slice(1)]);
+    expect(screen.getByRole("region", { name: "Треды" }).textContent).toBe("ТредыНет доступа");
+
+    update([{ ...SECTIONS[0], state: "missing" }, ...SECTIONS.slice(1)]);
+    expect(screen.getByRole("region", { name: "Треды" }).textContent).toContain("Поставщик отсутствует");
+
+    update([{ ...SECTIONS[0], state: "loading" }, ...SECTIONS.slice(1)]);
+    expect(within(screen.getByRole("region", { name: "Треды" })).getByRole("status").textContent).toBe("Загружается…");
+  });
+
+  it("an already open item of a provider that lost access is not focused either", async () => {
+    const { onFocusExisting, update } = open("tab");
+
+    update([{ ...SECTIONS[0], state: "denied" }, ...SECTIONS.slice(1)]);
+
+    expect(screen.queryByText("Уже открыто")).toBeNull();
+    expect(onFocusExisting).not.toHaveBeenCalled();
+  });
+});
