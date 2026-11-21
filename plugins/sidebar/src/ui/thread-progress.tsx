@@ -13,7 +13,7 @@ const PlanDetails=memo(function PlanDetails({plan,showCompleted}:{plan:Plan;show
    {plan.stages.filter(stage=>showCompleted||!completedStage(stage)).map((stage,i)=><div key={i}>{stage.name?<h4>{stage.name}</h4>:null}<ul>{stage.steps.map((step,j)=><li key={j} data-state={step.status}><span aria-hidden="true" className="step-dot"/>{step.title}<StepTime start={step.status==='pending'?undefined:step.startedAt} end={step.endedAt??plan.endedAt} running={plan.state!=='done'}/><span className="step-state">{{pending:'Не начат',active:'В работе',done:'Готово',error:'Ошибка',skipped:'Пропущен'}[step.status]}</span></li>)}</ul></div>)}
   </div>;
 });
-export function PlanStrip({plan,effects=true,status,extraPlans=[],showCompleted=true}:{plan:Plan;effects?:boolean;status?:{label:string;state:string};extraPlans?:readonly Plan[];showCompleted?:boolean}) {
+export function PlanStrip({plan,effects=true,status,extraPlans=[],showCompleted=true}:{plan:Plan;effects?:boolean;status?:{label:string;state:string;onActivate?:()=>void};extraPlans?:readonly Plan[];showCompleted?:boolean}) {
  const [expanded,setExpanded]=useState(false);
  const progress=useMemo(()=>planProgress(plan),[plan]);
  const color=colors[plan.state];
@@ -21,12 +21,12 @@ export function PlanStrip({plan,effects=true,status,extraPlans=[],showCompleted=
  return <details className="thread-progress" style={{'--plan-color':color} as CSSProperties} onToggle={event=>{if(event.target===event.currentTarget)setExpanded(event.currentTarget.open);}}>
   <summary title={`${plan.title}: ${label}`}><span className="progress-heading"><span className="progress-caption">{label}</span><span className="progress-fraction">{progress.total?`${progress.done}/${progress.total}`:'—'}</span>{extraPlans.length?<span className="extra-plan-count" title={`Ещё планов: ${extraPlans.length}`} aria-label={`Ещё планов: ${extraPlans.length}`}>+{extraPlans.length}</span>:null}</span>
   <div className="plan-line">
-  <PlanTrack plan={plan} effects={effects} compact/>{status?<span className={`state-badge plan-${status.state}`}>{status.label}</span>:null}</div></summary>
+  <PlanTrack plan={plan} effects={effects} compact/>{status?(status.onActivate?<button type="button" className={`state-badge plan-${status.state}`} title="Открыть нужный субтред" onClick={event=>{event.preventDefault();event.stopPropagation();status.onActivate?.();}}>{status.label} ↗</button>:<span className={`state-badge plan-${status.state}`}>{status.label}</span>):null}</div></summary>
   {expanded?<PlanDetails plan={plan} showCompleted={showCompleted}/>:null}
   {expanded&&extraPlans.length?<div className="additional-plans" aria-label="Остальные планы">{extraPlans.map(other=><div key={other.id}><div className="additional-plan-title">{other.title}</div><PlanStrip plan={other} effects={effects} showCompleted={showCompleted}/></div>)}</div>:null}
  </details>;
 }
-export function ThreadProgress({plans,effects=true,status}:{plans:readonly Plan[];effects?:boolean;status?:{label:string;state:string}}) {
+export function ThreadProgress({plans,effects=true,status}:{plans:readonly Plan[];effects?:boolean;status?:{label:string;state:string;onActivate?:()=>void}}) {
  const [showCompleted,setShowCompleted]=useState(false);
  const visible=plans.filter(plan=>showCompleted||plan.state!=='done');
  const hasCompleted=plans.some(plan=>plan.state==='done'||plan.stages.some(completedStage));

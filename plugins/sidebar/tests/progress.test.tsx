@@ -69,11 +69,11 @@ test('aggregate sums deepest planned branches without counting coordinator plans
  expect(aggregate.stages.map(s=>s.name).join(' ')).not.toContain('Coordination');
  expect(aggregateProgress([{id:'missing',parentThreadId:null,title:'Missing',plans:[]}])).toMatchObject({state:'running',note:'Без плана: 1',stages:[]});
 });
-test('completed auto-hidden phases remain in history and totals; manual hiding is respected',()=>{
+test('completed phases remain in history while aggregate uses the latest plan per child',()=>{
  const history=[plan({id:'phase1',state:'done',hidden:'auto'}),plan({id:'phase2',state:'done',hidden:'auto'}),plan({id:'phase3'}),plan({id:'manual',hidden:'manual'})];
  expect(sidebarPlans(history).map(p=>p.id)).toEqual(['phase3','phase1','phase2']);
  const total=aggregateProgress([{id:'worker',parentThreadId:null,title:'Worker',plans:sidebarPlans(history)}])!;
- expect(planProgress(total)).toMatchObject({done:3,total:9});
+ expect(planProgress(total)).toMatchObject({done:1,total:3});
  const slot=render(<ThreadProgress plans={sidebarPlans(history)}/>);
  expect(slot.queryByLabelText('Ещё планов: 2')).toBeNull();
  fireEvent.click(slot.getByRole('button',{name:'Показать готовые'}));
@@ -165,4 +165,17 @@ test('aggregate head carries the blocking child note instead of an unrelated wor
  expect(aggregate.note).toBe('Review: Confirm requirements');
  const slot=render(<PlanTrack plan={aggregate} compact/>);
  expect(slot.container.querySelector('.pp-head-label')?.textContent).toBe('Review: Confirm requirements');
+});
+
+test('aggregate counts an explicitly finished latest child plan without mutating saved step states',()=>{
+ const finished=plan({id:'latest',state:'done',updatedAt:20,stages:[{name:'Work',steps:[{title:'Work',status:'active'},{title:'Report',status:'pending'}]}]});
+ const aggregate=aggregateProgress([{id:'child',title:'Child',parentThreadId:null,plans:[plan({id:'old',updatedAt:1}),finished]}])!;
+ expect(planProgress(aggregate)).toMatchObject({done:2,total:2,percent:100});
+ expect(finished.stages[0]?.steps[0]?.status).toBe('active');
+});
+test('attention badge activation opens its destination without expanding the plan',()=>{
+ let calls=0;
+ const slot=render(<ThreadProgress plans={[plan({state:'error'})]} status={{label:'Ошибка',state:'error',onActivate:()=>calls++}}/>);
+ fireEvent.click(slot.getByRole('button',{name:'Ошибка ↗'}));
+ expect(calls).toBe(1);expect(slot.container.querySelector('details')?.open).toBe(false);
 });

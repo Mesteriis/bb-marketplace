@@ -35,7 +35,7 @@ export interface ProgressThread {id:string;parentThreadId:string|null;title:stri
 /** Use deepest planned branches, avoiding coordinator/worker double counting. */
 export function aggregateProgress(threads:readonly ProgressThread[]):Plan|null {
  if(!threads.length)return null;
- threads=threads.map(t=>({...t,plans:sidebarPlans(t.plans)}));
+ threads=threads.map(t=>({...t,plans:sidebarPlans(t.plans).sort((a,b)=>b.updatedAt-a.updatedAt||b.id.localeCompare(a.id)).slice(0,1)}));
  const byId=new Map(threads.map(t=>[t.id,t]));
  const covered=new Set<string>();
  for(const thread of threads)if(thread.plans.length) {
@@ -45,7 +45,7 @@ export function aggregateProgress(threads:readonly ProgressThread[]):Plan|null {
  const contributions=threads.filter(t=>!covered.has(t.id));
  const plans=contributions.flatMap(t=>[...t.plans].sort((a,b)=>(a.createdAt??a.updatedAt)-(b.createdAt??b.updatedAt)||a.id.localeCompare(b.id)).map(plan=>({thread:t,plan})));
  const missing=contributions.filter(t=>!t.plans.length).length;
- const stages=plans.flatMap(({thread,plan})=>plan.stages.map(stage=>({name:[thread.title,plan.title,stage.name].filter(Boolean).join(' · '),steps:stage.steps})));
+ const stages=plans.flatMap(({thread,plan})=>plan.stages.map(stage=>({name:[thread.title,plan.title,stage.name].filter(Boolean).join(' · '),steps:plan.state==='done'?stage.steps.map(step=>({...step,status:'done' as const,endedAt:step.endedAt??plan.endedAt})):stage.steps})));
  const steps=stages.flatMap(s=>s.steps);
  const done=steps.filter(s=>s.status==='done'||s.status==='skipped').length;
  const state=plans.some(p=>p.plan.state==='error')?'error':plans.some(p=>p.plan.state==='needs_input')?'needs_input':steps.length&&done===steps.length&&!missing?'done':'running';

@@ -2,7 +2,7 @@
 
 Project tree sorted by recent thread activity, with reversible hiding of projects and threads and a Show hidden toggle.
 
-Right-click a project or thread and choose **Скрыть**. Use **Показать скрытое** at the top to reveal hidden entries, then **Вернуть** in their menus to restore them. Hidden projects hide their threads, including pinned threads. Nothing is deleted or archived. Preferences are saved only in this browser profile; they do not sync across clients. Internal BB helper threads stay excluded.
+Right-click a project or thread and choose **Скрыть**. Use **Показать скрытое** in Projects to reveal hidden entries, then **Вернуть** in their menus to restore them. Hidden projects hide their threads, including pinned threads. Nothing is deleted or archived. Preferences are saved only in this browser profile; they do not sync across clients. Internal BB helper threads stay excluded.
 
 Projects and folders sort by their newest visible thread activity, including pinned threads. Empty projects follow; equal timestamps sort alphabetically. Select **Makosh Sidebar** under Settings → Appearance → Sidebar after installation.
 
@@ -20,7 +20,7 @@ Hiding a project also hides separately registered descendant projects and worktr
 
 Threads with subthreads have a separate expand/collapse chevron. Collapsing keeps the parent navigable and hides all descendants, including running threads. Status updates do not reopen the subtree; expanding restores it. Parent metadata retains descendant and activity counts. Subtrees start expanded outside the activity group.
 
-The **Сейчас** section (formerly **Активные**) shows running threads (starting, active, stopping) and threads the host marks unread until they are read. It includes all projects, including hidden ones and personal chats; archived/internal helper threads are excluded. Parent context is retained for an active subthread. A qualifying parent brings its subtree; subtrees start collapsed and expand on demand. Thread hierarchy remains available in the activity group; repeated rows are omitted from project navigation.
+The **Сейчас** section (formerly **Активные**) shows running threads (starting, active, stopping) and threads the host marks unread until they are read. It includes all projects, including hidden ones and personal chats; archived/internal helper threads are excluded. Parent context is retained for an active subthread. A qualifying parent brings its subtree; subtrees start collapsed and expand on demand. Thread hierarchy remains available in the activity group; the same threads remain available in the separate Projects tab.
 
 Collapsed subtrees also hide unread results and pending questions; their counts remain on the parent. Expand the parent to reach them.
 
@@ -34,10 +34,8 @@ Collapsed subtrees also hide unread results and pending questions; their counts 
 Раздел **Сейчас** группирует работу по родительским тредам. Фильтры **Все**,
 **В работе**, **Новые ответы** показывают количество тредов, а не число групп.
 Вкладка «Все» также сохраняет треды с ожидающим взаимодействием. Родитель
-остаётся доступен; свёрнутая группа показывает работающие субтреды, новые ответы
-и ожидающие взаимодействия. Иконки, бейджи, контекст проекта и линии связей
-различают состояние исполнения и непрочитанный результат. Показанные в «Сейчас»
-треды не дублируются в списке проектов; оставшиеся потомки сохраняются.
+остаётся доступен; свёрнутая группа скрывает всех потомков и сохраняет их счётчики. Иконки, бейджи, контекст проекта и линии связей
+различают состояние исполнения и непрочитанный результат. В отдельной вкладке «Проекты» доступны в том числе активные треды.
 
 Sidebar включает собственный движок Plan Progress: `plan_progress`, CLI
 `bb plan-progress`, напоминания с прежними ограничениями, диагностику,
@@ -98,7 +96,7 @@ Branch activity includes running descendants and the host's background agents, c
 
 Progress polling retains the last successful plan on transport or per-thread failures, marks it stale, and retries every five seconds. A request times out after ten seconds; realtime notifications coalesce instead of cancelling in-flight reads. The attention index cannot block plan reads. Active descendants stay observed while folded. Sidebar polling rechecks the actual thread status after reload and restores the existing automatic reminder for a verified active turn when work-call thresholds are reached; its durable once-per-turn budget still applies. It never creates artificial steps or completion percentages.
 
-Parents display **Общий прогресс субтредов**: completed/skipped steps divided by all known steps from descendant plans. A coordinator's plans are excluded when a deeper descendant has plans, so the same delegated work is not counted twice. All saved plans of each contributing thread are included, including auto-hidden completions; manually hidden plans stay excluded. Missing plans are reported instead of assuming completion. The aggregate is derived on each polling/realtime update and restored from stored child plans after reload, even when the parent agent is idle. Expand the aggregate for its thread/plan/stage breakdown and the parent's own chronological plan history.
+Parents display **Общий прогресс субтредов**: completed/skipped steps divided by all known steps from descendant plans. A coordinator's plans are excluded when a deeper descendant has plans, so the same delegated work is not counted twice. Only the latest non-manually-hidden plan of each contributing thread is included, including auto-hidden completion. Older plans remain available in history without inflating the aggregate. An explicitly completed latest plan contributes all its steps as complete; the stored step statuses remain unchanged. Missing plans are reported instead of assuming completion. The aggregate is derived on each polling/realtime update and restored from stored child plans after reload, even when the parent agent is idle. Expand the aggregate for its thread/plan/stage breakdown and the parent's own chronological plan history.
 
 The sidebar now retains original plan/step timestamps. Progress marks expose completed step/stage duration; the head dot exposes total and current-step elapsed time. Hover/focus also reveals the clock, and expanded steps show their duration. Time is wall-clock elapsed time including waits, not model CPU time; unknown timestamps remain unknown.
 
@@ -107,3 +105,11 @@ Completed plans and fully completed stages are hidden by default in the sidebar.
 Sidebar progress tracks are 20px tall. Dense plans group their timing marks into at most twelve positions, retaining every original label/duration in group tooltips. This prevents aggregate histories from covering the animation with a continuous row of dots; short plans retain individual marks.
 
 The sidebar and composer now share the original full track renderer: gradient fill and stream, moving stage/step capsule, stage/step separator, state icons, elapsed time replacing its label on hover or keyboard focus, and custom timing tooltips with passed/future marker colours. Sidebar tracks stay 20px high with dense marks grouped; composer tracks remain 22px with individual marks. A plan explicitly marked done has the original full-width completed fill; the expanded step counts/statuses remain the recorded values. Clocks update separately from static plan details.
+
+## Вкладки и верхняя панель
+
+**Сейчас** и **Проекты** — отдельные вкладки. В проектах поиск сохраняет путь до совпавшей папки; активные треды доступны и там. Блок «Требует внимания» показывает вопросы и ошибки (первые восемь, затем «Показать ещё»). Бейдж открывает нужный субтред; SDK не предоставляет переход к конкретному сообщению. Причина ожидания показывает количество работающих или ожидающих ответа потомков.
+
+Под прогрессом показано время фактического обновления плана, а не его чтения. После трёх минут без обновления работающего плана появляется «Проверить»; кнопка также доступна при отсутствии плана или ошибке. Повторное чтение не меняет время плана, подсказка показывает последнюю успешную проверку.
+
+С Makosh Navigation вкладки и создание чата занимают штатную верхнюю область, без повторной шапки списка. Это необязательная интеграция через события текущего документа: `makosh-sidebar:v1:state` (`{tab: 'now' | 'projects'}` или `null`), `:request`, `:select` (`{tab}`), `:header` (`{ready: boolean}`) с тем же префиксом. Прямых импортов и RPC между плагинами нет. Без совместимого Navigation или при ширине его области менее 90 px вкладки остаются внутри Sidebar; при ширине менее 180 px верхние вкладки используют иконки с доступными названиями.

@@ -3,7 +3,7 @@ import {useRpc,useRealtime} from '@get-bb/plugin-sdk/app';
 import type {contract} from '../../../server';
 import {aggregateProgress,type Plan,type ProgressResult,type ProgressThread} from '../../core/progress';
 
-type Entry={plans:Plan[];failed:boolean};
+type Entry={plans:Plan[];failed:boolean;checkedAt?:number};
 // A hung transport must not stop the recovery loop forever.
 async function bounded<T>(request:Promise<T>):Promise<T> {
  let timer:ReturnType<typeof setTimeout>|undefined;
@@ -11,7 +11,7 @@ async function bounded<T>(request:Promise<T>):Promise<T> {
  finally {clearTimeout(timer);}
 }
 type Attention=Record<string,'needs_input'|'error'>;
-const Context=createContext<{register:(id:string)=>()=>void;entries:Record<string,Entry>;availability:ProgressResult['availability']|null;attention:Attention;incomplete:boolean}>({register:()=>()=>{},entries:{},availability:null,attention:{},incomplete:false});
+const Context=createContext<{refresh:()=>void;register:(id:string)=>()=>void;entries:Record<string,Entry>;availability:ProgressResult['availability']|null;attention:Attention;incomplete:boolean}>({refresh:()=>{},register:()=>()=>{},entries:{},availability:null,attention:{},incomplete:false});
 export function ProgressProvider({children}:{children:ReactNode}) {
  const rpc=useRpc<typeof contract>();
  const [counts,setCounts]=useState<Record<string,number>>({});
@@ -48,7 +48,7 @@ export function ProgressProvider({children}:{children:ReactNode}) {
      const batch=threadIds.slice(i,i+25);
      const result=await bounded(rpcRef.current.call('progress',{threadIds:batch}));
      if(result.availability!=='ready'){state=result.availability;break;}
-     for(const row of result.entries)next[row.threadId]={plans:row.plans,failed:false};
+     for(const row of result.entries)next[row.threadId]={plans:row.plans,failed:false,checkedAt:Date.now()};
      for(const id of result.failedThreadIds)next[id]={plans:[],failed:true};
     }
    } catch {state='unavailable';}
@@ -56,7 +56,7 @@ export function ProgressProvider({children}:{children:ReactNode}) {
     inFlight=false;
     if(live){setAvailability(state);setEntries(old=>Object.fromEntries((ids?ids.split('\0'):[]).map(id=>{
       const fresh=next[id];
-      return [id,fresh&&!fresh.failed?fresh:{plans:old[id]?.plans??[],failed:true}];
+      return [id,fresh&&!fresh.failed?fresh:{plans:old[id]?.plans??[],failed:true,checkedAt:old[id]?.checkedAt}];
      })));timer=setTimeout(()=>void refresh(),pending?0:5000);}
    }
   };
@@ -66,11 +66,12 @@ export function ProgressProvider({children}:{children:ReactNode}) {
   document.addEventListener('visibilitychange',visible);
   return ()=>{live=false;refreshRef.current=null;clearTimeout(timer);document.removeEventListener('visibilitychange',visible);};
  },[ids]);
- const value=useMemo(()=>({register,entries,availability,attention,incomplete}),[register,entries,availability,attention,incomplete]);
+ const refresh=useCallback(()=>refreshRef.current?.(),[]);
+ const value=useMemo(()=>({refresh,register,entries,availability,attention,incomplete}),[refresh,register,entries,availability,attention,incomplete]);
  return <Context.Provider value={value}>{children}</Context.Provider>;
 }
 export function useThreadPlans(id:string,descendants:readonly Omit<ProgressThread,'plans'>[]=[]) {
- const {register,entries,availability}=useContext(Context);
+ const {register,entries,availability,refresh}=useContext(Context);
  useEffect(()=>register(id),[register,id]);
  useObserveThreadPlans(descendants.map(t=>t.id));
  const descendantsKey=JSON.stringify(descendants);
@@ -78,7 +79,7 @@ export function useThreadPlans(id:string,descendants:readonly Omit<ProgressThrea
   const aggregate=aggregateProgress(descendants.map(t=>({...t,plans:entries[t.id]?.plans??[]})));
   return aggregate?[aggregate,...[...(entries[id]?.plans??[])].sort((a,b)=>(a.createdAt??a.updatedAt)-(b.createdAt??b.updatedAt)||a.id.localeCompare(b.id))]:entries[id]?.plans??[];
  },[id,descendantsKey,entries]);
- return {plans,failed:entries[id]?.failed||descendants.some(t=>entries[t.id]?.failed),availability};
+ return {plans,checkedAt:entries[id]?.checkedAt,refresh,failed:entries[id]?.failed||descendants.some(t=>entries[t.id]?.failed),availability};
 }
 export function ProgressNotice() {
  const {availability,incomplete}=useContext(Context);
