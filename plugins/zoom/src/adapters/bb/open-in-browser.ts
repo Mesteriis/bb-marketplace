@@ -1,5 +1,5 @@
 // Opens a page of this BB server in the machine's default browser. BB's own
-// windows cannot use the camera or capture the screen, so a call that needs
+// windows cannot capture the screen, so a call that needs screen sharing
 // them runs there. Only loopback addresses are opened.
 import { execFile } from "node:child_process";
 

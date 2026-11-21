@@ -32,9 +32,9 @@ settings.
 ## Limits
 
 - One Zoom account.
-- Inside BB a call has no camera and no screen sharing: the BB app has no
-  camera permission and cannot capture the screen. The microphone works once
-  macOS allows it for bb. Use **В браузере** for video and screen sharing.
+- Inside BB a call has no screen sharing: the BB app cannot capture the
+  screen. Camera and microphone work once macOS allows them for bb. Use
+  **В браузере** for screen sharing.
 - Zoom lets an unpublished Meeting SDK app into meetings of its own account
   only. A meeting hosted by another account may be refused in the embedded
   call; the page then offers to open it in the Zoom app.

@@ -63,7 +63,9 @@ export function mediaProblemText(kind: string, name: string): string {
   }
   const refused = name === "NotAllowedError" || name === "SecurityError";
   if (kind === "camera") {
-    if (refused) return `Камера внутри BB не работает: у приложения BB нет системного доступа к камере (${name}). Откройте звонок в браузере.`;
+    if (refused) {
+      return `Камера недоступна (${name}). Разрешите её для bb: Системные настройки → Конфиденциальность и безопасность → Камера. Или откройте звонок в браузере.`;
+    }
     if (name === "NotFoundError") return `Камера недоступна (${name}): устройство не найдено.`;
     if (name === "NotReadableError") return `Камера недоступна (${name}): её занимает другое приложение.`;
     return `Камера недоступна (${name}).`;

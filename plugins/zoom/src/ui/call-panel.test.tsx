@@ -113,7 +113,7 @@ describe("media problems", () => {
   });
 
   it.each([
-    ["camera", "NotAllowedError", "Камера внутри BB не работает: у приложения BB нет системного доступа к камере (NotAllowedError). Откройте звонок в браузере."],
+    ["camera", "NotAllowedError", "Камера недоступна (NotAllowedError). Разрешите её для bb: Системные настройки → Конфиденциальность и безопасность → Камера. Или откройте звонок в браузере."],
     ["camera", "NotFoundError", "Камера недоступна (NotFoundError): устройство не найдено."],
     ["camera", "NotReadableError", "Камера недоступна (NotReadableError): её занимает другое приложение."],
     ["microphone", "NotAllowedError", "Микрофон недоступен (NotAllowedError). Разрешите его для bb: Системные настройки → Конфиденциальность и безопасность → Микрофон. Или откройте звонок в браузере."],

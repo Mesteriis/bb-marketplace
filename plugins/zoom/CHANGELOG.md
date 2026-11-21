@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- **В браузере**: open the same call in the system browser, where camera, microphone and screen sharing work. BB itself has no camera entitlement and no screen-capture handler.
+- **В браузере**: open the same call in the system browser, where screen sharing works. BB itself has no screen-capture handler.
 - The call page takes BB's theme colours and refits Zoom's view whenever the panel is resized.
 - The call panel names the reason when the browser refuses the camera, microphone or screen.
 
