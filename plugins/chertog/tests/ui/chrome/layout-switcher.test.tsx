@@ -491,3 +491,67 @@ describe("LayoutSwitcher: the list changes while a row is being edited", () => {
     expect(calls.onRename).toHaveBeenLastCalledWith("b", "Дельта");
   });
 });
+
+describe("LayoutSwitcher: presets and layouts change while the list is open", () => {
+  const base = (calls: ReturnType<typeof spies>) => ({
+    activeLayoutId: "l1",
+    saveStatus: "saved" as const,
+    ...calls,
+  });
+  const ONE: LayoutEntry[] = [{ id: "l1", name: "Основная" }];
+
+  it("a preset that is no longer offered cannot be created from", async () => {
+    const user = userEvent.setup();
+    const calls = spies();
+    const view = render(<LayoutSwitcher {...base(calls)} layouts={ONE} presets={PRESETS} />);
+
+    await user.click(screen.getByRole("button", { name: "Раскладка: Основная" }));
+    screen.getByRole("button", { name: "Создать из пресета «Созвон»" }).focus();
+    view.rerender(<LayoutSwitcher {...base(calls)} layouts={ONE} presets={[PRESETS[0]]} />);
+    await user.keyboard("{Enter}");
+
+    expect(screen.queryByRole("button", { name: "Создать из пресета «Созвон»" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Создать из пресета «Команда агентов»" })).toBeTruthy();
+    expect(calls.onCreateFromPreset).not.toHaveBeenCalled();
+  });
+
+  it("a preset replaced under the same id is created by its current name", async () => {
+    const user = userEvent.setup();
+    const calls = spies();
+    const view = render(<LayoutSwitcher {...base(calls)} layouts={ONE} presets={PRESETS} />);
+
+    await user.click(screen.getByRole("button", { name: "Раскладка: Основная" }));
+    view.rerender(<LayoutSwitcher {...base(calls)} layouts={ONE} presets={[PRESETS[0], { id: "call", name: "Встреча" }]} />);
+    await user.click(screen.getByRole("button", { name: "Создать из пресета «Встреча»" }));
+
+    expect(calls.onCreateFromPreset).toHaveBeenCalledTimes(1);
+    expect(calls.onCreateFromPreset).toHaveBeenLastCalledWith("call", "Встреча");
+  });
+
+  it("the preset name is numbered against the layouts as they are at the click", async () => {
+    const user = userEvent.setup();
+    const calls = spies();
+    const view = render(<LayoutSwitcher {...base(calls)} layouts={ONE} presets={PRESETS} />);
+
+    await user.click(screen.getByRole("button", { name: "Раскладка: Основная" }));
+    view.rerender(<LayoutSwitcher {...base(calls)} layouts={[...ONE, { id: "l2", name: "Созвон" }]} presets={PRESETS} />);
+    await user.click(screen.getByRole("button", { name: "Создать из пресета «Созвон»" }));
+
+    expect(calls.onCreateFromPreset).toHaveBeenCalledTimes(1);
+    expect(calls.onCreateFromPreset).toHaveBeenLastCalledWith("call", "Созвон 2");
+  });
+
+  it("a name typed before another window took it is refused at the submit", async () => {
+    const user = userEvent.setup();
+    const calls = spies();
+    const view = render(<LayoutSwitcher {...base(calls)} layouts={ONE} presets={[]} />);
+
+    await user.click(screen.getByRole("button", { name: "Раскладка: Основная" }));
+    await user.type(nameField(), "Ревью");
+    view.rerender(<LayoutSwitcher {...base(calls)} layouts={[...ONE, { id: "l2", name: "Ревью" }]} presets={[]} />);
+    await user.keyboard("{Enter}");
+
+    expect(calls.onCreateFromCurrent).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert").textContent).toBe("Раскладка с таким именем уже есть");
+  });
+});
