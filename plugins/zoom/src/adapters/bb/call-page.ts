@@ -28,7 +28,8 @@ export const CALL_PAGE_CSP = [
   "font-src https: data:",
 ].join("; ");
 
-const PAGE_SCRIPT = `
+/** Runs on the call page. Exported so tests can execute it against a stand-in SDK. */
+export const CALL_PAGE_SCRIPT = `
 (function () {
   var parentWindow = window.parent;
   function post(message) { parentWindow.postMessage(message, "*"); }
@@ -36,29 +37,41 @@ const PAGE_SCRIPT = `
     post({ type: "zoom-call:failed", message: "Не удалось загрузить Zoom Meeting SDK" });
     return;
   }
-  var client = ZoomMtgEmbedded.createClient();
-  var root = document.getElementById("meetingSDKElement");
-  var joined = false;
   function describe(error) {
     var code = error && (error.errorCode !== undefined ? error.errorCode : error.type);
     var message = error && (error.reason || error.message);
     return { code: String(code === undefined ? "unknown" : code), message: String(message || "Zoom отклонил вход") };
   }
-  client.on("connection-change", function (payload) {
-    if (payload && payload.state === "Connected") { joined = true; post({ type: "zoom-call:joined" }); }
-    if (payload && payload.state === "Closed") { joined = false; post({ type: "zoom-call:ended" }); }
-  });
-  var ready = client.init({
-    zoomAppRoot: root,
-    language: "ru-RU",
-    patchJsMedia: true,
-    customize: {
-      video: {
-        isResizable: false,
-        popper: { disableDraggable: true },
-        viewSizes: { default: { width: Math.max(320, window.innerWidth - 16), height: Math.max(240, window.innerHeight - 120) } }
+  var client = null;
+  var joined = false;
+  var ready;
+  try {
+    client = ZoomMtgEmbedded.createClient();
+    ready = Promise.resolve(client.init({
+      zoomAppRoot: document.getElementById("meetingSDKElement"),
+      language: "ru-RU",
+      patchJsMedia: true,
+      customize: {
+        video: {
+          isResizable: false,
+          popper: { disableDraggable: true },
+          viewSizes: { default: { width: Math.max(320, window.innerWidth - 16), height: Math.max(240, window.innerHeight - 120) } }
+        }
       }
-    }
+    })).then(function () {
+      // The SDK throws on on() until init() has finished.
+      client.on("connection-change", function (payload) {
+        if (payload && payload.state === "Connected") { joined = true; post({ type: "zoom-call:joined" }); }
+        if (payload && payload.state === "Closed") { joined = false; post({ type: "zoom-call:ended" }); }
+      });
+    });
+  } catch (error) {
+    ready = Promise.reject(error);
+  }
+  ready.then(function () {
+    post({ type: "zoom-call:ready" });
+  }, function (error) {
+    post({ type: "zoom-call:failed", message: "Zoom Meeting SDK не запустился: " + describe(error).message });
   });
   window.addEventListener("message", function (event) {
     if (event.source !== parentWindow || !event.data) return;
@@ -81,7 +94,6 @@ const PAGE_SCRIPT = `
       try { client.leaveMeeting(); } catch (error) { post({ type: "zoom-call:ended" }); }
     }
   });
-  post({ type: "zoom-call:ready" });
 })();
 `;
 
@@ -103,7 +115,7 @@ export function callPageHtml(): string {
 <body>
 <div id="meetingSDKElement"></div>
 ${scripts}
-<script>${PAGE_SCRIPT}</script>
+<script>${CALL_PAGE_SCRIPT}</script>
 </body>
 </html>
 `;
