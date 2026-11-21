@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import {afterEach,expect,test,vi} from 'vitest';
 import {act,cleanup,fireEvent,render,waitFor} from '@testing-library/react';
+import {PlanTrack} from '../src/ui/plan-track';
 import {PlanStrip,ThreadProgress} from '../src/ui/thread-progress';
 import {aggregateProgress,planProgress,progressMarks,compactProgressMarks,sidebarPlans,visiblePlans,type Plan} from '../src/core/progress';
 import {migrationEntry,sameRecord} from '../src/core/planning/migration';
@@ -45,9 +46,9 @@ test('one disclosure keeps the status and additional plans reachable without ano
  fireEvent.click(slot.getByText('Проверка → Тесты',{selector:'.progress-caption'}));
  await waitFor(()=>expect(slot.getAllByRole('progressbar')).toHaveLength(2));
  expect(slot.getByText('Второй план',{selector:'.additional-plan-title'})).toBeTruthy();
- expect(slot.getAllByText('Подготовка')).toHaveLength(1);
+ expect(slot.getAllByText('Подготовка',{selector:'.plan-steps li'})).toHaveLength(1);
  fireEvent.click(slot.getByText('Проверка → Тесты',{selector:'.additional-plans .progress-caption'}));
- await waitFor(()=>expect(slot.getAllByText('Подготовка')).toHaveLength(2));
+ await waitFor(()=>expect(slot.getAllByText('Подготовка',{selector:'.plan-steps li'})).toHaveLength(2));
 });
 test('migration validates state and keys and compares JSON independent of object order',()=>{
  const full={...plan(),kind:'plan',createdAt:1};
@@ -95,11 +96,12 @@ test('step and stage markers retain original elapsed time; current marker ticks 
  } finally {cleanup();vi.useRealTimers();}
 });
 
-test('completed-only plans are hidden by default and the button reveals them without changing progress',()=>{
+test('completed-only plans stay hidden until revealed, with the original completed track fill',()=>{
  const slot=render(<ThreadProgress plans={[plan({state:'done'})]}/>);
  expect(slot.queryByRole('progressbar')).toBeNull();
  fireEvent.click(slot.getByRole('button',{name:'Показать готовые'}));
- expect(slot.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('33');
+ expect(slot.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('100');
+ expect(slot.container.querySelector('.progress-fraction')?.textContent).toBe('1/3');
  fireEvent.click(slot.getByRole('button',{name:'Скрыть готовые'}));
  expect(slot.queryByRole('progressbar')).toBeNull();
 });
@@ -136,6 +138,31 @@ test('dense aggregates keep at most twelve visible marks without losing timing l
  expect(compact.length).toBeLessThanOrEqual(12);
  expect(compact.flatMap(m=>m.label.split('\n'))).toEqual(original.map(m=>m.label));
  const slot=render(<PlanStrip plan={p}/>);
- expect(slot.container.querySelectorAll('.plan-mark').length).toBeLessThanOrEqual(12);
+ expect(slot.container.querySelectorAll('.pp-track-mark').length).toBeLessThanOrEqual(12);
  expect(compactProgressMarks(plan())).toEqual(progressMarks(plan()));
+});
+
+test('shared track retains stage/step head, boundary separators, passed marks and custom timing tips',()=>{
+ const p=plan({createdAt:1000,stages:[{name:'First stage',steps:[{title:'Read',status:'done',startedAt:1000,endedAt:4000}]},{name:'Second stage',steps:[{title:'Build',status:'active',startedAt:4000},{title:'Report',status:'pending'}]}]});
+ const slot=render(<PlanTrack plan={p} compact/>);
+ expect(slot.container.querySelector('.pp-head-label')?.textContent).toBe('Second stageBuild');
+ expect(slot.container.querySelector('.pp-stage-separator')).toBeTruthy();
+ expect(slot.container.querySelector('.pp-track-mark.pp-track-passed .pp-track-tip')?.textContent).toBe('First stage · 3s');
+ expect(slot.container.querySelectorAll('.pp-track-mark:not(.pp-track-passed)')).toHaveLength(1);
+ expect(slot.getByRole('progressbar').style.height).toBe('20px');
+ slot.rerender(<PlanTrack plan={p}/>);
+ expect(slot.getByRole('progressbar').style.height).toBe('22px');
+});
+test.each(['needs_input','error','done'] as const)('shared head retains the %s state icon and note or finish time',state=>{
+ const slot=render(<PlanTrack plan={plan({state,note:'Explain the blocker',createdAt:1000,endedAt:state==='done'?10000:undefined})}/>);
+ expect(slot.container.querySelector('.pp-track-head svg path')).toBeTruthy();
+ expect(slot.container.querySelector('.pp-head-label')?.textContent).toBe(state==='done'?'9s':'Explain the blocker');
+ expect(slot.container.querySelector('.mspp-wave')).toBeTruthy();
+});
+
+test('aggregate head carries the blocking child note instead of an unrelated worker step',()=>{
+ const aggregate=aggregateProgress([{id:'worker',parentThreadId:null,title:'Worker',plans:[plan()]},{id:'review',parentThreadId:null,title:'Review',plans:[plan({state:'needs_input',note:'Confirm requirements'})]}])!;
+ expect(aggregate.note).toBe('Review: Confirm requirements');
+ const slot=render(<PlanTrack plan={aggregate} compact/>);
+ expect(slot.container.querySelector('.pp-head-label')?.textContent).toBe('Review: Confirm requirements');
 });

@@ -468,10 +468,12 @@ SOFTWARE.
   original idea: <https://github.com/zycck/claude-mods>.
 - Adapted paths: `plugins/sidebar/src/core/planning/`,
   `plugins/sidebar/src/adapters/bb/planning/`,
-  `plugins/sidebar/src/ui/progress-stream.tsx`, the planning skill and behavioral
+  `plugins/sidebar/src/ui/progress-stream.tsx`,
+  `plugins/sidebar/src/ui/plan-track.tsx`, `plugins/sidebar/src/ui/progress-time.tsx`,
+  timing marks in `plugins/sidebar/src/core/progress.ts`, the planning skill and behavioral
   tests. The engine, provider isolation, diagnostics, reminder safeguards,
-  composer display and answer speed are retained; the same stream renderer is
-  reused for compact sidebar tracks. There are no imports or runtime calls to
+  composer display and answer speed are retained; the same track and stream renderers are
+  reused in the composer and compact sidebar. There are no imports or runtime calls to
   the separate plugin.
 - License: MIT, Copyright (c) 2026 Yuri Smirnov; protocol and idea by zycck
   (MIT). Full notice: `plugins/sidebar/licenses/plan-progress-MIT.txt`.

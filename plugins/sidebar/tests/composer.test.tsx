@@ -21,6 +21,7 @@ test('the retained composer shows own plans and preserves folding across remount
  let slot=mount();
  await slot.findByRole('button',{name:'Show all (4)'});
  expect(slot.getAllByRole('progressbar')).toHaveLength(3);
+ expect(slot.container.querySelectorAll('.pp-track-head')).toHaveLength(3);
  fireEvent.click(slot.getByRole('button',{name:'Show all (4)'}));
  expect(slot.getAllByRole('progressbar')).toHaveLength(4);
  fireEvent.click(slot.getByRole('button',{name:/Progress · 4/}));

@@ -22,7 +22,7 @@ export function visiblePlans(plans:readonly Plan[]):Plan[] {
 export function planProgress(plan:Plan) {
  const steps=plan.stages.flatMap(stage=>stage.steps);
  const done=steps.filter(s=>s.status==='done'||s.status==='skipped').length;
- const active=steps.find(s=>s.status==='active')??steps.find(s=>s.status==='error');
+ const active=steps.find(s=>s.status==='active')??steps.find(s=>s.status==='error')??steps.find(s=>s.status==='pending');
  const stage=plan.stages.find(s=>s.steps.includes(active!));
  return {done,total:steps.length,percent:steps.length?Math.round(done/steps.length*100):0,stage:stage?.name??'',step:active?.title??''};
 }
@@ -49,10 +49,12 @@ export function aggregateProgress(threads:readonly ProgressThread[]):Plan|null {
  const steps=stages.flatMap(s=>s.steps);
  const done=steps.filter(s=>s.status==='done'||s.status==='skipped').length;
  const state=plans.some(p=>p.plan.state==='error')?'error':plans.some(p=>p.plan.state==='needs_input')?'needs_input':steps.length&&done===steps.length&&!missing?'done':'running';
+ const attention=plans.find(p=>p.plan.state==='error')??plans.find(p=>p.plan.state==='needs_input');
+ const note=[attention?`${attention.thread.title}: ${attention.plan.note??attention.plan.title}`:null,missing?`Без плана: ${missing}`:null].filter(Boolean).join(' · ')||undefined;
  const starts=plans.flatMap(p=>p.plan.createdAt===undefined?[]:[p.plan.createdAt]);
  const ends=plans.flatMap(p=>p.plan.endedAt===undefined?[]:[p.plan.endedAt]);
  return {id:'subthread-aggregate',title:'Общий прогресс субтредов',state,stages,
-  note:missing?`Без плана: ${missing}`:undefined,createdAt:starts.length?Math.min(...starts):undefined,
+  note,createdAt:starts.length?Math.min(...starts):undefined,
   endedAt:state==='done'&&ends.length===plans.length?Math.max(...ends):undefined,
   updatedAt:Math.max(0,...plans.map(p=>p.plan.updatedAt))};
 }
@@ -72,7 +74,7 @@ export function progressMarks(plan:Plan) {
   const label=passed?(isStage?before?.name:ended?.[0]?.title):(isStage?stage.name:step.title);
   const starts=ended?.flatMap(s=>s.startedAt===undefined?[]:[s.startedAt])??[];
   const ends=ended?.flatMap(s=>s.endedAt===undefined?[]:[s.endedAt])??[];
-  return [{at,isStage,label:`${label||step.title}${passed&&starts.length&&ends.length?' · '+elapsed(Math.max(...ends)-Math.min(...starts)):''}`}];
+  return [{at,isStage,passed,label:`${label||step.title}${passed&&starts.length&&ends.length?' · '+elapsed(Math.max(...ends)-Math.min(...starts)):''}`}];
  }));
 }
 
@@ -82,5 +84,5 @@ export function compactProgressMarks(plan:Plan) {
  if(marks.length<=12)return marks;
  const groups=new Map<number,typeof marks>();
  for(const mark of marks){const bucket=Math.min(11,Math.floor(mark.at*12));const group=groups.get(bucket)??[];group.push(mark);groups.set(bucket,group);}
- return [...groups.values()].map(group=>({at:group.reduce((sum,m)=>sum+m.at,0)/group.length,isStage:group.some(m=>m.isStage),label:group.map(m=>m.label).join('\n')}));
+ return [...groups.values()].map(group=>({at:group.reduce((sum,m)=>sum+m.at,0)/group.length,isStage:group.some(m=>m.isStage),passed:group.every(m=>m.passed),label:group.map(m=>m.label).join('\n')}));
 }

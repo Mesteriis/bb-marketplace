@@ -7,9 +7,9 @@
 // solid pill at the head naming the stage and step (the elapsed time while the
 // pointer is on the track). Bars come from server.ts over RPC and refetch on
 // the "bars-changed" realtime signal.
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
-import {Stream,STREAM_STYLE as STYLE,hex,mix,rgb,WHITE,FLICKER,mask} from "../../../ui/progress-stream";
+import {STREAM_STYLE as STYLE,hex,mix,rgb,WHITE,FLICKER,mask} from "../../../ui/progress-stream";
 import {
   definePluginApp,
   useBbNavigate,
@@ -22,7 +22,6 @@ import {
 import type { rpcContract } from "./server";
 import {
   BARS_CHANGED,
-  allSteps,
   counts,
   type Bar,
   type BarState,
@@ -34,6 +33,8 @@ import { SPEED_EVENT_TYPES, SpeedMeter, speedLabel, type Speed, type SpeedEvent 
 const cn=(...values:(string|false|null|undefined)[])=>values.filter(Boolean).join(" ");
 import { dueToHide, orderedPlans, VISIBLE_PLANS } from "../../../core/planning/presentation";
 import { DIAGNOSTICS_CHANGED, type ProgressDiagnostic } from "../../../core/planning/diagnostics";
+
+import {PlanTrack,PLAN_TRACK_STYLE,PLAN_ICONS as ICON_PATH} from "../../../ui/plan-track";
 
 // ---------- data ----------
 
@@ -190,154 +191,8 @@ const STATE_LABEL: Record<BarState, string> = {
 
 // ---------- the track ----------
 
-const ICON_PATH: Partial<Record<BarState, string>> = {
-  needs_input: "M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3M12 17h.01",
-  error: "M18 6 6 18M6 6l12 12",
-  done: "M20 6 9 17l-5-5",
-};
-
-/** Where the head is: how many steps are behind it, and the stage and step it stands on. */
-function head(bar: Bar) {
-  const steps = allSteps(bar);
-  const total = steps.length;
-  const done = steps.filter((step) => step.status === "done" || step.status === "skipped").length;
-  let index = steps.findIndex((step) => step.status === "active" || step.status === "error");
-  if (index === -1) index = steps.findIndex((step) => step.status === "pending");
-  let start = 0;
-  let stage = bar.stages.length - 1;
-  for (let i = 0; i < bar.stages.length; i++) {
-    const size = bar.stages[i]!.steps.length;
-    if (index >= 0 && index < start + size) {
-      stage = i;
-      break;
-    }
-    start += size;
-  }
-  return { total, done, stage, first: index === start, step: index === -1 ? undefined : steps[index] };
-}
-
-interface MarkInfo {
-  at: number;
-  isStage: boolean;
-  passed: boolean;
-  label: string;
-}
-
-/** A mark sits between steps: a capsule at a stage boundary, a dot between steps. */
-function marks(bar: Bar, fill: number): MarkInfo[] {
-  const total = allSteps(bar).length;
-  const list: MarkInfo[] = [];
-  let k = 0;
-  bar.stages.forEach((stage, i) => {
-    stage.steps.forEach((step, j) => {
-      if (k > 0) {
-        const at = k / total;
-        const isStage = j === 0;
-        const before = isStage ? bar.stages[i - 1] : stage;
-        const finished = (s: Step) => s.status === "done" || s.status === "skipped";
-        const passed = isStage ? !!before && before.steps.every(finished) : finished(stage.steps[j - 1]!);
-        const ended: Step | undefined = isStage ? before?.steps.at(-1) : stage.steps[j - 1];
-        // a passed mark names what ended there and how long it took; one ahead names what starts there
-        let label = passed ? (isStage ? (before?.name ?? "") : (ended?.title ?? "")) : isStage ? stage.name : step.title;
-        if (passed && isStage && before) {
-          // Wall-clock span of observed activity in the stage, including gaps/overlap.
-          const starts = before.steps.flatMap(s => s.startedAt === undefined ? [] : [s.startedAt]);
-          const ends = before.steps.flatMap(s => s.endedAt === undefined ? [] : [s.endedAt]);
-          if (starts.length && ends.length) label += ` · ${elapsed(Math.max(...ends) - Math.min(...starts))}`;
-        } else if (passed && ended?.startedAt !== undefined && ended.endedAt !== undefined) {
-          label += ` · ${elapsed(ended.endedAt - ended.startedAt)}`;
-        }
-        list.push({ at, isStage, passed, label: label || step.title });
-      }
-      k++;
-    });
-  });
-  return list;
-}
-
-function Track({ bar, now, effects }: { bar: Bar; now: number; effects: boolean }) {
-  const acc = hex(STATE_COLOR[bar.state]);
-  const light = mix(acc, WHITE, 0.32);
-  const where = head(bar);
-  const fill = bar.state === "done" ? 1 : where.total === 0 ? 0 : where.done / where.total;
-  const pct = `${(fill * 100).toFixed(2)}%`;
-  const icon = ICON_PATH[bar.state];
-  const single = bar.stages.length === 1;
-  const stageName = bar.stages[where.stage]?.name ?? "";
-  const name =
-    bar.state === "done"
-      ? elapsed((bar.endedAt ?? now) - bar.createdAt)
-      : single
-        ? stageName || where.step?.title || ""
-        : stageName;
-  const asks = (bar.state === "needs_input" || bar.state === "error") && bar.note !== undefined;
-  const step = asks || bar.state === "done" || (single && stageName === "") ? undefined : where.step?.title;
-  const label = asks ? bar.note! : name;
-  const markList = useMemo(() => marks(bar, fill), [bar, fill]);
-  const passedMark = rgb(mix(light, WHITE, 0.45), 0.9);
-
-  return (
-    <div
-      className="mspp-track relative h-[22px] min-w-0 flex-1"
-      role="progressbar"
-      aria-label={`${bar.title}: ${STATE_LABEL[bar.state]}${where.step === undefined ? "" : `, ${where.step.title}`}`}
-      aria-valuemin={0}
-      aria-valuemax={100}
-      aria-valuenow={Math.round(fill * 100)}
-    >
-      <div className="absolute inset-0 overflow-hidden rounded-full" style={{ backgroundColor: "rgba(128,128,128,.16)" }}>
-        <div
-          className="mspp-glide absolute inset-y-0 left-0 overflow-hidden"
-          style={{ width: pct, background: `linear-gradient(90deg, ${rgb(acc, 0.05)}, ${rgb(acc, 0.33)})` }}
-        >
-          <Stream bar={bar} light={light} effects={effects} />
-        </div>
-      </div>
-      {markList.map((mark, index) => (
-        <div
-          key={index}
-          className="mspp-mark absolute inset-y-0 flex w-2.5 -translate-x-1/2 items-center justify-center"
-          style={{ left: `${(mark.at * 100).toFixed(2)}%` }}
-        >
-          <span
-            className={mark.isStage ? "h-2.5 w-[3px] rounded-full" : "size-[3px] rounded-full"}
-            style={{ backgroundColor: mark.passed ? passedMark : "rgba(168,166,158,.85)" }}
-          />
-          <span className="mspp-tip absolute bottom-full z-10 mb-1 whitespace-nowrap rounded-full bg-popover px-2 py-0.5 text-[11px] text-popover-foreground shadow-md ring-1 ring-border">
-            {mark.label}
-          </span>
-        </div>
-      ))}
-      {/* the head: a solid pill with the stage and step, kept inside the track */}
-      <div
-        className="mspp-glide absolute inset-y-0 flex max-w-[55%] items-center gap-1.5 rounded-full px-2.5 text-white"
-        style={{ left: pct, transform: `translateX(-${pct})`, backgroundColor: STATE_COLOR[bar.state] }}
-      >
-        {icon === undefined ? null : (
-          <svg viewBox="0 0 24 24" className="size-3 shrink-0" aria-hidden>
-            <path d={icon} fill="none" stroke="currentColor" strokeWidth="3.6" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        )}
-        <span className="mspp-label flex min-w-0 items-center gap-1.5 whitespace-nowrap">
-          <span className="truncate text-xs font-medium">{label}</span>
-          {step === undefined || step === label ? null : (
-            <>
-              <span
-                className={cn(
-                  "shrink-0 rounded-full",
-                  where.first ? "h-2.5 w-0.5 bg-white/70" : "size-[3px] bg-white/80",
-                )}
-              />
-              <span className="min-w-0 truncate text-[11px] opacity-95">{step}</span>
-            </>
-          )}
-        </span>
-        <span className="mspp-clock whitespace-nowrap text-xs font-medium tabular-nums">
-          {elapsed((bar.endedAt ?? now) - bar.createdAt)}
-        </span>
-      </div>
-    </div>
-  );
+function Track({bar,effects}:{bar:Bar;now:number;effects:boolean}) {
+  return <PlanTrack plan={bar} effects={effects}/>;
 }
 
 // ---------- the step list ----------
@@ -722,7 +577,7 @@ function Banner() {
   const textButton = "min-h-8 rounded-md px-2 text-xs text-muted-foreground hover:bg-muted hover:text-foreground";
   return (
     <div className="mspp-banner rounded-2xl bg-muted/60 py-0.5">
-      <style>{STYLE}{BANNER_STYLE}</style>
+      <style>{STYLE}{PLAN_TRACK_STYLE}{BANNER_STYLE}</style>
       {warning && <div role="status" className="px-3 py-2 text-sm text-amber-700 dark:text-amber-400">{warning}</div>}
       {failure?.threadId === threadId && <div role="alert" className="px-3 py-2 text-sm text-red-500">{failure.text}</div>}
       <button type="button" aria-expanded={!collapsed} aria-controls={controls}
