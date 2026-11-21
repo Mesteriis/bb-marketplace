@@ -4,6 +4,7 @@
 export type { NamedLayout, WorkspaceDocument, WorkspacePanel } from "./document.ts";
 export {
   activeLayout,
+  captionFrom,
   initialDocument,
   namedLayoutSchema,
   placedPanelIds,
@@ -35,5 +36,5 @@ export {
   switchLayout,
 } from "./operations.ts";
 
-export type { PanelRename, WorkspaceEntry, WorkspaceMerge, WorkspaceSaveResult, WorkspaceStore } from "./store.ts";
+export type { IdRename, WorkspaceEntry, WorkspaceMerge, WorkspaceSaveResult, WorkspaceStore } from "./store.ts";
 export { decideSave, enterWorkspace, mergeDocuments } from "./store.ts";

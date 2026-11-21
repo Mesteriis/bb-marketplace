@@ -147,10 +147,24 @@ const SECRET_PANELS: [name: string, panel: unknown, reason: string][] = [
   ["a WebContents id among the parameters", { ref: { provider: "bb-thread", params: { threadId: "thr_b", webContentsId: 7 } }, title: "Тред B" }, "ref.params.webContentsId: A panel reference must not carry a live handle"],
   ["a process id among the parameters", { ref: { provider: "remote-ssh", params: { host: "build-1", pid: 4242 } }, title: "SSH" }, "ref.params.pid: A panel reference must not carry a live handle"],
   ["a PTY handle among the parameters", { ref: { provider: "remote-ssh", params: { host: "build-1", pty_handle: "pty-3" } }, title: "SSH" }, "ref.params.pty_handle: A panel reference must not carry a live handle"],
-  ["a title with a link that has a password", { ref: { provider: "zoom-meeting", params: { meetingId: "812" } }, title: "Созвон https://zoom.example/j/812?pwd=abc" }, "title: A title must not carry a link with a secret"],
-  ["a title with an encoded link that has a password", { ref: { provider: "zoom-meeting", params: { meetingId: "812" } }, title: "Созвон (https://zoom.example/j/812%3Fpwd%3Dabc)" }, "title: A title must not carry a link with a secret"],
-  ["a title with a link that has a login", { ref: { provider: "remote-ssh", params: { host: "build-1" } }, title: "ssh://root:hunter2@build-1" }, "title: A title must not carry a link with a secret"],
-  ["a title with a bracketed link that has a login", { ref: { provider: "remote-ssh", params: { host: "build-1" } }, title: "Сборка (ssh://root:hunter2@build-1)" }, "title: A title must not carry a link with a secret"],
+  ["a title with a link that has a password", { ref: { provider: "zoom-meeting", params: { meetingId: "812" } }, title: "Созвон https://zoom.example/j/812?pwd=abc" }, "title: A title must not carry a link or credentials"],
+  ["a title with an encoded link that has a password", { ref: { provider: "zoom-meeting", params: { meetingId: "812" } }, title: "Созвон (https://zoom.example/j/812%3Fpwd%3Dabc)" }, "title: A title must not carry a link or credentials"],
+  ["a title with a link that has a login", { ref: { provider: "remote-ssh", params: { host: "build-1" } }, title: "ssh://root:hunter2@build-1" }, "title: A title must not carry a link or credentials"],
+  ["a title with a bracketed link that has a login", { ref: { provider: "remote-ssh", params: { host: "build-1" } }, title: "Сборка (ssh://root:hunter2@build-1)" }, "title: A title must not carry a link or credentials"],
+  ["a title with credentials in a Markdown link", { ref: { provider: "remote-ssh", params: { host: "build-1" } }, title: "[сборка](https://root:hunter2@build-1)" }, "title: A title must not carry a link or credentials"],
+  ["a title with a fully encoded link with credentials", { ref: { provider: "remote-ssh", params: { host: "build-1" } }, title: "https%3A%2F%2Froot%3Ahunter2%40build-1" }, "title: A title must not carry a link or credentials"],
+  ["a title with a twice encoded link", { ref: { provider: "remote-ssh", params: { host: "build-1" } }, title: "https%253A%252F%252Froot%253Ahunter2%2540build-1" }, "title: A title must not carry a link or credentials"],
+  ["a title with credentials and no scheme", { ref: { provider: "remote-ssh", params: { host: "build-1" } }, title: "root:hunter2@build-1" }, "title: A title must not carry a link or credentials"],
+  ["a title with credentials behind HTML entities", { ref: { provider: "remote-ssh", params: { host: "build-1" } }, title: "root&#58;hunter2&commat;build-1" }, "title: A title must not carry a link or credentials"],
+  ["a title with a full-width at sign", { ref: { provider: "remote-ssh", params: { host: "build-1" } }, title: "root:hunter2＠build-1" }, "title: A title must not carry a link or credentials"],
+  ["a title with a key and its value", { ref: { provider: "remote-ssh", params: { host: "build-1" } }, title: "token=hunter2" }, "title: A title must not carry a link or credentials"],
+  ["a title with a named password", { ref: { provider: "remote-ssh", params: { host: "build-1" } }, title: "Пароль: hunter2" }, "title: A title must not carry a link or credentials"],
+  ["a title with an escaped character", { ref: { provider: "remote-ssh", params: { host: "build-1" } }, title: "root:hunter2\\u0040build-1" }, "title: A title must not carry a link or credentials"],
+  ["a process handle in capitals among the parameters", { ref: { provider: "remote-ssh", params: { host: "build-1", PIDHandle: 4242 } }, title: "SSH" }, "ref.params.PIDHandle: A panel reference must not carry a live handle"],
+  ["a lowercase instance id among the parameters", { ref: { provider: "remote-ssh", params: { host: "build-1", instanceid: "panel-7" } }, title: "SSH" }, "ref.params.instanceid: A panel reference must not carry a live handle"],
+  ["a PTY id in capitals among the parameters", { ref: { provider: "remote-ssh", params: { host: "build-1", PTYID: "pty-3" } }, title: "SSH" }, "ref.params.PTYID: A panel reference must not carry a live handle"],
+  ["a process id with a prefix among the parameters", { ref: { provider: "remote-ssh", params: { host: "build-1", shellPid: 4242 } }, title: "SSH" }, "ref.params.shellPid: A panel reference must not carry a live handle"],
+  ["a socket among the parameters", { ref: { provider: "remote-ssh", params: { host: "build-1", socketFd: 4242 } }, title: "SSH" }, "ref.params.socketFd: A panel reference must not carry a live handle"],
   ["an instance id beside the reference", { ref: { provider: "bb-thread", params: { threadId: "thr_b" } }, title: "Тред B", instanceId: "panel-7" }, 'Unrecognized key: "instanceId"'],
 ];
 
@@ -229,6 +243,28 @@ describe("secrets and live handles", () => {
       nextNodeId: 4,
     });
   });
+});
+
+describe("identifiers that only look like live handles", () => {
+  it.each([["groupId"], ["appId"], ["mapId"], ["rapidMode"], ["emptyState"], ["threadId"], ["frameId"], ["connectionId"]])(
+    "keeps the parameter %s",
+    (name) => {
+      const raw = stageAJson();
+      raw.panels.frame.ref.params = { [name]: "x-1" };
+      const result = readWorkspaceDocument(raw);
+      expect(result.status === "ok" && result.dropped).toEqual([]);
+    },
+  );
+
+  it.each([["Тред A"], ["Fix 50% CPU usage"], ["Q&A (черновик)"], ["build-1: логи, часть 2/3"], ["Что дальше?"], ["C# & F#"]])(
+    "keeps the title %s",
+    (title) => {
+      const raw = stageAJson();
+      raw.panels.frame.title = title;
+      const result = readWorkspaceDocument(raw);
+      expect(result.status === "ok" && result.document.panels.frame.title).toBe(title);
+    },
+  );
 });
 
 describe("migrateToVersion", () => {

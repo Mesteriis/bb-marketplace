@@ -59,36 +59,60 @@ function isCaption(text: string, maxLength: number): boolean {
 /** An id of a layout or a panel: letters, digits and `. _ : -`, without whitespace. */
 export const idSchema = z.string().regex(ID);
 
+/** A link, an address or a `key=value` pair, in plain form or behind percent, HTML or backslash escapes. */
+const UNSAFE_WORD = /:\/\/|[@=\\]|%[0-9a-f]{2}|&#|&[a-z][a-z0-9]*;/i;
+
+/** A secret named in words: `password: …`, `токен: …`. */
+const NAMED_SECRET = /(?:password|passwd|passcode|passphrase|pwd|secret|token|api[-_ ]?key|пароль|токен)\s*:/i;
+
 /**
- * Whether a caption carries a link with a login or a secret parameter. Each
- * word is judged by the rule `panelRefSchema` applies to a parameter value,
- * so a title and a reference refuse the same links.
+ * Whether a caption may be stored. A caption is a name a person reads, so it
+ * holds no link at all, no address with `@`, no `key=value` pair, no escape
+ * sequence that could hide one of them, and no secret named in words.
+ * Lookalike characters such as a full-width `＠` count as their plain form.
  */
-function hasSecretLink(title: string): boolean {
-  return title
-    .split(/\s+/)
-    .map((word) => word.replace(/^[^A-Za-z0-9]+/, ""))
-    .some((word) => word !== "" && !panelRefSchema.safeParse({ provider: "caption", params: { link: word } }).success);
+function isSafeCaption(text: string): boolean {
+  const plain = text.normalize("NFKC");
+  return !UNSAFE_WORD.test(plain) && !NAMED_SECRET.test(plain);
+}
+
+/**
+ * A caption made from text a provider reports, such as a thread or a page
+ * title: on one line, without the words a caption may not carry, cut to the
+ * length of a panel title or a layout name. `null` when nothing is left or
+ * the text names a secret.
+ */
+export function captionFrom(text: string, kind: "title" | "name"): string | null {
+  // A secret named in words cannot be cut out: which words are its value is unknown.
+  if (NAMED_SECRET.test(text.normalize("NFKC"))) return null;
+  const words = text.split(/[\s\u0000-\u001f\u007f]+/).filter((word) => word !== "" && isSafeCaption(word));
+  const caption = words.join(" ").slice(0, kind === "title" ? MAX_TITLE_LENGTH : MAX_NAME_LENGTH).trim();
+  return caption !== "" && isSafeCaption(caption) ? caption : null;
 }
 
 export const layoutNameSchema = z
   .string()
   .refine((name) => isCaption(name, MAX_NAME_LENGTH), "A name is 1 to 64 characters without line breaks")
-  .refine((name) => !hasSecretLink(name), "A name must not carry a link with a secret");
+  .refine((name) => isSafeCaption(name), "A name must not carry a link or credentials");
 
 const panelTitleSchema = z
   .string()
   .refine((title) => isCaption(title, MAX_TITLE_LENGTH), "A title is 1 to 120 characters without line breaks")
-  .refine((title) => !hasSecretLink(title), "A title must not carry a link with a secret");
+  .refine((title) => isSafeCaption(title), "A title must not carry a link or credentials");
 
-/** Words that mark a parameter as a handle of something running now: it dies with the process and must not be stored. */
-const LIVE_HANDLE_WORDS = new Set(["instance", "pid", "pty", "process", "handle"]);
-const LIVE_HANDLE_NAME = /web[-_]?contents|dom[-_]?node/i;
+/** Words that mark a parameter as a handle of something running now, wherever and in whatever case they stand in its name. */
+const LIVE_HANDLE_WORD = /instance|handle|process|socket|descriptor|webcontents|domnode/;
+
+/**
+ * `pid` and `pty` as a word of the name: `pid`, `shellPid`, `PIDHandle`,
+ * `ssh_pty`, `PTYID`. Inside another word, as in `appId`, `groupId`,
+ * `rapidMode` or `emptyState`, they mark nothing.
+ */
+const LIVE_HANDLE_SHORT_WORD = /(?:^|[^A-Za-z])(?:pid|pty)|(?:^|[^A-Z])(?:PID|Pid|PTY|Pty)/;
 
 /** Whether a parameter name such as `instanceId`, `pty_handle` or `webContentsId` names a live handle. */
 function isLiveHandleName(name: string): boolean {
-  const words = name.split(/[^A-Za-z0-9]+|(?<=[a-z0-9])(?=[A-Z])/).map((word) => word.toLowerCase());
-  return LIVE_HANDLE_NAME.test(name) || words.some((word) => LIVE_HANDLE_WORDS.has(word));
+  return LIVE_HANDLE_WORD.test(name.toLowerCase().replace(/[^a-z0-9]/g, "")) || LIVE_HANDLE_SHORT_WORD.test(name);
 }
 
 /** A reference as the document stores it: `panelRefSchema`, and no parameter that names a live handle. */

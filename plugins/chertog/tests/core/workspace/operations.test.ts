@@ -6,6 +6,7 @@ import {
   activeLayout,
   addLayoutFromTemplate,
   addPanelToGroup,
+  captionFrom,
   changeActiveLayout,
   createLayout,
   deleteLayout,
@@ -189,9 +190,19 @@ describe("panels", () => {
     expect(setPanelTitle(stageADocument(), "thread-x", "Имя")).toEqual({ ok: false, reason: "unknown-panel" });
     expect(setPanelTitle(stageADocument(), "thread-a", "")).toEqual({ ok: false, reason: "invalid-panel" });
     expect(setPanelTitle(stageADocument(), "thread-a", "Созвон https://zoom.example/j/812?pwd=fixture")).toEqual({ ok: false, reason: "invalid-panel" });
-    expect(done(setPanelTitle(stageADocument(), "thread-a", "Документация https://docs.example/guide?page=2")).panels["thread-a"].title).toBe(
-      "Документация https://docs.example/guide?page=2",
-    );
+    expect(setPanelTitle(stageADocument(), "thread-a", "Документация https://docs.example/guide")).toEqual({ ok: false, reason: "invalid-panel" });
+  });
+
+  it("makes a caption out of a title a provider reports, without the words a caption may not carry", () => {
+    expect(captionFrom("  Созвон   https://zoom.example/j/812?pwd=fixture сегодня ", "title")).toBe("Созвон сегодня");
+    expect(captionFrom("[сборка](https://root:hunter2@build-1) упала", "title")).toBe("упала");
+    expect(captionFrom("Пароль: hunter2", "title")).toBeNull();
+    expect(captionFrom("root:hunter2@build-1", "title")).toBeNull();
+    expect(captionFrom("Fix 50% CPU\nusage", "title")).toBe("Fix 50% CPU usage");
+    expect(captionFrom("я".repeat(130), "title")).toBe("я".repeat(120));
+    expect(captionFrom("я".repeat(70), "name")).toBe("я".repeat(64));
+    expect(captionFrom("   ", "name")).toBeNull();
+    expect(done(setPanelTitle(stageADocument(), "thread-a", captionFrom("Тред https://x.example/?token=1 A", "title") ?? "Тред")).panels["thread-a"].title).toBe("Тред A");
   });
 
   it("removing a panel no layout shows any more forgets its reference", () => {
