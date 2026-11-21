@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-makosh-sidebar",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "type": "module",
   "engines": {
     "bb": ">=0.49",
@@ -39,7 +39,7 @@
     "vitest": "^5.1.0"
   },
   "scripts": {
-    "check": "tsc --noEmit && vitest run && node --experimental-strip-types --no-warnings --test tests/planning/*.test.mjs",
+    "check": "tsc --noEmit && vitest run && node --experimental-strip-types --no-warnings --test tests/planning/*.test.mjs && python3 -m unittest discover -s tests -p '*_test.py'",
     "test": "vitest run",
     "build": "bb plugin build"
   },

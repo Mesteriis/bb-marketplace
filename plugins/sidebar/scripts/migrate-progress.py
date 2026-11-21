@@ -63,22 +63,60 @@ def export(destination):
     print(f"Backed up {len(entries)} records; legacy plugin untouched")
 
 
-def apply(source):
+def covers_legacy(key, old, current):
+    """Only provable supersets or a later confirmed root turn may supersede a backup."""
+    if old == current:
+        return True
+    if key.startswith("agent-errors:") and isinstance(old, list) and isinstance(current, list):
+        return all(item in current for item in old)
+    if key.startswith("reminder-v06:") and isinstance(old, dict) and isinstance(current, dict):
+        return (current.get("turnId") is not None
+                and current.get("turnId") != old.get("turnId")
+                and current.get("rootConfirmed") is True
+                and current.get("since", 0) > old.get("since", 0)
+                and current.get("lastSeq", 0) > old.get("lastSeq", 0))
+    if key.startswith("bars:") and isinstance(old, list) and isinstance(current, list):
+        # A confirmed human reply may clear a wait while the open UI reads a plan.
+        for previous in old:
+            updated = next((item for item in current if item.get("id") == previous.get("id")), None)
+            if previous == updated:
+                continue
+            if (not updated or previous.get("state") != "needs_input"
+                    or updated.get("state") != "running"
+                    or updated.get("createdAt") != previous.get("createdAt")
+                    or updated.get("updatedAt", 0) <= previous.get("updatedAt", 0)
+                    or updated.get("stages") != previous.get("stages")
+                    or updated.get("title") != previous.get("title")):
+                return False
+        return True
+    return False
+
+
+def apply(source, keep_newer_runtime=False):
     snapshot = json.loads(source.read_text())
     if snapshot.get("format") != 1:
         raise RuntimeError("Unsupported snapshot")
     entries = snapshot["entries"]
-    imported = unchanged = 0
+    imported = unchanged = kept = 0
     for offset in range(0, len(entries), 10):
         batch = entries[offset:offset + 10]
         result = rpc("progress_import", {"entries": batch})
-        if result["conflicts"]:
-            raise RuntimeError("Existing Sidebar state conflicts; nothing was overwritten; stop before uninstall")
         imported += result["imported"]
         unchanged += result["unchanged"]
+        if result["conflicts"]:
+            actual = {e["key"]: e["value"] for e in rpc("progress_export", {"keys": result["conflicts"]})["entries"]}
+            for entry in batch:
+                if entry["key"] not in result["conflicts"]:
+                    continue
+                if not keep_newer_runtime or not covers_legacy(entry["key"], entry["value"], actual.get(entry["key"])):
+                    raise RuntimeError("Existing Sidebar state conflicts; nothing was overwritten; stop before uninstall")
+                kept += 1
         actual = rpc("progress_export", {"keys": [e["key"] for e in batch]})["entries"]
-        if {e["key"]: e["value"] for e in actual} != {e["key"]: e["value"] for e in batch}:
-            raise RuntimeError("Migration verification failed; stop before uninstall")
+        actual = {e["key"]: e["value"] for e in actual}
+        for entry in batch:
+            current = actual.get(entry["key"])
+            if current != entry["value"] and not (keep_newer_runtime and covers_legacy(entry["key"], entry["value"], current)):
+                raise RuntimeError("Migration verification failed; stop before uninstall")
     # Only known non-secret progress settings; never copy plugin-wide settings blindly.
     for key, value in snapshot.get("settings", {}).items():
         if key not in SETTINGS:
@@ -88,7 +126,7 @@ def apply(source):
                                 capture_output=True, text=True)
         if result.returncode:
             raise RuntimeError("Could not restore a progress setting; stop before uninstall")
-    print(f"Verified all {len(entries)} records: {imported} imported, {unchanged} already present")
+    print(f"Verified all {len(entries)} records: {imported} imported, {unchanged} already present, {kept} newer runtime records retained")
 
 
 if __name__ == "__main__":
@@ -96,8 +134,9 @@ if __name__ == "__main__":
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--export", type=Path)
     group.add_argument("--apply", type=Path)
+    parser.add_argument("--keep-newer-runtime", action="store_true", help="Keep error supersets and proven newer root-turn budgets; never overwrite a conflict")
     arguments = parser.parse_args()
     try:
-        export(arguments.export) if arguments.export else apply(arguments.apply)
+        export(arguments.export) if arguments.export else apply(arguments.apply, arguments.keep_newer_runtime)
     except (RuntimeError, ValueError, sqlite3.Error, OSError, KeyError) as error:
         parser.exit(1, f"Migration stopped: {error}\n")
