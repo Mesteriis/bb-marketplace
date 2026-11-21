@@ -103,3 +103,5 @@ Parents display **Общий прогресс субтредов**: completed/sk
 The sidebar now retains original plan/step timestamps. Progress marks expose completed step/stage duration; the head dot exposes total and current-step elapsed time. Hover/focus also reveals the clock, and expanded steps show their duration. Time is wall-clock elapsed time including waits, not model CPU time; unknown timestamps remain unknown.
 
 Completed plans and fully completed stages are hidden by default in the sidebar. **Показать готовые** reveals them; **Скрыть готовые** folds them away again. This changes presentation only: their steps remain in aggregate totals. Closed plan details are unmounted, static step lists are memoized, and ticking clocks update separately with a pause while the document is hidden.
+
+Sidebar progress tracks are 20px tall. Dense plans group their timing marks into at most twelve positions, retaining every original label/duration in group tooltips. This prevents aggregate histories from covering the animation with a continuous row of dots; short plans retain individual marks.

@@ -75,3 +75,12 @@ export function progressMarks(plan:Plan) {
   return [{at,isStage,label:`${label||step.title}${passed&&starts.length&&ends.length?' · '+elapsed(Math.max(...ends)-Math.min(...starts)):''}`}];
  }));
 }
+
+/** Keep dense aggregates legible; every original marker remains in its group's tooltip. */
+export function compactProgressMarks(plan:Plan) {
+ const marks=progressMarks(plan);
+ if(marks.length<=12)return marks;
+ const groups=new Map<number,typeof marks>();
+ for(const mark of marks){const bucket=Math.min(11,Math.floor(mark.at*12));const group=groups.get(bucket)??[];group.push(mark);groups.set(bucket,group);}
+ return [...groups.values()].map(group=>({at:group.reduce((sum,m)=>sum+m.at,0)/group.length,isStage:group.some(m=>m.isStage),label:group.map(m=>m.label).join('\n')}));
+}

@@ -2,7 +2,7 @@
 import {afterEach,expect,test,vi} from 'vitest';
 import {act,cleanup,fireEvent,render,waitFor} from '@testing-library/react';
 import {PlanStrip,ThreadProgress} from '../src/ui/thread-progress';
-import {aggregateProgress,planProgress,progressMarks,sidebarPlans,visiblePlans,type Plan} from '../src/core/progress';
+import {aggregateProgress,planProgress,progressMarks,compactProgressMarks,sidebarPlans,visiblePlans,type Plan} from '../src/core/progress';
 import {migrationEntry,sameRecord} from '../src/core/planning/migration';
 afterEach(cleanup);
 const plan=(overrides:Partial<Plan>={}):Plan=>({id:'plan',title:'Проверить изменение',state:'running',updatedAt:1,stages:[{name:'Проверка',steps:[{title:'Подготовка',status:'done'},{title:'Тесты',status:'active'},{title:'Отчёт',status:'pending'}]}],...overrides});
@@ -128,4 +128,14 @@ test('completed stages can be revealed without changing the aggregate percentage
  fireEvent.click(slot.getByRole('button',{name:'Показать готовые'}));
  expect(slot.getByText('Closed work')).toBeTruthy();
  expect(slot.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('50');
+});
+
+test('dense aggregates keep at most twelve visible marks without losing timing labels',()=>{
+ const p=plan({stages:[{name:'Stage',steps:Array.from({length:178},(_,i)=>({title:'Step '+i,status:'done',startedAt:i*1000,endedAt:(i+1)*1000}))}]});
+ const original=progressMarks(p),compact=compactProgressMarks(p);
+ expect(compact.length).toBeLessThanOrEqual(12);
+ expect(compact.flatMap(m=>m.label.split('\n'))).toEqual(original.map(m=>m.label));
+ const slot=render(<PlanStrip plan={p}/>);
+ expect(slot.container.querySelectorAll('.plan-mark').length).toBeLessThanOrEqual(12);
+ expect(compactProgressMarks(plan())).toEqual(progressMarks(plan()));
 });

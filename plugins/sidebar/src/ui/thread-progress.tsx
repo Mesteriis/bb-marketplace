@@ -1,5 +1,5 @@
 import {memo,useMemo,useState,useEffect,type CSSProperties} from 'react';
-import {planLabels,planProgress,progressMarks,elapsed,type Plan} from '../core/progress';
+import {planLabels,planProgress,compactProgressMarks,elapsed,type Plan} from '../core/progress';
 import {Stream,STREAM_STYLE,progressLight} from './progress-stream';
 
 const colors={running:'#7858CA',needs_input:'#AD6400',error:'#C5353E',done:'#18883A'};
@@ -37,7 +37,7 @@ const PlanDetails=memo(function PlanDetails({plan,showCompleted}:{plan:Plan;show
 export function PlanStrip({plan,effects=true,status,extraPlans=[],showCompleted=true}:{plan:Plan;effects?:boolean;status?:{label:string;state:string};extraPlans?:readonly Plan[];showCompleted?:boolean}) {
  const [expanded,setExpanded]=useState(false);
  const progress=useMemo(()=>planProgress(plan),[plan]);
- const marks=useMemo(()=>progressMarks(plan),[plan]);
+ const marks=useMemo(()=>compactProgressMarks(plan),[plan]);
  const color=colors[plan.state];
  const label=plan.id==='subthread-aggregate'?`Общий прогресс субтредов${plan.note?' · '+plan.note:''}`:((plan.state==='needs_input'||plan.state==='error')&&plan.note)||[progress.stage,progress.step].filter(Boolean).join(' → ')||plan.title;
  return <details className="thread-progress" style={{'--plan-color':color} as CSSProperties} onToggle={event=>{if(event.target===event.currentTarget)setExpanded(event.currentTarget.open);}}>
