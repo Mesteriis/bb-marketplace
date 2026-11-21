@@ -5,7 +5,7 @@ import { createConsent, type ConsentStorage } from "../src/core/consent.ts";
 import { createStaging } from "../src/core/staging.ts";
 import type { PagePort } from "../src/core/transfer.ts";
 import { DockPage } from "../src/ui/dock-page.tsx";
-import type { DockServices } from "../src/ui/services.ts";
+import type { DockServices, IsUserAction } from "../src/ui/services.ts";
 import { ToolbarAction } from "../src/ui/toolbar-action.tsx";
 import { evaluateInDocument, mountFixture, PATH_A, PATH_B, URL_A, URL_B, type Fixture } from "./fixture.ts";
 
@@ -112,7 +112,12 @@ describe("the ChatGPT page", () => {
 });
 
 describe("the Browser toolbar control", () => {
-  function toolbar(services: DockServices, url: string, page: PagePort | null = livePage) {
+  function toolbar(
+    services: DockServices,
+    url: string,
+    page: PagePort | null = livePage,
+    isUserAction: IsUserAction | undefined = trusted,
+  ) {
     let counter = 0;
     return (
       <ToolbarAction
@@ -120,10 +125,79 @@ describe("the Browser toolbar control", () => {
         url={url}
         page={page}
         newNonce={() => "nonce-" + String((counter += 1))}
-        isUserAction={trusted}
+        {...(isUserAction === undefined ? {} : { isUserAction })}
       />
     );
   }
+
+  it("does not open on a click the user did not make", async () => {
+    fixture = mountFixture("textarea", { [PATH_A]: "draft" });
+    const evaluations: string[] = [];
+    const page: PagePort = {
+      evaluate: async (expression) => {
+        evaluations.push(expression);
+        return evaluateInDocument(expression);
+      },
+    };
+    const services = makeServices();
+    services.consent.grant();
+    services.staging.stage({ text: MARKER, source: { kind: "manual" } });
+    // No `isUserAction`: the default guard is in force, and dispatched events are untrusted.
+    render(<ToolbarAction services={services} url={URL_A} page={page} newNonce={() => "nonce"} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Вставить в ChatGPT…" }));
+    await settle();
+
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(evaluations).toEqual([]);
+  });
+
+  it("ignores untrusted clicks on insert, copy and re-choose in an open panel", async () => {
+    fixture = mountFixture("textarea", { [PATH_A]: "draft" });
+    const services = makeServices();
+    services.consent.grant();
+    services.staging.stage({ text: MARKER, source: { kind: "manual" } });
+    // Only the opening click counts as the user's; everything after it is scripted.
+    let allowed = 1;
+    render(toolbar(services, URL_A, livePage, (event) => (allowed -= 1) >= 0 && event.nativeEvent instanceof Event));
+
+    fireEvent.click(screen.getByRole("button", { name: "Вставить в ChatGPT…" }));
+    await settle();
+    fireEvent.click(screen.getByRole("button", { name: "Вставить в черновик" }));
+    fireEvent.click(screen.getByRole("button", { name: "Скопировать контекст" }));
+    fireEvent.click(screen.getByRole("button", { name: "Отмена" }));
+    await settle();
+
+    expect(fixture.draft(PATH_A)).toBe("draft");
+    expect(services.copied).toEqual([]);
+    expect(services.staging.get()?.text).toBe(MARKER);
+    expect(screen.getAllByRole("dialog")).toHaveLength(1);
+  });
+
+  it("tells the user the result when the toolbar is gone before the page answers", async () => {
+    let answer: (value: unknown) => void = () => {};
+    const answers: Array<Promise<unknown>> = [
+      Promise.resolve({ top: true, origin: "https://chatgpt.com", path: PATH_A }),
+      new Promise((resolve) => (answer = resolve)),
+    ];
+    const slowPage: PagePort = { evaluate: () => answers.shift() ?? Promise.reject(new Error("extra call")) };
+    const services = makeServices();
+    services.consent.grant();
+    services.staging.stage({ text: MARKER, source: { kind: "manual" } });
+    const view = render(toolbar(services, URL_A, slowPage));
+
+    fireEvent.click(screen.getByRole("button", { name: "Вставить в ChatGPT…" }));
+    await settle();
+    fireEvent.click(screen.getByRole("button", { name: "Вставить в черновик" }));
+    view.unmount();
+    answer({ status: "not-json-we-know" });
+    await settle();
+
+    expect(services.staging.get()).toBeNull();
+    expect(services.notes).toEqual([
+      "Результат вставки неизвестен: страница не ответила. Проверьте черновик перед повтором.",
+    ]);
+  });
 
   it("is absent until the embedded mode is on, and absent on other sites", () => {
     const services = makeServices();
