@@ -27,29 +27,31 @@
 
 Нужны: `git`, `node`, `npm`, `curl`, доступ к `registry.npmjs.org` (зависимости плагина, набор сборки BB, `playwright-core`) и `chrome-headless-shell` в `~/Library/Caches/ms-playwright` (на этой машине есть сборка 1248; из рабочего `HOME` она только читается).
 
-Скрипты лежат вне репозитория. Сохрани три файла ниже в один каталог, например `$TMPDIR/chertog-stand-scripts`, и выполни из корня checkout:
+Скрипты лежат вне репозитория. Сохрани три файла ниже в один каталог, например `$TMPDIR/chertog-stand-scripts`, сделай `prepare.sh` и `run.sh` исполняемыми и выполни из корня checkout:
 
 ```sh
-S="$TMPDIR/chertog-stand"
 P="$TMPDIR/chertog-stand-scripts"
-"$P/prepare.sh" "$PWD" "$S"                       # копия плагина, npm ci, bb plugin build
-(mkdir -p "$S/tools" && cd "$S/tools" && npm init -y >/dev/null \
-  && npm_config_cache="$S/home/.npm" npm i --no-audit --no-fund playwright-core)
-"$P/run.sh" "$S"                                  # запуск, установка, проба, остановка
+S=$("$P/prepare.sh" "$PWD" | tail -1)   # новый каталог, копия плагина, npm ci, bb plugin build, playwright-core
+"$P/run.sh" "$S"; echo "exit=$?"        # запуск, установка, проба, остановка; 0 только при STAND PASS
 ```
+
+`prepare.sh` каждый раз создаёт новый каталог через `mktemp -d` и печатает его путь последней строкой. Он ничего не удаляет и не принимает путь стенда снаружи, поэтому ошибка в аргументе не может стереть чужой каталог. `run.sh` отказывается работать с каталогом, который не подготовлен `prepare.sh`. Один подготовленный стенд рассчитан на один прогон; для следующего подготовь новый.
+
+Весь прогон идёт в чистом окружении: `npm ci`, сборка, установка `playwright-core`, сервер, CLI и браузерная проба запускаются через `env -i` с `HOME` стенда. Из рабочего `HOME` только читается готовый `chrome-headless-shell`; путь к другому браузеру можно передать переменной `CHROME`.
 
 `prepare.sh`:
 
 ```sh
 #!/bin/sh
-# Snapshot plugins/chertog at HEAD into the stand, install deps, build.
+# Create a new stand directory, snapshot plugins/chertog at HEAD into it, install deps, build.
+# Prints the stand path on the last line. Never deletes anything: each run gets its own directory.
 set -eu
-REPO="$1"; STAND="$2"
+REPO="$1"
 BB_APP=/Applications/dev/bb.app/Contents/Resources/app.asar.unpacked/node_modules/bb-app
-rm -rf "$STAND"; mkdir -p "$STAND/plugin" "$STAND/home" "$STAND/data"
+STAND=$(mktemp -d "${TMPDIR:-/tmp}/chertog-stand.XXXXXX")
+mkdir "$STAND/plugin" "$STAND/home" "$STAND/data" "$STAND/tools"
 git -C "$REPO" archive HEAD:plugins/chertog | tar -x -C "$STAND/plugin"
 git -C "$REPO" rev-parse HEAD > "$STAND/plugin-sha"
-cd "$STAND/plugin"
 # Clean environment: no BB_* of the owner's BB, throwaway HOME, proxies kept.
 clean() {
   env -i HOME="$STAND/home" PATH="$PATH" TMPDIR="${TMPDIR:-/tmp}" \
@@ -59,26 +61,33 @@ clean() {
     ${NODE_EXTRA_CA_CERTS:+NODE_EXTRA_CA_CERTS="$NODE_EXTRA_CA_CERTS"} \
     npm_config_cache="$STAND/home/.npm" "$@"
 }
-clean npm ci --no-audit --no-fund
-clean node "$BB_APP/dist/bb.js" plugin build
-ls -la dist
+cd "$STAND/plugin"
+clean npm ci --no-audit --no-fund >&2
+clean node "$BB_APP/dist/bb.js" plugin build >&2
+cd "$STAND/tools"
+clean npm init -y >/dev/null
+clean npm i --no-audit --no-fund playwright-core >&2
+echo "$STAND"
 ```
 
 `run.sh`:
 
 ```sh
 #!/bin/sh
-# Start an isolated BB, install the stand copy of Chertog, record the load, probe the web UI, stop.
+# Start an isolated BB, install the stand copy of Chertog, check the load, probe the web UI, stop.
+# Exit code is 0 only if every check passed; the instance is stopped in every case.
 set -eu
 STAND="$1"
+[ -f "$STAND/plugin-sha" ] && [ -d "$STAND/plugin/dist" ] || { echo "not a prepared stand: $STAND"; exit 2; }
 BB_APP=/Applications/dev/bb.app/Contents/Resources/app.asar.unpacked/node_modules/bb-app
-CHROME=$(ls -d "$HOME"/Library/Caches/ms-playwright/chromium_headless_shell-*/chrome-headless-shell-*/chrome-headless-shell | tail -1)
+# The browser binary is only read from the owner's Playwright cache; it runs with the stand HOME.
+CHROME=${CHROME:-$(ls -d "$HOME"/Library/Caches/ms-playwright/chromium_headless_shell-*/chrome-headless-shell-*/chrome-headless-shell | tail -1)}
 PORTS=$(node -e 'const n=require("node:net");const f=()=>new Promise(r=>{const s=n.createServer();s.listen(0,"127.0.0.1",()=>{const p=s.address().port;s.close(()=>r(p))})});(async()=>console.log(await f(),await f()))()')
 SERVER_PORT=${PORTS% *}; DAEMON_PORT=${PORTS#* }
 URL="http://127.0.0.1:$SERVER_PORT"
+clean() { env -i HOME="$STAND/home" PATH="$PATH" TMPDIR="${TMPDIR:-/tmp}" BB_TELEMETRY=false "$@"; }
 cli() {
-  env -i HOME="$STAND/home" PATH="$PATH" TMPDIR="${TMPDIR:-/tmp}" BB_TELEMETRY=false \
-    BB_DATA_DIR="$STAND/data" BB_SERVER_URL="$URL" BB_HOST_DAEMON_PORT="$DAEMON_PORT" \
+  clean BB_DATA_DIR="$STAND/data" BB_SERVER_URL="$URL" BB_HOST_DAEMON_PORT="$DAEMON_PORT" \
     node "$BB_APP/dist/bb.js" "$@"
 }
 # env execs node, so $! is the launcher itself; SIGTERM to it stops server and host daemon.
@@ -105,22 +114,27 @@ echo "== status"; cli status
 echo "== install"; cli plugin install "$STAND/plugin" --yes
 echo "== chertog in plugin list"
 cli plugin list --json > "$STAND/plugin-list.json"
-node -e 'const l=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).plugins??[];const p=l.find(x=>x.id==="chertog");console.log(JSON.stringify({plugins:l.length,id:p?.id,version:p?.version,status:p?.status,source:p?.source,sdkVersion:p?.app?.bundle?.sdkVersion,compatible:p?.app?.bundle?.compatible,jsUrl:p?.app?.bundle?.jsUrl}));process.exit(p?.status==="running"?0:1)' "$STAND/plugin-list.json"
+node -e 'const l=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).plugins??[];const p=l.find(x=>x.id==="chertog");console.log(JSON.stringify({plugins:l.length,id:p?.id,version:p?.version,status:p?.status,source:p?.source,sdkVersion:p?.app?.bundle?.sdkVersion,compatible:p?.app?.bundle?.compatible,jsUrl:p?.app?.bundle?.jsUrl}));process.exit(p?.status==="running"&&p?.app?.bundle?.compatible===true?0:1)' "$STAND/plugin-list.json"
 JS=$(node -e 'const l=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).plugins;console.log(l.find(x=>x.id==="chertog").app.bundle.jsUrl)' "$STAND/plugin-list.json")
 echo "== plugin bundle over HTTP"; curl -fsS -o /dev/null -w "GET $JS -> %{http_code} %{size_download} bytes\n" "$URL$JS"
 echo "== headless probe"
-node "$(dirname "$0")/probe.mjs" "$URL/" "$STAND/tools" "$CHROME" "$STAND/probe.png" "$JS" || echo "probe failed: exit $?"
+rc=0
+clean node "$(dirname "$0")/probe.mjs" "$URL/" "$STAND/tools" "$CHROME" "$STAND/probe.png" "$JS" || rc=$?
+[ "$rc" = 0 ] || echo "probe FAILED: exit $rc"
 if [ -n "${STAND_HOLD:-}" ]; then echo "holding at $URL; touch $STAND/stop to finish"; while [ ! -e "$STAND/stop" ]; do sleep 1; done; fi
 stop; trap - EXIT
 echo "== after stop"
 if curl -fsS --max-time 2 "$URL/health" >/dev/null 2>&1; then echo "server still answers"; exit 1; fi
 echo "server stopped: $URL/health refuses connections"
+[ "$rc" = 0 ] && echo "STAND PASS" || echo "STAND FAIL"
+exit "$rc"
 ```
 
 `probe.mjs`:
 
 ```js
 // Headless probe of the stand web UI: load, plugin bundle request, DOM rects, trusted mouse gesture.
+// Exits 1 unless every check holds.
 import { createRequire } from "node:module";
 const [url, toolsDir, chrome, shot, chertogJs] = process.argv.slice(2);
 const { chromium } = createRequire(toolsDir + "/")("playwright-core");
@@ -151,43 +165,54 @@ const out = await page.evaluate(() => ({
   text: document.body.innerText.replace(/\s+/g, " ").slice(0, 200),
 }));
 await page.screenshot({ path: shot });
-console.log(JSON.stringify({ ...out, pluginAppAssetResponses: assets.length, chertogBundle: assets.find((a) => a.endsWith(chertogJs)) ?? "not requested", pageErrors: errors }, null, 1));
+const chertogBundle = assets.find((a) => a.endsWith(chertogJs)) ?? "not requested";
+console.log(JSON.stringify({ ...out, pluginAppAssetResponses: assets.length, chertogBundle, pageErrors: errors }, null, 1));
 await browser.close();
+const failures = [];
+if (!chertogBundle.startsWith("200 ")) failures.push("Chertog bundle was not served to the page with 200: " + chertogBundle);
+if (errors.length > 0) failures.push("page errors: " + errors.length);
+if (out.pointer.events < 3 || !out.pointer.allTrusted) failures.push("mouse gesture did not produce trusted pointer events");
+if (!out.landmarks.some((l) => l.tag === "main" && l.rect[2] > l.rect[0] && l.rect[3] > l.rect[1])) failures.push("no measurable main area");
+for (const f of failures) console.error("PROBE FAIL: " + f);
+if (failures.length > 0) process.exit(1);
+console.log("PROBE PASS");
 ```
 
-Чтобы оставить стенд работать для ручного или автоматического прохода, запусти `STAND_HOLD=1 "$P/run.sh" "$S"`: скрипт напечатает адрес и будет ждать файл `$S/stop`. Этот режим в данном срезе не запускался.
+Чтобы оставить стенд работать для ручного или автоматического прохода, запусти `STAND_HOLD=1 "$P/run.sh" "$S"`: после пробы скрипт напечатает адрес и будет ждать файл `$S/stop`. Этот режим в данном срезе не запускался.
 
 ## Остановка
 
 `run.sh` останавливает экземпляр сам, в том числе при ошибке (`trap stop EXIT`): `kill -TERM` лаунчеру, ожидание до 30 секунд, затем `kill -KILL`. Лаунчер по `SIGTERM` завершает сервер и host daemon. После остановки скрипт проверяет, что `/health` больше не отвечает.
 
+Код завершения `run.sh` равен `0` только при `STAND PASS`. Он ненулевой, если плагин не в состоянии `running` или бандл несовместим, если бандл не отдаётся по HTTP, если браузер не запустился, если страница не получила бандл Чертога с `200`, если на странице были ошибки, если жест мышью не дал доверенных событий, если область `main` не измерилась, или если сервер после остановки ещё отвечает. Сбой пробы не отменяет остановку: скрипт запоминает код, останавливает экземпляр и только потом завершается с этим кодом.
+
 Остановить экземпляр, оставленный в режиме `STAND_HOLD`:
 
 ```sh
-touch "$TMPDIR/chertog-stand/stop"
+touch "$S/stop"
 ```
 
 Остановить вручную, если скрипт был прерван:
 
 ```sh
-ps -axo pid,ppid,command | grep -F "chertog-stand/data" | grep -v grep   # строка с dist/bb-app.js
+ps -axo pid,ppid,command | grep -F "chertog-stand." | grep -v grep   # строка с dist/bb-app.js
 kill -TERM <pid лаунчера>
 ```
 
-Удалить стенд целиком после остановки: `rm -rf "$TMPDIR/chertog-stand"`. В рабочем BB убирать нечего.
+Каталог стенда после остановки можно удалить вручную; его путь напечатал `prepare.sh`, имя начинается с `chertog-stand.`. Скрипты его не удаляют. В рабочем BB убирать нечего.
 
-Сигнал нужно слать самому процессу `bb-app.js`. В первом прогоне лаунчер был запущен через функцию оболочки, `$!` указывал на подоболочку, и `SIGTERM` сервер не остановил; в `run.sh` выше лаунчер запускается прямо через `env`, который заменяет себя на `node`. Команда `bb-app stop --data-dir <каталог>` существует, но в песочнице команд агента она не видит чужие процессы и ответила «bb was not running (removed a stale record of pid …)» при живом сервере. Вне песочницы она не проверялась.
+Сигнал нужно слать самому процессу `bb-app.js`. В самом первом запуске, до исправления скрипта, лаунчер был запущен через функцию оболочки, `$!` указывал на подоболочку, и `SIGTERM` сервер не остановил; в `run.sh` выше лаунчер запускается прямо через `env`, который заменяет себя на `node`. Команда `bb-app stop --data-dir <каталог>` существует, но в песочнице команд агента она не видит чужие процессы и ответила «bb was not running (removed a stale record of pid …)» при живом сервере. Вне песочницы она не проверялась.
 
 ## Что проверено фактически
 
-Два полных прогона `run.sh` на пустом каталоге данных: первый внутри песочницы команд агента (запись разрешена только в `$TMPDIR` и worktree), второй вне её, потому что Chromium в песочнице не стартует. `S` во втором прогоне: `/tmp/claude-501/chertog-stand`.
+Скрипты в этом документе прогнаны в том виде, в каком приведены. Стенд `/tmp/claude-501/chertog-stand.eltdA6` создан `prepare.sh`. На нём два прогона `run.sh`: внутри песочницы команд агента, где Chromium не стартует, и вне её. Перед вторым каталог `data` первого прогона был переименован, так что оба шли на пустых данных.
 
-Подготовка (`prepare.sh`):
+Подготовка (`prepare.sh`, вывод сборки):
 
 ```text
 Downloading the plugin build toolchain (one time)…
   esbuild@0.28.2, @tailwindcss/node@4.3.0, @tailwindcss/oxide@4.3.0, tailwindcss@4.3.0
-Toolchain ready (2.0s)
+Toolchain ready
 dist/server.js
 dist/server.js.map
 dist/server.meta.json
@@ -196,58 +221,76 @@ dist/app.css
 dist/app.meta.json
 ```
 
-Запуск, установка, загрузка и остановка (`run.sh`, второй прогон):
+Успешный прогон вне песочницы, `exit=0`:
 
 ```text
-== launcher pid 49577, server http://127.0.0.1:60837, host daemon port 60838
+== launcher pid 91148, server http://127.0.0.1:65402, host daemon port 65403
 == health
-{"ok":true,"launchId":"03780ed4-de35-4c43-a617-89e38875519d"}
+{"ok":true,"launchId":"23623c7a-0ca2-4d3f-a1fc-601c204b8a61"}
 == status
 Project: (not set)
 
 Thread: (not set)
 
-Data dir: /tmp/claude-501/chertog-stand/data
+Data dir: /tmp/claude-501/chertog-stand.eltdA6/data
 
 Tip: run bb guide for help getting started.
 == install
-Installing bb-plugin-chertog@0.1.0 from /tmp/claude-501/chertog-stand/plugin
+Installing bb-plugin-chertog@0.1.0 from /tmp/claude-501/chertog-stand.eltdA6/plugin
 Plugins are full-trust code running inside the BB server. They can read all local BB data, including other plugins' secrets.
 Installed:
 chertog@0.1.0  running
-  source: path:/tmp/claude-501/chertog-stand/plugin
+  source: path:/tmp/claude-501/chertog-stand.eltdA6/plugin
 == chertog in plugin list
-{"plugins":42,"id":"chertog","version":"0.1.0","status":"running","source":"path:/tmp/claude-501/chertog-stand/plugin","sdkVersion":"0.6.157","compatible":true,"jsUrl":"/api/v1/plugin-app-assets/653524671c361b63/app.js"}
+{"plugins":42,"id":"chertog","version":"0.1.0","status":"running","source":"path:/tmp/claude-501/chertog-stand.eltdA6/plugin","sdkVersion":"0.6.157","compatible":true,"jsUrl":"/api/v1/plugin-app-assets/653524671c361b63/app.js"}
 == plugin bundle over HTTP
 GET /api/v1/plugin-app-assets/653524671c361b63/app.js -> 200 3381 bytes
+== headless probe
+ "title": "bb", "path": "/", "viewport": [1440, 900]
+ "landmarks": nav [0, 0, 48, 853]; main [320, 0, 1440, 900]
+ "pointer": { "events": 7, "allTrusted": true, first pointermove (700, 450), last pointerup (820, 520) }
+ "text": "New thread Threads No threads Mobile apps Provider usage Report a bug More Select model No project Full Access Toggle Sidebar"
+ "pluginAppAssetResponses": 52
+ "chertogBundle": "200 /api/v1/plugin-app-assets/653524671c361b63/app.js"
+ "pageErrors": []
+PROBE PASS
 == after stop
-server stopped: http://127.0.0.1:60837/health refuses connections
+server stopped: http://127.0.0.1:65402/health refuses connections
+STAND PASS
 ```
 
-Проба в headless Chromium (`probe.mjs`, `playwright-core` 1.65.1, окно 1440×900), вывод сокращён до значимых полей:
+Вывод пробы в блоке сокращён до значимых полей; `playwright-core` 1.65.1, окно 1440×900.
+
+Прогон с отказом внутри песочницы, `exit=1`. Плагин установлен и отдаётся по HTTP, но браузер не запустился; экземпляр всё равно остановлен:
 
 ```text
-"title": "bb", "path": "/", "viewport": [1440, 900]
-"landmarks": nav [0, 0, 48, 853]; main [320, 0, 1440, 900]
-"pointer": { "events": 7, "allTrusted": true, first pointermove (700, 450), last pointerup (820, 520) }
-"text": "New thread Threads No threads Mobile apps Provider usage Report a bug More Select model No project Full Access Toggle Sidebar"
-"pluginAppAssetResponses": 52
-"chertogBundle": "200 /api/v1/plugin-app-assets/653524671c361b63/app.js"
-"pageErrors": []
+chertog@0.1.0  running
+  source: path:/tmp/claude-501/chertog-stand.eltdA6/plugin
+== plugin bundle over HTTP
+GET /api/v1/plugin-app-assets/653524671c361b63/app.js -> 200 3381 bytes
+== headless probe
+browserType.launch: Target page, context or browser has been closed
+[err] FATAL:base/apple/mach_port_rendezvous_mac.cc:159 … bootstrap_check_in org.chromium.Chromium.MachPortRendezvousServer: Permission denied (1100)
+probe FAILED: exit 1
+== after stop
+server stopped: http://127.0.0.1:65039/health refuses connections
+STAND FAIL
 ```
 
 Что из этого следует:
 
 | Факт | Доказательство |
 |---|---|
-| Стенд работает на своих данных | `bb status` стенда: `Data dir: /tmp/claude-501/chertog-stand/data`; в нём свои `bb.db`, `host-id`, `auth-secret`, `plugins/`, `logs/` |
-| Чертог из этого checkout загружен сервером | `chertog@0.1.0  running`, источник `path:…/chertog-stand/plugin`, SDK бандла `0.6.157`, `compatible: true` |
+| Стенд работает на своих данных | `bb status` стенда: `Data dir: /tmp/claude-501/chertog-stand.eltdA6/data`; в нём свои `bb.db`, `host-id`, `auth-secret`, `plugins/`, `logs/` |
+| Чертог из этого checkout загружен сервером | `chertog@0.1.0  running`, источник `path:…/chertog-stand.eltdA6/plugin`, SDK бандла `0.6.157`, `compatible: true` |
 | Веб-интерфейс открывается без входа и грузит бандл Чертога | страница `/` отрисовала оболочку BB, ответ `200` на `app.js` Чертога, ошибок страницы нет |
 | Жесты мышью настоящие | семь событий `pointermove`/`pointerdown`/`pointerup` с `isTrusted: true` от `page.mouse` |
 | Границы DOM измеримы | `getBoundingClientRect()` в координатах окна: область содержимого `main` занимает `[320, 0, 1440, 900]` |
 | Экземпляр остановлен | `/health` стенда отказывает в соединении; в `ps` нет процессов с `chertog-stand` |
+| Провал проверки меняет код завершения | прогон в песочнице: `probe FAILED: exit 1`, `STAND FAIL`, `exit=1`, сервер остановлен |
+| Проба работает с `HOME` стенда | `probe.mjs` запускается через `env -i HOME="$STAND/home"`; после прогона в `HOME` стенда лежат `.bb`, `.claude`, `.claude.json`, `.codex`, `.cursor`, `.hermes`, `.local`, `.npm`, `.pi`, `Library` |
 | Рабочий BB не изменён | `bb plugin list` рабочего сервера до и после: 127 плагинов, `chertog` нет; в `~/.bb/plugins` нет каталога `chertog`; `http://127.0.0.1:38886/health` отвечает с тем же `launchId` |
-| В песочнице стенд не пытался писать наружу | в логах первого прогона одна ошибка `EPERM`: провайдер `pi` не смог открыть сокет в `$TMPDIR` (ограничение песочницы, не стенда) |
+| В песочнице стенд не пытался писать наружу | в логах прогона внутри песочницы одна ошибка `EPERM`: провайдер `pi` не смог открыть сокет в `$TMPDIR` (ограничение песочницы, не стенда) |
 
 Особенности для агента в песочнице команд: запуск и остановка должны быть в одной команде, потому что следующая команда не видит и не может остановить процессы предыдущей; Chromium падает на `bootstrap_check_in … Permission denied`, для пробы нужен запуск вне песочницы.
 
@@ -309,6 +352,8 @@ server stopped: http://127.0.0.1:60837/health refuses connections
 - Изолированный Desktop: не запускался. Поведение второго экземпляра выведено из чтения `app.asar`, не из запуска.
 - Ни одна строка приёмки раздела 5 не пройдена. Проверены только возможности стенда: загрузка плагина, открытие страницы, доверенные события мыши, измерение границ.
 - Режим `STAND_HOLD` и остановка через файл `stop`.
+- Срабатывание каждого условия отказа пробы по отдельности. Наблюдался один случай: браузер не запустился. Ветки «бандл не запрошен», «ошибки страницы», «нет доверенных событий» и «нет области `main`» не вызывались.
+- Повторный `run.sh` на том же стенде без очистки каталога данных.
 - `bb-app stop --data-dir` вне песочницы команд.
 - Создание проекта и тредов на стенде, отправка сообщения без входа провайдера, агент-заглушка через `provider-acp`.
 - Терминал BB на стенде: создание PTY и вывод.
