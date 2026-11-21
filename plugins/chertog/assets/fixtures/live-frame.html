@@ -1,0 +1,203 @@
+<!doctype html>
+<!--
+  Chertog live frame fixture: a controlled page for the "live iframe panel"
+  acceptance row. It proves that a panel was neither reloaded nor destroyed
+  while the workspace was rebuilt around it.
+
+  Every load makes a new random boot ID and adds one to the load counters.
+  The parent window asks for the state with
+    { type: "chertog-fixture:probe" }
+  and gets back, on its own window only,
+    { type: "chertog-fixture:state", bootId, loadCount, sessionLoadCount,
+      destroyCount, loadedAt, instance, text, selectionStart, selectionEnd }
+  A count is null when the browser blocks storage for this frame.
+
+  Two frames of one origin share storage: give each its own counters with
+  ?instance=<name> (letters, digits, "-" and "_", at most 64).
+
+  The page uses no network, no timers, and never moves the caret itself.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chertog live frame fixture</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --_background: #ffffff;
+    --_foreground: #1a1a1a;
+    --_muted: #5c5c5c;
+    --_border: #c9c9c9;
+    --_field: #f5f5f5;
+    --_accent: #0b57d0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --_background: #161616;
+      --_foreground: #ececec;
+      --_muted: #a3a3a3;
+      --_border: #454545;
+      --_field: #222222;
+      --_accent: #8ab4f8;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    background: var(--chertog-fixture-background, var(--_background));
+    color: var(--chertog-fixture-foreground, var(--_foreground));
+    font: 13px/1.4 system-ui, sans-serif;
+  }
+  h1 { margin: 0; font-size: 14px; font-weight: 600; }
+  dl {
+    margin: 0;
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    gap: 4px 12px;
+  }
+  dt { color: var(--chertog-fixture-muted, var(--_muted)); }
+  dd {
+    margin: 0;
+    font-family: ui-monospace, monospace;
+    overflow-wrap: anywhere;
+  }
+  #boot-id { color: var(--chertog-fixture-accent, var(--_accent)); font-weight: 600; }
+  label { color: var(--chertog-fixture-muted, var(--_muted)); }
+  textarea {
+    flex: 1;
+    min-height: 72px;
+    width: 100%;
+    padding: 8px;
+    resize: none;
+    border: 1px solid var(--chertog-fixture-border, var(--_border));
+    border-radius: 6px;
+    background: var(--chertog-fixture-field, var(--_field));
+    color: inherit;
+    font: inherit;
+  }
+  textarea:focus-visible {
+    outline: 2px solid var(--chertog-fixture-accent, var(--_accent));
+    outline-offset: 1px;
+  }
+</style>
+</head>
+<body>
+<h1>Chertog live frame fixture</h1>
+<dl>
+  <dt>Boot ID</dt><dd id="boot-id"></dd>
+  <dt>Loaded at</dt><dd><time id="loaded-at"></time></dd>
+  <dt>Loads, all time</dt><dd id="load-count"></dd>
+  <dt>Loads, this session</dt><dd id="session-load-count"></dd>
+  <dt>Destroyed before this load</dt><dd id="destroy-count"></dd>
+  <dt>Instance</dt><dd id="instance"></dd>
+</dl>
+<label for="input">Type here, then move the panel. The text and the caret must stay.</label>
+<textarea id="input" spellcheck="false" autocomplete="off"></textarea>
+<script>
+(function () {
+  "use strict";
+
+  var PREFIX = "chertog-fixture:";
+  var UNAVAILABLE = "unavailable";
+
+  var requested = new window.URLSearchParams(window.location.search).get("instance");
+  var instance = requested !== null && /^[A-Za-z0-9_-]{1,64}$/.test(requested) ? requested : "default";
+  var loadsKey = PREFIX + instance + ":loads";
+  var destroysKey = PREFIX + instance + ":destroys";
+
+  // A frame of an opaque origin may not touch storage: the browser throws on
+  // the property itself. Such a count is null, never a made-up number.
+  function readCount(storageName, key) {
+    try {
+      var stored = Number.parseInt(window[storageName].getItem(key), 10);
+      return Number.isFinite(stored) && stored > 0 ? stored : 0;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function addOne(storageName, key) {
+    var count = readCount(storageName, key);
+    if (count === null) return null;
+    try {
+      window[storageName].setItem(key, String(count + 1));
+      return count + 1;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function makeBootId() {
+    var bytes = window.crypto.getRandomValues(new Uint8Array(16));
+    var hex = "";
+    for (var index = 0; index < bytes.length; index += 1) {
+      hex += (bytes[index] < 16 ? "0" : "") + bytes[index].toString(16);
+    }
+    return hex;
+  }
+
+  var bootId = makeBootId();
+  var loadedAt = new Date().toISOString();
+  var loadCount = addOne("localStorage", loadsKey);
+  var sessionLoadCount = addOne("sessionStorage", loadsKey);
+  var input = document.getElementById("input");
+
+  function show(id, shown) {
+    document.getElementById(id).textContent = shown === null ? UNAVAILABLE : String(shown);
+  }
+
+  show("boot-id", bootId);
+  show("loaded-at", loadedAt);
+  document.getElementById("loaded-at").dateTime = loadedAt;
+  show("load-count", loadCount);
+  show("session-load-count", sessionLoadCount);
+  show("destroy-count", readCount("localStorage", destroysKey));
+  show("instance", instance);
+
+  window.addEventListener("message", function (event) {
+    var parent = window.parent;
+    if (parent === window || event.source !== parent) return;
+    var message = event.data;
+    if (typeof message !== "object" || message === null || message.type !== PREFIX + "probe") return;
+    parent.postMessage(
+      {
+        type: PREFIX + "state",
+        bootId: bootId,
+        loadCount: loadCount,
+        sessionLoadCount: sessionLoadCount,
+        destroyCount: readCount("localStorage", destroysKey),
+        loadedAt: loadedAt,
+        instance: instance,
+        text: input.value,
+        selectionStart: input.selectionStart,
+        selectionEnd: input.selectionEnd
+      },
+      // An opaque origin serializes to "null", which names no origin to send to.
+      event.origin === "null" ? "*" : event.origin
+    );
+  });
+
+  // pagehide and unload both fire for one destruction; count it once.
+  var destroyed = false;
+  function countDestruction() {
+    if (destroyed) return;
+    destroyed = true;
+    addOne("localStorage", destroysKey);
+  }
+
+  window.addEventListener("pagehide", function (event) {
+    // A page kept for the back-forward cache is alive and may come back.
+    if (!event.persisted) countDestruction();
+  });
+  window.addEventListener("unload", countDestruction);
+})();
+</script>
+</body>
+</html>
