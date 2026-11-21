@@ -295,12 +295,12 @@ describe("a stored document the reader left parts out of", () => {
 
     const result = await store.save(read.document, 3);
     expect(result).toEqual({ status: "saved", document: { ...read.document, revision: 4 } });
-    expect(kv.keys()).toEqual(["workspace/backup/2026-11-21T12:00:00.000Z", DOCUMENT_KEY]);
-    expect(kv.value("workspace/backup/2026-11-21T12:00:00.000Z")).toEqual(damagedStageA(3));
+    expect(kv.keys()).toEqual(["workspace/backup/000001-2026-11-21T12:00:00.000Z", DOCUMENT_KEY]);
+    expect(kv.value("workspace/backup/000001-2026-11-21T12:00:00.000Z")).toEqual(damagedStageA(3));
     expect(kv.value(DOCUMENT_KEY)).toEqual({ ...read.document, revision: 4 });
     // The copy is written before the document is replaced.
     expect(kv.calls.filter((call) => call.startsWith("set "))).toEqual([
-      "set workspace/backup/2026-11-21T12:00:00.000Z",
+      "set workspace/backup/000001-2026-11-21T12:00:00.000Z",
       "set workspace/document",
     ]);
     expect(log.lines).toEqual(["warn workspace: the stored original is kept aside before a save over it; parts left out: 1; stored schema version: current; copies kept: 1"]);
@@ -315,7 +315,7 @@ describe("a stored document the reader left parts out of", () => {
 
     await store.save(read.document, 3);
     expect((await store.save({ ...read.document, revision: 4 }, 4)).status).toBe("saved");
-    expect(kv.keys()).toEqual(["workspace/backup/2026-11-21T12:00:00.000Z", DOCUMENT_KEY]);
+    expect(kv.keys()).toEqual(["workspace/backup/000001-2026-11-21T12:00:00.000Z", DOCUMENT_KEY]);
   });
 
   it("is not copied by a save that is refused", async () => {
@@ -334,7 +334,7 @@ describe("a stored document the reader left parts out of", () => {
   it("stays in storage when the copy cannot be written", async () => {
     const kv = new FakeKv();
     kv.seed(DOCUMENT_KEY, damagedStageA(3));
-    kv.failNextSetOf = "workspace/backup/2026-11-21T12:00:00.000Z";
+    kv.failNextSetOf = "workspace/backup/000001-2026-11-21T12:00:00.000Z";
     const { store } = rig(kv);
 
     await expect(store.save(stageADocument(), 3)).rejects.toEqual(new Error("the storage is full"));
@@ -352,15 +352,79 @@ describe("a stored document the reader left parts out of", () => {
       expect((await store.save({ ...stageADocument(), revision: index }, index)).status).toBe("saved");
     }
     expect(kv.keys()).toEqual([
-      "workspace/backup/2026-11-21T12:03:00.000Z",
-      "workspace/backup/2026-11-21T12:04:00.000Z",
-      "workspace/backup/2026-11-21T12:05:00.000Z",
-      "workspace/backup/2026-11-21T12:06:00.000Z",
-      "workspace/backup/2026-11-21T12:07:00.000Z",
+      "workspace/backup/000003-2026-11-21T12:03:00.000Z",
+      "workspace/backup/000004-2026-11-21T12:04:00.000Z",
+      "workspace/backup/000005-2026-11-21T12:05:00.000Z",
+      "workspace/backup/000006-2026-11-21T12:06:00.000Z",
+      "workspace/backup/000007-2026-11-21T12:07:00.000Z",
       DOCUMENT_KEY,
     ]);
-    expect(kv.value("workspace/backup/2026-11-21T12:03:00.000Z")).toEqual(damagedStageA(2));
-    expect(kv.value("workspace/backup/2026-11-21T12:07:00.000Z")).toEqual(damagedStageA(6));
+    expect(kv.value("workspace/backup/000003-2026-11-21T12:03:00.000Z")).toEqual(damagedStageA(2));
+    expect(kv.value("workspace/backup/000007-2026-11-21T12:07:00.000Z")).toEqual(damagedStageA(6));
+  });
+
+  it("keeps the five newest of seven copies made at one instant, the last one included", async () => {
+    const kv = new FakeKv();
+    const { store } = rig(kv);
+    for (const revision of [0, 1, 2, 3, 4, 5, 6]) {
+      kv.seed(DOCUMENT_KEY, damagedStageA(revision));
+      expect((await store.save({ ...stageADocument(), revision }, revision)).status).toBe("saved");
+      // The original a save has just replaced is always among the copies.
+      const copies = kv.keys().filter((key) => key !== DOCUMENT_KEY);
+      expect(copies.map((key) => kv.value(key))).toContainEqual(damagedStageA(revision));
+    }
+    expect(kv.keys()).toEqual([
+      "workspace/backup/000003-2026-11-21T12:00:00.000Z",
+      "workspace/backup/000004-2026-11-21T12:00:00.000Z",
+      "workspace/backup/000005-2026-11-21T12:00:00.000Z",
+      "workspace/backup/000006-2026-11-21T12:00:00.000Z",
+      "workspace/backup/000007-2026-11-21T12:00:00.000Z",
+      DOCUMENT_KEY,
+    ]);
+    expect(kv.value("workspace/backup/000003-2026-11-21T12:00:00.000Z")).toEqual(damagedStageA(2));
+    expect(kv.value("workspace/backup/000007-2026-11-21T12:00:00.000Z")).toEqual(damagedStageA(6));
+  });
+
+  it("keeps the newest copies when the clock goes back", async () => {
+    const kv = new FakeKv();
+    const hours = ["18", "17", "16", "15", "14", "13", "12"];
+    const { store } = rig(kv, clockOf(...hours.map((hour) => "2026-11-21T" + hour + ":00:00.000Z")));
+    for (const revision of [0, 1, 2, 3, 4, 5, 6]) {
+      kv.seed(DOCUMENT_KEY, damagedStageA(revision));
+      await store.save({ ...stageADocument(), revision }, revision);
+    }
+    expect(kv.keys()).toEqual([
+      "workspace/backup/000003-2026-11-21T16:00:00.000Z",
+      "workspace/backup/000004-2026-11-21T15:00:00.000Z",
+      "workspace/backup/000005-2026-11-21T14:00:00.000Z",
+      "workspace/backup/000006-2026-11-21T13:00:00.000Z",
+      "workspace/backup/000007-2026-11-21T12:00:00.000Z",
+      DOCUMENT_KEY,
+    ]);
+    expect(kv.value("workspace/backup/000007-2026-11-21T12:00:00.000Z")).toEqual(damagedStageA(6));
+  });
+
+  it("orders copies by their number past six digits and leaves keys it did not write alone", async () => {
+    const kv = new FakeKv();
+    kv.seed("workspace/backup/notes", "kept by hand");
+    for (const number of ["999997", "999998", "999999", "1000000"]) kv.seed("workspace/backup/" + number + "-2026-11-20T10:00:00.000Z", number);
+    kv.seed(DOCUMENT_KEY, damagedStageA(0));
+    const { store } = rig(kv);
+
+    await store.save(stageADocument(), 0);
+    kv.seed(DOCUMENT_KEY, damagedStageA(1));
+    await store.save({ ...stageADocument(), revision: 1 }, 1);
+    expect(kv.keys()).toEqual([
+      "workspace/backup/1000000-2026-11-20T10:00:00.000Z",
+      "workspace/backup/1000001-2026-11-21T12:00:00.000Z",
+      "workspace/backup/1000002-2026-11-21T12:00:00.000Z",
+      "workspace/backup/999998-2026-11-20T10:00:00.000Z",
+      "workspace/backup/999999-2026-11-20T10:00:00.000Z",
+      "workspace/backup/notes",
+      DOCUMENT_KEY,
+    ]);
+    expect(kv.value("workspace/backup/1000002-2026-11-21T12:00:00.000Z")).toEqual(damagedStageA(1));
+    expect(kv.value("workspace/backup/notes")).toBe("kept by hand");
   });
 
   it("gives two copies of one instant different keys", async () => {
@@ -370,9 +434,9 @@ describe("a stored document the reader left parts out of", () => {
       kv.seed(DOCUMENT_KEY, damagedStageA(revision));
       await store.save({ ...stageADocument(), revision }, revision);
     }
-    expect(kv.keys()).toEqual(["workspace/backup/2026-11-21T12:00:00.000Z", "workspace/backup/2026-11-21T12:00:00.000Z-2", DOCUMENT_KEY]);
-    expect(kv.value("workspace/backup/2026-11-21T12:00:00.000Z")).toEqual(damagedStageA(0));
-    expect(kv.value("workspace/backup/2026-11-21T12:00:00.000Z-2")).toEqual(damagedStageA(1));
+    expect(kv.keys()).toEqual(["workspace/backup/000001-2026-11-21T12:00:00.000Z", "workspace/backup/000002-2026-11-21T12:00:00.000Z", DOCUMENT_KEY]);
+    expect(kv.value("workspace/backup/000001-2026-11-21T12:00:00.000Z")).toEqual(damagedStageA(0));
+    expect(kv.value("workspace/backup/000002-2026-11-21T12:00:00.000Z")).toEqual(damagedStageA(1));
   });
 });
 
@@ -408,10 +472,10 @@ describe("a stored document of an older version", () => {
     expect(now.schemaVersion).toBe(2);
     expect(Object.values(now.panels).map((panel) => Object.keys(panel))).toEqual([["ref"], ["ref"], ["ref"]]);
 
-    expect(kv.keys()).toEqual(["workspace/backup/2026-11-21T12:00:00.000Z", DOCUMENT_KEY]);
-    expect(kv.value("workspace/backup/2026-11-21T12:00:00.000Z")).toEqual(stageAVersion1(4));
+    expect(kv.keys()).toEqual(["workspace/backup/000001-2026-11-21T12:00:00.000Z", DOCUMENT_KEY]);
+    expect(kv.value("workspace/backup/000001-2026-11-21T12:00:00.000Z")).toEqual(stageAVersion1(4));
     expect(kv.calls.filter((call) => call.startsWith("set "))).toEqual([
-      "set workspace/backup/2026-11-21T12:00:00.000Z",
+      "set workspace/backup/000001-2026-11-21T12:00:00.000Z",
       "set workspace/document",
     ]);
     expect(log.lines).toEqual([
@@ -427,7 +491,7 @@ describe("a stored document of an older version", () => {
 
     expect((await store.save({ ...stageADocument(), revision: 4 }, 4)).status).toBe("saved");
     expect((await store.save({ ...stageADocument(), revision: 5 }, 5)).status).toBe("saved");
-    expect(kv.keys()).toEqual(["workspace/backup/2026-11-21T12:00:00.000Z", DOCUMENT_KEY]);
+    expect(kv.keys()).toEqual(["workspace/backup/000001-2026-11-21T12:00:00.000Z", DOCUMENT_KEY]);
     expect(await store.load()).toEqual({ status: "ok", document: { ...stageADocument(), revision: 6 }, migratedFrom: null, dropped: [] });
   });
 

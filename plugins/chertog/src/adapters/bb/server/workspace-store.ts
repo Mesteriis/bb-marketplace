@@ -10,12 +10,21 @@ import { decideSave, readWorkspaceDocument } from "../../../core/workspace/index
 
 // The host namespaces the rows by plugin, so these keys cannot name a row of BB or of another plugin.
 const DOCUMENT_KEY = "workspace/document";
+/** Copies of stored originals: `workspace/backup/<number>-<instant>`. */
 const BACKUP_PREFIX = "workspace/backup/";
 
 /** The host keeps a value of at most 256 KB. */
 const MAX_DOCUMENT_BYTES = 256 * 1024;
 /** How many originals are kept aside; the oldest go first. */
 const MAX_BACKUPS = 5;
+
+const BACKUP_KEY = /^([0-9]{6,15})-/;
+
+/** The number of a copy this store wrote, `null` for a key under the prefix it did not write. */
+function backupNumber(key: string): number | null {
+  const match = BACKUP_KEY.exec(key.slice(BACKUP_PREFIX.length));
+  return match === null ? null : Number(match[1]);
+}
 
 export interface KvWorkspaceStoreDeps {
   readonly kv: PluginKvStorage;
@@ -34,13 +43,17 @@ export function createKvWorkspaceStore({ kv, now, log }: KvWorkspaceStoreDeps): 
    * the document.
    */
   async function keepAside(original: unknown, partsLeftOut: number, migratedFrom: number | null): Promise<void> {
-    const existing = await kv.list(BACKUP_PREFIX);
-    const dated = BACKUP_PREFIX + now().toISOString();
-    let key = dated;
-    for (let copy = 2; existing.includes(key); copy += 1) key = dated + "-" + copy;
+    // A copy is named by its number, then the instant. The number decides the age: it only grows,
+    // so neither two copies of one instant nor a clock that went back can put a new copy before an old one.
+    const numbered = (await kv.list(BACKUP_PREFIX))
+      .map((key) => ({ key, number: backupNumber(key) }))
+      .filter((copy): copy is { key: string; number: number } => copy.number !== null)
+      .sort((first, second) => first.number - second.number);
+    const number = (numbered.at(-1)?.number ?? 0) + 1;
+    const key = BACKUP_PREFIX + String(number).padStart(6, "0") + "-" + now().toISOString();
     await kv.set(key, original);
-    // ISO instants sort by time, and a second copy of one instant sorts after the first.
-    const copies = [...existing, key].sort();
+    // The copy just written has the highest number, so it is never among the ones dropped.
+    const copies = [...numbered.map((copy) => copy.key), key];
     const excess = copies.slice(0, Math.max(0, copies.length - MAX_BACKUPS));
     for (const old of excess) await kv.delete(old);
     log.warn(
