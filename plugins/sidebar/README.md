@@ -94,3 +94,7 @@ RPC `progress_import` принимает только ограниченные �
 `node --test tests/integration/*.test.mjs` (собранные сервер и host).
 
 Компактная компоновка сохраняет размер текста: контекст проекта и сводка потомков объединены, а бейдж состояния перенесён к подписи прогресса. Названию треда доступна полная ширина. Счётчик «+N» в той же подписи раскрывает остальные планы вместе с этапами текущего; закрытые дополнительные полоски не монтируются.
+
+Branch activity includes running descendants and the host's background agents, commands, workflows and plan mode, without changing the host execution status. This keeps the parent in **Сейчас / В работе** while its subtree works, including when folded.
+
+Progress polling retains the last successful plan on transport or per-thread failures, marks it stale, and retries every five seconds. A request times out after ten seconds; realtime notifications coalesce instead of cancelling in-flight reads. The attention index cannot block plan reads. Active descendants stay observed while folded. Sidebar polling rechecks the actual thread status after reload and restores the existing automatic reminder for a verified active turn when work-call thresholds are reached; its durable once-per-turn budget still applies. It never creates artificial steps or completion percentages.

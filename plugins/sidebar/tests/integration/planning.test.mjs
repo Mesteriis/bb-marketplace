@@ -469,3 +469,23 @@ test('ACP caught inner failure remains failed in the public diagnostic', async (
     assert.equal(report.diagnostic.source,'bb');assert.equal(report.diagnostic.lastOutcome,'failed');
   }finally{await h.dispose();}
 });
+
+test('sidebar polling recovers missing reminders after reload only for a verified active turn',async()=>{
+ let status='active',sends=0;
+ const events=[1,2,3,4].map(seq=>({seq,createdAt:100+seq,type:seq===1?'turn/started':'item/completed',scope:{kind:'turn',turnId:'current'},data:{item:{type:'fileRead'}}}));
+ const {bb,harness:h}=createFakePluginHost({pluginId:'makosh-sidebar',sdk:{threads:{
+  get:async()=>({id:'thread-test',status}),
+  events:{list:async args=>events.filter(e=>e.seq>Number(args.afterSeq??0)).sort((a,b)=>args.order==='desc'?b.seq-a.seq:a.seq-b.seq)},
+  send:async()=>{sends++;return {delivery:'sent'};},
+ }}});let current=h;
+ try {
+  await plugin(bb);
+  await h.callRpc('progress',{threadIds:['thread-test']});assert.equal(sends,1);
+  current=(await h.lifecycle.reload(plugin)).harness;
+  await current.callRpc('progress',{threadIds:['thread-test']});assert.equal(sends,1);
+  status='idle';events.push({seq:5,createdAt:200,type:'turn/started',scope:{kind:'turn',turnId:'next'}});
+  for(let seq=6;seq<=8;seq++)events.push({...events[1],seq,createdAt:200+seq,scope:{kind:'turn',turnId:'next'}});
+  await current.callRpc('progress',{threadIds:['thread-test']});assert.equal(sends,1);
+  status='active';await current.callRpc('progress',{threadIds:['thread-test']});assert.equal(sends,2);
+ } finally {await current.dispose();}
+});

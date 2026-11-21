@@ -6,6 +6,8 @@
 // pure — no React, no SDK calls — so the layout rules are testable on their
 // own.
 interface PluginSidebarThread {
+ descendantRunning?:boolean;
+ activity?:{workflows?:number;backgroundAgents?:number;backgroundCommands?:number;planMode?:number};
  hasPendingInteraction?:boolean;
  planAttention?:'needs_input'|'error';
  isUnread?: boolean; status?: string; id: string; projectId: string; title: string | null; titleFallback: string | null;

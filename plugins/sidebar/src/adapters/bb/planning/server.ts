@@ -785,6 +785,15 @@ export default async function registerPlanning(bb: BbPluginApi) {
   const storedPlanKeys=await bb.storage.kv.list('bars:');
   for(const key of storedPlanKeys.slice(0,2000))await readBars(key.slice(5));
   async function readSidebarBars(threadId:string) {
+    // Reconcile an already-running turn after a reload or a missed event.
+    // Only the existing bounded reminder may steer it; never invent steps.
+    try {
+      const thread=await bb.sdk.threads.get({threadId});
+      if(thread.status==='active') {
+        activeThreads.add(threadId);
+        await refreshDiagnostic(threadId,true);
+      } else activeThreads.delete(threadId);
+    } catch(error) {bb.log.warn(`Progress recovery could not observe ${threadId}: ${String(error)}`);}
     const bars=await readBars(threadId);
     if(!bars.some(bar=>bar.state==='needs_input'))return bars;
     await refreshAnswers(threadId);
