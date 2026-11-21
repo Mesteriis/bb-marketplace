@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import {afterEach,expect,test} from 'vitest';
-import {cleanup,fireEvent,render} from '@testing-library/react';
-import {PlanStrip} from '../src/ui/thread-progress';
+import {cleanup,fireEvent,render,waitFor} from '@testing-library/react';
+import {PlanStrip,ThreadProgress} from '../src/ui/thread-progress';
 import {planProgress,visiblePlans,type Plan} from '../src/core/progress';
 import {migrationEntry,sameRecord} from '../src/core/planning/migration';
 afterEach(cleanup);
@@ -35,6 +35,17 @@ test('filling changes only when real steps change, and preserves original effect
 test('a question or failure exposes its note without opening the plan',()=>{
  const slot=render(<PlanStrip plan={plan({state:'needs_input',note:'Уточнить критерии'})}/>);
  expect(slot.getByText('Уточнить критерии',{selector:'.progress-caption'})).toBeTruthy();
+});
+test('one disclosure keeps the status and additional plans reachable without another summary row',async()=>{
+ const slot=render(<ThreadProgress plans={[plan(),plan({id:'second',title:'Второй план'})]} status={{label:'В работе',state:'running'}}/>);
+ expect(slot.getByLabelText('Ещё планов: 1').textContent).toBe('+1');
+ expect(slot.getAllByRole('progressbar')).toHaveLength(1);
+ expect(slot.container.querySelector('.plan-line .state-badge')?.textContent).toBe('В работе');
+ expect(slot.container.querySelector('.more-plans')).toBeNull();
+ fireEvent.click(slot.getByText('Проверка → Тесты',{selector:'.progress-caption'}));
+ await waitFor(()=>expect(slot.getAllByRole('progressbar')).toHaveLength(2));
+ expect(slot.getByText('Второй план',{selector:'.additional-plan-title'})).toBeTruthy();
+ expect(slot.getAllByText('Подготовка')).toHaveLength(2);
 });
 test('migration validates state and keys and compares JSON independent of object order',()=>{
  const full={...plan(),kind:'plan',createdAt:1};
