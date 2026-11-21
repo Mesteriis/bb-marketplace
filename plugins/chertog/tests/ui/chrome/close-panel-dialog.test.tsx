@@ -4,7 +4,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
-import { ClosePanelDialog } from "../../../src/ui/chrome/index.ts";
+import { ClosePanelDialog, HiddenPanelsList, WorkspaceToolbar } from "../../../src/ui/chrome/index.ts";
 
 function outcomes() {
   return { onHide: vi.fn<() => void>(), onCloseAndEnd: vi.fn<() => void>(), onCancel: vi.fn<() => void>() };
@@ -170,3 +170,89 @@ describe("ClosePanelDialog", () => {
     expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "Соседний тайл" }));
   });
 });
+
+describe("ClosePanelDialog opened from a control that goes away", () => {
+  const PANELS = [
+    { instanceId: "p1", title: "Zoom: Планёрка" },
+    { instanceId: "p2", title: "SSH: build-01" },
+  ];
+
+  /** The workspace's wiring: «Закрыть» in the hidden list asks first, and only «Закрыть и завершить» removes the panel. */
+  function FromHiddenList({ inToolbar }: { inToolbar: boolean }) {
+    const [panels, setPanels] = useState(PANELS);
+    const [closing, setClosing] = useState<string | null>(null);
+    const hidden = { panels, onShow: () => {}, onClose: setClosing };
+    const unused = () => {
+      throw new Error("This callback is not part of the test");
+    };
+    return (
+      <>
+        {inToolbar ? (
+          <WorkspaceToolbar
+            layouts={{
+              layouts: [{ id: "l1", name: "Разработка" }],
+              activeLayoutId: "l1",
+              presets: [],
+              saveStatus: "saved",
+              onSwitch: unused,
+              onCreateFromCurrent: unused,
+              onCreateFromPreset: unused,
+              onRename: unused,
+              onDuplicate: unused,
+              onDelete: unused,
+              onReload: unused,
+            }}
+            content={{ sections: [], tileCount: 1, tileLimit: 8, onOpen: unused, onFocusExisting: unused }}
+            hiddenPanels={hidden}
+          />
+        ) : (
+          <HiddenPanelsList {...hidden} />
+        )}
+        <ClosePanelDialog
+          open={closing !== null}
+          panelTitle={panels.find((panel) => panel.instanceId === closing)?.title ?? ""}
+          onHide={() => setClosing(null)}
+          onCloseAndEnd={() => {
+            setPanels(panels.filter((panel) => panel.instanceId !== closing));
+            setClosing(null);
+          }}
+          onCancel={() => setClosing(null)}
+        />
+      </>
+    );
+  }
+
+  async function ask(inToolbar: boolean) {
+    const user = userEvent.setup();
+    render(<FromHiddenList inToolbar={inToolbar} />);
+    await user.click(screen.getByRole("button", { name: "Скрытые панели: 2" }));
+    await user.click(screen.getByRole("button", { name: "Закрыть «Zoom: Планёрка»" }));
+    expect(screen.getByRole("dialog", { name: "Закрыть «Zoom: Планёрка»?" })).toBeTruthy();
+    // The dialog took the focus, so the list folded and its «Закрыть» button is gone.
+    expect(screen.queryByRole("button", { name: "Закрыть «Zoom: Планёрка»" })).toBeNull();
+    return user;
+  }
+
+  const cases = [false, true].flatMap((inToolbar) =>
+    (
+      [
+        ["Escape", "{Escape}", null, 2],
+        ["«Отмена»", null, "Отмена", 2],
+        ["«Скрыть панель»", null, "Скрыть панель", 2],
+        ["«Закрыть и завершить»", null, "Закрыть и завершить", 1],
+      ] as const
+    ).map(([name, key, button, left]) => [inToolbar ? "the toolbar" : "the list alone", name, inToolbar, key, button, left] as const),
+  );
+
+  it.each(cases)("in %s, after %s the focus returns to «Скрытые панели», not to the page", async (_where, _name, inToolbar, key, button, left) => {
+    const user = await ask(inToolbar);
+
+    if (key !== null) await user.keyboard(key);
+    else await user.click(screen.getByRole("button", { name: button as string }));
+
+    expect(screen.queryByRole("dialog", { name: "Закрыть «Zoom: Планёрка»?" })).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: `Скрытые панели: ${left}` }));
+    expect(document.activeElement).not.toBe(document.body);
+  });
+});
+

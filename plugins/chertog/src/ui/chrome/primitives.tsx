@@ -149,9 +149,38 @@ interface ModalProps {
 }
 
 /**
+ * Where the focus goes back to when a dialog closes: the element that had it
+ * when the dialog opened, remembered together with its ancestors. If that
+ * element is gone by then (a list that folded when the dialog took the
+ * focus), the nearest ancestor still in the page answers with its
+ * `[data-focus-return]` control — the trigger of that list — or, without
+ * one, with its first control. The focus is never left on the page body
+ * while any of them is alive.
+ */
+function rememberFocusReturn(): () => HTMLElement | null {
+  const source = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null;
+  const ancestors: HTMLElement[] = [];
+  for (let node = source?.parentElement ?? null; node !== null && node !== document.body; node = node.parentElement) ancestors.push(node);
+  return () => {
+    if (source?.isConnected) return source;
+    const alive = ancestors.filter((ancestor) => ancestor.isConnected);
+    for (const ancestor of alive) {
+      const marked = ancestor.querySelector<HTMLElement>("[data-focus-return]:not([disabled])");
+      if (marked !== null) return marked;
+    }
+    for (const ancestor of alive) {
+      const first = focusableElements(ancestor)[0];
+      if (first !== undefined) return first;
+    }
+    return null;
+  };
+}
+
+/**
  * A modal dialog. Focus starts on the `[data-autofocus]` element (or the
  * first control), Tab cycles inside, and when the dialog goes away focus
- * returns to the element that had it before. Focus that the outcome itself
+ * returns to the element that had it before, or to what stands for it (see
+ * `rememberFocusReturn`). Focus that the outcome itself
  * moved elsewhere (to a tile, say) stays there.
  */
 export function Modal({ labelledBy, describedBy, onDismiss, className, children }: ModalProps) {
@@ -159,7 +188,7 @@ export function Modal({ labelledBy, describedBy, onDismiss, className, children 
   useKeepFocusInside(dialogRef, true);
 
   useEffect(() => {
-    const source = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const focusReturn = rememberFocusReturn();
     const dialog = dialogRef.current;
     if (dialog !== null) {
       const first = dialog.querySelector<HTMLElement>("[data-autofocus]") ?? focusableElements(dialog)[0] ?? dialog;
@@ -168,7 +197,7 @@ export function Modal({ labelledBy, describedBy, onDismiss, className, children 
     return () => {
       const active = document.activeElement;
       const leftBehind = active === null || active === document.body || dialog?.contains(active) === true;
-      if (leftBehind && source?.isConnected) source.focus();
+      if (leftBehind) focusReturn()?.focus();
     };
   }, []);
 
