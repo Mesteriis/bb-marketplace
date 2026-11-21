@@ -1,7 +1,7 @@
 // Fakes of the host for the server adapter tests: the plugin's key-value
-// storage, its logger, and its HTTP and RPC registries.
+// storage, its logger, and its HTTP, RPC and settings registries.
 import { Hono } from "hono";
-import type { BbPluginApi, PluginHttpHandler, PluginKvStorage, PluginLogger } from "@get-bb/plugin-sdk";
+import type { BbPluginApi, PluginHttpHandler, PluginKvStorage, PluginLogger, PluginSettingDescriptor } from "@get-bb/plugin-sdk";
 
 /** Lets every other pending task run, the way a real storage call gives up the thread. */
 function turn(): Promise<void> {
@@ -127,12 +127,29 @@ export class FakeRpc {
   }
 }
 
+/**
+ * The plugin's settings registry: every set of descriptors it was given, as
+ * given. The server only declares its settings, so using a handle throws.
+ */
+export class FakeSettings {
+  readonly defined: Record<string, PluginSettingDescriptor>[] = [];
+
+  define(descriptors: Record<string, PluginSettingDescriptor>): unknown {
+    this.defined.push(descriptors);
+    const unused = (member: string) => (): never => {
+      throw new Error("the server uses the settings handle: " + member);
+    };
+    return { get: unused("get"), experimental_set: unused("experimental_set"), onChange: unused("onChange") };
+  }
+}
+
 export interface FakeHost {
   readonly bb: BbPluginApi;
   readonly kv: FakeKv;
   readonly log: FakeLog;
   readonly http: FakeHttp;
   readonly rpc: FakeRpc;
+  readonly settings: FakeSettings;
 }
 
 /**
@@ -143,12 +160,13 @@ export function fakeHost(kv: FakeKv = new FakeKv()): FakeHost {
   const log = new FakeLog();
   const http = new FakeHttp();
   const rpc = new FakeRpc();
-  const used: Record<string, unknown> = { pluginId: "chertog", log, http, rpc, storage: { kv } };
+  const settings = new FakeSettings();
+  const used: Record<string, unknown> = { pluginId: "chertog", log, http, rpc, settings, storage: { kv } };
   const bb = new Proxy(used, {
     get(target, name) {
       if (typeof name === "string" && !Object.hasOwn(target, name)) throw new Error("the server reads bb." + name);
       return Reflect.get(target, name);
     },
   }) as unknown as BbPluginApi;
-  return { bb, kv, log, http, rpc };
+  return { bb, kv, log, http, rpc, settings };
 }
