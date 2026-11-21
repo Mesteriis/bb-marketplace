@@ -787,7 +787,10 @@ const NOT_MOVES = [
 ];
 
 function toolbar(slot: ReturnType<typeof render>) {
-  return within(slot.getByRole("toolbar", { name: "Conversation actions" }));
+  const bar = within(slot.getByRole("toolbar", { name: "Conversation actions" }));
+  const menu = bar.queryByText("Message actions");
+  if (menu && !menu.closest("details")?.open) fireEvent.click(menu);
+  return bar;
 }
 
 describe("Mail folders", () => {
@@ -891,6 +894,16 @@ describe("Message actions", () => {
       expect(visible(slot)).toEqual(expected);
     });
   }
+
+  it("opens secondary actions from the conversation and identifies unread mail after opening", async () => {
+    const slot = render(folderRpc({ thread_get: () => detailA }));
+    fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
+    await slot.findByRole("heading", { name: "Quarterly plan" });
+    const actions = within(slot.getByRole("toolbar", { name: "Conversation actions" }));
+    fireEvent.click(actions.getByText("Message actions"));
+    expect(actions.getByRole("button", { name: "Mark unread" })).toBeTruthy();
+    expect(slot.getAllByText("Unread on entry")).toHaveLength(2);
+  });
 
   it("Spam moves the folder's messages, toasts and removes the conversation", async () => {
     let moved = false;
@@ -1170,8 +1183,6 @@ describe("Fix round 1", () => {
       .filter((label) => label !== "Back");
     // Writing still applies; the moves do not.
     expect(labels).toEqual([
-      "Reply",
-      "Reply all",
       "Forward",
       "Translate",
       "Block",
@@ -1287,7 +1298,7 @@ describe("Fix round 1", () => {
 describe("Final fixes", () => {
   for (const [name, expected] of [
     [/^Trash/, ["Spam"]],
-    [/^Spam/, ["Not spam", "Archive", "Delete"]],
+    [/^Spam/, ["Archive", "Not spam", "Delete"]],
     [/^Work/, ["Archive", "Spam", "Delete"]],
   ] as const) {
     it(`outside Gmail shows Archive only where the server allows it (${name.source})`, async () => {
@@ -2758,7 +2769,7 @@ describe("One action toolbar", () => {
     expect(slot.getByText("me@work.example.org: 1")).toBeTruthy();
   });
 
-  it("narrow: one row of icon actions under the header, and a row click toggles while selecting", async () => {
+  it("narrow: labelled actions under the header, and a row click toggles while selecting", async () => {
     const restore = stubWidth(400);
     try {
       const slot = render(rowsRpc());
@@ -2767,11 +2778,7 @@ describe("One action toolbar", () => {
 
       expect(slot.queryByRole("toolbar", { name: "Selected conversations" })).toBeNull();
       const bar = slot.getByRole("toolbar", { name: "Selection actions" });
-      expect(bar.className).toContain("flex-nowrap");
-      expect(bar.className).toContain("overflow-x-auto");
-      expect(bar.className).toContain("shrink-0");
-      expect(bar.className).not.toContain("flex-wrap ");
-      expect(within(bar).getByRole("button", { name: "Delete" }).textContent).toBe("");
+      expect(within(bar).getByRole("button", { name: "Delete" }).textContent).toBe("Delete");
 
       fireEvent.click(rowButton(slot, /Tickets/));
       expect(slot.getByRole("checkbox", { name: "Select Tickets" }).getAttribute("aria-checked")).toBe("true");
@@ -2861,6 +2868,15 @@ describe("Mail in BB's sidebar", () => {
     );
   });
 
+  it("a citation link opens and marks the cited message even when there is newer mail", async () => {
+    const slot = render(mailRpc(), "t/acc-1/th-a/m/m-old");
+    await slot.findByRole("heading", { name: "Quarterly plan" });
+    const item = slot.getByText("From citation").closest("article");
+    expect(item?.getAttribute("data-message-id")).toBe("m-old");
+    expect(item?.querySelector("[data-mail-message-toggle]")?.getAttribute("aria-expanded")).toBe("true");
+    expect(slot.getByText("Latest message").closest("article")?.getAttribute("data-message-id")).toBe("m-new");
+  });
+
   it("a merged role in the subPath shows it in All accounts", async () => {
     const slot = render(unifiedRpc(), "v/all/sent");
 
@@ -2897,13 +2913,17 @@ describe("Mail in BB's sidebar", () => {
     );
   });
 
-  it("choosing an account in the sidebar leaves the routed view for its inbox", async () => {
+  it("sidebar account selection opens its inbox and scopes the shared sync command", async () => {
     const proto = Element.prototype as unknown as Record<string, unknown>;
     proto.scrollIntoView ??= () => {};
     proto.hasPointerCapture ??= () => false;
     proto.releasePointerCapture ??= () => {};
-    const slot = render(unifiedRpc(), "v/all/junk");
+    const slot = render(unifiedRpc({ sync_now: () => ({ started: false }) }), "v/all/junk");
     await slot.findByText("Invoice");
+
+    const getMail = () => folderRail(slot).getByRole("button", { name: "Get mail" });
+    fireEvent.click(getMail());
+    await waitFor(() => expect(callsTo(slot, "sync_now").at(-1)?.input).toEqual({ accountId: null }));
 
     const chooser = folderRail(slot).getByRole("combobox", { name: "Account" });
     chooser.focus();
@@ -2918,6 +2938,8 @@ describe("Mail in BB's sidebar", () => {
         scope: { kind: "account", accountId: "acc-2", folder: "INBOX" },
       }),
     );
+    fireEvent.click(getMail());
+    await waitFor(() => expect(callsTo(slot, "sync_now").at(-1)?.input).toEqual({ accountId: "acc-2" }));
   });
 
   it("the Mail page opens the conversation its subPath names", async () => {
@@ -3122,7 +3144,7 @@ describe("Composing", () => {
     const slot = render(composeRpc());
     fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
     await slot.findByRole("heading", { name: "Quarterly plan" });
-    fireEvent.click(toolbar(slot).getByRole("button", { name: "Reply" }));
+    fireEvent.click(within(slot.getByRole("group", { name: "Reply to conversation" })).getByRole("button", { name: "Reply" }));
     const composer = await composerRegion(slot, "Reply");
     fireEvent.change(within(composer).getByLabelText("Subject"), { target: { value: "Re: plan" } });
     fireEvent.click(slot.getByRole("button", { name: /Lunch/ }));
@@ -3132,11 +3154,11 @@ describe("Composing", () => {
     );
   });
 
-  it("Reply all and Forward come from the conversation toolbar", async () => {
+  it("Reply all under the conversation and Forward in the toolbar prepare their respective drafts", async () => {
     const slot = render(composeRpc());
     fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
     await slot.findByRole("heading", { name: "Quarterly plan" });
-    fireEvent.click(toolbar(slot).getByRole("button", { name: "Reply all" }));
+    fireEvent.click(within(slot.getByRole("group", { name: "Reply to conversation" })).getByRole("button", { name: "Reply all" }));
     await composerRegion(slot, "Reply all");
     expect(callsTo(slot, "compose_prepare")[0]?.input).toEqual({ kind: "reply_all", messageId: "m-new" });
     fireEvent.click(toolbar(slot).getByRole("button", { name: "Forward" }));
@@ -4495,6 +4517,7 @@ describe("Slice 3f: AI in the reading pane and the list", () => {
 
     const slot = renderWith(rpc, { mailCategories: true });
     expect(await slot.findByText("Bills?")).toBeTruthy();
+    fireEvent.click(slot.getByRole("button", { name: "More filters" }));
     fireEvent.click(slot.getByRole("button", { name: "Bills" }));
     await waitFor(() =>
       expect(callsTo(slot as never, "threads_list").at(-1)?.input).toMatchObject({ filter: { category: "bills" } }),
@@ -4875,7 +4898,8 @@ describe("Slice 3g: views, BB surfaces and settings", () => {
 
   it("Hide dev notifications filters the list with notDev", async () => {
     const slot = renderWith(mailRpc());
-    fireEvent.click(await slot.findByRole("button", { name: "Hide dev notifications" }));
+    fireEvent.click(await slot.findByRole("button", { name: "More filters" }));
+    fireEvent.click(slot.getByRole("button", { name: "Hide dev notifications" }));
     await waitFor(() => expect(callsTo(slot, "threads_list").at(-1)?.input).toMatchObject({ filter: { notDev: true } }));
   });
 
@@ -6080,7 +6104,10 @@ describe("Slice 3i part B: the next conversation, undo, frame keys and the stack
 
       fireEvent.click(button);
       await waitFor(() => expect(articles(slot)).toHaveLength(6));
-      expect(stack(slot)).toBeNull();
+      expect(stack(slot)?.getAttribute("aria-expanded")).toBe("true");
+      fireEvent.click(stack(slot)!);
+      expect(articles(slot)).toHaveLength(1);
+      fireEvent.click(stack(slot)!);
       await waitFor(() =>
         expect(document.activeElement).toBe(articles(slot)[0]!.querySelector("[data-mail-message-toggle]")),
       );
@@ -6136,6 +6163,10 @@ describe("Slice 3i part B: the next conversation, undo, frame keys and the stack
       fireEvent.click(slot.getByRole("button", { name: /5 earlier messages/ }));
       await waitFor(() => expect(articles(slot)).toHaveLength(6));
       fireEvent.click(within(articles(slot)[2]!).getAllByRole("button")[0]!);
+      fireEvent.click(slot.getByRole("button", { name: /5 earlier messages/ }));
+      expect(articles(slot).map((a) => a.getAttribute("data-message-id"))).toEqual(["s6"]);
+      fireEvent.click(slot.getByRole("button", { name: /5 earlier messages/ }));
+      expect(articles(slot)[2]!.querySelector("[data-mail-message-toggle]")?.getAttribute("aria-expanded")).toBe("false");
       fireEvent.click(slot.getByRole("button", { name: "Collapse all" }));
       expect(await slot.findByRole("button", { name: /5 earlier messages/ })).toBeTruthy();
     });

@@ -265,7 +265,7 @@ export interface MailAiPorts {
   disabledReason: string | null;
   keepTasks: (jobId: string, picks: TaskPick[]) => Promise<number>;
   /** Opens a conversation by its link (a cited message of another conversation). */
-  onOpenConversation: (accountId: string, threadId: string) => void;
+  onOpenConversation: (accountId: string, threadId: string, messageId?: string) => void;
   /** Ask AI with actions: how the buttons under an answer run; absent: none is offered. */
   askActions?: Omit<AskActionPorts, "search">;
   /** mailCategories is on: chips, filters and the page actions show. */
@@ -287,6 +287,7 @@ export interface MailAiPorts {
 }
 
 export interface MailPageProps {
+  linkedCitation?: import("./routes.ts").ThreadLink | null;
   /** null while the first load is in flight. */
   status: StatusView | null;
   statusError: string | null;
@@ -627,7 +628,7 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
     props.onSearch(query);
   };
   const [asked, setAsked] = useState<{ question: string; serial: number } | null>(null);
-  const [highlight, setHighlight] = useState<{ messageId: string; serial: number } | null>(null);
+  const [citationMark, setHighlight] = useState<{ threadId: string; messageId: string; serial: number } | null>(null);
   const [remindMessage, setRemindMessage] = useState<string | null>(null);
   /** Slice 3h: the message opened from a folder that is not grouped; it shows alone. */
   const [singleMessage, setSingleMessage] = useState<string | null>(null);
@@ -995,20 +996,19 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
     setTasksFor({ kind: "tasks", threadId: openDetail.thread.id, ...(aiFolder !== undefined ? { folder: aiFolder } : {}) });
   };
   /** A citation chip: a message of the open conversation comes into view; another conversation opens. */
+  const linked = props.linkedCitation;
+  const highlight = citationMark?.threadId === reading.threadId ? citationMark
+    : linked?.threadId === reading.threadId && linked?.messageId ? { messageId: linked.messageId, serial: 0 } : null;
+  useEffect(() => setHighlight(null), [reading.threadId, linked?.messageId]);
   const cite = (citation: AiCitation) => {
     if (citation.threadId === reading.threadId) {
       if (!reading.expandedIds.has(citation.messageId)) props.onToggleMessage(citation.messageId);
-      setHighlight((prev) => ({ messageId: citation.messageId, serial: (prev?.serial ?? 0) + 1 }));
+      setSingleMessage(null);
+      setHighlight((prev) => ({ threadId: citation.threadId, messageId: citation.messageId, serial: (prev?.serial ?? 0) + 1 }));
       return;
     }
-    ai?.onOpenConversation(citation.accountId, citation.threadId);
+    ai?.onOpenConversation(citation.accountId, citation.threadId, citation.messageId);
   };
-  // The mark on a cited message fades after a moment.
-  useEffect(() => {
-    if (highlight === null) return;
-    const timer = setTimeout(() => setHighlight(null), 2_000);
-    return () => clearTimeout(timer);
-  }, [highlight?.serial]);
   const bbUi = useBbDialogs(props.bb, reading.detail);
   const bbMessage = () => {
     if (!threadOpen || selecting || reading.detail === null) return null;
@@ -1072,8 +1072,8 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
           onExpandAll: () => expandAll(true),
           onCollapseAll: () => expandAll(false),
           stackOpen: stackOpen !== null && stackOpen.threadId === reading.threadId && stackOpen.open,
-          onStackOpen: () => {
-            if (reading.threadId !== null) setStackOpen({ threadId: reading.threadId, open: true });
+          onStackOpen: (open) => {
+            if (reading.threadId !== null) setStackOpen({ threadId: reading.threadId, open });
           },
         };
   const summaryShown = summaryFor !== null && summaryFor.threadId === reading.threadId && openDetail !== null && ai !== undefined;
@@ -1235,7 +1235,7 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
         {...(props.typing !== undefined ? { typing: props.typing } : {})}
         warning={composer.warning}
         dropped={composer.dropped}
-        layout={wide ? "panel" : "page"}
+        layout={wide || composer.dockThreadId !== null ? "panel" : "page"}
         onClose={props.onCloseComposer}
         onSent={props.onSent}
         onOpenSmtpSettings={props.onOpenSmtp}
@@ -1272,7 +1272,7 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
       lang={getLanguage()}
       className="@container flex h-full min-h-0 flex-1 flex-col outline-none"
     >
-      {composerView !== null && !wide ? (
+      {composerView !== null && !wide && !docked ? (
         <div className="flex min-h-0 flex-1 flex-col">{composerView}</div>
       ) : (
       <>
@@ -1457,7 +1457,7 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
               ports={ai.jobs}
               question={asked.question}
               {...(!props.unified && props.account !== null ? { accountId: props.account.id } : {})}
-              onOpen={(citation) => ai.onOpenConversation(citation.accountId, citation.threadId)}
+              onOpen={cite}
               onClose={() => setAsked(null)}
               {...(ai.askActions !== undefined ? { actions: { ...ai.askActions, search: showSearch } } : {})}
             />
@@ -1514,7 +1514,7 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
               detail={reading.detail}
               loading={reading.loading}
               error={reading.error}
-              onlyMessageId={list.messages !== undefined && !searching ? singleMessage : null}
+              onlyMessageId={list.messages !== undefined && !searching && highlight === null ? singleMessage : null}
               onShowConversation={() => setSingleMessage(null)}
               {...(reading3h !== undefined ? { reading3h } : {})}
               {...(props.slice3h !== undefined && openAccount !== null && props.slice3h.gmail(openAccount) && reading.threadId !== null

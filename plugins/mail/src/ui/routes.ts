@@ -16,11 +16,13 @@ import type { MailView, RoleName } from "./folder-list.tsx";
 export interface ThreadLink {
   accountId: string;
   threadId: string;
+  messageId?: string;
 }
 
 /** The subPath, as unencoded segments for `toPluginPanel`, of a conversation. */
-export function threadSubPath(accountId: string, threadId: string): string {
-  return `t/${encodeURIComponent(accountId)}/${encodeURIComponent(threadId)}`;
+export function threadSubPath(accountId: string, threadId: string, messageId?: string): string {
+  const path = `t/${encodeURIComponent(accountId)}/${encodeURIComponent(threadId)}`;
+  return messageId === undefined ? path : `${path}/m/${encodeURIComponent(messageId)}`;
 }
 
 function decodeTwice(segment: string): string | null {
@@ -35,11 +37,13 @@ function decodeTwice(segment: string): string | null {
 /** The conversation a panel subPath (as the host passes it) names; null for anything else. */
 export function parseThreadSubPath(subPath: string): ThreadLink | null {
   const segments = subPath.split("/");
-  if (segments.length !== 3 || segments[0] !== "t") return null;
+  if (segments[0] !== "t" || (segments.length !== 3 && (segments.length !== 5 || segments[3] !== "m"))) return null;
   const accountId = decodeTwice(segments[1]!);
   const threadId = decodeTwice(segments[2]!);
   if (accountId === null || threadId === null) return null;
-  return { accountId, threadId };
+  if (segments.length === 3) return { accountId, threadId };
+  const messageId = decodeTwice(segments[4]!);
+  return messageId === null ? null : { accountId, threadId, messageId };
 }
 
 /** The account segment of a merged role's view; account ids are generated UUIDs. */

@@ -93,12 +93,10 @@ function ActionButtons({
   actions,
   onAction,
   pending,
-  iconOnly,
 }: {
   actions: readonly BarAction[];
   onAction: (action: BarAction["action"]) => void;
   pending: boolean;
-  iconOnly: boolean;
 }) {
   const reasonId = useId();
   return (
@@ -107,33 +105,24 @@ function ActionButtons({
         const button = (
           <Button
             variant="ghost"
-            size={iconOnly ? "icon" : "sm"}
-            className={iconOnly ? "size-7 shrink-0" : undefined}
-            aria-label={iconOnly ? label : undefined}
+            size="sm"
+            className="h-7 gap-1 px-2"
             disabled={pending || disabledReason !== null}
             aria-describedby={disabledReason !== null ? `${reasonId}-${action}` : undefined}
             onClick={() => onAction(action)}
           >
             <Icon name={icon} fallback="Folder" aria-hidden />
-            {iconOnly ? null : label}
+            {tx(label)}
           </Button>
         );
         if (disabledReason === null) {
-          return iconOnly ? (
-            <span key={action} title={label} className="inline-flex shrink-0">
-              {button}
-            </span>
-          ) : (
-            <span key={action} className="inline-flex">
-              {button}
-            </span>
-          );
+          return <span key={action} className="inline-flex">{button}</span>;
         }
         return (
-          <span key={action} title={disabledReason} className="inline-flex shrink-0">
+          <span key={action} title={tx(disabledReason)} className="inline-flex shrink-0">
             {button}
             <span id={`${reasonId}-${action}`} className="sr-only">
-              {disabledReason}
+              {tx(disabledReason)}
             </span>
           </span>
         );
@@ -178,11 +167,11 @@ export function SelectionBar({ title, pageIds, selection, onSelectionChange, com
           className="mr-1"
         />
         {count === 0 ? (
-          <span className="min-w-0 flex-1 truncate text-xs font-medium text-muted-foreground">{title}</span>
+          <span className="min-w-0 flex-1 truncate text-base font-semibold text-foreground">{title}</span>
         ) : (
           <>
             <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground" aria-live="polite">
-              {count} {tx("selected")}
+              {tx("{count} selected", { count })}
             </span>
             <Button
               variant="ghost"
@@ -200,9 +189,9 @@ export function SelectionBar({ title, pageIds, selection, onSelectionChange, com
         <div
           role="toolbar"
           aria-label={tx("Selection actions")}
-          className="flex shrink-0 flex-nowrap items-center gap-0.5 overflow-x-auto px-2 pb-1"
+          className="flex shrink-0 flex-wrap items-center gap-1 px-2 pb-1"
         >
-          <ActionButtons {...compactActions} iconOnly />
+          <ActionButtons {...compactActions} />
         </div>
       ) : null}
     </div>
@@ -230,12 +219,12 @@ export function SelectionPanel({ count, perAccount, actions, onAction, pending }
         aria-label={tx("Selected conversations")}
         className="flex flex-wrap items-center gap-1 border-b border-border pb-2"
       >
-        <ActionButtons actions={actions} onAction={onAction} pending={pending} iconOnly={false} />
+        <ActionButtons actions={actions} onAction={onAction} pending={pending} />
       </div>
       <div role="status" className="flex flex-1 flex-col items-center justify-center gap-1 py-10 text-center">
         <Icon name="Mail" className="size-6 text-muted-foreground" aria-hidden />
         <p className="text-sm font-medium text-foreground">
-          {count === 1 ? tx("1 conversation selected") : `${count} conversations selected`}
+          {count === 1 ? tx("1 conversation selected") : tx("{count} conversations selected", { count })}
         </p>
         {perAccount.length > 1
           ? perAccount.map(({ label, count: n }) => (

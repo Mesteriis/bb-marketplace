@@ -488,7 +488,8 @@ type PageCommand =
   | { kind: "compose" }
   | { kind: "account"; choice: string }
   | { kind: "view"; view: MailView }
-  | { kind: "settings" }
+  | { kind: "settings"; section?: "filters" }
+  | { kind: "sync" }
   | { kind: "thread"; link: ThreadLink }
   | { kind: "page"; page: MailPageName }
   | { kind: "rail"; command: RailCommand };
@@ -1089,12 +1090,20 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
   /** Opens the conversation the subPath names, unless it is already open. */
   const openLinked = useCallback(
     (link: ThreadLink) => {
+      const previous = wantedLink.current;
       wantedLink.current = link;
       if (latest.current.scopeKey === null) return; // the view reset below opens it
-      if (openThreadId.current === link.threadId && openAccount.current === link.accountId) return;
-      selectThread(link.threadId, null, link.accountId);
+      if (openThreadId.current === link.threadId && openAccount.current === link.accountId) {
+        if (link.messageId === undefined || previous?.messageId === link.messageId) return;
+        const message = latest.current.reading.detail?.messages.find((item) => item.id === link.messageId);
+        if (message) {
+          expandMessage(message);
+          return;
+        }
+      }
+      selectThread(link.threadId, link.messageId ?? null, link.accountId);
     },
-    [selectThread],
+    [selectThread, expandMessage],
   );
 
   useEffect(() => {
@@ -1135,7 +1144,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     void loadList(latest.current.view, "reset");
     void loadTabs();
     const link = wantedLink.current;
-    if (link !== null) selectThread(link.threadId, null, link.accountId);
+    if (link !== null) selectThread(link.threadId, link.messageId ?? null, link.accountId);
   }, [scopeKey, currentViewKey, routeTab, inboxShown, loadList, loadTabs, runSearch, selectThread]);
 
   useEffect(
@@ -3074,6 +3083,23 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
   );
   const mailRulesOn = pluginSettings?.mailRules === true;
   const categoriesOn = pluginSettings?.mailCategories === true;
+  useEffect(() => {
+    let changed = false;
+    for (const [key, filter] of filtersRef.current) {
+      if ((categoriesOn || !filter.category) && (bbSettings.devNotifications || !filter.notDev)) continue;
+      const next = { ...filter };
+      if (!categoriesOn) delete next.category;
+      if (!bbSettings.devNotifications) delete next.notDev;
+      if (filterActive(next)) filtersRef.current.set(key, next);
+      else filtersRef.current.delete(key);
+      changed = true;
+    }
+    if (changed) {
+      setFilterVersion((version) => version + 1);
+      if (latest.current.scopeKey !== null) void loadList(latest.current.view, "reset");
+    }
+  }, [categoriesOn, bbSettings.devNotifications, loadList]);
+
   const reminderDaysSetting = (() => {
     const days = pluginSettings?.replyReminderDays;
     return typeof days === "number" && Number.isInteger(days) && days >= 1 && days <= 30 ? days : 3;
@@ -3337,8 +3363,8 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
         toast.success(kept === 1 ? tx("Kept 1 task") : tx("Kept {kept} tasks", { kept }));
         return kept;
       },
-      onOpenConversation: (accountId, threadId) =>
-        navigate.toPluginPanel("mail", { subPath: threadSubPath(accountId, threadId) }),
+      onOpenConversation: (accountId, threadId, messageId) =>
+        navigate.toPluginPanel("mail", { subPath: threadSubPath(accountId, threadId, messageId) }),
       categoriesOn,
       onCategorySet: (messageIds, category) => {
         rpc
@@ -4480,6 +4506,8 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
         ? null
         : {
             vaultReady: status.vaultReady,
+            syncing,
+            bbLink,
             accounts: status.accounts,
             unified,
             account,
@@ -4503,7 +4531,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
             gmailAccounts: [...gmailIds],
           },
     // currentViewKey stands for view, which is a new object each render.
-    [status, unified, account, folders, scoped, currentViewKey, outboxInScope, pageCounts, shownPage, bbSettings.devNotifications, savedSearches, savedRouteId, ungrouped, dragAccounts, gmailIds],
+    [status, syncing, bbLink, unified, account, folders, scoped, currentViewKey, outboxInScope, pageCounts, shownPage, bbSettings.devNotifications, savedSearches, savedRouteId, ungrouped, dragAccounts, gmailIds],
   );
   /** Changes when a pick in the sidebar should bring focus to the page. */
   const [focusRequest, setFocusRequest] = useState(0);
@@ -4521,8 +4549,11 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
         selectView(command.view);
         setFocusRequest((n) => n + 1);
         return;
+      case "sync":
+        void sync();
+        return;
       case "settings":
-        openSettings();
+        openSettings(command.section);
         return;
       case "thread":
         navigate.toPluginPanel("mail", { subPath: threadSubPath(command.link.accountId, command.link.threadId) });
@@ -4551,6 +4582,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
   return (
     <>
     <MailPage
+      linkedCitation={parseThreadSubPath(subPath)}
       translation={readingTranslation}
       focusRequest={focusRequest}
       status={status}
@@ -4911,6 +4943,10 @@ function MailFolderSidebar(_props: PluginNavPanelProps) {
   return (
     <MailSidebar
       state={state}
+      onSync={() => void mailPageLink.send({ kind: "sync" })}
+      onFilterRules={() => {
+        if (!mailPageLink.send({ kind: "settings", section: "filters" })) navigate.toPluginPanel("mail", { subPath: settingsSubPath("filters") });
+      }}
       onCompose={() => void mailPageLink.send({ kind: "compose" })}
       onSelectAccount={(choice) => {
         if (!mailPageLink.send({ kind: "account", choice })) navigate.toPluginPanel("mail");

@@ -297,7 +297,7 @@ function ImagesBar({
       className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border border-border bg-muted px-2 py-1 text-xs text-muted-foreground"
     >
       <Icon name="EyeOff" className="size-3.5 shrink-0" aria-hidden />
-      <span className="min-w-0 flex-1">
+      <span className="min-w-0 grow basis-52 break-words">
         {!blocked ? (
           <span>{tx("Remote images: this message has {p1}; they stay blocked.", { p1: trackersText(trackers) })}</span>
         ) : (

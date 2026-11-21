@@ -4,6 +4,7 @@
 // page keeps its open state beside quotesAll (part B resolution 7).
 import type { MessageHeader } from "../core/index.ts";
 import { hasSenderWarning } from "./sender-warnings.tsx";
+import { tx } from "./i18n/index.ts";
 import { addressLabel } from "./thread-list.tsx";
 
 export interface StackOptions {
@@ -44,8 +45,8 @@ export interface StackSummary {
 /** "A", "A and B", "A, B and C", "A, B and N others". */
 function joinNames(names: readonly string[]): string {
   if (names.length <= 1) return names[0] ?? "";
-  if (names.length <= 3) return `${names.slice(0, -1).join(", ")} and ${names.at(-1)!}`;
-  return `${names.slice(0, 2).join(", ")} and ${names.length - 2} others`;
+  if (names.length <= 3) return tx("{names} and {last}", { names: names.slice(0, -1).join(", "), last: names.at(-1)! });
+  return tx("{names} and {count} others", { names: names.slice(0, 2).join(", "), count: names.length - 2 });
 }
 
 /**

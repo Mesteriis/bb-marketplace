@@ -4,6 +4,8 @@
 // messages show sender, date and snippet; an expanded one shows its body.
 // The toolbar acts on the conversation's messages in the folder (or role)
 // being viewed; each message has its own flag, Details and downloads.
+import { ConversationToolbar, messageToHand } from "./conversation-toolbar.tsx";
+export { messageToHand, actionsFor, conversationAiReason, OUTSIDE_AI_ACCESS } from "./conversation-toolbar.tsx";
 import { OpenLine } from "./open-line.tsx";
 import { AiLine } from "./ai-label-chips.tsx";
 import { ReplyDraftStrip, type ReplyDraftPorts } from "./reply-draft-strip.tsx";
@@ -21,6 +23,7 @@ import type {
 import type { BbLinkView, DevLinkView, UnsubscribeInfoView } from "../core/model.ts";
 import type { ProjectListItem } from "../core/contract.ts";
 import { Button } from "@/components/ui/button";
+import { MailAvatar } from "./mail-avatar.tsx";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 import { LoadingState } from "./empty-states.tsx";
@@ -37,7 +40,7 @@ import { LabelChips } from "./label-chips.tsx";
 import { RelatedMail } from "./related-mail.tsx";
 import { LinkStatusLine, type LinkHover } from "./link-status.tsx";
 import { CryptoChip, cryptoPlaceholder, imagesHeldReason, RECEIPT_TEXT, securityOf, SenderWarnings } from "./sender-warnings.tsx";
-import { dateLocale, tx } from "./i18n/index.ts";
+import { dateLocale, tx, txn } from "./i18n/index.ts";
 import { PgpPanel, type PgpReadingPorts } from "./pgp-panel.tsx";
 import { InviteCard, type InvitePorts } from "./invite-card.tsx";
 import { isCalendarPart } from "../core/calendar-invite.ts";
@@ -135,7 +138,7 @@ export interface ReadingSlice3h {
   /** Slice 3i: the earlier-messages stack is open (page state beside quotesAll); absent: closed. */
   stackOpen?: boolean;
   /** Slice 3i: the owner opened the stack. */
-  onStackOpen?: () => void;
+  onStackOpen?: (open: boolean) => void;
   onExpandAll: () => void;
   onCollapseAll: () => void;
   /** Print... one message, or the conversation (Shift+P). */
@@ -245,12 +248,6 @@ export interface ReadingAi {
   highlight: { messageId: string; serial: number } | null;
 }
 
-/** Why Summarize and Find tasks are off for a conversation, or null. */
-export function conversationAiReason(messages: readonly MessageHeader[], disabledReason: string | null): string | null {
-  if (!messages.some((m) => m.inAiScope)) return OUTSIDE_AI_ACCESS;
-  return disabledReason;
-}
-
 /** The reading pane's part of inbox triage (slice 3e). */
 export interface ReadingInbox {
   /** unsubscribe_info of the newest message; null while unknown or for none. */
@@ -283,31 +280,10 @@ export interface ReadingTranslation {
   onToggle: (message: MessageHeader) => void;
 }
 
-interface ToolbarAction {
-  action: MessageAction;
-  label: string;
-  icon: string;
-}
-
-/**
- * The moves that make sense from a folder: Spam except in Spam, Not spam only
- * there, Archive where the server allows it, Delete except in Trash.
- */
-export function actionsFor(use: SpecialUse | null, archiveAllowed: boolean): ToolbarAction[] {
-  const actions: ToolbarAction[] = [];
-  if (use === "junk") actions.push({ action: "not_spam", label: tx("Not spam"), icon: "SecurityCheck" });
-  if (archiveAllowed) {
-    actions.push({ action: "archive", label: tx("Archive"), icon: "Archive" });
-  }
-  if (use !== "junk") actions.push({ action: "spam", label: tx("Spam"), icon: "AlertTriangle" });
-  if (use !== "trash") actions.push({ action: "delete", label: tx("Delete"), icon: "Trash2" });
-  return actions;
-}
-
 function recipients(message: MessageHeader): string {
   const parts: string[] = [];
-  if (message.to.length > 0) parts.push(`To ${message.to.map(addressLabel).join(", ")}`);
-  if (message.cc.length > 0) parts.push(`Cc ${message.cc.map(addressLabel).join(", ")}`);
+  if (message.to.length > 0) parts.push(`${tx("To")} ${message.to.map(addressLabel).join(", ")}`);
+  if (message.cc.length > 0) parts.push(`${tx("Cc")} ${message.cc.map(addressLabel).join(", ")}`);
   return parts.join(" · ");
 }
 
@@ -465,6 +441,8 @@ function MessageItem({
   onEditDraft,
   translation,
   highlighted = false,
+  unreadOnEntry,
+  newest,
   bb,
   projectId = null,
   onLinkHover,
@@ -487,6 +465,8 @@ function MessageItem({
   translation: ReactNode | null;
   /** A citation points here: marked for a moment. */
   highlighted?: boolean;
+  unreadOnEntry: boolean;
+  newest: boolean;
   bb?: ReadingBb;
   /** The conversation's project (slice 3g). */
   projectId?: string | null;
@@ -508,7 +488,8 @@ function MessageItem({
       data-message-id={message.id}
       className={cn("rounded-lg border border-border bg-card", highlighted && "ring-2 ring-ring")}
     >
-      <div className="flex items-start gap-1 px-3 py-2">
+      <div className="flex items-start gap-2 px-3 py-2">
+        <MailAvatar name={sender} />
         <button
           type="button"
           onClick={onToggle}
@@ -517,10 +498,10 @@ function MessageItem({
           data-mail-message-toggle=""
           className="flex min-w-0 flex-1 flex-col gap-0.5 rounded-md text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
-          <span className="flex min-w-0 items-baseline gap-2">
+          <span className="flex w-full min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
             <span
               className={cn(
-                "min-w-0 flex-1 truncate text-sm text-foreground",
+                "min-w-0 grow basis-36 truncate text-sm text-foreground",
                 !message.isRead && "font-semibold",
               )}
             >
@@ -531,6 +512,9 @@ function MessageItem({
                 </span>
               ) : null}
             </span>
+            {unreadOnEntry ? <span className="text-xs font-medium text-primary">{tx("Unread on entry")}</span> : null}
+            {highlighted ? <span className="text-xs font-medium text-primary">{tx("From citation")}</span> : null}
+            {newest ? <span className="text-xs text-muted-foreground">{tx("Latest message")}</span> : null}
             {otherFolder !== null ? (
               <span className="shrink-0 rounded-sm border border-border px-1 text-xs text-muted-foreground">
                 {otherFolder}
@@ -709,18 +693,8 @@ function MessageItem({
 }
 
 /** Why Hand to agent and the AI buttons are off for a message outside the AI access scope (slice 3f). */
-export const OUTSIDE_AI_ACCESS = "Outside AI access (Mail settings)";
-
-/** The message Hand to agent (and Reply, r, a, f) takes: the newest one open, else the newest. */
-export function messageToHand(messages: MessageHeader[], expandedIds: ReadonlySet<string>) {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (expandedIds.has(messages[i]!.id)) return messages[i]!;
-  }
-  return messages.at(-1) ?? null;
-}
-
 export function ReadingPane(props: ReadingPaneProps) {
-  const { detail, loading, error, expandedIds, bodies, onBack, folderUse, archiveAllowed } = props;
+  const { detail, loading, error, expandedIds, bodies, onBack } = props;
   const highlight = props.ai?.highlight ?? null;
   // Slice 3h: per-message switches of this conversation (plain text, original colors, quotes).
   const r3 = props.reading3h;
@@ -732,11 +706,11 @@ export function ReadingPane(props: ReadingPaneProps) {
   const onLinkHover = (link: LinkHover | null) => setHover({ thread: threadKey, link });
   // Slice 3i (part B resolution 7): the messages that never hide in the stack,
   // fixed on the first render of each conversation (before it turns read).
-  const [anchors, setAnchors] = useState<{ thread: string | null; ids: ReadonlySet<string> }>({ thread: null, ids: new Set() });
+  const [anchors, setAnchors] = useState<{ thread: string | null; ids: ReadonlySet<string>; unread: ReadonlySet<string> }>({ thread: null, ids: new Set(), unread: new Set() });
   const anchorIds =
     threadKey !== null && anchors.thread === threadKey ? anchors.ids : detail !== null ? anchorsOf(detail.messages, expandedIds) : NO_IDS;
   useEffect(() => {
-    if (detail !== null && threadKey !== null && anchors.thread !== threadKey) setAnchors({ thread: threadKey, ids: anchorIds });
+    if (detail !== null && threadKey !== null && anchors.thread !== threadKey) setAnchors({ thread: threadKey, ids: anchorIds, unread: new Set(detail.messages.filter((m) => !m.isRead).map((m) => m.id)) });
   }, [threadKey, detail]);
   const stackListId = useId();
   // After the stack opens, focus goes to the first message it revealed.
@@ -775,12 +749,12 @@ export function ReadingPane(props: ReadingPaneProps) {
         return;
       }
     }
-  }, [highlight?.serial]);
+  }, [highlight?.serial, highlight?.messageId, detail?.thread.id]);
   const back = (
     <div className="@3xl:hidden">
       <Button variant="ghost" size="sm" onClick={onBack}>
         <Icon name="ArrowLeft" aria-hidden />
-        {tx("Back")}
+        {tx("Back to list")}
       </Button>
     </div>
   );
@@ -806,157 +780,30 @@ export function ReadingPane(props: ReadingPaneProps) {
   const handed = messageToHand(messages, expandedIds);
   const handedDraft = handed !== null && props.isDraft(handed);
   const inbox = props.inbox;
-  // Block takes the sender of a received message: not in Sent or Drafts, not a draft.
-  const blockable =
-    handed !== null && !handedDraft && folderUse !== "sent" && folderUse !== "drafts" && handed.from.address.trim() !== ""
-      ? handed
-      : null;
   const unsubscribe = inbox?.unsubscribe ?? null;
   const already = unsubscribe?.already ?? null;
   const canUnsubscribe =
     preferredMethod(unsubscribe) !== null && (already === null || !SETTLED_UNSUBSCRIBE.has(already.state));
   // Slice 3i: earlier messages wait in one closed stack; the single-message view has none.
-  const { stacked, shown } =
+  const historyOpen = r3?.stackOpen === true;
+  const keepVisible = historyOpen ? NO_IDS : expandedIds;
+  const visibleAnchors = highlight === null ? anchorIds : new Set([...anchorIds, highlight.messageId]);
+  const { stacked, shown: recent } =
     single !== null
       ? { stacked: [] as MessageHeader[], shown: [single] }
       : r3 === undefined
         ? { stacked: [] as MessageHeader[], shown: messages }
-        : splitConversation(messages, { anchorIds, expandedIds, open: r3.stackOpen === true });
+        : splitConversation(messages, { anchorIds: visibleAnchors, expandedIds: keepVisible, open: false });
+  const shown = historyOpen && stacked.length > 0 ? messages : recent;
   return (
     <div className="box-border flex w-full min-w-0 flex-col gap-3 px-4 pb-6 pt-2">
+      {back}
+      <h2 className="break-words text-xl font-semibold text-foreground">{subjectOrPlaceholder(thread.subject)}</h2>
       {props.hideToolbar !== true ? (
-      <div
-        role="toolbar"
-        aria-label={tx("Conversation actions")}
-        className="flex flex-wrap items-center gap-1 border-b border-border pb-2"
-      >
-        {back}
-        {handed !== null && handedDraft ? (
-          <Button variant="ghost" size="sm" onClick={() => props.onEditDraft(handed)}>
-            <Icon name="Pencil" fallback="Mail" aria-hidden />
-            {tx("Edit draft")}
-          </Button>
-        ) : null}
-        {handed !== null && !handedDraft ? (
-          <>
-            <Button variant="ghost" size="sm" onClick={() => props.onCompose("reply", handed)}>
-              <Icon name="Reply" fallback="ArrowLeft" aria-hidden />
-              {tx("Reply")}
-            </Button>
-            <Button variant="ghost" size="sm" onClick={() => props.onCompose("reply_all", handed)}>
-              <Icon name="ReplyAll" fallback="ArrowLeft" aria-hidden />
-              {tx("Reply all")}
-            </Button>
-            <Button variant="ghost" size="sm" onClick={() => props.onCompose("forward", handed)}>
-              <Icon name="Forward" fallback="Send" aria-hidden />
-              {tx("Forward")}
-            </Button>
-            {props.translation !== undefined ? (
-              // A disabled button shows no tooltip of its own: the wrapper carries the reason.
-              <span title={props.translation.disabledReason ?? undefined} className="inline-flex">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  disabled={props.translation.disabledReason !== null}
-                  aria-description={props.translation.disabledReason ?? undefined}
-                  onClick={() => props.translation?.onToggle(handed)}
-                >
-                  <Icon name="Languages" fallback="Mail" aria-hidden />
-                  {props.translation.shown?.messageId === handed.id ? tx("Show original") : tx("Translate")}
-                </Button>
-              </span>
-            ) : null}
-          </>
-        ) : null}
-        {inFolder
-          ? actionsFor(folderUse, archiveAllowed).map(({ action, label, icon }) => (
-              <Button
-                key={action}
-                variant="ghost"
-                size="sm"
-                disabled={props.actionPending}
-                onClick={() => props.onAction(action)}
-              >
-                <Icon name={icon} aria-hidden />
-                {label}
-              </Button>
-            ))
-          : null}
-        {inFolder ? (
-          <>
-            <Button variant="ghost" size="sm" disabled={props.actionPending} onClick={props.onMoveTo}>
-              <Icon name="Folder" aria-hidden />
-              {tx("Move to\u2026")}
-            </Button>
-            <Button variant="ghost" size="sm" disabled={props.actionPending} onClick={props.onMarkUnread}>
-              <Icon name="Mail" aria-hidden />
-              {tx("Mark unread")}
-            </Button>
-            {inbox !== undefined && folderUse === "inbox" ? (
-              <Button variant="ghost" size="sm" disabled={props.actionPending} onClick={inbox.onSnooze}>
-                <Icon name="Clock" fallback="Info" aria-hidden />
-                {tx("Snooze")}
-              </Button>
-            ) : null}
-          </>
-        ) : null}
-        {inFolder && props.onLabels !== undefined ? (
-          <Button variant="ghost" size="sm" disabled={props.actionPending} aria-keyshortcuts="L" onClick={props.onLabels}>
-            <Icon name="Tag" fallback="Folder" aria-hidden />
-            {tx("Labels\u2026")}
-          </Button>
-        ) : null}
-        {inbox !== undefined && blockable !== null ? (
-          <Button variant="ghost" size="sm" disabled={props.actionPending} onClick={() => inbox.onBlock(blockable)}>
-            <Icon name="Ban" fallback="AlertTriangle" aria-hidden />
-            {tx("Block")}
-          </Button>
-        ) : null}
-        {props.ai !== undefined && handed !== null && !handedDraft && props.ai.onRemind !== undefined ? (
-          <Button variant="ghost" size="sm" onClick={() => props.ai?.onRemind?.(handed)}>
-            <Icon name="Clock" fallback="Info" aria-hidden />
-            {tx("Remind me\u2026")}
-          </Button>
-        ) : null}
-        <span className="flex-1" />
-        {props.bb !== undefined && handed !== null && !handedDraft ? (
-          <>
-            <span title={handed.inAiScope ? undefined : OUTSIDE_AI_ACCESS} className="inline-flex">
-              <Button
-                variant="ghost"
-                size="sm"
-                disabled={!handed.inAiScope}
-                aria-keyshortcuts="Shift+N"
-                onClick={() => props.bb?.onNewThread(handed)}
-              >
-                <Icon name="MessageSquarePlus" fallback="Bot" aria-hidden />
-                {tx("New thread\u2026")}
-              </Button>
-            </span>
-            <Button variant="ghost" size="sm" aria-keyshortcuts="Shift+K" onClick={() => props.bb?.onMakeTask(handed)}>
-              <Icon name="ListPlus" fallback="ListChecks" aria-hidden />
-              {tx("Make a task\u2026")}
-            </Button>
-          </>
-        ) : null}
-        {props.ai !== undefined ? (
-          <AiButtons ai={props.ai} reason={conversationAiReason(messages, props.ai.disabledReason)} />
-        ) : null}
-        {handed !== null ? (
-          <span title={handed.inAiScope ? undefined : OUTSIDE_AI_ACCESS} className="inline-flex">
-            <Button variant="ghost" size="sm" disabled={!handed.inAiScope} onClick={() => props.onHandToAgent(handed)}>
-              <Icon name="Bot" aria-hidden />
-              {tx("Hand to agent")}
-            </Button>
-          </span>
-        ) : null}
-      </div>
+        <ConversationToolbar key={thread.id} {...props} inFolder={inFolder} messages={messages} handed={handed} handedDraft={handedDraft} />
       ) : null}
       <div className="flex flex-col gap-1">
         <div className="flex flex-wrap items-start gap-2">
-          <h2 className="min-w-0 flex-1 text-lg font-semibold text-foreground">
-            {subjectOrPlaceholder(thread.subject)}
-          </h2>
           {inbox !== undefined && canUnsubscribe ? (
             <Button variant="outline" size="sm" className="h-7 shrink-0 px-2" onClick={inbox.onUnsubscribe}>
               {tx("Unsubscribe")}
@@ -964,7 +811,7 @@ export function ReadingPane(props: ReadingPaneProps) {
           ) : null}
         </div>
         <div className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
-          <span className="mr-1">{messages.length === 1 ? tx("1 message") : `${messages.length} messages`}</span>
+          <span className="mr-1">{txn(messages.length, "{count} message", "{count} messages")}</span>
           {r3 !== undefined && messages.length > 1 ? (
             <>
               <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" aria-keyshortcuts=";" onClick={r3.onExpandAll}>
@@ -1044,9 +891,14 @@ export function ReadingPane(props: ReadingPaneProps) {
         <StackButton
           messages={stacked}
           controls={stackListId}
+          open={historyOpen}
           onOpen={() => {
-            focusAfterOpen.current = stacked[0]!.id;
-            r3?.onStackOpen?.();
+            if (historyOpen) {
+              for (const message of stacked) if (expandedIds.has(message.id)) props.onToggleMessage(message.id);
+            } else {
+              focusAfterOpen.current = stacked[0]!.id;
+            }
+            r3?.onStackOpen?.(!historyOpen);
           }}
         />
       ) : null}
@@ -1080,6 +932,8 @@ export function ReadingPane(props: ReadingPaneProps) {
             onDownloadAttachment={(attachment) => props.onDownloadAttachment(message, attachment)}
             onEditDraft={props.isDraft(message) ? () => props.onEditDraft(message) : null}
             translation={props.translation?.shown?.messageId === message.id ? props.translation.shown.block : null}
+            unreadOnEntry={anchors.thread === threadKey ? anchors.unread.has(message.id) : !message.isRead}
+            newest={message.id === messages.at(-1)?.id}
             highlighted={highlight?.messageId === message.id}
             {...(props.bb !== undefined ? { bb: props.bb, projectId: detail.project?.id ?? null } : {})}
             {...(r3 !== undefined ? { r3, view: viewOf(message)! } : {})}
@@ -1090,6 +944,18 @@ export function ReadingPane(props: ReadingPaneProps) {
       </div>
       {r3 !== undefined && messages.length > 0 ? (
         <RelatedMail messageId={messages.at(-1)!.id} load={r3.related.load} onOpen={r3.related.onOpen} />
+      ) : null}
+      {handed !== null && !handedDraft && props.hideToolbar !== true ? (
+        <div role="group" aria-label={tx("Reply to conversation")} className="flex flex-wrap gap-1 rounded-md border border-border bg-card p-2">
+            <Button variant="ghost" size="sm" onClick={() => props.onCompose("reply", handed)}>
+              <Icon name="Reply" fallback="ArrowLeft" aria-hidden />
+              {tx("Reply")}
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => props.onCompose("reply_all", handed)}>
+              <Icon name="ReplyAll" fallback="ArrowLeft" aria-hidden />
+              {tx("Reply all")}
+            </Button>
+        </div>
       ) : null}
       <LinkStatusLine hover={hovered} cleanLinks={r3?.cleanLinks !== false} />
     </div>
@@ -1118,9 +984,9 @@ function dateRange(from: string | null, to: string | null): string {
  * The closed stack of earlier messages (slice 3i, B8): one control, styled
  * as a card with two offset edges behind it. Enter, Space or a click opens it.
  */
-function StackButton({ messages, controls, onOpen }: { messages: readonly MessageHeader[]; controls: string; onOpen: () => void }) {
+function StackButton({ messages, controls, open, onOpen }: { open: boolean; messages: readonly MessageHeader[]; controls: string; onOpen: () => void }) {
   const summary = stackSummary(messages);
-  const line = [summary.senders, dateRange(summary.from, summary.to), summary.warned ? "sender warning" : ""].filter((part) => part !== "").join(" \u00b7 ");
+  const line = [summary.senders, dateRange(summary.from, summary.to), summary.warned ? tx("sender warning") : ""].filter((part) => part !== "").join(" \u00b7 ");
   return (
     <div className="relative pb-2">
       <span aria-hidden className="absolute inset-x-3 bottom-0 h-3 rounded-b-lg border border-border bg-card" />
@@ -1128,12 +994,12 @@ function StackButton({ messages, controls, onOpen }: { messages: readonly Messag
       <button
         type="button"
         data-mail-stack=""
-        aria-expanded={false}
+        aria-expanded={open}
         aria-controls={controls}
         onClick={onOpen}
         className="relative flex w-full flex-col gap-0.5 rounded-lg border border-border bg-card px-3 py-2 text-left transition-colors hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
       >
-        <span className="text-sm text-foreground">{summary.count === 1 ? tx("1 earlier message") : `${summary.count} earlier messages`}</span>
+        <span className="text-sm text-foreground">{txn(summary.count, "{count} earlier message", "{count} earlier messages")}</span>
         <span className="truncate text-xs text-muted-foreground">{line}</span>
       </button>
     </div>
@@ -1157,21 +1023,4 @@ function flip(set: ReadonlySet<string>, id: string): ReadonlySet<string> {
   if (next.has(id)) next.delete(id);
   else next.add(id);
   return next;
-}
-
-/** Summarize and Find tasks; off with the reason as the tooltip. */
-function AiButtons({ ai, reason }: { ai: ReadingAi; reason: string | null }) {
-  return (
-    // A disabled button shows no tooltip of its own: the wrapper carries the reason.
-    <span title={reason ?? undefined} className="inline-flex">
-      <Button variant="ghost" size="sm" disabled={reason !== null} aria-description={reason ?? undefined} onClick={ai.onSummarize}>
-        <Icon name="Sparkles" fallback="Bot" aria-hidden />
-        {tx("Summarize")}
-      </Button>
-      <Button variant="ghost" size="sm" disabled={reason !== null} aria-description={reason ?? undefined} onClick={ai.onFindTasks}>
-        <Icon name="ListChecks" fallback="Check" aria-hidden />
-        {tx("Find tasks")}
-      </Button>
-    </span>
-  );
 }

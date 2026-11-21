@@ -28,7 +28,7 @@ const FOLDER_ICONS: Record<SpecialUse, string> = {
 };
 
 export function folderIcon(specialUse: SpecialUse | null): string {
-  return specialUse === null ? tx("Folder") : FOLDER_ICONS[specialUse];
+  return specialUse === null ? "Folder" : FOLDER_ICONS[specialUse];
 }
 
 /** The account's inbox path, or null before its folders are known. */
@@ -171,7 +171,8 @@ function RailButton({
         style={{ paddingLeft: `${0.5 + indent * 0.75}rem` }}
         className={cn(
           "flex h-7 w-full min-w-0 items-center gap-2 rounded-md pr-2 text-left text-sm text-foreground transition-colors hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring",
-          selected && "bg-state-active hover:bg-state-active",
+          selected && "bg-primary/15 text-foreground hover:bg-primary/20",
+          onMenu !== undefined && "pr-8",
           dimmed && "text-muted-foreground",
           over === "yes" && "bg-state-active ring-1 ring-inset ring-ring",
           over === "no" && "cursor-not-allowed opacity-60",
@@ -198,7 +199,7 @@ function RailButton({
           aria-label={tx("Folder options")}
           title={`${name} options`}
           onClick={onMenu}
-          className="absolute right-0.5 flex size-6 shrink-0 items-center justify-center rounded-md bg-background text-muted-foreground opacity-0 transition-opacity hover:bg-state-hover focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-hover:opacity-100"
+          className={cn(!selected && "opacity-0", "absolute right-0.5 flex size-6 shrink-0 items-center justify-center rounded-md bg-background text-muted-foreground transition-opacity hover:bg-state-hover focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-hover:opacity-100")}
         >
           <Icon name="MoreHorizontal" fallback="Info" className="size-4" aria-hidden />
         </button>
@@ -470,7 +471,7 @@ function AccountGroup({
           aria-label={tx("Account options")}
           title={`${label} options`}
           onClick={onMenu}
-          className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-state-hover focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-hover:opacity-100"
+          className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-opacity hover:bg-state-hover focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-hover:opacity-100"
         >
           <Icon name="MoreHorizontal" fallback="Info" className="size-4" aria-hidden />
         </button>
@@ -531,7 +532,7 @@ export function UnifiedRail({ roles, folders, accounts, view, onSelect, error, s
       </ul>
       {accounts.map((account) => {
         const own = ownFolders(folders, account.id);
-        if (own.length === 0) return null;
+
         const holdsView = view.kind === "folder" && view.accountId === account.id;
         return (
           <AccountGroup
