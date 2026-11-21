@@ -23,8 +23,9 @@ import { ToolbarAction } from "./src/ui/toolbar-action.tsx";
 
 declare const __BB_PLUGIN_ID__: string | undefined;
 
-// One per loaded copy of the plugin, in memory only. A reload or a disable
-// drops this module, and the staged text with it.
+// One per loaded copy of the plugin, in memory only. BB may keep this module
+// across a disable or a reload, so the `lifetime` content script below clears
+// the staged text when the plugin's UI is taken down.
 const services: DockServices = {
   staging: createStaging(),
   consent: createConsent(createLocalConsentStorage()),
@@ -69,6 +70,13 @@ function ChatDockToolbar({ url, experimental_page }: ExperimentalPluginBrowserTo
 }
 
 export default definePluginApp((app) => {
+  // No DOM and no listeners: this exists for its disposer, which BB calls on
+  // disable, stop, removal, reload and window teardown.
+  app.contentScripts.register({
+    id: "lifetime",
+    mount: () => () => services.staging.clear(),
+  });
+
   app.slots.navPanel({
     id: "chat-dock",
     title: "ChatGPT",
