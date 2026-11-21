@@ -18,12 +18,25 @@ const MAX_DOCUMENT_BYTES = 256 * 1024;
 /** How many originals are kept aside; the oldest go first. */
 const MAX_BACKUPS = 5;
 
-const BACKUP_KEY = /^([0-9]{6,15})-/;
+/** The whole name the store gives a copy: a number, then an ISO instant. Nothing else under the prefix is its own. */
+const BACKUP_KEY = /^([0-9]{6,15})-[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$/;
 
 /** The number of a copy this store wrote, `null` for a key under the prefix it did not write. */
 function backupNumber(key: string): number | null {
   const match = BACKUP_KEY.exec(key.slice(BACKUP_PREFIX.length));
   return match === null ? null : Number(match[1]);
+}
+
+/** Whether two values of plain JSON data are equal, whatever the order of their keys. */
+function sameData(first: unknown, second: unknown): boolean {
+  if (first === second) return true;
+  if (typeof first !== "object" || typeof second !== "object" || first === null || second === null) return false;
+  if (Array.isArray(first) !== Array.isArray(second)) return false;
+  const firstKeys = Object.keys(first);
+  if (firstKeys.length !== Object.keys(second).length) return false;
+  return firstKeys.every(
+    (key) => Object.hasOwn(second, key) && sameData((first as Record<string, unknown>)[key], (second as Record<string, unknown>)[key]),
+  );
 }
 
 export interface KvWorkspaceStoreDeps {
@@ -87,9 +100,10 @@ export function createKvWorkspaceStore({ kv, now, log }: KvWorkspaceStoreDeps): 
       return { status: "rejected", reason: "The workspace takes " + bytes + " bytes and storage keeps at most " + MAX_DOCUMENT_BYTES };
     }
 
-    // This write replaces what the reader could not carry over: the parts it left out, and the shape
-    // of an older version, which a migration may have dropped fields of. The original goes aside first.
-    if (stored.status === "ok" && (stored.dropped.length > 0 || stored.migratedFrom !== null)) {
+    // This write replaces the stored row with a document made from what the reader returned. Whenever
+    // that is not the row itself (a part left out, an older version, a repaired field, anything the
+    // reader may change later), the row goes aside first. The reader's report is not relied upon.
+    if (stored.status === "ok" && !sameData(original, stored.document)) {
       await keepAside(original, stored.dropped.length, stored.migratedFrom);
     }
     await kv.set(DOCUMENT_KEY, result.document);

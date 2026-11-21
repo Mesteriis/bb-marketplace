@@ -427,6 +427,87 @@ describe("a stored document the reader left parts out of", () => {
     expect(kv.value("workspace/backup/notes")).toBe("kept by hand");
   });
 
+  it("is kept aside when the reader only repaired the active layout and reported nothing", async () => {
+    const kv = new FakeKv();
+    const stored = stageAJson();
+    stored.revision = 3;
+    stored.activeLayoutId = "layout-gone";
+    kv.seed(DOCUMENT_KEY, stored);
+    const { store } = rig(kv);
+
+    const read = await store.load();
+    if (read.status !== "ok") throw new Error("the document was not read: " + read.status);
+    expect(read.dropped).toEqual([]);
+    expect(read.document.activeLayoutId).toBe("layout-dev");
+
+    expect((await store.save(read.document, 3)).status).toBe("saved");
+    expect(kv.keys()).toEqual(["workspace/backup/000001-2026-11-21T12:00:00.000Z", DOCUMENT_KEY]);
+    expect(kv.value("workspace/backup/000001-2026-11-21T12:00:00.000Z")).toEqual(stored);
+  });
+
+  it("is kept aside when it carries a field the reader does not return", async () => {
+    const kv = new FakeKv();
+    const stored = stageAJson();
+    stored.layouts[0].workspace.root.children[0].note = "поле, которого нет в схеме";
+    kv.seed(DOCUMENT_KEY, stored);
+    const { store } = rig(kv);
+
+    const read = await store.load();
+    if (read.status === "ok") {
+      expect((await store.save(read.document, 0)).status).toBe("saved");
+      expect(kv.value("workspace/backup/000001-2026-11-21T12:00:00.000Z")).toEqual(stored);
+    } else {
+      expect((await store.save(stageADocument(), 0)).status).toBe("rejected");
+      expect(kv.value(DOCUMENT_KEY)).toEqual(stored);
+    }
+  });
+
+  it("is not copied when it is whole, whatever the order of its keys", async () => {
+    const kv = new FakeKv();
+    const whole = stageAJson();
+    kv.seed(DOCUMENT_KEY, {
+      activeLayoutId: whole.activeLayoutId,
+      layouts: whole.layouts,
+      panels: whole.panels,
+      revision: 2,
+      schemaVersion: whole.schemaVersion,
+    });
+    const { log, store } = rig(kv);
+
+    expect((await store.save({ ...stageADocument(), revision: 2 }, 2)).status).toBe("saved");
+    expect(kv.keys()).toEqual([DOCUMENT_KEY]);
+    expect(log.lines).toEqual([]);
+  });
+
+  it("never deletes or counts a key under the prefix that is not a copy of its own", async () => {
+    const kv = new FakeKv();
+    const foreign = [
+      "workspace/backup/000000-notes",
+      "workspace/backup/000009-2026-11-21",
+      "workspace/backup/000009-2026-11-21T12:00:00.000Z-old",
+      "workspace/backup/000009-2026-11-21T12:00:00.000Z/part",
+      "workspace/backup/notes",
+    ];
+    for (const key of foreign) kv.seed(key, "kept by hand");
+    const { store } = rig(kv);
+    for (const revision of [0, 1, 2, 3, 4, 5, 6]) {
+      kv.seed(DOCUMENT_KEY, damagedStageA(revision));
+      expect((await store.save({ ...stageADocument(), revision }, revision)).status).toBe("saved");
+    }
+    expect(kv.keys()).toEqual(
+      [
+        ...foreign,
+        "workspace/backup/000003-2026-11-21T12:00:00.000Z",
+        "workspace/backup/000004-2026-11-21T12:00:00.000Z",
+        "workspace/backup/000005-2026-11-21T12:00:00.000Z",
+        "workspace/backup/000006-2026-11-21T12:00:00.000Z",
+        "workspace/backup/000007-2026-11-21T12:00:00.000Z",
+        DOCUMENT_KEY,
+      ].sort(),
+    );
+    for (const key of foreign) expect(kv.value(key)).toBe("kept by hand");
+  });
+
   it("gives two copies of one instant different keys", async () => {
     const kv = new FakeKv();
     const { store } = rig(kv);
