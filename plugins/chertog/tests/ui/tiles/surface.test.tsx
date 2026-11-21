@@ -227,6 +227,15 @@ describe("a gesture started while the keyboard is inside a frame", () => {
     return { calls, container, frame, surface: container.firstElementChild as HTMLElement };
   }
 
+  const firstTab = (container: HTMLElement): HTMLElement => container.querySelector('[data-panel-id="a"] [role="tab"]') as HTMLElement;
+
+  /** The focus leaves the frame and rests on nothing, as after a press on a part of the page that takes no focus. */
+  const toNowhere = (container: HTMLElement): void => {
+    firstTab(container).focus();
+    firstTab(container).blur();
+    expect(document.activeElement).toBe(document.body);
+  };
+
   const pressEscape = (): boolean => fireEvent.keyDown(document.activeElement as Element, { key: "Escape" });
 
   it("takes the keyboard for a divider drag, so Escape cancels it, and gives the focus back", () => {
@@ -264,6 +273,63 @@ describe("a gesture started while the keyboard is inside a frame", () => {
     expect(document.activeElement).toBe(frame);
     fireEvent.pointerUp(handle, { pointerId: 1, button: 0, clientX: 904, clientY: 200 });
     expect(calls.changes).toEqual([]);
+  });
+
+  it.each([
+    ["nowhere", toNowhere],
+    ["to the pressed tab", (container: HTMLElement): void => firstTab(container).focus()],
+  ])("returns to the frame's field after a cancelled header drag whose press moved the focus %s", (_name, browserMovesFocus) => {
+    const { calls, container, frame } = setup();
+    const inside = frame.contentDocument as Document;
+    const field = inside.body.appendChild(inside.createElement("input"));
+    field.focus();
+    const refocused = vi.spyOn(field, "focus");
+    const handle = header(container, "group-1");
+
+    fireEvent.pointerDown(handle, { pointerId: 1, button: 0, clientX: 300, clientY: 10 });
+    // What a browser does on the mouse press that follows: the focus leaves the frame.
+    browserMovesFocus(container);
+    expect(document.activeElement).not.toBe(frame);
+    fireEvent.pointerMove(handle, { pointerId: 1, clientX: 904, clientY: 200 });
+    expect(preview(container)).toBe("604px 0px 600px 398px");
+    expect(refocused).not.toHaveBeenCalled();
+
+    pressEscape();
+    expect(preview(container)).toBeNull();
+    expect(refocused).toHaveBeenCalledTimes(1);
+    fireEvent.pointerUp(handle, { pointerId: 1, button: 0, clientX: 904, clientY: 200 });
+    expect(calls.changes).toEqual([]);
+    expect(drawn(container)).toEqual(THREE_TILES_DRAWN);
+  });
+
+  it("keeps the focus where a plain click on a header put it", () => {
+    const { container, frame } = setup();
+    const frameFocused = vi.spyOn(frame, "focus");
+    const handle = header(container, "group-1");
+    fireEvent.pointerDown(handle, { pointerId: 1, button: 0, clientX: 300, clientY: 10 });
+    toNowhere(container);
+    fireEvent.pointerUp(handle, { pointerId: 1, button: 0, clientX: 300, clientY: 10 });
+    expect(frameFocused).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  it("does not pull the focus back from another frame the user went to meanwhile", () => {
+    const calls = newCalls(threeTiles());
+    const { container } = render(
+      <Harness calls={calls} size={SIZE}>
+        <iframe title="first" />
+        <iframe title="second" />
+      </Harness>,
+    );
+    const [first, second] = Array.from(container.querySelectorAll("iframe"));
+    first.focus();
+    const handle = header(container, "group-1");
+    fireEvent.pointerDown(handle, { pointerId: 1, button: 0, clientX: 300, clientY: 10 });
+    toNowhere(container);
+    fireEvent.pointerMove(handle, { pointerId: 1, clientX: 904, clientY: 200 });
+    second.focus();
+    fireEvent.lostPointerCapture(handle, { pointerId: 1 });
+    expect(document.activeElement).toBe(second);
   });
 
   it("gives the focus back after a confirmed gesture too", () => {

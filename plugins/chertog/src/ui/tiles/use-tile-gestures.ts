@@ -104,13 +104,25 @@ export function useTileGestures(input: TileGesturesInput): TileGestures {
   // React has rendered the previous one.
   const current = useRef<Gesture | null>(null);
 
-  // What had the keyboard before the gesture took it; see `takeKeyboard`.
+  // What had the keyboard when the pointer went down; see `takeKeyboard`.
   const keyboardOwner = useRef<{ frame: HTMLElement; inner: Focusable | null } | null>(null);
 
   /**
+   * The frame that has the keyboard now, with its focused field. Read on the
+   * press, before the browser reacts to it: a press on a header moves the
+   * focus out of the frame by itself, and the field is forgotten with it.
+   */
+  const frameWithKeyboard = (): { frame: HTMLElement; inner: Focusable | null } | null => {
+    const active = surface.current?.ownerDocument.activeElement;
+    if (!(active instanceof HTMLElement) || !FRAME_TAGS.has(active.tagName)) return null;
+    return { frame: active, inner: focusedInside(active) };
+  };
+
+  /**
    * A frame keeps its key presses to itself: while the focus is inside an
-   * iframe, Escape never reaches this document. So a gesture that starts with
-   * the focus in a frame moves it to the surface, and `end` gives it back.
+   * iframe, Escape never reaches this document. So a gesture that engages
+   * with the focus still in a frame moves it to the surface, and `end` gives
+   * it back to where it was on the press.
    *
    * A browser forgets which element of the frame was focused once the focus
    * leaves it. For a frame of the same origin that element is remembered here
@@ -121,9 +133,24 @@ export function useTileGestures(input: TileGesturesInput): TileGestures {
   const takeKeyboard = (): void => {
     const root = surface.current;
     const active = root?.ownerDocument.activeElement;
-    if (root === null || !(active instanceof HTMLElement) || !FRAME_TAGS.has(active.tagName)) return;
-    keyboardOwner.current = { frame: active, inner: focusedInside(active) };
-    root.focus({ preventScroll: true });
+    if (root !== null && active instanceof HTMLElement && FRAME_TAGS.has(active.tagName)) root.focus({ preventScroll: true });
+  };
+
+  /**
+   * Gives the keyboard back to the frame that had it on the press. Only
+   * after a gesture that moved something: a plain click on a header keeps
+   * the focus where the click put it. And only while the focus is still on
+   * the surface's own chrome or nowhere: the user may have moved on.
+   */
+  const returnKeyboard = (ended: Gesture): void => {
+    const owner = keyboardOwner.current;
+    keyboardOwner.current = null;
+    const root = surface.current;
+    if (owner === null || root === null || !owner.frame.isConnected) return;
+    if (ended.kind === "drag" && !ended.active) return;
+    const active = root.ownerDocument.activeElement;
+    const ours = active === null || active === root.ownerDocument.body || (root.contains(active) && !FRAME_TAGS.has(active.tagName));
+    if (ours) (owner.inner?.isConnected === true ? owner.inner : owner.frame).focus({ preventScroll: true });
   };
 
   const set = (next: Gesture | null): void => {
@@ -137,12 +164,7 @@ export function useTileGestures(input: TileGesturesInput): TileGestures {
     if (held === null) return;
     set(null);
     if (held.element.hasPointerCapture(held.pointerId)) held.element.releasePointerCapture(held.pointerId);
-    const owner = keyboardOwner.current;
-    keyboardOwner.current = null;
-    // Only if the focus is still where the gesture put it: the user may have moved on.
-    if (owner !== null && owner.frame.isConnected && owner.frame.ownerDocument.activeElement === surface.current) {
-      (owner.inner?.isConnected === true ? owner.inner : owner.frame).focus({ preventScroll: true });
-    }
+    returnKeyboard(held);
   };
 
   const held = (event: SurfacePointerEvent): Gesture | null => {
@@ -163,6 +185,7 @@ export function useTileGestures(input: TileGesturesInput): TileGestures {
   const begin = (event: SurfacePointerEvent): Held | null => {
     if (event.button !== 0 || current.current !== null) return null;
     event.currentTarget.setPointerCapture(event.pointerId);
+    keyboardOwner.current = frameWithKeyboard();
     return { pointerId: event.pointerId, element: event.currentTarget, base: state };
   };
 
