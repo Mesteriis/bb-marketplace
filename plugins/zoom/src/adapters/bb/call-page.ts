@@ -109,7 +109,7 @@ export const CALL_PAGE_SCRIPT = `
     var width = Math.max(MIN_WIDTH, Math.min(byWidth, byHeight));
     client.updateVideoOptions({
       isResizable: false,
-      popper: { disableDraggable: true, anchorPosition: { top: 0, left: Math.max(0, Math.floor((window.innerWidth - width - 4) / 2)) } },
+      popper: { disableDraggable: true },
       viewSizes: { default: { width: width, height: Math.floor(width * 9 / 16) } }
     });
   }
@@ -199,7 +199,8 @@ const THEME_CSS = `
   --bb-font: system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 html, body { margin: 0; height: 100%; background: var(--bb-background); color: var(--bb-foreground); font-family: var(--bb-font); }
-#meetingSDKElement { min-height: 100%; }
+/* Zoom makes this a flex row; its view is centred when the frame is wider than the view. */
+#meetingSDKElement { min-height: 100%; justify-content: center; }
 #notice { font-size: 14px; line-height: 1.5; text-align: center; padding: 0 16px; }
 #notice:not(:empty) { padding: 16px; }
 #meetingSDKElement .zoom-MuiPaper-root,

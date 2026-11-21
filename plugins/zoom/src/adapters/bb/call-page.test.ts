@@ -63,6 +63,10 @@ describe("call page served with a call (ticket link)", () => {
     expect(html).not.toContain("</script><script>alert(1)");
   });
 
+  it("centres Zoom's view in the frame", () => {
+    expect(callPageHtml()).toContain("#meetingSDKElement { min-height: 100%; justify-content: center; }");
+  });
+
   it("carries no call when embedded in BB", () => {
     expect(callPageHtml()).not.toContain("window.__ZOOM_CALL__ =");
   });

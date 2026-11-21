@@ -153,7 +153,7 @@ describe("fitting the Zoom view to the frame", () => {
     await settle();
     listeners["connection-change"]!({ state: "Connected" });
     expect(lastSize(client)).toEqual({ width: 944, height: 531 });
-    expect(client.updateVideoOptions.mock.calls.at(-1)![0].popper).toEqual({ disableDraggable: true, anchorPosition: { top: 0, left: 141 } });
+    expect(client.updateVideoOptions.mock.calls.at(-1)![0].popper).toEqual({ disableDraggable: true });
   });
 
   it("fills a narrow frame by width", async () => {
