@@ -6,6 +6,8 @@
 // pure — no React, no SDK calls — so the layout rules are testable on their
 // own.
 interface PluginSidebarThread {
+ hasPendingInteraction?:boolean;
+ planAttention?:'needs_input'|'error';
  isUnread?: boolean; status?: string; id: string; projectId: string; title: string | null; titleFallback: string | null;
  parentThreadId: string | null; isArchived: boolean; isPinned: boolean; latestAttentionAt: number;
 }
@@ -372,7 +374,7 @@ function finalize(node: MutableNode, preserveRootLevel = false): TreeNode {
   }
 
   const children = [...collapsed.children.values()]
-    .map(child=>finalize(child,preserveRootLevel))
+    .map(child=>finalize(child,false))
     .sort(compareNodes);
   const threads = nestThreads(collapsed.threads);
   return {

@@ -36,3 +36,8 @@ test('unread descendants stay visible in Active until read even with parent coll
  const slot=render(<ThreadBranch node={tree} depth={0} initialCollapsed showUnread renderRow={row}/>);
  expect(slot.getAllByRole('link').map(a=>a.textContent)).toEqual(['context','result']);
 });
+test('pending questions remain reachable when the active parent is collapsed',()=>{
+ const child={...node('question'),thread:{...node('question').thread,hasPendingInteraction:true}};
+ const slot=render(<ThreadBranch node={node('parent','idle',[child])} depth={0} initialCollapsed showUnread renderRow={(t,d,toggle)=><div>{toggle}<a href={'/'+t.id}>{t.id}</a></div>}/>);
+ expect(slot.getAllByRole('link').map(a=>a.textContent)).toEqual(['parent','question']);
+});

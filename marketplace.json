@@ -1104,7 +1104,7 @@
     {
       "id": "makosh-sidebar",
       "displayName": "Makosh Sidebar [Experimental]",
-      "description": "Project tree with hiding, recent activity sorting and an Active section for running threads and unread results.",
+      "description": "Task-focused sidebar with subthread status badges, live stages and animated progress; includes the independent plan_progress engine.",
       "icon": "FolderGit",
       "author": {
         "name": "Mesteriis",

@@ -460,3 +460,18 @@ SOFTWARE.
   artwork is embedded as local data URLs for document cards.
 - License: MIT, Copyright (c) 2025 Material Extensions.
   See `plugins/telegram/licenses/material-icon-theme-MIT.txt`.
+
+## Plan Progress in Makosh Sidebar
+
+- Source: <https://github.com/mrsu-smirnov/bb-plugin-plan-progress>, the
+  repository's maintained `plugins/plan-progress` 0.6.0 snapshot. Protocol and
+  original idea: <https://github.com/zycck/claude-mods>.
+- Adapted paths: `plugins/sidebar/src/core/planning/`,
+  `plugins/sidebar/src/adapters/bb/planning/`,
+  `plugins/sidebar/src/ui/progress-stream.tsx`, the planning skill and behavioral
+  tests. The engine, provider isolation, diagnostics, reminder safeguards,
+  composer display and answer speed are retained; the same stream renderer is
+  reused for compact sidebar tracks. There are no imports or runtime calls to
+  the separate plugin.
+- License: MIT, Copyright (c) 2026 Yuri Smirnov; protocol and idea by zycck
+  (MIT). Full notice: `plugins/sidebar/licenses/plan-progress-MIT.txt`.

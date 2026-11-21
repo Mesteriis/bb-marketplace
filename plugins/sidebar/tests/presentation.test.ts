@@ -1,5 +1,5 @@
 import {expect,test} from 'vitest';
-import {sidebarPresentation, runningThreads} from '../src/core/presentation';
+import {sidebarPresentation, runningThreads,omitThreadIds} from '../src/core/presentation';
 const projects=[{id:'p',name:'Project',path:'/Projects/Personal/Project',isPersonal:false},{id:'o',name:'Outside',path:'/Projects-extra/Other',isPersonal:false},{id:'loose',name:'Personal',path:null,isPersonal:true}];
 const thread=(id:string,projectId:string,status='idle')=>({id,projectId,status,isHidden:false,isArchived:false,isPinned:false,title:id,titleFallback:null,parentThreadId:null,latestAttentionAt:100});
 test('explicit root is omitted while siblings outside it are excluded',()=>{
@@ -34,6 +34,18 @@ test('a hidden running worktree thread escapes without restoring the empty workt
  const view=sidebarPresentation([{id:'w',name:'feature',path:'/Projects/worktrees/feature',isPersonal:false}],[thread('running-worktree','w','active')],{projects:[],threads:['running-worktree']},false,'/Projects');
  expect(view.tree.roots).toEqual([]);
  expect(view.running.map(t=>t.id)).toEqual(['running-worktree']);
+});
+test('root folders remain first level but single-child folder chains below them compress',()=>{
+ const view=sidebarPresentation([{id:'p',name:'golden-record',path:'/Projects/Work/itq/clients/evoca/golden-record',isPersonal:false}],[],{projects:[],threads:[]},false,'/Projects');
+ expect(view.tree.roots[0]?.label).toBe('Work');
+ expect(view.tree.roots[0]?.children[0]?.project?.id).toBe('p');
+ expect(view.tree.roots[0]?.children[0]?.label).toBe('itq/clients/evoca/golden-record');
+});
+test('deduplicating activity never removes quiet descendants from navigation',()=>{
+ const child={thread:thread('quiet','p'),children:[]};
+ const nodes=[{thread:thread('parent','p'),children:[child,{thread:thread('busy','p','active'),children:[]}]}];
+ expect(omitThreadIds(nodes,new Set(['parent','busy']))).toEqual([child]);
+ expect(nodes[0]?.children).toHaveLength(2);
 });
 
 test('hiding a project hides its separately registered nested worktree projects',()=>{

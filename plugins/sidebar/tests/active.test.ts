@@ -18,3 +18,10 @@ test('excludes archived and internal helper threads, deduplicates shared ancestr
  expect(activeThreads(rows).map(n=>n.thread.id)).toEqual(['parent']);
  expect(activeThreads(rows)[0]?.children.map(n=>n.thread.id)).toEqual(['one','two']);
 });
+test('filters keep ancestry while excluding unrelated siblings and include pending questions',()=>{
+ const rows=[thread('parent'),thread('worker','active','parent'),{...thread('result','idle','parent'),isUnread:true},{...thread('question'),hasPendingInteraction:true}];
+ expect(activeThreads(rows,'running')[0]?.children.map(n=>n.thread.id)).toEqual(['worker']);
+ expect(activeThreads(rows,'unread')[0]?.children.map(n=>n.thread.id)).toEqual(['result']);
+ expect(activeThreads(rows).map(n=>n.thread.id)).toContain('question');
+ expect(activeThreads([{...thread('failed-plan'),planAttention:'error' as const}]).map(n=>n.thread.id)).toEqual(['failed-plan']);
+});

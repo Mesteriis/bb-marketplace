@@ -4,7 +4,14 @@ export function isRunning(thread: {status?:string}) {
   return ['starting','active','stopping'].includes(thread.status ?? '');
 }
 export function runningThreads(nodes: readonly ThreadNode[], includeUnread = false): ThreadNode['thread'][] {
-  return nodes.flatMap(node => [...((isRunning(node.thread)||(includeUnread&&node.thread.isUnread))?[node.thread]:[]), ...runningThreads(node.children,includeUnread)]);
+  return nodes.flatMap(node => [...((isRunning(node.thread)||(includeUnread&&(node.thread.isUnread||node.thread.hasPendingInteraction||node.thread.planAttention)))?[node.thread]:[]), ...runningThreads(node.children,includeUnread)]);
+}
+/** Keep navigation complete while promoting children of an already-shown parent. */
+export function omitThreadIds(nodes:readonly ThreadNode[],shown:ReadonlySet<string>):ThreadNode[] {
+ return nodes.flatMap(node=>{
+  const children=omitThreadIds(node.children,shown);
+  return shown.has(node.thread.id)?children:[{...node,children}];
+ });
 }
 export function sidebarPresentation<T extends ThreadNode['thread'] & {isHidden:boolean}>(
  projects: readonly (ProjectLocation & {isPersonal:boolean})[], threads: readonly T[], hidden: Hidden, show: boolean, rootPath: string,

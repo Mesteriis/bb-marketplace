@@ -18,12 +18,15 @@
       ]
     },
     "noEmit": true,
-    "skipLibCheck": false
+    "skipLibCheck": false,
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true
   },
   "include": [
     "server.ts",
     "app.tsx",
     "src",
-    "tests"
+    "tests",
+    "host.ts"
   ]
 }
