@@ -84,8 +84,8 @@ describe("computeLayout", () => {
     expect(computeLayout(state, { x: 0, y: 0, width: 640, height: 700 }, OPTIONS).mode).toBe("tiled");
   });
 
-  it("in compact mode prefers the maximized group over the focused one", () => {
-    const state = { ...twoColumns(), maximizedGroupId: "group-1" };
+  it("in compact mode shows the maximized group", () => {
+    const state = maximizeGroup(twoColumns(), "group-1");
     const geometry = computeLayout(state, { x: 0, y: 0, width: 300, height: 700 }, OPTIONS);
     expect(geometry.mode).toBe("compact");
     expect(boxes(geometry)).toEqual({ "group-1": [0, 0, 300, 700] });

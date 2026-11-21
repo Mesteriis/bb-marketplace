@@ -45,7 +45,10 @@ export type LayoutNode = GroupNode | SplitNode;
 export interface WorkspaceState {
   readonly root: LayoutNode;
   readonly focusedGroupId: string;
-  /** The group shown alone on the whole surface; the tree keeps its shares for restore. */
+  /**
+   * The group shown alone on the whole surface; the tree keeps its shares for
+   * restore. When set it is the focused group: focus never rests on a hidden tile.
+   */
   readonly maximizedGroupId: string | null;
   readonly nextNodeId: number;
 }

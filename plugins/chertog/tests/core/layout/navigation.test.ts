@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   addTab,
+  computeLayout,
   createWorkspace,
   focusGroup,
   focusInDirection,
@@ -10,7 +11,7 @@ import {
   splitGroup,
 } from "../../../src/core/layout/index.ts";
 import type { WorkspaceState } from "../../../src/core/layout/index.ts";
-import { shape } from "./support.ts";
+import { boxes, OPTIONS, shape } from "./support.ts";
 
 /** a | (b / c): group-1 left, group-2 top right, group-4 bottom right. */
 function threeTiles(): WorkspaceState {
@@ -143,5 +144,27 @@ describe("moveTabInDirection", () => {
     const state = threeTiles();
     expect(moveTabInDirection(state, "c", "down")).toBe(state);
     expect(moveTabInDirection(state, "x", "left")).toBe(state);
+  });
+
+  it("leaves maximize when the tab moves from the maximized tile into a hidden one", () => {
+    // group-1 holds a and b, group-2 holds c; group-1 is maximized.
+    const start = maximizeGroup(addTab(splitGroup(createWorkspace(["a"]), "group-1", "right", "c"), "group-1", "b"), "group-1");
+    const state = moveTabInDirection(start, "a", "right");
+    expect(shape(state.root)).toEqual({
+      split: "split-3",
+      direction: "row",
+      sizes: [0.5, 0.5],
+      children: [
+        { group: "group-1", tabs: ["b"], active: "b" },
+        { group: "group-2", tabs: ["c", "a"], active: "a" },
+      ],
+    });
+    expect(state.focusedGroupId).toBe("group-2");
+    expect(state.maximizedGroupId).toBeNull();
+    expect(boxes(computeLayout(state, { x: 0, y: 0, width: 1204, height: 800 }, OPTIONS))).toEqual({
+      "group-1": [0, 0, 600, 800],
+      "split-3#0": [600, 0, 4, 800],
+      "group-2": [604, 0, 600, 800],
+    });
   });
 });

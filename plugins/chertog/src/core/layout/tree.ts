@@ -140,8 +140,18 @@ export function heirOf(root: LayoutNode, groupId: string): string | undefined {
 }
 
 /**
+ * Maximize holds only while the maximized group is the focused one. A
+ * maximized group hides every other tile, so focus that goes elsewhere ends
+ * maximize rather than point at a tile nobody can see.
+ */
+export function visibleMaximized(maximizedGroupId: string | null, focusedGroupId: string): string | null {
+  return maximizedGroupId === focusedGroupId ? maximizedGroupId : null;
+}
+
+/**
  * Closes an operation: normalizes the new tree, leaves one empty picker group
- * when nothing remains, and keeps focus and maximize on existing groups.
+ * when nothing remains, keeps the focus on an existing group and maximize only
+ * on the focused one.
  * `focus` lists the groups to focus in order of preference.
  */
 export function settle(
@@ -153,10 +163,11 @@ export function settle(
   const normal: LayoutNode = normalize(root) ?? { kind: "group", id: newId(ids, "group"), tabs: [], activeTab: null };
   const groups = listGroups(normal);
   const exists = (id: string | null | undefined): id is string => groups.some((group) => group.id === id);
+  const focusedGroupId = focus.find(exists) ?? groups[0].id;
   return {
     root: normal,
-    focusedGroupId: focus.find(exists) ?? groups[0].id,
-    maximizedGroupId: exists(maximizedGroupId) ? maximizedGroupId : null,
+    focusedGroupId,
+    maximizedGroupId: visibleMaximized(maximizedGroupId, focusedGroupId),
     nextNodeId: ids.next,
   };
 }

@@ -6,7 +6,7 @@
 import type { Edge, GroupNode, LayoutNode, WorkspaceState } from "./model.ts";
 import { findGroup, findGroupOfPanel } from "./model.ts";
 import type { IdSource } from "./tree.ts";
-import { emptied, heirOf, insertBeside, mapNodes, newId, normalize, replaceGroup, settle } from "./tree.ts";
+import { emptied, heirOf, insertBeside, mapNodes, newId, normalize, replaceGroup, settle, visibleMaximized } from "./tree.ts";
 
 /** A placement change a drop resolves to; `applyOperation` performs it. */
 export type LayoutOperation =
@@ -137,9 +137,10 @@ export function closeGroup(state: WorkspaceState, groupId: string): WorkspaceSta
   return settle(replaceGroup(state.root, emptied(group)), idsOf(state), focus, state.maximizedGroupId);
 }
 
+/** Focuses a group. Focusing a tile hidden behind a maximized one ends maximize. */
 export function focusGroup(state: WorkspaceState, groupId: string): WorkspaceState {
   if (state.focusedGroupId === groupId || findGroup(state.root, groupId) === undefined) return state;
-  return { ...state, focusedGroupId: groupId };
+  return { ...state, focusedGroupId: groupId, maximizedGroupId: visibleMaximized(state.maximizedGroupId, groupId) };
 }
 
 /** Shows a tab in its group and focuses that group. */
@@ -147,7 +148,12 @@ export function activateTab(state: WorkspaceState, panelId: string): WorkspaceSt
   const group = findGroupOfPanel(state.root, panelId);
   if (group === undefined) return state;
   if (group.activeTab === panelId) return focusGroup(state, group.id);
-  return { ...state, root: replaceGroup(state.root, { ...group, activeTab: panelId }), focusedGroupId: group.id };
+  return {
+    ...state,
+    root: replaceGroup(state.root, { ...group, activeTab: panelId }),
+    focusedGroupId: group.id,
+    maximizedGroupId: visibleMaximized(state.maximizedGroupId, group.id),
+  };
 }
 
 /** Shows one group on the whole surface and focuses it. The tree, and so every share, is untouched. */

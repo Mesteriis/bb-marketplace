@@ -357,6 +357,24 @@ describe("focus and maximize", () => {
     expect(toggleMaximize(maximized, "group-1").maximizedGroupId).toBe("group-1");
   });
 
+  it("never keeps the focus on a tile hidden behind a maximized one", () => {
+    const maximized = maximizeGroup(addTab(threeTiles(), "group-1", "d"), "group-1");
+    for (const state of [
+      focusGroup(maximized, "group-2"),
+      activateTab(maximized, "b"),
+      addTab(maximized, "group-2", "e"),
+      moveTab(maximized, "d", "group-2"),
+    ]) {
+      expect(state.focusedGroupId).toBe("group-2");
+      expect(state.maximizedGroupId).toBeNull();
+    }
+    // Work inside the maximized tile keeps it maximized.
+    for (const state of [addTab(maximized, "group-1", "e"), closeTab(maximized, "d"), activateTab(maximized, "a"), closeTab(maximized, "c")]) {
+      expect(state.focusedGroupId).toBe("group-1");
+      expect(state.maximizedGroupId).toBe("group-1");
+    }
+  });
+
   it("drops maximize when the maximized group closes", () => {
     const state = closeGroup(maximizeGroup(threeTiles(), "group-2"), "group-2");
     expect(state.maximizedGroupId).toBeNull();

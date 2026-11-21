@@ -77,6 +77,9 @@ function treeProblems(state: WorkspaceState): string[] {
   if (state.maximizedGroupId !== null && !groups.some((group) => group.id === state.maximizedGroupId)) {
     problems.push("maximize points at a missing group");
   }
+  if (state.maximizedGroupId !== null && state.maximizedGroupId !== state.focusedGroupId) {
+    problems.push("the focused group is hidden behind the maximized one");
+  }
   return problems;
 }
 
