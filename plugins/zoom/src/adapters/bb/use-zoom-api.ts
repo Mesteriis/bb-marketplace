@@ -21,6 +21,7 @@ export function useZoomApi(rpc: ZoomRpc): ZoomPageApi {
       listMeetings: () => rpcRef.current.call("meetings_list", null).then((result) => result.meetings),
       createMeeting: (input) => rpcRef.current.call("meeting_create", input).then((result) => result.meeting),
       prepareCall: (input) => rpcRef.current.call("call_prepare", input),
+      openCallInBrowser: (input) => rpcRef.current.call("call_open_external", input),
     }),
     [],
   );

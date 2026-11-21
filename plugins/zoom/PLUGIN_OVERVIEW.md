@@ -9,8 +9,9 @@ create one, and take the call without leaving BB.
   instant meeting and enter it right away.
 - **Join** a meeting from the calendar as its host, or paste any Zoom link or
   meeting number and join as a participant.
-- The call runs inside BB through Zoom's Meeting SDK for web. **Open in Zoom**
-  hands the same meeting to the Zoom app at any time.
+- The call runs inside BB through Zoom's Meeting SDK for web, in BB's colours
+  and sized to the panel. **В браузере** moves it to your default browser and
+  **Открыть в Zoom** to the Zoom app.
 
 Nothing else: no chat, recordings, transcription, agent tools or CLI.
 
@@ -31,6 +32,9 @@ settings.
 ## Limits
 
 - One Zoom account.
+- Inside BB a call has no camera and no screen sharing: the BB app has no
+  camera permission and cannot capture the screen. The microphone works once
+  macOS allows it for bb. Use **В браузере** for video and screen sharing.
 - Zoom lets an unpublished Meeting SDK app into meetings of its own account
   only. A meeting hosted by another account may be refused in the embedded
   call; the page then offers to open it in the Zoom app.

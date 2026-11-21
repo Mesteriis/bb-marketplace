@@ -58,6 +58,10 @@ export const rpcSchemas = {
       .strict(),
     output: z.object({ meeting: meetingSchema }).strict(),
   },
+  call_open_external: {
+    input: z.object({ link: z.string().max(2048), asHost: z.boolean() }).strict(),
+    output: z.object({ url: z.string(), opened: z.boolean() }).strict(),
+  },
   call_prepare: {
     input: z.object({ link: z.string().max(2048), asHost: z.boolean() }).strict(),
     output: preparedCallSchema,

@@ -65,11 +65,30 @@ export const MEDIA_REPORT_SCRIPT = `
 })();
 `;
 
-/** Runs on the call page. Exported so tests can execute it against a stand-in SDK. */
+/**
+ * Runs on the call page. Exported so tests can execute it against a stand-in
+ * SDK. Embedded in BB it talks to the parent window; opened on its own (a
+ * ticket link in the system browser) it joins the call it was served with
+ * and reports on the page itself.
+ */
 export const CALL_PAGE_SCRIPT = `
 (function () {
   var parentWindow = window.parent;
-  function post(message) { parentWindow.postMessage(message, "*"); }
+  var standalone = parentWindow === window;
+  var notice = document.getElementById("notice");
+  function say(text) { if (notice) notice.textContent = text; }
+  function post(message) {
+    if (!standalone) { parentWindow.postMessage(message, "*"); return; }
+    if (message.type === "zoom-call:failed") say(message.message);
+    if (message.type === "zoom-call:error") say("Zoom отклонил вход: " + message.message + " (код " + message.code + ")");
+    if (message.type === "zoom-call:joined") say("");
+    if (message.type === "zoom-call:ended") say("Звонок завершён. Эту вкладку можно закрыть.");
+  }
+  var served = standalone ? window.__ZOOM_CALL__ : null;
+  if (standalone && !served) {
+    say("Эта страница открывается из плагина Makosh Zoom в BB.");
+    return;
+  }
   if (typeof ZoomMtgEmbedded === "undefined") {
     post({ type: "zoom-call:failed", message: "Не удалось загрузить Zoom Meeting SDK" });
     return;
@@ -79,6 +98,22 @@ export const CALL_PAGE_SCRIPT = `
     var message = error && (error.reason || error.message);
     return { code: String(code === undefined ? "unknown" : code), message: String(message || "Zoom отклонил вход") };
   }
+
+  // Zoom derives the view's height from its width (16:9 video plus its own
+  // controls), so the view is fitted by width and refitted on every resize.
+  var CONTROLS_HEIGHT = 92;
+  var MIN_WIDTH = 320;
+  function fit() {
+    var byWidth = window.innerWidth - 4;
+    var byHeight = Math.floor((window.innerHeight - CONTROLS_HEIGHT) * 16 / 9);
+    var width = Math.max(MIN_WIDTH, Math.min(byWidth, byHeight));
+    client.updateVideoOptions({
+      isResizable: false,
+      popper: { disableDraggable: true, anchorPosition: { top: 0, left: Math.max(0, Math.floor((window.innerWidth - width - 4) / 2)) } },
+      viewSizes: { default: { width: width, height: Math.floor(width * 9 / 16) } }
+    });
+  }
+
   var client = null;
   var joined = false;
   var ready;
@@ -87,46 +122,63 @@ export const CALL_PAGE_SCRIPT = `
     ready = Promise.resolve(client.init({
       zoomAppRoot: document.getElementById("meetingSDKElement"),
       language: "ru-RU",
-      patchJsMedia: true,
-      customize: {
-        video: {
-          isResizable: false,
-          popper: { disableDraggable: true },
-          viewSizes: { default: { width: Math.max(320, window.innerWidth - 16), height: Math.max(240, window.innerHeight - 120) } }
-        }
-      }
+      patchJsMedia: true
     })).then(function () {
       // The SDK throws on on() until init() has finished.
       client.on("connection-change", function (payload) {
-        if (payload && payload.state === "Connected") { joined = true; post({ type: "zoom-call:joined" }); }
+        if (payload && payload.state === "Connected") { joined = true; fit(); post({ type: "zoom-call:joined" }); }
         if (payload && payload.state === "Closed") { joined = false; post({ type: "zoom-call:ended" }); }
       });
     });
   } catch (error) {
     ready = Promise.reject(error);
   }
+
+  var resizeTimer = null;
+  window.addEventListener("resize", function () {
+    if (resizeTimer !== null) clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(function () {
+      resizeTimer = null;
+      if (joined) { try { fit(); } catch (error) { /* the next resize tries again */ } }
+    }, 150);
+  });
+
+  function join(call) {
+    ready.then(function () {
+      return client.join({
+        signature: call.signature,
+        meetingNumber: call.meetingNumber,
+        password: call.passcode || "",
+        userName: call.userName,
+        zak: call.zak
+      });
+    }).catch(function (error) {
+      var info = describe(error);
+      post({ type: "zoom-call:error", code: info.code, message: info.message });
+    });
+  }
+
+  var THEME_KEYS = ["background", "foreground", "card", "popover", "border", "input", "primary", "primaryForeground", "muted", "mutedForeground", "destructive", "font"];
+  function applyTheme(colors) {
+    if (!colors || typeof colors !== "object") return;
+    THEME_KEYS.forEach(function (key) {
+      var value = colors[key];
+      if (typeof value === "string" && value !== "" && value.length <= 200) {
+        document.documentElement.style.setProperty("--bb-" + key, value);
+      }
+    });
+  }
+
   ready.then(function () {
     post({ type: "zoom-call:ready" });
+    if (standalone) join(served);
   }, function (error) {
     post({ type: "zoom-call:failed", message: "Zoom Meeting SDK не запустился: " + describe(error).message });
   });
   window.addEventListener("message", function (event) {
-    if (event.source !== parentWindow || !event.data) return;
-    if (event.data.type === "zoom-call:join" && event.data.call && !joined) {
-      var call = event.data.call;
-      ready.then(function () {
-        return client.join({
-          signature: call.signature,
-          meetingNumber: call.meetingNumber,
-          password: call.passcode || "",
-          userName: call.userName,
-          zak: call.zak
-        });
-      }).catch(function (error) {
-        var info = describe(error);
-        post({ type: "zoom-call:error", code: info.code, message: info.message });
-      });
-    }
+    if (standalone || event.source !== parentWindow || !event.data) return;
+    if (event.data.type === "zoom-call:theme") applyTheme(event.data.colors);
+    if (event.data.type === "zoom-call:join" && event.data.call && !joined) join(event.data.call);
     if (event.data.type === "zoom-call:leave" && joined) {
       try { client.leaveMeeting(); } catch (error) { post({ type: "zoom-call:ended" }); }
     }
@@ -134,26 +186,91 @@ export const CALL_PAGE_SCRIPT = `
 })();
 `;
 
-export function callPageHtml(): string {
+/**
+ * BB's colours over Zoom's component view. The variables are set from the
+ * host's theme; the defaults are a neutral dark. Zoom's MUI class names are
+ * not a stable interface: recheck these rules when MEETING_SDK_VERSION moves.
+ */
+const THEME_CSS = `
+:root {
+  --bb-background: #16161a; --bb-foreground: #e4e4e7; --bb-card: #1d1d22; --bb-popover: #1d1d22;
+  --bb-border: #2e2e35; --bb-input: #3f3f46; --bb-primary: #8b5cf6; --bb-primaryForeground: #0a0a0a;
+  --bb-muted: #26262c; --bb-mutedForeground: #a1a1aa; --bb-destructive: #ef4444;
+  --bb-font: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+html, body { margin: 0; height: 100%; background: var(--bb-background); color: var(--bb-foreground); font-family: var(--bb-font); }
+#meetingSDKElement { min-height: 100%; }
+#notice { font-size: 14px; line-height: 1.5; text-align: center; padding: 0 16px; }
+#notice:not(:empty) { padding: 16px; }
+#meetingSDKElement .zoom-MuiPaper-root,
+body > .zoom-MuiPopper-root .zoom-MuiPaper-root,
+body > .zoom-MuiPopover-root .zoom-MuiPaper-root,
+body > .zoom-MuiDialog-root .zoom-MuiPaper-root,
+body > .zoom-MuiMenu-root .zoom-MuiPaper-root {
+  background-color: var(--bb-card) !important; color: var(--bb-foreground) !important;
+  background-image: none !important; box-shadow: none !important; border: 1px solid var(--bb-border);
+}
+.zoom-MuiListItem-root { background-color: var(--bb-muted) !important; color: var(--bb-foreground) !important; }
+.zoom-MuiTypography-root, .zoom-MuiInputBase-root, .zoom-MuiFormLabel-root, .zoom-MuiTab-root { color: inherit !important; font-family: var(--bb-font) !important; }
+.zoom-MuiButtonBase-root { font-family: var(--bb-font) !important; }
+.zoom-MuiTooltip-tooltip {
+  background-color: var(--bb-popover) !important; color: var(--bb-foreground) !important;
+  border: 1px solid var(--bb-border); font-family: var(--bb-font) !important;
+}
+.zoom-MuiDivider-root { border-color: var(--bb-border) !important; }
+.zoom-MuiOutlinedInput-notchedOutline { border-color: var(--bb-input) !important; }
+.zoom-MuiTabs-indicator { background-color: var(--bb-primary) !important; }
+.zoom-MuiTab-root.Mui-selected { color: var(--bb-primary) !important; }
+.zoom-MuiButton-containedPrimary { background-color: var(--bb-primary) !important; color: var(--bb-primaryForeground) !important; }
+.zoom-MuiButton-textPrimary, .zoom-MuiButton-outlinedPrimary { color: var(--bb-foreground) !important; }
+.zoom-MuiMenuItem-root:hover, .zoom-MuiListItemButton-root:hover { background-color: var(--bb-muted) !important; }
+`;
+
+/** A call to join without a parent window: the page was opened by a ticket link. */
+export interface ServedCall {
+  readonly signature: string;
+  readonly meetingNumber: string;
+  readonly passcode: string | null;
+  readonly userName: string;
+  readonly zak: string;
+}
+
+/** JSON that cannot close the script element it sits in. */
+function inlineJson(value: unknown): string {
+  return JSON.stringify(value).replace(/</g, "\\u003c").replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
+}
+
+export function callPageHtml(served?: ServedCall): string {
   const scripts = [
     ...VENDOR.map((name) => `https://source.zoom.us/${MEETING_SDK_VERSION}/lib/vendor/${name}.min.js`),
     `https://source.zoom.us/zoom-meeting-embedded-${MEETING_SDK_VERSION}.min.js`,
   ]
     .map((source) => `<script src="${source}"></script>`)
     .join("\n");
+  const call =
+    served === undefined
+      ? ""
+      : `<script>window.__ZOOM_CALL__ = ${inlineJson({
+          signature: served.signature,
+          meetingNumber: served.meetingNumber,
+          passcode: served.passcode,
+          userName: served.userName,
+          zak: served.zak,
+        })};</script>\n`;
   return `<!doctype html>
 <html lang="ru">
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Zoom</title>
-<style>html, body { margin: 0; height: 100%; background: #111; } #meetingSDKElement { min-height: 100%; }</style>
+<style>${THEME_CSS}</style>
 </head>
 <body>
+<div id="notice" role="status"></div>
 <div id="meetingSDKElement"></div>
 <script>${MEDIA_REPORT_SCRIPT}</script>
 ${scripts}
-<script>${CALL_PAGE_SCRIPT}</script>
+${call}<script>${CALL_PAGE_SCRIPT}</script>
 </body>
 </html>
 `;

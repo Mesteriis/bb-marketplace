@@ -37,6 +37,7 @@ function setup(status: AccountStatus, meetings: ZoomMeeting[] = []) {
     listMeetings: vi.fn(async () => meetings),
     createMeeting: vi.fn(async () => meeting("9999999999", "Новая", "2026-11-24T10:00:00Z")),
     prepareCall: vi.fn(async () => PREPARED),
+    openCallInBrowser: vi.fn(async () => ({ url: "http://127.0.0.1:38886/call?ticket=t", opened: true })),
   } satisfies ZoomPageApi;
   const openExternal = vi.fn();
   const view = render(
@@ -123,6 +124,25 @@ describe("ZoomPage", () => {
     fireEvent.submit(field.closest("form")!);
     await screen.findByTitle("Звонок Zoom");
     expect(api.prepareCall).toHaveBeenCalledWith({ link: "123 456 7890", asHost: false });
+  });
+
+  it("moves the call to the system browser and closes the embedded one", async () => {
+    const { api, openExternal } = setup(CONNECTED, [meeting("1111111111", "Планёрка", "2026-11-23T10:00:00Z")]);
+    fireEvent.click(await screen.findByRole("button", { name: "Войти: Планёрка" }));
+    await screen.findByTitle("Звонок Zoom");
+    fireEvent.click(screen.getByRole("button", { name: "В браузере" }));
+    await waitFor(() => expect(api.openCallInBrowser).toHaveBeenCalledWith({ link: "https://us02web.zoom.us/j/1111111111?pwd=p1111111111", asHost: true }));
+    await waitFor(() => expect(screen.queryByTitle("Звонок Zoom")).toBeNull());
+    expect(openExternal).not.toHaveBeenCalled();
+  });
+
+  it("opens the link itself when the server could not start a browser", async () => {
+    const { api, openExternal } = setup(CONNECTED, [meeting("1111111111", "Планёрка", "2026-11-23T10:00:00Z")]);
+    api.openCallInBrowser.mockResolvedValue({ url: "http://127.0.0.1:38886/call?ticket=t", opened: false });
+    fireEvent.click(await screen.findByRole("button", { name: "Войти: Планёрка" }));
+    await screen.findByTitle("Звонок Zoom");
+    fireEvent.click(screen.getByRole("button", { name: "В браузере" }));
+    await waitFor(() => expect(openExternal).toHaveBeenCalledWith("http://127.0.0.1:38886/call?ticket=t"));
   });
 
   it("shows why joining failed and stays on the calendar", async () => {

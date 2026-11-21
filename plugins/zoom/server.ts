@@ -7,7 +7,9 @@
 import { randomBytes } from "node:crypto";
 import { defineRpcContract, experimental_PluginRpcRefusal, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
+import { createCallTickets } from "./src/adapters/bb/call-tickets.ts";
 import { registerHttpRoutes } from "./src/adapters/bb/http-routes.ts";
+import { openInSystemBrowser } from "./src/adapters/bb/open-in-browser.ts";
 import { createPendingLogins } from "./src/adapters/bb/pending-logins.ts";
 import { createTokenStore, generateVaultKey, isVaultKey } from "./src/adapters/bb/token-store.ts";
 import { prepareCall } from "./src/core/call.ts";
@@ -15,7 +17,7 @@ import { CHANNEL_ACCOUNT_CHANGED, rpcSchemas } from "./src/core/contract.ts";
 import { DomainError } from "./src/core/errors.ts";
 import { createOAuth } from "./src/core/oauth.ts";
 import type { AppCredentialsSource, HttpFetch } from "./src/core/ports.ts";
-import { redirectUriFor } from "./src/core/redirect.ts";
+import { CALL_PAGE_PATH, callPageUrlFor, redirectUriFor } from "./src/core/redirect.ts";
 import { createZoomApi } from "./src/core/zoom-api.ts";
 
 export const rpcContract = defineRpcContract(rpcSchemas);
@@ -88,7 +90,9 @@ export default async function plugin(bb: BbPluginApi) {
   const api = createZoomApi({ fetch: zoomFetch, clock, accessToken: (options) => oauth.accessToken(options) });
   const accountChanged = () => bb.realtime.publish(CHANNEL_ACCOUNT_CHANGED, {});
 
-  registerHttpRoutes(bb, oauth, accountChanged);
+  const tickets = createCallTickets(clock, () => randomBytes(32).toString("base64url"));
+
+  registerHttpRoutes(bb, oauth, tickets, accountChanged);
 
   async function run<T>(fn: () => Promise<T>): Promise<T> {
     try {
@@ -131,5 +135,13 @@ export default async function plugin(bb: BbPluginApi) {
     meetings_list: () => run(async () => ({ meetings: await api.listUpcoming() })),
     meeting_create: (input) => run(async () => ({ meeting: await api.createMeeting(input) })),
     call_prepare: (input) => run(() => prepareCall({ clock, credentials, api }, input)),
+    call_open_external: (input) =>
+      run(async () => {
+        const ticket = tickets.issue(await prepareCall({ clock, credentials, api }, input));
+        // The other loopback name, so Zoom's code shares no origin with BB in that browser either.
+        const page = callPageUrlFor(bb.server.loopbackBaseUrl) ?? `${bb.server.loopbackBaseUrl}${CALL_PAGE_PATH}`;
+        const url = `${page}?ticket=${ticket}`;
+        return { url, opened: await openInSystemBrowser(url) };
+      }),
   });
 }

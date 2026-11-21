@@ -19,6 +19,7 @@ function fakeSdk(options: { joinError?: unknown } = {}) {
       if (options.joinError !== undefined) throw options.joinError;
     }),
     leaveMeeting: vi.fn(),
+    updateVideoOptions: vi.fn(),
   };
   return { client, listeners, sdk: { createClient: () => client } };
 }
@@ -134,5 +135,135 @@ describe("media access reports", () => {
     expect(posted.slice(1)).toEqual([
       { type: "zoom-call:media-error", kind: "screen", name: "NotSupportedError", message: "Screen capture is not available here" },
     ]);
+  });
+});
+
+describe("fitting the Zoom view to the frame", () => {
+  function size(width: number, height: number) {
+    Object.defineProperty(window, "innerWidth", { value: width, configurable: true });
+    Object.defineProperty(window, "innerHeight", { value: height, configurable: true });
+  }
+  const lastSize = (client: { updateVideoOptions: ReturnType<typeof vi.fn> }) =>
+    client.updateVideoOptions.mock.calls.at(-1)![0].viewSizes.default;
+
+  it("fills a wide frame by height: 16:9 video plus 92 px of Zoom's own controls", async () => {
+    size(1231, 623);
+    const { client, listeners, sdk } = fakeSdk();
+    run(sdk);
+    await settle();
+    listeners["connection-change"]!({ state: "Connected" });
+    expect(lastSize(client)).toEqual({ width: 944, height: 531 });
+    expect(client.updateVideoOptions.mock.calls.at(-1)![0].popper).toEqual({ disableDraggable: true, anchorPosition: { top: 0, left: 141 } });
+  });
+
+  it("fills a narrow frame by width", async () => {
+    size(400, 900);
+    const { client, listeners, sdk } = fakeSdk();
+    run(sdk);
+    await settle();
+    listeners["connection-change"]!({ state: "Connected" });
+    expect(lastSize(client)).toEqual({ width: 396, height: 222 });
+  });
+
+  it("never goes below 320 px wide", async () => {
+    size(200, 150);
+    const { client, listeners, sdk } = fakeSdk();
+    run(sdk);
+    await settle();
+    listeners["connection-change"]!({ state: "Connected" });
+    expect(lastSize(client)).toEqual({ width: 320, height: 180 });
+  });
+
+  it("refits after the frame is resized, once the resizing settles", async () => {
+    vi.useFakeTimers();
+    try {
+      size(1231, 623);
+      const { client, listeners, sdk } = fakeSdk();
+      run(sdk);
+      await vi.advanceTimersByTimeAsync(0);
+      listeners["connection-change"]!({ state: "Connected" });
+      const before = client.updateVideoOptions.mock.calls.length;
+      size(800, 623);
+      window.dispatchEvent(new Event("resize"));
+      window.dispatchEvent(new Event("resize"));
+      await vi.advanceTimersByTimeAsync(149);
+      expect(client.updateVideoOptions.mock.calls.length).toBe(before);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(client.updateVideoOptions.mock.calls.length).toBe(before + 1);
+      expect(lastSize(client)).toEqual({ width: 796, height: 447 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not resize before the call is connected", async () => {
+    size(1231, 623);
+    const { client, sdk } = fakeSdk();
+    run(sdk);
+    await settle();
+    window.dispatchEvent(new Event("resize"));
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(client.updateVideoOptions).not.toHaveBeenCalled();
+  });
+});
+
+describe("theme from the host", () => {
+  it("applies known colours as CSS variables and ignores everything else", async () => {
+    const { say } = run(fakeSdk().sdk);
+    await settle();
+    say({
+      type: "zoom-call:theme",
+      colors: { background: "#1e1e2e", foreground: "#cdd6f4", primary: "color-mix(in oklch, #cdd6f4 13%, #1e1e2e)", evil: "red", card: "x".repeat(201), border: 5 },
+    });
+    const style = document.documentElement.style;
+    expect(style.getPropertyValue("--bb-background")).toBe("#1e1e2e");
+    expect(style.getPropertyValue("--bb-foreground")).toBe("#cdd6f4");
+    expect(style.getPropertyValue("--bb-primary")).toBe("color-mix(in oklch, #cdd6f4 13%, #1e1e2e)");
+    expect(style.getPropertyValue("--bb-evil")).toBe("");
+    expect(style.getPropertyValue("--bb-card")).toBe("");
+    expect(style.getPropertyValue("--bb-border")).toBe("");
+  });
+});
+
+describe("standalone page (opened in a browser of its own)", () => {
+  function standalone(sdk: unknown, call: unknown) {
+    document.body.innerHTML = '<div id="notice"></div><div id="meetingSDKElement"></div>';
+    vi.stubGlobal("ZoomMtgEmbedded", sdk);
+    vi.stubGlobal("__ZOOM_CALL__", call);
+    Object.defineProperty(window, "parent", { value: window, configurable: true });
+    new Function(MEDIA_REPORT_SCRIPT)();
+    new Function(CALL_PAGE_SCRIPT)();
+    return () => document.getElementById("notice")!.textContent;
+  }
+
+  it("joins the call it was served with, without waiting for a parent", async () => {
+    const { client, sdk } = fakeSdk();
+    standalone(sdk, CALL);
+    await settle();
+    await settle();
+    expect(client.join).toHaveBeenCalledWith({ signature: "sig", meetingNumber: "1111111111", password: "", userName: "Иван", zak: "zak" });
+  });
+
+  it("shows Zoom's refusal on the page", async () => {
+    const { sdk } = fakeSdk({ joinError: { reason: "Meeting SDK app is not published", errorCode: 4011 } });
+    const notice = standalone(sdk, CALL);
+    await settle();
+    await settle();
+    expect(notice()).toBe("Zoom отклонил вход: Meeting SDK app is not published (код 4011)");
+  });
+
+  it("says the call is over when it ends", async () => {
+    const { listeners, sdk } = fakeSdk();
+    const notice = standalone(sdk, CALL);
+    await settle();
+    await settle();
+    listeners["connection-change"]!({ state: "Closed" });
+    expect(notice()).toBe("Звонок завершён. Эту вкладку можно закрыть.");
+  });
+
+  it("explains a page opened without a call", async () => {
+    const notice = standalone(fakeSdk().sdk, undefined);
+    await settle();
+    expect(notice()).toBe("Эта страница открывается из плагина Makosh Zoom в BB.");
   });
 });

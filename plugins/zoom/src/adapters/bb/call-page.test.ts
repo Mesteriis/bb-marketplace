@@ -47,3 +47,23 @@ describe("result page", () => {
     expect(resultPageHtml(true, "Аккаунт Zoom подключён")).toContain("<h1>Аккаунт Zoom подключён</h1>");
   });
 });
+
+describe("call page served with a call (ticket link)", () => {
+  const served = { signature: "sig", meetingNumber: "1111111111", passcode: null, userName: 'Иван </script><script>alert(1)', zak: "zak" };
+
+  it("embeds the call before the page script, so it joins on its own", () => {
+    const html = callPageHtml(served);
+    expect(html).toContain('window.__ZOOM_CALL__ = {"signature":"sig","meetingNumber":"1111111111","passcode":null,');
+    expect(html.indexOf("window.__ZOOM_CALL__ =")).toBeLessThan(html.indexOf("var served = standalone"));
+  });
+
+  it("cannot be broken out of by a name containing a closing script tag", () => {
+    const html = callPageHtml(served);
+    expect(html).toContain("\\u003c/script>\\u003cscript>alert(1)");
+    expect(html).not.toContain("</script><script>alert(1)");
+  });
+
+  it("carries no call when embedded in BB", () => {
+    expect(callPageHtml()).not.toContain("window.__ZOOM_CALL__ =");
+  });
+});

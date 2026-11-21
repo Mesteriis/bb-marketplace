@@ -14,10 +14,15 @@ const CALL = {
   fallbackUrl: "https://zoom.us/j/1111111111?pwd=p1",
 };
 
+const THEME = { background: "#1e1e2e", foreground: "#cdd6f4" };
+
 function setup() {
   const onClose = vi.fn();
   const openExternal = vi.fn();
-  render(<CallPanel call={CALL} callPageUrl="/call" title="Планёрка" onClose={onClose} openExternal={openExternal} />);
+  const onOpenInBrowser = vi.fn();
+  render(
+    <CallPanel call={CALL} callPageUrl="/call" title="Планёрка" onClose={onClose} openExternal={openExternal} onOpenInBrowser={onOpenInBrowser} readTheme={() => THEME} />,
+  );
   const frame = screen.getByTitle("Звонок Zoom") as HTMLIFrameElement;
   const target = frame.contentWindow!;
   const posted = vi.spyOn(target, "postMessage").mockImplementation(() => undefined);
@@ -25,13 +30,14 @@ function setup() {
     act(() => {
       window.dispatchEvent(new MessageEvent("message", { data, source }));
     });
-  return { onClose, openExternal, posted, say };
+  return { onClose, openExternal, onOpenInBrowser, posted, say };
 }
 
 describe("CallPanel", () => {
   it("hands the meeting to the page once it is ready", () => {
     const { posted, say } = setup();
     say({ type: "zoom-call:ready" });
+    expect(posted).toHaveBeenNthCalledWith(1, { type: "zoom-call:theme", colors: THEME }, "*");
     expect(posted).toHaveBeenCalledWith(
       { type: "zoom-call:join", call: { signature: "sig", meetingNumber: "1111111111", passcode: "p1", userName: "Иван", zak: "zak" } },
       "*",
@@ -94,7 +100,7 @@ describe("media problems", () => {
     say({ type: "zoom-call:joined" });
     say({ type: "zoom-call:media-error", kind: "screen", name: "NotSupportedError", message: "Not supported" });
     expect(screen.getByRole("status").textContent).toBe(
-      "Демонстрация экрана недоступна: BB не даёт встроенным страницам захватывать экран (NotSupportedError). Откройте встречу в приложении Zoom.",
+      "Демонстрация экрана внутри BB не работает: приложение BB не умеет захват экрана (NotSupportedError). Откройте звонок в браузере.",
     );
     expect(screen.getByTitle("Звонок Zoom")).toBeTruthy();
   });
@@ -107,13 +113,23 @@ describe("media problems", () => {
   });
 
   it.each([
-    ["camera", "NotAllowedError", "Камера недоступна (NotAllowedError). Проверьте доступ: Системные настройки → Конфиденциальность и безопасность → Камера → bb."],
-    ["microphone", "NotAllowedError", "Микрофон недоступен (NotAllowedError). Проверьте доступ: Системные настройки → Конфиденциальность и безопасность → Микрофон → bb."],
+    ["camera", "NotAllowedError", "Камера внутри BB не работает: у приложения BB нет системного доступа к камере (NotAllowedError). Откройте звонок в браузере."],
     ["camera", "NotFoundError", "Камера недоступна (NotFoundError): устройство не найдено."],
     ["camera", "NotReadableError", "Камера недоступна (NotReadableError): её занимает другое приложение."],
+    ["microphone", "NotAllowedError", "Микрофон недоступен (NotAllowedError). Разрешите его для bb: Системные настройки → Конфиденциальность и безопасность → Микрофон. Или откройте звонок в браузере."],
     ["microphone", "AbortError", "Микрофон недоступен (AbortError)."],
   ])("describes %s with %s", (kind, name, text) => {
     expect(mediaProblemText(kind, name)).toBe(text);
+  });
+
+  it("offers the browser from the notice and from the header", () => {
+    const { say, onOpenInBrowser } = setup();
+    say({ type: "zoom-call:joined" });
+    say({ type: "zoom-call:media-error", kind: "camera", name: "NotAllowedError" });
+    const buttons = screen.getAllByRole("button", { name: "В браузере" });
+    expect(buttons).toHaveLength(2);
+    act(() => buttons[0]!.click());
+    expect(onOpenInBrowser).toHaveBeenCalledTimes(1);
   });
 
   it("ignores a report with an unknown kind", () => {

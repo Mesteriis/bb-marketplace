@@ -36,7 +36,7 @@ export function CalendarScreen({ api, displayName, callPageUrl, openExternal, no
   const [createOpen, setCreateOpen] = useState(false);
   const [joining, setJoining] = useState<string | null>(null);
   const [joinError, setJoinError] = useState<string | null>(null);
-  const [active, setActive] = useState<{ call: PreparedCall; title: string } | null>(null);
+  const [active, setActive] = useState<{ call: PreparedCall; title: string; link: string; asHost: boolean } | null>(null);
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
 
   useEffect(() => {
@@ -69,7 +69,7 @@ export function CalendarScreen({ api, displayName, callPageUrl, openExternal, no
           openExternal(call.fallbackUrl);
           notify("info", "Звонок внутри BB работает только при локальном адресе BB. Открываю встречу в Zoom");
         } else {
-          setActive({ call, title });
+          setActive({ call, title, link, asHost });
         }
       } catch (error) {
         setJoinError(messageOf(error));
@@ -84,6 +84,17 @@ export function CalendarScreen({ api, displayName, callPageUrl, openExternal, no
     setActive(null);
     setReload((value) => value + 1);
   }, []);
+
+  // The embedded call is closed first: the same person joining twice would hold two seats.
+  async function moveToBrowser(link: string, asHost: boolean) {
+    setActive(null);
+    try {
+      const { url, opened } = await api.openCallInBrowser({ link, asHost });
+      if (!opened) openExternal(url);
+    } catch (error) {
+      setJoinError(messageOf(error));
+    }
+  }
 
   async function create(input: NewMeeting, joinNow: boolean) {
     const meeting = await api.createMeeting(input);
@@ -105,7 +116,7 @@ export function CalendarScreen({ api, displayName, callPageUrl, openExternal, no
   }
 
   if (active !== null && callPageUrl !== null) {
-    return <CallPanel call={active.call} title={active.title === "" ? "Встреча Zoom" : active.title} callPageUrl={callPageUrl} onClose={closeCall} openExternal={openExternal} />;
+    return <CallPanel call={active.call} title={active.title === "" ? "Встреча Zoom" : active.title} callPageUrl={callPageUrl} onClose={closeCall} openExternal={openExternal} onOpenInBrowser={() => void moveToBrowser(active.link, active.asHost)} />;
   }
 
   const empty = week !== null && week.unscheduled.length === 0 && week.days.every((day) => day.events.length === 0);

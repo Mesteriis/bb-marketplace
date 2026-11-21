@@ -18,6 +18,12 @@ export interface ZoomPageApi {
   listMeetings(): Promise<ZoomMeeting[]>;
   createMeeting(input: NewMeeting): Promise<ZoomMeeting>;
   prepareCall(input: { link: string; asHost: boolean }): Promise<PreparedCall>;
+  /**
+   * Opens the same call in the machine's default browser, where camera,
+   * microphone and screen sharing work. `opened` false means the host could
+   * not start a browser and the page should open `url` itself.
+   */
+  openCallInBrowser(input: { link: string; asHost: boolean }): Promise<{ url: string; opened: boolean }>;
 }
 
 export type Notify = (kind: "error" | "success" | "info", message: string) => void;
