@@ -3,17 +3,46 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
 const pluginRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-const IMPORT_SPECIFIER =
-  /\bfrom\s+["']([^"']+)["']|\bimport\s+["']([^"']+)["']|\bimport\(\s*["']([^"']+)["']\s*\)|\brequire\(\s*["']([^"']+)["']\s*\)/g;
+/** What the scanner reports for an import whose target is not a string literal. */
+const NON_LITERAL = "<non-literal>";
 
+/**
+ * Every module specifier a source file imports, in source order. Reads the
+ * TypeScript syntax tree, so comments, line breaks and quoting style between
+ * the keyword and the specifier cannot hide an import, and import-like text
+ * inside comments and strings is not counted.
+ */
 function importSpecifiers(source: string): string[] {
-  return [...source.matchAll(IMPORT_SPECIFIER)].map(
-    (match) => match[1] ?? match[2] ?? match[3] ?? match[4] ?? "",
-  );
+  const file = ts.createSourceFile("module.tsx", source, ts.ScriptTarget.Latest, false, ts.ScriptKind.TSX);
+  const found: string[] = [];
+  const literal = (node: ts.Node | undefined): string =>
+    node !== undefined && ts.isStringLiteralLike(node) ? node.text : NON_LITERAL;
+
+  const visit = (node: ts.Node): void => {
+    if (ts.isImportDeclaration(node)) {
+      found.push(literal(node.moduleSpecifier));
+    } else if (ts.isExportDeclaration(node) && node.moduleSpecifier !== undefined) {
+      found.push(literal(node.moduleSpecifier));
+    } else if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference)) {
+      found.push(literal(node.moduleReference.expression));
+    } else if (ts.isImportTypeNode(node)) {
+      found.push(ts.isLiteralTypeNode(node.argument) ? literal(node.argument.literal) : NON_LITERAL);
+    } else if (
+      ts.isCallExpression(node) &&
+      (node.expression.kind === ts.SyntaxKind.ImportKeyword ||
+        (ts.isIdentifier(node.expression) && node.expression.text === "require"))
+    ) {
+      found.push(literal(node.arguments[0]));
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return found;
 }
 
 function sourceFiles(directory: string): string[] {
@@ -81,6 +110,52 @@ describe("import scanner", () => {
       'const f = require("pkg-f");',
     ].join("\n");
     expect(importSpecifiers(source)).toEqual(["pkg-a", "./b.ts", "pkg-c", "pkg-d", "pkg-e", "pkg-f"]);
+  });
+
+  it("finds specifiers behind comments, line breaks and template literals", () => {
+    const source = [
+      'const a = import(/* lazy */ "node:fs");',
+      'const b = import(',
+      '  // lazy',
+      '  "node:path"',
+      ');',
+      'import { c } from /* host */ "electron";',
+      'import /* side effect */ "@get-bb/plugin-sdk";',
+      'const d = require(/* cjs */ "tauri");',
+      'const e = import(`node:os`);',
+      'export { f } from\n"@tauri-apps/api";',
+    ].join("\n");
+    expect(importSpecifiers(source)).toEqual([
+      "node:fs",
+      "node:path",
+      "electron",
+      "@get-bb/plugin-sdk",
+      "tauri",
+      "node:os",
+      "@tauri-apps/api",
+    ]);
+  });
+
+  it("finds import-equals and type-only import() specifiers", () => {
+    const source = ['import fs = require("node:fs");', 'type Api = import("@get-bb/plugin-sdk").BbPluginApi;'].join("\n");
+    expect(importSpecifiers(source)).toEqual(["node:fs", "@get-bb/plugin-sdk"]);
+  });
+
+  it("reports an import whose target is computed, so it cannot pass as allowed", () => {
+    const source = ['const name = "node:" + "fs";', "const a = import(name);", "const b = require(name);"].join("\n");
+    expect(importSpecifiers(source)).toEqual(["<non-literal>", "<non-literal>"]);
+    expect(isAllowed(core, resolve(pluginRoot, "src/core/model.ts"), "<non-literal>")).toBe(false);
+    expect(isAllowed(ui, resolve(pluginRoot, "src/ui/page.tsx"), "<non-literal>")).toBe(false);
+  });
+
+  it("ignores import-like text inside comments and strings", () => {
+    const source = [
+      '// import { a } from "node:fs";',
+      '/* const b = require("electron"); */',
+      'const c = "import(\'node:path\')";',
+      'const url = "https://example.test/x"; // trailing',
+    ].join("\n");
+    expect(importSpecifiers(source)).toEqual([]);
   });
 });
 
