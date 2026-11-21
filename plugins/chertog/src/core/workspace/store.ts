@@ -53,21 +53,24 @@ function sameData(first: unknown, second: unknown): boolean {
 }
 
 /**
- * One item of a three-way merge. A side that changed the item since `base`
- * wins over a side that left it alone, also when the change is a deletion.
- * When both changed it, this window's version wins and `clash` is set.
+ * One item of a three-way merge when at most one side changed it since
+ * `base`, or both changed it the same way. The changed side wins, also when
+ * its change is a deletion; a deletion never beats a change, because the
+ * changed item is the one somebody is working on.
  */
-function mergeItem<T>(base: T | undefined, mine: T | undefined, theirs: T | undefined): { value: T | undefined; clash: boolean } {
-  if (sameData(mine, base)) return { value: theirs, clash: false };
-  if (sameData(theirs, base) || sameData(mine, theirs)) return { value: mine, clash: false };
-  // A deletion never beats a change: the changed item is the one somebody is working on.
-  if (mine === undefined) return { value: theirs, clash: false };
-  if (theirs === undefined) return { value: mine, clash: false };
-  return { value: mine, clash: true };
+function mergeItem<T>(base: T | undefined, mine: T | undefined, theirs: T | undefined): T | undefined {
+  if (sameData(mine, base)) return theirs;
+  if (sameData(theirs, base) || sameData(mine, theirs)) return mine;
+  return mine ?? theirs;
 }
 
-/** A panel id this window used that the merge replaced, because the stored document uses it for another panel. */
-export interface PanelRename {
+/** Whether both windows have the item and each made it, or changed it, in its own way. */
+function diverged<T>(base: T | undefined, mine: T | undefined, theirs: T | undefined): boolean {
+  return mine !== undefined && theirs !== undefined && !sameData(mine, theirs) && !sameData(mine, base) && !sameData(theirs, base);
+}
+
+/** An id of this window that the merge replaced, because the stored document uses it for something else. */
+export interface IdRename {
   readonly from: string;
   readonly to: string;
 }
@@ -75,13 +78,17 @@ export interface PanelRename {
 export interface WorkspaceMerge {
   /** The stored document with this window's work merged in, at the stored revision: save it against that revision. */
   readonly document: WorkspaceDocument;
-  /** Layouts both windows changed. This window's version was kept and the other window's change to them is lost. */
-  readonly overridden: readonly string[];
+  /**
+   * Layouts both windows created under one id, or both changed. The stored
+   * version keeps the id; this window's version is kept beside it under the
+   * new id, with its name, and stays open in this window.
+   */
+  readonly renamedLayouts: readonly IdRename[];
   /**
    * Panels of this window that got a new id. The window's layouts in the
    * merged document already use it; the window moves its live instance to it.
    */
-  readonly renamedPanels: readonly PanelRename[];
+  readonly renamedPanels: readonly IdRename[];
 }
 
 const MAX_ID_LENGTH = 64;
@@ -109,14 +116,15 @@ function renameTabs(node: LayoutNode, renames: ReadonlyMap<string, string>): Lay
 /**
  * Merges a refused save into the stored document. `base` is the document
  * both windows started from, `mine` this window's document, `theirs` the
- * document the conflict returned. Changes to different layouts are all kept;
- * a layout the other window created or changed is never lost; this window
- * stays on its own open layout. `livePanelIds` are the panels with an open
- * instance in this window, under this window's ids: their references stay.
+ * document the conflict returned. Nothing either window made is lost:
+ * changes to different layouts are all kept, and a layout both windows
+ * created or changed is kept in both versions. This window stays on its own
+ * open layout. `livePanelIds` are the panels with an open instance in this
+ * window, under this window's ids: their references stay.
  *
- * A panel id means one reference. When the two windows gave one id to
- * different references, the stored document keeps the id and this window's
- * panel gets a new one, in its layouts too, so no tile changes what it shows.
+ * An id means one thing. When the two windows gave one layout id or one
+ * panel id to different things, the stored document keeps the id and this
+ * window's layout or panel gets a new one, so no tile changes what it shows.
  */
 export function mergeDocuments(
   base: WorkspaceDocument,
@@ -129,35 +137,46 @@ export function mergeDocuments(
   const entry = (document: WorkspaceDocument, panelId: string): WorkspacePanel | undefined =>
     Object.hasOwn(document.panels, panelId) ? document.panels[panelId] : undefined;
 
-  const chosen: NamedLayout[] = [];
-  const overridden: string[] = [];
+  // Each chosen layout with the window whose panel ids its tabs speak.
+  const chosen: { layout: NamedLayout; mine: boolean }[] = [];
+  const copies: { layout: NamedLayout; mine: boolean }[] = [];
+  const layoutRenames = new Map<string, string>();
+  const takenLayoutIds = new Set([...base.layouts, ...mine.layouts, ...theirs.layouts].map((layout) => layout.id));
   const order = [...theirs.layouts, ...mine.layouts.filter((layout) => find(theirs, layout.id) === undefined)];
   for (const { id } of order) {
-    const merged = mergeItem(find(base, id), find(mine, id), find(theirs, id));
-    if (merged.value !== undefined) chosen.push(merged.value);
-    if (merged.clash) overridden.push(id);
+    const [before, own, stored] = [find(base, id), find(mine, id), find(theirs, id)];
+    if (own !== undefined && stored !== undefined && diverged(before, own, stored)) {
+      const renamed = freeId(id, takenLayoutIds);
+      takenLayoutIds.add(renamed);
+      layoutRenames.set(id, renamed);
+      chosen.push({ layout: stored, mine: false });
+      copies.push({ layout: { ...own, id: renamed }, mine: true });
+      continue;
+    }
+    const merged = mergeItem(before, own, stored);
+    if (merged !== undefined) chosen.push({ layout: merged, mine: merged === own && merged !== stored });
   }
+  chosen.push(...copies);
   // Each window deleted every layout the other one kept: this window keeps what it has open.
-  if (chosen.length === 0) chosen.push(find(mine, mine.activeLayoutId) ?? mine.layouts[0]);
+  if (chosen.length === 0) chosen.push({ layout: find(mine, mine.activeLayoutId) ?? mine.layouts[0], mine: true });
 
   // Ids the two windows use for different references. A layout taken from this window means this window's reference.
   const clashing = Object.keys(mine.panels).filter((panelId) => {
     const other = entry(theirs, panelId);
     return other !== undefined && panelRefKey(other.ref) !== panelRefKey(mine.panels[panelId].ref);
   });
-  const isMine = (layout: NamedLayout): boolean => find(mine, layout.id) === layout && find(theirs, layout.id) !== layout;
-  const placedByMine = new Set(chosen.filter(isMine).flatMap(placedPanelIds));
-  const taken = new Set([...Object.keys(base.panels), ...Object.keys(mine.panels), ...Object.keys(theirs.panels)]);
-  const renames = new Map<string, string>();
+  const placedByMine = new Set(chosen.filter((pick) => pick.mine).flatMap((pick) => placedPanelIds(pick.layout)));
+  const takenPanelIds = new Set([...Object.keys(base.panels), ...Object.keys(mine.panels), ...Object.keys(theirs.panels)]);
+  const panelRenames = new Map<string, string>();
   for (const panelId of clashing) {
     if (!placedByMine.has(panelId) && !livePanelIds.has(panelId)) continue;
-    const renamed = freeId(panelId, taken);
-    taken.add(renamed);
-    renames.set(panelId, renamed);
+    const renamed = freeId(panelId, takenPanelIds);
+    takenPanelIds.add(renamed);
+    panelRenames.set(panelId, renamed);
   }
-  const layouts = chosen.map((layout) => {
-    if (!isMine(layout)) return layout;
-    const root = renameTabs(layout.workspace.root, renames);
+  const layouts = chosen.map(({ layout, mine: own }) => {
+    if (!own) return layout;
+    const root = renameTabs(layout.workspace.root, panelRenames);
     return root === layout.workspace.root ? layout : { ...layout, workspace: { ...layout.workspace, root } };
   });
 
@@ -170,20 +189,21 @@ export function mergeDocuments(
       panels[panelId] = theirs.panels[panelId];
       continue;
     }
-    const merged = mergeItem(entry(base, panelId), entry(mine, panelId), entry(theirs, panelId)).value;
+    const merged = mergeItem(entry(base, panelId), entry(mine, panelId), entry(theirs, panelId));
     const needed = placed.has(panelId) || livePanelIds.has(panelId);
     const panel = merged ?? (needed ? (entry(theirs, panelId) ?? entry(mine, panelId)) : undefined);
     if (panel !== undefined) panels[panelId] = panel;
   }
-  for (const [from, to] of renames) panels[to] = mine.panels[from];
+  for (const [from, to] of panelRenames) panels[to] = mine.panels[from];
 
-  const stays = layouts.some((layout) => layout.id === mine.activeLayoutId);
-  const theirsStays = layouts.some((layout) => layout.id === theirs.activeLayoutId);
-  const activeLayoutId = stays ? mine.activeLayoutId : theirsStays ? theirs.activeLayoutId : layouts[0].id;
+  const open = layoutRenames.get(mine.activeLayoutId) ?? mine.activeLayoutId;
+  const has = (layoutId: string): boolean => layouts.some((layout) => layout.id === layoutId);
+  const activeLayoutId = has(open) ? open : has(theirs.activeLayoutId) ? theirs.activeLayoutId : layouts[0].id;
+  const renames = (map: ReadonlyMap<string, string>): IdRename[] => [...map].map(([from, to]) => ({ from, to }));
   return {
     document: { ...theirs, panels, layouts, activeLayoutId },
-    overridden,
-    renamedPanels: [...renames].map(([from, to]) => ({ from, to })),
+    renamedLayouts: renames(layoutRenames),
+    renamedPanels: renames(panelRenames),
   };
 }
 

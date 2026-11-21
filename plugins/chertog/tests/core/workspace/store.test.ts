@@ -11,6 +11,7 @@ import {
   enterWorkspace,
   initialDocument,
   mergeDocuments,
+  placedPanelIds,
   readWorkspaceDocument,
   registerPanel,
   removePanelFromLayout,
@@ -148,8 +149,8 @@ describe("decideSave", () => {
   it.each([
     ["a token in a panel reference", (document: any) => (document.panels.frame.ref.params.sessionToken = "tok-9"), "panels.frame.ref.params.sessionToken: A panel reference must not carry credentials"],
     ["an instance id among the parameters of a reference", (document: any) => (document.panels.frame.ref.params.instanceId = "live-1"), "panels.frame.ref.params.instanceId: A panel reference must not carry a live handle"],
-    ["a link with a password in a title", (document: any) => (document.panels.frame.title = "https://zoom.example/j/812?pwd=fixture"), "panels.frame.title: A title must not carry a link with a secret"],
-    ["a link with a password in a layout name", (document: any) => (document.layouts[0].name = "https://zoom.example/j/812?pwd=fixture"), "layouts.0.name: A name must not carry a link with a secret"],
+    ["a link with a password in a title", (document: any) => (document.panels.frame.title = "https://zoom.example/j/812?pwd=fixture"), "panels.frame.title: A title must not carry a link or credentials"],
+    ["a link with a password in a layout name", (document: any) => (document.layouts[0].name = "https://zoom.example/j/812?pwd=fixture"), "layouts.0.name: A name must not carry a link or credentials"],
     ["a live handle", (document: any) => (document.panels.frame.instanceId = "panel-2"), 'panels.frame: Unrecognized key: "instanceId"'],
     ["a tile for a panel without a reference", (document: any) => delete document.panels.frame, "layouts.0.workspace: the panel frame has no reference"],
     ["an active layout that does not exist", (document: any) => (document.activeLayoutId = "layout-x"), "activeLayoutId: the active layout layout-x does not exist"],
@@ -192,21 +193,100 @@ describe("two windows saving one workspace", () => {
     expected.layouts[0].name = "Сборка";
     expected.layouts[1] = REVIEW_SWAPPED;
     expected.layouts.push(CALL_PICKER);
-    expect(merged).toEqual({ document: expected, overridden: [], renamedPanels: [] });
+    expect(merged).toEqual({ document: expected, renamedLayouts: [], renamedPanels: [] });
 
     const saved = await store.save(merged.document, refused.current.revision);
     expect(saved).toEqual({ status: "saved", document: { ...expected, revision: 3 } });
     expect(await store.load()).toEqual({ status: "ok", document: { ...expected, revision: 3 }, migratedFrom: null, dropped: [] });
   });
 
-  it("when both windows changed one layout, the saving window wins and the layout is reported", () => {
+  it("when both windows changed one layout, both versions stay: the stored one under its id, this window's as a copy", () => {
     const base = { ...stageADocument(), revision: 1 };
     const mine = done(changeActiveLayout(base, (workspace) => swapGroups(workspace, "group-1", "group-2")));
     const theirs = { ...done(renameLayout(base, "layout-review", "Проверка")), revision: 2 };
     const expected = stageAJson();
     expected.revision = 2;
-    expected.layouts[1] = REVIEW_SWAPPED;
-    expect(mergeDocuments(base, mine, theirs, NO_LIVE_PANELS)).toEqual({ document: expected, overridden: ["layout-review"], renamedPanels: [] });
+    expected.layouts[1].name = "Проверка";
+    expected.layouts.push({ ...REVIEW_SWAPPED, id: "layout-review-2" });
+    expected.activeLayoutId = "layout-review-2";
+    expect(mergeDocuments(base, mine, theirs, NO_LIVE_PANELS)).toEqual({
+      document: expected,
+      renamedLayouts: [{ from: "layout-review", to: "layout-review-2" }],
+      renamedPanels: [],
+    });
+  });
+
+  it("two windows that created different layouts under one new id keep both", () => {
+    const base = { ...initialDocument("layout-1", "Home"), revision: 1 };
+    const theirs = { ...done(createLayout(base, "layout-2", "Review")), revision: 2 };
+    const mine = done(createLayout(base, "layout-2", "Research"));
+    const picker = { root: { kind: "group", id: "group-1", tabs: [], activeTab: null }, focusedGroupId: "group-1", maximizedGroupId: null, nextNodeId: 2 };
+    const merged = mergeDocuments(base, mine, theirs, NO_LIVE_PANELS);
+    expect(merged).toEqual({
+      document: {
+        schemaVersion: 1,
+        revision: 2,
+        panels: {},
+        layouts: [
+          { id: "layout-1", name: "Home", workspace: picker },
+          { id: "layout-2", name: "Review", workspace: picker },
+          { id: "layout-2-2", name: "Research", workspace: picker },
+        ],
+        activeLayoutId: "layout-2-2",
+      },
+      renamedLayouts: [{ from: "layout-2", to: "layout-2-2" }],
+      renamedPanels: [],
+    });
+    expect(decideSave(theirs, merged.document, 2).status).toBe("saved");
+  });
+
+  it("two windows that created the same layout under one id keep one", () => {
+    const base = { ...initialDocument("layout-1", "Home"), revision: 1 };
+    const theirs = { ...done(createLayout(base, "layout-2", "Review")), revision: 2 };
+    const mine = done(createLayout(base, "layout-2", "Review"));
+    const merged = mergeDocuments(base, mine, theirs, NO_LIVE_PANELS);
+    expect(merged.document.layouts.map((layout) => [layout.id, layout.name])).toEqual([
+      ["layout-1", "Home"],
+      ["layout-2", "Review"],
+    ]);
+    expect(merged.renamedLayouts).toEqual([]);
+  });
+
+  it("two copies with long ids do not get one new id", () => {
+    const base = { ...initialDocument("layout-1", "Home"), revision: 1 };
+    const first = "l".repeat(63) + "a";
+    const second = "l".repeat(63) + "b";
+    const theirs = { ...done(createLayout(done(createLayout(base, first, "Review")), second, "Notes")), revision: 2 };
+    const mine = done(createLayout(done(createLayout(base, first, "Research")), second, "Calls"));
+    const merged = mergeDocuments(base, mine, theirs, NO_LIVE_PANELS);
+    expect(merged.renamedLayouts).toEqual([
+      { from: first, to: "l".repeat(62) + "-2" },
+      { from: second, to: "l".repeat(62) + "-3" },
+    ]);
+    expect(merged.document.layouts.map((layout) => layout.name)).toEqual(["Home", "Review", "Notes", "Research", "Calls"]);
+    expect(decideSave(theirs, merged.document, 2).status).toBe("saved");
+  });
+
+  it("a copy takes the next free layout id, and its panels keep this window's meaning", () => {
+    const base = { ...initialDocument("layout-1", "Home"), revision: 1 };
+    const threadC = { ref: { provider: "bb-thread", params: { threadId: "thr_c" } }, title: "Тред C" };
+    const threadD = { ref: { provider: "bb-thread", params: { threadId: "thr_d" } }, title: "Тред D" };
+    let theirs = done(createLayout(base, "layout-2", "Review"));
+    theirs = done(addPanelToGroup(theirs, "group-1", "panel-1", threadC));
+    theirs = { ...done(createLayout(theirs, "layout-2-2", "Notes")), revision: 2 };
+    const mine = done(addPanelToGroup(done(createLayout(base, "layout-2", "Research")), "group-1", "panel-1", threadD));
+    const merged = mergeDocuments(base, mine, theirs, NO_LIVE_PANELS);
+    expect(merged.renamedLayouts).toEqual([{ from: "layout-2", to: "layout-2-3" }]);
+    expect(merged.renamedPanels).toEqual([{ from: "panel-1", to: "panel-1-2" }]);
+    expect(merged.document.layouts.map((layout) => [layout.id, layout.name, placedPanelIds(layout)])).toEqual([
+      ["layout-1", "Home", []],
+      ["layout-2", "Review", ["panel-1"]],
+      ["layout-2-2", "Notes", []],
+      ["layout-2-3", "Research", ["panel-1-2"]],
+    ]);
+    expect(merged.document.panels).toEqual({ "panel-1": threadC, "panel-1-2": threadD });
+    expect(merged.document.activeLayoutId).toBe("layout-2-3");
+    expect(decideSave(theirs, merged.document, 2).status).toBe("saved");
   });
 
   it("a layout this window deleted stays when the other window changed it", () => {
@@ -216,7 +296,7 @@ describe("two windows saving one workspace", () => {
     const expected = stageAJson();
     expected.revision = 2;
     expected.layouts[0].name = "Сборка";
-    expect(mergeDocuments(base, mine, theirs, NO_LIVE_PANELS)).toEqual({ document: expected, overridden: [], renamedPanels: [] });
+    expect(mergeDocuments(base, mine, theirs, NO_LIVE_PANELS)).toEqual({ document: expected, renamedLayouts: [], renamedPanels: [] });
   });
 
   it("a layout this window deleted goes when the other window left it alone, with the panels only it showed", () => {
@@ -227,7 +307,7 @@ describe("two windows saving one workspace", () => {
     expected.revision = 2;
     expected.layouts = [{ ...expected.layouts[1], name: "Проверка" }];
     delete expected.panels["thread-b"];
-    expect(mergeDocuments(base, mine, theirs, NO_LIVE_PANELS)).toEqual({ document: expected, overridden: [], renamedPanels: [] });
+    expect(mergeDocuments(base, mine, theirs, NO_LIVE_PANELS)).toEqual({ document: expected, renamedLayouts: [], renamedPanels: [] });
   });
 
   it("a layout the other window deleted goes, and this window opens the layout that window left active", () => {
@@ -238,7 +318,7 @@ describe("two windows saving one workspace", () => {
     expected.revision = 2;
     expected.layouts = [{ ...expected.layouts[0], name: "Сборка" }];
     expected.activeLayoutId = "layout-dev";
-    expect(mergeDocuments(base, mine, theirs, NO_LIVE_PANELS)).toEqual({ document: expected, overridden: [], renamedPanels: [] });
+    expect(mergeDocuments(base, mine, theirs, NO_LIVE_PANELS)).toEqual({ document: expected, renamedLayouts: [], renamedPanels: [] });
   });
 
   it("a layout the other window deleted stays when this window changed it", () => {
@@ -248,7 +328,7 @@ describe("two windows saving one workspace", () => {
     const expected = stageAJson();
     expected.revision = 2;
     expected.layouts = [expected.layouts[0], REVIEW_SWAPPED];
-    expect(mergeDocuments(base, mine, theirs, NO_LIVE_PANELS)).toEqual({ document: expected, overridden: [], renamedPanels: [] });
+    expect(mergeDocuments(base, mine, theirs, NO_LIVE_PANELS)).toEqual({ document: expected, renamedLayouts: [], renamedPanels: [] });
   });
 
   it("each window deleting the other's only remaining layout leaves this window's layout", () => {
@@ -259,7 +339,7 @@ describe("two windows saving one workspace", () => {
     expected.revision = 2;
     expected.layouts = [expected.layouts[1]];
     delete expected.panels["thread-b"];
-    expect(mergeDocuments(base, mine, theirs, NO_LIVE_PANELS)).toEqual({ document: expected, overridden: [], renamedPanels: [] });
+    expect(mergeDocuments(base, mine, theirs, NO_LIVE_PANELS)).toEqual({ document: expected, renamedLayouts: [], renamedPanels: [] });
   });
 
   it("a reference this window dropped stays while the other window's layout shows the panel or it is live here", () => {
@@ -296,7 +376,7 @@ describe("two windows saving one workspace", () => {
     expected.layouts[1].workspace.root.children[0] = { kind: "group", id: "group-1", tabs: ["frame", "panel-1-2"], activeTab: "panel-1-2" };
     expected.layouts[1].workspace.focusedGroupId = "group-1";
     const merged = mergeDocuments(base, mine, theirs, new Set(["panel-1"]));
-    expect(merged).toEqual({ document: expected, overridden: [], renamedPanels: [{ from: "panel-1", to: "panel-1-2" }] });
+    expect(merged).toEqual({ document: expected, renamedLayouts: [], renamedPanels: [{ from: "panel-1", to: "panel-1-2" }] });
     expect(decideSave(theirs, merged.document, 2).status).toBe("saved");
   });
 
@@ -361,6 +441,6 @@ describe("two windows saving one workspace", () => {
   it("a merge of unchanged documents is the stored document", () => {
     const base = { ...stageADocument(), revision: 1 };
     const theirs = { ...stageADocument(), revision: 2 };
-    expect(mergeDocuments(base, base, theirs, NO_LIVE_PANELS)).toEqual({ document: theirs, overridden: [], renamedPanels: [] });
+    expect(mergeDocuments(base, base, theirs, NO_LIVE_PANELS)).toEqual({ document: theirs, renamedLayouts: [], renamedPanels: [] });
   });
 });
