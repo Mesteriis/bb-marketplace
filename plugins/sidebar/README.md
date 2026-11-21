@@ -18,11 +18,11 @@ Branches emptied by thread hiding are omitted, including worktree branches. Orig
 
 Hiding a project also hides separately registered descendant projects and worktrees under its directory. Running descendants remain visible independently. Path matching respects directory boundaries.
 
-Threads with subthreads have a separate expand/collapse chevron. Collapsing keeps the parent navigable and shows only starting, active or stopping descendants, including deeper levels; expanding restores the full subtree. Finished descendants disappear while collapsed. Subtrees start expanded.
+Threads with subthreads have a separate expand/collapse chevron. Collapsing keeps the parent navigable and hides all descendants, including running threads. Status updates do not reopen the subtree; expanding restores it. Parent metadata retains descendant and activity counts. Subtrees start expanded outside the activity group.
 
-The **Сейчас** section (formerly **Активные**) shows running threads (starting, active, stopping) and threads the host marks unread until they are read. It includes all projects, including hidden ones and personal chats; archived/internal helper threads are excluded. Parent context is retained for an active subthread. A qualifying parent brings its subtree; subtrees start collapsed and expose running descendants according to the shared rules. Thread hierarchy remains available in the activity group; repeated rows are omitted from project navigation.
+The **Сейчас** section (formerly **Активные**) shows running threads (starting, active, stopping) and threads the host marks unread until they are read. It includes all projects, including hidden ones and personal chats; archived/internal helper threads are excluded. Parent context is retained for an active subthread. A qualifying parent brings its subtree; subtrees start collapsed and expand on demand. Thread hierarchy remains available in the activity group; repeated rows are omitted from project navigation.
 
-In Active only, collapsed subtrees also expose unread descendants so a completed result stays reachable until read. Other sections keep their running-only collapsed behavior.
+Collapsed subtrees also hide unread results and pending questions; their counts remain on the parent. Expand the parent to reach them.
 
 ### Длинные списки тредов
 

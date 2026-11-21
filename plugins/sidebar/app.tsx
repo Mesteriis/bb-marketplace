@@ -88,7 +88,7 @@ function Sidebar({ activeThreadId, onNavigate }: PluginThreadListProps) {
      <button aria-pressed={filter==='running'} onClick={()=>setFilter('running')}><span className="status-dot running" aria-hidden="true"/>В работе <span>{eligible.filter(isRunning).length}</span></button>
      <button aria-pressed={filter==='unread'} onClick={()=>setFilter('unread')}><span className="status-dot unread" aria-hidden="true"/>Новые ответы <span>{eligible.filter(t=>t.isUnread).length}</span></button>
     </div>
-    {active.map(node=><ThreadBranch key={node.thread.id} node={node} depth={0} renderRow={renderRow} initialCollapsed showUnread/>)}
+    {active.map(node=><ThreadBranch key={node.thread.id} node={node} depth={0} renderRow={renderRow} initialCollapsed/>)}
     {!active.length?<p className="empty-activity">{filter==='running'?'Нет работающих тредов':filter==='unread'?'Нет новых ответов':'Нет текущей активности'}</p>:null}
    </section>
    <h2 className="projects-heading">Проекты</h2>
