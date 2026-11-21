@@ -54,6 +54,7 @@ describe("named layouts", () => {
     ["an empty name", "layout-call", "   ", "invalid-name"],
     ["a name of 65 characters", "layout-call", "я".repeat(65), "invalid-name"],
     ["a name with a line break", "layout-call", "Со\nзвон", "invalid-name"],
+    ["a name with a link that has a password", "layout-call", "Созвон https://zoom.example/j/812?pwd=fixture", "invalid-name"],
   ])("does not create a layout with %s", (_name, id, name, reason) => {
     expect(createLayout(stageADocument(), id, name)).toEqual({ ok: false, reason });
   });
@@ -68,6 +69,7 @@ describe("named layouts", () => {
     expect(done(renameLayout(stageADocument(), "layout-dev", "Сборка"))).toEqual(expected);
     expect(renameLayout(stageADocument(), "layout-x", "Сборка")).toEqual({ ok: false, reason: "unknown-layout" });
     expect(renameLayout(stageADocument(), "layout-dev", "")).toEqual({ ok: false, reason: "invalid-name" });
+    expect(renameLayout(stageADocument(), "layout-dev", "zoom.example/j/812?pwd=fixture")).toEqual({ ok: false, reason: "invalid-name" });
   });
 
   it("duplicates a layout right after its source and opens the copy", () => {
@@ -159,6 +161,8 @@ describe("panels", () => {
     ["an unknown panel without a reference", "group-1", "terminal", undefined, "unknown-panel"],
     ["a reference with a password", "group-1", "terminal", { ref: { provider: "remote-ssh", params: { password: "hunter2" } }, title: "SSH" }, "invalid-panel"],
     ["a reference with an instance id", "group-1", "terminal", { ref: { provider: "remote-ssh", params: {}, instanceId: "panel-3" }, title: "SSH" }, "invalid-panel"],
+    ["a reference with an instance id among its parameters", "group-1", "terminal", { ref: { provider: "remote-ssh", params: { instanceId: "live-1" } }, title: "SSH" }, "invalid-panel"],
+    ["a title with a link that has a password", "group-1", "terminal", { ref: { provider: "remote-ssh", params: {} }, title: "https://zoom.example/j/812?pwd=fixture" }, "invalid-panel"],
     ["an empty title", "group-1", "terminal", { ref: { provider: "remote-ssh", params: {} }, title: " " }, "invalid-panel"],
     ["a title of 121 characters", "group-1", "terminal", { ref: { provider: "remote-ssh", params: {} }, title: "я".repeat(121) }, "invalid-panel"],
     ["a panel id with a space", "group-1", "my terminal", { ref: { provider: "remote-ssh", params: {} }, title: "SSH" }, "invalid-id"],
@@ -184,6 +188,10 @@ describe("panels", () => {
     expect(done(setPanelTitle(stageADocument(), "thread-a", "Починка сборки"))).toEqual(expected);
     expect(setPanelTitle(stageADocument(), "thread-x", "Имя")).toEqual({ ok: false, reason: "unknown-panel" });
     expect(setPanelTitle(stageADocument(), "thread-a", "")).toEqual({ ok: false, reason: "invalid-panel" });
+    expect(setPanelTitle(stageADocument(), "thread-a", "Созвон https://zoom.example/j/812?pwd=fixture")).toEqual({ ok: false, reason: "invalid-panel" });
+    expect(done(setPanelTitle(stageADocument(), "thread-a", "Документация https://docs.example/guide?page=2")).panels["thread-a"].title).toBe(
+      "Документация https://docs.example/guide?page=2",
+    );
   });
 
   it("removing a panel no layout shows any more forgets its reference", () => {

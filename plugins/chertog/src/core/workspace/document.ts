@@ -59,17 +59,53 @@ function isCaption(text: string, maxLength: number): boolean {
 /** An id of a layout or a panel: letters, digits and `. _ : -`, without whitespace. */
 export const idSchema = z.string().regex(ID);
 
+/**
+ * Whether a caption carries a link with a login or a secret parameter. Each
+ * word is judged by the rule `panelRefSchema` applies to a parameter value,
+ * so a title and a reference refuse the same links.
+ */
+function hasSecretLink(title: string): boolean {
+  return title
+    .split(/\s+/)
+    .map((word) => word.replace(/^[^A-Za-z0-9]+/, ""))
+    .some((word) => word !== "" && !panelRefSchema.safeParse({ provider: "caption", params: { link: word } }).success);
+}
+
 export const layoutNameSchema = z
   .string()
-  .refine((name) => isCaption(name, MAX_NAME_LENGTH), "A name is 1 to 64 characters without line breaks");
+  .refine((name) => isCaption(name, MAX_NAME_LENGTH), "A name is 1 to 64 characters without line breaks")
+  .refine((name) => !hasSecretLink(name), "A name must not carry a link with a secret");
 
 const panelTitleSchema = z
   .string()
-  .refine((title) => isCaption(title, MAX_TITLE_LENGTH), "A title is 1 to 120 characters without line breaks");
+  .refine((title) => isCaption(title, MAX_TITLE_LENGTH), "A title is 1 to 120 characters without line breaks")
+  .refine((title) => !hasSecretLink(title), "A title must not carry a link with a secret");
 
-/** Unknown fields are refused, so an instance id cannot ride along with a reference. */
+/** Words that mark a parameter as a handle of something running now: it dies with the process and must not be stored. */
+const LIVE_HANDLE_WORDS = new Set(["instance", "pid", "pty", "process", "handle"]);
+const LIVE_HANDLE_NAME = /web[-_]?contents|dom[-_]?node/i;
+
+/** Whether a parameter name such as `instanceId`, `pty_handle` or `webContentsId` names a live handle. */
+function isLiveHandleName(name: string): boolean {
+  const words = name.split(/[^A-Za-z0-9]+|(?<=[a-z0-9])(?=[A-Z])/).map((word) => word.toLowerCase());
+  return LIVE_HANDLE_NAME.test(name) || words.some((word) => LIVE_HANDLE_WORDS.has(word));
+}
+
+/** A reference as the document stores it: `panelRefSchema`, and no parameter that names a live handle. */
+const storedPanelRefSchema = panelRefSchema.superRefine((ref, context) => {
+  for (const name of Object.keys(ref.params)) {
+    if (isLiveHandleName(name)) {
+      context.addIssue({ code: "custom", path: ["params", name], message: "A panel reference must not carry a live handle" });
+    }
+  }
+});
+
+/**
+ * Unknown fields are refused, and so is a parameter that names a live handle:
+ * an instance id cannot ride along with a reference or inside it.
+ */
 export const workspacePanelSchema: z.ZodType<WorkspacePanel> = z.strictObject({
-  ref: panelRefSchema,
+  ref: storedPanelRefSchema,
   title: panelTitleSchema,
 });
 

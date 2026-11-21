@@ -35,5 +35,5 @@ export {
   switchLayout,
 } from "./operations.ts";
 
-export type { WorkspaceEntry, WorkspaceMerge, WorkspaceSaveResult, WorkspaceStore } from "./store.ts";
+export type { PanelRename, WorkspaceEntry, WorkspaceMerge, WorkspaceSaveResult, WorkspaceStore } from "./store.ts";
 export { decideSave, enterWorkspace, mergeDocuments } from "./store.ts";
