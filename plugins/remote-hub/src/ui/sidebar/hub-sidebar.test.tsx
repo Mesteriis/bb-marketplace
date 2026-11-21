@@ -87,6 +87,18 @@ describe("HubSidebar", () => {
     expect(second!.textContent).toContain("управляет агент");
   });
 
+  it("marks only the input-focused session while both are visible, preserving each status", () => {
+    const p = props({ sessions: [session, { ...session, id: "b", title: "test-vm", state: "lost" }], shown: ["a", "b"], focusedId: "a" });
+    render(<HubSidebar {...p} />);
+    const [first, second] = screen.getAllByTestId("sidebar-session");
+    expect(first!.className).toContain("border-ring");
+    expect(second!.className).not.toContain("border-ring");
+    expect(first!.textContent).toContain("подключено");
+    expect(second!.textContent).toContain("связь потеряна");
+    fireEvent.click(second!.querySelector("button")!);
+    expect(p.onFocusSession).toHaveBeenCalledWith("b");
+  });
+
   it("a connection macOS has not allowed offers Allow access", () => {
     const p = props({ connections: { pve1: { outcome: "keychain_needs_approval", nodes: [], guests: [] } } });
     render(<HubSidebar {...p} />);

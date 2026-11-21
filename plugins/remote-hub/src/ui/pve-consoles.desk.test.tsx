@@ -2,6 +2,7 @@
 // The Proxmox consoles on the desk: each console is a desk pane, and the desk follows the consoles.
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+vi.mock("@/components/ui/icon", () => ({ Icon: ({ name }: { name: string }) => <i data-icon={name} /> }));
 import { createDeskStore } from "./desk-store.ts";
 import { DeskContext } from "./desk/desk-context.tsx";
 import { Desk } from "./desk/desk.tsx";

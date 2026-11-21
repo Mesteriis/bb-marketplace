@@ -7,6 +7,8 @@ import { closeDeskSession, DeskContext } from "./desk-context.tsx";
 import { DeskPane } from "./desk-pane.tsx";
 import { Desk } from "./desk.tsx";
 
+vi.mock("@/components/ui/icon", () => ({ Icon: ({ name }: { name: string }) => <i data-icon={name} /> }));
+
 afterEach(cleanup);
 
 const lxc = (id: string, vmid: number, title: string, extra: Partial<DeskSession> = {}): DeskSession => ({
@@ -51,7 +53,7 @@ describe("Desk", () => {
     store.open(lxc("a", 165, "rdp-ssh-test"));
     store.open(lxc("b", 110, "db"));
     show(store);
-    fireEvent.click(screen.getByRole("button", { name: "Две рядом" }));
+    fireEvent.click(screen.getByRole("button", { name: "Два экрана" }));
     const panes = screen.getAllByTestId("desk-pane");
     expect(panes.map((p) => [p.getAttribute("aria-label"), p.style.order])).toEqual([
       ["rdp-ssh-test", "1"],
@@ -74,6 +76,34 @@ describe("Desk", () => {
     show(store);
     expect(screen.getByTestId("session-status").textContent).toBe("переподключение 2 из 5");
     expect(screen.queryByTestId("desk-pane-owner")).toBeNull();
+  });
+
+  it("can select the split layout before opening a session", () => {
+    const store = createDeskStore();
+    show(store);
+    fireEvent.click(screen.getByRole("button", { name: "Два экрана" }));
+    expect(store.get().layout).toBe("two");
+    expect(screen.getByRole("button", { name: "Два экрана" }).getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("moves input focus between split panes without remounting their contents", () => {
+    const store = createDeskStore();
+    store.open(lxc("a", 165, "lab-node"));
+    store.open(lxc("b", 110, "test-vm", { kind: "rdp" }));
+    store.layout("two");
+    show(store);
+    const terminal = screen.getByText("screen of lab-node");
+    const desktop = screen.getByText("screen of test-vm");
+    fireEvent.pointerDown(terminal);
+    expect(store.get().focus).toBe("a");
+    expect(terminal.closest("section")?.getAttribute("data-focused")).toBe("true");
+    expect(desktop.closest("section")?.getAttribute("data-focused")).toBe("false");
+    fireEvent.click(screen.getByRole("button", { name: "Один экран" }));
+    expect(desktop.closest("section")?.hidden).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Два экрана" }));
+    expect(screen.getByText("screen of test-vm")).toBe(desktop);
+    expect(screen.getByText("screen of lab-node")).toBe(terminal);
+    expect(screen.getByText("RDP")).toBeTruthy();
   });
 
   it("closing from elsewhere runs the pane's own close action", () => {
