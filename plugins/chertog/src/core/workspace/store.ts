@@ -2,6 +2,8 @@
 // save the same workspace: a save names the revision it was made from, a
 // stale save is refused with the stored document, and the refused window
 // merges its work into that document and saves again.
+import type { LayoutNode } from "../layout/index.ts";
+import { panelRefKey } from "../panels/index.ts";
 import type { NamedLayout, WorkspaceDocument, WorkspacePanel } from "./document.ts";
 import { firstProblem, initialDocument, placedPanelIds, workspaceDocumentSchema } from "./document.ts";
 import type { DroppedPart, WorkspaceReadResult } from "./read.ts";
@@ -64,11 +66,44 @@ function mergeItem<T>(base: T | undefined, mine: T | undefined, theirs: T | unde
   return { value: mine, clash: true };
 }
 
+/** A panel id this window used that the merge replaced, because the stored document uses it for another panel. */
+export interface PanelRename {
+  readonly from: string;
+  readonly to: string;
+}
+
 export interface WorkspaceMerge {
   /** The stored document with this window's work merged in, at the stored revision: save it against that revision. */
   readonly document: WorkspaceDocument;
   /** Layouts both windows changed. This window's version was kept and the other window's change to them is lost. */
   readonly overridden: readonly string[];
+  /**
+   * Panels of this window that got a new id. The window's layouts in the
+   * merged document already use it; the window moves its live instance to it.
+   */
+  readonly renamedPanels: readonly PanelRename[];
+}
+
+const MAX_ID_LENGTH = 64;
+
+/** `panel-1-2`, `panel-1-3`…: the first id no document of the merge uses. */
+function freeId(panelId: string, taken: ReadonlySet<string>): string {
+  for (let suffix = 2; ; suffix += 1) {
+    const tail = "-" + suffix;
+    const candidate = panelId.slice(0, MAX_ID_LENGTH - tail.length) + tail;
+    if (!taken.has(candidate)) return candidate;
+  }
+}
+
+/** The tree with the tabs renamed; a tree without such tabs is returned as is. */
+function renameTabs(node: LayoutNode, renames: ReadonlyMap<string, string>): LayoutNode {
+  if (node.kind === "split") {
+    const children = node.children.map((child) => renameTabs(child, renames));
+    return children.every((child, index) => child === node.children[index]) ? node : { ...node, children };
+  }
+  if (!node.tabs.some((tab) => renames.has(tab))) return node;
+  const rename = (panelId: string): string => renames.get(panelId) ?? panelId;
+  return { ...node, tabs: node.tabs.map(rename), activeTab: node.activeTab === null ? null : rename(node.activeTab) };
 }
 
 /**
@@ -77,7 +112,11 @@ export interface WorkspaceMerge {
  * document the conflict returned. Changes to different layouts are all kept;
  * a layout the other window created or changed is never lost; this window
  * stays on its own open layout. `livePanelIds` are the panels with an open
- * instance in this window: their references stay.
+ * instance in this window, under this window's ids: their references stay.
+ *
+ * A panel id means one reference. When the two windows gave one id to
+ * different references, the stored document keeps the id and this window's
+ * panel gets a new one, in its layouts too, so no tile changes what it shows.
  */
 export function mergeDocuments(
   base: WorkspaceDocument,
@@ -87,34 +126,65 @@ export function mergeDocuments(
 ): WorkspaceMerge {
   const find = (document: WorkspaceDocument, layoutId: string): NamedLayout | undefined =>
     document.layouts.find((layout) => layout.id === layoutId);
+  const entry = (document: WorkspaceDocument, panelId: string): WorkspacePanel | undefined =>
+    Object.hasOwn(document.panels, panelId) ? document.panels[panelId] : undefined;
 
-  const layouts: NamedLayout[] = [];
+  const chosen: NamedLayout[] = [];
   const overridden: string[] = [];
   const order = [...theirs.layouts, ...mine.layouts.filter((layout) => find(theirs, layout.id) === undefined)];
   for (const { id } of order) {
     const merged = mergeItem(find(base, id), find(mine, id), find(theirs, id));
-    if (merged.value !== undefined) layouts.push(merged.value);
+    if (merged.value !== undefined) chosen.push(merged.value);
     if (merged.clash) overridden.push(id);
   }
   // Each window deleted every layout the other one kept: this window keeps what it has open.
-  if (layouts.length === 0) layouts.push(find(mine, mine.activeLayoutId) ?? mine.layouts[0]);
+  if (chosen.length === 0) chosen.push(find(mine, mine.activeLayoutId) ?? mine.layouts[0]);
+
+  // Ids the two windows use for different references. A layout taken from this window means this window's reference.
+  const clashing = Object.keys(mine.panels).filter((panelId) => {
+    const other = entry(theirs, panelId);
+    return other !== undefined && panelRefKey(other.ref) !== panelRefKey(mine.panels[panelId].ref);
+  });
+  const isMine = (layout: NamedLayout): boolean => find(mine, layout.id) === layout && find(theirs, layout.id) !== layout;
+  const placedByMine = new Set(chosen.filter(isMine).flatMap(placedPanelIds));
+  const taken = new Set([...Object.keys(base.panels), ...Object.keys(mine.panels), ...Object.keys(theirs.panels)]);
+  const renames = new Map<string, string>();
+  for (const panelId of clashing) {
+    if (!placedByMine.has(panelId) && !livePanelIds.has(panelId)) continue;
+    const renamed = freeId(panelId, taken);
+    taken.add(renamed);
+    renames.set(panelId, renamed);
+  }
+  const layouts = chosen.map((layout) => {
+    if (!isMine(layout)) return layout;
+    const root = renameTabs(layout.workspace.root, renames);
+    return root === layout.workspace.root ? layout : { ...layout, workspace: { ...layout.workspace, root } };
+  });
 
   const placed = new Set(layouts.flatMap(placedPanelIds));
   const panels: Record<string, WorkspacePanel> = {};
   const panelIds = [...Object.keys(theirs.panels), ...Object.keys(mine.panels).filter((panelId) => !Object.hasOwn(theirs.panels, panelId))];
-  const entry = (document: WorkspaceDocument, panelId: string): WorkspacePanel | undefined =>
-    Object.hasOwn(document.panels, panelId) ? document.panels[panelId] : undefined;
   for (const panelId of panelIds) {
+    if (clashing.includes(panelId)) {
+      // The stored document owns a clashing id, whatever this window did to its own panel of that name.
+      panels[panelId] = theirs.panels[panelId];
+      continue;
+    }
     const merged = mergeItem(entry(base, panelId), entry(mine, panelId), entry(theirs, panelId)).value;
     const needed = placed.has(panelId) || livePanelIds.has(panelId);
     const panel = merged ?? (needed ? (entry(theirs, panelId) ?? entry(mine, panelId)) : undefined);
     if (panel !== undefined) panels[panelId] = panel;
   }
+  for (const [from, to] of renames) panels[to] = mine.panels[from];
 
   const stays = layouts.some((layout) => layout.id === mine.activeLayoutId);
   const theirsStays = layouts.some((layout) => layout.id === theirs.activeLayoutId);
   const activeLayoutId = stays ? mine.activeLayoutId : theirsStays ? theirs.activeLayoutId : layouts[0].id;
-  return { document: { ...theirs, panels, layouts, activeLayoutId }, overridden };
+  return {
+    document: { ...theirs, panels, layouts, activeLayoutId },
+    overridden,
+    renamedPanels: [...renames].map(([from, to]) => ({ from, to })),
+  };
 }
 
 /** What Home shows on entry and whether the workspace may be saved. */

@@ -143,6 +143,14 @@ const SECRET_PANELS: [name: string, panel: unknown, reason: string][] = [
   ["message text", { ref: { provider: "telegram-chat", params: { chatId: "42", draftText: "Привет" } }, title: "Чат" }, "ref.params.draftText: A panel reference must not carry correspondence"],
   ["a meeting link with a password", { ref: { provider: "zoom-meeting", params: { link: "https://zoom.example/j/812?pwd=abc" } }, title: "Созвон" }, "ref.params.link: A panel reference must not carry a link with a secret"],
   ["an instance id", { ref: { provider: "bb-thread", params: { threadId: "thr_b" }, instanceId: "panel-7" }, title: "Тред B" }, 'ref: Unrecognized key: "instanceId"'],
+  ["an instance id among the parameters", { ref: { provider: "bb-thread", params: { threadId: "thr_b", instanceId: "panel-7" } }, title: "Тред B" }, "ref.params.instanceId: A panel reference must not carry a live handle"],
+  ["a WebContents id among the parameters", { ref: { provider: "bb-thread", params: { threadId: "thr_b", webContentsId: 7 } }, title: "Тред B" }, "ref.params.webContentsId: A panel reference must not carry a live handle"],
+  ["a process id among the parameters", { ref: { provider: "remote-ssh", params: { host: "build-1", pid: 4242 } }, title: "SSH" }, "ref.params.pid: A panel reference must not carry a live handle"],
+  ["a PTY handle among the parameters", { ref: { provider: "remote-ssh", params: { host: "build-1", pty_handle: "pty-3" } }, title: "SSH" }, "ref.params.pty_handle: A panel reference must not carry a live handle"],
+  ["a title with a link that has a password", { ref: { provider: "zoom-meeting", params: { meetingId: "812" } }, title: "Созвон https://zoom.example/j/812?pwd=abc" }, "title: A title must not carry a link with a secret"],
+  ["a title with an encoded link that has a password", { ref: { provider: "zoom-meeting", params: { meetingId: "812" } }, title: "Созвон (https://zoom.example/j/812%3Fpwd%3Dabc)" }, "title: A title must not carry a link with a secret"],
+  ["a title with a link that has a login", { ref: { provider: "remote-ssh", params: { host: "build-1" } }, title: "ssh://root:hunter2@build-1" }, "title: A title must not carry a link with a secret"],
+  ["a title with a bracketed link that has a login", { ref: { provider: "remote-ssh", params: { host: "build-1" } }, title: "Сборка (ssh://root:hunter2@build-1)" }, "title: A title must not carry a link with a secret"],
   ["an instance id beside the reference", { ref: { provider: "bb-thread", params: { threadId: "thr_b" } }, title: "Тред B", instanceId: "panel-7" }, 'Unrecognized key: "instanceId"'],
 ];
 
@@ -193,7 +201,7 @@ describe("secrets and live handles", () => {
       migratedFrom: null,
       dropped: [{ kind: "panel", panelId: "thread-b", reason }],
     });
-    expect(JSON.stringify(result)).not.toMatch(/tok-1|hunter2|Привет|pwd=abc|panel-7/);
+    expect(JSON.stringify(result)).not.toMatch(/tok-1|hunter2|Привет|pwd|panel-7|4242|pty-3/);
   });
 
   it("drops a panel whose id is not an identifier, without repeating the id", () => {
