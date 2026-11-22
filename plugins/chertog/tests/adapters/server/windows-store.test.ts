@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { expect, it } from "vitest";
+import type { Action } from "../../../src/core/windows/ownership.ts";
 import { createWindowsStore } from "../../../src/adapters/bb/server/windows-store.ts";
 
 it("keeps a single owner across independently opened SQLite transactions", () => {
@@ -36,5 +37,31 @@ it("keeps a single owner across independently opened SQLite transactions", () =>
     concurrent.close();
     db.close();
     rmSync(directory, { recursive: true });
+  }
+});
+
+it.each(["source", "remaining", "none", "suspended", "crash"] as const)("handles a completed handoff when %s is available", (scenario) => {
+  let time = 100000;
+  const db = new DatabaseSync(":memory:");
+  try {
+    const store = createWindowsStore(db, () => time);
+    const source = store("source", false).snapshot.instanceId;
+    const target = store("target", false).snapshot.instanceId;
+    const change = (credential: string, generation: number, command: Action) =>
+      store(credential, false, { threadId: "thr_a", generation, command });
+    change("source", 0, { action: "claim" });
+    change("source", 1, { action: "prepare", target });
+    change("target", 2, { action: "ready" });
+    change("source", 3, { action: "switch" });
+    change("target", 4, { action: "received" });
+    if (scenario === "none" || scenario === "remaining") store("source", true);
+    const remaining = scenario === "remaining" ? store("third", false).snapshot.instanceId : null;
+    if (scenario === "crash") time += 30000;
+    else store("target", true, undefined, scenario !== "suspended");
+    const p = store(scenario === "source" || scenario === "crash" ? "source" : "new", false).snapshot.placements[0].placement;
+    expect(p.owner).toBe(scenario === "crash" || scenario === "suspended" ? target : scenario === "source" ? source : remaining);
+    expect(p.transfer).toBeNull();
+  } finally {
+    db.close();
   }
 });

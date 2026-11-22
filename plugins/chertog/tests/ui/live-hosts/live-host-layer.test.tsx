@@ -468,3 +468,31 @@ describe("LiveHostLayer: content", () => {
     expect([a.mounts, a.unmounts]).toEqual([1, 0]);
   });
 });
+
+it("lets only the addressed provider draft consume a file before containing the drop", () => {
+  const drafts: Record<string, File[]> = { first: [], second: [] };
+  const send = vi.fn();
+  const outerDrop = vi.fn();
+  function Draft({ id }: { id: string }) {
+    return <form onSubmit={event => { event.preventDefault(); send(id); }}>
+      <textarea aria-label={id} onDrop={event => {
+        event.preventDefault();
+        drafts[id].push(...Array.from(event.dataTransfer.files));
+      }} />
+    </form>;
+  }
+  const instances = ["first", "second", "preview"].map(id => ({
+    instanceId: id, panelId: id, acceptsFileDrop: id !== "preview",
+    renderContent: () => id === "preview" ? <button onDrop={send}>Preview</button> : <Draft id={id} />,
+  }));
+  render(<div onDrop={outerDrop}><LiveHostLayer instances={instances}
+    rects={rects({ first: rect(0, 0, 200, 200), second: rect(200, 0, 200, 200), preview: rect(400, 0, 200, 200) })} /></div>);
+  const file = new File(["sample"], "stand.txt");
+  const dataTransfer = { types: ["Files"], files: [file] };
+  screen.getByRole("textbox", { name: "first" }).focus();
+  fireEvent.drop(screen.getByRole("textbox", { name: "second" }), { dataTransfer });
+  fireEvent.drop(screen.getByRole("button", { name: "Preview" }), { dataTransfer });
+  expect(drafts).toEqual({ first: [], second: [file] });
+  expect(send).not.toHaveBeenCalled();
+  expect(outerDrop).not.toHaveBeenCalled();
+});

@@ -86,6 +86,25 @@ export class WorkspaceFileCatalog {
   }
 }
 
+// A direct OS drop inside a frame never reaches the tile's drag handlers.
+function readOnlyHtmlPreview(content: string): string {
+  const policy = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; form-action 'none'">`;
+  const doc = new DOMParser().parseFromString(policy + content, "text/html");
+  const roots: ParentNode[] = [doc];
+  for (const root of roots) {
+    root.querySelectorAll("input, textarea, select, button, fieldset").forEach(control => {
+      control.setAttribute("disabled", "");
+    });
+    root.querySelectorAll("[contenteditable]").forEach(element => element.removeAttribute("contenteditable"));
+    // Declarative shadow templates can become active when srcDoc is parsed.
+    root.querySelectorAll("template").forEach(template => {
+      if (template instanceof HTMLTemplateElement) roots.push(template.content);
+    });
+  }
+  doc.documentElement.setAttribute("contenteditable", "false");
+  return doc.documentElement.outerHTML;
+}
+
 export function createFilePreviewSource(catalog: WorkspaceFileCatalog): ContentSource {
   const title = "BB предпросмотр";
   const pending = new Map<string, AbortController>();
@@ -124,7 +143,7 @@ export function createFilePreviewSource(catalog: WorkspaceFileCatalog): ContentS
     render(ref) {
       const target = fileTarget(ref.params);
       return <FilePreview target={target} renderPreview={({ content }) => {
-        if (/\.html?$/i.test(target.path)) return <iframe title={target.path} sandbox="" referrerPolicy="no-referrer" className="h-full w-full" srcDoc={'<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'; img-src data:">' + content} />;
+        if (/\.html?$/i.test(target.path)) return <iframe title={target.path} sandbox="" referrerPolicy="no-referrer" className="h-full w-full" srcDoc={readOnlyHtmlPreview(content)} />;
         if (/\.(md|markdown)$/i.test(target.path)) return <Markdown content={content} />;
         return <pre className="h-full overflow-auto whitespace-pre">{content}</pre>;
       }} />;

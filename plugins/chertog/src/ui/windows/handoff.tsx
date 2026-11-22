@@ -66,3 +66,21 @@ export function IncomingTransfer(props: {
     </aside>
   );
 }
+
+export function ReturnedPanel(props: {
+  title: string;
+  held: boolean;
+  canOpen: boolean;
+  problem: string;
+  onOpen(): void;
+  onDismiss(): void;
+}) {
+  return (
+    <aside className="rounded border bg-background p-3 text-foreground">
+      <p role="status">Окно закрылось. Панель «{props.title}» возвращена в это окно.</p>
+      {!props.held && <button disabled={!props.canOpen} onClick={props.onOpen}>Показать панель</button>}
+      {props.problem && <p role="alert">{props.problem}</p>}
+      <button onClick={props.onDismiss}>{props.held ? "Понятно" : "Скрыть"}</button>
+    </aside>
+  );
+}

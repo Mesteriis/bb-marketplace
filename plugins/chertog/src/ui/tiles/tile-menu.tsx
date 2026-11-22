@@ -6,7 +6,8 @@ import { CONTROL_CLASS } from "./styles.ts";
 
 export interface TileMenuItem {
   readonly label: string;
-  onSelect(): void;
+  readonly reason?: string;
+  onSelect?(): void;
 }
 
 /**
@@ -79,14 +80,17 @@ export function TileMenu({ label, items }: { label: string; items: readonly Tile
               key={item.label}
               type="button"
               role="menuitem"
+              aria-disabled={!item.onSelect || undefined}
               tabIndex={-1}
               className="rounded px-2 py-1 text-left hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent focus-visible:text-accent-foreground focus-visible:outline-none"
               onClick={() => {
+                if (!item.onSelect) return;
                 setOpen(false);
                 item.onSelect();
               }}
             >
               {item.label}
+              {item.reason && <span className="block max-w-56 whitespace-normal text-muted-foreground">{item.reason}</span>}
             </button>
           ))}
         </div>

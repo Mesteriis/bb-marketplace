@@ -15,6 +15,7 @@
 //   the `instances` list.
 // A rebuild of the layout changes only the container's left, top, width,
 // height and visibility.
+import { containFileDrop } from "../tiles/file-drop.ts";
 import { Component, memo, Suspense, useState, type CSSProperties, type ReactNode } from "react";
 import type { Rect } from "../../core/layout/index.ts";
 import { PanelStateView } from "./PanelStateView.tsx";
@@ -25,6 +26,8 @@ export interface LiveHostInstance {
   instanceId: string;
   /** The panel that shows this instance now. May change: the instance then follows the other panel's rectangle. */
   panelId: string;
+  /** A bound provider owns a draft and handles the file inside its own subtree. */
+  readonly acceptsFileDrop?: boolean;
   /**
    * Renders the content; receives `instanceId`. Keep the function's identity
    * stable to skip re-renders of the content; a new function re-renders it
@@ -155,6 +158,10 @@ function LiveHost({ instance, rect, zIndex, gestureActive, onContentError }: Liv
   return (
     <div
       data-live-host={instance.instanceId}
+      onDragOverCapture={visible && instance.acceptsFileDrop ? undefined : containFileDrop}
+      onDropCapture={visible && instance.acceptsFileDrop ? undefined : containFileDrop}
+      onDragOver={containFileDrop}
+      onDrop={containFileDrop}
       data-panel-id={instance.panelId}
       data-visible={visible ? "true" : "false"}
       inert={!visible}

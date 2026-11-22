@@ -10,6 +10,7 @@
 //
 // The state belongs to the parent. Every change is asked for through
 // `onOperation` and shows once the parent passes the new state back.
+import { containFileDrop } from "./file-drop.ts";
 import { useLayoutEffect, useMemo, useRef, type KeyboardEvent, type ReactNode } from "react";
 import type { DragSource, LayoutOperation, LayoutOptions, Rect, WorkspaceState } from "../../core/layout/index.ts";
 import {
@@ -161,6 +162,8 @@ export function TileSurface(props: TileSurfaceProps) {
       }}
       className="bg-background text-foreground"
       {...gestures.surfaceHandlers}
+      onDragOver={containFileDrop}
+      onDrop={containFileDrop}
     >
       {geometry?.groups.map(({ groupId, rect }) => {
         const group = findGroup(shown.root, groupId);

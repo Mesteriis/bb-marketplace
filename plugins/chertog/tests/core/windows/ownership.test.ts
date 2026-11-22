@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { transition, type Placement } from "../../../src/core/windows/ownership.ts";
+import { depart, reconcile, transition, type Placement } from "../../../src/core/windows/ownership.ts";
 
 const initial: Placement = { owner: "source", generation: 1, transfer: null };
 const present = new Set(["source", "first", "second"]);
@@ -46,4 +46,11 @@ it("a closed source panel frees its claim while that window stays connected", ()
   expect(closed).toEqual({ owner: null, generation: 2, transfer: null });
   expect(transition(closed, "second", 2, { action: "claim" }, present, 101).owner).toBe("second");
   expect(() => transition(closed, "source", 1, { action: "claim" }, present, 101)).toThrow();
+});
+
+it("remembers the original source when a later attempted transfer expires", () => {
+  const detached: Placement = { owner: "first", returnSource: "source", generation: 5, transfer: null };
+  const pending = transition(detached, "first", 5, { action: "prepare", target: "second" }, present, 100);
+  const rolledBack = reconcile(pending, present, 40000);
+  expect(depart(rolledBack, "first", new Set(["second", "source"]), 40001).owner).toBe("source");
 });

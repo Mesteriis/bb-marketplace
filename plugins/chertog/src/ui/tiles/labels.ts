@@ -4,6 +4,7 @@
 export type PanelStatusTone = "idle" | "busy" | "attention" | "error";
 
 export interface PanelLabel {
+  readonly handoffUnavailable?: string;
   /** Tab text. */
   readonly title: string;
   /** What the panel is bound to: thread and project, branch, machine or environment. */
