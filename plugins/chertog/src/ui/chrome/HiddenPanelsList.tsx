@@ -15,7 +15,7 @@ export interface HiddenPanelsListProps {
 }
 
 export function HiddenPanelsList({ panels, onShow, onClose }: HiddenPanelsListProps) {
-  const popover = usePopover();
+  const popover = usePopover("end");
   const requestFocus = usePendingFocus(popover.rootRef);
   const listRef = useRef<HTMLUListElement>(null);
 
@@ -44,7 +44,7 @@ export function HiddenPanelsList({ panels, onShow, onClose }: HiddenPanelsListPr
       </button>
 
       {popover.open && (
-        <div ref={popover.panelRef} role="dialog" tabIndex={-1} aria-label={text.popoverLabel} className={`${classes.popover} right-0`}>
+        <div ref={popover.panelRef} role="dialog" tabIndex={-1} aria-label={text.popoverLabel} className={classes.popover}>
           {panels.length === 0 ? (
             <p className={classes.muted}>{text.empty}</p>
           ) : (

@@ -151,7 +151,7 @@ function NameForm({ label, value, error, errorId, limit, onChange, onSubmit, onC
 export function LayoutSwitcher(props: LayoutSwitcherProps) {
   const { layouts, activeLayoutId, presets, saveStatus } = props;
   const limit = props.maxNameLength ?? DEFAULT_MAX_NAME_LENGTH;
-  const popover = usePopover();
+  const popover = usePopover("start");
   const requestFocus = usePendingFocus(popover.rootRef);
   const listRef = useRef<HTMLUListElement>(null);
   const [newName, setNewName] = useState("");
@@ -281,7 +281,7 @@ export function LayoutSwitcher(props: LayoutSwitcherProps) {
         </button>
 
         {popover.open && (
-          <div ref={popover.panelRef} role="dialog" tabIndex={-1} aria-label={text.popoverLabel} className={`${classes.popover} left-0`}>
+          <div ref={popover.panelRef} role="dialog" tabIndex={-1} aria-label={text.popoverLabel} className={classes.popover}>
             <ul
               ref={listRef}
               aria-label={text.listLabel}
