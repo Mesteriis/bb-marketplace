@@ -195,9 +195,27 @@ it("retains the bound draft when a new generation recovers after bounded status 
     await waitFor(()=>expect(states).toContain("lost"),{timeout:11000});
     expect(status).toHaveBeenCalledTimes(4);
     status.mockReturnValue({state:"ready",connectionId:"12345678-1234-4123-8123-123456789bbb"});
-    node.dataset.generation = "2";
+    await act(async () => { node.dataset.generation = "2"; });
+    await waitFor(() => expect(node.childElementCount).toBe(0));
     announce(node,{...base,kind:"announce",generation:2,resourceRef:uuid});
     const restored = await within(node).findByRole<HTMLTextAreaElement>("textbox",{name:"Write a message"});
     expect(restored.value).toBe("recoverable draft");
   } finally { view.lifecycle.unmount(); }
 },15000);
+
+it("names each conversation region after the chat in its own tile", async () => {
+  const secondRef = "12345678-1234-4123-8123-123456789abd";
+  const {node,view} = openTile((method,payload) => {
+    if (method === "resolveEmbedChat" && payload.resourceRef === secondRef)
+      return {chat:{...fixtureChat,id:"22",name:"Synthetic second"},list:"main"};
+    return fixtureSession(method,payload);
+  });
+  try {
+    const other = target("view-2");
+    announce(other,{...base,kind:"announce",instanceId:"view-2",resourceRef:secondRef});
+    for (const [tile,name] of [[node,"Synthetic group"],[other,"Synthetic second"]] as const) {
+      await within(tile).findByRole("heading",{name});
+      expect(within(tile).getByRole("region",{name})).toBeTruthy();
+    }
+  } finally { view.lifecycle.unmount(); }
+});

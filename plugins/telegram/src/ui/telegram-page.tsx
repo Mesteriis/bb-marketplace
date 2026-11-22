@@ -851,6 +851,8 @@ export function TelegramPage({ live, boundChat, draftStorage, navigation, connec
   const firstUnread = hasUnread && live?.list !== "saved" && inbox !== undefined
     ? firstLoadedUnread(messages, loadedMessages, inbox, selectedHistory?.page?.before === null) : undefined;
   const unreadDivider = useRef<HTMLLIElement>(null);
+  const chatListHeadingId = useId();
+  const conversationHeadingId = useId();
   const unreadDividerId = useId();
   const [unreadJump, setUnreadJump] = useState<{ id: string; state: "loading" | "unavailable" }>();
   const canJumpToUnread = firstUnread || (hasUnread && live?.list !== "saved" && inbox !== undefined
@@ -2701,7 +2703,7 @@ export function TelegramPage({ live, boundChat, draftStorage, navigation, connec
           {!live && <button type="button" aria-pressed={folder === "work"} onClick={() => setFolder("work")}><Folder size={20} />{tr("Work")}</button>}
         </nav>
 
-        <section className="mtg-chats" aria-labelledby="mtg-chat-list" aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown Control+PageUp Control+PageDown Meta+PageUp Meta+PageDown Control+Alt+Home Control+Alt+End Meta+Alt+Home Meta+Alt+End"
+        <section className="mtg-chats" aria-labelledby={chatListHeadingId} aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown Control+PageUp Control+PageDown Meta+PageUp Meta+PageDown Control+Alt+Home Control+Alt+End Meta+Alt+Home Meta+Alt+End"
           onBlur={(event) => {
             if (!event.currentTarget.contains(event.relatedTarget)) setRecentSearchOpen(false);
           }}
@@ -2735,7 +2737,7 @@ export function TelegramPage({ live, boundChat, draftStorage, navigation, connec
             moveListFocus(event, search, resultSelector);
           }}>
           <header>
-            <div className="mtg-list-title"><h1 id="mtg-chat-list" ref={listHeading} tabIndex={-1}>{listTitle}</h1>
+            <div className="mtg-list-title"><h1 id={chatListHeadingId} ref={listHeading} tabIndex={-1}>{listTitle}</h1>
               {live?.list === "main" && live.createPrivateChat && <CreatePrivateChatDialog create={live.createPrivateChat}
                 onCreated={(chat) => {
                   setQuery("");
@@ -3037,7 +3039,7 @@ export function TelegramPage({ live, boundChat, draftStorage, navigation, connec
           "--mtg-chat-background": active?.backgroundFill ? backgroundFillStyle(active.backgroundFill) : active?.backgroundColor,
           "--mtg-chat-wallpaper": wallpaper,
         } as CSSProperties}
-          aria-labelledby="mtg-conversation-title" aria-keyshortcuts="Escape Alt+ArrowUp Alt+ArrowDown Control+PageUp Control+PageDown Meta+PageUp Meta+PageDown Control+Alt+Home Control+Alt+End Meta+Alt+Home Meta+Alt+End"
+          aria-labelledby={conversationHeadingId} aria-keyshortcuts="Escape Alt+ArrowUp Alt+ArrowDown Control+PageUp Control+PageDown Meta+PageUp Meta+PageDown Control+Alt+Home Control+Alt+End Meta+Alt+Home Meta+Alt+End"
           onDragOver={(event) => {
             if (!event.dataTransfer.types.includes("Files")) return;
             event.preventDefault();
@@ -3090,7 +3092,7 @@ export function TelegramPage({ live, boundChat, draftStorage, navigation, connec
           <header className="mtg-conversation-header">
             <Button className="mtg-back" variant="ghost" size="icon" type="button" aria-label={tr("Back to chats")} onClick={backToChats}><ArrowLeft size={18} aria-hidden="true" /></Button>
             {active && <Avatar key={`${active.id}:${active.avatarFileId}`} chat={active} load={live?.loadAvatar} />}
-            <div className="mtg-chat-heading"><h2 id="mtg-conversation-title" ref={heading} tabIndex={-1} title={active?.name}>{active?.name ?? tr("Select a chat")}</h2>
+            <div className="mtg-chat-heading"><h2 id={conversationHeadingId} ref={heading} tabIndex={-1} title={active?.name}>{active?.name ?? tr("Select a chat")}</h2>
               {live?.accountLabel && <p className="mtg-account-label" title={live.accountLabel}>{tr("Telegram account: ")}<bdi>{live.accountLabel}</bdi>
               </p>}
               <div className="mtg-chat-subtitle">

@@ -15,7 +15,7 @@ const hostMessage = z.union([
   z.strictObject({ ...address, kind: z.enum(["release", "close"]) }),
 ]);
 
-function ownedTarget(node: EventTarget | null, id: string, generation: number): node is HTMLDivElement {
+function ownedTarget(node: EventTarget | null, id: string, generation?: number): node is HTMLDivElement {
   if (!(node instanceof HTMLDivElement) || node.ownerDocument !== document || !node.isConnected) return false;
   const layers = document.querySelectorAll('[data-chertog-embed-layer="v1"]');
   const host = node.closest("[data-live-host]");
@@ -23,7 +23,7 @@ function ownedTarget(node: EventTarget | null, id: string, generation: number): 
     && layers[0]!.querySelectorAll(`[data-live-host="${id}"]`).length === 1
     && host.querySelectorAll('[data-chertog-embed-target="v1"]').length === 1
     && node.dataset.chertogEmbedTarget === "v1" && node.dataset.instanceId === id && node.dataset.provider === provider
-    && node.dataset.generation === String(generation);
+    && (generation === undefined || node.dataset.generation === String(generation));
 }
 type Status = "choosing" | "ready" | "denied" | "ended" | "lost" | "revoked" | "cancelled";
 // Lifetime follows the host instance. Recovery can replace its generation without
@@ -51,6 +51,8 @@ export function TelegramPortals({ renderPanel }: { renderPanel: (panel: EmbedPan
   const [views, setViews] = useState<View[]>([]);
   useEffect(() => {
     const active = new Map<string, View>(), generations = new Map<string, number>();
+    // An announcement owns one generation, but the draft belongs to the instance on this node.
+    const drafts = new Map<string, { node: HTMLDivElement; store: EmbedPanel["drafts"] }>();
     function refresh() { setViews([...active.values()]); }
     function reply(v: View, kind: string, resourceRef?: string) {
       if (active.get(v.id) !== v || !ownedTarget(v.node, v.id, v.generation)) return;
@@ -68,7 +70,7 @@ export function TelegramPortals({ renderPanel }: { renderPanel: (panel: EmbedPan
       if (m.generation < seen || (m.generation === seen && old?.node !== node)) return;
       if (m.kind !== "announce") {
         if (!old || old.generation !== m.generation) return;
-        if (m.kind === "release") active.delete(old.id);
+        if (m.kind === "release") { active.delete(old.id); drafts.delete(old.id); }
         else if (m.kind === "close") {
           if (old.last === "ended") { reply(old, "ended"); return; }
           old.panel.closing = true;
@@ -90,8 +92,11 @@ export function TelegramPortals({ renderPanel }: { renderPanel: (panel: EmbedPan
         refresh();
         return;
       }
+      const previous = drafts.get(m.instanceId);
+      const store = previous?.node === node ? previous.store : instanceDrafts();
+      drafts.set(m.instanceId, { node, store });
       const view: View = { id: m.instanceId, generation: m.generation, node, panel: {
-        drafts: old?.panel.drafts ?? instanceDrafts(),
+        drafts: store,
         resourceRef: uuid, visible: !node.closest("[inert],[hidden]"), closing: false,
         status(kind) {
           if (active.get(view.id) !== view || finished(view)) return;
@@ -117,6 +122,9 @@ export function TelegramPortals({ renderPanel }: { renderPanel: (panel: EmbedPan
       for (const view of active.values()) if (!ownedTarget(view.node, view.id, view.generation)) {
         active.delete(view.id); changed = true;
       }
+      for (const [id, entry] of drafts) {
+        if (!ownedTarget(entry.node, id)) drafts.delete(id);
+      }
       if (changed) refresh();
     });
     observer.observe(document.documentElement, { subtree: true, childList: true, attributes: true,
@@ -127,6 +135,7 @@ export function TelegramPortals({ renderPanel }: { renderPanel: (panel: EmbedPan
       document.removeEventListener(version + ".host", receive);
       for (const view of active.values()) reply(view, "revoked");
       active.clear();
+      drafts.clear();
     };
   }, []);
   return <>{views.map(v => createPortal(<div inert={!v.panel.visible} style={{height:"100%"}}>{finished(v)
