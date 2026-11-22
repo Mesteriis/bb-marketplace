@@ -1,0 +1,22 @@
+revision=eedddc49d546aa8e5cea1e86ffab7f14d5b34950
+cwd=plugins/remote-hub
+build=npm run build
+build_exit_code=0
+probe=node tests/embed-browser/probe.mjs
+
+vnc in 640×400: 500×375
+vnc in 360×220: 260×195
+VNC centre click reached the guest at 400,298
+vnc choosing → selected → ready → ready → lost; one attach; reload lost without RPC
+ssh in 640×400: 640×375
+ssh in 360×220: 360×195
+ssh choosing → selected → ready → ready → lost; one attach; reload lost without RPC
+RDP hide: queued Shift up, held Ctrl up and left button up received in order
+rdp in 640×400: 638×375
+rdp in 360×220: 358×195
+rdp choosing → selected → ready → ready → lost; one attach; reload lost without RPC
+VNC release: portal removed, one detach, socket closed
+vnc-release choosing → selected → ready; one attach; reload lost without RPC
+vnc-close choosing → selected → ready → ended; one attach; reload lost without RPC
+vnc-busy choosing → selected → denied; one attach; reload lost without RPC
+exit_code=0
