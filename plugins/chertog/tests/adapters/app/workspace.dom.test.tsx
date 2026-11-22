@@ -330,6 +330,59 @@ describe("the three actions", () => {
     expect(Object.keys(stage.rpc.stored?.panels ?? {})).toEqual(["panel-1", "panel-3"]);
   });
 
+  describe("closing a parent tile", () => {
+    async function parentWithChild(stage: Stage, user: ReturnType<typeof userEvent.setup>) {
+      stage.workspace.threads.set({
+        status: "ready",
+        threads: [
+          { id: "thr_a", title: "Исполнитель", projectName: "bb-main" },
+          { id: "thr_c", title: "Субтред", projectName: "bb-main", parentThreadId: "thr_a" },
+        ],
+      });
+      render(<Window stage={stage} onRoute />);
+      await user.click(await screen.findByRole("button", { name: /Исполнитель/ }));
+      await settled(stage);
+      act(() => void stage.workspace.session.openThread("thr_c"));
+      await settled(stage);
+      expect(tiles()).toHaveLength(2);
+    }
+
+    it("opens the block dialog, which confirms the block and the end of sessions, and the single-panel dialog for a panel without children", async () => {
+      const stage = newStage();
+      const user = userEvent.setup();
+      await parentWithChild(stage, user);
+      const close = vi.spyOn(stage.workspace.session, "closePanel");
+
+      await user.click(screen.getByRole("button", { name: "Закрыть: Исполнитель" }));
+      const dialog = await screen.findByRole("dialog", { name: "Закрыть вместе с подчинёнными (1)?" });
+      expect(screen.queryByRole("button", { name: "Скрыть панель" })).toBeNull();
+      await user.click(within(dialog).getByRole("button", { name: "Закрыть всё" }));
+      await settled(stage);
+      expect(close).toHaveBeenLastCalledWith("panel-1", { confirmBlock: true, confirmEndsSession: true });
+      expect(tiles().flatMap((tile) => Array.from(tile.querySelectorAll("[data-panel-id]")))).toHaveLength(0);
+    });
+
+    it("does not confirm the end of a session for a block that is gone by the time the user confirms", async () => {
+      const stage = newStage();
+      const user = userEvent.setup();
+      await parentWithChild(stage, user);
+      const close = vi.spyOn(stage.workspace.session, "closePanel");
+
+      await user.click(screen.getByRole("button", { name: "Закрыть: Исполнитель" }));
+      const dialog = await screen.findByRole("dialog", { name: "Закрыть вместе с подчинёнными (1)?" });
+      const childPanel = Object.keys(stage.workspace.session.document()!.panels).find((id) => stage.workspace.session.document()!.panels[id].ref.params.threadId === "thr_c")!;
+      await act(async () => {
+        await stage.workspace.session.closePanel(childPanel);
+      });
+      expect(stage.workspace.session.linkedCountOf("panel-1")).toBe(0);
+      close.mockClear();
+      await user.click(within(dialog).getByRole("button", { name: "Закрыть всё" }));
+      await settled(stage);
+      // The parent has no block now: it goes through the normal close, with no blanket confirmation.
+      expect(close.mock.calls.every(([, options]) => options?.confirmEndsSession !== true && options?.confirmBlock !== true)).toBe(true);
+    });
+  });
+
   it("ends a session only when asked by name, and a retry loads a new page", async () => {
     const stage = newStage();
     const user = userEvent.setup();

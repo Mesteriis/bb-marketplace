@@ -595,6 +595,12 @@ export class WorkspaceSession {
       : removePanelFromLayout(document, panelId, live));
   }
 
+  /** How many children the open layout places for the panel, read now. */
+  linkedCountOf(panelId: string): number {
+    const document = this.document();
+    return document === null ? 0 : blockChildren(document, panelId, this.parentOf).length;
+  }
+
   /**
    * Closes the panel: releases its view once and takes it out of the open
    * layout. When the registry warns that this ends the session, nothing

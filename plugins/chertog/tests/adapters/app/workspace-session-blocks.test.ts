@@ -232,4 +232,41 @@ describe("a parent tile and its block", () => {
     expect(blockChildren(session.document()!, "panel-p", session.parentOf)).toEqual([panelOf(session, "thr_c"), panelOf(session, "thr_c2")]);
     expect(blockChildren(session.document()!, "panel-q", session.parentOf)).toEqual([panelOf(session, "thr_q1")]);
   });
+
+  it("keeps the blocks of both tiles when two parents swap places", async () => {
+    const stored = twoTiles();
+    const groups = [group("group-1", "panel-p"), group("group-2", "panel-q")];
+    const document: WorkspaceDocument = {
+      ...stored,
+      panels: { "panel-p": { ref: threadRef("thr_p") }, "panel-q": { ref: threadRef("thr_q") } },
+      layouts: [{ ...stored.layouts[0], workspace: { ...stored.layouts[0].workspace, root: { kind: "split", id: "split-100", direction: "row", children: groups, sizes: [0.5, 0.5] } } }],
+    };
+    const session = await blockSession({}, document, ["thr_c", "thr_q1"]);
+    const root = shown(session).root;
+    session.applySurfaceChange({
+      kind: "operation",
+      operation: { type: "swapGroups", groupId: findGroupOfPanel(root, "panel-p")!.id, targetGroupId: findGroupOfPanel(root, "panel-q")!.id },
+    });
+    expect(placed(session)).toEqual(["panel-q", panelOf(session, "thr_q1"), "panel-p", panelOf(session, "thr_c")]);
+  });
+
+  it("refuses visibly a swap of a parent with the tile of its own child", async () => {
+    const session = await blockSession();
+    const before = session.document();
+    const root = shown(session).root;
+    session.applySurfaceChange({
+      kind: "operation",
+      operation: { type: "swapGroups", groupId: findGroupOfPanel(root, "panel-p")!.id, targetGroupId: findGroupOfPanel(root, panelOf(session, "thr_c"))!.id },
+    });
+    expect(session.document()).toBe(before);
+    expect(session.controller.getSnapshot().refusal).toBe("invalid-layout");
+    // The other way round: the child's tile dropped on the parent's.
+    session.controller.dismissRefusal();
+    session.applySurfaceChange({
+      kind: "operation",
+      operation: { type: "swapGroups", groupId: findGroupOfPanel(root, panelOf(session, "thr_c"))!.id, targetGroupId: findGroupOfPanel(root, "panel-p")!.id },
+    });
+    expect(session.document()).toBe(before);
+    expect(session.controller.getSnapshot().refusal).toBe("invalid-layout");
+  });
 });

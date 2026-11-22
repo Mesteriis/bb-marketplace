@@ -44,15 +44,38 @@ export function linkedCounts(document: WorkspaceDocument, parentOf: ParentOf): R
   return counts;
 }
 
-/** The panels a layout operation moves that have children: the tabs of a moved tile, or the moved tab. */
+/**
+ * The panels a layout operation moves that have children: the moved tab, or
+ * the tabs of a moved tile. A swap moves both tiles, so the other tile's
+ * parents count too.
+ */
 function movedParents(document: WorkspaceDocument, operation: LayoutOperation, parentOf: ParentOf): string[] {
   const { root } = activeLayout(document).workspace;
-  const moved = operation.type === "moveTab" || operation.type === "moveTabToEdge" ? [operation.panelId] : findGroup(root, operation.groupId)?.tabs ?? [];
+  const tabsOf = (groupId: string): readonly string[] => findGroup(root, groupId)?.tabs ?? [];
+  const moved = operation.type === "moveTab" || operation.type === "moveTabToEdge"
+    ? [operation.panelId]
+    : operation.type === "swapGroups" ? [...tabsOf(operation.groupId), ...tabsOf(operation.targetGroupId)] : tabsOf(operation.groupId);
   return moved.filter((panelId) => hasBlock(document, panelId, parentOf));
 }
 
-/** A layout operation that takes the children of every moved parent along; any other operation is applied as it is. */
+/** Whether any tab of `tabs` is a child of a panel of `parents`. */
+function holdsChildOf(parents: readonly string[], tabs: readonly string[], parentOf: ParentOf): boolean {
+  return tabs.some((tab) => { const parent = parentOf(tab); return parent !== undefined && parents.includes(parent); });
+}
+
+/**
+ * A layout operation that takes the children of every moved parent along; any
+ * other operation is applied as it is. A swap of a parent's tile with the tile
+ * of one of its own children is refused (`invalid-layout`, shown to the user):
+ * it has no meaning for a block, and doing nothing would look like a failure.
+ */
 export function applyOperationWithBlocks(document: WorkspaceDocument, operation: LayoutOperation, parentOf: ParentOf): WorkspaceChange {
+  if (operation.type === "swapGroups") {
+    const { root } = activeLayout(document).workspace;
+    const first = findGroup(root, operation.groupId)?.tabs ?? [];
+    const second = findGroup(root, operation.targetGroupId)?.tabs ?? [];
+    if (holdsChildOf(first, second, parentOf) || holdsChildOf(second, first, parentOf)) return { ok: false, reason: "invalid-layout" };
+  }
   const parents = movedParents(document, operation, parentOf);
   return parents.length === 0
     ? applyLayoutOperation(document, operation)

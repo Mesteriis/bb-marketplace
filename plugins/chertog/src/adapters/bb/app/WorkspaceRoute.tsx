@@ -188,10 +188,11 @@ export function WorkspaceRoute({ workspace, onNewThread, surfaceSize }: Workspac
     if (choice.placement === "pick-place") setPlacing(choice);
     else session.openContent(choice, destination);
   };
+  // Which question to ask is read from the session when the answer comes, not from what this render drew.
+  const askToClose = (panelId: string): void =>
+    setClosing({ panelId, title: session.labelOf(panelId).title, placed: placedPanels.has(panelId), linkedCount: session.linkedCountOf(panelId) });
   const requestClose = async (panelId: string): Promise<void> => {
-    if ((await session.closePanel(panelId)) === "needs-confirmation") {
-      setClosing({ panelId, title: session.labelOf(panelId).title, placed: placedPanels.has(panelId), linkedCount: labels[panelId]?.linkedCount ?? 0 });
-    }
+    if ((await session.closePanel(panelId)) === "needs-confirmation") askToClose(panelId);
   };
   const requestCloseInstance = (instanceId: string): void => {
     const panelId = session.panelOfInstance(instanceId);
@@ -335,8 +336,12 @@ export function WorkspaceRoute({ workspace, onNewThread, surfaceSize }: Workspac
         panelTitle={closing?.title ?? ""}
         linkedCount={closing?.linkedCount ?? 0}
         onConfirm={() => {
-          if (closing !== null) void session.closePanel(closing.panelId, { confirmBlock: true, confirmEndsSession: true });
+          const panelId = closing?.panelId;
           setClosing(null);
+          if (panelId === undefined) return;
+          // The block may have changed while the question was open: only a block that is still there is confirmed as a whole.
+          if (session.linkedCountOf(panelId) > 0) void session.closePanel(panelId, { confirmBlock: true, confirmEndsSession: true });
+          else void requestClose(panelId);
         }}
         onCancel={() => setClosing(null)}
       />
@@ -349,7 +354,11 @@ export function WorkspaceRoute({ workspace, onNewThread, surfaceSize }: Workspac
           setClosing(null);
         }}
         onCloseAndEnd={() => {
-          if (closing !== null) void session.closePanel(closing.panelId, { confirmEndsSession: true });
+          if (closing !== null) {
+            const { panelId } = closing;
+            // A block that appeared meanwhile needs its own question.
+            void session.closePanel(panelId, { confirmEndsSession: true }).then((outcome) => { if (outcome === "needs-confirmation") askToClose(panelId); });
+          }
           setClosing(null);
         }}
         onCancel={() => setClosing(null)}
