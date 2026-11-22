@@ -1,13 +1,11 @@
 // The ChatGPT page of BB's navigation. ChatGPT itself runs in a separate
-// native window with its own sign-in, placed exactly on the area this page
-// reserves for it, so it reads as part of the page. The column beside it
-// prepares the text and hands it over; inserting happens only after the user
-// confirms in the ChatGPT area.
-import { useCallback, useEffect, useRef, useState, type MouseEvent } from "react";
+// window with its own sign-in; this page prepares the text, shows the
+// window's state and hands the text over. Inserting happens only after the
+// user confirms in the window.
+import { useEffect, useRef, useState, type MouseEvent } from "react";
 import type { WindowStatusView } from "../core/window-status.ts";
 import { ContextPreview } from "./context-preview.tsx";
 import { BUTTON_GHOST, BUTTON_OUTLINE, BUTTON_PRIMARY, isTrustedEvent, type DockServices, type IsUserAction } from "./services.ts";
-import { useAttachment } from "./use-attachment.ts";
 import { useStaged } from "./use-store.ts";
 
 interface DockPageProps {
@@ -18,18 +16,18 @@ interface DockPageProps {
 }
 
 function describeStatus(status: WindowStatusView | null): string {
-  if (status === null) return "Открываю ChatGPT…";
+  if (status === null) return "Состояние окна неизвестно.";
   switch (status.window) {
     case "closed":
-      return "ChatGPT закрыт.";
+      return "Окно ChatGPT закрыто.";
     case "building":
-      return "ChatGPT собирается на этом Mac. Первый раз это занимает до минуты.";
+      return "Окно ChatGPT собирается на этом Mac. Первый раз это занимает до минуты.";
     case "unavailable":
-      return "ChatGPT недоступен. " + (status.reason ?? "");
+      return "Окно ChatGPT недоступно. " + (status.reason ?? "");
     case "open":
-      if (status.proposal === "waiting") return "Текст ждёт подтверждения в ChatGPT.";
-      if (status.proposal === "writing") return "Текст передаётся в поле ввода.";
-      return "ChatGPT открыт.";
+      if (status.proposal === "waiting") return "Окно открыто. Текст ждёт подтверждения в окне.";
+      if (status.proposal === "writing") return "Окно открыто. Текст передаётся в поле ввода.";
+      return "Окно ChatGPT открыто.";
   }
 }
 
@@ -37,29 +35,19 @@ const OUTCOME_TEXT = {
   "handed-off": "Последняя передача: текст передан в поле ввода. Проверьте черновик и отправьте сами.",
   unknown: "Последняя передача: результат неизвестен. Проверьте черновик перед повтором.",
   refused: "Последняя передача: вставка отменена, текст никуда не записан.",
-  copied: "Последняя передача: текст скопирован, вставьте его сами.",
-  cancelled: "Последняя передача отменена.",
+  copied: "Последняя передача: текст скопирован в окне, вставьте его сами.",
+  cancelled: "Последняя передача отменена в окне.",
 } as const;
 
 export function DockPage({ services, status, isUserAction = isTrustedEvent }: DockPageProps) {
-  const { staging, window: chat, copyText, notify } = services;
+  const { staging, window, copyText, notify } = services;
   const staged = useStaged(staging);
   const [busy, setBusy] = useState(false);
   const sent = useRef<{ proposalId: string; text: string } | null>(null);
-  const area = useRef<HTMLDivElement>(null);
   const hasText = staged !== null && staged.text.length > 0;
-  const open = status?.window === "open";
 
-  const attach = useCallback((view: Parameters<typeof chat.attach>[0]) => chat.attach(view), [chat]);
-  useAttachment(area, attach, true);
-
-  // Opening the ChatGPT page opens ChatGPT: no text is involved.
-  useEffect(() => {
-    chat.open().catch(() => notify("error", "Не удалось открыть ChatGPT."));
-  }, [chat, notify]);
-
-  // Once ChatGPT reports that the proposal may be in a draft, the same text
-  // is dropped here so it cannot be handed over twice by mistake.
+  // Once the window reports that the proposal may be in a draft, the same
+  // text is dropped here so it cannot be handed over twice by mistake.
   useEffect(() => {
     const last = status?.last;
     const mine = sent.current;
@@ -68,14 +56,14 @@ export function DockPage({ services, status, isUserAction = isTrustedEvent }: Do
     if (last.outcome !== "copied") sent.current = null;
   }, [status, staging]);
 
-  async function reopen(event: MouseEvent) {
+  async function open(event: MouseEvent) {
     if (!isUserAction(event) || busy) return;
     setBusy(true);
     try {
-      const next = await chat.open();
-      if (next.window === "unavailable") notify("error", next.reason ?? "ChatGPT недоступен.");
+      const next = await window.open();
+      if (next.window === "unavailable") notify("error", next.reason ?? "Окно ChatGPT недоступно.");
     } catch {
-      notify("error", "Не удалось открыть ChatGPT.");
+      notify("error", "Не удалось открыть окно ChatGPT.");
     } finally {
       setBusy(false);
     }
@@ -86,19 +74,19 @@ export function DockPage({ services, status, isUserAction = isTrustedEvent }: Do
     setBusy(true);
     const text = staged.text;
     try {
-      const result = await chat.propose(text, staged.source.kind);
+      const result = await window.propose(text, staged.source.kind);
       if (result.ok) {
         sent.current = { proposalId: result.proposalId, text };
-        notify("info", "Текст показан под ChatGPT. Проверьте беседу и подтвердите вставку там.");
+        notify("info", "Текст показан в окне ChatGPT. Проверьте беседу и подтвердите вставку там.");
       } else if (result.reason === "busy") {
-        notify("error", "ChatGPT ещё принимает предыдущий текст. Дождитесь результата.");
+        notify("error", "Окно ещё передаёт предыдущий текст. Дождитесь результата.");
       } else if (result.reason === "window-unavailable") {
-        notify("error", "ChatGPT ещё не готов. Повторите, когда он откроется.");
+        notify("error", "Окно ChatGPT ещё не готово. Повторите, когда оно откроется.");
       } else {
         notify("error", "Текст пуст или длиннее 100 000 знаков.");
       }
     } catch {
-      notify("error", "Не удалось передать текст в ChatGPT.");
+      notify("error", "Не удалось передать текст окну ChatGPT.");
     } finally {
       setBusy(false);
     }
@@ -111,54 +99,56 @@ export function DockPage({ services, status, isUserAction = isTrustedEvent }: Do
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col lg:flex-row">
-      <div
-        ref={area}
-        data-chat-dock-area=""
-        aria-label="ChatGPT"
-        className="relative flex min-h-[24rem] min-w-0 flex-1 items-center justify-center border-b border-border lg:border-b-0 lg:border-r"
-      >
-        {/* Seen only while the ChatGPT window is not over this area. */}
-        <div className="flex max-w-sm flex-col items-center gap-3 p-6 text-center">
-          <p role="status" aria-live="polite" className="text-sm text-muted-foreground">
+    <div className="h-full overflow-auto p-4 md:p-5">
+      <div className="mx-auto flex w-full max-w-3xl flex-col gap-5">
+        <section aria-labelledby="chat-dock-window" className="rounded-md border border-border p-3">
+          <h2 id="chat-dock-window" className="text-sm font-semibold">
+            Окно ChatGPT
+          </h2>
+          <p role="status" aria-live="polite" className="mt-1 text-sm text-muted-foreground">
             {describeStatus(status)}
           </p>
-          {status !== null && !open && status.window !== "building" && (
-            <button type="button" className={BUTTON_OUTLINE} disabled={busy} onClick={reopen}>
-              Открыть ChatGPT
-            </button>
+          {status?.last !== null && status?.last !== undefined && (
+            <p className="mt-1 text-xs text-muted-foreground">{OUTCOME_TEXT[status.last.outcome]}</p>
           )}
-        </div>
-      </div>
+          <p className="mt-3 text-xs leading-relaxed">
+            ChatGPT открывается в отдельном окне без адресной строки. У окна свой вход, отдельный от Browser в BB, и
+            инструменты агентов BB (<code>bb browser</code>) до него не дотягиваются. Программы с полными правами в macOS,
+            например средства автоматизации интерфейса, это окно видеть могут.
+          </p>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <button type="button" className={BUTTON_OUTLINE} disabled={busy} onClick={open}>
+              Открыть окно ChatGPT
+            </button>
+          </div>
+        </section>
 
-      <aside aria-label="Подготовленный контекст" className="flex w-full flex-col gap-3 overflow-auto p-4 lg:w-[22rem] lg:shrink-0">
-        <ContextPreview staging={staging} rows={10} />
-        <div className="flex flex-wrap items-center gap-2">
-          <button type="button" className={BUTTON_PRIMARY} disabled={!hasText || busy || status?.proposal === "writing"} onClick={handOver}>
-            Передать в ChatGPT
-          </button>
-          <button type="button" className={BUTTON_OUTLINE} disabled={!hasText} onClick={copy}>
-            Скопировать контекст
-          </button>
-          <button
-            type="button"
-            className={BUTTON_GHOST}
-            disabled={staged === null}
-            onClick={(event) => {
-              if (isUserAction(event)) staging.clear();
-            }}
-          >
-            Очистить
-          </button>
-        </div>
-        {status?.last !== null && status?.last !== undefined && <p className="text-xs text-muted-foreground">{OUTCOME_TEXT[status.last.outcome]}</p>}
-        <p className="text-xs leading-relaxed text-muted-foreground">
-          ChatGPT показан слева в собственном окне без адресной строки. Вход в нём сохраняется между запусками и отделён от
-          Browser в BB; инструменты агентов BB (<code>bb browser</code>) до него не дотягиваются. Программы с полными правами в
-          macOS, например средства автоматизации интерфейса, это окно видеть могут. Текст вставляется в черновик только
-          после вашего нажатия «Вставить в черновик» под ChatGPT. Отправляете сообщение вы.
-        </p>
-      </aside>
+        <section aria-label="Подготовленный контекст" className="flex flex-col gap-3">
+          <ContextPreview staging={staging} rows={12} />
+          <div className="flex flex-wrap items-center gap-2">
+            <button type="button" className={BUTTON_PRIMARY} disabled={!hasText || busy || status?.proposal === "writing"} onClick={handOver}>
+              Передать в окно ChatGPT
+            </button>
+            <button type="button" className={BUTTON_OUTLINE} disabled={!hasText} onClick={copy}>
+              Скопировать контекст
+            </button>
+            <button
+              type="button"
+              className={BUTTON_GHOST}
+              disabled={staged === null}
+              onClick={(event) => {
+                if (isUserAction(event)) staging.clear();
+              }}
+            >
+              Очистить
+            </button>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Текст хранится только в памяти этого окна BB. Окно ChatGPT покажет его вместе с адресатом, а вставит в
+            черновик только после вашего нажатия «Вставить в черновик» в самом окне. Отправляете сообщение вы.
+          </p>
+        </section>
+      </div>
     </div>
   );
 }

@@ -1,6 +1,5 @@
 // What the page needs from the outside. The BB adapter in app.tsx supplies
 // these; the page never calls the host itself.
-import type { Attachment } from "../core/attachment.ts";
 import type { Staging } from "../core/staging.ts";
 import type { ProposeOutcome, WindowStatusView } from "../core/window-status.ts";
 import type { ProposalSource } from "../core/window-session.ts";
@@ -10,8 +9,6 @@ export type Notify = (kind: "info" | "success" | "error", message: string) => vo
 export interface WindowApi {
   open(): Promise<WindowStatusView>;
   propose(text: string, source: ProposalSource): Promise<ProposeOutcome>;
-  /** Place the window on the page's reserved area, or hide it. */
-  attach(view: Attachment): void;
 }
 
 export interface DockServices {

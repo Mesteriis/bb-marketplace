@@ -23,7 +23,7 @@ function call() {
 }
 
 function stillWindow(): RunningWindow {
-  return { evaluate: async () => null, showPanel: () => {}, attach: () => {}, quit: () => {}, exited: new Promise(() => {}) };
+  return { evaluate: async () => null, showPanel: () => {}, show: () => {}, quit: () => {}, exited: new Promise(() => {}) };
 }
 
 describe("the host entry's handlers", () => {

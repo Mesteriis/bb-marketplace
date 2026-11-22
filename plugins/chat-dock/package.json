@@ -1,7 +1,7 @@
 {
   "name": "bb-plugin-chat-dock",
   "version": "0.1.0",
-  "description": "A ChatGPT page in BB: chatgpt.com shows inside the page in a window of its own that keeps you signed in; preview text you selected in a thread, copy it, or hand it to that window, where you confirm the insert into the open conversation's draft. You send the message yourself.",
+  "description": "A ChatGPT page in BB: preview text you selected in a thread, copy it, or hand it to a separate ChatGPT window with its own sign-in, where you confirm the insert into the open conversation's draft. You send the message yourself.",
   "private": true,
   "type": "module",
   "license": "MIT",
@@ -27,7 +27,7 @@
   },
   "bb": {
     "name": "BB Chat Dock [Experimental]",
-    "description": "A ChatGPT page in BB: chatgpt.com shows inside the page in a window of its own that keeps you signed in; preview text you selected in a thread, copy it, or hand it to that window, where you confirm the insert into the open conversation's draft. You send the message yourself.",
+    "description": "A ChatGPT page in BB: preview text you selected in a thread, copy it, or hand it to a separate ChatGPT window with its own sign-in, where you confirm the insert into the open conversation's draft. You send the message yourself.",
     "branding": {
       "icon": "./assets/icon.svg"
     },

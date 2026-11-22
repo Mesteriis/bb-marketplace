@@ -1,12 +1,9 @@
 // BB Chat Dock — the ChatGPT window.
 //
-// A small macOS app with one borderless window: https://chatgpt.com in a
-// WKWebView, without an address bar, navigation or window buttons, and
-// without a Dock icon. It sits on the place the BB page reserves for it and
-// follows the window that shows that page, so it looks and works as part of
-// BB. It keeps its own persistent website data store: the sign-in survives
-// restarts, and BB's built-in Browser and the agent tools that drive it
-// (`bb browser`) never see it. Web Inspector is off.
+// A small macOS app with one window: https://chatgpt.com in a WKWebView,
+// without an address bar, navigation buttons or window buttons. It keeps its
+// own website data store, so BB's built-in Browser and the agent tools that
+// drive it (`bb browser`) never see this sign-in. Web Inspector is off.
 //
 // It talks only to the process that started it, through JSON lines on stdin
 // and stdout. It never sends the page's content: only the document's address,
@@ -23,11 +20,7 @@ let allowedHosts: Set<String> = [
 ]
 let siteURL = URL(string: "https://chatgpt.com/")!
 // Fixed: the window's sign-in survives restarts and stays out of BB's Browser.
-#if CHAT_DOCK_TEST
-let dataStoreID = UUID(uuidString: "0B7E1A55-7E57-4C0D-8A1D-0000C4A7D0C5")!
-#else
 let dataStoreID = UUID(uuidString: "5C0E5E2B-6F7D-4F8A-9C3B-2B7C1D0A9E41")!
-#endif
 let pageWorld = WKContentWorld.world(name: "bb-chat-dock")
 
 func isAllowed(_ url: URL?) -> Bool {
@@ -36,103 +29,6 @@ func isAllowed(_ url: URL?) -> Bool {
   if let port = url.port, port != 443 { return false }
   if url.user != nil || url.password != nil { return false }
   return allowedHosts.contains(host)
-}
-
-/// A borderless window that still takes the keyboard. With no menu bar of its
-/// own, it maps the standard editing shortcuts itself.
-final class OverlayWindow: NSWindow {
-  override var canBecomeKey: Bool { true }
-  override var canBecomeMain: Bool { true }
-
-  override func performKeyEquivalent(with event: NSEvent) -> Bool {
-    if super.performKeyEquivalent(with: event) { return true }
-    let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-    guard let key = event.charactersIgnoringModifiers?.lowercased() else { return false }
-    let action: Selector?
-    switch (flags, key) {
-    case (.command, "x"): action = #selector(NSText.cut(_:))
-    case (.command, "c"): action = #selector(NSText.copy(_:))
-    case (.command, "v"): action = #selector(NSText.paste(_:))
-    case (.command, "a"): action = #selector(NSText.selectAll(_:))
-    case (.command, "z"): action = Selector(("undo:"))
-    case ([.command, .shift], "z"): action = Selector(("redo:"))
-    default: action = nil
-    }
-    guard let action else { return false }
-    return NSApp.sendAction(action, to: nil, from: self)
-  }
-}
-
-/// Where the BB page wants the window: its reserved area in CSS pixels and
-/// the page's viewport, as the page measured them.
-struct Attachment {
-  var visible: Bool
-  var rect: CGRect
-  var inner: CGSize
-  var outer: CGSize
-  var screen: CGPoint
-  var pixelRatio: Double
-
-  init?(_ c: [String: Any]) {
-    func number(_ key: String) -> Double? { (c[key] as? NSNumber)?.doubleValue }
-    guard let visible = c["visible"] as? Bool else { return nil }
-    self.visible = visible
-    guard let x = number("x"), let y = number("y"), let w = number("width"), let h = number("height"),
-          let iw = number("innerWidth"), let ih = number("innerHeight"),
-          let ow = number("outerWidth"), let oh = number("outerHeight"),
-          let sx = number("screenX"), let sy = number("screenY"), let dpr = number("pixelRatio"),
-          [x, y, w, h, iw, ih, ow, oh, sx, sy, dpr].allSatisfy({ $0.isFinite }), dpr > 0, iw > 0, ih > 0
-    else {
-      if visible { return nil }
-      self.rect = .zero; self.inner = .zero; self.outer = .zero; self.screen = .zero; self.pixelRatio = 1
-      return
-    }
-    rect = CGRect(x: x, y: y, width: w, height: h)
-    inner = CGSize(width: iw, height: ih)
-    outer = CGSize(width: ow, height: oh)
-    screen = CGPoint(x: sx, y: sy)
-    pixelRatio = dpr
-  }
-}
-
-/// The window that shows the BB page, as the window server reports it.
-struct TargetWindow {
-  let number: CGWindowID
-  let bounds: CGRect
-}
-
-func onScreenWindows() -> [[String: Any]] {
-  (CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]) ?? []
-}
-
-func bounds(of info: [String: Any]) -> CGRect? {
-  guard let dict = info[kCGWindowBounds as String] as? NSDictionary else { return nil }
-  return CGRect(dictionaryRepresentation: dict)
-}
-
-/// The ordinary window of another app whose frame best matches what the page
-/// reported about its own window.
-func findTarget(for a: Attachment, excluding own: Int) -> TargetWindow? {
-  var best: (TargetWindow, Double)?
-  for info in onScreenWindows() {
-    guard (info[kCGWindowLayer as String] as? Int) == 0,
-          let number = info[kCGWindowNumber as String] as? CGWindowID, Int(number) != own,
-          (info[kCGWindowOwnerPID as String] as? pid_t) != getpid(),
-          let b = bounds(of: info) else { continue }
-    let score = abs(b.minX - a.screen.x) + abs(b.minY - a.screen.y) + abs(b.width - a.outer.width) + abs(b.height - a.outer.height)
-    if score < 120, best == nil || score < best!.1 { best = (TargetWindow(number: number, bounds: b), score) }
-  }
-  return best?.0
-}
-
-/// The overlay's frame in window-server coordinates (top-left origin), given
-/// the target's current bounds. Browser chrome is assumed to sit on the left
-/// and top of the page, as in BB Desktop, Chrome-family browsers and Safari.
-func overlayRect(target: CGRect, chrome: CGPoint, zoom: Double, rect: CGRect) -> CGRect {
-  CGRect(x: target.minX + chrome.x + rect.minX * zoom,
-         y: target.minY + chrome.y + rect.minY * zoom,
-         width: rect.width * zoom,
-         height: rect.height * zoom)
 }
 
 final class Channel {
@@ -218,17 +114,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     webView.allowsBackForwardNavigationGestures = false
     webView.translatesAutoresizingMaskIntoConstraints = false
 
-    window = OverlayWindow(
-      contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
-      styleMask: [.borderless],
+    window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 1100, height: 820),
+      styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
       backing: .buffered, defer: false)
     window.title = "ChatGPT"
-    window.hasShadow = false
-    window.isOpaque = true
-    window.backgroundColor = .windowBackgroundColor
-    window.collectionBehavior = [.fullScreenAuxiliary, .ignoresCycle]
+    window.titleVisibility = .hidden
+    window.titlebarAppearsTransparent = true
+    for kind in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
+      window.standardWindowButton(kind)?.isHidden = true
+    }
     window.delegate = self
     window.isReleasedWhenClosed = false
+    window.setFrameAutosaveName("BBChatDockWindow")
 
     let content = NSView()
     panel.translatesAutoresizingMaskIntoConstraints = false
@@ -236,7 +134,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     content.addSubview(webView)
     content.addSubview(panel)
     NSLayoutConstraint.activate([
-      webView.topAnchor.constraint(equalTo: content.topAnchor),
+      // The strip above the page stays the window's drag area.
+      webView.topAnchor.constraint(equalTo: content.topAnchor, constant: 28),
       webView.leadingAnchor.constraint(equalTo: content.leadingAnchor),
       webView.trailingAnchor.constraint(equalTo: content.trailingAnchor),
       webView.bottomAnchor.constraint(equalTo: panel.topAnchor),
@@ -255,14 +154,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
       self?.channel.send(["type": "url", "url": view.url?.absoluteString ?? ""])
     }
     loadStart()
-    #if CHAT_DOCK_TEST
-    if ProcessInfo.processInfo.environment["CHAT_DOCK_TEST_OFFSCREEN"] == "1" {
-      // WebKit needs a window on screen; keep it out of sight.
-      window.setFrame(NSRect(x: -5000, y: -5000, width: 800, height: 600), display: false)
-      window.orderFrontRegardless()
-    }
-    #endif
-    startTracking()
+    show()
     readCommands()
     channel.send(["type": "ready"])
   }
@@ -281,77 +173,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     webView.load(URLRequest(url: siteURL))
   }
 
-  // MARK: Sitting on the BB page
-
-  var attachment: Attachment?
-  var target: TargetWindow?
-  var chrome = CGPoint.zero
-  var zoom = 1.0
-  var tracker: Timer?
-
-  func attach(_ next: Attachment) {
-    attachment = next
-    guard next.visible else {
-      target = nil
-      place()
-      return
-    }
-    if let found = findTarget(for: next, excluding: window.windowNumber) {
-      target = found
-      let backing = NSScreen.screens.first(where: { screenFrameCG($0).intersects(found.bounds) })?.backingScaleFactor ?? 2
-      zoom = next.pixelRatio / Double(backing)
-      chrome = CGPoint(x: max(0, found.bounds.width - next.inner.width * zoom),
-                       y: max(0, found.bounds.height - next.inner.height * zoom))
-    } else {
-      target = nil
-    }
-    place()
-  }
-
-  /// A screen's frame in window-server coordinates (top-left origin).
-  func screenFrameCG(_ screen: NSScreen) -> CGRect {
-    let primary = NSScreen.screens.first?.frame.height ?? screen.frame.maxY
-    return CGRect(x: screen.frame.minX, y: primary - screen.frame.maxY, width: screen.frame.width, height: screen.frame.height)
-  }
-
-  func startTracking() {
-    let timer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in self?.place() }
-    RunLoop.main.add(timer, forMode: .common)
-    tracker = timer
-  }
-
-  /// Puts the window on the page's reserved area, just above the page's
-  /// window, or hides it when the page is gone, hidden or off screen.
-  func place() {
+  func show() {
     #if CHAT_DOCK_TEST
-    if attachment == nil, ProcessInfo.processInfo.environment["CHAT_DOCK_TEST_OFFSCREEN"] == "1" { return }
+    if ProcessInfo.processInfo.environment["CHAT_DOCK_TEST_OFFSCREEN"] == "1" {
+      window.setFrameOrigin(NSPoint(x: -5000, y: -5000))
+      window.orderFrontRegardless()
+      return
+    }
     #endif
-    guard let a = attachment, a.visible, let t = target else {
-      if window.isVisible { window.orderOut(nil) }
-      return
-    }
-    let windows = onScreenWindows()
-    let targetIndex = windows.firstIndex { ($0[kCGWindowNumber as String] as? CGWindowID) == t.number }
-    guard let targetIndex, let current = bounds(of: windows[targetIndex]) else {
-      // Minimized, on another Space or closed.
-      if window.isVisible { window.orderOut(nil) }
-      return
-    }
-    let cg = overlayRect(target: current, chrome: chrome, zoom: zoom, rect: a.rect)
-    guard cg.width >= 40, cg.height >= 40 else {
-      if window.isVisible { window.orderOut(nil) }
-      return
-    }
-    let primary = NSScreen.screens.first?.frame.height ?? 0
-    let frame = NSRect(x: cg.minX, y: primary - cg.maxY, width: cg.width, height: cg.height)
-    if abs(window.frame.minX - frame.minX) > 0.5 || abs(window.frame.minY - frame.minY) > 0.5
-      || abs(window.frame.width - frame.width) > 0.5 || abs(window.frame.height - frame.height) > 0.5 {
-      window.setFrame(frame, display: true)
-    }
-    let ownIndex = windows.firstIndex { ($0[kCGWindowNumber as String] as? Int) == window.windowNumber }
-    if !window.isVisible || ownIndex == nil || ownIndex! > targetIndex {
-      window.order(.above, relativeTo: Int(t.number))
-    }
+    if window.frameAutosaveName.isEmpty || !window.setFrameUsingName("BBChatDockWindow") { window.center() }
+    window.makeKeyAndOrderFront(nil)
+    NSApp.activate()
   }
 
   func buildMenu() {
@@ -399,8 +231,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
 
   func handle(_ command: [String: Any]) {
     switch command["type"] as? String {
-    case "attach":
-      if let next = Attachment(command) { attach(next) }
+    case "show":
+      show()
     case "panel":
       applyPanel(command)
     case "evaluate":
@@ -433,20 +265,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     case "test-reload":
       // A new document at the same address, as a reload of the real site gives.
       loadStart()
-    case "test-state":
-      // Test builds only: where the window is, in window-server coordinates.
-      guard let id = command["id"] as? String else { return }
-      let primary = NSScreen.screens.first?.frame.height ?? 0
-      let f = window.frame
-      let windows = onScreenWindows()
-      let ownIndex = windows.firstIndex { ($0[kCGWindowNumber as String] as? Int) == window.windowNumber }
-      let targetIndex = target.flatMap { t in windows.firstIndex { ($0[kCGWindowNumber as String] as? CGWindowID) == t.number } }
-      channel.send(["type": "test-result", "id": id, "value": [
-        "visible": window.isVisible,
-        "x": f.minX, "y": primary - f.maxY, "width": f.width, "height": f.height,
-        "target": target.map { Int($0.number) } ?? -1,
-        "aboveTarget": ownIndex != nil && targetIndex != nil && ownIndex! < targetIndex!,
-      ] as [String: Any]])
     #endif
     default:
       break
@@ -464,6 +282,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     panel.copy.isHidden = !(view["canCopy"] as? Bool ?? false) || panelText.isEmpty
     panel.dismiss.title = view["dismissLabel"] as? String ?? "Отмена"
     panel.insert.isEnabled = !(view["busy"] as? Bool ?? false)
+    if visible { show() }
   }
 
   @objc func pressed(_ sender: NSButton) {
@@ -515,18 +334,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     NSApp.terminate(nil)
   }
 
-  // The window hides while the page's window is minimized or gone; that is
-  // not a reason to quit. Closing it quits in windowWillClose.
-  func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+  func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 }
 
 let app = NSApplication.shared
-// No Dock icon and no menu bar: the window is part of BB's interface.
-app.setActivationPolicy(.accessory)
-// A hidden window still holds the user's draft and sign-in: the system must
-// not stop the app because nothing of it is on screen.
-ProcessInfo.processInfo.disableAutomaticTermination("ChatGPT window is attached to BB")
-ProcessInfo.processInfo.disableSuddenTermination()
+app.setActivationPolicy(.regular)
 let delegate = AppDelegate()
 app.delegate = delegate
 app.run()

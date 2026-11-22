@@ -3,7 +3,6 @@
 // proposal waits and how the last one ended.
 import { defineRpcContract, type ExperimentalHostSignals } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import type { Attachment } from "./src/core/attachment.ts";
 import type { ProposeOutcome, WindowStatusView } from "./src/core/window-status.ts";
 
 export const MAX_PROPOSAL_LENGTH = 100_000;
@@ -38,30 +37,8 @@ export const proposeOutputSchema = z.discriminatedUnion("ok", [
   z.object({ ok: z.literal(false), reason: z.enum(["busy", "empty-text", "text-too-long", "window-unavailable"]) }).strict(),
 ]);
 
-const finite = z.number().finite().min(-100_000).max(100_000);
-
-export const attachmentSchema = z
-  .object({
-    visible: z.boolean(),
-    x: finite,
-    y: finite,
-    width: finite.min(0),
-    height: finite.min(0),
-    innerWidth: finite.positive(),
-    innerHeight: finite.positive(),
-    outerWidth: finite.positive(),
-    outerHeight: finite.positive(),
-    screenX: finite,
-    screenY: finite,
-    pixelRatio: z.number().finite().positive().max(16),
-  })
-  .strict();
-
-const attachOutput = z.object({ ok: z.literal(true) }).strict();
-
 const methods = {
   open: { input: z.null(), output: windowStatusSchema },
-  attach: { input: attachmentSchema, output: attachOutput },
   propose: { input: proposeInputSchema, output: proposeOutputSchema },
   status: { input: z.null(), output: windowStatusSchema, experimental_retryable: true },
 };
@@ -74,7 +51,6 @@ export const hostSignals = {
 
 export const rpcContract = defineRpcContract({
   open: { input: z.null(), output: windowStatusSchema },
-  attach: { input: attachmentSchema, output: attachOutput },
   propose: { input: proposeInputSchema, output: proposeOutputSchema },
   status: { input: z.null(), output: windowStatusSchema },
 });
@@ -85,7 +61,5 @@ export const STATUS_CHANNEL = "window-status";
 type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
 const statusMatches: Same<WindowStatusWire, WindowStatusView> = true;
 const proposeMatches: Same<z.infer<typeof proposeOutputSchema>, ProposeOutcome> = true;
-const attachmentMatches: Same<z.infer<typeof attachmentSchema>, Attachment> = true;
-void attachmentMatches;
 void statusMatches;
 void proposeMatches;

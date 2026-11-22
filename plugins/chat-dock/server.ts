@@ -1,8 +1,8 @@
 // BB Chat Dock — BB backend entry.
 //
-// Relays four calls between the BB page and the plugin's host entry on the
-// server's own machine: open the ChatGPT window, place it on the page's
-// reserved area, propose a text for it, read its status. No call returns page content, and none writes into the page:
+// Relays three calls between the BB page and the plugin's host entry on the
+// server's own machine: open the ChatGPT window, propose a text for it, read
+// its status. No call returns page content, and none writes into the page:
 // that happens only after the user presses "Вставить в черновик" in the
 // window itself. No settings, CLI commands, agent tools or storage.
 import { experimental_PluginRpcRefusal, type BbPluginApi } from "@get-bb/plugin-sdk";
@@ -43,9 +43,6 @@ export default async function plugin(bb: BbPluginApi) {
     },
     async status() {
       return host.call("status", null, { hostId: await localHost() });
-    },
-    async attach(input) {
-      return host.call("attach", input, { hostId: await localHost() });
     },
   });
 }

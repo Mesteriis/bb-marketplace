@@ -45,20 +45,19 @@ describe("the BB entry", () => {
         rpc: {
           status: () => OPEN,
           open: () => OPEN,
-          attach: () => ({ ok: true }),
           propose: (input: unknown) => (proposed.push(input), { ok: true, proposalId: "p-1" }),
         },
       },
     );
     expect((slot.getByLabelText("Текст для передачи") as HTMLTextAreaElement).value).toBe(MARK);
-    await slot.findByText("ChatGPT открыт.");
-    fireEvent.click(slot.getByRole("button", { name: "Передать в ChatGPT" }));
+    await slot.findByText("Окно ChatGPT открыто.");
+    fireEvent.click(slot.getByRole("button", { name: "Передать в окно ChatGPT" }));
     await vi.waitFor(() => expect(proposed).toEqual([{ text: MARK, source: "message-selection" }]));
     slot.lifecycle.unmount();
 
     await scripts.lifecycle.dispose();
 
-    const second = renderSlot(app.navPanels[0]!, { subPath: "" }, { rpc: { status: () => OPEN, open: () => OPEN, attach: () => ({ ok: true }) } });
+    const second = renderSlot(app.navPanels[0]!, { subPath: "" }, { rpc: { status: () => OPEN } });
     expect((second.getByLabelText("Текст для передачи") as HTMLTextAreaElement).value).toBe("");
     second.lifecycle.unmount();
   });
