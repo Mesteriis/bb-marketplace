@@ -115,6 +115,41 @@ describe("the title of the bar", () => {
   });
 });
 
+describe("the content picker's sections", () => {
+  it("are not built while the picker is closed, and are built when it opens", async () => {
+    const stage = newStage();
+    const user = userEvent.setup();
+    render(<Bar stage={stage} />);
+    await user.click(await screen.findByRole("button", { name: /Исполнитель/ }));
+    await waitFor(() => expect(document.querySelectorAll("[data-group-id]")).toHaveLength(1));
+    const sections = vi.spyOn(stage.workspace.session, "contentSections");
+
+    await act(async () => {
+      stage.workspace.threads.set({ status: "ready", threads: [{ id: "thr_a", title: "Исполнитель 2", projectName: "bb-main" }] });
+    });
+    expect(sections).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Добавить панель" }));
+    expect(sections).toHaveBeenCalled();
+    expect(within(screen.getByRole("dialog")).getByRole("button", { name: /Исполнитель 2/ })).toBeTruthy();
+  });
+
+  it("follow the data while the picker is open", async () => {
+    const stage = newStage();
+    const user = userEvent.setup();
+    render(<Bar stage={stage} />);
+    await user.click(await screen.findByRole("button", { name: /Исполнитель/ }));
+    await user.click(screen.getByRole("button", { name: "Добавить панель" }));
+    expect(within(screen.getByRole("dialog")).queryByRole("button", { name: /Новый/ })).toBeNull();
+
+    await act(async () => {
+      stage.workspace.threads.set({ status: "ready", threads: [{ id: "thr_n", title: "Новый тред в списке", projectName: "bb-main" }] });
+    });
+
+    expect(within(screen.getByRole("dialog")).getByRole("button", { name: /Новый тред в списке/ })).toBeTruthy();
+  });
+});
+
 describe("the actions of the bar", () => {
   it("opens BB's new thread screen", async () => {
     const stage = newStage();

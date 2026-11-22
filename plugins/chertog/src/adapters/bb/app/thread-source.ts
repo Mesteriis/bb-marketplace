@@ -48,6 +48,22 @@ export type ThreadDirectoryState =
   | { readonly status: "error" }
   | { readonly status: "ready"; readonly threads: readonly ThreadEntry[] };
 
+function sameEntry(a: ThreadEntry, b: ThreadEntry): boolean {
+  return (
+    a.id === b.id &&
+    a.title === b.title &&
+    a.projectName === b.projectName &&
+    a.parentThreadId === b.parentThreadId &&
+    a.status?.tone === b.status?.tone &&
+    a.status?.label === b.status?.label
+  );
+}
+
+function sameState(a: ThreadDirectoryState, b: ThreadDirectoryState): boolean {
+  if (a.status !== "ready" || b.status !== "ready") return a.status === b.status;
+  return a.threads.length === b.threads.length && a.threads.every((thread, index) => sameEntry(thread, b.threads[index]));
+}
+
 /** The threads BB lists for this window, as last reported. */
 export class ThreadDirectory {
   private state: ThreadDirectoryState = { status: "loading" };
@@ -64,7 +80,9 @@ export class ThreadDirectory {
     return this.byId.get(threadId);
   }
 
+  /** The same content again changes nothing and tells nobody: BB repeats its list on every update. */
   set(state: ThreadDirectoryState): void {
+    if (sameState(this.state, state)) return;
     this.state = state;
     this.byId = new Map(state.status === "ready" ? state.threads.map((thread) => [thread.id, thread]) : []);
     this.listeners.notify();
