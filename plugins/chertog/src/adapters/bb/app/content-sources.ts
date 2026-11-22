@@ -25,6 +25,11 @@ export interface PanelStateText {
 }
 
 export interface ContentSource {
+  readonly embed?: {
+    choose(id: string, selected: (uuid: string) => void, cancel: (reason?: string) => void): void;
+    target(id: string): ReactNode;
+    close(id: string): Promise<"ended" | "keep" | "hide">;
+  };
   /** The provider the panel registry asks to open, release and end a panel. */
   readonly provider: PanelProvider;
   /** Heading of the provider's section in the content picker. */
@@ -51,7 +56,7 @@ export interface ContentSource {
   /** The content of a live instance. Called once per instance while it stays live. */
   render(ref: PanelRef, instanceId: string): ReactNode;
   /** The provider's own words for a state of its panel, or `null` for the default text. */
-  stateText(state: PanelState, ref: PanelRef): PanelStateText | null;
+  stateText(state: PanelState, ref: PanelRef, instanceId?: string): PanelStateText | null;
   /** Lets the source tell the registry that a live panel stopped being live. */
   connect?(registry: Pick<PanelRegistry, "report">): void;
   subscribe(listener: () => void): () => void;

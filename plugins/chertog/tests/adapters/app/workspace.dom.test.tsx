@@ -4,7 +4,8 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useEffect } from "react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { embeddedSources } from "../../../src/adapters/bb/app/embedded-source.tsx";
 import { LiveLayer } from "../../../src/adapters/bb/app/LiveLayer.tsx";
 import { createWindowWorkspace, type WindowWorkspace } from "../../../src/adapters/bb/app/window-workspace.ts";
 import { WorkspaceRoute } from "../../../src/adapters/bb/app/WorkspaceRoute.tsx";
@@ -32,12 +33,12 @@ function ChatProbe({ threadId, stage }: { threadId: string; stage: Stage }) {
   return <textarea aria-label={"черновик " + threadId} defaultValue="" />;
 }
 
-function newStage(options: { fixture?: boolean; zoom?: boolean } = {}): Stage {
+function newStage(options: { fixture?: boolean; zoom?: boolean; embeds?: boolean } = {}): Stage {
   const rpc = new FakeWorkspaceRpc();
   const ids = sequentialIds();
   const stage: Stage = { rpc, chats: {}, newThreads: 0, workspace: undefined as unknown as WindowWorkspace };
   stage.workspace = createWindowWorkspace({
-    extraSources: options.zoom ? [createCardSource("zoom", { plugins: { list: async () => ({ plugins: [] }) } } as unknown as CardHost)] : [],
+    extraSources: options.embeds ? embeddedSources() : options.zoom ? [createCardSource("zoom", { plugins: { list: async () => ({ plugins: [] }) } } as unknown as CardHost)] : [],
     renderChat: (threadId) => <ChatProbe threadId={threadId} stage={stage} />,
     randomId: () => ids("r").slice(2),
     diagnostics: { failure: () => undefined },
@@ -468,4 +469,257 @@ it("keeps the Zoom entry available when applying the call preset again", async (
     const entry = stage.workspace.session.contentSections().find(section => section.providerId === "zoom")?.items[0];
     expect(entry?.openInTileId).toBe(currentPanel);
   }
+});
+
+it("keeps the picker node and instance through selection and requires owner ready", async () => {
+  const stage = newStage({ embeds: true });
+  render(<Window stage={stage} onRoute />);
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("button", { name: /Добавить вид Telegram/ }));
+  const node = document.querySelector<HTMLElement>('[data-chertog-embed-target="v1"]')!;
+  expect(node.isConnected).toBe(true);
+  const id = node.dataset.instanceId!;
+  const detail = { version: "chertog.embed.v1", provider: "telegram-chat", instanceId: id, generation: 1 };
+  const reply = (kind: string, fields = {}) => act(async () => {
+    node.dispatchEvent(new CustomEvent("chertog.embed.v1.owner", { bubbles: true, detail: { ...detail, kind, ...fields } }));
+  });
+  expect(stage.rpc.saves).toEqual([]);
+  await reply("ready");
+  expect(stage.workspace.session.registry.get(id)).toBeNull();
+  await reply("selected", { resourceRef: "12345678-1234-4123-8123-123456789abc" });
+  expect(stage.workspace.session.registry.get(id)?.state).toBe("loading");
+  expect(document.querySelector("[data-chertog-embed-target]")).toBe(node);
+  await reply("ready");
+  expect(stage.workspace.session.registry.get(id)?.state).toBe("live");
+  await reply("revoked");
+  await reply("ready");
+  expect(stage.workspace.session.registry.get(id)?.state).toBe("lost");
+});
+
+async function embedStage() {
+  const stage = newStage({ embeds: true });
+  render(<Window stage={stage} onRoute />);
+  await userEvent.setup().click(await screen.findByRole("button", { name: /Добавить вид Zoom/ }));
+  const node = document.querySelector<HTMLElement>('[data-chertog-embed-target="v1"]')!;
+  const id = node.dataset.instanceId!;
+  const session = stage.workspace.session;
+  const reply = (kind: string, fields = {}) => node.dispatchEvent(new CustomEvent("chertog.embed.v1.owner", {
+    bubbles: true, detail: { version: "chertog.embed.v1", provider: "zoom-call", instanceId: id, generation: 1, kind, ...fields },
+  }));
+  const select = () => reply("selected", { resourceRef: "12345678-1234-4123-8123-123456789abc" });
+  return { stage, session, node, id, reply, select };
+}
+
+it("times out an accepted reference, ignores late ready and retries with a new generation", async () => {
+  const { session, id, reply, select } = await embedStage();
+  vi.useFakeTimers();
+  try {
+    await act(async () => { select(); await vi.advanceTimersByTimeAsync(10001); reply("ready"); });
+    expect(session.registry.get(id)).toMatchObject({ state: "lost", unknownOutcome: "open" });
+    await act(async () => { session.retry(id); reply("ready"); });
+    expect(session.registry.get(id)?.state).toBe("loading");
+    await act(async () => { reply("denied", { generation: 2 }); });
+    expect(session.registry.get(id)?.state).toBe("access-denied");
+  } finally { vi.useRealTimers(); }
+});
+
+it("cancels a picker when its owner disables and ignores the late UUID", async () => {
+  const { stage, session, node, reply, select } = await embedStage();
+  await act(async () => { reply("revoked"); select(); });
+  expect(node.isConnected).toBe(false);
+  expect(session.reservations.size).toBe(0);
+  expect(stage.rpc.saves).toEqual([]);
+});
+
+it("retains the last view on keep or owner loss and releases only on acknowledged close", async () => {
+  const { session, node, id, reply, select } = await embedStage();
+  await act(async () => { select(); reply("ready"); });
+  const panel = session.panelOfInstance(id)!;
+  await act(async () => { const closing = session.closePanel(panel); reply("keep"); expect(await closing).toBe("kept"); });
+  expect(node.isConnected).toBe(true);
+  await act(async () => {
+    const closing = session.closePanel(panel);
+    reply("revoked"); reply("ended");
+    expect(await closing).toBe("kept");
+  });
+  expect(session.registry.get(id)?.state).toBe("lost");
+  await act(async () => {
+    session.retry(id); reply("ready", { generation: 2 });
+    const closing = session.closePanel(panel);
+    reply("ended", { generation: 2 });
+    expect(await closing).toBe("closed");
+  });
+  expect(node.isConnected).toBe(false);
+});
+
+it("keeps an immediate revocation after ready in the same dispatch turn", async () => {
+  const { session, id, reply, select } = await embedStage();
+  await act(async () => { select(); reply("ready"); reply("revoked"); });
+  expect(session.registry.get(id)).toMatchObject({ state: "lost", unknownOutcome: "open" });
+});
+
+it("keeps a Telegram sibling live after the owner closes one draft", async () => {
+  const { workspace } = newStage({ embeds: true });
+  const { session } = workspace;
+  render(<LiveLayer workspace={workspace} />);
+  await act(async () => { await session.controller.enter(); });
+  const resourceRef = "12345678-1234-4123-8123-123456789abc";
+  const nodes: HTMLElement[] = [];
+  function reply(node: HTMLElement, kind: string) {
+    node.dispatchEvent(new CustomEvent("chertog.embed.v1.owner", { bubbles: true, detail: {
+      version: "chertog.embed.v1", provider: "telegram-chat", instanceId: node.dataset.instanceId,
+      generation: 1, kind, ...(kind === "selected" ? { resourceRef } : {}),
+    } }));
+  }
+  for (let i = 0; i < 2; i++) {
+    await act(async () => { session.openContent({ providerId: "telegram-chat", itemId: "choose", placement: "default" }, { kind: "new-tile" }); });
+    const node = document.querySelectorAll<HTMLElement>("[data-chertog-embed-target]")[i]!;
+    nodes.push(node);
+    await act(async () => { reply(node, "selected"); reply(node, "ready"); });
+  }
+  expect(session.registry.list().map(view => view.ref.params)).toEqual([{ resourceRef }, { resourceRef }]);
+  const [first, second] = nodes as [HTMLElement, HTMLElement];
+  await act(async () => {
+    const done = session.closeInstance(first.dataset.instanceId!);
+    reply(first, "ended");
+    expect(await done).toBe("closed");
+  });
+  expect(second.isConnected).toBe(true);
+  expect(session.registry.get(second.dataset.instanceId!)?.state).toBe("live");
+});
+
+it("retains a last view whose close acknowledgement timed out and ignores a late ended", async () => {
+  const { session, node, id, select, reply } = await embedStage();
+  await act(async () => { select(); reply("ready"); });
+  vi.useFakeTimers();
+  try {
+    await act(async () => {
+      const closing = session.closeInstance(id);
+      await vi.advanceTimersByTimeAsync(10001);
+      expect(await closing).toBe("kept");
+      reply("ended");
+    });
+    expect(node.isConnected).toBe(true);
+    expect(session.registry.get(id)?.state).toBe("lost");
+  } finally { vi.useRealTimers(); }
+});
+
+it("explains an unsupported owner version without accepting its ready", async () => {
+  const { id, session, select, reply } = await embedStage();
+  vi.useFakeTimers();
+  try {
+    await act(async () => { select(); reply("ready", { version: "chertog.embed.v2" }); await vi.advanceTimersByTimeAsync(10001); });
+    expect(session.registry.get(id)?.unknownOutcome).toBe("open");
+    expect(screen.getByText("Версия протокола владельца не поддерживается.")).toBeTruthy();
+  } finally { vi.useRealTimers(); }
+});
+
+async function threadWithPendingZoom() {
+  const stage = newStage({ embeds: true });
+  const session = stage.workspace.session;
+  const user = userEvent.setup();
+  render(<Window stage={stage} onRoute />);
+  await user.click(await screen.findByRole("button", { name: /Исполнитель/ }));
+  await settled(stage);
+  const groupId = session.surfaceState()!.focusedGroupId;
+  await act(async () => {
+    session.openContent({ providerId: "zoom-call", itemId: "choose", placement: "tab" }, { kind: "group", groupId });
+  });
+  expect(session.reservations.size).toBe(1);
+  return { stage, session, user, groupId };
+}
+
+it("persists removing a group with a thread and pending Zoom picker", async () => {
+  const { stage, session, user } = await threadWithPendingZoom();
+  await user.click(screen.getByRole("button", { name: "Действия тайла" }));
+  await user.click(screen.getByRole("menuitem", { name: "Убрать тайл из раскладки" }));
+  await settled(stage);
+  expect(session.reservations.size).toBe(0);
+  expect(session.surfaceState()?.root).toMatchObject({ kind: "group", tabs: [] });
+  expect(stage.rpc.stored?.layouts[0].workspace.root).toMatchObject({ kind: "group", tabs: [] });
+  expect(session.hiddenPanels().map(panel => panel.title)).toEqual(["Исполнитель"]);
+});
+
+it("keeps existing tabs when only the pending Zoom picker tab is removed", async () => {
+  const { stage, session, user } = await threadWithPendingZoom();
+  const saved = stage.rpc.saves.length;
+  await user.click(screen.getByRole("button", { name: "Действия тайла" }));
+  await user.click(screen.getByRole("menuitem", { name: "Убрать вкладку из раскладки" }));
+  await settled(stage);
+  expect(session.reservations.size).toBe(0);
+  expect(session.surfaceState()?.root).toMatchObject({ kind: "group", tabs: ["panel-1"], activeTab: "panel-1" });
+  expect(stage.rpc.saves).toHaveLength(saved);
+});
+
+it("persists a thread split during Zoom selection and keeps it after cancellation", async () => {
+  const { stage, session, groupId } = await threadWithPendingZoom();
+  await act(async () => {
+    session.openContent({ providerId: "bb-thread", itemId: "thr_b", placement: "tab" }, { kind: "group", groupId });
+  });
+  await act(async () => {
+    session.applySurfaceChange({ kind: "operation", operation: {
+      type: "moveTabToEdge", panelId: "panel-1", targetGroupId: groupId, edge: "right",
+    } });
+  });
+  await settled(stage);
+  expect(session.reservations.size).toBe(1);
+  const split = { kind: "split", children: [{ kind: "group", tabs: ["panel-5"] }, { kind: "group", tabs: ["panel-1"] }] };
+  expect(stage.rpc.stored?.layouts[0].workspace.root).toMatchObject(split);
+  const reservation = [...session.reservations.values()][0]!;
+  await act(async () => { await session.closePanel(reservation.panelId); });
+  expect(session.surfaceState()?.root).toMatchObject(split);
+});
+
+async function zoomOverThreads(placement: "tab" | "split") {
+  const stage = newStage({ embeds: true });
+  const { session } = stage.workspace;
+  const user = userEvent.setup();
+  render(<Window stage={stage} onRoute />);
+  await user.click(await screen.findByRole("button", { name: /Исполнитель/ }));
+  const addTab = (providerId: string, itemId: string) => act(async () => {
+    session.openContent({ providerId, itemId, placement: "tab" }, { kind: "group", groupId: session.surfaceState()!.focusedGroupId });
+  });
+  if (placement === "split") await addPanel(user, /Ревьюер/);
+  else await addTab("bb-thread", "thr_b");
+  await user.click(screen.getByRole("tab", { name: /Исполнитель/ }));
+  await settled(stage);
+  await addTab("zoom-call", "choose");
+  const cancel = () => act(async () => {
+    await session.closePanel([...session.reservations.values()][0]!.panelId);
+  });
+  return { stage, user, cancel };
+}
+
+it("keeps an explicitly selected tab after cancelling Zoom selection", async () => {
+  const { stage, user, cancel } = await zoomOverThreads("tab");
+  await user.click(screen.getByRole("tab", { name: /Ревьюер/ }));
+  await settled(stage);
+  expect(screen.getByRole("tab", { name: /Ревьюер/ }).getAttribute("aria-selected")).toBe("true");
+  expect(stage.rpc.stored?.layouts[0].workspace.root).toMatchObject({ activeTab: "panel-3" });
+  await cancel();
+  expect(screen.getByRole("tab", { name: /Ревьюер/ }).getAttribute("aria-selected")).toBe("true");
+  expect(stage.rpc.stored?.layouts[0].workspace.root).toMatchObject({ activeTab: "panel-3" });
+});
+
+it("activates the adjacent permanent tab when the active Zoom picker closes", async () => {
+  const { stage, cancel } = await zoomOverThreads("tab");
+  expect(screen.getByRole("tab", { name: /Zoom/ }).getAttribute("aria-selected")).toBe("true");
+  expect(stage.workspace.session.focusedInstance()).toBeNull();
+  await cancel();
+  await settled(stage);
+  expect(screen.getByRole("tab", { name: /Ревьюер/ }).getAttribute("aria-selected")).toBe("true");
+  expect(stage.rpc.stored?.layouts[0].workspace.root).toMatchObject({ activeTab: "panel-3" });
+});
+
+it("keeps divider proportions changed during Zoom selection", async () => {
+  const { stage, cancel } = await zoomOverThreads("split");
+  const divider = screen.getByRole("separator");
+  expect(divider.getAttribute("aria-valuenow")).toBe("50");
+  fireEvent.keyDown(divider, { key: "ArrowRight" });
+  await settled(stage);
+  expect(divider.getAttribute("aria-valuenow")).toBe("51");
+  await cancel();
+  await settled(stage);
+  expect(screen.getByRole("separator").getAttribute("aria-valuenow")).toBe("51");
+  expect(stage.rpc.stored?.layouts[0].workspace.root).toMatchObject({ sizes: [616 / 1200, 584 / 1200] });
 });

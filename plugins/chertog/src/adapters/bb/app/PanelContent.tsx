@@ -12,13 +12,21 @@ export function PanelContent({ session, instanceId }: { session: WorkspaceSessio
   const view = session.viewOf(instanceId);
   const source = view?.source;
   const ready = view?.instance.state === "live" || view?.instance.state === "entry";
-  const renderContent = ready && source !== undefined;
+  const renderContent = ready && source !== undefined && !source.embed;
   const refKey = view === null ? null : panelRefKey(view.ref);
   const content = useMemo(
     () => (renderContent && view !== null && source !== undefined ? source.render(view.ref, instanceId) : null),
     // The reference is compared by its key: the document hands out a new object for the same reference.
     [renderContent, refKey, source, instanceId],
   );
+  const embed = session.reservations.get(instanceId)?.source.embed ?? (view?.instance.paramsVerified ? source?.embed : undefined);
+  if (embed) {
+    return <div data-chertog-panel={instanceId} className="relative h-full min-h-0 bg-background text-foreground">
+      {embed.target(instanceId)}
+      {view && !ready && view.instance.state !== "loading" &&
+        <div className="absolute inset-0 bg-background"><PanelStateView state={view.instance.state} panelTitle={view.title} {...view.stateText} onRetry={() => session.retry(instanceId)} /></div>}
+    </div>;
+  }
   if (view === null) return null;
   if (renderContent) {
     return (

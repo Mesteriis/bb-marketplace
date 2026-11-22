@@ -1600,7 +1600,7 @@
     {
       "id": "chertog",
       "displayName": "Chertog [Experimental]",
-      "description": "BB thread tiles, provider cards, live file previews and diffs, with named layouts, presets and confirmed thread handoff between windows.",
+      "description": "BB thread tiles, provider cards and owner-confirmed embedded views, file previews and diffs, named layouts, presets and thread handoff.",
       "icon": {
         "url": "./plugins/chertog/assets/icon.svg"
       },

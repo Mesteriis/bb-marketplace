@@ -13,7 +13,6 @@ import {
 } from "react";
 import { findGroup, listGroups, type Rect } from "../../../core/layout/index.ts";
 import { workspacePresets } from "../../../core/workspace/presets.ts";
-import { activeLayout } from "../../../core/workspace/index.ts";
 import { ClosePanelDialog, ContentPicker, WorkspaceToolbar, type ContentChoice } from "../../../ui/chrome/index.ts";
 import { classes, Modal } from "../../../ui/chrome/primitives.tsx";
 import { TileSurface, type ContentRects, type SurfaceSize } from "../../../ui/tiles/index.ts";
@@ -100,7 +99,7 @@ export function WorkspaceRoute({ workspace, onNewThread, surfaceSize }: Workspac
 
   // A tile menu opens over the content area, where the live layer is drawn:
   // the panel of that tile steps aside while the menu is open.
-  const workspaceState = document === null ? null : activeLayout(document).workspace;
+  const workspaceState = session.surfaceState();
   const stateRef = useRef(workspaceState);
   stateRef.current = workspaceState;
   const covered = useRef<ReadonlySet<string>>(new Set());
@@ -352,6 +351,8 @@ function Notices({ workspace }: { workspace: WindowWorkspace }) {
   const controller = workspace.session.controller;
   const { merge, refusal, dropped } = controller.getSnapshot();
   const rows: { key: string; tone: "error" | "info"; text: string; action?: { label: string; run(): void } }[] = [];
+  if (workspace.session.choiceError) rows.push({ key: "embed", tone: "error", text: workspace.session.choiceError,
+    action: { label: appStrings.dismiss, run: () => workspace.session.dismissChoiceError() } });
   if (dropped.length > 0) rows.push({ key: "dropped", tone: "info", text: appStrings.dropped(dropped.length) });
   if (merge !== null) {
     const parts = [
