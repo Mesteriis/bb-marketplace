@@ -1,5 +1,5 @@
 // Isolated BB with a registered fixture project containing preview.html
-// (<input type="file"><p>HTML preview</p>). Pass stand URL, playwright tools, Chromium, fixture.txt.
+// (copy the adjacent preview.html). Pass stand URL, playwright tools, Chromium, fixture.txt.
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 
@@ -18,7 +18,10 @@ try {
   await picker.getByRole("button", { name: /preview.html/ }).click();
 
   const iframe = page.locator('iframe[title="preview.html"]');
-  const input = iframe.contentFrame().locator('input[type=file]');
+  const frame = iframe.contentFrame();
+  const input = frame.locator("#inline");
+  const styled = frame.locator("#stylesheet");
+  const editor = frame.locator("#editor");
   await input.waitFor();
   const paragraph = iframe.contentFrame().getByText("HTML preview", { exact: true });
   const source = await iframe.evaluate(el => [el.src, el.srcdoc]);
@@ -27,12 +30,12 @@ try {
   const cdp = await page.context().newCDPSession(page);
   const data = { items: [], files: [file], dragOperationsMask: 1 };
   const drag = (type, at) => cdp.send("Input.dispatchDragEvent", { type, ...at, data });
-  const writes = [];
-  page.on("request", request => {
-    if (["POST", "PUT", "PATCH", "DELETE"].includes(request.method())) writes.push(request.url());
-  });
+  // Let BB finish fetching the preview before counting requests during the drops.
+  await page.waitForLoadState("networkidle");
+  const requests = [];
+  page.on("request", request => requests.push(request.url()));
   // Direct entry into the frame can be the first event from the OS.
-  for (const target of [input, paragraph]) {
+  for (const target of [input, styled, editor, paragraph]) {
     const box = await target.boundingBox();
     assert(box);
     const point = { x: box.x + 10, y: box.y + box.height / 2 };
@@ -42,12 +45,13 @@ try {
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     await paragraph.waitFor();
     assert.equal(await input.evaluate((el, doc) => el.ownerDocument === doc, original), true);
-    assert.deepEqual(await input.evaluate(el => Array.from(el.files, f => f.name)), []);
+    assert.deepEqual(await frame.locator("input").evaluateAll(inputs => inputs.map(el => el.files.length)), [0, 0]);
     assert.deepEqual(await iframe.evaluate(el => [el.src, el.srcdoc]), source);
     assert.equal(await original.evaluate(doc => doc.documentElement.outerHTML), markup);
   }
-  assert.deepEqual(writes, []);
-  console.log("PASS OS file drops on file input and ordinary text kept original document, source and content; zero files and sends");
+  assert.equal(await editor.evaluate(el => el.isContentEditable), false);
+  assert.deepEqual(requests, []);
+  console.log("PASS OS file drops on inline-styled and stylesheet-styled file inputs, editable fixture and ordinary text kept original document, source and content; zero files and HTTP requests");
 } finally {
   await browser.close();
 }
