@@ -21,7 +21,7 @@ const unanswered = { accepted: z.literal(false), outcome: z.null() };
 
 /** A request as the sender builds it: not answered yet. */
 export const openRequestSchema = z.union([
-  z.strictObject({ kind: z.literal("thread"), threadId: z.string().min(1).max(200), ...unanswered }),
+  z.strictObject({ kind: z.literal("thread"), threadId: z.string().min(1).max(128), ...unanswered }),
   z.strictObject({ kind: z.literal("panel"), ref: panelRefSchema, ...unanswered }),
 ]);
 export type OpenRequest = z.infer<typeof openRequestSchema>;

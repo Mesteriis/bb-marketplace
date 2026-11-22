@@ -8,7 +8,7 @@ import { isAcceptedOutcome, OPEN_EVENT, openRequestSchema, type OpenOutcome } fr
 
 /** What the listener needs of the workspace session. */
 export interface OpenTarget {
-  openThread(threadId: string): Exclude<OpenOutcome, "unsupported" | "invalid">;
+  openThread(threadId: string): Exclude<OpenOutcome, "invalid">;
   openPanel(ref: PanelRef): Exclude<OpenOutcome, "invalid">;
 }
 
@@ -30,6 +30,7 @@ export function handleOpenEvent(event: Event, target: OpenTarget): void {
     answer(reply, request.data.kind === "thread" ? target.openThread(request.data.threadId) : target.openPanel(request.data.ref));
   } catch (error) {
     console.error("[chertog] open request", error);
+    answer(reply, "invalid");
   }
 }
 

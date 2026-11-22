@@ -1,7 +1,7 @@
 // The page side of chertog.open.v1: validate a request, ask the session,
 // answer in the detail object before dispatch returns.
 import { renderHook } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { OPEN_EVENT } from "../../../src/core/wire/index.ts";
 import { useOpenRequests, type OpenTarget } from "../../../src/adapters/bb/app/open-requests.ts";
 
@@ -65,6 +65,15 @@ describe("useOpenRequests", () => {
     expect(() => send(null)).not.toThrow();
     expect(() => send("thread")).not.toThrow();
     expect(calls).toEqual([]);
+  });
+
+  it("answers invalid, not accepted, when the session throws", () => {
+    const session: OpenTarget = { openThread: () => { throw new Error("boom"); }, openPanel: () => "opened" };
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    renderHook(() => useOpenRequests(session));
+    expect(send(thread())).toMatchObject({ accepted: false, outcome: "invalid" });
+    expect(error).toHaveBeenCalled();
+    error.mockRestore();
   });
 
   it("leaves a request another listener already accepted alone", () => {

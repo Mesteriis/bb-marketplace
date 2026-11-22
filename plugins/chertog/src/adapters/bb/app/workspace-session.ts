@@ -397,8 +397,8 @@ export class WorkspaceSession {
    * `"not-shown"` only when the page is not shown; a change the core or the
    * tile limit refuses is `"refused"` and is reported like any other refusal.
    */
-  openThread(threadId: string): "opened" | "focused" | "refused" | "not-shown" {
-    return this.openRef(threadRef(threadId));
+  openThread(threadId: string): "opened" | "focused" | "refused" | "not-shown" | "unsupported" {
+    return this.openPanel(threadRef(threadId));
   }
 
   /**

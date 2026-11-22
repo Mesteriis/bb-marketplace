@@ -166,6 +166,25 @@ describe("openThread", () => {
   });
 });
 
+describe("openThread validation", () => {
+  it("answers unsupported for a thread id the provider or the reference rules refuse, and changes nothing", async () => {
+    const session = sessionOver(document(true));
+    await session.controller.enter();
+    const before = session.document();
+    expect(session.openThread("x".repeat(129))).toBe("unsupported");
+    expect(session.openThread("thr x")).toBe("unsupported");
+    expect(session.openThread("")).toBe("unsupported");
+    expect(session.document()).toBe(before);
+  });
+
+  it("treats a bb-thread panel request like a thread request, subthread block included", async () => {
+    const session = sessionOver(document(true));
+    await session.controller.enter();
+    expect(session.openPanel(thread("thr_c").ref)).toBe("opened");
+    expect(blockChildren(session.document()!, "panel-p", session.parentOf)).toEqual([panelOf(session, "thr_c")]);
+  });
+});
+
 describe("openPanel", () => {
   const frame = (name: string) => ({ provider: "fixture-frame", params: { frame: name } });
 

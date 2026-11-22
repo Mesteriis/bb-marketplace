@@ -18,7 +18,8 @@ describe("chertog.open.v1 request", () => {
 
   it("refuses an empty or oversized thread id and extra fields", () => {
     expect(openRequestSchema.safeParse({ ...thread, threadId: "" }).success).toBe(false);
-    expect(openRequestSchema.safeParse({ ...thread, threadId: "x".repeat(201) }).success).toBe(false);
+    expect(openRequestSchema.safeParse({ ...thread, threadId: "x".repeat(129) }).success).toBe(false);
+    expect(openRequestSchema.safeParse({ ...thread, threadId: "x".repeat(128) }).success).toBe(true);
     expect(openRequestSchema.safeParse({ ...thread, url: "https://x" }).success).toBe(false);
     expect(openRequestSchema.safeParse({ ...panel, extra: 1 }).success).toBe(false);
   });
