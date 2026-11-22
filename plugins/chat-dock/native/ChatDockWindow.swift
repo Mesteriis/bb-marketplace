@@ -218,7 +218,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     #endif
     startTracking()
     readCommands()
+    #if CHAT_DOCK_TEST
     channel.send(["type": "ready"])
+    #endif
   }
 
   func loadStart() {
@@ -471,7 +473,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
   }
 
   func windowWillClose(_ notification: Notification) {
+    #if CHAT_DOCK_TEST
     channel.send(["type": "closed"])
+    #endif
     NSApp.terminate(nil)
   }
 

@@ -58,6 +58,24 @@ describe("the ChatGPT tab", () => {
     expect(opened()).toBe(2);
   });
 
+  it("shows a refused open and lets you try again, even before any status arrived", async () => {
+    let attempts = 0;
+    const chat: WindowApi = {
+      open: async () => {
+        attempts += 1;
+        throw new Error("no host");
+      },
+      attach: () => {},
+    };
+    render(<DockPage chat={chat} status={null} />);
+    await settle();
+
+    expect(screen.getByRole("status").textContent).toBe("Не удалось связаться с компьютером, на котором работает BB.");
+    fireEvent.click(screen.getByRole("button", { name: "Открыть ChatGPT" }));
+    await settle();
+    expect(attempts).toBe(2);
+  });
+
   it("names the first build while it runs", () => {
     render(<DockPage chat={fakeChat().chat} status={{ window: "building", reason: null }} />);
     expect(screen.getByRole("status").textContent).toContain("собирается");

@@ -30,11 +30,15 @@ function describeStatus(status: WindowStatusView | null): string {
 export function DockPage({ chat, status }: DockPageProps) {
   const area = useRef<HTMLDivElement>(null);
   const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState(false);
   useAttachment(area, chat.attach, true);
 
-  // Opening the tab opens ChatGPT.
+  // Opening the tab opens ChatGPT. A refused call is shown, not swallowed.
   useEffect(() => {
-    chat.open().catch(() => {});
+    chat.open().then(
+      () => setFailed(false),
+      () => setFailed(true),
+    );
   }, [chat]);
 
   async function reopen() {
@@ -42,19 +46,20 @@ export function DockPage({ chat, status }: DockPageProps) {
     setBusy(true);
     try {
       await chat.open();
+      setFailed(false);
     } catch {
-      // The status line shows what happened.
+      setFailed(true);
     } finally {
       setBusy(false);
     }
   }
 
-  const canReopen = status !== null && (status.window === "closed" || status.window === "unavailable");
+  const canReopen = failed || (status !== null && (status.window === "closed" || status.window === "unavailable"));
   return (
     <div ref={area} data-chat-dock-area="" aria-label="ChatGPT" className="flex h-full min-h-0 w-full items-center justify-center">
       <div className="flex max-w-sm flex-col items-center gap-3 p-6 text-center">
         <p role="status" aria-live="polite" className="text-sm text-muted-foreground">
-          {describeStatus(status)}
+          {failed ? "Не удалось связаться с компьютером, на котором работает BB." : describeStatus(status)}
         </p>
         {canReopen && (
           <button type="button" className={BUTTON_OUTLINE} disabled={busy} onClick={reopen}>
