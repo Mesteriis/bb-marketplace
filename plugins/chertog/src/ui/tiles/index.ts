@@ -11,4 +11,4 @@ export type { PanelLabel, PanelStatusTone, TileSurfaceText } from "./labels.ts";
 export { DEFAULT_TILE_TEXT } from "./labels.ts";
 
 export type { KeyChord, TileCommand, TileKeyBinding } from "./keymap.ts";
-export { applyTileCommand, TILE_KEYMAP, tileCommandForKey } from "./keymap.ts";
+export { applyTileCommand, TILE_KEYMAP, tileCommandForKey, tileCommandOperation } from "./keymap.ts";

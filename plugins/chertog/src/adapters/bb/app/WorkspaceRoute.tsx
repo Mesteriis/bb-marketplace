@@ -13,7 +13,7 @@ import {
 } from "react";
 import { findGroup, listGroups, type Rect } from "../../../core/layout/index.ts";
 import { workspacePresets } from "../../../core/workspace/presets.ts";
-import { ClosePanelDialog, ContentPicker, WorkspaceToolbar, type ContentChoice } from "../../../ui/chrome/index.ts";
+import { CloseBlockDialog, ClosePanelDialog, ContentPicker, WorkspaceToolbar, type ContentChoice } from "../../../ui/chrome/index.ts";
 import { classes, Modal } from "../../../ui/chrome/primitives.tsx";
 import { TileSurface, type ContentRects, type SurfaceSize } from "../../../ui/tiles/index.ts";
 import { appStrings } from "./strings.ts";
@@ -330,10 +330,19 @@ export function WorkspaceRoute({ workspace, onNewThread, surfaceSize }: Workspac
         </Modal>
       )}
 
-      <ClosePanelDialog
-        open={closing !== null}
+      <CloseBlockDialog
+        open={closing !== null && closing.linkedCount > 0}
         panelTitle={closing?.title ?? ""}
         linkedCount={closing?.linkedCount ?? 0}
+        onConfirm={() => {
+          if (closing !== null) void session.closePanel(closing.panelId, { confirmBlock: true, confirmEndsSession: true });
+          setClosing(null);
+        }}
+        onCancel={() => setClosing(null)}
+      />
+      <ClosePanelDialog
+        open={closing !== null && closing.linkedCount === 0}
+        panelTitle={closing?.title ?? ""}
         onHide={() => {
           // A panel that is already out of the layout is hidden as it is.
           if (closing !== null && closing.placed) session.removeFromLayout(closing.panelId);

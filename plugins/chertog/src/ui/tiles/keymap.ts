@@ -1,13 +1,15 @@
 // Keyboard equivalents of the pointer gestures. The map is data, so a help
 // screen or a command palette can list the same chords the header handles.
-import type { Direction, WorkspaceState } from "../../core/layout/index.ts";
+import type { Direction, LayoutOperation, WorkspaceState } from "../../core/layout/index.ts";
 import {
   activateTab,
   findGroup,
   focusGroup,
   focusInDirection,
   moveGroupInDirection,
+  moveGroupOperation,
   moveTabInDirection,
+  moveTabOperation,
   toggleMaximize,
 } from "../../core/layout/index.ts";
 
@@ -93,4 +95,17 @@ export function applyTileCommand(state: WorkspaceState, groupId: string, command
     case "toggleMaximize":
       return toggleMaximize(from, groupId);
   }
+}
+
+/**
+ * The layout operation a move command stands for, as a drag would give it:
+ * what a parent needs to move the tiles linked to the moved one along.
+ * `undefined` for a command that moves nothing or is no move.
+ */
+export function tileCommandOperation(state: WorkspaceState, groupId: string, command: TileCommand): LayoutOperation | undefined {
+  const group = findGroup(state.root, groupId);
+  if (group === undefined) return undefined;
+  if (command.type === "moveGroup") return moveGroupOperation(state, groupId, command.direction);
+  if (command.type === "moveTab" && group.activeTab !== null) return moveTabOperation(state, group.activeTab, command.direction);
+  return undefined;
 }

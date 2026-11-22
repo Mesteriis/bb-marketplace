@@ -332,6 +332,12 @@ export class PanelRegistry {
     return { status: "closed", release: failed ? "failed" : "done" };
   }
 
+  /** Whether closing the instance now would first need the user's confirmation, because it is the last view of a live session. */
+  wouldNeedConfirmationToClose(instanceId: string): boolean {
+    const entry = this.entries.get(instanceId);
+    return entry !== undefined && this.closingEndsSession(entry);
+  }
+
   /**
    * Leaves the call or disconnects the session through the provider. Nothing
    * else in the registry does this. An unknown result leaves the panel live

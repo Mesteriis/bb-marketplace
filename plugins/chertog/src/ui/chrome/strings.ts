@@ -79,12 +79,17 @@ export const chromeStrings = {
     showLabel: (title: string) => `Показать «${title}»`,
     closeLabel: (title: string) => `Закрыть «${title}»`,
   },
+  closeBlockDialog: {
+    title: (count: number) => `Закрыть вместе с подчинёнными (${count})?`,
+    text: (panel: string) => `«${panel}» и его подчинённые тайлы закроются вместе. Если закрытие завершит чью-то сессию, она завершится.`,
+    confirm: "Закрыть всё",
+    cancel: "Отмена",
+  },
   closeDialog: {
     title: (panel: string) => `Закрыть «${panel}»?`,
     text: "Это последнее представление панели: если закрыть её, сессия завершится. Скрытая панель продолжит работать, её можно вернуть из списка скрытых панелей.",
     hide: "Скрыть панель",
     closeAndEnd: "Закрыть и завершить",
-    closeBlockAndEnd: (count: number) => `Закрыть вместе с подчинёнными (${count}) и завершить`,
     cancel: "Отмена",
   },
 } as const;

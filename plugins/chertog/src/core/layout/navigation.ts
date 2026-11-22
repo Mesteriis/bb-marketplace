@@ -3,7 +3,8 @@
 // result does not depend on the size of the work area.
 import type { Direction, Edge, LayoutNode, WorkspaceState } from "./model.ts";
 import { findGroupOfPanel } from "./model.ts";
-import { focusGroup, moveTab, moveTabToEdge, swapGroups } from "./operations.ts";
+import type { LayoutOperation } from "./operations.ts";
+import { applyOperation, focusGroup } from "./operations.ts";
 
 /** A group's place in the unit square, dividers ignored. */
 interface Box {
@@ -80,10 +81,16 @@ export function focusInDirection(state: WorkspaceState, direction: Direction): W
   return neighbor === undefined ? state : focusGroup(state, neighbor);
 }
 
-/** Swaps a group with its neighbour on the given side, as a header dropped on that tile's centre does. */
-export function moveGroupInDirection(state: WorkspaceState, groupId: string, direction: Direction): WorkspaceState {
+/** The operation that swaps a group with its neighbour on the given side, as a header dropped on that tile's centre does. */
+export function moveGroupOperation(state: WorkspaceState, groupId: string, direction: Direction): LayoutOperation | undefined {
   const neighbor = neighborInDirection(state.root, groupId, direction);
-  return neighbor === undefined ? state : swapGroups(state, groupId, neighbor);
+  return neighbor === undefined ? undefined : { type: "swapGroups", groupId, targetGroupId: neighbor };
+}
+
+/** Swaps a group with its neighbour on the given side. */
+export function moveGroupInDirection(state: WorkspaceState, groupId: string, direction: Direction): WorkspaceState {
+  const operation = moveGroupOperation(state, groupId, direction);
+  return operation === undefined ? state : applyOperation(state, operation);
 }
 
 /**
@@ -92,9 +99,15 @@ export function moveGroupInDirection(state: WorkspaceState, groupId: string, dir
  * tile on that side of it.
  */
 export function moveTabInDirection(state: WorkspaceState, panelId: string, direction: Direction): WorkspaceState {
+  const operation = moveTabOperation(state, panelId, direction);
+  return operation === undefined ? state : applyOperation(state, operation);
+}
+
+/** The operation `moveTabInDirection` performs. */
+export function moveTabOperation(state: WorkspaceState, panelId: string, direction: Direction): LayoutOperation | undefined {
   const group = findGroupOfPanel(state.root, panelId);
-  if (group === undefined) return state;
+  if (group === undefined) return undefined;
   const neighbor = neighborInDirection(state.root, group.id, direction);
-  if (neighbor !== undefined) return moveTab(state, panelId, neighbor);
-  return moveTabToEdge(state, panelId, group.id, EDGE_OF[direction]);
+  if (neighbor !== undefined) return { type: "moveTab", panelId, targetGroupId: neighbor };
+  return { type: "moveTabToEdge", panelId, targetGroupId: group.id, edge: EDGE_OF[direction] };
 }

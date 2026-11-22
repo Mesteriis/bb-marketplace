@@ -4,7 +4,7 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { addTab, createWorkspace } from "../../../src/core/layout/index.ts";
-import { applyTileCommand, TILE_KEYMAP, tileCommandForKey } from "../../../src/ui/tiles/index.ts";
+import { applyTileCommand, TILE_KEYMAP, tileCommandForKey, tileCommandOperation } from "../../../src/ui/tiles/index.ts";
 import { drawn, Harness, header, newCalls, shields, SIZE, THREE_TILES_DRAWN, threeTiles } from "./support.tsx";
 
 function setup(initial = threeTiles(), size = SIZE) {
@@ -56,6 +56,15 @@ describe("key map", () => {
     expect(tileCommandForKey({ key: "Enter", altKey: false, shiftKey: false, ctrlKey: false, metaKey: false })).toBeNull();
   });
 
+  it("names the operation of a move command and of nothing else", () => {
+    const state = threeTiles();
+    expect(tileCommandOperation(state, "group-4", { type: "moveGroup", direction: "left" })).toEqual({ type: "swapGroups", groupId: "group-4", targetGroupId: "group-1" });
+    expect(tileCommandOperation(state, "group-4", { type: "moveTab", direction: "up" })).toEqual({ type: "moveTab", panelId: "c", targetGroupId: "group-2" });
+    expect(tileCommandOperation(state, "group-4", { type: "moveTab", direction: "down" })).toEqual({ type: "moveTabToEdge", panelId: "c", targetGroupId: "group-4", edge: "bottom" });
+    expect(tileCommandOperation(state, "group-4", { type: "focus", direction: "left" })).toBeUndefined();
+    expect(tileCommandOperation(createWorkspace(["a"]), "group-1", { type: "moveGroup", direction: "up" })).toBeUndefined();
+  });
+
   it("returns the same state for a command that has nowhere to go", () => {
     const state = createWorkspace(["a"]);
     expect(applyTileCommand(state, "group-1", { type: "focus", direction: "left" })).toBe(state);
@@ -101,6 +110,7 @@ describe("keyboard on a tile header", () => {
     tab("Предпросмотр").focus();
     fireEvent.keyDown(tab("Предпросмотр"), { key: "ArrowUp", altKey: true, shiftKey: true });
     expect(tabsOf(container)).toEqual({ "group-1": ["a"], "group-2": ["b", "c"] });
+    expect(calls.changes[0]).toMatchObject({ kind: "state", via: { type: "moveTab", panelId: "c", targetGroupId: "group-2" } });
     expect(drawn(container)).toEqual({
       "group-1": "0px 0px 600px 800px",
       "split-3#0": "600px 0px 4px 800px",
@@ -113,6 +123,7 @@ describe("keyboard on a tile header", () => {
   it("moves the whole group by swapping it with its neighbour", () => {
     const { calls, container } = setup();
     fireEvent.keyDown(tab("Предпросмотр"), { key: "ArrowLeft", altKey: true, ctrlKey: true });
+    expect(calls.changes[0]).toMatchObject({ kind: "state", via: { type: "swapGroups", groupId: "group-4", targetGroupId: "group-1" } });
     expect(drawn(container)).toEqual({
       "group-4": "0px 0px 600px 800px",
       "split-3#0": "600px 0px 4px 800px",

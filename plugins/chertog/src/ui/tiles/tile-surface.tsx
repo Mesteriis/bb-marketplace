@@ -27,7 +27,7 @@ import {
   toggleMaximize,
 } from "../../core/layout/index.ts";
 import { Divider } from "./divider.tsx";
-import { applyTileCommand, tileCommandForKey } from "./keymap.ts";
+import { applyTileCommand, tileCommandForKey, tileCommandOperation } from "./keymap.ts";
 import { DEFAULT_TILE_TEXT, type PanelLabel, type TileSurfaceText } from "./labels.ts";
 import { rectStyle, tileHeaderHeight } from "./styles.ts";
 import { Tile, type PickerSlot } from "./tile.tsx";
@@ -41,7 +41,8 @@ import { useTileGestures } from "./use-tile-gestures.ts";
  */
 export type TileSurfaceChange =
   | { readonly kind: "operation"; readonly operation: LayoutOperation }
-  | { readonly kind: "state"; readonly state: WorkspaceState };
+  /** `via`: for a keyboard move, the operation the state is the result of (after focusing its tile), so the parent can move linked tiles along. */
+  | { readonly kind: "state"; readonly state: WorkspaceState; readonly via?: LayoutOperation };
 
 /** Content rectangle of every visible active tab, by panel id, in surface pixels. */
 export type ContentRects = Readonly<Record<string, Rect>>;
@@ -139,7 +140,8 @@ export function TileSurface(props: TileSurfaceProps) {
     const next = applyTileCommand(state, groupId, command);
     if (next === state) return;
     focusAfter.current = state;
-    ask(next);
+    const via = tileCommandOperation(state, groupId, command);
+    onOperation({ kind: "state", state: next, ...(via === undefined ? {} : { via }) });
   };
 
   const dragActive = gestures.dragging !== null;

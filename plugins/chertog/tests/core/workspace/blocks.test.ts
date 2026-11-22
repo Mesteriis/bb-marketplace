@@ -1,8 +1,8 @@
 // Linked block operations: a parent tile and its children kept together.
 import { describe, expect, it } from "vitest";
-import { addTab, createWorkspace, findGroupOfPanel, listGroups, moveTab, splitGroup } from "../../../src/core/layout/index.ts";
+import { addTab, createWorkspace, findGroupOfPanel, listGroups, moveTab, splitGroup, swapGroups } from "../../../src/core/layout/index.ts";
 import type { LayoutNode } from "../../../src/core/layout/index.ts";
-import { activeLayout, blockChildren, changeActiveLayout, BLOCK_SIDE_LIMIT, closeBlock, moveBlock, placeInBlock } from "../../../src/core/workspace/index.ts";
+import { activeLayout, blockChildren, changeActiveLayout, BLOCK_SIDE_LIMIT, closeBlock, moveBlock, moveWithBlocks, placeInBlock } from "../../../src/core/workspace/index.ts";
 import type { ParentOf, WorkspaceChange, WorkspaceDocument, WorkspacePanel } from "../../../src/core/workspace/index.ts";
 
 const NO_LIVE: ReadonlySet<string> = new Set();
@@ -145,6 +145,23 @@ describe("moveBlock", () => {
     expect(findGroupOfPanel(activeLayout(document).workspace.root, "p")?.activeTab).toBe("other");
     const moved = done(moveBlock(document, "p", groupIdOf(document, "q"), "left", parentOf));
     expect(shape(activeLayout(moved).workspace.root)).toEqual(["row", ["p", "other"], ["column", ["c1"], ["c2"]], ["q"]]);
+  });
+});
+
+describe("moveWithBlocks", () => {
+  const swapWithOther = (document: WorkspaceDocument) => (lifted: WorkspaceDocument) =>
+    changeActiveLayout(lifted, (workspace) => swapGroups(workspace, groupIdOf(document, "p"), groupIdOf(document, "other")));
+
+  it("applies any move and sets the children back around the parent's new tile", () => {
+    const document = done(changeOther(withChildren(2)));
+    const moved = done(moveWithBlocks(document, ["p"], groupIdOf(document, "other"), parentOf, swapWithOther(document)));
+    expect(placed(moved)).toEqual(["other", "p", "c1", "c2"]);
+  });
+
+  it("refuses an unknown target and leaves a no-op move alone", () => {
+    const document = done(changeOther(withChildren(2)));
+    expect(moveWithBlocks(document, ["p"], "no-such-group", parentOf, swapWithOther(document))).toEqual({ ok: false, reason: "unknown-group" });
+    expect(moveWithBlocks(document, ["p"], groupIdOf(document, "other"), parentOf, (lifted) => ({ ok: true, document: lifted }))).toEqual({ ok: true, document });
   });
 });
 

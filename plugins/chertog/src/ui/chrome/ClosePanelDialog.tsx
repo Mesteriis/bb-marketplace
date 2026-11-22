@@ -11,14 +11,12 @@ const text = chromeStrings.closeDialog;
 export interface ClosePanelDialogProps {
   open: boolean;
   panelTitle: string;
-  /** The panel is a parent: closing it closes this many linked tiles too. */
-  linkedCount?: number;
   onHide: () => void;
   onCloseAndEnd: () => void;
   onCancel: () => void;
 }
 
-export function ClosePanelDialog({ open, panelTitle, linkedCount, onHide, onCloseAndEnd, onCancel }: ClosePanelDialogProps) {
+export function ClosePanelDialog({ open, panelTitle, onHide, onCloseAndEnd, onCancel }: ClosePanelDialogProps) {
   const titleId = useId();
   const textId = useId();
   if (!open) return null;
@@ -36,7 +34,7 @@ export function ClosePanelDialog({ open, panelTitle, linkedCount, onHide, onClos
         </button>
         <span className="flex-1" />
         <button type="button" data-variant="danger" className={classes.dangerButton} onClick={onCloseAndEnd}>
-          {linkedCount ? text.closeBlockAndEnd(linkedCount) : text.closeAndEnd}
+          {text.closeAndEnd}
         </button>
         <button type="button" data-variant="primary" data-autofocus className={classes.primaryButton} onClick={onHide}>
           {text.hide}

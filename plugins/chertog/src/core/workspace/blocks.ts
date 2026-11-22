@@ -78,15 +78,42 @@ export function moveBlock(
   const children = blockChildren(document, parentPanelId, parentOf);
   const inside = new Set([parentGroupId, ...children.flatMap((child) => findGroupOfPanel(root, child)?.id ?? [])]);
   if (inside.has(targetGroupId)) return { ok: true, document };
-  const lifted = changeActiveLayout(document, (workspace) => children.reduce(closeTab, workspace));
+  return moveWithBlocks(document, [parentPanelId], targetGroupId, parentOf, (lifted) =>
+    changeActiveLayout(lifted, (workspace) => moveGroup(workspace, parentGroupId, targetGroupId, edge)));
+}
+
+/**
+ * Applies a move of tiles or tabs towards `targetGroupId` and keeps the block
+ * of every given parent together: the children are taken out first, the move
+ * is applied, and the children are set back beside their parent's new tile in
+ * their former order. A target that is a tile of one of the blocks, or a move
+ * that changes nothing, leaves the document as it is; an unknown target is
+ * refused.
+ */
+export function moveWithBlocks(
+  document: WorkspaceDocument,
+  parentPanelIds: readonly string[],
+  targetGroupId: string,
+  parentOf: ParentOf,
+  move: (lifted: WorkspaceDocument) => WorkspaceChange,
+): WorkspaceChange {
+  const { root } = activeLayout(document).workspace;
+  if (findGroup(root, targetGroupId) === undefined) return { ok: false, reason: "unknown-group" };
+  const blocks = parentPanelIds.map((parent) => ({ parent, children: blockChildren(document, parent, parentOf) }));
+  const childGroups = new Set(blocks.flatMap(({ children }) => children.flatMap((child) => findGroupOfPanel(root, child)?.id ?? [])));
+  if (childGroups.has(targetGroupId)) return { ok: true, document };
+  const lifted = changeActiveLayout(document, (workspace) => blocks.flatMap(({ children }) => children).reduce(closeTab, workspace));
   if (!lifted.ok) return lifted;
-  const moved = changeActiveLayout(lifted.document, (workspace) => moveGroup(workspace, parentGroupId, targetGroupId, edge));
+  const moved = move(lifted.document);
   if (!moved.ok) return moved;
+  if (activeLayout(moved.document).workspace === activeLayout(lifted.document).workspace) return { ok: true, document };
   let current = moved.document;
-  for (const child of children) {
-    const placed = placeInBlock(current, parentPanelId, child, document.panels[child], parentOf);
-    if (!placed.ok) return placed;
-    current = placed.document;
+  for (const { parent, children } of blocks) {
+    for (const child of children) {
+      const placed = placeInBlock(current, parent, child, document.panels[child], parentOf);
+      if (!placed.ok) return placed;
+      current = placed.document;
+    }
   }
   return { ok: true, document: current };
 }

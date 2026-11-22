@@ -26,7 +26,7 @@ export { computeLayout, DEFAULT_LAYOUT_OPTIONS } from "./geometry.ts";
 
 export { resizeDivider } from "./resize.ts";
 
-export { focusInDirection, moveGroupInDirection, moveTabInDirection, neighborInDirection } from "./navigation.ts";
+export { focusInDirection, moveGroupInDirection, moveGroupOperation, moveTabInDirection, moveTabOperation, neighborInDirection } from "./navigation.ts";
 
 export type { DragSource, DropResolution, DropZone } from "./drop.ts";
 export { resolveDrop } from "./drop.ts";
