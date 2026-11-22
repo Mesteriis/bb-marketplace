@@ -808,7 +808,7 @@
     {
       "id": "makosh-ai",
       "displayName": "Makosh AI [Experimental]",
-      "description": "Streams Claude Messages and Codex Responses to BB plugins through the existing Account Pooler.",
+      "description": "Streams Claude Messages and Codex Responses to BB plugins through the existing Account Pooler and installs its Account Pooler bridge when missing.",
       "icon": "Sparkles",
       "author": {
         "name": "Mesteriis",

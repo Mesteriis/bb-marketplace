@@ -95,7 +95,10 @@ describe("Makosh AI transport", () => {
     await plugin(bb);
     await expect(harness.behavior.callRpc("ai.v1.start", request, caller("consumer")))
       .rejects.toThrow("The Makosh bridge is required.");
-    expect(callRpc).toHaveBeenCalledTimes(1);
+    // The startup bridge check probes with model-api.v1.cancel; only one start is sent.
+    const starts = callRpc.mock.calls.filter((args: unknown[]) =>
+      (args[0] as { method?: string } | undefined)?.method === "model-api.v1.start");
+    expect(starts).toHaveLength(1);
     expect(callRpc).toHaveBeenCalledWith(expect.objectContaining({
       pluginId: "account-pool", method: "model-api.v1.start",
     }));
@@ -211,5 +214,34 @@ describe("Makosh AI error reasons", () => {
     const host = await setup(vi.fn());
     await expect(host.start({ ...request, body: { ...request.body, input: "x".repeat(8 * 1024 * 1024) } }))
       .rejects.toEqual(reason("invalid", "too_large"));
+  });
+
+  // The real host throws its own error class (BbHttpError), not the SDK class
+  // bundled into this plugin, with "<code>: HTTP <status>: " prefixes per hop.
+  class HostRpcError extends Error {
+    constructor(readonly code: string, message: string) { super(message); }
+  }
+
+  it("recognises a missing bridge reported by the host's own error class", async () => {
+    const missing = new HostRpcError("unknown_method",
+      'unknown_method: HTTP 404: plugin "account-pool" has no rpc method "model-api.v1.start"');
+    const start = failingPool(missing);
+    await plugin(start.bb);
+    await expect(start.harness.behavior.callRpc("ai.v1.start", request, caller("consumer")))
+      .rejects.toEqual(reason("conflict", "bridge_missing"));
+
+    const list = failingPool(missing);
+    await plugin(list.bb);
+    const { providers } = await list.harness.behavior.callRpc("ai.v1.providers", {}, caller("consumer")) as {
+      providers: { available: boolean; reason?: string }[];
+    };
+    expect(providers.every((entry) => !entry.available && entry.reason === "bridge_missing")).toBe(true);
+  });
+
+  it("classifies a prefixed bridge refusal from the host", async () => {
+    const { bb, harness } = failingPool(new HostRpcError("conflict", "conflict: HTTP 409: Too many open model streams."));
+    await plugin(bb);
+    await expect(harness.behavior.callRpc("ai.v1.start", request, caller("consumer")))
+      .rejects.toEqual(reason("conflict", "busy"));
   });
 });

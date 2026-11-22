@@ -19,15 +19,16 @@
     "build": "bb plugin build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "check": "npm run typecheck && npm run test"
+    "check": "npm run typecheck && npm run test",
+    "build:bridge": "node scripts/build-pool-bridge.mjs"
   },
   "name": "bb-plugin-makosh-ai",
   "version": "0.1.0",
-  "description": "Streams Claude Messages and Codex Responses to BB plugins through the existing Account Pooler.",
+  "description": "Streams Claude Messages and Codex Responses to BB plugins through the existing Account Pooler and installs its Account Pooler bridge when missing.",
   "homepage": "https://github.com/Mesteriis/makosh-bb/tree/main/plugins/ai#readme",
   "bb": {
     "name": "Makosh AI [Experimental]",
-    "description": "Streams Claude Messages and Codex Responses to BB plugins through the existing Account Pooler.",
+    "description": "Streams Claude Messages and Codex Responses to BB plugins through the existing Account Pooler and installs its Account Pooler bridge when missing.",
     "branding": {
       "icon": "Sparkles"
     },
@@ -46,6 +47,7 @@
     "@types/react": "^19.3.0",
     "better-sqlite3": "^12.11.1",
     "cron-parser": "^5.10.6",
+    "esbuild": "^0.28.2",
     "hono": "^4.13.18",
     "typescript": "^5.7.0",
     "vitest": "^5.1.0"

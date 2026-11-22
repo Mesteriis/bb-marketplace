@@ -2,8 +2,9 @@
 
 Makosh AI gives loaded BB plugins a server-side RPC for the Claude Messages and
 Codex Responses APIs. Inference runs inside the existing Account Pooler, using
-its accounts, quota rules, affinity and failover. Installations need a BB build
-with the [Account Pooler bridge](../../patches/README.md).
+its accounts, quota rules, affinity and failover. The model RPC comes from a
+bridge inside BB's built-in Account Pooler; Makosh AI installs it itself (see
+[Account Pooler bridge](#account-pooler-bridge)).
 
 ## API
 
@@ -105,3 +106,27 @@ The pool checks that routing is enabled and that it can serve the provider.
 A missing bridge fails the RPC. A disabled or unavailable route returns an
 error from the pool. The inference path has no BB thread dispatch, local
 account lookup or separate API keys.
+
+## Account Pooler bridge
+
+Account Pooler is built into bb-app and has no model RPC of its own. On every
+start, and when `autoInstallPoolBridge` is switched on, Makosh AI makes one
+no-op bridge call. When the bridge is missing, for example after a BB update:
+
+1. It finds `server/dist/builtin-plugins/account-pool/dist/server.js` of the
+   bb-app runtime that runs the plugin.
+2. It refuses a file inside a signed application bundle (`*.app/Contents/`)
+   and an Account Pooler build whose code it does not recognise; the plugin
+   log names the reason and nothing is changed.
+3. Otherwise it keeps the original as `server.js.orig`, writes the patched file
+   atomically and reloads Account Pooler. Requests in flight through the pool
+   at that moment are cut off.
+4. It checks the bridge again and logs the result. A pool that is not running
+   yet is retried every 30 seconds, six times.
+
+The patch adds the bridge from `src/adapters/bb/pool-bridge.ts`, bundled with
+its contract into `src/adapters/bb/pool-bridge.bundle.generated.ts`
+(`npm run build:bridge`; a test fails when the bundle is stale), splits the
+hub's request handling into authentication and a trusted path, and registers
+the bridge RPC. Turn `autoInstallPoolBridge` off to manage the bridge by hand.
+To undo the patch, put `server.js.orig` back and reload `account-pool`.

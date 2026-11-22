@@ -4,6 +4,7 @@ import {
   experimental_PluginRpcRefusal,
   type BbPluginApi,
   type ExperimentalPluginRpcHandlerContext,
+  type PluginSettingDescriptor,
 } from "@get-bb/plugin-sdk";
 import type { z } from "zod";
 import {
@@ -11,6 +12,8 @@ import {
   providersInput, providersOutput, readInput, readOutput, reasonMessage, startInput,
   type ErrorReason, type RefusalCode,
 } from "./src/core/contract.js";
+import { POOL_BRIDGE_BUNDLE } from "./src/adapters/bb/pool-bridge.bundle.generated.js";
+import { ensurePoolBridge, nodeFiles } from "./src/adapters/bb/pool-self-install.js";
 
 const contract = defineRpcContract({
   "ai.v1.providers": { input: providersInput, output: providersOutput },
@@ -38,7 +41,21 @@ const bridgeReasons: Record<string, ErrorReason> = {
   "Model request exceeds 8 MiB.": "too_large",
 };
 
-function poolRefusal(error: experimental_PluginRpcCallError): experimental_PluginRpcRefusal | undefined {
+type RpcCallFailure = { code: string; message: string };
+// The host reports a failed plugin RPC with its own error class (BbHttpError),
+// not the SDK class this plugin bundles, and prefixes the message with
+// "<code>: HTTP <status>: " for every hop. Match on the code, compare the bare message.
+const HOST_PREFIX = /^(?:[a-z_]+: )?HTTP \d+: /;
+export function rpcCallFailure(error: unknown): RpcCallFailure | undefined {
+  if (error instanceof experimental_PluginRpcCallError) return { code: error.code, message: error.message };
+  const code = (error as { code?: unknown } | null)?.code;
+  if (!(error instanceof Error) || typeof code !== "string") return undefined;
+  let message = error.message;
+  for (let bare = message.replace(HOST_PREFIX, ""); bare !== message; bare = message.replace(HOST_PREFIX, "")) message = bare;
+  return { code, message };
+}
+
+function poolRefusal(error: RpcCallFailure): experimental_PluginRpcRefusal | undefined {
   if (error.code === "unknown_method") {
     return new experimental_PluginRpcRefusal({
       code: errorReasons.bridge_missing,
@@ -66,7 +83,8 @@ async function fromPool<T>(call: Promise<T>): Promise<T> {
   try {
     return await call;
   } catch (error) {
-    if (error instanceof experimental_PluginRpcCallError) throw poolRefusal(error) ?? error;
+    const failure = rpcCallFailure(error);
+    if (failure) throw poolRefusal(failure) ?? error;
     throw error;
   }
 }
@@ -86,9 +104,10 @@ async function probeBridge(bb: BbPluginApi, owner: string, signal: AbortSignal):
       signal,
     });
   } catch (error) {
-    if (error instanceof experimental_PluginRpcCallError) {
-      if (error.code === "unknown_method") return { available: false, reason: "bridge_missing" };
-      if (error.code === "not_found") return { available: false, reason: "pool_missing" };
+    const failure = rpcCallFailure(error);
+    if (failure) {
+      if (failure.code === "unknown_method") return { available: false, reason: "bridge_missing" };
+      if (failure.code === "not_found") return { available: false, reason: "pool_missing" };
     }
     signal.throwIfAborted();
   }
@@ -145,5 +164,59 @@ export default async function plugin(bb: BbPluginApi): Promise<void> {
   }, {
     experimental_discoverable: true,
     experimental_description: "Make provider API requests through Account Pooler.",
+  });
+  startPoolBridgeSelfInstall(bb);
+}
+
+const settingDescriptors = {
+  autoInstallPoolBridge: {
+    type: "boolean",
+    label: "Install the Account Pooler bridge automatically",
+    description:
+      "When the bridge is missing (for example after a BB update), patch the built-in Account Pooler of a BB backend outside a signed app bundle and reload it.",
+    default: true,
+  },
+} satisfies Record<string, PluginSettingDescriptor>;
+
+const RETRY_MS = 30_000;
+const MAX_ATTEMPTS = 6;
+
+// Runs after load, off the factory's critical path. Account Pooler may still be
+// starting, so a missing pool is retried a few times.
+function startPoolBridgeSelfInstall(bb: BbPluginApi): void {
+  const settings = bb.settings.define(settingDescriptors);
+  const stop = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  bb.onDispose(() => {
+    stop.abort();
+    clearTimeout(timer);
+  });
+  const attempt = async (left: number): Promise<void> => {
+    if (stop.signal.aborted || !(await settings.get()).autoInstallPoolBridge) return;
+    const outcome = await ensurePoolBridge({
+      probe: async () => {
+        const availability = await probeBridge(bb, "makosh-ai", AbortSignal.any([stop.signal, AbortSignal.timeout(10_000)]));
+        return availability.available ? "present" : availability.reason;
+      },
+      hostEntry: process.argv[1],
+      bundle: POOL_BRIDGE_BUNDLE,
+      files: nodeFiles,
+      reload: async () => { await bb.sdk.plugins.reload({ pluginId: "account-pool" }); },
+      wait: (ms) => new Promise((resolve) => { timer = setTimeout(resolve, ms); }),
+      log: (message) => bb.log.info(message),
+    });
+    if (outcome.status === "skipped") bb.log.warn(`Account Pooler bridge not installed: ${outcome.reason}`);
+    else bb.log.info(`Account Pooler bridge check: ${outcome.status}`);
+    if (outcome.status === "pool_missing" && left > 1 && !stop.signal.aborted) {
+      timer = setTimeout(() => { void attempt(left - 1).catch(report); }, RETRY_MS);
+      timer.unref?.();
+    }
+  };
+  const report = (error: unknown) => {
+    if (!stop.signal.aborted) bb.log.warn(`Account Pooler bridge check failed: ${String(error)}`);
+  };
+  void attempt(MAX_ATTEMPTS).catch(report);
+  settings.onChange((next, prev) => {
+    if (next.autoInstallPoolBridge && !prev.autoInstallPoolBridge) void attempt(1).catch(report);
   });
 }
