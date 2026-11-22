@@ -112,9 +112,9 @@ describe("keyboard on a tile header", () => {
     expect(tabsOf(container)).toEqual({ "group-1": ["a"], "group-2": ["b", "c"] });
     expect(calls.changes[0]).toMatchObject({ kind: "state", via: { type: "moveTab", panelId: "c", targetGroupId: "group-2" } });
     expect(drawn(container)).toEqual({
-      "group-1": "0px 0px 600px 800px",
-      "split-3#0": "600px 0px 4px 800px",
-      "group-2": "604px 0px 600px 800px",
+      "group-1": "6px 6px 593px 788px",
+      "split-3#0": "599px 6px 6px 788px",
+      "group-2": "605px 6px 593px 788px",
     });
     expect(calls.changes).toHaveLength(1);
     expect(document.activeElement).toBe(tab("Предпросмотр"));
@@ -125,11 +125,11 @@ describe("keyboard on a tile header", () => {
     fireEvent.keyDown(tab("Предпросмотр"), { key: "ArrowLeft", altKey: true, ctrlKey: true });
     expect(calls.changes[0]).toMatchObject({ kind: "state", via: { type: "swapGroups", groupId: "group-4", targetGroupId: "group-1" } });
     expect(drawn(container)).toEqual({
-      "group-4": "0px 0px 600px 800px",
-      "split-3#0": "600px 0px 4px 800px",
-      "group-2": "604px 0px 600px 398px",
-      "split-5#0": "604px 398px 600px 4px",
-      "group-1": "604px 402px 600px 398px",
+      "group-4": "6px 6px 593px 788px",
+      "split-3#0": "599px 6px 6px 788px",
+      "group-2": "605px 6px 593px 391px",
+      "split-5#0": "605px 397px 593px 6px",
+      "group-1": "605px 403px 593px 391px",
     });
     expect(calls.changes).toHaveLength(1);
   });
@@ -155,8 +155,8 @@ describe("keyboard on a tile header", () => {
   it("maximizes and restores with Alt+Enter", () => {
     const { calls, container } = setup();
     fireEvent.keyDown(tab("Ревьюер"), { key: "Enter", altKey: true });
-    expect(drawn(container)).toEqual({ "group-2": "0px 0px 1204px 800px" });
-    expect(calls.rects.at(-1)).toEqual({ b: { x: 0, y: 32, width: 1204, height: 768 } });
+    expect(drawn(container)).toEqual({ "group-2": "6px 6px 1192px 788px" });
+    expect(calls.rects.at(-1)).toEqual({ b: { x: 7, y: 31, width: 1190, height: 762 } });
     expect(document.activeElement).toBe(tab("Ревьюер"));
 
     fireEvent.keyDown(tab("Ревьюер"), { key: "Enter", altKey: true });
@@ -176,7 +176,7 @@ describe("keyboard on a tile header", () => {
     const bar = screen.getAllByRole("separator")[0];
     expect(bar.tabIndex).toBe(0);
     fireEvent.keyDown(bar, { key: "ArrowRight" });
-    expect(drawn(container)["group-1"]).toBe("0px 0px 616px 800px");
+    expect(drawn(container)["group-1"]).toBe("6px 6px 609px 788px");
     fireEvent.keyDown(bar, { key: "ArrowDown" });
     fireEvent.keyDown(bar, { key: "ArrowLeft" });
     expect(drawn(container)).toEqual(THREE_TILES_DRAWN);
@@ -191,7 +191,7 @@ describe("maximize, close and the layout menu", () => {
     const tile = within(container.querySelector('[data-group-id="group-1"]') as HTMLElement);
 
     await user.click(tile.getByRole("button", { name: "Развернуть" }));
-    expect(drawn(container)).toEqual({ "group-1": "0px 0px 1204px 800px" });
+    expect(drawn(container)).toEqual({ "group-1": "6px 6px 1192px 788px" });
     expect(screen.queryAllByRole("separator")).toEqual([]);
     expect(calls.changes).toHaveLength(1);
     expect(screen.getByRole("button", { name: "Восстановить" })).toBeTruthy();
@@ -260,9 +260,9 @@ describe("maximize, close and the layout menu", () => {
     expect(calls.closes).toEqual([]);
     expect(calls.changes).toHaveLength(1);
     expect(drawn(container)).toEqual({
-      "group-1": "0px 0px 600px 800px",
-      "split-3#0": "600px 0px 4px 800px",
-      "group-4": "604px 0px 600px 800px",
+      "group-1": "6px 6px 593px 788px",
+      "split-3#0": "599px 6px 6px 788px",
+      "group-4": "605px 6px 593px 788px",
     });
     expect(screen.queryByRole("menu")).toBeNull();
   });
@@ -345,7 +345,7 @@ describe("empty tile", () => {
   it("offers the content picker on the whole surface and reports no content area", async () => {
     const user = userEvent.setup();
     const { calls, container } = setup(createWorkspace());
-    expect(drawn(container)).toEqual({ "group-1": "0px 0px 1204px 800px" });
+    expect(drawn(container)).toEqual({ "group-1": "6px 6px 1192px 788px" });
     expect(calls.rects).toEqual([{}]);
     expect(screen.queryByRole("tablist")).toBeNull();
     expect(screen.queryByRole("button", { name: "Развернуть" })).toBeNull();
@@ -388,9 +388,9 @@ describe("compact view", () => {
 
   it("shows the focused tile alone on the whole surface, without dividers", () => {
     const { calls, container } = setup(threeTiles(), NARROW);
-    expect(drawn(container)).toEqual({ "group-4": "0px 0px 500px 800px" });
+    expect(drawn(container)).toEqual({ "group-4": "6px 6px 488px 788px" });
     expect(screen.queryAllByRole("separator")).toEqual([]);
-    expect(calls.rects).toEqual([{ c: { x: 0, y: 32, width: 500, height: 768 } }]);
+    expect(calls.rects).toEqual([{ c: { x: 7, y: 31, width: 486, height: 762 } }]);
     expect(screen.queryByRole("button", { name: "Развернуть" })).toBeNull();
   });
 
@@ -406,7 +406,7 @@ describe("compact view", () => {
     expect(switcher.value).toBe("group-4");
 
     await user.selectOptions(switcher, "group-1");
-    expect(drawn(container)).toEqual({ "group-1": "0px 0px 500px 800px" });
+    expect(drawn(container)).toEqual({ "group-1": "6px 6px 488px 788px" });
     expect(calls.changes).toHaveLength(1);
     expect(calls.state.root).toBe(initial.root);
     expect(calls.state.maximizedGroupId).toBeNull();

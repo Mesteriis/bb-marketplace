@@ -9,7 +9,7 @@ import { TileSurface } from "../../../src/ui/tiles/index.ts";
 import type { ContentRects, PanelLabel, TileSurfaceChange, TileSurfaceProps } from "../../../src/ui/tiles/index.ts";
 
 export const OPTIONS: LayoutOptions = {
-  dividerSize: 4,
+  dividerSize: 6,
   minTileWidth: 240,
   minTileHeight: 120,
   compactWidth: 640,
@@ -84,11 +84,11 @@ export function drawn(container: HTMLElement): Record<string, string> {
 }
 
 export const THREE_TILES_DRAWN = {
-  "group-1": "0px 0px 600px 800px",
-  "split-3#0": "600px 0px 4px 800px",
-  "group-2": "604px 0px 600px 398px",
-  "split-5#0": "604px 398px 600px 4px",
-  "group-4": "604px 402px 600px 398px",
+  "group-1": "6px 6px 593px 788px",
+  "split-3#0": "599px 6px 6px 788px",
+  "group-2": "605px 6px 593px 391px",
+  "split-5#0": "605px 397px 593px 6px",
+  "group-4": "605px 403px 593px 391px",
 };
 
 export function header(container: HTMLElement, groupId: string): HTMLElement {

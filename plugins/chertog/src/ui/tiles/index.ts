@@ -5,7 +5,7 @@ export { TileSurface } from "./tile-surface.tsx";
 
 export type { PickerSlot } from "./tile.tsx";
 export type { SurfaceSize } from "./use-surface-size.ts";
-export { TILE_HEADER_HEIGHT } from "./styles.ts";
+export { CONTROL_CLASS, TILE_BORDER, TILE_GAP, TILE_HEADER_HEIGHT, tileBody, tileHeaderHeight } from "./styles.ts";
 
 export type { PanelLabel, PanelStatusTone, TileSurfaceText } from "./labels.ts";
 export { DEFAULT_TILE_TEXT } from "./labels.ts";

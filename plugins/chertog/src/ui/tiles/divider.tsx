@@ -1,5 +1,6 @@
-// The bar between two children of a split: dragged with the pointer, moved
-// with the arrow keys.
+// The handle in the gap between two children of a split: dragged with the
+// pointer, moved with the arrow keys. The gap is the divider's whole box (6 px
+// across), clear until hovered or focused.
 import type { KeyboardEvent, PointerEvent } from "react";
 import type { DividerRect } from "../../core/layout/index.ts";
 import { rectStyle } from "./styles.ts";
@@ -40,7 +41,7 @@ export function Divider({ divider, position, label, onPointerDown, onNudge }: Di
       aria-valuenow={position}
       data-divider={divider.splitId + "#" + divider.index}
       style={{ ...rectStyle(divider.rect), cursor: row ? "col-resize" : "row-resize", touchAction: "none" }}
-      className="bg-border transition-colors hover:bg-primary/60 focus-visible:bg-primary focus-visible:outline-none motion-reduce:transition-none"
+      className="rounded-full bg-transparent transition-colors hover:bg-primary/60 focus-visible:bg-primary focus-visible:outline-none motion-reduce:transition-none"
       onPointerDown={onPointerDown}
       onKeyDown={onKeyDown}
     />

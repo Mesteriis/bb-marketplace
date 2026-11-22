@@ -17,8 +17,8 @@ describe("surface size", () => {
   it("reserves a second header row in a narrow populated tile", () => {
     const calls = newCalls(createWorkspace(["a"]));
     const { container } = render(<Harness calls={calls} size={{ width: 160, height: 300 }} />);
-    expect(header(container, "group-1").style.height).toBe("64px");
-    expect(calls.rects.at(-1)).toEqual({ a: { x: 0, y: 64, width: 160, height: 236 } });
+    expect(header(container, "group-1").style.height).toBe("48px");
+    expect(calls.rects.at(-1)).toEqual({ a: { x: 7, y: 55, width: 146, height: 238 } });
   });
 
   it("keeps a tile menu in the same stacking context as the live layer", () => {
@@ -67,11 +67,11 @@ describe("surface size", () => {
     // The sidebar got wider: 200 px less for the surface.
     act(() => observers[0].callback([{ contentRect: { width: 1004, height: 800 } } as ResizeObserverEntry], {} as ResizeObserver));
     expect(drawn(view.container)).toEqual({
-      "group-1": "0px 0px 500px 800px",
-      "split-3#0": "500px 0px 4px 800px",
-      "group-2": "504px 0px 500px 398px",
-      "split-5#0": "504px 398px 500px 4px",
-      "group-4": "504px 402px 500px 398px",
+      "group-1": "6px 6px 493px 788px",
+      "split-3#0": "499px 6px 6px 788px",
+      "group-2": "505px 6px 493px 391px",
+      "split-5#0": "505px 397px 493px 6px",
+      "group-4": "505px 403px 493px 391px",
     });
     expect(rects).toHaveLength(2);
 
@@ -104,7 +104,7 @@ describe("surface size", () => {
     const handle = header(container, "group-1");
     fireEvent.pointerDown(handle, { pointerId: 1, button: 0, clientX: 580, clientY: 58 });
     fireEvent.pointerMove(handle, { pointerId: 1, clientX: 1184, clientY: 248 });
-    expect(preview(container)).toBe("604px 0px 600px 398px");
+    expect(preview(container)).toBe("605px 6px 593px 391px");
     fireEvent.pointerUp(handle, { pointerId: 1, button: 0, clientX: 1184, clientY: 248 });
     expect(calls.changes).toEqual([{ kind: "operation", operation: { type: "swapGroups", groupId: "group-1", targetGroupId: "group-2" } }]);
   });
@@ -122,8 +122,8 @@ describe("surface size", () => {
         onContentRects={(next) => rects.push(next)}
       />,
     );
-    expect(TILE_HEADER_HEIGHT).toBe(32);
-    expect(rects).toEqual([{ a: { x: 0, y: 20, width: 800, height: 0 } }]);
+    expect(TILE_HEADER_HEIGHT).toBe(24);
+    expect(rects).toEqual([{ a: { x: 7, y: 13, width: 786, height: 0 } }]);
   });
 });
 
@@ -146,14 +146,14 @@ describe("a layout that changes under a gesture", () => {
     const bar = divider(view.container, "split-3#0");
     fireEvent.pointerDown(bar, { pointerId: 1, button: 0, clientX: 602, clientY: 300 });
     fireEvent.pointerMove(bar, { pointerId: 1, clientX: 702, clientY: 300 });
-    expect(drawn(view.container)["group-1"]).toBe("0px 0px 700px 800px");
+    expect(drawn(view.container)["group-1"]).toBe("6px 6px 693px 788px");
 
     // The tile below on the right was closed from elsewhere.
     view.rerender(surface(closeGroup(start, "group-4")));
     expect(drawn(view.container)).toEqual({
-      "group-1": "0px 0px 600px 800px",
-      "split-3#0": "600px 0px 4px 800px",
-      "group-2": "604px 0px 600px 800px",
+      "group-1": "6px 6px 593px 788px",
+      "split-3#0": "599px 6px 6px 788px",
+      "group-2": "605px 6px 593px 788px",
     });
     expect(shields(view.container)).toEqual([]);
     expect(bar.hasPointerCapture(1)).toBe(false);
@@ -172,7 +172,7 @@ describe("a layout that changes under a gesture", () => {
     const handle = header(view.container, "group-1");
     fireEvent.pointerDown(handle, { pointerId: 1, button: 0, clientX: 300, clientY: 10 });
     fireEvent.pointerMove(handle, { pointerId: 1, clientX: 904, clientY: 200 });
-    expect(preview(view.container)).toBe("604px 0px 600px 398px");
+    expect(preview(view.container)).toBe("605px 6px 593px 391px");
 
     view.rerender(surface(closeGroup(start, "group-2")));
     expect(preview(view.container)).toBeNull();
@@ -219,7 +219,7 @@ describe("layers", () => {
     const tile = container.querySelector('[data-group-id="group-1"]') as HTMLElement;
     expect(tile.style.pointerEvents).toBe("none");
     expect(header(container, "group-1").style.pointerEvents).toBe("auto");
-    expect(header(container, "group-1").style.height).toBe("32px");
+    expect(header(container, "group-1").style.height).toBe("24px");
   });
 });
 
@@ -257,7 +257,7 @@ describe("a gesture started while the keyboard is inside a frame", () => {
     fireEvent.pointerDown(bar, { pointerId: 1, button: 0, clientX: 602, clientY: 300 });
     expect(document.activeElement).toBe(surface);
     fireEvent.pointerMove(bar, { pointerId: 1, clientX: 682, clientY: 300 });
-    expect(drawn(container)["group-1"]).toBe("0px 0px 680px 800px");
+    expect(drawn(container)["group-1"]).toBe("6px 6px 673px 788px");
 
     const frameFocused = vi.spyOn(frame, "focus");
     pressEscape();
@@ -278,7 +278,7 @@ describe("a gesture started while the keyboard is inside a frame", () => {
     expect(document.activeElement).toBe(frame);
     fireEvent.pointerMove(handle, { pointerId: 1, clientX: 904, clientY: 200 });
     expect(document.activeElement).toBe(surface);
-    expect(preview(container)).toBe("604px 0px 600px 398px");
+    expect(preview(container)).toBe("605px 6px 593px 391px");
 
     pressEscape();
     expect(preview(container)).toBeNull();
@@ -304,7 +304,7 @@ describe("a gesture started while the keyboard is inside a frame", () => {
     browserMovesFocus(container);
     expect(document.activeElement).not.toBe(frame);
     fireEvent.pointerMove(handle, { pointerId: 1, clientX: 904, clientY: 200 });
-    expect(preview(container)).toBe("604px 0px 600px 398px");
+    expect(preview(container)).toBe("605px 6px 593px 391px");
     expect(refocused).not.toHaveBeenCalled();
 
     pressEscape();

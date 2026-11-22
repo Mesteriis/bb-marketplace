@@ -67,7 +67,11 @@ export function Tile(props: TileProps) {
       data-dragging={dragging === "group" ? "true" : undefined}
       // Only the chrome takes the pointer; the content area below is left to the panel.
       style={{ ...rectStyle(props.rect), pointerEvents: "none" }}
-      className={"text-xs " + (dragging === "group" ? "opacity-60" : "")}
+      className={
+        "rounded-lg border bg-background text-xs " +
+        (focused ? "border-primary " : "border-border ") +
+        (dragging === "group" ? "opacity-60" : "")
+      }
     >
       <div
         data-tile-header
@@ -75,10 +79,10 @@ export function Tile(props: TileProps) {
         tabIndex={empty ? 0 : undefined}
         style={{ height: headerHeight, boxSizing: "border-box", pointerEvents: "auto", touchAction: "none", userSelect: "none" }}
         className={
-          "flex items-center border-b focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring " +
+          "flex items-center rounded-t-md border-b border-border bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring " +
           (tight ? "" : "gap-1 px-1 ") +
           (narrow ? "flex-wrap justify-end gap-y-0 " : "") +
-          (focused ? "border-primary bg-accent text-accent-foreground" : "border-border bg-muted text-muted-foreground")
+          (focused ? "text-foreground" : "text-muted-foreground")
         }
         onPointerDown={(event) => {
           if (!onControl(event.target)) props.onHeaderPointerDown(event);
@@ -93,7 +97,7 @@ export function Tile(props: TileProps) {
             title={titleOf(group)}
             value={group.id}
             onChange={(event) => props.onSwitch(event.target.value)}
-            className="h-6 max-w-[40%] shrink-0 rounded border border-input bg-transparent px-1 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            className="h-5 max-w-[40%] shrink-0 rounded border border-input bg-transparent px-1 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
             {switcher.map((member) => (
               <option key={member.id} value={member.id}>
@@ -108,7 +112,7 @@ export function Tile(props: TileProps) {
           <div
             role="tablist"
             aria-label={text.tabs}
-            className={"flex min-w-0 items-stretch overflow-x-auto " + (narrow ? "order-first h-7 w-full" : "h-full flex-1")}
+            className={"flex min-w-0 items-stretch overflow-x-auto " + (narrow ? "order-first h-6 w-full" : "h-full flex-1")}
           >
             {group.tabs.map((panelId) => {
               const label = labelOf(panels, panelId);
@@ -196,7 +200,7 @@ export function Tile(props: TileProps) {
       {empty && (
         <div
           style={{ position: "absolute", top: headerHeight, left: 0, right: 0, bottom: 0, pointerEvents: "auto" }}
-          className="flex items-center justify-center overflow-auto bg-background p-4 text-sm text-muted-foreground"
+          className="flex items-center justify-center overflow-auto rounded-b-md bg-background p-4 text-sm text-muted-foreground"
         >
           {props.renderPicker !== undefined ? (
             props.renderPicker({ groupId: group.id, pick: props.onPick })

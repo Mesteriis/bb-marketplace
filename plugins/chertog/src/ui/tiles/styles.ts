@@ -5,11 +5,25 @@ import type { CSSProperties } from "react";
 import type { Rect } from "../../core/layout/index.ts";
 
 /** Height of a tile header in pixels. The content area of a tile starts below it. */
-export const TILE_HEADER_HEIGHT = 32;
+export const TILE_HEADER_HEIGHT = 24;
+
+/** The gap between two tiles and between a tile and the edge of the surface, in pixels. The divider lies in it. */
+export const TILE_GAP = 6;
+
+/** Thickness of a tile's border in pixels. */
+export const TILE_BORDER = 1;
 
 /** Put the tab strip above its actions when a row would clip the active title. */
 export function tileHeaderHeight(width: number, populated: boolean): number {
   return populated && width < 220 ? TILE_HEADER_HEIGHT * 2 : TILE_HEADER_HEIGHT;
+}
+
+/** The visible body of a tile: inside its border and below its bar. The live layer places panel content there. */
+export function tileBody(rect: Rect, populated: boolean): Rect {
+  const width = Math.max(0, rect.width - TILE_BORDER * 2);
+  const height = Math.max(0, rect.height - TILE_BORDER * 2);
+  const header = Math.min(tileHeaderHeight(rect.width, populated), height);
+  return { x: rect.x + TILE_BORDER, y: rect.y + TILE_BORDER + header, width, height: height - header };
 }
 
 /** An absolutely placed box on whole pixels of the surface. */
@@ -19,4 +33,4 @@ export function rectStyle(rect: Rect): CSSProperties {
 
 /** A small icon button in a tile header. */
 export const CONTROL_CLASS =
-  "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring motion-reduce:transition-none";
+  "inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring motion-reduce:transition-none";

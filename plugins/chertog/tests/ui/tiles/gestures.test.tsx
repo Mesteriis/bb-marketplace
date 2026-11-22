@@ -28,9 +28,9 @@ describe("drawing", () => {
     const { calls } = setup();
     expect(calls.rects).toEqual([
       {
-        a: { x: 0, y: 32, width: 600, height: 768 },
-        b: { x: 604, y: 32, width: 600, height: 366 },
-        c: { x: 604, y: 434, width: 600, height: 366 },
+        a: { x: 7, y: 31, width: 591, height: 762 },
+        b: { x: 606, y: 31, width: 591, height: 365 },
+        c: { x: 606, y: 428, width: 591, height: 365 },
       },
     ]);
   });
@@ -58,22 +58,22 @@ describe("dragging a divider", () => {
 
     fireEvent.pointerDown(bar, { ...POINTER, clientX: 602, clientY: 300 });
     expect(bar.hasPointerCapture(1)).toBe(true);
-    expect(shields(container)).toEqual(["0px 32px 600px 768px", "604px 32px 600px 366px", "604px 434px 600px 366px"]);
+    expect(shields(container)).toEqual(["7px 31px 591px 762px", "606px 31px 591px 365px", "606px 428px 591px 365px"]);
 
     fireEvent.pointerMove(bar, { ...POINTER, clientX: 702, clientY: 300 });
     const held = {
-      "group-1": "0px 0px 700px 800px",
-      "split-3#0": "700px 0px 4px 800px",
-      "group-2": "704px 0px 500px 398px",
-      "split-5#0": "704px 398px 500px 4px",
-      "group-4": "704px 402px 500px 398px",
+      "group-1": "6px 6px 693px 788px",
+      "split-3#0": "699px 6px 6px 788px",
+      "group-2": "705px 6px 493px 391px",
+      "split-5#0": "705px 397px 493px 6px",
+      "group-4": "705px 403px 493px 391px",
     };
     expect(drawn(container)).toEqual(held);
     expect(calls.changes).toEqual([]);
     expect(calls.rects.at(-1)).toEqual({
-      a: { x: 0, y: 32, width: 700, height: 768 },
-      b: { x: 704, y: 32, width: 500, height: 366 },
-      c: { x: 704, y: 434, width: 500, height: 366 },
+      a: { x: 7, y: 31, width: 691, height: 762 },
+      b: { x: 706, y: 31, width: 491, height: 365 },
+      c: { x: 706, y: 428, width: 491, height: 365 },
     });
 
     fireEvent.pointerUp(bar, { ...POINTER, clientX: 702, clientY: 300 });
@@ -93,11 +93,11 @@ describe("dragging a divider", () => {
     fireEvent.pointerMove(bar, { ...POINTER, clientX: 900, clientY: 302 });
     fireEvent.pointerUp(bar, { ...POINTER, clientX: 900, clientY: 302 });
     expect(drawn(container)).toEqual({
-      "group-1": "0px 0px 600px 800px",
-      "split-3#0": "600px 0px 4px 800px",
-      "group-2": "604px 0px 600px 300px",
-      "split-5#0": "604px 300px 600px 4px",
-      "group-4": "604px 304px 600px 496px",
+      "group-1": "6px 6px 593px 788px",
+      "split-3#0": "599px 6px 6px 788px",
+      "group-2": "605px 6px 593px 293px",
+      "split-5#0": "605px 299px 593px 6px",
+      "group-4": "605px 305px 593px 489px",
     });
     expect(calls.changes).toHaveLength(1);
   });
@@ -108,19 +108,19 @@ describe("dragging a divider", () => {
     fireEvent.pointerDown(bar, { ...POINTER, clientX: 602, clientY: 300 });
     fireEvent.pointerMove(bar, { ...POINTER, clientX: 1602, clientY: 300 });
     expect(drawn(container)).toEqual({
-      "group-1": "0px 0px 960px 800px",
-      "split-3#0": "960px 0px 4px 800px",
-      "group-2": "964px 0px 240px 398px",
-      "split-5#0": "964px 398px 240px 4px",
-      "group-4": "964px 402px 240px 398px",
+      "group-1": "6px 6px 946px 788px",
+      "split-3#0": "952px 6px 6px 788px",
+      "group-2": "958px 6px 240px 391px",
+      "split-5#0": "958px 397px 240px 6px",
+      "group-4": "958px 403px 240px 391px",
     });
     fireEvent.pointerMove(bar, { ...POINTER, clientX: -400, clientY: 300 });
     expect(drawn(container)).toEqual({
-      "group-1": "0px 0px 240px 800px",
-      "split-3#0": "240px 0px 4px 800px",
-      "group-2": "244px 0px 960px 398px",
-      "split-5#0": "244px 398px 960px 4px",
-      "group-4": "244px 402px 960px 398px",
+      "group-1": "6px 6px 240px 788px",
+      "split-3#0": "246px 6px 6px 788px",
+      "group-2": "252px 6px 946px 391px",
+      "split-5#0": "252px 397px 946px 6px",
+      "group-4": "252px 403px 946px 391px",
     });
   });
 
@@ -176,18 +176,18 @@ describe("dragging a header", () => {
 
     fireEvent.pointerMove(handle, { ...POINTER, clientX: 904, clientY: 200 });
     expect(drawn(container)).toEqual(THREE_TILES_DRAWN);
-    expect(preview(container)).toBe("604px 0px 600px 398px");
+    expect(preview(container)).toBe("605px 6px 593px 391px");
     expect(shields(container)).toHaveLength(3);
     expect(calls.changes).toEqual([]);
 
     fireEvent.pointerUp(handle, { ...POINTER, clientX: 904, clientY: 200 });
     expect(calls.changes).toEqual([{ kind: "operation", operation: { type: "swapGroups", groupId: "group-1", targetGroupId: "group-2" } }]);
     expect(drawn(container)).toEqual({
-      "group-2": "0px 0px 600px 800px",
-      "split-3#0": "600px 0px 4px 800px",
-      "group-1": "604px 0px 600px 398px",
-      "split-5#0": "604px 398px 600px 4px",
-      "group-4": "604px 402px 600px 398px",
+      "group-2": "6px 6px 593px 788px",
+      "split-3#0": "599px 6px 6px 788px",
+      "group-1": "605px 6px 593px 391px",
+      "split-5#0": "605px 397px 593px 6px",
+      "group-4": "605px 403px 593px 391px",
     });
     expect(preview(container)).toBeNull();
     expect(shields(container)).toEqual([]);
@@ -198,7 +198,7 @@ describe("dragging a header", () => {
     const handle = header(container, "group-1");
     fireEvent.pointerDown(handle, { ...POINTER, clientX: 300, clientY: 10 });
     fireEvent.pointerMove(handle, { ...POINTER, clientX: 904, clientY: 790 });
-    expect(preview(container)).toBe("0px 602px 1204px 198px");
+    expect(preview(container)).toBe("6px 600px 1192px 194px");
     fireEvent.pointerUp(handle, { ...POINTER, clientX: 904, clientY: 790 });
     expect(calls.changes).toEqual([
       { kind: "operation", operation: { type: "moveGroup", groupId: "group-1", targetGroupId: "group-4", edge: "bottom" } },
@@ -234,7 +234,7 @@ describe("dragging a header", () => {
     for (const end of endings) {
       fireEvent.pointerDown(handle, { ...POINTER, clientX: 300, clientY: 10 });
       fireEvent.pointerMove(handle, { ...POINTER, clientX: 904, clientY: 200 });
-      expect(preview(container)).toBe("604px 0px 600px 398px");
+      expect(preview(container)).toBe("605px 6px 593px 391px");
       expect(drawn(container)).toEqual(THREE_TILES_DRAWN);
       end();
       expect(preview(container)).toBeNull();
@@ -276,7 +276,7 @@ describe("dragging a tab", () => {
 
     fireEvent.pointerDown(tab, { ...POINTER, clientX: 650, clientY: 410 });
     fireEvent.pointerMove(tab, { ...POINTER, clientX: 10, clientY: 400 });
-    expect(preview(container)).toBe("0px 0px 299px 800px");
+    expect(preview(container)).toBe("6px 6px 295px 788px");
     expect(drawn(container)).toEqual(THREE_TILES_DRAWN);
 
     fireEvent.pointerUp(tab, { ...POINTER, clientX: 10, clientY: 400 });
@@ -284,11 +284,11 @@ describe("dragging a tab", () => {
       { kind: "operation", operation: { type: "moveTabToEdge", panelId: "c", targetGroupId: "group-1", edge: "left" } },
     ]);
     expect(drawn(container)).toEqual({
-      "group-6": "0px 0px 299px 800px",
-      "split-3#0": "299px 0px 4px 800px",
-      "group-1": "303px 0px 299px 800px",
-      "split-3#1": "602px 0px 4px 800px",
-      "group-2": "606px 0px 598px 800px",
+      "group-6": "6px 6px 295px 788px",
+      "split-3#0": "301px 6px 6px 788px",
+      "group-1": "307px 6px 295px 788px",
+      "split-3#1": "602px 6px 6px 788px",
+      "group-2": "608px 6px 590px 788px",
     });
   });
 
@@ -297,13 +297,13 @@ describe("dragging a tab", () => {
     const tab = container.querySelector('[data-panel-id="c"] [role="tab"]') as HTMLElement;
     fireEvent.pointerDown(tab, { ...POINTER, clientX: 650, clientY: 410 });
     fireEvent.pointerMove(tab, { ...POINTER, clientX: 904, clientY: 200 });
-    expect(preview(container)).toBe("604px 0px 600px 800px");
+    expect(preview(container)).toBe("605px 6px 593px 788px");
     fireEvent.pointerUp(tab, { ...POINTER, clientX: 904, clientY: 200 });
     expect(calls.changes).toEqual([{ kind: "operation", operation: { type: "moveTab", panelId: "c", targetGroupId: "group-2" } }]);
     expect(drawn(container)).toEqual({
-      "group-1": "0px 0px 600px 800px",
-      "split-3#0": "600px 0px 4px 800px",
-      "group-2": "604px 0px 600px 800px",
+      "group-1": "6px 6px 593px 788px",
+      "split-3#0": "599px 6px 6px 788px",
+      "group-2": "605px 6px 593px 788px",
     });
   });
 

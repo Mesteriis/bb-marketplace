@@ -29,7 +29,7 @@ import {
 import { Divider } from "./divider.tsx";
 import { applyTileCommand, tileCommandForKey, tileCommandOperation } from "./keymap.ts";
 import { DEFAULT_TILE_TEXT, type PanelLabel, type TileSurfaceText } from "./labels.ts";
-import { rectStyle, tileHeaderHeight } from "./styles.ts";
+import { rectStyle, TILE_GAP, tileBody } from "./styles.ts";
 import { Tile, type PickerSlot } from "./tile.tsx";
 import { useSurfaceSize, type SurfaceSize } from "./use-surface-size.ts";
 import { useTileGestures } from "./use-tile-gestures.ts";
@@ -70,13 +70,15 @@ export interface TileSurfaceProps {
   readonly children?: ReactNode;
 }
 
+/** The layout of the tiles: the divider is the gap. */
+const TILE_LAYOUT_OPTIONS: LayoutOptions = { ...DEFAULT_LAYOUT_OPTIONS, dividerSize: TILE_GAP };
+
 function contentRectsOf(state: WorkspaceState, groups: readonly { groupId: string; rect: Rect }[]): ContentRects {
   const rects: Record<string, Rect> = {};
   for (const { groupId, rect } of groups) {
     const panelId = findGroup(state.root, groupId)?.activeTab;
     if (panelId === null || panelId === undefined) continue;
-    const header = Math.min(tileHeaderHeight(rect.width, true), rect.height);
-    rects[panelId] = { x: rect.x, y: rect.y + header, width: rect.width, height: rect.height - header };
+    rects[panelId] = tileBody(rect, true);
   }
   return rects;
 }
@@ -88,11 +90,21 @@ function draggedIn(source: DragSource | null, groupId: string): "group" | { pane
 }
 
 export function TileSurface(props: TileSurfaceProps) {
-  const { state, panels, onOperation, options = DEFAULT_LAYOUT_OPTIONS } = props;
+  const { state, panels, onOperation, options = TILE_LAYOUT_OPTIONS } = props;
   const text = useMemo(() => ({ ...DEFAULT_TILE_TEXT, ...props.text }), [props.text]);
   const surface = useRef<HTMLDivElement>(null);
   const size = useSurfaceSize(surface, props.size);
-  const bounds = useMemo<Rect>(() => ({ x: 0, y: 0, width: size?.width ?? 0, height: size?.height ?? 0 }), [size?.width, size?.height]);
+  // The tiles lie inside a margin as wide as the gap between them.
+  const margin = Math.max(0, Math.round(options.dividerSize));
+  const bounds = useMemo<Rect>(
+    () => ({
+      x: margin,
+      y: margin,
+      width: Math.max(0, (size?.width ?? 0) - margin * 2),
+      height: Math.max(0, (size?.height ?? 0) - margin * 2),
+    }),
+    [size?.width, size?.height, margin],
+  );
 
   const ask = (next: WorkspaceState): void => {
     if (next !== state) onOperation({ kind: "state", state: next });
@@ -164,7 +176,7 @@ export function TileSurface(props: TileSurfaceProps) {
         // Menus must stack above live panels mounted outside this surface.
         ...(dragActive ? { cursor: gestures.drop === null ? "not-allowed" : "grabbing" } : {}),
       }}
-      className="bg-background text-foreground"
+      className="text-foreground"
       {...gestures.surfaceHandlers}
       onDragOver={containFileDrop}
       onDrop={containFileDrop}

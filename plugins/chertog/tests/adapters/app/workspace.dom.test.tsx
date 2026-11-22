@@ -141,7 +141,7 @@ describe("the first entry", () => {
 
     expect(await screen.findByRole("heading", { name: "Выберите содержимое" })).toBeTruthy();
     expect(tiles()).toHaveLength(1);
-    expect([tiles()[0].style.left, tiles()[0].style.top, tiles()[0].style.width, tiles()[0].style.height]).toEqual(["0px", "0px", "1204px", "800px"]);
+    expect([tiles()[0].style.left, tiles()[0].style.top, tiles()[0].style.width, tiles()[0].style.height]).toEqual(["6px", "6px", "1192px", "788px"]);
     expect(screen.getByRole("button", { name: /Исполнитель/ }).textContent).toContain("bb-main");
     // Without the owner's acceptance setting the frame is not offered.
     expect(screen.queryByRole("button", { name: /Тестовая панель/ })).toBeNull();
@@ -191,7 +191,7 @@ describe("stage A in one window", () => {
     expect(screen.queryByRole("tab", { name: "Ревьюер" })).toBeNull();
     // From the rightmost of three tiles in a row to the left edge, under its header.
     expect(frameBoxBefore[0]).not.toBe("0px");
-    expect(boxOf(hostOf(frame())).slice(0, 2)).toEqual(["0px", "32px"]);
+    expect(boxOf(hostOf(frame())).slice(0, 2)).toEqual(["7px", "31px"]);
     // The hidden thread is live: same node, same draft, listed among the hidden panels.
     expect(draft("thr_b")).toBe(nodes.b);
     expect(nodes.b.value).toBe("черновик ревьюера");
@@ -784,5 +784,5 @@ it("keeps divider proportions changed during Zoom selection", async () => {
   await cancel();
   await settled(stage);
   expect(screen.getByRole("separator").getAttribute("aria-valuenow")).toBe("51");
-  expect(stage.rpc.stored?.layouts[0].workspace.root).toMatchObject({ sizes: [616 / 1200, 584 / 1200] });
+  expect(stage.rpc.stored?.layouts[0].workspace.root).toMatchObject({ sizes: [609 / 1186, 577 / 1186] });
 });
