@@ -71,9 +71,9 @@ function rdpSource(pending: { current?: PendingChoice }): ContentSource {
 /** A session whose layout holds the parent with its two subthreads and the unrelated tile. */
 async function blockSession(
   tweaks: Tweaks = {}, stored: WorkspaceDocument = twoTiles(), open: readonly string[] = ["thr_c", "thr_c2"], extra: readonly ContentSource[] = [],
+  rpc: FakeWorkspaceRpc = new FakeWorkspaceRpc(),
 ): Promise<WorkspaceSession> {
-  const rpc = new FakeWorkspaceRpc();
-  rpc.stored = stored;
+  rpc.stored ??= stored;
   const threads = new ThreadDirectory();
   threads.set({ status: "ready", threads: entries });
   const nextId = sequentialIds();
@@ -292,6 +292,51 @@ describe("a parent tile and its block", () => {
     });
     expect(session.document()).toBe(before);
     expect(session.controller.getSnapshot().refusal).toBe("invalid-layout");
+  });
+});
+
+describe("a thread tile's parent is fixed when it opens", () => {
+  /** The layout holds only the unrelated tile; the parent's thread is then opened in the test. */
+  const withoutParent = (): WorkspaceDocument => {
+    const document = twoTiles();
+    const { "panel-p": _parent, ...panels } = document.panels;
+    const root = document.layouts[0].workspace.root as never as { children: unknown[] };
+    return {
+      ...document, panels,
+      layouts: [{ ...document.layouts[0], workspace: { ...document.layouts[0].workspace, root: { ...root, children: [group("group-1", "panel-x")], sizes: [1] } as never, focusedGroupId: "group-1" } }],
+    };
+  };
+
+  it("a subthread opened alone stays independent when its parent is opened later", async () => {
+    const session = await blockSession({}, withoutParent(), ["thr_c"]);
+    const child = panelOf(session, "thr_c");
+    expect(session.document()!.panels[child].parent).toBeUndefined();
+    session.openThread("thr_p");
+    const parent = panelOf(session, "thr_p");
+    expect(session.parentOf(child)).toBeUndefined();
+    expect(session.linkedCountOf(parent)).toBe(0);
+    // Closing the parent closes nothing else, without any block question.
+    expect(await session.closePanel(parent)).toBe("closed");
+    expect(placed(session)).toContain(child);
+    // Moving the parent leaves the subthread where it is.
+    session.openThread("thr_p");
+    const tileOfChild = findGroupOfPanel(shown(session).root, child)!.id;
+    const parentTile = findGroupOfPanel(shown(session).root, panelOf(session, "thr_p"))!.id;
+    session.applySurfaceChange({ kind: "operation", operation: { type: "swapGroups", groupId: parentTile, targetGroupId: tileOfChild } });
+    expect(findGroupOfPanel(shown(session).root, child)).toBeDefined();
+    expect(session.linkedCountOf(panelOf(session, "thr_p"))).toBe(0);
+  });
+
+  it("a subthread opened while its parent is open joins the parent, and the link survives a save and a reload", async () => {
+    const rpc = new FakeWorkspaceRpc();
+    const session = await blockSession({}, twoTiles(), ["thr_c"], [], rpc);
+    const child = panelOf(session, "thr_c");
+    expect(session.document()!.panels[child].parent).toBe("panel-p");
+    await session.controller.whenIdle();
+    const reloaded = await blockSession({}, twoTiles(), [], [], rpc);
+    expect(reloaded.parentOf(child)).toBe("panel-p");
+    expect(blockChildren(reloaded.document()!, "panel-p", reloaded.parentOf)).toEqual([child]);
+    expect(reloaded.linkedCountOf("panel-p")).toBe(1);
   });
 });
 

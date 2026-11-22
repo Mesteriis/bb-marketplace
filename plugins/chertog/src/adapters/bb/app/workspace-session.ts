@@ -401,32 +401,16 @@ export class WorkspaceSession {
   }
 
   /**
-   * The parent panel of a panel: the stored `parent` when the open layout
-   * places it, else, for a thread, the panel of the parent thread the
-   * directory names when the layout places that. `undefined` otherwise.
+   * The parent panel of a panel: the stored `parent`, when the open layout
+   * places it. A thread tile's parent is fixed when the tile opens (see
+   * `placeRef`); the thread tree is never consulted afterwards, so a tile that
+   * opened alone stays alone. `undefined` otherwise.
    */
   parentOf: ParentOf = (panelId) => {
     const document = this.document();
-    if (document === null) return undefined;
-    const raw = this.rawParentOf(document, panelId);
-    if (raw === undefined || document.panels[panelId]?.parent === raw) return raw;
-    // A thread-derived parent is ignored when its own chain leads back here: the stored link wins, and the relation stays acyclic.
-    const seen = new Set([panelId]);
-    for (let at: string | undefined = raw; at !== undefined; at = this.rawParentOf(document, at)) {
-      if (at === panelId) return undefined;
-      if (seen.has(at)) break;
-      seen.add(at);
-    }
-    return raw;
+    const parent = document?.panels[panelId]?.parent;
+    return document !== null && parent !== undefined && findGroupOfPanel(activeLayout(document).workspace.root, parent) !== undefined ? parent : undefined;
   };
-
-  /** The parent as stored, else the thread tree's, before cycles are looked at. */
-  private rawParentOf(document: WorkspaceDocument, panelId: string): string | undefined {
-    const panel = document.panels[panelId];
-    if (panel === undefined) return undefined;
-    if (panel.parent !== undefined && findGroupOfPanel(activeLayout(document).workspace.root, panel.parent) !== undefined) return panel.parent;
-    return panel.ref.provider === THREAD_PROVIDER ? this.placedParentOf(document, String(panel.ref.params.threadId)) : undefined;
-  }
 
   /**
    * Opens a content picker beside the panel's tile as its child: whatever is
@@ -494,12 +478,12 @@ export class WorkspaceSession {
     return outcome;
   }
 
-  /** Places a panel that is not placed: a subthread in its parent's block, else in the picker that waits in the focused tile, or in a tile of its own. */
+  /** Places a panel that is not placed: a subthread in its parent's block when the parent is open now (the link is stored; later changes do not alter it), else in the picker that waits in the focused tile, or in a tile of its own. */
   private placeRef(
     document: WorkspaceDocument, live: ReadonlySet<string>, ref: PanelRef, panelId: string, known: boolean,
   ): WorkspaceChange & { chooser?: string } {
     const parentPanelId = ref.provider === THREAD_PROVIDER ? this.placedParentOf(document, String(ref.params.threadId)) : undefined;
-    if (parentPanelId !== undefined) return placeInBlock(document, parentPanelId, panelId, { ref }, this.parentOf);
+    if (parentPanelId !== undefined) return placeInBlock(document, parentPanelId, panelId, { ref, parent: parentPanelId }, this.parentOf);
     const workspace = activeLayout(document).workspace;
     const focused = findGroup(workspace.root, workspace.focusedGroupId);
     if (focused !== undefined && focused.tabs.length === 0) return addPanelToGroup(document, focused.id, panelId, { ref });
@@ -514,7 +498,7 @@ export class WorkspaceSession {
     return changeActiveLayout(registered.document, (current) => splitGroup(current, current.focusedGroupId, "right", panelId));
   }
 
-  /** The panel of the parent thread the directory names for a thread, when the open layout places it. */
+  /** The panel of the parent thread the directory names for a thread, when the open layout places it: asked only when a thread tile opens. */
   private placedParentOf(document: WorkspaceDocument, threadId: string): string | undefined {
     const parentThreadId = this.threads?.find(threadId)?.parentThreadId;
     if (parentThreadId === undefined) return undefined;
