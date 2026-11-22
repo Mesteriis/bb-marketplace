@@ -14,8 +14,7 @@ export interface LayoutPresetEntry {
   readonly description?: string;
 }
 
-/** `conflict`: another window saved first, and this one must reload before it can save. */
-export type SaveStatus = "saved" | "saving" | "conflict";
+export type SaveStatus = "saved" | "saving" | "conflict" | "failed" | "off";
 
 /** One thing a provider can open: a thread, a chat, a machine. */
 export interface ContentItem {

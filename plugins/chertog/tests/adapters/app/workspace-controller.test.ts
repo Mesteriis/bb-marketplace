@@ -195,7 +195,7 @@ describe("saving", () => {
 });
 
 describe("a failed save", () => {
-  it("is shown, keeps the local state, and the next change saves the last state", async () => {
+  it("is shown, keeps the local state, and an explicit retry saves subsequent edits too", async () => {
     const rpc = new FakeWorkspaceRpc();
     const { controller } = controllerOver(rpc);
     await controller.enter();
@@ -208,6 +208,10 @@ describe("a failed save", () => {
     expect(rpc.stored).toBeNull();
 
     controller.change((document) => createLayout(document, "layout-3", "Ревью"));
+    await controller.whenIdle();
+    expect(controller.getSnapshot().save.status).toBe("failed");
+    expect(rpc.saves).toHaveLength(1);
+    controller.retrySave();
     await controller.whenIdle();
     expect(controller.getSnapshot().save).toEqual({ status: "saved" });
     expect(rpc.saves.map((call) => call.expectedRevision)).toEqual([0, 0]);

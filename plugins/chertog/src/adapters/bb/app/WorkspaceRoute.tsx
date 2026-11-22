@@ -13,12 +13,12 @@ import {
 } from "react";
 import { findGroup, listGroups, type Rect } from "../../../core/layout/index.ts";
 import { activeLayout } from "../../../core/workspace/index.ts";
-import { ClosePanelDialog, ContentPicker, WorkspaceToolbar, type ContentChoice, type SaveStatus } from "../../../ui/chrome/index.ts";
+import { ClosePanelDialog, ContentPicker, WorkspaceToolbar, type ContentChoice } from "../../../ui/chrome/index.ts";
 import { classes, Modal } from "../../../ui/chrome/primitives.tsx";
 import { TileSurface, type ContentRects, type SurfaceSize } from "../../../ui/tiles/index.ts";
 import { appStrings } from "./strings.ts";
 import type { WindowWorkspace } from "./window-workspace.ts";
-import type { SaveState } from "./workspace-controller.ts";
+import type { WorkspaceSnapshot } from "./workspace-controller.ts";
 import { TILE_LIMIT, type ContentDestination } from "./workspace-session.ts";
 
 /** A press on a header becomes a drag after this many pixels, as in the tile surface. */
@@ -32,10 +32,14 @@ export interface WorkspaceRouteProps {
   readonly surfaceSize?: SurfaceSize;
 }
 
-/** The toolbar knows three states. A failed save is shown as not saved yet, with the reason in the notice below. */
-function toolbarStatus(save: SaveState): SaveStatus {
-  if (save.status === "conflict") return "conflict";
-  return save.status === "saving" || save.status === "failed" ? "saving" : "saved";
+function saveDetail({ save, origin }: WorkspaceSnapshot): string | undefined {
+  if (save.status === "failed") {
+    return save.kind === "rejected" ? appStrings.saveRejected(save.reason) : appStrings.saveFailed(save.reason);
+  }
+  if (save.status === "conflict") return appStrings.conflictGaveUp;
+  if (origin === "newer-version") return appStrings.newerVersion;
+  if (origin === "corrupt") return appStrings.corrupt;
+  return undefined;
 }
 
 interface ClosingPanel {
@@ -204,7 +208,9 @@ export function WorkspaceRoute({ workspace, onNewThread, surfaceSize }: Workspac
               layouts: document.layouts.map((layout) => ({ id: layout.id, name: layout.name })),
               activeLayoutId: document.activeLayoutId,
               presets: [],
-              saveStatus: toolbarStatus(save),
+              saveStatus: save.status,
+              saveDetail: saveDetail(snapshot),
+              onRetrySave: () => session.controller.retrySave(),
               onSwitch: (layoutId) => session.switchLayout(layoutId),
               onCreateFromCurrent: (name) => session.createLayoutFromCurrent(name),
               // Stage A offers no presets, so there is nothing this could be called for.
@@ -344,21 +350,8 @@ export function WorkspaceRoute({ workspace, onNewThread, surfaceSize }: Workspac
 /** What the user must know about saving: a failure, a merge with another window, a refused change, an unreadable store. */
 function Notices({ workspace }: { workspace: WindowWorkspace }) {
   const controller = workspace.session.controller;
-  const { save, merge, refusal, origin, dropped } = controller.getSnapshot();
+  const { merge, refusal, dropped } = controller.getSnapshot();
   const rows: { key: string; tone: "error" | "info"; text: string; action?: { label: string; run(): void } }[] = [];
-  if (save.status === "failed") {
-    rows.push({
-      key: "save",
-      tone: "error",
-      text: save.kind === "rejected" ? appStrings.saveRejected(save.reason) : appStrings.saveFailed(save.reason),
-      action: { label: appStrings.saveRetry, run: () => controller.retrySave() },
-    });
-  }
-  if (save.status === "conflict") {
-    rows.push({ key: "conflict", tone: "error", text: appStrings.conflictGaveUp, action: { label: appStrings.saveRetry, run: () => controller.retrySave() } });
-  }
-  if (origin === "newer-version") rows.push({ key: "origin", tone: "error", text: appStrings.newerVersion });
-  if (origin === "corrupt") rows.push({ key: "origin", tone: "error", text: appStrings.corrupt });
   if (dropped.length > 0) rows.push({ key: "dropped", tone: "info", text: appStrings.dropped(dropped.length) });
   if (merge !== null) {
     const parts = [

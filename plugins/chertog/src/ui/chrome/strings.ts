@@ -41,6 +41,9 @@ export const chromeStrings = {
     saved: "Сохранено",
     saving: "Сохраняется…",
     conflict: "Раскладки изменены в другом окне",
+    failed: "Не сохранено",
+    off: "Сохранение выключено",
+    retry: "Сохранить ещё раз",
     reload: "Обновить",
   },
   picker: {
