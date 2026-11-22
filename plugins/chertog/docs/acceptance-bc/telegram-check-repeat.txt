@@ -1,0 +1,17 @@
+> bb-plugin-makosh-telegram@0.1.0 check
+> npm run typecheck && npm run test
+> bb-plugin-makosh-telegram@0.1.0 typecheck
+> tsc --noEmit
+> bb-plugin-makosh-telegram@0.1.0 test
+> vitest run
+FAIL  tests/tdlib.test.ts > retains smpte2084 HDR in original and trimmed video and tone-maps the cover and GIF to SDR
+FAIL  tests/tdlib.test.ts > retains arib-std-b67 HDR in original and trimmed video and tone-maps the cover and GIF to SDR
+Error: Test timed out in 5000ms.
+FAIL  tests/tdlib.test.ts > retains Dolby Vision 8.1 during original sends, covers and trimmed sends
+Error: Test timed out in 5000ms.
+FAIL  tests/telegram.test.tsx > keeps channel inbox attachments working across chat details refreshes and forwards the exact inbox album
+Error: Test timed out in 5000ms.
+Test Files  2 failed | 41 passed (43)
+Tests  4 failed | 1825 passed | 4 skipped (1833)
+Duration  155.33s (tests 90%, import 6%, environment 4%)
+exit=1

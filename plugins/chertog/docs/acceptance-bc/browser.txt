@@ -1,0 +1,63 @@
+55e16830 • BB web 0.50.1 • 22.11.2026
+Стенд BB и Chromium использует синтетические данные. В выдержках ниже stdout/stderr и код завершения соответствующей пробы.
+
+Корневой маршрут и сохранение живых панелей [ui-stage-a, exit 0]
+PASS Home redirect, 1→2→1→2, maximize/restore, new thread screen and Back: two original iframe nodes and boot IDs, draft and caret 3
+PASS stand stopped
+
+Карточки, файл, diff, три пресета [ui-stage, exit 0]
+PASS Terminals card selected in picker and opened installed provider, then returned
+PASS resized two-tile split using pointer: 798 -> 843
+PASS environment ArrowDown selected fixture and kept focus
+PASS live file preview of sample.md
+PASS environment ArrowDown selected fixture and kept focus
+PASS revision ArrowDown/ArrowUp selected both revisions and kept focus
+PASS live two-revision diff of sample.md
+PASS Команда агентов target selected group=group-7 chooser=preset-5 target=panel-c0f96b88102f title=sample.md
+PASS terminal thread ArrowDown selected target and kept focus
+PASS Администрирование target selected group=group-6 chooser=preset-8 target=panel-102143c31840 title=BB терминал
+PASS Созвон target selected group=group-2 chooser=preset-9 target=panel-42ceb250a9d6 title=Stage B target
+PASS same fixture boot ID and draft after split, navigation and presets: 0a836636b36464d6bebbe94b0b2ac757
+PASS Команда агентов after reload group=group-7 chooser=preset-5 target=panel-c0f96b88102f title=sample.md
+PASS Администрирование after reload group=group-6 chooser=preset-8 target=panel-102143c31840 title=BB терминал
+PASS Созвон after reload group=group-2 chooser=preset-9 target=panel-42ceb250a9d6 title=Stage B target
+PASS reload restored four tiles and both live renderers; frame reloaded with a fresh boot ID; no observed terminal create/input/restart, join, connect or send
+PASS stand stopped
+
+Zoom и три протокола Remote Hub [ui-owners-all, exit 0]
+PASS Zoom invitation, SSH xterm, ready RDP and VNC in installed owner tiles at 1280x800; three attach calls/sockets, zero join/connect/close
+PASS stand stopped
+
+Drop в выбранный Telegram-композер и отказ в отстыковке [ui-telegram, exit 0]
+PASS immediate drop: both DOMRects equal, no send/upload
+PASS disabled detach menu: Передать в другое окно
+Провайдер не поддерживает безопасную передачу этой панели. Переместите целое окно BB средствами системы. Чтобы открыть второе окно, выберите New Window.
+PASS Telegram owner portals: one target draft, geometry unchanged, zero send/upload calls
+PASS stand stopped
+
+Drop в BB-композер и закрытие назначения [ui-handoff, exit 0]
+PASS two BB composers and tile layout
+PASS closed receiver restored the source, last receiver left the thread hidden, both threads idle, zero sends
+PASS stand stopped
+
+HTML-drop, первый запуск [ui-html, exit 1]
+AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
++   '<stand>/api/v1/plugins/chertog/rpc/window_sync'
+
+HTML-drop, свежий стенд [ui-html-repeat, exit 0]
+PASS OS file drops on inline-styled and stylesheet-styled file inputs, editable fixture and ordinary text kept original document, source and content; zero files and HTTP requests
+PASS stand stopped
+
+Отдельный браузерный runtime тестов Remote Hub [ui-remote-protocols, exit 1]
+Cannot load "zod": this bundle must be loaded by the BB app, which provides the shared plugin runtime (globalThis.__bbPluginRuntime).
+locator.click: Timeout 8000ms exceeded.
+  - waiting for getByRole('button', { name: 'VNC · 7' })
+
+Исправленная HTML-проба из b34669c6, та же сборка плагинов [ui-html-final, exit 0]
+PASS OS file drops on inline-styled and stylesheet-styled file inputs, editable fixture and ordinary text kept original document, source and content; zero files and preview requests
+PASS stand stopped
+
+Синтетический звонок Zoom и три живых вида Remote Hub [ui-zoom-frame, exit 0]
+PASS explicit synthetic Zoom join: same iframe and one join after adding three Remote Hub tiles
+PASS Zoom invitation, SSH xterm, ready RDP and VNC in installed owner tiles at 1280x800; three attach calls/sockets, zero remote connect/close
+PASS stand stopped

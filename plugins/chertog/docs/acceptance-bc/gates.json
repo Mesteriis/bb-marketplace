@@ -1,0 +1,93 @@
+{
+  "revision": "55e16830d40c668c7605e5cb152ae4f556c7fec1",
+  "commands": [
+    {
+      "package": "chertog",
+      "command": "npm run check",
+      "exit": 0,
+      "log": "chertog-check.txt",
+      "raw_sha256": "686ec436f0a84fe858fa0f66aae2fc6b832907e08cf67b555a3c479d3c319109"
+    },
+    {
+      "package": "chertog",
+      "command": "npm run build",
+      "exit": 0,
+      "log": "chertog-build.txt",
+      "raw_sha256": "c6922b34306b99589bc2a9e12655cb9b13b70f23df0edb7919ee4af8e13077fe"
+    },
+    {
+      "package": "telegram",
+      "command": "npm run check",
+      "exit": 0,
+      "log": "telegram-check-serial.txt",
+      "raw_sha256": "e3d22d3774f846a04bc43a6be27078f0abd458dead19c9a8788115277178b568"
+    },
+    {
+      "package": "telegram",
+      "command": "npm run build",
+      "exit": 0,
+      "log": "telegram-build.txt",
+      "raw_sha256": "b230dd35f38227ee10efc02de4686b0ae33a3f17f83111685fe51f04c112a78e"
+    },
+    {
+      "package": "zoom",
+      "command": "npm run check",
+      "exit": 0,
+      "log": "zoom-check.txt",
+      "raw_sha256": "a5888ec8f40072ef3b1e890aaf76c8a4b14709e8fcf490b239b3f893845abedc"
+    },
+    {
+      "package": "zoom",
+      "command": "npm run build",
+      "exit": 0,
+      "log": "zoom-build.txt",
+      "raw_sha256": "8979bcdd0901f931b95e83541f4ca612487ae9eb022f5b8b7f5fea08c97c9482"
+    },
+    {
+      "package": "remote-hub",
+      "command": "npm run check",
+      "exit": 0,
+      "log": "remote-hub-check.txt",
+      "raw_sha256": "cd38ba7fa1fe53e518e1a6fb6ac1334fff869f3d7047ea47fc45622730ac433a"
+    },
+    {
+      "package": "remote-hub",
+      "command": "npm run build",
+      "exit": 0,
+      "log": "remote-hub-build.txt",
+      "raw_sha256": "2760b69eaf149c3ddfe74ea0665065662977a3c45ed3abdbd7b977b3e825dac4"
+    },
+    {
+      "package": "repository",
+      "command": "node scripts/check-manifests.mjs",
+      "exit": 0,
+      "log": "manifests.txt",
+      "raw_sha256": "38cf13b03d3aac62259c0890b0a8c5fe70df8fe5d35cc2fd29d27769ecf0e5e3"
+    }
+  ],
+  "previous_attempts": [
+    {
+      "package": "telegram",
+      "command": "npm run check",
+      "exit": 1,
+      "log": "telegram-check.txt",
+      "raw_sha256": "02e8566e4b900f0d58f08a33ca3eed764c11fafd7dca0360f2b6f0d206536847"
+    },
+    {
+      "package": "telegram",
+      "command": "npm run check",
+      "exit": 1,
+      "log": "telegram-check-repeat.txt",
+      "raw_sha256": "be4902c248a957b22f800ebdb8f1eb570daa2b5e0e308e47b876b9688d09a8d5"
+    }
+  ],
+  "additional_checks": [
+    {
+      "package": "telegram",
+      "command": "npx --no-install vitest run --configLoader runner --testTimeout 20000",
+      "exit": 0,
+      "log": "telegram-20s.txt",
+      "raw_sha256": "5fdd52903f4ddf0d78d8b58c0a387e1f39c570b0df6efb273007bb90318ea756"
+    }
+  ]
+}

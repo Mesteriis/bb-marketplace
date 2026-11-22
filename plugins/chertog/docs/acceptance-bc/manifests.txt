@@ -1,0 +1,2 @@
+manifests ok: 85 plugin(s), 85 catalog entry(ies)
+exit=0

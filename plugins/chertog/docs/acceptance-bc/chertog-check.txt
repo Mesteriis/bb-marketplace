@@ -1,0 +1,10 @@
+> bb-plugin-chertog@0.1.0 check
+> npm run typecheck && npm run test
+> bb-plugin-chertog@0.1.0 typecheck
+> tsc --noEmit
+> bb-plugin-chertog@0.1.0 test
+> vitest run
+Test Files  58 passed (58)
+Tests  1085 passed (1085)
+Duration  15.53s (environment 32%, tests 32%, transform 21%, import 9%, setup 6%, worker 1%)
+exit=0

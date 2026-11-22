@@ -1,0 +1,9 @@
+> bb-plugin-makosh-zoom@0.1.0 build
+> bb plugin build
+dist/server.js
+dist/server.js.map
+dist/server.meta.json
+dist/app.js
+dist/app.css
+dist/app.meta.json
+exit=0

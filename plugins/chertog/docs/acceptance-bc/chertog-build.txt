@@ -1,0 +1,10 @@
+> bb-plugin-chertog@0.1.0 build
+> bb plugin build
+This plugin pins @get-bb/plugin-sdk 0.6.157; this bb's SDK is 0.6.132 — `bb plugin types` updates the pin.
+dist/server.js
+dist/server.js.map
+dist/server.meta.json
+dist/app.js
+dist/app.css
+dist/app.meta.json
+exit=0
