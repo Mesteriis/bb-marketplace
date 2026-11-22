@@ -1,6 +1,6 @@
 // Measures the area the page reserves for the ChatGPT window, in the page's
 // CSS pixels, together with what the window needs to find this page's window.
-import { hiddenFor, type Attachment } from "../core/attachment.ts";
+import { HIDDEN_ATTACHMENT, type Attachment } from "../core/attachment.ts";
 
 export interface ViewportLike {
   innerWidth: number;
@@ -12,23 +12,17 @@ export interface ViewportLike {
   devicePixelRatio: number;
 }
 
-export function measureAttachment(element: Element | null, view: ViewportLike, visible: boolean, owner: string): Attachment {
-  if (element === null || !visible) return hiddenFor(owner);
+export function measureAttachment(element: Element | null, view: ViewportLike, visible: boolean): Attachment {
+  if (element === null || !visible) return HIDDEN_ATTACHMENT;
   const box = element.getBoundingClientRect();
-  // Only the part of the area that is inside the viewport.
-  const left = Math.max(0, box.left);
-  const top = Math.max(0, box.top);
-  const right = Math.min(view.innerWidth, box.left + box.width);
-  const bottom = Math.min(view.innerHeight, box.top + box.height);
-  if (right - left <= 0 || bottom - top <= 0) return hiddenFor(owner);
+  if (box.width <= 0 || box.height <= 0) return HIDDEN_ATTACHMENT;
   const round = (value: number) => Math.round(value * 100) / 100;
   return {
-    owner,
     visible: true,
-    x: round(left),
-    y: round(top),
-    width: round(right - left),
-    height: round(bottom - top),
+    x: round(box.left),
+    y: round(box.top),
+    width: round(box.width),
+    height: round(box.height),
     innerWidth: view.innerWidth,
     innerHeight: view.innerHeight,
     outerWidth: view.outerWidth,
