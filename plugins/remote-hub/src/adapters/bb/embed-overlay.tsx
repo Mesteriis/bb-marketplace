@@ -53,7 +53,7 @@ function RemoteTile({ t, owner }: { t: Tile; owner: RemoteEmbedOwner }) {
       {t.status === "ended" && <p role="status">Просмотр закрыт.</p>}
       {t.status === "cancelled" && <p role="status">Выбор отменён.</p>}
       {!t.status && <p role="status">Открытие просмотра…</p>}
-      <div inert={t.confirm || t.status === "ended"} hidden={t.status === "ended"}>
+      <div className="rh-embed-surface" inert={t.confirm || t.status === "ended"} hidden={t.status === "ended"}>
         {t.surface && <LiveSurface v={t.surface} owner={owner} />}
       </div>
     </section>
