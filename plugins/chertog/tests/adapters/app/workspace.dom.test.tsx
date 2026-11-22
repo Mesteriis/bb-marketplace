@@ -669,3 +669,57 @@ it("persists a thread split during Zoom selection and keeps it after cancellatio
   await act(async () => { await session.closePanel(reservation.panelId); });
   expect(session.surfaceState()?.root).toMatchObject(split);
 });
+
+async function zoomOverThreads(placement: "tab" | "split") {
+  const stage = newStage({ embeds: true });
+  const { session } = stage.workspace;
+  const user = userEvent.setup();
+  render(<Window stage={stage} onRoute />);
+  await user.click(await screen.findByRole("button", { name: /Исполнитель/ }));
+  const addTab = (providerId: string, itemId: string) => act(async () => {
+    session.openContent({ providerId, itemId, placement: "tab" }, { kind: "group", groupId: session.surfaceState()!.focusedGroupId });
+  });
+  if (placement === "split") await addPanel(user, /Ревьюер/);
+  else await addTab("bb-thread", "thr_b");
+  await user.click(screen.getByRole("tab", { name: /Исполнитель/ }));
+  await settled(stage);
+  await addTab("zoom-call", "choose");
+  const cancel = () => act(async () => {
+    await session.closePanel([...session.reservations.values()][0]!.panelId);
+  });
+  return { stage, user, cancel };
+}
+
+it("keeps an explicitly selected tab after cancelling Zoom selection", async () => {
+  const { stage, user, cancel } = await zoomOverThreads("tab");
+  await user.click(screen.getByRole("tab", { name: /Ревьюер/ }));
+  await settled(stage);
+  expect(screen.getByRole("tab", { name: /Ревьюер/ }).getAttribute("aria-selected")).toBe("true");
+  expect(stage.rpc.stored?.layouts[0].workspace.root).toMatchObject({ activeTab: "panel-3" });
+  await cancel();
+  expect(screen.getByRole("tab", { name: /Ревьюер/ }).getAttribute("aria-selected")).toBe("true");
+  expect(stage.rpc.stored?.layouts[0].workspace.root).toMatchObject({ activeTab: "panel-3" });
+});
+
+it("activates the adjacent permanent tab when the active Zoom picker closes", async () => {
+  const { stage, cancel } = await zoomOverThreads("tab");
+  expect(screen.getByRole("tab", { name: /Zoom/ }).getAttribute("aria-selected")).toBe("true");
+  expect(stage.workspace.session.focusedInstance()).toBeNull();
+  await cancel();
+  await settled(stage);
+  expect(screen.getByRole("tab", { name: /Ревьюер/ }).getAttribute("aria-selected")).toBe("true");
+  expect(stage.rpc.stored?.layouts[0].workspace.root).toMatchObject({ activeTab: "panel-3" });
+});
+
+it("keeps divider proportions changed during Zoom selection", async () => {
+  const { stage, cancel } = await zoomOverThreads("split");
+  const divider = screen.getByRole("separator");
+  expect(divider.getAttribute("aria-valuenow")).toBe("50");
+  fireEvent.keyDown(divider, { key: "ArrowRight" });
+  await settled(stage);
+  expect(divider.getAttribute("aria-valuenow")).toBe("51");
+  await cancel();
+  await settled(stage);
+  expect(screen.getByRole("separator").getAttribute("aria-valuenow")).toBe("51");
+  expect(stage.rpc.stored?.layouts[0].workspace.root).toMatchObject({ sizes: [616 / 1200, 584 / 1200] });
+});
