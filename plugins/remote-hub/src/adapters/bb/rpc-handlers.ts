@@ -348,6 +348,8 @@ export function createRpcHandlers({ service, profiles, credentials, imports, age
       withHelper(() =>
         service.sessionClose({ generation: input.generation, sessionId: input.sessionId }),
       ),
+    session_resource_ref: (input) =>
+      withHelper(() => ({ resourceRef: service.sessionResourceRef(input, input.liveKind) })),
     session_attach: (input) =>
       withHelper(() => ({ token: service.sessionAttach({ generation: input.generation, sessionId: input.sessionId }, input.liveKind) })),
   });

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { useEffect } from "react";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { RemoteEmbedOverlay } from "./embed-overlay.tsx";
 import { DocumentRefs, type RemoteEmbedApi } from "./embed-owner.ts";
@@ -51,7 +51,7 @@ function container(provider: Provider, instanceId = "view-1") {
   return { base, host, target, responses, send };
 }
 function setup(provider: Provider) {
-  vi.spyOn(crypto, "randomUUID").mockReturnValueOnce(ref);
+
   const c = container(provider);
   const kind = provider === "remote-ssh-live" ? "ssh" : provider === "remote-rdp-live" ? "rdp" : "vnc";
   const api = {
@@ -77,6 +77,7 @@ function setup(provider: Provider) {
           },
         ] as Awaited<ReturnType<RemoteEmbedApi["list"]>>,
     ),
+    resourceRef: vi.fn(async (_handle: typeof handle) => ref as string | null),
     attach: vi.fn(async () => ({ wsUrl: "ws://localhost/attach", token: "private-token" })),
     close: vi.fn(async () => ({})),
     takeover: vi.fn(async () => ({})),
@@ -124,6 +125,27 @@ it.each(["remote-ssh-live", "remote-rdp-live", "remote-vnc-live"] as const)(
     next.unmount();
   },
 );
+it("returns the canonical SSH ref in two independent pickers, including before either selection is accepted", async () => {
+  const c = setup("remote-ssh-live");
+  const second = container("remote-ssh-live", "view-2");
+  for (const picker of [c, second]) {
+    picker.send({ kind: "announce", mode: "choose" });
+    fireEvent.click(await within(picker.target).findByRole("button", { name: "SSH · 7" }));
+    await waitFor(() => expect(picker.responses.at(-1)).toEqual({ ...picker.base, kind: "selected", resourceRef: ref }));
+  }
+  expect(c.api.resourceRef).toHaveBeenCalledTimes(2);
+  expect(c.api.attach).not.toHaveBeenCalled();
+});
+
+it("reports denied when the VNC viewer is already occupied during selection", async () => {
+  const c = setup("remote-vnc-live");
+  c.api.resourceRef.mockResolvedValue(null);
+  c.send({ kind: "announce", mode: "choose" });
+  fireEvent.click(await screen.findByText("VNC · 7"));
+  await waitFor(() => expect(c.responses.at(-1)).toEqual({ ...c.base, kind: "denied" }));
+  expect(c.api.attach).not.toHaveBeenCalled();
+});
+
 it("keeps, hides or closes the unique VNC view only on the owner's decision", async () => {
   const c = setup("remote-vnc-live");
   await choose(c);

@@ -48,6 +48,8 @@ const rpc = {
           reason: null,
         },
       ];
+    if (method === "session_resource_ref" && input.liveKind === kind && input.generation === handle.generation && input.sessionId === 7)
+      return { resourceRef: "12345678-1234-4123-8123-123456789abc" };
     if (method === "session_close" && input.generation === handle.generation && input.sessionId === 7) return {};
     if (method === "agent_sessions") return [];
     if (method === "session_attach" && input.liveKind === kind && input.generation === handle.generation && input.sessionId === 7)

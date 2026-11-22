@@ -59,6 +59,7 @@ function RemoteEmbedSlot() {
   current.current = { live, rpc };
   const api = useMemo<RemoteEmbedApi>(() => ({
     list: () => current.current.rpc.call("session_list"),
+    resourceRef: async (handle, liveKind) => (await current.current.rpc.call("session_resource_ref", { ...handle, liveKind })).resourceRef,
     attach: (handle, kind) => current.current.live.attach(handle, kind),
     close: h => current.current.rpc.call("session_close", h),
     takeover: h => current.current.live.takeover(h),

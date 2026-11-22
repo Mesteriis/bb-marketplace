@@ -242,9 +242,12 @@ describe("a graphical console (QEMU)", () => {
   });
 
   it("a second view is refused while the first is attached", async () => {
-    const { service } = setup();
+    const { service, helper } = setup();
     const { handle } = await service.pveOpen(args("qemu"));
+    helper.event(handle.sessionId, { type: "state", state: "open" });
+    expect(service.sessionResourceRef(handle, "vnc")).toBeTruthy();
     service.vncAttach(handle, sink().view);
+    expect(service.sessionResourceRef(handle, "vnc")).toBeNull();
     expect(service.vncAttach(handle, sink().view)).toEqual({ ok: false, code: "vnc_view_taken" });
   });
 

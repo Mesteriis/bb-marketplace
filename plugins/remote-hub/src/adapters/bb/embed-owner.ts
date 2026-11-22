@@ -6,6 +6,7 @@ import { viewExposed } from "../../ui/watch-beat.ts";
 
 export interface RemoteEmbedApi {
   list(): Promise<SessionInfo[]>;
+  resourceRef(handle: SessionHandle, liveKind: LiveKind): Promise<string | null>;
   attach(handle: SessionHandle, liveKind: LiveKind): Promise<{ wsUrl: string; token: string }>;
   close(handle: SessionHandle): Promise<unknown>;
   takeover(handle: SessionHandle): Promise<unknown>;
@@ -145,8 +146,11 @@ export class RemoteEmbedOwner {
       if (!this.active(t) || t.status !== "choosing") return;
       const s = rows.find((s) => same(s, handle) && canAttachLive(s, kind(t.provider)));
       if (!s) return this.status(t, "lost");
-      const ref = crypto.randomUUID();
-      t.pending = { provider: t.provider, handle: { generation: s.generation, sessionId: s.sessionId } };
+      const selectedHandle = { generation: s.generation, sessionId: s.sessionId };
+      const ref = await this.api.resourceRef(selectedHandle, kind(t.provider));
+      if (!this.active(t) || t.status !== "choosing") return;
+      if (ref === null) return this.status(t, "denied");
+      t.pending = { provider: t.provider, handle: selectedHandle };
       t.selected = ref;
       reply(t.target, t, { kind: "selected", resourceRef: ref });
     } catch (error) {

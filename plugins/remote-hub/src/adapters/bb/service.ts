@@ -177,6 +177,7 @@ export interface RemoteHubService {
   knownHosts: KnownHostsOverlay;
   sessionList(): SessionInfo[];
   sessionClose(handle: SessionHandle): Promise<{ exitCode: number | null; signal: number | null; reason: string }>;
+  sessionResourceRef(handle: SessionHandle, liveKind: LiveKind): string | null;
   sessionAttach(handle: SessionHandle, liveKind?: LiveKind): string;
   consumeAttachToken(token: string): AttachBinding | null;
   sessionScrollback(handle: SessionHandle): Promise<Uint8Array>;
@@ -252,6 +253,9 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
   let helper: HelperProcess | null = null;
   let starting: Promise<HelperProcess> | null = null;
   const sessions = new Map<string, SessionInfo>();
+  // The record is canonical for the target/profile and this exact helper generation/sessionId.
+  // Its UUID survives page reloads and expires with the service's live session registry.
+  const resourceRefs = new WeakMap<SessionInfo, string>();
   const listeners = new Map<string, Set<(data: Uint8Array) => void>>();
   const credits = new Map<string, CreditState>();
   const sessionEndListeners = new Map<string, Set<(info: { exitCode: number | null; signal: number | null; reason: string }) => void>>();
@@ -918,6 +922,13 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
     }
   };
 
+  const requireLiveSession = (handle: SessionHandle, liveKind: LiveKind): SessionInfo => {
+    requireGeneration(handle);
+    const record = sessions.get(keyOf(handle));
+    if (!record || !canAttachLive(record, liveKind)) throw new HelperRuntimeError("session_not_found", "live session is unavailable");
+    return record;
+  };
+
   if (deps.control !== undefined) {
     const gate = deps.control;
     gate.onChange((handle) => {
@@ -1281,13 +1292,18 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
       return Array.from(sessions.values());
     },
     sessionClose: (handle) => closeSession(handle),
+    sessionResourceRef(handle, liveKind) {
+      const record = requireLiveSession(handle, liveKind);
+      if (liveKind === "vnc" && vncRelays.get(keyOf(handle))?.attached) return null;
+      const existing = resourceRefs.get(record);
+      if (existing) return existing;
+      const ref = crypto.randomUUID();
+      resourceRefs.set(record, ref);
+      return ref;
+    },
     sessionAttach(handle, liveKind) {
-      requireGeneration(handle);
-      if (liveKind !== undefined) {
-        const current = sessions.get(keyOf(handle));
-        if (!canAttachLive(current, liveKind))
-          throw new HelperRuntimeError("session_not_found", "live session is unavailable");
-      }
+      if (liveKind === undefined) requireGeneration(handle);
+      else requireLiveSession(handle, liveKind);
       return attachTokens.issue(handle.sessionId, handle.generation, liveKind === "vnc");
     },
     consumeAttachToken(token) {
