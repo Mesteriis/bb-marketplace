@@ -32,8 +32,18 @@ try {
   const drag = (type, at) => cdp.send("Input.dispatchDragEvent", { type, ...at, data });
   // Let BB finish fetching the preview before counting requests during the drops.
   await page.waitForLoadState("networkidle");
+  const previewFrame = await (await iframe.elementHandle()).contentFrame();
+  assert(previewFrame);
   const requests = [];
-  page.on("request", request => requests.push(request.url()));
+  page.on("request", request => {
+    // The BB shell polls window state independently of the preview.
+    for (let sourceFrame = request.frame(); sourceFrame; sourceFrame = sourceFrame.parentFrame()) {
+      if (sourceFrame === previewFrame) {
+        requests.push(request.url());
+        break;
+      }
+    }
+  });
   // Direct entry into the frame can be the first event from the OS.
   for (const target of [input, styled, editor, paragraph]) {
     const box = await target.boundingBox();
@@ -51,7 +61,7 @@ try {
   }
   assert.equal(await editor.evaluate(el => el.isContentEditable), false);
   assert.deepEqual(requests, []);
-  console.log("PASS OS file drops on inline-styled and stylesheet-styled file inputs, editable fixture and ordinary text kept original document, source and content; zero files and HTTP requests");
+  console.log("PASS OS file drops on inline-styled and stylesheet-styled file inputs, editable fixture and ordinary text kept original document, source and content; zero files and preview requests");
 } finally {
   await browser.close();
 }
