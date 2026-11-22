@@ -1,6 +1,7 @@
 import { createElement } from "react";
 import type { useBbNavigate, useSdk } from "@get-bb/plugin-sdk/app";
 import { entryCards, entryRoute, fileTarget, type CardType } from "../../../core/panels/entry-card.ts";
+import { PanelRegistry } from "../../../core/panels/registry.ts";
 import { panelRefKey, panelRefSchema, type PanelRef } from "../../../core/panels/ref.ts";
 import { EntryCard, type CardAction } from "../../../ui/panels/EntryCard.tsx";
 import type { ContentSource, SourceItem } from "./content-sources.ts";
@@ -9,7 +10,34 @@ type Sdk = ReturnType<typeof useSdk>;
 type Navigate = ReturnType<typeof useBbNavigate>;
 type Scope = Parameters<Sdk["experimental_desktopBrowsers"]["listTabs"]>[0];
 
+interface CardRoutePort {
+  /** False only when the history entry has not been pushed. */
+  inDocument(href: string): boolean;
+  confirm(message: string): boolean;
+  reload(href: string): void;
+}
+
+const browserRoutes: CardRoutePort = {
+  inDocument(href) {
+    // BB's web router listens to popstate and uses the entry index for Back/Forward.
+    const index: unknown = window.history.state?.idx;
+    if (typeof index !== "number" || !Number.isSafeInteger(index + 1) || index < 0 ||
+      typeof window.crypto.randomUUID !== "function") return false;
+    const state = { usr: null, key: window.crypto.randomUUID(), idx: index + 1 };
+    try {
+      window.history.pushState(state, "", href);
+    } catch {
+      return false;
+    }
+    window.dispatchEvent(new PopStateEvent("popstate", { state }));
+    return true;
+  },
+  confirm: message => window.confirm(message),
+  reload: href => window.location.assign(href),
+};
+
 export interface CardHost {
+  routes?: CardRoutePort;
   navigate: Pick<Navigate, "toThread" | "experimental_openTerminal" | "experimental_openFilePreview" | "experimental_openFileExternally">;
   plugins: { list(): Promise<{ plugins: readonly { id: string; enabled: boolean; status: string }[] }> };
   desktop: {
@@ -57,7 +85,7 @@ function targetLabel(ref: PanelRef): string | undefined {
 }
 
 /** Resolve only the selected resource. Constructing or restoring a card never navigates. */
-export function cardActions(type: CardType, ref: PanelRef, host: CardHost): CardAction[] {
+export function cardActions(type: CardType, ref: PanelRef, host: CardHost, hasLivePanels: () => boolean = () => true): CardAction[] {
   if (ref.provider !== type) throw Error("Тип ссылки не соответствует карточке.");
   panelRefSchema.parse(ref);
   const data = entryCards[type].paramsSchema.parse(ref.params);
@@ -65,7 +93,11 @@ export function cardActions(type: CardType, ref: PanelRef, host: CardHost): Card
   if (href !== null) return [{
     label: "Открыть раздел", href,
     async run() {
-      window.location.assign(href);
+      const routes = host.routes ?? browserRoutes;
+      if (!routes.inDocument(href)) {
+        if (hasLivePanels() && !routes.confirm("Переход перезагрузит Чертог, живые панели закроются")) return "Переход отменён.";
+        routes.reload(href);
+      }
       return "Переход запрошен.";
     },
   }];
@@ -109,6 +141,11 @@ export function cardActions(type: CardType, ref: PanelRef, host: CardHost): Card
 }
 
 export function createCardSource(type: CardType, host: CardHost, directory?: CardDirectory): ContentSource {
+  let registry: PanelRegistry | null = null;
+  // Include parked views and pending opens. An unbound source cannot rule out live neighbours.
+  const hasLivePanels = () => registry?.list().some(p =>
+    p.state === "live" || p.state === "loading" || p.unknownOutcome === "open"
+  ) ?? true;
   const card = entryCards[type];
   const sectionRef = { provider: type, params: {} };
   const items = () => {
@@ -149,7 +186,8 @@ export function createCardSource(type: CardType, host: CardHost, directory?: Car
     label: ref => ref.provider === type && card.paramsSchema.safeParse(ref.params).success
       ? { title: card.title, context: targetLabel(ref) ?? card.purpose } : null,
     render: ref => createElement(EntryCard, { key: panelRefKey(ref), title: card.title, purpose: card.purpose,
-      target: targetLabel(ref), check, actions: cardActions(type, ref, host) }),
+      target: targetLabel(ref), check, actions: cardActions(type, ref, host, hasLivePanels) }),
+    connect(target) { registry = target instanceof PanelRegistry ? target : null; },
     stateText: () => null,
     subscribe: listener => directory?.subscribe(listener) ?? (() => {}),
   };

@@ -1,3 +1,7 @@
+import { isValidElement, type ComponentProps } from "react";
+import type { EntryCard } from "../../../src/ui/panels/EntryCard.tsx";
+import { PanelRegistry } from "../../../src/core/panels/registry.ts";
+import { FakeClock, FakeDiagnostics, FakeProvider, SequentialIds } from "../../core/panels/fakes.ts";
 import { expect, it, vi } from "vitest";
 import { cardActions, createCardSource, type CardHost } from "../../../src/adapters/bb/app/card-source.ts";
 
@@ -80,4 +84,44 @@ it("refuses a missing App Preview tab even if Desktop has a tab with the same ID
   await expect(actions[0].run()).rejects.toThrow("Вкладка предпросмотра в треде уже закрыта.");
   expect(bb.navigate.toThread).toHaveBeenCalledTimes(0);
   expect(bb.desktop.listInstances).toHaveBeenCalledTimes(0);
+});
+
+it.each([
+  { handled: true, live: true, confirmed: false, prompts: 0, reloads: 0 },
+  { handled: false, live: true, confirmed: false, prompts: 1, reloads: 0 },
+  { handled: false, live: true, confirmed: true, prompts: 1, reloads: 1 },
+  { handled: false, live: false, confirmed: false, prompts: 0, reloads: 1 },
+])("guards document replacement ($handled, $live, $confirmed)", async ({handled, live, confirmed, prompts, reloads}) => {
+  const routes = { inDocument: vi.fn(() => handled), confirm: vi.fn(() => confirmed), reload: vi.fn() };
+  const ref = { provider: "terminals", params: {} };
+  await cardActions("terminals", ref, { ...host(), routes }, () => live)[0].run();
+  expect(routes.inDocument.mock.calls).toEqual([["/plugins/terminals/terminals"]]);
+  expect(routes.confirm.mock.calls).toEqual(prompts ? [["Переход перезагрузит Чертог, живые панели закроются"]] : []);
+  expect(routes.reload.mock.calls).toEqual(reloads ? [["/plugins/terminals/terminals"]] : []);
+});
+
+it("checks the current registry on each fallback, including parked live panels", async () => {
+  const registry = new PanelRegistry({ clock: new FakeClock(1), ids: new SequentialIds(), diagnostics: new FakeDiagnostics() });
+  const routes = { inDocument: () => false, confirm: vi.fn(() => false), reload: vi.fn() };
+  const source = createCardSource("terminals", { ...host(), routes });
+  source.connect?.(registry);
+  const ref = { provider: "terminals", params: {} };
+  registry.registerProvider(source.provider);
+  const entry = registry.open(ref);
+  if (!entry.ok) throw Error(entry.reason);
+  await entry.settled;
+  const rendered = source.render(ref, entry.instance.instanceId);
+  if (!isValidElement<ComponentProps<typeof EntryCard>>(rendered)) throw Error("Missing entry card");
+  const open = rendered.props.actions[0].run;
+  await open();
+  expect(routes.confirm).toHaveBeenCalledTimes(0);
+  expect(routes.reload.mock.calls).toEqual([["/plugins/terminals/terminals"]]);
+  registry.registerProvider(new FakeProvider("fixture-frame", []));
+  const live = registry.open({ provider: "fixture-frame", params: {} });
+  if (!live.ok) throw Error(live.reason);
+  await live.settled;
+  registry.removeFromLayout(live.instance.instanceId);
+  expect(await open()).toBe("Переход отменён.");
+  expect(routes.confirm).toHaveBeenCalledTimes(1);
+  expect(routes.reload).toHaveBeenCalledTimes(1);
 });
