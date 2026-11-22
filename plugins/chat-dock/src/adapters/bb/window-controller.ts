@@ -50,18 +50,29 @@ export function createWindowController(deps: ControllerDeps): WindowController {
     reason = null;
     release = deps.retain();
     notify();
-    const built = await deps.build();
-    if (disposed) return;
-    if (!built.ok) {
+    const fail = (why: string) => {
       phase = "unavailable";
-      reason = built.reason;
+      reason = why;
       release?.();
       release = null;
       notify();
+    };
+    let built: BuildResult;
+    try {
+      built = await deps.build();
+    } catch {
+      return fail("Окно не собралось: ошибка файловой системы или компилятора.");
+    }
+    if (disposed) {
+      release?.();
+      release = null;
       return;
     }
+    if (!built.ok) return fail(built.reason);
     let current: WindowSession | null = null;
-    const window = deps.launch({
+    let window: RunningWindow;
+    try {
+      window = deps.launch({
       executable: built.executable,
       onMessage(message) {
         if (current === null) return;
@@ -82,7 +93,10 @@ export function createWindowController(deps: ControllerDeps): WindowController {
             return;
         }
       },
-    });
+      });
+    } catch {
+      return fail("Окно не запустилось.");
+    }
     current = createWindowSession({
       port: { evaluate: (expression) => window.evaluate(expression), showPanel: (view) => window.showPanel(view) },
       newId,

@@ -14,7 +14,9 @@ import { WINDOW_SOURCE } from "./window-source.generated.ts";
 export const APP_NAME = "BB Chat Dock.app";
 export const BUNDLE_ID = "io.github.mesteriis.bb-chat-dock.window";
 const EXECUTABLE = "ChatDockWindow";
-const EVALUATE_TIMEOUT_MS = 10_000;
+// Unanswered scripts are capped, not timed out: the transfer session has its
+// own timeout and must still see a late answer to withdraw a stale mark.
+const MAX_PENDING = 64;
 const BUILD_TIMEOUT_MS = 180_000;
 
 export type RunResult = { code: number | null; stderr: string };
@@ -107,8 +109,16 @@ export async function buildWindowApp(options: BuildOptions): Promise<BuildResult
     const signed = await run("codesign", ["--force", "--sign", "-", staged], 60_000);
     if (signed.code !== 0) return { ok: false, reason: "Не удалось подписать окно локальной подписью." };
     await mkdir(join(options.dataDir, "window", key), { recursive: true });
-    await rm(appDir, { recursive: true, force: true });
-    await rename(staged, appDir);
+    try {
+      await rename(staged, appDir);
+    } catch (error) {
+      // Another worker published the same version first: keep its build.
+      try {
+        await access(executable);
+      } catch {
+        throw error;
+      }
+    }
     return { ok: true, executable };
   } finally {
     await rm(work, { recursive: true, force: true });
@@ -135,7 +145,7 @@ const defaultSpawn = (executable: string, env: NodeJS.ProcessEnv): ChildProcess 
 
 export function launchWindow(options: LaunchOptions): RunningWindow {
   const child = (options.spawnChild ?? defaultSpawn)(options.executable, options.env ?? process.env);
-  const pending = new Map<string, { resolve(value: unknown): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> }>();
+  const pending = new Map<string, { resolve(value: unknown): void; reject(error: Error): void }>();
   let alive = true;
 
   const exited = new Promise<void>((resolve) => {
@@ -143,7 +153,6 @@ export function launchWindow(options: LaunchOptions): RunningWindow {
       if (!alive) return;
       alive = false;
       for (const [id, entry] of pending) {
-        clearTimeout(entry.timer);
         entry.reject(new Error("window closed"));
         pending.delete(id);
       }
@@ -161,7 +170,6 @@ export function launchWindow(options: LaunchOptions): RunningWindow {
       if (message.type === "result") {
         const entry = pending.get(message.id);
         if (entry === undefined) return;
-        clearTimeout(entry.timer);
         pending.delete(message.id);
         if (message.ok) entry.resolve(message.value);
         else entry.reject(new Error("page script failed"));
@@ -180,14 +188,13 @@ export function launchWindow(options: LaunchOptions): RunningWindow {
   return {
     evaluate(expression) {
       return new Promise((resolve, reject) => {
+        if (pending.size >= MAX_PENDING) {
+          reject(new Error("too many unanswered scripts"));
+          return;
+        }
         const id = randomUUID();
-        const timer = setTimeout(() => {
-          pending.delete(id);
-          reject(new Error("no answer"));
-        }, EVALUATE_TIMEOUT_MS);
-        pending.set(id, { resolve, reject, timer });
+        pending.set(id, { resolve, reject });
         if (!send({ type: "evaluate", id, expression })) {
-          clearTimeout(timer);
           pending.delete(id);
           reject(new Error("window closed"));
         }

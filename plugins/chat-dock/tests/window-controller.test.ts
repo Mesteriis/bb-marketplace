@@ -70,6 +70,18 @@ describe("the window controller", () => {
     expect(await controller.propose("text", "manual")).toEqual({ ok: false, reason: "window-unavailable" });
   });
 
+  it("ends a build that throws in 'unavailable' and releases the worker", async () => {
+    const { controller, leases } = rig(async () => {
+      throw new Error("ENOSPC");
+    });
+
+    const status = await controller.open();
+
+    expect(status.window).toBe("unavailable");
+    expect(status.reason).toContain("Окно не собралось");
+    expect(leases()).toBe(0);
+  });
+
   it("answers 'building' instead of waiting past the call's time limit", async () => {
     let finish: (value: BuildResult) => void = () => {};
     const { controller } = rig(() => new Promise((resolve) => (finish = resolve)));

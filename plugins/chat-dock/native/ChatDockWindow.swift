@@ -25,6 +25,9 @@ let pageWorld = WKContentWorld.world(name: "bb-chat-dock")
 
 func isAllowed(_ url: URL?) -> Bool {
   guard let url, url.scheme == "https", let host = url.host?.lowercased() else { return false }
+  // The default port only, and no credentials in the address.
+  if let port = url.port, port != 443 { return false }
+  if url.user != nil || url.password != nil { return false }
   return allowedHosts.contains(host)
 }
 

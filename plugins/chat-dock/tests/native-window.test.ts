@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import type { ChildProcess } from "node:child_process";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { createTransfer } from "../src/core/transfer.ts";
 import { APP_NAME, BUNDLE_ID, buildWindowApp, infoPlist, launchWindow, type Runner } from "../src/adapters/bb/native-window.ts";
 import { WINDOW_SOURCE } from "../src/adapters/bb/window-source.generated.ts";
 
@@ -53,6 +54,11 @@ describe("the embedded window source", () => {
     expect(WINDOW_SOURCE).toBe(readFileSync(new URL("../native/ChatDockWindow.swift", import.meta.url), "utf8"));
   });
 
+  it("allows only the default port and no credentials in the window's own policy", () => {
+    expect(WINDOW_SOURCE).toContain("if let port = url.port, port != 443 { return false }");
+    expect(WINDOW_SOURCE).toContain("if url.user != nil || url.password != nil { return false }");
+  });
+
   it("keeps the site fixed and the inspector off", () => {
     expect(WINDOW_SOURCE).toContain('URL(string: "https://chatgpt.com/")!');
     expect(WINDOW_SOURCE).toContain("webView.isInspectable = false");
@@ -88,6 +94,36 @@ describe("building the window app", () => {
     expect(calls[0]).toEqual(expect.arrayContaining(["swiftc", "-framework", "AppKit", "-framework", "WebKit"]));
     expect(calls[1]).toEqual(expect.arrayContaining(["--sign", "-"]));
     expect(first.ok && readFileSync(join(first.executable, "..", "..", "Info.plist"), "utf8")).toContain(BUNDLE_ID);
+  });
+
+  it("keeps a build another worker published first instead of deleting it", async () => {
+    const { renameSync, writeFileSync } = await import("node:fs");
+    const dataDir = tempDir();
+    const theirs: Runner = async (command, args) => {
+      if (command === "xcrun") writeFileSync(args[args.indexOf("-o") + 1]!, "theirs");
+      return { code: 0, stderr: "" };
+    };
+    const first = await buildWindowApp({ dataDir, tempDir: tempDir(), run: theirs, source: "// same" });
+    if (!first.ok) throw new Error("first build failed");
+    const app = join(first.executable, "..", "..", "..");
+    // Hide it so the second build does not take the reuse shortcut...
+    renameSync(app, app + ".hidden");
+    let restored = false;
+    const ours: Runner = async (command, args) => {
+      if (command === "xcrun") writeFileSync(args[args.indexOf("-o") + 1]!, "ours");
+      if (command === "codesign") {
+        // ...and publish it again while our build is being signed.
+        renameSync(app + ".hidden", app);
+        restored = true;
+      }
+      return { code: 0, stderr: "" };
+    };
+
+    const second = await buildWindowApp({ dataDir, tempDir: tempDir(), run: ours, source: "// same" });
+
+    expect(restored).toBe(true);
+    expect(second).toEqual({ ok: true, executable: first.executable });
+    expect(readFileSync(first.executable, "utf8")).toBe("theirs");
   });
 
   it("names the missing compiler and leaves nothing half-built", async () => {
@@ -141,6 +177,39 @@ describe("the running window", () => {
     await window.exited;
     await expect(window.evaluate("y")).rejects.toThrow("window closed");
     expect(child.written).toHaveLength(1);
+  });
+
+  it("delivers a late answer, so a stale mark set after the transfer's timeout is withdrawn", async () => {
+    const { child, window } = launch();
+    let n = 0;
+    const transfer = createTransfer({
+      page: window,
+      clipboard: { writeText: async () => false },
+      newNonce: () => "nonce-" + String((n += 1)),
+      timeoutMs: 20,
+    });
+
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const binding = transfer.bind("https://chatgpt.com/c/aaaaaaaa-0000-4000-8000-00000000000a");
+      await vi.advanceTimersByTimeAsync(20);
+      await binding;
+      expect(transfer.getState()).toEqual({ kind: "unbound", refusal: "page-unavailable" });
+      // Well past any adapter-level timeout the window adapter might have had.
+      await vi.advanceTimersByTimeAsync(11_000);
+    } finally {
+      vi.useRealTimers();
+    }
+    const bind = JSON.parse(child.written[0]!) as { id: string };
+    // The page ran the choice late and answers now.
+    child.say({ type: "result", id: bind.id, ok: true, value: { top: true, origin: "https://chatgpt.com", path: "/c/aaaaaaaa-0000-4000-8000-00000000000a", tracked: true } });
+    await tick();
+
+    const kinds = child.written.map((line) => {
+      const expression = (JSON.parse(line) as { expression: string }).expression;
+      return expression.includes("bindInPage") ? "bind" : expression.includes("revokeInPage") ? "revoke" : "other";
+    });
+    expect(kinds).toEqual(["bind", "revoke", "revoke"]);
   });
 
   it("sends the panel and asks the window to quit", async () => {
