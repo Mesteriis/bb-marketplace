@@ -2,6 +2,7 @@
 // contexts that behave like BB's: a context's worker lease can be taken only
 // while its own call runs.
 import type { WindowStatusWire } from "../../../contract.ts";
+import type { Attachment } from "../../core/attachment.ts";
 import type { ProposalSource } from "../../core/window-session.ts";
 import type { BuildResult, LaunchOptions, RunningWindow } from "./native-window.ts";
 import { createWindowController, type Retain, type WindowController } from "./window-controller.ts";
@@ -56,6 +57,10 @@ export function createHostHandlers(deps: HostHandlerDeps) {
     propose: (text: string, source: ProposalSource, context: HostCallContext) =>
       controllerFor(context).propose(text, source, retainFor(context)),
     status: (context: HostCallContext) => controllerFor(context).status(),
+    attach(view: Attachment, context: HostCallContext): { ok: true } {
+      controllerFor(context).attach(view);
+      return { ok: true };
+    },
     dispose() {
       controller?.dispose();
       controller = null;

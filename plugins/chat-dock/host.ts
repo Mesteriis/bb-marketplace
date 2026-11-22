@@ -18,6 +18,7 @@ export default experimental_defineHostEntry({
     open: async (_input, context) => handlers.open(context as unknown as HostCallContext),
     propose: async ({ text, source }, context) => handlers.propose(text, source, context as unknown as HostCallContext),
     status: async (_input, context) => handlers.status(context as unknown as HostCallContext),
+    attach: async (input, context) => handlers.attach(input, context as unknown as HostCallContext),
   },
   dispose: async () => handlers.dispose(),
 });

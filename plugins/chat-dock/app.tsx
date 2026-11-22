@@ -39,6 +39,9 @@ function ChatDockPanel(_props: PluginNavPanelProps) {
     () => ({
       open: () => rpcRef.current.call("open", null).then((next) => (setStatus(next), next)),
       propose: (text, source) => rpcRef.current.call("propose", { text, source }),
+      attach: (view) => {
+        rpcRef.current.call("attach", view).catch(() => {});
+      },
     }),
     [],
   );
