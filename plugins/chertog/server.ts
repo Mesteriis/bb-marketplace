@@ -2,7 +2,7 @@
 //
 // Composition root for the BB server: the declared settings, the workspace
 // RPC over the plugin's storage, the route of the controlled frame page, and
-// the check that keeps the Navigation and Sidebar plugins in step with their switches.
+// the switches that enable and disable the Navigation and Sidebar plugins.
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { registerWindowsRpc } from "./src/adapters/bb/server/windows-rpc.ts";
 import {

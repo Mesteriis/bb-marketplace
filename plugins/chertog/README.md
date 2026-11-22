@@ -79,11 +79,12 @@ again; the switch takes effect when BB delivers the new value, without a reload.
 
 `navigationPart` and `threadListPart` stand in until Navigation and the thread
 list are absorbed into Chertog (`docs/absorption-design.md`). The server checks
-them at start and on every settings write (`handle.onChange`): switch off and
-plugin on, it calls `bb.sdk.plugins.disable`; switch on and plugin off, `enable`;
-a plugin that is not installed is left alone with one log line. A refusal is
-logged once per new state and retried at the next write. The rule is
-`decidePartAction` in `src/core/parts`; the calls are in
+them only when the switch itself changes (`handle.onChange`, previous against
+new value): on to off with the plugin enabled calls `bb.sdk.plugins.disable`,
+off to on with the plugin disabled calls `enable`. Nothing runs at start or when
+another key is written, so a plugin the owner disabled by hand is never put
+back. A plugin that is not installed is left alone with one log line; a refusal
+is logged once. The rule is `decidePartAction` in `src/core/parts`; the calls are in
 `src/adapters/bb/server/parts-sync.ts`.
 
 ### Addressee of a command

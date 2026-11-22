@@ -57,42 +57,49 @@ const both = [
 ];
 
 describe("startPartSync", () => {
-  it("disables the plugin of a switch that is off at start, and leaves the other alone", async () => {
-    const { plugins, sync } = setup({ navigationPart: false, threadListPart: true }, both.map((p) => ({ ...p })));
-    await sync.idle();
-    expect(plugins.calls).toEqual(["list", "disable makosh-navigation"]);
-  });
-
-  it("enables a plugin that is off while its switch is on", async () => {
-    const { plugins, sync } = setup({ navigationPart: true, threadListPart: true }, [
+  it("does nothing at start, whatever the switches and the plugins say", async () => {
+    const { plugins, log, sync } = setup({ navigationPart: false, threadListPart: true }, [
       { id: "makosh-navigation", enabled: true },
       { id: "makosh-sidebar", enabled: false },
     ]);
     await sync.idle();
-    expect(plugins.calls).toEqual(["list", "enable makosh-sidebar"]);
+    expect(plugins.calls).toEqual([]);
+    expect(log.lines).toEqual([]);
   });
 
-  it("calls nothing when the plugins already match, and reads a missing key as on", async () => {
-    const { plugins, sync } = setup({}, both.map((p) => ({ ...p })));
-    await sync.idle();
-    expect(plugins.calls).toEqual(["list"]);
-  });
-
-  it("follows a change of the switch without a restart, both ways", async () => {
+  it("disables the plugin when its switch goes on to off, and enables it when it goes off to on", async () => {
     const { handle, plugins, sync } = setup({ navigationPart: true, threadListPart: true }, both.map((p) => ({ ...p })));
-    await sync.idle();
     handle.write({ threadListPart: false });
     await sync.idle();
     expect(plugins.state("makosh-sidebar")).toBe(false);
+    expect(plugins.state("makosh-navigation")).toBe(true);
     handle.write({ threadListPart: true });
     await sync.idle();
     expect(plugins.state("makosh-sidebar")).toBe(true);
     expect(plugins.calls.filter((call) => call !== "list")).toEqual(["disable makosh-sidebar", "enable makosh-sidebar"]);
   });
 
+  it("does nothing when another key is written, and never re-enables a plugin the owner disabled", async () => {
+    const { handle, plugins, sync } = setup({ navigationPart: true, threadListPart: true }, [
+      { id: "makosh-navigation", enabled: false },
+      { id: "makosh-sidebar", enabled: true },
+    ]);
+    handle.write({ homeRedirect: true });
+    handle.write({ tileSpace: false });
+    handle.write({ navigationPart: true });
+    await sync.idle();
+    expect(plugins.calls).toEqual([]);
+  });
+
+  it("does not call the host when the plugin already matches the new switch", async () => {
+    const { handle, plugins, sync } = setup({ navigationPart: true }, [{ id: "makosh-navigation", enabled: false }, { id: "makosh-sidebar", enabled: true }]);
+    handle.write({ navigationPart: false });
+    await sync.idle();
+    expect(plugins.calls.filter((call) => call !== "list")).toEqual([]);
+  });
+
   it("serializes changes that arrive together and ends on the last value", async () => {
     const { handle, plugins, sync } = setup({ navigationPart: true }, both.map((p) => ({ ...p })));
-    await sync.idle();
     handle.write({ navigationPart: false });
     handle.write({ navigationPart: true });
     handle.write({ navigationPart: false });
@@ -100,44 +107,35 @@ describe("startPartSync", () => {
     expect(plugins.state("makosh-navigation")).toBe(false);
   });
 
-  it("does nothing for a plugin that is not installed and says so once", async () => {
-    const { handle, plugins, log, sync } = setup({ navigationPart: false, threadListPart: false }, [{ id: "makosh-sidebar", enabled: true }]);
-    await sync.idle();
+  it("logs one line for a plugin that is not installed and calls nothing for it", async () => {
+    const { handle, plugins, log, sync } = setup({ navigationPart: true }, [{ id: "makosh-sidebar", enabled: true }]);
     handle.write({ navigationPart: false });
     await sync.idle();
-    expect(plugins.calls.filter((call) => call !== "list")).toEqual(["disable makosh-sidebar"]);
+    expect(plugins.calls.filter((call) => call !== "list")).toEqual([]);
     expect(log.lines.filter((line) => line.includes("makosh-navigation"))).toHaveLength(1);
   });
 
-  it("survives a refusal, logs one line per new state, and retries on the next change", async () => {
-    const { handle, plugins, log, sync } = setup({ navigationPart: false }, both.map((p) => ({ ...p })));
+  it("survives a refusal and logs it once, without retrying on unrelated writes", async () => {
+    const { handle, plugins, log, sync } = setup({ navigationPart: true }, both.map((p) => ({ ...p })));
     plugins.failures.set("makosh-navigation", "no permission");
+    handle.write({ navigationPart: false });
     await sync.idle();
     handle.write({ homeRedirect: true });
     await sync.idle();
-    expect(plugins.calls.filter((call) => call === "disable makosh-navigation")).toHaveLength(2);
+    expect(plugins.calls.filter((call) => call === "disable makosh-navigation")).toHaveLength(1);
     const warnings = log.lines.filter((line) => line.startsWith("warn"));
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toContain("makosh-navigation");
     expect(warnings[0]).toContain("no permission");
-    plugins.failures.set("makosh-navigation", "host refused");
-    handle.write({ homeRedirect: false });
-    await sync.idle();
-    expect(log.lines.filter((line) => line.startsWith("warn"))).toHaveLength(2);
-    plugins.failures.clear();
-    handle.write({ homeRedirect: true });
-    await sync.idle();
-    expect(plugins.state("makosh-navigation")).toBe(false);
   });
 
-  it("survives a failing inventory read and a failing settings read", async () => {
-    const handle = new FakeHandle({ navigationPart: false });
+  it("survives a failing inventory read", async () => {
+    const handle = new FakeHandle({ navigationPart: true });
     const log = new FakeLog();
     const plugins = { list: async () => { throw new Error("inventory down"); } };
     const sync = startPartSync({ settings: handle, plugins: () => plugins as never, log });
-    await sync.idle();
-    expect(log.lines.some((line) => line.startsWith("warn") && line.includes("inventory down"))).toBe(true);
-    const broken = startPartSync({ settings: { get: async () => { throw new Error("settings down"); }, onChange() {} }, plugins: () => plugins as never, log });
-    await expect(broken.idle()).resolves.toBeUndefined();
+    handle.write({ navigationPart: false });
+    await expect(sync.idle()).resolves.toBeUndefined();
+    expect(log.lines.filter((line) => line.startsWith("warn") && line.includes("inventory down"))).toHaveLength(1);
   });
 });

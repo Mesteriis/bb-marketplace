@@ -1,3 +1,3 @@
 // Parts of Chertog that still live in other plugins: the rule that keeps
-// each plugin in step with its switch.
-export { decidePartAction, type PartAction, type PluginState } from "./decision.ts";
+// each plugin move with its switch, and only when the switch moves.
+export { decidePartAction, isPartTransition, type PartAction, type PluginState } from "./decision.ts";

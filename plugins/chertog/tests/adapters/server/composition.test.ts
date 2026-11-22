@@ -73,7 +73,7 @@ describe("what the server registers", () => {
     expect(Object.values(declared).filter((descriptor) => "secret" in descriptor)).toEqual([]);
   });
 
-  it("keeps the plugins of the two part switches in step, from the start and on every write", async () => {
+  it("moves the plugin of a part switch only when that switch changes, never at start", async () => {
     const { settings, plugins } = loaded();
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(plugins.calls).toEqual([]);
@@ -83,6 +83,9 @@ describe("what the server registers", () => {
     settings.write({ navigationPart: true });
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(plugins.calls).toEqual(["disable makosh-navigation", "enable makosh-navigation"]);
+    settings.write({ homeRedirect: false });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(plugins.calls).toHaveLength(2);
   });
 
   it("serves the contract of the wire schemas", () => {
