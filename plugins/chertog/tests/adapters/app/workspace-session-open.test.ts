@@ -20,7 +20,7 @@ function thread(id: string) {
   return { ref: threadRef(id) };
 }
 
-function sessionOver(stored: WorkspaceDocument | null, rpc = new FakeWorkspaceRpc()) {
+function sessionOver(stored: WorkspaceDocument | null, rpc = new FakeWorkspaceRpc(), fixtureEnabled = true) {
   rpc.stored = stored;
   const threads = new ThreadDirectory();
   threads.set({ status: "ready", threads: entries });
@@ -29,7 +29,7 @@ function sessionOver(stored: WorkspaceDocument | null, rpc = new FakeWorkspaceRp
     rpc,
     sources: [
       createThreadSource({ directory: threads, renderChat: () => null }),
-      createFixtureSource({ pluginId: () => "chertog", enabled: () => true, newFrameName: () => "new" }),
+      createFixtureSource({ pluginId: () => "chertog", enabled: () => fixtureEnabled, newFrameName: () => "new" }),
     ],
     newId: (prefix) => nextId(prefix),
     diagnostics: { failure: () => undefined },
@@ -209,6 +209,18 @@ describe("openPanel", () => {
     expect(session.openPanel({ provider: "fixture-frame", params: { frame: "bad name" } })).toBe("unsupported");
     expect(session.openPanel({ provider: "fixture-frame", params: { other: 1 } })).toBe("unsupported");
     expect(session.document()).toBe(before);
+  });
+
+  it("answers unsupported for a source that is not offered, and opens it once it is", async () => {
+    const off = sessionOver(document(true), new FakeWorkspaceRpc(), false);
+    await off.controller.enter();
+    const before = off.document();
+    expect(off.openPanel(frame("a"))).toBe("unsupported");
+    expect(off.openPanel({ provider: "chertog-choose", params: { kind: "bb-thread" } })).toBe("unsupported");
+    expect(off.document()).toBe(before);
+    const on = sessionOver(document(true));
+    await on.controller.enter();
+    expect(on.openPanel(frame("a"))).toBe("opened");
   });
 
   it("refuses beyond the tile limit like a thread does", async () => {

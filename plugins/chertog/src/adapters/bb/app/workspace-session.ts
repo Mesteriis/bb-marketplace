@@ -404,12 +404,12 @@ export class WorkspaceSession {
   /**
    * Shows the panel of a provider this window knows as a tile, by the same
    * rules as a thread: focus a placed one, fill a waiting picker, else take a
-   * tile of its own. `"unsupported"` when no provider has that type or it
-   * refuses the parameters; nothing changes then.
+   * tile of its own. `"unsupported"` when no provider has that type, its
+   * source is not offered now, or it refuses the parameters; nothing changes then.
    */
   openPanel(ref: PanelRef): "opened" | "focused" | "refused" | "not-shown" | "unsupported" {
     const source = panelRefSchema.safeParse(ref).success ? this.sourceOf(ref.provider) : undefined;
-    if (source === undefined || !source.provider.paramsSchema.safeParse(ref.params).success) return "unsupported";
+    if (source === undefined || !source.offered() || !source.provider.paramsSchema.safeParse(ref.params).success) return "unsupported";
     return this.openRef(ref);
   }
 
