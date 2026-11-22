@@ -3,7 +3,9 @@
 // refused. None of them opens, closes or ends a panel: they change what is
 // stored about names and places.
 import type { LayoutOperation, WorkspaceState } from "../layout/index.ts";
-import { addTab, applyOperation, closeTab, createWorkspace, findGroup } from "../layout/index.ts";
+import { addTab, applyOperation, closeTab, createWorkspace, findGroup, findGroupOfPanel } from "../layout/index.ts";
+import { replaceGroup } from "../layout/tree.ts";
+import { acceptsChoice } from "../panels/choose.ts";
 import { panelRefKey } from "../panels/index.ts";
 import type { PanelRef } from "../panels/index.ts";
 import type { NamedLayout, WorkspaceDocument, WorkspacePanel } from "./document.ts";
@@ -245,4 +247,28 @@ export function addLayoutFromTemplate(document: WorkspaceDocument, layoutId: str
     known = registered.document;
   }
   return applied({ ...known, layouts: [...known.layouts, layout] });
+}
+
+
+/** Replace one chooser tab without changing focus, the split tree or any other layout. */
+export function replaceChoosePanel(
+  document: WorkspaceDocument, chooserId: string, selectedId: string, ref: PanelRef, livePanelIds: ReadonlySet<string>,
+): WorkspaceChange {
+  const layout = activeLayout(document);
+  const group = findGroupOfPanel(layout.workspace.root, chooserId);
+  if (!group) return refused("not-placed");
+  if (!acceptsChoice(document.panels[chooserId].ref, ref)) return refused("invalid-panel");
+  if (placedPanelIds(layout).includes(selectedId)) return refused("already-placed");
+  const known = registerPanel(document, selectedId, { ref });
+  if (!known.ok) return known;
+  const root = replaceGroup(layout.workspace.root, {
+    ...group,
+    tabs: group.tabs.map(id => id === chooserId ? selectedId : id),
+    activeTab: group.activeTab === chooserId ? selectedId : group.activeTab,
+  });
+  const result = replaceLayout(known.document, { ...layout, workspace: { ...layout.workspace, root } });
+  if (livePanelIds.has(chooserId) || result.layouts.some(other => placedPanelIds(other).includes(chooserId))) return applied(result);
+  const panels = { ...result.panels };
+  delete panels[chooserId];
+  return applied({ ...result, panels });
 }
