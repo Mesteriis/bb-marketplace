@@ -155,7 +155,7 @@ function ThreadRow({ thread, depth, active, muted, onNavigate, toggleControl,con
     const planAttention=plan?.state==='needs_input'||plan?.state==='error';
     const badge=thread.hasPendingInteraction?'Нужен ответ':planAttention?planLabels[plan.state]:thread.status==='error'?'Ошибка':isRunning(thread)?(thread.status==='stopping'?'Останавливается':thread.status==='starting'?'Запускается':'В работе'):thread.isUnread?'Новый ответ':plan?.state==='done'?'План готов':null;
     const badgeState=thread.hasPendingInteraction?'needs_input':planAttention?plan.state:thread.status==='error'?'error':isRunning(thread)?'running':thread.isUnread?'unread':plan?.state;
-    const openAttention=()=>{navigate.toThread(thread.hasPendingInteraction?thread.id:attentionThreadId??thread.id);onNavigate();};
+    const openAttention=()=>{const id=thread.hasPendingInteraction?thread.id:attentionThreadId??thread.id;if(!requestChertogTile(id))navigate.toThread(id);onNavigate();};
     const target = { ...thread, environment: thread.environment?.id ? { id: thread.environment.id, path: thread.environment.path } : null };
     const indent=26+Math.min(depth,3)*14;
     return <ThreadMenu thread={target}><div className={'thread-item' + (active ? ' active' : '') + (muted ? ' user-hidden' : '')} style={{'--thread-indent':`${indent}px`} as React.CSSProperties}><div className="tree-row thread-row" style={{paddingLeft:indent}}>
