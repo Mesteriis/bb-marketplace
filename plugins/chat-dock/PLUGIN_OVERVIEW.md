@@ -19,8 +19,7 @@ there. You always send the message yourself.
 
 ## Limits you should know
 
-- Works in BB Desktop only; in BB's web UI in a browser the window is not
-  glued to the page. BB menus that open over the ChatGPT area appear under it. Browser chrome
+- BB menus that open over the ChatGPT area appear under it. Browser chrome
   is assumed to be above and left of the page.
 - macOS 14+ with Xcode or the Command Line Tools: the window is compiled on
   your Mac the first time you open it.
