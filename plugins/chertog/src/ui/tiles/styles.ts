@@ -16,9 +16,29 @@ export const INNER_RADIUS = "calc(var(--radius) - 1px)";
 /** Thickness of a tile's border in pixels. */
 export const TILE_BORDER = 1;
 
-/** Put the tab strip above its actions when a row would clip the active title. */
+/** Narrower than this a tile has no padding or gap in its bar. */
+export const TIGHT_WIDTH = 96;
+
+/** Narrower than this a tile does not show the project beside the buttons, so the buttons are the only thing that can wrap. */
+export const CONTEXT_MIN_WIDTH = 200;
+
+const BAR_BUTTONS = 4;
+const BUTTON_SIZE = 20;
+const BAR_GAP = 4;
+const BAR_PADDING = 4;
+
+/**
+ * Put the tab strip above its actions when a row would clip the active title,
+ * and give the four buttons as many extra rows as their width needs, so none
+ * of them is cut off.
+ */
 export function tileHeaderHeight(width: number, populated: boolean): number {
-  return populated && width < 220 ? TILE_HEADER_HEIGHT * 2 : TILE_HEADER_HEIGHT;
+  if (!populated || width >= 220) return TILE_HEADER_HEIGHT;
+  const tight = width < TIGHT_WIDTH;
+  const inner = width - TILE_BORDER * 2 - (tight ? 0 : BAR_PADDING * 2);
+  const step = BUTTON_SIZE + (tight ? 0 : BAR_GAP);
+  const perRow = Math.max(1, Math.floor((inner + (tight ? 0 : BAR_GAP)) / step));
+  return TILE_HEADER_HEIGHT * (1 + Math.ceil(BAR_BUTTONS / perRow));
 }
 
 /** The visible body of a tile: inside its border and below its bar. The live layer places panel content there. */

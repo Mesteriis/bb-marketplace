@@ -26,6 +26,33 @@ describe("tile bar", () => {
     expect(tileHeaderHeight(220, true)).toBe(24);
     expect(tileHeaderHeight(100, false)).toBe(24);
   });
+
+  it("adds rows for the four buttons when they do not fit in one: 110 px takes two rows, 79 px three, 30 px five", () => {
+    // 4 buttons of 20 px with 4 px gaps need 92 px plus 8 px of padding and 2 px of border.
+    expect(tileHeaderHeight(110, true)).toBe(48);
+    expect(tileHeaderHeight(102, true)).toBe(48);
+    expect(tileHeaderHeight(101, true)).toBe(72);
+    // Under 96 px the bar has no padding or gap, so a row holds floor((width - 2) / 20) buttons.
+    expect(tileHeaderHeight(79, true)).toBe(72);
+    expect(tileHeaderHeight(50, true)).toBe(72);
+    expect(tileHeaderHeight(30, true)).toBe(120);
+  });
+
+  it("leaves no button outside a 110 px tile: the project label is dropped under 200 px, and every control is inside the tile", () => {
+    const calls = newCalls(createWorkspace(["a"]));
+    const { container } = render(<Harness calls={calls} size={{ width: 122, height: 300 }} />);
+    // 122 px of surface, 6 px of edge on both sides: the tile is 110 px wide.
+    const tile = section(container, "group-1");
+    expect(tile.style.width).toBe("110px");
+    expect(tile.querySelector("[data-tile-context]")).toBeNull();
+    expect(header(container, "group-1").style.height).toBe("48px");
+    expect(within(tile).getAllByRole("button").filter((b) => b.hasAttribute("data-tile-control")).map((b) => b.getAttribute("aria-label"))).toContain("Закрыть панель");
+  });
+
+  it("keeps the project label from 200 px up", () => {
+    const { container } = render(<Harness calls={newCalls(createWorkspace(["a"]))} size={{ width: 212, height: 300 }} />);
+    expect(section(container, "group-1").querySelector("[data-tile-context]")?.textContent).toBe("thr_a · bb-main");
+  });
 });
 
 describe("tile geometry", () => {

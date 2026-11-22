@@ -6,7 +6,7 @@ import type { GroupNode, Rect } from "../../core/layout/index.ts";
 import { CloseIcon, MaximizeIcon, PlusIcon, RestoreIcon } from "./icons.tsx";
 import { labelOf, type PanelLabel, type TileSurfaceText } from "./labels.ts";
 import { StatusDot } from "./status-dot.tsx";
-import { CONTROL_CLASS, INNER_RADIUS, rectStyle, tileHeaderHeight, TILE_HEADER_HEIGHT } from "./styles.ts";
+import { CONTEXT_MIN_WIDTH, CONTROL_CLASS, INNER_RADIUS, rectStyle, tileHeaderHeight, TIGHT_WIDTH, TILE_HEADER_HEIGHT } from "./styles.ts";
 import { TileMenu } from "./tile-menu.tsx";
 import { tileMenuItems } from "./tile-menu-items.ts";
 
@@ -50,7 +50,7 @@ export function Tile(props: TileProps) {
   const { group, panels, text, focused, maximized, switcher, dragging } = props;
   const empty = group.activeTab === null;
   const headerHeight = tileHeaderHeight(props.rect.width, !empty);
-  const tight = props.rect.width < 96;
+  const tight = props.rect.width < TIGHT_WIDTH;
   const narrow = headerHeight > TILE_HEADER_HEIGHT;
   const active = group.activeTab === null ? undefined : labelOf(panels, group.activeTab);
   const titleOf = (member: GroupNode): string => (member.activeTab === null ? text.emptyTile : labelOf(panels, member.activeTab).title);
@@ -162,7 +162,7 @@ export function Tile(props: TileProps) {
             })}
           </div>
         )}
-        {active?.context !== undefined && (
+        {active?.context !== undefined && (!narrow || props.rect.width >= CONTEXT_MIN_WIDTH) && (
           <span data-tile-context title={active.context} className="min-w-0 max-w-[40%] shrink truncate px-1 text-muted-foreground">
             {active.context}
           </span>
