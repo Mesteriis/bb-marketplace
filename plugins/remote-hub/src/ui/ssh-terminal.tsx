@@ -28,6 +28,8 @@ export interface TerminalApi {
 export interface SshTerminalProps {
   wsUrl: string;
   token: string;
+  canInput?: () => boolean;
+  onLive?: () => void;
   onStateChange?: (state: SshTerminalState, exit?: SshExitInfo) => void;
   /** Prompts of OpenSSH's askpass and what happened to a saved secret. */
   onAskpass?: (event: SshAskpassEvent) => void;
@@ -111,7 +113,7 @@ export function SshTerminal(props: SshTerminalProps) {
       // This view is being looked at: tell the service, so an agent may type into the session.
       stopBeat = startWatchBeat(sendControl, container);
       terminal.onData((data) => {
-        if (propsRef.current.inputEnabled === false) {
+        if (propsRef.current.inputEnabled === false || propsRef.current.canInput?.() === false) {
           propsRef.current.onInputRefused?.();
           return;
         }
@@ -137,6 +139,7 @@ export function SshTerminal(props: SshTerminalProps) {
           live = false;
         } else if (msg.type === "live") {
           live = true;
+          propsRef.current.onLive?.();
         } else if (msg.type === "closed") {
           props.onStateChange?.("closed", {
             exitCode: msg.exitCode ?? null,

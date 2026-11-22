@@ -29,9 +29,11 @@ function setup(over: { visible?: boolean; focused?: boolean; observer?: boolean 
   const env: WatchEnv = { document: doc, window, ...(over.observer === false ? {} : { IntersectionObserver: FakeObserver as unknown as typeof IntersectionObserver }) };
   const sent: boolean[] = [];
   const target = document.createElement("div");
+  document.body.append(target);
   const stop = startWatchBeat((m) => sent.push(m.visible), target, env);
   return {
     sent,
+    target,
     stop,
     see: (r: number) => FakeObserver.last!.see(r),
     setVisible: (v: boolean) => {
@@ -79,6 +81,20 @@ describe("startWatchBeat: the view tells the service it is on screen in the focu
     t.setFocused(true);
     expect(t.sent).toEqual([false, true, false, true]);
     t.stop();
+  });
+
+  it("stops counting an inert ancestor even while the observer still reports full intersection", () => {
+    vi.useFakeTimers();
+    const t = setup();
+    const panel = document.createElement("div");
+    document.body.append(panel);
+    panel.append(t.target);
+    t.see(1);
+    panel.setAttribute("inert", "");
+    vi.advanceTimersByTime(WATCH_BEAT_MS);
+    expect(t.sent.at(-1)).toBe(false);
+    t.stop();
+    panel.remove();
   });
 
   it("reports every interval and stops when the view goes away", () => {

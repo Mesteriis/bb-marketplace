@@ -15,8 +15,7 @@ export class VncChannel {
   }
   onclose: ((event: { code: number; reason: string; wasClean: boolean }) => void) | null = null;
   onerror: ((event: unknown) => void) | null = null;
-  private openHandler: (() => void) | null = null;
-  private openAnnounced = false;
+  onopen: (() => void) | null = null;
   private handler: ((event: VncChannelMessage) => void) | null = null;
   private state: VncChannelState = "connecting";
   /** Bytes that arrived before noVNC set `onmessage`; handed over in order as soon as it does. */
@@ -39,16 +38,6 @@ export class VncChannel {
     },
   ) {}
 
-  get onopen(): (() => void) | null {
-    return this.openHandler;
-  }
-
-  /** noVNC assigns this when it attaches, which may be after the socket opened: it is told then, once. */
-  set onopen(handler: (() => void) | null) {
-    this.openHandler = handler;
-    this.announceOpen();
-  }
-
   get onmessage(): ((event: VncChannelMessage) => void) | null {
     return this.handler;
   }
@@ -56,7 +45,9 @@ export class VncChannel {
   /** noVNC assigns this after the object was handed over: whatever waited is delivered at that moment, in order. */
   set onmessage(handler: ((event: VncChannelMessage) => void) | null) {
     this.handler = handler;
-    this.flush();
+    // WebSock installs onmessage before RFB inspects readyState and starts its handshake.
+    // A late viewer of an open socket handles open itself. Deliver the queued greeting after attach returns.
+    if (handler && this.opened) queueMicrotask(() => this.flush());
   }
 
   get readyState(): VncChannelState {
@@ -83,7 +74,7 @@ export class VncChannel {
     if (this.state !== "connecting") return;
     this.state = "open";
     this.opened = true;
-    this.announceOpen();
+    this.onopen?.();
     this.flush();
   }
 
@@ -109,12 +100,6 @@ export class VncChannel {
     this.flush();
     this.state = "closed";
     this.onclose?.({ code, reason, wasClean: this.closeRequested || code === 1000 });
-  }
-
-  private announceOpen(): void {
-    if (!this.opened || this.openAnnounced || this.openHandler === null) return;
-    this.openAnnounced = true;
-    this.openHandler();
   }
 
   private flush(): void {

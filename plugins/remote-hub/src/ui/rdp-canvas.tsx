@@ -42,6 +42,8 @@ export interface RdpCanvasProps {
   token: string;
   fit: FitMode;
   label: string;
+  canInput?: () => boolean;
+  onFullFrame?: () => void;
   onEvent: (event: RdpCanvasEvent) => void;
   handleRef?: Ref<RdpCanvasHandle>;
 }
@@ -69,6 +71,10 @@ export function RdpCanvas(props: RdpCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const fitRef = useRef<FitMode>(props.fit);
   fitRef.current = props.fit;
+  const inputGuard = useRef(props.canInput);
+  inputGuard.current = props.canInput;
+  const fullFrameRef = useRef(props.onFullFrame);
+  fullFrameRef.current = props.onFullFrame;
   const onEventRef = useRef(props.onEvent);
   onEventRef.current = props.onEvent;
   const [pointer, setPointer] = useState<{ left: number; top: number; click: string | null; at: number } | null>(null);
@@ -124,6 +130,7 @@ export function RdpCanvas(props: RdpCanvasProps) {
     const flush = (): void => {
       frameRequest = null;
       if (queue.length === 0) return;
+      if (inputGuard.current?.() === false) { queue = []; return; }
       const batch = queue.slice(0, 256);
       queue = queue.slice(256);
       sendJson({ type: "input", events: batch });
@@ -142,7 +149,7 @@ export function RdpCanvas(props: RdpCanvasProps) {
     /** Queue events; consecutive mouse moves collapse to the latest. Input is
      *  refused until the desktop is ready. */
     const enqueue = (events: RdpViewInputEvent[]): void => {
-      if (!ready || socket.readyState !== WebSocket.OPEN) return;
+      if (!ready || socket.readyState !== WebSocket.OPEN || inputGuard.current?.() === false) return;
       for (const event of events) {
         const last = queue[queue.length - 1];
         if (event.kind === "mouse_move" && last !== undefined && last.kind === "mouse_move") queue[queue.length - 1] = event;
@@ -178,6 +185,7 @@ export function RdpCanvas(props: RdpCanvasProps) {
       }
     };
 
+    let fullRows = 0;
     const draw = (payload: ArrayBuffer): void => {
       const chunk = parseUpdateChunk(new Uint8Array(payload));
       if (chunk === null || context === null) return;
@@ -196,10 +204,13 @@ export function RdpCanvas(props: RdpCanvasProps) {
       if (chunk.frameId !== bandsFrame) {
         bandsFrame = chunk.frameId;
         bandsDrawn = 0;
+        fullRows = 0;
       }
+      fullRows = chunk.x === 0 && chunk.w === chunk.fbWidth && chunk.y === fullRows ? fullRows + chunk.h : -1;
       bandsDrawn += 1;
       if (bandsDrawn >= chunk.chunks && chunk.frameId !== lastAcked) {
         lastAcked = chunk.frameId;
+        if (fullRows === chunk.fbHeight) fullFrameRef.current?.();
         sendJson({ type: "ack", frameId: chunk.frameId });
       }
     };
@@ -388,7 +399,7 @@ export function RdpCanvas(props: RdpCanvasProps) {
       let i = 0;
       const step = (): void => {
         pasteTimer = null;
-        if (disposed || i >= batches.length) return;
+        if (disposed || i >= batches.length || inputGuard.current?.() === false) return;
         enqueue(batches[i++] as RdpViewInputEvent[]);
         flushNow();
         if (i < batches.length) pasteTimer = setTimeout(step, PASTE_BATCH_MS);

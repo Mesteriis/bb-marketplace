@@ -1,3 +1,4 @@
+import { canAttachLive, type LiveKind } from "../../core/live-session-kind.ts";
 // The Remote Hub backend service: owns the cached HelperProcess, restarts it
 // after a crash without replaying any input, and exposes the operations the
 // RPC surface wraps. Host-free of the BB SDK (only the adapter), so it is
@@ -176,7 +177,7 @@ export interface RemoteHubService {
   knownHosts: KnownHostsOverlay;
   sessionList(): SessionInfo[];
   sessionClose(handle: SessionHandle): Promise<{ exitCode: number | null; signal: number | null; reason: string }>;
-  sessionAttach(handle: SessionHandle): string;
+  sessionAttach(handle: SessionHandle, liveKind?: LiveKind): string;
   consumeAttachToken(token: string): { sessionId: number; generation: string } | null;
   sessionScrollback(handle: SessionHandle): Promise<Uint8Array>;
   /** Terminal output of a session from a read position (null = the newest bytes). Null when the helper is not running. */
@@ -1273,8 +1274,13 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
       return Array.from(sessions.values());
     },
     sessionClose: (handle) => closeSession(handle),
-    sessionAttach(handle) {
+    sessionAttach(handle, liveKind) {
       requireGeneration(handle);
+      if (liveKind !== undefined) {
+        const current = sessions.get(keyOf(handle));
+        if (!canAttachLive(current, liveKind))
+          throw new HelperRuntimeError("session_not_found", "live session is unavailable");
+      }
       return attachTokens.issue(handle.sessionId, handle.generation);
     },
     consumeAttachToken(token) {

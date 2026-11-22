@@ -27,10 +27,11 @@ export type VncViewState = "connecting" | "authenticating" | "waiting_frame" | "
 export interface VncViewProps {
   wsUrl: string;
   token: string;
+  canInput?: () => boolean;
   onViewState?: (state: VncViewState) => void;
   onConsole?: (event: { state: PveConsoleInfo["state"]; reason: PveConsoleInfo["reason"] }) => void;
   /** The console ended or the view was refused: a code and fixed text. */
-  onEnded?: (info: { code: string; text: string }) => void;
+  onEnded?: (info: { code: string; text: string }, confirmed?: boolean) => void;
   onControl?: (message: ControlMessage) => void;
   onAgent?: (event: FeedEvent) => void;
   /** Something the owner should know that is not an error (a paste that was cut short). */
@@ -47,9 +48,13 @@ export const PASTE_CUT_TEXT = `Вставлены только первые ${MA
 
 export function VncView(props: VncViewProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const viewer = useRef<RfbType | null>(null);
   const propsRef = useRef(props);
   propsRef.current = props;
 
+  useEffect(() => {
+    if (viewer.current && props.canInput) viewer.current.viewOnly = !props.canInput();
+  });
   useEffect(() => {
     const container = containerRef.current;
     if (container === null) return;
@@ -60,10 +65,10 @@ export function VncView(props: VncViewProps) {
     let wantsCredentials = false;
     // Said once: the console's own end (a `closed` or `error` message) is the specific reason; a bare socket close is only the fallback.
     let endReported = false;
-    const report = (info: { code: string; text: string }): void => {
+    const report = (info: { code: string; text: string }, confirmed = false): void => {
       if (endReported) return;
       endReported = true;
-      propsRef.current.onEnded?.(info);
+      propsRef.current.onEnded?.(info, confirmed);
     };
     const tracker = new ModifierTracker();
 
@@ -138,7 +143,7 @@ export function VncView(props: VncViewProps) {
       const step = (): void => {
         pasteTimer = null;
         const current = rfb;
-        if (disposed || current === null) return;
+        if (disposed || current === null || propsRef.current.canInput?.() === false) return;
         // A few keys per tick: fast enough for a command line, slow enough for a console that reads its keyboard one key at a time.
         for (let n = 0; n < PASTE_KEYS_PER_TICK && i < keys.length; n++, i++) {
           const key = keys[i] as PasteKey;
@@ -198,6 +203,8 @@ export function VncView(props: VncViewProps) {
       .then((RFB) => {
         if (disposed) return;
         rfb = new RFB(container, channel, { shared: true });
+        viewer.current = rfb;
+        if (propsRef.current.canInput) rfb.viewOnly = !propsRef.current.canInput();
         // Scale the remote screen to the pane; the guest's own resolution is never changed from here.
         rfb.scaleViewport = true;
         rfb.resizeSession = false;
@@ -212,7 +219,7 @@ export function VncView(props: VncViewProps) {
         rfb.addEventListener("connect", () => {
           forgetPassword(); // the security handshake is over
           say("ready");
-          rfb?.focus({ preventScroll: true });
+          if (propsRef.current.canInput?.() !== false) rfb?.focus({ preventScroll: true });
         });
         rfb.addEventListener("securityfailure", () => {
           forgetPassword();
@@ -257,7 +264,7 @@ export function VncView(props: VncViewProps) {
         propsRef.current.onConsole?.({ state: msg.state, reason: (msg.reason as PveConsoleInfo["reason"] | undefined) ?? null });
       } else if (msg.type === "closed") {
         forgetPassword();
-        report({ code: typeof msg.reason === "string" ? msg.reason : (msg.code ?? "closed"), text: msg.text ?? "Консоль завершилась." });
+        report({ code: typeof msg.reason === "string" ? msg.reason : (msg.code ?? "closed"), text: msg.text ?? "Консоль завершилась." }, true);
       } else if (msg.type === "error") {
         report({ code: msg.code ?? "error", text: msg.text ?? "Не удалось показать консоль." });
       } else if (msg.type === "control" && (msg.owner === "human" || msg.owner === "agent")) {
@@ -283,6 +290,7 @@ export function VncView(props: VncViewProps) {
 
     return () => {
       disposed = true;
+      viewer.current = null;
       forgetPassword();
       if (stopBeat !== null) stopBeat();
       container.removeEventListener("keydown", onKeyDown, true);

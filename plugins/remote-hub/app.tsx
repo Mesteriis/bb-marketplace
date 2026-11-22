@@ -4,6 +4,8 @@
 // @get-bb/plugin-sdk/app are provided by the BB app at load time, so this
 // file must be loaded by BB, not imported directly.
 import "./app.css";
+import { RemoteEmbedOverlay } from "./src/adapters/bb/embed-overlay.tsx";
+import { DocumentRefs, type RemoteEmbedApi } from "./src/adapters/bb/embed-owner.ts";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ThreadTitle, definePluginApp, experimental_useAppPanel, useBbContext, useBbNavigate, useRealtime, useRpc, useSidebarSplitLayout } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server.ts";
@@ -34,15 +36,34 @@ function useLiveApi(): LiveSessionApi {
   return useMemo<LiveSessionApi>(
     () => ({
       find: async (h) => {
-        const all = (await rpc.call("session_list")) as Array<{ generation: string; sessionId: number; kind: "echo" | "ssh" | "rdp"; state: "connecting" | "running" | "closed" }>;
+        const all = await rpc.call("session_list");
         return all.find((x) => x.generation === h.generation && x.sessionId === h.sessionId) ?? null;
       },
-      attach: async (h) => ({ token: ((await rpc.call("session_attach", { generation: h.generation, sessionId: h.sessionId })) as { token: string }).token, wsUrl: attachUrl() }),
+      attach: async (h, liveKind) => {
+        const { token } = await rpc.call("session_attach", { generation: h.generation, sessionId: h.sessionId, ...(liveKind && { liveKind }) });
+        return { token, wsUrl: attachUrl() };
+      },
       takeover: (h) => rpc.call("agent_control_takeover", { generation: h.generation, sessionId: h.sessionId }),
       openRemoteHub: (h) => navigate.toPluginPanel(SESSION_PAGE, { subPath: `${h.generation}.${h.sessionId}` }),
     }),
     [rpc, navigate],
   );
+}
+
+// A reload deliberately loses the private mapping from layout UUIDs to live handles.
+const embedRefs = new DocumentRefs();
+function RemoteEmbedSlot() {
+  const live = useLiveApi();
+  const rpc = useRpc<typeof rpcContract>();
+  const current = useRef({ live, rpc });
+  current.current = { live, rpc };
+  const api = useMemo<RemoteEmbedApi>(() => ({
+    list: () => current.current.rpc.call("session_list"),
+    attach: (handle, kind) => current.current.live.attach(handle, kind),
+    close: h => current.current.rpc.call("session_close", h),
+    takeover: h => current.current.live.takeover(h),
+  }), []);
+  return <WithAgentContext><RemoteEmbedOverlay api={api} refs={embedRefs} /></WithAgentContext>;
 }
 
 /** Opening a session beside its agent's thread: the live view in the main pane, the thread in a split next to it. */
@@ -273,6 +294,7 @@ export default definePluginApp((app) => {
   });
   app.slots.messageDirective({ id: "remote-session", component: RemoteSessionDirective });
   app.slots.experimental_appOverlay({ id: "remote-hub-agent-banner", component: AgentBannerOverlay });
+  app.slots.experimental_appOverlay({ id: "remote-hub-embed", component: RemoteEmbedSlot });
   app.slots.experimental_tab({
     id: LIVE_TAB_ID,
     title: "Remote Hub",

@@ -1189,3 +1189,18 @@
 .rh-session-status[data-tone="agent"] {
   color: var(--rh-agent);
 }
+
+.rh-embed {
+  height: 100%;
+  min-width: 0;
+  overflow: auto;
+  color: var(--ink);
+}
+.rh-embed [role="alertdialog"], .rh-embed-picker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .5rem;
+  padding: .5rem;
+}
+.rh-embed-picker h2, .rh-embed [role="alertdialog"] p { width: 100%; }
