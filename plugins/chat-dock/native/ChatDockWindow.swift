@@ -117,18 +117,38 @@ func bounds(of info: [String: Any]) -> CGRect? {
 
 /// The ordinary window of another app whose frame best matches what the page
 /// reported about its own window.
-/// Only a window of `ownerPID`, the app in front: the page reports while the
-/// user looks at it, and a placement sent from elsewhere cannot put ChatGPT
-/// over an app the user is not using.
+/// The only app whose windows may carry ChatGPT: BB Desktop. A placement
+/// sent through the plugin's RPC cannot put ChatGPT over another app.
+let ownerBundle = "dev.bb.desktop"
+#if CHAT_DOCK_TEST
+/// Test builds only: one more app the stand lets stand in for BB Desktop.
+var testOwnerBundle: String?
+#endif
+
+func isOwnerApp(_ pid: pid_t) -> Bool {
+  guard let id = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier else { return false }
+  #if CHAT_DOCK_TEST
+  if let testOwnerBundle, id == testOwnerBundle { return true }
+  #endif
+  return id == ownerBundle || id.hasPrefix(ownerBundle + ".")
+}
+
+/// How far a window's frame is from what the page reported about its window.
+func mismatch(_ b: CGRect, _ a: Attachment) -> Double {
+  abs(b.minX - a.screen.x) + abs(b.minY - a.screen.y) + abs(b.width - a.outer.width) + abs(b.height - a.outer.height)
+}
+
+/// A window of BB Desktop that is in front (`ownerPID`): the page reports
+/// while the user looks at it.
 func findTarget(for a: Attachment, excluding own: Int, ownerPID: pid_t?) -> TargetWindow? {
-  guard let ownerPID, ownerPID != getpid() else { return nil }
+  guard let ownerPID, ownerPID != getpid(), isOwnerApp(ownerPID) else { return nil }
   var best: (TargetWindow, Double)?
   for info in onScreenWindows() {
     guard (info[kCGWindowLayer as String] as? Int) == 0,
           let number = info[kCGWindowNumber as String] as? CGWindowID, Int(number) != own,
           (info[kCGWindowOwnerPID as String] as? pid_t) == ownerPID,
           let b = bounds(of: info) else { continue }
-    let score = abs(b.minX - a.screen.x) + abs(b.minY - a.screen.y) + abs(b.width - a.outer.width) + abs(b.height - a.outer.height)
+    let score = mismatch(b, a)
     if score < 120, best == nil || score < best!.1 { best = (TargetWindow(number: number, bounds: b), score) }
   }
   return best?.0
@@ -310,21 +330,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
 
   func attach(_ next: Attachment) {
     attachment = next
+    // The window found earlier stays the target while the page still matches
+    // it, even when ChatGPT itself is in front because the user typed there.
+    if next.visible, let t = target, let current = currentBounds(of: t.number), mismatch(current, next) < 120,
+       adopt(TargetWindow(number: t.number, bounds: current), for: next) {
+      place()
+      return
+    }
     target = nil
     locate()
     place()
   }
 
-  /// Finds the page's window for the current placement, if its app is in front.
+  func currentBounds(of number: CGWindowID) -> CGRect? {
+    onScreenWindows().first { ($0[kCGWindowNumber as String] as? CGWindowID) == number }.flatMap { bounds(of: $0) }
+  }
+
+  /// Finds the page's window for the current placement, if BB is in front.
   func locate() {
-    guard let next = attachment, next.visible else { return }
-    if let found = findTarget(for: next, excluding: window.windowNumber, ownerPID: frontmostPID()) {
-      target = found
-      let backing = NSScreen.screens.first(where: { screenFrameCG($0).intersects(found.bounds) })?.backingScaleFactor ?? 2
-      zoom = next.pixelRatio / Double(backing)
-      chrome = CGPoint(x: max(0, found.bounds.width - next.inner.width * zoom),
-                       y: max(0, found.bounds.height - next.inner.height * zoom))
+    guard let next = attachment, next.visible,
+          let found = findTarget(for: next, excluding: window.windowNumber, ownerPID: frontmostPID()) else { return }
+    _ = adopt(found, for: next)
+  }
+
+  /// Takes `found` as the target if the page's viewport, at the reported
+  /// scale, fits inside that window; a scale that does not is refused.
+  func adopt(_ found: TargetWindow, for next: Attachment) -> Bool {
+    let backing = NSScreen.screens.first(where: { screenFrameCG($0).intersects(found.bounds) })?.backingScaleFactor ?? 2
+    let scale = next.pixelRatio / Double(backing)
+    guard next.inner.width * scale <= found.bounds.width + 2, next.inner.height * scale <= found.bounds.height + 2 else {
+      target = nil
+      return false
     }
+    target = found
+    zoom = scale
+    chrome = CGPoint(x: max(0, found.bounds.width - next.inner.width * zoom),
+                     y: max(0, found.bounds.height - next.inner.height * zoom))
+    return true
   }
 
   /// A screen's frame in window-server coordinates (top-left origin).
@@ -357,8 +399,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
       if window.isVisible { window.orderOut(nil) }
       return
     }
-    let cg = overlayRect(target: current, chrome: chrome, zoom: zoom, rect: a.rect)
-    guard cg.width >= 40, cg.height >= 40 else {
+    // Never past the page's window, whatever was reported.
+    let cg = overlayRect(target: current, chrome: chrome, zoom: zoom, rect: a.rect).intersection(current)
+    guard !cg.isNull, cg.width >= 40, cg.height >= 40 else {
       if window.isVisible { window.orderOut(nil) }
       return
     }
@@ -455,6 +498,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     case "test-front":
       // Test builds only: which app counts as the one in front.
       testFrontPID = (command["pid"] as? NSNumber).map { pid_t($0.int32Value) }
+    case "test-owner":
+      testOwnerBundle = command["bundle"] as? String
     case "test-close-key":
       // Test builds only: ⌘W as the menu receives it.
       if let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0,
