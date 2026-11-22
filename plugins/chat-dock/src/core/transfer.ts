@@ -164,13 +164,28 @@ export function createTransfer(options: TransferOptions): TransferSession {
       nonce = candidate;
       pending = wanted.target;
       set({ kind: "binding" });
+      const asked = page.evaluate(bindExpression({ nonce: candidate }));
+      // A page may run the choice after its withdrawal. When such a late
+      // answer arrives for a choice that is no longer current, the mark it
+      // left is withdrawn again.
+      const withdrawIfStale = () => {
+        asked.then(
+          (late) => {
+            if (nonce !== candidate && parseBindReport(late) !== null) {
+              page.evaluate(revokeExpression({ nonce: candidate })).catch(() => {});
+            }
+          },
+          () => {},
+        );
+      };
       let answer: unknown;
       try {
-        answer = await withTimeout(page.evaluate(bindExpression({ nonce: candidate })), timeoutMs);
+        answer = await withTimeout(asked, timeoutMs);
       } catch {
         answer = TIMED_OUT;
       }
-      if (disposed || attempt !== epoch) return;
+      if (disposed || attempt !== epoch) return withdrawIfStale();
+      if (answer === TIMED_OUT) withdrawIfStale();
       const report = answer === TIMED_OUT ? null : parseBindReport(answer);
       if (report === null) return refuse("page-unavailable");
       if (!report.top) return refuse("not-top");

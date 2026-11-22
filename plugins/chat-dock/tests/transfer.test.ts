@@ -424,8 +424,13 @@ describe("re-review findings", () => {
     release();
     await binding;
     await queue;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    await queue;
 
-    expect(evaluations).toHaveLength(2);
+    // The choice, its withdrawal on dispose, and a second, harmless withdrawal
+    // when the stale choice answers. No write is ever sent.
+    const kinds = evaluations.map((e) => (e.includes("bindInPage") ? "bind" : e.includes("revokeInPage") ? "revoke" : "write"));
+    expect(kinds).toEqual(["bind", "revoke", "revoke"]);
     expect((globalThis as unknown as { __bbChatDock?: unknown }).__bbChatDock).toBeUndefined();
   });
 
@@ -470,5 +475,31 @@ describe("re-review findings", () => {
 
     expect(session.getState().kind).toBe("unknown");
     expect(fixture.draft(PATH_A)).toBe("draft" + MARKER);
+  });
+});
+
+describe("a page that runs the choice after its withdrawal", () => {
+  it("withdraws the late mark again when the late answer arrives", async () => {
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => (release = resolve));
+    const order: string[] = [];
+    // Out of order: the withdrawal runs at once, the choice only later.
+    const page: PagePort = {
+      async evaluate(expression) {
+        const kind = expression.includes("bindInPage") ? "bind" : expression.includes("revokeInPage") ? "revoke" : "write";
+        if (kind === "bind") await held;
+        order.push(kind);
+        return evaluateInDocument(expression);
+      },
+    };
+    const { session } = rig("textarea", { [PATH_A]: "draft" }, page);
+
+    await session.bind(URL_A);
+    expect(session.getState()).toEqual({ kind: "unbound", refusal: "page-unavailable" });
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(order).toEqual(["revoke", "bind", "revoke"]);
+    expect((globalThis as unknown as { __bbChatDock?: unknown }).__bbChatDock).toBeUndefined();
   });
 });
