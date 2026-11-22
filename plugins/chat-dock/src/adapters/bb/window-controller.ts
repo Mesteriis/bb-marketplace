@@ -3,7 +3,7 @@
 // that carries no text and no conversation.
 import { randomUUID } from "node:crypto";
 import type { WindowStatusWire } from "../../../contract.ts";
-import { HIDDEN_ATTACHMENT, type Attachment } from "../../core/attachment.ts";
+import { acceptAttachment, HIDDEN_ATTACHMENT, type Attachment } from "../../core/attachment.ts";
 import { createWindowSession, type ProposalSource, type ProposeResult, type WindowSession } from "../../core/window-session.ts";
 import type { BuildResult, LaunchOptions, RunningWindow } from "./native-window.ts";
 
@@ -168,8 +168,10 @@ export function createWindowController(deps: ControllerDeps): WindowController {
     },
 
     attach(view) {
-      placement = view;
-      running?.attach(view);
+      const next = acceptAttachment(placement, view);
+      if (next === null) return;
+      placement = next;
+      running?.attach(next);
     },
 
     status,

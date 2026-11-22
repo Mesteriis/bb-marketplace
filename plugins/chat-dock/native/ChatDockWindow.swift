@@ -87,6 +87,11 @@ struct Attachment {
       self.rect = .zero; self.inner = .zero; self.outer = .zero; self.screen = .zero; self.pixelRatio = 1
       return
     }
+    // The area must lie inside the page's viewport and the viewport inside
+    // the page's window: the window never covers more than the page.
+    if visible && !(x >= 0 && y >= 0 && x + w <= iw + 1 && y + h <= ih + 1 && iw <= ow + 1 && ih <= oh + 1) {
+      return nil
+    }
     rect = CGRect(x: x, y: y, width: w, height: h)
     inner = CGSize(width: iw, height: ih)
     outer = CGSize(width: ow, height: oh)
@@ -112,12 +117,16 @@ func bounds(of info: [String: Any]) -> CGRect? {
 
 /// The ordinary window of another app whose frame best matches what the page
 /// reported about its own window.
-func findTarget(for a: Attachment, excluding own: Int) -> TargetWindow? {
+/// Only a window of `ownerPID`, the app in front: the page reports while the
+/// user looks at it, and a placement sent from elsewhere cannot put ChatGPT
+/// over an app the user is not using.
+func findTarget(for a: Attachment, excluding own: Int, ownerPID: pid_t?) -> TargetWindow? {
+  guard let ownerPID, ownerPID != getpid() else { return nil }
   var best: (TargetWindow, Double)?
   for info in onScreenWindows() {
     guard (info[kCGWindowLayer as String] as? Int) == 0,
           let number = info[kCGWindowNumber as String] as? CGWindowID, Int(number) != own,
-          (info[kCGWindowOwnerPID as String] as? pid_t) != getpid(),
+          (info[kCGWindowOwnerPID as String] as? pid_t) == ownerPID,
           let b = bounds(of: info) else { continue }
     let score = abs(b.minX - a.screen.x) + abs(b.minY - a.screen.y) + abs(b.width - a.outer.width) + abs(b.height - a.outer.height)
     if score < 120, best == nil || score < best!.1 { best = (TargetWindow(number: number, bounds: b), score) }
@@ -288,24 +297,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
   var chrome = CGPoint.zero
   var zoom = 1.0
   var tracker: Timer?
+  #if CHAT_DOCK_TEST
+  var testFrontPID: pid_t?
+  #endif
+
+  func frontmostPID() -> pid_t? {
+    #if CHAT_DOCK_TEST
+    if let testFrontPID { return testFrontPID }
+    #endif
+    return NSWorkspace.shared.frontmostApplication?.processIdentifier
+  }
 
   func attach(_ next: Attachment) {
     attachment = next
-    guard next.visible else {
-      target = nil
-      place()
-      return
-    }
-    if let found = findTarget(for: next, excluding: window.windowNumber) {
+    target = nil
+    locate()
+    place()
+  }
+
+  /// Finds the page's window for the current placement, if its app is in front.
+  func locate() {
+    guard let next = attachment, next.visible else { return }
+    if let found = findTarget(for: next, excluding: window.windowNumber, ownerPID: frontmostPID()) {
       target = found
       let backing = NSScreen.screens.first(where: { screenFrameCG($0).intersects(found.bounds) })?.backingScaleFactor ?? 2
       zoom = next.pixelRatio / Double(backing)
       chrome = CGPoint(x: max(0, found.bounds.width - next.inner.width * zoom),
                        y: max(0, found.bounds.height - next.inner.height * zoom))
-    } else {
-      target = nil
     }
-    place()
   }
 
   /// A screen's frame in window-server coordinates (top-left origin).
@@ -326,6 +345,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     #if CHAT_DOCK_TEST
     if attachment == nil, ProcessInfo.processInfo.environment["CHAT_DOCK_TEST_OFFSCREEN"] == "1" { return }
     #endif
+    if let a = attachment, a.visible, target == nil { locate() }
     guard let a = attachment, a.visible, let t = target else {
       if window.isVisible { window.orderOut(nil) }
       return
@@ -359,7 +379,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     let appItem = NSMenuItem()
     main.addItem(appItem)
     let appMenu = NSMenu()
-    appMenu.addItem(withTitle: "Закрыть окно", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+    // A borderless window has no close button for performClose to press.
+    let close = appMenu.addItem(withTitle: "Закрыть окно", action: #selector(closeWindow(_:)), keyEquivalent: "w")
+    close.target = self
     appMenu.addItem(withTitle: "Выйти", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
     appItem.submenu = appMenu
     let editItem = NSMenuItem()
@@ -429,6 +451,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         } else {
           self?.channel.send(["type": "test-result", "id": id, "value": NSNull()])
         }
+      }
+    case "test-front":
+      // Test builds only: which app counts as the one in front.
+      testFrontPID = (command["pid"] as? NSNumber).map { pid_t($0.int32Value) }
+    case "test-close-key":
+      // Test builds only: ⌘W as the menu receives it.
+      if let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0,
+                                      windowNumber: window.windowNumber, context: nil, characters: "w",
+                                      charactersIgnoringModifiers: "w", isARepeat: false, keyCode: 13) {
+        if !(window.performKeyEquivalent(with: event)) { _ = NSApp.mainMenu?.performKeyEquivalent(with: event) }
       }
     case "test-reload":
       // A new document at the same address, as a reload of the real site gives.
@@ -508,6 +540,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
       NSWorkspace.shared.open(url)
     }
     return nil
+  }
+
+  @objc func closeWindow(_ sender: Any?) {
+    window.close()
   }
 
   func windowWillClose(_ notification: Notification) {

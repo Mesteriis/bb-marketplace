@@ -54,13 +54,25 @@ describe("the window controller", () => {
 
   it("keeps the page's placement for a window that starts later, and forwards later ones", async () => {
     const { controller, windows, retain } = rig(async () => ({ ok: true, executable: "/x" }));
-    const placed = { visible: true, x: 0, y: 40, width: 800, height: 600, innerWidth: 1200, innerHeight: 800, outerWidth: 1200, outerHeight: 800, screenX: 10, screenY: 20, pixelRatio: 2 };
+    const placed = { owner: "a", visible: true, x: 0, y: 40, width: 800, height: 600, innerWidth: 1200, innerHeight: 800, outerWidth: 1200, outerHeight: 800, screenX: 10, screenY: 20, pixelRatio: 2 };
 
     controller.attach(placed);
     await controller.open(retain);
     controller.attach({ ...placed, visible: false });
 
     expect(windows[0]!.shown).toEqual(["attach", "hide"]);
+  });
+
+  it("ignores a hide from a page that no longer owns the window, and an area outside the viewport", async () => {
+    const { controller, windows, retain } = rig(async () => ({ ok: true, executable: "/x" }));
+    const placed = { owner: "a", visible: true, x: 0, y: 40, width: 800, height: 600, innerWidth: 1200, innerHeight: 800, outerWidth: 1200, outerHeight: 800, screenX: 10, screenY: 20, pixelRatio: 2 };
+    await controller.open(retain);
+    controller.attach(placed);
+    controller.attach({ ...placed, owner: "b" });
+    controller.attach({ ...placed, owner: "a", visible: false });
+    controller.attach({ ...placed, owner: "c", x: -500, width: 3000 });
+
+    expect(windows[0]!.shown).toEqual(["hide", "attach", "attach"]);
   });
 
   it("releases the worker and reports closed when the window exits", async () => {

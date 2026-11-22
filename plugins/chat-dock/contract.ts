@@ -3,7 +3,7 @@
 // proposal waits and how the last one ended.
 import { defineRpcContract, type ExperimentalHostSignals } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import type { Attachment } from "./src/core/attachment.ts";
+import { insideViewport, MAX_OWNER_LENGTH, type Attachment } from "./src/core/attachment.ts";
 import type { ProposeOutcome, WindowStatusView } from "./src/core/window-status.ts";
 
 export const MAX_PROPOSAL_LENGTH = 100_000;
@@ -42,6 +42,7 @@ const finite = z.number().finite().min(-100_000).max(100_000);
 
 export const attachmentSchema = z
   .object({
+    owner: z.string().max(MAX_OWNER_LENGTH),
     visible: z.boolean(),
     x: finite,
     y: finite,
@@ -55,7 +56,9 @@ export const attachmentSchema = z
     screenY: finite,
     pixelRatio: z.number().finite().positive().max(16),
   })
-  .strict();
+  .strict()
+  // The window may cover only the page's own viewport.
+  .refine((a) => !a.visible || insideViewport(a), { message: "area outside the page's viewport" });
 
 const attachOutput = z.object({ ok: z.literal(true) }).strict();
 
