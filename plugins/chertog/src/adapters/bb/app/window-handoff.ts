@@ -24,7 +24,7 @@ interface State {
 }
 
 export class WindowClient {
-  private readonly credential = crypto.randomUUID();
+  private credential = crypto.randomUUID();
   private rpc: Rpc | undefined;
   private listeners = new Listeners();
   private state: State = { snapshot: null, error: null };
@@ -65,6 +65,15 @@ export class WindowClient {
     this.rpc = rpc;
     return this.sync();
   }
+  resumeFromHistory(rpc: Rpc) {
+    // The pre-navigation identity may have an outstanding leave or mutation.
+    // Start a fresh queue and require the new identity's own server snapshot.
+    this.credential = crypto.randomUUID();
+    this.approvals.clear();
+    this.pendingChanges.clear();
+    this.tail = Promise.resolve();
+    return this.start(rpc);
+  }
   stop = () => {
     this.version++;
     this.rpc = undefined;
@@ -78,6 +87,7 @@ export class WindowClient {
     void rpc?.("window_sync", { credential: this.credential, close: true }).catch(() => {});
   };
   sync = () => {
+    if (!this.rpc) return Promise.resolve();
     if (!this.pendingRead) {
       const read = this.call("window_sync", {});
       this.pendingRead = read;
@@ -93,7 +103,9 @@ export class WindowClient {
     if (pending) return pending;
     const change = this.call("window_change", { provider: "bb-thread", threadId, generation, command });
     this.pendingChanges.set(key, change);
-    void change.finally(() => this.pendingChanges.delete(key));
+    void change.finally(() => {
+      if (this.pendingChanges.get(key) === change) this.pendingChanges.delete(key);
+    });
     return change;
   }
   private call(method: Parameters<Rpc>[0], input: Record<string, unknown>) {
@@ -142,12 +154,25 @@ export function WindowOverlay({ workspace, call, children }: { workspace: Window
   const latest = useRef(call);
   latest.current = call;
   useEffect(() => {
-    void client.start((method, input) => latest.current(method, input));
+    const rpc: Rpc = (method, input) => latest.current(method, input);
+    void client.start(rpc);
+    let cached = false;
+    const hide = (event: PageTransitionEvent) => {
+      cached = event.persisted;
+      client.leave();
+    };
+    const show = (event: PageTransitionEvent) => {
+      if (!cached || !event.persisted) return;
+      cached = false;
+      void client.resumeFromHistory(rpc);
+    };
     const heartbeat = setInterval(client.sync, 5000);
-    window.addEventListener("pagehide", client.leave);
+    window.addEventListener("pagehide", hide);
+    window.addEventListener("pageshow", show);
     return () => {
       clearInterval(heartbeat);
-      window.removeEventListener("pagehide", client.leave);
+      window.removeEventListener("pagehide", hide);
+      window.removeEventListener("pageshow", show);
       client.stop();
     };
   }, [client]);
