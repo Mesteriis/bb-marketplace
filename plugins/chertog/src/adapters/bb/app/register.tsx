@@ -24,6 +24,7 @@ import { createHomeRedirectSection, openNewThreadScreen } from "../home/index.ts
 import { runForTileComposer, tileComposer } from "./addressee.ts";
 import { embeddedSources } from "./embedded-source.tsx";
 import { providerSources } from "./provider-sources.tsx";
+import { useOpenRequests } from "./open-requests.ts";
 import { LiveLayer } from "./LiveLayer.tsx";
 import { readAcceptanceFixture, readHomeRedirect } from "./settings.ts";
 import { appStrings } from "./strings.ts";
@@ -78,6 +79,7 @@ function useHostHandles(workspace: WindowWorkspace): void {
 function ChertogOverlay() {
   const workspace = useWindowWorkspace();
   useHostHandles(workspace);
+  useOpenRequests(workspace.session);
 
   const { status, threads, projects } = experimental_useSidebarThreads();
   useEffect(() => {

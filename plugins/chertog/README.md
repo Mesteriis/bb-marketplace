@@ -28,6 +28,14 @@ The package is `bb-plugin-chertog` and the plugin id BB derives from it is
 | RPC `load_workspace`, `save_workspace` | The workspace document in the plugin's key-value storage. |
 | HTTP `GET /fixtures/live-frame.html` | The controlled frame page for acceptance. |
 
+### Integrate with Chertog
+
+Any BB plugin can ask an open Chertog window to show a thread or a provider
+panel as a tile by dispatching the same-document `chertog.open.v1` event. The
+page answers in the event's `detail` before dispatch returns, and the plugin
+falls back to its own action only when `detail.accepted` is false. Format,
+sender snippet and providers: [docs/open-wire-v1.md](./docs/open-wire-v1.md).
+
 ### Why live panels live in the overlay
 
 BB unmounts a nav panel when the user leaves its route and mounts a new one on

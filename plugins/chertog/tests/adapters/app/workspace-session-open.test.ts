@@ -5,6 +5,7 @@ import { findGroupOfPanel, listGroups } from "../../../src/core/layout/index.ts"
 import type { WorkspaceDocument } from "../../../src/core/workspace/index.ts";
 import { activeLayout, blockChildren, panelIdOfRef } from "../../../src/core/workspace/index.ts";
 import { ThreadDirectory, createThreadSource, threadRef, type ThreadEntry } from "../../../src/adapters/bb/app/thread-source.ts";
+import { createFixtureSource } from "../../../src/adapters/bb/app/fixture-source.tsx";
 import { TILE_LIMIT, WorkspaceSession } from "../../../src/adapters/bb/app/workspace-session.ts";
 import { FakeWorkspaceRpc, sequentialIds } from "./support.ts";
 
@@ -26,7 +27,10 @@ function sessionOver(stored: WorkspaceDocument | null, rpc = new FakeWorkspaceRp
   const nextId = sequentialIds();
   const session = new WorkspaceSession({
     rpc,
-    sources: [createThreadSource({ directory: threads, renderChat: () => null })],
+    sources: [
+      createThreadSource({ directory: threads, renderChat: () => null }),
+      createFixtureSource({ pluginId: () => "chertog", enabled: () => true, newFrameName: () => "new" }),
+    ],
     newId: (prefix) => nextId(prefix),
     diagnostics: { failure: () => undefined },
     threads,
@@ -159,5 +163,48 @@ describe("openThread", () => {
     const ids = Object.keys(session.document()!.panels).filter((id) => session.document()!.panels[id].ref.params.threadId === "thr_x");
     expect(ids).toHaveLength(1);
     expect(listGroups(shown(session).root)).toHaveLength(2);
+  });
+});
+
+describe("openPanel", () => {
+  const frame = (name: string) => ({ provider: "fixture-frame", params: { frame: name } });
+
+  it("reports not-shown while the page is not shown", () => {
+    expect(sessionOver(document(true)).openPanel(frame("a"))).toBe("not-shown");
+  });
+
+  it("opens a registered provider ref in a new tile and focuses it on the second request", async () => {
+    const session = sessionOver(document(true));
+    await session.controller.enter();
+    expect(session.openPanel(frame("a"))).toBe("opened");
+    expect(listGroups(shown(session).root).map((tile) => tile.tabs.length)).toEqual([1, 1]);
+    expect(session.openPanel(frame("a"))).toBe("focused");
+    expect(listGroups(shown(session).root)).toHaveLength(2);
+  });
+
+  it("answers unsupported for an unknown provider or params the provider refuses, and changes nothing", async () => {
+    const session = sessionOver(document(true));
+    await session.controller.enter();
+    const before = session.document();
+    expect(session.openPanel({ provider: "no-such", params: {} })).toBe("unsupported");
+    expect(session.openPanel({ provider: "fixture-frame", params: { frame: "bad name" } })).toBe("unsupported");
+    expect(session.openPanel({ provider: "fixture-frame", params: { other: 1 } })).toBe("unsupported");
+    expect(session.document()).toBe(before);
+  });
+
+  it("refuses beyond the tile limit like a thread does", async () => {
+    const panels: Record<string, WorkspaceDocument["panels"][string]> = {};
+    for (let index = 1; index <= TILE_LIMIT; index += 1) panels["tile-" + index] = thread("thr_" + index);
+    const session = sessionOver(tiled(panels));
+    await session.controller.enter();
+    expect(session.openPanel(frame("a"))).toBe("refused");
+  });
+
+  it("puts a ref in the picker tile that accepts it", async () => {
+    const chooser = { ref: { provider: "chertog-choose", params: { kind: "bb-thread" } } };
+    const session = sessionOver(tiled({ "panel-p": thread("thr_p"), "panel-choose": chooser }));
+    await session.controller.enter();
+    expect(session.openPanel(thread("thr_x").ref)).toBe("opened");
+    expect(session.document()!.panels["panel-choose"]).toBeUndefined();
   });
 });

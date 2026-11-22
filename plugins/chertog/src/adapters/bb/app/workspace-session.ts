@@ -17,7 +17,7 @@ import {
 import { applyPreset } from "../../../core/workspace/presets.ts";
 import { replaceChoosePanel } from "../../../core/workspace/operations.ts";
 import { acceptsChoice, CHOOSE_PROVIDER } from "../../../core/panels/choose.ts";
-import { panelRefKey, PanelRegistry, type Clock, type Diagnostics, type PanelInstance, type PanelRef } from "../../../core/panels/index.ts";
+import { panelRefKey, panelRefSchema, PanelRegistry, type Clock, type Diagnostics, type PanelInstance, type PanelRef } from "../../../core/panels/index.ts";
 import {
   activeLayout,
   addPanelToGroup,
@@ -398,8 +398,23 @@ export class WorkspaceSession {
    * tile limit refuses is `"refused"` and is reported like any other refusal.
    */
   openThread(threadId: string): "opened" | "focused" | "refused" | "not-shown" {
+    return this.openRef(threadRef(threadId));
+  }
+
+  /**
+   * Shows the panel of a provider this window knows as a tile, by the same
+   * rules as a thread: focus a placed one, fill a waiting picker, else take a
+   * tile of its own. `"unsupported"` when no provider has that type or it
+   * refuses the parameters; nothing changes then.
+   */
+  openPanel(ref: PanelRef): "opened" | "focused" | "refused" | "not-shown" | "unsupported" {
+    const source = panelRefSchema.safeParse(ref).success ? this.sourceOf(ref.provider) : undefined;
+    if (source === undefined || !source.provider.paramsSchema.safeParse(ref.params).success) return "unsupported";
+    return this.openRef(ref);
+  }
+
+  private openRef(ref: PanelRef): "opened" | "focused" | "refused" | "not-shown" {
     if (this.surfaceState() === null) return "not-shown";
-    const ref = threadRef(threadId);
     let outcome: "opened" | "focused" = "opened";
     let chooser: string | undefined;
     const refusal = this.controller.change((document, live) => {
@@ -411,7 +426,7 @@ export class WorkspaceSession {
       }
       outcome = "opened";
       const panelId = existing ?? this.newId("panel");
-      const placed = this.placeThread(document, live, threadId, panelId, existing !== undefined);
+      const placed = this.placeRef(document, live, ref, panelId, existing !== undefined);
       if (!placed.ok) return placed;
       chooser = placed.chooser;
       return listGroups(activeLayout(placed.document).workspace.root).length > TILE_LIMIT ? { ok: false, reason: "invalid-layout" } : placed;
@@ -422,12 +437,11 @@ export class WorkspaceSession {
     return outcome;
   }
 
-  /** Places a thread that is not placed: in its parent's block, in the picker that waits in the focused tile, or in a tile of its own. */
-  private placeThread(
-    document: WorkspaceDocument, live: ReadonlySet<string>, threadId: string, panelId: string, known: boolean,
+  /** Places a panel that is not placed: a subthread in its parent's block, else in the picker that waits in the focused tile, or in a tile of its own. */
+  private placeRef(
+    document: WorkspaceDocument, live: ReadonlySet<string>, ref: PanelRef, panelId: string, known: boolean,
   ): WorkspaceChange & { chooser?: string } {
-    const ref = threadRef(threadId);
-    const parentPanelId = this.placedParentOf(document, threadId);
+    const parentPanelId = ref.provider === THREAD_PROVIDER ? this.placedParentOf(document, String(ref.params.threadId)) : undefined;
     if (parentPanelId !== undefined) return placeInBlock(document, parentPanelId, panelId, { ref }, this.parentOf);
     const workspace = activeLayout(document).workspace;
     const focused = findGroup(workspace.root, workspace.focusedGroupId);
