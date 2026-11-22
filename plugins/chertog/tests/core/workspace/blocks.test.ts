@@ -202,3 +202,34 @@ describe("openBeside", () => {
     expect(closed.panels).toEqual({});
   });
 });
+
+describe("choosing a panel the document already has, in a picker beside a parent", () => {
+  const RDP = { provider: "remote-rdp-live", params: { resourceRef: "6f1c2d3e-4b5a-4c6d-8e7f-0a1b2c3d4e5f" } };
+  const picker = { ref: { provider: CHOOSE_PROVIDER, params: { kind: "any" } }, parent: "p" };
+  const stored = (document: WorkspaceDocument): ParentOf => (panelId) => document.panels[panelId]?.parent;
+  /** Parents p and q placed, a picker beside p, and a hidden panel `h` with the given stored parent. */
+  function hiddenOnDocument(hiddenParent: string | undefined, extra: Record<string, WorkspacePanel> = {}, placedIds = ["p", "q", "pick"]): WorkspaceDocument {
+    return {
+      schemaVersion: 3, revision: 0,
+      panels: { p: thread("p"), q: thread("q"), pick: picker, h: hiddenParent === undefined ? { ref: RDP } : { ref: RDP, parent: hiddenParent }, ...extra },
+      layouts: [{ id: "layout-1", name: "Работа", workspace: createWorkspace(placedIds) }],
+      activeLayoutId: "layout-1",
+    };
+  }
+
+  it.each([["another parent", "q"], ["no parent", undefined]])("joins the block of the picker's parent, not the block of %s", (_name, oldParent) => {
+    const chosen = done(replaceChoosePanel(hiddenOnDocument(oldParent), "pick", "new", RDP, NO_LIVE));
+    expect(chosen.panels.h).toEqual({ ref: RDP, parent: "p" });
+    expect(placed(chosen)).toContain("h");
+    expect(blockChildren(chosen, "p", stored(chosen))).toEqual(["h"]);
+    expect(blockChildren(chosen, "q", stored(chosen))).toEqual([]);
+    const closed = done(closeBlock(chosen, "p", stored(chosen), NO_LIVE));
+    expect(placed(closed)).toEqual(["q"]);
+  });
+
+  it("is refused, with nothing changed, when the hidden panel is an ancestor of the picker's parent", () => {
+    // p's own stored parent is h: h becoming p's child would make a cycle.
+    const document = hiddenOnDocument(undefined, { p: { ...thread("p"), parent: "h" } });
+    expect(replaceChoosePanel(document, "pick", "new", RDP, NO_LIVE)).toEqual({ ok: false, reason: "invalid-panel" });
+  });
+});

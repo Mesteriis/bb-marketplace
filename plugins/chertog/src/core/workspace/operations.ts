@@ -250,6 +250,16 @@ export function addLayoutFromTemplate(document: WorkspaceDocument, layoutId: str
   return applied({ ...known, layouts: [...known.layouts, layout] });
 }
 
+/** Whether the chain of stored parents that starts at `from` (itself included) reaches `target`. */
+function leadsTo(document: WorkspaceDocument, from: string, target: string): boolean {
+  const seen = new Set<string>();
+  for (let at: string | undefined = from; at !== undefined && !seen.has(at); at = document.panels[at]?.parent) {
+    if (at === target) return true;
+    seen.add(at);
+  }
+  return false;
+}
+
 /** Show an already placed target and leave the chooser available for a different choice.
  * Otherwise put the selected reference in the chooser's place, preserving the surrounding layout.
  */
@@ -265,7 +275,14 @@ export function replaceChoosePanel(
   if (placed !== undefined) return changeActiveLayout(document, workspace => activateTab(workspace, placed));
   const targetId = panelIdOfRef(document, ref) ?? selectedId;
   const parent = document.panels[chooserId].parent;
-  const known = registerPanel(document, targetId, parent === undefined ? { ref } : { ref, parent });
+  const existing = panelIdOfRef(document, ref);
+  // A panel the document already has is not registered again, so it takes the picker's parent here, unless that makes a cycle.
+  if (existing !== undefined && parent !== undefined && leadsTo(document, parent, existing)) return refused("invalid-panel");
+  const registered = registerPanel(document, targetId, parent === undefined ? { ref } : { ref, parent });
+  if (!registered.ok) return registered;
+  const known = existing !== undefined && parent !== undefined
+    ? { ...registered, document: { ...registered.document, panels: { ...registered.document.panels, [existing]: { ...registered.document.panels[existing], parent } } } }
+    : registered;
   if (!known.ok) return known;
   const root = replaceGroup(layout.workspace.root, {
     ...group,
