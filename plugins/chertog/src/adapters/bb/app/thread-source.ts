@@ -34,6 +34,7 @@ export interface ThreadEntry {
   readonly id: string;
   readonly title: string;
   /** `null` for a thread of the personal project. */
+  readonly hostId?: string;
   readonly projectName: string | null;
   /** What the agent is doing; absent while the thread is idle. */
   readonly status?: NonNullable<PanelLabel["status"]>;

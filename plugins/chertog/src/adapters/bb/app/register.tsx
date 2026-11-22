@@ -10,6 +10,7 @@ import {
   useBbNavigate,
   useComposers,
   useRpc,
+  useSdk,
   useRealtime,
   useSettings,
   type PluginAppBuilder,
@@ -21,6 +22,7 @@ import { CHANNEL } from "../../../core/windows/wire.ts";
 import type { Diagnostics } from "../../../core/panels/index.ts";
 import { createHomeRedirectSection, openNewThreadScreen } from "../home/index.ts";
 import { runForTileComposer, tileComposer } from "./addressee.ts";
+import { providerSources } from "./provider-sources.tsx";
 import { LiveLayer } from "./LiveLayer.tsx";
 import { readAcceptanceFixture, readHomeRedirect } from "./settings.ts";
 import { appStrings } from "./strings.ts";
@@ -43,10 +45,13 @@ function randomId(): string {
 let current: WindowWorkspace | null = null;
 
 /** This window's workspace. The plugin app is loaded once per window, and so is this. */
-function windowWorkspace(): WindowWorkspace {
+function useWindowWorkspace(): WindowWorkspace {
+  const sdk = useSdk();
+  const navigate = useBbNavigate();
   current ??= createWindowWorkspace({
     // An existing thread in a bounded container; no thread is created or forked here.
     renderChat: (threadId) => <ThreadChat threadId={threadId} layout="contained" />,
+    extraSources: threads => providerSources(sdk, navigate, threads),
     randomId,
     diagnostics,
   });
@@ -70,7 +75,7 @@ function useHostHandles(workspace: WindowWorkspace): void {
 }
 
 function ChertogOverlay() {
-  const workspace = windowWorkspace();
+  const workspace = useWindowWorkspace();
   useHostHandles(workspace);
 
   const { status, threads, projects } = experimental_useSidebarThreads();
@@ -89,6 +94,7 @@ function ChertogOverlay() {
           return {
             id: thread.id,
             title: thread.displayTitle,
+            hostId: thread.host?.id,
             projectName: projectNames.get(thread.projectId) ?? null,
             ...(entryStatus === undefined ? {} : { status: entryStatus }),
           };
@@ -125,7 +131,7 @@ function ComposerWatch({ workspace }: { workspace: WindowWorkspace }) {
 }
 
 function ChertogNavPanel() {
-  const workspace = windowWorkspace();
+  const workspace = useWindowWorkspace();
   useHostHandles(workspace);
   const navigate = useBbNavigate();
   return (
@@ -169,14 +175,16 @@ export function registerChertogApp(app: PluginAppBuilder): void {
     id: "focus-tile-composer",
     title: appStrings.focusComposerCommand,
     isAvailable() {
-      const workspace = windowWorkspace();
+      const workspace = current;
+      if (!workspace) return false;
       const instanceId = chosenInstance(workspace);
       if (instanceId === null) return false;
       const read = (id: string) => workspace.session.registry.addresseeOf(id);
       return tileComposer(read, workspace.composers.list(), instanceId).status === "one";
     },
     async run() {
-      const workspace = windowWorkspace();
+      const workspace = current;
+      if (!workspace) return;
       const instanceId = chosenInstance(workspace);
       if (instanceId === null) return;
       await runForTileComposer(
@@ -194,13 +202,15 @@ export function registerChertogApp(app: PluginAppBuilder): void {
     id: "end-panel-session",
     title: appStrings.endSessionCommand,
     isAvailable() {
-      const workspace = windowWorkspace();
+      const workspace = current;
+      if (!workspace) return false;
       const instance = workspace.session.focusedInstance();
       if (workspace.bridge.getPlace() === null || instance === null || instance.state !== "live") return false;
       return workspace.session.sourceOf(instance.ref.provider)?.canEndSession === true;
     },
     async run() {
-      const workspace = windowWorkspace();
+      const workspace = current;
+      if (!workspace) return;
       const instanceId = chosenInstance(workspace);
       if (instanceId !== null) await workspace.session.endSession(instanceId);
     },

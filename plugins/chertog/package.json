@@ -1,7 +1,7 @@
 {
   "name": "bb-plugin-chertog",
   "version": "0.1.0",
-  "description": "Tiling workspace for BB: existing threads side by side in tiles and tabs, with named layouts that keep panels alive as you move them.",
+  "description": "BB thread tiles, provider cards, live file previews and diffs, with named layouts, presets and confirmed thread handoff between windows.",
   "private": true,
   "type": "module",
   "license": "MIT",
@@ -28,7 +28,7 @@
   },
   "bb": {
     "name": "Chertog [Experimental]",
-    "description": "Tiling workspace for BB: existing threads side by side in tiles and tabs, with named layouts that keep panels alive as you move them.",
+    "description": "BB thread tiles, provider cards, live file previews and diffs, with named layouts, presets and confirmed thread handoff between windows.",
     "branding": {
       "icon": "./assets/icon.svg"
     },

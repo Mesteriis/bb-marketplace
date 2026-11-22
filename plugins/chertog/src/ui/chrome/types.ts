@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 // Props-level data of the workspace chrome. These are plain view types: the
 // adapter that owns the workspace document maps its state onto them.
 
@@ -34,6 +35,7 @@ export interface ContentSection {
   readonly providerId: string;
   readonly title: string;
   readonly state: ContentSectionState;
+  readonly controls?: ReactNode;
   readonly items: readonly ContentItem[];
 }
 

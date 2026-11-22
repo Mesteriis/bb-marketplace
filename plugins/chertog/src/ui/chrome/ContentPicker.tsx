@@ -151,6 +151,7 @@ export function ContentPicker(props: ContentPickerProps) {
                   <h3 id={sectionId} className={classes.sectionHeading}>
                     {section.title}
                   </h3>
+                  {section.controls}
                   {section.state === "loading" && (
                     <p role="status" className={classes.muted}>
                       {text.loading}
