@@ -80,6 +80,12 @@ function applied(document: WorkspaceDocument): WorkspaceChange {
   return { ok: true, document };
 }
 
+/** Allocator progress alone is not a change to the user's arrangement. */
+function samePlacement(a: WorkspaceState, b: WorkspaceState): boolean {
+  if (a.focusedGroupId !== b.focusedGroupId || a.maximizedGroupId !== b.maximizedGroupId) return false;
+  return a.root === b.root || JSON.stringify(a.root) === JSON.stringify(b.root);
+}
+
 export class WorkspaceSession {
   readonly registry: PanelRegistry;
   readonly controller: WorkspaceController;
@@ -263,10 +269,17 @@ export class WorkspaceSession {
       const shown = this.surfaceState();
       if (!base || !shown) return;
       const next = change.kind === "operation" ? applyOperation(shown, change.operation) : change.state;
-      this.placement = { base: activeLayout(base).workspace, shown: next };
+      const current = activeLayout(base).workspace;
+      const before = this.withoutReservations(shown);
+      const after = this.withoutReservations(next);
+      // Only durable topology, focus or size changes require a save. In
+      // particular, cancelling a provisional split may consume layout ids.
+      const changed = !samePlacement(before, after);
+      this.placement = { base: changed ? after : current, shown: next };
       for (const [id, r] of this.reservations) {
         if (!findGroupOfPanel(next.root, r.panelId)) this.cancelChoice(id);
       }
+      if (changed) this.controller.change(document => changeActiveLayout(document, () => after));
       this.touch();
       return;
     }
@@ -352,12 +365,25 @@ export class WorkspaceSession {
     });
   }
 
+  private withoutReservations(shown: WorkspaceState, keepId?: string): WorkspaceState {
+    let state = shown;
+    for (const [id, reservation] of this.reservations) {
+      if (id !== keepId) state = closeTab(state, reservation.panelId);
+    }
+    return state;
+  }
+
+  private holdsPlacement(base: WorkspaceState): boolean {
+    return this.placement !== null && (this.placement.base === base ||
+      (this.placement.base.nextNodeId === base.nextNodeId && samePlacement(this.placement.base, base)));
+  }
+
   surfaceState(): WorkspaceState | null {
     const document = this.document();
     if (!document) return null;
     const base = activeLayout(document).workspace;
     if (!this.reservations.size) return base;
-    if (this.placement?.base === base) return this.placement.shown;
+    if (this.placement && this.holdsPlacement(base)) return this.placement.shown;
     let state = base;
     for (const r of this.reservations.values()) {
       if (r.layoutId === document.activeLayoutId)
@@ -406,7 +432,7 @@ export class WorkspaceSession {
     if (!r || !doc) return;
     const state = activeLayout(doc).workspace;
     const ref = { provider: r.source.provider.type, params: { resourceRef } };
-    if (doc.activeLayoutId !== r.layoutId || !findGroup(state.root, r.groupId) ||
+    if (doc.activeLayoutId !== r.layoutId || !findGroupOfPanel(this.surfaceState()!.root, r.panelId) ||
         (r.split && listGroups(state.root).length >= TILE_LIMIT) || !r.source.provider.paramsSchema.safeParse(ref.params).success) {
       this.cancelChoice(id);
       return;
@@ -420,10 +446,7 @@ export class WorkspaceSession {
     }
     const known = registerPanel(doc, r.panelId, { ref });
     const shown = this.surfaceState()!;
-    let accepted = shown;
-    for (const [otherId, other] of this.reservations) {
-      if (otherId !== id) accepted = closeTab(accepted, other.panelId);
-    }
+    const accepted = this.withoutReservations(shown, id);
     const placed = known.ok ? changeActiveLayout(known.document, () => accepted) : known;
     if (!placed.ok) { this.cancelChoice(id); return; }
     const opened = this.registry.acceptReservation(id, ref, () => {
@@ -528,7 +551,7 @@ export class WorkspaceSession {
       }
       const layout = activeLayout(document);
       for (const [id, r] of this.reservations) {
-        if (layout.id !== r.layoutId || !findGroup(layout.workspace.root, r.groupId)) this.cancelChoice(id);
+        if (layout.id !== r.layoutId || (!this.holdsPlacement(layout.workspace) && !findGroup(layout.workspace.root, r.groupId))) this.cancelChoice(id);
       }
       const placed = new Set(placedPanelIds(layout));
       for (const group of listGroups(layout.workspace.root)) {

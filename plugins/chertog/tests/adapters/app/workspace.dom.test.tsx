@@ -613,3 +613,59 @@ it("explains an unsupported owner version without accepting its ready", async ()
     expect(screen.getByText("Версия протокола владельца не поддерживается.")).toBeTruthy();
   } finally { vi.useRealTimers(); }
 });
+
+async function threadWithPendingZoom() {
+  const stage = newStage({ embeds: true });
+  const session = stage.workspace.session;
+  const user = userEvent.setup();
+  render(<Window stage={stage} onRoute />);
+  await user.click(await screen.findByRole("button", { name: /Исполнитель/ }));
+  await settled(stage);
+  const groupId = session.surfaceState()!.focusedGroupId;
+  await act(async () => {
+    session.openContent({ providerId: "zoom-call", itemId: "choose", placement: "tab" }, { kind: "group", groupId });
+  });
+  expect(session.reservations.size).toBe(1);
+  return { stage, session, user, groupId };
+}
+
+it("persists removing a group with a thread and pending Zoom picker", async () => {
+  const { stage, session, user } = await threadWithPendingZoom();
+  await user.click(screen.getByRole("button", { name: "Действия тайла" }));
+  await user.click(screen.getByRole("menuitem", { name: "Убрать тайл из раскладки" }));
+  await settled(stage);
+  expect(session.reservations.size).toBe(0);
+  expect(session.surfaceState()?.root).toMatchObject({ kind: "group", tabs: [] });
+  expect(stage.rpc.stored?.layouts[0].workspace.root).toMatchObject({ kind: "group", tabs: [] });
+  expect(session.hiddenPanels().map(panel => panel.title)).toEqual(["Исполнитель"]);
+});
+
+it("keeps existing tabs when only the pending Zoom picker tab is removed", async () => {
+  const { stage, session, user } = await threadWithPendingZoom();
+  const saved = stage.rpc.saves.length;
+  await user.click(screen.getByRole("button", { name: "Действия тайла" }));
+  await user.click(screen.getByRole("menuitem", { name: "Убрать вкладку из раскладки" }));
+  await settled(stage);
+  expect(session.reservations.size).toBe(0);
+  expect(session.surfaceState()?.root).toMatchObject({ kind: "group", tabs: ["panel-1"], activeTab: "panel-1" });
+  expect(stage.rpc.saves).toHaveLength(saved);
+});
+
+it("persists a thread split during Zoom selection and keeps it after cancellation", async () => {
+  const { stage, session, groupId } = await threadWithPendingZoom();
+  await act(async () => {
+    session.openContent({ providerId: "bb-thread", itemId: "thr_b", placement: "tab" }, { kind: "group", groupId });
+  });
+  await act(async () => {
+    session.applySurfaceChange({ kind: "operation", operation: {
+      type: "moveTabToEdge", panelId: "panel-1", targetGroupId: groupId, edge: "right",
+    } });
+  });
+  await settled(stage);
+  expect(session.reservations.size).toBe(1);
+  const split = { kind: "split", children: [{ kind: "group", tabs: ["panel-5"] }, { kind: "group", tabs: ["panel-1"] }] };
+  expect(stage.rpc.stored?.layouts[0].workspace.root).toMatchObject(split);
+  const reservation = [...session.reservations.values()][0]!;
+  await act(async () => { await session.closePanel(reservation.panelId); });
+  expect(session.surfaceState()?.root).toMatchObject(split);
+});
