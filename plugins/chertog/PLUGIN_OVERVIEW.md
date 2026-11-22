@@ -6,6 +6,9 @@ them. The interface is in Russian.
 
 - **A workspace page.** "Чертог" in BB's navigation opens a page of tiles
   with BB's thread list beside it.
+- **Controls in BB's title bar.** The focused tile and its menu on the left;
+  layouts, "+ Панель", "Скрытые панели" and "Новый тред" on the right, folded
+  into "Ещё" under 880 px. Each tile has a 24 px bar with "+ ⋯ ▢ ✕".
 - **Threads in tiles.** Pick an existing thread for a tile or a tab; the
   header shows its project and status. Chertog never creates or stops a thread.
 - **Click opens a tile.** With Makosh Sidebar installed and the Chertog page
@@ -33,7 +36,7 @@ them. The interface is in Russian.
 - **Embedded views.** Choose Telegram, Zoom, SSH, RDP or VNC in the content picker. A compatible provider draws its picker and confirms the selected resource in the same tile.
 - **File previews and diffs.** Select a ready workspace and a file. Compare the file at two available Git revisions inside a tile.
 - **Presets.** Start from «Команда агентов», «Администрирование» or «Созвон». Choose the individual targets in the resulting tiles.
-- **Thread handoff.** Transfer an existing thread to another participating BB window after confirmation.
+- **Thread handoff.** Transfer an existing thread to another participating BB window after confirmation, from the tile menu.
 
 ## Limits
 
@@ -41,7 +44,7 @@ them. The interface is in Russian.
 - Telegram, Zoom, Remote Hub and Terminals keep their full screens and sessions in their own plugins. Saved entry cards still open the provider page. Embedded views require an owner that supports chertog.embed.v1.
 - One workspace per BB server and one Chertog page per window. Thread handoff covers an existing BB thread. External calls and media stay with their provider.
 - A reload reopens the layouts and loads their panels again.
-- Click-to-tile and blocks: isolated stand, headless browser, seeded threads (docs/acceptance-open.md). Other features were checked in a test BB in a browser. Not checked in BB Desktop or with running agents.
+- Click-to-tile and blocks: isolated stand, headless browser, seeded threads (docs/acceptance-open.md). Tile look and title bar: same stand, 1440x900 and 1280x600 (docs/acceptance-tile-chrome.md). Other features were checked in a test BB in a browser. Not checked in BB Desktop or with running agents.
 
 ## Data
 

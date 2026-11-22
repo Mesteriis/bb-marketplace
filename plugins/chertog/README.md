@@ -20,7 +20,7 @@ The package is `bb-plugin-chertog` and the plugin id BB derives from it is
 
 | Surface | What it is |
 | --- | --- |
-| `navPanel` `chertog-home`, route `/plugins/chertog/home` | The workspace: toolbar and tile surface on the whole route. No `experimental_sidebar`, so BB's thread list stays. |
+| `navPanel` `chertog-home`, route `/plugins/chertog/home` | The workspace: the tile surface on the whole route. Its controls sit in BB's title bar (`experimental_headerTitle`, `headerContent`), not in the page. No `experimental_sidebar`, so BB's thread list stays. |
 | `experimental_appOverlay` `chertog-live-panels` | The parent of live panels for the life of the window. See below. |
 | `homepageSection` `chertog-home-redirect` | Sends an accidental arrival on the stock Home to the route ([docs/home-redirect.md](./docs/home-redirect.md)). Off until the setting below is declared. |
 | Command `focus-tile-composer` | Focuses the composer of the thread in the focused tile. |
