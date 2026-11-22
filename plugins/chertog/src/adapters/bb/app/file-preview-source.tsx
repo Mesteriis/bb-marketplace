@@ -86,6 +86,11 @@ export class WorkspaceFileCatalog {
   }
 }
 
+// A direct OS drop inside a frame never reaches the tile's drag handlers.
+const HTML_PREVIEW_PREFIX =
+  `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; form-action 'none'">` +
+  `<style>input, textarea, select, [contenteditable], label { pointer-events: none !important; }</style>`;
+
 export function createFilePreviewSource(catalog: WorkspaceFileCatalog): ContentSource {
   const title = "BB предпросмотр";
   const pending = new Map<string, AbortController>();
@@ -124,7 +129,7 @@ export function createFilePreviewSource(catalog: WorkspaceFileCatalog): ContentS
     render(ref) {
       const target = fileTarget(ref.params);
       return <FilePreview target={target} renderPreview={({ content }) => {
-        if (/\.html?$/i.test(target.path)) return <iframe title={target.path} sandbox="" referrerPolicy="no-referrer" className="h-full w-full" srcDoc={'<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'; img-src data:">' + content} />;
+        if (/\.html?$/i.test(target.path)) return <iframe title={target.path} sandbox="" referrerPolicy="no-referrer" className="h-full w-full" srcDoc={HTML_PREVIEW_PREFIX + content} />;
         if (/\.(md|markdown)$/i.test(target.path)) return <Markdown content={content} />;
         return <pre className="h-full overflow-auto whitespace-pre">{content}</pre>;
       }} />;
