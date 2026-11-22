@@ -1,9 +1,48 @@
 // BB Chat Dock — BB backend entry.
 //
-// Empty on purpose. The plugin registers no RPC method, HTTP route, CLI
-// command, agent tool, setting, schedule or storage: everything it does
-// happens in the BB window, on the user's own click. An agent therefore has
-// nothing of this plugin to call.
-import type { BbPluginApi } from "@get-bb/plugin-sdk";
+// Relays three calls between the BB page and the plugin's host entry on the
+// server's own machine: open the ChatGPT window, propose a text for it, read
+// its status. No call returns page content, and none writes into the page:
+// that happens only after the user presses "Вставить в черновик" in the
+// window itself. No settings, CLI commands, agent tools or storage.
+import { experimental_PluginRpcRefusal, type BbPluginApi } from "@get-bb/plugin-sdk";
+import { hostContract, hostSignals, rpcContract, STATUS_CHANNEL, type WindowStatusWire } from "./contract.ts";
 
-export default async function plugin(_bb: BbPluginApi) {}
+export { rpcContract };
+
+export default async function plugin(bb: BbPluginApi) {
+  const host = bb.hosts.experimental_client({ contract: hostContract, experimental_signals: hostSignals });
+
+  async function localHost(): Promise<string> {
+    const { primaryHostId } = await bb.sdk.system.config();
+    if (primaryHostId === null) {
+      throw new experimental_PluginRpcRefusal({ code: "conflict", message: "Компьютер, на котором работает BB, не подключён как хост" });
+    }
+    return primaryHostId;
+  }
+
+  const closed: WindowStatusWire = { window: "closed", reason: null, proposal: "none", last: null };
+
+  const unsubscribe = host.experimental_onSignal("changed", ({ payload }) => {
+    bb.realtime.publish(STATUS_CHANNEL, payload);
+  });
+  const unsubscribeExit = host.experimental_onWorkerExit(() => {
+    bb.realtime.publish(STATUS_CHANNEL, closed);
+  });
+  bb.onDispose(() => {
+    unsubscribe();
+    unsubscribeExit();
+  });
+
+  bb.rpc.register(rpcContract, {
+    async open() {
+      return host.call("open", null, { hostId: await localHost() });
+    },
+    async propose(input) {
+      return host.call("propose", input, { hostId: await localHost() });
+    },
+    async status() {
+      return host.call("status", null, { hostId: await localHost() });
+    },
+  });
+}

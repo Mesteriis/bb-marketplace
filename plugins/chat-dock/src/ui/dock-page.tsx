@@ -1,95 +1,135 @@
-// The ChatGPT page of the navigation: what the plugin does, the mode it is
-// in, the staged text, and the explicit copy. It shows no imitation of a
-// chat: the real site lives in BB's Browser, or wherever the user keeps it.
-import { useState, type MouseEvent } from "react";
+// The ChatGPT page of BB's navigation. ChatGPT itself runs in a separate
+// window with its own sign-in; this page prepares the text, shows the
+// window's state and hands the text over. Inserting happens only after the
+// user confirms in the window.
+import { useEffect, useRef, useState, type MouseEvent } from "react";
+import type { WindowStatusView } from "../core/window-status.ts";
 import { ContextPreview } from "./context-preview.tsx";
-import {
-  BUTTON_GHOST,
-  BUTTON_OUTLINE,
-  BUTTON_PRIMARY,
-  isTrustedEvent,
-  type DockServices,
-  type IsUserAction,
-} from "./services.ts";
-import { useConsent, useStaged } from "./use-store.ts";
+import { BUTTON_GHOST, BUTTON_OUTLINE, BUTTON_PRIMARY, isTrustedEvent, type DockServices, type IsUserAction } from "./services.ts";
+import { useStaged } from "./use-store.ts";
 
 interface DockPageProps {
   services: DockServices;
-  /** Ask BB to open the site. False when BB declined. */
-  openChatGpt(): boolean;
+  /** The window's latest status; null until it is known. */
+  status: WindowStatusView | null;
   isUserAction?: IsUserAction;
 }
 
-export function DockPage({ services, openChatGpt, isUserAction = isTrustedEvent }: DockPageProps) {
-  const { staging, consent, copyText, notify } = services;
+function describeStatus(status: WindowStatusView | null): string {
+  if (status === null) return "Состояние окна неизвестно.";
+  switch (status.window) {
+    case "closed":
+      return "Окно ChatGPT закрыто.";
+    case "building":
+      return "Окно ChatGPT собирается на этом Mac. Первый раз это занимает до минуты.";
+    case "unavailable":
+      return "Окно ChatGPT недоступно. " + (status.reason ?? "");
+    case "open":
+      if (status.proposal === "waiting") return "Окно открыто. Текст ждёт подтверждения в окне.";
+      if (status.proposal === "writing") return "Окно открыто. Текст передаётся в поле ввода.";
+      return "Окно ChatGPT открыто.";
+  }
+}
+
+const OUTCOME_TEXT = {
+  "handed-off": "Последняя передача: текст передан в поле ввода. Проверьте черновик и отправьте сами.",
+  unknown: "Последняя передача: результат неизвестен. Проверьте черновик перед повтором.",
+  refused: "Последняя передача: вставка отменена, текст никуда не записан.",
+  copied: "Последняя передача: текст скопирован в окне, вставьте его сами.",
+  cancelled: "Последняя передача отменена в окне.",
+} as const;
+
+export function DockPage({ services, status, isUserAction = isTrustedEvent }: DockPageProps) {
+  const { staging, window, copyText, notify } = services;
   const staged = useStaged(staging);
-  const embedded = useConsent(consent);
-  const [copying, setCopying] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const sent = useRef<{ proposalId: string; text: string } | null>(null);
   const hasText = staged !== null && staged.text.length > 0;
 
-  async function copy(event: MouseEvent) {
-    if (!isUserAction(event) || copying || staged === null || staged.text.length === 0) return;
-    setCopying(true);
+  // Once the window reports that the proposal may be in a draft, the same
+  // text is dropped here so it cannot be handed over twice by mistake.
+  useEffect(() => {
+    const last = status?.last;
+    const mine = sent.current;
+    if (last === undefined || last === null || mine === null || last.proposalId !== mine.proposalId) return;
+    if (last.outcome === "handed-off" || last.outcome === "unknown") staging.clearIf(mine.text);
+    if (last.outcome !== "copied") sent.current = null;
+  }, [status, staging]);
+
+  async function open(event: MouseEvent) {
+    if (!isUserAction(event) || busy) return;
+    setBusy(true);
     try {
-      const ok = await copyText(staged.text);
-      notify(ok ? "success" : "error", ok ? "Контекст скопирован. Вставьте его в поле ChatGPT сами: ⌘V." : "Не удалось записать буфер обмена.");
+      const next = await window.open();
+      if (next.window === "unavailable") notify("error", next.reason ?? "Окно ChatGPT недоступно.");
+    } catch {
+      notify("error", "Не удалось открыть окно ChatGPT.");
     } finally {
-      setCopying(false);
+      setBusy(false);
     }
   }
 
-  function toggleEmbedded(event: MouseEvent) {
-    if (!isUserAction(event)) return;
-    if (embedded) consent.withdraw();
-    else consent.grant();
+  async function handOver(event: MouseEvent) {
+    if (!isUserAction(event) || busy || staged === null || staged.text.length === 0) return;
+    setBusy(true);
+    const text = staged.text;
+    try {
+      const result = await window.propose(text, staged.source.kind);
+      if (result.ok) {
+        sent.current = { proposalId: result.proposalId, text };
+        notify("info", "Текст показан в окне ChatGPT. Проверьте беседу и подтвердите вставку там.");
+      } else if (result.reason === "busy") {
+        notify("error", "Окно ещё передаёт предыдущий текст. Дождитесь результата.");
+      } else if (result.reason === "window-unavailable") {
+        notify("error", "Окно ChatGPT ещё не готово. Повторите, когда оно откроется.");
+      } else {
+        notify("error", "Текст пуст или длиннее 100 000 знаков.");
+      }
+    } catch {
+      notify("error", "Не удалось передать текст окну ChatGPT.");
+    } finally {
+      setBusy(false);
+    }
   }
 
-  function open(event: MouseEvent) {
-    if (!isUserAction(event)) return;
-    if (!openChatGpt()) notify("error", "BB не смог открыть chatgpt.com.");
+  async function copy(event: MouseEvent) {
+    if (!isUserAction(event) || staged === null || staged.text.length === 0) return;
+    const ok = await copyText(staged.text);
+    notify(ok ? "success" : "error", ok ? "Контекст скопирован. Вставьте его в поле ChatGPT сами: ⌘V." : "Не удалось записать буфер обмена.");
   }
 
   return (
     <div className="h-full overflow-auto p-4 md:p-5">
       <div className="mx-auto flex w-full max-w-3xl flex-col gap-5">
-        <section aria-labelledby="chat-dock-mode" className="rounded-md border border-border p-3">
-          <h2 id="chat-dock-mode" className="text-sm font-semibold">
-            Режим: {embedded ? "встроенный ChatGPT" : "ручная вставка"}
+        <section aria-labelledby="chat-dock-window" className="rounded-md border border-border p-3">
+          <h2 id="chat-dock-window" className="text-sm font-semibold">
+            Окно ChatGPT
           </h2>
-          {embedded ? (
-            <p className="mt-1 text-sm text-muted-foreground">
-              Откройте беседу на chatgpt.com во вкладке Browser. Кнопка «Вставить в ChatGPT…» рядом с адресной строкой
-              покажет текст и беседу и добавит текст в её черновик. Сообщение отправляете вы.
-            </p>
-          ) : (
-            <p className="mt-1 text-sm text-muted-foreground">
-              Подготовьте текст ниже, нажмите «Скопировать контекст» и вставьте его в ChatGPT сами.
-            </p>
+          <p role="status" aria-live="polite" className="mt-1 text-sm text-muted-foreground">
+            {describeStatus(status)}
+          </p>
+          {status?.last !== null && status?.last !== undefined && (
+            <p className="mt-1 text-xs text-muted-foreground">{OUTCOME_TEXT[status.last.outcome]}</p>
           )}
-          <div role="note" className="mt-3 rounded-md border border-border bg-secondary p-2.5 text-xs leading-relaxed">
-            <p className="font-medium">Почему встроенный режим выключен по умолчанию</p>
-            <p className="mt-1">
-              У встроенного Browser один общий вход для всех вкладок. Штатные инструменты агентов BB могут открыть
-              вкладку с этим входом, управлять ею и снимать с неё изображение. Если вы войдёте в ChatGPT внутри BB,
-              агенты на этом компьютере технически смогут читать вашу переписку. Плагин не может это отключить.
-            </p>
-          </div>
+          <p className="mt-3 text-xs leading-relaxed">
+            ChatGPT открывается в отдельном окне без адресной строки. У окна свой вход, отдельный от Browser в BB, и
+            инструменты агентов BB (<code>bb browser</code>) до него не дотягиваются. Программы с полными правами в macOS,
+            например средства автоматизации интерфейса, это окно видеть могут.
+          </p>
           <div className="mt-3 flex flex-wrap items-center gap-2">
-            <button type="button" className={BUTTON_OUTLINE} aria-pressed={embedded} onClick={toggleEmbedded}>
-              {embedded ? "Выключить встроенный режим" : "Я понимаю риск: включить встроенный режим"}
+            <button type="button" className={BUTTON_OUTLINE} disabled={busy} onClick={open}>
+              Открыть окно ChatGPT
             </button>
-            {embedded && (
-              <button type="button" className={BUTTON_GHOST} onClick={open}>
-                Открыть chatgpt.com в BB
-              </button>
-            )}
           </div>
         </section>
 
         <section aria-label="Подготовленный контекст" className="flex flex-col gap-3">
           <ContextPreview staging={staging} rows={12} />
           <div className="flex flex-wrap items-center gap-2">
-            <button type="button" className={BUTTON_PRIMARY} disabled={!hasText || copying} onClick={copy}>
+            <button type="button" className={BUTTON_PRIMARY} disabled={!hasText || busy || status?.proposal === "writing"} onClick={handOver}>
+              Передать в окно ChatGPT
+            </button>
+            <button type="button" className={BUTTON_OUTLINE} disabled={!hasText} onClick={copy}>
               Скопировать контекст
             </button>
             <button
@@ -104,8 +144,8 @@ export function DockPage({ services, openChatGpt, isUserAction = isTrustedEvent 
             </button>
           </div>
           <p className="text-xs text-muted-foreground">
-            Текст хранится только в памяти этого окна до передачи или очистки. В буфер обмена он попадает только по
-            кнопке.
+            Текст хранится только в памяти этого окна BB. Окно ChatGPT покажет его вместе с адресатом, а вставит в
+            черновик только после вашего нажатия «Вставить в черновик» в самом окне. Отправляете сообщение вы.
           </p>
         </section>
       </div>

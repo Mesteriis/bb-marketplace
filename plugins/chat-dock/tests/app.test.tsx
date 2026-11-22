@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
-// The BB entry itself: what it registers, that the Browser page is scripted
-// only in the isolated world, and that taking the plugin's UI down drops the
-// staged text.
+// The BB entry itself: what it registers, that a selection reaches the page,
+// that the page talks to the window only through RPC, and that taking the
+// plugin's UI down drops the staged text.
 import { fireEvent } from "@testing-library/react";
 import { loadPluginApp, mountPluginContentScripts, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -14,75 +14,51 @@ vi.mock("../src/ui/services.ts", async (original) => ({
   isTrustedEvent: () => true,
 }));
 
-const MARKER = "SYNTHETIC-MARKER-app-3e1f";
-const URL_A = "https://chatgpt.com/c/aaaaaaaa-0000-4000-8000-00000000000a";
+const MARK = "SYNTHETIC-MARKER-app-3e1f";
+const OPEN = { window: "open", reason: null, proposal: "none", last: null };
 
 afterEach(() => {
   document.body.innerHTML = "";
 });
 
 describe("the BB entry", () => {
-  it("registers one page, one message action, one toolbar control and no more", async () => {
+  it("registers one page, one message action, one lifetime script, and no Browser control", async () => {
     const app = await loadPluginApp(() => import("../app.tsx"));
 
     expect(app.navPanels.map((panel) => [panel.id, panel.title, panel.path])).toEqual([["chat-dock", "ChatGPT", "chat"]]);
-    expect(app.messageActions.map((action) => [action.id, action.title])).toEqual([
-      ["stage-selection", "Вставить в ChatGPT…"],
-    ]);
-    expect(app.browserToolbarActions.map((action) => action.id)).toEqual(["insert"]);
+    expect(app.messageActions.map((action) => [action.id, action.title])).toEqual([["stage-selection", "Вставить в ChatGPT…"]]);
+    expect(app.browserToolbarActions).toEqual([]);
     expect(app.contentScripts.map((script) => script.id)).toEqual(["lifetime"]);
   });
 
-  it("stages a selection for the page and drops it when the plugin's UI is taken down", async () => {
+  it("stages a selection, hands it to the window through RPC, and drops it when the UI is taken down", async () => {
     const app = await loadPluginApp(() => import("../app.tsx"));
     const scripts = await mountPluginContentScripts(app, { pluginId: "chat-dock", generation: 1 });
     const run = app.messageActions[0]!.run as (context: { threadId: string; selectedText?: string }) => void;
+    const proposed: unknown[] = [];
 
-    run({ threadId: "thr_1" });
-    run({ threadId: "thr_1", selectedText: MARKER });
-    const first = renderSlot(app.navPanels[0]!, { subPath: "" });
-    expect((first.getByLabelText("Текст для передачи") as HTMLTextAreaElement).value).toBe(MARKER);
-    first.lifecycle.unmount();
-
-    await scripts.lifecycle.dispose();
-
-    const second = renderSlot(app.navPanels[0]!, { subPath: "" });
-    expect((second.getByLabelText("Текст для передачи") as HTMLTextAreaElement).value).toBe("");
-    second.lifecycle.unmount();
-  });
-
-  it("scripts the Browser page only in the isolated world, and only after the mode is turned on", async () => {
-    const app = await loadPluginApp(() => import("../app.tsx"));
-    const scripts = await mountPluginContentScripts(app, { pluginId: "chat-dock", generation: 2 });
-    const worlds: Array<string | undefined> = [];
-    const page = {
-      evaluate: async (_expression: string, options?: { world?: string }) => {
-        worlds.push(options?.world);
-        return null;
+    run({ threadId: "thr_1", selectedText: MARK });
+    const slot = renderSlot(
+      app.navPanels[0]!,
+      { subPath: "" },
+      {
+        rpc: {
+          status: () => OPEN,
+          open: () => OPEN,
+          propose: (input: unknown) => (proposed.push(input), { ok: true, proposalId: "p-1" }),
+        },
       },
-      onMessage: () => () => {},
-    };
-    const props = { threadId: "thr_1", tabId: "tab_1", url: URL_A, isCompactViewport: false, experimental_page: page };
-
-    const before = renderSlot(app.browserToolbarActions[0]!, props);
-    expect(before.queryByRole("button", { name: "Вставить в ChatGPT…" })).toBeNull();
-    before.lifecycle.unmount();
-
-    const panel = renderSlot(app.navPanels[0]!, { subPath: "" });
-    fireEvent.click(panel.getByRole("button", { name: "Я понимаю риск: включить встроенный режим" }));
-    panel.lifecycle.unmount();
-
-    const slot = renderSlot(app.browserToolbarActions[0]!, props);
-    fireEvent.click(slot.getByRole("button", { name: "Вставить в ChatGPT…" }));
-    await slot.findByRole("dialog");
-    // The choice, then the withdrawal after the fake page's unusable answer.
-    expect(worlds).toEqual(["isolated", "isolated"]);
+    );
+    expect((slot.getByLabelText("Текст для передачи") as HTMLTextAreaElement).value).toBe(MARK);
+    await slot.findByText("Окно ChatGPT открыто.");
+    fireEvent.click(slot.getByRole("button", { name: "Передать в окно ChatGPT" }));
+    await vi.waitFor(() => expect(proposed).toEqual([{ text: MARK, source: "message-selection" }]));
     slot.lifecycle.unmount();
 
-    // Taking the plugin's UI down turns the mode off again.
     await scripts.lifecycle.dispose();
-    const after = renderSlot(app.browserToolbarActions[0]!, props);
-    expect(after.queryByRole("button", { name: "Вставить в ChatGPT…" })).toBeNull();
-    after.lifecycle.unmount();
+
+    const second = renderSlot(app.navPanels[0]!, { subPath: "" }, { rpc: { status: () => OPEN } });
+    expect((second.getByLabelText("Текст для передачи") as HTMLTextAreaElement).value).toBe("");
+    second.lifecycle.unmount();
   });
 });

@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { createConsent } from "../src/core/consent.ts";
 import { createStaging } from "../src/core/staging.ts";
 import { describeTarget, isChatGptUrl, targetFromUrl } from "../src/core/target.ts";
 
@@ -33,32 +32,6 @@ describe("conversation targets", () => {
   });
 });
 
-describe("embedded-mode consent", () => {
-  it("is off until granted, off again after withdrawal, and tells subscribers once per change", () => {
-    const consent = createConsent();
-    let notified = 0;
-    const unsubscribe = consent.subscribe(() => (notified += 1));
-
-    expect(consent.granted()).toBe(false);
-    consent.grant();
-    consent.grant();
-    expect(consent.granted()).toBe(true);
-    consent.withdraw();
-    expect(consent.granted()).toBe(false);
-    expect(notified).toBe(2);
-
-    unsubscribe();
-    consent.grant();
-    expect(notified).toBe(2);
-  });
-
-  it("starts off in every new instance: nothing is stored", () => {
-    createConsent().grant();
-
-    expect(createConsent().granted()).toBe(false);
-  });
-});
-
 describe("staged context", () => {
   it("keeps the source through an edit and forgets everything on clear", () => {
     const staging = createStaging();
@@ -80,23 +53,15 @@ describe("staged context", () => {
     expect(staging.get()).toEqual({ text: "typed", source: { kind: "manual" } });
   });
 
-  it("reserves one transfer at a time and drops only the text that was sent", () => {
+  it("drops the staged text only when it is still exactly the sent text", () => {
     const staging = createStaging();
-    staging.stage({ text: "first", source: { kind: "manual" } });
-
-    expect(staging.beginTransfer()).toBe(true);
-    expect(staging.beginTransfer()).toBe(false);
-    expect(staging.transferring()).toBe(true);
-    staging.stage({ text: "picked meanwhile", source: { kind: "manual" } });
-    staging.endTransfer("first", true);
-
-    expect(staging.transferring()).toBe(false);
-    expect(staging.get()?.text).toBe("picked meanwhile");
-    expect(staging.beginTransfer()).toBe(true);
-    staging.endTransfer("picked meanwhile", false);
-    expect(staging.get()?.text).toBe("picked meanwhile");
-    expect(staging.beginTransfer()).toBe(true);
-    staging.endTransfer("picked meanwhile", true);
+    staging.stage({ text: "sent", source: { kind: "manual" } });
+    staging.clearIf("other");
+    expect(staging.get()?.text).toBe("sent");
+    staging.edit("edited meanwhile");
+    staging.clearIf("sent");
+    expect(staging.get()?.text).toBe("edited meanwhile");
+    staging.clearIf("edited meanwhile");
     expect(staging.get()).toBeNull();
   });
 });

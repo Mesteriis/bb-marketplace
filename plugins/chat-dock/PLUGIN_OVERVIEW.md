@@ -1,26 +1,29 @@
-BB Chat Dock adds a **ChatGPT** page to BB for handing text from a thread to
-ChatGPT. You always send the message yourself.
+BB Chat Dock adds a **ChatGPT** page to BB and a separate ChatGPT window on
+your Mac. You hand text from a thread to the window and confirm the insert
+there. You always send the message yourself.
 
 ## What you get
 
 - **Вставить в ChatGPT…** in the text-selection menu of assistant messages:
   it stages the exact text you highlighted.
 - A **ChatGPT** page in the sidebar with the staged text, its source, a field
-  to edit it, and **Скопировать контекст**. This manual mode is the default.
-- An opt-in embedded mode, kept in memory until the plugin is disabled or BB restarts. With it on, Browser tabs on `https://chatgpt.com`
-  get a toolbar control that shows the text and the open conversation and
-  appends the text to that conversation's draft.
+  to edit it, **Скопировать контекст**, and **Передать в окно ChatGPT**.
+- A ChatGPT window without an address bar or window buttons, fixed to
+  `https://chatgpt.com`, with its own sign-in kept apart from BB's Browser. A
+  panel at its bottom shows the text and the open conversation; **Вставить в
+  черновик** appends the text to that conversation's draft.
 
 ## Limits you should know
 
-- The embedded mode is off by default. BB's Browser keeps one sign-in for all
-  tabs, and BB's agent browser tools can open, drive and capture tabs with it.
-  If you sign in to ChatGPT inside BB, agents on that computer can technically
-  read your conversations. The plugin cannot prevent this.
-- Insertion works only in BB Desktop, in an existing conversation. A changed
-  conversation, a reload, a redirect or an unknown editor cancels it; nothing
-  is written and the clipboard is left alone.
-- The plugin does not read the draft, so it reports "handed to the editor",
-  never "inserted". Insertion is verified on a test page, not on the live site.
+- macOS 14+ with Xcode or the Command Line Tools: the window is compiled on
+  your Mac the first time you open it.
+- BB's agent browser tools cannot reach the window, but apps with full macOS
+  rights (UI automation) can, like any window. Agents can open the window or
+  show a text in its panel through the plugin's RPC; only your press in the
+  window inserts it.
+- A changed conversation, a reload or an unknown editor cancels the insert;
+  nothing is written. The plugin does not read the draft, so it reports
+  "handed to the editor", never "inserted". Verified on synthetic pages in
+  WebKit and Chromium, not on the live site.
 
-No agent tools, CLI, RPC, settings or storage. Staged text stays in memory.
+No settings, CLI commands, agent tools or storage. Staged text stays in memory.

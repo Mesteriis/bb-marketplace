@@ -1,13 +1,19 @@
-// What the screens need from the outside. The BB adapter in app.tsx supplies
-// these; the screens never call the host themselves.
-import type { Consent } from "../core/consent.ts";
+// What the page needs from the outside. The BB adapter in app.tsx supplies
+// these; the page never calls the host itself.
 import type { Staging } from "../core/staging.ts";
+import type { ProposeOutcome, WindowStatusView } from "../core/window-status.ts";
+import type { ProposalSource } from "../core/window-session.ts";
 
 export type Notify = (kind: "info" | "success" | "error", message: string) => void;
 
+export interface WindowApi {
+  open(): Promise<WindowStatusView>;
+  propose(text: string, source: ProposalSource): Promise<ProposeOutcome>;
+}
+
 export interface DockServices {
   staging: Staging;
-  consent: Consent;
+  window: WindowApi;
   /** Write the system clipboard. Called only from a user's own action. */
   copyText(text: string): Promise<boolean>;
   notify: Notify;

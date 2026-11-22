@@ -1,7 +1,7 @@
 {
   "name": "bb-plugin-chat-dock",
   "version": "0.1.0",
-  "description": "A ChatGPT page in BB: preview text you selected in a thread and copy it, or append it to the draft of a conversation open in BB's Browser. You send the message yourself.",
+  "description": "A ChatGPT page in BB: preview text you selected in a thread, copy it, or hand it to a separate ChatGPT window with its own sign-in, where you confirm the insert into the open conversation's draft. You send the message yourself.",
   "private": true,
   "type": "module",
   "license": "MIT",
@@ -18,8 +18,8 @@
   "keywords": [
     "bb-plugin",
     "chatgpt",
-    "browser",
-    "context"
+    "context",
+    "macos"
   ],
   "engines": {
     "bb": ">=0.50",
@@ -27,13 +27,14 @@
   },
   "bb": {
     "name": "BB Chat Dock [Experimental]",
-    "description": "A ChatGPT page in BB: preview text you selected in a thread and copy it, or append it to the draft of a conversation open in BB's Browser. You send the message yourself.",
+    "description": "A ChatGPT page in BB: preview text you selected in a thread, copy it, or hand it to a separate ChatGPT window with its own sign-in, where you confirm the insert into the open conversation's draft. You send the message yourself.",
     "branding": {
       "icon": "./assets/icon.svg"
     },
     "server": "./server.ts",
     "app": "./app.tsx",
-    "skills": []
+    "skills": [],
+    "host": "./host.ts"
   },
   "scripts": {
     "build": "bb plugin build",
@@ -56,5 +57,8 @@
     "sonner": "^1.7.4",
     "typescript": "^5.7.0",
     "vitest": "^5.1.0"
+  },
+  "dependencies": {
+    "zod": "^4.6.7"
   }
 }
