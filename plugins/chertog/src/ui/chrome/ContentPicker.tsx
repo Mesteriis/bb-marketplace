@@ -102,6 +102,11 @@ export function ContentPicker(props: ContentPickerProps) {
       cancelLimit();
       return;
     }
+    // The picker's own search field uses Up/Down to enter the results.
+    // Provider controls keep their native caret, option and value navigation.
+    if (event.defaultPrevented || (event.target instanceof Element && event.target.closest(
+      'select, textarea, input:not([type="search"][data-nav]), [role="combobox"], [role="listbox"], [contenteditable="true"]',
+    ))) return;
     moveByArrows(event, rootRef.current);
   }
 
