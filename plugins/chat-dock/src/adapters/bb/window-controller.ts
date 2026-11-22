@@ -9,8 +9,6 @@ import type { BuildResult, LaunchOptions, RunningWindow } from "./native-window.
 export interface ControllerDeps {
   build(): Promise<BuildResult>;
   launch(options: Pick<LaunchOptions, "executable" | "onMessage">): RunningWindow;
-  /** Keeps the host worker alive while the window runs; returns the release. */
-  retain(): () => void;
   onChange(status: WindowStatusWire): void;
   newId?: () => string;
   timeoutMs?: number;
@@ -18,9 +16,16 @@ export interface ControllerDeps {
   startWaitMs?: number;
 }
 
+/**
+ * Keeps the host worker alive while the window runs and returns the release.
+ * BB accepts it only from the call that is running now, so every call passes
+ * its own.
+ */
+export type Retain = () => () => void;
+
 export interface WindowController {
-  open(): Promise<WindowStatusWire>;
-  propose(text: string, source: ProposalSource): Promise<ProposeResult | { ok: false; reason: "window-unavailable" }>;
+  open(retain: Retain): Promise<WindowStatusWire>;
+  propose(text: string, source: ProposalSource, retain: Retain): Promise<ProposeResult | { ok: false; reason: "window-unavailable" }>;
   status(): WindowStatusWire;
   dispose(): void;
 }
@@ -45,10 +50,16 @@ export function createWindowController(deps: ControllerDeps): WindowController {
     if (!disposed) deps.onChange(status());
   }
 
-  async function start(): Promise<void> {
+  async function start(retain: Retain): Promise<void> {
     phase = "building";
     reason = null;
-    release = deps.retain();
+    try {
+      release = retain();
+    } catch {
+      phase = "closed";
+      notify();
+      throw new Error("the host refused to keep the window running");
+    }
     notify();
     const fail = (why: string) => {
       phase = "unavailable";
@@ -122,13 +133,13 @@ export function createWindowController(deps: ControllerDeps): WindowController {
 
   // Waits for the window, but not past the host call's own time limit: a
   // first build can take longer, and the caller then sees "building".
-  async function ensureOpen(): Promise<void> {
+  async function ensureOpen(retain: Retain): Promise<void> {
     if (running !== null) {
       running.show();
       return;
     }
     if (starting === null) {
-      starting = start().finally(() => {
+      starting = start(retain).finally(() => {
         starting = null;
       });
     }
@@ -143,13 +154,13 @@ export function createWindowController(deps: ControllerDeps): WindowController {
   }
 
   return {
-    async open() {
-      await ensureOpen();
+    async open(retain) {
+      await ensureOpen(retain);
       return status();
     },
 
-    async propose(text, source) {
-      await ensureOpen();
+    async propose(text, source, retain) {
+      await ensureOpen(retain);
       if (session === null) return { ok: false, reason: "window-unavailable" };
       return session.propose(text, source);
     },

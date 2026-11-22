@@ -27,23 +27,23 @@ function rig(build: () => Promise<BuildResult>) {
       windows.push(created);
       return created.window;
     },
-    retain: () => {
-      leases += 1;
-      return () => void (leases -= 1);
-    },
     onChange: (status) => void statuses.push(status),
     startWaitMs: 50,
   });
-  return { controller, statuses, windows, leases: () => leases };
+  const retain = () => {
+    leases += 1;
+    return () => void (leases -= 1);
+  };
+  return { controller, statuses, windows, leases: () => leases, retain };
 }
 
 describe("the window controller", () => {
   it("builds once, opens one window, and only shows it again on a second open", async () => {
     let builds = 0;
-    const { controller, windows, leases } = rig(async () => ((builds += 1), { ok: true, executable: "/x" }));
+    const { controller, windows, leases, retain } = rig(async () => ((builds += 1), { ok: true, executable: "/x" }));
 
-    expect((await controller.open()).window).toBe("open");
-    await controller.open();
+    expect((await controller.open(retain)).window).toBe("open");
+    await controller.open(retain);
 
     expect(builds).toBe(1);
     expect(windows).toHaveLength(1);
@@ -52,8 +52,8 @@ describe("the window controller", () => {
   });
 
   it("releases the worker and reports closed when the window exits", async () => {
-    const { controller, windows, leases, statuses } = rig(async () => ({ ok: true, executable: "/x" }));
-    await controller.open();
+    const { controller, windows, leases, statuses, retain } = rig(async () => ({ ok: true, executable: "/x" }));
+    await controller.open(retain);
 
     windows[0]!.exit();
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -63,19 +63,19 @@ describe("the window controller", () => {
   });
 
   it("reports why the window cannot be built", async () => {
-    const { controller, leases } = rig(async () => ({ ok: false, reason: "нет компилятора" }));
+    const { controller, leases, retain } = rig(async () => ({ ok: false, reason: "нет компилятора" }));
 
-    expect(await controller.open()).toEqual({ window: "unavailable", reason: "нет компилятора", proposal: "none", last: null });
+    expect(await controller.open(retain)).toEqual({ window: "unavailable", reason: "нет компилятора", proposal: "none", last: null });
     expect(leases()).toBe(0);
-    expect(await controller.propose("text", "manual")).toEqual({ ok: false, reason: "window-unavailable" });
+    expect(await controller.propose("text", "manual", retain)).toEqual({ ok: false, reason: "window-unavailable" });
   });
 
   it("ends a build that throws in 'unavailable' and releases the worker", async () => {
-    const { controller, leases } = rig(async () => {
+    const { controller, leases, retain } = rig(async () => {
       throw new Error("ENOSPC");
     });
 
-    const status = await controller.open();
+    const status = await controller.open(retain);
 
     expect(status.window).toBe("unavailable");
     expect(status.reason).toContain("Окно не собралось");
@@ -84,18 +84,18 @@ describe("the window controller", () => {
 
   it("answers 'building' instead of waiting past the call's time limit", async () => {
     let finish: (value: BuildResult) => void = () => {};
-    const { controller } = rig(() => new Promise((resolve) => (finish = resolve)));
+    const { controller, retain } = rig(() => new Promise((resolve) => (finish = resolve)));
 
-    expect((await controller.open()).window).toBe("building");
-    expect(await controller.propose("text", "manual")).toEqual({ ok: false, reason: "window-unavailable" });
+    expect((await controller.open(retain)).window).toBe("building");
+    expect(await controller.propose("text", "manual", retain)).toEqual({ ok: false, reason: "window-unavailable" });
     finish({ ok: true, executable: "/x" });
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(controller.status().window).toBe("open");
   });
 
   it("closes the window and releases the worker on dispose", async () => {
-    const { controller, leases } = rig(async () => ({ ok: true, executable: "/x" }));
-    await controller.open();
+    const { controller, leases, retain } = rig(async () => ({ ok: true, executable: "/x" }));
+    await controller.open(retain);
 
     controller.dispose();
 
