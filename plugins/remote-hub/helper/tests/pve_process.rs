@@ -241,6 +241,23 @@ fn a_binary_stream_frame_never_reaches_a_graphical_console() {
 }
 
 #[test]
+fn a_new_view_gets_a_fresh_rfb_greeting_on_the_same_helper_session() {
+    let w = world(default_state());
+    let mut h = start(&[]);
+    h.send(&Request::OpenPve { id: 1, connect: connect(w.fake.port, Some(PASSWORD), None, ca()), target: ConsoleTarget::Qemu { node: "pve1".into(), vmid: 100 }, cols: 80, rows: 24, keepalive_secs: None });
+    let Response::SessionOpened { session_id, .. } = h.read_reply(1) else { panic!("not opened") };
+    read_stream_until(&mut h, session_id, b"RFB 003.008");
+    let first_password = w.fake.state.lock().unwrap().vnc_password.clone().unwrap();
+    h.send(&Request::PveVncRebind { id: 2, session_id });
+    assert!(matches!(h.read_reply(2), Response::SessionInputAck { session_id: sid, .. } if sid == session_id));
+    read_stream_until(&mut h, session_id, b"RFB 003.008");
+    assert!(w.fake.state.lock().unwrap().vnc_password.as_ref().unwrap() != &first_password);
+    h.send(&Request::SessionClose { id: 3, session_id });
+    h.read_reply(3);
+    h.shutdown();
+}
+
+#[test]
 fn the_vnc_password_reaches_the_client_once_and_is_in_no_argv_and_no_stderr() {
     let w = world(default_state());
     let mut h = start(&[]);

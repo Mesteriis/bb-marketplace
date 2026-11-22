@@ -543,8 +543,12 @@ export const rpcSchemas = {
     input: sessionHandleSchema,
     output: z.object({ exitCode: z.number().int().nullable(), signal: z.number().int().nullable(), reason: z.string() }),
   },
+  session_resource_ref: {
+    input: sessionHandleSchema.extend({ liveKind: z.enum(["ssh", "rdp", "vnc"]) }),
+    output: z.object({ resourceRef: z.uuidv4().nullable() }),
+  },
   session_attach: {
-    input: sessionHandleSchema,
+    input: sessionHandleSchema.extend({ liveKind: z.enum(["ssh", "rdp", "vnc"]).optional() }),
     output: z.object({ token: z.string().regex(/^[0-9a-f]{32}$/) }),
   },
 };

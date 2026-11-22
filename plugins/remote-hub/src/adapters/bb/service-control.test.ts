@@ -154,6 +154,24 @@ function setup() {
   return { helper, service, leases, attach, setSuspended, advance: (ms: number) => void (now += ms) };
 }
 
+it("gives repeat selections of the same live SSH session one resourceRef and distinct sessions different refs", async () => {
+  const { service } = setup();
+  const profile = "12345678-1234-4123-8123-123456789abc";
+  const first = await service.sshOpen({ host: "h", extraOptions: [] }, 80, 24, profile);
+  const second = await service.sshOpen({ host: "h", extraOptions: [] }, 80, 24, profile);
+  const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
+  const a = service.sessionResourceRef(first, "ssh");
+  const b = service.sessionResourceRef(second, "ssh");
+  expect(a).toMatch(uuid);
+  expect(b).toMatch(uuid);
+  expect(b).not.toBe(a);
+  expect(service.sessionResourceRef({ ...first }, "ssh")).toBe(a);
+  expect(() => service.sessionResourceRef(first, "rdp")).toThrow();
+  await service.sessionClose(first);
+  expect(() => service.sessionResourceRef(first, "ssh")).toThrow();
+  expect(service.sessionResourceRef(second, "ssh")).toBe(b);
+});
+
 describe("a terminal session while an agent holds the lease", () => {
   it("forwards the human's keys when nobody holds it", async () => {
     const { helper, service, attach } = setup();

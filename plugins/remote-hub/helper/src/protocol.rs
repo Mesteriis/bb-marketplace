@@ -170,6 +170,8 @@ pub enum Request {
     },
     #[serde(rename = "pve.targets")]
     PveTargets { id: u64, connect: PveConnect },
+    #[serde(rename = "pve.vnc_rebind")]
+    PveVncRebind { id: u64, #[serde(rename = "sessionId")] session_id: u32 },
     /// Raw bytes for a graphical (RFB) console, base64: they are not text, so `session.input` cannot carry them.
     #[serde(rename = "pve.vnc_input")]
     PveVncInput {

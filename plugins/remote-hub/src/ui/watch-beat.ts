@@ -21,6 +21,15 @@ function globals(): WatchEnv {
   };
 }
 
+export function viewExposed(target: Element | null | undefined): boolean {
+  if (!target?.isConnected || target.closest('[hidden],[inert],[aria-hidden="true"]')) return false;
+  for (let node: Element | null = target; node; node = node.parentElement) {
+    const style = node.ownerDocument.defaultView?.getComputedStyle(node);
+    if (!style || style.display === "none" || style.visibility !== "visible" || style.opacity === "0") return false;
+  }
+  return true;
+}
+
 export function startWatchBeat(
   send: (message: { type: "watch"; visible: boolean }) => void,
   target: Element | null | undefined,
@@ -29,7 +38,7 @@ export function startWatchBeat(
   const { document: doc, window: win } = env;
   let ratio = 0;
   const looking = (): boolean =>
-    doc !== undefined && doc.visibilityState === "visible" && typeof doc.hasFocus === "function" && doc.hasFocus() && ratio >= MIN_VISIBLE_RATIO;
+    doc !== undefined && doc.visibilityState === "visible" && typeof doc.hasFocus === "function" && doc.hasFocus() && ratio >= MIN_VISIBLE_RATIO && viewExposed(target);
   const report = (): void => send({ type: "watch", visible: looking() });
 
   let observer: IntersectionObserver | null = null;

@@ -7,10 +7,14 @@ export interface Clock {
 
 export const realClock: Clock = { now: () => Date.now() };
 
-export interface AttachToken {
-  token: string;
+export interface AttachBinding {
   sessionId: number;
   generation: string;
+  embeddedVnc?: true;
+}
+
+export interface AttachToken extends AttachBinding {
+  token: string;
   expiresAt: number;
 }
 
@@ -73,12 +77,13 @@ export class AttachTokens {
     }
   }
 
-  issue(sessionId: number, generation: string): string {
+  issue(sessionId: number, generation: string, embeddedVnc = false): string {
     const token = newAttachToken();
     this.tokens.set(token, {
       token,
       sessionId,
       generation,
+      ...(embeddedVnc && { embeddedVnc: true as const }),
       expiresAt: this.clock.now() + this.ttlMs,
     });
     this.sweep();
@@ -86,13 +91,13 @@ export class AttachTokens {
   }
 
   /** Consume the token on first use; unknown/expired returns null. */
-  consume(token: string): { sessionId: number; generation: string } | null {
+  consume(token: string): AttachBinding | null {
     this.sweep();
     const entry = this.tokens.get(token);
     if (entry === undefined) return null;
     this.tokens.delete(token);
     if (this.clock.now() > entry.expiresAt) return null;
-    return { sessionId: entry.sessionId, generation: entry.generation };
+    return { sessionId: entry.sessionId, generation: entry.generation, ...(entry.embeddedVnc && { embeddedVnc: true }) };
   }
 
   /** Revoke every outstanding token of one helper generation. */

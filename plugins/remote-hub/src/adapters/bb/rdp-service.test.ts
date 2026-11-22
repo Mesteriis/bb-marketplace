@@ -207,6 +207,17 @@ async function readySession() {
 }
 
 describe("RDP service: states and the desktop", () => {
+  it("issues a live RDP token only for the ready desktop of the current generation", async () => {
+    const { helper, service } = setup();
+    const handle = await service.rdpOpen({ ...TARGET }, 8, 4);
+    expect(() => service.sessionAttach(handle, "rdp")).toThrow();
+    helper.desktop(handle.sessionId, 1, 8, 4);
+    expect(() => service.sessionAttach(handle, "ssh")).toThrow();
+    expect(service.sessionAttach(handle, "rdp")).toMatch(/^[0-9a-f]{32}$/);
+    await service.sessionClose(handle);
+    expect(() => service.sessionAttach(handle, "rdp")).toThrow();
+  });
+
   it("records the state trace in order and reports desktop_ready only after the desktop event", async () => {
     const { helper, service } = setup();
     const handle = await service.rdpOpen({ ...TARGET }, 8, 4);

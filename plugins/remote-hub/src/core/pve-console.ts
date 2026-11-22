@@ -1,6 +1,6 @@
 // What a Proxmox console session is, as the rest of the plugin sees it (host-free).
 //  - the console kinds and the states a header can show, with the concrete reason for a failure;
-//  - the relay of a graphical console: the raw RFB stream cannot be resumed, so exactly one view may ever attach, bytes that
+//  - the relay of a graphical console: the raw RFB stream cannot be resumed, so one viewer owns each handshake, bytes that
 //    arrive before it attaches are held (bounded), and the short-lived VNC password is handed to that view once.
 import type { PveConsoleTarget } from "./pve-protocol.ts";
 import type { PveConnectionView } from "./pve-targets.ts";
@@ -95,14 +95,21 @@ export class VncRelay {
   private bufferedBytes = 0;
   private password: string | null = null;
   private sink: VncViewSink | null = null;
-  private everAttached = false;
-  private disposed = false;
+  private phase: "initial" | "viewing" | "parked" | "rebinding" | "ended" = "initial";
+
+  get parked(): boolean {
+    return this.phase === "parked";
+  }
+
+  get acceptsInput(): boolean {
+    return this.phase === "viewing";
+  }
 
   constructor(private readonly maxBuffered: number) {}
 
   /** Bytes from the console. `overflow`: nobody is looking and the held bytes passed the cap, so the console cannot be kept. */
   push(bytes: Uint8Array): "ok" | "overflow" {
-    if (this.disposed) return "ok";
+    if (this.phase !== "initial" && this.phase !== "viewing") return "ok";
     if (this.sink !== null) {
       this.sink.data(bytes);
       return "ok";
@@ -118,7 +125,8 @@ export class VncRelay {
   }
 
   setPassword(password: string): void {
-    if (this.disposed) return;
+    if (this.phase === "ended" || this.parked) return;
+    if (this.phase === "rebinding") this.phase = "viewing";
     if (this.sink !== null) {
       this.sink.password(password);
       return;
@@ -126,10 +134,10 @@ export class VncRelay {
     this.password = password;
   }
 
-  attach(sink: VncViewSink): { ok: true } | { ok: false; code: VncAttachRefusal } {
+  attach(sink: VncViewSink, allowParked = false): { ok: true } | { ok: false; code: VncAttachRefusal } {
     if (this.sink !== null) return { ok: false, code: "vnc_view_taken" };
-    if (this.everAttached) return { ok: false, code: "vnc_not_resumable" };
-    this.everAttached = true;
+    if (this.phase !== "initial" && !(allowParked && this.parked)) return { ok: false, code: "vnc_not_resumable" };
+    this.phase = this.parked ? "rebinding" : "viewing";
     this.sink = sink;
     if (this.password !== null) {
       const password = this.password;
@@ -143,7 +151,8 @@ export class VncRelay {
   }
 
   /** The view went away: the stream is not resumable, so nothing more is kept for a later one. */
-  detach(): void {
+  detach(park = false): void {
+    this.phase = park && this.sink !== null ? "parked" : "ended";
     this.sink = null;
     this.buffered = [];
     this.bufferedBytes = 0;
@@ -156,7 +165,6 @@ export class VncRelay {
 
   /** The session ended: forget everything. */
   dispose(): void {
-    this.disposed = true;
     this.detach();
   }
 }

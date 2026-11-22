@@ -7,8 +7,9 @@
 //   view -> service   binary: raw RFB bytes (what noVNC writes)
 //                     text:   {type:"detach"} | {type:"watch", visible}
 //
-// An RFB stream cannot be resumed: exactly one view ever attaches (see VncRelay). The VNC password comes as one `password`
+// An RFB stream cannot be resumed: exactly one view owns each handshake (see VncRelay). The VNC password comes as one `password`
 // message to that view, never in a URL, an RPC result or a log.
+import type { AttachBinding } from "../../core/attach.ts";
 import { z } from "zod";
 import type { AgentFeed } from "../../core/agent-feed.ts";
 import { reasonText, VNC_VIEW_BACKLOG_BYTES } from "../../core/pve-console.ts";
@@ -47,7 +48,7 @@ function safeJson(text: string): unknown {
 
 export function createVncSocketHandlers(
   service: RemoteHubService,
-  binding: { sessionId: number; generation: string } | null,
+  binding: AttachBinding | null,
   attachId: string,
   watchers?: WatcherBook,
   feed?: AgentFeed,
@@ -125,7 +126,7 @@ export function createVncSocketHandlers(
             send(socket, bytes);
           },
           sendPassword: (value) => send(socket, JSON.stringify({ type: "password", value })),
-        });
+        }, binding.embeddedVnc);
       } catch {
         close(socket, WS_GENERATION_STALE, "session_not_found");
         return;
