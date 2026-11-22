@@ -262,14 +262,15 @@ export function LayoutSwitcher(props: LayoutSwitcherProps) {
   }
 
   return (
-    <div className="flex min-w-0 items-center gap-2">
-      <div ref={popover.rootRef} className="relative min-w-0" onKeyDown={onPopoverKeyDown} onBlur={popover.onBlur}>
+    <div className="flex min-w-0 max-w-full flex-wrap items-center gap-x-2 gap-y-1">
+      <div ref={popover.rootRef} className="relative min-w-0 max-w-56" onKeyDown={onPopoverKeyDown} onBlur={popover.onBlur}>
         <button
           ref={popover.triggerRef}
           type="button"
           data-focus-return
           data-toolbar-item
-          className={`${classes.button} max-w-56`}
+          title={active?.name}
+          className={`${classes.button} w-max max-w-full`}
           aria-haspopup="dialog"
           aria-expanded={popover.open}
           aria-label={active === undefined ? text.triggerNone : text.trigger(active.name)}
@@ -330,6 +331,7 @@ export function LayoutSwitcher(props: LayoutSwitcherProps) {
                         type="button"
                         data-nav
                         data-action="switch"
+                        title={layout.name}
                         aria-current={layout.id === activeLayoutId ? "true" : undefined}
                         className={`flex h-7 min-w-0 flex-1 items-center rounded-md px-2 text-left text-xs hover:bg-state-hover aria-[current=true]:bg-state-active aria-[current=true]:font-medium ${classes.focusRing}`}
                         onClick={() => closeAfter(() => layout.id !== activeLayoutId && props.onSwitch(layout.id))}
@@ -453,9 +455,9 @@ export function LayoutSwitcher(props: LayoutSwitcherProps) {
 
       <span
         role="status"
-        title={props.saveDetail}
+        title={props.saveDetail ?? chromeStrings.saveStatus[saveStatus]}
         aria-description={props.saveDetail}
-        className={`truncate text-xs ${saveStatus === "conflict" || saveStatus === "failed" ? "text-destructive" : "text-muted-foreground"}`}
+        className={`max-w-full truncate text-xs ${saveStatus === "conflict" || saveStatus === "failed" ? "text-destructive" : "text-muted-foreground"}`}
       >
         {chromeStrings.saveStatus[saveStatus]}
       </span>

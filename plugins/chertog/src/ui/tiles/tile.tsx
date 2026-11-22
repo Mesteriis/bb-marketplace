@@ -5,7 +5,7 @@ import type { KeyboardEvent, MouseEvent, PointerEvent, ReactNode } from "react";
 import type { GroupNode, Rect } from "../../core/layout/index.ts";
 import { CloseIcon, MaximizeIcon, PlusIcon, RestoreIcon } from "./icons.tsx";
 import { labelOf, type PanelLabel, type PanelStatusTone, type TileSurfaceText } from "./labels.ts";
-import { CONTROL_CLASS, rectStyle, TILE_HEADER_HEIGHT } from "./styles.ts";
+import { CONTROL_CLASS, rectStyle, tileHeaderHeight, TILE_HEADER_HEIGHT } from "./styles.ts";
 import { TileMenu } from "./tile-menu.tsx";
 
 const STATUS_CLASS: Record<PanelStatusTone, string> = {
@@ -52,6 +52,9 @@ function onControl(target: EventTarget): boolean {
 export function Tile(props: TileProps) {
   const { group, panels, text, focused, maximized, switcher, dragging } = props;
   const empty = group.activeTab === null;
+  const headerHeight = tileHeaderHeight(props.rect.width, !empty);
+  const tight = props.rect.width < 96;
+  const narrow = headerHeight > TILE_HEADER_HEIGHT;
   const active = group.activeTab === null ? undefined : labelOf(panels, group.activeTab);
   const titleOf = (member: GroupNode): string => (member.activeTab === null ? text.emptyTile : labelOf(panels, member.activeTab).title);
 
@@ -73,9 +76,11 @@ export function Tile(props: TileProps) {
         data-tile-header
         data-tile-focus={empty ? "true" : undefined}
         tabIndex={empty ? 0 : undefined}
-        style={{ height: TILE_HEADER_HEIGHT, boxSizing: "border-box", pointerEvents: "auto", touchAction: "none", userSelect: "none" }}
+        style={{ height: headerHeight, boxSizing: "border-box", pointerEvents: "auto", touchAction: "none", userSelect: "none" }}
         className={
-          "flex items-center gap-1 border-b px-1 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring " +
+          "flex items-center border-b focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring " +
+          (tight ? "" : "gap-1 px-1 ") +
+          (narrow ? "flex-wrap justify-end gap-y-0 " : "") +
           (focused ? "border-primary bg-accent text-accent-foreground" : "border-border bg-muted text-muted-foreground")
         }
         onPointerDown={(event) => {
@@ -88,6 +93,7 @@ export function Tile(props: TileProps) {
           <select
             data-tile-control
             aria-label={text.switchTile}
+            title={titleOf(group)}
             value={group.id}
             onChange={(event) => props.onSwitch(event.target.value)}
             className="h-6 max-w-[40%] shrink-0 rounded border border-input bg-transparent px-1 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
@@ -102,7 +108,11 @@ export function Tile(props: TileProps) {
         {empty ? (
           <span className="min-w-0 flex-1 truncate px-1">{text.emptyTile}</span>
         ) : (
-          <div role="tablist" aria-label={text.tabs} className="flex h-full min-w-0 flex-1 items-stretch overflow-hidden">
+          <div
+            role="tablist"
+            aria-label={text.tabs}
+            className={"flex min-w-0 items-stretch overflow-x-auto " + (narrow ? "order-first h-7 w-full" : "h-full flex-1")}
+          >
             {group.tabs.map((panelId) => {
               const label = labelOf(panels, panelId);
               const selected = panelId === group.activeTab;
@@ -114,7 +124,8 @@ export function Tile(props: TileProps) {
                   data-panel-id={panelId}
                   title={label.context === undefined ? label.title : label.title + " — " + label.context}
                   className={
-                    "flex min-w-0 max-w-48 items-center gap-1 border-r border-border pl-2 pr-1 transition-colors motion-reduce:transition-none " +
+                    "flex max-w-48 items-center border-r border-border transition-colors motion-reduce:transition-none " +
+                    (tight ? "min-w-16 gap-0.5 " : "min-w-20 gap-1 pl-2 pr-1 ") +
                     (selected ? "bg-background text-foreground " : "hover:bg-background/60 ") +
                     (dragged ? "opacity-60" : "")
                   }
@@ -128,7 +139,7 @@ export function Tile(props: TileProps) {
                     aria-selected={selected}
                     tabIndex={selected ? 0 : -1}
                     data-tile-focus={selected ? "true" : undefined}
-                    className="h-full min-w-0 flex-1 truncate text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"
+                    className="h-full min-w-6 flex-1 truncate text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"
                     // A pointer click is handled on release by the surface, which tells it from a drag; this is Enter and Space.
                     onClick={(event) => {
                       if (event.detail === 0) props.onActivateTab(panelId);
@@ -142,7 +153,7 @@ export function Tile(props: TileProps) {
                     tabIndex={-1}
                     aria-label={text.closeTab(label.title)}
                     title={text.closeTab(label.title)}
-                    className={CONTROL_CLASS + " h-5 w-5"}
+                    className={CONTROL_CLASS}
                     onClick={() => props.onRequestClose(panelId)}
                   >
                     <CloseIcon />
@@ -153,7 +164,7 @@ export function Tile(props: TileProps) {
           </div>
         )}
         {active?.context !== undefined && (
-          <span data-tile-context className="min-w-0 max-w-[40%] shrink truncate px-1 text-muted-foreground">
+          <span data-tile-context title={active.context} className="min-w-0 max-w-[40%] shrink truncate px-1 text-muted-foreground">
             {active.context}
           </span>
         )}
@@ -187,7 +198,7 @@ export function Tile(props: TileProps) {
       </div>
       {empty && (
         <div
-          style={{ position: "absolute", top: TILE_HEADER_HEIGHT, left: 0, right: 0, bottom: 0, pointerEvents: "auto" }}
+          style={{ position: "absolute", top: headerHeight, left: 0, right: 0, bottom: 0, pointerEvents: "auto" }}
           className="flex items-center justify-center overflow-auto bg-background p-4 text-sm text-muted-foreground"
         >
           {props.renderPicker !== undefined ? (

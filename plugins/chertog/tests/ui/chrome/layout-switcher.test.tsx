@@ -85,6 +85,16 @@ const popover = () => screen.getByRole("dialog", { name: "Раскладки" })
 const nameField = () => screen.getByRole("textbox", { name: "Имя новой раскладки" });
 
 describe("LayoutSwitcher: creating and switching", () => {
+  it("exposes the full layout name on the trigger and in its list", async () => {
+    const user = userEvent.setup();
+    const name = "Раскладка отдела эксплуатации и сопровождения";
+    render(<Harness calls={spies()} initial={[{ id: "l1", name }]} />);
+    const trigger = screen.getByRole("button", { name: "Раскладка: " + name });
+    expect(trigger.title).toBe(name);
+    await user.click(trigger);
+    expect(within(popover()).getByRole("button", { name }).title).toBe(name);
+  });
+
   it("creates «Разработка» and «Ревью» from the current layout and switches between them", async () => {
     const user = userEvent.setup();
     const calls = spies();
@@ -356,6 +366,7 @@ describe("LayoutSwitcher: save status", () => {
     const calls = spies();
     render(<Harness calls={calls} saveStatus="failed" />);
     expect(screen.getByRole("status").textContent).toBe("Не сохранено");
+    expect(screen.getByRole("status").title).toBe("Не сохранено");
     expect(calls.onRetrySave).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: "Сохранить ещё раз" }));
     expect(calls.onRetrySave).toHaveBeenCalledTimes(1);
