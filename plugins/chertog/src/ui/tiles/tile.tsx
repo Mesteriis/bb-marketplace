@@ -6,7 +6,7 @@ import type { GroupNode, Rect } from "../../core/layout/index.ts";
 import { CloseIcon, MaximizeIcon, PlusIcon, RestoreIcon } from "./icons.tsx";
 import { labelOf, type PanelLabel, type TileSurfaceText } from "./labels.ts";
 import { StatusDot } from "./status-dot.tsx";
-import { CONTROL_CLASS, rectStyle, tileHeaderHeight, TILE_HEADER_HEIGHT } from "./styles.ts";
+import { CONTROL_CLASS, INNER_RADIUS, rectStyle, tileHeaderHeight, TILE_HEADER_HEIGHT } from "./styles.ts";
 import { TileMenu } from "./tile-menu.tsx";
 import { tileMenuItems } from "./tile-menu-items.ts";
 
@@ -77,9 +77,9 @@ export function Tile(props: TileProps) {
         data-tile-header
         data-tile-focus={empty ? "true" : undefined}
         tabIndex={empty ? 0 : undefined}
-        style={{ height: headerHeight, boxSizing: "border-box", pointerEvents: "auto", touchAction: "none", userSelect: "none" }}
+        style={{ height: headerHeight, boxSizing: "border-box", borderTopLeftRadius: INNER_RADIUS, borderTopRightRadius: INNER_RADIUS, pointerEvents: "auto", touchAction: "none", userSelect: "none" }}
         className={
-          "flex items-center rounded-t-md border-b border-border bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring " +
+          "flex items-center border-b border-border bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring " +
           (tight ? "" : "gap-1 px-1 ") +
           (narrow ? "flex-wrap justify-end gap-y-0 " : "") +
           (focused ? "text-foreground" : "text-muted-foreground")
@@ -194,13 +194,23 @@ export function Tile(props: TileProps) {
                 {maximized ? <RestoreIcon /> : <MaximizeIcon />}
               </button>
             )}
+            <button
+              type="button"
+              data-tile-control
+              aria-label={text.closePanel}
+              title={text.closePanel}
+              className={CONTROL_CLASS}
+              onClick={() => props.onRequestClose(group.activeTab as string)}
+            >
+              <CloseIcon />
+            </button>
           </>
         )}
       </div>
       {empty && (
         <div
-          style={{ position: "absolute", top: headerHeight, left: 0, right: 0, bottom: 0, pointerEvents: "auto" }}
-          className="flex items-center justify-center overflow-auto rounded-b-md bg-background p-4 text-sm text-muted-foreground"
+          style={{ position: "absolute", top: headerHeight, left: 0, right: 0, bottom: 0, pointerEvents: "auto", borderBottomLeftRadius: INNER_RADIUS, borderBottomRightRadius: INNER_RADIUS }}
+          className="flex items-center justify-center overflow-auto bg-background p-4 text-sm text-muted-foreground"
         >
           {props.renderPicker !== undefined ? (
             props.renderPicker({ groupId: group.id, pick: props.onPick })

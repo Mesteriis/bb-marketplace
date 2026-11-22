@@ -1,12 +1,14 @@
 // What the tile chrome shows about a panel, and the surface's own texts.
 // The surface knows panels only by id; the parent supplies these labels.
 
+import type { TileMenuItem } from "./tile-menu.tsx";
+
 export type PanelStatusTone = "idle" | "busy" | "attention" | "error";
 
 export interface PanelLabel {
   readonly handoffUnavailable?: string;
   /** Items for handing the panel over to another window: one per target, or the reason there is none. */
-  readonly handoffItems?: readonly { readonly label: string; readonly reason?: string; onSelect?(): void }[];
+  readonly handoffItems?: readonly TileMenuItem[];
   /** Tab text. */
   readonly title: string;
   /** What the panel is bound to: thread and project, branch, machine or environment. */
@@ -23,6 +25,8 @@ export interface TileSurfaceText {
   readonly pickContent: string;
   readonly addTab: string;
   readonly closeTab: (title: string) => string;
+  /** The close button of the bar: closes the active panel. */
+  readonly closePanel: string;
   readonly tileMenu: string;
   readonly removeTab: string;
   readonly removeTile: string;
@@ -40,6 +44,7 @@ export const DEFAULT_TILE_TEXT: TileSurfaceText = {
   pickContent: "Выбрать содержимое",
   addTab: "Добавить вкладку",
   closeTab: (title) => "Закрыть: " + title,
+  closePanel: "Закрыть панель",
   tileMenu: "Действия тайла",
   removeTab: "Убрать вкладку из раскладки",
   removeTile: "Убрать тайл из раскладки",

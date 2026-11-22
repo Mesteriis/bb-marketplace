@@ -262,7 +262,7 @@ export function WindowOverlay({ workspace, call, children }: { workspace: Window
  * is no other window. Nothing while the window does not own the thread.
  */
 export function handoffMenuItems(client: WindowClient, threadId: string): TileMenuItem[] {
-  const known = client.read().snapshot ?? client.lastKnown;
+  const known = client.read().snapshot;
   const placement = known?.placements.find((item) => item.threadId === threadId)?.placement;
   const me = known?.instanceId;
   if (!known || !me || !placement || placement.owner !== me) return [];
@@ -275,7 +275,8 @@ export function handoffMenuItems(client: WindowClient, threadId: string): TileMe
   }
   const targets = known.windows.filter((id) => id !== me);
   if (targets.length === 0) return [{ label: "Передать в другое окно", reason: "Откройте второе окно через New Window." }];
-  return targets.map((id) => ({ label: "Передать в окно " + id.slice(0, 8), onSelect: () => command({ action: "prepare", target: id }) }));
+  // Which window is this one: without it the ids of three or more windows cannot be told apart.
+  return [{ label: "Это окно " + me.slice(0, 8) }, ...targets.map((id) => ({ label: "Передать в окно " + id.slice(0, 8), onSelect: () => command({ action: "prepare", target: id }) }))];
 }
 
 export function WindowThread({ threadId, children }: { threadId: string; children: ReactNode }) {

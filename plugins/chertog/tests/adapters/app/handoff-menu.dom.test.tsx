@@ -28,8 +28,9 @@ async function clientWith(windows: string[], placement: Placement | null) {
 it("offers one item per other window, and a prepare command for it", async () => {
   const { client, sent } = await clientWith(["me", "634b078f51300", "aaaaaaaa11"], { owner: "me", generation: 3, transfer: null });
   const items = handoffMenuItems(client, "thr_a");
-  expect(items.map((item) => item.label)).toEqual(["Передать в окно 634b078f", "Передать в окно aaaaaaaa"]);
-  await act(async () => items[0].onSelect?.());
+  expect(items.map((item) => item.label)).toEqual(["Это окно me", "Передать в окно 634b078f", "Передать в окно aaaaaaaa"]);
+  expect(items[0].onSelect).toBeUndefined();
+  await act(async () => items[1].onSelect?.());
   expect(sent).toEqual([expect.objectContaining({ threadId: "thr_a", generation: 3, command: { action: "prepare", target: "634b078f51300" } })]);
 });
 

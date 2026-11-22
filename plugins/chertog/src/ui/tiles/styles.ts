@@ -10,6 +10,9 @@ export const TILE_HEADER_HEIGHT = 24;
 /** The gap between two tiles and between a tile and the edge of the surface, in pixels. The divider lies in it. */
 export const TILE_GAP = 6;
 
+/** The radius of the curve inside a tile border: BB's radius less the border. */
+export const INNER_RADIUS = "calc(var(--radius) - 1px)";
+
 /** Thickness of a tile's border in pixels. */
 export const TILE_BORDER = 1;
 

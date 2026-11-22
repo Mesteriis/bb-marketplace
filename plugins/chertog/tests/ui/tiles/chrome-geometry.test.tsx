@@ -1,7 +1,7 @@
 // The look of a tile: a 24 px bar, 6 px between tiles and to the edge, a
 // rounded border, and a content area inside the border for the live layer.
 // Every expected number is written out by hand.
-import { render } from "@testing-library/react";
+import { fireEvent, render, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { createWorkspace, toggleMaximize } from "../../../src/core/layout/index.ts";
 import { CONTROL_CLASS, TILE_HEADER_HEIGHT, tileBody, tileHeaderHeight } from "../../../src/ui/tiles/index.ts";
@@ -91,5 +91,26 @@ describe("tile frame", () => {
   it("draws the surface itself without background", () => {
     const { container } = render(<Harness calls={newCalls(threeTiles())} size={SIZE} />);
     expect(container.querySelector<HTMLElement>("[data-chertog-surface]")!.className).not.toMatch(/\bbg-/);
+  });
+});
+
+describe("tile bar close button", () => {
+  it("sits last on the right, outside the tab strip, 20 px, and asks to close the active panel", () => {
+    const calls = newCalls(threeTiles());
+    const { container } = render(<Harness calls={calls} size={SIZE} />);
+    const bar = header(container, "group-4");
+    const button = within(bar).getByRole("button", { name: "Закрыть панель" });
+    expect(button.closest('[role="tablist"]')).toBeNull();
+    expect(button.className).toContain("h-5 w-5");
+    const controls = Array.from(bar.querySelectorAll("button")).filter((b) => b.closest('[role="tablist"]') === null);
+    expect(controls.at(-1)).toBe(button);
+    fireEvent.click(button);
+    expect(calls.closes).toEqual(["c"]);
+    expect(calls.changes).toEqual([]);
+  });
+
+  it("is absent from an empty tile", () => {
+    const { container } = render(<Harness calls={newCalls(createWorkspace([]))} size={SIZE} />);
+    expect(container.querySelector('[aria-label="Закрыть панель"]')).toBeNull();
   });
 });
