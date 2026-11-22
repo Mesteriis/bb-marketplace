@@ -26,10 +26,11 @@ import { embeddedSources } from "./embedded-source.tsx";
 import { providerSources } from "./provider-sources.tsx";
 import { useOpenRequests, whenShown } from "./open-requests.ts";
 import { LiveLayer } from "./LiveLayer.tsx";
-import { readAcceptanceFixture, readHomeRedirect } from "./settings.ts";
+import { readAcceptanceFixture, readHomeRedirectEffective, readTileSpace } from "./settings.ts";
 import { appStrings } from "./strings.ts";
 import type { ThreadEntry } from "./thread-source.ts";
 import { createWindowWorkspace, type WindowWorkspace } from "./window-workspace.ts";
+import { TileTitle } from "../../../ui/chrome/index.ts";
 import { ChertogHeaderActions, ChertogHeaderTitle, useChertogPageTitle } from "./WorkspaceHeader.tsx";
 import { WorkspaceRoute } from "./WorkspaceRoute.tsx";
 
@@ -77,7 +78,27 @@ function useHostHandles(workspace: WindowWorkspace): void {
   workspace.host.pluginId = experimental_usePluginId();
 }
 
+/** The «Тайловое пространство» switch as the window sees it; `null` until BB delivers the values. */
+function useTileSpace(): boolean | null {
+  return readTileSpace(useSettings().values);
+}
+
+/** Set by the overlay, which BB keeps mounted: the commands read it, they have no hooks. */
+let tileSpaceOn = false;
+
+/** Mounts the workspace's overlay only while the switch is on: off, it holds no listener and no subscription. */
 function ChertogOverlay() {
+  const tileSpace = useTileSpace();
+  useEffect(() => {
+    tileSpaceOn = tileSpace === true;
+    return () => {
+      tileSpaceOn = false;
+    };
+  }, [tileSpace]);
+  return tileSpace === true ? <ChertogLiveOverlay /> : null;
+}
+
+function ChertogLiveOverlay() {
   const workspace = useWindowWorkspace();
   useHostHandles(workspace);
   const openTarget = useMemo(() => whenShown(workspace.session, () => workspace.bridge.getPlace() !== null), [workspace]);
@@ -136,7 +157,23 @@ function ComposerWatch({ workspace }: { workspace: WindowWorkspace }) {
   return null;
 }
 
+/** What the route says with the switch off: one line, and where to turn it on. */
+function TileSpaceOff() {
+  return (
+    <div data-chertog-tile-space-off className="p-6 text-sm text-muted-foreground">
+      <p>{appStrings.tileSpaceOff}</p>
+      <p>{appStrings.tileSpaceOffWhere}</p>
+    </div>
+  );
+}
+
 function ChertogNavPanel() {
+  const tileSpace = useTileSpace();
+  if (tileSpace === null) return null;
+  return tileSpace ? <ChertogWorkspacePanel /> : <TileSpaceOff />;
+}
+
+function ChertogWorkspacePanel() {
   const workspace = useWindowWorkspace();
   useHostHandles(workspace);
   return (
@@ -151,12 +188,24 @@ function ChertogNavPanel() {
 // (observed on BB 0.50.1: inside the plugin root, so the scoped classes of
 // the chrome apply there).
 function ChertogHeaderTitleSlot() {
+  const tileSpace = useTileSpace();
+  if (tileSpace === null) return null;
+  // Off: the name only, no tile and no menu.
+  if (!tileSpace) return <TileTitle tile={null} fallback={appStrings.panelTitle} menuLabel={appStrings.focusedTileMenu} menuItems={[]} />;
+  return <ChertogLiveHeaderTitle />;
+}
+
+function ChertogLiveHeaderTitle() {
   const workspace = useWindowWorkspace();
   useHostHandles(workspace);
   return <ChertogHeaderTitle workspace={workspace} />;
 }
 
 function ChertogHeaderActionsSlot() {
+  return useTileSpace() === true ? <ChertogLiveHeaderActions /> : null;
+}
+
+function ChertogLiveHeaderActions() {
   const workspace = useWindowWorkspace();
   useHostHandles(workspace);
   const navigate = useBbNavigate();
@@ -164,12 +213,14 @@ function ChertogHeaderActionsSlot() {
 }
 
 function useChertogPageTitleSlot() {
-  return useChertogPageTitle(useWindowWorkspace());
+  const tileSpace = useTileSpace();
+  const title = useChertogPageTitle(useWindowWorkspace());
+  return tileSpace === true ? title : null;
 }
 
 /** The instance of the focused tile, while the window shows the Chertog route. */
 function chosenInstance(workspace: WindowWorkspace): string | null {
-  return workspace.bridge.getPlace() === null ? null : (workspace.session.focusedInstance()?.instanceId ?? null);
+  return !tileSpaceOn || workspace.bridge.getPlace() === null ? null : (workspace.session.focusedInstance()?.instanceId ?? null);
 }
 
 export function registerChertogApp(app: PluginAppBuilder): void {
@@ -193,7 +244,7 @@ export function registerChertogApp(app: PluginAppBuilder): void {
     component: createHomeRedirectSection({
       panelPath: CHERTOG_PANEL_PATH,
       openLabel: appStrings.openChertog,
-      useRedirectEnabled: () => readHomeRedirect(useSettings().values),
+      useRedirectEnabled: () => readHomeRedirectEffective(useSettings().values),
     }),
   });
 
@@ -231,7 +282,7 @@ export function registerChertogApp(app: PluginAppBuilder): void {
     title: appStrings.endSessionCommand,
     isAvailable() {
       const workspace = current;
-      if (!workspace) return false;
+      if (!workspace || !tileSpaceOn) return false;
       const instance = workspace.session.focusedInstance();
       if (workspace.bridge.getPlace() === null || instance === null || instance.state !== "live") return false;
       return workspace.session.sourceOf(instance.ref.provider)?.canEndSession === true;

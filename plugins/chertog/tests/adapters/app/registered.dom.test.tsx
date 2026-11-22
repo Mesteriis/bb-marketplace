@@ -12,6 +12,7 @@ const sdk = { plugins: { list: async () => ({ plugins: [] }) }, environments: {}
 vi.mock("@get-bb/plugin-sdk/app", () => ({
   useComposers: () => composers, useBbNavigate: () => ({}), useSdk: () => sdk,
   experimental_usePluginId: () => "chertog",
+  useSettings: () => ({ values: {} }),
   useRpc: () => ({ call: (method: string, input: SaveCall) =>
     method === "load_workspace" ? store.load() : store.save(input.document, input.expectedRevision) }),
 }));
