@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useRef, useState, useSyncExternalStore } from "react";
 import { classes } from "../../../ui/chrome/primitives.tsx";
 import type { WorkspaceFileCatalog } from "./file-preview-source.tsx";
 import type { createDiffSource } from "./diff-source.tsx";
@@ -8,7 +8,7 @@ type Revisions = Pick<ReturnType<typeof createDiffSource>, "loadRevisions" | "se
 export function CatalogControls({ catalog, diff }: { catalog: WorkspaceFileCatalog; diff?: Revisions }) {
   const [environments, setEnvironments] = useState<Awaited<ReturnType<typeof catalog.listEnvironments>>>([]);
   const [query, setQuery] = useState("");
-  const [env, setEnv] = useState("");
+  const env = useSyncExternalStore(catalog.subscribe, catalog.requestedEnvironment);
   const [revisions, setRevisions] = useState<readonly string[]>([]);
   const [pair, setPair] = useState(["", ""]);
   const [message, setMessage] = useState("");
@@ -27,7 +27,6 @@ export function CatalogControls({ catalog, diff }: { catalog: WorkspaceFileCatal
   }
   async function select(id: string) {
     const turn = ++generation.current;
-    setEnv(id);
     setPair(["", ""]);
     setRevisions([]);
     setMessage("");

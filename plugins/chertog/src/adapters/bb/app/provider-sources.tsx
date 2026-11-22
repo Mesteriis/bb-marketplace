@@ -24,17 +24,11 @@ export function providerSources(sdk: PluginBrowserBbSdk, navigate: ReturnType<ty
   let selectedThread = "";
   const directory: CardDirectory = {
     subscribe(listener) {
-      const stops = [changes.subscribe(listener), files.subscribe(listener), threads.subscribe(listener)];
+      const stops = [changes.subscribe(listener), threads.subscribe(listener)];
       return () => stops.forEach(stop => stop());
     },
     items(type): Row[] {
       if (type === "bb-terminal") return terminals;
-      if (type === "markdown-editor" || type === "bb-editor") {
-        return files.snapshot.items.flatMap(item => {
-          const params = files.params(item.id);
-          return params ? [{ ...item, ref: { provider: type, params } }] : [];
-        });
-      }
       const state = threads.get();
       if (state.status !== "ready") return [];
       return state.threads.flatMap(thread => {
@@ -68,8 +62,19 @@ export function providerSources(sdk: PluginBrowserBbSdk, navigate: ReturnType<ty
     changes.notify();
   }
   const cards = (Object.keys(entryCards) as CardType[]).map(type => {
+    if (type === "bb-editor" || type === "markdown-editor") {
+      const catalog = new WorkspaceFileCatalog(sdk.environments);
+      const card = createCardSource(type, host, {
+        subscribe: catalog.subscribe,
+        items: () => catalog.snapshot.items.flatMap(item => {
+          const params = catalog.params(item.id);
+          return params ? [{ ...item, ref: { provider: type, params } }] : [];
+        }),
+      });
+      return { ...card, controls: () => <CatalogControls catalog={catalog} />,
+        section: () => ({ ...card.section(), state: catalog.snapshot.state }) };
+    }
     const card = createCardSource(type, host, directory);
-    if (type === "bb-editor" || type === "markdown-editor") card.controls = () => <CatalogControls catalog={files} />;
     if (type === "bb-terminal") {
       const section = card.section;
       card.section = () => ({ ...section(), state: terminalState });
