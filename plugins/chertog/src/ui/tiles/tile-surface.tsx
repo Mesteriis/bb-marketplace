@@ -56,6 +56,8 @@ export interface TileSurfaceProps {
   onRequestClose(panelId: string): void;
   /** An empty tile, or the add button of a tile, asks for content. */
   onPickContent(groupId: string): void;
+  /** The menu item "open beside" of a tile: a picker opens as a child of the tile's active panel. Without it the menu has no such item. */
+  onOpenBeside?(panelId: string): void;
   /** Called when the content rectangles change, a dragged divider included. */
   onContentRects?(rects: ContentRects): void;
   /** Draws the body of an empty tile. Without it the tile shows one button that calls `onPickContent`. */
@@ -194,6 +196,7 @@ export function TileSurface(props: TileSurfaceProps) {
             onRemoveTile={() => ask(closeGroup(state, groupId))}
             onToggleMaximize={() => ask(toggleMaximize(state, groupId))}
             onPick={() => props.onPickContent(groupId)}
+            {...(props.onOpenBeside === undefined ? {} : { onOpenBeside: props.onOpenBeside })}
             onSwitch={(target) => ask(focusGroup(state, target))}
           />
         );

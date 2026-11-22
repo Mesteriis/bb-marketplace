@@ -44,7 +44,7 @@ describe("entry", () => {
     expect(snapshot.phase).toBe("ready");
     expect(snapshot.origin).toBe("first-entry");
     expect(snapshot.document).toEqual({
-      schemaVersion: 2,
+      schemaVersion: 3,
       revision: 0,
       panels: {},
       layouts: [{ id: "layout-main", name: "Основная", workspace: EMPTY_TILE }],

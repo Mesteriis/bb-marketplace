@@ -41,6 +41,8 @@ export interface TileProps {
   onRemoveTile(): void;
   onToggleMaximize(): void;
   onPick(): void;
+  /** Ask the parent to open a picker beside the active panel of this tile, as its child. Without it the menu has no such item. */
+  onOpenBeside?(panelId: string): void;
   onSwitch(groupId: string): void;
 }
 
@@ -178,6 +180,7 @@ export function Tile(props: TileProps) {
               items={[
                 { label: text.removeTab, onSelect: () => props.onRemoveTab(group.activeTab as string) },
                 { label: text.removeTile, onSelect: props.onRemoveTile },
+                ...(props.onOpenBeside === undefined ? [] : [{ label: text.openBeside, onSelect: () => props.onOpenBeside?.(group.activeTab as string) }]),
                 ...(active?.linkedCount ? [{ label: text.closeBlock(active.linkedCount), onSelect: () => props.onRequestClose(group.activeTab as string) }] : []),
                 ...(active?.handoffUnavailable ? [{
                   label: "Передать в другое окно",

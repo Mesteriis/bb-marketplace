@@ -10,7 +10,7 @@ import { decideSave, readWorkspaceDocument } from "../../../src/core/workspace/i
  */
 export function stageADocument(): WorkspaceDocument {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     revision: 0,
     panels: {
       "thread-a": { ref: { provider: "bb-thread", params: { threadId: "thr_a" } } },

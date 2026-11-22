@@ -29,7 +29,7 @@ function done(change: WorkspaceChange): WorkspaceDocument {
 }
 
 const FIRST_DOCUMENT = {
-  schemaVersion: 2,
+  schemaVersion: 3,
   revision: 0,
   panels: {},
   layouts: [
@@ -237,7 +237,7 @@ describe("two windows saving one workspace", () => {
     const merged = mergeDocuments(base, mine, theirs, NO_LIVE_PANELS);
     expect(merged).toEqual({
       document: {
-        schemaVersion: 2,
+        schemaVersion: 3,
         revision: 2,
         panels: {},
         layouts: [

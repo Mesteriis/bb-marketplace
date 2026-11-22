@@ -287,6 +287,22 @@ describe("maximize, close and the layout menu", () => {
     expect(calls.closes).toEqual(["a"]);
   });
 
+  it("offers opening something next to a tile, for the tile's active panel, when the parent can do it", async () => {
+    const user = userEvent.setup();
+    const opened: string[] = [];
+    const calls = newCalls(threeTiles());
+    const { container } = render(<Harness calls={calls} size={SIZE} onOpenBeside={(panelId) => opened.push(panelId)} />);
+    await user.click(within(container.querySelector('[data-group-id="group-2"]') as HTMLElement).getByRole("button", { name: "Действия тайла" }));
+    expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
+      "Убрать вкладку из раскладки",
+      "Убрать тайл из раскладки",
+      "Открыть рядом…",
+    ]);
+    await user.click(screen.getByRole("menuitem", { name: "Открыть рядом…" }));
+    expect(opened).toEqual(["b"]);
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
+
   it("closes the menu on Escape and returns the focus to its button", async () => {
     const user = userEvent.setup();
     const { calls, container } = setup();

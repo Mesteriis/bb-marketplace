@@ -25,6 +25,7 @@ export interface TileSurfaceText {
   readonly removeTab: string;
   readonly removeTile: string;
   readonly closeBlock: (count: number) => string;
+  readonly openBeside: string;
   readonly maximize: string;
   readonly restore: string;
   readonly resize: string;
@@ -41,6 +42,7 @@ export const DEFAULT_TILE_TEXT: TileSurfaceText = {
   removeTab: "Убрать вкладку из раскладки",
   removeTile: "Убрать тайл из раскладки",
   closeBlock: (count) => `Закрыть вместе с подчинёнными (${count})`,
+  openBeside: "Открыть рядом…",
   maximize: "Развернуть",
   restore: "Восстановить",
   resize: "Изменить размер",

@@ -2,7 +2,8 @@
 import { describe, expect, it } from "vitest";
 import { addTab, createWorkspace, findGroupOfPanel, listGroups, moveTab, splitGroup, swapGroups } from "../../../src/core/layout/index.ts";
 import type { LayoutNode } from "../../../src/core/layout/index.ts";
-import { activeLayout, blockChildren, changeActiveLayout, BLOCK_SIDE_LIMIT, closeBlock, moveBlock, moveWithBlocks, placeInBlock } from "../../../src/core/workspace/index.ts";
+import { activeLayout, blockChildren, changeActiveLayout, BLOCK_SIDE_LIMIT, closeBlock, moveBlock, moveWithBlocks, openBeside, placeInBlock, replaceChoosePanel } from "../../../src/core/workspace/index.ts";
+import { CHOOSE_PROVIDER } from "../../../src/core/panels/choose.ts";
 import type { ParentOf, WorkspaceChange, WorkspaceDocument, WorkspacePanel } from "../../../src/core/workspace/index.ts";
 
 const NO_LIVE: ReadonlySet<string> = new Set();
@@ -20,7 +21,7 @@ function done(change: WorkspaceChange): WorkspaceDocument {
 /** One layout with one tile `p`, the parent thread. */
 function parentOnly(): WorkspaceDocument {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     revision: 0,
     panels: { p: thread("p") },
     layouts: [{ id: "layout-1", name: "Работа", workspace: createWorkspace(["p"]) }],
@@ -176,3 +177,28 @@ function changeOther(document: WorkspaceDocument): WorkspaceChange {
 function moveChildInto(document: WorkspaceDocument, panelId: string, intoPanelId: string): WorkspaceChange {
   return changeActiveLayout(document, (workspace) => moveTab(workspace, panelId, groupIdOf(document, intoPanelId)));
 }
+
+describe("openBeside", () => {
+  const RDP = { provider: "remote-rdp-live", params: { resourceRef: "6f1c2d3e-4b5a-4c6d-8e7f-0a1b2c3d4e5f" } };
+  const stored = (document: WorkspaceDocument): ParentOf => (panelId) => document.panels[panelId]?.parent;
+
+  it("puts a picker tile right of the parent, with the parent stored on it", () => {
+    const document = done(openBeside(parentOnly(), "p", "pick", stored(parentOnly())));
+    expect(shape(activeLayout(document).workspace.root)).toEqual(["row", ["p"], ["pick"]]);
+    expect(document.panels.pick).toEqual({ ref: { provider: CHOOSE_PROVIDER, params: { kind: "any" } }, parent: "p" });
+  });
+
+  it("refuses a parent the layout does not place", () => {
+    expect(openBeside(parentOnly(), "nobody", "pick", () => undefined)).toEqual({ ok: false, reason: "not-placed" });
+  });
+
+  it("makes a chosen RDP session a child that closing the parent closes too", () => {
+    const opened = done(openBeside(parentOnly(), "p", "pick", () => undefined));
+    const chosen = done(replaceChoosePanel(opened, "pick", "rdp", RDP, NO_LIVE));
+    expect(chosen.panels.rdp).toEqual({ ref: RDP, parent: "p" });
+    expect(blockChildren(chosen, "p", stored(chosen))).toEqual(["rdp"]);
+    const closed = done(closeBlock(chosen, "p", stored(chosen), NO_LIVE));
+    expect(placed(closed)).toEqual([]);
+    expect(closed.panels).toEqual({});
+  });
+});

@@ -4,6 +4,7 @@ import { closeTab, findGroupOfPanel, listGroups } from "../../../src/core/layout
 import type { WorkspaceDocument } from "../../../src/core/workspace/index.ts";
 import { activeLayout, blockChildren, panelIdOfRef } from "../../../src/core/workspace/index.ts";
 import type { ContentSource } from "../../../src/adapters/bb/app/content-sources.ts";
+import { chooseSource } from "../../../src/adapters/bb/app/choose-source.tsx";
 import { ThreadDirectory, createThreadSource, threadRef, type ThreadEntry } from "../../../src/adapters/bb/app/thread-source.ts";
 import { WorkspaceSession } from "../../../src/adapters/bb/app/workspace-session.ts";
 import { applyTileCommand, tileCommandOperation } from "../../../src/ui/tiles/index.ts";
@@ -36,7 +37,7 @@ function twoTiles(unrelatedFirst = false, secondParent = false): WorkspaceDocume
   const parents = { kind: "group" as const, id: "group-1", tabs: ["panel-p", "panel-q"], activeTab: "panel-p" };
   const groups = secondParent ? [parents, group("group-2", "panel-x")] : unrelatedFirst ? [group("group-1", "panel-x"), group("group-2", "panel-p")] : [group("group-1", "panel-p"), group("group-2", "panel-x")];
   return {
-    schemaVersion: 2, revision: 1,
+    schemaVersion: 3, revision: 1,
     panels: { "panel-p": { ref: threadRef("thr_p") }, "panel-x": { ref: threadRef("thr_x") }, ...(secondParent ? { "panel-q": { ref: threadRef("thr_q") } } : {}) },
     layouts: [{
       id: "layout-main", name: "main",
@@ -53,9 +54,9 @@ async function blockSession(tweaks: Tweaks = {}, stored: WorkspaceDocument = two
   const threads = new ThreadDirectory();
   threads.set({ status: "ready", threads: entries });
   const nextId = sequentialIds();
-  const session = new WorkspaceSession({
+  const session: WorkspaceSession = new WorkspaceSession({
     rpc,
-    sources: [tweaked(createThreadSource({ directory: threads, renderChat: () => null }), tweaks)],
+    sources: [tweaked(createThreadSource({ directory: threads, renderChat: () => null }), tweaks), chooseSource(() => session)],
     newId: (prefix) => nextId(prefix),
     diagnostics: { failure: () => undefined },
     threads,
@@ -268,5 +269,36 @@ describe("a parent tile and its block", () => {
     });
     expect(session.document()).toBe(before);
     expect(session.controller.getSnapshot().refusal).toBe("invalid-layout");
+  });
+});
+
+describe("opening something beside a tile", () => {
+  it("places a picker right of the tile with the tile as its parent, so it counts as a child", async () => {
+    const session = await blockSession({}, twoTiles(), []);
+    session.openBeside("panel-p");
+    const picker = placed(session).find((panelId) => session.document()!.panels[panelId].ref.provider === "chertog-choose")!;
+    expect(session.document()!.panels[picker].parent).toBe("panel-p");
+    expect(session.parentOf(picker)).toBe("panel-p");
+    expect(blockChildren(session.document()!, "panel-p", session.parentOf)).toEqual([picker]);
+    expect(session.linkedCountOf("panel-p")).toBe(1);
+  });
+
+  it("keeps what is chosen in that picker in the block: it inherits the parent and closes with it", async () => {
+    const session = await blockSession({}, twoTiles(), []);
+    session.openBeside("panel-p");
+    const picker = placed(session).find((panelId) => session.document()!.panels[panelId].ref.provider === "chertog-choose")!;
+    session.replaceChoice(session.instanceOfPanel(picker)!.instanceId, { providerId: "bb-thread", itemId: "thr_q", placement: "tab" });    const chosen = panelOf(session, "thr_q");
+    expect(session.document()!.panels[chosen].parent).toBe("panel-p");
+    expect(session.parentOf(chosen)).toBe("panel-p");
+    expect(await session.closePanel("panel-p", { confirmBlock: true })).toBe("closed");
+    expect(placed(session)).toEqual(["panel-x"]);
+  });
+
+  it("does not treat a stored parent as a parent while that parent is not placed", async () => {
+    const session = await blockSession({}, twoTiles(), []);
+    session.openBeside("panel-p");
+    const picker = placed(session).find((panelId) => session.document()!.panels[panelId].ref.provider === "chertog-choose")!;
+    session.removeFromLayout("panel-p");
+    expect(session.parentOf(picker)).toBeUndefined();
   });
 });

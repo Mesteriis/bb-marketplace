@@ -11,7 +11,7 @@ import { panelRefSchema } from "../panels/index.ts";
 import type { PanelRef } from "../panels/index.ts";
 
 /** The version this code writes. A change of the stored shape raises it and adds a step to the migration chain. */
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 /**
  * A panel the workspace knows: how to find it again. The document keeps no
@@ -20,6 +20,12 @@ export const SCHEMA_VERSION = 2;
  */
 export interface WorkspacePanel {
   readonly ref: PanelRef;
+  /**
+   * The panel this one belongs to: a child tile opened beside it. It names
+   * another panel of the document; closing or moving that panel takes this one
+   * along. A panel that is no child has none.
+   */
+  readonly parent?: string;
 }
 
 /** One named arrangement: the tree with its own focus and maximized tile. */
@@ -120,6 +126,7 @@ const storedPanelRefSchema = panelRefSchema.superRefine((ref, context) => {
  */
 export const workspacePanelSchema: z.ZodType<WorkspacePanel> = z.strictObject({
   ref: storedPanelRefSchema,
+  parent: idSchema.optional(),
 });
 
 const nodeIdSchema = z.string().regex(NODE_ID);
@@ -211,6 +218,18 @@ export const namedLayoutSchema: z.ZodType<NamedLayout> = z.strictObject({
   workspace: workspaceStateSchema,
 });
 
+/**
+ * The panels without a `parent` that names a panel the record no longer has.
+ * A child outlives its parent as a plain panel; the same record when nothing dangles.
+ */
+export function withoutDanglingParents(panels: Readonly<Record<string, WorkspacePanel>>): Readonly<Record<string, WorkspacePanel>> {
+  const dangling = Object.entries(panels).filter(([, panel]) => panel.parent !== undefined && !Object.hasOwn(panels, panel.parent));
+  if (dangling.length === 0) return panels;
+  const kept: Record<string, WorkspacePanel> = { ...panels };
+  for (const [panelId, panel] of dangling) kept[panelId] = { ref: panel.ref };
+  return kept;
+}
+
 /** The panel ids a layout places, in reading order. */
 export function placedPanelIds(layout: NamedLayout): string[] {
   return listGroups(layout.workspace.root).flatMap((group) => group.tabs);
@@ -241,6 +260,11 @@ export const workspaceDocumentSchema: z.ZodType<WorkspaceDocument> = z
         context.addIssue({ code: "custom", path: ["layouts", index, "workspace"], message: "the panel " + stranger + " has no reference" });
       }
     });
+    for (const [panelId, panel] of Object.entries(document.panels)) {
+      if (panel.parent !== undefined && (panel.parent === panelId || !Object.hasOwn(document.panels, panel.parent))) {
+        context.addIssue({ code: "custom", path: ["panels", panelId, "parent"], message: "the parent of " + panelId + " is not another panel of the document" });
+      }
+    }
     if (!layoutIds.has(document.activeLayoutId)) {
       context.addIssue({
         code: "custom",

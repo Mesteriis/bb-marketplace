@@ -6,11 +6,11 @@ import { panelRefSchema, type PanelRef } from "./ref.ts";
 
 export const CHOOSE_PROVIDER = "chertog-choose";
 export const chooseParamsSchema = z.strictObject({
-  kind: z.enum(["bb-thread", FILE_PREVIEW_PROVIDER, DIFF_PROVIDER, "bb-terminal"]),
+  kind: z.enum(["bb-thread", FILE_PREVIEW_PROVIDER, DIFF_PROVIDER, "bb-terminal", "any"]),
 });
 export type ChooseKind = z.infer<typeof chooseParamsSchema>["kind"];
 
-const targets = {
+const targets: Record<Exclude<ChooseKind, "any">, z.ZodType> = {
   "bb-thread": z.strictObject({ threadId: z.string().min(1).max(128) }),
   [FILE_PREVIEW_PROVIDER]: filePreviewParamsSchema,
   [DIFF_PROVIDER]: diffParamsSchema,
@@ -19,8 +19,10 @@ const targets = {
 
 export function acceptsChoice(chooser: PanelRef, selected: PanelRef): boolean {
   const params = chooseParamsSchema.safeParse(chooser.params);
-  return chooser.provider === CHOOSE_PROVIDER && params.success && selected.provider === params.data.kind
-    && targets[params.data.kind].safeParse(selected.params).success;
+  if (chooser.provider !== CHOOSE_PROVIDER || !params.success) return false;
+  // The picker opened beside a tile takes any content; the provider checks its own parameters when it opens.
+  if (params.data.kind === "any") return selected.provider !== CHOOSE_PROVIDER && panelRefSchema.safeParse(selected).success;
+  return selected.provider === params.data.kind && targets[params.data.kind].safeParse(selected.params).success;
 }
 
 export const chooseProvider: PanelProvider = {

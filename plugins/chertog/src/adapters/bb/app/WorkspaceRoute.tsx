@@ -262,6 +262,7 @@ export function WorkspaceRoute({ workspace, onNewThread, surfaceSize }: Workspac
           onOperation={(change) => session.applySurfaceChange(change)}
           onRequestClose={(panelId) => void requestClose(panelId)}
           onPickContent={(groupId) => setTabFor(groupId)}
+          onOpenBeside={(panelId) => void session.openBeside(panelId)}
           onContentRects={(rects: ContentRects) => {
             contentRects.current = new Map(Object.entries(rects));
             bridge.update(owner, { rects: contentRects.current });

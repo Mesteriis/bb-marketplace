@@ -4,6 +4,7 @@
 // is placed: nothing is opened or ended.
 import type { Edge } from "../layout/index.ts";
 import { activateTab, closeTab, findGroup, findGroupOfPanel, listGroups, moveGroup, splitGroup } from "../layout/index.ts";
+import { CHOOSE_PROVIDER } from "../panels/choose.ts";
 import type { WorkspaceDocument, WorkspacePanel } from "./document.ts";
 import { activeLayout, placedPanelIds } from "./document.ts";
 import type { WorkspaceChange } from "./operations.ts";
@@ -44,6 +45,15 @@ export function placeInBlock(
   if (target === undefined) return { ok: false, reason: "not-placed" };
   const edge: Edge = last === undefined ? "right" : "bottom";
   return changeActiveLayout(registered.document, (workspace) => splitGroup(workspace, target.id, edge, panelId));
+}
+
+/**
+ * Opens a content picker as a child of the parent's tile: it is placed like
+ * any child of the block and stores the parent, so what is chosen in it (it
+ * inherits the parent) stays part of the block after a reload.
+ */
+export function openBeside(document: WorkspaceDocument, parentPanelId: string, pickerId: string, parentOf: ParentOf): WorkspaceChange {
+  return placeInBlock(document, parentPanelId, pickerId, { ref: { provider: CHOOSE_PROVIDER, params: { kind: "any" } }, parent: parentPanelId }, parentOf);
 }
 
 /**

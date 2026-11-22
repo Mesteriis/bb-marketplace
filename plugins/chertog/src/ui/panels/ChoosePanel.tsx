@@ -5,6 +5,7 @@ const labels: Record<ChooseKind, [string, string]> = {
   "bb-file-preview": ["Выберите файл для предпросмотра.", "Выбрать файл"],
   "bb-diff": ["Выберите файл и ревизии для сравнения.", "Выбрать изменения"],
   "bb-terminal": ["Выберите существующий терминал.", "Выбрать терминал"],
+  any: ["Выберите, что открыть рядом.", "Выбрать"],
 };
 
 export function ChoosePanel({ kind, onChoose }: { kind: ChooseKind; onChoose(kind: ChooseKind): void }) {

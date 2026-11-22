@@ -46,7 +46,7 @@ function tiled(panels: Record<string, WorkspaceDocument["panels"][string]>): Wor
   const groups = ids.map((id, index) => group("group-" + (index + 1), id));
   const root = groups.length === 1 ? groups[0] : { kind: "split" as const, id: "split-100", direction: "row" as const, children: groups, sizes: groups.map(() => 1 / groups.length) };
   return {
-    schemaVersion: 2, revision: 1, panels,
+    schemaVersion: 3, revision: 1, panels,
     layouts: [{ id: "layout-main", name: "main", workspace: { root, focusedGroupId: "group-" + groups.length, maximizedGroupId: null, nextNodeId: 200 } }],
     activeLayoutId: "layout-main",
   };
@@ -60,7 +60,7 @@ function document(parentPlaced: boolean): WorkspaceDocument {
     workspace: { root: group("group-1", panel), focusedGroupId: "group-1", maximizedGroupId: null, nextNodeId: 2 },
   });
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     revision: 1,
     panels: { "panel-p": thread("thr_p"), "panel-x": thread("thr_x") },
     layouts: parentPlaced ? [layout("layout-main", "panel-p"), layout("other", "panel-x")] : [layout("layout-main", "panel-x"), layout("other", "panel-p")],

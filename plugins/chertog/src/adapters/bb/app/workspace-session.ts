@@ -27,6 +27,7 @@ import {
   closeBlock,
   deleteLayout,
   duplicateLayout,
+  openBeside,
   panelIdOfRef,
   placeInBlock,
   placedPanelIds,
@@ -384,15 +385,29 @@ export class WorkspaceSession {
   }
 
   /**
-   * The parent panel of a thread panel: the panel of the parent thread the
-   * directory names, when the open layout places it. `undefined` otherwise.
+   * The parent panel of a panel: the stored `parent` when the open layout
+   * places it, else, for a thread, the panel of the parent thread the
+   * directory names when the layout places that. `undefined` otherwise.
    */
   parentOf: ParentOf = (panelId) => {
     const document = this.document();
-    const ref = document?.panels[panelId]?.ref;
-    if (document === null || ref === undefined || ref.provider !== THREAD_PROVIDER) return undefined;
-    return this.placedParentOf(document, String(ref.params.threadId));
+    const panel = document?.panels[panelId];
+    if (document === null || panel === undefined) return undefined;
+    if (panel.parent !== undefined && findGroupOfPanel(activeLayout(document).workspace.root, panel.parent) !== undefined) return panel.parent;
+    return panel.ref.provider === THREAD_PROVIDER ? this.placedParentOf(document, String(panel.ref.params.threadId)) : undefined;
   };
+
+  /**
+   * Opens a content picker beside the panel's tile as its child: whatever is
+   * chosen in it joins the panel's block. `null` when it was opened, else the
+   * reason the change was refused.
+   */
+  openBeside(panelId: string): WorkspaceChangeRefusal | null {
+    return this.controller.change((document) => {
+      const opened = openBeside(document, panelId, this.newId("panel"), this.parentOf);
+      return opened.ok && listGroups(activeLayout(opened.document).workspace.root).length > TILE_LIMIT ? { ok: false, reason: "invalid-layout" } : opened;
+    });
+  }
 
   /**
    * Shows a BB thread as a tile of the open layout. A thread the layout

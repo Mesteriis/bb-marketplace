@@ -9,7 +9,7 @@ import { acceptsChoice } from "../panels/choose.ts";
 import { panelRefKey } from "../panels/index.ts";
 import type { PanelRef } from "../panels/index.ts";
 import type { NamedLayout, WorkspaceDocument, WorkspacePanel } from "./document.ts";
-import { activeLayout, idSchema, layoutNameSchema, placedPanelIds, workspacePanelSchema, workspaceStateSchema } from "./document.ts";
+import { activeLayout, idSchema, layoutNameSchema, placedPanelIds, withoutDanglingParents, workspacePanelSchema, workspaceStateSchema } from "./document.ts";
 
 export type WorkspaceChangeRefusal =
   | "invalid-id"
@@ -90,7 +90,7 @@ export function dropUnusedPanels(document: WorkspaceDocument, livePanelIds: Read
   const placed = new Set(document.layouts.flatMap(placedPanelIds));
   const kept = Object.entries(document.panels).filter(([panelId]) => placed.has(panelId) || livePanelIds.has(panelId));
   if (kept.length === Object.keys(document.panels).length) return document;
-  return { ...document, panels: Object.fromEntries(kept) };
+  return { ...document, panels: withoutDanglingParents(Object.fromEntries(kept)) };
 }
 
 /** Adds an empty layout, one content-picker tile, after the others and opens it. */
@@ -179,6 +179,7 @@ export function registerPanel(document: WorkspaceDocument, panelId: string, pane
   if (!isId(panelId)) return refused("invalid-id");
   const cleaned = cleanPanel(panel);
   if (cleaned === null) return refused("invalid-panel");
+  if (cleaned.parent !== undefined && (cleaned.parent === panelId || !hasPanel(document.panels, cleaned.parent))) return refused("invalid-panel");
   if (hasPanel(document.panels, panelId)) {
     return panelRefKey(document.panels[panelId].ref) === panelRefKey(cleaned.ref) ? applied(document) : refused("panel-conflict");
   }
@@ -263,7 +264,8 @@ export function replaceChoosePanel(
   const placed = placedPanelIds(layout).find(id => panelRefKey(document.panels[id].ref) === key);
   if (placed !== undefined) return changeActiveLayout(document, workspace => activateTab(workspace, placed));
   const targetId = panelIdOfRef(document, ref) ?? selectedId;
-  const known = registerPanel(document, targetId, { ref });
+  const parent = document.panels[chooserId].parent;
+  const known = registerPanel(document, targetId, parent === undefined ? { ref } : { ref, parent });
   if (!known.ok) return known;
   const root = replaceGroup(layout.workspace.root, {
     ...group,
@@ -274,5 +276,5 @@ export function replaceChoosePanel(
   if (livePanelIds.has(chooserId) || result.layouts.some(other => placedPanelIds(other).includes(chooserId))) return applied(result);
   const panels = { ...result.panels };
   delete panels[chooserId];
-  return applied({ ...result, panels });
+  return applied({ ...result, panels: withoutDanglingParents(panels) });
 }

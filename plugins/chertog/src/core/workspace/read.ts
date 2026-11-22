@@ -10,6 +10,7 @@ import {
   namedLayoutSchema,
   placedPanelIds,
   SCHEMA_VERSION,
+  withoutDanglingParents,
   workspaceDocumentSchema,
   workspacePanelSchema,
 } from "./document.ts";
@@ -40,7 +41,11 @@ function withoutPanelTitles(old: Readonly<Record<string, unknown>>): Record<stri
 }
 
 /** The steps to the current version. A step is added here together with every new version. */
-export const WORKSPACE_MIGRATIONS: MigrationChain = { 1: withoutPanelTitles };
+export const WORKSPACE_MIGRATIONS: MigrationChain = {
+  1: withoutPanelTitles,
+  // Version 3 only allows an optional `parent` on a panel; a version-2 document is already valid.
+  2: (old) => ({ ...old }),
+};
 
 export type MigrationResult =
   | { readonly status: "current"; readonly document: Readonly<Record<string, unknown>> }
@@ -180,7 +185,8 @@ export function readWorkspaceDocument(raw: unknown, migrations: MigrationChain =
   const document = workspaceDocumentSchema.safeParse({
     schemaVersion: SCHEMA_VERSION,
     revision: envelope.data.revision,
-    panels,
+    // A panel that was left out above cannot stay somebody's parent.
+    panels: withoutDanglingParents(panels),
     layouts,
     activeLayoutId: active.id,
   });

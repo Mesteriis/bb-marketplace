@@ -7,8 +7,8 @@ import type { MigrationChain } from "../../../src/core/workspace/index.ts";
 import { stageADocument, stageAJson } from "./fixtures.ts";
 
 describe("readWorkspaceDocument", () => {
-  it("has schema version 2", () => {
-    expect(SCHEMA_VERSION).toBe(2);
+  it("has schema version 3", () => {
+    expect(SCHEMA_VERSION).toBe(3);
   });
 
   it("reports storage without a document as empty", () => {
@@ -26,8 +26,8 @@ describe("readWorkspaceDocument", () => {
   });
 
   it("reports a newer version without a document to save over it", () => {
-    const raw = { ...stageAJson(), schemaVersion: 3, zones: [{ display: "second" }] };
-    expect(readWorkspaceDocument(raw)).toEqual({ status: "newer", schemaVersion: 3 });
+    const raw = { ...stageAJson(), schemaVersion: 4, zones: [{ display: "second" }] };
+    expect(readWorkspaceDocument(raw)).toEqual({ status: "newer", schemaVersion: 4 });
   });
 
   it.each([
@@ -169,7 +169,7 @@ describe("secrets and live handles", () => {
     expect(result).toEqual({
       status: "ok",
       document: {
-        schemaVersion: 2,
+        schemaVersion: 3,
         revision: 0,
         panels: {
           "thread-a": { ref: { provider: "bb-thread", params: { threadId: "thr_a" } } },

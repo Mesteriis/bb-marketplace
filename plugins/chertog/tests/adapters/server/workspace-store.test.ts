@@ -570,7 +570,7 @@ describe("a stored document of an older version", () => {
 
     const now = kv.value(DOCUMENT_KEY) as { schemaVersion: number; panels: Record<string, object> };
     expect(now).toEqual({ ...stageADocument(), revision: 5 });
-    expect(now.schemaVersion).toBe(2);
+    expect(now.schemaVersion).toBe(3);
     expect(Object.values(now.panels).map((panel) => Object.keys(panel))).toEqual([["ref"], ["ref"], ["ref"]]);
 
     expect(kv.keys()).toEqual(["workspace/backup/000001-2026-11-21T12:00:00.000Z", DOCUMENT_KEY]);

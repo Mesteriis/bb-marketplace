@@ -10,6 +10,7 @@ export {
   SCHEMA_VERSION,
   workspaceDocumentSchema,
   workspacePanelSchema,
+  withoutDanglingParents,
   workspaceStateSchema,
 } from "./document.ts";
 
@@ -17,7 +18,7 @@ export type { DroppedPart, MigrationChain, MigrationResult, WorkspaceReadResult 
 export { migrateToVersion, readWorkspaceDocument, WORKSPACE_MIGRATIONS } from "./read.ts";
 
 export type { ParentOf } from "./blocks.ts";
-export { BLOCK_SIDE_LIMIT, blockChildren, closeBlock, moveBlock, moveWithBlocks, placeInBlock } from "./blocks.ts";
+export { BLOCK_SIDE_LIMIT, blockChildren, closeBlock, moveBlock, moveWithBlocks, openBeside, placeInBlock } from "./blocks.ts";
 
 export type { LayoutTemplate, ListedPanel, WorkspaceChange, WorkspaceChangeRefusal } from "./operations.ts";
 export {
@@ -34,6 +35,7 @@ export {
   registerPanel,
   removePanelFromLayout,
   renameLayout,
+  replaceChoosePanel,
   switchLayout,
 } from "./operations.ts";
 
