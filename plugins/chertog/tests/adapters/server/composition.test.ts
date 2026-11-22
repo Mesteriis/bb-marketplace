@@ -26,7 +26,9 @@ describe("what the server registers", () => {
   it("registers the workspace RPC, the fixture route and the settings, and nothing else", () => {
     const { rpc, http, kv, log, settings } = loaded();
     expect(settings.defined).toHaveLength(1);
-    expect(rpc.registered).toHaveLength(1);
+    expect(rpc.registered).toHaveLength(2);
+    expect(Object.keys(rpc.registered[1].contract)).toEqual(["window_sync", "window_change"]);
+    expect(Object.keys(rpc.registered[1].handlers)).toEqual(["window_sync", "window_change"]);
     expect(rpc.registered[0].contract).toBe(rpcContract);
     expect(Object.keys(rpc.registered[0].contract)).toEqual(["load_workspace", "save_workspace"]);
     expect(Object.keys(rpc.registered[0].handlers)).toEqual(["load_workspace", "save_workspace"]);
