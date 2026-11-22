@@ -28,19 +28,18 @@ them. The interface is in Russian.
 - **Saving.** Layouts are saved on this BB server after every change. Two
   windows that change them at once are merged, and nothing either made is
   lost. A failed save is shown and leaves your layout on screen.
+- **Provider entry cards.** Choose Terminals, Telegram, Zoom or a Remote Hub protocol. Opening a card takes you to the provider when you request it. File, thread and terminal targets are chosen explicitly.
+- **File previews and diffs.** Select a ready workspace and a file. Compare the file at two available Git revisions inside a tile.
+- **Presets.** Start from «Команда агентов», «Администрирование» or «Созвон». Choose the individual targets in the resulting tiles.
+- **Thread handoff.** Transfer an existing thread to another participating BB window after confirmation.
 
 ## Limits
 
-- BB's Home button does not open Chertog. BB has no setting for another Home
-  page.
-- The redirect from BB's new thread screen to Chertog and the acceptance test
-  panel wait for two plugin settings that this version does not declare yet.
-  Until then both are off, and that screen shows an empty "Чертог" heading.
+- The homeRedirect setting controls the redirect from the stock Home screen. The acceptanceFixture setting exposes the test frame.
 - The command for the chosen tile is unavailable when its thread is on screen
   twice, for example in a tile and in BB's own pane.
-- Panels for Telegram, Zoom, Remote Hub, the editor and diffs are not built.
-- One workspace per BB server, and one Chertog page per window. Moving panels
-  between windows and monitors is not built.
+- Telegram, Zoom, Remote Hub and Terminals keep their full screens and sessions in their own plugins. The Chertog tile holds their entry card.
+- One workspace per BB server and one Chertog page per window. Thread handoff covers an existing BB thread. External calls and media stay with their provider.
 - A page reload or an app restart reopens the layouts and loads their panels
   again. Panels stay alive only while the window stays open.
 - Checked in a test BB in a browser. Not yet checked in BB Desktop or with
@@ -49,5 +48,5 @@ them. The interface is in Russian.
 ## Data
 
 Stored on your BB server, in the plugin's own storage: layout names, the tile
-arrangement, and for each panel the id of its thread. No message text, drafts,
+arrangement, and panel references such as thread IDs, workspace-relative file paths and commit IDs. No message text, drafts,
 titles or credentials are stored. Nothing is sent anywhere else.

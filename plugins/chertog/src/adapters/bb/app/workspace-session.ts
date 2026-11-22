@@ -11,7 +11,10 @@ import {
   splitGroup,
   type WorkspaceState,
 } from "../../../core/layout/index.ts";
-import { PanelRegistry, type Clock, type Diagnostics, type PanelInstance, type PanelRef } from "../../../core/panels/index.ts";
+import { applyPreset } from "../../../core/workspace/presets.ts";
+import { replaceChoosePanel } from "../../../core/workspace/operations.ts";
+import { CHOOSE_PROVIDER } from "../../../core/panels/choose.ts";
+import { panelRefKey, PanelRegistry, type Clock, type Diagnostics, type PanelInstance, type PanelRef } from "../../../core/panels/index.ts";
 import {
   activeLayout,
   addPanelToGroup,
@@ -190,7 +193,10 @@ export class WorkspaceSession {
   /** The sections of the content picker. An item the open layout already places carries the panel to show instead. */
   contentSections(): ContentSection[] {
     const document = this.document();
-    const placed = document === null ? new Set<string>() : new Set(placedPanelIds(activeLayout(document)));
+    const placed = new Map<string, string>();
+    if (document) {
+      for (const id of placedPanelIds(activeLayout(document))) placed.set(panelRefKey(document.panels[id].ref), id);
+    }
     return this.sources
       .filter((source) => source.offered())
       .map((source) => {
@@ -199,11 +205,12 @@ export class WorkspaceSession {
           providerId: source.provider.type,
           title: source.sectionTitle,
           state: section.state,
+          controls: source.controls?.(),
           items: section.items.map((item) => {
             const ref = source.stableRefOf(item.id);
-            const panelId = ref === null || document === null ? undefined : panelIdOfRef(document, ref);
+            const panelId = ref === null ? undefined : placed.get(panelRefKey(ref));
             // The picker hands this value back unchanged; the panel says both which tile and which tab.
-            return panelId !== undefined && placed.has(panelId) ? { ...item, openInTileId: panelId } : item;
+            return panelId !== undefined ? { ...item, openInTileId: panelId } : item;
           }),
         };
       });
@@ -256,6 +263,26 @@ export class WorkspaceSession {
     this.controller.change((document) => duplicateLayout(document, document.activeLayoutId, this.newId("layout"), name));
   }
 
+  createFromPreset(presetId: string, name: string): void {
+    const id = this.newId("layout");
+    this.controller.change(document => {
+      const result = applyPreset(document, id, presetId);
+      return result.ok ? renameLayout(result.document, id, name) : result;
+    });
+  }
+
+  replaceChoice(instanceId: string, choice: ContentChoice): void {
+    const chooser = this.panelOfInstance(instanceId);
+    const ref = this.sourceOf(choice.providerId)?.refOf(choice.itemId);
+    this.controller.change((document, live) => {
+      if (!chooser || !ref) return { ok: false, reason: "unknown-panel" };
+      const retained = new Set(live);
+      retained.delete(chooser);
+      return replaceChoosePanel(document, chooser, this.newId("panel"), ref, retained);
+    });
+    if (chooser && !this.document()?.panels[chooser]) void this.registry.close(instanceId);
+  }
+
   duplicateLayout(layoutId: string, name: string): void {
     this.controller.change((document) => duplicateLayout(document, layoutId, this.newId("layout"), name));
   }
@@ -279,7 +306,9 @@ export class WorkspaceSession {
     const ref = this.sourceOf(choice.providerId)?.refOf(choice.itemId) ?? null;
     if (ref === null) return "unknown-panel";
     return this.controller.change((document) => {
-      const existing = panelIdOfRef(document, ref);
+      const key = panelRefKey(ref);
+      const placed = placedPanelIds(activeLayout(document)).find(id => panelRefKey(document.panels[id].ref) === key);
+      const existing = placed ?? panelIdOfRef(document, ref);
       const panelId = existing ?? this.newId("panel");
       const workspace = activeLayout(document).workspace;
       if (findGroupOfPanel(workspace.root, panelId) !== undefined) {
@@ -377,22 +406,29 @@ export class WorkspaceSession {
         if (this.registry.get(instanceId) === null) this.instances.delete(panelId);
       }
       const layout = activeLayout(document);
-      const taken = new Set(this.instances.values());
+      const placed = new Set(placedPanelIds(layout));
       for (const group of listGroups(layout.workspace.root)) {
         const panelId = group.activeTab;
         if (panelId === null || this.instances.has(panelId) || this.refused.has(panelId)) continue;
         const ref = refOfPanel(document, panelId);
         if (ref === null) continue;
-        const opened = this.registry.open(ref);
+        const opened = this.registry.open(ref, { newView: ref.provider === CHOOSE_PROVIDER });
         // One reference is one instance: a second panel id for it would show the same view twice.
-        if (!opened.ok || taken.has(opened.instance.instanceId)) {
+        if (!opened.ok) {
           this.refused.add(panelId);
           continue;
         }
+        const previous = this.panelOfInstance(opened.instance.instanceId);
+        if (previous !== null) {
+          if (placed.has(previous)) {
+            this.refused.add(panelId);
+            continue;
+          }
+          // Presets may use a fresh panel id for the very same provider entry.
+          this.instances.delete(previous);
+        }
         this.instances.set(panelId, opened.instance.instanceId);
-        taken.add(opened.instance.instanceId);
       }
-      const placed = new Set(placedPanelIds(layout));
       for (const [panelId, instanceId] of this.instances) {
         if (placed.has(panelId)) this.registry.returnToLayout(instanceId);
         else this.registry.removeFromLayout(instanceId);

@@ -27,6 +27,8 @@ export class WorkspaceFileCatalog {
   readonly subscribe = this.changes.subscribe;
   private generation = 0;
   private environment: Environment | null = null;
+  private scope = "";
+  readonly requestedEnvironment = () => this.scope;
   private section: SourceSection = { state: "ready", items: [] };
   constructor(private readonly environments: EnvironmentReader) {}
 
@@ -42,6 +44,7 @@ export class WorkspaceFileCatalog {
 
   async select(environmentId: string, query = "") {
     const generation = ++this.generation;
+    this.scope = environmentId;
     this.environment = null;
     this.section = { state: "loading", items: [] };
     this.changes.notify();

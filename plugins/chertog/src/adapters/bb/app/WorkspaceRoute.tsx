@@ -12,6 +12,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { findGroup, listGroups, type Rect } from "../../../core/layout/index.ts";
+import { workspacePresets } from "../../../core/workspace/presets.ts";
 import { activeLayout } from "../../../core/workspace/index.ts";
 import { ClosePanelDialog, ContentPicker, WorkspaceToolbar, type ContentChoice } from "../../../ui/chrome/index.ts";
 import { classes, Modal } from "../../../ui/chrome/primitives.tsx";
@@ -207,14 +208,13 @@ export function WorkspaceRoute({ workspace, onNewThread, surfaceSize }: Workspac
             layouts={{
               layouts: document.layouts.map((layout) => ({ id: layout.id, name: layout.name })),
               activeLayoutId: document.activeLayoutId,
-              presets: [],
+              presets: workspacePresets,
               saveStatus: save.status,
               saveDetail: saveDetail(snapshot),
               onRetrySave: () => session.controller.retrySave(),
               onSwitch: (layoutId) => session.switchLayout(layoutId),
               onCreateFromCurrent: (name) => session.createLayoutFromCurrent(name),
-              // Stage A offers no presets, so there is nothing this could be called for.
-              onCreateFromPreset: () => undefined,
+              onCreateFromPreset: (id, name) => session.createFromPreset(id, name),
               onRename: (layoutId, name) => session.renameLayout(layoutId, name),
               onDuplicate: (layoutId, name) => session.duplicateLayout(layoutId, name),
               onDelete: (layoutId) => session.deleteLayout(layoutId),

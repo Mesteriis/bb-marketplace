@@ -3,6 +3,7 @@
 // bridge between the route and the live layer. It is created once and
 // outlives every visit of the Chertog route.
 import type { Diagnostics } from "../../../core/panels/index.ts";
+import { chooseSource } from "./choose-source.tsx";
 import { ComposerDirectory } from "./addressee.ts";
 import type { ContentSource } from "./content-sources.ts";
 import { createFixtureSource, type FixtureSource } from "./fixture-source.tsx";
@@ -35,7 +36,7 @@ export interface WindowWorkspaceOptions {
   randomId(): string;
   readonly diagnostics: Diagnostics;
   /** Sources beyond the two of stage A. */
-  readonly extraSources?: readonly ContentSource[];
+  readonly extraSources?: readonly ContentSource[] | ((threads: ThreadDirectory) => readonly ContentSource[]);
 }
 
 /** Named arrangements are shared. The selected one belongs to this browsing context. */
@@ -75,7 +76,7 @@ export function createWindowWorkspace(options: WindowWorkspaceOptions): WindowWo
     directory: threads,
     renderChat: (threadId) => createElement(WindowThread, { threadId, children: options.renderChat(threadId) }),
   });
-  const session = new WorkspaceSession({
+  const session: WorkspaceSession = new WorkspaceSession({
     rpc: windowLayoutPort(
       createWorkspaceRpcPort(() => {
         if (host.rpc === null) throw new Error("BB has not given this window its RPC client yet");
@@ -104,7 +105,8 @@ export function createWindowWorkspace(options: WindowWorkspaceOptions): WindowWo
         provider: { ...thread.provider, capabilities: { ...thread.provider.capabilities, transferBetweenWindows: "yes" } },
       },
       fixture,
-      ...(options.extraSources ?? []),
+      chooseSource(() => session),
+      ...(typeof options.extraSources === "function" ? options.extraSources(threads) : options.extraSources ?? []),
     ],
     newId: (prefix) => prefix + "-" + options.randomId(),
     diagnostics: options.diagnostics,

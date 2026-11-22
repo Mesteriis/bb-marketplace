@@ -36,6 +36,8 @@ export interface ContentSource {
   /** Whether the content picker lists this source now. A source that is not offered still shows its saved panels. */
   offered(): boolean;
   section(): SourceSection;
+  /** Controls for selecting the scope of a catalog before choosing an item. */
+  controls?(): ReactNode;
   /** The reference to open for a listed item, or `null` when the item is not listed any more. */
   refOf(itemId: string): PanelRef | null;
   /**

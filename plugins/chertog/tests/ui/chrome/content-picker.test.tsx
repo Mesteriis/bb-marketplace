@@ -370,3 +370,21 @@ describe("ContentPicker: a provider that is not ready offers nothing", () => {
     expect(onFocusExisting).not.toHaveBeenCalled();
   });
 });
+
+describe("ContentPicker: provider control keys", () => {
+  it.each(["ArrowDown", "ArrowUp", "Home", "End"])("leaves %s with the focused provider control", (key) => {
+    setup({ sections: [{ ...SECTIONS[0], controls: <>
+      <select aria-label="Среда"><option>A</option><option>B</option></select>
+      <input aria-label="Строка" type="number" />
+      <button role="combobox" aria-label="Ревизия" aria-expanded={false}>Выберите</button>
+      <div role="listbox" aria-label="Тред"><div role="option" aria-selected={false} tabIndex={0}>Тред A</div></div>
+    </> }] });
+    for (const control of [screen.getByLabelText("Среда"), screen.getByLabelText("Строка"),
+      screen.getByLabelText("Ревизия"), screen.getByRole("option", { name: "Тред A" })]) {
+      control.focus();
+      const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+      expect(control.dispatchEvent(event)).toBe(true);
+      expect(document.activeElement).toBe(control);
+    }
+  });
+});

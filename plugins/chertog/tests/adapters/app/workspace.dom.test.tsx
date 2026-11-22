@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 import { LiveLayer } from "../../../src/adapters/bb/app/LiveLayer.tsx";
 import { createWindowWorkspace, type WindowWorkspace } from "../../../src/adapters/bb/app/window-workspace.ts";
 import { WorkspaceRoute } from "../../../src/adapters/bb/app/WorkspaceRoute.tsx";
+import { createCardSource, type CardHost } from "../../../src/adapters/bb/app/card-source.ts";
 import { FakeWorkspaceRpc, sequentialIds } from "./support.ts";
 
 const SIZE = { width: 1204, height: 800 };
@@ -31,11 +32,12 @@ function ChatProbe({ threadId, stage }: { threadId: string; stage: Stage }) {
   return <textarea aria-label={"черновик " + threadId} defaultValue="" />;
 }
 
-function newStage(options: { fixture?: boolean } = {}): Stage {
+function newStage(options: { fixture?: boolean; zoom?: boolean } = {}): Stage {
   const rpc = new FakeWorkspaceRpc();
   const ids = sequentialIds();
   const stage: Stage = { rpc, chats: {}, newThreads: 0, workspace: undefined as unknown as WindowWorkspace };
   stage.workspace = createWindowWorkspace({
+    extraSources: options.zoom ? [createCardSource("zoom", { plugins: { list: async () => ({ plugins: [] }) } } as unknown as CardHost)] : [],
     renderChat: (threadId) => <ChatProbe threadId={threadId} stage={stage} />,
     randomId: () => ids("r").slice(2),
     diagnostics: { failure: () => undefined },
@@ -434,4 +436,36 @@ describe("one surface per window", () => {
     expect(screen.getAllByRole("toolbar")).toHaveLength(1);
     expect(screen.getByText("Чертог уже открыт в другой панели этого окна. Рабочее место в окне одно.")).toBeTruthy();
   });
+});
+
+it("places three independently selectable thread tiles from the agent preset", async () => {
+  const stage = newStage();
+  const user = userEvent.setup();
+  render(<Window stage={stage} onRoute />);
+  await user.click(await screen.findByRole("button", { name: /^Раскладка:/ }));
+  await user.click(screen.getByRole("button", { name: /Команда агентов/ }));
+  const choices = await screen.findAllByRole("button", { name: "Выбрать тред" });
+  expect(choices).toHaveLength(3);
+  await user.click(choices[1]);
+  const picker = within(screen.getByRole("dialog"));
+  expect(picker.queryByRole("heading", { name: "Приёмка" })).toBeNull();
+  await user.click(picker.getByRole("button", { name: /Исполнитель/ }));
+  expect(await screen.findByRole("textbox", { name: "черновик thr_a" })).toBeTruthy();
+  expect(screen.getAllByRole("button", { name: "Выбрать тред" })).toHaveLength(2);
+});
+
+it("keeps the Zoom entry available when applying the call preset again", async () => {
+  const stage = newStage({ zoom: true });
+  const user = userEvent.setup();
+  render(<Window stage={stage} onRoute />);
+  for (let turn = 0; turn < 2; turn++) {
+    await user.click(await screen.findByRole("button", { name: /^Раскладка:/ }));
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: /^Создать.*Созвон/ }));
+    const zoom = stage.workspace.session.focusedInstance();
+    expect(zoom?.ref.provider).toBe("zoom");
+    expect(zoom?.state).toBe("entry");
+    const currentPanel = stage.workspace.session.panelOfInstance(zoom!.instanceId);
+    const entry = stage.workspace.session.contentSections().find(section => section.providerId === "zoom")?.items[0];
+    expect(entry?.openInTileId).toBe(currentPanel);
+  }
 });
