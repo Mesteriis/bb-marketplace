@@ -53,7 +53,7 @@ export class EmbedOwner {
     const code = error && typeof error === "object" && "code" in error ? error.code : null;
     this.status(v, code === "forbidden" || code === "not_found" ? "denied" : "lost");
   }
-  private callsChanged = () => {
+  private callsChanged = (lostDocument?: string) => {
     for (const v of this.views.values()) {
       const call = v.meeting && this.calls.snapshot().get(v.meeting.id);
       if (call) {
@@ -64,7 +64,9 @@ export class EmbedOwner {
         }
       } else if (v.hadCall) {
         v.hadCall = false;
-        this.status(v, "ended");
+        v.awaitingEnd = false;
+        v.prompt = false;
+        if (v.status !== "ended") this.status(v, lostDocument === v.meeting?.id ? "lost" : "ended");
       }
     }
     this.redraw();

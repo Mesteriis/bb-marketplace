@@ -25,6 +25,7 @@ interface CallPanelProps {
   /** The host's colours for the call page; defaults to reading them from the page. */
   confirmLeave?: () => void;
   leaving?: boolean;
+  onDocumentLost?: () => void;
   onLost?: () => void;
   readTheme?: () => Record<string, string>;
 }
@@ -90,9 +91,10 @@ function text(value: unknown, fallback: string): string {
   return typeof value === "string" && value !== "" ? value.slice(0, 300) : fallback;
 }
 
-export function CallPanel({ call, callPageUrl, title, onClose, openExternal, onOpenInBrowser, readTheme, confirmLeave, leaving, onLost }: CallPanelProps) {
+export function CallPanel({ call, callPageUrl, title, onClose, openExternal, onOpenInBrowser, readTheme, confirmLeave, leaving, onLost, onDocumentLost }: CallPanelProps) {
   const frame = useRef<HTMLIFrameElement>(null);
   const joinedOnce = useRef(false);
+  const documentLost = useRef(false);
   const refused = useRef(false);
   const leaveSent = useRef(false);
   const origin = new URL(callPageUrl, window.location.href).origin;
@@ -106,7 +108,7 @@ export function CallPanel({ call, callPageUrl, title, onClose, openExternal, onO
 
     function onMessage(event: MessageEvent) {
       const target = frame.current?.contentWindow;
-      if (target == null || event.source !== target || event.origin !== origin) return;
+      if (documentLost.current || target == null || event.source !== target || event.origin !== origin) return;
       const data: unknown = event.data;
       if (typeof data !== "object" || data === null) return;
       const message = data as { type?: unknown; message?: unknown; code?: unknown; kind?: unknown; name?: unknown };
@@ -220,6 +222,16 @@ export function CallPanel({ call, callPageUrl, title, onClose, openExternal, onO
         <iframe
           hidden={phase.kind === "failed"}
           ref={frame}
+          onLoad={() => {
+            if (documentLost.current) return;
+            if (!joinedOnce.current) {
+              frame.current?.contentWindow?.postMessage({ type: "zoom-call:loaded" }, origin);
+              return;
+            }
+            documentLost.current = true;
+            setPhase({ kind: "failed", message: "Страница звонка перезагружена. Чтобы войти снова, откройте встречу." });
+            onDocumentLost?.();
+          }}
           src={callPageUrl}
           title="Звонок Zoom"
           className="min-h-0 w-full flex-1 border-0 bg-black"

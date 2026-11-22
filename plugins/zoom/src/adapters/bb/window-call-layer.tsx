@@ -73,6 +73,7 @@ function Surface({ calls, id, session }: { calls: WindowCalls; id: string; sessi
         {...session}
         onClose={ended}
         onLost={lost}
+        onDocumentLost={() => calls.end(id, "document-lost")}
         confirmLeave={() => setConfirm(true)}
         onOpenInBrowser={moveToBrowser}
       />

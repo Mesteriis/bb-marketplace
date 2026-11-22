@@ -57,7 +57,7 @@ function Tile({ owner, view: v }: { owner: EmbedOwner; view: View }) {
         : v.status === "ended"
           ? "Вид закрыт"
           : v.status === "lost"
-            ? "Связь со звонком потеряна"
+            ? "Связь со звонком потеряна. Чтобы войти снова, откройте встречу заново."
             : v.status === "cancelled"
               ? "Выбор отменён"
               : "Проверяю встречу…"}

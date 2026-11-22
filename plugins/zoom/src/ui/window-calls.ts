@@ -10,7 +10,7 @@ export interface WindowCall {
 }
 export class WindowCalls {
   private active = new Map<string, WindowCall>();
-  private listeners = new Set<() => void>();
+  private listeners = new Set<(lostDocument?: string) => void>();
   readonly anchors = new Map<HTMLElement, string>();
   revision = 0;
   reset() {
@@ -21,19 +21,23 @@ export class WindowCalls {
   }
   calendarMeeting: string | null = null;
   snapshot = () => this.active;
-  subscribe = (listener: () => void) => {
+  subscribe = (listener: (lostDocument?: string) => void) => {
     this.listeners.add(listener);
     return () => {
       this.listeners.delete(listener);
     };
   };
-  private change() {
+  private change(lostDocument?: string) {
     this.active = new Map(this.active);
-    for (const listener of this.listeners) listener();
+    for (const listener of this.listeners) listener(lostDocument);
   }
   show(session: WindowCall, calendar = false) {
     const id = session.call.meetingNumber;
-    if (!this.active.has(id)) this.active.set(id, session);
+    const existing = this.active.get(id);
+    if (!existing) this.active.set(id, session);
+    else if (calendar) {
+      this.active.set(id, { ...existing, title: session.title, openExternal: session.openExternal, openInBrowser: session.openInBrowser });
+    }
     if (calendar) this.calendarMeeting = id;
     this.change();
   }
@@ -44,9 +48,9 @@ export class WindowCalls {
       this.change();
     }
   }
-  end(id: string) {
+  end(id: string, reason: "ended" | "document-lost" = "ended") {
     if (this.calendarMeeting === id) this.calendarMeeting = null;
     this.active.delete(id);
-    this.change();
+    this.change(reason === "document-lost" ? id : undefined);
   }
 }

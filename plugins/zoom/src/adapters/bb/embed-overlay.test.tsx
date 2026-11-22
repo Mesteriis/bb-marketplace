@@ -213,3 +213,51 @@ it("remembers a release received before the announce and requires a later genera
   await screen.findByRole("button", { name: "Войти в звонок" });
   expect(api.resolve).toHaveBeenCalledTimes(1);
 });
+
+it("reports a replaced call document as lost and waits for a fresh explicit join", async () => {
+  const { messages, api, host, target } = fixture();
+  host({ kind: "announce", resourceRef: ref });
+  fireEvent.click(await screen.findByRole("button", { name: "Войти в звонок" }));
+  const frame = (await screen.findByTitle("Звонок Zoom")) as HTMLIFrameElement;
+  const source = frame.contentWindow!;
+  const posted = vi.spyOn(source, "postMessage").mockImplementation(() => {});
+  const say = (type: string) => act(() => {
+    window.dispatchEvent(new MessageEvent("message", { data: { type }, source, origin: "http://localhost:38886" }));
+  });
+  fireEvent.load(frame);
+  say("zoom-call:ready");
+  say("zoom-call:joined");
+  expect(screen.getByText("В звонке")).toBeTruthy();
+  fireEvent.load(frame);
+  say("zoom-call:ready");
+  say("zoom-call:joined");
+  expect(messages.at(-1)).toEqual({ ...address, kind: "lost" });
+  expect(screen.queryByText("В звонке")).toBeNull();
+  expect(screen.getByText(/войти снова/i)).toBeTruthy();
+  expect(posted.mock.calls.filter(([m]) => m.type === "zoom-call:join")).toHaveLength(1);
+  host({ kind: "release" });
+  target.dataset.generation = "2";
+  host({ kind: "announce", generation: 2, resourceRef: ref });
+  const rejoin = await screen.findByRole("button", { name: "Войти в звонок" });
+  expect(api.prepare).toHaveBeenCalledTimes(1);
+  expect(screen.queryByTitle("Звонок Zoom")).toBeNull();
+  fireEvent.click(rejoin);
+  expect(await screen.findByTitle("Звонок Zoom")).not.toBe(frame);
+  expect(api.prepare).toHaveBeenCalledTimes(2);
+});
+
+it("adds the calendar browser action to a tile call without replacing its iframe", async () => {
+  const calls = new WindowCalls();
+  const { host } = fixture(calls);
+  host({ kind: "announce", resourceRef: ref });
+  fireEvent.click(await screen.findByRole("button", { name: "Войти в звонок" }));
+  const frame = await screen.findByTitle("Звонок Zoom");
+  const existing = calls.snapshot().get(meeting.id)!;
+  expect(screen.queryByRole("button", { name: "В браузере" })).toBeNull();
+  const openInBrowser = vi.fn();
+  act(() => calls.show({ ...existing, call: { ...existing.call, signature: "fresh" }, openInBrowser }, true));
+  render(<CallAnchor calls={calls} id={meeting.id} />);
+  expect(screen.getByTitle("Звонок Zoom")).toBe(frame);
+  fireEvent.click(await screen.findByRole("button", { name: "В браузере" }));
+  await waitFor(() => expect(openInBrowser).toHaveBeenCalledTimes(1));
+});

@@ -42,6 +42,7 @@ function run(sdk: unknown) {
   const origin = new URL(window.location.origin);
   origin.hostname = "127.0.0.1";
   const say = (data: unknown) => window.dispatchEvent(new MessageEvent("message", { data, origin:origin.origin, source: parent as unknown as Window }));
+  say({ type: "zoom-call:loaded" });
   return { posted, say };
 }
 

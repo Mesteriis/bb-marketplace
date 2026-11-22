@@ -6,7 +6,7 @@
 // Messages (all `{ type: "zoom-call:…" }`):
 //   page → parent: ready | failed {message} | joined | ended | error {code, message}
 //                  | media-error {kind: camera|microphone|screen, name, message}
-//   parent → page: join {call} | leave
+//   parent → page: loaded | join {call} | leave
 
 /** Pinned so a Zoom release cannot change the code the page runs. Update with the SDK notes. */
 export const MEETING_SDK_VERSION = "6.10.0";
@@ -194,14 +194,21 @@ export const CALL_PAGE_SCRIPT = `
     });
   }
 
+  var loaded = false;
+  var initialized = false;
+  function announceReady() {
+    if (loaded && initialized) post({ type: "zoom-call:ready" });
+  }
   ready.then(function () {
-    post({ type: "zoom-call:ready" });
+    initialized = true;
     if (standalone) join(served);
+    else announceReady();
   }, function (error) {
     post({ type: "zoom-call:failed", message: "Zoom Meeting SDK не запустился: " + describe(error).message });
   });
   window.addEventListener("message", function (event) {
     if (standalone || event.source !== parentWindow || !parentOrigin || event.origin !== parentOrigin || !event.data) return;
+    if (event.data.type === "zoom-call:loaded") { loaded = true; announceReady(); }
     if (event.data.type === "zoom-call:theme") applyTheme(event.data.colors);
     if (event.data.type === "zoom-call:join" && event.data.call && !joined) join(event.data.call);
     if (event.data.type === "zoom-call:leave") {
