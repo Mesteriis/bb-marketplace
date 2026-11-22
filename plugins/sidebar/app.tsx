@@ -20,6 +20,7 @@ import {attentionThreads,requiresAttention,waitingReason,searchProjects} from '.
 import {SidebarTabs,type SidebarTab} from './src/ui/sidebar-tabs';
 import {useSidebarHeader} from './src/adapters/bb/sidebar-header';
 import {ProgressFreshness} from './src/ui/progress-freshness';
+import {requestChertogTile} from './src/adapters/bb/chertog-open';
 function change(kind: 'projects' | 'threads', id: string) {
     try {
         toggle(kind, id);
@@ -160,7 +161,7 @@ function ThreadRow({ thread, depth, active, muted, onNavigate, toggleControl,con
     return <ThreadMenu thread={target}><div className={'thread-item' + (active ? ' active' : '') + (muted ? ' user-hidden' : '')} style={{'--thread-indent':`${indent}px`} as React.CSSProperties}><div className="tree-row thread-row" style={{paddingLeft:indent}}>
  {toggleControl}
  <a href={thread.href} aria-current={active ? 'page' : undefined} onClick={e => { if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)
-        return; e.preventDefault(); navigate.toThread(thread.id); onNavigate(); }}><span title={thread.indicatorLabel ?? undefined} className={`status-dot ${isRunning(thread)?'running':thread.isUnread?'unread':'quiet'}`} aria-hidden="true"/><span className="thread-copy">{context||summary?<span className="thread-meta">{context?<span className="thread-context">{context}</span>:null}{summary?<span className="subthread-summary-inline">{summary}</span>:null}</span>:null}<span className="label">{thread.displayTitle}</span>{reason?<span className="thread-waiting">{reason}</span>:null}</span>{thread.isUnread&&badgeState!=='unread'?<span className="status-dot unread" role="img" aria-label="Новый ответ"/>:null}{!plans.length&&badge?<span className={`state-badge plan-${badgeState}`}>{badge}</span>:null}</a>
+        return; e.preventDefault(); if(!requestChertogTile(thread.id))navigate.toThread(thread.id); onNavigate(); }}><span title={thread.indicatorLabel ?? undefined} className={`status-dot ${isRunning(thread)?'running':thread.isUnread?'unread':'quiet'}`} aria-hidden="true"/><span className="thread-copy">{context||summary?<span className="thread-meta">{context?<span className="thread-context">{context}</span>:null}{summary?<span className="subthread-summary-inline">{summary}</span>:null}</span>:null}<span className="label">{thread.displayTitle}</span>{reason?<span className="thread-waiting">{reason}</span>:null}</span>{thread.isUnread&&badgeState!=='unread'?<span className="status-dot unread" role="img" aria-label="Новый ответ"/>:null}{!plans.length&&badge?<span className={`state-badge plan-${badgeState}`}>{badge}</span>:null}</a>
  <ActionsMenu thread={target} trigger={props => <button {...props} className={[props.className,"thread-menu"].filter(Boolean).join(" ")} aria-label={`Действия: ${thread.displayTitle}`}>⋯</button>}/>
  </div><ThreadProgress plans={plans} effects={values?.effects!==false} status={badge&&badgeState?{label:badge,state:badgeState,onActivate:badgeState==='needs_input'||badgeState==='error'?openAttention:undefined}:undefined}/><div className="thread-progress-meta">{plans.length||isRunning(thread)||failed?<ProgressFreshness updatedAt={plan?.updatedAt} checkedAt={checkedAt} failed={!!failed} running={isRunning(thread)} onRefresh={refresh}/>:null}</div></div></ThreadMenu>;
 }
@@ -170,5 +171,5 @@ function AttentionRow({thread,onNavigate}:{thread:PluginSidebarThread&{planAtten
  const {plans}=useThreadPlans(thread.id);
  const question=thread.hasPendingInteraction||thread.planAttention==='needs_input';
  const plan=plans.find(p=>p.state===(question?'needs_input':'error'));
- return <a className={'attention-item '+(question?'needs-input':'error')} href={thread.href} onClick={event=>{if(event.button!==0||event.metaKey||event.ctrlKey||event.shiftKey||event.altKey)return;event.preventDefault();navigate.toThread(thread.id);onNavigate();}}><span aria-hidden="true">{question?'?':'!'}</span><span><strong>{thread.displayTitle}</strong><small>{plan?.note??(question?'Нужен твой ответ':'Ошибка выполнения')}</small></span><span aria-hidden="true">↗</span></a>;
+ return <a className={'attention-item '+(question?'needs-input':'error')} href={thread.href} onClick={event=>{if(event.button!==0||event.metaKey||event.ctrlKey||event.shiftKey||event.altKey)return;event.preventDefault();if(!requestChertogTile(thread.id))navigate.toThread(thread.id);onNavigate();}}><span aria-hidden="true">{question?'?':'!'}</span><span><strong>{thread.displayTitle}</strong><small>{plan?.note??(question?'Нужен твой ответ':'Ошибка выполнения')}</small></span><span aria-hidden="true">↗</span></a>;
 }
