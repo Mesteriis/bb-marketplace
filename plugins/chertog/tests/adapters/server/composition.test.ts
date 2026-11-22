@@ -38,9 +38,9 @@ describe("what the server registers", () => {
     expect(log.lines).toEqual([]);
   });
 
-  it("declares exactly the two settings, both plain switches", () => {
+  it("declares exactly the five settings, all plain switches", () => {
     const [declared] = loaded().settings.defined;
-    expect(Object.keys(declared)).toEqual(["homeRedirect", "acceptanceFixture"]);
+    expect(Object.keys(declared)).toEqual(["homeRedirect", "acceptanceFixture", "tileSpace", "navigationPart", "threadListPart"]);
     expect(declared).toEqual({
       homeRedirect: {
         type: "boolean",
@@ -50,9 +50,39 @@ describe("what the server registers", () => {
         default: true,
       },
       acceptanceFixture: { type: "boolean", label: "Тестовая панель для приёмки", default: false },
+      tileSpace: {
+        type: "boolean",
+        label: "Тайловое пространство",
+        description: "Страница Чертога с тайлами. Выключите, чтобы Чертог не работал в окне.",
+        default: true,
+      },
+      navigationPart: {
+        type: "boolean",
+        label: "Навигация",
+        description: "Makosh Navigation: группы и разделы навигации BB. Выключите, чтобы вернуть штатную навигацию.",
+        default: true,
+      },
+      threadListPart: {
+        type: "boolean",
+        label: "Список тредов",
+        description: "Makosh Sidebar: список «Сейчас / Проекты» и прогресс планов. Выключите, чтобы вернуть штатный список.",
+        default: true,
+      },
     });
     // Neither is a secret: a switch is stored with the plugin's settings and reaches the windows.
     expect(Object.values(declared).filter((descriptor) => "secret" in descriptor)).toEqual([]);
+  });
+
+  it("keeps the plugins of the two part switches in step, from the start and on every write", async () => {
+    const { settings, plugins } = loaded();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(plugins.calls).toEqual([]);
+    settings.write({ navigationPart: false });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(plugins.calls).toEqual(["disable makosh-navigation"]);
+    settings.write({ navigationPart: true });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(plugins.calls).toEqual(["disable makosh-navigation", "enable makosh-navigation"]);
   });
 
   it("serves the contract of the wire schemas", () => {

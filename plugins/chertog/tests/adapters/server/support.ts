@@ -129,17 +129,67 @@ export class FakeRpc {
 
 /**
  * The plugin's settings registry: every set of descriptors it was given, as
- * given. The server only declares its settings, so using a handle throws.
+ * given, and a handle that reads their defaults, holds written values and
+ * reports a write to the listeners, as BB does.
  */
 export class FakeSettings {
   readonly defined: Record<string, PluginSettingDescriptor>[] = [];
+  private values: Record<string, unknown> = {};
+  private readonly listeners: ((next: Record<string, unknown>, prev: Record<string, unknown>) => void)[] = [];
 
   define(descriptors: Record<string, PluginSettingDescriptor>): unknown {
     this.defined.push(descriptors);
-    const unused = (member: string) => (): never => {
-      throw new Error("the server uses the settings handle: " + member);
+    const effective = () => {
+      const defaults = Object.fromEntries(
+        Object.entries(descriptors).flatMap(([key, descriptor]) => ("default" in descriptor ? [[key, descriptor.default]] : [])),
+      );
+      return { ...defaults, ...this.values };
     };
-    return { get: unused("get"), experimental_set: unused("experimental_set"), onChange: unused("onChange") };
+    return {
+      get: async () => effective(),
+      experimental_set: async () => {
+        throw new Error("the server writes settings");
+      },
+      onChange: (listener: (next: Record<string, unknown>, prev: Record<string, unknown>) => void) => void this.listeners.push(listener),
+      effective,
+    };
+  }
+
+  /** A settings write as BB reports it. */
+  write(patch: Record<string, unknown>): void {
+    const [descriptors] = this.defined;
+    const read = () => ({
+      ...Object.fromEntries(Object.entries(descriptors).flatMap(([key, d]) => ("default" in d ? [[key, d.default]] : []))),
+      ...this.values,
+    });
+    const prev = read();
+    this.values = { ...this.values, ...patch };
+    const next = read();
+    for (const listener of this.listeners) listener(next, prev);
+  }
+}
+
+/** The plugin inventory and the enable and disable calls of `bb.sdk.plugins`. */
+export class FakePlugins {
+  readonly calls: string[] = [];
+  readonly inventory: { id: string; enabled: boolean }[] = [
+    { id: "makosh-navigation", enabled: true },
+    { id: "makosh-sidebar", enabled: true },
+  ];
+  async list() {
+    return { plugins: this.inventory.map((plugin) => ({ ...plugin })) };
+  }
+  async enable({ pluginId }: { pluginId: string }) {
+    this.calls.push("enable " + pluginId);
+    const entry = this.inventory.find((plugin) => plugin.id === pluginId);
+    if (entry) entry.enabled = true;
+    return entry;
+  }
+  async disable({ pluginId }: { pluginId: string }) {
+    this.calls.push("disable " + pluginId);
+    const entry = this.inventory.find((plugin) => plugin.id === pluginId);
+    if (entry) entry.enabled = false;
+    return entry;
   }
 }
 
@@ -150,6 +200,7 @@ export interface FakeHost {
   readonly http: FakeHttp;
   readonly rpc: FakeRpc;
   readonly settings: FakeSettings;
+  readonly plugins: FakePlugins;
 }
 
 /**
@@ -161,12 +212,13 @@ export function fakeHost(kv: FakeKv = new FakeKv()): FakeHost {
   const http = new FakeHttp();
   const rpc = new FakeRpc();
   const settings = new FakeSettings();
-  const used: Record<string, unknown> = { pluginId: "chertog", log, http, rpc, settings, storage: { kv } };
+  const plugins = new FakePlugins();
+  const used: Record<string, unknown> = { pluginId: "chertog", log, http, rpc, settings, storage: { kv }, sdk: { plugins } };
   const bb = new Proxy(used, {
     get(target, name) {
       if (typeof name === "string" && !Object.hasOwn(target, name)) throw new Error("the server reads bb." + name);
       return Reflect.get(target, name);
     },
   }) as unknown as BbPluginApi;
-  return { bb, kv, log, http, rpc, settings };
+  return { bb, kv, log, http, rpc, settings, plugins };
 }
