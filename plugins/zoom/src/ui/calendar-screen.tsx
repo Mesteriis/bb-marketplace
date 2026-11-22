@@ -37,11 +37,13 @@ export function CalendarScreen({ calls, api, displayName, callPageUrl, openExter
   const [createOpen, setCreateOpen] = useState(false);
   const [joining, setJoining] = useState<string | null>(null);
   const [joinError, setJoinError] = useState<string | null>(null);
-  useSyncExternalStore(calls.subscribe, calls.snapshot);
+  const calendarMeeting = useSyncExternalStore(calls.subscribe, () => calls.calendarMeeting);
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
 
   useEffect(() => {
+    if (calendarMeeting !== null) return;
     let cancelled = false;
+    setMeetings({ kind: "loading" });
     api.listMeetings().then(
       (list) => !cancelled && setMeetings({ kind: "ready", list }),
       (error: unknown) => !cancelled && setMeetings({ kind: "error", message: messageOf(error) }),
@@ -49,7 +51,7 @@ export function CalendarScreen({ calls, api, displayName, callPageUrl, openExter
     return () => {
       cancelled = true;
     };
-  }, [api, reload]);
+  }, [api, reload, calendarMeeting]);
 
   useEffect(() => {
     const timer = window.setInterval(() => setMoment(now()), TICK_MS);
@@ -108,7 +110,7 @@ export function CalendarScreen({ calls, api, displayName, callPageUrl, openExter
     }
   }
 
-  if (calls.calendarMeeting) return <CallAnchor calls={calls} id={calls.calendarMeeting} />;
+  if (calendarMeeting !== null) return <CallAnchor calls={calls} id={calendarMeeting} />;
 
   const empty = week !== null && week.unscheduled.length === 0 && week.days.every((day) => day.events.length === 0);
 

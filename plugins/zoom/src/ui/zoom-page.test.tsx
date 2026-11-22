@@ -98,6 +98,20 @@ describe("ZoomPage", () => {
     expect(api.prepareCall).toHaveBeenCalledWith({ link: "https://us02web.zoom.us/j/1111111111?pwd=p1111111111", asHost: true });
   });
 
+  it("refreshes the visible calendar after its call ends", async () => {
+    const { api } = setup(CONNECTED, [meeting("1111111111", "Планёрка", "2026-11-23T10:00:00Z")]);
+    fireEvent.click(await screen.findByRole("button", { name: "Войти: Планёрка" }));
+    const frame = (await screen.findByTitle("Звонок Zoom")) as HTMLIFrameElement;
+    api.listMeetings.mockResolvedValue([meeting("2222222222", "Разбор релиза", "2026-11-24T11:00:00Z")]);
+    expect(api.listMeetings).toHaveBeenCalledTimes(1);
+    fireEvent(window, new MessageEvent("message", {
+      source: frame.contentWindow, origin: window.location.origin, data: { type: "zoom-call:ended" },
+    }));
+    await waitFor(() => expect(api.listMeetings).toHaveBeenCalledTimes(2));
+    expect(await screen.findByRole("button", { name: "Войти: Разбор релиза" })).toBeTruthy();
+    expect(screen.queryByText("Планёрка")).toBeNull();
+  });
+
   it("opens the meeting in the Zoom app when BB has no separate origin for the call page", async () => {
     const api = {
       status: vi.fn(async () => CONNECTED),
