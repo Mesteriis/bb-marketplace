@@ -19,6 +19,8 @@ const REFUSALS: Record<WorkspaceChangeRefusal, string> = {
 
 export const appStrings = {
   panelTitle: "Чертог",
+  /** The title bar's menu acts on the focused tile; its name differs from the buttons in the tiles. */
+  focusedTileMenu: "Действия выбранного тайла",
   firstLayoutName: "Основная",
   openChertog: "Открыть Чертог",
   focusComposerCommand: "Чертог: перейти к вводу выбранного тайла",

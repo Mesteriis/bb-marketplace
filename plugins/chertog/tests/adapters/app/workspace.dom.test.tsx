@@ -801,7 +801,7 @@ it("offers the handover of a thread in the menu of its tile and in the title bar
     }));
   });
   expect(screen.queryByText("Передать в другое окно")).toBeNull();
-  const menus = screen.getAllByRole("button", { name: "Действия тайла" });
+  const menus = [screen.getByRole("button", { name: "Действия тайла" }), screen.getByRole("button", { name: "Действия выбранного тайла" })];
   expect(menus).toHaveLength(2);
   for (const menu of menus) {
     await user.click(menu);

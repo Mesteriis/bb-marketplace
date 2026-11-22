@@ -12,6 +12,7 @@ import { FakeWorkspaceRpc, sequentialIds } from "./support.ts";
 const SIZE = { width: 1204, height: 800 };
 
 interface Stage {
+  rpc: FakeWorkspaceRpc;
   workspace: WindowWorkspace;
   newThreads: number;
 }
@@ -19,7 +20,7 @@ interface Stage {
 function newStage(): Stage {
   const rpc = new FakeWorkspaceRpc();
   const ids = sequentialIds();
-  const stage: Stage = { newThreads: 0, workspace: undefined as unknown as WindowWorkspace };
+  const stage: Stage = { newThreads: 0, rpc, workspace: undefined as unknown as WindowWorkspace };
   stage.workspace = createWindowWorkspace({
     renderChat: () => null,
     randomId: () => ids("r").slice(2),
@@ -71,7 +72,7 @@ describe("the title of the bar", () => {
 
     await screen.findByRole("heading", { name: "Выберите содержимое" });
     expect(title().getByText("Чертог")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Действия тайла" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Действия выбранного тайла" })).toBeNull();
   });
 
   it("shows the focused tile and changes at once when the focus moves", async () => {
@@ -104,8 +105,8 @@ describe("the title of the bar", () => {
     await addPanel(user, /Ревьюер/);
     expect(document.querySelectorAll("[data-group-id]")).toHaveLength(2);
 
-    await user.click(title().getByRole("button", { name: "Действия тайла" }));
-    const items = within(screen.getByRole("menu", { name: "Действия тайла" })).getAllByRole("menuitem");
+    await user.click(title().getByRole("button", { name: "Действия выбранного тайла" }));
+    const items = within(screen.getByRole("menu", { name: "Действия выбранного тайла" })).getAllByRole("menuitem");
     expect(items.map((item) => item.textContent)).toEqual(["Убрать вкладку из раскладки", "Убрать тайл из раскладки", "Открыть рядом…"]);
     await user.click(within(screen.getByRole("menu")).getByRole("menuitem", { name: "Убрать тайл из раскладки" }));
 
@@ -188,6 +189,31 @@ describe("the actions of the bar", () => {
 
     expect(await screen.findByRole("button", { name: "Новый тред" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Ещё" })).toBeNull();
+    vi.restoreAllMocks();
+  });
+});
+
+describe("a failed save in a narrow title bar", () => {
+  it("stays visible with its retry outside the folded menu, and a normal state does not", async () => {
+    vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+    const original = HTMLElement.prototype.getBoundingClientRect;
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      return this.tagName === "HEADER" ? ({ width: 640, height: 48, left: 0, top: 0, right: 640, bottom: 48, x: 0, y: 0, toJSON: () => ({}) } as DOMRect) : original.call(this);
+    });
+    const stage = newStage();
+    const user = userEvent.setup();
+    render(<Bar stage={stage} />);
+    await screen.findByRole("button", { name: "Ещё" });
+    expect(screen.queryByRole("status")).toBeNull();
+
+    stage.rpc.saveFailures.push(new Error("нет сети"));
+    await user.click(await screen.findByRole("button", { name: /Исполнитель/ }));
+
+    const status = await screen.findByRole("status");
+    expect(status.textContent).toBe("Не сохранено");
+    expect(screen.queryByRole("dialog", { name: "Ещё" })).toBeNull();
+    await user.click(within(screen.getByRole("toolbar")).getByRole("button", { name: "Сохранить ещё раз" }));
+    await waitFor(() => expect(screen.queryByRole("status")).toBeNull());
     vi.restoreAllMocks();
   });
 });

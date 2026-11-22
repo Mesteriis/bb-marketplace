@@ -67,7 +67,7 @@ export function ChertogHeaderTitle({ workspace }: { workspace: WindowWorkspace }
           openBeside: (panelId) => void session.openBeside(panelId),
           requestClose: (panelId) => void actions.requestClose(panelId),
         });
-  return <TileTitle tile={tile?.label ?? null} fallback={appStrings.panelTitle} menuLabel={DEFAULT_TILE_TEXT.tileMenu} menuItems={menuItems} />;
+  return <TileTitle tile={tile?.label ?? null} fallback={appStrings.panelTitle} menuLabel={appStrings.focusedTileMenu} menuItems={menuItems} />;
 }
 
 /** Whether the title bar this component sits in is narrower than `NARROW_BELOW`. An unmeasured bar counts as wide. */

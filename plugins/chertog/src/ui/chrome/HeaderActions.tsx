@@ -83,6 +83,27 @@ function MoreMenu({ layouts, hiddenPanels, onNewThread }: Pick<HeaderActionsProp
   );
 }
 
+/** A save that did not go through must not hide in the folded menu: its status and the way out stay in the bar. */
+function SaveProblem({ layouts }: { layouts: LayoutSwitcherProps }) {
+  const { saveStatus } = layouts;
+  if (saveStatus !== "failed" && saveStatus !== "conflict") return null;
+  return (
+    <>
+      <span role="status" title={layouts.saveDetail ?? chromeStrings.saveStatus[saveStatus]} className="max-w-32 truncate text-xs text-destructive">
+        {chromeStrings.saveStatus[saveStatus]}
+      </span>
+      <button type="button" data-toolbar-item className={classes.button} onClick={layouts.onRetrySave}>
+        {chromeStrings.saveStatus.retry}
+      </button>
+      {saveStatus === "conflict" && (
+        <button type="button" data-toolbar-item className={classes.button} onClick={layouts.onReload}>
+          {chromeStrings.saveStatus.reload}
+        </button>
+      )}
+    </>
+  );
+}
+
 export function HeaderActions({ layouts, content, hiddenPanels, onNewThread, narrow = false }: HeaderActionsProps) {
   const [picking, setPicking] = useState(false);
   const pickerHeadingId = useId();
@@ -95,6 +116,7 @@ export function HeaderActions({ layouts, content, hiddenPanels, onNewThread, nar
           <Icon name="plus" />
           <span>{text.addPanelShort}</span>
         </button>
+        {narrow && <SaveProblem layouts={layouts} />}
         {narrow ? (
           <MoreMenu layouts={layouts} hiddenPanels={hiddenPanels} onNewThread={onNewThread} />
         ) : (
