@@ -1,0 +1,10 @@
+> bb-plugin-makosh-remote-hub@0.1.0 build
+> bb plugin build && node scripts/check-dist-css.mjs
+dist/server.js
+dist/server.js.map
+dist/server.meta.json
+dist/app.js
+dist/app.css
+dist/app.meta.json
+dist/app.css carries 12 required .rh-* selectors
+exit=0

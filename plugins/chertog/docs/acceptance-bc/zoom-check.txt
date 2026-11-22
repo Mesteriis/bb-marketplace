@@ -1,0 +1,10 @@
+> bb-plugin-makosh-zoom@0.1.0 check
+> npm run typecheck && npm run test
+> bb-plugin-makosh-zoom@0.1.0 typecheck
+> tsc --noEmit
+> bb-plugin-makosh-zoom@0.1.0 test
+> vitest run
+Test Files  20 passed (20)
+Tests  210 passed (210)
+Duration  3.39s (environment 36%, transform 32%, tests 15%, import 15%, worker 2%)
+exit=0

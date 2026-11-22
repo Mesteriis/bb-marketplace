@@ -1,0 +1,10 @@
+> bb-plugin-makosh-telegram@0.1.0 check
+> npm run typecheck && npm run test
+> bb-plugin-makosh-telegram@0.1.0 typecheck
+> tsc --noEmit
+> bb-plugin-makosh-telegram@0.1.0 test
+> vitest run
+Test Files  43 passed (43)
+Tests  1829 passed | 4 skipped (1833)
+Duration  195.10s (tests 91%, import 5%, environment 3%, transform 1%)
+exit=0

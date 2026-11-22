@@ -1,0 +1,22 @@
+> bb-plugin-makosh-telegram@0.1.0 check
+> npm run typecheck && npm run test
+> bb-plugin-makosh-telegram@0.1.0 typecheck
+> tsc --noEmit
+> bb-plugin-makosh-telegram@0.1.0 test
+> vitest run
+FAIL  tests/approval-flow.test.tsx > shows the account and topic undefined on the send form and rejects an account switch
+Error: Test timed out in 5000ms.
+FAIL  tests/tdlib.test.ts > retains smpte2084 HDR in original and trimmed video and tone-maps the cover and GIF to SDR
+FAIL  tests/tdlib.test.ts > retains arib-std-b67 HDR in original and trimmed video and tone-maps the cover and GIF to SDR
+Error: Test timed out in 5000ms.
+FAIL  tests/tdlib.test.ts > retains Dolby Vision 8.4 during original sends, covers and trimmed sends
+Error: Test timed out in 5000ms.
+FAIL  tests/telegram-panel.test.tsx > uses Fixture.default with Telegram's main list at 1 and navigation set to false
+FAIL  tests/telegram-panel.test.tsx > uses Archive with Telegram's main list at 1 and navigation set to true
+Error: Test timed out in 5000ms.
+FAIL  tests/telegram.test.tsx > opens a forum topic, loads earlier pages and returns to the group history
+Error: Test timed out in 5000ms.
+Test Files  4 failed | 39 passed (43)
+Tests  7 failed | 1822 passed | 4 skipped (1833)
+Duration  226.63s (tests 72%, transform 18%, import 6%, environment 4%)
+exit=1

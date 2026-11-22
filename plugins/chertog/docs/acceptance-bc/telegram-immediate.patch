@@ -1,0 +1,10 @@
+--- telegram-drop.browser.mjs
++++ telegram-drop.browser.mjs
+@@ -9 +9 @@
+-const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
++const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+@@ -61,0 +62,2 @@
++  assert.deepEqual(calls.filter(method => /send|upload/i.test(method)), []);
++  console.log("PASS immediate drop: both DOMRects equal, no send/upload");
+@@ -67,0 +70 @@
++  console.log("PASS disabled detach menu:", await transfer.innerText());

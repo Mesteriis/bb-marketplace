@@ -1,0 +1,13 @@
+> bb-plugin-makosh-remote-hub@0.1.0 check
+> npm run typecheck && npm run test && npm run check:vendor
+> bb-plugin-makosh-remote-hub@0.1.0 typecheck
+> tsc --noEmit
+> bb-plugin-makosh-remote-hub@0.1.0 test
+> vitest run
+Test Files  120 passed | 5 skipped (125)
+Tests  1424 passed | 44 skipped (1468)
+Duration  15.57s (tests 36%, environment 27%, transform 19%, import 17%, worker 1%)
+> bb-plugin-makosh-remote-hub@0.1.0 check:vendor
+> node scripts/check-vendor.mjs
+vendor/novnc matches its manifest (59 files)
+exit=0
