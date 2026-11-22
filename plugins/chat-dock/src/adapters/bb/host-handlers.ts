@@ -3,7 +3,6 @@
 // while its own call runs.
 import type { WindowStatusWire } from "../../../contract.ts";
 import type { Attachment } from "../../core/attachment.ts";
-import type { ProposalSource } from "../../core/window-session.ts";
 import type { BuildResult, LaunchOptions, RunningWindow } from "./native-window.ts";
 import { createWindowController, type Retain, type WindowController } from "./window-controller.ts";
 
@@ -16,7 +15,7 @@ export interface HostCallContext {
 
 export interface HostHandlerDeps {
   build(paths: { dataDir: string; tempDir: string }): Promise<BuildResult>;
-  launch(options: Pick<LaunchOptions, "executable" | "onMessage">): RunningWindow;
+  launch(options: Pick<LaunchOptions, "executable">): RunningWindow;
 }
 
 export function createHostHandlers(deps: HostHandlerDeps) {
@@ -54,8 +53,6 @@ export function createHostHandlers(deps: HostHandlerDeps) {
 
   return {
     open: (context: HostCallContext) => controllerFor(context).open(retainFor(context)),
-    propose: (text: string, source: ProposalSource, context: HostCallContext) =>
-      controllerFor(context).propose(text, source, retainFor(context)),
     status: (context: HostCallContext) => controllerFor(context).status(),
     attach(view: Attachment, context: HostCallContext): { ok: true } {
       controllerFor(context).attach(view);

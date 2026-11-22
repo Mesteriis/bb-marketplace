@@ -23,14 +23,14 @@ function call() {
 }
 
 function stillWindow(): RunningWindow {
-  return { evaluate: async () => null, showPanel: () => {}, attach: () => {}, quit: () => {}, exited: new Promise(() => {}) };
+  return { attach: () => {}, quit: () => {}, exited: new Promise(() => {}) };
 }
 
 describe("the host entry's handlers", () => {
   it("opens the window after the page first asked for the status in an earlier call", async () => {
     const handlers = createHostHandlers({ build: async () => ({ ok: true, executable: "/x" }), launch: () => stillWindow() });
     const first = call();
-    expect(await handlers.status(first.context)).toEqual({ window: "closed", reason: null, proposal: "none", last: null });
+    expect(await handlers.status(first.context)).toEqual({ window: "closed", reason: null });
     first.end();
 
     const second = call();
@@ -39,19 +39,6 @@ describe("the host entry's handlers", () => {
     expect(opened.window).toBe("open");
     expect(second.leases()).toBe(1);
     expect(first.leases()).toBe(0);
-  });
-
-  it("proposes through a fresh call too, without reusing an old one", async () => {
-    const handlers = createHostHandlers({ build: async () => ({ ok: true, executable: "/x" }), launch: () => stillWindow() });
-    const first = call();
-    await handlers.status(first.context);
-    first.end();
-
-    const second = call();
-    const result = await handlers.propose("text", "manual", second.context);
-
-    expect(result.ok).toBe(true);
-    expect(second.leases()).toBe(1);
   });
 
   it("reports status changes through the latest call's signal channel", async () => {

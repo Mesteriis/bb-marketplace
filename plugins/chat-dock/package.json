@@ -1,7 +1,7 @@
 {
   "name": "bb-plugin-chat-dock",
   "version": "0.1.0",
-  "description": "A ChatGPT page in BB: chatgpt.com shows inside the page in a window of its own that keeps you signed in; preview text you selected in a thread, copy it, or hand it to that window, where you confirm the insert into the open conversation's draft. You send the message yourself.",
+  "description": "A ChatGPT tab in BB: chatgpt.com covers the whole tab in a window of its own, without an address bar, and keeps you signed in. Nothing else.",
   "private": true,
   "type": "module",
   "license": "MIT",
@@ -27,7 +27,7 @@
   },
   "bb": {
     "name": "BB Chat Dock [Experimental]",
-    "description": "A ChatGPT page in BB: chatgpt.com shows inside the page in a window of its own that keeps you signed in; preview text you selected in a thread, copy it, or hand it to that window, where you confirm the insert into the open conversation's draft. You send the message yourself.",
+    "description": "A ChatGPT tab in BB: chatgpt.com covers the whole tab in a window of its own, without an address bar, and keeps you signed in. Nothing else.",
     "branding": {
       "icon": "./assets/icon.svg"
     },
@@ -54,7 +54,6 @@
     "jsdom": "^26.1.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "sonner": "^1.7.4",
     "typescript": "^5.7.0",
     "vitest": "^5.1.0"
   },

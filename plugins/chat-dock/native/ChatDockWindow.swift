@@ -2,17 +2,13 @@
 //
 // A small macOS app with one borderless window: https://chatgpt.com in a
 // WKWebView, without an address bar, navigation or window buttons, and
-// without a Dock icon. It sits on the place the BB page reserves for it and
-// follows the window that shows that page, so it looks and works as part of
-// BB. It keeps its own persistent website data store: the sign-in survives
+// without a Dock icon. It covers BB's ChatGPT tab and follows BB's window,
+// so ChatGPT looks and works as the content of that tab. It keeps its own persistent website data store: the sign-in survives
 // restarts, and BB's built-in Browser and the agent tools that drive it
 // (`bb browser`) never see it. Web Inspector is off.
 //
-// It talks only to the process that started it, through JSON lines on stdin
-// and stdout. It never sends the page's content: only the document's address,
-// the result of the plugin's own scripts (an address and a status word), and
-// which of its own buttons the user pressed. Text is written into the page
-// only after the user presses "Вставить в черновик" in this window.
+// It talks only to the process that started it, through JSON lines on stdin:
+// where to sit, and quit. It sends nothing about the page.
 import AppKit
 import WebKit
 
@@ -28,7 +24,6 @@ let dataStoreID = UUID(uuidString: "0B7E1A55-7E57-4C0D-8A1D-0000C4A7D0C5")!
 #else
 let dataStoreID = UUID(uuidString: "5C0E5E2B-6F7D-4F8A-9C3B-2B7C1D0A9E41")!
 #endif
-let pageWorld = WKContentWorld.world(name: "bb-chat-dock")
 
 func isAllowed(_ url: URL?) -> Bool {
   guard let url, url.scheme == "https", let host = url.host?.lowercased() else { return false }
@@ -176,65 +171,10 @@ final class Channel {
   }
 }
 
-final class Panel: NSView {
-  let status = NSTextField(wrappingLabelWithString: "")
-  let preview = NSTextView()
-  let insert = NSButton(title: "Вставить в черновик", target: nil, action: nil)
-  let rebind = NSButton(title: "Выбрать открытую беседу", target: nil, action: nil)
-  let copy = NSButton(title: "Скопировать", target: nil, action: nil)
-  let dismiss = NSButton(title: "Отмена", target: nil, action: nil)
-
-  override init(frame: NSRect) {
-    super.init(frame: frame)
-    wantsLayer = true
-    layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
-    let border = NSBox(); border.boxType = .separator
-    status.font = .systemFont(ofSize: 12)
-    status.maximumNumberOfLines = 4
-    preview.isEditable = false
-    preview.isSelectable = true
-    preview.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
-    preview.textContainerInset = NSSize(width: 4, height: 4)
-    let scroll = NSScrollView()
-    scroll.documentView = preview
-    scroll.hasVerticalScroller = true
-    scroll.borderType = .bezelBorder
-    preview.autoresizingMask = [.width]
-    insert.keyEquivalent = ""
-    insert.bezelColor = .controlAccentColor
-    let buttons = NSStackView(views: [insert, rebind, copy, NSView(), dismiss])
-    buttons.orientation = .horizontal
-    buttons.spacing = 8
-    let stack = NSStackView(views: [border, status, scroll, buttons])
-    stack.orientation = .vertical
-    stack.alignment = .leading
-    stack.spacing = 8
-    stack.edgeInsets = NSEdgeInsets(top: 0, left: 12, bottom: 12, right: 12)
-    stack.translatesAutoresizingMaskIntoConstraints = false
-    addSubview(stack)
-    NSLayoutConstraint.activate([
-      stack.leadingAnchor.constraint(equalTo: leadingAnchor),
-      stack.trailingAnchor.constraint(equalTo: trailingAnchor),
-      stack.topAnchor.constraint(equalTo: topAnchor),
-      stack.bottomAnchor.constraint(equalTo: bottomAnchor),
-      border.widthAnchor.constraint(equalTo: stack.widthAnchor),
-      scroll.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -24),
-      scroll.heightAnchor.constraint(equalToConstant: 120),
-      buttons.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -24),
-      status.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -24),
-    ])
-  }
-
-  required init?(coder: NSCoder) { nil }
-}
-
 final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate, NSWindowDelegate {
   let channel = Channel()
   var window: NSWindow!
   var webView: WKWebView!
-  let panel = Panel()
-  var panelText = ""
-  var urlObservation: NSKeyValueObservation?
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     buildMenu()
@@ -260,29 +200,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     window.isReleasedWhenClosed = false
 
     let content = NSView()
-    panel.translatesAutoresizingMaskIntoConstraints = false
-    panel.isHidden = true
     content.addSubview(webView)
-    content.addSubview(panel)
     NSLayoutConstraint.activate([
       webView.topAnchor.constraint(equalTo: content.topAnchor),
       webView.leadingAnchor.constraint(equalTo: content.leadingAnchor),
       webView.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-      webView.bottomAnchor.constraint(equalTo: panel.topAnchor),
-      panel.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-      panel.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-      panel.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+      webView.bottomAnchor.constraint(equalTo: content.bottomAnchor),
     ])
     window.contentView = content
-    for (button, action) in [(panel.insert, "insert"), (panel.rebind, "rebind"), (panel.copy, "copy"), (panel.dismiss, "dismiss")] {
-      button.target = self
-      button.action = #selector(pressed(_:))
-      button.identifier = NSUserInterfaceItemIdentifier(action)
-    }
-
-    urlObservation = webView.observe(\.url, options: [.new]) { [weak self] view, _ in
-      self?.channel.send(["type": "url", "url": view.url?.absoluteString ?? ""])
-    }
     loadStart()
     #if CHAT_DOCK_TEST
     if ProcessInfo.processInfo.environment["CHAT_DOCK_TEST_OFFSCREEN"] == "1" {
@@ -466,25 +391,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     switch command["type"] as? String {
     case "attach":
       if let next = Attachment(command) { attach(next) }
-    case "panel":
-      applyPanel(command)
-    case "evaluate":
-      guard let id = command["id"] as? String, let expression = command["expression"] as? String else { return }
-      webView.evaluateJavaScript(expression, in: nil, in: pageWorld) { [weak self] result in
-        switch result {
-        case .success(let value):
-          let json: Any = JSONSerialization.isValidJSONObject(["v": value]) ? value : NSNull()
-          self?.channel.send(["type": "result", "id": id, "ok": true, "value": json])
-        case .failure:
-          self?.channel.send(["type": "result", "id": id, "ok": false])
-        }
-      }
     case "quit":
       NSApp.terminate(nil)
     #if CHAT_DOCK_TEST
-    case "test-press":
-      // Test builds only: stands in for the user's click on a panel button.
-      if let action = command["action"] as? String { perform(action) }
     case "test-eval-main":
       // Test builds only: lets the stand drive its synthetic page.
       guard let id = command["id"] as? String, let expression = command["expression"] as? String else { return }
@@ -528,36 +437,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     default:
       break
     }
-  }
-
-  func applyPanel(_ view: [String: Any]) {
-    let visible = view["visible"] as? Bool ?? false
-    panel.isHidden = !visible
-    panel.status.stringValue = view["status"] as? String ?? ""
-    panelText = view["text"] as? String ?? ""
-    panel.preview.string = panelText
-    panel.insert.isHidden = !(view["canInsert"] as? Bool ?? false)
-    panel.rebind.isHidden = !(view["canRebind"] as? Bool ?? false)
-    panel.copy.isHidden = !(view["canCopy"] as? Bool ?? false) || panelText.isEmpty
-    panel.dismiss.title = view["dismissLabel"] as? String ?? "Отмена"
-    panel.insert.isEnabled = !(view["busy"] as? Bool ?? false)
-  }
-
-  @objc func pressed(_ sender: NSButton) {
-    guard let action = sender.identifier?.rawValue else { return }
-    perform(action)
-  }
-
-  func perform(_ action: String) {
-    if action == "copy" {
-      // The user's own click in this window writes the clipboard; nothing else does.
-      let board = NSPasteboard.general
-      board.clearContents()
-      let ok = board.setString(panelText, forType: .string)
-      channel.send(["type": "copied", "ok": ok])
-      return
-    }
-    channel.send(["type": "pressed", "action": action])
   }
 
   // MARK: The fixed site

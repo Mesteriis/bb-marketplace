@@ -7,8 +7,6 @@ function fakeWindow() {
   let exit: () => void = () => {};
   const shown: string[] = [];
   const window: RunningWindow = {
-    evaluate: async () => null,
-    showPanel: () => {},
     attach: (view) => void shown.push(view.visible ? "attach" : "hide"),
     quit: () => exit(),
     exited: new Promise<void>((resolve) => (exit = resolve)),
@@ -83,15 +81,14 @@ describe("the window controller", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(leases()).toBe(0);
-    expect(statuses[statuses.length - 1]).toEqual({ window: "closed", reason: null, proposal: "none", last: null });
+    expect(statuses[statuses.length - 1]).toEqual({ window: "closed", reason: null });
   });
 
   it("reports why the window cannot be built", async () => {
     const { controller, leases, retain } = rig(async () => ({ ok: false, reason: "нет компилятора" }));
 
-    expect(await controller.open(retain)).toEqual({ window: "unavailable", reason: "нет компилятора", proposal: "none", last: null });
+    expect(await controller.open(retain)).toEqual({ window: "unavailable", reason: "нет компилятора" });
     expect(leases()).toBe(0);
-    expect(await controller.propose("text", "manual", retain)).toEqual({ ok: false, reason: "window-unavailable" });
   });
 
   it("ends a build that throws in 'unavailable' and releases the worker", async () => {
@@ -111,7 +108,6 @@ describe("the window controller", () => {
     const { controller, retain } = rig(() => new Promise((resolve) => (finish = resolve)));
 
     expect((await controller.open(retain)).window).toBe("building");
-    expect(await controller.propose("text", "manual", retain)).toEqual({ ok: false, reason: "window-unavailable" });
     finish({ ok: true, executable: "/x" });
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(controller.status().window).toBe("open");

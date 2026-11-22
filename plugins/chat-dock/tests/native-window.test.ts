@@ -4,8 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import type { ChildProcess } from "node:child_process";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { createTransfer } from "../src/core/transfer.ts";
+import { afterEach, describe, expect, it } from "vitest";
 import { APP_NAME, BUNDLE_ID, buildWindowApp, infoPlist, launchWindow, type Runner } from "../src/adapters/bb/native-window.ts";
 import { WINDOW_SOURCE } from "../src/adapters/bb/window-source.generated.ts";
 
@@ -39,13 +38,11 @@ class FakeChild extends EventEmitter {
 
 function launch() {
   const child = new FakeChild();
-  const messages: unknown[] = [];
   const window = launchWindow({
     executable: "/fake/ChatDockWindow",
-    onMessage: (message) => void messages.push(message),
     spawnChild: () => child as unknown as ChildProcess,
   });
-  return { child, messages, window };
+  return { child, window };
 }
 const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
 
@@ -65,7 +62,7 @@ describe("the embedded window source", () => {
     expect(WINDOW_SOURCE).toContain("WKWebsiteDataStore(forIdentifier: dataStoreID)");
     // Test hooks exist only inside compile-time test blocks.
     const outside = WINDOW_SOURCE.replace(/#if CHAT_DOCK_TEST[\s\S]*?#endif/g, "");
-    expect(outside).not.toContain("test-press");
+    expect(outside).not.toContain("test-eval-main");
     expect(outside).not.toContain("CHAT_DOCK_TEST_HTML");
   });
 });
@@ -141,83 +138,31 @@ describe("building the window app", () => {
 });
 
 describe("the running window", () => {
-  it("answers page scripts by id and ignores lines it does not know", async () => {
-    const { child, window, messages } = launch();
-    const answer = window.evaluate("1 + 1");
-    await tick();
-    const sent = JSON.parse(child.written[0]!) as { type: string; id: string; expression: string };
-    expect(sent).toMatchObject({ type: "evaluate", expression: "1 + 1" });
-
-    child.say({ type: "result", id: "someone-else", ok: true, value: 3 });
-    child.stdout.write("garbage\n");
-    child.say({ type: "result", id: sent.id, ok: true, value: { status: "handed-off" } });
-
-    await expect(answer).resolves.toEqual({ status: "handed-off" });
-    expect(messages).toEqual([]);
-  });
-
-  it("forwards the user's presses and addresses", async () => {
-    const { child, messages } = launch();
-    child.say({ type: "url", url: "https://chatgpt.com/c/abc" });
-    child.say({ type: "pressed", action: "insert" });
-    await tick();
-
-    expect(messages).toEqual([
-      { type: "url", url: "https://chatgpt.com/c/abc" },
-      { type: "pressed", action: "insert" },
-    ]);
-  });
-
-  it("fails pending scripts when the window exits, and sends nothing after", async () => {
+  it("sends only placements and quit; no page script, panel or text", async () => {
     const { child, window } = launch();
-    const answer = window.evaluate("x");
-    child.emit("exit", 0);
-
-    await expect(answer).rejects.toThrow("window closed");
-    await window.exited;
-    await expect(window.evaluate("y")).rejects.toThrow("window closed");
-    expect(child.written).toHaveLength(1);
-  });
-
-  it("delivers a late answer, so a stale mark set after the transfer's timeout is withdrawn", async () => {
-    const { child, window } = launch();
-    let n = 0;
-    const transfer = createTransfer({
-      page: window,
-      clipboard: { writeText: async () => false },
-      newNonce: () => "nonce-" + String((n += 1)),
-      timeoutMs: 20,
-    });
-
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    try {
-      const binding = transfer.bind("https://chatgpt.com/c/aaaaaaaa-0000-4000-8000-00000000000a");
-      await vi.advanceTimersByTimeAsync(20);
-      await binding;
-      expect(transfer.getState()).toEqual({ kind: "unbound", refusal: "page-unavailable" });
-      // Well past any adapter-level timeout the window adapter might have had.
-      await vi.advanceTimersByTimeAsync(11_000);
-    } finally {
-      vi.useRealTimers();
-    }
-    const bind = JSON.parse(child.written[0]!) as { id: string };
-    // The page ran the choice late and answers now.
-    child.say({ type: "result", id: bind.id, ok: true, value: { top: true, origin: "https://chatgpt.com", path: "/c/aaaaaaaa-0000-4000-8000-00000000000a", tracked: true } });
-    await tick();
-
-    const kinds = child.written.map((line) => {
-      const expression = (JSON.parse(line) as { expression: string }).expression;
-      return expression.includes("bindInPage") ? "bind" : expression.includes("revokeInPage") ? "revoke" : "other";
-    });
-    expect(kinds).toEqual(["bind", "revoke", "revoke"]);
-  });
-
-  it("sends the panel and asks the window to quit", async () => {
-    const { child, window } = launch();
-    window.showPanel({ visible: true, status: "s", text: "t", canInsert: true, canRebind: false, canCopy: true, busy: false, dismissLabel: "Отмена" });
+    window.attach({ owner: "p", visible: true, x: 0, y: 0, width: 800, height: 600, innerWidth: 800, innerHeight: 600, outerWidth: 800, outerHeight: 640, screenX: 0, screenY: 0, pixelRatio: 2 });
     window.quit();
     await tick();
 
-    expect(child.written.map((line) => JSON.parse(line).type)).toEqual(["panel", "quit"]);
+    expect(child.written.map((line) => JSON.parse(line).type)).toEqual(["attach", "quit"]);
+    expect(Object.keys(window).sort()).toEqual(["attach", "exited", "quit"]);
+  });
+
+  it("sends nothing after the window exits, and stops a window that does not quit", async () => {
+    const { child, window } = launch();
+    child.emit("exit", 0);
+    await window.exited;
+    window.attach({ owner: "p", visible: false, x: 0, y: 0, width: 0, height: 0, innerWidth: 1, innerHeight: 1, outerWidth: 1, outerHeight: 1, screenX: 0, screenY: 0, pixelRatio: 1 });
+    window.quit();
+    await tick();
+
+    expect(child.written).toEqual([]);
+    expect(child.killed).toEqual([]);
+  });
+
+  it("the window source has no page scripts, panel or clipboard writes", () => {
+    for (const gone of ["evaluateJavaScript(expression, in: nil, in: pageWorld", "class Panel", "NSPasteboard", "Вставить в черновик"]) {
+      expect(WINDOW_SOURCE).not.toContain(gone);
+    }
   });
 });

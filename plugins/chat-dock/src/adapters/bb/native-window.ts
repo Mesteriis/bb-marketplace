@@ -1,23 +1,17 @@
 // Builds the ChatGPT window app on this Mac and runs it as a child process.
 // The window talks to this process only through its standard input and
-// output; it opens no port, so nothing else on the machine can drive it
-// through the plugin.
+// output; it opens no port. The plugin can only place, show or quit it.
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { access, mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { arch } from "node:os";
 import { join } from "node:path";
-import { createInterface } from "node:readline";
 import type { Attachment } from "../../core/attachment.ts";
-import { parseWindowMessage, type PanelView, type WindowMessage } from "../../core/window-protocol.ts";
 import { WINDOW_SOURCE } from "./window-source.generated.ts";
 
 export const APP_NAME = "BB Chat Dock.app";
 export const BUNDLE_ID = "io.github.mesteriis.bb-chat-dock.window";
 const EXECUTABLE = "ChatDockWindow";
-// Unanswered scripts are capped, not timed out: the transfer session has its
-// own timeout and must still see a late answer to withdraw a stale mark.
-const MAX_PENDING = 64;
 const BUILD_TIMEOUT_MS = 180_000;
 
 export type RunResult = { code: number | null; stderr: string };
@@ -127,9 +121,7 @@ export async function buildWindowApp(options: BuildOptions): Promise<BuildResult
 }
 
 export interface RunningWindow {
-  evaluate(expression: string): Promise<unknown>;
-  showPanel(view: PanelView): void;
-  /** Place the window on the BB page's reserved area, or hide it. */
+  /** Place the window on the BB page, or hide it. */
   attach(view: Attachment): void;
   quit(): void;
   readonly exited: Promise<void>;
@@ -137,49 +129,27 @@ export interface RunningWindow {
 
 export interface LaunchOptions {
   executable: string;
-  onMessage(message: Exclude<WindowMessage, { type: "result" }>): void;
   env?: NodeJS.ProcessEnv;
   spawnChild?: (executable: string, env: NodeJS.ProcessEnv) => ChildProcess;
 }
 
+// Its standard output is not read: the window sends nothing the plugin needs.
 const defaultSpawn = (executable: string, env: NodeJS.ProcessEnv): ChildProcess =>
-  spawn(executable, [], { stdio: ["pipe", "pipe", "ignore"], env });
+  spawn(executable, [], { stdio: ["pipe", "ignore", "ignore"], env });
 
 export function launchWindow(options: LaunchOptions): RunningWindow {
   const child = (options.spawnChild ?? defaultSpawn)(options.executable, options.env ?? process.env);
-  const pending = new Map<string, { resolve(value: unknown): void; reject(error: Error): void }>();
   let alive = true;
 
   const exited = new Promise<void>((resolve) => {
     const done = () => {
       if (!alive) return;
       alive = false;
-      for (const [id, entry] of pending) {
-        entry.reject(new Error("window closed"));
-        pending.delete(id);
-      }
       resolve();
     };
     child.once("exit", done);
     child.once("error", done);
   });
-
-  if (child.stdout !== null) {
-    const lines = createInterface({ input: child.stdout, crlfDelay: Infinity });
-    lines.on("line", (line) => {
-      const message = parseWindowMessage(line);
-      if (message === null) return;
-      if (message.type === "result") {
-        const entry = pending.get(message.id);
-        if (entry === undefined) return;
-        pending.delete(message.id);
-        if (message.ok) entry.resolve(message.value);
-        else entry.reject(new Error("page script failed"));
-        return;
-      }
-      options.onMessage(message);
-    });
-  }
 
   function send(command: Record<string, unknown>): boolean {
     if (!alive || child.stdin === null || child.stdin.destroyed) return false;
@@ -188,23 +158,6 @@ export function launchWindow(options: LaunchOptions): RunningWindow {
   }
 
   return {
-    evaluate(expression) {
-      return new Promise((resolve, reject) => {
-        if (pending.size >= MAX_PENDING) {
-          reject(new Error("too many unanswered scripts"));
-          return;
-        }
-        const id = randomUUID();
-        pending.set(id, { resolve, reject });
-        if (!send({ type: "evaluate", id, expression })) {
-          pending.delete(id);
-          reject(new Error("window closed"));
-        }
-      });
-    },
-    showPanel(view) {
-      send({ type: "panel", ...view });
-    },
     attach(view) {
       send({ type: "attach", ...view });
     },
