@@ -32,6 +32,8 @@ const tileOf = async (page, panel) => {
   const panelId = await panel.locator("xpath=ancestor::*[@data-live-host]").getAttribute("data-panel-id");
   return page.locator("[data-group-id]").filter({ has: page.locator('[data-panel-id="' + panelId + '"]') });
 };
+// The title bar has a «Действия тайла» button too, so a receiver's menu is taken from inside its tile.
+const tileMenuButton = page => page.locator("[data-chertog-route] [data-group-id]").first().getByRole("button", { name: "Действия тайла" });
 try {
   const source = await open();
   await source.locator("[data-chertog-route]").getByRole("button", { name: /Передача окна/ }).first().click();
@@ -56,7 +58,7 @@ try {
     await source.getByRole("menuitem", { name: /^Передать в окно / }).click();
     await receiver.getByRole("button", { name: "Принять", exact: true }).click();
     await source.locator("[data-chertog-panel]").filter({ hasText: /Панель в окне/ }).first().waitFor();
-    await receiver.getByRole("button", { name: "Действия тайла" }).first().click();
+    await tileMenuButton(receiver).click();
     await receiver.getByRole("menuitem", { name: /^Передать в окно / }).first().waitFor();
     await receiver.keyboard.press("Escape");
     return receiver;
@@ -69,7 +71,7 @@ try {
 
   const last = await transfer();
   await source.close();
-  await last.getByRole("button", { name: "Действия тайла" }).first().click();
+  await tileMenuButton(last).click();
   await last.getByText("Откройте второе окно через New Window.").waitFor();
   await last.close();
   const restored = await open();
