@@ -11,22 +11,23 @@ export function PanelContent({ session, instanceId }: { session: WorkspaceSessio
   useSyncExternalStore(session.subscribe, session.getVersion);
   const view = session.viewOf(instanceId);
   const source = view?.source;
-  const live = view !== null && view.instance.state === "live" && source !== undefined;
+  const ready = view?.instance.state === "live" || view?.instance.state === "entry";
+  const renderContent = ready && source !== undefined;
   const refKey = view === null ? null : panelRefKey(view.ref);
   const content = useMemo(
-    () => (live && view !== null && source !== undefined ? source.render(view.ref, instanceId) : null),
+    () => (renderContent && view !== null && source !== undefined ? source.render(view.ref, instanceId) : null),
     // The reference is compared by its key: the document hands out a new object for the same reference.
-    [live, refKey, source, instanceId],
+    [renderContent, refKey, source, instanceId],
   );
   if (view === null) return null;
-  if (live) {
+  if (renderContent) {
     return (
       <div data-chertog-panel={instanceId} className="flex h-full min-h-0 w-full flex-col bg-background text-foreground">
         {content}
       </div>
     );
   }
-  const state = view.instance.state === "live" ? "provider-missing" : view.instance.state;
+  const state = ready ? "provider-missing" : view.instance.state;
   // A panel without its provider has nobody to ask again.
   const retry = state === "loading" || state === "provider-missing" ? undefined : () => session.retry(instanceId);
   return (

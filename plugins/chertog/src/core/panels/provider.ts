@@ -34,10 +34,11 @@ export interface PanelCapabilities {
  * - `provider-missing`: no provider of this type is registered; the reference is kept.
  * - `session-ended`: the provider's session is over.
  * - `access-denied`: the provider refused access.
+ * - `entry`: the card is ready; the external session is unknown.
  * - `live`: the provider confirmed a live view.
  * - `lost`: the view is gone or its fate is unknown; it is never shown as restored.
  */
-export type PanelState = "loading" | "provider-missing" | "session-ended" | "access-denied" | "live" | "lost";
+export type PanelState = "loading" | "provider-missing" | "session-ended" | "access-denied" | "live" | "entry" | "lost";
 
 export interface PanelOpenRequest {
   /** The instance the view belongs to. Stable across layouts and moves. */
@@ -55,6 +56,7 @@ export type PanelOpenOutcome =
       /** Identity of who receives input from this panel, or null when it takes none. */
       readonly addressee: string | null;
     }
+  | { readonly status: "entry" }
   | { readonly status: "session-ended" | "access-denied" | "lost" | "unknown" };
 
 export type PanelEndSessionOutcome = "ended" | "unknown";
