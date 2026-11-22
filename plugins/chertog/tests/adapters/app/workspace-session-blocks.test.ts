@@ -384,3 +384,106 @@ describe("opening beside a subordinate tile", () => {
     expect(blockChildren(session.document()!, child, session.parentOf)).toEqual([]);
   });
 });
+
+describe("parents that would form a cycle", () => {
+  /** A subthread tile A (its thread parent thr_p is not placed) beside an unrelated tile. */
+  function subthreadOnly(): WorkspaceDocument {
+    const document = twoTiles();
+    const { "panel-p": _parent, ...panels } = document.panels;
+    return {
+      ...document,
+      panels: { ...panels, "panel-a": { ref: threadRef("thr_c") } },
+      layouts: [{ ...document.layouts[0], workspace: { ...document.layouts[0].workspace, root: { ...document.layouts[0].workspace.root, children: [group("group-1", "panel-a"), group("group-2", "panel-x")] } as never } }],
+    };
+  }
+  const chooseInto = async (session: WorkspaceSession, besidePanel: string, threadId: string): Promise<string> => {
+    session.openBeside(besidePanel);
+    const picker = placed(session).find((panelId) => session.document()!.panels[panelId].ref.provider === "chertog-choose")!;
+    session.replaceChoice(session.instanceOfPanel(picker)!.instanceId, { providerId: "bb-thread", itemId: threadId, placement: "tab" });
+    await session.controller.whenIdle();
+    return panelOf(session, threadId);
+  };
+
+  it("keeps the relation acyclic: a stored parent wins over the thread tree, and nothing hangs", async () => {
+    const session = await blockSession({}, subthreadOnly(), []);
+    const z = await chooseInto(session, "panel-a", "thr_q");
+    const p = await chooseInto(session, "panel-a", "thr_p");
+    // P is A's stored child, although the thread tree makes P the parent of A: the stored link wins.
+    expect(session.parentOf(p)).toBe("panel-a");
+    expect(session.parentOf("panel-a")).toBeUndefined();
+    // Beside Z means beside the block's main tile A, and it returns.
+    session.openBeside(z);
+    const pickers = placed(session).filter((panelId) => session.document()!.panels[panelId].ref.provider === "chertog-choose");
+    expect(pickers).toHaveLength(1);
+    expect(session.document()!.panels[pickers[0]].parent).toBe("panel-a");
+    // Closing P closes nothing else; closing A closes its whole block.
+    expect(session.linkedCountOf(p)).toBe(0);
+    expect(await session.closePanel("panel-a", { confirmBlock: true })).toBe("closed");
+    expect(placed(session)).toEqual(["panel-x"]);
+  });
+});
+
+describe("an embedded choice whose reference the document already has", () => {
+  const RDP = { provider: "remote-rdp-live", params: { resourceRef: RDP_UUID } };
+  function withRdp(inLayout: boolean): WorkspaceDocument {
+    const document = twoTiles();
+    const root = document.layouts[0].workspace.root as unknown as { children: Array<{ tabs: string[] }> };
+    const children = inLayout ? [root.children[0], { ...root.children[1], tabs: ["panel-x", "panel-r"] }] : root.children;
+    return {
+      ...document,
+      panels: { ...document.panels, "panel-r": { ref: RDP } },
+      layouts: [{ ...document.layouts[0], workspace: { ...document.layouts[0].workspace, root: { ...root, children } as never } }],
+    };
+  }
+  const bound = (session: WorkspaceSession) => session.registry.list().every((instance) => session.document()!.panels[session.panelOfInstance(instance.instanceId) ?? ""] !== undefined);
+  const rdpInstances = (session: WorkspaceSession) => session.registry.list().filter((instance) => instance.ref.provider === "remote-rdp-live");
+
+  const pickerIn = (session: WorkspaceSession) => placed(session).find((panelId) => session.document()!.panels[panelId].ref.provider === "chertog-choose")!;
+  /** Opens a picker beside the parent and confirms the RDP resource in it. */
+  async function pick(session: WorkspaceSession, pending: { current?: PendingChoice }): Promise<void> {
+    session.openBeside("panel-p");
+    session.replaceChoice(session.instanceOfPanel(pickerIn(session))!.instanceId, { providerId: "remote-rdp-live", itemId: "choose", placement: "tab" });
+    pending.current!.selected(RDP_UUID);
+    await session.controller.whenIdle();
+  }
+  async function choose(stored: WorkspaceDocument, hide = false): Promise<WorkspaceSession> {
+    const pending: { current?: PendingChoice } = {};
+    const session = await blockSession({}, stored, [], [rdpSource(pending)]);
+    if (hide) {
+      // A hidden panel survives only while its instance is live: choose it once, then take it out of the layout.
+      await pick(session, pending);
+      session.removeFromLayout(placed(session).find((panelId) => session.document()!.panels[panelId].ref.provider === "remote-rdp-live")!);
+    }
+    await pick(session, pending);
+    return session;
+  }
+
+  it("does not orphan an instance when the reference is already placed", async () => {
+    const session = await choose(withRdp(true));
+    expect(bound(session)).toBe(true);
+    expect(rdpInstances(session)).toHaveLength(1);
+    expect(Object.values(session.document()!.panels).filter((panel) => panel.ref.provider === "remote-rdp-live")).toHaveLength(1);
+  });
+
+  it("puts a registered but not placed reference in the picker's place, under its own id", async () => {
+    const session = await choose(twoTiles(), true);
+    expect(bound(session)).toBe(true);
+    expect(rdpInstances(session)).toHaveLength(1);
+    const rdp = Object.keys(session.document()!.panels).filter((panelId) => session.document()!.panels[panelId].ref.provider === "remote-rdp-live");
+    expect(rdp).toHaveLength(1);
+    expect(session.document()!.panels[rdp[0]].parent).toBe("panel-p");
+    expect(placed(session)).toContain(rdp[0]);
+    expect(placed(session).some((panelId) => session.document()!.panels[panelId].ref.provider === "chertog-choose")).toBe(false);
+  });
+
+  it("reports a refusal to start the choice instead of closing silently", async () => {
+    const session = await blockSession({}, twoTiles(), [], [rdpSource({})]);
+    session.openBeside("panel-p");
+    const picker = placed(session).find((panelId) => session.document()!.panels[panelId].ref.provider === "chertog-choose")!;
+    const instanceId = session.instanceOfPanel(picker)!.instanceId;
+    // Eight tiles are the limit; a replacement never adds one, so a refusal needs a vanished picker group instead.
+    session.removeFromLayout(picker);
+    session.replaceChoice(instanceId, { providerId: "remote-rdp-live", itemId: "choose", placement: "tab" });
+    expect(session.choiceError).not.toBeNull();
+  });
+});

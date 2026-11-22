@@ -342,7 +342,10 @@ export class WorkspaceSession {
     const chooser = this.panelOfInstance(instanceId);
     const embedded = this.sourceOf(choice.providerId);
     if (chooser && embedded?.embed && choice.itemId === "choose") {
-      if (this.pickerOffersEmbeds(instanceId)) this.chooseResource(embedded, { kind: "group", groupId: this.groupOfPanel(chooser) ?? "" }, false, chooser);
+      if (this.pickerOffersEmbeds(instanceId)) {
+        const refusal = this.chooseResource(embedded, { kind: "group", groupId: this.groupOfPanel(chooser) ?? "" }, false, chooser);
+        if (refusal !== null) { this.choiceError = appStrings.refusal(refusal); this.touch(); }
+      }
       return;
     }
     const ref = this.sourceOf(choice.providerId)?.refOf(choice.itemId);
@@ -404,11 +407,26 @@ export class WorkspaceSession {
    */
   parentOf: ParentOf = (panelId) => {
     const document = this.document();
-    const panel = document?.panels[panelId];
-    if (document === null || panel === undefined) return undefined;
+    if (document === null) return undefined;
+    const raw = this.rawParentOf(document, panelId);
+    if (raw === undefined || document.panels[panelId]?.parent === raw) return raw;
+    // A thread-derived parent is ignored when its own chain leads back here: the stored link wins, and the relation stays acyclic.
+    const seen = new Set([panelId]);
+    for (let at: string | undefined = raw; at !== undefined; at = this.rawParentOf(document, at)) {
+      if (at === panelId) return undefined;
+      if (seen.has(at)) break;
+      seen.add(at);
+    }
+    return raw;
+  };
+
+  /** The parent as stored, else the thread tree's, before cycles are looked at. */
+  private rawParentOf(document: WorkspaceDocument, panelId: string): string | undefined {
+    const panel = document.panels[panelId];
+    if (panel === undefined) return undefined;
     if (panel.parent !== undefined && findGroupOfPanel(activeLayout(document).workspace.root, panel.parent) !== undefined) return panel.parent;
     return panel.ref.provider === THREAD_PROVIDER ? this.placedParentOf(document, String(panel.ref.params.threadId)) : undefined;
-  };
+  }
 
   /**
    * Opens a content picker beside the panel's tile as its child: whatever is
@@ -419,7 +437,11 @@ export class WorkspaceSession {
     return this.controller.change((document) => {
       // A block has one level: beside a child means beside the main tile the child belongs to.
       let root = panelId;
-      for (let parent = this.parentOf(root); parent !== undefined && parent !== panelId; parent = this.parentOf(root)) root = parent;
+      const seen = new Set([root]);
+      for (let parent = this.parentOf(root); parent !== undefined && !seen.has(parent); parent = this.parentOf(root)) {
+        seen.add(parent);
+        root = parent;
+      }
       const opened = openBeside(document, root, this.newId("panel"), this.parentOf);
       return opened.ok && listGroups(activeLayout(opened.document).workspace.root).length > TILE_LIMIT ? { ok: false, reason: "invalid-layout" } : opened;
     });
@@ -613,21 +635,35 @@ export class WorkspaceSession {
   /** A confirmed embedded choice that takes the place of its picker: the new panel keeps the picker's parent. */
   private acceptReplacement(id: string, r: NonNullable<ReturnType<typeof this.reservations.get>>, ref: PanelRef, doc: WorkspaceDocument): void {
     const picker = r.replaces as string;
+    // A reference the document already has keeps its id; the new instance would be bound to an id the document does not use.
+    // So that instance is dropped, and the picker is replaced by (or the view moves to) the panel that exists.
+    const existing = panelIdOfRef(doc, ref);
+    if (existing !== undefined) {
+      this.cancelChoice(id);
+      if (findGroupOfPanel(activeLayout(doc).workspace.root, existing) !== undefined) { this.focusPanel(existing); return; }
+      this.replacePicker(picker, existing, ref);
+      return;
+    }
     const trial = replaceChoosePanel(doc, picker, r.panelId, ref, new Set());
     if (!trial.ok || !this.document()?.panels[picker]) { this.cancelChoice(id); return; }
     const opened = this.registry.acceptReservation(id, ref, () => {
       this.instances.set(r.panelId, id);
       this.reservations.delete(id);
       this.placement = null;
-      this.controller.change((document, live) => {
-        const retained = new Set(live);
-        retained.delete(picker);
-        return replaceChoosePanel(document, picker, r.panelId, ref, retained);
-      });
-      const pickerInstance = this.instanceOfPanel(picker)?.instanceId;
-      if (pickerInstance !== undefined && !this.document()?.panels[picker]) void this.registry.close(pickerInstance);
+      this.replacePicker(picker, r.panelId, ref);
     });
     if (!opened.ok) this.cancelChoice(id);
+  }
+
+  /** Replaces the picker panel by the panel of a reference, closing the picker's instance when it is gone. */
+  private replacePicker(picker: string, panelId: string, ref: PanelRef): void {
+    this.controller.change((document, live) => {
+      const retained = new Set(live);
+      retained.delete(picker);
+      return replaceChoosePanel(document, picker, panelId, ref, retained);
+    });
+    const pickerInstance = this.instanceOfPanel(picker)?.instanceId;
+    if (pickerInstance !== undefined && !this.document()?.panels[picker]) void this.registry.close(pickerInstance);
   }
 
   /** Shows the tab of a panel the open layout places and focuses its tile. */
