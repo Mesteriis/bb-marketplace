@@ -3,6 +3,7 @@
 // that carries no text and no conversation.
 import { randomUUID } from "node:crypto";
 import type { WindowStatusWire } from "../../../contract.ts";
+import { HIDDEN_ATTACHMENT, type Attachment } from "../../core/attachment.ts";
 import { createWindowSession, type ProposalSource, type ProposeResult, type WindowSession } from "../../core/window-session.ts";
 import type { BuildResult, LaunchOptions, RunningWindow } from "./native-window.ts";
 
@@ -25,6 +26,8 @@ export type Retain = () => () => void;
 
 export interface WindowController {
   open(retain: Retain): Promise<WindowStatusWire>;
+  /** Where the BB page wants the window. Kept for a window not started yet. */
+  attach(view: Attachment): void;
   propose(text: string, source: ProposalSource, retain: Retain): Promise<ProposeResult | { ok: false; reason: "window-unavailable" }>;
   status(): WindowStatusWire;
   dispose(): void;
@@ -39,6 +42,7 @@ export function createWindowController(deps: ControllerDeps): WindowController {
   let starting: Promise<void> | null = null;
   let release: (() => void) | null = null;
   let last: WindowStatusWire["last"] = null;
+  let placement: Attachment = HIDDEN_ATTACHMENT;
   let disposed = false;
 
   function status(): WindowStatusWire {
@@ -116,6 +120,7 @@ export function createWindowController(deps: ControllerDeps): WindowController {
     });
     running = window;
     session = current;
+    window.attach(placement);
     phase = "open";
     notify();
     void window.exited.then(() => {
@@ -134,10 +139,7 @@ export function createWindowController(deps: ControllerDeps): WindowController {
   // Waits for the window, but not past the host call's own time limit: a
   // first build can take longer, and the caller then sees "building".
   async function ensureOpen(retain: Retain): Promise<void> {
-    if (running !== null) {
-      running.show();
-      return;
-    }
+    if (running !== null) return;
     if (starting === null) {
       starting = start(retain).finally(() => {
         starting = null;
@@ -163,6 +165,11 @@ export function createWindowController(deps: ControllerDeps): WindowController {
       await ensureOpen(retain);
       if (session === null) return { ok: false, reason: "window-unavailable" };
       return session.propose(text, source);
+    },
+
+    attach(view) {
+      placement = view;
+      running?.attach(view);
     },
 
     status,

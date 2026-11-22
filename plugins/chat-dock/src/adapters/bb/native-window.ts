@@ -8,6 +8,7 @@ import { access, mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { arch } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
+import type { Attachment } from "../../core/attachment.ts";
 import { parseWindowMessage, type PanelView, type WindowMessage } from "../../core/window-protocol.ts";
 import { WINDOW_SOURCE } from "./window-source.generated.ts";
 
@@ -128,7 +129,8 @@ export async function buildWindowApp(options: BuildOptions): Promise<BuildResult
 export interface RunningWindow {
   evaluate(expression: string): Promise<unknown>;
   showPanel(view: PanelView): void;
-  show(): void;
+  /** Place the window on the BB page's reserved area, or hide it. */
+  attach(view: Attachment): void;
   quit(): void;
   readonly exited: Promise<void>;
 }
@@ -203,8 +205,8 @@ export function launchWindow(options: LaunchOptions): RunningWindow {
     showPanel(view) {
       send({ type: "panel", ...view });
     },
-    show() {
-      send({ type: "show" });
+    attach(view) {
+      send({ type: "attach", ...view });
     },
     quit() {
       if (!send({ type: "quit" })) return;

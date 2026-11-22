@@ -9,7 +9,7 @@ function fakeWindow() {
   const window: RunningWindow = {
     evaluate: async () => null,
     showPanel: () => {},
-    show: () => void shown.push("show"),
+    attach: (view) => void shown.push(view.visible ? "attach" : "hide"),
     quit: () => exit(),
     exited: new Promise<void>((resolve) => (exit = resolve)),
   };
@@ -38,7 +38,7 @@ function rig(build: () => Promise<BuildResult>) {
 }
 
 describe("the window controller", () => {
-  it("builds once, opens one window, and only shows it again on a second open", async () => {
+  it("builds once and opens one window, however often it is asked", async () => {
     let builds = 0;
     const { controller, windows, leases, retain } = rig(async () => ((builds += 1), { ok: true, executable: "/x" }));
 
@@ -47,8 +47,20 @@ describe("the window controller", () => {
 
     expect(builds).toBe(1);
     expect(windows).toHaveLength(1);
-    expect(windows[0]!.shown).toEqual(["show"]);
+    // The new window is told at once that the page has not placed it yet.
+    expect(windows[0]!.shown).toEqual(["hide"]);
     expect(leases()).toBe(1);
+  });
+
+  it("keeps the page's placement for a window that starts later, and forwards later ones", async () => {
+    const { controller, windows, retain } = rig(async () => ({ ok: true, executable: "/x" }));
+    const placed = { visible: true, x: 0, y: 40, width: 800, height: 600, innerWidth: 1200, innerHeight: 800, outerWidth: 1200, outerHeight: 800, screenX: 10, screenY: 20, pixelRatio: 2 };
+
+    controller.attach(placed);
+    await controller.open(retain);
+    controller.attach({ ...placed, visible: false });
+
+    expect(windows[0]!.shown).toEqual(["attach", "hide"]);
   });
 
   it("releases the worker and reports closed when the window exits", async () => {
