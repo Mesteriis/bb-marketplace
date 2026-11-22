@@ -1,5 +1,6 @@
 // The "…" menu of a tile: actions on the layout that are not gestures.
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { usePopupAlignment } from "../chrome/use-popup-alignment.ts";
 import { MoreIcon } from "./icons.tsx";
 import { CONTROL_CLASS } from "./styles.ts";
 
@@ -18,6 +19,9 @@ export function TileMenu({ label, items }: { label: string; items: readonly Tile
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   const button = useRef<HTMLButtonElement>(null);
+
+  const menu = useRef<HTMLDivElement>(null);
+  usePopupAlignment(open, menu, button, "end");
 
   useEffect(() => {
     const element = root.current;
@@ -63,11 +67,12 @@ export function TileMenu({ label, items }: { label: string; items: readonly Tile
       </button>
       {open && (
         <div
+          ref={menu}
           role="menu"
           aria-label={label}
           onKeyDown={onKeyDown}
-          style={{ position: "absolute", top: "100%", right: 0, zIndex: 20 }}
-          className="mt-1 flex min-w-max flex-col rounded-md border border-border bg-popover p-1 text-xs text-popover-foreground shadow-md"
+          style={{ position: "absolute", top: "100%", zIndex: 20 }}
+          className="mt-1 flex w-max flex-col rounded-md border border-border bg-popover p-1 text-xs text-popover-foreground shadow-md"
         >
           {items.map((item) => (
             <button

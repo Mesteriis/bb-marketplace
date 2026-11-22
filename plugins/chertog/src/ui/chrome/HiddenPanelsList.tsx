@@ -15,7 +15,7 @@ export interface HiddenPanelsListProps {
 }
 
 export function HiddenPanelsList({ panels, onShow, onClose }: HiddenPanelsListProps) {
-  const popover = usePopover();
+  const popover = usePopover("end");
   const requestFocus = usePendingFocus(popover.rootRef);
   const listRef = useRef<HTMLUListElement>(null);
 
@@ -44,7 +44,7 @@ export function HiddenPanelsList({ panels, onShow, onClose }: HiddenPanelsListPr
       </button>
 
       {popover.open && (
-        <div ref={popover.panelRef} role="dialog" tabIndex={-1} aria-label={text.popoverLabel} className={`${classes.popover} right-0`}>
+        <div ref={popover.panelRef} role="dialog" tabIndex={-1} aria-label={text.popoverLabel} className={classes.popover}>
           {panels.length === 0 ? (
             <p className={classes.muted}>{text.empty}</p>
           ) : (
@@ -54,8 +54,8 @@ export function HiddenPanelsList({ panels, onShow, onClose }: HiddenPanelsListPr
                 {panels.map((panel) => (
                   <li key={panel.instanceId} className="flex min-h-7 items-center gap-1 px-1">
                     <span className="flex min-w-0 flex-1 flex-col">
-                      <span className="truncate text-xs font-medium">{panel.title}</span>
-                      {panel.context !== undefined && <span className="truncate text-xs text-muted-foreground">{panel.context}</span>}
+                      <span title={panel.title} className="truncate text-xs font-medium">{panel.title}</span>
+                      {panel.context !== undefined && <span title={panel.context} className="truncate text-xs text-muted-foreground">{panel.context}</span>}
                     </span>
                     <button
                       type="button"

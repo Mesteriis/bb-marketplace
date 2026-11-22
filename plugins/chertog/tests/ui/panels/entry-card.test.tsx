@@ -34,3 +34,30 @@ it("withholds navigation if the provider disappears between restore and the clic
   await screen.findByText("Поставщик выключен");
   expect(run).toHaveBeenCalledTimes(0);
 });
+
+it("allows long content, links and retry controls to fit a narrow tile", async () => {
+  const label = "Открыть редактор";
+  const longName = "КонфигурацияИспытательногоОкружения";
+  render(<div style={{ width: 79 }}><EntryCard
+    title={longName}
+    purpose={longName}
+    target={longName}
+    check={async () => {}}
+    actions={[
+      { label, run: async () => { throw Error(longName); } },
+      { label: longName, href: "/editor", run: async () => "OK" },
+    ]}
+  /></div>);
+  const region = screen.getByRole("region", { name: longName });
+  expect(region.classList.contains("min-w-0")).toBe(true);
+  expect(region.classList.contains("[overflow-wrap:anywhere]")).toBe(true);
+
+  const open = await screen.findByRole("button", { name: label });
+  const link = screen.getByRole("link", { name: longName });
+  fireEvent.click(open);
+  const retry = await screen.findByRole("button", { name: "Повторить" });
+  for (const control of [open, link, retry]) {
+    expect(control.classList.contains("max-w-full")).toBe(true);
+    expect(control.classList.contains("whitespace-normal")).toBe(true);
+  }
+});

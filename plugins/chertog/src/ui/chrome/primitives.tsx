@@ -12,6 +12,8 @@ import {
   useState,
 } from "react";
 
+import { usePopupAlignment } from "./use-popup-alignment.ts";
+
 const focusRing = "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
 const buttonBase = `inline-flex h-7 shrink-0 items-center justify-center gap-1 rounded-md px-2 text-xs font-medium disabled:pointer-events-none disabled:opacity-50 ${focusRing}`;
 
@@ -104,12 +106,13 @@ function useKeepFocusInside(containerRef: RefObject<HTMLElement | null>, active:
  * itself, which must be focusable (`tabIndex={-1}`): it takes the focus when
  * the focused control inside it disappears.
  */
-export function usePopover() {
+export function usePopover(align: "start" | "end") {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   useKeepFocusInside(panelRef, open);
+  usePopupAlignment(open, panelRef, triggerRef, align);
 
   const close = useCallback(() => {
     setOpen(false);

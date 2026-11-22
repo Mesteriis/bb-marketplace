@@ -31,6 +31,8 @@ describe("HiddenPanelsList", () => {
 
     await user.click(screen.getByRole("button", { name: "Скрытые панели: 2" }));
     expect(screen.getByRole("dialog", { name: "Скрытые панели" }).textContent).toContain("Идёт звонок");
+    expect(screen.getByText("Zoom: Планёрка").title).toBe("Zoom: Планёрка");
+    expect(screen.getByText("Идёт звонок").title).toBe("Идёт звонок");
     await user.click(screen.getByRole("button", { name: "Показать «Zoom: Планёрка»" }));
 
     expect(onShow).toHaveBeenCalledTimes(1);

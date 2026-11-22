@@ -2,7 +2,7 @@
 // content picker of an empty tile and the compact view.
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { addTab, createWorkspace } from "../../../src/core/layout/index.ts";
 import { applyTileCommand, TILE_KEYMAP, tileCommandForKey } from "../../../src/ui/tiles/index.ts";
 import { drawn, Harness, header, newCalls, shields, SIZE, THREE_TILES_DRAWN, threeTiles } from "./support.tsx";
@@ -208,6 +208,27 @@ describe("maximize, close and the layout menu", () => {
     expect(calls.closes).toEqual(["b"]);
     expect(calls.changes).toEqual([]);
     expect(drawn(container)).toEqual(THREE_TILES_DRAWN);
+  });
+
+  it.each([
+    [0, 640, 108, 0],
+    [320, 960, 428, 0],
+    [0, 320, 136, -136],
+    [0, 640, 588, -176],
+  ])("keeps a 200px menu within surface [%i, %i] for a trigger at %i", async (left, right, x, offset) => {
+    const { container } = setup();
+    const trigger = within(container.querySelector<HTMLElement>("[data-group-id]")!).getByRole("button", { name: "Действия тайла" });
+    const geometry = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      if (this.hasAttribute("data-chertog-surface")) return new DOMRect(left, 0, right - left, 400);
+      if (this.getAttribute("role") === "menu") return new DOMRect(0, 0, 200, 58);
+      return new DOMRect(x, 0, 24, 24);
+    });
+    try {
+      await userEvent.click(trigger);
+      expect(screen.getByRole("menu").style.left).toBe(offset + "px");
+    } finally {
+      geometry.mockRestore();
+    }
   });
 
   it("removes a tab from the layout through the menu without closing it", async () => {

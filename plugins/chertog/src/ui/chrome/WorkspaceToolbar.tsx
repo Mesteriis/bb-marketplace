@@ -37,7 +37,7 @@ export function WorkspaceToolbar({ layouts, content, hiddenPanels }: WorkspaceTo
       <div
         role="toolbar"
         aria-label={text.label}
-        className="flex h-9 w-full shrink-0 items-center gap-2 border-b border-border bg-background px-2"
+        className="flex min-h-9 w-full shrink-0 flex-wrap items-center gap-x-2 gap-y-1 py-1 border-b border-border bg-background px-2"
         onKeyDown={moveAlongToolbar}
       >
         <LayoutSwitcher {...layouts} />

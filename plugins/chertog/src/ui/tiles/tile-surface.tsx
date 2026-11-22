@@ -28,7 +28,7 @@ import {
 import { Divider } from "./divider.tsx";
 import { applyTileCommand, tileCommandForKey } from "./keymap.ts";
 import { DEFAULT_TILE_TEXT, type PanelLabel, type TileSurfaceText } from "./labels.ts";
-import { rectStyle, TILE_HEADER_HEIGHT } from "./styles.ts";
+import { rectStyle, tileHeaderHeight } from "./styles.ts";
 import { Tile, type PickerSlot } from "./tile.tsx";
 import { useSurfaceSize, type SurfaceSize } from "./use-surface-size.ts";
 import { useTileGestures } from "./use-tile-gestures.ts";
@@ -71,7 +71,7 @@ function contentRectsOf(state: WorkspaceState, groups: readonly { groupId: strin
   for (const { groupId, rect } of groups) {
     const panelId = findGroup(state.root, groupId)?.activeTab;
     if (panelId === null || panelId === undefined) continue;
-    const header = Math.min(TILE_HEADER_HEIGHT, rect.height);
+    const header = Math.min(tileHeaderHeight(rect.width, true), rect.height);
     rects[panelId] = { x: rect.x, y: rect.y + header, width: rect.width, height: rect.height - header };
   }
   return rects;
@@ -156,7 +156,7 @@ export function TileSurface(props: TileSurfaceProps) {
         width: "100%",
         height: "100%",
         overflow: "hidden",
-        isolation: "isolate",
+        // Menus must stack above live panels mounted outside this surface.
         ...(dragActive ? { cursor: gestures.drop === null ? "not-allowed" : "grabbing" } : {}),
       }}
       className="bg-background text-foreground"

@@ -7,6 +7,11 @@ import type { Rect } from "../../core/layout/index.ts";
 /** Height of a tile header in pixels. The content area of a tile starts below it. */
 export const TILE_HEADER_HEIGHT = 32;
 
+/** Put the tab strip above its actions when a row would clip the active title. */
+export function tileHeaderHeight(width: number, populated: boolean): number {
+  return populated && width < 220 ? TILE_HEADER_HEIGHT * 2 : TILE_HEADER_HEIGHT;
+}
+
 /** An absolutely placed box on whole pixels of the surface. */
 export function rectStyle(rect: Rect): CSSProperties {
   return { position: "absolute", left: rect.x, top: rect.y, width: rect.width, height: rect.height };

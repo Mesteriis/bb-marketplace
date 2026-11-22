@@ -65,7 +65,8 @@ describe("ContentPicker: sections and states", () => {
 
     expect(titles()).toEqual(["Исполнитель", "Ревьюер", "Черновик релиза"]);
     const first = item(/Исполнитель/);
-    expect(first.textContent).toContain("bb-main");
+    expect(within(first).getByText("Исполнитель").title).toBe("Исполнитель");
+    expect(within(first).getByText("bb-main").title).toBe("bb-main");
     expect(first.textContent).toContain("Работает");
   });
 

@@ -14,6 +14,19 @@ afterEach(() => {
 });
 
 describe("surface size", () => {
+  it("reserves a second header row in a narrow populated tile", () => {
+    const calls = newCalls(createWorkspace(["a"]));
+    const { container } = render(<Harness calls={calls} size={{ width: 160, height: 300 }} />);
+    expect(header(container, "group-1").style.height).toBe("64px");
+    expect(calls.rects.at(-1)).toEqual({ a: { x: 0, y: 64, width: 160, height: 236 } });
+  });
+
+  it("keeps a tile menu in the same stacking context as the live layer", () => {
+    const { container } = render(<Harness calls={newCalls(threeTiles())} size={SIZE} />);
+    const surface = container.querySelector<HTMLElement>("[data-chertog-surface]")!;
+    expect(surface.style.isolation).not.toBe("isolate");
+  });
+
   it("measures its container and follows the resize observer", () => {
     const observers: { callback: ResizeObserverCallback; targets: Element[]; disconnected: boolean }[] = [];
     vi.stubGlobal(

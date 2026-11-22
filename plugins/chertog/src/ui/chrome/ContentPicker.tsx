@@ -177,11 +177,11 @@ export function ContentPicker(props: ContentPickerProps) {
                             className={`flex min-h-7 w-full items-center gap-2 rounded-md px-2 py-1 text-left text-xs hover:bg-state-hover ${classes.focusRing}`}
                             onClick={() => choose(section.providerId, item)}
                           >
-                            <span data-item-title className="min-w-0 flex-1 truncate font-medium">
+                            <span title={item.title} data-item-title className="min-w-0 flex-1 truncate font-medium">
                               {item.title}
                             </span>
-                            {item.context !== undefined && <span className="shrink-0 truncate text-muted-foreground">{item.context}</span>}
-                            {item.status !== undefined && <span className="shrink-0 text-muted-foreground">{item.status}</span>}
+                            {item.context !== undefined && <span title={item.context} className="max-w-[40%] truncate text-muted-foreground">{item.context}</span>}
+                            {item.status !== undefined && <span title={item.status} className="max-w-[30%] truncate text-muted-foreground">{item.status}</span>}
                             {item.openInTileId !== undefined && (
                               <span className="shrink-0 rounded border border-border bg-secondary px-1 text-foreground">{text.alreadyOpen}</span>
                             )}

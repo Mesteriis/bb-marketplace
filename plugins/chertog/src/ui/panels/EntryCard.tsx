@@ -21,7 +21,7 @@ type Attempt =
   | { state: "requested"; result: string }
   | { state: "choose"; choices: readonly CardAction[] };
 
-const button = "inline-flex items-center rounded-md border border-border px-3 py-1.5 text-sm hover:bg-muted focus-visible:outline";
+const button = "min-w-0 max-w-full whitespace-normal rounded-md border border-border px-[min(2%,0.75rem)] py-1.5 text-sm hover:bg-muted focus-visible:outline";
 const reason = (error: unknown) => error instanceof Error && error.message ? error.message : "Причину отказа определить не удалось.";
 
 export function EntryCard({ title, purpose, target, check, actions }: Props) {
@@ -69,11 +69,11 @@ export function EntryCard({ title, purpose, target, check, actions }: Props) {
     choose: "Выберите из списка",
   }[attempt.state];
   const choices = attempt.state === "choose" ? attempt.choices : actions;
-  return <section aria-label={title} className="min-h-0 overflow-auto p-4 text-sm text-foreground">
+  return <section aria-label={title} className="min-h-0 min-w-0 overflow-auto px-[min(5%,1rem)] py-4 text-sm [overflow-wrap:anywhere] text-foreground">
     <h3 className="font-medium">{title}</h3>
     <p className="mt-1">{purpose}</p>
     {target && <p className="mt-1 break-all text-muted-foreground">{target}</p>}
-    <div role="status" className="my-3 break-words">
+    <div role="status" className="my-3">
       <p>{status}</p>
       {"reason" in attempt && <p>{attempt.reason}</p>}
       {attempt.state === "requested" && <p>{attempt.result}</p>}
