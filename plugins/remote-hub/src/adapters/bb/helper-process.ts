@@ -823,6 +823,13 @@ export class HelperProcess {
     return { handle: { generation: this.generation, sessionId: resp.sessionId }, kind: resp.kind === "vnc" ? "vnc" : "pve" };
   }
 
+  async pveVncRebind(handle: SessionHandle): Promise<void> {
+    this.assertGeneration(handle);
+    const resp = await this.request({ type: "pve.vnc_rebind", sessionId: handle.sessionId } as RequestMessage);
+    if (resp.type === "error") throw new HelperRequestError(resp.code, resp.message);
+    if (resp.type !== "session.input_ack") throw new Error("unexpected helper response: " + resp.type);
+  }
+
   /** Raw RFB bytes from the view to a graphical console. */
   async pveVncInput(handle: SessionHandle, data: Uint8Array): Promise<void> {
     this.assertGeneration(handle);

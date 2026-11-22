@@ -25,7 +25,7 @@ async function until(check, description) {
 }
 const browser = await chromium.launch({ executablePath: process.env.CHROME });
 try {
-  for (const scenario of ["ssh", "rdp", "vnc", "vnc-release", "vnc-busy"]) {
+  for (const scenario of ["ssh", "rdp", "vnc", "vnc-release", "vnc-close", "vnc-busy"]) {
     const kind = scenario.split("-")[0];
     const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
     page.on("pageerror", (error) => console.error(error.message));
@@ -99,7 +99,7 @@ try {
       assert.deepEqual(sequence,[["left",true],[42,true],[29,true],[42,false],[29,false],["left",false]]);
       console.log("RDP hide: queued Shift up, held Ctrl up and left button up received in order");
       await page.evaluate(() => fixture.send({kind:"visibility",visible:true}));
-    } else if (scenario === "vnc" || scenario === "vnc-release") {
+    } else if (kind === "vnc" && scenario !== "vnc-busy") {
       // A local RFB 3.8 server greeting, None security and a 2 × 2 true-colour desktop.
       const desktop = Buffer.from([0, 2, 0, 2, 32, 24, 0, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0, 0, 0, 0, 0, 0, 0, 0]);
       const handshake = [Buffer.from([1, 1]), Buffer.alloc(4), desktop];
@@ -123,6 +123,14 @@ try {
       assert.equal(detaches,1);
       assert.equal(await page.locator(".rh-embed").count(),0);
       console.log("VNC release: portal removed, one detach, socket closed");
+    } else if (scenario === "vnc-close") {
+      await page.evaluate(() => fixture.send({kind:"close"}));
+      await page.getByRole("alertdialog").waitFor();
+      assert.equal(await page.evaluate(() => fixture.calls.includes("session_close")), false);
+      await page.getByRole("button", {name:"Завершить консоль"}).click();
+      await status("ended");
+      await page.evaluate(() => fixture.send({kind:"release"}));
+      assert.equal(await page.evaluate(() => fixture.calls.filter(m => m === "session_close").length), 1);
     } else if (scenario !== "vnc-busy") {
       await page.evaluate(() => {
         fixture.move();

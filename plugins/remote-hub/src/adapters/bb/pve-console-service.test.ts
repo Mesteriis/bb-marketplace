@@ -14,6 +14,7 @@ class FakeHelper {
   status = { version: "0.1.0", pid: 1, platform: "test", sessionCount: 0 };
   nextSessionId = 1;
   opens: Array<{ target: unknown; cols: number; rows: number }> = [];
+  pveVncRebind = vi.fn(async (_handle: SessionHandle) => {});
   vncInputs: Array<{ sessionId: number; bytes: number[] }> = [];
   closes: number[] = [];
   /** Delivered synchronously inside openPve, like the helper writing session.opened and the first events into one read. */
@@ -386,9 +387,9 @@ function wired(over: Parameters<typeof setup>[0] = {}) {
   const ctx = setup(over);
   let captured: ((c: { url: URL }) => Handlers) | null = null;
   registerStreamSocket({ http: { experimental_websocket: (_p: string, h: typeof captured) => void (captured = h) } } as never, { service: ctx.service });
-  const attach = async (handle: SessionHandle) => {
+  const attach = async (handle: SessionHandle, kind?: "vnc") => {
     const socket = new FakeSocket();
-    const handlers = captured!({ url: new URL("ws://x/attach?attach=" + ctx.service.sessionAttach(handle)) });
+    const handlers = captured!({ url: new URL("ws://x/attach?attach=" + ctx.service.sessionAttach(handle, kind)) });
     await handlers.onOpen(socket);
     return { socket, handlers };
   };
@@ -396,6 +397,64 @@ function wired(over: Parameters<typeof setup>[0] = {}) {
 }
 
 describe("the attach socket of a graphical console", () => {
+  it("parks a released embed until a page requests a fresh handshake on the same console", async () => {
+    const { helper, service, record, attach } = wired({ vncBuffer: 3 });
+    const { handle } = await service.pveOpen(args("qemu"));
+    helper.event(1, { type: "state", state: "open" });
+    const tile = await attach(handle, "vnc");
+    tile.handlers.onMessage(tile.socket, '{"type":"detach"}');
+    tile.handlers.onClose();
+    tile.handlers.onError();
+    helper.data(1, 1, 2, 3, 4);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(helper.closes).toEqual([]);
+    expect(record(handle).state).toBe("running");
+    expect(helper.pveVncRebind).not.toHaveBeenCalled();
+    expect((await attach(handle, "vnc")).socket.closedWith?.reason).toBe("vnc_not_resumable");
+    const page = await attach(handle);
+    page.handlers.onMessage(page.socket, Uint8Array.of(7));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(helper.vncInputs).toEqual([]);
+    expect(helper.pveVncRebind).toHaveBeenCalledExactlyOnceWith(handle);
+    expect((await attach(handle)).socket.closedWith?.reason).toBe("vnc_view_taken");
+    helper.data(1, 5);
+    helper.event(1, { type: "vnc_password", password: "fresh" });
+    helper.data(1, 82, 70, 66);
+    expect(binaries(page.socket)).toEqual([[82, 70, 66]]);
+    expect(texts(page.socket)).toContainEqual({ type: "password", value: "fresh" });
+    page.handlers.onMessage(page.socket, Uint8Array.of(6));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(helper.vncInputs).toEqual([{sessionId: 1, bytes: [6]}]);
+    page.handlers.onClose();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(helper.closes).toEqual([1]);
+    expect(record(handle).reason).toBe("view_closed");
+  });
+
+  it("applies the normal idle timeout to a parked graphical console", async () => {
+    const { helper, service, record, attach } = wired({ idle: 1000 });
+    const { handle } = await service.pveOpen(args("qemu"));
+    helper.event(1, { type: "state", state: "open" });
+    (await attach(handle, "vnc")).handlers.onClose();
+    await vi.advanceTimersByTimeAsync(999);
+    expect(helper.closes).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(helper.closes).toEqual([1]);
+    expect(record(handle).reason).toBe("idle_timeout");
+  });
+
+  it("closes the helper once when the owner confirms ending an embedded console", async () => {
+    const { helper, service, record, attach } = wired();
+    const { handle } = await service.pveOpen(args("qemu"));
+    helper.event(1, { type: "state", state: "open" });
+    const tile = await attach(handle, "vnc");
+    await service.sessionClose(handle);
+    tile.handlers.onClose();
+    await vi.advanceTimersByTimeAsync(60001);
+    expect(helper.closes).toEqual([1]);
+    expect(record(handle).state).toBe("closed");
+  });
+
   it("sends the console's header, then the one-time password as its own message, then the RFB bytes, in that order", async () => {
     const { helper, service, attach } = wired();
     const { handle } = await service.pveOpen(args("qemu"));

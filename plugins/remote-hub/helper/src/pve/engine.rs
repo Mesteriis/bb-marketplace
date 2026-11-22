@@ -92,6 +92,7 @@ enum Cmd {
     Input(Vec<u8>),
     /// A new driver: drop the input queued for the old one, then answer `OwnerSet`.
     SetOwner(u64),
+    RebindVnc,
     Resize(u16, u16),
     Close,
 }
@@ -169,6 +170,7 @@ pub async fn serve(stream: tokio::net::UnixStream) -> i32 {
                 Some(&protocol::FRAME_DATA) => Cmd::Input(body[1..].to_vec()),
                 Some(&protocol::FRAME_CONTROL) => match serde_json::from_slice::<PveCommand>(&body[1..]) {
                     Ok(PveCommand::Resize { cols, rows }) => Cmd::Resize(cols, rows),
+                    Ok(PveCommand::RebindVnc) => Cmd::RebindVnc,
                     Ok(PveCommand::Close) => Cmd::Close,
                     Ok(PveCommand::SetOwner { request }) => Cmd::SetOwner(request),
                     Ok(PveCommand::SaveAck { ok }) => {
@@ -457,49 +459,54 @@ async fn connect_vnc(client: &Client, auth: &PveAuth, node: &str, vmid: u32, out
 
 /// A QEMU graphical console: the raw RFB stream, relayed both ways without looking inside it.
 async fn run_vnc(client: &Client, auth: &PveAuth, node: &str, vmid: u32, keepalive: Duration, out: &Out, cmds: &mut mpsc::Receiver<Cmd>) -> i32 {
-    let connected = tokio::select! {
-        r = connect_vnc(client, auth, node, vmid, out) => r,
-        _ = async { while let Some(c) = cmds.recv().await { if matches!(c, Cmd::Close) { break; } } } => {
-            out.event(&PveEvent::Closed { reason: "closed_by_user".to_string() }).await;
+    loop {
+        let connected = tokio::select! {
+            r = connect_vnc(client, auth, node, vmid, out) => r,
+            _ = async { while let Some(c) = cmds.recv().await { if matches!(c, Cmd::Close) { break; } } } => {
+                out.event(&PveEvent::Closed { reason: "closed_by_user".to_string() }).await;
+                return 0;
+            }
+        };
+        let (mut ws, password, first) = match connected {
+            Ok(v) => v,
+            Err(e) => {
+                out.error(&e).await;
+                out.event(&PveEvent::Closed { reason: "error".to_string() }).await;
+                return 1;
+            }
+        };
+        // The password first: whoever views the session needs it before the server's greeting is answered.
+        out.event(&PveEvent::VncPassword { password }).await;
+        out.state("open").await;
+        if !out.data(&first).await {
+            return 2;
+        }
+        let mut ping = tokio::time::interval(keepalive);
+        ping.reset();
+        let reason = loop {
+            tokio::select! {
+                msg = ws.next() => match msg {
+                    Some(Ok(Message::Binary(b))) => { if !out.data(&b).await { break Some("helper_gone"); } }
+                    Some(Ok(Message::Close(_))) | None => break Some("remote_closed"),
+                    Some(Ok(_)) => {}
+                    Some(Err(_)) => break Some("websocket_error"),
+                },
+                cmd = cmds.recv() => match cmd {
+                    Some(Cmd::Input(bytes)) => { if ws.send(Message::binary(bytes)).await.is_err() { break Some("websocket_error"); } }
+                    Some(Cmd::RebindVnc) => break None,
+                    Some(Cmd::Resize(..)) => {}
+                    Some(Cmd::SetOwner(request)) => { out.event(&PveEvent::OwnerSet { request, dropped: 0 }).await; }
+                    Some(Cmd::Close) | None => break Some("closed_by_user"),
+                },
+                _ = ping.tick() => { if ws.send(Message::Ping(Vec::new().into())).await.is_err() { break Some("websocket_error"); } }
+            }
+        };
+        let _ = tokio::time::timeout(Duration::from_secs(2), ws.close(None)).await;
+        if let Some(reason) = reason {
+            out.event(&PveEvent::Closed { reason: reason.to_string() }).await;
             return 0;
         }
-    };
-    let (mut ws, password, first) = match connected {
-        Ok(v) => v,
-        Err(e) => {
-            out.error(&e).await;
-            out.event(&PveEvent::Closed { reason: "error".to_string() }).await;
-            return 1;
-        }
-    };
-    // The password first: whoever views the session needs it before the server's greeting is answered.
-    out.event(&PveEvent::VncPassword { password }).await;
-    out.state("open").await;
-    if !out.data(&first).await {
-        return 2;
     }
-    let mut ping = tokio::time::interval(keepalive);
-    ping.reset();
-    let reason = loop {
-        tokio::select! {
-            msg = ws.next() => match msg {
-                Some(Ok(Message::Binary(b))) => { if !out.data(&b).await { break "helper_gone"; } }
-                Some(Ok(Message::Close(_))) | None => break "remote_closed",
-                Some(Ok(_)) => {}
-                Some(Err(_)) => break "websocket_error",
-            },
-            cmd = cmds.recv() => match cmd {
-                Some(Cmd::Input(bytes)) => { if ws.send(Message::binary(bytes)).await.is_err() { break "websocket_error"; } }
-                Some(Cmd::Resize(..)) => {}
-                Some(Cmd::SetOwner(request)) => { out.event(&PveEvent::OwnerSet { request, dropped: 0 }).await; }
-                Some(Cmd::Close) | None => break "closed_by_user",
-            },
-            _ = ping.tick() => { if ws.send(Message::Ping(Vec::new().into())).await.is_err() { break "websocket_error"; } }
-        }
-    };
-    let _ = tokio::time::timeout(Duration::from_secs(2), ws.close(None)).await;
-    out.event(&PveEvent::Closed { reason: reason.to_string() }).await;
-    0
 }
 
 async fn run_terminal(
@@ -567,6 +574,7 @@ async fn run_terminal(
                     if !outbox.wait_no_input_in_flight(HANDOVER_DEADLINE).await { break "upstream_stalled"; }
                     if !out.event(&PveEvent::OwnerSet { request, dropped }).await { break "helper_gone"; }
                 }
+                Some(Cmd::RebindVnc) => {}
                 Some(Cmd::Resize(c, r)) => { outbox.push(Message::binary(term::encode_resize(c.clamp(1, 1000), r.clamp(1, 1000))), None); }
                 Some(Cmd::Close) | None => break "closed_by_user",
             },

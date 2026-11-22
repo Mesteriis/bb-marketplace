@@ -220,7 +220,7 @@ function ConnectTab({ subPath }: { subPath: string }) {
   // This page is on screen for that session while it is mounted (the split fallback relies on it).
   const watchedKey = watched === null ? null : `${watched.generation}.${watched.sessionId}`;
   useEffect(() => (watchedKey === null ? undefined : markSessionPage(watchedKey)), [watchedKey]);
-  // A graphics console an agent opened is viewed here, on the Remote Hub page: its one view for its whole life.
+  // A graphics console an agent opened is viewed here, on the Remote Hub page: its single active view.
   const [adopt, setAdopt] = useState<PveConsoleLaunch | undefined>(undefined);
   useEffect(() => {
     if (watchedKey === null || watched === null) return;

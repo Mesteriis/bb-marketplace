@@ -4,7 +4,7 @@ import { canAttachLive, type LiveKind } from "../../core/live-session-kind.ts";
 // RPC surface wraps. Host-free of the BB SDK (only the adapter), so it is
 // unit-testable with an injected startHelper factory.
 import type { ExecStateMessage } from "../../core/exec-protocol.ts";
-import { AttachTokens, ATTACH_TOKEN_TTL_MS, type Clock } from "../../core/attach.ts";
+import { AttachTokens, ATTACH_TOKEN_TTL_MS, type AttachBinding, type Clock } from "../../core/attach.ts";
 import { createCreditState, type CreditState } from "../../core/credit.ts";
 import { CredentialError, type CredentialBind, type CredentialVault } from "../../core/credential.ts";
 import type { PveConnect, PveConsoleTarget, PveSteps } from "../../core/pve-protocol.ts";
@@ -154,8 +154,8 @@ export interface RemoteHubService {
   pveOpen(args: PveOpenArgs): Promise<{ handle: SessionHandle; kind: "pve" | "vnc" }>;
   /** State and failure reason of a Proxmox console, replayed on subscribe. */
   subscribePveConsole(handle: SessionHandle, cb: (event: PveConsoleEvent) => void): () => void;
-  /** The one view of a graphical console. Refused for a second view and for any view after the first one left (an RFB stream cannot be resumed). */
-  vncAttach(handle: SessionHandle, view: VncViewSocket): { ok: true; attachment: VncAttachment } | { ok: false; code: VncAttachRefusal };
+  /** Claims the sole viewer. A page adopting a parked console starts a fresh RFB handshake. */
+  vncAttach(handle: SessionHandle, view: VncViewSocket, embeddedVnc?: boolean): { ok: true; attachment: VncAttachment } | { ok: false; code: VncAttachRefusal };
   /** Proxmox VE: discovery and onboarding, through the helper. A refusal is an answer with a code, never a thrown secret. */
   pve: {
     targets(connect: PveConnect): Promise<PveAnswer>;
@@ -178,7 +178,7 @@ export interface RemoteHubService {
   sessionList(): SessionInfo[];
   sessionClose(handle: SessionHandle): Promise<{ exitCode: number | null; signal: number | null; reason: string }>;
   sessionAttach(handle: SessionHandle, liveKind?: LiveKind): string;
-  consumeAttachToken(token: string): { sessionId: number; generation: string } | null;
+  consumeAttachToken(token: string): AttachBinding | null;
   sessionScrollback(handle: SessionHandle): Promise<Uint8Array>;
   /** Terminal output of a session from a read position (null = the newest bytes). Null when the helper is not running. */
   sessionRead(handle: SessionHandle, from: number | null, max: number): ScrollbackRead | null;
@@ -1181,24 +1181,32 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
         set.delete(cb);
       };
     },
-    vncAttach(handle, view) {
+    vncAttach(handle, view, embeddedVnc = false) {
       requireGeneration(handle);
       const key = keyOf(handle);
       const info = sessions.get(key);
       const relay = vncRelays.get(key);
       if (info?.kind !== "vnc" || relay === undefined) throw new HelperRuntimeError("session_not_found", "unknown graphical console");
-      const attached = relay.attach({ data: (bytes) => view.sendData(bytes), password: (password) => view.sendPassword(password) });
+      const rebind = relay.parked;
+      const attached = relay.attach({ data: (bytes) => view.sendData(bytes), password: (password) => view.sendPassword(password) }, !embeddedVnc);
       if (!attached.ok) return attached;
       viewAttached(key);
       let done = false;
+      if (rebind) {
+        void start().then(hp => hp.pveVncRebind(handle)).catch(() => {
+          if (!done && sessions.get(key)?.state !== "closed") void closeSession(handle, "viewer_failed").catch(() => {});
+        });
+      }
       return {
         ok: true,
         attachment: {
           async input(bytes) {
+            if (done || !relay.acceptsInput) return false;
             if (deps.control !== undefined && !deps.control.humanMayDrive(handle)) return false;
             await handoff(handle);
             if (ownerUnconfirmed(handle) || (deps.control !== undefined && !deps.control.humanMayDrive(handle))) return false;
             const hp = await start();
+            if (done || !relay.acceptsInput) return false;
             await hp.pveVncInput(handle, bytes);
             return true;
           },
@@ -1209,10 +1217,9 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
           detach() {
             if (done) return;
             done = true;
-            relay.detach();
+            relay.detach(embeddedVnc);
             viewDetached(key);
-            // The stream cannot be resumed, so a console whose one view is gone has no use: it is closed now, not kept for a view
-            // that can never come (and nothing, not even the password, outlives it).
+            if (embeddedVnc) return;
             const info = sessions.get(key);
             if (info !== undefined && info.state !== "closed") void closeSession(handle, "view_closed").catch(() => {});
           },
@@ -1281,7 +1288,7 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
         if (!canAttachLive(current, liveKind))
           throw new HelperRuntimeError("session_not_found", "live session is unavailable");
       }
-      return attachTokens.issue(handle.sessionId, handle.generation);
+      return attachTokens.issue(handle.sessionId, handle.generation, liveKind === "vnc");
     },
     consumeAttachToken(token) {
       return attachTokens.consume(token);

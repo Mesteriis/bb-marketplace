@@ -21,7 +21,7 @@ function RemoteTile({ t, owner }: { t: Tile; owner: RemoteEmbedOwner }) {
     <section className="rh-embed" hidden={!t.visible} inert={!t.visible}>
       {t.confirm && (
         <div role="alertdialog" aria-label="Закрыть графическую консоль?">
-          <p>Закрытие единственного просмотра завершит консоль VNC.</p>
+          <p>Скрыть просмотр или завершить консоль VNC?</p>
           <Button disabled={t.busy} onClick={() => void owner.decide(t, "keep")}>
             Оставить
           </Button>

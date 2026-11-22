@@ -148,6 +148,7 @@ fn request_id(req: &Request) -> Option<u64> {
         | Request::OpenRdp { id, .. }
         | Request::OpenPve { id, .. }
         | Request::PveTargets { id, .. }
+        | Request::PveVncRebind { id, .. }
         | Request::PveVncInput { id, .. }
         | Request::PveProvision { id, .. }
         | Request::CredentialSave { id, .. }
@@ -912,6 +913,11 @@ fn handle(
         Request::OpenPve { id, connect, target, cols, rows, keepalive_secs } => {
             Ok(crate::pve::glue::open_terminal(pve, current_exe, id, &connect, target, cols, rows, keepalive_secs))
         }
+        Request::PveVncRebind { id, session_id } if pve.is_vnc(session_id) => Ok(match pve.send_command(session_id, &crate::pve::protocol::PveCommand::RebindVnc) {
+            Ok(()) => protocol::encode_response(&Response::SessionInputAck { id, session_id }),
+            Err(e) => crate::pve::glue::enqueue_error(id, session_id, e),
+        }),
+        Request::PveVncRebind { id, session_id } => Ok(crate::pve::glue::enqueue_error(id, session_id, crate::pve::manager::EnqueueError::UnknownSession)),
         Request::PveVncInput { id, session_id, data } if pve.is_vnc(session_id) => Ok(crate::pve::glue::vnc_input(pve, id, session_id, &data)),
         Request::PveVncInput { id, session_id, .. } => Ok(crate::pve::glue::enqueue_error(id, session_id, crate::pve::manager::EnqueueError::UnknownSession)),
         Request::PveTargets { id, connect } => Ok(crate::pve::glue::open_targets(pve, current_exe, id, &connect)),

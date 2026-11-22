@@ -210,14 +210,12 @@ including a temporary keychain), unit tests beside each module, `src/core/pve-pr
 - **Reconnect** opens a NEW console for the same target and closes the old one; it is offered when the console is lost, failed,
   disconnected or restored (not connecting, active or waiting for an automatic attempt). For graphics the tab says so: "Reconnect opens
   a NEW console; the screen you had is not restored". Automatic attempts and tab restore are in the stage 3 section below.
-- **Graphics have exactly one view, ever.** An RFB stream cannot be resumed, so the first view to attach owns it; a second view while the
-  first is attached is refused (`vnc_view_taken`), and so is any view after the first left (`vnc_not_resumable`: disconnect and open it
-  again). The page keeps the view mounted for as long as its tab exists. Bytes the console sends before its view attaches (the 12-byte
-  greeting) are held up to 256 KiB; beyond that the console is closed.
-- **The view's lifetime is the console's lifetime.** When the one view detaches (the tab is closed, the page unmounts or reloads, the
-  socket drops) the console is closed at once with `view_closed`: nothing could attach to it afterwards, so keeping it would only leave an
-  idle guest session open. The VNC password is dropped from the service's memory after the view took it and whenever the console closes.
-  The 5-minute idle rule therefore concerns terminal consoles and consoles that have never had a view.
+- **Graphics have one viewer at a time.** A second viewer receives `vnc_view_taken`. Each RFB handshake belongs to one viewer.
+  Before the first viewer attaches, the relay holds up to 256 KiB of console data. The ordinary Remote Hub page keeps the viewer
+  mounted for the lifetime of its tab. Detaching that page closes the console immediately with `view_closed`.
+- **Releasing a Chertog tile** disconnects its viewer and parks the live console under the existing five-minute idle rule. While
+  parked, the relay discards framebuffer data. Opening the same session on the Remote Hub page requests a fresh RFB handshake and
+  one-time password from its helper. The session handle stays the same. Confirming **Завершить консоль** closes it immediately.
 - **A hidden tab counts as attached.** A tab that is merely not selected, or a BB window that is in the background, still has its view
   mounted and keeps beating; the idle clock runs only when **no page at all** holds the console's tab.
 - **Back-pressure on the graphics stream.** RFB cannot be thinned out, so a view that cannot keep up closes the console instead of
@@ -305,7 +303,7 @@ the human's keys on the same path as SSH), and to a `vnc` session it is refused 
   "reconnected" lines were found in the scrollback; the earlier screen text was not, so the earlier output is not guaranteed to be kept.
 - **Input while not active** is refused: the terminal does not send it and the tab shows "Not connected: what you type is not sent, and is
   not kept to be sent later". It is never queued.
-- **Graphics** are never reattached (RFB cannot resume); a lost graphical console shows the reason and Reconnect, which opens a NEW
+- **After graphics transport loss**, the graphical console shows the reason and Reconnect, which opens a NEW
   console and says so.
 - **Location.** Every open and every reconnect re-reads the guest from Proxmox (`openConsole` always refreshes) and opens on the node the
   guest is on now; the header shows `on <node>` from that read (`pve_console_open` returns `node`). A guest that moved between the list

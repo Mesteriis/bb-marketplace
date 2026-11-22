@@ -57,6 +57,7 @@ export const pveVncInputRequestSchema = z.object({
   sessionId: sessionIdSchema,
   data: z.string().regex(/^[A-Za-z0-9+/]*={0,2}$/).max(256 * 1024),
 });
+const pveVncRebindRequestSchema = z.object({ type: z.literal("pve.vnc_rebind"), id: idSchema, sessionId: sessionIdSchema });
 export const pveTargetsRequestSchema = z.object({ type: z.literal("pve.targets"), id: idSchema, connect: pveConnectSchema });
 
 // ---- helper -> client ----
@@ -160,5 +161,5 @@ export const pveProvisionedSchema = z.object({ type: z.literal("pve.provisioned"
 /** What mode 1 creates: fixed, and shown to the owner before anything is written. */
 export const PVE_PROVISION = { role: "RemoteHubConsole", user: "remotehub@pve", privileges: ["Sys.Audit", "Sys.Console", "VM.Audit", "VM.Console"] } as const;
 
-export const pveRequestSchemas = [openPveRequestSchema, pveTargetsRequestSchema, pveVncInputRequestSchema, pveProvisionRequestSchema] as const;
+export const pveRequestSchemas = [openPveRequestSchema, pveTargetsRequestSchema, pveVncInputRequestSchema, pveVncRebindRequestSchema, pveProvisionRequestSchema] as const;
 export const pveResponseSchemas = [pveStateSchema, pveVncPasswordSchema, pveErrorSchema, pveTargetsResultSchema, pveFailedSchema, pvePlanSchema, pveProvisionedSchema] as const;

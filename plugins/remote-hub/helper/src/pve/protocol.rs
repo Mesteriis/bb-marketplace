@@ -193,6 +193,7 @@ pub enum PveCommand {
         #[serde(default)]
         keepalive_secs: Option<u64>,
     },
+    RebindVnc,
     Resize { cols: u16, rows: u16 },
     /// A new driver: input still queued in the engine for the previous one is dropped, then `OwnerSet { request }` answers.
     SetOwner { request: u64 },

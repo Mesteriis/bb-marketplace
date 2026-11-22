@@ -48,6 +48,7 @@ const rpc = {
           reason: null,
         },
       ];
+    if (method === "session_close" && input.generation === handle.generation && input.sessionId === 7) return {};
     if (method === "agent_sessions") return [];
     if (method === "session_attach" && input.liveKind === kind && input.generation === handle.generation && input.sessionId === 7)
       return { token: "private-synthetic-token" };
