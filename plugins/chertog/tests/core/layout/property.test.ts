@@ -168,7 +168,10 @@ describe("random operation sequences", () => {
     }
   });
 
-  it("resize moves one boundary: everything outside the two dragged children stays put", () => {
+  // Each of the 480 resizes paints the whole 900 by 700 work area, about a
+  // second of pure computation on an idle machine. Under a full parallel run
+  // that passes Vitest's default 5 s, so the test states its own budget.
+  it("resize moves one boundary: everything outside the two dragged children stays put", { timeout: 60_000 }, () => {
     const bounds = { x: 7, y: 11, width: 900, height: 700 };
     const find = (node: LayoutNode, id: string): LayoutNode | undefined =>
       node.id === id ? node : node.kind === "split" ? node.children.map((child) => find(child, id)).find(Boolean) : undefined;
