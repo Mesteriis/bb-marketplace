@@ -10,11 +10,14 @@ import {
   useBbNavigate,
   useComposers,
   useRpc,
+  useRealtime,
   useSettings,
   type PluginAppBuilder,
   type PluginSidebarThread,
 } from "@get-bb/plugin-sdk/app";
 import { useEffect } from "react";
+import { WindowOverlay } from "./window-handoff.ts";
+import { CHANNEL } from "../../../core/windows/wire.ts";
 import type { Diagnostics } from "../../../core/panels/index.ts";
 import { createHomeRedirectSection, openNewThreadScreen } from "../home/index.ts";
 import { runForTileComposer, tileComposer } from "./addressee.ts";
@@ -99,7 +102,13 @@ function ChertogOverlay() {
     workspace.fixture.settingChanged();
   }, [workspace, acceptanceFixture]);
 
-  return <LiveLayer workspace={workspace} diagnostics={diagnostics} />;
+  const rpc = useRpc();
+  useRealtime(CHANNEL, () => { void workspace.handoff.sync(); });
+  return (
+    <WindowOverlay workspace={workspace} call={(method, input) => rpc.call(method, input)}>
+      <LiveLayer workspace={workspace} diagnostics={diagnostics} />
+    </WindowOverlay>
+  );
 }
 
 /**
