@@ -1,3 +1,4 @@
+import { embedMigration } from "../src/adapters/bb/embed-resources.ts";
 import { miniAppAgentTool } from "../src/adapters/bb/mini-app-agent.ts";
 import { miniAppDeviceStorageMigration, miniAppLocationAccessMigration } from "../src/adapters/bb/mini-app-device-storage.ts";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
@@ -145,7 +146,7 @@ test.runIf(process.platform === "darwin")("switches account databases and refuse
   let secondAccountId = 8;
   let transcriptionSignal: AbortSignal | undefined;
   try {
-    for (const sql of [...channelPostReceiptMigrations, privateHistoryMigration, privateMediaMigration, miniAppDeviceStorageMigration, miniAppLocationAccessMigration]) database.exec(sql);
+    for (const sql of [...channelPostReceiptMigrations, privateHistoryMigration, privateMediaMigration, miniAppDeviceStorageMigration, miniAppLocationAccessMigration, embedMigration]) database.exec(sql);
     vi.spyOn(bb.storage, "database").mockReturnValue(database);
     vi.spyOn(bb.storage, "migrate").mockImplementation(() => {});
     vi.spyOn(tdjson, "findTdjsonLibrary").mockReturnValue("fixture");
@@ -208,6 +209,10 @@ test.runIf(process.platform === "darwin")("switches account databases and refuse
     const { connectionId: first, draftScope: firstScope, navigationScope: firstNavigation } = await readyAuth();
     const call = (connectionId: string, method: string, payload: unknown) =>
       harness.behavior.callRpc("sessionRpc", { connectionId, method, payload });
+    const resourceRef = await call(first, "bindEmbedChat", { id: "42", list: "main" });
+    await expect(call(first, "resolveEmbedChat", { resourceRef })).resolves.toMatchObject({ chat: { id: "42" } });
+    await expect(call(first, "embedChatAction", { resourceRef, method: "send", payload: { id: "43", text: "fixture" } }))
+      .rejects.toMatchObject({ code: "conflict" });
     const firstMedia = { photo: 2, video: 3, file: 0 };
     const secondMedia = { photo: 0, video: 0, file: 0 };
     const firstPlayback = { video: 0, gif: 0, videoNote: 0 };
@@ -246,6 +251,9 @@ test.runIf(process.platform === "darwin")("switches account databases and refuse
     unblockAccountLookup();
     await switchAccount;
     const { connectionId: second, draftScope: secondScope, navigationScope: secondNavigation } = await readyAuth();
+    await expect(call(second, "resolveEmbedChat", { resourceRef })).rejects.toMatchObject({ code: "conflict" });
+    await expect(call(first, "embedChatAction", { resourceRef, method: "send", payload: { id: "42", text: "fixture" } }))
+      .rejects.toMatchObject({ code: "conflict" });
     expect(secondScope).not.toBe(firstScope);
     expect(secondNavigation).not.toBe(firstNavigation);
     expect(second).not.toBe(first);

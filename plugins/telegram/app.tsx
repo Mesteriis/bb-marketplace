@@ -1,3 +1,4 @@
+import { TelegramEmbedOverlay } from "./src/adapters/bb/embed-overlay.tsx";
 import { showDesktopMessageNotice, telegramWindowInBackground } from "./src/adapters/bb/desktop-message-notices.ts";
 import { useTelegramAiTransfer } from "./src/adapters/bb/ai-transfer.ts";
 import { TelegramAiTransfer } from "./src/ui/ai-transfer.tsx";
@@ -45,7 +46,7 @@ import { type ComponentType, type ContextType, useCallback, useEffect, useLayout
 import { TelegramLocaleProvider, resolveTelegramLanguage } from "./src/ui/i18n/index.tsx";
 import type { rpcContract } from "./server.ts";
 import { communityChangedChannel, contactBirthdaysChangedChannel, storyDeletedChannel, storyFeedChangedChannel, storyStealthChangedChannel, storyStealthTimes, type StoryStealthTimes, storyReference, type StoryReference, chatChangedChannel, deviceSignInsChangedChannel, messageNotificationChannel, canRefreshMessageNotification, messageNotificationDelivery, type MessageNotification, type ChatExportOptions, type LocationPoint, type TranslationLanguage, type ContactDraft, type MessagePinMode, type UnreadListCount, messagesDeletedChannel, messagesDeletedSchema, maxPlaybackBytes, schemas, type PollChoice, type PollDraft, type PollAttachmentReference, type InviteTarget, type ForwardPresentation, type ForwardTarget, type ChatNotificationMode, type ChatMutePeriod, type ChatNotificationOverride, type ChatNotificationField, type DeletionScope, type ForumTopicPage, type ForumTopicAction, type ForumTopicTarget, type TelegramPhoto, type MessageSearchFilter, type MessagesDeleted, type MediaReply, type MediaDelivery, type AttachmentSendDelivery, type PhotoSize, type AgentAccess, type Auth, type ChatList, type FolderLayout, type TelegramFolder, type TelegramDevice } from "./src/core/contract.ts";
-import { uploadDocument, uploadPollFiles, uploadQuickReplyDocument } from "./src/adapters/bb/document-delivery-client.ts";
+import { documentSender, uploadDocument, uploadPollFiles, uploadQuickReplyDocument } from "./src/adapters/bb/document-delivery-client.ts";
 import type { ComposerMediaActions } from "./src/ui/media-composer.tsx";
 import type { Chat } from "./src/core/demo.ts";
 import { readRenderer } from "./src/core/agent-read.ts";
@@ -1404,11 +1405,7 @@ function TelegramPanel({ subPath }: PluginNavPanelProps) {
       ...(originalStyles ? { originalStyles } : {}), ...(styles ? { styles } : {}), ...(placement ? { placement } : {}), ...(links ? { links } : {}), ...(scheduled ? { scheduled } : {}), ...(customEmoji ? { customEmoji } : {}) }), [rpc]);
   const editText = useCallback((id: string, messageId: string, text: string, original: string, originalStyles?: import("./src/core/contract.ts").StyledRange[], styles?: import("./src/core/contract.ts").StyledRange[], removeLinkPreview?: string, links?: import("./src/core/contract.ts").EditLinks, scheduled?: import("./src/core/contract.ts").ScheduledEdit, customEmoji?: import("./src/core/contract.ts").EditCustomEmoji) =>
     rpc.call("edit", { id, messageId, text, original, ...(originalStyles ? { originalStyles } : {}), ...(styles ? { styles } : {}), ...(removeLinkPreview ? { removeLinkPreview } : {}), ...(links ? { links } : {}), ...(scheduled ? { scheduled } : {}), ...(customEmoji ? { customEmoji } : {}) }), [rpc]);
-  const sendDocument = useCallback(async (id: string, file: File, caption: string, progress: Parameters<import("./src/core/contract.ts").DocumentSender>[3], signal: AbortSignal, topic?: ForumTopicTarget, replyTo?: import("./src/core/contract.ts").AttachmentReply, video?: true, options?: import("./src/core/contract.ts").DocumentSendOptions, delivery?: AttachmentSendDelivery) => {
-    const preparation = await rpc.call("prepareDocumentUpload", { id, name: file.name.slice(0, 255), caption, size: file.size, ...(topic ? { topic } : {}), ...(typeof replyTo === "string" ? { replyTo } : replyTo ? { reply: replyTo } : {}), ...(video ? { video } : {}), ...(options ? { options } : {}), ...(delivery ? { delivery } : {}) });
-    if ("rejection" in preparation) return { state: "failed" as const, uploadRejection: preparation.rejection };
-    return uploadDocument(preparation.url, file, progress, signal);
-  }, [rpc]);
+  const sendDocument = useMemo(() => documentSender(input => rpc.call("prepareDocumentUpload", input)), [rpc]);
   const sendPhoto = useCallback((id: string, caption: string, base64: string, topic?: ForumTopicTarget, replyTo?: import("./src/core/contract.ts").AttachmentReply,
     options?: import("./src/core/contract.ts").AttachmentSendOptions, delivery?: AttachmentSendDelivery) => rpc.call("sendPhoto", {
       id, caption, base64, ...(topic ? { topic } : {}), ...(typeof replyTo === "string" ? { replyTo } : replyTo ? { reply: replyTo } : {}), ...(options ? { options } : {}), ...(delivery ? { delivery } : {}),
@@ -2352,6 +2349,7 @@ function withTelegramLanguage<Props extends object>(Component: ComponentType<Pro
 }
 
 export default definePluginApp((app) => {
+  app.slots.experimental_appOverlay({ id: "chertog-chat", component: withTelegramLanguage(TelegramEmbedOverlay) });
   app.slots.pendingInteraction({
     id: readRenderer,
     component: withTelegramLanguage(PendingAgentRead),

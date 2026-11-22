@@ -44,6 +44,19 @@ async function waitForDelivery<Result extends { state: string }>(schema: ZodType
   return { state: "unknown" };
 }
 
+type PrepareDocument = (input: import("zod").input<typeof schemas.prepareDocumentUpload.input>) =>
+  Promise<import("zod").output<typeof schemas.prepareDocumentUpload.output>>;
+
+export function documentSender(prepare: PrepareDocument): DocumentSender {
+  return async (id, file, caption, progress, signal, topic, replyTo, video, options, delivery) => {
+    const preparation = await prepare({ id, name: file.name.slice(0, 255), caption, size: file.size,
+      ...(topic && { topic }), ...(typeof replyTo === "string" ? { replyTo } : replyTo ? { reply: replyTo } : {}),
+      ...(video && { video }), ...(options && { options }), ...(delivery && { delivery }) });
+    if ("rejection" in preparation) return { state: "failed", uploadRejection: preparation.rejection };
+    return uploadDocument(preparation.url, file, progress, signal);
+  };
+}
+
 export function uploadDocument(url: string, file: Blob, progress: UploadProgress, signal: AbortSignal) {
   return uploadFile(schemas.sendDocument.output, url, file, progress, signal);
 }

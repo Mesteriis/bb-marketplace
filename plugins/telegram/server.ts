@@ -1,3 +1,4 @@
+import { embedMigration, embedResources } from "./src/adapters/bb/embed-resources.ts";
 import { createMiniAppAgent, miniAppAgentTool } from "./src/adapters/bb/mini-app-agent.ts";
 import { historyMessageChangedChannel, privateCallChangedChannel } from "./src/core/contract.ts";
 import { privateCallPython } from "./src/adapters/bb/private-call-engine.ts";
@@ -216,7 +217,7 @@ export default async function activate(bb: BbPluginApi) {
       const directory = join(dirname(database.name), selected === "primary" ? "tdlib" : `tdlib-${selected}`);
       const key = selected === "primary" ? sessionKey : createHmac("sha256", Buffer.from(sessionKey, "base64"))
         .update(`makosh-telegram/tdlib/${selected}`).digest("base64");
-      bb.storage.migrate(database, [...channelPostReceiptMigrations, privateHistoryMigration, privateMediaMigration, miniAppDeviceStorageMigration, miniAppLocationAccessMigration]);
+      bb.storage.migrate(database, [...channelPostReceiptMigrations, privateHistoryMigration, privateMediaMigration, miniAppDeviceStorageMigration, miniAppLocationAccessMigration, embedMigration]);
       const channelPosts = createChannelPostReceipts(database, sessionKey);
       const privateHistory = createPrivateHistory(database, sessionKey);
       const miniAppStorage = createMiniAppDeviceStorage(database);
@@ -466,6 +467,27 @@ export default async function activate(bb: BbPluginApi) {
     ],
     skills: [],
   }));
+
+  function embedDenied(): never {
+    throw new experimental_PluginRpcRefusal({ code: "conflict", message: "Open an available Telegram conversation again." });
+  }
+  let resourceStore: ReturnType<typeof embedResources> | undefined;
+  async function embedOwner() {
+    if (!requestConnection.getStore()) return embedDenied();
+    const current = connected();
+    const account = JSON.stringify([accounts.selected, await current.accountId()]);
+    if (connected() !== current) return embedDenied();
+    resourceStore ??= embedResources(bb.storage.database());
+    return { current, account, store: resourceStore };
+  }
+  async function resolveEmbed(resourceRef: string) {
+    const { current, account, store } = await embedOwner();
+    const location = store.resolve(account, resourceRef);
+    if (!location) return embedDenied();
+    const target = await current.resumeConversation(location.id, "main", location.topicId);
+    if (connected() !== current || !target || target.chat.id !== location.id || target.topic?.id !== location.topicId) return embedDenied();
+    return target;
+  }
 
   const handlers: ExperimentalPluginRpcHandlersWithContext<typeof rpcContract> = {
     setLanguagePreference: async ({ kind, value }, context) => {
@@ -1093,6 +1115,35 @@ export default async function activate(bb: BbPluginApi) {
         return connectCurrent();
       })().finally(() => { switchingAccount = undefined; });
       return safe(switchingAccount, "Could not switch Telegram accounts.");
+    },
+    bindEmbedChat: async ({ id, list, topicId }, context) => {
+      guard(context);
+      const { current, account, store } = await embedOwner();
+      const target = await current.resumeConversation(id, list, topicId);
+      if (connected() !== current || !target || target.chat.id !== id || target.topic?.id !== topicId) return embedDenied();
+      return store.bind(account, id, topicId);
+    },
+    resolveEmbedChat: async ({ resourceRef }, context) => { guard(context); return resolveEmbed(resourceRef); },
+    embedChatAction: async ({ resourceRef, method, payload }, context) => {
+      guard(context);
+      const target = await resolveEmbed(resourceRef);
+      checkConnection();
+      if (payload.id !== target.chat.id) return embedDenied();
+      const topic = target.topic;
+      if (method !== "peerProfile") {
+        if (topic && ["send", "chatDraft"].includes(method)) return embedDenied();
+        if (["history", "topicDraft", "saveChatDraft"].includes(method) && payload.topicId !== topic?.id) return embedDenied();
+        if (method === "sendTopicText" || method === "prepareDocumentUpload") {
+          if (payload.topic !== undefined || topic) {
+            const supplied = payload.topic as { id?: unknown; name?: unknown } | null;
+            if (!topic || supplied?.id !== topic.id || supplied.name !== topic.name) return embedDenied();
+          }
+        }
+      }
+      const input = schemas[method].input.parse(payload);
+      const result = await handlers[method](input as never, context);
+      checkConnection();
+      return schemas[method].output.parse(result);
     },
     sessionRpc: async ({ connectionId: expected, method, payload }, context) => {
       guard(context);

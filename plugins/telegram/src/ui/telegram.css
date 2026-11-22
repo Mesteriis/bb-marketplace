@@ -2621,3 +2621,9 @@
   .mtg-toast-entry, .mtg-toast-entry[data-leaving] { animation: none; }
   .mtg-toast-entry[data-leaving] { display: none; }
 }
+
+.mtg-embed-conversation { height: 100%; min-height: 0; container-type: inline-size; }
+@container (max-width: 670px) {
+  .mtg-embed-conversation .mtg-layout[data-layout="embedded"]:has(> .mtg-inline-details) { grid-template-columns: minmax(0, 1fr); }
+  .mtg-embed-conversation .mtg-layout:has(> .mtg-inline-details) > .mtg-conversation { display: none; }
+}

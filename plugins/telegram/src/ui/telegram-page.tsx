@@ -436,8 +436,9 @@ function renderChatNavigation(target: HTMLElement | undefined, children: ReactNo
   return target ? createPortal(<div className="mtg-sidebar-layout">{children}</div>, target) : children;
 }
 
-export function TelegramPage({ live, draftStorage, navigation, connectionScope, workspace, privateCall, settingsView }: {
+export function TelegramPage({ live, boundChat, draftStorage, navigation, connectionScope, workspace, privateCall, settingsView }: {
   live?: Live;
+  boundChat?: Chat;
   draftStorage?: AccountDrafts;
   navigation?: { scope: string; restore: (location: ConversationLocation) => Promise<ResumedConversation | null> };
   connectionScope?: string;
@@ -549,12 +550,12 @@ export function TelegramPage({ live, draftStorage, navigation, connectionScope, 
   const [recentSearchRevision, setRecentSearchRevision] = useState(0);
   const [recentRecordFailed, setRecentRecordFailed] = useState(false);
   const [directLinkStatus, setDirectLinkStatus] = useState<{ url: string; request: number; busy: boolean }>();
-  const [selectedChat, setSelectedChat] = useState<Chat>();
+  const [selectedChat, setSelectedChat] = useState<Chat | undefined>(boundChat);
   const [archiveStatus, setArchiveStatus] = useState<Record<string, "busy" | "failed" | undefined>>({});
   const activeArchive = useRef(new Set<string>());
   const [detailsRequest, setDetailsRequest] = useState<{ id: string; nonce: number; kind: "profile" | "boost" }>();
-  const [activeId, setActiveId] = useState(live ? "" : demoChats[0]!.id);
-  const [showConversation, setShowConversation] = useState(false);
+  const [activeId, setActiveId] = useState(boundChat?.id ?? (live ? "" : demoChats[0]!.id));
+  const [showConversation, setShowConversation] = useState(!!boundChat);
   const openWorkspaceDetails = useRef(workspace?.openDetails);
   const workspaceActive = workspace?.sidebar !== undefined;
   const [inlineDetails, setInlineDetails] = useState(false);
