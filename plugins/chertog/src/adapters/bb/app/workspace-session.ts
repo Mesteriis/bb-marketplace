@@ -443,7 +443,7 @@ export class WorkspaceSession {
         root = parent;
       }
       const opened = openBeside(document, root, this.newId("panel"), this.parentOf);
-      return opened.ok && listGroups(activeLayout(opened.document).workspace.root).length > TILE_LIMIT ? { ok: false, reason: "invalid-layout" } : opened;
+      return opened.ok && listGroups(activeLayout(opened.document).workspace.root).length > TILE_LIMIT ? { ok: false, reason: "tile-limit" } : opened;
     });
   }
 
@@ -486,7 +486,7 @@ export class WorkspaceSession {
       const placed = this.placeRef(document, live, ref, panelId, existing !== undefined);
       if (!placed.ok) return placed;
       chooser = placed.chooser;
-      return listGroups(activeLayout(placed.document).workspace.root).length > TILE_LIMIT ? { ok: false, reason: "invalid-layout" } : placed;
+      return listGroups(activeLayout(placed.document).workspace.root).length > TILE_LIMIT ? { ok: false, reason: "tile-limit" } : placed;
     });
     if (refusal !== null) return "refused";
     const instanceId = chooser === undefined ? null : this.instanceOfPanel(chooser)?.instanceId ?? null;
@@ -562,7 +562,7 @@ export class WorkspaceSession {
     const state = activeLayout(doc).workspace;
     const groupId = destination.kind === "group" ? destination.groupId : state.focusedGroupId;
     if (!findGroup(state.root, groupId)) return "unknown-group";
-    if (split && listGroups(this.surfaceState()!.root).length >= TILE_LIMIT) return "invalid-layout";
+    if (split && listGroups(this.surfaceState()!.root).length >= TILE_LIMIT) return "tile-limit";
     const id = this.registry.reserve(source.provider.type);
     if (id === null) return "unknown-panel";
     const panelId = this.newId("panel");

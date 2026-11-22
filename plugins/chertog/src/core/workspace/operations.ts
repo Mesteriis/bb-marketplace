@@ -16,6 +16,7 @@ export type WorkspaceChangeRefusal =
   | "invalid-name"
   | "invalid-panel"
   | "invalid-layout"
+  | "tile-limit"
   | "layout-exists"
   | "unknown-layout"
   | "last-layout"

@@ -6,6 +6,7 @@ import type { WorkspaceDocument } from "../../../src/core/workspace/index.ts";
 import { activeLayout, blockChildren, panelIdOfRef } from "../../../src/core/workspace/index.ts";
 import { ThreadDirectory, createThreadSource, threadRef, type ThreadEntry } from "../../../src/adapters/bb/app/thread-source.ts";
 import { createFixtureSource } from "../../../src/adapters/bb/app/fixture-source.tsx";
+import { appStrings } from "../../../src/adapters/bb/app/strings.ts";
 import { TILE_LIMIT, WorkspaceSession } from "../../../src/adapters/bb/app/workspace-session.ts";
 import { FakeWorkspaceRpc, sequentialIds } from "./support.ts";
 
@@ -100,7 +101,8 @@ describe("openThread", () => {
     const before = session.document();
     expect(session.openThread("thr_x")).toBe("refused");
     expect(session.document()).toBe(before);
-    expect(session.controller.getSnapshot().refusal).toBe("invalid-layout");
+    expect(session.controller.getSnapshot().refusal).toBe("tile-limit");
+    expect(appStrings.refusal("tile-limit")).toBe("Достигнут предел в 8 тайлов: закройте один из тайлов, чтобы открыть новый.");
     expect(session.openThread("thr_1")).toBe("focused");
   });
 
@@ -229,6 +231,7 @@ describe("openPanel", () => {
     const session = sessionOver(tiled(panels));
     await session.controller.enter();
     expect(session.openPanel(frame("a"))).toBe("refused");
+    expect(session.controller.getSnapshot().refusal).toBe("tile-limit");
   });
 
   it("puts a ref in the picker tile that accepts it", async () => {
