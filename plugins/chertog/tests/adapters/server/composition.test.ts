@@ -23,8 +23,9 @@ async function call(handlers: Record<string, Handler>, method: "load_workspace" 
 }
 
 describe("what the server registers", () => {
-  it("registers the workspace RPC and the fixture route, and nothing else", () => {
-    const { rpc, http, kv, log } = loaded();
+  it("registers the workspace RPC, the fixture route and the settings, and nothing else", () => {
+    const { rpc, http, kv, log, settings } = loaded();
+    expect(settings.defined).toHaveLength(1);
     expect(rpc.registered).toHaveLength(1);
     expect(rpc.registered[0].contract).toBe(rpcContract);
     expect(Object.keys(rpc.registered[0].contract)).toEqual(["load_workspace", "save_workspace"]);
@@ -33,6 +34,23 @@ describe("what the server registers", () => {
     // Loading the plugin reads and writes nothing.
     expect(kv.calls).toEqual([]);
     expect(log.lines).toEqual([]);
+  });
+
+  it("declares exactly the two settings, both plain switches", () => {
+    const [declared] = loaded().settings.defined;
+    expect(Object.keys(declared)).toEqual(["homeRedirect", "acceptanceFixture"]);
+    expect(declared).toEqual({
+      homeRedirect: {
+        type: "boolean",
+        label: "Открывать Чертог вместо штатного Домой",
+        description:
+          "Перенаправляет только корневой экран нового треда: штатная команда нового треда без проекта и «Домой» в новой вкладке тоже откроют Чертог, а перед переходом может мелькнуть штатный экран.",
+        default: true,
+      },
+      acceptanceFixture: { type: "boolean", label: "Тестовая панель для приёмки", default: false },
+    });
+    // Neither is a secret: a switch is stored with the plugin's settings and reaches the windows.
+    expect(Object.values(declared).filter((descriptor) => "secret" in descriptor)).toEqual([]);
   });
 
   it("serves the contract of the wire schemas", () => {
