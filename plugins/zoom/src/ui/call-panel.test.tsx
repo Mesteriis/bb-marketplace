@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CallPanel, mediaProblemText } from "./call-panel.tsx";
 
@@ -24,6 +24,7 @@ function setup() {
     <CallPanel call={CALL} callPageUrl="http://localhost:38886/call" title="Планёрка" onClose={onClose} openExternal={openExternal} onOpenInBrowser={onOpenInBrowser} readTheme={() => THEME} />,
   );
   const frame = screen.getByTitle("Звонок Zoom") as HTMLIFrameElement;
+  fireEvent.load(frame);
   const target = frame.contentWindow!;
   const posted = vi.spyOn(target, "postMessage").mockImplementation(() => undefined);
   const say = (data: unknown, source: Window | null = target, origin = "http://localhost:38886") =>

@@ -94,7 +94,7 @@ function text(value: unknown, fallback: string): string {
 export function CallPanel({ call, callPageUrl, title, onClose, openExternal, onOpenInBrowser, readTheme, confirmLeave, leaving, onLost, onDocumentLost }: CallPanelProps) {
   const frame = useRef<HTMLIFrameElement>(null);
   const joinedOnce = useRef(false);
-  const documentLost = useRef(false);
+  const documentState = useRef<"awaiting-load" | "authorized" | "lost">("awaiting-load");
   const refused = useRef(false);
   const leaveSent = useRef(false);
   const origin = new URL(callPageUrl, window.location.href).origin;
@@ -108,12 +108,12 @@ export function CallPanel({ call, callPageUrl, title, onClose, openExternal, onO
 
     function onMessage(event: MessageEvent) {
       const target = frame.current?.contentWindow;
-      if (documentLost.current || target == null || event.source !== target || event.origin !== origin) return;
+      if (documentState.current === "lost" || target == null || event.source !== target || event.origin !== origin) return;
       const data: unknown = event.data;
       if (typeof data !== "object" || data === null) return;
       const message = data as { type?: unknown; message?: unknown; code?: unknown; kind?: unknown; name?: unknown };
       if (message.type === "zoom-call:ready") {
-        if (joinedOnce.current || leaveSent.current) return;
+        if (documentState.current !== "authorized" || joinedOnce.current || leaveSent.current) return;
         joinedOnce.current = true;
         setPhase({ kind: "joining" });
         const colors = readTheme !== undefined ? readTheme() : frame.current !== null ? themeOf(frame.current) : {};
@@ -223,12 +223,14 @@ export function CallPanel({ call, callPageUrl, title, onClose, openExternal, onO
           hidden={phase.kind === "failed"}
           ref={frame}
           onLoad={() => {
-            if (documentLost.current) return;
-            if (!joinedOnce.current) {
+            if (documentState.current === "lost") return;
+            if (documentState.current === "awaiting-load") {
+              documentState.current = "authorized";
               frame.current?.contentWindow?.postMessage({ type: "zoom-call:loaded" }, origin);
               return;
             }
-            documentLost.current = true;
+            documentState.current = "lost";
+            joinedOnce.current = false;
             setPhase({ kind: "failed", message: "Страница звонка перезагружена. Чтобы войти снова, откройте встречу." });
             onDocumentLost?.();
           }}

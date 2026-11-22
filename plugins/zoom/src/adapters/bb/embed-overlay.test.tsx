@@ -79,6 +79,7 @@ it("retains one iframe and its parent through visibility, keep and hide; waits f
   host({ kind: "announce", resourceRef: ref });
   fireEvent.click(await screen.findByRole("button", { name: "Войти в звонок" }));
   const frame = (await screen.findByTitle("Звонок Zoom")) as HTMLIFrameElement;
+  fireEvent.load(frame);
   const parent = frame.parentElement;
   const posted = vi.spyOn(frame.contentWindow!, "postMessage").mockImplementation(() => {});
   const say = (type: string) =>
@@ -214,7 +215,11 @@ it("remembers a release received before the announce and requires a later genera
   expect(api.resolve).toHaveBeenCalledTimes(1);
 });
 
-it("reports a replaced call document as lost and waits for a fresh explicit join", async () => {
+it.each([
+  { phase: "before SDK ready", events: [], joins: 0 },
+  { phase: "while joining", events: ["zoom-call:ready"], joins: 1 },
+  { phase: "after joining", events: ["zoom-call:ready", "zoom-call:joined"], joins: 1 },
+])("reports a document replaced $phase as lost and waits for a fresh explicit join", async ({ events, joins }) => {
   const { messages, api, host, target } = fixture();
   host({ kind: "announce", resourceRef: ref });
   fireEvent.click(await screen.findByRole("button", { name: "Войти в звонок" }));
@@ -225,16 +230,14 @@ it("reports a replaced call document as lost and waits for a fresh explicit join
     window.dispatchEvent(new MessageEvent("message", { data: { type }, source, origin: "http://localhost:38886" }));
   });
   fireEvent.load(frame);
-  say("zoom-call:ready");
-  say("zoom-call:joined");
-  expect(screen.getByText("В звонке")).toBeTruthy();
+  for (const event of events) say(event);
   fireEvent.load(frame);
   say("zoom-call:ready");
   say("zoom-call:joined");
+  expect(posted.mock.calls.filter(([m]) => m.type === "zoom-call:join")).toHaveLength(joins);
   expect(messages.at(-1)).toEqual({ ...address, kind: "lost" });
   expect(screen.queryByText("В звонке")).toBeNull();
   expect(screen.getByText(/войти снова/i)).toBeTruthy();
-  expect(posted.mock.calls.filter(([m]) => m.type === "zoom-call:join")).toHaveLength(1);
   host({ kind: "release" });
   target.dataset.generation = "2";
   host({ kind: "announce", generation: 2, resourceRef: ref });
