@@ -66,6 +66,30 @@ function lookAtScreen() {
 const msg = (socket: FakeWebSocket, value: unknown) => act(() => socket.onmessage?.({ data: JSON.stringify(value) }));
 
 describe("RdpCanvas shows what an agent does and says it is being looked at", () => {
+  it("drains accepted key-up before releasing a still-held key when the tile becomes inert", async () => {
+    vi.useFakeTimers();
+    let allowed = true;
+    render(<RdpCanvas wsUrl="ws://x" token="t" fit="fit" label="desktop" canInput={() => allowed} onEvent={() => {}} />);
+    await act(async () => {});
+    const socket = FakeWebSocket.instances[0]!;
+    msg(socket, { type: "desktop", frameId: 1, width: 8, height: 4 });
+    const canvas = screen.getByLabelText("desktop");
+    const key = (type: string, code: string) => canvas.dispatchEvent(new KeyboardEvent(type, {code, bubbles:true}));
+    key("keydown", "ShiftLeft");
+    key("keydown", "ControlLeft");
+    vi.advanceTimersByTime(20);
+    key("keyup", "ShiftLeft");
+    allowed = false;
+    canvas.dispatchEvent(new Event("blur"));
+    const keys = socket.messages.filter(m => m.type === "input").flatMap(m => m.events);
+    expect(keys).toEqual([
+      {kind:"key",scancode:42,extended:false,down:true},
+      {kind:"key",scancode:29,extended:false,down:true},
+      {kind:"key",scancode:42,extended:false,down:false},
+      {kind:"key",scancode:29,extended:false,down:false},
+    ]);
+  });
+
   it("reports visible only while the canvas is on screen in the focused window, not just mounted", async () => {
     lookAtScreen();
     render(<RdpCanvas wsUrl="ws://x/attach" token="t" fit="fit" label="desktop" onEvent={() => {}} />);

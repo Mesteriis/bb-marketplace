@@ -12,7 +12,7 @@ import { ControlBadge, HUMAN_CONTROL, nextControl, type ControlMessage, type Con
 import { AgentStage } from "./agent-overlay.tsx";
 import type { FeedEvent } from "../core/agent-feed.ts";
 import { CommandLog, applyExecEvent, type LoggedCommand } from "./command-log.tsx";
-import { RdpCanvas } from "./rdp-canvas.tsx";
+import { RdpCanvas, type RdpCanvasHandle } from "./rdp-canvas.tsx";
 import { VncView } from "./vnc-view.tsx";
 import { SshTerminal } from "./ssh-terminal.tsx";
 
@@ -132,12 +132,14 @@ export function AttachedSession({
   view,
   takeover,
   canInput,
+  rdpHandle,
   onStatus,
 }: {
   handle: SessionHandle;
   view: { kind: "ssh" | "pve" | "vnc" | "rdp"; token: string; wsUrl: string };
   takeover: LiveSessionApi["takeover"];
   canInput?: () => boolean;
+  rdpHandle?: React.Ref<RdpCanvasHandle>;
   onStatus?: (status: LiveViewStatus) => void;
 }) {
   const [owner, setOwner] = useState<ControlView>(HUMAN_CONTROL);
@@ -184,6 +186,7 @@ export function AttachedSession({
         ) : (
           <div className="rh-rdp-wrap">
             <RdpCanvas
+              handleRef={rdpHandle}
               canInput={canInput}
               wsUrl={view.wsUrl}
               token={view.token}

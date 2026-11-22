@@ -1,6 +1,7 @@
 import { canAttachLive, type LiveKind } from "../../core/live-session-kind.ts";
 import type { SessionHandle, SessionInfo } from "../../core/rpc.ts";
 import { matchesTarget, providers, query, readHost, reply, type Address, type Provider, type Status } from "./embed-wire.ts";
+import type { RdpCanvasHandle } from "../../ui/rdp-canvas.tsx";
 import { viewExposed } from "../../ui/watch-beat.ts";
 
 export interface RemoteEmbedApi {
@@ -25,10 +26,9 @@ export interface Surface {
   kind: "ssh" | "rdp" | "vnc";
   handle: SessionHandle;
   provider: Provider;
-  id: string;
-  parent: HTMLDivElement;
+  rdpHandle: { current: RdpCanvasHandle | null };
   socket: { token: string; wsUrl: string };
-  tile?: Tile;
+  tile: Tile;
   ready: boolean;
 }
 type Resource = { provider: Provider; handle: SessionHandle };
@@ -48,7 +48,6 @@ function failure(error: unknown): "lost" | "denied" {
 
 export class RemoteEmbedOwner {
   tiles = new Map<string, Tile>();
-  surfaces = new Set<Surface>();
   constructor(
     readonly api: RemoteEmbedApi,
     private refs: DocumentRefs,
@@ -73,16 +72,11 @@ export class RemoteEmbedOwner {
       document.removeEventListener("chertog.embed.v1.host", this.host);
       for (const t of this.tiles.values()) this.status(t, "revoked");
       this.tiles.clear();
-      this.surfaces.clear();
     };
   }
   private release(t: Tile) {
-    if (t.surface) {
-      // RFB cannot detach and resume. Keep its single viewer parked and inert until reclaimed.
-      if (t.provider !== "remote-vnc-live") this.surfaces.delete(t.surface);
-      t.surface.parent.remove();
-      t.surface.tile = undefined;
-    }
+    t.surface?.rdpHandle.current?.releaseInput();
+    t.surface = undefined;
     this.tiles.delete(t.instanceId);
     this.redraw();
   }
@@ -119,7 +113,10 @@ export class RemoteEmbedOwner {
       return;
     }
     if (!t || m.generation !== t.generation) return;
-    if (m.kind === "visibility") t.visible = m.visible;
+    if (m.kind === "visibility") {
+      if (t.visible && !m.visible) t.surface?.rdpHandle.current?.releaseInput();
+      t.visible = m.visible;
+    }
     if (m.kind === "close") {
       if (t.provider === "remote-vnc-live" && t.status === "lost") return this.status(t, "lost");
       if (t.surface && t.provider === "remote-vnc-live") t.confirm = true;
@@ -176,30 +173,19 @@ export class RemoteEmbedOwner {
       if (!s || s.reason === "helper_exited") return this.status(t, "lost");
       if (s.state === "closed") return this.status(t, "ended");
       if (!canAttachLive(s, kind(t.provider))) return this.status(t, "denied");
-      if (s.kind === "vnc") {
-        const existing = [...this.surfaces].find((v) => same(v.handle, handle));
-        if (existing) {
-          if (existing.tile) return this.status(t, "denied");
-          existing.tile = t;
-          t.surface = existing;
-          if (existing.ready) this.status(t, "ready");
-          this.redraw();
-          return;
-        }
-      }
+      if (s.kind === "vnc" && [...this.tiles.values()].some(tile => tile.surface && same(tile.surface.handle, handle)))
+        return this.status(t, "denied");
       const socket = await this.api.attach(handle, kind(t.provider));
       if (!this.current(t) || t.status) return;
       const surface: Surface = {
-        id: crypto.randomUUID(),
+        rdpHandle: { current: null },
         kind: kind(t.provider),
         handle,
         provider: t.provider,
-        parent: document.createElement("div"),
         socket,
         tile: t,
         ready: false,
       };
-      this.surfaces.add(surface);
       t.surface = surface;
       this.redraw();
     } catch (error) {
@@ -207,22 +193,19 @@ export class RemoteEmbedOwner {
     }
   }
   report(v: Surface, state: "ready" | "ended" | "lost" | "denied") {
-    if (!this.surfaces.has(v)) return;
+    if (v.tile.surface !== v || !this.current(v.tile)) return;
     if (state === "ready") {
       if (v.ready) return;
       v.ready = true;
     } else {
-      this.surfaces.delete(v);
-      if (v.tile) {
-        v.tile.surface = undefined;
-        v.tile.confirm = false;
-      }
+      v.tile.surface = undefined;
+      v.tile.confirm = false;
     }
-    if (v.tile && v.tile.status !== "ended") this.status(v.tile, state);
+    if (v.tile.status !== "ended") this.status(v.tile, state);
     this.redraw();
   }
   canInput(v: Surface) {
-    return !!v.tile && v.ready && v.tile.status === "ready" && !v.tile.confirm && this.active(v.tile);
+    return v.ready && v.tile.status === "ready" && !v.tile.confirm && this.active(v.tile);
   }
   async takeover(v: Surface) {
     if (!this.canInput(v)) throw new Error("Просмотр недоступен");

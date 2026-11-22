@@ -1,5 +1,6 @@
 // Run after npm run build. Supply PLAYWRIGHT_CORE (module path) and CHROME (executable) from the isolated stand.
 import assert from "node:assert/strict";
+import { setTimeout as delay } from "node:timers/promises";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { build } from "vite";
@@ -17,17 +18,33 @@ const result = await build({
   },
 });
 const runtime = result[0].output.find((file) => file.type === "chunk").code;
+async function until(check, description) {
+  const deadline = Date.now() + 5000;
+  while (!check() && Date.now() < deadline) await delay(10);
+  assert.ok(check(), description);
+}
 const browser = await chromium.launch({ executablePath: process.env.CHROME });
 try {
-  for (const scenario of ["ssh", "rdp", "vnc", "vnc-busy"]) {
+  for (const scenario of ["ssh", "rdp", "vnc", "vnc-release", "vnc-busy"]) {
     const kind = scenario.split("-")[0];
     const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
     page.on("pageerror", (error) => console.error(error.message));
     let socket;
     let connections = 0;
+    let detaches = 0;
+    let disconnected = false;
+    const input = [];
+    function observe(message) {
+      if (typeof message !== "string") return;
+      const frame = JSON.parse(message);
+      if (frame.type === "input") input.push(...frame.events);
+      if (frame.type === "detach") detaches++;
+    }
     await page.routeWebSocket("**/http/attach?*", (ws) => {
       socket = ws;
       connections++;
+      ws.onMessage(observe);
+      ws.onClose(() => { disconnected = true; });
     });
     await page.route("https://remote-hub.test/**", (route) => {
       const pathname = new URL(route.request().url()).pathname;
@@ -66,11 +83,28 @@ try {
         .first()
         .evaluate((c) => [...c.getContext("2d").getImageData(0, 1, 1, 1).data]);
       assert.deepEqual(rgba, [255, 255, 255, 255]);
-    } else if (scenario === "vnc") {
+      await page.locator("canvas").evaluate(canvas => {
+        const box = canvas.getBoundingClientRect();
+        canvas.dispatchEvent(new MouseEvent("mousedown", {bubbles:true,button:0,clientX:box.x+box.width/2,clientY:box.y+box.height/2}));
+        for (const code of ["ShiftLeft","ControlLeft"]) canvas.dispatchEvent(new KeyboardEvent("keydown",{code,bubbles:true}));
+      });
+      await until(() => input.some(e => e.kind === "key" && e.scancode === 29 && e.down), "RDP key-down reached the peer");
+      await page.locator("canvas").evaluate(canvas => {
+        canvas.dispatchEvent(new KeyboardEvent("keyup",{code:"ShiftLeft",bubbles:true}));
+        fixture.send({kind:"visibility",visible:false});
+        canvas.dispatchEvent(new KeyboardEvent("keydown",{code:"KeyX",bubbles:true}));
+      });
+      await until(() => input.some(e => e.kind === "mouse_button" && !e.down), "RDP released the held mouse before hiding");
+      const sequence = input.filter(e => e.kind !== "mouse_move").map(e => [e.scancode ?? e.button,e.down]);
+      assert.deepEqual(sequence,[["left",true],[42,true],[29,true],[42,false],[29,false],["left",false]]);
+      console.log("RDP hide: queued Shift up, held Ctrl up and left button up received in order");
+      await page.evaluate(() => fixture.send({kind:"visibility",visible:true}));
+    } else if (scenario === "vnc" || scenario === "vnc-release") {
       // A local RFB 3.8 server greeting, None security and a 2 × 2 true-colour desktop.
       const desktop = Buffer.from([0, 2, 0, 2, 32, 24, 0, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0, 0, 0, 0, 0, 0, 0, 0]);
       const handshake = [Buffer.from([1, 1]), Buffer.alloc(4), desktop];
       socket.onMessage((message) => {
+        observe(message);
         if (typeof message !== "string" && handshake.length) socket.send(handshake.shift());
       });
       socket.send(Buffer.from("RFB 003.008\n"));
@@ -80,7 +114,16 @@ try {
       socket.send(JSON.stringify({ type: "error", code: "vnc_view_taken" }));
       await status("denied");
     }
-    if (scenario !== "vnc-busy") {
+    if (scenario === "vnc-release") {
+      await page.evaluate(() => {
+        fixture.send({kind:"release"});
+        fixture.send({kind:"release"});
+      });
+      await until(() => disconnected, "VNC viewer closed its socket before document reload");
+      assert.equal(detaches,1);
+      assert.equal(await page.locator(".rh-embed").count(),0);
+      console.log("VNC release: portal removed, one detach, socket closed");
+    } else if (scenario !== "vnc-busy") {
       await page.evaluate(() => {
         fixture.move();
         fixture.send({ kind: "visibility", visible: false });

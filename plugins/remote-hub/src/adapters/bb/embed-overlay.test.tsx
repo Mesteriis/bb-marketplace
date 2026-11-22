@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { useEffect } from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { RemoteEmbedOverlay } from "./embed-overlay.tsx";
@@ -21,8 +22,12 @@ vi.mock("../../ui/ssh-terminal.tsx", () => ({
 vi.mock("../../ui/rdp-canvas.tsx", () => ({
   RdpCanvas: ({ onFullFrame }: RdpCanvasProps) => <button onClick={onFullFrame}>RDP frame</button>,
 }));
+const { vncDetached } = vi.hoisted(() => ({ vncDetached: vi.fn() }));
 vi.mock("../../ui/vnc-view.tsx", () => ({
-  VncView: ({ onViewState }: VncViewProps) => <button onClick={() => onViewState?.("ready")}>VNC ready</button>,
+  VncView: ({ onViewState }: VncViewProps) => {
+    useEffect(() => () => { vncDetached(); }, []);
+    return <button onClick={() => onViewState?.("ready")}>VNC ready</button>;
+  },
 }));
 afterEach(() => {
   cleanup();
@@ -142,15 +147,17 @@ it("keeps, hides or closes the unique VNC view only on the owner's decision", as
   c.send({ kind: "release" });
   expect(c.api.close).toHaveBeenCalledTimes(1);
 });
-it("parks a released VNC stream and reuses its same viewer after a later announcement", async () => {
+it("unmounts the unique VNC viewer exactly once on release", async () => {
   const c = setup("remote-vnc-live");
   const button = await choose(c);
+  vncDetached.mockClear();
+  c.send({ kind: "visibility", visible: false });
+  expect(vncDetached).not.toHaveBeenCalled();
   c.send({ kind: "release" });
+  c.send({ kind: "release" });
+  c.send({ kind: "announce", resourceRef: ref });
   expect(button.isConnected).toBe(false);
-  const other = container("remote-vnc-live", "other");
-  other.send({ kind: "announce", resourceRef: ref });
-  await waitFor(() => expect(other.responses.at(-1)?.kind).toBe("ready"));
-  expect(other.target.contains(button)).toBe(true);
+  expect(vncDetached).toHaveBeenCalledTimes(1);
   expect(c.api.attach).toHaveBeenCalledTimes(1);
   expect(c.api.close).not.toHaveBeenCalled();
 });

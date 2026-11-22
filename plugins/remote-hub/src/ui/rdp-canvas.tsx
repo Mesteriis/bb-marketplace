@@ -33,6 +33,7 @@ export type RdpCanvasEvent =
   | { type: "input_blocked" };
 
 export interface RdpCanvasHandle {
+  releaseInput(): void;
   sendCtrlAltDel(): void;
   refresh(): void;
 }
@@ -78,6 +79,7 @@ export function RdpCanvas(props: RdpCanvasProps) {
   const onEventRef = useRef(props.onEvent);
   onEventRef.current = props.onEvent;
   const [pointer, setPointer] = useState<{ left: number; top: number; click: string | null; at: number } | null>(null);
+  const releaseRef = useRef<(() => void) | null>(null);
   const sendRef = useRef<{ input: (events: RdpViewInputEvent[]) => void; refresh: () => void }>({
     input: () => {},
     refresh: () => {},
@@ -86,6 +88,7 @@ export function RdpCanvas(props: RdpCanvasProps) {
   useImperativeHandle(
     props.handleRef,
     () => ({
+      releaseInput: () => releaseRef.current?.(),
       sendCtrlAltDel: () => sendRef.current.input([{ kind: "ctrl_alt_del" }]),
       refresh: () => sendRef.current.refresh(),
     }),
@@ -130,7 +133,7 @@ export function RdpCanvas(props: RdpCanvasProps) {
     const flush = (): void => {
       frameRequest = null;
       if (queue.length === 0) return;
-      if (inputGuard.current?.() === false) { queue = []; return; }
+      // The guard applies at enqueue. An accepted key-up must reach the peer even after the tile becomes inert.
       const batch = queue.slice(0, 256);
       queue = queue.slice(256);
       sendJson({ type: "input", events: batch });
@@ -287,8 +290,6 @@ export function RdpCanvas(props: RdpCanvasProps) {
             if (at !== null) {
               setPointer({ ...at, click: typeof ev.click === "string" ? ev.click : null, at: Date.now() });
               if (pointerTimer !== null) clearTimeout(pointerTimer);
-      if (pasteTimer !== null) clearTimeout(pasteTimer);
-      fallback.cancel();
               pointerTimer = setTimeout(() => setPointer(null), 4000);
             }
           }
@@ -322,6 +323,7 @@ export function RdpCanvas(props: RdpCanvasProps) {
       if (pos !== null) enqueue([mouseMoveEvent(pos, fb)]);
     };
     const onMouseButton = (down: boolean) => (event: MouseEvent): void => {
+      if (inputGuard.current?.() === false) return;
       if (down) canvas.focus();
       const pos = position(event);
       if (pos === null) {
@@ -357,6 +359,7 @@ export function RdpCanvas(props: RdpCanvasProps) {
       event.preventDefault();
     };
     const onKey = (down: boolean) => (event: KeyboardEvent): void => {
+      if (inputGuard.current?.() === false) return;
       // The one keyboard way out: Ctrl+Alt+Shift+Escape (all four held) hands the
       // keyboard back to the page. It is never forwarded.
       if (event.ctrlKey && event.altKey && event.shiftKey && event.code === "Escape") {
@@ -406,11 +409,13 @@ export function RdpCanvas(props: RdpCanvasProps) {
       };
       step();
     };
-    const fallback = createPasteFallback((text) => {
+    const createFallback = () => createPasteFallback((text) => {
       pending = text;
       typePending();
     });
+    let fallback = createFallback();
     const onPaste = (event: ClipboardEvent): void => {
+      if (inputGuard.current?.() === false) return;
       fallback.eventSeen();
       const text = event.clipboardData?.getData("text/plain") ?? "";
       event.preventDefault();
@@ -419,6 +424,14 @@ export function RdpCanvas(props: RdpCanvasProps) {
       typePending();
     };
     const onBlur = (): void => {
+      if (pasteTimer !== null) clearTimeout(pasteTimer);
+      pasteTimer = null;
+      pasteArmed = false;
+      modifiersDown = false;
+      pending = null;
+      fallback.cancel();
+      fallback = createFallback();
+
       // Send what is still queued FIRST (a queued key-up must never be dropped),
       // then release what is still held: otherwise a key whose up was queued but
       // not sent stays pressed on the remote.
@@ -428,6 +441,7 @@ export function RdpCanvas(props: RdpCanvasProps) {
         sendJson({ type: "input", events: releases });
       }
     };
+    releaseRef.current = onBlur;
     const onContextMenu = (event: Event): void => event.preventDefault();
     const handlers: Array<[string, EventListener]> = [
       ["mousemove", onMouseMove as EventListener],
@@ -445,16 +459,13 @@ export function RdpCanvas(props: RdpCanvasProps) {
 
     return () => {
       disposed = true;
+      releaseRef.current = null;
       if (stopBeat !== null) stopBeat();
       if (pointerTimer !== null) clearTimeout(pointerTimer);
       for (const [name, handler] of handlers) canvas.removeEventListener(name, handler);
       window.removeEventListener("mouseup", onWindowMouseUp);
-      if (socket.readyState === WebSocket.OPEN) {
-        if (ready) flushNow();
-        const releases = [...held.releaseAll(), ...releaseButtons()];
-        if (releases.length > 0 && ready) socket.send(JSON.stringify({ type: "input", events: releases }));
-        socket.send(JSON.stringify({ type: "detach" }));
-      }
+      onBlur();
+      sendJson({ type: "detach" });
       if (frameRequest !== null) cancelAnimationFrame(frameRequest);
       socket.close();
       sendRef.current = { input: () => {}, refresh: () => {} };

@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useReducer, useRef } from "react";
+import { useEffect, useMemo, useReducer } from "react";
 import { createPortal } from "react-dom";
 import { Button } from "@/components/ui/button";
 import { AttachedSession } from "../../ui/live-session.tsx";
@@ -8,6 +8,7 @@ function LiveSurface({ v, owner }: { v: Surface; owner: RemoteEmbedOwner }) {
   return (
     <AttachedSession
       handle={v.handle}
+      rdpHandle={v.rdpHandle}
       view={{ kind: v.kind, ...v.socket }}
       canInput={() => owner.canInput(v)}
       takeover={() => owner.takeover(v)}
@@ -16,13 +17,6 @@ function LiveSurface({ v, owner }: { v: Surface; owner: RemoteEmbedOwner }) {
   );
 }
 function RemoteTile({ t, owner }: { t: Tile; owner: RemoteEmbedOwner }) {
-  const anchor = useRef<HTMLDivElement>(null);
-  const surface = t.surface;
-  useLayoutEffect(() => {
-    if (!surface || !anchor.current) return;
-    anchor.current.append(surface.parent);
-    return () => surface.parent.remove();
-  }, [surface]);
   return (
     <section className="rh-embed" hidden={!t.visible} inert={!t.visible}>
       {t.confirm && (
@@ -59,7 +53,9 @@ function RemoteTile({ t, owner }: { t: Tile; owner: RemoteEmbedOwner }) {
       {t.status === "ended" && <p role="status">Просмотр закрыт.</p>}
       {t.status === "cancelled" && <p role="status">Выбор отменён.</p>}
       {!t.status && <p role="status">Открытие просмотра…</p>}
-      <div ref={anchor} inert={t.confirm || t.status === "ended"} hidden={t.status === "ended"} />
+      <div inert={t.confirm || t.status === "ended"} hidden={t.status === "ended"}>
+        {t.surface && <LiveSurface v={t.surface} owner={owner} />}
+      </div>
     </section>
   );
 }
@@ -70,7 +66,6 @@ export function RemoteEmbedOverlay({ api, refs }: { api: RemoteEmbedApi; refs: D
   return (
     <>
       {[...owner.tiles.values()].map((t) => createPortal(<RemoteTile t={t} owner={owner} />, t.target, t.instanceId + "/" + t.generation))}
-      {[...owner.surfaces].map((v) => createPortal(<LiveSurface v={v} owner={owner} />, v.parent, v.id))}
     </>
   );
 }
