@@ -7,10 +7,10 @@
 Скрипты подготовки и запуска те же, что в [e2e-stand.md](e2e-stand.md), с тремя отличиями:
 
 1. `prepare.sh` копирует, собирает (`npm ci`, `bb plugin build`) оба каталога: `plugins/chertog` в `$STAND/plugin`, `plugins/sidebar` в `$STAND/sidebar`.
-2. `run.sh` ставит оба: `bb plugin install $STAND/plugin --yes` и `bb plugin install $STAND/sidebar --yes`, затем выполняет [acceptance-open/seed.mjs](acceptance-open/seed.mjs) `$STAND/data/bb.db` (пять тредов без запуска агентов: основной, два его субтреда, другой и «свежий» непрочитанный) и запускает пробу вместо `probe.mjs`.
+2. `run.sh` ставит оба: `bb plugin install $STAND/plugin --yes` и `bb plugin install $STAND/sidebar --yes`, затем выполняет [acceptance-open/seed.mjs](acceptance-open/seed.mjs) `$STAND/data/bb.db` (пять тредов без запуска агентов: основной, два его субтреда, другой и «свежий» (в списке «Сейчас» виден, пока не открыт)) и запускает пробу вместо `probe.mjs`.
 3. Проба: [tests/adapters/app/open-from-sidebar.browser.mjs](../tests/adapters/app/open-from-sidebar.browser.mjs) `<url> <playwright-tools-dir> <chromium> <каталог стенда>`. Каждый прогон начинается с нового стенда: раскладка сохраняется на сервере, повторный прогон на старых данных даёт другой исходный вид.
 
-Журнал последнего прогона: [acceptance-open/stand-run.log](acceptance-open/stand-run.log). Скриншоты шагов проба кладёт в каталог стенда (`open-*.png`).
+Журнал последнего прогона: [acceptance-open/stand-run.txt](acceptance-open/stand-run.txt). Скриншоты шагов проба кладёт в каталог стенда (`open-*.png`).
 
 ## Результат
 
@@ -33,7 +33,7 @@
 
 ## Найденный дефект и исправление
 
-На стенде шаг 7 сначала не прошёл: после закрытия панели Чертога запрос `chertog.open.v1` отвечал `opened`, добавлял тайл в невидимую раскладку, а Sidebar не переходил на тред. Сессия окна хранит документ и после ухода со страницы, а ответ `not-shown` выдавался только при пустом документе. Исправление: обёртка `whenShown` в `src/adapters/bb/app/open-requests.ts` отвечает `not-shown`, пока мост поверхности не показывает маршрут Чертога (`bridge.getPlace() === null`). Тест `tests/adapters/app/open-listener.dom.test.tsx` написан до подключения; сценарий стенда после исправления прошёл.
+На стенде шаг 7 сначала не прошёл: после закрытия панели Чертога запрос `chertog.open.v1` отвечал `opened`, добавлял тайл в невидимую раскладку, а Sidebar не переходил на тред. Сессия окна хранит документ и после ухода со страницы, а ответ `not-shown` выдавался только при пустом документе. Исправление: обёртка `whenShown` в `src/adapters/bb/app/open-requests.ts` отвечает `not-shown`, пока мост поверхности не показывает маршрут Чертога (`bridge.getPlace() === null`). Тесты: `open-listener.dom.test.tsx` (обёртка) и `open-request-wiring.dom.test.tsx` (оверлей из `register.tsx` отвечает `not-shown` после ухода со страницы; без подключения в `register.tsx` падает); сценарий стенда после исправления прошёл.
 
 ## Что не проверено и ограничения
 

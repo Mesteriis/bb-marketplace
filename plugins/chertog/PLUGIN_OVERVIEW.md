@@ -41,7 +41,7 @@ them. The interface is in Russian.
 - Telegram, Zoom, Remote Hub and Terminals keep their full screens and sessions in their own plugins. Saved entry cards still open the provider page. Embedded views require an owner that supports chertog.embed.v1.
 - One workspace per BB server and one Chertog page per window. Thread handoff covers an existing BB thread. External calls and media stay with their provider.
 - A reload reopens the layouts and loads their panels again.
-- Click-to-tile and blocks: isolated stand, headless browser, seeded threads (docs/acceptance-open.md). Checked in a test BB in a browser. Not checked in BB Desktop or with running agents.
+- Click-to-tile and blocks: isolated stand, headless browser, seeded threads (docs/acceptance-open.md). Other features were checked in a test BB in a browser. Not checked in BB Desktop or with running agents.
 
 ## Data
 

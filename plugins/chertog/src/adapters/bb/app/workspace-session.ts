@@ -451,7 +451,7 @@ export class WorkspaceSession {
    * Shows a BB thread as a tile of the open layout. A thread the layout
    * already places is focused; a subthread whose parent is placed joins the
    * parent's block; any other thread gets a tile right of the focused one.
-   * `"not-shown"` only when the page is not shown; a change the core or the
+   * `"not-shown"` only when no document is loaded (the route being on screen is checked by the caller, see `whenShown`); a change the core or the
    * tile limit refuses is `"refused"` and is reported like any other refusal.
    */
   openThread(threadId: string): "opened" | "focused" | "refused" | "not-shown" | "unsupported" {

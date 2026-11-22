@@ -1,0 +1,27 @@
+seeded 5
+PASS start: one waiting picker tile on the Chertog page :: [{"id":"group-1","rect":[320,85,1440,900],"tabs":[],"title":"Новый тайл"}]
+PASS click on thread row opens a tile, URL stays on the Chertog page :: {"path":"/plugins/chertog/home","groups":[{"id":"group-1","rect":[320,85,1440,900],"tabs":["Основной тред"],"title":"Основной тред"}]}
+PASS second click focuses the same tile (no duplicate, no new tile) :: {"groups":1,"tiles":1}
+PASS first subthread opens in a block to the right of its parent :: {"parent":[320,85,878,900],"s1":[882,85,1440,900]}
+PASS second subthread opens below the first, still in the block :: {"s1":[882,85,1440,491],"s2":[882,495,1440,900]}
+PASS Cmd-click is not taken by Chertog: BB navigates to the thread itself :: {"newBrowserTab":false,"path":"/threads/thr_other","tilesBeforeClick":3}
+PASS while the Chertog pane is still open beside the thread, a request is accepted (focused) :: {"accepted":true,"outcome":"focused"}
+PASS (b) request while the Chertog page is not shown: accepted=false, outcome=not-shown :: {"path":"/threads/thr_other","notShown":{"accepted":false,"outcome":"not-shown"}}
+PASS (b) same for a panel request :: {"accepted":false,"outcome":"not-shown"}
+PASS (b) click on a row outside the Chertog page navigates natively to the thread :: {"from":"/threads/thr_other","to":"/threads/thr_fresh"}
+PASS layout with the block survives the trip away :: [["Основной тред"],["Субтред один"],["Субтред два"]]
+PASS (a) panel request from another sender is accepted: opened :: {"accepted":true,"outcome":"opened"}
+PASS (a) repeating the panel request gives focused :: {"accepted":true,"outcome":"focused"}
+PASS (a) unknown provider gives unsupported, accepted=false :: {"accepted":false,"outcome":"unsupported"}
+PASS (a) malformed request gives invalid, accepted=false :: {"accepted":false,"outcome":"invalid"}
+PASS (a) the terminal panel got a tile of its own :: [["Основной тред"],["BB терминал"],["Субтред один"],["Субтред два"]]
+PASS (c) «Открыть рядом…» adds a waiting picker tile in the parent's block (right column, under the subthreads) :: {"before":4,"after":5,"picker":[884,698,1440,900],"s2":[884,493,1440,694]}
+PASS (c) choosing in that picker puts the thread in the parent's block (the picker tile is reused, no extra tile) :: [["Основной тред"],["BB терминал"],["Субтред один"],["Субтред два"],["Другой тред"]]
+PASS (d) Ctrl+Alt+ArrowRight on the parent moves the parent, and the block keeps its relative arrangement :: {"posBefore":[320,85,598,900],"posAfter":[880,85,1158,900],"relBefore":[["Субтред один",564,0],["Субтред два",564,408],["Другой тред",564,613]],"relAfter":[["Субтред один",282,0],["Субтред два",282,408],["Другой тред",282,613]],"sameShape":true}
+PASS (d) children stay on the same sides of the parent after the move :: {"relBefore":[["Субтред один",564,0],["Субтред два",564,408],["Другой тред",564,613]],"relAfter":[["Субтред один",282,0],["Субтред два",282,408],["Другой тред",282,613]]}
+PASS (c) closing the parent asks one «Закрыть вместе с подчинёнными (N)?» :: {"title":"Закрыть вместе с подчинёнными (3)?"}
+PASS closing the main thread closed the whole block :: {"followUpDialogs":0,"left":[["BB терминал"]]}
+PASS no page errors during the whole run :: []
+PROBE PASS
+probe exit 0
+server stopped: http://127.0.0.1:55408/health refuses connections
