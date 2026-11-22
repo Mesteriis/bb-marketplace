@@ -21,7 +21,7 @@ export const SIZE = { width: 1204, height: 800 };
 export const PANELS: Record<string, PanelLabel> = {
   a: { title: "Исполнитель", context: "thr_a · bb-main" },
   b: { title: "Ревьюер", context: "thr_b · bb-main", status: { tone: "busy", label: "Работает" } },
-  c: { title: "Предпросмотр", context: "MacBook" },
+  c: { handoffUnavailable: "Передача недоступна.", title: "Предпросмотр", context: "MacBook" },
 };
 
 /** a | (b / c): group-1 on the left, group-2 over group-4 on the right, group-4 focused. */

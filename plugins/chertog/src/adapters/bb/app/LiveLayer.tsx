@@ -35,7 +35,8 @@ export function LiveLayer({ workspace, diagnostics }: LiveLayerProps) {
   const renderContent = useCallback((instanceId: string): ReactNode => <PanelContent session={session} instanceId={instanceId} />, [session]);
   const instances: LiveHostInstance[] = session.registry.list().flatMap((instance) => {
     const panelId = session.panelOfInstance(instance.instanceId);
-    return panelId === null ? [] : [{ instanceId: instance.instanceId, panelId, renderContent }];
+    const acceptsFileDrop = instance.state === "live" && (instance.ref.provider === "bb-thread" || instance.ref.provider === "telegram-chat");
+    return panelId === null ? [] : [{ instanceId: instance.instanceId, panelId, renderContent, acceptsFileDrop }];
   });
   for (const [instanceId, reservation] of session.reservations) {
     instances.push({ instanceId, panelId: reservation.panelId, renderContent });

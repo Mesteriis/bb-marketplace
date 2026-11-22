@@ -19,8 +19,8 @@ function setup() {
   workspace.session.registry.open(threadRef("thr_one"));
   const rpc = async (method: "window_sync" | "window_change", input: Record<string, unknown>) => {
     if (method === "window_sync") {
-      const { credential, close } = windowSchemas.window_sync.input.parse(input);
-      return store(credential, close).snapshot;
+      const { credential, close, suspended } = windowSchemas.window_sync.input.parse(input);
+      return store(credential, close, undefined, !suspended).snapshot;
     }
     const { credential, ...mutation } = windowSchemas.window_change.input.parse(input);
     return store(credential, false, mutation).snapshot;

@@ -13,7 +13,7 @@ export function registerWindowsRpc(bb: BbPluginApi): void {
     return snapshot;
   }
   bb.rpc.register(windowsContract, {
-    window_sync: ({ credential, close }) => execute(credential, close),
+    window_sync: ({ credential, close, suspended }) => execute(credential, close, undefined, !suspended),
     window_change: ({ credential, threadId, generation, command }) =>
       execute(credential, false, { threadId, generation, command }),
   });

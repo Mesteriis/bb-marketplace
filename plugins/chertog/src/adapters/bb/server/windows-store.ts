@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import {
+  depart,
   placementSchema,
   PRESENCE_MS,
   reconcile,
@@ -27,7 +28,7 @@ export function createWindowsStore(db: WindowDatabase, now = Date.now) {
   const seen = db.prepare("INSERT OR REPLACE INTO chertog_window(id,seen) VALUES (?,?)");
   const presence = db.prepare("SELECT id FROM chertog_window WHERE seen >= 0 AND seen > ?");
   const lookup = db.prepare("SELECT seen FROM chertog_window WHERE id=?");
-  const transact = (credential: string, close: boolean, mutation?: { threadId: string; generation: number; command: Action }) => {
+  const transact = (credential: string, close: boolean, mutation?: { threadId: string; generation: number; command: Action }, graceful = true) => {
     const instanceId = createHash("sha256").update(credential).digest("hex");
     const time = now();
     const online = () => (presence.all(time - PRESENCE_MS) as { id: string }[]).map((row) => row.id);
@@ -42,7 +43,7 @@ export function createWindowsStore(db: WindowDatabase, now = Date.now) {
     let changed = joined || close;
     for (const row of load.all() as { thread: string; state: string }[]) {
       const previous = placementSchema.parse(JSON.parse(row.state));
-      const p = reconcile(previous, present, time);
+      const p = close && graceful ? depart(previous, instanceId, present, time) : reconcile(previous, present, time);
       if (p !== previous) {
         save.run(row.thread, JSON.stringify(p));
         changed = true;

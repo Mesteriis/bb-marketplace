@@ -11,7 +11,7 @@ export const snapshotSchema = z.strictObject({
 });
 export type WindowSnapshot = z.infer<typeof snapshotSchema>;
 export const windowSchemas = {
-  window_sync: { input: z.strictObject({ credential, close: z.boolean().default(false) }), output: snapshotSchema },
+  window_sync: { input: z.strictObject({ credential, close: z.boolean().default(false), suspended: z.boolean().optional() }), output: snapshotSchema },
   window_change: {
     input: z.strictObject({
       credential,

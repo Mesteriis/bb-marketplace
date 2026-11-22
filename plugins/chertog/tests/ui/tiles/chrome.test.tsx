@@ -380,3 +380,14 @@ describe("compact view", () => {
     expect(calls.changes).toEqual([]);
   });
 });
+
+it("explains why a preview cannot be transferred and how to move the whole window", () => {
+  const { container } = setup();
+  const tile = within(container.querySelector('[data-group-id="group-4"]') as HTMLElement);
+  fireEvent.click(tile.getByRole("button", { name: "Действия тайла" }));
+  const item = tile.getByRole("menuitem", { name: /Передать в другое окно/ });
+  expect(item.getAttribute("aria-disabled")).toBe("true");
+  expect(item.textContent).toMatch(/New Window/);
+  fireEvent.click(item);
+  expect(tile.getByRole("menu")).toBeTruthy();
+});

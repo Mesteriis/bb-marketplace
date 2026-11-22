@@ -326,3 +326,11 @@ describe("dragging a tab", () => {
     expect(calls.state.focusedGroupId).toBe("group-1");
   });
 });
+
+it("consumes an OS file dropped on chrome without moving a tile or opening the file", () => {
+  const { calls, container, initial } = setup();
+  const dataTransfer = { types: ["Files"], files: [new File(["local"], "local.txt")] };
+  expect(fireEvent.drop(header(container, "group-2"), { dataTransfer })).toBe(false);
+  expect(calls.state).toBe(initial);
+  expect(calls.changes).toEqual([]);
+});

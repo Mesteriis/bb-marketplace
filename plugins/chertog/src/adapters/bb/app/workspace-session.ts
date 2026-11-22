@@ -179,7 +179,10 @@ export class WorkspaceSession {
     const ref = document === null ? null : refOfPanel(document, panelId);
     const source = ref === null ? undefined : this.sourceOf(ref.provider);
     const known = ref === null || source === undefined ? null : source.label(ref);
-    const label: PanelLabel = known ?? { title: source?.neutralLabel ?? appStrings.panelNeutral };
+    const label: PanelLabel = {
+      ...(known ?? { title: source?.neutralLabel ?? appStrings.panelNeutral }),
+      ...handoffLabel(ref?.provider),
+    };
     if (this.refused.has(panelId)) return { ...label, status: { tone: "error", label: appStrings.openFailed } };
     const state = this.instanceOfPanel(panelId)?.state;
     if (state === undefined || state === "live" || state === "entry" || state === "loading") return label;
@@ -189,7 +192,7 @@ export class WorkspaceSession {
   labels(): Record<string, PanelLabel> {
     const document = this.document();
     const labels = document === null ? {} : Object.fromEntries(Object.keys(document.panels).map((panelId) => [panelId, this.labelOf(panelId)]));
-    for (const r of this.reservations.values()) labels[r.panelId] = { title: r.source.neutralLabel };
+    for (const r of this.reservations.values()) labels[r.panelId] = { title: r.source.neutralLabel, ...handoffLabel(r.source.provider.type) };
     return labels;
   }
 
@@ -603,4 +606,11 @@ export class WorkspaceSession {
       this.syncing = false;
     }
   }
+}
+
+function handoffLabel(provider: string | undefined): Pick<PanelLabel, "handoffUnavailable"> {
+  if (provider === "bb-thread") return {};
+  return { handoffUnavailable: provider === "zoom-call"
+    ? "Звонок нельзя перенести без потери связи."
+    : "Провайдер не поддерживает безопасную передачу этой панели." };
 }

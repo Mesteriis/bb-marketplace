@@ -11,7 +11,7 @@ import {
 } from "react";
 import { PRESENCE_MS, type Action } from "../../../core/windows/ownership.ts";
 import { snapshotSchema, type WindowSnapshot } from "../../../core/windows/wire.ts";
-import { HandoffControls, IncomingTransfer } from "../../../ui/windows/handoff.tsx";
+import { HandoffControls, IncomingTransfer, ReturnedPanel } from "../../../ui/windows/handoff.tsx";
 import { findThreadComposer } from "./addressee.ts";
 import { threadAddressee } from "./thread-source.ts";
 import { Listeners } from "./content-sources.ts";
@@ -81,10 +81,10 @@ export class WindowClient {
     clearTimeout(this.expiry);
     this.set({ snapshot: null, error: null });
   };
-  leave = () => {
+  leave = (suspended = false) => {
     const rpc = this.rpc;
     this.stop();
-    void rpc?.("window_sync", { credential: this.credential, close: true }).catch(() => {});
+    void rpc?.("window_sync", { credential: this.credential, close: true, ...(suspended ? { suspended: true } : {}) }).catch(() => {});
   };
   sync = () => {
     if (!this.rpc) return Promise.resolve();
@@ -159,7 +159,7 @@ export function WindowOverlay({ workspace, call, children }: { workspace: Window
     let cached = false;
     const hide = (event: PageTransitionEvent) => {
       cached = event.persisted;
-      client.leave();
+      client.leave(event.persisted);
     };
     const show = (event: PageTransitionEvent) => {
       if (!cached || !event.persisted) return;
@@ -200,7 +200,7 @@ export function WindowOverlay({ workspace, call, children }: { workspace: Window
         .map((view) => view.ref.params.threadId),
     );
     for (const { threadId, placement } of snapshot.placements) {
-      if (placement.owner === snapshot.instanceId && !placement.transfer && !held.has(threadId)) {
+      if (placement.owner === snapshot.instanceId && !placement.transfer && !placement.returned && !held.has(threadId)) {
         void client.change(threadId, placement.generation, { action: "release" });
       }
     }
@@ -210,11 +210,31 @@ export function WindowOverlay({ workspace, call, children }: { workspace: Window
     snapshot?.placements.filter(
       ({ placement: p }) => p.transfer?.target === snapshot.instanceId && p.transfer.phase === "prepared",
     ) ?? [];
+  const returned = snapshot?.placements.filter(({ placement }) => !placement.transfer && placement.returned && placement.owner === snapshot.instanceId) ?? [];
   const [problem, setProblem] = useState("");
+  function openThread(threadId: string) {
+    const error = workspace.session.openContent(
+      { providerId: "bb-thread", itemId: threadId, placement: "tab" }, { kind: "new-tile" },
+    );
+    setProblem(error === null ? "" : "Не удалось открыть панель: " + error);
+    return error === null;
+  }
   return createElement(
     ActiveWindow.Provider,
     { value: workspace },
     children,
+    createElement("div", { className: "fixed bottom-4 right-4 z-50 grid max-h-[70vh] gap-2 overflow-auto" },
+      ...returned.map(({ threadId, placement }) => {
+        const thread = workspace.threads.find(threadId);
+        const held = workspace.session.registry.list().some(view =>
+          view.ref.provider === "bb-thread" && view.ref.params.threadId === threadId);
+        return createElement(ReturnedPanel, {
+          key: threadId, title: thread?.title ?? "Тред", held, canOpen: !!place && !!thread, problem,
+          onOpen: () => { openThread(threadId); },
+          onDismiss: () => void client.change(threadId, placement.generation, { action: held ? "acknowledge" : "release" }),
+        });
+      }),
+    ),
     ...incoming.map(({ threadId, placement }) => {
       const thread = workspace.threads.find(threadId);
       return createElement(IncomingTransfer, {
@@ -226,14 +246,7 @@ export function WindowOverlay({ workspace, call, children }: { workspace: Window
           void client.change(threadId, placement.generation, { action: "cancel" });
         },
         onAccept: () => {
-          const result = workspace.session.openContent(
-            { providerId: "bb-thread", itemId: threadId, placement: "tab" },
-            { kind: "new-tile" },
-          );
-          if (result !== null) {
-            setProblem("Не удалось открыть панель: " + result);
-            return;
-          }
+          if (!openThread(threadId)) return;
           // The live thread panel checks the provider and acknowledges its committed, inert render.
           workspace.handoff.accept(threadId, placement.generation);
         },
@@ -273,7 +286,7 @@ function CoordinatedThread({
   const preparing = t?.target === me && (accepted || t?.phase === "ready");
   const [show, setShow] = useState(false);
   useEffect(() => {
-    if (snapshot && (!p || p.owner === null)) void command({ action: "claim" });
+    if (snapshot && (!p || (p.owner === null && !p.returned))) void command({ action: "claim" });
   }, [!!snapshot, p?.owner]);
   useLayoutEffect(() => {
     if (!snapshot || !client.valid()) return;
@@ -307,7 +320,7 @@ function CoordinatedThread({
       },
       onCancel: t?.source === me && t?.phase === "prepared" ? () => void command({ action: "cancel" }) : undefined,
       onRecover:
-        p?.owner && snapshot && !snapshot.windows.includes(p.owner) ? () => void command({ action: "claim" }) : undefined,
+        snapshot && ((p?.owner && !snapshot.windows.includes(p.owner)) || (p?.returned && !p.owner)) ? () => void command({ action: "claim" }) : undefined,
     }),
     (owner || retired || preparing) &&
       createElement(
@@ -320,6 +333,8 @@ function CoordinatedThread({
           onBeforeInputCapture: guard,
           onClickCapture: guard,
           onPasteCapture: guard,
+          onDropCapture: guard,
+          onDragOverCapture: guard,
         },
         children,
       ),
