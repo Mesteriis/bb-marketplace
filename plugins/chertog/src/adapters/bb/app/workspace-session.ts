@@ -26,12 +26,14 @@ import {
   deleteLayout,
   duplicateLayout,
   panelIdOfRef,
+  placeInBlock,
   placedPanelIds,
   registerPanel,
   removePanelFromLayout,
   renameLayout,
   switchLayout,
   type IdRename,
+  type ParentOf,
   type WorkspaceChange,
   type WorkspaceChangeRefusal,
   type WorkspaceDocument,
@@ -40,6 +42,7 @@ import type { ContentChoice, ContentSection, HiddenPanelEntry } from "../../../u
 import type { PanelLabel, TileSurfaceChange } from "../../../ui/tiles/index.ts";
 import { Listeners, type ContentSource, type PanelStateText } from "./content-sources.ts";
 import { appStrings } from "./strings.ts";
+import { THREAD_PROVIDER, threadRef, type ThreadDirectory } from "./thread-source.ts";
 import { refOfPanel, WorkspaceController, type WorkspaceRpcPort } from "./workspace-controller.ts";
 
 /** How many tiles a layout may have; BB's own split has the same limit. */
@@ -53,6 +56,8 @@ export interface WorkspaceSessionOptions {
   readonly sources: readonly ContentSource[];
   /** A new id with the given prefix, unique in this workspace: `panel-…`, `layout-…`, `view-…`. */
   newId(prefix: "panel" | "layout" | "view"): string;
+  /** The threads BB lists; where a subthread learns its parent. Without it no thread has a parent. */
+  readonly threads?: ThreadDirectory;
   readonly clock?: Clock;
   readonly diagnostics: Diagnostics;
 }
@@ -91,6 +96,7 @@ export class WorkspaceSession {
   readonly controller: WorkspaceController;
   readonly sources: readonly ContentSource[];
   private readonly newId: WorkspaceSessionOptions["newId"];
+  private readonly threads: ThreadDirectory | undefined;
   /** The live instance of a panel of the document, by panel id. */
   private readonly instances = new Map<string, string>();
   /** Panels whose reference the provider refused to open. */
@@ -109,6 +115,7 @@ export class WorkspaceSession {
 
   constructor(options: WorkspaceSessionOptions) {
     this.newId = options.newId;
+    this.threads = options.threads;
     this.sources = options.sources;
     this.registry = new PanelRegistry({
       clock: options.clock ?? { now: () => Date.now() },
@@ -370,6 +377,53 @@ export class WorkspaceSession {
       if (choice.placement === "tab") return addPanelToGroup(known.document, workspace.focusedGroupId, panelId);
       return changeActiveLayout(known.document, (current) => splitGroup(current, current.focusedGroupId, "right", panelId));
     });
+  }
+
+  /**
+   * The parent panel of a thread panel: the panel of the parent thread the
+   * directory names, when the open layout places it. `undefined` otherwise.
+   */
+  parentOf: ParentOf = (panelId) => {
+    const document = this.document();
+    const ref = document?.panels[panelId]?.ref;
+    if (document === null || ref === undefined || ref.provider !== THREAD_PROVIDER) return undefined;
+    return this.placedParentOf(document, String(ref.params.threadId));
+  };
+
+  /**
+   * Shows a BB thread as a tile of the open layout. A thread the layout
+   * already places is focused; a subthread whose parent is placed joins the
+   * parent's block; any other thread gets a tile right of the focused one.
+   * `"not-shown"` also covers a change the core refused.
+   */
+  openThread(threadId: string): "opened" | "focused" | "not-shown" {
+    if (this.surfaceState() === null) return "not-shown";
+    const ref = threadRef(threadId);
+    let outcome: "opened" | "focused" = "opened";
+    const refusal = this.controller.change((document) => {
+      const workspace = activeLayout(document).workspace;
+      const existing = panelIdOfRef(document, ref);
+      if (existing !== undefined && findGroupOfPanel(workspace.root, existing) !== undefined) {
+        outcome = "focused";
+        return changeActiveLayout(document, (current) => activateTab(current, existing));
+      }
+      const panelId = existing ?? this.newId("panel");
+      const parentPanelId = this.placedParentOf(document, threadId);
+      if (parentPanelId !== undefined) return placeInBlock(document, parentPanelId, panelId, { ref }, this.parentOf);
+      const known = existing === undefined ? registerPanel(document, panelId, { ref }) : applied(document);
+      if (!known.ok) return known;
+      return changeActiveLayout(known.document, (current) => splitGroup(current, current.focusedGroupId, "right", panelId));
+    });
+    return refusal === null ? outcome : "not-shown";
+  }
+
+  /** The panel of the parent thread the directory names for a thread, when the open layout places it. */
+  private placedParentOf(document: WorkspaceDocument, threadId: string): string | undefined {
+    const parentThreadId = this.threads?.find(threadId)?.parentThreadId;
+    if (parentThreadId === undefined) return undefined;
+    const parentPanelId = panelIdOfRef(document, threadRef(parentThreadId));
+    if (parentPanelId === undefined) return undefined;
+    return findGroupOfPanel(activeLayout(document).workspace.root, parentPanelId) === undefined ? undefined : parentPanelId;
   }
 
   private withoutReservations(shown: WorkspaceState, keepId?: string): WorkspaceState {

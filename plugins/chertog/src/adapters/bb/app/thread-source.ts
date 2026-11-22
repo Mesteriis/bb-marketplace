@@ -36,6 +36,8 @@ export interface ThreadEntry {
   /** `null` for a thread of the personal project. */
   readonly hostId?: string;
   readonly projectName: string | null;
+  /** The thread this one was spawned from; absent for a root thread. */
+  readonly parentThreadId?: string;
   /** What the agent is doing; absent while the thread is idle. */
   readonly status?: NonNullable<PanelLabel["status"]>;
 }

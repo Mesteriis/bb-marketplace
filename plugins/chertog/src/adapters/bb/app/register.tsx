@@ -97,6 +97,7 @@ function ChertogOverlay() {
             title: thread.displayTitle,
             hostId: thread.host?.id,
             projectName: projectNames.get(thread.projectId) ?? null,
+            ...(thread.parentThreadId === null ? {} : { parentThreadId: thread.parentThreadId }),
             ...(entryStatus === undefined ? {} : { status: entryStatus }),
           };
         }),

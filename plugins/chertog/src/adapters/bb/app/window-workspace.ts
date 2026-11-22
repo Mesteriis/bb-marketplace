@@ -109,6 +109,7 @@ export function createWindowWorkspace(options: WindowWorkspaceOptions): WindowWo
       ...(typeof options.extraSources === "function" ? options.extraSources(threads) : options.extraSources ?? []),
     ],
     newId: (prefix) => prefix + "-" + options.randomId(),
+    threads,
     diagnostics: options.diagnostics,
   });
   return {
