@@ -5,3 +5,4 @@ export * from "./panels/index.ts";
 export * from "./workspace/index.ts";
 export * from "./home/index.ts";
 export * from "./wire/index.ts";
+export * from "./parts/index.ts";
