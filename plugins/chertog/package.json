@@ -1,7 +1,7 @@
 {
   "name": "bb-plugin-chertog",
   "version": "0.1.0",
-  "description": "Thread tiles opened from the thread list, linked subthread blocks, embedded views, previews, layouts, handoff, chertog.open.v1 for plugins.",
+  "description": "Thread tiles, subthread blocks, embedded views, previews, layouts, handoff, chertog.open.v1; switches for workspace, navigation, thread list",
   "private": true,
   "type": "module",
   "license": "MIT",
@@ -28,7 +28,7 @@
   },
   "bb": {
     "name": "Chertog [Experimental]",
-    "description": "Thread tiles opened from the thread list, linked subthread blocks, embedded views, previews, layouts, handoff, chertog.open.v1 for plugins.",
+    "description": "Thread tiles, subthread blocks, embedded views, previews, layouts, handoff, chertog.open.v1; switches for workspace, navigation, thread list",
     "branding": {
       "icon": "./assets/icon.svg"
     },

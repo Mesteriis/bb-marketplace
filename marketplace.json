@@ -1600,7 +1600,7 @@
     {
       "id": "chertog",
       "displayName": "Chertog [Experimental]",
-      "description": "Thread tiles opened from the thread list, linked subthread blocks, embedded views, previews, layouts, handoff, chertog.open.v1 for plugins.",
+      "description": "Thread tiles, subthread blocks, embedded views, previews, layouts, handoff, chertog.open.v1; switches for workspace, navigation, thread list",
       "icon": {
         "url": "./plugins/chertog/assets/icon.svg"
       },

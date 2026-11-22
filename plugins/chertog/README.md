@@ -55,13 +55,36 @@ shows.
 
 ### Settings
 
-A window reads two boolean settings through `useSettings()`. The server does
-not declare them yet, so both read as off.
+The server declares five boolean switches with `bb.settings.define`. A window
+reads them through `useSettings()`; the server reads the last two (below).
+Until BB delivers the values nothing of the workspace is mounted, and a key
+that is missing reads as on, so an installation that never saw a switch keeps
+its behavior.
 
-| Key | Meaning | Until declared |
+| Key | Meaning | Default |
 | --- | --- | --- |
-| `homeRedirect` | "Открывать Чертог вместо штатного Домой", on by default | no redirect; the Home section draws nothing |
-| `acceptanceFixture` | "Тестовая панель для приёмки", off by default | the content picker does not offer the test panel |
+| `homeRedirect` | "Открывать Чертог вместо штатного Домой". Never redirects while `tileSpace` is off | on |
+| `acceptanceFixture` | "Тестовая панель для приёмки": the content picker offers the test panel | off |
+| `tileSpace` | "Тайловое пространство": turns the in-window workspace on and off | on |
+| `navigationPart` | "Навигация": enables or disables the `makosh-navigation` plugin | on |
+| `threadListPart` | "Список тредов": enables or disables the `makosh-sidebar` plugin | on |
+
+With `tileSpace` off, the window mounts no live layer, window overlay,
+`chertog.open.v1` listener or thread subscription. A request for a tile stays
+unanswered (`accepted: false`), so Makosh Sidebar opens the thread as usual.
+BB's title bar on the Chertog route shows only the name, the page shows one line
+saying the workspace is off, the Home redirect does not fire, and the tile
+commands do nothing. Saved layouts are not touched and return when it is on
+again; the switch takes effect when BB delivers the new value, without a reload.
+
+`navigationPart` and `threadListPart` stand in until Navigation and the thread
+list are absorbed into Chertog (`docs/absorption-design.md`). The server checks
+them at start and on every settings write (`handle.onChange`): switch off and
+plugin on, it calls `bb.sdk.plugins.disable`; switch on and plugin off, `enable`;
+a plugin that is not installed is left alone with one log line. A refusal is
+logged once per new state and retried at the next write. The rule is
+`decidePartAction` in `src/core/parts`; the calls are in
+`src/adapters/bb/server/parts-sync.ts`.
 
 ### Addressee of a command
 
