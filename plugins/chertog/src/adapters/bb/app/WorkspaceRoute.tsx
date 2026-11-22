@@ -1,7 +1,8 @@
-// The Chertog route: the workspace toolbar over the tile surface, on the
-// whole area BB gives the nav panel. It draws tile chrome only. Live panel
-// content belongs to the window's live layer; the route tells it where the
-// surface is and where each content area lies.
+// The Chertog route: the tile surface on the whole area BB gives the nav
+// panel, under BB's own title bar (which carries the workspace controls, see
+// `WorkspaceHeader.tsx`). It draws tile chrome only. Live panel content
+// belongs to the window's live layer; the route tells it where the surface is
+// and where each content area lies.
 import {
   useEffect,
   useId,
@@ -12,51 +13,29 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { findGroup, listGroups, type Rect } from "../../../core/layout/index.ts";
-import { workspacePresets } from "../../../core/workspace/presets.ts";
-import { CloseBlockDialog, ClosePanelDialog, ContentPicker, WorkspaceToolbar, type ContentChoice } from "../../../ui/chrome/index.ts";
+import { CloseBlockDialog, ClosePanelDialog, ContentPicker, type ContentChoice } from "../../../ui/chrome/index.ts";
 import { classes, Modal } from "../../../ui/chrome/primitives.tsx";
 import { TileSurface, type ContentRects, type SurfaceSize } from "../../../ui/tiles/index.ts";
+import { chromeActions } from "./chrome-actions.ts";
 import { appStrings } from "./strings.ts";
 import type { WindowWorkspace } from "./window-workspace.ts";
-import type { WorkspaceSnapshot } from "./workspace-controller.ts";
-import { TILE_LIMIT, type ContentDestination } from "./workspace-session.ts";
+import { TILE_LIMIT } from "./workspace-session.ts";
 
 /** A press on a header becomes a drag after this many pixels, as in the tile surface. */
 const DRAG_THRESHOLD = 4;
 
 export interface WorkspaceRouteProps {
   readonly workspace: WindowWorkspace;
-  /** Opens BB's new thread screen. */
-  onNewThread(): void;
   /** The size of the tile surface when the caller knows it; tests pass it, the app measures. */
   readonly surfaceSize?: SurfaceSize;
-}
-
-function saveDetail({ save, origin }: WorkspaceSnapshot): string | undefined {
-  if (save.status === "failed") {
-    return save.kind === "rejected" ? appStrings.saveRejected(save.reason) : appStrings.saveFailed(save.reason);
-  }
-  if (save.status === "conflict") return appStrings.conflictGaveUp;
-  if (origin === "newer-version") return appStrings.newerVersion;
-  if (origin === "corrupt") return appStrings.corrupt;
-  return undefined;
-}
-
-interface ClosingPanel {
-  readonly panelId: string;
-  readonly title: string;
-  /** Whether the open layout places the panel: only then can it be hidden instead. */
-  readonly placed: boolean;
-  /** Linked tiles that close with it. */
-  readonly linkedCount: number;
 }
 
 function sameSet(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
   return a.size === b.size && [...a].every((item) => b.has(item));
 }
 
-export function WorkspaceRoute({ workspace, onNewThread, surfaceSize }: WorkspaceRouteProps) {
-  const { session, bridge } = workspace;
+export function WorkspaceRoute({ workspace, surfaceSize }: WorkspaceRouteProps) {
+  const { session, bridge, dialogs } = workspace;
   useSyncExternalStore(session.subscribe, session.getVersion);
   const snapshot = session.controller.getSnapshot();
   const document = snapshot.document;
@@ -71,8 +50,13 @@ export function WorkspaceRoute({ workspace, onNewThread, surfaceSize }: Workspac
     const claimed = bridge.claim(owner);
     setOwns(claimed);
     if (claimed) bridge.update(owner, { rects: contentRects.current });
-    return () => bridge.release(owner);
-  }, [bridge, owner]);
+    return () => {
+      bridge.release(owner);
+      // A question the route was showing does not wait for the next visit.
+      dialogs.setClosing(null);
+      dialogs.setPlacing(null);
+    };
+  }, [bridge, owner, dialogs]);
   useEffect(() => {
     if (owns === true) void session.controller.enter();
   }, [owns, session]);
@@ -147,9 +131,10 @@ export function WorkspaceRoute({ workspace, onNewThread, surfaceSize }: Workspac
     bridge.update(owner, { gesture: "none" });
   };
 
-  const [closing, setClosing] = useState<ClosingPanel | null>(null);
+  // The title bar asks questions too (close a hidden panel, choose a tile for a panel): they are drawn here.
+  useSyncExternalStore(dialogs.subscribe, dialogs.getVersion);
+  const { closing, placing } = dialogs;
   const [tabFor, setTabFor] = useState<string | null>(null);
-  const [placing, setPlacing] = useState<ContentChoice | null>(null);
   const tabHeadingId = useId();
   const placeHeadingId = useId();
 
@@ -182,67 +167,12 @@ export function WorkspaceRoute({ workspace, onNewThread, surfaceSize }: Workspac
   const groups = listGroups(workspaceState.root);
   const labels = session.labels();
   const sections = session.contentSections();
-  const placedPanels = new Set(groups.flatMap((group) => group.tabs));
-
-  const open = (choice: ContentChoice, destination: ContentDestination): void => {
-    if (choice.placement === "pick-place") setPlacing(choice);
-    else session.openContent(choice, destination);
-  };
-  // Which question to ask is read from the session when the answer comes, not from what this render drew.
-  const askToClose = (panelId: string): void =>
-    setClosing({ panelId, title: session.labelOf(panelId).title, placed: placedPanels.has(panelId), linkedCount: session.linkedCountOf(panelId) });
-  const requestClose = async (panelId: string): Promise<void> => {
-    if ((await session.closePanel(panelId)) === "needs-confirmation") askToClose(panelId);
-  };
-  const requestCloseInstance = (instanceId: string): void => {
-    const panelId = session.panelOfInstance(instanceId);
-    if (panelId !== null) void requestClose(panelId);
-  };
+  const { open, askToClose, requestClose } = chromeActions(session, dialogs);
   const itemTitle = (choice: ContentChoice): string =>
     sections.find((section) => section.providerId === choice.providerId)?.items.find((item) => item.id === choice.itemId)?.title ?? appStrings.panelNeutral;
 
-  const save = snapshot.save;
   return (
     <div data-chertog-route aria-label={appStrings.routeLabel} className="flex h-full min-h-0 w-full flex-1 flex-col overflow-hidden bg-background text-foreground">
-      <div className="flex w-full shrink-0 items-stretch">
-        <div className="min-w-0 flex-1">
-          <WorkspaceToolbar
-            layouts={{
-              layouts: document.layouts.map((layout) => ({ id: layout.id, name: layout.name })),
-              activeLayoutId: document.activeLayoutId,
-              presets: workspacePresets,
-              saveStatus: save.status,
-              saveDetail: saveDetail(snapshot),
-              onRetrySave: () => session.controller.retrySave(),
-              onSwitch: (layoutId) => session.switchLayout(layoutId),
-              onCreateFromCurrent: (name) => session.createLayoutFromCurrent(name),
-              onCreateFromPreset: (id, name) => session.createFromPreset(id, name),
-              onRename: (layoutId, name) => session.renameLayout(layoutId, name),
-              onDuplicate: (layoutId, name) => session.duplicateLayout(layoutId, name),
-              onDelete: (layoutId) => session.deleteLayout(layoutId),
-              onReload: () => void session.controller.reload(),
-            }}
-            content={{
-              sections,
-              tileCount: groups.length,
-              tileLimit: TILE_LIMIT,
-              onOpen: (choice) => open(choice, { kind: "new-tile" }),
-              onFocusExisting: (panelId) => session.focusPanel(panelId),
-            }}
-            hiddenPanels={{
-              panels: session.hiddenPanels(),
-              onShow: (instanceId) => session.showHidden(instanceId),
-              onClose: requestCloseInstance,
-            }}
-          />
-        </div>
-        <div className="flex h-9 shrink-0 items-center border-b border-border bg-background pr-2">
-          <button type="button" className={classes.ghostButton} onClick={onNewThread}>
-            {appStrings.newThread}
-          </button>
-        </div>
-      </div>
-
       <Notices workspace={workspace} />
 
       <div
@@ -303,7 +233,7 @@ export function WorkspaceRoute({ workspace, onNewThread, surfaceSize }: Workspac
       )}
 
       {placing !== null && (
-        <Modal labelledBy={placeHeadingId} onDismiss={() => setPlacing(null)}>
+        <Modal labelledBy={placeHeadingId} onDismiss={() => dialogs.setPlacing(null)}>
           <h2 id={placeHeadingId} className="text-sm font-medium">
             {appStrings.pickPlaceHeading(itemTitle(placing))}
           </h2>
@@ -315,7 +245,7 @@ export function WorkspaceRoute({ workspace, onNewThread, surfaceSize }: Workspac
                   type="button"
                   className={`${classes.button} w-full justify-start`}
                   onClick={() => {
-                    setPlacing(null);
+                    dialogs.setPlacing(null);
                     session.openContent({ ...placing, placement: "default" }, { kind: "group", groupId: group.id });
                   }}
                 >
@@ -325,7 +255,7 @@ export function WorkspaceRoute({ workspace, onNewThread, surfaceSize }: Workspac
             ))}
           </ul>
           <div className="flex justify-end">
-            <button type="button" data-autofocus className={classes.button} onClick={() => setPlacing(null)}>
+            <button type="button" data-autofocus className={classes.button} onClick={() => dialogs.setPlacing(null)}>
               {appStrings.pickPlaceCancel}
             </button>
           </div>
@@ -338,13 +268,13 @@ export function WorkspaceRoute({ workspace, onNewThread, surfaceSize }: Workspac
         linkedCount={closing?.linkedCount ?? 0}
         onConfirm={() => {
           const panelId = closing?.panelId;
-          setClosing(null);
+          dialogs.setClosing(null);
           if (panelId === undefined) return;
           // The block may have changed while the question was open: only a block that is still there is confirmed as a whole.
           if (session.linkedCountOf(panelId) > 0) void session.closePanel(panelId, { confirmBlock: true, confirmEndsSession: true });
           else void requestClose(panelId);
         }}
-        onCancel={() => setClosing(null)}
+        onCancel={() => dialogs.setClosing(null)}
       />
       <ClosePanelDialog
         open={closing !== null && closing.linkedCount === 0}
@@ -352,7 +282,7 @@ export function WorkspaceRoute({ workspace, onNewThread, surfaceSize }: Workspac
         onHide={() => {
           // A panel that is already out of the layout is hidden as it is.
           if (closing !== null && closing.placed) session.removeFromLayout(closing.panelId);
-          setClosing(null);
+          dialogs.setClosing(null);
         }}
         onCloseAndEnd={() => {
           if (closing !== null) {
@@ -360,9 +290,9 @@ export function WorkspaceRoute({ workspace, onNewThread, surfaceSize }: Workspac
             // A block that appeared meanwhile needs its own question.
             void session.closePanel(panelId, { confirmEndsSession: true }).then((outcome) => { if (outcome === "needs-confirmation") askToClose(panelId); });
           }
-          setClosing(null);
+          dialogs.setClosing(null);
         }}
-        onCancel={() => setClosing(null)}
+        onCancel={() => dialogs.setClosing(null)}
       />
     </div>
   );

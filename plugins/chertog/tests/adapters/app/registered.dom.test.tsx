@@ -18,10 +18,11 @@ vi.mock("@get-bb/plugin-sdk/app", () => ({
 
 it("offers Terminals on the registered workspace page and saves its reference", async () => {
   let Page!: ComponentType;
-  registerChertogApp({ slots: { navPanel: (slot: { component: ComponentType }) => { Page = slot.component; },
+  let Actions!: ComponentType;
+  registerChertogApp({ slots: { navPanel: (slot: { component: ComponentType; headerContent: ComponentType }) => { Page = slot.component; Actions = slot.headerContent; },
     experimental_appOverlay() {}, homepageSection() {} }, commands: { register() {} } } as unknown as PluginAppBuilder);
   const user = userEvent.setup();
-  render(<Page />);
+  render(<><Actions /><Page /></>);
   await user.click(await screen.findByRole("button", { name: "Добавить панель" }));
   await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Terminals" }));
   expect(Object.values(store.saves.at(-1)!.document.panels).map(p => p.ref)).toEqual([{ provider: "terminals", params: {} }]);

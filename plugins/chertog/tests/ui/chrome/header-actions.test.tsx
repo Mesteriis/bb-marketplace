@@ -1,9 +1,9 @@
-// The strip above the surface: the switcher, "add panel" and the hidden
-// panels in one toolbar.
+// The right side of the title bar: the layout switcher, "add panel", the hidden
+// panels and a new thread; on a narrow bar all but "add panel" fold into one menu.
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import { WorkspaceToolbar, type ContentChoice, type ContentSection } from "../../../src/ui/chrome/index.ts";
+import { HeaderActions, type ContentChoice, type ContentSection } from "../../../src/ui/chrome/index.ts";
 
 const SECTIONS: ContentSection[] = [
   {
@@ -17,19 +17,22 @@ const SECTIONS: ContentSection[] = [
   },
 ];
 
-function setup(tileCount = 3) {
+function setup(tileCount = 3, narrow = false) {
   const calls = {
     onSwitch: vi.fn<(layoutId: string) => void>(),
     onOpen: vi.fn<(choice: ContentChoice) => void>(),
     onFocusExisting: vi.fn<(tileId: string) => void>(),
     onShow: vi.fn<(instanceId: string) => void>(),
     onClose: vi.fn<(instanceId: string) => void>(),
+    onNewThread: vi.fn<() => void>(),
   };
   const unused = () => {
     throw new Error("This callback is not part of the test");
   };
   render(
-    <WorkspaceToolbar
+    <HeaderActions
+      onNewThread={calls.onNewThread}
+      narrow={narrow}
       layouts={{
         layouts: [
           { id: "l1", name: "Разработка" },
@@ -66,8 +69,8 @@ function setup(tileCount = 3) {
 
 const pickerDialog = () => screen.queryByRole("dialog", { name: "Добавить панель" });
 
-describe("WorkspaceToolbar", () => {
-  it("is one toolbar with the switcher, the save status, «Добавить панель» and the hidden panels", () => {
+describe("HeaderActions", () => {
+  it("is one toolbar with the switcher, the save status, «Добавить панель», the hidden panels and a new thread", () => {
     setup();
 
     const toolbar = within(screen.getByRole("toolbar", { name: "Рабочее место" }));
@@ -75,6 +78,7 @@ describe("WorkspaceToolbar", () => {
     expect(toolbar.getByRole("status").textContent).toBe("Сохранено");
     expect(toolbar.getByRole("button", { name: "Добавить панель" })).toBeTruthy();
     expect(toolbar.getByRole("button", { name: "Скрытые панели: 1" })).toBeTruthy();
+    expect(toolbar.getByRole("button", { name: "Новый тред" })).toBeTruthy();
     // The strip adds no navigation of its own.
     expect(toolbar.queryByRole("navigation")).toBeNull();
     expect(toolbar.queryByRole("link")).toBeNull();
@@ -125,7 +129,8 @@ describe("WorkspaceToolbar", () => {
     };
     render(
       <>
-        <WorkspaceToolbar
+        <HeaderActions
+          onNewThread={unused}
           layouts={{
             layouts: [{ id: "l1", name: "Разработка" }],
             activeLayoutId: "l1",
@@ -202,6 +207,14 @@ describe("WorkspaceToolbar", () => {
     expect(calls.onClose).toHaveBeenLastCalledWith("p1");
   });
 
+  it("starts a new thread from its own button", async () => {
+    const { user, calls } = setup();
+
+    await user.click(screen.getByRole("button", { name: "Новый тред" }));
+
+    expect(calls.onNewThread).toHaveBeenCalledTimes(1);
+  });
+
   it("moves between its controls with the left and right arrows", async () => {
     const { user } = setup();
 
@@ -212,20 +225,75 @@ describe("WorkspaceToolbar", () => {
     await user.keyboard("{ArrowRight}");
     expect(document.activeElement).toBe(screen.getByRole("button", { name: "Скрытые панели: 1" }));
     await user.keyboard("{ArrowRight}");
-    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Скрытые панели: 1" }));
-    await user.keyboard("{ArrowLeft}{ArrowLeft}");
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Новый тред" }));
+    await user.keyboard("{ArrowRight}");
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Новый тред" }));
+    await user.keyboard("{ArrowLeft}{ArrowLeft}{ArrowLeft}");
     expect(document.activeElement).toBe(screen.getByRole("button", { name: "Раскладка: Разработка" }));
   });
 });
 
-describe("WorkspaceToolbar: the focused control disappears from the picker dialog", () => {
+describe("HeaderActions on a narrow bar", () => {
+  it("keeps «Добавить панель» and folds everything else into one menu", async () => {
+    const { user, calls } = setup(3, true);
+    const toolbar = within(screen.getByRole("toolbar", { name: "Рабочее место" }));
+
+    expect(toolbar.getByRole("button", { name: "Добавить панель" })).toBeTruthy();
+    expect(toolbar.queryByRole("button", { name: "Раскладка: Разработка" })).toBeNull();
+    expect(toolbar.queryByRole("button", { name: "Скрытые панели: 1" })).toBeNull();
+    expect(toolbar.queryByRole("button", { name: "Новый тред" })).toBeNull();
+
+    await user.click(toolbar.getByRole("button", { name: "Ещё" }));
+    const menu = within(screen.getByRole("dialog", { name: "Ещё" }));
+    expect(menu.getByRole("button", { name: "Раскладка: Разработка" })).toBeTruthy();
+    expect(menu.getByRole("button", { name: "Скрытые панели: 1" })).toBeTruthy();
+    expect(menu.getByRole("status").textContent).toBe("Сохранено");
+
+    await user.click(menu.getByRole("button", { name: "Новый тред" }));
+    expect(calls.onNewThread).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("dialog", { name: "Ещё" })).toBeNull();
+  });
+
+  it("switches a layout from inside the menu", async () => {
+    const { user, calls } = setup(3, true);
+
+    await user.click(screen.getByRole("button", { name: "Ещё" }));
+    await user.click(screen.getByRole("button", { name: "Раскладка: Разработка" }));
+    await user.click(within(screen.getByRole("dialog", { name: "Раскладки" })).getByRole("button", { name: "Ревью" }));
+
+    expect(calls.onSwitch).toHaveBeenLastCalledWith("l2");
+  });
+
+  it("still adds a panel through the picker", async () => {
+    const { user, calls } = setup(3, true);
+
+    await user.click(screen.getByRole("button", { name: "Добавить панель" }));
+    await user.click(screen.getByRole("button", { name: /Исполнитель/ }));
+
+    expect(calls.onOpen).toHaveBeenLastCalledWith({ providerId: "threads", itemId: "t1", placement: "default" });
+  });
+
+  it("closes the menu on Escape and returns the focus to its button", async () => {
+    const { user } = setup(3, true);
+    const more = screen.getByRole("button", { name: "Ещё" });
+
+    await user.click(more);
+    await user.keyboard("{Escape}");
+
+    expect(screen.queryByRole("dialog", { name: "Ещё" })).toBeNull();
+    expect(document.activeElement).toBe(more);
+  });
+});
+
+describe("HeaderActions: the focused control disappears from the picker dialog", () => {
   const unused = () => {
     throw new Error("This callback is not part of the test");
   };
   function open(tileCount: number) {
     const onOpen = vi.fn<(choice: ContentChoice) => void>();
     const toolbar = (sections: ContentSection[]) => (
-      <WorkspaceToolbar
+      <HeaderActions
+        onNewThread={unused}
         layouts={{
           layouts: [{ id: "l1", name: "Разработка" }],
           activeLayoutId: "l1",

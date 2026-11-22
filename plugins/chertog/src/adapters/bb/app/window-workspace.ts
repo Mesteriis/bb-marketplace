@@ -5,6 +5,7 @@
 import type { Diagnostics } from "../../../core/panels/index.ts";
 import { chooseSource } from "./choose-source.tsx";
 import { ComposerDirectory } from "./addressee.ts";
+import { ChromeDialogs } from "./chrome-actions.ts";
 import type { ContentSource } from "./content-sources.ts";
 import { createFixtureSource, type FixtureSource } from "./fixture-source.tsx";
 import { SurfaceBridge } from "./surface-bridge.ts";
@@ -18,6 +19,8 @@ export interface WindowWorkspace {
   readonly handoff: WindowClient;
   readonly session: WorkspaceSession;
   readonly bridge: SurfaceBridge;
+  /** The questions the title bar and the route ask together. */
+  readonly dialogs: ChromeDialogs;
   readonly threads: ThreadDirectory;
   readonly composers: ComposerDirectory;
   readonly fixture: FixtureSource;
@@ -116,6 +119,7 @@ export function createWindowWorkspace(options: WindowWorkspaceOptions): WindowWo
     handoff: new WindowClient(),
     session,
     bridge: new SurfaceBridge(),
+    dialogs: new ChromeDialogs(),
     threads,
     composers: new ComposerDirectory(),
     fixture,

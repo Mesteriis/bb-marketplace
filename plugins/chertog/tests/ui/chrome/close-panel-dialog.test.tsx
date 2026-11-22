@@ -4,7 +4,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
-import { ClosePanelDialog, HiddenPanelsList, WorkspaceToolbar } from "../../../src/ui/chrome/index.ts";
+import { ClosePanelDialog, HiddenPanelsList, HeaderActions } from "../../../src/ui/chrome/index.ts";
 
 function outcomes() {
   return { onHide: vi.fn<() => void>(), onCloseAndEnd: vi.fn<() => void>(), onCancel: vi.fn<() => void>() };
@@ -188,7 +188,7 @@ describe("ClosePanelDialog opened from a control that goes away", () => {
     return (
       <>
         {inToolbar ? (
-          <WorkspaceToolbar
+          <HeaderActions
             layouts={{
               layouts: [{ id: "l1", name: "Разработка" }],
               activeLayoutId: "l1",
@@ -205,6 +205,7 @@ describe("ClosePanelDialog opened from a control that goes away", () => {
             }}
             content={{ sections: [], tileCount: 1, tileLimit: 8, onOpen: unused, onFocusExisting: unused }}
             hiddenPanels={hidden}
+            onNewThread={unused}
           />
         ) : (
           <HiddenPanelsList {...hidden} />

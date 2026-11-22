@@ -20,7 +20,6 @@ const REFUSALS: Record<WorkspaceChangeRefusal, string> = {
 export const appStrings = {
   panelTitle: "Чертог",
   firstLayoutName: "Основная",
-  newThread: "Новый тред",
   openChertog: "Открыть Чертог",
   focusComposerCommand: "Чертог: перейти к вводу выбранного тайла",
   endSessionCommand: "Чертог: завершить сессию выбранной панели",

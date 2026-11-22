@@ -5,6 +5,10 @@ export const chromeStrings = {
   toolbar: {
     label: "Рабочее место",
     addPanel: "Добавить панель",
+    /** The visible caption of the add button; its accessible name is `addPanel`. */
+    addPanelShort: "Панель",
+    newThread: "Новый тред",
+    more: "Ещё",
   },
   layouts: {
     trigger: (name: string) => `Раскладка: ${name}`,

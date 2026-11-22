@@ -2,7 +2,7 @@
 // the Chertog route has left the window, although the session keeps its document.
 import type { PluginAppBuilder } from "@get-bb/plugin-sdk/app";
 import type { ComponentType } from "react";
-import { render, screen } from "@testing-library/react";
+import { render, waitFor } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import { OPEN_EVENT } from "../../../src/core/wire/index.ts";
 import { registerChertogApp } from "../../../src/adapters/bb/app/register.tsx";
@@ -36,7 +36,8 @@ it("answers open requests only while the Chertog route is on screen", async () =
   render(<Overlay />);
   expect(ask()).toEqual({ accepted: false, outcome: "not-shown" });
   const page = render(<Page />);
-  await screen.findByRole("button", { name: "Добавить панель" });
+  // The workspace is loaded once the surface host replaces the loading notice.
+  await waitFor(() => expect(document.querySelector("[data-chertog-surface-host]")).not.toBeNull());
   expect(ask()).toMatchObject({ accepted: true, outcome: "opened" });
   page.unmount();
   expect(ask()).toEqual({ accepted: false, outcome: "not-shown" });

@@ -1,4 +1,5 @@
-// The assembled workspace of one window: the route (toolbar and tile surface)
+// The assembled workspace of one window: BB's title bar with Chertog's part
+// (the focused tile and the workspace actions), the route (tile surface)
 // and the live layer over one session, driven through the UI. The providers
 // are stand-ins: a chat that is a textarea, and the fixture frame.
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -8,6 +9,7 @@ import { describe, expect, it, vi } from "vitest";
 import { embeddedSources } from "../../../src/adapters/bb/app/embedded-source.tsx";
 import { LiveLayer } from "../../../src/adapters/bb/app/LiveLayer.tsx";
 import { createWindowWorkspace, type WindowWorkspace } from "../../../src/adapters/bb/app/window-workspace.ts";
+import { ChertogHeaderActions, ChertogHeaderTitle } from "../../../src/adapters/bb/app/WorkspaceHeader.tsx";
 import { WorkspaceRoute } from "../../../src/adapters/bb/app/WorkspaceRoute.tsx";
 import { createCardSource, type CardHost } from "../../../src/adapters/bb/app/card-source.ts";
 import { FakeWorkspaceRpc, sequentialIds } from "./support.ts";
@@ -66,7 +68,15 @@ function newStage(options: { fixture?: boolean; zoom?: boolean; embeds?: boolean
 function Window({ stage, onRoute }: { stage: Stage; onRoute: boolean }) {
   return (
     <>
-      {onRoute && <WorkspaceRoute workspace={stage.workspace} surfaceSize={SIZE} onNewThread={() => (stage.newThreads += 1)} />}
+      {onRoute && (
+        <>
+          <header>
+            <ChertogHeaderTitle workspace={stage.workspace} />
+            <ChertogHeaderActions workspace={stage.workspace} onNewThread={() => (stage.newThreads += 1)} />
+          </header>
+          <WorkspaceRoute workspace={stage.workspace} surfaceSize={SIZE} />
+        </>
+      )}
       <LiveLayer workspace={stage.workspace} />
     </>
   );
@@ -481,13 +491,13 @@ describe("one surface per window", () => {
     const stage = newStage();
     render(
       <>
-        <WorkspaceRoute workspace={stage.workspace} surfaceSize={SIZE} onNewThread={() => undefined} />
-        <WorkspaceRoute workspace={stage.workspace} surfaceSize={SIZE} onNewThread={() => undefined} />
+        <WorkspaceRoute workspace={stage.workspace} surfaceSize={SIZE} />
+        <WorkspaceRoute workspace={stage.workspace} surfaceSize={SIZE} />
         <LiveLayer workspace={stage.workspace} />
       </>,
     );
     await screen.findByRole("heading", { name: "Выберите содержимое" });
-    expect(screen.getAllByRole("toolbar")).toHaveLength(1);
+    expect(screen.getAllByRole("heading", { name: "Выберите содержимое" })).toHaveLength(1);
     expect(screen.getByText("Чертог уже открыт в другой панели этого окна. Рабочее место в окне одно.")).toBeTruthy();
   });
 });
@@ -684,7 +694,7 @@ async function threadWithPendingZoom() {
 
 it("persists removing a group with a thread and pending Zoom picker", async () => {
   const { stage, session, user } = await threadWithPendingZoom();
-  await user.click(screen.getByRole("button", { name: "Действия тайла" }));
+  await user.click(within(tiles()[0]).getByRole("button", { name: "Действия тайла" }));
   await user.click(screen.getByRole("menuitem", { name: "Убрать тайл из раскладки" }));
   await settled(stage);
   expect(session.reservations.size).toBe(0);
@@ -696,7 +706,7 @@ it("persists removing a group with a thread and pending Zoom picker", async () =
 it("keeps existing tabs when only the pending Zoom picker tab is removed", async () => {
   const { stage, session, user } = await threadWithPendingZoom();
   const saved = stage.rpc.saves.length;
-  await user.click(screen.getByRole("button", { name: "Действия тайла" }));
+  await user.click(within(tiles()[0]).getByRole("button", { name: "Действия тайла" }));
   await user.click(screen.getByRole("menuitem", { name: "Убрать вкладку из раскладки" }));
   await settled(stage);
   expect(session.reservations.size).toBe(0);

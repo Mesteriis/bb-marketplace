@@ -30,6 +30,7 @@ import { readAcceptanceFixture, readHomeRedirect } from "./settings.ts";
 import { appStrings } from "./strings.ts";
 import type { ThreadEntry } from "./thread-source.ts";
 import { createWindowWorkspace, type WindowWorkspace } from "./window-workspace.ts";
+import { ChertogHeaderActions, ChertogHeaderTitle, useChertogPageTitle } from "./WorkspaceHeader.tsx";
 import { WorkspaceRoute } from "./WorkspaceRoute.tsx";
 
 /** `path` of the nav panel: the route is `/plugins/chertog/home`. */
@@ -138,13 +139,32 @@ function ComposerWatch({ workspace }: { workspace: WindowWorkspace }) {
 function ChertogNavPanel() {
   const workspace = useWindowWorkspace();
   useHostHandles(workspace);
-  const navigate = useBbNavigate();
   return (
     <>
       <ComposerWatch workspace={workspace} />
-      <WorkspaceRoute workspace={workspace} onNewThread={() => openNewThreadScreen(navigate)} />
+      <WorkspaceRoute workspace={workspace} />
     </>
   );
+}
+
+// BB renders these two in its shared title bar, in the plugin's own scope
+// (observed on BB 0.50.1: inside the plugin root, so the scoped classes of
+// the chrome apply there).
+function ChertogHeaderTitleSlot() {
+  const workspace = useWindowWorkspace();
+  useHostHandles(workspace);
+  return <ChertogHeaderTitle workspace={workspace} />;
+}
+
+function ChertogHeaderActionsSlot() {
+  const workspace = useWindowWorkspace();
+  useHostHandles(workspace);
+  const navigate = useBbNavigate();
+  return <ChertogHeaderActions workspace={workspace} onNewThread={() => openNewThreadScreen(navigate)} />;
+}
+
+function useChertogPageTitleSlot() {
+  return useChertogPageTitle(useWindowWorkspace());
 }
 
 /** The instance of the focused tile, while the window shows the Chertog route. */
@@ -160,6 +180,9 @@ export function registerChertogApp(app: PluginAppBuilder): void {
     icon: "LayoutGrid",
     path: CHERTOG_PANEL_PATH,
     component: ChertogNavPanel,
+    experimental_headerTitle: ChertogHeaderTitleSlot,
+    headerContent: ChertogHeaderActionsSlot,
+    experimental_usePageTitle: useChertogPageTitleSlot,
   });
 
   app.slots.experimental_appOverlay({ id: "chertog-live-panels", component: ChertogOverlay });
