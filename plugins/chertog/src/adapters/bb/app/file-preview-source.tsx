@@ -1,10 +1,8 @@
 import { experimental_FilePreview as FilePreview, Markdown } from "@get-bb/plugin-sdk/app";
-import { entryCards, fileTarget } from "../../../core/panels/entry-card.ts";
+import { FILE_PREVIEW_PROVIDER as provider, filePreviewParamsSchema as schema } from "../../../core/diff/refs.ts";
+import { fileTarget } from "../../../core/panels/entry-card.ts";
 import type { PanelRef } from "../../../core/panels/ref.ts";
 import { Listeners, type ContentSource, type SourceSection } from "./content-sources.ts";
-
-const schema = entryCards["bb-editor"].paramsSchema;
-const provider = "bb-file-preview";
 
 interface Environment {
   id: string;

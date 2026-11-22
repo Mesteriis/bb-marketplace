@@ -1,14 +1,11 @@
 import { experimental_Diff as Diff, type PluginBrowserBbSdk } from "@get-bb/plugin-sdk/app";
 import { z } from "zod";
 import { unifiedPatch } from "../../../core/diff/unified-patch.ts";
-import { entryCards, fileTarget } from "../../../core/panels/entry-card.ts";
+import { DIFF_PROVIDER as provider, diffParamsSchema as schema, gitShaSchema as sha } from "../../../core/diff/refs.ts";
+import { fileTarget } from "../../../core/panels/entry-card.ts";
 import type { PanelRef } from "../../../core/panels/ref.ts";
 import { Listeners, type ContentSource } from "./content-sources.ts";
 import type { WorkspaceFileCatalog } from "./file-preview-source.tsx";
-
-const provider = "bb-diff";
-const sha = z.string().regex(/^[a-f0-9]{40}$/i);
-const schema = entryCards["bb-editor"].paramsSchema.omit({ kind: true }).extend({ fromSha: sha, toSha: sha });
 
 const statusSchema = z.object({
   outcome: z.literal("available"),
