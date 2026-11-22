@@ -5,6 +5,9 @@
 // instance, closing releases it, and ending a session is asked for by name.
 import {
   activateTab,
+  addTab,
+  applyOperation,
+  closeTab,
   findGroup,
   findGroupOfPanel,
   listGroups,
@@ -59,6 +62,7 @@ export type ContentDestination = { readonly kind: "new-tile" } | { readonly kind
 
 export type CloseOutcome =
   | "closed"
+  | "kept"
   /** Nothing was closed: this is the last view and closing ends the session. */
   | "needs-confirmation";
 
@@ -86,6 +90,14 @@ export class WorkspaceSession {
   /** Panels whose reference the provider refused to open. */
   private readonly refused = new Set<string>();
   private readonly listeners = new Listeners();
+  readonly reservations = new Map<string, {
+    panelId: string; source: ContentSource; groupId: string; layoutId: string; split: boolean;
+  }>();
+  private placement: { base: WorkspaceState; shown: WorkspaceState } | null = null;
+  choiceError: string | null = null;
+
+  dismissChoiceError(): void { this.choiceError = null; this.touch(); }
+
   private version = 0;
   private syncing = false;
 
@@ -170,7 +182,9 @@ export class WorkspaceSession {
 
   labels(): Record<string, PanelLabel> {
     const document = this.document();
-    return document === null ? {} : Object.fromEntries(Object.keys(document.panels).map((panelId) => [panelId, this.labelOf(panelId)]));
+    const labels = document === null ? {} : Object.fromEntries(Object.keys(document.panels).map((panelId) => [panelId, this.labelOf(panelId)]));
+    for (const r of this.reservations.values()) labels[r.panelId] = { title: r.source.neutralLabel };
+    return labels;
   }
 
   /** What the content of an instance needs to draw itself, or `null` once the instance is closed. */
@@ -186,7 +200,7 @@ export class WorkspaceSession {
       ref,
       source,
       title: this.labelOf(panelId).title,
-      stateText: source?.stateText(instance.state, ref) ?? null,
+      stateText: source?.stateText(instance.state, ref, instanceId) ?? null,
     };
   }
 
@@ -243,6 +257,19 @@ export class WorkspaceSession {
 
   /** A change the tile surface asked for: a drop, or the state after a focus move, a resize, maximize or a removal. */
   applySurfaceChange(change: TileSurfaceChange): void {
+    // A transient group cannot be written into the shared layout.
+    if (this.reservations.size) {
+      const base = this.document();
+      const shown = this.surfaceState();
+      if (!base || !shown) return;
+      const next = change.kind === "operation" ? applyOperation(shown, change.operation) : change.state;
+      this.placement = { base: activeLayout(base).workspace, shown: next };
+      for (const [id, r] of this.reservations) {
+        if (!findGroupOfPanel(next.root, r.panelId)) this.cancelChoice(id);
+      }
+      this.touch();
+      return;
+    }
     if (change.kind === "operation") {
       this.controller.change((document) => applyLayoutOperation(document, change.operation));
     } else {
@@ -303,7 +330,10 @@ export class WorkspaceSession {
    * comes back as the same instance.
    */
   openContent(choice: Pick<ContentChoice, "providerId" | "itemId" | "placement">, destination: ContentDestination): WorkspaceChangeRefusal | null {
-    const ref = this.sourceOf(choice.providerId)?.refOf(choice.itemId) ?? null;
+    const source = this.sourceOf(choice.providerId);
+    if (source?.embed && choice.itemId === "choose")
+      return this.chooseResource(source, destination, destination.kind === "new-tile" && choice.placement !== "tab");
+    const ref = source?.refOf(choice.itemId) ?? null;
     if (ref === null) return "unknown-panel";
     return this.controller.change((document) => {
       const key = panelRefKey(ref);
@@ -322,6 +352,89 @@ export class WorkspaceSession {
     });
   }
 
+  surfaceState(): WorkspaceState | null {
+    const document = this.document();
+    if (!document) return null;
+    const base = activeLayout(document).workspace;
+    if (!this.reservations.size) return base;
+    if (this.placement?.base === base) return this.placement.shown;
+    let state = base;
+    for (const r of this.reservations.values()) {
+      if (r.layoutId === document.activeLayoutId)
+        state = r.split ? splitGroup(state, r.groupId, "right", r.panelId) : addTab(state, r.groupId, r.panelId);
+    }
+    this.placement = { base, shown: state };
+    return state;
+  }
+
+  private chooseResource(source: ContentSource, destination: ContentDestination, split: boolean): WorkspaceChangeRefusal | null {
+    const doc = this.document();
+    if (!doc || !source.embed) return "unknown-panel";
+    const state = activeLayout(doc).workspace;
+    const groupId = destination.kind === "group" ? destination.groupId : state.focusedGroupId;
+    if (!findGroup(state.root, groupId)) return "unknown-group";
+    if (split && listGroups(this.surfaceState()!.root).length >= TILE_LIMIT) return "invalid-layout";
+    const id = this.registry.reserve(source.provider.type);
+    if (id === null) return "unknown-panel";
+    const panelId = this.newId("panel");
+    const shown = this.surfaceState()!;
+    this.reservations.set(id, { panelId, source, groupId, split, layoutId: doc.activeLayoutId });
+    this.placement = { base: state, shown: split ? splitGroup(shown, groupId, "right", panelId) : addTab(shown, groupId, panelId) };
+    this.choiceError = null;
+    source.embed.choose(id, uuid => this.acceptChoice(id, uuid), reason => {
+      if (reason) this.choiceError = source.neutralLabel + ". " + reason;
+      this.cancelChoice(id);
+    });
+    this.touch();
+    return null;
+  }
+
+  private cancelChoice(id: string): void {
+    const r = this.reservations.get(id);
+    if (!r) return;
+    this.reservations.delete(id);
+    if (this.placement) this.placement = this.reservations.size
+      ? { ...this.placement, shown: closeTab(this.placement.shown, r.panelId) } : null;
+    this.registry.cancelReservation(id);
+    void r.source.provider.release(id);
+    this.touch();
+  }
+
+  private acceptChoice(id: string, resourceRef: string): void {
+    const r = this.reservations.get(id);
+    const doc = this.document();
+    if (!r || !doc) return;
+    const state = activeLayout(doc).workspace;
+    const ref = { provider: r.source.provider.type, params: { resourceRef } };
+    if (doc.activeLayoutId !== r.layoutId || !findGroup(state.root, r.groupId) ||
+        (r.split && listGroups(state.root).length >= TILE_LIMIT) || !r.source.provider.paramsSchema.safeParse(ref.params).success) {
+      this.cancelChoice(id);
+      return;
+    }
+    const existing = panelIdOfRef(doc, ref);
+    if (!r.source.provider.multipleViews && existing) {
+      this.cancelChoice(id);
+      if (findGroupOfPanel(state.root, existing)) this.focusPanel(existing);
+      else this.controller.change(current => addPanelToGroup(current, r.groupId, existing));
+      return;
+    }
+    const known = registerPanel(doc, r.panelId, { ref });
+    const shown = this.surfaceState()!;
+    let accepted = shown;
+    for (const [otherId, other] of this.reservations) {
+      if (otherId !== id) accepted = closeTab(accepted, other.panelId);
+    }
+    const placed = known.ok ? changeActiveLayout(known.document, () => accepted) : known;
+    if (!placed.ok) { this.cancelChoice(id); return; }
+    const opened = this.registry.acceptReservation(id, ref, () => {
+      this.instances.set(r.panelId, id);
+      this.reservations.delete(id);
+      this.placement = this.reservations.size ? { base: accepted, shown } : null;
+      this.controller.change(() => placed);
+    });
+    if (!opened.ok) this.cancelChoice(id);
+  }
+
   /** Shows the tab of a panel the open layout places and focuses its tile. */
   focusPanel(panelId: string): void {
     this.changeLayout((workspace) => activateTab(workspace, panelId));
@@ -338,6 +451,7 @@ export class WorkspaceSession {
 
   /** Removes the panel from the open layout. Its instance stays as live as it was and is listed among the hidden panels. */
   removeFromLayout(panelId: string): void {
+    for (const [id, r] of this.reservations) if (r.panelId === panelId) { this.cancelChoice(id); return; }
     this.controller.change((document, live) => removePanelFromLayout(document, panelId, live));
   }
 
@@ -347,8 +461,15 @@ export class WorkspaceSession {
    * happens until the user confirms.
    */
   async closePanel(panelId: string, options: { confirmEndsSession?: boolean } = {}): Promise<CloseOutcome> {
+    for (const [id, r] of this.reservations) if (r.panelId === panelId) { this.cancelChoice(id); return "closed"; }
     const instanceId = this.instances.get(panelId);
     if (instanceId !== undefined) {
+      const view = this.viewOf(instanceId);
+      if (view?.source?.embed && view.instance.state !== "access-denied" && view.instance.state !== "session-ended") {
+        const decision = await view.source.embed.close(instanceId);
+        if (decision === "hide") this.removeFromLayout(panelId);
+        if (decision !== "ended") return "kept";
+      }
       const result = await this.registry.close(instanceId, options);
       if (result.status === "needs-confirmation") return "needs-confirmation";
       if (this.instances.get(panelId) === instanceId) this.instances.delete(panelId);
@@ -406,13 +527,18 @@ export class WorkspaceSession {
         if (this.registry.get(instanceId) === null) this.instances.delete(panelId);
       }
       const layout = activeLayout(document);
+      for (const [id, r] of this.reservations) {
+        if (layout.id !== r.layoutId || !findGroup(layout.workspace.root, r.groupId)) this.cancelChoice(id);
+      }
       const placed = new Set(placedPanelIds(layout));
       for (const group of listGroups(layout.workspace.root)) {
         const panelId = group.activeTab;
         if (panelId === null || this.instances.has(panelId) || this.refused.has(panelId)) continue;
         const ref = refOfPanel(document, panelId);
         if (ref === null) continue;
-        const opened = this.registry.open(ref, { newView: ref.provider === CHOOSE_PROVIDER });
+        const source = this.sourceOf(ref.provider);
+        const newView = ref.provider === CHOOSE_PROVIDER || Boolean(source?.embed && source.provider.multipleViews);
+        const opened = this.registry.open(ref, { newView });
         // One reference is one instance: a second panel id for it would show the same view twice.
         if (!opened.ok) {
           this.refused.add(panelId);

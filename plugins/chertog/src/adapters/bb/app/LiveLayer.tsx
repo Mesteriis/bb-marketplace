@@ -37,6 +37,9 @@ export function LiveLayer({ workspace, diagnostics }: LiveLayerProps) {
     const panelId = session.panelOfInstance(instance.instanceId);
     return panelId === null ? [] : [{ instanceId: instance.instanceId, panelId, renderContent }];
   });
+  for (const [instanceId, reservation] of session.reservations) {
+    instances.push({ instanceId, panelId: reservation.panelId, renderContent });
+  }
   const rects = useMemo(() => {
     if (place === null) return NO_RECTS;
     if (place.covered.size === 0) return place.rects;

@@ -116,6 +116,7 @@ export class PanelRegistry {
   private readonly providers = new Map<string, PanelProvider>();
   private readonly entries = new Map<string, Entry>();
   private readonly listeners = new Set<() => void>();
+  private readonly reservations = new Map<string, string>();
   private lastGeneration = 0;
 
   constructor(ports: { clock: Clock; ids: IdGenerator; diagnostics: Diagnostics }) {
@@ -155,6 +156,36 @@ export class PanelRegistry {
    * they are not given out until the provider appears and accepts them.
    */
   open(ref: PanelRef, options: PanelOpenOptions = {}): PanelOpenResult {
+    return this.openView(ref, options);
+  }
+
+  reserve(provider: string): string | null {
+    if (!this.providers.has(provider)) return null;
+    const id = this.freshId();
+    this.reservations.set(id, provider);
+    return id;
+  }
+
+  cancelReservation(id: string): void {
+    this.reservations.delete(id);
+  }
+
+  /** Promote the one-use reservation. Install its placement before the provider can answer open. */
+  acceptReservation(id: string, ref: PanelRef, place: () => void): PanelOpenResult {
+    const provider = this.providers.get(ref.provider);
+    if (this.reservations.get(id) !== ref.provider || !provider)
+      return { ok: false, reason: "invalid-ref" };
+    this.reservations.delete(id);
+    return this.openView(ref, { newView: provider.multipleViews }, { id, place });
+  }
+
+  private freshId(): string {
+    const id = this.ids.nextId();
+    if (this.entries.has(id) || this.reservations.has(id)) throw new Error('Panel instance id "' + id + '" was issued twice');
+    return id;
+  }
+
+  private openView(ref: PanelRef, options: PanelOpenOptions, reservation?: { id: string; place(): void }): PanelOpenResult {
     const parsed = panelRefSchema.safeParse(ref);
     if (!parsed.success) return { ok: false, reason: "invalid-ref" };
     const key = panelRefKey(parsed.data);
@@ -167,13 +198,12 @@ export class PanelRegistry {
       if (provider === undefined || !provider.multipleViews) return { ok: false, reason: "multiple-views-unsupported" };
     } else {
       const existing = this.findByKey(key);
-      if (existing !== undefined) return this.reuse(existing, provider);
+      if (existing !== undefined) return reservation === undefined
+        ? this.reuse(existing, provider)
+        : { ok: false, reason: "multiple-views-unsupported" };
     }
 
-    const instanceId = this.ids.nextId();
-    if (this.entries.has(instanceId)) {
-      throw new Error('Panel instance id "' + instanceId + '" was issued twice');
-    }
+    const instanceId = reservation?.id ?? this.freshId();
     const entry: Entry = {
       instanceId,
       ref: Object.freeze({ provider: parsed.data.provider, params: Object.freeze({ ...parsed.data.params }) }),
@@ -193,6 +223,7 @@ export class PanelRegistry {
       settled: Promise.resolve(null),
     };
     this.entries.set(instanceId, entry);
+    reservation?.place();
     if (provider === undefined) {
       entry.settled = Promise.resolve(this.snapshot(entry));
     } else {
@@ -348,13 +379,14 @@ export class PanelRegistry {
    * panel is not live. `session-ended` is about the session, so it ends
    * every view of it; `access-denied` and `lost` are about this view only.
    */
-  report(instanceId: string, state: "session-ended" | "access-denied" | "lost"): boolean {
+  report(instanceId: string, state: "session-ended" | "access-denied" | "lost" | "unknown"): boolean {
     const entry = this.entries.get(instanceId);
     if (entry === undefined || entry.state !== "live") return false;
     if (state === "session-ended") {
       this.markSessionEnded(entry.generation);
     } else {
-      entry.state = state;
+      entry.state = state === "unknown" ? "lost" : state;
+      if (state === "unknown") entry.unknownOutcome = "open";
       entry.addressee = null;
     }
     this.notify();
@@ -455,6 +487,7 @@ export class PanelRegistry {
   private unregisterProvider(provider: PanelProvider): void {
     if (this.providers.get(provider.type) !== provider) return;
     this.providers.delete(provider.type);
+    for (const [id, type] of this.reservations) if (type === provider.type) this.cancelReservation(id);
     let changed = false;
     for (const entry of this.entries.values()) {
       if (entry.view !== provider) continue;

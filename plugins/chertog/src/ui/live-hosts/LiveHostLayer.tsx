@@ -102,7 +102,7 @@ export function LiveHostLayer({ instances, rects, layers, gestureActive = false,
   }
 
   return (
-    <div data-live-host-layer style={ROOT_STYLE}>
+    <div data-live-host-layer data-chertog-embed-layer="v1" style={ROOT_STYLE}>
       {current.map((instanceId) => {
         const instance = byId.get(instanceId);
         if (instance === undefined) return null;

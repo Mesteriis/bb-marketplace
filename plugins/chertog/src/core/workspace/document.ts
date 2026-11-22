@@ -3,6 +3,7 @@
 // them, and no panel title. It never keeps a live handle (an instance id, a process, a DOM node)
 // and, through `panelRefSchema`, never keeps credentials, correspondence,
 // tokens or links with a password.
+import { paramsSchema as embedParams, providers as embedTypes } from "../embed/wire.ts";
 import { z } from "zod";
 import type { LayoutNode, WorkspaceState } from "../layout/index.ts";
 import { createWorkspace, listGroups } from "../layout/index.ts";
@@ -104,6 +105,8 @@ function isLiveHandleName(name: string): boolean {
 
 /** A reference as the document stores it: `panelRefSchema`, and no parameter that names a live handle. */
 const storedPanelRefSchema = panelRefSchema.superRefine((ref, context) => {
+  if (embedTypes.some(type => type === ref.provider) && !embedParams.safeParse(ref.params).success)
+    context.addIssue({ code: "custom", path: ["params"], message: "Embedded views store only a resource UUID" });
   for (const name of Object.keys(ref.params)) {
     if (isLiveHandleName(name)) {
       context.addIssue({ code: "custom", path: ["params", name], message: "A panel reference must not carry a live handle" });

@@ -22,6 +22,7 @@ import { CHANNEL } from "../../../core/windows/wire.ts";
 import type { Diagnostics } from "../../../core/panels/index.ts";
 import { createHomeRedirectSection, openNewThreadScreen } from "../home/index.ts";
 import { runForTileComposer, tileComposer } from "./addressee.ts";
+import { embeddedSources } from "./embedded-source.tsx";
 import { providerSources } from "./provider-sources.tsx";
 import { LiveLayer } from "./LiveLayer.tsx";
 import { readAcceptanceFixture, readHomeRedirect } from "./settings.ts";
@@ -51,7 +52,7 @@ function useWindowWorkspace(): WindowWorkspace {
   current ??= createWindowWorkspace({
     // An existing thread in a bounded container; no thread is created or forked here.
     renderChat: (threadId) => <ThreadChat threadId={threadId} layout="contained" />,
-    extraSources: threads => providerSources(sdk, navigate, threads),
+    extraSources: threads => [...providerSources(sdk, navigate, threads), ...embeddedSources()],
     randomId,
     diagnostics,
   });
