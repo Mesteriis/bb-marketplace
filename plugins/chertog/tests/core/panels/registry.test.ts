@@ -802,6 +802,45 @@ describe("ending the session", () => {
     expect(registry.get("panel-1")).toMatchObject({ state: "live", addressee: "thread:thr_a" });
   });
 
+  it.each(["ended", "unknown"] as const)("preserves close confirmation after a stale %s answer", async (answer) => {
+    const { registry, threads } = setup();
+    threads.endsSession = true;
+    await openSettled(registry, threadA);
+    const ending = deferred<typeof answer>();
+    threads.endSessionResult = () => ending.promise;
+
+    const result = registry.endSession("panel-1");
+    expect(registry.report("panel-1", "lost")).toBe(true);
+    threads.openResult = async () => ({ status: "unknown" });
+    const retry = registry.retryOpen("panel-1");
+    expect(retry.ok && await retry.settled).toMatchObject({ state: "lost", unknownOutcome: "open" });
+    ending.resolve(answer);
+    await result;
+
+    expect(await registry.close("panel-1")).toEqual({ status: "needs-confirmation", warning: "ends-session" });
+    expect(threads.releases).toEqual([]);
+    expect(registry.get("panel-1")).toMatchObject({ state: "lost", unknownOutcome: "open" });
+  });
+
+  it("ends only the original open attempts when a retried view rejoins its generation", async () => {
+    const { registry, threads } = setup();
+    threads.multipleViews = true;
+    await openSettled(registry, threadA);
+    await openSettled(registry, threadA, true);
+    const ending = deferred<"ended">();
+    threads.endSessionResult = () => ending.promise;
+
+    const result = registry.endSession("panel-1");
+    registry.report("panel-2", "lost");
+    const retry = registry.retryOpen("panel-2");
+    expect(retry.ok && await retry.settled).toMatchObject({ state: "live" });
+    ending.resolve("ended");
+    await result;
+
+    expect(registry.get("panel-1")).toMatchObject({ state: "session-ended" });
+    expect(registry.get("panel-2")).toMatchObject({ state: "live" });
+  });
+
   it("does not end a second view opened and confirmed live after the request", async () => {
     const { registry, threads } = setup();
     threads.multipleViews = true;

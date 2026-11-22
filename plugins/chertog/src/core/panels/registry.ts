@@ -317,9 +317,9 @@ export class PanelRegistry {
     // hold it at this moment, loading ones included. A view opened later is
     // not part of what the provider was asked to end.
     const generation = entry.generation;
-    const asked = new Set<string>();
+    const asked = new Map<Entry, number>();
     for (const other of this.entries.values()) {
-      if (other.generation === generation && holdsSession(other)) asked.add(other.instanceId);
+      if (other.generation === generation && holdsSession(other)) asked.set(other, other.attempt);
     }
     let outcome: "ended" | "unknown";
     try {
@@ -329,14 +329,14 @@ export class PanelRegistry {
       this.reportFailure("panel-provider-end-session", error);
     }
     entry.endingSession = false;
-    const stillOpen = this.entries.get(instanceId) === entry;
+    const sameView = this.entries.get(instanceId) === entry && asked.get(entry) === entry.attempt;
     if (outcome === "ended") {
       // The session is over for its other views even if this one was closed
       // while the provider was answering.
-      if (stillOpen) entry.unknownOutcome = null;
+      if (sameView) entry.unknownOutcome = null;
       this.markSessionEnded(generation, asked);
       this.notify();
-    } else if (stillOpen) {
+    } else if (sameView) {
       entry.unknownOutcome = "end-session";
       this.notify();
     }
@@ -473,12 +473,12 @@ export class PanelRegistry {
    * The session is over for every view of that participation, not only for
    * the one the user acted in: none of them stays live or keeps an addressee.
    * A view still loading is ended too, and its late answer is ignored. With
-   * `only`, the end applies to those instances alone.
+   * `only`, the end applies only to the open attempts present when requested.
    */
-  private markSessionEnded(generation: number, only?: ReadonlySet<string>): void {
+  private markSessionEnded(generation: number, only?: ReadonlyMap<Entry, number>): void {
     for (const entry of this.entries.values()) {
       if (entry.generation !== generation || !holdsSession(entry)) continue;
-      if (only !== undefined && !only.has(entry.instanceId)) continue;
+      if (only !== undefined && only.get(entry) !== entry.attempt) continue;
       entry.state = "session-ended";
       entry.addressee = null;
       entry.attempt += 1;
