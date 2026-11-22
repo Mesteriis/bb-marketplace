@@ -44,6 +44,7 @@ function setup(tileCount = 3) {
         onRename: unused,
         onDuplicate: unused,
         onDelete: unused,
+        onRetrySave: unused,
         onReload: unused,
       }}
       content={{
@@ -136,6 +137,7 @@ describe("WorkspaceToolbar", () => {
             onRename: unused,
             onDuplicate: unused,
             onDelete: unused,
+            onRetrySave: unused,
             onReload: unused,
           }}
           content={{
@@ -235,6 +237,7 @@ describe("WorkspaceToolbar: the focused control disappears from the picker dialo
           onRename: unused,
           onDuplicate: unused,
           onDelete: unused,
+          onRetrySave: unused,
           onReload: unused,
         }}
         content={{ sections, tileCount, tileLimit: 8, onOpen, onFocusExisting: unused }}

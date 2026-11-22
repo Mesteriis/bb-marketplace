@@ -175,7 +175,7 @@ export class WorkspaceController {
     const next = dropUnusedPanels(result.document, live);
     if (next === current) return null;
     this.set({ document: next, refusal: null });
-    this.schedule();
+    if (this.snapshot.save.status !== "failed") this.schedule();
     return null;
   }
 
@@ -186,7 +186,8 @@ export class WorkspaceController {
 
   /** Sends the current state again after a failed save or a conflict the window gave up on. */
   retrySave(): void {
-    if (this.snapshot.document !== null) this.schedule();
+    const { status } = this.snapshot.save;
+    if (status === "failed" || status === "conflict") this.schedule();
   }
 
   dismissMerge(): void {

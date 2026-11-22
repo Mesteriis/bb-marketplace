@@ -14,6 +14,7 @@ function spies() {
     onRename: vi.fn<(layoutId: string, name: string) => void>(),
     onDuplicate: vi.fn<(layoutId: string, name: string) => void>(),
     onDelete: vi.fn<(layoutId: string) => void>(),
+    onRetrySave: vi.fn<() => void>(),
     onReload: vi.fn<() => void>(),
   };
 }
@@ -69,6 +70,7 @@ function Harness({ calls, initial = [{ id: "l1", name: "Основная" }], sa
         calls.onDelete(id);
         setLayouts(layouts.filter((layout) => layout.id !== id));
       }}
+      onRetrySave={calls.onRetrySave}
       onReload={calls.onReload}
     />
   );
@@ -340,11 +342,23 @@ describe("LayoutSwitcher: save status", () => {
   it.each([
     ["saved", "Сохранено"],
     ["saving", "Сохраняется…"],
+    ["off", "Сохранение выключено"],
   ] as const)("reports %s without a reload action", (saveStatus, text) => {
     render(<Harness calls={spies()} saveStatus={saveStatus} />);
 
     expect(screen.getByRole("status").textContent).toBe(text);
+    expect(screen.queryByRole("button", { name: "Сохранить ещё раз" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Обновить" })).toBeNull();
+  });
+
+  it("offers an explicit retry after failure", async () => {
+    const user = userEvent.setup();
+    const calls = spies();
+    render(<Harness calls={calls} saveStatus="failed" />);
+    expect(screen.getByRole("status").textContent).toBe("Не сохранено");
+    expect(calls.onRetrySave).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Сохранить ещё раз" }));
+    expect(calls.onRetrySave).toHaveBeenCalledTimes(1);
   });
 
   it("reports a conflict with another window and reloads on request", async () => {

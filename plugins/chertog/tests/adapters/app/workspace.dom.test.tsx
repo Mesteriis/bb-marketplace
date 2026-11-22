@@ -358,16 +358,29 @@ describe("saving", () => {
     await user.click(await screen.findByRole("button", { name: /Исполнитель/ }));
     await settled(stage);
 
-    expect(screen.getByRole("alert").textContent).toBe("Раскладки не сохранены: нет сети. Изменения остаются в этом окне.");
-    expect(within(screen.getByRole("toolbar")).getByRole("status").textContent).toBe("Сохраняется…");
+    const toolbar = within(screen.getByRole("toolbar"));
+    expect(toolbar.getByRole("status").textContent).toBe("Не сохранено");
+    expect(toolbar.getByRole("status").title).toContain("нет сети");
+    expect(screen.queryByRole("alert")).toBeNull();
     expect(draft("thr_a")).toBeTruthy();
     expect(stage.rpc.stored).toBeNull();
 
-    await user.click(screen.getByRole("button", { name: "Сохранить ещё раз" }));
+    await user.click(toolbar.getByRole("button", { name: "Сохранить ещё раз" }));
     await settled(stage);
     expect(screen.queryByRole("alert")).toBeNull();
     expect(within(screen.getByRole("toolbar")).getByRole("status").textContent).toBe("Сохранено");
     expect(stage.rpc.stored?.revision).toBe(1);
+  });
+
+  it("shows saving is off when storage has a newer schema", async () => {
+    const stage = newStage();
+    stage.rpc.loadAnswer = { status: "newer", schemaVersion: 9 };
+    render(<Window stage={stage} onRoute />);
+    const toolbar = within(await screen.findByRole("toolbar"));
+    expect(toolbar.getByRole("status").textContent).toBe("Сохранение выключено");
+    expect(toolbar.getByRole("status").title).toContain("более новой версией");
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Сохранить ещё раз" })).toBeNull();
   });
 
   it("tells the user about a merge with another window", async () => {

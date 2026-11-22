@@ -200,6 +200,7 @@ describe("ClosePanelDialog opened from a control that goes away", () => {
               onRename: unused,
               onDuplicate: unused,
               onDelete: unused,
+              onRetrySave: unused,
               onReload: unused,
             }}
             content={{ sections: [], tileCount: 1, tileLimit: 8, onOpen: unused, onFocusExisting: unused }}

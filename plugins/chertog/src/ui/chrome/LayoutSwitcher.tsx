@@ -17,6 +17,8 @@ export interface LayoutSwitcherProps {
   activeLayoutId: string;
   presets: readonly LayoutPresetEntry[];
   saveStatus: SaveStatus;
+  saveDetail?: string | undefined;
+  onRetrySave: () => void;
   maxNameLength?: number;
   onSwitch: (layoutId: string) => void;
   /** The name is trimmed, not empty, within the length limit and not used by another layout. */
@@ -449,9 +451,19 @@ export function LayoutSwitcher(props: LayoutSwitcherProps) {
         )}
       </div>
 
-      <span role="status" className={`truncate text-xs ${saveStatus === "conflict" ? "text-destructive" : "text-muted-foreground"}`}>
+      <span
+        role="status"
+        title={props.saveDetail}
+        aria-description={props.saveDetail}
+        className={`truncate text-xs ${saveStatus === "conflict" || saveStatus === "failed" ? "text-destructive" : "text-muted-foreground"}`}
+      >
         {chromeStrings.saveStatus[saveStatus]}
       </span>
+      {(saveStatus === "failed" || saveStatus === "conflict") && (
+        <button type="button" data-toolbar-item className={classes.button} onClick={props.onRetrySave}>
+          {chromeStrings.saveStatus.retry}
+        </button>
+      )}
       {saveStatus === "conflict" && (
         <button type="button" data-toolbar-item className={classes.button} onClick={props.onReload}>
           {chromeStrings.saveStatus.reload}
