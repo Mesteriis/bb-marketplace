@@ -20,6 +20,7 @@ export function tileMenuItems(panelId: string, label: PanelLabel | undefined, te
     { label: text.removeTile, onSelect: () => actions.removeTile() },
     ...(openBeside === undefined ? [] : [{ label: text.openBeside, onSelect: () => openBeside(panelId) }]),
     ...(label?.linkedCount ? [{ label: text.closeBlock(label.linkedCount), onSelect: () => actions.requestClose(panelId) }] : []),
+    ...(label?.handoffItems ?? []),
     ...(label?.handoffUnavailable
       ? [
           {

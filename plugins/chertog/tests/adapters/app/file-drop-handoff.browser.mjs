@@ -26,7 +26,12 @@ async function drop(locator) {
 
 const groups = page => page.locator("[data-group-id]").evaluateAll(elements =>
   elements.map(group => [group.dataset.groupId, [...group.querySelectorAll("[data-panel-id]")].map(tab => tab.dataset.panelId), group.style.cssText]));
-const live = page => page.locator("[data-chertog-panel]").filter({ has: page.getByRole("button", { name: "Передать в другое окно", exact: true }) });
+const live = page => page.locator("[data-chertog-panel]").filter({ has: page.locator("[contenteditable=true]") });
+// Handing a thread over is an item of its tile menu, not a row over the chat.
+const tileOf = async (page, panel) => {
+  const panelId = await panel.locator("xpath=ancestor::*[@data-live-host]").getAttribute("data-panel-id");
+  return page.locator("[data-group-id]").filter({ has: page.locator('[data-panel-id="' + panelId + '"]') });
+};
 try {
   const source = await open();
   await source.locator("[data-chertog-route]").getByRole("button", { name: /Передача окна/ }).first().click();
@@ -34,7 +39,7 @@ try {
   await source.getByRole("button", { name: "Добавить панель", exact: true }).click();
   await source.getByRole("dialog").getByRole("region", { name: "Треды" }).getByRole("button", { name: /Соседний тред/ }).click();
   const panels = live(source);
-  await panels.nth(1).getByRole("button", { name: "Передать в другое окно" }).waitFor();
+  await panels.nth(1).locator("[contenteditable=true]").first().waitFor();
   const target = panels.nth(0);
   const neighbor = panels.nth(1);
   const before = await groups(source);
@@ -47,22 +52,24 @@ try {
   console.log("PASS two BB composers and tile layout");
   async function transfer() {
     const receiver = await open();
-    await target.getByRole("button", { name: "Передать в другое окно", exact: true }).click();
-    await target.getByRole("button", { name: /^Окно / }).click();
+    await (await tileOf(source, target)).getByRole("button", { name: "Действия тайла" }).click();
+    await source.getByRole("menuitem", { name: /^Передать в окно / }).click();
     await receiver.getByRole("button", { name: "Принять", exact: true }).click();
     await source.locator("[data-chertog-panel]").filter({ hasText: /Панель в окне/ }).first().waitFor();
-    await receiver.getByRole("button", { name: "Передать в другое окно", exact: true }).click();
-    await receiver.getByText(/^Это окно /).waitFor();
+    await receiver.getByRole("button", { name: "Действия тайла" }).first().click();
+    await receiver.getByRole("menuitem", { name: /^Передать в окно / }).first().waitFor();
+    await receiver.keyboard.press("Escape");
     return receiver;
   }
   const receiver = await transfer();
   await receiver.close();
   await source.getByRole("status").filter({ hasText: /возвращена в это окно/ }).waitFor({ timeout: 15000 });
   await source.getByRole("button", { name: "Понятно", exact: true }).click();
-  await panels.nth(1).getByRole("button", { name: "Передать в другое окно" }).waitFor();
+  await panels.nth(1).locator("[contenteditable=true]").first().waitFor();
 
   const last = await transfer();
   await source.close();
+  await last.getByRole("button", { name: "Действия тайла" }).first().click();
   await last.getByText("Откройте второе окно через New Window.").waitFor();
   await last.close();
   const restored = await open();

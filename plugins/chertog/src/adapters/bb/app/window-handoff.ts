@@ -11,10 +11,11 @@ import {
 } from "react";
 import { PRESENCE_MS, type Action } from "../../../core/windows/ownership.ts";
 import { snapshotSchema, type WindowSnapshot } from "../../../core/windows/wire.ts";
-import { HandoffControls, IncomingTransfer, ReturnedPanel } from "../../../ui/windows/handoff.tsx";
+import { HandoffNotice, IncomingTransfer, ReturnedPanel } from "../../../ui/windows/handoff.tsx";
 import { findThreadComposer } from "./addressee.ts";
 import { threadAddressee } from "./thread-source.ts";
 import { Listeners } from "./content-sources.ts";
+import type { TileMenuItem } from "../../../ui/tiles/index.ts";
 import type { WindowWorkspace } from "./window-workspace.ts";
 
 type Rpc = (method: "window_sync" | "window_change", input: Record<string, unknown>) => Promise<unknown>;
@@ -255,6 +256,28 @@ export function WindowOverlay({ workspace, call, children }: { workspace: Window
   );
 }
 
+/**
+ * The handover items of a thread panel's tile menu: one per other window, a
+ * cancel while a prepared handover of this window waits, a reason when there
+ * is no other window. Nothing while the window does not own the thread.
+ */
+export function handoffMenuItems(client: WindowClient, threadId: string): TileMenuItem[] {
+  const known = client.read().snapshot ?? client.lastKnown;
+  const placement = known?.placements.find((item) => item.threadId === threadId)?.placement;
+  const me = known?.instanceId;
+  if (!known || !me || !placement || placement.owner !== me) return [];
+  const command = (action: Action) => void client.change(threadId, placement.generation, action);
+  const transfer = placement.transfer;
+  if (transfer) {
+    return transfer.source === me && transfer.phase === "prepared"
+      ? [{ label: "Отменить передачу", onSelect: () => command({ action: "cancel" }) }]
+      : [];
+  }
+  const targets = known.windows.filter((id) => id !== me);
+  if (targets.length === 0) return [{ label: "Передать в другое окно", reason: "Откройте второе окно через New Window." }];
+  return targets.map((id) => ({ label: "Передать в окно " + id.slice(0, 8), onSelect: () => command({ action: "prepare", target: id }) }));
+}
+
 export function WindowThread({ threadId, children }: { threadId: string; children: ReactNode }) {
   const workspace = useContext(ActiveWindow);
   return workspace ? createElement(CoordinatedThread, { workspace, threadId, children }) : children;
@@ -284,7 +307,6 @@ function CoordinatedThread({
   const composers = useSyncExternalStore(workspace.composers.subscribe, workspace.composers.list);
   const hasComposer = findThreadComposer(composers, threadId).status === "one";
   const preparing = t?.target === me && (accepted || t?.phase === "ready");
-  const [show, setShow] = useState(false);
   useEffect(() => {
     if (snapshot && (!p || (p.owner === null && !p.returned))) void command({ action: "claim" });
   }, [!!snapshot, p?.owner]);
@@ -301,24 +323,13 @@ function CoordinatedThread({
       event.stopPropagation();
     }
   };
-  const targets = snapshot?.windows.filter((id) => id !== me) ?? [];
   return createElement(
     "div",
     { className: "flex h-full min-h-0 flex-col" },
-    createElement(HandoffControls, {
+    createElement(HandoffNotice, {
       owner,
       ownerId: p?.owner ?? null,
-      windowId: me ?? null,
-      targets,
-      show,
-      onToggle: () => setShow(!show),
-      busy: !!t,
       error,
-      onPick: (target: string) => {
-        setShow(false);
-        void command({ action: "prepare", target });
-      },
-      onCancel: t?.source === me && t?.phase === "prepared" ? () => void command({ action: "cancel" }) : undefined,
       onRecover:
         snapshot && ((p?.owner && !snapshot.windows.includes(p.owner)) || (p?.returned && !p.owner)) ? () => void command({ action: "claim" }) : undefined,
     }),

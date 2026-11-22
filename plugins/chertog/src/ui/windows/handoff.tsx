@@ -1,48 +1,30 @@
 import type { ReactNode } from "react";
+import { classes } from "../chrome/primitives.tsx";
 
-export function HandoffControls(props: {
+/**
+ * What a thread panel says when it cannot take input: an error, or the thread
+ * is in another window. The owning window shows nothing here; handing the
+ * thread over is an item of the tile menu.
+ */
+export function HandoffNotice(props: {
   owner: boolean;
   ownerId?: string | null;
-  windowId?: string | null;
-  targets: string[];
-  show: boolean;
-  busy: boolean;
   error: string | null;
-  onToggle(): void;
-  onPick(target: string): void;
-  onCancel?: () => void;
   onRecover?: () => void;
 }): ReactNode {
-  if (props.error) return <p role="alert">{props.error}</p>;
-  if (!props.owner)
-    return (
-      <div>
-        {props.onRecover ? (
-          <button onClick={props.onRecover}>Вернуть панель в это окно</button>
-        ) : props.ownerId ? (
-          "Панель в окне " + props.ownerId.slice(0, 8)
-        ) : (
-          "Ожидание права ввода"
-        )}
-      </div>
-    );
+  if (props.error) return <p role="alert" className="px-2 py-1 text-xs text-destructive">{props.error}</p>;
+  if (props.owner) return null;
   return (
-    <div className="flex flex-wrap gap-2 px-2 text-xs">
-      <button disabled={props.busy} onClick={props.onToggle} aria-expanded={props.show}>
-        Передать в другое окно
-      </button>
-      {props.onCancel && <button onClick={props.onCancel}>Отменить передачу</button>}
-      {props.show && props.windowId && <span>Это окно {props.windowId.slice(0, 8)}</span>}
-      {props.show &&
-        (props.targets.length ? (
-          props.targets.map((id) => (
-            <button key={id} onClick={() => props.onPick(id)}>
-              Окно {id.slice(0, 8)}
-            </button>
-          ))
-        ) : (
-          <span>Откройте второе окно через New Window.</span>
-        ))}
+    <div className="flex flex-wrap items-center gap-2 px-2 py-1 text-xs text-muted-foreground">
+      {props.onRecover ? (
+        <button type="button" className={classes.button} onClick={props.onRecover}>
+          Вернуть панель в это окно
+        </button>
+      ) : props.ownerId ? (
+        "Панель в окне " + props.ownerId.slice(0, 8)
+      ) : (
+        "Ожидание права ввода"
+      )}
     </div>
   );
 }
@@ -55,14 +37,21 @@ export function IncomingTransfer(props: {
   onAccept(): void;
 }) {
   return (
-    <aside className="fixed bottom-4 right-4 z-50 rounded border bg-background p-3 text-foreground" aria-label="Передача панели">
+    <aside
+      className="fixed bottom-4 right-4 z-50 flex max-w-sm flex-col gap-2 rounded-lg border border-border bg-card p-3 text-sm text-card-foreground shadow-md"
+      aria-label="Передача панели"
+    >
       <p>Принять панель «{props.title}»?</p>
-      {!props.enabled && <p>Откройте Чертог в этом окне и проверьте доступ к треду.</p>}
-      {props.problem && <p role="alert">{props.problem}</p>}
-      <button disabled={!props.enabled} onClick={props.onAccept}>
-        Принять
-      </button>{" "}
-      <button onClick={props.onCancel}>Отказаться</button>
+      {!props.enabled && <p className="text-xs text-muted-foreground">Откройте Чертог в этом окне и проверьте доступ к треду.</p>}
+      {props.problem && <p role="alert" className="text-xs text-destructive">{props.problem}</p>}
+      <div className="flex gap-2">
+        <button type="button" className={classes.primaryButton} disabled={!props.enabled} onClick={props.onAccept}>
+          Принять
+        </button>
+        <button type="button" className={classes.button} onClick={props.onCancel}>
+          Отказаться
+        </button>
+      </div>
     </aside>
   );
 }
@@ -76,11 +65,19 @@ export function ReturnedPanel(props: {
   onDismiss(): void;
 }) {
   return (
-    <aside className="rounded border bg-background p-3 text-foreground">
+    <aside className="flex max-w-sm flex-col gap-2 rounded-lg border border-border bg-card p-3 text-sm text-card-foreground shadow-md">
       <p role="status">Окно закрылось. Панель «{props.title}» возвращена в это окно.</p>
-      {!props.held && <button disabled={!props.canOpen} onClick={props.onOpen}>Показать панель</button>}
-      {props.problem && <p role="alert">{props.problem}</p>}
-      <button onClick={props.onDismiss}>{props.held ? "Понятно" : "Скрыть"}</button>
+      {props.problem && <p role="alert" className="text-xs text-destructive">{props.problem}</p>}
+      <div className="flex gap-2">
+        {!props.held && (
+          <button type="button" className={classes.primaryButton} disabled={!props.canOpen} onClick={props.onOpen}>
+            Показать панель
+          </button>
+        )}
+        <button type="button" className={classes.button} onClick={props.onDismiss}>
+          {props.held ? "Понятно" : "Скрыть"}
+        </button>
+      </div>
     </aside>
   );
 }

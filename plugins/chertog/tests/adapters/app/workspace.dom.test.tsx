@@ -786,3 +786,26 @@ it("keeps divider proportions changed during Zoom selection", async () => {
   expect(screen.getByRole("separator").getAttribute("aria-valuenow")).toBe("51");
   expect(stage.rpc.stored?.layouts[0].workspace.root).toMatchObject({ sizes: [609 / 1186, 577 / 1186] });
 });
+
+it("offers the handover of a thread in the menu of its tile and in the title bar, and draws no row for it", async () => {
+  const user = userEvent.setup();
+  const stage = newStage();
+  render(<Window stage={stage} onRoute />);
+  await user.click(await screen.findByRole("button", { name: /Исполнитель/ }));
+  await settled(stage);
+  await act(async () => {
+    await stage.workspace.handoff.start(async () => ({
+      instanceId: "me",
+      windows: ["me", "634b078f51300"],
+      placements: [{ threadId: "thr_a", placement: { owner: "me", generation: 1, transfer: null } }],
+    }));
+  });
+  expect(screen.queryByText("Передать в другое окно")).toBeNull();
+  const menus = screen.getAllByRole("button", { name: "Действия тайла" });
+  expect(menus).toHaveLength(2);
+  for (const menu of menus) {
+    await user.click(menu);
+    expect(screen.getByRole("menuitem", { name: "Передать в окно 634b078f" })).toBeTruthy();
+    await user.keyboard("{Escape}");
+  }
+});

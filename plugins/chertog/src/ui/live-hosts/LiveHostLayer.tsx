@@ -151,6 +151,9 @@ function LiveHost({ instance, rect, zIndex, gestureActive, onContentError }: Liv
     height: shown.height,
     zIndex,
     overflow: "hidden",
+    // The tile's border curves at the bottom; the content follows it, one border width inside.
+    borderBottomLeftRadius: "calc(var(--radius) - 1px)",
+    borderBottomRightRadius: "calc(var(--radius) - 1px)",
     visibility: visible ? "visible" : "hidden",
     pointerEvents: visible && !gestureActive ? "auto" : "none",
   };

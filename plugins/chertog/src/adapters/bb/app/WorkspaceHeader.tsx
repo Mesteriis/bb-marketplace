@@ -9,6 +9,7 @@ import { workspacePresets } from "../../../core/workspace/presets.ts";
 import { HeaderActions, TileTitle } from "../../../ui/chrome/index.ts";
 import { DEFAULT_TILE_TEXT, tileMenuItems, type PanelLabel } from "../../../ui/tiles/index.ts";
 import { chromeActions } from "./chrome-actions.ts";
+import { panelLabels, useHandoffState } from "./panel-labels.ts";
 import { appStrings } from "./strings.ts";
 import type { WindowWorkspace } from "./window-workspace.ts";
 import type { WorkspaceSnapshot } from "./workspace-controller.ts";
@@ -28,17 +29,19 @@ interface ActiveTile {
 function useSession(workspace: WindowWorkspace): WorkspaceSession {
   const { session } = workspace;
   useSyncExternalStore(session.subscribe, session.getVersion);
+  useHandoffState(workspace);
   return session;
 }
 
 /** The active panel of the focused tile, or `null` when the workspace is not loaded or that tile is empty. */
-function activeTile(session: WorkspaceSession): ActiveTile | null {
+function activeTile(workspace: WindowWorkspace): ActiveTile | null {
+  const { session } = workspace;
   const state = session.surfaceState();
   if (state === null) return null;
   const group = findGroup(state.root, state.focusedGroupId);
   if (group === undefined || group.activeTab === null) return null;
   const panelId = group.activeTab;
-  return { panelId, groupId: group.id, label: session.labels()[panelId] ?? { title: panelId } };
+  return { panelId, groupId: group.id, label: panelLabels(workspace)[panelId] ?? { title: panelId } };
 }
 
 function saveDetail({ save, origin }: WorkspaceSnapshot): string | undefined {
@@ -53,7 +56,7 @@ function saveDetail({ save, origin }: WorkspaceSnapshot): string | undefined {
 
 export function ChertogHeaderTitle({ workspace }: { workspace: WindowWorkspace }) {
   const session = useSession(workspace);
-  const tile = activeTile(session);
+  const tile = activeTile(workspace);
   const actions = chromeActions(session, workspace.dialogs);
   const menuItems =
     tile === null
@@ -140,7 +143,7 @@ export function ChertogHeaderActions({ workspace, onNewThread }: { workspace: Wi
 
 /** The page title of the pane: the focused tile; `null` leaves BB's default panel title. */
 export function useChertogPageTitle(workspace: WindowWorkspace): { title: string; windowTitle: string } | null {
-  const session = useSession(workspace);
-  const title = activeTile(session)?.label.title ?? null;
+  useSession(workspace);
+  const title = activeTile(workspace)?.label.title ?? null;
   return useMemo(() => (title === null ? null : { title, windowTitle: `${title} — ${appStrings.panelTitle}` }), [title]);
 }

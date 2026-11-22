@@ -97,7 +97,6 @@ try {
      await host.getByText("term_fixtureabc",{exact:false}).first().waitFor();
    }
    if(goal.action==="Выбрать тред") {
-     if(!afterReload) await host.getByRole("button",{name:"Передать в другое окно"}).waitFor();
      await host.locator("[data-chertog-panel]").waitFor();
    }
    assert.equal(await tile.locator('[data-panel-id="'+goal.chooserId+'"]').count(),0);

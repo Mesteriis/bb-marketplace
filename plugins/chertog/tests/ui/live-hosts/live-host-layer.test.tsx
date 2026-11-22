@@ -223,6 +223,10 @@ describe("LiveHostLayer: geometry and visibility", () => {
     expect(hostA.style.pointerEvents).toBe("auto");
     expect(hostA.style.zIndex).toBe("0");
     expect(hostA.style.overflow).toBe("hidden");
+    // Clipped by the tile's inner radius at the bottom, where the tile's border curves.
+    expect(hostA.style.borderBottomLeftRadius).toBe("calc(var(--radius) - 1px)");
+    expect(hostA.style.borderBottomRightRadius).toBe("calc(var(--radius) - 1px)");
+    expect(hostA.style.borderTopLeftRadius).toBe("");
     expect(hostA.style.display).toBe("");
     expect(hostA.hasAttribute("inert")).toBe(false);
     expect(hostA.hasAttribute("aria-hidden")).toBe(false);

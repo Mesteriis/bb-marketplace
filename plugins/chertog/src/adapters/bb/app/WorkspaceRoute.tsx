@@ -15,6 +15,7 @@ import {
 import { findGroup, listGroups, type Rect } from "../../../core/layout/index.ts";
 import { CloseBlockDialog, ClosePanelDialog, ContentPicker, type ContentChoice } from "../../../ui/chrome/index.ts";
 import { classes, Modal } from "../../../ui/chrome/primitives.tsx";
+import { panelLabels, useHandoffState } from "./panel-labels.ts";
 import { TileSurface, type ContentRects, type SurfaceSize } from "../../../ui/tiles/index.ts";
 import { chromeActions } from "./chrome-actions.ts";
 import { appStrings } from "./strings.ts";
@@ -37,6 +38,7 @@ function sameSet(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
 export function WorkspaceRoute({ workspace, surfaceSize }: WorkspaceRouteProps) {
   const { session, bridge, dialogs } = workspace;
   useSyncExternalStore(session.subscribe, session.getVersion);
+  useHandoffState(workspace);
   const snapshot = session.controller.getSnapshot();
   const document = snapshot.document;
 
@@ -165,7 +167,7 @@ export function WorkspaceRoute({ workspace, surfaceSize }: WorkspaceRouteProps) 
   }
 
   const groups = listGroups(workspaceState.root);
-  const labels = session.labels();
+  const labels = panelLabels(workspace);
   const sections = session.contentSections();
   const { open, askToClose, requestClose } = chromeActions(session, dialogs);
   const itemTitle = (choice: ContentChoice): string =>
