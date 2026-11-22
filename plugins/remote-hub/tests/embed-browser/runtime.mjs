@@ -7,6 +7,7 @@ import * as classVarianceAuthority from "class-variance-authority";
 import * as clsx from "clsx";
 import * as tailwindMerge from "tailwind-merge";
 import * as radixDropdownMenu from "@radix-ui/react-dropdown-menu";
+import * as zod from "zod";
 
 const version = "chertog.embed.v1";
 const provider = new URL(location.href).searchParams.get("provider");
@@ -65,6 +66,7 @@ globalThis.__bbPluginRuntime = {
   clsx,
   tailwindMerge,
   radixDropdownMenu,
+  zod,
   pluginSdkApp: {
     definePluginApp: (register) => register,
     useRpc: () => rpc,
