@@ -5,7 +5,7 @@ import { findGroupOfPanel, listGroups } from "../../../src/core/layout/index.ts"
 import type { WorkspaceDocument } from "../../../src/core/workspace/index.ts";
 import { activeLayout, blockChildren, panelIdOfRef } from "../../../src/core/workspace/index.ts";
 import { ThreadDirectory, createThreadSource, threadRef, type ThreadEntry } from "../../../src/adapters/bb/app/thread-source.ts";
-import { WorkspaceSession } from "../../../src/adapters/bb/app/workspace-session.ts";
+import { TILE_LIMIT, WorkspaceSession } from "../../../src/adapters/bb/app/workspace-session.ts";
 import { FakeWorkspaceRpc, sequentialIds } from "./support.ts";
 
 const entries: ThreadEntry[] = [
@@ -19,8 +19,7 @@ function thread(id: string) {
   return { ref: threadRef(id) };
 }
 
-function sessionOver(stored: WorkspaceDocument | null) {
-  const rpc = new FakeWorkspaceRpc();
+function sessionOver(stored: WorkspaceDocument | null, rpc = new FakeWorkspaceRpc()) {
   rpc.stored = stored;
   const threads = new ThreadDirectory();
   threads.set({ status: "ready", threads: entries });
@@ -29,10 +28,24 @@ function sessionOver(stored: WorkspaceDocument | null) {
     rpc,
     sources: [createThreadSource({ directory: threads, renderChat: () => null })],
     newId: (prefix) => nextId(prefix),
-    diagnostics: { report: () => undefined } as never,
+    diagnostics: { failure: () => undefined },
     threads,
   });
   return session;
+}
+
+const group = (id: string, panel: string) => ({ kind: "group" as const, id, tabs: [panel], activeTab: panel });
+
+/** One layout whose tiles show the given panels side by side, the last one focused. */
+function tiled(panels: Record<string, WorkspaceDocument["panels"][string]>): WorkspaceDocument {
+  const ids = Object.keys(panels);
+  const groups = ids.map((id, index) => group("group-" + (index + 1), id));
+  const root = groups.length === 1 ? groups[0] : { kind: "split" as const, id: "split-100", direction: "row" as const, children: groups, sizes: groups.map(() => 1 / groups.length) };
+  return {
+    schemaVersion: 2, revision: 1, panels,
+    layouts: [{ id: "layout-main", name: "main", workspace: { root, focusedGroupId: "group-" + groups.length, maximizedGroupId: null, nextNodeId: 200 } }],
+    activeLayoutId: "layout-main",
+  };
 }
 
 function document(parentPlaced: boolean): WorkspaceDocument {
@@ -55,10 +68,53 @@ const shown = (session: WorkspaceSession) => activeLayout(session.document()!).w
 const panelOf = (session: WorkspaceSession, id: string) => panelIdOfRef(session.document()!, threadRef(id));
 
 describe("openThread", () => {
-  it("reports not-shown and changes nothing while the page is not shown", () => {
-    const session = sessionOver(document(true));
+  it("reports not-shown and changes nothing while the page is not shown", async () => {
+    const rpc = new FakeWorkspaceRpc();
+    const stored = document(true);
+    const session = sessionOver(stored, rpc);
     expect(session.openThread("thr_x")).toBe("not-shown");
     expect(session.document()).toBeNull();
+    await session.controller.whenIdle();
+    expect(rpc.saves).toEqual([]);
+    expect(rpc.stored).toEqual(stored);
+  });
+
+  it("focuses the tile of a placed thread when focus starts on another tile", async () => {
+    const session = sessionOver(tiled({ "panel-p": thread("thr_p"), "panel-x": thread("thr_x") }));
+    await session.controller.enter();
+    expect(shown(session).focusedGroupId).toBe("group-2");
+    expect(session.openThread("thr_p")).toBe("focused");
+    expect(shown(session).focusedGroupId).toBe("group-1");
+    expect(listGroups(shown(session).root)).toHaveLength(2);
+  });
+
+  it("refuses a new tile beyond the tile limit, reports it, and still focuses an open thread", async () => {
+    const panels: Record<string, WorkspaceDocument["panels"][string]> = {};
+    for (let index = 1; index <= TILE_LIMIT; index += 1) panels["tile-" + index] = thread("thr_" + index);
+    const session = sessionOver(tiled(panels));
+    await session.controller.enter();
+    const before = session.document();
+    expect(session.openThread("thr_x")).toBe("refused");
+    expect(session.document()).toBe(before);
+    expect(session.controller.getSnapshot().refusal).toBe("invalid-layout");
+    expect(session.openThread("thr_1")).toBe("focused");
+  });
+
+  it("puts a thread in the picker tile that waits in the focused tile", async () => {
+    const chooser = { ref: { provider: "chertog-choose", params: { kind: "bb-thread" } } };
+    const session = sessionOver(tiled({ "panel-p": thread("thr_p"), "panel-choose": chooser }));
+    await session.controller.enter();
+    expect(session.openThread("thr_x")).toBe("opened");
+    const tabs = listGroups(shown(session).root).map((tile) => tile.tabs);
+    expect(tabs).toEqual([["panel-p"], [panelOf(session, "thr_x")]]);
+    expect(session.document()!.panels["panel-choose"]).toBeUndefined();
+  });
+
+  it("puts a thread in the empty tile of a first entry", async () => {
+    const session = sessionOver(null);
+    await session.controller.enter();
+    expect(session.openThread("thr_x")).toBe("opened");
+    expect(listGroups(shown(session).root).map((tile) => tile.tabs)).toEqual([[panelOf(session, "thr_x")]]);
   });
 
   it("focuses a thread that is already placed", async () => {

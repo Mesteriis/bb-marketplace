@@ -16,7 +16,7 @@ import {
 } from "../../../core/layout/index.ts";
 import { applyPreset } from "../../../core/workspace/presets.ts";
 import { replaceChoosePanel } from "../../../core/workspace/operations.ts";
-import { CHOOSE_PROVIDER } from "../../../core/panels/choose.ts";
+import { acceptsChoice, CHOOSE_PROVIDER } from "../../../core/panels/choose.ts";
 import { panelRefKey, PanelRegistry, type Clock, type Diagnostics, type PanelInstance, type PanelRef } from "../../../core/panels/index.ts";
 import {
   activeLayout,
@@ -394,27 +394,53 @@ export class WorkspaceSession {
    * Shows a BB thread as a tile of the open layout. A thread the layout
    * already places is focused; a subthread whose parent is placed joins the
    * parent's block; any other thread gets a tile right of the focused one.
-   * `"not-shown"` also covers a change the core refused.
+   * `"not-shown"` only when the page is not shown; a change the core or the
+   * tile limit refuses is `"refused"` and is reported like any other refusal.
    */
-  openThread(threadId: string): "opened" | "focused" | "not-shown" {
+  openThread(threadId: string): "opened" | "focused" | "refused" | "not-shown" {
     if (this.surfaceState() === null) return "not-shown";
     const ref = threadRef(threadId);
     let outcome: "opened" | "focused" = "opened";
-    const refusal = this.controller.change((document) => {
+    let chooser: string | undefined;
+    const refusal = this.controller.change((document, live) => {
       const workspace = activeLayout(document).workspace;
       const existing = panelIdOfRef(document, ref);
       if (existing !== undefined && findGroupOfPanel(workspace.root, existing) !== undefined) {
         outcome = "focused";
         return changeActiveLayout(document, (current) => activateTab(current, existing));
       }
+      outcome = "opened";
       const panelId = existing ?? this.newId("panel");
-      const parentPanelId = this.placedParentOf(document, threadId);
-      if (parentPanelId !== undefined) return placeInBlock(document, parentPanelId, panelId, { ref }, this.parentOf);
-      const known = existing === undefined ? registerPanel(document, panelId, { ref }) : applied(document);
-      if (!known.ok) return known;
-      return changeActiveLayout(known.document, (current) => splitGroup(current, current.focusedGroupId, "right", panelId));
+      const placed = this.placeThread(document, live, threadId, panelId, existing !== undefined);
+      if (!placed.ok) return placed;
+      chooser = placed.chooser;
+      return listGroups(activeLayout(placed.document).workspace.root).length > TILE_LIMIT ? { ok: false, reason: "invalid-layout" } : placed;
     });
-    return refusal === null ? outcome : "not-shown";
+    if (refusal !== null) return "refused";
+    const instanceId = chooser === undefined ? null : this.instanceOfPanel(chooser)?.instanceId ?? null;
+    if (chooser !== undefined && instanceId !== null && !this.document()?.panels[chooser]) void this.registry.close(instanceId);
+    return outcome;
+  }
+
+  /** Places a thread that is not placed: in its parent's block, in the picker that waits in the focused tile, or in a tile of its own. */
+  private placeThread(
+    document: WorkspaceDocument, live: ReadonlySet<string>, threadId: string, panelId: string, known: boolean,
+  ): WorkspaceChange & { chooser?: string } {
+    const ref = threadRef(threadId);
+    const parentPanelId = this.placedParentOf(document, threadId);
+    if (parentPanelId !== undefined) return placeInBlock(document, parentPanelId, panelId, { ref }, this.parentOf);
+    const workspace = activeLayout(document).workspace;
+    const focused = findGroup(workspace.root, workspace.focusedGroupId);
+    if (focused !== undefined && focused.tabs.length === 0) return addPanelToGroup(document, focused.id, panelId, { ref });
+    const active = focused?.activeTab ?? null;
+    if (active !== null && acceptsChoice(document.panels[active].ref, ref)) {
+      const retained = new Set(live);
+      retained.delete(active);
+      return { ...replaceChoosePanel(document, active, panelId, ref, retained), chooser: active } as WorkspaceChange & { chooser?: string };
+    }
+    const registered = known ? applied(document) : registerPanel(document, panelId, { ref });
+    if (!registered.ok) return registered;
+    return changeActiveLayout(registered.document, (current) => splitGroup(current, current.focusedGroupId, "right", panelId));
   }
 
   /** The panel of the parent thread the directory names for a thread, when the open layout places it. */
