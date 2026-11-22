@@ -211,7 +211,7 @@ export class PanelRegistry {
     const entry = this.entries.get(instanceId);
     if (entry === undefined) return { ok: false, reason: "not-open" };
     if (entry.state === "loading") return { ok: false, reason: "busy" };
-    if (entry.state === "live") return { ok: false, reason: "already-live" };
+    if (entry.state === "live" || entry.state === "entry") return { ok: false, reason: "already-live" };
     const provider = this.providers.get(entry.ref.provider);
     if (provider === undefined) return { ok: false, reason: "provider-missing" };
     if (!provider.paramsSchema.safeParse(entry.ref.params).success) return { ok: false, reason: "invalid-ref" };
@@ -438,6 +438,8 @@ export class PanelRegistry {
     if (outcome.status === "live") {
       entry.state = "live";
       entry.addressee = outcome.addressee;
+    } else if (outcome.status === "entry") {
+      entry.state = "entry";
     } else if (outcome.status === "session-ended") {
       this.markSessionEnded(entry.generation);
     } else if (outcome.status === "access-denied") {
@@ -460,7 +462,10 @@ export class PanelRegistry {
       // and an answer still on its way no longer counts.
       entry.view = null;
       entry.attempt += 1;
-      if (holdsSession(entry)) {
+      if (entry.state === "entry") {
+        entry.state = "provider-missing";
+        changed = true;
+      } else if (holdsSession(entry)) {
         entry.state = "lost";
         entry.addressee = null;
         changed = true;

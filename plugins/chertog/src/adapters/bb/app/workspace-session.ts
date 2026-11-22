@@ -161,7 +161,7 @@ export class WorkspaceSession {
     const label: PanelLabel = known ?? { title: source?.neutralLabel ?? appStrings.panelNeutral };
     if (this.refused.has(panelId)) return { ...label, status: { tone: "error", label: appStrings.openFailed } };
     const state = this.instanceOfPanel(panelId)?.state;
-    if (state === undefined || state === "live" || state === "loading") return label;
+    if (state === undefined || state === "live" || state === "entry" || state === "loading") return label;
     return { ...label, status: { tone: "error", label: appStrings.hiddenState[state] } };
   }
 
@@ -218,7 +218,7 @@ export class WorkspaceSession {
       const panelId = this.panelOfInstance(instance.instanceId);
       if (panelId === null || placed.has(panelId)) return [];
       const label = this.labelOf(panelId);
-      const context = instance.state === "live" ? label.context : appStrings.hiddenState[instance.state];
+      const context = instance.state === "live" || instance.state === "entry" ? label.context : appStrings.hiddenState[instance.state];
       return [{ instanceId: instance.instanceId, title: label.title, ...(context === undefined ? {} : { context }) }];
     });
   }
