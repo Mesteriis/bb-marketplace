@@ -252,7 +252,7 @@ export function addLayoutFromTemplate(document: WorkspaceDocument, layoutId: str
 }
 
 /** Whether the chain of stored parents that starts at `from` (itself included) reaches `target`. */
-function leadsTo(document: WorkspaceDocument, from: string, target: string): boolean {
+export function leadsTo(document: WorkspaceDocument, from: string, target: string): boolean {
   const seen = new Set<string>();
   for (let at: string | undefined = from; at !== undefined && !seen.has(at); at = document.panels[at]?.parent) {
     if (at === target) return true;

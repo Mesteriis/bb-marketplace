@@ -15,7 +15,7 @@ import {
   type WorkspaceState,
 } from "../../../core/layout/index.ts";
 import { applyPreset } from "../../../core/workspace/presets.ts";
-import { replaceChoosePanel } from "../../../core/workspace/operations.ts";
+import { leadsTo, replaceChoosePanel } from "../../../core/workspace/operations.ts";
 import { acceptsChoice, CHOOSE_PROVIDER } from "../../../core/panels/choose.ts";
 import { panelRefKey, panelRefSchema, PanelRegistry, type Clock, type Diagnostics, type PanelInstance, type PanelRef } from "../../../core/panels/index.ts";
 import {
@@ -483,7 +483,11 @@ export class WorkspaceSession {
     document: WorkspaceDocument, live: ReadonlySet<string>, ref: PanelRef, panelId: string, known: boolean,
   ): WorkspaceChange & { chooser?: string } {
     const parentPanelId = ref.provider === THREAD_PROVIDER ? this.placedParentOf(document, String(ref.params.threadId)) : undefined;
-    if (parentPanelId !== undefined) return placeInBlock(document, parentPanelId, panelId, { ref, parent: parentPanelId }, this.parentOf);
+    // A panel the document already has is not registered again, so it takes this parent here, unless that makes a cycle (then it is placed on its own).
+    if (parentPanelId !== undefined && !(known && leadsTo(document, parentPanelId, panelId))) {
+      const linked = known ? { ...document, panels: { ...document.panels, [panelId]: { ...document.panels[panelId], parent: parentPanelId } } } : document;
+      return placeInBlock(linked, parentPanelId, panelId, { ref, parent: parentPanelId }, this.parentOf);
+    }
     const workspace = activeLayout(document).workspace;
     const focused = findGroup(workspace.root, workspace.focusedGroupId);
     if (focused !== undefined && focused.tabs.length === 0) return addPanelToGroup(document, focused.id, panelId, { ref });

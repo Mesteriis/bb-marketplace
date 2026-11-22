@@ -338,6 +338,50 @@ describe("a thread tile's parent is fixed when it opens", () => {
     expect(blockChildren(reloaded.document()!, "panel-p", reloaded.parentOf)).toEqual([child]);
     expect(reloaded.linkedCountOf("panel-p")).toBe(1);
   });
+
+  it("a known subthread, hidden and reopened beside its open parent, joins the parent's block", async () => {
+    const rpc = new FakeWorkspaceRpc();
+    const session = await blockSession({}, withoutParent(), ["thr_c"], [], rpc);
+    const child = panelOf(session, "thr_c");
+    expect(session.document()!.panels[child].parent).toBeUndefined();
+    session.removeFromLayout(child);
+    expect(placed(session)).not.toContain(child);
+    session.openThread("thr_p");
+    const parent = panelOf(session, "thr_p");
+    session.openThread("thr_c");
+    expect(panelOf(session, "thr_c")).toBe(child);
+    expect(session.document()!.panels[child].parent).toBe(parent);
+    expect(session.parentOf(child)).toBe(parent);
+    expect(blockChildren(session.document()!, parent, session.parentOf)).toEqual([child]);
+    expect(session.linkedCountOf(parent)).toBe(1);
+    // Moving the parent takes it along.
+    const root = shown(session).root;
+    session.applySurfaceChange({
+      kind: "operation",
+      operation: { type: "moveGroup", groupId: findGroupOfPanel(root, parent)!.id, targetGroupId: findGroupOfPanel(root, "panel-x")!.id, edge: "left" },
+    });
+    expect(placed(session).indexOf(child)).toBe(placed(session).indexOf(parent) + 1);
+    // The link survives a save and a reload.
+    await session.controller.whenIdle();
+    const reloaded = await blockSession({}, withoutParent(), [], [], rpc);
+    expect(reloaded.parentOf(child)).toBe(parent);
+    expect(reloaded.linkedCountOf(parent)).toBe(1);
+    // Closing the parent closes the subthread with it.
+    expect(await session.closePanel(parent, { confirmBlock: true })).toBe("closed");
+    expect(placed(session)).not.toContain(child);
+  });
+
+  it("a known subthread reopened while its parent is not open stays unlinked", async () => {
+    const session = await blockSession({}, withoutParent(), ["thr_c"]);
+    const child = panelOf(session, "thr_c");
+    session.removeFromLayout(child);
+    session.openThread("thr_c");
+    expect(placed(session)).toContain(child);
+    expect(session.document()!.panels[child].parent).toBeUndefined();
+    session.openThread("thr_p");
+    expect(session.parentOf(child)).toBeUndefined();
+    expect(session.linkedCountOf(panelOf(session, "thr_p"))).toBe(0);
+  });
 });
 
 describe("opening something beside a tile", () => {
