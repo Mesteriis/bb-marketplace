@@ -71,7 +71,8 @@ function ChatDockToolbar({ url, experimental_page }: ExperimentalPluginBrowserTo
 
 export default definePluginApp((app) => {
   // No DOM and no listeners: this exists for its disposer, which BB calls on
-  // disable, stop, removal, reload and window teardown.
+  // disable, stop, removal, a reload that replaces the bundle, and window
+  // teardown. A reload of the same bundle keeps the open window's UI.
   app.contentScripts.register({
     id: "lifetime",
     mount: () => () => {
