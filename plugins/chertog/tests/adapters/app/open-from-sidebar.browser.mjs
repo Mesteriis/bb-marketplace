@@ -128,7 +128,7 @@ await shot("5-beside");
 await page.getByRole("button", { name: "Выбрать", exact: true }).click();
 await page.waitForTimeout(500);
 await shot("5a-picker-open");
-// The picker dialog is taller than the 900 px window and its top part cannot be scrolled to (see the report); the search field narrows it.
+// The picker dialog is capped at the window height (Modal), so its top part is reachable; the search field still narrows the list.
 await page.getByRole("dialog").getByRole("searchbox").fill("Другой тред");
 await page.waitForTimeout(300);
 await page.getByRole("dialog").locator('button[data-item-key=\'["bb-thread","thr_other"]\']').click();

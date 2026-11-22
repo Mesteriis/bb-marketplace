@@ -256,6 +256,10 @@ export function Modal({ labelledBy, describedBy, onDismiss, className, children 
         aria-describedby={describedBy}
         tabIndex={-1}
         onKeyDown={onKeyDown}
+        // Inline on purpose: a dialog portaled to the body is outside the plugin's scoped stylesheet, which drops
+        // `max-h-full` there. Without a height cap the dialog grows to its content and the centring backdrop clips both
+        // ends, so the top cannot be scrolled to.
+        style={{ maxHeight: "100%", overflowY: "auto" }}
         className={`flex max-h-full w-full flex-col gap-3 overflow-auto rounded-md border border-border bg-background p-4 text-sm text-foreground shadow-sm ${classes.focusRing} ${className ?? "max-w-md"}`}
       >
         {children}
