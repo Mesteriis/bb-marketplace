@@ -73,8 +73,8 @@ await page.mouse.move(d0.x + d0.width / 2, d0.y + d0.height / 2); await page.mou
 const d1 = await div.boundingBox(); const t1 = await tiles();
 check("divider drag moved the divider by 80px and resized tiles", Math.abs(d1.x - d0.x + 80) <= 2 && t1[0].rect[2] !== t0[0].rect[2], { d0: d0.x, d1: d1.x });
 await shot("6-after-drag");
-const over2 = await page.evaluate(() => [...document.querySelectorAll("[data-chertog-route] [data-group-id] [data-live-host]")].map(h => { const g = h.closest("[data-group-id]"); const gr = g.getBoundingClientRect(), hr = h.getBoundingClientRect(); return hr.left >= gr.left && hr.right <= gr.right && hr.bottom <= gr.bottom + 0.5; }));
-check("after the drag live content stays inside its tile", over2.every(Boolean), over2);
+const over2 = await page.evaluate(() => { const active = new Set([...document.querySelectorAll("[role=tab][aria-selected=true]")].map(t => t.closest("[data-panel-id]")?.dataset.panelId)); return [...document.querySelectorAll("[data-live-host][data-panel-id]")].filter(h => active.has(h.dataset.panelId)).map(h => { const hr = h.getBoundingClientRect(); const g = [...document.querySelectorAll("[data-chertog-route] [data-group-id]")].find(x => { const r = x.getBoundingClientRect(); return hr.left >= r.left - 1 && hr.right <= r.right + 1 && hr.top >= r.top && hr.bottom <= r.bottom + 1; }); const bar = g?.querySelector("[data-tile-header]")?.getBoundingClientRect(); return { panel: h.dataset.panelId, tile: g?.dataset.groupId ?? null, hostTop: Math.round(hr.top), barBottom: bar && Math.round(bar.bottom) }; }); });
+check("after the drag live content stays inside its tile, under the bar (at least two hosts matched)", over2.length >= 2 && over2.every(o => o.tile !== null && Math.abs(o.hostTop - o.barBottom) <= 1), over2);
 // ✕ closes the panel
 const before = await tiles();
 const target = before.find(x => x.tabs.length === 1 && x.tabs[0] === "Тред гамма " + SFX) ?? before.at(-1);

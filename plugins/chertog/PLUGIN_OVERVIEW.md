@@ -8,7 +8,7 @@ them. The interface is in Russian.
   with BB's thread list beside it.
 - **Controls in BB's title bar.** The focused tile and its menu on the left;
   layouts, "+ Панель", "Скрытые панели" and "Новый тред" on the right, folded
-  into "Ещё" under 880 px. Each tile has a 24 px bar with "+ ⋯ ▢ ✕".
+  into "Ещё" when the bar is under 880 px. Each tile has a 24 px bar with "+ ⋯ ▢ ✕".
 - **Threads in tiles.** Pick an existing thread for a tile or a tab; the
   header shows its project and status. Chertog never creates or stops a thread.
 - **Click opens a tile.** With Makosh Sidebar installed and the Chertog page

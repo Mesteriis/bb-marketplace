@@ -1,34 +1,34 @@
-ok   1440x900 two thread tiles — [["Тред альфа p1"],["Тред бета p1"]]
-ok   1440x900 a tile with tabs exists — [["Тред альфа p1"],["Тред бета p1","Тестовая панель frame-cb1ce8df8dc6"]]
-ok   1440x900 each tile bar is 24px and has + ⋯ ▢ ✕ — [[24,["Тред альфа p1","Закрыть: Тред альфа p1","Добавить вкладку","Действия тайла","Развернуть","Закрыть панель"]],[24,["Тред бета p1","Закрыть: Тред бета p1","Тестовая панель frame-cb1ce8df8dc6","Закрыть: Тестовая панель frame-cb1ce8df8dc6","Добавить вкладку","Действия тайла","Развернуть","Закрыть панель"]],[24,["Тред гамма p1","Закрыт
-ok   1440x900 live content starts at the bar's bottom, inside a tile — [{"panel":"panel-ad8e80e582a9","tile":"group-1","hostTop":79,"barBottom":79,"hostRect":[327,79,873,893],"thread":true,"alien":[]},{"panel":"panel-124710c71168","tile":"group-2","hostTop":79,"barBottom":79,"hostRect":[881,79,1153,893],"thread":false,"alien":[]},{"panel":"panel-988675c46e45","tile":"group-4","hostTop":79,"barBottom":79,"hostRect":[1161,79,1433,893],"thread":true,"alien":[]}]
+ok   1440x900 two thread tiles — [["Тред альфа q1"],["Тред бета q1"]]
+ok   1440x900 a tile with tabs exists — [["Тред альфа q1"],["Тред бета q1","Тестовая панель frame-11a0182e92d4"]]
+ok   1440x900 each tile bar is 24px and has + ⋯ ▢ ✕ — [[24,["Тред альфа q1","Закрыть: Тред альфа q1","Добавить вкладку","Действия тайла","Развернуть","Закрыть панель"]],[24,["Тред бета q1","Закрыть: Тред бета q1","Тестовая панель frame-11a0182e92d4","Закрыть: Тестовая панель frame-11a0182e92d4","Добавить вкладку","Действия тайла","Развернуть","Закрыть панель"]],[24,["Тред гамма q1","Закрыт
+ok   1440x900 live content starts at the bar's bottom, inside a tile — [{"panel":"panel-45f304d35634","tile":"group-1","hostTop":79,"barBottom":79,"hostRect":[327,79,873,893],"thread":true,"alien":[]},{"panel":"panel-679a05cf47f5","tile":"group-2","hostTop":79,"barBottom":79,"hostRect":[881,79,1153,893],"thread":false,"alien":[]},{"panel":"panel-faf826432dc7","tile":"group-4","hostTop":79,"barBottom":79,"hostRect":[1161,79,1433,893],"thread":true,"alien":[]}]
 ok   1440x900 thread views are not covered by any outside element (25-point hit grid) — [["group-1",true,[]],["group-2",false,[]],["group-4",true,[]]]
-ok   1440x900 focusing another tile changes the title bar — ["Тред альфа p1 Без проекта","Тред бета p1 Без проекта","Тред гамма p1 Без проекта"]
+ok   1440x900 focusing another tile changes the title bar — ["Тред альфа q1 Без проекта","Тред бета q1 Без проекта","Тред гамма q1 Без проекта"]
 ok   1440x900 focused tile has its own border colour — [["oklch(0.27 0 0)","oklch(0.904954 0 0)","oklch(0.904954 0 0)"],["oklch(0.904954 0 0)","oklch(0.27 0 0)","oklch(0.904954 0 0)"],["oklch(0.904954 0 0)","oklch(0.904954 0 0)","oklch(0.27 0 0)"]]
 ok   1440x900 title bar right side has layout, + Панель, Скрытые, Новый тред — ["Раскладка: Основная","Добавить панель","Скрытые панели: 0","Новый тред"]
 ok   1440x900 layout list opens
 ok   1440x900 + Панель opens the picker
 ok   1440x900 divider drag moved the divider by 80px and resized tiles — {"d0":874,"d1":794}
-ok   1440x900 after the drag live content stays inside its tile — []
-ok   1440x900 tile-bar ✕ closed the panel (tile gone, others stay) — {"before":[["Тред альфа p1"],["Тред бета p1","Тестовая панель frame-cb1ce8df8dc6"],["Тред гамма p1"]],"after":[["Тред альфа p1"],["Тред бета p1","Тестовая панель frame-cb1ce8df8dc6"]]}
-ok   1440x900 ✕ on a tile with tabs closes the active tab only — {"was":["Тред бета p1","Тестовая панель frame-cb1ce8df8dc6"],"now":["Тестовая панель frame-cb1ce8df8dc6"]}
+ok   1440x900 after the drag live content stays inside its tile, under the bar (at least two hosts matched) — [{"panel":"panel-45f304d35634","tile":"group-1","hostTop":79,"barBottom":79},{"panel":"panel-1d1d575c8a88","tile":"group-2","hostTop":79,"barBottom":79},{"panel":"panel-faf826432dc7","tile":"group-4","hostTop":79,"barBottom":79}]
+ok   1440x900 tile-bar ✕ closed the panel (tile gone, others stay) — {"before":[["Тред альфа q1"],["Тред бета q1","Тестовая панель frame-11a0182e92d4"],["Тред гамма q1"]],"after":[["Тред альфа q1"],["Тред бета q1","Тестовая панель frame-11a0182e92d4"]]}
+ok   1440x900 ✕ on a tile with tabs closes the active tab only — {"was":["Тред бета q1","Тестовая панель frame-11a0182e92d4"],"now":["Тестовая панель frame-11a0182e92d4"]}
 ok   1440x900 «Новый тред» left the Chertog route — "/"
 ok   1440x900 no page errors — []
 PROBE PASS
-ok   1280x600 two thread tiles — [["Тред альфа p2"],["Тред бета p2"]]
-ok   1280x600 a tile with tabs exists — [["Тред альфа p2"],["Тред бета p2","Тестовая панель frame-6be0cf3196da"]]
-ok   1280x600 each tile bar is 24px and has + ⋯ ▢ ✕ — [[24,["Тред альфа p2","Закрыть: Тред альфа p2","Добавить вкладку","Действия тайла","Развернуть","Закрыть панель"]],[24,["Тред бета p2","Закрыть: Тред бета p2","Тестовая панель frame-6be0cf3196da","Закрыть: Тестовая панель frame-6be0cf3196da","Добавить вкладку","Действия тайла","Развернуть","Закрыть панель"]],[24,["Тред гамма p2","Закрыт
-ok   1280x600 live content starts at the bar's bottom, inside a tile — [{"panel":"panel-4e54d8a67c48","tile":"group-5","hostTop":79,"barBottom":79,"hostRect":[327,79,793,593],"thread":true,"alien":[]},{"panel":"panel-4f6965788d66","tile":"group-6","hostTop":79,"barBottom":79,"hostRect":[801,79,1033,593],"thread":false,"alien":[]},{"panel":"panel-bdc55d526114","tile":"group-8","hostTop":79,"barBottom":79,"hostRect":[1041,79,1273,593],"thread":true,"alien":[]}]
+ok   1280x600 two thread tiles — [["Тред альфа q2"],["Тред бета q2"]]
+ok   1280x600 a tile with tabs exists — [["Тред альфа q2"],["Тред бета q2","Тестовая панель frame-394a926d8e55"]]
+ok   1280x600 each tile bar is 24px and has + ⋯ ▢ ✕ — [[24,["Тред альфа q2","Закрыть: Тред альфа q2","Добавить вкладку","Действия тайла","Развернуть","Закрыть панель"]],[24,["Тред бета q2","Закрыть: Тред бета q2","Тестовая панель frame-394a926d8e55","Закрыть: Тестовая панель frame-394a926d8e55","Добавить вкладку","Действия тайла","Развернуть","Закрыть панель"]],[24,["Тред гамма q2","Закрыт
+ok   1280x600 live content starts at the bar's bottom, inside a tile — [{"panel":"panel-3c9bb33ab550","tile":"group-5","hostTop":79,"barBottom":79,"hostRect":[327,79,793,593],"thread":true,"alien":[]},{"panel":"panel-04caa26e8d25","tile":"group-6","hostTop":79,"barBottom":79,"hostRect":[801,79,1033,593],"thread":false,"alien":[]},{"panel":"panel-83e67cd1291c","tile":"group-8","hostTop":79,"barBottom":79,"hostRect":[1041,79,1273,593],"thread":true,"alien":[]}]
 ok   1280x600 thread views are not covered by any outside element (25-point hit grid) — [["group-5",true,[]],["group-6",false,[]],["group-8",true,[]]]
-ok   1280x600 focusing another tile changes the title bar — ["Тред альфа p2 Без проекта","Тред бета p2 Без проекта","Тред гамма p2 Без проекта"]
+ok   1280x600 focusing another tile changes the title bar — ["Тред альфа q2 Без проекта","Тред бета q2 Без проекта","Тред гамма q2 Без проекта"]
 ok   1280x600 focused tile has its own border colour — [["oklch(0.27 0 0)","oklch(0.904954 0 0)","oklch(0.904954 0 0)"],["oklch(0.904954 0 0)","oklch(0.27 0 0)","oklch(0.904954 0 0)"],["oklch(0.904954 0 0)","oklch(0.904954 0 0)","oklch(0.27 0 0)"]]
 ok   1280x600 title bar right side has layout, + Панель, Скрытые, Новый тред — ["Раскладка: Основная","Добавить панель","Скрытые панели: 0","Новый тред"]
 ok   1280x600 layout list opens
 ok   1280x600 + Панель opens the picker
 ok   1280x600 divider drag moved the divider by 80px and resized tiles — {"d0":794,"d1":714}
-ok   1280x600 after the drag live content stays inside its tile — []
-ok   1280x600 tile-bar ✕ closed the panel (tile gone, others stay) — {"before":[["Тред альфа p2"],["Тред бета p2","Тестовая панель frame-6be0cf3196da"],["Тред гамма p2"]],"after":[["Тред альфа p2"],["Тред бета p2","Тестовая панель frame-6be0cf3196da"]]}
-ok   1280x600 ✕ on a tile with tabs closes the active tab only — {"was":["Тред бета p2","Тестовая панель frame-6be0cf3196da"],"now":["Тестовая панель frame-6be0cf3196da"]}
+ok   1280x600 after the drag live content stays inside its tile, under the bar (at least two hosts matched) — [{"panel":"panel-3c9bb33ab550","tile":"group-5","hostTop":79,"barBottom":79},{"panel":"panel-3fe47af8e0f9","tile":"group-6","hostTop":79,"barBottom":79},{"panel":"panel-83e67cd1291c","tile":"group-8","hostTop":79,"barBottom":79}]
+ok   1280x600 tile-bar ✕ closed the panel (tile gone, others stay) — {"before":[["Тред альфа q2"],["Тред бета q2","Тестовая панель frame-394a926d8e55"],["Тред гамма q2"]],"after":[["Тред альфа q2"],["Тред бета q2","Тестовая панель frame-394a926d8e55"]]}
+ok   1280x600 ✕ on a tile with tabs closes the active tab only — {"was":["Тред бета q2","Тестовая панель frame-394a926d8e55"],"now":["Тестовая панель frame-394a926d8e55"]}
 ok   1280x600 «Новый тред» left the Chertog route — "/"
 ok   1280x600 no page errors — []
 PROBE PASS

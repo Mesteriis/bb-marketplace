@@ -28,7 +28,8 @@ try {
   assert.equal(await groups.count(), 1);
   await groups.first().getByRole("button", { name: "Восстановить" }).click();
   assert.deepEqual(await tileIds(), original);
-  await route.getByRole("button", { name: "Новый тред", exact: true }).click();
+  // Since 79f18fa2 «Новый тред» is in BB's title bar. Selector updated; this historical probe was not re-run on the new look.
+  await page.locator("header").getByRole("button", { name: "Новый тред", exact: true }).click();
   await page.waitForURL(new URL("/", url).href);
   await page.goBack();
   await groups.nth(1).waitFor();
