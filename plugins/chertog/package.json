@@ -1,7 +1,7 @@
 {
   "name": "bb-plugin-chertog",
   "version": "0.1.0",
-  "description": "BB thread tiles, provider cards and owner-confirmed embedded views, file previews and diffs, named layouts, presets and thread handoff.",
+  "description": "Thread tiles opened from the thread list, linked subthread blocks, embedded views, previews, layouts, handoff, chertog.open.v1 for plugins.",
   "private": true,
   "type": "module",
   "license": "MIT",
@@ -28,7 +28,7 @@
   },
   "bb": {
     "name": "Chertog [Experimental]",
-    "description": "BB thread tiles, provider cards and owner-confirmed embedded views, file previews and diffs, named layouts, presets and thread handoff.",
+    "description": "Thread tiles opened from the thread list, linked subthread blocks, embedded views, previews, layouts, handoff, chertog.open.v1 for plugins.",
     "branding": {
       "icon": "./assets/icon.svg"
     },

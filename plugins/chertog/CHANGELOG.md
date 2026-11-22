@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Click in the thread list opens a tile (Makosh Sidebar sends `chertog.open.v1`), subthreads open as linked blocks beside their parent, tiles have "Открыть рядом…", the parent's keyboard move and close take the block along, and a window without a shown Chertog page answers open requests `not-shown`. Stand record: docs/acceptance-open.md.
 - Stage A in one window. The "Чертог" page shows the tile surface on the whole route with BB's thread list beside it: existing threads in tiles and tabs, split, drag, resize, maximize, keyboard equivalents, and named layouts created, renamed, duplicated, deleted and switched from the toolbar.
 - Live panels are kept for the life of the window in an app overlay, because BB remounts a nav panel on every return to its route. Leaving for a thread and coming back shows the same panels.
 - Layouts are saved through the plugin's RPC after every change, one save at a time, against the revision they were made from. A conflict with another window is merged and reported; a failed save is shown and keeps the window's state.

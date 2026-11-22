@@ -1600,7 +1600,7 @@
     {
       "id": "chertog",
       "displayName": "Chertog [Experimental]",
-      "description": "BB thread tiles, provider cards and owner-confirmed embedded views, file previews and diffs, named layouts, presets and thread handoff.",
+      "description": "Thread tiles opened from the thread list, linked subthread blocks, embedded views, previews, layouts, handoff, chertog.open.v1 for plugins.",
       "icon": {
         "url": "./plugins/chertog/assets/icon.svg"
       },
