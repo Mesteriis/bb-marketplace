@@ -25246,3 +25246,21 @@ test("sends installed stickers as poll options and loads artwork from the matchi
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("recognises embed forums by verified TDLib metadata and keeps ordinary and read-only chats selectable", async () => {
+  const {session} = harness(query => {
+    if (query["@type"] === "getAuthorizationState") return {"@type":"authorizationStateReady"};
+    if (query["@type"] === "getChats") return {"@type":"chats",chat_ids:[-1,-2,-3,-4]};
+    if (query["@type"] === "getChat") return {"@type":"chat", id:query.chat_id, title:"Synthetic",
+      type:query.chat_id === -1 ? {"@type":"chatTypeBasicGroup"} : {"@type":"chatTypeSupergroup",supergroup_id:-Number(query.chat_id),is_channel:false}};
+    if (query["@type"] === "getSupergroup" && query.supergroup_id !== 4)
+      return {"@type":"supergroup", id:query.supergroup_id, is_channel:false, is_forum:query.supergroup_id === 3};
+    throw new Error("Unavailable metadata");
+  });
+  try {
+    await vi.waitFor(()=>expect(session.status().state).toBe("ready"));
+    expect(await session.embedChatChoices("")).toEqual([
+      {id:"-1",name:"Synthetic"}, {id:"-2",name:"Synthetic"}, {id:"-3",name:"Synthetic",forum:true}, {id:"-4",name:"Synthetic"},
+    ]);
+  } finally { await session.close(); }
+});

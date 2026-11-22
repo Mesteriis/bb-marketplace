@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { render, act, cleanup, fireEvent, within, waitFor } from "@testing-library/react";
-import { afterEach, beforeAll, expect, it } from "vitest";
+import { afterEach, beforeAll, expect, it, vi } from "vitest";
 import { TelegramPortals } from "../src/adapters/bb/embed-portals.tsx";
 
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
@@ -70,7 +70,7 @@ it("registers the Telegram owner slot and waits for host acceptance before resol
     sessionRpc: input => {
       const {method,payload} = input as {method:string;payload:{method?:string}};
       methods.push(method);
-      if (method === "chatPage") return {chats:[chat],nextOffset:null};
+      if (method === "embedChatChoices") return [chat];
       if (method === "bindEmbedChat") return ref;
       if (method === "resolveEmbedChat") return {chat,list:"main"};
       if (method === "embedChatAction" && payload.method === "history") return {messages:[],before:null};
@@ -107,3 +107,97 @@ it("cannot accept an in-flight choice after owner cancellation", () => {
   fireEvent.click(node.querySelector("button")!);
   expect(replies).toEqual(["cancelled"]);
 });
+
+
+const connectionId = "12345678-1234-4123-8123-123456789aaa";
+const uuid = "12345678-1234-4123-8123-123456789abc";
+const fixtureChat = {id:"21",name:"Synthetic group",initials:"A",color:"#246dbd",subtitle:"Group",messages:[]};
+const fixtureRow = {id:"42",author:"Fixture",time:"",text:"Original fixture"};
+function openTile(session: (method: string, payload: Record<string, unknown>) => unknown,
+  status = () => ({ state: "ready", connectionId }), choose = false) {
+  const node = target("view-1");
+  const states: string[] = [];
+  node.addEventListener("chertog.embed.v1.owner", event => states.push((event as CustomEvent).detail.kind));
+  const view = renderSlot(app.appOverlays.find(item => item.id === "chertog-chat")!, {}, { rpc: {
+    status, sessionRpc: input => {
+      const { method, payload } = input as { method: string; payload: Record<string,unknown> };
+      return session(method, payload);
+    },
+  } });
+  announce(node, { ...base, kind: "announce", ...(choose ? {mode:"choose"} : {resourceRef:uuid}) });
+  return { node, states, view };
+}
+it("offers topics only for a verified forum and lets the user recover from a topic or chat refusal", async () => {
+  const rows = [fixtureChat, {...fixtureChat, id:"22",name:"Synthetic forum",forum:true}];
+  const {node,states,view} = openTile((method, payload) => {
+    if (method === "embedChatChoices") return rows;
+    if (method === "forumTopics") return null;
+    if (method === "bindEmbedChat" && payload.id === "21") throw new Error("revoked");
+    if (method === "bindEmbedChat") return uuid;
+    throw new Error(method);
+  }, undefined, true);
+  try {
+    const ui = within(node);
+    await ui.findByRole("button",{name:"Synthetic group"});
+    expect(ui.queryByRole("button",{name:"Темы · Synthetic group"})).toBeNull();
+    fireEvent.click(ui.getByRole("button",{name:"Темы · Synthetic forum"}));
+    expect((await ui.findByRole("alert")).textContent).toMatch(/тем/i);
+    fireEvent.click(ui.getByRole("button",{name:"Назад к чатам"}));
+    fireEvent.click(await ui.findByRole("button",{name:"Synthetic group"}));
+    expect((await ui.findByRole("alert")).textContent).toMatch(/чат/);
+    fireEvent.click(ui.getByRole("button",{name:"Synthetic forum"}));
+    await waitFor(()=>expect(states).toContain("selected"));
+    expect(states).not.toContain("denied");
+  } finally { view.lifecycle.unmount(); }
+});
+function fixtureSession(method: string, payload: Record<string,unknown>) {
+  if (method === "resolveEmbedChat") return {chat:fixtureChat,list:"main"};
+  if (payload.method === "history") return {messages:[fixtureRow],before:null};
+  if (payload.method === "historyMessage") return {...fixtureRow,text:"Edited fixture"};
+  throw new Error(method);
+}
+it("keeps the same composer, selection and draft across one failed status poll and recovery", async () => {
+  const status = vi.fn().mockReturnValue({state:"ready",connectionId});
+  const {node,states,view} = openTile(fixtureSession,status);
+  try {
+    const field = await within(node).findByRole<HTMLTextAreaElement>("textbox",{name:"Write a message"});
+    fireEvent.change(field,{target:{value:"unsaved fixture"}}); field.setSelectionRange(1,4);
+    status.mockRejectedValueOnce(new Error("poll interrupted"));
+    await waitFor(()=>expect(status.mock.calls.length).toBeGreaterThanOrEqual(3),{timeout:12000});
+    expect(within(node).getByRole("textbox",{name:"Write a message"})).toBe(field);
+    expect([field.value,field.selectionStart,field.selectionEnd]).toEqual(["unsaved fixture",1,4]);
+    expect(states).not.toContain("lost");
+  } finally { view.lifecycle.unmount(); }
+},15000);
+it("refreshes edited rows and applies only deletions for the bound chat and connection", async () => {
+  const {node,view} = openTile(fixtureSession);
+  try {
+    const ui=within(node);
+    await ui.findByText("Original fixture");
+    await view.behavior.emitRealtime("telegram-history-message-changed",{connectionId,id:"21",messageId:"42"});
+    await ui.findByText("Edited fixture");
+    for (const extra of [{id:"23"},{connectionId:uuid}]) {
+      await view.behavior.emitRealtime("telegram-messages-deleted",{connectionId,id:"21",messageIds:["42"],...extra});
+      expect(ui.getByText("Edited fixture")).toBeTruthy();
+    }
+    await view.behavior.emitRealtime("telegram-messages-deleted",{connectionId,id:"21",messageIds:["42"]});
+    await waitFor(()=>expect(ui.queryByText("Edited fixture")).toBeNull());
+  } finally { view.lifecycle.unmount(); }
+});
+
+it("retains the bound draft when a new generation recovers after bounded status failures", async () => {
+  const status = vi.fn().mockReturnValue({state:"ready",connectionId});
+  const {node,states,view} = openTile(fixtureSession,status);
+  try {
+    const field = await within(node).findByRole("textbox",{name:"Write a message"});
+    fireEvent.change(field,{target:{value:"recoverable draft"}});
+    status.mockRejectedValueOnce(new Error()).mockRejectedValueOnce(new Error()).mockRejectedValueOnce(new Error());
+    await waitFor(()=>expect(states).toContain("lost"),{timeout:11000});
+    expect(status).toHaveBeenCalledTimes(4);
+    status.mockReturnValue({state:"ready",connectionId:"12345678-1234-4123-8123-123456789bbb"});
+    node.dataset.generation = "2";
+    announce(node,{...base,kind:"announce",generation:2,resourceRef:uuid});
+    const restored = await within(node).findByRole<HTMLTextAreaElement>("textbox",{name:"Write a message"});
+    expect(restored.value).toBe("recoverable draft");
+  } finally { view.lifecycle.unmount(); }
+},15000);

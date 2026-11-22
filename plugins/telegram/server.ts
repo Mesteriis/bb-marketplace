@@ -1116,6 +1116,10 @@ export default async function activate(bb: BbPluginApi) {
       })().finally(() => { switchingAccount = undefined; });
       return safe(switchingAccount, "Could not switch Telegram accounts.");
     },
+    embedChatChoices: ({ query }, context) => {
+      guard(context);
+      return safe(connected().embedChatChoices(query), "Could not load Telegram chats.");
+    },
     bindEmbedChat: async ({ id, list, topicId }, context) => {
       guard(context);
       const { current, account, store } = await embedOwner();
@@ -1132,7 +1136,7 @@ export default async function activate(bb: BbPluginApi) {
       const topic = target.topic;
       if (method !== "peerProfile") {
         if (topic && ["send", "chatDraft"].includes(method)) return embedDenied();
-        if (["history", "topicDraft", "saveChatDraft"].includes(method) && payload.topicId !== topic?.id) return embedDenied();
+        if (["history", "historyMessage", "topicDraft", "saveChatDraft"].includes(method) && payload.topicId !== topic?.id) return embedDenied();
         if (method === "sendTopicText" || method === "prepareDocumentUpload") {
           if (payload.topic !== undefined || topic) {
             const supplied = payload.topic as { id?: unknown; name?: unknown } | null;

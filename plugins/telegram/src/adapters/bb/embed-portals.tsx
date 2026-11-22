@@ -1,3 +1,4 @@
+import { createAccountDrafts, type AccountDrafts } from "../../ui/local-drafts.ts";
 import { useEffect, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { z } from "zod";
@@ -25,7 +26,18 @@ function ownedTarget(node: EventTarget | null, id: string, generation: number): 
     && node.dataset.generation === String(generation);
 }
 type Status = "choosing" | "ready" | "denied" | "ended" | "lost" | "revoked" | "cancelled";
+// Lifetime follows the host instance. Recovery can replace its generation without
+// replacing a draft. The server resolves the account/chat/topic UUID before lookup.
+function instanceDrafts() {
+  let current: { resource: string; drafts: AccountDrafts } | undefined;
+  return (resource: string) => {
+    if (current?.resource !== resource)
+      current = { resource, drafts: createAccountDrafts() };
+    return current.drafts;
+  };
+}
 export type EmbedPanel = {
+  drafts: ReturnType<typeof instanceDrafts>;
   resourceRef?: string; closing: boolean; visible: boolean;
   status: (kind: Status) => void; select: (uuid: string) => void; keep: () => void; hide: () => void;
 };
@@ -79,6 +91,7 @@ export function TelegramPortals({ renderPanel }: { renderPanel: (panel: EmbedPan
         return;
       }
       const view: View = { id: m.instanceId, generation: m.generation, node, panel: {
+        drafts: old?.panel.drafts ?? instanceDrafts(),
         resourceRef: uuid, visible: !node.closest("[inert],[hidden]"), closing: false,
         status(kind) {
           if (active.get(view.id) !== view || finished(view)) return;

@@ -1,6 +1,7 @@
+import { useEmbedHistory } from "./embed-history.ts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRpc, useRealtime } from "@get-bb/plugin-sdk/app";
-import { schemas, historyMessageChangedChannel, historyMessageChangedEvent, messageNotificationChannel, messageNotificationDelivery,
+import { schemas, messageNotificationChannel, messageNotificationDelivery,
   type ResumedConversation, type ConversationLocation } from "../../core/contract.ts";
 import type { rpcContract } from "../../../server.ts";
 import type { z } from "zod";
@@ -8,7 +9,7 @@ import { TelegramPortals, type EmbedPanel } from "./embed-portals.tsx";
 import { EmbedConversation, type BoundCall } from "./embed-conversation.tsx";
 import { omitUndefinedRpcFields } from "./rpc-wire.ts";
 
-type Method = "chatPage" | "search" | "forumTopics" | "bindEmbedChat" | "resolveEmbedChat" | "embedChatAction";
+type Method = "embedChatChoices" | "forumTopics" | "bindEmbedChat" | "resolveEmbedChat" | "embedChatAction";
 type SessionCall = <K extends Method>(method: K, input: z.input<(typeof schemas)[K]["input"]>) => Promise<z.output<(typeof schemas)[K]["output"]>>;
 
 export function TelegramEmbedOverlay() {
@@ -21,16 +22,23 @@ function Tile({ panel }: { panel: EmbedPanel }) {
   useEffect(() => {
     let alive = true;
     let timer: ReturnType<typeof setTimeout>;
+    let failures = 0;
     async function check() {
       const status = await rpc.call("status").catch(() => null);
       if (!alive) return;
-      setConnection(!status ? false : status.state === "ready" ? status.connectionId ?? null : null);
+      if (status) {
+        failures = 0;
+        setConnection(status.state === "ready" ? status.connectionId ?? null : null);
+      } else if (++failures >= 3) {
+        setConnection(false);
+        return;
+      }
       timer = setTimeout(() => void check(), 2500);
     }
     void check();
     return () => { alive = false; clearTimeout(timer); };
   }, [rpc]);
-  useEffect(() => { if (connection === null) panel.status("denied"); else if (connection === false) panel.status("lost"); }, [connection, panel]);
+  useEffect(() => { if (connection === null) panel.status(panel.resourceRef ? "denied" : "choosing"); else if (connection === false) panel.status("lost"); }, [connection, panel]);
   const call = useMemo<SessionCall>(() => async (method, input) => {
     if (!connection) throw new Error("Telegram connection unavailable");
     const value = await rpc.call("sessionRpc", { connectionId: connection, method, payload: omitUndefinedRpcFields(input) });
@@ -49,13 +57,13 @@ function Picker({ call, panel }: { call: SessionCall; panel: EmbedPanel }) {
   const [query, setQuery] = useState("");
   const [forum, setForum] = useState<string>();
   const [items, setItems] = useState<{ name: string; location: ConversationLocation; forum?: boolean }[]>();
-  const [error, setError] = useState(false);
+  const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
   const alive = useRef(false);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   useEffect(() => {
     let current = true;
-    setItems(undefined); setError(false);
+    setItems(undefined); setError(""); panel.status("choosing");
     const q = query.trim();
     async function load() {
       if (forum) {
@@ -63,21 +71,21 @@ function Picker({ call, panel }: { call: SessionCall; panel: EmbedPanel }) {
         if (topics === null) throw new Error("Unavailable topics");
         return topics.map(topic => ({ name: topic.name, location: { id: forum, list: "main" as const, topicId: topic.id } }));
       }
-      const chats = q.length >= 2 ? await call("search", { query: q }) : (await call("chatPage", { list: "main", offset: 0 })).chats;
-      return chats.map(chat => ({ name: chat.name, forum: chat.subtitle === "Group", location: { id: chat.id, list: "main" as const } }));
+      const chats = await call("embedChatChoices", { query: q });
+      return chats.map(chat => ({ name: chat.name, forum: chat.forum, location: { id: chat.id, list: "main" as const } }));
     }
-    void load().then(rows => { if (current) { setItems(rows); panel.status("choosing"); } },
-      () => { if (current) { setError(true); panel.status("denied"); } });
+    void load().then(rows => { if (current) { setItems(rows); } },
+      () => { if (current) { setError(forum ? "Темы недоступны. Вернитесь к списку и выберите другой чат." : "Не удалось загрузить список чатов. Повторите поиск."); } });
     return () => { current = false; };
   }, [call, forum, query, panel]);
   async function select(location: ConversationLocation) {
     setPending(true);
     try { const ref = await call("bindEmbedChat", location); if (alive.current) panel.select(ref); }
-    catch { if (alive.current) { setPending(false); setError(true); } }
+    catch { if (alive.current) { setPending(false); setError(location.topicId ? "Эта тема недоступна. Выберите другую тему или чат." : "Этот чат недоступен. Выберите другой чат."); } }
   }
   return <section aria-label="Выбор чата Telegram"><label>{forum ? "Найти тему" : "Найти чат"}
     <input value={query} maxLength={128} disabled={pending} onChange={e => setQuery(e.target.value)} /></label>
-    {error ? <p role="alert">Не удалось получить доступ к чату.</p> : !items ? <p>Загрузка…</p> : !items.length && <p>Ничего не найдено.</p>}
+    {error ? <p role="alert">{error}</p> : !items ? <p>Загрузка…</p> : !items.length && <p>Ничего не найдено.</p>}
     <ul>{items?.map(item => <li key={item.location.topicId ?? item.location.id}><button disabled={pending}
       onClick={() => void select(item.location)}>{item.name}</button>{item.forum && <button disabled={pending} onClick={() => { setQuery(""); setForum(item.location.id); }}>Темы · {item.name}</button>}</li>)}</ul>
     {forum && <button disabled={pending} onClick={() => { setForum(undefined); setQuery(""); }}>Назад к чатам</button>}
@@ -94,10 +102,6 @@ function Resolved({ call, resourceRef, connection, panel }: { call: SessionCall;
       () => { if (alive) { setFailed(true); panel.status("denied"); } });
     return () => { alive = false; };
   }, [call, resourceRef, panel]);
-  useRealtime(historyMessageChangedChannel, raw => {
-    const event = historyMessageChangedEvent.safeParse(raw).data;
-    if (event && event.connectionId === connection && event.id === target?.chat.id) setRevision(n => n + 1);
-  });
   useRealtime(messageNotificationChannel, raw => {
     const delivery = messageNotificationDelivery.safeParse(raw).data;
     if (!delivery || delivery.connectionId !== connection || "removed" in delivery.event) return;
@@ -108,6 +112,7 @@ function Resolved({ call, resourceRef, connection, panel }: { call: SessionCall;
     const value = await call("embedChatAction", { resourceRef, method, payload });
     return schemas[method].output.parse(value) as never;
   }, [call, resourceRef]);
+  const updates = useEmbedHistory(connection, target, bound);
   return failed ? <p role="alert">Чат недоступен для текущего аккаунта.</p> : !target ? <p>Открываем чат…</p>
-    : <EmbedConversation target={target} call={bound} revision={revision} />;
+    : <EmbedConversation target={target} call={bound} revision={revision} updates={updates} draftStorage={panel.drafts(resourceRef)} />;
 }

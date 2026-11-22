@@ -5139,23 +5139,30 @@ export function createTelegram(
     if (user["@type"] === "user" && user.id === id && bot?.["@type"] === "userTypeBot" && bot.has_topics === true) return bot;
   }
 
+  async function forumCapabilities(chat: TdObject, signal?: AbortSignal) {
+    const type = object(chat.type);
+    if (type?.["@type"] === "chatTypePrivate") {
+      const bot = await botForumType(chat, signal);
+      if (!bot) return null;
+      return { canCreateBotTopics: bot.allows_users_to_create_topics === true };
+    } else if (type?.["@type"] === "chatTypeSupergroup" && !type.is_channel && Number.isSafeInteger(type.supergroup_id)) {
+      const group = await request({ "@type": "getSupergroup", supergroup_id: type.supergroup_id }, undefined, signal);
+      if (group.id !== type.supergroup_id || group.is_forum !== true || group.is_channel === true) return null;
+      return { canCreateBotTopics: false };
+    }
+    return null;
+  }
+
   async function forumTopicPage(chatId: string, query: string, cursor?: NonNullable<ForumTopicPage["next"]>, signal?: AbortSignal,
     requireShareable = false, requireCompletePage = false): Promise<ForumTopicPage | null> {
     requireReady();
     const chat_id = Number(chatId);
     if (!Number.isSafeInteger(chat_id) || !chat_id) return null;
     const chat = await request({ "@type": "getChat", chat_id }, undefined, signal);
-    const type = object(chat.type);
     if (chat.id !== chat_id || (requireShareable && (chat["@type"] !== "chat" || !allowsSharing(chat)))) return null;
-    let canCreateBotTopics = false;
-    if (type?.["@type"] === "chatTypePrivate") {
-      const bot = await botForumType(chat, signal);
-      if (!bot) return null;
-      canCreateBotTopics = bot.allows_users_to_create_topics === true;
-    } else if (type?.["@type"] === "chatTypeSupergroup" && !type.is_channel && Number.isSafeInteger(type.supergroup_id)) {
-      const group = await request({ "@type": "getSupergroup", supergroup_id: type.supergroup_id }, undefined, signal);
-      if (group.id !== type.supergroup_id || group.is_forum !== true || group.is_channel === true) return null;
-    } else return null;
+    const forum = await forumCapabilities(chat, signal);
+    if (!forum) return null;
+    const { canCreateBotTopics } = forum;
     const result = await request({
       "@type": "getForumTopics", chat_id, query, offset_date: cursor?.date ?? 0, offset_message_id: cursor?.message ?? 0,
       offset_forum_topic_id: cursor?.topic ?? 0, limit: 40,
@@ -17008,6 +17015,17 @@ export function createTelegram(
       return (await forumTopicPage(chatId, query, undefined, signal, requireShareable))?.topics ?? null;
     },
     async postingAllowed(id: string) { return (await postingPermissions(id)).text; },
+    async embedChatChoices(query: string) {
+      requireReady();
+      const ids = await recipientChatIds(query);
+      const rows = await Promise.allSettled(ids.map(async id => {
+        const chat = await request({ "@type": "getChat", chat_id: id });
+        if (chat["@type"] !== "chat" || chat.id !== id) return;
+        const forum = await forumCapabilities(chat).catch(() => null);
+        return { id: String(id), name: chatTitle(chat), ...(forum && { forum: true as const }) };
+      }));
+      return rows.flatMap(row => row.status === "fulfilled" && row.value ? [row.value] : []);
+    },
     async externalReplyChats(query: string) {
       requireReady();
       const ids = await recipientChatIds(query);
