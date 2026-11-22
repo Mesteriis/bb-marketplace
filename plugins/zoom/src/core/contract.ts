@@ -62,6 +62,9 @@ export const rpcSchemas = {
     input: z.object({ link: z.string().max(2048), asHost: z.boolean() }).strict(),
     output: z.object({ url: z.string(), opened: z.boolean() }).strict(),
   },
+  embed_select: { input: z.strictObject({ id: z.string().regex(/^\d{9,11}$/) }), output: z.uuidv4() },
+  embed_resolve: { input: z.strictObject({ resourceRef: z.uuidv4() }), output: z.strictObject({ id: z.string(), topic: z.string() }) },
+  embed_prepare: { input: z.strictObject({ resourceRef: z.uuidv4() }), output: preparedCallSchema },
   call_prepare: {
     input: z.object({ link: z.string().max(2048), asHost: z.boolean() }).strict(),
     output: preparedCallSchema,

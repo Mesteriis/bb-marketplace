@@ -21,14 +21,14 @@ function setup() {
   const openExternal = vi.fn();
   const onOpenInBrowser = vi.fn();
   render(
-    <CallPanel call={CALL} callPageUrl="/call" title="Планёрка" onClose={onClose} openExternal={openExternal} onOpenInBrowser={onOpenInBrowser} readTheme={() => THEME} />,
+    <CallPanel call={CALL} callPageUrl="http://localhost:38886/call" title="Планёрка" onClose={onClose} openExternal={openExternal} onOpenInBrowser={onOpenInBrowser} readTheme={() => THEME} />,
   );
   const frame = screen.getByTitle("Звонок Zoom") as HTMLIFrameElement;
   const target = frame.contentWindow!;
   const posted = vi.spyOn(target, "postMessage").mockImplementation(() => undefined);
-  const say = (data: unknown, source: Window | null = target) =>
+  const say = (data: unknown, source: Window | null = target, origin = "http://localhost:38886") =>
     act(() => {
-      window.dispatchEvent(new MessageEvent("message", { data, source }));
+      window.dispatchEvent(new MessageEvent("message", { data, source, origin }));
     });
   return { onClose, openExternal, onOpenInBrowser, posted, say };
 }
@@ -36,11 +36,15 @@ function setup() {
 describe("CallPanel", () => {
   it("hands the meeting to the page once it is ready", () => {
     const { posted, say } = setup();
+    say({ type: "zoom-call:ready" }, undefined, "https://elsewhere.example");
+    expect(posted).not.toHaveBeenCalled();
     say({ type: "zoom-call:ready" });
-    expect(posted).toHaveBeenNthCalledWith(1, { type: "zoom-call:theme", colors: THEME }, "*");
+    say({ type: "zoom-call:ready" });
+    expect(posted).toHaveBeenCalledTimes(2);
+    expect(posted).toHaveBeenNthCalledWith(1, { type: "zoom-call:theme", colors: THEME }, "http://localhost:38886");
     expect(posted).toHaveBeenCalledWith(
       { type: "zoom-call:join", call: { signature: "sig", meetingNumber: "1111111111", passcode: "p1", userName: "Иван", zak: "zak" } },
-      "*",
+      "http://localhost:38886",
     );
     expect(screen.getByText("Подключаюсь…")).toBeTruthy();
   });
@@ -74,7 +78,7 @@ describe("CallPanel", () => {
     const { say, posted, onClose } = setup();
     say({ type: "zoom-call:joined" });
     act(() => screen.getByRole("button", { name: "Выйти" }).click());
-    expect(posted).toHaveBeenLastCalledWith({ type: "zoom-call:leave" }, "*");
+    expect(posted).toHaveBeenLastCalledWith({ type: "zoom-call:leave" }, "http://localhost:38886");
     expect(onClose).not.toHaveBeenCalled();
     say({ type: "zoom-call:ended" });
     expect(onClose).toHaveBeenCalledTimes(1);

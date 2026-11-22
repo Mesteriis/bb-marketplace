@@ -1,12 +1,12 @@
 // The connected state: week navigation, join by link, new meeting, the week
 // itself, and the call panel once a meeting is joined.
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { Button } from "@/components/ui/button";
 import { layoutWeek, localDate, shiftWeek, weekStartOf } from "../core/calendar.ts";
-import type { PreparedCall } from "../core/call.ts";
+import type { WindowCalls } from "./window-calls";
+import { CallAnchor } from "./call-anchor";
 import type { NewMeeting, ZoomMeeting } from "../core/model.ts";
 import { messageOf, type Notify, type ZoomPageApi } from "./api.ts";
-import { CallPanel } from "./call-panel.tsx";
 import { CreateMeetingDialog } from "./create-meeting-dialog.tsx";
 import { JoinByLink } from "./join-by-link.tsx";
 import { nextMeeting, weekRangeLabel } from "./format.ts";
@@ -16,6 +16,7 @@ import { WeekCalendar } from "./week-calendar.tsx";
 const TICK_MS = 30_000;
 
 interface CalendarScreenProps {
+  calls: WindowCalls;
   api: ZoomPageApi;
   displayName: string | null;
   callPageUrl: string | null;
@@ -28,7 +29,7 @@ interface CalendarScreenProps {
 
 type Meetings = { kind: "loading" } | { kind: "error"; message: string } | { kind: "ready"; list: ZoomMeeting[] };
 
-export function CalendarScreen({ api, displayName, callPageUrl, openExternal, notify, now, timeZone, onAccountChanged }: CalendarScreenProps) {
+export function CalendarScreen({ calls, api, displayName, callPageUrl, openExternal, notify, now, timeZone, onAccountChanged }: CalendarScreenProps) {
   const [meetings, setMeetings] = useState<Meetings>({ kind: "loading" });
   const [reload, setReload] = useState(0);
   const [moment, setMoment] = useState(now);
@@ -36,7 +37,7 @@ export function CalendarScreen({ api, displayName, callPageUrl, openExternal, no
   const [createOpen, setCreateOpen] = useState(false);
   const [joining, setJoining] = useState<string | null>(null);
   const [joinError, setJoinError] = useState<string | null>(null);
-  const [active, setActive] = useState<{ call: PreparedCall; title: string; link: string; asHost: boolean } | null>(null);
+  useSyncExternalStore(calls.subscribe, calls.snapshot);
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
 
   useEffect(() => {
@@ -61,15 +62,23 @@ export function CalendarScreen({ api, displayName, callPageUrl, openExternal, no
 
   const join = useCallback(
     async (key: string, link: string, asHost: boolean, title: string) => {
+      const revision = calls.revision;
       setJoining(key);
       setJoinError(null);
       try {
         const call = await api.prepareCall({ link, asHost });
+        if (calls.revision !== revision) return;
         if (callPageUrl === null) {
           openExternal(call.fallbackUrl);
           notify("info", "Звонок внутри BB работает только при локальном адресе BB. Открываю встречу в Zoom");
         } else {
-          setActive({ call, title, link, asHost });
+          calls.show({ call, title: title || "Встреча Zoom", callPageUrl, openExternal,
+            openInBrowser: () => {
+              void api.openCallInBrowser({link, asHost}).then(({ url, opened }) => {
+                if (!opened) openExternal(url);
+              }).catch(error => notify("error", messageOf(error)));
+            },
+          }, true);
         }
       } catch (error) {
         setJoinError(messageOf(error));
@@ -77,24 +86,8 @@ export function CalendarScreen({ api, displayName, callPageUrl, openExternal, no
         setJoining(null);
       }
     },
-    [api, callPageUrl, openExternal, notify],
+    [api, calls, callPageUrl, openExternal, notify],
   );
-
-  const closeCall = useCallback(() => {
-    setActive(null);
-    setReload((value) => value + 1);
-  }, []);
-
-  // The embedded call is closed first: the same person joining twice would hold two seats.
-  async function moveToBrowser(link: string, asHost: boolean) {
-    setActive(null);
-    try {
-      const { url, opened } = await api.openCallInBrowser({ link, asHost });
-      if (!opened) openExternal(url);
-    } catch (error) {
-      setJoinError(messageOf(error));
-    }
-  }
 
   async function create(input: NewMeeting, joinNow: boolean) {
     const meeting = await api.createMeeting(input);
@@ -115,9 +108,7 @@ export function CalendarScreen({ api, displayName, callPageUrl, openExternal, no
     }
   }
 
-  if (active !== null && callPageUrl !== null) {
-    return <CallPanel call={active.call} title={active.title === "" ? "Встреча Zoom" : active.title} callPageUrl={callPageUrl} onClose={closeCall} openExternal={openExternal} onOpenInBrowser={() => void moveToBrowser(active.link, active.asHost)} />;
-  }
+  if (calls.calendarMeeting) return <CallAnchor calls={calls} id={calls.calendarMeeting} />;
 
   const empty = week !== null && week.unscheduled.length === 0 && week.days.every((day) => day.events.length === 0);
 

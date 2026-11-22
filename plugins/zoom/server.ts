@@ -7,6 +7,7 @@
 import { randomBytes } from "node:crypto";
 import { defineRpcContract, experimental_PluginRpcRefusal, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
+import { createMeetingRefs } from "./src/adapters/bb/meeting-refs";
 import { createCallTickets } from "./src/adapters/bb/call-tickets.ts";
 import { registerHttpRoutes } from "./src/adapters/bb/http-routes.ts";
 import { openInSystemBrowser } from "./src/adapters/bb/open-in-browser.ts";
@@ -88,7 +89,12 @@ export default async function plugin(bb: BbPluginApi) {
     random: { token: (bytes) => randomBytes(bytes).toString("base64url") },
   });
   const api = createZoomApi({ fetch: zoomFetch, clock, accessToken: (options) => oauth.accessToken(options) });
-  const accountChanged = () => bb.realtime.publish(CHANNEL_ACCOUNT_CHANGED, {});
+  let accountRevision = 0;
+  const accountChanged = () => {
+    accountRevision++;
+    bb.realtime.publish(CHANNEL_ACCOUNT_CHANGED, {});
+  };
+  const refs = createMeetingRefs(bb.storage.kv, api, () => accountRevision);
 
   const tickets = createCallTickets(clock, () => randomBytes(32).toString("base64url"));
 
@@ -102,7 +108,8 @@ export default async function plugin(bb: BbPluginApi) {
         // A sign-in that Zoom no longer accepts was just forgotten: tell open pages.
         if (error.code === "auth_expired") accountChanged();
         throw new experimental_PluginRpcRefusal({
-          code: error.code === "not_found" ? "not_found" : "invalid",
+          code: error.code === "not_found" ? "not_found"
+            : ["not_configured", "not_connected", "auth_expired", "auth_denied"].includes(error.code) ? "forbidden" : "invalid",
           message: error.message,
         });
       }
@@ -111,7 +118,8 @@ export default async function plugin(bb: BbPluginApi) {
     }
   }
 
-  bb.rpc.register(rpcContract, {
+  type Handlers = Parameters<typeof bb.rpc.register<typeof rpcContract>>[1];
+  const handlers: Handlers = {
     async status() {
       const configured = (await credentials.get()) !== null;
       const connected = await oauth.isConnected();
@@ -134,6 +142,10 @@ export default async function plugin(bb: BbPluginApi) {
       }),
     meetings_list: () => run(async () => ({ meetings: await api.listUpcoming() })),
     meeting_create: (input) => run(async () => ({ meeting: await api.createMeeting(input) })),
+    embed_select: ({ id }) => run(() => refs.select(id)),
+    embed_resolve: ({ resourceRef }) => run(() => refs.resolve(resourceRef, async ({ id, topic }) => ({ id, topic }))),
+    embed_prepare: ({ resourceRef }) => run(() => refs.resolve(resourceRef, meeting =>
+      prepareCall({ clock, credentials, api }, { link: meeting.joinUrl, asHost: true }))),
     call_prepare: (input) => run(() => prepareCall({ clock, credentials, api }, input)),
     call_open_external: (input) =>
       run(async () => {
@@ -143,5 +155,17 @@ export default async function plugin(bb: BbPluginApi) {
         const url = `${page}?ticket=${ticket}`;
         return { url, opened: await openInSystemBrowser(url) };
       }),
-  });
+  };
+  function ownerHandler<K extends keyof Handlers>(key: K): Handlers[K] {
+    const invoke = handlers[key] as (input: unknown) => unknown;
+    return ((input: unknown, ctx: { experimental_caller: { kind: string } }) => {
+      if (ctx?.experimental_caller?.kind !== "client") {
+        throw new experimental_PluginRpcRefusal({ code: "forbidden", message: "Действие доступно только в Zoom" });
+      }
+      return invoke(input);
+    }) as Handlers[K];
+  }
+  bb.rpc.register(rpcContract, Object.fromEntries(
+    (Object.keys(handlers) as (keyof Handlers)[]).map(key => [key, ownerHandler(key)]),
+  ) as Handlers);
 }

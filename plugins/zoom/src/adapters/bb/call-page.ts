@@ -34,17 +34,29 @@ export const CALL_PAGE_CSP = [
  * camera, microphone or screen, which Zoom's own UI does not explain. The
  * refusal still reaches the SDK unchanged.
  */
+const PARENT_ORIGIN_SCRIPT = `
+  var parentUrl = new URL(window.location.href);
+  var other = parentUrl.hostname === "localhost" ? "127.0.0.1" : parentUrl.hostname === "127.0.0.1" ? "localhost" : null;
+  var parentOrigin = null;
+  if (other && parentUrl.protocol === "http:") {
+    parentUrl.hostname = other;
+    parentOrigin = parentUrl.origin;
+  }
+`;
+
 export const MEDIA_REPORT_SCRIPT = `
 (function () {
+  ${PARENT_ORIGIN_SCRIPT}
   var media = navigator.mediaDevices;
   if (!media) return;
   function report(kind, error) {
+    if (!parentOrigin || window.parent === window) return;
     window.parent.postMessage({
       type: "zoom-call:media-error",
       kind: kind,
       name: String((error && error.name) || "Error"),
       message: String((error && error.message) || "").slice(0, 200)
-    }, "*");
+    }, parentOrigin);
   }
   function wrap(method, kindOf) {
     var original = media[method];
@@ -73,12 +85,13 @@ export const MEDIA_REPORT_SCRIPT = `
  */
 export const CALL_PAGE_SCRIPT = `
 (function () {
+  ${PARENT_ORIGIN_SCRIPT}
   var parentWindow = window.parent;
   var standalone = parentWindow === window;
   var notice = document.getElementById("notice");
   function say(text) { if (notice) notice.textContent = text; }
   function post(message) {
-    if (!standalone) { parentWindow.postMessage(message, "*"); return; }
+    if (!standalone) { if (parentOrigin) parentWindow.postMessage(message, parentOrigin); return; }
     if (message.type === "zoom-call:failed") say(message.message);
     if (message.type === "zoom-call:error") say("Zoom отклонил вход: " + message.message + " (код " + message.code + ")");
     if (message.type === "zoom-call:joined") say("");
@@ -116,6 +129,16 @@ export const CALL_PAGE_SCRIPT = `
 
   var client = null;
   var joined = false;
+  var joinStarted = false;
+  var leaveRequested = false;
+  var leaveStarted = false;
+  function leave() {
+    if (!joined || !leaveRequested || leaveStarted) return;
+    leaveStarted = true;
+    Promise.resolve().then(function () { return client.leaveMeeting(); }).catch(function () {
+      post({ type: "zoom-call:leave-unknown" });
+    });
+  }
   var ready;
   try {
     client = ZoomMtgEmbedded.createClient();
@@ -126,7 +149,7 @@ export const CALL_PAGE_SCRIPT = `
     })).then(function () {
       // The SDK throws on on() until init() has finished.
       client.on("connection-change", function (payload) {
-        if (payload && payload.state === "Connected") { joined = true; fit(); post({ type: "zoom-call:joined" }); }
+        if (payload && payload.state === "Connected") { joined = true; fit(); post({ type: "zoom-call:joined" }); leave(); }
         if (payload && payload.state === "Closed") { joined = false; post({ type: "zoom-call:ended" }); }
       });
     });
@@ -144,6 +167,8 @@ export const CALL_PAGE_SCRIPT = `
   });
 
   function join(call) {
+    if (joinStarted || leaveRequested) return;
+    joinStarted = true;
     ready.then(function () {
       return client.join({
         signature: call.signature,
@@ -176,11 +201,12 @@ export const CALL_PAGE_SCRIPT = `
     post({ type: "zoom-call:failed", message: "Zoom Meeting SDK не запустился: " + describe(error).message });
   });
   window.addEventListener("message", function (event) {
-    if (standalone || event.source !== parentWindow || !event.data) return;
+    if (standalone || event.source !== parentWindow || !parentOrigin || event.origin !== parentOrigin || !event.data) return;
     if (event.data.type === "zoom-call:theme") applyTheme(event.data.colors);
     if (event.data.type === "zoom-call:join" && event.data.call && !joined) join(event.data.call);
-    if (event.data.type === "zoom-call:leave" && joined) {
-      try { client.leaveMeeting(); } catch (error) { post({ type: "zoom-call:ended" }); }
+    if (event.data.type === "zoom-call:leave") {
+      leaveRequested = true;
+      leave();
     }
   });
 })();

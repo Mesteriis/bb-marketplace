@@ -6,7 +6,10 @@ import { messageOf, noNotify, type AccountStatus, type Notify, type ZoomPageApi 
 import { CalendarScreen } from "./calendar-screen.tsx";
 import { ConnectScreen } from "./connect-screen.tsx";
 
+import type { WindowCalls } from "./window-calls";
+
 export interface ZoomPageProps {
+  calls: WindowCalls;
   api: ZoomPageApi;
   /** The address BB is open on; the OAuth redirect is built from it. */
   origin: string;
@@ -23,7 +26,7 @@ export interface ZoomPageProps {
 
 type Load = { kind: "loading" } | { kind: "error"; message: string } | { kind: "ready"; status: AccountStatus };
 
-export function ZoomPage({ api, origin, callPageUrl, openExternal, refreshKey, notify = noNotify, now = Date.now, timeZone }: ZoomPageProps) {
+export function ZoomPage({ calls, api, origin, callPageUrl, openExternal, refreshKey, notify = noNotify, now = Date.now, timeZone }: ZoomPageProps) {
   const [load, setLoad] = useState<Load>({ kind: "loading" });
   const [connecting, setConnecting] = useState(false);
   const [attempt, setAttempt] = useState(0);
@@ -76,6 +79,7 @@ export function ZoomPage({ api, origin, callPageUrl, openExternal, refreshKey, n
   }
   return (
     <CalendarScreen
+      calls={calls}
       api={api}
       displayName={load.status.displayName}
       callPageUrl={callPageUrl}

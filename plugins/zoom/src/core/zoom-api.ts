@@ -42,6 +42,7 @@ export interface ZoomApiDeps {
 }
 
 export interface ZoomApi {
+  accountId(): Promise<string>;
   listUpcoming(): Promise<ZoomMeeting[]>;
   createMeeting(input: NewMeeting): Promise<ZoomMeeting>;
   /** The user's ZAK: lets the Meeting SDK start or join as this user. */
@@ -141,6 +142,9 @@ export function createZoomApi(deps: ZoomApiDeps): ZoomApi {
   }
 
   return {
+    async accountId() {
+      return (await call("/users/me", z.object({ id: z.string().min(1) }), { method: "GET" })).id;
+    },
     async listUpcoming() {
       const meetings: ZoomMeeting[] = [];
       let pageToken = "";

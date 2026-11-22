@@ -23,6 +23,9 @@ interface CallPanelProps {
   /** Moves the call to the system browser, where camera and screen sharing work. */
   onOpenInBrowser?: () => void;
   /** The host's colours for the call page; defaults to reading them from the page. */
+  confirmLeave?: () => void;
+  leaving?: boolean;
+  onLost?: () => void;
   readTheme?: () => Record<string, string>;
 }
 
@@ -87,8 +90,12 @@ function text(value: unknown, fallback: string): string {
   return typeof value === "string" && value !== "" ? value.slice(0, 300) : fallback;
 }
 
-export function CallPanel({ call, callPageUrl, title, onClose, openExternal, onOpenInBrowser, readTheme }: CallPanelProps) {
+export function CallPanel({ call, callPageUrl, title, onClose, openExternal, onOpenInBrowser, readTheme, confirmLeave, leaving, onLost }: CallPanelProps) {
   const frame = useRef<HTMLIFrameElement>(null);
+  const joinedOnce = useRef(false);
+  const refused = useRef(false);
+  const leaveSent = useRef(false);
+  const origin = new URL(callPageUrl, window.location.href).origin;
   const [phase, setPhase] = useState<Phase>({ kind: "loading" });
   const [mediaProblem, setMediaProblem] = useState<string | null>(null);
 
@@ -99,18 +106,19 @@ export function CallPanel({ call, callPageUrl, title, onClose, openExternal, onO
 
     function onMessage(event: MessageEvent) {
       const target = frame.current?.contentWindow;
-      if (target == null || event.source !== target) return;
+      if (target == null || event.source !== target || event.origin !== origin) return;
       const data: unknown = event.data;
       if (typeof data !== "object" || data === null) return;
       const message = data as { type?: unknown; message?: unknown; code?: unknown; kind?: unknown; name?: unknown };
       if (message.type === "zoom-call:ready") {
+        if (joinedOnce.current || leaveSent.current) return;
+        joinedOnce.current = true;
         setPhase({ kind: "joining" });
         const colors = readTheme !== undefined ? readTheme() : frame.current !== null ? themeOf(frame.current) : {};
-        target.postMessage({ type: "zoom-call:theme", colors }, "*");
-        // The message goes to this one window, whichever origin the host gave the call page.
+        target.postMessage({ type: "zoom-call:theme", colors }, origin);
         target.postMessage(
           { type: "zoom-call:join", call: { signature: call.signature, meetingNumber: call.meetingNumber, passcode: call.passcode, userName: call.userName, zak: call.zak } },
-          "*",
+          origin,
         );
       } else if (message.type === "zoom-call:joined") {
         setPhase({ kind: "joined" });
@@ -118,9 +126,13 @@ export function CallPanel({ call, callPageUrl, title, onClose, openExternal, onO
         onClose();
       } else if (message.type === "zoom-call:media-error") {
         if (isMediaKind(message.kind)) setMediaProblem(mediaProblemText(message.kind, text(message.name, "Error").slice(0, 40)));
+      } else if (message.type === "zoom-call:leave-unknown") {
+        setPhase({ kind: "failed", message: "Zoom не подтвердил выход из встречи" });
       } else if (message.type === "zoom-call:failed") {
         setPhase({ kind: "failed", message: text(message.message, "Не удалось загрузить Zoom") });
       } else if (message.type === "zoom-call:error") {
+        refused.current = true;
+        if (leaveSent.current) { onClose(); return; }
         setPhase({ kind: "failed", message: `${text(message.message, "Zoom отклонил вход")} (код ${text(message.code, "неизвестен")})` });
       }
     }
@@ -129,10 +141,24 @@ export function CallPanel({ call, callPageUrl, title, onClose, openExternal, onO
       window.clearTimeout(timeout);
       window.removeEventListener("message", onMessage);
     };
-  }, [call, onClose, readTheme]);
+  }, [call, onClose, readTheme, origin]);
+
+  useEffect(() => {
+    if (phase.kind === "failed") onLost?.();
+  }, [phase.kind, onLost]);
+
+  useEffect(() => {
+    if (!leaving || leaveSent.current) return;
+    leaveSent.current = true;
+    if (!joinedOnce.current || refused.current) onClose();
+    else frame.current?.contentWindow?.postMessage({ type: "zoom-call:leave" }, origin);
+  }, [leaving, origin, onClose]);
 
   function leave() {
-    if (phase.kind === "joined") frame.current?.contentWindow?.postMessage({ type: "zoom-call:leave" }, "*");
+    if (confirmLeave) return confirmLeave();
+    if (leaveSent.current) return;
+    leaveSent.current = true;
+    if (phase.kind === "joined") frame.current?.contentWindow?.postMessage({ type: "zoom-call:leave" }, origin);
     else onClose();
   }
 
@@ -184,13 +210,15 @@ export function CallPanel({ call, callPageUrl, title, onClose, openExternal, onO
           </p>
           <div className="flex gap-2">
             <Button onClick={() => openExternal(call.fallbackUrl)}>Открыть в Zoom</Button>
-            <Button variant="outline" onClick={onClose}>
+            <Button variant="outline" onClick={confirmLeave ?? onClose}>
               Закрыть
             </Button>
           </div>
         </div>
-      ) : (
+      ) : null}
+      {(phase.kind !== "failed" || (joinedOnce.current && !refused.current)) && (
         <iframe
+          hidden={phase.kind === "failed"}
           ref={frame}
           src={callPageUrl}
           title="Звонок Zoom"

@@ -3,17 +3,26 @@ import type { useRpc } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "../../../server.ts";
 import type { ZoomPageApi } from "../../ui/api.ts";
 
+import type { EmbedApi } from "./embed-owner";
+type OwnerApi = ZoomPageApi & { embed: EmbedApi };
+
 export type ZoomRpc = ReturnType<typeof useRpc<typeof rpcContract>>;
 
 // Host renders may replace the RPC wrapper. The page depends on this API's
 // identity for loading; a new transport alone must not reload its data.
-export function useZoomApi(rpc: ZoomRpc): ZoomPageApi {
+export function useZoomApi(rpc: ZoomRpc): OwnerApi {
   const rpcRef = useRef(rpc);
   useEffect(() => {
     rpcRef.current = rpc;
   }, [rpc]);
-  return useMemo<ZoomPageApi>(
+  return useMemo<OwnerApi>(
     () => ({
+      embed: {
+        list: () => rpcRef.current.call("meetings_list", null).then(r => r.meetings),
+        select: id => rpcRef.current.call("embed_select", {id}),
+        resolve: resourceRef => rpcRef.current.call("embed_resolve", {resourceRef}),
+        prepare: resourceRef => rpcRef.current.call("embed_prepare", {resourceRef}),
+      },
       status: () => rpcRef.current.call("status", null),
       redirectUri: (origin) => rpcRef.current.call("redirect_uri", { origin }).then((result) => result.redirectUri),
       beginLogin: (origin) => rpcRef.current.call("login_begin", { origin }),

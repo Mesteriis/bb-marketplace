@@ -39,7 +39,9 @@ function run(sdk: unknown) {
   Object.defineProperty(window, "parent", { value: parent, configurable: true });
   new Function(MEDIA_REPORT_SCRIPT)();
   new Function(CALL_PAGE_SCRIPT)();
-  const say = (data: unknown) => window.dispatchEvent(new MessageEvent("message", { data, source: parent as unknown as Window }));
+  const origin = new URL(window.location.origin);
+  origin.hostname = "127.0.0.1";
+  const say = (data: unknown) => window.dispatchEvent(new MessageEvent("message", { data, origin:origin.origin, source: parent as unknown as Window }));
   return { posted, say };
 }
 
@@ -266,4 +268,23 @@ describe("standalone page (opened in a browser of its own)", () => {
     await settle();
     expect(notice()).toBe("Эта страница открывается из плагина Makosh Zoom в BB.");
   });
+});
+
+it("queues one leave during join and waits for the SDK to confirm Closed", async () => {
+  const {sdk, client, listeners} = fakeSdk();
+  const {say,posted} = run(sdk);
+  await settle();
+  say({type:"zoom-call:join",call:CALL});
+  say({type:"zoom-call:join",call:CALL});
+  say({type:"zoom-call:leave"});
+  say({type:"zoom-call:leave"});
+  await settle();
+  expect(client.join).toHaveBeenCalledTimes(1);
+  expect(client.leaveMeeting).not.toHaveBeenCalled();
+  listeners["connection-change"]!({state:"Connected"});
+  await settle();
+  expect(client.leaveMeeting).toHaveBeenCalledTimes(1);
+  expect(posted).not.toContainEqual({type:"zoom-call:ended"});
+  listeners["connection-change"]!({state:"Closed"});
+  expect(posted.at(-1)).toEqual({type:"zoom-call:ended"});
 });

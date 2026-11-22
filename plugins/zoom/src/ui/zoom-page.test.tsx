@@ -3,6 +3,8 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ZoomMeeting } from "../core/model.ts";
 import type { AccountStatus, ZoomPageApi } from "./api.ts";
+import { WindowCalls } from "./window-calls";
+import { WindowCallLayer } from "../adapters/bb/window-call-layer";
 import { ZoomPage } from "./zoom-page.tsx";
 
 afterEach(cleanup);
@@ -40,8 +42,9 @@ function setup(status: AccountStatus, meetings: ZoomMeeting[] = []) {
     openCallInBrowser: vi.fn(async () => ({ url: "http://127.0.0.1:38886/call?ticket=t", opened: true })),
   } satisfies ZoomPageApi;
   const openExternal = vi.fn();
+  const calls = new WindowCalls();
   const view = render(
-    <ZoomPage api={api} origin={ORIGIN} callPageUrl="/call-page" openExternal={openExternal} refreshKey={0} now={() => NOW} timeZone="UTC" />,
+    <><WindowCallLayer calls={calls} /><ZoomPage calls={calls} api={api} origin={ORIGIN} callPageUrl="/call-page" openExternal={openExternal} refreshKey={0} now={() => NOW} timeZone="UTC" /></>,
   );
   return { api, openExternal, view };
 }
@@ -70,7 +73,7 @@ describe("ZoomPage", () => {
     await screen.findByText("Подключите аккаунт Zoom");
     api.status.mockResolvedValue(CONNECTED);
     view.rerender(
-      <ZoomPage api={api} origin={ORIGIN} callPageUrl="/call-page" openExternal={() => undefined} refreshKey={1} now={() => NOW} timeZone="UTC" />,
+      <ZoomPage calls={new WindowCalls()} api={api} origin={ORIGIN} callPageUrl="/call-page" openExternal={() => undefined} refreshKey={1} now={() => NOW} timeZone="UTC" />,
     );
     expect(await screen.findByRole("button", { name: "Новая встреча" })).toBeTruthy();
   });
@@ -106,7 +109,7 @@ describe("ZoomPage", () => {
       prepareCall: vi.fn(async () => PREPARED),
     } as unknown as ZoomPageApi;
     const openExternal = vi.fn();
-    render(<ZoomPage api={api} origin="https://bb.example.net" callPageUrl={null} openExternal={openExternal} refreshKey={0} now={() => NOW} timeZone="UTC" />);
+    render(<ZoomPage calls={new WindowCalls()} api={api} origin="https://bb.example.net" callPageUrl={null} openExternal={openExternal} refreshKey={0} now={() => NOW} timeZone="UTC" />);
     fireEvent.click(await screen.findByRole("button", { name: "Войти: Планёрка" }));
     await waitFor(() => expect(openExternal).toHaveBeenCalledWith("https://zoom.us/j/1111111111?pwd=p1"));
     expect(screen.queryByTitle("Звонок Zoom")).toBeNull();
@@ -130,7 +133,7 @@ describe("ZoomPage", () => {
     const { api, openExternal } = setup(CONNECTED, [meeting("1111111111", "Планёрка", "2026-11-23T10:00:00Z")]);
     fireEvent.click(await screen.findByRole("button", { name: "Войти: Планёрка" }));
     await screen.findByTitle("Звонок Zoom");
-    fireEvent.click(screen.getByRole("button", { name: "В браузере" }));
+    fireEvent.click(await screen.findByRole("button", { name: "В браузере" }));
     await waitFor(() => expect(api.openCallInBrowser).toHaveBeenCalledWith({ link: "https://us02web.zoom.us/j/1111111111?pwd=p1111111111", asHost: true }));
     await waitFor(() => expect(screen.queryByTitle("Звонок Zoom")).toBeNull());
     expect(openExternal).not.toHaveBeenCalled();
@@ -141,7 +144,7 @@ describe("ZoomPage", () => {
     api.openCallInBrowser.mockResolvedValue({ url: "http://127.0.0.1:38886/call?ticket=t", opened: false });
     fireEvent.click(await screen.findByRole("button", { name: "Войти: Планёрка" }));
     await screen.findByTitle("Звонок Zoom");
-    fireEvent.click(screen.getByRole("button", { name: "В браузере" }));
+    fireEvent.click(await screen.findByRole("button", { name: "В браузере" }));
     await waitFor(() => expect(openExternal).toHaveBeenCalledWith("http://127.0.0.1:38886/call?ticket=t"));
   });
 
@@ -157,7 +160,7 @@ describe("ZoomPage", () => {
     const { api } = setup(CONNECTED);
     api.status.mockRejectedValueOnce(new Error("offline"));
     cleanup();
-    render(<ZoomPage api={api} origin={ORIGIN} callPageUrl="/call-page" openExternal={() => undefined} refreshKey={0} now={() => NOW} timeZone="UTC" />);
+    render(<ZoomPage calls={new WindowCalls()} api={api} origin={ORIGIN} callPageUrl="/call-page" openExternal={() => undefined} refreshKey={0} now={() => NOW} timeZone="UTC" />);
     fireEvent.click(await screen.findByRole("button", { name: "Повторить" }));
     expect(await screen.findByRole("button", { name: "Новая встреча" })).toBeTruthy();
   });
