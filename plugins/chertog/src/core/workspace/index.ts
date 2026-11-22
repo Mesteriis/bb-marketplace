@@ -16,6 +16,9 @@ export {
 export type { DroppedPart, MigrationChain, MigrationResult, WorkspaceReadResult } from "./read.ts";
 export { migrateToVersion, readWorkspaceDocument, WORKSPACE_MIGRATIONS } from "./read.ts";
 
+export type { ParentOf } from "./blocks.ts";
+export { BLOCK_SIDE_LIMIT, blockChildren, closeBlock, moveBlock, placeInBlock } from "./blocks.ts";
+
 export type { LayoutTemplate, ListedPanel, WorkspaceChange, WorkspaceChangeRefusal } from "./operations.ts";
 export {
   addLayoutFromTemplate,
