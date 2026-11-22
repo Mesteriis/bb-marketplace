@@ -1063,9 +1063,10 @@ Settings: `historyStepDays`, `serverSearchKeepDays`, `indexAttachmentText`,
   messages before the first one you need wait in one closed stack, "N
   earlier messages", when there are two or more of them. The message you
   opened, the newest and every message that was unread when the
-  conversation opened are never stacked, nor is one you expanded. A click,
-  Enter or Space opens the stack; **Expand all** (`;`) opens it with
-  everything, **Collapse all** closes it again, and a finished **Load the
+  conversation opened stay visible. Opening the stack reveals message headers.
+  Choose a header to read its body or use the same stack control to fold the history.
+  **Expand all** (`;`) also opens every message body. **Collapse all** closes
+  the history again. A finished **Load the
   whole conversation** that added messages opens it. The stack names the
   senders and adds "· sender warning" when a stacked message has one. Order
   stays oldest to newest; print, Hand to agent and citations still see every
@@ -1580,8 +1581,9 @@ wrong; check the cited messages".
   drafted reply. **Reply drafted** appears under the message with
   its first lines, **Use** (opens an ordinary reply with the text in it)
   and **Dismiss**. Nothing is sent and nothing is saved on the mail server
-  until you act. At most 10 an hour and 50 a day (counted while BB runs; a
-  restart starts the count again); a draft is forgotten when you use or
+  until you act. At most 10 an hour and 50 a day. The day's count is read
+  from the activity log, so a restart does not start it again (clearing
+  the log does); the hour's count restarts with BB. A draft is forgotten when you use or
   dismiss it, when you answer in the conversation, when the message is
   deleted or leaves AI access, when you turn the setting off, or after 14
   days. Each call is a row in the agent log.
@@ -1607,8 +1609,10 @@ wrong; check the cited messages".
   about it once more, alone, so one email cannot decide for its
   neighbours. Turning the label's switch or the setting off also stops
   archives of a call already running. At most 50 automatic archives an
-  hour, 20 model calls an hour and 100 a day, ten messages a call (all
-  counted while BB runs; a restart or a plugin reload starts them again). The line
+  hour, 20 model calls an hour and 100 a day, ten messages a call. The
+  archives of the hour and the calls of the day are read from the activity
+  log, so a restart or a plugin reload does not start them again (clearing
+  the log does); the calls of the hour restart with BB. The line
   and labels are kept 90 days.
 
 ### Dictation
@@ -1791,18 +1795,30 @@ your own access in BB, as everything you install there does.
 ## Mail in the sidebar
 
 While the Mail page is open, BB's sidebar shows the mail rail instead of the
-chat list (the panel's experimental `experimental_sidebar`): **New message**,
-the account chooser, the folders with unread counts (in All accounts the
+chat list (the panel's experimental `experimental_sidebar`). The account chooser,
+**New message** and **Get mail** share a row. Sync uses the selected account
+or all accounts in the combined view. Below are the folders with unread counts (in All accounts the
 merged roles, then each account's folders in a group you can fold) and the
 **Outbox** while sends are pending. BB's navigation rail stays; other pages
 keep the chat list. There is nothing to turn on. The page itself shows the
 search bar, the conversation list and the reading pane or composer; on a
 phone-sized window the folders are in BB's sidebar drawer.
 
+In a narrow window, opening a conversation replaces the list. **Back to list**
+returns to the cursor row. Select multiple conversations to show their actions
+above the list. **More filters** offers the enabled category and developer-mail
+conditions. **Reset** clears the current view's quick filters. **Filter rules**
+beside Mail settings opens the incoming-mail rules.
+
+In the reader, **Message actions** holds the additional commands for the
+current message and folder. Choose **Reply** or **Reply all** below the messages
+to open the draft there, with its recipients and normal sending controls.
+
 The folder you view is the page's route remainder, so BB's back and forward
 walk it: `v/all/<role>` for a merged role (`inbox`, `sent`, `drafts`, `junk`,
 `trash`, `archive`) and `v/<accountId>/<folder path>` for one account's
-folder. `t/<accountId>/<threadId>` opens a conversation and `d/<draftId>` opens a
+folder. `t/<accountId>/<threadId>` opens a conversation. A citation adds
+`/m/<messageId>` to expand and mark its message. `d/<draftId>` opens a
 draft in the composer (what an agent card's **Open in Mail** uses). Ids and
 paths are percent-encoded.
 

@@ -84,6 +84,7 @@ export function HubSidebarConnected({ profiles: api, pve, allow, bus = defaultBu
       sessions={desk.sessions}
       thumbs={thumbs}
       shown={desk.shown}
+      focusedId={desk.focus}
       onFocusSession={(id) => {
         store.focus(id);
         bus.send({ type: "desk" });

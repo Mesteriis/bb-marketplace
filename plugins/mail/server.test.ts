@@ -6286,6 +6286,16 @@ describe("the plugin API reads", () => {
     expect(answer.accounts).toEqual([{ id: "acc_1", email: "", displayName: null, provider: answer.accounts[0]!.provider }]);
   });
 
+  it("a plugin cannot search by the owner's AI labels", async () => {
+    const { crm } = await loadGranted();
+    for (const query of ["ai:urgent", "pelican -ai:urgent"]) {
+      await expect(crm("plugin_messages_search", { accountId: "acc_1", query })).rejects.toMatchObject({
+        code: "invalid",
+        message: "ai: labels are the owner's own and are not searchable here",
+      });
+    }
+  });
+
   it("search returns what the owner shares with agents, with secrets hidden", async () => {
     const { crm } = await loadGranted();
     const answer = (await crm("plugin_messages_search", { accountId: "acc_1" })) as { messages: { id: string; subject: string; from: { address: string } }[] };
@@ -6614,6 +6624,18 @@ describe("agent paths: scope, redaction and the log (slice 3f)", () => {
     expect(inbox).not.toContain(excluded);
     await runCardTool(host, "mail_triage", { items: [{ messageId: inside, action: "archive" }] });
     expect(agentLogRows(host).filter((row) => row.tool === "triage").map((row) => row.outcome)).toEqual(["cancelled"]);
+  });
+
+  it("an agent cannot search by the owner's AI labels, in either sign", async () => {
+    const host = await loadCanary();
+    const search = async (query: string) =>
+      toolText(await host.harness.behavior.callAgentTool("mail_search", { query }, { threadId: CANARY_THREAD }));
+    const refusal = "ai: labels are the owner's own and are not searchable here";
+    expect(await search("ai:urgent")).toContain(refusal);
+    expect(await search("Invented -ai:urgent")).toContain(refusal);
+    expect(await search("ai:urgent")).not.toContain("Invented");
+    // The same words without the operator are an ordinary search.
+    expect(await search("Invented")).not.toContain(refusal);
   });
 
   it("search refuses codes, numbers and tokens and keeps only hits whose redacted text still matches", async () => {

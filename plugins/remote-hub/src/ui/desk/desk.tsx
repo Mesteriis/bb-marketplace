@@ -3,7 +3,7 @@
 import type { ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { useDesk } from "../desk-store.ts";
-import { tx } from "../i18n.ts";
+import { plural, tx } from "../i18n.ts";
 import { useDeskStore } from "./desk-context.tsx";
 
 export function Desk({ children }: { children: ReactNode }) {
@@ -11,10 +11,10 @@ export function Desk({ children }: { children: ReactNode }) {
   const desk = useDesk(store);
   const empty = desk.shown.length === 0;
   return (
-    <div className="rh-tokens flex h-full min-h-0 flex-col bg-background text-foreground">
-      {desk.sessions.length > 1 && (
-        <div className="flex h-[var(--rh-header)] shrink-0 items-center gap-2 border-b border-border px-4 text-sm" role="toolbar" aria-label={tx("app.title")}>
-          <span className="flex-1 truncate text-muted-foreground">{tx("sidebar.open")}: {desk.sessions.length}</span>
+    <div className="rh-tokens rh-desk flex h-full min-h-0 flex-col bg-background text-foreground">
+      <div className="rh-desk-toolbar" role="toolbar" aria-label={tx("desk.title")}>
+        <h1 className="rh-desk-title">{tx("desk.title")}</h1>
+        <div className="rh-layout-switch" role="group" aria-label={tx("desk.layout")}>
           <Button type="button" size="sm" variant="ghost" aria-pressed={desk.layout === "one"} onClick={() => store.layout("one")}>
             {tx("desk.one")}
           </Button>
@@ -22,14 +22,17 @@ export function Desk({ children }: { children: ReactNode }) {
             {tx("desk.two")}
           </Button>
         </div>
-      )}
+        <span className="rh-desk-count" role="status">
+          {plural(desk.sessions.length, ["сессия", "сессии", "сессий"])}
+        </span>
+      </div>
       {empty && (
         <div className="flex flex-1 flex-col items-center justify-center gap-2 p-8 text-center" data-testid="desk-empty">
           <p className="text-base font-medium">{tx("desk.empty.title")}</p>
           <p className="max-w-sm text-sm text-muted-foreground">{tx("desk.empty.hint")}</p>
         </div>
       )}
-      <div className={empty ? "hidden" : "grid min-h-0 flex-1 gap-3 p-4"} style={{ gridTemplateColumns: `repeat(${Math.max(desk.shown.length, 1)}, minmax(0, 1fr))` }} data-testid="desk-grid">
+      <div className={empty ? "hidden" : "rh-desk-grid grid min-h-0 flex-1"} style={{ gridTemplateColumns: `repeat(${Math.max(desk.shown.length, 1)}, minmax(0, 1fr))` }} data-testid="desk-grid">
         {children}
       </div>
     </div>

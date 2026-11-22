@@ -13,6 +13,7 @@ let clock: FixedClock;
 let enabled: boolean;
 let started: { input: string; unattended: boolean | undefined }[];
 let drafts: ReplyDrafts;
+let makeDrafts: () => ReplyDrafts;
 let warned: Set<string>;
 
 /** The stored id of the INBOX message with this Message-ID (read from the fake's rows). */
@@ -44,7 +45,7 @@ beforeEach(() => {
     poll: () => ({ state: "failed" as const, error: "failed" as const }),
     finished: () => null,
   } as unknown as Pick<AiJobs, "start" | "settled" | "poll" | "finished" | "cancel">;
-  drafts = createReplyDrafts({
+  makeDrafts = () => createReplyDrafts({
     store,
     clock,
     enabled: () => enabled,
@@ -59,6 +60,7 @@ beforeEach(() => {
     schedule: () => () => {},
     log: () => {},
   });
+  drafts = makeDrafts();
 });
 
 const inbox = (uid: number, overrides: Parameters<typeof makeFetchedMessage>[1]) =>
@@ -79,6 +81,25 @@ describe("createReplyDrafts", () => {
     expect(started[0]!.input).toContain("Sign as Alex.");
     expect(started[0]!.input).toContain("Invented earlier note to Ann.");
     expect(started[0]!.input).not.toContain("Invented offer.");
+  });
+
+  it("the day's fifty outlive a restart: drafts the activity log holds of the last day count", async () => {
+    const logged = (minutesAgo: number) =>
+      store.appendAgentLog({
+        at: new Date(Date.parse(NOW) - minutesAgo * 60_000).toISOString(),
+        actor: "owner_ai", threadId: null, tool: "ai_autodraft", outcome: "ok", messageIds: [], count: 1, hiddenCount: 0, refId: null, provider: null, model: null,
+      });
+    for (let i = 0; i < 49; i++) logged(30 + i);
+    // One from two days ago no longer counts.
+    logged(2 * 24 * 60);
+    const restarted = makeDrafts();
+    inbox(1, { from: { name: "Ann", address: ANN }, bodyText: "Invented: Tuesday?" });
+    inbox(2, { from: { name: "Ann", address: ANN }, bodyText: "Invented: Wednesday?" });
+    restarted.offer([idAt(1)]);
+    await restarted.queue.idle();
+    restarted.offer([idAt(2)]);
+    await restarted.queue.idle();
+    expect(started).toHaveLength(1);
   });
 
   it("leaves alone a message whose reply would go elsewhere and one the owner has answered", async () => {

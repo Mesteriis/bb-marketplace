@@ -10,6 +10,12 @@ describe("thread subPath", () => {
     expect(parseThreadSubPath("t/acc-1/t_42")).toEqual({ accountId: "acc-1", threadId: "t_42" });
   });
 
+  it("retains the cited message across host encoding", () => {
+    const path = threadSubPath("a", "t", "msg/1");
+    expect(path).toBe("t/a/t/m/msg%2F1");
+    expect(parseThreadSubPath(hostEncode(path))).toEqual({ accountId: "a", threadId: "t", messageId: "msg/1" });
+  });
+
   it.each([
     ["a/b", "t/1"],
     ["100%", "50% off"],
@@ -29,6 +35,8 @@ describe("thread subPath", () => {
     "t//t_42",
     "x/acc-1/t_42",
     "t/acc-1/t_42/extra",
+    "t/acc-1/t_42/m/",
+    "t/acc-1/t_42/x/other",
     "t/%E0%A4%A/t_42",
     "t/acc-1/%",
   ])("rejects %j", (subPath) => {

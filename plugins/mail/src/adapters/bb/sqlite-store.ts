@@ -3623,6 +3623,11 @@ export function createSqliteStore(db: Database.Database): MailStore {
         ]) {
           db.prepare(`DELETE FROM ${table} WHERE account_id = ?`).run(id);
         }
+        // What AI wrote about this account's mail, and its read statuses (a token's opens go first).
+        db.prepare("DELETE FROM reply_drafts WHERE account_id = ?").run(id);
+        db.prepare("DELETE FROM message_ai WHERE account_id = ?").run(id);
+        db.prepare("DELETE FROM open_events WHERE token IN (SELECT token FROM sent_tracking WHERE account_id = ?)").run(id);
+        db.prepare("DELETE FROM sent_tracking WHERE account_id = ?").run(id);
         // Rule runs stay for the caps, without their messages (review C1).
         db.prepare("UPDATE rule_runs SET message_id = NULL WHERE account_id = ?").run(id);
         db.prepare("DELETE FROM accounts WHERE id = ?").run(id);
@@ -6522,6 +6527,14 @@ export function createSqliteStore(db: Database.Database): MailStore {
           model: entry.model,
         });
       return Number(result.lastInsertRowid);
+    },
+
+    agentLogSince(tool, sinceIso) {
+      return db
+        .prepare<[string, string], { at: string; count: number }>(
+          "SELECT at, result_count AS count FROM agent_log WHERE tool = ? AND at >= ? ORDER BY at, seq",
+        )
+        .all(tool, sinceIso);
     },
 
     setAgentLogSources(seq, messageIds, count, hiddenCount) {

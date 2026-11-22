@@ -1,19 +1,23 @@
-Project tree with hiding, recent activity sorting and an Active section for running threads and unread results.
+Task-focused sidebar with separate Now and Projects tabs, subthread badges and live animated progress; includes the independent plan_progress engine.
 
-Right-click a project or thread and choose **Скрыть**. Use **Показать скрытое** at the top to reveal hidden entries, then **Вернуть** in their menus to restore them. Hidden projects hide their threads, including pinned threads. Nothing is deleted or archived. Preferences are saved only in this browser profile; they do not sync across clients. Internal BB helper threads stay excluded.
+## Панель работы
 
-Projects and folders sort by their newest visible thread activity, including pinned threads. Empty projects follow; equal timestamps sort alphabetically. Select **Makosh Sidebar** under Settings → Appearance → Sidebar after installation.
+Выберите **Makosh Sidebar** в Settings → Appearance → Sidebar. **Сейчас** объединяет работающие треды, непрочитанные ответы, вопросы и ошибки; фильтры считают треды, а не группы. «Требует внимания» собирает вопросы и ошибки с переходом в нужный субтред. Архивные и внутренние служебные треды исключены. Стрелка скрывает всех потомков, включая активных; счётчики сохраняются, обновления не раскрывают ветку. Активный потомок удерживает родителя в «В работе». Причина ожидания показывает занятых потомков.
 
-Set **Корневая папка проектов** in plugin settings to an absolute directory path. That directory is omitted; its immediate folders are the first level. Projects outside it are omitted, with an exception for running threads. Empty root shows all project locations.
+Отдельная вкладка **Проекты** содержит поиск, папки, закреплённые и «Без проекта»; активные треды доступны и здесь. С Makosh Navigation вкладки и кнопка нового чата размещаются в штатной верхней области. Без него вкладки остаются внутри списка; жёсткой зависимости нет.
 
-**Без проекта** is always present and starts collapsed, including when empty. Expand it to browse personal-project chats. Collapsed folders, pins and the projectless section show only running threads. Hidden projects or threads also expose running threads, which disappear again when execution ends. Running means starting, active or stopping; internal helper threads remain excluded. Preferences about hiding are preserved.
+## Планы
 
-Hiding the last visible thread also hides its now-empty project/worktree branch and empty parent folders. Show hidden restores the branch. Running hidden threads remain visible separately.
+Sidebar включает независимый движок Plan Progress: `plan_progress`, CLI `bb plan-progress`, диагностику, ограниченные напоминания, изоляцию Claude Desktop и оценку скорости ответа. Полоска над вводом сохранена. Отдельный Plan Progress не нужен; безопасный перенос описан в README.
 
-Hiding a project also hides separately registered descendant projects and worktrees under its directory. Running descendants remain visible independently. Path matching respects directory boundaries.
+У родителя общий прогресс рассчитывается из последних сохранённых планов субтредов, обновляется без участия родительского агента и восстанавливается после перезагрузки. Промежуточные координаторы не дублируют вклад потомков. Явно завершённый план учитывается как завершённый, записанные статусы шагов сохраняются. Старые планы доступны в истории. «План готов» не означает завершение треда.
 
-Threads with subthreads have a separate expand/collapse chevron. Collapsing keeps the parent navigable and shows only starting, active or stopping descendants, including deeper levels; expanding restores the full subtree. Finished descendants disappear while collapsed. Subtrees start expanded.
+Нажатие подписи раскрывает этапы и шаги, «+N» — остальные планы. Готовые планы и этапы скрыты по умолчанию; «Показать готовые» раскрывает их. Общий с полоской над вводом компонент сохраняет волну, мерцание, бегунок этапа/шага, значки, время при наведении/фокусе и подсказки отметок. Полоска Sidebar — 20 px; длинные планы группируют отметки в 12 позиций. Effects и reduced motion ограничивают анимации.
 
-The **Активные** section shows running threads (starting, active, stopping) and threads the host marks unread until they are read. It includes all projects, including hidden ones and personal chats; archived/internal helper threads are excluded. Parent context is retained for an active subthread. A qualifying parent brings its subtree; subtrees start collapsed and expose running descendants according to the shared rules. Project lists keep their existing placement.
+Обновление по realtime и раз в 5 секунд, кроме скрытой вкладки. Последние данные сохраняются при сбое; таймаут запроса 10 секунд. Активные потомки наблюдаются и свёрнутыми. Показано фактическое время обновления плана; «Проверить» перечитывает данные без подмены этого времени. Индекс внимания ограничен первыми 2000 сохранённых тредов, неполное покрытие обозначается.
 
-In Active only, collapsed subtrees also expose unread descendants so a completed result stays reachable until read. Other sections keep their running-only collapsed behavior.
+## Проекты и скрытие
+
+Корневая папка проектов убирает выбранный путь, оставляя непосредственные папки первым уровнем. Вне корня проекты скрыты, кроме работающих тредов. Сортировка — по последней активности. В папке по умолчанию 5 тредов, лимит настраивается от 1 до 1000. Контекстное меню → «Скрыть», «Показать скрытое» → «Вернуть». Ничего не удаляется и не архивируется; предпочтения хранятся в текущем профиле браузера.
+
+Движок и анимация адаптированы из Plan Progress 0.6.0 (MIT, Yuri Smirnov; исходная идея zycck). Происхождение сохранено в THIRD_PARTY_NOTICES.

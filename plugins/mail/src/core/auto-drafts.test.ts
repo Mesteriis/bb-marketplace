@@ -42,6 +42,19 @@ describe("eligible", () => {
 });
 
 describe("DraftBudget", () => {
+  it("counts what was taken before a restart: the times given at the start", () => {
+    let now = Date.parse("2026-11-20T08:00:00.000Z");
+    const hour = 60 * 60 * 1000;
+    // Two inside the last day, one older, in any order.
+    const budget = new DraftBudget({ now: () => new Date(now) }, 3, [now - 2 * hour, now - 30 * hour, now - 5 * hour]);
+    expect(budget.take()).toBe(true);
+    expect(budget.take()).toBe(false);
+    // The oldest counted one is 5 hours old: a slot opens 19 hours later.
+    now += 19 * hour;
+    expect(budget.take()).toBe(true);
+    expect(budget.take()).toBe(false);
+  });
+
   it("allows fifty a day and starts again a day after the oldest", () => {
     let now = Date.parse("2026-11-20T08:00:00.000Z");
     const budget = new DraftBudget({ now: () => new Date(now) });

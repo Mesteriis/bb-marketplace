@@ -54,6 +54,17 @@ export function createReplyDrafts(deps: ReplyDraftsDeps) {
   const { store, clock } = deps;
   const nowIso = () => clock.now().toISOString();
   const own = () => new Set(ownAddresses(store).map(lower));
+  const draftedTimes = (): number[] => {
+    try {
+      return store
+        .agentLogSince("ai_autodraft", new Date(clock.now().getTime() - 24 * 60 * 60 * 1000).toISOString())
+        .map((row) => Date.parse(row.at))
+        .filter((time) => Number.isFinite(time));
+    } catch {
+      // A log that cannot be read leaves the day as a fresh run's.
+      return [];
+    }
+  };
 
   /** When the owner last wrote in the message's conversation; null: never. */
   const ownerRepliedAt = (threadId: string | null, folder: string): string | null => {
@@ -169,7 +180,8 @@ export function createReplyDrafts(deps: ReplyDraftsDeps) {
         model,
       });
     },
-    budget: new DraftBudget(clock),
+    // The day's drafts outlive a restart: those the activity log holds of the last day count.
+    budget: new DraftBudget(clock, undefined, draftedTimes()),
     schedule: deps.schedule,
     log: deps.log,
     ...(deps.gate === undefined ? {} : { gate: deps.gate }),

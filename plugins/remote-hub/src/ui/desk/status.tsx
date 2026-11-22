@@ -1,4 +1,5 @@
 // The small pieces every surface uses to say what state a session is in.
+import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 import { toneOf, type Tone } from "../../core/desk-status.ts";
 import type { DeskSession, DeskSessionKind } from "../../core/desk.ts";
@@ -45,9 +46,18 @@ export function kindText(kind: DeskSessionKind): string {
   return tx(KIND_KEY[kind]);
 }
 
+/** Protocol labels distinguish terminal and graphical sessions without relying on colour. */
+export function sessionKindLabel(kind: DeskSessionKind): string {
+  return { ssh: "SSH", rdp: "RDP", "pve-terminal": "PVE", "pve-graphics": "VNC" }[kind];
+}
+
+export function SessionIcon({ kind, className }: { kind: DeskSessionKind; className?: string }) {
+  return <Icon name={kind === "ssh" || kind === "pve-terminal" ? "Terminal" : "ComputerTerminal01"} className={className} />;
+}
+
 export function SessionStatus({ session }: { session: Pick<DeskSession, "state" | "attempt" | "owner"> }) {
   return (
-    <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-secondary px-2 py-0.5 text-xs text-muted-foreground" data-testid="session-status">
+    <span className="rh-session-status inline-flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground" data-testid="session-status" data-tone={toneOf(session)}>
       <StatusDot tone={toneOf(session)} />
       {stateText(session)}
     </span>

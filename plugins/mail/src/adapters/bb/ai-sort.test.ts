@@ -3,7 +3,7 @@ import type { LogEntryInput } from "../../core/agent-log.ts";
 import type { SortItem } from "../../core/ai-sort.ts";
 import { FixedClock, composeHarness, makeFetchedMessage } from "../../core/testing/fakes.ts";
 import type { AiFinished, AiJobs } from "./ai-jobs.ts";
-import { createAiSort, type AiSort } from "./ai-sort.ts";
+import { SORT_CALLS_PER_DAY, createAiSort, type AiSort } from "./ai-sort.ts";
 
 const NOW = "2026-11-20T10:00:00.000Z";
 const toOwner = [{ name: null, address: "owner@example.org" }];
@@ -26,6 +26,7 @@ let logRows: LogEntryInput[];
 let lines: string[];
 let woken: string[];
 let changed: string[];
+let makeSort: () => ReturnType<typeof createAiSort>;
 let sort: AiSort;
 
 const idOf = (messageId: string) =>
@@ -79,7 +80,7 @@ beforeEach(() => {
     cancel: () => false,
   } as unknown as Pick<AiJobs, "start" | "settled" | "poll" | "finished" | "cancel">;
   let ids = 0;
-  sort = createAiSort({
+  makeSort = () => createAiSort({
     store,
     clock,
     enabled: () => enabled,
@@ -94,6 +95,7 @@ beforeEach(() => {
     schedule: () => () => {},
     log: (line) => lines.push(line),
   });
+  sort = makeSort();
 });
 
 describe("createAiSort", () => {
@@ -232,6 +234,32 @@ describe("createAiSort", () => {
     expect(sent).toHaveLength(66);
     expect(ids.filter((id) => pendingOf(id) === "Archive")).toHaveLength(50);
     expect(store.messageAi(ids).size).toBe(60);
+  });
+
+  it("the bounds outlive a restart: archives of the last hour and calls of the last day are read from the activity log", async () => {
+    const pitch = sort.labels.save({ name: "Pitch", description: "Cold sales offers.", autoArchive: true }).label;
+    const past = (minutes: number) => new Date(Date.parse(NOW) - minutes * 60_000).toISOString();
+    const logged = (at: string, tool: "ai_sort" | "ai_archive", count: number) =>
+      store.appendAgentLog({ at, actor: "owner_ai", threadId: null, tool, outcome: "ok", messageIds: [], count, hiddenCount: 0, refId: null, provider: null, model: null });
+    // Before the restart: 48 archived within the hour (and 30 two hours ago, which no longer count).
+    logged(past(120), "ai_archive", 30);
+    logged(past(40), "ai_archive", 28);
+    logged(past(10), "ai_archive", 20);
+    const restarted = makeSort();
+    const ids = [inbox(1), inbox(2), inbox(3), inbox(4)];
+    answerFor = (count) => Array.from({ length: count }, (_, i) => ({ n: i + 1, summary: null, labelIds: [pitch.id] }));
+    restarted.offer(ids);
+    await restarted.queue.idle();
+    await restarted.confirm.idle();
+    expect(ids.filter((id) => pendingOf(id) === "Archive")).toHaveLength(2);
+
+    // A day's calls already made: nothing more is asked after a restart.
+    const before = sent.length;
+    for (let i = 0; i < SORT_CALLS_PER_DAY; i++) logged(past(60 + i), "ai_sort", 10);
+    const spent = makeSort();
+    spent.offer([inbox(5)]);
+    await spent.queue.idle();
+    expect(sent.length).toBe(before);
   });
 
   it("keeps the owner's labels: a clean name and description, no repeats, an unknown id refused", () => {

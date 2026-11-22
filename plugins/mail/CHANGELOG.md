@@ -8,6 +8,17 @@ All notable changes to Makosh Mail are recorded here. The format follows
 
 ### Fixed
 
+- The daily limits of AI that runs by itself (auto drafts, sorting) and the
+  hourly limit of automatic archives are read from the activity log at
+  start: a restart or a plugin reload no longer starts them again.
+- Removing an account also removes the reply drafts, AI lines and labels,
+  and read statuses of its mail.
+- **Send later** counts an address still being typed in To when it looks
+  for the person's usual hour.
+- Sorting settings: **Edit** on another label waits while a label's form is
+  open, so what was typed is not thrown away.
+- The store listing says that two AI features can run by themselves when
+  turned on (it said "AI on click").
 - Typing speed: Undo takes back a fix as a step of its own; **Move sender
   to Bcc** is also a button beside Bcc; a template whose files fail to
   attach midway shows what was attached.

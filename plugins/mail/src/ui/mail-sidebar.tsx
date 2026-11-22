@@ -28,6 +28,7 @@ import {
   type RailExtras,
   type RoleName,
 } from "./folder-list.tsx";
+import { syncStatusLabel, type BbLink } from "./mail-status.tsx";
 import { outboxAttention } from "./outbox.tsx";
 import { ActionMenu, type MenuEntry } from "./action-menu.tsx";
 import { SavedSearchesRail } from "./saved-searches.tsx";
@@ -53,6 +54,8 @@ export type RailCommand =
 export interface MailSidebarState {
   /** False while the vault key is missing. */
   vaultReady: boolean;
+  syncing?: boolean;
+  bbLink?: BbLink;
   accounts: readonly Account[];
   /** All accounts is chosen. */
   unified: boolean;
@@ -94,6 +97,8 @@ export interface MailSidebarProps {
   /** null until the Mail page has loaded. */
   state: MailSidebarState | null;
   onCompose: () => void;
+  onSync?: () => void;
+  onFilterRules?: () => void;
   /** An account id, or ALL_ACCOUNTS. */
   onSelectAccount: (choice: string) => void;
   onSelectView: (view: MailView) => void;
@@ -267,7 +272,7 @@ export function folderMenuEntries(folder: Folder, grouped: boolean, gmail: boole
   return entries;
 }
 
-export function MailSidebar({ state, onCompose, onSelectAccount, onSelectView, onOpenSettings, onSelectPage, onRailCommand }: MailSidebarProps) {
+export function MailSidebar({ state, onCompose, onSync, onFilterRules, onSelectAccount, onSelectView, onOpenSettings, onSelectPage, onRailCommand }: MailSidebarProps) {
   const [menu, setMenu] = useState<OpenMenu | null>(null);
   const extras: RailExtras | undefined =
     onRailCommand === undefined || state === null
@@ -333,14 +338,22 @@ export function MailSidebar({ state, onCompose, onSelectAccount, onSelectView, o
     return (
       <>
         <div className="flex shrink-0 flex-col gap-1.5 px-1.5 pb-1.5 pt-2">
-          <Button variant="outline" size="sm" className="w-full justify-start" onClick={onCompose}>
-            <Icon name="Pencil" fallback="Plus" aria-hidden />
-            {tx("New message")}
-          </Button>
           <div className="flex items-center gap-1">
             <div className="min-w-0 flex-1">
               <AccountChooser state={state} onSelectAccount={onSelectAccount} />
             </div>
+            <span title={tx("New message")}>
+              <Button size="icon" className="size-7 shrink-0 bg-primary text-primary-foreground hover:bg-primary/90" aria-label={tx("New message")} onClick={onCompose}>
+                <Icon name="Plus" aria-hidden />
+              </Button>
+            </span>
+            {onSync !== undefined ? (
+              <span title={tx("Get mail")}>
+                <Button variant="outline" size="icon" className="size-7 shrink-0" aria-label={tx("Get mail")} disabled={state.syncing} onClick={onSync}>
+                  <Icon name="RotateCcw" aria-hidden />
+                </Button>
+              </span>
+            ) : null}
             {onRailCommand !== undefined && !state.unified && state.account !== null ? (
               <Button
                 variant="ghost"
@@ -353,22 +366,11 @@ export function MailSidebar({ state, onCompose, onSelectAccount, onSelectView, o
               </Button>
             ) : null}
           </div>
+          <span role="status" className="truncate px-1 text-xs text-muted-foreground">
+            {syncStatusLabel(state.unified ? state.accounts : state.account ? [state.account] : [], state.syncing === true, Date.now(), state.bbLink)}
+          </span>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto pb-2">
-          {state.pages !== undefined && onSelectPage !== undefined ? (
-            <PageRows pages={state.pages} onSelect={onSelectPage} />
-          ) : null}
-          {state.saved !== undefined && onRailCommand !== undefined ? (
-            <SavedSearchesRail
-              searches={state.saved.searches}
-              currentId={state.saved.currentId}
-              onOpen={(search) => onRailCommand({ kind: "saved_open", id: search.id })}
-              onMenu={(search) => {
-                const searches = state.saved?.searches ?? [];
-                setMenu({ kind: "saved", search, index: searches.indexOf(search), count: searches.length });
-              }}
-            />
-          ) : null}
           {state.unified ? (
             <UnifiedRail
               roles={state.roles}
@@ -390,12 +392,38 @@ export function MailSidebar({ state, onCompose, onSelectAccount, onSelectView, o
               {...(extras !== undefined ? { extras } : {})}
             />
           ) : null}
+          {!state.unified && state.account !== null && onRailCommand !== undefined ? (
+            <Button variant="ghost" size="sm" className="mx-1.5 h-7 gap-1 px-2 text-primary"
+              onClick={() => onRailCommand({ kind: "folder_new", accountId: state.account!.id, parent: null })}>
+              <Icon name="FolderPlus" fallback="Plus" aria-hidden />{tx("Create folder")}
+            </Button>
+          ) : null}
+          {state.pages !== undefined && onSelectPage !== undefined ? (
+            <PageRows pages={state.pages} onSelect={onSelectPage} />
+          ) : null}
+          {state.saved !== undefined && onRailCommand !== undefined ? (
+            <SavedSearchesRail
+              searches={state.saved.searches}
+              currentId={state.saved.currentId}
+              onOpen={(search) => onRailCommand({ kind: "saved_open", id: search.id })}
+              onMenu={(search) => {
+                const searches = state.saved?.searches ?? [];
+                setMenu({ kind: "saved", search, index: searches.indexOf(search), count: searches.length });
+              }}
+            />
+          ) : null}
           {toOutbox !== null ? (
             <OutboxRowButton rows={state.outbox} target={toOutbox} onSelect={onSelectView} />
           ) : null}
         </div>
         {onOpenSettings !== undefined ? (
-          <div className="flex shrink-0 items-center border-t border-border px-1.5 py-1">
+          <div className="flex shrink-0 flex-col items-stretch border-t border-border px-1.5 py-1">
+            {onFilterRules !== undefined ? (
+              <Button variant="ghost" size="sm" className="h-7 justify-start px-2 text-muted-foreground" onClick={onFilterRules}>
+                <Icon name="ListFilter" fallback="Settings" aria-hidden />
+                {tx("Filter rules")}
+              </Button>
+            ) : null}
             <Button
               variant="ghost"
               size="sm"

@@ -5,8 +5,10 @@
 import { OpenedMark } from "./open-line.tsx";
 import { createContext, useContext, useEffect, useRef, type CSSProperties, type DragEvent, type ReactNode } from "react";
 import type { AttachmentMatch, MailAddress, MessageSummary, ThreadSummary } from "../core/index.ts";
+import { ActionPopover } from "@/components/ui/action-popover";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { MailAvatar } from "./mail-avatar.tsx";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 import { AiLabelChips } from "./ai-label-chips.tsx";
@@ -122,9 +124,9 @@ export function QuickFilters({
         return (
           <Button
             key={key}
-            variant={on ? "secondary" : "ghost"}
+            variant={on ? "secondary" : "outline"}
             size="sm"
-            className={cn("h-6 px-2 text-xs", !on && "text-muted-foreground")}
+            className={cn("h-7 gap-1 px-2 text-xs", on ? "bg-primary/15 text-primary" : "text-muted-foreground")}
             aria-pressed={on}
             onClick={() => {
               const next: ListFilter = { ...filter };
@@ -133,36 +135,50 @@ export function QuickFilters({
               onChange(next);
             }}
           >
+            <Icon name={key === "unread" ? "Mail" : key === "flagged" ? "Star" : "Paperclip"} aria-hidden />
             {tx(label)}
           </Button>
         );
       })}
-      {dev ? (
-        <Button
-          variant={filter.notDev === true ? "secondary" : "ghost"}
-          size="sm"
-          className={cn("h-6 px-2 text-xs", filter.notDev !== true && "text-muted-foreground")}
-          aria-pressed={filter.notDev === true}
-          onClick={() => {
-            const next: ListFilter = { ...filter };
-            if (next.notDev === true) delete next.notDev;
-            else next.notDev = true;
-            onChange(next);
-          }}
-        >
-          {tx("Hide dev notifications")}
-        </Button>
+      {categories || dev ? (
+        <ActionPopover label={tx("More filters")} trigger={
+          <Button variant="outline" size="sm" className="h-7 gap-1 px-2">
+            {tx("More filters")}<Icon name="ChevronDown" aria-hidden />
+          </Button>
+        }>
+          {dev ? (
+            <Button
+              variant={filter.notDev === true ? "secondary" : "ghost"}
+              size="sm"
+              className={cn("h-6 px-2 text-xs", filter.notDev !== true && "text-muted-foreground")}
+              aria-pressed={filter.notDev === true}
+              onClick={() => {
+                const next: ListFilter = { ...filter };
+                if (next.notDev === true) delete next.notDev;
+                else next.notDev = true;
+                onChange(next);
+              }}
+            >
+              {tx("Hide dev notifications")}
+            </Button>
+          ) : null}
+          {categories ? (
+            <CategoryFilters
+              value={filter.category}
+              onChange={(category) => {
+                const next: ListFilter = { ...filter };
+                if (category === undefined) delete next.category;
+                else next.category = category;
+                onChange(next);
+              }}
+            />
+          ) : null}
+        </ActionPopover>
       ) : null}
-      {categories ? (
-        <CategoryFilters
-          value={filter.category}
-          onChange={(category) => {
-            const next: ListFilter = { ...filter };
-            if (category === undefined) delete next.category;
-            else next.category = category;
-            onChange(next);
-          }}
-        />
+      {filterActive(filter) ? (
+        <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => onChange({})}>
+          {tx("Reset")}
+        </Button>
       ) : null}
       {trailing !== undefined && trailing !== null ? <span className="ml-auto flex items-center">{trailing}</span> : null}
     </div>
@@ -309,7 +325,7 @@ function Row({
       className={cn(
         "group flex items-start border-b border-border transition-colors hover:bg-state-hover",
         focused && "bg-state-hover",
-        (selected || check?.checked) && "bg-state-active hover:bg-state-active",
+        (selected || check?.checked) && "bg-primary/15 shadow-[inset_2px_0_var(--primary)] hover:bg-primary/20",
       )}
     >
       {check !== undefined ? (
@@ -319,12 +335,13 @@ function Row({
             checked={check.checked}
             onClick={(event) => check.onToggle(event.shiftKey)}
             className={cn(
-              "opacity-0 focus-visible:opacity-100 group-hover:opacity-100",
+              "opacity-70 focus-visible:opacity-100 group-hover:opacity-100",
               (check.checked || check.anyChecked) && "opacity-100",
             )}
           />
         </span>
       ) : null}
+      {!compact ? <span className="pointer-events-none hidden shrink-0 self-center pl-2 @md:inline-flex"><MailAvatar name={people} /></span> : null}
       <button
         type="button"
         data-row-key={rowKey}
@@ -353,7 +370,7 @@ function Row({
             {people}
           </span>
           {marker !== null ? (
-            <span className="max-w-24 shrink-0 truncate rounded-sm border border-border px-1 text-xs text-muted-foreground">
+            <span title={marker} className="max-w-24 shrink-0 truncate rounded-sm bg-primary/15 px-1.5 text-xs text-primary">
               {marker}
             </span>
           ) : null}

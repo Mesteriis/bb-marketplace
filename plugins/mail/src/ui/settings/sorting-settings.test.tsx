@@ -89,4 +89,17 @@ describe("SortingSettings", () => {
     expect((await screen.findByRole("alert")).textContent).toBe("Another AI label has this name");
     expect(screen.getByLabelText("Label name")).toBeTruthy();
   });
+
+  it("a form being edited is not replaced by another label's: Edit and Add wait for Save or Cancel", async () => {
+    mount([PITCH, INVOICE]);
+    fireEvent.click(await screen.findByRole("button", { name: "Edit: Pitch" }));
+    fireEvent.change(screen.getByLabelText("Label name"), { target: { value: "Pitches I typed" } });
+    expect(screen.getByRole("button", { name: "Edit: Invoice" }).hasAttribute("disabled")).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Edit: Invoice" }));
+    expect((screen.getByLabelText("Label name") as HTMLInputElement).value).toBe("Pitches I typed");
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.getByRole("button", { name: "Edit: Invoice" }).hasAttribute("disabled")).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Edit: Invoice" }));
+    expect((screen.getByLabelText("Label name") as HTMLInputElement).value).toBe("Invoice");
+  });
 });

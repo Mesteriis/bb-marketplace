@@ -4,6 +4,7 @@ const ru = {
   "app.title": "Remote Hub",
 
   "sidebar.search": "Поиск подключений и гостей",
+  "sidebar.saved": "Сохранённые подключения",
   "sidebar.open": "Открыто сейчас",
   "sidebar.connections": "Подключения",
   "sidebar.ungrouped": "Без группы",
@@ -73,8 +74,10 @@ const ru = {
 
   "desk.empty.title": "Выберите подключение слева",
   "desk.empty.hint": "Открытые сессии остаются в списке «Открыто сейчас», пока вы их не закроете.",
-  "desk.one": "Одна",
-  "desk.two": "Две рядом",
+  "desk.title": "Рабочая область",
+  "desk.layout": "Расположение сессий",
+  "desk.one": "Один экран",
+  "desk.two": "Два экрана",
   "desk.count": "{count} рядом",
   "desk.back": "К сессиям",
 

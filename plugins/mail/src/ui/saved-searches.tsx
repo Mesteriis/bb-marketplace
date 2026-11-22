@@ -42,7 +42,7 @@ export function SavedSearchesRail({
   if (searches.length === 0) return null;
   return (
     <div className="px-1.5 py-1">
-      <p className="px-2 pb-0.5 pt-1 text-xs font-medium text-muted-foreground">{tx("Saved")}</p>
+      <p className="px-2 pb-0.5 pt-1 text-xs font-medium text-muted-foreground">{tx("Saved searches")}</p>
       <ul aria-label={tx("Saved searches")} className="flex flex-col gap-px">
         {searches.map((search) => {
           const count = savedCount(search);

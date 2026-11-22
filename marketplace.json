@@ -768,7 +768,7 @@
     {
       "id": "makosh-mail",
       "displayName": "Makosh Mail [Experimental]",
-      "description": "Reads, searches, files and sends iCloud, Gmail and IMAP mail; sender warnings; AI on click; mail to BB threads and tasks; agent log.",
+      "description": "Reads, searches, files and sends iCloud, Gmail and IMAP mail; sender warnings; AI on click or opt-in; mail to BB threads, tasks; agent log.",
       "icon": {
         "url": "./plugins/mail/assets/icon.svg"
       },
@@ -1104,7 +1104,7 @@
     {
       "id": "makosh-sidebar",
       "displayName": "Makosh Sidebar [Experimental]",
-      "description": "Project tree with hiding, recent activity sorting and an Active section for running threads and unread results.",
+      "description": "Task-focused sidebar with subthread status badges, live stages and animated progress; includes the independent plan_progress engine.",
       "icon": "FolderGit",
       "author": {
         "name": "Mesteriis",

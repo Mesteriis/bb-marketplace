@@ -1,10 +1,31 @@
 import { buildProjectTree, type ProjectLocation, type ThreadNode } from './tree';
 import { visibleItems, type Hidden } from './visibility';
-export function isRunning(thread: {status?:string}) {
-  return ['starting','active','stopping'].includes(thread.status ?? '');
+export function isRunning(thread: {status?:string;descendantRunning?:boolean;activity?:{workflows?:number;backgroundAgents?:number;backgroundCommands?:number;planMode?:number}}) {
+  return !!thread.descendantRunning || ['starting','active','stopping'].includes(thread.status ?? '') ||
+    Object.values(thread.activity??{}).some(count=>typeof count==='number'&&count>0);
+}
+/** Derive branch activity without changing the host's execution status. */
+export function withBranchActivity<T extends {id:string;parentThreadId:string|null;isArchived:boolean;isHidden:boolean;status?:string;activity?:{workflows?:number;backgroundAgents?:number;backgroundCommands?:number;planMode?:number}}>(threads:readonly T[]):(T&{descendantRunning:boolean})[] {
+ const byId=new Map(threads.filter(t=>!t.isArchived&&!t.isHidden).map(t=>[t.id,t]));
+ const busyParents=new Set<string>();
+ for(const thread of byId.values())if(isRunning(thread)) {
+  const seen=new Set([thread.id]);
+  let parent=thread.parentThreadId;
+  while(parent&&byId.has(parent)&&!seen.has(parent)) {
+   seen.add(parent);busyParents.add(parent);parent=byId.get(parent)!.parentThreadId;
+  }
+ }
+ return threads.map(thread=>({...thread,descendantRunning:busyParents.has(thread.id)}));
 }
 export function runningThreads(nodes: readonly ThreadNode[], includeUnread = false): ThreadNode['thread'][] {
-  return nodes.flatMap(node => [...((isRunning(node.thread)||(includeUnread&&node.thread.isUnread))?[node.thread]:[]), ...runningThreads(node.children,includeUnread)]);
+  return nodes.flatMap(node => [...((isRunning(node.thread)||(includeUnread&&(node.thread.isUnread||node.thread.hasPendingInteraction||node.thread.planAttention)))?[node.thread]:[]), ...runningThreads(node.children,includeUnread)]);
+}
+/** Keep navigation complete while promoting children of an already-shown parent. */
+export function omitThreadIds(nodes:readonly ThreadNode[],shown:ReadonlySet<string>):ThreadNode[] {
+ return nodes.flatMap(node=>{
+  const children=omitThreadIds(node.children,shown);
+  return shown.has(node.thread.id)?children:[{...node,children}];
+ });
 }
 export function sidebarPresentation<T extends ThreadNode['thread'] & {isHidden:boolean}>(
  projects: readonly (ProjectLocation & {isPersonal:boolean})[], threads: readonly T[], hidden: Hidden, show: boolean, rootPath: string,

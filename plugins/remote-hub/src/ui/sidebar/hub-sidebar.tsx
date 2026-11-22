@@ -11,7 +11,7 @@ import type { DeskSession } from "../../core/desk.ts";
 import { toneOf } from "../../core/desk-status.ts";
 import type { Thumb } from "../../core/thumb.ts";
 import { buildTree, type GuestFilter, type TreeConnection, type TreeProfile, type TreeRow } from "../../core/hub-tree.ts";
-import { kindText, stateText, StatusDot } from "../desk/status.tsx";
+import { kindText, SessionIcon, stateText, StatusDot } from "../desk/status.tsx";
 import { plural, tx } from "../i18n.ts";
 import { outcomeRu } from "../pve-texts.ts";
 import type { PveConsoleRequest } from "../pve-api.ts";
@@ -25,6 +25,8 @@ export interface HubSidebarProps {
   /** The small pictures of the open sessions, by session id. */
   thumbs?: Readonly<Record<string, Thumb>>;
   shown: readonly string[];
+  /** Both panes may be visible; only one receives input. */
+  focusedId?: string | null;
   onFocusSession: (id: string) => void;
   onCloseSession: (id: string) => void;
   /** A Proxmox connection was opened in the tree: its guests are wanted. */
@@ -44,7 +46,7 @@ export interface HubSidebarProps {
 const ROW = "flex h-[var(--rh-row)] w-full min-w-0 items-center gap-2 rounded-md px-2 text-left text-sm hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 /** What ends a row; it gives way to the row's action button while the row is hovered or focused. */
 const TRAIL = "flex shrink-0 items-center gap-2 group-focus-within:invisible group-hover:invisible";
-const SECTION = "flex items-center justify-between px-2 pb-1.5 pt-3.5 text-xs uppercase tracking-wide text-muted-foreground";
+const SECTION = "flex items-center justify-between px-2 pb-1.5 pt-3.5 text-xs font-medium text-muted-foreground";
 const FILTERS: ReadonlyArray<{ value: GuestFilter; key: "pve.filter.all" | "pve.filter.running" | "pve.filter.lxc" | "pve.filter.vm" }> = [
   { value: "all", key: "pve.filter.all" },
   { value: "running", key: "pve.filter.running" },
@@ -56,9 +58,9 @@ const GUESTS = ["гость", "гостя", "гостей"] as const;
 /** The session's small picture: a terminal's last lines or a desktop's frame; an empty screen until there is one. */
 function SessionThumb({ thumb }: { thumb: Thumb | undefined }) {
   return (
-    <span className="block h-14 w-full overflow-hidden rounded bg-[var(--rh-screen)]" aria-hidden="true" data-testid="sidebar-thumb">
+    <span className="block size-9 shrink-0 overflow-hidden rounded bg-[var(--rh-screen)]" aria-hidden="true" data-testid="sidebar-thumb">
       {thumb?.type === "image" && <img src={thumb.url} alt="" className="size-full object-cover object-top" />}
-      {thumb?.type === "text" && <span className="block whitespace-pre p-1.5 font-mono text-[8px] leading-[1.3] text-muted-foreground">{thumb.lines.join("\n")}</span>}
+      {thumb?.type === "text" && <span className="block whitespace-pre p-1 font-mono text-[6px] leading-[1.3] text-muted-foreground">{thumb.lines.join("\n")}</span>}
     </span>
   );
 }
@@ -101,6 +103,7 @@ export function HubSidebar(props: HubSidebarProps) {
               onClick={() => (r.protocol === "pve" ? toggle(r.id) : props.onConnect(r.id))}
             >
               {r.protocol === "pve" && <Icon name={r.expanded ? "ChevronDown" : "ChevronRight"} className="size-3 shrink-0 text-muted-foreground" />}
+              <Icon name={r.protocol === "pve" ? "ComputerTerminal01" : r.protocol === "rdp" ? "ComputerTerminal01" : "Terminal"} className="size-4 shrink-0 text-muted-foreground" />
               <span className="min-w-0 flex-1 truncate">{r.name}</span>
               <span className={TRAIL}>
                 <ProtocolTag protocol={r.protocol} />
@@ -151,12 +154,12 @@ export function HubSidebar(props: HubSidebarProps) {
 
   const hasPve = rows.some((r) => r.type === "profile" && r.protocol === "pve" && r.expanded);
   return (
-    <nav className="rh-tokens flex h-full min-h-0 flex-col text-foreground" aria-label={tx("app.title")}>
+    <nav className="rh-tokens rh-sidebar flex h-full min-h-0 flex-col text-foreground" aria-label={tx("app.title")}>
       <div className="sticky top-0 z-10 flex h-[var(--rh-header)] shrink-0 items-center gap-2 bg-[var(--sidebar,var(--background))] px-3" data-testid="sidebar-head">
-        <Input type="search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder={tx("sidebar.search")} aria-label={tx("sidebar.search")} className="h-8 flex-1" />
+        <h2 className="min-w-0 flex-1 truncate text-base font-semibold">{tx("app.title")}</h2>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button type="button" variant="outline" size="icon" className="size-8 shrink-0" aria-label={tx("sidebar.add")}>
+            <Button type="button" size="icon" className="rh-add-connection size-8 shrink-0" aria-label={tx("sidebar.add")}>
               <Icon name="Plus" className="size-4" />
             </Button>
           </DropdownMenuTrigger>
@@ -170,7 +173,11 @@ export function HubSidebar(props: HubSidebarProps) {
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
+      <div className="rh-sidebar-search">
+        <Icon name="Search" className="size-4 shrink-0 text-muted-foreground" />
+        <Input type="search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder={tx("sidebar.search")} aria-label={tx("sidebar.search")} className="h-9 min-w-0 flex-1 pl-8" />
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-3">
         {props.sessions.length > 0 && (
           <section aria-label={tx("sidebar.open")}>
             <div className={SECTION}>
@@ -178,19 +185,23 @@ export function HubSidebar(props: HubSidebarProps) {
               <span>{props.sessions.length}</span>
             </div>
             {props.sessions.map((s) => (
-              <div key={s.id} className={cn("group relative mb-2 rounded-lg border", props.shown.includes(s.id) ? "border-ring" : "border-border")} data-testid="sidebar-session">
+              <div key={s.id} className={cn("rh-sidebar-session group relative mb-2 rounded-lg border", (props.focusedId === undefined ? props.shown.includes(s.id) : props.focusedId === s.id) ? "border-ring" : "border-border")} data-testid="sidebar-session">
                 <button
                   type="button"
-                  className="flex w-full min-w-0 flex-col gap-1.5 rounded-lg p-2 text-left text-sm hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  className="flex w-full min-w-0 items-center gap-2.5 rounded-lg p-2.5 pr-7 text-left text-sm hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                   aria-current={props.shown.includes(s.id) ? "true" : undefined}
                   title={`${s.detail} · ${stateText(s)}`}
                   onClick={() => props.onFocusSession(s.id)}
                 >
-                  <SessionThumb thumb={props.thumbs?.[s.id]} />
-                  <span className="flex w-full min-w-0 items-center gap-2">
-                    <StatusDot tone={toneOf(s)} />
-                    <span className="min-w-0 flex-1 truncate">{s.title}</span>
-                    <span className="shrink-0 text-xs text-muted-foreground">{s.state === "active" ? (s.owner === "agent" ? tx("session.drivenByAgent") : kindText(s.kind)) : stateText(s)}</span>
+                  {props.thumbs?.[s.id] === undefined ? <span className="rh-session-icon"><SessionIcon kind={s.kind} className="size-5" /></span> : <SessionThumb thumb={props.thumbs[s.id]} />}
+                  <span className="min-w-0 flex-1">
+                    <span className="flex min-w-0 items-center gap-2">
+                      <span className="min-w-0 flex-1 truncate font-medium">{s.title}</span>
+                      <StatusDot tone={toneOf(s)} />
+                    </span>
+                    <span className="mt-0.5 block truncate text-xs text-muted-foreground">{s.detail || kindText(s.kind)}</span>
+                    <span className="sr-only">{kindText(s.kind)} · {stateText(s)}</span>
+                    {s.owner === "agent" && s.state === "active" && <span className="block text-xs text-primary">{tx("session.drivenByAgent")}</span>}
                   </span>
                 </button>
                 <Button type="button" variant="secondary" size="icon" className="absolute right-1 top-1 size-6 opacity-0 focus-visible:opacity-100 group-hover:opacity-100" aria-label={`${tx("session.close")}: ${s.title}`} onClick={() => props.onCloseSession(s.id)}>
@@ -200,6 +211,7 @@ export function HubSidebar(props: HubSidebarProps) {
             ))}
           </section>
         )}
+        <div className="rh-saved-heading">{tx("sidebar.saved")}</div>
         {hasPve && (
           <div className="flex flex-wrap gap-1 px-2 pt-3" role="group" aria-label="Proxmox">
             {FILTERS.map((f) => (

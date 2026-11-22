@@ -6,11 +6,11 @@ import type { DeskSession } from "../../core/desk.ts";
 import { useDesk } from "../desk-store.ts";
 import { tx } from "../i18n.ts";
 import { registerCloser, useDeskStore } from "./desk-context.tsx";
-import { SessionStatus } from "./status.tsx";
+import { SessionIcon, sessionKindLabel, SessionStatus } from "./status.tsx";
 import { useThumb } from "./use-thumb.ts";
 
 export interface DeskPaneProps {
-  session: Pick<DeskSession, "id" | "title" | "detail" | "state" | "attempt" | "owner">;
+  session: Pick<DeskSession, "id" | "kind" | "title" | "detail" | "state" | "attempt" | "owner">;
   /** Buttons for this session (Disconnect, Reconnect …), drawn at the right of the header. */
   actions?: ReactNode;
   /** Disconnects the session and takes it off the desk. */
@@ -37,19 +37,26 @@ export function DeskPane({ session, actions, onClose, note, children }: DeskPane
       style={{ order: order === -1 ? undefined : order }}
       onPointerDown={() => store.focus(session.id)}
       onFocus={() => store.focus(session.id)}
-      className={cn("min-h-0 min-w-0 flex-col overflow-hidden rounded-lg border bg-background", order === -1 ? "hidden" : "flex", focused && desk.shown.length > 1 ? "border-ring" : "border-border")}
+      className={cn("rh-desk-pane min-h-0 min-w-0 flex-col overflow-hidden rounded-lg border bg-background", order === -1 ? "hidden" : "flex", focused && desk.shown.length > 1 ? "border-ring" : "border-border")}
     >
-      <header className="flex h-9 shrink-0 items-center gap-2 border-b border-border px-3 text-sm">
-        <strong className="max-w-[45%] shrink-0 truncate font-semibold" title={session.title}>{session.title}</strong>
-        <span className="min-w-0 truncate text-muted-foreground">{session.detail}</span>
-        <SessionStatus session={session} />
+      <header className="rh-pane-header">
+        <SessionIcon kind={session.kind} className="rh-pane-icon" />
+        <div className="rh-pane-identity">
+          <div className="rh-pane-title-row">
+            <strong className="truncate font-semibold" title={session.title}>{session.title}</strong>
+            <span className="rh-pane-kind">{sessionKindLabel(session.kind)}</span>
+          </div>
+          <div className="rh-pane-detail-row">
+            {session.detail !== "" && <span className="rh-pane-detail" title={session.detail}>{session.detail}</span>}
+            <SessionStatus session={session} />
+          </div>
+        </div>
         {session.state === "active" && session.owner === "agent" && (
-          <span className="shrink-0 rounded-full bg-secondary px-2 py-0.5 text-xs text-muted-foreground" data-testid="desk-pane-owner">
+          <span className="rh-pane-owner" data-testid="desk-pane-owner">
             {tx("session.drivenByAgent")}
           </span>
         )}
-        <span className="flex-1" />
-        <span className="flex shrink-0 items-center">{actions}</span>
+        <div className="rh-pane-actions">{actions}</div>
       </header>
       {note}
       <div ref={body} className="relative flex min-h-0 flex-1 flex-col">

@@ -1,5 +1,5 @@
 import {expect,test} from 'vitest';
-import {sidebarPresentation, runningThreads} from '../src/core/presentation';
+import {sidebarPresentation, runningThreads,isRunning,withBranchActivity,omitThreadIds} from '../src/core/presentation';
 const projects=[{id:'p',name:'Project',path:'/Projects/Personal/Project',isPersonal:false},{id:'o',name:'Outside',path:'/Projects-extra/Other',isPersonal:false},{id:'loose',name:'Personal',path:null,isPersonal:true}];
 const thread=(id:string,projectId:string,status='idle')=>({id,projectId,status,isHidden:false,isArchived:false,isPinned:false,title:id,titleFallback:null,parentThreadId:null,latestAttentionAt:100});
 test('explicit root is omitted while siblings outside it are excluded',()=>{
@@ -35,6 +35,18 @@ test('a hidden running worktree thread escapes without restoring the empty workt
  expect(view.tree.roots).toEqual([]);
  expect(view.running.map(t=>t.id)).toEqual(['running-worktree']);
 });
+test('root folders remain first level but single-child folder chains below them compress',()=>{
+ const view=sidebarPresentation([{id:'p',name:'golden-record',path:'/Projects/Work/itq/clients/evoca/golden-record',isPersonal:false}],[],{projects:[],threads:[]},false,'/Projects');
+ expect(view.tree.roots[0]?.label).toBe('Work');
+ expect(view.tree.roots[0]?.children[0]?.project?.id).toBe('p');
+ expect(view.tree.roots[0]?.children[0]?.label).toBe('itq/clients/evoca/golden-record');
+});
+test('deduplicating activity never removes quiet descendants from navigation',()=>{
+ const child={thread:thread('quiet','p'),children:[]};
+ const nodes=[{thread:thread('parent','p'),children:[child,{thread:thread('busy','p','active'),children:[]}]}];
+ expect(omitThreadIds(nodes,new Set(['parent','busy']))).toEqual([child]);
+ expect(nodes[0]?.children).toHaveLength(2);
+});
 
 test('hiding a project hides its separately registered nested worktree projects',()=>{
  const nested=[{id:'base',name:'veda',path:'/Projects/veda',isPersonal:false},{id:'wt',name:'feature',path:'/Projects/veda/.claude/worktrees/feature',isPersonal:false},{id:'other',name:'veda-other',path:'/Projects/veda-other',isPersonal:false}];
@@ -46,4 +58,18 @@ test('hiding a project hides its separately registered nested worktree projects'
  expect(busy.running.map(t=>t.id)).toEqual(['wt-busy']);
  const revealed=sidebarPresentation(nested,[thread('wt-idle','wt')],hidden,true,'/Projects');
  expect(revealed.tree.roots.some(n=>n.project?.id==='base')).toBe(true);
+});
+
+test('background work and nested active children keep the full branch active without mutating host status',()=>{
+ const rows=[thread('root','p'),{...thread('middle','p'),parentThreadId:'root'}, {...thread('worker','p','active'),parentThreadId:'middle'}, {...thread('background','p'),activity:{backgroundCommands:1}}];
+ const result=withBranchActivity(rows);
+ expect(result.map(isRunning)).toEqual([true,true,true,true]);
+ expect(result[0]?.status).toBe('idle');
+ expect(rows[0]).not.toHaveProperty('descendantRunning');
+ expect(withBranchActivity(rows.map(t=>({...t,status:'idle',activity:{backgroundCommands:0}}))).some(isRunning)).toBe(false);
+});
+test('archived and internal children do not promote parents; cycles terminate',()=>{
+ const rows=[thread('parent','p'),{...thread('hidden','p','active'),parentThreadId:'parent',isHidden:true},{...thread('archived','p','active'),parentThreadId:'parent',isArchived:true}];
+ expect(isRunning(withBranchActivity(rows)[0]!)).toBe(false);
+ expect(withBranchActivity([{...thread('a','p'),parentThreadId:'b'},{...thread('b','p','active'),parentThreadId:'a'}]).every(isRunning)).toBe(true);
 });

@@ -3275,6 +3275,16 @@ describe.each(storeKinds)("operators for Inbox tabs (%s)", (_kind, make) => {
   });
 
 
+  it("from:known also knows a person a send reached, before any Sent copy is stored", () => {
+    from("bob@example.com");
+    from("hidden@example.net");
+    from("stranger@example.net");
+    s.createDraft(newDraft());
+    s.queueOutbox(newOutbox(), 1);
+    s.transitionOutbox("out_1", ["queued"], "sent");
+    expect(found("from:known in:inbox")).toEqual(["bob@example.com", "friend@gmail.com", "hidden@example.net"]);
+  });
+
   it("a scoped read (an agent, another plugin) finds nothing by a sender set, in either sign", () => {
     // The sets come from the owner's settings and from Sent mail of every account, shared or not.
     const scoped = (query: string) => s.search(parseQuery(query), null, 50, { scoped: true }).map((hit) => hit.from.address).sort();
@@ -3805,6 +3815,22 @@ describe("slice-3d migration (SQLite)", () => {
     ]);
   });
 
+  it("deleteAccount removes what AI wrote about its mail and its read statuses; another account's stay", () => {
+    store.saveAccount(makeStoredAccount({ id: "acc_2", email: "second@example.com", username: "second-login" }));
+    for (const acc of ["acc_1", "acc_2"]) {
+      db.prepare("INSERT INTO reply_drafts (message_id, account_id, paragraphs_json, links_removed, provider, model, created_at) VALUES (?, ?, '[]', 0, 'p', 'm', ?)").run(`m_${acc}`, acc, T0);
+      db.prepare("INSERT INTO message_ai (account_id, dedup_key, summary, labels_json, created_at) VALUES (?, 'k', 'Invented line', '[]', ?)").run(acc, T0);
+      db.prepare("INSERT INTO sent_tracking (token, account_id, rfc_message_id, created_at) VALUES (?, ?, ?, ?)").run(`tok_${acc}`, acc, `<${acc}@example.org>`, T0);
+      db.prepare("INSERT INTO open_events (token, at, kind) VALUES (?, ?, 'person')").run(`tok_${acc}`, T0);
+    }
+    store.deleteAccount("acc_1");
+    const left = (table: string, column: string) => (db.prepare(`SELECT ${column} AS v FROM ${table}`).all() as { v: string }[]).map((row) => row.v);
+    expect(left("reply_drafts", "account_id")).toEqual(["acc_2"]);
+    expect(left("message_ai", "account_id")).toEqual(["acc_2"]);
+    expect(left("sent_tracking", "account_id")).toEqual(["acc_2"]);
+    expect(left("open_events", "token")).toEqual(["tok_acc_2"]);
+  });
+
   it("deleteAccount removes identities and sent_recipients; templates stay", () => {
     store.upsertIdentity({ accountId: "acc_1", address: "alias@example.org", displayName: null }, T0);
     store.dismissIdentity("acc_1", "other@example.org", T0);
@@ -4049,6 +4075,21 @@ describe.each(storeKinds)("slice-3d store semantics (%s)", (_kind, make) => {
       expect(s.contacts("alias", 10)).toEqual([]);
       expect(s.correspondence(["ann@example.com"]).map((c) => c.accountId)).toEqual(["acc_1"]);
     });
+  });
+
+  it("agentLogSince gives the time and count of one tool's rows since a moment, oldest first", () => {
+    const row = (at: string, tool: "ai_sort" | "ai_archive", count: number) =>
+      s.appendAgentLog({ at, actor: "owner_ai", threadId: null, tool, outcome: "ok", messageIds: [], count, hiddenCount: 0, refId: null, provider: null, model: null });
+    row("2026-11-20T08:00:00.000Z", "ai_archive", 4);
+    row("2026-11-20T06:00:00.000Z", "ai_archive", 2);
+    row("2026-11-20T07:00:00.000Z", "ai_sort", 10);
+    row("2026-11-19T07:00:00.000Z", "ai_archive", 9);
+    expect(s.agentLogSince("ai_archive", "2026-11-20T00:00:00.000Z")).toEqual([
+      { at: "2026-11-20T06:00:00.000Z", count: 2 },
+      { at: "2026-11-20T08:00:00.000Z", count: 4 },
+    ]);
+    expect(s.agentLogSince("ai_sort", "2026-11-20T07:00:00.000Z")).toEqual([{ at: "2026-11-20T07:00:00.000Z", count: 10 }]);
+    expect(s.agentLogSince("ai_autodraft", "2026-11-01T00:00:00.000Z")).toEqual([]);
   });
 
   describe("templates", () => {

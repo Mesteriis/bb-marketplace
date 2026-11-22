@@ -1,6 +1,6 @@
 This experimental release puts your mailbox next to your threads: read,
-sort, snooze and send iCloud, Gmail or IMAP mail, use AI on your click, and
-hand mail to BB projects, threads and Taskboard.
+sort, snooze and send iCloud, Gmail or IMAP mail, use AI, and hand mail
+to BB projects, threads and Taskboard.
 
 ## What you get
 
@@ -28,12 +28,12 @@ hand mail to BB projects, threads and Taskboard.
 Toasts for new mail from people you write to. **Unsubscribe** asks first.
 **Snooze** (`b`) and **Block** rules move mail later on their own.
 
-## AI on your click
+## AI
 
 **Translate**, **Summarize**, **Ask**, **Find tasks**, **categories**,
-**Today**, **reply reminders**, **Improve**, **Write with AI**. Off by
-default: reply drafts and AI labels for new mail. Nothing is sent
-without you. Makosh AI gets subjects, names, dates, unquoted bodies;
+**Today**, **reply reminders**, **Improve**, **Write with AI** on your
+click. Off by default, on their own: reply drafts, AI labels. Nothing is
+sent without you. Makosh AI gets subjects, names, dates, unquoted bodies;
 never addresses or files.
 
 ## BB integration
