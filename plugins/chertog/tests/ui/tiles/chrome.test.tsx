@@ -256,6 +256,26 @@ describe("maximize, close and the layout menu", () => {
     expect(screen.queryByRole("menu")).toBeNull();
   });
 
+  it("offers closing a parent together with its linked tiles, and only for a tile that has some", async () => {
+    const user = userEvent.setup();
+    const calls = newCalls(threeTiles());
+    const panels = { a: { title: "Исполнитель", linkedCount: 2 }, b: { title: "Ревьюер" }, c: { title: "Предпросмотр" } };
+    const { container } = render(<Harness calls={calls} size={SIZE} panels={panels} />);
+
+    await user.click(within(container.querySelector('[data-group-id="group-2"]') as HTMLElement).getByRole("button", { name: "Действия тайла" }));
+    expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Убрать вкладку из раскладки", "Убрать тайл из раскладки"]);
+    await user.keyboard("{Escape}");
+
+    await user.click(within(container.querySelector('[data-group-id="group-1"]') as HTMLElement).getByRole("button", { name: "Действия тайла" }));
+    expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
+      "Убрать вкладку из раскладки",
+      "Убрать тайл из раскладки",
+      "Закрыть вместе с подчинёнными (2)",
+    ]);
+    await user.click(screen.getByRole("menuitem", { name: "Закрыть вместе с подчинёнными (2)" }));
+    expect(calls.closes).toEqual(["a"]);
+  });
+
   it("closes the menu on Escape and returns the focus to its button", async () => {
     const user = userEvent.setup();
     const { calls, container } = setup();

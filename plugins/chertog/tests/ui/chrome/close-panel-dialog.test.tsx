@@ -171,6 +171,13 @@ describe("ClosePanelDialog", () => {
   });
 });
 
+describe("ClosePanelDialog for a parent with linked tiles", () => {
+  it("says the close takes the linked tiles along", () => {
+    render(<ClosePanelDialog open panelTitle="Родитель" linkedCount={2} onHide={vi.fn()} onCloseAndEnd={vi.fn()} onCancel={vi.fn()} />);
+    expect(screen.getByRole("button", { name: "Закрыть вместе с подчинёнными (2) и завершить" })).toBeTruthy();
+  });
+});
+
 describe("ClosePanelDialog opened from a control that goes away", () => {
   const PANELS = [
     { instanceId: "p1", title: "Zoom: Планёрка" },

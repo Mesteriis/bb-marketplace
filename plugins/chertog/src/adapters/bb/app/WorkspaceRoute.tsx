@@ -47,6 +47,8 @@ interface ClosingPanel {
   readonly title: string;
   /** Whether the open layout places the panel: only then can it be hidden instead. */
   readonly placed: boolean;
+  /** Linked tiles that close with it. */
+  readonly linkedCount: number;
 }
 
 function sameSet(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
@@ -188,7 +190,7 @@ export function WorkspaceRoute({ workspace, onNewThread, surfaceSize }: Workspac
   };
   const requestClose = async (panelId: string): Promise<void> => {
     if ((await session.closePanel(panelId)) === "needs-confirmation") {
-      setClosing({ panelId, title: session.labelOf(panelId).title, placed: placedPanels.has(panelId) });
+      setClosing({ panelId, title: session.labelOf(panelId).title, placed: placedPanels.has(panelId), linkedCount: labels[panelId]?.linkedCount ?? 0 });
     }
   };
   const requestCloseInstance = (instanceId: string): void => {
@@ -331,6 +333,7 @@ export function WorkspaceRoute({ workspace, onNewThread, surfaceSize }: Workspac
       <ClosePanelDialog
         open={closing !== null}
         panelTitle={closing?.title ?? ""}
+        linkedCount={closing?.linkedCount ?? 0}
         onHide={() => {
           // A panel that is already out of the layout is hidden as it is.
           if (closing !== null && closing.placed) session.removeFromLayout(closing.panelId);

@@ -178,6 +178,7 @@ export function Tile(props: TileProps) {
               items={[
                 { label: text.removeTab, onSelect: () => props.onRemoveTab(group.activeTab as string) },
                 { label: text.removeTile, onSelect: props.onRemoveTile },
+                ...(active?.linkedCount ? [{ label: text.closeBlock(active.linkedCount), onSelect: () => props.onRequestClose(group.activeTab as string) }] : []),
                 ...(active?.handoffUnavailable ? [{
                   label: "Передать в другое окно",
                   reason: active.handoffUnavailable + " Переместите целое окно BB средствами системы. Чтобы открыть второе окно, выберите New Window.",

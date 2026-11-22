@@ -62,20 +62,22 @@ export function closeBlock(
 }
 
 /**
- * Moves the parent's tile to an edge of another tile and puts the children
- * back beside it in their former order. A target inside the block itself, or
- * an unknown group, changes nothing.
+ * Moves the tile of the parent panel to an edge of another tile and puts the
+ * children back beside it in their former order. A target inside the block
+ * itself changes nothing; an unknown target group or a parent the layout does
+ * not place is refused.
  */
 export function moveBlock(
-  document: WorkspaceDocument, parentGroupId: string, targetGroupId: string, edge: Edge, parentOf: ParentOf,
+  document: WorkspaceDocument, parentPanelId: string, targetGroupId: string, edge: Edge, parentOf: ParentOf,
 ): WorkspaceChange {
   const { root } = activeLayout(document).workspace;
-  const parentGroup = findGroup(root, parentGroupId);
-  if (parentGroup === undefined || parentGroup.activeTab === null) return { ok: false, reason: "unknown-group" };
-  const parentPanelId = parentGroup.activeTab;
+  const parentGroup = findGroupOfPanel(root, parentPanelId);
+  if (parentGroup === undefined) return { ok: false, reason: "not-placed" };
+  if (findGroup(root, targetGroupId) === undefined) return { ok: false, reason: "unknown-group" };
+  const parentGroupId = parentGroup.id;
   const children = blockChildren(document, parentPanelId, parentOf);
   const inside = new Set([parentGroupId, ...children.flatMap((child) => findGroupOfPanel(root, child)?.id ?? [])]);
-  if (inside.has(targetGroupId) || findGroup(root, targetGroupId) === undefined) return { ok: true, document };
+  if (inside.has(targetGroupId)) return { ok: true, document };
   const lifted = changeActiveLayout(document, (workspace) => children.reduce(closeTab, workspace));
   if (!lifted.ok) return lifted;
   const moved = changeActiveLayout(lifted.document, (workspace) => moveGroup(workspace, parentGroupId, targetGroupId, edge));

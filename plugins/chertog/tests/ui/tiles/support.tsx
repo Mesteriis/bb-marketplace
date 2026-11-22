@@ -49,7 +49,7 @@ export function Harness({
   calls,
   size,
   ...rest
-}: { calls: Calls; size: TileSurfaceProps["size"] } & Partial<Pick<TileSurfaceProps, "renderPicker" | "children">>) {
+}: { calls: Calls; size: TileSurfaceProps["size"] } & Partial<Pick<TileSurfaceProps, "renderPicker" | "children" | "panels">>) {
   const [state, setState] = useState(calls.state);
   calls.state = state;
   return (

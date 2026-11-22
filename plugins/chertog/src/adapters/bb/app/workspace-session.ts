@@ -12,6 +12,7 @@ import {
   findGroupOfPanel,
   listGroups,
   splitGroup,
+  type LayoutOperation,
   type WorkspaceState,
 } from "../../../core/layout/index.ts";
 import { applyPreset } from "../../../core/workspace/presets.ts";
@@ -22,9 +23,12 @@ import {
   activeLayout,
   addPanelToGroup,
   applyLayoutOperation,
+  blockChildren,
   changeActiveLayout,
+  closeBlock,
   deleteLayout,
   duplicateLayout,
+  moveBlock,
   panelIdOfRef,
   placeInBlock,
   placedPanelIds,
@@ -199,6 +203,12 @@ export class WorkspaceSession {
   labels(): Record<string, PanelLabel> {
     const document = this.document();
     const labels = document === null ? {} : Object.fromEntries(Object.keys(document.panels).map((panelId) => [panelId, this.labelOf(panelId)]));
+    if (document !== null) {
+      for (const panelId of Object.keys(document.panels)) {
+        const linkedCount = blockChildren(document, panelId, this.parentOf).length;
+        if (linkedCount > 0) labels[panelId] = { ...labels[panelId], linkedCount };
+      }
+    }
     for (const r of this.reservations.values()) labels[r.panelId] = { title: r.source.neutralLabel, ...handoffLabel(r.source.provider.type) };
     return labels;
   }
@@ -282,10 +292,32 @@ export class WorkspaceSession {
       return;
     }
     if (change.kind === "operation") {
-      this.controller.change((document) => applyLayoutOperation(document, change.operation));
+      const { operation } = change;
+      this.controller.change((document) => operation.type === "moveGroup" ? this.moveGroupWithBlock(document, operation) : applyLayoutOperation(document, operation));
     } else {
-      this.controller.change((document) => changeActiveLayout(document, () => change.state));
+      this.controller.change((document) => this.applyStateWithBlocks(document, change.state));
     }
+  }
+
+  /** A dragged tile that holds a parent takes the parent's children along; any other tile moves alone. */
+  private moveGroupWithBlock(document: WorkspaceDocument, operation: Extract<LayoutOperation, { type: "moveGroup" }>): WorkspaceChange {
+    const group = findGroup(activeLayout(document).workspace.root, operation.groupId);
+    const parent = group?.tabs.find((panelId) => blockChildren(document, panelId, this.parentOf).length > 0);
+    return parent === undefined
+      ? applyLayoutOperation(document, operation)
+      : moveBlock(document, parent, operation.targetGroupId, operation.edge, this.parentOf);
+  }
+
+  /** A state the surface asks for. A parent that leaves the layout in it takes its children along. */
+  private applyStateWithBlocks(document: WorkspaceDocument, state: WorkspaceState): WorkspaceChange {
+    const changed = changeActiveLayout(document, () => state);
+    if (!changed.ok) return changed;
+    const kept = new Set(placedPanelIds(activeLayout(changed.document)));
+    const orphans = placedPanelIds(activeLayout(document))
+      .filter((panelId) => !kept.has(panelId))
+      .flatMap((panelId) => blockChildren(document, panelId, this.parentOf))
+      .filter((child) => kept.has(child));
+    return orphans.length === 0 ? changed : changeActiveLayout(changed.document, (workspace) => orphans.reduce(closeTab, workspace));
   }
 
   private commitSurface(current: WorkspaceState, shown: WorkspaceState): void {
@@ -586,7 +618,14 @@ export class WorkspaceSession {
   /** Removes the panel from the open layout. Its instance stays as live as it was and is listed among the hidden panels. */
   removeFromLayout(panelId: string): void {
     for (const [id, r] of this.reservations) if (r.panelId === panelId) { this.cancelChoice(id); return; }
-    this.controller.change((document, live) => removePanelFromLayout(document, panelId, live));
+    this.controller.change((document, live) => this.hasBlock(document, panelId)
+      ? closeBlock(document, panelId, this.parentOf, live)
+      : removePanelFromLayout(document, panelId, live));
+  }
+
+  /** Whether the open layout places children of the panel. */
+  private hasBlock(document: WorkspaceDocument, panelId: string): boolean {
+    return blockChildren(document, panelId, this.parentOf).length > 0;
   }
 
   /**
@@ -596,6 +635,23 @@ export class WorkspaceSession {
    */
   async closePanel(panelId: string, options: { confirmEndsSession?: boolean } = {}): Promise<CloseOutcome> {
     for (const [id, r] of this.reservations) if (r.panelId === panelId) { this.cancelChoice(id); return "closed"; }
+    // A parent takes the children it has now along: one close, one question.
+    const document = this.document();
+    const children = document === null ? [] : blockChildren(document, panelId, this.parentOf);
+    for (const member of [panelId, ...children]) {
+      const outcome = await this.endInstance(member, options);
+      if (outcome !== "closed") return outcome;
+    }
+    this.controller.change((current, live) => {
+      const placed = placedPanelIds(activeLayout(current)).includes(panelId);
+      if (children.length > 0 && (placed || this.hasBlock(current, panelId))) return closeBlock(current, panelId, this.parentOf, live);
+      return placed ? removePanelFromLayout(current, panelId, live) : applied(current);
+    });
+    return "closed";
+  }
+
+  /** Releases the view of one panel and forgets its instance; the layout is not touched, except that a provider's "hide" answer hides the panel. */
+  private async endInstance(panelId: string, options: { confirmEndsSession?: boolean }): Promise<CloseOutcome> {
     const instanceId = this.instances.get(panelId);
     if (instanceId !== undefined) {
       const view = this.viewOf(instanceId);
@@ -609,10 +665,6 @@ export class WorkspaceSession {
       if (this.instances.get(panelId) === instanceId) this.instances.delete(panelId);
     }
     this.refused.delete(panelId);
-    this.controller.change((document, live) => {
-      const placed = placedPanelIds(activeLayout(document)).includes(panelId);
-      return placed ? removePanelFromLayout(document, panelId, live) : applied(document);
-    });
     return "closed";
   }
 

@@ -1,6 +1,6 @@
 // Linked block operations: a parent tile and its children kept together.
 import { describe, expect, it } from "vitest";
-import { createWorkspace, findGroupOfPanel, listGroups, moveTab, splitGroup } from "../../../src/core/layout/index.ts";
+import { addTab, createWorkspace, findGroupOfPanel, listGroups, moveTab, splitGroup } from "../../../src/core/layout/index.ts";
 import type { LayoutNode } from "../../../src/core/layout/index.ts";
 import { activeLayout, blockChildren, changeActiveLayout, BLOCK_SIDE_LIMIT, closeBlock, moveBlock, placeInBlock } from "../../../src/core/workspace/index.ts";
 import type { ParentOf, WorkspaceChange, WorkspaceDocument, WorkspacePanel } from "../../../src/core/workspace/index.ts";
@@ -115,7 +115,7 @@ describe("closeBlock", () => {
 describe("moveBlock", () => {
   it("moves the parent left of another tile and sets the children back right of it", () => {
     const document = done(changeOther(withChildren(3)));
-    const moved = done(moveBlock(document, groupIdOf(document, "p"), groupIdOf(document, "other"), "left", parentOf));
+    const moved = done(moveBlock(document, "p", groupIdOf(document, "other"), "left", parentOf));
     expect(shape(activeLayout(moved).workspace.root)).toEqual(["row", ["p"], ["column", ["c1"], ["c2"], ["c3"]], ["other"]]);
     expect(blockChildren(moved, "p", parentOf)).toEqual(["c1", "c2", "c3"]);
     expect(Object.keys(moved.panels).sort()).toEqual(["c1", "c2", "c3", "other", "p"]);
@@ -123,8 +123,28 @@ describe("moveBlock", () => {
 
   it("changes nothing when the target is a tile of the block itself", () => {
     const document = withChildren(2);
-    const same = moveBlock(document, groupIdOf(document, "p"), groupIdOf(document, "c1"), "left", parentOf);
+    const same = moveBlock(document, "p", groupIdOf(document, "c1"), "left", parentOf);
     expect(same).toEqual({ ok: true, document });
+  });
+
+  it("refuses an unknown target group instead of reporting a change", () => {
+    const document = withChildren(1);
+    expect(moveBlock(document, "p", "no-such-group", "left", parentOf)).toEqual({ ok: false, reason: "unknown-group" });
+  });
+
+  it("refuses a parent the layout does not place", () => {
+    const document = done(changeOther(withChildren(1)));
+    expect(moveBlock(document, "ghost", groupIdOf(document, "other"), "left", parentOf)).toEqual({ ok: false, reason: "not-placed" });
+  });
+
+  it("takes the parent by panel id even when another tab is active in its tile", () => {
+    let document = withChildren(2);
+    document = { ...document, panels: { ...document.panels, other: thread("other"), q: thread("q") } };
+    document = done(changeActiveLayout(document, (workspace) => addTab(workspace, groupIdOf(document, "p"), "other")));
+    document = done(changeActiveLayout(document, (workspace) => splitGroup(workspace, groupIdOf(document, "p"), "left", "q")));
+    expect(findGroupOfPanel(activeLayout(document).workspace.root, "p")?.activeTab).toBe("other");
+    const moved = done(moveBlock(document, "p", groupIdOf(document, "q"), "left", parentOf));
+    expect(shape(activeLayout(moved).workspace.root)).toEqual(["row", ["p", "other"], ["column", ["c1"], ["c2"]], ["q"]]);
   });
 });
 

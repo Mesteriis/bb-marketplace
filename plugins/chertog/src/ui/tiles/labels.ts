@@ -11,6 +11,8 @@ export interface PanelLabel {
   readonly context?: string;
   /** A short state shown as a dot beside the tab; `label` is read out and shown on hover. */
   readonly status?: { readonly tone: PanelStatusTone; readonly label: string };
+  /** How many linked tiles (children) the panel has in the open layout; closing the panel closes them too. */
+  readonly linkedCount?: number;
 }
 
 export interface TileSurfaceText {
@@ -22,6 +24,7 @@ export interface TileSurfaceText {
   readonly tileMenu: string;
   readonly removeTab: string;
   readonly removeTile: string;
+  readonly closeBlock: (count: number) => string;
   readonly maximize: string;
   readonly restore: string;
   readonly resize: string;
@@ -37,6 +40,7 @@ export const DEFAULT_TILE_TEXT: TileSurfaceText = {
   tileMenu: "Действия тайла",
   removeTab: "Убрать вкладку из раскладки",
   removeTile: "Убрать тайл из раскладки",
+  closeBlock: (count) => `Закрыть вместе с подчинёнными (${count})`,
   maximize: "Развернуть",
   restore: "Восстановить",
   resize: "Изменить размер",
