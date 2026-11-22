@@ -3,7 +3,7 @@ import { listGroups } from "../../../src/core/layout/index.ts";
 import { chooseProvider } from "../../../src/core/panels/choose.ts";
 import { activeLayout, workspaceDocumentSchema } from "../../../src/core/workspace/document.ts";
 import { applyPreset } from "../../../src/core/workspace/presets.ts";
-import { duplicateLayout, replaceChoosePanel, type WorkspaceChange } from "../../../src/core/workspace/operations.ts";
+import { addPanelToGroup, duplicateLayout, replaceChoosePanel, type WorkspaceChange } from "../../../src/core/workspace/operations.ts";
 import { stageADocument } from "./fixtures.ts";
 
 function changed(change: WorkspaceChange) {
@@ -16,7 +16,7 @@ const card = (provider: string) => ({ provider, params: {} });
 
 describe("workspace presets", () => {
   it.each([
-    ["agents", "Команда агентов", [choose("bb-thread"), choose("bb-diff"), choose("bb-thread"), choose("bb-file-preview")]],
+    ["agents", "Команда агентов", [choose("bb-thread"), choose("bb-thread"), choose("bb-thread"), choose("bb-diff"), choose("bb-file-preview")]],
     ["administration", "Администрирование", [card("remote-ssh"), card("remote-rdp"), card("remote-vnc"), choose("bb-terminal")]],
     ["call", "Созвон", [card("zoom"), choose("bb-thread"), card("telegram")]],
   ] as const)("creates the %s tiles in a valid v2 document", (preset, name, expected) => {
@@ -53,6 +53,20 @@ describe("workspace presets", () => {
     expect(result.panels[slot].ref).toEqual(choose("bb-thread"));
     expect(workspaceDocumentSchema.safeParse(result).success).toBe(true);
     expect(replaceChoosePanel(result, slot, "thread-b", ref, new Set())).toEqual({ ok: false, reason: "not-placed" });
+  });
+
+  it.each(["thread-a", "new-id"])("activates the placed reference when offered %s and keeps the chooser available", selectedId => {
+    const initial = stageADocument();
+    const ref = initial.panels["thread-a"].ref;
+    const background = changed(addPanelToGroup(initial, "group-2", "thread-b"));
+    const before = changed(addPanelToGroup(background, "group-1", "chooser", { ref: choose("bb-thread") }));
+    const result = changed(replaceChoosePanel(before, "chooser", selectedId, ref, new Set()));
+    expect(listGroups(activeLayout(result).workspace.root)).toEqual([
+      { kind: "group", id: "group-1", tabs: ["frame", "chooser"], activeTab: "chooser" },
+      { kind: "group", id: "group-2", tabs: ["thread-a", "thread-b"], activeTab: "thread-a" },
+    ]);
+    expect(activeLayout(result).workspace.focusedGroupId).toBe("group-2");
+    expect(result.panels).toBe(before.panels);
   });
 
   it("rejects mismatched providers and missing or unsafe targets atomically", () => {

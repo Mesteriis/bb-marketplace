@@ -16,7 +16,7 @@ function card(provider: CardType): PanelRef {
 /** Columns in reading order. Each entry occupies its own tile. */
 export const workspacePresets = [
   { id: "agents", name: "Команда агентов", columns: [
-    [choose("bb-thread"), choose("bb-diff")], [choose("bb-thread"), choose("bb-file-preview")],
+    [choose("bb-thread"), choose("bb-thread"), choose("bb-thread")], [choose("bb-diff"), choose("bb-file-preview")],
   ] },
   { id: "administration", name: "Администрирование", columns: [
     [card("remote-ssh"), card("remote-rdp")], [card("remote-vnc"), choose("bb-terminal")],
@@ -46,8 +46,13 @@ export function applyPreset(document: WorkspaceDocument, layoutId: string, prese
   const leftId = workspace.focusedGroupId;
   workspace = splitGroup(workspace, leftId, "right", place(right[0]));
   const rightId = workspace.focusedGroupId;
-  if (left[1]) workspace = splitGroup(workspace, leftId, "bottom", place(left[1]));
-  workspace = splitGroup(workspace, rightId, "bottom", place(right[1]));
+  for (const [firstGroup, remaining] of [[leftId, left.slice(1)], [rightId, right.slice(1)]] as const) {
+    let lastGroup = firstGroup;
+    for (const ref of remaining) {
+      workspace = splitGroup(workspace, lastGroup, "bottom", place(ref));
+      lastGroup = workspace.focusedGroupId;
+    }
+  }
   workspace = focusGroup(workspace, leftId);
   const added = addLayoutFromTemplate(document, layoutId, { name, panels, workspace });
   return added.ok ? switchLayout(added.document, layoutId) : added;

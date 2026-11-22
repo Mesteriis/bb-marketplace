@@ -3,7 +3,7 @@
 // refused. None of them opens, closes or ends a panel: they change what is
 // stored about names and places.
 import type { LayoutOperation, WorkspaceState } from "../layout/index.ts";
-import { addTab, applyOperation, closeTab, createWorkspace, findGroup, findGroupOfPanel } from "../layout/index.ts";
+import { activateTab, addTab, applyOperation, closeTab, createWorkspace, findGroup, findGroupOfPanel } from "../layout/index.ts";
 import { replaceGroup } from "../layout/tree.ts";
 import { acceptsChoice } from "../panels/choose.ts";
 import { panelRefKey } from "../panels/index.ts";
@@ -249,8 +249,9 @@ export function addLayoutFromTemplate(document: WorkspaceDocument, layoutId: str
   return applied({ ...known, layouts: [...known.layouts, layout] });
 }
 
-
-/** Replace one chooser tab without changing focus, the split tree or any other layout. */
+/** Show an already placed target and leave the chooser available for a different choice.
+ * Otherwise put the selected reference in the chooser's place, preserving the surrounding layout.
+ */
 export function replaceChoosePanel(
   document: WorkspaceDocument, chooserId: string, selectedId: string, ref: PanelRef, livePanelIds: ReadonlySet<string>,
 ): WorkspaceChange {
@@ -258,13 +259,16 @@ export function replaceChoosePanel(
   const group = findGroupOfPanel(layout.workspace.root, chooserId);
   if (!group) return refused("not-placed");
   if (!acceptsChoice(document.panels[chooserId].ref, ref)) return refused("invalid-panel");
-  if (placedPanelIds(layout).includes(selectedId)) return refused("already-placed");
-  const known = registerPanel(document, selectedId, { ref });
+  const key = panelRefKey(ref);
+  const placed = placedPanelIds(layout).find(id => panelRefKey(document.panels[id].ref) === key);
+  if (placed !== undefined) return changeActiveLayout(document, workspace => activateTab(workspace, placed));
+  const targetId = panelIdOfRef(document, ref) ?? selectedId;
+  const known = registerPanel(document, targetId, { ref });
   if (!known.ok) return known;
   const root = replaceGroup(layout.workspace.root, {
     ...group,
-    tabs: group.tabs.map(id => id === chooserId ? selectedId : id),
-    activeTab: group.activeTab === chooserId ? selectedId : group.activeTab,
+    tabs: group.tabs.map(id => id === chooserId ? targetId : id),
+    activeTab: group.activeTab === chooserId ? targetId : group.activeTab,
   });
   const result = replaceLayout(known.document, { ...layout, workspace: { ...layout.workspace, root } });
   if (livePanelIds.has(chooserId) || result.layouts.some(other => placedPanelIds(other).includes(chooserId))) return applied(result);
