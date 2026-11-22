@@ -51,6 +51,7 @@ export type ThreadDirectoryState =
 function sameEntry(a: ThreadEntry, b: ThreadEntry): boolean {
   return (
     a.id === b.id &&
+    a.hostId === b.hostId &&
     a.title === b.title &&
     a.projectName === b.projectName &&
     a.parentThreadId === b.parentThreadId &&

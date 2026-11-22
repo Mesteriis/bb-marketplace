@@ -51,7 +51,7 @@ function setup(tileCount = 3, narrow = false) {
         onReload: unused,
       }}
       content={{
-        sections: SECTIONS,
+        sections: () => SECTIONS,
         tileCount,
         tileLimit: 8,
         onOpen: calls.onOpen,
@@ -146,7 +146,7 @@ describe("HeaderActions", () => {
             onReload: unused,
           }}
           content={{
-            sections: SECTIONS,
+            sections: () => SECTIONS,
             tileCount: 3,
             tileLimit: 8,
             onOpen: unused,
@@ -308,7 +308,7 @@ describe("HeaderActions: the focused control disappears from the picker dialog",
           onRetrySave: unused,
           onReload: unused,
         }}
-        content={{ sections, tileCount, tileLimit: 8, onOpen, onFocusExisting: unused }}
+        content={{ sections: () => sections, tileCount, tileLimit: 8, onOpen, onFocusExisting: unused }}
         hiddenPanels={{ panels: [], onShow: unused, onClose: unused }}
       />
     );

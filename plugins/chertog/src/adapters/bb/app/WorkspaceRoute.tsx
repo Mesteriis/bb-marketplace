@@ -168,10 +168,12 @@ export function WorkspaceRoute({ workspace, surfaceSize }: WorkspaceRouteProps) 
 
   const groups = listGroups(workspaceState.root);
   const labels = panelLabels(workspace);
-  const sections = session.contentSections();
+  // Built when a picker or the placing question is on screen, once per render.
+  let built: ReturnType<typeof session.contentSections> | undefined;
+  const sections = () => (built ??= session.contentSections());
   const { open, askToClose, requestClose } = chromeActions(session, dialogs);
   const itemTitle = (choice: ContentChoice): string =>
-    sections.find((section) => section.providerId === choice.providerId)?.items.find((item) => item.id === choice.itemId)?.title ?? appStrings.panelNeutral;
+    sections().find((section) => section.providerId === choice.providerId)?.items.find((item) => item.id === choice.itemId)?.title ?? appStrings.panelNeutral;
 
   return (
     <div data-chertog-route aria-label={appStrings.routeLabel} className="flex h-full min-h-0 w-full flex-1 flex-col overflow-hidden bg-background text-foreground">
@@ -203,7 +205,7 @@ export function WorkspaceRoute({ workspace, surfaceSize }: WorkspaceRouteProps) 
             <div className="flex h-full w-full max-w-lg flex-col">
               <ContentPicker
                 target="empty-tile"
-                sections={sections}
+                sections={sections()}
                 tileCount={groups.length}
                 tileLimit={TILE_LIMIT}
                 onOpen={(choice) => open(choice, { kind: "group", groupId: slot.groupId })}
@@ -219,7 +221,7 @@ export function WorkspaceRoute({ workspace, surfaceSize }: WorkspaceRouteProps) 
           <ContentPicker
             target="tab"
             headingId={tabHeadingId}
-            sections={sections}
+            sections={sections()}
             tileCount={groups.length}
             tileLimit={TILE_LIMIT}
             onOpen={(choice) => {

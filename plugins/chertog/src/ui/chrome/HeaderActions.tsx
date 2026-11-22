@@ -15,7 +15,10 @@ const text = chromeStrings.toolbar;
 export interface HeaderActionsProps {
   layouts: LayoutSwitcherProps;
   /** What "add panel" offers. It always adds a tile, so the tile limit applies. */
-  content: Pick<ContentPickerProps, "sections" | "tileCount" | "tileLimit" | "onOpen" | "onFocusExisting">;
+  content: Pick<ContentPickerProps, "tileCount" | "tileLimit" | "onOpen" | "onFocusExisting"> & {
+    /** Called only while the picker is open: building the sections can be costly. */
+    sections: () => ContentPickerProps["sections"];
+  };
   hiddenPanels: HiddenPanelsListProps;
   /** Opens BB's new thread screen. */
   onNewThread: () => void;
@@ -132,7 +135,7 @@ export function HeaderActions({ layouts, content, hiddenPanels, onNewThread, nar
           <ContentPicker
             target="new-tile"
             headingId={pickerHeadingId}
-            sections={content.sections}
+            sections={content.sections()}
             tileCount={content.tileCount}
             tileLimit={content.tileLimit}
             onOpen={(choice) => {

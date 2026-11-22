@@ -124,7 +124,7 @@ export function ChertogHeaderActions({ workspace, onNewThread }: { workspace: Wi
             onReload: () => void session.controller.reload(),
           }}
           content={{
-            sections: session.contentSections(),
+            sections: () => session.contentSections(),
             tileCount: listGroups(state.root).length,
             tileLimit: TILE_LIMIT,
             onOpen: (choice) => actions.open(choice, { kind: "new-tile" }),
