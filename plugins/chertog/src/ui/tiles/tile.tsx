@@ -4,16 +4,11 @@
 import type { KeyboardEvent, MouseEvent, PointerEvent, ReactNode } from "react";
 import type { GroupNode, Rect } from "../../core/layout/index.ts";
 import { CloseIcon, MaximizeIcon, PlusIcon, RestoreIcon } from "./icons.tsx";
-import { labelOf, type PanelLabel, type PanelStatusTone, type TileSurfaceText } from "./labels.ts";
+import { labelOf, type PanelLabel, type TileSurfaceText } from "./labels.ts";
+import { StatusDot } from "./status-dot.tsx";
 import { CONTROL_CLASS, rectStyle, tileHeaderHeight, TILE_HEADER_HEIGHT } from "./styles.ts";
 import { TileMenu } from "./tile-menu.tsx";
-
-const STATUS_CLASS: Record<PanelStatusTone, string> = {
-  idle: "bg-muted-foreground/50",
-  busy: "bg-primary",
-  attention: "bg-amber-500",
-  error: "bg-destructive",
-};
+import { tileMenuItems } from "./tile-menu-items.ts";
 
 export interface PickerSlot {
   readonly groupId: string;
@@ -132,9 +127,7 @@ export function Tile(props: TileProps) {
                     (dragged ? "opacity-60" : "")
                   }
                 >
-                  {label.status !== undefined && (
-                    <span role="img" aria-label={label.status.label} title={label.status.label} className={"h-1.5 w-1.5 shrink-0 rounded-full " + STATUS_CLASS[label.status.tone]} />
-                  )}
+                  {label.status !== undefined && <StatusDot status={label.status} />}
                   <button
                     type="button"
                     role="tab"
@@ -177,16 +170,12 @@ export function Tile(props: TileProps) {
             </button>
             <TileMenu
               label={text.tileMenu}
-              items={[
-                { label: text.removeTab, onSelect: () => props.onRemoveTab(group.activeTab as string) },
-                { label: text.removeTile, onSelect: props.onRemoveTile },
-                ...(props.onOpenBeside === undefined ? [] : [{ label: text.openBeside, onSelect: () => props.onOpenBeside?.(group.activeTab as string) }]),
-                ...(active?.linkedCount ? [{ label: text.closeBlock(active.linkedCount), onSelect: () => props.onRequestClose(group.activeTab as string) }] : []),
-                ...(active?.handoffUnavailable ? [{
-                  label: "Передать в другое окно",
-                  reason: active.handoffUnavailable + " Переместите целое окно BB средствами системы. Чтобы открыть второе окно, выберите New Window.",
-                }] : []),
-              ]}
+              items={tileMenuItems(group.activeTab, active, text, {
+                removeTab: props.onRemoveTab,
+                removeTile: props.onRemoveTile,
+                ...(props.onOpenBeside === undefined ? {} : { openBeside: props.onOpenBeside }),
+                requestClose: props.onRequestClose,
+              })}
             />
             {switcher === undefined && (
               <button

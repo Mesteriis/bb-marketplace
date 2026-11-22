@@ -12,3 +12,9 @@ export { DEFAULT_TILE_TEXT } from "./labels.ts";
 
 export type { KeyChord, TileCommand, TileKeyBinding } from "./keymap.ts";
 export { applyTileCommand, TILE_KEYMAP, tileCommandForKey, tileCommandOperation } from "./keymap.ts";
+
+export type { TileMenuItem } from "./tile-menu.tsx";
+export { TileMenu } from "./tile-menu.tsx";
+export type { TileMenuActions } from "./tile-menu-items.ts";
+export { tileMenuItems } from "./tile-menu-items.ts";
+export { StatusDot } from "./status-dot.tsx";
