@@ -16,7 +16,7 @@ import {
   type PluginAppBuilder,
   type PluginSidebarThread,
 } from "@get-bb/plugin-sdk/app";
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import { WindowOverlay } from "./window-handoff.ts";
 import { CHANNEL } from "../../../core/windows/wire.ts";
 import type { Diagnostics } from "../../../core/panels/index.ts";
@@ -24,7 +24,7 @@ import { createHomeRedirectSection, openNewThreadScreen } from "../home/index.ts
 import { runForTileComposer, tileComposer } from "./addressee.ts";
 import { embeddedSources } from "./embedded-source.tsx";
 import { providerSources } from "./provider-sources.tsx";
-import { useOpenRequests } from "./open-requests.ts";
+import { useOpenRequests, whenShown } from "./open-requests.ts";
 import { LiveLayer } from "./LiveLayer.tsx";
 import { readAcceptanceFixture, readHomeRedirect } from "./settings.ts";
 import { appStrings } from "./strings.ts";
@@ -79,7 +79,8 @@ function useHostHandles(workspace: WindowWorkspace): void {
 function ChertogOverlay() {
   const workspace = useWindowWorkspace();
   useHostHandles(workspace);
-  useOpenRequests(workspace.session);
+  const openTarget = useMemo(() => whenShown(workspace.session, () => workspace.bridge.getPlace() !== null), [workspace]);
+  useOpenRequests(openTarget);
 
   const { status, threads, projects } = experimental_useSidebarThreads();
   useEffect(() => {

@@ -3,7 +3,7 @@
 import { renderHook } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { OPEN_EVENT } from "../../../src/core/wire/index.ts";
-import { useOpenRequests, type OpenTarget } from "../../../src/adapters/bb/app/open-requests.ts";
+import { useOpenRequests, whenShown, type OpenTarget } from "../../../src/adapters/bb/app/open-requests.ts";
 
 type Outcome = "opened" | "focused" | "refused" | "not-shown" | "unsupported";
 
@@ -90,5 +90,20 @@ describe("useOpenRequests", () => {
     view.unmount();
     expect(send(thread())).toMatchObject({ accepted: false, outcome: null });
     expect(calls).toEqual([]);
+  });
+});
+
+describe("whenShown", () => {
+  it("answers not-shown without touching the session while no Chertog route is on screen", () => {
+    const { session, calls } = fakeSession("opened");
+    let shown = false;
+    const target = whenShown(session, () => shown);
+    expect(target.openThread("thr_1")).toBe("not-shown");
+    expect(target.openPanel(panel().ref)).toBe("not-shown");
+    expect(calls).toEqual([]);
+    shown = true;
+    expect(target.openThread("thr_1")).toBe("opened");
+    expect(target.openPanel(panel().ref)).toBe("opened");
+    expect(calls).toEqual([["thread", "thr_1"], ["panel", panel().ref]]);
   });
 });

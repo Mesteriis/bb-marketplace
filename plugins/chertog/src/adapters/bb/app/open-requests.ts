@@ -12,6 +12,18 @@ export interface OpenTarget {
   openPanel(ref: PanelRef): Exclude<OpenOutcome, "invalid">;
 }
 
+/**
+ * The session keeps its document after the Chertog route closes, so it cannot
+ * tell by itself whether anyone would see a new tile. A window that shows no
+ * Chertog route answers `not-shown` and the sender navigates on its own.
+ */
+export function whenShown(target: OpenTarget, isShown: () => boolean): OpenTarget {
+  return {
+    openThread: (threadId) => (isShown() ? target.openThread(threadId) : "not-shown"),
+    openPanel: (ref) => (isShown() ? target.openPanel(ref) : "not-shown"),
+  };
+}
+
 function answer(detail: Record<string, unknown>, outcome: OpenOutcome): void {
   detail.accepted = isAcceptedOutcome(outcome);
   detail.outcome = outcome;
