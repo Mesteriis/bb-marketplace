@@ -15,7 +15,7 @@ function Choice({ session, instanceId, kind }: { session: WorkspaceSession; inst
     <ChoosePanel kind={kind} onChoose={() => setOpen(true)} />
     {open && createPortal(<Modal labelledBy={heading} onDismiss={() => setOpen(false)} className="h-[min(32rem,100%)] max-w-lg">
       <ContentPicker target="empty-tile" headingId={heading}
-        sections={session.contentSections().filter(section => kind === "any" ? session.sourceOf(section.providerId)?.embed === undefined : section.providerId === kind)} tileCount={0} tileLimit={1}
+        sections={session.contentSections().filter(section => kind === "any" ? session.pickerOffersEmbeds(instanceId) || session.sourceOf(section.providerId)?.embed === undefined : section.providerId === kind)} tileCount={0} tileLimit={1}
         onFocusExisting={id => { session.focusPanel(id); setOpen(false); }}
         onOpen={choice => { session.replaceChoice(instanceId, choice); setOpen(false); }} />
     </Modal>, document.body)}

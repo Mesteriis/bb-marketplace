@@ -1,7 +1,7 @@
 // The store port rules: the first entry, saving against a revision, the
 // conflict of two windows and the merge that keeps both windows' work.
 import { describe, expect, it } from "vitest";
-import { swapGroups } from "../../../src/core/layout/index.ts";
+import { createWorkspace, swapGroups } from "../../../src/core/layout/index.ts";
 import {
   addPanelToGroup,
   changeActiveLayout,
@@ -17,6 +17,7 @@ import {
   removePanelFromLayout,
   renameLayout,
   switchLayout,
+  workspaceDocumentSchema,
 } from "../../../src/core/workspace/index.ts";
 import type { WorkspaceChange, WorkspaceDocument } from "../../../src/core/workspace/index.ts";
 import { MemoryWorkspaceStore, stageADocument, stageAJson } from "./fixtures.ts";
@@ -518,5 +519,37 @@ describe("two windows saving one workspace", () => {
     const base = { ...stageADocument(), revision: 1 };
     const theirs = { ...stageADocument(), revision: 2 };
     expect(mergeDocuments(base, base, theirs, NO_LIVE_PANELS)).toEqual({ document: theirs, renamedLayouts: [], renamedPanels: [] });
+  });
+});
+
+describe("merging panels that have a parent", () => {
+  const thr = (id: string) => ({ provider: "bb-thread", params: { threadId: "thr_" + id } });
+  const doc = (panels: WorkspaceDocument["panels"], layouts: Array<[string, string[]]>, revision = 1): WorkspaceDocument => ({
+    schemaVersion: 3,
+    revision,
+    panels,
+    layouts: layouts.map(([id, tabs]) => ({ id, name: id, workspace: createWorkspace(tabs) })),
+    activeLayoutId: layouts[0][0],
+  });
+
+  it("does not leave a child with a parent the merge dropped", () => {
+    // Window A opens a child of p in L1; window B deleted L2, the only layout that placed p, and saved first.
+    const base = doc({ x: { ref: thr("x") }, p: { ref: thr("p") } }, [["L1", ["x"]], ["L2", ["p"]]]);
+    const mine = doc({ x: { ref: thr("x") }, p: { ref: thr("p") }, c: { ref: thr("c"), parent: "p" } }, [["L1", ["x", "c"]], ["L2", ["p"]]], 2);
+    const theirs = doc({ x: { ref: thr("x") } }, [["L1", ["x"]]], 2);
+    const { document } = mergeDocuments(base, mine, theirs, NO_LIVE_PANELS);
+    expect(document.panels.c).toEqual({ ref: thr("c") });
+    expect(workspaceDocumentSchema.safeParse(document).success).toBe(true);
+  });
+
+  it("follows a renamed parent: this window's parent id changes with its panel", () => {
+    // Both windows gave id `p` to different threads: this window's `p` becomes `p-2`, and so does the parent of its child.
+    const base = doc({}, [["L1", []]], 0);
+    const mine = doc({ p: { ref: thr("mine") }, c: { ref: thr("c"), parent: "p" } }, [["L1", ["p", "c"]]], 1);
+    const theirs = doc({ p: { ref: thr("theirs") } }, [["L1", ["p"]]], 1);
+    const merged = mergeDocuments(base, mine, theirs, NO_LIVE_PANELS);
+    expect(merged.renamedPanels).toEqual([{ from: "p", to: "p-2" }]);
+    expect(merged.document.panels.c).toEqual({ ref: thr("c"), parent: "p-2" });
+    expect(workspaceDocumentSchema.safeParse(merged.document).success).toBe(true);
   });
 });

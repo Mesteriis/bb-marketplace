@@ -272,7 +272,10 @@ export function replaceChoosePanel(
     tabs: group.tabs.map(id => id === chooserId ? targetId : id),
     activeTab: group.activeTab === chooserId ? targetId : group.activeTab,
   });
-  const result = replaceLayout(known.document, { ...layout, workspace: { ...layout.workspace, root } });
+  // What was a child of the picker is a child of what replaced it.
+  const reparented = Object.fromEntries(Object.entries(known.document.panels).map(([id, panel]): [string, WorkspacePanel] =>
+    [id, panel.parent === chooserId && id !== targetId ? { ...panel, parent: targetId } : panel]));
+  const result = replaceLayout({ ...known.document, panels: reparented }, { ...layout, workspace: { ...layout.workspace, root } });
   if (livePanelIds.has(chooserId) || result.layouts.some(other => placedPanelIds(other).includes(chooserId))) return applied(result);
   const panels = { ...result.panels };
   delete panels[chooserId];

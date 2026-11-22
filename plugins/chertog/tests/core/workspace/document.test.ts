@@ -83,9 +83,10 @@ describe("a choice made in a picker with a parent", () => {
     expect(chosen.ok && workspaceDocumentSchema.safeParse(chosen.document).success).toBe(true);
   });
 
-  it("drops the parent of a panel whose picker was the parent", () => {
+  it("re-parents a child of the picker to the chosen panel", () => {
     const stored = document({ pick: { ref: { provider: CHOOSE_PROVIDER, params: { kind: "any" } } }, c: { ...thread("c"), parent: "pick" } }, ["pick", "c"]);
     const chosen = replaceChoosePanel(stored, "pick", "rdp", RDP, NO_LIVE);
-    expect(chosen.ok && chosen.document.panels.c).toEqual(thread("c"));
+    expect(chosen.ok && chosen.document.panels.c).toEqual({ ...thread("c"), parent: "rdp" });
+    expect(chosen.ok && workspaceDocumentSchema.safeParse(chosen.document).success).toBe(true);
   });
 });

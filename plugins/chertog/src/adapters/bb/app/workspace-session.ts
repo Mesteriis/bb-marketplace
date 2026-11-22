@@ -104,6 +104,8 @@ export class WorkspaceSession {
   private readonly listeners = new Listeners();
   readonly reservations = new Map<string, {
     panelId: string; source: ContentSource; groupId: string; layoutId: string; split: boolean;
+    /** The picker panel the confirmed choice replaces in place; absent when the choice adds a panel. */
+    replaces?: string;
   }>();
   private placement: { base: WorkspaceState; shown: WorkspaceState } | null = null;
   choiceError: string | null = null;
@@ -330,8 +332,19 @@ export class WorkspaceSession {
     });
   }
 
+  /** Whether the picker of this instance may list embedded sources: only a picker opened beside a tile, which has a parent. */
+  pickerOffersEmbeds(instanceId: string): boolean {
+    const panelId = this.panelOfInstance(instanceId);
+    return panelId !== null && this.document()?.panels[panelId]?.parent !== undefined;
+  }
+
   replaceChoice(instanceId: string, choice: ContentChoice): void {
     const chooser = this.panelOfInstance(instanceId);
+    const embedded = this.sourceOf(choice.providerId);
+    if (chooser && embedded?.embed && choice.itemId === "choose") {
+      if (this.pickerOffersEmbeds(instanceId)) this.chooseResource(embedded, { kind: "group", groupId: this.groupOfPanel(chooser) ?? "" }, false, chooser);
+      return;
+    }
     const ref = this.sourceOf(choice.providerId)?.refOf(choice.itemId);
     this.controller.change((document, live) => {
       if (!chooser || !ref) return { ok: false, reason: "unknown-panel" };
@@ -404,7 +417,10 @@ export class WorkspaceSession {
    */
   openBeside(panelId: string): WorkspaceChangeRefusal | null {
     return this.controller.change((document) => {
-      const opened = openBeside(document, panelId, this.newId("panel"), this.parentOf);
+      // A block has one level: beside a child means beside the main tile the child belongs to.
+      let root = panelId;
+      for (let parent = this.parentOf(root); parent !== undefined && parent !== panelId; parent = this.parentOf(root)) root = parent;
+      const opened = openBeside(document, root, this.newId("panel"), this.parentOf);
       return opened.ok && listGroups(activeLayout(opened.document).workspace.root).length > TILE_LIMIT ? { ok: false, reason: "invalid-layout" } : opened;
     });
   }
@@ -513,7 +529,12 @@ export class WorkspaceSession {
     return state;
   }
 
-  private chooseResource(source: ContentSource, destination: ContentDestination, split: boolean): WorkspaceChangeRefusal | null {
+  private groupOfPanel(panelId: string): string | undefined {
+    const document = this.document();
+    return document === null ? undefined : findGroupOfPanel(activeLayout(document).workspace.root, panelId)?.id;
+  }
+
+  private chooseResource(source: ContentSource, destination: ContentDestination, split: boolean, replaces?: string): WorkspaceChangeRefusal | null {
     const doc = this.document();
     if (!doc || !source.embed) return "unknown-panel";
     const state = activeLayout(doc).workspace;
@@ -524,7 +545,7 @@ export class WorkspaceSession {
     if (id === null) return "unknown-panel";
     const panelId = this.newId("panel");
     const shown = this.surfaceState()!;
-    this.reservations.set(id, { panelId, source, groupId, split, layoutId: doc.activeLayoutId });
+    this.reservations.set(id, { panelId, source, groupId, split, layoutId: doc.activeLayoutId, ...(replaces === undefined ? {} : { replaces }) });
     this.placement = { base: state, shown: split ? splitGroup(shown, groupId, "right", panelId) : addTab(shown, groupId, panelId) };
     this.choiceError = null;
     source.embed.choose(id, uuid => this.acceptChoice(id, uuid), reason => {
@@ -574,6 +595,7 @@ export class WorkspaceSession {
       else this.controller.change(current => addPanelToGroup(current, r.groupId, existing));
       return;
     }
+    if (r.replaces !== undefined) { this.acceptReplacement(id, r, ref, doc); return; }
     const known = registerPanel(doc, r.panelId, { ref });
     const shown = this.surfaceState()!;
     const accepted = this.withoutReservations(shown, id);
@@ -584,6 +606,26 @@ export class WorkspaceSession {
       this.reservations.delete(id);
       this.placement = this.reservations.size ? { base: accepted, shown } : null;
       this.controller.change(() => placed);
+    });
+    if (!opened.ok) this.cancelChoice(id);
+  }
+
+  /** A confirmed embedded choice that takes the place of its picker: the new panel keeps the picker's parent. */
+  private acceptReplacement(id: string, r: NonNullable<ReturnType<typeof this.reservations.get>>, ref: PanelRef, doc: WorkspaceDocument): void {
+    const picker = r.replaces as string;
+    const trial = replaceChoosePanel(doc, picker, r.panelId, ref, new Set());
+    if (!trial.ok || !this.document()?.panels[picker]) { this.cancelChoice(id); return; }
+    const opened = this.registry.acceptReservation(id, ref, () => {
+      this.instances.set(r.panelId, id);
+      this.reservations.delete(id);
+      this.placement = null;
+      this.controller.change((document, live) => {
+        const retained = new Set(live);
+        retained.delete(picker);
+        return replaceChoosePanel(document, picker, r.panelId, ref, retained);
+      });
+      const pickerInstance = this.instanceOfPanel(picker)?.instanceId;
+      if (pickerInstance !== undefined && !this.document()?.panels[picker]) void this.registry.close(pickerInstance);
     });
     if (!opened.ok) this.cancelChoice(id);
   }

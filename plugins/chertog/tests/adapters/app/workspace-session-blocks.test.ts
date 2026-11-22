@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { closeTab, findGroupOfPanel, listGroups } from "../../../src/core/layout/index.ts";
 import type { WorkspaceDocument } from "../../../src/core/workspace/index.ts";
 import { activeLayout, blockChildren, panelIdOfRef } from "../../../src/core/workspace/index.ts";
+import { paramsSchema as embedParams } from "../../../src/core/embed/wire.ts";
 import type { ContentSource } from "../../../src/adapters/bb/app/content-sources.ts";
 import { chooseSource } from "../../../src/adapters/bb/app/choose-source.tsx";
 import { ThreadDirectory, createThreadSource, threadRef, type ThreadEntry } from "../../../src/adapters/bb/app/thread-source.ts";
@@ -47,8 +48,30 @@ function twoTiles(unrelatedFirst = false, secondParent = false): WorkspaceDocume
   };
 }
 
+/** What the embed stub's `choose` was given, so a test can confirm or cancel the choice like the embedded page would. */
+interface PendingChoice { selected(uuid: string): void; cancel(reason?: string): void }
+const RDP_UUID = "6f1c2d3e-4b5a-4c6d-8e7f-0a1b2c3d4e5f";
+
+/** An embedded provider like Remote Hub RDP: its item opens a choice that ends in a resource UUID. */
+function rdpSource(pending: { current?: PendingChoice }): ContentSource {
+  return {
+    provider: {
+      type: "remote-rdp-live", paramsSchema: embedParams, multipleViews: true,
+      capabilities: { showNativeRoute: "no", embedInstance: "yes", keepLiveInDocument: "yes", rebindToSession: "unverified", transferBetweenWindows: "no", restoreAfterRestart: "partial" },
+      open: async () => ({ status: "entry" }), release() {}, endsSessionOnLastClose: () => false, endSession: async () => "unknown",
+    },
+    sectionTitle: "RDP", neutralLabel: "RDP", canEndSession: false, offered: () => true,
+    section: () => ({ state: "ready", items: [{ id: "choose", title: "Добавить RDP" }] }),
+    stableRefOf: () => null, refOf: () => null, label: () => ({ title: "RDP" }), stateText: () => null, subscribe: () => () => {},
+    render: () => null,
+    embed: { choose: (_id, selected, cancel) => { pending.current = { selected, cancel }; }, target: () => null, close: async () => "ended" },
+  } as ContentSource;
+}
+
 /** A session whose layout holds the parent with its two subthreads and the unrelated tile. */
-async function blockSession(tweaks: Tweaks = {}, stored: WorkspaceDocument = twoTiles(), open: readonly string[] = ["thr_c", "thr_c2"]): Promise<WorkspaceSession> {
+async function blockSession(
+  tweaks: Tweaks = {}, stored: WorkspaceDocument = twoTiles(), open: readonly string[] = ["thr_c", "thr_c2"], extra: readonly ContentSource[] = [],
+): Promise<WorkspaceSession> {
   const rpc = new FakeWorkspaceRpc();
   rpc.stored = stored;
   const threads = new ThreadDirectory();
@@ -56,7 +79,7 @@ async function blockSession(tweaks: Tweaks = {}, stored: WorkspaceDocument = two
   const nextId = sequentialIds();
   const session: WorkspaceSession = new WorkspaceSession({
     rpc,
-    sources: [tweaked(createThreadSource({ directory: threads, renderChat: () => null }), tweaks), chooseSource(() => session)],
+    sources: [tweaked(createThreadSource({ directory: threads, renderChat: () => null }), tweaks), chooseSource(() => session), ...extra],
     newId: (prefix) => nextId(prefix),
     diagnostics: { failure: () => undefined },
     threads,
@@ -287,7 +310,8 @@ describe("opening something beside a tile", () => {
     const session = await blockSession({}, twoTiles(), []);
     session.openBeside("panel-p");
     const picker = placed(session).find((panelId) => session.document()!.panels[panelId].ref.provider === "chertog-choose")!;
-    session.replaceChoice(session.instanceOfPanel(picker)!.instanceId, { providerId: "bb-thread", itemId: "thr_q", placement: "tab" });    const chosen = panelOf(session, "thr_q");
+    session.replaceChoice(session.instanceOfPanel(picker)!.instanceId, { providerId: "bb-thread", itemId: "thr_q", placement: "tab" });
+    const chosen = panelOf(session, "thr_q");
     expect(session.document()!.panels[chosen].parent).toBe("panel-p");
     expect(session.parentOf(chosen)).toBe("panel-p");
     expect(await session.closePanel("panel-p", { confirmBlock: true })).toBe("closed");
@@ -300,5 +324,63 @@ describe("opening something beside a tile", () => {
     const picker = placed(session).find((panelId) => session.document()!.panels[panelId].ref.provider === "chertog-choose")!;
     session.removeFromLayout("panel-p");
     expect(session.parentOf(picker)).toBeUndefined();
+  });
+});
+
+describe("an embedded source chosen in the picker beside a tile", () => {
+  const pickerOf = (session: WorkspaceSession) =>
+    placed(session).find((panelId) => session.document()!.panels[panelId].ref.provider === "chertog-choose")!;
+  const rdpChoice = { providerId: "remote-rdp-live", itemId: "choose", placement: "tab" as const };
+
+  it("offers the embedded sections in a picker that has a parent, and only there", async () => {
+    const session = await blockSession({}, twoTiles(), [], [rdpSource({})]);
+    session.openBeside("panel-p");
+    expect(session.pickerOffersEmbeds(session.instanceOfPanel(pickerOf(session))!.instanceId)).toBe(true);
+    expect(session.pickerOffersEmbeds(session.instanceOfPanel("panel-x")!.instanceId)).toBe(false);
+  });
+
+  it("replaces the picker in place with the confirmed choice, which joins the block and closes with it", async () => {
+    const pending: { current?: PendingChoice } = {};
+    const session = await blockSession({}, twoTiles(), [], [rdpSource(pending)]);
+    session.openBeside("panel-p");
+    const picker = pickerOf(session);
+    const before = shown(session);
+    session.replaceChoice(session.instanceOfPanel(picker)!.instanceId, rdpChoice);
+    pending.current!.selected(RDP_UUID);
+    await session.controller.whenIdle();
+    const rdp = placed(session).find((panelId) => session.document()!.panels[panelId]?.ref.provider === "remote-rdp-live")!;
+    expect(session.document()!.panels[picker]).toBeUndefined();
+    expect(session.document()!.panels[rdp].parent).toBe("panel-p");
+    expect(findGroupOfPanel(shown(session).root, rdp)!.id).toBe(findGroupOfPanel(before.root, picker)!.id);
+    expect(blockChildren(session.document()!, "panel-p", session.parentOf)).toEqual([rdp]);
+    expect(await session.closePanel("panel-p", { confirmBlock: true })).toBe("closed");
+    expect(placed(session)).toEqual(["panel-x"]);
+    expect(session.document()!.panels[rdp]).toBeUndefined();
+  });
+
+  it("leaves the picker as it was when the choice is cancelled", async () => {
+    const pending: { current?: PendingChoice } = {};
+    const session = await blockSession({}, twoTiles(), [], [rdpSource(pending)]);
+    session.openBeside("panel-p");
+    const picker = pickerOf(session);
+    await session.controller.whenIdle();
+    const before = session.document();
+    session.replaceChoice(session.instanceOfPanel(picker)!.instanceId, rdpChoice);
+    pending.current!.cancel();
+    await session.controller.whenIdle();
+    expect(session.document()).toBe(before);
+    expect(pickerOf(session)).toBe(picker);
+  });
+});
+
+describe("opening beside a subordinate tile", () => {
+  it("attaches the picker to the block's main tile, never to a grandchild", async () => {
+    const session = await blockSession();
+    const child = panelOf(session, "thr_c");
+    session.openBeside(child);
+    const picker = placed(session).find((panelId) => session.document()!.panels[panelId].ref.provider === "chertog-choose")!;
+    expect(session.document()!.panels[picker].parent).toBe("panel-p");
+    expect(blockChildren(session.document()!, "panel-p", session.parentOf)).toContain(picker);
+    expect(blockChildren(session.document()!, child, session.parentOf)).toEqual([]);
   });
 });

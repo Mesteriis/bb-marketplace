@@ -5,7 +5,7 @@
 import type { LayoutNode } from "../layout/index.ts";
 import { panelRefKey } from "../panels/index.ts";
 import type { NamedLayout, WorkspaceDocument, WorkspacePanel } from "./document.ts";
-import { firstProblem, initialDocument, placedPanelIds, workspaceDocumentSchema } from "./document.ts";
+import { firstProblem, initialDocument, placedPanelIds, withoutDanglingParents, workspaceDocumentSchema } from "./document.ts";
 import type { DroppedPart, WorkspaceReadResult } from "./read.ts";
 
 export type WorkspaceSaveResult =
@@ -116,7 +116,12 @@ function renameTabs(node: LayoutNode, renames: ReadonlyMap<string, string>): Lay
 /** The document with panel ids replaced, in the dictionary and in every tab. */
 function renamePanels(document: WorkspaceDocument, renames: ReadonlyMap<string, string>): WorkspaceDocument {
   if (renames.size === 0) return document;
-  const panels = Object.fromEntries(Object.entries(document.panels).map(([panelId, panel]) => [renames.get(panelId) ?? panelId, panel]));
+  const panels = Object.fromEntries(
+    Object.entries(document.panels).map(([panelId, panel]): [string, WorkspacePanel] => [
+      renames.get(panelId) ?? panelId,
+      panel.parent !== undefined && renames.has(panel.parent) ? { ...panel, parent: renames.get(panel.parent) as string } : panel,
+    ]),
+  );
   const layouts = document.layouts.map((layout) => {
     const root = renameTabs(layout.workspace.root, renames);
     return root === layout.workspace.root ? layout : { ...layout, workspace: { ...layout.workspace, root } };
@@ -207,7 +212,7 @@ export function mergeDocuments(
   const has = (layoutId: string): boolean => layouts.some((layout) => layout.id === layoutId);
   const activeLayoutId = has(open) ? open : has(theirs.activeLayoutId) ? theirs.activeLayoutId : layouts[0].id;
   return {
-    document: { ...theirs, panels, layouts, activeLayoutId },
+    document: { ...theirs, panels: withoutDanglingParents(panels), layouts, activeLayoutId },
     renamedLayouts: [...layoutRenames].map(([from, to]) => ({ from, to })),
     renamedPanels: [...mineRenames].filter(([, to]) => Object.hasOwn(panels, to)).map(([from, to]) => ({ from, to })),
   };
