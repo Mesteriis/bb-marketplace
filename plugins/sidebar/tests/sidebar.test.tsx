@@ -18,7 +18,10 @@ async function catalogSlot() {
    {...make('recent-thread', 'orbit', 'idle'), latestAttentionAt: 500, isUnread: true},
    {...make('old-thread', 'retired', 'idle'), isArchived: true},
    {...make('archived-atlas-thread', 'atlas', 'idle'), isArchived: true},
+   {...make('child-atlas-thread', 'atlas', 'idle'), parentThreadId: 'active-thread'},
+   {...make('child-with-archived-parent', 'atlas', 'idle'), parentThreadId: 'archived-atlas-thread'},
    {...make('projectless-thread', 'personal', 'idle'), createdAt: 1},
+   {...make('projectless-child', 'personal', 'idle'), parentThreadId: 'projectless-thread'},
    make('outside-thread', 'outside', 'active'),
   ]},
   rpc: {paths: () => projects.map(({id, name}) => ({
@@ -91,6 +94,8 @@ test('multiple project lists open inline and can open two threads side by side',
  const atlas = within(slot.getByRole('list', {name: 'Треды проекта atlas'}));
  const orbit = within(slot.getByRole('list', {name: 'Треды проекта orbit'}));
  expect(atlas.queryByText('archived-atlas-thread')).toBeNull();
+ expect(atlas.queryByText('child-atlas-thread')).toBeNull();
+ expect(atlas.queryByText('child-with-archived-parent')).toBeNull();
  expect(atlas.getByRole('img', {name: 'В работе'})).toBeTruthy();
  expect(atlas.queryByText('В работе')).toBeNull();
  fireEvent.click(atlas.getByRole('link', {name: 'active-thread В работе'}));
@@ -111,6 +116,7 @@ test('projectless conversations open in the sidebar outside the scoped catalog',
  fireEvent.click(slot.getByRole('button', {name: 'Без проекта', expanded: false}));
  const list = within(slot.getByRole('list', {name: 'Треды без проекта'}));
  expect(list.queryByText('active-thread')).toBeNull();
+ expect(list.queryByText('projectless-child')).toBeNull();
  expect(list.queryByRole('img')).toBeNull();
  expect(list.queryByText('Нет активности')).toBeNull();
  fireEvent.click(list.getByRole('link', {name: 'projectless-thread'}));

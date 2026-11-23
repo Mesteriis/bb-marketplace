@@ -17,10 +17,11 @@ export function CatalogThreads({label, threads, activeThreadId, onOpen}: {
     activeThreadId: string | null;
     onOpen: (id: string, split: boolean) => void;
 }) {
-    if (!threads.length) return <p className="catalog-empty" role="status">Нет неархивных тредов.</p>;
-    const sorted = [...threads].sort((a, b) => b.latestAttentionAt - a.latestAttentionAt);
+    const parents = threads.filter(thread => thread.parentThreadId === null)
+        .sort((a, b) => b.latestAttentionAt - a.latestAttentionAt);
+    if (!parents.length) return <p className="catalog-empty" role="status">Нет родительских тредов.</p>;
     return <ul className="catalog-threads" aria-label={label}>
-        {sorted.map(thread => {
+        {parents.map(thread => {
             const status = threadStatus(thread);
             return <li key={thread.id} className="catalog-thread">
                 <a href={thread.href} aria-current={thread.id === activeThreadId ? 'page' : undefined}
