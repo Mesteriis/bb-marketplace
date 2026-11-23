@@ -1,37 +1,36 @@
-import { useEffect, useRef, useState } from "react";
-import { definePluginApp, experimental_useAppPanel, ThreadChat, useBbNavigate } from "@get-bb/plugin-sdk/app";
-import { Composer } from "./src/adapters/bb/Composer";
+import { useRef, useState } from "react";
+import { definePluginApp, ThreadChat, useBbNavigate } from "@get-bb/plugin-sdk/app";
+import { LegacyDraft } from "./src/adapters/bb/LegacyDraft";
 import { Evidence, Journal } from "./src/adapters/bb/Evidence";
 import { useActivity } from "./src/adapters/bb/useActivity";
 import { useThreadContext } from "./src/adapters/bb/useThreadContext";
 import { Overview } from "./src/ui/Overview";
 import { ThreadNavigation } from "./src/adapters/bb/ThreadNavigation";
-import { contextTab, ContextPanel, panelId, panelPath, statusTab, StatusPanel } from "./src/adapters/bb/threadPanels";
+import { panelId, panelPath, ThreadInspector } from "./src/adapters/bb/threadPanels";
 import { threadFromPath } from "./src/core/threadRoute";
 import "./app.css";
 
 function ThreadPage({ subPath }: { subPath: string }) {
   const threadId = threadFromPath(subPath);
-  const sidePanel = experimental_useAppPanel();
-  const opened = useRef(false);
-
-  useEffect(() => {
-    if (threadId && !opened.current) opened.current = sidePanel.openTab({ tab: statusTab });
-  }, [sidePanel, threadId]);
-
-  return threadId ? <ThreadScreen key={threadId} threadId={threadId} /> : (
+  return threadId ? (
+    <div className="tc-workspace">
+      <div className="tc-layout">
+        <ThreadScreen key={threadId} threadId={threadId} />
+        <ThreadInspector threadId={threadId} />
+      </div>
+    </div>
+  ) : (
     <div className="tc-empty"><h2>Makosh TreadChat</h2><p>Выберите тред слева.</p></div>
   );
 }
 
 function ThreadScreen({ threadId }: { threadId: string }) {
   const navigate = useBbNavigate();
-  const [dialogue, setDialogue] = useState(false);
-  const [journal, setJournal] = useState(false);
+  const [mode, setMode] = useState<"overview" | "dialogue" | "journal">("overview");
   const [source, setSource] = useState<number>();
   const evidence = useRef<HTMLDivElement>(null);
   const lastSourceButton = useRef<HTMLElement | null>(null);
-  const { title, currentStep, needsAnswer } = useThreadContext(threadId);
+  const { title, currentStep, needsAnswer, status } = useThreadContext(threadId);
 
   function openSource(seq: number) {
     lastSourceButton.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -48,32 +47,35 @@ function ThreadScreen({ threadId }: { threadId: string }) {
     <div className="tc-panel">
       <header className="tc-header">
         <div className="tc-heading">
-          <h2>{title || "Тред"}</h2>
+          <div className="tc-identity">
+            <span className="tc-mark" aria-hidden="true">◈</span>
+            <div>
+              <h2>{title || "Тред"}</h2>
+              {status === "active" && <span className="tc-running">● В работе</span>}
+            </div>
+          </div>
           <button onClick={() => navigate.toThread(threadId)}>Открыть чат BB</button>
         </div>
         <div className="tc-modes" role="group" aria-label="Содержимое треда">
-          <button aria-pressed={!dialogue} onClick={() => setDialogue(false)}>Обзор</button>
-          <button aria-pressed={dialogue} onClick={() => setDialogue(true)}>Диалог</button>
+          <button aria-pressed={mode === "overview"} onClick={() => setMode("overview")}>Обзор</button>
+          <button aria-pressed={mode === "dialogue"} onClick={() => setMode("dialogue")}>Диалог</button>
+          <button aria-pressed={mode === "journal"} onClick={() => setMode("journal")}>Технический журнал</button>
         </div>
       </header>
-      {dialogue ? (
-        <div className="tc-dialogue"><ThreadChat threadId={threadId} variant="timeline" /></div>
-      ) : (
-        <main className="tc-feed">
-          <ActivityFeed threadId={threadId} currentStep={currentStep} needsAnswer={needsAnswer}
-            openSource={openSource} openChat={() => navigate.toThread(threadId)} />
+      <LegacyDraft threadId={threadId} />
+      {(mode !== "dialogue" || source !== undefined) && (
+        <section className="tc-feed" aria-label="Подробности треда">
+          {mode === "overview" && <ActivityFeed threadId={threadId} currentStep={currentStep} needsAnswer={needsAnswer}
+            openSource={openSource} openChat={() => navigate.toThread(threadId)} />}
+          {mode === "journal" && <Journal threadId={threadId} openSource={openSource} />}
           {source !== undefined && (
             <div ref={evidence} tabIndex={-1}>
               <Evidence key={source} threadId={threadId} seq={source} onClose={closeSource} />
             </div>
           )}
-          <button className="tc-journal" aria-expanded={journal} onClick={() => setJournal(value => !value)}>
-            {journal ? "Свернуть журнал" : "Технический журнал"}
-          </button>
-          {journal && <Journal threadId={threadId} openSource={openSource} />}
-        </main>
+        </section>
       )}
-      <Composer threadId={threadId} title={title} />
+      <div className="tc-dialogue"><ThreadChat threadId={threadId} variant="full" permissionPolicy="editable" /></div>
     </div>
   );
 }
@@ -89,8 +91,6 @@ export default definePluginApp(app => {
     id: panelId, path: panelPath, title: "Makosh TreadChat", icon: "MessagesSquare",
     component: ThreadPage, experimental_sidebar: ThreadNavigation,
   });
-  app.slots.experimental_tab({ ...statusTab, title: "Состояние", icon: "Activity", component: StatusPanel });
-  app.slots.experimental_tab({ ...contextTab, title: "Контекст", icon: "Info", component: ContextPanel });
   app.slots.experimental_threadAction({
     id: "open-treadchat", title: "TreadChat", icon: "MessagesSquare", group: "treadchat", placement: "header",
     item: ({ thread, navigate }) => ({

@@ -21,9 +21,24 @@ function text(value: unknown, limit = 1200): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim().slice(0, limit) : undefined;
 }
 
-function activeStep(steps: unknown): string | undefined {
-  if (!Array.isArray(steps)) return undefined;
-  return text(steps.map(record).find(step => step.status === "active")?.step);
+export interface PlanStep {
+  title: string;
+  status: "pending" | "active" | "completed" | "failed";
+}
+
+export function planSteps(event: EventRecord): PlanStep[] {
+  const data = record(event.data);
+  const item = record(data.item);
+  const steps = event.type === "turn/plan/updated" ? data.plan :
+    event.type === "item/completed" && item.type === "planSteps" ? item.steps : undefined;
+  if (!Array.isArray(steps)) return [];
+  return steps.flatMap(raw => {
+    const step = record(raw);
+    const title = text(step.step);
+    if (!title) return [];
+    const status = step.status;
+    return [{ title, status: status === "active" || status === "completed" || status === "failed" ? status : "pending" }];
+  });
 }
 
 const verification = /(?:^|[;&|]\s*)(?:(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|check|lint|typecheck|build)\b|(?:pytest|vitest|jest|tsc|eslint|ruff)\b|(?:go|cargo|node)\s+(?:test|--test)\b)/;
@@ -38,7 +53,7 @@ export function activity(event: EventRecord): Activity | null {
     case "item/completed": {
       const item = record(data.item);
       if (item.type === "planSteps") {
-        const detail = activeStep(item.steps);
+        const detail = planSteps(event).find(step => step.status === "active")?.title;
         return detail ? entry("plan", "Этап плана", detail) : null;
       }
       if (item.type === "agentMessage" && text(item.text)) {
@@ -56,7 +71,7 @@ export function activity(event: EventRecord): Activity | null {
       return null;
     }
     case "turn/plan/updated": {
-      const detail = activeStep(data.plan);
+      const detail = planSteps(event).find(step => step.status === "active")?.title;
       return detail ? entry("plan", "Этап плана", detail) : null;
     }
     case "system/interaction/lifecycle": {

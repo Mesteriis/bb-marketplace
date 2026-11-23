@@ -1,12 +1,12 @@
 import { useEffect, useState } from "react";
 import { useRealtimeConnectionState, useSdk } from "@get-bb/plugin-sdk/app";
 
-import { activity } from "../../core/activity";
+import { planSteps, type PlanStep } from "../../core/activity";
 
 export function useThreadContext(threadId: string) {
   const sdk = useSdk();
   const connection = useRealtimeConnectionState();
-  const [state, setState] = useState({ title: "", currentStep: "", needsAnswer: false, status: "" });
+  const [state, setState] = useState({ title: "", currentStep: "", needsAnswer: false, status: "", steps: [] as PlanStep[] });
   useEffect(() => {
     if (connection !== "connected") return;
     const controller = new AbortController();
@@ -25,17 +25,19 @@ export function useThreadContext(threadId: string) {
       ]);
       if (request.aborted) return;
       const planEvent = plan.status === "fulfilled" ? plan.value[0] : undefined;
-      const projected = planEvent && activity(planEvent);
-      const currentStep = projected?.kind === "plan" ? projected.detail ?? "" : "";
+      const planSnapshot = planEvent ? planSteps(planEvent) : [];
       setState(previous => {
         const title = thread.status === "fulfilled" ? (thread.value.title ?? threadId) : previous.title;
         const needsAnswer = interactions.status === "fulfilled"
           ? interactions.value.some(interaction => interaction.status === "pending") : previous.needsAnswer;
-        const step = plan.status === "fulfilled" ? currentStep : previous.currentStep;
+        const steps = plan.status === "fulfilled" ? planSnapshot : previous.steps;
+        const currentStep = steps.find(step => step.status === "active")?.title ?? "";
         const status = thread.status === "fulfilled" ? thread.value.status : previous.status;
-        return previous.title === title && previous.currentStep === step &&
-          previous.needsAnswer === needsAnswer && previous.status === status
-          ? previous : { title, currentStep: step, needsAnswer, status };
+        return previous.title === title && previous.currentStep === currentStep &&
+          previous.needsAnswer === needsAnswer && previous.status === status &&
+          previous.steps.length === steps.length && previous.steps.every((step, index) =>
+            step.title === steps[index]?.title && step.status === steps[index]?.status)
+          ? previous : { title, currentStep, needsAnswer, status, steps };
       });
     }
     const unsubscribe = sdk.subscribe({

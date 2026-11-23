@@ -22,34 +22,41 @@ export function Overview(props: Props) {
           {props.online && <button onClick={props.retry}>Повторить</button>}
         </p>
       )}
-      {props.needsAnswer && (
-        <p className="tc-notice">
-          BB ждёт вашего ответа. <button onClick={props.openChat}>Открыть запрос в чате</button>
-        </p>
-      )}
-      {props.currentStep && !props.rows.some(row => row.kind === "plan" && row.detail === props.currentStep) && <p className="tc-step"><strong>Текущий этап</strong> {props.currentStep}</p>}
-      <div className="tc-heading">
-        <h3>Что я пропустил</h3>
-        {props.rows.length > 0 && <button onClick={props.markViewed}>Отметить просмотренным</button>}
+      <div className="tc-summary">
+        {props.needsAnswer && (
+          <p className="tc-card tc-attention">
+            <strong>Требует внимания</strong>
+            BB ждёт вашего ответа. <button onClick={props.openChat}>Открыть запрос в чате</button>
+          </p>
+        )}
+        {props.currentStep && (
+          <div className="tc-card tc-stage"><strong>Текущий этап</strong><p>{props.currentStep}</p></div>
+        )}
       </div>
-      {props.rows.length ? (
-        <ol className="tc-list">
-          {props.rows.map(row => (
-            <li key={row.seq} data-kind={row.kind}>
-              <div className="tc-heading">
-                <strong>{row.title}</strong>
-                <time dateTime={new Date(row.createdAt).toISOString()}>
-                  {new Date(row.createdAt).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"})}
-                </time>
-              </div>
-              {row.detail && <p className="tc-snippet">{row.detail}</p>}
-              <button onClick={() => props.openSource(row.seq)} aria-label={"Открыть источник " + row.seq}>
-                Открыть источник
-              </button>
-            </li>
-          ))}
-        </ol>
-      ) : <p className="tc-muted">{props.pending ? "Загружаю события…" : "Новых значимых событий нет."}</p>}
+      <div className="tc-card tc-activity">
+        <div className="tc-heading">
+          <h3>Что я пропустил</h3>
+          {props.rows.length > 0 && <button onClick={props.markViewed}>Отметить просмотренным</button>}
+        </div>
+        {props.rows.length ? (
+          <ol className="tc-list">
+            {props.rows.map(row => (
+              <li key={row.seq} data-kind={row.kind}>
+                <div className="tc-heading">
+                  <strong>{row.title}</strong>
+                  <time dateTime={new Date(row.createdAt).toISOString()}>
+                    {new Date(row.createdAt).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"})}
+                  </time>
+                </div>
+                {row.detail && <p className="tc-snippet">{row.detail}</p>}
+                <button onClick={() => props.openSource(row.seq)} aria-label={"Открыть источник " + row.seq}>
+                  Открыть источник
+                </button>
+              </li>
+            ))}
+          </ol>
+        ) : <p className="tc-muted">{props.pending ? "Загружаю события…" : "Новых значимых событий нет."}</p>}
+      </div>
     </section>
   );
 }

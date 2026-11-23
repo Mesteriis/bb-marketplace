@@ -45,3 +45,15 @@ test("BB normalizes a legacy plan into planSteps; the overview displays the acti
   assert.equal(result.kind, "plan");
   assert.equal(result.detail, "Verify");
 });
+
+test("plan progress preserves step order and completion from provider events", async () => {
+  const { planSteps } = await import("../src/core/activity.ts");
+  assert.deepEqual(planSteps({ ...base, type: "turn/plan/updated", data: { plan: [
+    { step: "Read brief", status: "completed" }, { step: "Check app", status: "active" },
+    { step: "Report" }, { step: "" },
+  ] } }), [
+    { title: "Read brief", status: "completed" }, { title: "Check app", status: "active" },
+    { title: "Report", status: "pending" },
+  ]);
+  assert.deepEqual(planSteps({...base,type:"turn/completed",data:{}}), []);
+});
