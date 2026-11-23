@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-makosh-treadchat",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "type": "module",
   "description": "Open a dedicated BB thread workspace with activity, conversation, and context.",
   "license": "MIT",

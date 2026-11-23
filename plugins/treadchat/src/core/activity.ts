@@ -11,6 +11,7 @@ export interface Activity {
   kind: "agent" | "check" | "change" | "plan" | "attention" | "run";
   title: string;
   detail?: string;
+  paths?: string[];
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -66,7 +67,7 @@ export function activity(event: EventRecord): Activity | null {
       }
       if (item.type === "fileChange" && item.status === "completed" && Array.isArray(item.changes)) {
         const paths = item.changes.flatMap(change => text(record(change).path, 220) ?? []).slice(0, 8);
-        if (paths.length) return entry("change", "Изменения в файлах", paths.join("\n"));
+        if (paths.length) return { ...entry("change", "Изменения в файлах", paths.join("\n")), paths };
       }
       return null;
     }

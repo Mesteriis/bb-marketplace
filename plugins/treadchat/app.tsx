@@ -12,14 +12,7 @@ import "./app.css";
 
 function ThreadPage({ subPath }: { subPath: string }) {
   const threadId = threadFromPath(subPath);
-  return threadId ? (
-    <div className="tc-workspace">
-      <div className="tc-layout">
-        <ThreadScreen key={threadId} threadId={threadId} />
-        <ThreadInspector threadId={threadId} />
-      </div>
-    </div>
-  ) : (
+  return threadId ? <ThreadScreen key={threadId} threadId={threadId} /> : (
     <div className="tc-empty"><h2>Makosh TreadChat</h2><p>Выберите тред слева.</p></div>
   );
 }
@@ -44,38 +37,43 @@ function ThreadScreen({ threadId }: { threadId: string }) {
   }
 
   return (
-    <div className="tc-panel">
-      <header className="tc-header">
-        <div className="tc-heading">
-          <div className="tc-identity">
-            <span className="tc-mark" aria-hidden="true">◈</span>
-            <div>
-              <h2>{title || "Тред"}</h2>
-              {status === "active" && <span className="tc-running">● В работе</span>}
+    <div className="tc-workspace">
+      <div className="tc-layout">
+        <div className="tc-panel">
+          <header className="tc-header">
+            <div className="tc-heading">
+              <div className="tc-identity">
+                <span className="tc-mark" aria-hidden="true">◈</span>
+                <div>
+                  <h2>{title || "Тред"}</h2>
+                  {status === "active" && <span className="tc-running">● В работе</span>}
+                </div>
+              </div>
+              <button onClick={() => navigate.toThread(threadId)}>Открыть чат BB</button>
             </div>
-          </div>
-          <button onClick={() => navigate.toThread(threadId)}>Открыть чат BB</button>
-        </div>
-        <div className="tc-modes" role="group" aria-label="Содержимое треда">
-          <button aria-pressed={mode === "overview"} onClick={() => setMode("overview")}>Обзор</button>
-          <button aria-pressed={mode === "dialogue"} onClick={() => setMode("dialogue")}>Диалог</button>
-          <button aria-pressed={mode === "journal"} onClick={() => setMode("journal")}>Технический журнал</button>
-        </div>
-      </header>
-      <LegacyDraft threadId={threadId} />
-      {(mode !== "dialogue" || source !== undefined) && (
-        <section className="tc-feed" aria-label="Подробности треда">
-          {mode === "overview" && <ActivityFeed threadId={threadId} currentStep={currentStep} needsAnswer={needsAnswer}
-            openSource={openSource} openChat={() => navigate.toThread(threadId)} />}
-          {mode === "journal" && <Journal threadId={threadId} openSource={openSource} />}
-          {source !== undefined && (
-            <div ref={evidence} tabIndex={-1}>
-              <Evidence key={source} threadId={threadId} seq={source} onClose={closeSource} />
+            <div className="tc-modes" role="group" aria-label="Содержимое треда">
+              <button aria-pressed={mode === "overview"} onClick={() => setMode("overview")}>Обзор</button>
+              <button aria-pressed={mode === "dialogue"} onClick={() => setMode("dialogue")}>Диалог</button>
+              <button aria-pressed={mode === "journal"} onClick={() => setMode("journal")}>Технический журнал</button>
             </div>
+          </header>
+          <LegacyDraft threadId={threadId} />
+          {(mode !== "dialogue" || source !== undefined) && (
+            <section className="tc-feed" aria-label="Подробности треда">
+              {mode === "overview" && <ActivityFeed threadId={threadId} currentStep={currentStep} needsAnswer={needsAnswer}
+                openSource={openSource} openChat={() => navigate.toThread(threadId)} />}
+              {mode === "journal" && <Journal threadId={threadId} openSource={openSource} />}
+              {source !== undefined && (
+                <div ref={evidence} tabIndex={-1}>
+                  <Evidence key={source} threadId={threadId} seq={source} onClose={closeSource} />
+                </div>
+              )}
+            </section>
           )}
-        </section>
-      )}
-      <div className="tc-dialogue"><ThreadChat threadId={threadId} variant="full" permissionPolicy="editable" /></div>
+          <div className="tc-dialogue"><ThreadChat threadId={threadId} variant="full" permissionPolicy="editable" /></div>
+        </div>
+        <ThreadInspector threadId={threadId} openSource={openSource} />
+      </div>
     </div>
   );
 }

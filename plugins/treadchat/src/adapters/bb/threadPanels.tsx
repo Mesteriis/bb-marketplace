@@ -1,11 +1,18 @@
 import { experimental_useSidebarThreads, useBbNavigate } from "@get-bb/plugin-sdk/app";
 import { useState } from "react";
+import type { InspectorSource } from "../../core/inspector";
+import { useInspectorActivity } from "./useInspectorActivity";
 import { useThreadContext } from "./useThreadContext";
 
 export const panelPath = "thread";
 export const panelId = "thread-chat";
 
-export function ThreadInspector({ threadId }: { threadId: string }) {
+interface InspectorProps {
+  threadId: string;
+  openSource(seq: number): void;
+}
+
+export function ThreadInspector({ threadId, openSource }: InspectorProps) {
   const [section, setSection] = useState<"status" | "context">("status");
 
   return (
@@ -15,15 +22,16 @@ export function ThreadInspector({ threadId }: { threadId: string }) {
         <button aria-pressed={section === "context"} onClick={() => setSection("context")}>Контекст</button>
       </div>
       <div className="tc-inspector-content">
-        {section === "status" ? <ThreadStatus key={threadId} threadId={threadId} /> : <ContextPanel threadId={threadId} />}
+        {section === "status" ? <ThreadStatus key={threadId} threadId={threadId} openSource={openSource} /> : <ContextPanel threadId={threadId} />}
       </div>
     </aside>
   );
 }
 
-function ThreadStatus({ threadId }: { threadId: string }) {
+function ThreadStatus({ threadId, openSource }: InspectorProps) {
   const navigate = useBbNavigate();
   const { steps, needsAnswer, status } = useThreadContext(threadId);
+  const { artifacts, decisions, check, stale } = useInspectorActivity(threadId);
   const labels: Record<string, string> = {
     starting: "Запускается", active: "В работе", stopping: "Останавливается",
     idle: "Ожидает сообщения", pending: "Есть сообщение в очереди", error: "Ошибка",
@@ -34,6 +42,7 @@ function ThreadStatus({ threadId }: { threadId: string }) {
 
   return (
     <section className="tc-side" aria-label="Состояние треда">
+      {stale && <p role="status" className="tc-inspector-stale">Данные могут быть устаревшими.</p>}
       {!!steps.length && (
         <section className="tc-card" aria-label="Прогресс задачи">
           <div className="tc-heading"><h3>Прогресс задачи</h3><span>{completed} / {steps.length}</span></div>
@@ -48,10 +57,36 @@ function ThreadStatus({ threadId }: { threadId: string }) {
           </ol>
         </section>
       )}
-      {status && <section className="tc-card"><h3>Выполнение</h3><p>{labels[status] ?? status}</p></section>}
-      {needsAnswer && (
-        <button onClick={() => navigate.toThread(threadId)}>Ответить на запрос BB</button>
+      <SourceCard title="Ключевые решения" items={decisions} openSource={openSource} />
+      <SourceCard title="Артефакты" items={artifacts} openSource={openSource} />
+      {(status || check || needsAnswer) && (
+        <section className="tc-card" aria-label="Выполнение">
+          <h3>Выполнение</h3>
+          {status && <p>{labels[status] ?? status}</p>}
+          {check && <button className="tc-source-link" onClick={() => openSource(check.seq)}>{check.title}</button>}
+          {needsAnswer && <button onClick={() => navigate.toThread(threadId)}>Ответить на запрос BB</button>}
+        </section>
       )}
+    </section>
+  );
+}
+
+function SourceCard({ title, items, openSource }: {
+  title: string;
+  items: readonly InspectorSource[];
+  openSource(seq: number): void;
+}) {
+  if (!items.length) return null;
+  return (
+    <section className="tc-card" aria-label={title}>
+      <h3>{title}</h3>
+      <ul className="tc-inspector-sources">
+        {items.map(item => (
+          <li key={item.title + item.seq}>
+            <button className="tc-source-link" onClick={() => openSource(item.seq)}>{item.title}</button>
+          </li>
+        ))}
+      </ul>
     </section>
   );
 }
