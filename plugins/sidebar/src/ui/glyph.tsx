@@ -1,6 +1,6 @@
 /** Small original outline glyphs; inherit the host theme and text colour. */
 export function Glyph({ kind }: {
-    kind: 'folder' | 'open' | 'project' | 'pin' | 'eye' | 'search' | 'sliders' | 'inbox' | 'chevron' | 'split' | 'info' | 'activity' | 'warning' | 'clock' | 'dot' | 'stop' | 'plus' | 'eye-off';
+    kind: 'folder' | 'open' | 'project' | 'pin' | 'eye' | 'search' | 'sliders' | 'inbox' | 'chevron' | 'split' | 'info' | 'activity' | 'warning' | 'clock' | 'dot' | 'stop' | 'plus' | 'eye-off' | 'copy' | 'message' | 'file' | 'layers';
 }) {
     const paths = {
         folder: 'M3 7V5a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z',
@@ -20,6 +20,10 @@ export function Glyph({ kind }: {
         stop: 'M6 6h12v12H6Z',
         plus: 'M12 5v14M5 12h14',
         'eye-off': 'm3 3 18 18M10.5 10.5a2 2 0 0 0 3 3M5 6.5A16 16 0 0 0 2 12s4 7 10 7a10 10 0 0 0 4.5-1.2M9 5.5A9 9 0 0 1 12 5c6 0 10 7 10 7a16 16 0 0 1-3 3.5',
+        copy: 'M8 7V4h12v14h-3M4 7h13v14H4Z',
+        message: 'M4 4h16v12H9l-5 4V4Z',
+        file: 'M6 3h8l4 4v14H6Zm8 0v5h4M9 12h6m-6 4h6',
+        layers: 'm12 3 9 5-9 5-9-5 9-5Zm-9 9 9 5 9-5M3 16l9 5 9-5',
         eye: 'M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12Zm7 0a3 3 0 1 0 6 0 3 3 0 0 0-6 0',
     };
     return <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><path d={paths[kind]}/></svg>;

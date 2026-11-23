@@ -148,12 +148,20 @@ test('the project menu groups actions and opens properties without expanding the
    {...make('archived', 'atlas', 'idle'), isArchived: true},
    make('other', 'orbit', 'active'),
   ]},
-  rpc: {paths: () => [{id: 'atlas', name: 'atlas', path: '/Projects/Work/Team/atlas'}]},
+  rpc: {project_overview: () => ({
+   capturedAt: 1760000000000,
+   project: {id: 'atlas', name: 'atlas', kind: 'standard', gitRemoteUrl: null, createdAt: 1, updatedAt: 2,
+    sources: [{id: 'source', type: 'local_path', path: '/Projects/Work/Team/atlas', isDefault: true, createdAt: 1, updatedAt: 2}]},
+   groups: {unarchivedVisible: {parent: 1, child: 0}, unarchivedHidden: {parent: 0, child: 0},
+    archivedVisible: {parent: 0, child: 0}, archivedHidden: {parent: 0, child: 0}},
+   threads: [],
+  })},
  });
- expect(panel.getByRole('heading', {name: 'atlas'})).toBeTruthy();
- expect(await panel.findByText('/Projects/Work/Team/atlas')).toBeTruthy();
- expect(panel.getByText('1', {selector: 'dd'})).toBeTruthy();
- expect(within(panel.getByRole('region', {name: 'Свойства проекта'})).queryByRole('textbox')).toBeNull();
+ expect(await panel.findByRole('heading', {name: 'atlas'})).toBeTruthy();
+ expect(panel.getByText('/Projects/Work/Team/atlas')).toBeTruthy();
+ expect(panel.getByRole('heading', {name: 'Распределение тредов'})).toBeTruthy();
+ expect(panel.getByText('Фрагмент JSON')).toBeTruthy();
+ expect(within(panel.getByRole('region', {name: 'Обзор проекта'})).queryByRole('textbox')).toBeNull();
  panel.lifecycle.unmount();
  slot.lifecycle.unmount();
 });
