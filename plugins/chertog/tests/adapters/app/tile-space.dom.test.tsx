@@ -16,6 +16,7 @@ vi.mock("@get-bb/plugin-sdk/app", async (original) => ({
   ...(await original<object>()),
   useComposers: () => [], useBbNavigate: () => ({}), useSdk: () => sdk,
   experimental_usePluginId: () => "chertog",
+  experimental_useSidebarNavigation: () => ({ items: [], actions: { setVisible: () => undefined } }),
   useRealtime: () => undefined,
   useSettings: () => ({ values: host.values }),
   experimental_useSidebarThreads: () => { host.threadReads++; return { status: "ready", threads: [], projects: [] }; },

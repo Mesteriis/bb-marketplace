@@ -78,6 +78,8 @@ commands do nothing. Saved layouts are not touched and return when it is on
 again (thread tiles as they were; embedded views such as Telegram, Zoom and
 SSH/RDP/VNC come back as a «Повторить» card and reopen on click); the switch takes effect when BB delivers the new value, without a reload.
 
+Chertog's own navigation entry follows the switch through BB's sidebar visibility (`sidebar.visiblePluginPanels`): hidden when `tileSpace` goes off, shown when it goes on, and only on that change (first start with it off hides the entry; with it on nothing is touched), so an entry the owner hid or showed by hand is left alone.
+
 `navigationPart` and `threadListPart` stand in until Navigation and the thread
 list are absorbed into Chertog (`docs/absorption-design.md`). The server checks
 them only when the switch itself changes (`handle.onChange`, previous against

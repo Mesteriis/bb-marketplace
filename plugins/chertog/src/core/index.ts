@@ -6,3 +6,4 @@ export * from "./workspace/index.ts";
 export * from "./home/index.ts";
 export * from "./wire/index.ts";
 export * from "./parts/index.ts";
+export * from "./nav/index.ts";

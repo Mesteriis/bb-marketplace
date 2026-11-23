@@ -25,6 +25,7 @@ import { runForTileComposer, tileComposer } from "./addressee.ts";
 import { embeddedSources } from "./embedded-source.tsx";
 import { providerSources } from "./provider-sources.tsx";
 import { useOpenRequests, whenShown } from "./open-requests.ts";
+import { NavVisibilityWatch } from "./nav-visibility.tsx";
 import { LiveLayer } from "./LiveLayer.tsx";
 import { readAcceptanceFixture, readHomeRedirectEffective, readTileSpace } from "./settings.ts";
 import { appStrings } from "./strings.ts";
@@ -36,6 +37,9 @@ import { WorkspaceRoute } from "./WorkspaceRoute.tsx";
 
 /** `path` of the nav panel: the route is `/plugins/chertog/home`. */
 export const CHERTOG_PANEL_PATH = "home";
+
+/** `id` of the nav panel; BB keys its sidebar item `<pluginId>/<this>`. */
+const CHERTOG_PANEL_ID = "chertog-home";
 
 const diagnostics: Diagnostics = {
   failure: (where, error) => console.error("[chertog] " + where, error),
@@ -86,7 +90,7 @@ function useTileSpace(): boolean | null {
 /** Set by the overlay, which BB keeps mounted: the commands read it, they have no hooks. */
 let tileSpaceOn = false;
 
-/** Mounts the workspace's overlay only while the switch is on: off, it holds no listener and no subscription. */
+/** Mounts the workspace's overlay only while the switch is on: off, it holds no listener and no subscription, only the nav entry watch. */
 function ChertogOverlay() {
   const tileSpace = useTileSpace();
   useEffect(() => {
@@ -95,7 +99,12 @@ function ChertogOverlay() {
       tileSpaceOn = false;
     };
   }, [tileSpace]);
-  return tileSpace === true ? <ChertogLiveOverlay /> : null;
+  return (
+    <>
+      <NavVisibilityWatch panelId={CHERTOG_PANEL_ID} tileSpace={tileSpace} />
+      {tileSpace === true ? <ChertogLiveOverlay /> : null}
+    </>
+  );
 }
 
 function ChertogLiveOverlay() {
@@ -226,7 +235,7 @@ function chosenInstance(workspace: WindowWorkspace): string | null {
 export function registerChertogApp(app: PluginAppBuilder): void {
   // No `experimental_sidebar`: BB's own tree of projects and threads stays beside the workspace.
   app.slots.navPanel({
-    id: "chertog-home",
+    id: CHERTOG_PANEL_ID,
     title: appStrings.panelTitle,
     icon: "LayoutGrid",
     path: CHERTOG_PANEL_PATH,
