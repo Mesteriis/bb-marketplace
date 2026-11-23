@@ -1,0 +1,67 @@
+import { experimental_defineHostEntry } from "@get-bb/plugin-sdk/host";
+import { hostContract } from "./src/adapters/bb/host-contract.ts";
+import { failureFor } from "./src/core/workspace.ts";
+import { assertWorktree, checkOrigin, cloneHttps, cloneLocal, exchangeHttps, localGit, worktreeIdentity } from "./src/adapters/bb/local-git.ts";
+
+import { execFile } from "node:child_process";
+import { homedir } from "node:os";
+import { resolve, sep } from "node:path";
+import { promisify } from "node:util";
+
+export default experimental_defineHostEntry({
+  contract: hostContract,
+  handlers: {
+    async trash({root,identity},{signal}) {
+      try {
+        if (process.platform !== "darwin") throw new Error("TRASH_UNAVAILABLE");
+        if ([homedir(),process.cwd()].some(path => path === root || path.startsWith(root + sep)) || root === sep)
+          throw new Error("PROTECTED_FOLDER");
+        const trees = await localGit(root,{kind:"worktrees"},signal);
+        if (trees.worktrees?.length !== 1 || resolve(trees.worktrees[0].path) !== root)
+          throw new Error("SHARED_WORKTREE");
+        await assertWorktree(root,identity,signal,true);
+        await promisify(execFile)("/usr/bin/trash",[root],{signal});
+        return {ok:true as const};
+      } catch (error) { return failureFor(error,"TRASH_FAILED"); }
+    },
+    async validate({root}, {signal}) {
+      try { return {ok: true as const, ...await worktreeIdentity(root, signal, true)}; }
+      catch (error) { return failureFor(error, "INVALID_WORKTREE"); }
+    },
+    async git({root, identity, action}, {signal}) {
+      try {
+        await assertWorktree(root,identity,signal,action.kind === "worktrees");
+        return {ok: true as const, value: await localGit(root, action, signal)};
+      }
+      catch (error) { return failureFor(error, "GIT_REJECTED"); }
+    },
+    async checkOrigin({root, identity, clone}, {signal}) {
+      try {
+        await assertWorktree(root,identity,signal);
+        return {ok:true as const, root:await checkOrigin(root,clone,signal),identity};
+      }
+      catch (error) { return failureFor(error,"REMOTE_MISMATCH"); }
+    },
+    async cloneHttps({clone, username, destination}, {signal}) {
+      try {
+        const root = await cloneHttps(clone,username,destination,signal);
+        return {ok:true as const,...await worktreeIdentity(root,signal)};
+      }
+      catch (error) { return failureFor(error,"GIT_REJECTED"); }
+    },
+    async exchangeHttps({clone, username, root, identity, action}, {signal}) {
+      try {
+        await assertWorktree(root,identity,signal);
+        return {ok:true as const, value:await exchangeHttps(root, clone, username, action, signal)};
+      }
+      catch (error) { return failureFor(error,"GIT_REJECTED"); }
+    },
+    async cloneLocal({source, destination}, {signal}) {
+      try {
+        const root = await cloneLocal(source,destination,signal);
+        return {ok:true as const,...await worktreeIdentity(root,signal)};
+      }
+      catch (error) { return failureFor(error, "GIT_REJECTED"); }
+    },
+  },
+});

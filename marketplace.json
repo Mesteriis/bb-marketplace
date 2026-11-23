@@ -252,6 +252,26 @@
       }
     },
     {
+      "id": "bb-git-dashboard",
+      "displayName": "BB Git Dashboard",
+      "description": "Project-based Git workspace for worktrees, CI/CD, issues, variables and pull requests in BB.",
+      "icon": {
+        "url": "./plugins/bb-git-dashboard/assets/icon.svg"
+      },
+      "author": {
+        "name": "Mesteriis",
+        "github": "Mesteriis",
+        "url": "https://github.com/Mesteriis"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/bb-git-dashboard",
+          "ref": "main"
+        }
+      }
+    },
+    {
       "id": "bb-github-pr-dashboard",
       "displayName": "GitHub PR Dashboard",
       "description": "Track your GitHub PRs and review requests in one tab: why each is stuck, changed files, replies, and alerts.",

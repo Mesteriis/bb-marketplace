@@ -56,6 +56,10 @@
       "source": "./plugins/autorouter"
     },
     {
+      "name": "bb-git-dashboard",
+      "source": "./plugins/bb-git-dashboard"
+    },
+    {
       "name": "bb-github-pr-dashboard",
       "source": "./plugins/bb-github-pr-dashboard"
     },

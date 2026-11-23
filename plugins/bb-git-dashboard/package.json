@@ -1,0 +1,56 @@
+{
+  "name": "bb-git-dashboard",
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "bb": ">=0.50.1",
+    "bbPluginSdk": ">=0.6.157",
+    "node": ">=22.18"
+  },
+  "bb": {
+    "name": "BB Git Dashboard",
+    "description": "Project-based Git workspace for worktrees, CI/CD, issues, variables and pull requests in BB.",
+    "branding": {
+      "icon": "./assets/icon.svg"
+    },
+    "server": "./server.ts",
+    "app": "./app.tsx",
+    "host": "./host.ts"
+  },
+  "dependencies": {
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@get-bb/plugin-sdk": "0.6.157",
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "hono": "^4.11.9",
+    "typescript": "^5.7.0"
+  },
+  "license": "MIT",
+  "description": "Project-based Git workspace for worktrees, CI/CD, issues, variables and pull requests in BB.",
+  "scripts": {
+    "check": "tsc --noEmit && npm test",
+    "test": "node --disable-warning=ExperimentalWarning --test tests/*.test.ts",
+    "build": "bb plugin build"
+  },
+  "files": [
+    "app.tsx",
+    "host.ts",
+    "server.ts",
+    "src",
+    "assets",
+    "skills",
+    "dist",
+    "README.md",
+    "PLUGIN_OVERVIEW.md",
+    "LICENSE",
+    "CONTRACTS.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Mesteriis/bb-marketplace.git",
+    "directory": "plugins/bb-git-dashboard"
+  }
+}
