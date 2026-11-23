@@ -11,6 +11,7 @@ type Props = {
     projectless?: {id: string; threads: readonly CatalogThread[]};
     onOpenThread: (id: string, split: boolean) => void;
     onCompose: (id: string) => void;
+    onOpenProjectInfo: (id: string) => void;
     onToggleHidden: (id: string) => void;
 };
 
@@ -58,7 +59,7 @@ function ProjectStatus({row}: {row: CatalogRow}) {
     </span>;
 }
 
-export function ProjectCatalog({rows, activeProjectId, activeThreadId, projectless, onOpenThread, onCompose, onToggleHidden}: Props) {
+export function ProjectCatalog({rows, activeProjectId, activeThreadId, projectless, onOpenThread, onCompose, onOpenProjectInfo, onToggleHidden}: Props) {
     const [query, setQuery] = useState('');
     const [scope, setScope] = useState('');
     const [sort, setSort] = useState<CatalogSort>('activity');
@@ -132,7 +133,11 @@ export function ProjectCatalog({rows, activeProjectId, activeThreadId, projectle
                         <ProjectStatus row={row}/>
                         <span className="catalog-chevron"><Glyph kind="chevron"/></span>
                     </button>
-                    <a className="catalog-info" href={row.settingsHref}
+                    <a className="catalog-info" href={row.infoHref} onClick={event => {
+                        if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+                        event.preventDefault();
+                        onOpenProjectInfo(row.id);
+                    }}
                         aria-label={`Свойства проекта ${row.name}`} title="Свойства проекта"><Glyph kind="info"/></a>
                     <Overlay label={`Действия проекта ${row.name}`} icon="⋯"
                         open={typeof overlay === 'object' && overlay?.id === row.id}

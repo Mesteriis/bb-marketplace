@@ -20,6 +20,7 @@ import {ProgressFreshness} from './src/ui/progress-freshness';
 import {requestChertogTile} from './src/adapters/bb/chertog-open';
 import {buildCatalog, isCatalogThread} from './src/core/project-catalog';
 import {ProjectCatalog} from './src/ui/project-catalog';
+import {ProjectInfoPanel, projectInfoHref, projectInfoPath} from './src/adapters/bb/project-info';
 
 function change(kind: 'catalogProjects' | 'threads', id: string) {
     try {
@@ -31,6 +32,8 @@ function change(kind: 'catalogProjects' | 'threads', id: string) {
 }
 export default definePluginApp(app => {
     registerPlanningApp(app);
+    app.slots.navPanel({id: 'project-info', path: projectInfoPath, title: 'Свойства проекта',
+        icon: 'FolderGit', component: ProjectInfoPanel});
     app.slots.experimental_threadList({ id: 'tree', title: 'Makosh Sidebar', component: props=><ProgressProvider><Sidebar {...props}/></ProgressProvider> });
     app.slots.experimental_threadAction({ id: 'hide', title: 'Скрыть / вернуть', icon: 'Eye', group: 'organize',
         useData: () => useHidden(), item: ({ thread, data }) => ({ label: data.threads.includes(thread.id) ? 'Вернуть' : 'Скрыть', icon: 'Eye', run: () => change('threads', thread.id) }) });
@@ -67,7 +70,7 @@ function Sidebar({ activeThreadId, activeProjectId, onNavigate }: PluginThreadLi
     const catalog = useMemo(() => {
         if (tab !== 'projects') return [];
         const locations = new Map(paths.map(({id, path}) => [id, path]));
-        return buildCatalog(projects.map(project => ({...project, path: locations.get(project.id) ?? null})),
+        return buildCatalog(projects.map(project => ({...project, infoHref: projectInfoHref(project.id), path: locations.get(project.id) ?? null})),
             threads, rootPath, catalogHidden);
     }, [tab, projects, paths, threads, rootPath, catalogHidden]);
     const [, refreshToday] = useState(0);
@@ -132,6 +135,7 @@ function Sidebar({ activeThreadId, activeProjectId, onNavigate }: PluginThreadLi
             }
         }}
         onCompose={id => { navigate.toCompose({projectId: id}); onNavigate(); }}
+        onOpenProjectInfo={id => { navigate.toPluginPanel(projectInfoPath, {subPath: id}); onNavigate(); }}
         onToggleHidden={id => change('catalogProjects', id)}/>
    </div>}
   </>}

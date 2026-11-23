@@ -1,7 +1,7 @@
 import {isRunning} from './presentation';
 import type {ProjectLocation, ThreadNode} from './tree';
 
-export type CatalogProject = ProjectLocation & {isPersonal: boolean; settingsHref: string};
+export type CatalogProject = ProjectLocation & {isPersonal: boolean; infoHref: string};
 export type CatalogThread = ThreadNode['thread'] & {isHidden: boolean; href: string; displayTitle: string};
 export type CatalogSort = 'activity' | 'name';
 

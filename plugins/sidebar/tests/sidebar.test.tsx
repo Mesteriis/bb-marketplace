@@ -26,11 +26,11 @@ async function catalogSlot() {
     : '/Projects/' + (id === 'orbit' ? 'Personal' : 'Work/Team') + '/' + id,
   })), attention: () => ({entries: [], incomplete: false})},
  });
- return slot;
+ return {slot, definition, projects};
 }
 
 test('manual hiding applies to running projects and can be reversed from visibility settings', async () => {
- const slot = await catalogSlot();
+ const {slot} = await catalogSlot();
  fireEvent.click(slot.getByRole('tab', {name: 'Проекты'}));
  await slot.findByRole('button', {name: /^atlas/});
  fireEvent.click(slot.getByRole('button', {name: 'Действия проекта atlas'}));
@@ -47,7 +47,7 @@ test('manual hiding applies to running projects and can be reversed from visibil
 });
 
 test('the catalog hides archive-only and unused projects until requested', async () => {
- const slot = await catalogSlot();
+ const {slot} = await catalogSlot();
  fireEvent.click(slot.getByRole('tab', {name: 'Проекты'}));
  await slot.findByRole('button', {name: /^atlas/});
  expect(slot.queryByRole('button', {name: /retired|unused|outside/})).toBeNull();
@@ -60,7 +60,7 @@ test('the catalog hides archive-only and unused projects until requested', async
 });
 
 test('the catalog filters by folder, sorts and searches by path', async () => {
- const slot = await catalogSlot();
+ const {slot} = await catalogSlot();
  expect(slot.getByRole('region', {name: 'Треды за последние 24 часа'})).toBeTruthy();
  fireEvent.click(slot.getByRole('tab', {name: 'Проекты'}));
  await slot.findByRole('button', {name: /^atlas/});
@@ -80,7 +80,7 @@ test('the catalog filters by folder, sorts and searches by path', async () => {
 });
 
 test('multiple project lists open inline and can open two threads side by side', async () => {
- const slot = await catalogSlot();
+ const {slot} = await catalogSlot();
  fireEvent.click(slot.getByRole('tab', {name: 'Проекты'}));
  const first = await slot.findByRole('button', {name: /^atlas/, expanded: false});
  fireEvent.click(first);
@@ -106,7 +106,7 @@ test('multiple project lists open inline and can open two threads side by side',
 });
 
 test('projectless conversations open in the sidebar outside the scoped catalog', async () => {
- const slot = await catalogSlot();
+ const {slot} = await catalogSlot();
  fireEvent.click(slot.getByRole('tab', {name: 'Проекты'}));
  fireEvent.click(slot.getByRole('button', {name: 'Без проекта', expanded: false}));
  const list = within(slot.getByRole('list', {name: 'Треды без проекта'}));
@@ -117,14 +117,30 @@ test('projectless conversations open in the sidebar outside the scoped catalog',
  expect(slot.inspection.navigateCalls.at(-1)).toMatchObject({method: 'toThread', threadId: 'projectless-thread'});
  slot.lifecycle.unmount();
 });
-test('project info links to the native settings without expanding the project', async () => {
- const slot = await catalogSlot();
+test('project info opens a read-only page in BB without expanding the project', async () => {
+ const {slot, definition, projects} = await catalogSlot();
  fireEvent.click(slot.getByRole('tab', {name: 'Проекты'}));
  const card = await slot.findByRole('button', {name: /^atlas/, expanded: false});
  const info = slot.getByRole('link', {name: 'Свойства проекта atlas'});
- expect(info.getAttribute('href')).toBe('/settings/atlas');
+ expect(info.getAttribute('href')).toBe('/plugins/makosh-sidebar/project-info/atlas');
+ fireEvent.click(info);
+ expect(slot.inspection.navigateCalls.at(-1)).toMatchObject({
+  method: 'toPluginPanel', path: 'project-info', options: {subPath: 'atlas'},
+ });
  expect(card.getAttribute('aria-expanded')).toBe('false');
- expect(slot.queryByRole('link', {name: 'Свойства проекта Без проекта'})).toBeNull();
+ const panel = renderSlot(definition.navPanels[0]!, {subPath: 'atlas'}, {
+  sidebarThreads: {status: 'ready', projects, sections: [], threads: [
+   make('running', 'atlas', 'active'),
+   {...make('archived', 'atlas', 'idle'), isArchived: true},
+   make('other', 'orbit', 'active'),
+  ]},
+  rpc: {paths: () => [{id: 'atlas', name: 'atlas', path: '/Projects/Work/Team/atlas'}]},
+ });
+ expect(panel.getByRole('heading', {name: 'atlas'})).toBeTruthy();
+ expect(await panel.findByText('/Projects/Work/Team/atlas')).toBeTruthy();
+ expect(panel.getByText('1', {selector: 'dd'})).toBeTruthy();
+ expect(within(panel.getByRole('region', {name: 'Свойства проекта'})).queryByRole('textbox')).toBeNull();
+ panel.lifecycle.unmount();
  slot.lifecycle.unmount();
 });
 test('attention includes host errors and pending questions and opens the correct thread',async()=>{
