@@ -117,17 +117,25 @@ test('projectless conversations open in the sidebar outside the scoped catalog',
  expect(slot.inspection.navigateCalls.at(-1)).toMatchObject({method: 'toThread', threadId: 'projectless-thread'});
  slot.lifecycle.unmount();
 });
-test('project info opens a read-only page in BB without expanding the project', async () => {
+test('the project menu groups actions and opens properties without expanding the project', async () => {
  const {slot, definition, projects} = await catalogSlot();
  fireEvent.click(slot.getByRole('tab', {name: 'Проекты'}));
  const card = await slot.findByRole('button', {name: /^atlas/, expanded: false});
- const info = slot.getByRole('link', {name: 'Свойства проекта atlas'});
+ expect(slot.queryByRole('link', {name: /Свойства проекта/})).toBeNull();
+ const actions = slot.getByRole('button', {name: 'Действия проекта atlas'});
+ fireEvent.click(actions);
+ const menu = within(slot.getByRole('group', {name: 'Действия проекта atlas'}));
+ expect(menu.getByRole('button', {name: 'Новый тред'})).toBeTruthy();
+ expect(menu.getByRole('button', {name: 'Скрыть проект'})).toBeTruthy();
+ expect(within(card).getByRole('img', {name: '1 в работе'})).toBeTruthy();
+ const info = menu.getByRole('link', {name: 'Свойства проекта'});
  expect(info.getAttribute('href')).toBe('/plugins/makosh-sidebar/project-info/atlas');
  fireEvent.click(info);
  expect(slot.inspection.navigateCalls.at(-1)).toMatchObject({
   method: 'toPluginPanel', path: 'project-info', options: {subPath: 'atlas'},
  });
  expect(card.getAttribute('aria-expanded')).toBe('false');
+ expect(actions.getAttribute('aria-expanded')).toBe('false');
  const panel = renderSlot(definition.navPanels[0]!, {subPath: 'atlas'}, {
   sidebarThreads: {status: 'ready', projects, sections: [], threads: [
    make('running', 'atlas', 'active'),

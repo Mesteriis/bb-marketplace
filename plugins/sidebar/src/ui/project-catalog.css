@@ -102,28 +102,12 @@
 .catalog-status.running { color: var(--plan-done); }
 .catalog-status.unread { color: var(--plan-unread); }
 
-.catalog-info {
-    display: grid;
-    place-items: center;
-    min-width: var(--catalog-control);
-    min-height: var(--catalog-control);
-    flex: none;
-    color: var(--catalog-muted);
-    border-radius: var(--catalog-radius);
-}
-.catalog-info:hover { color: var(--foreground); }
-
 .catalog-overlay { position: relative; flex: none; }
 .catalog-overlay > button {
     display: grid;
     place-items: center;
     min-width: var(--catalog-control);
 }
-.catalog-row .catalog-overlay > button { opacity: 0; }
-.catalog-row:hover .catalog-overlay > button,
-.catalog-row:focus-within .catalog-overlay > button,
-.catalog-row .catalog-overlay > button[aria-expanded="true"] { opacity: 1; }
-
 .catalog-popover {
     position: absolute;
     inset-block-start: 100%;
@@ -147,20 +131,17 @@
     text-align: start;
     border-radius: var(--catalog-radius);
 }
-.catalog-popover > :is(button, label):hover { background: var(--catalog-accent); }
+.catalog-popover > :is(button, label, a):hover { background: var(--catalog-accent); }
+.catalog-popover > a { color: inherit; text-decoration: none; }
 .catalog-empty { color: var(--catalog-muted); padding-inline: var(--catalog-gap); }
-@media (hover: none) {
-    .catalog-row .catalog-overlay > button { opacity: 1; }
-}
 
 .catalog-chevron {
     display: flex;
-    margin-inline-start: auto;
+    flex: none;
     color: var(--catalog-muted);
 }
 
 .catalog-disclosure[aria-expanded="true"] .catalog-chevron { transform: rotate(90deg); }
-.catalog-status + .catalog-chevron { margin-inline-start: 0; }
 
 .catalog-threads {
     list-style: none;

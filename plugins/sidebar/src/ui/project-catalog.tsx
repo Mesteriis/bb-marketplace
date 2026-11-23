@@ -39,7 +39,7 @@ function Overlay({label, icon, open, onOpenChange, children}: {
         onOpenChange(false);
         trigger.current?.focus();
     }}>
-        <button type="button" ref={trigger} aria-label={label} aria-expanded={open} title={label}
+        <button type="button" ref={trigger} aria-label={label} aria-expanded={open}
             onClick={() => onOpenChange(!open)}>{icon}</button>
         {open && <div className="catalog-popover" role="group" aria-label={label}>{children}</div>}
     </div>;
@@ -114,9 +114,8 @@ export function ProjectCatalog({rows, activeProjectId, activeThreadId, projectle
             <div className={`catalog-row${projectless.id === activeProjectId ? ' selected' : ''}`}>
                 <button type="button" className="catalog-disclosure" aria-expanded={expanded.has(projectless.id)}
                     onClick={() => toggleExpanded(projectless.id)}>
-                    <Glyph kind="inbox"/>
-                    Без проекта
                     <span className="catalog-chevron"><Glyph kind="chevron"/></span>
+                    Без проекта
                 </button>
             </div>
             {expanded.has(projectless.id) && <CatalogThreads label="Треды без проекта" threads={projectless.threads}
@@ -127,30 +126,30 @@ export function ProjectCatalog({rows, activeProjectId, activeThreadId, projectle
                 <div className={`catalog-row${row.id === activeProjectId ? ' selected' : ''}`}>
                     <button type="button" className="catalog-disclosure" aria-expanded={expanded.has(row.id)}
                         onClick={() => toggleExpanded(row.id)}>
-                        <Glyph kind="project"/>
+                        <span className="catalog-chevron"><Glyph kind="chevron"/></span>
                         <span className="catalog-name" title={row.name}>{row.name}</span>
                         {row.folder && <span className="catalog-path" title={row.folder}>{row.folder}</span>}
                         <ProjectStatus row={row}/>
-                        <span className="catalog-chevron"><Glyph kind="chevron"/></span>
                     </button>
-                    <a className="catalog-info" href={row.infoHref} onClick={event => {
-                        if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-                        event.preventDefault();
-                        onOpenProjectInfo(row.id);
-                    }}
-                        aria-label={`Свойства проекта ${row.name}`} title="Свойства проекта"><Glyph kind="info"/></a>
                     <Overlay label={`Действия проекта ${row.name}`} icon="⋯"
                         open={typeof overlay === 'object' && overlay?.id === row.id}
                         onOpenChange={open => setOverlay(open ? {id: row.id} : null)}>
+                        <a href={row.infoHref} onClick={event => {
+                            if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+                            event.preventDefault();
+                            setOverlay(null);
+                            onOpenProjectInfo(row.id);
+                        }}><Glyph kind="info"/>Свойства проекта</a>
+                        <button type="button" onClick={() => {
+                            setOverlay(null);
+                            onCompose(row.id);
+                        }}><Glyph kind="plus"/>Новый тред</button>
                         <button type="button" onClick={() => {
                             onToggleHidden(row.id);
                             setOverlay(null);
                             search.current?.focus();
-                        }}>{row.hidden ? 'Вернуть в список' : 'Скрыть проект'}</button>
-                        <button type="button" onClick={() => {
-                            setOverlay(null);
-                            onCompose(row.id);
-                        }}>Новый тред</button>
+                        }}><Glyph kind={row.hidden ? 'eye' : 'eye-off'}/>
+                            {row.hidden ? 'Вернуть в список' : 'Скрыть проект'}</button>
                     </Overlay>
                 </div>
                 {expanded.has(row.id) && <CatalogThreads label={`Треды проекта ${row.name}`} threads={row.threads}
