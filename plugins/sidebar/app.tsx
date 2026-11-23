@@ -18,7 +18,7 @@ import {SidebarTabs,type SidebarTab} from './src/ui/sidebar-tabs';
 import {useSidebarHeader} from './src/adapters/bb/sidebar-header';
 import {ProgressFreshness} from './src/ui/progress-freshness';
 import {requestChertogTile} from './src/adapters/bb/chertog-open';
-import {buildCatalog, isCatalogParent} from './src/core/project-catalog';
+import {buildCatalog, isCatalogThread} from './src/core/project-catalog';
 import {ProjectCatalog} from './src/ui/project-catalog';
 import {ProjectInfoPanel, projectInfoHref, projectInfoPath} from './src/adapters/bb/project-info';
 
@@ -64,15 +64,15 @@ function Sidebar({ activeThreadId, activeProjectId, onNavigate }: PluginThreadLi
     const projectless = useMemo(() => {
         if (tab !== 'projects') return undefined;
         const personal = projects.find(project => project.isPersonal);
-        return personal && {id: personal.id, threads: threadsWithAttention.filter(thread =>
-            thread.projectId === personal.id && isCatalogParent(thread))};
-    }, [tab, projects, threadsWithAttention]);
+        return personal && {id: personal.id, threads: threads.filter(thread =>
+            thread.projectId === personal.id && isCatalogThread(thread))};
+    }, [tab, projects, threads]);
     const catalog = useMemo(() => {
         if (tab !== 'projects') return [];
         const locations = new Map(paths.map(({id, path}) => [id, path]));
         return buildCatalog(projects.map(project => ({...project, infoHref: projectInfoHref(project.id), path: locations.get(project.id) ?? null})),
-            threadsWithAttention, rootPath, catalogHidden);
-    }, [tab, projects, paths, threadsWithAttention, rootPath, catalogHidden]);
+            threads, rootPath, catalogHidden);
+    }, [tab, projects, paths, threads, rootPath, catalogHidden]);
     const [, refreshToday] = useState(0);
     const {recent, withAncestors} = todayScope(threadsWithAttention, Date.now());
     const today = withBranchActivity(withAncestors);
