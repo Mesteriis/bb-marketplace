@@ -19,6 +19,13 @@ async function readThreads(sdk: Sdk, projectId: string, archived: boolean) {
     }
 }
 
+export async function readProjectThreads(sdk: Sdk, projectId: string) {
+    const [active, archived] = await Promise.all([readThreads(sdk, projectId, false), readThreads(sdk, projectId, true)]);
+    // A thread can move into the archive while the two lists are read.
+    const rows = new Map([...active, ...archived].map(row => [row.id, row]));
+    return [...rows.values()].filter(row => row.deletedAt == null);
+}
+
 function displayRemote(value: string | null) {
     if (!value) return null;
     if (/^git@[\w.-]+:[\w./-]+$/.test(value)) return value;
@@ -38,16 +45,13 @@ function displayRemote(value: string | null) {
 export async function readProjectOverview(sdk: Sdk, projectId: string): Promise<ProjectOverviewData> {
     const project = await sdk.projects.get({projectId});
     if (project.kind !== 'standard' || project.id !== projectId) throw new Error('Standard project not found');
-    const [active, archived] = await Promise.all([readThreads(sdk, projectId, false), readThreads(sdk, projectId, true)]);
-    // A thread can move into the archive while the two lists are read.
-    const rows = new Map([...active, ...archived].map(row => [row.id, row]));
+    const rows = await readProjectThreads(sdk, projectId);
     const groups: ProjectOverviewData['groups'] = {
         unarchivedVisible: {parent: 0, child: 0}, unarchivedHidden: {parent: 0, child: 0},
         archivedVisible: {parent: 0, child: 0}, archivedHidden: {parent: 0, child: 0},
     };
     const sample: ThreadRow[] = [];
-    for (const row of rows.values()) {
-        if (row.deletedAt != null) continue;
+    for (const row of rows) {
         const archive = row.archivedAt == null ? 'unarchived' : 'archived';
         const visibility = row.visibility === 'visible' ? 'Visible' : 'Hidden';
         groups[`${archive}${visibility}`][row.parentThreadId == null ? 'parent' : 'child']++;

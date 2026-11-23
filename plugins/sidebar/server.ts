@@ -4,9 +4,12 @@ import {progressSchema} from './src/core/progress';
 import registerPlanning from './src/adapters/bb/planning/server';
 import {sidebarPlans} from './src/core/progress';
 import {migrationEntry,migrationKey} from './src/core/planning/migration';
+import {projectActivitySchema} from './src/core/project-activity';
+import {readProjectActivity} from './src/adapters/bb/project-activity-read';
 import {projectOverviewSchema} from './src/core/project-overview';
 import {readProjectOverview} from './src/adapters/bb/project-overview-read';
 export const contract = defineRpcContract({
+    project_activity: {input: z.object({projectId: z.string().min(1).max(200)}), output: projectActivitySchema},
     project_overview: {input: z.object({projectId: z.string().min(1).max(200)}), output: projectOverviewSchema},
     paths: { input: z.null(), output: z.array(z.object({ id: z.string(), name: z.string(), path: z.string().nullable() })) },
     progress: {input:z.object({threadIds:z.array(z.string().min(1).max(200)).max(25)}),output:progressSchema},
@@ -17,6 +20,7 @@ export const contract = defineRpcContract({
 export default async function plugin(bb: BbPluginApi) {
     const planning=await registerPlanning(bb);
     bb.rpc.register(contract, {
+        project_activity: ({projectId}) => readProjectActivity(bb.sdk, projectId),
         project_overview: ({projectId}) => readProjectOverview(bb.sdk, projectId),
         attention:()=>planning.attention(),
         progress_import:({entries})=>planning.importRecords(entries),

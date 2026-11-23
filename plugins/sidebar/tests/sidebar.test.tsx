@@ -149,26 +149,71 @@ test('the project menu groups actions and opens properties without expanding the
  });
  expect(card.getAttribute('aria-expanded')).toBe('false');
  expect(actions.getAttribute('aria-expanded')).toBe('false');
+ const loadActivity = vi.fn(() => ({days: Array.from({length: 14}, (_, index) => ({
+  day: '2026-11-' + (index + 10), input: 100, output: 20, cached: 30, samples: 1, created: 2, archived: 1,
+ }))}));
  const panel = renderSlot(definition.navPanels[0]!, {subPath: 'atlas'}, {
   sidebarThreads: {status: 'ready', projects, sections: [], threads: [
    make('running', 'atlas', 'active'),
    {...make('archived', 'atlas', 'idle'), isArchived: true},
    make('other', 'orbit', 'active'),
   ]},
-  rpc: {project_overview: () => ({
+  rpc: {project_activity: loadActivity, project_overview: () => ({
    capturedAt: 1760000000000,
    project: {id: 'atlas', name: 'atlas', kind: 'standard', gitRemoteUrl: null, createdAt: 1, updatedAt: 2,
-    sources: [{id: 'source', type: 'local_path', path: '/Projects/Work/Team/atlas', isDefault: true, createdAt: 1, updatedAt: 2}]},
+    sources: [
+     {id: 'source', type: 'local_path', path: '/Projects/Work/Team/atlas', isDefault: true, createdAt: 1, updatedAt: 2},
+     {id: 'docs', type: 'local_path', path: '/Projects/Work/Team/docs', isDefault: false, createdAt: 3, updatedAt: 4},
+    ]},
    groups: {unarchivedVisible: {parent: 1, child: 0}, unarchivedHidden: {parent: 0, child: 0},
     archivedVisible: {parent: 0, child: 0}, archivedHidden: {parent: 0, child: 0}},
-   threads: [],
+   threads: [{id: 'thread-sample', title: 'Example', status: 'idle', visibility: 'visible',
+    providerId: 'test', createdAt: 5, updatedAt: 6, hasPendingInteraction: false}],
   })},
  });
  expect(await panel.findByRole('heading', {name: 'atlas'})).toBeTruthy();
- expect(panel.getByText('/Projects/Work/Team/atlas')).toBeTruthy();
- expect(panel.getByRole('heading', {name: 'Распределение тредов'})).toBeTruthy();
- expect(panel.getByText('Фрагмент JSON')).toBeTruthy();
- expect(within(panel.getByRole('region', {name: 'Обзор проекта'})).queryByRole('textbox')).toBeNull();
+ const properties = within(panel.getByRole('region', {name: 'Свойства проекта'}));
+ const tabs = within(properties.getByRole('tablist', {name: 'Разделы проекта'}));
+ const overview = tabs.getByRole('tab', {name: 'Обзор'});
+ const analytics = tabs.getByRole('tab', {name: 'Аналитика'});
+ const sources = tabs.getByRole('tab', {name: 'Источники'});
+ expect(overview.getAttribute('aria-selected')).toBe('true');
+ const overviewContent = within(properties.getByRole('tabpanel', {name: 'Обзор'}));
+ expect(overviewContent.getByRole('heading', {name: 'Распределение тредов'})).toBeTruthy();
+ expect(overviewContent.getByText('Git remote URL')).toBeTruthy();
+ const json = properties.getByText('Фрагмент JSON').parentElement!.querySelector('pre')!;
+ const overviewJson = json.textContent;
+ expect(JSON.parse(overviewJson ?? '').threads).toEqual([{id: 'thread-sample', title: 'Example', status: 'idle',
+  visibility: 'visible', providerId: 'test', createdAt: 5, updatedAt: 6, hasPendingInteraction: false}]);
+ expect(loadActivity).not.toHaveBeenCalled();
+ overview.focus();
+ fireEvent.keyDown(overview, {key: 'End'});
+ expect(document.activeElement).toBe(sources);
+ expect(sources.getAttribute('aria-selected')).toBe('true');
+ expect(properties.queryByRole('tabpanel', {name: 'Обзор'})).toBeNull();
+ const sourceContent = within(properties.getByRole('tabpanel', {name: 'Источники'}));
+ expect(sourceContent.getByText('/Projects/Work/Team/atlas')).toBeTruthy();
+ expect(sourceContent.getByText('/Projects/Work/Team/docs')).toBeTruthy();
+ expect(sourceContent.getAllByText('По умолчанию')).toHaveLength(2);
+ expect(properties.getByText('Фрагмент JSON')).toBeTruthy();
+ expect(loadActivity).not.toHaveBeenCalled();
+ fireEvent.click(analytics);
+ expect(await panel.findByRole('img', {name: 'Потребление токенов'})).toBeTruthy();
+ expect(loadActivity).toHaveBeenCalledTimes(1);
+ expect(panel.getByText('30%', {exact: true})).toBeTruthy();
+ fireEvent.change(panel.getByRole('combobox', {name: 'Период'}), {target: {value: '14'}});
+ expect(panel.getByRole('combobox', {name: 'День'}).querySelectorAll('option')).toHaveLength(14);
+ fireEvent.click(panel.getByRole('button', {name: 'Активность'}));
+ expect(panel.getByRole('img', {name: 'Активность тредов'})).toBeTruthy();
+ expect(panel.queryByText('30%', {exact: true})).toBeNull();
+ fireEvent.click(overview);
+ expect(properties.queryByRole('img', {name: 'Активность тредов'})).toBeNull();
+ fireEvent.click(analytics);
+ expect(properties.getByRole('img', {name: 'Активность тредов'})).toBeTruthy();
+ expect((properties.getByRole('combobox', {name: 'Период'}) as HTMLSelectElement).value).toBe('14');
+ expect(loadActivity).toHaveBeenCalledTimes(1);
+ expect(properties.getByText('Фрагмент JSON')).toBeTruthy();
+ expect(json.textContent).toBe(overviewJson);
  panel.lifecycle.unmount();
  slot.lifecycle.unmount();
 });

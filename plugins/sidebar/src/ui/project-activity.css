@@ -1,0 +1,105 @@
+.overview-activity-body {
+    display: grid;
+    gap: var(--overview-pad);
+    padding: var(--overview-pad);
+    font-variant-numeric: tabular-nums;
+}
+
+.overview-activity-controls, .overview-activity-legend, .overview-activity-day, .overview-cache > div {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: .5rem .85rem;
+}
+
+.overview-activity-controls, .overview-cache > div { justify-content: space-between; }
+
+.overview-activity-controls [role="group"] { display: flex; flex-wrap: wrap; gap: .375rem; }
+
+.overview-activity-controls button, .overview-activity-body select {
+    padding: .35rem .6rem;
+    color: inherit;
+    font: inherit;
+    border: 1px solid var(--overview-border);
+    border-radius: .375rem;
+    background: var(--overview-surface);
+}
+
+.overview-activity-body select:focus-visible {
+    outline: 2px solid var(--ring, var(--overview-accent));
+    outline-offset: 2px;
+}
+
+.overview-activity-controls button[aria-pressed="true"] {
+    border-color: var(--overview-accent);
+    background: var(--overview-control);
+}
+
+.overview-activity-legend h3 { flex: 1 1 11rem; }
+.overview-activity-legend i {
+    display: inline-block;
+    inline-size: .52rem;
+    block-size: .52rem;
+    margin-inline-end: .35rem;
+    border-radius: 50%;
+    background: currentColor;
+}
+
+.overview-activity .plot-primary { color: var(--overview-accent); }
+.overview-activity .plot-secondary { color: var(--overview-secondary); }
+
+.overview-plot-scroll { overflow-x: auto; }
+.overview-plot { display: block; inline-size: 100%; min-inline-size: 22rem; max-block-size: 20rem; }
+.overview-plot-grid path { stroke: var(--overview-border); }
+.overview-plot-grid text, .overview-plot-label { fill: var(--muted-foreground); font-size: 12px; }
+.overview-plot-series { animation: makosh-plot-in .55s ease-out both; }
+.overview-plot-line {
+    stroke-width: 2.5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    filter: drop-shadow(0 0 4px color-mix(in srgb, currentColor 62%, transparent));
+}
+
+.overview-plot-marker { stroke: var(--muted-foreground); stroke-dasharray: 4 4; }
+.overview-plot-dot { stroke: var(--overview-surface); stroke-width: 1.5; }
+.overview-plot rect { cursor: crosshair; }
+.overview-activity-day, .overview-cache small { color: var(--muted-foreground); }
+
+.overview-cache {
+    display: grid;
+    gap: .45rem;
+    padding: var(--overview-pad);
+    border: 1px solid var(--overview-border);
+    border-radius: var(--overview-radius);
+}
+
+.overview-cache-track {
+    display: block;
+    block-size: .45rem;
+    border-radius: 1rem;
+    background: var(--overview-control);
+}
+
+.overview-cache-track i {
+    display: block;
+    block-size: 100%;
+    border-radius: inherit;
+    background: var(--overview-secondary);
+    box-shadow: 0 0 .65rem color-mix(in srgb, var(--overview-secondary) 38%, transparent);
+    animation: makosh-overview-bar-in .45s ease-out both;
+    transform-origin: left center;
+    transition: width .35s ease-out;
+}
+
+@keyframes makosh-plot-in {
+    from { clip-path: inset(0 100% 0 0); }
+    to { clip-path: inset(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .overview-plot-series, .overview-cache-track i { animation: none; transition: none; }
+}
+
+@container (max-width: 42rem) {
+    .overview-plot-grid text, .overview-plot-label { font-size: 17px; }
+}

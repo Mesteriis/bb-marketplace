@@ -16,7 +16,7 @@ function Ring({title, first, second}: {title: string; first: [string, number]; s
     const total = first[1] + second[1];
     return <section className="overview-chart">
         <h3>{title}</h3>
-        <div className="overview-ring" style={{'--ring-share': `${scale(first[1], total)}%`} as CSSProperties} data-empty={!total}>
+        <div className="overview-ring" style={{'--ring-share': `${scale(first[1], total) * 3.6}deg`} as CSSProperties} data-empty={!total}>
             <span><strong>{total}</strong>всего</span>
         </div>
         <dl className="overview-legend">

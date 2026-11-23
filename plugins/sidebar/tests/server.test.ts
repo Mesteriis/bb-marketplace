@@ -1,5 +1,5 @@
 import type {BbPluginApi} from '@get-bb/plugin-sdk';
-import {expect,test} from 'vitest';
+import {expect,test,vi} from 'vitest';
 import {createFakePluginHost} from '@get-bb/plugin-sdk/testing';
 import plugin from '../server';
 
@@ -63,4 +63,48 @@ test('project overview reads all pages and keeps hidden thread titles out of the
   });
   expect(JSON.stringify(result)).not.toContain('hidden-0');
  } finally {await harness.lifecycle.dispose();}
+});
+
+test('project activity counts recent archived and active threads and their daily token deltas', async () => {
+ const now = Date.UTC(2026, 10, 23, 12);
+ const yesterday = Date.UTC(2026, 10, 22, 12);
+ const thread = (id: string, archivedAt: number | null) =>
+  ({id, projectId: 'project', archivedAt, createdAt: yesterday});
+ const event = (seq: number, createdAt: number, last: object) =>
+  ({id: 'event-' + seq, seq, createdAt, type: 'thread/tokenUsage/updated',
+    data: {tokenUsage: {total: {totalTokens: 9999}, last}}});
+ const tokenCursors: (string | undefined)[] = [];
+ const {bb, harness} = createFakePluginHost({pluginId: 'makosh-sidebar', sdk: {
+  projects: {get: async () => ({id: 'project', name: 'Example', kind: 'standard', gitRemoteUrl: null, sources: [], createdAt: 1, updatedAt: 2})},
+  threads: {
+   list: async ({archived} = {}) => [archived ? thread('archived', now) : thread('active', null)] as
+    Awaited<ReturnType<BbPluginApi['sdk']['threads']['list']>>,
+   events: {list: async ({threadId, beforeSeq, order}) => {
+    expect(order).toBe('desc');
+    const rows = threadId === 'archived'
+     ? [event(1, yesterday, {totalTokens: 75, outputTokens: 15, cacheReadInputTokens: 45})]
+     : beforeSeq === undefined
+      ? Array.from({length: 100}, (_, index) => event(102 - index, now, {}))
+      : [event(2, now, {totalTokens: 120, outputTokens: 20, cachedInputTokens: 33}),
+         event(1, Date.UTC(2026, 10, 8), {totalTokens: 400, outputTokens: 40})];
+    if (threadId === 'active') tokenCursors.push(beforeSeq);
+    return rows as Awaited<ReturnType<BbPluginApi['sdk']['threads']['events']['list']>>;
+   }},
+  },
+ }});
+ const dateNow = vi.spyOn(Date, 'now').mockReturnValue(now);
+ try {
+  await plugin(bb);
+  const result = await harness.behavior.callRpc('project_activity', {projectId: 'project'}) as {days: unknown[]};
+  expect(result.days).toHaveLength(14);
+  expect(tokenCursors).toEqual([undefined, '3']);
+  expect(result.days.slice(-3)).toEqual([
+   {day: '2026-11-21', created: 0, archived: 0, input: 0, output: 0, cached: 0, samples: 0},
+   {day: '2026-11-22', created: 2, archived: 0, input: 60, output: 15, cached: 45, samples: 1},
+   {day: '2026-11-23', created: 0, archived: 1, input: 100, output: 20, cached: 33, samples: 1},
+  ]);
+ } finally {
+  dateNow.mockRestore();
+  await harness.lifecycle.dispose();
+ }
 });

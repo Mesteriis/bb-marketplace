@@ -1,4 +1,4 @@
-import {useState, type ReactNode} from 'react';
+import {useId, useState, type KeyboardEvent, type ReactNode} from 'react';
 import {overviewTotals, type ProjectOverviewData} from '../core/project-overview';
 import {Glyph} from './glyph';
 import {ProjectOverviewCharts} from './project-overview-charts';
@@ -43,34 +43,60 @@ function ProjectSource({source}: {source: ProjectOverviewData['project']['source
     ]}/>;
 }
 
-function ThreadSample({threads, onOpenThread}: {threads: ProjectOverviewData['threads']; onOpenThread: (id: string) => void}) {
-    return <section className="overview-card">
-        <header className="overview-section-header"><h2><Glyph kind="message"/>Треды (выборка)</h2></header>
-        {!threads.length ? <p className="overview-empty">Нет видимых тредов вне архива.</p> : <div className="overview-table-scroll overview-thread-table">
-            <table aria-label="Последние видимые треды вне архива">
-                <thead><tr>{['ID', 'Заголовок', 'Статус', 'Видимость', 'Провайдер', 'Создан', 'Обновлён', 'Ждёт ответа']
-                    .map(label => <th key={label} scope="col">{label}</th>)}</tr></thead>
-                <tbody>{threads.map(thread => <tr key={thread.id}>
-                    <td><CopyValue value={thread.id}/></td>
-                    <td><button className="overview-thread-link" type="button" onClick={() => onOpenThread(thread.id)}>
-                        {thread.title ?? 'Без названия'}</button></td>
-                    <td><span className="overview-tag" data-status={thread.status}>{thread.status}</span></td>
-                    <td><span className="overview-tag">{thread.visibility}</span></td>
-                    <td><span className="overview-tag">{thread.providerId}</span></td>
-                    <td><time dateTime={new Date(thread.createdAt).toISOString()}>{utc(thread.createdAt)}</time></td>
-                    <td><time dateTime={new Date(thread.updatedAt).toISOString()}>{utc(thread.updatedAt)}</time></td>
-                    <td>{thread.hasPendingInteraction ? 'Да' : 'Нет'}</td>
-                </tr>)}</tbody>
-            </table>
-        </div>}
-    </section>;
+function ProjectSources({sources}: {sources: ProjectOverviewData['project']['sources']}) {
+    const primary = sources.find(source => source.isDefault);
+    const ordered = primary ? [primary, ...sources.filter(source => source !== primary)] : sources;
+    if (!ordered.length) return <p className="overview-empty">У проекта пока нет источников.</p>;
+
+    return <>
+        {!primary && <p className="overview-empty">Источник по умолчанию не задан.</p>}
+        {ordered.map(source => <section className="overview-card" key={source.id}>
+            <header className="overview-section-header">
+                <h2><Glyph kind="folder"/>{source.isDefault ? 'Источник по умолчанию' : 'Дополнительный источник'}</h2>
+            </header>
+            <ProjectSource source={source}/>
+        </section>)}
+    </>;
 }
 
-export function ProjectOverview({data, onOpenThread}: {data: ProjectOverviewData; onOpenThread: (id: string) => void}) {
+const projectTabs = [
+    {id: 'overview', label: 'Обзор'},
+    {id: 'analytics', label: 'Аналитика'},
+    {id: 'sources', label: 'Источники'},
+] as const;
+type ProjectTab = typeof projectTabs[number]['id'];
+
+export function ProjectOverview({data, activity}: {data: ProjectOverviewData; activity: ReactNode}) {
+    const [tab, setTab] = useState<ProjectTab>('overview');
+    const [visitedAnalytics, setVisitedAnalytics] = useState(false);
+    const id = useId();
+    const tabId = (key: ProjectTab) => `${id}-tab-${key}`;
+    const panelId = (key: ProjectTab) => `${id}-panel-${key}`;
+    const activeLabel = projectTabs.find(item => item.id === tab)?.label;
+
+    function select(key: ProjectTab) {
+        setTab(key);
+        if (key === 'analytics') setVisitedAnalytics(true);
+    }
+
+    function moveTab(event: KeyboardEvent<HTMLButtonElement>, index: number) {
+        const length = projectTabs.length;
+        let next: number;
+        switch (event.key) {
+            case 'Home': next = 0; break;
+            case 'End': next = length - 1; break;
+            case 'ArrowLeft': next = (index - 1 + length) % length; break;
+            case 'ArrowRight': next = (index + 1) % length; break;
+            default: return;
+        }
+        event.preventDefault();
+        const key = projectTabs[next].id;
+        select(key);
+        event.currentTarget.ownerDocument.getElementById(tabId(key))?.focus();
+    }
+
     const {project, groups} = data;
     const stats = overviewTotals(groups);
-    const source = project.sources.find(item => item.isDefault);
-    const others = project.sources.filter(item => item !== source);
     const json = JSON.stringify({...data, metrics: stats}, null, 2);
     const metrics = [
         {label: 'Всего тредов', value: stats.total, icon: 'message'},
@@ -79,9 +105,9 @@ export function ProjectOverview({data, onOpenThread}: {data: ProjectOverviewData
         {label: 'Источники', value: project.sources.length, icon: 'folder'},
     ] as const;
 
-    return <section className="sidebar-project-info" aria-label="Обзор проекта">
+    return <section className="sidebar-project-info" aria-label="Свойства проекта">
         <div className="overview-top">
-            <div className="overview-breadcrumb" aria-label="Путь страницы">Проекты <span>/</span> {project.name} <span>/</span> Обзор</div>
+            <div className="overview-breadcrumb" aria-label="Путь страницы">Проекты <span>/</span> {project.name} <span>/</span> {activeLabel}</div>
             <details className="overview-json">
                 <summary>Фрагмент JSON</summary>
                 <div className="overview-json-content"><Copy value={json}/><pre>{json}</pre></div>
@@ -96,13 +122,19 @@ export function ProjectOverview({data, onOpenThread}: {data: ProjectOverviewData
                 Снимок данных: {utc(data.capturedAt)}
             </time>
         </header>
-        <dl className="overview-metrics">{metrics.map(({label, value, icon}) =>
-            <div className="overview-card overview-metric" key={label}>
-                <span className="overview-icon"><Glyph kind={icon}/></span>
-                <div><dt>{label}</dt><dd>{value}</dd></div>
-            </div>,
-        )}</dl>
-        <div className="overview-summary-grid">
+        <div className="overview-tabs" role="tablist" aria-label="Разделы проекта">
+            {projectTabs.map(({id: key, label}, index) => <button key={key} id={tabId(key)} type="button" role="tab"
+                aria-selected={tab === key} aria-controls={panelId(key)} tabIndex={tab === key ? 0 : -1}
+                onClick={() => select(key)} onKeyDown={event => moveTab(event, index)}>{label}</button>)}
+        </div>
+        <div className="overview-tab-panel" id={panelId('overview')} role="tabpanel" aria-labelledby={tabId('overview')}
+            hidden={tab !== 'overview'} tabIndex={0}>
+            <dl className="overview-metrics">{metrics.map(({label, value, icon}) =>
+                <div className="overview-card overview-metric" key={label}>
+                    <span className="overview-icon"><Glyph kind={icon}/></span>
+                    <div><dt>{label}</dt><dd>{value}</dd></div>
+                </div>,
+            )}</dl>
             <section className="overview-card">
                 <header className="overview-section-header"><h2><Glyph kind="info"/>Сводка проекта</h2></header>
                 <PropertyGrid fields={[
@@ -115,16 +147,15 @@ export function ProjectOverview({data, onOpenThread}: {data: ProjectOverviewData
                     ['Создан', utc(project.createdAt)], ['Обновлён', utc(project.updatedAt)],
                 ]}/>
             </section>
-            <section className="overview-card">
-                <header className="overview-section-header"><h2><Glyph kind="folder"/>Источник по умолчанию</h2></header>
-                {source ? <ProjectSource source={source}/> : <p className="overview-empty">Источник по умолчанию не задан.</p>}
-                {others.length > 0 && <details className="overview-other-sources">
-                    <summary>Другие источники ({others.length})</summary>
-                    {others.map(item => <ProjectSource key={item.id} source={item}/>)}
-                </details>}
-            </section>
+            <ProjectOverviewCharts groups={groups}/>
         </div>
-        <ProjectOverviewCharts groups={groups}/>
-        <ThreadSample threads={data.threads} onOpenThread={onOpenThread}/>
+        <div className="overview-tab-panel" id={panelId('analytics')} role="tabpanel" aria-labelledby={tabId('analytics')}
+            hidden={tab !== 'analytics'} tabIndex={0}>
+            {visitedAnalytics && <section className="overview-card overview-activity">{activity}</section>}
+        </div>
+        <div className="overview-tab-panel" id={panelId('sources')} role="tabpanel" aria-labelledby={tabId('sources')}
+            hidden={tab !== 'sources'} tabIndex={0}>
+            <ProjectSources sources={project.sources}/>
+        </div>
     </section>;
 }
