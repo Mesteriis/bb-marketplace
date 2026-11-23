@@ -1616,6 +1616,24 @@
           "ref": "main"
         }
       }
+    },
+    {
+      "id": "makosh-treadchat",
+      "displayName": "Makosh TreadChat",
+      "description": "Review significant events, inspect sources, and send follow-ups to the same BB thread.",
+      "icon": "MessagesSquare",
+      "author": {
+        "name": "Mesteriis",
+        "github": "Mesteriis",
+        "url": "https://github.com/Mesteriis"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/treadchat",
+          "ref": "main"
+        }
+      }
     }
   ]
 }
