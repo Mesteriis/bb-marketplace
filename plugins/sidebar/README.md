@@ -1,33 +1,20 @@
 # Makosh Sidebar
 
-Project tree sorted by recent thread activity, with reversible hiding of projects and threads and a Show hidden toggle.
+**Проекты** — плоский каталог. Поиск работает по имени и пути, папки первого уровня под настроенным корнем служат фильтрами, сортировка доступна по активности и имени. Выбор проекта открывает его неархивные треды в основной области.
 
-Right-click a project or thread and choose **Скрыть**. Use **Показать скрытое** in Projects to reveal hidden entries, then **Вернуть** in their menus to restore them. Hidden projects hide their threads, including pinned threads. Nothing is deleted or archived. Preferences are saved only in this browser profile; they do not sync across clients. Internal BB helper threads stay excluded.
+В меню строки выберите **Скрыть проект**. Чтобы вернуть его, откройте **Видимость проектов**, включите **Показывать скрытые** и выберите **Вернуть в список**. Ручное скрытие хранится в профиле браузера и действует на конкретный проект в каталоге. Существующий список скрытых проектов служит исходным значением. Треды и данные проектов остаются в BB.
 
-Projects and folders sort by their newest visible thread activity, including pinned threads. Empty projects follow; equal timestamps sort alphabetically. Select **Makosh Sidebar** under Settings → Appearance → Sidebar after installation.
+Каталог по умолчанию исключает проекты без неархивных тредов. Переключатель **Показывать пустые** добавляет их в список. Скрытые вручную пустые проекты доступны через **Показывать скрытые**, чтобы их можно было восстановить.
 
-Development: `npm ci`, `npm run check`, `npm run build`. Installation changes the running BB and requires owner approval. No project names, project order, archive state, or thread visibility fields are modified. Hidden settings use browser localStorage. Reloading resets the Show hidden toggle.
+Задайте абсолютный путь в настройке **Корневая папка проектов**. Проекты вне неё исключаются из каталога. При пустом корне каталог охватывает все расположения.
 
-The tree layout is ported from Tree Sidebar (MIT); see the repository THIRD_PARTY_NOTICES.md. Live BB installation and visual acceptance are separate from unit checks.
+Development: `npm ci`, `npm run check`, `npm run build`. Select **Makosh Sidebar** under Settings → Appearance → Sidebar after installation. Installation changes the running BB and requires owner approval.
 
-Set **Корневая папка проектов** in plugin settings to an absolute directory path. That directory is omitted; its immediate folders are the first level. Projects outside it are omitted, with an exception for running threads. Empty root shows all project locations.
-
-**Без проекта** is always present and starts collapsed, including when empty. Expand it to browse personal-project chats. Collapsed folders, pins and the projectless section show only running threads. Hidden projects or threads also expose running threads, which disappear again when execution ends. Running means starting, active or stopping; internal helper threads remain excluded. Preferences about hiding are preserved.
-
-Branches emptied by thread hiding are omitted, including worktree branches. Originally empty projects remain available.
-
-Hiding a project also hides separately registered descendant projects and worktrees under its directory. Running descendants remain visible independently. Path matching respects directory boundaries.
-
-Threads with subthreads have a separate expand/collapse chevron. Collapsing keeps the parent navigable and hides all descendants, including running threads. Status updates do not reopen the subtree; expanding restores it. Parent metadata retains descendant and activity counts. Subtrees start expanded outside the activity group.
+The original tree layout was ported from Tree Sidebar (MIT). See the repository THIRD_PARTY_NOTICES.md.
 
 **Сегодня** shows threads created in the last 24 hours, including idle threads, across all projects and personal chats. Archived and internal helper threads are excluded. Recent subthreads retain their visible ancestor chain, including parents older than 24 hours. Older sibling branches appear only if they have a recent descendant. Subtrees start collapsed and expand on demand. **Проекты** has no age limit.
 
 Collapsed subtrees also hide unread results and pending questions; their counts remain on the parent. Expand the parent to reach them.
-
-### Длинные списки тредов
-
-В каждой раскрытой папке по умолчанию показаны первые 5 тредов. Кнопка «Показать больше» раскрывает остальные, «Показать меньше» возвращает короткий список. В настройках плагина поле «Тредов в папке» принимает целое число от 1 до 1000. Вложенные папки не входят в лимит; раздел «Активные» не ограничивается.
-
 
 ## Планы и наблюдаемость
 
@@ -35,7 +22,7 @@ Collapsed subtrees also hide unread results and pending questions; their counts 
 **В работе**, **Новые ответы** показывают количество тредов, а не число групп.
 Фильтр «Все» показывает все треды за последние 24 часа. Родитель
 остаётся доступен; свёрнутая группа скрывает всех потомков и сохраняет их счётчики. Иконки, бейджи, контекст проекта и линии связей
-различают состояние исполнения и непрочитанный результат. В отдельной вкладке «Проекты» доступны в том числе активные треды.
+различают состояние исполнения и непрочитанный результат. Статусы активных тредов также видны в каталоге проектов.
 
 Sidebar включает собственный движок Plan Progress: `plan_progress`, CLI
 `bb plan-progress`, напоминания с прежними ограничениями, диагностику,

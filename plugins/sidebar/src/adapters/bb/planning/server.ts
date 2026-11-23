@@ -102,8 +102,7 @@ const barsKey = (threadId: string) => `bars:${threadId}`;
 
 export default async function registerPlanning(bb: BbPluginApi) {
   const settings = bb.settings.define({
-    threadLimit:{type:'number',label:'Тредов в папке',description:'Сколько тредов показывать до кнопки «Показать больше». От 1 до 1000.',default:5,experimental_schema:z.number().int().min(1).max(1000)},
-    rootPath:{type:'string',label:'Корневая папка проектов',description:'Абсолютный путь. Пустое значение показывает все проекты.',default:''},
+    rootPath:{type:'string',label:'Корневая папка проектов',description:'Абсолютный путь. Пустое значение включает все расположения в каталоге.',default:''},
     automaticReminders: {
       type: "boolean", label: "Automatic progress reminders",
       description: "One attempt per observed root turn after 3 work calls without a bar or 6 without an update. Missing history can suppress it. Never starts a new turn.",

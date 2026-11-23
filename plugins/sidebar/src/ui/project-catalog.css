@@ -1,0 +1,158 @@
+.project-catalog {
+    --catalog-gap: .5rem;
+    --catalog-radius: .375rem;
+    --catalog-control: 1.875rem;
+    --catalog-muted: var(--muted-foreground);
+    --catalog-accent: var(--sidebar-accent, var(--accent));
+    padding-block: var(--catalog-gap);
+}
+
+.catalog-search, .catalog-toolbar {
+    display: flex;
+    align-items: center;
+    gap: var(--catalog-gap);
+}
+
+.makosh-sidebar .project-catalog .project-search {
+    flex: 1;
+    min-width: 0;
+    margin: 0;
+}
+
+.catalog-toolbar {
+    flex-wrap: wrap;
+    justify-content: space-between;
+    margin-block: var(--catalog-gap);
+}
+
+.catalog-scopes {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .125rem;
+    min-width: 0;
+}
+
+.catalog-scopes button, .catalog-toolbar select, .catalog-overlay > button {
+    min-height: var(--catalog-control);
+    border-radius: var(--catalog-radius);
+    padding-inline: var(--catalog-gap);
+    color: var(--catalog-muted);
+}
+
+.catalog-toolbar select {
+    background: var(--background);
+    font: inherit;
+}
+
+.catalog-scopes button[aria-pressed="true"], .catalog-overlay > button[aria-expanded="true"],
+.catalog-scopes button:hover, .catalog-overlay > button:hover {
+    background: var(--catalog-accent);
+    color: var(--foreground);
+}
+
+.catalog-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.catalog-row {
+    display: flex;
+    align-items: center;
+    min-height: var(--catalog-control);
+    border-radius: var(--catalog-radius);
+}
+
+.catalog-row:hover, .catalog-row:focus-within, .catalog-row.selected {
+    background: var(--catalog-accent);
+}
+
+.catalog-row > a {
+    display: flex;
+    align-items: center;
+    gap: var(--catalog-gap);
+    flex: 1;
+    min-width: 0;
+    min-height: var(--catalog-control);
+    padding-inline: var(--catalog-gap);
+    border-radius: var(--catalog-radius);
+    text-decoration: none;
+    color: inherit;
+}
+
+.catalog-name, .catalog-path {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.catalog-name { font-weight: 550; }
+.catalog-path, .catalog-status { color: var(--catalog-muted); font-size: .6875rem; }
+.catalog-status { margin-inline-start: auto; flex-shrink: 0; }
+.catalog-status.waiting { color: var(--plan-warning); }
+.catalog-status.failed { color: var(--plan-error); }
+.catalog-status.running { color: var(--plan-done); }
+.catalog-status.unread { color: var(--plan-unread); }
+
+.catalog-overlay { position: relative; flex: none; }
+.catalog-overlay > button {
+    display: grid;
+    place-items: center;
+    min-width: var(--catalog-control);
+}
+.catalog-row .catalog-overlay > button { opacity: 0; }
+.catalog-row:hover .catalog-overlay > button,
+.catalog-row:focus-within .catalog-overlay > button,
+.catalog-row .catalog-overlay > button[aria-expanded="true"] { opacity: 1; }
+
+.catalog-popover {
+    position: absolute;
+    inset-block-start: 100%;
+    inset-inline-end: 0;
+    z-index: 2;
+    display: grid;
+    min-width: max-content;
+    padding: .25rem;
+    background: var(--popover);
+    color: var(--popover-foreground);
+    border: 1px solid var(--border);
+    border-radius: var(--catalog-radius);
+    box-shadow: 0 .5rem 1.5rem #0003;
+}
+
+.catalog-popover > * {
+    display: flex;
+    align-items: center;
+    gap: var(--catalog-gap);
+    padding: .375rem var(--catalog-gap);
+    text-align: start;
+    border-radius: var(--catalog-radius);
+}
+.catalog-popover > :is(button, label):hover { background: var(--catalog-accent); }
+.catalog-empty { color: var(--catalog-muted); padding-inline: var(--catalog-gap); }
+@media (hover: none) {
+    .catalog-row .catalog-overlay > button { opacity: 1; }
+}
+
+.project-threads {
+    max-width: 48rem;
+    margin-inline: auto;
+    padding: 1.25rem;
+}
+
+.project-threads header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: .75rem;
+    margin-block-end: .75rem;
+}
+
+.project-threads h1 { font-size: 1.25rem; font-weight: 600; }
+.project-threads ul { list-style: none; margin: 0; padding: 0; }
+.project-threads a, .project-threads button {
+    display: block;
+    padding: .5rem .625rem;
+    border-radius: .375rem;
+}
+.project-threads a:hover, .project-threads button { background: var(--accent); }

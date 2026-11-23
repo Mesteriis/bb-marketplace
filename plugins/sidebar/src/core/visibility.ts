@@ -1,6 +1,7 @@
 export interface Hidden {
     projects: string[];
     threads: string[];
+    catalogProjects?: string[];
 }
 export function parseHidden(raw: string | null): Hidden {
     try {
@@ -9,14 +10,19 @@ export function parseHidden(raw: string | null): Hidden {
         if (!value || typeof value !== 'object')
             return { projects: [], threads: [] };
         const object = value as Record<string, unknown>;
-        return { projects: ids(object.projects), threads: ids(object.threads) };
+        return {
+            projects: ids(object.projects),
+            threads: ids(object.threads),
+            ...(Array.isArray(object.catalogProjects) ? {catalogProjects: ids(object.catalogProjects)} : {}),
+        };
     }
     catch {
         return { projects: [], threads: [] };
     }
 }
 export function toggleHidden(hidden: Hidden, kind: keyof Hidden, id: string): Hidden {
-    return { ...hidden, [kind]: hidden[kind].includes(id) ? hidden[kind].filter(value => value !== id) : [...hidden[kind], id] };
+    const current = hidden[kind] ?? hidden.projects;
+    return { ...hidden, [kind]: current.includes(id) ? current.filter(value => value !== id) : [...current, id] };
 }
 export function visibleItems<P extends {
     id: string;
