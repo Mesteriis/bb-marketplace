@@ -26,7 +26,7 @@ export function Overview(props: Props) {
         {props.needsAnswer && (
           <p className="tc-card tc-attention">
             <strong>Требует внимания</strong>
-            BB ждёт вашего ответа. <button onClick={props.openChat}>Открыть запрос в чате</button>
+            BB ждёт вашего ответа. <button onClick={props.openChat}>Открыть запрос в диалоге</button>
           </p>
         )}
         {props.currentStep && (
