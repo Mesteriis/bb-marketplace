@@ -18,7 +18,8 @@ async function catalogSlot() {
    {...make('recent-thread', 'orbit', 'idle'), latestAttentionAt: 500, isUnread: true},
    {...make('old-thread', 'retired', 'idle'), isArchived: true},
    {...make('archived-atlas-thread', 'atlas', 'idle'), isArchived: true},
-   {...make('child-atlas-thread', 'atlas', 'idle'), parentThreadId: 'active-thread'},
+   {...make('child-atlas-thread', 'atlas', 'active'), parentThreadId: 'active-thread', latestAttentionAt: 900},
+   {...make('child-only-live', 'retired', 'active'), parentThreadId: 'old-thread'},
    {...make('child-with-archived-parent', 'atlas', 'idle'), parentThreadId: 'archived-atlas-thread'},
    {...make('projectless-thread', 'personal', 'idle'), createdAt: 1},
    {...make('projectless-child', 'personal', 'idle'), parentThreadId: 'projectless-thread'},
@@ -146,12 +147,14 @@ test('the project menu groups actions and opens properties without expanding the
   sidebarThreads: {status: 'ready', projects, sections: [], threads: [
    make('running', 'atlas', 'active'),
    {...make('archived', 'atlas', 'idle'), isArchived: true},
+   {...make('child', 'atlas', 'active'), parentThreadId: 'running'},
    make('other', 'orbit', 'active'),
   ]},
   rpc: {paths: () => [{id: 'atlas', name: 'atlas', path: '/Projects/Work/Team/atlas'}]},
  });
  expect(panel.getByRole('heading', {name: 'atlas'})).toBeTruthy();
  expect(await panel.findByText('/Projects/Work/Team/atlas')).toBeTruthy();
+ expect(panel.getByText('Родительские треды вне архива')).toBeTruthy();
  expect(panel.getByText('1', {selector: 'dd'})).toBeTruthy();
  expect(within(panel.getByRole('region', {name: 'Свойства проекта'})).queryByRole('textbox')).toBeNull();
  panel.lifecycle.unmount();

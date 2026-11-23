@@ -9,8 +9,8 @@ function pathKey(path: string) {
     return path.trim().replace(/\\/g, '/').replace(/\/+$/, '');
 }
 
-export function isCatalogThread(thread: CatalogThread) {
-    return !thread.isArchived && !thread.isHidden;
+export function isCatalogParent(thread: CatalogThread) {
+    return thread.parentThreadId === null && !thread.isArchived && !thread.isHidden;
 }
 
 export function buildCatalog(
@@ -23,7 +23,7 @@ export function buildCatalog(
     const hidden = new Set(hiddenIds);
     const liveByProject = new Map<string, CatalogThread[]>();
     for (const thread of threads) {
-        if (!isCatalogThread(thread)) continue;
+        if (!isCatalogParent(thread)) continue;
         const live = liveByProject.get(thread.projectId);
         if (live) live.push(thread);
         else liveByProject.set(thread.projectId, [thread]);

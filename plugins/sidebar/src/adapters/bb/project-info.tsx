@@ -1,7 +1,7 @@
 import {useEffect, useState} from 'react';
 import {experimental_useSidebarThreads, useRpc, type PluginNavPanelProps} from '@get-bb/plugin-sdk/app';
 import type {contract} from '../../../server';
-import {isCatalogThread} from '../../core/project-catalog';
+import {isCatalogParent} from '../../core/project-catalog';
 import '../../ui/project-info.css';
 
 export const projectInfoPath = 'project-info';
@@ -39,14 +39,14 @@ export function ProjectInfoPanel({subPath}: PluginNavPanelProps) {
     if (!project) return <p className="sidebar-project-info" role="status">
         {subPath ? 'Проект не найден.' : 'Выберите проект в сайдбаре.'}
     </p>;
-    const threadCount = threads.filter(thread => thread.projectId === project.id && isCatalogThread(thread)).length;
+    const threadCount = threads.filter(thread => thread.projectId === project.id && isCatalogParent(thread)).length;
 
     return <section className="sidebar-project-info" aria-label="Свойства проекта">
         <h1>{project.name}</h1>
         <dl>
             <dt>Локальная папка</dt>
             <dd><ProjectLocation key={project.id} projectId={project.id}/></dd>
-            <dt>Треды вне архива</dt>
+            <dt>Родительские треды вне архива</dt>
             <dd>{threadCount}</dd>
         </dl>
     </section>;

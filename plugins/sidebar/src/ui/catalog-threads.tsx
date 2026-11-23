@@ -17,9 +17,8 @@ export function CatalogThreads({label, threads, activeThreadId, onOpen}: {
     activeThreadId: string | null;
     onOpen: (id: string, split: boolean) => void;
 }) {
-    const parents = threads.filter(thread => thread.parentThreadId === null)
-        .sort((a, b) => b.latestAttentionAt - a.latestAttentionAt);
-    if (!parents.length) return <p className="catalog-empty" role="status">Нет родительских тредов.</p>;
+    if (!threads.length) return <p className="catalog-empty" role="status">Нет родительских тредов.</p>;
+    const parents = [...threads].sort((a, b) => b.latestAttentionAt - a.latestAttentionAt);
     return <ul className="catalog-threads" aria-label={label}>
         {parents.map(thread => {
             const status = threadStatus(thread);
