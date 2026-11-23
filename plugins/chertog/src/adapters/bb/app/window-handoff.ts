@@ -308,9 +308,13 @@ function CoordinatedThread({
   const composers = useSyncExternalStore(workspace.composers.subscribe, workspace.composers.list);
   const hasComposer = findThreadComposer(composers, threadId).status === "one";
   const preparing = t?.target === me && (accepted || t?.phase === "ready");
+  // A window that reloads or restarts gets a new identity, so the panel it held
+  // stays owned by an identity that is gone. A window that shows the panel takes
+  // it over without asking; an owner that is still present keeps it.
+  const abandoned = !!snapshot && !!p?.owner && !p.transfer && !snapshot.windows.includes(p.owner);
   useEffect(() => {
-    if (snapshot && (!p || (p.owner === null && !p.returned))) void command({ action: "claim" });
-  }, [!!snapshot, p?.owner]);
+    if (snapshot && (!p || (p.owner === null && !p.returned) || abandoned)) void command({ action: "claim" });
+  }, [!!snapshot, p?.owner, abandoned]);
   useLayoutEffect(() => {
     if (!snapshot || !client.valid()) return;
     if (fenced) void command({ action: "switch" });
