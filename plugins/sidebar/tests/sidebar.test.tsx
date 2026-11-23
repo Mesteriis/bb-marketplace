@@ -7,8 +7,8 @@ afterEach(() => { cleanup(); localStorage.clear(); });
  const make=(id:string,projectId:string,status:'active'|'idle'|'error')=>({id,projectId,status,title:id,titleFallback:null,parentThreadId:null,parentNotifications:"auto" as const,lifecycleOwnerThreadId:null,sourceThreadId:null,sectionId:null,originKind:null,originPluginId:null,providerId:"test",pinnedAt:null,archivedAt:null,createdAt:Date.now(),updatedAt:1,lastReadAt:null,hasPendingInteraction:false,isUnread:false,isPinned:false,pinSortKey:null,isArchived:false,displayTitle:id,href:'/projects/'+projectId+'/threads/'+id,environment:null,host:null,isHidden:false,indicator:'none' as const,indicatorLabel:null,runtimeStatus:status,queuedWork:'none' as const,activity:{workflows:0,backgroundAgents:0,backgroundCommands:0,planMode:0},latestAttentionAt:100});
 async function catalogSlot() {
  const definition = await loadPluginApp(() => Promise.resolve({ default: app }));
- const projects = ['atlas', 'orbit', 'retired', 'unused', 'outside'].map(id =>
-  ({id, name: id, isPersonal: false, href: '/projects/' + id, settingsHref: '/settings/' + id}));
+ const projects = ['atlas', 'orbit', 'retired', 'unused', 'outside', 'personal'].map(id =>
+  ({id, name: id, isPersonal: id === 'personal', href: '/projects/' + id, settingsHref: '/settings/' + id}));
  const slot = renderSlot(definition.threadLists[0]!, {
   activeThreadId: null, activeProjectId: 'atlas', isCompactViewport: false, onNavigate: () => {}, searchQuery: '',
  }, {
@@ -64,9 +64,9 @@ test('the flat catalog filters by folder, sorts, searches by path and opens the 
  const atlas = await slot.findByRole('link', {name: /atlas/});
  expect(atlas.getAttribute('aria-current')).toBe('page');
  expect(slot.getByRole('link', {name: /orbit.*1 новый ответ/})).toBeTruthy();
- expect(slot.getAllByRole('link').map(link => link.getAttribute('href'))).toEqual(['/plugins/makosh-sidebar/projects/orbit','/plugins/makosh-sidebar/projects/atlas']);
+ expect(within(slot.getByRole('list', {name: 'Проекты'})).getAllByRole('link').map(link => link.getAttribute('href'))).toEqual(['/plugins/makosh-sidebar/projects/orbit','/plugins/makosh-sidebar/projects/atlas']);
  fireEvent.change(slot.getByRole('combobox', {name: 'Сортировка проектов'}), {target: {value: 'name'}});
- expect(slot.getAllByRole('link').map(link => link.getAttribute('href'))).toEqual(['/plugins/makosh-sidebar/projects/atlas','/plugins/makosh-sidebar/projects/orbit']);
+ expect(within(slot.getByRole('list', {name: 'Проекты'})).getAllByRole('link').map(link => link.getAttribute('href'))).toEqual(['/plugins/makosh-sidebar/projects/atlas','/plugins/makosh-sidebar/projects/orbit']);
  fireEvent.click(slot.getByRole('button', {name: 'Work'}));
  expect(slot.queryByRole('link', {name: /orbit/})).toBeNull();
  fireEvent.change(slot.getByRole('textbox', {name: 'Найти проект'}), {target: {value: 'work/team'}});
@@ -90,6 +90,26 @@ test('the project page opens older non-archived threads in the main area', async
  expect(panel.inspection.navigateCalls.at(-1)).toMatchObject({method: 'toThread', threadId: 'older-thread'});
  expect(panel.queryByRole('link', {name: 'archived-thread'})).toBeNull();
  expect(panel.queryByRole('link', {name: 'somewhere-else'})).toBeNull();
+ panel.lifecycle.unmount();
+ slot.lifecycle.unmount();
+});
+test('projectless conversations remain accessible outside the scoped project catalog', async () => {
+ const {slot, definition, projects} = await catalogSlot();
+ fireEvent.click(slot.getByRole('tab', {name: 'Проекты'}));
+ fireEvent.click(await slot.findByRole('link', {name: 'Без проекта'}));
+ expect(slot.inspection.navigateCalls.at(-1)).toMatchObject({
+  method: 'toPluginPanel', path: 'projects', options: {subPath: 'personal'},
+ });
+ const panel = renderSlot(definition.navPanels[0]!, {subPath: 'personal'}, {sidebarThreads: {
+  status: 'ready', projects, sections: [], threads: [
+   {...make('projectless-thread', 'personal', 'idle'), createdAt: 1},
+   make('project-thread', 'atlas', 'idle'),
+  ],
+ }});
+ expect(panel.getByRole('heading', {name: 'Без проекта'})).toBeTruthy();
+ fireEvent.click(panel.getByRole('link', {name: 'projectless-thread'}));
+ expect(panel.inspection.navigateCalls.at(-1)).toMatchObject({method: 'toThread', threadId: 'projectless-thread'});
+ expect(panel.queryByRole('link', {name: 'project-thread'})).toBeNull();
  panel.lifecycle.unmount();
  slot.lifecycle.unmount();
 });

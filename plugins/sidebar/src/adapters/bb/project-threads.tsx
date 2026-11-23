@@ -2,6 +2,10 @@ import {experimental_useSidebarThreads, useBbNavigate, type PluginNavPanelProps}
 
 export const projectThreadsPath = 'projects';
 
+export function projectThreadsHref(projectId: string) {
+    return `/plugins/makosh-sidebar/${projectThreadsPath}/${encodeURIComponent(projectId)}`;
+}
+
 export function ProjectThreads({subPath}: PluginNavPanelProps) {
     const {projects, threads, status} = experimental_useSidebarThreads();
     const navigate = useBbNavigate();
@@ -15,9 +19,10 @@ export function ProjectThreads({subPath}: PluginNavPanelProps) {
     const rows = threads.filter(thread => thread.projectId === project.id && !thread.isHidden && !thread.isArchived)
         .sort((a, b) => b.latestAttentionAt - a.latestAttentionAt);
 
-    return <section className="project-threads" aria-label={`Треды проекта ${project.name}`}>
+    const title = project.isPersonal ? 'Без проекта' : project.name;
+    return <section className="project-threads" aria-label={project.isPersonal ? 'Треды без проекта' : `Треды проекта ${title}`}>
         <header>
-            <h1>{project.name}</h1>
+            <h1>{title}</h1>
             <button type="button" onClick={() => navigate.toCompose({projectId: project.id})}>Новый тред</button>
         </header>
         {rows.length ? <ul>{rows.map(thread => <li key={thread.id}>

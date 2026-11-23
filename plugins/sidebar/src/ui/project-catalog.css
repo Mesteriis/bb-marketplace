@@ -67,6 +67,8 @@
     background: var(--catalog-accent);
 }
 
+.catalog-projectless { margin-block-end: var(--catalog-gap); }
+
 .catalog-row > a {
     display: flex;
     align-items: center;

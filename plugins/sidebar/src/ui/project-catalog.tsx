@@ -1,4 +1,4 @@
-import {useEffect, useRef, useState, type ReactNode} from 'react';
+import {useEffect, useRef, useState, type MouseEvent, type ReactNode} from 'react';
 import {filterCatalog, type CatalogRow, type CatalogSort} from '../core/project-catalog';
 import {Glyph} from './glyph';
 import './project-catalog.css';
@@ -6,6 +6,7 @@ import './project-catalog.css';
 type Props = {
     rows: readonly CatalogRow[];
     activeProjectId: string | null;
+    projectless?: {id: string; href: string};
     onOpen: (id: string) => void;
     onCompose: (id: string) => void;
     onToggleHidden: (id: string) => void;
@@ -52,7 +53,7 @@ function ProjectStatus({row}: {row: CatalogRow}) {
     return status && <span className={`catalog-status ${status.kind}`}>{status.label}</span>;
 }
 
-export function ProjectCatalog({rows, activeProjectId, onOpen, onCompose, onToggleHidden}: Props) {
+export function ProjectCatalog({rows, activeProjectId, projectless, onOpen, onCompose, onToggleHidden}: Props) {
     const [query, setQuery] = useState('');
     const [scope, setScope] = useState('');
     const [sort, setSort] = useState<CatalogSort>('activity');
@@ -64,6 +65,12 @@ export function ProjectCatalog({rows, activeProjectId, onOpen, onCompose, onTogg
         .sort((a, b) => a.localeCompare(b, undefined, {numeric: true}));
     const selectedScope = scopes.includes(scope) ? scope : '';
     const visible = filterCatalog(rows, {query, scope: selectedScope, sort, showHidden, showEmpty});
+
+    function openRow(event: MouseEvent<HTMLAnchorElement>, id: string) {
+        if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+        event.preventDefault();
+        onOpen(id);
+    }
 
     return <div className="project-catalog">
         <div className="catalog-search">
@@ -93,14 +100,17 @@ export function ProjectCatalog({rows, activeProjectId, onOpen, onCompose, onTogg
                 <option value="name">По имени</option>
             </select>
         </div>
+        {projectless && <div className={`catalog-row catalog-projectless${projectless.id === activeProjectId ? ' selected' : ''}`}>
+            <a href={projectless.href} aria-current={projectless.id === activeProjectId ? 'page' : undefined}
+                onClick={event => openRow(event, projectless.id)}>
+                <Glyph kind="inbox"/>
+                Без проекта
+            </a>
+        </div>}
         <ul className="catalog-list" aria-label="Проекты">
             {visible.map(row => <li key={row.id} className={`catalog-row${row.id === activeProjectId ? ' selected' : ''}`}>
                 <a href={row.href} aria-current={row.id === activeProjectId ? 'page' : undefined}
-                    onClick={event => {
-                        if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-                        event.preventDefault();
-                        onOpen(row.id);
-                    }}>
+                    onClick={event => openRow(event, row.id)}>
                     <Glyph kind="project"/>
                     <span className="catalog-name" title={row.name}>{row.name}</span>
                     {row.folder && <span className="catalog-path" title={row.folder}>{row.folder}</span>}

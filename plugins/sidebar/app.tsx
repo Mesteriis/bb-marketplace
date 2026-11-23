@@ -20,7 +20,7 @@ import {ProgressFreshness} from './src/ui/progress-freshness';
 import {requestChertogTile} from './src/adapters/bb/chertog-open';
 import {buildCatalog} from './src/core/project-catalog';
 import {ProjectCatalog} from './src/ui/project-catalog';
-import {ProjectThreads, projectThreadsPath} from './src/adapters/bb/project-threads';
+import {ProjectThreads, projectThreadsHref, projectThreadsPath} from './src/adapters/bb/project-threads';
 
 function change(kind: 'catalogProjects' | 'threads', id: string) {
     try {
@@ -61,11 +61,12 @@ function Sidebar({ activeThreadId, activeProjectId, onNavigate }: PluginThreadLi
         setError(true); }); return () => { live = false; }; }, [rpc, ids, retry]);
     const { values } = useSettings();
     const rootPath = typeof values?.rootPath === 'string' ? values.rootPath : '';
+    const personal = projects.find(project => project.isPersonal);
     const catalog = useMemo(() => {
         if (tab !== 'projects') return [];
         const locations = new Map(paths.map(({id, path}) => [id, path]));
         return buildCatalog(projects.map(project => ({...project, path: locations.get(project.id) ?? null,
-            href: `/plugins/makosh-sidebar/${projectThreadsPath}/${encodeURIComponent(project.id)}`})),
+            href: projectThreadsHref(project.id)})),
             threads, rootPath, catalogHidden);
     }, [tab, projects, paths, threads, rootPath, catalogHidden]);
     const [, refreshToday] = useState(0);
@@ -121,6 +122,7 @@ function Sidebar({ activeThreadId, activeProjectId, onNavigate }: PluginThreadLi
     {!todayRows.length?<p className="empty-activity">{filter==='running'?'Нет работающих тредов':filter==='unread'?'Нет новых ответов':filter==='attention'?'Нет тредов, требующих внимания':'Нет тредов за последние 24 часа'}</p>:null}
    </section></div>:<div role="tabpanel" id="makosh-sidebar-panel-projects" aria-labelledby="makosh-sidebar-tab-projects">
     <ProjectCatalog rows={catalog} activeProjectId={activeProjectId}
+        projectless={personal && {id: personal.id, href: projectThreadsHref(personal.id)}}
         onOpen={id => { navigate.toPluginPanel(projectThreadsPath, {subPath: id}); onNavigate(); }}
         onCompose={id => { navigate.toCompose({projectId: id}); onNavigate(); }}
         onToggleHidden={id => change('catalogProjects', id)}/>
