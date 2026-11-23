@@ -1,12 +1,16 @@
 import {isRunning} from './presentation';
 import type {ProjectLocation, ThreadNode} from './tree';
 
-export type CatalogProject = ProjectLocation & {isPersonal: boolean; href: string};
-export type CatalogThread = ThreadNode['thread'] & {isHidden: boolean};
+export type CatalogProject = ProjectLocation & {isPersonal: boolean};
+export type CatalogThread = ThreadNode['thread'] & {isHidden: boolean; href: string; displayTitle: string};
 export type CatalogSort = 'activity' | 'name';
 
 function pathKey(path: string) {
     return path.trim().replace(/\\/g, '/').replace(/\/+$/, '');
+}
+
+export function isCatalogThread(thread: CatalogThread) {
+    return !thread.isArchived && !thread.isHidden;
 }
 
 export function buildCatalog(
@@ -19,7 +23,7 @@ export function buildCatalog(
     const hidden = new Set(hiddenIds);
     const liveByProject = new Map<string, CatalogThread[]>();
     for (const thread of threads) {
-        if (thread.isArchived || thread.isHidden) continue;
+        if (!isCatalogThread(thread)) continue;
         const live = liveByProject.get(thread.projectId);
         if (live) live.push(thread);
         else liveByProject.set(thread.projectId, [thread]);
@@ -35,6 +39,7 @@ export function buildCatalog(
             ...project,
             scope: root ? folders[0] ?? '' : '',
             folder: folders.join(' / '),
+            threads: live,
             hidden: hidden.has(project.id),
             empty: live.length === 0,
             attentionAt: live.reduce((latest, thread) => Math.max(latest, thread.latestAttentionAt), 0),

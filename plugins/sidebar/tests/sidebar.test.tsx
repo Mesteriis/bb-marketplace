@@ -17,6 +17,8 @@ async function catalogSlot() {
    {...make('active-thread', 'atlas', 'active'), latestAttentionAt: 400},
    {...make('recent-thread', 'orbit', 'idle'), latestAttentionAt: 500, isUnread: true},
    {...make('old-thread', 'retired', 'idle'), isArchived: true},
+   {...make('archived-atlas-thread', 'atlas', 'idle'), isArchived: true},
+   {...make('projectless-thread', 'personal', 'idle'), createdAt: 1},
    make('outside-thread', 'outside', 'active'),
   ]},
   rpc: {paths: () => projects.map(({id, name}) => ({
@@ -24,97 +26,91 @@ async function catalogSlot() {
     : '/Projects/' + (id === 'orbit' ? 'Personal' : 'Work/Team') + '/' + id,
   })), attention: () => ({entries: [], incomplete: false})},
  });
- return {slot, definition, projects};
+ return slot;
 }
 
 test('manual hiding applies to running projects and can be reversed from visibility settings', async () => {
- const {slot} = await catalogSlot();
+ const slot = await catalogSlot();
  fireEvent.click(slot.getByRole('tab', {name: 'Проекты'}));
- await slot.findByRole('link', {name: /atlas/});
+ await slot.findByRole('button', {name: /^atlas/});
  fireEvent.click(slot.getByRole('button', {name: 'Действия проекта atlas'}));
  fireEvent.click(slot.getByRole('button', {name: 'Скрыть проект'}));
- expect(slot.queryByRole('link', {name: /atlas/})).toBeNull();
+ expect(slot.queryByRole('button', {name: /^atlas/})).toBeNull();
  fireEvent.click(slot.getByRole('button', {name: 'Видимость проектов'}));
  fireEvent.click(slot.getByRole('checkbox', {name: 'Показывать скрытые'}));
- expect(slot.getByRole('link', {name: /atlas/})).toBeTruthy();
+ expect(slot.getByRole('button', {name: /^atlas/})).toBeTruthy();
  fireEvent.click(slot.getByRole('button', {name: 'Действия проекта atlas'}));
  fireEvent.click(slot.getByRole('button', {name: 'Вернуть в список'}));
- expect(slot.getByRole('link', {name: /atlas/})).toBeTruthy();
+ expect(slot.getByRole('button', {name: /^atlas/})).toBeTruthy();
  expect(localStorage.getItem('makosh-sidebar:hidden:v1')).toBe('{"projects":[],"threads":[],"catalogProjects":[]}');
  slot.lifecycle.unmount();
 });
 
 test('the catalog hides archive-only and unused projects until requested', async () => {
- const {slot} = await catalogSlot();
+ const slot = await catalogSlot();
  fireEvent.click(slot.getByRole('tab', {name: 'Проекты'}));
- await slot.findByRole('link', {name: /atlas/});
- expect(slot.queryByRole('link', {name: /retired|unused|outside/})).toBeNull();
+ await slot.findByRole('button', {name: /^atlas/});
+ expect(slot.queryByRole('button', {name: /retired|unused|outside/})).toBeNull();
  fireEvent.click(slot.getByRole('button', {name: 'Видимость проектов'}));
  fireEvent.click(slot.getByRole('checkbox', {name: 'Показывать пустые'}));
- expect(slot.getByRole('link', {name: /retired/})).toBeTruthy();
- expect(slot.getByRole('link', {name: /unused/})).toBeTruthy();
- expect(slot.queryByRole('link', {name: /outside/})).toBeNull();
+ expect(slot.getByRole('button', {name: /^retired/})).toBeTruthy();
+ expect(slot.getByRole('button', {name: /^unused/})).toBeTruthy();
+ expect(slot.queryByRole('button', {name: /outside/})).toBeNull();
  slot.lifecycle.unmount();
 });
 
-test('the flat catalog filters by folder, sorts, searches by path and opens the project', async () => {
- const {slot} = await catalogSlot();
+test('the catalog filters by folder, sorts and searches by path', async () => {
+ const slot = await catalogSlot();
  expect(slot.getByRole('region', {name: 'Треды за последние 24 часа'})).toBeTruthy();
  fireEvent.click(slot.getByRole('tab', {name: 'Проекты'}));
- const atlas = await slot.findByRole('link', {name: /atlas/});
- expect(atlas.getAttribute('aria-current')).toBe('page');
- expect(slot.getByRole('link', {name: /orbit.*1 новый ответ/})).toBeTruthy();
- expect(within(slot.getByRole('list', {name: 'Проекты'})).getAllByRole('link').map(link => link.getAttribute('href'))).toEqual(['/plugins/makosh-sidebar/projects/orbit','/plugins/makosh-sidebar/projects/atlas']);
+ await slot.findByRole('button', {name: /^atlas/});
+ const list = within(slot.getByRole('list', {name: 'Проекты'}));
+ const projectsInOrder = () => list.getAllByRole('button', {name: /^(atlas|orbit)/})
+  .map(button => button.textContent?.match(/^(atlas|orbit)/)?.[0]);
+ expect(projectsInOrder()).toEqual(['orbit', 'atlas']);
  fireEvent.change(slot.getByRole('combobox', {name: 'Сортировка проектов'}), {target: {value: 'name'}});
- expect(within(slot.getByRole('list', {name: 'Проекты'})).getAllByRole('link').map(link => link.getAttribute('href'))).toEqual(['/plugins/makosh-sidebar/projects/atlas','/plugins/makosh-sidebar/projects/orbit']);
+ expect(projectsInOrder()).toEqual(['atlas', 'orbit']);
  fireEvent.click(slot.getByRole('button', {name: 'Work'}));
- expect(slot.queryByRole('link', {name: /orbit/})).toBeNull();
+ expect(slot.queryByRole('button', {name: /^orbit/})).toBeNull();
  fireEvent.change(slot.getByRole('textbox', {name: 'Найти проект'}), {target: {value: 'work/team'}});
- fireEvent.click(slot.getByRole('link', {name: /atlas/}));
- expect(slot.inspection.navigateCalls.at(-1)).toMatchObject({method: 'toPluginPanel', path: 'projects', options: {subPath: 'atlas'}});
- expect(slot.queryByText('active-thread')).toBeNull();
+ expect(slot.getByRole('button', {name: /^atlas/})).toBeTruthy();
  fireEvent.click(slot.getByRole('tab', {name: 'Сегодня'}));
  expect(slot.getByRole('region', {name: 'Треды за последние 24 часа'})).toBeTruthy();
  slot.lifecycle.unmount();
 });
-test('the project page opens older non-archived threads in the main area', async () => {
- const {slot, definition, projects} = await catalogSlot();
- const panel = renderSlot(definition.navPanels[0]!, {subPath: 'atlas'}, {sidebarThreads: {
-  status: 'ready', projects, sections: [], threads: [
-   {...make('older-thread', 'atlas', 'idle'), createdAt: 1},
-   {...make('archived-thread', 'atlas', 'idle'), isArchived: true},
-   make('running-thread', 'atlas', 'active'),
-   {...make('waiting-thread', 'atlas', 'idle'), hasPendingInteraction: true},
-   make('somewhere-else', 'orbit', 'idle'),
-  ],
- }});
- expect(panel.getByRole('link', {name: 'running-thread В работе'})).toBeTruthy();
- expect(panel.getByRole('link', {name: 'waiting-thread Ждёт ответа'})).toBeTruthy();
- fireEvent.click(panel.getByRole('link', {name: 'older-thread Нет активности'}));
- expect(panel.inspection.navigateCalls.at(-1)).toMatchObject({method: 'toThread', threadId: 'older-thread'});
- expect(panel.queryByRole('link', {name: 'archived-thread'})).toBeNull();
- expect(panel.queryByRole('link', {name: 'somewhere-else'})).toBeNull();
- panel.lifecycle.unmount();
+
+test('multiple project lists open inline and can open two threads side by side', async () => {
+ const slot = await catalogSlot();
+ fireEvent.click(slot.getByRole('tab', {name: 'Проекты'}));
+ const first = await slot.findByRole('button', {name: /^atlas/, expanded: false});
+ fireEvent.click(first);
+ fireEvent.click(slot.getByRole('button', {name: /^orbit/, expanded: false}));
+ expect(slot.inspection.navigateCalls).toHaveLength(0);
+ expect(slot.getByRole('button', {name: /^atlas/, expanded: true})).toBeTruthy();
+ expect(slot.getByRole('button', {name: /^orbit/, expanded: true})).toBeTruthy();
+ const atlas = within(slot.getByRole('list', {name: 'Треды проекта atlas'}));
+ const orbit = within(slot.getByRole('list', {name: 'Треды проекта orbit'}));
+ expect(atlas.queryByText('archived-atlas-thread')).toBeNull();
+ fireEvent.click(atlas.getByRole('link', {name: 'active-thread В работе'}));
+ fireEvent.click(orbit.getByRole('button', {name: 'Открыть рядом: recent-thread'}));
+ expect(slot.inspection.navigateCalls).toEqual([
+  expect.objectContaining({method: 'toThread', threadId: 'active-thread'}),
+  expect.objectContaining({method: 'toThread', threadId: 'recent-thread', options: {split: true}}),
+ ]);
+ fireEvent.click(first);
+ expect(slot.queryByRole('list', {name: 'Треды проекта atlas'})).toBeNull();
+ expect(slot.getByRole('list', {name: 'Треды проекта orbit'})).toBeTruthy();
  slot.lifecycle.unmount();
 });
-test('projectless conversations remain accessible outside the scoped project catalog', async () => {
- const {slot, definition, projects} = await catalogSlot();
+
+test('projectless conversations open in the sidebar outside the scoped catalog', async () => {
+ const slot = await catalogSlot();
  fireEvent.click(slot.getByRole('tab', {name: 'Проекты'}));
- fireEvent.click(await slot.findByRole('link', {name: 'Без проекта'}));
- expect(slot.inspection.navigateCalls.at(-1)).toMatchObject({
-  method: 'toPluginPanel', path: 'projects', options: {subPath: 'personal'},
- });
- const panel = renderSlot(definition.navPanels[0]!, {subPath: 'personal'}, {sidebarThreads: {
-  status: 'ready', projects, sections: [], threads: [
-   {...make('projectless-thread', 'personal', 'idle'), createdAt: 1},
-   make('project-thread', 'atlas', 'idle'),
-  ],
- }});
- expect(panel.getByRole('heading', {name: 'Без проекта'})).toBeTruthy();
- fireEvent.click(panel.getByRole('link', {name: 'projectless-thread Нет активности'}));
- expect(panel.inspection.navigateCalls.at(-1)).toMatchObject({method: 'toThread', threadId: 'projectless-thread'});
- expect(panel.queryByRole('link', {name: 'project-thread'})).toBeNull();
- panel.lifecycle.unmount();
+ fireEvent.click(slot.getByRole('button', {name: 'Без проекта', expanded: false}));
+ const list = within(slot.getByRole('list', {name: 'Треды без проекта'}));
+ expect(list.queryByText('active-thread')).toBeNull();
+ fireEvent.click(list.getByRole('link', {name: 'projectless-thread Нет активности'}));
+ expect(slot.inspection.navigateCalls.at(-1)).toMatchObject({method: 'toThread', threadId: 'projectless-thread'});
  slot.lifecycle.unmount();
 });
 test('attention includes host errors and pending questions and opens the correct thread',async()=>{

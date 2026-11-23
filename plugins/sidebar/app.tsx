@@ -18,9 +18,8 @@ import {SidebarTabs,type SidebarTab} from './src/ui/sidebar-tabs';
 import {useSidebarHeader} from './src/adapters/bb/sidebar-header';
 import {ProgressFreshness} from './src/ui/progress-freshness';
 import {requestChertogTile} from './src/adapters/bb/chertog-open';
-import {buildCatalog} from './src/core/project-catalog';
+import {buildCatalog, isCatalogThread} from './src/core/project-catalog';
 import {ProjectCatalog} from './src/ui/project-catalog';
-import {ProjectThreads, projectThreadsHref, projectThreadsPath} from './src/adapters/bb/project-threads';
 
 function change(kind: 'catalogProjects' | 'threads', id: string) {
     try {
@@ -32,8 +31,6 @@ function change(kind: 'catalogProjects' | 'threads', id: string) {
 }
 export default definePluginApp(app => {
     registerPlanningApp(app);
-    app.slots.navPanel({id: 'project-threads', path: projectThreadsPath, title: 'Треды проекта',
-        icon: 'FolderGit', component: ProjectThreads});
     app.slots.experimental_threadList({ id: 'tree', title: 'Makosh Sidebar', component: props=><ProgressProvider><Sidebar {...props}/></ProgressProvider> });
     app.slots.experimental_threadAction({ id: 'hide', title: 'Скрыть / вернуть', icon: 'Eye', group: 'organize',
         useData: () => useHidden(), item: ({ thread, data }) => ({ label: data.threads.includes(thread.id) ? 'Вернуть' : 'Скрыть', icon: 'Eye', run: () => change('threads', thread.id) }) });
@@ -61,12 +58,16 @@ function Sidebar({ activeThreadId, activeProjectId, onNavigate }: PluginThreadLi
         setError(true); }); return () => { live = false; }; }, [rpc, ids, retry]);
     const { values } = useSettings();
     const rootPath = typeof values?.rootPath === 'string' ? values.rootPath : '';
-    const personal = projects.find(project => project.isPersonal);
+    const projectless = useMemo(() => {
+        if (tab !== 'projects') return undefined;
+        const personal = projects.find(project => project.isPersonal);
+        return personal && {id: personal.id, threads: threads.filter(thread =>
+            thread.projectId === personal.id && isCatalogThread(thread))};
+    }, [tab, projects, threads]);
     const catalog = useMemo(() => {
         if (tab !== 'projects') return [];
         const locations = new Map(paths.map(({id, path}) => [id, path]));
-        return buildCatalog(projects.map(project => ({...project, path: locations.get(project.id) ?? null,
-            href: projectThreadsHref(project.id)})),
+        return buildCatalog(projects.map(project => ({...project, path: locations.get(project.id) ?? null})),
             threads, rootPath, catalogHidden);
     }, [tab, projects, paths, threads, rootPath, catalogHidden]);
     const [, refreshToday] = useState(0);
@@ -121,9 +122,15 @@ function Sidebar({ activeThreadId, activeProjectId, onNavigate }: PluginThreadLi
     {todayRows.map(node=><ThreadBranch key={node.thread.id} node={node} depth={0} renderRow={renderRow} initialCollapsed/>)}
     {!todayRows.length?<p className="empty-activity">{filter==='running'?'Нет работающих тредов':filter==='unread'?'Нет новых ответов':filter==='attention'?'Нет тредов, требующих внимания':'Нет тредов за последние 24 часа'}</p>:null}
    </section></div>:<div role="tabpanel" id="makosh-sidebar-panel-projects" aria-labelledby="makosh-sidebar-tab-projects">
-    <ProjectCatalog rows={catalog} activeProjectId={activeProjectId}
-        projectless={personal && {id: personal.id, href: projectThreadsHref(personal.id)}}
-        onOpen={id => { navigate.toPluginPanel(projectThreadsPath, {subPath: id}); onNavigate(); }}
+    <ProjectCatalog rows={catalog} activeProjectId={activeProjectId} activeThreadId={activeThreadId}
+        projectless={projectless}
+        onOpenThread={(id, split) => {
+            if (split) navigate.toThread(id, {split: true});
+            else {
+                if (!requestChertogTile(id)) navigate.toThread(id);
+                onNavigate();
+            }
+        }}
         onCompose={id => { navigate.toCompose({projectId: id}); onNavigate(); }}
         onToggleHidden={id => change('catalogProjects', id)}/>
    </div>}
