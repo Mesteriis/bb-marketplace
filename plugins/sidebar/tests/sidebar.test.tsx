@@ -180,7 +180,15 @@ test('the project menu groups actions and opens properties without expanding the
  expect(overview.getAttribute('aria-selected')).toBe('true');
  const overviewContent = within(properties.getByRole('tabpanel', {name: 'Обзор'}));
  expect(overviewContent.getByRole('heading', {name: 'Распределение тредов'})).toBeTruthy();
+ expect(overviewContent.getByRole('heading', {name: 'Архив и видимость'})).toBeTruthy();
+ const distribution = within(overviewContent.getByRole('region', {name: 'Распределение тредов'}));
+ expect(distribution.getAllByRole('listitem')).toHaveLength(3);
+ const breakdown = within(overviewContent.getByRole('table', {name: 'Разбивка тредов'}));
+ expect(breakdown.getAllByRole('row')).toHaveLength(5);
+ expect(within(breakdown.getByRole('row', {name: 'Вне архива / видимые 1 0 1'})).getAllByRole('cell')
+  .map(cell => cell.textContent)).toEqual(['1', '0', '1']);
  expect(overviewContent.getByText('Git remote URL')).toBeTruthy();
+ expect(overviewContent.getByText('Снимок данных')).toBeTruthy();
  const json = properties.getByText('Фрагмент JSON').parentElement!.querySelector('pre')!;
  const overviewJson = json.textContent;
  expect(JSON.parse(overviewJson ?? '').threads).toEqual([{id: 'thread-sample', title: 'Example', status: 'idle',

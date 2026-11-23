@@ -1,7 +1,7 @@
 import {useId, useState, type KeyboardEvent, type ReactNode} from 'react';
 import {overviewTotals, type ProjectOverviewData} from '../core/project-overview';
 import {Glyph} from './glyph';
-import {ProjectOverviewCharts} from './project-overview-charts';
+import {ProjectOverviewBreakdown, ProjectOverviewDistribution} from './project-overview-charts';
 import './project-info.css';
 
 function utc(timestamp: number) {
@@ -72,7 +72,6 @@ export function ProjectOverview({data, activity}: {data: ProjectOverviewData; ac
     const id = useId();
     const tabId = (key: ProjectTab) => `${id}-tab-${key}`;
     const panelId = (key: ProjectTab) => `${id}-panel-${key}`;
-    const activeLabel = projectTabs.find(item => item.id === tab)?.label;
 
     function select(key: ProjectTab) {
         setTab(key);
@@ -105,22 +104,16 @@ export function ProjectOverview({data, activity}: {data: ProjectOverviewData; ac
         {label: 'Источники', value: project.sources.length, icon: 'folder'},
     ] as const;
 
-    return <section className="sidebar-project-info" aria-label="Свойства проекта">
-        <div className="overview-top">
-            <div className="overview-breadcrumb" aria-label="Путь страницы">Проекты <span>/</span> {project.name} <span>/</span> {activeLabel}</div>
+    return <section className="sidebar-project-info overview-page" aria-label="Свойства проекта">
+        <header className="overview-top">
+            <div className="overview-title">
+                <span className="overview-icon"><Glyph kind="project"/></span>
+                <h1>{project.name}</h1>
+            </div>
             <details className="overview-json">
                 <summary>Фрагмент JSON</summary>
                 <div className="overview-json-content"><Copy value={json}/><pre>{json}</pre></div>
             </details>
-        </div>
-        <header className="overview-title">
-            <span className="overview-icon"><Glyph kind="project"/></span>
-            <h1>{project.name}</h1>
-            <span className="overview-tag overview-kind">{project.kind}</span>
-            <span className="overview-tag">ID: {project.id}</span>
-            <time dateTime={new Date(data.capturedAt).toISOString()} className="overview-snapshot">
-                Снимок данных: {utc(data.capturedAt)}
-            </time>
         </header>
         <div className="overview-tabs" role="tablist" aria-label="Разделы проекта">
             {projectTabs.map(({id: key, label}, index) => <button key={key} id={tabId(key)} type="button" role="tab"
@@ -135,19 +128,23 @@ export function ProjectOverview({data, activity}: {data: ProjectOverviewData; ac
                     <div><dt>{label}</dt><dd>{value}</dd></div>
                 </div>,
             )}</dl>
-            <section className="overview-card">
-                <header className="overview-section-header"><h2><Glyph kind="info"/>Сводка проекта</h2></header>
-                <PropertyGrid fields={[
-                    ['ID', <CopyValue value={project.id}/>],
-                    ['Имя', project.name],
-                    ['Тип', <span className="overview-tag overview-kind">{project.kind}</span>],
-                    ['Git remote URL', project.gitRemoteUrl && /^https?:\/\//.test(project.gitRemoteUrl)
-                        ? <a href={project.gitRemoteUrl} target="_blank" rel="noopener noreferrer">{project.gitRemoteUrl}</a>
-                        : project.gitRemoteUrl ?? 'Не задан'],
-                    ['Создан', utc(project.createdAt)], ['Обновлён', utc(project.updatedAt)],
-                ]}/>
-            </section>
-            <ProjectOverviewCharts groups={groups}/>
+            <div className="overview-summary-grid">
+                <section className="overview-card">
+                    <header className="overview-section-header"><h2><Glyph kind="info"/>Сводка проекта</h2></header>
+                    <PropertyGrid fields={[
+                        ['ID', <CopyValue value={project.id}/>],
+                        ['Имя', project.name],
+                        ['Тип', <span className="overview-tag overview-kind">{project.kind}</span>],
+                        ['Git remote URL', project.gitRemoteUrl && /^https?:\/\//.test(project.gitRemoteUrl)
+                            ? <a href={project.gitRemoteUrl} target="_blank" rel="noopener noreferrer">{project.gitRemoteUrl}</a>
+                            : project.gitRemoteUrl ?? 'Не задан'],
+                        ['Создан', utc(project.createdAt)], ['Обновлён', utc(project.updatedAt)],
+                        ['Снимок данных', <time dateTime={new Date(data.capturedAt).toISOString()}>{utc(data.capturedAt)}</time>],
+                    ]}/>
+                </section>
+                <ProjectOverviewDistribution stats={stats}/>
+            </div>
+            <ProjectOverviewBreakdown groups={groups}/>
         </div>
         <div className="overview-tab-panel" id={panelId('analytics')} role="tabpanel" aria-labelledby={tabId('analytics')}
             hidden={tab !== 'analytics'} tabIndex={0}>
