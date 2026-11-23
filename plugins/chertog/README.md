@@ -75,7 +75,8 @@ unanswered (`accepted: false`), so Makosh Sidebar opens the thread as usual.
 BB's title bar on the Chertog route shows only the name, the page shows one line
 saying the workspace is off, the Home redirect does not fire, and the tile
 commands do nothing. Saved layouts are not touched and return when it is on
-again; the switch takes effect when BB delivers the new value, without a reload.
+again (thread tiles as they were; embedded views such as Telegram, Zoom and
+SSH/RDP/VNC come back as a «Повторить» card and reopen on click); the switch takes effect when BB delivers the new value, without a reload.
 
 `navigationPart` and `threadListPart` stand in until Navigation and the thread
 list are absorbed into Chertog (`docs/absorption-design.md`). The server checks
