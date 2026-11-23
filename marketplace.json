@@ -1620,7 +1620,7 @@
     {
       "id": "makosh-treadchat",
       "displayName": "Makosh TreadChat",
-      "description": "Review significant events, inspect sources, and send follow-ups to the same BB thread.",
+      "description": "Open a dedicated BB thread workspace with activity, conversation, and context.",
       "icon": "MessagesSquare",
       "author": {
         "name": "Mesteriis",

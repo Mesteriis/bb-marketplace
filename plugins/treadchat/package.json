@@ -1,8 +1,8 @@
 {
   "name": "bb-plugin-makosh-treadchat",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
-  "description": "Review significant events, inspect sources, and send follow-ups to the same BB thread.",
+  "description": "Open a dedicated BB thread workspace with activity, conversation, and context.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -15,7 +15,7 @@
   },
   "bb": {
     "name": "Makosh TreadChat",
-    "description": "Review significant events, inspect sources, and send follow-ups to the same BB thread.",
+    "description": "Open a dedicated BB thread workspace with activity, conversation, and context.",
     "branding": {
       "icon": "MessagesSquare"
     },

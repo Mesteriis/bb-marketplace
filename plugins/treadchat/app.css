@@ -15,8 +15,7 @@
 .tc-header { border-bottom: 1px solid var(--border); }
 .tc-feed { overflow: auto; }
 .tc-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .4rem .65rem; }
-.tc-thread { margin-top: .25rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tc-thread, .tc-muted, .tc-heading time { color: var(--muted-foreground); }
+.tc-muted, .tc-heading time { color: var(--muted-foreground); }
 .tc-heading + .tc-muted { margin-top: .55rem; }
 .tc-panel button {
   font: inherit;
@@ -69,3 +68,34 @@
 }
 .tc-composer .tc-heading { margin-top: .45rem; }
 .tc-panel button.tc-primary:enabled { background: var(--primary); color: var(--primary-foreground); }
+
+.tc-feed, .tc-composer, .tc-header { width: 100%; box-sizing: border-box; }
+.tc-feed > *, .tc-composer > *, .tc-header > * { max-width: 53rem; margin-inline: auto; }
+.tc-modes { display: flex; gap: .4rem; margin-top: .55rem; }
+.tc-modes button[aria-pressed="true"] { background: var(--accent); color: var(--accent-foreground); }
+.tc-dialogue { min-height: 0; min-width: 0; overflow: hidden; }
+.tc-empty, .tc-side, .tc-navigation { padding: .75rem 1rem; }
+.tc-side h2, .tc-empty h2 { font-size: 1rem; margin-top: 0; }
+.tc-side p { overflow-wrap: anywhere; }
+.tc-side button, .tc-navigation button {
+  text-align: left;
+  font: inherit;
+  color: var(--foreground);
+  border-radius: .35rem;
+  padding: .3rem .5rem;
+}
+.tc-side button { border: 1px solid var(--border); }
+.tc-navigation { overflow: auto; height: 100%; box-sizing: border-box; }
+.tc-navigation h3 { font-size: .75rem; color: var(--muted-foreground); margin: .65rem 0 .25rem; }
+.tc-navigation ul { list-style: none; margin: 0; padding: 0; }
+.tc-navigation button {
+  width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.tc-navigation button:hover, .tc-navigation button[aria-current="page"] {
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+.tc-navigation button:focus-visible, .tc-side button:focus-visible { outline: 2px solid var(--ring); }

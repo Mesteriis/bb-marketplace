@@ -6,7 +6,7 @@ import { activity } from "../../core/activity";
 export function useThreadContext(threadId: string) {
   const sdk = useSdk();
   const connection = useRealtimeConnectionState();
-  const [state, setState] = useState({ title: "", currentStep: "", needsAnswer: false });
+  const [state, setState] = useState({ title: "", currentStep: "", needsAnswer: false, status: "" });
   useEffect(() => {
     if (connection !== "connected") return;
     const controller = new AbortController();
@@ -32,8 +32,10 @@ export function useThreadContext(threadId: string) {
         const needsAnswer = interactions.status === "fulfilled"
           ? interactions.value.some(interaction => interaction.status === "pending") : previous.needsAnswer;
         const step = plan.status === "fulfilled" ? currentStep : previous.currentStep;
-        return previous.title === title && previous.currentStep === step && previous.needsAnswer === needsAnswer
-          ? previous : { title, currentStep: step, needsAnswer };
+        const status = thread.status === "fulfilled" ? thread.value.status : previous.status;
+        return previous.title === title && previous.currentStep === step &&
+          previous.needsAnswer === needsAnswer && previous.status === status
+          ? previous : { title, currentStep: step, needsAnswer, status };
       });
     }
     const unsubscribe = sdk.subscribe({
