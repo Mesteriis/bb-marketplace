@@ -1,9 +1,20 @@
-import {experimental_useSidebarThreads, useBbNavigate, type PluginNavPanelProps} from '@get-bb/plugin-sdk/app';
+import {experimental_useSidebarThreads, useBbNavigate, type PluginNavPanelProps, type PluginSidebarThread} from '@get-bb/plugin-sdk/app';
+
+import {isRunning} from '../../core/presentation';
 
 export const projectThreadsPath = 'projects';
 
 export function projectThreadsHref(projectId: string) {
     return `/plugins/makosh-sidebar/${projectThreadsPath}/${encodeURIComponent(projectId)}`;
+}
+
+function threadStatus(thread: PluginSidebarThread) {
+    if (thread.hasPendingInteraction) return {text: 'Ждёт ответа', tone: 'waiting'};
+    if (thread.status === 'error') return {text: 'Ошибка', tone: 'failed'};
+    if (thread.status === 'stopping') return {text: 'Останавливается', tone: 'running'};
+    if (isRunning(thread)) return {text: 'В работе', tone: 'running'};
+    if (thread.isUnread) return {text: 'Новый ответ', tone: 'unread'};
+    return {text: 'Нет активности', tone: 'muted'};
 }
 
 export function ProjectThreads({subPath}: PluginNavPanelProps) {
@@ -25,12 +36,18 @@ export function ProjectThreads({subPath}: PluginNavPanelProps) {
             <h1>{title}</h1>
             <button type="button" onClick={() => navigate.toCompose({projectId: project.id})}>Новый тред</button>
         </header>
-        {rows.length ? <ul>{rows.map(thread => <li key={thread.id}>
-            <a href={thread.href} onClick={event => {
-                if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-                event.preventDefault();
-                navigate.toThread(thread.id);
-            }}>{thread.displayTitle}</a>
-        </li>)}</ul> : <p role="status">Нет неархивных тредов.</p>}
+        {rows.length ? <ul>{rows.map(thread => {
+            const state = threadStatus(thread);
+            return <li key={thread.id}>
+                <a href={thread.href} onClick={event => {
+                    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+                    event.preventDefault();
+                    navigate.toThread(thread.id);
+                }}>
+                    <span className="project-thread-title">{thread.displayTitle}</span>
+                    <span className={`project-thread-status ${state.tone}`}>{state.text}</span>
+                </a>
+            </li>;
+        })}</ul> : <p role="status">Нет неархивных тредов.</p>}
     </section>;
 }

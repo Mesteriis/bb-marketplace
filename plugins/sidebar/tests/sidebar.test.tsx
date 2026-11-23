@@ -83,10 +83,14 @@ test('the project page opens older non-archived threads in the main area', async
   status: 'ready', projects, sections: [], threads: [
    {...make('older-thread', 'atlas', 'idle'), createdAt: 1},
    {...make('archived-thread', 'atlas', 'idle'), isArchived: true},
+   make('running-thread', 'atlas', 'active'),
+   {...make('waiting-thread', 'atlas', 'idle'), hasPendingInteraction: true},
    make('somewhere-else', 'orbit', 'idle'),
   ],
  }});
- fireEvent.click(panel.getByRole('link', {name: 'older-thread'}));
+ expect(panel.getByRole('link', {name: 'running-thread В работе'})).toBeTruthy();
+ expect(panel.getByRole('link', {name: 'waiting-thread Ждёт ответа'})).toBeTruthy();
+ fireEvent.click(panel.getByRole('link', {name: 'older-thread Нет активности'}));
  expect(panel.inspection.navigateCalls.at(-1)).toMatchObject({method: 'toThread', threadId: 'older-thread'});
  expect(panel.queryByRole('link', {name: 'archived-thread'})).toBeNull();
  expect(panel.queryByRole('link', {name: 'somewhere-else'})).toBeNull();
@@ -107,7 +111,7 @@ test('projectless conversations remain accessible outside the scoped project cat
   ],
  }});
  expect(panel.getByRole('heading', {name: 'Без проекта'})).toBeTruthy();
- fireEvent.click(panel.getByRole('link', {name: 'projectless-thread'}));
+ fireEvent.click(panel.getByRole('link', {name: 'projectless-thread Нет активности'}));
  expect(panel.inspection.navigateCalls.at(-1)).toMatchObject({method: 'toThread', threadId: 'projectless-thread'});
  expect(panel.queryByRole('link', {name: 'project-thread'})).toBeNull();
  panel.lifecycle.unmount();
