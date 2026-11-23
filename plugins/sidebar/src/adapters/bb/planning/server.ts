@@ -2,7 +2,7 @@
 //
 // Registers the plan_progress agent tool. Bars live in this plugin's kv
 // storage, one list per thread; every write publishes a realtime signal so
-// the bar above the thread's composer (app.tsx) refetches.
+// the sidebar refetches progress.
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import {
@@ -85,7 +85,7 @@ const opSchema = z.object({
   state: z.enum(STATE_NAMES).optional().describe('"needs_input" before asking the user; "done" when finished.'),
 });
 
-const INSTRUCTIONS = `Show progress on multi-step work with BB's plan_progress tool; the user sees it as a bar above the message box.
+const INSTRUCTIONS = `Show progress on multi-step work with BB's plan_progress tool; the user sees progress in the Makosh Sidebar thread list.
 - REQUIRED: for 3 or more requested actions, create the BB bar BEFORE the first work tool call. Read-only work counts. Reading three files counts. A task finished in one turn still counts. "No subagents" does not forbid a progress bar: the bar is UI bookkeeping, not a subagent or a workspace edit. Do not reinterpret three explicit steps as a one-step answer.
 - In Claude Code, discover and use mcp__bb-bridge__plan_progress (ToolSearch: select:mcp__bb-bridge__plan_progress). Never use mcp__plan-progress__plan_progress: it belongs to the Claude Desktop plugin and cannot display a bar in BB. Other providers use their advertised BB plan_progress tool.
 - If the BB tool is missing or fails, use the same operation with bb plan-progress op '<json>' in the current thread. If that also fails, report the failure; do not silently use the Desktop plugin.
@@ -128,7 +128,7 @@ export default async function registerPlanning(bb: BbPluginApi) {
     autoClose: {
       type: "boolean",
       label: "Auto-close",
-      description: "Hide done plans after the delay and tracked helpers finish; idle alone does not finish a plan. The agent creates plans for tasks with 3+ actions. Restore from Hidden plans.",
+      description: "Hide done plans after the delay and tracked helpers finish; idle alone does not finish a plan. The agent creates plans for tasks with 3+ actions. Use Show completed to see completed plans in the sidebar.",
       default: true,
     },
     autoCloseSeconds: {
@@ -587,7 +587,7 @@ export default async function registerPlanning(bb: BbPluginApi) {
   bb.agents.registerTool({
     name: "plan_progress",
     description:
-      "BB progress bar above the BB message box (Claude: mcp__bb-bridge__plan_progress). " +
+      "BB progress in the Makosh Sidebar thread list (Claude: mcp__bb-bridge__plan_progress). " +
       "Separate from the Claude Desktop plan-progress tool. " +
       "Create once with the whole plan, then send short ops.",
     instructions: INSTRUCTIONS,

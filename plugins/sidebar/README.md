@@ -20,7 +20,7 @@ Hiding a project also hides separately registered descendant projects and worktr
 
 Threads with subthreads have a separate expand/collapse chevron. Collapsing keeps the parent navigable and hides all descendants, including running threads. Status updates do not reopen the subtree; expanding restores it. Parent metadata retains descendant and activity counts. Subtrees start expanded outside the activity group.
 
-The **Сейчас** section (formerly **Активные**) shows running threads (starting, active, stopping) and threads the host marks unread until they are read. It includes all projects, including hidden ones and personal chats; archived/internal helper threads are excluded. Parent context is retained for an active subthread. A qualifying parent brings its subtree; subtrees start collapsed and expand on demand. Thread hierarchy remains available in the activity group; the same threads remain available in the separate Projects tab.
+**Сегодня** shows threads created in the last 24 hours, including idle threads, across all projects and personal chats. Archived and internal helper threads are excluded. Recent subthreads retain their visible ancestor chain, including parents older than 24 hours. Older sibling branches appear only if they have a recent descendant. Subtrees start collapsed and expand on demand. **Проекты** has no age limit.
 
 Collapsed subtrees also hide unread results and pending questions; their counts remain on the parent. Expand the parent to reach them.
 
@@ -31,21 +31,19 @@ Collapsed subtrees also hide unread results and pending questions; their counts 
 
 ## Планы и наблюдаемость
 
-Раздел **Сейчас** группирует работу по родительским тредам. Фильтры **Все**,
+Раздел **Сегодня** группирует работу по родительским тредам. Фильтры **Все**,
 **В работе**, **Новые ответы** показывают количество тредов, а не число групп.
-Вкладка «Все» также сохраняет треды с ожидающим взаимодействием. Родитель
+Фильтр «Все» показывает все треды за последние 24 часа. Родитель
 остаётся доступен; свёрнутая группа скрывает всех потомков и сохраняет их счётчики. Иконки, бейджи, контекст проекта и линии связей
 различают состояние исполнения и непрочитанный результат. В отдельной вкладке «Проекты» доступны в том числе активные треды.
 
 Sidebar включает собственный движок Plan Progress: `plan_progress`, CLI
 `bb plan-progress`, напоминания с прежними ограничениями, диагностику,
-изолированный запуск Claude и оценку скорости ответа. Полоска над полем ввода
-сохранена. Отдельный плагин Plan Progress не нужен и должен быть выключен
+изолированный запуск Claude и оценку скорости ответа. Прогресс виден в списке тредов. Отдельный плагин Plan Progress не нужен и должен быть выключен
 до включения этой версии Sidebar, чтобы не регистрировать два одинаковых
 инструмента и CLI. Код не импортирует файлы другого плагина и не вызывает его RPC.
 
-В строке треда показаны текущий этап/шаг, число завершённых шагов и компактная
-полоска. Нажмите её подпись, чтобы открыть этапы и шаги. Несколько планов
+Пока агент работает, в строке треда показаны текущий этап/шаг, число завершённых шагов и полоска. После ответа стрелка у строки раскрывает планы и время обновления. Вопросы и ошибки остаются видимыми в строке. Несколько планов
 раскрываются через счётчик «+N» в строке прогресса; вопросы и ошибки идут первыми. Завершённые автоматически скрытые планы доступны в истории; ручное скрытие сохраняется.
 У родителя основной прогресс рассчитывается по шагам субтредов. «План готов» относится
 только к плану, а не к завершению треда; счётчик шагов сохраняет реальные статусы.
@@ -56,7 +54,7 @@ Plan Progress. Настройка **Effects** отключает волну и �
 Sidebar получает данные для отрисованных строк, их потомков и активных веток, пакетами до 25 тредов,
 обновляет их по собственным realtime-событиям и раз в 5 секунд, приостанавливая
 опрос в скрытой вкладке. Ошибка чтения показана явно; она не означает отсутствие
-плана. Вопросы и ошибки планов поднимают тред в «Сейчас», даже если он прочитан и не выполняется. Индекс строится при загрузке из первых 2000 сохранённых тредов и обновляется при изменении планов; неполное покрытие обозначается явно.
+плана. Вопросы и ошибки планов попадают в блок внимания вкладки «Сегодня», если тред создан за последние 24 часа. Индекс строится при загрузке из первых 2000 сохранённых тредов и обновляется при изменении планов; неполное покрытие обозначается явно.
 
 ### Перенос с отдельного Plan Progress
 
@@ -92,7 +90,7 @@ RPC `progress_import` принимает только ограниченные �
 
 Компактная компоновка сохраняет размер текста: контекст проекта и сводка потомков объединены, а бейдж состояния перенесён к подписи прогресса. Названию треда доступна полная ширина. Счётчик «+N» в той же подписи раскрывает остальные планы вместе с этапами текущего; закрытые дополнительные полоски не монтируются.
 
-Branch activity includes running descendants and the host's background agents, commands, workflows and plan mode, without changing the host execution status. This keeps the parent in **Сейчас / В работе** while its subtree works, including when folded.
+Branch activity includes running descendants and the host's background agents, commands, workflows and plan mode, without changing the host execution status. This keeps the parent in **Сегодня / В работе** while its subtree works, including when folded.
 
 Progress polling retains the last successful plan on transport or per-thread failures, marks it stale, and retries every five seconds. A request times out after ten seconds; realtime notifications coalesce instead of cancelling in-flight reads. The attention index cannot block plan reads. Active descendants stay observed while folded. Sidebar polling rechecks the actual thread status after reload and restores the existing automatic reminder for a verified active turn when work-call thresholds are reached; its durable once-per-turn budget still applies. It never creates artificial steps or completion percentages.
 
@@ -104,11 +102,11 @@ Completed plans and fully completed stages are hidden by default in the sidebar.
 
 Sidebar progress tracks are 20px tall. Dense plans group their timing marks into at most twelve positions, retaining every original label/duration in group tooltips. This prevents aggregate histories from covering the animation with a continuous row of dots; short plans retain individual marks.
 
-The sidebar and composer now share the original full track renderer: gradient fill and stream, moving stage/step capsule, stage/step separator, state icons, elapsed time replacing its label on hover or keyboard focus, and custom timing tooltips with passed/future marker colours. Sidebar tracks stay 20px high with dense marks grouped; composer tracks remain 22px with individual marks. A plan explicitly marked done has the original full-width completed fill; the expanded step counts/statuses remain the recorded values. Clocks update separately from static plan details.
+Progress tracks in the sidebar thread list use the full track renderer: gradient fill and stream, moving stage/step capsule, stage/step separator, state icons, elapsed time replacing its label on hover or keyboard focus, and custom timing tooltips with passed/future marker colours. Tracks are 20px high with dense marks grouped. A plan explicitly marked done has the original full-width completed fill; the expanded step counts/statuses remain the recorded values. Clocks update separately from static plan details.
 
 ## Вкладки и верхняя панель
 
-**Сейчас** и **Проекты** — отдельные вкладки. В проектах поиск сохраняет путь до совпавшей папки; активные треды доступны и там. Блок «Требует внимания» показывает вопросы и ошибки (первые восемь, затем «Показать ещё»). Бейдж открывает нужный субтред; SDK не предоставляет переход к конкретному сообщению. Причина ожидания показывает количество работающих или ожидающих ответа потомков.
+**Сегодня** и **Проекты** — отдельные вкладки. В проектах поиск сохраняет путь до совпавшей папки; активные треды доступны и там. Блок «Требует внимания» показывает вопросы и ошибки (первые восемь, затем «Показать ещё»). Бейдж открывает нужный субтред; SDK не предоставляет переход к конкретному сообщению. Причина ожидания показывает количество работающих или ожидающих ответа потомков.
 
 Под прогрессом показано время фактического обновления плана, а не его чтения. После трёх минут без обновления работающего плана появляется «Проверить»; кнопка также доступна при отсутствии плана или ошибке. Повторное чтение не меняет время плана, подсказка показывает последнюю успешную проверку.
 

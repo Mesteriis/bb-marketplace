@@ -7,10 +7,12 @@ import {StepTime} from './progress-time';
 const colors={running:'#7858CA',needs_input:'#AD6400',error:'#C5353E',done:'#18883A'};
 export function ProgressStyles(){return <style>{STREAM_STYLE}{PLAN_TRACK_STYLE}</style>;}
 const completedStage=(stage:Plan['stages'][number])=>stage.steps.length>0&&stage.steps.every(step=>step.status==='done'||step.status==='skipped');
-const PlanDetails=memo(function PlanDetails({plan,showCompleted}:{plan:Plan;showCompleted:boolean}) {
- return <div className="plan-steps"><strong>{plan.title}</strong><span className={`state-badge plan-${plan.state}`}>{planLabels[plan.state]}</span>
+const PlanDetails=memo(function PlanDetails({plan,showCompleted,live=true}:{plan:Plan;showCompleted:boolean;live?:boolean}) {
+ const progress=live?null:planProgress(plan);
+ return <div className="plan-steps"><strong>{plan.title}</strong>{live||plan.state!=='running'?<span className={`state-badge plan-${plan.state}`}>{planLabels[plan.state]}</span>:null}
+   {progress&&progress.total>0?<span className="progress-fraction">{progress.done}/{progress.total}</span>:null}
    {plan.note?<p>{plan.note}</p>:null}
-   {plan.stages.filter(stage=>showCompleted||!completedStage(stage)).map((stage,i)=><div key={i}>{stage.name?<h4>{stage.name}</h4>:null}<ul>{stage.steps.map((step,j)=><li key={j} data-state={step.status}><span aria-hidden="true" className="step-dot"/>{step.title}<StepTime start={step.status==='pending'?undefined:step.startedAt} end={step.endedAt??plan.endedAt} running={plan.state!=='done'}/><span className="step-state">{{pending:'Не начат',active:'В работе',done:'Готово',error:'Ошибка',skipped:'Пропущен'}[step.status]}</span></li>)}</ul></div>)}
+   {plan.stages.filter(stage=>showCompleted||!completedStage(stage)).map((stage,i)=><div key={i}>{stage.name?<h4>{stage.name}</h4>:null}<ul>{stage.steps.map((step,j)=><li key={j} data-state={step.status}><span aria-hidden="true" className="step-dot"/>{step.title}<StepTime start={step.status==='pending'?undefined:step.startedAt} end={step.endedAt??plan.endedAt} running={live&&plan.state!=='done'}/><span className="step-state">{{pending:'Не начат',active:'В работе',done:'Готово',error:'Ошибка',skipped:'Пропущен'}[step.status]}</span></li>)}</ul></div>)}
   </div>;
 });
 export function PlanStrip({plan,effects=true,status,extraPlans=[],showCompleted=true}:{plan:Plan;effects?:boolean;status?:{label:string;state:string;onActivate?:()=>void};extraPlans?:readonly Plan[];showCompleted?:boolean}) {
@@ -32,4 +34,8 @@ export function ThreadProgress({plans,effects=true,status}:{plans:readonly Plan[
  const hasCompleted=plans.some(plan=>plan.state==='done'||plan.stages.some(completedStage));
  if(!plans.length)return null;
  return <div className="thread-plans">{visible.length?<PlanStrip plan={visible[0]!} effects={effects} status={status} extraPlans={visible.slice(1)} showCompleted={showCompleted}/>:null}{hasCompleted?<button type="button" className="completed-plans-toggle" aria-pressed={showCompleted} onClick={()=>setShowCompleted(value=>!value)}>{showCompleted?'Скрыть готовые':'Показать готовые'}</button>:null}</div>;
+}
+
+export function ThreadPlanHistory({plans}:{plans:readonly Plan[]}) {
+ return <div className="thread-plans">{plans.map(plan=><PlanDetails key={plan.id} plan={plan} showCompleted live={false}/>)}</div>;
 }

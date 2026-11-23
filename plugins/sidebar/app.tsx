@@ -6,7 +6,7 @@ import { toast } from 'sonner';
 import type { contract } from './server';
 import { buildProjectTree, type TreeNode, type ProjectLocation, type ThreadNode } from './src/core/tree';
 import { sidebarPresentation, runningThreads, isRunning,withBranchActivity } from './src/core/presentation';
-import { activeThreads } from './src/core/active';
+import { todayScope, todayThreads, TODAY_WINDOW_MS } from './src/core/active';
 import { ThreadBranch } from './src/ui/thread-branch';
 import { FoldSection } from './src/ui/fold-section';
 import { useHidden, toggle } from './src/adapters/bb/preferences';
@@ -14,7 +14,8 @@ import './sidebar.css';
 import { Glyph } from './src/ui/glyph';
 import {ProgressProvider,ProgressNotice,useThreadPlans,useObserveThreadPlans,usePlanningAttention} from './src/adapters/bb/progress-context';
 import {registerPlanningApp} from './src/adapters/bb/planning/app';
-import {ThreadProgress,ProgressStyles} from './src/ui/thread-progress';
+import {ProgressLifecycle} from './src/adapters/bb/planning/progress-lifecycle';
+import {ThreadProgress,ThreadPlanHistory,ProgressStyles} from './src/ui/thread-progress';
 import {planLabels} from './src/core/progress';
 import {attentionThreads,requiresAttention,waitingReason,searchProjects} from './src/core/work-status';
 import {SidebarTabs,type SidebarTab} from './src/ui/sidebar-tabs';
@@ -39,7 +40,8 @@ function Sidebar({ activeThreadId, onNavigate }: PluginThreadListProps) {
     const navigate=useBbNavigate();
     const { status, threads:hostThreads, projects } = useThreads();
     const attention=usePlanningAttention();
-    const threads=useMemo(()=>withBranchActivity(hostThreads).map(thread=>({...thread,planAttention:attention[thread.id]})),[hostThreads,attention]);
+    const threadsWithAttention=useMemo(()=>hostThreads.map(thread=>({...thread,planAttention:attention[thread.id]})),[hostThreads,attention]);
+    const threads=useMemo(()=>withBranchActivity(threadsWithAttention),[threadsWithAttention]);
     useObserveThreadPlans(threads.filter(t=>!t.isHidden&&!t.isArchived&&isRunning(t)).map(t=>t.id));
     const hidden = useHidden();
     const [show, setShow] = useState(false);
@@ -61,12 +63,25 @@ function Sidebar({ activeThreadId, onNavigate }: PluginThreadListProps) {
     const threadLimit = typeof values?.threadLimit === 'number' && Number.isInteger(values.threadLimit) && values.threadLimit >= 1 && values.threadLimit <= 1000 ? values.threadLimit : 5;
     const view = useMemo(() => sidebarPresentation(projects.map(p => ({...p,path:paths.find(x=>x.id===p.id)?.path??null})), threads, hidden, show, rootPath), [projects,threads,paths,hidden,show,rootPath]);
     const { tree } = view;
-    const active = useMemo(()=>activeThreads(threads,filter),[threads,filter]);
     const eligible=threads.filter(t=>!t.isHidden&&!t.isArchived);
-    const attentionRows=attentionThreads(eligible);
-    const byId = new Map(threads.map(t => [t.id, t]));
+    const [, refreshToday] = useState(0);
+    const {recent, withAncestors} = todayScope(threadsWithAttention, Date.now());
+    const today = withBranchActivity(withAncestors);
+    const recentIds = new Set(recent.map(thread => thread.id));
+    const recentRows = today.filter(thread => recentIds.has(thread.id));
+    const nextExpiry = recent.reduce((next, thread) =>
+        Math.min(next, thread.createdAt + TODAY_WINDOW_MS + 1), Infinity);
+    useEffect(() => {
+        if (tab !== 'now' || !Number.isFinite(nextExpiry)) return;
+        const timer = setTimeout(() => refreshToday(value => value + 1), Math.max(0, nextExpiry - Date.now()));
+        return () => clearTimeout(timer);
+    }, [tab, nextExpiry]);
+    const todayRows = todayThreads(today,filter,recentIds);
+    const attentionRows=attentionThreads(recentRows);
+    const shownThreads = tab === 'now' ? today : eligible;
+    const byId = new Map((tab === 'now' ? today : threads).map(t => [t.id, t]));
     const childrenByParent=new Map<string,PluginSidebarThread[]>();
-    for(const thread of eligible)if(thread.parentThreadId){const bucket=childrenByParent.get(thread.parentThreadId)??[];bucket.push(thread);childrenByParent.set(thread.parentThreadId,bucket);}
+    for(const thread of shownThreads)if(thread.parentThreadId){const bucket=childrenByParent.get(thread.parentThreadId)??[];bucket.push(thread);childrenByParent.set(thread.parentThreadId,bucket);}
     const renderRow = (item: ThreadNode['thread'], depth: number, toggleControl: React.ReactNode,node?:ThreadNode) => {
         const thread = byId.get(item.id);
         if (!thread) return null;
@@ -88,20 +103,21 @@ function Sidebar({ activeThreadId, onNavigate }: PluginThreadListProps) {
     const projectNodes=searchProjects([...tree.roots,...tree.unrooted],projectQuery);
     return <div className="makosh-sidebar">
   <ProgressStyles/>
+  <ProgressLifecycle threadId={activeThreadId}/>
   {!headerAttached?<SidebarTabs tab={tab} onChange={setTab} onCompose={()=>{navigate.toCompose({});onNavigate();}}/>:null}
   <ProgressNotice/>
   {error ? <p role="alert">Не удалось загрузить пути проектов. <button onClick={() => setRetry(x => x + 1)}>Повторить</button></p> : null}
   {status === 'loading' ? <p role="status">Загрузка…</p> : status === 'error' ? <p role="alert">Не удалось загрузить список.</p> : <>
-   {tab==='now'?<div role="tabpanel" id="makosh-sidebar-panel-now" aria-labelledby="makosh-sidebar-tab-now"><section aria-label="Активные" className="active-groups">
+   {tab==='now'?<div role="tabpanel" id="makosh-sidebar-panel-now" aria-labelledby="makosh-sidebar-tab-now"><section aria-label="Треды за последние 24 часа" className="active-groups">
     <div className="activity-filters" aria-label="Фильтр активности">
      <button aria-pressed={filter==='all'} onClick={()=>setFilter('all')}>Все</button>
-     <button aria-pressed={filter==='running'} onClick={()=>setFilter('running')}><span className="status-dot running" aria-hidden="true"/>В работе <span>{eligible.filter(isRunning).length}</span></button>
-     <button aria-pressed={filter==='unread'} onClick={()=>setFilter('unread')}><span className="status-dot unread" aria-hidden="true"/>Новые ответы <span>{eligible.filter(t=>t.isUnread).length}</span></button>
+     <button aria-pressed={filter==='running'} onClick={()=>setFilter('running')}><span className="status-dot running" aria-hidden="true"/>В работе <span>{recentRows.filter(isRunning).length}</span></button>
+     <button aria-pressed={filter==='unread'} onClick={()=>setFilter('unread')}><span className="status-dot unread" aria-hidden="true"/>Новые ответы <span>{recentRows.filter(t=>t.isUnread).length}</span></button>
      <button aria-pressed={filter==='attention'} onClick={()=>setFilter('attention')}>Внимание <span>{attentionRows.length}</span></button>
     </div>
     {attentionRows.length?<section className="attention-inbox" aria-label="Требует внимания"><div className="attention-heading">Требует внимания <span>{attentionRows.length}</span></div>{(allAttention?attentionRows:attentionRows.slice(0,8)).map(thread=><AttentionRow key={thread.id} thread={thread} onNavigate={onNavigate}/>)}{attentionRows.length>8?<button className="attention-more" onClick={()=>setAllAttention(!allAttention)}>{allAttention?'Свернуть':`Ещё ${attentionRows.length-8}`}</button>:null}</section>:null}
-    {active.map(node=><ThreadBranch key={node.thread.id} node={node} depth={0} renderRow={renderRow} initialCollapsed/>)}
-    {!active.length?<p className="empty-activity">{filter==='running'?'Нет работающих тредов':filter==='unread'?'Нет новых ответов':filter==='attention'?'Нет тредов, требующих внимания':'Нет текущей активности'}</p>:null}
+    {todayRows.map(node=><ThreadBranch key={node.thread.id} node={node} depth={0} renderRow={renderRow} initialCollapsed/>)}
+    {!todayRows.length?<p className="empty-activity">{filter==='running'?'Нет работающих тредов':filter==='unread'?'Нет новых ответов':filter==='attention'?'Нет тредов, требующих внимания':'Нет тредов за последние 24 часа'}</p>:null}
    </section></div>:<div role="tabpanel" id="makosh-sidebar-panel-projects" aria-labelledby="makosh-sidebar-tab-projects"><label className="project-search"><Glyph kind="folder"/><input aria-label="Найти проект" placeholder="Найти проект" value={projectQuery} onChange={event=>setProjectQuery(event.target.value)}/></label>
    {!projectQuery.trim()?<><FoldSection label="Без проекта" count={view.loose.length} running={view.loose.filter(isRunning).map(t=>renderThread({thread:t,children:[]},0))}>
     {view.loose.map(t=>renderThread({thread:t,children:[]},0))}
@@ -152,18 +168,34 @@ function ThreadRow({ thread, depth, active, muted, onNavigate, toggleControl,con
     const {plans,failed,checkedAt,refresh}=useThreadPlans(thread.id,descendants);
     const {values}=useSettings();
     const plan=plans[0];
-    const planAttention=plan?.state==='needs_input'||plan?.state==='error';
-    const badge=thread.hasPendingInteraction?'Нужен ответ':planAttention?planLabels[plan.state]:thread.status==='error'?'Ошибка':isRunning(thread)?(thread.status==='stopping'?'Останавливается':thread.status==='starting'?'Запускается':'В работе'):thread.isUnread?'Новый ответ':plan?.state==='done'?'План готов':null;
-    const badgeState=thread.hasPendingInteraction?'needs_input':planAttention?plan.state:thread.status==='error'?'error':isRunning(thread)?'running':thread.isUnread?'unread':plan?.state;
+    const running=isRunning(thread);
+    const [historyOpen,setHistoryOpen]=useState(false);
+    useEffect(()=>{if(running)setHistoryOpen(false);},[running]);
+    const attentionPlan=plans.find(item=>item.state==='needs_input'||item.state==='error');
+    const attentionState=thread.hasPendingInteraction?'needs_input':thread.status==='error'?'error':(attentionPlan?.state==='error'?'error':attentionPlan?'needs_input':null);
+    const attentionNote=plans.find(item=>item.state===attentionState&&item.note)?.note??reason;
+    const badgeState=attentionState??(running?'running':thread.isUnread?'unread':null);
+    const badge=attentionState?(thread.status==='error'&&attentionState==='error'?'Ошибка':planLabels[attentionState]):
+        running?(thread.status==='stopping'?'Останавливается':thread.status==='starting'?'Запускается':'В работе'):
+        thread.isUnread?'Новый ответ':null;
+    const showTrack=running&&plans.some(item=>item.state!=='done');
+    const showHistory=!running&&plans.length>0;
+    const showDetails=showHistory&&historyOpen;
     const openAttention=()=>{const id=thread.hasPendingInteraction?thread.id:attentionThreadId??thread.id;if(!requestChertogTile(id))navigate.toThread(id);onNavigate();};
     const target = { ...thread, environment: thread.environment?.id ? { id: thread.environment.id, path: thread.environment.path } : null };
     const indent=26+Math.min(depth,3)*14;
     return <ThreadMenu thread={target}><div className={'thread-item' + (active ? ' active' : '') + (muted ? ' user-hidden' : '')} style={{'--thread-indent':`${indent}px`} as React.CSSProperties}><div className="tree-row thread-row" style={{paddingLeft:indent}}>
  {toggleControl}
  <a href={thread.href} aria-current={active ? 'page' : undefined} onClick={e => { if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)
-        return; e.preventDefault(); if(!requestChertogTile(thread.id))navigate.toThread(thread.id); onNavigate(); }}><span title={thread.indicatorLabel ?? undefined} className={`status-dot ${isRunning(thread)?'running':thread.isUnread?'unread':'quiet'}`} aria-hidden="true"/><span className="thread-copy">{context||summary?<span className="thread-meta">{context?<span className="thread-context">{context}</span>:null}{summary?<span className="subthread-summary-inline">{summary}</span>:null}</span>:null}<span className="label">{thread.displayTitle}</span>{reason?<span className="thread-waiting">{reason}</span>:null}</span>{thread.isUnread&&badgeState!=='unread'?<span className="status-dot unread" role="img" aria-label="Новый ответ"/>:null}{!plans.length&&badge?<span className={`state-badge plan-${badgeState}`}>{badge}</span>:null}</a>
+        return; e.preventDefault(); if(!requestChertogTile(thread.id))navigate.toThread(thread.id); onNavigate(); }}><span title={thread.indicatorLabel ?? undefined} className={`status-dot ${running?'running':thread.isUnread?'unread':'quiet'}`} aria-hidden="true"/><span className="thread-copy">{context||summary?<span className="thread-meta">{context?<span className="thread-context">{context}</span>:null}{summary?<span className="subthread-summary-inline">{summary}</span>:null}</span>:null}<span className="label">{thread.displayTitle}</span>{attentionNote?<span className="thread-waiting">{attentionNote}</span>:null}</span>{thread.isUnread&&badgeState!=='unread'?<span className="status-dot unread" role="img" aria-label="Новый ответ"/>:null}{!attentionState&&!showTrack&&badge?<span className={`state-badge plan-${badgeState}`}>{badge}</span>:null}</a>
+ {attentionState?<button type="button" className={`state-badge plan-${attentionState}`} onClick={openAttention}>{badge} ↗</button>:null}
+ {showHistory?<button type="button" className="plan-history-toggle" aria-label={`План: ${thread.displayTitle}`} title={historyOpen?'Скрыть план':'Показать план'} aria-expanded={historyOpen} onClick={()=>setHistoryOpen(open=>!open)}><span aria-hidden="true">{historyOpen?'▾':'▸'}</span></button>:null}
  <ActionsMenu thread={target} trigger={props => <button {...props} className={[props.className,"thread-menu"].filter(Boolean).join(" ")} aria-label={`Действия: ${thread.displayTitle}`}>⋯</button>}/>
- </div><ThreadProgress plans={plans} effects={values?.effects!==false} status={badge&&badgeState?{label:badge,state:badgeState,onActivate:badgeState==='needs_input'||badgeState==='error'?openAttention:undefined}:undefined}/><div className="thread-progress-meta">{plans.length||isRunning(thread)||failed?<ProgressFreshness updatedAt={plan?.updatedAt} checkedAt={checkedAt} failed={!!failed} running={isRunning(thread)} onRefresh={refresh}/>:null}</div></div></ThreadMenu>;
+ </div>
+ {running?<ThreadProgress plans={plans} effects={values?.effects!==false} status={!attentionState&&badge&&badgeState?{label:badge,state:badgeState}:undefined}/>:null}
+ {showDetails?<ThreadPlanHistory plans={plans}/>:null}
+ {running||showDetails?<div className="thread-progress-meta"><ProgressFreshness updatedAt={plan?.updatedAt} checkedAt={checkedAt} failed={!!failed} running={running} onRefresh={refresh}/></div>:null}
+ </div></ThreadMenu>;
 }
 
 function AttentionRow({thread,onNavigate}:{thread:PluginSidebarThread&{planAttention?:'needs_input'|'error'};onNavigate:()=>void}) {

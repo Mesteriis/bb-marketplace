@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
-import { afterEach, expect, test } from 'vitest';
+import { afterEach, expect, test, vi } from 'vitest';
 import { act, fireEvent, cleanup, waitFor, within } from '@testing-library/react';
 import { loadPluginApp, renderSlot } from '@get-bb/plugin-sdk/testing/app';
 import app from '../app';
 afterEach(() => { cleanup(); localStorage.clear(); });
- const make=(id:string,projectId:string,status:'active'|'idle'|'error')=>({id,projectId,status,title:id,titleFallback:null,parentThreadId:null,parentNotifications:"auto" as const,lifecycleOwnerThreadId:null,sourceThreadId:null,sectionId:null,originKind:null,originPluginId:null,providerId:"test",pinnedAt:null,archivedAt:null,createdAt:1,updatedAt:1,lastReadAt:null,hasPendingInteraction:false,isUnread:false,isPinned:false,pinSortKey:null,isArchived:false,displayTitle:id,href:'/projects/'+projectId+'/threads/'+id,environment:null,host:null,isHidden:false,indicator:'none' as const,indicatorLabel:null,runtimeStatus:status,queuedWork:'none' as const,activity:{workflows:0,backgroundAgents:0,backgroundCommands:0,planMode:0},latestAttentionAt:100});
+ const make=(id:string,projectId:string,status:'active'|'idle'|'error')=>({id,projectId,status,title:id,titleFallback:null,parentThreadId:null,parentNotifications:"auto" as const,lifecycleOwnerThreadId:null,sourceThreadId:null,sectionId:null,originKind:null,originPluginId:null,providerId:"test",pinnedAt:null,archivedAt:null,createdAt:Date.now(),updatedAt:1,lastReadAt:null,hasPendingInteraction:false,isUnread:false,isPinned:false,pinSortKey:null,isArchived:false,displayTitle:id,href:'/projects/'+projectId+'/threads/'+id,environment:null,host:null,isHidden:false,indicator:'none' as const,indicatorLabel:null,runtimeStatus:status,queuedWork:'none' as const,activity:{workflows:0,backgroundAgents:0,backgroundCommands:0,planMode:0},latestAttentionAt:100});
 test('hidden project disappears, is revealed by the top toggle and can be restored', async () => {
     const definition = await loadPluginApp(() => Promise.resolve({ default: app }));
     const slot = renderSlot(definition.threadLists[0]!, { activeThreadId: null, activeProjectId: null, isCompactViewport: false, onNavigate: () => { }, searchQuery: '' }, { sidebarThreads: { status: 'ready', projects: [{ id: 'p1', name: 'Example', isPersonal: false, href: '/projects/p1', settingsHref: '/settings/p1' }], threads: [], sections: [] }, rpc: { paths: () => [{ id: 'p1', name: 'Example', path: null }] } });
@@ -21,17 +21,16 @@ test('hidden project disappears, is revealed by the top toggle and can be restor
     slot.lifecycle.unmount();
 });
 
-test('collapsed folders and projectless section keep only live threads visible', async () => {
+test('Сегодня includes idle threads and Projects preserves projectless navigation', async () => {
  const definition=await loadPluginApp(()=>Promise.resolve({default:app}));
 
  // Complete synthetic sidebar rows; no backend or real workspace data.
 
  const slot=renderSlot(definition.threadLists[0]!,{activeThreadId:null,activeProjectId:null,isCompactViewport:false,onNavigate:()=>{},searchQuery:''},{settings:{rootPath:'/Projects'},sidebarThreads:{status:'ready',projects:[{id:'p',name:'Example',isPersonal:false,href:'/p',settingsHref:'/s'},{id:'loose',name:'Personal',isPersonal:true,href:'/l',settingsHref:'/s'}],threads:[make('busy','p','active'),make('idle','p','idle'),make('loose-idle','loose','idle'),make('loose-busy','loose','active')],sections:[]},rpc:{paths:()=>[{id:'p',name:'Example',path:'/Projects/Personal/Example'}]}});
- const activeSection=within(slot.getByRole('region',{name:'Активные'}));
+ const activeSection=within(slot.getByRole('region',{name:'Треды за последние 24 часа'}));
  expect(activeSection.getAllByRole('link',{name:/busy/}).length).toBe(2);
- expect(activeSection.queryByRole('link',{name:'idle'})).toBeNull();
- expect(slot.queryByRole('link',{name:'idle'})).toBeNull();
- expect(slot.queryByRole('link',{name:'loose-idle'})).toBeNull();
+ expect(activeSection.getByRole('link',{name:'Example idle'})).toBeTruthy();
+ expect(activeSection.getByRole('link',{name:'Personal loose-idle'})).toBeTruthy();
  fireEvent.click(slot.getByRole('tab',{name:'Проекты'}));
  await slot.findByRole('button',{name:'Personal 2'});
  fireEvent.click(slot.getByRole('button',{name:'Без проекта 2'}));
@@ -50,8 +49,8 @@ test('projects are separate, searchable and retain active threads in their proje
  expect(slot.getByRole('link',{name:/quiet/})).toBeTruthy();
  fireEvent.change(slot.getByRole('textbox',{name:'Найти проект'}),{target:{value:'missing'}});
  expect(slot.getByText('Проекты не найдены')).toBeTruthy();
- fireEvent.click(slot.getByRole('tab',{name:'Сейчас'}));
- expect(slot.getByRole('region',{name:'Активные'})).toBeTruthy();
+ fireEvent.click(slot.getByRole('tab',{name:'Сегодня'}));
+ expect(slot.getByRole('region',{name:'Треды за последние 24 часа'})).toBeTruthy();
  slot.lifecycle.unmount();
 });
 test('attention includes host errors and pending questions and opens the correct thread',async()=>{
@@ -62,18 +61,114 @@ test('attention includes host errors and pending questions and opens the correct
  fireEvent.click(inbox.getByRole('link',{name:/question/}));
  expect(slot.inspection.navigateCalls.at(-1)).toMatchObject({method:'toThread',threadId:'question'});
  fireEvent.click(slot.getByRole('button',{name:'Внимание 2'}));
- expect(within(slot.getByRole('region',{name:'Активные'})).queryByRole('link',{name:/worker/})).toBeNull();
+ expect(within(slot.getByRole('region',{name:'Треды за последние 24 часа'})).queryByRole('link',{name:/worker/})).toBeNull();
  slot.lifecycle.unmount();
 });
 test('optional navigation header handshake removes duplicate controls and restores fallback on detach',async()=>{
  const definition=await loadPluginApp(()=>Promise.resolve({default:app}));
  const slot=renderSlot(definition.threadLists[0]!,{activeThreadId:null,activeProjectId:null,isCompactViewport:false,onNavigate:()=>{},searchQuery:''},{rpc:{paths:()=>[],attention:()=>({entries:[],incomplete:false})}});
- expect(slot.getByRole('tab',{name:'Сейчас'})).toBeTruthy();
+ expect(slot.getByRole('tab',{name:'Сегодня'})).toBeTruthy();
  act(()=>window.dispatchEvent(new CustomEvent('makosh-sidebar:v1:header',{detail:{ready:true}})));
  expect(slot.queryByRole('tablist')).toBeNull();
  act(()=>window.dispatchEvent(new CustomEvent('makosh-sidebar:v1:select',{detail:{tab:'projects'}})));
  expect(slot.getByRole('textbox',{name:'Найти проект'})).toBeTruthy();
  act(()=>window.dispatchEvent(new CustomEvent('makosh-sidebar:v1:header',{detail:{ready:false}})));
  expect(slot.getByRole('tab',{name:'Проекты'}).getAttribute('aria-selected')).toBe('true');
+ slot.lifecycle.unmount();
+});
+
+test('the thread list shows the active plan on its thread row', async () => {
+ const definition = await loadPluginApp(() => Promise.resolve({ default: app }));
+ const thread = make('busy', 'p', 'active');
+ const slot = renderSlot(definition.threadLists[0]!, {
+  activeThreadId: thread.id, activeProjectId: null, isCompactViewport: false, onNavigate: () => {}, searchQuery: '',
+ }, {
+  sidebarThreads: { status: 'ready', projects: [], threads: [thread], sections: [] },
+  rpc: {
+   paths: () => [],
+   attention: () => ({ entries: [], incomplete: false }),
+   bars_get: () => ({ bars: [] }),
+   agents_get: () => ({ agents: [] }),
+   progress: () => ({
+    availability: 'ready',
+    entries: [{ threadId: thread.id, plans: [{ id: 'plan', title: 'Sidebar fixture', state: 'running', updatedAt: 1, stages: [] }] }],
+    failedThreadIds: [],
+   }),
+  },
+ });
+ const active = within(slot.getByRole('region', { name: 'Треды за последние 24 часа' }));
+ expect(await active.findAllByRole('progressbar', { name: 'Sidebar fixture: В работе' })).not.toHaveLength(0);
+ slot.lifecycle.unmount();
+});
+
+test('Сегодня retains older ancestors only while they have a recent descendant', async () => {
+ vi.useFakeTimers({ now: 1732147200000 });
+ try {
+  const definition = await loadPluginApp(() => Promise.resolve({ default: app }));
+  const old = { ...make('old-parent', 'p', 'error'), createdAt: 1732060799999 };
+  const edge = { ...make('exactly-24-hours', 'p', 'idle'), createdAt: 1732060800000, parentThreadId: old.id };
+  const olderSibling = { ...make('older-sibling', 'p', 'active'), createdAt: 1732060799999, parentThreadId: old.id };
+  const recent = { ...make('recent-idle', 'p', 'idle'), createdAt: 1732147199999 };
+  const slot = renderSlot(definition.threadLists[0]!, {
+   activeThreadId: null, activeProjectId: null, isCompactViewport: false, onNavigate: () => {}, searchQuery: '',
+  }, {
+   sidebarThreads: { status: 'ready', projects: [], threads: [old, edge, olderSibling, recent], sections: [] },
+   rpc: { paths: () => [], attention: () => ({ entries: [], incomplete: false }), progress: () => ({ availability: 'ready', entries: [], failedThreadIds: [] }) },
+  });
+  expect(slot.getByRole('tab', { name: 'Сегодня' })).toBeTruthy();
+  expect(slot.getByRole('link', { name: /old-parent/ })).toBeTruthy();
+  expect(slot.queryByRole('link', { name: /exactly-24-hours/ })).toBeNull();
+  fireEvent.click(slot.getByRole('button', { name: 'Развернуть сабтреды: old-parent' }));
+  expect(slot.getByRole('link', { name: /exactly-24-hours/ })).toBeTruthy();
+  expect(slot.queryByRole('link', { name: /older-sibling/ })).toBeNull();
+  expect(slot.getByRole('link', { name: /recent-idle/ })).toBeTruthy();
+  expect(slot.queryByRole('region', { name: 'Требует внимания' })).toBeNull();
+  await act(async () => vi.advanceTimersByTimeAsync(1));
+  expect(slot.queryByRole('link', { name: /old-parent/ })).toBeNull();
+  expect(slot.queryByRole('link', { name: /exactly-24-hours/ })).toBeNull();
+  expect(slot.getByRole('link', { name: /recent-idle/ })).toBeTruthy();
+  slot.lifecycle.unmount();
+ } finally {
+  vi.useRealTimers();
+ }
+});
+
+test('idle threads keep plans behind disclosure and leave blockers visible', async () => {
+ const definition = await loadPluginApp(() => Promise.resolve({ default: app }));
+ const finished = { ...make('finished', 'p', 'idle'), isUnread: true };
+ const blocked = make('blocked', 'p', 'idle');
+ const failed = make('failed-plan', 'p', 'idle');
+ const plans = [
+  { id: 'unfinished', title: 'Delivery plan', state: 'running', updatedAt: 1, stages: [{ name: 'Delivery', steps: [{ title: 'Merge the change', status: 'pending' }] }] },
+  { id: 'blocked', title: 'Blocked plan', state: 'needs_input', updatedAt: 1, note: 'Choose the target branch', stages: [] },
+  { id: 'failed', title: 'Failed plan', state: 'error', updatedAt: 1, note: 'Build failed', stages: [] },
+ ];
+ const threads = [finished, blocked, failed];
+ const slot = renderSlot(definition.threadLists[0]!, {
+  activeThreadId: null, activeProjectId: null, isCompactViewport: false, onNavigate: () => {}, searchQuery: '',
+ }, {
+  sidebarThreads: { status: 'ready', projects: [], threads, sections: [] },
+  rpc: {
+   paths: () => [],
+   attention: () => ({ entries: [], incomplete: false }),
+   progress: () => ({
+    availability: 'ready',
+    entries: threads.map((thread, index) => ({ threadId: thread.id, plans: [plans[index]] })),
+    failedThreadIds: [],
+   }),
+  },
+ });
+ const today = within(slot.getByRole('region', { name: 'Треды за последние 24 часа' }));
+ const toggle = await today.findByRole('button', { name: 'План: finished' });
+ expect(today.getByText('Новый ответ')).toBeTruthy();
+ expect(today.getByText('Choose the target branch')).toBeTruthy();
+ expect(today.getByText('Build failed')).toBeTruthy();
+ expect(today.queryByRole('progressbar')).toBeNull();
+ expect(today.queryByText('Merge the change')).toBeNull();
+ expect(today.queryByText(/^Обновлён/)).toBeNull();
+ fireEvent.click(toggle);
+ expect(today.getByText('Merge the change')).toBeTruthy();
+ expect(today.getByText(/^Обновлён/)).toBeTruthy();
+ expect(today.queryByRole('progressbar')).toBeNull();
  slot.lifecycle.unmount();
 });

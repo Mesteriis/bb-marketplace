@@ -5,7 +5,7 @@ import { loadPluginApp, renderSlot } from '@get-bb/plugin-sdk/testing/app';
 import app from '../app';
 
 afterEach(() => { cleanup(); localStorage.clear(); });
-const make = (id: string, over: object = {}) => ({ id, projectId: 'p', status: 'active' as const, title: id, titleFallback: null, parentThreadId: null, parentNotifications: 'auto' as const, lifecycleOwnerThreadId: null, sourceThreadId: null, sectionId: null, originKind: null, originPluginId: null, providerId: 'test', pinnedAt: null, archivedAt: null, createdAt: 1, updatedAt: 1, lastReadAt: null, hasPendingInteraction: false, isUnread: false, isPinned: false, pinSortKey: null, isArchived: false, displayTitle: id, href: '/projects/p/threads/' + id, environment: null, host: null, isHidden: false, indicator: 'none' as const, indicatorLabel: null, runtimeStatus: 'active' as const, queuedWork: 'none' as const, activity: { workflows: 0, backgroundAgents: 0, backgroundCommands: 0, planMode: 0 }, latestAttentionAt: 100, ...over });
+const make = (id: string, over: object = {}) => ({ id, projectId: 'p', status: 'active' as const, title: id, titleFallback: null, parentThreadId: null, parentNotifications: 'auto' as const, lifecycleOwnerThreadId: null, sourceThreadId: null, sectionId: null, originKind: null, originPluginId: null, providerId: 'test', pinnedAt: null, archivedAt: null, createdAt: Date.now(), updatedAt: 1, lastReadAt: null, hasPendingInteraction: false, isUnread: false, isPinned: false, pinSortKey: null, isArchived: false, displayTitle: id, href: '/projects/p/threads/' + id, environment: null, host: null, isHidden: false, indicator: 'none' as const, indicatorLabel: null, runtimeStatus: 'active' as const, queuedWork: 'none' as const, activity: { workflows: 0, backgroundAgents: 0, backgroundCommands: 0, planMode: 0 }, latestAttentionAt: 100, ...over });
 
 const questionPlan = { id: 'plan', title: 'Plan', state: 'needs_input', updatedAt: 1, stages: [{ name: 'Stage', steps: [{ title: 'Step', status: 'active' }] }] };
 async function render(onNavigate: () => void, planned = false) {
@@ -26,7 +26,7 @@ test('thread row: accepted request keeps the user on the page and still closes t
   const onNavigate = vi.fn(); const seen: string[] = [];
   const stop = answer(true, 'opened', seen);
   const slot = await render(onNavigate);
-  const link = within(slot.getByRole('region', { name: 'Активные' })).getAllByRole('link', { name: /busy/ })[0]!;
+  const link = within(slot.getByRole('region', { name: 'Треды за последние 24 часа' })).getAllByRole('link', { name: /busy/ })[0]!;
   const notPrevented = fireEvent.click(link);
   stop();
   expect(seen).toEqual(['busy']);
@@ -39,7 +39,7 @@ test('thread row: accepted request keeps the user on the page and still closes t
 test('thread row: no listener navigates as before', async () => {
   const onNavigate = vi.fn();
   const slot = await render(onNavigate);
-  const link = within(slot.getByRole('region', { name: 'Активные' })).getAllByRole('link', { name: /busy/ })[0]!;
+  const link = within(slot.getByRole('region', { name: 'Треды за последние 24 часа' })).getAllByRole('link', { name: /busy/ })[0]!;
   fireEvent.click(link);
   expect(slot.inspection.navigateCalls.at(-1)).toMatchObject({ method: 'toThread', threadId: 'busy' });
   expect(onNavigate).toHaveBeenCalledTimes(1);
@@ -49,7 +49,7 @@ test('thread row: no listener navigates as before', async () => {
 test('thread row: not-shown reply navigates', async () => {
   const seen: string[] = []; const stop = answer(false, 'not-shown', seen);
   const slot = await render(() => { });
-  fireEvent.click(within(slot.getByRole('region', { name: 'Активные' })).getAllByRole('link', { name: /busy/ })[0]!);
+  fireEvent.click(within(slot.getByRole('region', { name: 'Треды за последние 24 часа' })).getAllByRole('link', { name: /busy/ })[0]!);
   stop();
   expect(slot.inspection.navigateCalls.at(-1)).toMatchObject({ method: 'toThread', threadId: 'busy' });
   slot.lifecycle.unmount();
@@ -58,7 +58,7 @@ test('thread row: not-shown reply navigates', async () => {
 test('thread row: modifier and non-left clicks send nothing', async () => {
   const seen: string[] = []; const stop = answer(true, 'opened', seen);
   const slot = await render(() => { });
-  const link = within(slot.getByRole('region', { name: 'Активные' })).getAllByRole('link', { name: /busy/ })[0]!;
+  const link = within(slot.getByRole('region', { name: 'Треды за последние 24 часа' })).getAllByRole('link', { name: /busy/ })[0]!;
   const block = (event: Event) => event.preventDefault(); // the browser would follow the link; jsdom cannot
   document.addEventListener('click', block);
   fireEvent.click(link, { metaKey: true });

@@ -13,7 +13,7 @@ test('header opts in only when Sidebar is mounted, exchanges selection and retur
   const slot=render(<Header/>);
   expect(slot.queryByRole('tablist')).toBeNull();
   act(()=>window.dispatchEvent(new CustomEvent('makosh-sidebar:v1:state',{detail:{tab:'now'}})));
-  expect(slot.getByRole('tab',{name:'Сейчас'}).getAttribute('aria-selected')).toBe('true');
+  expect(slot.getByRole('tab',{name:'Сегодня'}).getAttribute('aria-selected')).toBe('true');
   fireEvent.click(slot.getByRole('tab',{name:'Проекты'}));
   expect(events).toEqual([{tab:'projects'}]);
   act(()=>window.dispatchEvent(new CustomEvent('makosh-sidebar:v1:state',{detail:null})));
