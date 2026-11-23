@@ -2,13 +2,13 @@ import {isRunning} from '../core/presentation';
 import type {CatalogThread} from '../core/project-catalog';
 import {Glyph} from './glyph';
 
-function threadStatus(thread: CatalogThread) {
-    if (thread.hasPendingInteraction || thread.planAttention === 'needs_input') return {text: 'Ждёт ответа', tone: 'waiting'};
-    if (thread.status === 'error' || thread.planAttention === 'error') return {text: 'Ошибка', tone: 'failed'};
-    if (thread.status === 'stopping') return {text: 'Останавливается', tone: 'running'};
-    if (isRunning(thread)) return {text: 'В работе', tone: 'running'};
-    if (thread.isUnread) return {text: 'Новый ответ', tone: 'unread'};
-    return {text: 'Нет активности', tone: 'muted'};
+function threadStatus(thread: CatalogThread): {text: string; tone: string; icon: 'clock' | 'warning' | 'stop' | 'activity' | 'dot'} | null {
+    if (thread.hasPendingInteraction || thread.planAttention === 'needs_input') return {text: 'Ждёт ответа', tone: 'waiting', icon: 'clock'};
+    if (thread.status === 'error' || thread.planAttention === 'error') return {text: 'Ошибка', tone: 'failed', icon: 'warning'};
+    if (thread.status === 'stopping') return {text: 'Останавливается', tone: 'running', icon: 'stop'};
+    if (isRunning(thread)) return {text: 'В работе', tone: 'running', icon: 'activity'};
+    if (thread.isUnread) return {text: 'Новый ответ', tone: 'unread', icon: 'dot'};
+    return null;
 }
 
 export function CatalogThreads({label, threads, activeThreadId, onOpen}: {
@@ -30,7 +30,8 @@ export function CatalogThreads({label, threads, activeThreadId, onOpen}: {
                         onOpen(thread.id, false);
                     }}>
                     <span className="catalog-thread-title" title={thread.displayTitle}>{thread.displayTitle}</span>
-                    <span className={`catalog-thread-status ${status.tone}`}>{status.text}</span>
+                    {status && <span className={`catalog-thread-status ${status.tone}`} role="img"
+                        aria-label={status.text} title={status.text}><Glyph kind={status.icon}/></span>}
                 </a>
                 <button type="button" className="catalog-split" aria-label={`Открыть рядом: ${thread.displayTitle}`}
                     title="Открыть рядом" onClick={() => onOpen(thread.id, true)}><Glyph kind="split"/></button>

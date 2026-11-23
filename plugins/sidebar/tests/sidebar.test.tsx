@@ -91,6 +91,8 @@ test('multiple project lists open inline and can open two threads side by side',
  const atlas = within(slot.getByRole('list', {name: 'Треды проекта atlas'}));
  const orbit = within(slot.getByRole('list', {name: 'Треды проекта orbit'}));
  expect(atlas.queryByText('archived-atlas-thread')).toBeNull();
+ expect(atlas.getByRole('img', {name: 'В работе'})).toBeTruthy();
+ expect(atlas.queryByText('В работе')).toBeNull();
  fireEvent.click(atlas.getByRole('link', {name: 'active-thread В работе'}));
  fireEvent.click(orbit.getByRole('button', {name: 'Открыть рядом: recent-thread'}));
  expect(slot.inspection.navigateCalls).toEqual([
@@ -109,8 +111,20 @@ test('projectless conversations open in the sidebar outside the scoped catalog',
  fireEvent.click(slot.getByRole('button', {name: 'Без проекта', expanded: false}));
  const list = within(slot.getByRole('list', {name: 'Треды без проекта'}));
  expect(list.queryByText('active-thread')).toBeNull();
- fireEvent.click(list.getByRole('link', {name: 'projectless-thread Нет активности'}));
+ expect(list.queryByRole('img')).toBeNull();
+ expect(list.queryByText('Нет активности')).toBeNull();
+ fireEvent.click(list.getByRole('link', {name: 'projectless-thread'}));
  expect(slot.inspection.navigateCalls.at(-1)).toMatchObject({method: 'toThread', threadId: 'projectless-thread'});
+ slot.lifecycle.unmount();
+});
+test('project info links to the native settings without expanding the project', async () => {
+ const slot = await catalogSlot();
+ fireEvent.click(slot.getByRole('tab', {name: 'Проекты'}));
+ const card = await slot.findByRole('button', {name: /^atlas/, expanded: false});
+ const info = slot.getByRole('link', {name: 'Свойства проекта atlas'});
+ expect(info.getAttribute('href')).toBe('/settings/atlas');
+ expect(card.getAttribute('aria-expanded')).toBe('false');
+ expect(slot.queryByRole('link', {name: 'Свойства проекта Без проекта'})).toBeNull();
  slot.lifecycle.unmount();
 });
 test('attention includes host errors and pending questions and opens the correct thread',async()=>{

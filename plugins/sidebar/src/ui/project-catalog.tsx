@@ -46,13 +46,16 @@ function Overlay({label, icon, open, onOpenChange, children}: {
 
 function ProjectStatus({row}: {row: CatalogRow}) {
     const status =
-        row.hidden ? {label: 'Скрыт', kind: 'muted'} :
-        row.empty ? {label: 'Пустой', kind: 'muted'} :
-        row.waiting ? {label: 'Ждёт ответа', kind: 'waiting'} :
-        row.failed ? {label: 'Ошибка', kind: 'failed'} :
-        row.running ? {label: `${row.running} в работе`, kind: 'running'} :
-        row.unread ? {label: row.unread === 1 ? '1 новый ответ' : `${row.unread} новых`, kind: 'unread'} : null;
-    return status && <span className={`catalog-status ${status.kind}`}>{status.label}</span>;
+        row.hidden ? {label: 'Скрыт', kind: 'muted', icon: 'eye'} as const :
+        row.empty ? {label: 'Пустой', kind: 'muted', icon: 'inbox'} as const :
+        row.waiting ? {label: 'Ждёт ответа', kind: 'waiting', icon: 'clock'} as const :
+        row.failed ? {label: 'Ошибка', kind: 'failed', icon: 'warning'} as const :
+        row.running ? {label: `${row.running} в работе`, kind: 'running', icon: 'activity', count: row.running} as const :
+        row.unread ? {label: row.unread === 1 ? '1 новый ответ' : `${row.unread} новых`, kind: 'unread', icon: 'dot', count: row.unread} as const : null;
+    return status && <span className={`catalog-status ${status.kind}`} role="img" aria-label={status.label} title={status.label}>
+        <Glyph kind={status.icon}/>
+        {'count' in status && <span aria-hidden="true">{status.count}</span>}
+    </span>;
 }
 
 export function ProjectCatalog({rows, activeProjectId, activeThreadId, projectless, onOpenThread, onCompose, onToggleHidden}: Props) {
@@ -129,6 +132,8 @@ export function ProjectCatalog({rows, activeProjectId, activeThreadId, projectle
                         <ProjectStatus row={row}/>
                         <span className="catalog-chevron"><Glyph kind="chevron"/></span>
                     </button>
+                    <a className="catalog-info" href={row.settingsHref}
+                        aria-label={`Свойства проекта ${row.name}`} title="Свойства проекта"><Glyph kind="info"/></a>
                     <Overlay label={`Действия проекта ${row.name}`} icon="⋯"
                         open={typeof overlay === 'object' && overlay?.id === row.id}
                         onOpenChange={open => setOverlay(open ? {id: row.id} : null)}>

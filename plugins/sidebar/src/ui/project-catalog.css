@@ -90,11 +90,28 @@
 
 .catalog-name { font-weight: 550; }
 .catalog-path, .catalog-status { color: var(--catalog-muted); font-size: .6875rem; }
-.catalog-status { margin-inline-start: auto; flex-shrink: 0; }
+.catalog-status {
+    display: inline-flex;
+    align-items: center;
+    gap: .125rem;
+    margin-inline-start: auto;
+    flex-shrink: 0;
+}
 .catalog-status.waiting { color: var(--plan-warning); }
 .catalog-status.failed { color: var(--plan-error); }
 .catalog-status.running { color: var(--plan-done); }
 .catalog-status.unread { color: var(--plan-unread); }
+
+.catalog-info {
+    display: grid;
+    place-items: center;
+    min-width: var(--catalog-control);
+    min-height: var(--catalog-control);
+    flex: none;
+    color: var(--catalog-muted);
+    border-radius: var(--catalog-radius);
+}
+.catalog-info:hover { color: var(--foreground); }
 
 .catalog-overlay { position: relative; flex: none; }
 .catalog-overlay > button {
@@ -179,7 +196,7 @@
     text-overflow: ellipsis;
     white-space: nowrap;
 }
-.catalog-thread-status { flex: none; font-size: .6875rem; margin-inline-start: auto; color: var(--catalog-muted); }
+.catalog-thread-status { display: flex; flex: none; margin-inline-start: auto; color: var(--catalog-muted); }
 .catalog-thread-status.waiting { color: var(--plan-warning); }
 .catalog-thread-status.failed { color: var(--plan-error); }
 .catalog-thread-status.running { color: var(--plan-done); }
