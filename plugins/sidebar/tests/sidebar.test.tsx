@@ -82,38 +82,45 @@ test('the catalog filters by folder, sorts and searches by path', async () => {
  slot.lifecycle.unmount();
 });
 
-test('multiple project lists open inline and can open two threads side by side', async () => {
+test('opening a project shows its overview and closes the previous project list', async () => {
  const {slot} = await catalogSlot();
  fireEvent.click(slot.getByRole('tab', {name: 'Проекты'}));
  const first = await slot.findByRole('button', {name: /^atlas/, expanded: false});
  fireEvent.click(first);
- fireEvent.click(slot.getByRole('button', {name: /^orbit/, expanded: false}));
- expect(slot.inspection.navigateCalls).toHaveLength(0);
- expect(slot.getByRole('button', {name: /^atlas/, expanded: true})).toBeTruthy();
- expect(slot.getByRole('button', {name: /^orbit/, expanded: true})).toBeTruthy();
+ expect(slot.inspection.navigateCalls.at(-1)).toMatchObject({
+  method: 'toPluginPanel', path: 'project-info', options: {subPath: 'atlas'},
+ });
  const atlas = within(slot.getByRole('list', {name: 'Треды проекта atlas'}));
- const orbit = within(slot.getByRole('list', {name: 'Треды проекта orbit'}));
  expect(atlas.queryByText('archived-atlas-thread')).toBeNull();
  expect(atlas.queryByText('child-atlas-thread')).toBeNull();
  expect(atlas.queryByText('child-with-archived-parent')).toBeNull();
  expect(atlas.getByRole('img', {name: 'В работе'})).toBeTruthy();
- expect(atlas.queryByText('В работе')).toBeNull();
  fireEvent.click(atlas.getByRole('link', {name: 'active-thread В работе'}));
- fireEvent.click(orbit.getByRole('button', {name: 'Открыть рядом: recent-thread'}));
- expect(slot.inspection.navigateCalls).toEqual([
-  expect.objectContaining({method: 'toThread', threadId: 'active-thread'}),
-  expect.objectContaining({method: 'toThread', threadId: 'recent-thread', options: {split: true}}),
- ]);
- fireEvent.click(first);
+ expect(slot.inspection.navigateCalls.at(-1)).toMatchObject({method:'toThread', threadId:'active-thread'});
+ const second = slot.getByRole('button', {name: /^orbit/, expanded: false});
+ fireEvent.click(second);
+ expect(slot.inspection.navigateCalls.at(-1)).toMatchObject({
+  method: 'toPluginPanel', path: 'project-info', options: {subPath: 'orbit'},
+ });
  expect(slot.queryByRole('list', {name: 'Треды проекта atlas'})).toBeNull();
- expect(slot.getByRole('list', {name: 'Треды проекта orbit'})).toBeTruthy();
+ const orbit = within(slot.getByRole('list', {name: 'Треды проекта orbit'}));
+ fireEvent.click(orbit.getByRole('button', {name: 'Открыть рядом: recent-thread'}));
+ expect(slot.inspection.navigateCalls.at(-1)).toMatchObject({method:'toThread', threadId:'recent-thread', options:{split:true}});
+ const navigations = slot.inspection.navigateCalls.length;
+ fireEvent.click(second);
+ expect(slot.queryByRole('list', {name: 'Треды проекта orbit'})).toBeNull();
+ expect(slot.inspection.navigateCalls).toHaveLength(navigations);
  slot.lifecycle.unmount();
 });
 
 test('projectless conversations open in the sidebar outside the scoped catalog', async () => {
  const {slot} = await catalogSlot();
  fireEvent.click(slot.getByRole('tab', {name: 'Проекты'}));
+ fireEvent.click(await slot.findByRole('button', {name: /^atlas/, expanded: false}));
+ const navigations = slot.inspection.navigateCalls.length;
  fireEvent.click(slot.getByRole('button', {name: 'Без проекта', expanded: false}));
+ expect(slot.queryByRole('list', {name: 'Треды проекта atlas'})).toBeNull();
+ expect(slot.inspection.navigateCalls).toHaveLength(navigations);
  const list = within(slot.getByRole('list', {name: 'Треды без проекта'}));
  expect(list.queryByText('active-thread')).toBeNull();
  expect(list.queryByText('projectless-child')).toBeNull();

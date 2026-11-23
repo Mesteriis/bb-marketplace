@@ -72,14 +72,11 @@ export function ProjectCatalog({rows, activeProjectId, activeThreadId, projectle
     const selectedScope = scopes.includes(scope) ? scope : '';
     const visible = filterCatalog(rows, {query, scope: selectedScope, sort, showHidden, showEmpty});
 
-    const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
-    function toggleExpanded(id: string) {
-        setExpanded(previous => {
-            const next = new Set(previous);
-            if (next.has(id)) next.delete(id);
-            else next.add(id);
-            return next;
-        });
+    const [expandedId, setExpandedId] = useState<string | null>(null);
+    function toggleExpanded(id: string, openOverview: boolean) {
+        const opening = expandedId !== id;
+        setExpandedId(opening ? id : null);
+        if (opening && openOverview) onOpenProjectInfo(id);
     }
 
     return <div className="project-catalog">
@@ -112,20 +109,20 @@ export function ProjectCatalog({rows, activeProjectId, activeThreadId, projectle
         </div>
         {projectless && <div className="catalog-projectless">
             <div className={`catalog-row${projectless.id === activeProjectId ? ' selected' : ''}`}>
-                <button type="button" className="catalog-disclosure" aria-expanded={expanded.has(projectless.id)}
-                    onClick={() => toggleExpanded(projectless.id)}>
+                <button type="button" className="catalog-disclosure" aria-expanded={expandedId === projectless.id}
+                    onClick={() => toggleExpanded(projectless.id, false)}>
                     <span className="catalog-chevron"><Glyph kind="chevron"/></span>
                     Без проекта
                 </button>
             </div>
-            {expanded.has(projectless.id) && <CatalogThreads label="Треды без проекта" threads={projectless.threads}
+            {expandedId === projectless.id && <CatalogThreads label="Треды без проекта" threads={projectless.threads}
                 activeThreadId={activeThreadId} onOpen={onOpenThread}/>}
         </div>}
         <ul className="catalog-list" aria-label="Проекты">
             {visible.map(row => <li key={row.id}>
                 <div className={`catalog-row${row.id === activeProjectId ? ' selected' : ''}`}>
-                    <button type="button" className="catalog-disclosure" aria-expanded={expanded.has(row.id)}
-                        onClick={() => toggleExpanded(row.id)}>
+                    <button type="button" className="catalog-disclosure" aria-expanded={expandedId === row.id}
+                        onClick={() => toggleExpanded(row.id, true)}>
                         <span className="catalog-chevron"><Glyph kind="chevron"/></span>
                         <span className="catalog-name" title={row.name}>{row.name}</span>
                         {row.folder && <span className="catalog-path" title={row.folder}>{row.folder}</span>}
@@ -152,7 +149,7 @@ export function ProjectCatalog({rows, activeProjectId, activeThreadId, projectle
                             {row.hidden ? 'Вернуть в список' : 'Скрыть проект'}</button>
                     </Overlay>
                 </div>
-                {expanded.has(row.id) && <CatalogThreads label={`Треды проекта ${row.name}`} threads={row.threads}
+                {expandedId === row.id && <CatalogThreads label={`Треды проекта ${row.name}`} threads={row.threads}
                     activeThreadId={activeThreadId} onOpen={onOpenThread}/>}
             </li>)}
         </ul>

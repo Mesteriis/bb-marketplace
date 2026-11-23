@@ -40,7 +40,7 @@ test('sidebar RPC restores auto-hidden history and preserves timing across reloa
 test('project overview reads all pages and keeps hidden thread titles out of the sample', async () => {
  const thread = (id: string, archivedAt: number | null, visibility: 'hidden' | 'visible', parentThreadId: string | null) =>
   ({id, projectId: 'project', archivedAt, visibility, parentThreadId, title: id, titleFallback: null,
-    status: 'idle', providerId: 'test', createdAt: 1, updatedAt: 2, latestAttentionAt: 2, hasPendingInteraction: false});
+    status: 'idle', providerId: 'test', createdAt: 1.25, updatedAt: 2.75, latestAttentionAt: 2, hasPendingInteraction: false});
  const active = [
   thread('visible-parent', null, 'visible', null),
   thread('visible-child', null, 'visible', 'visible-parent'),
@@ -48,7 +48,7 @@ test('project overview reads all pages and keeps hidden thread titles out of the
  ];
  const archived = [thread('archived-parent', 3, 'visible', null), thread('archived-hidden', 3, 'hidden', null)];
  const {bb, harness} = createFakePluginHost({pluginId: 'makosh-sidebar', sdk: {
-  projects: {get: async () => ({id: 'project', name: 'Example', kind: 'standard', gitRemoteUrl: null, sources: [], createdAt: 1, updatedAt: 2})},
+  projects: {get: async () => ({id: 'project', name: 'Example', kind: 'standard', gitRemoteUrl: null, sources: [], createdAt: 1.5, updatedAt: 2})},
   threads: {list: async ({archived: inArchive, offset = 0, limit = 100} = {}) =>
    (inArchive ? archived : active).slice(offset, offset + limit) as Awaited<ReturnType<BbPluginApi['sdk']['threads']['list']>>},
  }});
@@ -56,10 +56,10 @@ test('project overview reads all pages and keeps hidden thread titles out of the
   await plugin(bb);
   const result = await harness.behavior.callRpc('project_overview', {projectId: 'project'});
   expect(result).toMatchObject({
-   project: {id: 'project', name: 'Example'},
+   project: {id: 'project', name: 'Example', createdAt: 1.5},
    groups: {unarchivedVisible: {parent: 1, child: 1}, unarchivedHidden: {parent: 0, child: 201},
     archivedVisible: {parent: 1, child: 0}, archivedHidden: {parent: 1, child: 0}},
-   threads: [{id: 'visible-parent'}, {id: 'visible-child'}],
+   threads: [{id: 'visible-parent', updatedAt: 2.75}, {id: 'visible-child'}],
   });
   expect(JSON.stringify(result)).not.toContain('hidden-0');
  } finally {await harness.lifecycle.dispose();}

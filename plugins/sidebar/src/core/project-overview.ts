@@ -1,6 +1,6 @@
 import {z} from 'zod';
 
-const timestamp = z.number().int().nonnegative();
+const timestamp = z.number().finite().nonnegative();
 const counts = z.object({parent: z.number().int().nonnegative(), child: z.number().int().nonnegative()});
 export const overviewGroups = ['unarchivedVisible', 'unarchivedHidden', 'archivedVisible', 'archivedHidden'] as const;
 
