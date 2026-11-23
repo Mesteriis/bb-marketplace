@@ -342,6 +342,10 @@
     {
       "name": "chertog",
       "source": "./plugins/chertog"
+    },
+    {
+      "name": "treadchat",
+      "source": "./plugins/treadchat"
     }
   ]
 }

@@ -1,0 +1,35 @@
+{
+  "name": "bb-plugin-makosh-treadchat",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Review significant events, inspect sources, and send follow-ups to the same BB thread.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Mesteriis/bb-marketplace.git",
+    "directory": "plugins/treadchat"
+  },
+  "engines": {
+    "bb": ">=0.50.1",
+    "bbPluginSdk": ">=0.6.157 <0.7.0"
+  },
+  "bb": {
+    "name": "Makosh TreadChat",
+    "description": "Review significant events, inspect sources, and send follow-ups to the same BB thread.",
+    "branding": {
+      "icon": "MessagesSquare"
+    },
+    "server": "./server.ts",
+    "app": "./app.tsx"
+  },
+  "scripts": {
+    "check": "tsc && node --test tests/*.test.mjs",
+    "build": "bb plugin build"
+  },
+  "devDependencies": {
+    "@get-bb/plugin-sdk": "0.6.157",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "typescript": "^5.7.0"
+  }
+}
