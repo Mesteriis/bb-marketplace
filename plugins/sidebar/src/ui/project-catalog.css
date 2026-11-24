@@ -198,3 +198,62 @@
 @media (hover: none) {
     .catalog-thread .catalog-split { opacity: 1; }
 }
+
+.catalog-popover > .catalog-destructive,
+.project-catalog .catalog-dialog-buttons > .catalog-destructive {
+    color: var(--destructive);
+}
+
+.catalog-action-dialog {
+    box-sizing: border-box;
+    width: min(26rem, calc(100% - 2rem));
+    max-height: calc(100% - 2rem);
+    padding: 1.25rem;
+    border: 1px solid var(--border);
+    border-radius: .75rem;
+    background: var(--popover);
+    color: var(--popover-foreground);
+    box-shadow: 0 .5rem 1.5rem #0004;
+    overflow-wrap: anywhere;
+}
+
+.catalog-action-dialog::backdrop { background: #0008; }
+.catalog-action-dialog h2 { font-size: 1rem; font-weight: 600; }
+.catalog-action-dialog p { margin-block: .75rem; }
+.catalog-action-dialog [role="alert"] { color: var(--destructive); }
+
+.catalog-dialog-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: .5rem;
+}
+
+.project-catalog .catalog-dialog-buttons > button {
+    padding: .375rem .75rem;
+    border: 1px solid var(--border);
+    border-radius: var(--catalog-radius);
+}
+
+.catalog-dialog-buttons > button:hover:not(:disabled) { background: var(--catalog-accent); }
+.catalog-dialog-buttons > button:disabled { opacity: .65; }
+
+.catalog-action-dialog .catalog-worktree-issues {
+    list-style: none;
+    padding: 0;
+    margin-block: .75rem;
+    max-height: 35dvh;
+    overflow-y: auto;
+}
+
+.catalog-worktree-issues li {
+    padding-block: .5rem;
+    border-top: 1px solid var(--border);
+}
+.project-catalog .catalog-worktree-issues button {
+    margin-top: .375rem;
+    padding: .375rem .75rem;
+    border: 1px solid var(--border);
+    border-radius: var(--catalog-radius);
+}
+.catalog-worktree-issues button:hover:not(:disabled) { background: var(--catalog-accent); }

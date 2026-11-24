@@ -1,17 +1,42 @@
 // @vitest-environment jsdom
-import { afterEach, expect, test, vi } from 'vitest';
+import { beforeEach, afterEach, expect, test, vi } from 'vitest';
 import { act, fireEvent, cleanup, waitFor, within } from '@testing-library/react';
+import type {useSdk} from '@get-bb/plugin-sdk/app';
 import { loadPluginApp, renderSlot } from '@get-bb/plugin-sdk/testing/app';
 import app from '../app';
+beforeEach(() => {
+ Object.assign(HTMLDialogElement.prototype, {
+  showModal(this: HTMLDialogElement) { this.setAttribute('open', ''); },
+  close(this: HTMLDialogElement) { this.removeAttribute('open'); },
+ });
+});
 afterEach(() => { cleanup(); localStorage.clear(); });
  const make=(id:string,projectId:string,status:'active'|'idle'|'error')=>({id,projectId,status,title:id,titleFallback:null,parentThreadId:null,parentNotifications:"auto" as const,lifecycleOwnerThreadId:null,sourceThreadId:null,sectionId:null,originKind:null,originPluginId:null,providerId:"test",pinnedAt:null,archivedAt:null,createdAt:Date.now(),updatedAt:1,lastReadAt:null,hasPendingInteraction:false,isUnread:false,isPinned:false,pinSortKey:null,isArchived:false,displayTitle:id,href:'/projects/'+projectId+'/threads/'+id,environment:null,host:null,isHidden:false,indicator:'none' as const,indicatorLabel:null,runtimeStatus:status,queuedWork:'none' as const,activity:{workflows:0,backgroundAgents:0,backgroundCommands:0,planMode:0},latestAttentionAt:100});
-async function catalogSlot() {
+type Environment = Awaited<ReturnType<ReturnType<typeof useSdk>['environments']['list']>>[number];
+const featureEnvironment = {id: 'worktree', projectId: 'atlas', isWorktree: true, status: 'ready',
+ lifecycle: {phase: 'active'}, name: 'Feature', branchName: 'feature'} as Environment;
+const mainStatus = (options: {dirty?: boolean; unmerged?: boolean; aheadCount?: number} = {}) => ({
+ outcome: 'available',
+ workspace: {
+  workingTree: {fileCount: options.dirty ? 1 : 0, hasUncommittedChanges: false},
+  branch: {currentBranch: 'feature'},
+  mergeBase: {mergeBaseBranch: 'refs/heads/main', baseRef: 'main-head', aheadCount: options.aheadCount ?? 0,
+   hasCommittedUnmergedChanges: options.unmerged ?? false, squashMergeCheckComplete: true},
+ },
+});
+type ListedThread = Awaited<ReturnType<ReturnType<typeof useSdk>['threads']['list']>>[number];
+function listedThread(id: string, extra: Partial<ListedThread> = {}): ListedThread {
+ return {...make(id, 'atlas', 'idle'), deletedAt: null, visibility: 'visible', ...extra} as ListedThread;
+}
+
+async function catalogSlot(sdk?: NonNullable<Parameters<typeof renderSlot>[2]>['sdk']) {
  const definition = await loadPluginApp(() => Promise.resolve({ default: app }));
  const projects = ['atlas', 'orbit', 'retired', 'unused', 'outside', 'personal'].map(id =>
   ({id, name: id, isPersonal: id === 'personal', href: '/projects/' + id, settingsHref: '/settings/' + id}));
  const slot = renderSlot(definition.threadLists[0]!, {
   activeThreadId: null, activeProjectId: 'atlas', isCompactViewport: false, onNavigate: () => {}, searchQuery: '',
  }, {
+  sdk: {environments: {list: async () => []}, ...sdk},
   settings: {rootPath: '/Projects'},
   sidebarThreads: {status: 'ready', projects, sections: [], threads: [
    {...make('active-thread', 'atlas', 'active'), latestAttentionAt: 400},
@@ -31,6 +56,150 @@ async function catalogSlot() {
  });
  return {slot, definition, projects};
 }
+
+test('archiving a project uses every page of unarchived threads, including hidden children', async () => {
+ const visible = Array.from({length: 100}, (_, i) => listedThread('atlas-' + i));
+ const hiddenChild = listedThread('child', {parentThreadId: 'atlas-0', visibility: 'hidden'});
+ const archived = new Set<string>();
+ const {slot} = await catalogSlot({threads: {
+  list: async args => {
+   expect(args).toMatchObject({projectId: 'atlas', archived: false, includeHidden: true, limit: 100});
+   return [...visible, hiddenChild].filter(row => !archived.has(row.id))
+    .slice(args?.offset ?? 0, (args?.offset ?? 0) + 100);
+  },
+  archive: async ({threadId}) => { archived.add(threadId); return {ok: true, archivedThreadIds: [threadId]}; },
+ }});
+ fireEvent.click(slot.getByRole('tab', {name: 'Проекты'}));
+ fireEvent.click(await slot.findByRole('button', {name: 'Действия проекта atlas'}));
+ fireEvent.click(slot.getByRole('button', {name: 'Архивировать все треды'}));
+ expect(archived.size).toBe(0);
+ const dialog = within(slot.getByRole('alertdialog'));
+ fireEvent.click(dialog.getByRole('button', {name: 'Архивировать'}));
+ await waitFor(() => expect(archived.size).toBe(101));
+ expect(archived.has('child')).toBe(true);
+ slot.lifecycle.unmount();
+});
+
+test('a partial archive failure reports the remaining work and can be retried', async () => {
+ const rows = [listedThread('blocked'), listedThread('ready')];
+ const archived = new Set<string>();
+ let allowBlocked = false;
+ const {slot} = await catalogSlot({threads: {
+  list: async () => rows.filter(row => !archived.has(row.id)),
+  archive: async ({threadId}) => {
+   if (threadId === 'blocked' && !allowBlocked) throw new Error('BB rejected the request');
+   archived.add(threadId);
+   return {ok: true, archivedThreadIds: [threadId]};
+  },
+ }});
+ fireEvent.click(slot.getByRole('tab', {name: 'Проекты'}));
+ fireEvent.click(await slot.findByRole('button', {name: 'Действия проекта atlas'}));
+ fireEvent.click(slot.getByRole('button', {name: 'Архивировать все треды'}));
+ const dialog = within(slot.getByRole('alertdialog'));
+ fireEvent.click(dialog.getByRole('button', {name: 'Архивировать'}));
+ expect((await dialog.findByRole('alert')).textContent).toBe('Архивировано: 1. Не удалось архивировать: 1.');
+ expect([...archived]).toEqual(['ready']);
+ allowBlocked = true;
+ fireEvent.click(dialog.getByRole('button', {name: 'Архивировать'}));
+ await waitFor(() => expect(slot.queryByRole('alertdialog')).toBeNull());
+ expect([...archived]).toEqual(['ready', 'blocked']);
+ slot.lifecycle.unmount();
+});
+
+test('deleting a project calls BB for the selected project only after confirmation', async () => {
+ const deleted: string[] = [];
+ const {slot} = await catalogSlot({projects: {
+  delete: async ({projectId}) => { deleted.push(projectId); return {ok: true}; },
+ }});
+ fireEvent.click(slot.getByRole('tab', {name: 'Проекты'}));
+ const actions = await slot.findByRole('button', {name: 'Действия проекта orbit'});
+ fireEvent.click(actions);
+ fireEvent.click(slot.getByRole('button', {name: 'Удалить проект'}));
+ fireEvent.click(within(slot.getByRole('alertdialog')).getByRole('button', {name: 'Отмена'}));
+ expect(deleted).toEqual([]);
+ fireEvent.click(actions);
+ fireEvent.click(slot.getByRole('button', {name: 'Удалить проект'}));
+ const dialog = within(slot.getByRole('alertdialog'));
+ expect(dialog.getByText('orbit')).toBeTruthy();
+ fireEvent.click(dialog.getByRole('button', {name: 'Удалить проект'}));
+ await waitFor(() => expect(deleted).toEqual(['orbit']));
+ slot.lifecycle.unmount();
+});
+
+test.each([
+ ['Архивировать все треды', 'Архивировать'],
+ ['Удалить проект', 'Удалить проект'],
+])('%s offers an AI merge prompt for an unmerged worktree', async (label, confirmation) => {
+ const affected: string[] = [];
+ const {slot} = await catalogSlot({
+  environments: {list: async () => [featureEnvironment]},
+  plugins: {callRpc: async ({pluginId, method, input, outputSchema}) => {
+   expect({pluginId, method, input}).toEqual({
+    pluginId: 'bb--git', method: 'workspaceStatus', input: {environmentId: 'worktree', mergeBaseBranch: 'refs/heads/main'},
+   });
+   return outputSchema.parse(mainStatus({unmerged: true, aheadCount: 2}));
+  }},
+  threads: {list: async () => {affected.push('archive'); return [];}},
+  projects: {delete: async () => {affected.push('delete'); return {ok: true};}},
+ });
+ fireEvent.click(slot.getByRole('tab', {name: 'Проекты'}));
+ fireEvent.click(await slot.findByRole('button', {name: 'Действия проекта atlas'}));
+ fireEvent.click(slot.getByRole('button', {name: label}));
+ const dialog = within(slot.getByRole('alertdialog'));
+ fireEvent.click(dialog.getByRole('button', {name: confirmation}));
+ const merge = await dialog.findByRole('button', {name: 'Подготовить слияние с ИИ'});
+ expect(affected).toEqual([]);
+ fireEvent.click(merge);
+ expect(slot.inspection.navigateCalls.at(-1)).toMatchObject({
+  method: 'toCompose', options: {projectId: 'atlas', environmentId: 'worktree', initialPrompt: expect.stringContaining('main')},
+ });
+ expect(affected).toEqual([]);
+ slot.lifecycle.unmount();
+});
+
+test('archiving waits for an unavailable check, then allows a clean squash-merged worktree', async () => {
+ let ready = false;
+ const archived: string[] = [];
+ const {slot} = await catalogSlot({
+  environments: {list: async () => [featureEnvironment]},
+  plugins: {callRpc: async ({outputSchema}) => outputSchema.parse(ready ? mainStatus({aheadCount: 2}) : {outcome: 'unavailable'})},
+  threads: {list: async () => [listedThread('rest')], archive: async ({threadId}) => {
+   archived.push(threadId); return {ok: true, archivedThreadIds: [threadId]};
+  }},
+ });
+ fireEvent.click(slot.getByRole('tab', {name: 'Проекты'}));
+ fireEvent.click(await slot.findByRole('button', {name: 'Действия проекта atlas'}));
+ fireEvent.click(slot.getByRole('button', {name: 'Архивировать все треды'}));
+ const dialog = within(slot.getByRole('alertdialog'));
+ fireEvent.click(dialog.getByRole('button', {name: 'Архивировать'}));
+ await dialog.findByText('Не удалось проверить относительно main.');
+ expect(dialog.queryByRole('button', {name: 'Продолжить без слияния'})).toBeNull();
+ expect(archived).toEqual([]);
+ ready = true;
+ fireEvent.click(dialog.getByRole('button', {name: 'Проверить и архивировать'}));
+ await waitFor(() => expect(archived).toEqual(['rest']));
+ slot.lifecycle.unmount();
+});
+
+test('deleting with untracked work requires an explicit second confirmation', async () => {
+ const deleted: string[] = [];
+ const {slot} = await catalogSlot({
+  environments: {list: async () => [featureEnvironment]},
+  plugins: {callRpc: async ({outputSchema}) => outputSchema.parse(mainStatus({dirty: true}))},
+  projects: {delete: async ({projectId}) => {deleted.push(projectId); return {ok: true};}},
+ });
+ fireEvent.click(slot.getByRole('tab', {name: 'Проекты'}));
+ fireEvent.click(await slot.findByRole('button', {name: 'Действия проекта atlas'}));
+ fireEvent.click(slot.getByRole('button', {name: 'Удалить проект'}));
+ const dialog = within(slot.getByRole('alertdialog'));
+ fireEvent.click(dialog.getByRole('button', {name: 'Удалить проект'}));
+ const proceed = await dialog.findByRole('button', {name: 'Продолжить без слияния'});
+ expect(dialog.getByText('Незакоммиченные изменения')).toBeTruthy();
+ expect(deleted).toEqual([]);
+ fireEvent.click(proceed);
+ await waitFor(() => expect(deleted).toEqual(['atlas']));
+ slot.lifecycle.unmount();
+});
 
 test('manual hiding applies to running projects and can be reversed from visibility settings', async () => {
  const {slot} = await catalogSlot();

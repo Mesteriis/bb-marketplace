@@ -5,7 +5,7 @@ type Sdk = BbPluginApi['sdk'];
 type ThreadRow = Awaited<ReturnType<Sdk['threads']['list']>>[number];
 const PAGE_SIZE = 100;
 
-async function readThreads(sdk: Sdk, projectId: string, archived: boolean) {
+export async function readThreads(sdk: {threads: Pick<Sdk['threads'], 'list'>}, projectId: string, archived: boolean) {
     const unique = new Map<string, ThreadRow>();
     for (let offset = 0; ; offset += PAGE_SIZE) {
         const rows = await sdk.threads.list({projectId, archived, includeHidden: true, limit: PAGE_SIZE, offset});

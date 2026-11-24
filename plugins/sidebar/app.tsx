@@ -20,6 +20,7 @@ import {ProgressFreshness} from './src/ui/progress-freshness';
 import {requestChertogTile} from './src/adapters/bb/chertog-open';
 import {buildCatalog, isCatalogThread} from './src/core/project-catalog';
 import {ProjectCatalog} from './src/ui/project-catalog';
+import {useProjectActions} from './src/adapters/bb/project-actions';
 import {ProjectInfoPanel, projectInfoHref, projectInfoPath} from './src/adapters/bb/project-info';
 
 function change(kind: 'catalogProjects' | 'threads', id: string) {
@@ -40,6 +41,7 @@ export default definePluginApp(app => {
 });
 function Sidebar({ activeThreadId, activeProjectId, onNavigate }: PluginThreadListProps) {
     const navigate=useBbNavigate();
+    const projectActions = useProjectActions();
     const { status, threads:hostThreads, projects } = useThreads();
     const attention=usePlanningAttention();
     const threadsWithAttention=useMemo(()=>hostThreads.map(thread=>({...thread,planAttention:attention[thread.id]})),[hostThreads,attention]);
@@ -136,7 +138,9 @@ function Sidebar({ activeThreadId, activeProjectId, onNavigate }: PluginThreadLi
         }}
         onCompose={id => { navigate.toCompose({projectId: id}); onNavigate(); }}
         onOpenProjectInfo={id => { navigate.toPluginPanel(projectInfoPath, {subPath: id}); onNavigate(); }}
-        onToggleHidden={id => change('catalogProjects', id)}/>
+        onToggleHidden={id => change('catalogProjects', id)}
+        onProjectAction={projectActions.run}
+        onPrepareMerge={(projectId, id) => {projectActions.prepareMerge(projectId, id); onNavigate();}}/>
    </div>}
   </>}
  </div>;

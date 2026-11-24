@@ -1,7 +1,9 @@
 import {useEffect, useRef, useState, type ReactNode} from 'react';
 import {filterCatalog, type CatalogRow, type CatalogSort, type CatalogThread} from '../core/project-catalog';
+import type {WorktreeIssue} from '../core/project-worktrees';
 import {Glyph} from './glyph';
 import {CatalogThreads} from './catalog-threads';
+import {ProjectActionDialog, projectActionLabels, type ProjectAction, type ProjectActionTarget} from './project-action-dialog';
 import './project-catalog.css';
 
 type Props = {
@@ -13,6 +15,8 @@ type Props = {
     onCompose: (id: string) => void;
     onOpenProjectInfo: (id: string) => void;
     onToggleHidden: (id: string) => void;
+    onProjectAction: (action: ProjectAction, id: string, acknowledged?: readonly WorktreeIssue[]) => Promise<WorktreeIssue[]>;
+    onPrepareMerge: (projectId: string, environmentId: string) => void;
 };
 
 function Overlay({label, icon, open, onOpenChange, children}: {
@@ -59,13 +63,14 @@ function ProjectStatus({row}: {row: CatalogRow}) {
     </span>;
 }
 
-export function ProjectCatalog({rows, activeProjectId, activeThreadId, projectless, onOpenThread, onCompose, onOpenProjectInfo, onToggleHidden}: Props) {
+export function ProjectCatalog({rows, activeProjectId, activeThreadId, projectless, onOpenThread, onCompose, onOpenProjectInfo, onToggleHidden, onProjectAction, onPrepareMerge}: Props) {
     const [query, setQuery] = useState('');
     const [scope, setScope] = useState('');
     const [sort, setSort] = useState<CatalogSort>('activity');
     const [showHidden, setShowHidden] = useState(false);
     const [showEmpty, setShowEmpty] = useState(false);
     const [overlay, setOverlay] = useState<{id: string} | 'visibility' | null>(null);
+    const [actionTarget, setActionTarget] = useState<ProjectActionTarget | null>(null);
     const search = useRef<HTMLInputElement>(null);
     const scopes = [...new Set(rows.map(row => row.scope).filter(Boolean))]
         .sort((a, b) => a.localeCompare(b, undefined, {numeric: true}));
@@ -147,12 +152,22 @@ export function ProjectCatalog({rows, activeProjectId, activeThreadId, projectle
                             search.current?.focus();
                         }}><Glyph kind={row.hidden ? 'eye' : 'eye-off'}/>
                             {row.hidden ? 'Вернуть в список' : 'Скрыть проект'}</button>
+                        {projectActionLabels.map(({action, label, icon}) => <button key={action} type="button"
+                            className={action === 'delete' ? 'catalog-destructive' : undefined} onClick={() => {
+                                setOverlay(null);
+                                setActionTarget({action, id: row.id, name: row.name});
+                            }}><Glyph kind={icon}/>{label}</button>)}
                     </Overlay>
                 </div>
                 {expandedId === row.id && <CatalogThreads label={`Треды проекта ${row.name}`} threads={row.threads}
                     activeThreadId={activeThreadId} onOpen={onOpenThread}/>}
             </li>)}
         </ul>
+        {actionTarget && <ProjectActionDialog target={actionTarget} onRun={onProjectAction}
+            onPrepareMerge={onPrepareMerge} onClose={() => {
+            setActionTarget(null);
+            search.current?.focus();
+        }}/>}
         {!visible.length && <p className="catalog-empty" role="status">Проекты не найдены</p>}
     </div>;
 }
