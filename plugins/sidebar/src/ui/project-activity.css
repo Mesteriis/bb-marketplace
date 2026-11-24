@@ -52,7 +52,8 @@
 .overview-plot { display: block; inline-size: 100%; min-inline-size: 22rem; max-block-size: 20rem; }
 .overview-plot-grid path { stroke: var(--overview-border); }
 .overview-plot-grid text, .overview-plot-label { fill: var(--muted-foreground); font-size: 12px; }
-.overview-plot-series { animation: makosh-plot-in .55s ease-out both; }
+.overview-plot-series > g { animation: makosh-plot-in .55s ease-out both; }
+.overview-plot-series > .plot-secondary { animation-delay: .085s; }
 .overview-plot-line {
     stroke-width: 2.5;
     stroke-linecap: round;
@@ -97,7 +98,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-    .overview-plot-series, .overview-cache-track i { animation: none; transition: none; }
+    .overview-plot-series > g, .overview-cache-track i { animation: none; transition: none; }
 }
 
 @container (max-width: 42rem) {

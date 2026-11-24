@@ -147,6 +147,20 @@
 .overview-copy button svg { inline-size: .875rem; block-size: .875rem; }
 .overview-copy [role="status"] { font-size: .68rem; color: var(--muted-foreground); }
 
+.overview-summary-grid > .overview-card, .overview-summary-grid + .overview-card {
+    border: 0;
+    border-radius: 0;
+    background: none;
+}
+.overview-summary-grid .overview-section-header, .overview-summary-grid + .overview-card .overview-section-header {
+    padding-inline: 0;
+    border-radius: 0;
+    background: none;
+}
+.overview-summary-grid :is(.overview-properties, .overview-distribution-bars, .overview-highlights),
+.overview-summary-grid + .overview-card .overview-table-scroll { padding-inline: 0; }
+.overview-summary-grid .overview-properties dd { border-inline-start: 0; }
+
 .overview-distribution-bars {
     display: grid;
     gap: .75rem;
@@ -178,7 +192,7 @@
     transform-origin: left center;
 }
 .overview-distribution-first { background: var(--overview-secondary); }
-.overview-distribution-second { background: var(--overview-accent); }
+.overview-distribution-second { position: relative; overflow: hidden; background: var(--overview-accent); }
 .overview-highlights {
     display: flex;
     flex-wrap: wrap;
@@ -190,6 +204,38 @@
 @keyframes makosh-overview-bar-in {
     from { transform: scaleX(0); }
     to { transform: scaleX(1); }
+}
+@keyframes makosh-overview-enter {
+    from { opacity: .55; translate: 0 5px; }
+    to { opacity: 1; translate: 0 0; }
+}
+@keyframes makosh-overview-sheen {
+    from { transform: translateX(-100%); }
+    to { transform: translateX(100%); }
+}
+@media (prefers-reduced-motion: no-preference) {
+    .overview-tabs button { transition: background-color .18s ease, border-color .18s ease; }
+    .overview-tab-panel:not([hidden]) > *,
+    .overview-tab-panel:not([hidden]) .overview-metrics > *,
+    .overview-tab-panel:not([hidden]) .overview-summary-grid > * {
+        animation: makosh-overview-enter .28s ease-out backwards;
+    }
+    .overview-tab-panel:not([hidden]) > :nth-child(2), .overview-tab-panel:not([hidden]) .overview-metrics > :nth-child(2),
+    .overview-tab-panel:not([hidden]) .overview-summary-grid > :nth-child(2) { animation-delay: .045s; }
+    .overview-tab-panel:not([hidden]) > :nth-child(3), .overview-tab-panel:not([hidden]) .overview-metrics > :nth-child(3) { animation-delay: .09s; }
+    .overview-tab-panel:not([hidden]) .overview-metrics > :nth-child(4) { animation-delay: .135s; }
+    .overview-distribution-bars li { --overview-bar-delay: .03s; }
+    .overview-distribution-bars li:nth-child(2) { --overview-bar-delay: .09s; }
+    .overview-distribution-bars li:nth-child(3) { --overview-bar-delay: .15s; }
+    .overview-distribution-bars .overview-stacked-bar { animation-delay: var(--overview-bar-delay); }
+    .overview-distribution-track .overview-distribution-second::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        background: linear-gradient(90deg, transparent 25%, #fff5 50%, transparent 75%);
+        animation: makosh-overview-sheen .55s ease-out calc(.35s + var(--overview-bar-delay)) both;
+    }
 }
 @media (prefers-reduced-motion: reduce) {
     .overview-stacked-bar { animation: none; }
