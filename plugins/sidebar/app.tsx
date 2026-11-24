@@ -4,7 +4,7 @@ import { toast } from 'sonner';
 import type { contract } from './server';
 import type { ProjectLocation, ThreadNode } from './src/core/tree';
 import { isRunning,withBranchActivity } from './src/core/presentation';
-import { todayScope, todayThreads, TODAY_WINDOW_MS } from './src/core/active';
+import { todayScope, todayThreads } from './src/core/active';
 import { ThreadBranch } from './src/ui/thread-branch';
 import { useHidden, toggle } from './src/adapters/bb/preferences';
 import './sidebar.css';
@@ -76,12 +76,10 @@ function Sidebar({ activeThreadId, activeProjectId, onNavigate }: PluginThreadLi
             threads, rootPath, catalogHidden);
     }, [tab, projects, paths, threads, rootPath, catalogHidden]);
     const [, refreshToday] = useState(0);
-    const {recent, withAncestors} = todayScope(threadsWithAttention, Date.now());
+    const {recent, withAncestors, nextExpiry} = todayScope(threadsWithAttention, Date.now());
     const today = withBranchActivity(withAncestors);
     const recentIds = new Set(recent.map(thread => thread.id));
     const recentRows = today.filter(thread => recentIds.has(thread.id));
-    const nextExpiry = recent.reduce((next, thread) =>
-        Math.min(next, thread.createdAt + TODAY_WINDOW_MS + 1), Infinity);
     useEffect(() => {
         if (tab !== 'now' || !Number.isFinite(nextExpiry)) return;
         const timer = setTimeout(() => refreshToday(value => value + 1), Math.max(0, nextExpiry - Date.now()));

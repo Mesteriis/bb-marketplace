@@ -474,6 +474,29 @@ test('Сегодня retains older ancestors only while they have a recent desce
  }
 });
 
+test('Сегодня counts an older thread with recent activity until that activity expires', async () => {
+ vi.useFakeTimers({ now: 1732147200000 });
+ const definition = await loadPluginApp(() => Promise.resolve({ default: app }));
+ const resumed = { ...make('resumed-thread', 'p', 'active'), createdAt: 1731974400000, updatedAt: 1732060800000 };
+ const slot = renderSlot(definition.threadLists[0]!, {
+  activeThreadId: null, activeProjectId: null, isCompactViewport: false, onNavigate: () => {}, searchQuery: '',
+ }, {
+  sidebarThreads: { status: 'ready', projects: [], threads: [resumed], sections: [] },
+  rpc: { paths: () => [], attention: () => ({ entries: [], incomplete: false }), progress: () => ({ availability: 'ready', entries: [], failedThreadIds: [] }) },
+ });
+ try {
+  expect(slot.getByRole('link', { name: /resumed-thread/ })).toBeTruthy();
+  fireEvent.click(slot.getByRole('button', { name: 'В работе 1' }));
+  expect(slot.getByRole('link', { name: /resumed-thread/ })).toBeTruthy();
+  await act(async () => vi.advanceTimersByTimeAsync(1));
+  expect(slot.getByRole('button', { name: 'В работе 0' })).toBeTruthy();
+  expect(slot.queryByRole('link', { name: /resumed-thread/ })).toBeNull();
+ } finally {
+  slot.lifecycle.unmount();
+  vi.useRealTimers();
+ }
+});
+
 test('idle threads keep plans behind disclosure and leave blockers visible', async () => {
  const definition = await loadPluginApp(() => Promise.resolve({ default: app }));
  const finished = { ...make('finished', 'p', 'idle'), isUnread: true };

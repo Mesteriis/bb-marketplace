@@ -16,7 +16,7 @@ Development: `npm ci`, `npm run check`, `npm run build`. Select **Makosh Sidebar
 
 The original tree layout was ported from Tree Sidebar (MIT). See the repository THIRD_PARTY_NOTICES.md.
 
-**Сегодня** shows threads created in the last 24 hours, including idle threads, across all projects and personal chats. Archived and internal helper threads are excluded. Recent subthreads retain their visible ancestor chain, including parents older than 24 hours. Older sibling branches appear only if they have a recent descendant. Subtrees start collapsed and expand on demand. **Проекты** has no age limit.
+**Сегодня** shows threads created or updated in the last 24 hours, including idle threads, across all projects and personal chats. Archived and internal helper threads are excluded. The sidebar SDK supplies the thread update time, which BB refreshes when work resumes. Recent subthreads retain their visible ancestor chain, including parents older than 24 hours. Older sibling branches appear only if they have a recent descendant. Subtrees start collapsed and expand on demand. **Проекты** has no age limit.
 
 Collapsed subtrees also hide unread results and pending questions; their counts remain on the parent. Expand the parent to reach them.
 
@@ -45,7 +45,7 @@ Plan Progress. Настройка **Effects** отключает волну и �
 Sidebar получает данные для отрисованных строк, их потомков и активных веток, пакетами до 25 тредов,
 обновляет их по собственным realtime-событиям и раз в 5 секунд, приостанавливая
 опрос в скрытой вкладке. Ошибка чтения показана явно; она не означает отсутствие
-плана. Вопросы и ошибки планов попадают в блок внимания вкладки «Сегодня», если тред создан за последние 24 часа. Индекс строится при загрузке из первых 2000 сохранённых тредов и обновляется при изменении планов; неполное покрытие обозначается явно.
+плана. Вопросы и ошибки планов попадают в блок внимания вкладки «Сегодня», если тред создан или обновлён за последние 24 часа. Индекс строится при загрузке из первых 2000 сохранённых тредов и обновляется при изменении планов; неполное покрытие обозначается явно.
 
 ### Перенос с отдельного Plan Progress
 
