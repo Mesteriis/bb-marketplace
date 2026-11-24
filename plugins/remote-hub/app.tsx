@@ -9,6 +9,7 @@ import { DocumentRefs, type RemoteEmbedApi } from "./src/adapters/bb/embed-owner
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ThreadTitle, definePluginApp, experimental_useAppPanel, useBbContext, useBbNavigate, useRealtime, useRpc, useSidebarSplitLayout } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server.ts";
+import { ThreadHub } from "./src/ui/thread-hub.tsx";
 import { HubPage } from "./src/ui/hub-page.tsx";
 import { HubSidebarConnected } from "./src/ui/sidebar/hub-sidebar-connected.tsx";
 import type { PveConsoleLaunch } from "./src/ui/pve-consoles.tsx";
@@ -135,7 +136,16 @@ function WithAgentContext({ children }: { children: React.ReactNode }) {
   return <AgentContextProvider value={value}>{children}</AgentContextProvider>;
 }
 
-/** The side-panel tab the overlay opens when an agent starts acting. */
+/** The action menu opens the hub. A session link opens only its live view. */
+function RemoteHubTab({ params }: { params: unknown }) {
+  return params == null ? <ThreadHubTab /> : <LiveTab params={params} />;
+}
+
+function ThreadHubTab() {
+  const bridge = useBridge();
+  return <WithAgentContext><ThreadHub bridge={bridge} /></WithAgentContext>;
+}
+
 function LiveTab({ params }: { params: unknown }) {
   const api = useLiveApi();
   const id = typeof params === "object" && params !== null && typeof (params as { sessionId?: unknown }).sessionId === "string" ? (params as { sessionId: string }).sessionId : "";
@@ -302,7 +312,8 @@ export default definePluginApp((app) => {
     icon: "Terminal",
     context: { kind: "thread" },
     availability: "action",
-    component: LiveTab,
+    layout: "flush",
+    component: RemoteHubTab,
   });
   app.slots.navPanel({
     id: "remote-hub-ssh",

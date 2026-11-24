@@ -1220,3 +1220,27 @@
   padding: .5rem;
 }
 .rh-embed-picker h2, .rh-embed [role="alertdialog"] p { width: 100%; }
+
+.rh-thread-hub {
+  container: rh-thread-hub / inline-size;
+}
+
+.rh-thread-hub-layout {
+  display: grid;
+  grid-template-rows: minmax(0, 2fr) minmax(0, 3fr);
+}
+
+.rh-thread-hub-connections {
+  border-bottom: 1px solid var(--border);
+}
+
+@container rh-thread-hub (min-width: 640px) {
+  .rh-thread-hub-layout {
+    grid-template: minmax(0, 1fr) / 220px minmax(0, 1fr);
+  }
+
+  .rh-thread-hub-connections {
+    border-bottom: 0;
+    border-inline-end: 1px solid var(--border);
+  }
+}

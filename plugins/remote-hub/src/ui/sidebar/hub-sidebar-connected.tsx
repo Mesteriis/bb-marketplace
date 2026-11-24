@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Profile } from "../../core/profile.ts";
 import type { TreeConnection, TreeProfile } from "../../core/hub-tree.ts";
 import type { PveConnectionView } from "../../core/pve-targets.ts";
-import { closeDeskSession, useDeskStore } from "../desk/desk-context.tsx";
+import { closeDeskSession, useDeskStore, useDeskThumbStore } from "../desk/desk-context.tsx";
 import { useDesk } from "../desk-store.ts";
 import { hubBus as defaultBus, type HubBus } from "../hub-bus.ts";
 import type { PveApi } from "../pve-api.ts";
@@ -37,7 +37,7 @@ export function treeConnectionOf(view: PveConnectionView): TreeConnection {
 export function HubSidebarConnected({ profiles: api, pve, allow, bus = defaultBus }: HubSidebarConnectedProps) {
   const store = useDeskStore();
   const desk = useDesk(store);
-  const thumbs = useThumbs();
+  const thumbs = useThumbs(useDeskThumbStore());
   const data = useProfiles(api);
   const { reload } = data;
   const [views, setViews] = useState<Readonly<Record<string, PveConnectionView>>>({});

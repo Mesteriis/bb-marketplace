@@ -39,7 +39,7 @@ function setup(credentials?: { save: ReturnType<typeof vi.fn> }) {
 describe("HubPage", () => {
   it("starts with an empty desk and no secondary screen", () => {
     setup();
-    expect(screen.getByTestId("desk-empty").textContent).toContain("Выберите подключение слева");
+    expect(screen.getByTestId("desk-empty").textContent).toContain("Выберите подключение");
     expect(screen.queryByTestId("hub-screen")).toBeNull();
   });
 

@@ -32,7 +32,7 @@ function show(store: DeskStore, onClose: (id: string) => void = () => undefined)
 describe("Desk", () => {
   it("says what to do while nothing is open", () => {
     show(createDeskStore());
-    expect(screen.getByTestId("desk-empty").textContent).toContain("Выберите подключение слева");
+    expect(screen.getByTestId("desk-empty").textContent).toContain("Выберите подключение");
   });
 
   it("shows only the focused session in one pane and keeps the other mounted but hidden", () => {

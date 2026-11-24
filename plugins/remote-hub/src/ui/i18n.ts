@@ -72,7 +72,7 @@ const ru = {
   "strip.sessions": "Remote Hub: {count}",
   "strip.title": "Удалённые сессии этого треда",
 
-  "desk.empty.title": "Выберите подключение слева",
+  "desk.empty.title": "Выберите подключение",
   "desk.empty.hint": "Открытые сессии остаются в списке «Открыто сейчас», пока вы их не закроете.",
   "desk.title": "Рабочая область",
   "desk.layout": "Расположение сессий",

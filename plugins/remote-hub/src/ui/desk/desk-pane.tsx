@@ -5,7 +5,7 @@ import { cn } from "@/lib/utils";
 import type { DeskSession } from "../../core/desk.ts";
 import { useDesk } from "../desk-store.ts";
 import { tx } from "../i18n.ts";
-import { registerCloser, useDeskStore } from "./desk-context.tsx";
+import { registerCloser, useDeskStore, useDeskThumbStore } from "./desk-context.tsx";
 import { SessionIcon, sessionKindLabel, SessionStatus } from "./status.tsx";
 import { useThumb } from "./use-thumb.ts";
 
@@ -25,9 +25,9 @@ export function DeskPane({ session, actions, onClose, note, children }: DeskPane
   const desk = useDesk(store);
   const order = desk.shown.indexOf(session.id);
   const focused = desk.focus === session.id;
-  useEffect(() => registerCloser(session.id, onClose), [session.id, onClose]);
+  useEffect(() => registerCloser(store, session.id, onClose), [store, session.id, onClose]);
   const body = useRef<HTMLDivElement | null>(null);
-  useThumb(session.id, body);
+  useThumb(session.id, body, useDeskThumbStore());
   return (
     <section
       hidden={order === -1}
