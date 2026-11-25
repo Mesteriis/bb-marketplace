@@ -48,6 +48,17 @@ export interface McpServerRecord {
   enabled: number; // 0/1
 }
 
+/** The last catalog an MCP server reported, kept on disk across restarts. */
+export interface McpCatalogRecord {
+  pluginId: string;
+  serverId: string;
+  /** Hash of the server's configJson the catalog was listed with. */
+  configHash: string;
+  /** JSON object with tools, prompts, resources and resourceTemplates arrays. */
+  catalogJson: string;
+  updatedAt: number;
+}
+
 export interface AgentPluginSnapshot {
   plugins: PluginRecord[];
   skills: PluginSkillRecord[];

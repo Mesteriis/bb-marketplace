@@ -84,4 +84,33 @@ describe("isolated Agent Plugins MCP host", () => {
     await expect(call).rejects.toThrow();
     await expect(harness.experimental_call("close", { key: "plugin:stalled" })).resolves.toEqual({ closed: false });
   }, 5_000);
+
+  it("accepts a connect timeout for a server that answers in time", async () => {
+    const harness = createHarness();
+    const catalog = await harness.experimental_call("start", {
+      key: "plugin:timed",
+      command: process.execPath,
+      args: ["-e", FIXTURE],
+      cwd: "/tmp",
+      env: { PATH: process.env.PATH ?? "" },
+      connectTimeoutMs: 60_000,
+    });
+    expect(catalog.tools).toEqual([expect.objectContaining({ name: "echo" })]);
+  }, 15_000);
+
+  it("gives up on a silent handshake after the requested connect timeout", async () => {
+    const harness = createHarness();
+    const started = Date.now();
+    await expect(harness.experimental_call("start", {
+      key: "plugin:silent",
+      command: process.execPath,
+      args: ["-e", "process.stdin.resume()"],
+      cwd: "/tmp",
+      env: { PATH: process.env.PATH ?? "" },
+      connectTimeoutMs: 1_000,
+    })).rejects.toThrow(/timed out/iu);
+    // The old fixed limit was 15 seconds; the requested one second must win.
+    expect(Date.now() - started).toBeLessThan(5_000);
+    await expect(harness.experimental_call("close", { key: "plugin:silent" })).resolves.toEqual({ closed: false });
+  }, 10_000);
 });

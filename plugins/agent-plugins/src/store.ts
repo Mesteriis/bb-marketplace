@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import type { PluginRecord, PluginSkillRecord, McpServerRecord } from "./types.js";
+import type { PluginRecord, PluginSkillRecord, McpServerRecord, McpCatalogRecord } from "./types.js";
 
 export class AgentPluginsStore {
   constructor(
@@ -67,6 +67,16 @@ export class AgentPluginsStore {
       // enabled without rewriting their rows.
       `ALTER TABLE plugin_skills ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1`,
       `ALTER TABLE mcp_servers ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1`,
+      // The last catalog each MCP server reported, so a stopped server can be
+      // listed and described without starting its process.
+      `CREATE TABLE IF NOT EXISTS mcp_catalogs (
+        pluginId TEXT NOT NULL REFERENCES plugins(id) ON DELETE CASCADE,
+        serverId TEXT NOT NULL,
+        configHash TEXT NOT NULL,
+        catalogJson TEXT NOT NULL,
+        updatedAt INTEGER NOT NULL,
+        PRIMARY KEY (pluginId, serverId)
+      )`,
     ]);
   }
 
@@ -166,8 +176,33 @@ export class AgentPluginsStore {
   }
 
   deleteMcpServer(pluginId: string, serverId: string): boolean {
+    this.deleteMcpCatalog(pluginId, serverId);
     const result = this.db
       .prepare(`DELETE FROM mcp_servers WHERE pluginId = ? AND serverId = ?`)
+      .run(pluginId, serverId);
+    return result.changes > 0;
+  }
+
+  getMcpCatalog(pluginId: string, serverId: string): McpCatalogRecord | undefined {
+    return this.db
+      .prepare(`SELECT * FROM mcp_catalogs WHERE pluginId = ? AND serverId = ?`)
+      .get(pluginId, serverId) as McpCatalogRecord | undefined;
+  }
+
+  saveMcpCatalog(record: McpCatalogRecord): void {
+    this.db
+      .prepare(
+        `INSERT INTO mcp_catalogs (pluginId, serverId, configHash, catalogJson, updatedAt)
+         VALUES (@pluginId, @serverId, @configHash, @catalogJson, @updatedAt)
+         ON CONFLICT(pluginId, serverId) DO UPDATE SET
+           configHash=excluded.configHash, catalogJson=excluded.catalogJson, updatedAt=excluded.updatedAt`,
+      )
+      .run(record as unknown as Record<string, unknown>);
+  }
+
+  deleteMcpCatalog(pluginId: string, serverId: string): boolean {
+    const result = this.db
+      .prepare(`DELETE FROM mcp_catalogs WHERE pluginId = ? AND serverId = ?`)
       .run(pluginId, serverId);
     return result.changes > 0;
   }

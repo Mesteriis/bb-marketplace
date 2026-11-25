@@ -8,6 +8,7 @@ import { z } from "zod";
 import { AgentPluginsStore } from "./src/store.js";
 import { validateManifest, validateMcpEnvelope, validateMcpServer, validateSkillFrontmatter } from "./src/loader.js";
 import { McpGateway, type McpStdioCatalog, type McpStdioHost } from "./src/gateway.js";
+import { connectTimeoutMsFromSetting, DEFAULT_CONNECT_TIMEOUT_SECONDS, DEFAULT_IDLE_STOP_MINUTES, idleStopMsFromSetting } from "./src/runtime-settings.js";
 import { mcpHostContract, mcpHostSignals } from "./src/host-contract.js";
 import { DEFAULT_TOOL_SEARCH_LIMIT, MAX_DESCRIBE_TOOLS, MAX_TOOL_SEARCH_LIMIT, describeTools, searchTools } from "./src/tool-search.js";
 import { DeferredOAuthCredentialStore, McpOAuthProvider, type OAuthCredentialRecord } from "./src/oauth.js";
@@ -166,7 +167,7 @@ export default async function plugin(bb: BbPluginApi) {
   }
 
   const store = new AgentPluginsStore(bb.storage.database(), (db, s) => bb.storage.migrate(db, s));
-  const oauthSettings = bb.settings.define({
+  const pluginSettings = bb.settings.define({
     oauthCredentials: {
       type: "string",
       label: "MCP OAuth credentials",
@@ -174,10 +175,22 @@ export default async function plugin(bb: BbPluginApi) {
       secret: true,
       default: "",
     },
+    mcpIdleStopMinutes: {
+      type: "string",
+      label: "Stop idle MCP servers after (minutes)",
+      description: "A local (stdio) MCP server with no tool, prompt, resource or completion request for this long is stopped and starts again on the next request. Its tools stay listed. 0 keeps servers running.",
+      default: String(DEFAULT_IDLE_STOP_MINUTES),
+    },
+    mcpConnectTimeoutSeconds: {
+      type: "string",
+      label: "MCP server start timeout (seconds)",
+      description: "How long an MCP server may take to start and list its tools before the attempt fails. Between 5 and 600.",
+      default: String(DEFAULT_CONNECT_TIMEOUT_SECONDS),
+    },
   });
   const oauthCredentialStore = new DeferredOAuthCredentialStore({
     async load(): Promise<Record<string, OAuthCredentialRecord>> {
-      const settings = await oauthSettings.get();
+      const settings = await pluginSettings.get();
       const raw = settings.oauthCredentials;
       if (!raw) return {};
       try {
@@ -252,9 +265,15 @@ export default async function plugin(bb: BbPluginApi) {
       return mcpHostClient.experimental_onSignal("connectionChanged", ({ payload }) => handler(payload.key, payload.status, payload.error));
     },
   };
+  const runtimeSettings = await pluginSettings.get().catch((error) => {
+    bb.log.warn(`[agent-plugins] MCP runtime settings unavailable, using defaults: ${errorText(error)}`);
+    return undefined;
+  });
   const gateway = new McpGateway(store, bb.log, {
     onChanged: () => publishChanged({ kind: "mcp-runtime" }),
     stdioHost,
+    idleStopMs: idleStopMsFromSetting(runtimeSettings?.mcpIdleStopMinutes),
+    connectTimeoutMs: connectTimeoutMsFromSetting(runtimeSettings?.mcpConnectTimeoutSeconds),
     oauth: {
       async getProvider(pluginId, serverId, serverUrl) {
         const redirect = new URL(`/api/v1/plugins/${encodeURIComponent(bb.pluginId)}/http/oauth/callback`, bb.server.loopbackBaseUrl);
@@ -262,6 +281,10 @@ export default async function plugin(bb: BbPluginApi) {
         return new McpOAuthProvider(`${pluginId}:${serverId}`, serverUrl, redirect, oauthCredentialStore);
       },
     },
+  });
+  pluginSettings.onChange((next) => {
+    gateway.setIdleStopMs(idleStopMsFromSetting(next.mcpIdleStopMinutes));
+    gateway.setConnectTimeoutMs(connectTimeoutMsFromSetting(next.mcpConnectTimeoutSeconds));
   });
   const installLocks = new Set<string>();
   const updateCache = new Map<string, UpdateResult>();

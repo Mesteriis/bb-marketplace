@@ -37,6 +37,24 @@ bb plugin install git:https://github.com/patleeman/bb-plugins.git --subdirectory
 
 The MCP client delegates authentication to the official SDK, including protected-resource/authorization-server discovery, dynamic client registration, PKCE, refresh, `WWW-Authenticate`, insufficient-scope step-up, and OAuth callback completion. Tokens and PKCE state are stored in a BB secret setting; they are never placed in the database snapshot or frontend payload.
 
+## Settings
+
+Set these under **Settings → Plugins → Agent Plugins**, or with `bb plugin config agent-plugins set <key> <value>`. A change applies at once, without a reload.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `mcpIdleStopMinutes` | `10` | Minutes a local (stdio) MCP server may go without a tool call, prompt, resource read or completion before its process is stopped. `0` keeps servers running. Fractions are accepted; the maximum is 1440. |
+| `mcpConnectTimeoutSeconds` | `60` | Seconds an MCP server may take to start and list its capabilities before the attempt fails with a timeout. Between 5 and 600. |
+
+How idle stop behaves:
+
+- A stopped server keeps its approval and stays enabled; its status is `idle`. The next tool call, prompt, resource read or completion starts it again and returns the normal result, after the server's start-up time.
+- `agent_plugins_list_tools` and `agent_plugins_describe_tool` answer for a stopped server from its last catalog and do not start it. The catalog is saved in the plugin's database, so after a BB restart a server with a saved catalog stays stopped until it is first used.
+- The catalog is refreshed while the server is running (every five minutes on a catalog read, and when the server reports a change), when its configuration changes, and when no catalog is saved yet. Stopping, disabling, approving or updating a server by hand, and a server crash, discard the saved catalog, so the next catalog read starts the server.
+- A server is not stopped while a request is in flight or while a resource subscription is open. The idle time counts from the end of the last request; listing tools does not count as a request.
+- Streamable HTTP and SSE servers have no local process and are left connected.
+- With stopping on, a log-level change is sent only to running servers.
+
 This v0 release installs one package instance at a time. Remove an existing
 plugin before installing the same package name again; removal keeps its data
 unless you choose to purge it.

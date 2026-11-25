@@ -12,7 +12,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { mcpHostContract, mcpHostSignals, type McpHostCatalog } from "./src/host-contract.js";
 import { optionalMcpCall } from "./src/mcp-compat.js";
 
-const CONNECT_TIMEOUT_MS = 15_000;
+const DEFAULT_CONNECT_TIMEOUT_MS = 60_000;
 const REQUEST_TIMEOUT_MS = 60_000;
 const CLOSE_TIMEOUT_MS = 2_000;
 const MCP_CLIENT_INFO = { name: "bb-agent-plugins-stdio", version: "0.2.2" };
@@ -179,6 +179,7 @@ async function start(input: {
   args: string[];
   cwd: string;
   env: Record<string, string>;
+  connectTimeoutMs?: number;
 }, context: ExperimentalHostRpcContext<typeof mcpHostSignals>): Promise<McpHostCatalog> {
   throwIfAborted(context.signal);
   const existing = connections.get(input.key);
@@ -227,7 +228,7 @@ async function start(input: {
 
   try {
     await abortable(
-      client.connect(transport, { signal: context.signal, timeout: CONNECT_TIMEOUT_MS }),
+      client.connect(transport, { signal: context.signal, timeout: input.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS }),
       context.signal,
       () => { void client.close().catch(() => {}); },
     );

@@ -81,4 +81,52 @@ describe("AgentPluginsStore resource settings", () => {
     expect(store.setSkillEnabled(plugin.id, "research", true)?.enabled).toBe(1);
     expect(store.setMcpEnabled(plugin.id, "docs", true)?.enabled).toBe(1);
   });
+
+  it("keeps one saved MCP catalog per server and replaces it on save", () => {
+    const store = createStore();
+    const plugin = addPlugin(store);
+
+    expect(store.getMcpCatalog(plugin.id, "docs")).toBeUndefined();
+    store.saveMcpCatalog({ pluginId: plugin.id, serverId: "docs", configHash: "hash-1", catalogJson: "{\"tools\":[]}", updatedAt: 100 });
+    store.saveMcpCatalog({ pluginId: plugin.id, serverId: "other", configHash: "hash-9", catalogJson: "{}", updatedAt: 5 });
+    store.saveMcpCatalog({ pluginId: plugin.id, serverId: "docs", configHash: "hash-2", catalogJson: "{\"tools\":[1]}", updatedAt: 200 });
+
+    expect(store.getMcpCatalog(plugin.id, "docs")).toEqual({
+      pluginId: "plugin-1",
+      serverId: "docs",
+      configHash: "hash-2",
+      catalogJson: "{\"tools\":[1]}",
+      updatedAt: 200,
+    });
+    expect(store.getMcpCatalog(plugin.id, "other")?.updatedAt).toBe(5);
+  });
+
+  it("drops a saved MCP catalog with its server and with its plugin", () => {
+    const store = createStore();
+    const plugin = addPlugin(store);
+    const server = {
+      pluginId: plugin.id,
+      type: "stdio" as const,
+      configJson: JSON.stringify({ type: "stdio", command: "node" }),
+      status: "idle" as const,
+      lastError: null,
+      approved: 1,
+      enabled: 1,
+    };
+    store.upsertMcpServer({ ...server, serverId: "docs" });
+    store.upsertMcpServer({ ...server, serverId: "other" });
+    store.saveMcpCatalog({ pluginId: plugin.id, serverId: "docs", configHash: "a", catalogJson: "{}", updatedAt: 1 });
+    store.saveMcpCatalog({ pluginId: plugin.id, serverId: "other", configHash: "b", catalogJson: "{}", updatedAt: 2 });
+
+    expect(store.deleteMcpServer(plugin.id, "docs")).toBe(true);
+    expect(store.getMcpCatalog(plugin.id, "docs")).toBeUndefined();
+    expect(store.getMcpCatalog(plugin.id, "other")?.configHash).toBe("b");
+
+    expect(store.deleteMcpCatalog(plugin.id, "other")).toBe(true);
+    expect(store.deleteMcpCatalog(plugin.id, "other")).toBe(false);
+
+    store.saveMcpCatalog({ pluginId: plugin.id, serverId: "other", configHash: "b", catalogJson: "{}", updatedAt: 2 });
+    expect(store.deletePlugin(plugin.id)).toBe(true);
+    expect(store.getMcpCatalog(plugin.id, "other")).toBeUndefined();
+  });
 });

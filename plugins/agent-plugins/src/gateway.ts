@@ -75,6 +75,13 @@ export interface McpGatewayOptions {
   onRoots?: (pluginId: string, serverId: string) => Promise<unknown>;
   /** Isolated worker boundary used for local stdio MCP servers. */
   stdioHost?: McpStdioHost;
+  /**
+   * Stop a stdio server after this long without a tool, prompt, resource or
+   * completion request. 0 or absent keeps servers running.
+   */
+  idleStopMs?: number;
+  /** How long a server may take to start and list its capabilities. */
+  connectTimeoutMs?: number;
 }
 
 export interface McpStdioConfig {
@@ -83,6 +90,8 @@ export interface McpStdioConfig {
   args: string[];
   cwd: string;
   env: Record<string, string>;
+  /** Bound on the MCP initialize handshake inside the isolated worker. */
+  connectTimeoutMs?: number;
 }
 
 export interface McpStdioCatalog {
@@ -109,7 +118,9 @@ export interface McpStdioHost {
 }
 
 const MCP_CLIENT_INFO = { name: "bb-agent-plugins", version: "0.2.2" };
-const CONNECT_TIMEOUT_MS = 15_000;
+const DEFAULT_CONNECT_TIMEOUT_MS = 60_000;
+const MIN_CONNECT_TIMEOUT_MS = 1_000;
+const MAX_CONNECT_TIMEOUT_MS = 10 * 60_000;
 const OAUTH_TIMEOUT_MS = 15_000;
 const FETCH_TIMEOUT_GRACE_MS = 1_000;
 const CLOSE_TIMEOUT_MS = 2_000;
@@ -126,6 +137,8 @@ function authorizationFailure(params: URLSearchParams): string {
 function slug(v: string): string { return v.toLowerCase().replace(/[^a-z0-9_-]+/gu, "_").replace(/^_+|_+$/gu, "") || "item"; }
 function shortHash(v: string): string { return crypto.createHash("sha256").update(v).digest("hex").slice(0, 10); }
 function keyOf(pluginId: string, serverId: string): string { return `${pluginId}:${serverId}`; }
+function configHashOf(configJson: string): string { return crypto.createHash("sha256").update(configJson).digest("hex"); }
+function durationOrZero(value: number | undefined): number { return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0; }
 
 function exposedId(kind: string, pluginId: string, serverId: string, name: string): string {
   // Keep the original tool-ID hash stable for clients that cached a catalog
@@ -172,6 +185,8 @@ interface Connected {
   resourceTemplates: ResourceTemplateType[];
   expectedClose: boolean;
   provider?: McpOAuthProvider;
+  /** Set for stdio servers: the only ones that own a process worth stopping. */
+  stdioOwner?: { pluginId: string; serverId: string };
 }
 
 interface PendingAuth {
@@ -319,6 +334,12 @@ export class McpGateway implements McpRuntime {
   private readonly catalogGenerations = new Map<string, number>();
   private readonly dirtyCatalogs = new Set<string>();
   private readonly serverEpochs = new Map<string, number>();
+  private readonly idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly idleStops = new Map<string, Promise<void>>();
+  private readonly activeUses = new Map<string, number>();
+  private readonly subscriptions = new Map<string, Set<string>>();
+  private idleStopMs = 0;
+  private connectTimeoutMs = DEFAULT_CONNECT_TIMEOUT_MS;
   private readonly hostExitUnsubscribe?: () => void;
   private readonly hostCatalogUnsubscribe?: () => void;
   private readonly hostConnectionUnsubscribe?: () => void;
@@ -329,6 +350,13 @@ export class McpGateway implements McpRuntime {
     private readonly log: { info(m: string): void; warn(m: string): void; error(m: string): void },
     private readonly options: McpGatewayOptions = {},
   ) {
+    this.idleStopMs = durationOrZero(options.idleStopMs);
+    this.setConnectTimeoutMs(options.connectTimeoutMs);
+    // A new gateway has no processes yet, so a stdio server recorded as
+    // running by the previous BB process is stopped until something uses it.
+    for (const record of this.store.listMcpServers()) {
+      if (record.type === "stdio" && record.status === "ready") this.store.upsertMcpServer({ ...record, status: "idle", lastError: null });
+    }
     this.hostExitUnsubscribe = options.stdioHost?.onWorkerExit?.(() => {
       void this.handleHostWorkerExit();
     });
@@ -340,8 +368,23 @@ export class McpGateway implements McpRuntime {
     });
   }
 
+  /** Apply a changed idle time, also to servers that are already running. */
+  setIdleStopMs(ms: number): void {
+    this.idleStopMs = durationOrZero(ms);
+    for (const key of [...this.idleTimers.keys()]) this.cancelIdleStop(key);
+    for (const key of this.conns.keys()) this.scheduleIdleStop(key);
+  }
+
+  /** Apply a changed start limit to connections opened from now on. */
+  setConnectTimeoutMs(ms: number | undefined): void {
+    const value = durationOrZero(ms);
+    this.connectTimeoutMs = value === 0 ? DEFAULT_CONNECT_TIMEOUT_MS : Math.min(Math.max(value, MIN_CONNECT_TIMEOUT_MS), MAX_CONNECT_TIMEOUT_MS);
+  }
+
   async close(): Promise<void> {
     this.closed = true;
+    for (const key of [...this.idleTimers.keys()]) this.cancelIdleStop(key);
+    this.subscriptions.clear();
     for (const controller of this.connectControllers.values()) controller.abort(new Error("MCP gateway closing"));
     await Promise.allSettled([...this.pending.entries()].map(async ([key, pending]) => {
       try { await withTimeout(pending, CLOSE_TIMEOUT_MS, `wait for MCP connection ${key}`); }
@@ -381,7 +424,8 @@ export class McpGateway implements McpRuntime {
     this.conns.delete(key);
     this.oauthPending.delete(key);
     this.failures.delete(key);
-    this.invalidateCatalog(key);
+    this.forgetIdleState(key);
+    this.invalidateCatalog(pluginId, serverId);
     const value = conn ?? auth;
     if (!value) return;
     try {
@@ -425,8 +469,11 @@ export class McpGateway implements McpRuntime {
       const [pluginId, serverId] = key.split(":", 2);
       const message = "Isolated MCP worker exited; the server will reconnect on the next request";
       this.failures.set(key, { message, at: Date.now() });
-      this.invalidateCatalog(key);
-      if (pluginId && serverId) this.persistStatus(pluginId, serverId, "error", message);
+      this.forgetIdleState(key);
+      if (pluginId && serverId) {
+        this.invalidateCatalog(pluginId, serverId);
+        this.persistStatus(pluginId, serverId, "error", message);
+      }
     }
     if (isolated.length > 0) await this.notifyChanged();
   }
@@ -435,10 +482,13 @@ export class McpGateway implements McpRuntime {
     const connection = this.conns.get(key);
     if (!connection || connection.kind !== "host") return;
     this.conns.delete(key);
-    this.invalidateCatalog(key);
+    this.forgetIdleState(key);
     const [pluginId, serverId] = key.split(":", 2);
     const message = error ?? `Isolated MCP transport ${status}`;
-    if (pluginId && serverId) this.persistStatus(pluginId, serverId, "error", message);
+    if (pluginId && serverId) {
+      this.invalidateCatalog(pluginId, serverId);
+      this.persistStatus(pluginId, serverId, "error", message);
+    }
     this.failures.set(key, { message, at: Date.now() });
     await this.notifyChanged();
   }
@@ -549,7 +599,7 @@ export class McpGateway implements McpRuntime {
       }
       try {
         await provider.clearPending();
-        await withTimeout(this.ensureServer(pluginId, serverId), CONNECT_TIMEOUT_MS, `reconnect ${serverId}`);
+        await withTimeout(this.ensureServer(pluginId, serverId), this.connectTimeoutMs, `reconnect ${serverId}`);
         this.persistStatus(pluginId, serverId, "ready", null);
         this.failures.delete(key);
         await this.notifyChanged();
@@ -599,7 +649,7 @@ export class McpGateway implements McpRuntime {
     // now-authenticated provider instead.
     await this.closePendingAuth(key, pending);
     try {
-      await withTimeout(this.ensureServer(pluginId, serverId), CONNECT_TIMEOUT_MS, `reconnect ${serverId}`);
+      await withTimeout(this.ensureServer(pluginId, serverId), this.connectTimeoutMs, `reconnect ${serverId}`);
       this.failures.delete(key);
       await this.notifyChanged();
     } catch (error) {
@@ -640,7 +690,8 @@ export class McpGateway implements McpRuntime {
     await this.notifyChanged();
   }
 
-  private cacheCatalog(key: string, configJson: string, connection: Connected, error: string | null = null): CatalogCache {
+  private cacheCatalog(pluginId: string, serverId: string, configJson: string, connection: Connected, error: string | null = null): CatalogCache {
+    const key = keyOf(pluginId, serverId);
     const cached: CatalogCache = {
       configJson,
       tools: connection.tools,
@@ -652,23 +703,71 @@ export class McpGateway implements McpRuntime {
     };
     this.catalogCache.set(key, cached);
     this.dirtyCatalogs.delete(key);
+    if (error === null) this.saveCatalog(pluginId, serverId, cached);
     return cached;
   }
 
-  private invalidateCatalog(key: string): void {
+  /** Keep the catalog on disk so a stopped server can be listed without starting it. */
+  private saveCatalog(pluginId: string, serverId: string, cached: CatalogCache): void {
+    try {
+      this.store.saveMcpCatalog({
+        pluginId,
+        serverId,
+        configHash: configHashOf(cached.configJson),
+        catalogJson: JSON.stringify({ tools: cached.tools, prompts: cached.prompts, resources: cached.resources, resourceTemplates: cached.resourceTemplates }),
+        updatedAt: cached.updatedAt,
+      });
+    } catch (error) { this.log.warn(`save MCP catalog ${keyOf(pluginId, serverId)}: ${errorText(error)}`); }
+  }
+
+  private loadSavedCatalog(record: ReturnType<McpGateway["serverRecord"]>): CatalogCache | undefined {
+    try {
+      const saved = this.store.getMcpCatalog(record.pluginId, record.serverId);
+      if (!saved || saved.configHash !== configHashOf(record.configJson)) return undefined;
+      const parsed = asRecord(JSON.parse(saved.catalogJson));
+      if (!parsed) return undefined;
+      const cached: CatalogCache = {
+        configJson: record.configJson,
+        tools: (asRecordArray(parsed.tools) ?? []) as unknown as Tool[],
+        prompts: (asRecordArray(parsed.prompts) ?? []) as unknown as Prompt[],
+        resources: (asRecordArray(parsed.resources) ?? []) as unknown as Resource[],
+        resourceTemplates: (asRecordArray(parsed.resourceTemplates) ?? []) as unknown as ResourceTemplateType[],
+        updatedAt: saved.updatedAt,
+        error: null,
+      };
+      this.catalogCache.set(keyOf(record.pluginId, record.serverId), cached);
+      return cached;
+    } catch (error) {
+      this.log.warn(`load MCP catalog ${keyOf(record.pluginId, record.serverId)}: ${errorText(error)}`);
+      return undefined;
+    }
+  }
+
+  private invalidateCatalog(pluginId: string, serverId: string): void {
+    const key = keyOf(pluginId, serverId);
     this.catalogGenerations.set(key, (this.catalogGenerations.get(key) ?? 0) + 1);
     this.catalogCache.delete(key);
     this.catalogLoads.delete(key);
     this.dirtyCatalogs.delete(key);
+    try { this.store.deleteMcpCatalog(pluginId, serverId); }
+    catch (error) { this.log.warn(`delete MCP catalog ${key}: ${errorText(error)}`); }
+  }
+
+  /** With idle stop on, a stdio server runs only while something uses it. */
+  private startsOnDemand(record: { type: string }): boolean {
+    return this.idleStopMs > 0 && record.type === "stdio";
   }
 
   private async getCatalog(record: ReturnType<McpGateway["serverRecord"]>): Promise<CatalogCache> {
     const key = keyOf(record.pluginId, record.serverId);
-    const cached = this.catalogCache.get(key);
+    // A stopped on-demand server answers from its last catalog whatever its
+    // age: the TTL refresh applies only while the process is running anyway.
+    const stopped = this.startsOnDemand(record) && !this.conns.has(key) && !this.pending.has(key);
+    const cached = this.catalogCache.get(key) ?? (stopped ? this.loadSavedCatalog(record) : undefined);
     const age = cached ? Date.now() - cached.updatedAt : Number.POSITIVE_INFINITY;
     if (cached && cached.configJson === record.configJson && !this.dirtyCatalogs.has(key)) {
       if (cached.error && age < RETRY_AFTER_MS) throw new Error(cached.error);
-      if (!cached.error && age < CATALOG_TTL_MS) return cached;
+      if (!cached.error && (age < CATALOG_TTL_MS || stopped)) return cached;
     }
     const existingLoad = this.catalogLoads.get(key);
     if (existingLoad) return existingLoad;
@@ -683,13 +782,13 @@ export class McpGateway implements McpRuntime {
           const controller = new AbortController();
           await withTimeout(
             this.refreshCatalog(connection, controller.signal),
-            CONNECT_TIMEOUT_MS,
+            this.connectTimeoutMs,
             `refresh MCP catalog ${record.serverId}`,
             () => controller.abort(new Error(`MCP catalog refresh timed out for ${record.serverId}`)),
           );
         }
         if ((this.catalogGenerations.get(key) ?? 0) !== generation) throw new Error(`MCP catalog invalidated for ${record.serverId}`);
-        return this.cacheCatalog(key, record.configJson, connection);
+        return this.cacheCatalog(record.pluginId, record.serverId, record.configJson, connection);
       } catch (error) {
         if ((this.catalogGenerations.get(key) ?? 0) === generation) {
           const message = errorText(error);
@@ -701,7 +800,7 @@ export class McpGateway implements McpRuntime {
             resourceTemplates: [],
             expectedClose: false,
           };
-          this.cacheCatalog(key, record.configJson, empty, message);
+          this.cacheCatalog(record.pluginId, record.serverId, record.configJson, empty, message);
         }
         throw error;
       }
@@ -734,10 +833,8 @@ export class McpGateway implements McpRuntime {
     const definition = catalog.find((item) => item.opaqueId === opaqueId);
     if (!definition) throw new Error(`Tool not found: ${opaqueId}`);
     if (definition.status === "error") throw new Error(definition.error ?? "tool in error state");
-    const conn = await this.ensureServer(definition.pluginId, definition.serverId);
-    if (!conn) throw new Error(`MCP server unavailable: ${definition.serverId}`);
-    const tool = conn.tools.find((item) => item.name === definition.name);
-    const result = await this.withAuthState(definition.pluginId, definition.serverId, () => this.callTool(conn!, definition.name, args, tool, signal));
+    const result = await this.useServer(definition.pluginId, definition.serverId, (conn) =>
+      this.callTool(conn, definition.name, args, conn.tools.find((item) => item.name === definition.name), signal));
     return contentResult(result);
   }
 
@@ -758,14 +855,12 @@ export class McpGateway implements McpRuntime {
   async getPrompt(opaqueId: string, args: JsonRecord = {}, signal?: AbortSignal): Promise<JsonRecord> {
     const definition = (await this.listPrompts()).find((item) => item.opaqueId === opaqueId);
     if (!definition) throw new Error(`Prompt not found: ${opaqueId}`);
-    const conn = await this.ensureServer(definition.pluginId, definition.serverId);
-    if (!conn) throw new Error(`MCP server unavailable: ${definition.serverId}`);
     const argumentsMap: Record<string, string> = {};
     for (const [name, value] of Object.entries(args)) {
       if (typeof value !== "string") throw new Error(`Prompt argument ${name} must be a string`);
       argumentsMap[name] = value;
     }
-    return responseRecord(await this.withAuthState(definition.pluginId, definition.serverId, () => this.callPrompt(conn!, definition.name, argumentsMap, signal)));
+    return responseRecord(await this.useServer(definition.pluginId, definition.serverId, (conn) => this.callPrompt(conn, definition.name, argumentsMap, signal)));
   }
 
   async listResources(): Promise<CatalogResource[]> {
@@ -799,9 +894,7 @@ export class McpGateway implements McpRuntime {
   async readResource(opaqueId: string, signal?: AbortSignal): Promise<JsonRecord> {
     const definition = (await this.listResources()).find((item) => item.opaqueId === opaqueId);
     if (!definition) throw new Error(`Resource not found: ${opaqueId}`);
-    const conn = await this.ensureServer(definition.pluginId, definition.serverId);
-    if (!conn) throw new Error(`MCP server unavailable: ${definition.serverId}`);
-    return responseRecord(await this.withAuthState(definition.pluginId, definition.serverId, () => this.readResourceOnConnection(conn!, definition.uri, signal)));
+    return responseRecord(await this.useServer(definition.pluginId, definition.serverId, (conn) => this.readResourceOnConnection(conn, definition.uri, signal)));
   }
 
   async complete(ref: JsonRecord, argument: JsonRecord, signal?: AbortSignal): Promise<JsonRecord> {
@@ -831,8 +924,6 @@ export class McpGateway implements McpRuntime {
       else if (matches.length > 1) throw new Error(`Completion resource template is ambiguous: ${ref.uriTemplate}`);
     }
     if (!target) throw new Error("Completion reference must include pluginId and serverId");
-    const conn = await this.ensureServer(target.pluginId, target.serverId);
-    if (!conn) throw new Error(`MCP server unavailable: ${target.serverId}`);
     if (ref.type !== "ref/prompt" && ref.type !== "ref/resource") throw new Error(`Unsupported completion reference type: ${String(ref.type)}`);
     if (ref.type === "ref/prompt" && typeof ref.name !== "string") throw new Error("Prompt completion reference must include name");
     if (ref.type === "ref/resource" && typeof ref.uri !== "string") throw new Error("Resource completion reference must include uri");
@@ -843,30 +934,40 @@ export class McpGateway implements McpRuntime {
       name: typeof argument.name === "string" ? argument.name : String(argument.name ?? ""),
       value: typeof argument.value === "string" ? argument.value : String(argument.value ?? ""),
     };
-    const params: JsonRecord = { ref: wireRef, argument: wireArgument };
-    return responseRecord(await this.withAuthState(target.pluginId, target.serverId, () => this.completeOnConnection(conn!, wireRef, wireArgument, signal)));
+    return responseRecord(await this.useServer(target.pluginId, target.serverId, (conn) => this.completeOnConnection(conn, wireRef, wireArgument, signal)));
   }
 
   async subscribeResource(opaqueId: string, signal?: AbortSignal): Promise<void> {
     const definition = (await this.listResources()).find((item) => item.opaqueId === opaqueId);
     if (!definition) throw new Error(`Resource not found: ${opaqueId}`);
-    const conn = await this.ensureServer(definition.pluginId, definition.serverId);
-    if (!conn) throw new Error(`MCP server unavailable: ${definition.serverId}`);
-    await this.withAuthState(definition.pluginId, definition.serverId, () => this.subscribeOnConnection(conn!, definition.uri, signal));
+    const key = keyOf(definition.pluginId, definition.serverId);
+    await this.useServer(definition.pluginId, definition.serverId, async (conn) => {
+      await this.subscribeOnConnection(conn, definition.uri, signal);
+      // A subscription is a standing request: stopping the process would drop it silently.
+      const uris = this.subscriptions.get(key) ?? new Set<string>();
+      uris.add(definition.uri);
+      this.subscriptions.set(key, uris);
+    });
   }
 
   async unsubscribeResource(opaqueId: string, signal?: AbortSignal): Promise<void> {
     const definition = (await this.listResources()).find((item) => item.opaqueId === opaqueId);
     if (!definition) throw new Error(`Resource not found: ${opaqueId}`);
-    const conn = await this.ensureServer(definition.pluginId, definition.serverId);
-    if (!conn) throw new Error(`MCP server unavailable: ${definition.serverId}`);
-    await this.withAuthState(definition.pluginId, definition.serverId, () => this.unsubscribeOnConnection(conn!, definition.uri, signal));
+    const key = keyOf(definition.pluginId, definition.serverId);
+    await this.useServer(definition.pluginId, definition.serverId, async (conn) => {
+      await this.unsubscribeOnConnection(conn, definition.uri, signal);
+      const uris = this.subscriptions.get(key);
+      uris?.delete(definition.uri);
+      if (uris?.size === 0) this.subscriptions.delete(key);
+    });
   }
 
   async setLoggingLevel(level: string, signal?: AbortSignal): Promise<void> {
     const allowed = new Set(["debug", "info", "notice", "warning", "error", "critical", "alert", "emergency"]);
     if (!allowed.has(level)) throw new Error(`Invalid MCP logging level: ${level}`);
     for (const record of this.enabledApprovedServers()) {
+      // A stopped on-demand server has no session to configure; do not start it for this.
+      if (this.startsOnDemand(record) && !this.conns.has(keyOf(record.pluginId, record.serverId))) continue;
       const conn = await this.ensureServer(record.pluginId, record.serverId);
       if (conn) await this.withAuthState(record.pluginId, record.serverId, () => this.setLoggingLevelOnConnection(conn!, level, signal));
     }
@@ -922,6 +1023,10 @@ export class McpGateway implements McpRuntime {
   private async ensureServer(pluginId: string, serverId: string): Promise<Connected | null> {
     if (this.closed) throw new Error("MCP gateway closed");
     const key = keyOf(pluginId, serverId);
+    // Let an idle stop finish closing the old process before starting a new one under the same key.
+    const stopping = this.idleStops.get(key);
+    if (stopping) await stopping;
+    if (this.closed) throw new Error("MCP gateway closed");
     const record = this.serverRecord(pluginId, serverId);
     if (record.enabled !== 1) throw new Error(`MCP server ${serverId} is disabled`);
     const existing = this.conns.get(key);
@@ -956,15 +1061,23 @@ export class McpGateway implements McpRuntime {
     let transport: Connected["transport"] | undefined;
     let provider: McpOAuthProvider | undefined;
     let connection: Connected | undefined;
+    // A timeout aborts the attempt through the same controller as a cancel.
+    // Remember which one happened so a slow server is reported as slow.
+    let timedOut = false;
+    const connectTimeoutMs = this.connectTimeoutMs;
+    const stdioOwner = cfg.type === "stdio" ? { pluginId, serverId } : undefined;
     try {
       if (signal.aborted) throw signal.reason instanceof Error ? signal.reason : new Error("MCP connection cancelled");
       if (cfg.type === "stdio" && this.options.stdioHost) {
         const stdio = await this.expandedStdioConfig(key, cfg, plugin);
         const catalog = await withTimeout(
-          this.options.stdioHost.start(stdio, signal),
-          CONNECT_TIMEOUT_MS,
+          this.options.stdioHost.start({ ...stdio, connectTimeoutMs }, signal),
+          connectTimeoutMs,
           `start isolated MCP ${serverId}`,
-          () => this.connectControllers.get(key)?.abort(new Error(`start isolated MCP ${serverId} timed out`)),
+          () => {
+            timedOut = true;
+            this.connectControllers.get(key)?.abort(new Error(`start isolated MCP ${serverId} timed out`));
+          },
         );
         connection = {
           kind: "host",
@@ -975,6 +1088,7 @@ export class McpGateway implements McpRuntime {
           resources: catalog.resources,
           resourceTemplates: catalog.resourceTemplates,
           expectedClose: false,
+          stdioOwner,
         };
       } else {
         const capabilities: ClientCapabilities = {};
@@ -1006,35 +1120,39 @@ export class McpGateway implements McpRuntime {
           });
         }
 
-        connection = { kind: "local", client, transport, tools: [], prompts: [], resources: [], resourceTemplates: [], expectedClose: false, provider };
+        connection = { kind: "local", client, transport, tools: [], prompts: [], resources: [], resourceTemplates: [], expectedClose: false, provider, stdioOwner };
         this.installTransportHandlers(key, pluginId, serverId, connection);
         await withTimeout(
-          client.connect(transport, { signal, timeout: CONNECT_TIMEOUT_MS }),
-          CONNECT_TIMEOUT_MS,
+          client.connect(transport, { signal, timeout: connectTimeoutMs }),
+          connectTimeoutMs,
           `connect ${serverId}`,
           () => { void client?.close().catch(() => {}); },
         );
         await withTimeout(
           this.refreshCatalog(connection, signal),
-          CONNECT_TIMEOUT_MS,
+          connectTimeoutMs,
           `list MCP capabilities ${serverId}`,
-          () => this.connectControllers.get(key)?.abort(new Error(`list MCP capabilities ${serverId} timed out`)),
+          () => {
+            timedOut = true;
+            this.connectControllers.get(key)?.abort(new Error(`list MCP capabilities ${serverId} timed out`));
+          },
         );
       }
       if (provider) await provider.clearPending();
       if (this.closed) throw new Error("MCP gateway closed");
       if ((this.serverEpochs.get(key) ?? 0) !== epoch) throw new Error(`MCP connection cancelled for ${serverId}`);
       this.conns.set(key, connection);
-      this.cacheCatalog(key, this.serverRecord(pluginId, serverId).configJson, connection);
+      this.cacheCatalog(pluginId, serverId, this.serverRecord(pluginId, serverId).configJson, connection);
       this.oauthPending.delete(key);
       this.failures.delete(key);
       this.persistStatus(pluginId, serverId, "ready", null);
+      this.scheduleIdleStop(key);
       this.log.info(`MCP connected ${pluginId}:${serverId} (${connection.tools.length} tools, ${connection.prompts.length} prompts, ${connection.resources.length} resources)`);
       await this.notifyChanged();
       return connection;
     } catch (error) {
       const message = errorText(error);
-      const cancelled = this.closed || signal.aborted || (this.serverEpochs.get(key) ?? 0) !== epoch;
+      const cancelled = this.closed || (signal.aborted && !timedOut) || (this.serverEpochs.get(key) ?? 0) !== epoch;
       if (cancelled) {
         if (connection) try { await this.closeConnected(key, connection); } catch {}
         else if (client) try { await withTimeout(client.close(), CLOSE_TIMEOUT_MS, `close cancelled ${serverId}`); } catch {}
@@ -1096,7 +1214,8 @@ export class McpGateway implements McpRuntime {
       if (conn.expectedClose || this.closed) return;
       if (this.conns.get(key)?.transport !== conn.transport) return;
       this.conns.delete(key);
-      this.invalidateCatalog(key);
+      this.forgetIdleState(key);
+      this.invalidateCatalog(pluginId, serverId);
       const message = `MCP transport closed unexpectedly for ${serverId}`;
       this.failures.set(key, { message, at: Date.now() });
       this.persistStatus(pluginId, serverId, "error", message);
@@ -1148,7 +1267,8 @@ export class McpGateway implements McpRuntime {
             conn.prompts = catalog.prompts;
             conn.resources = catalog.resources;
             conn.resourceTemplates = catalog.resourceTemplates;
-            this.cacheCatalog(key, this.serverRecord(key.split(":", 2)[0]!, key.split(":", 2)[1]!).configJson, conn);
+            const [hostPluginId, hostServerId] = key.split(":", 2);
+            this.cacheCatalog(hostPluginId!, hostServerId!, this.serverRecord(hostPluginId!, hostServerId!).configJson, conn);
             void this.notifyChanged();
           }).catch((refreshError) => this.log.warn(`MCP ${key} isolated catalog refresh failed: ${errorText(refreshError)}`));
         }
@@ -1171,7 +1291,7 @@ export class McpGateway implements McpRuntime {
             const [pluginId, serverId] = key.split(":", 2);
             if (pluginId && serverId) {
               const record = this.store.listMcpServers(pluginId).find((item) => item.serverId === serverId);
-              if (record) this.cacheCatalog(key, record.configJson, conn);
+              if (record) this.cacheCatalog(pluginId, serverId, record.configJson, conn);
             }
           }
         }).catch((templateError) => this.log.warn(`MCP ${key} resource template refresh failed: ${errorText(templateError)}`));
@@ -1179,7 +1299,7 @@ export class McpGateway implements McpRuntime {
       const [pluginId, serverId] = key.split(":", 2);
       if (pluginId && serverId) {
         const record = this.store.listMcpServers(pluginId).find((item) => item.serverId === serverId);
-        if (record) this.cacheCatalog(key, record.configJson, conn);
+        if (record) this.cacheCatalog(pluginId, serverId, record.configJson, conn);
       }
     }
     void this.notifyChanged();
@@ -1239,6 +1359,77 @@ export class McpGateway implements McpRuntime {
 
   private async notifyChanged(): Promise<void> {
     try { await this.options.onChanged?.(); } catch (error) { this.log.warn(`MCP change notification failed: ${errorText(error)}`); }
+  }
+
+  /**
+   * Run one request against a server, starting it if it was stopped. The
+   * server cannot be stopped as idle while the request is in flight; the idle
+   * time is counted from the end of the last request.
+   */
+  private async useServer<T>(pluginId: string, serverId: string, operation: (conn: Connected) => Promise<T>): Promise<T> {
+    const key = keyOf(pluginId, serverId);
+    this.activeUses.set(key, (this.activeUses.get(key) ?? 0) + 1);
+    this.cancelIdleStop(key);
+    try {
+      const conn = await this.ensureServer(pluginId, serverId);
+      if (!conn) throw new Error(`MCP server unavailable: ${serverId}`);
+      return await this.withAuthState(pluginId, serverId, () => operation(conn));
+    } finally {
+      const remaining = (this.activeUses.get(key) ?? 1) - 1;
+      if (remaining > 0) this.activeUses.set(key, remaining);
+      else this.activeUses.delete(key);
+      this.scheduleIdleStop(key);
+    }
+  }
+
+  private isInUse(key: string): boolean {
+    return (this.activeUses.get(key) ?? 0) > 0 || (this.subscriptions.get(key)?.size ?? 0) > 0;
+  }
+
+  private cancelIdleStop(key: string): void {
+    const timer = this.idleTimers.get(key);
+    if (timer === undefined) return;
+    clearTimeout(timer);
+    this.idleTimers.delete(key);
+  }
+
+  private forgetIdleState(key: string): void {
+    this.cancelIdleStop(key);
+    this.subscriptions.delete(key);
+  }
+
+  private scheduleIdleStop(key: string): void {
+    this.cancelIdleStop(key);
+    const conn = this.conns.get(key);
+    if (this.closed || this.idleStopMs <= 0 || !conn?.stdioOwner || this.isInUse(key)) return;
+    const timer = setTimeout(() => {
+      this.idleTimers.delete(key);
+      void this.stopIdleServer(key, conn);
+    }, this.idleStopMs);
+    // An idle timer must never be the reason the BB server process stays alive.
+    (timer as { unref?: () => void }).unref?.();
+    this.idleTimers.set(key, timer);
+  }
+
+  /**
+   * End an unused stdio server's process. Unlike closeServer this is not a
+   * user action: approval, enabled state and the catalog all stay, and the
+   * next request starts the server again.
+   */
+  private async stopIdleServer(key: string, conn: Connected): Promise<void> {
+    if (this.closed || this.conns.get(key) !== conn || !conn.stdioOwner || this.isInUse(key)) return;
+    const { pluginId, serverId } = conn.stdioOwner;
+    this.conns.delete(key);
+    this.persistStatus(pluginId, serverId, "idle", null);
+    const stop = (async () => {
+      try { await this.closeConnected(key, conn); }
+      catch (error) { this.log.warn(`stop idle MCP ${key}: ${errorText(error)}`); }
+    })();
+    this.idleStops.set(key, stop);
+    try { await stop; }
+    finally { if (this.idleStops.get(key) === stop) this.idleStops.delete(key); }
+    this.log.info(`MCP stopped idle ${key}; it starts again on the next request`);
+    await this.notifyChanged();
   }
 
   private async withAuthState<T>(pluginId: string, serverId: string, operation: () => Promise<T>): Promise<T> {

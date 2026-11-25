@@ -32,6 +32,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm run test",
     "build": "bb plugin build .",
     "prepack": "bb plugin build . && node -e \"const fs=require('node:fs'); for (const file of ['dist/app.js','dist/app.css','dist/app.meta.json','dist/server.js','dist/server.meta.json','dist/host.js','dist/host.meta.json']) { if (!fs.existsSync(file)) throw new Error('Missing release artifact: '+file); }\"",
     "test": "vitest run"

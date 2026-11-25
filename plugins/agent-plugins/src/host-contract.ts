@@ -19,6 +19,8 @@ const stdioConfigSchema = z.object({
   args: z.array(z.string().max(16_384)).max(256),
   cwd: z.string().min(1).max(16_384),
   env: z.record(z.string(), z.string().max(16_384)),
+  /** Bound on the MCP initialize handshake; the worker's default applies when absent. */
+  connectTimeoutMs: z.number().int().min(1_000).max(600_000).optional(),
 }).strict();
 
 const operationSchema = z.object({ key: serverKeySchema }).strict();
