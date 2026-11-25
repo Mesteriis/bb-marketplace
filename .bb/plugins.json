@@ -350,6 +350,14 @@
     {
       "name": "treadchat",
       "source": "./plugins/treadchat"
+    },
+    {
+      "name": "skill-library",
+      "source": "./plugins/skill-library"
+    },
+    {
+      "name": "design-canvas",
+      "source": "./plugins/design-canvas"
     }
   ]
 }

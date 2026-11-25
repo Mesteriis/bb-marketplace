@@ -230,6 +230,18 @@
       "upstreamRemote": "upstream-cua-driver"
     },
     {
+      "id": "design-canvas",
+      "prefix": "plugins/design-canvas",
+      "upstream": "https://github.com/anh-chu/bb-plugin-design-canvas.git",
+      "upstreamSubdir": ".",
+      "upstreamRevision": "1fcc8ef5e316695d3ccfb0505c1e0609a9ad3b8d",
+      "fork": "https://github.com/Mesteriis/bb-plugin-design-canvas.git",
+      "branch": "marketplace/design-canvas",
+      "commit": "9c9dcedec7925a84aaba29a91e08943de9d54d43",
+      "remote": "plugin-design-canvas",
+      "upstreamRemote": "upstream-design-canvas"
+    },
+    {
       "id": "desktop-browser-agent",
       "prefix": "plugins/desktop-browser-agent",
       "upstream": "https://github.com/qwadrox/bb-plugin-desktop-browser-agent.git",
@@ -672,6 +684,18 @@
       "commit": "4c1b7b7dfa3a570ab8244c2e298dd05a20a5e0e8",
       "remote": "plugin-session-history",
       "upstreamRemote": "upstream-session-history"
+    },
+    {
+      "id": "skill-library",
+      "prefix": "plugins/skill-library",
+      "upstream": "https://github.com/Ayan-M-Dev/bb-plugin-skill-library.git",
+      "upstreamSubdir": ".",
+      "upstreamRevision": "a99c584fe57719ee396c7a3bbda4f349795ca19d",
+      "fork": "https://github.com/Mesteriis/bb-plugin-skill-library.git",
+      "branch": "marketplace/skill-library",
+      "commit": "cf54a4cbe8c37189d2b54f8b4bf57c543d4a592e",
+      "remote": "plugin-skill-library",
+      "upstreamRemote": "upstream-skill-library"
     },
     {
       "id": "skills",

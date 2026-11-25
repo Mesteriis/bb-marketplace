@@ -1654,6 +1654,42 @@
           "ref": "main"
         }
       }
+    },
+    {
+      "id": "skill-library",
+      "displayName": "Skill Library",
+      "description": "Browse, edit, create, and install agent skills from the sidebar.",
+      "icon": "BookOpen",
+      "author": {
+        "name": "Ayan-M-Dev",
+        "github": "Ayan-M-Dev",
+        "url": "https://github.com/Ayan-M-Dev"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/skill-library",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "design-canvas",
+      "displayName": "Design Canvas",
+      "description": "Where humans and agents design together: HTML artboards you move, edit, tune and comment on.",
+      "icon": "Palette",
+      "author": {
+        "name": "anh-chu",
+        "github": "anh-chu",
+        "url": "https://github.com/anh-chu"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/design-canvas",
+          "ref": "main"
+        }
+      }
     }
   ]
 }
