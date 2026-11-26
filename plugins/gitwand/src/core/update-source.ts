@@ -5,11 +5,12 @@
 export const RELEASE_CHANNEL_URL = "https://github.com/Mesteriis/GitWand-bb/releases/latest/download/channel.json";
 
 /**
- * The minisign public key (both lines) that signs the release channel.
- * null until the owner creates the key and provides its public half; updates
- * stay off without a key.
+ * The minisign public key (both lines) that signs the release channel: the
+ * owner's key 24041B7E27AE78BE. Its secret half never leaves the owner and
+ * the release environment of Mesteriis/GitWand-bb.
  */
-export const RELEASE_PUBLIC_KEY: string | null = null;
+export const RELEASE_PUBLIC_KEY: string | null = `untrusted comment: minisign public key 24041B7E27AE78BE
+RWS+eK4nfhsEJBkFnXaOm8cDxZgmOQD8BQBXek5QVbkToGsAPUBOunOE`;
 
 export type UpdateSource = { kind: "on"; url: string; key: string } | { kind: "off"; reason: string };
 

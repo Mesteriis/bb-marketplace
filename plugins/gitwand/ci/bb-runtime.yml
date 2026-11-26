@@ -54,7 +54,7 @@ jobs:
           - platform: darwin-arm64
             runner: macos-14
           - platform: darwin-x64
-            runner: macos-13
+            runner: macos-15-intel
           - platform: linux-x64
             runner: ubuntu-22.04
     runs-on: ${{ matrix.runner }}
@@ -120,6 +120,10 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "24"
+
+      - name: Plugin dependencies
+        working-directory: marketplace/plugins/gitwand
+        run: npm ci --no-audit --no-fund
 
       - name: Collect the archives
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0

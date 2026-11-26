@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { parseMinisignPublicKey } from "./minisign.ts";
 import { RELEASE_CHANNEL_URL, RELEASE_PUBLIC_KEY, updateSource } from "./update-source.ts";
 
 const KEY = "untrusted comment: minisign public key\nRWQBAgMEBQYHCKCm2o2isGk5eGQRQYR/4EqQ7PViHojAa1iAXr+RLXkH";
@@ -8,8 +9,10 @@ describe("release constants", () => {
     expect(RELEASE_CHANNEL_URL).toBe("https://github.com/Mesteriis/GitWand-bb/releases/latest/download/channel.json");
   });
 
-  it("have no public key until the owner provides one", () => {
-    expect(RELEASE_PUBLIC_KEY).toBeNull();
+  it("carry the owner's minisign public key 24041B7E27AE78BE", () => {
+    // minisign prints the key id as a little-endian number; the file stores its bytes.
+    const key = parseMinisignPublicKey(RELEASE_PUBLIC_KEY ?? "");
+    expect(key.keyId.match(/../g)!.reverse().join("").toUpperCase()).toBe("24041B7E27AE78BE");
   });
 });
 

@@ -7,12 +7,22 @@ import { parse } from "yaml";
 const root = new URL("../", import.meta.url);
 const workflow = parse(readFileSync(new URL("ci/bb-runtime.yml", root), "utf8"));
 type Step = { name?: string; uses?: string; run?: string; env?: Record<string, string>; with?: Record<string, string> };
-const jobs = workflow.jobs as Record<string, { steps: Step[]; permissions?: Record<string, string>; environment?: string; strategy?: { matrix: { include: { platform: string }[] } } }>;
+const jobs = workflow.jobs as Record<string, { steps: Step[]; permissions?: Record<string, string>; environment?: string; strategy?: { matrix: { include: { platform: string; runner: string }[] } } }>;
 const steps = Object.values(jobs).flatMap((j) => j.steps);
 
 describe("bb-runtime workflow", () => {
   it("builds every runtime platform the plugin knows", () => {
     expect(jobs.build.strategy!.matrix.include.map((m) => m.platform)).toEqual(["darwin-arm64", "darwin-x64", "linux-x64"]);
+  });
+
+  it("runs on runner images GitHub still offers (actionlint's list)", () => {
+    expect(jobs.build.strategy!.matrix.include.map((m) => m.runner)).toEqual(["macos-14", "macos-15-intel", "ubuntu-22.04"]);
+  });
+
+  it("installs the plugin's dependencies before make-channel.ts, which imports zod", () => {
+    const names = jobs.release.steps.map((s) => s.name);
+    expect(names.indexOf("Plugin dependencies")).toBeGreaterThan(-1);
+    expect(names.indexOf("Plugin dependencies")).toBeLessThan(names.indexOf("Write channel.json"));
   });
 
   it("pins every action to a full commit", () => {
