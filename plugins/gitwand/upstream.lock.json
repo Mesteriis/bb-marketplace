@@ -8,28 +8,28 @@
     { "name": "0003-repo-catalog.patch", "sha256": "f4718ca80ce26ce818506c73441d5c04b87dd938493eb5732b7302c5ad462a5c" }
   ],
   "runtime": {
-    "version": "3.14.0+bb1",
-    "release": "https://github.com/Mesteriis/GitWand-bb/releases/tag/runtime-3.14.0-bb1",
-    "builtFrom": "eb96a11416ad7ec08f8df666c5e6472daf8d3851",
+    "version": "3.14.0+bb2",
+    "release": "https://github.com/Mesteriis/GitWand-bb/releases/tag/runtime-3.14.0-bb2",
+    "builtFrom": "c988566144abb2fb2b1e94d4d94da4e96957d6a5",
     "signingKey": "24041B7E27AE78BE",
     "channel": {
-      "sha256": "213e0316c5d2a511b9ef37e34b52e7da54c7a265ca001687da31b3a12ad91270"
+      "sha256": "090d5baa35ff040904b3c33c482a62c205964b035145c83f0e039649b78fc882"
     },
     "platforms": {
       "darwin-arm64": {
-        "url": "https://github.com/Mesteriis/GitWand-bb/releases/download/runtime-3.14.0-bb1/gitwand-runtime-3.14.0-bb1-darwin-arm64.tar.gz",
-        "sha256": "d182e6b2130900d36225711c004a4e6462a7350a288d2bd0d67556acb5d0d11e",
-        "size": 7063890
+        "url": "https://github.com/Mesteriis/GitWand-bb/releases/download/runtime-3.14.0-bb2/gitwand-runtime-3.14.0-bb2-darwin-arm64.tar.gz",
+        "sha256": "9c98efe4521c06af35605270ec288a725c296610e664350e5f258bf2218b3c6b",
+        "size": 7074965
       },
       "darwin-x64": {
-        "url": "https://github.com/Mesteriis/GitWand-bb/releases/download/runtime-3.14.0-bb1/gitwand-runtime-3.14.0-bb1-darwin-x64.tar.gz",
-        "sha256": "9ca9303fb98c6dceb4cdb8fc5d38c336bdbe79484bbc071e46af08c93da7c4c5",
-        "size": 7316930
+        "url": "https://github.com/Mesteriis/GitWand-bb/releases/download/runtime-3.14.0-bb2/gitwand-runtime-3.14.0-bb2-darwin-x64.tar.gz",
+        "sha256": "d9143ce70272089e0f6bc70221dbe3a7418a014b86c2d3e3d49ab12ac66ff720",
+        "size": 7329059
       },
       "linux-x64": {
-        "url": "https://github.com/Mesteriis/GitWand-bb/releases/download/runtime-3.14.0-bb1/gitwand-runtime-3.14.0-bb1-linux-x64.tar.gz",
-        "sha256": "427a686c5fc572e1fbd6633f47681065e95201013b229bcc66a629bd1f653b86",
-        "size": 8406326
+        "url": "https://github.com/Mesteriis/GitWand-bb/releases/download/runtime-3.14.0-bb2/gitwand-runtime-3.14.0-bb2-linux-x64.tar.gz",
+        "sha256": "25ba695c90448a8894d9dcd83053914fe9d6babd4afa5ad73b86a7b1808299ea",
+        "size": 8416074
       }
     }
   }
