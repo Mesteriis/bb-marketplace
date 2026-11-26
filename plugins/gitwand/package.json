@@ -1,0 +1,40 @@
+{
+  "name": "bb-plugin-makosh-gitwand",
+  "version": "0.1.0",
+  "description": "Git client GitWand inside BB: status, history, branches, terminal and forges, run by GitWand's own Rust backend.",
+  "type": "module",
+  "license": "MIT",
+  "private": true,
+  "bb": {
+    "name": "Makosh GitWand [Experimental]",
+    "description": "Git client GitWand inside BB: status, history, branches, terminal and forges, run by GitWand's own Rust backend.",
+    "branding": {
+      "icon": "./assets/icon.svg"
+    },
+    "server": "./server.ts"
+  },
+  "scripts": {
+    "build": "bb plugin build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "check": "npm run typecheck && npm run test"
+  },
+  "dependencies": {
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@get-bb/plugin-sdk": "0.6.132",
+    "@testing-library/dom": "^10.4.2",
+    "@testing-library/react": "^16.3.3",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "hono": "^4.13.22",
+    "jsdom": "^26.1.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "typescript": "^5.7.0",
+    "vitest": "^5.1.0"
+  }
+}
