@@ -24,7 +24,7 @@ import { fileURLToPath } from "node:url";
 import { KNOWN_PLUGIN_COMMANDS } from "../src/core/tauri-plugin-commands.ts";
 import { UI_BASE_PATH } from "../src/core/ui-routes.ts";
 import { generateFor } from "./gen-bridge-dispatch.ts";
-import { archiveName, jsLicenseLines, manifestText, parseBuildArgs, shippedCrates, type CargoMetadata, runtimeVersion, scanPluginCommands, unknownPluginCommands, type Platform } from "./lib/runtime-build.ts";
+import { archiveName, jsLicenseLines, tarOwnerFlags, manifestText, parseBuildArgs, shippedCrates, type CargoMetadata, runtimeVersion, scanPluginCommands, unknownPluginCommands, type Platform } from "./lib/runtime-build.ts";
 
 const PLUGIN = fileURLToPath(new URL("..", import.meta.url));
 const started = Date.now();
@@ -172,7 +172,7 @@ function main(): void {
   mkdirSync(out, { recursive: true });
   const archive = join(out, archiveName(version, args.platform));
   // Neutral owner: the build machine's user name stays out of the archive.
-  run("tar", ["--uid", "0", "--gid", "0", "--uname", "root", "--gname", "wheel", "-czf", archive, "-C", join(work, "stage"), name], { env: { ...env, COPYFILE_DISABLE: "1" } });
+  run("tar", [...tarOwnerFlags(run("tar", ["--version"])), "-czf", archive, "-C", join(work, "stage"), name], { env: { ...env, COPYFILE_DISABLE: "1" } });
   const unpacked = join(out, `${version}-${args.platform}`);
   rmSync(unpacked, { recursive: true, force: true });
   cpSync(stage, unpacked, { recursive: true });

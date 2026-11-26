@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { archiveName, jsLicenseLines, manifestText, shippedCrates, parseBuildArgs, runtimeVersion, scanPluginCommands, unknownPluginCommands } from "./runtime-build.ts";
+import { archiveName, jsLicenseLines, tarOwnerFlags, manifestText, shippedCrates, parseBuildArgs, runtimeVersion, scanPluginCommands, unknownPluginCommands } from "./runtime-build.ts";
 
 const SHA = "436b9684f096e8edd35b6a36e3b4d3af0fd7e084";
 
@@ -109,5 +109,19 @@ describe("jsLicenseLines", () => {
       "Apache-2.0": [{ name: "@tauri-apps/api", versions: ["2.12.4", "2.12.3"], paths: ["/tmp/y"] }],
     });
     expect(jsLicenseLines(json)).toEqual(["@tauri-apps/api 2.12.3 Apache-2.0", "@tauri-apps/api 2.12.4 Apache-2.0", "vue 3.5.42 MIT"]);
+  });
+});
+
+describe("tarOwnerFlags", () => {
+  it("uses the bsdtar flags on macOS's tar", () => {
+    expect(tarOwnerFlags("bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8\n")).toEqual(["--uid", "0", "--gid", "0", "--uname", "root", "--gname", "wheel"]);
+  });
+
+  it("uses the GNU flags on GNU tar (ubuntu)", () => {
+    expect(tarOwnerFlags("tar (GNU tar) 1.34\nCopyright (C) 2021 Free Software Foundation, Inc.\n")).toEqual(["--owner=0", "--group=0", "--numeric-owner"]);
+  });
+
+  it("refuses a tar it does not know", () => {
+    expect(() => tarOwnerFlags("busybox tar 1.36\n")).toThrow(/unknown tar/);
   });
 });

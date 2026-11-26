@@ -106,3 +106,14 @@ export function jsLicenseLines(json: string): string[] {
     .flatMap(([license, packages]) => packages.flatMap((p) => p.versions.map((v) => `${p.name} ${v} ${license}`)))
     .sort();
 }
+
+/**
+ * Flags that give the archive a neutral owner (root, uid/gid 0), so the build
+ * machine's user name stays out of it. bsdtar (macOS) and GNU tar (Linux)
+ * spell them differently; `versionText` is the output of `tar --version`.
+ */
+export function tarOwnerFlags(versionText: string): string[] {
+  if (/\bbsdtar\b/.test(versionText)) return ["--uid", "0", "--gid", "0", "--uname", "root", "--gname", "wheel"];
+  if (/\(GNU tar\)/.test(versionText)) return ["--owner=0", "--group=0", "--numeric-owner"];
+  throw new Error(`unknown tar: ${versionText.split("\n")[0]}`);
+}

@@ -48,7 +48,7 @@ jobs:
   build:
     name: build ${{ matrix.platform }}
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         include:
           - platform: darwin-arm64
