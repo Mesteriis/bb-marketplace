@@ -8,11 +8,15 @@
   },
   "ociDigest": "sha256:9c46a918633fb474bf8035e3ee90ebac6bcf2b18ccb00679ac4c179cba0ebfcf",
   "notes": [
-    "OCI-индекс mcp/time скачан по дайджесту, sha256 манифеста совпал с закреплённым; код не запускался.",
+    "OCI-индекс mcp/time скачан по дайджесту, sha256 индекса, манифеста, конфига и всех слоёв совпали; код не запускался.",
     "Разобран слой amd64 sha256:3bedd9be88a9…: сервер mcp-server-time 0.6.2 (MIT), два инструмента: get_current_time, convert_time.",
-    "Код сервера (201 строка) не содержит сети, подпроцессов и доступа к файлам; только datetime/zoneinfo и stdio.",
-    "Образ работает от root (в конфиге нет User); для запуска стоит задать --network none, --read-only, не от root.",
+    "Код сервера (201 строка) не содержит сети, подпроцессов и доступа к файлам; только datetime/zoneinfo и stdio. Сеть не нужна, network остаётся none.",
+    "user: image — под uid 65534 образ не запустится: /app/.venv/bin/python — симлинк на /root/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/bin/python3.10, а /root в итоговом слое drwx------ root (0700), nobody не пройдёт через каталог. Файлы /app читаемы всеми; в конфиге образа User не задан, значит root.",
+    "Риск root смягчается песочницей каталога: --network none, корень только для чтения, tmpfs /tmp, все capabilities сброшены.",
     "Зависимости устаревшие (mcp 1.0.0, starlette 0.41.3, certifi 2024.8.30, uvicorn 0.32.1); уязвимости не сверялись с базой."
   ],
-  "acceptedAt": "2026-11-26T11:07:18.675Z"
+  "docker": {
+    "user": "image"
+  },
+  "acceptedAt": "2026-11-26T11:40:51.595Z"
 }
