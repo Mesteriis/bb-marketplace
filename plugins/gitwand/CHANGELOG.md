@@ -21,6 +21,9 @@
   or the rows shown, Pull after a confirmation that lists the repositories;
   pull requests for the selection only.
 - Settings **Project folders**, **Search depth** and **GitLab hosts**.
+- The backend starts with the plugin (installing the first runtime from the
+  signed channel when none is installed) and again after an unexpected
+  exit, instead of on the first GitWand call.
 
 ## 0.1.0 — 2026-11-26
 
