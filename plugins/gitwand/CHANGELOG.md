@@ -24,4 +24,8 @@
   (`/gw/embed.css`).
 - Keystrokes to one terminal are sent in order (they arrived reordered when
   each went out as its own request).
+- Release tooling, not run yet: `ci/bb-runtime.yml` (build matrix, signing in
+  a protected environment, release), `scripts/make-channel.ts`, and the
+  release channel URL with a place for the public key (unset) in
+  `src/core/update-source.ts`.
 

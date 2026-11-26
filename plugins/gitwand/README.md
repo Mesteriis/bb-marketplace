@@ -56,6 +56,27 @@ build scripts run only there. The result goes to `.runtime/` (ignored by git):
 `LICENSE`, `NOTICES`, `runtime.json` and `MANIFEST.sha256`, the same tree
 unpacked, and `current.json` pointing at it.
 
+## Releasing a runtime
+
+`ci/bb-runtime.yml` is the release workflow for the release repository
+(`Mesteriis/GitWand-bb`, copied to `.github/workflows/bb-runtime.yml`). Run by
+hand with the GitWand tag and commit from `upstream.lock.json`, a build number
+and a ref of this repository, it builds the archive on macOS arm64, macOS x64
+and Linux x64, then, in the protected `release` environment:
+
+- `scripts/make-channel.ts` puts the archives under release asset names
+  (`+bbN` becomes `-bbN`) and writes `channel.json`;
+- minisign signs it with the owner's key (secrets `MINISIGN_SECRET_KEY`,
+  `MINISIGN_PASSWORD`) and checks the signature with the public key
+  (variable `MINISIGN_PUBLIC_KEY`);
+- a release `runtime-<version with -bbN>` gets the archives, `channel.json`
+  and `channel.json.minisig`.
+
+The plugin reads `RELEASE_CHANNEL_URL` (the latest release's `channel.json`)
+and `RELEASE_PUBLIC_KEY` from `src/core/update-source.ts`; the settings can
+replace either. Updates stay off while no public key is set; the key is
+still `null`.
+
 ## Bridge contract tests
 
 `npm run check` includes `tests/bridge-contract.test.ts`, which runs against the

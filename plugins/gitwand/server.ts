@@ -21,6 +21,7 @@ import { EMBED_CSS, UiRoutes } from "./src/adapters/bb/ui-http.ts";
 import { UpdateService, type UpdateCheck } from "./src/adapters/bb/update-service.ts";
 import { rpcSchemas, type GitWandStatus } from "./src/core/contract.ts";
 import { PLUGIN_HTTP_BASE } from "./src/core/frame-url.ts";
+import { RELEASE_CHANNEL_URL, RELEASE_PUBLIC_KEY, updateSource } from "./src/core/update-source.ts";
 import { platformKey } from "./src/core/versions.ts";
 import packageJson from "./package.json" with { type: "json" };
 
@@ -53,13 +54,13 @@ export default async function plugin(bb: BbPluginApi) {
     updateChannelUrl: {
       type: "string",
       label: "Update channel URL",
-      description: "https URL of channel.json; channel.json.minisig must sit next to it. Updates are off while empty.",
+      description: "https URL of channel.json; channel.json.minisig must sit next to it. Empty: the plugin's release channel.",
       default: "",
     },
     updatePublicKey: {
       type: "string",
       label: "Update signing key",
-      description: "The minisign public key (both lines) that signs channel.json. Updates are off while empty.",
+      description: "The minisign public key (both lines) that signs channel.json. Empty: the key built into the plugin; updates are off while neither is set.",
       default: "",
     },
   });
@@ -147,13 +148,15 @@ export default async function plugin(bb: BbPluginApi) {
     };
   });
 
-  // Updates: off until a channel URL and a signing key are set.
+  // Updates: the release channel (or the one in settings); off without a signing key.
   let lastCheck: UpdateCheck | null = null;
   const updates = async () => {
     const s = await settings.get();
     return new UpdateService({
-      channelUrl: s.updateChannelUrl,
-      publicKey: s.updatePublicKey,
+      ...(() => {
+        const source = updateSource({ url: s.updateChannelUrl, key: s.updatePublicKey }, { url: RELEASE_CHANNEL_URL, key: RELEASE_PUBLIC_KEY });
+        return source.kind === "on" ? { channelUrl: source.url, publicKey: source.key } : { channelUrl: "", publicKey: "" };
+      })(),
       platform: platform ?? "darwin-arm64",
       pluginVersion: packageJson.version,
       installed: async () => (runtime?.source === "installed" ? runtime.version : null),
