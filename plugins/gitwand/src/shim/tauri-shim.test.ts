@@ -300,3 +300,28 @@ describe("plugin behaviour", () => {
     expect(await check()).toBeNull();
   });
 });
+
+describe("terminal input order", () => {
+  it("sends keystrokes to one terminal one after another, so a slow request cannot reorder them", async () => {
+    const pending: (() => void)[] = [];
+    routes["POST invoke"] = () => ({ json: { ok: null } });
+    const realFetch = window.fetch;
+    window.fetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) =>
+      new Promise<Response>((resolve) => pending.push(() => resolve(realFetch(input, init) as unknown as Response))),
+    ) as typeof fetch;
+    const a = invoke("terminal_write", { id: 7, data: "e" });
+    const b = invoke("terminal_write", { id: 7, data: "r" });
+    const other = invoke("terminal_write", { id: 8, data: "x" });
+    await flush();
+    expect((window.fetch as ReturnType<typeof vi.fn>).mock.calls.map((c) => JSON.parse(String(c[1].body)).args)).toEqual([
+      { id: 7, data: "e" },
+      { id: 8, data: "x" },
+    ]);
+    pending.shift()!();
+    await a;
+    await flush();
+    expect((window.fetch as ReturnType<typeof vi.fn>).mock.calls.map((c) => JSON.parse(String(c[1].body)).args.data)).toEqual(["e", "x", "r"]);
+    pending.splice(0).forEach((go) => go());
+    await Promise.all([b, other]);
+  });
+});

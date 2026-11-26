@@ -43,6 +43,7 @@
     "shim": "node scripts/build-shim.ts"
   },
   "dependencies": {
+    "@radix-ui/react-slot": "^1.5.0",
     "zod": "^4.6.5"
   },
   "devDependencies": {
@@ -57,11 +58,14 @@
     "@types/node": "^22.0.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
     "hono": "^4.13.22",
     "jsdom": "^26.1.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "sonner": "^1.7.4",
+    "tailwind-merge": "^3.7.1",
     "typescript": "^5.7.0",
     "vitest": "^5.1.0"
   }

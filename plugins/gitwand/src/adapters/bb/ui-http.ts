@@ -7,6 +7,19 @@ import { PLUGIN_HTTP_BASE } from "../../core/frame-url.ts";
 import { contentTypeFor, uiRouteFor } from "../../core/ui-routes.ts";
 
 export const SHIM_PATH = `${PLUGIN_HTTP_BASE}/gw/shim.js`;
+export const EMBED_CSS_PATH = `${PLUGIN_HTTP_BASE}/gw/embed.css`;
+
+/**
+ * Styles for GitWand inside a BB tab. GitWand centres its dock over the whole
+ * window; in a window narrower than its desktop layout (a thread tab is
+ * 480-900 px) the dock covers the commit panel's Stage all and Commit
+ * buttons. The panel gets room for the dock, the same clearance GitWand gives
+ * its PR view (`--app-dock-height` plus the dock's offsets).
+ */
+export const EMBED_CSS = `@media (max-width: 1200px) {
+  .commit-panel { padding-bottom: calc(var(--app-dock-height, 44px) + 2 * var(--space-4, 12px)) !important; }
+}
+`;
 
 /** The UI may only be framed by BB pages on loopback, and talks only to its own origin. */
 const UI_CSP = [
@@ -38,7 +51,7 @@ export async function serveUiFile(uiDir: string | null, file: string): Promise<R
   }
   const headers: Record<string, string> = { "content-type": contentTypeFor(file), "x-content-type-options": "nosniff" };
   if (file === "index.html") {
-    const html = body.toString("utf8").replace("<head>", `<head>\n    <script src="${SHIM_PATH}"></script>`);
+    const html = body.toString("utf8").replace("<head>", `<head>\n    <script src="${SHIM_PATH}"></script>\n    <link rel="stylesheet" href="${EMBED_CSS_PATH}">`);
     return new Response(html, { headers: { ...headers, "content-security-policy": UI_CSP, "cache-control": "no-store" } });
   }
   return new Response(new Uint8Array(body), { headers: { ...headers, "cache-control": "no-cache" } });
@@ -57,12 +70,22 @@ export class UiRoutes {
     return this.registered.size;
   }
 
-  ensure(files: string[]): void {
+  /** Registers what is new; a route the host refuses is reported and tried again next time. */
+  ensure(files: string[]): { added: number; failed: string[] } {
+    let added = 0;
+    const failed: string[] = [];
     for (const file of files) {
       const route = uiRouteFor(file);
       if (route === null || this.registered.has(route)) continue;
-      this.register(route, async () => serveUiFile(await this.uiDir(), file));
+      try {
+        this.register(route, async () => serveUiFile(await this.uiDir(), file));
+      } catch {
+        failed.push(file);
+        continue;
+      }
       this.registered.add(route);
+      added++;
     }
+    return { added, failed };
   }
 }

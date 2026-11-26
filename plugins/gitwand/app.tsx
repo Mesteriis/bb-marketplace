@@ -16,11 +16,12 @@ import { toast } from "sonner";
 import type { rpcContract } from "./server.ts";
 import type { GitWandStatus } from "./src/core/contract.ts";
 import { frameUrlFor } from "./src/core/frame-url.ts";
-import { GitWandHost } from "./src/ui/gitwand-host.tsx";
+import { GitWandHost, Notice } from "./src/ui/gitwand-host.tsx";
 import { SettingsPanel } from "./src/ui/settings-panel.tsx";
 
 const GITWAND_TAB = { id: "gitwand", context: { kind: "thread" }, availability: "action" } as const satisfies ExperimentalTabReference;
 
+const NO_RUNTIME = "Рантайм GitWand не установлен. Установите его в настройках плагина GitWand.";
 const notify = (title: string, body: string) => toast.info(title, { description: body });
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
@@ -30,8 +31,8 @@ function ThreadTab({ threadId }: ExperimentalThreadActionTabProps) {
   useEffect(() => {
     let live = true;
     setRepo(null);
-    rpc.call("repo_for_thread", { threadId }).then(
-      (r) => live && setRepo(r),
+    Promise.all([rpc.call("repo_for_thread", { threadId }), rpc.call("status", null)]).then(
+      ([r, s]) => live && setRepo(s.runtime === null ? { path: null, problem: NO_RUNTIME } : r),
       (e) => live && setRepo({ path: null, problem: message(e) }),
     );
     return () => {
@@ -40,7 +41,7 @@ function ThreadTab({ threadId }: ExperimentalThreadActionTabProps) {
     // The RPC wrapper may change identity between renders; the thread decides.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [threadId]);
-  if (repo === null) return <div role="status" style={{ padding: 16 }}>Открываю GitWand…</div>;
+  if (repo === null) return <Notice icon="LoaderCircle" text="Открываю GitWand…" />;
   const url = repo.path === null ? null : frameUrlFor(window.location.origin, repo.path);
   return <GitWandHost url={url} problem={repo.problem} onNotify={notify} />;
 }
@@ -55,25 +56,25 @@ function Settings() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const run = useCallback(
-    (method: "status" | "restart" | "rollback" | "check_updates") => {
+    (call: () => Promise<GitWandStatus>) => {
       setBusy(true);
       setError(null);
-      rpc
-        .call(method, null)
+      call()
         .then(setStatus, (e) => setError(message(e)))
         .finally(() => setBusy(false));
     },
     [rpc],
   );
-  useEffect(() => run("status"), []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => run(() => rpc.call("status", null)), []); // eslint-disable-line react-hooks/exhaustive-deps
   return (
     <SettingsPanel
       status={status}
       error={error}
       busy={busy}
-      onRestart={() => run("restart")}
-      onRollback={() => run("rollback")}
-      onCheckUpdates={() => run("check_updates")}
+      onRestart={() => run(() => rpc.call("restart", null))}
+      onRollback={() => run(() => rpc.call("rollback", null))}
+      onCheckUpdates={() => run(() => rpc.call("check_updates", null))}
+      onInstall={(version) => run(() => rpc.call("install_update", { version }))}
     />
   );
 }

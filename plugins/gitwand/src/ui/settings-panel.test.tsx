@@ -1,9 +1,11 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { installTestPluginRuntime } from "@get-bb/plugin-sdk/testing/app";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GitWandStatus } from "../core/contract.ts";
 import { SettingsPanel } from "./settings-panel.tsx";
 
+installTestPluginRuntime();
 afterEach(cleanup);
 
 const STATUS: GitWandStatus = {
@@ -13,9 +15,10 @@ const STATUS: GitWandStatus = {
   bridge: { state: "running", detail: null },
   tools: { git: true, gh: false, glab: true },
   update: { state: "disabled", detail: null },
+  notice: null,
 };
 
-const handlers = () => ({ onRestart: vi.fn(), onRollback: vi.fn(), onCheckUpdates: vi.fn() });
+const handlers = () => ({ onRestart: vi.fn(), onRollback: vi.fn(), onCheckUpdates: vi.fn(), onInstall: vi.fn() });
 
 describe("SettingsPanel", () => {
   it("shows runtime, backend, tools and updates", () => {
@@ -54,5 +57,33 @@ describe("SettingsPanel", () => {
   it("shows an action error", () => {
     render(<SettingsPanel status={STATUS} error="There is no previous GitWand runtime to roll back to" busy={false} {...handlers()} />);
     expect(screen.getByRole("alert").textContent).toBe("There is no previous GitWand runtime to roll back to");
+  });
+});
+
+describe("SettingsPanel install", () => {
+  it("offers to install an available build and installs that version", () => {
+    const h = handlers();
+    render(<SettingsPanel status={{ ...STATUS, update: { state: "available", detail: "3.14.0+bb2" } }} error={null} busy={false} {...h} />);
+    fireEvent.click(screen.getByRole("button", { name: "Установить 3.14.0+bb2" }));
+    expect(h.onInstall).toHaveBeenCalledWith("3.14.0+bb2");
+  });
+
+  it("offers no install without an available build", () => {
+    render(<SettingsPanel status={STATUS} error={null} busy={false} {...handlers()} />);
+    expect(screen.queryByRole("button", { name: /^Установить/ })).toBeNull();
+  });
+
+  it("says where a runtime comes from while none is installed and updates are off", () => {
+    render(<SettingsPanel status={{ ...STATUS, runtime: null, update: { state: "disabled", detail: null } }} error={null} busy={false} {...handlers()} />);
+    expect(screen.getByRole("note").textContent).toBe(
+      "Чтобы запустить GitWand, укажите каталог рантайма разработки или канал обновлений с ключом подписи в настройках выше.",
+    );
+  });
+});
+
+describe("SettingsPanel notice", () => {
+  it("shows what the user has to do", () => {
+    render(<SettingsPanel status={{ ...STATUS, notice: "Перезагрузите плагин: bb plugin reload makosh-gitwand" }} error={null} busy={false} {...handlers()} />);
+    expect(screen.getByRole("status").textContent).toBe("Перезагрузите плагин: bb plugin reload makosh-gitwand");
   });
 });

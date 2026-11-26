@@ -19,7 +19,20 @@ HOME), never on the maintainer's BB. Same approach as
    command in GitWand's terminal (checked through the file it writes), opens
    the sidebar page and the settings section. Exit code 0 only on
    `SCENARIO PASS`.
-5. `touch "$S/stop"` — the instance stops; `run.sh` checks the server no
+5. Full acceptance (plan section «Проверка»), on the same stand:
+   `docs/e2e-stand/reset-repo.sh "$S"; node docs/e2e-stand/acceptance.mjs "$URL/" <tools> <chrome> <out> "$PROJECT" "$THREAD" "$REPO" "$S"`
+   — one line per check: tab, narrow tab 480/560 px, stage/commit, watcher,
+   diff/history/branches, merge conflict in GitWand's editor, push/fetch/pull
+   on a local bare repository, terminal (`git --version`, resize).
+6. Update acceptance: a stand without a development runtime
+   (`STAND_CA=<tls.crt> run.sh "$S" -`), a local https channel
+   (`channel/serve.mjs`, `channel/publish.sh <version> <port>` signs
+   `channel.json` with a throwaway minisign key made by OpenSSL; see the
+   script for the key files it expects), settings `updateChannelUrl` and
+   `updatePublicKey` set with `bb plugin config`, then
+   `node docs/e2e-stand/update.mjs …`: first install from the channel, the next
+   build through GitWand's own update banner, rollback, a tampered manifest.
+7. `touch "$S/stop"` — the instance stops; `run.sh` checks the server no
    longer answers and no `gitwand-bridge` of the stand is left.
 
 Chromium, PTYs and FSEvents do not work inside agent sandboxes: run steps 3–5

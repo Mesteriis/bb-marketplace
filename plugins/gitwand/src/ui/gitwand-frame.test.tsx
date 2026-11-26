@@ -1,8 +1,10 @@
 // @vitest-environment jsdom
 import { cleanup, render, screen } from "@testing-library/react";
+import { installTestPluginRuntime } from "@get-bb/plugin-sdk/testing/app";
 import { afterEach, describe, expect, it } from "vitest";
 import { GitWandFrame } from "./gitwand-frame.tsx";
 
+installTestPluginRuntime();
 afterEach(cleanup);
 
 const URL_A = "http://localhost:38886/api/v1/plugins/makosh-gitwand/http/ui/index.html?repo=%2Fr";

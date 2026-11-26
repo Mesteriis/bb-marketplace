@@ -17,7 +17,7 @@ import { smokeRuntime } from "./src/adapters/bb/runtime-smoke.ts";
 import { RuntimeStore, resolveRuntime, type InstalledRuntime } from "./src/adapters/bb/runtime-store.ts";
 import { shimScript } from "./src/adapters/bb/shim-script.ts";
 import { repoForThread, type ThreadSdk } from "./src/adapters/bb/thread-repo.ts";
-import { UiRoutes } from "./src/adapters/bb/ui-http.ts";
+import { EMBED_CSS, UiRoutes } from "./src/adapters/bb/ui-http.ts";
 import { UpdateService, type UpdateCheck } from "./src/adapters/bb/update-service.ts";
 import { rpcSchemas, type GitWandStatus } from "./src/core/contract.ts";
 import { PLUGIN_HTTP_BASE } from "./src/core/frame-url.ts";
@@ -109,14 +109,22 @@ export default async function plugin(bb: BbPluginApi) {
     (route, handler) => bb.http.route("GET", route, handler),
     async () => runtime?.uiDir ?? null,
   );
+  // BB may refuse routes registered after load; then the new UI files need a plugin reload.
+  let routesNotice: string | null = null;
   async function ensureUiRoutes(): Promise<void> {
-    routes.ensure(runtime === null ? ["index.html"] : await uiFiles(runtime.uiDir));
+    const { failed } = routes.ensure(runtime === null ? ["index.html"] : await uiFiles(runtime.uiDir));
+    routesNotice =
+      failed.length === 0
+        ? null
+        : `Новый интерфейс GitWand заработает после перезагрузки плагина (${failed.length} новых файлов): bb plugin reload makosh-gitwand или выключите и включите плагин.`;
+    if (failed.length > 0) bb.log.warn(`could not register ${failed.length} UI routes after load`);
   }
   await refreshRuntime();
   await ensureUiRoutes();
 
   const shim = shimScript(`${PLUGIN_HTTP_BASE}/gw/`);
   bb.http.route("GET", "/gw/shim.js", () => new Response(shim, { headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store" } }));
+  bb.http.route("GET", "/gw/embed.css", () => new Response(EMBED_CSS, { headers: { "content-type": "text/css; charset=utf-8", "cache-control": "no-store" } }));
   bb.http.route("POST", "/gw/invoke", async (c) => {
     let body: unknown;
     try {
@@ -164,20 +172,25 @@ export default async function plugin(bb: BbPluginApi) {
     const p = service?.pending() ?? null;
     return Response.json({ update: p === null ? null : { version: p.version, currentVersion: p.currentVersion ?? runtime?.version ?? null, date: null, body: null } });
   });
-  bb.http.route("POST", "/gw/update/install", async (c) => {
-    const { version } = (await c.req.json().catch(() => ({}))) as { version?: string };
+  /** Installs the pending build; the running bridge stops so the next call starts the new one. */
+  async function installPending(version: string | undefined): Promise<{ ok: true } | { status: number; error: string }> {
     const p = service?.pending() ?? null;
-    if (store === null || p === null || p.version !== version) return Response.json({ error: "No GitWand update is pending" }, { status: 409 });
+    if (store === null || p === null || p.version !== version) return { status: 409, error: "No GitWand update is pending" };
     try {
       await store.install(p);
     } catch (error) {
-      return Response.json({ error: (error as Error).message }, { status: 500 });
+      return { status: 500, error: (error as Error).message };
     }
     await refreshRuntime();
     await ensureUiRoutes();
     await supervisor.stop();
     await checkUpdates();
-    return Response.json({ ok: { version: p.version } });
+    return { ok: true };
+  }
+  bb.http.route("POST", "/gw/update/install", async (c) => {
+    const { version } = (await c.req.json().catch(() => ({}))) as { version?: string };
+    const r = await installPending(version);
+    return "ok" in r ? Response.json({ ok: { version } }) : Response.json({ error: r.error }, { status: r.status });
   });
 
   async function status(): Promise<GitWandStatus> {
@@ -200,6 +213,7 @@ export default async function plugin(bb: BbPluginApi) {
       bridge: { state: runtime === null && s.state !== "failed" ? "no-runtime" : s.state, detail: s.state === "failed" ? s.error : null },
       tools: { git: has("git"), gh: has("gh"), glab: has("glab") },
       update: updateState,
+      notice: routesNotice,
     };
   }
 
@@ -225,6 +239,11 @@ export default async function plugin(bb: BbPluginApi) {
     },
     check_updates: async () => {
       await checkUpdates();
+      return status();
+    },
+    install_update: async ({ version }) => {
+      const r = await installPending(version);
+      if (!("ok" in r)) refuse(new Error(r.error));
       return status();
     },
     repo_for_thread: ({ threadId }) => repoForThread(bb.sdk as unknown as ThreadSdk, threadId, existsSync),

@@ -17,3 +17,11 @@
   `__TAURI_INTERNALS__` shim answers every Tauri plugin command the UI
   bundle names; runtimes install from a signed (minisign) channel with a
   smoke test, keep the previous build and roll back.
+- Settings section and tab states on the vendored BB design system; an
+  Install button for an available build, so the first runtime can come from
+  the update channel; a notice when new UI files need a plugin reload.
+- Narrow tab (480-560 px): GitWand's commit panel keeps clear of its dock
+  (`/gw/embed.css`).
+- Keystrokes to one terminal are sent in order (they arrived reordered when
+  each went out as its own request).
+

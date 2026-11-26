@@ -26,6 +26,8 @@
     "app.tsx",
     "src",
     "tests",
-    "scripts"
+    "scripts",
+    "components",
+    "lib"
   ]
 }

@@ -18,14 +18,14 @@ function ui(): string {
 }
 
 describe("serveUiFile", () => {
-  it("serves index.html with the shim loaded first and a loopback-only frame policy", async () => {
+  it("serves index.html with the shim loaded first, the embedding styles, and a loopback-only frame policy", async () => {
     const r = await serveUiFile(ui(), "index.html");
     expect(r.status).toBe(200);
     expect(r.headers.get("content-type")).toBe("text/html; charset=utf-8");
     expect(r.headers.get("content-security-policy")).toContain("frame-ancestors http://127.0.0.1:* http://localhost:*");
     expect(r.headers.get("cache-control")).toBe("no-store");
     expect(await r.text()).toBe(
-      '<!doctype html>\n<html lang="en">\n  <head>\n    <script src="/api/v1/plugins/makosh-gitwand/http/gw/shim.js"></script>\n    <title>GitWand</title>\n  </head>\n</html>\n',
+      '<!doctype html>\n<html lang="en">\n  <head>\n    <script src="/api/v1/plugins/makosh-gitwand/http/gw/shim.js"></script>\n    <link rel="stylesheet" href="/api/v1/plugins/makosh-gitwand/http/gw/embed.css">\n    <title>GitWand</title>\n  </head>\n</html>\n',
     );
   });
 
@@ -54,5 +54,28 @@ describe("UiRoutes", () => {
     routes.ensure(["index.html", "assets/b.js", "../escape.js"]);
     expect(registered).toEqual(["/ui/index.html", "/ui/assets/a.js", "/ui/assets/b.js"]);
     expect(routes.count).toBe(3);
+  });
+});
+
+describe("UiRoutes when the host refuses a late route", () => {
+  it("reports the files it could not register and retries them next time", () => {
+    let refuse = true;
+    const registered: string[] = [];
+    const routes = new UiRoutes((path) => {
+      if (refuse && path !== "/ui/index.html") throw new Error("routes are registered at load only");
+      registered.push(path);
+    }, async () => null);
+    expect(routes.ensure(["index.html", "assets/new.js"])).toEqual({ added: 1, failed: ["assets/new.js"] });
+    refuse = false;
+    expect(routes.ensure(["index.html", "assets/new.js"])).toEqual({ added: 1, failed: [] });
+    expect(registered).toEqual(["/ui/index.html", "/ui/assets/new.js"]);
+  });
+});
+
+describe("EMBED_CSS", () => {
+  it("keeps GitWand's commit panel clear of its dock in a narrow window, and nothing else", async () => {
+    const { EMBED_CSS } = await import("./ui-http.ts");
+    expect(EMBED_CSS).toMatch(/^@media \(max-width: \d+px\) \{/);
+    expect([...EMBED_CSS.matchAll(/([.#][a-z-]+) \{/g)].map((m) => m[1])).toEqual([".commit-panel"]);
   });
 });

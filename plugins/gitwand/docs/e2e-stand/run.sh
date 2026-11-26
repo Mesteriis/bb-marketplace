@@ -10,7 +10,11 @@ PORTS=$(node -e 'const n=require("node:net");const f=()=>new Promise(r=>{const s
 SERVER_PORT=${PORTS% *}; DAEMON_PORT=${PORTS#* }
 URL="http://127.0.0.1:$SERVER_PORT"
 cli() { env -i HOME="$STAND/home" PATH="$PATH" TMPDIR="${TMPDIR:-/tmp}" BB_TELEMETRY=false BB_DATA_DIR="$STAND/data" BB_SERVER_URL="$URL" BB_HOST_DAEMON_PORT="$DAEMON_PORT" node "$BB_APP/dist/bb.js" "$@"; }
-env -i HOME="$STAND/home" PATH="$PATH" TMPDIR="${TMPDIR:-/tmp}" GITWAND_RUNTIME_DIR="$RUNTIME" \
+# RUNTIME "-" runs without a development runtime (the update channel installs one).
+# STAND_CA adds a CA the stand trusts (a local https update channel).
+env -i HOME="$STAND/home" PATH="$PATH" TMPDIR="${TMPDIR:-/tmp}" \
+  ${RUNTIME:+$( [ "$RUNTIME" = "-" ] || echo GITWAND_RUNTIME_DIR="$RUNTIME" )} \
+  ${STAND_CA:+NODE_EXTRA_CA_CERTS="$STAND_CA"} \
   BB_TELEMETRY=false BB_SKIP_ONBOARDING=true NODE_ENV=production \
   node "$BB_APP/dist/bb-app.js" --data-dir "$STAND/data" \
   --server-port "$SERVER_PORT" --host-daemon-port "$DAEMON_PORT" \
@@ -47,5 +51,5 @@ stop; trap - EXIT
 echo "== after stop"
 if curl -fsS --max-time 2 "$URL/health" >/dev/null 2>&1; then echo "server still answers"; exit 1; fi
 sleep 1
-if pgrep -fl "$RUNTIME/bin/gitwand-bridge"; then echo "gitwand-bridge survived the stand"; exit 1; fi
+if pgrep -fl "$STAND/.*gitwand-bridge|${RUNTIME#-}/bin/gitwand-bridge" | grep -v pgrep; then echo "gitwand-bridge survived the stand"; exit 1; fi
 echo "STAND STOPPED CLEAN"

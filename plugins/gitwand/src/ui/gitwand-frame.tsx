@@ -1,6 +1,7 @@
 // The GitWand UI in an iframe on a sibling loopback origin. The host entry
 // computes the URL (src/core/frame-url.ts); null means no such origin exists.
 import type { Ref } from "react";
+import { Icon } from "@/components/ui/icon";
 
 const SANDBOX = "allow-scripts allow-same-origin allow-forms allow-popups allow-modals";
 
@@ -12,8 +13,11 @@ export interface GitWandFrameProps {
 export function GitWandFrame({ url, frameRef }: GitWandFrameProps) {
   if (url === null) {
     return (
-      <div role="status" style={{ padding: 16 }}>
-        GitWand открывается только в BB на этом компьютере: откройте BB по адресу http://127.0.0.1 или http://localhost.
+      <div className="flex h-full w-full items-center justify-center p-6">
+        <div role="status" className="flex max-w-md items-start gap-3 text-sm text-muted-foreground">
+          <Icon name="MonitorOff" className="mt-0.5 size-4 shrink-0" />
+          <span>GitWand открывается только в BB на этом компьютере: откройте BB по адресу http://127.0.0.1 или http://localhost.</span>
+        </div>
       </div>
     );
   }
@@ -24,7 +28,7 @@ export function GitWandFrame({ url, frameRef }: GitWandFrameProps) {
       src={url}
       sandbox={SANDBOX}
       allow="clipboard-read; clipboard-write"
-      style={{ display: "block", width: "100%", height: "100%", border: 0 }}
+      className="block h-full w-full border-0"
     />
   );
 }

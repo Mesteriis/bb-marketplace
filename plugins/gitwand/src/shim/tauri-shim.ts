@@ -232,7 +232,22 @@ export function installTauriShim(win: any, cfg: ShimConfig): void {
     }
   };
 
-  const invoke = async (cmd: string, args: Record<string, unknown> = {}): Promise<unknown> => {
+  // Keystrokes to one terminal must arrive in order. Each invoke is its own
+  // HTTP request and the bridge runs requests concurrently, so writes to the
+  // same terminal wait for the previous one.
+  const writeQueues = new Map<string, Promise<unknown>>();
+  const invoke = (cmd: string, args: Record<string, unknown> = {}): Promise<unknown> => {
+    if (cmd !== "terminal_write") return send(cmd, args);
+    const key = String(args?.id);
+    const next = (writeQueues.get(key) ?? Promise.resolve()).catch(() => undefined).then(() => send(cmd, args));
+    writeQueues.set(key, next);
+    next.finally(() => {
+      if (writeQueues.get(key) === next) writeQueues.delete(key);
+    }).catch(() => undefined);
+    return next;
+  };
+
+  const send = async (cmd: string, args: Record<string, unknown> = {}): Promise<unknown> => {
     if (cmd.startsWith("plugin:")) return plugin(cmd.slice("plugin:".length), args ?? {});
     const json = JSON.stringify(args ?? {});
     if (json.includes('"__CHANNEL__:')) {
