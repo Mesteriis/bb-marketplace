@@ -24,6 +24,7 @@
   "include": [
     "server.ts",
     "src",
-    "tests"
+    "tests",
+    "scripts"
   ]
 }

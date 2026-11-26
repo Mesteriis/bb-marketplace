@@ -1,0 +1,10 @@
+{
+  "repo": "https://github.com/devlint/GitWand.git",
+  "tag": "v3.14.0",
+  "commit": "436b9684f096e8edd35b6a36e3b4d3af0fd7e084",
+  "patches": [
+    { "name": "0001-bridge-crate.patch", "sha256": "825ca92b47f4d173007bb94e004e8fcfab0ed5a6c93fe6d417de076e84278c5f" },
+    { "name": "0002-vite-base.patch", "sha256": "ac4e97937dc20ea37ba97ce3e4631df7850553067b50c66748493ae41bcb2648" }
+  ],
+  "runtime": null
+}

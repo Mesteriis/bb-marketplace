@@ -3,6 +3,11 @@
 // into its route, refusing any name that could leave that directory or be
 // read as something other than a plain path.
 
+import { PLUGIN_HTTP_BASE } from "./frame-url.ts";
+
+/** Where the UI is mounted; the build passes it to Vite as `base`. */
+export const UI_BASE_PATH = `${PLUGIN_HTTP_BASE}/ui`;
+
 const SEGMENT = /^[^/\\\u0000?#]+$/;
 
 /** `/ui/<file>` for a `/`-separated path relative to `ui/`, or null if unsafe. */
