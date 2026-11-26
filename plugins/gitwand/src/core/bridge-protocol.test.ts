@@ -72,3 +72,9 @@ describe("parseBridgeLine", () => {
     expect(parseBridgeLine(line)).toMatchObject({ kind: "invalid" });
   });
 });
+
+describe("encodeBridgeRequest with a connection", () => {
+  it("adds conn after args, so the bridge files terminals and watchers under it", () => {
+    expect(encodeBridgeRequest(5, "watch_repo_start", { cwd: "/r" }, "c-1")).toBe('{"id":5,"cmd":"watch_repo_start","args":{"cwd":"/r"},"conn":"c-1"}\n');
+  });
+});

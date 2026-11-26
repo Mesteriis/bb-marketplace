@@ -1,6 +1,6 @@
 // The stdio protocol between the plugin server and gitwand-bridge: one JSON
 // object per line in each direction.
-//   request:  {"id":n,"cmd":"git_status","args":{...}}
+//   request:  {"id":n,"cmd":"git_status","args":{...},"conn":"…"}  (conn optional)
 //   result:   {"id":n,"ok":<value>} | {"id":n,"error":<value>}
 //   channel:  {"channel":n,"message":<value>}  (tauri::ipc::Channel output)
 import { z } from "zod";
@@ -8,9 +8,9 @@ import { z } from "zod";
 const COMMAND_NAME = /^[a-z_][a-z0-9_]*$/;
 
 /** One request line, newline included. Throws on a name the bridge cannot know. */
-export function encodeBridgeRequest(id: number, cmd: string, args: Record<string, unknown>): string {
+export function encodeBridgeRequest(id: number, cmd: string, args: Record<string, unknown>, conn?: string): string {
   if (!COMMAND_NAME.test(cmd)) throw new Error(`invalid bridge command name: ${JSON.stringify(cmd)}`);
-  return JSON.stringify({ id, cmd, args }) + "\n";
+  return JSON.stringify(conn === undefined ? { id, cmd, args } : { id, cmd, args, conn }) + "\n";
 }
 
 export type BridgeLine =

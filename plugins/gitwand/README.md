@@ -4,9 +4,28 @@ GitWand inside BB: GitWand's own UI in an iframe, driven by GitWand's own Rust
 commands running headless as `gitwand-bridge`. The full plan lives with the
 maintainer; this file covers the parts in the repository.
 
+## How it runs
+
+- `server.ts` starts `gitwand-bridge` from the runtime in use as a child
+  process over stdio (no port, no token), relays the page's calls
+  (`POST /gw/invoke`) and channel messages (`WS /gw/ws`, one connection per
+  page, channels and terminals bound to it), serves the UI with one GET route
+  per file under `/ui/`, and answers the settings and tab RPC.
+- The page loads `/gw/shim.js` first: `src/shim/tauri-shim.ts`, shipped as a
+  generated string (`src/adapters/bb/shim-source.generated.ts`) so the plugin
+  bundler cannot change it. Run `npm run shim` after editing the shim; a test
+  fails while the generated file is stale.
+- The runtime in use is the **Development runtime directory** setting (or
+  `GITWAND_RUNTIME_DIR`), else the installed build under the plugin's data
+  directory. Installed builds come from the signed update channel (settings
+  **Update channel URL** and **Update signing key**; off while empty).
+
 ## Layout
 
 - `src/core`, `src/ui` — host-agnostic code (see `docs/architecture.md`).
+- `src/shim` — the `__TAURI_INTERNALS__` shim; imports nothing.
+- `src/adapters/bb` — bridge process and supervisor, relay, UI routes,
+  runtime store, update channel, minisign verification.
 - `bridge-src/` — Rust sources copied into upstream's `apps/desktop/src-tauri`
   at build time: the stdio loop (`src/bridge/mod.rs`), the five hand-written
   adapters (`src/bridge/adapters.rs`) and the `gitwand-bridge` example entry.

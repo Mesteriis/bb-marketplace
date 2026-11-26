@@ -10,11 +10,14 @@ export const UI_BASE_PATH = `${PLUGIN_HTTP_BASE}/ui`;
 
 const SEGMENT = /^[^/\\\u0000?#]+$/;
 
+/** Whether a `/`-separated relative path stays inside its directory and reads as a plain path. */
+export function isSafeRelativePath(file: string): boolean {
+  return file.split("/").every((s) => SEGMENT.test(s) && s !== "." && s !== ".." && !s.includes(":"));
+}
+
 /** `/ui/<file>` for a `/`-separated path relative to `ui/`, or null if unsafe. */
 export function uiRouteFor(file: string): string | null {
-  const segments = file.split("/");
-  const safe = segments.every((s) => SEGMENT.test(s) && s !== "." && s !== ".." && !s.includes(":"));
-  return safe ? `/ui/${file}` : null;
+  return isSafeRelativePath(file) ? `/ui/${file}` : null;
 }
 
 const TYPES: Record<string, string> = {

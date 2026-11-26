@@ -51,6 +51,9 @@ function violations(layer: Layer): string[] {
 
 const core: Layer = { directory: "src/core", packages: ["zod"], reachable: ["src/core"] };
 
+// Serialized into the page with Function.prototype.toString(): nothing outside itself.
+const shim: Layer = { directory: "src/shim", packages: [], reachable: ["src/shim"] };
+
 const ui: Layer = {
   directory: "src/ui",
   packages: ["react", "@/components", "@/lib", "@/hooks"],
@@ -72,12 +75,16 @@ describe("import scanner", () => {
 });
 
 describe("host-agnostic layers", () => {
-  it.each([core, ui])("$directory has source files to check", (layer) => {
+  it.each([core, ui, shim])("$directory has source files to check", (layer) => {
     expect(sourceFiles(resolve(pluginRoot, layer.directory)).length).toBeGreaterThan(0);
   });
 
   it("src/core imports only zod and itself", () => {
     expect(violations(core)).toEqual([]);
+  });
+
+  it("src/shim imports nothing, so it survives serialization", () => {
+    expect(violations(shim)).toEqual([]);
   });
 
   it("src/ui imports only React, the core, and the vendored design system", () => {

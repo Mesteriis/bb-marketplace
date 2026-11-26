@@ -5,25 +5,52 @@
   "type": "module",
   "license": "MIT",
   "private": true,
+  "author": "Mesteriis",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Mesteriis/makosh-bb.git",
+    "directory": "plugins/gitwand"
+  },
+  "homepage": "https://github.com/Mesteriis/makosh-bb/tree/main/plugins/gitwand#readme",
+  "bugs": {
+    "url": "https://github.com/Mesteriis/makosh-bb/issues"
+  },
+  "keywords": [
+    "bb-plugin",
+    "makosh",
+    "gitwand",
+    "git",
+    "git-client"
+  ],
+  "engines": {
+    "bb": ">=0.49",
+    "bbPluginSdk": ">=0.6.132"
+  },
   "bb": {
     "name": "Makosh GitWand [Experimental]",
     "description": "Git client GitWand inside BB: status, history, branches, terminal and forges, run by GitWand's own Rust backend.",
     "branding": {
       "icon": "./assets/icon.svg"
     },
-    "server": "./server.ts"
+    "server": "./server.ts",
+    "app": "./app.tsx"
   },
   "scripts": {
     "build": "bb plugin build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "check": "npm run typecheck && npm run test"
+    "check": "npm run typecheck && npm run test",
+    "shim": "node scripts/build-shim.ts"
   },
   "dependencies": {
     "zod": "^4.6.5"
   },
   "devDependencies": {
     "@get-bb/plugin-sdk": "0.6.132",
+    "@tauri-apps/api": "2.12.4",
+    "@tauri-apps/plugin-clipboard-manager": "2.3.3",
+    "@tauri-apps/plugin-process": "2.3.1",
+    "@tauri-apps/plugin-updater": "2.14.1",
     "@testing-library/dom": "^10.4.2",
     "@testing-library/react": "^16.3.3",
     "@types/better-sqlite3": "^7.6.13",
@@ -34,6 +61,7 @@
     "jsdom": "^26.1.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "sonner": "^1.7.4",
     "typescript": "^5.7.0",
     "vitest": "^5.1.0"
   }

@@ -1,13 +1,15 @@
 // The GitWand UI in an iframe on a sibling loopback origin. The host entry
 // computes the URL (src/core/frame-url.ts); null means no such origin exists.
+import type { Ref } from "react";
 
 const SANDBOX = "allow-scripts allow-same-origin allow-forms allow-popups allow-modals";
 
 export interface GitWandFrameProps {
   url: string | null;
+  frameRef?: Ref<HTMLIFrameElement>;
 }
 
-export function GitWandFrame({ url }: GitWandFrameProps) {
+export function GitWandFrame({ url, frameRef }: GitWandFrameProps) {
   if (url === null) {
     return (
       <div role="status" style={{ padding: 16 }}>
@@ -17,6 +19,7 @@ export function GitWandFrame({ url }: GitWandFrameProps) {
   }
   return (
     <iframe
+      ref={frameRef}
       title="GitWand"
       src={url}
       sandbox={SANDBOX}
