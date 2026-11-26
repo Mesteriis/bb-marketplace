@@ -5,10 +5,11 @@ import { BridgeCli } from "./src/adapters/bb/bridge-cli";
 import { bbEnv, resolveBb } from "./src/adapters/bb/bb-binary";
 import { CollectionGit } from "./src/adapters/bb/collection-git";
 import { CollectionWrite } from "./src/adapters/bb/collection-write";
+import { DockerCatalogHttp } from "./src/adapters/bb/docker-catalog-http";
 import { EnvFiles } from "./src/adapters/bb/env-files";
 import { checkLaunchers } from "./src/adapters/bb/launchers";
 import { PackagesDir } from "./src/adapters/bb/packages-dir";
-import { RegistryHttp } from "./src/adapters/bb/registry-http";
+import { GITHUB_REGISTRY_URL, RegistryHttp } from "./src/adapters/bb/registry-http";
 import { KvReviewStore } from "./src/adapters/bb/review-store";
 import { ReviewThreads } from "./src/adapters/bb/review-threads";
 import { unconfiguredCollection, unconfiguredThreads, unconfiguredWrite } from "./src/adapters/bb/unconfigured";
@@ -39,6 +40,9 @@ export default function plugin(bb: BbPluginApi) {
     },
   });
 
+  // One instance for the plugin's lifetime: it holds the 6-hour cache of the Docker catalog file.
+  const dockerCatalog = new DockerCatalogHttp();
+
   // Built per call: the loopback URL is readable only after the server listens, and settings may change.
   async function service() {
     const { marketplaceRepoPath, marketplaceProjectId } = await settings.get();
@@ -57,6 +61,10 @@ export default function plugin(bb: BbPluginApi) {
       collection: repo === null ? unconfiguredCollection(noRepo) : new CollectionGit(repo),
       catalogRoot: dataDir,
       registry: new RegistryHttp(),
+      extraSources: [
+        { id: "github", port: new RegistryHttp(GITHUB_REGISTRY_URL) },
+        { id: "docker", port: dockerCatalog, lookup: (name, version) => dockerCatalog.lookup(name, version) },
+      ],
       threads: projectSetting === "" ? unconfiguredThreads(noProject) : new ReviewThreads(projectSetting, bbPath, env),
       write: repo === null ? unconfiguredWrite(noRepo) : new CollectionWrite(repo),
       reviews: new KvReviewStore(bb.storage.kv),

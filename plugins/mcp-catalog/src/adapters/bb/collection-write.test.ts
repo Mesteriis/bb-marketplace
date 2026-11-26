@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -151,6 +151,47 @@ describe("accept", () => {
     expect(result.commit).toBe(failure?.acceptCommit);
     expect(run(main, "show", "HEAD:mcp-collection/index.json")).toContain("io.example/demo");
   });
+  describe("a failure after a clean merge names its own step", () => {
+    /** A commit-msg hook that refuses the merge commit while the block file exists. */
+    async function blockMergeCommit(): Promise<string> {
+      const block = join(dirname(main), "block-merge-commit");
+      await writeFile(block, "1");
+      const hook = join(main, ".git", "hooks", "commit-msg");
+      await writeFile(hook, `#!/bin/sh\nif [ -f "${block}" ] && grep -q "^Merge mcp-collection" "$1"; then echo "hook says no" >&2; exit 1; fi\n`);
+      await chmod(hook, 0o755);
+      return block;
+    }
+
+    it("does not call a failed merge commit a conflict, and leaves main clean", async () => {
+      await writeEntry(wt);
+      await blockMergeCommit();
+      const failure = await write.accept(wt, SLUG, opts()).then(() => null, (error: Error & { acceptCommit?: string }) => error);
+      expect(failure?.message).toContain("коммит слияния");
+      expect(failure?.message).toContain("hook says no");
+      expect(failure?.message).not.toContain("конфликт");
+      expect(failure?.acceptCommit).toBe(run(wt, "rev-parse", "HEAD").trim());
+      expect(run(main, "status", "--porcelain").trim()).toBe("");
+    });
+
+    it("a retry after main took another entry rebuilds the index on its own", async () => {
+      await writeEntry(wt);
+      const block = await blockMergeCommit();
+      const failure = await write.accept(wt, SLUG, opts()).then(() => null, (error: Error & { acceptCommit?: string }) => error);
+      expect(failure?.acceptCommit).toBeDefined();
+      await rm(block);
+      const wtB = join(dirname(wt), "review-b");
+      run(main, "worktree", "add", "-b", "bb/review-b", wtB, "main");
+      await writeEntry(wtB, { name: "io.example/beta", slug: "io-example-beta" });
+      await write.accept(wtB, "io-example-beta", opts({ push: true, name: "io.example/beta" }));
+      const result = await write.accept(wt, SLUG, opts({ push: true, acceptedCommit: failure?.acceptCommit }));
+      expect(indexOnMain()).toEqual([
+        { name: "io.example/beta", version: "1.0.0", path: "mcp-collection/io-example-beta" },
+        { name: "io.example/demo", version: "1.0.0", path: `mcp-collection/${SLUG}` },
+      ]);
+      expect(run(main, "status", "--porcelain").trim()).toBe("");
+      expect(result.commit).toMatch(/^[0-9a-f]{40}$/);
+    });
+  });
   it("refuses a reviewer commit that borrows the accept subject, forged index included", async () => {
     await writeEntry(wt);
     await put(wt, "mcp-collection/index.json", JSON.stringify({ servers: [
@@ -169,6 +210,36 @@ describe("accept", () => {
     await write.accept(wt, SLUG, opts());
     const entry = JSON.parse(run(main, "show", `HEAD:mcp-collection/${SLUG}/entry.json`));
     expect(Date.parse(entry.acceptedAt)).not.toBeNaN();
+  });
+  describe("docker records", () => {
+    const digestA = `sha256:${"ab".repeat(32)}`;
+    const digestB = `sha256:${"cd".repeat(32)}`;
+    const name = "com.docker.mcp/demo";
+    const slug = "com-docker-mcp-demo";
+    const serverFor = (digest: string, remote = false) => ({
+      name, description: "d", version: `sha256-${digest.slice(7, 19)}`,
+      packages: [{ registryType: "oci", identifier: "mcp/demo", version: digest, transport: { type: "stdio" } }],
+      ...(remote ? { remotes: [{ type: "sse", url: "https://m.example.com/sse" }] } : {}),
+    });
+    const writeDocker = async (root: string, server: ReturnType<typeof serverFor>, entryExtra: object) => {
+      const text = `${JSON.stringify(server)}\n`;
+      await put(root, `mcp-collection/${slug}/server.json`, text);
+      await put(root, `mcp-collection/${slug}/review.md`, "ok\n");
+      await put(root, `mcp-collection/${slug}/entry.json`, JSON.stringify({ name, version: server.version, serverJsonSha256: await sha256Hex(text), ...entryExtra }));
+      await put(root, "mcp-collection/index.json", JSON.stringify({ servers: [{ name, version: server.version, path: `mcp-collection/${slug}` }] }));
+    };
+    it("accepts digest B over an accepted digest A", async () => {
+      await writeDocker(wt, serverFor(digestA), { choice: { kind: "package", index: 0 }, ociDigest: digestA });
+      await write.accept(wt, slug, { push: true, expected: serverFor(digestA) as RegistryServer });
+      const wt2 = join(dirname(wt), "review2");
+      run(main, "worktree", "add", "-b", "bb/review-docker-b", wt2, "main");
+      await writeDocker(wt2, serverFor(digestB), { choice: { kind: "package", index: 0 }, ociDigest: digestB });
+      await expect(write.accept(wt2, slug, { push: true, expected: serverFor(digestB) as RegistryServer })).resolves.toHaveProperty("commit");
+    });
+    it("does not require ociDigest when the choice is a remote", async () => {
+      await writeDocker(wt, serverFor(digestA, true), { choice: { kind: "remote", index: 0 } });
+      await expect(write.accept(wt, slug, { push: false, expected: serverFor(digestA, true) as RegistryServer })).resolves.toHaveProperty("commit");
+    });
   });
   describe("refuses and leaves main untouched", () => {
     const untouched = async (message: RegExp) => {
@@ -191,6 +262,34 @@ describe("accept", () => {
       const head = run(main, "rev-parse", "HEAD").trim();
       await expect(write.accept(wt, SLUG, opts({ server: { ...serverOf("io.example/demo", "1.0.0"), description: "other" } }))).rejects.toThrow(/реестра/);
       expect(run(main, "rev-parse", "HEAD").trim()).toBe(head);
+    });
+    it("a docker record whose entry ociDigest differs from the catalog digest", async () => {
+      const digest = `sha256:${"ab".repeat(32)}`;
+      const name = "com.docker.mcp/demo";
+      const slug = "com-docker-mcp-demo";
+      const server = {
+        name, description: "d", version: "sha256-abababababab",
+        packages: [{ registryType: "oci", identifier: "mcp/demo", version: digest, transport: { type: "stdio" } }],
+      };
+      const writeDocker = async (ociDigest?: string) => {
+        const text = `${JSON.stringify(server)}\n`;
+        await put(wt, `mcp-collection/${slug}/server.json`, text);
+        await put(wt, `mcp-collection/${slug}/review.md`, "ok\n");
+        await put(wt, `mcp-collection/${slug}/entry.json`, JSON.stringify({
+          name, version: server.version, serverJsonSha256: await sha256Hex(text), choice: { kind: "package", index: 0 },
+          ...(ociDigest === undefined ? {} : { ociDigest }),
+        }));
+        await put(wt, "mcp-collection/index.json", JSON.stringify({ servers: [{ name, version: server.version, path: `mcp-collection/${slug}` }] }));
+      };
+      const head = run(main, "rev-parse", "HEAD").trim();
+      const message = "ociDigest в entry.json не совпадает с digest образа из каталога Docker";
+      await writeDocker(`sha256:${"f".repeat(64)}`);
+      await expect(write.accept(wt, slug, { push: false, expected: server as RegistryServer })).rejects.toThrow(message);
+      await writeDocker(undefined);
+      await expect(write.accept(wt, slug, { push: false, expected: server as RegistryServer })).rejects.toThrow(message);
+      expect(run(main, "rev-parse", "HEAD").trim()).toBe(head);
+      await writeDocker(digest);
+      await expect(write.accept(wt, slug, { push: false, expected: server as RegistryServer })).resolves.toHaveProperty("commit");
     });
     it("an entry for another name or version than the review", async () => {
       await writeEntry(wt);

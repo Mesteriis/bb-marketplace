@@ -1,4 +1,4 @@
-import { chmod, mkdir, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, normalize } from "node:path";
 import { SLUG, type PackagesPort } from "../../core/inventory";
 
@@ -58,6 +58,25 @@ export class PackagesDir implements PackagesPort {
       throw error;
     }
     return target;
+  }
+
+  async read(slug: string): Promise<Record<string, string> | null> {
+    const root = this.dirOf(slug);
+    const files: Record<string, string> = {};
+    const walk = async (relative: string): Promise<void> => {
+      for (const entry of await readdir(join(root, relative), { withFileTypes: true })) {
+        const path = relative === "" ? entry.name : `${relative}/${entry.name}`;
+        if (entry.isDirectory()) await walk(path);
+        else if (entry.isFile()) files[path] = await readFile(join(root, path), "utf8");
+      }
+    };
+    try {
+      await walk("");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw error;
+    }
+    return files;
   }
 
   async remove(slug: string): Promise<void> {

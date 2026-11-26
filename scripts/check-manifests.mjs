@@ -10,6 +10,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { serverSlug } from "./server-slug.mjs";
 
 const root = resolve(
   process.argv[2] ?? join(dirname(fileURLToPath(import.meta.url)), ".."),
@@ -272,10 +273,15 @@ function checkMcpCollection() {
   }
   // One line per server: an update replaces the line of its name, it never adds a second one.
   const seen = new Set();
-  for (const item of index.servers) {
-    const at = `${indexPath} (${item?.name ?? "entry without name"})`;
-    if (typeof item?.name !== "string" || typeof item?.version !== "string" || typeof item?.path !== "string") {
-      problem(at, "entry needs string name, version and path");
+  const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+  for (const [position, item] of index.servers.entries()) {
+    if (!isObject(item)) {
+      problem(`${indexPath} (entry #${position + 1})`, "must be an object with string name, version and path");
+      continue;
+    }
+    const at = `${indexPath} (${item.name ?? "entry without name"})`;
+    if (typeof item.name !== "string" || typeof item.version !== "string" || typeof item.path !== "string") {
+      problem(at, "name, version and path must all be strings");
       continue;
     }
     if (seen.has(item.name)) {
@@ -283,7 +289,7 @@ function checkMcpCollection() {
       continue;
     }
     seen.add(item.name);
-    const slug = item.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    const slug = serverSlug(item.name);
     if (item.path !== `mcp-collection/${slug}`) {
       problem(at, `path must be "mcp-collection/${slug}"`);
       continue;
@@ -299,7 +305,11 @@ function checkMcpCollection() {
       problem(at, `entry.json is invalid JSON (${error.message})`);
       continue;
     }
-    if (entry?.name !== item.name || entry?.version !== item.version) {
+    if (!isObject(entry)) {
+      problem(at, "entry.json must be a JSON object");
+      continue;
+    }
+    if (entry.name !== item.name || entry.version !== item.version) {
       problem(at, "entry.json name/version do not match the index");
     }
     const choice = entry?.choice;

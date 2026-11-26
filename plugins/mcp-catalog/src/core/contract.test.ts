@@ -22,3 +22,14 @@ describe("rpc input caps", () => {
     expect(input.safeParse({ pluginId: "p", values: { K: "v" }, clear: ["J"] }).success).toBe(true);
   });
 });
+
+describe("accept and reject input", () => {
+  it("takes a name, and optionally the version of the review", () => {
+    for (const method of ["accept", "reject"] as const) {
+      const input = rpcSchemas[method].input;
+      expect(input.safeParse({ name: "a/b" }).success).toBe(true);
+      expect(input.safeParse({ name: "a/b", version: "1.0.0" }).success).toBe(true);
+      expect(input.safeParse({ name: "a/b", version: "" }).success).toBe(false);
+    }
+  });
+});

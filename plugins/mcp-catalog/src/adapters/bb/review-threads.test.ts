@@ -1,6 +1,9 @@
 import { readFileSync } from "node:fs";
+import { chmod, mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { parseThreadInfo, spawnArgs } from "./review-threads";
+import { ReviewThreads, parseThreadInfo, spawnArgs } from "./review-threads";
 
 describe("review threads adapter", () => {
   it("builds the spawn argv with auto permissions and the prompt read from stdin", () => {
@@ -28,5 +31,15 @@ describe("review threads adapter", () => {
     const mk = (status: string) => ({ thread: { status }, environment: null });
     expect(parseThreadInfo(mk("active")).status).toBe("running");
     expect(parseThreadInfo(mk("error")).status).toBe("failed");
+  });
+  it("passes only the tail of a long stderr and never an env value", async () => {
+    const bb = join(await mkdtemp(join(tmpdir(), "review-threads-")), "bb");
+    await writeFile(bb, `#!/bin/sh\ni=1; while [ $i -le 60 ]; do echo "noise $i $BB_TEST_TOKEN" >&2; i=$((i+1)); done; echo "real reason" >&2; exit 1\n`);
+    await chmod(bb, 0o755);
+    const threads = new ReviewThreads("proj", bb, { ...process.env, BB_TEST_TOKEN: "s3cr3t-value" });
+    const error = await threads.info("thr").then(() => null, (e: Error) => e);
+    expect((error?.message ?? "").split("\n")).toHaveLength(21);
+    expect(error?.message.endsWith("real reason")).toBe(true);
+    expect(error?.message).not.toContain("s3cr3t-value");
   });
 });

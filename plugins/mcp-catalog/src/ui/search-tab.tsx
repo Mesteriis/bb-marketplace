@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import type { SearchItem } from "../core/contract";
+import type { CatalogId, SearchItem } from "../core/contract";
 import { isNewerVersion } from "../core/inventory";
 import { messageOf, type CatalogApi, type Notify, type Setup } from "./api";
 import { Badge, Centered, Notice, Row } from "./parts";
@@ -12,6 +12,14 @@ const SOURCE_LABEL: Record<SearchItem["versions"][number]["sources"][number], st
   docker: "Docker",
   remote: "удалённый адрес",
 };
+
+const CATALOGS: { id: CatalogId; label: string }[] = [
+  { id: "official", label: "Официальный" },
+  { id: "github", label: "GitHub" },
+  { id: "docker", label: "Docker" },
+];
+
+const CATALOG_LABEL: Record<CatalogId, string> = { official: "Официальный", github: "GitHub", docker: "Docker" };
 
 type Results =
   | { kind: "idle" }
@@ -32,10 +40,13 @@ function mergeItems(previous: SearchItem[], next: SearchItem[]): SearchItem[] {
     const versions = [...existing.versions];
     for (const version of item.versions) if (!versions.some((known) => known.version === version.version)) versions.push(version);
     versions.sort((a, b) => (isNewerVersion(a.version, b.version) ? -1 : isNewerVersion(b.version, a.version) ? 1 : 0));
+    const newer = isNewerVersion(item.latestVersion, existing.latestVersion);
     merged[at] = {
       ...existing,
       versions,
-      latestVersion: isNewerVersion(item.latestVersion, existing.latestVersion) ? item.latestVersion : existing.latestVersion,
+      latestVersion: newer ? item.latestVersion : existing.latestVersion,
+      unsupported: newer ? item.unsupported : existing.unsupported,
+      catalogs: CATALOGS.map((catalog) => catalog.id).filter((id) => existing.catalogs.includes(id) || item.catalogs.includes(id)),
       installed: existing.installed || item.installed,
       inCollection: existing.inCollection || item.inCollection,
       reviewing: existing.reviewing || item.reviewing,
@@ -58,13 +69,15 @@ export function SearchTab({ api, notify, tick, onChanged, setup }: Props) {
   const [results, setResults] = useState<Results>({ kind: "idle" });
   const [chosen, setChosen] = useState<Record<string, string>>({});
   const [busyName, setBusyName] = useState<string | null>(null);
+  const [catalogs, setCatalogs] = useState<CatalogId[]>(CATALOGS.map((catalog) => catalog.id));
   const latest = useRef(0);
+  const hintId = useId();
 
-  const run = async (query: string, cursor?: string, keep: SearchItem[] = []) => {
+  const run = async (query: string, cursor?: string, keep: SearchItem[] = [], from: CatalogId[] = catalogs) => {
     const id = ++latest.current;
     setResults({ kind: "loading", items: keep });
     try {
-      const page = await api.search(query, cursor);
+      const page = await api.search(query, cursor, from);
       if (id !== latest.current) return;
       setResults({ kind: "ready", items: mergeItems(keep, page.items), nextCursor: page.nextCursor, warning: page.warning });
     } catch (error) {
@@ -92,6 +105,16 @@ export function SearchTab({ api, notify, tick, onChanged, setup }: Props) {
     void run(query);
   };
 
+  const toggle = (id: CatalogId) => {
+    if (catalogs.length === 1 && catalogs.includes(id)) return;
+    const next = catalogs.includes(id)
+      ? catalogs.filter((known) => known !== id)
+      : CATALOGS.map((c) => c.id).filter((c) => c === id || catalogs.includes(c));
+    setCatalogs(next);
+    setChosen({});
+    if (submitted !== null) void run(submitted, undefined, [], next);
+  };
+
   const review = async (item: SearchItem, version: string) => {
     setBusyName(item.name);
     try {
@@ -114,6 +137,28 @@ export function SearchTab({ api, notify, tick, onChanged, setup }: Props) {
           Найти
         </Button>
       </form>
+      <div role="group" aria-label="Каталоги" className="flex flex-wrap items-center gap-3 px-4 text-xs">
+        {CATALOGS.map((catalog) => {
+          const last = catalogs.length === 1 && catalogs.includes(catalog.id);
+          return (
+            <label key={catalog.id} className="flex items-center gap-1.5">
+              <input
+                type="checkbox"
+                checked={catalogs.includes(catalog.id)}
+                aria-disabled={last ? true : undefined}
+                aria-describedby={last ? hintId : undefined}
+                onChange={() => toggle(catalog.id)}
+              />
+              {catalog.label}
+            </label>
+          );
+        })}
+        {catalogs.length === 1 && (
+          <span id={hintId} className="text-muted-foreground">
+            Должен быть включён хотя бы один каталог
+          </span>
+        )}
+      </div>
       {results.kind === "idle" && <Centered>Введите запрос: имя или тема сервера.</Centered>}
       {results.kind === "loading" && results.items.length === 0 && <Centered>Загрузка…</Centered>}
       {results.kind === "error" && (
@@ -154,23 +199,31 @@ export function SearchTab({ api, notify, tick, onChanged, setup }: Props) {
                       </option>
                     ))}
                   </select>
+                  {item.catalogs.map((id) => (
+                    <Badge key={id} tone="outline">
+                      каталог: {CATALOG_LABEL[id]}
+                    </Badge>
+                  ))}
                   {version.sources.map((source) => (
                     <Badge key={source}>{SOURCE_LABEL[source]}</Badge>
                   ))}
-                  {version.publishedAt !== null && <span className="text-xs text-muted-foreground">{version.publishedAt.slice(0, 10)}</span>}
+                  {version.publishedAt !== null && (
+                    <span className="text-xs text-muted-foreground">{version.publishedAt.slice(0, 10)}</span>
+                  )}
                   {item.installed && <Badge>уже стоит</Badge>}
                   {item.inCollection && <Badge>в коллекции</Badge>}
-                  {item.reviewing && <Badge>проверяется</Badge>}
+                  {version.reviewing && <Badge>проверяется</Badge>}
                   <Button
                     className="ml-auto"
                     size="sm"
                     variant="outline"
-                    disabled={busyName !== null || item.reviewing || !setup.repo || !setup.project}
+                    disabled={busyName !== null || version.reviewing || version.unsupported !== null || !setup.repo || !setup.project}
                     onClick={() => void review(item, version.version)}
                   >
                     Проверить
                   </Button>
                 </div>
+                {version.unsupported !== null && <p className="text-xs text-destructive">не поддерживается: {version.unsupported}</p>}
                 <p className="text-xs text-muted-foreground">{version.description}</p>
               </Row>
             );

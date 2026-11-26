@@ -51,6 +51,8 @@ export type RegistryServer = z.infer<typeof RegistryServer>;
 export interface RegistryMeta {
   publishedAt?: string;
   isLatest?: boolean;
+  /** Why the server cannot be taken into the collection; set by catalogs that list servers this plugin cannot run. */
+  unsupported?: string;
 }
 
 export interface RegistryPage {

@@ -53,6 +53,17 @@ describe("BridgeCli", () => {
     await expect(new BridgeCli(bb).show("x")).rejects.toThrow("плагин не найден");
   });
 
+  it("passes only the tail of a long stderr and never an env value", async () => {
+    await fakeBb(`i=1; while [ $i -le 60 ]; do echo "noise $i token=$BB_TEST_TOKEN" >&2; i=$((i+1)); done; echo "real reason" >&2; exit 1`);
+    const cli = new BridgeCli(bb, { ...process.env, BB_TEST_TOKEN: "s3cr3t-value" });
+    const error = await cli.show("x").then(() => null, (e: Error) => e);
+    const lines = (error?.message ?? "").split("\n");
+    expect(lines).toHaveLength(21);
+    expect(lines.at(-1)).toBe("real reason");
+    expect(error?.message).not.toContain("s3cr3t-value");
+    expect(error?.message).toContain("token=***");
+  });
+
   it("reports a missing binary", async () => {
     await expect(new BridgeCli(join(dir, "nope")).list()).rejects.toThrow();
   });
@@ -97,7 +108,7 @@ describe("BridgeCli", () => {
         { opaqueId: "p__x__s__t_1", pluginName: "n", serverId: "s", name: "t", status: "ready" },
       ] })}'`,
     );
-    expect(await new BridgeCli(bb).toolCounts([{ pluginId: "p__x", serverId: "s" }])).toEqual({ "p__x/s": 1 });
+    expect(await new BridgeCli(bb).toolCounts([{ pluginId: "p__x", serverId: "s" }])).toEqual({ counts: { "p__x/s": 1 }, skipped: 0 });
   });
 
   it("counts tools per plugin and server across pages of 200", async () => {
@@ -112,7 +123,7 @@ describe("BridgeCli", () => {
         `esac`,
       ].join("\n"),
     );
-    expect(await new BridgeCli(bb).toolCounts([{ pluginId: "p1", serverId: "a" }, { pluginId: "p2", serverId: "b" }])).toEqual({ "p1/a": 200, "p2/b": 3 });
+    expect(await new BridgeCli(bb).toolCounts([{ pluginId: "p1", serverId: "a" }, { pluginId: "p2", serverId: "b" }])).toEqual({ counts: { "p1/a": 200, "p2/b": 3 }, skipped: 0 });
     expect((await readFile(join(dir, "calls"), "utf8")).split("\n").filter(Boolean)).toEqual([
       "agent-plugins tools --limit 200 --offset 0 --json",
       "agent-plugins tools --limit 200 --offset 200 --json",
@@ -128,6 +139,31 @@ describe("BridgeCli", () => {
       ] })}'`,
     );
     const known = [{ pluginId: "p", serverId: "a" }, { pluginId: "p__a", serverId: "b" }];
-    expect(await new BridgeCli(bb).toolCounts(known)).toEqual({ "p/a": 1, "p__a/b": 1 });
+    expect(await new BridgeCli(bb).toolCounts(known)).toEqual({ counts: { "p/a": 1, "p__a/b": 1 }, skipped: 1 });
+  });
+
+  it("does not guess when a plugin id containing `__<serverId>__` makes an opaqueId ambiguous", async () => {
+    await fakeBb(
+      `echo '${JSON.stringify({ tools: [
+        { opaqueId: "p__s__x__s__t_1", pluginName: "n", serverId: "s", name: "t", status: "ready" },
+        { opaqueId: "p__s__u_1", pluginName: "n", serverId: "s", name: "u", status: "ready" },
+        { opaqueId: "p__s__x__s__v_1", pluginName: "n", serverId: "s", name: "v", status: "ready" },
+      ] })}'`,
+    );
+    const known = [{ pluginId: "p", serverId: "s" }, { pluginId: "p__s__x", serverId: "s" }];
+    expect(await new BridgeCli(bb).toolCounts(known)).toEqual({ counts: { "p/s": 1 }, skipped: 2 });
+  });
+
+  it("counts malformed rows and tools of unknown servers as skipped instead of dropping them silently", async () => {
+    await fakeBb(
+      `echo '${JSON.stringify({ tools: [
+        { opaqueId: "p__s__t_1", pluginName: "n", serverId: "s", name: "t", status: "ready" },
+        { serverId: "s", name: "no opaque id" },
+        "not an object",
+        { opaqueId: "gone__s__t_1", pluginName: "n", serverId: "s", name: "t", status: "ready" },
+        { opaqueId: "p__s__error_1", pluginName: "n", serverId: "s", name: "__error_s", status: "error" },
+      ] })}'`,
+    );
+    expect(await new BridgeCli(bb).toolCounts([{ pluginId: "p", serverId: "s" }])).toEqual({ counts: { "p/s": 1 }, skipped: 3 });
   });
 });

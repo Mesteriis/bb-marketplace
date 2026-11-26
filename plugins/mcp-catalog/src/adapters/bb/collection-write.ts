@@ -2,7 +2,8 @@ import { execFile } from "node:child_process";
 import { readFile, realpath, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { CollectionEntry, CollectionEntryDraft, CollectionIndex, canonicalJson, sha256Hex, withIndexLine } from "../../core/collection";
-import { SLUG, isNewerVersion } from "../../core/inventory";
+import { DOCKER_PREFIX, checkDockerDigest } from "../../core/docker-catalog";
+import { SLUG, isReplacementVersion } from "../../core/inventory";
 import type { RegistryServer } from "../../core/registry";
 import type { CollectionWritePort } from "../../core/review";
 
@@ -128,7 +129,16 @@ export class CollectionWrite implements CollectionWritePort {
       throw new Error("в ветке проверки есть посторонние коммиты");
     }
 
-    if (!retry) {
+    if (retry) {
+      // Main may have taken other entries since our commit: rebuild the index line on today's main and amend,
+      // so that the owner never has to work out why a retry fails.
+      const rebuilt = indexText(withIndexLine(await indexAt(main, "main"), line));
+      if ((await git(worktree, ["show", `HEAD:${INDEX}`])) !== rebuilt) {
+        await writeFile(join(worktree, INDEX), rebuilt);
+        await git(worktree, ["add", "--", INDEX]);
+        await git(worktree, ["commit", "--amend", "--no-edit", "--", INDEX]);
+      }
+    } else {
       const changed = [
         ...(await git(worktree, ["diff", "--name-only", "main...HEAD"])).split("\n"),
         ...statusPaths(await git(worktree, ["status", "--porcelain=v1", "-z", "-uall"])),
@@ -163,21 +173,24 @@ export class CollectionWrite implements CollectionWritePort {
     // The index is the one file two accepted entries both touch: the merge result takes main's index with
     // this entry's line put in, whatever git made of it. Any other conflict aborts the merge.
     const merged = indexText(withIndexLine(await indexAt(main, "main"), line));
+    let step = "слияние";
+    let conflict = false;
     try {
       await git(main, ["merge", "--no-ff", "--no-commit", sha]).catch(async (error: unknown) => {
         const conflicted = (await git(main, ["diff", "--name-only", "--diff-filter=U"])).split("\n").filter((path) => path !== "");
-        if (conflicted.length === 0 || conflicted.some((path) => path !== INDEX)) throw error;
+        if (conflicted.length > 0 && conflicted.some((path) => path !== INDEX)) conflict = true;
+        if (conflicted.length === 0 || conflict) throw error;
       });
+      step = "запись индекса";
       await writeFile(join(main, INDEX), merged);
       await git(main, ["add", "--", INDEX]);
+      step = "коммит слияния";
       await git(main, ["commit", "--no-edit", "-m", `Merge mcp-collection ${slug}`]);
     } catch (error) {
       const inProgress = await git(main, ["rev-parse", "-q", "--verify", "MERGE_HEAD"]).then(() => true, () => false);
-      if (inProgress) {
-        await git(main, ["merge", "--abort"]);
-        return fail("не удалось слить запись коллекции: конфликт", error);
-      }
-      return fail(`не удалось слить запись коллекции: ${(error as Error).message}`, error);
+      if (inProgress) await git(main, ["merge", "--abort"]);
+      if (conflict) return fail("не удалось слить запись коллекции: конфликт", error);
+      return fail(`не удалось слить запись коллекции (шаг «${step}»): ${(error as Error).message}`, error);
     }
     if (opts.push) {
       try {
@@ -217,6 +230,7 @@ export class CollectionWrite implements CollectionWritePort {
     if (draft.name !== expected.name || draft.version !== expected.version) {
       throw new Error("запись в рабочем дереве не та, что проверялась: имя или версия другие");
     }
+    if (expected.name.startsWith(DOCKER_PREFIX) && draft.choice.kind === "package") checkDockerDigest(expected, draft.ociDigest);
     if ((await sha256Hex(serverBytes)) !== draft.serverJsonSha256) throw new Error("хэш server.json не совпадает с entry.json");
     if (canonicalJson(JSON.parse(serverBytes.toString("utf8"))) !== canonicalJson(expected)) {
       throw new Error("server.json не совпадает с записью реестра для этой версии");
@@ -235,12 +249,12 @@ export class CollectionWrite implements CollectionWritePort {
       throw new Error("индекс коллекции должен отличаться от main одной строкой этого сервера: новой или заменённой более новой версией");
     }
     const previous = mineBefore[0];
-    if (previous !== undefined && !isNewerVersion(draft.version, previous.version)) {
+    if (previous !== undefined && !isReplacementVersion(draft.name, draft.version, previous.version)) {
       throw new Error(`в коллекции уже есть версия ${previous.version}: принять можно только более новую`);
     }
   }
 
-  async reject(_worktree: string): Promise<void> {
+  async reject(): Promise<void> {
     // Nothing destructive here: archiving the thread and its worktree is a later owner action.
   }
 }

@@ -41,6 +41,9 @@ export type CollectionItem = z.infer<typeof CollectionItemSchema>;
 export const CollectionResult = z.object({ items: z.array(CollectionItemSchema) });
 export type CollectionResult = z.infer<typeof CollectionResult>;
 
+export const CatalogIdSchema = z.enum(["official", "github", "docker"]);
+export type CatalogId = z.infer<typeof CatalogIdSchema>;
+
 export const SearchSource = z.enum(["npm", "pypi", "docker", "remote"]);
 export type SearchSource = z.infer<typeof SearchSource>;
 
@@ -49,6 +52,10 @@ export const SearchVersionSchema = z.object({
   publishedAt: z.string().nullable(),
   description: z.string(),
   sources: z.array(SearchSource),
+  /** Why this version cannot be reviewed here, or null. */
+  unsupported: z.string().nullable(),
+  /** A review of exactly this version is in progress. */
+  reviewing: z.boolean(),
 });
 export type SearchVersion = z.infer<typeof SearchVersionSchema>;
 
@@ -59,8 +66,12 @@ export const SearchItemSchema = z.object({
   versions: z.array(SearchVersionSchema).min(1),
   installed: z.boolean(),
   inCollection: z.boolean(),
-  /** A review of this server is in progress. */
+  /** A review of any version of this server is in progress. */
   reviewing: z.boolean(),
+  /** Catalogs that list this server. */
+  catalogs: z.array(CatalogIdSchema),
+  /** Why the latest version cannot be reviewed here, or null. */
+  unsupported: z.string().nullable(),
 });
 export type SearchItem = z.infer<typeof SearchItemSchema>;
 
@@ -115,6 +126,8 @@ export type ConfigResult = z.infer<typeof ConfigResult>;
 const PluginRef = z.object({ pluginId: z.string().min(1) });
 const ServerRef = z.object({ pluginId: z.string().min(1), serverId: z.string().min(1) });
 const NameRef = z.object({ name: z.string().min(1).max(200) });
+/** A review of a server; the version tells apart reviews of several versions of the same name. */
+const ReviewRef = NameRef.extend({ version: z.string().min(1).max(64).optional() });
 
 export const MAX_VALUE_KEYS = 50;
 export const MAX_VALUE_BYTES = 8 * 1024;
@@ -138,7 +151,11 @@ export const rpcSchemas = {
   update: { input: PluginRef, output: z.null() },
   collection: { input: z.null(), output: CollectionResult },
   search: {
-    input: z.object({ query: z.string().trim().min(1).max(200), cursor: z.string().max(2000).optional() }),
+    input: z.object({
+      query: z.string().trim().min(1).max(200),
+      cursor: z.string().max(2000).optional(),
+      catalogs: z.array(CatalogIdSchema).max(3).optional(),
+    }),
     output: SearchResult,
   },
   startReview: {
@@ -146,8 +163,8 @@ export const rpcSchemas = {
     output: ReviewItemSchema,
   },
   reviews: { input: z.null(), output: ReviewsResult },
-  accept: { input: NameRef, output: z.null() },
-  reject: { input: NameRef, output: z.null() },
+  accept: { input: ReviewRef, output: z.null() },
+  reject: { input: ReviewRef, output: z.null() },
   install: { input: NameRef.extend({ values: ValuesSchema }), output: InstallResult },
   secretsState: { input: z.union([NameRef, PluginRef]), output: SecretsStateResult },
 } as const;

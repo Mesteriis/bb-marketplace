@@ -51,7 +51,7 @@ export function CollectionTab({ api, notify, tick, onChanged, setup }: Props) {
               <h2 className="px-4 pt-3 text-xs font-medium uppercase text-muted-foreground">Проверки</h2>
               <ul>
                 {items.map((item) => (
-                  <ReviewRow key={item.name} item={item} api={api} notify={notify} onChanged={onChanged} canDecide={setup.repo} />
+                  <ReviewRow key={`${item.name}@${item.version}`} item={item} api={api} notify={notify} onChanged={onChanged} canDecide={setup.repo} />
                 ))}
               </ul>
             </section>
@@ -146,10 +146,10 @@ function ReviewRow({
         <Badge tone={item.state === "failed" ? "danger" : "plain"}>{REVIEW_LABEL[item.state]}</Badge>
         {item.state === "ready" && (
           <div className="ml-auto flex gap-1">
-            <Button size="sm" variant="outline" disabled={busy || !canDecide} onClick={() => void act(() => api.accept({ name: item.name }), "Принято в коллекцию")}>
+            <Button size="sm" variant="outline" disabled={busy || !canDecide} onClick={() => void act(() => api.accept({ name: item.name, version: item.version }), "Принято в коллекцию")}>
               Принять
             </Button>
-            <Button size="sm" variant="ghost" disabled={busy || !canDecide} onClick={() => void act(() => api.reject({ name: item.name }), "Отклонено")}>
+            <Button size="sm" variant="ghost" disabled={busy || !canDecide} onClick={() => void act(() => api.reject({ name: item.name, version: item.version }), "Отклонено")}>
               Отклонить
             </Button>
           </div>

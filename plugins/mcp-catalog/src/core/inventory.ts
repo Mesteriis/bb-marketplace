@@ -1,3 +1,4 @@
+import { DOCKER_PREFIX } from "./docker-catalog";
 import { type CollectionIndex, serverSlug } from "./collection";
 
 /** Fields of `bb agent-plugins list --json` the plugin needs. */
@@ -30,8 +31,11 @@ export interface BridgePort {
   approve(id: string, serverId: string): Promise<void>;
   auth(id: string, serverId: string): Promise<{ url?: string }>;
   setEnabled(id: string, serverId: string, enabled: boolean): Promise<void>;
-  /** Number of tools per `<pluginId>/<serverId>` for the given servers, from one listing. */
-  toolCounts(known: { pluginId: string; serverId: string }[]): Promise<Record<string, number>>;
+  /**
+   * Number of tools per `<pluginId>/<serverId>` for the given servers, from one listing; `skipped` counts the
+   * listed tools that could not be attributed to exactly one known server (malformed or ambiguous rows).
+   */
+  toolCounts(known: { pluginId: string; serverId: string }[]): Promise<{ counts: Record<string, number>; skipped: number }>;
 }
 
 /** Secret values never leave the port: `state` reports only whether each key is set. */
@@ -41,6 +45,8 @@ export interface SecretsPort {
   write(slug: string, values: Record<string, string>): Promise<void>;
   /** Deletes the listed keys from the slug's stored values. */
   clear(slug: string, keys: string[]): Promise<void>;
+  /** Sets the typed values (empty ones keep the old value) and deletes `clear`, in one atomic replacement. */
+  apply(slug: string, values: Record<string, string>, clear: string[]): Promise<void>;
   remove(slug: string): Promise<void>;
   /** Absolute path of the env file for the slug. */
   path(slug: string): string;
@@ -50,6 +56,8 @@ export interface PackagesPort {
   /** Writes the package files and returns the package directory. */
   write(slug: string, files: Record<string, string>): Promise<string>;
   remove(slug: string): Promise<void>;
+  /** The files currently on disk (path -> content), or null when the package directory does not exist. */
+  read(slug: string): Promise<Record<string, string> | null>;
 }
 
 export type Origin = "catalog" | "infra" | "other";
@@ -114,6 +122,14 @@ export function isNewerVersion(candidate: string, installed: string): boolean {
   return compareIdentifiers(a[4], b[4]) > 0;
 }
 
+/**
+ * Whether `candidate` should replace `installed` for the server `name`. Docker versions are content digests with no
+ * order, so any different one is a replacement; everything else must be strictly newer semver.
+ */
+export function isReplacementVersion(name: string, candidate: string, installed: string): boolean {
+  return name.startsWith(DOCKER_PREFIX) ? candidate !== installed : isNewerVersion(candidate, installed);
+}
+
 /** Slug of a catalog package taken from its `path:<catalogRoot>/packages/<slug>` intent; null if not a clean slug. */
 export function catalogSlugOf(sourceIntent: string, catalogRoot: string): string | null {
   const prefix = `path:${catalogRoot.replace(/\/+$/, "")}/packages/`;
@@ -136,10 +152,9 @@ export function buildInventory(
     const plugin = byId.get(server.pluginId);
     if (plugin === undefined) return [];
     const origin = originOf(plugin.sourceIntent, catalogRoot);
-    const latest =
-      origin === "catalog"
-        ? collection?.servers.find((item) => serverSlug(item.name) === server.serverId)?.version
-        : undefined;
+    const listed =
+      origin === "catalog" ? collection?.servers.find((item) => serverSlug(item.name) === server.serverId) : undefined;
+    const latest = listed?.version;
     return [
       {
         pluginId: plugin.id,
@@ -150,7 +165,7 @@ export function buildInventory(
         approved: server.approved === 1,
         origin,
         lastError: server.lastError ?? plugin.lastError,
-        updateAvailable: latest !== undefined && isNewerVersion(latest, plugin.version) ? latest : null,
+        updateAvailable: listed !== undefined && latest !== undefined && isReplacementVersion(listed.name, latest, plugin.version) ? latest : null,
         toolCount: toolCounts === undefined ? null : (toolCounts[`${server.pluginId}/${server.serverId}`] ?? 0),
       },
     ];

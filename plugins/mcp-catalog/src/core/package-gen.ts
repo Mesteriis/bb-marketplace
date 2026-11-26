@@ -1,3 +1,4 @@
+import { declaredVariables } from "./catalog-view";
 import { type CollectionEntry, serverSlug } from "./collection";
 import type { RegistryServer } from "./registry";
 import { LEGACY_STDIO_SHIM } from "./shim";
@@ -11,6 +12,10 @@ function shQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
+// PEP 440 without epochs and without any operator character: release, pre, post, dev and local parts.
+const PYPI_VERSION =
+  /^\d+(\.\d+)*([._-]?(a|b|c|rc|alpha|beta|pre|preview)[._-]?\d*)?([._-]?(post|rev|r)[._-]?\d*|-\d+)?([._-]?dev[._-]?\d*)?(\+[a-z0-9]+([._-][a-z0-9]+)*)?$/i;
+
 const SEMVER = /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$/;
 
 type Pin = "semver" | "pypi" | "loose";
@@ -18,7 +23,7 @@ type Pin = "semver" | "pypi" | "loose";
 function requirePinned(version: string, kind: Pin): string {
   const loose = version.trim() !== "" && version.toLowerCase() !== "latest" && !/[\^~*<>|\s]/.test(version);
   const ok =
-    kind === "semver" ? SEMVER.test(version) : kind === "pypi" ? /^\d/.test(version) && !/[,!=*<>~^\s]/.test(version) : loose;
+    kind === "semver" ? SEMVER.test(version) : kind === "pypi" ? PYPI_VERSION.test(version) : loose;
   if (!ok || !loose) {
     throw new Error(`версия «${version}» не закреплена: нужна точная версия, без latest и диапазонов`);
   }
@@ -29,6 +34,17 @@ function requireIdentifier(identifier: string, allowColon: boolean): string {
   const pattern = allowColon ? /^[@A-Za-z0-9][A-Za-z0-9@/._:-]*$/ : /^[@A-Za-z0-9][A-Za-z0-9@/._-]*$/;
   if (!pattern.test(identifier)) throw new Error(`недопустимый идентификатор пакета «${identifier}»`);
   return identifier;
+}
+
+/**
+ * The image reference is `<name>@<digest from the entry>`: the digest is the pin, so a tag after the last `/`
+ * is dropped (a colon before it is a registry port and stays). A digest in the identifier itself is refused.
+ */
+function ociName(identifier: string): string {
+  if (identifier.includes("@")) throw new Error(`идентификатор образа «${identifier}» не должен содержать digest: он берётся из записи коллекции`);
+  const slash = identifier.lastIndexOf("/");
+  const colon = identifier.indexOf(":", slash + 1);
+  return colon < 0 ? identifier : identifier.slice(0, colon);
 }
 
 function requireEnvName(name: string): string {
@@ -65,9 +81,8 @@ function fixedArguments(args: Argument[] | undefined): string[] {
 
 /** Name of the generated bridge plugin for a server slug. */
 export function pluginName(slug: string): string {
-  const name = `mcp-${slug}`.slice(0, 64).replace(/[-.]+$/, "");
   if (slug === "") throw new Error("не удалось получить имя пакета из имени сервера");
-  return name;
+  return `mcp-${slug}`.slice(0, 64).replace(/[-.]+$/, "");
 }
 
 /** Id of the server the generated `mcp.json` declares (the key of `mcpServers`). */
@@ -86,6 +101,8 @@ export function generatePackage(
   paths: { envFile: string },
 ): Record<string, string> {
   const slug = serverSlug(entry.name);
+  // Which variables this version declares: the next update reads it to tell new variables from old ones.
+  const variables = json({ declared: declaredVariables(server, entry).map((variable) => variable.name) });
   const plugin = json({
     $schema: PLUGIN_SCHEMA,
     name: pluginName(slug),
@@ -102,6 +119,7 @@ export function generatePackage(
     }
     return {
       "plugin.json": plugin,
+      "variables.json": variables,
       "mcp.json": json({
         $schema: MCP_SCHEMA,
         mcpServers: { [generatedServerId(slug)]: { type: remote.type, url: remote.url } },
@@ -117,7 +135,8 @@ export function generatePackage(
   const pin: Pin = pkg.registryType === "npm" ? "semver" : pkg.registryType === "pypi" ? "pypi" : "loose";
   requirePinned(entry.version, pin);
   const version = requirePinned(pkg.version ?? entry.version, pin);
-  const id = requireIdentifier(pkg.identifier, pkg.registryType === "oci");
+  const checked = requireIdentifier(pkg.identifier, pkg.registryType === "oci");
+  const id = pkg.registryType === "oci" ? ociName(checked) : checked;
   const runtimeArgs = fixedArguments(pkg.runtimeArguments);
   const packageArgs = fixedArguments(pkg.packageArguments);
   let command: string[];
@@ -143,6 +162,7 @@ export function generatePackage(
 
   return {
     "plugin.json": plugin,
+    "variables.json": variables,
     "mcp.json": json({
       $schema: MCP_SCHEMA,
       mcpServers: { [generatedServerId(slug)]: { type: "stdio", command: "./bin/run.sh" } },

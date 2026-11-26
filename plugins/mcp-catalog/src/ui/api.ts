@@ -1,4 +1,5 @@
 import type {
+  CatalogId,
   CollectionResult,
   ConfigResult,
   InstallResult,
@@ -19,11 +20,11 @@ export interface CatalogApi {
   remove(input: { pluginId: string }): Promise<void>;
   update(input: { pluginId: string }): Promise<void>;
   collection(): Promise<CollectionResult>;
-  search(query: string, cursor?: string): Promise<SearchResult>;
+  search(query: string, cursor?: string, catalogs?: CatalogId[]): Promise<SearchResult>;
   startReview(input: { name: string; version: string }): Promise<ReviewItem>;
   reviews(): Promise<ReviewsResult>;
-  accept(input: { name: string }): Promise<void>;
-  reject(input: { name: string }): Promise<void>;
+  accept(input: { name: string; version?: string }): Promise<void>;
+  reject(input: { name: string; version?: string }): Promise<void>;
   install(input: { name: string; values: Record<string, string> }): Promise<InstallResult>;
   secretsState(input: { name: string } | { pluginId: string }): Promise<SecretsStateResult>;
   config(): Promise<ConfigResult>;

@@ -23,20 +23,29 @@ export interface Kv {
   list(prefix?: string): Promise<string[]>;
 }
 
-/** Review records in the plugin's key-value storage, one per registry server name. */
+/**
+ * Review records in the plugin's key-value storage, one per registry server name and version
+ * (`review:<name>@<version>`). Records an earlier build stored under the bare name (`review:<name>`) are
+ * still read; when both exist for the same name and version the new key wins.
+ */
 export class KvReviewStore implements ReviewStore {
   constructor(private readonly kv: Kv) {}
 
   async list(): Promise<ReviewRecord[]> {
-    const records: ReviewRecord[] = [];
+    const byIdentity = new Map<string, { record: ReviewRecord; legacy: boolean }>();
     for (const key of await this.kv.list(PREFIX)) {
       const parsed = Record_.safeParse(await this.kv.get(key));
-      if (parsed.success) records.push(parsed.data);
+      if (!parsed.success) continue;
+      const record = parsed.data;
+      const legacy = key === `${PREFIX}${record.name}`;
+      const identity = JSON.stringify([record.name, record.version]);
+      const known = byIdentity.get(identity);
+      if (known === undefined || (known.legacy && !legacy)) byIdentity.set(identity, { record, legacy });
     }
-    return records;
+    return [...byIdentity.values()].map((item) => item.record);
   }
 
   async put(record: ReviewRecord): Promise<void> {
-    await this.kv.set(`${PREFIX}${record.name}`, Record_.parse(record));
+    await this.kv.set(`${PREFIX}${record.name}@${record.version}`, Record_.parse(record));
   }
 }

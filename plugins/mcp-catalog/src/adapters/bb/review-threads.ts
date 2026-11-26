@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { z } from "zod";
+import { cliErrorMessage } from "./cli-error";
 import type { ThreadInfo, ThreadsPort } from "../../core/review";
 
 const Show = z.object({
@@ -67,8 +68,7 @@ export class ReviewThreads implements ThreadsPort {
         { maxBuffer: 16 * 1024 * 1024, timeout: 120_000, ...(this.env === undefined ? {} : { env: this.env }) },
         (error, stdout, stderr) => {
           if (error !== null) {
-            const text = String(stderr).trim();
-            reject(new Error(text.length > 0 ? text : error.message));
+            reject(new Error(cliErrorMessage(String(stderr), error.message, this.env ?? process.env)));
             return;
           }
           try {

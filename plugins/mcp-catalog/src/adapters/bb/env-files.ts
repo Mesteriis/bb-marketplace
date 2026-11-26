@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { chmod, mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { SLUG, type SecretsPort } from "../../core/inventory";
@@ -31,6 +32,8 @@ function requireSlug(slug: string): string {
 
 /** Secrets as `<dataDir>/env/<slug>.env`: 0600, written atomically, sourced by run.sh with `set -a; . file`. */
 export class EnvFiles implements SecretsPort {
+  private readonly queues = new Map<string, Promise<void>>();
+
   constructor(private readonly dataDir: string) {}
 
   path(slug: string): string {
@@ -51,25 +54,47 @@ export class EnvFiles implements SecretsPort {
     return Object.fromEntries(Object.entries(values).map(([key, value]) => [key, value === "" ? "missing" : "set"]));
   }
 
+  /** Runs `task` after every earlier task of the same slug has settled; slugs do not block each other. */
+  private locked<T>(slug: string, task: () => Promise<T>): Promise<T> {
+    requireSlug(slug);
+    const previous = this.queues.get(slug) ?? Promise.resolve();
+    const run = previous.then(task);
+    const settled = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.queues.set(slug, settled);
+    void settled.then(() => {
+      if (this.queues.get(slug) === settled) this.queues.delete(slug);
+    });
+    return run;
+  }
+
   async write(slug: string, values: Record<string, string>): Promise<void> {
-    for (const key of Object.keys(values)) {
-      if (!KEY.test(key)) throw new Error("недопустимое имя переменной");
-    }
-    const merged = await this.read(slug);
-    for (const [key, value] of Object.entries(values)) {
-      if (value !== "") merged[key] = value;
-    }
-    await this.persist(slug, merged);
+    await this.apply(slug, values, []);
   }
 
   async clear(slug: string, keys: string[]): Promise<void> {
-    for (const key of keys) {
+    await this.apply(slug, {}, keys);
+  }
+
+  /** Sets the non-empty values and removes the listed keys with one atomic replacement of the file. */
+  async apply(slug: string, values: Record<string, string>, clear: string[]): Promise<void> {
+    for (const key of [...Object.keys(values), ...clear]) {
       if (!KEY.test(key)) throw new Error("недопустимое имя переменной");
     }
-    const current = await this.read(slug);
-    const kept = Object.fromEntries(Object.entries(current).filter(([key]) => !keys.includes(key)));
-    if (Object.keys(kept).length === Object.keys(current).length) return;
-    await this.persist(slug, kept);
+    await this.locked(slug, async () => {
+      const current = await this.read(slug);
+      const next = { ...current };
+      for (const key of clear) delete next[key];
+      for (const [key, value] of Object.entries(values)) {
+        if (value !== "") next[key] = value;
+      }
+      const changed =
+        Object.keys(next).length !== Object.keys(current).length || Object.entries(next).some(([key, value]) => current[key] !== value);
+      // Writing nothing new still creates the file once, so that a first write of only empty values behaves as before.
+      if (changed || Object.keys(values).length > 0) await this.persist(slug, next);
+    });
   }
 
   /** Replaces the whole file atomically: tmp file with 0600, then rename. */
@@ -81,7 +106,7 @@ export class EnvFiles implements SecretsPort {
     const text = Object.entries(values)
       .map(([key, value]) => `${key}=${shQuote(value)}\n`)
       .join("");
-    const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
+    const tmp = `${file}.${process.pid}.${Date.now()}.${randomBytes(4).toString("hex")}.tmp`;
     const handle = await open(tmp, "wx", 0o600);
     try {
       await handle.writeFile(text);
@@ -97,6 +122,6 @@ export class EnvFiles implements SecretsPort {
   }
 
   async remove(slug: string): Promise<void> {
-    await rm(this.path(slug), { force: true });
+    await this.locked(slug, () => rm(this.path(slug), { force: true }));
   }
 }

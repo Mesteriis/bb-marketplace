@@ -111,4 +111,70 @@ describe("CollectionGit", () => {
     expect(await port.isAccepted("--all")).toBe(false);
     expect(await port.isAccepted("main")).toBe(false);
   });
+
+  describe("fetch coalescing", () => {
+    const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+    /** A git runner whose fetches stay pending until released; everything else answers an empty index. */
+    function gatedRunner() {
+      const gates: (() => void)[] = [];
+      let fetches = 0;
+      const runner = (_repo: string, args: string[]): Promise<string> => {
+        if (args[0] !== "fetch") return Promise.resolve('{"servers":[]}');
+        fetches++;
+        return new Promise((resolve) => gates.push(() => resolve("")));
+      };
+      return { runner, gates, fetches: () => fetches };
+    }
+
+    it("keeps one fetch in flight; invalidations during it schedule exactly one follow-up", async () => {
+      const gated = gatedRunner();
+      const port = new CollectionGit("/repo", 10_000, () => 1, gated.runner);
+      const first = port.readIndex();
+      await tick();
+      port.invalidate();
+      const second = port.readIndex();
+      port.invalidate();
+      const third = port.readIndex();
+      await tick();
+      expect(gated.fetches()).toBe(1);
+      gated.gates[0]?.();
+      await tick();
+      expect(gated.fetches()).toBe(2);
+      gated.gates[1]?.();
+      expect(await Promise.all([first, second, third])).toEqual([{ servers: [] }, { servers: [] }, { servers: [] }]);
+      expect(gated.fetches()).toBe(2);
+    });
+
+    it("an invalidate during a fetch that nobody reads is not lost: the next read fetches again", async () => {
+      const gated = gatedRunner();
+      const port = new CollectionGit("/repo", 10_000, () => 1, gated.runner);
+      const first = port.readIndex();
+      await tick();
+      port.invalidate();
+      gated.gates[0]?.();
+      await first;
+      await tick();
+      const second = port.readIndex();
+      await tick();
+      expect(gated.fetches()).toBe(2);
+      gated.gates[1]?.();
+      await second;
+    });
+
+    it("an invalidate with nothing in flight just makes the next read fetch again", async () => {
+      const gated = gatedRunner();
+      const port = new CollectionGit("/repo", 10_000, () => 1, gated.runner);
+      const first = port.readIndex();
+      await tick();
+      gated.gates[0]?.();
+      await first;
+      port.invalidate();
+      const second = port.readIndex();
+      await tick();
+      expect(gated.fetches()).toBe(2);
+      gated.gates[1]?.();
+      await second;
+    });
+  });
 });

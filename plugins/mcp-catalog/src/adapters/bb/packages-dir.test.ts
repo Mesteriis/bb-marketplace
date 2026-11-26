@@ -48,4 +48,11 @@ describe("PackagesDir", () => {
     await expect(packages.write("srv", { "../x": "x" })).rejects.toThrow();
     await expect(packages.write("srv", { "/abs": "x" })).rejects.toThrow();
   });
+
+  it("reads back what it wrote, nested, and gives null for a package that is not there", async () => {
+    const files = { "plugin.json": "{}", "bin/run.sh": "#!/bin/sh\n", "bin/deep/x.txt": "x" };
+    await packages.write("my-srv", files);
+    expect(await packages.read("my-srv")).toEqual(files);
+    expect(await packages.read("other")).toBeNull();
+  });
 });

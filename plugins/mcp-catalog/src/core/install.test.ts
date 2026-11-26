@@ -21,12 +21,12 @@ function srv(extra: Partial<BridgeServer>): BridgeServer {
   return { pluginId: "p1", serverId: "s", type: "stdio", status: "ready", lastError: null, approved: 1, enabled: 0, ...extra };
 }
 
-async function collection(version = "1.0.0"): Promise<CollectionPort> {
+async function collection(version = "1.0.0", environmentVariables?: unknown[]): Promise<CollectionPort> {
   const serverText = JSON.stringify({
     name: NAME,
     description: "d",
     version,
-    packages: [{ registryType: "npm", identifier: "demo", version, transport: { type: "stdio" } }],
+    packages: [{ registryType: "npm", identifier: "demo", version, transport: { type: "stdio" }, ...(environmentVariables === undefined ? {} : { environmentVariables }) }],
   });
   const entry = {
     name: NAME,
@@ -62,20 +62,22 @@ function fakes(existing: { plugins?: BridgePlugin[]; servers?: BridgeServer[] } 
     approve: async () => {},
     auth: async () => ({}),
     setEnabled: async () => {},
-    toolCounts: async () => ({}),
+    toolCounts: async () => ({ counts: {}, skipped: 0 }),
   };
   const stored: Record<string, string> = {};
-  const deps = async (version = "1.0.0"): Promise<InstallDeps> => ({
+  let previousFiles: Record<string, string> | null = { "plugin.json": "previous" };
+  const deps = async (version = "1.0.0", environmentVariables?: unknown[]): Promise<InstallDeps> => ({
     bridge,
-    collection: await collection(version),
+    collection: await collection(version, environmentVariables),
     catalogRoot: ROOT,
     secrets: {
-      state: async () => ({}),
+      state: async () => Object.fromEntries(Object.keys(stored).map((key) => [key, "set" as const])),
       write: async (slug, values) => {
         calls.push(`secrets.write ${slug}`);
         for (const [k, v] of Object.entries(values)) if (v !== "") stored[k] = v;
       },
       clear: async () => {},
+      apply: async () => {},
       remove: async (slug) => void calls.push(`secrets.remove ${slug}`),
       path: (slug) => `${ROOT}/env/${slug}.env`,
     },
@@ -85,10 +87,22 @@ function fakes(existing: { plugins?: BridgePlugin[]; servers?: BridgeServer[] } 
         return `${ROOT}/packages/${slug}`;
       },
       remove: async (slug) => void calls.push(`packages.remove ${slug}`),
+      read: async () => previousFiles,
     },
   });
-  return { calls, stored, deps };
+  return { calls, stored, deps, setPrevious: (files: Record<string, string> | null) => void (previousFiles = files) };
 }
+
+describe("buildInventory docker", () => {
+  it("any different docker version is an update; the same one is not", () => {
+    const name = "com.docker.mcp/brave";
+    const index = { servers: [{ name, version: "sha256-bbbbbbbbbbbb", path: "p" }] };
+    const row = (version: string) =>
+      buildInventory([plugin({ id: "a", sourceIntent: `path:${ROOT}/packages/x`, version })], [srv({ pluginId: "a", serverId: "com-docker-mcp-brave" })], ROOT, index)[0];
+    expect(row("sha256-aaaaaaaaaaaa")?.updateAvailable).toBe("sha256-bbbbbbbbbbbb");
+    expect(row("sha256-bbbbbbbbbbbb")?.updateAvailable).toBeNull();
+  });
+});
 
 describe("buildInventory", () => {
   it("marks catalog, infra and other origins and normalises flags", () => {
@@ -143,7 +157,7 @@ describe("installFromCollection", () => {
     expect(result).toEqual({ pluginId: "new", needsApproval: true });
     expect(f.calls).toEqual([
       `secrets.write ${SLUG}`,
-      `packages.write ${SLUG} bin/run.sh,bin/shim.py,mcp.json,plugin.json`,
+      `packages.write ${SLUG} bin/run.sh,bin/shim.py,mcp.json,plugin.json,variables.json`,
       `bridge.install ${ROOT}/packages/${SLUG}`,
     ]);
   });
@@ -182,7 +196,7 @@ describe("installFromCollection", () => {
     await expect(installFromCollection(deps, NAME, { TOKEN: "" }, accepted)).rejects.toThrow("boom");
     expect(f.calls).toEqual([
       `secrets.write ${SLUG}`,
-      `packages.write ${SLUG} bin/run.sh,bin/shim.py,mcp.json,plugin.json`,
+      `packages.write ${SLUG} bin/run.sh,bin/shim.py,mcp.json,plugin.json,variables.json`,
       `packages.remove ${SLUG}`,
     ]);
     expect(f.stored).toEqual({ TOKEN: "t" });
@@ -254,7 +268,7 @@ describe("updateFromCollection", () => {
     const f = fakes({ plugins: [catalogPlugin] });
     await updateFromCollection(await f.deps("2.0.0"), "p1", accepted);
     expect(f.calls).toEqual([
-      `packages.write ${SLUG} bin/run.sh,bin/shim.py,mcp.json,plugin.json`,
+      `packages.write ${SLUG} bin/run.sh,bin/shim.py,mcp.json,plugin.json,variables.json`,
       "bridge.update p1",
     ]);
   });
@@ -283,3 +297,184 @@ describe("updateFromCollection", () => {
     expect(f.calls).toEqual([]);
   });
 });
+
+describe("removeCatalogServer partial cleanup", () => {
+  it("keeps going when the package cannot be removed and names what is left", async () => {
+    const f = fakes({ plugins: [catalogPlugin] });
+    const deps = await f.deps();
+    deps.packages.remove = async () => {
+      throw new Error("disk busy");
+    };
+    await expect(removeCatalogServer(deps, "p1")).rejects.toThrow(
+      "сервер удалён из моста, но остались данные: файлы пакета (disk busy)",
+    );
+    expect(f.calls).toEqual(["bridge.remove p1", `secrets.remove ${SLUG}`]);
+  });
+
+  it("removes the package and reports the keys file left when secrets.remove fails", async () => {
+    const f = fakes({ plugins: [catalogPlugin] });
+    const deps = await f.deps();
+    deps.secrets.remove = async () => {
+      throw new Error("denied");
+    };
+    await expect(removeCatalogServer(deps, "p1")).rejects.toThrow("сервер удалён из моста, но остались данные: файл ключей (denied)");
+    expect(f.calls).toEqual(["bridge.remove p1", `packages.remove ${SLUG}`]);
+  });
+
+  it("lists both leftovers when both fail", async () => {
+    const f = fakes({ plugins: [catalogPlugin] });
+    const deps = await f.deps();
+    deps.packages.remove = async () => {
+      throw new Error("a");
+    };
+    deps.secrets.remove = async () => {
+      throw new Error("b");
+    };
+    await expect(removeCatalogServer(deps, "p1")).rejects.toThrow("файлы пакета (a); файл ключей (b)");
+  });
+});
+
+describe("updateFromCollection rollback", () => {
+  it("restores the previous package files when bridge.update fails, and rethrows", async () => {
+    const f = fakes({ plugins: [catalogPlugin] });
+    const deps = await f.deps("2.0.0");
+    const written: Record<string, string>[] = [];
+    deps.packages.write = async (slug, files) => {
+      written.push(files);
+      return `${ROOT}/packages/${slug}`;
+    };
+    deps.bridge.update = async () => {
+      throw new Error("bridge down");
+    };
+    await expect(updateFromCollection(deps, "p1", accepted)).rejects.toThrow("bridge down");
+    expect(written).toHaveLength(2);
+    expect(Object.keys(written[0] ?? {}).sort()).toEqual(["bin/run.sh", "bin/shim.py", "mcp.json", "plugin.json", "variables.json"]);
+    expect(written[1]).toEqual({ "plugin.json": "previous" });
+  });
+
+  it("says so when the previous files cannot be restored either", async () => {
+    const f = fakes({ plugins: [catalogPlugin] });
+    const deps = await f.deps("2.0.0");
+    let writes = 0;
+    deps.packages.write = async (slug) => {
+      if (++writes === 2) throw new Error("disk full");
+      return `${ROOT}/packages/${slug}`;
+    };
+    deps.bridge.update = async () => {
+      throw new Error("bridge down");
+    };
+    await expect(updateFromCollection(deps, "p1", accepted)).rejects.toThrow(
+      "bridge down; прежние файлы пакета восстановить не удалось: disk full",
+    );
+  });
+
+  it("does not try to write back when the plugin had no package files", async () => {
+    const f = fakes({ plugins: [catalogPlugin] });
+    f.setPrevious(null);
+    const deps = await f.deps("2.0.0");
+    deps.bridge.update = async () => {
+      throw new Error("bridge down");
+    };
+    await expect(updateFromCollection(deps, "p1", accepted)).rejects.toThrow("bridge down");
+    expect(f.calls.filter((call) => call.startsWith("packages.write"))).toHaveLength(1);
+  });
+});
+
+describe("updateFromCollection and variables that are new in the update", () => {
+  const variables = [
+    { name: "API_KEY", isRequired: true, isSecret: true },
+    { name: "REGION", isSecret: false, default: "eu-1" },
+    { name: "MODE", isSecret: false, default: "fast" },
+    { name: "TOKEN", isSecret: true, default: "should-not-be-used" },
+  ];
+
+  const declared = (...names: string[]) => ({ "plugin.json": "previous", "variables.json": JSON.stringify({ declared: names }) });
+
+  it("gives a default only to a variable that is new, not to one the owner cleared", async () => {
+    const f = fakes({ plugins: [catalogPlugin] });
+    f.setPrevious(declared("A"));
+    await updateFromCollection(
+      await f.deps("2.0.0", [{ name: "A", isSecret: false, default: "x" }, { name: "B", isSecret: false, default: "y" }]),
+      "p1",
+      accepted,
+    );
+    expect(f.stored).toEqual({ B: "y" });
+  });
+
+  it("writes the defaults of new non-secret variables before the package, keeping stored ones", async () => {
+    const f = fakes({ plugins: [catalogPlugin] });
+    f.setPrevious(declared());
+    f.stored.API_KEY = "k";
+    f.stored.MODE = "slow";
+    await updateFromCollection(await f.deps("2.0.0", variables), "p1", accepted);
+    expect(f.stored).toEqual({ API_KEY: "k", MODE: "slow", REGION: "eu-1" });
+    expect(f.calls).toEqual([
+      `secrets.write ${SLUG}`,
+      `packages.write ${SLUG} bin/run.sh,bin/shim.py,mcp.json,plugin.json,variables.json`,
+      "bridge.update p1",
+    ]);
+  });
+
+  it("refuses with the names of new required variables that have no value, and writes nothing", async () => {
+    const f = fakes({ plugins: [catalogPlugin] });
+    f.setPrevious(declared());
+    await expect(updateFromCollection(await f.deps("2.0.0", variables), "p1", accepted)).rejects.toThrow(
+      "не задана обязательная переменная API_KEY",
+    );
+    expect(f.calls).toEqual([]);
+    expect(f.stored).toEqual({});
+  });
+
+  it("names every missing required variable", async () => {
+    const f = fakes({ plugins: [catalogPlugin] });
+    f.setPrevious(declared());
+    const two = [{ name: "A_KEY", isRequired: true, isSecret: true }, { name: "B_KEY", isRequired: true, isSecret: false }];
+    await expect(updateFromCollection(await f.deps("2.0.0", two), "p1", accepted)).rejects.toThrow(
+      "не заданы обязательные переменные: A_KEY, B_KEY",
+    );
+  });
+
+  it("lets a required variable with a default through", async () => {
+    const f = fakes({ plugins: [catalogPlugin] });
+    f.setPrevious(declared());
+    await updateFromCollection(await f.deps("2.0.0", [{ name: "REGION", isRequired: true, isSecret: false, default: "eu-1" }]), "p1", accepted);
+    expect(f.stored).toEqual({ REGION: "eu-1" });
+  });
+});
+
+describe("updateFromCollection when the installed package does not record its variables", () => {
+  const required = [{ name: "R_KEY", isRequired: true, isSecret: true }];
+  const defaulted = [{ name: "D", isSecret: false, default: "y" }];
+
+  it("refuses a required variable with no value and writes nothing (no variables.json)", async () => {
+    const f = fakes({ plugins: [catalogPlugin] });
+    await expect(updateFromCollection(await f.deps("2.0.0", required), "p1", accepted)).rejects.toThrow("не задана обязательная переменная R_KEY");
+    expect(f.calls).toEqual([]);
+  });
+
+  it("sets no default (no variables.json)", async () => {
+    const f = fakes({ plugins: [catalogPlugin] });
+    await updateFromCollection(await f.deps("2.0.0", defaulted), "p1", accepted);
+    expect(f.stored).toEqual({});
+  });
+
+  it("treats a malformed variables.json the same way", async () => {
+    for (const text of ["{not json", '{"declared":"x"}', '{"declared":[1]}']) {
+      const f = fakes({ plugins: [catalogPlugin] });
+      f.setPrevious({ "plugin.json": "previous", "variables.json": text });
+      await expect(updateFromCollection(await f.deps("2.0.0", required), "p1", accepted)).rejects.toThrow("не задана обязательная переменная R_KEY");
+      const g = fakes({ plugins: [catalogPlugin] });
+      g.setPrevious({ "plugin.json": "previous", "variables.json": text });
+      await updateFromCollection(await g.deps("2.0.0", defaulted), "p1", accepted);
+      expect(g.stored).toEqual({});
+    }
+  });
+
+  it("lets a required variable that is already stored through", async () => {
+    const f = fakes({ plugins: [catalogPlugin] });
+    f.stored.R_KEY = "k";
+    await updateFromCollection(await f.deps("2.0.0", required), "p1", accepted);
+    expect(f.calls).toEqual([`packages.write ${SLUG} bin/run.sh,bin/shim.py,mcp.json,plugin.json,variables.json`, "bridge.update p1"]);
+  });
+});
+

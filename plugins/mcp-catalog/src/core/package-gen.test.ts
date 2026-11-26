@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { CollectionEntry, serverSlug } from "./collection";
-import { generatePackage } from "./package-gen";
+import { generatePackage, pluginName } from "./package-gen";
 import { LEGACY_STDIO_SHIM } from "./shim";
 import type { RegistryServer } from "./registry";
 
@@ -34,7 +34,7 @@ describe("serverSlug", () => {
 describe("generatePackage", () => {
   it("generates npm launcher pinned to version", () => {
     const files = generatePackage(npm, entry(), paths);
-    expect(Object.keys(files).sort()).toEqual(["bin/run.sh", "bin/shim.py", "mcp.json", "plugin.json"]);
+    expect(Object.keys(files).sort()).toEqual(["bin/run.sh", "bin/shim.py", "mcp.json", "plugin.json", "variables.json"]);
     const run = files["bin/run.sh"] ?? "";
     expect(run.startsWith("#!/bin/sh\nset -eu\n")).toBe(true);
     expect(run).toContain(`set -a; . '/home/u/.config/bb-mcp/time.env'; set +a`);
@@ -64,10 +64,30 @@ describe("generatePackage", () => {
     expect(run).toContain(`'docker' 'run' '--rm' '-i' 'ghcr.io/acme/time@${digest}'`);
   });
 
+  it("docker launcher passes positional arguments after the image, never before it", () => {
+    const s = server({
+      packages: [
+        {
+          registryType: "oci",
+          identifier: "ghcr.io/acme/time",
+          transport: { type: "stdio" },
+          packageArguments: [
+            { type: "positional", value: "--transport=stdio" },
+            { type: "positional", value: "-v" },
+          ],
+        },
+      ],
+    });
+    const digest = `sha256:${"b".repeat(64)}`;
+    const run = generatePackage(s, entry({ ociDigest: digest }), paths)["bin/run.sh"];
+    expect(run).toContain(`'ghcr.io/acme/time@${digest}' '--transport=stdio' '-v'`);
+    expect(run).not.toContain(`'--transport=stdio' 'ghcr.io`);
+  });
+
   it("remote without secret headers has no launcher", () => {
     const s = server({ remotes: [{ type: "streamable-http", url: "https://x.example/mcp", headers: [{ name: "X-Id" }] }] });
     const files = generatePackage(s, entry({ choice: { kind: "remote", index: 0 } }), paths);
-    expect(Object.keys(files).sort()).toEqual(["mcp.json", "plugin.json"]);
+    expect(Object.keys(files).sort()).toEqual(["mcp.json", "plugin.json", "variables.json"]);
     expect(JSON.parse(files["mcp.json"] ?? "").mcpServers["io-github-acme-time-server"]).toEqual({
       type: "streamable-http",
       url: "https://x.example/mcp",
@@ -86,6 +106,36 @@ describe("generatePackage", () => {
       expect(() => generatePackage(py, entry({ version }), paths)).toThrow(/не закреплена/);
     }
     expect(() => generatePackage(npm, entry({ version: "1.2.3-beta.1+build.5" }), paths)).not.toThrow();
+  });
+
+  it("pins a PyPI version to PEP 440 characters: no shell or separator characters", () => {
+    const py = (version: string) => server({ packages: [{ registryType: "pypi", identifier: "mcp-time", version, transport: { type: "stdio" } }] });
+    for (const version of ["1.0.0", "2024.1.2", "1.0.0rc1", "1.0.0.post1", "1.0.0.dev2", "1.0+local.1", "1.0.0a1"]) {
+      expect(() => generatePackage(py(version), entry({ version }), paths)).not.toThrow();
+    }
+    for (const version of ["1.0;touch x", "1.0.0;", "1.0&&id", "1.0'x", "1.0#x", "1.0$(id)", "1.0\nx", "1.0.0/x", "1.0`x`"]) {
+      expect(() => generatePackage(py("1.0.0"), entry({ version }), paths), version).toThrow(/не закреплена/);
+      expect(() => generatePackage(py(version), entry({ version: "1.0.0" }), paths), version).toThrow(/не закреплена/);
+    }
+  });
+
+  it("pins an OCI image by digest: a tag in the identifier is dropped, a registry port is kept, an `@` is refused", () => {
+    const oci = (identifier: string) => server({ packages: [{ registryType: "oci", identifier, transport: { type: "stdio" } }] });
+    const hex = "b".repeat(64);
+    const withDigest = entry({ ociDigest: `sha256:${hex}` });
+    const image = (identifier: string) => generatePackage(oci(identifier), withDigest, paths)["bin/run.sh"] ?? "";
+    expect(image("ghcr.io/x/y:1.2.3")).toContain(`'ghcr.io/x/y@sha256:${hex}'`);
+    expect(image("ghcr.io/x/y:1.2.3")).not.toContain("1.2.3");
+    expect(image("localhost:5000/x")).toContain(`'localhost:5000/x@sha256:${hex}'`);
+    expect(image("localhost:5000/x:v2")).toContain(`'localhost:5000/x@sha256:${hex}'`);
+    for (const identifier of [`x@sha256:${"a".repeat(64)}`, `ghcr.io/x/y:1.2@sha256:${"a".repeat(64)}`]) {
+      expect(() => generatePackage(oci(identifier), withDigest, paths), identifier).toThrow(/digest/);
+    }
+  });
+
+  it("rejects an empty slug before building a plugin name", () => {
+    expect(() => pluginName("")).toThrow("не удалось получить имя пакета");
+    expect(pluginName("a".repeat(80)).length).toBeLessThanOrEqual(64);
   });
 
   it("rejects an identifier that could be read as a flag or break quoting", () => {

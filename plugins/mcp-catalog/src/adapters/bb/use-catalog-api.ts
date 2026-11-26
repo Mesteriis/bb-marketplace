@@ -21,7 +21,12 @@ export function useCatalogApi(rpc: CatalogRpc): CatalogApi {
       remove: (input) => rpcRef.current.call("remove", input).then(() => undefined),
       update: (input) => rpcRef.current.call("update", input).then(() => undefined),
       collection: () => rpcRef.current.call("collection", null),
-      search: (query, cursor) => rpcRef.current.call("search", cursor === undefined ? { query } : { query, cursor }),
+      search: (query, cursor, catalogs) =>
+        rpcRef.current.call("search", {
+          query,
+          ...(cursor === undefined ? {} : { cursor }),
+          ...(catalogs === undefined ? {} : { catalogs }),
+        }),
       startReview: (input) => rpcRef.current.call("startReview", input),
       reviews: () => rpcRef.current.call("reviews", null),
       accept: (input) => rpcRef.current.call("accept", input).then(() => undefined),

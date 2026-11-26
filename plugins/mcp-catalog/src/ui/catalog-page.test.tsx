@@ -98,7 +98,7 @@ describe("settings not filled in", () => {
       collection: async () => ({ items: [{ name: "io.example/Demo", version: "1.0.0", summary: "", error: null, installed: false }] }),
       reviews: async () => ({ items: [{ name: "a/ready", version: "1.0.0", state: "ready" as const, error: null, threadId: "t1" }] }),
       search: async () => ({
-        items: [{ name: "a/new", latestVersion: "1.0.0", versions: [{ version: "1.0.0", publishedAt: null, description: "", sources: ["npm" as const] }], installed: false, inCollection: false, reviewing: false }],
+        items: [{ name: "a/new", latestVersion: "1.0.0", versions: [{ version: "1.0.0", publishedAt: null, description: "", sources: ["npm" as const], unsupported: null, reviewing: false }], installed: false, inCollection: false, reviewing: false, catalogs: ["official" as const], unsupported: null }],
         nextCursor: null,
         warning: null,
       }),
@@ -319,7 +319,7 @@ describe("collection tab", () => {
     expect(screen.getByText("идёт проверка")).toBeTruthy();
     expect(screen.getByText("тред упал")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Принять" }));
-    await waitFor(() => expect(api.accept).toHaveBeenCalledWith({ name: "a/ready" }));
+    await waitFor(() => expect(api.accept).toHaveBeenCalledWith({ name: "a/ready", version: "1.0.0" }));
   });
 });
 
@@ -404,6 +404,8 @@ describe("search tab", () => {
     publishedAt: "2026-11-20T16:05:37Z",
     description: "Демо-сервер",
     sources: ["npm" as const],
+    unsupported: null,
+    reviewing: false,
     ...extra,
   });
   const found = (extra = {}) => ({
@@ -413,6 +415,8 @@ describe("search tab", () => {
     installed: false,
     inCollection: false,
     reviewing: false,
+    catalogs: ["official" as const],
+    unsupported: null,
     ...extra,
   });
   const page = (items: ReturnType<typeof found>[], nextCursor: string | null = null) => ({ items, nextCursor, warning: null });
@@ -460,10 +464,21 @@ describe("search tab", () => {
   });
 
   it("marks a server whose review is running «проверяется» and disables «Проверить»", async () => {
-    await search(fakeApi({ search: async () => page([found({ reviewing: true })]) }));
+    await search(fakeApi({ search: async () => page([found({ reviewing: true, versions: [ver("1.2.3", { reviewing: true }), ver("1.2.2")] })]) }));
     await screen.findByText("io.example/Demo");
     expect(screen.getByText("проверяется")).toBeTruthy();
     expect((screen.getByRole("button", { name: "Проверить" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("disables «Проверить» only for the selected version that is under review", async () => {
+    await search(fakeApi({ search: async () => page([found({ reviewing: true, versions: [ver("1.2.3"), ver("1.2.2", { reviewing: true })] })]) }));
+    await screen.findByText("io.example/Demo");
+    const button = () => screen.getByRole("button", { name: "Проверить" }) as HTMLButtonElement;
+    expect(button().disabled).toBe(false);
+    expect(screen.queryByText("проверяется")).toBeNull();
+    fireEvent.change(screen.getByLabelText("Версия io.example/Demo"), { target: { value: "1.2.2" } });
+    expect(button().disabled).toBe(true);
+    expect(screen.getByText("проверяется")).toBeTruthy();
   });
 
   it("starts a review", async () => {
@@ -497,10 +512,154 @@ describe("search tab", () => {
     await screen.findByText("a/one");
     fireEvent.click(screen.getByRole("button", { name: "Ещё" }));
     await screen.findByText("a/two");
-    expect(searchFn).toHaveBeenLastCalledWith("demo", "c2");
+    expect(searchFn).toHaveBeenLastCalledWith("demo", "c2", ["official", "github", "docker"]);
     expect(screen.getAllByText("a/one")).toHaveLength(1);
     const select = screen.getByLabelText("Версия a/one") as HTMLSelectElement;
     expect(Array.from(select.options).map((option) => option.value)).toEqual(["1.2.3", "1.2.1"]);
+  });
+
+  const toggle = (name: string) => screen.getByRole("checkbox", { name }) as HTMLInputElement;
+
+  it("shows the three catalog toggles, all on, and a badge per catalog of each result", async () => {
+    await search(
+      fakeApi({
+        search: async () => page([found({ catalogs: ["official", "docker"] })]),
+      }),
+    );
+    await screen.findByText("io.example/Demo");
+    expect(["Официальный", "GitHub", "Docker"].map((name) => toggle(name).checked)).toEqual([true, true, true]);
+    const row = within(screen.getByText("io.example/Demo").closest("li") as HTMLElement);
+    expect(row.getByText("каталог: Официальный")).toBeTruthy();
+    expect(row.getByText("каталог: Docker")).toBeTruthy();
+    expect(row.queryByText(/GitHub/)).toBeNull();
+  });
+
+  it("sends the first search with all catalogs", async () => {
+    const searchFn = vi.fn(async () => page([found()]));
+    await search(fakeApi({ search: searchFn }));
+    await screen.findByText("io.example/Demo");
+    expect(searchFn).toHaveBeenCalledWith("demo", undefined, ["official", "github", "docker"]);
+  });
+
+  it("re-runs from the first page without the toggled-off catalog and clears the list", async () => {
+    const searchFn = vi
+      .fn()
+      .mockResolvedValueOnce(page([found({ name: "a/one" })], "c2"))
+      .mockResolvedValueOnce(page([found({ name: "a/two" })]));
+    await search(fakeApi({ search: searchFn }));
+    await screen.findByText("a/one");
+    fireEvent.click(toggle("Docker"));
+    await screen.findByText("a/two");
+    expect(searchFn).toHaveBeenLastCalledWith("demo", undefined, ["official", "github"]);
+    expect(screen.queryByText("a/one")).toBeNull();
+    expect(toggle("Docker").checked).toBe(false);
+  });
+
+  it("keeps the last enabled catalog on, explains why and stays focusable", async () => {
+    await search(fakeApi({ search: async () => page([found()]) }));
+    await screen.findByText("io.example/Demo");
+    expect(screen.queryByText("Должен быть включён хотя бы один каталог")).toBeNull();
+    fireEvent.click(toggle("GitHub"));
+    fireEvent.click(toggle("Docker"));
+    await waitFor(() => expect(toggle("Docker").checked).toBe(false));
+    const last = toggle("Официальный");
+    expect(last.disabled).toBe(false);
+    expect(last.getAttribute("aria-disabled")).toBe("true");
+    const hint = screen.getByText("Должен быть включён хотя бы один каталог");
+    expect(last.getAttribute("aria-describedby")).toBe(hint.id);
+    expect(hint.id).not.toBe("");
+    fireEvent.click(last);
+    expect(toggle("Официальный").checked).toBe(true);
+    expect(toggle("GitHub").getAttribute("aria-disabled")).toBeNull();
+  });
+
+  it("drops the response of a search that a catalog toggle has replaced", async () => {
+    const resolvers: ((value: ReturnType<typeof page>) => void)[] = [];
+    const searchFn = vi.fn(() => new Promise<ReturnType<typeof page>>((resolve) => resolvers.push(resolve)));
+    await search(fakeApi({ search: searchFn }));
+    await waitFor(() => expect(searchFn).toHaveBeenCalledTimes(1));
+    fireEvent.click(toggle("Docker"));
+    await waitFor(() => expect(searchFn).toHaveBeenCalledTimes(2));
+    resolvers[1]?.(page([found({ name: "a/new" })]));
+    await screen.findByText("a/new");
+    resolvers[0]?.(page([found({ name: "a/old" })]));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(screen.queryByText("a/old")).toBeNull();
+    expect(screen.getByText("a/new")).toBeTruthy();
+  });
+
+  it("drops a «Ещё» page that arrives after a catalog toggle", async () => {
+    let resolveMore: (value: ReturnType<typeof page>) => void = () => {};
+    const searchFn = vi
+      .fn()
+      .mockResolvedValueOnce(page([found({ name: "a/one" })], "c2"))
+      .mockImplementationOnce(() => new Promise((resolve) => (resolveMore = resolve)))
+      .mockResolvedValueOnce(page([found({ name: "a/fresh" })]));
+    await search(fakeApi({ search: searchFn }));
+    await screen.findByText("a/one");
+    fireEvent.click(screen.getByRole("button", { name: "Ещё" }));
+    await waitFor(() => expect(searchFn).toHaveBeenCalledTimes(2));
+    fireEvent.click(toggle("Docker"));
+    await screen.findByText("a/fresh");
+    resolveMore(page([found({ name: "a/stale" })]));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(screen.queryByText("a/stale")).toBeNull();
+    expect(screen.queryByText("a/one")).toBeNull();
+    expect(screen.getByText("a/fresh")).toBeTruthy();
+  });
+
+  it("remembers the toggles before a first search", async () => {
+    const searchFn = vi.fn(async () => page([found()]));
+    renderPage(fakeApi({ search: searchFn }));
+    clickTab("Поиск");
+    fireEvent.click(toggle("GitHub"));
+    expect(searchFn).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText("Запрос в реестр"), {
+      target: { value: "demo" },
+    });
+    fireEvent.submit(screen.getByRole("search"));
+    await screen.findByText("io.example/Demo");
+    expect(searchFn).toHaveBeenCalledWith("demo", undefined, ["official", "docker"]);
+  });
+
+  it("disables «Проверить» for an unsupported version and shows the reason", async () => {
+    const item = found({
+      unsupported: "нет пакета для запуска",
+      versions: [ver("1.2.3", { unsupported: "нет пакета для запуска" })],
+    });
+    await search(fakeApi({ search: async () => page([item]) }));
+    await screen.findByText("io.example/Demo");
+    expect(screen.getByText("не поддерживается: нет пакета для запуска")).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Проверить" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("uses the unsupported state of the picked version", async () => {
+    const item = found({
+      unsupported: "старый формат",
+      versions: [ver("1.2.3", { unsupported: "старый формат" }), ver("1.2.2")],
+    });
+    await search(fakeApi({ search: async () => page([item]) }));
+    await screen.findByText("не поддерживается: старый формат");
+    fireEvent.change(screen.getByLabelText("Версия io.example/Demo"), {
+      target: { value: "1.2.2" },
+    });
+    expect(screen.queryByText(/не поддерживается/)).toBeNull();
+    expect((screen.getByRole("button", { name: "Проверить" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("merges catalogs of a name that straddles the pages", async () => {
+    const searchFn = vi
+      .fn()
+      .mockResolvedValueOnce(page([found({ name: "a/one", catalogs: ["official"] })], "c2"))
+      .mockResolvedValueOnce(page([found({ name: "a/one", catalogs: ["docker"] })]));
+    await search(fakeApi({ search: searchFn }));
+    await screen.findByText("a/one");
+    fireEvent.click(screen.getByRole("button", { name: "Ещё" }));
+    await waitFor(() => expect(searchFn).toHaveBeenCalledTimes(2));
+    const row = within(screen.getByText("a/one").closest("li") as HTMLElement);
+    await waitFor(() => expect(row.getByText("каталог: Docker")).toBeTruthy());
+    expect(row.getByText("каталог: Официальный")).toBeTruthy();
+    expect(screen.getAllByText("a/one")).toHaveLength(1);
   });
 });
 
