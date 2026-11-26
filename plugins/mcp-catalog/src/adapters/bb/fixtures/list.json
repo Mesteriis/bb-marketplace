@@ -1,0 +1,58 @@
+[
+  {
+    "id": "82172b9b-7aed-4125-8d57-098c397aa0d1",
+    "name": "pkg-a",
+    "version": "0.1.0",
+    "sourceIntent": "path:/Users/test/mcp/data/packages/pkg-a",
+    "status": "active",
+    "lastError": null
+  },
+  {
+    "id": "b4e67505-0a24-4f6d-a1d0-68a0818d1b81",
+    "name": "pkg-b",
+    "version": "0.1.0",
+    "sourceIntent": "path:/Users/test/mcp/bb-mcp-packages/pkg-b",
+    "status": "active",
+    "lastError": null
+  },
+  {
+    "id": "f8685dde-d3ca-4477-8d56-d1d0e73c30f0",
+    "name": "pkg-c",
+    "version": "0.1.0",
+    "sourceIntent": "path:/Users/test/mcp/other/pkg-c",
+    "status": "active",
+    "lastError": null
+  },
+  {
+    "id": "974b07da-0a76-4d22-8db9-8c354adc3485",
+    "name": "pkg-d",
+    "version": "0.1.0",
+    "sourceIntent": "path:/Users/test/mcp/other/pkg-d",
+    "status": "active",
+    "lastError": null
+  },
+  {
+    "id": "17dc4f32-c548-4c3e-bd6e-5f71ba161a34",
+    "name": "pkg-e",
+    "version": "0.1.0",
+    "sourceIntent": "path:/Users/test/mcp/other/pkg-e",
+    "status": "active",
+    "lastError": null
+  },
+  {
+    "id": "46cae27e-8335-4475-90cb-795061185973",
+    "name": "pkg-f",
+    "version": "0.1.0",
+    "sourceIntent": "path:/Users/test/mcp/other/pkg-f",
+    "status": "active",
+    "lastError": null
+  },
+  {
+    "id": "f1f8950b-0c90-4bb1-b347-32dd2e8a7f48",
+    "name": "pkg-g",
+    "version": "0.1.0",
+    "sourceIntent": "path:/Users/test/mcp/other/pkg-g",
+    "status": "active",
+    "lastError": null
+  }
+]

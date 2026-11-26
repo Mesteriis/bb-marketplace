@@ -1,0 +1,102 @@
+{
+  "plugin": {
+    "id": "46cae27e-8335-4475-90cb-795061185973",
+    "name": "pkg-f",
+    "version": "0.1.0",
+    "sourceIntent": "path:/Users/test/mcp/other/pkg-f",
+    "status": "active",
+    "lastError": null
+  },
+  "mcpServers": [
+    {
+      "pluginId": "46cae27e-8335-4475-90cb-795061185973",
+      "serverId": "srv-1",
+      "type": "stdio",
+      "status": "idle",
+      "lastError": null,
+      "approved": 1,
+      "enabled": 1
+    },
+    {
+      "pluginId": "46cae27e-8335-4475-90cb-795061185973",
+      "serverId": "srv-2",
+      "type": "streamable-http",
+      "status": "ready",
+      "lastError": null,
+      "approved": 1,
+      "enabled": 1
+    },
+    {
+      "pluginId": "46cae27e-8335-4475-90cb-795061185973",
+      "serverId": "srv-3",
+      "type": "stdio",
+      "status": "idle",
+      "lastError": null,
+      "approved": 1,
+      "enabled": 1
+    },
+    {
+      "pluginId": "46cae27e-8335-4475-90cb-795061185973",
+      "serverId": "srv-4",
+      "type": "streamable-http",
+      "status": "ready",
+      "lastError": null,
+      "approved": 1,
+      "enabled": 1
+    },
+    {
+      "pluginId": "46cae27e-8335-4475-90cb-795061185973",
+      "serverId": "srv-5",
+      "type": "stdio",
+      "status": "idle",
+      "lastError": null,
+      "approved": 1,
+      "enabled": 1
+    },
+    {
+      "pluginId": "46cae27e-8335-4475-90cb-795061185973",
+      "serverId": "srv-6",
+      "type": "streamable-http",
+      "status": "ready",
+      "lastError": null,
+      "approved": 1,
+      "enabled": 1
+    },
+    {
+      "pluginId": "46cae27e-8335-4475-90cb-795061185973",
+      "serverId": "srv-7",
+      "type": "stdio",
+      "status": "idle",
+      "lastError": null,
+      "approved": 1,
+      "enabled": 1
+    },
+    {
+      "pluginId": "46cae27e-8335-4475-90cb-795061185973",
+      "serverId": "srv-8",
+      "type": "stdio",
+      "status": "idle",
+      "lastError": null,
+      "approved": 1,
+      "enabled": 1
+    },
+    {
+      "pluginId": "46cae27e-8335-4475-90cb-795061185973",
+      "serverId": "srv-9",
+      "type": "stdio",
+      "status": "idle",
+      "lastError": null,
+      "approved": 1,
+      "enabled": 1
+    },
+    {
+      "pluginId": "46cae27e-8335-4475-90cb-795061185973",
+      "serverId": "srv-10",
+      "type": "stdio",
+      "status": "idle",
+      "lastError": null,
+      "approved": 1,
+      "enabled": 1
+    }
+  ]
+}

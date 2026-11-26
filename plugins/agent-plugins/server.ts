@@ -1207,6 +1207,8 @@ export default async function plugin(bb: BbPluginApi) {
       { name: "resources", summary: "List MCP resources via bridge", usage: "bb agent-plugins resources [--json]" },
       { name: "skills", summary: "List materialized skills", usage: "bb agent-plugins skills [--json]" },
       { name: "approve", summary: "Approve an MCP server", usage: "bb agent-plugins approve <id> <serverId> [--json]" },
+      { name: "enable", summary: "Enable one MCP server", usage: "bb agent-plugins enable <id> <serverId> [--json]" },
+      { name: "disable", summary: "Disable one MCP server", usage: "bb agent-plugins disable <id> <serverId> [--json]" },
       { name: "auth", summary: "Start or inspect MCP OAuth", usage: "bb agent-plugins auth <id> <serverId> [--json]" },
     ],
     async run(argv, _ctx) {
@@ -1346,6 +1348,16 @@ export default async function plugin(bb: BbPluginApi) {
           return { exitCode: 1, stderr: `${errorText(e)}\n` };
         }
       }
+      if (cmd === "enable" || cmd === "disable") {
+        const id = rest[0]; const serverId = rest[1];
+        if (!id || !serverId || serverId === "--json") return { exitCode: 2, stderr: "Usage: bb agent-plugins enable|disable <id> <serverId> [--json]\n" };
+        try {
+          const result = await setMcpEnabled(id, serverId, cmd === "enable");
+          return { exitCode: 0, stdout: (asJson ? JSON.stringify(result) : `${cmd === "enable" ? "Enabled" : "Disabled"} ${serverId} [${result.status}]\n`) };
+        } catch (e) {
+          return { exitCode: 1, stderr: `${errorText(e)}\n` };
+        }
+      }
       if (cmd === "auth") {
         const id = rest[0]; const serverId = rest[1];
         if (!id || !serverId || serverId === "--json") return { exitCode: 2, stderr: "Usage: bb agent-plugins auth <id> <serverId> [--json]\n" };
@@ -1357,7 +1369,7 @@ export default async function plugin(bb: BbPluginApi) {
           return { exitCode: 0, stdout: asJson ? JSON.stringify({ url, status }, null, 2) + "\n" : `${status}${url ? ` — authorize at ${url}` : ""}\n` };
         } catch (e) { return { exitCode: 1, stderr: `${errorText(e)}\n` }; }
       }
-      return { exitCode: 2, stderr: "Usage: bb agent-plugins <list|show|install|outdated|update|remove|tools|describe|call|prompts|resources|skills|approve|auth> …\n" };
+      return { exitCode: 2, stderr: "Usage: bb agent-plugins <list|show|install|outdated|update|remove|tools|describe|call|prompts|resources|skills|approve|enable|disable|auth> …\n" };
     },
   });
 

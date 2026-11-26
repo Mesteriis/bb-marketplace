@@ -11,3 +11,7 @@ Maintained fork: https://github.com/Mesteriis/patleeman-bb-plugins
 Branch: `marketplace/agent-plugins`
 
 Imported into `bb-marketplace/plugins/agent-plugins` with git subtree. Original branding and licenses are retained.
+
+## Local changes
+
+- CLI `bb agent-plugins enable|disable <id> <serverId> [--json]`: a local change, proposed to upstream.

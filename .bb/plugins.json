@@ -180,6 +180,10 @@
       "source": "./plugins/markdown-editor"
     },
     {
+      "name": "mcp-catalog",
+      "source": "./plugins/mcp-catalog"
+    },
+    {
       "name": "mcp-hub",
       "source": "./plugins/mcp-hub"
     },

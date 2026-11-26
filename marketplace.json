@@ -1600,6 +1600,24 @@
       }
     },
     {
+      "id": "makosh-mcp-catalog",
+      "displayName": "MCP Каталог",
+      "description": "MCP-серверы поверх моста Agent Plugins: поиск в реестре, проверка агентом, коллекция в git, установка только принятого.",
+      "icon": "Plug",
+      "author": {
+        "name": "Mesteriis",
+        "github": "Mesteriis",
+        "url": "https://github.com/Mesteriis"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/mcp-catalog",
+          "ref": "main"
+        }
+      }
+    },
+    {
       "id": "makosh-navigation",
       "displayName": "Makosh Navigation",
       "description": "Customizable BB navigation with nested groups, icons, separators and a settings editor with autosave.",

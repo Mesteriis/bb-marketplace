@@ -1,0 +1,23 @@
+{
+  "thread": {
+    "id": "thr_review1",
+    "projectId": "proj_test",
+    "environmentId": "env_test",
+    "providerId": "claude-code",
+    "title": "mcp-catalog: проверка io.example/demo 1.0.0",
+    "status": "idle",
+    "archivedAt": null,
+    "runtime": { "displayStatus": "idle" }
+  },
+  "environment": {
+    "id": "env_test",
+    "projectId": "proj_test",
+    "path": "/Users/test/.bb/thread-storage/thr_review1/bb-main",
+    "isGitRepo": true,
+    "isWorktree": true,
+    "branchName": "bb/review-demo",
+    "baseBranch": "main",
+    "status": "ready"
+  },
+  "pendingTodos": null
+}

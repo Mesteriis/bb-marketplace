@@ -1,0 +1,4 @@
+/* Layout only; colours come from the BB theme variables through the utility classes. */
+[role="tabpanel"][hidden] {
+  display: none;
+}

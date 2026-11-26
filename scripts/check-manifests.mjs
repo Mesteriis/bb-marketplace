@@ -6,6 +6,7 @@
 //   node scripts/check-manifests.mjs [repository-root]
 //
 // Prints every problem and exits 1 when something is off.
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -259,12 +260,78 @@ function checkCatalog(plugins) {
   return entries.length;
 }
 
+/** The accepted-servers collection (mcp-collection/), checked only when present. */
+function checkMcpCollection() {
+  const indexPath = "mcp-collection/index.json";
+  if (!existsSync(join(root, "mcp-collection"))) return 0;
+  const index = readJson(indexPath);
+  if (index === null) return 0;
+  if (!Array.isArray(index.servers)) {
+    problem(indexPath, "servers must be an array");
+    return 0;
+  }
+  // One line per server: an update replaces the line of its name, it never adds a second one.
+  const seen = new Set();
+  for (const item of index.servers) {
+    const at = `${indexPath} (${item?.name ?? "entry without name"})`;
+    if (typeof item?.name !== "string" || typeof item?.version !== "string" || typeof item?.path !== "string") {
+      problem(at, "entry needs string name, version and path");
+      continue;
+    }
+    if (seen.has(item.name)) {
+      problem(at, `duplicate server name "${item.name}"`);
+      continue;
+    }
+    seen.add(item.name);
+    const slug = item.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    if (item.path !== `mcp-collection/${slug}`) {
+      problem(at, `path must be "mcp-collection/${slug}"`);
+      continue;
+    }
+    const files = ["server.json", "review.md", "entry.json"];
+    const missing = files.filter((file) => !isFile(`${item.path}/${file}`));
+    for (const file of missing) problem(at, `${item.path}/${file} is missing`);
+    if (missing.length > 0) continue;
+    let entry = null;
+    try {
+      entry = JSON.parse(readFileSync(join(root, item.path, "entry.json"), "utf8"));
+    } catch (error) {
+      problem(at, `entry.json is invalid JSON (${error.message})`);
+      continue;
+    }
+    if (entry?.name !== item.name || entry?.version !== item.version) {
+      problem(at, "entry.json name/version do not match the index");
+    }
+    const choice = entry?.choice;
+    const choiceOk =
+      (choice?.kind === "package" || choice?.kind === "remote") &&
+      Number.isInteger(choice.index) &&
+      choice.index >= 0;
+    for (const field of ["name", "version", "serverJsonSha256", "acceptedAt"]) {
+      if (typeof entry?.[field] !== "string") problem(at, `entry.json: ${field} must be a string`);
+    }
+    if (!choiceOk) problem(at, "entry.json: choice must be {kind: package|remote, index: integer >= 0}");
+    if (entry?.ociDigest !== undefined && typeof entry.ociDigest !== "string") {
+      problem(at, "entry.json: ociDigest must be a string");
+    }
+    if (entry?.notes !== undefined && !(Array.isArray(entry.notes) && entry.notes.every((n) => typeof n === "string"))) {
+      problem(at, "entry.json: notes must be an array of strings");
+    }
+    const hash = createHash("sha256")
+      .update(readFileSync(join(root, item.path, "server.json")))
+      .digest("hex");
+    if (hash !== entry?.serverJsonSha256) problem(at, "server.json hash does not match entry.json serverJsonSha256");
+  }
+  return index.servers.length;
+}
+
 const plugins = checkCollection();
 const entryCount = checkCatalog(plugins);
+const collectionCount = checkMcpCollection();
 
 if (problems.length > 0) {
   console.error(problems.map((line) => `- ${line}`).join("\n"));
   console.error(`\n${problems.length} problem(s) found.`);
   process.exit(1);
 }
-console.log(`manifests ok: ${plugins.length} plugin(s), ${entryCount} catalog entry(ies)`);
+console.log(`manifests ok: ${plugins.length} plugin(s), ${entryCount} catalog entry(ies)${collectionCount > 0 ? `, ${collectionCount} collection server(s)` : ""}`);

@@ -191,6 +191,66 @@ describe("Agent Plugins MCP runtime settings", () => {
   }, 15_000);
 });
 
+describe("Agent Plugins CLI enable and disable", () => {
+  async function setup() {
+    const dataDir = await fsp.mkdtemp(path.join(os.tmpdir(), "agent-plugins-data-"));
+    const source = await fsp.mkdtemp(path.join(os.tmpdir(), "agent-plugins-source-"));
+    tempDirs.push(dataDir, source);
+    await writePlugin(source, "1.0.0", "first version");
+    await fsp.writeFile(path.join(source, "mcp.json"), JSON.stringify({
+      $schema: "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+      mcpServers: { docs: { type: "stdio", command: "node" } },
+    }));
+    const host = createFakePluginHost({
+      pluginId: "agent-plugins",
+      sdk: { system: { config: async () => ({ dataDir, primaryHostId: "host-1" }) } },
+      experimental_callHostRpc: ({ method }) => {
+        if (method === "start" || method === "refresh") {
+          return { tools: [{ name: "search", description: "Search docs", inputSchema: { type: "object" } }], prompts: [], resources: [], resourceTemplates: [] };
+        }
+        if (method === "close") return { closed: true };
+        throw new Error(`unexpected host call ${method}`);
+      },
+    });
+    hosts.push(host);
+    await plugin(host.bb);
+    const installed = (await host.harness.callRpc("install", { source: `path:${source}` })) as { id: string };
+    await host.harness.callRpc("approve", { id: installed.id, serverId: "docs" });
+    // The registered bb.cli object is the CLI entry point; the harness has no separate runner.
+    const run = (argv: string[]) => host.harness.registrations.cli!.run(argv, {} as never) as Promise<{ exitCode: number; stdout?: string; stderr?: string }>;
+    return { host, id: installed.id, run };
+  }
+
+  it("disables and enables an MCP server from the CLI", async () => {
+    const { host, id, run } = await setup();
+    const enabledOf = async () => ((await host.harness.callRpc("snapshot", null)) as { mcpServers: Array<{ enabled: boolean }> }).mcpServers[0]!.enabled;
+
+    const off = await run(["disable", id, "docs", "--json"]);
+    expect(off.exitCode).toBe(0);
+    expect(JSON.parse(off.stdout!)).toMatchObject({ enabled: false });
+    expect(await enabledOf()).toBe(false);
+
+    const on = await run(["enable", id, "docs", "--json"]);
+    expect(on.exitCode).toBe(0);
+    expect(JSON.parse(on.stdout!)).toMatchObject({ enabled: true });
+    expect(await enabledOf()).toBe(true);
+  });
+
+  it("exits 2 with usage when the server id is missing", async () => {
+    const { id, run } = await setup();
+    const result = await run(["disable", id]);
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toContain("Usage: bb agent-plugins enable|disable <id> <serverId> [--json]");
+  });
+
+  it("exits 1 with the error text when the server does not exist", async () => {
+    const { id, run } = await setup();
+    const result = await run(["enable", id, "missing"]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toBeTruthy();
+  });
+});
+
 async function waitFor(condition: () => boolean, timeoutMs = 5_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!condition()) {
