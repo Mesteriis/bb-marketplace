@@ -1,0 +1,10 @@
+#!/bin/sh
+# Stand stand-in for glab: one GitLab host with one membership.
+D=$(dirname "$0")/data
+LOG=${FAKE_FORGE_LOG:-/dev/null}
+case "$1 $2" in
+"config get") echo https; exit 0 ;;
+"api --hostname") echo "glab api $3" >>"$LOG"; cat "$D/glab-projects.ndjson"; exit 0 ;;
+esac
+echo "fake glab: unsupported: $*" >&2
+exit 2

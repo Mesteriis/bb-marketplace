@@ -7,11 +7,15 @@
 // page uses for the thread tab and the settings section.
 import { existsSync } from "node:fs";
 import { readdir } from "node:fs/promises";
-import { userInfo } from "node:os";
+import { homedir, userInfo } from "node:os";
 import { join, relative, sep } from "node:path";
 import { defineRpcContract, experimental_PluginRpcRefusal, type BbPluginApi, type ExperimentalPluginWebSocket } from "@get-bb/plugin-sdk";
-import { experimental_hostToolchain, experimental_spawnHostProcess } from "@get-bb/plugin-sdk/process";
+import { experimental_execHostFileCallback, experimental_hostToolchain, experimental_spawnHostProcess } from "@get-bb/plugin-sdk/process";
 import { BridgeSupervisor, bridgeEnv, type SpawnBridge } from "./src/adapters/bb/bridge-process.ts";
+import { execCli } from "./src/adapters/bb/exec-cli.ts";
+import { listRemoteSources } from "./src/adapters/bb/forge-cli.ts";
+import { nodeScanFs } from "./src/adapters/bb/node-scan-fs.ts";
+import { RepoCatalogService } from "./src/adapters/bb/repo-catalog-service.ts";
 import { GitwandRelay } from "./src/adapters/bb/relay.ts";
 import { autostart, restartAfterCrash } from "./src/adapters/bb/autostart.ts";
 import { smokeRuntime } from "./src/adapters/bb/runtime-smoke.ts";
@@ -22,6 +26,7 @@ import { EMBED_CSS, UiRoutes } from "./src/adapters/bb/ui-http.ts";
 import { UpdateService, type UpdateCheck } from "./src/adapters/bb/update-service.ts";
 import { rpcSchemas, type GitWandStatus } from "./src/core/contract.ts";
 import { PLUGIN_HTTP_BASE } from "./src/core/frame-url.ts";
+import { DEFAULT_SCAN_DEPTH, MAX_SCAN_DEPTH, settingsList } from "./src/core/repo-scan.ts";
 import { RELEASE_CHANNEL_URL, RELEASE_PUBLIC_KEY, updateSource } from "./src/core/update-source.ts";
 import { platformKey } from "./src/core/versions.ts";
 import packageJson from "./package.json" with { type: "json" };
@@ -64,6 +69,26 @@ export default async function plugin(bb: BbPluginApi) {
       description: "The minisign public key (both lines) that signs channel.json. Empty: the key built into the plugin; updates are off while neither is set.",
       default: "",
     },
+    projectRoots: {
+      type: "string",
+      label: "Project folders",
+      description:
+        "Folders GitWand's Repositories dialog searches for git repositories, one per line or separated by commas; ~ is your home folder.",
+      experimental_multiline: true,
+      default: "~/projects",
+    },
+    scanDepth: {
+      type: "number",
+      label: "Search depth",
+      description: `How deep below each folder a repository's .git may sit, like find -maxdepth (1–${MAX_SCAN_DEPTH}).`,
+      default: DEFAULT_SCAN_DEPTH,
+    },
+    gitlabHosts: {
+      type: "string",
+      label: "GitLab hosts",
+      description: "GitLab hosts whose projects you are a member of are listed through glab, separated by commas. Empty: no GitLab.",
+      default: "gitlab.com",
+    },
   });
 
   const platform = platformKey(process.platform, process.arch);
@@ -98,7 +123,31 @@ export default async function plugin(bb: BbPluginApi) {
     spawn: spawnBridge,
     onInvalidLine: (line) => bb.log.warn(`gitwand-bridge wrote an unexpected line: ${line.slice(0, 200)}`),
   });
-  const relay = new GitwandRelay({ get: () => supervisor.get(), current: () => supervisor.running() });
+  // The Repositories dialog: local scan and forge listing, answered here, not by the bridge.
+  const has = (tool: string) => experimental_hostToolchain.resolve(tool) !== null;
+  const cliEnv = () => experimental_hostToolchain.environment(process.env);
+  const exec = execCli(experimental_execHostFileCallback as never);
+  const catalog = new RepoCatalogService({
+    dataDir: bb.server.experimental_dataDir,
+    home: homedir(),
+    fs: nodeScanFs,
+    settings: async () => {
+      const s = await settings.get();
+      return { roots: s.projectRoots, depth: s.scanDepth };
+    },
+    listRemote: async () =>
+      listRemoteSources({
+        exec: (cmd, args, options) => exec(experimental_hostToolchain.resolve(cmd) ?? cmd, args, options),
+        env: cliEnv,
+        has,
+        gitlabHosts: settingsList((await settings.get()).gitlabHosts),
+        now: () => new Date(),
+      }),
+  });
+  const relay = new GitwandRelay({ get: () => supervisor.get(), current: () => supervisor.running() }, undefined, {
+    repo_catalog: () => catalog.catalog(),
+    repo_catalog_refresh: () => catalog.refresh(),
+  });
   supervisor.onChannel((channel, message) => relay.onBridgeChannel(channel, message));
   // The backend runs with the plugin: started at load and started again after it exits (the supervisor's
   // crash guard ends a crash loop). Not after the plugin is disposed.
@@ -223,7 +272,6 @@ export default async function plugin(bb: BbPluginApi) {
             : lastCheck.kind === "error"
               ? { state: "error", detail: lastCheck.error }
               : { state: lastCheck.kind, detail: null };
-    const has = (tool: string) => experimental_hostToolchain.resolve(tool) !== null;
     return {
       platform,
       runtime: runtime === null ? null : { version: runtime.version, source: runtime.source, commit: runtime.commit },

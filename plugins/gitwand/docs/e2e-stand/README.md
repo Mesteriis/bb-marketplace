@@ -32,7 +32,17 @@ HOME), never on the maintainer's BB. Same approach as
    `updatePublicKey` set with `bb plugin config`, then
    `node docs/e2e-stand/update.mjs …`: first install from the channel, the next
    build through GitWand's own update banner, rollback, a tampered manifest.
-7. `touch "$S/stop"` — the instance stops; `run.sh` checks the server no
+7. Repositories dialog: start the stand with the fake forges,
+   `STAND_BIN="$PWD/docs/e2e-stand/fake-forges" docs/e2e-stand/run.sh "$S" <runtime> &`
+   (`fake-forges/gh` and `glab` answer with made-up accounts `stand-owner`,
+   `stand-work` and a GitLab membership, and refuse a listing that arrives
+   without that account's own token or with `GITHUB_TOKEN`; every listing
+   is written to `$S/forge-calls.log`). `run.sh` puts three repositories
+   under the stand's `~/projects`. Then
+   `. "$S/facts.env"; node docs/e2e-stand/catalog.mjs "$URL/" <tools> <chrome> <out> "$PROJECT" "$THREAD" "$S"`
+   prints one line per check and exits 0 only on `CATALOG PASS`. No real
+   forge account is used.
+8. `touch "$S/stop"` — the instance stops; `run.sh` checks the server no
    longer answers and no `gitwand-bridge` of the stand is left.
 
 Clean install from the marketplace, before a release reaches the owner's BB:

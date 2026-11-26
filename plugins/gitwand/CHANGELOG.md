@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.2.0 — 2026-11-26
+
+- Repositories dialog inside GitWand (patch 0003, runtime 3.14.0+bb2): the
+  **+** menu and the start screen open a searchable list of the local
+  repositories under the project folders and the remote repositories of
+  every `gh` account (own and organizations) and of `glab` GitLab
+  memberships. Cloned remotes open their clone; the others open CloneModal
+  with the URL filled in, which still asks for the folder.
+- The plugin server answers the dialog's commands (`repo_catalog`,
+  `repo_catalog_refresh`) itself, before the bridge: a scan of the roots like
+  `find -maxdepth`, `gh api` with each account's own token passed only in
+  that call's environment, `glab api`, and a cache of the forge listing in
+  the plugin's data directory, fetched again on Refresh only. A source that
+  fails keeps its last listing and shows a fixed error, never CLI output.
+- Status, Fetch, Pull and Pull requests across repositories in the same
+  dialog, on GitWand's own `workspace_status_all`, `workspace_fetch_all`,
+  `workspace_pull_all` and `workspace_prs_all`: status in batches of 20 for
+  the rows in view or on **Refresh status**; Fetch and Pull on the selection
+  or the rows shown, Pull after a confirmation that lists the repositories;
+  pull requests for the selection only.
+- Settings **Project folders**, **Search depth** and **GitLab hosts**.
+
 ## 0.1.0 — 2026-11-26
 
 - Package skeleton: stdio protocol with `gitwand-bridge`, per-file UI routes,

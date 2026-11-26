@@ -132,3 +132,33 @@ describe("GitwandRelay invoke", () => {
     expect(await relay.invoke({ cmd: "git_status", args: {} })).toEqual({ status: 503, body: { error: "The GitWand runtime is not installed" } });
   });
 });
+
+describe("GitwandRelay plugin commands", () => {
+  function withLocal(handlers: Record<string, (args: Record<string, unknown>) => Promise<unknown>>) {
+    const calls: string[] = [];
+    const bridge = { alive: true, call: async (cmd: string) => (calls.push(cmd), { ok: true as const, value: "bridge" }) };
+    const relay = new GitwandRelay({ get: async () => bridge, current: () => bridge }, () => "conn-1", handlers);
+    return { relay, calls };
+  }
+
+  it("answers a plugin command itself and never reaches the bridge", async () => {
+    const { relay, calls } = withLocal({ repo_catalog: async (args) => ({ echoed: args }) });
+    expect(await relay.invoke({ cmd: "repo_catalog", args: { a: 1 } })).toEqual({ status: 200, body: { ok: { echoed: { a: 1 } } } });
+    expect(calls).toEqual([]);
+  });
+
+  it("returns a plugin command's failure as the command's error", async () => {
+    const { relay } = withLocal({
+      repo_catalog_refresh: async () => {
+        throw new Error("Workspace file is not valid JSON");
+      },
+    });
+    expect(await relay.invoke({ cmd: "repo_catalog_refresh", args: {} })).toEqual({ status: 200, body: { error: "Workspace file is not valid JSON" } });
+  });
+
+  it("still sends other commands to the bridge", async () => {
+    const { relay, calls } = withLocal({ repo_catalog: async () => null });
+    expect(await relay.invoke({ cmd: "git_status", args: {} })).toEqual({ status: 200, body: { ok: "bridge" } });
+    expect(calls).toEqual(["git_status"]);
+  });
+});

@@ -20,6 +20,28 @@ maintainer; this file covers the parts in the repository.
   directory. Installed builds come from the signed update channel (settings
   **Update channel URL** and **Update signing key**; off while empty).
 
+## The Repositories dialog
+
+The relay answers `repo_catalog` and `repo_catalog_refresh` itself
+(`src/adapters/bb/repo-catalog-service.ts`); every other command goes to the
+bridge, including the dialog's `workspace_status_all`, `workspace_fetch_all`,
+`workspace_pull_all` and `workspace_prs_all`, which take a list of
+repositories and need no workspace file.
+
+- Local: the roots in **Project folders** are scanned like
+  `find <root> -maxdepth <Search depth> -name .git` (`src/core/repo-scan.ts`),
+  without node_modules, the inside of `.git` or symlinks; remotes come from
+  each repository's git config, worktrees included.
+- Remote: `gh auth status --json hosts` lists the accounts; for each one
+  `gh auth token --user` gives its token, which goes only into the
+  environment of that account's `gh api user/repos` call
+  (`src/adapters/bb/forge-cli.ts`). GitLab projects come from
+  `glab api projects?membership=true` per **GitLab hosts**. Errors are fixed
+  texts; CLI output is never returned or logged.
+- The forge listing is cached in `<data>/catalog/remote.json` and listed
+  again on the first catalog ever and on Refresh only; a source that fails
+  keeps its last listing.
+
 ## Layout
 
 - `src/core`, `src/ui` — host-agnostic code (see `docs/architecture.md`).
@@ -29,11 +51,18 @@ maintainer; this file covers the parts in the repository.
 - `bridge-src/` — Rust sources copied into upstream's `apps/desktop/src-tauri`
   at build time: the stdio loop (`src/bridge/mod.rs`), the five hand-written
   adapters (`src/bridge/adapters.rs`) and the `gitwand-bridge` example entry.
-- `patches/` — the two patches applied to upstream:
+- `patches/` — the three patches applied to upstream:
   - `0001-bridge-crate.patch`: `bridge` feature and example in `Cargo.toml`,
     `mod bridge` in `lib.rs`, `not(feature = "bridge")` on the telemetry
     `compile_error!`, and `watch_repo_start_for_label` in `watcher.rs`;
-  - `0002-vite-base.patch`: grammars loaded under Vite's `BASE_URL`.
+  - `0002-vite-base.patch`: grammars loaded under Vite's `BASE_URL`;
+  - `0003-repo-catalog.patch`: the Repositories dialog (`RepoCatalogModal`,
+    a **+** menu item and a start-screen button, CloneModal's `initialUrl`),
+    its bulk status, fetch, pull and pull requests on the existing
+    `workspace_*_all` commands, and two Rust commands, `repo_catalog` and
+    `repo_catalog_refresh`, that only report that the desktop app has no
+    catalog. Inside BB the plugin server answers both before they reach the
+    bridge (see below).
 - `upstream.lock.json` — upstream repository, tag, commit and patch hashes.
 - `scripts/gen-bridge-dispatch.ts` — generates `dispatch.rs` from
   `generate_handler!` (336 of 341 commands on v3.14.0).

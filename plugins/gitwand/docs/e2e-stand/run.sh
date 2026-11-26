@@ -10,9 +10,20 @@ PORTS=$(node -e 'const n=require("node:net");const f=()=>new Promise(r=>{const s
 SERVER_PORT=${PORTS% *}; DAEMON_PORT=${PORTS#* }
 URL="http://127.0.0.1:$SERVER_PORT"
 cli() { env -i HOME="$STAND/home" PATH="$PATH" TMPDIR="${TMPDIR:-/tmp}" BB_TELEMETRY=false BB_DATA_DIR="$STAND/data" BB_SERVER_URL="$URL" BB_HOST_DAEMON_PORT="$DAEMON_PORT" node "$BB_APP/dist/bb.js" "$@"; }
+# Repositories under the stand HOME's ~/projects, the plugin's default root.
+P="$STAND/home/projects"; rm -rf "$P"; mkdir -p "$P/group"
+for d in alpha group/beta scratch; do git init -q -b main "$P/$d"; done
+git -C "$P/alpha" remote add origin git@github.com:stand-owner/alpha.git
 # RUNTIME "-" runs without a development runtime (the update channel installs one).
 # STAND_CA adds a CA the stand trusts (a local https update channel).
-env -i HOME="$STAND/home" PATH="$PATH" TMPDIR="${TMPDIR:-/tmp}" \
+# STAND_BIN goes first on the server's PATH (fake-forges/ stands in for gh and glab).
+# BB's host toolchain puts the login shell's PATH before the inherited one, so
+# the stand HOME's shell profiles put it first there too.
+if [ -n "${STAND_BIN:-}" ]; then
+  for f in .zprofile .zshrc .bash_profile; do printf 'export PATH="%s:$PATH"\n' "$STAND_BIN" > "$STAND/home/$f"; done
+fi
+env -i HOME="$STAND/home" PATH="${STAND_BIN:+$STAND_BIN:}$PATH" TMPDIR="${TMPDIR:-/tmp}" \
+  FAKE_FORGE_LOG="$STAND/forge-calls.log" \
   ${RUNTIME:+$( [ "$RUNTIME" = "-" ] || echo GITWAND_RUNTIME_DIR="$RUNTIME" )} \
   ${STAND_CA:+NODE_EXTRA_CA_CERTS="$STAND_CA"} \
   BB_TELEMETRY=false BB_SKIP_ONBOARDING=true NODE_ENV=production \

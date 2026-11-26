@@ -95,10 +95,10 @@ await page.screenshot({ path: `${out}/5-page.png` });
 
 // 6. Settings section.
 await page.goto(`${url}settings/plugins/makosh-gitwand`, { waitUntil: "load" });
-await page.getByText("3.14.0+bb1", { exact: false }).first().waitFor({ timeout: 15000 }).catch(() => {});
+await page.getByText(/3\.14\.0\+bb\d+/).first().waitFor({ timeout: 15000 }).catch(() => {});
 const settingsText = await page.evaluate(() => document.body.innerText.replace(/\s+/g, " "));
 const m = /Рантайм (.{0,80})/.exec(settingsText);
-check("settings: runtime and backend shown", /3\.14\.0\+bb1 \(каталог разработки\)/.test(settingsText) && /Бэкенд (работает|не запущен)/.test(settingsText), m?.[0]);
+check("settings: runtime and backend shown", /3\.14\.0\+bb\d+ \(каталог разработки\)/.test(settingsText) && /Бэкенд (работает|не запущен)/.test(settingsText), m?.[0]);
 await page.screenshot({ path: `${out}/6-settings.png`, fullPage: true });
 
 check("no page errors", errors.length === 0, errors);

@@ -131,14 +131,14 @@ describe.skipIf(RUNTIME === null)("gitwand-bridge runtime contract", () => {
       for (const path of shipped) expect(createHash("sha256").update(readFileSync(join(dir, path))).digest("hex"), path).toBe(listed.get(path));
     });
 
-    it("records the build: GitWand v3.14.0 at the pinned commit, protocol 1, 336 generated commands", () => {
+    it("records the build: GitWand v3.14.0 at the pinned commit, protocol 1, 338 generated commands", () => {
       expect(JSON.parse(readFileSync(join(dir, "runtime.json"), "utf8"))).toMatchObject({
-        version: "3.14.0+bb1",
+        version: "3.14.0+bb2",
         gitwandTag: "v3.14.0",
         commit: COMMIT,
         platform: "darwin-arm64",
         protocol: 1,
-        generated: 336,
+        generated: 338,
         adapted: 5,
       });
     });
@@ -150,7 +150,7 @@ describe.skipIf(RUNTIME === null)("gitwand-bridge runtime contract", () => {
     });
 
     it("prints its identity with --version", () => {
-      expect(execFileSync(bin, ["--version"], { encoding: "utf8" }).trim()).toBe(`gitwand-bridge 3.14.0+bb1 (${COMMIT}) commands=336`);
+      expect(execFileSync(bin, ["--version"], { encoding: "utf8" }).trim()).toBe(`gitwand-bridge 3.14.0+bb2 (${COMMIT}) commands=338`);
     });
   });
 
@@ -158,7 +158,7 @@ describe.skipIf(RUNTIME === null)("gitwand-bridge runtime contract", () => {
     it("answers __hello with protocol, versions and command counts", async () => {
       expect(await bridge.call("__hello")).toEqual({
         ok: true,
-        value: { protocol: 1, version: "3.14.0", commit: COMMIT, runtime: "3.14.0+bb1", generated: 336, adapted: ADAPTED },
+        value: { protocol: 1, version: "3.14.0", commit: COMMIT, runtime: "3.14.0+bb2", generated: 338, adapted: ADAPTED },
       });
     });
 
@@ -166,6 +166,15 @@ describe.skipIf(RUNTIME === null)("gitwand-bridge runtime contract", () => {
       const r = await bridge.call("git_status", { cwd: repo });
       expect(r.ok).toBe(true);
       expect(r.value).toMatchObject({ branch: "main", staged: [], untracked: [], unstaged: [{ path: "changed.txt", status: "modified" }] });
+    });
+
+    it("reports the status of a list of repositories without a workspace file", async () => {
+      const r = await bridge.call("workspace_status_all", { repos: [{ path: repo, name: "stand" }] });
+      expect(r).toMatchObject({ ok: true, value: [{ path: repo, name: "stand", branch: "main", modified: 1, conflicted: 0, error: null }] });
+    });
+
+    it("answers repo_catalog with its desktop stub: the plugin server answers it before the bridge", async () => {
+      expect(await bridge.call("repo_catalog")).toEqual({ ok: false, error: "The repository catalog is not available in this build of GitWand" });
     });
 
     it("answers an unknown command with an error, not a crash", async () => {

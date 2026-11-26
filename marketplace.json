@@ -1354,7 +1354,7 @@
     {
       "id": "makosh-gitwand",
       "displayName": "Makosh GitWand [Experimental]",
-      "description": "Git client GitWand inside BB: status, history, branches, terminal and forges, run by GitWand's own Rust backend.",
+      "description": "Git client GitWand inside BB: history, branches, terminal, forges, and all your local and GitHub/GitLab repositories in one list.",
       "icon": {
         "url": "./plugins/gitwand/assets/icon.svg"
       },

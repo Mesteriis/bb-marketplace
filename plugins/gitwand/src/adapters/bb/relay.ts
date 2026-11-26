@@ -40,6 +40,9 @@ export interface RelayResponse {
 
 const OPEN = 1;
 
+/** Commands the plugin server answers itself instead of the bridge (no channels, no connection). */
+export type PluginCommands = Record<string, (args: Record<string, unknown>) => Promise<unknown>>;
+
 export class GitwandRelay {
   private readonly router = new ChannelRouter();
   private readonly sockets = new Map<string, RelaySocket>();
@@ -47,6 +50,7 @@ export class GitwandRelay {
   constructor(
     private readonly bridges: RelayBridgeSource,
     private readonly newConnId: () => string = randomUUID,
+    private readonly pluginCommands: PluginCommands = {},
   ) {}
 
   /** Registers a page socket; returns its connection id, also sent to the page. */
@@ -88,6 +92,14 @@ export class GitwandRelay {
     if (!parsed.success) return { status: 400, body: { error: "Malformed GitWand call" } };
     const { cmd, conn } = parsed.data;
     let args = parsed.data.args;
+    const own = Object.hasOwn(this.pluginCommands, cmd) ? this.pluginCommands[cmd] : undefined;
+    if (own !== undefined) {
+      try {
+        return { status: 200, body: { ok: (await own(args)) ?? null } };
+      } catch (error) {
+        return { status: 200, body: { error: error instanceof Error ? error.message : String(error) } };
+      }
+    }
     if (conn !== undefined && !this.sockets.has(conn)) {
       if (this.router.hasChannel(args)) return { status: 409, body: { error: "This call streams over a GitWand connection, and none is open" } };
       return { status: 400, body: { error: "Unknown GitWand connection" } };
