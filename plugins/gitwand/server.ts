@@ -13,6 +13,7 @@ import { defineRpcContract, experimental_PluginRpcRefusal, type BbPluginApi, typ
 import { experimental_hostToolchain, experimental_spawnHostProcess } from "@get-bb/plugin-sdk/process";
 import { BridgeSupervisor, bridgeEnv, type SpawnBridge } from "./src/adapters/bb/bridge-process.ts";
 import { GitwandRelay } from "./src/adapters/bb/relay.ts";
+import { autostart, restartAfterCrash } from "./src/adapters/bb/autostart.ts";
 import { smokeRuntime } from "./src/adapters/bb/runtime-smoke.ts";
 import { RuntimeStore, resolveRuntime, type InstalledRuntime } from "./src/adapters/bb/runtime-store.ts";
 import { shimScript } from "./src/adapters/bb/shim-script.ts";
@@ -99,11 +100,25 @@ export default async function plugin(bb: BbPluginApi) {
   });
   const relay = new GitwandRelay({ get: () => supervisor.get(), current: () => supervisor.running() });
   supervisor.onChannel((channel, message) => relay.onBridgeChannel(channel, message));
+  // The backend runs with the plugin: started at load and started again after it exits (the supervisor's
+  // crash guard ends a crash loop). Not after the plugin is disposed.
+  let disposed = false;
   supervisor.onLost((reason) => {
     bb.log.info(`gitwand-bridge stopped: ${reason}`);
     relay.onBridgeLost(reason);
+    setTimeout(() => {
+      if (disposed || supervisor.status().state !== "stopped") return;
+      void restartAfterCrash({
+        state: () => supervisor.status().state,
+        start: async () => void (await supervisor.get()),
+        log: (message) => bb.log.warn(message),
+      });
+    }, 1000);
   });
-  bb.onDispose(() => supervisor.stop());
+  bb.onDispose(() => {
+    disposed = true;
+    return supervisor.stop();
+  });
 
   // UI files: one route per file of the runtime in use.
   const routes = new UiRoutes(
@@ -261,4 +276,19 @@ export default async function plugin(bb: BbPluginApi) {
     }) as Handlers[K];
   }
   bb.rpc.register(rpcContract, Object.fromEntries((Object.keys(handlers) as (keyof Handlers)[]).map((key) => [key, ownerOnly(key)])) as Handlers);
+
+  // In the background, so plugin load (and BB start) does not wait for the backend or the channel.
+  void autostart({
+    hasRuntime: () => runtime !== null,
+    installFirst: async () => {
+      await checkUpdates();
+      const pending = service?.pending() ?? null;
+      if (pending === null) return false;
+      const r = await installPending(pending.version);
+      if (!("ok" in r)) throw new Error(r.error);
+      return true;
+    },
+    start: async () => void (await supervisor.get()),
+    log: (message) => bb.log.warn(message),
+  });
 }
