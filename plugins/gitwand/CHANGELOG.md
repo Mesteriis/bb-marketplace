@@ -24,8 +24,11 @@
   (`/gw/embed.css`).
 - Keystrokes to one terminal are sent in order (they arrived reordered when
   each went out as its own request).
-- Release tooling, not run yet: `ci/bb-runtime.yml` (build matrix, signing in
-  a protected environment, release), `scripts/make-channel.ts`, and the
-  release channel URL with a place for the public key (unset) in
-  `src/core/update-source.ts`.
+- Release tooling: `ci/bb-runtime.yml` (build matrix, signing in a protected
+  environment, release), `scripts/make-channel.ts`, and the release channel
+  URL and the owner's public key in `src/core/update-source.ts`. The runtime
+  archive is packed with GNU tar as well as bsdtar.
+- Marketplace installs build: the plugin SDK is a dependency, because a git
+  install omits devDependencies and the server bundles
+  `@get-bb/plugin-sdk/process` from the plugin's own SDK.
 
