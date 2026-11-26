@@ -1,0 +1,9 @@
+{
+  "servers": [
+    {
+      "name": "com.docker.mcp/time",
+      "version": "sha256-9c46a918633f",
+      "path": "mcp-collection/com-docker-mcp-time"
+    }
+  ]
+}

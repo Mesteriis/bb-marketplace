@@ -1,0 +1,18 @@
+{
+  "name": "com.docker.mcp/time",
+  "version": "sha256-9c46a918633f",
+  "serverJsonSha256": "3edfcb150d4b1c4c39f9ce0ce0112b53b4ebaff96564e5762a027824e849926d",
+  "choice": {
+    "kind": "package",
+    "index": 0
+  },
+  "ociDigest": "sha256:9c46a918633fb474bf8035e3ee90ebac6bcf2b18ccb00679ac4c179cba0ebfcf",
+  "notes": [
+    "OCI-индекс mcp/time скачан по дайджесту, sha256 манифеста совпал с закреплённым; код не запускался.",
+    "Разобран слой amd64 sha256:3bedd9be88a9…: сервер mcp-server-time 0.6.2 (MIT), два инструмента: get_current_time, convert_time.",
+    "Код сервера (201 строка) не содержит сети, подпроцессов и доступа к файлам; только datetime/zoneinfo и stdio.",
+    "Образ работает от root (в конфиге нет User); для запуска стоит задать --network none, --read-only, не от root.",
+    "Зависимости устаревшие (mcp 1.0.0, starlette 0.41.3, certifi 2024.8.30, uvicorn 0.32.1); уязвимости не сверялись с базой."
+  ],
+  "acceptedAt": "2026-11-26T11:07:18.675Z"
+}
