@@ -74,8 +74,36 @@ and Linux x64, then, in the protected `release` environment:
 
 The plugin reads `RELEASE_CHANNEL_URL` (the latest release's `channel.json`)
 and `RELEASE_PUBLIC_KEY` from `src/core/update-source.ts`; the settings can
-replace either. Updates stay off while no public key is set; the key is
-still `null`.
+replace either. The built-in key is the owner's minisign key
+`24041B7E27AE78BE`. After a release, `upstream.lock.json` records it under
+`runtime`: the version, the `bb-marketplace` commit it was built from, the
+sha256 of `channel.json` and each archive's URL, sha256 and size, all copied
+from the published, signed `channel.json`.
+
+### When CI cannot build a platform
+
+GitHub sometimes cannot provide a runner (for 3.14.0+bb1 no macOS arm64
+runner was ever assigned). Then the owner finishes the release by hand, with
+the same inputs the workflow uses:
+
+1. Build the missing platform on a machine of that platform, from the same
+   `bb-marketplace` commit and with the same tag, commit and build number:
+   `node scripts/build-runtime.ts --tag <tag> --commit <commit> --platform <platform> --build <N> --out <dir>`.
+2. Download the archives CI did build (the workflow run's
+   `runtime-<platform>` artifacts) into the same directory.
+3. Write the manifest with the workflow's arguments:
+   `node scripts/make-channel.ts --version <X.Y.Z+bbN> --tag <tag> --commit <commit> --min-plugin <version> --base-url https://github.com/Mesteriis/GitWand-bb/releases/download/runtime-<X.Y.Z-bbN> --out release <dir>/gitwand-runtime-*.tar.gz`.
+4. Sign it locally with the owner's key and check the signature:
+   `minisign -S -s <secret key> -m release/channel.json -t "gitwand-bb runtime <X.Y.Z+bbN>"`, then
+   `minisign -V -p <public key> -m release/channel.json`.
+   The secret key and its password never leave the owner's machine.
+5. Create the release `runtime-<X.Y.Z-bbN>` in `Mesteriis/GitWand-bb` with
+   everything in `release/`, then check that
+   `releases/latest/download/channel.json` and its `.minisig` download and
+   verify, and that every archive's sha256 matches the manifest.
+
+A build number is never reused: if a published release turns out wrong,
+release `+bbN+1`.
 
 ## Bridge contract tests
 

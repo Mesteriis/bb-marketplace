@@ -6,5 +6,30 @@
     { "name": "0001-bridge-crate.patch", "sha256": "825ca92b47f4d173007bb94e004e8fcfab0ed5a6c93fe6d417de076e84278c5f" },
     { "name": "0002-vite-base.patch", "sha256": "ac4e97937dc20ea37ba97ce3e4631df7850553067b50c66748493ae41bcb2648" }
   ],
-  "runtime": null
+  "runtime": {
+    "version": "3.14.0+bb1",
+    "release": "https://github.com/Mesteriis/GitWand-bb/releases/tag/runtime-3.14.0-bb1",
+    "builtFrom": "eb96a11416ad7ec08f8df666c5e6472daf8d3851",
+    "signingKey": "24041B7E27AE78BE",
+    "channel": {
+      "sha256": "213e0316c5d2a511b9ef37e34b52e7da54c7a265ca001687da31b3a12ad91270"
+    },
+    "platforms": {
+      "darwin-arm64": {
+        "url": "https://github.com/Mesteriis/GitWand-bb/releases/download/runtime-3.14.0-bb1/gitwand-runtime-3.14.0-bb1-darwin-arm64.tar.gz",
+        "sha256": "d182e6b2130900d36225711c004a4e6462a7350a288d2bd0d67556acb5d0d11e",
+        "size": 7063890
+      },
+      "darwin-x64": {
+        "url": "https://github.com/Mesteriis/GitWand-bb/releases/download/runtime-3.14.0-bb1/gitwand-runtime-3.14.0-bb1-darwin-x64.tar.gz",
+        "sha256": "9ca9303fb98c6dceb4cdb8fc5d38c336bdbe79484bbc071e46af08c93da7c4c5",
+        "size": 7316930
+      },
+      "linux-x64": {
+        "url": "https://github.com/Mesteriis/GitWand-bb/releases/download/runtime-3.14.0-bb1/gitwand-runtime-3.14.0-bb1-linux-x64.tar.gz",
+        "sha256": "427a686c5fc572e1fbd6633f47681065e95201013b229bcc66a629bd1f653b86",
+        "size": 8406326
+      }
+    }
+  }
 }

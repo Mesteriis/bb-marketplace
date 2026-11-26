@@ -35,5 +35,14 @@ HOME), never on the maintainer's BB. Same approach as
 7. `touch "$S/stop"` — the instance stops; `run.sh` checks the server no
    longer answers and no `gitwand-bridge` of the stand is left.
 
+Clean install from the marketplace, before a release reaches the owner's BB:
+`S=$(mktemp -d); run-market.sh "$S" <checkout with the catalog entry>` adds
+that checkout as a `path:` marketplace and installs `makosh-gitwand@mesteriis`,
+which builds from the entry's git source (`main` on GitHub) without
+devDependencies, as a real install does. Then
+`. "$S/facts.env"; node docs/e2e-stand/market.mjs "$URL/" <tools> <chrome> <out> "$PROJECT" "$THREAD"`
+installs the runtime from the real signed channel through the settings
+section and opens the tab; it exits 0 only if all of that worked.
+
 Chromium, PTYs and FSEvents do not work inside agent sandboxes: run steps 3–5
 outside them. Do not edit `run.sh` while an instance runs it.

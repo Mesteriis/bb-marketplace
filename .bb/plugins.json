@@ -292,6 +292,10 @@
       "source": "./plugins/zoom"
     },
     {
+      "name": "gitwand",
+      "source": "./plugins/gitwand"
+    },
+    {
       "name": "terminal-jobs",
       "source": "./plugins/terminal-jobs"
     },

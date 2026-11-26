@@ -1352,6 +1352,26 @@
       }
     },
     {
+      "id": "makosh-gitwand",
+      "displayName": "Makosh GitWand [Experimental]",
+      "description": "Git client GitWand inside BB: status, history, branches, terminal and forges, run by GitWand's own Rust backend.",
+      "icon": {
+        "url": "./plugins/gitwand/assets/icon.svg"
+      },
+      "author": {
+        "name": "Mesteriis",
+        "github": "Mesteriis",
+        "url": "https://github.com/Mesteriis"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/gitwand",
+          "ref": "main"
+        }
+      }
+    },
+    {
       "id": "terminal-jobs",
       "displayName": "Terminal jobs",
       "description": "Runs durable terminal jobs and sends completion notices.",
