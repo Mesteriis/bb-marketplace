@@ -20,7 +20,7 @@ describe("bb-runtime workflow", () => {
   });
 
   it("runs on runner images GitHub still offers (actionlint's list)", () => {
-    expect(jobs.build.strategy!.matrix.include.map((m) => m.runner)).toEqual(["macos-14", "macos-15-intel", "ubuntu-22.04"]);
+    expect(jobs.build.strategy!.matrix.include.map((m) => m.runner)).toEqual(["macos-15", "macos-15-intel", "ubuntu-22.04"]);
   });
 
   it("installs the plugin's dependencies before make-channel.ts, which imports zod", () => {
