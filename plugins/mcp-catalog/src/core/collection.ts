@@ -12,6 +12,14 @@ export const CollectionEntry = z.object({
   // A reviewer may write null for a non-OCI package; it means "absent".
   ociDigest: z.preprocess((value) => (value === null ? undefined : value), z.string().optional()),
   notes: z.array(z.string()).optional(),
+  // Sandbox exceptions for an OCI package; absent means the strict defaults (no network, user nobody).
+  docker: z
+    .object({
+      network: z.enum(["none", "bridge"]).optional(),
+      user: z.enum(["nobody", "image"]).optional(),
+    })
+    .strict()
+    .optional(),
   acceptedAt: z.string(),
 });
 export type CollectionEntry = z.infer<typeof CollectionEntry>;
@@ -19,6 +27,30 @@ export type CollectionEntry = z.infer<typeof CollectionEntry>;
 /** What the reviewer writes: `acceptedAt` is added by `accept`. */
 export const CollectionEntryDraft = CollectionEntry.omit({ acceptedAt: true });
 export type CollectionEntryDraft = z.infer<typeof CollectionEntryDraft>;
+
+/** The `docker` field only means something for an OCI package choice; anything else is an error. */
+export function checkDockerField(server: RegistryServer, entry: { choice: { kind: string; index: number }; docker?: unknown }): void {
+  if (entry.docker === undefined) return;
+  const pkg = entry.choice.kind === "package" ? server.packages?.[entry.choice.index] : undefined;
+  if (pkg?.registryType !== "oci") throw new Error("поле docker допустимо только для образа OCI");
+}
+
+const FORBIDDEN_OCI_ENV = /^(HOME|PATH|DOCKER_.*|DYLD_.*|LD_.*|PYTHON.*)$/;
+
+/** The refusal for an environment variable name that would change how docker itself runs; undefined when fine. */
+export function ociEnvRefusal(name: string): string | undefined {
+  return FORBIDDEN_OCI_ENV.test(name) ? `переменная «${name}» запрещена для образа OCI: она меняет запуск docker` : undefined;
+}
+
+/** Throws for a declared environment variable of the chosen OCI package that would change the docker command. */
+export function checkOciEnvironment(server: RegistryServer, entry: { choice: { kind: string; index: number } }): void {
+  const pkg = entry.choice.kind === "package" ? server.packages?.[entry.choice.index] : undefined;
+  if (pkg?.registryType !== "oci") return;
+  for (const variable of pkg.environmentVariables ?? []) {
+    const refusal = ociEnvRefusal(variable.name);
+    if (refusal !== undefined) throw new Error(refusal);
+  }
+}
 
 /** Stable identifier of a registry server name: lower-case, `-`-separated. */
 export function serverSlug(name: string): string {
@@ -48,6 +80,11 @@ export interface CollectionPort {
   readFile(path: string): Promise<string>;
   /** True when `commit` (an accept commit this catalog recorded) is an ancestor of `origin/main`. */
   isAccepted(commit: string): Promise<boolean>;
+  /**
+   * True when the entry folder `path` is the same tree at `commit` (the accept commit) and at `origin/main` now:
+   * what is installed from main is exactly what was accepted. Any failure is false.
+   */
+  sameEntryAt(commit: string, path: string): Promise<boolean>;
   /** Forget any cached read so that the next `readIndex` sees the remote again. */
   invalidate?(): void;
 }
@@ -98,5 +135,7 @@ export async function loadAcceptedEntry(
   if (server.name !== entry.name || server.version !== entry.version) {
     throw new Error("запись коллекции повреждена: server.json не совпадает с entry.json");
   }
+  checkDockerField(server, entry);
+  checkOciEnvironment(server, entry);
   return { server, entry, review };
 }

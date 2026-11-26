@@ -1,5 +1,5 @@
 import { declaredVariables } from "./catalog-view";
-import { type CollectionEntry, serverSlug } from "./collection";
+import { type CollectionEntry, checkDockerField, checkOciEnvironment, ociEnvRefusal, serverSlug } from "./collection";
 import type { RegistryServer } from "./registry";
 import { LEGACY_STDIO_SHIM } from "./shim";
 
@@ -79,6 +79,36 @@ function fixedArguments(args: Argument[] | undefined): string[] {
   return out;
 }
 
+/**
+ * Runtime arguments of an OCI package: the catalog owns the Docker restrictions, so the only thing a server
+ * may add is passing an environment variable through by name (`-e NAME`, `--env NAME`, `--env=NAME`).
+ */
+function ociRuntimeArguments(argv: string[]): string[] {
+  const refuse = (arg: string): never => {
+    throw new Error(`аргумент запуска «${arg.trim().slice(0, 60)}» не разрешён: ограничения Docker задаёт каталог`);
+  };
+  const forbid = (name: string): void => {
+    const refusal = ociEnvRefusal(name);
+    if (refusal !== undefined) throw new Error(refusal);
+  };
+  const out: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]!;
+    if (arg === "-e" || arg === "--env") {
+      const name = argv[++i];
+      if (name === undefined || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) refuse(arg);
+      forbid(name as string);
+      out.push("-e", name as string);
+    } else if (/^--env=[A-Za-z_][A-Za-z0-9_]*$/.test(arg)) {
+      forbid(arg.slice("--env=".length));
+      out.push("-e", arg.slice("--env=".length));
+    } else {
+      refuse(arg);
+    }
+  }
+  return out;
+}
+
 /** Name of the generated bridge plugin for a server slug. */
 export function pluginName(slug: string): string {
   if (slug === "") throw new Error("не удалось получить имя пакета из имени сервера");
@@ -100,6 +130,8 @@ export function generatePackage(
   entry: CollectionEntry,
   paths: { envFile: string },
 ): Record<string, string> {
+  checkDockerField(server, entry);
+  checkOciEnvironment(server, entry);
   const slug = serverSlug(entry.name);
   // Which variables this version declares: the next update reads it to tell new variables from old ones.
   const variables = json({ declared: declaredVariables(server, entry).map((variable) => variable.name) });
@@ -137,7 +169,8 @@ export function generatePackage(
   const version = requirePinned(pkg.version ?? entry.version, pin);
   const checked = requireIdentifier(pkg.identifier, pkg.registryType === "oci");
   const id = pkg.registryType === "oci" ? ociName(checked) : checked;
-  const runtimeArgs = fixedArguments(pkg.runtimeArguments);
+  const rawRuntimeArgs = fixedArguments(pkg.runtimeArguments);
+  const runtimeArgs = pkg.registryType === "oci" ? ociRuntimeArguments(rawRuntimeArgs) : rawRuntimeArgs;
   const packageArgs = fixedArguments(pkg.packageArguments);
   let command: string[];
   if (pkg.registryType === "npm") {
@@ -149,7 +182,14 @@ export function generatePackage(
       throw new Error("для образа OCI нужен ociDigest вида sha256:<64 hex>");
     }
     const envArgs = (pkg.environmentVariables ?? []).flatMap((v) => ["-e", requireEnvName(v.name)]);
-    command = ["docker", "run", "--rm", "-i", ...envArgs, ...runtimeArgs, `${id}@${entry.ociDigest}`, ...packageArgs];
+    const sandbox = [
+      "--network", entry.docker?.network ?? "none",
+      "--read-only", "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m",
+      ...(entry.docker?.user === "image" ? [] : ["--user", "65534:65534"]),
+      "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+      "-e", "HOME=/tmp",
+    ];
+    command = ["docker", "run", "--rm", "-i", ...sandbox, ...envArgs, ...runtimeArgs, `${id}@${entry.ociDigest}`, ...packageArgs];
   }
 
   const run = [

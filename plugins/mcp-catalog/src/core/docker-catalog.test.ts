@@ -129,6 +129,13 @@ describe("mapDockerEntry", () => {
     expect(mapDockerEntry("a", secret).meta.unsupported).toBe("некорректное имя переменной 1BAD");
   });
 
+  it("env_names_that_change_the_docker_command_are_unsupported", () => {
+    const reason = (name: string) => `переменная «${name}» запрещена для образа OCI: она меняет запуск docker`;
+    expect(mapDockerEntry("a", { ...brave, env: [{ name: "DOCKER_HOST", value: "tcp://x:2375" }] }).meta.unsupported).toBe(reason("DOCKER_HOST"));
+    expect(mapDockerEntry("a", { ...brave, env: [{ name: "HOME", value: "/x" }] }).meta.unsupported).toBe(reason("HOME"));
+    expect(mapDockerEntry("a", { ...brave, secrets: [{ name: "s", env: "DYLD_INSERT_LIBRARIES" }] }).meta.unsupported).toBe(reason("DYLD_INSERT_LIBRARIES"));
+  });
+
   it("invalid_image_identifier_is_unsupported", () => {
     const entry = { ...brave, image: `mcp/br ave;rm@${DIGEST}` };
     const { server, meta } = mapDockerEntry("a", entry);

@@ -27,6 +27,59 @@ describe("reviewPrompt", () => {
   });
 });
 
+describe("reviewPrompt sandbox text", () => {
+  const oci = RegistryServer.parse({ name: "io.example/Demo", description: "d", version: "1.2.3", packages: [{ registryType: "oci", identifier: "a/b", transport: { type: "stdio" } }] });
+  const npm = RegistryServer.parse({ name: "io.example/Demo", description: "d", version: "1.2.3", packages: [{ registryType: "npm", identifier: "x", version: "1.2.3", transport: { type: "stdio" } }] });
+
+  it("tells the reviewer about the sandbox and the two exceptions for an OCI package", () => {
+    const text = reviewPrompt(oci);
+    expect(text).not.toContain("Если выберешь пакет OCI");
+    expect(text).toContain("без сети (--network none), корень только для чтения, /tmp в tmpfs, пользователь nobody (65534), все capabilities сброшены");
+    expect(text).toContain('"docker": {"network": "bridge"}');
+    expect(text).toContain('"docker": {"user": "image"}');
+    expect(text).toContain("объясни зачем в notes");
+    expect(text).toContain('docker (необязательно, только для OCI-пакета: {"network":"none"|"bridge","user":"nobody"|"image"}');
+    expect(text).not.toContain("сеть, скорее всего, нужна");
+  });
+
+  it("adds the likely-network line when a Docker record has allowHosts", () => {
+    expect(reviewPrompt(oci, { allowHosts: ["a.example"] })).toContain("сеть, скорее всего, нужна");
+  });
+
+  it("a server with both npm and OCI packages gets one short line instead of the full text", () => {
+    const both = RegistryServer.parse({ ...oci, packages: [...(npm.packages ?? []), ...(oci.packages ?? [])] });
+    const text = reviewPrompt(both);
+    expect(text).toContain("Если выберешь пакет OCI, учти ограничения Docker: без сети, корень только для чтения, /tmp в tmpfs, пользователь nobody, capabilities сброшены;");
+    expect(text).not.toContain("Каталог запускает образ OCI в песочнице");
+  });
+
+  it("Docker-catalog hints give the full text even with an npm package alongside", () => {
+    const both = RegistryServer.parse({ ...oci, packages: [...(npm.packages ?? []), ...(oci.packages ?? [])] });
+    const text = reviewPrompt(both, { ociDigest: `sha256:${"ab".repeat(32)}` });
+    expect(text).toContain("Каталог запускает образ OCI в песочнице");
+    expect(text).not.toContain("Если выберешь пакет OCI");
+  });
+
+  it("tells the reviewer to check uid 65534 access in the layers and to explain user/network in notes", () => {
+    const text = reviewPrompt(oci);
+    expect(text).toContain("читаются и исполняются пользователем uid 65534, включая родительские каталоги; если нет, поставь `\"docker\": {\"user\": \"image\"}` и объясни почему в notes");
+    expect(text).toContain("Если коду нужна сеть, поставь `\"docker\": {\"network\": \"bridge\"}` и тоже объясни в notes.");
+    expect(reviewPrompt(npm)).not.toContain("uid 65534");
+  });
+
+  it("adds the re-check lines only for a re-check", () => {
+    const line = "Это повторная проверка уже принятой версии: папка mcp-collection/io-example-demo/ уже есть, перезапиши в ней все три файла; строку в index.json оставь (имя и версия те же).";
+    expect(reviewPrompt(oci, { recheck: true })).toContain(line);
+    expect(reviewPrompt(npm, { recheck: true })).toContain(line);
+    expect(reviewPrompt(oci)).not.toContain("повторная проверка");
+  });
+
+  it("has no sandbox text for npm", () => {
+    expect(reviewPrompt(npm)).not.toContain("--network none");
+    expect(reviewPrompt(npm)).not.toContain("песочнице");
+  });
+});
+
 describe("reviewPrompt hints", () => {
   const digest = `sha256:${"cd".repeat(32)}`;
   it("adds the ociDigest line and the allowHosts line", () => {

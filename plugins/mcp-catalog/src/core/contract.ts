@@ -35,6 +35,10 @@ export const CollectionItemSchema = z.object({
   /** Set when the entry is damaged: the item stays visible but cannot be installed. */
   error: z.string().nullable(),
   installed: z.boolean(),
+  /** A review of exactly this name and version is running or waits for a decision. */
+  reviewing: z.boolean(),
+  /** How the last re-check ended without a new accept, or null. */
+  lastRecheck: z.object({ state: z.enum(["failed", "rejected"]), error: z.string().nullable() }).nullable(),
 });
 export type CollectionItem = z.infer<typeof CollectionItemSchema>;
 
@@ -90,6 +94,8 @@ export const ReviewItemSchema = z.object({
   state: ReviewStateSchema,
   error: z.string().nullable(),
   threadId: z.string(),
+  /** A re-check of an already accepted version. */
+  recheck: z.boolean(),
 });
 export type ReviewItem = z.infer<typeof ReviewItemSchema>;
 
@@ -159,7 +165,7 @@ export const rpcSchemas = {
     output: SearchResult,
   },
   startReview: {
-    input: z.object({ name: z.string().min(1).max(200), version: z.string().min(1).max(64) }),
+    input: z.object({ name: z.string().min(1).max(200), version: z.string().min(1).max(64), recheck: z.boolean().optional() }),
     output: ReviewItemSchema,
   },
   reviews: { input: z.null(), output: ReviewsResult },

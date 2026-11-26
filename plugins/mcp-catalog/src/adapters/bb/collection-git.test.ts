@@ -178,3 +178,21 @@ describe("CollectionGit", () => {
     });
   });
 });
+
+describe("CollectionGit.sameEntryAt", () => {
+  const dir = "mcp-collection/a-b";
+  it("is true while the folder is unchanged on origin/main, false after it changed, and false for bad input", async () => {
+    await commitToOrigin({ [`${dir}/entry.json`]: "1", "mcp-collection/index.json": '{"servers":[]}' });
+    const accepted = run(work, "rev-parse", "HEAD").trim();
+    await commitToOrigin({ "mcp-collection/index.json": '{"servers":[1]}' });
+    const port = new CollectionGit(clone, 0);
+    expect(await port.sameEntryAt(accepted, dir)).toBe(true);
+    await commitToOrigin({ [`${dir}/entry.json`]: "2" });
+    expect(await port.sameEntryAt(accepted, dir)).toBe(false);
+    expect(await port.sameEntryAt("0".repeat(40), dir)).toBe(false);
+    expect(await port.sameEntryAt("HEAD", dir)).toBe(false);
+    expect(await port.sameEntryAt(accepted, "README.md")).toBe(false);
+    expect(await port.sameEntryAt(accepted, "mcp-collection/../README.md")).toBe(false);
+    expect(await port.sameEntryAt(accepted, "mcp-collection/none")).toBe(false);
+  });
+});

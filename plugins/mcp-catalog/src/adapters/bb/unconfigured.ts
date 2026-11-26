@@ -7,6 +7,7 @@ export function unconfiguredCollection(error: () => Error): CollectionPort {
     readIndex: async () => Promise.reject(error()),
     readFile: async () => Promise.reject(error()),
     isAccepted: async () => Promise.reject(error()),
+    sameEntryAt: async () => Promise.reject(error()),
   };
 }
 

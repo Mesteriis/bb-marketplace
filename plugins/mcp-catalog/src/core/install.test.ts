@@ -45,6 +45,7 @@ async function collection(version = "1.0.0", environmentVariables?: unknown[]): 
     readIndex: async () => ({ servers: [{ name: NAME, version, path: dir }] }),
     readFile: async (path) => files[path] ?? "",
     isAccepted: async () => true,
+    sameEntryAt: async () => true,
   };
 }
 

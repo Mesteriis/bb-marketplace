@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { readFile, realpath, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { CollectionEntry, CollectionEntryDraft, CollectionIndex, canonicalJson, sha256Hex, withIndexLine } from "../../core/collection";
+import { CollectionEntry, CollectionEntryDraft, CollectionIndex, canonicalJson, checkDockerField, checkOciEnvironment, sha256Hex, withIndexLine } from "../../core/collection";
 import { DOCKER_PREFIX, checkDockerDigest } from "../../core/docker-catalog";
 import { SLUG, isReplacementVersion } from "../../core/inventory";
 import type { RegistryServer } from "../../core/registry";
@@ -88,7 +88,7 @@ export class CollectionWrite implements CollectionWritePort {
   async accept(
     worktree: string,
     slug: string,
-    opts: { push: boolean; acceptedCommit?: string; expected: RegistryServer },
+    opts: { push: boolean; acceptedCommit?: string; expected: RegistryServer; replaceSameVersion?: boolean },
   ): Promise<{ commit: string }> {
     if (!SLUG.test(slug)) throw new Error("недопустимое имя сервера");
     const main = this.marketplaceRepoPath;
@@ -145,7 +145,7 @@ export class CollectionWrite implements CollectionWritePort {
       ];
       // The reviewer's index is judged against the main it started from ...
       const forkPoint = (await git(worktree, ["merge-base", "main", "HEAD"])).trim();
-      await this.checkTree(slug, changed, (path) => readFile(join(worktree, path)), await indexAt(worktree, forkPoint), opts.expected, false);
+      await this.checkTree(slug, changed, (path) => readFile(join(worktree, path)), await indexAt(worktree, forkPoint), opts.expected, false, opts.replaceSameVersion === true);
       // ... and then rebuilt on today's main, so that an entry accepted meanwhile does not block this one.
       await writeFile(join(worktree, INDEX), indexText(withIndexLine(await indexAt(main, "main"), line)));
       const entryPath = join(worktree, prefix, "entry.json");
@@ -162,7 +162,7 @@ export class CollectionWrite implements CollectionWritePort {
     // Everything is checked again against the committed tree, which is what gets merged.
     try {
       const committed = (await git(worktree, ["diff", "--name-only", "main...HEAD"])).split("\n");
-      await this.checkTree(slug, committed, (path) => gitBuf(worktree, ["show", `HEAD:${path}`]), await indexAt(main, "main"), opts.expected, true);
+      await this.checkTree(slug, committed, (path) => gitBuf(worktree, ["show", `HEAD:${path}`]), await indexAt(main, "main"), opts.expected, true, opts.replaceSameVersion === true);
       if ((await git(worktree, ["status", "--porcelain", "-uall"])).trim() !== "") {
         throw new Error("рабочее дерево проверки не чистое: слияние отменено");
       }
@@ -217,6 +217,7 @@ export class CollectionWrite implements CollectionWritePort {
     before: CollectionIndex,
     expected: RegistryServer,
     committed: boolean,
+    replaceSameVersion: boolean,
   ): Promise<void> {
     const prefix = `mcp-collection/${slug}/`;
     const outside = [...new Set(changedPaths)].filter((path) => path !== "" && !path.startsWith(prefix) && path !== INDEX);
@@ -230,6 +231,8 @@ export class CollectionWrite implements CollectionWritePort {
     if (draft.name !== expected.name || draft.version !== expected.version) {
       throw new Error("запись в рабочем дереве не та, что проверялась: имя или версия другие");
     }
+    checkDockerField(expected, draft);
+    checkOciEnvironment(expected, draft);
     if (expected.name.startsWith(DOCKER_PREFIX) && draft.choice.kind === "package") checkDockerDigest(expected, draft.ociDigest);
     if ((await sha256Hex(serverBytes)) !== draft.serverJsonSha256) throw new Error("хэш server.json не совпадает с entry.json");
     if (canonicalJson(JSON.parse(serverBytes.toString("utf8"))) !== canonicalJson(expected)) {
@@ -249,7 +252,7 @@ export class CollectionWrite implements CollectionWritePort {
       throw new Error("индекс коллекции должен отличаться от main одной строкой этого сервера: новой или заменённой более новой версией");
     }
     const previous = mineBefore[0];
-    if (previous !== undefined && !isReplacementVersion(draft.name, draft.version, previous.version)) {
+    if (previous !== undefined && !(replaceSameVersion && previous.version === draft.version) && !isReplacementVersion(draft.name, draft.version, previous.version)) {
       throw new Error(`в коллекции уже есть версия ${previous.version}: принять можно только более новую`);
     }
   }

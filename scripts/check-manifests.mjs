@@ -327,6 +327,33 @@ function checkMcpCollection() {
     if (entry?.notes !== undefined && !(Array.isArray(entry.notes) && entry.notes.every((n) => typeof n === "string"))) {
       problem(at, "entry.json: notes must be an array of strings");
     }
+    let ociPackage;
+    try {
+      const server = JSON.parse(readFileSync(join(root, item.path, "server.json"), "utf8"));
+      const chosen = choice?.kind === "package" ? server?.packages?.[choice.index] : undefined;
+      if (chosen?.registryType === "oci") ociPackage = chosen;
+    } catch {
+      // an unreadable server.json is reported by the hash check below
+    }
+    if (entry?.docker !== undefined) {
+      const docker = entry.docker;
+      const allowed = { network: ["none", "bridge"], user: ["nobody", "image"] };
+      if (!isObject(docker) || Object.keys(docker).some((key) => !Object.hasOwn(allowed, key))) {
+        problem(at, "entry.json: docker must be an object with only network and user");
+      } else {
+        for (const [key, values] of Object.entries(allowed)) {
+          if (docker[key] !== undefined && !values.includes(docker[key])) {
+            problem(at, `entry.json: docker.${key} must be one of ${values.join(", ")}`);
+          }
+        }
+      }
+      if (ociPackage === undefined) problem(at, "entry.json: поле docker допустимо только для образа OCI");
+    }
+    for (const variable of ociPackage?.environmentVariables ?? []) {
+      if (typeof variable?.name === "string" && /^(HOME|PATH|DOCKER_.*|DYLD_.*|LD_.*|PYTHON.*)$/.test(variable.name)) {
+        problem(at, `server.json: переменная «${variable.name}» запрещена для образа OCI: она меняет запуск docker`);
+      }
+    }
     const hash = createHash("sha256")
       .update(readFileSync(join(root, item.path, "server.json")))
       .digest("hex");

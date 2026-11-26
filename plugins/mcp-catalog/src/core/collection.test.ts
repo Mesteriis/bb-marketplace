@@ -35,6 +35,7 @@ async function fakePort(
       return text;
     },
     isAccepted: async () => true,
+    sameEntryAt: async () => true,
   };
 }
 
@@ -43,6 +44,30 @@ describe("sha256Hex", () => {
     expect(await sha256Hex("abc")).toBe(
       "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
     );
+  });
+});
+
+describe("loadAcceptedEntry docker field", () => {
+  const ociText = JSON.stringify({ name: NAME, description: "d", version: "1.0.0", packages: [{ registryType: "oci", identifier: "a/b", transport: { type: "stdio" } }] });
+  const load = async (serverJson: string, docker: unknown) =>
+    loadAcceptedEntry(await fakePort(serverJson, { entryOverride: { docker, serverJsonSha256: await sha256Hex(serverJson) } }), NAME);
+
+  it("accepts a valid docker field for an OCI choice", async () => {
+    expect((await load(ociText, { network: "bridge", user: "image" })).entry.docker).toEqual({ network: "bridge", user: "image" });
+  });
+
+  it("rejects docker with a non-OCI choice", async () => {
+    const npmText = JSON.stringify({ name: NAME, description: "d", version: "1.0.0", packages: [{ registryType: "npm", identifier: "x", version: "1.0.0", transport: { type: "stdio" } }] });
+    await expect(load(npmText, { network: "bridge" })).rejects.toThrow("поле docker допустимо только для образа OCI");
+  });
+
+  it("rejects a forbidden environment variable of the chosen OCI package", async () => {
+    const bad = JSON.stringify({ name: NAME, description: "d", version: "1.0.0", packages: [{ registryType: "oci", identifier: "a/b", transport: { type: "stdio" }, environmentVariables: [{ name: "DOCKER_HOST" }] }] });
+    await expect(load(bad, undefined)).rejects.toThrow("переменная «DOCKER_HOST» запрещена для образа OCI: она меняет запуск docker");
+  });
+
+  it.each([[{ network: "host" }], [{ user: "root" }], [{ privileged: true }]])("rejects invalid docker %j", async (docker) => {
+    await expect(load(ociText, docker)).rejects.toThrow();
   });
 });
 

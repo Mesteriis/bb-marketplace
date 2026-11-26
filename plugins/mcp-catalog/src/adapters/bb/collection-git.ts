@@ -102,6 +102,22 @@ export class CollectionGit implements CollectionPort {
     );
   }
 
+  /** True only when `path` (an entry folder) has the same git tree id at `commit` and at `origin/main` after a fetch. */
+  async sameEntryAt(commit: string, path: string): Promise<boolean> {
+    if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(commit)) return false;
+    if (!path.startsWith(PREFIX) || path.split("/").includes("..") || path.includes("\0") || path.endsWith("/")) return false;
+    await this.fetchOnce();
+    try {
+      const [accepted, current] = await Promise.all([
+        this.runGit(this.repoPath, ["rev-parse", `${commit}:${path}`]),
+        this.runGit(this.repoPath, ["rev-parse", `origin/main:${path}`]),
+      ]);
+      return accepted.trim() !== "" && accepted.trim() === current.trim();
+    } catch {
+      return false;
+    }
+  }
+
   async readFile(path: string): Promise<string> {
     if (!path.startsWith(PREFIX) || path.split("/").includes("..") || path.includes("\0")) {
       throw new Error("недопустимый путь коллекции");

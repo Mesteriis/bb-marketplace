@@ -50,6 +50,7 @@ async function collectionPort(version = "1.0.0", server: RegistryServer = REGIST
     readIndex: async () => ({ servers: [{ name: NAME, version, path: dir }] }),
     readFile: async (path) => files[path] ?? "",
     isAccepted: async () => true,
+    sameEntryAt: async () => true,
   };
 }
 
@@ -82,6 +83,8 @@ async function build(opts: {
   registrySearch?: RegistryPort["search"];
   /** Overrides the collection's answer to "is this accept commit on origin/main". */
   isAccepted?: (commit: string) => Promise<boolean>;
+  /** Overrides the answer to "is the entry folder still what the accept commit had". */
+  sameEntryAt?: (commit: string, path: string) => Promise<boolean>;
 } = {}) {
   const calls: string[] = [];
   const prompts: string[] = [];
@@ -125,6 +128,7 @@ async function build(opts: {
     readIndex: () => baseCollection.readIndex(),
     readFile: (path) => baseCollection.readFile(path),
     isAccepted: opts.isAccepted ?? ((commit) => baseCollection.isAccepted(commit)),
+    sameEntryAt: opts.sameEntryAt ?? ((commit, path) => baseCollection.sameEntryAt(commit, path)),
   };
   const service = createService({
     bridge,
@@ -428,7 +432,7 @@ describe("service.collection and search", () => {
     const { service } = await build({ plugins: [{ id: "p", name: "mcp-io-example-demo", version: "1.0.0", sourceIntent: "x", status: "ready", lastError: null }] });
     const { items } = await service.collection();
     expect(items).toEqual([
-      { name: NAME, version: "1.0.0", summary: "Лицензия MIT, сетевых адресов нет.", error: null, installed: true },
+      { name: NAME, version: "1.0.0", summary: "Лицензия MIT, сетевых адресов нет.", error: null, installed: true, reviewing: false, lastRecheck: null },
     ]);
   });
 
@@ -476,6 +480,7 @@ describe("one fetch per request", () => {
       },
       readFile: async (path) => files[path] ?? "",
       isAccepted: async () => true,
+      sameEntryAt: async () => true,
     };
     return { port, reads: () => reads };
   }
@@ -837,5 +842,144 @@ describe("service docker records", () => {
     });
     await service.accept({ name: DOCKER_NAME });
     expect(accepted).toEqual(["/wtNew"]);
+  });
+});
+
+describe("re-check of an accepted version", () => {
+  const OLD = "d".repeat(40);
+  const accepted = record({ state: "accepted", acceptCommit: OLD, acceptedAt: 500, worktree: undefined });
+  const rechecking = record({ state: "reviewing", worktree: undefined, previousAccept: { acceptCommit: OLD, acceptedAt: 500 } });
+
+  it("still refuses a review of an accepted version without recheck", async () => {
+    const { service } = await build({ records: [accepted] });
+    await expect(service.startReview({ name: NAME, version: "1.0.0" })).rejects.toThrow("эта версия уже принята в коллекцию");
+  });
+
+  it("recheck: true on an accepted version starts a review that carries the old accept", async () => {
+    const { service, store, prompts } = await build({ records: [accepted] });
+    const item = await service.startReview({ name: NAME, version: "1.0.0", recheck: true });
+    expect(item).toMatchObject({ state: "reviewing", recheck: true });
+    expect(store.records.get(`${NAME}@1.0.0`)).toMatchObject({ state: "reviewing", previousAccept: { acceptCommit: OLD, acceptedAt: 500 } });
+    expect(prompts[0]).toContain("Это повторная проверка уже принятой версии: папка mcp-collection/io-example-demo/ уже есть, перезапиши в ней все три файла; строку в index.json оставь (имя и версия те же).");
+  });
+
+  it("recheck: true without an accepted record is refused", async () => {
+    for (const records of [[], [record({ state: "rejected" })], [record({ state: "failed" })]]) {
+      const { service } = await build({ records });
+      await expect(service.startReview({ name: NAME, version: "1.0.0", recheck: true })).rejects.toThrow("повторная проверка возможна только для принятой версии");
+    }
+  });
+
+  it("a running re-check refuses another one", async () => {
+    const { service } = await build({ records: [rechecking] });
+    await expect(service.startReview({ name: NAME, version: "1.0.0", recheck: true })).rejects.toThrow("уже идёт");
+  });
+
+  it("requireAccepted passes during the re-check with the old commit, and fails when it is not an ancestor", async () => {
+    const seen: string[] = [];
+    const ok = await build({ records: [rechecking], isAccepted: async (commit) => (seen.push(commit), true) });
+    expect((await ok.service.install({ name: NAME, values: { API_KEY: SECRET } })).ok).toBe(true);
+    expect([...new Set(seen)]).toEqual([OLD]);
+    const bad = await build({ records: [rechecking], isAccepted: async () => false });
+    await expect(bad.service.install({ name: NAME, values: { API_KEY: SECRET } })).rejects.toThrow("запись не принята в этом каталоге");
+  });
+
+  it("accept of a ready re-check replaces the entry, passes replaceSameVersion and drops previousAccept", async () => {
+    const opts: unknown[] = [];
+    const { service, store } = await build({
+      records: [{ ...rechecking, state: "ready", worktree: "/wt" }],
+      accept: async (_wt, _slug, o) => (opts.push(o), { commit: "new" }),
+    });
+    await service.accept({ name: NAME, version: "1.0.0" });
+    expect(opts[0]).toMatchObject({ replaceSameVersion: true });
+    const rec = store.records.get(`${NAME}@1.0.0`);
+    expect(rec).toMatchObject({ state: "accepted", acceptCommit: "new", acceptedAt: 1_000 });
+    expect(rec?.previousAccept).toBeUndefined();
+  });
+
+  it("accept of an ordinary review does not ask to replace the same version", async () => {
+    const opts: unknown[] = [];
+    const { service } = await build({ records: [record({ state: "ready" })], accept: async (_wt, _slug, o) => (opts.push(o), { commit: "c" }) });
+    await service.accept({ name: NAME, version: "1.0.0" });
+    expect(opts[0]).not.toHaveProperty("replaceSameVersion");
+  });
+
+  it("reject of a ready re-check restores the accepted record", async () => {
+    const { service, store } = await build({ records: [{ ...rechecking, state: "ready", worktree: "/wt" }] });
+    await service.reject({ name: NAME, version: "1.0.0" });
+    expect(store.records.get(`${NAME}@1.0.0`)).toEqual({
+      name: NAME, version: "1.0.0", threadId: "thr_1", state: "accepted", acceptCommit: OLD, acceptedAt: 500,
+      lastRecheck: { state: "rejected", threadId: "thr_1", at: 1_000 },
+    });
+  });
+
+  it("a failed thread, a missing entry and the 6-hour timeout restore the accepted record and keep the reason", async () => {
+    const back = (error: string) => ({
+      name: NAME, version: "1.0.0", threadId: "thr_1", state: "accepted", acceptCommit: OLD, acceptedAt: 500,
+      lastRecheck: { state: "failed", error, threadId: "thr_1", at: 1_000 },
+    });
+    const failed = await build({ records: [rechecking], info: { status: "failed" } });
+    await failed.service.reviews();
+    expect(failed.store.records.get(`${NAME}@1.0.0`)).toEqual(back("тред проверки завершился с ошибкой"));
+
+    const timedOut = await build({ records: [{ ...rechecking, startedAt: 1_000 - 6 * 3600_000 - 1 }], info: { status: "running" } });
+    await timedOut.service.reviews();
+    expect(timedOut.store.records.get(`${NAME}@1.0.0`)).toEqual(back("проверка не завершилась за 6 часов"));
+
+    const noWorktree = await build({ records: [rechecking], info: { status: "done" } });
+    await noWorktree.service.reviews();
+    expect(noWorktree.store.records.get(`${NAME}@1.0.0`)).toEqual(back("у треда проверки нет рабочего дерева"));
+  });
+
+  it("the collection item shows the last re-check outcome; it does not block a new re-check; a successful accept clears it", async () => {
+    const failed = { ...accepted, lastRecheck: { state: "failed" as const, error: "тред упал", threadId: "thr_1", at: 7 } };
+    const b = await build({ records: [failed] });
+    expect((await b.service.collection()).items[0]).toMatchObject({ lastRecheck: { state: "failed", error: "тред упал" } });
+    await b.service.startReview({ name: NAME, version: "1.0.0", recheck: true });
+    expect(b.store.records.get(`${NAME}@1.0.0`)?.lastRecheck).toBeUndefined();
+    const rejected = await build({ records: [{ ...accepted, lastRecheck: { state: "rejected", threadId: "t", at: 1 } }] });
+    expect((await rejected.service.collection()).items[0]).toMatchObject({ lastRecheck: { state: "rejected", error: null } });
+    expect((await (await build({ records: [accepted] })).service.collection()).items[0]).toMatchObject({ lastRecheck: null });
+    const ready = await build({ records: [{ ...rechecking, state: "ready", worktree: "/wt" }] });
+    await ready.service.accept({ name: NAME, version: "1.0.0" });
+    expect(ready.store.records.get(`${NAME}@1.0.0`)?.lastRecheck).toBeUndefined();
+  });
+
+  it("install is refused when the entry folder changed after the accept, and checks the commit it uses", async () => {
+    const seen: [string, string][] = [];
+    const sameEntryAt = async (commit: string, path: string) => (seen.push([commit, path]), false);
+    const a = await build({ records: [ACCEPTED], sameEntryAt });
+    await expect(a.service.install({ name: NAME, values: { API_KEY: SECRET } })).rejects.toThrow("запись в коллекции изменена после принятия: нужна новая проверка");
+    const r = await build({ records: [rechecking], sameEntryAt });
+    await expect(r.service.install({ name: NAME, values: { API_KEY: SECRET } })).rejects.toThrow("запись в коллекции изменена после принятия: нужна новая проверка");
+    expect(seen).toEqual([[ACCEPT_SHA, "mcp-collection/io-example-demo"], [OLD, "mcp-collection/io-example-demo"]]);
+  });
+
+  it("a late poll does not overwrite a record that changed meanwhile", async () => {
+    let b: Awaited<ReturnType<typeof build>> | undefined;
+    const info = {
+      get status() {
+        b?.store.records.set(`${NAME}@1.0.0`, { name: NAME, version: "1.0.0", threadId: "thr_1", state: "accepted", acceptCommit: "f".repeat(40) });
+        return "failed" as const;
+      },
+    };
+    b = await build({ records: [rechecking], info });
+    const { items } = await b.service.reviews();
+    expect(b.store.records.get(`${NAME}@1.0.0`)).toEqual({ name: NAME, version: "1.0.0", threadId: "thr_1", state: "accepted", acceptCommit: "f".repeat(40) });
+    expect(items[0]).toMatchObject({ state: "accepted" });
+  });
+
+  it("recheck is only for the version that is the current index line", async () => {
+    const old = record({ state: "accepted", version: "0.9.0", acceptCommit: OLD, worktree: undefined });
+    const { service } = await build({ records: [old] });
+    await expect(service.startReview({ name: NAME, version: "0.9.0", recheck: true })).rejects.toThrow("повторная проверка возможна только для текущей версии в коллекции");
+  });
+
+  it("a running re-check is listed with recheck: true and marks the collection item as reviewing", async () => {
+    const { service } = await build({ records: [rechecking] });
+    expect((await service.reviews()).items[0]).toMatchObject({ state: "reviewing", recheck: true });
+    expect((await service.collection()).items[0]).toMatchObject({ name: NAME, reviewing: true });
+    const idle = await build({ records: [accepted] });
+    expect((await idle.service.collection()).items[0]).toMatchObject({ reviewing: false });
   });
 });

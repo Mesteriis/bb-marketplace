@@ -31,6 +31,55 @@ describe("serverSlug", () => {
   });
 });
 
+const SANDBOX =
+  "'--network' 'none' '--read-only' '--tmpfs' '/tmp:rw,noexec,nosuid,size=64m' '--user' '65534:65534' '--cap-drop' 'ALL' '--security-opt' 'no-new-privileges' '-e' 'HOME=/tmp'";
+
+describe("generatePackage docker sandbox", () => {
+  const image = server({ packages: [{ registryType: "oci", identifier: "ghcr.io/acme/time", transport: { type: "stdio" } }] });
+  const digest = `sha256:${"b".repeat(64)}`;
+  const run = (docker?: CollectionEntry["docker"]) => generatePackage(image, entry({ ociDigest: digest, docker }), paths)["bin/run.sh"];
+
+  it("launches with every strict flag by default", () => {
+    expect(run()).toBe(
+      `#!/bin/sh\nset -eu\nset -a; . '/home/u/.config/bb-mcp/time.env'; set +a\nexec python3 "$(dirname "$0")/shim.py" 'docker' 'run' '--rm' '-i' ${SANDBOX} 'ghcr.io/acme/time@${digest}'\n`,
+    );
+    expect(run({})).toBe(run());
+    expect(run({ network: "none", user: "nobody" })).toBe(run());
+  });
+
+  it("docker.network bridge swaps the network flag", () => {
+    expect(run({ network: "bridge" })).toContain(`'--rm' '-i' '--network' 'bridge' '--read-only'`);
+  });
+
+  it("docker.user image drops --user", () => {
+    const text = run({ user: "image" }) ?? "";
+    expect(text).not.toContain("--user");
+    expect(text).toContain(`'--tmpfs' '/tmp:rw,noexec,nosuid,size=64m' '--cap-drop' 'ALL'`);
+  });
+
+  it.each(["DOCKER_HOST", "HOME", "DYLD_INSERT_LIBRARIES", "PATH", "LD_PRELOAD", "PYTHONPATH", "DOCKER_CONFIG"])(
+    "refuses a declared %s for an OCI package",
+    (name) => {
+      const bad = server({ packages: [{ registryType: "oci", identifier: "ghcr.io/acme/time", transport: { type: "stdio" }, environmentVariables: [{ name, default: "x" }] }] });
+      expect(() => generatePackage(bad, entry({ ociDigest: digest }), paths)).toThrow(`переменная «${name}» запрещена для образа OCI: она меняет запуск docker`);
+    },
+  );
+
+  it("always passes -e HOME=/tmp and allows ordinary declared variables", () => {
+    const ok = server({ packages: [{ registryType: "oci", identifier: "ghcr.io/acme/time", transport: { type: "stdio" }, environmentVariables: [{ name: "HOMEDIR" }] }] });
+    expect(generatePackage(ok, entry({ ociDigest: digest }), paths)["bin/run.sh"]).toContain(`'-e' 'HOME=/tmp' '-e' 'HOMEDIR' 'ghcr.io/acme/time@`);
+  });
+
+  it("does not apply the OCI variable rule to npm", () => {
+    const n = server({ packages: [{ registryType: "npm", identifier: "@acme/time", version: "1.2.3", transport: { type: "stdio" }, environmentVariables: [{ name: "HOME" }] }] });
+    expect(generatePackage(n, entry(), paths)["bin/run.sh"]).toContain("'npx'");
+  });
+
+  it("refuses docker on a non-OCI choice", () => {
+    expect(() => generatePackage(npm, entry({ docker: { network: "bridge" } }), paths)).toThrow("поле docker допустимо только для образа OCI");
+  });
+});
+
 describe("generatePackage", () => {
   it("generates npm launcher pinned to version", () => {
     const files = generatePackage(npm, entry(), paths);
@@ -61,7 +110,7 @@ describe("generatePackage", () => {
     });
     const digest = `sha256:${"b".repeat(64)}`;
     const run = generatePackage(s, entry({ ociDigest: digest }), paths)["bin/run.sh"];
-    expect(run).toContain(`'docker' 'run' '--rm' '-i' 'ghcr.io/acme/time@${digest}'`);
+    expect(run).toContain(`'docker' 'run' '--rm' '-i' '--network' 'none' '--read-only' '--tmpfs' '/tmp:rw,noexec,nosuid,size=64m' '--user' '65534:65534' '--cap-drop' 'ALL' '--security-opt' 'no-new-privileges' '-e' 'HOME=/tmp' 'ghcr.io/acme/time@${digest}'\n`);
   });
 
   it("docker launcher passes positional arguments after the image, never before it", () => {
@@ -167,7 +216,7 @@ describe("generatePackage", () => {
     });
     const digest = `sha256:${"b".repeat(64)}`;
     const run = generatePackage(s, entry({ ociDigest: digest }), paths)["bin/run.sh"] ?? "";
-    expect(run).toContain(`'docker' 'run' '--rm' '-i' '-e' 'API_KEY' 'ghcr.io/acme/time@${digest}'`);
+    expect(run).toContain(`'docker' 'run' '--rm' '-i' '--network' 'none' '--read-only' '--tmpfs' '/tmp:rw,noexec,nosuid,size=64m' '--user' '65534:65534' '--cap-drop' 'ALL' '--security-opt' 'no-new-privileges' '-e' 'HOME=/tmp' '-e' 'API_KEY' 'ghcr.io/acme/time@${digest}'`);
     expect(run).not.toContain("hunter2");
     expect(run).not.toContain("API_KEY=");
   });
@@ -223,13 +272,46 @@ describe("generatePackage", () => {
       );
     });
 
-    it("puts docker runtime arguments before the image and package arguments after it", () => {
-      const s = withArgs({ runtimeArguments: [{ type: "named", name: "--network", value: "none" }], packageArguments: [{ type: "positional", value: "serve" }] }, "oci");
+    it("puts allowed docker runtime arguments after the sandbox flags and before the image, package arguments after it", () => {
+      const s = withArgs({ runtimeArguments: [{ type: "named", name: "-e", value: "FOO" }], packageArguments: [{ type: "positional", value: "serve" }] }, "oci");
       expect(generatePackage(s, oci, paths)["bin/run.sh"]).toContain(
-        `'docker' 'run' '--rm' '-i' '--network' 'none' 'ghcr.io/acme/time@sha256:${"c".repeat(64)}' 'serve'\n`,
+        `exec python3 "$(dirname "$0")/shim.py" 'docker' 'run' '--rm' '-i' ${SANDBOX} '-e' 'FOO' 'ghcr.io/acme/time@sha256:${"c".repeat(64)}' 'serve'\n`,
       );
     });
 
+    it("accepts --env NAME and --env=NAME as -e NAME", () => {
+      const s = withArgs({ runtimeArguments: [{ type: "named", name: "--env", value: "A" }, { type: "positional", value: "--env=B" }] }, "oci");
+      expect(generatePackage(s, oci, paths)["bin/run.sh"]).toContain(`${SANDBOX} '-e' 'A' '-e' 'B' 'ghcr.io/acme/time@`);
+    });
+
+    it.each([
+      [[{ type: "named", name: "--network", value: "host" }], "--network"],
+      [[{ type: "named", name: "-v", value: "/:/host" }], "-v"],
+      [[{ type: "positional", value: "--privileged" }], "--privileged"],
+      [[{ type: "positional", value: "--env=FOO=bar" }], "--env=FOO=bar"],
+      [[{ type: "named", name: "--user", value: "0" }], "--user"],
+      [[{ type: "named", name: "-e", value: "FOO=bar" }], "-e"],
+      [[{ type: "positional", value: `--${"x".repeat(80)}` }], `--${"x".repeat(58)}`],
+    ])("refuses docker runtime arguments %j", (runtimeArguments, shown) => {
+      expect(() => generatePackage(withArgs({ runtimeArguments }, "oci"), oci, paths)).toThrow(
+        `аргумент запуска «${shown}» не разрешён: ограничения Docker задаёт каталог`,
+      );
+    });
+
+    it.each([
+      [[{ type: "named", name: "-e", value: "DOCKER_HOST" }], "DOCKER_HOST"],
+      [[{ type: "named", name: "--env", value: "HOME" }], "HOME"],
+      [[{ type: "positional", value: "--env=DYLD_INSERT_LIBRARIES" }], "DYLD_INSERT_LIBRARIES"],
+    ])("refuses runtime env pass-through of a forbidden name %j", (runtimeArguments, name) => {
+      expect(() => generatePackage(withArgs({ runtimeArguments }, "oci"), oci, paths)).toThrow(
+        `переменная «${name}» запрещена для образа OCI: она меняет запуск docker`,
+      );
+    });
+
+    it("leaves npm and pypi runtime arguments alone", () => {
+      const runtimeArguments = [{ type: "named", name: "--network", value: "host" }];
+      expect(generatePackage(withArgs({ runtimeArguments }), entry(), paths)["bin/run.sh"]).toContain(`'npx' '--network' 'host' '-y'`);
+    });
     it("refuses a named argument whose name is not a flag", () => {
       const s = withArgs({ packageArguments: [{ type: "named", name: "x; rm -rf /", value: "1" }] });
       expect(() => generatePackage(s, entry(), paths)).toThrow("недопустимое имя аргумента");

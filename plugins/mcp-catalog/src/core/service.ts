@@ -31,6 +31,7 @@ import {
   advanceReview,
   reviewPrompt,
   reviewTitle,
+  restoreAccepted,
 } from "./review";
 
 export type LauncherCheck = (kind: LauncherKind) => Promise<{ ok: true } | { ok: false; message: string }>;
@@ -58,7 +59,7 @@ function messageOf(error: unknown): string {
 }
 
 function toItem(rec: ReviewRecord): ReviewItem {
-  return { name: rec.name, version: rec.version, state: rec.state, error: rec.error ?? null, threadId: rec.threadId };
+  return { name: rec.name, version: rec.version, state: rec.state, error: rec.error ?? null, threadId: rec.threadId, recheck: rec.previousAccept !== undefined };
 }
 
 type Group = Pick<SearchItem, "name" | "latestVersion" | "versions" | "catalogs" | "unsupported">;
@@ -122,14 +123,16 @@ export function createService(deps: ServiceDeps) {
    */
   async function requireAccepted(entry: CollectionEntry): Promise<void> {
     const rec = (await deps.reviews.list()).find(
-      (item) => item.name === entry.name && item.version === entry.version && item.state === "accepted",
+      (item) => item.name === entry.name && item.version === entry.version && (item.state === "accepted" || item.previousAccept !== undefined),
     );
-    const ok =
-      rec !== undefined &&
-      typeof rec.acceptCommit === "string" &&
-      rec.acceptCommit !== "" &&
-      (await deps.collection.isAccepted(rec.acceptCommit));
+    // During a re-check the old accept still stands: the entry on origin/main is the one it recorded.
+    const commit = rec?.state === "accepted" ? rec.acceptCommit : rec?.previousAccept?.acceptCommit;
+    const ok = typeof commit === "string" && commit !== "" && (await deps.collection.isAccepted(commit));
     if (!ok) throw new Error("запись не принята в этом каталоге");
+    // The commit is an ancestor, but the folder on main must still be exactly what that commit accepted.
+    if (!(await deps.collection.sameEntryAt(commit as string, `mcp-collection/${serverSlug(entry.name)}`))) {
+      throw new Error("запись в коллекции изменена после принятия: нужна новая проверка");
+    }
   }
 
   async function installedSlugs(): Promise<(slug: string) => boolean> {
@@ -184,14 +187,23 @@ export function createService(deps: ServiceDeps) {
     async collection(): Promise<CollectionResult> {
       const index = CollectionIndex.parse(await deps.collection.readIndex());
       const isInstalled = await installedSlugs();
+      const busy = new Set(
+        (await deps.reviews.list()).filter((rec) => rec.state === "reviewing" || rec.state === "ready").map((rec) => `${rec.name}@${rec.version}`),
+      );
+      const records = await deps.reviews.list();
+      const lastOf = (name: string, version: string) => {
+        const last = records.find((rec) => rec.name === name && rec.version === version && rec.state === "accepted")?.lastRecheck;
+        return last === undefined ? null : { state: last.state, error: last.error ?? null };
+      };
       const items = await Promise.all(
         index.servers.map(async (item) => {
+          const reviewing = busy.has(`${item.name}@${item.version}`);
           const installed = isInstalled(serverSlug(item.name));
           try {
             const { review } = await loadAcceptedEntry(deps.collection, item.name, index);
-            return { name: item.name, version: item.version, summary: reviewSummary(review), error: null, installed };
+            return { name: item.name, version: item.version, summary: reviewSummary(review), error: null, installed, reviewing, lastRecheck: lastOf(item.name, item.version) };
           } catch (error) {
-            return { name: item.name, version: item.version, summary: "", error: messageOf(error), installed };
+            return { name: item.name, version: item.version, summary: "", error: messageOf(error), installed, reviewing, lastRecheck: lastOf(item.name, item.version) };
           }
         }),
       );
@@ -222,20 +234,36 @@ export function createService(deps: ServiceDeps) {
       return { items, nextCursor: page.nextCursor ?? null, warning: warnings.length === 0 ? null : warnings.join("; ") };
     },
 
-    async startReview(input: { name: string; version: string }): Promise<ReviewItem> {
+    async startReview(input: { name: string; version: string; recheck?: boolean }): Promise<ReviewItem> {
       const existing = (await deps.reviews.list()).find((item) => item.name === input.name && item.version === input.version);
-      if (existing?.state === "accepted") throw new Error("эта версия уже принята в коллекцию");
+      const recheck = input.recheck === true;
+      let previousAccept: ReviewRecord["previousAccept"];
+      if (recheck && existing?.state === "accepted") {
+        if (typeof existing.acceptCommit !== "string" || existing.acceptCommit === "") {
+          throw new Error("повторная проверка возможна только для принятой версии");
+        }
+        previousAccept = { acceptCommit: existing.acceptCommit, ...(existing.acceptedAt === undefined ? {} : { acceptedAt: existing.acceptedAt }) };
+      } else if (recheck && existing?.previousAccept === undefined) {
+        throw new Error("повторная проверка возможна только для принятой версии");
+      } else if (existing?.state === "accepted") {
+        throw new Error("эта версия уже принята в коллекцию");
+      }
       if (existing !== undefined && (existing.state === "reviewing" || existing.state === "ready")) {
         throw new Error("проверка этого сервера уже идёт или ждёт решения");
+      }
+      if (recheck) {
+        const current = CollectionIndex.parse(await deps.collection.readIndex()).servers.find((item) => item.name === input.name);
+        if (current?.version !== input.version) throw new Error("повторная проверка возможна только для текущей версии в коллекции");
       }
       const { server, unsupported, allowHosts, allowHostsDropped } = await catalogs.find(input.name, input.version);
       if (unsupported !== undefined) throw new Error(`не поддерживается: ${unsupported}`);
       let prompt: string;
       let title: string;
       try {
-        prompt = reviewPrompt(server, server.name.startsWith(DOCKER_PREFIX) ? { ociDigest: ociDigestOf(server), allowHosts, allowHostsDropped } : {});
+        prompt = reviewPrompt(server, server.name.startsWith(DOCKER_PREFIX) ? { ociDigest: ociDigestOf(server), allowHosts, allowHostsDropped, recheck } : { recheck });
         title = reviewTitle(server);
       } catch (error) {
+        if (recheck) throw error;
         const failed: ReviewRecord = {
           name: server.name,
           version: server.version,
@@ -253,6 +281,7 @@ export function createService(deps: ServiceDeps) {
         threadId,
         state: "reviewing",
         startedAt: now(),
+        ...(previousAccept === undefined ? {} : { previousAccept }),
       };
       await deps.reviews.put(rec);
       return toItem(rec);
@@ -268,7 +297,12 @@ export function createService(deps: ServiceDeps) {
         } catch {
           // The thread cannot be read right now; the record stays as it was and the next request tries again.
         }
-        if (current !== rec) await deps.reviews.put(current);
+        if (current !== rec) {
+          // A decision may have landed while the thread was being read: only an unchanged record is overwritten.
+          const fresh = (await deps.reviews.list()).find((item) => item.name === rec.name && item.version === rec.version);
+          if (fresh !== undefined && fresh.state === rec.state && fresh.threadId === rec.threadId) await deps.reviews.put(current);
+          else if (fresh !== undefined) current = fresh;
+        }
         items.push(toItem(current));
       }
       return { items: items.sort((a, b) => a.name.localeCompare(b.name) || a.version.localeCompare(b.version, undefined, { numeric: true })) };
@@ -285,8 +319,10 @@ export function createService(deps: ServiceDeps) {
           push: true,
           acceptedCommit: rec.acceptCommit,
           expected,
+          ...(rec.previousAccept === undefined ? {} : { replaceSameVersion: true }),
         });
-        await deps.reviews.put({ ...rec, state: "accepted", acceptCommit: commit });
+        const { previousAccept: _previous, ...rest } = rec;
+        await deps.reviews.put({ ...rest, state: "accepted", acceptCommit: commit, acceptedAt: now() });
         deps.collection.invalidate?.();
       } catch (error) {
         const commit = (error as { acceptCommit?: unknown } | null)?.acceptCommit;
@@ -299,7 +335,7 @@ export function createService(deps: ServiceDeps) {
       const rec = await findRecord(input.name, input.version, ["ready", "failed"]);
       if (rec.state !== "ready" && rec.state !== "failed") throw new Error("отклонить можно только законченную или упавшую проверку");
       if (rec.worktree !== undefined) await deps.write.reject(rec.worktree);
-      await deps.reviews.put({ ...rec, state: "rejected" });
+      await deps.reviews.put(rec.previousAccept === undefined ? { ...rec, state: "rejected" } : restoreAccepted(rec, { state: "rejected" }, now()));
     },
 
     async secretsState(input: { name: string } | { pluginId: string }): Promise<SecretsStateResult> {

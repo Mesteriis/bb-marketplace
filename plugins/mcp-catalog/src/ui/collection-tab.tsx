@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import type { CollectionItem, ReviewItem } from "../core/contract";
 import { messageOf, type CatalogApi, type Notify, type Setup } from "./api";
@@ -28,6 +28,19 @@ export function CollectionTab({ api, notify, tick, onChanged, setup }: Props) {
   const collection = useLoad(() => api.collection(), tick);
   const reviews = useLoad(() => api.reviews(), tick);
   const [installing, setInstalling] = useState<CollectionItem | null>(null);
+  const [rechecking, setRechecking] = useState<string | null>(null);
+  const recheck = async (item: CollectionItem) => {
+    setRechecking(`${item.name}@${item.version}`);
+    try {
+      await api.startReview({ name: item.name, version: item.version, recheck: true });
+      notify("success", "Повторная проверка запущена");
+      onChanged();
+    } catch (error) {
+      notify("error", messageOf(error));
+    } finally {
+      setRechecking(null);
+    }
+  };
 
   const open = reviews.state.kind === "ready" && reviews.state.data.items.some((item) => item.state === "reviewing");
   const reloadReviews = reviews.reload;
@@ -36,6 +49,17 @@ export function CollectionTab({ api, notify, tick, onChanged, setup }: Props) {
     const timer = setInterval(reloadReviews, POLL_MS);
     return () => clearInterval(timer);
   }, [open, reloadReviews]);
+
+  // A review that stops running changes the collection (accepted, restored): reload it so its buttons are current.
+  const running = useRef<Set<string>>(new Set());
+  const reloadCollection = collection.reload;
+  useEffect(() => {
+    if (reviews.state.kind !== "ready") return;
+    const now = new Set(reviews.state.data.items.filter((item) => item.state === "reviewing").map((item) => `${item.name}@${item.version}`));
+    const left = [...running.current].some((key) => !now.has(key));
+    running.current = now;
+    if (left) reloadCollection();
+  }, [reviews.state, reloadCollection]);
 
   const loadVariables = useCallback(
     () => (installing === null ? Promise.reject(new Error("не выбран сервер")) : api.secretsState({ name: installing.name })),
@@ -75,13 +99,32 @@ export function CollectionTab({ api, notify, tick, onChanged, setup }: Props) {
                       <span className="min-w-0 truncate text-sm font-medium">{item.name}</span>
                       <Badge tone="outline">{item.version}</Badge>
                       {item.installed && <Badge>уже стоит</Badge>}
-                      {item.error === null && !item.installed && (
-                        <Button className="ml-auto" size="sm" variant="outline" disabled={!setup.repo} onClick={() => setInstalling(item)}>
-                          Поставить
-                        </Button>
-                      )}
+                      <div className="ml-auto flex gap-1">
+                        {item.error === null && !item.installed && (
+                          <Button size="sm" variant="outline" disabled={!setup.repo} onClick={() => setInstalling(item)}>
+                            Поставить
+                          </Button>
+                        )}
+                        {item.error === null && (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            disabled={item.reviewing || rechecking !== null || !setup.repo || !setup.project}
+                            onClick={() => void recheck(item)}
+                          >
+                            Проверить заново
+                          </Button>
+                        )}
+                      </div>
                     </div>
                     {item.summary !== "" && <p className="text-xs text-muted-foreground">{item.summary}</p>}
+                    {item.lastRecheck !== null && (
+                      <p className="text-xs text-muted-foreground">
+                        {item.lastRecheck.state === "rejected"
+                          ? "повторная проверка отклонена"
+                          : `повторная проверка не прошла${item.lastRecheck.error === null ? "" : `: ${item.lastRecheck.error}`}`}
+                      </p>
+                    )}
                     {item.error !== null && <Notice danger>{item.error}</Notice>}
                   </Row>
                 ))}
@@ -143,7 +186,9 @@ function ReviewRow({
       <div className="flex flex-wrap items-center gap-2">
         <span className="min-w-0 truncate text-sm font-medium">{item.name}</span>
         <Badge tone="outline">{item.version}</Badge>
-        <Badge tone={item.state === "failed" ? "danger" : "plain"}>{REVIEW_LABEL[item.state]}</Badge>
+        <Badge tone={item.state === "failed" ? "danger" : "plain"}>
+          {item.recheck && item.state === "reviewing" ? "повторная проверка" : REVIEW_LABEL[item.state]}
+        </Badge>
         {item.state === "ready" && (
           <div className="ml-auto flex gap-1">
             <Button size="sm" variant="outline" disabled={busy || !canDecide} onClick={() => void act(() => api.accept({ name: item.name, version: item.version }), "Принято в коллекцию")}>

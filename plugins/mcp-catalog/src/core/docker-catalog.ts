@@ -1,4 +1,4 @@
-import { canonicalJson } from "./collection";
+import { canonicalJson, ociEnvRefusal } from "./collection";
 import type { RegistryMeta, RegistryPage, RegistryServer } from "./registry";
 
 export const DOCKER_PREFIX = "com.docker.mcp/";
@@ -68,13 +68,16 @@ function mixedEnvName(entry: Obj): string | undefined {
   return undefined;
 }
 
-function badEnvName(entry: Obj): string | undefined {
-  const names = [...list(entry.secrets), ...list(entry.env)].flatMap((item, at) => {
+function envNames(entry: Obj): string[] {
+  return [...list(entry.secrets), ...list(entry.env)].flatMap((item, at) => {
     if (!isObj(item)) return [];
     const name = at < list(entry.secrets).length ? str(item.env) : str(item.name);
     return name === undefined ? [] : [name];
   });
-  return names.find((name) => !ENV_NAME.test(name));
+}
+
+function badEnvName(entry: Obj): string | undefined {
+  return envNames(entry).find((name) => !ENV_NAME.test(name));
 }
 
 function envVariables(entry: Obj): EnvVar[] {
@@ -143,6 +146,12 @@ export function mapDockerEntry(key: string, entry: unknown, hash: Hash): { serve
   if (mixed !== undefined) return minimal(mixedTemplate(mixed));
   const badName = badEnvName(data);
   if (badName !== undefined) return minimal(badVariable(badName));
+  if (pinned !== null) {
+    for (const name of envNames(data)) {
+      const refusal = ociEnvRefusal(name);
+      if (refusal !== undefined) return minimal(refusal);
+    }
+  }
   if (pinned !== null && !OCI_IDENTIFIER.test(pinned[1] ?? "")) return minimal(BAD_IMAGE);
 
   const found = remoteOf(data);

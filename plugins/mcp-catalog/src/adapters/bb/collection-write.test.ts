@@ -30,22 +30,30 @@ interface Spec {
   slug?: string;
   version?: string;
   hash?: string;
+  /** The `docker` field the reviewer wrote, and the registry type of the package it chose. */
+  docker?: unknown;
+  registryType?: "oci" | "npm";
+  envNames?: string[];
   index?: boolean;
   /** Index lines the reviewer left besides this entry's own line. */
   others?: { name: string; version: string; path: string }[];
 }
 
-const serverOf = (name: string, version: string) => ({ name, description: "d", version });
+const serverOf = (name: string, version: string, registryType?: string, envNames?: string[]) => ({
+  name, description: "d", version,
+  ...(registryType === undefined ? {} : { packages: [{ registryType, identifier: "a/b", version, transport: { type: "stdio" }, ...(envNames === undefined ? {} : { environmentVariables: envNames.map((n) => ({ name: n })) }) }] }),
+});
 
 async function writeEntry(root: string, over: Spec = {}) {
   const name = over.name ?? "io.example/demo";
   const slug = over.slug ?? SLUG;
   const version = over.version ?? "1.0.0";
-  const serverText = `${JSON.stringify(serverOf(name, version))}\n`;
+  const serverText = `${JSON.stringify(serverOf(name, version, over.registryType, over.envNames))}\n`;
   const entry = {
     name, version,
     serverJsonSha256: over.hash ?? (await sha256Hex(serverText)),
     choice: { kind: "package", index: 0 },
+    ...(over.docker === undefined ? {} : { docker: over.docker }),
   };
   await put(root, `mcp-collection/${slug}/server.json`, serverText);
   await put(root, `mcp-collection/${slug}/review.md`, "ok\n");
@@ -98,6 +106,29 @@ describe("branchHasEntry", () => {
   });
 });
 
+describe("accept docker field", () => {
+  const ociServer = serverOf("io.example/demo", "1.0.0", "oci");
+  it("accepts a valid docker field for an OCI package", async () => {
+    await writeEntry(wt, { registryType: "oci", docker: { network: "bridge", user: "image" } });
+    await write.accept(wt, SLUG, opts({ server: ociServer }));
+    expect(JSON.parse(run(main, "show", `HEAD:mcp-collection/${SLUG}/entry.json`)).docker).toEqual({ network: "bridge", user: "image" });
+  });
+  it("rejects an invalid docker value", async () => {
+    await writeEntry(wt, { registryType: "oci", docker: { network: "host" } });
+    await expect(write.accept(wt, SLUG, opts({ server: ociServer }))).rejects.toThrow();
+  });
+  it("rejects a declared DOCKER_HOST on an OCI package", async () => {
+    await writeEntry(wt, { registryType: "oci", envNames: ["DOCKER_HOST"] });
+    await expect(write.accept(wt, SLUG, opts({ server: serverOf("io.example/demo", "1.0.0", "oci", ["DOCKER_HOST"]) }))).rejects.toThrow(
+      "переменная «DOCKER_HOST» запрещена для образа OCI: она меняет запуск docker",
+    );
+  });
+  it("rejects docker on a non-OCI package", async () => {
+    await writeEntry(wt, { registryType: "npm", docker: { network: "bridge" } });
+    await expect(write.accept(wt, SLUG, opts({ server: serverOf("io.example/demo", "1.0.0", "npm") }))).rejects.toThrow("поле docker допустимо только для образа OCI");
+  });
+});
+
 describe("accept", () => {
   it("commits in the worktree, merges into main and pushes", async () => {
     await writeEntry(wt);
@@ -107,6 +138,11 @@ describe("accept", () => {
     expect(run(wt, "log", "-1", "--format=%B")).toContain("mcp-collection: accept io.example/demo 1.0.0");
     expect(run(wt, "log", "-1", "--format=%B")).toContain("Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>");
     expect(run(origin, "rev-parse", "main").trim()).toBe(run(main, "rev-parse", "main").trim());
+  });
+  it("leaves the entry folder on main identical to the accept commit's", async () => {
+    await writeEntry(wt);
+    const { commit } = await write.accept(wt, SLUG, opts({ push: true }));
+    expect(run(main, "rev-parse", `main:mcp-collection/${SLUG}`)).toBe(run(main, "rev-parse", `${commit}:mcp-collection/${SLUG}`));
   });
   it("does not push when push is false", async () => {
     await writeEntry(wt);
@@ -386,5 +422,28 @@ describe("accept", () => {
       await writeEntry(wt2, { version: "1.1.0", others: [{ name: "io.example/demo", version: "1.0.0", path: `mcp-collection/${SLUG}` }] });
       await expect(write.accept(wt2, SLUG, opts({ version: "1.1.0" }))).rejects.toThrow(/индекс/);
     });
+  });
+});
+
+describe("accept of a re-check", () => {
+  const second = async () => {
+    await writeEntry(wt);
+    await write.accept(wt, SLUG, opts({ push: true }));
+    const again = join(wt, "..", "review2");
+    run(main, "worktree", "add", "-b", "bb/recheck", again);
+    return again;
+  };
+
+  it("replaces the entry of the same version only when asked to", async () => {
+    const again = await second();
+    const ociServer = serverOf("io.example/demo", "1.0.0", "oci");
+    await writeEntry(again, { registryType: "oci", docker: { user: "image" } });
+    await expect(write.accept(again, SLUG, opts({ server: ociServer }))).rejects.toThrow("в коллекции уже есть версия 1.0.0: принять можно только более новую");
+    run(again, "reset", "--hard", "-q");
+    await writeEntry(again, { registryType: "oci", docker: { user: "image" } });
+    await write.accept(again, SLUG, { ...opts({ server: ociServer }), replaceSameVersion: true });
+    const entry = JSON.parse(run(main, "show", `HEAD:mcp-collection/${SLUG}/entry.json`));
+    expect(entry.docker).toEqual({ user: "image" });
+    expect(indexOnMain()).toEqual([{ name: "io.example/demo", version: "1.0.0", path: `mcp-collection/${SLUG}` }]);
   });
 });

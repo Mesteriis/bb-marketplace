@@ -95,8 +95,8 @@ describe("settings not filled in", () => {
     fakeApi({
       config: async () => ({ pluginId: "mcp-catalog", missing }),
       inventory: async () => ({ rows: [row({ updateAvailable: "1.1.0" })], warnings: [] }),
-      collection: async () => ({ items: [{ name: "io.example/Demo", version: "1.0.0", summary: "", error: null, installed: false }] }),
-      reviews: async () => ({ items: [{ name: "a/ready", version: "1.0.0", state: "ready" as const, error: null, threadId: "t1" }] }),
+      collection: async () => ({ items: [{ name: "io.example/Demo", version: "1.0.0", summary: "", error: null, installed: false, reviewing: false, lastRecheck: null }] }),
+      reviews: async () => ({ items: [{ name: "a/ready", version: "1.0.0", state: "ready" as const, error: null, threadId: "t1", recheck: false }] }),
       search: async () => ({
         items: [{ name: "a/new", latestVersion: "1.0.0", versions: [{ version: "1.0.0", publishedAt: null, description: "", sources: ["npm" as const], unsupported: null, reviewing: false }], installed: false, inCollection: false, reviewing: false, catalogs: ["official" as const], unsupported: null }],
         nextCursor: null,
@@ -263,12 +263,14 @@ describe("installed tab", () => {
   });
 });
 
-const item = (extra: Partial<{ name: string; version: string; summary: string; error: string | null; installed: boolean }> = {}) => ({
+const item = (extra: Partial<{ name: string; version: string; summary: string; error: string | null; installed: boolean; reviewing: boolean; lastRecheck: { state: "failed" | "rejected"; error: string | null } | null }> = {}) => ({
   name: "io.example/Demo",
   version: "1.0.0",
   summary: "Лицензия MIT.",
   error: null,
   installed: false,
+  reviewing: false,
+  lastRecheck: null,
   ...extra,
 });
 
@@ -305,9 +307,9 @@ describe("collection tab", () => {
   it("offers «Принять» and «Отклонить» only for a ready review", async () => {
     const reviews = async () => ({
       items: [
-        { name: "a/ready", version: "1.0.0", state: "ready" as const, error: null, threadId: "t1" },
-        { name: "b/running", version: "1.0.0", state: "reviewing" as const, error: null, threadId: "t2" },
-        { name: "c/failed", version: "1.0.0", state: "failed" as const, error: "тред упал", threadId: "t3" },
+        { name: "a/ready", version: "1.0.0", state: "ready" as const, error: null, threadId: "t1", recheck: false },
+        { name: "b/running", version: "1.0.0", state: "reviewing" as const, error: null, threadId: "t2", recheck: false },
+        { name: "c/failed", version: "1.0.0", state: "failed" as const, error: "тред упал", threadId: "t3", recheck: false },
       ],
     });
     const api = fakeApi({ reviews });
@@ -320,6 +322,59 @@ describe("collection tab", () => {
     expect(screen.getByText("тред упал")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Принять" }));
     await waitFor(() => expect(api.accept).toHaveBeenCalledWith({ name: "a/ready", version: "1.0.0" }));
+  });
+});
+
+describe("re-check", () => {
+  it("«Проверить заново» starts a review with recheck: true", async () => {
+    const startReview = vi.fn(async () => ({ name: "io.example/Demo", version: "1.0.0", state: "reviewing" as const, error: null, threadId: "t9", recheck: true }));
+    const api = fakeApi({ collection: async () => ({ items: [item()] }), startReview });
+    renderPage(api);
+    clickTab("Коллекция");
+    await screen.findByText("io.example/Demo");
+    fireEvent.click(screen.getByRole("button", { name: "Проверить заново" }));
+    await waitFor(() => expect(startReview).toHaveBeenCalledWith({ name: "io.example/Demo", version: "1.0.0", recheck: true }));
+  });
+
+  it("is disabled while a review of that version is running", async () => {
+    renderPage(fakeApi({ collection: async () => ({ items: [item({ reviewing: true })] }) }));
+    clickTab("Коллекция");
+    await screen.findByText("io.example/Demo");
+    expect((screen.getByRole("button", { name: "Проверить заново" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("labels a running re-check «повторная проверка»", async () => {
+    renderPage(fakeApi({ reviews: async () => ({ items: [{ name: "a/b", version: "1.0.0", state: "reviewing" as const, error: null, threadId: "t1", recheck: true }] }) }));
+    clickTab("Коллекция");
+    await screen.findByText("a/b");
+    expect(screen.getByText("повторная проверка")).toBeTruthy();
+    expect(screen.queryByText("идёт проверка")).toBeNull();
+  });
+});
+
+describe("re-check follow-up", () => {
+  it("shows why the last re-check did not pass", async () => {
+    renderPage(fakeApi({ collection: async () => ({ items: [item({ lastRecheck: { state: "failed", error: "тред упал" } }), item({ name: "b/x", lastRecheck: { state: "rejected", error: null } })] }) }));
+    clickTab("Коллекция");
+    await screen.findByText("повторная проверка не прошла: тред упал");
+    expect(screen.getByText("повторная проверка отклонена")).toBeTruthy();
+  });
+
+  it("reloads the collection when a review stops running", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const running = { name: "io.example/Demo", version: "1.0.0", state: "reviewing" as const, error: null, threadId: "t1", recheck: true };
+      const reviews = vi.fn().mockResolvedValueOnce({ items: [running] }).mockResolvedValue({ items: [{ ...running, state: "accepted" as const }] });
+      const collection = vi.fn(async () => ({ items: [item()] }));
+      renderPage(fakeApi({ reviews, collection }));
+      clickTab("Коллекция");
+      await screen.findByText("повторная проверка");
+      const before = collection.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(16_000);
+      await waitFor(() => expect(collection.mock.calls.length).toBeGreaterThan(before));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -452,7 +507,7 @@ describe("search tab", () => {
   });
 
   it("reviews the selected version and shows that version's description and date", async () => {
-    const startReview = vi.fn(async () => ({ name: "io.example/Demo", version: "1.2.2", state: "reviewing" as const, error: null, threadId: "t" }));
+    const startReview = vi.fn(async () => ({ name: "io.example/Demo", version: "1.2.2", state: "reviewing" as const, error: null, threadId: "t", recheck: false }));
     const item = found({ versions: [ver("1.2.3"), ver("1.2.2", { description: "Старая версия", publishedAt: "2026-10-01T00:00:00Z" })] });
     await search(fakeApi({ search: async () => page([item]), startReview }));
     await screen.findByText("io.example/Demo");
@@ -482,7 +537,7 @@ describe("search tab", () => {
   });
 
   it("starts a review", async () => {
-    const startReview = vi.fn(async () => ({ name: "a/new", version: "1.2.3", state: "reviewing" as const, error: null, threadId: "t" }));
+    const startReview = vi.fn(async () => ({ name: "a/new", version: "1.2.3", state: "reviewing" as const, error: null, threadId: "t", recheck: false }));
     await search(fakeApi({ search: async () => page([found({ name: "a/new" })]), startReview }));
     await screen.findByText("a/new");
     fireEvent.click(screen.getByRole("button", { name: "Проверить" }));

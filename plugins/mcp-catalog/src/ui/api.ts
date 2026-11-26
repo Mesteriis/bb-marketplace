@@ -21,7 +21,7 @@ export interface CatalogApi {
   update(input: { pluginId: string }): Promise<void>;
   collection(): Promise<CollectionResult>;
   search(query: string, cursor?: string, catalogs?: CatalogId[]): Promise<SearchResult>;
-  startReview(input: { name: string; version: string }): Promise<ReviewItem>;
+  startReview(input: { name: string; version: string; recheck?: boolean }): Promise<ReviewItem>;
   reviews(): Promise<ReviewsResult>;
   accept(input: { name: string; version?: string }): Promise<void>;
   reject(input: { name: string; version?: string }): Promise<void>;
