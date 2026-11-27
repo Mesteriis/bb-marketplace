@@ -1059,8 +1059,10 @@ test("SFTP estimate binds actor, request and metadata and can only start one sca
   try {
     const now = Date.now();
     clock.mockReturnValue(now);
-    await expect(bb.rpc("scan_start", { ...input, approvedBytes: "7" }))
+    await expect(bb.rpc("scan_start", input))
       .rejects.toMatchObject({ code: "forbidden", message: "A remote scan requires a confirmed estimate" });
+    await expect(bb.rpc("scan_start", { ...input, approvedBytes: "7" }))
+      .rejects.toMatchObject({ code: "invalid", message: "Invalid Commander request" });
     const estimate = scanEstimate.parse(await bb.rpc("scan_start", { ...input, estimateOnly: true }));
     expect(estimate.bytesPlanned).toBe("7");
     expect(fixture.remote.opCount("op:read")).toBe(0);
@@ -1090,4 +1092,35 @@ test("SFTP estimate binds actor, request and metadata and can only start one sca
     clock.mockRestore();
     await bb.dispose();
   }
+});
+
+test("scan estimate returns planned bytes per endpoint and a total", async () => {
+  const fixture = remoteFixture({});
+  const bb = await backend(undefined, fixture.callRpc);
+  try {
+    await expect(bb.rpc("scan_start", {
+      kind: "dirs", by: "sha256", estimateOnly: true, left: ref("/data"),
+      right: { endpoint: fixture.endpoint, path: parsePosix("/data") },
+    })).resolves.toMatchObject({
+      bytesPlanned: "8",
+      bytesByEndpoint: [{ endpoint: "host:test", bytesPlanned: "1" }, { endpoint: fixture.endpoint, bytesPlanned: "7" }],
+    });
+    expect(fixture.remote.opCount("op:read")).toBe(0);
+  } finally { await bb.dispose(); }
+});
+
+test("a seventeenth estimate on one agent thread is refused while another thread can estimate", async () => {
+  const bb = await backend();
+  try {
+    await bb.rpc("agent_grants_set", { grant: {
+      threadId: "*", endpoint: "host:test", scope: parsePosix("/"), permissions: ["read"],
+    } });
+    const input = { ref: ref("/data/a"), estimateOnly: true };
+    for (let i = 0; i < 16; i++) await expect(bb.tool("commander_checksum", input))
+      .resolves.toMatchObject({ bytesPlanned: "1", estimateId: expect.any(String) });
+    await expect(bb.tool("commander_checksum", input))
+      .resolves.toEqual({ code: "conflict", message: "Commander refused the request" });
+    await expect(bb.tool("commander_checksum", input, { ...agent, threadId: "thread-b" }))
+      .resolves.toMatchObject({ bytesPlanned: "1", estimateId: expect.any(String) });
+  } finally { await bb.dispose(); }
 });

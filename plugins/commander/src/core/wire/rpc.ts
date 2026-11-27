@@ -55,37 +55,43 @@ const tab = z.strictObject({
 });
 const pane = z.strictObject({ tabs: z.array(tab).max(32), activeTab: z.int().min(0).max(31).nullable() })
   .refine(({ tabs, activeTab }) => tabs.length === 0 ? activeTab === null : activeTab !== null && activeTab < tabs.length);
+const scanBytes = z.string().regex(/^(0|[1-9]\d{0,25})$/);
+const scanId = z.strictObject({ scanId: z.uuid() });
+const scanControl = {
+  estimateOnly: z.boolean().optional(),
+  estimateId: z.uuid().optional(),
+};
+const ChecksumRequest = z.strictObject({ kind: z.literal("checksum"), ref: ResourceRef });
+const DirectoryScanRequest = z.strictObject({
+  kind: z.literal("dirs"), left: ResourceRef, right: ResourceRef,
+  by: z.enum(["size+mtime", "sha256"]), mtimeToleranceMs: z.int().min(0).max(86_400_000).default(2000),
+  limit: z.int().min(1).max(LIST_PAGE_MAX).default(100),
+});
+export const ChecksumScan = ChecksumRequest.extend(scanControl);
+export const CompareScan = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("files"), left: ResourceRef, right: ResourceRef,
+    mode: z.enum(["size", "sha256", "bytes"]), ...scanControl,
+  }),
+  DirectoryScanRequest.extend(scanControl),
+]);
+const savedChecksum = scanId.extend({ request: ChecksumRequest });
+const savedComparison = scanId.extend({ request: DirectoryScanRequest });
+export type SavedUiScan = { scanId: string; request: z.output<typeof ChecksumRequest> | z.output<typeof DirectoryScanRequest> };
 export const UiState = z.strictObject({
   left: pane,
   right: pane,
   activePane: z.enum(["left", "right"]),
   layout: z.enum(["horizontal", "vertical"]),
   split: z.number().min(0.1).max(0.9),
+  lastChecksum: savedChecksum.optional(),
+  lastComparison: savedComparison.optional(),
   inspectorCollapsed: z.boolean().optional(),
 });
 export type UiState = z.infer<typeof UiState>;
 
 const uiScope = z.strictObject({ threadId: threadId.optional() });
 
-const scanBytes = z.string().regex(/^(0|[1-9]\d{0,25})$/);
-const scanId = z.strictObject({ scanId: z.uuid() });
-const scanControl = {
-  estimateOnly: z.boolean().optional(),
-  estimateId: z.uuid().optional(),
-  approvedBytes: scanBytes.optional(),
-};
-export const ChecksumScan = z.strictObject({ kind: z.literal("checksum"), ref: ResourceRef, ...scanControl });
-export const CompareScan = z.discriminatedUnion("kind", [
-  z.strictObject({
-    kind: z.literal("files"), left: ResourceRef, right: ResourceRef,
-    mode: z.enum(["size", "sha256", "bytes"]), ...scanControl,
-  }),
-  z.strictObject({
-    kind: z.literal("dirs"), left: ResourceRef, right: ResourceRef,
-    by: z.enum(["size+mtime", "sha256"]), mtimeToleranceMs: z.int().min(0).max(86_400_000).default(2000),
-    limit: z.int().min(1).max(LIST_PAGE_MAX).default(100), ...scanControl,
-  }),
-]);
 export const ScanJobView = z.strictObject({
   id: z.uuid(),
   kind: z.enum(["checksum", "compare", "search"]),
@@ -107,7 +113,11 @@ const scanResult = z.union([
 ]);
 export type ScanResult = z.infer<typeof scanResult>;
 
-export const ScanEstimateView = z.strictObject({ estimateId: z.uuid(), bytesPlanned: scanBytes });
+export const ScanEstimateView = z.strictObject({
+  estimateId: z.uuid(), bytesPlanned: scanBytes,
+  bytesByEndpoint: z.array(z.strictObject({ endpoint: EndpointId, bytesPlanned: scanBytes })).min(1).max(2),
+});
+export type ScanEstimateView = z.infer<typeof ScanEstimateView>;
 export const ScanGetView = z.strictObject({
   job: ScanJobView, result: scanResult.nullable(), reason: z.literal("result_expired").optional(),
 });

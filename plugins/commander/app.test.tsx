@@ -536,12 +536,13 @@ const scanJob = { id: scanId, kind: "compare", initiator: { kind: "owner" }, end
   state: "running", progress: { items: 2, bytes: "4", bytesPlanned: "16" }, partial: false, error: null };
 
 test("directory comparison waits for confirmation of the remote estimate before starting", async () => {
-  const remote = { ...endpoint, provider: "sftp", id: "sftp:123e4567-e89b-42d3-a456-426614174000", hostId: null };
+  const remote = { ...endpoint, label: "Тестовый SFTP", provider: "sftp", id: "sftp:123e4567-e89b-42d3-a456-426614174000", hostId: null };
   saved!.right.tabs[0]!.endpoint = remote.id;
   const call = host.call.getMockImplementation()!;
   host.call.mockClear().mockImplementation(async (method, input) => {
     if (method === "endpoints_list") return { endpoints: [endpoint, remote] };
-    if (method === "scan_start") return input.estimateOnly ? { estimateId: remoteEstimateId, bytesPlanned: "16" } : scanJob;
+    if (method === "scan_start") return input.estimateOnly ? { estimateId: remoteEstimateId, bytesPlanned: "16",
+      bytesByEndpoint: [{endpoint: endpoint.id, bytesPlanned: "4"}, {endpoint: remote.id, bytesPlanned: "12"}] } : scanJob;
     if (method === "scan_get") return { job: scanJob, result: null };
     return call(method, input);
   });
@@ -549,7 +550,7 @@ test("directory comparison waits for confirmation of the remote estimate before 
   await leftFile();
   fireEvent.click(screen.getByRole("button", { name: "Сравнить каталоги" }));
   fireEvent.click(screen.getByRole("button", { name: "Сверить по SHA-256" }));
-  expect(await screen.findByText("Объём чтения: до 16 Б")).toBeDefined();
+  expect(await screen.findByText("Прочитает до 4 Б локально и 12 Б с «Тестовый SFTP»")).toBeDefined();
   expect(host.call.mock.calls.filter(([method]) => method === "scan_start")).toHaveLength(1);
   fireEvent.click(screen.getByRole("button", { name: "Подтвердить чтение" }));
   await waitFor(() => expect(host.call).toHaveBeenCalledWith("scan_start",
@@ -613,4 +614,52 @@ test("directory results align entries and can hide equal pairs", async () => {
   fireEvent.click(screen.getByRole("checkbox", { name: "Скрыть одинаковые" }));
   expect(screen.queryByText("совпадает.txt")).toBeNull();
   expect(screen.getByText("только-слева.txt")).toBeDefined();
+});
+
+test.each([
+  ["running", null], ["interrupted", "Сканирование прервано"], ["done", "Результат недоступен"],
+] as const)("reopening comparison after remount restores %s from UI storage", async (state, text) => {
+  const remote = { ...endpoint, provider: "sftp", id: "sftp:123e4567-e89b-42d3-a456-426614174000", hostId: null };
+  saved!.right.tabs[0]!.endpoint = remote.id;
+  const call = host.call.getMockImplementation()!;
+  let reopened = false;
+  host.call.mockClear().mockImplementation(async (method, input) => {
+    if (method === "endpoints_list") return { endpoints: [endpoint, remote] };
+    if (method === "scan_start") return input.estimateOnly ? {
+      estimateId: remoteEstimateId, bytesPlanned: "16", bytesByEndpoint: [{ endpoint: remote.id, bytesPlanned: "16" }],
+    } : scanJob;
+    if (method === "scan_get") return { job: { ...scanJob, state: reopened ? state : "running" }, result: null,
+      ...(reopened && state === "done" ? { reason: "result_expired" } : {}) };
+    return call(method, input);
+  });
+  const page = mount();
+  await leftFile();
+  fireEvent.click(screen.getByRole("button", { name: "Сравнить каталоги" }));
+  fireEvent.click(screen.getByRole("button", { name: "Сверить по SHA-256" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Подтвердить чтение" }));
+  await screen.findByRole("progressbar");
+  page.unmount();
+  reopened = true;
+  mount();
+  await leftFile();
+  fireEvent.click(screen.getByRole("button", { name: "Сравнить каталоги" }));
+  if (text) await screen.findByText(text);
+  else await screen.findByRole("progressbar");
+  expect(host.call.mock.calls.filter(([method]) => method === "scan_start")).toHaveLength(2);
+  if (text) {
+    fireEvent.click(screen.getByRole("button", { name: "Повторить" }));
+    await screen.findByRole("button", { name: "Подтвердить чтение" });
+    expect(host.call.mock.calls.filter(([method]) => method === "scan_start").at(-1)?.[1])
+      .toMatchObject({ kind: "dirs", by: "sha256", estimateOnly: true });
+    expect(host.call.mock.calls.filter(([method]) => method === "scan_start").at(-1)?.[1]).not.toHaveProperty("estimateId");
+  }
+});
+
+test("Escape closes comparison and returns focus to the active file panel", async () => {
+  mount();
+  fireEvent.click(await leftFile());
+  fireEvent.click(screen.getByRole("button", { name: "Сравнить каталоги" }));
+  const title = screen.getByRole("heading", { name: "Сравнение каталогов", level: 1 });
+  fireEvent.keyDown(title, { key: "Escape" });
+  await waitFor(() => expect(document.activeElement).toBe(grid()));
 });

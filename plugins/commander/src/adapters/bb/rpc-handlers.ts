@@ -237,7 +237,7 @@ export function createOperations(deps: {
       const { provider, path } = location(input.ref);
       const expected = await scanFile({ provider, path }, signal);
       return {
-        bytes: estimateRead([expected]),
+        planned: [estimateRead([expected])],
         snapshot: [expected],
         async work(ctx: ScanContext): Promise<ScanResult> {
           const sha256 = await checksum(provider, path, ctx.signal, { ...scanHash(ctx), expected });
@@ -253,7 +253,7 @@ export function createOperations(deps: {
       const a = await scanFile(left, signal);
       const b = await scanFile(right, signal);
       return {
-        bytes: input.mode === "size" || a.size !== b.size ? 0n : estimateRead([a, b]),
+        planned: input.mode === "size" || a.size !== b.size ? [0n, 0n] : [estimateRead([a]), estimateRead([b])],
         snapshot: [a, b],
         async work(ctx: ScanContext): Promise<ScanResult> {
           const comparison = await compareFiles(left, right, input.mode, ctx.signal, { ...scanHash(ctx), expected: [a, b] });
@@ -266,7 +266,7 @@ export function createOperations(deps: {
     const a = await scanDir(left, input.limit, signal);
     const b = await scanDir(right, input.limit, signal);
     return {
-      bytes: input.by === "sha256" ? estimateRead(a.entries) + estimateRead(b.entries) : 0n,
+      planned: input.by === "sha256" ? [estimateRead(a.entries), estimateRead(b.entries)] : [0n, 0n],
       snapshot: [a, b],
       async work(ctx: ScanContext): Promise<ScanResult> {
         const equal: [Entry, Entry][] = [];
@@ -454,14 +454,15 @@ export function createOperations(deps: {
       await checkScanRead(initiator, paths);
       await deps.ready();
       const remote = ids.some((id) => id.startsWith("sftp:"));
-      const { estimateId, estimateOnly, approvedBytes: _legacyApproval, ...scan } = input;
+      const { estimateId, estimateOnly, ...scan } = input;
       const request = JSON.stringify(scan);
       if (!estimateOnly && remote && !estimateId) {
         throw refusal("forbidden", "A remote scan requires a confirmed estimate");
       }
       if (!estimateOnly && estimateId) requireScanEstimate(estimateId, initiator, request);
       await endpoints.prepare(ids, signal);
-      const { bytes, snapshot, work } = await prepareScan(input, signal);
+      const { planned, snapshot, work } = await prepareScan(input, signal);
+      const bytes = planned.reduce((total, count) => total + count, 0n);
       const snapshotDigest = createHash("sha256").update(JSON.stringify(snapshot)).digest("hex");
       return serializeAccess(async () => {
         await checkScanRead(initiator, paths);
@@ -476,9 +477,17 @@ export function createOperations(deps: {
           const ownPool = [...scanEstimates].filter(([, item]) => item.initiator.kind === initiator.kind);
           const poolLimit = initiator.kind === "owner" ? 32 : 64;
           if (ownPool.length >= poolLimit) throw refusal("conflict", "Scan estimate pool is full");
+          if (initiator.kind === "agent" && ownPool.filter(([, item]) => ownedBy(initiator, item.initiator)).length >= 16) {
+            throw refusal("conflict", "Thread scan estimate pool is full");
+          }
           const id = planner.uuid();
           scanEstimates.set(id, { initiator, request, snapshot: snapshotDigest, expires: now + 600_000 });
-          return { estimateId: id, bytesPlanned: bytes.toString() };
+          const byEndpoint = new Map<string, bigint>();
+          paths.forEach(({ endpoint }, index) => {
+            byEndpoint.set(endpoint, (byEndpoint.get(endpoint) ?? 0n) + planned[index]);
+          });
+          return { estimateId: id, bytesPlanned: bytes.toString(),
+            bytesByEndpoint: [...byEndpoint].map(([endpoint, count]) => ({ endpoint, bytesPlanned: count.toString() })) };
         }
         if (estimateId) {
           const estimate = requireScanEstimate(estimateId, initiator, request);

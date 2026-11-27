@@ -98,14 +98,15 @@ function useWorkspaceState(rpc: Rpc, sdk: Sdk, threadId: string | undefined, env
     return () => { active = false; mounted.current = false; flush(); };
   }, [rpc, sdk, environment, threadId, flush]);
 
-  const update = useCallback((change: (state: UiState) => UiState) => {
+  const update = useCallback((change: (state: UiState) => UiState, saveNow = false) => {
     const next = change(current.current);
     if (next === current.current) return;
     current.current = next;
     setState(next);
     dirty.current = true;
     clearTimeout(timer.current);
-    timer.current = setTimeout(flush, delay);
+    if (saveNow) flush();
+    else timer.current = setTimeout(flush, delay);
   }, [flush]);
 
   const refreshEndpoints = useCallback(async () => {
@@ -305,7 +306,9 @@ function CommanderPage({ compact = false, environment, threadId }: { compact?: b
   };
   const mutate = async (action: Promise<unknown>) => { const result = await action; refresh("job"); return result; };
   const identity = (job: OperationJob) => ({ jobId: job.id, digest: job.plan.digest });
-  return <Workspace scans={scans} state={state} update={update} endpoints={endpoints} compact={compact} queue={queue} problem={problem}
+  return <Workspace scans={scans} onRememberScan={({ scanId, request }) => update((previous) => request.kind === "dirs"
+    ? { ...previous, lastComparison: { scanId, request } }
+    : { ...previous, lastChecksum: { scanId, request } }, true)} state={state} update={update} endpoints={endpoints} compact={compact} queue={queue} problem={problem}
     directories={{ left: leftDir, right: rightDir }} bindings={bindings}
     onBindings={(value) => {
       setBindings(value);

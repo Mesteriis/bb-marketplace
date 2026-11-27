@@ -2,8 +2,8 @@ import { useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent }
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import type { ConflictAction, Entry, OperationJob, OperationPlan, ResourceRef } from "../core/model.ts";
-import { displayPath, join, NameSegment, parent, parsePosix, type ResourcePath } from "../core/path.ts";
-import type { AgentGrant, UiState } from "../core/wire/rpc.ts";
+import { displayPath, join, NameSegment, parent, parsePosix, samePath, type ResourcePath } from "../core/path.ts";
+import type { AgentGrant, SavedUiScan, UiState } from "../core/wire/rpc.ts";
 import { CompareView, type ScanActions, type ScanSubject } from "./compare-view.tsx";
 import { ConflictDialog, Modal, PlanDialog, TextDialog } from "./dialogs.tsx";
 import { chord, findShortcut, shortcuts, shortcutText, type KeyBindings, type Shortcut } from "./keyboard.ts";
@@ -46,6 +46,7 @@ export interface WorkspaceProps {
   onCancel: (job: OperationJob) => Promise<unknown>;
   onPreview: (ref: ResourceRef) => void;
   scans: ScanActions;
+  onRememberScan(scan: SavedUiScan): void;
   onCompare: (source: ResourceRef, target: ResourceRef) => Promise<[string, string]>;
   onTerminal: (ref: ResourceRef) => Promise<void>;
   onOpenThread: (threadId: string) => void;
@@ -57,6 +58,16 @@ const actions = [
   { key: "move", icon: "MoveTo" }, { key: "mkdir", icon: "FolderPlus" }, { key: "remove", icon: "Trash2" },
 ] as const;
 const noEntries: Entry[] = [];
+
+function savedScan(state: UiState, subject: ScanSubject): SavedUiScan | undefined {
+  const sameRef = (a: ResourceRef, b: ResourceRef) => a.endpoint === b.endpoint && samePath(a.path, b.path, true);
+  if (subject.kind === "checksum" && state.lastChecksum && sameRef(subject.file.ref, state.lastChecksum.request.ref)) {
+    return state.lastChecksum;
+  }
+  const compare = state.lastComparison;
+  if (subject.kind === "dirs" && compare
+    && sameRef(subject.left.ref, compare.request.left) && sameRef(subject.right.ref, compare.request.right)) return compare;
+}
 
 function maskMatcher(mask: string) {
   const pattern = Array.from(mask);
@@ -475,7 +486,11 @@ export function Workspace(props: WorkspaceProps) {
     onCancel={(job) => open({ kind: "cancel", job })} />;
 
   return <div ref={root} className="cm-workspace" data-compact={compact} onKeyDown={onKeyDown}>
-    {dialog?.kind === "scan" ? <CompareView subject={dialog.subject} api={props.scans} close={close} /> : <>
+    {dialog?.kind === "scan" ? <CompareView subject={dialog.subject} api={props.scans} saved={savedScan(state, dialog.subject)}
+      remember={props.onRememberScan} close={() => {
+        focusReturn.current = root.current?.querySelector(".cm-scan h1") ?? null;
+        close();
+      }} /> : <>
     <header className="cm-heading">
       {compact && <h1><Icon name="Folder" />Commander</h1>}
       {!dialog && retryConflict ? <div className="cm-retry">
@@ -484,21 +499,20 @@ export function Workspace(props: WorkspaceProps) {
       </div> : <><span className="cm-hint">{compact ? ru.threadEnvironment : ru.shortcut}</span><span className="cm-fill" /></>}
       {!compact && <><Button size="sm" variant="outline" aria-label={ru.swap} onClick={() => { setCursor({}); update((previous) => ({ ...previous, left: previous.right, right: previous.left })); }}>
         <Icon name="ArrowUpDown" /><span>{ru.swap}</span></Button>
-        <Button size="sm" variant="outline" aria-label={ru.compare} disabled={!ready || !destination || !directories.left || !directories.right ||
-          directories.left.loading || directories.right.loading || !!directories.left.error || !!directories.right.error}
+        <Button size="sm" variant="outline" aria-label={ru.compare} disabled={!left || !right}
           onClick={() => {
             if (!left || !right) return;
             const a = currentRef(left), b = currentRef(right);
             open({ kind: "scan", subject: { kind: "dirs",
-              left: { ref: a, label: endpointsBySide.left?.label ?? a.endpoint },
-              right: { ref: b, label: endpointsBySide.right?.label ?? b.endpoint },
+              left: { ref: a, label: endpointsBySide.left?.label ?? a.endpoint, readOnly: endpointsBySide.left?.readOnly ?? true },
+              right: { ref: b, label: endpointsBySide.right?.label ?? b.endpoint, readOnly: endpointsBySide.right?.readOnly ?? true },
             } });
           }}>
           <Icon name="FileDiff" /><span>{ru.compare}</span></Button></>}
       <Button size="sm" variant="outline" aria-label={ru.scanChecksum} disabled={!ready || current?.kind !== "file"} onClick={() => {
         if (!tab || current?.kind !== "file") return;
         open({ kind: "scan", subject: { kind: "checksum", file: {
-          ref: { endpoint: tab.endpoint, path: join(tab.path, current.name) }, label: endpoint?.label ?? tab.endpoint,
+          ref: { endpoint: tab.endpoint, path: join(tab.path, current.name) }, label: endpoint?.label ?? tab.endpoint, readOnly: endpoint?.readOnly ?? true,
         } } });
       }}><Icon name="Hash" /><span>SHA-256</span></Button>
       <Button ref={queueToggle} size="sm" variant="ghost" className="cm-queue-toggle" aria-label={ru.queue} aria-expanded={queueOpen}
