@@ -2,8 +2,9 @@
  * Known limits
  * Node has no openat/renameat2 API. Intermediate components can change between
  * lstat and an operation. Parent, leaf and descriptor checks narrow those windows.
- * Conditional replace is serialized with mutations within this worker. External
- * processes can still change the target between the final check and rename.
+ * Conditional mutations are serialized within this worker. External
+ * processes can still change an entry between its final version check and
+ * rename, unlink or rmdir.
  * POSIX directory/symlink rename without replacement uses a final absence check
  * followed by rename. That sequence can race with external target creation.
  * Filesystems that reject hard links use the same fallback and report it.
@@ -13,12 +14,13 @@ import { link, mkdir, opendir, rename, rmdir, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { CommanderError } from "../../../core/errors.ts";
 import { type Entry } from "../../../core/model.ts";
-import { parsePosix } from "../../../core/path.ts";
+import { parsePosix, type ResourcePath } from "../../../core/path.ts";
 import { type HostFsContract, type HostFsInput, type HostFsMethod, type HostFsOutput } from "../../../core/wire/host-fs.ts";
 import { fsError, hasErrno, linkUnavailable } from "./errors.ts";
-import { changed, describe, entryKind, forEachChunk, hashFile, matches, position, withRegularFile } from "./files.ts";
-import { type NamePlatform } from "./names.ts";
-import { childPath, decodeName, lstatOrNull, parseWindowsPath, recheckParent, requireAbsent, requireDirectory, resolvePath, sameNode } from "./paths.ts";
+import { changed, describe, entryKind, forEachChunk, hashFile, matches, position, requireVersion, verifyVersionHash, withRegularFile,
+  type ExpectedVersion } from "./files.ts";
+import { validateTargetName, type NamePlatform } from "./names.ts";
+import { childPath, decodeName, lstatOrNull, parseWindowsPath, recheckParent, requireDirectory, resolvePath, sameNode } from "./paths.ts";
 import { WriteSessions, type WriteOptions } from "./writes.ts";
 
 interface Context {
@@ -101,6 +103,17 @@ export function createHostFs(options: WriteOptions & { platform?: NamePlatform }
     };
   }
 
+  async function resolveVersionedPath(
+    path: ResourcePath, expect: ExpectedVersion, options: Parameters<typeof resolvePath>[2],
+  ) {
+    try {
+      return await resolvePath(path, platform, options);
+    } catch (error) {
+      if (expect && expect !== "absent" && hasErrno(error, "ENOENT")) throw changed();
+      throw error;
+    }
+  }
+
   const handlers: Handlers = {
     list: handle<"list">(async ({ path, cursor, limit }, { signal }) => {
       const { full, stats } = await resolvePath(path, platform);
@@ -180,63 +193,81 @@ export function createHostFs(options: WriteOptions & { platform?: NamePlatform }
       await mkdir(target.full);
       return {};
     })),
-    rename: handle<"rename">(({ from, to, replace }, { signal }) => writes.publish(async () => {
-      const source = await resolvePath(from, platform, { mutable: true });
-      const target = await resolvePath(to, platform, { target: true });
-      if (!source.stats) throw new CommanderError("not_found", "Source does not exist");
-      if (!replace && target.stats) throw new CommanderError("already_exists", "Target exists");
+    rename: handle<"rename">(async ({ from, to, replace, expectTarget }, { signal }) => {
+      const name = to.segments.at(-1);
+      if (name) validateTargetName(name, platform);
+      // Inspect the leaf with lstat so a newly occupied target reports a version mismatch.
+      const resolveTarget = () => resolveVersionedPath(to, expectTarget, { mutable: true });
+      const hashed = await verifyVersionHash(resolveTarget, expectTarget, signal, options.hashTarget);
+      const noReplace = !replace || expectTarget === "absent";
 
-      await recheckParent(source);
-      await recheckParent(target);
-      signal.throwIfAborted();
-      if (!replace && source.stats.isFile()) {
-        let linked = false;
-        try {
-          await (options.link ?? link)(source.full, target.full);
-          linked = true;
-        } catch (error) {
-          if (!linkUnavailable(error)) throw error;
-        }
-        if (linked) {
+      return writes.publish(async () => {
+        const source = await resolvePath(from, platform, { mutable: true });
+        const target = await resolveTarget();
+        if (!source.stats) throw new CommanderError("not_found", "Source does not exist");
+
+        const checkTarget = async () => {
+          const current = await lstatOrNull(target.full);
+          requireVersion(current, expectTarget, hashed);
+          if (current?.isSymbolicLink()) throw new CommanderError("permission_denied", "Symbolic link at target");
+          if (noReplace && current) throw new CommanderError("already_exists", "Target exists");
+        };
+
+        if (noReplace && source.stats.isFile()) {
+          await recheckParent(source);
+          await recheckParent(target);
+          await checkTarget();
+          signal.throwIfAborted();
+          let linked = false;
           try {
-            await recheckParent(source);
-            await recheckParent(target);
-            const bound = await lstatOrNull(target.full);
-            const current = await lstatOrNull(source.full);
-            if (!bound || !current || !sameNode(bound, source.stats) || !sameNode(current, bound)) throw changed();
-            await (options.unlink ?? unlink)(source.full);
-          } catch {
-            throw new CommanderError("outcome_unknown", "Rename could not confirm removal of the original source");
+            await (options.link ?? link)(source.full, target.full);
+            linked = true;
+          } catch (error) {
+            if (expectTarget === "absent" && hasErrno(error, "EEXIST")) throw changed();
+            if (!linkUnavailable(error)) throw error;
           }
-          return {};
+          if (linked) {
+            try {
+              await recheckParent(source);
+              await recheckParent(target);
+              const bound = await lstatOrNull(target.full);
+              const current = await lstatOrNull(source.full);
+              if (!bound || !current || !sameNode(bound, source.stats) || !sameNode(current, bound)) throw changed();
+              await (options.unlink ?? unlink)(source.full);
+            } catch {
+              throw new CommanderError("outcome_unknown", "Rename could not confirm removal of the original source");
+            }
+            return {};
+          }
         }
-      }
 
-      // rename itself has no no-clobber flag on this API. Recheck after a failed link or directory lookup.
-      await recheckParent(source);
-      await recheckParent(target);
-      const current = await lstatOrNull(source.full);
-      if (!current || !sameNode(current, source.stats)) throw changed();
-      if (!replace) await requireAbsent(target.full);
-      else if ((await lstatOrNull(target.full))?.isSymbolicLink()) {
-        throw new CommanderError("permission_denied", "Symbolic link at target");
-      }
-      signal.throwIfAborted();
-      await rename(source.full, target.full);
-      return replace ? {} : { atomicNoReplace: false as const };
-    })),
-    remove: handle<"remove">(({ path, kind }, { signal }) => writes.publish(async () => {
-      const resolved = await resolvePath(path, platform, { mutable: true });
-      const { full, stats } = resolved;
-      if (stats && entryKind(stats) !== kind) throw changed();
-      await recheckParent(resolved);
-      const current = await lstatOrNull(full);
-      if (current && (!stats || !sameNode(current, stats))) throw changed();
-      signal.throwIfAborted();
-      if (kind === "dir") await rmdir(full);
-      else await unlink(full);
-      return {};
-    })),
+        // Recheck after a failed link. The rename syscall itself has no no-clobber flag on this API.
+        await recheckParent(source);
+        await recheckParent(target);
+        const current = await lstatOrNull(source.full);
+        if (!current || !sameNode(current, source.stats)) throw changed();
+        await checkTarget();
+        signal.throwIfAborted();
+        await rename(source.full, target.full);
+        return noReplace ? { atomicNoReplace: false as const } : {};
+      });
+    }),
+    remove: handle<"remove">(async ({ path, kind, expect }, { signal }) => {
+      const resolveEntry = () => resolveVersionedPath(path, expect, { mutable: true });
+      const hashed = await verifyVersionHash(resolveEntry, expect, signal, options.hashTarget);
+      return writes.publish(async () => {
+        const resolved = await resolveEntry();
+        const { full, stats } = resolved;
+        await recheckParent(resolved);
+        const current = await lstatOrNull(full);
+        requireVersion(current, expect, hashed);
+        if (current && (!stats || !sameNode(current, stats) || entryKind(current) !== kind)) throw changed();
+        signal.throwIfAborted();
+        if (kind === "dir") await rmdir(full);
+        else await unlink(full);
+        return {};
+      });
+    }),
     copyWithin: handle<"copyWithin">(async ({ from, to, replace, expectTarget }, { signal }) => {
       const source = await resolvePath(from, platform);
       return withRegularFile(source.full, source.stats, signal, async (file, opened) => {

@@ -113,9 +113,5 @@ export function createLocalProvider(
       return fingerprintResult("copyWithin", to, await call("copyWithin", { from, to, ...opts }, signal));
     },
     async sha256(path, signal) { return (await call("sha256", { path }, signal)).hex; },
-  } satisfies Omit<FileProvider, "openWrite"> & {
-    openWrite(target: ResourcePath, signal: AbortSignal): Promise<
-      Awaited<ReturnType<FileProvider["openWrite"]>> & { readonly tempPath: ResourcePath }
-    >;
-  };
+  } satisfies FileProvider;
 }

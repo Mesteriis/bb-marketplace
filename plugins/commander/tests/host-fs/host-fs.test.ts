@@ -371,3 +371,88 @@ it("refuses a target symlink and every mutation through an intermediate symlink"
   expect(await readdir(join(root, "other"))).toEqual(["victim"]);
   expect(await readFile(join(root, "other", "victim"), "utf8")).toBe("keep");
 });
+
+it("refuses a stale rename target without changing either path", async () => {
+  await writeFile(join(root, "source"), "source");
+  await writeFile(join(root, "target"), "replacement");
+  await expect(fs.handlers.rename({
+    from: at("source"), to: at("target"), replace: true, expectTarget: { size: "3", mtimeNs: "0" },
+  }, ctx)).rejects.toMatchObject({ code: "changed_since_plan" });
+  expect(await readFile(join(root, "source"), "utf8")).toBe("source");
+  expect(await readFile(join(root, "target"), "utf8")).toBe("replacement");
+});
+
+it("reports a newly occupied target as changed when link loses the race", async () => {
+  const source = join(root, "source");
+  const target = join(root, "target");
+  await writeFile(source, "source");
+  await fs.dispose();
+  fs = createHostFs({
+    link: async (from, to) => {
+      await writeFile(target, "intervening");
+      await link(from, to);
+    },
+  });
+  await expect(fs.handlers.rename({
+    from: at("source"), to: at("target"), replace: false, expectTarget: "absent",
+  }, ctx)).rejects.toMatchObject({ code: "changed_since_plan" });
+  expect(await readFile(source, "utf8")).toBe("source");
+  expect(await readFile(target, "utf8")).toBe("intervening");
+});
+
+it("refuses to remove a file with a stale version", async () => {
+  await writeFile(join(root, "target"), "replacement");
+  await expect(fs.handlers.remove({
+    path: at("target"), kind: "file", expect: { size: "3", mtimeNs: "0" },
+  }, ctx)).rejects.toMatchObject({ code: "changed_since_plan" });
+  expect(await readFile(join(root, "target"), "utf8")).toBe("replacement");
+});
+
+it("rejects removal of a regular file with matching metadata and a stale SHA-256", async () => {
+  const target = join(root, "target");
+  await writeFile(target, "abc");
+  const stats = await lstat(target, { bigint: true });
+  await expect(fs.handlers.remove({
+    path: at("target"), kind: "file",
+    expect: { size: "3", mtimeNs: stats.mtimeNs.toString(), sha256: "0".repeat(64) },
+  }, ctx)).rejects.toMatchObject({ code: "changed_since_plan" });
+  expect(await readFile(target, "utf8")).toBe("abc");
+});
+
+it("removes an empty directory with the expected version", async () => {
+  const target = join(root, "target");
+  await mkdir(target);
+  const stats = await lstat(target, { bigint: true });
+  await fs.handlers.remove({
+    path: at("target"), kind: "dir", expect: { size: stats.size.toString(), mtimeNs: stats.mtimeNs.toString() },
+  }, ctx);
+  expect(await readdir(root)).toEqual([]);
+});
+
+it("reports a symlink that occupied an expected-absent rename target", async () => {
+  await writeFile(join(root, "source"), "source");
+  await writeFile(join(root, "victim"), "keep");
+  await symlink(join(root, "victim"), join(root, "target"));
+  await expect(fs.handlers.rename({
+    from: at("source"), to: at("target"), replace: false, expectTarget: "absent",
+  }, ctx)).rejects.toMatchObject({ code: "changed_since_plan" });
+  expect(await readFile(join(root, "source"), "utf8")).toBe("source");
+  expect((await lstat(join(root, "target"))).isSymbolicLink()).toBe(true);
+  expect(await readFile(join(root, "victim"), "utf8")).toBe("keep");
+});
+
+it("replaces a regular rename target whose expected fingerprint still matches", async () => {
+  const target = join(root, "target");
+  await writeFile(join(root, "source"), "source");
+  await writeFile(target, "abc");
+  const stats = await lstat(target, { bigint: true });
+  await fs.handlers.rename({
+    from: at("source"), to: at("target"), replace: true,
+    expectTarget: {
+      size: "3", mtimeNs: stats.mtimeNs.toString(),
+      sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+    },
+  }, ctx);
+  expect(await readFile(target, "utf8")).toBe("source");
+  expect(await readdir(root)).toEqual(["target"]);
+});

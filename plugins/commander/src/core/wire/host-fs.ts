@@ -16,6 +16,7 @@ const publication = z.object({
 }).strict();
 const publishedFile = Fingerprint.extend(publication.shape);
 const writeCleanup = publication.pick({ orphanedTempPath: true });
+const expectTarget = Fingerprint.or(z.literal("absent")).optional();
 const transfer = z.object({ from: ResourcePath, to: ResourcePath, replace: z.boolean() }).strict();
 
 export const HostFsContract = {
@@ -39,10 +40,10 @@ export const HostFsContract = {
   },
   writeAbort: { input: session, output: writeCleanup },
   mkdir: { input: path, output: empty },
-  rename: { input: transfer, output: publication.pick({ atomicNoReplace: true }) },
-  remove: { input: path.extend({ kind: EntryKind }), output: empty },
+  rename: { input: transfer.extend({ expectTarget }), output: publication.pick({ atomicNoReplace: true }) },
+  remove: { input: path.extend({ kind: EntryKind, expect: Fingerprint.optional() }), output: empty },
   copyWithin: {
-    input: transfer.extend({ expectTarget: Fingerprint.or(z.literal("absent")).optional() }),
+    input: transfer.extend({ expectTarget }),
     output: publishedFile,
   },
   sha256: { input: path, output: z.object({ hex: z.string().regex(/^[0-9a-f]{64}$/) }).strict() },

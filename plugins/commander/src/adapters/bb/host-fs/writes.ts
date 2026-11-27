@@ -4,12 +4,11 @@ import { link, open, rename, unlink, type FileHandle } from "node:fs/promises";
 import { CommanderError } from "../../../core/errors.ts";
 import { type Fingerprint } from "../../../core/model.ts";
 import { join, parent, type NameSegment, type ResourcePath } from "../../../core/path.ts";
-import { changed, fingerprint, hashFile, matches, noFollow, withRegularFile } from "./files.ts";
+import { changed, fingerprint, hashFile, noFollow, requireVersion, verifyVersionHash, type ExpectedVersion } from "./files.ts";
 import { hasErrno, linkUnavailable } from "./errors.ts";
 import { type NamePlatform } from "./names.ts";
 import { childPath, decodeName, encodeName, lstatOrNull, recheckParent, requireAbsent, resolvePath, sameNode } from "./paths.ts";
 
-type TargetVersion = Fingerprint | "absent" | null | undefined;
 type PublishedFile = Fingerprint & { atomicNoReplace?: false; orphanedTempPath?: ResourcePath };
 type CleanupResult = { orphanedTempPath?: ResourcePath };
 export type StagingOrphan = {
@@ -135,13 +134,15 @@ export class WriteSessions {
    * Preserve POSIX permission bits when replacing a file. Extended attributes
    * and ACLs of the old target are not copied to the staged inode.
    */
-  commit(session: string, replace: boolean, expect: TargetVersion, signal: AbortSignal): Promise<PublishedFile> {
+  commit(session: string, replace: boolean, expect: ExpectedVersion, signal: AbortSignal): Promise<PublishedFile> {
     return this.run(session, async (stage) => {
       const { file, target, directory, tempName } = stage;
       signal.throwIfAborted();
       await file.sync();
       const stagedStats = await file.stat({ bigint: true });
-      const hashed = await this.verifyTargetHash(target, expect, signal);
+      const hashed = await verifyVersionHash(
+        () => resolvePath(target, this.platform, { target: true }), expect, signal, this.options.hashTarget,
+      );
       return this.publish(async () => {
         signal.throwIfAborted();
         const resolved = await resolvePath(target, this.platform, { target: true });
@@ -152,7 +153,8 @@ export class WriteSessions {
         await recheckParent(resolved);
         const currentTarget = await lstatOrNull(resolved.full);
         if (currentTarget?.isSymbolicLink()) throw new CommanderError("permission_denied", "Symbolic link at target");
-        this.checkTarget(currentTarget, expect, hashed);
+        if (expect && expect !== "absent" && currentTarget && !currentTarget.isFile()) throw changed();
+        requireVersion(currentTarget, expect, hashed);
         const mode = replace && currentTarget?.isFile()
           ? Number(currentTarget.mode & 0o7777n)
           : 0o644 & ~process.umask();
@@ -175,7 +177,7 @@ export class WriteSessions {
               const fallbackTemp = await lstatOrNull(temp);
               if (!fallbackTemp?.isFile() || !sameNode(fallbackTemp, stagedStats)) throw changed();
               if (expect && expect !== "absent") {
-                this.checkTarget(await lstatOrNull(resolved.full), expect, hashed);
+                requireVersion(await lstatOrNull(resolved.full), expect, hashed);
               }
               await requireAbsent(resolved.full, expect === "absent");
               signal.throwIfAborted();
@@ -207,30 +209,6 @@ export class WriteSessions {
     const result = this.publishing.then(use);
     this.publishing = result.then(() => {}, () => {});
     return result;
-  }
-
-  private async verifyTargetHash(
-    target: ResourcePath, expect: TargetVersion, signal: AbortSignal,
-  ): Promise<BigIntStats | null> {
-    if (!expect || expect === "absent" || !expect.sha256) return null;
-    const { full, stats } = await resolvePath(target, this.platform, { target: true });
-    if (!stats?.isFile() || !matches(stats, expect)) throw changed();
-    return withRegularFile(full, stats, signal, async (file, opened) => {
-      if (!matches(opened, expect)) throw changed();
-      const hex = await (this.options.hashTarget ?? hashFile)(file, signal);
-      const after = await file.stat({ bigint: true });
-      if (hex !== expect.sha256 || !matches(after, expect)) throw changed();
-      return opened;
-    });
-  }
-
-  private checkTarget(current: BigIntStats | null, expect: TargetVersion, hashed: BigIntStats | null): void {
-    if (expect == null) return;
-    if (expect === "absent") {
-      if (current) throw changed();
-      return;
-    }
-    if (!current?.isFile() || !matches(current, expect) || (hashed && !sameNode(current, hashed))) throw changed();
   }
 
   abort(session: string): Promise<CleanupResult> {

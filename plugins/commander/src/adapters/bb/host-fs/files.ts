@@ -94,3 +94,35 @@ export async function hashFile(file: FileHandle, signal: AbortSignal): Promise<s
   await forEachChunk(file, signal, (chunk) => { hash.update(chunk); });
   return hash.digest("hex");
 }
+
+export type ExpectedVersion = Fingerprint | "absent" | null | undefined;
+
+export function requireVersion(
+  current: BigIntStats | null, expect: ExpectedVersion, hashed: BigIntStats | null = null,
+): void {
+  if (expect == null) return;
+  if (expect === "absent") {
+    if (current) throw changed();
+    return;
+  }
+  if (!current || !matches(current, expect) || (hashed && !sameNode(current, hashed))) throw changed();
+}
+
+/** Hash outside the publish lock, then compare the verified inode and version under it. */
+export async function verifyVersionHash(
+  resolve: () => Promise<{ full: FsPath; stats: BigIntStats | null }>,
+  expect: ExpectedVersion,
+  signal: AbortSignal,
+  hash = hashFile,
+): Promise<BigIntStats | null> {
+  if (!expect || expect === "absent" || !expect.sha256) return null;
+  const { full, stats } = await resolve();
+  if (!stats?.isFile() || !matches(stats, expect)) throw changed();
+  return withRegularFile(full, stats, signal, async (file, opened) => {
+    if (!matches(opened, expect)) throw changed();
+    const hex = await hash(file, signal);
+    const after = await file.stat({ bigint: true });
+    if (hex !== expect.sha256 || !matches(after, expect)) throw changed();
+    return opened;
+  });
+}

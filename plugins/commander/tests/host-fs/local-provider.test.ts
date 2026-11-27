@@ -130,3 +130,30 @@ it("reports a non-atomic publication to the caller while returning a strict fing
   expect(await provider.copyWithin(path, path, { replace: false }, signal)).toEqual({ size: "3", mtimeNs: "1" });
   expect(onResult).toHaveBeenCalledWith({ method: "copyWithin", target: path, atomicNoReplace: false });
 });
+
+it("validates and forwards conditional mutations through host RPC", async () => {
+  const root = await mkdtemp(join(await realpath(tmpdir()), "commander-conditional-"));
+  const host = createHostFs();
+  const harness = experimental_createHostEntryHarness(experimental_defineHostEntry({
+    contract: HostFsContract, handlers: host.rpcHandlers, dispose: host.dispose,
+  }));
+  const provider = createLocalProvider(endpoint, {
+    call: (method, input, options) => harness.experimental_call(method, input, { signal: options.signal }),
+  });
+  const from = parsePosix(join(root, "source"));
+  const to = parsePosix(join(root, "target"));
+  const expectVersion = { size: "3", mtimeNs: "0" };
+  try {
+    await writeFile(join(root, "source"), "keep");
+    await writeFile(join(root, "target"), "untouched");
+    await expect(provider.rename(from, to, { replace: false, expectTarget: "absent" }, signal))
+      .rejects.toMatchObject({ code: "changed_since_plan" });
+    await expect(provider.remove(from, { kind: "file", expect: expectVersion }, signal))
+      .rejects.toMatchObject({ code: "changed_since_plan" });
+    expect(await readFile(join(root, "source"), "utf8")).toBe("keep");
+    expect(await readFile(join(root, "target"), "utf8")).toBe("untouched");
+  } finally {
+    await harness.experimental_dispose();
+    await rm(root, { recursive: true, force: true });
+  }
+});
