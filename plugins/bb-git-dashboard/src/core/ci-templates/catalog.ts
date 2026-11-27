@@ -52,9 +52,9 @@ export function offerTemplates(forge: CiForge, stacks: Stack[], own: OwnEntry[])
  * The values suggested for a template: the defaults of the found stacks it is written for, then the repository's
  * default branch and its name as a local image name.
  */
-export function templateDefaults(template: CiTemplate, stacks: Stack[], repo: {branch: string | null; name: string}): StackValues {
+export function templateDefaults(template: CiTemplate, stacks: Stack[], repo: {branch: string | null; name: string; make?: boolean}): StackValues {
   const values: StackValues = {};
   for (const stack of stacks) if (template.stacks.includes(stack.id)) for (const [key, value] of Object.entries(stack.defaults)) if (!(key in values)) values[key] = value;
   const image = repo.name.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, "").slice(0, 60);
-  return {...values, branch: repo.branch ?? "main", image: image || "app"};
+  return {...values, branch: repo.branch ?? "main", image: image || "app", make: repo.make === true};
 }

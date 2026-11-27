@@ -7,7 +7,7 @@ export type Stack = {id: StackId; evidence: string[]; defaults: StackValues};
 /** The project's tracked paths and the text of the root manifests among them (see `manifestPaths`). */
 export type StackInput = {paths: string[]; manifests: Record<string, string>};
 
-const manifests = new Set(["package.json", ".nvmrc", ".node-version", "pyproject.toml", "requirements.txt", ".python-version", "go.mod", "Cargo.toml"]);
+const manifests = new Set(["package.json", ".nvmrc", ".node-version", "pyproject.toml", "requirements.txt", ".python-version", "go.mod", "Cargo.toml", "Makefile"]);
 /** The root manifests worth reading, in the order the project lists them. */
 export const manifestPaths = (paths: string[]) => paths.filter(path => manifests.has(path));
 
@@ -46,6 +46,7 @@ function python(root: Set<string>, files: Record<string, string>): Stack {
     pythonTool: tool,
     pythonVersion: minor(files[".python-version"]) ?? minor(requires) ?? "3.12",
     test: /\bpytest\b/.test(project) || /\bpytest\b/.test(files["requirements.txt"] ?? ""),
+    lockfile: root.has("uv.lock") || root.has("poetry.lock"),
   }};
 }
 
@@ -60,3 +61,6 @@ export function detectStacks({paths, manifests: files}: StackInput): Stack[] {
   if (root.has("Dockerfile")) found.push({id: "docker", evidence: ["Dockerfile"], defaults: {}});
   return found;
 }
+
+/** Whether the project's root Makefile has a `check` target, which CI then runs instead of its own steps (ADR-011). */
+export const makeCheck = ({paths, manifests: files}: StackInput) => paths.includes("Makefile") && /^check\s*:(?!=)/m.test(files.Makefile ?? "");

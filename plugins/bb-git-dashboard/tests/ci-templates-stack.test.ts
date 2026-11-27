@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { detectStacks, manifestPaths } from "../src/core/ci-templates/stack.ts";
+import { detectStacks, makeCheck, manifestPaths } from "../src/core/ci-templates/stack.ts";
 
 test("a Node project: the package manager from the packageManager field, the version from .nvmrc, scripts as flags", () => {
   const stacks = detectStacks({
@@ -23,13 +23,13 @@ test("Node without packageManager takes the lockfile, and the engines range when
 test("a Python project: uv by its lockfile, poetry by its section, the version from requires-python, pytest as the test flag", () => {
   const [uv] = detectStacks({paths: ["pyproject.toml", "uv.lock", "tests/test_app.py"],
     manifests: {"pyproject.toml": "[project]\nname = \"x\"\nrequires-python = \">=3.13\"\n[dependency-groups]\ndev = [\"pytest>=8\"]\n"}});
-  assert.deepEqual(uv, {id: "python", evidence: ["pyproject.toml", "uv.lock"], defaults: {pythonTool: "uv", pythonVersion: "3.13", test: true}});
+  assert.deepEqual(uv, {id: "python", evidence: ["pyproject.toml", "uv.lock"], defaults: {pythonTool: "uv", pythonVersion: "3.13", test: true, lockfile: true}});
   const [poetry] = detectStacks({paths: ["pyproject.toml"], manifests: {"pyproject.toml": "[tool.poetry]\nname = \"x\"\n"}});
-  assert.deepEqual(poetry.defaults, {pythonTool: "poetry", pythonVersion: "3.12", test: false});
+  assert.deepEqual(poetry.defaults, {pythonTool: "poetry", pythonVersion: "3.12", test: false, lockfile: false});
   const [pip] = detectStacks({paths: ["requirements.txt", ".python-version"], manifests: {".python-version": "3.11.9\n"}});
-  assert.deepEqual(pip, {id: "python", evidence: ["requirements.txt"], defaults: {pythonTool: "pip", pythonVersion: "3.11", test: false}});
+  assert.deepEqual(pip, {id: "python", evidence: ["requirements.txt"], defaults: {pythonTool: "pip", pythonVersion: "3.11", test: false, lockfile: false}});
   const [plain] = detectStacks({paths: ["pyproject.toml"], manifests: {"pyproject.toml": "[project]\nname = \"x\"\n[tool.pytest.ini_options]\n"}});
-  assert.deepEqual(plain.defaults, {pythonTool: "pyproject", pythonVersion: "3.12", test: true});
+  assert.deepEqual(plain.defaults, {pythonTool: "pyproject", pythonVersion: "3.12", test: true, lockfile: false});
 });
 
 test("Go takes its version from go.mod, Rust is found by Cargo.toml, Docker by a Dockerfile at the root", () => {
@@ -46,6 +46,12 @@ test("only files at the root count, and a project with none of them has no stack
 });
 
 test("the manifests to read are the root ones the project has", () => {
-  assert.deepEqual(manifestPaths(["package.json", "src/a.ts", ".nvmrc", "pyproject.toml", "web/package.json", "go.mod", ".python-version"]),
-    ["package.json", ".nvmrc", "pyproject.toml", "go.mod", ".python-version"]);
+  assert.deepEqual(manifestPaths(["package.json", "src/a.ts", ".nvmrc", "pyproject.toml", "web/package.json", "go.mod", ".python-version", "Makefile"]),
+    ["package.json", ".nvmrc", "pyproject.toml", "go.mod", ".python-version", "Makefile"]);
+});
+
+test("a root Makefile with a check target makes CI run make check", () => {
+  assert.equal(makeCheck({paths: ["Makefile"], manifests: {Makefile: ".PHONY: check\ncheck: lint test\n\tgo vet ./...\n"}}), true);
+  assert.equal(makeCheck({paths: ["Makefile"], manifests: {Makefile: "build:\n\tgo build\n# check: not a target\n"}}), false);
+  assert.equal(makeCheck({paths: ["src/Makefile"], manifests: {}}), false);
 });

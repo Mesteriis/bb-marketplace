@@ -3,7 +3,7 @@ import type { z } from "zod";
 import { offerTemplates, ownTemplates, templateDefaults, type OwnEntry } from "../../core/ci-templates/catalog.ts";
 import type { ciTemplateRequest, CiTemplatesView } from "../../core/ci-templates/contract.ts";
 import { renderTemplate, resolveValues, secretIssues } from "../../core/ci-templates/render.ts";
-import { detectStacks } from "../../core/ci-templates/stack.ts";
+import { detectStacks, makeCheck } from "../../core/ci-templates/stack.ts";
 import type { Account, Repo } from "../../core/providers.ts";
 import type { Preview, RemoteAction } from "../../core/publication.ts";
 import { CodedError, failureFor, type Copy, type Failure } from "../../core/workspace.ts";
@@ -50,7 +50,7 @@ export function ciTemplateHandlers(bb: BbPluginApi, deps: Deps) {
     if (!read.ok) throw new Error(read.code);
     const stacks = detectStacks(read);
     const {offered, rejected} = offerTemplates(account.kind, stacks, await own(copy));
-    return {forge: account.kind, repo: {path: repo.path, name: repo.name, branch: repo.branch}, ref: read.ref, head: read.head, stacks, offered, rejected,
+    return {forge: account.kind, repo: {path: repo.path, name: repo.name, branch: repo.branch, make: makeCheck(read)}, ref: read.ref, head: read.head, stacks, offered, rejected,
       existing: read.paths.filter(path => ciPaths.test(path)), account, repoRef: repo};
   }
 

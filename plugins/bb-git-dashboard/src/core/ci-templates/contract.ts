@@ -10,7 +10,7 @@ const value = z.union([z.string().max(100), z.boolean()]);
 const source = z.enum(["builtin", "settings", "folder"]);
 export const ciTemplatesView = z.object({
   forge: ciForge,
-  repo: z.object({path: z.string(), name: z.string(), branch: z.string().nullable()}),
+  repo: z.object({path: z.string(), name: z.string(), branch: z.string().nullable(), make: z.boolean()}),
   /** Where the stack was read: `origin/<default branch>` as last fetched, or HEAD when the copy has no such ref. */
   ref: z.string(),
   /** The commit the stack was read at, or null before the first commit. */

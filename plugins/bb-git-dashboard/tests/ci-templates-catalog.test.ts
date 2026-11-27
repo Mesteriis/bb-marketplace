@@ -54,7 +54,7 @@ jobs:
         with:
           node-version: "20"
       - name: Enable pnpm
-        run: corepack enable
+        run: npm install -g corepack && corepack enable
       - name: Install
         run: pnpm install --frozen-lockfile
       - name: Test
@@ -65,7 +65,7 @@ jobs:
 
 test("Python with uv on GitLab CI", () => {
   const template = byId("python-gitlab");
-  assert.deepEqual(renderTemplate(template, resolveValues(template, {}, {pythonTool: "uv", pythonVersion: "3.13", test: true})), {path: ".gitlab-ci.yml", text:
+  assert.deepEqual(renderTemplate(template, resolveValues(template, {}, {pythonTool: "uv", pythonVersion: "3.13", test: true, lockfile: true})), {path: ".gitlab-ci.yml", text:
 `# Python CI from a Makosh Git template. Add deployment and secrets yourself.
 workflow:
   rules:
@@ -131,7 +131,24 @@ test("offered templates are the forge's: those of the found stacks first, in the
 
 test("a template's suggested values are those of its own stacks, then the repository's branch and name", () => {
   const stacks: Stack[] = [{id: "node", evidence: [], defaults: {test: false, packageManager: "pnpm"}}, {id: "python", evidence: [], defaults: {test: true, pythonTool: "uv"}}];
-  assert.deepEqual(templateDefaults(byId("node-github"), stacks, {branch: "trunk", name: "My App"}), {test: false, packageManager: "pnpm", branch: "trunk", image: "my-app"});
-  assert.deepEqual(templateDefaults(byId("python-github"), stacks, {branch: null, name: "x"}), {test: true, pythonTool: "uv", branch: "main", image: "x"});
-  assert.deepEqual(templateDefaults(byId("go-github"), stacks, {branch: "main", name: "--"}), {branch: "main", image: "app"});
+  assert.deepEqual(templateDefaults(byId("node-github"), stacks, {branch: "trunk", name: "My App"}), {test: false, packageManager: "pnpm", branch: "trunk", image: "my-app", make: false});
+  assert.deepEqual(templateDefaults(byId("python-github"), stacks, {branch: null, name: "x"}), {test: true, pythonTool: "uv", branch: "main", image: "x", make: false});
+  assert.deepEqual(templateDefaults(byId("go-github"), stacks, {branch: "main", name: "--", make: true}), {branch: "main", image: "app", make: true});
+});
+
+test("without a committed uv.lock, uv syncs without --locked", () => {
+  const template = byId("python-github");
+  const {text} = renderTemplate(template, resolveValues(template, {}, {pythonTool: "uv", lockfile: false}));
+  assert.match(text, /run: pip install uv && uv sync\n/);
+  assert.doesNotMatch(text, /--locked/);
+});
+
+test("with a Makefile that has a check target, CI sets up the language and runs make check instead of the steps", () => {
+  const template = byId("go-github");
+  const {text} = renderTemplate(template, resolveValues(template, {}, {goVersion: "1.26", make: true}));
+  assert.equal(text.split("\n").slice(-3).join("\n"), "      - name: Check\n        run: make check\n");
+  assert.doesNotMatch(text, /go vet/);
+  const node = byId("node-gitlab");
+  const nodeText = renderTemplate(node, resolveValues(node, {}, {packageManager: "npm", lockfile: true, make: true})).text;
+  assert.match(nodeText, /    - npm ci\n    - make check\n$/);
 });
