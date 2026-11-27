@@ -34,6 +34,7 @@ type PreparedDirectory = { source: Location; target: Location };
 type MoveFinish = "removed" | "source_retained" | "move_cancelled";
 type ItemResult = "done" | "skipped" | Exclude<MoveFinish, "removed"> | PreparedDirectory;
 const cancelledError = new CommanderError("cancelled", "Job cancelled");
+const shutdownError = new CommanderError("internal", "runner is shutting down");
 const sourceRetained = "Source changed; source retained";
 const moveCancelled = "Move cancelled; source retained";
 
@@ -78,6 +79,9 @@ export class JobRunner {
   private readonly store: JobStore;
   private readonly chunkBytes: number;
   private readonly active = new Map<string, Run>();
+  private readonly stopping = new AbortController();
+  private readonly operations = new Set<Promise<unknown>>();
+  private stopped?: Promise<void>;
   private readonly decisions = new Map<string, Map<number, Decision>>();
   private readonly rules = new Map<string, Map<Conflict["reason"], ConflictAction>>();
   private readonly restored = new Map<string, Checkpoint>();
@@ -91,8 +95,35 @@ export class JobRunner {
     }
   }
 
-  async submit(plan: OperationPlan, opts?: { awaitsOwner: boolean }): Promise<OperationJob> {
+  shutdown(): Promise<void> {
+    if (!this.stopped) {
+      this.stopped = Promise.allSettled([
+        ...this.operations, ...Array.from(this.active.values(), (run) => run.done),
+      ]).then(() => {});
+      this.stopping.abort(shutdownError);
+    }
+    return this.stopped;
+  }
+
+  private async accept<T>(action: () => Promise<T>): Promise<T> {
+    this.stopping.signal.throwIfAborted();
+    const operation = Promise.withResolvers<T>();
+    this.operations.add(operation.promise);
+    try {
+      operation.resolve(action());
+      return await operation.promise;
+    } finally {
+      this.operations.delete(operation.promise);
+    }
+  }
+
+  submit(plan: OperationPlan, opts?: { awaitsOwner: boolean }): Promise<OperationJob> {
+    return this.accept(() => this.submitPlan(plan, opts));
+  }
+
+  private async submitPlan(plan: OperationPlan, opts?: { awaitsOwner: boolean }): Promise<OperationJob> {
     plan = await this.validPlan(plan);
+    this.stopping.signal.throwIfAborted();
     const now = this.deps.now().toISOString();
     const job = OperationJob.parse({
       id: this.deps.uuid(), plan, state: "pending", awaitsOwner: opts?.awaitsOwner ?? false,
@@ -106,13 +137,17 @@ export class JobRunner {
     return job;
   }
 
-  async approve(id: string): Promise<void> {
+  approve(id: string): Promise<void> {
+    return this.accept(() => this.approvePending(id));
+  }
+
+  private async approvePending(id: string): Promise<void> {
     const job = await this.requireJob(id);
     if (job.state !== "pending" || !job.awaitsOwner) {
       throw new CommanderError("changed_since_plan", "Job is no longer awaiting approval");
     }
     const plan = await this.validPlan(job.plan);
-    const context = this.context(id, 0, new AbortController().signal);
+    const context = this.context(id, 0, this.stopping.signal);
     const checked = await this.deps.revalidate?.(plan, context.signal);
     if (checked && !checked.ok) throw new CommanderError("changed_since_plan", "Plan changed before approval");
     // Sources are checked before any target is touched.
@@ -141,6 +176,7 @@ export class JobRunner {
       if (!await this.start(job, plan)) throw new CommanderError("changed_since_plan", "Job is no longer awaiting approval");
       return;
     }
+    this.stopping.signal.throwIfAborted();
     if (!await this.change(job, "start")) throw new CommanderError("changed_since_plan", "Job is no longer awaiting approval");
     const running = await this.requireJob(id);
     if (running.state === "running") await this.requestConflict(running, targetConflict.index, targetConflict.conflict);
@@ -156,7 +192,12 @@ export class JobRunner {
   }
 
   async decide(id: string, input: ConflictDecision): Promise<void> {
+    this.stopping.signal.throwIfAborted();
     const decision = ConflictDecision.parse(input);
+    return this.accept(() => this.applyDecision(id, decision));
+  }
+
+  private async applyDecision(id: string, decision: ConflictDecision): Promise<void> {
     const job = await this.requireJob(id);
     const conflict = job.pendingConflict;
     if (job.state !== "awaiting_decision" || conflict?.id !== decision.conflictId) {
@@ -165,6 +206,7 @@ export class JobRunner {
     if (conflict.allowedResolutions && !conflict.allowedResolutions.includes(decision.action)) {
       throw new CommanderError("unsupported", "Resolution is unavailable for this conflict");
     }
+    this.stopping.signal.throwIfAborted();
     if (decision.action === "cancel") {
       if (!await this.change(job, "cancel")) throw new CommanderError("changed_since_plan", "Conflict is no longer current");
       await this.finishCancel(id);
@@ -196,13 +238,18 @@ export class JobRunner {
     await this.finishCancel(id);
   }
 
-  async recover(): Promise<{ resumed: string[]; unknown: string[] }> {
+  recover(): Promise<{ resumed: string[]; unknown: string[] }> {
+    return this.accept(() => this.recoverJobs());
+  }
+
+  private async recoverJobs(): Promise<{ resumed: string[]; unknown: string[] }> {
     const result: { resumed: string[]; unknown: string[] } = { resumed: [], unknown: [] };
     const jobs = await this.store.list({
       states: ["running", "cancel_requested", "awaiting_decision", "interrupted", "pending"],
       limit: Number.MAX_SAFE_INTEGER,
     });
     for (const job of jobs) {
+      this.stopping.signal.throwIfAborted();
       if (this.active.has(job.id)) continue;
       if (job.state === "pending") {
         if (!job.awaitsOwner && await this.start(job)) result.resumed.push(job.id);
@@ -233,6 +280,7 @@ export class JobRunner {
         }
 
       } catch {
+        this.stopping.signal.throwIfAborted();
         const latest = await this.requireJob(job.id);
         const error = new CommanderError("outcome_unknown", "Interrupted job outcome could not be confirmed");
         if (index !== null) await this.record(latest, index, "unknown", error);
@@ -240,6 +288,7 @@ export class JobRunner {
         result.unknown.push(job.id);
         continue;
       }
+      this.stopping.signal.throwIfAborted();
       if (cancelling) {
         await this.change(await this.requireJob(job.id), "cancel_done", { currentItem: null, error: null });
         continue;
@@ -264,7 +313,7 @@ export class JobRunner {
     const source = item.source && this.location(item.source);
     const target = this.recoveredTarget(item, checkpoint);
 
-    const context = this.context(job.id, index, new AbortController().signal);
+    const context = this.context(job.id, index, this.stopping.signal);
     context.load(checkpoint);
     const outcome = await reconcileItem(checkpoint, source, target, item, job.plan, context,
       (point) => this.store.checkpoint(point));
@@ -318,17 +367,20 @@ export class JobRunner {
   }
 
   private async start(job: OperationJob, snapshot?: OperationPlan): Promise<boolean> {
+    this.stopping.signal.throwIfAborted();
     if (!await this.change(job, "start")) return false;
     this.launch(job.id, snapshot);
     return true;
   }
 
   private launch(id: string, snapshot?: OperationPlan): void {
+    this.stopping.signal.throwIfAborted();
     if (this.active.has(id)) return;
     const controller = new AbortController();
     const done = Promise.resolve()
-      .then(() => this.execute(id, controller.signal, snapshot))
+      .then(() => this.execute(id, AbortSignal.any([controller.signal, this.stopping.signal]), snapshot))
       .catch(async (error: unknown) => {
+        if (this.stopping.signal.aborted) return;
         const job = await this.requireJob(id);
         if (job.state === "running") {
           await this.change(job, "fail", { error: safeError(error).toShape(), currentItem: null });
@@ -347,6 +399,7 @@ export class JobRunner {
     const deferred = [...prepared.keys()].sort((a, b) => a - b);
     try {
       for (;;) {
+        if (this.stopping.signal.aborted) return;
         let job = await this.requireJob(id);
         if (job.state !== "running") return;
         if (snapshot) job = { ...job, plan: snapshot };
@@ -383,6 +436,7 @@ export class JobRunner {
             }
           }
         } catch (caught) {
+          if (this.stopping.signal.aborted) return;
           const current = await this.requireJob(id);
           if (caught instanceof ItemConflict && current.state === "running") {
             await this.requestConflict(current, index, caught, this.progress(current, toBig(job.progress.bytesDone)));
@@ -403,13 +457,15 @@ export class JobRunner {
         if (next < job.items.length) next = index + 1;
       }
     } finally {
-      const job = await this.requireJob(id);
-      if (job.state === "cancel_requested") await this.finishCancel(id);
-      if (job.state !== "awaiting_decision" && job.state !== "running") {
-        this.rules.delete(id);
-        this.decisions.delete(id);
-        this.directories.delete(id);
-        this.restored.delete(id);
+      if (!this.stopping.signal.aborted) {
+        const job = await this.requireJob(id);
+        if (job.state === "cancel_requested") await this.finishCancel(id);
+        if (job.state !== "awaiting_decision" && job.state !== "running") {
+          this.rules.delete(id);
+          this.decisions.delete(id);
+          this.directories.delete(id);
+          this.restored.delete(id);
+        }
       }
     }
   }
@@ -537,7 +593,7 @@ export class JobRunner {
       : (proof: VerifyContext) => this.unchanged(source, sourceFingerprint, destination, expectTarget, proof);
     const spelled = async () => {
       const { jobId, itemIndex } = context.saved();
-      return nameSpelling(source!, destination!, this.context(jobId, itemIndex, new AbortController().signal)).catch(() => null);
+      return nameSpelling(source!, destination!, this.context(jobId, itemIndex, this.stopping.signal)).catch(() => null);
     };
 
     switch (job.plan.kind) {
@@ -579,7 +635,7 @@ export class JobRunner {
             const entry = await probe().catch(async () => {
               if (!signal.aborted) return null;
               const { jobId, itemIndex } = context.saved();
-              const check = this.context(jobId, itemIndex, new AbortController().signal);
+              const check = this.context(jobId, itemIndex, this.stopping.signal);
               return observe(destination, check, Boolean(sourceFingerprint.sha256)).catch(() => null);
             });
             if (entry?.kind !== item.kind || !matches(entry, sourceFingerprint) || (caseOnly && await spelled() !== "target")) {
@@ -757,7 +813,7 @@ export class JobRunner {
           throw new CommanderError("outcome_unknown", "Temporary path already belongs to another entry");
         }
         if (failure.retryable || signal.aborted || failure.code === "outcome_unknown") {
-          const check = this.context(jobId, itemIndex, new AbortController().signal);
+          const check = this.context(jobId, itemIndex, this.stopping.signal);
           await removeStagedTemp(temp, check);
           if (failure.code !== "outcome_unknown" && !await unchanged(check).catch(() => false)) {
             throw new CommanderError("outcome_unknown", "Mutation state after openWrite could not be confirmed");
@@ -808,6 +864,7 @@ export class JobRunner {
         await confirmSource();
         committed = await commitTarget(() => session.commit({ replace, expectTarget: expectTarget === "absent" ? null : expectTarget }, signal));
       } catch (error) {
+        if (this.stopping.signal.aborted) throw shutdownError;
         if (safeError(error).code === "outcome_unknown") throw error;
         try {
           await session.abort();
@@ -856,7 +913,7 @@ export class JobRunner {
     const missing = () => new CommanderError("outcome_unknown", "Verified destination was lost or replaced; source retained");
 
     const confirmCancellation = async (): Promise<MoveFinish> => {
-      const check = this.context(checkpoint.jobId, checkpoint.itemIndex, new AbortController().signal);
+      const check = this.context(checkpoint.jobId, checkpoint.itemIndex, this.stopping.signal);
       if (!await confirm(check).catch(() => false)) throw missing();
       const sourceEntry = await observe(source, check, Boolean(version.sha256)).catch(() => null);
       if (!sourceEntry) throw new CommanderError("outcome_unknown", "Move source could not be confirmed after cancellation");
@@ -911,7 +968,7 @@ export class JobRunner {
         } catch (error) {
           const failure = safeError(error);
           if (!signal.aborted && !failure.retryable && failure.code !== "outcome_unknown") throw error;
-          const check = this.context(jobId, itemIndex, new AbortController().signal);
+          const check = this.context(jobId, itemIndex, this.stopping.signal);
           const untouched = await unchanged(check).catch(() => false);
           if (untouched && failure.code !== "outcome_unknown") throw error;
           throw new CommanderError("outcome_unknown", "Mutation outcome could not be confirmed");
