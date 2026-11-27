@@ -49,6 +49,7 @@ function TemplateForm({api, copyId, view, entry, onDone}: {api: CiApi; copyId: s
   return <form className="git-stack git-ci-dispatch" aria-label={"Template " + template.title} onSubmit={submit}>
     <div className="git-row git-ci-run-title"><h3>{template.title}</h3><span className="git-muted">{sourceNames[entry.source]}</span></div>
     {template.description && <p className="git-muted">{template.description}</p>}
+    {view.forge === "github" && <p className="git-muted">GitHub accepts a workflow file only from a token with the workflow scope.</p>}
     {template.params.map(param => <Field key={param.name} param={param} value={values[param.name] ?? param.default}
       onChange={value => setValues(previous => ({...previous, [param.name]: value}))}/>)}
     <label>New branch<input value={branch} required maxLength={250} pattern="[A-Za-z0-9_][A-Za-z0-9_.\/\-]*" onChange={event => setBranch(event.target.value)}/></label>
@@ -56,17 +57,22 @@ function TemplateForm({api, copyId, view, entry, onDone}: {api: CiApi; copyId: s
     <label>Pull request description<textarea rows={3} maxLength={4000} value={body} onChange={event => setBody(event.target.value)}/></label>
     {"problem" in rendered ? <p className="git-error" role="alert">{rendered.problem}</p> : <>
       <div className="git-row"><strong className="git-path">{rendered.file.path}</strong>
-        <span className="git-muted">{rendered.file.text.split("\n").length} lines, from {view.repo.branch ?? "the default branch"} at the forge</span></div>
-      {existing && <p className="git-error" role="alert">The copy already has {rendered.file.path}: the forge will refuse a new file there. Change the file name, or edit that file instead.</p>}
+        <span className="git-muted">{rendered.file.text.split("\n").filter(Boolean).length} lines, in a new branch from {view.repo.branch ?? "the default branch"} at the forge</span></div>
+      {existing && <p className="git-error" role="alert">{view.ref} already has {rendered.file.path}: the forge will refuse a new file there. Change the file name, or edit that file instead.</p>}
       <pre className="git-code" aria-label="File preview">{rendered.file.text}</pre>
     </>}
     {error && <p className="git-error" role="alert">{error}</p>}
     <div className="git-row"><button type="submit" className="git-primary" disabled={"problem" in rendered || existing}>Create branch and pull request…</button></div>
     {prepared && <ConfirmDialog title="Create CI branch and pull request" lines={prepared.preview.lines} onClose={() => setPrepared(null)}
       onConfirm={async () => {
-        const outcome = await api.publishTemplate(prepared.preview.id);
-        if (outcome.status === "failed" || outcome.status === "unknown") throw new Error((outcome.code ?? "OUTCOME_UNKNOWN") + " · " + outcome.summary.slice(-1)[0]);
-        onDone(outcome.pullNumber ? "Pull request #" + outcome.pullNumber + " opened from " + branch.trim() + "." : "The branch " + branch.trim() + " was created.");
+        // The preview is spent once publish runs: whatever the outcome, the dialog closes and the form says it.
+        try {
+          const outcome = await api.publishTemplate(prepared.preview.id);
+          const left = outcome.summary.filter(line => line.startsWith("Branch " + branch.trim() + " was created"));
+          if (outcome.status === "failed" || outcome.status === "unknown")
+            setError((outcome.status === "unknown" ? "The outcome is unknown (" : "Not done (") + (outcome.code ?? "OUTCOME_UNKNOWN") + ")." + (left.length ? " " + left.join(" ") : " Nothing was left on the forge."));
+          else onDone(outcome.pullNumber ? "Pull request #" + outcome.pullNumber + " opened from " + branch.trim() + "." : "The branch " + branch.trim() + " was created.");
+        } catch (cause) { setError(message(cause)); }
       }}>
       <pre className="git-code" aria-label="File to commit">{prepared.file.text}</pre>
     </ConfirmDialog>}
@@ -82,12 +88,16 @@ export function TemplatePage({api, copyId, onClose}: {api: CiApi; copyId: string
   const [error, setError] = useState("");
   const [key, setKey] = useState("");
   const [done, setDone] = useState("");
+  const [revision, setRevision] = useState(0);
   useEffect(() => {
     let live = true;
-    api.templates(copyId).then(result => { if (!live) return; setView(result); setKey(result.offered[0]?.key ?? ""); },
-      cause => { if (live) setError(message(cause)); });
+    api.templates(copyId).then(result => {
+      if (!live) return;
+      setView(result);
+      setKey(previous => result.offered.some(item => item.key === previous) ? previous : result.offered[0]?.key ?? "");
+    }, cause => { if (live) setError(message(cause)); });
     return () => { live = false; };
-  }, [api, copyId]);
+  }, [api, copyId, revision]);
   const entry = view?.offered.find(item => item.key === key);
   const suggested = view?.offered.filter(item => item.matches) ?? [];
   const others = view?.offered.filter(item => !item.matches) ?? [];
@@ -99,17 +109,19 @@ export function TemplatePage({api, copyId, onClose}: {api: CiApi; copyId: string
     {done && <p role="status">{done}</p>}
     {view && <>
       <p className="git-muted">{view.head === null ? "The copy has no commits yet."
-        : view.stacks.length ? "Found at HEAD: " + view.stacks.map(stack => stackNames[stack.id] + " (" + stack.evidence.join(", ") + ")").join("; ") + "."
-        : "No known stack at the root of HEAD: every template is listed."}</p>
+        : view.stacks.length ? "Found at " + view.ref + ": " + view.stacks.map(stack => stackNames[stack.id] + " (" + stack.evidence.join(", ") + ")").join("; ") + "."
+        : "No known stack at the root of " + view.ref + ": every template is listed."}
+        {view.ref === "HEAD" && view.head !== null && " The copy has no fetched origin/" + (view.repo.branch ?? "default branch") + ", so its current branch was read."}</p>
       {view.existing.length > 0 && <p className="git-muted">CI files already there: {view.existing.join(", ")}.</p>}
       {view.rejected.length > 0 && <details><summary>{view.rejected.length} own template(s) not offered</summary>
         <ul>{view.rejected.map(item => <li key={item.source + item.name}><strong>{item.name}</strong> ({sourceNames[item.source]}): {item.issues.join(" ")}</li>)}</ul></details>}
       {view.offered.length === 0 ? <p className="git-muted">No templates for this forge.</p>
-        : <label>Template<select value={key} onChange={event => { setKey(event.target.value); setDone(""); }}>
+        : <label className="git-ci-template-pick">Template<select value={key} onChange={event => { setKey(event.target.value); setDone(""); }}>
           {suggested.length > 0 && <optgroup label="Suited to this project">{suggested.map(item => <option key={item.key} value={item.key}>{item.template.title}</option>)}</optgroup>}
           {others.length > 0 && <optgroup label={suggested.length ? "Other stacks" : "All templates"}>{others.map(item => <option key={item.key} value={item.key}>{item.template.title}</option>)}</optgroup>}
         </select></label>}
-      {entry && <TemplateForm key={entry.key} api={api} copyId={copyId} view={view} entry={entry} onDone={setDone}/>}
+      {entry && <TemplateForm key={entry.key + "#" + revision} api={api} copyId={copyId} view={view} entry={entry}
+        onDone={text => { setDone(text); setRevision(value => value + 1); }}/>}
     </>}
   </section>;
 }

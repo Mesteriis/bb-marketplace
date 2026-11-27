@@ -11,12 +11,14 @@ const source = z.enum(["builtin", "settings", "folder"]);
 export const ciTemplatesView = z.object({
   forge: ciForge,
   repo: z.object({path: z.string(), name: z.string(), branch: z.string().nullable()}),
+  /** Where the stack was read: `origin/<default branch>` as last fetched, or HEAD when the copy has no such ref. */
+  ref: z.string(),
   /** The commit the stack was read at, or null before the first commit. */
   head: z.string().nullable(),
   stacks: z.array(z.object({id: z.enum(stackIds), evidence: z.array(z.string()), defaults: z.record(z.string(), value)})),
   offered: z.array(z.object({key: z.string(), source, matches: z.boolean(), template: ciTemplate})),
   rejected: z.array(z.object({source, name: z.string(), issues: z.array(z.string())})),
-  /** CI files the copy already has at HEAD. */
+  /** CI files already at that ref. */
   existing: z.array(z.string()),
 });
 export type CiTemplatesView = z.infer<typeof ciTemplatesView>;

@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { provider } from "../src/adapters/bb/provider.ts";
+import { BranchLeft } from "../src/adapters/bb/ci-file.ts";
 import type { Account, Repo } from "../src/core/providers.ts";
 
 type Call = {method: string; path: string; query: URLSearchParams; body: unknown};
@@ -52,7 +53,8 @@ test("Gitea: a commit that does not start at the base is no outcome to trust", a
   const {send} = server("https://gitea.example.org", {
     "POST /api/v1/repos/owner/app/contents/ci.yml": () => Response.json({commit: {sha: made, parents: [{sha: "d".repeat(40)}]}}, {status: 201}),
   });
-  await assert.rejects(provider(account, "t", send).createFile(repoOf("gt", "owner/app"), {...change, path: "ci.yml"}), {message: "STALE_HEAD"});
+  await assert.rejects(provider(account, "t", send).createFile(repoOf("gt", "owner/app"), {...change, path: "ci.yml"}),
+    (error: Error) => error instanceof BranchLeft && error.message === "STALE_HEAD" && error.commit === made);
 });
 
 test("GitLab: one commit with a create action on a new branch started at the base commit", async () => {
@@ -85,4 +87,27 @@ test("a refused write is the forge's refusal, and a reply without a commit is an
   await assert.rejects(provider(account, "t", refused.send).createFile(repoOf("gl", "group/app", "42"), change), {message: "PROVIDER_REJECTED"});
   const empty = server("https://gitlab.example.org", {"POST /api/v4/projects/42/repository/commits": () => Response.json({}, {status: 201})});
   await assert.rejects(provider(account, "t", empty.send).createFile(repoOf("gl", "group/app", "42"), change), {message: "OUTCOME_UNKNOWN"});
+});
+
+test("GitHub: a file the forge refuses after the branch was made removes the branch again; if that fails too, the branch is reported left", async () => {
+  const account: Account = {kind: "github", id: "gh", label: "GH", origin: "https://github.com", organization: "", username: "octo"};
+  const rolled = server("https://api.github.com", {
+    "POST /repos/owner/app/git/refs": () => Response.json({}, {status: 201}),
+    "PUT /repos/owner/app/contents/.github/workflows/ci.yml": () => Response.json({message: "workflow scope"}, {status: 404}),
+    "DELETE /repos/owner/app/git/refs/heads/ci/node": () => new Response(null, {status: 204}),
+  });
+  await assert.rejects(provider(account, "t", rolled.send).createFile(repoOf("gh", "owner/app"), change), (error: Error) => error.message === "PROVIDER_DENIED" && !(error instanceof BranchLeft));
+  assert.deepEqual(rolled.calls.map(call => call.method + " " + call.path), ["POST /repos/owner/app/git/refs", "PUT /repos/owner/app/contents/.github/workflows/ci.yml", "DELETE /repos/owner/app/git/refs/heads/ci/node"]);
+  const stuck = server("https://api.github.com", {
+    "POST /repos/owner/app/git/refs": () => Response.json({}, {status: 201}),
+    "PUT /repos/owner/app/contents/.github/workflows/ci.yml": () => Response.json({message: "workflow scope"}, {status: 404}),
+  });
+  await assert.rejects(provider(account, "t", stuck.send).createFile(repoOf("gh", "owner/app"), change), (error: Error) => error instanceof BranchLeft && error.message === "PROVIDER_DENIED" && error.commit === null);
+});
+
+test("Gitea: a commit off the base, or with no parents to check, leaves a branch that is reported", async () => {
+  const account: Account = {kind: "gitea", id: "gt", label: "GT", origin: "https://gitea.example.org", organization: "", username: "octo"};
+  const bare = server("https://gitea.example.org", {"POST /api/v1/repos/owner/app/contents/ci.yml": () => Response.json({commit: {sha: made}}, {status: 201})});
+  await assert.rejects(provider(account, "t", bare.send).createFile(repoOf("gt", "owner/app"), {...change, path: "ci.yml"}),
+    (error: Error) => error instanceof BranchLeft && error.message === "OUTCOME_UNKNOWN" && error.commit === made);
 });

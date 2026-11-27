@@ -9,7 +9,7 @@ Needs `git`, `node`, `npm`, `curl`, access to `registry.npmjs.org`, BB at
 `run.sh` outside them.
 
 ```sh
-S=$(docs/e2e-stand/prepare.sh "$PWD") && docs/e2e-stand/run.sh "$S" "$PWD/docs/e2e-stand/smoke.mjs" "$PWD/docs/e2e-stand/ci.mjs" "$PWD/docs/e2e-stand/code-review.mjs" "$PWD/docs/e2e-stand/code-review-runs.mjs" "$PWD/docs/e2e-stand/code-review-more.mjs" "$PWD/docs/e2e-stand/history.mjs" "$PWD/docs/e2e-stand/gitlab.mjs" "$PWD/docs/e2e-stand/inbox.mjs" "$PWD/docs/e2e-stand/review.mjs" "$PWD/docs/e2e-stand/code-review-drafts.mjs"
+S=$(docs/e2e-stand/prepare.sh "$PWD") && docs/e2e-stand/run.sh "$S" "$PWD/docs/e2e-stand/smoke.mjs" "$PWD/docs/e2e-stand/ci.mjs" "$PWD/docs/e2e-stand/code-review.mjs" "$PWD/docs/e2e-stand/code-review-runs.mjs" "$PWD/docs/e2e-stand/code-review-more.mjs" "$PWD/docs/e2e-stand/history.mjs" "$PWD/docs/e2e-stand/gitlab.mjs" "$PWD/docs/e2e-stand/inbox.mjs" "$PWD/docs/e2e-stand/review.mjs" "$PWD/docs/e2e-stand/code-review-drafts.mjs" "$PWD/docs/e2e-stand/ci-templates.mjs"
 ```
 
 - `prepare.sh` copies this package into a new `$TMPDIR/git-dashboard-stand.*`, runs `npm ci` and
@@ -29,6 +29,11 @@ S=$(docs/e2e-stand/prepare.sh "$PWD") && docs/e2e-stand/run.sh "$S" "$PWD/docs/e
   log opens at its error line, scrolling only the log; re-run failed jobs and a manual run with inputs go through
   the confirmation dialog and reach the stand-in exactly once (`$S/forge/writes.log`); Ask agent opens a thread;
   layout at 768 px.
+
+- `ci-templates.mjs` — after `ci.mjs`, last, as it commits to `stand-beta`: commits a pnpm Node project to `stand-beta`; Templates reads the stack at HEAD and
+  offers Node.js · Gitea Actions first; a value that does not fit is refused before anything is sent; the file and
+  pull request are previewed, then reach the stand-in once each (the file in a new branch from main, then the pull
+  request); layout at 768 px.
 
 - `code-review.mjs` — line review of `stand-beta`'s uncommitted change: a line comment with a severity, Send to agent
   into the thread Ask agent opened, the answer through `bb git-dashboard review` from that thread, shown Answered.

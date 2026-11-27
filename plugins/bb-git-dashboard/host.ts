@@ -123,10 +123,10 @@ export default experimental_defineHostEntry({
       }
       catch (error) { return failureFor(error,"NO_ORIGIN"); }
     },
-    async ciStack({root, identity}, {signal}) {
+    async ciStack({root, identity, branch}, {signal}) {
       try {
         await assertWorktree(root, identity, signal);
-        const found = await ciStack(root, signal);
+        const found = await ciStack(root, branch ?? undefined, signal);
         return {ok:true as const, ...found, paths:found.paths.slice(0, 5000)};
       } catch (error) { return failureFor(error,"GIT_REJECTED"); }
     },

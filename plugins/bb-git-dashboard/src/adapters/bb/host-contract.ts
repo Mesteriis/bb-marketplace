@@ -54,7 +54,8 @@ export const hostContract = defineRpcContract({
     output:z.discriminatedUnion("ok",[failure,z.object({ok:z.literal(true),commits:z.array(z.object({sha:z.string(),subject:z.string()}))})])},
   /** The copy's files whose path holds every word of `query` (Any file view). */
   /** What a copy's stack is told by at HEAD (CI templates). */
-  ciStack: {input:z.object({root:path,identity}),output:z.discriminatedUnion("ok",[failure,z.object({ok:z.literal(true),head:z.string().nullable(),
+  ciStack: {input:z.object({root:path,identity,branch:z.string().max(250).nullable()}),output:z.discriminatedUnion("ok",[failure,z.object({ok:z.literal(true),
+    ref:z.string().max(260),head:z.string().nullable(),
     paths:z.array(z.string().max(4096)).max(5000),manifests:z.record(z.string(),z.string().max(64*1024))})])},
   /** The own CI templates folder's JSON files. */
   ciTemplateFolder: {input:z.object({folder:z.string().min(1).max(1000)}),output:z.discriminatedUnion("ok",[failure,z.object({ok:z.literal(true),

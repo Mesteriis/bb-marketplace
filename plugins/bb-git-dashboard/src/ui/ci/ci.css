@@ -16,6 +16,8 @@
 .git-ws .git-ci-dispatch, .git-ws .git-ci-threads { border: 1px solid var(--border); border-radius: 7px; padding: 12px; background: var(--card); }
 .git-ws .git-ci-dispatch label { display: grid; gap: 4px; }
 .git-ws .git-ci-dispatch label.git-ci-check { grid-template-columns: auto 1fr; align-items: center; }
+.git-ws .git-ci-template-pick { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.git-ws .git-ci-template-pick select { min-width: 0; max-width: 100%; }
 .git-ws .git-ci-dispatch label.git-ci-check > input { order: -1; }
 .git-ws .git-ci-threads legend { padding: 0 4px; font-weight: 600; }
 .git-ws .git-ci-thread-list { display: grid; gap: 4px; max-height: 30vh; overflow: auto; }

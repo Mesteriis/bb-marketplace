@@ -37,7 +37,8 @@ try {
   const section = page.getByRole("region", { name: "CI templates" });
   check("the stack is read at HEAD with its evidence", await visible(section.getByText("Found at HEAD: Node.js (package.json, pnpm-lock.yaml).")));
   check("the forge's templates are offered", await visible(section.getByText("CI templates · Gitea Actions")));
-  const choice = section.getByLabel("Template", { exact: true });
+  // The template choice is the section's first select (its label also reads the chosen option).
+  const choice = section.locator("select").first();
   check("the suited template comes first", await choice.evaluate(select => select.selectedOptions[0]?.textContent) === "Node.js · Gitea Actions" &&
     await choice.locator("optgroup").first().getAttribute("label") === "Suited to this project");
   const preview = section.getByLabel("File preview");
@@ -60,7 +61,7 @@ try {
     && await visible(dialog.getByText(/^stand\/beta:main @ a{40}$/)) && writes().length === before);
   check("the dialog shows the file to commit", /node-version: "20"/.test(await dialog.getByLabel("File to commit").innerText()));
   await dialog.getByRole("button", { name: "Confirm" }).click();
-  check("the pull request is reported", await visible(section.getByText("Pull request #9 opened from ci/node-gitea.")));
+  check("the pull request is reported", await visible(section.getByText("Pull request #9 opened from ci/node-gitea.")), await section.getByRole("alert").allInnerTexts());
   const sent = writes().slice(before);
   const [file, pull] = sent;
   check("the file and the pull request reached the forge once each", sent.length === 2 && file?.path === "/api/v1/repos/stand/beta/contents/.gitea/workflows/ci.yml"

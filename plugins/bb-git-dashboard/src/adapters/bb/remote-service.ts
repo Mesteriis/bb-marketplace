@@ -13,6 +13,7 @@ import { client, originOf } from "./provider-http.ts";
 import { credentialVault } from "./credential-vault.ts";
 import { providerCredentials, type CredentialState } from "./provider-credentials.ts";
 import { hostContract } from "./host-contract.ts";
+import { prepareCiFile, publishCiFile } from "./ci-file.ts";
 
 const catalogKey = (id: string, page: number) => "catalog/" + id + "/" + page;
 const remoteLog = "remote-operation/";
@@ -199,11 +200,9 @@ export function remoteService(bb: BbPluginApi, loadCopy: (id:string) => Promise<
         const copy = await loadCopy(action.copyId);
         if (!copy) throw new Error("NOT_FOUND");
         await assertOrigin(repo,copy);
-        if (repo.canPush === false) throw new Error("PROVIDER_DENIED");
-        if (!repo.branch) throw new Error("NO_REMOTE_BRANCH");
-        base = await api.branch(repo,repo.branch);
-        lines.push("Template · " + action.template, action.path + " · " + action.content.split("\n").length + " lines",
-          repo.path + ":" + repo.branch + " @ " + base, "New branch · " + action.branch, action.title);
+        const checked = await prepareCiFile(api,repo,action);
+        base = checked.base;
+        lines.push(...checked.lines);
       } else {
         const command = action.action;
         if (command.kind === "create") {
@@ -243,7 +242,6 @@ export function remoteService(bb: BbPluginApi, loadCopy: (id:string) => Promise<
         const base = command.kind === "create" ? await latest.api.branch(repo,command.base) : (await latest.api.pull(repo,command.number)).base.sha;
         if (base !== record.base) throw new Error("STALE_HEAD");
       }
-      if (action.kind === "ciFile" && await latest.api.branch(repo,repo.branch!) !== record.base) throw new Error("STALE_HEAD");
       if (record.generation !== generation) throw new Error("PREVIEW_EXPIRED");
       const pending:RemoteOutcome = {id,kind:action.kind,target,status:"pending",actor,at:new Date().toISOString(),summary:value.lines};
       active.add(id);
@@ -255,17 +253,10 @@ export function remoteService(bb: BbPluginApi, loadCopy: (id:string) => Promise<
             const result = await latest.api.mutate(repo,action.action);
             outcome = {...pending,status:result.outcome,pullNumber:result.number};
           } else if (action.kind === "ciFile") {
-            const made = await latest.api.createFile(repo,{branch:action.branch,base:record.base!,baseBranch:repo.branch!,
-              path:action.path,content:action.content,message:action.title});
-            try {
-              const result = await latest.api.mutate(repo,{kind:"create",head:action.branch,base:repo.branch!,expected:made,title:action.title,body:action.body});
-              outcome = {...pending,status:result.outcome,pullNumber:result.number};
-            } catch (error) {
-              // The branch is there: the outcome says so, so the pull request can be opened by hand.
-              const known = failureFor(error,"OUTCOME_UNKNOWN");
-              outcome = {...pending,status:known.code === "OUTCOME_UNKNOWN" ? "unknown" : "failed",code:known.code,
-                summary:[...pending.summary,"Branch " + action.branch + " was created at " + made + "; the pull request was not opened."]};
-            }
+            const result = await publishCiFile(latest.api,repo,action,record.base!);
+            // RPC answers carry no undefined values: absent fields are left out.
+            outcome = {...pending,status:result.status,summary:[...pending.summary,...result.notes],
+              ...(result.pullNumber !== undefined ? {pullNumber:result.pullNumber} : {}),...(result.code !== undefined ? {code:result.code} : {})};
           } else if (action.kind === "clone") {
             const result = await host.call("cloneHttps",{clone:repo.clone, username:latest.selected.username,destination:action.destination},{hostId:action.hostId});
             if (!result.ok) throw new Error(result.code);

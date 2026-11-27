@@ -12,7 +12,7 @@ The **Projects folder** setting (default `~/projects`) and its exclusion list de
 
 ## History
 
-The History tab of a working copy, also a **Git History** tab in a thread and an optional thread header button, draws the commit graph over all branches, tags and remotes grouped by day, lists uncommitted changes on top, and opens a commit's files and patches. Find in loaded commits by subject, hash, author or ref. It reads Git on the copy's own host without changing anything.
+The History tab of a working copy, also a **Git History** tab in a thread and an optional thread header button, draws the commit graph over all branches, tags and remotes grouped by day, lists uncommitted changes on top, and opens a commit's files and patches.
 
 ## Line review
 
@@ -28,10 +28,10 @@ A pull request opens with its Markdown discussion and Jira links, checks, files 
 
 ## CI/CD
 
-The Actions tab and a thread's **CI/CD** tab list GitHub Actions, Gitea Actions, GitLab CI/CD or Azure Pipelines runs with tiles and filters, open a failed job's log at its error line, and re-run, cancel or run a workflow after a confirmation. **CI/CD** in Git sums up every linked repository. Ask agent, Send to threads and `bb git-dashboard ci` pass runs to agents as fenced, untrusted text.
+The Actions tab and a thread's **CI/CD** tab list GitHub Actions, Gitea Actions, GitLab CI/CD or Azure Pipelines runs with tiles and filters, open a failed job's log at its error line, and re-run, cancel or run a workflow after a confirmation. **Templates** write a pipeline for the copy's stack to a new branch with a pull request. **CI/CD** in Git sums up every linked repository. Ask agent, Send to threads and `bb git-dashboard ci` pass runs to agents as fenced, untrusted text.
 
 ## Remote repositories
 
 Connect GitHub, GitLab, Azure Repos or Gitea accounts. Repository tabs show Code, CI/CD, issues and variables where supported. Secret and variable values stay in the provider. Review clone, fetch, push and PR actions before confirming them. HTTPS Git uses the account’s credential in the host’s macOS Keychain. API tokens go to Makosh Credential Vault when enabled, with a fallback copy in BB’s secret settings.
 
-The thread’s Git panel resolves its registered working copy. Grant agents read or local write access and review their publication and worktree requests in BB. Pinned tabs keep their worktree or pull request.
+Grant agents read or local write access and review their publication and worktree requests in BB. Pinned tabs keep their worktree or pull request.

@@ -34,7 +34,7 @@ test("the stack input is the committed root entries, the CI files and the root m
 test("a repository without commits has no stack input", async () => {
   const repo = join(base, "empty");
   git(base, "init", "-q", "-b", "main", repo);
-  assert.deepEqual(await ciStack(repo), {head: null, paths: [], manifests: {}});
+  assert.deepEqual(await ciStack(repo), {ref: "HEAD", head: null, paths: [], manifests: {}});
 });
 
 test("a manifest over 64 KB is left out", async () => {
@@ -58,4 +58,31 @@ test("the templates folder gives its JSON files, sorted, without links, folders 
     skipped: ["big.json", "link.json", "sub.json"]});
   assert.deepEqual(await ciTemplateFolder(join(base, "none")), {files: [], skipped: []});
   await assert.rejects(ciTemplateFolder("relative/path"), {message: "INVALID_PATH"});
+});
+
+test("the stack is read at the forge's default branch as fetched (origin/<branch>), else at HEAD, and says which", async () => {
+  const repo = join(base, "fetched");
+  git(base, "init", "-q", "-b", "main", repo);
+  writeFileSync(join(repo, "go.mod"), "module x\n");
+  git(repo, "add", "."); git(repo, "commit", "-qm", "main");
+  const main = git(repo, "rev-parse", "HEAD").trim();
+  git(repo, "update-ref", "refs/remotes/origin/main", main);
+  git(repo, "switch", "-q", "-c", "feature");
+  writeFileSync(join(repo, "Cargo.toml"), "[package]\n");
+  git(repo, "add", "."); git(repo, "commit", "-qm", "feature");
+  const atMain = await ciStack(repo, "main");
+  assert.deepEqual([atMain.ref, atMain.head, atMain.paths], ["origin/main", main, ["go.mod"]]);
+  const atHead = await ciStack(repo, "trunk");
+  assert.deepEqual([atHead.ref, atHead.paths], ["HEAD", ["Cargo.toml", "go.mod"]]);
+});
+
+test("a root manifest name that is not a file, such as a submodule, is skipped", async () => {
+  const repo = join(base, "gitlink");
+  git(base, "init", "-q", "-b", "main", repo);
+  writeFileSync(join(repo, "README.md"), "x\n");
+  git(repo, "add", "."); git(repo, "commit", "-qm", "first");
+  git(repo, "update-index", "--add", "--cacheinfo", "160000," + git(repo, "rev-parse", "HEAD").trim() + ",go.mod");
+  git(repo, "commit", "-qm", "gitlink");
+  const found = await ciStack(repo);
+  assert.deepEqual([found.paths, found.manifests], [["README.md", "go.mod"], {}]);
 });

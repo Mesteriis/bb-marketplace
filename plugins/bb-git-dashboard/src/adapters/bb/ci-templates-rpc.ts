@@ -16,7 +16,7 @@ type Deps = {
   linked(copy: Copy): Promise<{account: Account; repo: Repo}>;
   prepare(request: {accountId: string; repoId: string; action: RemoteAction}): Promise<{ok: true; value: Preview} | Failure>;
 };
-const ciPaths = /^(?:\.github\/workflows\/|\.gitea\/workflows\/)[^/]+$|^\.gitlab-ci\.yml$|^azure-pipelines\.yml$/;
+const ciPaths = /^(?:\.github\/workflows\/|\.gitea\/workflows\/|\.gitlab\/ci\/|\.azure-pipelines\/)[^/]+$|^\.gitlab-ci\.yml$|^azure-pipelines[^/]*\.ya?ml$/;
 
 /** CI templates of a copy's forge: the stack at HEAD, the built-in and own templates, and the render into a new branch. */
 export function ciTemplateHandlers(bb: BbPluginApi, deps: Deps) {
@@ -46,11 +46,11 @@ export function ciTemplateHandlers(bb: BbPluginApi, deps: Deps) {
     const copy = await deps.copy(copyId);
     if (!copy) throw new Error("NOT_FOUND");
     const {account, repo} = await deps.linked(copy);
-    const read = await host.call("ciStack", {root: copy.root, identity: copy.identity}, {hostId: copy.hostId}).catch(() => failureFor(undefined, "HOST_UNAVAILABLE"));
+    const read = await host.call("ciStack", {root: copy.root, identity: copy.identity, branch: repo.branch}, {hostId: copy.hostId}).catch(() => failureFor(undefined, "HOST_UNAVAILABLE"));
     if (!read.ok) throw new Error(read.code);
     const stacks = detectStacks(read);
     const {offered, rejected} = offerTemplates(account.kind, stacks, await own(copy));
-    return {forge: account.kind, repo: {path: repo.path, name: repo.name, branch: repo.branch}, head: read.head, stacks, offered, rejected,
+    return {forge: account.kind, repo: {path: repo.path, name: repo.name, branch: repo.branch}, ref: read.ref, head: read.head, stacks, offered, rejected,
       existing: read.paths.filter(path => ciPaths.test(path)), account, repoRef: repo};
   }
 

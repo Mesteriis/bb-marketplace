@@ -95,6 +95,7 @@ const next: Record<string, string> = {
   REVERT_REFUSED: "Revert this change with git: the Review does not revert it.",
   NOT_UNCOMMITTED: "Revert works in the Uncommitted changes view.",
   CLEARED: "The review was cleared while this was being set up; nothing was started.",
+  BRANCH_EXISTS: "Choose a branch name that is not on the forge yet: the file goes into a new branch.",
   TEMPLATE_INVALID: "Check the template and its values: the detail names what does not fit.",
 };
 /** An error with a code `failureFor` knows and a `detail` for the agent. */

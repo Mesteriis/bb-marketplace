@@ -115,7 +115,7 @@ test("own templates come from a JSON list in the settings and from JSON files; b
 test("offered templates are the forge's: those of the found stacks first, in the stacks' order, own ones before built-in", () => {
   const {offered, rejected} = offerTemplates("gitea", [{id: "go", evidence: ["go.mod"], defaults: {}}, {id: "docker", evidence: ["Dockerfile"], defaults: {}}], [
     {source: "settings", name: "mine", raw: own("mine", ["docker"])},
-    {source: "folder", name: "x.json", raw: {...own("x", []), forge: "gitlab"}},
+    {source: "folder", name: "x.json", raw: {...own("x", []), forge: "gitlab", path: ".gitlab-ci.yml"}},
     {source: "folder", name: "bad.json", raw: {...own("bad", []), body: "{{nope}}\n"}},
     {source: "folder", name: "broken.json", raw: null, error: "The file is not JSON."},
   ]);

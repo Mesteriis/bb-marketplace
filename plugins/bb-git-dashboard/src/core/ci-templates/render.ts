@@ -2,8 +2,11 @@ import { z } from "zod";
 import { CodedError } from "../workspace.ts";
 import { stackIds, type StackValues } from "./stack.ts";
 
-/** One line of safe characters: substituted into YAML it cannot start a key, a comment, a quote or a new line. */
-const word = z.string().regex(/^[A-Za-z0-9._\/@+-]{1,100}$/);
+/**
+ * One line of safe characters that starts with a letter, digit or underscore: substituted into YAML it cannot start a
+ * key, a comment, a quote, an indicator or a new line.
+ */
+const word = z.string().regex(/^[A-Za-z0-9_][A-Za-z0-9._\/@+-]{0,99}$/);
 const name = z.string().regex(/^[a-z][A-Za-z0-9]{0,39}$/);
 export const ciParam = z.discriminatedUnion("kind", [
   z.object({name, label: z.string().min(1).max(80), kind: z.literal("text"), default: word}),
@@ -57,10 +60,16 @@ function substitute(line: string, params: Map<string, CiParam>, values: CiValues
   });
 }
 
-function safePath(path: string) {
-  const parts = path.split("/");
-  if (!/\.ya?ml$/.test(path) || parts[0] === ".git" || parts.some(part => !/^[A-Za-z0-9._-]+$/.test(part) || part === "." || part === "..")
-    || /^\.env/.test(parts.at(-1)!)) throw invalid("unsafe file path " + path);
+/** Where each forge reads its CI files from: a template writes nowhere else. */
+const ciLocations: Record<CiForge, RegExp> = {
+  github: /^\.github\/workflows\/[A-Za-z0-9_][A-Za-z0-9._-]*\.ya?ml$/,
+  gitea: /^\.(?:gitea|github)\/workflows\/[A-Za-z0-9_][A-Za-z0-9._-]*\.ya?ml$/,
+  gitlab: /^(?:\.gitlab-ci\.yml|\.gitlab\/ci\/[A-Za-z0-9_][A-Za-z0-9._-]*\.ya?ml)$/,
+  azure: /^(?:azure-pipelines[A-Za-z0-9._-]*|\.azure-pipelines\/[A-Za-z0-9_][A-Za-z0-9._-]*)\.ya?ml$/,
+};
+
+function safePath(path: string, forge: CiForge) {
+  if (!ciLocations[forge].test(path) || path.split("/").some(part => part === "." || part === "..")) throw invalid("file path " + path + " is not a " + forge + " CI file");
   return path;
 }
 
@@ -86,10 +95,14 @@ export function renderTemplate(template: CiTemplate, values: CiValues): {path: s
       stack.push({name: key, keep: sign === "#" ? truth : !truth});
     } else if (closing) {
       if (stack.pop()?.name !== closing[1]) throw invalid("section " + closing[1] + " closes no open section");
-    } else if (stack.every(section => section.keep)) out.push(substitute(line, params, values));
+    } else {
+      // Every line is checked, kept or not, so a template is valid for every value and not only its defaults.
+      const text = substitute(line, params, values);
+      if (stack.every(section => section.keep)) out.push(text);
+    }
   }
   if (stack.length) throw invalid("section " + stack.at(-1)!.name + " is not closed");
-  return {path: safePath(substitute(template.path, params, values)), text: out.join("\n")};
+  return {path: safePath(substitute(template.path, params, values), template.forge), text: out.join("\n")};
 }
 
 const secretRules: [string, RegExp][] = [
@@ -97,6 +110,9 @@ const secretRules: [string, RegExp][] = [
   ["a forge or cloud token", /\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|xox[abposr]-[A-Za-z0-9-]{10,})/],
   ["credentials in an address", /[a-z][a-z0-9+.-]*:\/\/[^\s/:@]+:[^\s/@]+@/i],
   ["an IP address", /\b(?:\d{1,3}\.){3}\d{1,3}\b/],
+  // A pipeline that names a server can send what it builds, or its secrets, there: templates name none.
+  ["an address", /\b[a-z][a-z0-9+.-]*:\/\//i],
+  ["a .env file", /(?:^|[\s/"'=:])\.env(?:\.[A-Za-z0-9_-]+)?(?=$|[\s"';&|)])/m],
 ];
 /** What in a text looks like a secret or a machine's address, which a template must not carry. */
 export const secretIssues = (text: string) => secretRules.filter(([, rule]) => rule.test(text)).map(([label]) => label);
