@@ -1,0 +1,40 @@
+export type RemoteRef = {transport: "https" | "ssh"; host: string; port: number | null; path: string};
+
+const hostName = /^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$/;
+const user = /^[A-Za-z0-9._-]{1,64}$/;
+
+function cleanPath(raw: string) {
+  const parts = raw.replace(/\/+$/, "").replace(/\.git$/i, "").split("/").filter(Boolean);
+  if (!parts.length || parts.some(part => part === "." || part === ".." || /[\s\\]/.test(part))) return null;
+  return parts.join("/");
+}
+
+function ref(transport: RemoteRef["transport"], host: string, port: number | null, rawPath: string): RemoteRef | null {
+  const path = cleanPath(rawPath);
+  if (!hostName.test(host) || !path) return null;
+  return {transport, host: host.toLowerCase(), port, path};
+}
+
+/** Parses an origin URL into forge coordinates. Remotes carrying credentials or pointing at local paths are rejected. */
+export function parseRemote(value: string): RemoteRef | null {
+  const input = value.trim();
+  if (!input || input.length > 1000 || /[\r\n]/.test(input)) return null;
+  if (input.includes("://")) {
+    let url: URL;
+    try { url = new URL(input); } catch { return null; }
+    if (url.password || url.search || url.hash) return null;
+    if (url.protocol === "https:") return url.username ? null : ref("https", url.hostname, url.port ? Number(url.port) : null, url.pathname);
+    if (url.protocol === "ssh:") {
+      if (url.username && !user.test(url.username)) return null;
+      return ref("ssh", url.hostname, url.port ? Number(url.port) : null, url.pathname);
+    }
+    return null;
+  }
+  const scp = /^(?:([^@/:]+)@)?([^@/:]+):(.+)$/.exec(input);
+  if (!scp || (scp[1] && !user.test(scp[1])) || scp[3].startsWith("/")) return null;
+  return ref("ssh", scp[2], null, scp[3]);
+}
+
+export function sameRepository(left: RemoteRef, right: RemoteRef) {
+  return left.host === right.host && left.path.toLowerCase() === right.path.toLowerCase();
+}
