@@ -20,6 +20,8 @@ test("JobStore exposes a state CAS and the last checkpoint for one item", () => 
     phase: "prepared" | "copying" | "committed" | "verified" | "source_removed";
     bytesDone: string;
     tempPath: ResourcePath | null;
+    tempFingerprint?: Fingerprint;
+    via?: "rename" | "copy";
     targetPath: ResourcePath | null;
     expectTarget: Fingerprint | "absent" | null;
     verified: { size: string; sha256?: string } | null;

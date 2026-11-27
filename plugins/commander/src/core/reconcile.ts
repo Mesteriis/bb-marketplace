@@ -1,7 +1,7 @@
 import { CommanderError } from "./errors.ts";
 import type { Checkpoint } from "./job-store.ts";
-import type { Entry, Fingerprint, OperationPlan, ResourceRef } from "./model.ts";
-import { parent, samePath } from "./path.ts";
+import type { Entry, Fingerprint, OperationPlan, PlanItem, ResourceRef } from "./model.ts";
+import { join, NameSegment, parent, samePath } from "./path.ts";
 import type { FileProvider } from "./provider.ts";
 import { toBig } from "./size.ts";
 
@@ -10,13 +10,22 @@ export interface Location {
   path: ResourceRef["path"];
 }
 
-export function fingerprint(entry: Entry | null): Fingerprint | null {
-  return entry && { size: entry.size, mtimeNs: entry.mtimeNs };
+export function tempNameFor(jobId: string, itemIndex: number): NameSegment {
+  return NameSegment.parse({ t: `.commander-${jobId}-${itemIndex}.part` });
+}
+
+type Observation = Entry & { sha256?: string };
+
+export function fingerprint(entry: Observation | null): Fingerprint | null {
+  if (!entry) return null;
+  return entry.sha256 ? { size: entry.size, mtimeNs: entry.mtimeNs, sha256: entry.sha256 }
+    : { size: entry.size, mtimeNs: entry.mtimeNs };
 }
 
 export function matches(actual: Fingerprint | null, expected: Fingerprint | null): boolean {
   return actual === null || expected === null ? actual === expected
-    : actual.size === expected.size && actual.mtimeNs === expected.mtimeNs;
+    : actual.size === expected.size && actual.mtimeNs === expected.mtimeNs
+      && (!expected.sha256 || actual.sha256 === expected.sha256);
 }
 
 // SHA-256, FIPS 180-4. Keep only one 64-byte block and its message schedule.
@@ -108,9 +117,10 @@ export async function readChunks(
   call: ProviderCall, consume: (bytes: Uint8Array, offset: bigint) => Promise<void>,
 ): Promise<void> {
   const size = toBig(expected.size);
+  const version = { size: expected.size, mtimeNs: expected.mtimeNs };
   for (let offset = 0n; offset < size;) {
     const length = Math.min(chunkBytes, Number(size - offset));
-    const bytes = await call(() => location.provider.read(location.path, offset, length, expected, signal));
+    const bytes = await call(() => location.provider.read(location.path, offset, length, version, signal));
     if (!bytes.length || bytes.length > length) {
       throw new CommanderError("changed_since_plan", "Unexpected source length");
     }
@@ -123,14 +133,19 @@ async function digest(location: Location, expected: Fingerprint, context: Verify
   const { call, signal, chunkBytes } = context;
   const { provider, path } = location;
   if (provider.sha256) {
-    const hash = await call(() => provider.sha256!(path, signal));
-    if (!matches(fingerprint(await call(() => provider.stat(path, signal))), expected)) {
+    signal.throwIfAborted();
+    const hash = await provider.sha256(path, signal);
+    if (!matches(fingerprint(await call(() => provider.stat(path, signal))), { size: expected.size, mtimeNs: expected.mtimeNs })) {
       throw new CommanderError("changed_since_plan", "File changed during checksum");
     }
     return hash;
   }
   const hash = new TransferHash();
   await readChunks(location, expected, chunkBytes, signal, call, async (bytes) => { hash.update(bytes); });
+  const actual = await call(() => provider.stat(path, signal));
+  if (!matches(actual, { size: expected.size, mtimeNs: expected.mtimeNs })) {
+    throw new CommanderError("changed_since_plan", "File changed during checksum");
+  }
   return hash.finish();
 }
 
@@ -140,61 +155,123 @@ export interface VerifyContext {
   call: ProviderCall;
 }
 
+export async function observe(location: Location, context: VerifyContext, withHash = false): Promise<Observation | null> {
+  const { provider, path } = location;
+  const entry = await context.call(() => provider.stat(path, context.signal));
+  if (withHash && entry?.kind === "file") return { ...entry, sha256: await digest(location, entry, context) };
+  return entry;
+}
+
+export function matchesTarget(entry: Observation | null, expected: Checkpoint["expectTarget"]): boolean {
+  return expected === "absent" || expected === null ? entry === null : matches(entry, expected);
+}
+
 export async function verifyCopy(
   source: Location, target: Location, expected: Fingerprint, mode: OperationPlan["verify"],
   context: VerifyContext, sourceHash?: string, committed?: Fingerprint,
-): Promise<void> {
-  const { signal, call } = context;
-  const entry = await call(() => target.provider.stat(target.path, signal));
+): Promise<NonNullable<Checkpoint["verified"]>> {
+  const entry = await observe(target, context, Boolean(committed?.sha256));
   if (entry?.kind !== "file" || entry.size !== expected.size || (committed && !matches(entry, committed))) {
     throw new CommanderError("changed_since_plan", "Destination verification failed");
   }
-  if (mode === "sha256") {
-    const hash = sourceHash ?? await digest(source, expected, context);
-    if (hash !== await digest(target, entry, context)) {
-      throw new CommanderError("changed_since_plan", "Destination checksum differs");
-    }
+  if (mode === "size") return { size: entry.size };
+  const hash = sourceHash ?? await digest(source, expected, context);
+  if (hash !== (entry.sha256 ?? await digest(target, entry, context))) {
+    throw new CommanderError("changed_since_plan", "Destination checksum differs");
+  }
+  return { size: entry.size, sha256: hash };
+}
+
+export async function confirmVerified(
+  target: Location, checkpoint: Checkpoint, kind: PlanItem["kind"], context: VerifyContext,
+): Promise<boolean> {
+  const proof = checkpoint.verified;
+  if (!proof) return false;
+  const entry = await observe(target, context, Boolean(proof.sha256 || checkpoint.committed?.sha256));
+  return entry?.kind === kind && entry.size === proof.size && (!proof.sha256 || entry.sha256 === proof.sha256)
+    && (!checkpoint.committed || matches(entry, checkpoint.committed));
+}
+
+export async function removeStagedTemp(
+  temp: Location, context: VerifyContext, expected?: Fingerprint, requirePresent = false,
+): Promise<void> {
+  const staged = await observe(temp, context, Boolean(expected?.sha256)).catch(() => {
+    throw new CommanderError("outcome_unknown", "Temporary file version could not be confirmed");
+  });
+  if (!staged && !requirePresent) return;
+  if (staged?.kind !== "file" || (expected ? !matches(staged, expected) : staged.size !== "0")) {
+    throw new CommanderError("outcome_unknown", "Temporary file does not match the recorded evidence");
+  }
+  try {
+    await temp.provider.remove(temp.path, { kind: "file", expect: fingerprint(staged)! }, context.signal);
+  } catch {
+    throw new CommanderError("outcome_unknown", "Temporary file could not be removed");
   }
 }
 
-export async function reconcileCopy(
-  checkpoint: Checkpoint, source: Location, target: Location, expected: Fingerprint,
-  plan: OperationPlan, context: VerifyContext,
-): Promise<"pending" | "done"> {
-  const { call, signal } = context;
-  const { provider, path } = target;
-  if (checkpoint.phase === "copying") {
-    const dir = parent(path);
+type Recovery = "pending" | "done" | "deferred_directory" | { verified: NonNullable<Checkpoint["verified"]> };
+
+export async function reconcileItem(
+  checkpoint: Checkpoint, source: Location | null, target: Location | null, item: PlanItem,
+  plan: OperationPlan, context: VerifyContext, save: (checkpoint: Checkpoint) => Promise<void>,
+): Promise<Recovery> {
+  const unknown = () => new CommanderError("outcome_unknown", "Interrupted mutation could not be confirmed");
+  const expected = item.fingerprint;
+  if (checkpoint.phase === "prepared" || checkpoint.phase === "copying") {
+    const expectTarget = checkpoint.expectTarget;
+    const before = source && await observe(source, context, Boolean(expected?.sha256));
+    const after = target && await observe(target, context,
+      Boolean((expectTarget && expectTarget !== "absent" && expectTarget.sha256) || expected?.sha256));
+    if (plan.kind === "mkdir" && after?.kind === "dir") return "done";
+    if (plan.kind === "delete" && source && before === null) return "done";
+    const wasRename = plan.kind === "rename" || (plan.kind === "move" && checkpoint.via === "rename"
+      && source?.provider.endpoint.id === target?.provider.endpoint.id);
+    if (wasRename && before === null && expected && after?.kind === item.kind && matches(after, expected)) return "done";
     const temp = checkpoint.tempPath;
-    const tempDir = temp && parent(temp);
-    const sensitive = provider.endpoint.caseSensitive;
-    if (!dir || !temp || !tempDir || !samePath(dir, tempDir, sensitive) || samePath(path, temp, sensitive)
-        || (provider.endpoint.id === source.provider.endpoint.id && samePath(source.path, temp, sensitive))) {
-      throw new CommanderError("outcome_unknown", "Invalid temporary path");
+    if (temp && target) {
+      const { provider, path } = target;
+      const dir = parent(path);
+      const sensitive = provider.endpoint.caseSensitive;
+      if (!dir || !samePath(temp, join(dir, tempNameFor(checkpoint.jobId, checkpoint.itemIndex)), sensitive)
+          || samePath(path, temp, sensitive)
+          || (source && provider.endpoint.id === source.provider.endpoint.id && samePath(source.path, temp, sensitive))) {
+        throw unknown();
+      }
+      if (checkpoint.phase === "copying" && checkpoint.tempFingerprint?.size !== checkpoint.bytesDone) throw unknown();
+      await removeStagedTemp({ provider, path: temp }, context,
+        checkpoint.phase === "copying" ? checkpoint.tempFingerprint : undefined, checkpoint.phase === "copying");
+      await save({ ...checkpoint, phase: "prepared", tempFingerprint: undefined });
+    } else if (checkpoint.phase === "copying") {
+      throw unknown();
     }
-    const existing = await call(() => provider.stat(path, signal));
-    const staged = await call(() => provider.stat(temp, signal));
-    if (existing || staged?.kind !== "file") {
-      throw new CommanderError("outcome_unknown", "Destination or temporary file changed");
-    }
-    await call(() => provider.remove(temp, { kind: "file" }, signal));
+    if ((source && (!before || !matches(before, expected))) || !matchesTarget(after, expectTarget)) throw unknown();
     return "pending";
   }
-
-  const sourceEntry = await call(() => source.provider.stat(source.path, signal));
-  if (checkpoint.phase === "source_removed") {
-    const destination = await call(() => provider.stat(path, signal));
-    if (plan.kind !== "move" || sourceEntry || destination?.kind !== "file" || destination.size !== expected.size) {
-      throw new CommanderError("outcome_unknown", "Move outcome cannot be confirmed");
+  if (!target || !source || !expected) throw unknown();
+  const observed = await observe(source, context, Boolean(expected.sha256));
+  if (checkpoint.phase === "source_removed" || observed === null) {
+    if ((plan.kind !== "move" && plan.kind !== "rename") || observed !== null) throw unknown();
+    if (checkpoint.verified) {
+      if (await confirmVerified(target, checkpoint, item.kind, context)) return "done";
+      throw unknown();
     }
-    return "done";
+    if (checkpoint.phase === "committed" && checkpoint.committed?.size === checkpoint.bytesDone) {
+      const destination = await observe(target, context, Boolean(checkpoint.committed.sha256));
+      if (destination?.kind === item.kind && matches(destination, checkpoint.committed)) return "done";
+    }
+    throw unknown();
   }
-  if (sourceEntry?.kind !== "file" || !matches(sourceEntry, expected)) {
-    throw new CommanderError("outcome_unknown", "Source changed before recovery");
+  if (checkpoint.phase === "verified" && plan.kind === "move" && item.kind === "dir") {
+    // Moving children changes directory metadata. Finalization checks the
+    // directory again and the provider removes it only if it is empty.
+    if (checkpoint.verified && observed?.kind === "dir" && (await observe(target, context))?.kind === "dir") {
+      return "deferred_directory";
+    }
+    throw unknown();
   }
-  if (checkpoint.bytesDone !== expected.size) throw new CommanderError("outcome_unknown", "Incomplete transfer checkpoint");
-  // Recovery may remove the source. Prove content equality even for a size-only
-  // move because the original destination fingerprint is unavailable here.
-  await verifyCopy(source, target, expected, plan.kind === "move" ? "sha256" : plan.verify, context);
-  return "done";
+  if (observed?.kind !== "file" || !matches(observed, expected) || checkpoint.bytesDone !== expected.size) throw unknown();
+  if (checkpoint.verified && !await confirmVerified(target, checkpoint, item.kind, context)) throw unknown();
+  const verified = await verifyCopy(source, target, expected, plan.kind === "move" ? "sha256" : plan.verify, context,
+    undefined, checkpoint.committed);
+  return plan.kind === "move" ? { verified } : "done";
 }

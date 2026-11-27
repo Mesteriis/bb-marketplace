@@ -13,6 +13,7 @@ interface StoredEntry {
   bytes: Uint8Array;
   mtimeNs: string;
   temporary?: boolean;
+  size?: number;
 }
 
 export class FakeProvider implements FileProvider {
@@ -102,11 +103,15 @@ export class FakeProvider implements FileProvider {
     return bytes;
   }
 
-  async openWrite(path: ResourcePath, signal: AbortSignal): Promise<WriteSession> {
+  async openWrite(path: ResourcePath, opts: Parameters<FileProvider["openWrite"]>[1], signal: AbortSignal): Promise<WriteSession> {
     await this.before("openWrite", path, signal);
     const dir = parent(path);
     if (!dir) throw new CommanderError("invalid_path", "Cannot write root");
-    const tempPath = join(dir, { t: ".commander-" + ++this.clock + ".part" });
+    const tempPath = join(dir, opts.tempName);
+    if (this.same(path, tempPath) || this.find(tempPath)) {
+      throw new CommanderError("already_exists", "Temporary path already exists");
+    }
+    this.clock++;
     const temp: StoredEntry = { path: tempPath, bytes: new Uint8Array(), mtimeNs: String(this.clock), kind: "file", temporary: true };
     this.set(temp);
     const chunks: Uint8Array[] = [];
@@ -122,6 +127,8 @@ export class FakeProvider implements FileProvider {
         if (offset !== BigInt(length)) throw new CommanderError("invalid_path", "Expected sequential offset");
         chunks.push(bytes.slice());
         length += bytes.byteLength;
+        temp.size = length;
+        temp.mtimeNs = String(++this.clock);
         relayBuffers.get(bytes)?.();
         relayBuffers.delete(bytes);
       },
@@ -229,11 +236,11 @@ export class FakeProvider implements FileProvider {
   }
 
   private fingerprint(entry: StoredEntry): Fingerprint {
-    return { size: String(entry.bytes.byteLength), mtimeNs: entry.mtimeNs };
+    return { size: String(entry.size ?? entry.bytes.byteLength), mtimeNs: entry.mtimeNs };
   }
 
   private matches(entry: StoredEntry, fingerprint: Fingerprint): boolean {
-    if (String(entry.bytes.byteLength) !== fingerprint.size || entry.mtimeNs !== fingerprint.mtimeNs) return false;
+    if (String(entry.size ?? entry.bytes.byteLength) !== fingerprint.size || entry.mtimeNs !== fingerprint.mtimeNs) return false;
     if (!fingerprint.sha256) return true;
     const hash = new TransferHash();
     hash.update(entry.bytes);

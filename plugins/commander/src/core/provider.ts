@@ -1,5 +1,5 @@
 import type { Capability, Endpoint, Entry, EntryKind, Fingerprint } from "./model.ts";
-import type { ResourcePath } from "./path.ts";
+import type { NameSegment, ResourcePath } from "./path.ts";
 
 export interface ListPage {
   entries: Entry[];
@@ -13,6 +13,7 @@ export interface WriteSession {
    */
   readonly tempPath: ResourcePath;
 
+  /** Write to the already opened temporary file. Never report already_exists. */
   write(offset: bigint, bytes: Uint8Array, signal: AbortSignal): Promise<void>;
 
   /**
@@ -58,8 +59,11 @@ export interface FileProvider {
     signal: AbortSignal,
   ): Promise<Uint8Array>;
 
-  /** Stage writes in a temporary file beside the target. */
-  openWrite(target: ResourcePath, signal: AbortSignal): Promise<WriteSession>;
+  /**
+   * Exclusively create the caller's unique, job-owned temporary name beside the
+   * target. Report already_exists on collision and return that exact tempPath.
+   */
+  openWrite(target: ResourcePath, opts: { tempName: NameSegment }, signal: AbortSignal): Promise<WriteSession>;
 
   mkdir(path: ResourcePath, signal: AbortSignal): Promise<void>;
 
