@@ -105,11 +105,6 @@ test("help and unknown commands print the usage", async () => {
   assert.match(wrong.stderr!, /^Usage/);
 });
 
-test("the CLI's command list fits BB's registration rule", async () => {
-  const {ciCommands} = await import("../src/adapters/bb/ci-cli.ts");
-  for (const command of ciCommands) assert.match(command.name, /^[a-z0-9-]+$/);
-  assert.ok(ciCommands.every(command => command.summary && command.usage));
-});
 
 test("a workflow whose file cannot be read is listed without its inputs, not failing the list", async () => {
   const {cli} = setup("read", true, true, true);

@@ -11,13 +11,17 @@ import { forgeLinking } from "./src/adapters/bb/forge-rpc.ts";
 import { projectCatalog } from "./src/adapters/bb/project-catalog.ts";
 import { ciHandlers } from "./src/adapters/bb/ci-rpc.ts";
 import { historyHandlers } from "./src/adapters/bb/history-rpc.ts";
+import { codeReviewHandlers } from "./src/adapters/bb/code-review-rpc.ts";
+import { codeReviewTools, registerCodeReviewTools } from "./src/adapters/bb/code-review-tools.ts";
 import { inboxHandlers } from "./src/adapters/bb/inbox-rpc.ts";
 import { reviewHandlers } from "./src/adapters/bb/review-rpc.ts";
 import { pullMutation } from "./src/core/providers.ts";
 import { remoteTarget } from "./src/core/publication.ts";
 import { registerAgentWork } from "./src/adapters/bb/agent-work.ts";
 import { approve } from "./src/adapters/bb/approve.ts";
-import { ciCli, ciCommands } from "./src/adapters/bb/ci-cli.ts";
+import { ciCli } from "./src/adapters/bb/ci-cli.ts";
+import { gitDashboardCli } from "./src/adapters/bb/cli.ts";
+import { reviewCommands } from "./src/adapters/bb/code-review-cli.ts";
 import { rpc } from "./src/adapters/bb/rpc.ts";
 
 const changed = "git-workspace-changed";
@@ -154,8 +158,10 @@ export default function plugin(bb: BbPluginApi) {
     return result.filter((location,index) => result.findIndex(other =>
       other.projectId === location.projectId && other.hostId === location.hostId && other.path === location.path) === index);
   }
+  const codeReview = codeReviewHandlers(bb, linkedCopy, threadId => threadContext(threadId).then(context => context.copy.id, () => null));
   bb.rpc.register(rpc, {
     ...ci.handlers,
+    ...codeReview.handlers,
     ...historyHandlers(bb, linkedCopy),
     ...inboxHandlers(bb, {accounts: remote.accountList, credential: remote.credential}),
     ...reviewHandlers(bb, {credential: remote.credential}),
@@ -433,17 +439,16 @@ export default function plugin(bb: BbPluginApi) {
     },
   });
 
-  bb.cli.register({
-    name: "git-dashboard", summary: "Makosh Git: CI/CD of the thread's working copy", commands: ciCommands,
-    run: ciCli({
-      context: async threadId => { const {copy, permission} = await threadContext(threadId); return {copyId: copy.id, permission}; },
-      service: ci.service,
-      approve: (threadId, previewId, title, lines, signal) => approve(bb, threadId, previewId, title, lines, signal),
-    }),
-  });
+  bb.cli.register(gitDashboardCli(ciCli({
+    context: async threadId => { const {copy, permission} = await threadContext(threadId); return {copyId: copy.id, permission}; },
+    service: ci.service,
+    approve: (threadId, previewId, title, lines, signal) => approve(bb, threadId, previewId, title, lines, signal),
+  }), reviewCommands(codeReview.service)));
 
+  registerCodeReviewTools(bb, codeReview.service);
   registerAgentWork(bb,threadContext,saveCopy);
   bb.agents.configure(() => ({skills: [], tools:[
     "git_workspace_context", "git_workspace_local", "git_dashboard_pull", "git_dashboard_publish", "git_dashboard_activity", "git_dashboard_start_work",
+    ...codeReviewTools,
   ]}));
 }

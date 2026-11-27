@@ -36,11 +36,6 @@ export const ciUsage = [
   "  bb git-dashboard ci cancel <run-id>",
   "Writes wait for the owner's approval in the thread.",
 ].join("\n");
-/** One BB command entry: its names must be `[a-z0-9-]+`, so the subcommands live in its usage. */
-export const ciCommands = [
-  {name: "ci", summary: "CI/CD of the thread's working copy: list, show, workflows, run, rerun, cancel (writes after the owner approves)",
-    usage: "bb git-dashboard ci <list|show|workflows|run|rerun|cancel> … (bb git-dashboard help)"},
-];
 const usageOf = {
   show: "bb git-dashboard ci show <run-id> [--json]",
   run: "bb git-dashboard ci run <workflow-id|file|name> [--ref <branch>] [name=value ...]",
@@ -56,12 +51,19 @@ const titles = {dispatch: "Approve CI: run workflow", rerun: "Approve CI: re-run
 
 /** `bb git-dashboard ci …` for agents and terminals: reads the thread's copy, and writes only after approval. */
 export function ciCli(deps: CiCliDeps) {
-  return async (argv: string[], ctx: PluginCliContext): Promise<PluginCliResult> => {
+  const fromArgv = async (argv: string[], ctx: PluginCliContext): Promise<PluginCliResult> => {
     const [group, command, ...rest] = argv;
     if (group === undefined || group === "help" || group === "--help" || group === "-h" || command === "help") return {exitCode: 0, stdout: ciUsage};
     if (group !== "ci") return {exitCode: 1, stderr: ciUsage};
+    let parsed: Parsed;
+    try { parsed = parse(rest); }
+    catch (error) { return {exitCode: 1, stderr: error instanceof Error ? error.message : "USAGE"}; }
+    return run(command, parsed, ctx);
+  };
+
+  /** One `ci` command with its arguments already split into flags, `--name value` options and positional words. */
+  async function run(command: string | undefined, {flags, values, positional}: Parsed, ctx: PluginCliContext): Promise<PluginCliResult> {
     try {
-      const {flags, values, positional} = parse(rest);
       if (!ctx.threadId) fail("THREAD_REQUIRED", "run this from a BB thread whose working copy is attached in Git");
       const {copyId, permission} = await deps.context(ctx.threadId!);
       if (permission === "none" || (writes.has(command ?? "") && permission !== "write")) fail("ACCESS_DENIED");
@@ -141,7 +143,7 @@ export function ciCli(deps: CiCliDeps) {
       const code = error instanceof CliError ? error.message : error instanceof Error && /^[A-Z_]+$/.test(error.message) ? error.message : "PROVIDER_UNAVAILABLE";
       return {exitCode: 1, stderr: code};
     }
-  };
+  }
 
   async function write(copyId: string, input: CiAction, ctx: PluginCliContext): Promise<PluginCliResult> {
     const action = ciAction.parse(input);
@@ -158,10 +160,13 @@ export function ciCli(deps: CiCliDeps) {
     await deps.service.confirm(preview.id);
     return {exitCode: 0, stdout: "Done: " + preview.lines.join("; ")};
   }
+  return Object.assign(fromArgv, {run});
 }
 
+export type Parsed = {flags: Set<string>; values: Map<string, string>; positional: string[]};
+
 /** Flags, `--name value` options and positional words; `name=value` pairs stay positional. */
-function parse(args: string[]) {
+function parse(args: string[]): Parsed {
   const flags = new Set<string>();
   const values = new Map<string, string>();
   const positional: string[] = [];
