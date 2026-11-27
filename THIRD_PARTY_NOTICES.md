@@ -17,6 +17,9 @@ Name the source, the revision, the license, and the paths it landed in.
 - The same registry at tag `desktop-v0.50.1` supplies Button, Card, Input,
   Textarea and their helpers in `plugins/telegram/components/ui/` and
   `plugins/telegram/lib/utils.ts`.
+- Also `plugins/commander/components/ui/`, `plugins/commander/lib/`, and
+  `plugins/commander/hooks/` copied from the Mail paths above in revision
+  `c1fee6f8e8b6f2a5c54aa0b843fc3fe8fa232c2f` (main; identical to the revision copied).
 - License: MIT, Copyright (c) 2026 Michael Yong.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -488,3 +491,14 @@ SOFTWARE.
   `@get-bb/plugin-sdk` 0.6.132 (<https://www.npmjs.com/package/@get-bb/plugin-sdk>),
   whose package declares no license; it is the same runtime BB plugin builds
   bundle into their `dist/`.
+
+## Lucide icons in Commander design artboards
+
+- Source: npm `lucide-static@1.82.0` (<https://lucide.dev>), SVG files
+  unchanged; also embedded as data URIs in the artboard HTML.
+- Paths: `plugins/commander/docs/design/v2/icons/`,
+  `plugins/commander/docs/design/v2/*.html`. Design reference only, not
+  shipped in the plugin build. The artboards name the Inter font, which is
+  not vendored here.
+- License: ISC, Copyright (c) 2026 Lucide Icons and Contributors (full text in
+  `plugins/commander/docs/design/v2/icons/LICENSE-lucide`).

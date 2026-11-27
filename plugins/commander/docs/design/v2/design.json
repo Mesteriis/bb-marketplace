@@ -1,0 +1,70 @@
+{
+  "version": 1,
+  "title": "Commander — вариант 2",
+  "kind": "prototype",
+  "description": "Выбранное владельцем направление 2 (рабочее место с инспектором): основная страница, диалог конфликта, подтверждение плана агента, компактная вкладка у треда.",
+  "artboards": [
+    {
+      "id": "main",
+      "title": "Страница",
+      "file": "main.html",
+      "width": 1440,
+      "height": 1024,
+      "group": "page"
+    },
+    {
+      "id": "conflict",
+      "title": "Конфликт",
+      "file": "conflict.html",
+      "width": 1440,
+      "height": 1024,
+      "group": "page"
+    },
+    {
+      "id": "agent-plan",
+      "title": "План агента",
+      "file": "agent-plan.html",
+      "width": 1440,
+      "height": 1024,
+      "group": "page"
+    },
+    {
+      "id": "thread-tab",
+      "title": "Вкладка у треда",
+      "file": "thread-tab.html",
+      "width": 420,
+      "height": 900
+    }
+  ],
+  "tweaks": [
+    {
+      "id": "rowh",
+      "label": "Высота строки",
+      "type": "range",
+      "var": "--row-h",
+      "min": 22,
+      "max": 36,
+      "step": 2,
+      "unit": "px",
+      "default": 28
+    },
+    {
+      "id": "fs",
+      "label": "Размер шрифта",
+      "type": "range",
+      "var": "--font-size",
+      "min": 12,
+      "max": 15,
+      "step": 1,
+      "unit": "px",
+      "default": 13
+    },
+    {
+      "id": "sel",
+      "label": "Цвет выделения",
+      "type": "color",
+      "var": "--sel",
+      "default": "#e5a15a"
+    }
+  ]
+}

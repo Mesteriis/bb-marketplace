@@ -328,6 +328,26 @@
       }
     },
     {
+      "id": "makosh-commander",
+      "displayName": "Makosh Commander [Experimental]",
+      "description": "Two-pane file manager for local files and SFTP via Remote Hub, with transfer plans, a job queue, a thread tab, CLI and agent tools.",
+      "icon": {
+        "url": "./plugins/commander/assets/icon.svg"
+      },
+      "author": {
+        "name": "Mesteriis",
+        "github": "Mesteriis",
+        "url": "https://github.com/Mesteriis"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/commander",
+          "ref": "main"
+        }
+      }
+    },
+    {
       "id": "context-health",
       "displayName": "Context Health",
       "description": "Inspect thread context usage, skills, instructions and conversation content.",
