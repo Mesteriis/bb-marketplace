@@ -108,6 +108,13 @@ export interface FileProvider {
   ): Promise<Fingerprint>;
 
   sha256?(path: ResourcePath, signal: AbortSignal): Promise<string>;
+
+  /**
+   * Integrity barrier after the last read of an entry (archives: size and CRC/AES confirmed by the helper).
+   * Callers invoke it once after reading the whole entry and before committing anything; it also runs
+   * for an empty entry that was never read. A failure means the bytes read must not be published.
+   */
+  finishRead?(path: ResourcePath, expect: Fingerprint | null, signal: AbortSignal): Promise<void>;
 }
 
 export const READ_CHUNK_MAX = 4 * 1024 * 1024;

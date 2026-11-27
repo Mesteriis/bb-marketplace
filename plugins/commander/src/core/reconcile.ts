@@ -127,6 +127,8 @@ export async function readChunks(
     await consume(bytes, offset);
     offset += BigInt(bytes.length);
   }
+  // Providers with an integrity barrier (archives) confirm the whole entry before the caller commits.
+  await call(() => location.provider.finishRead?.(location.path, version, signal) ?? Promise.resolve());
 }
 
 async function digest(location: Location, expected: Fingerprint, context: VerifyContext): Promise<string> {

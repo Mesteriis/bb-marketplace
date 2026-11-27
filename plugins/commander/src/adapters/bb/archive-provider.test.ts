@@ -1,0 +1,199 @@
+import { describe, expect, it, vi } from "vitest";
+import { CommanderError } from "../../core/errors.ts";
+import type { Endpoint } from "../../core/model.ts";
+import { parsePosix } from "../../core/path.ts";
+import type { ArchiveEntry } from "../../core/wire/archive-protocol.ts";
+import { ArchiveProvider, type ArchiveRpc } from "./archive-provider.ts";
+
+const ENDPOINT: Endpoint = {
+  id: "archive:123e4567-e89b-42d3-a456-426614174000", provider: "archive", label: "a.zip", machine: "server",
+  hostId: null, readOnly: true, caseSensitive: true,
+};
+const signal = new AbortController().signal;
+const b64 = (s: string | number[]) => Buffer.from(typeof s === "string" ? s : Uint8Array.from(s)).toString("base64");
+
+const file = (id: number, name: string, size: number, over: Partial<ArchiveEntry> = {}): ArchiveEntry => ({
+  id, nameB64: b64(name), name, nameLossy: false, kind: "file", size: String(size), csize: String(size),
+  mtime: 1732665600, mode: 0o644, encrypted: false, ...over,
+});
+
+type Call = { t: string; [key: string]: unknown };
+function rpcWith(handler: (body: Call) => { json: Record<string, unknown>; data?: Uint8Array[] } | Promise<{ json: Record<string, unknown>; data?: Uint8Array[] }>) {
+  const calls: Call[] = [];
+  const rpc: ArchiveRpc = {
+    request: vi.fn(async (body: Call) => {
+      calls.push(body);
+      const out = await handler(body);
+      return { json: { req: 1, ...out.json } as unknown as { t: string }, data: out.data ?? [] };
+    }) as unknown as ArchiveRpc["request"],
+  };
+  return { rpc, calls };
+}
+const make = (rpc: ArchiveRpc, over: Partial<ConstructorParameters<typeof ArchiveProvider>[0]> = {}) =>
+  new ArchiveProvider({ endpoint: ENDPOINT, rpc, verifySource: async () => {}, ...over });
+
+describe("list and stat", () => {
+  it("maps helper entries to Entry values and sends the prefix as base64 of the joined segments", async () => {
+    const { rpc, calls } = rpcWith(() => ({
+      json: {
+        t: "ok", cursor: null, entries: [
+          file(0, "docs/a.txt", 5),
+          { ...file(1, "docs/sub", 0), kind: "dir", synthetic: true },
+          { ...file(2, "docs/.hidden", 1) },
+          { ...file(3, "docs/l", 0), kind: "symlink", linkB64: b64("a.txt") },
+        ],
+      },
+    }));
+    const page = await make(rpc).list(parsePosix("/docs"), { cursor: null, limit: 10 }, signal);
+    expect(calls[0]).toMatchObject({ t: "list", prefixB64: b64("docs"), cursor: null, limit: 10 });
+    expect(page.cursor).toBeNull();
+    expect(page.entries).toEqual([
+      { name: { t: "a.txt" }, kind: "file", size: "5", mtimeNs: "1732665600000000000", mtimePrecision: "s", mode: 0o644, linkTarget: null, hidden: false },
+      { name: { t: "sub" }, kind: "dir", size: "0", mtimeNs: "1732665600000000000", mtimePrecision: "s", mode: 0o644, linkTarget: null, hidden: false },
+      { name: { t: ".hidden" }, kind: "file", size: "1", mtimeNs: "1732665600000000000", mtimePrecision: "s", mode: 0o644, linkTarget: null, hidden: true },
+      { name: { t: "l" }, kind: "symlink", size: "0", mtimeNs: "1732665600000000000", mtimePrecision: "s", mode: 0o644, linkTarget: { t: "a.txt" }, hidden: false },
+    ]);
+  });
+  it("represents a non UTF-8 name as raw bytes and uses null time when the entry has none", async () => {
+    const raw = [0x63, 0x61, 0x66, 0x82];
+    const { rpc } = rpcWith(() => ({ json: { t: "ok", cursor: null, entries: [{ ...file(0, "caf?", 1), nameB64: b64(raw), nameLossy: true, mtime: null }] } }));
+    const page = await make(rpc).list(parsePosix("/"), { cursor: null, limit: 10 }, signal);
+    expect(page.entries[0]).toMatchObject({ name: { b: b64(raw) }, mtimeNs: null, mtimePrecision: "unknown" });
+  });
+  it("stat returns null when the helper has no such entry", async () => {
+    const { rpc, calls } = rpcWith(() => ({ json: { t: "ok", entry: null } }));
+    expect(await make(rpc).stat(parsePosix("/missing.txt"), signal)).toBeNull();
+    expect(calls[0]).toMatchObject({ t: "stat", nameB64: b64("missing.txt") });
+  });
+  it("checks the source version before every operation and fails changed_since_plan", async () => {
+    const { rpc } = rpcWith(() => ({ json: { t: "ok", entry: null } }));
+    const verifySource = vi.fn(async () => { throw new CommanderError("changed_since_plan", "Archive changed"); });
+    await expect(make(rpc, { verifySource }).stat(parsePosix("/a"), signal)).rejects.toMatchObject({ code: "changed_since_plan" });
+    expect(rpc.request).not.toHaveBeenCalled();
+  });
+});
+
+describe("read", () => {
+  function reading(size: number) {
+    let pos = 0;
+    const h = rpcWith((body) => {
+      switch (body.t) {
+        case "stat": return { json: { t: "ok", entry: file(7, "a.bin", size) } };
+        case "read_open": pos = 0; return { json: { t: "ok", stream: 3, size: String(size) } };
+        case "read": {
+          const n = Math.min(body.length as number, size - pos);
+          const bytes = Uint8Array.from({ length: n }, (_, i) => (pos + i) % 256);
+          pos += n;
+          return { json: { t: "ok", pos }, data: [bytes] };
+        }
+        case "read_finish": return { json: { t: "ok", size: String(size), crc32: null, aes_auth: null } };
+        case "read_close": return { json: { t: "ok" } };
+        default: throw new Error(body.t);
+      }
+    });
+    return h;
+  }
+  const path = parsePosix("/a.bin");
+  const same = { size: "10", mtimeNs: "1732665600000000000" };
+
+  it("reads sequentially through one stream", async () => {
+    const { rpc, calls } = reading(10);
+    const provider = make(rpc);
+    expect([...await provider.read(path, 0n, 4, same, signal)]).toEqual([0, 1, 2, 3]);
+    expect([...await provider.read(path, 4n, 6, same, signal)]).toEqual([4, 5, 6, 7, 8, 9]);
+    expect(calls.filter((c) => c.t === "read_open")).toHaveLength(1);
+  });
+  it("reopens the stream on a jump and skips to the offset", async () => {
+    const { rpc, calls } = reading(10);
+    const provider = make(rpc);
+    await provider.read(path, 0n, 4, same, signal);
+    expect([...await provider.read(path, 2n, 3, same, signal)]).toEqual([2, 3, 4]);
+    expect(calls.filter((c) => c.t === "read_open")).toHaveLength(2);
+    expect(calls.some((c) => c.t === "read_close")).toBe(true);
+  });
+  it("fails changed_since_plan when the expected version differs from the entry", async () => {
+    const { rpc } = reading(10);
+    await expect(make(rpc).read(path, 0n, 4, { size: "11", mtimeNs: same.mtimeNs }, signal)).rejects.toMatchObject({ code: "changed_since_plan" });
+    await expect(make(rpc).read(path, 0n, 4, { size: "10", mtimeNs: "1" }, signal)).rejects.toMatchObject({ code: "changed_since_plan" });
+  });
+  it("refuses to read a directory and a missing entry", async () => {
+    const dir = rpcWith(() => ({ json: { t: "ok", entry: { ...file(1, "d", 0), kind: "dir" } } }));
+    await expect(make(dir.rpc).read(parsePosix("/d"), 0n, 1, null, signal)).rejects.toMatchObject({ code: "is_a_directory" });
+    const none = rpcWith(() => ({ json: { t: "ok", entry: null } }));
+    await expect(make(none.rpc).read(parsePosix("/x"), 0n, 1, null, signal)).rejects.toMatchObject({ code: "not_found" });
+  });
+  it("passes the owner's password callback to read_open and never to the agent path", async () => {
+    const { rpc } = reading(10);
+    const password = async () => Uint8Array.from([1]);
+    await make(rpc, { password }).read(path, 0n, 1, same, signal);
+    const [, options] = (rpc.request as unknown as { mock: { calls: unknown[][] } }).mock.calls.find((c) => (c[0] as Call).t === "read_open")!;
+    expect((options as { password?: unknown }).password).toBe(password);
+    const agent = reading(10);
+    await make(agent.rpc).read(path, 0n, 1, same, signal);
+    const [, agentOptions] = (agent.rpc.request as unknown as { mock: { calls: unknown[][] } }).mock.calls.find((c) => (c[0] as Call).t === "read_open")!;
+    expect((agentOptions as { password?: unknown }).password).toBeUndefined();
+  });
+});
+
+describe("finishRead (the integrity barrier)", () => {
+  const path = parsePosix("/a.bin");
+  it("runs read_finish after the whole entry was read", async () => {
+    let finished = false;
+    const { rpc, calls } = rpcWith((body) => {
+      if (body.t === "stat") return { json: { t: "ok", entry: file(7, "a.bin", 3) } };
+      if (body.t === "read_open") return { json: { t: "ok", stream: 3, size: "3" } };
+      if (body.t === "read") return { json: { t: "ok", pos: 3 }, data: [Uint8Array.from([1, 2, 3])] };
+      if (body.t === "read_finish") { finished = true; return { json: { t: "ok", size: "3", crc32: 1, aes_auth: null } }; }
+      return { json: { t: "ok" } };
+    });
+    const provider = make(rpc);
+    await provider.read(path, 0n, 3, null, signal);
+    await provider.finishRead!(path, { size: "3", mtimeNs: "1732665600000000000" }, signal);
+    expect(finished).toBe(true);
+    expect(calls.map((c) => c.t)).toEqual(["stat", "read_open", "read", "stat", "read_finish", "read_close"]);
+  });
+  it("runs the barrier for an empty entry without any read", async () => {
+    const { rpc, calls } = rpcWith((body) => {
+      if (body.t === "stat") return { json: { t: "ok", entry: file(7, "a.bin", 0) } };
+      if (body.t === "read_open") return { json: { t: "ok", stream: 4, size: "0" } };
+      return { json: { t: "ok", size: "0", crc32: 0, aes_auth: null } };
+    });
+    await make(rpc).finishRead!(path, { size: "0", mtimeNs: "1732665600000000000" }, signal);
+    expect(calls.map((c) => c.t)).toEqual(["stat", "read_open", "read_finish", "read_close"]);
+  });
+  it("propagates a failed barrier so the caller never commits", async () => {
+    const { rpc } = rpcWith((body) => {
+      if (body.t === "stat") return { json: { t: "ok", entry: file(7, "a.bin", 0) } };
+      if (body.t === "read_open") return { json: { t: "ok", stream: 4, size: "0" } };
+      if (body.t === "read_close") return { json: { t: "ok" } };
+      throw new CommanderError("invalid_archive", "bad crc", false, "crc_mismatch");
+    });
+    await expect(make(rpc).finishRead!(path, { size: "0", mtimeNs: "1732665600000000000" }, signal))
+      .rejects.toMatchObject({ code: "invalid_archive", reason: "crc_mismatch" });
+  });
+  it("refuses a barrier when the entry was not read completely", async () => {
+    const { rpc } = rpcWith((body) => {
+      if (body.t === "stat") return { json: { t: "ok", entry: file(7, "a.bin", 3) } };
+      if (body.t === "read_open") return { json: { t: "ok", stream: 3, size: "3" } };
+      if (body.t === "read") return { json: { t: "ok", pos: 1 }, data: [Uint8Array.from([1])] };
+      return { json: { t: "ok" } };
+    });
+    const provider = make(rpc);
+    await provider.read(path, 0n, 1, null, signal);
+    await expect(provider.finishRead!(path, { size: "3", mtimeNs: "1732665600000000000" }, signal)).rejects.toMatchObject({ code: "internal" });
+  });
+});
+
+describe("a read-only provider", () => {
+  it("advertises list, stat and read only and refuses every mutation with unsupported", async () => {
+    const provider = make(rpcWith(() => ({ json: { t: "ok" } })).rpc);
+    expect([...provider.capabilities].sort()).toEqual(["list", "read", "stat"]);
+    const path = parsePosix("/a");
+    await expect(provider.openWrite(path, { tempName: { t: "x" } }, signal)).rejects.toMatchObject({ code: "unsupported" });
+    await expect(provider.mkdir(path, signal)).rejects.toMatchObject({ code: "unsupported" });
+    await expect(provider.rename(path, path, { replace: false }, signal)).rejects.toMatchObject({ code: "unsupported" });
+    await expect(provider.remove(path, { kind: "file" }, signal)).rejects.toMatchObject({ code: "unsupported" });
+    expect(provider.copyWithin).toBeUndefined();
+    expect(provider.sha256).toBeUndefined();
+  });
+});
