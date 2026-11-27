@@ -46,6 +46,8 @@ export type CatalogPage = z.infer<typeof catalogPage>;
 
 export interface Provider {
   repositories(page: number): Promise<CatalogPage>;
+  /** One repository by its provider path: `owner/name`, or `project/name` on Azure. */
+  repository(path: string): Promise<Repo>;
   pulls(repo: Repo, page: number): Promise<{items: Pull[]; more: boolean}>;
   pull(repo: Repo, number: number): Promise<Pull>;
   details(repo: Repo, number: number): Promise<PullDetails>;

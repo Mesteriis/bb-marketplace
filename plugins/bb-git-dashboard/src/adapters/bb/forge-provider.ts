@@ -1,4 +1,4 @@
-import { catalogPage, pull, type Account, type Provider, type Repo } from "../../core/providers.ts";
+import { catalogPage, pull, repo, type Account, type Provider, type Repo } from "../../core/providers.ts";
 import { array, cloneUrl, object, segment, sha, text, type Http } from "./provider-http.ts";
 
 const size = 40;
@@ -40,20 +40,26 @@ export function forgeProvider(account: Account, request: Http): Provider {
     return revision;
   };
 
+  function forgeRepo(raw: unknown) {
+    const value = object(raw);
+    const full = text(value.full_name);
+    const slug = full.split("/");
+    return repo.parse({
+      id:String(value.id ?? ""), accountId:account.id, project:slug[0] ?? "", name:text(value.name),
+      path:full, clone:cloneUrl(account,value.clone_url), branch:text(value.default_branch) || null,
+      canPush:typeof object(value.permissions).push === "boolean" ? object(value.permissions).push : null,
+    });
+  }
+
   return {
+    async repository(path) {
+      const root = forgeRepositoryPath({path} as Repo);
+      return forgeRepo((await http(root)).payload);
+    },
     async repositories(page) {
       const {payload,headers} = await http("/user/repos?" + pagination(page));
       const rows = array(payload);
-      const items = rows.map(raw => {
-        const value = object(raw);
-        const full = text(value.full_name);
-        const slug = full.split("/");
-        return {
-          id:String(value.id ?? ""), accountId:account.id, project:slug[0] ?? "", name:text(value.name),
-          path:full, clone:cloneUrl(account,value.clone_url), branch:text(value.default_branch) || null,
-          canPush:typeof object(value.permissions).push === "boolean" ? object(value.permissions).push : null,
-        };
-      });
+      const items = rows.map(raw => forgeRepo(raw));
       return catalogPage.parse({items, more:next(headers,rows.length), observedAt:new Date().toISOString()});
     },
     async pulls(repo, page) {

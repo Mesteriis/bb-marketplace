@@ -63,19 +63,28 @@ export function azureProvider(account: Account, http: Http): Provider {
     }
     throw new Error("GIT_OUTPUT_LIMIT");
   }
+  function azureRepo(row: Record<string, unknown>) {
+    const project = text(object(row.project).name);
+    const name = text(row.name);
+    return repoSchema.parse({
+      id:text(row.id), accountId:account.id, project, name, path:project + "/" + name,
+      clone:cloneUrl(account,row.remoteUrl), branch:branchName(row.defaultBranch) || null, canPush:null,
+    });
+  }
   return {
+    async repository(path) {
+      const parts = path.split("/");
+      if (parts.length !== 2 || parts.some(part => !part || part === "." || part === "..")) throw new Error("INVALID_INPUT");
+      const {payload} = await http(endpoint(scope + "/" + segment(parts[0]) + "/_apis/git/repositories/" + segment(parts[1])));
+      const row = object(payload);
+      if (row.isDisabled === true) throw new Error("NOT_FOUND");
+      return azureRepo(row);
+    },
     async repositories(page) {
       const {payload} = await http(endpoint(scope + "/_apis/git/repositories"));
       const start = (page - 1) * pageSize;
       const catalog = values(payload).map(object).filter(row => row.isDisabled !== true);
-      const items = catalog.slice(start, start + pageSize).map(row => {
-        const project = text(object(row.project).name);
-        const name = text(row.name);
-        return repoSchema.parse({
-          id:text(row.id), accountId:account.id, project, name, path:project + "/" + name,
-          clone:cloneUrl(account,row.remoteUrl), branch:branchName(row.defaultBranch) || null, canPush:null,
-        });
-      });
+      const items = catalog.slice(start, start + pageSize).map(azureRepo);
       return {items, more:start + pageSize < catalog.length, observedAt:new Date().toISOString()};
     },
     async pulls(repo, page) {

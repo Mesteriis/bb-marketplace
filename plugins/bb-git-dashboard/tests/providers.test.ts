@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import type { Account } from "../src/core/providers.ts";
+import { provider } from "../src/adapters/bb/provider.ts";
 
 const implementation = () => import("../src/adapters/bb/provider.ts");
 const fixture = [
@@ -87,4 +88,35 @@ test("does not repeat an external write after a lost response or expose its exce
     project:"team",name:"demo",branch:"main",canPush:true},
     {kind:"create",head:"feature",base:"main",expected:"1".repeat(40),title:"Test",body:""}),{message:"OUTCOME_UNKNOWN"});
   assert.equal(writes,1);
+});
+
+const lookups = [
+  {kind:"github", origin:"https://api.github.com", organization:"", path:"Mesteriis/makosh-git-sandbox", url:"/repos/Mesteriis/makosh-git-sandbox",
+    body:{id:7,name:"makosh-git-sandbox",full_name:"Mesteriis/makosh-git-sandbox",clone_url:"https://github.com/Mesteriis/makosh-git-sandbox.git",default_branch:"main",permissions:{push:true}},
+    expected:{id:"7",path:"Mesteriis/makosh-git-sandbox",project:"Mesteriis",branch:"main",canPush:true}},
+  {kind:"gitea", origin:"https://git.example.invalid", organization:"", path:"team/demo", url:"/api/v1/repos/team/demo",
+    body:{id:5,name:"demo",full_name:"team/demo",clone_url:"https://git.example.invalid/team/demo.git",default_branch:"dev"},
+    expected:{id:"5",path:"team/demo",project:"team",branch:"dev",canPush:null}},
+  {kind:"azure", origin:"https://dev.azure.com", organization:"org", path:"Team Project/demo", url:"/org/Team%20Project/_apis/git/repositories/demo",
+    body:{id:"repo-id",name:"demo",project:{name:"Team Project"},remoteUrl:"https://dev.azure.com/org/Team%20Project/_git/demo",defaultBranch:"refs/heads/main"},
+    expected:{id:"repo-id",path:"Team Project/demo",project:"Team Project",branch:"main",canPush:null}},
+] as const;
+
+for (const setup of lookups) {
+  test(setup.kind + " looks up one repository by its path", async () => {
+    const account: Account = {kind:setup.kind,origin:setup.origin,organization:setup.organization,id:"a",label:"A",username:"alice"};
+    const api = provider(account,"sample-secret",async target => {
+      assert.equal(new URL(String(target)).pathname,setup.url);
+      return Response.json(setup.body);
+    });
+    const found = await api.repository(setup.path);
+    assert.deepEqual({id:found.id,path:found.path,project:found.project,branch:found.branch,canPush:found.canPush},setup.expected);
+    assert.equal(found.accountId,"a");
+  });
+}
+
+test("a repository path with dot segments is refused before any request", async () => {
+  const account: Account = {kind:"github",origin:"https://api.github.com",organization:"",id:"a",label:"A",username:"alice"};
+  const api = provider(account,"t",async () => { throw new Error("must not be called"); });
+  await assert.rejects(api.repository("../x"),{message:"INVALID_INPUT"});
 });
