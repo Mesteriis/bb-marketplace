@@ -100,3 +100,19 @@ test("a GitLab connection is checked through /user and lists member projects", a
   const checked = await checkConnection({kind: "gitlab", origin: "https://gitlab.com", organization: "", label: "GitLab", username: "", token}, "id", send);
   assert.deepEqual({username: checked.username, repositories: checked.repositories}, {username: "octo", repositories: ["group/sub/app"]});
 });
+
+test("a self-managed GitLab on its own port is checked through /api/v4/user", async () => {
+  const {checkConnection} = await import("../src/adapters/bb/connection.ts");
+  const paths: string[] = [];
+  const send = (async (target: string | URL) => {
+    const url = new URL(String(target));
+    paths.push(url.host + url.pathname);
+    if (url.pathname === "/api/v4/user") return Response.json({id: 1, username: "octo"});
+    if (url.pathname === "/api/v4/projects") return Response.json([], {headers: {"x-next-page": ""}});
+    return Response.json({message: "404 Not found"}, {status: 404});
+  }) as typeof fetch;
+  const result = await checkConnection({kind: "gitlab", origin: "https://gitlab.example.org:8443", organization: "", label: "GL",
+    username: "", token: "fixture-token-value"}, "gl", send);
+  assert.equal(result.username, "octo");
+  assert.deepEqual(paths, ["gitlab.example.org:8443/api/v4/user", "gitlab.example.org:8443/api/v4/projects"]);
+});

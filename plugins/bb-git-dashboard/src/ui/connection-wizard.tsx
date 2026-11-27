@@ -119,7 +119,7 @@ export function ConnectionWizard({api,onClose,onSaved}:{
             detection && <label>Provider type
               <select value={kind} onChange={event => setKind(event.target.value as typeof kind)} required>
                 <option value="">Choose the server type</option>
-                <option value="github">GitHub Enterprise</option><option value="gitea">Gitea</option>
+                <option value="github">GitHub Enterprise</option><option value="gitlab">GitLab self-managed</option><option value="gitea">Gitea</option>
               </select>
             </label>}
           {provider === "azure" && <>

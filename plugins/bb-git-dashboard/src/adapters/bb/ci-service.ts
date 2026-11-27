@@ -9,6 +9,7 @@ import type { Account, Repo } from "../../core/providers.ts";
 import type { Copy } from "../../core/workspace.ts";
 import { actionsPipelines } from "./forges/actions-pipelines.ts";
 import { azurePipelines } from "./forges/azure-pipelines.ts";
+import { gitlabPipelines } from "./forges/gitlab-pipelines.ts";
 
 type Linked = {account: Account; token: string; repo: Repo};
 export type CiDeps = {
@@ -23,7 +24,7 @@ const previewTtl = 5 * 60_000;
 export function pipelinesOf({account, token, repo}: Linked, send: typeof fetch = fetch): Pipelines {
   if (account.kind === "github" || account.kind === "gitea") return actionsPipelines(account, repo, token, send);
   if (account.kind === "azure") return azurePipelines(account, repo, token, send);
-  throw new Error("PROVIDER_UNSUPPORTED");
+  return gitlabPipelines(account, repo, token, send);
 }
 
 /** CI/CD reads and confirmed writes for a working copy's linked repository. */

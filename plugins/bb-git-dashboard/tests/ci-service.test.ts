@@ -16,6 +16,7 @@ function setup(kind: Account["kind"] = "github", linkedRepo: () => Repo = () => 
     if (init?.method === "POST") { writes.push(url.pathname); return new Response(null, {status: 204}); }
     if (url.pathname.endsWith("/actions/workflows")) return Response.json({workflows: [{id: 123, name: "CI", path: ".github/workflows/ci.yml"}]});
     if (url.pathname.endsWith("/actions/runs/9")) return Response.json(run);
+    if (url.pathname === "/api/v4/projects/1/pipelines") return Response.json([]);
     if (url.pathname.endsWith("/actions/runs")) return Response.json({workflow_runs: [run], total_count: 1});
     if (url.pathname.endsWith("/check-runs/77/annotations")) return Response.json([{annotation_level: "failure", message: "The job was not started because of billing."}]);
     return new Response("{}", {status: 404});
@@ -52,8 +53,10 @@ test("dispatching an unknown workflow is refused before anything is written", as
   assert.deepEqual(writes, ["/repos/octo/sandbox/actions/workflows/123/dispatches"]);
 });
 
-test("GitLab and unknown copies are reported, not guessed", async () => {
-  await assert.rejects(setup("gitlab").service.runs("c1", "all", 1), {message: "PROVIDER_UNSUPPORTED"});
+test("GitLab copies read pipelines; unknown copies are reported, not guessed", async () => {
+  const gitlab = await setup("gitlab").service.runs("c1", "all", 1);
+  assert.equal(gitlab.forge, "gitlab");
+  assert.deepEqual(gitlab.limitations, {});
   await assert.rejects(setup().service.runs("other", "all", 1), {message: "NOT_FOUND"});
 });
 

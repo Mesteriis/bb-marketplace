@@ -12,7 +12,10 @@ const limitations: Record<Kind, Partial<Record<Capability, string>>> = {
     issues: "Azure Boards are scoped to the Azure DevOps project.",
     variables: "Azure variable groups are scoped to the Azure DevOps project.",
   },
-  gitlab: Object.fromEntries(all.map(capability => [capability, "GitLab support arrives in a later release."])),
+  gitlab: {
+    issues: "GitLab support arrives in a later release.",
+    variables: "GitLab support arrives in a later release.",
+  },
 };
 
 export function limitation(kind: Kind, capability: Capability): string | null {

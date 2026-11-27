@@ -42,10 +42,10 @@ test("GitLab accounts get an API client", () => {
 });
 
 test("capabilities state what each forge offers in this release", () => {
-  assert.deepEqual(capabilities("gitlab"), {repositories: false, pulls: false, pipelines: false, issues: false, variables: false});
+  assert.deepEqual(capabilities("gitlab"), {repositories: true, pulls: true, pipelines: true, issues: false, variables: false});
   assert.deepEqual(capabilities("github"), {repositories: true, pulls: true, pipelines: true, issues: true, variables: true});
   assert.equal(capabilities("azure").issues, false);
   assert.equal(limitation("azure", "issues"), "Azure Boards are scoped to the Azure DevOps project.");
   assert.equal(limitation("github", "issues"), null);
-  assert.equal(limitation("gitlab", "pipelines"), "GitLab support arrives in a later release.");
+  assert.equal(limitation("gitlab", "issues"), "GitLab support arrives in a later release.");
 });
