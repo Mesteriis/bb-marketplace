@@ -1,0 +1,34 @@
+/* Makosh Git colours. Only BB's theme tokens come in; every --git-* value is derived from var(--background), so BB's
+   light and dark modes and its palettes (including coloured ones) need no theme of the plugin's own.
+   --git-step is 0 on a light background and 1 on a dark one (the switch sits at lightness 0.6); a text colour is the
+   designed value for its mode, kept at least 0.5 of lightness away from the background, which holds 4.5:1 on the
+   lighter dark palettes as well (tests/ui-tokens.test.ts checks every palette BB ships).
+   A background tone moves the background's lightness and chroma toward the tone by a share that depends on the mode:
+   on a grey background that is exactly a mix in oklab, and it never drifts to pink as a mix in oklch with white does. */
+.git-ws {
+  --git-step: clamp(0, (0.6 - l) * 50, 1);
+
+  --git-bad-text: oklch(from var(--background) calc((1 - var(--git-step)) * min(0.45, l - 0.5) + var(--git-step) * max(0.74, l + 0.5)) calc(0.19 + (0.15 - 0.19) * var(--git-step)) 25);
+  --git-success: oklch(from var(--background) calc((1 - var(--git-step)) * min(0.47, l - 0.5) + var(--git-step) * max(0.76, l + 0.5)) calc(0.13 + (0.15 - 0.13) * var(--git-step)) 155);
+  --git-warning: oklch(from var(--background) calc((1 - var(--git-step)) * min(0.5, l - 0.5) + var(--git-step) * max(0.77, l + 0.5)) calc(0.14 + (0.16 - 0.14) * var(--git-step)) 55);
+  --git-violet: oklch(from var(--background) calc((1 - var(--git-step)) * min(0.48, l - 0.5) + var(--git-step) * max(0.72, l + 0.5)) calc(0.17 + (0.11 - 0.17) * var(--git-step)) 291.6);
+
+  --git-bad-bg: oklch(from var(--background) calc(l + (0.55 - l) * (0.09 + 0.11 * var(--git-step))) calc(c + (0.19 - c) * (0.09 + 0.11 * var(--git-step))) 25);
+  --git-good-bg: oklch(from var(--background) calc(l + (0.7 - l) * (0.14 - 0.02 * var(--git-step))) calc(c + (0.15 - c) * (0.14 - 0.02 * var(--git-step))) 155);
+  --git-warn-bg: oklch(from var(--background) calc(l + (0.7 - l) * (0.14 + 0.02 * var(--git-step))) calc(c + (0.16 - c) * (0.14 + 0.02 * var(--git-step))) 50);
+  --git-violet-bg: oklch(from var(--background) calc(l + (0.6 - l) * (0.08 + 0.1 * var(--git-step))) calc(c + (0.15 - c) * (0.08 + 0.1 * var(--git-step))) 291.6);
+
+  /* Neutral layers between the background and the text, for hover, group rows and the side column. */
+  --git-subtle: color-mix(in oklab, var(--foreground) 5%, var(--background));
+  --git-hairline: color-mix(in oklab, var(--foreground) 9%, var(--background));
+  --git-side: color-mix(in oklab, var(--foreground) 3%, var(--background));
+  --git-scrim: color-mix(in oklab, var(--foreground) 30%, transparent);
+  --git-shadow: color-mix(in oklab, var(--foreground) 22%, transparent);
+
+  /* Earlier names, kept until their sections move to the new system. */
+  --git-raised: var(--git-subtle);
+  --git-selected: var(--git-violet-bg);
+  --git-focus: var(--git-violet);
+  --git-added: var(--git-success);
+  --git-removed: var(--git-bad-text);
+}

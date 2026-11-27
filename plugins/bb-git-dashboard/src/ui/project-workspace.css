@@ -1,8 +1,4 @@
 .git-project-layout {
-  --git-raised: color-mix(in srgb, var(--card), var(--foreground) 3%);
-  --git-violet: #9566dc;
-  --git-selected: color-mix(in srgb, var(--git-violet) 23%, var(--card));
-  --git-focus: color-mix(in srgb, var(--git-violet) 57%, var(--foreground));
   display: grid;
   grid-template-columns: minmax(184px, clamp(200px, 20%, 290px)) minmax(0, 1fr);
   grid-template-rows: auto 1fr;

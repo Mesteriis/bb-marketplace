@@ -22,6 +22,8 @@ import { requestOfKey, ReviewOpenOverlay, reviewRoute } from "./src/app/review-o
 import { useReviewRevisions } from "./src/app/review-signal.ts";
 import { ciApi, codeReviewApi, failed, historyApi, okValue } from "./src/app/apis.tsx";
 import { ciTab, historyTab, reviewTab, ThreadCi, ThreadHistory, ThreadReview, registerHistoryShortcut, registerReviewSurfaces } from "./src/app/thread-tabs.tsx";
+import "./src/ui/system/tokens.css";
+import "./src/ui/system/system.css";
 import "./src/ui/git.css";
 import { withCodeTheme } from "./src/app/code-theme.tsx";
 import { NotificationSettings } from "./src/app/notification-settings.tsx";
