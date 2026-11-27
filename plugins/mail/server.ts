@@ -9,7 +9,7 @@
 // account goes out through toPublicAccount, and log lines carry account ids
 // and outcome codes only.
 import { createReadStatus, type ReadStatus } from "./src/adapters/bb/read-status.ts";
-import { READ_STATUS_FEED_CHARS, READ_STATUS_ORIGIN } from "./src/core/read-status.ts";
+import { READ_STATUS_FEED_CHARS } from "./src/core/read-status.ts";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
   PluginCliError,
@@ -805,8 +805,8 @@ function defineSettings(bb: BbPluginApi) {
     readStatusOrigin: {
       type: "string",
       label: "Read-status endpoint",
-      description: "The https address of your own endpoint (the Makosh site).",
-      default: READ_STATUS_ORIGIN,
+      description: "The https address of your own endpoint (the Makosh site), like https://makosh.example.org. Empty: no image is added and opens are not read.",
+      default: "",
       experimental_schema: z.string().max(200),
     },
     readStatusTrackKey: {

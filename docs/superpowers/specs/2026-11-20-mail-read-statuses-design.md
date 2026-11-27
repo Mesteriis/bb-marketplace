@@ -1,7 +1,7 @@
 # Makosh Mail: read statuses — design
 
 Date: 2026-11-20. Status: the way is decided (the owner, 2026-11-20:
-their own public endpoint at `makosh.sh-inc.dev`, on their server); the
+their own public endpoint, on their server); the
 endpoint is built and running (`site/`), the plugin side is not built yet.
 Ninth of nine projects that bring Superhuman Mail's features to Makosh Mail.
 
@@ -56,7 +56,7 @@ such address. Three ways:
 
 ## The endpoint as built
 
-`site/` in this repository, running at `https://makosh.sh-inc.dev`:
+`site/` in this repository, running at the address in `MAKOSH_ORIGIN`:
 `GET /o/<token>.gif` and `GET /api/events?after=N` with a bearer key. A
 token is `<id>.<sig>`: 16–32 base64url characters and the first 16
 base64url characters of HMAC-SHA256(track key, id); only signed tokens

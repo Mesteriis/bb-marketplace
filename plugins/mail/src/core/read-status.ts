@@ -4,7 +4,6 @@
 // message. An open is a hint, not a proof: some mail services fetch images
 // by themselves, and many programs never fetch them.
 
-export const READ_STATUS_ORIGIN = "https://makosh.sh-inc.dev";
 export const READ_STATUS_KEEP_DAYS = 90;
 /** The endpoint is asked for new opens at most this often. */
 export const READ_STATUS_POLL_MS = 5 * 60_000;

@@ -1,7 +1,9 @@
-# makosh.sh-inc.dev: the Makosh site and the read-status endpoint.
-# Lives in LXC 136 (utility) at /opt/utility/stacks/makosh-site; the public
-# name is published by nginx on LXC 112. Secrets are in .env next to this
-# file (0600), made on the host and never printed.
+# The Makosh site and the read-status endpoint, behind a reverse proxy that
+# publishes the public name (nginx-site.conf.example). The values of one
+# installation are in .env next to this file (0600), made on the host and
+# never printed: MAKOSH_TRACK_KEY, MAKOSH_API_KEY, MAKOSH_ORIGIN (the public
+# https address) and MAKOSH_BIND (the address:port the proxy reaches, for
+# example 127.0.0.1:18760).
 name: makosh-site
 services:
   site:
@@ -13,13 +15,12 @@ services:
     environment:
       PORT: "8080"
       MAKOSH_DATA_FILE: /data/opens.jsonl
-      MAKOSH_ORIGIN: https://makosh.sh-inc.dev
       NODE_ENV: production
     volumes:
       - ./app:/app:ro
       - ./data:/data
     ports:
-      - "10.34.10.34:18760:8080"
+      - "${MAKOSH_BIND:?set MAKOSH_BIND in .env to the address:port the proxy reaches}:8080"
     read_only: true
     tmpfs:
       - /tmp:size=8m

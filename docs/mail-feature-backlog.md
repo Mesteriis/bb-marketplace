@@ -146,7 +146,7 @@
 
 Отложено владельцем 2026-11-20; к этому вернуться отдельно.
 
-- **Верификация приложения в Google (перевод входа через Google в рабочий режим).** Проект Google Cloud «Makosh», Google Auth Platform. Уже сделано: приложение в статусе «In production»; брендинг проверен и опубликован; право собственности на `https://makosh.sh-inc.dev/` подтверждено в Search Console (файл `google73cd373a002a533f.html` отдаёт сайт, убирать нельзя); в Data Access заявлены `openid`, `userinfo.email` и `https://mail.google.com/`, вписано обоснование. Осталось:
+- **Верификация приложения в Google (перевод входа через Google в рабочий режим).** Проект Google Cloud «Makosh», Google Auth Platform. Уже сделано: приложение в статусе «In production»; брендинг проверен и опубликован; право собственности на адрес сайта Makosh (`MAKOSH_ORIGIN`) подтверждено в Search Console (файл проверки `google<16 hex>.html` отдаёт сайт, убирать нельзя); в Data Access заявлены `openid`, `userinfo.email` и `https://mail.google.com/`, вписано обоснование. Осталось:
   1. Снять демо-видео и выложить на YouTube: вход через Google в Makosh Mail с экраном «unverified app», затем как приложение читает и отправляет почту; в видео должны быть видны все OAuth-клиенты проекта.
   2. В Data Access вставить ссылку на видео и выбрать «Email client» в «What features will you use?» (выбор подтверждается кнопкой OK в списке; без ссылки на видео поле после сохранения оставалось пустым), нажать Save.
   3. Verification Center → Prepare for verification → Confirm.

@@ -141,7 +141,7 @@ export function privacyPage(site) {
     body: `<section class="hero">
 <h1>Privacy policy</h1>
 <p class="lede">Makosh plugins run on your computer and keep their data there. This page says exactly what is handled, by whom, and what never leaves your machine.</p>
-<p class="note">Effective ${EFFECTIVE}. Applies to the Makosh plugins for BB (Makosh Mail and the others listed on the <a href="/">home page</a>) and to this website, makosh.sh-inc.dev.</p>
+<p class="note">Effective ${EFFECTIVE}. Applies to the Makosh plugins for BB (Makosh Mail and the others listed on the <a href="/">home page</a>) and to this website, ${esc(new URL(site.origin).host)}.</p>
 </section>
 <section class="prose">
 <h2>Who is responsible</h2>

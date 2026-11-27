@@ -20,6 +20,11 @@ if (trackKey === apiKey) {
   console.error("MAKOSH_TRACK_KEY and MAKOSH_API_KEY must be different secrets");
   process.exit(1);
 }
+const origin = env.MAKOSH_ORIGIN ?? "";
+if (!/^https:\/\/[a-z0-9.-]+(:\d{1,5})?$/.test(origin)) {
+  console.error("MAKOSH_ORIGIN must be set to the site's https address, for example https://makosh.example.org");
+  process.exit(1);
+}
 const store = new OpenStore(env.MAKOSH_DATA_FILE ?? "/data/opens.jsonl", (line) => console.error(line));
 try {
   store.checkWritable();
@@ -37,7 +42,7 @@ const app = createApp({
   store,
   catalog,
   site: {
-    origin: env.MAKOSH_ORIGIN ?? "https://makosh.sh-inc.dev",
+    origin,
     contact: env.MAKOSH_CONTACT_EMAIL || undefined,
     googleVerification: env.MAKOSH_GOOGLE_SITE_VERIFICATION || undefined,
     googleVerificationFile: env.MAKOSH_GOOGLE_VERIFICATION_FILE || undefined,

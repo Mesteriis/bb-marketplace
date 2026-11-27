@@ -6,6 +6,12 @@ All notable changes to Makosh Mail are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- `readStatusOrigin` is empty by default: read statuses work only after you
+  set the https address of your own endpoint. An installation that relied on
+  the former built-in address sets it once in the plugin's settings.
+
 ### Fixed
 
 - The daily limits of AI that runs by itself (auto drafts, sorting) and the

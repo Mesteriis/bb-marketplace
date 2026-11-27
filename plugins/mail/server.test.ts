@@ -2496,6 +2496,30 @@ describe("compose and send", () => {
     }
   });
 
+  it("read statuses: with both keys and no endpoint address, nothing is added and no feed is asked", async () => {
+    const asked: string[] = [];
+    const host = await load({
+      settings: { vaultKey: COMPOSE_KEY, readStatusTrackKey: "track-key-for-tests-0123456789abcdef", readStatusFeedKey: "feed-key-for-tests-0123456789abcdefg" },
+      seed: (bb) => seedCompose(bb),
+      server: composeServer,
+      outboxIntervalMs: 5,
+      readStatusFetch: async (url) => {
+        asked.push(url);
+        return { status: 200, text: async () => JSON.stringify({ events: [], next: 0, epoch: "epoch-one-0001", last: 0 }) };
+      },
+    });
+    const service = host.harness.behavior.runService("sync");
+    const { draftId, revision } = await savedDraft(host);
+    await call(host, "compose_send", { draftId, baseRevision: revision, requestId: REQUEST_ID });
+    host.clock.set(new Date(NOW.getTime() + UNDO_MS));
+    await vi.waitFor(() => expect(outboxStates(host)).toContain("done"));
+    service.controller.abort();
+    await service.done;
+
+    expect(new TextDecoder().decode(host.transport.sent[0]!.raw)).not.toContain("/o/");
+    expect(asked).toEqual([]);
+  });
+
   it("realtime carries ids and states only; logs carry no content or secret", async () => {
     const host = await loadCompose();
     const service = host.harness.behavior.runService("sync");

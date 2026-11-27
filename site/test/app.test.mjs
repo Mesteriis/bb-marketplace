@@ -46,6 +46,7 @@ test("the pages answer with what a reviewer looks for", async () => {
   assert.ok(privacy.includes("Google API Services User Data Policy"));
   assert.ok(privacy.includes("Limited Use"));
   assert.ok(privacy.includes("mailto:owner@example.org"));
+  assert.ok(privacy.includes("and to this website, makosh.example.org."));
   const mail = await (await fetch(`${base}/mail`)).text();
   assert.ok(mail.includes("https://mail.google.com/"));
   assert.equal((await fetch(`${base}/terms`)).status, 200);

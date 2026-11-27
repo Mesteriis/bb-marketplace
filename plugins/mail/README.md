@@ -1641,9 +1641,10 @@ endpoint notes the token, the time and a coarse kind of client — never an
 IP address — and Makosh Mail reads those notes every five minutes.
 
 - Set up once in BB Settings → Plugins → Makosh Mail: `readStatusOrigin`
-  (the endpoint's https address), `readStatusTrackKey` and
-  `readStatusFeedKey` (the endpoint's `MAKOSH_TRACK_KEY` and
-  `MAKOSH_API_KEY`). Without both keys nothing is added to your mail.
+  (the endpoint's https address, empty until you set it),
+  `readStatusTrackKey` and `readStatusFeedKey` (the endpoint's
+  `MAKOSH_TRACK_KEY` and `MAKOSH_API_KEY`). Without the address and both
+  keys nothing is added to your mail.
 - The switch **Show when mail I send is opened** (Mail settings →
   Templates → Typing, on by default) turns it off for all mail.
 - Never added to signed or encrypted mail, to mail that goes only to
