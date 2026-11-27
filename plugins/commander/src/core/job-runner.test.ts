@@ -3,8 +3,9 @@ import { CommanderError } from "./errors.ts";
 import { JobRunner, type RunnerDeps } from "./job-runner.ts";
 import { Conflict, OperationJob, planDigest, type JobState, type OperationPlan } from "./model.ts";
 import { parsePosix } from "./path.ts";
+import { buildPlan } from "./planner.ts";
 import { FakeProvider } from "./testing/fake-provider.ts";
-import { tempNameFor } from "./reconcile.ts";
+import { isCaseOnlyPair, tempNameFor } from "./reconcile.ts";
 import type { Checkpoint } from "./job-store.ts";
 import { MemoryJobStore } from "./testing/memory-job-store.ts";
 
@@ -33,6 +34,7 @@ async function setup(options: {
       target: { endpoint: "host:to", path: output },
       kind: "file" as const,
       fingerprint: { size: String(size), mtimeNs: "1" },
+      expectTarget: "absent" as const,
     };
   });
   const unsigned: Omit<OperationPlan, "digest"> = {
@@ -42,6 +44,7 @@ async function setup(options: {
     kind: options.kind ?? "copy",
     sourceEndpoint: "host:from",
     targetEndpoint: "host:to",
+    targetDir: options.kind === "delete" || options.kind === "rename" ? null : { endpoint: "host:to", path: { segments: [] } },
     items,
     route: "relay-server",
     conflictPolicy: options.policy ?? "ask",
@@ -74,6 +77,16 @@ async function setup(options: {
   return { runner, newRunner, plan, store, from, to, retryDelay, at };
 }
 
+/** Rebuild the plan the way the planner would after a target already exists. */
+async function planningExisting(plan: OperationPlan, provider: FakeProvider): Promise<OperationPlan> {
+  const { digest: _digest, ...unsigned } = plan;
+  for (const item of unsigned.items) {
+    const entry = item.target && await provider.stat(item.target.path, new AbortController().signal);
+    if (item.target) item.expectTarget = entry ? { size: entry.size, mtimeNs: entry.mtimeNs } : "absent";
+  }
+  return { ...unsigned, digest: await planDigest(unsigned) };
+}
+
 test("relays 10 MiB in ten sequential 1 MiB chunks", async () => {
   const { runner, plan, at, from, to } = await setup({ size: 10 * mib });
   from.trackRelayReads = true;
@@ -89,7 +102,7 @@ test.each(["this", "remaining_same_reason"] as const)("scopes skip decisions to 
   const { runner, plan, at, to } = await setup({ count: 2 });
   to.put(target, Uint8Array.of(7), "1");
   to.put(parsePosix("/b1"), Uint8Array.of(8), "1");
-  const { id } = await runner.submit(plan);
+  const { id } = await runner.submit(await planningExisting(plan, to));
   const first = await at(id, "awaiting_decision", 0);
   expect(first.pendingConflict?.reason).toBe("exists");
   await runner.decide(id, { conflictId: first.pendingConflict!.id, action: "skip", applyTo });
@@ -112,8 +125,9 @@ test("asks about a changed source despite overwrite policy", async () => {
 test("checks the target fingerprint again at commit after overwrite approval", async () => {
   const { runner, plan, at, to } = await setup();
   to.put(target, Uint8Array.of(7), "1");
-  const { id } = await runner.submit(plan);
+  const { id } = await runner.submit(await planningExisting(plan, to));
   const conflict = (await at(id, "awaiting_decision", 0)).pendingConflict!;
+  expect(conflict.reason).toBe("exists");
   to.delay = async (op) => {
     if (op === "commit") to.put(target, Uint8Array.of(8), "2");
   };
@@ -223,8 +237,10 @@ test("uses same-endpoint copy and refuses a late target replacement", async () =
   const { digest: _digest, ...unsigned } = plan;
   unsigned.route = "same-endpoint";
   unsigned.targetEndpoint = "host:from";
+  unsigned.targetDir = { endpoint: "host:from", path: { segments: [] } };
   unsigned.conflictPolicy = "overwrite";
   unsigned.items[0].target!.endpoint = "host:from";
+  unsigned.items[0].expectTarget = { size: "1", mtimeNs: "1" };
   from.delay = async (op) => {
     if (op === "copyWithin") from.put(target, Uint8Array.of(8), "2");
   };
@@ -321,6 +337,7 @@ test("moves an expanded directory across endpoints and removes its source after 
     target: { endpoint: "host:to", path: output },
     kind: "dir",
     fingerprint: { size: "0", mtimeNs: dir.mtimeNs },
+    expectTarget: "absent",
   });
 
   const { id } = await runner.submit({ ...unsigned, digest: await planDigest(unsigned) });
@@ -484,8 +501,10 @@ test.each(["approve", "reject"] as const)("only %s wins the approval CAS", async
 test.each(["skip", "cancel"] as const)("only %s wins the decision CAS", async (winner) => {
   const { runner, plan, store, at, to } = await setup();
   to.put(target, Uint8Array.of(5), "2");
-  const { id } = await runner.submit(plan);
-  const conflictId = (await at(id, "awaiting_decision")).pendingConflict!.id;
+  const { id } = await runner.submit(await planningExisting(plan, to));
+  const pending = (await at(id, "awaiting_decision")).pendingConflict!;
+  expect(pending.reason).toBe("exists");
+  const conflictId = pending.id;
   const gate = delayUpdate(store, winner === "skip" ? "cancel_requested" : "running");
   const loser = runner.decide(id, { conflictId, action: winner === "skip" ? "cancel" : "skip", applyTo: "this" });
   const rejected = expect(loser).rejects.toMatchObject({ code: "changed_since_plan" });
@@ -506,6 +525,7 @@ test.each(["delete", "mkdir", "rename"] as const)("executes a %s plan", async (k
   const item = unsigned.items[0];
   if (kind === "delete") {
     item.target = null;
+    item.expectTarget = null;
     unsigned.targetEndpoint = null;
   } else if (kind === "mkdir") {
     item.kind = "dir";
@@ -533,6 +553,7 @@ test.each(["remove", "rename"] as const)("checks both locations after interrupti
   const { digest: _digest, ...unsigned } = plan;
   if (operation === "remove") {
     unsigned.items[0].target = null;
+    unsigned.items[0].expectTarget = null;
     unsigned.targetEndpoint = null;
   } else {
     unsigned.items[0].target!.endpoint = "host:from";
@@ -557,14 +578,7 @@ test.each(["remove", "rename"] as const)("checks both locations after interrupti
 });
 
 test("flags a target that appeared after an explicitly absent plan target", async () => {
-  const { runner, plan, to, at } = await setup({
-    policy: "overwrite",
-    revalidate: async (snapshot) => {
-      // S2 adds the field to the schema. This fake models its checked snapshot.
-      Object.assign(snapshot.items[0], { expectTarget: "absent" });
-      return { ok: true, plan: snapshot };
-    },
-  });
+  const { runner, plan, to, at } = await setup({ policy: "overwrite" });
   const job = await runner.submit(plan, { awaitsOwner: true });
   to.put(target, Uint8Array.of(7), "2");
   await runner.approve(job.id);
@@ -659,7 +673,7 @@ test("preserves a target conflict if a second restart interrupts conflict recove
   to.delay = async (op) => {
     if (op === "commit") to.put(target, Uint8Array.of(8), "3");
   };
-  const { id } = await runner.submit(plan);
+  const { id } = await runner.submit(await planningExisting(plan, to));
   const initial = await at(id, "awaiting_decision", 0);
   expect(initial.pendingConflict?.reason).toBe("target_changed");
   const update = store.update.bind(store);
@@ -728,7 +742,7 @@ test("restores a staged parent directory after restarting during a child move", 
   unsigned.items[0].source!.path = child;
   unsigned.items[0].target!.path = copy;
   unsigned.items.unshift({ source: { endpoint: "host:from", path: input }, target: { endpoint: "host:to", path: output },
-    kind: "dir", fingerprint: { size: "0", mtimeNs: dir.mtimeNs } });
+    kind: "dir", fingerprint: { size: "0", mtimeNs: dir.mtimeNs }, expectTarget: "absent" });
   const waiting = pause();
   const checkpoint = store.checkpoint.bind(store);
   vi.spyOn(store, "checkpoint").mockImplementation(async (point) => {
@@ -825,9 +839,10 @@ test("restores staged parent directories when a restarted child conflict is deci
   unsigned.items[0].source!.path = child;
   unsigned.items[0].target!.path = copy;
   unsigned.items.unshift({ source: { endpoint: "host:from", path: input }, target: { endpoint: "host:to", path: output },
-    kind: "dir", fingerprint: { size: "0", mtimeNs: dir.mtimeNs } });
-  const { id } = await runner.submit({ ...unsigned, digest: await planDigest(unsigned) });
+    kind: "dir", fingerprint: { size: "0", mtimeNs: dir.mtimeNs }, expectTarget: "absent" });
+  const { id } = await runner.submit(await planningExisting({ ...unsigned, digest: await planDigest(unsigned) }, to));
   const conflict = (await at(id, "awaiting_decision", 1)).pendingConflict!;
+  expect(conflict.reason).toBe("exists");
   const restarted = newRunner();
   await restarted.recover();
   await restarted.decide(id, { conflictId: conflict.id, action: "overwrite", applyTo: "this" });
@@ -896,7 +911,7 @@ test("keeps the source directory if a completed child's destination disappears",
   unsigned.items[0].source!.path = child;
   unsigned.items[0].target!.path = copy;
   unsigned.items.unshift({ source: { endpoint: "host:from", path: input }, target: { endpoint: "host:to", path: output },
-    kind: "dir", fingerprint: { size: "0", mtimeNs: dir.mtimeNs } });
+    kind: "dir", fingerprint: { size: "0", mtimeNs: dir.mtimeNs }, expectTarget: "absent" });
   const update = store.update.bind(store);
   vi.spyOn(store, "update").mockImplementation(async (...args) => {
     const updated = await update(...args);
@@ -1056,11 +1071,12 @@ test("records verified evidence for a child recovered after rename before the di
   const { digest: _digest, ...unsigned } = plan;
   unsigned.items = [
     { source: { endpoint: "host:from", path: input }, target: { endpoint: "host:from", path: output }, kind: "dir",
-      fingerprint: { size: "0", mtimeNs: dir.mtimeNs } },
+      fingerprint: { size: "0", mtimeNs: dir.mtimeNs }, expectTarget: "absent" },
     { source: { endpoint: "host:from", path: parsePosix("/tree/child") },
-      target: { endpoint: "host:from", path: parsePosix("/tree-copy/child") }, kind: "file", fingerprint: { size: "3", mtimeNs: "1" } },
+      target: { endpoint: "host:from", path: parsePosix("/tree-copy/child") }, kind: "file", fingerprint: { size: "3", mtimeNs: "1" }, expectTarget: "absent" },
   ];
   unsigned.targetEndpoint = "host:from";
+  unsigned.targetDir = { endpoint: "host:from", path: { segments: [] } };
   const lost = pause();
   const checkpoint = store.checkpoint.bind(store);
   vi.spyOn(store, "checkpoint").mockImplementation(async (point) => {
@@ -1198,4 +1214,320 @@ test("saves the transferred source hash with the committed checkpoint", async ()
   const committed = spy.mock.calls.map(([point]) => point).filter((point) => point.phase === "committed");
   expect(committed).toHaveLength(1);
   expect(committed[0].sourceHash).toBe(sha42);
+});
+
+test.each([["-1", "completed"], ["-3", "unknown"]] as const)(
+  "compares signed mtimeNs without throwing: recorded -2, current %s", async (current, state) => {
+    const { runner, plan, store, to, at } = await setup();
+    const { id } = await runner.submit(plan, { awaitsOwner: true });
+    await store.update(id, { state: "running", currentItem: 0 }, "pending");
+    const tempPath = parsePosix("/" + (tempNameFor(id, 0) as { t: string }).t);
+    to.put(tempPath, new Uint8Array(6).fill(42), current);
+    await store.checkpoint({ jobId: id, itemIndex: 0, phase: "copying", bytesDone: "6", tempPath,
+      tempFingerprint: { size: "3", mtimeNs: "-2" }, via: "copy", targetPath: target, expectTarget: "absent", verified: null });
+    expect(await runner.recover()).toEqual({ resumed: state === "completed" ? [id] : [], unknown: state === "unknown" ? [id] : [] });
+    await at(id, state);
+  });
+
+test("a recorded temp that is missing is unknown without a recorded expectTarget, and nothing is reopened", async () => {
+  const ctx = await setup();
+  const { runner, to, at } = ctx;
+  const { id, tempPath } = await interruptedCopy(ctx, 0, { expectTarget: null });
+  await to.remove(tempPath, { kind: "file" }, signal());
+  to.calls.length = 0;
+  expect(await runner.recover()).toEqual({ resumed: [], unknown: [id] });
+  await at(id, "unknown");
+  expect(to.calls.filter(({ op }) => op === "openWrite")).toHaveLength(0);
+});
+
+async function committedMove(sourceBytes: Uint8Array, targetBytes: Uint8Array) {
+  const ctx = await setup({ kind: "move", verify: "sha256" });
+  const { runner, plan, store, from, to } = ctx;
+  const { id } = await runner.submit(plan, { awaitsOwner: true });
+  await store.update(id, { state: "running", currentItem: 0 }, "pending");
+  from.put(source, sourceBytes, "1");
+  to.put(target, targetBytes, "50");
+  await store.checkpoint({ jobId: id, itemIndex: 0, phase: "committed", bytesDone: "3", tempPath: null, via: "copy",
+    targetPath: target, expectTarget: "absent", verified: null, committed: { size: "3", mtimeNs: "50" }, sourceHash: sha42 });
+  return { ...ctx, id };
+}
+
+test("does not remove a surviving source whose bytes differ from the transferred hash", async () => {
+  const { runner, from, to, at, id } = await committedMove(Uint8Array.of(9, 9, 9), Uint8Array.of(9, 9, 9));
+  expect(await runner.recover()).toEqual({ resumed: [], unknown: [id] });
+  await at(id, "unknown");
+  expect(from.contents(source)).toEqual(Uint8Array.of(9, 9, 9));
+  expect(from.calls.filter(({ op }) => op === "remove")).toHaveLength(0);
+  expect(to.contents(target)).toEqual(Uint8Array.of(9, 9, 9));
+});
+
+test("clears the source hash when recovery reaches verified", async () => {
+  const { runner, store, from, at, id } = await committedMove(Uint8Array.of(42, 42, 42), Uint8Array.of(42, 42, 42));
+  expect(await runner.recover()).toEqual({ resumed: [id], unknown: [] });
+  await at(id, "completed");
+  expect(from.contents(source)).toBeNull();
+  const point = await store.lastCheckpoint(id, 0);
+  expect(point?.phase).toBe("source_removed");
+  expect(point?.sourceHash).toBeUndefined();
+});
+
+test("clears the source hash when a missing-source recovery is recorded as verified", async () => {
+  const { runner, store, from, at, id } = await committedMove(Uint8Array.of(42, 42, 42), Uint8Array.of(42, 42, 42));
+  await from.remove(source, { kind: "file" }, signal());
+  expect(await runner.recover()).toEqual({ resumed: [id], unknown: [] });
+  await at(id, "completed");
+  const point = await store.lastCheckpoint(id, 0);
+  expect(point?.phase).toBe("verified");
+  expect(point?.sourceHash).toBeUndefined();
+});
+
+test("renames only the case of a name on a case-insensitive endpoint, from the real S2 plan to the final spelling", async () => {
+  const fake = new FakeProvider("host:ci", false);
+  const dir = parsePosix("/d");
+  const upper = parsePosix("/d/A");
+  await fake.mkdir(dir, signal());
+  fake.put(upper, Uint8Array.of(1, 2, 3), "7");
+  const plan = await buildPlan({
+    kind: "rename", initiator: { kind: "owner" }, sources: [{ endpoint: "host:ci", path: upper }], targetDir: null,
+    newName: { t: "a" }, conflictPolicy: "ask", verify: "size",
+  }, {
+    provider: () => fake, now: () => new Date(date), uuid: () => "323e4567-e89b-42d3-a456-426614174000",
+    limits: { maxItems: 100, maxDepth: 10 }, protectedPathsFor: () => [],
+  }, signal());
+  expect(plan.items[0].expectTarget).toBe("absent");
+  const store = new MemoryJobStore();
+  let next = 0;
+  const runner = new JobRunner({
+    store, provider: () => fake, now: () => new Date(date), uuid: () => "423e4567-e89b-42d3-a456-" + String(++next).padStart(12, "0"),
+    onEvent: () => {},
+  });
+  const { id } = await runner.submit(plan, { awaitsOwner: true });
+  await runner.approve(id);
+  const job = await vi.waitFor(async () => {
+    const current = (await store.get(id))!;
+    expect(current.state).toBe("completed");
+    return current;
+  });
+  expect(job.items[0].outcome).toBe("done");
+  const names = (await fake.list(dir, { cursor: null, limit: 10 }, signal())).entries.map(({ name }) => name);
+  expect(names).toEqual([{ t: "a" }]);
+  expect(fake.contents(upper)).toEqual(Uint8Array.of(1, 2, 3));
+});
+
+test("still rejects a copy whose target folds onto its own source", async () => {
+  const fake = new FakeProvider("host:ci", false);
+  fake.put(parsePosix("/A"), Uint8Array.of(1), "7");
+  const entry = (await fake.stat(parsePosix("/A"), signal()))!;
+  const unsigned: Omit<OperationPlan, "digest"> = {
+    id: "123e4567-e89b-42d3-a456-426614174000", createdAt: date, initiator: { kind: "owner" }, kind: "copy",
+    sourceEndpoint: "host:ci", targetEndpoint: "host:ci", targetDir: { endpoint: "host:ci", path: { segments: [] } },
+    items: [{ source: { endpoint: "host:ci", path: parsePosix("/A") }, target: { endpoint: "host:ci", path: parsePosix("/a") },
+      kind: "file", fingerprint: { size: entry.size, mtimeNs: entry.mtimeNs }, expectTarget: "absent" }],
+    route: "same-endpoint", conflictPolicy: "ask", verify: "size", totalBytes: "1",
+  };
+  const store = new MemoryJobStore();
+  const runner = new JobRunner({ store, provider: () => fake, now: () => new Date(date), uuid: () => "523e4567-e89b-42d3-a456-000000000001", onEvent: () => {} });
+  const { id } = await runner.submit({ ...unsigned, digest: await planDigest(unsigned) });
+  const job = await vi.waitFor(async () => {
+    const current = (await store.get(id))!;
+    expect(["failed", "awaiting_decision", "completed", "unknown"]).toContain(current.state);
+    return current;
+  });
+  expect(job.state).toBe("failed");
+  expect(job.items[0].error).toBe("Destination overlaps source");
+  expect(fake.contents(parsePosix("/A"))).toEqual(Uint8Array.of(1));
+});
+
+async function caseRename() {
+  const fake = new FakeProvider("host:ci", false);
+  const dir = parsePosix("/d");
+  const upper = parsePosix("/d/A");
+  await fake.mkdir(dir, signal());
+  fake.put(upper, Uint8Array.of(1, 2, 3), "7");
+  const plan = await buildPlan({
+    kind: "rename", initiator: { kind: "owner" }, sources: [{ endpoint: "host:ci", path: upper }], targetDir: null,
+    newName: { t: "a" }, conflictPolicy: "ask", verify: "size",
+  }, {
+    provider: () => fake, now: () => new Date(date), uuid: () => "323e4567-e89b-42d3-a456-426614174000",
+    limits: { maxItems: 100, maxDepth: 10 }, protectedPathsFor: () => [],
+  }, signal());
+  const store = new MemoryJobStore();
+  let next = 0;
+  const newRunner = () => new JobRunner({
+    store, provider: () => fake, now: () => new Date(date),
+    uuid: () => "423e4567-e89b-42d3-a456-" + String(++next).padStart(12, "0"), onEvent: () => {},
+  });
+  const names = async () => (await fake.list(dir, { cursor: null, limit: 10 }, signal())).entries.map(({ name }) => name);
+  const at = (id: string, state: JobState) => vi.waitFor(async () => {
+    const job = (await store.get(id))!;
+    expect(job.state).toBe(state);
+    return job;
+  });
+  return { fake, dir, upper, plan, store, newRunner, runner: newRunner(), names, at, renames: () => fake.calls.filter(({ op }) => op === "rename") };
+}
+
+test("a rename decision on a changed case-only source targets a new name without replacing anything", async () => {
+  const { fake, upper, plan, runner, names, at } = await caseRename();
+  fake.put(upper, Uint8Array.of(1, 2, 3), "8");
+  const rename = vi.spyOn(fake, "rename");
+  const { id } = await runner.submit(plan);
+  const conflict = (await at(id, "awaiting_decision")).pendingConflict!;
+  expect(conflict.reason).toBe("source_changed");
+  await runner.decide(id, { conflictId: conflict.id, action: "rename", applyTo: "this" });
+  expect((await at(id, "completed")).items[0].outcome).toBe("done");
+  expect(rename).toHaveBeenCalledTimes(1);
+  expect(rename.mock.calls[0].slice(0, 3)).toEqual([upper, parsePosix("/d/a (2)"), { replace: false, expectTarget: "absent" }]);
+  expect(await names()).toEqual([{ t: "a (2)" }]);
+});
+
+test("a lost reply after a successful case-only rename is done without a second rename", async () => {
+  const { fake, plan, runner, names, at, renames } = await caseRename();
+  const original = fake.rename.bind(fake);
+  vi.spyOn(fake, "rename").mockImplementationOnce(async (...args) => {
+    await original(...args);
+    throw new CommanderError("timeout", "Reply lost", true);
+  });
+  const { id } = await runner.submit(plan);
+  expect((await at(id, "completed")).items[0].outcome).toBe("done");
+  expect(renames()).toHaveLength(1);
+  expect(await names()).toEqual([{ t: "a" }]);
+});
+
+test("a case-only rename that failed before applying stays failed, not done", async () => {
+  const { fake, plan, runner, names, at } = await caseRename();
+  vi.spyOn(fake, "rename").mockImplementationOnce(async () => {
+    throw new CommanderError("timeout", "Reply lost", true);
+  });
+  const { id } = await runner.submit(plan);
+  expect((await at(id, "failed")).items[0].outcome).toBe("failed");
+  expect(await names()).toEqual([{ t: "A" }]);
+});
+
+test("restarting between a case-only rename and its verified checkpoint finishes it as done", async () => {
+  const { fake, plan, store, runner, newRunner, names, at, renames } = await caseRename();
+  const lost = pause();
+  const checkpoint = store.checkpoint.bind(store);
+  vi.spyOn(store, "checkpoint").mockImplementation(async (point) => {
+    if (point.phase === "verified") {
+      lost.release();
+      return new Promise(() => {});
+    }
+    await checkpoint(point);
+  });
+  const { id } = await runner.submit(plan);
+  await lost.promise;
+  vi.mocked(store.checkpoint).mockRestore();
+  expect(await names()).toEqual([{ t: "a" }]);
+  expect(await newRunner().recover()).toEqual({ resumed: [id], unknown: [] });
+  expect((await at(id, "completed")).items[0].outcome).toBe("done");
+  expect(renames()).toHaveLength(1);
+  expect(fake.contents(parsePosix("/d/a"))).toEqual(Uint8Array.of(1, 2, 3));
+});
+
+test("restarting before a case-only rename was applied leaves it pending and runs it once", async () => {
+  const { plan, store, runner, newRunner, names, at, renames } = await caseRename();
+  const lost = pause();
+  const checkpoint = store.checkpoint.bind(store);
+  vi.spyOn(store, "checkpoint").mockImplementation(async (point) => {
+    await checkpoint(point);
+    if (point.phase === "prepared" && point.via === "rename") {
+      lost.release();
+      return new Promise(() => {});
+    }
+  });
+  const { id } = await runner.submit(plan);
+  await lost.promise;
+  vi.mocked(store.checkpoint).mockRestore();
+  expect(await names()).toEqual([{ t: "A" }]);
+  expect(await newRunner().recover()).toEqual({ resumed: [id], unknown: [] });
+  expect((await at(id, "completed")).items[0].outcome).toBe("done");
+  expect(renames()).toHaveLength(1);
+  expect(await names()).toEqual([{ t: "a" }]);
+});
+
+test("cancelling during a case-only rename records its actual result", async () => {
+  const { fake, plan, runner, names, at, renames } = await caseRename();
+  const original = fake.rename.bind(fake);
+  const applied = pause();
+  vi.spyOn(fake, "rename").mockImplementationOnce(async (from, to, opts, stepSignal) => {
+    await original(from, to, opts, stepSignal);
+    applied.release();
+    await new Promise<void>((_, reject) => stepSignal.addEventListener("abort", () => reject(stepSignal.reason), { once: true }));
+  });
+  const { id } = await runner.submit(plan);
+  await applied.promise;
+  await runner.cancel(id);
+  expect((await at(id, "cancelled")).items[0].outcome).toBe("done");
+  expect(renames()).toHaveLength(1);
+  expect(await names()).toEqual([{ t: "a" }]);
+});
+
+test("a case-only rename that finds its source changed asks about source_changed with the new version", async () => {
+  const { fake, upper, plan, runner, at } = await caseRename();
+  const original = fake.rename.bind(fake);
+  vi.spyOn(fake, "rename").mockImplementationOnce(async (...args) => {
+    fake.put(upper, Uint8Array.of(1, 2, 3), "8");
+    return original(...args);
+  });
+  const { id } = await runner.submit(plan);
+  const conflict = (await at(id, "awaiting_decision")).pendingConflict!;
+  expect(conflict.reason).toBe("source_changed");
+  expect(conflict.source).toEqual({ size: "3", mtimeNs: "8" });
+  expect(conflict.target).toBeNull();
+});
+
+test("a broken listing after a case-only rename leaves the item unknown after a bounded number of list calls", async () => {
+  const { fake, plan, store, runner, newRunner, at } = await caseRename();
+  const lost = pause();
+  const checkpoint = store.checkpoint.bind(store);
+  vi.spyOn(store, "checkpoint").mockImplementation(async (point) => {
+    if (point.phase === "verified") {
+      lost.release();
+      return new Promise(() => {});
+    }
+    await checkpoint(point);
+  });
+  const { id } = await runner.submit(plan);
+  await lost.promise;
+  vi.mocked(store.checkpoint).mockRestore();
+  const list = vi.spyOn(fake, "list").mockImplementation(async () => ({
+    entries: [{ name: { t: "x" }, kind: "file", size: "1", mtimeNs: "1", mtimePrecision: "ns", mode: null, linkTarget: null, hidden: false }],
+    cursor: "same",
+  }));
+  expect(await newRunner().recover()).toEqual({ resumed: [], unknown: [id] });
+  expect((await at(id, "unknown")).items[0].outcome).toBe("unknown");
+  expect(list).toHaveBeenCalledTimes(2);
+});
+
+test("a case-only conflict keeps the source hash, so a second same-size replacement is caught before renaming", async () => {
+  const { fake, upper, plan, store, runner, at, renames } = await caseRename();
+  const { digest: _digest, ...unsigned } = plan;
+  unsigned.items[0].fingerprint!.sha256 = "039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81";
+  const original = fake.rename.bind(fake);
+  vi.spyOn(fake, "rename").mockImplementationOnce(async (...args) => {
+    fake.put(upper, Uint8Array.of(9, 9, 9), "7");
+    return original(...args);
+  });
+  const { id } = await runner.submit({ ...unsigned, digest: await planDigest(unsigned) });
+  const first = (await at(id, "awaiting_decision")).pendingConflict!;
+  expect(first.reason).toBe("source_changed");
+  expect(first.source).toEqual({ size: "3", mtimeNs: "7", sha256: "e740a6faf2db65f5853148d75d9a335d7c4b94ab106fe5f237bc34fdcfc74584" });
+  fake.put(upper, Uint8Array.of(8, 8, 8), "7");
+  await runner.decide(id, { conflictId: first.id, action: "rename", applyTo: "this" });
+  const second = await vi.waitFor(async () => {
+    const job = (await store.get(id))!;
+    expect(job.state).toBe("awaiting_decision");
+    expect(job.pendingConflict?.id).not.toBe(first.id);
+    return job.pendingConflict!;
+  });
+  expect(second.reason).toBe("source_changed");
+  expect(renames()).toHaveLength(1);
+});
+
+test("a rename that only changes the Unicode normalisation form is not a case-only rename", () => {
+  const provider = new FakeProvider("host:ci", false);
+  const at = (name: string) => ({ provider, path: parsePosix("/d/" + name) });
+  expect(isCaseOnlyPair(at("\u00c4"), at("\u00e4"))).toBe(true);
+  expect(isCaseOnlyPair(at("\u00e4"), at("a\u0308"))).toBe(false);
+  expect(isCaseOnlyPair(at("A"), at("a"))).toBe(true);
 });

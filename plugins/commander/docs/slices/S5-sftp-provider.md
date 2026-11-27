@@ -16,7 +16,7 @@
 ## Контракт
 
 Источник истины — `plugins/remote-hub/src/core/sftp-contract.ts` ветки
-`feat/remote-hub-sftp` (коммит `0bdc04d8`; рабочая копия
+`feat/remote-hub-sftp` (коммит `37fdffcd`, правки после `0bdc04d8`: `ea8e3bfa`, `37fdffcd`; рабочая копия
 `/Users/avm/projects/Personal/bb-main/.worktrees/remote-hub-sftp`), id плагина
 `makosh-remote-hub`. Плагины не импортируют файлы друг друга (AGENTS.md), поэтому
 `src/core/wire/remote-hub-sftp.ts` — ручное zod-зеркало этого файла:
@@ -25,7 +25,7 @@
 `hub_sftp_request_access`, `hub_sftp_grants`, `hub_sftp_open`, `hub_sftp_op`,
 `hub_sftp_close`, `SFTP_REFUSALS`, `SFTP_EVENTS_CHANNEL = "remote-hub.sftp"`,
 события `sftp.consent {profileId, state}`, `sftp.channel {channelId, state}`.
-Константа `REMOTE_HUB_SFTP_CONTRACT = "remote-hub@0bdc04d8"`; тест-зеркало
+Константа `REMOTE_HUB_SFTP_CONTRACT = "remote-hub@37fdffcd"`; тест-зеркало
 сверяет те же примеры, что `sftp-contract.test.ts` Remote Hub (переписать
 значения литералами, не импортировать).
 
@@ -50,6 +50,15 @@
   поколением helper-а.
 - Лимиты `SFTP_LIMITS`: кусок 4 MiB, 4 канала на плагин, страница 1000,
   каталог 10 000.
+- Base64 (данные и пути `{bytes}`) — без регулярки с повтором: зеркало
+  `base64Bytes(text)` Remote Hub — число декодированных байт или `null` для
+  неканонического текста (стандартный алфавит, длина кратна 4, не больше
+  двух `=` и только в конце; URL-алфавит не принимается); лимит по
+  декодированным байтам: 4 194 303 и 4 194 304 — да, 4 194 305 и 4 194 306 —
+  нет.
+- `rename`: `overwrite: false` — цель существует → `exists`;
+  `overwrite: true` — только атомарная posix-rename; без расширения всегда
+  `unsupported`, есть цель или нет (Remote Hub не эмулирует remove+rename).
 
 ```ts
 export interface RemoteHubPort {       // узкий порт, реализация в S7 через bb.sdk.plugins.callRpc
@@ -62,10 +71,21 @@ export function createSftpProvider(opts: {
 
 Поведение:
 
-- Канал открывается лениво, один на провайдер; `channel_closed` или смена
-  `generation` → одна попытка переоткрыть для идемпотентных операций (list,
-  stat, read, realpath); для write/rename/remove — не повторять, бросать
-  `outcome_unknown` при неоднозначном исходе.
+- Канал открывается лениво, один на провайдер. Коды по контракту
+  `37fdffcd`:
+  - `channel_closed` — канала нет (закрыт, отозван, сменилось поколение
+    helper-а) и запрос на сервер не отправлялся; для `write`, `mkdir`,
+    `rename`, `remove` мутация не применялась. Для любой операции —
+    переоткрыть канал и повторить один раз; второй `channel_closed` подряд →
+    `connection_failed` (retryable).
+  - `outcome_unknown` — только мутации: запрос ушёл, канал умер до ответа.
+    Не повторять; бросать `outcome_unknown` (S1), дальше reconciliation S3.
+- `WriteSession.tempPath` (контракт S3) = путь temp-файла ниже.
+- `rename`/`remove` с `expectTarget`/`expect` (контракт S3): `stat` и сверка
+  непосредственно перед `hub_sftp_op rename|remove`; расхождение →
+  `changed_since_plan`. Окно неатомарности здесь шире (два RPC через Remote
+  Hub) — описать в комментарии; `expectTarget: "absent"` с
+  `overwrite:false` полагается на `exists` сервера, а не на stat.
 - `openWrite(target)`: temp-имя `.<name>.commander-<uuid>.part` в каталоге
   цели; первый кусок `create: "exclusive"` offset 0, последующие
   `create: "existing"`; `commit({replace:false})` → `rename(overwrite:false)`
@@ -88,7 +108,9 @@ export function createSftpProvider(opts: {
 
 Мок (`testing/remote-hub-mock.ts`): in-memory сервер по зеркалу схем, с
 режимами `consent: none|pending|granted|revoked`,
-`hostKey: trusted|unknown|changed`, `generationBumpAfter: n`,
+`hostKey: trusted|unknown|changed`, `generationBumpAfter: n` (следующий
+запрос получает `channel_closed`), `dieAfterSend: op` (мутация применена,
+ответ — `outcome_unknown`),
 `posixRename: boolean`, `failWrite: "unreachable"`, `dirSize` для проверки
 лимита 10 000.
 
@@ -100,13 +122,24 @@ export function createSftpProvider(opts: {
   операция `consent_required`, канал закрыт.
 - `hostKey: unknown` и `changed` → `host_key_rejected`, ни одного
   `hub_sftp_op` не отправлено.
-- Смена `generation` после 2 операций: `list` повторяется прозрачно (1
-  повтор), `write` → `outcome_unknown`, без повтора.
+- `generationBumpAfter: 2`: и `list`, и `write` получают `channel_closed`,
+  канал переоткрыт, операция повторена один раз и прошла; содержимое `write`
+  записано ровно один раз.
+- Два `channel_closed` подряд → `connection_failed`, третьего запроса нет.
+- `dieAfterSend: "write"` → `outcome_unknown`, повтора нет (мок считает
+  одну применённую запись).
 - `posixRename: false` → commit с replace даёт конфликт, а не
   remove+rename; `atomicReplace` не объявлен.
 - Байтовое имя `{bytes:"/w=="}` от мока → сегмент `{b:"/w=="}` и обратно
   тот же путь в `write`.
 - Каталог 10 001 запись → `limit_exceeded`.
+- `remove` с устаревшим `expect` → `changed_since_plan`, ни одного
+  `hub_sftp_op remove` не отправлено.
+- Зеркало `base64Bytes`: строка base64 ровно 4 MiB проходит схему без
+  переполнения стека; 4 194 303 и 4 194 304 байта — принимаются, 4 194 305 и
+  4 194 306 — отказ; URL-алфавит (`-`, `_`) — отказ.
+- Мок с `posixRename: false`: `rename(overwrite:true)` → `unsupported` и при
+  отсутствующей цели.
 - Чтение 9 MiB кусками по 4 MiB → 3 вызова `read` c offset `0`, `4194304`,
   `8388608`.
 - Сообщения ошибок не содержат строк `identityFile`, `.ssh/`, `Keychain`

@@ -16,6 +16,12 @@
 свои записи добавлять отдельными разделами рядом, существующие не
 переписывать.
 
+Исключение владения: S2 правит `src/core/model.ts` (S1) одним изменением —
+`PlanItem` получает `expectTarget: Fingerprint | "absent" | null`
+(`Fingerprint` — цель существует и её отпечаток; `"absent"` — цели нет;
+`null` — не применимо, например delete). Поле входит в канонический JSON и
+`digest`. Тест: смена `expectTarget` меняет digest (литералы).
+
 ## Контракт
 
 ```ts
@@ -35,7 +41,8 @@ export interface PlannerDeps {
   uuid(): string;
   limits: { maxItems: number; maxDepth: number };  // по умолчанию 100_000 и 64
 }
-// Раскрывает каталоги рекурсивно (list по страницам), снимает stat-отпечатки,
+// Раскрывает каталоги рекурсивно (list по страницам), снимает stat-отпечатки
+// источника и stat цели каждого элемента (→ expectTarget: отпечаток или "absent"),
 // вычисляет route ("same-endpoint" если sourceEndpoint === targetEndpoint),
 // totalBytes и digest. Симлинки не разыменовываются: элемент kind "symlink".
 export function buildPlan(req: PlanRequest, deps: PlannerDeps, signal: AbortSignal): Promise<OperationPlan>;
@@ -70,6 +77,8 @@ export function authorize(initiator: Initiator, plan: OperationPlan, grants: Gra
   `totalBytes === "6"`, `route === "relay-server"` для разных endpoint.
 - Глубина 65 → `limit_exceeded`; 100 001 элемент → `limit_exceeded`.
 - `revalidate` после изменения size одного файла → `{ok:false, changed:[1]}`.
+- `buildPlan`: цель отсутствует → `expectTarget: "absent"`; цель есть →
+  её `Fingerprint`; delete → `null`.
 - Copy `/a` в `/a/b` → `invalid_path`; delete `/` и home → `permission_denied`;
   запись в readOnly endpoint → `read_only`.
 - `nextFreeName`: литералы из контракта выше.
