@@ -1,5 +1,5 @@
 import type { Capability, Endpoint, Entry, EntryKind, Fingerprint } from "./model.ts";
-import type { ResourcePath } from "./path.ts";
+import type { NameSegment, ResourcePath } from "./path.ts";
 
 export interface ListPage {
   entries: Entry[];
@@ -7,6 +7,18 @@ export interface ListPage {
 }
 
 export interface WriteSession {
+  /**
+   * Temporary path on this endpoint, stable until commit or abort.
+   * After a lost session the provider leaves it for reconciliation.
+   */
+  readonly tempPath: ResourcePath;
+
+  /**
+   * Write to the already opened temporary file. Never report already_exists.
+   * After the call resolves, stat(tempPath) should show the written size. A
+   * provider with buffered handles may show less (never more than offset plus
+   * bytes written); the runner then records the observed size and does not fail.
+   */
   write(offset: bigint, bytes: Uint8Array, signal: AbortSignal): Promise<void>;
 
   /**
@@ -52,20 +64,31 @@ export interface FileProvider {
     signal: AbortSignal,
   ): Promise<Uint8Array>;
 
-  /** Stage writes in a temporary file beside the target. */
-  openWrite(target: ResourcePath, signal: AbortSignal): Promise<WriteSession>;
+  /**
+   * Exclusively create the caller's unique, job-owned temporary name beside the
+   * target. Report already_exists on collision and return that exact tempPath.
+   */
+  openWrite(target: ResourcePath, opts: { tempName: NameSegment }, signal: AbortSignal): Promise<WriteSession>;
 
   mkdir(path: ResourcePath, signal: AbortSignal): Promise<void>;
 
+  /**
+   * Check the expected target version or absence immediately before renaming.
+   * Report changed_since_plan on mismatch. Document any non-atomic check window.
+   */
   rename(
     from: ResourcePath,
     to: ResourcePath,
-    opts: { replace: boolean },
+    opts: { replace: boolean; expectTarget?: Fingerprint | "absent" },
     signal: AbortSignal,
   ): Promise<void>;
 
-  /** A directory must be empty. */
-  remove(path: ResourcePath, opts: { kind: EntryKind }, signal: AbortSignal): Promise<void>;
+  /**
+   * A directory must be empty. Check the expected entry version immediately
+   * before removal; report changed_since_plan on mismatch. Document any
+   * non-atomic check window.
+   */
+  remove(path: ResourcePath, opts: { kind: EntryKind; expect?: Fingerprint }, signal: AbortSignal): Promise<void>;
 
   /**
    * As part of confirmed replacement, the provider must check expectTarget:

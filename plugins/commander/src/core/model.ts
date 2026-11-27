@@ -155,6 +155,9 @@ export type JobState = z.infer<typeof JobState>;
 
 export const ConflictReason = z.enum(["exists", "source_changed", "target_changed", "type_mismatch"]);
 export type ConflictReason = z.infer<typeof ConflictReason>;
+export const ConflictAction = z.enum(["overwrite", "skip", "rename", "cancel"]);
+export type ConflictAction = z.infer<typeof ConflictAction>;
+
 export const Conflict = z.object({
   id: z.string().uuid(),
   jobId: z.string().uuid(),
@@ -162,11 +165,10 @@ export const Conflict = z.object({
   reason: ConflictReason,
   source: Fingerprint.nullable(),
   target: Fingerprint.nullable(),
+  allowedResolutions: z.array(ConflictAction).optional(),
 }).strict();
 export type Conflict = z.infer<typeof Conflict>;
 
-export const ConflictAction = z.enum(["overwrite", "skip", "rename", "cancel"]);
-export type ConflictAction = z.infer<typeof ConflictAction>;
 export const ConflictDecision = z.object({
   conflictId: z.string().uuid(),
   action: ConflictAction,
@@ -213,8 +215,8 @@ export const OperationJob = z.object({
   if (job.awaitsOwner && job.state !== "pending") {
     ctx.addIssue({ code: "custom", path: ["awaitsOwner"], message: "Owner approval requires a pending job" });
   }
-  if (job.pendingConflict !== null && job.state !== "awaiting_decision") {
-    ctx.addIssue({ code: "custom", path: ["pendingConflict"], message: "A pending conflict requires an awaiting-decision job" });
+  if (job.pendingConflict !== null && job.state !== "awaiting_decision" && job.state !== "interrupted") {
+    ctx.addIssue({ code: "custom", path: ["pendingConflict"], message: "A pending conflict requires an awaiting-decision or interrupted job" });
   }
   if (job.currentItem !== null && job.currentItem >= job.items.length) {
     ctx.addIssue({ code: "custom", path: ["currentItem"], message: "Current item is outside the job" });
