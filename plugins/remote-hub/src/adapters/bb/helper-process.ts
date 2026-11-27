@@ -8,6 +8,7 @@
 // (bundled-types/bb-plugin-sdk-process.d.ts:46-54); both wrap Node's
 // child_process, which is what the BB server itself runs on.
 import type { ExecFinishedMessage, ExecStateMessage } from "../../core/exec-protocol.ts";
+import type { SftpChannelEnd } from "../../core/sftp-protocol.ts";
 import type { CredentialBind } from "../../core/credential.ts";
 import type { RdpOptions } from "../../core/rdp-options.ts";
 import type { PveConnect, PveConsoleTarget, PveGuest, PveNode, PvePlan, PveSteps } from "../../core/pve-protocol.ts";
@@ -270,6 +271,12 @@ interface OneShot {
 
 const defaultSpawn: HelperSpawn = (binPath, args) => experimental_spawnHostProcess(binPath, args);
 
+/** Where an SFTP channel's bytes and its end go. `closed` is called exactly once, after the last `data`. */
+export interface SftpSink {
+  data(bytes: Uint8Array): void;
+  closed(end: SftpChannelEnd): void;
+}
+
 export class HelperProcess {
   private readonly child: ChildProcessWithoutNullStreams;
   private nextId = 1;
@@ -282,6 +289,8 @@ export class HelperProcess {
   private readonly rdpSessions = new Set<number>();
   /** Graphical PVE consoles: their stream frames are raw RFB, never terminal text (no scrollback, no byte credit). */
   private readonly vncSessions = new Set<number>();
+  /** SFTP channels: their stream frames are protocol bytes for one sink; what arrives before the sink is attached waits. */
+  private readonly sftpChannels = new Map<number, { sink: SftpSink | null; early: Uint8Array[]; ended: SftpChannelEnd | null }>();
   private readonly screens = new Map<number, PendingScreenshot>();
   private readonly onExecFinishedCallbacks: Array<(event: ExecFinishedMessage) => void> = [];
   private readonly onSshAskpassCallbacks: Array<(sessionId: number, event: SshAskpassEvent) => void> = [];
@@ -438,6 +447,7 @@ export class HelperProcess {
     // the chunk is handled in this same loop, before openRdp's continuation runs.
     if (resp.type === "session.opened" && resp.kind === "rdp") this.rdpSessions.add(resp.sessionId);
     if (resp.type === "session.opened" && resp.kind === "vnc") this.vncSessions.add(resp.sessionId);
+    if (resp.type === "sftp.opened") this.sftpChannels.set(resp.sftpId, { sink: null, early: [], ended: null });
     const oneShotIndex = this.oneShots.findIndex((w) => w.predicate(resp));
     if (oneShotIndex >= 0) {
       const [waiter] = this.oneShots.splice(oneShotIndex, 1);
@@ -449,6 +459,10 @@ export class HelperProcess {
     if (this.handlePveControl(resp)) return;
     if (resp.type === "exec.finished") {
       for (const cb of this.onExecFinishedCallbacks) cb(resp);
+      return;
+    }
+    if (resp.type === "sftp.closed") {
+      this.endSftp(resp.sftpId, { reason: resp.reason, exitCode: resp.exitCode, refused: resp.refused, stderr: resp.stderr });
       return;
     }
     const id = "id" in resp ? (resp as { id?: unknown }).id : undefined;
@@ -586,7 +600,29 @@ export class HelperProcess {
     entry.reject(error);
   }
 
+  private endSftp(sftpId: number, end: SftpChannelEnd): void {
+    const channel = this.sftpChannels.get(sftpId);
+    if (channel === undefined || channel.ended !== null) return;
+    if (channel.sink === null) {
+      channel.ended = end; // told to the sink when it attaches
+      return;
+    }
+    this.sftpChannels.delete(sftpId);
+    try {
+      channel.sink.closed(end);
+    } catch {
+      // a sink's throw must not break the reader
+    }
+  }
+
   private handleStream(sessionId: number, seq: number, data: Uint8Array): void {
+    const sftp = this.sftpChannels.get(sessionId);
+    if (sftp !== undefined) {
+      // A copy: `data` is a view of the read buffer, which is replaced as soon as this loop goes on.
+      if (sftp.sink === null) sftp.early.push(data.slice());
+      else sftp.sink.data(data);
+      return;
+    }
     if (this.vncSessions.has(sessionId)) {
       for (const cb of this.onVncDataCallbacks) cb(sessionId, data);
       return;
@@ -671,6 +707,7 @@ export class HelperProcess {
     this.pending.clear();
     for (const id of Array.from(this.screens.keys())) this.failScreenshot(id, reason);
     for (const waiter of this.oneShots.splice(0)) waiter.reject(reason);
+    for (const sftpId of Array.from(this.sftpChannels.keys())) this.endSftp(sftpId, { reason: "helper_exit", exitCode: null, refused: null, stderr: "" });
     for (const callback of this.onExitCallbacks) {
       try {
         callback();
@@ -892,6 +929,43 @@ export class HelperProcess {
   async execForget(execId: number): Promise<void> {
     const resp = await this.request({ type: "exec.forget", execId } as RequestMessage);
     if (resp.type === "error") throw new HelperRequestError(resp.code, resp.message);
+  }
+
+  /**
+   * Opens an SFTP channel (ssh with the sftp subsystem, no pty). The helper validates the argv again and adds the subsystem
+   * itself. Bytes the server sends go to `sink`, in order; `sink.closed` is the last call.
+   */
+  async sftpOpen(spec: SshSpawnSpec, askpass: { credentialRef: string } | null, sink: SftpSink): Promise<number> {
+    const resp = await this.request({ type: "sftp.open", program: spec.program, argv: spec.argv, env: spec.env, ...(askpass === null ? {} : { askpass }) } as RequestMessage);
+    if (resp.type === "error") throw new HelperRequestError(resp.code, resp.message);
+    if (resp.type !== "sftp.opened") throw new HelperRequestError("protocol_error", "unexpected answer to sftp.open");
+    const channel = this.sftpChannels.get(resp.sftpId);
+    if (channel === undefined) throw new HelperRequestError("protocol_error", "the channel was not recorded");
+    channel.sink = sink;
+    for (const bytes of channel.early.splice(0)) sink.data(bytes);
+    if (channel.ended !== null) {
+      this.sftpChannels.delete(resp.sftpId);
+      sink.closed(channel.ended);
+    }
+    return resp.sftpId;
+  }
+
+  /** Bytes for an SFTP channel's server. False when the channel is gone (nothing was sent). */
+  sftpWrite(sftpId: number, data: Uint8Array): boolean {
+    if (this.dead || !this.sftpChannels.has(sftpId)) return false;
+    // The helper takes at most one frame body of 4 MiB; protocol packets are far smaller, but a caller may batch.
+    const piece = 1024 * 1024;
+    for (let at = 0; at < data.byteLength; at += piece) {
+      this.child.stdin.write(encodeStreamFrame({ sessionId: sftpId, seq: 0 }, data.subarray(at, Math.min(at + piece, data.byteLength))));
+    }
+    return true;
+  }
+
+  /** Asks the helper to end a channel; its sink hears `closed` when the program is gone. */
+  async sftpClose(sftpId: number): Promise<void> {
+    if (!this.sftpChannels.has(sftpId)) return;
+    const resp = await this.request({ type: "sftp.close", sftpId } as RequestMessage);
+    if (resp.type === "error" && resp.code !== "unknown_sftp") throw new HelperRequestError(resp.code, resp.message);
   }
 
   /** A run ended (the helper tells it unasked). */

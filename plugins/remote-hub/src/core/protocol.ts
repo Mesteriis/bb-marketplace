@@ -11,6 +11,7 @@
 // these constants and message names.
 import { credentialRequestSchemas, credentialResponseSchemas } from "./credential-protocol.ts";
 import { execRequestSchemas, execResponseSchemas } from "./exec-protocol.ts";
+import { sftpRequestSchemas, sftpResponseSchemas } from "./sftp-protocol.ts";
 import { knownHostsRequestSchemas, knownHostsResponseSchemas } from "./known-hosts-protocol.ts";
 import { sshAskpassRequestSchemas, sshAskpassResponseSchemas } from "./ssh-askpass-protocol.ts";
 import { z } from "zod";
@@ -202,6 +203,7 @@ export const errorEnvelopeSchema = z.object({
 
 export const requestSchema = z.discriminatedUnion("type", [
   ...execRequestSchemas,
+  ...sftpRequestSchemas,
   ...credentialRequestSchemas,
   ...knownHostsRequestSchemas,
   ...sshAskpassRequestSchemas,
@@ -220,6 +222,7 @@ export const requestSchema = z.discriminatedUnion("type", [
 
 export const responseSchema = z.discriminatedUnion("type", [
   ...execResponseSchemas,
+  ...sftpResponseSchemas,
   ...credentialResponseSchemas,
   ...knownHostsResponseSchemas,
   ...sshAskpassResponseSchemas,
@@ -260,6 +263,8 @@ export const controlMessageSchema = z.union([
     errorEnvelopeSchema,
     ...execRequestSchemas,
     ...execResponseSchemas,
+    ...sftpRequestSchemas,
+    ...sftpResponseSchemas,
     ...credentialRequestSchemas,
     ...credentialResponseSchemas,
     ...knownHostsRequestSchemas,

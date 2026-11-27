@@ -91,7 +91,7 @@ const channelId = z.string().uuid();
 const profileId = z.string().uuid();
 const generation = z.string().regex(/^[0-9a-f]{32}$/);
 
-const onChannel = <T extends z.ZodRawShape>(op: string, shape: T) => z.object({ channelId, op: z.literal(op), ...shape }).strict();
+const onChannel = <O extends string, T extends z.ZodRawShape>(op: O, shape: T) => z.object({ channelId, op: z.literal(op), ...shape }).strict();
 
 const writeSchema = onChannel("write", {
   path: sftpPathSchema,

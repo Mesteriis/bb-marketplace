@@ -199,3 +199,13 @@ export function buildSshExecSpawn(target: SshTarget, command: string, env: Recor
   argv.push(command);
   return { program: "/usr/bin/ssh", argv, env: sshEnvAllowlist(env) };
 }
+
+/**
+ * An SFTP channel: the SAME argv as an interactive session with `-T` (no pty) and NO command. The helper adds the `sftp`
+ * subsystem and its own fixed options itself, so nothing but SFTP can be asked for here.
+ */
+export function buildSshSftpSpawn(target: SshTarget, env: Record<string, string | undefined>): SshSpawnSpec {
+  const argv = buildSshArgv(target, { allowKnownHostsFileWithSecret: env.REMOTE_HUB_TEST_ALLOW_KNOWN_HOSTS !== undefined });
+  argv[1] = "-T";
+  return { program: "/usr/bin/ssh", argv, env: sshEnvAllowlist(env) };
+}
