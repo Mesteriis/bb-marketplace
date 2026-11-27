@@ -1,4 +1,4 @@
-// Ручное zod-зеркало контракта Remote Hub для других плагинов (remote-hub@22933aad):
+// Ручное zod-зеркало контракта Remote Hub для других плагинов (remote-hub@e1b0d502):
 // plugins/remote-hub/src/core/sftp-contract.ts. Плагины не импортируют файлы друг друга,
 // поэтому схемы переписаны здесь. Ничего, кроме zod и самого себя, не импортирует.
 //
@@ -6,7 +6,7 @@
 // ссылки на учётные данные или имени элемента Keychain (все объекты `.strict()`).
 import { z } from "zod";
 
-export const REMOTE_HUB_SFTP_CONTRACT = "remote-hub@22933aad";
+export const REMOTE_HUB_SFTP_CONTRACT = "remote-hub@e1b0d502";
 
 export const SFTP_LIMITS = {
   /** Наибольший объём байт одного чтения или одной записи. */
@@ -112,7 +112,8 @@ export const sftpOpInputSchema = z.union([
   z.discriminatedUnion("op", [
     onChannel("list", {
       path: sftpPathSchema,
-      cursor: z.string().min(1).max(128).optional(),
+      /** Opaque: what the previous page returned as `nextCursor`. */
+      cursor: z.string().min(1).max(1024).optional(),
       limit: z.number().int().min(1).max(SFTP_LIMITS.listPage).optional(),
     }),
     /** true: куда указывает симлинк; false: сам линк. */

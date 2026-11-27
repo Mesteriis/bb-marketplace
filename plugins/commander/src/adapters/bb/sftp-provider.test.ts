@@ -67,7 +67,7 @@ function tempName(session: SftpWriteSession): string {
 
 describe("contract and capabilities", () => {
   it("exports the contract id it mirrors and declares only the stage-one capabilities", () => {
-    expect(REMOTE_HUB_SFTP_CONTRACT).toBe("remote-hub@22933aad");
+    expect(REMOTE_HUB_SFTP_CONTRACT).toBe("remote-hub@e1b0d502");
     const { provider } = setup();
     expect([...provider.capabilities].sort()).toEqual(["list", "mkdir", "read", "remove", "rename", "seek", "stat", "write"]);
     expect(provider.capabilities.has("atomicReplace")).toBe(false);

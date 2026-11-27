@@ -27,7 +27,9 @@
 `hub_sftp_request_access`, `hub_sftp_grants`, `hub_sftp_open`, `hub_sftp_op`,
 `hub_sftp_close`, `SFTP_REFUSALS`, `SFTP_EVENTS_CHANNEL = "remote-hub.sftp"`,
 события `sftp.consent {profileId, state}`, `sftp.channel {channelId, state}`.
-Константа `REMOTE_HUB_SFTP_CONTRACT = "remote-hub@22933aad"`; тест-зеркало
+Константа `REMOTE_HUB_SFTP_CONTRACT = "remote-hub@e1b0d502"` (релиз Remote Hub
+0.2.0; от `22933aad` изменился только `cursor` в `list`: длина 1..1024 вместо
+1..128 — фикс `2675be3e`); тест-зеркало
 сверяет те же примеры, что `sftp-contract.test.ts` Remote Hub (переписать
 значения литералами, не импортировать).
 
