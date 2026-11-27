@@ -6,9 +6,9 @@ import { type Fingerprint } from "../../../core/model.ts";
 import { join, NameSegment, parent, type ResourcePath } from "../../../core/path.ts";
 import { changed, fingerprint, hashFile, noFollow, requireVersion, verifyVersionHash, type ExpectedVersion } from "./files.ts";
 import { hasErrno, linkUnavailable } from "./errors.ts";
-import { validateTargetName, type NamePlatform } from "./names.ts";
+import { stagingNameConflicts, validateTargetName, type NamePlatform } from "./names.ts";
 import {
-  childPath, decodeName, encodeName, lstatOrNull, recheckParent, requireAbsent, resolvePath, sameNode, stagingNameConflicts,
+  childPath, decodeName, encodeName, lstatOrNull, recheckParent, requireAbsent, resolvePath, sameNode,
 } from "./paths.ts";
 
 type PublishedFile = Fingerprint & { atomicNoReplace?: false; orphanedTempPath?: ResourcePath };
@@ -105,7 +105,7 @@ export class WriteSessions {
     const tempName = requested === undefined ? stagingName(targetName, session, this.platform) : requested;
     if (!NameSegment.safeParse(tempName).success) throw new CommanderError("invalid_name", "Invalid staging name");
     validateTargetName(tempName, this.platform);
-    if (await stagingNameConflicts(resolved.parent!, targetName, tempName)) {
+    if (stagingNameConflicts(targetName, tempName)) {
       throw new CommanderError("invalid_name", "Staging name must differ from the target name");
     }
     const directory = resolved.parentStats!;

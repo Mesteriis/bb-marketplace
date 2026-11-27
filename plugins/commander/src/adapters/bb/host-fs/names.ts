@@ -10,3 +10,11 @@ export function validateTargetName(name: NameSegment, platform: NamePlatform): v
     throw new CommanderError("invalid_name", "Invalid Windows target name");
   }
 }
+
+/** Keep target and staging names distinct across filesystem case and normalization rules. */
+export function stagingNameConflicts(target: NameSegment, temp: NameSegment): boolean {
+  if ("t" in target && "t" in temp) {
+    return target.t.normalize("NFC").toUpperCase() === temp.t.normalize("NFC").toUpperCase();
+  }
+  return "b" in target && "b" in temp && target.b === temp.b;
+}

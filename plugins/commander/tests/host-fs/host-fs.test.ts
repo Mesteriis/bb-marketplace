@@ -604,63 +604,19 @@ it.each(["../escaped.part", "target"])("rejects unsafe staging name %j before cr
   expect(await readdir(root)).toEqual([]);
 });
 
-async function observeStageOpens(rejectCleanup = false) {
+it.each([
+  ["Caf\u00E9", "Cafe\u0301"],
+  ["Report", "report"],
+])("rejects equivalent staging names %j and %j before open", async (target, temp) => {
+  await writeFile(join(root, "CasEProbe"), "");
   await fs.dispose();
   let opens = 0;
   fs = createHostFs({
     openStage: (path, flags, mode) => { opens++; return open(path, flags, mode); },
-    // A post-open rejection cannot hide an accidental creation from readdir.
-    ...(rejectCleanup ? {
-      unlink: async () => { throw Object.assign(new Error("injected"), { code: "EPERM" }); },
-      onOrphan: () => {},
-    } : {}),
   });
-  return () => opens;
-}
-
-async function caseProbe() {
-  await writeFile(join(root, "CasEProbe"), "");
-  return lstat(join(root, "caseProbe")).then(() => false, (error: NodeJS.ErrnoException) => {
-    if (error.code === "ENOENT") return true;
-    throw error;
-  });
-}
-
-it("rejects case aliases before opening on a case-insensitive filesystem", async ({ skip }) => {
-  if (await caseProbe()) skip("Requires a case-insensitive filesystem");
-  const opens = await observeStageOpens(true);
   await expect(fs.handlers.writeOpen({
-    target: at("Report"), tempName: { t: "report" },
+    target: at(target), tempName: { t: temp },
   }, ctx)).rejects.toMatchObject({ code: "invalid_name" });
-  expect(opens()).toBe(0);
+  expect(opens).toBe(0);
   expect(await readdir(root)).toEqual(["CasEProbe"]);
-});
-
-it("rejects case variants before open when an empty directory gives no case evidence", async () => {
-  const opens = await observeStageOpens(true);
-  await expect(fs.handlers.writeOpen({
-    target: at("Report"), tempName: { t: "report" },
-  }, ctx)).rejects.toMatchObject({ code: "invalid_name" });
-  expect(opens()).toBe(0);
-  expect(await readdir(root)).toEqual([]);
-});
-
-it("allows distinct case variants when the directory is known to be case-sensitive", async ({ skip }) => {
-  if (!await caseProbe()) skip("Requires a case-sensitive filesystem");
-  const opens = await observeStageOpens();
-  const { tempName } = await fs.handlers.writeOpen({
-    target: at("Report"), tempName: { t: "report" },
-  }, ctx);
-  expect(tempName).toEqual({ t: "report" });
-  expect(opens()).toBe(1);
-  expect((await readdir(root)).sort()).toEqual(["CasEProbe", "report"]);
-});
-
-it.skipIf(process.platform !== "darwin")("rejects NFC and NFD aliases before opening on macOS", async () => {
-  const opens = await observeStageOpens(true);
-  await expect(fs.handlers.writeOpen({
-    target: at("Caf\u00E9"), tempName: { t: "Cafe\u0301" },
-  }, ctx)).rejects.toMatchObject({ code: "invalid_name" });
-  expect(opens()).toBe(0);
-  expect(await readdir(root)).toEqual([]);
 });
