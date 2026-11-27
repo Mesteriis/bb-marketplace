@@ -1,8 +1,10 @@
 import { mkdtempSync, rmSync } from "node:fs";
+import { registerHooks } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, expect, test } from "vitest";
+import { CommanderError } from "../../core/errors.ts";
 import type { Checkpoint, JobStore } from "../../core/job-store.ts";
 import { OperationJob } from "../../core/model.ts";
 import { createSqliteJobStore } from "./job-store-sqlite.ts";
@@ -90,7 +92,7 @@ test("rejects duplicate ids without replacing the original job", async () => {
   expect(await store.get(job.id)).toStrictEqual(job);
 });
 
-test("compare-and-swap accepts only the first transition across connections", async () => {
+test("CAS accepts only the first transition with the expected state", async () => {
   await store.create(job);
   const peerDb = new Database(filename);
   try {
@@ -108,21 +110,21 @@ test("compare-and-swap accepts only the first transition across connections", as
 
 test("clears owner approval on pending exit and rejects setting it on a running job", async () => {
   await store.create(job);
-  await expect(store.update(job.id, { state: "running", awaitsOwner: true }, "pending")).rejects.toThrow();
+  await expect(store.update(job.id, { state: "running", awaitsOwner: true }, "pending")).rejects.toThrow("Owner approval requires a pending job");
   expect(await store.get(job.id)).toStrictEqual(job);
   expect(await store.update(job.id, { state: "running" }, "pending")).toBe(true);
   const running = { ...job, state: "running", awaitsOwner: false };
   expect(await store.get(job.id)).toStrictEqual(running);
-  await expect(store.update(job.id, { awaitsOwner: true }, "running")).rejects.toThrow();
+  await expect(store.update(job.id, { awaitsOwner: true }, "running")).rejects.toThrow("Owner approval requires a pending job");
   expect(await store.get(job.id)).toStrictEqual(running);
-  await expect(store.create({ ...job, id: secondId, state: "running" })).rejects.toThrow();
+  await expect(store.create({ ...job, id: secondId, state: "running" })).rejects.toThrow("Owner approval requires a pending job");
   expect(await store.get(secondId)).toBeNull();
 });
 
 test("rejects a patch that breaks the operation job invariants", async () => {
   await store.create(job);
-  await expect(store.update(job.id, { currentItem: 1 }, "pending")).rejects.toThrow();
-  await expect(store.update(job.id, { items: [] }, "pending")).rejects.toThrow();
+  await expect(store.update(job.id, { currentItem: 1 }, "pending")).rejects.toThrow("Current item is outside the job");
+  await expect(store.update(job.id, { items: [] }, "pending")).rejects.toThrow("Expected one outcome per plan item");
   expect(await store.get(job.id)).toStrictEqual(job);
 });
 
@@ -170,20 +172,24 @@ test("stores the latest checkpoint per item and reopens both jobs and checkpoint
   expect(await store.lastCheckpoint(job.id, 1)).toStrictEqual({ ...checkpoint, itemIndex: 1 });
 });
 
-test("creation keeps the newest 1000 terminal jobs and prunes their old checkpoints", async () => {
-  await store.create(job);
-  const oldestId = "00000000-0000-4000-8000-000000000000";
-  db.exec(`
-    WITH RECURSIVE seq(n) AS (VALUES(0) UNION ALL SELECT n + 1 FROM seq WHERE n < 1000)
+function seedTerminalJobs(count: number, firstOffset: number): void {
+  db.prepare(`
+    WITH RECURSIVE seq(n) AS (VALUES(0) UNION ALL SELECT n + 1 FROM seq WHERE n + 1 < @count)
     INSERT INTO jobs
     SELECT printf('00000000-0000-4000-8000-%012d', n), plan_json,
       CASE n % 4 WHEN 0 THEN 'completed' WHEN 1 THEN 'failed'
         WHEN 2 THEN 'cancelled' ELSE 'unknown' END,
       progress_json, NULL, NULL, items_json, NULL, created_at,
-      strftime('%Y-%m-%dT%H:%M:%fZ', created_at, printf('+%d seconds', n)),
+      strftime('%Y-%m-%dT%H:%M:%fZ', created_at, printf('+%d seconds', n + @firstOffset)),
       initiator_kind, thread_id, 0
-    FROM seq CROSS JOIN jobs WHERE id = '223e4567-e89b-42d3-a456-426614174000';
-  `);
+    FROM seq CROSS JOIN jobs WHERE id = @templateId
+  `).run({ count, firstOffset, templateId: job.id });
+}
+
+test("creation keeps the newest 1000 terminal jobs and prunes their old checkpoints", async () => {
+  await store.create(job);
+  const oldestId = "00000000-0000-4000-8000-000000000000";
+  seedTerminalJobs(1001, 0);
   await store.checkpoint({ ...checkpoint, jobId: oldestId });
   await store.checkpoint(checkpoint);
 
@@ -198,8 +204,145 @@ test("creation keeps the newest 1000 terminal jobs and prunes their old checkpoi
     .toHaveLength(1000);
 });
 
-test("reapplying the migration SQL preserves existing rows", async () => {
+test("normalizes stored dates and prunes the earlier terminal job at the 1000-job boundary", async () => {
+  await store.create({
+    ...job,
+    createdAt: "2026-11-27T00:00:00Z",
+    updatedAt: "2026-11-27T00:00:00Z",
+    state: "completed",
+    awaitsOwner: false,
+  });
+  await store.create({
+    ...job,
+    id: secondId,
+    state: "completed",
+    awaitsOwner: false,
+    updatedAt: "2026-11-27T00:00:00.500Z",
+  });
+  const older = await store.get(job.id);
+  const beforePrune = (await store.list({ states: ["completed"], limit: 2 })).map(({ id }) => id);
+  seedTerminalJobs(999, 1);
+  await store.create({ ...job, id: "223e4567-e89b-42d3-a456-426614174002" });
+
+  expect(await store.get(job.id)).toBeNull();
+  expect(await store.get(secondId)).toMatchObject({ updatedAt: "2026-11-27T00:00:00.500Z" });
+  expect(beforePrune).toEqual([secondId, job.id]);
+  expect(older).toMatchObject({
+    createdAt: "2026-11-27T00:00:00.000Z",
+    updatedAt: "2026-11-27T00:00:00.000Z",
+  });
+  expect(await store.update(secondId, { updatedAt: "2026-11-27T00:00:01Z" }, "completed")).toBe(true);
+  expect(await store.get(secondId)).toMatchObject({ updatedAt: "2026-11-27T00:00:01.000Z" });
+});
+
+test("prunes a damaged pending job as terminal unknown", async () => {
   await store.create(job);
-  migrate(db);
+  seedTerminalJobs(1000, 1);
+  db.prepare("UPDATE jobs SET plan_json = ? WHERE id = ?").run("{broken", job.id);
+  expect(await store.list({ states: ["completed", "failed", "cancelled", "unknown"], limit: 2000 }))
+    .toHaveLength(1001);
+
+  await store.create({ ...job, id: secondId });
+  expect(await store.get(job.id)).toBeNull();
+  expect(await store.list({ states: ["completed", "failed", "cancelled", "unknown"], limit: 2000 }))
+    .toHaveLength(1000);
+});
+
+test("rejects plan in a patch even if the replacement plan matches the new outcomes", async () => {
+  await store.create(job);
+  const patch = {
+    plan: { ...job.plan, items: [job.plan.items[0], job.plan.items[0]] },
+    items: [job.items[0], job.items[0]],
+  };
+  try {
+    await expect(store.update(job.id, patch, "pending")).rejects.toThrow(
+      new CommanderError("internal", "Job update contains an unsupported field"),
+    );
+  } finally {
+    expect(await store.get(job.id)).toStrictEqual(job);
+  }
+});
+
+test("rejects a checkpoint after its job is pruned without creating an orphan", async () => {
+  await store.create({ ...job, state: "completed", awaitsOwner: false });
+  seedTerminalJobs(1000, 1);
+  await store.create({ ...job, id: secondId });
+  expect(await store.get(job.id)).toBeNull();
+
+  try {
+    await expect(store.checkpoint(checkpoint)).rejects.toMatchObject({
+      name: "CommanderError", code: "not_found", message: "Job not found",
+    });
+  } finally {
+    expect(await store.lastCheckpoint(job.id, 0)).toBeNull();
+  }
+});
+
+test("assigns distinct stable UUIDs from rowid and preserves valid initiators on damaged rows", async () => {
+  await store.create(job);
+  await store.create({ ...job, id: secondId });
+  const damage = db.prepare("UPDATE jobs SET rowid = ?, id = ?, plan_json = '{broken', initiator_kind = ?, thread_id = ? WHERE id = ?");
+  damage.run("9007199254740992", "damaged-1", "agent", "thr_test", job.id);
+  damage.run("9007199254740993", "damaged-2", "agent", "", secondId);
+
+  const first = await store.get("damaged-1");
+  const second = await store.get("damaged-2");
+  expect(first).toMatchObject({
+    id: "00000000-0020-8000-8000-000000000000",
+    state: "unknown",
+    plan: { initiator: { kind: "agent", threadId: "thr_test" } },
+  });
+  expect(second).toMatchObject({
+    id: "00000000-0020-8000-8000-000000000001",
+    state: "unknown",
+    plan: { initiator: { kind: "owner" } },
+  });
+  db.close();
+  db = new Database(filename);
+  store = createSqliteJobStore(db);
+  expect(await store.list({ states: ["unknown"], limit: 2 })).toStrictEqual([first, second]);
+});
+
+test("SQLite rejects setting awaits_owner directly on a running job", async () => {
+  await store.create({ ...job, state: "running", awaitsOwner: false });
+  expect(() => db.prepare("UPDATE jobs SET awaits_owner = 1 WHERE id = ?").run(job.id))
+    .toThrow(expect.objectContaining({ code: "SQLITE_CONSTRAINT_CHECK" }));
+  expect(await store.get(job.id)).toMatchObject({ state: "running", awaitsOwner: false });
+});
+
+async function loadSdkTestHost() {
+  const sdkTesting = import.meta.resolve("@get-bb/plugin-sdk/testing");
+  // SDK 0.6.132 eagerly imports an optional peer used only by the scheduler.
+  // Keep the native loader override scoped to this import and fail if used.
+  const hook = registerHooks({
+    resolve(specifier, context, nextResolve) {
+      try {
+        return nextResolve(specifier, context);
+      } catch (error) {
+        if (specifier !== "cron-parser" || context.parentURL !== sdkTesting
+          || (error as NodeJS.ErrnoException).code !== "ERR_MODULE_NOT_FOUND") throw error;
+        const unusedScheduler = 'export class CronExpressionParser { static parse() { throw new Error("Scheduler unavailable in this test"); } }';
+        return { url: `data:text/javascript,${encodeURIComponent(unusedScheduler)}`, shortCircuit: true };
+      }
+    },
+  });
+  try {
+    return await import("@get-bb/plugin-sdk/testing");
+  } finally {
+    hook.deregister();
+  }
+}
+
+test("two SDK migration calls preserve a single journal entry and the existing row", async () => {
+  const { createFakePluginHost } = await loadSdkTestHost();
+  const { bb } = createFakePluginHost({ pluginId: "commander-s6-migration" });
+  bb.storage.migrate(db, MIGRATIONS);
+  await store.create(job);
+  const journal = db.prepare("SELECT * FROM _bb_migrations ORDER BY id");
+  const entries = journal.all();
+  expect(entries).toEqual([{ id: 0, applied_at: expect.any(Number), statement_hash: expect.stringMatching(/^[a-f0-9]{64}$/) }]);
+
+  bb.storage.migrate(db, MIGRATIONS);
+  expect(journal.all()).toStrictEqual(entries);
   expect(await createSqliteJobStore(db).get(job.id)).toStrictEqual(job);
 });
