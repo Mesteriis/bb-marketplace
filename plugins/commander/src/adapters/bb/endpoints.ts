@@ -35,6 +35,7 @@ export function createEndpoints(bb: BbPluginApi) {
   const hosts = new Map<string, { home: ResourcePath; provider: FileProvider }>();
   const sftp = new Map<string, { provider: SftpProvider; home: ResourcePath; closing?: Promise<void> }>();
   const loadingSftp = new Map<string, Promise<void>>();
+  const closing = new AbortController();
   let closed = false;
 
   async function list(signal: AbortSignal) {
@@ -88,18 +89,22 @@ export function createEndpoints(bb: BbPluginApi) {
   }
 
   async function prepareSftp(endpoint: Endpoint, signal: AbortSignal) {
-    const cached = sftp.get(endpoint.id);
-    if (cached?.provider.endpoint.readOnly === endpoint.readOnly) return;
-    await loadingSftp.get(endpoint.id);
-    if (sftp.get(endpoint.id)?.provider.endpoint.readOnly === endpoint.readOnly) return;
-    if (closed) throw new CommanderError("cancelled", "Commander is stopping");
-    const task = loadSftp(endpoint, signal);
-    loadingSftp.set(endpoint.id, task);
-    try {
+    while (sftp.get(endpoint.id)?.provider.endpoint.readOnly !== endpoint.readOnly) {
+      signal.throwIfAborted();
+      closing.signal.throwIfAborted();
+      let task = loadingSftp.get(endpoint.id);
+      if (!task) {
+        // The shared load is registered before invoking the transport. One
+        // caller dropping its request cannot abort another caller's load.
+        const loadSignal = AbortSignal.any([closing.signal, AbortSignal.timeout(15_000)]);
+        task = Promise.resolve().then(() => loadSftp(endpoint, loadSignal)).finally(() => {
+          loadingSftp.delete(endpoint.id);
+        });
+        loadingSftp.set(endpoint.id, task);
+      }
       await task;
-    } finally {
-      if (loadingSftp.get(endpoint.id) === task) loadingSftp.delete(endpoint.id);
     }
+    signal.throwIfAborted();
   }
 
   async function loadSftp(endpoint: Endpoint, signal: AbortSignal) {
@@ -152,6 +157,7 @@ export function createEndpoints(bb: BbPluginApi) {
     },
     async close() {
       closed = true;
+      closing.abort();
       await Promise.allSettled(loadingSftp.values());
       await Promise.allSettled([...sftp.values()].map(({ provider, closing }) => Promise.allSettled([provider.close(), closing])));
       sftp.clear();
