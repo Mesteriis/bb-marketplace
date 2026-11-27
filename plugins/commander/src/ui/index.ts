@@ -1,2 +1,1 @@
-// Host-independent React components for Commander.
-export {};
+export { Workspace } from "./workspace.tsx";
