@@ -12,8 +12,12 @@ const overscan = 8;
 export const upKey = "parent";
 export const entryIcon = { dir: "Folder", file: "File", symlink: "Link", other: "FileQuestion" };
 
-export function ProblemLine({ problem }: { problem: Problem }) {
-  return <div className="cm-problem" role="alert"><code>{problem.code}</code> {problem.message}</div>;
+export function ProblemLine({ problem, truncate }: { problem: Problem; truncate?: boolean }) {
+  const title = truncate ? [problem.code, problem.message].filter(Boolean).join(" ") : undefined;
+  return <div className="cm-problem" role="alert">
+    <Icon name="AlertTriangle" aria-hidden="true" />
+    <span title={title}><code>{problem.code}</code>{problem.message && " " + problem.message}</span>
+  </div>;
 }
 
 function Breadcrumbs({ segments }: { segments: ResourcePath["segments"] }) {

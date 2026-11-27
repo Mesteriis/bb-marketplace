@@ -485,7 +485,10 @@ export function Workspace(props: WorkspaceProps) {
   return <div ref={root} className="cm-workspace" data-compact={compact} onKeyDown={onKeyDown}>
     <header className="cm-heading">
       {compact && <h1><Icon name="Folder" />Commander</h1>}
-      <span className="cm-hint">{compact ? ru.threadEnvironment : ru.shortcut}</span><span className="cm-fill" />
+      {!dialog && retryConflict ? <div className="cm-retry">
+        <ProblemLine problem={retryConflict.problem} truncate />
+        <Button size="sm" variant="outline" disabled={busy} onClick={() => goBack(retryConflict.view)}>{ru.retryConflict}</Button>
+      </div> : <><span className="cm-hint">{compact ? ru.threadEnvironment : ru.shortcut}</span><span className="cm-fill" /></>}
       {!compact && <><Button size="sm" variant="outline" aria-label={ru.swap} onClick={() => { setCursor({}); update((previous) => ({ ...previous, left: previous.right, right: previous.left })); }}>
         <Icon name="ArrowUpDown" /><span>{ru.swap}</span></Button>
         <Button size="sm" variant="outline" aria-label={ru.compare} disabled={!ready || !destination || !directories.left || !directories.right ||
@@ -505,10 +508,6 @@ export function Workspace(props: WorkspaceProps) {
           ? nameOf(tabs[pane]!.path.segments.at(-1)!) : endpointsBySide[pane]?.label ?? ru[pane]}</span>
       </Button>)}</div>
     {(props.problem || problem && !dialog) && <ProblemLine problem={(problem ?? props.problem)!} />}
-    {!dialog && retryConflict && <div className="cm-retry">
-      <ProblemLine problem={retryConflict.problem} />
-      <Button size="sm" variant="outline" disabled={busy} onClick={() => goBack(retryConflict.view)}>{ru.retryConflict}</Button>
-    </div>}
     {notice && <div className="cm-empty" role="status">{notice}</div>}
     <div className="cm-work" data-queue={queueOpen}>
       {sides.map((pane) => {

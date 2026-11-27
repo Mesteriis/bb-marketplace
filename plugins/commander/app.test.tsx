@@ -15,7 +15,7 @@ vi.mock("@get-bb/plugin-sdk/app", () => ({
   useRealtime: () => {},
   useBbNavigate: () => host.navigate,
   useSdk: () => host.sdk,
-  experimental_Icon: () => null,
+  experimental_Icon: ({ name }: { name: string }) => <svg aria-hidden="true" data-test-icon={name} />,
 }));
 
 import app from "./app.tsx";
@@ -100,6 +100,39 @@ test("F5 opens a copy plan from the grid and leaves foreign and address inputs a
   expect(fireEvent.keyDown(grid(), { key: "F5" })).toBe(false);
   const plan = await screen.findByRole("dialog", { name: "Копирование" });
   expect(within(plan).getByText("/приёмник")).toBeDefined();
+});
+
+test("a read-only destination blocks copy and move, and its own panel blocks writes", async () => {
+  const readOnly = { ...endpoint, id: "host:archive", hostId: "archive", label: "Архив", readOnly: true };
+  saved!.right.tabs[0]!.endpoint = "host:archive";
+  const call = host.call.getMockImplementation()!;
+  host.call.mockImplementation(async (method, input) =>
+    method === "endpoints_list" ? { endpoints: [endpoint, readOnly] } : call(method, input));
+
+  mount();
+  fireEvent.click(await leftFile());
+  const right = grid("Правая панель");
+  const file = await within(right).findByRole("row", { name: /пример\.txt/ });
+  const badge = within(right.parentElement!).getByRole("img", { name: "Только чтение" });
+  expect(badge.textContent).toBe("Только чтение");
+  const action = (name: string) => screen.getByRole("button", { name }) as HTMLButtonElement;
+  host.call.mockClear();
+
+  expect(action("Копировать (F5)").disabled).toBe(true);
+  expect(action("Переместить (F6)").disabled).toBe(true);
+  fireEvent.keyDown(grid(), { key: "F5" });
+  fireEvent.keyDown(grid(), { key: "F6" });
+  fireEvent.click(file);
+
+  expect(action("Копировать (F5)").disabled).toBe(false);
+  expect(action("Переместить (F6)").disabled).toBe(true);
+  expect(action("Каталог (F7)").disabled).toBe(true);
+  expect(action("Удалить (F8)").disabled).toBe(true);
+  fireEvent.keyDown(right, { key: "F6" });
+  fireEvent.keyDown(right, { key: "F7" });
+  fireEvent.keyDown(right, { key: "F8" });
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(host.call.mock.calls.filter(([method]) => method === "plan_create")).toEqual([]);
 });
 
 test("Tab switches the focused grid and remount restores path and selection during debounce", async () => {
@@ -202,6 +235,22 @@ function conflictFixture(id: string, conflictId: string, filename: string): Oper
 }
 const firstConflict = () => conflictFixture("a49575e8-a22b-4fa8-a4e3-cd96ab734325", "74db46a5-bb94-4259-af37-2dd4547c1fb6", "пример.txt");
 const nextConflict = () => conflictFixture("522b5f7f-3f4a-4ace-afb6-e2b57bc2f5c4", "70443f80-c1f2-473a-910e-e4a113208d3d", "второй.txt");
+
+test.each([
+  ["awaiting_decision", false, "Ждёт решения", "CircleQuestion"],
+  ["pending", true, "Ждёт разрешения", "Lock"],
+  ["running", false, "Выполняется", "Play"],
+  ["completed", false, "Готово", "CircleCheck"],
+  ["failed", false, "Ошибка", "AlertTriangle"],
+] as const)("queue state %s uses a readable label and its own icon", async (state, awaitsOwner, label, icon) => {
+  const job = firstConflict();
+  jobs = [{ ...job, state, awaitsOwner, pendingConflict: state === "awaiting_decision" ? job.pendingConflict : null }];
+  mount();
+  const card = await screen.findByRole("article", { name: "Копирование" });
+  expect(within(card).getByText(label)).toBeDefined();
+  expect(within(card).getByRole("progressbar", { name: label })).toBeDefined();
+  expect(card.querySelector(`[data-test-icon="${icon}"]`)).not.toBeNull();
+});
 
 test("closing content comparison or cancellation confirmation restores the same checked conflict", async () => {
   jobs = [firstConflict()];
@@ -394,6 +443,11 @@ test.each([
   if (dismissal === "Escape") fireEvent.keyDown(nested, { key: "Escape" });
   else fireEvent.click(within(nested).getByRole("button", { name: "Закрыть" }));
   const retry = await screen.findByRole("button", { name: "Проверить снова" });
+  const heading = retry.closest("header");
+  expect(heading).not.toBeNull();
+  const alert = within(heading!).getByRole("alert");
+  expect(within(alert).getByTitle("timeout Время ожидания истекло").textContent).toBe("timeout Время ожидания истекло");
+  expect(alert.querySelector('[data-test-icon="AlertTriangle"]')).not.toBeNull();
   expect(screen.queryByRole("dialog")).toBeNull();
   expect(document.activeElement).toBe(open);
   expect(host.call.mock.calls.filter(([method]) => method === "job_decide" || method === "job_cancel")).toEqual([]);
