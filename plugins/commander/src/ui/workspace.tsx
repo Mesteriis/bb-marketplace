@@ -117,6 +117,7 @@ export function Workspace(props: WorkspaceProps) {
   const previousRows = useRef<Record<Side, Entry[]>>({ left: [], right: [] });
   const [dialog, setDialog] = useState<DialogState | null>(null);
   const [same, setSame] = useState(false);
+  const [retryConflict, setRetryConflict] = useState<{ view: ConflictView; problem: Problem } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [problem, setProblem] = useState<Problem | null>(null);
   const [busy, setBusy] = useState(false);
@@ -222,6 +223,7 @@ export function Workspace(props: WorkspaceProps) {
       focusReturn.current = null;
       queueMicrotask(() => {
         if (next?.isConnected) {
+          next.scrollIntoView?.({ block: "nearest" });
           next.focus({ preventScroll: true });
           if (document.activeElement === next) return;
         }
@@ -242,8 +244,21 @@ export function Workspace(props: WorkspaceProps) {
   const close = () => { setDialog(null); setProblem(null); };
   function goBack(returnTo: ConflictView) {
     void perform(async () => {
-      const fresh = await props.onReloadConflict(returnTo.job.id);
+      let fresh: OperationJob | null;
+      try {
+        fresh = await props.onReloadConflict(returnTo.job.id);
+      } catch (error) {
+        close();
+        setRetryConflict({ view: returnTo, problem: problemOf(error) });
+        return;
+      }
+      setRetryConflict(null);
       if (fresh?.pendingConflict && fresh.pendingConflict.id === returnTo.job.pendingConflict?.id) {
+        if (!dialog) {
+          const buttons = Array.from(root.current?.querySelectorAll<HTMLButtonElement>("[data-conflict-id]") ?? []);
+          focusReturn.current = buttons.find((button) => button.dataset.conflictId === fresh.pendingConflict?.id)
+            ?? queueToggle.current;
+        }
         setDialog({ kind: "conflict", job: fresh });
       } else {
         close();
@@ -257,6 +272,7 @@ export function Workspace(props: WorkspaceProps) {
     const previous = props.queue.jobs;
     void perform(() => props.onDecide(job, action, apply), () => {
       conflictFocus.current = { jobId: job.id, conflictId: conflict.id, jobs: previous };
+      setRetryConflict((retry) => retry?.view.job.pendingConflict?.id === conflict.id ? null : retry);
       close();
     });
   }
@@ -270,6 +286,7 @@ export function Workspace(props: WorkspaceProps) {
     if (!dialog) focusReturn.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setProblem(null);
     setNotice(null);
+    if (!dialog) setRetryConflict(null);
     if (next.kind === "conflict") setSame(false);
     setDialog(next);
   };
@@ -488,6 +505,10 @@ export function Workspace(props: WorkspaceProps) {
           ? nameOf(tabs[pane]!.path.segments.at(-1)!) : endpointsBySide[pane]?.label ?? ru[pane]}</span>
       </Button>)}</div>
     {(props.problem || problem && !dialog) && <ProblemLine problem={(problem ?? props.problem)!} />}
+    {!dialog && retryConflict && <div className="cm-retry">
+      <ProblemLine problem={retryConflict.problem} />
+      <Button size="sm" variant="outline" disabled={busy} onClick={() => goBack(retryConflict.view)}>{ru.retryConflict}</Button>
+    </div>}
     {notice && <div className="cm-empty" role="status">{notice}</div>}
     <div className="cm-work" data-queue={queueOpen}>
       {sides.map((pane) => {
@@ -512,10 +533,11 @@ export function Workspace(props: WorkspaceProps) {
     <footer ref={toolbar} className="cm-toolbar">
       {actions.filter(({ key }) => !compact || key === "copy" || key === "preview").map(({ key, icon }) => {
         const shortcut = bindings[key] ?? shortcuts[key][0];
-        const title = shortcutText[key] + " (" + shortcut + ")";
+        const label = compact && key === "copy" ? ru.compactCopy : shortcutText[key];
+        const title = label + " (" + shortcut + ")";
         return <Button asChild key={key} size="sm" variant="outline">
           <button type="button" title={title} aria-label={title} aria-keyshortcuts={shortcut} disabled={busy || !can[key]} onClick={() => invoke(key)}>
-            <Icon name={icon} /><span>{compact && key === "copy" ? ru.compactCopy : shortcutText[key]}</span>
+            <Icon name={icon} /><span>{label}</span>
             <kbd aria-hidden="true">{shortcut}</kbd>
           </button>
         </Button>;

@@ -12,6 +12,7 @@ export const ru = {
   terminal: "Терминал здесь", compactTerminal: "Терминал", close: "Закрыть",
   compareLimit: "Сравнение доступно для двух текстовых файлов до 128 КБ", allItems: "Список объектов",
   cancel: "Отмена", cancelJob: "Отменить задание", run: "Запустить", next: "Далее",
+  retryConflict: "Проверить снова",
   conflictEnded: "Конфликт больше не ожидает решения",
   conflictExists: (file: string) => file + " уже есть в назначении",
   conflictForFile: (file: string, reason: string) => file + " · " + reason,

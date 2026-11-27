@@ -367,3 +367,118 @@ test("returning from comparison re-reads the job and reports a conflict resolved
   expect(await screen.findByText("Конфликт больше не ожидает решения")).toBeDefined();
   expect(screen.queryByRole("dialog")).toBeNull();
 });
+
+test.each([
+  ["Сравнить содержимое", "Escape"],
+  ["Сравнить содержимое", "Закрыть"],
+  ["Отменить задание", "Escape"],
+  ["Отменить задание", "Закрыть"],
+])("a failed job read exits %s via %s and offers a read-only retry", async (title, dismissal) => {
+  jobs = [firstConflict()];
+  mount();
+  const open = await screen.findByRole("button", { name: "Сравнить и решить" });
+  open.focus();
+  fireEvent.click(open);
+  const conflict = await screen.findByRole("dialog", { name: "пример.txt уже есть в назначении" });
+  fireEvent.click(within(conflict).getByRole("checkbox"));
+  fireEvent.click(within(conflict).getByRole("button", { name: title }));
+  const nested = await screen.findByRole("dialog", { name: title });
+  const call = host.call.getMockImplementation()!;
+  let fail = true;
+  host.call.mockImplementation(async (method, input) => {
+    if (fail && method === "job_list") throw Object.assign(new Error("fixture timeout"), { code: "timeout" });
+    return call(method, input);
+  });
+  host.call.mockClear();
+  if (dismissal === "Escape") fireEvent.keyDown(nested, { key: "Escape" });
+  else fireEvent.click(within(nested).getByRole("button", { name: "Закрыть" }));
+  const retry = await screen.findByRole("button", { name: "Проверить снова" });
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(document.activeElement).toBe(open);
+  expect(host.call.mock.calls.filter(([method]) => method === "job_decide" || method === "job_cancel")).toEqual([]);
+  fail = false;
+  fireEvent.click(retry);
+  const restored = await screen.findByRole("dialog", { name: "пример.txt уже есть в назначении" });
+  expect(within(restored).getByRole("checkbox").getAttribute("aria-checked")).toBe("true");
+});
+
+test("returning to a conflict checks its ID past 200 records and follows an empty page", async () => {
+  const original = firstConflict();
+  jobs = [original];
+  mount();
+  fireEvent.click(await screen.findByRole("button", { name: "Сравнить и решить" }));
+  const conflict = await screen.findByRole("dialog", { name: "пример.txt уже есть в назначении" });
+  fireEvent.click(within(conflict).getByRole("button", { name: "Сравнить содержимое" }));
+  const content = await screen.findByRole("dialog", { name: "Сравнить содержимое" });
+  const call = host.call.getMockImplementation()!;
+  const other = nextConflict();
+  host.call.mockImplementation(async (method, input) => {
+    if (method !== "job_list" || input.states?.length === 1 && input.states[0] === "unknown" || !input.states) return call(method, input);
+    if (!input.states.includes("unknown")) return { jobs: [] };
+    if (input.cursor === undefined) return {
+      jobs: Array.from({ length: 200 }, (_, index) => ({ ...other, id: "other-" + index })), nextCursor: "401",
+    };
+    if (input.cursor === "401") return { jobs: [], nextCursor: "201" };
+    expect(input.cursor).toBe("201");
+    return { jobs: [original], nextCursor: "1" };
+  });
+  fireEvent.keyDown(content, { key: "Escape" });
+  expect(await screen.findByRole("dialog", { name: "пример.txt уже есть в назначении" })).toBeDefined();
+  expect(screen.queryByText("Конфликт больше не ожидает решения")).toBeNull();
+});
+
+test("the next conflict scrolls into view before receiving focus after inline skip", async () => {
+  jobs = [firstConflict(), nextConflict()];
+  mount();
+  const [, next] = await screen.findAllByRole("button", { name: "Сравнить и решить" });
+  const [skip] = screen.getAllByRole("button", { name: "Пропустить" });
+  const scroll = vi.fn(() => expect(document.activeElement).not.toBe(next));
+  Object.defineProperty(next, "scrollIntoView", { value: scroll });
+  skip.focus();
+  fireEvent.click(skip, { detail: 0 });
+  await waitFor(() => expect(document.activeElement).toBe(next));
+  expect(scroll).toHaveBeenCalledExactlyOnceWith({ block: "nearest" });
+});
+
+test("a same-server SFTP conflict identifies both distinct profiles", async () => {
+  const incoming = "sftp:5c256831-3f21-4724-b7eb-1837a3d8f755";
+  const outgoing = "sftp:ee4213b1-ca02-4d18-9588-438ef9c9113e";
+  const original = firstConflict();
+  const [{ source, target, ...item }] = original.plan.items;
+  jobs = [{ ...original, plan: { ...original.plan, sourceEndpoint: incoming, targetEndpoint: outgoing,
+    targetDir: { endpoint: outgoing, path: path("приёмник") },
+    items: [{ ...item, source: { ...source!, endpoint: incoming }, target: { ...target!, endpoint: outgoing } }],
+  } }];
+  const call = host.call.getMockImplementation()!;
+  const sftp = { provider: "sftp", machine: "fixture.test:22", hostId: null, readOnly: false, caseSensitive: true, consent: "granted" };
+  host.call.mockImplementation(async (method, input) => method === "endpoints_list"
+    ? { endpoints: [endpoint, { ...sftp, id: incoming, label: "Входящие" }, { ...sftp, id: outgoing, label: "Публикация" }] } : call(method, input));
+  mount();
+  fireEvent.click(await screen.findByRole("button", { name: "Сравнить и решить" }));
+  const dialog = await screen.findByRole("dialog", { name: "пример.txt уже есть в назначении" });
+  expect(within(within(dialog).getByRole("region", { name: "Копируемый" })).getByText("fixture.test:22 · Входящие")).toBeDefined();
+  expect(within(within(dialog).getByRole("region", { name: "В назначении" })).getByText("fixture.test:22 · Публикация")).toBeDefined();
+});
+
+test("the thread copy button includes its visible wording and shortcut in its accessible name", async () => {
+  mount(true);
+  await leftFile();
+  expect(screen.getByRole("button", { name: "Копировать в… (F5)" }).textContent).toContain("Копировать в…");
+});
+
+test("resolving a conflict clears its obsolete retry prompt", async () => {
+  jobs = [firstConflict()];
+  mount();
+  fireEvent.click(await screen.findByRole("button", { name: "Сравнить и решить" }));
+  const dialog = await screen.findByRole("dialog", { name: "пример.txt уже есть в назначении" });
+  fireEvent.click(within(dialog).getByRole("button", { name: "Сравнить содержимое" }));
+  const nested = await screen.findByRole("dialog", { name: "Сравнить содержимое" });
+  const call = host.call.getMockImplementation()!;
+  host.call.mockImplementationOnce(async () => { throw new Error("fixture timeout"); });
+  fireEvent.keyDown(nested, { key: "Escape" });
+  await screen.findByRole("button", { name: "Проверить снова" });
+  host.call.mockImplementation(call);
+  fireEvent.click(screen.getByRole("button", { name: "Пропустить" }));
+  await waitFor(() => expect(screen.queryByRole("button", { name: "Сравнить и решить" })).toBeNull());
+  expect(screen.queryByRole("button", { name: "Проверить снова" })).toBeNull();
+});

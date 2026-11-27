@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { LIST_PAGE_MAX } from "./src/core/provider.ts";
 import { parsePosix } from "./src/core/path.ts";
 import { CommanderError } from "./src/core/errors.ts";
-import type { ConflictAction, Entry, OperationJob, OperationPlan, ResourceRef } from "./src/core/model.ts";
+import { JobState, type ConflictAction, type Entry, type OperationJob, type OperationPlan, type ResourceRef } from "./src/core/model.ts";
 import { type UiState, type rpcSchemas } from "./src/core/wire/rpc.ts";
 import { Workspace } from "./src/ui/index.ts";
 import { activeTab, currentRef, emptyState, nativePath, newTab, problemOf, unloaded,
@@ -145,6 +145,25 @@ function useDirectory(rpc: Rpc, ref: ResourceRef | undefined, revision: number):
     return () => { active = false; };
   }, [rpc, key, revision]);
   return key === null ? undefined : view?.key === key ? view.directory : unloaded;
+}
+
+async function readConflictJob(rpc: Rpc, jobId: string): Promise<OperationJob | null> {
+  // The cursor is available only for a filter that includes "unknown".
+  const cursors = new Set<string>();
+  let cursor: string | undefined;
+  do {
+    const page: { jobs: JobView[]; nextCursor?: string } = await rpc.call("job_list", {
+      states: [...JobState.options], limit: 200, ...(cursor === undefined ? {} : { cursor }),
+    });
+    const job = page.jobs.find((entry) => entry.id === jobId);
+    if (job) return "plan" in job && job.state === "awaiting_decision" && job.pendingConflict ? job : null;
+    cursor = page.nextCursor;
+    if (cursor !== undefined) {
+      if (cursors.has(cursor)) throw new CommanderError("internal", ru.unknownError);
+      cursors.add(cursor);
+    }
+  } while (cursor !== undefined);
+  return null;
 }
 
 function useJobs(rpc: Rpc, revision: number) {
@@ -312,11 +331,9 @@ function CommanderPage({ compact = false, environment, threadId }: { compact?: b
     onInspect={inspect} onApprove={(job) => mutate(rpc.call("plan_approve", identity(job)))}
     onReject={(job) => mutate(rpc.call("plan_reject", identity(job)))}
     onReloadConflict={async (jobId) => {
-      const { jobs } = await rpc.call("job_list", { states: ["awaiting_decision"], limit: 200 });
-      const fresh = jobs.find((job): job is OperationJob => "plan" in job && job.id === jobId
-        && job.state === "awaiting_decision" && !!job.pendingConflict);
+      const fresh = await readConflictJob(rpc, jobId);
       refresh("job");
-      return fresh ?? null;
+      return fresh;
     }}
     onDecide={async (job, action: ConflictAction, same) => {
       if (!job.pendingConflict) return;

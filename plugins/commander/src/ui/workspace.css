@@ -190,6 +190,7 @@
 .cm-name { gap: 8px; }
 .cm-name span, .cm-selection div span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cm-summary { flex: 0 0 auto; padding: 7px 12px; border-top: 1px solid var(--border); }
+.cm-retry { display: flex; flex-wrap: wrap; align-items: center; padding-inline-end: 12px; }
 .cm-empty, .cm-problem { padding: 8px 12px; overflow-wrap: anywhere; }
 .cm-empty { color: var(--muted-foreground); }
 .cm-problem { color: var(--destructive); }
