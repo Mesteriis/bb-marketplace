@@ -1,15 +1,19 @@
+import { createHash } from "node:crypto";
 import { experimental_PluginRpcRefusal, type ExperimentalPluginRpcHandlersWithContext, type PluginKvStorage } from "@get-bb/plugin-sdk";
+import { checksum, compareDirs, compareFiles, estimateRead, scanDir, scanFile } from "../../core/compare.ts";
 import { CommanderError, isCommanderError } from "../../core/errors.ts";
 import type { JobRunner } from "../../core/job-runner.ts";
 import type { AgentJobStore } from "../../core/job-store.ts";
-import type { Initiator, JobState, OperationJob, OperationPlan, ResourceRef } from "../../core/model.ts";
+import type { Entry, Initiator, JobState, OperationJob, OperationPlan, ResourceRef } from "../../core/model.ts";
+import type { ScanContext, ScanRunner } from "../../core/scan-job.ts";
 import { parent } from "../../core/path.ts";
 import { authorize, REQUIRED } from "../../core/permissions.ts";
 import { buildPlan, revalidate, type PlannerDeps } from "../../core/planner.ts";
-import { UiState, rpcSchemas, type AgentGrant, type DamagedJob, type GrantKey, type RpcInput } from "../../core/wire/rpc.ts";
+import { UiState, rpcSchemas, type AgentGrant, type DamagedJob, type GrantKey, type RpcInput, type ScanResult } from "../../core/wire/rpc.ts";
 import { SFTP_REFUSALS, SftpRefusal } from "../../core/wire/remote-hub-sftp.ts";
 import { covers, type createAgentGrants } from "./agent-grants.ts";
 import type { Endpoints } from "./endpoints.ts";
+import { scanJobView } from "./scan-store-sqlite.ts";
 
 const owner = { kind: "owner" } as const;
 const stateKey = (threadId?: string) => threadId === undefined ? "ui-state" : "ui-state:thread:" + threadId;
@@ -106,9 +110,13 @@ export function createOperations(deps: {
   publish(kind: "job" | "dir" | "endpoints", id: string): void;
   ready(): Promise<void>;
   isManaged(id: string): boolean;
+  scans: ScanRunner;
 }) {
   const { endpoints, runner, store, planner, grants, kv, publish } = deps;
   const plans = new Map<string, { plan: OperationPlan; bytes: number; created: number }>();
+  const scanEstimates = new Map<string, {
+    initiator: Initiator; request: string; snapshot: string; expires: number;
+  }>();
   let accessQueue: Promise<unknown> = Promise.resolve();
 
   function serializeAccess<T>(action: () => Promise<T>): Promise<T> {
@@ -217,6 +225,7 @@ export function createOperations(deps: {
   async function changeGrants(threadId: string, update: () => Promise<void>) {
     const cancellations = await serializeAccess(async () => {
       await update();
+      deps.scans.cancelAgent(threadId);
       const active = await store.list({ states: [...activeStates],
         threadId, limit: Number.MAX_SAFE_INTEGER });
       return uncoveredJobs(active);
@@ -231,6 +240,77 @@ export function createOperations(deps: {
   async function jobPage({ states, limit, cursor }: RpcInput<"job_list">, threadId?: string) {
     if (states?.includes("unknown")) return store.listUnknownPage({ states, limit, cursor, threadId });
     return { jobs: await store.list({ states, limit, threadId }) };
+  }
+
+  // Scan preflight uses metadata only. Work uses the same snapshots so a fresh
+  // listing or stat cannot silently raise a remote read budget after approval.
+  async function prepareScan(input: RpcInput<"scan_start">, signal: AbortSignal) {
+    const location = (ref: ResourceRef) => ({ provider: endpoints.provider(ref.endpoint), path: ref.path });
+    if (input.kind === "checksum") {
+      const { provider, path } = location(input.ref);
+      const expected = await scanFile({ provider, path }, signal);
+      return {
+        planned: [estimateRead([expected])],
+        snapshot: [expected],
+        async work(ctx: ScanContext): Promise<ScanResult> {
+          const sha256 = await checksum(provider, path, ctx.signal, { ...scanHash(ctx), expected });
+          ctx.progress({ items: 1 });
+          return { sha256 };
+        },
+      };
+    }
+
+    const left = location(input.left);
+    const right = location(input.right);
+    if (input.kind === "files") {
+      const a = await scanFile(left, signal);
+      const b = await scanFile(right, signal);
+      return {
+        planned: input.mode === "size" || a.size !== b.size ? [0n, 0n] : [estimateRead([a]), estimateRead([b])],
+        snapshot: [a, b],
+        async work(ctx: ScanContext): Promise<ScanResult> {
+          const comparison = await compareFiles(left, right, input.mode, ctx.signal, { ...scanHash(ctx), expected: [a, b] });
+          ctx.progress({ items: 1 });
+          return { comparison };
+        },
+      };
+    }
+
+    const a = await scanDir(left, input.limit, signal);
+    const b = await scanDir(right, input.limit, signal);
+    return {
+      planned: input.by === "sha256" ? [estimateRead(a.entries), estimateRead(b.entries)] : [0n, 0n],
+      snapshot: [a, b],
+      async work(ctx: ScanContext): Promise<ScanResult> {
+        const equal: [Entry, Entry][] = [];
+        const diff = await compareDirs(left, right, input, ctx.signal, {
+          ...scanHash(ctx), listings: [a, b], onItem: () => ctx.progress({ items: 1 }),
+          onEqual: (left, right) => equal.push([left, right]),
+        });
+        if (diff.partial) ctx.markPartial("Directory entry limit reached");
+        return { ...diff, equal };
+      },
+    };
+  }
+
+  function requireScanEstimate(id: string, initiator: Initiator, request: string) {
+    const estimate = scanEstimates.get(id);
+    if (!estimate || Date.now() >= estimate.expires) {
+      scanEstimates.delete(id);
+      throw refusal("forbidden", "Scan estimate is missing or expired");
+    }
+    if (!ownedBy(initiator, estimate.initiator) || estimate.request !== request) {
+      throw refusal("forbidden", "Scan estimate does not match the request");
+    }
+    return estimate;
+  }
+
+  async function checkScanRead(initiator: Initiator, paths: ResourceRef[]) {
+    if (initiator.kind === "owner") return;
+    const rows = await grants.forThread(initiator.threadId);
+    if (paths.some((ref) => !covers(effectiveGrants(rows, ref.endpoint), ref, "read"))) {
+      throw refusal("forbidden", "Path is outside the agent's grant");
+    }
   }
 
   return {
@@ -398,6 +478,93 @@ export function createOperations(deps: {
         await requestCancel(job);
       }
     },
+    async scanStart(input: RpcInput<"scan_start">, initiator: Initiator, signal: AbortSignal) {
+      const paths = input.kind === "checksum" ? [input.ref] : [input.left, input.right];
+      const ids = [...new Set(paths.map(({ endpoint }) => endpoint))];
+      await checkScanRead(initiator, paths);
+      await deps.ready();
+      const remote = ids.some((id) => id.startsWith("sftp:"));
+      const { estimateId, estimateOnly, ...scan } = input;
+      const request = JSON.stringify(scan);
+      if (!estimateOnly && remote && !estimateId) {
+        throw refusal("forbidden", "A remote scan requires a confirmed estimate");
+      }
+      if (!estimateOnly && estimateId) requireScanEstimate(estimateId, initiator, request);
+      await endpoints.prepare(ids, signal);
+      const { planned, snapshot, work } = await prepareScan(input, signal);
+      const bytes = planned.reduce((total, count) => total + count, 0n);
+      const snapshotDigest = createHash("sha256").update(JSON.stringify(snapshot)).digest("hex");
+      return serializeAccess(async () => {
+        await checkScanRead(initiator, paths);
+        await deps.ready();
+        signal.throwIfAborted();
+        if (estimateOnly) {
+          const now = Date.now();
+          for (const [id, estimate] of scanEstimates) {
+            if (now >= estimate.expires) scanEstimates.delete(id);
+          }
+          // Keep estimate issuance bounded and prevent agents from evicting owner estimates.
+          const ownPool = [...scanEstimates].filter(([, item]) => item.initiator.kind === initiator.kind);
+          const poolLimit = initiator.kind === "owner" ? 32 : 64;
+          if (ownPool.length >= poolLimit) throw refusal("conflict", "Scan estimate pool is full");
+          if (initiator.kind === "agent" && ownPool.filter(([, item]) => ownedBy(initiator, item.initiator)).length >= 16) {
+            throw refusal("conflict", "Thread scan estimate pool is full");
+          }
+          const id = planner.uuid();
+          scanEstimates.set(id, { initiator, request, snapshot: snapshotDigest, expires: now + 600_000 });
+          const byEndpoint = new Map<string, bigint>();
+          paths.forEach(({ endpoint }, index) => {
+            byEndpoint.set(endpoint, (byEndpoint.get(endpoint) ?? 0n) + planned[index]);
+          });
+          return { estimateId: id, bytesPlanned: bytes.toString(),
+            bytesByEndpoint: [...byEndpoint].map(([endpoint, count]) => ({ endpoint, bytesPlanned: count.toString() })) };
+        }
+        if (estimateId) {
+          const estimate = requireScanEstimate(estimateId, initiator, request);
+          scanEstimates.delete(estimateId);
+          if (estimate.snapshot !== snapshotDigest) throw refusal("conflict", "Scan metadata changed; estimate again");
+        }
+        const job = deps.scans.start({
+          kind: input.kind === "checksum" ? "checksum" : "compare", initiator, endpoints: ids, bytesPlanned: bytes,
+        }, work);
+        return scanJobView(job);
+      });
+    },
+    scanGet(id: string) {
+      const job = deps.scans.get(id);
+      if (!job) return null;
+      const result = deps.scans.result<ScanResult>(id);
+      return { job: scanJobView(job), result,
+        ...(job.state === "done" && result === null ? { reason: "result_expired" as const } : {}) };
+    },
+    scanCancel(id: string) {
+      deps.scans.cancel(id);
+      return {};
+    },
+    async scanTool(input: RpcInput<"scan_start">, initiator: Initiator, signal: AbortSignal) {
+      const started = await this.scanStart(input, initiator, signal);
+      if (!("id" in started)) return started;
+      const cancel = () => deps.scans.cancel(started.id);
+      signal.addEventListener("abort", cancel, { once: true });
+      if (signal.aborted) cancel();
+      try {
+        await deps.scans.wait(started.id);
+        signal.throwIfAborted();
+        const job = deps.scans.get(started.id);
+        if (job?.error) throw job.error;
+        if (job?.state !== "done") throw refusal("conflict", "Commander scan did not complete");
+        const result = deps.scans.result<ScanResult>(started.id);
+        if (result && "onlyLeft" in result) {
+          const safe = (entry: (typeof result.onlyLeft)[number]) => ({ ...entry, linkTarget: null });
+          const { equal: _equal, ...diff } = result;
+          return { ...diff, onlyLeft: result.onlyLeft.map(safe), onlyRight: result.onlyRight.map(safe),
+            differ: result.differ.map(([left, right]) => [safe(left), safe(right)]) };
+        }
+        return result;
+      } finally {
+        signal.removeEventListener("abort", cancel);
+      }
+    },
     listGrants: grants.list,
     setGrant: (grant: AgentGrant) => changeGrants(grant.threadId, () => grants.set(grant)),
     revokeGrant: (key: GrantKey) => changeGrants(key.threadId, () => grants.revoke(key)),
@@ -416,6 +583,16 @@ function agentJobView(job: OperationJob, grants: AgentGrant[]) {
     ? canObserve(grants, source)
     : target !== null && canObserve(grants, target));
   return damaged(job) ?? (visible ? { ...summary, progress: job.progress, initiator: job.plan.initiator } : summary);
+}
+
+function scanHash(ctx: ScanContext) {
+  return {
+    onBytes: (bytes: bigint) => ctx.progress({ bytes }),
+    createHash() {
+      const hash = createHash("sha256");
+      return { update: (bytes: Uint8Array) => { hash.update(bytes); }, finish: () => hash.digest("hex") };
+    },
+  };
 }
 
 export function createRpcHandlers(ops: Operations): ExperimentalPluginRpcHandlersWithContext<typeof rpcSchemas> {
@@ -441,6 +618,9 @@ export function createRpcHandlers(ops: Operations): ExperimentalPluginRpcHandler
     sftp_request_access: (input, ctx) => ops.requestAccess(input, ctx.experimental_signal),
     ui_state_get: ({ threadId }) => ops.getState(threadId),
     ui_state_set: ({ state, threadId }) => ops.setState(state, threadId),
+    scan_start: (input, ctx) => ops.scanStart(input, owner, ctx.experimental_signal),
+    scan_get: ({ scanId }) => ops.scanGet(scanId),
+    scan_cancel: ({ scanId }) => ops.scanCancel(scanId),
   };
   const wrap = <M extends keyof typeof handlers>(method: M) => {
     const handle = handlers[method] as (value: RpcInput<M>, ctx: Parameters<typeof handlers[M]>[1]) => unknown;

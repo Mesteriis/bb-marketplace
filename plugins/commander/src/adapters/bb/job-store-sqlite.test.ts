@@ -494,7 +494,7 @@ test("the SDK creates tables in a clean database and the second migrate preserve
     expect(tables.all()).toStrictEqual([]);
 
     bb.storage.migrate(cleanDb, MIGRATIONS);
-    expect(tables.all()).toStrictEqual(["_bb_migrations", "checkpoints", "commander_owner_approvals", "jobs"]);
+    expect(tables.all()).toStrictEqual(["_bb_migrations", "checkpoints", "commander_owner_approvals", "jobs", "scan_jobs"]);
     await createSqliteJobStore(cleanDb).create(job);
     const journal = cleanDb.prepare("SELECT * FROM _bb_migrations ORDER BY id");
     const entries = journal.all();
@@ -505,6 +505,7 @@ test("the SDK creates tables in a clean database and the second migrate preserve
       { id: 3, applied_at: expect.any(Number), statement_hash: expect.stringMatching(/^[a-f0-9]{64}$/) },
       { id: 4, applied_at: expect.any(Number), statement_hash: expect.stringMatching(/^[a-f0-9]{64}$/) },
       { id: 5, applied_at: expect.any(Number), statement_hash: expect.stringMatching(/^[a-f0-9]{64}$/) },
+      { id: 6, applied_at: expect.any(Number), statement_hash: expect.stringMatching(/^[a-f0-9]{64}$/) },
     ]);
 
     bb.storage.migrate(cleanDb, MIGRATIONS);
@@ -530,7 +531,7 @@ test.each([1, 2, 3])("upgrades a v%i checkpoint without inventing recovery metad
     `).run(job.id, date, job.id, date);
 
     bb.storage.migrate(legacyDb, MIGRATIONS);
-    expect(legacyDb.prepare("SELECT id FROM _bb_migrations ORDER BY id").pluck().all()).toEqual([0, 1, 2, 3, 4, 5]);
+    expect(legacyDb.prepare("SELECT id FROM _bb_migrations ORDER BY id").pluck().all()).toEqual([0, 1, 2, 3, 4, 5, 6]);
     expect(journal.all(version)).toStrictEqual(originalEntries);
 
     const migrated = createSqliteJobStore(legacyDb);

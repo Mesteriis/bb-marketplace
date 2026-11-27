@@ -6,6 +6,7 @@ import { JobRunner } from "../../core/job-runner.ts";
 import { planDigest, type OperationPlan } from "../../core/model.ts";
 import { parsePosix } from "../../core/path.ts";
 import type { PlannerDeps } from "../../core/planner.ts";
+import type { ScanRunner } from "../../core/scan-job.ts";
 import { FakeProvider } from "../../core/testing/fake-provider.ts";
 import { MemoryJobStore } from "../../core/testing/memory-job-store.ts";
 import { createAgentGrants } from "./agent-grants.ts";
@@ -72,6 +73,8 @@ async function failedAgentJob(outcome: "failed" | "unknown" = "failed") {
     runner,
     store,
     planner: {} as PlannerDeps,
+    // Retry starts no scan.
+    scans: {} as ScanRunner,
     grants: createAgentGrants(pluginKv),
     kv: pluginKv,
     publish: () => {},

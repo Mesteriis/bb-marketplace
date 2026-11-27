@@ -1,5 +1,5 @@
 import { definePluginApp, useBbNavigate, useRealtime, useRpc, useSdk, type ExperimentalThreadTabProps } from "@get-bb/plugin-sdk/app";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LIST_PAGE_MAX } from "./src/core/provider.ts";
 import { parsePosix } from "./src/core/path.ts";
 import { CommanderError } from "./src/core/errors.ts";
@@ -10,6 +10,7 @@ import type { RetryNote } from "./src/ui/queue.tsx";
 import { activeTab, currentRef, emptyState, nativePath, newTab, problemOf, unloaded,
   type Directory, type EndpointView, type JobView, type PlanRequest, type Problem, type Side } from "./src/ui/model.ts";
 import { shortcuts, type KeyBindings, type Shortcut } from "./src/ui/keyboard.ts";
+import type { ScanActions } from "./src/ui/compare-view.tsx";
 import { ru } from "./src/ui/strings.ts";
 import "./src/ui/workspace.css";
 
@@ -98,14 +99,15 @@ function useWorkspaceState(rpc: Rpc, sdk: Sdk, threadId: string | undefined, env
     return () => { active = false; mounted.current = false; flush(); };
   }, [rpc, sdk, environment, threadId, flush]);
 
-  const update = useCallback((change: (state: UiState) => UiState) => {
+  const update = useCallback((change: (state: UiState) => UiState, saveNow = false) => {
     const next = change(current.current);
     if (next === current.current) return;
     current.current = next;
     setState(next);
     dirty.current = true;
     clearTimeout(timer.current);
-    timer.current = setTimeout(flush, delay);
+    if (saveNow) flush();
+    else timer.current = setTimeout(flush, delay);
   }, [flush]);
 
   const refreshEndpoints = useCallback(async () => {
@@ -200,6 +202,34 @@ function CommanderPage({ compact = false, environment, threadId }: { compact?: b
   const sdk = useSdk();
   const navigate = useBbNavigate();
   const { state, update, endpoints, problem, refreshEndpoints } = useWorkspaceState(rpc, sdk, threadId, environment);
+  // A scan screen can close before scan_start returns. Keep one pending start
+  // for each kind, matching the two slots in the persisted workspace state.
+  const starting = useRef(new Set<"dirs" | "checksum">());
+  const [startingScans, setStartingScans] = useState<ReadonlySet<"dirs" | "checksum">>(() => new Set());
+  const scans = useMemo<ScanActions>(() => ({
+    async start(input) {
+      const { estimateOnly, estimateId: _estimateId, ...request } = input;
+      if (estimateOnly) return rpc.call("scan_start", input);
+      if (starting.current.has(request.kind)) throw new CommanderError("limit_exceeded", ru.busy);
+      starting.current.add(request.kind);
+      setStartingScans(new Set(starting.current));
+      try {
+        const reply = await rpc.call("scan_start", input);
+        if ("id" in reply) {
+          const scanId = reply.id;
+          update((previous) => request.kind === "dirs"
+            ? { ...previous, lastComparison: { scanId, request } }
+            : { ...previous, lastChecksum: { scanId, request } }, true);
+        }
+        return reply;
+      } finally {
+        starting.current.delete(request.kind);
+        setStartingScans(new Set(starting.current));
+      }
+    },
+    get: (scanId) => rpc.call("scan_get", { scanId }),
+    cancel: (scanId) => rpc.call("scan_cancel", { scanId }),
+  }), [rpc, update]);
   const [bindings, setBindings] = useState(loadBindings);
   // S17: the last retry result by job id: nothing to retry, or files waiting for a directory check.
   const [retryNotes, setRetryNotes] = useState<Record<string, RetryNote>>({});
@@ -315,7 +345,7 @@ function CommanderPage({ compact = false, environment, threadId }: { compact?: b
     if (!plan) return null;
     return rpc.call("plan_run", { planId: plan.id, digest: plan.digest });
   };
-  return <Workspace state={state} update={update} endpoints={endpoints} compact={compact} queue={queue} problem={problem}
+  return <Workspace scans={scans} startingScans={startingScans} state={state} update={update} endpoints={endpoints} compact={compact} queue={queue} problem={problem}
     directories={{ left: leftDir, right: rightDir }} bindings={bindings}
     onBindings={(value) => {
       setBindings(value);
