@@ -1,5 +1,5 @@
 import { CommanderError } from "./errors.ts";
-import type { NameSegment } from "./path.ts";
+import { NameSegment } from "./path.ts";
 
 export const NAME_SUFFIX_LIMIT = 100_000;
 
@@ -42,6 +42,10 @@ export function nextFreeName(
   const { base, ext } = splitName(text);
   for (let n = 2; n <= limit; n++) {
     const candidate = toSegment(`${base} (${n})${ext}`, name);
+    // A suffix can push a name past the schema limits (1024 characters, base64 length).
+    if (!NameSegment.safeParse(candidate).success) {
+      throw new CommanderError("invalid_name", "The suffixed name exceeds the name length limit");
+    }
     if (!taken(candidate)) return candidate;
   }
   throw new CommanderError("limit_exceeded", "No free name within the suffix limit");

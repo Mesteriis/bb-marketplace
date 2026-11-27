@@ -1,3 +1,4 @@
+import { CommanderError } from "./errors.ts";
 import { isAncestorOrSelf, type ResourcePath } from "./path.ts";
 import {
   Permission,
@@ -23,7 +24,8 @@ export const REQUIRED: Record<OperationKind, Permission[]> = {
 const SOURCE_SIDE: Record<OperationKind, Permission[]> = {
   copy: ["read"],
   move: ["read", "delete"],
-  rename: [],
+  // rename rewrites the entry in place, so the source needs write as well as the target.
+  rename: ["write"],
   mkdir: [],
   delete: ["delete"],
 };
@@ -71,15 +73,29 @@ function sideMissing(
   return required.filter((permission) => !granted.has(permission));
 }
 
+function sameInitiator(a: Initiator, b: Initiator): boolean {
+  if (a.kind === "owner" || b.kind === "owner") return a.kind === b.kind;
+  return a.threadId === b.threadId;
+}
+
 /**
  * The owner has every permission. An agent needs each item's source and target
  * covered by a grant on that item's endpoint, with its scope containing the path.
+ *
+ * The initiator must be the plan's own initiator: a mismatch is a caller bug and
+ * throws internal instead of authorizing anything.
+ *
+ * Known limit: the plan lists names outside the agent's grant. S7 must not return
+ * the plan itself to an agent; only the grant verdict may leave the core.
  */
 export function authorize(
   initiator: Initiator,
   plan: OperationPlan,
   grants: Grant[],
 ): { ok: true } | { ok: false; missing: Permission[] } {
+  if (!sameInitiator(initiator, plan.initiator)) {
+    throw new CommanderError("internal", "authorize was called with another initiator than the plan's");
+  }
   if (initiator.kind === "owner") return { ok: true };
 
   const missing = new Set<Permission>();

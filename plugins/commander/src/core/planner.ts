@@ -1,27 +1,34 @@
+import { z } from "zod";
 import { CommanderError } from "./errors.ts";
 import {
-  assertDeletable,
+  assertNoSourceOverlap,
+  assertNoTargetOverlap,
   assertNotIntoSelf,
   assertNotReplacingSource,
+  assertRemovable,
   assertWritable,
 } from "./guards.ts";
 import {
+  ConflictPolicy,
+  Initiator,
+  OperationKind,
   OperationPlan,
+  ResourceRef,
+  Verify,
   planDigest,
-  type ConflictPolicy,
   type EndpointId,
   type Entry,
-  type Initiator,
-  type OperationKind,
   type PlanItem,
-  type ResourceRef,
   type Route,
-  type Verify,
 } from "./model.ts";
-import { join, parent, parsePosix, type NameSegment, type ResourcePath } from "./path.ts";
+import { NameSegment, join, parent, type ResourcePath } from "./path.ts";
 import type { FileProvider } from "./provider.ts";
 import { LIST_PAGE_MAX } from "./provider.ts";
-import { addSize, type Size } from "./size.ts";
+import { fromBig, toBig, type Size } from "./size.ts";
+
+/** The schema limit of OperationPlan.items; a configured maxItems cannot exceed it. */
+const SCHEMA_MAX_ITEMS = 100_000;
+const SIZE_MAX = 99_999_999_999_999_999_999n;
 
 export interface PlanRequest {
   kind: OperationKind;
@@ -36,20 +43,43 @@ export interface PlanRequest {
   verify: Verify;
 }
 
+const PlanRequestInput = z.object({
+  kind: OperationKind,
+  initiator: Initiator,
+  sources: z.array(ResourceRef).max(SCHEMA_MAX_ITEMS),
+  targetDir: ResourceRef.nullable(),
+  newName: NameSegment.nullable(),
+  conflictPolicy: ConflictPolicy,
+  verify: Verify,
+}).strict();
+
 export interface PlannerDeps {
   provider(endpoint: EndpointId): FileProvider;
   now(): Date;
   uuid(): string;
   limits: { maxItems: number; maxDepth: number };
   /**
-   * Paths delete must refuse (the host home, for example). The root and every
-   * ancestor of these paths are refused as well. Defaults to none.
+   * Protected paths of the endpoint's host (the home directory, for example).
+   * The root, each protected path and each ancestor of one cannot be removed,
+   * moved or renamed. Null means the host did not say: removal is refused.
    */
-  protectedPaths?: ResourcePath[];
+  protectedPathsFor(endpoint: EndpointId): ResourcePath[] | null;
 }
 
 function invalidRequest(message: string): CommanderError {
   return new CommanderError("invalid_path", message);
+}
+
+/**
+ * Copies the caller's request and validates it. Runs before the first await, so
+ * later changes by the caller cannot reach the plan or its digest.
+ */
+function snapshotRequest(raw: PlanRequest): PlanRequest {
+  const parsed = PlanRequestInput.safeParse(raw);
+  if (!parsed.success) {
+    throw new CommanderError("internal", "The plan request does not match its schema");
+  }
+  return parsed.data;
 }
 
 function commonEndpoint(sources: ResourceRef[]): EndpointId | null {
@@ -67,98 +97,115 @@ function lastSegment(path: ResourcePath): NameSegment {
   return name;
 }
 
-function nameText(name: NameSegment): string {
-  return "t" in name ? name.t : atob(name.b);
-}
-
-async function listAll(
+/** A requested source that is missing is not_found; a child that vanished mid-walk is a change. */
+async function statExisting(
   provider: FileProvider,
   path: ResourcePath,
   signal: AbortSignal,
-): Promise<Entry[]> {
-  const entries: Entry[] = [];
-  let cursor: string | null = null;
-  do {
-    signal.throwIfAborted();
-    const page = await provider.list(path, { cursor, limit: LIST_PAGE_MAX }, signal);
-    entries.push(...page.entries);
-    cursor = page.cursor;
-  } while (cursor !== null);
-  return entries;
+  missing: "not_found" | "changed_since_plan",
+): Promise<Entry> {
+  const entry = await provider.stat(path, signal);
+  if (entry === null) {
+    throw missing === "not_found"
+      ? new CommanderError("not_found", "The source does not exist")
+      : new CommanderError("changed_since_plan", "An entry disappeared while the plan was built");
+  }
+  return entry;
 }
 
-interface Expansion {
+/** The target directory must exist and be a real directory (not a symlink, not a file). */
+async function assertDirectoryTarget(provider: FileProvider, path: ResourcePath, signal: AbortSignal): Promise<void> {
+  const entry = await provider.stat(path, signal);
+  if (entry === null) throw new CommanderError("not_found", "The target directory does not exist");
+  if (entry.kind !== "dir") throw invalidRequest("The target must be a directory");
+}
+
+interface Walk {
+  provider: FileProvider;
+  kind: OperationKind;
   items: PlanItem[];
-  /** Target endpoint for target refs, or null when there are none (delete). */
   targetEndpoint: EndpointId | null;
+  maxItems: number;
+  maxDepth: number;
+  signal: AbortSignal;
+}
+
+function pushItem(walk: Walk, item: PlanItem): void {
+  walk.items.push(item);
+  if (walk.items.length > walk.maxItems) {
+    throw new CommanderError("limit_exceeded", "The operation has too many items");
+  }
 }
 
 /**
- * Walks one source tree. Copy and move list a directory before its children so
- * the target directory exists first; delete lists children before the directory
- * because a provider removes only empty directories.
+ * Streams one source tree. Each page's children are stat-ed and planned as they
+ * arrive, so the item budget stops the listing at the page where it runs out.
+ * Copy and move add a directory before its children, so the target directory is
+ * created first. Delete adds children before their directory, because a provider
+ * removes only empty directories.
  */
-async function expand(
-  provider: FileProvider,
-  root: { path: ResourcePath; entry: Entry; target: ResourcePath | null },
-  expansion: Expansion,
-  deps: PlannerDeps,
-  signal: AbortSignal,
-  kind: OperationKind,
+async function walk(
+  w: Walk,
+  srcPath: ResourcePath,
+  entry: Entry,
+  tgtPath: ResourcePath | null,
+  depth: number,
 ): Promise<void> {
-  const postOrder = kind === "delete";
-  const sourceEndpoint = provider.endpoint.id;
-
-  async function visit(
-    srcPath: ResourcePath,
-    entry: Entry,
-    tgtPath: ResourcePath | null,
-    depth: number,
-  ): Promise<void> {
-    signal.throwIfAborted();
-    if (depth > deps.limits.maxDepth) {
-      throw new CommanderError("limit_exceeded", "The tree is nested too deeply");
-    }
-
-    const item: PlanItem = {
-      source: { endpoint: sourceEndpoint, path: srcPath },
-      target: tgtPath === null || expansion.targetEndpoint === null
-        ? null
-        : { endpoint: expansion.targetEndpoint, path: tgtPath },
-      kind: entry.kind,
-      fingerprint: { size: entry.size, mtimeNs: entry.mtimeNs },
-    };
-
-    if (!postOrder) pushItem(item);
-    if (entry.kind === "dir") {
-      for (const child of await listAll(provider, srcPath, signal)) {
-        await visit(
-          join(srcPath, child.name),
-          child,
-          tgtPath === null ? null : join(tgtPath, child.name),
-          depth + 1,
-        );
-      }
-    }
-    if (postOrder) pushItem(item);
+  w.signal.throwIfAborted();
+  if (depth > w.maxDepth) {
+    throw new CommanderError("limit_exceeded", "The tree is nested too deeply");
   }
-
-  function pushItem(item: PlanItem): void {
-    expansion.items.push(item);
-    if (expansion.items.length > deps.limits.maxItems) {
-      throw new CommanderError("limit_exceeded", "The operation has too many items");
-    }
-  }
-
-  await visit(root.path, root.entry, root.target, 0);
+  const item: PlanItem = {
+    source: { endpoint: w.provider.endpoint.id, path: srcPath },
+    target: tgtPath === null || w.targetEndpoint === null
+      ? null
+      : { endpoint: w.targetEndpoint, path: tgtPath },
+    kind: entry.kind,
+    fingerprint: { size: entry.size, mtimeNs: entry.mtimeNs },
+  };
+  const postOrder = w.kind === "delete";
+  if (!postOrder) pushItem(w, item);
+  // Only a real directory is descended into; a symlink stays one item.
+  if (entry.kind === "dir") await walkChildren(w, srcPath, tgtPath, depth);
+  if (postOrder) pushItem(w, item);
 }
 
-function sumFileBytes(items: PlanItem[]): Size {
-  return items.reduce<Size>(
-    (total, item) =>
-      item.kind === "file" && item.fingerprint !== null ? addSize(total, item.fingerprint.size) : total,
-    "0",
-  );
+async function walkChildren(
+  w: Walk,
+  srcPath: ResourcePath,
+  tgtPath: ResourcePath | null,
+  depth: number,
+): Promise<void> {
+  const seenCursors = new Set<string>();
+  let cursor: string | null = null;
+  do {
+    w.signal.throwIfAborted();
+    const page = await w.provider.list(srcPath, { cursor, limit: LIST_PAGE_MAX }, w.signal);
+    for (const child of page.entries) {
+      const childPath = join(srcPath, child.name);
+      const childEntry = await statExisting(w.provider, childPath, w.signal, "changed_since_plan");
+      await walk(w, childPath, childEntry, tgtPath === null ? null : join(tgtPath, child.name), depth + 1);
+    }
+    cursor = page.cursor;
+    if (cursor !== null) {
+      if (seenCursors.has(cursor)) {
+        throw new CommanderError("internal", "The provider repeated a listing cursor");
+      }
+      seenCursors.add(cursor);
+    }
+  } while (cursor !== null);
+}
+
+/** The total must fit the 20-digit Size type; beyond it the plan cannot be represented. */
+function totalBytesOf(items: PlanItem[]): Size {
+  let total = 0n;
+  for (const item of items) {
+    if (item.kind === "file" && item.fingerprint !== null) total += toBig(item.fingerprint.size);
+  }
+  if (total > SIZE_MAX) {
+    throw new CommanderError("limit_exceeded", "The total size exceeds the 20-digit limit");
+  }
+  return fromBig(total);
 }
 
 function routeFor(sourceEndpoint: EndpointId | null, targetEndpoint: EndpointId | null): Route {
@@ -169,19 +216,22 @@ function routeFor(sourceEndpoint: EndpointId | null, targetEndpoint: EndpointId 
 }
 
 /**
- * Builds the plan. Guards run before any listing so a refused operation reads
- * nothing it does not need. Symlinks are planned as items and never followed.
+ * Builds the plan from a snapshot of the request. Guards run before any listing,
+ * so a refused operation reads nothing it does not need. Symlinks are planned as
+ * items and never followed.
  */
 export async function buildPlan(
-  req: PlanRequest,
+  rawRequest: PlanRequest,
   deps: PlannerDeps,
   signal: AbortSignal,
 ): Promise<OperationPlan> {
+  const req = snapshotRequest(rawRequest);
   signal.throwIfAborted();
+  const caseOf = (id: EndpointId) => deps.provider(id).endpoint.caseSensitive;
   const sourceEndpoint = commonEndpoint(req.sources);
-  const protectedPaths = deps.protectedPaths ?? [];
+  const maxItems = Math.min(deps.limits.maxItems, SCHEMA_MAX_ITEMS);
 
-  let targetEndpoint: EndpointId | null;
+  let targetEndpoint: EndpointId | null = null;
   switch (req.kind) {
     case "copy":
     case "move": {
@@ -189,11 +239,16 @@ export async function buildPlan(
         throw invalidRequest("copy and move need sources and a target directory");
       }
       targetEndpoint = req.targetDir.endpoint;
-      const targetProvider = deps.provider(targetEndpoint);
-      assertNotIntoSelf(req.sources, req.targetDir, targetProvider.endpoint.caseSensitive);
-      assertNotReplacingSource(req.sources, req.targetDir, targetProvider.endpoint.caseSensitive);
-      assertWritable(targetProvider.endpoint);
-      if (req.kind === "move") assertWritable(deps.provider(sourceEndpoint!).endpoint);
+      const targetEp = deps.provider(targetEndpoint).endpoint;
+      assertNotIntoSelf(req.sources, req.targetDir, targetEp.caseSensitive);
+      assertNotReplacingSource(req.sources, req.targetDir, targetEp.caseSensitive);
+      assertWritable(targetEp);
+      if (req.kind === "move") {
+        assertWritable(deps.provider(sourceEndpoint!).endpoint);
+        for (const source of req.sources) {
+          assertRemovable(source, deps.protectedPathsFor(source.endpoint));
+        }
+      }
       break;
     }
     case "mkdir": {
@@ -210,6 +265,7 @@ export async function buildPlan(
       }
       targetEndpoint = sourceEndpoint;
       assertWritable(deps.provider(sourceEndpoint!).endpoint);
+      assertRemovable(req.sources[0], deps.protectedPathsFor(req.sources[0].endpoint));
       break;
     }
     case "delete": {
@@ -217,32 +273,33 @@ export async function buildPlan(
         throw invalidRequest("delete needs sources and no target");
       }
       targetEndpoint = null;
-      for (const source of req.sources) {
-        assertDeletable(source, protectedPaths);
-      }
       assertWritable(deps.provider(sourceEndpoint!).endpoint);
+      for (const source of req.sources) {
+        assertRemovable(source, deps.protectedPathsFor(source.endpoint));
+      }
       break;
     }
   }
 
-  const items: PlanItem[] = [];
-  const expansion: Expansion = { items, targetEndpoint };
+  assertNoSourceOverlap(req.sources, caseOf);
+  if (req.targetDir !== null && req.kind !== "rename" && req.kind !== "delete") {
+    await assertDirectoryTarget(deps.provider(req.targetDir.endpoint), req.targetDir.path, signal);
+  }
 
+  const items: PlanItem[] = [];
   if (req.kind === "mkdir") {
-    const target = join(req.targetDir!.path, req.newName!);
     items.push({
       source: null,
-      target: { endpoint: targetEndpoint!, path: target },
+      target: { endpoint: targetEndpoint!, path: join(req.targetDir!.path, req.newName!) },
       kind: "dir",
       fingerprint: null,
     });
   } else if (req.kind === "rename") {
     const source = req.sources[0];
+    const provider = deps.provider(source.endpoint);
     const sourceParent = parent(source.path);
     if (sourceParent === null) throw invalidRequest("The root cannot be renamed");
-    const provider = deps.provider(source.endpoint);
-    const entry = await provider.stat(source.path, signal);
-    if (entry === null) throw new CommanderError("not_found", "The source does not exist");
+    const entry = await statExisting(provider, source.path, signal, "not_found");
     items.push({
       source: { endpoint: source.endpoint, path: source.path },
       target: { endpoint: source.endpoint, path: join(sourceParent, req.newName!) },
@@ -252,14 +309,18 @@ export async function buildPlan(
   } else {
     for (const source of req.sources) {
       const provider = deps.provider(source.endpoint);
-      const entry = await provider.stat(source.path, signal);
-      if (entry === null) throw new CommanderError("not_found", "A source does not exist");
-      const target = req.kind === "delete"
-        ? null
-        : join(req.targetDir!.path, lastSegment(source.path));
-      await expand(provider, { path: source.path, entry, target }, expansion, deps, signal, req.kind);
+      const entry = await statExisting(provider, source.path, signal, "not_found");
+      const target = req.kind === "delete" ? null : join(req.targetDir!.path, lastSegment(source.path));
+      await walk(
+        { provider, kind: req.kind, items, targetEndpoint, maxItems, maxDepth: deps.limits.maxDepth, signal },
+        source.path,
+        entry,
+        target,
+        0,
+      );
     }
   }
+  assertNoTargetOverlap(items, caseOf);
 
   const unsigned = {
     id: deps.uuid(),
@@ -272,21 +333,43 @@ export async function buildPlan(
     conflictPolicy: req.conflictPolicy,
     route: routeFor(sourceEndpoint, targetEndpoint),
     verify: req.verify,
-    totalBytes: sumFileBytes(items),
+    totalBytes: totalBytesOf(items),
   };
   const digest = await planDigest(unsigned);
   return OperationPlan.parse({ ...unsigned, digest });
 }
 
+/** Every removal and write the plan needs must still be allowed under current policy. */
+async function assertPlanStillAllowed(plan: OperationPlan, deps: PlannerDeps): Promise<void> {
+  const removes = plan.kind === "delete" || plan.kind === "move" || plan.kind === "rename";
+  for (const item of plan.items) {
+    if (item.target !== null) assertWritable(deps.provider(item.target.endpoint).endpoint);
+    if (removes && item.source !== null) {
+      assertWritable(deps.provider(item.source.endpoint).endpoint);
+      assertRemovable(item.source, deps.protectedPathsFor(item.source.endpoint));
+    }
+  }
+}
+
 /**
- * Compares each source item's stat with the plan's fingerprint. Returns the
+ * Checks that the plan is intact and that its sources still match. Returns the
  * indexes of items whose kind, size or mtime changed, or that are gone.
+ *
+ * Known limit: a directory's mtimeNs can be null (the provider cannot report it).
+ * A null matches null, so a change to such a directory's contents is not seen
+ * unless its children are themselves planned items.
  */
 export async function revalidate(
   plan: OperationPlan,
   deps: PlannerDeps,
   signal: AbortSignal,
 ): Promise<{ ok: true } | { ok: false; changed: number[] }> {
+  const { digest, ...unsigned } = plan;
+  if ((await planDigest(unsigned)) !== digest) {
+    throw new CommanderError("internal", "The plan does not match its digest");
+  }
+  await assertPlanStillAllowed(plan, deps);
+
   const changed: number[] = [];
   for (const [index, item] of plan.items.entries()) {
     if (item.source === null || item.fingerprint === null) continue;

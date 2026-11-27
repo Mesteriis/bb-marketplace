@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildPlan, revalidate, type PlannerDeps } from "./planner.ts";
+import { buildPlan, revalidate, type PlanRequest, type PlannerDeps } from "./planner.ts";
 import { CommanderError } from "./errors.ts";
 import {
   OperationPlan,
@@ -38,6 +38,7 @@ interface Stored {
 /** In-memory FileProvider for this test file only (S3's fake is not used). */
 class MemoryProvider implements FileProvider {
   readonly capabilities: ReadonlySet<Capability> = new Set<Capability>(["list", "stat"]);
+  listCalls = 0;
   private readonly byKey = new Map<string, Stored>();
   private readonly childKeys = new Map<string, string[]>();
 
@@ -81,6 +82,7 @@ class MemoryProvider implements FileProvider {
     signal: AbortSignal,
   ): Promise<ListPage> {
     signal.throwIfAborted();
+    this.listCalls++;
     const keys = this.childKeys.get(displayPath(path)) ?? [];
     const start = opts.cursor === null ? 0 : Number(opts.cursor);
     const size = Math.min(opts.limit, this.pageSize);
@@ -115,13 +117,7 @@ class MemoryProvider implements FileProvider {
   }
 }
 
-/** /src holds a.txt (1), b.txt (2), c.txt (3) and an empty sub/ directory. */
-function treeProviders(source: MemoryProvider, extra: MemoryProvider[] = []) {
-  const providers = new Map<string, MemoryProvider>([[source.endpoint.id, source]]);
-  for (const other of extra) providers.set(other.endpoint.id, other);
-  return providers;
-}
-
+/** /src: a.txt (1), b.txt (2), c.txt (3), empty sub/; /out is an existing directory. */
 function srcTree(id = "host:x") {
   return new MemoryProvider(endpoint(id), [
     ["/src", "dir", "0"],
@@ -129,13 +125,17 @@ function srcTree(id = "host:x") {
     ["/src/b.txt", "file", "2"],
     ["/src/c.txt", "file", "3"],
     ["/src/sub", "dir", "0"],
+    ["/out", "dir", "0"],
   ], 2);
 }
 
-function depsFor(
-  providers: Map<string, MemoryProvider>,
-  overrides: Partial<PlannerDeps> = {},
-): PlannerDeps {
+function treeProviders(...providers: MemoryProvider[]) {
+  return new Map<string, MemoryProvider>(providers.map((p) => [p.endpoint.id, p]));
+}
+
+type Overrides = Partial<PlannerDeps>;
+
+function depsFor(providers: Map<string, MemoryProvider>, overrides: Overrides = {}): PlannerDeps {
   return {
     provider: (id) => {
       const provider = providers.get(id);
@@ -145,6 +145,7 @@ function depsFor(
     now: () => NOW,
     uuid: () => PLAN_ID,
     limits: { maxItems: 100_000, maxDepth: 64 },
+    protectedPathsFor: () => [],
     ...overrides,
   };
 }
@@ -155,22 +156,30 @@ function ref(endpointId: string, text: string): ResourceRef {
 
 const signal = () => new AbortController().signal;
 
+function copyRequest(sources: ResourceRef[], targetDir: ResourceRef): PlanRequest {
+  return {
+    kind: "copy",
+    initiator: { kind: "owner" },
+    sources,
+    targetDir,
+    newName: null,
+    conflictPolicy: "ask",
+    verify: "size",
+  };
+}
+
+function moveRequest(sources: ResourceRef[], targetDir: ResourceRef): PlanRequest {
+  return { ...copyRequest(sources, targetDir), kind: "move" };
+}
+
 describe("buildPlan on a copy between two endpoints", () => {
   it("expands the tree into 5 items and 6 bytes with a relay route", async () => {
     const src = srcTree("host:x");
     const dst = new MemoryProvider(endpoint("host:y"), [["/dst", "dir", "0"]]);
-    const deps = depsFor(treeProviders(src, [dst]));
+    const deps = depsFor(treeProviders(src, dst));
 
     const plan = await buildPlan(
-      {
-        kind: "copy",
-        initiator: { kind: "owner" },
-        sources: [ref("host:x", "/src")],
-        targetDir: ref("host:y", "/dst"),
-        newName: null,
-        conflictPolicy: "ask",
-        verify: "size",
-      },
+      copyRequest([ref("host:x", "/src")], ref("host:y", "/dst")),
       deps,
       signal(),
     );
@@ -191,18 +200,9 @@ describe("buildPlan on a copy between two endpoints", () => {
   });
 
   it("returns a plan that parses and carries the digest of its canonical form", async () => {
-    const src = srcTree();
-    const deps = depsFor(treeProviders(src));
+    const deps = depsFor(treeProviders(srcTree()));
     const plan = await buildPlan(
-      {
-        kind: "copy",
-        initiator: { kind: "owner" },
-        sources: [ref("host:x", "/src")],
-        targetDir: ref("host:x", "/out"),
-        newName: null,
-        conflictPolicy: "rename",
-        verify: "sha256",
-      },
+      { ...copyRequest([ref("host:x", "/src")], ref("host:x", "/out")), conflictPolicy: "rename", verify: "sha256" },
       deps,
       signal(),
     );
@@ -213,6 +213,36 @@ describe("buildPlan on a copy between two endpoints", () => {
     expect(plan.verify).toBe("sha256");
     const { digest, ...unsigned } = plan;
     expect(digest).toBe(await planDigest(unsigned));
+  });
+
+  it("takes its own snapshot of the request before the first await", async () => {
+    const deps = depsFor(treeProviders(srcTree()));
+    const req = copyRequest([ref("host:x", "/src")], ref("host:x", "/out"));
+    const pending = buildPlan(req, deps, signal());
+
+    req.initiator = { kind: "agent", threadId: "thr_evil" };
+    req.sources[0] = ref("host:x", "/out");
+    req.targetDir = null;
+    const plan = await pending;
+
+    expect(plan.initiator).toEqual({ kind: "owner" });
+    expect(plan.sourceEndpoint).toBe("host:x");
+    expect(displayPath(plan.items[0].source!.path)).toBe("/src");
+    expect(displayPath(plan.items[0].target!.path)).toBe("/out/src");
+    const { digest, ...unsigned } = plan;
+    expect(digest).toBe(await planDigest(unsigned));
+  });
+
+  it("rejects a total size beyond 20 digits with limit_exceeded", async () => {
+    const big = new MemoryProvider(endpoint("host:x"), [
+      ["/src", "dir", "0"],
+      ["/src/huge", "file", "99999999999999999999"],
+      ["/src/one", "file", "1"],
+      ["/out", "dir", "0"],
+    ]);
+    await expect(
+      buildPlan(copyRequest([ref("host:x", "/src")], ref("host:x", "/out")), depsFor(treeProviders(big)), signal()),
+    ).rejects.toMatchObject({ code: "limit_exceeded" });
   });
 });
 
@@ -287,9 +317,34 @@ describe("buildPlan ordering and kinds", () => {
     expect(displayPath(plan.items[0].target!.path)).toBe("/src/renamed.txt");
     expect(plan.items[0].target!.endpoint).toBe("host:x");
   });
+
+  it("plans a symlink child as a symlink item and does not descend into it", async () => {
+    class LyingStat extends MemoryProvider {
+      override async stat(path: ResourcePath, signal: AbortSignal) {
+        const entry = await super.stat(path, signal);
+        if (entry !== null && displayPath(path) === "/src/sub") return { ...entry, kind: "symlink" as const };
+        return entry;
+      }
+    }
+    const src = new LyingStat(endpoint("host:x"), [
+      ["/src", "dir", "0"],
+      ["/src/sub", "dir", "0"],
+      ["/src/sub/hidden", "file", "7"],
+      ["/out", "dir", "0"],
+    ]);
+    const plan = await buildPlan(
+      copyRequest([ref("host:x", "/src")], ref("host:x", "/out")),
+      depsFor(treeProviders(src)),
+      signal(),
+    );
+
+    expect(plan.items.map((item) => displayPath(item.source!.path))).toEqual(["/src", "/src/sub"]);
+    expect(plan.items[1].kind).toBe("symlink");
+    expect(src.listCalls).toBe(1);
+  });
 });
 
-describe("buildPlan limits", () => {
+describe("buildPlan limits and streaming", () => {
   function chain(depth: number): string[] {
     const paths = ["/deep"];
     let current = "/deep";
@@ -301,26 +356,24 @@ describe("buildPlan limits", () => {
   }
 
   function deepTree(depth: number) {
-    return new MemoryProvider(
-      endpoint("host:x"),
-      chain(depth).map((text) => [text, "dir", "0"] as [string, EntryKind, string]),
-    );
+    return new MemoryProvider(endpoint("host:x"), [
+      ...chain(depth).map((text) => [text, "dir", "0"] as [string, EntryKind, string]),
+      ["/out", "dir", "0"],
+    ]);
   }
 
-  const copyDeep = (depth: number, overrides: Partial<PlannerDeps> = {}) =>
+  const copyDeep = (depth: number, overrides: Overrides = {}) =>
     buildPlan(
-      {
-        kind: "copy",
-        initiator: { kind: "owner" },
-        sources: [ref("host:x", "/deep")],
-        targetDir: ref("host:x", "/out"),
-        newName: null,
-        conflictPolicy: "ask",
-        verify: "size",
-      },
+      copyRequest([ref("host:x", "/deep")], ref("host:x", "/out")),
       depsFor(treeProviders(deepTree(depth)), overrides),
       signal(),
     );
+
+  function bigFixture(): Array<[string, EntryKind, string]> {
+    const files: Array<[string, EntryKind, string]> = [["/big", "dir", "0"], ["/out", "dir", "0"]];
+    for (let index = 0; index < 100_001; index++) files.push([`/big/f${index}`, "file", "0"]);
+    return files;
+  }
 
   it("accepts a directory nested 64 levels deep", async () => {
     const plan = await copyDeep(64);
@@ -332,149 +385,257 @@ describe("buildPlan limits", () => {
   });
 
   it("rejects 100001 items with limit_exceeded", async () => {
-    const files: Array<[string, EntryKind, string]> = [["/big", "dir", "0"]];
-    for (let index = 0; index < 100_001; index++) files.push([`/big/f${index}`, "file", "0"]);
-    const deps = depsFor(treeProviders(new MemoryProvider(endpoint("host:x"), files)));
-
+    const deps = depsFor(treeProviders(new MemoryProvider(endpoint("host:x"), bigFixture())));
     await expect(
-      buildPlan(
-        {
-          kind: "copy",
-          initiator: { kind: "owner" },
-          sources: [ref("host:x", "/big")],
-          targetDir: ref("host:x", "/out"),
-          newName: null,
-          conflictPolicy: "ask",
-          verify: "size",
-        },
-        deps,
-        signal(),
-      ),
+      buildPlan(copyRequest([ref("host:x", "/big")], ref("host:x", "/out")), deps, signal()),
+    ).rejects.toMatchObject({ code: "limit_exceeded" });
+  });
+
+  it("clamps a configured maxItems to the schema limit of 100000", async () => {
+    const deps = depsFor(treeProviders(new MemoryProvider(endpoint("host:x"), bigFixture())), {
+      limits: { maxItems: 10_000_000, maxDepth: 64 },
+    });
+    await expect(
+      buildPlan(copyRequest([ref("host:x", "/big")], ref("host:x", "/out")), deps, signal()),
     ).rejects.toMatchObject({ code: "limit_exceeded" });
   });
 
   it("applies a configured maxItems", async () => {
     await expect(
       buildPlan(
-        {
-          kind: "copy",
-          initiator: { kind: "owner" },
-          sources: [ref("host:x", "/src")],
-          targetDir: ref("host:x", "/out"),
-          newName: null,
-          conflictPolicy: "ask",
-          verify: "size",
-        },
+        copyRequest([ref("host:x", "/src")], ref("host:x", "/out")),
         depsFor(treeProviders(srcTree()), { limits: { maxItems: 3, maxDepth: 64 } }),
         signal(),
       ),
     ).rejects.toMatchObject({ code: "limit_exceeded" });
   });
+
+  it("stops listing as soon as the budget runs out on the second page", async () => {
+    // Pages of 2 over six children. Root (1), f0 (2), f1 (3) fill page one; f2 (4) fits,
+    // f3 (5) exceeds the budget of 4 on page two. A third page must never be requested.
+    const src = new MemoryProvider(endpoint("host:x"), [
+      ["/src", "dir", "0"],
+      ["/src/f0", "file", "0"],
+      ["/src/f1", "file", "0"],
+      ["/src/f2", "file", "0"],
+      ["/src/f3", "file", "0"],
+      ["/src/f4", "file", "0"],
+      ["/src/f5", "file", "0"],
+      ["/out", "dir", "0"],
+    ], 2);
+    await expect(
+      buildPlan(
+        copyRequest([ref("host:x", "/src")], ref("host:x", "/out")),
+        depsFor(treeProviders(src), { limits: { maxItems: 4, maxDepth: 64 } }),
+        signal(),
+      ),
+    ).rejects.toMatchObject({ code: "limit_exceeded" });
+    expect(src.listCalls).toBe(2);
+  });
+
+  it("rejects a repeated cursor with internal", async () => {
+    class StuckCursor extends MemoryProvider {
+      override async list(path: ResourcePath, opts: { cursor: string | null; limit: number }, signal: AbortSignal) {
+        const page = await super.list(path, opts, signal);
+        return { entries: page.entries, cursor: "stuck" };
+      }
+    }
+    const src = new StuckCursor(endpoint("host:x"), [
+      ["/src", "dir", "0"],
+      ["/src/a.txt", "file", "1"],
+      ["/src/b.txt", "file", "2"],
+      ["/out", "dir", "0"],
+    ], 1);
+    await expect(
+      buildPlan(copyRequest([ref("host:x", "/src")], ref("host:x", "/out")), depsFor(treeProviders(src)), signal()),
+    ).rejects.toMatchObject({ code: "internal" });
+  });
 });
 
-describe("revalidate", () => {
-  it("is ok while the sources are unchanged", async () => {
-    const src = srcTree();
-    const deps = depsFor(treeProviders(src));
-    const plan = await buildPlan(
-      {
-        kind: "copy",
-        initiator: { kind: "owner" },
-        sources: [ref("host:x", "/src")],
-        targetDir: ref("host:x", "/out"),
-        newName: null,
-        conflictPolicy: "ask",
-        verify: "size",
-      },
-      deps,
-      signal(),
-    );
-    expect(await revalidate(plan, deps, signal())).toEqual({ ok: true });
+describe("buildPlan target directory", () => {
+  function targetsFixture() {
+    return new MemoryProvider(endpoint("host:x"), [
+      ["/src", "dir", "0"],
+      ["/src/f", "file", "1"],
+      ["/out", "dir", "0"],
+      ["/lnk", "symlink", "0"],
+      ["/file", "file", "0"],
+    ]);
+  }
+
+  it("refuses a symlink as the target directory with invalid_path", async () => {
+    await expect(
+      buildPlan(copyRequest([ref("host:x", "/src/f")], ref("host:x", "/lnk")), depsFor(treeProviders(targetsFixture())), signal()),
+    ).rejects.toMatchObject({ code: "invalid_path" });
   });
 
-  it("reports the index of an item whose size changed", async () => {
-    const src = srcTree();
-    const deps = depsFor(treeProviders(src));
-    const plan = await buildPlan(
-      {
-        kind: "copy",
-        initiator: { kind: "owner" },
-        sources: [ref("host:x", "/src")],
-        targetDir: ref("host:x", "/out"),
-        newName: null,
-        conflictPolicy: "ask",
-        verify: "size",
-      },
-      deps,
-      signal(),
-    );
-    src.setSize("/src/a.txt", "9");
-    expect(await revalidate(plan, deps, signal())).toEqual({ ok: false, changed: [1] });
+  it("refuses a file as the target directory with invalid_path", async () => {
+    await expect(
+      buildPlan(copyRequest([ref("host:x", "/src/f")], ref("host:x", "/file")), depsFor(treeProviders(targetsFixture())), signal()),
+    ).rejects.toMatchObject({ code: "invalid_path" });
+  });
+
+  it("reports a missing target directory as not_found", async () => {
+    await expect(
+      buildPlan(copyRequest([ref("host:x", "/src/f")], ref("host:x", "/nope")), depsFor(treeProviders(targetsFixture())), signal()),
+    ).rejects.toMatchObject({ code: "not_found" });
   });
 });
 
-describe("buildPlan guards", () => {
-  const request = (overrides: Record<string, unknown>) => ({
-    kind: "copy" as const,
-    initiator: { kind: "owner" as const },
-    sources: [ref("host:x", "/a")],
-    targetDir: ref("host:x", "/a/b"),
-    newName: null,
-    conflictPolicy: "ask" as const,
-    verify: "size" as const,
-    ...overrides,
-  });
-
-  const aTree = () =>
+describe("buildPlan overlaps", () => {
+  const overlapFixture = () =>
     new MemoryProvider(endpoint("host:x"), [
-      ["/a", "dir", "0"],
-      ["/a/f", "file", "1"],
+      ["/src", "dir", "0"],
+      ["/src/a", "file", "1"],
+      ["/other", "dir", "0"],
+      ["/other/a", "file", "1"],
+      ["/out", "dir", "0"],
+      ["/out/a", "dir", "0"],
+      ["/out/a/b", "file", "1"],
     ]);
 
-  it("rejects copying a directory into itself with invalid_path", async () => {
-    await expect(buildPlan(request({}), depsFor(treeProviders(aTree())), signal())).rejects.toMatchObject({
-      code: "invalid_path",
-    });
+  it("rejects the same source listed twice", async () => {
+    await expect(
+      buildPlan(
+        copyRequest([ref("host:x", "/src/a"), ref("host:x", "/src/a")], ref("host:x", "/out")),
+        depsFor(treeProviders(overlapFixture())),
+        signal(),
+      ),
+    ).rejects.toMatchObject({ code: "invalid_path" });
+  });
+
+  it("rejects a source that is an ancestor of another source", async () => {
+    await expect(
+      buildPlan(
+        copyRequest([ref("host:x", "/src"), ref("host:x", "/src/a")], ref("host:x", "/out")),
+        depsFor(treeProviders(overlapFixture())),
+        signal(),
+      ),
+    ).rejects.toMatchObject({ code: "invalid_path" });
+  });
+
+  it("rejects two computed targets that are the same path", async () => {
+    await expect(
+      buildPlan(
+        copyRequest([ref("host:x", "/src/a"), ref("host:x", "/other/a")], ref("host:x", "/out")),
+        depsFor(treeProviders(overlapFixture())),
+        signal(),
+      ),
+    ).rejects.toMatchObject({ code: "invalid_path" });
+  });
+
+  it("rejects a computed target that is an ancestor of another source", async () => {
+    // /src/a lands at /out/a, which is an ancestor of the source /out/a/b.
+    await expect(
+      buildPlan(
+        moveRequest([ref("host:x", "/src/a"), ref("host:x", "/out/a/b")], ref("host:x", "/out")),
+        depsFor(treeProviders(overlapFixture())),
+        signal(),
+      ),
+    ).rejects.toMatchObject({ code: "invalid_path" });
+  });
+});
+
+describe("buildPlan protected paths", () => {
+  function homeFixture() {
+    return new MemoryProvider(endpoint("host:x"), [
+      ["/home", "dir", "0"],
+      ["/home/u", "dir", "0"],
+      ["/home/u/x", "file", "1"],
+      ["/out", "dir", "0"],
+    ]);
+  }
+  const home = [parsePosix("/home/u")];
+
+  it("refuses to move the home directory", async () => {
+    await expect(
+      buildPlan(moveRequest([ref("host:x", "/home/u")], ref("host:x", "/out")), depsFor(treeProviders(homeFixture()), { protectedPathsFor: () => home }), signal()),
+    ).rejects.toMatchObject({ code: "permission_denied" });
+  });
+
+  it("refuses to rename the home directory", async () => {
+    await expect(
+      buildPlan(
+        {
+          kind: "rename",
+          initiator: { kind: "owner" },
+          sources: [ref("host:x", "/home/u")],
+          targetDir: null,
+          newName: { t: "v" },
+          conflictPolicy: "ask",
+          verify: "size",
+        },
+        depsFor(treeProviders(homeFixture()), { protectedPathsFor: () => home }),
+        signal(),
+      ),
+    ).rejects.toMatchObject({ code: "permission_denied" });
+  });
+
+  it("refuses to delete when the host policy is unknown (null)", async () => {
+    await expect(
+      buildPlan(
+        {
+          kind: "delete",
+          initiator: { kind: "owner" },
+          sources: [ref("host:x", "/home/u/x")],
+          targetDir: null,
+          newName: null,
+          conflictPolicy: "ask",
+          verify: "size",
+        },
+        depsFor(treeProviders(homeFixture()), { protectedPathsFor: () => null }),
+        signal(),
+      ),
+    ).rejects.toMatchObject({ code: "permission_denied" });
+  });
+
+  it("allows copying the home directory", async () => {
+    const plan = await buildPlan(
+      copyRequest([ref("host:x", "/home/u")], ref("host:x", "/out")),
+      depsFor(treeProviders(homeFixture()), { protectedPathsFor: () => home }),
+      signal(),
+    );
+    expect(plan.items.length).toBe(2);
   });
 
   it("refuses to delete the root with permission_denied", async () => {
     await expect(
       buildPlan(
-        request({ kind: "delete", sources: [ref("host:x", "/")], targetDir: null }),
-        depsFor(treeProviders(aTree())),
+        {
+          kind: "delete",
+          initiator: { kind: "owner" },
+          sources: [ref("host:x", "/")],
+          targetDir: null,
+          newName: null,
+          conflictPolicy: "ask",
+          verify: "size",
+        },
+        depsFor(treeProviders(srcTree())),
         signal(),
       ),
     ).rejects.toMatchObject({ code: "permission_denied" });
   });
+});
 
-  it("refuses to delete the home directory with permission_denied", async () => {
+describe("buildPlan guards", () => {
+  it("rejects copying a directory into itself with invalid_path", async () => {
+    const tree = new MemoryProvider(endpoint("host:x"), [["/a", "dir", "0"], ["/a/f", "file", "1"]]);
     await expect(
-      buildPlan(
-        request({ kind: "delete", sources: [ref("host:x", "/a")], targetDir: null }),
-        depsFor(treeProviders(aTree()), { protectedPaths: [parsePosix("/a")] }),
-        signal(),
-      ),
-    ).rejects.toMatchObject({ code: "permission_denied" });
+      buildPlan(copyRequest([ref("host:x", "/a")], ref("host:x", "/a/b")), depsFor(treeProviders(tree)), signal()),
+    ).rejects.toMatchObject({ code: "invalid_path" });
   });
 
   it("refuses to write into a read-only endpoint with read_only", async () => {
+    const src = srcTree("host:x");
     const ro = new MemoryProvider(endpoint("host:y", true), [["/dst", "dir", "0"]]);
     await expect(
-      buildPlan(
-        request({ sources: [ref("host:x", "/a")], targetDir: ref("host:y", "/dst") }),
-        depsFor(treeProviders(aTree(), [ro])),
-        signal(),
-      ),
+      buildPlan(copyRequest([ref("host:x", "/src")], ref("host:y", "/dst")), depsFor(treeProviders(src, ro)), signal()),
     ).rejects.toMatchObject({ code: "read_only" });
   });
 
   it("reports a missing source as not_found", async () => {
     await expect(
-      buildPlan(
-        request({ sources: [ref("host:x", "/missing")], targetDir: ref("host:x", "/out") }),
-        depsFor(treeProviders(aTree())),
-        signal(),
-      ),
+      buildPlan(copyRequest([ref("host:x", "/missing")], ref("host:x", "/out")), depsFor(treeProviders(srcTree())), signal()),
     ).rejects.toMatchObject({ code: "not_found" });
   });
 
@@ -482,8 +643,8 @@ describe("buildPlan guards", () => {
     const other = new MemoryProvider(endpoint("host:y"), [["/z", "file", "1"]]);
     await expect(
       buildPlan(
-        request({ sources: [ref("host:x", "/a"), ref("host:y", "/z")], targetDir: ref("host:x", "/out") }),
-        depsFor(treeProviders(aTree(), [other])),
+        copyRequest([ref("host:x", "/src"), ref("host:y", "/z")], ref("host:x", "/out")),
+        depsFor(treeProviders(srcTree(), other)),
         signal(),
       ),
     ).rejects.toMatchObject({ code: "unsupported" });
@@ -493,7 +654,55 @@ describe("buildPlan guards", () => {
     const controller = new AbortController();
     controller.abort();
     await expect(
-      buildPlan(request({ targetDir: ref("host:x", "/out") }), depsFor(treeProviders(aTree())), controller.signal),
+      buildPlan(copyRequest([ref("host:x", "/src")], ref("host:x", "/out")), depsFor(treeProviders(srcTree())), controller.signal),
     ).rejects.toThrow();
+  });
+});
+
+describe("revalidate", () => {
+  const copyPlan = async (src: MemoryProvider, deps: PlannerDeps) =>
+    buildPlan(copyRequest([ref("host:x", "/src")], ref("host:x", "/out")), deps, signal());
+
+  it("is ok while the sources are unchanged", async () => {
+    const src = srcTree();
+    const deps = depsFor(treeProviders(src));
+    expect(await revalidate(await copyPlan(src, deps), deps, signal())).toEqual({ ok: true });
+  });
+
+  it("reports the index of an item whose size changed", async () => {
+    const src = srcTree();
+    const deps = depsFor(treeProviders(src));
+    const plan = await copyPlan(src, deps);
+    src.setSize("/src/a.txt", "9");
+    expect(await revalidate(plan, deps, signal())).toEqual({ ok: false, changed: [1] });
+  });
+
+  it("rejects a plan whose content no longer matches its digest", async () => {
+    const src = srcTree();
+    const deps = depsFor(treeProviders(src));
+    const plan = await copyPlan(src, deps);
+    const tampered = { ...plan, totalBytes: "0" };
+    await expect(revalidate(tampered, deps, signal())).rejects.toMatchObject({ code: "internal" });
+  });
+
+  it("re-applies the protection policy to removal items", async () => {
+    const src = srcTree();
+    const deps = depsFor(treeProviders(src));
+    const plan = await buildPlan(
+      {
+        kind: "delete",
+        initiator: { kind: "owner" },
+        sources: [ref("host:x", "/src/a.txt")],
+        targetDir: null,
+        newName: null,
+        conflictPolicy: "ask",
+        verify: "size",
+      },
+      deps,
+      signal(),
+    );
+    await expect(
+      revalidate(plan, depsFor(treeProviders(src), { protectedPathsFor: () => null }), signal()),
+    ).rejects.toMatchObject({ code: "permission_denied" });
   });
 });

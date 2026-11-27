@@ -51,6 +51,13 @@ it("suffixes raw byte names in bytes and keeps them raw", () => {
   expect(result).toEqual({ b: btoa("aÿ (2).txt") });
 });
 
+it("returns invalid_name when the suffixed candidate exceeds the 1024-character name limit", () => {
+  // 1024 characters with no extension: "aaaa (2)" is 1029 and no longer a valid NameSegment.
+  expect(() => nextFreeName({ t: "a".repeat(1024) }, none)).toThrow(
+    expect.objectContaining({ code: "invalid_name" }),
+  );
+});
+
 it("skips a taken raw byte candidate", () => {
   const raw: NameSegment = { b: btoa("aÿ.txt") };
   const taken = new Set([btoa("aÿ (2).txt")]);

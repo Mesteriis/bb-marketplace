@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import { REQUIRED, authorize, type Grant } from "./permissions.ts";
-import type { Initiator, OperationPlan, ResourceRef } from "./model.ts";
+import type { Initiator, OperationPlan, PlanItem, ResourceRef } from "./model.ts";
 import { parsePosix } from "./path.ts";
 
 const owner: Initiator = { kind: "owner" };
@@ -10,12 +10,16 @@ function ref(endpoint: string, path: string): ResourceRef {
   return { endpoint: endpoint as ResourceRef["endpoint"], path: parsePosix(path) };
 }
 
-function planOf(kind: OperationPlan["kind"], items: OperationPlan["items"]): OperationPlan {
+function planOf(
+  kind: OperationPlan["kind"],
+  items: PlanItem[],
+  initiator: Initiator = agent,
+): OperationPlan {
   return {
     id: "00000000-0000-4000-8000-000000000001",
     kind,
     createdAt: "2026-11-27T00:00:00.000Z",
-    initiator: owner,
+    initiator,
     sourceEndpoint: "host:x",
     targetEndpoint: kind === "delete" ? null : "host:x",
     items,
@@ -42,10 +46,23 @@ it("lists the required permissions per operation kind", () => {
 });
 
 it("lets the owner do anything without grants", () => {
-  const plan = planOf("delete", [
-    { source: ref("host:x", "/etc/passwd"), target: null, kind: "file", fingerprint: null },
-  ]);
+  const plan = planOf(
+    "delete",
+    [{ source: ref("host:x", "/etc/passwd"), target: null, kind: "file", fingerprint: null }],
+    owner,
+  );
   expect(authorize(owner, plan, [])).toEqual({ ok: true });
+});
+
+it("refuses to authorize a plan under another initiator", () => {
+  const agentPlan = planOf(
+    "delete",
+    [{ source: ref("host:x", "/data/a"), target: null, kind: "file", fingerprint: null }],
+    agent,
+  );
+  expect(() => authorize(owner, agentPlan, [])).toThrow(
+    expect.objectContaining({ code: "internal" }),
+  );
 });
 
 it("allows an agent whose grant scope covers every item", () => {
@@ -82,6 +99,22 @@ it("reports delete as missing for a move without the delete permission", () => {
     },
   ]);
   expect(authorize(agent, plan, grantReadWriteData)).toEqual({ ok: false, missing: ["delete"] });
+});
+
+it("requires write on the source of a rename, not only on the target", () => {
+  // Grant covers /data/b only. Rename /data/a -> /data/b writes the source too.
+  const plan = planOf("rename", [
+    {
+      source: ref("host:x", "/data/a"),
+      target: ref("host:x", "/data/b"),
+      kind: "file",
+      fingerprint: null,
+    },
+  ]);
+  const grants: Grant[] = [
+    { endpoint: "host:x", permissions: ["write"], scope: parsePosix("/data/b") },
+  ];
+  expect(authorize(agent, plan, grants)).toEqual({ ok: false, missing: ["write"] });
 });
 
 it("requires a grant for the item's own endpoint", () => {
