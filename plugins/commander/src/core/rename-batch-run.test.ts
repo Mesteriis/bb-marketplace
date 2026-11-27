@@ -1,4 +1,4 @@
-import { expect, test, vi } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import { CommanderError } from "./errors.ts";
 import { JobRunner, type RunnerDeps } from "./job-runner.ts";
 import { OperationJob, planDigest, type Fingerprint, type JobState, type OperationPlan, type PlanItem } from "./model.ts";
@@ -46,10 +46,24 @@ async function renamePlan(items: Array<{ from: string; to: string; fingerprint: 
   return { ...unsigned, digest: await planDigest(unsigned) };
 }
 
-/** The provider computes SHA-256 on the host by default, as a local endpoint does; `checksum: false` models SFTP. */
+/** The default for setup: the provider computes SHA-256 on the host, as a local endpoint does. `both` changes it. */
+let checksumDefault = true;
+afterEach(() => { checksumDefault = true; });
+
+/** Runs a scenario twice: with SHA-256 computed on the host, and without it (SFTP). */
+function both(name: string, body: () => Promise<void>) {
+  for (const checksum of [true, false]) {
+    test(name + " (sha256 " + (checksum ? "on" : "off") + ")", async () => {
+      checksumDefault = checksum;
+      await body();
+    });
+  }
+}
+
+/** The provider computes SHA-256 on the host by default; `checksum: false` models SFTP. */
 async function setup(files: Array<[string, string, string]>, caseSensitive = true, options: { checksum?: boolean } = {}) {
   const provider = new FakeProvider("host:x", caseSensitive);
-  if (options.checksum ?? true) provider.enableChecksum();
+  if (options.checksum ?? checksumDefault) provider.enableChecksum();
   for (const [path, bytes, mtime] of files) {
     provider.put(parsePosix(path), new TextEncoder().encode(bytes), mtime);
   }
@@ -115,7 +129,7 @@ test("case-only A.txt → a.txt on a case-insensitive endpoint completes beside 
   expect(names).not.toContain("A.txt");
 });
 
-test("a crash between the phases resumes on restart and finishes the swap without losing a file", async () => {
+both("a crash between the phases resumes on restart and finishes the swap without losing a file", async () => {
   const { provider, runner, newRunner, store, at } = await setup([["/a.txt", "AAA", "1000"], ["/b.txt", "BB", "2000"]]);
   const plan = await renamePlan([
     { from: "/a.txt", to: "/b.txt", fingerprint: fp("3", "1000"), expect: fp("2", "2000") },
@@ -144,7 +158,7 @@ test("a crash between the phases resumes on restart and finishes the swap withou
   expect(text(provider.contents(parsePosix("/a.txt")))).toBe("BB");
 });
 
-test("a target taken after staging fails the item, and the staged files return to their names", async () => {
+both("a target taken after staging fails the item, and the staged files return to their names", async () => {
   const { provider, runner, at } = await setup([["/a.txt", "A", "1000"], ["/c.txt", "C", "2000"]]);
   const plan = await renamePlan([
     { from: "/a.txt", to: "/x.txt", fingerprint: fp("1", "1000"), expect: "absent" },
@@ -165,7 +179,7 @@ test("a target taken after staging fails the item, and the staged files return t
   expect(provider.contents(parsePosix("/y.txt"))).toBeNull();
 });
 
-test("a cancel during the first phase returns every staged file to its name", async () => {
+both("a cancel during the first phase returns every staged file to its name", async () => {
   const { provider, runner, store, at } = await setup([["/a.txt", "A", "1000"], ["/c.txt", "C", "2000"]]);
   const plan = await renamePlan([
     { from: "/a.txt", to: "/x.txt", fingerprint: fp("1", "1000"), expect: "absent" },
@@ -204,7 +218,7 @@ test("a source changed after planning fails its item before anything moves", asy
   expect(text(provider.contents(parsePosix("/c.txt")))).toBe("C");
 });
 
-test("a crash after the first move of a cycle's second phase restarts and finishes the swap", async () => {
+both("a crash after the first move of a cycle's second phase restarts and finishes the swap", async () => {
   const { provider, runner, newRunner, store, at } = await setup([["/a.txt", "AAA", "1000"], ["/b.txt", "BB", "2000"]]);
   const plan = await renamePlan([
     { from: "/a.txt", to: "/b.txt", fingerprint: fp("3", "1000"), expect: fp("2", "2000") },
@@ -245,7 +259,7 @@ test("retry of a finished batch rename is refused with the 2a text and plans not
   );
 });
 
-test("restart after the last phase-2 move, with identical size and mtime, records done without moving anything", async () => {
+both("restart after the last phase-2 move, with identical size and mtime, records done without moving anything", async () => {
   const { provider, runner, newRunner, store, at } = await setup([["/a.txt", "AA", "1000"], ["/b.txt", "BB", "1000"]]);
   const plan = await renamePlan([
     { from: "/a.txt", to: "/b.txt", fingerprint: fp("2", "1000"), expect: fp("2", "1000") },
@@ -525,7 +539,7 @@ test("a restart of a committed batch refuses a cancel that arrives during its fi
   expect((refused as CommanderError).message).toBe("Batch rename cancel is unavailable: the second phase is running");
 });
 
-test("a restart that finds a staged file it cannot prove, and then a failed read of the next item, leaves the first file under its temporary name", async () => {
+test("a restart with own records returns the first item, and the second, whose read failed, stays unknown under its temporary name", async () => {
   const { provider, runner, newRunner, store, at } = await setup([["/a.txt", "A", "1000"], ["/c.txt", "C", "2000"]], true, { checksum: false });
   const plan = await renamePlan([
     { from: "/a.txt", to: "/x.txt", fingerprint: fp("1", "1000"), expect: "absent" },
@@ -548,10 +562,130 @@ test("a restart that finds a staged file it cannot prove, and then a failed read
   provider.failOn.push({ op: "stat", path: parsePosix("/c.txt"), times: 1, error: new CommanderError("permission_denied", "denied") });
   await newRunner().recover();
   const job = await at(id, "unknown");
-  // The first item stays unknown under its temporary name; the second cannot be read and fails.
-  expect(job.items.map(({ outcome }) => outcome)).toEqual(["unknown", "failed"]);
+  // The first item is proven by its own record and goes back; the second has its own record and
+  // its read failed, so it may be mid-move: unknown, and its file stays under its temporary name.
+  expect(job.items.map(({ outcome }) => outcome)).toEqual(["pending", "unknown"]);
+  const second = tempNameFor(id, 1);
+  expect(text(provider.contents(parsePosix("/" + ("t" in second ? second.t : ""))))).toBe("C");
+  expect(text(provider.contents(parsePosix("/a.txt")))).toBe("A");
+  expect((await store.get(id))?.items[1].error).toBeTruthy();
+});
+
+test("a confirmed item stays done in the journal when the next item turns out unknown", async () => {
+  const { provider, runner, newRunner, store, at } = await setup([["/a.txt", "A", "1000"], ["/c.txt", "C", "2000"]]);
+  const plan = await renamePlan([
+    { from: "/a.txt", to: "/x.txt", fingerprint: fp("1", "1000"), expect: "absent" },
+    { from: "/c.txt", to: "/y.txt", fingerprint: fp("1", "2000"), expect: "absent" },
+  ]);
+  // Stop before the second item's move: the first item has landed, the second is staged.
+  let crashing: Promise<void> | null = null;
+  provider.delay = async (op, path, signal) => {
+    if (op !== "rename" || isTemp(path) || leaf(path) !== "y.txt" || crashing) return;
+    crashing = runner.shutdown();
+    if (!signal.aborted) {
+      await new Promise((_, reject) => signal.addEventListener("abort", () => reject(new CommanderError("cancelled", "stop"))));
+    }
+    signal.throwIfAborted();
+  };
+  const { id } = await runner.submit(plan);
+  await vi.waitFor(() => expect(crashing).not.toBeNull());
+  await crashing;
+  // The second item's staged file disappears: its next item is unknown.
+  const second = tempNameFor(id, 1);
+  await provider.remove(parsePosix("/" + ("t" in second ? second.t : "")), { kind: "file" }, new AbortController().signal);
+  provider.delay = undefined;
+  await newRunner().recover();
+  const job = await at(id, "unknown");
+  expect(job.items.map(({ outcome }) => outcome)).toEqual(["done", "unknown"]);
+  expect((await store.get(id))?.items.map(({ outcome }) => outcome)).toEqual(["done", "unknown"]);
+  expect(text(provider.contents(parsePosix("/x.txt")))).toBe("A");
+});
+
+test("a directory whose temporary name holds a foreign entry with the same size and mtime is unknown and nothing moves", async () => {
+  const { provider, runner, at } = await setup([["/c.txt", "C", "2000"]]);
+  // The foreign directory sits under the temporary name of item 0, with the planned size and mtime.
+  const first = tempNameFor(JOB_ID, 0);
+  const firstName = "t" in first ? first.t : "";
+  await provider.mkdir(parsePosix("/" + firstName), new AbortController().signal);
+  const foreign = await provider.stat(parsePosix("/" + firstName), new AbortController().signal);
+  const plan = await renamePlan([
+    { from: "/d", to: "/x", fingerprint: { size: foreign!.size, mtimeNs: foreign!.mtimeNs }, expect: "absent", kind: "dir" },
+    { from: "/c.txt", to: "/y.txt", fingerprint: fp("1", "2000"), expect: "absent" },
+  ]);
+  const { id } = await runner.submit(plan);
+  const job = await at(id, "unknown");
+  expect(job.items.map(({ outcome }) => outcome)).toEqual(["unknown", "pending"]);
+  expect(await provider.stat(parsePosix("/" + firstName), new AbortController().signal)).not.toBeNull();
+  expect(await provider.stat(parsePosix("/x"), new AbortController().signal)).toBeNull();
+  expect(text(provider.contents(parsePosix("/c.txt")))).toBe("C");
+});
+
+test("a failed read of an item with its own record is unknown, and both temporary names stay where they are", async () => {
+  const { provider, runner, newRunner, at } = await setup([["/a.txt", "A", "1000"], ["/c.txt", "C", "2000"]]);
+  const plan = await renamePlan([
+    { from: "/a.txt", to: "/x.txt", fingerprint: fp("1", "1000"), expect: "absent" },
+    { from: "/c.txt", to: "/y.txt", fingerprint: fp("1", "2000"), expect: "absent" },
+  ]);
+  let crashing: Promise<void> | null = null;
+  provider.delay = async (op, path, signal) => {
+    if (op !== "rename" || isTemp(path) || crashing) return;
+    crashing = runner.shutdown();
+    if (!signal.aborted) {
+      await new Promise((_, reject) => signal.addEventListener("abort", () => reject(new CommanderError("cancelled", "stop"))));
+    }
+    signal.throwIfAborted();
+  };
+  const { id } = await runner.submit(plan);
+  await vi.waitFor(() => expect(crashing).not.toBeNull());
+  await crashing;
+  provider.delay = undefined;
+  // The first item cannot go back (its source name is taken), and the second cannot be read.
+  provider.put(parsePosix("/a.txt"), new TextEncoder().encode("Z"), "9000");
+  provider.failOn.push({ op: "stat", path: parsePosix("/c.txt"), times: 1, error: new CommanderError("permission_denied", "denied") });
+  await newRunner().recover();
+  const job = await at(id, "unknown");
+  expect(job.items.map(({ outcome }) => outcome)).toEqual(["unknown", "unknown"]);
   const first = tempNameFor(id, 0);
+  const second = tempNameFor(id, 1);
   expect(text(provider.contents(parsePosix("/" + ("t" in first ? first.t : ""))))).toBe("A");
-  expect(provider.contents(parsePosix("/a.txt"))).toBeNull();
-  expect((await store.get(id))?.items[0].error).toBeTruthy();
+  expect(text(provider.contents(parsePosix("/" + ("t" in second ? second.t : ""))))).toBe("C");
+  expect(text(provider.contents(parsePosix("/a.txt")))).toBe("Z");
+  void provider;
+});
+
+test("after a restart, recover() then cancel() on one runner is refused while the committed batch runs", async () => {
+  const { provider, runner, newRunner, store, at } = await setup([["/a.txt", "AAA", "1000"], ["/b.txt", "BB", "2000"]]);
+  const plan = await renamePlan([
+    { from: "/a.txt", to: "/b.txt", fingerprint: fp("3", "1000"), expect: fp("2", "2000") },
+    { from: "/b.txt", to: "/a.txt", fingerprint: fp("2", "2000"), expect: fp("3", "1000") },
+  ]);
+  let crashing: Promise<void> | null = null;
+  provider.delay = async (op, path, signal) => {
+    if (op !== "rename" || isTemp(path) || crashing) return;
+    crashing = runner.shutdown();
+    if (!signal.aborted) {
+      await new Promise((_, reject) => signal.addEventListener("abort", () => reject(new CommanderError("cancelled", "stop"))));
+    }
+    signal.throwIfAborted();
+  };
+  const { id } = await runner.submit(plan);
+  await vi.waitFor(() => expect(crashing).not.toBeNull());
+  await crashing;
+  expect((await store.get(id))?.state).toBe("running");
+  // The first read after the restart waits until the cancel has been tried.
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  provider.delay = async (op, _path, signal) => {
+    if (op !== "stat") return;
+    await Promise.race([gate, new Promise((_, reject) => signal.addEventListener("abort", () => reject(new CommanderError("cancelled", "aborted"))))]);
+  };
+  const next = newRunner();
+  await next.recover();
+  const attempt = await next.cancel(id).then(() => null, (error: unknown) => error);
+  release();
+  expect(attempt).toBeInstanceOf(CommanderError);
+  expect((attempt as CommanderError).message).toBe("Batch rename cancel is unavailable: the second phase is running");
+  await at(id, "completed");
+  expect(text(provider.contents(parsePosix("/b.txt")))).toBe("AAA");
+  expect(text(provider.contents(parsePosix("/a.txt")))).toBe("BB");
 });

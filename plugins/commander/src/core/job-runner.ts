@@ -779,6 +779,11 @@ export class JobRunner {
         try {
           state = await this.batchState(plan, id, index, signal);
         } catch (error) {
+          // An item with its own transfer record may be mid-move: it is unknown, not failed.
+          const own = await this.store.lastCheckpoint(id, index);
+          const failure = own?.via === "rename"
+            ? new CommanderError("outcome_unknown", "The batch item could not be read; its transfer may be unfinished")
+            : safeError(error);
           // Items not read yet cannot be decided: each is unknown and moves nothing.
           // Earlier items already decided unknown keep that outcome; the items not read yet are unknown too.
           for (const [earlier, earlierState] of states) {
@@ -787,10 +792,15 @@ export class JobRunner {
           for (const later of pending.slice(position + 1)) {
             preset.set(later, { outcome: "unknown", error: new CommanderError("outcome_unknown", "The batch item was not read") });
           }
-          throw new BatchStop(index, safeError(error), preset);
+          throw new BatchStop(index, failure, preset);
         }
         states.set(index, state);
         if (state === "staged") moved.push(index);   // counted at once, so a later failure undoes it
+        if (state === "done") {
+          // Recorded at once: a later item's failure does not undo a confirmed one.
+          finished.add(index);
+          await this.record(await this.requireJob(id), index, "done");
+        }
       }
       current = null;
       const unknownError = () => new CommanderError("outcome_unknown", "The batch item state could not be confirmed");
@@ -802,11 +812,6 @@ export class JobRunner {
           preset.set(index, state === "unknown" ? { outcome: "unknown", error: unknownError() } : { outcome: "failed", error: changedError() });
         }
         throw new BatchStop(first, firstState === "unknown" ? unknownError() : changedError(), preset);
-      }
-      for (const index of pending) {
-        if (states.get(index) !== "done") continue;
-        finished.add(index);
-        await this.record(await this.requireJob(id), index, "done");
       }
       // Phase 1: every source not yet moved goes to its temporary name.
       for (const index of pending) {
@@ -905,14 +910,17 @@ export class JobRunner {
   }
 
   /**
-   * Whether the entry is the recorded version. A directory, or any non-file, is proven by
-   * its type, size and mtime alone. A file needs its recorded SHA-256, read through the
-   * provider's own computation; without one, the proof is not possible.
+   * Whether the entry is the version this item's own transfer recorded. The proof is the
+   * item's own transfer record (without one nothing is proven), the type, size and mtime
+   * (checked by the caller), and for a file on a provider that computes SHA-256, the recorded
+   * hash. A provider without SHA-256 (SFTP) relies on the record and the metadata; the
+   * residual risk is a content swap with the same type, size and mtime.
    */
   private async provesRecorded(location: Location, kind: PlanItem["kind"], record: Checkpoint | null, signal: AbortSignal): Promise<boolean> {
-    if (kind !== "file") return true;
-    const expected = record?.verified?.sha256;
-    if (expected === undefined || !location.provider.sha256) return false;
+    if (record?.via !== "rename") return false;
+    if (kind !== "file" || !location.provider.sha256) return true;
+    const expected = record.verified?.sha256;
+    if (expected === undefined) return false;   // the record lacks the identity this provider can check
     return (await location.provider.sha256(location.path, signal)) === expected;
   }
 
