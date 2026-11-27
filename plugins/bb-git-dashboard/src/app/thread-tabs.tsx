@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { experimental_useAppPanel, useBbNavigate, useRealtime, useRpc, useSettings, type PluginAppSlots, type PluginThreadActionRegistration } from "@get-bb/plugin-sdk/app";
+import { useBbNavigate, useRealtime, useRpc, useSettings, type PluginAppSlots, type PluginThreadActionRegistration } from "@get-bb/plugin-sdk/app";
 import type { rpc } from "../adapters/bb/rpc.ts";
 import type { Copy } from "../core/workspace.ts";
 import { CiPanel } from "../ui/ci/ci-panel.tsx";
@@ -57,24 +57,7 @@ const headerShortcut: PluginThreadActionRegistration<boolean> = {
   } : null,
 };
 
-/** BB 0.48 drew icon components in the thread header through a slot newer SDKs no longer type. */
-type LegacyHeaderSlots = {experimental_threadHeaderAction?(registration: {id: string; title: string; component: () => ReactNode}): void};
-
 /** The Git History button in the thread header, shown when the historyHeaderShortcut setting is on. */
 export function registerHistoryShortcut(slots: PluginAppSlots) {
-  const legacy = slots as unknown as LegacyHeaderSlots;
-  if (typeof legacy.experimental_threadHeaderAction === "function") {
-    legacy.experimental_threadHeaderAction({id: "git-history-header", title: "Git History", component: LegacyHeaderButton});
-    return "icon" as const;
-  }
   slots.experimental_threadAction(headerShortcut);
-  return "labelled" as const;
-}
-
-/** The icon button of the legacy slot: same setting, same tab. */
-function LegacyHeaderButton() {
-  const panel = experimental_useAppPanel();
-  if (useSettings().values?.historyHeaderShortcut !== true) return null;
-  return <button type="button" aria-label="Open Git History" title="Open Git History"
-    onClick={() => { panel.openTab({tab: historyTab, title: "Git History"}); }}>Git History</button>;
 }
