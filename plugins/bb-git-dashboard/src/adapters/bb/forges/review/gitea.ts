@@ -1,3 +1,4 @@
+import { partial } from "../../../../core/partial.ts";
 import type { PrAction } from "../../../../core/pulls/actions.ts";
 import type { Comment, PrDetail, Reviewer, Thread, TimelineEntry } from "../../../../core/pulls/detail.ts";
 import type { PrFile } from "../../../../core/pulls/diff.ts";
@@ -40,15 +41,24 @@ export function giteaReview(account: Account, token: string, path: string, send:
   const get = async (target: string) => (await http(repo + target)).payload;
   return {
     async detail(number) {
-      const [raw, comments, reviews, commits, viewer] = await Promise.all([
-        get("/pulls/" + number).then(object), get("/issues/" + number + "/comments?limit=100").then(array),
-        get("/pulls/" + number + "/reviews?limit=100").then(array), get("/pulls/" + number + "/commits?limit=100").then(array),
-        http("/api/v1/user").then(result => text(object(result.payload).login)),
-      ]);
+      // Only the pull request itself is required; each other part degrades to a notice on its own.
+      const [raw, ...parts] = await Promise.all([
+        get("/pulls/" + number).then(object),
+        partial(get("/issues/" + number + "/comments?limit=100").then(array), [] as unknown[], code => "Comments could not be read (" + code + ")."),
+        partial(get("/pulls/" + number + "/reviews?limit=100").then(array), [] as unknown[], code => "Reviews could not be read (" + code + ")."),
+        partial(get("/pulls/" + number + "/commits?limit=100").then(array), [] as unknown[], code => "Commits could not be read (" + code + ")."),
+        partial(http("/api/v1/user").then(result => text(object(result.payload).login)), "",
+          code => "Your Gitea user could not be read (" + code + "); the forge may refuse some review choices."),
+      ] as const);
+      const [{value: comments}, {value: reviews}, {value: commits}, {value: viewer}] = parts;
+      const notices = parts.flatMap(part => part.notice ? [part.notice] : []);
       const head = sha(object(raw.head).sha);
       const author = text(object(raw.user).login) || "ghost";
       const reviewRows = reviews.map(object).filter(row => row.state !== "PENDING" && row.state !== "REQUEST_REVIEW");
-      const lineComments = (await inBatches(reviewRows, 4, row => get("/pulls/" + number + "/reviews/" + segment(String(row.id)) + "/comments").then(array)))
+      const lines = await partial(inBatches(reviewRows, 4, row => get("/pulls/" + number + "/reviews/" + segment(String(row.id)) + "/comments").then(array)),
+        [] as unknown[][], code => "Line comments could not be read (" + code + ").");
+      if (lines.notice) notices.push(lines.notice);
+      const lineComments = lines.value
         .flat().map(object).sort((left, right) => text(left.created_at).localeCompare(text(right.created_at)));
       const threads = new Map<string, Thread>();
       for (const row of lineComments) {
@@ -80,10 +90,12 @@ export function giteaReview(account: Account, token: string, path: string, send:
       const reviewers: Reviewer[] = [...requested.filter(who => !latest.has(who)).map(who => ({name: who, avatarUrl: null, team: false, state: "REQUESTED"})),
         ...[...latest].map(([who, state]) => ({name: who, avatarUrl: null, team: false, state}))];
       const states = [...latest.values()];
-      const status = head ? object(await get("/commits/" + head + "/status").catch(() => ({}))) : {};
+      const checked = head ? await partial(get("/commits/" + head + "/status").then(object), {} as Json, code => "Commit status could not be read (" + code + ").") : null;
+      if (checked?.notice) notices.push(checked.notice);
+      const status = checked?.value ?? {};
       const merged = raw.merged === true;
       const detail: PrDetail = {
-        forge: "gitea", id: String(raw.id ?? ""), headSha: head, viewer, number, title: text(raw.title), url: text(raw.html_url), repo: path, author,
+        forge: "gitea", id: String(raw.id ?? ""), headSha: head, viewer, notices, number, title: text(raw.title), url: text(raw.html_url), repo: path, author,
         authorAvatarUrl: null, state: merged ? "MERGED" : raw.state === "open" ? "OPEN" : "CLOSED",
         isDraft: raw.draft === true || draftPrefix.test(text(raw.title)), headRefName: text(object(raw.head).ref), baseRefName: text(object(raw.base).ref),
         onDefaultBranch: text(object(raw.base).ref) === text(object(object(raw.base).repo).default_branch), stackedOn: null,

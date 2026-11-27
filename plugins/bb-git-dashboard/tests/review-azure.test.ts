@@ -100,3 +100,13 @@ test("a review whose vote fails after its comment was posted says it stopped hal
   await assert.rejects(azureReview(account, token, "Web/app", send).act(7, {kind: "review", event: "APPROVE", body: "Good", comments: []}, current),
     (error: Error & {done?: number}) => error.message === "OUTCOME_PARTIAL" && error.done === 1);
 });
+
+test("only the pull request itself is required: every other part degrades to a notice", async () => {
+  const {send} = azure({["GET " + pr]: () => Response.json(raw)});
+  const detail = await azureReview(account, token, "Web/app", send).detail(7);
+  assert.deepEqual([detail.title, detail.threads, detail.commits, detail.checks], ["Add retries", [], [], []]);
+  assert.deepEqual(detail.notices, [
+    "Threads could not be read (PROVIDER_DENIED).", "Statuses could not be read (PROVIDER_DENIED).", "Commits could not be read (PROVIDER_DENIED).",
+    "Your Azure DevOps identity could not be read (PROVIDER_DENIED); the forge may refuse some review choices.",
+  ]);
+});

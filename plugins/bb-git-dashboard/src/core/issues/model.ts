@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { partial } from "../partial.ts";
 
 export type IssueComment = {author: string; body: string; createdAt: string; url: string};
 export type IssueDetail = {number: number; title: string; body: string; open: boolean; author: string; labels: string[]; url: string;
@@ -7,10 +8,7 @@ export type IssueDetail = {number: number; title: string; body: string; open: bo
   notice: string | null};
 
 /** A part of an issue read on its own: its failure leaves the issue readable with a notice. */
-export async function optional<T>(read: Promise<T>, fallback: T): Promise<{value: T; notice: string | null}> {
-  try { return {value: await read, notice: null}; }
-  catch (error) { return {value: fallback, notice: "Comments could not be read (" + (error instanceof Error && /^[A-Z_]+$/.test(error.message) ? error.message : "PROVIDER_UNAVAILABLE") + ")."}; }
-}
+export const optional = <T>(read: Promise<T>, fallback: T) => partial(read, fallback, code => "Comments could not be read (" + code + ").");
 
 const text = z.string().trim().min(1).max(60_000);
 /** Every write on an issue; previewed and confirmed like pull request writes. */

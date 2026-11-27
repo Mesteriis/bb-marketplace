@@ -1,3 +1,4 @@
+import { partial } from "../../../../core/partial.ts";
 import type { PrAction } from "../../../../core/pulls/actions.ts";
 import type { Comment, PrDetail, Reviewer, Thread, TimelineEntry } from "../../../../core/pulls/detail.ts";
 import type { PrFile } from "../../../../core/pulls/diff.ts";
@@ -36,8 +37,15 @@ export function azureReview(account: Account, token: string, path: string, send:
   const me = async () => object((await get(org + "/_apis/connectionData")).authenticatedUser);
   return {
     async detail(number) {
-      const [raw, threads, statuses, commits, viewer] = await Promise.all([get(base(number)), get(base(number) + "/threads"),
-        get(base(number) + "/statuses").catch(() => ({} as Json)), get(base(number) + "/commits"), me()]);
+      // Only the pull request itself is required; each other part degrades to a notice on its own.
+      const [raw, ...parts] = await Promise.all([get(base(number)),
+        partial(get(base(number) + "/threads"), {} as Json, code => "Threads could not be read (" + code + ")."),
+        partial(get(base(number) + "/statuses"), {} as Json, code => "Statuses could not be read (" + code + ")."),
+        partial(get(base(number) + "/commits"), {} as Json, code => "Commits could not be read (" + code + ")."),
+        partial(me(), {} as Json, code => "Your Azure DevOps identity could not be read (" + code + "); the forge may refuse some review choices."),
+      ] as const);
+      const [{value: threads}, {value: statuses}, {value: commits}, {value: viewer}] = parts;
+      const notices = parts.flatMap(part => part.notice ? [part.notice] : []);
       const author = text(object(raw.createdBy).displayName) || "Unknown";
       const lineThreads: Thread[] = [];
       const timeline: TimelineEntry[] = text(raw.description).trim()
@@ -63,7 +71,7 @@ export function azureReview(account: Account, token: string, path: string, send:
       const votes = array(raw.reviewers).map(row => Number(object(row).vote) || 0);
       const status = text(raw.status);
       const detail: PrDetail = {
-        forge: "azure", id: String(raw.pullRequestId ?? number), headSha: sha(object(raw.lastMergeSourceCommit).commitId), viewer: text(viewer.providerDisplayName) || text(viewer.id),
+        forge: "azure", id: String(raw.pullRequestId ?? number), headSha: sha(object(raw.lastMergeSourceCommit).commitId), viewer: text(viewer.providerDisplayName) || text(viewer.id), notices,
         number, title: text(raw.title), url: "https://dev.azure.com" + org + "/" + segment(project) + "/_git/" + segment(name) + "/pullrequest/" + number,
         repo: path, author, authorAvatarUrl: null, state: status === "active" ? "OPEN" : status === "completed" ? "MERGED" : "CLOSED", isDraft: raw.isDraft === true,
         headRefName: branch(raw.sourceRefName), baseRefName: branch(raw.targetRefName), onDefaultBranch: false, stackedOn: null, changedFiles: 0,

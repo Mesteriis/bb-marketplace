@@ -22,6 +22,7 @@ export const prDetail = z.object({
   commits: z.array(z.object({oid: z.string(), shortOid: z.string(), headline: z.string(), author: z.string(), avatarUrl: nullable, committedDate: z.string(),
     ci: z.enum(["failing", "pending", "passing", "skipped"]).nullable()})),
   commitCount: z.number().int(), myReviewOid: nullable, diffRefs: z.object({base: z.string(), head: z.string(), start: z.string()}).nullable().optional(), fromFork: z.boolean().optional(),
+  notices: z.array(z.string().max(300)).max(10).optional(),
 });
 const file = z.object({path: z.string(), previousPath: nullable, status: z.string(), additions: z.number().int(), deletions: z.number().int(), patch: nullable});
 const target = {accountId: id, repo: z.string().min(3).max(500), number: z.number().int().positive()};

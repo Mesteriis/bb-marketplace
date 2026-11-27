@@ -109,6 +109,7 @@ export function PrPage({api, accountId, repo, number, onStep}: {api: ReviewApi; 
       </div>}
       {!open && detail.state === "CLOSED" && <div className="git-row"><button type="button" onClick={() => void act({kind: "state", open: true}, "Reopen")}>Reopen</button></div>}
       {notice && <p className="git-muted" role="status">{notice}</p>}
+      {(detail.notices ?? []).length > 0 && <ul className="git-muted" aria-label="Parts not read">{detail.notices!.map(line => <li key={line}>{line}</li>)}</ul>}
       {error && <p className="git-error" role="alert">{error}</p>}
     </header>
     <nav className="git-inbox-tabs" aria-label="Pull request sections">

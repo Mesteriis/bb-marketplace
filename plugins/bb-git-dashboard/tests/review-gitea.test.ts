@@ -93,3 +93,14 @@ test("a comment on a removed line is on the old side, in its own thread", async 
   const detail = await giteaReview(account, token, "o/r", send).detail(7);
   assert.deepEqual(detail.threads.map(thread => [thread.id, thread.side, thread.line]), [["2", "RIGHT", 5], ["3", "LEFT", 5]]);
 });
+
+test("only the pull request itself is required: every other part degrades to a notice", async () => {
+  const {send} = gitea({["GET " + repo + "/pulls/7"]: () => Response.json(pull)});
+  const detail = await giteaReview(account, token, "o/r", send).detail(7);
+  assert.deepEqual([detail.title, detail.threads, detail.commits, detail.viewer], [pull.title, [], [], ""]);
+  assert.deepEqual(detail.notices, [
+    "Comments could not be read (PROVIDER_DENIED).", "Reviews could not be read (PROVIDER_DENIED).", "Commits could not be read (PROVIDER_DENIED).",
+    "Your Gitea user could not be read (PROVIDER_DENIED); the forge may refuse some review choices.",
+    "Commit status could not be read (PROVIDER_DENIED).",
+  ]);
+});

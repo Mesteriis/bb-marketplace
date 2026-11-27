@@ -111,3 +111,28 @@ test("a comment on a renamed file names its old path; a review that stops halfwa
     ({path: "a.ts", line, side: "RIGHT" as const, startLine: null, body: "c" + line}))}, current), (error: Error & {done?: number; total?: number}) =>
     error.message === "OUTCOME_PARTIAL" && error.done === 1 && error.total === 4);
 });
+
+test("a failed optional part leaves the merge request readable and says what is missing", async () => {
+  const denied = () => Response.json({message: "403 Forbidden"}, {status: 403});
+  const {send} = gitlab({...routes, ["GET " + mr + "/discussions"]: denied, ["GET " + mr + "/commits"]: denied,
+    ["GET " + mr + "/approvals"]: denied, ["GET /api/v4/user"]: () => Response.json({message: "401 Unauthorized"}, {status: 401})});
+  const detail = await gitlabReview(account, token, "group/sub/app", send).detail(7);
+  assert.deepEqual([detail.title, detail.threads, detail.commits, detail.viewer], ["Draft: Add retries", [], [], ""]);
+  assert.deepEqual(detail.timeline.map(entry => entry.body), ["Why"]);
+  assert.deepEqual(detail.notices, [
+    "Discussions could not be read (PROVIDER_DENIED).",
+    "Approvals could not be read (PROVIDER_DENIED).",
+    "Commits could not be read (PROVIDER_DENIED).",
+    "Your GitLab user could not be read (PROVIDER_DENIED); the forge may refuse some review choices.",
+  ]);
+});
+
+test("the merge request itself failing still fails the page", async () => {
+  const {send} = gitlab({...routes, ["GET " + mr]: () => Response.json({message: "404 Not found"}, {status: 404})});
+  await assert.rejects(gitlabReview(account, token, "group/sub/app", send).detail(7), /PROVIDER_DENIED/);
+});
+
+test("a complete read has no notices", async () => {
+  const {send} = gitlab(routes);
+  assert.deepEqual((await gitlabReview(account, token, "group/sub/app", send).detail(7)).notices, []);
+});

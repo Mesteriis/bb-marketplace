@@ -81,7 +81,10 @@ export interface PrDetail {
   /** The head branch lives in another repository (a fork). */
   fromFork?: boolean;
   /** The signed-in GitHub user looking at the PR. */
+  /** Empty when the forge did not say who the token belongs to. */
   viewer: string;
+  /** Parts that could not be read; the page shows what it has and says what is missing. */
+  notices?: string[];
   number: number;
   title: string;
   url: string;

@@ -1,3 +1,4 @@
+import { partial } from "../../../../core/partial.ts";
 import type { PrAction } from "../../../../core/pulls/actions.ts";
 import type { Comment, PrDetail, Reviewer, Thread, TimelineEntry } from "../../../../core/pulls/detail.ts";
 import type { PrFile } from "../../../../core/pulls/diff.ts";
@@ -45,11 +46,17 @@ export function gitlabReview(account: Account, token: string, path: string, send
   }
   return {
     async detail(number) {
-      const [raw, discussions, approvals, commits, viewer] = await Promise.all([
-        http(mr(number)).then(result => object(result.payload)), pages(mr(number) + "/discussions"),
-        http(mr(number) + "/approvals").then(result => object(result.payload)).catch(() => ({} as Json)),
-        pages(mr(number) + "/commits"), http("/api/v4/user").then(result => text(object(result.payload).username)),
-      ]);
+      // Only the merge request itself is required; each other part degrades to a notice on its own.
+      const [raw, ...parts] = await Promise.all([
+        http(mr(number)).then(result => object(result.payload)),
+        partial(pages(mr(number) + "/discussions"), [] as Json[], code => "Discussions could not be read (" + code + ")."),
+        partial(http(mr(number) + "/approvals").then(result => object(result.payload)), {} as Json, code => "Approvals could not be read (" + code + ")."),
+        partial(pages(mr(number) + "/commits"), [] as Json[], code => "Commits could not be read (" + code + ")."),
+        partial(http("/api/v4/user").then(result => text(object(result.payload).username)), "",
+          code => "Your GitLab user could not be read (" + code + "); the forge may refuse some review choices."),
+      ] as const);
+      const [{value: discussions}, {value: approvals}, {value: commits}, {value: viewer}] = parts;
+      const notices = parts.flatMap(part => part.notice ? [part.notice] : []);
       const refs = object(raw.diff_refs);
       const head = sha(raw.sha) ?? sha(refs.head_sha);
       const author = text(object(raw.author).username) || "ghost";
@@ -82,7 +89,7 @@ export function gitlabReview(account: Account, token: string, path: string, send
       const pipeline = object(raw.head_pipeline);
       const status = text(raw.detailed_merge_status);
       const detail: PrDetail = {
-        forge: "gitlab", id: String(raw.id ?? ""), headSha: head, viewer, number, title: text(raw.title), url: text(raw.web_url), repo: path, author,
+        forge: "gitlab", id: String(raw.id ?? ""), headSha: head, viewer, notices, number, title: text(raw.title), url: text(raw.web_url), repo: path, author,
         authorAvatarUrl: null, state: raw.state === "opened" ? "OPEN" : raw.state === "merged" ? "MERGED" : "CLOSED", isDraft: raw.draft === true,
         headRefName: text(raw.source_branch), baseRefName: text(raw.target_branch), onDefaultBranch: false, stackedOn: null, changedFiles: 0,
         pendingReviewId: null, additions: 0, deletions: 0,

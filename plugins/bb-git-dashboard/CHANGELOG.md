@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.1 — 2026-11-27
+
+- A pull request page needs only the pull request itself: on GitLab, Gitea and Azure DevOps its discussions, reviews, approvals, commits, statuses and your own user are read on their own, and one that fails leaves the page open with a line saying what is missing and why (live check on gitlab.com, where one such read answered 401 and took the whole merge request page down).
+
 ## 0.7.0 — 2026-11-27
 
 - **Pull request page** for GitHub, GitLab, Gitea and Azure DevOps, opened from My PRs (click or Enter; ↗ still opens the forge; [ and ] step through the list): header with state, branches, size, blockers, reviewers and labels; Overview with the description and discussion; Checks with what failed; Files with the patch, line threads under their lines and Wrap long lines; Commits; Comments with every review thread.
