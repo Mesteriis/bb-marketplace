@@ -2,7 +2,7 @@ import { expect, test, vi } from "vitest";
 import { CommanderError } from "./errors.ts";
 import { JobRunner, type RunnerDeps } from "./job-runner.ts";
 import { Conflict, OperationJob, planDigest, type JobState, type OperationPlan } from "./model.ts";
-import { parsePosix } from "./path.ts";
+import { parsePosix, samePath } from "./path.ts";
 import { buildPlan } from "./planner.ts";
 import { FakeProvider } from "./testing/fake-provider.ts";
 import { isCaseOnlyPair, tempNameFor } from "./reconcile.ts";
@@ -1587,4 +1587,336 @@ test("an idle runner shuts down idempotently and refuses new work", async () => 
   await expect(runner.decide(id, { conflictId: id, action: "skip", applyTo: "this" })).rejects.toMatchObject(error);
   await expect(runner.recover()).rejects.toMatchObject(error);
   expect(await store.list({ limit: 10 })).toMatchObject([{ id, state: "pending", awaitsOwner: true }]);
+});
+
+/** The write to `name` lands, but the reply that verifies the destination is lost. */
+function loseVerifyReply(to: FakeProvider, name: string) {
+  let armed = false;
+  const openWrite = to.openWrite.bind(to);
+  vi.spyOn(to, "openWrite").mockImplementation(async (path, opts, signal) => {
+    const session = await openWrite(path, opts, signal);
+    const segment = path.segments.at(-1);
+    if (!segment || !("t" in segment) || segment.t !== name) return session;
+    const commit = session.commit.bind(session);
+    return { ...session, commit: async (commitOpts, stepSignal) => {
+      const committed = await commit(commitOpts, stepSignal);
+      armed = true;
+      return committed;
+    } };
+  });
+  const stat = to.stat.bind(to);
+  vi.spyOn(to, "stat").mockImplementation(async (path, signal) => {
+    if (armed) {
+      armed = false;
+      throw new CommanderError("outcome_unknown", "Verification reply lost", true);
+    }
+    return stat(path, signal);
+  });
+}
+
+test("retry plans only the failed item and keeps a confirmed unknown item done", async () => {
+  const { runner, plan, store, to, at } = await setup({ count: 3 });
+  to.failOn.push({ op: "commit", path: parsePosix("/b1"), times: 1, error: new CommanderError("permission_denied", "Denied") });
+  loseVerifyReply(to, "b2");
+  const { id } = await runner.submit(plan);
+  const failed = await at(id, "unknown");
+  expect(failed.items.map(({ outcome }) => outcome)).toEqual(["done", "failed", "unknown"]);
+
+  const retry = (await runner.retryJob(id, { kind: "owner" })).plan;
+  expect(retry!.items.map(({ source }) => source?.path.segments)).toEqual([[{ t: "a1" }]]);
+  expect(retry!.totalBytes).toBe("3");
+  expect((await store.get(id))!.items.map(({ outcome }) => outcome)).toEqual(["done", "failed", "done"]);
+
+  const retried = await runner.submit(retry!);
+  await at(retried.id, "completed");
+  expect(to.contents(parsePosix("/b1"))).toEqual(Uint8Array.of(42, 42, 42));
+});
+
+test("a repeated retry after a lost reply does not plan or write the confirmed item again", async () => {
+  const { runner, plan, to, at } = await setup({ count: 3 });
+  to.failOn.push({ op: "commit", path: parsePosix("/b1"), times: 1, error: new CommanderError("permission_denied", "Denied") });
+  loseVerifyReply(to, "b2");
+  const { id } = await runner.submit(plan);
+  await at(id, "unknown");
+
+  const first = (await runner.retryJob(id, { kind: "owner" })).plan;
+  const second = (await runner.retryJob(id, { kind: "owner" })).plan;
+  expect(first!.items).toHaveLength(1);
+  expect(second!.items).toHaveLength(1);
+  const commitsToB2 = to.calls.filter(({ op, path }) => op === "commit" && samePath(path, parsePosix("/b2"), true));
+  expect(commitsToB2).toHaveLength(1);
+});
+
+test("retry of a finished job with nothing to retry returns no plan and no excluded files", async () => {
+  const { runner, plan, at } = await setup({ count: 2 });
+  const { id } = await runner.submit(plan);
+  await at(id, "completed");
+  await expect(runner.retryJob(id, { kind: "owner" })).resolves.toEqual({ plan: null, excluded: [] });
+});
+
+test("retry refuses a plan whose source changed since the failed run", async () => {
+  const revalidate = vi.fn(async () => ({ ok: false as const, changed: [{ index: 0, reason: "source_changed" as const }] }));
+  const { runner, plan, to, at } = await setup({ count: 2, revalidate });
+  to.failOn.push({ op: "commit", path: parsePosix("/b"), times: 1, error: new CommanderError("permission_denied", "Denied") });
+  const { id } = await runner.submit(plan);
+  await at(id, "failed");
+  await expect(runner.retryJob(id, { kind: "owner" })).rejects.toMatchObject({ code: "changed_since_plan" });
+  expect(revalidate).toHaveBeenCalledTimes(1);
+});
+
+/** The write to `name` lands, but its commit reply is lost before the runner records it. */
+function loseCommitReply(to: FakeProvider, name: string) {
+  const openWrite = to.openWrite.bind(to);
+  vi.spyOn(to, "openWrite").mockImplementation(async (path, opts, signal) => {
+    const session = await openWrite(path, opts, signal);
+    const segment = path.segments.at(-1);
+    if (!segment || !("t" in segment) || segment.t !== name) return session;
+    const commit = session.commit.bind(session);
+    return { ...session, commit: async (commitOpts, stepSignal) => {
+      await commit(commitOpts, stepSignal);
+      throw new CommanderError("outcome_unknown", "Commit reply lost", true);
+    } };
+  });
+}
+
+test("retry does not plan an unknown item that reconciliation cannot confirm", async () => {
+  const { runner, plan, store, to, at } = await setup({ count: 3 });
+  to.failOn.push({ op: "commit", path: parsePosix("/b"), times: 1, error: new CommanderError("permission_denied", "Denied") });
+  loseCommitReply(to, "b1");
+  const { id } = await runner.submit(plan);
+  expect((await at(id, "unknown")).items.map(({ outcome }) => outcome)).toEqual(["failed", "unknown", "pending"]);
+
+  const retry = (await runner.retryJob(id, { kind: "owner" })).plan;
+  // The pending item after the unknown one is planned for a finished job; the unknown one is not.
+  expect(retry!.items.map(({ source }) => source?.path.segments)).toEqual([[{ t: "a" }], [{ t: "a2" }]]);
+  expect((await store.get(id))!.items.map(({ outcome }) => outcome)).toEqual(["failed", "unknown", "pending"]);
+});
+
+test("retry plans a failed directory before the failed children inside it", async () => {
+  const { runner, plan, to, from, at } = await setup({ count: 1 });
+  const signal = new AbortController().signal;
+  const tree = parsePosix("/tree");
+  await from.mkdir(tree, signal);
+  const dir = (await from.stat(tree, signal))!;
+  const child = parsePosix("/tree/child");
+  from.put(child, Uint8Array.of(42, 42, 42), "1");
+  to.failOn.push({ op: "mkdir", path: parsePosix("/tree-copy"), times: 1, error: new CommanderError("permission_denied", "Denied") });
+
+  const { digest: _digest, ...unsigned } = plan;
+  unsigned.items = [
+    {
+      source: { endpoint: "host:from", path: tree }, target: { endpoint: "host:to", path: parsePosix("/tree-copy") },
+      kind: "dir", fingerprint: { size: "0", mtimeNs: dir.mtimeNs }, expectTarget: "absent",
+    },
+    {
+      source: { endpoint: "host:from", path: child }, target: { endpoint: "host:to", path: parsePosix("/tree-copy/child") },
+      kind: "file", fingerprint: { size: "3", mtimeNs: "1" }, expectTarget: "absent",
+    },
+  ];
+  unsigned.totalBytes = "3";
+  const { id } = await runner.submit({ ...unsigned, digest: await planDigest(unsigned) });
+  expect((await at(id, "failed")).items.map(({ outcome }) => outcome)).toEqual(["failed", "skipped"]);
+
+  const retry = (await runner.retryJob(id, { kind: "owner" })).plan;
+  expect(retry!.items.map(({ kind, source }) => [kind, source?.path.segments])).toEqual([
+    ["dir", [{ t: "tree" }]],
+    ["file", [{ t: "tree" }, { t: "child" }]],
+  ]);
+  const retried = await runner.submit(retry!);
+  await at(retried.id, "completed");
+  expect(to.contents(parsePosix("/tree-copy/child"))).toEqual(Uint8Array.of(42, 42, 42));
+});
+
+/** Hold the commit of `name` until the returned release is called. */
+function holdCommit(to: FakeProvider, name: string) {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  to.delay = async (op, path) => {
+    const segment = path.segments.at(-1);
+    if (op === "commit" && segment && "t" in segment && segment.t === name) await gate;
+  };
+  return release;
+}
+
+test("retry of a finished job plans its pending items and keeps the unknown item unknown", async () => {
+  const { runner, plan, store, to, at } = await setup({ count: 4 });
+  loseCommitReply(to, "b1");
+  const { id } = await runner.submit(plan);
+  expect((await at(id, "unknown")).items.map(({ outcome }) => outcome)).toEqual(["done", "unknown", "pending", "pending"]);
+
+  const { plan: retry, excluded } = await runner.retryJob(id, { kind: "owner" });
+  expect(retry!.items.map(({ source }) => source?.path.segments)).toEqual([[{ t: "a2" }], [{ t: "a3" }]]);
+  expect(excluded).toEqual([]);
+  expect((await store.get(id))!.items.map(({ outcome }) => outcome)).toEqual(["done", "unknown", "pending", "pending"]);
+});
+
+test("retry refuses a running job and plans nothing", async () => {
+  const { runner, plan, to, at } = await setup({ count: 2 });
+  const release = holdCommit(to, "b1");
+  const { id } = await runner.submit(plan);
+  await at(id, "running");
+  await expect(runner.retryJob(id, { kind: "owner" })).rejects.toMatchObject({ code: "changed_since_plan" });
+  release();
+  await at(id, "completed");
+});
+
+test("retry leaves out files inside a directory whose creation stays unconfirmed", async () => {
+  const { runner, plan, store, from, to, at } = await setup({ count: 1 });
+  const signal = new AbortController().signal;
+  await from.mkdir(parsePosix("/tree"), signal);
+  const dir = (await from.stat(parsePosix("/tree"), signal))!;
+  from.put(parsePosix("/tree/a"), Uint8Array.of(42, 42, 42), "1");
+  from.put(parsePosix("/tree/b"), Uint8Array.of(42, 42, 42), "1");
+  // The directory is created, then its reply is lost: the checkpoint cannot confirm it.
+  const mkdir = to.mkdir.bind(to);
+  vi.spyOn(to, "mkdir").mockImplementationOnce(async (path, stepSignal) => {
+    await mkdir(path, stepSignal);
+    throw new CommanderError("outcome_unknown", "Reply lost", true);
+  });
+  const child = (name: string) => ({
+    source: { endpoint: "host:from", path: parsePosix("/tree/" + name) },
+    target: { endpoint: "host:to", path: parsePosix("/tree-copy/" + name) },
+    kind: "file" as const,
+    fingerprint: { size: "3", mtimeNs: "1" },
+    expectTarget: "absent" as const,
+  });
+  const { digest: _digest, ...unsigned } = plan;
+  unsigned.items = [
+    {
+      source: { endpoint: "host:from", path: parsePosix("/tree") }, target: { endpoint: "host:to", path: parsePosix("/tree-copy") },
+      kind: "dir", fingerprint: { size: "0", mtimeNs: dir.mtimeNs }, expectTarget: "absent",
+    },
+    child("a"),
+    child("b"),
+    plan.items[0],
+  ];
+  unsigned.totalBytes = "9";
+  const { id } = await runner.submit({ ...unsigned, digest: await planDigest(unsigned) });
+  await at(id, "unknown");
+  // The run halts at the unknown directory, so the children cannot have run: their failed
+  // outcomes are recorded directly, as a job that had failed them would hold.
+  const failed = { outcome: "failed" as const, error: "Denied" };
+  await store.update(id, {
+    items: [{ outcome: "unknown", error: null }, failed, failed, failed],
+  }, "unknown");
+
+  const { plan: retry, excluded } = await runner.retryJob(id, { kind: "owner" });
+  expect(retry!.items.map(({ source }) => source?.path.segments)).toEqual([[{ t: "a" }]]);
+  expect(excluded).toEqual([{ count: 2, reason: "parent_unconfirmed" }]);
+});
+
+test("retry does not repeat a file the owner skipped on a conflict", async () => {
+  const { runner, plan, to, at } = await setup({ count: 3 });
+  to.put(parsePosix("/b1"), Uint8Array.of(7), "1");
+  to.failOn.push({ op: "commit", path: parsePosix("/b2"), times: 1, error: new CommanderError("permission_denied", "Denied") });
+  const { id } = await runner.submit(await planningExisting(plan, to));
+  const waiting = await at(id, "awaiting_decision", 1);
+  await runner.decide(id, { conflictId: waiting.pendingConflict!.id, action: "skip", applyTo: "this" });
+  expect((await at(id, "failed")).items.map(({ outcome }) => outcome)).toEqual(["done", "skipped", "failed"]);
+
+  const { plan: retry, excluded } = await runner.retryJob(id, { kind: "owner" });
+  expect(retry?.items.map(({ source }) => source?.path.segments)).toEqual([[{ t: "a2" }]]);
+  expect(excluded).toEqual([]);
+});
+
+/** A directory whose creation stays unconfirmed, with only its children as candidates. */
+async function waitingOnlyForDirectory() {
+  const { runner, plan, store, from, to, at } = await setup({ count: 1 });
+  const signal = new AbortController().signal;
+  await from.mkdir(parsePosix("/tree"), signal);
+  const dir = (await from.stat(parsePosix("/tree"), signal))!;
+  from.put(parsePosix("/tree/a"), Uint8Array.of(42, 42, 42), "1");
+  from.put(parsePosix("/tree/b"), Uint8Array.of(42, 42, 42), "1");
+  const mkdir = to.mkdir.bind(to);
+  vi.spyOn(to, "mkdir").mockImplementationOnce(async (path, stepSignal) => {
+    await mkdir(path, stepSignal);
+    throw new CommanderError("outcome_unknown", "Reply lost", true);
+  });
+  const child = (name: string) => ({
+    source: { endpoint: "host:from", path: parsePosix("/tree/" + name) },
+    target: { endpoint: "host:to", path: parsePosix("/tree-copy/" + name) },
+    kind: "file" as const,
+    fingerprint: { size: "3", mtimeNs: "1" },
+    expectTarget: "absent" as const,
+  });
+  const { digest: _digest, ...unsigned } = plan;
+  unsigned.items = [
+    {
+      source: { endpoint: "host:from", path: parsePosix("/tree") }, target: { endpoint: "host:to", path: parsePosix("/tree-copy") },
+      kind: "dir", fingerprint: { size: "0", mtimeNs: dir.mtimeNs }, expectTarget: "absent",
+    },
+    child("a"),
+    child("b"),
+  ];
+  unsigned.totalBytes = "6";
+  const { id } = await runner.submit({ ...unsigned, digest: await planDigest(unsigned) });
+  await at(id, "unknown");
+  const failed = { outcome: "failed" as const, error: "Denied" };
+  await store.update(id, { items: [{ outcome: "unknown", error: null }, failed, failed] }, "unknown");
+  return { runner, id };
+}
+
+test("retry returns no plan when every candidate waits for a directory check", async () => {
+  const { runner, id } = await waitingOnlyForDirectory();
+  await expect(runner.retryJob(id, { kind: "owner" })).resolves.toEqual({
+    plan: null, excluded: [{ count: 2, reason: "parent_unconfirmed" }],
+  });
+});
+
+test("retry stops confirming when its request is cancelled and plans nothing", async () => {
+  const { runner, plan, to, at } = await setup({ count: 2 });
+  loseCommitReply(to, "b1");
+  const { id } = await runner.submit(plan);
+  await at(id, "unknown");
+  to.delay = async (_op, _path, signal) => {
+    await new Promise<void>((_, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+  };
+  const request = new AbortController();
+  const pending = runner.retryJob(id, { kind: "owner" }, request.signal);
+  request.abort(new Error("request cancelled"));
+  await expect(pending).rejects.toThrow("request cancelled");
+  expect((await at(id, "unknown")).items.map(({ outcome }) => outcome)).toEqual(["done", "unknown"]);
+});
+
+test("retry plans a failed directory alone when its skipped child carries no parent reason", async () => {
+  const { runner, plan, store, from, to, at } = await setup({ count: 1 });
+  const signal = new AbortController().signal;
+  const tree = parsePosix("/tree");
+  await from.mkdir(tree, signal);
+  const dir = (await from.stat(tree, signal))!;
+  from.put(parsePosix("/tree/child"), Uint8Array.of(42, 42, 42), "1");
+  to.failOn.push({ op: "mkdir", path: parsePosix("/tree-copy"), times: 1, error: new CommanderError("permission_denied", "Denied") });
+  const { digest: _digest, ...unsigned } = plan;
+  unsigned.items = [
+    {
+      source: { endpoint: "host:from", path: tree }, target: { endpoint: "host:to", path: parsePosix("/tree-copy") },
+      kind: "dir", fingerprint: { size: "0", mtimeNs: dir.mtimeNs }, expectTarget: "absent",
+    },
+    {
+      source: { endpoint: "host:from", path: parsePosix("/tree/child") }, target: { endpoint: "host:to", path: parsePosix("/tree-copy/child") },
+      kind: "file", fingerprint: { size: "3", mtimeNs: "1" }, expectTarget: "absent",
+    },
+  ];
+  unsigned.totalBytes = "3";
+  const { id } = await runner.submit({ ...unsigned, digest: await planDigest(unsigned) });
+  await at(id, "failed");
+  // A job written before the parent reason existed: the child is skipped with no error text.
+  await store.update(id, { items: [{ outcome: "failed", error: "Denied" }, { outcome: "skipped", error: null }] }, "failed");
+
+  const { plan: retry } = await runner.retryJob(id, { kind: "owner" });
+  expect(retry?.items.map(({ kind, source }) => [kind, source?.path.segments])).toEqual([["dir", [{ t: "tree" }]]]);
+});
+
+test("cancelling a retry during its final revalidate returns no plan", async () => {
+  const request = new AbortController();
+  const revalidate = vi.fn(async () => {
+    request.abort(new Error("request cancelled"));
+    return { ok: true as const };
+  });
+  const { runner, plan, to, at } = await setup({ count: 2, revalidate });
+  to.failOn.push({ op: "commit", path: parsePosix("/b"), times: 1, error: new CommanderError("permission_denied", "Denied") });
+  const { id } = await runner.submit(plan);
+  await at(id, "failed");
+  await expect(runner.retryJob(id, { kind: "owner" }, request.signal)).rejects.toThrow("request cancelled");
+  expect(revalidate).toHaveBeenCalledTimes(1);
 });

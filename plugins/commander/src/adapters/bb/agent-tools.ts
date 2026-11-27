@@ -65,4 +65,12 @@ export function registerAgentTools(agents: BbPluginApi["agents"], ops: Operation
     (input, agent) => ops.agentJobs(input, agent.threadId));
   register("cancel", "Cancel one of this thread's file operations.", rpcSchemas.job_cancel.input,
     ({ jobId }, agent) => ops.cancel(jobId, agent));
+  // The same grant check as job_retry runs in ops.retry; the plan itself stays on the host.
+  register("retry", "Plan a retry of this thread's finished file operation with unfinished items. Show the ticket to the owner before running it.", rpcSchemas.job_retry.input,
+    async ({ jobId }, agent, signal) => {
+      const { plan, excluded } = await ops.retry(jobId, agent, signal);
+      return plan
+        ? { id: plan.id, digest: plan.digest, status: "planned", excluded }
+        : { id: null, digest: null, status: "nothing_to_retry", excluded };
+    });
 }

@@ -9,7 +9,7 @@ import { chord, findShortcut, shortcuts, shortcutText, type KeyBindings, type Sh
 import { activeTab, currentRef, keyOf, nameOf, nativePath, otherSide, problemOf, selectionInfo, shortPath, sides, visibleEntries,
   type Directory, type EndpointView, type PlanCheck, type PlanRequest, type Problem, type Side, type Tab } from "./model.ts";
 import { Pane, ProblemLine, rowHeight, upKey } from "./pane.tsx";
-import { Queue, type QueueProps } from "./queue.tsx";
+import { Queue, type QueueProps, type RetryNote } from "./queue.tsx";
 import { ru } from "./strings.ts";
 
 type ConflictView = { kind: "conflict"; job: OperationJob };
@@ -43,6 +43,10 @@ export interface WorkspaceProps {
   onReloadConflict: (jobId: string) => Promise<OperationJob | null>;
   onDecide: (job: OperationJob, action: ConflictAction, same: boolean) => Promise<unknown>;
   onCancel: (job: OperationJob) => Promise<unknown>;
+  /** S17: повтор невыполненного; хост создаёт план повтора и запускает его. */
+  onRetry: (job: OperationJob) => Promise<unknown>;
+  /** S17: the last retry result by job id, shown on the queue card. */
+  retryNotes: Record<string, RetryNote>;
   onPreview: (ref: ResourceRef) => void;
   onCompare: (source: ResourceRef, target: ResourceRef) => Promise<[string, string]>;
   onTerminal: (ref: ResourceRef) => Promise<void>;
@@ -480,7 +484,9 @@ export function Workspace(props: WorkspaceProps) {
     fullDestination: right ? targetLabel + displayPath(right.path) : "—" };
   const queue = <Queue {...props.queue} endpoints={endpoints} id={queueId} open={queueOpen} collapse={queueOpen ? toggleQueue : undefined} compact={compact} selection={selection}
     onInspect={inspect} onSkip={(job) => decide(job, "skip", false)}
-    onCancel={(job) => open({ kind: "cancel", job })} />;
+    onCancel={(job) => open({ kind: "cancel", job })}
+    onRetry={(job) => { void props.onRetry(job).catch((error: unknown) => setProblem(problemOf(error))); }}
+    retryNotes={props.retryNotes} />;
 
   return <div ref={root} className="cm-workspace" data-compact={compact} onKeyDown={onKeyDown}>
     <header className="cm-heading">

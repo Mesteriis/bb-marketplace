@@ -9,6 +9,12 @@ import { sftpMethods } from "./remote-hub-sftp.ts";
 
 const empty = z.strictObject({});
 const jobId = z.strictObject({ jobId: z.uuid() });
+// S17: файлы внутри каталога, чьё создание не подтверждено, в план не входят и считаются здесь.
+export const RetryResult = z.strictObject({
+  plan: OperationPlan.nullable(),
+  excluded: z.array(z.strictObject({ count: z.int().min(1), reason: z.literal("parent_unconfirmed") })),
+});
+export type RetryResult = z.infer<typeof RetryResult>;
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
 export const threadId = z.string().min(1).max(64);
 export const GrantKey = z.strictObject({
@@ -90,6 +96,8 @@ export const rpcSchemas = {
   job_get: { input: jobId, output: JobView.nullable() },
   job_decide: { input: ConflictDecision.extend(jobId.shape), output: empty },
   job_cancel: { input: jobId, output: empty },
+  // S17: план повтора failed и неподтверждённых unknown-элементов; запускается через plan_run.
+  job_retry: { input: jobId, output: RetryResult },
   // Read-only preflight for an owner client. Approval repeats validation against live metadata.
   plan_check: {
     input: jobId.extend({ digest }),

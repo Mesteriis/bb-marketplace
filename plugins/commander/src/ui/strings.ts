@@ -13,6 +13,10 @@ export const ru = {
   compareLimit: "Сравнение доступно для двух текстовых файлов до 128 КБ", allItems: "Список объектов",
   cancel: "Отмена", cancelJob: "Отменить задание", run: "Запустить", next: "Далее",
   retryConflict: "Проверить снова",
+  retryUnfinished: "Повторить невыполненное",
+  retryNothing: "Повторять нечего",
+  // S17: по-русски число задаёт форму слова (1 элемент, 2 элемента, 5 элементов).
+  retryWaitsForCheck: (count: number) => count + " " + ({ one: "элемент ждёт", few: "элемента ждут", many: "элементов ждут", other: "элементов ждут" } as Record<string, string>)[new Intl.PluralRules("ru").select(count)] + " сверки каталога",
   conflictEnded: "Конфликт больше не ожидает решения",
   conflictExists: (file: string) => file + " уже есть в назначении",
   conflictForFile: (file: string, reason: string) => file + " · " + reason,

@@ -19,6 +19,7 @@ vi.mock("@get-bb/plugin-sdk/app", () => ({
 }));
 
 import app from "./app.tsx";
+import { ru } from "./src/ui/strings.ts";
 import type { ComponentType } from "react";
 
 const endpoint = { id: "host:fixture", provider: "local", label: "Стенд", machine: "Стенд", hostId: "fixture", readOnly: false, caseSensitive: true };
@@ -528,4 +529,17 @@ test("resolving a conflict clears its obsolete retry prompt", async () => {
   fireEvent.click(screen.getByRole("button", { name: "Пропустить" }));
   await waitFor(() => expect(screen.queryByRole("button", { name: "Сравнить и решить" })).toBeNull());
   expect(screen.queryByRole("button", { name: "Проверить снова" })).toBeNull();
+});
+
+test("a refused job retry shows its problem on the page instead of failing silently", async () => {
+  const job = firstConflict();
+  jobs = [{ ...job, state: "failed", awaitsOwner: false, pendingConflict: null }];
+  mount();
+  const card = await screen.findByRole("article", { name: "Копирование" });
+  const call = host.call.getMockImplementation()!;
+  host.call.mockImplementation(async (method, input) => method === "job_retry"
+    ? Promise.reject(new Error("refused by the host")) : call(method, input));
+  fireEvent.click(within(card).getByRole("button", { name: "Повторить невыполненное" }));
+  expect(await screen.findByText(ru.unknownError)).toBeDefined();
+  expect(host.call.mock.calls.some(([method]) => method === "plan_run")).toBe(false);
 });

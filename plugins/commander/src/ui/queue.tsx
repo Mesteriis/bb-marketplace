@@ -2,6 +2,7 @@ import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import type { OperationJob } from "../core/model.ts";
 import { displayPath } from "../core/path.ts";
+import { parentSkipNote } from "../core/retry-note.ts";
 import { bytes, damaged, date, shortPath, type EndpointView, type JobView, type Problem } from "./model.ts";
 import { ProblemLine } from "./pane.tsx";
 import { approvalState, operationText, reasonText, ru, stateText } from "./strings.ts";
@@ -9,15 +10,23 @@ import { approvalState, operationText, reasonText, ru, stateText } from "./strin
 const plurals = new Intl.PluralRules("ru");
 const pluralIndex = { one: 0, few: 1, many: 2, other: 2, two: 2, zero: 2 } as const;
 const cancellable = new Set(["pending", "running", "awaiting_decision", "interrupted"]);
+// S17: те же конечные состояния, что принимает ядро повтора.
+const retryable = new Set(["completed", "failed", "cancelled", "unknown"]);
+// Items a retry can still act on: unfinished, or skipped only because of a directory above them.
+const hasUnfinished = (job: OperationJob) => job.items.some(({ outcome, error }) => outcome === "failed" || outcome === "pending"
+  || outcome === "unknown" || (outcome === "skipped" && error === parentSkipNote));
+/** S17: the result of the last retry request for a job: nothing to retry, or files waiting for a check. */
+export type RetryNote = { kind: "nothing" } | { kind: "waiting"; count: number };
 const stateIcons = {
   pending: "Clock", approval: "Lock", running: "Play", awaiting_decision: "CircleQuestion",
   completed: "CircleCheck", failed: "AlertTriangle", cancel_requested: "Clock",
   cancelled: "CircleX", interrupted: "Pause", unknown: "CircleQuestion",
 };
 
-function JobCard({ job, endpoints, compact, onInspect, onSkip, onCancel }: {
+function JobCard({ job, endpoints, compact, onInspect, onSkip, onCancel, onRetry, retryNotes }: {
   job: JobView; endpoints: EndpointView[]; compact?: boolean;
   onInspect: (job: OperationJob) => void; onSkip: (job: OperationJob) => void; onCancel: (job: OperationJob) => void;
+  onRetry?: (job: OperationJob) => void; retryNotes?: Record<string, RetryNote>;
 }) {
   if (damaged(job)) return <article className="cm-job" aria-label={ru.damaged}>
     <strong>{ru.damaged}</strong><span className="cm-meta">{job.id}</span>
@@ -66,6 +75,8 @@ function JobCard({ job, endpoints, compact, onInspect, onSkip, onCancel }: {
       {total > 0n && <> · {bytes(progress.bytesDone)} / {bytes(progress.bytesTotal)}</>}</div>
     {pendingConflict && <div className="cm-meta">{reasonText[pendingConflict.reason]}</div>}
     {job.error && <ProblemLine problem={{ code: job.error.code, message: "" }} />}
+    {retryNotes?.[job.id] && <div className="cm-meta">{retryNotes[job.id].kind === "nothing"
+      ? ru.retryNothing : ru.retryWaitsForCheck((retryNotes[job.id] as { count: number }).count)}</div>}
     <div className="cm-actions">
       {conflict && <Button size="sm" data-conflict-id={conflict.id} onClick={() => onInspect(job)}>{ru.resolve}</Button>}
       {conflict && (conflict.allowedResolutions?.includes("skip") ?? true) &&
@@ -73,6 +84,8 @@ function JobCard({ job, endpoints, compact, onInspect, onSkip, onCancel }: {
       {job.awaitsOwner && <Button size="sm" variant="outline" onClick={() => onInspect(job)}>{ru.inspectPlan}</Button>}
       {cancellable.has(job.state) && !job.awaitsOwner && !conflict &&
         <Button size="sm" variant="outline" onClick={() => onCancel(job)}>{ru.cancelJob}</Button>}
+      {onRetry && retryable.has(job.state) && hasUnfinished(job) && !job.awaitsOwner && !conflict &&
+        <Button size="sm" variant="outline" onClick={() => onRetry(job)}>{ru.retryUnfinished}</Button>}
     </div>
   </article>;
 }
@@ -80,6 +93,10 @@ function JobCard({ job, endpoints, compact, onInspect, onSkip, onCancel }: {
 export type QueueProps = {
   jobs: JobView[]; endpoints: EndpointView[]; error: Problem | null; loading: boolean;
   onInspect: (job: OperationJob) => void; onSkip: (job: OperationJob) => void; onCancel: (job: OperationJob) => void;
+  /** S17: the last retry result, by job id. */
+  retryNotes?: Record<string, RetryNote>;
+  /** S17: optional, so a host without the retry wiring still renders the queue. */
+  onRetry?: (job: OperationJob) => void;
 };
 export function Queue({ compact, open, selection, id, collapse, ...props }: QueueProps & {
   compact?: boolean; open: boolean; id: string; collapse?: () => void; selection: { count: number; size: string; destination: string; fullDestination: string };
