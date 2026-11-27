@@ -5,7 +5,8 @@
  * `--text-base64-stdin`, so quotes, backticks and new lines survive whatever the shell.
  */
 import { PluginCliError } from "@get-bb/plugin-sdk";
-import { describeLocation, GENERAL_PATH, type ReviewThread, type Severity } from "../../core/code-review/model.ts";
+import { parseRange } from "../../core/code-review/git-spec.ts";
+import { describeLocation, describeTarget, GENERAL_PATH, targetRequestSchema, type ReviewThread, type Severity, type TargetRequest } from "../../core/code-review/model.ts";
 import { failureFor } from "../../core/workspace.ts";
 import type { AgentCommentInput } from "./code-review-runs.ts";
 import type { AgentAction } from "./code-review-service.ts";
@@ -52,6 +53,8 @@ export type ReviewCliDeps = {
   sentTo(callerThreadId: string, all: boolean): ReviewThread[];
   answer(callerThreadId: string, prefix: string, action: AgentAction, text: string): Promise<ReviewThread>;
   comment(callerThreadId: string, input: AgentCommentInput): Promise<ReviewThread>;
+  /** Asks the window showing the thread to open its copy's Review on a view and file. */
+  open(threadId: string, target: TargetRequest, file: string | null): Promise<{copyId: string; route: string}>;
   /** Binds a run's thread that calls in before BB answered its start. */
   bind(callerThreadId: string): Promise<void>;
 };
@@ -104,5 +107,27 @@ export function reviewCommands(deps: ReviewCliDeps) {
         startLine, endLine: options.endLine ?? startLine, severity: options.severity ?? null, body: text}).catch(refused);
       return {exitCode: 0, stdout: "Added comment thread " + thread.id + " on " + describeLocation(thread) + ".\n"};
     },
+    /** `review open [file] [--view …] [--thread …]`: opens the Review in the BB window showing the thread. */
+    async open(options: {file: string | undefined; view: string | undefined; base: string | undefined; commit: string | undefined; range: string | undefined;
+      thread: string | undefined}, threadId: string | undefined) {
+      const target = viewRequest(options);
+      const opened = await deps.open(options.thread ?? caller(threadId), target, options.file ?? null).catch(refused);
+      const described = target.kind === "branch" || target.kind === "all" ? {kind: target.kind, base: target.base ?? "the default branch"} : target;
+      return {exitCode: 0, stdout: "Opening the review of " + describeTarget(described)
+        + " in the BB window that shows the thread.\nThe page, in any BB window: " + opened.route + "\n"};
+    },
   };
+}
+
+/** The view `review open` asks for, from its options; the uncommitted changes when none is named. */
+function viewRequest(options: {view: string | undefined; base: string | undefined; commit: string | undefined; range: string | undefined}): TargetRequest {
+  const {view, base, commit, range} = options;
+  const misuse = (text: string): never => { throw new PluginCliError(text, {code: "unexpected_argument"}); };
+  if (range !== undefined && view !== undefined && view !== "range") misuse("--range goes with --view range, or alone.");
+  if (range !== undefined || view === "range") return parseRange(range ?? "") ?? misuse("Give --range as a..b or a...b.");
+  if (commit !== undefined) return targetRequestSchema.safeParse({kind: "commit", sha: commit}).data ?? misuse("--commit takes a commit hash of 7 to 64 hex characters.");
+  if (view === "commit") misuse("--view commit needs --commit <sha>.");
+  if (view === "branch" || view === "all") return base === undefined ? {kind: view} : {kind: view, base};
+  if (base !== undefined) misuse("--base goes with --view branch or --view all.");
+  return targetRequestSchema.safeParse({kind: view ?? "uncommitted"}).data ?? misuse("Unknown view " + view + ".");
 }

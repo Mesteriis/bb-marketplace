@@ -17,8 +17,10 @@ import { CiOverview } from "./src/ui/ci/ci-overview.tsx";
 import { IssuePage } from "./src/ui/review/issue-page.tsx";
 import { parseRef, refPath, type ReviewApi } from "./src/ui/review/review-api.ts";
 import { dispatchReviewCommand, REVIEW_COMMANDS, type ReviewCommand } from "./src/ui/code-review/commands.ts";
+import { ReviewsPage, type ReviewsApi } from "./src/ui/code-review/reviews-page.tsx";
+import { requestOfKey, ReviewOpenOverlay, reviewRoute } from "./src/app/review-open.tsx";
 import { ciApi, codeReviewApi, failed, historyApi, okValue } from "./src/app/apis.tsx";
-import { ciTab, historyTab, reviewTab, ThreadCi, ThreadHistory, ThreadReview, registerHistoryShortcut } from "./src/app/thread-tabs.tsx";
+import { ciTab, historyTab, reviewTab, ThreadCi, ThreadHistory, ThreadReview, registerHistoryShortcut, registerReviewSurfaces } from "./src/app/thread-tabs.tsx";
 import "./src/ui/git.css";
 
 type Client = ReturnType<typeof useRpc<typeof rpc>>;
@@ -250,6 +252,18 @@ function Dashboard({subPath}: {subPath: string}) {
   useRealtime(inboxSignal, readAlerts);
   const badge = alerts?.badge && alerts.unseen > 0 ? alerts.unseen : null;
   const open = (path:string) => navigate.toPluginPanel("git",path ? {subPath:path} : undefined);
+  const reviewsApi = useMemo<ReviewsApi>(() => ({
+    summaries: async () => okValue(await client.call("reviewSummaries",{})).reviews,
+    deleteOrphans: async sessionIds => okValue(await client.call("reviewDeleteOrphans",{sessionIds})),
+  }), [client]);
+  // Open comment threads over every review, for the Reviews button.
+  const [reviewsOpen,setReviewsOpen] = useState(0);
+  useEffect(() => {
+    let active = true;
+    reviewsApi.summaries().then(rows => { if (active) setReviewsOpen(rows.filter(row => !row.orphan).reduce((sum,row) => sum + row.open,0)); },() => {});
+    return () => { active = false; };
+  }, [reviewsApi,reviewRevision]);
+  const openReview = (copyId:string,targetKey:string,file:string|null) => open(reviewRoute(copyId,requestOfKey(targetKey),file));
   return <div className="git-ws-frame"><div className="git-ws">
     <InboxToasts alerts={alerts}/>
     {parseRef(subPath) ? (() => {
@@ -270,7 +284,13 @@ function Dashboard({subPath}: {subPath: string}) {
           : <IssuePage key={subPath} api={review} accountId={ref.accountId} repo={ref.repo} number={ref.number}
             onCreated={number => open(refPath("issue",{accountId:ref.accountId,repo:ref.repo,number}))}/>}
       </>;
-    })() : subPath === "ci" ? <>
+    })() : subPath === "reviews" ? <>
+      <nav aria-label="Git workspace" className="git-row git-section-tabs">
+        <button type="button" onClick={() => open("")}>Projects</button>
+        <span>Reviews</span>
+      </nav>
+      <ReviewsPage api={reviewsApi} revision={reviewRevision} onOpen={(copyId, targetKey) => openReview(copyId, targetKey, null)}/>
+    </> : subPath === "ci" ? <>
       <nav aria-label="Git workspace" className="git-row git-section-tabs">
         <button type="button" onClick={() => open("")}>Projects</button>
         <span>CI/CD</span>
@@ -294,7 +314,7 @@ function Dashboard({subPath}: {subPath: string}) {
         }
       }}/>
     </> : <ProjectWorkspace copies={copies} hosts={hosts} projects={projects} locations={locations} subPath={subPath}
-      loaded={loaded} error={error} api={api} onOpen={open} inboxBadge={badge} historyGraph={historyGraph} reviewRevision={reviewRevision}
+      loaded={loaded} error={error} api={api} onOpen={open} inboxBadge={badge} reviewsBadge={reviewsOpen || null} historyGraph={historyGraph} reviewRevision={reviewRevision}
       onOpenIssue={(accountId,repo,number) => open(refPath("issue",{accountId,repo,number}))}
       onAttach={async (hostId,root,projectId) => {
         const result = await client.call("attach",{hostId,root,projectId});
@@ -418,6 +438,7 @@ export default definePluginApp(app => {
   app.slots.experimental_tab({...ciTab, title:"CI/CD", icon:"Workflow", layout:"flush", component:ThreadCi});
   app.slots.experimental_tab({...reviewTab, title:"Review", icon:"FileDiff", layout:"flush", component:ThreadReview});
   // The Review's palette commands: each opens the thread's Review tab and leaves its action there.
+  app.slots.experimental_appOverlay({id:"review-open", component:ReviewOpenOverlay});
   app.commands.register({id:"review-open", title:"Makosh Git: review this thread's changes", isAvailable:context => context.threadId !== null,
     run:context => { context.experimental_panel.openTab({tab:reviewTab, title:"Review"}); }});
   for (const [id, title] of Object.entries(REVIEW_COMMANDS) as [ReviewCommand, string][]) {
@@ -429,5 +450,6 @@ export default definePluginApp(app => {
       }});
   }
   registerHistoryShortcut(app.slots);
+  registerReviewSurfaces(app.slots);
   app.slots.experimental_tab({id:tab.id, title:"Pinned Git", icon:"GitBranch", context:{kind:"nav-panel", panelId:"git"}, availability:"action", layout:"flush", component:PinnedGit});
 });

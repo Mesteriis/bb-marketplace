@@ -72,6 +72,11 @@ try {
   const runThread = page.url().match(/thr_[A-Za-z0-9_-]+/)?.[0];
   check("Open thread goes to the run's thread", Boolean(runThread), page.url());
 
+  const header = page.getByRole("button", { name: "Review this thread's changes" });
+  if (await visible(header, 10000)) {
+    await header.click();
+    check("the thread header's Review button opens the thread's Review tab", await visible(page.getByRole("region", { name: "Review" }).getByLabel("What to review")));
+  } else check("the thread header's Review button is there", false, "not found");
   const listed = JSON.parse(bb(["git-dashboard", "review", "list", "--all", "--json"], runThread));
   check("the review run sees the threads of its review", Array.isArray(listed) && listed.length >= 1, listed.length);
   const said = bb(["git-dashboard", "review", "comment", "README.md", "--line", "2", "--end-line", "3", "--severity", "nit", "Probe", "comment", "from", "the", "run."], runThread);

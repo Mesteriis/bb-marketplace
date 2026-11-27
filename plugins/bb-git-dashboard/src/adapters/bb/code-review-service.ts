@@ -1,6 +1,6 @@
 import { placeThread, type Placement } from "../../core/code-review/anchors.ts";
 import { changeRevision, PATCH_BATCH, patchPaths, wholeFileEntry, withPatches, type ReviewDiff, type ReviewDiffFile } from "../../core/code-review/diff.ts";
-import { ANCHOR_MAX_CHARS, BODY_MAX_CHARS, GENERAL_PATH, targetKey, targetSchema, type Severity, type Side, type Target, type TargetRequest } from "../../core/code-review/model.ts";
+import { ANCHOR_MAX_CHARS, BODY_MAX_CHARS, describeTarget, GENERAL_PATH, targetFromKey, targetKey, targetSchema, type Severity, type Side, type Target, type TargetRequest } from "../../core/code-review/model.ts";
 import { contentLines, parsePatchLines } from "../../core/code-review/patch-lines.ts";
 import { readViewState, viewStateSchema, type ViewState } from "../../core/code-review/view-state.ts";
 import { sendPrompt } from "../../core/code-review/prompt.ts";
@@ -135,6 +135,28 @@ export function codeReviewService(deps: CodeReviewDeps) {
     saveViewState(scope: string, sessionId: string, state: ViewState) {
       session(sessionId);
       return {kept: store.saveViewState(scopeOf(scope), sessionId, state.savedAt, JSON.stringify(viewStateSchema.parse(state)))};
+    },
+
+    /** Every review with threads for the Reviews page: its copy (null when gone: an orphan), view and counts. */
+    async summaries() {
+      const rows = store.summaries();
+      const copies = new Map(await Promise.all([...new Set(rows.map(row => row.copyId))].map(async id => [id, await deps.copy(id).catch(() => undefined)] as const)));
+      return rows.map(row => {
+        const copy = copies.get(row.copyId);
+        return {...row, orphan: !copy, view: describeTarget(targetFromKey(row.targetKey)),
+          copyName: copy ? copy.repositoryName || copy.root.split(/[\\/]/).filter(Boolean).pop() || copy.root : null};
+      });
+    },
+    /** Open and total threads of the copy a BB thread works on, for its Info row; null when it works on none. */
+    async threadCounts(threadId: string) {
+      const copyId = await deps.threads.copyOf(threadId).catch(() => null);
+      return copyId ? {copyId, ...store.counts(copyId)} : null;
+    },
+    /** `bb git-dashboard review open`: the copy and view a thread's Review is to open on. */
+    async requestOpen(threadId: string, target: TargetRequest, file: string | null) {
+      const copyId = await deps.threads.copyOf(threadId).catch(() => null) ?? fail("NOT_FOUND");
+      if (file !== null && (file.length > 4096 || !file.trim())) fail("INVALID_INPUT");
+      return {copyId, target, file};
     },
 
     /** Files of the copy for the Any file view's search. */
@@ -283,13 +305,4 @@ export function codeReviewService(deps: CodeReviewDeps) {
   };
 }
 
-/** A session's view from its key, when no view was read since the server started. */
-export function targetFromKey(key: string): Target {
-  if (key === "uncommitted" || key === "staged" || key === "unstaged" || key === "files") return {kind: key};
-  const [kind, rest] = [key.slice(0, key.indexOf(":")), key.slice(key.indexOf(":") + 1)];
-  if (kind === "branch" || kind === "all") return {kind, base: rest};
-  if (kind === "commit") return {kind, sha: rest};
-  const symmetric = rest.includes("...");
-  const [from, to] = rest.split(symmetric ? "..." : "..");
-  return {kind: "range", from, to, symmetric};
-}
+export { targetFromKey } from "../../core/code-review/model.ts";

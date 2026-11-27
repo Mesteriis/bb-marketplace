@@ -16,7 +16,7 @@ type Location = {hostId:string;projectId:string;path:string;name:string|null};
 const sections = ["Code","History","Review","Actions","Issues","Variables"] as const;
 type Section = typeof sections[number];
 
-export function ProjectWorkspace({copies,hosts,projects,locations,subPath,loaded,error,api,onOpen,onAttach,onClone,renderWorktree,inboxBadge = null,onOpenIssue,historyGraph = true,reviewRevision = 0}: {
+export function ProjectWorkspace({copies,hosts,projects,locations,subPath,loaded,error,api,onOpen,onAttach,onClone,renderWorktree,inboxBadge = null,reviewsBadge = null,onOpenIssue,historyGraph = true,reviewRevision = 0}: {
   copies:Copy[]; hosts:Host[]; projects:Project[]; locations:Location[]; subPath:string;
   /** The History tab draws branch and merge lanes; off by the historyGraph setting. */
   historyGraph?:boolean;
@@ -28,10 +28,14 @@ export function ProjectWorkspace({copies,hosts,projects,locations,subPath,loaded
   renderWorktree(copy:Copy,host:string,attach:(root:string)=>Promise<void>):ReactNode;
   /** Unseen My PRs alerts, or null when there are none or the badge is off. */
   inboxBadge?:number|null;
+  /** Open comment threads over every review, for the Reviews button; null for none. */
+  reviewsBadge?:number|null;
   onOpenIssue?(accountId:string,repo:string,number:number|"new"):void;
 }) {
   const groups = useMemo(() => projectTree(projects,copies), [copies,projects]);
-  const [first, second] = subPath.split("/");
+  const [first, second, third] = subPath.split("/");
+  // `<copy>/review/<file>`: the Review goes to that file once it shows (`bb git-dashboard review open`).
+  const reviewFile = third ? decodeURIComponentSafe(third) : undefined;
   const selected = groups.flatMap(group => group.repositories.map(repo => ({group,repo})))
     .find(({repo}) => repo.copies.some(copy => copy.id === first));
   const group = first === "project" ? groups.find(group => group.id === decodeURIComponentSafe(second)) :
@@ -66,6 +70,7 @@ export function ProjectWorkspace({copies,hosts,projects,locations,subPath,loaded
       <button onClick={() => onOpen("inbox")}>Мои PR{inboxBadge !== null &&
         <span className="git-inbox-badge" aria-label={inboxBadge + " new"}>{inboxBadge}</span>}</button>
       <button onClick={() => onOpen("ci")}>CI/CD</button>
+      <button onClick={() => onOpen("reviews")}>Reviews{reviewsBadge ? <span className="git-inbox-badge" aria-label={reviewsBadge + " open comment threads"}>{reviewsBadge}</span> : null}</button>
       <button aria-expanded={connections} onClick={() => setConnections(!connections)}>Подключения</button>
     </header>
     {connections &&       <section className="git-project-connections">
@@ -121,7 +126,7 @@ export function ProjectWorkspace({copies,hosts,projects,locations,subPath,loaded
         })}
       </>}
       {loaded && copy && section === "History" && <HistoryPanel key={copy.id} api={api.history} copyId={copy.id} graph={historyGraph}/>}
-      {loaded && copy && section === "Review" && <ReviewPanel key={copy.id} api={api.review} copyId={copy.id} revision={reviewRevision}/>}
+      {loaded && copy && section === "Review" && <ReviewPanel key={copy.id + (reviewFile ?? "")} api={api.review} copyId={copy.id} revision={reviewRevision} initialFile={reviewFile}/>}
       {loaded && copy && section !== "Code" && section !== "History" && section !== "Review" && <RepositoryPanel key={copy.id + section} copyId={copy.id} name={repo!.name}
         accounts={accounts} api={api} onAddConnection={() => setConnecting(true)} section={section.toLowerCase() as RepositorySection} onOpenIssue={onOpenIssue}/>}
       {connecting && <ConnectionWizard api={api} onClose={() => setConnecting(false)} onSaved={account => {

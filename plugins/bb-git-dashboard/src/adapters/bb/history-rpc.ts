@@ -11,6 +11,8 @@ export function historyHandlers(bb: BbPluginApi, copyOf: (copyId: string) => Pro
   // Read by the app through useSettings(); the server only declares them.
   bb.settings.define({
     historyGraph: {type: "boolean", label: "History: draw branch and merge lanes", description: "Off shows the history as one list without the graph.", default: true},
+    reviewHeaderShortcut: {type: "boolean", label: "Line review: show a Review button in the thread header",
+      description: "It opens the thread's Review tab, or closes it. Review stays available from the thread panel's New tab and the palette either way.", default: true},
     historyHeaderShortcut: {type: "boolean", label: "History: show a Git History button in the thread header",
       description: "Git History stays available from the thread panel's New tab either way.", default: false},
   });

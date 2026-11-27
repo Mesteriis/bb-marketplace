@@ -130,6 +130,14 @@ try {
   check("a file with a thread stays in Any file", await review.getByLabel("What to review").inputValue() === "files"
     && await visible(review.getByRole("article", { name: /Comment thread on README\.md:1/ })));
 
+  await page.goto(url + "plugins/bb-git-dashboard/git", { waitUntil: "load" });
+  check("the Reviews button counts open comment threads", await visible(page.getByRole("button", { name: /^Reviews/ }).getByLabel(/open comment threads/)));
+  await page.getByRole("button", { name: /^Reviews/ }).click();
+  const reviews = page.getByRole("region", { name: "Reviews" });
+  check("the Reviews page lists the Any file review", await visible(reviews.getByRole("button", { name: /gamma.*files of the working copy/ })));
+  await reviews.getByRole("button", { name: /gamma.*files of the working copy/ }).click();
+  check("a review opens on its view", await until(async () => await page.getByLabel("What to review").inputValue().catch(() => "") === "files"));
+
   await page.setViewportSize({ width: 768, height: 900 });
   await page.waitForTimeout(300);
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);

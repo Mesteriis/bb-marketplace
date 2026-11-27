@@ -22,6 +22,12 @@ export const codeReviewContract = {
       threads: z.array(reviewThreadSchema), placements: z.record(z.string(), placementSchema),
       /** Where the copy is, to open its files in BB's preview. */
       copy: z.object({hostId: id, root: z.string().max(4096)}), colorBlind: z.boolean().optional()})},
+  /** The Reviews page: every review with threads; an orphan's copy is gone. */
+  reviewSummaries: {input: z.object({}), output: answer({reviews: z.array(z.object({sessionId: reviewId, copyId: id, copyName: z.string().nullable(),
+    orphan: z.boolean(), targetKey: z.string(), view: z.string(), open: z.number().int(), total: z.number().int(), updatedAt: z.number()}))})},
+  reviewDeleteOrphans: {input: z.object({sessionIds: z.array(reviewId).min(1).max(200)}), output: answer({deleted: z.number().int(), deletedThreads: z.number().int()})},
+  /** A thread's Info row: its copy's open and total comment threads; null when it works on no copy. */
+  reviewThreadCounts: {input: z.object({threadId: id}), output: answer({counts: z.object({copyId: id, open: z.number().int(), total: z.number().int()}).nullable()})},
   reviewSearchFiles: {input: z.object({copyId: id, query: z.string().max(200)}), output: answer({paths: z.array(z.string()), more: z.boolean()})},
   reviewFileEntry: {input: z.object({copyId: id, path: z.string().min(1).max(4096)}), output: answer({file: reviewDiffFileSchema})},
   reviewRevert: {input: z.object({sessionId: reviewId, path: z.string().min(1).max(4096), revision: z.string().regex(/^[0-9a-f]{16}$/),

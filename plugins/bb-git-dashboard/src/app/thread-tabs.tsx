@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { useBbNavigate, useRealtime, useRpc, useSettings, type PluginAppSlots, type PluginThreadActionRegistration } from "@get-bb/plugin-sdk/app";
+import { experimental_DetailRow as DetailRow, experimental_THREAD_INFO_ROW_GROUPS, experimental_useAppPanel, useBbNavigate, useRealtime, useRpc, useSettings,
+  type ExperimentalThreadInfoProps, type PluginAppSlots, type PluginThreadActionRegistration } from "@get-bb/plugin-sdk/app";
 import type { rpc } from "../adapters/bb/rpc.ts";
 import type { Copy } from "../core/workspace.ts";
 import { CiPanel } from "../ui/ci/ci-panel.tsx";
@@ -72,4 +73,39 @@ const headerShortcut: PluginThreadActionRegistration<boolean> = {
 /** The Git History button in the thread header, shown when the historyHeaderShortcut setting is on. */
 export function registerHistoryShortcut(slots: PluginAppSlots) {
   slots.experimental_threadAction(headerShortcut);
+}
+
+/** The Review button in the thread header: opens the thread's Review tab, or closes it when it shows (on unless turned off). */
+const reviewShortcut: PluginThreadActionRegistration<boolean> = {
+  id: "git-review-header", title: "Review", icon: "FileDiff", group: "git", placement: "header",
+  useData: () => useSettings().values?.reviewHeaderShortcut !== false,
+  item: ({data, experimental_panel}) => data ? {
+    label: "Review this thread's changes", icon: "FileDiff",
+    run: () => { experimental_panel.toggleTab({tab: reviewTab, title: "Review"}); },
+  } : null,
+};
+
+/** "N open of M comment threads" in the thread's Info, with Open; nothing for a copy without threads. */
+function ReviewInfoRow({threadId}: ExperimentalThreadInfoProps) {
+  const client = useRpc<typeof rpc>();
+  const panel = experimental_useAppPanel();
+  const [counts, setCounts] = useState<{open: number; total: number} | null>(null);
+  const [revision, setRevision] = useState(0);
+  useRealtime("code-review-changed", useCallback(() => setRevision(value => value + 1), []));
+  useEffect(() => {
+    let active = true;
+    client.call("reviewThreadCounts", {threadId}).then(result => { if (active) setCounts(result.ok ? result.counts : null); }, () => {});
+    return () => { active = false; };
+  }, [client, threadId, revision]);
+  if (!counts?.total) return null;
+  return <DetailRow label="Review" icon="FileDiff">
+    <span>{counts.open ? counts.open + " open of " + counts.total + " comment threads" : counts.total + " comment thread" + (counts.total === 1 ? "" : "s") + ", all closed"}</span>{" "}
+    <button type="button" className="git-link" onClick={() => panel.openTab({tab: reviewTab, title: "Review"})}>Open</button>
+  </DetailRow>;
+}
+
+/** The Review's header button and its row in the thread's Info. */
+export function registerReviewSurfaces(slots: PluginAppSlots) {
+  slots.experimental_threadAction(reviewShortcut);
+  slots.experimental_threadInfoRow({id: "git-review", group: experimental_THREAD_INFO_ROW_GROUPS.git, component: ReviewInfoRow});
 }

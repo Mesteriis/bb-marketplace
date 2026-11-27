@@ -321,6 +321,25 @@ export function codeReviewRuns(deps: RunDeps) {
       return {deletedThreads, closedRuns: open.length};
     },
 
+    /**
+     * Deletes the reviews asked for whose copy is gone (orphans), each checked again right before its delete; a review
+     * whose copy is back stays. Their open runs close and their threads are archived.
+     */
+    async deleteOrphans(sessionIds: readonly string[]) {
+      let deleted = 0, deletedThreads = 0;
+      for (const sessionId of new Set(sessionIds)) {
+        const owner = store.sessionById(sessionId);
+        if (!owner || await deps.copy(owner.copyId).catch(() => undefined)) continue;
+        clears.set(owner.id, clearCount(owner.id) + 1);
+        const open = runs.open(owner.id);
+        deletedThreads += store.threads(owner.id).length;
+        store.deleteSession(owner.id);
+        deleted++;
+        await Promise.all(open.flatMap(run => run.threadId ? [archive(run.threadId)] : []));
+      }
+      return {deleted, deletedThreads};
+    },
+
     /** Closes a run: it loses its rights first, then its thread is archived. */
     async close(runId: string) {
       const run = runs.run(runId) ?? fail("UNKNOWN_RUN");

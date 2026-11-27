@@ -249,3 +249,24 @@ test("Any file shows the files that have threads, finds and opens others, and pl
   assert.deepEqual(await service.searchFiles("c1", "."), {paths: ["a.ts", "b.md"], more: false});
   assert.equal((await service.fileEntry("c1", "a.ts")).whole, true);
 });
+
+test("the Reviews page names each review's copy and view, and tells an orphan (its copy gone) apart", async () => {
+  const {service, store} = setup();
+  const here = store.session("c1", "branch:main");
+  store.createThread({sessionId: here.id, filePath: "a.ts", side: null, startLine: 0, endLine: 0, severity: null, anchorContent: null, body: "x"});
+  const gone = store.session("c9", "uncommitted");
+  store.createThread({sessionId: gone.id, filePath: "a.ts", side: null, startLine: 0, endLine: 0, severity: null, anchorContent: null, body: "y"});
+  const rows = await service.summaries();
+  assert.deepEqual(rows.map(row => [row.copyId, row.copyName, row.orphan, row.view, row.open, row.total]).sort(),
+    [["c1", "app", false, "committed changes since main", 1, 1], ["c9", null, true, "uncommitted changes", 1, 1]]);
+});
+
+test("a thread's Info row counts its copy's threads, and an open request names the copy and view", async () => {
+  const {service, store} = setup();
+  const session = store.session("c1", "uncommitted");
+  store.createThread({sessionId: session.id, filePath: "a.ts", side: null, startLine: 0, endLine: 0, severity: null, anchorContent: null, body: "x"});
+  assert.deepEqual(await service.threadCounts("thr_work"), {copyId: "c1", open: 1, total: 1});
+  assert.equal(await service.threadCounts("thr_other"), null);
+  assert.deepEqual(await service.requestOpen("thr_work", {kind: "staged"}, "src/a.ts"), {copyId: "c1", target: {kind: "staged"}, file: "src/a.ts"});
+  await assert.rejects(service.requestOpen("thr_other", {kind: "staged"}, null), /NOT_FOUND/);
+});

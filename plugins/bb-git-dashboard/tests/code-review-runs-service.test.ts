@@ -35,7 +35,7 @@ function setup(options: {copy?: Copy; spawnFails?: string; modes?: string[] | nu
     changed: id => changes.push(id)});
   let next = 0;
   const service = codeReviewRuns({
-    store, runs, review, copy: async () => copy, diff: host.diff, read: async () => "alpha\nbeta\n",
+    store, runs, review, copy: async id => id === copy.id ? copy : undefined, diff: host.diff, read: async () => "alpha\nbeta\n",
     settings: async () => ({aiProvider: "", aiModel: "", aiPermissionMode: "auto"}),
     bb: {
       thread: async id => ({environmentId: id === "thr_owner" ? "env_1" : null, originPluginId: id.startsWith("thr_run") ? "bb-git-dashboard" : "other"}),
@@ -259,4 +259,19 @@ test("in the Any file view a run comments on the file's own lines", async () => 
   const made = await service.addComment("thr_files", {filePath: "notes.md", side: "new", startLine: 2, endLine: 2, severity: null, body: "Typo"});
   assert.equal(made.anchorContent, "beta");
   await assert.rejects(service.addComment("thr_files", {filePath: "notes.md", side: "new", startLine: 5, endLine: 5, severity: null, body: "x"}), /LINE_NOT_IN_DIFF/);
+});
+
+test("deleting orphan reviews takes only those whose copy is still gone, closing their runs", async () => {
+  const {service, store, runs, archived} = setup();
+  const orphan = store.session("copy_gone", "uncommitted");
+  store.createThread({sessionId: orphan.id, filePath: "a.ts", side: null, startLine: 0, endLine: 0, severity: null, anchorContent: null, body: "x"});
+  const run = runs.create({sessionId: orphan.id, kind: "review", focus: null, providerId: "codex", model: null, parentThreadId: null, baseline: null});
+  runs.bind(run.id, "thr_old");
+  const live = store.session("copy_1", "staged");
+  store.createThread({sessionId: live.id, filePath: "a.ts", side: null, startLine: 0, endLine: 0, severity: null, anchorContent: null, body: "y"});
+  assert.deepEqual(await service.deleteOrphans([orphan.id, live.id, "ffffffffffff"]), {deleted: 1, deletedThreads: 1});
+  assert.equal(store.sessionById(orphan.id), null);
+  assert.equal(runs.run(run.id), null);
+  assert.deepEqual(archived, ["thr_old"]);
+  assert.equal(store.threads(live.id).length, 1);
 });

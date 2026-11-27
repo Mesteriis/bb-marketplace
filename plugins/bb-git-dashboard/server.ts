@@ -445,7 +445,7 @@ export default function plugin(bb: BbPluginApi) {
     approve: (threadId, previewId, title, lines, signal) => approve(bb, threadId, previewId, title, lines, signal),
   }), reviewCommands({
     sentTo: codeReview.service.sentTo, answer: codeReview.service.answer,
-    comment: codeReview.runs.addComment, bind: codeReview.runs.bindIfPending,
+    comment: codeReview.runs.addComment, bind: codeReview.runs.bindIfPending, open: codeReview.requestOpen,
   })));
 
   registerCodeReviewTools(bb, codeReview.service, codeReview.runs);

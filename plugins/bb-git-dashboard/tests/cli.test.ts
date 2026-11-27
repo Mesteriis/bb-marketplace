@@ -14,6 +14,7 @@ function setup() {
   const answers: {caller: string; prefix: string; action: string; text: string}[] = [];
   const comments: unknown[] = [];
   const bound: string[] = [];
+  const opened: unknown[] = [];
   const ciCalls: string[] = [];
   const ci = ciCli({
     context: async () => ({copyId: "c1", permission: "read"}),
@@ -37,8 +38,9 @@ function setup() {
       return {...thread(), filePath: input.filePath, side: input.side, startLine: input.startLine, endLine: input.endLine};
     },
     bind: async caller => { bound.push(caller); },
+    open: async (threadId, target, file) => { opened.push({threadId, target, file}); if (threadId === "thr_none") throw new Error("NOT_FOUND"); return {copyId: "c1", route: "plugins/bb-git-dashboard/git/c1/review"}; },
   });
-  return {cli: gitDashboardCli(ci, review), answers, ciCalls, comments, bound};
+  return {cli: gitDashboardCli(ci, review), answers, ciCalls, comments, bound, opened};
 }
 
 test("review reply, resolve and dismiss take words or base64, from the thread the comments went to", async () => {
@@ -82,7 +84,7 @@ test("review list --json drops whole threads to fit and still parses", async () 
   const big = {...{id: "abcdef123456", sessionId: "s", filePath: "a.ts", side: "new" as const, startLine: 1, endLine: 1, status: "open" as const, severity: null,
     anchorContent: "y".repeat(300_000), createdAt: 1, updatedAt: 1, delivery: null, comments: []}};
   const cli = gitDashboardCli(ciCli({context: async () => ({copyId: "c", permission: "read"}), service: {} as never, approve: async () => false}),
-    reviewCommands({sentTo: () => [big, {...big, id: "bcdef1234567"}], answer: async () => big, comment: async () => big, bind: async () => {}}));
+    reviewCommands({sentTo: () => [big, {...big, id: "bcdef1234567"}], answer: async () => big, comment: async () => big, bind: async () => {}, open: async () => ({copyId: "c", route: "r"})}));
   const result = await cli.run(["review", "list", "--json"], {threadId: "thr_1"});
   assert.equal(JSON.parse(result.stdout ?? "").length, 1);
   assert.match(result.stderr ?? "", /1 thread\(s\) left out/);
@@ -101,4 +103,19 @@ test("review comment leaves a run's comment on lines, the whole file or the whol
   assert.deepEqual(bound, ["thr_run", "thr_run", "thr_run"]);
   assert.match((await cli.run(["review", "comment", "src/a.ts", "x"], {threadId: "thr_run"})).stderr ?? "", /Give --line/);
   assert.match((await cli.run(["review", "comment", "src/a.ts", "--line", "9", "x"], {threadId: "thr_run"})).stderr ?? "", /LINE_NOT_IN_DIFF: Lines shown there: 1-3\./);
+});
+
+test("review open asks for this thread's review on a view and file, and refuses mixed or bad options", async () => {
+  const {cli, opened} = setup();
+  const result = await cli.run(["review", "open", "src/a.ts", "--view", "branch"], {threadId: "thr_1"});
+  assert.equal(result.stdout, "Opening the review of committed changes since the default branch in the BB window that shows the thread.\nThe page, in any BB window: plugins/bb-git-dashboard/git/c1/review\n");
+  await cli.run(["review", "open", "--range", "main...feature", "--thread", "thr_2"], {threadId: "thr_1"});
+  await cli.run(["review", "open", "--commit", "abc1234"], {threadId: "thr_1"});
+  assert.deepEqual(opened, [{threadId: "thr_1", target: {kind: "branch"}, file: "src/a.ts"},
+    {threadId: "thr_2", target: {kind: "range", from: "main", to: "feature", symmetric: true}, file: null},
+    {threadId: "thr_1", target: {kind: "commit", sha: "abc1234"}, file: null}]);
+  assert.match((await cli.run(["review", "open", "--view", "commit"], {threadId: "thr_1"})).stderr ?? "", /needs --commit/);
+  assert.match((await cli.run(["review", "open", "--base", "main"], {threadId: "thr_1"})).stderr ?? "", /--base goes with/);
+  assert.match((await cli.run(["review", "open", "--commit", "zz"], {threadId: "thr_1"})).stderr ?? "", /7 to 64 hex/);
+  assert.match((await cli.run(["review", "open"], {threadId: "thr_none"})).stderr ?? "", /NOT_FOUND/);
 });

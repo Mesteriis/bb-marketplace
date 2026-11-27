@@ -109,3 +109,18 @@ test("a tab's kept view state is replaced only by one saved later", () => {
   assert.equal(store.viewState("thread:t1", session.id), "{\"a\":2}");
   assert.equal(store.viewState("thread:t2", session.id), null);
 });
+
+test("the Reviews page lists sessions with threads, newest first, and a session is deleted with all of it", () => {
+  const {store, session, thread, tick} = setup();
+  thread();
+  tick(100);
+  const other = store.session("copy_2", "staged");
+  const second = store.createThread({sessionId: other.id, filePath: "b.ts", side: null, startLine: 0, endLine: 0, severity: null, anchorContent: null, body: "x"});
+  store.setStatus(second.id, "resolved");
+  store.session("copy_3", "uncommitted");
+  assert.deepEqual(store.summaries().map(row => [row.copyId, row.targetKey, row.open, row.total]), [["copy_2", "staged", 0, 1], ["copy_1", "uncommitted", 1, 1]]);
+  store.setViewed(session.id, "a.ts", "r");
+  store.deleteSession(session.id);
+  assert.equal(store.sessionById(session.id), null);
+  assert.deepEqual(store.summaries().map(row => row.copyId), ["copy_2"]);
+});

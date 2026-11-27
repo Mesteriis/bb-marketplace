@@ -150,3 +150,14 @@ export function describeLocation(thread: Pick<ReviewThread, "filePath" | "side" 
   const lines = thread.startLine === thread.endLine ? String(thread.startLine) : thread.startLine + "-" + thread.endLine;
   return thread.filePath + ":" + lines + " (" + (thread.side === "old" ? "old side, removed lines" : "new side") + ")";
 }
+
+/** A session's view from its key, when no view was read since the server started. */
+export function targetFromKey(key: string): Target {
+  if (key === "uncommitted" || key === "staged" || key === "unstaged" || key === "files") return {kind: key};
+  const [kind, rest] = [key.slice(0, key.indexOf(":")), key.slice(key.indexOf(":") + 1)];
+  if (kind === "branch" || kind === "all") return {kind, base: rest};
+  if (kind === "commit") return {kind, sha: rest};
+  const symmetric = rest.includes("...");
+  const [from, to] = rest.split(symmetric ? "..." : "..");
+  return {kind: "range", from, to, symmetric};
+}

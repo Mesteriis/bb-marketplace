@@ -11,6 +11,8 @@ import { REVIEW_MIGRATIONS, ReviewStore, type ReviewDb } from "./review-store.ts
 
 type Caller = {experimental_caller: {kind: string}};
 export const codeReviewSignal = "code-review-changed";
+/** `bb git-dashboard review open`: the window showing the thread opens its copy's Review on the view and file. */
+export const codeReviewOpenSignal = "code-review-open";
 /** How agents sign their comments, by their thread's provider; diff-review's names. */
 const providerNames: Record<string, string> = {"claude-code": "Claude Code", codex: "Codex", opencode: "OpenCode", gemini: "Gemini"};
 
@@ -198,6 +200,9 @@ export function codeReviewHandlers(bb: BbPluginApi, copyOf: (copyId: string) => 
       ({run: await runs.startExplain({...input, threadId: viewerThreadId ?? null})})),
     reviewFix: handle(async ({viewerThreadId, ...input}: Omit<Parameters<typeof runs.fixInNewThread>[0], "threadId"> & {viewerThreadId?: string | null}) =>
       runs.fixInNewThread({...input, threadId: viewerThreadId ?? null})),
+    reviewSummaries: handle(async () => ({reviews: await service.summaries()})),
+    reviewDeleteOrphans: handle(({sessionIds}: {sessionIds: string[]}) => runs.deleteOrphans(sessionIds)),
+    reviewThreadCounts: handle(async ({threadId}: {threadId: string}) => ({counts: await service.threadCounts(threadId)})),
     reviewSearchFiles: handle(({copyId, query}: {copyId: string; query: string}) => service.searchFiles(copyId, query)),
     reviewFileEntry: handle(async ({copyId, path}: {copyId: string; path: string}) => ({file: await service.fileEntry(copyId, path)})),
     reviewRevert: handle(async ({sessionId, path, revision, hunks}: {sessionId: string; path: string; revision: string; hunks: number[] | null}) => {
@@ -234,5 +239,11 @@ export function codeReviewHandlers(bb: BbPluginApi, copyOf: (copyId: string) => 
       return {threads};
     }),
   };
-  return {handlers, service, runs};
+  /** Asks the BB window showing `threadId` to open its copy's Review; the CLI's `review open`. */
+  const requestOpen = async (threadId: string, target: Parameters<typeof service.requestOpen>[1], file: string | null) => {
+    const opened = await service.requestOpen(threadId, target, file);
+    bb.realtime.publish(codeReviewOpenSignal, {threadId, ...opened});
+    return {...opened, route: "plugins/" + bb.pluginId + "/git/" + opened.copyId + "/review"};
+  };
+  return {handlers, service, runs, requestOpen};
 }

@@ -37,7 +37,9 @@ function request(kind: Kind, base: string, sha: string, range: string): TargetRe
  * The line review of a working copy: pick a view, comment on lines, files or the whole diff, and send the open
  * threads to the agent working on the copy. `revision` changes when the review changed elsewhere.
  */
-export function ReviewPanel({api, copyId, currentThreadId, revision}: {api: CodeReviewApi; copyId: string; currentThreadId?: string; revision: number}) {
+export function ReviewPanel({api, copyId, currentThreadId, revision, initialFile}: {api: CodeReviewApi; copyId: string; currentThreadId?: string; revision: number;
+  /** A file to go to once the view shows (`bb git-dashboard review open`). */
+  initialFile?: string}) {
   const scope = viewScope(copyId, currentThreadId);
   // What this tab or copy kept from the last visit; read once, as the starting state.
   const [kept] = useState(() => readView(browserStorage(), scope));
@@ -247,6 +249,15 @@ export function ReviewPanel({api, copyId, currentThreadId, revision}: {api: Code
     setCommentAt(item.id);
     reach(thread && thread.filePath !== GENERAL_PATH ? thread.filePath : null, `[data-thread-id="${CSS.escape(item.id)}"]`);
   };
+  // `review open` named a file: the view goes to it once, when it first shows; one not in this view is opened in Any file.
+  const wentTo = useRef(false);
+  useEffect(() => {
+    if (!initialFile || wentTo.current || !view || !keptState.ready) return;
+    wentTo.current = true;
+    if (view.target.kind === "files" && !view.files.some(file => file.path === initialFile)) void openFile(initialFile).catch(cause => setStatus(message(cause)));
+    else if (view.files.some(file => file.path === initialFile)) reach(initialFile, `section[data-path="${CSS.escape(initialFile)}"]`);
+    else setStatus(initialFile + " is not in this view.");
+  });
   useReviewCommands(currentThreadId ?? "copy:" + copyId, (command: ReviewCommand) => {
     const actions: Record<ReviewCommand, () => void> = {
       reload: refresh, send: () => setSending(true), "ai-review": () => setReviewing(true), "comment-diff": () => setGeneral(true),

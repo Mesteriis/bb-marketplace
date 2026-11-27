@@ -308,6 +308,23 @@ export class ReviewStore {
       .run(scope, sessionId, savedAt, state).changes) > 0;
   }
 
+  /** Every session that has threads, with its open and total counts, the latest change first (the Reviews page). */
+  summaries(limit = 500) {
+    return (this.db.prepare(`SELECT s.id, s.copy_id, s.target_key, sum(t.status = 'open') AS open, count(t.id) AS total, max(t.updated_at) AS updated_at
+      FROM review_sessions s JOIN review_threads t ON t.session_id = s.id GROUP BY s.id ORDER BY updated_at DESC LIMIT ?`).all(limit) as
+      {id: string; copy_id: string; target_key: string; open: number | null; total: number; updated_at: number}[])
+      .map(row => ({sessionId: row.id, copyId: row.copy_id, targetKey: row.target_key, open: Number(row.open ?? 0), total: Number(row.total), updatedAt: Number(row.updated_at)}));
+  }
+
+  /** Deletes a session with everything of it: threads, comments, sends, runs, marks and kept states. */
+  deleteSession(sessionId: string) {
+    this.db.transaction(() => {
+      // Threads first: they point at sends, which the session's delete takes with it.
+      this.db.prepare("DELETE FROM review_threads WHERE session_id = ?").run(sessionId);
+      this.db.prepare("DELETE FROM review_sessions WHERE id = ?").run(sessionId);
+    })();
+  }
+
   /** The session's Viewed marks: path to the change revision each was made at. */
   viewed(sessionId: string): Map<string, string> {
     const rows = this.db.prepare("SELECT path, revision FROM review_viewed WHERE session_id = ?").all(sessionId) as {path: string; revision: string}[];
