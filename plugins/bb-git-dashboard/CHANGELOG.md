@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Fixed (present since 0.1.0): staging through the plugin copied the Git index with a fresh timestamp. A same-size edit made in the same second as the last index write then looked unchanged: staging that file as a hunk failed with `INVALID_PATH`, and staging any other file wrote an index in which the edit stayed hidden from `git status`, `git diff` and `git commit -a` until the file changed again. Index copies now keep their modification time.
+
 ## 0.2.0 — 2026-11-27
 
 - Display name is now **Makosh Git**. Plugin id, CLI and agent tool names are unchanged.

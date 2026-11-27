@@ -1,6 +1,6 @@
 import { createReadStream } from "node:fs";
 import { createHash } from "node:crypto";
-import { copyFile, lstat, mkdtemp, open, realpath, rename, rm, stat } from "node:fs/promises";
+import { copyFile, lstat, mkdtemp, open, realpath, rename, rm, stat, utimes } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { author, type GitAction, type GitResult } from "../../core/git.ts";
 import { gitRunner, type GitRun } from "./git-process.ts";
@@ -161,6 +161,17 @@ async function diff(git: GitRun, path: string, staged: boolean, index?: string) 
   return {text, header, hunks};
 }
 
+/**
+ * Copies an index file together with its modification time. Git treats entries written in the same second as the
+ * index file as racily clean and re-reads their content; a copy with a fresh timestamp would hide a same-size edit
+ * made in that second, and writing such a copy back would hide it from Git itself.
+ */
+async function copyIndex(from: string, to: string) {
+  await copyFile(from, to);
+  const {atime, mtime} = await stat(from);
+  await utimes(to, atime, mtime);
+}
+
 async function lockedIndex<T>(git: GitRun, mutate: boolean, action: (index: string) => Promise<T>): Promise<T> {
   const path = (await git(["rev-parse", "--path-format=absolute", "--git-path", "index"])).text.replace(/\n$/, "");
   const lockPath = path + ".lock";
@@ -170,10 +181,10 @@ async function lockedIndex<T>(git: GitRun, mutate: boolean, action: (index: stri
   try {
     scratch = await mkdtemp(join(dirname(path), ".bb-index-"));
     const index = join(scratch, "index");
-    await copyFile(path, index).catch(error => { if (!missing(error)) throw error; });
+    await copyIndex(path, index).catch(error => { if (!missing(error)) throw error; });
     const result = await action(index);
     if (mutate) {
-      await copyFile(index, lockPath);
+      await copyIndex(index, lockPath);
       await lock.sync();
       await rename(lockPath, path);
       committed = true;

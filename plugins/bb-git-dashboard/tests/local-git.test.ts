@@ -142,3 +142,43 @@ test("reads the origin URL as configured and reports a missing origin", async ()
   git("remote", "add", "origin", "git@github-work-alias:Octo-Owner/sandbox-repo.git");
   assert.equal(await originUrl(root), "git@github-work-alias:Octo-Owner/sandbox-repo.git");
 });
+
+// Git compares index entries with file times at one-second precision. An entry written in the same second as
+// the index file is "racily clean": Git re-reads its content. A copy of the index made in a later second must
+// keep that information, or a same-size edit made in that second becomes invisible.
+const wallSecond = () => Math.floor(Date.now() / 1000);
+async function startOfSecond() {
+  while (Date.now() % 1000 > 150) await new Promise(resolve => setTimeout(resolve, 5));
+}
+async function nextSecond(after: number) {
+  while (wallSecond() <= after) await new Promise(resolve => setTimeout(resolve, 5));
+}
+async function racilyCleanEdit(path: string, before: string, after: string) {
+  await startOfSecond();
+  const second = wallSecond();
+  writeFileSync(join(root, path), before);
+  git("add", "--", path);
+  writeFileSync(join(root, path), after);
+  assert.equal(wallSecond(), second, "the add and the edit must share one second");
+  await nextSecond(second);
+}
+
+test("a same-size edit in the second of the last index write can still be staged as a hunk", async () => {
+  const { localGit } = await service();
+  await racilyCleanEdit(file, original, changed);
+  const diff = await localGit(root, { kind: "diff", path: file, staged: false });
+  assert.equal(diff.hunks?.length, 2);
+  await localGit(root, { kind: "hunk", path: file, staged: false, token: diff.hunks![0].token });
+  assert.equal(git("show", ":" + file), original.replace("first", "FIRST"));
+});
+
+test("staging another file does not hide a racily clean edit from later status", async () => {
+  const { localGit } = await service();
+  writeFileSync(join(root, "other.txt"), "other\n");
+  const staged = original.replace("middle", "MIDDLE");
+  await racilyCleanEdit(file, staged, staged.replace("first", "FIRST"));
+  await localGit(root, { kind: "stage", path: "other.txt", staged: false });
+  // The worktree still differs from the staged version; status must keep saying so.
+  assert.match(git("status", "--porcelain"), /^MM literal\[1\]\.txt$/m);
+  assert.deepEqual((await localGit(root, { kind: "status" })).files?.find(entry => entry.path === file), { path: file, index: "M", worktree: "M" });
+});
