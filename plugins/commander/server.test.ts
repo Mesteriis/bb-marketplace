@@ -680,3 +680,93 @@ test("saves grants and queues cancellation before the recovery service is ready"
     spy?.mockRestore();
   }
 });
+
+test.each(["during reconciliation", "during CAS"])("recovers a second job cancelled %s in the same pass", async (when) => {
+  const bb = await backend();
+  let restarted: typeof bb | undefined;
+  let firstDisposed = false;
+  let spy: ReturnType<typeof vi.spyOn> | undefined;
+  const reconciling = Promise.withResolvers<void>();
+  const continueRecovery = Promise.withResolvers<void>();
+  const actual = sqliteStore.createSqliteJobStore;
+  try {
+    const store = actual(bb.db);
+    const firstId = "113e4567-e89b-42d3-a456-426614174000";
+    const secondId = "223e4567-e89b-42d3-a456-426614174000";
+    for (const [id, input, date] of [
+      [firstId, dataCopy, "2026-11-27T02:00:00.000Z"],
+      [secondId, request, "2026-11-27T01:00:00.000Z"],
+    ] as const) {
+      const plan = await bb.rpc("plan_create", input);
+      await store.create(OperationJob.parse({
+        id, plan, state: "running", currentItem: null, pendingConflict: null, awaitsOwner: false,
+        progress: { itemsDone: 0, itemsTotal: 1, bytesDone: "0", bytesTotal: "1" },
+        items: [{ outcome: "pending", error: null }], error: null, createdAt: date, updatedAt: date,
+      }));
+    }
+    await bb.dispose(false);
+    firstDisposed = true;
+    spy = vi.spyOn(sqliteStore, "createSqliteJobStore").mockImplementation((db) => {
+      const store = actual(db);
+      const update = store.update.bind(store);
+      store.update = async (id, patch, expected) => {
+        const pauseFirst = when === "during reconciliation" && id === firstId && expected === "interrupted" && patch.progress;
+        const pauseSecond = when === "during CAS" && id === secondId && expected === "running" && patch.state === "interrupted";
+        if (pauseFirst || pauseSecond) {
+          reconciling.resolve();
+          await continueRecovery.promise;
+        }
+        return update(id, patch, expected);
+      };
+      return store;
+    });
+    restarted = await backend(bb);
+    await reconciling.promise;
+    await expect(restarted.rpc("job_cancel", { jobId: secondId })).resolves.toEqual({});
+    expect((await store.get(secondId))?.state).toBe("cancel_requested");
+    continueRecovery.resolve();
+    await vi.waitFor(async () => {
+      expect((await store.get(firstId))?.state).toBe("completed");
+      expect((await store.get(secondId))?.state).toBe("cancelled");
+    }, { timeout: 400 });
+    expect(restarted.disk.contents(parsePosix("/out/a"))).toBeNull();
+  } finally {
+    continueRecovery.resolve();
+    if (restarted) await restarted.dispose();
+    else if (firstDisposed) bb.db.close();
+    else await bb.dispose();
+    spy?.mockRestore();
+  }
+});
+
+test("masks both missing paths and a full plan quota outside the grant", async () => {
+  const bb = await backend();
+  try {
+    await bb.rpc("agent_grants_set", { grant: { ...dataGrant, permissions: ["observe"] } });
+    const stem = "long-name-" + "x".repeat(956) + "-";
+    const entry = (name: string) => ({
+      name: { t: name }, kind: "file" as const, size: "1", mtimeNs: "1",
+      mtimePrecision: "ns" as const, mode: null, linkTarget: null, hidden: false,
+    });
+    const stat = bb.disk.stat.bind(bb.disk);
+    vi.spyOn(bb.disk, "stat").mockImplementation((path, signal) => {
+      const leaf = path.segments.at(-1);
+      return leaf && "t" in leaf && leaf.t.startsWith(stem)
+        ? Promise.resolve(entry(leaf.t))
+        : stat(path, signal);
+    });
+    vi.spyOn(bb.disk, "list").mockImplementation(async (_path, { cursor, limit }) => {
+      const start = Number(cursor ?? 0);
+      const end = Math.min(start + limit, 5_000);
+      return { entries: Array.from({ length: end - start }, (_, i) => entry(stem + String(start + i))),
+        cursor: end < 5_000 ? String(end) : null };
+    });
+    const remove = { ...request, kind: "delete", sources: [ref("/out")], targetDir: null };
+    const ownerPlan = OperationJob.shape.plan.parse(await bb.rpc("plan_create", remove));
+    expect(ownerPlan.items).toHaveLength(5_001);
+    expect(Buffer.byteLength(JSON.stringify(ownerPlan))).toBeGreaterThan(4_194_304);
+    const missing = await bb.tool("commander_plan", { ...remove, sources: [ref("/missing")] });
+    expect(missing).toEqual({ code: "forbidden", message: "Commander refused the request" });
+    expect(await bb.tool("commander_plan", remove)).toEqual(missing);
+  } finally { await bb.dispose(); }
+});

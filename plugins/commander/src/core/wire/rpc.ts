@@ -72,6 +72,9 @@ export const rpcSchemas = {
   entry_stat: { input: z.strictObject({ ref: ResourceRef }), output: Entry.nullable() },
   plan_create: { input: PlanInput, output: OperationPlan },
   plan_run: { input: z.strictObject({ planId: z.uuid(), digest }), output: OperationJob },
+  // Обычная выдача идёт по updated_at DESC (при равенстве по id ASC).
+  // Фильтр с unknown сканирует по rowid DESC. nextCursor может прийти
+  // с пустым jobs. Передайте его как cursor с тем же фильтром.
   job_list: {
     input: z.strictObject({
       states: z.array(JobState).max(9).optional(),

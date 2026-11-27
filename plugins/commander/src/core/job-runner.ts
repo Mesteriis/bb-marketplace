@@ -248,57 +248,69 @@ export class JobRunner {
       states: ["running", "cancel_requested", "awaiting_decision", "interrupted", "pending"],
       limit: Number.MAX_SAFE_INTEGER,
     });
-    for (const job of jobs) {
-      this.stopping.signal.throwIfAborted();
-      if (this.active.has(job.id)) continue;
-      if (job.state === "pending") {
-        if (!job.awaitsOwner && await this.start(job)) result.resumed.push(job.id);
-        continue;
-      }
-      const cancelling = job.state === "cancel_requested" || (job.state === "interrupted"
-        && job.error?.code === "cancelled" && job.error.message === cancelledError.message);
-      if (job.state !== "interrupted" && !await this.change(job, "process_lost", {
-        pendingConflict: job.pendingConflict,
-        ...(cancelling ? { error: cancelledError.toShape() } : {}),
-      })) continue;
-      let interrupted = await this.requireJob(job.id);
-      if (!cancelling && interrupted.pendingConflict) {
-        if (await this.change(interrupted, "restore_conflict", { pendingConflict: interrupted.pendingConflict }, "conflict")) {
-          result.resumed.push(job.id);
-        }
-        continue;
-      }
-      const completedBytes = interrupted.items.reduce((bytes, item, index) =>
-        bytes + this.itemBytes(interrupted, index, item.outcome), 0n);
-      const progress = this.progress(interrupted, completedBytes);
-      await this.patch(interrupted, { progress }, "progress");
-      interrupted = { ...interrupted, progress };
-      const index = interrupted.currentItem;
-      try {
-        if (index !== null && interrupted.items[index].outcome === "pending") {
-          await this.recoverStartedItem(interrupted, index, cancelling);
-        }
-
-      } catch {
-        this.stopping.signal.throwIfAborted();
-        const latest = await this.requireJob(job.id);
-        const error = new CommanderError("outcome_unknown", "Interrupted job outcome could not be confirmed");
-        if (index !== null) await this.record(latest, index, "unknown", error);
-        else await this.change(latest, "reconciled_unknown", { error: error.toShape(), currentItem: null });
-        result.unknown.push(job.id);
-        continue;
-      }
-      this.stopping.signal.throwIfAborted();
-      if (cancelling) {
-        await this.change(await this.requireJob(job.id), "cancel_done", { currentItem: null, error: null });
-        continue;
-      }
-      if (await this.change(await this.requireJob(job.id), "resume")) {
-        this.launch(job.id);
-        result.resumed.push(job.id);
-      }
+    for (const { id } of jobs) {
+      const outcome = await this.recoverJob(id);
+      if (outcome) result[outcome].push(id);
     }
     return result;
+  }
+
+  private async recoverJob(id: string): Promise<"resumed" | "unknown" | undefined> {
+    for (;;) {
+      this.stopping.signal.throwIfAborted();
+      const job = await this.store.get(id);
+      if (!job || this.active.has(id)) return;
+      if (job.state === "pending") {
+        if (job.awaitsOwner) return;
+        if (await this.start(job)) return "resumed";
+        continue;
+      }
+      if (job.state === "running" || job.state === "awaiting_decision" || job.state === "cancel_requested") {
+        await this.change(job, "process_lost", {
+          pendingConflict: job.pendingConflict,
+          ...(job.state === "cancel_requested" ? { error: cancelledError.toShape() } : {}),
+        });
+        // Read back the persisted state after both a transition and a lost CAS.
+        continue;
+      }
+      if (job.state !== "interrupted") return;
+      const cancelling = job.error?.code === "cancelled" && job.error.message === cancelledError.message;
+      if (!cancelling && job.pendingConflict) {
+        if (await this.change(job, "restore_conflict", { pendingConflict: job.pendingConflict }, "conflict")) return "resumed";
+        continue;
+      }
+      const completedBytes = job.items.reduce((bytes, item, index) =>
+        bytes + this.itemBytes(job, index, item.outcome), 0n);
+      const progress = this.progress(job, completedBytes);
+      if (!await this.patch(job, { progress }, "progress")) continue;
+      const index = job.currentItem;
+      try {
+        if (index !== null && job.items[index].outcome === "pending") {
+          await this.recoverStartedItem({ ...job, progress }, index, cancelling);
+        }
+      } catch {
+        this.stopping.signal.throwIfAborted();
+        const latest = await this.store.get(id);
+        if (latest?.state !== "interrupted") continue;
+        const error = new CommanderError("outcome_unknown", "Interrupted job outcome could not be confirmed");
+        if (index !== null) {
+          await this.record(latest, index, "unknown", error);
+          if ((await this.store.get(id))?.state === "unknown") return "unknown";
+        } else if (await this.change(latest, "reconciled_unknown", { error: error.toShape(), currentItem: null })) {
+          return "unknown";
+        }
+        continue;
+      }
+      this.stopping.signal.throwIfAborted();
+      const latest = await this.store.get(id);
+      if (latest?.state !== "interrupted") continue;
+      if (cancelling) {
+        if (await this.change(latest, "cancel_done", { currentItem: null, error: null })) return;
+      } else if (await this.change(latest, "resume")) {
+        this.launch(id);
+        return "resumed";
+      }
+    }
   }
 
   private async recoverStartedItem(

@@ -239,7 +239,6 @@ export function createOperations(deps: {
     },
     async createPlan(input: RpcInput<"plan_create">, initiator: Initiator, signal: AbortSignal) {
       const limits = initiator.kind === "agent" ? { ...planner.limits, maxItems: maxAgentPlanItems } : planner.limits;
-      if (input.sources.length > limits.maxItems) throw refusal("invalid", "Selection exceeds the plan item limit");
       const paths = [...input.sources];
       if (input.targetDir) paths.push(input.targetDir);
       if (input.kind === "rename" && input.sources[0]) {
@@ -249,16 +248,16 @@ export function createOperations(deps: {
       }
       const rows = initiator.kind === "agent" ? await grants.forThread(initiator.threadId) : [];
       const restricted = initiator.kind === "agent" && paths.some((ref) => !canObserve(rows, ref));
-      let plan: OperationPlan;
       try {
+        if (input.sources.length > limits.maxItems) throw refusal("invalid", "Selection exceeds the plan item limit");
         await endpoints.prepare(paths.map(({ endpoint }) => endpoint), signal);
-        plan = await buildPlan({ ...input, initiator }, { ...planner, limits }, signal);
+        const plan = await buildPlan({ ...input, initiator }, { ...planner, limits }, signal);
+        remember(plan);
+        return plan;
       } catch (error) {
         if (restricted) throw refusal("forbidden", "Commander planning failed outside the metadata grant");
         throw error;
       }
-      remember(plan);
-      return plan;
     },
     async runPlan({ planId, digest }: RpcInput<"plan_run">, initiator: Initiator, signal: AbortSignal) {
       await deps.ready();
