@@ -6,9 +6,9 @@ Open Git from BB navigation and choose a project and repository in the tree. Att
 
 Each working copy is matched to its forge from its `origin` remote (SSH aliases through `ssh -G`). Well-known forges are recognised by name, other servers once through their public version endpoint, asked anonymously from the copy's host. The account is chosen automatically by owner, organization or server; when two fit equally, the repository panel asks.
 
-## Projects folder
+## Projects folder and catalog
 
-The **Projects folder** setting (default `~/projects` on the scanned host) and its exclusion list define which folders count as projects: a folder with `.git` is a project, a nested repository, linked worktree or submodule belongs to its parent, and hidden folders, `node_modules`, `vendor` and `references` are skipped. A preview shows the projects found as a tree and what was skipped and why.
+The **Projects folder** setting (default `~/projects`) and its exclusion list define the projects: a folder with `.git`; worktrees and submodules belong to their parent; hidden folders, `node_modules`, `vendor` and `references` are skipped. **Каталог** lists them beside every account's repositories, marks what is cloned, clones into a category, and fetches or pulls chosen projects.
 
 ## History
 

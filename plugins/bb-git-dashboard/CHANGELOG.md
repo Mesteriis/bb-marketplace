@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.11.0 — 2026-11-27
+
+The project catalog.
+
+- **Каталог** in Git: the projects of a machine's projects folder (by the rules of the Projects folder setting) and the repositories of every connected GitHub, GitLab, Gitea and Azure DevOps account in one list. A repository a local project has as a remote is marked **cloned**, with its folder; one seen by two accounts is one row. An account that does not answer keeps its last listing and says so.
+- **Clone…** asks every time for a category (a folder of the projects folder that holds projects) and a name, then previews the clone before it runs.
+- **Status, Fetch, Pull** for chosen local projects, one answer each; fetch and pull are confirmed with the list of projects, and pull only fast-forwards a clean branch behind its upstream. SSH remotes are reached with your SSH keys in batch mode (it never asks), HTTPS ones with the connected account of their server; only projects inside the projects folder are touched.
+- **Open pull requests** of chosen repositories, listed together and opened in Makosh Git.
+- A merge or rebase that took in a commit which reached the branch while it was being confirmed says which, with **Abort** while it is in progress or **Undo** once done.
+- Ported from GitWand gitwand/v0.2.0 (MIT): the remote key, reading remotes from a Git config and the merge of listings.
+
 ## 0.10.0 — 2026-11-27
 
 Merge, rebase and a conflict editor.
