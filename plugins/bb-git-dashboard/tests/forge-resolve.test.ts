@@ -66,8 +66,10 @@ test("a found forge is cached for 30 days, an unknown host for one day", async (
 test("an unreachable host is reported and rechecked on request", async () => {
   const {resolver, calls} = setup({probes: {"https://gitlab.acme.example": "unreachable"}});
   assert.deepEqual(await resolver.resolve(remote("git@gitlab.acme.example:team/app.git")),
-    {kind: null, origin: "https://gitlab.acme.example", host: "gitlab.acme.example", status: "unreachable"});
-  assert.equal((await resolver.resolve(remote("git@gitlab.acme.example:team/app.git"))).status, "cached");
+    {kind: "gitlab", origin: "https://gitlab.acme.example", host: "gitlab.acme.example", status: "unreachable"});
+  // The cached answer still says the server did not answer, without probing again.
+  assert.equal((await resolver.resolve(remote("git@gitlab.acme.example:team/app.git"))).status, "unreachable");
+  assert.equal(calls.probe.length, 1);
   await resolver.resolve(remote("git@gitlab.acme.example:team/app.git"), {recheck: true});
   assert.equal(calls.probe.length, 2);
 });
@@ -77,4 +79,11 @@ test("an SSH alias without a configured hostname stays unknown and is not probed
   assert.deepEqual(await resolver.resolve(remote("git@work-box:team/app.git")),
     {kind: null, origin: null, host: "work-box", status: "unknown"});
   assert.deepEqual(calls.probe, []);
+});
+
+test("an unreachable server keeps no kind unless its name says GitLab", async () => {
+  const {resolver} = setup({probes: {"https://git.offline.example": "unreachable", "https://gitlab.offline.example": null}});
+  assert.equal((await resolver.resolve(remote("https://git.offline.example/a/b"))).kind, null);
+  // A reachable server that answers neither probe is not called GitLab because of its name.
+  assert.equal((await resolver.resolve(remote("https://gitlab.offline.example/a/b"))).kind, null);
 });

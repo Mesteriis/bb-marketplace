@@ -88,7 +88,7 @@ export function forgeLinks(ports: LinkPorts) {
       if (linked) {
         return {...empty, remote, detection: place.detection, reason: "linked", linked, chosen: linked.accountId};
       }
-      if (!place.path) return {...empty, remote, detection: place.detection, reason: "none", linked: null};
+      if (!place.path || place.detection.status === "unreachable") return {...empty, remote, detection: place.detection, reason: "none", linked: null};
       const choice = await pickAccount(place.detection, place.path, accounts, ports.facts);
       const base = {remote, detection: place.detection, candidates: pool(choice.candidates), chosen: choice.chosen, reason: choice.reason};
       if (!choice.chosen) return {...base, linked: null, error: null};

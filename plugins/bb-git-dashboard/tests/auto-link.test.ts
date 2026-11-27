@@ -92,3 +92,14 @@ test("a copy without a usable origin reports no remote", async () => {
   assert.equal(status.remote, null);
   assert.equal(status.reason, "none");
 });
+
+test("a server that did not answer is not looked up", async () => {
+  const {links, calls} = setup("git@gitlab.acme.example:team/app.git", {
+    probe: async () => "unreachable",
+    accounts: async () => [{kind: "gitlab", id: "gl", label: "gl", origin: "https://gitlab.acme.example", organization: "", username: "u"}],
+  });
+  const status = await links.status(copy);
+  assert.deepEqual({kind: status.detection?.kind, state: status.detection?.status, reason: status.reason, linked: status.linked},
+    {kind: "gitlab", state: "unreachable", reason: "none", linked: null});
+  assert.deepEqual(calls.lookup, []);
+});

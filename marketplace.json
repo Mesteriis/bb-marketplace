@@ -253,8 +253,8 @@
     },
     {
       "id": "bb-git-dashboard",
-      "displayName": "BB Git Dashboard",
-      "description": "Project-based Git workspace for worktrees, CI/CD, issues, variables and pull requests in BB.",
+      "displayName": "Makosh Git",
+      "description": "Git workspace for worktrees, CI/CD, issues, variables and pull requests, with forge and account detected from each copy's remote.",
       "icon": {
         "url": "./plugins/bb-git-dashboard/assets/icon.svg"
       },

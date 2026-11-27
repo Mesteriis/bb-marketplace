@@ -1,6 +1,6 @@
 {
   "name": "bb-git-dashboard",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "engines": {
     "bb": ">=0.50.1",
@@ -8,8 +8,8 @@
     "node": ">=22.18"
   },
   "bb": {
-    "name": "BB Git Dashboard",
-    "description": "Project-based Git workspace for worktrees, CI/CD, issues, variables and pull requests in BB.",
+    "name": "Makosh Git",
+    "description": "Git workspace for worktrees, CI/CD, issues, variables and pull requests, with forge and account detected from each copy's remote.",
     "branding": {
       "icon": "./assets/icon.svg"
     },
@@ -29,7 +29,7 @@
     "typescript": "^5.7.0"
   },
   "license": "MIT",
-  "description": "Project-based Git workspace for worktrees, CI/CD, issues, variables and pull requests in BB.",
+  "description": "Git workspace for worktrees, CI/CD, issues, variables and pull requests, with forge and account detected from each copy's remote.",
   "scripts": {
     "check": "tsc --noEmit && npm test",
     "test": "node --disable-warning=ExperimentalWarning --test tests/*.test.ts",
@@ -46,7 +46,8 @@
     "README.md",
     "PLUGIN_OVERVIEW.md",
     "LICENSE",
-    "CONTRACTS.md"
+    "CONTRACTS.md",
+    "CHANGELOG.md"
   ],
   "repository": {
     "type": "git",

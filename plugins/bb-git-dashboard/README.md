@@ -1,6 +1,6 @@
-# BB Git Dashboard
+# Makosh Git
 
-Plugin ID and package name are both `bb-git-dashboard`. The navigation entry is **Git**. Makosh Credential Vault is an optional integration.
+Plugin ID and package name are both `bb-git-dashboard`; the display name is **Makosh Git**. The navigation entry is **Git**. Makosh Credential Vault is an optional integration.
 
 The Git sidebar groups projects by the parent directory of their default BB source. Search by project or folder name above the independently scrolling list. Projects without a source appear under «Без папки».
 
@@ -14,7 +14,7 @@ npm run check
 npm run build
 ```
 
-For a prebuilt `bb-git-dashboard-0.1.0.tgz`, unpack it into a new directory, enter `package/` and run `npm install --omit=dev --ignore-scripts`. A BB path install still resolves the host entry's Zod dependency from the package directory.
+For a prebuilt `bb-git-dashboard-0.2.0.tgz`, unpack it into a new directory, enter `package/` and run `npm install --omit=dev --ignore-scripts`. A BB path install still resolves the host entry's Zod dependency from the package directory.
 
 Run `bb plugin install "$PWD" --yes` from a **test profile** to install the prepared directory. Check for `bb-git-dashboard` in `bb plugin list --json`, then open **Git** in BB Web. The acceptance artifacts include an isolated profile launcher and browser scenario for BB 0.50.1. Installing or removing a plugin in an owner's BB profile requires their go-ahead.
 
@@ -24,7 +24,7 @@ Open **Git** for the global catalog. Filter by project in BB’s native left sid
 
 Use **+ Worktree** to select a project source or ready environment, or attach an absolute trusted path on the selected host. Previously attached copies are matched to BB projects by exact host and path. Copies without an unambiguous project appear under **Unassigned** and can be attached from the intended project. Linked worktrees can also be opened from **Code → Worktrees**. To clone from a local bare repository, supply the bare source and a new destination whose parent already exists.
 
-**Actions**, **Issues** and **Variables** read data for the selected repository. Choose a provider account and repository from the connection form. The plugin verifies that the provider clone URL matches the working copy’s HTTPS `origin`. GitHub and supported Gitea instances expose CI/CD runs, issues, repository variables and secret names. Azure Repos exposes builds filtered by the Git repository. Azure Boards and variable groups are project-scoped. The views display up to 30 entries per list. Secret values are never returned. Run and issue links open the provider’s own views when the provider supplies a link on its configured origin.
+**Actions**, **Issues** and **Variables** read data for the selected repository. The panel detects the forge and account from the working copy’s `origin` and connects the repository on its own; when the choice is ambiguous it asks for the account. A provider account and repository can still be chosen by hand from the connection form. The plugin verifies that the provider repository is the working copy’s `origin`, comparing SSH and HTTPS forms of the same repository. HTTPS fetch and push still require the HTTPS `origin` itself. GitHub and supported Gitea instances expose CI/CD runs, issues, repository variables and secret names. Azure Repos exposes builds filtered by the Git repository. Azure Boards and variable groups are project-scoped. The views display up to 30 entries per list. Secret values are never returned. Run and issue links open the provider’s own views when the provider supplies a link on its configured origin.
 
 ## Accounts and transport
 

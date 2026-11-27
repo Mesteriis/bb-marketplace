@@ -2,10 +2,13 @@ import { useEffect, useState, type FormEvent } from "react";
 import type { Account, Repo } from "../core/providers.ts";
 import type { FeatureList, RepositorySection } from "../core/repository-features.ts";
 import type { RemoteApi } from "./remotes.tsx";
+import { ForgeStatusLine, type ForgeStatus } from "./forge-status.tsx";
 
 type Link = {accountId:string;repoId:string};
 export type RepositoryApi = Pick<RemoteApi,"accounts"|"repositories"|"status"> & {
   link(copyId:string):Promise<Link|null>;
+  forgeStatus(copyId:string,recheck:boolean):Promise<ForgeStatus>;
+  forgeConnect(copyId:string,accountId:string):Promise<void>;
   setLink(copyId:string,target:Link|null):Promise<void>;
   features(copyId:string,section:RepositorySection):Promise<{repo:Repo;features:FeatureList}>;
 };
@@ -28,14 +31,19 @@ export function RepositoryPanel({copyId,name,accounts,api,section,onAddConnectio
   const [revision,setRevision] = useState(0);
   const [changing,setChanging] = useState(false);
   const [filter,setFilter] = useState("all");
+  const [forge,setForge] = useState<ForgeStatus>();
+  const [recheck,setRecheck] = useState(false);
   const label = labels[section];
   useEffect(() => {
     let active = true;
     setPending(true);
     setError("");
     setData(undefined);
-    api.link(copyId).then(async link => {
+    api.forgeStatus(copyId,recheck).then(async status => {
       if (!active) return;
+      setRecheck(false);
+      setForge(status);
+      const link = status.linked;
       setTarget(link);
       if (link) {
         const response = await api.features(copyId,section);
@@ -53,6 +61,13 @@ export function RepositoryPanel({copyId,name,accounts,api,section,onAddConnectio
       setRevision(value => value + 1);
     } catch (error) { setNotice(message(error)); }
   };
+  const choose = async (accountId:string) => {
+    try {
+      await api.forgeConnect(copyId,accountId);
+      setNotice("");
+      setRevision(value => value + 1);
+    } catch (error) { setNotice(message(error)); }
+  };
   const rows = data?.features.items.filter(row => filter === "all" || row.status === filter) ?? [];
   const provider = data?.repo && accounts.find(account => account.id === data.repo.accountId);
   return <section className="git-project-code git-repository-panel">
@@ -66,7 +81,9 @@ export function RepositoryPanel({copyId,name,accounts,api,section,onAddConnectio
         <button type="button" aria-expanded={changing} onClick={() => setChanging(value => !value)}>Connection</button>
       </div>}
     </div>
-    {target === null && <p className="git-muted">Connect an account repository matching this working copy’s HTTPS origin.</p>}
+    {forge && <ForgeStatusLine key={copyId + ":" + forge.candidates.map(row => row.id).join(",")} status={forge} busy={pending} onChoose={choose}
+      onRecheck={() => { setRecheck(true); setRevision(value => value + 1); }}/>}
+    {target === null && <p className="git-muted">Or connect an account repository matching this working copy’s origin by hand.</p>}
     {(target === null || changing) && (accounts.length > 0
       ? <ConnectionPicker accounts={accounts} target={target} api={api} onChange={change}/>
       : <div className="git-row"><button type="button" onClick={onAddConnection}>Add connection</button></div>)}

@@ -194,6 +194,14 @@ function Dashboard({subPath}: {subPath: string}) {
       const result = await client.call("repositoryLink",{copyId});
       return result.ok ? result.target : failed(result);
     },
+    forgeStatus: async (copyId,recheck) => {
+      const result = await client.call("forgeStatus",{copyId,recheck});
+      return result.ok ? result.value : failed(result);
+    },
+    forgeConnect: async (copyId,accountId) => {
+      const result = await client.call("forgeConnect",{copyId,accountId});
+      if (!result.ok) failed(result);
+    },
     setLink: async (copyId,target) => {
       const result = await client.call("linkRepository",{copyId,target});
       if (!result.ok) failed(result);
