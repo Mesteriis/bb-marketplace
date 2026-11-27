@@ -219,7 +219,11 @@ export function createOperations(deps: {
   async function requestCancel(job: OperationJob) {
     let current: OperationJob | null = job;
     while (current && cancellable.has(current.state)) {
-      if (current.state === "pending" || deps.isManaged(current.id)) {
+      // S13: an owner deletion can be created already paused, with no running transition
+      // to register it as live. A paused delete has no staging to reconcile before cancellation.
+      const pausedSyncDelete = current.state === "awaiting_decision" && current.plan.kind === "delete"
+        && current.plan.initiator.kind === "owner" && current.plan.syncId !== undefined;
+      if (current.state === "pending" || deps.isManaged(current.id) || pausedSyncDelete) {
         await runner.cancel(current.id);
         return;
       }

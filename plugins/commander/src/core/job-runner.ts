@@ -147,23 +147,23 @@ export class JobRunner {
     plan = await this.validPlan(plan);
     this.stopping.signal.throwIfAborted();
     const now = this.deps.now().toISOString();
+    const id = this.deps.uuid();
+    const awaitsOwner = opts?.awaitsOwner ?? false;
+    // S13: persist the failed preflight with the job so recovery cannot see a runnable state.
+    const changed = awaitsOwner ? undefined : opts?.syncDeleteConflict;
+    const pendingConflict: Conflict | null = changed ? {
+      id: this.deps.uuid(), jobId: id, itemIndex: changed.index, reason: changed.reason,
+      source: plan.items[changed.index].fingerprint, target: null, allowedResolutions: ["skip", "cancel"],
+    } : null;
     const job = OperationJob.parse({
-      id: this.deps.uuid(), plan, state: "pending", awaitsOwner: opts?.awaitsOwner ?? false,
-      currentItem: null, pendingConflict: null, error: null, createdAt: now, updatedAt: now,
+      id, plan, state: pendingConflict ? "awaiting_decision" : "pending", awaitsOwner,
+      currentItem: pendingConflict?.itemIndex ?? null, pendingConflict, error: null, createdAt: now, updatedAt: now,
       progress: { itemsDone: 0, itemsTotal: plan.items.length, bytesDone: "0", bytesTotal: plan.totalBytes },
       items: plan.items.map(() => ({ outcome: "pending", error: null })),
     });
     await this.store.create(job);
-    this.deps.onEvent({ jobId: job.id, kind: "state" });
-    if (job.awaitsOwner) return job;
-    // S13: a failed delete preflight must be recorded before launching any item.
-    const changed = opts?.syncDeleteConflict;
-    if (changed) {
-      const item = plan.items[changed.index];
-      await this.startInConflict(job, changed.index, new ItemConflict(changed.reason, item.fingerprint, null));
-      return this.requireJob(job.id);
-    }
-    await this.start(job);
+    this.deps.onEvent({ jobId: job.id, kind: pendingConflict ? "conflict" : "state" });
+    if (!awaitsOwner && !pendingConflict) await this.start(job);
     return job;
   }
 
