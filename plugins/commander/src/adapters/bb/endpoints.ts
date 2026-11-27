@@ -30,7 +30,10 @@ function remoteHubRefusal(error: unknown): SftpRefusalCode | null {
     message = error.message.replace(/^HTTP \d{3}: /, "");
   }
   if (typeof code !== "string" || typeof message !== "string") return null;
-  const key = message.split(":", 1)[0];
+  // The refusal code is the text before the first ": "; without that exact separator it is not a refusal.
+  const end = message.indexOf(": ");
+  if (end <= 0) return null;
+  const key = message.slice(0, end);
   if (!Object.hasOwn(SFTP_REFUSALS, key)) return null;
   return SFTP_REFUSALS[key as SftpRefusalCode] === code ? key as SftpRefusalCode : null;
 }

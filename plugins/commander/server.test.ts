@@ -426,7 +426,7 @@ for (const refusalAs of ["sdk", "http"] as const) {
       try {
         await expect(bb.rpc("endpoint_home", { endpoint: fixture.endpoint }))
           .rejects.toMatchObject({
-            code: "invalid",
+            code: "forbidden",
             message: '{"code":"host_key_rejected","message":"Remote Hub did not trust the host key","retryable":false}',
           });
       } finally { await bb.dispose(); }
@@ -448,6 +448,25 @@ test("keeps a missing consent apart from a transport failure when BB reports ref
       });
   } finally { await bb.dispose(); }
 });
+
+for (const [label, message] of [
+  ["a known code without the \": \" separator", "host_key_unknown"],
+  ["a known code inside diagnostic text", "ssh said host_key_unknown: while probing"],
+] as const) {
+  test(`treats ${label} with a matching class as a transport failure`, async () => {
+    const fixture = remoteFixture({ refusalAs: "http" });
+    const bb = await backend(undefined, async (args) => {
+      if (args.method === "hub_sftp_open") throw new BbHttpErrorLike(403, "forbidden", message);
+      return fixture.callRpc(args);
+    });
+    try {
+      await expect(bb.rpc("endpoint_home", { endpoint: fixture.endpoint })).rejects.toMatchObject({
+        code: "invalid",
+        message: '{"code":"connection_failed","message":"SFTP home directory is unavailable","retryable":true}',
+      });
+    } finally { await bb.dispose(); }
+  });
+}
 
 test("treats an HTTP failure whose class does not match the refusal as a transport failure", async () => {
   const fixture = remoteFixture({ refusalAs: "http" });
@@ -476,7 +495,7 @@ test("reports a host key that changes after the home loaded as host_key_rejected
     changed = true;
     await expect(bb.rpc("dir_list", { ref: { endpoint: fixture.endpoint, path: parsePosix("/data") }, cursor: null, limit: 10 }))
       .rejects.toMatchObject({
-        code: "invalid",
+        code: "forbidden",
         message: '{"code":"host_key_rejected","message":"The server\'s host key is not trusted; decide it on the Remote Hub page","retryable":false}',
       });
   } finally { await bb.dispose(); }

@@ -31,7 +31,8 @@ export function publicError(error: unknown) {
   if (error instanceof experimental_PluginRpcRefusal) return error;
   if (error instanceof SftpRefusal) return refusal(SFTP_REFUSALS[error.code], error.code);
   if (!isCommanderError(error)) return refusal("invalid", "Commander operation failed");
-  const code = error.code === "permission_denied" || error.code === "read_only" || error.code === "consent_required" ? "forbidden"
+  const code = error.code === "permission_denied" || error.code === "read_only" || error.code === "consent_required"
+    || error.code === "host_key_rejected" ? "forbidden"
     : error.code === "not_found" ? "not_found"
     : error.code === "changed_since_plan" || error.code === "already_exists" ? "conflict" : "invalid";
   return refusal(code, JSON.stringify(error.toShape()));
