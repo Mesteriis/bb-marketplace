@@ -65,14 +65,15 @@ try {
     && await review.getByRole("region", { name: "many/f29.txt" }).locator(".git-review-code", { hasText: "line 29" }).count() > 0));
   await review.getByRole("button", { name: "Find", exact: true }).click();
   await review.getByLabel("Find", { exact: true }).fill("line 2");
+  check("Find counts the matches before stepping", await review.getByRole("search", { name: "Find in the diff" }).getByRole("status").innerText() === "11 matches");
   const status = await review.getByRole("search", { name: "Find in the diff" }).getByRole("status").innerText();
   await review.getByLabel("Find", { exact: true }).press("Enter");
-  check("Find steps to a match and marks it", /of 11/.test(await review.getByRole("search", { name: "Find in the diff" }).getByRole("status").innerText())
-    && await review.locator(".git-review-row[data-current]").count() === 1, status);
+  check("Find steps to a match and marks it", await until(async () => await review.getByRole("search", { name: "Find in the diff" }).getByRole("status").innerText() === "1 of 11"
+    && await review.locator(".git-review-row[data-current]").count() === 1), status);
   await review.getByLabel("Find", { exact: true }).press("Escape");
   await review.getByRole("button", { name: "Go to", exact: true }).click();
-  await review.getByLabel("Go to", { exact: true }).fill("f29");
-  await review.getByLabel("Go to", { exact: true }).press("Enter");
+  await review.getByLabel("Go to file, comment or view").fill("f29");
+  await review.getByLabel("Go to file, comment or view").press("Enter");
   check("Go to reaches a file", await until(async () => await page.evaluate(() => document.activeElement?.getAttribute("data-path")) === "many/f29.txt"));
   const large = review.getByRole("region", { name: "large.txt" });
   check("a large change starts folded and says so", await visible(large.getByText(/large change/)) && await large.locator(".git-review-row").count() === 0);
@@ -96,9 +97,9 @@ try {
   await review.getByRole("region", { name: "many/f03.txt" }).getByRole("button", { name: "▾" }).click();
   await page.waitForTimeout(1500);
   review = await open();
-  check("an unsent line comment and a folded file survive a reload", await visible(review.getByLabel("Line comment"))
-    && await review.getByLabel("Line comment").inputValue() === "Unsent for now"
-    && await review.getByRole("region", { name: "many/f03.txt" }).locator(".git-review-row").count() === 0);
+  const restored = [await visible(review.getByLabel("Line comment")), await review.getByLabel("Line comment").inputValue().catch(() => null),
+    await review.getByRole("region", { name: "many/f03.txt" }).locator(".git-review-row").count()];
+  check("an unsent line comment and a folded file survive a reload", restored[0] && restored[1] === "Unsent for now" && restored[2] === 0, restored);
   await review.getByLabel("Line comment").fill("To be **cleared**.");
   await review.getByRole("button", { name: "Comment", exact: true }).click();
   const thread = review.getByRole("article", { name: /Comment thread on watched\.txt:1/ });

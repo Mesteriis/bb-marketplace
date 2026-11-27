@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { changeRevision } from "../../core/code-review/diff.ts";
 import type { ReviewDiffFile } from "../../core/code-review/diff.ts";
 import type { ReviewThread, Side } from "../../core/code-review/model.ts";
@@ -62,7 +62,13 @@ export function FileDiff({file, threads, placements, wrap, split, workingCopy, a
   const setClosed = setClosedState;
   const toggleFold = () => setClosedState(current => { kept.setFold(file.path, !current); return !current; });
   // Marking a file Viewed folds it; a mark that went stale (its change moved on) unfolds it.
-  useEffect(() => { if (file.viewed !== undefined) setClosed(file.viewed || large); }, [file.viewed, large]);
+  const lastViewed = useRef(file.viewed);
+  useEffect(() => {
+    // Only a change of the mark folds or unfolds; on mount the kept fold stands.
+    if (file.viewed === undefined || file.viewed === lastViewed.current) return;
+    lastViewed.current = file.viewed;
+    setClosed(file.viewed || large);
+  }, [file.viewed, large]);
   const [marking, setMarking] = useState(false);
   useEffect(() => { if (reveal) setClosed(false); }, [reveal]);
   const indexOf = useMemo(() => new Map(rows.map((row, index) => [row, index])), [rows]);

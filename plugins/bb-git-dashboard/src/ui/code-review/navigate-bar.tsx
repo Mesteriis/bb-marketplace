@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { MAX_MATCHES, type GoToItem } from "./navigation.ts";
 
+const shown = (count: number) => count >= MAX_MATCHES ? MAX_MATCHES + "+" : String(count);
+
 /** Find in the diff: Enter goes to the next match, Shift+Enter to the previous one, Escape closes. */
 export function FindBar({query, matchCase, count, current, onQuery, onMatchCase, onStep, onClose}: {
   query: string; matchCase: boolean; count: number; current: number;
@@ -13,7 +15,7 @@ export function FindBar({query, matchCase, count, current, onQuery, onMatchCase,
   return <div className="git-row git-code-review-find" role="search" aria-label="Find in the diff">
     <input aria-label="Find" autoFocus value={query} placeholder="Find in the diff" onChange={event => onQuery(event.target.value)} onKeyDown={keys}/>
     <label><input type="checkbox" checked={matchCase} onChange={event => onMatchCase(event.target.checked)}/> Match case</label>
-    <span className="git-muted" role="status">{!query ? "" : count === 0 ? "No matches" : (current + 1) + " of " + (count >= MAX_MATCHES ? MAX_MATCHES + "+" : count)}</span>
+    <span className="git-muted" role="status">{!query ? "" : count === 0 ? "No matches" : current < 0 ? shown(count) + (count === 1 ? " match" : " matches") : (current + 1) + " of " + shown(count)}</span>
     <button type="button" disabled={!count} onClick={() => onStep(-1)} aria-label="Previous match">↑</button>
     <button type="button" disabled={!count} onClick={() => onStep(1)} aria-label="Next match">↓</button>
     <button type="button" onClick={onClose}>Close</button>
@@ -34,7 +36,7 @@ export function GoToDialog({items, onQuery, onPick, onClose}: {items: GoToItem[]
     if (event.key === "Escape") { event.preventDefault(); onClose(); }
   };
   return <div className="git-ci-threads git-stack git-code-review-goto" role="dialog" aria-label="Go to">
-    <input aria-label="Go to" autoFocus placeholder="File, comment or view" role="combobox" aria-expanded="true" aria-controls="git-review-goto-list"
+    <input aria-label="Go to file, comment or view" autoFocus placeholder="File, comment or view" role="combobox" aria-expanded="true" aria-controls="git-review-goto-list"
       aria-activedescendant={items[active] ? "git-review-goto-" + active : undefined} onChange={event => onQuery(event.target.value)} onKeyDown={keys}/>
     <ul id="git-review-goto-list" role="listbox" ref={list}>
       {items.map((item, index) => <li key={item.kind + item.label + index} id={"git-review-goto-" + index} role="option" aria-selected={index === active}

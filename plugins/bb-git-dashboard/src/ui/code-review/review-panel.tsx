@@ -149,10 +149,11 @@ export function ReviewPanel({api, copyId, currentThreadId, revision}: {api: Code
   };
   const markViewed = async (path: string, revision: string, on: boolean) => {
     if (!view) return;
-    try {
-      await api.setViewed(view.sessionId, path, revision, on);
-      setView(current => current && {...current, files: current.files.map(file => file.path === path ? {...file, viewed: on} : file)});
-    } catch (cause) { setStatus("Could not mark " + path + ": " + message(cause)); }
+    const mark = (viewed: boolean) => setView(current => current && {...current, files: current.files.map(file => file.path === path ? {...file, viewed} : file)});
+    // The box turns at once; a mark the server refuses turns back.
+    mark(on);
+    try { await api.setViewed(view.sessionId, path, revision, on); }
+    catch (cause) { mark(!on); setStatus("Could not mark " + path + ": " + message(cause)); }
   };
   const clear = async () => {
     if (!view) return;
