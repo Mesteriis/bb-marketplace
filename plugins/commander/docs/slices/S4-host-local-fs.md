@@ -56,6 +56,18 @@ export const HostFsContract = {
   `rename(temp, target)`; права результата — `0644 & ~umask` (не копировать
   0600 temp).
 - `remove` каталога — только пустой (`rmdir`); файл — `unlink`.
+- Имена на хостах Windows (`process.platform === "win32"` в host entry):
+  сегмент, который создаётся или в который переименовывают (`writeOpen`,
+  `mkdir`, `rename` — цель, `copyWithin` — цель), отклоняется ошибкой
+  `invalid_name`, если содержит `\\`, `:`, управляющие символы U+0000–U+001F,
+  `<`, `>`, `"`, `|`, `?`, `*`, оканчивается точкой или пробелом, или его
+  основа без расширения (без учёта регистра) — зарезервированное имя `CON`,
+  `PRN`, `AUX`, `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9` (`nul.txt` тоже
+  отклоняется). Чтение и листинг существующих имён не фильтруются. На POSIX —
+  как сейчас: запрещены только `/` и `\0` (их уже не пропускает
+  `NameSegment` S1). Код `invalid_name` берётся из `ErrorCode` S1; в ветке S1
+  на `8dd22857` его ещё нет — если к началу S4 он не слит, стоп и вопрос в
+  тред Commander, не подменять `invalid_path`.
 - Ошибки `errno` → `ErrorCode`: ENOENT→not_found, EEXIST→already_exists,
   EACCES/EPERM→permission_denied, ENOSPC→no_space, EROFS→read_only,
   ENOTDIR/EISDIR, ELOOP→permission_denied.
@@ -83,6 +95,12 @@ atomicReplace, serverSideCopy, seek, checksum (trash — нет в v1).
 - Цель — симлинк на файл вне каталога → `permission_denied`, файл вне не
   изменён (symlink escape).
 - `remove` непустого каталога → ошибка, ничего не удалено.
+- Проверка имён Windows — чистая функция (`host-fs/names.ts`), тестируется
+  на любой ОС с явным параметром платформы: `win32` отклоняет `a:b`, `a\\b`,
+  `CON`, `con.txt`, `NUL`, `COM1.log`, `LPT9`, `name.`, `name ` → все
+  `invalid_name`; принимает `CONSOLE`, `COM10`, `nul_`, `Привет.txt`; `posix`
+  принимает `a:b`, `CON`, `name.`. Плюс один тест на уровне обработчика
+  `mkdir` с платформой `win32` → `invalid_name`, каталог не создан.
 - Каталог без прав на чтение (chmod 000) → `permission_denied`.
 - TTL: сессия без активности (инъекция таймера) → temp удалён.
 - `local-provider` с фейковым host-клиентом: перевод ошибок и `Size`.
