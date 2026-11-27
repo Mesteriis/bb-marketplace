@@ -41,12 +41,19 @@ export type RunGit = (
 /** Where git is: on PATH, else where macOS and Homebrew put it (a daemon's PATH may be bare). */
 const GIT_CANDIDATES = ["git", "/usr/bin/git", "/opt/homebrew/bin/git", "/usr/local/bin/git"];
 
-export function createRunGit(timeoutMs = 60_000): RunGit {
+/**
+ * Changed from diff-review: git runs with no global or system config, no replace objects, no fsmonitor or hooks,
+ * and only the environment it needs, as the plugin's own runner does; `signal` stops it with the request.
+ */
+export function createRunGit(timeoutMs = 60_000, signal?: AbortSignal): RunGit {
   let git: string | null = null;
   const attempt = (file: string, root: string, args: readonly string[], maxBuffer: number, encoding: "utf8" | "latin1", input: Buffer | undefined) =>
     new Promise<{ stdout: string; code: number | null; missing: boolean; stderr: string }>((resolve) => {
       // Paths as they are, not octal-quoted, whatever the user's git config says.
-      const child = execFile(file, ["-C", root, "-c", "core.quotePath=false", ...args], { encoding, maxBuffer, timeout: timeoutMs, killSignal: "SIGKILL", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", LC_ALL: "C" } }, (error, stdout, stderr) => {
+      const child = execFile(file, ["-C", root, "-c", "core.quotePath=false", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
+        "-c", "core.untrackedCache=false", "--no-replace-objects", ...args], { encoding, maxBuffer, timeout: timeoutMs, killSignal: "SIGKILL", signal,
+        env: { PATH: process.env.PATH, HOME: process.env.HOME, SystemRoot: process.env.SystemRoot, GIT_OPTIONAL_LOCKS: "0", LC_ALL: "C",
+          GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_NO_REPLACE_OBJECTS: "1", GIT_TERMINAL_PROMPT: "0" } }, (error, stdout, stderr) => {
         const code = error === null ? 0 : typeof (error as { code?: unknown }).code === "number" ? ((error as { code: number }).code) : null;
         const overflow = (error as { code?: unknown } | null)?.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER";
         resolve({ stdout, code: overflow ? -1 : code, missing: (error as { code?: unknown } | null)?.code === "ENOENT", stderr: overflow ? "output too large" : stderr });

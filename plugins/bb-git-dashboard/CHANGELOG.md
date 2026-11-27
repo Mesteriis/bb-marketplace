@@ -9,7 +9,7 @@ Line review, the first part of taking over diff-review (0.9.1 brings its AI runs
 - **Suggest a change** adds a suggestion block seeded with the commented lines; **Apply suggestion** writes it over those lines of the working file, only while the file is as the view read it, and resolves the thread.
 - **Send to agent** puts the chosen open threads, with the commented code and a review summary, in a thread working on the copy (the current one in a thread's tab). Each thread then shows Sent, Answered or No reply.
 - The agent answers each thread from that thread: `bb git-dashboard review list|reply|resolve|dismiss` (text as base64 through stdin) or the `git_review_*` tools; answers from any other thread are refused. The git-dashboard skill describes it.
-- The whole `bb git-dashboard` CLI is declared with BB's command parser: `--help` at every level, usage errors with codes, and `--json` error envelopes.
+- The whole `bb git-dashboard` CLI is declared with BB's command parser: `--help` at every level, usage errors with codes, and `--json` error envelopes. `ci list --active --failed` together is now refused instead of showing the failed runs.
 - Ported from diff-review (MIT) with diffity's parts (MIT): anchors, patch lines, suggestions, ranges, the host's diffs, the store, the send prompt and the review CLI, with their tests.
 
 ## 0.8.0 — 2026-11-27

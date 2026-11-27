@@ -12,6 +12,8 @@ import { describeLocation, describeTarget, GENERAL_PATH, type ReviewThread, type
 
 /** The command an agent answers with; the skill in `skills/diff-review` says the same. */
 export const CLI = "bb git-dashboard review";
+/** The most of a thread's commented code the message repeats. */
+const anchorShown = 4000;
 
 function quote(body: string): string {
   return body
@@ -25,8 +27,10 @@ function threadSection(thread: ReviewThread): string {
   if (thread.severity !== null) facts.push(thread.severity);
   const lines = [`### Thread \`${thread.id}\` — ${facts.join(" · ")}`, ""];
   if (thread.filePath !== GENERAL_PATH && thread.startLine > 0 && thread.anchorContent !== null) {
-    const fence = "`".repeat(Math.max(3, ...[...thread.anchorContent.matchAll(/`+/g)].map(run => run[0].length + 1)));
-    lines.push("Commented code, as it read then:", "", fence, thread.anchorContent, fence, "");
+    // A long range is cut in the message; the agent reads the file for the rest.
+    const code = thread.anchorContent.length > anchorShown ? thread.anchorContent.slice(0, anchorShown) + "\n… (cut; read the file)" : thread.anchorContent;
+    const fence = "`".repeat(Math.max(3, ...[...code.matchAll(/`+/g)].map(run => run[0].length + 1)));
+    lines.push("Commented code, as it read then:", "", fence, code, fence, "");
   }
   for (const comment of thread.comments) {
     const who = comment.authorType === "user" ? "User" : `Agent (${comment.authorName})`;

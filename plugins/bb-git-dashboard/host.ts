@@ -8,7 +8,6 @@ import { createRunGit, defaultBase, diff as reviewDiff, GitError } from "./src/a
 import type { Target } from "./src/core/code-review/model.ts";
 import { readReviewFile, writeReviewFile } from "./src/adapters/bb/review-files.ts";
 
-const reviewGit = createRunGit();
 import { walkProjects } from "./src/adapters/bb/project-walk.ts";
 import { maxDepth } from "./src/core/catalog/project-scan.ts";
 import { isAbsolute } from "node:path";
@@ -96,6 +95,7 @@ export default experimental_defineHostEntry({
     async reviewDiff({root, identity, target, ignoreWhitespace}, {signal}) {
       try {
         await assertWorktree(root,identity,signal);
+        const reviewGit = createRunGit(60_000, signal);
         // The branch views without a base compare against the copy's default branch.
         let resolved: Target;
         if ((target.kind === "branch" || target.kind === "all") && !target.base) {
@@ -103,7 +103,9 @@ export default experimental_defineHostEntry({
           if (!base) throw new GitError("Unknown revision 'main'.");
           resolved = {kind: target.kind, base};
         } else resolved = target as Target;
-        return {ok:true as const, value:await reviewDiff(reviewGit, root, resolved, ignoreWhitespace), target:resolved};
+        const value = await reviewDiff(reviewGit, root, resolved, ignoreWhitespace);
+        // A commit's review is kept under its full hash, however short the hash it was asked by.
+        return {ok:true as const, value, target:resolved.kind === "commit" && value.headSha ? {kind:"commit" as const, sha:value.headSha} : resolved};
       } catch (error) {
         // diff-review's git reports in sentences; the plugin answers in codes.
         const unknown = error instanceof GitError && /^Unknown revision|no common ancestor/.test(error.message);

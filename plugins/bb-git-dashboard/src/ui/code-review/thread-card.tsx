@@ -81,9 +81,11 @@ export function ThreadCard({thread, api, current, canApply, showPath, outdated}:
   const [replying, setReplying] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
   const [error, setError] = useState("");
-  const [open, setOpen] = useState(thread.status === "open");
+  const [shown, setShown] = useState(false);
   const act = (work: Promise<void>) => { setError(""); work.catch(cause => setError(message(cause))); };
   const closed = thread.status !== "open";
+  // A closed thread starts folded; an open one always shows, also after it is reopened elsewhere.
+  const open = !closed || shown;
   return <article className="git-review-thread" data-resolved={closed || undefined} aria-label={"Comment thread on " + describeLocation(thread)}>
     <header className="git-row git-code-review-thread-head">
       {showPath && <span className="git-path">{describeLocation(thread)}</span>}
@@ -93,7 +95,7 @@ export function ThreadCard({thread, api, current, canApply, showPath, outdated}:
       {thread.delivery && <span className="git-review-tag" data-waiting={thread.delivery.state === "sent" || undefined}>
         {deliveryLabel[thread.delivery.state]}{" "}<button type="button" className="git-link" onClick={() => api.openThread(thread.delivery!.threadId)}>Open the thread</button></span>}
       <span className="git-ci-spacer"/>
-      {closed && <button type="button" aria-expanded={open} onClick={() => setOpen(value => !value)}>{open ? "Fold" : "Show"}</button>}
+      {closed && <button type="button" aria-expanded={open} onClick={() => setShown(value => !value)}>{open ? "Fold" : "Show"}</button>}
     </header>
     {open && <>
       {outdated && thread.anchorContent !== null && <pre className="git-code">{thread.anchorContent}</pre>}

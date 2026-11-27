@@ -221,3 +221,19 @@ describe("the default base of the branch views", () => {
     expect(await defaultBase(run, root)).toBe("origin/trunk");
   });
 });
+
+describe("git for the review reads what was committed", () => {
+  it("ignores replace refs, so a commit shows its real content", async () => {
+    const root = repo();
+    writeFileSync(join(root, "a.txt"), "one\nREAL\n");
+    git(root, "commit", "-q", "-am", "real");
+    const real = git(root, "rev-parse", "HEAD");
+    writeFileSync(join(root, "a.txt"), "one\nFAKE\n");
+    git(root, "commit", "-q", "-am", "fake");
+    const fake = git(root, "rev-parse", "HEAD");
+    git(root, "replace", real, fake);
+    const shown = await diff(run, root, { kind: "commit", sha: real }, false);
+    expect(shown.files[0]!.patch).toContain("+REAL");
+    expect(shown.files[0]!.patch).not.toContain("FAKE");
+  });
+});

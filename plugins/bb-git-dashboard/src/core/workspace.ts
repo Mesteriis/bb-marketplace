@@ -67,6 +67,7 @@ const next: Record<string, string> = {
   CHANGED: "The file changed since the review was loaded. Reload the review and apply it again.",
   BINARY_FILE: "Suggestions apply to text files only.",
   FILE_TOO_LARGE: "Suggestions apply to files up to 1 MB.",
+  NOT_UTF8: "Suggestions apply to UTF-8 text files only; this file has another encoding.",
   LINE_NOT_IN_DIFF: "Comment on lines the diff shows, or on the whole file.",
   NOT_SENT_HERE: "This comment thread was not sent to this thread. Run `bb git-dashboard review list` to see the ones that were.",
   INVALID_ID: "Use a comment thread id, or a unique prefix of four or more of its characters.",

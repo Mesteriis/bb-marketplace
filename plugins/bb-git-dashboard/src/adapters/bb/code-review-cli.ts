@@ -66,7 +66,12 @@ export function reviewCommands(deps: ReviewCliDeps) {
   return {
     list(all: boolean, json: boolean, threadId: string | undefined) {
       const rows = deps.sentTo(caller(threadId), all);
-      if (json) return {exitCode: 0, stdout: JSON.stringify(rows).slice(0, LIST_MAX_CHARS)};
+      if (json) {
+        // Whole threads are dropped from the end until the JSON fits, so it always parses; stderr says what was left out.
+        let kept = rows;
+        while (kept.length && JSON.stringify(kept).length > LIST_MAX_CHARS) kept = kept.slice(0, -1);
+        return {exitCode: 0, stdout: JSON.stringify(kept), ...(kept.length < rows.length ? {stderr: (rows.length - kept.length) + " thread(s) left out to fit the output.\n"} : {})};
+      }
       const text = rows.length ? rows.map(formatThread).join("\n\n") : all ? "No comment threads were sent to this thread." : "No open comment threads were sent to this thread.";
       return {exitCode: 0, stdout: (text.length > LIST_MAX_CHARS ? text.slice(0, LIST_MAX_CHARS) + "\n… cut" : text) + "\n"};
     },

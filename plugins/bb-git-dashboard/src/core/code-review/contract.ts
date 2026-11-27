@@ -3,7 +3,7 @@ import { answer } from "../answer.ts";
 import { id } from "../workspace.ts";
 import { placementSchema } from "./placement.ts";
 import { reviewDiffFileSchema } from "./diff.ts";
-import { BODY_MAX_CHARS, reviewThreadSchema, severitySchema, sideSchema, targetRequestSchema, targetSchema, threadStatusSchema } from "./model.ts";
+import { ANCHOR_MAX_CHARS, BODY_MAX_CHARS, reviewThreadSchema, severitySchema, sideSchema, targetRequestSchema, targetSchema, threadStatusSchema } from "./model.ts";
 
 const reviewId = z.string().regex(/^[0-9a-f]{12}$/);
 const body = z.string().min(1).max(BODY_MAX_CHARS);
@@ -13,7 +13,8 @@ export const codeReviewContract = {
     output: answer({sessionId: reviewId, target: targetSchema, files: z.array(reviewDiffFileSchema), truncated: z.boolean(),
       baseSha: z.string().nullable(), headSha: z.string().nullable(), threads: z.array(reviewThreadSchema), placements: z.record(z.string(), placementSchema)})},
   reviewCreateThread: {input: z.object({sessionId: reviewId, filePath: z.string().min(1).max(4096), side: sideSchema.nullable(),
-    startLine: z.number().int().min(0), endLine: z.number().int().min(0), severity: severitySchema.nullable(), body}),
+    startLine: z.number().int().min(0), endLine: z.number().int().min(0), anchorContent: z.string().max(ANCHOR_MAX_CHARS).nullable(),
+    severity: severitySchema.nullable(), body}),
     output: answer({thread: reviewThreadSchema})},
   reviewAddComment: {input: z.object({threadId: reviewId, body}), output: answer({})},
   reviewEditComment: {input: z.object({commentId: reviewId, body}), output: answer({})},

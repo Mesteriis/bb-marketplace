@@ -1,7 +1,7 @@
 import { placeThread, type Placement } from "../../core/code-review/anchors.ts";
 import type { ReviewDiff } from "../../core/code-review/diff.ts";
-import { BODY_MAX_CHARS, GENERAL_PATH, targetKey, targetSchema, type Severity, type Side, type Target, type TargetRequest } from "../../core/code-review/model.ts";
-import { linesText, parsePatchLines, type PatchLines } from "../../core/code-review/patch-lines.ts";
+import { ANCHOR_MAX_CHARS, BODY_MAX_CHARS, GENERAL_PATH, targetKey, targetSchema, type Severity, type Side, type Target, type TargetRequest } from "../../core/code-review/model.ts";
+import { contentLines, parsePatchLines } from "../../core/code-review/patch-lines.ts";
 import { sendPrompt } from "../../core/code-review/prompt.ts";
 import { bodyParts, replaceLines } from "../../core/code-review/suggestion.ts";
 import type { Copy } from "../../core/workspace.ts";
@@ -28,7 +28,9 @@ export type CodeReviewDeps = {
   /** The copy's review changed: tabs reload it. */
   changed(copyId: string): void;
 };
-export type NewThreadInput = {filePath: string; side: Side | null; startLine: number; endLine: number; severity: Severity | null; body: string};
+/** `anchorContent`: the commented lines' text as the owner's view showed them; the thread follows that text. */
+export type NewThreadInput = {filePath: string; side: Side | null; startLine: number; endLine: number; anchorContent: string | null;
+  severity: Severity | null; body: string};
 export type AgentAction = "reply" | "resolve" | "dismiss";
 
 /** Views whose new side is the working tree, where a suggestion can be written. */
@@ -46,8 +48,6 @@ function text(body: string) {
  */
 export function codeReviewService(deps: CodeReviewDeps) {
   const {store} = deps;
-  /** Each session's lines as its last view read them, to anchor new threads and place suggestions. */
-  const lastLines = new Map<string, {target: Target; files: Map<string, PatchLines>}>();
 
   function session(sessionId: string) {
     return store.sessionById(sessionId) ?? fail("NOT_FOUND");
@@ -60,12 +60,12 @@ export function codeReviewService(deps: CodeReviewDeps) {
   }
   const changed = (sessionId: string) => deps.changed(session(sessionId).copyId);
 
-  /** The thread an agent named by a unique prefix of its id. */
-  function named(prefix: string) {
+  /** The thread an agent named by a unique prefix of its id, among those sent to its own thread only. */
+  function named(callerThreadId: string, prefix: string) {
     if (!/^[0-9a-f]{4,12}$/.test(prefix)) fail("INVALID_ID");
-    const found = store.threadsByPrefix(prefix);
+    const found = store.threadsSentTo(callerThreadId).filter(row => row.id.startsWith(prefix));
     if (found.length > 1) fail("AMBIGUOUS_ID");
-    return found[0] ?? fail("NOT_SENT_HERE");
+    return found[0]?.id ?? fail("NOT_SENT_HERE");
   }
 
   return {
@@ -75,7 +75,6 @@ export function codeReviewService(deps: CodeReviewDeps) {
       const key = targetKey(targetSchema.parse(target));
       const {id: sessionId} = store.session(copy.id, key);
       const files = new Map(value.files.flatMap(file => file.patch === null ? [] : [[file.path, parsePatchLines(file.patch)] as const]));
-      lastLines.set(sessionId, {target, files});
       const threads = store.threads(sessionId);
       const placements: Record<string, Placement> = Object.fromEntries(threads.map(row => [row.id,
         placeThread(row, value.files.some(file => file.path === row.filePath) ? files.get(row.filePath) ?? {old: new Map(), new: new Map()} : undefined)]));
@@ -89,12 +88,9 @@ export function codeReviewService(deps: CodeReviewDeps) {
       const general = input.filePath === GENERAL_PATH;
       const wholeFile = !general && input.startLine === 0;
       if (!general && !wholeFile && (input.side === null || input.endLine < input.startLine)) fail("INVALID_INPUT");
-      let anchorContent: string | null = null;
-      if (!general && !wholeFile) {
-        const lines = lastLines.get(sessionId)?.files.get(input.filePath);
-        anchorContent = lines ? linesText(lines, input.side!, input.startLine, input.endLine) : null;
-        if (anchorContent === null) fail("LINE_NOT_IN_DIFF");
-      }
+      const anchorContent = general || wholeFile ? null : input.anchorContent;
+      if (!general && !wholeFile && anchorContent === null) fail("LINE_NOT_IN_DIFF");
+      if (anchorContent !== null && anchorContent.length > ANCHOR_MAX_CHARS) fail("INVALID_INPUT");
       const made = store.createThread({sessionId, filePath: input.filePath, side: general || wholeFile ? null : input.side,
         startLine: general ? 0 : input.startLine, endLine: general ? 0 : input.endLine, severity: input.severity, anchorContent, body});
       changed(sessionId);
@@ -131,7 +127,7 @@ export function codeReviewService(deps: CodeReviewDeps) {
       if (await deps.threads.copyOf(bbThreadId) !== owner.copyId) fail("WRONG_WORKSPACE");
       const chosen = store.threads(sessionId).filter(row => threadIds.includes(row.id) && row.status === "open");
       if (!chosen.length) fail("NOTHING_TO_SEND");
-      const target = lastLines.get(sessionId)?.target ?? targetFromKey(owner.targetKey);
+      const target = targetFromKey(owner.targetKey);
       const recorded = store.recordSend(sessionId, bbThreadId, chosen.map(row => row.id), note);
       try {
         await deps.threads.send(bbThreadId, sendPrompt({target, threads: chosen, note}));
@@ -154,7 +150,7 @@ export function codeReviewService(deps: CodeReviewDeps) {
       // What awaits BB comes first; the right is checked in the same transaction as the write.
       const authorName = await deps.threads.providerName(callerThreadId).catch(() => "Agent");
       const started = await deps.threads.turnStart(callerThreadId).catch(() => null);
-      const id = named(prefix);
+      const id = named(callerThreadId, prefix);
       const written = store.answerAsAgent({threadId: id, callerThreadId, ackBefore: started, authorName, body: content,
         status: action === "reply" ? null : action === "resolve" ? "resolved" : "dismissed"});
       if (written === null) fail("NOT_SENT_HERE");
@@ -181,15 +177,15 @@ export function codeReviewService(deps: CodeReviewDeps) {
       const row = thread(threadId);
       if (row.status !== "open") fail("NOT_OPEN");
       const owner = session(row.sessionId);
-      const seen = lastLines.get(row.sessionId);
-      const target = seen?.target ?? targetFromKey(owner.targetKey);
+      const target = targetFromKey(owner.targetKey);
       if (!workingViews.has(target.kind) || row.side !== "new" || row.startLine === 0 || row.anchorContent === null) fail("NOT_WORKING_COPY");
       const comment = row.comments.find(item => item.id === commentId) ?? fail("NOT_FOUND");
       const block = bodyParts(comment.body).find(part => part.kind === "suggestion") ?? fail("NO_SUGGESTION");
-      const place = placeThread(row, seen?.files.get(row.filePath));
-      if (place.state === "outdated") throw new Error("CHANGED");
       const copy = await copyOf(owner.copyId);
       const file = await deps.host.read(copy, row.filePath);
+      // The new side of these views is the working file itself: the thread is placed against what it reads now.
+      const place = placeThread(row, contentLines(file.text));
+      if (place.state === "outdated") throw new Error("CHANGED");
       const next = replaceLines(file.text, place.startLine, place.endLine, row.anchorContent!, block.kind === "suggestion" ? block.code : "");
       if (next === null) fail("CHANGED");
       await deps.host.write(copy, row.filePath, file.sha256, next!);

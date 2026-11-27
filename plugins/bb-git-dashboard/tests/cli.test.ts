@@ -68,3 +68,13 @@ test("ci commands keep their arguments through the declared parser", async () =>
   assert.equal((await cli.run(["ci", "cancel", "8"], {threadId: "thr_1"})).stderr, "ACCESS_DENIED");
   assert.equal((await cli.run(["--help"], {})).exitCode, 0);
 });
+
+test("review list --json drops whole threads to fit and still parses", async () => {
+  const big = {...{id: "abcdef123456", sessionId: "s", filePath: "a.ts", side: "new" as const, startLine: 1, endLine: 1, status: "open" as const, severity: null,
+    anchorContent: "y".repeat(300_000), createdAt: 1, updatedAt: 1, delivery: null, comments: []}};
+  const cli = gitDashboardCli(ciCli({context: async () => ({copyId: "c", permission: "read"}), service: {} as never, approve: async () => false}),
+    reviewCommands({sentTo: () => [big, {...big, id: "bcdef1234567"}], answer: async () => big}));
+  const result = await cli.run(["review", "list", "--json"], {threadId: "thr_1"});
+  assert.equal(JSON.parse(result.stdout ?? "").length, 1);
+  assert.match(result.stderr ?? "", /1 thread\(s\) left out/);
+});

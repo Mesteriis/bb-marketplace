@@ -45,8 +45,9 @@ export function ReviewPanel({api, copyId, currentThreadId, revision}: {api: Code
   useEffect(() => {
     let active = true;
     setLoading(true);
+    // A view that fails to load leaves none on screen, so nothing is commented or sent to the previous one.
     api.view(copyId, applied, ignoreWhitespace).then(next => { if (active) { setView(next); setError(""); } },
-      cause => { if (active) setError(message(cause)); }).finally(() => { if (active) setLoading(false); });
+      cause => { if (active) { setView(undefined); setError(message(cause)); } }).finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [api, copyId, applied, ignoreWhitespace, revision, reload]);
   const refresh = useCallback(() => setReload(value => value + 1), []);
@@ -106,7 +107,7 @@ export function ReviewPanel({api, copyId, currentThreadId, revision}: {api: Code
     {view && (general || generalThreads.length > 0) && <section className="git-stack" aria-label="About the whole diff">
       <h3>About the whole diff</h3>
       {general && <Composer label="Comment on the whole diff" withSeverity submitLabel="Comment" onCancel={() => setGeneral(false)}
-        onSubmit={async (body, severity) => { await create({filePath: GENERAL_PATH, side: null, startLine: 0, endLine: 0, severity, body}); setGeneral(false); }}/>}
+        onSubmit={async (body, severity) => { await create({filePath: GENERAL_PATH, side: null, startLine: 0, endLine: 0, anchorContent: null, severity, body}); setGeneral(false); }}/>}
       {generalThreads.map(thread => <ThreadCard key={thread.id} thread={thread} api={liveApi} current={undefined} canApply={false}/>)}
     </section>}
     {view && outdated.length > 0 && <section className="git-stack" aria-label="Not on the current diff">

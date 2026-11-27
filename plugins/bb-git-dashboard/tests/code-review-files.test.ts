@@ -40,3 +40,11 @@ test("a write lands only over the bytes it was computed from, and keeps the file
     assert.equal(readFileSync(join(root, "run.sh"), "utf8"), "echo two\n");
   } finally { done(); }
 });
+
+test("a file that is not UTF-8 is refused, so writing it back cannot replace its bytes", async () => {
+  const {root, done} = folder();
+  try {
+    writeFileSync(join(root, "latin.txt"), Buffer.from([0x63, 0x61, 0x66, 0xe9, 0x0a]));
+    await assert.rejects(readReviewFile(root, "latin.txt"), {message: "NOT_UTF8"});
+  } finally { done(); }
+});

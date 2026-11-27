@@ -35,13 +35,13 @@ function setup(options: {threadCopy?: Record<string, string>; turnStart?: number
     },
     changed: copyId => published.push(copyId),
   });
-  return {service, store, sent, published, file: () => file, tick: (ms = 10) => { now += ms; }};
+  return {service, store, sent, published, file: () => file, setFile: (text: string) => { file = text; }, tick: (ms = 10) => { now += ms; }};
 }
 
 test("a view reads the diff, makes its session and places each thread against the current lines", async () => {
   const {service} = setup();
   const first = await service.view("c1", {kind: "uncommitted"}, false);
-  const thread = await service.createThread(first.sessionId, {filePath: "a.ts", side: "new", startLine: 2, endLine: 2, severity: "must-fix", body: "Why upper case?"});
+  const thread = await service.createThread(first.sessionId, {filePath: "a.ts", side: "new", startLine: 2, endLine: 2, anchorContent: "TWO", severity: "must-fix", body: "Why upper case?"});
   assert.equal(thread.anchorContent, "TWO");
   const again = await service.view("c1", {kind: "uncommitted"}, false);
   assert.equal(again.sessionId, first.sessionId);
@@ -54,16 +54,16 @@ test("a view reads the diff, makes its session and places each thread against th
 test("a comment on lines the diff does not show is refused; whole-file and whole-diff ones are not", async () => {
   const {service} = setup();
   const {sessionId} = await service.view("c1", {kind: "uncommitted"}, false);
-  await assert.rejects(service.createThread(sessionId, {filePath: "a.ts", side: "new", startLine: 40, endLine: 40, severity: null, body: "?"}), {message: "LINE_NOT_IN_DIFF"});
-  await assert.rejects(service.createThread(sessionId, {filePath: "a.ts", side: "new", startLine: 2, endLine: 2, severity: null, body: "  "}), {message: "INVALID_INPUT"});
-  assert.equal((await service.createThread(sessionId, {filePath: "a.ts", side: null, startLine: 0, endLine: 0, severity: null, body: "File?"})).anchorContent, null);
-  assert.equal((await service.createThread(sessionId, {filePath: "__general__", side: null, startLine: 0, endLine: 0, severity: "question", body: "Overall?"})).filePath, "__general__");
+  await assert.rejects(service.createThread(sessionId, {filePath: "a.ts", side: "new", startLine: 40, endLine: 40, anchorContent: null, severity: null, body: "?"}), {message: "LINE_NOT_IN_DIFF"});
+  await assert.rejects(service.createThread(sessionId, {filePath: "a.ts", side: "new", startLine: 2, endLine: 2, anchorContent: "TWO", severity: null, body: "  "}), {message: "INVALID_INPUT"});
+  assert.equal((await service.createThread(sessionId, {filePath: "a.ts", side: null, startLine: 0, endLine: 0, anchorContent: null, severity: null, body: "File?"})).anchorContent, null);
+  assert.equal((await service.createThread(sessionId, {filePath: "__general__", side: null, startLine: 0, endLine: 0, anchorContent: null, severity: "question", body: "Overall?"})).filePath, "__general__");
 });
 
 test("sending puts the open threads in the copy's thread as one prompt and marks them sent", async () => {
   const {service, sent} = setup();
   const {sessionId} = await service.view("c1", {kind: "uncommitted"}, false);
-  const one = await service.createThread(sessionId, {filePath: "a.ts", side: "new", startLine: 2, endLine: 2, severity: "nit", body: "Rename."});
+  const one = await service.createThread(sessionId, {filePath: "a.ts", side: "new", startLine: 2, endLine: 2, anchorContent: "TWO", severity: "nit", body: "Rename."});
   const result = await service.send(sessionId, "thr_work", [one.id], "Please be quick.");
   assert.equal(result.count, 1);
   assert.match(sent[0].text, /^# Address review comments/);
@@ -76,11 +76,11 @@ test("sending puts the open threads in the copy's thread as one prompt and marks
 test("a send goes only to a thread working on this copy, and a failed one leaves nothing marked", async () => {
   const {service} = setup();
   const {sessionId} = await service.view("c1", {kind: "uncommitted"}, false);
-  const one = await service.createThread(sessionId, {filePath: "a.ts", side: "new", startLine: 2, endLine: 2, severity: null, body: "?"});
+  const one = await service.createThread(sessionId, {filePath: "a.ts", side: "new", startLine: 2, endLine: 2, anchorContent: "TWO", severity: null, body: "?"});
   await assert.rejects(service.send(sessionId, "thr_elsewhere", [one.id], ""), {message: "WRONG_WORKSPACE"});
   const failing = setup({sendFails: true});
   const view = await failing.service.view("c1", {kind: "uncommitted"}, false);
-  const two = await failing.service.createThread(view.sessionId, {filePath: "a.ts", side: "new", startLine: 2, endLine: 2, severity: null, body: "?"});
+  const two = await failing.service.createThread(view.sessionId, {filePath: "a.ts", side: "new", startLine: 2, endLine: 2, anchorContent: "TWO", severity: null, body: "?"});
   await assert.rejects(failing.service.send(view.sessionId, "thr_work", [two.id], ""), {message: "THREAD_UNAVAILABLE"});
   assert.equal(failing.service.threads(view.sessionId)[0].delivery, null);
 });
@@ -88,7 +88,7 @@ test("a send goes only to a thread working on this copy, and a failed one leaves
 test("the agent answers by id prefix, only on threads sent to it, and resolve and dismiss close them", async () => {
   const {service, tick} = setup({turnStart: 5_000});
   const {sessionId} = await service.view("c1", {kind: "uncommitted"}, false);
-  const one = await service.createThread(sessionId, {filePath: "a.ts", side: "new", startLine: 2, endLine: 2, severity: null, body: "?"});
+  const one = await service.createThread(sessionId, {filePath: "a.ts", side: "new", startLine: 2, endLine: 2, anchorContent: "TWO", severity: null, body: "?"});
   await assert.rejects(service.answer("thr_work", one.id.slice(0, 5), "reply", "Hi"), {message: "NOT_SENT_HERE"});
   await service.send(sessionId, "thr_work", [one.id], "");
   tick();
@@ -105,13 +105,13 @@ test("the agent answers by id prefix, only on threads sent to it, and resolve an
 test("a turn that ends without an answer marks the thread no reply, but not one sent after the turn began", async () => {
   const late = setup({turnStart: 500});
   const view = await late.service.view("c1", {kind: "uncommitted"}, false);
-  const one = await late.service.createThread(view.sessionId, {filePath: "a.ts", side: "new", startLine: 2, endLine: 2, severity: null, body: "?"});
+  const one = await late.service.createThread(view.sessionId, {filePath: "a.ts", side: "new", startLine: 2, endLine: 2, anchorContent: "TWO", severity: null, body: "?"});
   await late.service.send(view.sessionId, "thr_work", [one.id], "");
   await late.service.turnEnded("thr_work");
   assert.equal(late.service.threads(view.sessionId)[0].delivery?.state, "sent");
   const ended = setup({turnStart: 5_000});
   const view2 = await ended.service.view("c1", {kind: "uncommitted"}, false);
-  const two = await ended.service.createThread(view2.sessionId, {filePath: "a.ts", side: "new", startLine: 2, endLine: 2, severity: null, body: "?"});
+  const two = await ended.service.createThread(view2.sessionId, {filePath: "a.ts", side: "new", startLine: 2, endLine: 2, anchorContent: "TWO", severity: null, body: "?"});
   await ended.service.send(view2.sessionId, "thr_work", [two.id], "");
   await ended.service.turnEnded("thr_work");
   assert.equal(ended.service.threads(view2.sessionId)[0].delivery?.state, "no_reply");
@@ -121,7 +121,7 @@ test("a turn that ends without an answer marks the thread no reply, but not one 
 test("a suggestion is applied to the working file over the commented lines and resolves the thread", async () => {
   const {service, file} = setup();
   const {sessionId} = await service.view("c1", {kind: "uncommitted"}, false);
-  const one = await service.createThread(sessionId, {filePath: "a.ts", side: "new", startLine: 2, endLine: 2, severity: "suggestion",
+  const one = await service.createThread(sessionId, {filePath: "a.ts", side: "new", startLine: 2, endLine: 2, anchorContent: "TWO", severity: "suggestion",
     body: "Use lower case:\n```suggestion\ntwo\n```"});
   await service.applySuggestion(one.id, one.comments[0].id);
   assert.equal(file(), "one\ntwo\nthree\n");
@@ -132,9 +132,41 @@ test("a suggestion is applied to the working file over the commented lines and r
 test("a suggestion is not applied to a committed view or to removed lines", async () => {
   const {service} = setup();
   const {sessionId} = await service.view("c1", {kind: "commit", sha: "abcdef1"}, false);
-  const one = await service.createThread(sessionId, {filePath: "a.ts", side: "new", startLine: 2, endLine: 2, severity: null, body: "```suggestion\nx\n```"});
+  const one = await service.createThread(sessionId, {filePath: "a.ts", side: "new", startLine: 2, endLine: 2, anchorContent: "TWO", severity: null, body: "```suggestion\nx\n```"});
   await assert.rejects(service.applySuggestion(one.id, one.comments[0].id), {message: "NOT_WORKING_COPY"});
   const work = await service.view("c1", {kind: "uncommitted"}, false);
-  const old = await service.createThread(work.sessionId, {filePath: "a.ts", side: "old", startLine: 2, endLine: 2, severity: null, body: "```suggestion\nx\n```"});
+  const old = await service.createThread(work.sessionId, {filePath: "a.ts", side: "old", startLine: 2, endLine: 2, anchorContent: "TWO", severity: null, body: "```suggestion\nx\n```"});
   await assert.rejects(service.applySuggestion(old.id, old.comments[0].id), {message: "NOT_WORKING_COPY"});
+});
+
+test("the anchor is the text the owner commented on, kept within its limit", async () => {
+  const {service} = setup();
+  const {sessionId} = await service.view("c1", {kind: "uncommitted"}, false);
+  const made = await service.createThread(sessionId, {filePath: "a.ts", side: "new", startLine: 2, endLine: 2, anchorContent: "what the owner saw", severity: null, body: "?"});
+  assert.equal(made.anchorContent, "what the owner saw");
+  await assert.rejects(service.createThread(sessionId, {filePath: "a.ts", side: "new", startLine: 2, endLine: 2, anchorContent: "x".repeat(20_001), severity: null, body: "?"}),
+    {message: "INVALID_INPUT"});
+});
+
+test("a suggestion follows its lines in the working file when they moved", async () => {
+  const {service, file, setFile} = setup();
+  const {sessionId} = await service.view("c1", {kind: "uncommitted"}, false);
+  const one = await service.createThread(sessionId, {filePath: "a.ts", side: "new", startLine: 2, endLine: 2, anchorContent: "TWO", severity: null,
+    body: "```suggestion\ntwo\n```"});
+  setFile("zero\none\nTWO\nthree\n");
+  await service.applySuggestion(one.id, one.comments[0].id);
+  assert.equal(file(), "zero\none\ntwo\nthree\n");
+  const gone = await service.createThread(sessionId, {filePath: "a.ts", side: "new", startLine: 3, endLine: 3, anchorContent: "nowhere", severity: null,
+    body: "```suggestion\nx\n```"});
+  await assert.rejects(service.applySuggestion(gone.id, gone.comments[0].id), {message: "CHANGED"});
+});
+
+test("a long commented range is cut in the message to the agent", async () => {
+  const {sendPrompt} = await import("../src/core/code-review/prompt.ts");
+  const long = "x".repeat(5000) + "\n```end";
+  const text = sendPrompt({target: {kind: "uncommitted"}, note: "", threads: [{id: "abcdef123456", sessionId: "s", filePath: "a.ts", side: "new", startLine: 1, endLine: 2,
+    status: "open", severity: null, anchorContent: long, createdAt: 1, updatedAt: 1, delivery: null,
+    comments: [{id: "c", authorType: "user", authorName: "You", body: "Why?", createdAt: 1, editedAt: null}]}]});
+  assert.match(text, /x{4000}\n… \(cut; read the file\)\n```\n/);
+  assert.doesNotMatch(text, /```end/);
 });

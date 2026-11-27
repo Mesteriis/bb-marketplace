@@ -81,10 +81,8 @@ test("a thread still waiting when the agent's turn ends is marked no reply, once
   assert.equal(store.thread(made.id)!.delivery?.state, "no_reply");
 });
 
-test("short ids are found by prefix, with LIKE characters taken literally", () => {
+test("a copy's threads are counted, open and all", () => {
   const {store, thread} = setup();
-  const made = thread();
-  assert.deepEqual(store.threadsByPrefix(made.id.slice(0, 4)), [made.id]);
-  assert.deepEqual(store.threadsByPrefix("%"), []);
+  thread();
   assert.deepEqual(store.counts("copy_1"), {total: 1, open: 1});
 });

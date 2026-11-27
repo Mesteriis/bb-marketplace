@@ -4,7 +4,7 @@ import type { ReviewThread, Severity, Side, Target, TargetRequest, ThreadStatus 
 export type Placement = {state: "anchored" | "moved"; startLine: number; endLine: number} | {state: "outdated"};
 export type ReviewView = {sessionId: string; target: Target; files: ReviewDiffFile[]; truncated: boolean; baseSha: string | null; headSha: string | null;
   threads: ReviewThread[]; placements: Record<string, Placement>};
-export type NewThread = {filePath: string; side: Side | null; startLine: number; endLine: number; severity: Severity | null; body: string};
+export type NewThread = {filePath: string; side: Side | null; startLine: number; endLine: number; anchorContent: string | null; severity: Severity | null; body: string};
 
 /** What the line review asks of the host; the entry point implements it over RPC. */
 export type CodeReviewApi = {

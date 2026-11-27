@@ -119,12 +119,6 @@ export class ReviewStore {
     return row ? this.withComments([row])[0] : null;
   }
 
-  /** Threads whose id starts with `prefix`, for an agent that typed a short id. */
-  threadsByPrefix(prefix: string): string[] {
-    return (this.db.prepare("SELECT id FROM review_threads WHERE id LIKE ? ESCAPE '\\' LIMIT 3").all(prefix.replace(/[\\%_]/g, "\\$&") + "%") as {id: string}[])
-      .map(row => row.id);
-  }
-
   /** The threads whose last send went to `bbThreadId`, oldest first. */
   threadsSentTo(bbThreadId: string): ReviewThread[] {
     return this.withComments(this.db.prepare(threadSelect + " WHERE s.bb_thread_id = ? ORDER BY t.created_at, t.rowid").all(bbThreadId) as ThreadRow[]);

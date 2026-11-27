@@ -47,8 +47,8 @@ export function FileDiff({file, threads, wrap, canComment, act, ask, onDraft, ca
     </header>
     {loose.map(thread => <ThreadView key={keyOf(thread)} thread={thread} can={can} act={act} ask={() => ask(thread)}/>)}
     {!file.patch ? <p className="git-muted">No line diff for this file (binary, too large, or not provided by the forge).</p> :
-      <div className="git-review-diff" data-wrap={wrap || undefined} role="table" aria-label={"Diff of " + file.path}>
-        {rows.map((row, index) => <div key={index} role="row">
+      <div className="git-review-diff" data-wrap={wrap || undefined} role="group" aria-label={"Diff of " + file.path}>
+        {rows.map((row, index) => <div key={index}>
           <div className="git-review-row" data-kind={row.kind} data-selected={selected(index) || undefined}>
             {row.kind === "hunk" ? <span className="git-review-hunk">{row.text}</span> : <>
               <button type="button" className="git-review-number" disabled={!canComment} aria-label={row.kind === "del" ? "Comment on old line " + row.oldLine : "Comment on line " + row.newLine}

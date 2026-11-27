@@ -55,11 +55,11 @@ export function FileDiff({file, threads, placements, wrap, workingCopy, api, onC
     </header>
     {!closed && <>
       {fileComment && <Composer label={"Comment on " + file.path} withSeverity submitLabel="Comment" onCancel={() => setFileComment(false)}
-        onSubmit={async (body, severity) => { await onCreate({filePath: file.path, side: null, startLine: 0, endLine: 0, severity, body}); setFileComment(false); }}/>}
+        onSubmit={async (body, severity) => { await onCreate({filePath: file.path, side: null, startLine: 0, endLine: 0, anchorContent: null, severity, body}); setFileComment(false); }}/>}
       {wholeFile.map(thread => <ThreadCard key={thread.id} thread={thread} api={api} current={undefined} canApply={false}/>)}
       {!file.patch ? <p className="git-muted">{file.binary ? "Binary file: no line diff." : "This file's diff is too large to show."}</p> :
-        <div className="git-review-diff" data-wrap={wrap || undefined} role="table" aria-label={"Diff of " + file.path}>
-          {rows.map((row, index) => <div key={index} role="row">
+        <div className="git-review-diff" data-wrap={wrap || undefined} role="group" aria-label={"Diff of " + file.path}>
+          {rows.map((row, index) => <div key={index}>
             <div className="git-review-row" data-kind={row.kind === "addition" ? "add" : row.kind === "deletion" ? "del" : row.kind === "hunk" ? "hunk" : "ctx"}
               data-selected={inSelection(row) || undefined}>
               {row.kind === "hunk" ? <span className="git-review-hunk">{row.text}</span> : <>
@@ -75,7 +75,7 @@ export function FileDiff({file, threads, placements, wrap, workingCopy, api, onC
               <p className="git-muted">{"Comment on " + (range.start === range.end ? "line " + range.end : "lines " + range.start + "–" + range.end) + (selection.side === "old" ? " (removed)" : "")}</p>
               <Composer label="Line comment" withSeverity code={selection.side === "new" ? selectedCode : null} submitLabel="Comment" onCancel={() => setSelection(null)}
                 onSubmit={async (body, severity) => {
-                  await onCreate({filePath: file.path, side: selection.side, startLine: range.start, endLine: range.end, severity, body});
+                  await onCreate({filePath: file.path, side: selection.side, startLine: range.start, endLine: range.end, anchorContent: selectedCode, severity, body});
                   setSelection(null);
                 }}/>
             </div>}
