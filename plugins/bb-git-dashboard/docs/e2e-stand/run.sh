@@ -48,6 +48,15 @@ git -C "$G" init -q -b main
 echo a > "$G/README.md"; git -C "$G" add .; git -C "$G" -c user.email=stand@example.invalid -c user.name=stand commit -qm "first commit"
 git -C "$G" remote add origin "https://localhost:$GITLAB_PORT/stand/gamma.git"
 
+# macOS: the stand's HOME has no keychain, so an agent started by the stand BB that saves a credential makes
+# the system show "A keychain cannot be found to store ..." on the desktop. An empty keychain of its own stops that.
+if [ "$(uname)" = Darwin ]; then
+  KEYCHAIN="$STAND/home/Library/Keychains/login.keychain-db"; mkdir -p "$STAND/home/Library/Keychains"
+  HOME="$STAND/home" security create-keychain -p "" "$KEYCHAIN"
+  HOME="$STAND/home" security default-keychain -s "$KEYCHAIN"
+  HOME="$STAND/home" security list-keychains -s "$KEYCHAIN"
+fi
+
 env -i HOME="$STAND/home" PATH="$PATH" TMPDIR="${TMPDIR:-/tmp}" \
   NODE_EXTRA_CA_CERTS="$STAND/forge/cert.pem" \
   BB_TELEMETRY=false BB_SKIP_ONBOARDING=true NODE_ENV=production \
