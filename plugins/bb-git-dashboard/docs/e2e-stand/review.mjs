@@ -53,6 +53,12 @@ try {
   await pr.getByRole("button", { name: "Comment", exact: true }).click();
   check("a comment is previewed", await confirm(page, "Comment on stand/beta #3"));
   check("and reaches Gitea once", gitea().filter(write => write.path.endsWith("/issues/3/comments")).length === 1);
+  await pr.getByRole("button", { name: "Edit description" }).click();
+  await pr.getByRole("textbox", { name: "Description" }).fill("New description.");
+  await pr.getByRole("button", { name: "Save description" }).click();
+  check("editing the description is previewed with the new text", await confirm(page, "Replace the description of stand/beta #3"));
+  check("and reaches Gitea as the pull request's body", gitea().some(write => write.path.endsWith("/pulls/3") && write.body?.body === "New description."),
+    gitea().filter(write => write.path.endsWith("/pulls/3")));
 
   await page.getByRole("button", { name: "My PRs" }).click();
   await page.locator(".git-inbox-item", { hasText: "Retry flaky test" }).locator("a").first().click();

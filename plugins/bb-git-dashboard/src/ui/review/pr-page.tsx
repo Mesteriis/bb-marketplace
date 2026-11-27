@@ -31,6 +31,7 @@ export function PrPage({api, accountId, repo, number, onStep}: {api: ReviewApi; 
   const [event, setEvent] = useState<ReviewEvent>("COMMENT");
   const [wrap, setWrap] = useState(false);
   const [title, setTitle] = useState<string | null>(null);
+  const [description, setDescription] = useState<string | null>(null);
   const [reviewer, setReviewer] = useState("");
   const [method, setMethod] = useState<"merge" | "squash" | "rebase">("merge");
 
@@ -125,6 +126,12 @@ export function PrPage({api, accountId, repo, number, onStep}: {api: ReviewApi; 
     </nav>
 
     {tab === "Overview" && <div className="git-stack">
+      {description === null ? can.editBody && detail.canEdit && <div className="git-row">
+        <button type="button" onClick={() => setDescription(detail.body)}>Edit description</button></div>
+        : <form className="git-stack" onSubmit={formEvent => { formEvent.preventDefault(); void act({kind: "editBody", body: description}, "Edit description"); }}>
+          <textarea aria-label="Description" value={description} rows={8} maxLength={60_000} onChange={change => setDescription(change.target.value)}/>
+          <div className="git-row"><button type="submit">Save description</button><button type="button" onClick={() => setDescription(null)}>Cancel</button></div>
+        </form>}
       {detail.timeline.length === 0 && <p className="git-muted">No description or comments yet.</p>}
       {detail.timeline.map((entry, index) => <article key={index} className="git-review-comment">
         <div className="git-muted">{entry.author}{entry.reviewState ? " · " + entry.reviewState.toLowerCase().replaceAll("_", " ") : ""} · {entry.createdAt.slice(0, 16).replace("T", " ")}</div>
@@ -190,7 +197,7 @@ export function PrPage({api, accountId, repo, number, onStep}: {api: ReviewApi; 
       setNotice(result.outcome === "accepted" ? "Accepted: the forge finishes it shortly." : "Done.");
     }} onClose={done => {
       setPreview(null);
-      if (done) { setComment(""); setTitle(null); setReviewer(""); if (preview.kind === "review") { setDrafts([]); setSummary(""); } setFiles(null); void load(); }
+      if (done) { setComment(""); setTitle(null); setDescription(null); setReviewer(""); if (preview.kind === "review") { setDrafts([]); setSummary(""); } setFiles(null); void load(); }
     }}/>}
   </section>;
 }

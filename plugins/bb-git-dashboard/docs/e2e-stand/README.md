@@ -9,7 +9,7 @@ Needs `git`, `node`, `npm`, `curl`, access to `registry.npmjs.org`, BB at
 `run.sh` outside them.
 
 ```sh
-S=$(docs/e2e-stand/prepare.sh "$PWD") && docs/e2e-stand/run.sh "$S" "$PWD/docs/e2e-stand/smoke.mjs" "$PWD/docs/e2e-stand/ci.mjs" "$PWD/docs/e2e-stand/history.mjs" "$PWD/docs/e2e-stand/gitlab.mjs" "$PWD/docs/e2e-stand/inbox.mjs" "$PWD/docs/e2e-stand/review.mjs"
+S=$(docs/e2e-stand/prepare.sh "$PWD") && docs/e2e-stand/run.sh "$S" "$PWD/docs/e2e-stand/smoke.mjs" "$PWD/docs/e2e-stand/ci.mjs" "$PWD/docs/e2e-stand/code-review.mjs" "$PWD/docs/e2e-stand/history.mjs" "$PWD/docs/e2e-stand/gitlab.mjs" "$PWD/docs/e2e-stand/inbox.mjs" "$PWD/docs/e2e-stand/review.mjs"
 ```
 
 - `prepare.sh` copies this package into a new `$TMPDIR/git-dashboard-stand.*`, runs `npm ci` and
