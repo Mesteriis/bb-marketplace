@@ -254,7 +254,7 @@ boolean|null}` отдельным запросом: helper дочитывает 
 2. Отказ: номер диска ≠ 0, диск каталога ≠ 0, число записей на диске ≠ общему
    (`multi_volume`); смещение/размер каталога вне файла, `offset + size >
    eocd_pos`, переполнение (`checked_add`) → `bad_range`; число записей
-   > `maxEntries` → `too_many_entries` (границы: 100 000 проходят, 100 001 — нет);
+   > `maxEntries` → `entries_exceeded` (границы: 100 000 проходят, 100 001 — нет);
    размер каталога > 64 МиБ → `directory_too_large`.
 3. Каталог проходится ограниченными чтениями (буфер ≤ 64 КиБ): для каждой
    записи сигнатура `PK\1\2`, длины `name/extra/comment` внутри каталога,
@@ -500,25 +500,38 @@ UI (снимки 1440×900 и 768×900): Enter на архиве → панел�
 
 Решение координатора. В `src/core/errors.ts` (правка вне плана, разрешена):
 - `ErrorCode` += `"invalid_archive"`;
-- `CommanderErrorShape` += необязательное `reason?: ArchiveReason` — **закрытый**
-  `z.enum` (ниже); `CommanderError` получает необязательный четвёртый
-  аргумент конструктора/опцию `reason`, `toShape()` его выдаёт. Префиксов вида
-  `[bad_tar]` в `message` нет; UI выбирает текст по `code` + `reason`.
+- `CommanderErrorShape` += необязательное `reason`; допустимые значения —
+  **закрытый набор для каждого `code`**, схема проверяет **пару** `code` +
+  `reason` (`superRefine` по таблице ниже): недопустимая пара не проходит.
+  `CommanderError` получает необязательную опцию `reason`, `toShape()` её
+  выдаёт. Префиксов вида `[bad_tar]` в `message` нет; UI выбирает строку по
+  паре `code` + `reason`.
 - Ошибки без `reason` читаются и пишутся как раньше (поле необязательно,
-  `strict()` схема остаётся). Тесты: старая форма без `reason` проходит схему;
-  `reason: "no_such_reason"` **не проходит**; `reason` из enum проходит;
-  `toShape()` без `reason` не добавляет ключ; `message` по-прежнему ≤ 500.
+  `strict()` схема остаётся). `reason` допустим **только** у кодов из таблицы;
+  у остальных (`no_space`, `changed_since_plan`, `cancelled`, `timeout`,
+  `consent_required`, …) любой `reason` не проходит.
 
-`ArchiveReason` (закрытый список, один enum на все подкоды):
-`bad_tar, bad_zip, bad_eocd, bad_zip64, bad_range, bad_pax, count_mismatch,
-scan_mismatch, overlapping_entries, local_name_mismatch, multi_volume,
-truncated, size_overflow, duplicate_name, size_mismatch, crc_mismatch,
-aes_auth_failed, unsupported_format, unsupported_compression,
-unsupported_pax_size, archives_unavailable, meta_too_large,
-directory_too_large, too_many_entries, name_too_long, total_exceeded,
-ratio_exceeded, too_many_open_archives, password_required, bad_password,
-helper_checksum_failed, helper_version_mismatch, helper_crashed,
-protocol_error`.
+Допустимые пары (всего 34 подкода):
+
+| `code` | допустимые `reason` |
+|---|---|
+| `invalid_archive` | `bad_tar, bad_zip, bad_eocd, bad_zip64, bad_range, bad_pax, count_mismatch, scan_mismatch, overlapping_entries, local_name_mismatch, multi_volume, truncated, size_overflow, duplicate_name, size_mismatch, crc_mismatch, aes_auth_failed` (17) |
+| `unsupported` | `unsupported_format, unsupported_compression, unsupported_pax_size, archives_unavailable` (4) |
+| `limit_exceeded` | `meta_too_large, directory_too_large, entries_exceeded, name_too_long, total_bytes_exceeded, ratio_exceeded, too_many_open_archives` (7) |
+| `auth_failed` | `password_required, bad_password_or_corrupt` (2) |
+| `internal` | `helper_checksum_failed, helper_version_mismatch, helper_crashed, protocol_error` (4) |
+
+Тесты схемы (`errors.test.ts`, литералы):
+- без `reason` (старая форма) проходит; `toShape()` без `reason` ключ не добавляет;
+- проходят: `invalid_archive`+`duplicate_name`, `limit_exceeded`+`ratio_exceeded`,
+  `auth_failed`+`password_required`, `unsupported`+`archives_unavailable`,
+  `internal`+`helper_crashed`;
+- **не проходят**: `invalid_archive`+`ratio_exceeded`, `limit_exceeded`+`bad_tar`,
+  `auth_failed`+`duplicate_name`, `unsupported`+`password_required`,
+  `no_space`+`bad_tar`, `internal`+`bad_zip`, любой `code`+`"no_such_reason"`;
+- `message` по-прежнему ≤ 500, пары из набора проходят `toShape()` и обратный разбор.
+- `link_not_supported`, `link_escapes` и остальные причины элементов плана —
+  `RefusedReason` (§5.4), **не** `reason` ошибки.
 
 Коды helper → `ErrorCode` + `reason` → строка UI. Строки UI — русские; агент
 видит `code`, `reason`, `retryable` и безопасное `message` (без путей и имён
@@ -531,12 +544,12 @@ protocol_error`.
 | `size_mismatch`, `crc_mismatch`, `aes_auth_failed` | `invalid_archive` | тот же код | элемент `failed`, temp убирает раннер | «Данные записи повреждены (контрольная сумма или размер)» |
 | `unsupported_format`, `unsupported_compression`, `unsupported_pax_size` | `unsupported` | тот же код | отказ | «Формат или вариант архива не поддерживается» |
 | `archives_unavailable` | `unsupported` | `archives_unavailable` | отказ, не повторять | «Архивы недоступны: нет helper для платформы» (или «Модуль архивов перезапускался слишком часто; откройте архив заново») |
-| `meta_too_large`, `directory_too_large`, `too_many_entries`, `name_too_long` | `limit_exceeded` | тот же код | отказ | «Архив устроен необычно: превышен предел служебных данных, числа записей или длины имени» |
-| `total_exceeded` | `limit_exceeded` | `total_exceeded` | отказ | «Превышен предел распаковки (общий размер)» |
+| `meta_too_large`, `directory_too_large`, `entries_exceeded`, `name_too_long` | `limit_exceeded` | тот же код | отказ | «Архив устроен необычно: превышен предел служебных данных, числа записей или длины имени» |
+| `total_bytes_exceeded` | `limit_exceeded` | `total_bytes_exceeded` | отказ | «Превышен предел распаковки (общий размер)» |
 | `ratio_exceeded` | `limit_exceeded` | `ratio_exceeded` | отказ | «Архив сжат сильнее допустимого (коэффициент > N:1); возможно, это архивная бомба. Поднять предел можно в настройках» |
 | `too_many_open_archives` | `limit_exceeded` | `too_many_open_archives`, `retryable` | повторить позже | «Открыто слишком много архивов (максимум 4)» |
 | `password_required` | `auth_failed` | `password_required` | ждёт владельца (`awaitsOwner`) | «Архив зашифрован: введите пароль» |
-| `bad_password` (в т. ч. `bad_password_or_corrupt` ZipCrypto) | `auth_failed` | `bad_password` | отказ, ввод повторить | «Неверный пароль или повреждённые данные» |
+| `bad_password_or_corrupt` (в т. ч. `bad_password_or_corrupt` ZipCrypto) | `auth_failed` | `bad_password_or_corrupt` | отказ, ввод повторить | «Неверный пароль или повреждённые данные» |
 | `helper_checksum_failed` | `internal` | `helper_checksum_failed` | сбой установки | «Модуль архивов повреждён: контрольная сумма не совпала. Переустановите плагин» |
 | `helper_version_mismatch` | `internal` | `helper_version_mismatch` | сбой установки | «Модуль архивов несовместим с версией плагина» |
 | `helper_crashed`, `protocol_error` | `internal`, `retryable` | тот же код | сбой, можно повторить | «Модуль архивов остановился. Повторите; пароль придётся ввести заново» |
