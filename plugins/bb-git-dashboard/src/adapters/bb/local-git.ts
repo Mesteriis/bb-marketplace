@@ -376,15 +376,6 @@ export async function exchangeHttps(path: string, clone: string, username: strin
   return status(git, root);
 }
 
-export async function checkOrigin(path: string, clone: string, signal?: AbortSignal) {
-  const root = await validateWorktree(path,signal);
-  if (root !== path) return gitError("INVALID_WORKTREE");
-  const git = gitRunner(root,signal);
-  const origin = (await git(["remote", "get-url", "origin"]).catch(() => gitError("NO_ORIGIN"))).text.replace(/\n$/, "");
-  if (origin !== clone) return gitError("REMOTE_MISMATCH");
-  return root;
-}
-
 export async function originUrl(path: string, signal?: AbortSignal) {
   const root = await validateWorktree(path,signal);
   if (root !== path) return gitError("INVALID_WORKTREE");

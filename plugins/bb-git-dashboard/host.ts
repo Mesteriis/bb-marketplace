@@ -2,7 +2,7 @@ import { experimental_defineHostEntry } from "@get-bb/plugin-sdk/host";
 import { hostContract } from "./src/adapters/bb/host-contract.ts";
 import { failureFor } from "./src/core/workspace.ts";
 import { sshHostname } from "./src/adapters/bb/ssh-config.ts";
-import { assertWorktree, checkOrigin, originUrl, cloneHttps, cloneLocal, exchangeHttps, localGit, worktreeIdentity } from "./src/adapters/bb/local-git.ts";
+import { assertWorktree, originUrl, cloneHttps, cloneLocal, exchangeHttps, localGit, worktreeIdentity } from "./src/adapters/bb/local-git.ts";
 
 import { execFile } from "node:child_process";
 import { homedir } from "node:os";
@@ -35,13 +35,6 @@ export default experimental_defineHostEntry({
         return {ok: true as const, value: await localGit(root, action, signal)};
       }
       catch (error) { return failureFor(error, "GIT_REJECTED"); }
-    },
-    async checkOrigin({root, identity, clone}, {signal}) {
-      try {
-        await assertWorktree(root,identity,signal);
-        return {ok:true as const, root:await checkOrigin(root,clone,signal),identity};
-      }
-      catch (error) { return failureFor(error,"REMOTE_MISMATCH"); }
     },
     async cloneHttps({clone, username, destination}, {signal}) {
       try {

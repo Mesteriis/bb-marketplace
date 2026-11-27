@@ -15,7 +15,6 @@ export const hostContract = defineRpcContract({
   trash: {input:z.object({root:path,identity}),output:z.discriminatedUnion("ok",[failure,z.object({ok:z.literal(true)})])},
   validate: {input: z.object({root: path}), output: rootResponse},
   git: {input: z.object({root: path, identity, action: gitAction}), output: gitResponse},
-  checkOrigin: {input:z.object({root:path,identity,clone}),output:rootResponse},
   cloneHttps: {input:z.object({clone, username, destination:path}),output:rootResponse},
   exchangeHttps: {input:z.object({clone, username, root:path, identity, action:exchangeAction}),output:gitResponse},
   cloneLocal: {input: z.object({source: path, destination: path}), output: rootResponse},
