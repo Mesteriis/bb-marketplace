@@ -3,9 +3,9 @@ import { CommanderErrorShape } from "./errors.ts";
 import { NameSegment, ResourcePath, canonicalBase64, isAncestorOrSelf } from "./path.ts";
 import { Size, toBig } from "./size.ts";
 
-export const ProviderKind = z.enum(["local", "sftp"]);
+export const ProviderKind = z.enum(["local", "sftp", "archive"]);
 export type ProviderKind = z.infer<typeof ProviderKind>;
-export const EndpointId = z.string().regex(/^(host:[A-Za-z0-9_-]{1,64}|sftp:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/);
+export const EndpointId = z.string().regex(/^(host:[A-Za-z0-9_-]{1,64}|(sftp|archive):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/);
 export type EndpointId = z.infer<typeof EndpointId>;
 export const Endpoint = z.object({
   id: EndpointId,

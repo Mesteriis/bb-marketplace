@@ -31,6 +31,14 @@ it("accepts host and SFTP endpoint IDs", () => {
     .toBe("sftp:123e4567-e89b-42d3-a456-426614174000");
 });
 
+it("accepts an archive endpoint ID and rejects malformed ones", () => {
+  expect(EndpointId.parse("archive:123e4567-e89b-42d3-a456-426614174000"))
+    .toBe("archive:123e4567-e89b-42d3-a456-426614174000");
+  for (const bad of ["archive:../x", "archive:", "archive:123e4567", "archive:123E4567-E89B-42D3-A456-426614174000"]) {
+    expect(EndpointId.safeParse(bad).success, bad).toBe(false);
+  }
+});
+
 it("rejects an SFTP ID containing a relative path", () => {
   expect(EndpointId.safeParse("sftp:../x").success).toBe(false);
 });
