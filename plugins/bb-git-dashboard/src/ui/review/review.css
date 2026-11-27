@@ -67,3 +67,7 @@
 .git-ws .git-review-show { margin-left: auto; }
 .git-ws .git-review-keys { margin-left: auto; font-size: 12px; }
 .git-ws .git-review-thread:focus-visible, .git-ws .git-review-file:focus-visible { outline: 2px solid var(--git-focus); outline-offset: 2px; }
+.git-ws .git-pr-step { gap: 6px; margin-left: auto; white-space: nowrap; }
+/* Comments: Unresolved / Resolved, the pressed one marked. */
+.git-ws .git-pr-thread-filter { gap: 0; }
+.git-ws .git-pr-thread-filter button[aria-pressed="true"] { background: color-mix(in srgb, var(--git-focus) 18%, transparent); font-weight: 600; }

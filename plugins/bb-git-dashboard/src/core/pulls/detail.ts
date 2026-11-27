@@ -142,3 +142,17 @@ export function threadStatus(t: Thread, viewer: string, author: string): ThreadS
 
 
 export type FixSubject = { kind: "thread"; thread: Thread } | { kind: "check"; check: CheckDetail };
+
+/**
+ * The Comments tab's two lists by thread id, without the drafts of your unsubmitted review, and what waits: on your
+ * pull request the threads waiting on your reply, on someone else's the ones its author answered. Ported from
+ * bb-github-pr-dashboard's ThreadsTab.
+ */
+export function threadFilter(threads: readonly Thread[], viewer: string, author: string): {unresolved: string[]; resolved: string[]; waiting: string | null} {
+  const published = threads.filter(thread => !thread.isPending);
+  const open = published.filter(thread => !thread.isResolved);
+  const yours = viewer === author;
+  const count = open.filter(thread => threadStatus(thread, viewer, author) === (yours ? "waiting-on-you" : "author-replied")).length;
+  return {unresolved: open.map(thread => thread.id), resolved: published.filter(thread => thread.isResolved).map(thread => thread.id),
+    waiting: count === 0 ? null : yours ? count + " waiting on your reply" : count + " answered by " + author};
+}

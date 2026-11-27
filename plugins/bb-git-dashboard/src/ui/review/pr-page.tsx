@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { PrAction } from "../../core/pulls/actions.ts";
+import { threadFilter } from "../../core/pulls/detail.ts";
 import { canSubmitReview, reviewEvents, type ReviewEvent } from "../../core/pulls/review.ts";
 import { ConfirmDialog } from "../ci/confirm-dialog.tsx";
 import { FileDiff, type DraftComment } from "./diff-view.tsx";
@@ -20,7 +21,9 @@ const methodLabel = {merge: "Merge", squash: "Squash and merge", rebase: "Rebase
 const stateLabel: Record<string, string> = {OPEN: "Open", CLOSED: "Closed", MERGED: "Merged"};
 
 /** A pull request: header and state actions, then its discussion, checks, files with line threads, commits and threads. */
-export function PrPage({api, accountId, repo, number, onStep, revision = 0}: {api: ReviewApi; accountId: string; repo: string; number: number; onStep?(step: -1 | 1): void;
+export function PrPage({api, accountId, repo, number, onStep, position, revision = 0}: {api: ReviewApi; accountId: string; repo: string; number: number; onStep?(step: -1 | 1): void;
+  /** Where this pull request is in the My PRs list it was opened from (0-based); absent when opened from elsewhere. */
+  position?: {index: number; total: number};
   /** Changes when an agent's answer may have arrived: the drafts are read again. */
   revision?: number}) {
   // Kept by value: a re-render of the app (an alert arriving) must not reload the page and drop a review in progress.
@@ -45,6 +48,8 @@ export function PrPage({api, accountId, repo, number, onStep, revision = 0}: {ap
   const [title, setTitle] = useState<string | null>(null);
   const [description, setDescription] = useState<string | null>(null);
   const [reviewer, setReviewer] = useState("");
+  // Unresolved or Resolved on Comments; null until chosen, then Unresolved while any is open.
+  const [threadsShown, setThreadsShown] = useState<"unresolved" | "resolved" | null>(null);
   const [method, setMethod] = useState<"merge" | "squash" | "rebase">("merge");
 
   const retry = useAutoRetry(() => void load());
@@ -117,6 +122,9 @@ export function PrPage({api, accountId, repo, number, onStep, revision = 0}: {ap
   const unresolved = detail.threads.filter(thread => !thread.isResolved);
   const failing = detail.checks.filter(check => check.status === "failing");
   const threadCan = {reply: can.reply, resolve: can.resolve, delete: can.deleteComment};
+  // Comments: Unresolved or Resolved, without the drafts of your unsubmitted review (they show under their lines on Files).
+  const lists = threadFilter(detail.threads, detail.viewer, detail.author);
+  const listed = threadsShown ?? (lists.unresolved.length ? "unresolved" : "resolved");
   const threadsOf = (file: PrFileView) => detail.threads.filter(thread => thread.path === file.path || (file.previousPath !== null && thread.path === file.previousPath));
 
   return <PrText api={api} pr={detail}><section className="git-review" aria-label={"Pull request " + detail.repo + " #" + detail.number}>
@@ -129,6 +137,11 @@ export function PrPage({api, accountId, repo, number, onStep, revision = 0}: {ap
             <button type="button" onClick={() => setTitle(null)}>Cancel</button></form>}
         {title === null && can.editTitle && detail.canEdit && <button type="button" className="git-link" aria-label="Edit title" onClick={() => setTitle(detail.title)}>✎</button>}
         {detail.url && <a href={detail.url} target="_blank" rel="noreferrer">Open on the forge</a>}
+        {position && onStep && <span className="git-row git-pr-step" role="group" aria-label="Pull requests of the list">
+          <button type="button" disabled={position.index === 0} title="Previous pull request ( [ )" onClick={() => onStep(-1)}>Prev</button>
+          <span className="git-muted">{position.index + 1} of {position.total}</span>
+          <button type="button" disabled={position.index >= position.total - 1} title="Next pull request ( ] )" onClick={() => onStep(1)}>Next</button>
+        </span>}
         <PrMenu api={api} target={target} url={detail.url} onRefresh={() => { void load(); readDrafts(); }} onNotice={setNotice}/>
       </div>
       <p className="git-muted">{detail.repo} · {detail.author} · <button type="button" className="git-link git-branch-copy" title="Copy the branch name"
@@ -244,8 +257,16 @@ export function PrPage({api, accountId, repo, number, onStep, revision = 0}: {ap
     </ul>}
 
     {tab === "Comments" && <div className="git-stack">
-      {detail.threads.length === 0 && <p className="git-muted">No review threads.</p>}
-      {detail.threads.map(thread => <ThreadView key={thread.id + ":" + thread.comments.length} thread={thread} can={threadCan}
+      {lists.unresolved.length + lists.resolved.length > 0 ? <div className="git-row">
+        <div className="git-row git-pr-thread-filter" role="group" aria-label="Thread status">
+          {(["unresolved", "resolved"] as const).map(name => <button key={name} type="button" aria-pressed={listed === name} onClick={() => setThreadsShown(name)}>
+            {name === "unresolved" ? "Unresolved" : "Resolved"} <span className="git-inbox-count">{lists[name].length}</span></button>)}
+        </div>
+        {lists.waiting && <span className="git-review-tag" data-waiting>{lists.waiting}</span>}
+      </div> : <p className="git-muted">No review threads.</p>}
+      {lists[listed].length === 0 && lists.unresolved.length + lists.resolved.length > 0 &&
+        <p className="git-muted">{listed === "unresolved" ? "Every thread is resolved." : "No resolved threads yet."}</p>}
+      {detail.threads.filter(thread => lists[listed].includes(thread.id)).map(thread => <ThreadView key={thread.id + ":" + thread.comments.length} thread={thread} can={threadCan}
         act={action => void act(action, action.kind === "resolve" ? (action.resolved ? "Resolve" : "Unresolve") : action.kind === "deleteComment" ? "Delete comment" : "Reply")}
         ask={() => void ask({kind: "thread", threadId: thread.id})} onShow={() => { setTab("Files"); setShown(thread.id); }}
         drafts={agentDrafts.filter(draft => draft.externalId === thread.id)}

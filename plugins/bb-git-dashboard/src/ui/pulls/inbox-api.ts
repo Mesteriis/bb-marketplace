@@ -65,3 +65,14 @@ export function showing(shown: number, total: number | null, searchable: boolean
   if (total === null || shown >= total) return null;
   return "Showing the " + shown + " most recently updated of " + total + "." + (searchable ? " Search to reach the older ones." : "");
 }
+
+/** Where Open on an alert goes in Makosh Git: its pull request, or My PRs for an alert of no pull request (the test). */
+export function alertPath(alert: Pick<InboxAlert, "accountId" | "repo" | "number">): string {
+  return alert.number > 0 && alert.accountId && alert.repo ? ["pr", alert.accountId, String(alert.number), alert.repo].join("/") : "inbox";
+}
+
+/** The count on Makosh Git's navigation entry: unseen alerts, while "show the unread count" is on. */
+export function alertBadge(summary: AlertSummary | null): {count: number; tone: "critical"; label: string} | null {
+  if (!summary?.badge || summary.unseen <= 0) return null;
+  return {count: summary.unseen, tone: "critical", label: summary.unseen + " new pull request alert" + (summary.unseen === 1 ? "" : "s")};
+}

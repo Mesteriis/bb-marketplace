@@ -209,8 +209,8 @@ function Row({item, tab, current, bind, onFocus, onOpen}: {item: InboxItem; tab:
   </li>;
 }
 
-/** Alerts that arrived while the page is open, shown for a few seconds. */
-export function InboxToasts({alerts}: {alerts: AlertSummary | null}) {
+/** Alerts that arrived while BB is open, shown for a few seconds; Open goes to the pull request in Makosh Git. */
+export function InboxToasts({alerts, onOpen}: {alerts: AlertSummary | null; onOpen(alert: AlertSummary["alerts"][number]): void}) {
   const [shown, setShown] = useState<AlertSummary["alerts"]>([]);
   const known = useRef<Set<string> | null>(null);
   // Each toast owns its timer, so a later update of the alert list cannot keep one on screen.
@@ -232,9 +232,11 @@ export function InboxToasts({alerts}: {alerts: AlertSummary | null}) {
   if (!shown.length) return null;
   return <div className="git-inbox-toasts" role="status" aria-live="polite">
     {shown.map(alert => <div key={alert.id} className="git-inbox-toast">
-      {alert.url ? <a href={alert.url} target="_blank" rel="noreferrer"><strong>{alert.headline}</strong><span>{alert.detail}</span></a>
-        : <div><strong>{alert.headline}</strong><span>{alert.detail}</span></div>}
-      <button type="button" className="git-link" aria-label="Close" onClick={() => dismiss(alert.id)}>×</button>
+      <div className="git-inbox-toast-text"><strong>{alert.headline}</strong><span>{alert.detail}</span></div>
+      <div className="git-row">
+        <button type="button" onClick={() => { dismiss(alert.id); onOpen(alert); }}>Open</button>
+        <button type="button" className="git-link" aria-label="Close" onClick={() => dismiss(alert.id)}>×</button>
+      </div>
     </div>)}
   </div>;
 }

@@ -44,3 +44,7 @@
 .git-ws .git-inbox-updated { font-size: 12px; white-space: nowrap; }
 .git-ws .git-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 @media (max-width: 700px) { .git-ws .git-inbox-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+/* The app-wide toasts: the wrapper only carries Makosh Git's styles, it takes no room of its own. */
+.git-ws.git-ws-overlay { display: contents; }
+.git-ws .git-inbox-toast-text { display: grid; gap: 2px; min-width: 0; }
+.git-ws .git-inbox-toast-text span { color: var(--muted-foreground); overflow-wrap: anywhere; }

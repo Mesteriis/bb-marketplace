@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.9.4 — 2026-11-27
+
+The three remaining differences from bb-github-pr-dashboard, on the owner's decision.
+
+- **Alerts across BB:** new My PRs alerts show as toasts anywhere in BB, with **Open** to the pull request in Makosh Git (My PRs for the test alert), while **My PRs: show alerts as toasts** is on; Git's navigation entry shows the unread count while **My PRs: show the unread count** is on.
+- **Prev / Next** and **N of M** on a pull request opened from My PRs, beside the [ and ] keys.
+- **Comments:** **Unresolved / Resolved** with their counts, and **N waiting on your reply** on your pull request (**N answered by the author** on someone else's). Drafts of your unsubmitted review stay on Files.
+- **Apply suggestion** keeps a file's mode under a strict umask (a 0755 script became 0700 under umask 077).
+- Ported from bb-github-pr-dashboard (MIT): the alert toasts and badge, and the Comments filter.
+
 ## 0.9.3 — 2026-11-27
 
 The pull request page and My PRs catch up with bb-github-pr-dashboard, so it can be removed.

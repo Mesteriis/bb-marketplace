@@ -65,7 +65,7 @@ try {
   const mr = page.getByRole("region", { name: "Pull request stand/gamma #5" });
   check("a GitLab merge request opens", await visible(mr.getByRole("heading", { name: /Retry flaky test/ })));
   await mr.getByRole("navigation", { name: "Pull request sections" }).getByRole("button", { name: /^Comments/ }).click();
-  await mr.getByRole("button", { name: "Resolve" }).click();
+  await mr.getByRole("button", { name: "Resolve", exact: true }).click();
   check("resolving a thread is previewed", await confirm(page, "Resolve a review thread on stand/gamma #5"));
   check("and resolves the GitLab discussion", JSON.stringify(gitlab().at(-1)) === JSON.stringify({method: "PUT", path: "/api/v4/projects/7/merge_requests/5/discussions/disc-1", body: {resolved: true}}), gitlab().at(-1));
   // Approving needs a merge request by someone else: !8 asks for my review.

@@ -10,7 +10,7 @@ import type { ConnectionApi } from "./src/ui/connection-wizard.tsx";
 import type { RepositoryApi } from "./src/ui/repository-panel.tsx";
 import { Worktree } from "./src/ui/worktree.tsx";
 import { Remotes, type RemoteApi } from "./src/ui/remotes.tsx";
-import { InboxPage, InboxToasts } from "./src/ui/pulls/inbox-page.tsx";
+import { InboxPage } from "./src/ui/pulls/inbox-page.tsx";
 import type { AlertSummary, InboxApi, InboxItem } from "./src/ui/pulls/inbox-api.ts";
 import { PrPage } from "./src/ui/review/pr-page.tsx";
 import { CiOverview } from "./src/ui/ci/ci-overview.tsx";
@@ -26,6 +26,7 @@ import "./src/ui/git.css";
 import { withCodeTheme } from "./src/app/code-theme.tsx";
 import { NotificationSettings } from "./src/app/notification-settings.tsx";
 import { PrLinkOverlay } from "./src/app/pr-links.tsx";
+import { AlertToastsOverlay, useInboxBadge } from "./src/app/alerts.tsx";
 
 type Client = ReturnType<typeof useRpc<typeof rpc>>;
 type Host = {id: string; name: string};
@@ -285,11 +286,10 @@ function Dashboard({subPath}: {subPath: string}) {
   }, [reviewsApi,reviewRevision]);
   const openReview = (copyId:string,targetKey:string,file:string|null) => open(reviewRoute(copyId,requestOfKey(targetKey),file));
   return <div className="git-ws-frame"><div className="git-ws">
-    <InboxToasts alerts={alerts}/>
     {parseRef(subPath) ? (() => {
       const ref = parseRef(subPath)!;
+      const index = order.findIndex(item => item.accountId === ref.accountId && item.repo === ref.repo && item.number === ref.number);
       const step = (by: -1 | 1) => {
-        const index = order.findIndex(item => item.accountId === ref.accountId && item.repo === ref.repo && item.number === ref.number);
         const next = index < 0 ? undefined : order[index + by];
         if (next) open(refPath("pr",{accountId:next.accountId,repo:next.repo,number:next.number}));
       };
@@ -300,7 +300,7 @@ function Dashboard({subPath}: {subPath: string}) {
           <span>{ref.repo} {ref.kind === "pr" ? "#" + ref.number : ref.number === "new" ? "· new issue" : "issue #" + ref.number}</span>
         </nav>
         {ref.kind === "pr" && typeof ref.number === "number"
-          ? <PrPage key={subPath} api={review} accountId={ref.accountId} repo={ref.repo} number={ref.number} onStep={order.length ? step : undefined} revision={reviewRevisions.byCopy["forge:" + ref.accountId] ?? 0}/>
+          ? <PrPage key={subPath} api={review} accountId={ref.accountId} repo={ref.repo} number={ref.number} onStep={order.length ? step : undefined} position={index < 0 ? undefined : {index,total:order.length}} revision={reviewRevisions.byCopy["forge:" + ref.accountId] ?? 0}/>
           : <IssuePage key={subPath} api={review} accountId={ref.accountId} repo={ref.repo} number={ref.number}
             onCreated={number => open(refPath("issue",{accountId:ref.accountId,repo:ref.repo,number}))}/>}
       </>;
@@ -452,7 +452,7 @@ export default definePluginApp(app => {
   app.slots.experimental_tab({...pullTab,title:"Pinned pull request",icon:"GitPullRequest",layout:"flush",component:withCodeTheme(PinnedPull)});
   app.slots.pendingInteraction({id:"git-confirm",component:Approval});
   app.slots.settingsSection({id:"notifications", title:"Notifications", description:"How My PRs tells you that CI started failing or someone commented on your pull requests.", component:NotificationSettings});
-  app.slots.navPanel({id:"git", title:"Git", icon:"GitBranch", path:"git", component:withCodeTheme(Dashboard), experimental_sidebar:ProjectsSidebar});
+  app.slots.navPanel({id:"git", title:"Git", icon:"GitBranch", path:"git", component:withCodeTheme(Dashboard), experimental_useBadge:useInboxBadge, experimental_sidebar:ProjectsSidebar});
   app.slots.experimental_tab({id:"git-thread", title:"Git", icon:"GitBranch", context:{kind:"thread"}, availability:"fixed", layout:"flush", component:withCodeTheme(ThreadGit)});
   app.slots.experimental_tab({id:tab.id, title:"Pinned Git", icon:"GitBranch", context:{kind:"thread"}, availability:"action", layout:"flush", component:withCodeTheme(PinnedGit)});
   app.slots.experimental_tab({...historyTab, title:"Git History", icon:"FolderGit", layout:"flush", component:ThreadHistory});
@@ -461,6 +461,7 @@ export default definePluginApp(app => {
   // The Review's palette commands: each opens the thread's Review tab and leaves its action there.
   app.slots.experimental_appOverlay({id:"review-open", component:ReviewOpenOverlay});
   app.slots.experimental_appOverlay({id:"pr-links", component:PrLinkOverlay});
+  app.slots.experimental_appOverlay({id:"pr-alerts", component:AlertToastsOverlay});
   app.commands.register({id:"review-open", title:"Makosh Git: review this thread's changes", isAvailable:context => context.threadId !== null,
     run:context => { context.experimental_panel.openTab({tab:reviewTab, title:"Review"}); }});
   for (const [id, title] of Object.entries(REVIEW_COMMANDS) as [ReviewCommand, string][]) {

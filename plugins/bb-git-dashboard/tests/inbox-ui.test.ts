@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { ago, grouped, openStats, severity, showing, type InboxItem, type InboxList } from "../src/ui/pulls/inbox-api.ts";
+import { ago, alertBadge, alertPath, grouped, openStats, severity, showing, type InboxItem, type InboxList } from "../src/ui/pulls/inbox-api.ts";
 
 const item = (over: Partial<InboxItem>): InboxItem => ({id: "1", number: 1, title: "T", url: "https://github.com/o/r/pull/1", repo: "o/r", author: "a",
   baseRefName: "main", headRefName: "f", onDefaultBranch: true, stackedOn: null, isDraft: false, createdAt: "", updatedAt: "2026-11-27T00:00:00Z",
@@ -54,4 +54,20 @@ test("a list cut short says how many it shows of how many", () => {
   assert.equal(showing(30, 120, true), "Showing the 30 most recently updated of 120. Search to reach the older ones.");
   assert.equal(showing(30, 30, true), null);
   assert.equal(showing(30, null, true), null);
+});
+
+test("Open on an alert goes to its pull request in Makosh Git; a test alert goes to My PRs", () => {
+  const alert = {id: "a", kind: "ci", repo: "stand/gamma", number: 5, url: "https://x/5", headline: "h", detail: "d", at: "", seen: false, accountId: "gl"} as const;
+  assert.equal(alertPath(alert), "pr/gl/5/stand/gamma");
+  const test = {...alert, number: 0, repo: "", accountId: ""};
+  assert.equal(alertPath(test), "inbox");
+});
+
+test("the badge counts unseen alerts only while the setting allows it", () => {
+  const summary = (unseen: number, badge: boolean) => ({alerts: [], unseen, toasts: true, badge});
+  assert.deepEqual(alertBadge(summary(3, true)), {count: 3, tone: "critical", label: "3 new pull request alerts"});
+  assert.deepEqual(alertBadge(summary(1, true)), {count: 1, tone: "critical", label: "1 new pull request alert"});
+  assert.equal(alertBadge(summary(3, false)), null);
+  assert.equal(alertBadge(summary(0, true)), null);
+  assert.equal(alertBadge(null), null);
 });
