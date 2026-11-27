@@ -123,7 +123,7 @@ export default function plugin(bb: BbPluginApi): void {
     grants: pluginGrants,
     transport: createSftpTransport({ service, profiles, credentials }),
     profile: (id) => sftpProfileFacts(profiles.get(id)),
-    agentPresent: () => sshAgentPresent(process.env),
+    agentPresent: (host) => sshAgentPresent(process.env, host),
     newId: () => randomUUID(),
     now: () => new Date(),
     onEvent: (event) => publishSftp({ channelId: event.channelId, state: event.state }),

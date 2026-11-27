@@ -27,6 +27,8 @@ export interface SftpTransport {
 
 export interface SftpProfileFacts {
   protocol: string;
+  /** Where it connects (the name the owner saved). */
+  host: string;
   /** Signs in with the SSH agent (no saved secret, no key file of its own). */
   agent: boolean;
   /** A password connection without a saved password: nobody can type it for a channel. */
@@ -41,8 +43,8 @@ export interface SftpChannelsDeps {
   grants: PluginGrantBook;
   transport: SftpTransport;
   profile(profileId: string): SftpProfileFacts | null;
-  /** Whether an SSH agent socket is there at all (asked only after an agent connection was refused). */
-  agentPresent(): boolean;
+  /** Whether the SSH agent ssh uses for this host is there at all (asked only after an agent connection was refused). */
+  agentPresent(host: string): boolean;
   newId(): string;
   now(): Date;
   /** How long the server may take to answer the version exchange. */
@@ -127,7 +129,7 @@ export class SftpChannels {
           const timer = setTimeout(() => reject(new SftpOpError("unreachable")), this.deps.startTimeoutMs ?? 45_000);
           const fail = (): void => {
             clearTimeout(timer);
-            reject(new SftpOpError(ended === null ? "failure" : classifyChannelEnd(ended, profile.agent ? (this.deps.agentPresent() ? "present" : "absent") : null)));
+            reject(new SftpOpError(ended === null ? "failure" : classifyChannelEnd(ended, profile.agent ? (this.deps.agentPresent(profile.host) ? "present" : "absent") : null)));
           };
           onEnd = fail;
           if (ended !== null) return fail();

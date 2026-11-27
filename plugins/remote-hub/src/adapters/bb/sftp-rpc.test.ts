@@ -43,7 +43,7 @@ function setup(end: SftpChannelEnd | null = null) {
     grants,
     profile: (id) => {
       const p = all.find((x) => x.id === id);
-      return p === undefined ? null : { protocol: p.protocol, agent: false, needsSecret: false };
+      return p === undefined ? null : { protocol: p.protocol, host: p.host, agent: false, needsSecret: false };
     },
     agentPresent: () => true,
     newId,

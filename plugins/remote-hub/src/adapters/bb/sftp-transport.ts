@@ -3,12 +3,14 @@
 // it by reference and the helper answers ssh's one prompt itself; a connection without one is left to the SSH agent or a
 // plain key, with the user's own configuration.
 import { statSync } from "node:fs";
+import { homedir } from "node:os";
 import { profileToSshTarget } from "../../core/catalogue.ts";
 import { CredentialError } from "../../core/credential.ts";
 import { knownHostsName, parseKnownHosts } from "../../core/known-hosts.ts";
 import type { Profile } from "../../core/profile.ts";
 import type { SftpProfileFacts, SftpTransport } from "../../core/sftp-channels.ts";
 import type { RemoteHubService } from "./service.ts";
+import { agentSocketFor, readUserSshConfig } from "./user-ssh-agent.ts";
 import { knownHostsTextHolds, readUserKnownHosts } from "./user-known-hosts.ts";
 
 export interface SftpTransportDeps {
@@ -24,6 +26,7 @@ export function sftpProfileFacts(profile: Profile | null): SftpProfileFacts | nu
   if (profile === null) return null;
   return {
     protocol: profile.protocol,
+    host: profile.host,
     agent: profile.authType === "agent",
     needsSecret: profile.authType === "password" && profile.credentialRef === null,
     needsConfig: profile.needsConfig === true,
@@ -49,10 +52,10 @@ export function createSftpTransport({ service, profiles, credentials }: SftpTran
   };
 }
 
-/** Whether an SSH agent socket is there at all. */
-export function sshAgentPresent(env: Record<string, string | undefined>): boolean {
-  const path = env.SSH_AUTH_SOCK;
-  if (path === undefined || path === "") return false;
+/** Whether the SSH agent ssh would use for `host` is there at all: the owner's IdentityAgent, else SSH_AUTH_SOCK. */
+export function sshAgentPresent(env: Record<string, string | undefined>, host: string, config: () => string = readUserSshConfig): boolean {
+  const path = agentSocketFor({ env, home: env.HOME ?? homedir(), host, configText: config() });
+  if (path === null) return false;
   try {
     return statSync(path).isSocket();
   } catch {

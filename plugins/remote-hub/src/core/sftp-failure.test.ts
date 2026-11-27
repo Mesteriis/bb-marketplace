@@ -35,6 +35,8 @@ test("a refusal of the open itself maps to the contract's codes", () => {
   expect(classifyOpenRefusal("keychain_needs_approval")).toBe("keychain_needs_approval");
   expect(classifyOpenRefusal("credential_target_mismatch")).toBe("credential_missing");
   expect(classifyOpenRefusal("credential_missing")).toBe("credential_missing");
+  expect(classifyOpenRefusal("keychain_unavailable")).toBe("keychain_unavailable");
+  expect(classifyOpenRefusal("vault_unavailable")).toBe("keychain_unavailable");
   expect(classifyOpenRefusal("ssh_option_rejected")).toBe("profile_needs_config");
   expect(classifyOpenRefusal("too_many_channels")).toBe("limit_exceeded");
   expect(classifyOpenRefusal("something_new")).toBe("failure");

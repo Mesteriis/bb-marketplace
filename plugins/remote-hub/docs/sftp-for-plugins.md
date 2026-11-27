@@ -65,6 +65,13 @@ the contract. Two of them describe a lost channel:
 - `outcome_unknown`: a changing request was sent and the channel ended before the answer. Remote Hub does not repeat it.
 
 `agent_unavailable` means a connection that signs in with the SSH agent was refused and no agent socket is there.
+The agent is the one ssh itself would use for that host: an `IdentityAgent` in the owner's `~/.ssh/config` (1Password,
+Secretive) wins over `SSH_AUTH_SOCK`, so Remote Hub looks at that socket when it names the refusal. Remote Hub does not
+override the owner's configuration.
+
+`keychain_unavailable` means the saved credential could not be read because the Keychain or Credential Vault could not
+be reached at all (as opposed to `keychain_locked` and `keychain_needs_approval`, which the owner can fix with an unlock
+or Allow access).
 
 ## Events
 

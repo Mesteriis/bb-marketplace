@@ -20,6 +20,9 @@ export function classifyOpenRefusal(code: string): SftpRefusalCode {
     case "credential_target_mismatch":
     case "invalid_credential_ref":
       return "credential_missing";
+    case "keychain_unavailable":
+    case "vault_unavailable":
+      return "keychain_unavailable";
     case "ssh_option_rejected":
       return "profile_needs_config";
     case "too_many_channels":

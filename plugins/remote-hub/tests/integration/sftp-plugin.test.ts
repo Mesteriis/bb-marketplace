@@ -170,7 +170,7 @@ describe.skipIf(!dockerOk)("SFTP for other plugins: grants, three kinds of sign-
       grants,
       transport,
       profile: (id) => sftpProfileFacts(profiles.get(id)),
-      agentPresent: () => sshAgentPresent(env),
+      agentPresent: (host) => sshAgentPresent(env, host, () => ""),
       newId: () => randomUUID(),
       now: () => new Date(),
       onEvent: (e) => void events.push(JSON.stringify({ channelId: e.channelId, state: e.state })),

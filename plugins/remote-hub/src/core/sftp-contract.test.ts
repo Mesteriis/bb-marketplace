@@ -163,6 +163,7 @@ describe("refusals and events", () => {
     expect(SFTP_REFUSALS.profile_not_found).toBe("not_found");
     expect(SFTP_REFUSALS.profile_needs_config).toBe("conflict");
     expect(SFTP_REFUSALS.agent_unavailable).toBe("conflict");
+    expect(SFTP_REFUSALS.keychain_unavailable).toBe("conflict");
     expect(SFTP_REFUSALS.limit_exceeded).toBe("invalid");
     expect("consent_expired" in SFTP_REFUSALS).toBe(false);
     for (const cls of Object.values(SFTP_REFUSALS)) expect(["forbidden", "not_found", "conflict", "invalid"]).toContain(cls);
