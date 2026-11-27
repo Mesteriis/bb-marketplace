@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { lstat, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, lstat, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { filePath } from "./local-git.ts";
 
@@ -34,7 +34,10 @@ export async function writeReviewFile(root: string, path: string, expected: stri
   const full = join(root, path);
   const temporary = join(dirname(full), "." + randomBytes(6).toString("hex") + ".makosh-git");
   try {
-    await writeFile(temporary, text, {mode: (await stat(full)).mode & 0o777, flag: "wx"});
+    const mode = (await stat(full)).mode & 0o777;
+    await writeFile(temporary, text, {mode: 0o600, flag: "wx"});
+    // The mode given to open() is cut by the umask: set it after, so a 0755 script stays 0755 under umask 077.
+    await chmod(temporary, mode);
     // The folder may have been swapped for a link since the path was checked: write only where it was.
     if (await realpath(dirname(full)) !== dirname(full)) throw new Error("INVALID_PATH");
     await rename(temporary, full);
