@@ -1151,3 +1151,51 @@ test.each(["mkdir", "rename"] as const)("reports already_exists from %s as a tar
   const { id } = await runner.submit({ ...unsigned, digest: await planDigest(unsigned) });
   expect((await at(id, "awaiting_decision")).pendingConflict?.reason).toBe("target_changed");
 });
+
+test.each([["1", "completed"], ["9999", "unknown"]] as const)(
+  "without write intent a temp is ours only if mtime is not older than recorded (%s)", async (recordedMtime, state) => {
+    const ctx = await setup();
+    const { runner, to, at } = ctx;
+    const { id, tempPath } = await interruptedCopy(ctx, 6, { bytesDone: "6", tempFingerprint: { size: "3", mtimeNs: recordedMtime } });
+    expect(await runner.recover()).toEqual({ resumed: state === "completed" ? [id] : [], unknown: state === "unknown" ? [id] : [] });
+    await at(id, state);
+    expect((await to.stat(tempPath, signal()))?.size ?? null).toBe(state === "unknown" ? "6" : null);
+  });
+
+test.each([["absent", "completed"], ["changed", "unknown"]] as const)(
+  "a recorded temp that is physically missing falls back to source and target checks (%s)", async (target_, state) => {
+    const ctx = await setup();
+    const { runner, to, at } = ctx;
+    const { id, tempPath } = await interruptedCopy(ctx, 0, {});
+    await to.remove(tempPath, { kind: "file" }, signal());
+    if (target_ === "changed") to.put(target, Uint8Array.of(7), "5");
+    expect(await runner.recover()).toEqual({ resumed: state === "completed" ? [id] : [], unknown: state === "unknown" ? [id] : [] });
+    await at(id, state);
+    if (state === "completed") expect(to.contents(target)).toEqual(Uint8Array.of(42, 42, 42));
+    else expect(to.contents(target)).toEqual(Uint8Array.of(7));
+  });
+
+test.each([
+  [Uint8Array.of(42, 42, 42), "completed"],
+  [Uint8Array.of(9, 9, 9), "unknown"],
+] as const)("recovers a sha256 move from the checkpoint's source hash when the plan has none (%s)", async (bytes, state) => {
+  const { runner, plan, store, from, to, at } = await setup({ kind: "move", verify: "sha256" });
+  const { id } = await runner.submit(plan, { awaitsOwner: true });
+  await store.update(id, { state: "running", currentItem: 0 }, "pending");
+  await from.remove(source, { kind: "file" }, signal());
+  to.put(target, bytes, "50");
+  await store.checkpoint({ jobId: id, itemIndex: 0, phase: "committed", bytesDone: "3", tempPath: null, via: "copy",
+    targetPath: target, expectTarget: "absent", verified: null, committed: { size: "3", mtimeNs: "50" }, sourceHash: sha42 });
+  expect(await runner.recover()).toEqual({ resumed: state === "completed" ? [id] : [], unknown: state === "unknown" ? [id] : [] });
+  await at(id, state);
+});
+
+test("saves the transferred source hash with the committed checkpoint", async () => {
+  const { runner, plan, store, at } = await setup({ kind: "move", verify: "sha256" });
+  const spy = vi.spyOn(store, "checkpoint");
+  const { id } = await runner.submit(plan);
+  await at(id, "completed");
+  const committed = spy.mock.calls.map(([point]) => point).filter((point) => point.phase === "committed");
+  expect(committed).toHaveLength(1);
+  expect(committed[0].sourceHash).toBe(sha42);
+});

@@ -239,15 +239,17 @@ async function recoverTemp(
     if (ours && copying) {
       const size = toBig(staged.size);
       const upper = checkpoint.writing ? toBig(checkpoint.writing.offset) + BigInt(checkpoint.writing.length) : toBig(checkpoint.bytesDone);
+      // Trust the stat lag window: a buffered handle may have grown the file after it was recorded.
+      // Without a write intent the file must also not be older than the recorded version.
       ours = size >= toBig(recorded!.size) && size <= upper
-        && (checkpoint.writing !== undefined || staged.size !== recorded!.size || staged.mtimeNs === recorded!.mtimeNs);
+        && (checkpoint.writing !== undefined || (staged.mtimeNs !== null && recorded!.mtimeNs !== null && toBig(staged.mtimeNs) >= toBig(recorded!.mtimeNs)));
     }
     if (!ours) throw unknown("Temporary file does not match the recorded evidence");
     cleanup = { tempPath: temp.path, tempFingerprint: fingerprint(staged)! };
     await save({ ...checkpoint, cleanup });
-  } else if (copying) {
-    throw unknown("Recorded temporary file is missing");
   }
+  // A recorded temp that is physically missing is not proof by itself either way:
+  // the caller still checks that source and target match the recorded versions.
   if (staged) {
     try {
       await temp.provider.remove(temp.path, { kind: "file", expect: cleanup!.tempFingerprint }, context.signal);
@@ -311,14 +313,15 @@ export async function reconcileItem(
     }
     if (checkpoint.phase === "committed" && checkpoint.committed?.size === checkpoint.bytesDone) {
       // A sha256 plan needs the source's hash as evidence; size and mtime alone prove nothing.
-      const hashed = plan.verify === "sha256" || Boolean(expected.sha256);
-      if (hashed && !expected.sha256) throw unknown();
+      const hash = expected.sha256 ?? checkpoint.sourceHash;
+      const hashed = plan.verify === "sha256" || Boolean(hash);
+      if (hashed && !hash) throw unknown();
       const destination = await observe(target, context, hashed || Boolean(checkpoint.committed.sha256));
       if (destination?.kind === item.kind && matches(destination, checkpoint.committed)
-          && (!hashed || destination.sha256 === expected.sha256)) {
+          && (!hashed || destination.sha256 === hash)) {
         await save({
           ...checkpoint, phase: "verified",
-          verified: hashed ? { size: destination.size, sha256: expected.sha256 } : { size: destination.size },
+          verified: hashed ? { size: destination.size, sha256: hash } : { size: destination.size },
         });
         return "done";
       }

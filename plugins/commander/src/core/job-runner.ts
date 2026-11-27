@@ -790,9 +790,12 @@ export class JobRunner {
       }
     }
     try {
-      await mark("committed", { committed, bytesDone: expected.size, tempPath: null, tempFingerprint: undefined });
+      await mark("committed", {
+        committed, bytesDone: expected.size, tempPath: null, tempFingerprint: undefined,
+        sourceHash: sourceHash ?? expected.sha256,
+      });
       const verified = await verifyCopy(source, target, expected, verify, context, sourceHash ?? expected.sha256, committed);
-      await mark("verified", { verified });
+      await mark("verified", { verified, sourceHash: undefined });
     } catch (error) {
       if (signal.aborted) throw new CommanderError("outcome_unknown", "Cancellation interrupted a committed item");
       if (safeError(error).code === "changed_since_plan") {
