@@ -117,3 +117,11 @@ test("a fix run answers only the threads sent to it", () => {
   runs.bind(run.id, "thr_fix");
   assert.deepEqual(store.agentThreads("thr_fix").map(row => row.id), [sent.id]);
 });
+
+test("a run that failed to start or was closed is never bound to a thread BB made after all", () => {
+  const {runs, session} = setup();
+  const failed = runs.create({sessionId: session.id, kind: "review", focus: null, providerId: "codex", model: null, parentThreadId: null, baseline: null, failed: "timeout"});
+  assert.equal(runs.hasUnbound(), false);
+  assert.equal(runs.bind(failed.id, "thr_late"), false);
+  assert.equal(runs.isRunThread("thr_late"), false);
+});

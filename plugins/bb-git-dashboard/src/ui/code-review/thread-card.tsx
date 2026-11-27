@@ -94,7 +94,8 @@ export function ThreadCard({thread, api, current, canApply, showPath, outdated}:
       {closed && <span className="git-review-tag">{thread.status === "resolved" ? "Resolved" : "Dismissed"}</span>}
       {outdated && <span className="git-review-tag" data-waiting>Outdated</span>}
       {thread.delivery && <span className="git-review-tag" data-waiting={thread.delivery.state === "sent" || undefined}>
-        {deliveryLabel[thread.delivery.state]}{" "}<button type="button" className="git-link" onClick={() => api.openThread(thread.delivery!.threadId)}>Open the thread</button></span>}
+        {deliveryLabel[thread.delivery.state]}{" "}{thread.delivery.threadId.startsWith("run:") ? <span className="git-muted">(thread starting)</span>
+          : <button type="button" className="git-link" onClick={() => api.openThread(thread.delivery!.threadId)}>Open the thread</button>}</span>}
       <span className="git-ci-spacer"/>
       {closed && <button type="button" aria-expanded={open} onClick={() => setShown(value => !value)}>{open ? "Fold" : "Show"}</button>}
     </header>

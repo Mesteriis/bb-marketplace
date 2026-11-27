@@ -64,18 +64,21 @@ export class RunStore {
     return row ? toRun(row) : null;
   }
 
-  /** Binds a run to the thread BB started for it, once, with the sends recorded for it meanwhile. */
+  /**
+   * Binds a running run to the thread BB started for it, once, with the sends recorded for it meanwhile. A run that
+   * failed to start or was closed is never bound: a thread BB made after all gets no rights from it.
+   */
   bind(id: string, bbThreadId: string): boolean {
     return this.db.transaction(() => {
-      const bound = Number(this.db.prepare("UPDATE review_runs SET bb_thread_id = ? WHERE id = ? AND bb_thread_id IS NULL").run(bbThreadId, id).changes) > 0;
+      const bound = Number(this.db.prepare("UPDATE review_runs SET bb_thread_id = ? WHERE id = ? AND bb_thread_id IS NULL AND status = 'running'").run(bbThreadId, id).changes) > 0;
       if (bound) this.db.prepare("UPDATE review_sends SET bb_thread_id = ? WHERE bb_thread_id = ?").run(bbThreadId, pendingRunThread(id));
       return bound;
     })();
   }
 
-  /** Whether some run not yet closed still waits for BB to give it a thread. */
+  /** Whether some running run still waits for BB to give it a thread. */
   hasUnbound(): boolean {
-    return this.db.prepare("SELECT 1 FROM review_runs WHERE bb_thread_id IS NULL AND status != 'closed' LIMIT 1").get() !== undefined;
+    return this.db.prepare("SELECT 1 FROM review_runs WHERE bb_thread_id IS NULL AND status = 'running' LIMIT 1").get() !== undefined;
   }
 
   /** Whether `bbThreadId` carried runs and all of them are closed: it has lost every right, those from sends included. */

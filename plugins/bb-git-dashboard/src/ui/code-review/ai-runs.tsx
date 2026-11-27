@@ -52,7 +52,7 @@ export function AiReviewForm({api, copyId, sessionId, viewer, onClose, onStarted
     try {
       const started = mode === "summary" ? await api.startSummary(sessionId, run.execution, viewer)
         : await api.startReview(sessionId, focuses, instructions, run.execution, viewer);
-      onStarted(started, started.status === "failed" ? started.summary ?? "The run could not start."
+      onStarted(started, started.status !== "running" ? started.summary ?? "The run was closed before it started."
         : mode === "summary" ? "Summary started; it appears here as a comment on the whole diff." : "AI review started; its comments appear here as it goes.");
     } catch (cause) { setError(message(cause)); }
     finally { setPending(false); }

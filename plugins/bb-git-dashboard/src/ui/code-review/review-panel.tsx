@@ -74,13 +74,17 @@ export function ReviewPanel({api, copyId, currentThreadId, revision}: {api: Code
     if (typeof asked === "string") setError(asked); else { setError(""); setApplied(asked); }
   };
   const create = async (thread: NewThread) => { if (view) { await api.createThread(view.sessionId, thread, viewer); refresh(); } };
+  const [explaining, setExplaining] = useState(false);
+  // The outcome goes to the status line: `error` is cleared by the reload that follows.
   const explain = async (place: ExplainPlace) => {
-    if (!view) return;
-    setStatus("");
+    if (!view || explaining) return;
+    setStatus(""); setExplaining(true);
     try {
       const run = await api.startExplain(view.sessionId, place, viewer);
-      setStatus(run.status === "failed" ? run.summary ?? "The explanation could not start." : "Explanation started; it appears here as a comment.");
-    } catch (cause) { setError(message(cause)); }
+      setStatus(run.status === "running" ? "Explanation started; it appears here as a comment."
+        : run.summary ?? "The explanation was not started.");
+    } catch (cause) { setStatus("Could not start the explanation: " + message(cause)); }
+    finally { setExplaining(false); }
     refresh();
   };
   const live = <T,>(work: Promise<T>) => work.then(result => { refresh(); return result; });
@@ -142,7 +146,7 @@ export function ReviewPanel({api, copyId, currentThreadId, revision}: {api: Code
       {outdated.map(thread => <ThreadCard key={thread.id} thread={thread} api={liveApi} current={undefined} canApply={false} showPath outdated/>)}
     </section>}
     {view && !view.files.length && <p className="git-muted">{view.target.kind === "uncommitted" ? "No uncommitted changes." : "Nothing changed in this view."}</p>}
-    {view && files.map(file => <FileDiff key={view.sessionId + file.path} file={file} wrap={wrap} workingCopy={working} api={liveApi} onCreate={create} onExplain={explain}
+    {view && files.map(file => <FileDiff key={view.sessionId + file.path} file={file} wrap={wrap} workingCopy={working} api={liveApi} onCreate={create} onExplain={explain} explaining={explaining}
       threads={threads.filter(thread => thread.filePath === file.path && placed(thread.id)?.state !== "outdated")} placements={view.placements}/>)}
   </section>;
 }

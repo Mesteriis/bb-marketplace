@@ -15,11 +15,11 @@ const keyOf = (side: Side, line: number) => side + ":" + line;
  * One file of the review: its patch as rows with each thread under the last line it is placed on. Click a line
  * number to comment, Shift+click another line on the same side to comment on the range.
  */
-export function FileDiff({file, threads, placements, wrap, workingCopy, api, onCreate, onExplain}: {
+export function FileDiff({file, threads, placements, wrap, workingCopy, api, onCreate, onExplain, explaining}: {
   file: ReviewDiffFile; threads: ReviewThread[]; placements: Record<string, Placement>; wrap: boolean; workingCopy: boolean;
   api: CodeReviewApi; onCreate(thread: NewThread): Promise<void>;
   /** Starts an AI run that explains the file or the selected lines. */
-  onExplain(place: ExplainPlace): Promise<void>;
+  onExplain(place: ExplainPlace): Promise<void>; explaining: boolean;
 }) {
   const rows = useMemo(() => file.patch ? displayRows(file.patch) : [], [file.patch]);
   const lines = useMemo(() => file.patch ? parsePatchLines(file.patch) : null, [file.patch]);
@@ -54,7 +54,7 @@ export function FileDiff({file, threads, placements, wrap, workingCopy, api, onC
       <span className="git-muted">{file.untracked ? "untracked" : file.changeKind.replace("_", " ")} · {additions}</span>
       {threads.length > 0 && <span className="git-review-tag">{threads.filter(thread => thread.status === "open").length} open</span>}
       <span className="git-ci-spacer"/>
-      <button type="button" onClick={() => void onExplain({filePath: file.path, side: null, startLine: 0, endLine: 0, code: null})}>Explain</button>
+      <button type="button" disabled={explaining} onClick={() => void onExplain({filePath: file.path, side: null, startLine: 0, endLine: 0, code: null})}>Explain</button>
       <button type="button" aria-expanded={fileComment} onClick={() => setFileComment(value => !value)}>Comment on file</button>
     </header>
     {!closed && <>
@@ -79,7 +79,7 @@ export function FileDiff({file, threads, placements, wrap, workingCopy, api, onC
               <div className="git-row">
                 <p className="git-muted">{"Comment on " + (range.start === range.end ? "line " + range.end : "lines " + range.start + "–" + range.end) + (selection.side === "old" ? " (removed)" : "")}</p>
                 <span className="git-ci-spacer"/>
-                <button type="button" onClick={() => { void onExplain({filePath: file.path, side: selection.side, startLine: range.start, endLine: range.end, code: selectedCode}); setSelection(null); }}>
+                <button type="button" disabled={explaining} onClick={() => { void onExplain({filePath: file.path, side: selection.side, startLine: range.start, endLine: range.end, code: selectedCode}); setSelection(null); }}>
                   Explain {range.start === range.end ? "this line" : "these lines"}</button>
               </div>
               <Composer label="Line comment" withSeverity code={selection.side === "new" ? selectedCode : null} submitLabel="Comment" onCancel={() => setSelection(null)}

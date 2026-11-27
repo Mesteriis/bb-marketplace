@@ -35,7 +35,7 @@ export function SendForm({api, copyId, sessionId, threads, currentThreadId, onCl
       if (fresh) {
         if (!run.execution) return;
         const {run: started, count} = await api.fix(sessionId, chosen, note, run.execution, currentThreadId ?? null);
-        onSent(started.status === "failed" ? started.summary ?? "The thread could not start." : "Sent " + plural(count) + " to a new thread.");
+        onSent(started.status !== "running" ? started.summary ?? "The run was closed before it started." : "Sent " + plural(count) + " to a new thread.");
       } else {
         const {count} = await api.send(sessionId, target, chosen, note);
         onSent("Sent " + plural(count) + " to the agent.");

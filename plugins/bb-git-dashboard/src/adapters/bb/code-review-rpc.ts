@@ -124,11 +124,10 @@ export function codeReviewHandlers(bb: BbPluginApi, copyOf: (copyId: string) => 
 
   // A turn that ends, well or badly, closes out what was sent to that thread and the runs it carries.
   const turnEnded = async (thread: {id: string}, lastText: string | null, failed: boolean) => {
-    try {
-      await runs.bindIfPending(thread.id);
-      await service.turnEnded(thread.id);
-      await runs.turnEnded(thread.id, lastText, failed);
-    } catch { /* the next turn retries */ }
+    // Each step runs even when the one before failed: a run must not stay Running because a send could not be marked.
+    for (const step of [() => runs.bindIfPending(thread.id), () => service.turnEnded(thread.id), () => runs.turnEnded(thread.id, lastText, failed)]) {
+      await step().catch(error => bb.log.warn("Could not close out the review sends and runs of " + thread.id + ": " + String(error)));
+    }
   };
   bb.events.on("thread.idle", ({thread, lastAssistantText}) => { void turnEnded(thread, lastAssistantText, false); });
   bb.events.on("thread.failed", ({thread, error}) => { void turnEnded(thread, error, true); });

@@ -46,7 +46,7 @@ export function gitDashboardCli(ci: Ci, review: Review) {
         run: (input, ctx) => ciRun("rerun", ctx, flag(input.options.all, "--all"), [], [input.positionals["run-id"]])}),
       "ci cancel": cliCommand({summary: "Cancel a run, after the owner approves", positionals: [runId] as const,
         run: (input, ctx) => ciRun("cancel", ctx, [], [], [input.positionals["run-id"]])}),
-      "review list": cliCommand({summary: "The comment threads sent to this thread, with every comment",
+      "review list": cliCommand({summary: "The comment threads you may answer (sent here; for an AI review run, its whole review), with every comment",
         options: {all: {type: "boolean", description: "Include resolved and dismissed threads"}, json},
         run: (input, ctx) => review.list(input.options.all, input.options.json, ctx.threadId)}),
       "review reply": answer("reply", "Answer in a comment thread; it stays open", "reply"),
