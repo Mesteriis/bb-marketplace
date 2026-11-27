@@ -1,42 +1,70 @@
 import type { Run } from "../ci/model.ts";
 import type { InboxPr } from "../pulls/model.ts";
 
-/** What the overview knows of an attached copy: its branch and how far it is from its upstream (git status, no fetch). */
-export type CopyState = {copyId: string; name: string; branch: string | null; ahead: number; behind: number; at: string | null};
+/** What the overview knows of an attached copy, from git status without a fetch: its branch, upstream and distance to it. */
+export type CopyState = {copyId: string; name: string; branch: string | null; upstream: string | null; ahead: number; behind: number; at: string | null};
 export type RepositoryRuns = {copyId: string; repository: string; runs: Run[]};
 export type OverviewInput = {
   /** My open pull requests (My PRs, Open). */
   mine: InboxPr[];
   /** Pull requests waiting for my review (My PRs, Review requested). */
   requested: InboxPr[];
-  /** My merged pull requests (My PRs, Merged). */
+  /** My merged pull requests (My PRs, Merged), for the board. */
   merged: InboxPr[];
   runs: RepositoryRuns[];
   copies: CopyState[];
   now: number;
 };
-export type OverviewKind = "ci-failed" | "review" | "conflict" | "threads" | "ready" | "unpushed" | "ci-running" | "behind";
+export type OverviewKind = "ci-failed" | "review" | "conflict" | "changes" | "threads" | "ready" | "unpushed" | "ci-running" | "behind";
 export type OverviewGroup = "action" | "finish" | "waiting";
 export type OverviewItem = {key: string; kind: OverviewKind; group: OverviewGroup; at: string | null;
   pr?: InboxPr; copyId?: string; copy?: CopyState; repository?: string; run?: Run};
+/** One thing keeping a pull request from merging, as a word of the interface (forge-specific notes keep their text). */
+export type Blocker = {key: "draft" | "stacked" | "conflicts" | "ci-failing" | "ci-running" | "changes" | "threads" | "review-required"; n?: number}
+  | {key: "note"; text: string};
 
 export const groupOf: Record<OverviewKind, OverviewGroup> = {
-  "ci-failed": "action", review: "action", conflict: "action", threads: "action",
+  "ci-failed": "action", review: "action", conflict: "action", changes: "action", threads: "action",
   ready: "finish", unpushed: "finish", "ci-running": "waiting", behind: "waiting",
 };
 const groups: OverviewGroup[] = ["action", "finish", "waiting"];
-const prKey = (pr: InboxPr) => "pr:" + pr.accountId + ":" + pr.repo + "#" + pr.number;
+/** A pull request is the same one whichever account read it. */
+export const prKey = (pr: InboxPr) => "pr:" + pr.url;
 
-/** Open, not a draft, nothing blocking it and CI green or absent: one merge away. */
-export const isReady = (pr: InboxPr) => !pr.isDraft && pr.blockers.length === 0 && (pr.ci === "passing" || pr.ci === "none");
+/** What keeps a pull request from merging, from its fields, in the order My PRs lists them. */
+export function blockerList(pr: InboxPr): Blocker[] {
+  const out: Blocker[] = [];
+  if (pr.isDraft) out.push({key: "draft"});
+  if (pr.stackedOn) out.push({key: "stacked", n: pr.stackedOn.number});
+  if (pr.conflicts) out.push({key: "conflicts"});
+  if (pr.ci === "failing") out.push({key: "ci-failing", n: pr.failingChecks.length});
+  if (pr.ci === "pending") out.push({key: "ci-running"});
+  if (pr.reviewDecision === "CHANGES_REQUESTED") out.push({key: "changes"});
+  if (pr.unresolvedThreads > 0) out.push({key: "threads", n: pr.unresolvedThreads});
+  for (const text of pr.notes) out.push({key: "note", text});
+  if (pr.reviewDecision === "REVIEW_REQUIRED") out.push({key: "review-required"});
+  return out;
+}
 
-/** The reason one of my open pull requests needs something, most pressing first; null when it only waits. */
+/**
+ * One merge away, on the forge's word: CI green, an approval or no review required, nothing blocking. A forge that does
+ * not say (Gitea gives no review decision, Azure no CI state) is not taken as a yes.
+ */
+export const isReady = (pr: InboxPr) => !pr.isDraft && pr.blockers.length === 0 && pr.ci === "passing" && pr.reviewDecision === "APPROVED";
+
+/** The reason one of my open pull requests is in the list, most pressing first; null when it only waits (a draft). */
 function reasonOf(pr: InboxPr): OverviewKind | null {
   if (pr.ci === "failing") return "ci-failed";
   if (pr.conflicts) return "conflict";
+  if (pr.reviewDecision === "CHANGES_REQUESTED") return "changes";
   if (pr.unresolvedThreads > 0) return "threads";
-  return isReady(pr) ? "ready" : null;
+  if (isReady(pr)) return "ready";
+  if (pr.ci === "pending" && !pr.isDraft) return "ci-running";
+  return null;
 }
+
+/** Work only this machine has: commits ahead of the upstream, or a branch never published. */
+export const isUnpushed = (copy: CopyState) => copy.ahead > 0 || (copy.branch !== null && copy.upstream === null);
 
 /** The newest run that has not finished, of each repository. */
 export function runningRuns(runs: RepositoryRuns[]): {copyId: string; repository: string; run: Run}[] {
@@ -46,21 +74,27 @@ export function runningRuns(runs: RepositoryRuns[]): {copyId: string; repository
     return open[0] ? [{copyId, repository, run: open[0]}] : [];
   });
 }
+export const runAt = (run: Run) => run.startedAt ?? run.createdAt;
+
+/** Each pull request once, by its address. */
+export function unique(prs: InboxPr[]): InboxPr[] {
+  const seen = new Set<string>();
+  return prs.filter(pr => !seen.has(prKey(pr)) && Boolean(seen.add(prKey(pr))));
+}
 
 /** The list view of the overview: what needs me, what I can finish, what goes on without me. */
 export function overviewItems(input: OverviewInput): OverviewItem[] {
   const items: OverviewItem[] = [];
   const add = (kind: OverviewKind, item: Omit<OverviewItem, "kind" | "group">) => items.push({...item, kind, group: groupOf[kind]});
-  const mine = new Set(input.mine.map(prKey));
-  for (const pr of input.mine) {
+  const mine = unique(input.mine);
+  const mineKeys = new Set(mine.map(prKey));
+  for (const pr of mine) {
     const kind = reasonOf(pr);
     if (kind) add(kind, {key: prKey(pr), at: pr.updatedAt, pr});
   }
-  for (const pr of input.requested) if (!mine.has(prKey(pr))) add("review", {key: prKey(pr), at: pr.updatedAt, pr});
-  for (const copy of input.copies) if (copy.ahead > 0) add("unpushed", {key: "copy:" + copy.copyId + ":ahead", at: copy.at, copyId: copy.copyId, copy});
-  for (const {copyId, repository, run} of runningRuns(input.runs)) {
-    add("ci-running", {key: "run:" + copyId + ":" + run.id, at: run.startedAt ?? run.createdAt, copyId, repository, run});
-  }
+  for (const pr of unique(input.requested)) if (!mineKeys.has(prKey(pr))) add("review", {key: prKey(pr), at: pr.updatedAt, pr});
+  for (const copy of input.copies) if (isUnpushed(copy)) add("unpushed", {key: "copy:" + copy.copyId + ":ahead", at: copy.at, copyId: copy.copyId, copy});
+  for (const {copyId, repository, run} of runningRuns(input.runs)) add("ci-running", {key: "run:" + copyId + ":" + run.id, at: runAt(run), copyId, repository, run});
   for (const copy of input.copies) if (copy.behind > 0) add("behind", {key: "copy:" + copy.copyId + ":behind", at: copy.at, copyId: copy.copyId, copy});
   const time = (item: OverviewItem) => item.at ? Date.parse(item.at) || 0 : 0;
   return groups.flatMap(group => items.filter(item => item.group === group)

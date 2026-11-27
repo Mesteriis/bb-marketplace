@@ -26,8 +26,8 @@ try {
     if (theme === "light" && await page.getByRole("button", { name: "Board", exact: true }).getAttribute("aria-pressed") === "true") {
       await page.getByRole("button", { name: "List", exact: true }).click();
     }
-    const action = page.getByRole("listbox", { name: "Needs your action" });
-    const failing = action.getByRole("option", { name: /CI failed.*Add greeting check/ });
+    const action = page.getByRole("list", { name: "Needs your action" });
+    const failing = action.getByRole("button", { name: /CI failed.*Add greeting check/ });
     check(theme + ": my pull request with failing CI needs my action", await visible(failing, 60000));
     if (theme === "light") {
       check("the status is a word as well as a colour, and the meta line names the repository and number", await visible(failing.getByText("CI failed"))
@@ -38,15 +38,15 @@ try {
         && await visible(details.getByText(/CI failing/)) && await details.locator(".g-btn.pri").count() === 1
         && await details.getByRole("button", { name: "Checks" }).count() === 1);
       // Keyboard: from the first item j goes to the second and k back; the focused item is the selected one; Enter opens it.
-      const options = page.getByRole("option");
-      const keys = await options.evaluateAll(items => items.map(item => item.getAttribute("data-key")));
-      await options.first().focus();
+      const rows = page.locator(".git-overview-row");
+      const keys = await rows.evaluateAll(items => items.map(item => item.getAttribute("data-key")));
+      await rows.first().focus();
       await page.keyboard.press("j");
-      const second = await page.evaluate(() => [document.activeElement?.getAttribute("data-key"), document.querySelector("[role=option][aria-selected=true]")?.getAttribute("data-key")]);
+      const second = await page.evaluate(() => [document.activeElement?.getAttribute("data-key"), document.querySelector(".git-overview-row[aria-current=true]")?.getAttribute("data-key")]);
       await page.keyboard.press("k");
-      const first = await page.evaluate(() => [document.activeElement?.getAttribute("data-key"), document.querySelector("[role=option][aria-selected=true]")?.getAttribute("data-key")]);
-      check("j and k move the focus and the selection together", keys.length < 2
-        || (second[0] === keys[1] && second[1] === keys[1] && first[0] === keys[0] && first[1] === keys[0]), {keys, second, first});
+      const first = await page.evaluate(() => [document.activeElement?.getAttribute("data-key"), document.querySelector(".git-overview-row[aria-current=true]")?.getAttribute("data-key")]);
+      check("j and k move the focus and the selection together", keys.length >= 2
+        && second[0] === keys[1] && second[1] === keys[1] && first[0] === keys[0] && first[1] === keys[0], {keys, second, first});
       await failing.focus();
       await page.keyboard.press("Enter");
       check("Enter opens the focused pull request", await page.waitForURL(/\/git\/pr\/stand-gitea\/3\//, { timeout: 15000 }).then(() => true, () => false), page.url());
@@ -68,7 +68,7 @@ try {
       await side(page).getByRole("button", { name: "RU", exact: true }).click();
       await page.getByRole("button", { name: "Список", exact: true }).click();
       check("in Russian the overview's words are Russian", await visible(page.getByRole("heading", { name: "Обзор", level: 1 }))
-        && await visible(page.getByRole("listbox", { name: "Нужно ваше действие" })));
+        && await visible(page.getByRole("list", { name: "Нужно ваше действие" })));
       await page.waitForTimeout(800);
       await page.screenshot({ path: out + "/overview-list-ru-light.png" });
       await side(page).getByRole("button", { name: "EN", exact: true }).click();

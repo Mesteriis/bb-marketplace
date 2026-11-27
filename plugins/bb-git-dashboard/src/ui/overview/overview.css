@@ -4,10 +4,15 @@
 .git-ws .git-overview-list { padding: 8px 12px 24px; min-width: 0; }
 .git-ws .git-overview-list ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
 .git-ws .git-overview-group { margin: 0; padding: 14px 12px 6px; display: flex; gap: 8px; }
-.git-ws .git-overview-list .g-it { cursor: pointer; }
+.git-ws .git-overview-list .g-it { padding: 0 8px 0 0; gap: 8px; }
 .git-ws .git-overview-list .g-it:hover:not(.sel) { background: var(--git-subtle); }
-.git-ws .git-overview-list .g-it:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
-.git-ws .git-overview-text { flex: 1; min-width: 0; }
+.git-ws .git-overview-row {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 12px; padding: 9px 4px 9px 12px; border: 0; border-radius: 8px;
+  background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.git-ws .git-overview-row:hover { background: transparent; }
+.git-ws .git-overview-row:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+.git-ws .git-overview-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .git-ws .git-overview-title { display: flex; flex-wrap: wrap; gap: 0 8px; align-items: baseline; font-weight: 550; min-width: 0; }
 .git-ws .git-overview-title > .g-ell { flex: 1 1 120px; }
 .git-ws .git-overview-kind { font-weight: 600; white-space: nowrap; }
@@ -39,7 +44,7 @@
 
 @container (max-width: 560px) {
   .git-ws .git-overview-list .g-btn { min-width: 0; }
-  .git-ws .git-overview-list .g-it { gap: 8px; padding-inline: 8px; }
+  .git-ws .git-overview-row { gap: 8px; padding-left: 8px; }
 }
 @container (max-width: 900px) {
   .git-ws .git-overview-split { grid-template-columns: minmax(0, 1fr); }

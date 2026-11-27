@@ -144,7 +144,7 @@ function Dashboard({subPath}: {subPath: string}) {
   const panel = experimental_useAppPanel();
   const settingValues = useSettings().values;
   const historyGraph = settingValues?.historyGraph !== false;
-  const overview = useOverviewApi(copies, projects.length);
+  const overview = useOverviewApi(copies);
   const reviewRevisions = useReviewRevisions();
   const reviewRevision = reviewRevisions.any;
   const api = useMemo<RemoteApi & RepositoryApi & ConnectionApi & {trees(id:string):Promise<import("./src/core/git.ts").GitResult>}>(() => ({
@@ -285,7 +285,7 @@ function Dashboard({subPath}: {subPath: string}) {
     </> : subPath === "catalog" ? <>
       <CatalogPage api={catalogApi} hosts={hosts}/>
     </> : subPath === "" ? <>
-      <OverviewPage api={overview} initialView={settingValues?.overviewView === "board" ? "board" : "list"}/>
+      <OverviewPage api={overview} ready={loaded} initialView={settingValues?.overviewView === "board" ? "board" : "list"}/>
     </> : subPath === "connections" ? <>
       <ConnectionsPage api={api} title={t("section.connections")} onBrowse={() => open("remotes")} onChanged={accountsChanged}/>
     </> : subPath === "remotes" ? <>
