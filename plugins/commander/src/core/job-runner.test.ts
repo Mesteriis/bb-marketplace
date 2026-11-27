@@ -1,7 +1,7 @@
 import { expect, test, vi } from "vitest";
 import { CommanderError } from "./errors.ts";
 import { JobRunner, type RunnerDeps } from "./job-runner.ts";
-import { Conflict, planDigest, type JobState, type OperationJob, type OperationPlan } from "./model.ts";
+import { Conflict, OperationJob, planDigest, type JobState, type OperationPlan } from "./model.ts";
 import { parsePosix } from "./path.ts";
 import { FakeProvider } from "./testing/fake-provider.ts";
 import { tempNameFor } from "./reconcile.ts";
@@ -51,7 +51,7 @@ async function setup(options: {
   const store = new MemoryJobStore();
   let nextId = 0;
   const retryDelay = vi.fn(async () => {});
-  const runner = new JobRunner({
+  const newRunner = () => new JobRunner({
     store,
     provider: (id) => id === "host:from" ? from : to,
     now: () => new Date(date),
@@ -61,6 +61,7 @@ async function setup(options: {
     revalidate: options.revalidate,
     onEvent: () => {},
   });
+  const runner = newRunner();
   async function at(id: string, state: JobState, item?: number): Promise<OperationJob> {
     return vi.waitFor(async () => {
       const job = (await store.get(id))!;
@@ -69,7 +70,7 @@ async function setup(options: {
       return job;
     });
   }
-  return { runner, plan, store, from, to, retryDelay, at };
+  return { runner, newRunner, plan, store, from, to, retryDelay, at };
 }
 
 test("relays 10 MiB in ten sequential 1 MiB chunks", async () => {
@@ -611,4 +612,236 @@ test("does not replay commit after a retryable failure if the destination change
   expect((await at(id, "unknown")).items.map(({ outcome }) => outcome)).toEqual(["unknown", "pending"]);
   expect(to.calls.filter(({ op }) => op === "commit")).toHaveLength(1);
   expect(to.contents(target)).toEqual(Uint8Array.of(9, 9, 9));
+});
+
+test("persists the exact temporary path before openWrite and recovers a created temp", async () => {
+  const { runner, newRunner, plan, store, to, at } = await setup();
+  const started = pause();
+  const openWrite = to.openWrite.bind(to);
+  const intercept = vi.spyOn(to, "openWrite").mockImplementationOnce(async (...args) => {
+    await openWrite(...args);
+    started.release();
+    return new Promise(() => {});
+  });
+  const { id } = await runner.submit(plan);
+  await started.promise;
+  const tempPath = parsePosix("/.commander-223e4567-e89b-42d3-a456-000000000001-0.part");
+  expect(await store.lastCheckpoint(id, 0)).toEqual({
+    jobId: id, itemIndex: 0, phase: "prepared", bytesDone: "0", tempPath,
+    targetPath: { segments: [{ t: "b" }] }, expectTarget: "absent", verified: null,
+  });
+  const foreign = parsePosix("/.other-job.part");
+  to.put(foreign, Uint8Array.of(19));
+  expect(await newRunner().recover()).toEqual({ resumed: [id], unknown: [] });
+  expect((await at(id, "completed")).items[0].outcome).toBe("done");
+  expect(to.contents(tempPath)).toBeNull();
+  expect(to.contents(foreign)).toEqual(Uint8Array.of(19));
+  expect(intercept).toHaveBeenCalledTimes(2);
+});
+
+test("retains another item's temp even if a checkpoint points at it", async () => {
+  const { runner, plan, store, to, at } = await setup();
+  const { id } = await runner.submit(plan, { awaitsOwner: true });
+  await store.update(id, { state: "running", currentItem: 0 }, "pending");
+  const { tempPath } = await to.openWrite(target, { tempName: { t: ".other-job.part" } }, new AbortController().signal);
+  await store.checkpoint({ jobId: id, itemIndex: 0, phase: "prepared", bytesDone: "0", tempPath, targetPath: target,
+    expectTarget: "absent", verified: null });
+  expect(await runner.recover()).toEqual({ resumed: [], unknown: [id] });
+  expect((await at(id, "unknown")).items[0].outcome).toBe("unknown");
+  expect(to.temporaryCount).toBe(1);
+});
+
+test("preserves a target conflict if a second restart interrupts conflict recovery", async () => {
+  const { runner, newRunner, plan, store, to, at } = await setup({ policy: "overwrite" });
+  to.put(target, Uint8Array.of(7), "2");
+  to.delay = async (op) => {
+    if (op === "commit") to.put(target, Uint8Array.of(8), "3");
+  };
+  const { id } = await runner.submit(plan);
+  const initial = await at(id, "awaiting_decision", 0);
+  expect(initial.pendingConflict?.reason).toBe("target_changed");
+  const update = store.update.bind(store);
+  const interrupt = vi.spyOn(store, "update").mockImplementation(async (...args) => {
+    const updated = await update(...args);
+    if (args[1].state === "interrupted") throw new Error("Process lost after interrupted was saved");
+    return updated;
+  });
+  await expect(newRunner().recover()).rejects.toThrow("Process lost");
+  const interrupted = await at(id, "interrupted", 0);
+  expect(OperationJob.parse(interrupted).pendingConflict).toEqual(initial.pendingConflict);
+  interrupt.mockRestore();
+  await newRunner().recover();
+  expect((await at(id, "awaiting_decision", 0)).pendingConflict).toEqual(initial.pendingConflict);
+  expect(to.contents(target)).toEqual(Uint8Array.of(8));
+  expect(to.calls.filter(({ op }) => op === "commit")).toHaveLength(1);
+});
+
+test("reports loss of a verified destination and preserves the move source", async () => {
+  const { runner, plan, store, from, to, at } = await setup({ kind: "move" });
+  const checkpoint = store.checkpoint.bind(store);
+  vi.spyOn(store, "checkpoint").mockImplementation(async (point) => {
+    await checkpoint(point);
+    if (point.phase === "verified") to.put(target, Uint8Array.of(99, 99, 99), "700");
+  });
+  const { id } = await runner.submit(plan);
+  const job = await at(id, "unknown");
+  expect(job.items[0]).toEqual({ outcome: "unknown", error: "Verified destination was lost or replaced; source retained" });
+  expect(from.contents(source)).toEqual(Uint8Array.of(42, 42, 42));
+  expect(from.calls.some(({ op }) => op === "remove")).toBe(false);
+});
+
+test("records a verified copy if cancelled during the post-verify target check", async () => {
+  const { runner, plan, store, from, to, at } = await setup({ kind: "move" });
+  const waiting = pause();
+  const checkpoint = store.checkpoint.bind(store);
+  vi.spyOn(store, "checkpoint").mockImplementation(async (point) => {
+    await checkpoint(point);
+    if (point.phase !== "verified") return;
+    to.delay = async (op, _path, signal) => {
+      if (op !== "stat" || to.delay === undefined) return;
+      to.delay = undefined;
+      waiting.release();
+      await new Promise<void>((_, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+    };
+  });
+  const { id } = await runner.submit(plan);
+  await waiting.promise;
+  await runner.cancel(id);
+  expect((await at(id, "cancelled")).items[0]).toEqual({ outcome: "done", error: "Move cancelled; source retained" });
+  expect(from.contents(source)).toEqual(Uint8Array.of(42, 42, 42));
+  expect(to.contents(target)).toEqual(Uint8Array.of(42, 42, 42));
+});
+
+test("restores a staged parent directory after restarting during a child move", async () => {
+  const { runner, newRunner, plan, store, from, to, at } = await setup({ kind: "move" });
+  const input = parsePosix("/tree");
+  const output = parsePosix("/tree-copy");
+  const child = parsePosix("/tree/child");
+  const copy = parsePosix("/tree-copy/child");
+  const signal = new AbortController().signal;
+  await from.mkdir(input, signal);
+  const dir = (await from.stat(input, signal))!;
+  from.put(child, Uint8Array.of(42, 42, 42), "1");
+  const { digest: _digest, ...unsigned } = plan;
+  unsigned.items[0].source!.path = child;
+  unsigned.items[0].target!.path = copy;
+  unsigned.items.unshift({ source: { endpoint: "host:from", path: input }, target: { endpoint: "host:to", path: output },
+    kind: "dir", fingerprint: { size: "0", mtimeNs: dir.mtimeNs } });
+  const waiting = pause();
+  const checkpoint = store.checkpoint.bind(store);
+  vi.spyOn(store, "checkpoint").mockImplementation(async (point) => {
+    await checkpoint(point);
+    if (point.itemIndex === 1 && point.phase === "copying") {
+      waiting.release();
+      return new Promise(() => {});
+    }
+  });
+  const { id } = await runner.submit({ ...unsigned, digest: await planDigest(unsigned) });
+  await waiting.promise;
+  vi.mocked(store.checkpoint).mockRestore();
+  expect(await newRunner().recover()).toEqual({ resumed: [id], unknown: [] });
+  expect((await at(id, "completed")).items.map(({ outcome }) => outcome)).toEqual(["done", "done"]);
+  expect(await from.stat(input, signal)).toBeNull();
+  expect(to.contents(copy)).toEqual(Uint8Array.of(42, 42, 42));
+  expect(to.calls.filter(({ op }) => op === "mkdir")).toHaveLength(1);
+});
+
+test("leaves approval pending when revalidate fails even if a target conflict is observable", async () => {
+  const { runner, plan, to, at } = await setup({
+    policy: "overwrite",
+    revalidate: async (snapshot) => {
+      Object.assign(snapshot.items[0], { expectTarget: "absent" });
+      return { ok: false, changed: [{ index: 0, reason: "target_changed" }] } as const;
+    },
+  });
+  const { id } = await runner.submit(plan, { awaitsOwner: true });
+  to.put(target, Uint8Array.of(9), "2");
+  await expect(runner.approve(id)).rejects.toMatchObject({ code: "changed_since_plan" });
+  expect((await at(id, "pending")).awaitsOwner).toBe(true);
+  expect(to.contents(target)).toEqual(Uint8Array.of(9));
+});
+
+test("reconciles mkdir as done when its prepared destination is already a directory", async () => {
+  const { runner, plan, store, to, at } = await setup({ kind: "mkdir" });
+  const { digest: _digest, ...unsigned } = plan;
+  Object.assign(unsigned.items[0], { source: null, kind: "dir", fingerprint: null });
+  unsigned.sourceEndpoint = null;
+  unsigned.totalBytes = "0";
+  const { id } = await runner.submit({ ...unsigned, digest: await planDigest(unsigned) }, { awaitsOwner: true });
+  await store.update(id, { state: "running", currentItem: 0 }, "pending");
+  await store.checkpoint({ jobId: id, itemIndex: 0, phase: "prepared", bytesDone: "0", tempPath: null,
+    targetPath: target, expectTarget: "absent", verified: null });
+  await to.mkdir(target, new AbortController().signal);
+  expect(await runner.recover()).toEqual({ resumed: [id], unknown: [] });
+  expect((await at(id, "completed")).items[0].outcome).toBe("done");
+  expect(to.calls.filter(({ op }) => op === "mkdir")).toHaveLength(1);
+});
+
+test("restarts from a verified move checkpoint written by the runner", async () => {
+  const { runner, newRunner, plan, store, from, to, at } = await setup({ kind: "move", verify: "sha256" });
+  const paused = pause();
+  const checkpoint = store.checkpoint.bind(store);
+  const write = vi.spyOn(store, "checkpoint").mockImplementation(async (point) => {
+    await checkpoint(point);
+    if (point.phase === "verified") {
+      paused.release();
+      return new Promise(() => {});
+    }
+  });
+  const { id } = await runner.submit(plan);
+  await paused.promise;
+  expect(await store.lastCheckpoint(id, 0)).toEqual({
+    jobId: "223e4567-e89b-42d3-a456-000000000001", itemIndex: 0,
+    phase: "verified", bytesDone: "3", tempPath: null,
+    targetPath: { segments: [{ t: "b" }] }, expectTarget: "absent",
+    committed: { size: "3", mtimeNs: "102" },
+    verified: { size: "3", sha256: "596f4162a52f315b2ad0fa53fd30a2769d02a41ed7439123790966eee4ceb5cd" },
+  });
+  write.mockRestore();
+  expect(await newRunner().recover()).toEqual({ resumed: [id], unknown: [] });
+  expect((await at(id, "completed")).items[0]).toEqual({ outcome: "done", error: null });
+  expect(from.contents(source)).toBeNull();
+  expect(to.contents(target)).toEqual(Uint8Array.of(42, 42, 42));
+  expect(from.calls.filter(({ op }) => op === "remove")).toHaveLength(1);
+});
+
+test("restores staged parent directories when a restarted child conflict is decided", async () => {
+  const { runner, newRunner, plan, from, to, at } = await setup({ kind: "move" });
+  const input = parsePosix("/tree");
+  const output = parsePosix("/tree-copy");
+  const child = parsePosix("/tree/child");
+  const copy = parsePosix("/tree-copy/child");
+  const signal = new AbortController().signal;
+  await from.mkdir(input, signal);
+  const dir = (await from.stat(input, signal))!;
+  from.put(child, Uint8Array.of(42, 42, 42), "1");
+  to.put(copy, Uint8Array.of(7), "2");
+  const { digest: _digest, ...unsigned } = plan;
+  unsigned.items[0].source!.path = child;
+  unsigned.items[0].target!.path = copy;
+  unsigned.items.unshift({ source: { endpoint: "host:from", path: input }, target: { endpoint: "host:to", path: output },
+    kind: "dir", fingerprint: { size: "0", mtimeNs: dir.mtimeNs } });
+  const { id } = await runner.submit({ ...unsigned, digest: await planDigest(unsigned) });
+  const conflict = (await at(id, "awaiting_decision", 1)).pendingConflict!;
+  const restarted = newRunner();
+  await restarted.recover();
+  await restarted.decide(id, { conflictId: conflict.id, action: "overwrite", applyTo: "this" });
+  expect((await at(id, "completed")).items.map(({ outcome }) => outcome)).toEqual(["done", "done"]);
+  expect(await from.stat(input, signal)).toBeNull();
+  expect(to.contents(copy)).toEqual(Uint8Array.of(42, 42, 42));
+  expect(to.calls.filter(({ op }) => op === "mkdir")).toHaveLength(1);
+});
+
+test("marks a prepared job unknown if cleanup of its owned temporary file fails", async () => {
+  const { runner, plan, store, to, at } = await setup();
+  const { id } = await runner.submit(plan, { awaitsOwner: true });
+  await store.update(id, { state: "running", currentItem: 0 }, "pending");
+  const { tempPath } = await to.openWrite(target, { tempName: tempNameFor(id, 0) }, new AbortController().signal);
+  await store.checkpoint({ jobId: id, itemIndex: 0, bytesDone: "0", phase: "prepared", tempPath, targetPath: target,
+    expectTarget: "absent", verified: null });
+  to.failOn.push({ op: "remove", path: tempPath, times: 1, error: new CommanderError("timeout", "Remove reply lost", true) });
+  expect(await runner.recover()).toEqual({ resumed: [], unknown: [id] });
+  expect((await at(id, "unknown")).items[0].outcome).toBe("unknown");
+  expect(to.calls.filter(({ op }) => op === "remove")).toHaveLength(1);
+  expect(to.temporaryCount).toBe(1);
 });

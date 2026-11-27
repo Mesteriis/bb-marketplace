@@ -7,7 +7,7 @@ import {
   type Fingerprint, type ItemOutcome, type PlanItem, type ResourceRef,
 } from "./model.ts";
 import { isAncestorOrSelf, join, parent, samePath, type ResourcePath } from "./path.ts";
-import { READ_CHUNK_MAX, type FileProvider } from "./provider.ts";
+import { READ_CHUNK_MAX, type FileProvider, type WriteSession } from "./provider.ts";
 import {
   confirmVerified, fingerprint, matches, matchesTarget, observe, readChunks, reconcileItem, tempNameFor, TransferHash, verifyCopy,
   type Location, type VerifyContext,
@@ -21,7 +21,9 @@ export interface RunnerDeps {
   uuid(): string;
   chunkBytes?: number;
   retryDelay?(milliseconds: number, signal: AbortSignal): Promise<void>;
-  revalidate?(plan: OperationPlan, signal: AbortSignal): Promise<{ ok: true; plan: OperationPlan } | { ok: false; changed: number[] }>;
+  revalidate?(plan: OperationPlan, signal: AbortSignal): Promise<{ ok: true } | {
+    ok: false; changed: { index: number; reason: "source_changed" | "target_changed" }[];
+  }>;
   onEvent(e: { jobId: string; kind: "progress" | "state" | "conflict" }): void;
 }
 
@@ -29,9 +31,11 @@ type Patch = Parameters<JobStore["update"]>[1];
 type EventKind = Parameters<RunnerDeps["onEvent"]>[0]["kind"];
 type Decision = { conflict: Conflict; action: ConflictAction };
 type PreparedDirectory = { source: Location; target: Location };
-type ItemResult = "done" | "skipped" | "source_retained" | PreparedDirectory;
+type MoveFinish = "removed" | "source_retained" | "move_cancelled";
+type ItemResult = "done" | "skipped" | Exclude<MoveFinish, "removed"> | PreparedDirectory;
 const cancelledError = new CommanderError("cancelled", "Job cancelled");
 const sourceRetained = "Source changed; source retained";
+const moveCancelled = "Move cancelled; source retained";
 
 function plannedTarget(item: PlanItem): Checkpoint["expectTarget"] {
   // S2 adds this field to the core schema when its branch is integrated.
@@ -111,11 +115,10 @@ export class JobRunner {
     if (job.state !== "pending" || !job.awaitsOwner) {
       throw new CommanderError("changed_since_plan", "Job is no longer awaiting approval");
     }
-    const submitted = await this.validPlan(job.plan);
+    const plan = await this.validPlan(job.plan);
     const context = this.context(id, 0, new AbortController().signal);
-    const checked = await this.deps.revalidate?.(submitted, context.signal);
-    const plan = checked?.ok ? checked.plan : submitted;
-    if (plan.digest !== submitted.digest) throw new CommanderError("changed_since_plan", "Approval snapshot changed");
+    const checked = await this.deps.revalidate?.(plan, context.signal);
+    if (checked && !checked.ok) throw new CommanderError("changed_since_plan", "Plan changed before approval");
     const targetDirectory = (plan as OperationPlan & { targetDir?: ResourceRef | ResourcePath | null }).targetDir;
     if (targetDirectory) {
       const ref = "endpoint" in targetDirectory ? targetDirectory
@@ -139,7 +142,6 @@ export class JobRunner {
       }
     }
     if (!targetConflict) {
-      if (checked && !checked.ok) throw new CommanderError("changed_since_plan", "Plan changed before approval");
       if (!await this.start(job, plan)) throw new CommanderError("changed_since_plan", "Job is no longer awaiting approval");
       return;
     }
@@ -212,9 +214,17 @@ export class JobRunner {
       }
       const cancelling = job.state === "cancel_requested" || (job.state === "interrupted"
         && job.error?.code === "cancelled" && job.error.message === cancelledError.message);
-      if (job.state !== "interrupted" && !await this.change(job, "process_lost",
-        cancelling ? { error: cancelledError.toShape() } : undefined)) continue;
+      if (job.state !== "interrupted" && !await this.change(job, "process_lost", {
+        pendingConflict: job.pendingConflict,
+        ...(cancelling ? { error: cancelledError.toShape() } : {}),
+      })) continue;
       let interrupted = await this.requireJob(job.id);
+      if (!cancelling && interrupted.pendingConflict) {
+        if (await this.change(interrupted, "restore_conflict", { pendingConflict: interrupted.pendingConflict }, "conflict")) {
+          result.resumed.push(job.id);
+        }
+        continue;
+      }
       const completedBytes = interrupted.items.reduce((bytes, item, index) =>
         bytes + this.itemBytes(interrupted, index, item.outcome), 0n);
       const progress = this.progress(interrupted, completedBytes);
@@ -222,9 +232,10 @@ export class JobRunner {
       interrupted = { ...interrupted, progress };
       const index = interrupted.currentItem;
       try {
-        if (index !== null && interrupted.items[index].outcome === "pending" && job.state !== "awaiting_decision") {
+        if (index !== null && interrupted.items[index].outcome === "pending") {
           await this.recoverStartedItem(interrupted, index, cancelling);
         }
+
       } catch {
         const latest = await this.requireJob(job.id);
         const error = new CommanderError("outcome_unknown", "Interrupted job outcome could not be confirmed");
@@ -238,35 +249,24 @@ export class JobRunner {
         continue;
       }
       if (await this.change(await this.requireJob(job.id), "resume")) {
-        if (job.state === "awaiting_decision" && job.pendingConflict) {
-          await this.change(await this.requireJob(job.id), "conflict", {
-            pendingConflict: job.pendingConflict,
-          }, "conflict");
-        } else {
-          this.launch(job.id);
-        }
+        this.launch(job.id);
         result.resumed.push(job.id);
       }
     }
     return result;
   }
 
-  private async recoverStartedItem(job: OperationJob, index: number, cancelling: boolean): Promise<void> {
+  private async recoverStartedItem(
+    job: OperationJob, index: number, cancelling: boolean, saved?: Checkpoint,
+  ): Promise<void> {
     // The runner writes prepared before issuing any mutation. A missing
     // checkpoint is therefore safe to leave pending.
-    const checkpoint = await this.store.lastCheckpoint(job.id, index);
+    const checkpoint = saved ?? await this.store.lastCheckpoint(job.id, index);
     if (!checkpoint) return;
 
     const item = job.plan.items[index];
     const source = item.source && this.location(item.source);
-    const target = item.target && this.location({ ...item.target, path: checkpoint.targetPath ?? item.target.path });
-    if (target && item.target && checkpoint.targetPath) {
-      const original = parent(item.target.path);
-      const actual = parent(target.path);
-      if (!original || !actual || !samePath(original, actual, target.provider.endpoint.caseSensitive)) {
-        throw new CommanderError("outcome_unknown", "Recovered destination is outside the planned directory");
-      }
-    }
+    const target = this.recoveredTarget(item, checkpoint);
 
     const context = this.context(job.id, index, new AbortController().signal);
     context.load(checkpoint);
@@ -277,17 +277,41 @@ export class JobRunner {
       return;
     }
 
+    if (outcome === "deferred_directory") {
+      if (!cancelling && source && target) {
+        const directories = this.directories.get(job.id) ?? new Map<number, PreparedDirectory>();
+        directories.set(index, { source, target });
+        this.directories.set(job.id, directories);
+      }
+      return;
+    }
+
     let warning: string | undefined;
     if (typeof outcome === "object") {
       if (!source || !target || !item.fingerprint) throw new CommanderError("internal", "Move recovery lacks an endpoint");
       if (cancelling) {
-        warning = "Move cancelled; source retained";
+        warning = moveCancelled;
       } else {
         await context.mark("verified", { verified: outcome.verified });
-        if (!await this.finishMove(source, target, item.fingerprint, context)) warning = sourceRetained;
+        const result = await this.finishMove(source, target, item.fingerprint, context);
+        if (result !== "removed") warning = result === "move_cancelled" ? moveCancelled : sourceRetained;
       }
     }
     await this.record(job, index, "done", undefined, job.progress.bytesDone, warning);
+  }
+
+  private recoveredTarget(item: PlanItem, checkpoint: Checkpoint): Location | null {
+    if (!item.target) return null;
+    const path = checkpoint.targetPath ?? item.target.path;
+    const target = this.location({ ...item.target, path });
+    if (checkpoint.targetPath) {
+      const original = parent(item.target.path);
+      const actual = parent(path);
+      if (!original || !actual || !samePath(original, actual, target.provider.endpoint.caseSensitive)) {
+        throw new CommanderError("outcome_unknown", "Recovered destination is outside the planned directory");
+      }
+    }
+    return target;
   }
 
   private async validPlan(input: OperationPlan): Promise<OperationPlan> {
@@ -324,7 +348,7 @@ export class JobRunner {
     let next = 0;
     const prepared = this.directories.get(id) ?? new Map<number, PreparedDirectory>();
     this.directories.set(id, prepared);
-    const deferred: number[] = [...prepared.keys()];
+    const deferred = [...prepared.keys()].sort((a, b) => a - b);
     try {
       for (;;) {
         let job = await this.requireJob(id);
@@ -353,8 +377,9 @@ export class JobRunner {
           } else {
             const outcome = await this.perform(job, index, context, decision);
             if (typeof outcome === "string") {
-              await this.record(await this.requireJob(id), index, outcome === "source_retained" ? (job.plan.kind === "delete" ? "skipped" : "done") : outcome,
-                undefined, job.progress.bytesDone, outcome === "source_retained" ? sourceRetained : undefined);
+              const warning = outcome === "source_retained" ? sourceRetained : outcome === "move_cancelled" ? moveCancelled : undefined;
+              const result = outcome === "done" || outcome === "skipped" ? outcome : job.plan.kind === "delete" ? "skipped" : "done";
+              await this.record(await this.requireJob(id), index, result, undefined, job.progress.bytesDone, warning);
             } else {
               prepared.set(index, outcome);
               deferred.push(index);
@@ -423,6 +448,19 @@ export class JobRunner {
   private async perform(job: OperationJob, index: number, context: ItemContext, decision?: Decision): Promise<ItemResult> {
     const item = job.plan.items[index];
     const source = item.source && this.location(item.source);
+    if (job.plan.kind === "move" && item.kind === "dir" && source) {
+      // A child may have paused for a decision across a restart. Restore the
+      // parent on demand even if startup only restored the pending conflict.
+      const checkpoint = await this.store.lastCheckpoint(job.id, index);
+      if (checkpoint?.phase === "verified" || checkpoint?.phase === "source_removed") {
+        const target = this.recoveredTarget(item, checkpoint);
+        const outcome = await reconcileItem(checkpoint, source, target, item, job.plan, context,
+          (point) => this.store.checkpoint(point));
+        if (outcome === "done") return "done";
+        if (outcome === "deferred_directory" && target) return { source, target };
+        throw new CommanderError("outcome_unknown", "Staged move directory could not be confirmed");
+      }
+    }
     const restore = this.restored.get(job.id);
     const saved = restore?.itemIndex === index ? restore : undefined;
     if (saved) this.restored.delete(job.id);
@@ -513,7 +551,8 @@ export class JobRunner {
             return { source, target: destination };
           }
           await this.copy(item, source, destination, sourceFingerprint, replace, expectTarget, job.plan, context, unchanged);
-          return await this.finishMove(source, destination, sourceFingerprint, context) ? "done" : "source_retained";
+          const result = await this.finishMove(source, destination, sourceFingerprint, context);
+          return result === "removed" ? "done" : result;
         case "copy":
           if (!source || !destination || !sourceFingerprint) break;
           await this.copy(item, source, destination, sourceFingerprint, replace, expectTarget, job.plan, context, unchanged);
@@ -624,9 +663,28 @@ export class JobRunner {
       } else {
         const { jobId, itemIndex } = context.saved();
         const tempName = tempNameFor(jobId, itemIndex);
-        const session = await mutate(() => provider.openWrite(path, { tempName }, signal), unchanged);
+        const dir = parent(path);
+        if (!dir) throw new CommanderError("invalid_path", "Cannot write root");
+        const tempPath = join(dir, tempName);
+        const sensitive = provider.endpoint.caseSensitive;
+        if (samePath(tempPath, path, sensitive)
+            || (source.provider.endpoint.id === provider.endpoint.id && samePath(tempPath, source.path, sensitive))) {
+          throw new CommanderError("invalid_path", "Temporary path overlaps an operation endpoint");
+        }
+        await mark("prepared", { tempPath });
+        let session: WriteSession;
         try {
-          await mark("copying", { tempPath: session.tempPath });
+          session = await mutate(() => provider.openWrite(path, { tempName }, signal), unchanged);
+        } catch (error) {
+          if (safeError(error).code !== "already_exists") throw error;
+          await mark("prepared", { tempPath: null });
+          throw new CommanderError("outcome_unknown", "Temporary path already belongs to another entry");
+        }
+        if (!samePath(session.tempPath, tempPath, sensitive)) {
+          throw new CommanderError("outcome_unknown", "Provider returned an unexpected temporary path");
+        }
+        try {
+          await mark("copying");
           const hash = verify === "sha256" ? new TransferHash() : null;
           let bytesDone = 0n;
           try {
@@ -692,14 +750,33 @@ export class JobRunner {
     }
   }
 
-  private async finishMove(source: Location, target: Location, expected: Fingerprint, context: ItemContext): Promise<boolean> {
+  private async finishMove(source: Location, target: Location, expected: Fingerprint, context: ItemContext): Promise<MoveFinish> {
     const checkpoint = context.saved();
-    if (context.signal.aborted || !await confirmVerified(target, checkpoint, "file", context)) return false;
     const sha256 = checkpoint.verified?.sha256;
-    const fingerprint = sha256 ? { ...expected, sha256 } : expected;
-    if (!await this.removeSource(source, "file", fingerprint, context, target)) return false;
+    const version = sha256 ? { ...expected, sha256 } : expected;
+    const confirm = (check: VerifyContext) => confirmVerified(target, checkpoint, "file", check);
+    const missing = () => new CommanderError("outcome_unknown", "Verified destination was lost or replaced; source retained");
+
+    const confirmCancellation = async (): Promise<MoveFinish> => {
+      const check = this.context(checkpoint.jobId, checkpoint.itemIndex, new AbortController().signal);
+      if (!await confirm(check).catch(() => false)) throw missing();
+      const sourceEntry = await observe(source, check, Boolean(version.sha256)).catch(() => null);
+      if (!sourceEntry) throw new CommanderError("outcome_unknown", "Move source could not be confirmed after cancellation");
+      return matches(sourceEntry, version) ? "move_cancelled" : "source_retained";
+    };
+    let verified: boolean;
+    try {
+      verified = await confirm(context);
+    } catch (error) {
+      if (context.signal.aborted) return confirmCancellation();
+      throw error;
+    }
+    if (!verified) throw missing();
+    if (!await this.removeSource(source, "file", version, context, target)) {
+      return context.signal.aborted ? confirmCancellation() : "source_retained";
+    }
     await context.mark("source_removed");
-    return true;
+    return "removed";
   }
 
   private context(

@@ -1,7 +1,7 @@
 import { CommanderError } from "./errors.ts";
 import type { Checkpoint } from "./job-store.ts";
 import type { Entry, Fingerprint, OperationPlan, PlanItem, ResourceRef } from "./model.ts";
-import { NameSegment, parent, samePath } from "./path.ts";
+import { join, NameSegment, parent, samePath } from "./path.ts";
 import type { FileProvider } from "./provider.ts";
 import { toBig } from "./size.ts";
 
@@ -192,7 +192,7 @@ export async function confirmVerified(
     && (!checkpoint.committed || matches(entry, checkpoint.committed));
 }
 
-type Recovery = "pending" | "done" | { verified: NonNullable<Checkpoint["verified"]> };
+type Recovery = "pending" | "done" | "deferred_directory" | { verified: NonNullable<Checkpoint["verified"]> };
 
 export async function reconcileItem(
   checkpoint: Checkpoint, source: Location | null, target: Location | null, item: PlanItem,
@@ -206,17 +206,17 @@ export async function reconcileItem(
     const before = source && await observe(source, context, Boolean(expected?.sha256));
     const after = target && await observe(target, context,
       Boolean((expectTarget && expectTarget !== "absent" && expectTarget.sha256) || expected?.sha256));
+    if (plan.kind === "mkdir" && after?.kind === "dir") return "done";
     if (plan.kind === "delete" && source && before === null) return "done";
     if ((plan.kind === "rename" || plan.kind === "move") && before === null && expected
         && after?.kind === item.kind && matches(after, expected)) return "done";
-    if ((source && (!before || !matches(before, expected))) || !matchesTarget(after, expectTarget)) throw unknown();
     const temp = checkpoint.tempPath;
     if (temp && target) {
       const { provider, path } = target;
       const dir = parent(path);
-      const tempDir = parent(temp);
       const sensitive = provider.endpoint.caseSensitive;
-      if (!dir || !tempDir || !samePath(dir, tempDir, sensitive) || samePath(path, temp, sensitive)
+      if (!dir || !samePath(temp, join(dir, tempNameFor(checkpoint.jobId, checkpoint.itemIndex)), sensitive)
+          || samePath(path, temp, sensitive)
           || (source && provider.endpoint.id === source.provider.endpoint.id && samePath(source.path, temp, sensitive))) {
         throw unknown();
       }
@@ -232,12 +232,21 @@ export async function reconcileItem(
     } else if (checkpoint.phase === "copying") {
       throw unknown();
     }
+    if ((source && (!before || !matches(before, expected))) || !matchesTarget(after, expectTarget)) throw unknown();
     return "pending";
   }
   if (!target || !source || !expected) throw unknown();
   const observed = await observe(source, context, Boolean(expected.sha256));
   if (checkpoint.phase === "source_removed" || (checkpoint.phase === "verified" && observed === null)) {
     if (plan.kind === "move" && observed === null && await confirmVerified(target, checkpoint, item.kind, context)) return "done";
+    throw unknown();
+  }
+  if (checkpoint.phase === "verified" && plan.kind === "move" && item.kind === "dir") {
+    // Moving children changes directory metadata. Finalization checks the
+    // directory again and the provider removes it only if it is empty.
+    if (checkpoint.verified && observed?.kind === "dir" && (await observe(target, context))?.kind === "dir") {
+      return "deferred_directory";
+    }
     throw unknown();
   }
   if (observed?.kind !== "file" || !matches(observed, expected) || checkpoint.bytesDone !== expected.size) throw unknown();
