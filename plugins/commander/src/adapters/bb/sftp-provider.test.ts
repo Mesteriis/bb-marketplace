@@ -1,9 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { ErrorCode } from "../../core/errors.ts";
 import { CommanderError } from "../../core/errors.ts";
 import type { Endpoint } from "../../core/model.ts";
 import type { NameSegment, ResourcePath } from "../../core/path.ts";
-import { REMOTE_HUB_SFTP_CONTRACT, SFTP_REFUSALS, type SftpRefusalCode, type SftpPath } from "../../core/wire/remote-hub-sftp.ts";
+import { REMOTE_HUB_SFTP_CONTRACT, SFTP_REFUSALS, SftpRefusal, type SftpRefusalCode, type SftpPath } from "../../core/wire/remote-hub-sftp.ts";
 import { createSftpProvider, type SftpProvider, type SftpWriteSession } from "./sftp-provider.ts";
 import { RemoteHubMock, type RemoteHubMockOptions } from "./testing/remote-hub-mock.ts";
 
@@ -687,6 +687,13 @@ describe("error mapping", () => {
     }
   });
 
+  it("treats an outcome_unknown refusal before a read is sent as internal", async () => {
+    const { mock, provider } = setup({ openFailure: "outcome_unknown" });
+    await expectCode(provider.list(at(), { cursor: null, limit: 10 }, signal()), "internal");
+    expect(mock.opCount("open")).toBe(1);
+    expect(mock.calls.filter(({ method }) => method === "hub_sftp_op")).toEqual([]);
+  });
+
   it("treats an outcome_unknown refusal on a read as an internal error", async () => {
     const { mock, provider } = setup({ failAll: "outcome_unknown", refusalDetail: LEAK });
     const error = await expectCode(provider.list(at(), { cursor: null, limit: 10 }, signal()), "internal");
@@ -1043,6 +1050,105 @@ describe("an aborted session is finished (final review)", () => {
     expect(mock.appliedCount("write")).toBe(2);
     expect(mock.appliedCount("remove")).toBe(1);
     expect(mock.exists("/.commander-test.part")).toBe(false);
+  });
+
+  it.each(["success", "outcome_unknown", "remove_denied"] as const)(
+    "concurrent aborts wait for the held write and share cleanup on %s",
+    async (result) => {
+      const { mock, provider } = setup({
+        holdWrite: true,
+        onOperation(op) {
+          if (op === "remove" && result === "remove_denied") throw new SftpRefusal("permission_denied");
+        },
+      });
+      const session = await openWrite(provider, at("a.txt"), signal());
+      if (result === "outcome_unknown") mock.dieNext("write");
+      const writing = session.write(0n, bytes("abc"), signal());
+      const written = result === "outcome_unknown" ? expectCode(writing, "outcome_unknown") : expect(writing).resolves.toBeUndefined();
+      await vi.waitFor(() => expect(mock.appliedCount("write")).toBe(2));
+
+      const first = session.abort();
+      const second = session.abort();
+      const cleanup = Promise.allSettled([first, second]);
+      const settled = vi.fn();
+      void first.then(settled, settled);
+      void second.then(settled, settled);
+      try {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(mock.opCount("op:remove")).toBe(0);
+        expect(settled).not.toHaveBeenCalled();
+      } finally {
+        mock.releaseHeld();
+        await Promise.all([written, cleanup]);
+      }
+      const outcomes = await cleanup;
+      if (result === "remove_denied") {
+        expect(outcomes).toMatchObject([
+          { status: "rejected", reason: { code: "permission_denied" } },
+          { status: "rejected", reason: { code: "permission_denied" } },
+        ]);
+      } else {
+        expect(outcomes).toEqual([
+          { status: "fulfilled", value: undefined },
+          { status: "fulfilled", value: undefined },
+        ]);
+      }
+      expect(second).toBe(first);
+      expect(mock.opCount("op:remove")).toBe(result === "outcome_unknown" ? 0 : 1);
+      expect(mock.exists("/.commander-test.part")).toBe(result !== "success");
+    },
+  );
+
+  it.each([
+    ["initial send", 1],
+    ["retry after channel_closed", 2],
+  ] as const)("abort during a delayed open blocks the %s of a write", async (phase, writes) => {
+    let releaseOpen!: () => void;
+    const openGate = new Promise<void>((resolve) => { releaseOpen = resolve; });
+    const { mock, provider } = setup({ onOpen: (opened) => opened === 2 ? openGate : undefined });
+    const session = await openWrite(provider, at("a.txt"), signal());
+    if (phase === "initial send") await provider.close();
+    else mock.expireChannels();
+
+    const written = expectCode(session.write(0n, bytes("abc"), signal()), "internal");
+    await vi.waitFor(() => expect(mock.opCount("open")).toBe(2));
+    const cleanup = session.abort();
+    try {
+      expect(mock.opCount("op:write")).toBe(writes);
+      expect(mock.opCount("op:remove")).toBe(0);
+    } finally {
+      releaseOpen();
+      await Promise.all([written, cleanup]);
+    }
+    expect(mock.opCount("op:write")).toBe(writes);
+    expect(mock.appliedCount("write")).toBe(1);
+    expect(mock.opCount("op:remove")).toBe(1);
+  });
+
+  it.each(["success", "outcome_unknown"] as const)("abort waits for a held commit with %s", async (result) => {
+    const { mock, provider } = setup({ holdRename: true });
+    const session = await openWrite(provider, at("a.txt"), signal());
+    await session.write(0n, bytes("abc"), signal());
+    if (result === "outcome_unknown") mock.dieNext("rename");
+    const committing = session.commit({ replace: false, expectTarget: null }, signal());
+    const committed = result === "success"
+      ? expect(committing).resolves.toEqual({ size: "3", mtimeNs: "1795790479000000000" })
+      : expectCode(committing, "outcome_unknown");
+    await vi.waitFor(() => expect(mock.appliedCount("rename")).toBe(1));
+
+    const cleanup = session.abort();
+    const settled = vi.fn();
+    void cleanup.then(settled, settled);
+    try {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(mock.opCount("op:remove")).toBe(0);
+      expect(settled).not.toHaveBeenCalled();
+    } finally {
+      mock.releaseHeld();
+      await Promise.all([committed, cleanup]);
+    }
+    expect(mock.opCount("op:remove")).toBe(0);
+    expect(text(mock.bytesAt("/a.txt"))).toBe("abc");
   });
 
   it("after a no_such_file abort, the session is finished too", async () => {

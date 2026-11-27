@@ -35,6 +35,7 @@ agent tools и CLI, с одинаковыми проверками. Агент �
 | `plan_create` | `PlanRequest` без `initiator` (owner) | `OperationPlan` |
 | `plan_run` | `{ planId, digest }` | `OperationJob` — digest должен совпасть с сохранённым планом |
 | `job_list` | `{ states?, limit ≤ 200 }` | `{ jobs: OperationJob[] }` |
+| `job_get` | `{ jobId }` | `OperationJob \| DamagedJob \| null` — только владелец, повреждённое задание возвращается без плана |
 | `job_decide` | `ConflictDecision & { jobId }` | `{}` |
 | `job_cancel` | `{ jobId }` | `{}` |
 | `plan_approve` / `plan_reject` | `{ jobId, digest }` | `OperationJob` — только для job с `awaitsOwner`; digest сверяется, перед запуском `revalidate` (S2) |
@@ -86,7 +87,7 @@ CLI `bb makosh-commander`: `endpoints`, `ls <endpoint> <path>`,
 
 Задача, которую S6 не смог прочитать, приходит как `state: "unknown"` с
 `error.code: "internal"` и сообщением «Stored job is damaged»; её `plan` —
-заглушка `delete`, а не реальная операция. RPC (`job_list`), agent tools
+заглушка `delete`, а не реальная операция. RPC (`job_list`, `job_get`), agent tools
 (`commander_jobs`) и CLI (`jobs`) распознают такую задачу по `error` и не
 выдают её `plan.kind`, элементы плана, endpoint и пути как описание операции:
 ответ — id, состояние, «повреждена, план недоступен». Над ней разрешено только
