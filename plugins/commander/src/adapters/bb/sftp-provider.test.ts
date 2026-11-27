@@ -103,6 +103,8 @@ describe("consent, host key, access", () => {
   });
 
   it.each([
+    ["list", "host_key_changed", "open"],
+    // Direct host-key refusals from an operation are synthetic contract cases.
     ["list", "host_key_changed", "op"],
     ["stat", "host_key_unknown", "open"],
     ["write", "host_key_changed", "op"],
@@ -113,7 +115,7 @@ describe("consent, host key, access", () => {
     await expect(provider.list(at(), opts, signal())).resolves.toMatchObject({ cursor: null });
 
     const call = mock.call.bind(mock);
-    vi.spyOn(mock, "call").mockImplementation((method, input, sig) => {
+    const portCall = vi.spyOn(mock, "call").mockImplementation((method, input, sig) => {
       if (method === (via === "open" ? "hub_sftp_open" : "hub_sftp_op")) {
         return Promise.reject(new SftpRefusal(code));
       }
@@ -125,6 +127,9 @@ describe("consent, host key, access", () => {
       : operation === "stat" ? provider.stat(at(), signal()) : provider.list(at(), opts, signal());
     const error = await expectCode(result, "host_key_rejected");
     expect(error.retryable).toBe(false);
+    if (via === "open") {
+      expect(portCall.mock.calls.map(([method]) => method)).toEqual(["hub_sftp_op", "hub_sftp_open"]);
+    }
     expect(mock.appliedCount("write")).toBe(0);
   });
 

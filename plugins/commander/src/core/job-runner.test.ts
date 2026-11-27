@@ -466,6 +466,32 @@ test("does not verify source_removed using only a matching file length", async (
   expect((await at(id, "unknown")).items[0].outcome).toBe("unknown");
 });
 
+test.each([[0, "3"], [1, "6"]] as const)(
+  "keeps confirmed checkpoint bytes when recovery fails after %s completed items",
+  async (index, expectedBytes) => {
+    const { runner, newRunner, plan, store, to, at } = await setup({ count: 2 });
+    const { id } = await runner.submit(plan, { awaitsOwner: true });
+    const items = [
+      { outcome: index === 0 ? "pending" as const : "done" as const, error: null },
+      { outcome: "pending" as const, error: null },
+    ];
+    await store.update(id, { state: "running", awaitsOwner: false, currentItem: index, items,
+      progress: { itemsDone: index, itemsTotal: 2, bytesDone: "3", bytesTotal: "6" } }, "pending");
+    const path = index === 0 ? target : parsePosix("/b1");
+    const tempPath = parsePosix("/.commander-223e4567-e89b-42d3-a456-000000000001-" + index + ".part");
+    await store.checkpoint({
+      jobId: id, itemIndex: index, phase: "copying", bytesDone: "3", tempPath,
+      tempFingerprint: { size: "3", mtimeNs: "2" }, targetPath: path, expectTarget: "absent", verified: null,
+    });
+    to.failOn.push({ op: "stat", path: tempPath, times: 1, error: new CommanderError("permission_denied", "Denied") });
+
+    expect(await newRunner().recover()).toEqual({ resumed: [], unknown: [id] });
+    const job = await at(id, "unknown");
+    expect(job.items[index].outcome).toBe("unknown");
+    expect(job.progress.bytesDone).toBe(expectedBytes);
+  },
+);
+
 test("accepts both legacy conflicts and conflicts with explicit resolutions", () => {
   const conflict = {
     id: "333e4567-e89b-42d3-a456-426614174000",
