@@ -298,6 +298,7 @@ impl OpenArchive {
             }
             left -= got.len() as u64;
         }
+        let is_zip = self.index.format == Format::Zip;
         let s = self.stream_mut(sid)?;
         if s.out != s.size {
             return Err(errors::invalid("size_mismatch"));
@@ -312,7 +313,7 @@ impl OpenArchive {
             }
         }
         s.finished = true;
-        let crc = if self.index.format == Format::Zip { entry.crc32 } else { None };
+        let crc = if is_zip { entry.crc32 } else { None };
         let aes = if entry.encrypted && entry.aes { Some(true) } else { None };
         Ok((s.size, crc, aes))
     }

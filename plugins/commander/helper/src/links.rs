@@ -32,3 +32,21 @@ fn escapes(name: &[u8], target: &[u8]) -> bool {
     }
     false
 }
+
+#[cfg(test)]
+mod tests {
+    use super::classify;
+
+    #[test]
+    fn links_are_classified_by_where_their_target_resolves() {
+        assert_eq!(classify(b"out", b"../../etc/passwd"), "link_escapes");
+        assert_eq!(classify(b"d/l", b"../x"), "link_not_supported");
+        assert_eq!(classify(b"d/l", b"../../x"), "link_escapes");
+        assert_eq!(classify(b"l", b"/etc/passwd"), "link_escapes");
+        assert_eq!(classify(b"l", b"C:\\x"), "link_escapes");
+        assert_eq!(classify(b"l", b"a/b"), "link_not_supported");
+        assert_eq!(classify(b"l", b""), "link_escapes");
+        assert_eq!(classify(b"a/b/l", b"../../.."), "link_escapes");
+        assert_eq!(classify(b"a/b/l", b"../.."), "link_not_supported");
+    }
+}

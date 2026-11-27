@@ -45,7 +45,7 @@ describe("list and stat", () => {
       },
     }));
     const page = await make(rpc).list(parsePosix("/docs"), { cursor: null, limit: 10 }, signal);
-    expect(calls[0]).toMatchObject({ t: "list", prefixB64: b64("docs"), cursor: null, limit: 10 });
+    expect(calls[0]).toMatchObject({ t: "list", prefix: b64("docs"), cursor: null, limit: 10 });
     expect(page.cursor).toBeNull();
     expect(page.entries).toEqual([
       { name: { t: "a.txt" }, kind: "file", size: "5", mtimeNs: "1732665600000000000", mtimePrecision: "s", mode: 0o644, linkTarget: null, hidden: false },

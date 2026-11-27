@@ -29,6 +29,7 @@ pub struct Pack {
     total: u64,
     aes: Option<Zeroizing<String>>,
     current: Option<Current>,
+    finished: bool,
 }
 
 struct Current {
@@ -68,7 +69,7 @@ impl Pack {
         if aes.is_some() && matches!(kind, Kind::Tar) {
             return Err(errors::unsupported("encryption_unsupported"));
         }
-        Ok(Pack { kind, writer: Some(writer), path: staging.to_vec(), limits, names: HashSet::new(), entries: 0, total: 0, aes, current: None })
+        Ok(Pack { kind, writer: Some(writer), path: staging.to_vec(), limits, names: HashSet::new(), entries: 0, total: 0, aes, current: None, finished: false })
     }
 
     pub fn wants_password(kind: &str, aes: bool) -> bool {
@@ -139,10 +140,12 @@ impl Pack {
     }
 
     pub fn end_entry(&mut self) -> Result<(), HErr> {
-        if let Some(cur) = self.current.take() {
+        if let Some(cur) = &self.current {
             if cur.written != cur.declared {
                 return Err(errors::invalid("size_mismatch"));
             }
+        }
+        if let Some(cur) = self.current.take() {
             if !cur.is_zip {
                 if let Writer::Tar(f) = self.writer.as_mut().unwrap() {
                     let pad = (512 - cur.declared % 512) % 512;
@@ -186,12 +189,16 @@ impl Pack {
             hasher.update(&buf[..n]);
             size += n as u64;
         }
+        self.finished = true;
         let digest = hasher.finalize();
         Ok((size, digest.iter().map(|b| format!("{b:02x}")).collect()))
     }
 
-    /// Drop the writer and remove the staging file.
+    /// Drop the writer and remove the staging file (a finished one is left to its owner).
     pub fn abort(&mut self) {
+        if self.finished {
+            return; // the caller owns a finished staging file
+        }
         self.writer = None;
         self.current = None;
         if let Ok(c) = crate::fsio::path_cstr(&self.path) {

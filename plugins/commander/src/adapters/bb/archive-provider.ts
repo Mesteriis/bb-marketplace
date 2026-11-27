@@ -93,7 +93,7 @@ export class ArchiveProvider implements FileProvider {
   async list(path: ResourcePath, opts: { cursor: string | null; limit: number }, signal: AbortSignal): Promise<ListPage> {
     await this.options.verifySource(signal);
     const { json } = await this.options.rpc.request(
-      { t: "list", prefixB64: pathB64(path), cursor: opts.cursor, limit: opts.limit }, { signal },
+      { t: "list", prefix: pathB64(path), cursor: opts.cursor, limit: opts.limit }, { signal },
     );
     const entries = (json.entries as ArchiveEntry[]).map(toEntry);
     return { entries, cursor: (json.cursor as string | null) ?? null };
@@ -135,6 +135,7 @@ export class ArchiveProvider implements FileProvider {
       { t: "read_open", id: entry.id },
       { signal, ...(this.options.password ? { password: this.options.password } : {}) },
     );
+    if (entry.id === null) throw new CommanderError("is_a_directory", "Archive entry is a directory");
     this.current = { id: entry.id, stream: json.stream as number, pos: 0n, size: BigInt(json.size as string) };
     return this.current;
   }

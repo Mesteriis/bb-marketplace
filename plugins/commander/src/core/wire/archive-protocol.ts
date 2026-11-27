@@ -202,7 +202,7 @@ export const OpenRequest = z.object({
 export type OpenRequest = z.infer<typeof OpenRequest>;
 
 export const ListRequest = z.object({
-  t: z.literal("list"), req: Req, prefixB64: z.string().max(8192),
+  t: z.literal("list"), req: Req, prefix: z.string().max(8192),
   cursor: z.string().max(64).nullable(), limit: z.number().int().min(1).max(1000),
 }).strict();
 export const StatRequest = z.object({ t: z.literal("stat"), req: Req, nameB64: base64 }).strict();
@@ -231,7 +231,8 @@ export const Response = z.union([OkResponse, ErrResponse, NeedPassword]);
 export type Response = z.infer<typeof Response>;
 
 export const ArchiveEntry = z.object({
-  id: z.number().int().min(0),
+  /** Null for a directory the helper made up (no such record in the archive). */
+  id: z.number().int().min(0).nullable(),
   nameB64: z.string().max(8192),
   name: z.string().max(4096),
   nameLossy: z.boolean(),

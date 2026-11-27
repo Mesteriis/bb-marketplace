@@ -12,10 +12,12 @@ use std::sync::Arc;
 /// Bytes read through `PreadFile` (test counter only).
 pub static BYTES_READ: AtomicU64 = AtomicU64::new(0);
 
+/// macOS rejects O_NOFOLLOW together with O_NOFOLLOW_ANY (EINVAL); O_NOFOLLOW_ANY alone refuses a
+/// symlink in *any* path component, including the last, which is the stronger of the two.
 #[cfg(target_os = "macos")]
-const O_NOFOLLOW_ANY: libc::c_int = 0x2000_0000;
+const NO_LINKS: libc::c_int = 0x2000_0000;
 #[cfg(not(target_os = "macos"))]
-const O_NOFOLLOW_ANY: libc::c_int = 0;
+const NO_LINKS: libc::c_int = libc::O_NOFOLLOW;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Fingerprint {
@@ -43,7 +45,7 @@ fn map_errno(err: io::Error) -> HErr {
 
 fn open_at(dir: RawFd, name: &[u8], flags: libc::c_int) -> io::Result<OwnedFd> {
     let c = CString::new(name).map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))?;
-    let fd = unsafe { libc::openat(dir, c.as_ptr(), flags | libc::O_CLOEXEC | libc::O_NOFOLLOW | O_NOFOLLOW_ANY, 0) };
+    let fd = unsafe { libc::openat(dir, c.as_ptr(), flags | libc::O_CLOEXEC | NO_LINKS, 0) };
     if fd < 0 {
         Err(io::Error::last_os_error())
     } else {
@@ -66,7 +68,7 @@ pub fn open_walk(root: &[u8], segments: &[Vec<u8>]) -> Result<File, HErr> {
         }
     }
     let croot = CString::new(root).map_err(|_| errors::invalid_path("The root must be an absolute path"))?;
-    let rfd = unsafe { libc::open(croot.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC | O_NOFOLLOW_ANY) };
+    let rfd = unsafe { libc::open(croot.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | NO_LINKS) };
     if rfd < 0 {
         return Err(map_errno(io::Error::last_os_error()));
     }

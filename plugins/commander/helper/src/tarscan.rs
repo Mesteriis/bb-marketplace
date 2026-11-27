@@ -296,6 +296,10 @@ fn cross_check(file: &PreadFile, entries: &[Entry]) -> Result<(), HErr> {
     let mut count = 0usize;
     for item in iter {
         let entry = item.map_err(|_| errors::invalid("scan_mismatch"))?;
+        // The crate surfaces global PAX headers as entries; they are physical headers for us.
+        if entry.header().entry_type().is_pax_global_extensions() {
+            continue;
+        }
         let want = entries.get(count).ok_or_else(|| errors::invalid("scan_mismatch"))?;
         if entry.path_bytes().as_ref() != want.name_raw.as_slice() {
             return Err(errors::invalid("scan_mismatch"));

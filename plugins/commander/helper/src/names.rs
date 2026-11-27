@@ -76,3 +76,43 @@ const CP437_HIGH: [char; 128] = [
 pub fn cp437(raw: &[u8]) -> String {
     raw.iter().map(|b| if *b < 0x80 { *b as char } else { CP437_HIGH[(*b - 0x80) as usize] }).collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hostile_names_are_refused_with_their_reason() {
+        let refused: [(&[u8], &str); 12] = [
+            (b"../x", UNSAFE_NAME),
+            (b"/abs", UNSAFE_NAME),
+            (b"C:\\x", UNSAFE_NAME),
+            (b"a/../../b", UNSAFE_NAME),
+            (b"a//b", UNSAFE_NAME),
+            (b"a/./b", UNSAFE_NAME),
+            (b"", UNSAFE_NAME),
+            (b"/", UNSAFE_NAME),
+            (b"a\\b", BACKSLASH),
+            (b"a\0b", UNSAFE_NAME),
+            (b"a\x01b", UNSAFE_NAME),
+            (b"caf\x82.txt", NAME_ENCODING),
+        ];
+        for (name, reason) in refused {
+            assert_eq!(check_entry_name(name), Err(reason), "{:?}", String::from_utf8_lossy(name));
+        }
+        assert_eq!(check_entry_name(&[b'a'; 256]), Err(UNSAFE_NAME));
+        assert_eq!(check_entry_name(b"\\\\server\\share"), Err(UNSAFE_NAME));
+    }
+
+    #[test]
+    fn plain_names_and_directory_markers_pass() {
+        assert_eq!(check_entry_name(b"a/b/"), Ok(vec![b"a".to_vec(), b"b".to_vec()]));
+        assert_eq!(check_entry_name(b"file.txt"), Ok(vec![b"file.txt".to_vec()]));
+        assert_eq!(check_entry_name(&[b'a'; 255]).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn cp437_decodes_the_high_half() {
+        assert_eq!(cp437(b"caf\x82.txt"), "café.txt");
+    }
+}
