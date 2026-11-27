@@ -42,6 +42,14 @@ export const ru = {
   unknownError: "Не удалось выполнить операцию", noThreadEndpoint: "Источник окружения недоступен",
   busy: "Загрузка…", cancelConfirm: "Остановить задание? Уже выполненные действия сохранятся.",
   bytes: "Б", kib: "КБ", mib: "МБ", gib: "ГБ", tib: "ТБ", items: "Объектов",
+  scanTitle: "Сравнение каталогов", scanChecksum: "Хеш выбранного файла", scanDifference: "Отличие",
+  scanMetadata: "Сравнить по размеру и времени", scanMetadataShort: "Размер + время", scanHashes: "Сверить по SHA-256", scanCalculate: "Вычислить SHA-256",
+  scanEstimate: (size: string) => "Объём чтения: до " + size, scanConfirm: "Подтвердить чтение",
+  scanProgress: (items: number, size: string) => "Объектов: " + items + " · Прочитано: " + size,
+  scanProgressLabel: "Прогресс сканирования", scanCancel: "Отменить сканирование", scanRetry: "Повторить",
+  scanInterrupted: "Сканирование прервано", scanExpired: "Результат недоступен",
+  scanHideEqual: "Скрыть одинаковые", scanTolerance: "По размеру и времени изменения, допуск 2 с",
+  scanPartial: "Результат неполный: достигнут предел записей",
   nameSort: "Имя", sizeSort: "Размер", dateSort: "Изменён",
 };
 export const operationText = { copy: "Копирование", move: "Перемещение", rename: "Переименование", mkdir: "Создание каталога", delete: "Удаление" };

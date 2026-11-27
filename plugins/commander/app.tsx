@@ -1,5 +1,5 @@
 import { definePluginApp, useBbNavigate, useRealtime, useRpc, useSdk, type ExperimentalThreadTabProps } from "@get-bb/plugin-sdk/app";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LIST_PAGE_MAX } from "./src/core/provider.ts";
 import { parsePosix } from "./src/core/path.ts";
 import { CommanderError } from "./src/core/errors.ts";
@@ -9,6 +9,7 @@ import { Workspace } from "./src/ui/index.ts";
 import { activeTab, currentRef, emptyState, nativePath, newTab, problemOf, unloaded,
   type Directory, type EndpointView, type JobView, type PlanRequest, type Problem, type Side } from "./src/ui/model.ts";
 import { shortcuts, type KeyBindings, type Shortcut } from "./src/ui/keyboard.ts";
+import type { ScanActions } from "./src/ui/compare-view.tsx";
 import { ru } from "./src/ui/strings.ts";
 import "./src/ui/workspace.css";
 
@@ -196,6 +197,11 @@ function useJobs(rpc: Rpc, revision: number) {
 
 function CommanderPage({ compact = false, environment, threadId }: { compact?: boolean; environment?: string; threadId?: string }) {
   const rpc = useRpc<typeof rpcSchemas>();
+  const scans = useMemo<ScanActions>(() => ({
+    start: (input) => rpc.call("scan_start", input),
+    get: (scanId) => rpc.call("scan_get", { scanId }),
+    cancel: (scanId) => rpc.call("scan_cancel", { scanId }),
+  }), [rpc]);
   const sdk = useSdk();
   const navigate = useBbNavigate();
   const { state, update, endpoints, problem, refreshEndpoints } = useWorkspaceState(rpc, sdk, threadId, environment);
@@ -299,7 +305,7 @@ function CommanderPage({ compact = false, environment, threadId }: { compact?: b
   };
   const mutate = async (action: Promise<unknown>) => { const result = await action; refresh("job"); return result; };
   const identity = (job: OperationJob) => ({ jobId: job.id, digest: job.plan.digest });
-  return <Workspace state={state} update={update} endpoints={endpoints} compact={compact} queue={queue} problem={problem}
+  return <Workspace scans={scans} state={state} update={update} endpoints={endpoints} compact={compact} queue={queue} problem={problem}
     directories={{ left: leftDir, right: rightDir }} bindings={bindings}
     onBindings={(value) => {
       setBindings(value);

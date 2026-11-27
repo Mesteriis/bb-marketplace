@@ -529,3 +529,88 @@ test("resolving a conflict clears its obsolete retry prompt", async () => {
   await waitFor(() => expect(screen.queryByRole("button", { name: "Сравнить и решить" })).toBeNull());
   expect(screen.queryByRole("button", { name: "Проверить снова" })).toBeNull();
 });
+
+const scanId = "c38be723-5bd3-4377-b968-f2aa1ec7a5e1";
+const remoteEstimateId = "cc187b4d-0b46-4b8a-b26f-a8dcdb8dae09";
+const scanJob = { id: scanId, kind: "compare", initiator: { kind: "owner" }, endpoints: ["host:fixture"],
+  state: "running", progress: { items: 2, bytes: "4", bytesPlanned: "16" }, partial: false, error: null };
+
+test("directory comparison waits for confirmation of the remote estimate before starting", async () => {
+  const remote = { ...endpoint, provider: "sftp", id: "sftp:123e4567-e89b-42d3-a456-426614174000", hostId: null };
+  saved!.right.tabs[0]!.endpoint = remote.id;
+  const call = host.call.getMockImplementation()!;
+  host.call.mockClear().mockImplementation(async (method, input) => {
+    if (method === "endpoints_list") return { endpoints: [endpoint, remote] };
+    if (method === "scan_start") return input.estimateOnly ? { estimateId: remoteEstimateId, bytesPlanned: "16" } : scanJob;
+    if (method === "scan_get") return { job: scanJob, result: null };
+    return call(method, input);
+  });
+  mount();
+  await leftFile();
+  fireEvent.click(screen.getByRole("button", { name: "Сравнить каталоги" }));
+  fireEvent.click(screen.getByRole("button", { name: "Сверить по SHA-256" }));
+  expect(await screen.findByText("Объём чтения: до 16 Б")).toBeDefined();
+  expect(host.call.mock.calls.filter(([method]) => method === "scan_start")).toHaveLength(1);
+  fireEvent.click(screen.getByRole("button", { name: "Подтвердить чтение" }));
+  await waitFor(() => expect(host.call).toHaveBeenCalledWith("scan_start",
+    expect.objectContaining({ kind: "dirs", by: "sha256", estimateId: remoteEstimateId })));
+  expect(await screen.findByRole("progressbar", { name: "Прогресс сканирования" })).toBeDefined();
+});
+
+test.each([
+  ["interrupted", "Сканирование прервано", {}],
+  ["done", "Результат недоступен", { reason: "result_expired" }],
+] as const)("comparison shows %s and allows a fresh run", async (state, text, reason) => {
+  const call = host.call.getMockImplementation()!;
+  host.call.mockClear().mockImplementation(async (method, input) => {
+    if (method === "scan_start") return scanJob;
+    if (method === "scan_get") return { job: { ...scanJob, state, partial: state === "interrupted" }, result: null, ...reason };
+    return call(method, input);
+  });
+  mount();
+  await leftFile();
+  fireEvent.click(screen.getByRole("button", { name: "Сравнить каталоги" }));
+  fireEvent.click(screen.getByRole("button", { name: "Сравнить по размеру и времени" }));
+  expect(await screen.findByText(text)).toBeDefined();
+  fireEvent.click(screen.getByRole("button", { name: "Повторить" }));
+  await waitFor(() => expect(host.call.mock.calls.filter(([method]) => method === "scan_start")).toHaveLength(2));
+});
+
+test("the selected file can be hashed and an active scan cancelled", async () => {
+  const call = host.call.getMockImplementation()!;
+  let cancelled = false;
+  host.call.mockClear().mockImplementation(async (method, input) => {
+    if (method === "scan_start") return { ...scanJob, kind: "checksum" };
+    if (method === "scan_get") return { job: { ...scanJob, kind: "checksum", state: cancelled ? "cancelled" : "running" }, result: null };
+    if (method === "scan_cancel") { cancelled = true; return {}; }
+    return call(method, input);
+  });
+  mount();
+  fireEvent.click(await leftFile());
+  fireEvent.click(screen.getByRole("button", { name: "Хеш выбранного файла" }));
+  fireEvent.click(screen.getByRole("button", { name: "Вычислить SHA-256" }));
+  await screen.findByRole("progressbar");
+  fireEvent.click(screen.getByRole("button", { name: "Отменить сканирование" }));
+  await waitFor(() => expect(host.call).toHaveBeenCalledWith("scan_cancel", { scanId }));
+  expect(await screen.findByText("Отменено")).toBeDefined();
+});
+
+test("directory results align entries and can hide equal pairs", async () => {
+  const call = host.call.getMockImplementation()!;
+  host.call.mockImplementation(async (method, input) => {
+    if (method === "scan_start") return scanJob;
+    if (method === "scan_get") return { job: { ...scanJob, state: "done" }, result: {
+      onlyLeft: [entry("только-слева.txt")], onlyRight: [], differ: [],
+      same: 1, equal: [[entry("совпадает.txt"), entry("совпадает.txt")]], partial: false,
+    } };
+    return call(method, input);
+  });
+  mount();
+  await leftFile();
+  fireEvent.click(screen.getByRole("button", { name: "Сравнить каталоги" }));
+  fireEvent.click(screen.getByRole("button", { name: "Сравнить по размеру и времени" }));
+  expect(await screen.findAllByText("совпадает.txt")).toHaveLength(2);
+  fireEvent.click(screen.getByRole("checkbox", { name: "Скрыть одинаковые" }));
+  expect(screen.queryByText("совпадает.txt")).toBeNull();
+  expect(screen.getByText("только-слева.txt")).toBeDefined();
+});

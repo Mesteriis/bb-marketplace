@@ -4,6 +4,7 @@ import { Icon } from "@/components/ui/icon";
 import type { ConflictAction, Entry, OperationJob, OperationPlan, ResourceRef } from "../core/model.ts";
 import { displayPath, join, NameSegment, parent, parsePosix, type ResourcePath } from "../core/path.ts";
 import type { AgentGrant, UiState } from "../core/wire/rpc.ts";
+import { CompareView, type ScanActions, type ScanSubject } from "./compare-view.tsx";
 import { ConflictDialog, Modal, PlanDialog, TextDialog } from "./dialogs.tsx";
 import { chord, findShortcut, shortcuts, shortcutText, type KeyBindings, type Shortcut } from "./keyboard.ts";
 import { activeTab, currentRef, keyOf, nameOf, nativePath, otherSide, problemOf, selectionInfo, shortPath, sides, visibleEntries,
@@ -18,7 +19,7 @@ type DialogState = { kind: "plan"; plan: OperationPlan; job?: OperationJob }
   | ConflictView
   | { kind: "cancel"; job: OperationJob; returnTo?: ConflictView }
   | { kind: "text"; title: string; label: string; initial?: string; submit: (value: string) => void }
-  | { kind: "compare"; difference: [number, number, number, number] }
+  | { kind: "scan"; subject: ScanSubject }
   | { kind: "content"; source: string; target: string; returnTo: ConflictView }
   | { kind: "settings" };
 
@@ -44,6 +45,7 @@ export interface WorkspaceProps {
   onDecide: (job: OperationJob, action: ConflictAction, same: boolean) => Promise<unknown>;
   onCancel: (job: OperationJob) => Promise<unknown>;
   onPreview: (ref: ResourceRef) => void;
+  scans: ScanActions;
   onCompare: (source: ResourceRef, target: ResourceRef) => Promise<[string, string]>;
   onTerminal: (ref: ResourceRef) => Promise<void>;
   onOpenThread: (threadId: string) => void;
@@ -55,19 +57,6 @@ const actions = [
   { key: "move", icon: "MoveTo" }, { key: "mkdir", icon: "FolderPlus" }, { key: "remove", icon: "Trash2" },
 ] as const;
 const noEntries: Entry[] = [];
-
-function compareEntries(left: Entry[], right: Entry[]): [number, number, number, number] {
-  const byName = new Map(right.map((entry) => [keyOf(entry.name), entry]));
-  let onlyLeft = 0, changed = 0, equal = 0;
-  for (const entry of left) {
-    const key = keyOf(entry.name), counterpart = byName.get(key);
-    if (!counterpart) onlyLeft++;
-    else if (entry.kind === counterpart.kind && entry.size === counterpart.size && entry.mtimeNs === counterpart.mtimeNs) equal++;
-    else changed++;
-    byName.delete(key);
-  }
-  return [onlyLeft, byName.size, changed, equal];
-}
 
 function maskMatcher(mask: string) {
   const pattern = Array.from(mask);
@@ -239,7 +228,10 @@ export function Workspace(props: WorkspaceProps) {
     if (!focusReturn.current) return;
     const previous = focusReturn.current;
     focusReturn.current = null;
-    queueMicrotask(() => { if (previous.isConnected) previous.focus({ preventScroll: true }); });
+    queueMicrotask(() => {
+      if (previous.isConnected) previous.focus({ preventScroll: true });
+      else grids[side].current?.focus({ preventScroll: true });
+    });
   }, [dialog, props.queue.jobs, props.queue.error, queueOpen, side]);
   const close = () => { setDialog(null); setProblem(null); };
   function goBack(returnTo: ConflictView) {
@@ -483,6 +475,7 @@ export function Workspace(props: WorkspaceProps) {
     onCancel={(job) => open({ kind: "cancel", job })} />;
 
   return <div ref={root} className="cm-workspace" data-compact={compact} onKeyDown={onKeyDown}>
+    {dialog?.kind === "scan" ? <CompareView subject={dialog.subject} api={props.scans} close={close} /> : <>
     <header className="cm-heading">
       {compact && <h1><Icon name="Folder" />Commander</h1>}
       {!dialog && retryConflict ? <div className="cm-retry">
@@ -493,8 +486,21 @@ export function Workspace(props: WorkspaceProps) {
         <Icon name="ArrowUpDown" /><span>{ru.swap}</span></Button>
         <Button size="sm" variant="outline" aria-label={ru.compare} disabled={!ready || !destination || !directories.left || !directories.right ||
           directories.left.loading || directories.right.loading || !!directories.left.error || !!directories.right.error}
-          onClick={() => open({ kind: "compare", difference: compareEntries(directories.left!.entries, directories.right!.entries) })}>
+          onClick={() => {
+            if (!left || !right) return;
+            const a = currentRef(left), b = currentRef(right);
+            open({ kind: "scan", subject: { kind: "dirs",
+              left: { ref: a, label: endpointsBySide.left?.label ?? a.endpoint },
+              right: { ref: b, label: endpointsBySide.right?.label ?? b.endpoint },
+            } });
+          }}>
           <Icon name="FileDiff" /><span>{ru.compare}</span></Button></>}
+      <Button size="sm" variant="outline" aria-label={ru.scanChecksum} disabled={!ready || current?.kind !== "file"} onClick={() => {
+        if (!tab || current?.kind !== "file") return;
+        open({ kind: "scan", subject: { kind: "checksum", file: {
+          ref: { endpoint: tab.endpoint, path: join(tab.path, current.name) }, label: endpoint?.label ?? tab.endpoint,
+        } } });
+      }}><Icon name="Hash" /><span>SHA-256</span></Button>
       <Button ref={queueToggle} size="sm" variant="ghost" className="cm-queue-toggle" aria-label={ru.queue} aria-expanded={queueOpen}
         aria-controls={queueId} data-queue-open={queueOpen} onClick={toggleQueue}>
         <Icon name="ListTodo" /><span className="cm-count">{props.queue.jobs.length}</span></Button>
@@ -565,11 +571,6 @@ export function Workspace(props: WorkspaceProps) {
         <Button size="sm" variant="destructive" disabled={busy || !activeJob} onClick={() => void perform(() => props.onCancel(dialog.job), close)}>{ru.cancelJob}</Button>
       </div>
     </Modal>}
-    {dialog?.kind === "compare" && <Modal title={ru.compare} close={close}>
-      <dl className="cm-facts">{[ru.compareOnlyLeft, ru.compareOnlyRight, ru.compareChanged, ru.compareEqual].map((label, index) =>
-        <div key={label}><dt>{label}</dt><dd>{dialog.difference[index]}</dd></div>)}</dl>
-      <Button size="sm" variant="outline" onClick={close}>{ru.close}</Button>
-    </Modal>}
     {dialog?.kind === "content" && <Modal title={ru.content} description={dialog.source === dialog.target ? ru.compareEqual : ru.compareChanged} close={() => goBack(dialog.returnTo)} busy={busy}>
       {problem && <ProblemLine problem={problem} />}
       <div className="cm-pair">
@@ -585,5 +586,6 @@ export function Workspace(props: WorkspaceProps) {
       <div className="cm-actions"><Button size="sm" variant="outline" onClick={() => props.onBindings({})}>{ru.resetKeys}</Button>
         <Button size="sm" onClick={close}>{ru.close}</Button></div>
     </Modal>}
+    </>}
   </div>;
 }
