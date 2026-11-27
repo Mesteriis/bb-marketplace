@@ -38,3 +38,21 @@ export function parseRemote(value: string): RemoteRef | null {
 export function sameRepository(left: RemoteRef, right: RemoteRef) {
   return left.host === right.host && left.path.toLowerCase() === right.path.toLowerCase();
 }
+
+type Kind = "github" | "gitlab" | "gitea" | "azure";
+
+function decoded(parts: string[]) {
+  try { return parts.map(part => decodeURIComponent(part)); } catch { return null; }
+}
+
+/** The provider's own repository path for a remote: `owner/name`, a GitLab group path, or `project/name` on Azure. */
+export function providerPath(kind: Kind, remote: RemoteRef): string | null {
+  const parts = decoded(remote.path.split("/"));
+  if (!parts) return null;
+  if (kind === "gitlab") return parts.join("/");
+  if (kind === "github" || kind === "gitea") return parts.length === 2 ? parts.join("/") : null;
+  const git = parts.indexOf("_git");
+  if (git >= 1 && git === parts.length - 2) return parts[git - 1] + "/" + parts[git + 1];
+  if (parts[0] === "v3" && parts.length === 4) return parts[2] + "/" + parts[3];
+  return null;
+}

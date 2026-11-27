@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseRemote, sameRepository } from "../src/core/forge/remote-url.ts";
+import { parseRemote, providerPath, sameRepository } from "../src/core/forge/remote-url.ts";
 
 test("HTTPS remotes keep host and path without the .git suffix", () => {
   assert.deepEqual(parseRemote("https://github.com/o/r.git"), {transport: "https", host: "github.com", port: null, path: "o/r"});
@@ -30,4 +30,16 @@ test("the same repository matches across transports and letter case", () => {
   assert.equal(sameRepository(ssh, https), true);
   assert.equal(sameRepository(ssh, parseRemote("https://github.com/mesteriis/other")!), false);
   assert.equal(sameRepository(ssh, parseRemote("https://gitlab.com/mesteriis/repo")!), false);
+});
+
+test("provider paths are derived per forge from any remote form", () => {
+  const path = (kind: Parameters<typeof providerPath>[0], url: string) => providerPath(kind, parseRemote(url)!);
+  assert.equal(path("github", "git@github.com:Mesteriis/makosh-git-sandbox.git"), "Mesteriis/makosh-git-sandbox");
+  assert.equal(path("gitea", "https://git.acme.example/team/app"), "team/app");
+  assert.equal(path("github", "https://github.com/o/r/tree/main"), null);
+  assert.equal(path("gitlab", "git@gitlab.com:group/sub/app.git"), "group/sub/app");
+  assert.equal(path("azure", "https://dev.azure.com/org/Team%20Project/_git/app"), "Team Project/app");
+  assert.equal(path("azure", "git@ssh.dev.azure.com:v3/org/Team%20Project/app"), "Team Project/app");
+  assert.equal(path("azure", "https://org.visualstudio.com/Proj/_git/app"), "Proj/app");
+  assert.equal(path("azure", "https://dev.azure.com/org/app"), null);
 });
