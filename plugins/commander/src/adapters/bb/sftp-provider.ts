@@ -6,7 +6,6 @@
 // - a refusal is definitive when the server says the operation was not applied (see DEFINITIVE);
 // - any other failure of a mutation after it was sent is outcome_unknown and is never repeated;
 // - a read may be repeated once on a closed channel; a cancelled read is cancelled.
-import { randomUUID } from "node:crypto";
 import { ZodError } from "zod";
 import { CommanderError, type ErrorCode } from "../../core/errors.ts";
 import { Entry, type Capability, type Endpoint, type Fingerprint } from "../../core/model.ts";
@@ -29,13 +28,13 @@ import {
 } from "../../core/wire/remote-hub-sftp.ts";
 
 export interface SftpWriteSession extends WriteSession {
-  /** The temporary file beside the target; known from the start, stable until commit or abort. */
+  /** The temporary file: parent(target) + the caller's tempName; known from the start, stable until commit or abort. */
   readonly tempPath: ResourcePath;
 }
 
 /** The core's FileProvider, with openWrite giving the session that carries its tempPath. */
 export type SftpProvider = Omit<FileProvider, "openWrite"> & {
-  openWrite(target: ResourcePath, signal: AbortSignal): Promise<SftpWriteSession>;
+  openWrite(target: ResourcePath, opts: { tempName: NameSegment }, signal: AbortSignal): Promise<SftpWriteSession>;
   close(): Promise<void>;
 };
 
@@ -47,8 +46,6 @@ export interface SftpProviderOptions {
 
 const SLASH = 0x2f;
 const DOT = 0x2e;
-/** Bytes of the target's name kept in the temp name, so the temp name stays a valid segment. */
-const TEMP_STEM_BYTES = 200;
 
 /** Refusal code → core error code. Remote Hub's own text is never copied into the message. */
 const ERROR_CODE: Record<SftpRefusalCode, ErrorCode> = {
@@ -119,6 +116,7 @@ const MESSAGE: Partial<Record<ErrorCode, string>> = {
   unsupported: "The server cannot do this operation",
   limit_exceeded: "Directory has more entries than can be listed",
   invalid_path: "Invalid resource path",
+  invalid_name: "Invalid name",
   outcome_unknown: "The outcome of the operation is unknown",
   internal: "Remote Hub call failed",
 };
@@ -456,14 +454,18 @@ export function createSftpProvider(options: SftpProviderOptions): SftpProvider {
     }
   }
 
-  async function openWriteSession(target: ResourcePath): Promise<SftpWriteSession> {
+  /**
+   * A session whose temp file is the caller's name in the target's directory. The name is checked as a core segment
+   * and must differ from the target's own name; the creation is exclusive, so a name already taken is exists and the
+   * file there is never overwritten.
+   */
+  async function openWriteSession(target: ResourcePath, tempName: NameSegment): Promise<SftpWriteSession> {
     const last = target.segments.at(-1);
     if (last === undefined) throw commanderError("invalid_path");
+    const parsed = NameSegment.safeParse(tempName);
+    if (!parsed.success || JSON.stringify(parsed.data) === JSON.stringify(last)) throw commanderError("invalid_name");
     const parent = target.segments.slice(0, -1);
-    const stem = segmentFromBytes(segmentBytes(last).slice(0, TEMP_STEM_BYTES));
-    const tempName = segmentFromBytes(concat([new Uint8Array([DOT]), segmentBytes(stem), encode(`.commander-${randomUUID()}.part`)]));
-    if (!NameSegment.safeParse(tempName).success) throw commanderError("internal");
-    const tempPath: ResourcePath = { segments: [...parent, tempName] };
+    const tempPath: ResourcePath = { segments: [...parent, parsed.data] };
 
     // created: a creating write has been answered, so the temp is known to exist and is ours to remove.
     // halt: the session may no longer touch the temp (a refused creation, or an unknown outcome).
@@ -618,8 +620,8 @@ export function createSftpProvider(options: SftpProviderOptions): SftpProvider {
       });
     },
 
-    openWrite(target, _signal) {
-      return guard(() => openWriteSession(target));
+    openWrite(target, opts, _signal) {
+      return guard(() => openWriteSession(target, opts.tempName));
     },
 
     async mkdir(path, signal) {

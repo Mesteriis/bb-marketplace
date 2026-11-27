@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 import type { ErrorCode } from "../../core/errors.ts";
 import { CommanderError } from "../../core/errors.ts";
 import type { Endpoint } from "../../core/model.ts";
-import type { ResourcePath } from "../../core/path.ts";
+import type { NameSegment, ResourcePath } from "../../core/path.ts";
 import { REMOTE_HUB_SFTP_CONTRACT, SFTP_REFUSALS, type SftpRefusalCode, type SftpPath } from "../../core/wire/remote-hub-sftp.ts";
-import { createSftpProvider, type SftpWriteSession } from "./sftp-provider.ts";
+import { createSftpProvider, type SftpProvider, type SftpWriteSession } from "./sftp-provider.ts";
 import { RemoteHubMock, type RemoteHubMockOptions } from "./testing/remote-hub-mock.ts";
 
 const PROFILE = "5b568675-f842-4a96-83e0-78ae53d96024";
@@ -23,6 +23,13 @@ const endpoint: Endpoint = {
 
 const seg = (t: string) => ({ t });
 const at = (...names: string[]): ResourcePath => ({ segments: names.map(seg) });
+/** The caller-chosen temp name every test session uses unless it passes its own (contract C4). */
+const DEFAULT_TEMP: NameSegment = { t: ".commander-test.part" };
+
+function openWrite(provider: SftpProvider, target: ResourcePath, sig: AbortSignal, tempName: NameSegment = DEFAULT_TEMP) {
+  return provider.openWrite(target, { tempName }, sig);
+}
+
 const signal = () => new AbortController().signal;
 const bytes = (text: string) => new TextEncoder().encode(text);
 const text = (data: Uint8Array | undefined) => (data === undefined ? undefined : new TextDecoder().decode(data));
@@ -117,7 +124,7 @@ describe("consent, host key, access", () => {
 describe("ambiguous outcome of a mutation (a transport failure after sending)", () => {
   it("a dropped connection after a write applied is outcome_unknown, not retryable, and not repeated", async () => {
     const { mock, provider } = setup({ faultNext: "drop" });
-    const session = await provider.openWrite(at("f.txt"), signal());
+    const session = await openWrite(provider, at("f.txt"), signal());
     const error = await expectCode(session.write(0n, bytes("abc"), signal()), "outcome_unknown");
     expect(error.retryable).toBe(false);
     expect(mock.opCount("op:write")).toBe(1);
@@ -147,14 +154,14 @@ describe("ambiguous outcome of a mutation (a transport failure after sending)", 
 
   it.each(["unreachable", "failure", "channel_closed"] as const)("a write refused with %s is outcome_unknown", async (code) => {
     const { provider } = setup({ failAll: code });
-    const session = await provider.openWrite(at("f.txt"), signal());
+    const session = await openWrite(provider, at("f.txt"), signal());
     const error = await expectCode(session.write(0n, bytes("abc"), signal()), "outcome_unknown");
     expect(error.retryable).toBe(false);
   });
 
   it("a definitive refusal on a write keeps its own code", async () => {
     const { provider } = setup({ failAll: "permission_denied" });
-    const session = await provider.openWrite(at("f.txt"), signal());
+    const session = await openWrite(provider, at("f.txt"), signal());
     await expectCode(session.write(0n, bytes("abc"), signal()), "permission_denied");
   });
 });
@@ -162,7 +169,7 @@ describe("ambiguous outcome of a mutation (a transport failure after sending)", 
 describe("temporary file after an uncertain or refused creation", () => {
   it("exists on the first exclusive write forbids further writes and never removes the temp", async () => {
     const { mock, provider } = setup({ failNext: "exists" });
-    const session = await provider.openWrite(at("f.txt"), signal());
+    const session = await openWrite(provider, at("f.txt"), signal());
     await expectCode(session.write(0n, bytes("abc"), signal()), "already_exists");
     await session.abort();
     expect(mock.opCount("op:remove")).toBe(0);
@@ -172,7 +179,7 @@ describe("temporary file after an uncertain or refused creation", () => {
 
   it("after an outcome_unknown on the first write, abort does not remove the temp", async () => {
     const { mock, provider } = setup({ faultNext: "drop" });
-    const session = await provider.openWrite(at("f.txt"), signal());
+    const session = await openWrite(provider, at("f.txt"), signal());
     await expectCode(session.write(0n, bytes("abc"), signal()), "outcome_unknown");
     await session.abort();
     expect(mock.opCount("op:remove")).toBe(0);
@@ -181,7 +188,7 @@ describe("temporary file after an uncertain or refused creation", () => {
 
   it("a session whose temp was never confirmed created removes nothing on abort", async () => {
     const { mock, provider } = setup();
-    const session = await provider.openWrite(at("f.txt"), signal());
+    const session = await openWrite(provider, at("f.txt"), signal());
     await session.abort();
     expect(mock.opCount("op:remove")).toBe(0);
   });
@@ -198,7 +205,7 @@ describe("cancellation", () => {
 
   it("an aborted write before sending is cancelled and sends no write", async () => {
     const { mock, provider } = setup();
-    const session = await provider.openWrite(at("f.txt"), signal());
+    const session = await openWrite(provider, at("f.txt"), signal());
     const aborted = new AbortController();
     aborted.abort();
     await expectCode(session.write(0n, bytes("abc"), aborted.signal), "cancelled");
@@ -213,7 +220,7 @@ describe("cancellation", () => {
 
   it("an AbortError from the port during a mutation is outcome_unknown", async () => {
     const { provider } = setup({ faultNext: "abort" });
-    const session = await provider.openWrite(at("f.txt"), signal());
+    const session = await openWrite(provider, at("f.txt"), signal());
     await expectCode(session.write(0n, bytes("abc"), signal()), "outcome_unknown");
   });
 });
@@ -278,7 +285,7 @@ describe("listing and attributes", () => {
     const raw = page.entries.find((e) => "b" in e.name);
     expect(raw?.name).toEqual({ b: "/w==" });
 
-    const session = await provider.openWrite({ segments: [raw!.name] }, signal());
+    const session = await openWrite(provider, { segments: [raw!.name] }, signal());
     await session.write(0n, bytes("x"), signal());
     await session.commit({ replace: true, expectTarget: null }, signal());
     const rename = mock.calls.filter((c) => c.method === "hub_sftp_op" && (c.input as { op: string }).op === "rename").at(-1)?.input as { to: unknown };
@@ -386,7 +393,7 @@ describe("generation change", () => {
     mock.seedFile("/a.txt", "a");
     await provider.stat(at("a.txt"), signal());
     await provider.stat(at("a.txt"), signal());
-    const session = await provider.openWrite(at("new.txt"), signal());
+    const session = await openWrite(provider, at("new.txt"), signal());
     await expectCode(session.write(0n, new Uint8Array([1, 2, 3]), signal()), "outcome_unknown");
     expect(mock.opCount("op:write")).toBe(1);
     expect(mock.opCount("open")).toBe(1);
@@ -404,7 +411,7 @@ describe("atomic replace", () => {
   it("without posix-rename, commit with replace is unsupported, not a remove and rename", async () => {
     const { mock, provider } = setup({ posixRename: false });
     mock.seedFile("/target.txt", "old");
-    const session = await provider.openWrite(at("target.txt"), signal());
+    const session = await openWrite(provider, at("target.txt"), signal());
     await session.write(0n, bytes("new"), signal());
     await expectCode(session.commit({ replace: true, expectTarget: null }, signal()), "unsupported");
     expect(mock.opCount("op:remove")).toBe(0);
@@ -429,7 +436,7 @@ describe("atomic replace", () => {
   it("atomicReplace is declared only after the first replacing rename of an existing target succeeds", async () => {
     const { mock, provider } = setup({ posixRename: true });
     mock.seedFile("/target.txt", "old");
-    const session = await provider.openWrite(at("target.txt"), signal());
+    const session = await openWrite(provider, at("target.txt"), signal());
     await session.write(0n, bytes("new"), signal());
     expect(provider.capabilities.has("atomicReplace")).toBe(false);
     await session.commit({ replace: true, expectTarget: null }, signal());
@@ -456,7 +463,7 @@ describe("atomic replace", () => {
 
   it("a write whose reply is for another operation is outcome_unknown", async () => {
     const { provider } = setup({ misreply: true });
-    const session = await provider.openWrite(at("f.txt"), signal());
+    const session = await openWrite(provider, at("f.txt"), signal());
     await expectCode(session.write(0n, bytes("abc"), signal()), "outcome_unknown");
   });
 
@@ -474,7 +481,7 @@ describe("atomic replace", () => {
   it("commit without replace fails with already_exists when the target exists", async () => {
     const { mock, provider } = setup();
     mock.seedFile("/target.txt", "old");
-    const session = await provider.openWrite(at("target.txt"), signal());
+    const session = await openWrite(provider, at("target.txt"), signal());
     await session.write(0n, bytes("new"), signal());
     await expectCode(session.commit({ replace: false, expectTarget: null }, signal()), "already_exists");
     expect(text(mock.bytesAt("/target.txt"))).toBe("old");
@@ -483,7 +490,7 @@ describe("atomic replace", () => {
   it("a replacing commit whose expectTarget no longer matches reports changed_since_plan", async () => {
     const { mock, provider } = setup();
     mock.seedFile("/target.txt", "old");
-    const session = await provider.openWrite(at("target.txt"), signal());
+    const session = await openWrite(provider, at("target.txt"), signal());
     await session.write(0n, bytes("new"), signal());
     await expectCode(
       session.commit({ replace: true, expectTarget: { size: "99", mtimeNs: "1795790479000000000" } }, signal()),
@@ -494,7 +501,7 @@ describe("atomic replace", () => {
 
   it("a replacing commit with a fingerprint while the target is absent reports changed_since_plan", async () => {
     const { provider } = setup();
-    const session = await provider.openWrite(at("gone.txt"), signal());
+    const session = await openWrite(provider, at("gone.txt"), signal());
     await session.write(0n, bytes("new"), signal());
     await expectCode(
       session.commit({ replace: true, expectTarget: { size: "3", mtimeNs: "1795790479000000000" } }, signal()),
@@ -504,7 +511,7 @@ describe("atomic replace", () => {
 
   it("when the rename landed but the final stat fails, commit is outcome_unknown", async () => {
     const { mock, provider } = setup({ statFailsAfterRename: true });
-    const session = await provider.openWrite(at("landed.txt"), signal());
+    const session = await openWrite(provider, at("landed.txt"), signal());
     await session.write(0n, bytes("abc"), signal());
     await expectCode(session.commit({ replace: false, expectTarget: null }, signal()), "outcome_unknown");
     expect(text(mock.bytesAt("/landed.txt"))).toBe("abc");
@@ -512,31 +519,45 @@ describe("atomic replace", () => {
 });
 
 describe("writes", () => {
-  it("stages in a temporary file beside the target, at tempPath, and renames it on commit", async () => {
+  it("stages in the caller's temp name, exactly at parent(target) + tempName, and renames it on commit", async () => {
     const { mock, provider } = setup();
     mock.seedDir("/dir");
-    const session = await provider.openWrite(at("dir", "report.txt"), signal());
-    expect(session.tempPath.segments.slice(0, 1)).toEqual([seg("dir")]);
-    expect(session.tempPath.segments[1]).toEqual({ t: expect.stringMatching(/^\.report\.txt\.commander-[0-9a-f-]{36}\.part$/) });
-    const temp = session.tempPath.segments[1];
+    const session = await openWrite(provider, at("dir", "report.txt"), signal(), { t: ".report.part" });
+    expect(session.tempPath).toEqual({ segments: [seg("dir"), { t: ".report.part" }] });
 
-    const tempFile = `/dir/${(temp as { t: string }).t}`;
     await session.write(0n, bytes("abc"), signal());
-    expect(mock.exists(tempFile)).toBe(true);
+    expect(mock.exists("/dir/.report.part")).toBe(true);
     expect(mock.exists("/dir/report.txt")).toBe(false);
 
     await session.commit({ replace: false, expectTarget: null }, signal());
-    expect(mock.exists(tempFile)).toBe(false);
+    expect(mock.exists("/dir/.report.part")).toBe(false);
     expect(text(mock.bytesAt("/dir/report.txt"))).toBe("abc");
   });
 
-  it("the temp name of a 1000-character target stays a valid segment of at most 1024 characters", async () => {
+  it("a temp name already taken is exists, and the file there is not overwritten", async () => {
+    const { mock, provider } = setup();
+    mock.seedFile("/.taken", "keep");
+    const session = await openWrite(provider, at("f.txt"), signal(), { t: ".taken" });
+    await expectCode(session.write(0n, bytes("abc"), signal()), "already_exists");
+    expect(text(mock.bytesAt("/.taken"))).toBe("keep");
+  });
+
+  it("a temp name that is not a valid segment is invalid_name, and nothing is sent", async () => {
+    const { mock, provider } = setup();
+    await expectCode(openWrite(provider, at("f.txt"), signal(), { t: "a/b" }), "invalid_name");
+    await expectCode(openWrite(provider, at("f.txt"), signal(), { t: "x".repeat(1025) }), "invalid_name");
+    expect(mock.calls).toHaveLength(0);
+  });
+
+  it("a temp name equal to the target's own name is invalid_name", async () => {
+    const { provider } = setup();
+    await expectCode(openWrite(provider, at("f.txt"), signal(), { t: "f.txt" }), "invalid_name");
+  });
+
+  it("a 1000-character target commits from a short caller temp name", async () => {
     const { mock, provider } = setup();
     const name = "n".repeat(1000);
-    const session = await provider.openWrite(at(name), signal());
-    const last = session.tempPath.segments.at(-1);
-    expect(last).toEqual({ t: expect.stringMatching(/^\.n{200}\.commander-[0-9a-f-]{36}\.part$/) });
-    expect((last as { t: string }).t.length).toBeLessThanOrEqual(1024);
+    const session = await openWrite(provider, at(name), signal(), { t: ".n.part" });
     await session.write(0n, bytes("abc"), signal());
     await session.commit({ replace: false, expectTarget: null }, signal());
     expect(text(mock.bytesAt(`/${name}`))).toBe("abc");
@@ -544,7 +565,7 @@ describe("writes", () => {
 
   it("committing an empty file creates it with zero bytes", async () => {
     const { mock, provider } = setup();
-    const session = await provider.openWrite(at("empty.txt"), signal());
+    const session = await openWrite(provider, at("empty.txt"), signal());
     await session.commit({ replace: false, expectTarget: null }, signal());
     expect(mock.exists("/empty.txt")).toBe(true);
     expect(mock.bytesAt("/empty.txt")?.byteLength).toBe(0);
@@ -552,7 +573,7 @@ describe("writes", () => {
 
   it("a file of 5 MiB goes in two chunks: exclusive at 0, then existing at 4194304", async () => {
     const { mock, provider } = setup();
-    const session = await provider.openWrite(at("big.bin"), signal());
+    const session = await openWrite(provider, at("big.bin"), signal());
     await session.write(0n, new Uint8Array(5 * MIB), signal());
     await session.commit({ replace: false, expectTarget: null }, signal());
     const writes = mock.calls
@@ -567,7 +588,7 @@ describe("writes", () => {
 
   it("abort removes the temporary file and can be called again", async () => {
     const { mock, provider } = setup();
-    const session = await provider.openWrite(at("tmp.txt"), signal());
+    const session = await openWrite(provider, at("tmp.txt"), signal());
     await session.write(0n, new Uint8Array([1]), signal());
     await session.abort();
     await session.abort();
@@ -667,7 +688,7 @@ describe("error mapping", () => {
 
   it("a full 4 MiB write chunk goes through the schema in one call", async () => {
     const { mock, provider } = setup();
-    const session = await provider.openWrite(at("full.bin"), signal());
+    const session = await openWrite(provider, at("full.bin"), signal());
     await session.write(0n, new Uint8Array(4 * MIB), signal());
     await session.commit({ replace: false, expectTarget: null }, signal());
     expect(mock.opCount("op:write")).toBe(1);
@@ -799,7 +820,7 @@ describe("abort checked before each port call (review repair)", () => {
 describe("empty commit checks the written count (review repair)", () => {
   it("a write reply that disagrees on the empty file is outcome_unknown, with no rename or remove", async () => {
     const { mock, provider } = setup({ writtenOverride: 5 });
-    const session = await provider.openWrite(at("empty.txt"), signal());
+    const session = await openWrite(provider, at("empty.txt"), signal());
     await expectCode(session.commit({ replace: false, expectTarget: null }, signal()), "outcome_unknown");
     expect(mock.opCount("op:rename")).toBe(0);
     expect(mock.opCount("op:remove")).toBe(0);
