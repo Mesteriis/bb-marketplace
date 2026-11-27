@@ -210,3 +210,10 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+## License texts written by scaffolds
+
+`src/core/scaffolds/licenses.ts` holds the texts a new project's LICENSE gets: the MIT License, with the copyright
+line as a template, and the Apache License, Version 2.0, terms and conditions as published by the Apache Software
+Foundation (taken from the TypeScript package's `LICENSE.txt`, line ends normalised). License texts are reproduced
+verbatim so they can be applied to other works; they carry no code.

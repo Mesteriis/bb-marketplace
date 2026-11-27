@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.13.0 — 2026-11-27
+
+Scaffolds: new projects from a skeleton.
+
+- **New project…** in the Catalog: a scaffold, a category of the projects folder and a name, its parameters, the CI of a chosen forge and the commit author; the files are listed and can be read before anything is written. After a preview, the folder is made with git init on main and a first commit, and the copy is attached in Git. Only a new folder inside the projects folder, never inside another project; a failed step removes the folder again.
+- Built-in scaffolds: **Python service (uv)** (a plain asyncio service or FastAPI, Docker optional), **Go service with a web UI** (golangci-lint and govulncheck pinned, React + Vite + TypeScript in web/ and Docker optional) and **BB plugin** (server with an RPC, optional app page and host entry, core and UI kept free of host code, typed ESLint). Each was generated and passed its own `make check` with the pinned versions.
+- Every scaffold gets the common files: LICENSE (MIT, Apache-2.0 or none), SECURITY.md, README.ru.md, AGENTS.md and CLAUDE.md, .editorconfig, .gitattributes, .gitignore (`.env*` but `.env.example`, `.zed/`), CHANGELOG.md and THIRD_PARTY_NOTICES.md; CONTRIBUTING.md and CODE_OF_CONDUCT.md by choice.
+- The CI file comes from the 0.12 templates by the stack of the generated files and calls `make check`.
+- Own scaffolds in the same JSON format from the **Scaffolds: own scaffolds** setting or a folder on the machine. Free text goes as it is only into Markdown, LICENSE and NOTICE, quoted with `|json` into other files and never into shell, Make or Docker files; no file goes into `.git` or is a `.env` other than `.env.example`; a scaffold with secret-like text, or that does not render with every choice, is listed with the reason and not offered.
+- CI templates: Corepack is installed before it is enabled (Node.js 25+ ships without it); uv uses `--locked` only with a committed `uv.lock`; a root Makefile with a `check` target is what CI runs; a Go project with web/ gets Node.js for it (a job of its own on GitLab).
+
 ## 0.12.0 — 2026-11-27
 
 CI templates.

@@ -9,7 +9,7 @@ Needs `git`, `node`, `npm`, `curl`, access to `registry.npmjs.org`, BB at
 `run.sh` outside them.
 
 ```sh
-S=$(docs/e2e-stand/prepare.sh "$PWD") && docs/e2e-stand/run.sh "$S" "$PWD/docs/e2e-stand/smoke.mjs" "$PWD/docs/e2e-stand/ci.mjs" "$PWD/docs/e2e-stand/code-review.mjs" "$PWD/docs/e2e-stand/code-review-runs.mjs" "$PWD/docs/e2e-stand/code-review-more.mjs" "$PWD/docs/e2e-stand/history.mjs" "$PWD/docs/e2e-stand/gitlab.mjs" "$PWD/docs/e2e-stand/inbox.mjs" "$PWD/docs/e2e-stand/review.mjs" "$PWD/docs/e2e-stand/code-review-drafts.mjs" "$PWD/docs/e2e-stand/ci-templates.mjs"
+S=$(docs/e2e-stand/prepare.sh "$PWD") && docs/e2e-stand/run.sh "$S" "$PWD/docs/e2e-stand/smoke.mjs" "$PWD/docs/e2e-stand/ci.mjs" "$PWD/docs/e2e-stand/code-review.mjs" "$PWD/docs/e2e-stand/code-review-runs.mjs" "$PWD/docs/e2e-stand/code-review-more.mjs" "$PWD/docs/e2e-stand/history.mjs" "$PWD/docs/e2e-stand/gitlab.mjs" "$PWD/docs/e2e-stand/inbox.mjs" "$PWD/docs/e2e-stand/review.mjs" "$PWD/docs/e2e-stand/code-review-drafts.mjs" "$PWD/docs/e2e-stand/scaffolds.mjs" "$PWD/docs/e2e-stand/ci-templates.mjs"
 ```
 
 - `prepare.sh` copies this package into a new `$TMPDIR/git-dashboard-stand.*`, runs `npm ci` and
@@ -29,6 +29,10 @@ S=$(docs/e2e-stand/prepare.sh "$PWD") && docs/e2e-stand/run.sh "$S" "$PWD/docs/e
   log opens at its error line, scrolling only the log; re-run failed jobs and a manual run with inputs go through
   the confirmation dialog and reach the stand-in exactly once (`$S/forge/writes.log`); Ask agent opens a thread;
   layout at 768 px.
+
+- `scaffolds.mjs` — New project in the Catalog: a Python scaffold with free text, GitHub Actions CI and an author; a
+  name that is no folder name refused in the form; the preview before anything is written; the folder in the projects
+  folder with its files, git on main and one commit by the author, listed in the catalog; the same name again refused.
 
 - `ci-templates.mjs` — after `ci.mjs`, last, as it commits to `stand-beta`: commits a pnpm Node project to `stand-beta`; Templates reads the stack at HEAD and
   offers Node.js · Gitea Actions first; a value that does not fit is refused before anything is sent; the file and
