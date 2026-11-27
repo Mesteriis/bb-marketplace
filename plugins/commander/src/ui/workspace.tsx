@@ -40,6 +40,7 @@ export interface WorkspaceProps {
   onInspect: (job: OperationJob) => Promise<{ check: PlanCheck; grants: AgentGrant[] }>;
   onApprove: (job: OperationJob) => Promise<unknown>;
   onReject: (job: OperationJob) => Promise<unknown>;
+  onReloadConflict: (jobId: string) => Promise<OperationJob | null>;
   onDecide: (job: OperationJob, action: ConflictAction, same: boolean) => Promise<unknown>;
   onCancel: (job: OperationJob) => Promise<unknown>;
   onPreview: (ref: ResourceRef) => void;
@@ -105,15 +106,18 @@ export function Workspace(props: WorkspaceProps) {
   const { state, update, endpoints, directories, compact, bindings } = props;
   const root = useRef<HTMLDivElement>(null);
   const queueToggle = useRef<HTMLButtonElement>(null);
+  const focusQueue = useRef(false);
+  const toolbar = useRef<HTMLElement>(null);
   const queueId = useId();
   const [narrowQueue, setNarrowQueue] = useState(false);
   const [width, setWidth] = useState<number>();
-  const wide = !compact && (width === undefined || width >= 1200);
+  const wide = !compact && (width === undefined || width >= 1040);
   const queueOpen = wide ? state.inspectorCollapsed !== true : narrowQueue;
   const [cursor, setCursor] = useState<Partial<Record<Side, Cursor>>>({});
   const previousRows = useRef<Record<Side, Entry[]>>({ left: [], right: [] });
   const [dialog, setDialog] = useState<DialogState | null>(null);
   const [same, setSame] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
   const [problem, setProblem] = useState<Problem | null>(null);
   const [busy, setBusy] = useState(false);
   const running = useRef(false);
@@ -143,7 +147,10 @@ export function Workspace(props: WorkspaceProps) {
       if (!value || !directory || directory.loading || directory.error) continue;
       const rows = all[pane], above = parent(value.path), previous = previousRows.current[pane];
       previousRows.current[pane] = rows;
-      if (!position) continue;
+      if (!position) {
+        if (above) setCursor((previous) => ({ ...previous, [pane]: { key: upKey, index: 0, explicit: true } }));
+        continue;
+      }
       if (position.key === upKey && above || rows.some((entry) => keyOf(entry.name) === position.key)) continue;
       const index = closestRow(previous, rows, position);
       const next = rows[index];
@@ -160,7 +167,7 @@ export function Workspace(props: WorkspaceProps) {
     const existing = new Set(directories[side].entries.map((entry) => keyOf(entry.name)));
     return tab.selection.filter((name) => existing.has(keyOf(name)));
   }, [tab?.selection, directories[side]]);
-  const selected = selectedNames.length > 0 || !!current;
+  const selected = cursor[side]?.key !== upKey && (selectedNames.length > 0 || !!current);
   const can: Record<string, boolean> = {
     preview: ready && endpoint?.provider === "local" && !!endpoint.hostId && current?.kind !== "dir" && !!current &&
       "t" in current.name && !!tab && nativePath(tab.path) !== null,
@@ -170,6 +177,26 @@ export function Workspace(props: WorkspaceProps) {
     terminal: !!ready && endpoint?.provider === "local" && !!endpoint.hostId && !!tab && nativePath(tab.path) !== null,
   };
   can.edit = can.preview;
+  useLayoutEffect(() => {
+    const bar = toolbar.current;
+    if (!bar) return;
+    const fit = () => {
+      bar.dataset.density = "full";
+      if (bar.scrollWidth <= bar.clientWidth) return;
+      bar.dataset.density = "labels";
+      if (bar.scrollWidth > bar.clientWidth) bar.dataset.density = "keys";
+    };
+    fit();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(fit);
+    observer.observe(bar);
+    return () => observer.disconnect();
+  }, [bindings, compact, endpoint?.provider]);
+  useLayoutEffect(() => {
+    if (!queueOpen || !focusQueue.current) return;
+    focusQueue.current = false;
+    root.current?.querySelector<HTMLButtonElement>("[data-close-queue]")?.focus({ preventScroll: true });
+  }, [queueOpen]);
   const activeJob = dialog && "job" in dialog && dialog.job
     ? props.queue.jobs.find((job): job is OperationJob => job.id === dialog.job?.id && "plan" in job) : null;
   useLayoutEffect(() => {
@@ -177,16 +204,22 @@ export function Workspace(props: WorkspaceProps) {
     const pending = conflictFocus.current;
     if (pending) {
       if (pending.jobs === props.queue.jobs && !props.queue.error) return;
-      conflictFocus.current = null;
-      focusReturn.current = null;
       const oldIndex = pending.jobs.findIndex((job) => job.id === pending.jobId);
       const updatedIndex = props.queue.jobs.findIndex((job) => job.id === pending.jobId);
-      const remaining = new Set(props.queue.jobs.slice(Math.max(0, updatedIndex < 0 ? oldIndex : updatedIndex))
-        .flatMap((job) => "plan" in job && job.state === "awaiting_decision" && job.pendingConflict
-          && job.pendingConflict.id !== pending.conflictId ? [job.pendingConflict.id] : []));
+      const start = Math.max(0, updatedIndex < 0 ? oldIndex : updatedIndex);
+      const ordered = [...props.queue.jobs.slice(start), ...props.queue.jobs.slice(0, start)];
+      const nextId = ordered.find((job): job is OperationJob => "plan" in job && job.state === "awaiting_decision"
+        && !!job.pendingConflict && job.pendingConflict.id !== pending.conflictId)?.pendingConflict?.id;
       const buttons = Array.from(root.current?.querySelectorAll<HTMLButtonElement>("[data-conflict-id]") ?? []);
-      const next = buttons.find((button) => button.dataset.conflictId && remaining.has(button.dataset.conflictId)
-        && getComputedStyle(button).visibility !== "hidden");
+      const next = nextId ? buttons.find((button) => button.dataset.conflictId === nextId
+        && getComputedStyle(button).visibility !== "hidden") : undefined;
+      if (nextId && !next && !queueOpen) {
+        if (wide) update((previous) => ({ ...previous, inspectorCollapsed: false }));
+        else setNarrowQueue(true);
+        return;
+      }
+      conflictFocus.current = null;
+      focusReturn.current = null;
       queueMicrotask(() => {
         if (next?.isConnected) {
           next.focus({ preventScroll: true });
@@ -205,9 +238,19 @@ export function Workspace(props: WorkspaceProps) {
     const previous = focusReturn.current;
     focusReturn.current = null;
     queueMicrotask(() => { if (previous.isConnected) previous.focus({ preventScroll: true }); });
-  }, [dialog, props.queue.jobs, props.queue.error, side]);
+  }, [dialog, props.queue.jobs, props.queue.error, queueOpen, side]);
   const close = () => { setDialog(null); setProblem(null); };
-  const goBack = (returnTo: ConflictView) => { setProblem(null); setDialog(returnTo); };
+  function goBack(returnTo: ConflictView) {
+    void perform(async () => {
+      const fresh = await props.onReloadConflict(returnTo.job.id);
+      if (fresh?.pendingConflict && fresh.pendingConflict.id === returnTo.job.pendingConflict?.id) {
+        setDialog({ kind: "conflict", job: fresh });
+      } else {
+        close();
+        setNotice(ru.conflictEnded);
+      }
+    });
+  }
   function decide(job: OperationJob, action: ConflictAction, apply: boolean) {
     const conflict = job.pendingConflict;
     if (!conflict) return;
@@ -218,13 +261,15 @@ export function Workspace(props: WorkspaceProps) {
     });
   }
   function toggleQueue() {
-    if (!wide) { setNarrowQueue(!queueOpen); return; }
-    update((previous) => ({ ...previous, inspectorCollapsed: queueOpen }));
+    if (!queueOpen) focusQueue.current = true;
+    if (wide) update((previous) => ({ ...previous, inspectorCollapsed: queueOpen }));
+    else setNarrowQueue(!queueOpen);
     if (queueOpen) queueMicrotask(() => queueToggle.current?.focus({ preventScroll: true }));
   }
   const open = (next: DialogState) => {
     if (!dialog) focusReturn.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setProblem(null);
+    setNotice(null);
     if (next.kind === "conflict") setSame(false);
     setDialog(next);
   };
@@ -233,6 +278,7 @@ export function Workspace(props: WorkspaceProps) {
     running.current = true;
     setBusy(true);
     setProblem(null);
+    setNotice(null);
     try { await action(); completed?.(); }
     catch (error) { setProblem(problemOf(error)); }
     finally { running.current = false; setBusy(false); }
@@ -415,8 +461,8 @@ export function Workspace(props: WorkspaceProps) {
   const targetLabel = right ? (endpointsBySide.right?.label ?? right.endpoint) + ":" : "";
   const selection = { ...info, destination: right ? targetLabel + shortPath(right.path) : "—",
     fullDestination: right ? targetLabel + displayPath(right.path) : "—" };
-  const queue = <Queue {...props.queue} endpoints={endpoints} id={queueId} open={queueOpen} collapse={wide ? toggleQueue : undefined} compact={compact} selection={selection}
-    onInspect={inspect} onSkip={(job) => void perform(() => props.onDecide(job, "skip", false))}
+  const queue = <Queue {...props.queue} endpoints={endpoints} id={queueId} open={queueOpen} collapse={queueOpen ? toggleQueue : undefined} compact={compact} selection={selection}
+    onInspect={inspect} onSkip={(job) => decide(job, "skip", false)}
     onCancel={(job) => open({ kind: "cancel", job })} />;
 
   return <div ref={root} className="cm-workspace" data-compact={compact} onKeyDown={onKeyDown}>
@@ -442,6 +488,7 @@ export function Workspace(props: WorkspaceProps) {
           ? nameOf(tabs[pane]!.path.segments.at(-1)!) : endpointsBySide[pane]?.label ?? ru[pane]}</span>
       </Button>)}</div>
     {(props.problem || problem && !dialog) && <ProblemLine problem={(problem ?? props.problem)!} />}
+    {notice && <div className="cm-empty" role="status">{notice}</div>}
     <div className="cm-work" data-queue={queueOpen}>
       {sides.map((pane) => {
         const value = tabs[pane], source = endpointsBySide[pane];
@@ -462,11 +509,17 @@ export function Workspace(props: WorkspaceProps) {
       })}
       {queue}
     </div>
-    <footer className="cm-toolbar">
-      {actions.filter(({ key }) => !compact || key === "copy" || key === "preview").map(({ key, icon }) =>
-        <Button key={key} aria-label={compact && key === "copy" ? ru.compactCopy : shortcutText[key]} aria-keyshortcuts={bindings[key] ?? shortcuts[key][0]} size="sm" variant="outline" disabled={busy || !can[key]}
-          onClick={() => invoke(key)}><Icon name={icon} /><span>{compact && key === "copy" ? ru.compactCopy : shortcutText[key]}</span>
-          {!compact && <kbd>{bindings[key] ?? shortcuts[key][0]}</kbd>}</Button>)}
+    <footer ref={toolbar} className="cm-toolbar">
+      {actions.filter(({ key }) => !compact || key === "copy" || key === "preview").map(({ key, icon }) => {
+        const shortcut = bindings[key] ?? shortcuts[key][0];
+        const title = shortcutText[key] + " (" + shortcut + ")";
+        return <Button asChild key={key} size="sm" variant="outline">
+          <button type="button" title={title} aria-label={title} aria-keyshortcuts={shortcut} disabled={busy || !can[key]} onClick={() => invoke(key)}>
+            <Icon name={icon} /><span>{compact && key === "copy" ? ru.compactCopy : shortcutText[key]}</span>
+            <kbd aria-hidden="true">{shortcut}</kbd>
+          </button>
+        </Button>;
+      })}
       <span className="cm-fill" />
       {endpoint?.provider === "local" && <Button size="sm" variant="outline" aria-label={compact ? ru.compactTerminal : ru.terminal} className="cm-terminal" disabled={!can.terminal || busy}
         onClick={() => { if (tab) void perform(() => props.onTerminal(currentRef(tab))); }}>
@@ -496,12 +549,13 @@ export function Workspace(props: WorkspaceProps) {
         <div key={label}><dt>{label}</dt><dd>{dialog.difference[index]}</dd></div>)}</dl>
       <Button size="sm" variant="outline" onClick={close}>{ru.close}</Button>
     </Modal>}
-    {dialog?.kind === "content" && <Modal title={ru.content} description={dialog.source === dialog.target ? ru.compareEqual : ru.compareChanged} close={() => goBack(dialog.returnTo)}>
+    {dialog?.kind === "content" && <Modal title={ru.content} description={dialog.source === dialog.target ? ru.compareEqual : ru.compareChanged} close={() => goBack(dialog.returnTo)} busy={busy}>
+      {problem && <ProblemLine problem={problem} />}
       <div className="cm-pair">
         <div className="cm-detail"><strong>{ru.source}</strong><pre>{dialog.source}</pre></div>
         <div className="cm-detail"><strong>{ru.existing}</strong><pre>{dialog.target}</pre></div>
       </div>
-      <Button size="sm" variant="outline" onClick={() => goBack(dialog.returnTo)}>{ru.close}</Button>
+      <Button size="sm" variant="outline" disabled={busy} onClick={() => goBack(dialog.returnTo)}>{ru.close}</Button>
     </Modal>}
     {dialog?.kind === "settings" && <Modal title={ru.keySettings} description={ru.keyHint} close={close}>
       <div className="cm-keymap">{(Object.keys(shortcuts) as Shortcut[]).map((key) => <label key={key}>

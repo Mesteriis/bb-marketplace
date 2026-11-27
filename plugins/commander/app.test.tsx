@@ -6,7 +6,7 @@ import type { UiState } from "./src/core/wire/rpc.ts";
 
 const host = vi.hoisted(() => ({
   call: vi.fn(),
-  navigate: {},
+  navigate: { experimental_openFilePreview: vi.fn() },
   sdk: { environments: { get: vi.fn() }, files: { read: vi.fn() } },
 }));
 vi.mock("@get-bb/plugin-sdk/app", () => ({
@@ -35,6 +35,7 @@ beforeEach(() => {
   files = [entry("вложенный", "dir"), entry("пример.txt")];
   jobs = [];
   threadStates = new Map();
+  host.navigate.experimental_openFilePreview.mockClear().mockReturnValue(true);
   host.sdk.environments.get.mockResolvedValue({ hostId: "fixture", path: "/окружение" });
   host.sdk.files.read.mockImplementation(async ({ path }) => ({ content: path.startsWith("/данные") ? "исходный текст" : "текст назначения", contentEncoding: "utf8", sizeBytes: 20 }));
   const tab = { endpoint: "host:fixture", sort: { by: "name", direction: "asc" } as const, selection: [], filter: "", scrollTop: 0 };
@@ -276,7 +277,7 @@ test("when a selected file vanishes the closest remaining row is visible and F8 
   fireEvent.click(within(grid().parentElement!).getByRole("button", { name: "Обновить" }));
   const next = await leftFile("вв.txt");
   await waitFor(() => expect(grid().getAttribute("aria-activedescendant")).toBe(next.id));
-  expect((screen.getByRole("button", { name: "Удалить" }) as HTMLButtonElement).disabled).toBe(true);
+  expect((screen.getByRole("button", { name: "Удалить (F8)" }) as HTMLButtonElement).disabled).toBe(true);
   host.call.mockClear();
   fireEvent.keyDown(grid(), { key: "F8" });
   expect(host.call.mock.calls.filter(([method]) => method === "plan_create")).toEqual([]);
@@ -291,4 +292,78 @@ test("filtering prefers the nearest former neighbor over a row at the same new i
   fireEvent.change(filter, { target: { value: "оставить" } });
   const neighbor = await leftFile("04-оставить.txt");
   expect(grid().getAttribute("aria-activedescendant")).toBe(neighbor.id);
+});
+
+
+test.each([true, false])("keyboard activation of an inline skip restores focus (next: %s)", async (hasNext) => {
+  jobs = hasNext ? [firstConflict(), nextConflict()] : [firstConflict()];
+  mount();
+  await leftFile();
+  const [skip] = await screen.findAllByRole("button", { name: "Пропустить" });
+  skip.focus();
+  fireEvent.click(skip, { detail: 0 });
+  await waitFor(() => {
+    const next = hasNext ? screen.getByRole("button", { name: "Сравнить и решить" }) : grid();
+    expect(document.activeElement).toBe(next);
+  });
+});
+
+test("resolving the bottom conflict wraps focus to the first remaining conflict", async () => {
+  jobs = [firstConflict(), nextConflict()];
+  mount();
+  const [, bottom] = await screen.findAllByRole("button", { name: "Сравнить и решить" });
+  bottom.focus();
+  fireEvent.click(bottom);
+  const dialog = await screen.findByRole("dialog", { name: "второй.txt уже есть в назначении" });
+  fireEvent.keyDown(dialog, { key: "s" });
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: "Сравнить и решить" })));
+});
+
+test("keyboard activation of the queue moves focus to its collapse button", async () => {
+  saved = { ...saved!, inspectorCollapsed: true };
+  mount();
+  await leftFile();
+  const toggle = screen.getByRole("button", { name: "Очередь" });
+  toggle.focus();
+  fireEvent.click(toggle, { detail: 0 });
+  await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: "Свернуть очередь" })));
+});
+
+test("entering a directory places the cursor on the parent and file shortcuts follow an explicit file cursor", async () => {
+  mount();
+  fireEvent.doubleClick(await leftFile("вложенный"));
+  await leftFile();
+  const parent = within(grid()).getByText("..", { exact: true }).closest("[role=row]")!;
+  expect(grid().getAttribute("aria-activedescendant")).toBe(parent.id);
+  expect(parent.getAttribute("data-cursor")).toBe("true");
+  for (const [key, label] of [["F5", "Копировать"], ["F6", "Переместить"], ["F8", "Удалить"]]) {
+    const action = screen.getByRole("button", { name: new RegExp(label) }) as HTMLButtonElement;
+    expect(action.disabled).toBe(true);
+    expect(action.title).toBe(label + " (" + key + ")");
+    fireEvent.keyDown(grid(), { key });
+  }
+  expect(screen.queryByRole("dialog")).toBeNull();
+  fireEvent.click(await leftFile());
+  fireEvent.keyDown(grid(), { key: "F3" });
+  fireEvent.keyDown(grid(), { key: "F4" });
+  expect(host.navigate.experimental_openFilePreview).toHaveBeenCalledTimes(2);
+  expect(host.navigate.experimental_openFilePreview).toHaveBeenCalledWith({
+    target: { kind: "host", hostId: "fixture", path: "/данные/вложенный/пример.txt" }, location: null,
+  });
+  fireEvent.keyDown(grid(), { key: "F6", shiftKey: true });
+  expect(await screen.findByRole("dialog", { name: "Переименовать" })).toBeDefined();
+});
+
+test("returning from comparison re-reads the job and reports a conflict resolved elsewhere", async () => {
+  jobs = [firstConflict()];
+  mount();
+  fireEvent.click(await screen.findByRole("button", { name: "Сравнить и решить" }));
+  const conflict = await screen.findByRole("dialog", { name: "пример.txt уже есть в назначении" });
+  fireEvent.click(within(conflict).getByRole("button", { name: "Сравнить содержимое" }));
+  const comparison = await screen.findByRole("dialog", { name: "Сравнить содержимое" });
+  jobs = [];
+  fireEvent.keyDown(comparison, { key: "Escape" });
+  expect(await screen.findByText("Конфликт больше не ожидает решения")).toBeDefined();
+  expect(screen.queryByRole("dialog")).toBeNull();
 });

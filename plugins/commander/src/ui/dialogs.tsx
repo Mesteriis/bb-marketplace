@@ -41,8 +41,13 @@ export function TextDialog({ title, label, initial = "", submit, close, busy, er
 
 function Resource({ value, endpoints }: { value: ResourceRef; endpoints: EndpointView[] }) {
   const endpoint = endpoints.find((entry) => entry.id === value.endpoint);
-  return <><small>{endpoint?.label ?? value.endpoint}{endpoint && endpoint.machine !== endpoint.label && <> · {endpoint.machine}</>}</small>
-    <code>{displayPath(value.path)}</code></>;
+  const name = value.path.segments.at(-1);
+  return <div className="cm-plan-resource">
+    <strong>{name ? nameOf(name) : "/"}</strong>
+    <span className="cm-meta">{endpoint?.machine ?? value.endpoint}
+      {endpoint && endpoint.machine !== endpoint.label && <> · {endpoint.label}</>}</span>
+    <span className="cm-plan-path">{displayPath(value.path)}</span>
+  </div>;
 }
 const durationFormats = (["day", "hour", "minute", "second"] as const).map((unit) =>
   new Intl.NumberFormat("ru", { style: "unit", unit, unitDisplay: "long" }));
@@ -64,13 +69,14 @@ function FingerprintCard({ label, value, other, refValue, endpoints }: {
   const endpoint = endpoints.find((entry) => entry.id === refValue?.endpoint);
   const name = refValue?.path.segments.at(-1);
   const dir = refValue ? parent(refValue.path) : null;
-  const location = dir ? (endpoint?.label ?? refValue!.endpoint) + ":" : "";
+  const machine = endpoint?.machine ?? refValue?.endpoint;
   const newer = timeDifference(value, other);
   return <section className="cm-detail cm-fingerprint" aria-label={label}>
     <span className="cm-meta">{label}</span>
     <strong className="cm-fingerprint-name" title={name ? nameOf(name) : undefined}>{name ? nameOf(name) : "—"}</strong>
-    <span className="cm-meta cm-fingerprint-path" title={dir ? location + displayPath(dir) : undefined}>
-      {dir ? location + shortPath(dir) : "—"}
+    <span className="cm-meta cm-fingerprint-machine" title={machine}>{machine ?? "—"}</span>
+    <span className="cm-meta cm-fingerprint-path" title={dir ? displayPath(dir) : undefined}>
+      <bdi dir="ltr">{dir ? shortPath(dir) : "—"}</bdi>
     </span>
     <dl className="cm-facts">
       <dt>{ru.size}</dt><dd>{value ? bytes(value.size) : "—"}</dd>

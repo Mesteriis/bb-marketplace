@@ -311,6 +311,13 @@ function CommanderPage({ compact = false, environment, threadId }: { compact?: b
     onRun={(plan: OperationPlan) => mutate(rpc.call("plan_run", { planId: plan.id, digest: plan.digest }))}
     onInspect={inspect} onApprove={(job) => mutate(rpc.call("plan_approve", identity(job)))}
     onReject={(job) => mutate(rpc.call("plan_reject", identity(job)))}
+    onReloadConflict={async (jobId) => {
+      const { jobs } = await rpc.call("job_list", { states: ["awaiting_decision"], limit: 200 });
+      const fresh = jobs.find((job): job is OperationJob => "plan" in job && job.id === jobId
+        && job.state === "awaiting_decision" && !!job.pendingConflict);
+      refresh("job");
+      return fresh ?? null;
+    }}
     onDecide={async (job, action: ConflictAction, same) => {
       if (!job.pendingConflict) return;
       await mutate(rpc.call("job_decide", { jobId: job.id, conflictId: job.pendingConflict.id, action, applyTo: same ? "remaining_same_reason" : "this" }));

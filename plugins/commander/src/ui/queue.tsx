@@ -83,7 +83,7 @@ export function Queue({ compact, open, selection, id, collapse, ...props }: Queu
   const displayed = compact && !open ? [active, conflict].filter((job): job is JobView => !!job) : props.jobs;
   return <aside id={id} className="cm-queue" aria-label={ru.queue} data-open={open}>
     <h2><Icon name="ListTodo" /> {ru.queue}<span className="cm-count">{props.jobs.length}</span>
-      {collapse && <Button size="sm" variant="ghost" aria-label={ru.collapseQueue} aria-controls={id} onClick={collapse}><Icon name="PanelRight" /></Button>}
+      {collapse && <Button size="sm" variant="ghost" aria-label={ru.collapseQueue} aria-controls={id} data-close-queue onClick={collapse}><Icon name="PanelRight" /></Button>}
     </h2>
     <div className="cm-jobs">
       {props.error && <ProblemLine problem={props.error} />}
