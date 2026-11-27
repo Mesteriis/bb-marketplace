@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.10.0 — 2026-11-27
+
+Merge, rebase and a conflict editor.
+
+- **Branches** lists local and remote-tracking branches with **Merge into** the current branch and **Rebase onto** (an ordinary rebase, not interactive). The confirmation says beforehand how many commits come and which files will conflict (Git's merge-tree, without touching the tree); a merge can fast-forward or always make a merge commit. Both start only on a clean tree at the head that was shown, and ask for a Git author where the copy has none.
+- **In progress:** a bar for a merge, rebase, cherry-pick or revert left in progress, with its step (commit N of M), its conflicted files, **Continue**, **Skip** (rebase, cherry-pick) and **Abort**, each confirmed.
+- **Conflict editor:** each conflict side by side with the base, answered by one side, both in either order, the base, picked lines or typed text; the result can be edited as a whole before **Save and mark resolved**, which writes it over the file as it was read and stages it. A file one side deleted, or that is not text, is taken whole from a side or deleted.
+- A rebase keeps each commit's author; Git never waits for an editor; conflict markers are written in the zdiff3 style.
+
 ## 0.9.4 — 2026-11-27
 
 The three remaining differences from bb-github-pr-dashboard, on the owner's decision.

@@ -1,10 +1,10 @@
 ## Git in BB
 
-Open Git from BB navigation and choose a project and repository in the tree. Attach working copies from the project’s sources, ready environments or a trusted path on a selected machine. Inspect staged, unstaged and untracked changes, stage individual text hunks, commit the index, compare commits, and manage branches and linked worktrees.
+Open Git from BB navigation and choose a project and repository in the tree. Attach working copies from the project’s sources, ready environments or a trusted path on a selected machine. Inspect staged, unstaged and untracked changes, stage individual text hunks, commit the index, compare commits, and manage branches and linked worktrees. Merge or rebase after a preview of the conflicts, then resolve them in an editor.
 
 ## Forge and account detection
 
-Each working copy is matched to its forge from its `origin` remote (SSH aliases through `ssh -G`). Well-known forges are recognised by name, other servers once through their public version endpoint, asked without credentials from the copy's host and cached. The account is chosen automatically by owner, organization or server; when two fit equally, the repository panel asks.
+Each working copy is matched to its forge from its `origin` remote (SSH aliases through `ssh -G`). Well-known forges are recognised by name, other servers once through their public version endpoint, asked anonymously from the copy's host. The account is chosen automatically by owner, organization or server; when two fit equally, the repository panel asks.
 
 ## Projects folder
 
@@ -32,6 +32,6 @@ The Actions tab and a thread's **CI/CD** tab list GitHub Actions, Gitea Actions,
 
 ## Remote repositories
 
-Connect GitHub, GitLab, Azure Repos or Gitea accounts. Repository tabs show Code, CI/CD, issues and variables where supported. Secret and variable values stay in the provider. Review clone, fetch, push and PR actions before confirming them. HTTPS Git uses the account’s credential in the host’s macOS Keychain. The connection wizard stores API tokens in Makosh Credential Vault when enabled and keeps a fallback copy in BB’s secret settings.
+Connect GitHub, GitLab, Azure Repos or Gitea accounts. Repository tabs show Code, CI/CD, issues and variables where supported. Secret and variable values stay in the provider. Review clone, fetch, push and PR actions before confirming them. HTTPS Git uses the account’s credential in the host’s macOS Keychain. API tokens go to Makosh Credential Vault when enabled, with a fallback copy in BB’s secret settings.
 
-The thread’s Git panel resolves its registered working copy. Grant agents read or local write access and review their publication and worktree requests in BB. Pinned tabs keep their selected worktree or pull request when the selection in Git changes.
+The thread’s Git panel resolves its registered working copy. Grant agents read or local write access and review their publication and worktree requests in BB. Pinned tabs keep their worktree or pull request.
