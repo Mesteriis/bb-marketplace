@@ -295,7 +295,7 @@ export function createSftpProvider(options: SftpProviderOptions): SftpProvider {
     });
   }
 
-  function openChannel(signal: AbortSignal): Promise<string> {
+  function openChannel(signal: AbortSignal, mutating: boolean): Promise<string> {
     if (channelId !== null) return Promise.resolve(channelId);
     if (opening === null) {
       opening = callPort("hub_sftp_open", { profileId }, new AbortController().signal).then(
@@ -314,7 +314,12 @@ export function createSftpProvider(options: SftpProviderOptions): SftpProvider {
       // so it never surfaces as an unhandled rejection. Each caller still sees it through its own wait.
       opening.catch(() => undefined);
     }
-    return waitForOpen(opening, signal);
+    const waiting = waitForOpen(opening, signal);
+    if (mutating) return waiting;
+    return waiting.catch((error: unknown) => {
+      if (error instanceof SftpRefusal && error.code === "outcome_unknown") throw commanderError("internal");
+      throw error;
+    });
   }
 
   /**
@@ -324,13 +329,13 @@ export function createSftpProvider(options: SftpProviderOptions): SftpProvider {
    */
   async function execute(build: (channel: string) => SftpOpInput, mutating: boolean, signal: AbortSignal): Promise<SftpOpOutput> {
     if (signal.aborted) throw commanderError("cancelled");
-    const first = await openChannel(signal);
+    const first = await openChannel(signal, mutating);
     try {
       return await send(build(first), mutating, signal);
     } catch (error) {
       if (!(error instanceof SftpRefusal && error.code === "channel_closed")) throw error;
       if (signal.aborted) throw commanderError("cancelled");
-      const second = await openChannel(signal);
+      const second = await openChannel(signal, mutating);
       return send(build(second), mutating, signal);
     }
   }
@@ -348,6 +353,7 @@ export function createSftpProvider(options: SftpProviderOptions): SftpProvider {
         if (error.code === "channel_closed" || error.code === "consent_revoked" || error.code === "outcome_unknown") {
           dropChannel(input.channelId);
         }
+        if (!mutating && error.code === "outcome_unknown") throw commanderError("internal");
         // channel_closed: the request never reached the server, so the caller may repeat it once (see execute).
         if (mutating && error.code !== "channel_closed" && !DEFINITIVE.has(error.code)) throw commanderError("outcome_unknown");
         throw error;
@@ -442,18 +448,22 @@ export function createSftpProvider(options: SftpProviderOptions): SftpProvider {
     create: "exclusive" | "existing",
     signal: AbortSignal,
     onHalt: (code: ErrorCode) => void,
+    beforeSend?: () => void,
   ): Promise<number> {
     try {
       const out = narrow(
         await execute(
-          (channel) => ({
-            channelId: channel,
-            op: "write",
-            path: toWirePath(tempPath),
-            offset: offset.toString(),
-            data: Buffer.from(slice).toString("base64"),
-            create,
-          }),
+          (channel) => {
+            beforeSend?.();
+            return {
+              channelId: channel,
+              op: "write",
+              path: toWirePath(tempPath),
+              offset: offset.toString(),
+              data: Buffer.from(slice).toString("base64"),
+              create,
+            };
+          },
           true,
           signal,
         ),
@@ -488,34 +498,41 @@ export function createSftpProvider(options: SftpProviderOptions): SftpProvider {
     // halt: the session may no longer touch the temp (an unknown outcome of a later call).
     let halt: ErrorCode | null = null;
     let finished = false;
+    let cleanup: Promise<void> | null = null;
+    const activeOperations = new Set<Promise<unknown>>();
+    function track<T>(operation: Promise<T>): Promise<T> {
+      activeOperations.add(operation);
+      return operation.finally(() => { activeOperations.delete(operation); });
+    }
     const setHalt = (code: ErrorCode) => {
       halt = code;
     };
     const checkOpen = () => {
       if (halt !== null) throw commanderError(halt);
-      if (finished) throw commanderError("internal");
+      if (cleanup !== null || finished) throw commanderError("internal");
     };
 
     return {
       tempPath,
 
       async write(offset: bigint, bytes: Uint8Array, signal: AbortSignal): Promise<void> {
-        return guard(async () => {
-          checkOpen();
+        checkOpen();
+        return track(guard(async () => {
           for (let done = 0; done < bytes.length; done += READ_CHUNK_MAX) {
+            checkOpen();
             const slice = bytes.subarray(done, done + READ_CHUNK_MAX);
-            const written = await writeChunk(tempPath, offset + BigInt(done), slice, "existing", signal, setHalt);
+            const written = await writeChunk(tempPath, offset + BigInt(done), slice, "existing", signal, setHalt, checkOpen);
             if (written !== slice.length) {
               setHalt("outcome_unknown");
               throw commanderError("outcome_unknown");
             }
           }
-        });
+        }));
       },
 
-      async commit(opts, signal: AbortSignal): Promise<Fingerprint> {
-        return guard(async () => {
-          checkOpen();
+      async commit(opts, signal): Promise<Fingerprint> {
+        checkOpen();
+        return track(guard(async () => {
           const target: ResourcePath = { segments: [...parent, last] };
           const expectTarget = opts.replace && opts.expectTarget !== null ? opts.expectTarget : undefined;
           try {
@@ -533,17 +550,19 @@ export function createSftpProvider(options: SftpProviderOptions): SftpProvider {
             // The rename has landed; whatever the final stat says, the outcome seen here is unknown.
             throw commanderError("outcome_unknown");
           }
-        });
+        }));
       },
 
-      async abort(): Promise<void> {
-        return guard(async () => {
-          // Only the temp this session created, and whose state is known, may be removed. Once the removal is
-          // confirmed (or the temp is already gone) the session is finished: a later write or commit is refused
-          // before any call, and a second abort is a no-op, so it cannot touch a file that another owner created.
+      abort(): Promise<void> {
+        if (cleanup !== null) return cleanup;
+        if (halt !== null || finished) return Promise.resolve();
+        cleanup = guard(async () => {
+          // The write or commit may have changed the temp or published the target.
+          await Promise.allSettled(activeOperations);
           if (halt !== null || finished) return;
           try {
             await removeOp(tempPath, "file", new AbortController().signal);
+            finished = true;
           } catch (error) {
             if (error instanceof SftpRefusal && error.code === "no_such_file") {
               finished = true;
@@ -552,8 +571,8 @@ export function createSftpProvider(options: SftpProviderOptions): SftpProvider {
             if (isUnknown(error)) setHalt("outcome_unknown");
             throw error;
           }
-          finished = true;
-        });
+        }).finally(() => { cleanup = null; });
+        return cleanup;
       },
     };
   }

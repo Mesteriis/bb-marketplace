@@ -148,22 +148,8 @@ function useDirectory(rpc: Rpc, ref: ResourceRef | undefined, revision: number):
 }
 
 async function readConflictJob(rpc: Rpc, jobId: string): Promise<OperationJob | null> {
-  // The cursor is available only for a filter that includes "unknown".
-  const cursors = new Set<string>();
-  let cursor: string | undefined;
-  do {
-    const page: { jobs: JobView[]; nextCursor?: string } = await rpc.call("job_list", {
-      states: [...JobState.options], limit: 200, ...(cursor === undefined ? {} : { cursor }),
-    });
-    const job = page.jobs.find((entry) => entry.id === jobId);
-    if (job) return "plan" in job && job.state === "awaiting_decision" && job.pendingConflict ? job : null;
-    cursor = page.nextCursor;
-    if (cursor !== undefined) {
-      if (cursors.has(cursor)) throw new CommanderError("internal", ru.unknownError);
-      cursors.add(cursor);
-    }
-  } while (cursor !== undefined);
-  return null;
+  const job = await rpc.call("job_get", { jobId });
+  return job && "plan" in job && job.state === "awaiting_decision" && job.pendingConflict ? job : null;
 }
 
 function useJobs(rpc: Rpc, revision: number) {
