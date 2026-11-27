@@ -42,3 +42,15 @@ test("a pull request's projects are found by their remote on any forge, and its 
     thread("t4", "p1", "retries", 7, 1), thread("t5", "p1", "main", 8)], ["p1", "p2"], "retries"), "t2");
   assert.equal(branchThread([], ["p1"], "retries"), null);
 });
+
+test("a selection of diff rows becomes a line comment anchor", async () => {
+  const {lineAnchor, parsePatch} = await import("../src/core/pulls/diff.ts");
+  const rows = parsePatch("@@ -10,3 +10,4 @@\n keep\n-old\n+new\n+more\n@@ -40 +41 @@\n tail");
+  assert.deepEqual(lineAnchor(rows, 3, 4), {side: "RIGHT", line: 12, startLine: 11, contextLine: null});
+  assert.deepEqual(lineAnchor(rows, 2, 2), {side: "LEFT", line: 11, startLine: null, contextLine: null});
+  assert.deepEqual(lineAnchor(rows, 1, 1), {side: "RIGHT", line: 10, startLine: null, contextLine: 10});
+  // From a removed row to an added one: the sides differ, so the anchor is the last row alone.
+  assert.deepEqual(lineAnchor(rows, 2, 3), {side: "RIGHT", line: 11, startLine: null, contextLine: null});
+  assert.equal(lineAnchor(rows, 4, 6), null);
+  assert.equal(lineAnchor(rows, 0, 0), null);
+});

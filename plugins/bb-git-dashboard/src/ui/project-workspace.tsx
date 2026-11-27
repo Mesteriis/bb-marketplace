@@ -15,7 +15,7 @@ type Location = {hostId:string;projectId:string;path:string;name:string|null};
 const sections = ["Code","History","Actions","Issues","Variables"] as const;
 type Section = typeof sections[number];
 
-export function ProjectWorkspace({copies,hosts,projects,locations,subPath,loaded,error,api,onOpen,onAttach,onClone,renderWorktree,inboxBadge = null}: {
+export function ProjectWorkspace({copies,hosts,projects,locations,subPath,loaded,error,api,onOpen,onAttach,onClone,renderWorktree,inboxBadge = null,onOpenIssue}: {
   copies:Copy[]; hosts:Host[]; projects:Project[]; locations:Location[]; subPath:string;
   loaded:boolean; error:string; api:RepositoryApi & ConnectionApi & {trees(id:string):Promise<GitResult>};
   onOpen(path:string):void; onAttach(hostId:string,root:string,projectId?:string):Promise<Copy>;
@@ -23,6 +23,7 @@ export function ProjectWorkspace({copies,hosts,projects,locations,subPath,loaded
   renderWorktree(copy:Copy,host:string,attach:(root:string)=>Promise<void>):ReactNode;
   /** Unseen My PRs alerts, or null when there are none or the badge is off. */
   inboxBadge?:number|null;
+  onOpenIssue?(accountId:string,repo:string,number:number|"new"):void;
 }) {
   const groups = useMemo(() => projectTree(projects,copies), [copies,projects]);
   const [first, second] = subPath.split("/");
@@ -115,7 +116,7 @@ export function ProjectWorkspace({copies,hosts,projects,locations,subPath,loaded
       </>}
       {loaded && copy && section === "History" && <HistoryPanel key={copy.id} api={api.history} copyId={copy.id}/>}
       {loaded && copy && section !== "Code" && section !== "History" && <RepositoryPanel key={copy.id + section} copyId={copy.id} name={repo!.name}
-        accounts={accounts} api={api} onAddConnection={() => setConnecting(true)} section={section.toLowerCase() as RepositorySection}/>}
+        accounts={accounts} api={api} onAddConnection={() => setConnecting(true)} section={section.toLowerCase() as RepositorySection} onOpenIssue={onOpenIssue}/>}
       {connecting && <ConnectionWizard api={api} onClose={() => setConnecting(false)} onSaved={account => {
         setAccounts(previous => [...previous.filter(item => item.id !== account.id),account]);
         setConnecting(false);

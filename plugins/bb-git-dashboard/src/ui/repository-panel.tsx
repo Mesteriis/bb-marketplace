@@ -25,8 +25,10 @@ const labels = {
 };
 const message = (error:unknown) => error instanceof Error ? error.message : "Request failed.";
 
-export function RepositoryPanel({copyId,name,accounts,api,section,onAddConnection}: {
+export function RepositoryPanel({copyId,name,accounts,api,section,onAddConnection,onOpenIssue}: {
   copyId:string;name:string;accounts:Account[];api:RepositoryApi;section:RepositorySection;onAddConnection():void;
+  /** Opens an issue, or the new-issue form, inside Makosh Git. */
+  onOpenIssue?(accountId:string,repo:string,number:number|"new"):void;
 }) {
   const [target,setTarget] = useState<Link|null>();
   const [data,setData] = useState<Awaited<ReturnType<RepositoryApi["features"]>>>();
@@ -81,6 +83,8 @@ export function RepositoryPanel({copyId,name,accounts,api,section,onAddConnectio
         {section === "issues" && <select aria-label="Issue state" value={filter} onChange={event => setFilter(event.target.value)}>
           <option value="all">All states</option><option value="open">Open</option><option value="closed">Closed</option>
         </select>}
+        {section === "issues" && data?.repo && onOpenIssue && provider && provider.kind !== "azure" &&
+          <button type="button" onClick={() => onOpenIssue(data.repo.accountId,data.repo.path,"new")}>New issue</button>}
         <button disabled={pending} type="button" onClick={() => setRevision(value => value + 1)}>Refresh</button>
         <button type="button" aria-expanded={changing} onClick={() => setChanging(value => !value)}>Connection</button>
       </div>}
@@ -101,8 +105,9 @@ export function RepositoryPanel({copyId,name,accounts,api,section,onAddConnectio
     {rows.length > 0 && <div className="git-workspace-table"><table>
       <thead><tr><th scope="col">Name</th><th scope="col">{section === "variables" ? "Type" : "Status"}</th>
         <th scope="col">{section === "variables" && forge?.detection?.kind === "gitlab" ? "Settings" : label.detail}</th><th scope="col">Updated</th></tr></thead>
-      <tbody>{rows.map(row => <tr key={row.id}><th scope="row">{row.url
-        ? <a href={row.url} target="_blank" rel="noreferrer">{row.name}</a> : row.name}</th>
+      <tbody>{rows.map(row => <tr key={row.id}><th scope="row">{section === "issues" && onOpenIssue && data?.repo && /^\d+$/.test(row.id)
+        ? <button type="button" className="git-link" onClick={() => onOpenIssue(data.repo.accountId,data.repo.path,Number(row.id))}>{row.name}</button>
+        : row.url ? <a href={row.url} target="_blank" rel="noreferrer">{row.name}</a> : row.name}</th>
         <td><span className="git-state" data-state={row.status}>{row.status || "—"}</span></td>
         <td>{row.detail ?? (row.status === "Secret" ? "••••••" : "—")}</td>
         <td>{row.updated ? <time dateTime={row.updated}>{row.updated.slice(0,10)}</time> : "—"}</td>

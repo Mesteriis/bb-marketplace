@@ -11,7 +11,10 @@ import type { RepositoryApi } from "./src/ui/repository-panel.tsx";
 import { Worktree } from "./src/ui/worktree.tsx";
 import { Remotes, type RemoteApi } from "./src/ui/remotes.tsx";
 import { InboxPage, InboxToasts } from "./src/ui/pulls/inbox-page.tsx";
-import type { AlertSummary, InboxApi } from "./src/ui/pulls/inbox-api.ts";
+import type { AlertSummary, InboxApi, InboxItem } from "./src/ui/pulls/inbox-api.ts";
+import { PrPage } from "./src/ui/review/pr-page.tsx";
+import { IssuePage } from "./src/ui/review/issue-page.tsx";
+import { parseRef, refPath, type ReviewApi } from "./src/ui/review/review-api.ts";
 import "./src/ui/git.css";
 
 type Client = ReturnType<typeof useRpc<typeof rpc>>;
@@ -246,6 +249,18 @@ function Dashboard({subPath}: {subPath: string}) {
     alerts: async () => okValue(await client.call("inboxAlerts",{})),
     seen: async () => okValue(await client.call("inboxSeen",{})),
   }), [client]);
+  const review = useMemo<ReviewApi>(() => ({
+    detail: async ref => okValue(await client.call("prDetail",ref)),
+    files: async ref => okValue(await client.call("prFiles",ref)).files,
+    prepare: async (ref,action) => okValue(await client.call("prPrepare",{...ref,action})),
+    confirm: async previewId => okValue(await client.call("prConfirm",{previewId})),
+    ask: async (ref,subject) => okValue(await client.call("prAsk",{...ref,subject})),
+    openThread: threadId => navigate.toThread(threadId),
+    issue: async ref => okValue(await client.call("issueDetail",ref)).issue,
+    issuePrepare: async (accountId,repo,action) => okValue(await client.call("issuePrepare",{accountId,repo,action})),
+    issueConfirm: async previewId => okValue(await client.call("issueConfirm",{previewId})),
+  }), [client,navigate]);
+  const [order,setOrder] = useState<InboxItem[]>([]);
   const [alerts,setAlerts] = useState<AlertSummary|null>(null);
   const readAlerts = useCallback(() => { inbox.alerts().then(setAlerts,() => {}); }, [inbox]);
   useEffect(readAlerts, [readAlerts]);
@@ -254,12 +269,31 @@ function Dashboard({subPath}: {subPath: string}) {
   const open = (path:string) => navigate.toPluginPanel("git",path ? {subPath:path} : undefined);
   return <div className="git-ws-frame"><div className="git-ws">
     <InboxToasts alerts={alerts}/>
-    {subPath === "inbox" ? <>
+    {parseRef(subPath) ? (() => {
+      const ref = parseRef(subPath)!;
+      const step = (by: -1 | 1) => {
+        const index = order.findIndex(item => item.accountId === ref.accountId && item.repo === ref.repo && item.number === ref.number);
+        const next = index < 0 ? undefined : order[index + by];
+        if (next) open(refPath("pr",{accountId:next.accountId,repo:next.repo,number:next.number}));
+      };
+      return <>
+        <nav aria-label="Git workspace" className="git-row git-section-tabs">
+          <button type="button" onClick={() => open("")}>Projects</button>
+          <button type="button" onClick={() => open("inbox")}>My PRs</button>
+          <span>{ref.repo} {ref.kind === "pr" ? "#" + ref.number : ref.number === "new" ? "· new issue" : "issue #" + ref.number}</span>
+        </nav>
+        {ref.kind === "pr" && typeof ref.number === "number"
+          ? <PrPage key={subPath} api={review} target={{accountId:ref.accountId,repo:ref.repo,number:ref.number}} onStep={order.length ? step : undefined}/>
+          : <IssuePage key={subPath} api={review} accountId={ref.accountId} repo={ref.repo} number={ref.number}
+            onCreated={number => open(refPath("issue",{accountId:ref.accountId,repo:ref.repo,number}))}/>}
+      </>;
+    })() : subPath === "inbox" ? <>
       <nav aria-label="Git workspace" className="git-row git-section-tabs">
         <button type="button" onClick={() => open("")}>Projects</button>
         <span>My PRs</span>
       </nav>
-      <InboxPage api={inbox} alerts={alerts} onSeen={() => { inbox.seen().then(setAlerts,() => {}); }}/>
+      <InboxPage api={inbox} alerts={alerts} onSeen={() => { inbox.seen().then(setAlerts,() => {}); }}
+        onOpen={(item,list) => { setOrder(list); open(refPath("pr",{accountId:item.accountId,repo:item.repo,number:item.number})); }}/>
     </> : subPath === "remotes" ? <>
       <nav aria-label="Git workspace" className="git-row git-section-tabs">
         <button type="button" onClick={() => open("")}>Projects</button>
@@ -272,6 +306,7 @@ function Dashboard({subPath}: {subPath: string}) {
       }}/>
     </> : <ProjectWorkspace copies={copies} hosts={hosts} projects={projects} locations={locations} subPath={subPath}
       loaded={loaded} error={error} api={api} onOpen={open} inboxBadge={badge}
+      onOpenIssue={(accountId,repo,number) => open(refPath("issue",{accountId,repo,number}))}
       onAttach={async (hostId,root,projectId) => {
         const result = await client.call("attach",{hostId,root,projectId});
         return result.ok ? result.value : failed(result);

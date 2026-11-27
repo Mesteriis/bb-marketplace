@@ -13,7 +13,9 @@ const reviewText: Record<string, string> = {APPROVED: "Approved", CHANGES_REQUES
   DISMISSED: "Dismissed", APPROVED_WITH_SUGGESTIONS: "Approved with suggestions", WAITING_FOR_AUTHOR: "Waiting for author", REJECTED: "Rejected"};
 
 /** My PRs: every connected account's pull requests by tab, what blocks each one, and new alerts. */
-export function InboxPage({api, alerts, onSeen}: {api: InboxApi; alerts: AlertSummary | null; onSeen(): void}) {
+export function InboxPage({api, alerts, onSeen, onOpen}: {api: InboxApi; alerts: AlertSummary | null; onSeen(): void;
+  /** Opens a pull request inside Makosh Git, with the rows in page order for [ and ]. */
+  onOpen?(item: InboxItem, order: InboxItem[]): void}) {
   const [tab, setTab] = useState<InboxTab>("open");
   const [list, setList] = useState<InboxList | null>(null);
   const [counts, setCounts] = useState<InboxList["counts"]>({});
@@ -101,7 +103,7 @@ export function InboxPage({api, alerts, onSeen}: {api: InboxApi; alerts: AlertSu
         {!folded.has(repo.key) && <ul className="git-inbox-list">{repo.items.map(item => {
           index += 1;
           const position = index;
-          return <Row key={item.id} item={item} tab={tab} current={position === cursor}
+          return <Row key={item.id} item={item} tab={tab} current={position === cursor} onOpen={onOpen && (() => onOpen(item, flat))}
             bind={element => { rows.current[position] = element; }} onFocus={() => setCursor(position)}/>;
         })}</ul>}
       </div>)}
@@ -109,10 +111,15 @@ export function InboxPage({api, alerts, onSeen}: {api: InboxApi; alerts: AlertSu
   </section>;
 }
 
-function Row({item, tab, current, bind, onFocus}: {item: InboxItem; tab: InboxTab; current: boolean; bind(element: HTMLAnchorElement | null): void; onFocus(): void}) {
+function Row({item, tab, current, bind, onFocus, onOpen}: {item: InboxItem; tab: InboxTab; current: boolean; bind(element: HTMLAnchorElement | null): void;
+  onFocus(): void; onOpen?(): void}) {
   const stale = tab === "reviewed" && item.myReview?.stale;
   return <li className="git-inbox-item" data-severity={severity(item)} data-current={current || undefined}>
-    <a ref={bind} href={item.url} target="_blank" rel="noreferrer" onFocus={onFocus}>
+    <a ref={bind} href={item.url} target="_blank" rel="noreferrer" onFocus={onFocus} onClick={event => {
+      // A plain click or Enter opens the pull request here; a modified click still opens the forge.
+      if (!onOpen || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      event.preventDefault(); onOpen();
+    }}>
       <span className="git-inbox-title">{item.title}</span>
       <span className="git-muted">#{item.number} · {item.author}{item.additions !== null && item.deletions !== null &&
         <> · <span className="git-inbox-plus">+{item.additions}</span> <span className="git-inbox-minus">−{item.deletions}</span></>}</span>
@@ -123,6 +130,7 @@ function Row({item, tab, current, bind, onFocus}: {item: InboxItem; tab: InboxTa
         {stale ? "Updated after your review" : reviewText[item.myReview.state] ?? item.myReview.state}</span>}
       {item.mergedAt && <span className="git-muted">Merged {item.mergedAt.slice(0, 10)}</span>}
       {item.closedAt && <span className="git-muted">Closed {item.closedAt.slice(0, 10)}</span>}
+      {onOpen && <a className="git-muted" href={item.url} target="_blank" rel="noreferrer" aria-label={"Open #" + item.number + " on the forge"}>↗</a>}
     </div>
   </li>;
 }

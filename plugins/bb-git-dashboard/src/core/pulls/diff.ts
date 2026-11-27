@@ -127,3 +127,18 @@ export function prFromUrl(href: string): { repo: string; number: number } | null
   return { repo: `${m[1]}/${m[2]}`, number: Number(m[3]) };
 }
 
+
+// ---- Makosh Git: a selection of rows as the anchor of a line comment action ----
+
+/**
+ * The anchor for rows `a`..`b`: the last row's side and line, the first row's line when both are on that side, and,
+ * for an unchanged last row, its line on the other side (GitLab anchors such a row on both). Null across hunks.
+ */
+export function lineAnchor(rows: DiffLine[], a: number, b: number): {side: "LEFT" | "RIGHT"; line: number; startLine: number | null; contextLine: number | null} | null {
+  const range = commentRange(rows, a, b);
+  if (!range) return null;
+  const last = rows[Math.max(a, b)]!;
+  const startLine = range.start && range.start.side === range.side && range.start.line !== range.line ? range.start.line : null;
+  const contextLine = last.kind === "ctx" ? (range.side === "RIGHT" ? last.oldLine : last.newLine) : null;
+  return {side: range.side, line: range.line, startLine, contextLine};
+}
