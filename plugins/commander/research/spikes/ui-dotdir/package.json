@@ -1,0 +1,38 @@
+{
+  "name": "bb-plugin-commander-spike-dotdir",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Stage 0 spike: @dotdirfm/ui mounted in a BB navPanel with an in-memory Bridge. Not a product.",
+  "engines": {
+    "bb": ">=0.49",
+    "bbPluginSdk": ">=0.6.132"
+  },
+  "bb": {
+    "name": "Commander spike: DotDir UI",
+    "description": "Stage 0 spike only.",
+    "server": "./server.ts",
+    "app": "./app.tsx",
+    "branding": {
+      "icon": "Folder"
+    }
+  },
+  "keywords": [
+    "bb-plugin"
+  ],
+  "scripts": {
+    "build": "bb plugin build",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@dotdirfm/ui": "0.1.34"
+  },
+  "devDependencies": {
+    "@get-bb/plugin-sdk": "0.6.132",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "typescript": "^5.7.0"
+  }
+}
