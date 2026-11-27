@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { sectionOf, sections } from "../src/ui/shell/sections.ts";
 
 test("every place of the dashboard belongs to one section of the side column", () => {
-  assert.equal(sectionOf(""), "projects");
+  assert.equal(sectionOf(""), "overview");
+  assert.equal(sectionOf("projects"), "projects");
   assert.equal(sectionOf("project/p-1"), "projects");
   assert.equal(sectionOf("c0ffee12"), "projects");
   assert.equal(sectionOf("c0ffee12/actions"), "projects");
@@ -20,6 +21,6 @@ test("every place of the dashboard belongs to one section of the side column", (
 
 test("the side column lists each section once, with its path", () => {
   assert.deepEqual(sections.map(section => [section.id, section.path]), [
-    ["inbox", "inbox"], ["ci", "ci"], ["reviews", "reviews"], ["projects", ""], ["catalog", "catalog"],
+    ["overview", ""], ["inbox", "inbox"], ["ci", "ci"], ["reviews", "reviews"], ["projects", "projects"], ["catalog", "catalog"],
   ]);
 });

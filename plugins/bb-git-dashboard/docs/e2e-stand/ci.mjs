@@ -18,7 +18,7 @@ try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
   const errors = [];
   page.on("pageerror", error => errors.push(String(error).slice(0, 200)));
-  await page.goto(url + "plugins/bb-git-dashboard/git", { waitUntil: "load" });
+  await page.goto(url + "plugins/bb-git-dashboard/git/projects", { waitUntil: "load" });
   await page.getByRole("button", { name: "+ Подключить копию" }).click({ timeout: 30000 });
   const select = page.locator(".git-add-copy select").first();
   const value = await select.locator("option").evaluateAll(options => options.find(option => option.textContent.trim().endsWith("/beta"))?.value ?? "");

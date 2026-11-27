@@ -18,4 +18,9 @@ test("the language switch writes the setting for the app only", async () => {
   assert.deepEqual(written, []);
   assert.deepEqual(await handlers.interfaceSet({uiLanguage: "ru"}, {experimental_caller: {kind: "client"}}), {ok: true});
   assert.deepEqual(written, [{uiLanguage: "ru"}]);
+  // The overview's view alone, without touching the language.
+  assert.deepEqual(declared.overviewView?.options, ["list", "board"]);
+  assert.equal(declared.overviewView?.default, "list");
+  assert.deepEqual(await handlers.interfaceSet({overviewView: "board"}, {experimental_caller: {kind: "client"}}), {ok: true});
+  assert.deepEqual(written.at(-1), {overviewView: "board"});
 });

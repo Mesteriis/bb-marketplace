@@ -27,7 +27,7 @@ try {
   const errors = [];
   page.on("pageerror", error => errors.push(String(error).slice(0, 200)));
   const open = async () => {
-    await page.goto(url + "plugins/bb-git-dashboard/git", { waitUntil: "load" });
+    await page.goto(url + "plugins/bb-git-dashboard/git/projects", { waitUntil: "load" });
     let entry = page.locator("button.git-table-entry", { hasText: "gamma" }).first();
     if (!await visible(entry, 8000)) {
       await page.getByRole("button", { name: "+ Подключить копию" }).click({ timeout: 30000 });
@@ -136,7 +136,7 @@ try {
   const featureCommit = await commitList.locator("option").evaluateAll(options => options.find(option => option.textContent.includes("feature work"))?.value ?? "");
   await commitList.selectOption(featureCommit);
   check("a recent commit is picked from the list", await visible(review.getByRole("region", { name: "feature.txt" })) && /^[0-9a-f]{40}$/.test(featureCommit), featureCommit);
-  await page.goto(url + "plugins/bb-git-dashboard/git", { waitUntil: "load" });
+  await page.goto(url + "plugins/bb-git-dashboard/git/projects", { waitUntil: "load" });
   const reviewsSection = page.getByRole("navigation", { name: "Makosh Git" }).getByRole("button", { name: /^Reviews\b/ });
   check("the Reviews section counts open comment threads", await visible(reviewsSection.getByLabel(/open comment threads?$/)));
   await reviewsSection.click();

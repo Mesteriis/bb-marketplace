@@ -46,7 +46,7 @@ try {
     return route.fulfill({ response, json: body });
   });
 
-  await page.goto(url + "plugins/bb-git-dashboard/git", { waitUntil: "load" });
+  await page.goto(url + "plugins/bb-git-dashboard/git/projects", { waitUntil: "load" });
   await page.getByRole("navigation", { name: "Makosh Git" }).getByRole("button", { name: /^My PRs\b/ }).click({ timeout: 30000 });
   const inbox = page.getByRole("region", { name: "My pull requests" });
   const row = inbox.locator(".git-inbox-item", { hasText: "Add greeting check" });
@@ -143,7 +143,7 @@ try {
   check("the Notifications settings offer a test notification", await visible(send, 30000));
   await send.click();
   check("it answers how the alert went out", await visible(page.getByRole("status").filter({ hasText: /The alert is in My PRs\./ })));
-  await page.goto(url + "plugins/bb-git-dashboard/git", { waitUntil: "load" });
+  await page.goto(url + "plugins/bb-git-dashboard/git/projects", { waitUntil: "load" });
   await page.getByRole("navigation", { name: "Makosh Git" }).getByRole("button", { name: /^My PRs\b/ }).click({ timeout: 30000 });
   check("the test alert is in My PRs", await visible(page.getByText("Test alert from Makosh Git")));
 

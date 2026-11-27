@@ -13,7 +13,7 @@ try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
   const errors = [];
   page.on("pageerror", error => errors.push(String(error).slice(0, 200)));
-  await page.goto(url + "plugins/bb-git-dashboard/git", { waitUntil: "load" });
+  await page.goto(url + "plugins/bb-git-dashboard/git/projects", { waitUntil: "load" });
   let entry = page.locator("button.git-table-entry", { hasText: "alpha" }).first();
   if (!await visible(entry, 8000)) {
     await page.getByRole("button", { name: "+ Подключить копию" }).click({ timeout: 30000 });

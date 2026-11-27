@@ -11,7 +11,7 @@ const failures = [];
 const check = (name, ok, detail) => { console.log((ok ? "ok   " : "FAIL ") + name + (detail === undefined ? "" : " — " + JSON.stringify(detail))); if (!ok) failures.push(name); };
 const visible = (locator, timeout = 15000) => locator.first().waitFor({ timeout }).then(() => true, () => false);
 const named = label => new RegExp("^" + label.replace(/[/]/g, "\\/") + "\\b");
-const sections = [["Projects", "projects"], ["My PRs", "inbox"], ["CI/CD", "ci"], ["Reviews", "reviews"], ["Catalog", "catalog"], ["Connections", "connections"]];
+const sections = [["Overview", "overview"], ["Projects", "projects"], ["My PRs", "inbox"], ["CI/CD", "ci"], ["Reviews", "reviews"], ["Catalog", "catalog"], ["Connections", "connections"]];
 try {
   for (const theme of ["light", "dark"]) {
     const context = await browser.newContext({ viewport: { width: 1440, height: 1024 } });

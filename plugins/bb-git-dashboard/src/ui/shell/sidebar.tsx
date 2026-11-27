@@ -60,7 +60,7 @@ export function Sidebar({subPath, open, projects, copies, hosts, hiddenRepositor
   }
   async function visibility(project: Project, hidden: boolean) {
     await api.projectVisibility(project.id, hidden);
-    if (hidden && (subPath === "project/" + encodeURIComponent(project.id) || copies.some(copy => copy.projectId === project.id && copy.id === copyOf))) open("");
+    if (hidden && (subPath === "project/" + encodeURIComponent(project.id) || copies.some(copy => copy.projectId === project.id && copy.id === copyOf))) open("projects");
     setManage(null);
   }
   const toggle = (key: string) => setClosed(previous => {

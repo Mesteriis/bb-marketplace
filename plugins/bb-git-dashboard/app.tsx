@@ -24,6 +24,8 @@ import { ciApi, codeReviewApi, failed, historyApi, okValue } from "./src/app/api
 import { ciTab, historyTab, reviewTab, ThreadCi, ThreadHistory, ThreadReview, registerHistoryShortcut, registerReviewSurfaces } from "./src/app/thread-tabs.tsx";
 import { Sidebar, type SidebarApi } from "./src/ui/shell/sidebar.tsx";
 import { ConnectionsPage } from "./src/ui/connections-page.tsx";
+import { OverviewPage } from "./src/ui/overview/overview-page.tsx";
+import { useOverviewApi } from "./src/app/overview-data.tsx";
 import { useT } from "./src/ui/i18n/use-t.tsx";
 import { accountsChanged, onAccountsChanged, withInterface } from "./src/app/interface.tsx";
 import "./src/ui/system/tokens.css";
@@ -140,7 +142,9 @@ function Dashboard({subPath}: {subPath: string}) {
   const {client, copies, hosts, projects, locations, loaded, error} = useCatalog();
   const navigate = useBbNavigate();
   const panel = experimental_useAppPanel();
-  const historyGraph = useSettings().values?.historyGraph !== false;
+  const settingValues = useSettings().values;
+  const historyGraph = settingValues?.historyGraph !== false;
+  const overview = useOverviewApi(copies, projects.length);
   const reviewRevisions = useReviewRevisions();
   const reviewRevision = reviewRevisions.any;
   const api = useMemo<RemoteApi & RepositoryApi & ConnectionApi & {trees(id:string):Promise<import("./src/core/git.ts").GitResult>}>(() => ({
@@ -280,6 +284,8 @@ function Dashboard({subPath}: {subPath: string}) {
         onOpen={(item,list) => { setOrder(list); open(refPath("pr",{accountId:item.accountId,repo:item.repo,number:item.number})); }}/>
     </> : subPath === "catalog" ? <>
       <CatalogPage api={catalogApi} hosts={hosts}/>
+    </> : subPath === "" ? <>
+      <OverviewPage api={overview} initialView={settingValues?.overviewView === "board" ? "board" : "list"}/>
     </> : subPath === "connections" ? <>
       <ConnectionsPage api={api} title={t("section.connections")} onBrowse={() => open("remotes")} onChanged={accountsChanged}/>
     </> : subPath === "remotes" ? <>
@@ -288,7 +294,7 @@ function Dashboard({subPath}: {subPath: string}) {
           throw new Error("The panel did not accept this pull request.");
         }
       }}/>
-    </> : <ProjectWorkspace copies={copies} hosts={hosts} projects={projects} locations={locations} subPath={subPath}
+    </> : <ProjectWorkspace copies={copies} hosts={hosts} projects={projects} locations={locations} subPath={subPath === "projects" ? "" : subPath}
       loaded={loaded} error={error} api={api} onOpen={open} title={t("section.projects")} historyGraph={historyGraph} reviewRevisions={reviewRevisions.byCopy}
       onOpenIssue={(accountId,repo,number) => open(refPath("issue",{accountId,repo,number}))}
       onAttach={async (hostId,root,projectId) => {

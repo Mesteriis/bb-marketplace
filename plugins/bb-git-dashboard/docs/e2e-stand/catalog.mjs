@@ -15,7 +15,7 @@ try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
   const errors = [];
   page.on("pageerror", error => errors.push(String(error).slice(0, 200)));
-  await page.goto(url + "plugins/bb-git-dashboard/git", { waitUntil: "load" });
+  await page.goto(url + "plugins/bb-git-dashboard/git/projects", { waitUntil: "load" });
   await page.getByRole("navigation", { name: "Makosh Git" }).getByRole("button", { name: /^Catalog\b/ }).click({ timeout: 30000 });
   const catalog = page.getByRole("region", { name: "Catalog" });
   const localList = catalog.getByRole("list", { name: "Local projects" });

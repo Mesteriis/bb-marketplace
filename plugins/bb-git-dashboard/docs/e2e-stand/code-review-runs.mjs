@@ -27,7 +27,7 @@ try {
   const errors = [];
   page.on("pageerror", error => errors.push(String(error).slice(0, 200)));
   const openReview = async () => {
-    await page.goto(url + "plugins/bb-git-dashboard/git", { waitUntil: "load" });
+    await page.goto(url + "plugins/bb-git-dashboard/git/projects", { waitUntil: "load" });
     await page.locator("button.git-table-entry", { hasText: "beta" }).first().click({ timeout: 30000 });
     await page.getByRole("navigation", { name: "Repository sections" }).getByRole("button", { name: "Review" }).click();
     const review = page.getByRole("region", { name: "Review" });

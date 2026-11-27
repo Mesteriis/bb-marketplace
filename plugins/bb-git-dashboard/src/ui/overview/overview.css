@@ -1,0 +1,47 @@
+/* The overview: the list with the chosen item's details beside it, or the board by stage. */
+.git-ws .git-overview { min-height: 100%; }
+.git-ws .git-overview-split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(320px, 42%); border-top: 1px solid var(--border); flex: 1; min-height: 0; }
+.git-ws .git-overview-list { padding: 8px 12px 24px; min-width: 0; }
+.git-ws .git-overview-list ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.git-ws .git-overview-group { margin: 0; padding: 14px 12px 6px; display: flex; gap: 8px; }
+.git-ws .git-overview-list .g-it { cursor: pointer; }
+.git-ws .git-overview-list .g-it:hover:not(.sel) { background: var(--git-subtle); }
+.git-ws .git-overview-list .g-it:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+.git-ws .git-overview-text { flex: 1; min-width: 0; }
+.git-ws .git-overview-title { display: flex; flex-wrap: wrap; gap: 0 8px; align-items: baseline; font-weight: 550; min-width: 0; }
+.git-ws .git-overview-title > .g-ell { flex: 1 1 120px; }
+.git-ws .git-overview-kind { font-weight: 600; white-space: nowrap; }
+.git-ws .git-overview-meta { font-size: 12px; }
+.git-ws .git-overview-when { font-size: 12px; white-space: nowrap; }
+.git-ws .git-overview-list .g-btn { min-width: 92px; }
+.git-ws .git-overview-details { border-left: 1px solid var(--border); padding: 20px 24px; display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.git-ws .git-overview-details h2 { margin: 0; font-size: 17px; font-weight: 650; letter-spacing: -.01em; }
+.git-ws .git-overview-details h3 { margin: 0 0 8px; }
+.git-ws .git-overview-chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.git-ws .git-overview-blockers { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.git-ws .git-overview-blockers li { display: flex; gap: 8px; align-items: center; }
+.git-ws .git-overview-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+
+.git-ws .git-overview-board { border-top: 1px solid var(--border); padding: 12px 24px 24px; display: grid; gap: 16px; }
+.git-ws .git-overview-board ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.git-ws .git-overview-now ul { grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
+.git-ws .git-overview-board h2 { margin: 0 0 8px; display: flex; gap: 8px; }
+.git-ws .git-overview-columns { display: grid; grid-template-columns: repeat(5, minmax(200px, 1fr)); gap: 12px; padding-bottom: 4px; }
+.git-ws .git-overview-column { min-width: 0; }
+.git-ws .git-overview-card {
+  width: 100%; display: grid; gap: 4px; text-align: left; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--background); color: var(--foreground); font: inherit; cursor: pointer;
+}
+.git-ws .git-overview-card:hover:not(:disabled) { background: var(--git-subtle); }
+.git-ws .git-overview-card:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+.git-ws .git-overview-card:disabled { opacity: 1; cursor: default; }
+.git-ws .git-overview-card-title { font-weight: 600; }
+
+@container (max-width: 560px) {
+  .git-ws .git-overview-list .g-btn { min-width: 0; }
+  .git-ws .git-overview-list .g-it { gap: 8px; padding-inline: 8px; }
+}
+@container (max-width: 900px) {
+  .git-ws .git-overview-split { grid-template-columns: minmax(0, 1fr); }
+  .git-ws .git-overview-details { border-left: 0; border-top: 1px solid var(--border); }
+}

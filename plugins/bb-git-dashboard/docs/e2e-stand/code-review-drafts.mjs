@@ -26,7 +26,7 @@ try {
   const errors = [];
   page.on("pageerror", error => errors.push(String(error).slice(0, 200)));
   const openPull = async () => {
-    await page.goto(url + "plugins/bb-git-dashboard/git", { waitUntil: "load" });
+    await page.goto(url + "plugins/bb-git-dashboard/git/projects", { waitUntil: "load" });
     await page.getByRole("navigation", { name: "Makosh Git" }).getByRole("button", { name: /^My PRs\b/ }).click({ timeout: 30000 });
     await page.locator(".git-inbox-item", { hasText: "Add greeting check" }).locator("a").first().click();
     const pr = page.getByRole("region", { name: "Pull request stand/beta #3" });
