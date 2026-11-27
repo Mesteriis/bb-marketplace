@@ -2,7 +2,7 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import type { Entry, Initiator } from "../../core/model.ts";
 import { rpcSchemas, threadId } from "../../core/wire/rpc.ts";
-import { agentJobView, publicError, type Operations } from "./rpc-handlers.ts";
+import { publicError, type Operations } from "./rpc-handlers.ts";
 
 function metadata(entry: Entry | null) {
   if (!entry) return null;
@@ -56,7 +56,7 @@ export function registerAgentTools(agents: BbPluginApi["agents"], ops: Operation
       return { jobId: job.id, status: job.awaitsOwner ? "awaiting_owner" : "submitted" };
     });
   register("jobs", "List this thread's file operation states.", rpcSchemas.job_list.input,
-    async (input, agent) => ({ jobs: (await ops.jobs(input, agent)).map(agentJobView) }));
+    async (input, agent) => ({ jobs: await ops.agentJobs(input, agent.threadId) }));
   register("cancel", "Cancel one of this thread's file operations.", rpcSchemas.job_cancel.input,
     ({ jobId }, agent) => ops.cancel(jobId, agent));
 }

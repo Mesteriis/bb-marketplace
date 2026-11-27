@@ -88,7 +88,7 @@ export function registerCli(cli: BbPluginApi["cli"], ops: Operations) {
       jobs: cliCommand({
         summary: "List file operation jobs",
         options: { limit: { type: "integer", min: 1, max: 200, default: 100, description: "Maximum number of jobs" } },
-        run: ({ options }) => show(async () => ({ jobs: (await ops.jobs({ limit: options.limit }, owner)).map(jobView) })),
+        run: ({ options }) => show(async () => ({ jobs: (await ops.jobs({ limit: options.limit })).map(jobView) })),
       }),
       cancel: cliCommand({
         summary: "Cancel a file operation job",

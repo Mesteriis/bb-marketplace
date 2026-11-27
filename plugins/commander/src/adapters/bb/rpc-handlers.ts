@@ -6,7 +6,7 @@ import type { Initiator, OperationJob, OperationPlan, ResourceRef } from "../../
 import { parent } from "../../core/path.ts";
 import { authorize, REQUIRED } from "../../core/permissions.ts";
 import { buildPlan, type PlannerDeps } from "../../core/planner.ts";
-import { UiState, rpcSchemas, type AgentGrant, type DamagedJob, type RpcInput } from "../../core/wire/rpc.ts";
+import { UiState, rpcSchemas, type AgentGrant, type DamagedJob, type GrantKey, type RpcInput } from "../../core/wire/rpc.ts";
 import { SFTP_REFUSALS, SftpRefusal } from "../../core/wire/remote-hub-sftp.ts";
 import { covers, type createAgentGrants } from "./agent-grants.ts";
 import type { Endpoints } from "./endpoints.ts";
@@ -15,6 +15,9 @@ const owner = { kind: "owner" } as const;
 const stateKey = "ui-state";
 const maxPlanBytes = 16 * 1024 * 1024;
 const maxPlans = 128;
+const maxAgentPlanBytes = 4 * 1024 * 1024;
+const maxThreadPlans = 32;
+const maxAgentPlanItems = 10_000;
 const lifetime = 30 * 60 * 1000;
 const activeStates = ["pending", "running", "awaiting_decision", "cancel_requested", "interrupted"] as const;
 
@@ -49,10 +52,12 @@ function refs(plan: OperationPlan): string[] {
 
 function autoRunAllowed(plan: OperationPlan, initiator: Initiator, grants: AgentGrant[]) {
   if (!authorize(initiator, plan, grants).ok || REQUIRED[plan.kind].includes("delete")) return false;
+  const mayOverwrite = plan.conflictPolicy === "overwrite" || plan.conflictPolicy === "overwriteIfNewer";
   // The runner can stage a sibling of a destination or choose a free sibling on conflict.
   // A grant for the destination leaf alone cannot authorize that.
   return plan.items.every(({ target }) => {
     if (!target) return true;
+    if (mayOverwrite && !covers(grants, target, "delete")) return false;
     const directory = parent(target.path);
     return directory !== null && covers(grants, { endpoint: target.endpoint, path: directory }, "write");
   });
@@ -65,9 +70,14 @@ function effectiveGrants(rows: AgentGrant[], endpoint: string): AgentGrant[] {
 }
 
 function operationGrants(rows: AgentGrant[], plan: OperationPlan): AgentGrant[] {
-  return refs(plan).flatMap((endpoint) => effectiveGrants(rows, endpoint)
+  return [...new Set(refs(plan))].flatMap((endpoint) => effectiveGrants(rows, endpoint)
     .filter((row) => row.endpoint === "*" || row.endpoint === endpoint)
     .map((row) => ({ ...row, endpoint })));
+}
+
+function canObserve(rows: AgentGrant[], ref: ResourceRef) {
+  const grants = effectiveGrants(rows, ref.endpoint);
+  return covers(grants, ref, "observe") || covers(grants, ref, "read");
 }
 
 export function createOperations(deps: {
@@ -79,27 +89,50 @@ export function createOperations(deps: {
   kv: PluginKvStorage;
   publish(kind: "job" | "dir" | "endpoints", id: string): void;
   ready(): Promise<void>;
+  hasOwnerApproval(id: string): boolean;
 }) {
   const { endpoints, runner, store, planner, grants, kv, publish } = deps;
   const plans = new Map<string, { plan: OperationPlan; bytes: number; created: number }>();
-  let planBytes = 0;
+  let accessQueue: Promise<unknown> = Promise.resolve();
 
-  function forget(id: string) {
-    const entry = plans.get(id);
-    if (entry) planBytes -= entry.bytes;
-    plans.delete(id);
+  function serializeAccess<T>(action: () => Promise<T>): Promise<T> {
+    const result = accessQueue.then(action);
+    accessQueue = result.catch(() => {});
+    return result;
   }
 
   function remember(plan: OperationPlan) {
     const bytes = Buffer.byteLength(JSON.stringify(plan));
-    if (bytes > maxPlanBytes) throw refusal("invalid", "Operation plan exceeds the storage limit");
+    const initiator = plan.initiator;
+    const agent = initiator.kind === "agent";
+    const actorLimit = agent ? maxThreadPlans : maxPlans;
+    const actorBytesLimit = agent ? maxAgentPlanBytes : maxPlanBytes;
+    if (bytes > actorBytesLimit) throw refusal("invalid", "Operation plan exceeds the storage limit");
+    const now = Date.now();
+    const own: [string, number][] = [];
+    let otherCount = 0;
+    let otherBytes = 0;
     for (const [id, entry] of plans) {
-      if (Date.now() - entry.created > lifetime || plans.size >= maxPlans || planBytes + bytes > maxPlanBytes) {
-        forget(id);
-      } else break;
+      if (now - entry.created > lifetime) plans.delete(id);
+      else if (ownedBy(initiator, entry.plan.initiator)) own.push([id, entry.bytes]);
+      else if (agent && entry.plan.initiator.kind === "agent") {
+        otherCount++;
+        otherBytes += entry.bytes;
+      }
     }
-    plans.set(plan.id, { plan: structuredClone(plan), bytes, created: Date.now() });
-    planBytes += bytes;
+    if (otherCount >= maxPlans || otherBytes + bytes > maxPlanBytes) {
+      throw refusal("conflict", "Agent plan pool is full");
+    }
+    let ownBytes = own.reduce((total, [, size]) => total + size, 0);
+    for (let index = 0; index < own.length; index++) {
+      const count = own.length - index;
+      if (count < actorLimit && ownBytes + bytes <= actorBytesLimit
+        && otherCount + count < maxPlans && otherBytes + ownBytes + bytes <= maxPlanBytes) break;
+      const [id, size] = own[index];
+      plans.delete(id);
+      ownBytes -= size;
+    }
+    plans.set(plan.id, { plan: structuredClone(plan), bytes, created: now });
   }
 
   async function requireJob(id: string, initiator?: Initiator) {
@@ -119,10 +152,40 @@ export function createOperations(deps: {
 
   async function checkMetadata(initiator: Initiator, ref: ResourceRef) {
     if (initiator.kind === "owner") return;
-    const rows = effectiveGrants(await grants.forThread(initiator.threadId), ref.endpoint);
-    if (!covers(rows, ref, "observe") && !covers(rows, ref, "read")) {
+    if (!canObserve(await grants.forThread(initiator.threadId), ref)) {
       throw refusal("forbidden", "Path is outside the agent's grant");
     }
+  }
+
+  async function uncoveredJobs(jobs: OperationJob[]) {
+    const grantsByThread = new Map<string, AgentGrant[]>();
+    const uncovered: OperationJob[] = [];
+    for (const job of jobs) {
+      const { initiator } = job.plan;
+      if (initiator.kind !== "agent" || job.awaitsOwner || deps.hasOwnerApproval(job.id)) continue;
+      let rows = grantsByThread.get(initiator.threadId);
+      if (!rows) {
+        rows = await grants.forThread(initiator.threadId);
+        grantsByThread.set(initiator.threadId, rows);
+      }
+      if (!autoRunAllowed(job.plan, initiator, operationGrants(rows, job.plan))) uncovered.push(job);
+    }
+    return uncovered;
+  }
+
+  function changeGrants(threadId: string, update: () => Promise<void>) {
+    return serializeAccess(async () => {
+      await deps.ready();
+      await update();
+      const active = await store.list({ states: ["pending", "running", "awaiting_decision", "cancel_requested"],
+        threadId, limit: Number.MAX_SAFE_INTEGER });
+      const cancellations = await uncoveredJobs(active);
+      const results = await Promise.allSettled(cancellations.map(({ id }) => runner.cancel(id)));
+      if (results.some(({ status }) => status === "rejected")) {
+        throw refusal("conflict", "Grant updated but job cancellation could not be confirmed");
+      }
+      return {};
+    });
   }
 
   return {
@@ -148,10 +211,12 @@ export function createOperations(deps: {
       return endpoints.provider(ref.endpoint).stat(ref.path, signal);
     },
     async createPlan(input: RpcInput<"plan_create">, initiator: Initiator, signal: AbortSignal) {
+      const limits = initiator.kind === "agent" ? { ...planner.limits, maxItems: maxAgentPlanItems } : planner.limits;
+      if (input.sources.length > limits.maxItems) throw refusal("invalid", "Selection exceeds the plan item limit");
       const ids = input.sources.map(({ endpoint }) => endpoint);
       if (input.targetDir) ids.push(input.targetDir.endpoint);
       await endpoints.prepare(ids, signal);
-      const plan = await buildPlan({ ...input, initiator }, planner, signal);
+      const plan = await buildPlan({ ...input, initiator }, { ...planner, limits }, signal);
       remember(plan);
       return plan;
     },
@@ -159,24 +224,27 @@ export function createOperations(deps: {
       await deps.ready();
       const entry = plans.get(planId);
       if (!entry || Date.now() - entry.created > lifetime) {
-        forget(planId);
+        plans.delete(planId);
         throw refusal("not_found", "Plan is unavailable");
       }
       const { plan } = entry;
       if (!ownedBy(initiator, plan.initiator)) throw refusal("forbidden", "Plan belongs to another initiator");
       if (plan.digest !== digest) throw refusal("conflict", "Plan digest does not match");
       await endpoints.prepare(refs(plan), signal);
-      const rows = initiator.kind === "agent" ? await grants.forThread(initiator.threadId) : [];
-      const awaitsOwner = initiator.kind === "agent" && !autoRunAllowed(plan, initiator, operationGrants(rows, plan));
-      signal.throwIfAborted();
-      if (plans.get(planId) !== entry) throw refusal("conflict", "Plan is no longer available");
-      forget(planId);
-      return runner.submit(plan, { awaitsOwner });
+      return serializeAccess(async () => {
+        const rows = initiator.kind === "agent" ? await grants.forThread(initiator.threadId) : [];
+        const awaitsOwner = initiator.kind === "agent" && !autoRunAllowed(plan, initiator, operationGrants(rows, plan));
+        signal.throwIfAborted();
+        if (plans.get(planId) !== entry) throw refusal("conflict", "Plan is no longer available");
+        plans.delete(planId);
+        return runner.submit(plan, { awaitsOwner });
+      });
     },
-    async jobs(input: RpcInput<"job_list">, initiator: Initiator) {
-      // Filter by thread before applying its page limit. S6 bounds retained terminal rows.
-      const rows = await store.list({ ...input, limit: initiator.kind === "owner" ? input.limit : Number.MAX_SAFE_INTEGER });
-      return (initiator.kind === "owner" ? rows : rows.filter((job) => ownedBy(initiator, job.plan.initiator))).slice(0, input.limit);
+    jobs: (input: RpcInput<"job_list">) => store.list(input),
+    async agentJobs(input: RpcInput<"job_list">, threadId: string) {
+      const jobs = await store.list({ ...input, threadId });
+      const rows = await grants.forThread(threadId);
+      return jobs.map((job) => agentJobView(job, rows));
     },
     async cancel(id: string, initiator: Initiator) {
       await deps.ready();
@@ -228,8 +296,24 @@ export function createOperations(deps: {
       const ids = new Set(recovery.filter((job) => !job.awaitsOwner).flatMap((job) => refs(job.plan)));
       await Promise.allSettled([...ids].map((id) => endpoints.prepare([id], signal)));
       signal.throwIfAborted();
+      const uncovered = await uncoveredJobs(recovery);
+      for (const job of uncovered) {
+        signal.throwIfAborted();
+        if (job.state === "cancel_requested") continue;
+        if (job.state === "pending") {
+          await runner.cancel(job.id);
+          continue;
+        }
+        // The previous process may have stopped after persisting the grant
+        // change. Recover the last checkpoint in cancellation mode.
+        if (await store.update(job.id, {
+          state: "cancel_requested", pendingConflict: null, updatedAt: planner.now().toISOString(),
+        }, job.state)) publish("job", job.id);
+      }
     },
-    grants,
+    listGrants: grants.list,
+    setGrant: (grant: AgentGrant) => changeGrants(grant.threadId, () => grants.set(grant)),
+    revokeGrant: (key: GrantKey) => changeGrants(key.threadId, () => grants.revoke(key)),
   };
 }
 
@@ -239,10 +323,12 @@ export function jobView(job: OperationJob) {
   return damaged(job) ?? job;
 }
 
-export function agentJobView(job: OperationJob) {
-  return damaged(job) ?? {
-    id: job.id, state: job.state, awaitsOwner: job.awaitsOwner, progress: job.progress, initiator: job.plan.initiator,
-  };
+function agentJobView(job: OperationJob, grants: AgentGrant[]) {
+  const summary = { id: job.id, state: job.state, awaitsOwner: job.awaitsOwner };
+  const visible = job.plan.items.every(({ source, target }) => source
+    ? canObserve(grants, source)
+    : target !== null && canObserve(grants, target));
+  return damaged(job) ?? (visible ? { ...summary, progress: job.progress, initiator: job.plan.initiator } : summary);
 }
 
 export function createRpcHandlers(ops: Operations): ExperimentalPluginRpcHandlersWithContext<typeof rpcSchemas> {
@@ -253,14 +339,14 @@ export function createRpcHandlers(ops: Operations): ExperimentalPluginRpcHandler
     entry_stat: ({ ref }, ctx) => ops.stat(ref, owner, ctx.experimental_signal),
     plan_create: (input, ctx) => ops.createPlan(input, owner, ctx.experimental_signal),
     plan_run: (input, ctx) => ops.runPlan(input, owner, ctx.experimental_signal),
-    job_list: async (input) => ({ jobs: (await ops.jobs(input, owner)).map(jobView) }),
+    job_list: async (input) => ({ jobs: (await ops.jobs(input)).map(jobView) }),
     job_decide: (input, ctx) => ops.decide(input, ctx.experimental_signal),
     job_cancel: ({ jobId }) => ops.cancel(jobId, owner),
     plan_approve: (input, ctx) => ops.approve(input, ctx.experimental_signal),
     plan_reject: (input) => ops.reject(input),
-    agent_grants_list: async () => ({ grants: await ops.grants.list() }),
-    agent_grants_set: async ({ grant }) => { await ops.grants.set(grant); return {}; },
-    agent_grants_revoke: async (input) => { await ops.grants.revoke(input); return {}; },
+    agent_grants_list: async () => ({ grants: await ops.listGrants() }),
+    agent_grants_set: ({ grant }) => ops.setGrant(grant),
+    agent_grants_revoke: (input) => ops.revokeGrant(input),
     sftp_request_access: (input, ctx) => ops.requestAccess(input, ctx.experimental_signal),
     ui_state_get: () => ops.getState(),
     ui_state_set: ({ state }) => ops.setState(state),

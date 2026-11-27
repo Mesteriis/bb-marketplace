@@ -12,11 +12,22 @@ import { revalidate, type PlannerDeps } from "./src/core/planner.ts";
 import { rpcSchemas } from "./src/core/wire/rpc.ts";
 
 export const rpcContract = defineRpcContract(rpcSchemas);
+const agentJobMigration = `
+  CREATE INDEX IF NOT EXISTS jobs_agent_updated_at ON jobs (thread_id, updated_at DESC, id ASC)
+    WHERE initiator_kind = 'agent';
+  CREATE TABLE IF NOT EXISTS commander_owner_approvals (job_id TEXT PRIMARY KEY);
+  CREATE TRIGGER IF NOT EXISTS commander_record_owner_approval AFTER UPDATE OF state ON jobs
+    WHEN old.awaits_owner = 1 AND new.state = 'running'
+    BEGIN INSERT OR IGNORE INTO commander_owner_approvals VALUES (new.id); END;
+  CREATE TRIGGER IF NOT EXISTS commander_forget_owner_approval AFTER DELETE ON jobs
+    BEGIN DELETE FROM commander_owner_approvals WHERE job_id = old.id; END;
+`;
 
 export default function activate(bb: BbPluginApi) {
   const db = bb.storage.database();
-  bb.storage.migrate(db, MIGRATIONS);
+  bb.storage.migrate(db, [...MIGRATIONS, agentJobMigration]);
   const store = createSqliteJobStore(db);
+  const ownerApproval = db.prepare("SELECT 1 FROM commander_owner_approvals WHERE job_id = ?").pluck();
   const endpoints = createEndpoints(bb);
   const kv = bb.storage.kv;
   const grants = createAgentGrants(kv);
@@ -46,20 +57,30 @@ export default function activate(bb: BbPluginApi) {
     },
   });
 
-  let recovered = false;
+  let recovery: "starting" | "ready" | "failed" = "starting";
   const ops = createOperations({
     endpoints, runner, store, planner, grants, kv, publish,
+    hasOwnerApproval: (id) => ownerApproval.get(id) === 1,
     async ready() {
-      if (disposed || !recovered) throw refusal("conflict", "Commander jobs are being recovered");
+      if (recovery === "failed") throw refusal("conflict", "Commander recovery failed");
+      if (disposed || recovery !== "ready") throw refusal("conflict", "Commander jobs are being recovered");
     },
   });
 
   bb.background.service("jobs", {
     async start(signal) {
       if (signal.aborted) return;
-      await ops.prepareRecovery(signal);
-      await runner.recover();
-      recovered = true;
+      try {
+        await ops.prepareRecovery(signal);
+        await runner.recover();
+        if (signal.aborted || disposed) return;
+        recovery = "ready";
+      } catch {
+        if (signal.aborted || disposed) return;
+        recovery = "failed";
+        bb.log.error("Commander recovery failed");
+        throw new Error("Commander recovery failed");
+      }
       if (!signal.aborted) {
         await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
       }
