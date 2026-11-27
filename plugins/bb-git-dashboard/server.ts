@@ -9,6 +9,7 @@ import { hostContract } from "./src/adapters/bb/host-contract.ts";
 import { remoteService } from "./src/adapters/bb/remote-service.ts";
 import { forgeLinking } from "./src/adapters/bb/forge-rpc.ts";
 import { projectCatalog } from "./src/adapters/bb/project-catalog.ts";
+import { ciHandlers } from "./src/adapters/bb/ci-rpc.ts";
 import { pullMutation } from "./src/core/providers.ts";
 import { remoteTarget } from "./src/core/publication.ts";
 import { registerAgentWork } from "./src/adapters/bb/agent-work.ts";
@@ -99,6 +100,14 @@ export default function plugin(bb: BbPluginApi) {
   const forge = forgeLinking(bb,linkKey,() => remote);
   const remote = remoteService(bb,loadCopy,saveCopy,forge.originMatches);
   const catalog = projectCatalog(bb);
+  const ci = ciHandlers(bb, {
+    copy: linkedCopy,
+    async linked(copy) {
+      const target = await kv.get<Target>(linkKey(copy));
+      if (!target) throw new Error("ACCOUNT_UNCONFIGURED");
+      return remote.linked(target, copy);
+    },
+  }, copyId => bb.realtime.publish("ci-changed", {copyId}));
   type Target = z.infer<typeof remoteTarget>;
   const validatedProject = async (projectId:string | undefined) =>
     !projectId || (await bb.sdk.projects.list()).some(project => project.id === projectId);
@@ -137,6 +146,7 @@ export default function plugin(bb: BbPluginApi) {
       other.projectId === location.projectId && other.hostId === location.hostId && other.path === location.path) === index);
   }
   bb.rpc.register(rpc, {
+    ...ci,
     checkConnection: (input,context) => clientOnly(context) ? remote.checkConnection(input) : denied(),
     saveConnection: (input,context) => clientOnly(context) ? remote.saveConnection(input) : denied(),
     accounts: (_,context) => clientOnly(context) ? remote.accounts() : denied(),

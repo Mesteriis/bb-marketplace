@@ -118,6 +118,12 @@ export function remoteService(bb: BbPluginApi, loadCopy: (id:string) => Promise<
   }
 
   return {
+    /** Account, token and provider repository of a linked target, with the copy's origin checked. */
+    linked: async (target:Target, copy:Copy) => {
+      const found = await repository(target);
+      await assertOrigin(found.repo,copy);
+      return {account:found.selected, token:found.token, repo:found.repo};
+    },
     accountList: async () => accounts((await settings.get()).accounts),
     credential: async (id:string) => {
       const {selected,token} = await context(id);
