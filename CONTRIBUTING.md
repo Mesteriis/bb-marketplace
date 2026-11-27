@@ -10,7 +10,7 @@ merged change is a small one with a clear reason.
    enforced by a test, and most review comments come from it.
 2. For anything larger than a fix, open an issue first and describe the
    outcome you want.
-3. You need Node 22 or later and BB 0.49 or later (`bb --version`).
+3. You need Node 24 or later (the version in `.nvmrc`, which CI uses) and BB 0.49 or later (`bb --version`).
 
 ## Work on a plugin
 

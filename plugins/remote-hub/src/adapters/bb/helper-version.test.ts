@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
-import { HELPER_VERSION, helperBinaryPath, probeHelper } from "./helper-process.ts";
+import { HELPER_VERSION, helperBinaryPath, platformError, probeHelper } from "./helper-process.ts";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
@@ -16,7 +16,9 @@ test("the helper version the plugin expects is the crate's version and the packa
   expect(HELPER_VERSION).toBe("0.2.1");
 });
 
-test.skipIf(!existsSync(join(root, "bin", "remote-hub-helper")))("the shipped helper binary passes the plugin's own start check (checksum and version)", async () => {
+// The shipped binary is built for darwin/arm64 only: on another machine the plugin refuses it before starting it
+// (platformError), so there is nothing to run there.
+test.skipIf(!existsSync(join(root, "bin", "remote-hub-helper")) || platformError() !== null)("the shipped helper binary passes the plugin's own start check (checksum and version)", async () => {
   const probe = await probeHelper(helperBinaryPath(root));
   expect(probe).toMatchObject({ ok: true });
 });
