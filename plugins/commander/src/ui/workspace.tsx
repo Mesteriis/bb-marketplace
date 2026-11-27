@@ -4,7 +4,7 @@ import { Icon } from "@/components/ui/icon";
 import type { ConflictAction, Entry, OperationJob, OperationPlan, ResourceRef } from "../core/model.ts";
 import { displayPath, join, NameSegment, parent, parsePosix, type ResourcePath } from "../core/path.ts";
 import type { AgentGrant, UiState } from "../core/wire/rpc.ts";
-import type { ViewModel } from "../core/preview.ts";
+import type { ViewKind, ViewResult } from "../core/preview.ts";
 import { ConflictDialog, Modal, PlanDialog, TextDialog } from "./dialogs.tsx";
 import { chord, findShortcut, shortcuts, shortcutText, type KeyBindings, type Shortcut } from "./keyboard.ts";
 import { activeTab, currentRef, keyOf, nameOf, nativePath, otherSide, problemOf, selectionInfo, shortPath, sides, visibleEntries,
@@ -22,7 +22,7 @@ type DialogState = { kind: "plan"; plan: OperationPlan; job?: OperationJob }
   | { kind: "text"; title: string; label: string; initial?: string; submit: (value: string) => void }
   | { kind: "compare"; difference: [number, number, number, number] }
   | { kind: "content"; source: string; target: string; returnTo: ConflictView }
-  | { kind: "view"; ref: ResourceRef; title: string; model: ViewModel | null; problem: Problem | null }
+  | { kind: "view"; ref: ResourceRef; title: string; mode: ViewKind | "auto"; result: ViewResult | null; problem: Problem | null }
   | { kind: "settings" };
 
 export interface WorkspaceProps {
@@ -47,7 +47,7 @@ export interface WorkspaceProps {
   onDecide: (job: OperationJob, action: ConflictAction, same: boolean) => Promise<unknown>;
   onCancel: (job: OperationJob) => Promise<unknown>;
   onPreview: (ref: ResourceRef) => void;
-  onView: (ref: ResourceRef) => Promise<ViewModel>;
+  onView: (ref: ResourceRef, mode: ViewKind | "auto") => Promise<ViewResult>;
   onCompare: (source: ResourceRef, target: ResourceRef) => Promise<[string, string]>;
   onTerminal: (ref: ResourceRef) => Promise<void>;
   onOpenThread: (threadId: string) => void;
@@ -349,15 +349,18 @@ export function Workspace(props: WorkspaceProps) {
     // A local file with a host path opens in BB's own preview. Anything else, such as SFTP,
     // falls back to the Commander viewer, which reads the window through file_read.
     try { props.onPreview(ref); return; } catch { /* No native preview for this entry. */ }
-    open({ kind: "view", ref, title: "t" in entry.name ? entry.name.t : "", model: null, problem: null });
-    void loadView(ref);
+    open({ kind: "view", ref, title: "t" in entry.name ? entry.name.t : "", mode: "auto", result: null, problem: null });
+    void loadView(ref, "auto");
   }
-  async function loadView(ref: ResourceRef) {
+  async function loadView(ref: ResourceRef, mode: ViewKind | "auto") {
     try {
-      const model = await props.onView(ref);
-      setDialog((current) => current?.kind === "view" && current.ref === ref ? { ...current, model, problem: null } : current);
+      const result = await props.onView(ref, mode);
+      setDialog((current) => current?.kind === "view" && current.ref === ref ? { ...current, result, problem: null } : current);
     } catch (error) {
-      setDialog((current) => current?.kind === "view" && current.ref === ref ? { ...current, model: null, problem: problemOf(error) } : current);
+      const failure = problemOf(error);
+      // The only conflict a window read can report is a file that changed during the read.
+      const problem = failure.code === "conflict" ? { code: failure.code, message: ru.view.changed } : failure;
+      setDialog((current) => current?.kind === "view" && current.ref === ref ? { ...current, result: null, problem } : current);
     }
   }
   function preview(value: Tab, entry: Entry) {
@@ -600,10 +603,11 @@ export function Workspace(props: WorkspaceProps) {
       <Button size="sm" variant="outline" disabled={busy} onClick={() => goBack(dialog.returnTo)}>{ru.close}</Button>
     </Modal>}
     {dialog?.kind === "view" && <Modal title={dialog.title} close={close}>
-      {dialog.model && <Viewer name={dialog.title} model={dialog.model} />}
+      {dialog.result && <Viewer name={dialog.title} model={dialog.result.model} modes={dialog.result.modes}
+        onMode={(mode) => { setDialog({ ...dialog, mode, result: null, problem: null }); void loadView(dialog.ref, mode); }} />}
       {dialog.problem && <ProblemLine problem={dialog.problem} />}
       <div className="cm-actions">
-        {dialog.problem && <Button size="sm" variant="outline" onClick={() => { setDialog({ ...dialog, model: null, problem: null }); void loadView(dialog.ref); }}>{ru.refresh}</Button>}
+        {dialog.problem && <Button size="sm" variant="outline" onClick={() => { setDialog({ ...dialog, result: null, problem: null }); void loadView(dialog.ref, dialog.mode); }}>{ru.refresh}</Button>}
         <Button size="sm" variant="outline" onClick={close}>{ru.close}</Button>
       </div>
     </Modal>}

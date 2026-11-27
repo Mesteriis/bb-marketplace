@@ -3,16 +3,22 @@ import type { ResourcePath } from "./path.ts";
 import type { FileProvider } from "./provider.ts";
 import { toBig } from "./size.ts";
 
-/** Largest window a single view or agent read returns, in bytes. */
+/** Largest content window a single view or agent read asks for, in bytes. */
 export const MAX_VIEW_BYTES = 1024 * 1024;
+/** Largest serialized response (JSON, UTF-8) of a view, for both the RPC and the agent tool. */
+export const MAX_RESPONSE_BYTES = 1024 * 1024;
 
 const HEAD_BYTES = 512;
 const HEX_WIDTH = 16;
+const encoder = new TextEncoder();
+/** C0 controls except tab, newline and carriage return; DEL; C1 controls. */
+const CONTROL = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/;
 
 export const IMAGE_MIMES = ["image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml"] as const;
 export type ImageMime = (typeof IMAGE_MIMES)[number];
 
-export type ViewKind = "text" | "image" | "binary";
+export const VIEW_KINDS = ["text", "image", "binary"] as const;
+export type ViewKind = (typeof VIEW_KINDS)[number];
 
 export interface ViewWindow {
   kind: ViewKind;
@@ -29,6 +35,12 @@ export type ViewModel =
   | { kind: "text"; text: string; truncated: boolean }
   | { kind: "image"; mime: ImageMime; bytes: Uint8Array; truncated: boolean }
   | { kind: "binary"; lines: string[]; truncated: boolean };
+
+/** One representation of a window plus every representation the file offers. */
+export interface ViewResult {
+  model: ViewModel;
+  modes: ViewKind[];
+}
 
 function startsWith(head: Uint8Array, magic: readonly number[]): boolean {
   return magic.length <= head.length && magic.every((byte, index) => head[index] === byte);
@@ -52,17 +64,17 @@ function isSvg(name: string, head: Uint8Array): boolean {
 }
 
 /**
- * True for valid UTF-8 without NUL bytes. Streaming decode holds back an incomplete
- * multi-byte sequence at the window end instead of failing on it.
+ * True for valid UTF-8 without control characters (tab, newline and carriage return
+ * excepted). Streaming decode holds back an incomplete multi-byte sequence at the end.
  */
-function isText(head: Uint8Array): boolean {
-  if (head.includes(0)) return false;
+function isText(bytes: Uint8Array): boolean {
+  let text: string;
   try {
-    new TextDecoder("utf-8", { fatal: true }).decode(head, { stream: true });
-    return true;
+    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes, { stream: true });
   } catch {
     return false;
   }
+  return !CONTROL.test(text);
 }
 
 export function mimeFor(name: string, head: Uint8Array): ImageMime | undefined {
@@ -71,10 +83,10 @@ export function mimeFor(name: string, head: Uint8Array): ImageMime | undefined {
   return isSvg(name, head) ? "image/svg+xml" : undefined;
 }
 
-/** Classifies a window by its name and first bytes. Names are data; only the bytes decide raster content. */
-export function detectKind(name: string, head: Uint8Array): ViewKind {
-  if (mimeFor(name, head)) return "image";
-  return isText(head) ? "text" : "binary";
+/** Classifies a window by its name and bytes. Names are data; the bytes decide the content. */
+export function detectKind(name: string, bytes: Uint8Array): ViewKind {
+  if (mimeFor(name, bytes.subarray(0, HEAD_BYTES))) return "image";
+  return isText(bytes) ? "text" : "binary";
 }
 
 /** Formats bytes as `offset  xx xx …`, 16 bytes per line, without padding the last line. */
@@ -119,13 +131,12 @@ export async function readForView(
   const expect = { size: entry.size, mtimeNs: entry.mtimeNs };
   const bytes = await provider.read(path, opts.offset, length, expect, signal);
   const name = entryName(path);
-  const head = bytes.subarray(0, HEAD_BYTES);
-  const mime = mimeFor(name, head);
-  const kind = detectKind(name, head);
+  const kind = detectKind(name, bytes);
+  const mime = kind === "image" ? mimeFor(name, bytes.subarray(0, HEAD_BYTES)) : undefined;
 
   return {
     kind,
-    ...(kind === "image" && mime ? { mime } : {}),
+    ...(mime ? { mime } : {}),
     bytes,
     offset: opts.offset,
     size,
@@ -133,10 +144,10 @@ export async function readForView(
   };
 }
 
-/** Turns a window into what the viewer shows: source text, an image, or hex lines. */
+/** Turns a window into one representation of it. */
 export function viewModel(name: string, view: ViewWindow): ViewModel {
   if (view.kind === "image") {
-    const mime = view.mime ?? mimeFor(name, view.bytes);
+    const mime = view.mime ?? mimeFor(name, view.bytes.subarray(0, HEAD_BYTES));
     if (!mime) throw new RangeError("Image window without a known image type");
     return { kind: "image", mime, bytes: view.bytes, truncated: view.truncated };
   }
@@ -146,11 +157,16 @@ export function viewModel(name: string, view: ViewWindow): ViewModel {
   return { kind: "binary", lines: hexLines(view.bytes, view.offset), truncated: view.truncated };
 }
 
-/** JSON form of a view window for the RPC and agent tool. Image bytes travel as base64. */
-export type WireView =
+/** JSON form of a view. Image bytes travel as base64. */
+export type WireBody =
   | { kind: "text"; text: string; truncated: boolean }
   | { kind: "image"; mime: ImageMime; base64: string; truncated: boolean }
   | { kind: "binary"; lines: string[]; truncated: boolean };
+
+export interface WireView {
+  modes: ViewKind[];
+  view: WireBody;
+}
 
 export function base64Of(bytes: Uint8Array): string {
   let binary = "";
@@ -164,14 +180,64 @@ export function bytesOf(base64: string): Uint8Array {
   return Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
 }
 
-export function toWire(model: ViewModel): WireView {
+function bodyOf(model: ViewModel): WireBody {
   if (model.kind === "image") return { kind: "image", mime: model.mime, base64: base64Of(model.bytes), truncated: model.truncated };
   if (model.kind === "text") return { kind: "text", text: model.text, truncated: model.truncated };
   return { kind: "binary", lines: model.lines, truncated: model.truncated };
 }
 
-export function fromWire(wire: WireView): ViewModel {
-  if (wire.kind === "image") return { kind: "image", mime: wire.mime, bytes: bytesOf(wire.base64), truncated: wire.truncated };
-  if (wire.kind === "text") return { kind: "text", text: wire.text, truncated: wire.truncated };
-  return { kind: "binary", lines: wire.lines, truncated: wire.truncated };
+function modelOf(body: WireBody): ViewModel {
+  if (body.kind === "image") return { kind: "image", mime: body.mime, bytes: bytesOf(body.base64), truncated: body.truncated };
+  if (body.kind === "text") return { kind: "text", text: body.text, truncated: body.truncated };
+  return { kind: "binary", lines: body.lines, truncated: body.truncated };
+}
+
+export function toWire(result: ViewResult): WireView {
+  return { modes: result.modes, view: bodyOf(result.model) };
+}
+
+export function fromWire(wire: WireView): ViewResult {
+  return { modes: wire.modes, model: modelOf(wire.view) };
+}
+
+/** Bytes of the JSON response, as the tool and RPC send it. */
+export function responseBytes(wire: WireView): number {
+  return encoder.encode(JSON.stringify(wire)).byteLength;
+}
+
+function prefixOf(window: ViewWindow, length: number): ViewWindow {
+  return { ...window, bytes: window.bytes.subarray(0, length), truncated: window.truncated || length < window.bytes.length };
+}
+
+/** Largest prefix of the window whose response fits MAX_RESPONSE_BYTES, found by binary search. */
+function fitPrefix(name: string, window: ViewWindow, kind: ViewKind, modes: ViewKind[]): ViewModel {
+  const fits = (length: number) =>
+    responseBytes({ modes, view: bodyOf(viewModel(name, { ...prefixOf(window, length), kind })) }) <= MAX_RESPONSE_BYTES;
+  let low = 0;
+  let high = window.bytes.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (fits(middle)) low = middle;
+    else high = middle - 1;
+  }
+  return viewModel(name, { ...prefixOf(window, low), kind });
+}
+
+/**
+ * Chooses what to show for a window. Text and image windows also offer hex, so the
+ * owner can switch. An image is offered only when it fits the response whole; otherwise
+ * the window is shown as hex. A requested mode that the file does not offer falls back
+ * to the file's own kind.
+ */
+export function viewFor(name: string, window: ViewWindow, requested: ViewKind | "auto" = "auto"): ViewResult {
+  const imageFits = window.kind === "image" && window.mime !== undefined
+    && responseBytes({ modes: ["image", "binary"], view: bodyOf(viewModel(name, window)) }) <= MAX_RESPONSE_BYTES;
+  const modes: ViewKind[] = [];
+  if (window.kind === "text") modes.push("text");
+  if (imageFits) modes.push("image");
+  modes.push("binary");
+
+  const chosen = requested !== "auto" && modes.includes(requested) ? requested : modes[0]!;
+  if (chosen === "image") return { modes, model: viewModel(name, window) };
+  return { modes, model: fitPrefix(name, window, chosen, modes) };
 }

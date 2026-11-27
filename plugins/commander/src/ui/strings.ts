@@ -43,7 +43,10 @@ export const ru = {
   busy: "Загрузка…", cancelConfirm: "Остановить задание? Уже выполненные действия сохранятся.",
   bytes: "Б", kib: "КБ", mib: "МБ", gib: "ГБ", tib: "ТБ", items: "Объектов",
   nameSort: "Имя", sizeSort: "Размер", dateSort: "Изменён",
-  viewTruncated: "Показана только первая часть файла",
+  view: {
+    truncated: "Показана только первая часть файла", changed: "Файл изменился во время просмотра", group: "Режим просмотра",
+    text: "Текст", hex: "Hex", image: "Изображение",
+  },
 };
 export const operationText = { copy: "Копирование", move: "Перемещение", rename: "Переименование", mkdir: "Создание каталога", delete: "Удаление" };
 export const stateText = {

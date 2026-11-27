@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parsePosix } from "./path.ts";
-import { detectKind, fromWire, hexLines, MAX_VIEW_BYTES, readForView, toWire, viewModel } from "./preview.ts";
+import { detectKind, fromWire, hexLines, MAX_RESPONSE_BYTES, MAX_VIEW_BYTES, readForView, responseBytes, toWire, viewFor, viewModel } from "./preview.ts";
 import type { FileProvider } from "./provider.ts";
 import { FakeProvider } from "./testing/fake-provider.ts";
 
@@ -96,12 +96,68 @@ describe("readForView consistency", () => {
 
 describe("wire form", () => {
   it("carries image bytes as base64 and restores them exactly", () => {
-    const model = viewModel("picture.png", { kind: "image", mime: "image/png", bytes: PNG_HEAD, offset: 0n, size: 16n, truncated: false });
+    const result = viewFor("picture.png", { kind: "image", mime: "image/png", bytes: PNG_HEAD, offset: 0n, size: 16n, truncated: false });
 
-    const wire = toWire(model);
+    const wire = toWire(result);
 
-    expect(wire).toEqual({ kind: "image", mime: "image/png", base64: "iVBORw0KGgoAAAANSUhEUg==", truncated: false });
-    expect(fromWire(wire)).toEqual(model);
+    expect(wire).toEqual({
+      modes: ["image", "binary"],
+      view: { kind: "image", mime: "image/png", base64: "iVBORw0KGgoAAAANSUhEUg==", truncated: false },
+    });
+    expect(fromWire(wire)).toEqual(result);
+  });
+});
+
+describe("control characters and response size", () => {
+  it("classifies text with a control character as binary, while tab, newline and CR stay text", () => {
+    expect(detectKind("notes.txt", Uint8Array.from([0x41, 0x01]))).toBe("binary");
+    expect(detectKind("notes.txt", Uint8Array.from([0x41, 0x09, 0x0a, 0x0d, 0x42]))).toBe("text");
+  });
+
+  it("shows 600 KiB of 0x01 bytes as binary within the response limit", async () => {
+    const provider = new FakeProvider("local");
+    const path = parsePosix("/controls.dat");
+    provider.put(path, new Uint8Array(600 * 1024).fill(0x01));
+    const window = await readForView(provider, path, { offset: 0n, length: MAX_VIEW_BYTES }, new AbortController().signal);
+
+    const result = viewFor("controls.dat", window);
+
+    expect(result.model.kind).toBe("binary");
+    expect(result.modes).toEqual(["binary"]);
+    expect(responseBytes(toWire(result))).toBeLessThanOrEqual(1048576);
+    expect(MAX_RESPONSE_BYTES).toBe(1048576);
+  });
+
+  it("cuts 2 MiB of ASCII so the whole JSON response is at most 1048576 bytes and marks it truncated", async () => {
+    const provider = new FakeProvider("local");
+    const path = parsePosix("/ascii.txt");
+    provider.put(path, new Uint8Array(2 * 1024 * 1024).fill(0x41));
+    const window = await readForView(provider, path, { offset: 0n, length: 2 * 1024 * 1024 }, new AbortController().signal);
+
+    const result = viewFor("ascii.txt", window);
+
+    expect(result.model.kind).toBe("text");
+    expect(responseBytes(toWire(result))).toBeLessThanOrEqual(1048576);
+    expect(result.model.truncated).toBe(true);
+  });
+
+  it("offers hex instead of an image that does not fit the response whole", () => {
+    const big = new Uint8Array(900 * 1024);
+    big.set(PNG_HEAD, 0);
+    const window = { kind: "image" as const, mime: "image/png" as const, bytes: big, offset: 0n, size: BigInt(big.byteLength), truncated: false };
+
+    const result = viewFor("huge.png", window);
+
+    expect(result.modes).toEqual(["binary"]);
+    expect(result.model.kind).toBe("binary");
+    expect(responseBytes(toWire(result))).toBeLessThanOrEqual(1048576);
+  });
+
+  it("offers text and hex for a text file and honours a requested hex mode", () => {
+    const window = { kind: "text" as const, bytes: text("hi"), offset: 0n, size: 2n, truncated: false };
+
+    expect(viewFor("a.txt", window).modes).toEqual(["text", "binary"]);
+    expect(viewFor("a.txt", window, "binary").model).toEqual({ kind: "binary", lines: ["00000000  68 69"], truncated: false });
   });
 });
 

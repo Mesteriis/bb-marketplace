@@ -5,7 +5,7 @@ import {
 } from "../model.ts";
 import { NameSegment, ResourcePath } from "../path.ts";
 import { LIST_PAGE_MAX } from "../provider.ts";
-import { IMAGE_MIMES, MAX_VIEW_BYTES } from "../preview.ts";
+import { IMAGE_MIMES, MAX_RESPONSE_BYTES, MAX_VIEW_BYTES, VIEW_KINDS } from "../preview.ts";
 import { Size } from "../size.ts";
 import { sftpMethods } from "./remote-hub-sftp.ts";
 
@@ -77,22 +77,28 @@ export const rpcSchemas = {
   },
   entry_stat: { input: z.strictObject({ ref: ResourceRef }), output: Entry.nullable() },
   // Window of a file for F3 and the agent read tool. Length is capped at 1 MiB; image bytes are base64.
+  // Window of a file for F3 and the agent read tool. The JSON response is at most 1 MiB; `modes` lists
+  // the representations the file offers, and `mode` picks one (auto: the file's own kind).
   file_read: {
     input: z.strictObject({
       ref: ResourceRef,
       offset: Size.default("0"),
       length: z.int().min(1).max(MAX_VIEW_BYTES).default(MAX_VIEW_BYTES),
+      mode: z.enum(["auto", ...VIEW_KINDS]).default("auto"),
     }),
-    output: z.discriminatedUnion("kind", [
-      z.strictObject({ kind: z.literal("text"), text: z.string().max(MAX_VIEW_BYTES), truncated: z.boolean() }),
-      z.strictObject({
-        kind: z.literal("image"),
-        mime: z.enum(IMAGE_MIMES),
-        base64: z.string().max(Math.ceil(MAX_VIEW_BYTES / 3) * 4),
-        truncated: z.boolean(),
-      }),
-      z.strictObject({ kind: z.literal("binary"), lines: z.array(z.string().max(96)).max(MAX_VIEW_BYTES / 16), truncated: z.boolean() }),
-    ]),
+    output: z.strictObject({
+      modes: z.array(z.enum(VIEW_KINDS)).min(1).max(3),
+      view: z.discriminatedUnion("kind", [
+        z.strictObject({ kind: z.literal("text"), text: z.string().max(MAX_RESPONSE_BYTES), truncated: z.boolean() }),
+        z.strictObject({
+          kind: z.literal("image"),
+          mime: z.enum(IMAGE_MIMES),
+          base64: z.string().max(MAX_RESPONSE_BYTES),
+          truncated: z.boolean(),
+        }),
+        z.strictObject({ kind: z.literal("binary"), lines: z.array(z.string().max(96)).max(MAX_RESPONSE_BYTES / 16), truncated: z.boolean() }),
+      ]),
+    }),
   },
   plan_create: { input: PlanInput, output: OperationPlan },
   plan_run: { input: z.strictObject({ planId: z.uuid(), digest }), output: OperationJob },

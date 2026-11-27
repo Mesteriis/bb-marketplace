@@ -18,6 +18,7 @@ async function backend() {
   disk.put(parsePosix("/data/big.txt"), new Uint8Array(2 * 1024 * 1024).fill(0x41), "1");
   disk.put(parsePosix("/data/data.bin"), Uint8Array.from([0x00, 0x01, 0x02]), "1");
   disk.put(parsePosix("/data/picture.png"), PNG, "1");
+  disk.put(parsePosix("/data/controls.dat"), new Uint8Array(600 * 1024).fill(0x01), "1");
   disk.put(parsePosix("/etc/secret"), Uint8Array.of(12), "1");
   let handlers: Record<string, (input: unknown, ctx: unknown) => Promise<unknown>> = {};
   const tools = new Map<string, (input: unknown, ctx: PluginAgentToolContext) => Promise<{ content: { text: string }[] }>>();
@@ -60,58 +61,86 @@ async function backend() {
   };
 }
 
-test("owner RPC returns one 1 MiB window of a 2 MiB file and marks it truncated", async () => {
+const RESPONSE_MAX = 1048576;
+const jsonBytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
+const shared = { threadId: "thread-a", endpoint: "host:test", scope: parsePosix("/data"), permissions: ["read"] };
+
+test("owner RPC returns a 2 MiB text file as one window whose JSON is at most 1 MiB, marked truncated", async () => {
   const bb = await backend();
   try {
-    const view = await bb.rpc("file_read", { ref: ref("/data/big.txt") }) as { kind: string; text: string; truncated: boolean };
-    expect(view.kind).toBe("text");
-    expect(view.text.length).toBe(1048576);
-    expect(view.truncated).toBe(true);
+    const result = await bb.rpc("file_read", { ref: ref("/data/big.txt") }) as { modes: string[]; view: { kind: string; text: string; truncated: boolean } };
+    expect(result.modes).toEqual(["text", "binary"]);
+    expect(result.view.kind).toBe("text");
+    expect(result.view.truncated).toBe(true);
+    expect(jsonBytes(result)).toBeLessThanOrEqual(RESPONSE_MAX);
   } finally { await bb.dispose(); }
 });
 
-test("owner RPC honours offset: the second 1 MiB ends the file without truncation", async () => {
+test("owner RPC switches a text file to hex with mode binary", async () => {
   const bb = await backend();
   try {
-    const view = await bb.rpc("file_read", { ref: ref("/data/big.txt"), offset: "1048576" }) as { text: string; truncated: boolean };
-    expect(view.text.length).toBe(1048576);
-    expect(view.truncated).toBe(false);
+    const result = await bb.rpc("file_read", { ref: ref("/data/big.txt"), mode: "binary" }) as { modes: string[]; view: { kind: string; lines: string[]; truncated: boolean } };
+    expect(result.modes).toEqual(["text", "binary"]);
+    expect(result.view.kind).toBe("binary");
+    expect(result.view.lines[0]).toBe("00000000  41 41 41 41 41 41 41 41 41 41 41 41 41 41 41 41");
+    expect(jsonBytes(result)).toBeLessThanOrEqual(RESPONSE_MAX);
   } finally { await bb.dispose(); }
 });
 
-test("agent commander_read with a read grant gets the same capped window", async () => {
+test("owner RPC honours offset on a binary file", async () => {
   const bb = await backend();
   try {
-    await bb.rpc("agent_grants_set", { grant: { threadId: "thread-a", endpoint: "host:test", scope: parsePosix("/data"), permissions: ["read"] } });
-    const view = await bb.tool("commander_read", { ref: ref("/data/big.txt") }) as { kind: string; text: string; truncated: boolean };
-    expect(view).toMatchObject({ kind: "text", truncated: true });
-    expect(view.text.length).toBe(1048576);
+    await expect(bb.rpc("file_read", { ref: ref("/data/data.bin"), offset: "1" })).resolves.toEqual({
+      modes: ["binary"], view: { kind: "binary", lines: ["00000001  01 02"], truncated: false },
+    });
+  } finally { await bb.dispose(); }
+});
+
+test("agent commander_read with a read grant gets a window whose JSON is at most 1 MiB", async () => {
+  const bb = await backend();
+  try {
+    await bb.rpc("agent_grants_set", { grant: shared });
+    const result = await bb.tool("commander_read", { ref: ref("/data/big.txt") }) as { view: { kind: string; truncated: boolean } };
+    expect(result.view).toMatchObject({ kind: "text", truncated: true });
+    expect(jsonBytes(result)).toBeLessThanOrEqual(RESPONSE_MAX);
+  } finally { await bb.dispose(); }
+});
+
+test("agent commander_read of 600 KiB of 0x01 bytes is binary and within 1 MiB", async () => {
+  const bb = await backend();
+  try {
+    await bb.rpc("agent_grants_set", { grant: shared });
+    const result = await bb.tool("commander_read", { ref: ref("/data/controls.dat") }) as { modes: string[]; view: { kind: string; truncated: boolean } };
+    expect(result.modes).toEqual(["binary"]);
+    expect(result.view).toMatchObject({ kind: "binary", truncated: true });
+    expect(jsonBytes(result)).toBeLessThanOrEqual(RESPONSE_MAX);
   } finally { await bb.dispose(); }
 });
 
 test("agent commander_read outside its grant is refused and reads nothing", async () => {
   const bb = await backend();
   try {
-    await bb.rpc("agent_grants_set", { grant: { threadId: "thread-a", endpoint: "host:test", scope: parsePosix("/data"), permissions: ["read"] } });
+    await bb.rpc("agent_grants_set", { grant: shared });
     await expect(bb.tool("commander_read", { ref: ref("/etc/secret") })).resolves.toMatchObject({ code: "forbidden" });
   } finally { await bb.dispose(); }
 });
 
-test("agent commander_read of a binary file returns hex lines", async () => {
+test("agent commander_read of a small binary file returns hex lines", async () => {
   const bb = await backend();
   try {
-    await bb.rpc("agent_grants_set", { grant: { threadId: "thread-a", endpoint: "host:test", scope: parsePosix("/data"), permissions: ["read"] } });
+    await bb.rpc("agent_grants_set", { grant: shared });
     await expect(bb.tool("commander_read", { ref: ref("/data/data.bin") })).resolves.toEqual({
-      kind: "binary", lines: ["00000000  00 01 02"], truncated: false,
+      modes: ["binary"], view: { kind: "binary", lines: ["00000000  00 01 02"], truncated: false },
     });
   } finally { await bb.dispose(); }
 });
 
-test("owner RPC returns a PNG as base64 under image/png", async () => {
+test("owner RPC returns a PNG as base64 under image/png, offering hex too", async () => {
   const bb = await backend();
   try {
     await expect(bb.rpc("file_read", { ref: ref("/data/picture.png") })).resolves.toEqual({
-      kind: "image", mime: "image/png", base64: "iVBORw0KGgoAAAANSUhEUg==", truncated: false,
+      modes: ["image", "binary"],
+      view: { kind: "image", mime: "image/png", base64: "iVBORw0KGgoAAAANSUhEUg==", truncated: false },
     });
   } finally { await bb.dispose(); }
 });

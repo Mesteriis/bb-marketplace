@@ -3,7 +3,7 @@ import { CommanderError, isCommanderError } from "../../core/errors.ts";
 import type { JobRunner } from "../../core/job-runner.ts";
 import type { AgentJobStore } from "../../core/job-store.ts";
 import type { Initiator, JobState, OperationJob, OperationPlan, ResourceRef } from "../../core/model.ts";
-import { entryName, readForView, toWire, viewModel } from "../../core/preview.ts";
+import { entryName, readForView, toWire, viewFor } from "../../core/preview.ts";
 import { parent } from "../../core/path.ts";
 import { toBig } from "../../core/size.ts";
 import { authorize, REQUIRED } from "../../core/permissions.ts";
@@ -251,11 +251,11 @@ export function createOperations(deps: {
       return endpoints.provider(ref.endpoint).stat(ref.path, signal);
     },
     async read(input: RpcInput<"file_read">, initiator: Initiator, signal: AbortSignal) {
-      const { ref, offset, length } = input;
+      const { ref, offset, length, mode } = input;
       await checkRead(initiator, ref);
       await endpoints.prepare([ref.endpoint], signal);
-      const view = await readForView(endpoints.provider(ref.endpoint), ref.path, { offset: toBig(offset), length }, signal);
-      return toWire(viewModel(entryName(ref.path), view));
+      const window = await readForView(endpoints.provider(ref.endpoint), ref.path, { offset: toBig(offset), length }, signal);
+      return toWire(viewFor(entryName(ref.path), window, mode));
     },
     async createPlan(input: RpcInput<"plan_create">, initiator: Initiator, signal: AbortSignal) {
       const limits = initiator.kind === "agent" ? { ...planner.limits, maxItems: maxAgentPlanItems } : planner.limits;
