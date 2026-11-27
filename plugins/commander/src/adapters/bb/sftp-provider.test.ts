@@ -945,3 +945,37 @@ describe("temp name equal to the target under the endpoint's case rule (review C
     expect(session.tempPath).toEqual({ segments: [{ t: "report" }] });
   });
 });
+
+describe("an aborted session is finished (final review)", () => {
+  it("after abort, a session cannot write or commit, and a second abort is a no-op; the next owner's bytes are intact", async () => {
+    const { mock, provider } = setup();
+    const a = await openWrite(provider, at("a.txt"), signal(), { t: ".shared.part" });
+    await a.abort();
+    expect(mock.opCount("op:remove")).toBe(1);
+
+    const b = await openWrite(provider, at("b.txt"), signal(), { t: ".shared.part" });
+    await b.write(0n, bytes("bbb"), signal());
+    const before = mock.calls.length;
+
+    await expectCode(a.write(0n, bytes("aaa"), signal()), "internal");
+    await expectCode(a.commit({ replace: false, expectTarget: null }, signal()), "internal");
+    expect(mock.calls.length).toBe(before);
+    expect(text(mock.bytesAt("/.shared.part"))).toBe("bbb");
+
+    await a.abort();
+    expect(mock.calls.length).toBe(before);
+    expect(mock.opCount("op:remove")).toBe(1);
+  });
+
+  it("after a no_such_file abort, the session is finished too", async () => {
+    const { mock, provider } = setup();
+    const a = await openWrite(provider, at("a.txt"), signal(), { t: ".gone.part" });
+    await a.abort();
+    mock.seedFile("/.gone.part", "other");
+    await a.abort();
+    const before = mock.calls.length;
+    await expectCode(a.write(0n, bytes("x"), signal()), "internal");
+    expect(mock.calls.length).toBe(before);
+    expect(text(mock.bytesAt("/.gone.part"))).toBe("other");
+  });
+});

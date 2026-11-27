@@ -475,7 +475,6 @@ export function createSftpProvider(options: SftpProviderOptions): SftpProvider {
     // halt: the session may no longer touch the temp (an unknown outcome of a later call).
     let halt: ErrorCode | null = null;
     let finished = false;
-    let exists = true;
     const setHalt = (code: ErrorCode) => {
       halt = code;
     };
@@ -526,19 +525,21 @@ export function createSftpProvider(options: SftpProviderOptions): SftpProvider {
 
       async abort(): Promise<void> {
         return guard(async () => {
-          // Only the temp this session created, and whose state is known, may be removed.
-          if (halt !== null || finished || !exists) return;
+          // Only the temp this session created, and whose state is known, may be removed. Once the removal is
+          // confirmed (or the temp is already gone) the session is finished: a later write or commit is refused
+          // before any call, and a second abort is a no-op, so it cannot touch a file that another owner created.
+          if (halt !== null || finished) return;
           try {
             await removeOp(tempPath, "file", new AbortController().signal);
           } catch (error) {
             if (error instanceof SftpRefusal && error.code === "no_such_file") {
-              exists = false;
+              finished = true;
               return;
             }
             if (isUnknown(error)) setHalt("outcome_unknown");
             throw error;
           }
-          exists = false;
+          finished = true;
         });
       },
     };
