@@ -3,7 +3,7 @@ import { transition, type JobEvent } from "./job-machine.ts";
 import type { Checkpoint, JobStore } from "./job-store.ts";
 import {
   ConflictDecision, OperationJob, OperationPlan, planDigest,
-  type Conflict, type ConflictAction, type EndpointId, type Entry,
+  type Conflict, type ConflictAction, type EndpointId, type Entry, type Initiator,
   type Fingerprint, type ItemOutcome, type PlanItem, type ResourceRef,
 } from "./model.ts";
 import { isAncestorOrSelf, join, parent, samePath, type ResourcePath } from "./path.ts";
@@ -73,6 +73,15 @@ function wait(milliseconds: number, signal: AbortSignal): Promise<void> {
     }
     signal.addEventListener("abort", abort, { once: true });
   });
+}
+
+/** Same rule as the planner: the bytes of the file items with a fingerprint. */
+function totalBytesOf(items: PlanItem[]): OperationPlan["totalBytes"] {
+  let total = 0n;
+  for (const item of items) {
+    if (item.kind === "file" && item.fingerprint !== null) total += toBig(item.fingerprint.size);
+  }
+  return fromBig(total);
 }
 
 export class JobRunner {
@@ -237,6 +246,90 @@ export class JobRunner {
     run?.controller.abort(cancelledError);
     await run?.done;
     await this.finishCancel(id);
+  }
+
+  /**
+   * Plan a retry of the failed and unconfirmed items of a failed or unknown job.
+   * An unknown item that reconciliation proves done is recorded as done and left
+   * out. The remaining items form a new plan, checked by revalidate; running it
+   * goes through the usual plan path.
+   */
+  retryJob(id: string, initiator: Initiator): Promise<OperationPlan> {
+    return this.accept(() => this.planRetry(id, initiator));
+  }
+
+  private async planRetry(id: string, initiator: Initiator): Promise<OperationPlan> {
+    const job = await this.requireJob(id);
+    if (job.state !== "failed" && job.state !== "unknown") {
+      throw new CommanderError("changed_since_plan", "Only a failed or unknown job can be retried");
+    }
+    const kept: number[] = [];
+    const confirmed: number[] = [];
+    for (const [index, { outcome }] of job.items.entries()) {
+      if (outcome === "failed") kept.push(index);
+      if (outcome !== "unknown") continue;
+      const verdict = await this.confirmUnknown(job, index);
+      if (verdict === "done") confirmed.push(index);
+      if (verdict === "retry") kept.push(index);
+    }
+    if (confirmed.length) await this.recordConfirmed(job, confirmed);
+    if (kept.length === 0) throw new CommanderError("unsupported", "No item can be retried safely");
+
+    const items = kept.map((index) => job.plan.items[index]);
+    const unsigned: Omit<OperationPlan, "digest"> = {
+      id: this.deps.uuid(),
+      createdAt: this.deps.now().toISOString(),
+      // The retrying party owns the new plan, so its grants are checked when it runs.
+      initiator,
+      kind: job.plan.kind,
+      sourceEndpoint: job.plan.sourceEndpoint,
+      targetEndpoint: job.plan.targetEndpoint,
+      targetDir: job.plan.targetDir,
+      items,
+      conflictPolicy: job.plan.conflictPolicy,
+      route: job.plan.route,
+      verify: job.plan.verify,
+      totalBytes: totalBytesOf(items),
+    };
+    const plan = OperationPlan.parse({ ...unsigned, digest: await planDigest(unsigned) });
+    const checked = await this.deps.revalidate?.(plan, this.stopping.signal);
+    if (checked && !checked.ok) {
+      throw new CommanderError("changed_since_plan", "Retry plan no longer matches the sources or targets; create a new plan");
+    }
+    return plan;
+  }
+
+  /** Decide an unknown item from its recorded checkpoint, reading the endpoints but writing nothing new. */
+  private async confirmUnknown(job: OperationJob, index: number): Promise<"done" | "retry" | "unresolved"> {
+    const checkpoint = await this.store.lastCheckpoint(job.id, index);
+    // The runner records prepared before any mutation, so a missing checkpoint means nothing was issued.
+    if (!checkpoint) return "retry";
+    const item = job.plan.items[index];
+    try {
+      const context = this.context(job.id, index, this.stopping.signal);
+      context.load(checkpoint);
+      const outcome = await reconcileItem(checkpoint, item.source && this.location(item.source),
+        this.recoveredTarget(item, checkpoint), item, job.plan, context, (point) => this.store.checkpoint(point));
+      if (outcome === "done") return "done";
+      return outcome === "pending" ? "retry" : "unresolved";
+    } catch {
+      this.stopping.signal.throwIfAborted();
+      return "unresolved";
+    }
+  }
+
+  private async recordConfirmed(job: OperationJob, indices: number[]): Promise<void> {
+    const items = job.items.slice();
+    let bytes = toBig(job.progress.bytesDone);
+    for (const index of indices) {
+      items[index] = { outcome: "done", error: null };
+      bytes += this.itemBytes(job, index, "done");
+    }
+    // An unknown item already counts in itemsDone; confirming it adds only its bytes.
+    const progress = this.progress(job, bytes);
+    if (!await this.patch(job, { items, progress }, "progress")) {
+      throw new CommanderError("changed_since_plan", "Job changed while it was checked for retry");
+    }
   }
 
   recover(): Promise<{ resumed: string[]; unknown: string[] }> {

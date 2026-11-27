@@ -308,6 +308,15 @@ export function createOperations(deps: {
       await requestCancel(job);
       return {};
     },
+    // S17: план повтора принадлежит запрашивающему, поэтому plan_run проверит его гранты.
+    async retry(id: string, initiator: Initiator, signal: AbortSignal) {
+      await deps.ready();
+      await requireJob(id, initiator.kind === "agent" ? initiator : undefined);
+      signal.throwIfAborted();
+      const plan = await runner.retryJob(id, initiator);
+      remember(plan);
+      return plan;
+    },
     async decide({ jobId, ...decision }: RpcInput<"job_decide">, signal: AbortSignal) {
       await deps.ready();
       const job = await requireJob(jobId);
@@ -400,6 +409,8 @@ export function createRpcHandlers(ops: Operations): ExperimentalPluginRpcHandler
     job_get: ({ jobId }) => ops.job(jobId),
     job_decide: (input, ctx) => ops.decide(input, ctx.experimental_signal),
     job_cancel: ({ jobId }) => ops.cancel(jobId, owner),
+    // S17: повтор невыполненного из очереди.
+    job_retry: ({ jobId }, ctx) => ops.retry(jobId, owner, ctx.experimental_signal),
     plan_check: (input, ctx) => ops.checkPlan(input, ctx.experimental_signal),
     plan_approve: (input, ctx) => ops.approve(input, ctx.experimental_signal),
     plan_reject: (input) => ops.reject(input),

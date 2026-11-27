@@ -9,15 +9,20 @@ import { approvalState, operationText, reasonText, ru, stateText } from "./strin
 const plurals = new Intl.PluralRules("ru");
 const pluralIndex = { one: 0, few: 1, many: 2, other: 2, two: 2, zero: 2 } as const;
 const cancellable = new Set(["pending", "running", "awaiting_decision", "interrupted"]);
+// S17: только задания, у которых есть невыполненные элементы (failed или unknown).
+const retryable = new Set(["failed", "unknown"]);
+// Временная строка до переноса в strings.ts (владеет S8).
+const retryUnfinished = "Повторить невыполненное";
 const stateIcons = {
   pending: "Clock", approval: "Lock", running: "Play", awaiting_decision: "CircleQuestion",
   completed: "CircleCheck", failed: "AlertTriangle", cancel_requested: "Clock",
   cancelled: "CircleX", interrupted: "Pause", unknown: "CircleQuestion",
 };
 
-function JobCard({ job, endpoints, compact, onInspect, onSkip, onCancel }: {
+function JobCard({ job, endpoints, compact, onInspect, onSkip, onCancel, onRetry }: {
   job: JobView; endpoints: EndpointView[]; compact?: boolean;
   onInspect: (job: OperationJob) => void; onSkip: (job: OperationJob) => void; onCancel: (job: OperationJob) => void;
+  onRetry?: (job: OperationJob) => void;
 }) {
   if (damaged(job)) return <article className="cm-job" aria-label={ru.damaged}>
     <strong>{ru.damaged}</strong><span className="cm-meta">{job.id}</span>
@@ -73,6 +78,8 @@ function JobCard({ job, endpoints, compact, onInspect, onSkip, onCancel }: {
       {job.awaitsOwner && <Button size="sm" variant="outline" onClick={() => onInspect(job)}>{ru.inspectPlan}</Button>}
       {cancellable.has(job.state) && !job.awaitsOwner && !conflict &&
         <Button size="sm" variant="outline" onClick={() => onCancel(job)}>{ru.cancelJob}</Button>}
+      {onRetry && retryable.has(job.state) && !job.awaitsOwner && !conflict &&
+        <Button size="sm" variant="outline" onClick={() => onRetry(job)}>{retryUnfinished}</Button>}
     </div>
   </article>;
 }
@@ -80,6 +87,8 @@ function JobCard({ job, endpoints, compact, onInspect, onSkip, onCancel }: {
 export type QueueProps = {
   jobs: JobView[]; endpoints: EndpointView[]; error: Problem | null; loading: boolean;
   onInspect: (job: OperationJob) => void; onSkip: (job: OperationJob) => void; onCancel: (job: OperationJob) => void;
+  /** S17: optional, so a host without the retry wiring still renders the queue. */
+  onRetry?: (job: OperationJob) => void;
 };
 export function Queue({ compact, open, selection, id, collapse, ...props }: QueueProps & {
   compact?: boolean; open: boolean; id: string; collapse?: () => void; selection: { count: number; size: string; destination: string; fullDestination: string };

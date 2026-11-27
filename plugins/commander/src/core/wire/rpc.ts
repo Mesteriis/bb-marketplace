@@ -90,6 +90,8 @@ export const rpcSchemas = {
   job_get: { input: jobId, output: JobView.nullable() },
   job_decide: { input: ConflictDecision.extend(jobId.shape), output: empty },
   job_cancel: { input: jobId, output: empty },
+  // S17: план повтора failed и неподтверждённых unknown-элементов; запускается через plan_run.
+  job_retry: { input: jobId, output: OperationPlan },
   // Read-only preflight for an owner client. Approval repeats validation against live metadata.
   plan_check: {
     input: jobId.extend({ digest }),

@@ -2,7 +2,7 @@ import { expect, test, vi } from "vitest";
 import { CommanderError } from "./errors.ts";
 import { JobRunner, type RunnerDeps } from "./job-runner.ts";
 import { Conflict, OperationJob, planDigest, type JobState, type OperationPlan } from "./model.ts";
-import { parsePosix } from "./path.ts";
+import { parsePosix, samePath } from "./path.ts";
 import { buildPlan } from "./planner.ts";
 import { FakeProvider } from "./testing/fake-provider.ts";
 import { isCaseOnlyPair, tempNameFor } from "./reconcile.ts";
@@ -1587,4 +1587,79 @@ test("an idle runner shuts down idempotently and refuses new work", async () => 
   await expect(runner.decide(id, { conflictId: id, action: "skip", applyTo: "this" })).rejects.toMatchObject(error);
   await expect(runner.recover()).rejects.toMatchObject(error);
   expect(await store.list({ limit: 10 })).toMatchObject([{ id, state: "pending", awaitsOwner: true }]);
+});
+
+/** The write to `name` lands, but the reply that verifies the destination is lost. */
+function loseVerifyReply(to: FakeProvider, name: string) {
+  let armed = false;
+  const openWrite = to.openWrite.bind(to);
+  vi.spyOn(to, "openWrite").mockImplementation(async (path, opts, signal) => {
+    const session = await openWrite(path, opts, signal);
+    const segment = path.segments.at(-1);
+    if (!segment || !("t" in segment) || segment.t !== name) return session;
+    const commit = session.commit.bind(session);
+    return { ...session, commit: async (commitOpts, stepSignal) => {
+      const committed = await commit(commitOpts, stepSignal);
+      armed = true;
+      return committed;
+    } };
+  });
+  const stat = to.stat.bind(to);
+  vi.spyOn(to, "stat").mockImplementation(async (path, signal) => {
+    if (armed) {
+      armed = false;
+      throw new CommanderError("outcome_unknown", "Verification reply lost", true);
+    }
+    return stat(path, signal);
+  });
+}
+
+test("retry plans only the failed item and keeps a confirmed unknown item done", async () => {
+  const { runner, plan, store, to, at } = await setup({ count: 3 });
+  to.failOn.push({ op: "commit", path: parsePosix("/b1"), times: 1, error: new CommanderError("permission_denied", "Denied") });
+  loseVerifyReply(to, "b2");
+  const { id } = await runner.submit(plan);
+  const failed = await at(id, "unknown");
+  expect(failed.items.map(({ outcome }) => outcome)).toEqual(["done", "failed", "unknown"]);
+
+  const retry = await runner.retryJob(id, { kind: "owner" });
+  expect(retry.items.map(({ source }) => source?.path.segments)).toEqual([[{ t: "a1" }]]);
+  expect(retry.totalBytes).toBe("3");
+  expect((await store.get(id))!.items.map(({ outcome }) => outcome)).toEqual(["done", "failed", "done"]);
+
+  const retried = await runner.submit(retry);
+  await at(retried.id, "completed");
+  expect(to.contents(parsePosix("/b1"))).toEqual(Uint8Array.of(42, 42, 42));
+});
+
+test("a repeated retry after a lost reply does not plan or write the confirmed item again", async () => {
+  const { runner, plan, to, at } = await setup({ count: 3 });
+  to.failOn.push({ op: "commit", path: parsePosix("/b1"), times: 1, error: new CommanderError("permission_denied", "Denied") });
+  loseVerifyReply(to, "b2");
+  const { id } = await runner.submit(plan);
+  await at(id, "unknown");
+
+  const first = await runner.retryJob(id, { kind: "owner" });
+  const second = await runner.retryJob(id, { kind: "owner" });
+  expect(first.items).toHaveLength(1);
+  expect(second.items).toHaveLength(1);
+  const commitsToB2 = to.calls.filter(({ op, path }) => op === "commit" && samePath(path, parsePosix("/b2"), true));
+  expect(commitsToB2).toHaveLength(1);
+});
+
+test("retry refuses a job that is not failed or unknown", async () => {
+  const { runner, plan, at } = await setup();
+  const { id } = await runner.submit(plan);
+  await at(id, "completed");
+  await expect(runner.retryJob(id, { kind: "owner" })).rejects.toMatchObject({ code: "changed_since_plan" });
+});
+
+test("retry refuses a plan whose source changed since the failed run", async () => {
+  const revalidate = vi.fn(async () => ({ ok: false as const, changed: [{ index: 0, reason: "source_changed" as const }] }));
+  const { runner, plan, to, at } = await setup({ count: 2, revalidate });
+  to.failOn.push({ op: "commit", path: parsePosix("/b"), times: 1, error: new CommanderError("permission_denied", "Denied") });
+  const { id } = await runner.submit(plan);
+  await at(id, "failed");
+  await expect(runner.retryJob(id, { kind: "owner" })).rejects.toMatchObject({ code: "changed_since_plan" });
+  expect(revalidate).toHaveBeenCalledTimes(1);
 });
