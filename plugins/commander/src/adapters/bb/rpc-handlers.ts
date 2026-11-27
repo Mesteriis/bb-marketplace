@@ -72,6 +72,19 @@ function effectiveGrants(rows: AgentGrant[], endpoint: string): AgentGrant[] {
   return endpoint.startsWith("sftp:") ? rows.filter((row) => row.scope.segments.length === 0) : rows;
 }
 
+/**
+ * Reconciling an unknown item may remove a temporary file beside its target, so the agent
+ * needs write on that directory, as an automatic run does. Without it nothing is reconciled.
+ */
+function unknownTargetsWritable(rows: AgentGrant[], job: OperationJob) {
+  return job.items.every(({ outcome }, index) => {
+    const target = job.plan.items[index].target;
+    if (outcome !== "unknown" || !target) return true;
+    const directory = parent(target.path);
+    return directory !== null && covers(rows, { endpoint: target.endpoint, path: directory }, "write");
+  });
+}
+
 function operationGrants(rows: AgentGrant[], plan: OperationPlan): AgentGrant[] {
   return [...new Set(refs(plan))].flatMap((endpoint) => effectiveGrants(rows, endpoint)
     .filter((row) => row.endpoint === "*" || row.endpoint === endpoint)
@@ -315,12 +328,13 @@ export function createOperations(deps: {
       if (initiator.kind === "agent") {
         // Grants are checked on the job's own items before reconciliation may write anything.
         const rows = await grants.forThread(initiator.threadId);
-        if (!authorize(initiator, job.plan, operationGrants(rows, job.plan)).ok) {
+        if (!authorize(initiator, job.plan, operationGrants(rows, job.plan)).ok || !unknownTargetsWritable(rows, job)) {
           throw refusal("forbidden", "Commander planning failed outside the metadata grant");
         }
       }
       signal.throwIfAborted();
       const retry = await runner.retryJob(id, initiator, signal);
+      signal.throwIfAborted();
       if (retry.plan) remember(retry.plan);
       return { plan: retry.plan, excluded: retry.excluded };
     },

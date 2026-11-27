@@ -12,6 +12,7 @@ import {
   confirmVerified, fingerprint, isCaseOnlyPair, matches, nameSpelling, matchesTarget, observe, readChunks, reconcileItem, removeStagedTemp, tempNameFor, TransferHash, verifyCopy,
   type Location, type VerifyContext,
 } from "./reconcile.ts";
+import { parentSkipNote } from "./retry-note.ts";
 import { fromBig, toBig } from "./size.ts";
 
 export interface RunnerDeps {
@@ -83,8 +84,6 @@ export interface RetryPlan {
 }
 const finishedStates: ReadonlySet<string> = new Set(["completed", "failed", "cancelled", "unknown"]);
 type Verdict = "done" | "retry" | "unresolved";
-/** Recorded as the error of an item the runner skipped because a directory above it is not done. */
-export const parentSkipNote = "Skipped: a directory above this item is not done";
 
 /** Same rule as the planner: the bytes of the file items with a fingerprint. */
 function totalBytesOf(items: PlanItem[]): OperationPlan["totalBytes"] {
@@ -271,7 +270,9 @@ export class JobRunner {
     return this.accept(() => this.planRetry(id, initiator, signal));
   }
 
-  private async planRetry(id: string, initiator: Initiator, signal: AbortSignal): Promise<RetryPlan> {
+  private async planRetry(id: string, initiator: Initiator, requestSignal: AbortSignal): Promise<RetryPlan> {
+    // One signal for the whole pass: the request, or shutdown of the runner, stops every step, including the final revalidate.
+    const signal = AbortSignal.any([requestSignal, this.stopping.signal]);
     const job = await this.requireJob(id);
     // A job still running, pending or waiting for a decision has items in flight.
     if (!finishedStates.has(job.state)) {
@@ -369,10 +370,12 @@ export class JobRunner {
       totalBytes: totalBytesOf(items),
     };
     const plan = OperationPlan.parse({ ...unsigned, digest: await planDigest(unsigned) });
-    const checked = await this.deps.revalidate?.(plan, this.stopping.signal);
+    const checked = await this.deps.revalidate?.(plan, signal);
     if (checked && !checked.ok) {
       throw new CommanderError("changed_since_plan", "Retry plan no longer matches the sources or targets; create a new plan");
     }
+    // A cancelled request gets no plan: the caller stores the plan only after this returns.
+    signal.throwIfAborted();
     return { plan, excluded: excludedGroups };
   }
 

@@ -1877,3 +1877,46 @@ test("retry stops confirming when its request is cancelled and plans nothing", a
   await expect(pending).rejects.toThrow("request cancelled");
   expect((await at(id, "unknown")).items.map(({ outcome }) => outcome)).toEqual(["done", "unknown"]);
 });
+
+test("retry plans a failed directory alone when its skipped child carries no parent reason", async () => {
+  const { runner, plan, store, from, to, at } = await setup({ count: 1 });
+  const signal = new AbortController().signal;
+  const tree = parsePosix("/tree");
+  await from.mkdir(tree, signal);
+  const dir = (await from.stat(tree, signal))!;
+  from.put(parsePosix("/tree/child"), Uint8Array.of(42, 42, 42), "1");
+  to.failOn.push({ op: "mkdir", path: parsePosix("/tree-copy"), times: 1, error: new CommanderError("permission_denied", "Denied") });
+  const { digest: _digest, ...unsigned } = plan;
+  unsigned.items = [
+    {
+      source: { endpoint: "host:from", path: tree }, target: { endpoint: "host:to", path: parsePosix("/tree-copy") },
+      kind: "dir", fingerprint: { size: "0", mtimeNs: dir.mtimeNs }, expectTarget: "absent",
+    },
+    {
+      source: { endpoint: "host:from", path: parsePosix("/tree/child") }, target: { endpoint: "host:to", path: parsePosix("/tree-copy/child") },
+      kind: "file", fingerprint: { size: "3", mtimeNs: "1" }, expectTarget: "absent",
+    },
+  ];
+  unsigned.totalBytes = "3";
+  const { id } = await runner.submit({ ...unsigned, digest: await planDigest(unsigned) });
+  await at(id, "failed");
+  // A job written before the parent reason existed: the child is skipped with no error text.
+  await store.update(id, { items: [{ outcome: "failed", error: "Denied" }, { outcome: "skipped", error: null }] }, "failed");
+
+  const { plan: retry } = await runner.retryJob(id, { kind: "owner" });
+  expect(retry?.items.map(({ kind, source }) => [kind, source?.path.segments])).toEqual([["dir", [{ t: "tree" }]]]);
+});
+
+test("cancelling a retry during its final revalidate returns no plan", async () => {
+  const request = new AbortController();
+  const revalidate = vi.fn(async () => {
+    request.abort(new Error("request cancelled"));
+    return { ok: true as const };
+  });
+  const { runner, plan, to, at } = await setup({ count: 2, revalidate });
+  to.failOn.push({ op: "commit", path: parsePosix("/b"), times: 1, error: new CommanderError("permission_denied", "Denied") });
+  const { id } = await runner.submit(plan);
+  await at(id, "failed");
+  await expect(runner.retryJob(id, { kind: "owner" }, request.signal)).rejects.toThrow("request cancelled");
+  expect(revalidate).toHaveBeenCalledTimes(1);
+});

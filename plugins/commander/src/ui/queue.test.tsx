@@ -2,6 +2,7 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import type { OperationJob } from "../core/model.ts";
+import { parentSkipNote } from "../core/retry-note.ts";
 import type { JobView } from "./model.ts";
 import { Queue } from "./queue.tsx";
 
@@ -87,4 +88,20 @@ test("says that nothing is left to retry when the plan is empty", () => {
   render(<Queue id="queue" open selection={selection} jobs={[failed]} endpoints={[]} error={null} loading={false}
     {...handlers} onRetry={vi.fn()} retryNotes={{ [failed.id]: { kind: "nothing" } }} />);
   expect(screen.getByText("Повторять нечего")).toBeDefined();
+});
+
+test("hides retry on a finished job with nothing unfinished in its items", () => {
+  const finished = { ...job("completed", "223e4567-e89b-42d3-a456-000000000009"),
+    items: [{ outcome: "done", error: null }, { outcome: "skipped", error: "Skipped by the owner" }] } as JobView;
+  render(<Queue id="queue" open selection={selection} jobs={[finished]} endpoints={[]} error={null} loading={false}
+    {...handlers} onRetry={vi.fn()} />);
+  expect(screen.queryByRole("button", { name: "Повторить невыполненное" })).toBeNull();
+});
+
+test("offers retry on a finished job whose skipped item waits on a parent directory", () => {
+  const finished = { ...job("failed", "223e4567-e89b-42d3-a456-00000000000a"),
+    items: [{ outcome: "done", error: null }, { outcome: "skipped", error: parentSkipNote }] } as JobView;
+  render(<Queue id="queue" open selection={selection} jobs={[finished]} endpoints={[]} error={null} loading={false}
+    {...handlers} onRetry={vi.fn()} />);
+  expect(screen.getByRole("button", { name: "Повторить невыполненное" })).toBeDefined();
 });

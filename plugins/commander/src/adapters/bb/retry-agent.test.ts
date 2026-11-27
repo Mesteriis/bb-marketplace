@@ -18,11 +18,13 @@ const signal = new AbortController().signal;
 const agent = { kind: "agent", threadId: "thread-a" } as const;
 const refusalText = "Commander planning failed outside the metadata grant";
 
-async function failedAgentJob() {
+/** `unknown` makes the commit reply lost after the temporary file was written, so reconciliation has a temp to remove. */
+async function failedAgentJob(outcome: "failed" | "unknown" = "failed") {
   const from = new FakeProvider("host:from");
   const to = new FakeProvider("host:to");
   from.put(parsePosix("/a"), new Uint8Array(3).fill(42), "1");
-  to.failOn.push({ op: "commit", path: parsePosix("/b"), times: 1, error: new CommanderError("permission_denied", "Denied") });
+  to.failOn.push({ op: "commit", path: parsePosix("/b"), times: 1, error: outcome === "failed"
+    ? new CommanderError("permission_denied", "Denied") : new CommanderError("outcome_unknown", "Commit reply lost", true) });
   // The fake store only needs the job queries; the approval queries are unused by the retry path.
   const store = Object.assign(new MemoryJobStore(), {
     hasOwnerApproval: () => false,
@@ -58,7 +60,7 @@ async function failedAgentJob() {
     totalBytes: "3",
   };
   const job = await runner.submit({ ...unsigned, digest: await planDigest(unsigned) });
-  await vi.waitFor(async () => expect((await store.get(job.id))!.state).toBe("failed"));
+  await vi.waitFor(async () => expect((await store.get(job.id))!.state).toBe(outcome === "failed" ? "failed" : "unknown"));
   const kv = new Map<string, unknown>();
   const pluginKv = {
     get: async (key: string) => kv.get(key),
@@ -76,7 +78,7 @@ async function failedAgentJob() {
     ready: async () => {},
     isManaged: () => false,
   });
-  return { ops, kv, job };
+  return { ops, kv, job, from, to };
 }
 
 test("an agent without a grant on the job's endpoints gets the planning refusal and no retry plan", async () => {
@@ -115,4 +117,23 @@ test("the commander_retry tool gives a granted agent a plan ticket and refuses a
   expect(await body()).toEqual({ code: "forbidden", message: "Commander refused the request" });
   kv.set("agent-grants", [{ threadId: "thread-a", endpoint: "*", scope: parsePosix("/"), permissions: ["read", "write"] }]);
   expect(await body()).toMatchObject({ status: "planned", digest: expect.any(String) });
+});
+
+test("an agent retry that would reconcile an unknown item needs write on the target directory", async () => {
+  const { ops, kv, job, from, to } = await failedAgentJob("unknown");
+  // Read on the source and write on the target file only: the directory beside the target is not covered.
+  kv.set("agent-grants", [
+    { threadId: "thread-a", endpoint: "host:from", scope: parsePosix("/a"), permissions: ["read"] },
+    { threadId: "thread-a", endpoint: "host:to", scope: parsePosix("/b"), permissions: ["write"] },
+  ]);
+  await expect(ops.retry(job.id, agent, signal)).rejects.toMatchObject({ message: refusalText });
+  expect(to.calls.filter(({ op }) => op === "remove")).toHaveLength(0);
+  expect(from.calls.filter(({ op }) => op === "remove")).toHaveLength(0);
+
+  kv.set("agent-grants", [
+    { threadId: "thread-a", endpoint: "host:from", scope: parsePosix("/a"), permissions: ["read"] },
+    { threadId: "thread-a", endpoint: "host:to", scope: parsePosix("/"), permissions: ["write"] },
+  ]);
+  const { plan } = await ops.retry(job.id, agent, signal);
+  expect(plan?.items).toHaveLength(1);
 });

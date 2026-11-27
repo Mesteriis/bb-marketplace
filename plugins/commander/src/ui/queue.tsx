@@ -2,6 +2,7 @@ import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import type { OperationJob } from "../core/model.ts";
 import { displayPath } from "../core/path.ts";
+import { parentSkipNote } from "../core/retry-note.ts";
 import { bytes, damaged, date, shortPath, type EndpointView, type JobView, type Problem } from "./model.ts";
 import { ProblemLine } from "./pane.tsx";
 import { approvalState, operationText, reasonText, ru, stateText } from "./strings.ts";
@@ -11,6 +12,9 @@ const pluralIndex = { one: 0, few: 1, many: 2, other: 2, two: 2, zero: 2 } as co
 const cancellable = new Set(["pending", "running", "awaiting_decision", "interrupted"]);
 // S17: те же конечные состояния, что принимает ядро повтора.
 const retryable = new Set(["completed", "failed", "cancelled", "unknown"]);
+// Items a retry can still act on: unfinished, or skipped only because of a directory above them.
+const hasUnfinished = (job: OperationJob) => job.items.some(({ outcome, error }) => outcome === "failed" || outcome === "pending"
+  || outcome === "unknown" || (outcome === "skipped" && error === parentSkipNote));
 /** S17: the result of the last retry request for a job: nothing to retry, or files waiting for a check. */
 export type RetryNote = { kind: "nothing" } | { kind: "waiting"; count: number };
 const stateIcons = {
@@ -80,7 +84,7 @@ function JobCard({ job, endpoints, compact, onInspect, onSkip, onCancel, onRetry
       {job.awaitsOwner && <Button size="sm" variant="outline" onClick={() => onInspect(job)}>{ru.inspectPlan}</Button>}
       {cancellable.has(job.state) && !job.awaitsOwner && !conflict &&
         <Button size="sm" variant="outline" onClick={() => onCancel(job)}>{ru.cancelJob}</Button>}
-      {onRetry && retryable.has(job.state) && !job.awaitsOwner && !conflict &&
+      {onRetry && retryable.has(job.state) && hasUnfinished(job) && !job.awaitsOwner && !conflict &&
         <Button size="sm" variant="outline" onClick={() => onRetry(job)}>{ru.retryUnfinished}</Button>}
     </div>
   </article>;
