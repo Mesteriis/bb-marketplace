@@ -126,15 +126,26 @@ export function detectKind(bytes: Uint8Array, final: boolean): ViewKind {
  * Hex dump: `offset  xx xx … xx  |ascii|`, 16 bytes per line, 8 bytes per half. A short
  * last line keeps its columns, so the ASCII column stays aligned.
  */
+const HEX_BYTE = Array.from({ length: 256 }, (_, byte) => byte.toString(16).padStart(2, "0").toUpperCase());
+const ASCII_BYTE = Array.from({ length: 256 }, (_, byte) => (byte >= 0x20 && byte < 0x7f ? String.fromCharCode(byte) : "."));
+
+// The reply fit searches over prefixes and renders hex for each probe, so this stays a table lookup.
 export function hexLines(bytes: Uint8Array, offset: bigint): string[] {
   const lines: string[] = [];
   for (let start = 0; start < bytes.length; start += HEX_WIDTH) {
-    const chunk = bytes.subarray(start, start + HEX_WIDTH);
-    const slots = Array.from({ length: HEX_WIDTH }, (_, index) =>
-      index < chunk.length ? chunk[index]!.toString(16).padStart(2, "0").toUpperCase() : "  ");
+    const end = Math.min(start + HEX_WIDTH, bytes.length);
+    let hex = "";
+    let ascii = "";
+    for (let index = 0; index < HEX_WIDTH; index++) {
+      if (index) hex += index === 8 ? "  " : " ";
+      const at = start + index;
+      if (at < end) {
+        hex += HEX_BYTE[bytes[at]!]!;
+        ascii += ASCII_BYTE[bytes[at]!]!;
+      } else hex += "  ";
+    }
     const address = (offset + BigInt(start)).toString(16).padStart(8, "0").toUpperCase();
-    const ascii = Array.from(chunk, (byte) => (byte >= 0x20 && byte < 0x7f ? String.fromCharCode(byte) : ".")).join("");
-    lines.push(`${address}  ${slots.slice(0, 8).join(" ")}  ${slots.slice(8).join(" ")}  |${ascii}|`);
+    lines.push(`${address}  ${hex}  |${ascii}|`);
   }
   return lines;
 }
@@ -204,7 +215,10 @@ export function base64Of(bytes: Uint8Array): string {
 }
 
 export function bytesOf(base64: string): Uint8Array {
-  return Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+  return bytes;
 }
 
 /** Bytes of the response as the owner RPC or the agent tool sends it. */
@@ -293,7 +307,17 @@ export function replyFor(window: ViewWindow, requested: ViewKind | "auto", audie
     return reply(fitChunk(window, measure));
   }
   if (chosen === "text") return reply(fitPrefix(window, textBody, (body) => measure(body)));
-  return reply(fitPrefix(window, binaryBody, (body) => measure(body)));
+  // Every probe of the fit is a prefix of the same window: render its full lines once and slice them.
+  const lines = hexLines(window.bytes, window.offset);
+  const binaryPrefix = (prefix: ViewWindow): WireBody => {
+    const whole = Math.floor(prefix.bytes.length / HEX_WIDTH);
+    const shown = lines.slice(0, whole);
+    if (whole * HEX_WIDTH < prefix.bytes.length) {
+      shown.push(...hexLines(prefix.bytes.subarray(whole * HEX_WIDTH), prefix.offset + BigInt(whole * HEX_WIDTH)));
+    }
+    return { kind: "binary", lines: shown, truncated: prefix.truncated, shown: prefix.bytes.length, total: prefix.size.toString() };
+  };
+  return reply(fitPrefix(window, binaryPrefix, (body) => measure(body)));
 }
 
 function modelOf(body: WireBody): ViewModel {

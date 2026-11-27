@@ -1,3 +1,5 @@
+import { SearchPanel, type SearchActions } from "./search-panel.tsx";
+import type { SearchHit } from "../core/search.ts";
 import { useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
@@ -57,6 +59,7 @@ export interface WorkspaceProps {
   retryNotes: Record<string, RetryNote>;
   onPreview: (ref: ResourceRef) => void;
   scans: ScanActions;
+  search?: SearchActions;
   startingScans: ReadonlySet<ScanSubject["kind"]>;
   onView: (ref: ResourceRef, mode: ViewKind | "auto") => Promise<ViewResult>;
   onCompare: (source: ResourceRef, target: ResourceRef) => Promise<[string, string]>;
@@ -127,6 +130,7 @@ export function Workspace(props: WorkspaceProps) {
   const queueOpen = wide ? state.inspectorCollapsed !== true : narrowQueue;
   const [cursor, setCursor] = useState<Partial<Record<Side, Cursor>>>({});
   const previousRows = useRef<Record<Side, Entry[]>>({ left: [], right: [] });
+  const [searchRoots, setSearchRoots] = useState<Partial<Record<Side, ResourceRef>>>({});
   const [dialog, setDialog] = useState<DialogState | null>(null);
   const [same, setSame] = useState(false);
   const [retryConflict, setRetryConflict] = useState<{ view: ConflictView; problem: Problem } | null>(null);
@@ -148,6 +152,9 @@ export function Workspace(props: WorkspaceProps) {
   const side = state.activePane, opposite = otherSide(side);
   const left = activeTab(state, "left"), right = activeTab(state, "right");
   const tabs = { left, right }, tab = tabs[side], destination = tabs[opposite];
+  // S11: a search replaces only its source pane; the other pane remains the copy destination.
+  const searchRoot = (pane: Side) => state.searchPanels?.[pane]?.root ?? searchRoots[pane];
+  const inSearch = !!props.search && !!searchRoot(side);
   const leftEntries = useMemo(() => filterAndSort(directories.left, left), [directories.left, left?.sort, left?.filter]);
   const rightEntries = useMemo(() => filterAndSort(directories.right, right), [directories.right, right?.sort, right?.filter]);
   const all = { left: leftEntries, right: rightEntries }, entries = all[side];
@@ -363,7 +370,9 @@ export function Workspace(props: WorkspaceProps) {
     } else view(value, entry);
   }
   function view(value: Tab, entry: Entry) {
-    const ref = { endpoint: value.endpoint, path: join(value.path, entry.name) };
+    viewRef({ endpoint: value.endpoint, path: join(value.path, entry.name) }, entry);
+  }
+  function viewRef(ref: ResourceRef, entry: Entry) {
     // A local file with a host path opens in BB's own preview when it succeeds; the DOM guarantees of
     // the Commander viewer do not cover that preview. Anything else, such as SFTP, falls back to
     // the Commander viewer, which reads the window through file_read.
@@ -415,6 +424,29 @@ export function Workspace(props: WorkspaceProps) {
           (kind === "move" || kind === "copy") && destination ? currentRef(destination) : null,
         newName: result?.data ?? null, conflictPolicy: "ask", verify: "size",
       });
+      open({ kind: "plan", plan });
+    });
+  }
+  // S11: operate on the original refs, including paths from different directories.
+  function closeSearch(pane: Side) {
+    setSearchRoots((previous) => ({ ...previous, [pane]: undefined }));
+    if (state.searchPanels?.[pane]) {
+      update((previous) => ({ ...previous, searchPanels: { ...previous.searchPanels, [pane]: undefined } }));
+    }
+    requestAnimationFrame(() => grids[pane].current?.focus({ preventScroll: true }));
+  }
+  function openSearchHit(pane: Side, hit: SearchHit) {
+    if (hit.entry.kind === "dir") {
+      patch(pane, (item) => ({ ...item, endpoint: hit.ref.endpoint, path: hit.ref.path,
+        selection: [], filter: "", scrollTop: 0 }));
+      setCursor((previous) => ({ ...previous, [pane]: undefined }));
+      closeSearch(pane);
+    } else viewRef(hit.ref, hit.entry);
+  }
+  function copySearchHits(refs: ResourceRef[], targetDir: ResourceRef) {
+    void perform(async () => {
+      const plan = await props.onCreate({ kind: "copy", sources: refs, targetDir,
+        newName: null, conflictPolicy: "ask", verify: "size" });
       open({ kind: "plan", plan });
     });
   }
@@ -480,6 +512,14 @@ export function Workspace(props: WorkspaceProps) {
       || targetElement.closest("input,textarea,select,[contenteditable]:not([contenteditable=false])")) return;
     const inGrid = !!targetElement.closest(".cm-grid") && !targetElement.closest("button");
     const action = findShortcut(event, bindings);
+    // Search owns its result actions; the standard pane switch still applies.
+    if (inSearch || targetElement.closest("[data-search-panel]")) {
+      if (action === "switchPane" && inGrid && !event.repeat) {
+        event.preventDefault();
+        invoke(action);
+      }
+      return;
+    }
     if (action && (action !== "switchPane" || inGrid) && (!event.repeat || action === "up")) {
       if (!inGrid && (action === "toggle" || action === "up" || action === "mark" || action === "unmark" || action === "invert")) return;
       event.preventDefault();
@@ -556,9 +596,9 @@ export function Workspace(props: WorkspaceProps) {
         <ProblemLine problem={retryConflict.problem} truncate />
         <Button size="sm" variant="outline" disabled={busy} onClick={() => goBack(retryConflict.view)}>{ru.retryConflict}</Button>
       </div> : <><span className="cm-hint">{compact ? ru.threadEnvironment : ru.shortcut}</span><span className="cm-fill" /></>}
-      {!compact && <><Button size="sm" variant="outline" aria-label={ru.swap} onClick={() => { setCursor({}); update((previous) => ({ ...previous, left: previous.right, right: previous.left })); }}>
+      {!compact && <><Button size="sm" variant="outline" aria-label={ru.swap} disabled={!!searchRoot("left") || !!searchRoot("right")} onClick={() => { setCursor({}); update((previous) => ({ ...previous, left: previous.right, right: previous.left })); }}>
         <Icon name="ArrowUpDown" /><span>{ru.swap}</span></Button>
-        <Button size="sm" variant="outline" aria-label={ru.compare} disabled={!left || !right}
+        <Button size="sm" variant="outline" aria-label={ru.compare} disabled={!left || !right || !!searchRoot("left") || !!searchRoot("right")}
           onClick={() => {
             if (!left || !right) return;
             const a = currentRef(left), b = currentRef(right);
@@ -568,7 +608,7 @@ export function Workspace(props: WorkspaceProps) {
             } });
           }}>
           <Icon name="FileDiff" /><span>{ru.compare}</span></Button></>}
-      <Button size="sm" variant="outline" aria-label={ru.scanChecksum} disabled={!ready || current?.kind !== "file"} onClick={() => {
+      <Button size="sm" variant="outline" aria-label={ru.scanChecksum} disabled={inSearch || !ready || current?.kind !== "file"} onClick={() => {
         if (!tab || current?.kind !== "file") return;
         open({ kind: "scan", subject: { kind: "checksum", file: {
           ref: { endpoint: tab.endpoint, path: join(tab.path, current.name) }, label: endpoint?.label ?? tab.endpoint, readOnly: endpoint?.readOnly,
@@ -591,6 +631,22 @@ export function Workspace(props: WorkspaceProps) {
     <div className="cm-work" data-queue={queueOpen}>
       {sides.map((pane) => {
         const value = tabs[pane], source = endpointsBySide[pane];
+        const where = searchRoot(pane);
+        if (where && props.search) {
+          const targetPane = otherSide(pane);
+          const targetTab = tabs[targetPane], copyTo = endpointsBySide[targetPane];
+          const canCopy = !!targetTab && !!copyTo && !copyTo.readOnly && !searchRoot(targetPane)
+            && !directories[targetPane]?.loading && !directories[targetPane]?.error && !busy;
+          return <SearchPanel key={pane} side={pane} active={pane === side} root={where}
+            label={endpoints.find(({ id }) => id === where.endpoint)?.label ?? where.endpoint}
+            savedId={state.searchPanels?.[pane]?.scanId} grid={grids[pane]} api={props.search}
+            onFocus={() => setPane(pane)} onClose={() => closeSearch(pane)}
+            onSave={(scanId) => update((previous) => ({ ...previous,
+              searchPanels: { ...previous.searchPanels, [pane]: { scanId, root: where } },
+            }))}
+            onOpen={(hit) => openSearchHit(pane, hit)}
+            onCopy={canCopy ? (refs) => copySearchHits(refs, currentRef(targetTab)) : undefined} />;
+        }
         return <Pane key={pane} side={pane} active={pane === side} tab={value} tabs={state[pane].tabs} activeIndex={state[pane].activeTab}
           endpoints={endpoints} endpoint={source} directory={directories[pane]} entries={all[pane]}
           cursor={cursor[pane]?.key ?? null}
@@ -604,6 +660,9 @@ export function Workspace(props: WorkspaceProps) {
           onScroll={(scrollTop) => patch(pane, (item) => item.scrollTop === scrollTop ? item : { ...item, scrollTop })}
           onPoint={(entry, mark) => point(pane, entry, mark)}
           onOpen={(entry) => openEntry(pane, entry)} onRefresh={() => props.onRefresh(pane)}
+          onSearch={props.search && value && source && !directories[pane]?.error && !directories[pane]?.loading
+            ? () => { setPane(pane); setSearchRoots((previous) => ({ ...previous, [pane]: currentRef(value) })); }
+            : undefined}
           onAccess={() => { if (source) void perform(() => props.onAccess(source)); }} />;
       })}
       {queue}
@@ -614,14 +673,14 @@ export function Workspace(props: WorkspaceProps) {
         const label = compact && key === "copy" ? ru.compactCopy : shortcutText[key];
         const title = label + " (" + shortcut + ")";
         return <Button asChild key={key} size="sm" variant="outline">
-          <button type="button" title={title} aria-label={title} aria-keyshortcuts={shortcut} disabled={busy || !can[key]} onClick={() => invoke(key)}>
+          <button type="button" title={title} aria-label={title} aria-keyshortcuts={shortcut} disabled={inSearch || busy || !can[key]} onClick={() => invoke(key)}>
             <Icon name={icon} /><span>{label}</span>
             <kbd aria-hidden="true">{shortcut}</kbd>
           </button>
         </Button>;
       })}
       <span className="cm-fill" />
-      {endpoint?.provider === "local" && <Button size="sm" variant="outline" aria-label={compact ? ru.compactTerminal : ru.terminal} className="cm-terminal" disabled={!can.terminal || busy}
+      {endpoint?.provider === "local" && <Button size="sm" variant="outline" aria-label={compact ? ru.compactTerminal : ru.terminal} className="cm-terminal" disabled={inSearch || !can.terminal || busy}
         onClick={() => { if (tab) void perform(() => props.onTerminal(currentRef(tab))); }}>
         <Icon name="Terminal" /><span>{compact ? ru.compactTerminal : ru.terminal}</span></Button>}
     </footer>

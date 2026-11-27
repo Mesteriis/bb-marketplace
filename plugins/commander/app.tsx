@@ -1,11 +1,12 @@
-import { definePluginApp, useBbNavigate, useRealtime, useRpc, useSdk, type ExperimentalThreadTabProps } from "@get-bb/plugin-sdk/app";
+import type { SearchActions } from "./src/ui/search-panel.tsx";
+import { definePluginApp, experimental_PluginRpcCallError, experimental_usePluginId, useBbNavigate, useRealtime, useRpc, useSdk, type ExperimentalThreadTabProps } from "@get-bb/plugin-sdk/app";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LIST_PAGE_MAX } from "./src/core/provider.ts";
 import { parsePosix } from "./src/core/path.ts";
 import { assembleImage, type ViewKind, type WireView } from "./src/core/preview.ts";
 import { CommanderError } from "./src/core/errors.ts";
 import { JobState, type ConflictAction, type Entry, type OperationJob, type OperationPlan, type ResourceRef } from "./src/core/model.ts";
-import { type UiState, type rpcSchemas } from "./src/core/wire/rpc.ts";
+import { rpcSchemas, type UiState } from "./src/core/wire/rpc.ts";
 import { Workspace } from "./src/ui/index.ts";
 import type { RetryNote } from "./src/ui/queue.tsx";
 import { activeTab, currentRef, emptyState, nativePath, newTab, problemOf, unloaded,
@@ -17,6 +18,34 @@ import "./src/ui/workspace.css";
 
 type Rpc = ReturnType<typeof useRpc<typeof rpcSchemas>>;
 type Sdk = ReturnType<typeof useSdk>;
+// S11: the pinned SDK cannot take a signal. Use HTTP cancellation when the
+// transport is available; both paths also accept a request-id cancellation.
+async function startSearch(rpc: Rpc, pluginId: string, input: Parameters<SearchActions["start"]>[0], signal: AbortSignal) {
+  let response: Response | undefined;
+  let envelope: { ok?: boolean; result?: unknown; error?: unknown } | null;
+  try {
+    response = await fetch(`/api/v1/plugins/${encodeURIComponent(pluginId)}/rpc/scan_start`, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+      signal,
+    });
+    signal.throwIfAborted();
+    if (response.status === 401 || response.status === 404) return rpc.call("scan_start", input);
+    envelope = await response.json();
+  } catch (error) {
+    signal.throwIfAborted();
+    // A successful status can arrive before a truncated JSON body. Reuse the
+    // same request id so the server can replay an already-created job.
+    if (!(error instanceof TypeError) && !(error instanceof SyntaxError && response?.status === 200)) throw error;
+    return rpc.call("scan_start", input);
+  }
+  signal.throwIfAborted();
+  if (!response.ok || envelope?.ok !== true) throw experimental_PluginRpcCallError.from(envelope?.error);
+  return rpcSchemas.scan_start.output.parse(envelope.result);
+}
+
 const delay = 250;
 let pendingWrite = Promise.resolve();
 const bindingsKey = "makosh-commander:key-bindings";
@@ -200,6 +229,7 @@ function useJobs(rpc: Rpc, revision: number) {
 
 function CommanderPage({ compact = false, environment, threadId }: { compact?: boolean; environment?: string; threadId?: string }) {
   const rpc = useRpc<typeof rpcSchemas>();
+  const pluginId = experimental_usePluginId();
   const sdk = useSdk();
   const navigate = useBbNavigate();
   const { state, update, endpoints, problem, refreshEndpoints } = useWorkspaceState(rpc, sdk, threadId, environment);
@@ -231,6 +261,13 @@ function CommanderPage({ compact = false, environment, threadId }: { compact?: b
     get: (scanId) => rpc.call("scan_get", { scanId }),
     cancel: (scanId) => rpc.call("scan_cancel", { scanId }),
   }), [rpc, update]);
+  // S11: polling and job cancellation use the shared scan transport.
+  const search = useMemo<SearchActions>(() => ({
+    start: (input, signal) => startSearch(rpc, pluginId, input, signal),
+    get: scans.get,
+    cancel: scans.cancel,
+    cancelRequest: (clientRequestId) => rpc.call("scan_cancel", { clientRequestId }),
+  }), [pluginId, rpc, scans]);
   const [bindings, setBindings] = useState(loadBindings);
   // S17: the last retry result by job id: nothing to retry, or files waiting for a directory check.
   const [retryNotes, setRetryNotes] = useState<Record<string, RetryNote>>({});
@@ -352,7 +389,7 @@ function CommanderPage({ compact = false, environment, threadId }: { compact?: b
     if (!plan) return null;
     return rpc.call("plan_run", { planId: plan.id, digest: plan.digest });
   };
-  return <Workspace scans={scans} startingScans={startingScans} state={state} update={update} endpoints={endpoints} compact={compact} queue={queue} problem={problem}
+  return <Workspace search={search} scans={scans} startingScans={startingScans} state={state} update={update} endpoints={endpoints} compact={compact} queue={queue} problem={problem}
     directories={{ left: leftDir, right: rightDir }} bindings={bindings}
     onBindings={(value) => {
       setBindings(value);
