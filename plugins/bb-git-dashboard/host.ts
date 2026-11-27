@@ -2,6 +2,7 @@ import { experimental_defineHostEntry } from "@get-bb/plugin-sdk/host";
 import { hostContract } from "./src/adapters/bb/host-contract.ts";
 import { failureFor } from "./src/core/workspace.ts";
 import { sshHostname } from "./src/adapters/bb/ssh-config.ts";
+import { commitDetails, commitPatch, historyPage, historyRevision, workingPatch } from "./src/adapters/bb/history-git.ts";
 import { probeForge } from "./src/adapters/bb/forge-probe.ts";
 import { walkProjects } from "./src/adapters/bb/project-walk.ts";
 import { maxDepth } from "./src/core/catalog/project-scan.ts";
@@ -74,6 +75,25 @@ export default experimental_defineHostEntry({
       const url = new URL(origin);
       if (url.protocol !== "https:" || url.pathname !== "/" || url.username || url.password || url.search) return {kind:null};
       return {kind:await probeForge(url.origin)};
+    },
+    async historyPage({root, identity, offset, limit}, {signal}) {
+      try { await assertWorktree(root,identity,signal); return {ok:true as const, value:await historyPage(root,offset,limit,signal)}; }
+      catch (error) { return failureFor(error,"GIT_REJECTED"); }
+    },
+    async historyRevision({root, identity}, {signal}) {
+      try { await assertWorktree(root,identity,signal); return {ok:true as const, revision:await historyRevision(root,signal)}; }
+      catch (error) { return failureFor(error,"GIT_REJECTED"); }
+    },
+    async historyCommit({root, identity, hash}, {signal}) {
+      try { await assertWorktree(root,identity,signal); return {ok:true as const, value:await commitDetails(root,hash,signal)}; }
+      catch (error) { return failureFor(error,"GIT_REJECTED"); }
+    },
+    async historyPatch({root, identity, hash, path}, {signal}) {
+      try {
+        await assertWorktree(root,identity,signal);
+        return {ok:true as const, value:hash === null ? await workingPatch(root,path,signal) : await commitPatch(root,hash,path,signal)};
+      }
+      catch (error) { return failureFor(error,"GIT_REJECTED"); }
     },
     async sshHostname({alias}) {
       try { return {ok:true as const, hostname:await sshHostname(alias)}; }

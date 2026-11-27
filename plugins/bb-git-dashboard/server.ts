@@ -10,6 +10,7 @@ import { remoteService } from "./src/adapters/bb/remote-service.ts";
 import { forgeLinking } from "./src/adapters/bb/forge-rpc.ts";
 import { projectCatalog } from "./src/adapters/bb/project-catalog.ts";
 import { ciHandlers } from "./src/adapters/bb/ci-rpc.ts";
+import { historyHandlers } from "./src/adapters/bb/history-rpc.ts";
 import { pullMutation } from "./src/core/providers.ts";
 import { remoteTarget } from "./src/core/publication.ts";
 import { registerAgentWork } from "./src/adapters/bb/agent-work.ts";
@@ -147,6 +148,7 @@ export default function plugin(bb: BbPluginApi) {
   }
   bb.rpc.register(rpc, {
     ...ci,
+    ...historyHandlers(bb, linkedCopy),
     checkConnection: (input,context) => clientOnly(context) ? remote.checkConnection(input) : denied(),
     saveConnection: (input,context) => clientOnly(context) ? remote.saveConnection(input) : denied(),
     accounts: (_,context) => clientOnly(context) ? remote.accounts() : denied(),

@@ -7,6 +7,7 @@ import { path } from "../../core/git.ts";
 import { copy, failure, gitResponse, id, operation, request } from "../../core/workspace.ts";
 
 import { ciContract } from "../../core/ci/contract.ts";
+import { historyContract } from "../../core/history/contract.ts";
 import { scanPreview } from "../../core/catalog/project-scan.ts";
 import { projectNode } from "../../core/catalog/project-tree.ts";
 import { forgeStatus, linkTarget } from "../../core/forge/contract.ts";
@@ -17,6 +18,7 @@ const success = z.object({ok: z.literal(true)});
 const copyResponse = z.discriminatedUnion("ok", [failure, success.extend({value: copy})]);
 export const rpc = defineRpcContract({
   ...ciContract,
+  ...historyContract,
   checkConnection: {input:connectionInput,output:z.discriminatedUnion("ok",[failure,success.extend({value:connectionCheck})])},
   saveConnection: {input:connectionInput,output:z.discriminatedUnion("ok",[failure,success.extend({value:account})])},
   accounts: {input:z.null(),output:z.discriminatedUnion("ok",[failure,success.extend({items:z.array(account)})])},

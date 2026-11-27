@@ -3,6 +3,7 @@ import { z } from "zod";
 import { gitAction, path } from "../../core/git.ts";
 import { failure, gitResponse } from "../../core/workspace.ts";
 import { verdict } from "../../core/catalog/project-scan.ts";
+import { commitDetails, historyPage, patchText } from "../../core/history/model.ts";
 
 const identity = z.string().regex(/^[a-f0-9]{64}$/);
 const rootResponse = z.discriminatedUnion("ok", [failure, z.object({ok: z.literal(true), root: path, identity, repository:identity.optional(), repositoryName:z.string().optional()})]);
@@ -23,5 +24,11 @@ export const hostContract = defineRpcContract({
   scanProjects: {input:z.object({root:path,exclude:z.array(z.string().max(255)).max(100)}),
     output:z.discriminatedUnion("ok",[failure,z.object({ok:z.literal(true),verdicts:z.array(verdict).max(20_000),truncated:z.boolean()})])},
   probeForge: {input:z.object({origin:z.url().max(300)}),output:z.object({kind:z.enum(["gitea","gitlab","unreachable"]).nullable()})},
+  historyPage: {input:z.object({root:path,identity,offset:z.number().int().min(0),limit:z.number().int().min(1).max(200)}),
+    output:z.discriminatedUnion("ok",[failure,z.object({ok:z.literal(true),value:historyPage})])},
+  historyRevision: {input:z.object({root:path,identity}),output:z.discriminatedUnion("ok",[failure,z.object({ok:z.literal(true),revision:z.string()})])},
+  historyCommit: {input:z.object({root:path,identity,hash:z.string().max(64)}),output:z.discriminatedUnion("ok",[failure,z.object({ok:z.literal(true),value:commitDetails})])},
+  historyPatch: {input:z.object({root:path,identity,hash:z.string().max(64).nullable(),path}),
+    output:z.discriminatedUnion("ok",[failure,z.object({ok:z.literal(true),value:patchText})])},
   sshHostname: {input:z.object({alias:z.string().max(253)}),output:z.discriminatedUnion("ok",[failure,z.object({ok:z.literal(true),hostname:z.string().max(253)})])},
 });

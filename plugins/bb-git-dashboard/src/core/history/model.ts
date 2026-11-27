@@ -21,3 +21,4 @@ export type HistoryPage = z.infer<typeof historyPage>;
 export const commitDetails = commitSummary.extend({body: z.string(), files: z.array(fileChange)});
 export type CommitDetails = z.infer<typeof commitDetails>;
 export const objectName = z.string().regex(/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/);
+export const patchText = z.object({text: z.string()});

@@ -1,13 +1,12 @@
 import { z } from "zod";
-import { failure, id } from "../workspace.ts";
+import { answer } from "../answer.ts";
+import { id } from "../workspace.ts";
 import { ciAction } from "./actions.ts";
 import { dispatchSpecSchema } from "./dispatch.ts";
 import { job, run, runFilter } from "./model.ts";
 
 const operations = z.object({dispatch: z.boolean(), dispatchInputs: z.boolean(), rerunFailed: z.boolean(), rerunAll: z.boolean(), cancel: z.boolean(), liveLog: z.boolean()});
 const runId = z.string().min(1).max(200);
-/** The plugin's answer envelope: a failure with a code, or the value with `ok: true`. */
-const answer = <T extends z.ZodRawShape>(shape: T) => z.discriminatedUnion("ok", [failure, z.object({ok: z.literal(true), ...shape})]);
 export const ciContract = {
   ciRuns: {input: z.object({copyId: id, filter: runFilter, page: z.number().int().min(1).max(50)}),
     output: answer({items: z.array(run), more: z.boolean(), forge: z.enum(["github", "gitlab", "gitea", "azure"]),
