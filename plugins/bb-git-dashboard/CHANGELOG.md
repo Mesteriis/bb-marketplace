@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.13.2 — 2026-11-27
+
+The token of a new repository in the Keychain.
+
+- **New project…** with a repository now saves the account's token in the macOS Keychain for that repository's exact address and the account's username, right after the forge has made it with this account, and then pushes main. The token reaches the helper on stdin of the host's own `git credential approve` only — not arguments, environment, `.git/config`, logs or error text — so the push finds it and macOS does not ask for access.
+- The preview says so before confirming; the activity log records that the entry was saved (or why not), without its value.
+- The entry is read back through the same `git` and helper (`git credential approve` reports success whatever the helper did). If the Keychain did not keep it, main is not pushed: the repository stays empty with origin set, and the answer names the reason and what to do. A repository whose creation was not confirmed gets no entry.
+
 ## 0.13.1 — 2026-11-27
 
 A new project's repository on a forge.

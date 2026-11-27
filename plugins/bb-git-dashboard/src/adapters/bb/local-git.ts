@@ -359,14 +359,15 @@ export async function localGit(path: string, action: GitAction, signal?: AbortSi
   return gitError("INVALID_INPUT");
 }
 
-async function httpsOrigin(clone: string, username: string) {
+/** The HTTPS transport of an account: a plain address and the system credential helper, keyed by the address's path. */
+export async function httpsOrigin(clone: string, username: string, platform: NodeJS.Platform = process.platform) {
   const url = new URL(clone);
   if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash || !/^[^\s\r\n:=]+$/.test(username)) {
     return gitError("INVALID_REMOTE");
   }
   // This transport explicitly selects a system credential helper. It never reads
   // personal Git configuration or falls back to a credential for another account.
-  if (process.platform !== "darwin") return gitError("CREDENTIAL_HELPER_UNAVAILABLE");
+  if (platform !== "darwin") return gitError("CREDENTIAL_HELPER_UNAVAILABLE");
   return {url:url.href, config:{username, helper:"osxkeychain"}};
 }
 

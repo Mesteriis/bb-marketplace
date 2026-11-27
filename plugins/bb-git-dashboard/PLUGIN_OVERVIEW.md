@@ -32,6 +32,6 @@ The Actions tab and a thread's **CI/CD** tab list GitHub Actions, Gitea Actions,
 
 ## Remote repositories
 
-Connect GitHub, GitLab, Azure Repos or Gitea accounts. Repository tabs show Code, CI/CD, issues and variables where supported. Secret and variable values stay in the provider. Review clone, fetch, push and PR actions before confirming them. HTTPS Git uses the account’s credential in the host’s macOS Keychain. API tokens go to Makosh Credential Vault when enabled, with a fallback copy in BB’s secret settings.
+Connect GitHub, GitLab, Azure Repos or Gitea accounts. Repository tabs show Code, CI/CD, issues and variables where supported. Secret and variable values stay in the provider. Review clone, fetch, push and PR actions before confirming them. HTTPS Git uses the account’s macOS Keychain entry; New project adds it. API tokens go to Makosh Credential Vault when enabled, with a fallback copy in BB’s secret settings.
 
 Grant agents read or local write access and review their publication and worktree requests in BB. Pinned tabs keep their target.

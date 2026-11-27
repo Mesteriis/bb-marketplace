@@ -57,7 +57,27 @@ if [ "$(uname)" = Darwin ]; then
   HOME="$STAND/home" security list-keychains -s "$KEYCHAIN"
 fi
 
-env -i HOME="$STAND/home" PATH="$PATH" TMPDIR="${TMPDIR:-/tmp}" \
+# The stand never touches a Keychain: the plugin's HTTPS Git selects the macOS helper (credential.helper=osxkeychain);
+# a `git` first on the stand BB's PATH swaps that for fake-credential-helper.mjs, which keeps Git's store and erase
+# requests in a file and answers lookups from it (the Gitea stand-in asks for them on its new repositories). Reading a
+# Keychain entry with another program makes macOS ask on the desktop, so the real helper is exercised only by the
+# live script the maintainer runs.
+BIN="$STAND/bin"; mkdir -p "$BIN"; REAL_GIT=$(command -v git); : > "$STAND/forge/credentials.log"
+cat > "$BIN/credential-helper" <<HELPER
+#!/bin/sh
+exec "$(command -v node)" "$HERE/fake-credential-helper.mjs" "$STAND/forge/credentials.log" "\$1"
+HELPER
+cat > "$BIN/git" <<WRAPPER
+#!/bin/sh
+for arg do shift; [ "\$arg" = "credential.helper=osxkeychain" ] && arg="credential.helper=$BIN/credential-helper"; set -- "\$@" "\$arg"; done
+exec "$REAL_GIT" "\$@"
+WRAPPER
+chmod +x "$BIN/credential-helper" "$BIN/git"
+# BB's host daemon takes PATH from a login shell (/bin/zsh -ilc) under the stand HOME, where /etc/zprofile puts
+# /usr/bin first; .zprofile runs after it, so the stand's git comes first for the host too.
+printf 'export PATH="%s:$PATH"\n' "$BIN" > "$STAND/home/.zprofile"
+
+env -i HOME="$STAND/home" PATH="$BIN:$PATH" TMPDIR="${TMPDIR:-/tmp}" \
   NODE_EXTRA_CA_CERTS="$STAND/forge/cert.pem" MAKOSH_GIT_CA_FILE="$STAND/forge/cert.pem" \
   BB_TELEMETRY=false BB_SKIP_ONBOARDING=true NODE_ENV=production \
   node "$BB_APP/dist/bb-app.js" --data-dir "$STAND/data" \

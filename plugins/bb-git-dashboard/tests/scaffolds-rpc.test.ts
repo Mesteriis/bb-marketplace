@@ -8,7 +8,8 @@ const request = {hostId: "host-1", key: "builtin:python-service-uv", values: {na
   author: {name: "Stand Author", email: "author@example.invalid"}, repository: null};
 
 /** A server with one machine; `answer` is what the host's scaffoldCreate returns, or throws for a lost answer. */
-function server(answer: () => Promise<unknown>, more: {publish?: () => Promise<unknown>; create?: () => Promise<unknown>; account?: () => typeof account} = {}) {
+function server(answer: () => Promise<unknown>, more: {publish?: () => Promise<unknown>; create?: () => Promise<unknown>; account?: () => typeof account;
+  credential?: () => Promise<unknown>} = {}) {
   const calls: {name: string; input: unknown}[] = [];
   const created: unknown[] = [];
   const linked: unknown[] = [];
@@ -19,18 +20,20 @@ function server(answer: () => Promise<unknown>, more: {publish?: () => Promise<u
     settings: {define: () => ({get: async () => ({scaffolds: "", scaffoldsFolder: ""})})},
     hosts: {experimental_client: () => ({call: async (name: string, input: unknown) => {
       calls.push({name, input});
-      return name === "scaffoldPublish" ? (more.publish ?? (async () => ({ok: true})))() : answer();
+      return name === "scaffoldPublish" ? (more.publish ?? (async () => ({ok: true})))()
+        : name === "scaffoldCredential" ? (more.credential ?? (async () => ({ok: true})))() : answer();
     }})},
     onDispose: () => {},
     realtime: {publish: () => {}},
   } as unknown as BbPluginApi;
   const handlers = scaffoldHandlers(bb, {rules: async () => ({root}), saveCopy: async (...args) => { saved.push(args); return {id: "copy-1"} as never; },
     accounts: async () => [account],
-    api: async () => ({account: (more.account ?? (() => account))(), api: {createRepository: async (spec: unknown) => { created.push(spec); return (more.create ?? (async () => repo))(); }} as never}),
+    api: async () => ({account: (more.account ?? (() => account))(), token, api: {createRepository: async (spec: unknown) => { created.push(spec); return (more.create ?? (async () => repo))(); }} as never}),
     link: async (_copy, accountId, path) => { linked.push([accountId, path]); },
     record: async entry => { log.push(entry); }});
   return {handlers, calls, saved, created, linked, log, setRoot: (value: string) => { root = value; }};
 }
+const token = "fixture-token-value-0123456789";
 const account = {kind: "gitea" as const, id: "acc-1", label: "Stand", origin: "https://git.example.org", organization: "", username: "octo"};
 const repo = {id: "9", accountId: "acc-1", project: "octo", name: "notes", path: "octo/notes", clone: "https://git.example.org/octo/notes.git", branch: "main", canPush: true};
 const made = async () => ({ok: true, root: "/home/owner/projects/notes", identity: "a".repeat(64), repositoryName: "notes"});
@@ -86,8 +89,8 @@ test("a repository asked for is private unless public is chosen and spelled out,
   const pub = await handlers.scaffoldPrepare({...request, repository: {accountId: "acc-1", owner: null, visibility: "public"}}, client);
   assert.ok(pub.ok);
   if (!pub.ok) return;
-  assert.equal(pub.preview.lines.at(-1), "New repository · Stand (gitea) · octo/notes · PUBLIC: anyone can read it · main pushed over HTTPS with the Keychain entry of octo"
-    + " for the new repository's path; without one the repository stays empty");
+  assert.equal(pub.preview.lines.at(-1), "New repository · Stand (gitea) · octo/notes · PUBLIC: anyone can read it · the token of octo is saved in the Keychain"
+    + " for the new repository's address only, then main is pushed over HTTPS with it");
   const priv = await handlers.scaffoldPrepare({...request, values: {name: "notes", description: "Notes"}, repository: {accountId: "acc-1", owner: "team", visibility: "private"}}, client);
   assert.ok(priv.ok);
   if (!priv.ok) return;
@@ -95,8 +98,10 @@ test("a repository asked for is private unless public is chosen and spelled out,
   assert.deepEqual(done, {ok: true, copyId: "copy-1", root: "/home/owner/projects/notes", repository: {path: "octo/notes", pushed: true}, notes: []});
   assert.deepEqual(created, [{owner: "team", name: "notes", description: "Notes", visibility: "private"}]);
   assert.deepEqual(linked, [["acc-1", "octo/notes"]]);
-  assert.deepEqual(calls.map(call => call.name), ["scaffoldCreate", "scaffoldPublish"]);
-  assert.deepEqual(calls[1]!.input, {root: "/home/owner/projects/notes", identity: "a".repeat(64), clone: "https://git.example.org/octo/notes.git", username: "octo"});
+  // The token is saved for the exact address of the repository just made, with the account's user, before the first push.
+  assert.deepEqual(calls.map(call => call.name), ["scaffoldCreate", "scaffoldCredential", "scaffoldPublish"]);
+  assert.deepEqual(calls[1]!.input, {root: "/home/owner/projects/notes", identity: "a".repeat(64), clone: "https://git.example.org/octo/notes.git", username: "octo", secret: token});
+  assert.deepEqual(calls[2]!.input, {root: "/home/owner/projects/notes", identity: "a".repeat(64), clone: "https://git.example.org/octo/notes.git", username: "octo"});
   const bad = await handlers.scaffoldPrepare({...request, repository: {accountId: "acc-1", owner: "a/b", visibility: "private"}}, client);
   assert.equal(bad.ok ? "ok" : bad.code, "INVALID_INPUT");
 });
@@ -133,7 +138,9 @@ test("outside writes are logged before and after; a lost answer is told apart fr
   assert.deepEqual(ok.created, [{owner: null, name: "notes", description: "", visibility: "private"}]);
   assert.deepEqual(ok.log.map(entry => [entry.kind, entry.status]), [["repository", "pending"], ["repository", "completed"]]);
   assert.equal(ok.log[0]!.id, ok.log[1]!.id);
-  assert.deepEqual(ok.log[1]!.summary, ["New private repository octo/notes", "main pushed from /home/owner/projects/notes"]);
+  assert.deepEqual(ok.log[1]!.summary, ["New private repository octo/notes", "Token of octo saved in the Keychain for https://git.example.org/octo/notes.git",
+    "main pushed from /home/owner/projects/notes"]);
+  assert.doesNotMatch(JSON.stringify(ok.log), new RegExp(token));
 
   const lost = server(made, {create: async () => { throw new Error("OUTCOME_UNKNOWN"); }});
   const one = await lost.handlers.scaffoldPrepare({...request, repository: {accountId: "acc-1", owner: null, visibility: "private"}}, client);
@@ -144,6 +151,8 @@ test("outside writes are logged before and after; a lost answer is told apart fr
   if (!unknown.ok) return;
   assert.match(unknown.notes[0] ?? "", /did not answer whether repository the account's user\/notes was created\. Look for it/);
   assert.deepEqual(lost.log.map(entry => entry.status), ["pending", "unknown"]);
+  // A repository not known to exist gets no Keychain entry.
+  assert.deepEqual(lost.calls.map(call => call.name), ["scaffoldCreate"]);
 
   const silentPush = server(made, {publish: async () => { throw new Error("timeout"); }});
   const two = await silentPush.handlers.scaffoldPrepare({...request, repository: {accountId: "acc-1", owner: null, visibility: "private"}}, client);
@@ -166,4 +175,26 @@ test("an account changed since the preview makes no repository", async () => {
   assert.equal(done.repository, null);
   assert.match(done.notes[0] ?? "", /not created \(PREVIEW_EXPIRED\)/);
   assert.deepEqual(changed.created, []);
+});
+
+test("a Keychain entry that is not saved leaves the repository empty and says why; the token is in no answer or log", async () => {
+  for (const [credential, reason] of [[async () => ({ok: false, code: "CREDENTIAL_HELPER_UNAVAILABLE", next: ""}), /\(CREDENTIAL_HELPER_UNAVAILABLE\)/],
+    [async () => { throw new Error("timeout"); }, /did not answer/]] as const) {
+    const run = server(made, {credential});
+    const prepared = await run.handlers.scaffoldPrepare({...request, repository: {accountId: "acc-1", owner: null, visibility: "private"}}, client);
+    assert.ok(prepared.ok);
+    if (!prepared.ok) return;
+    const done = await run.handlers.scaffoldCreate({previewId: prepared.preview.id}, client);
+    assert.ok(done.ok);
+    if (!done.ok) return;
+    assert.deepEqual(done.repository, {path: "octo/notes", pushed: false});
+    assert.deepEqual(run.calls.map(call => call.name), ["scaffoldCreate", "scaffoldCredential"]);
+    assert.match(done.notes[0] ?? "", /Repository octo\/notes was created empty/);
+    assert.match(done.notes[0] ?? "", reason);
+    assert.match(done.notes[0] ?? "", /Add the HTTPS credential of octo for https:\/\/git\.example\.org\/octo\/notes\.git to the Keychain, then push main from Git/);
+    assert.deepEqual(run.log.map(entry => entry.status), ["pending", "failed"]);
+    assert.match(run.log[1]!.summary[1] ?? "", /^Token of octo not saved in the Keychain/);
+    assert.deepEqual(run.linked, [["acc-1", "octo/notes"]]);
+    for (const text of [JSON.stringify(done), JSON.stringify(run.log)]) assert.doesNotMatch(text, new RegExp(token));
+  }
 });

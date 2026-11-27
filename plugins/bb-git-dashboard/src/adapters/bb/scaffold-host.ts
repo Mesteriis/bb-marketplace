@@ -3,7 +3,7 @@ import { dirname, join, sep } from "node:path";
 import { clonePath } from "../../core/catalog/catalog.ts";
 import { projectsFolder } from "./catalog-host.ts";
 import { gitRunner } from "./git-process.ts";
-import { assertWorktree, exchangeHttps, worktreeIdentity } from "./local-git.ts";
+import { assertWorktree, exchangeHttps, httpsOrigin, worktreeIdentity } from "./local-git.ts";
 
 const fail = (code: string): never => { throw new Error(code); };
 export type ScaffoldFileWrite = {path: string; text: string; executable: boolean};
@@ -65,14 +65,51 @@ export async function publishFirst(root: string, identity: string, clone: string
   await assertWorktree(root, identity, signal);
   const url = new URL(clone);
   if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash) fail("INVALID_REMOTE");
+  await setOrigin(root, url.href, signal);
   const git = gitRunner(root, signal);
-  const origin = (await git(["remote", "get-url", "origin"], {codes: [0, 2, 128]})).text.replace(/\n$/, "");
-  if (!origin) await git(["remote", "add", "origin", url.href]);
-  else if (origin !== url.href) fail("REMOTE_MISMATCH");
   if ((await git(["branch", "--show-current"])).text.trim() !== "main") fail("STALE_HEAD");
   const head = (await git(["rev-parse", "--verify", "HEAD^{commit}"])).text.trim();
   await exchange(root, url.href, username, {kind: "push", expected: head, branch: "main"}, signal);
   await git(["update-ref", "refs/remotes/origin/main", head]);
   await git(["config", "branch.main.remote", "origin"]);
   await git(["config", "branch.main.merge", "refs/heads/main"]);
+}
+
+/** The credential fields Git itself asks the helper for at an HTTPS push to `url` (credential.useHttpPath). */
+function credentialFields(url: URL, username: string): string {
+  // As Git does: the path decoded (a malformed escape is kept as it is) and without trailing slashes.
+  const raw = url.pathname.slice(1).replace(/\/+$/, "");
+  let path = raw;
+  try { path = decodeURIComponent(raw); } catch { /* Git keeps an undecodable escape as written. */ }
+  if (/[\r\n\0]/.test(url.host + path)) fail("INVALID_REMOTE");
+  return ["protocol=https", "host=" + url.host, "path=" + path, "username=" + username].join("\n") + "\n";
+}
+
+/** origin of a new project is the plain clone address; another one is refused. */
+async function setOrigin(root: string, url: string, signal?: AbortSignal) {
+  const git = gitRunner(root, signal);
+  const origin = (await git(["remote", "get-url", "origin"], {codes: [0, 2, 128]})).text.replace(/\n$/, "");
+  if (!origin) await git(["remote", "add", "origin", url]);
+  else if (origin !== url) fail("REMOTE_MISMATCH");
+}
+
+/**
+ * Saves an account's token in the system Keychain for one repository address (credential.useHttpPath), through
+ * `git credential approve` with the same Git and helper the plugin's HTTPS push runs, so that push finds it and macOS
+ * does not ask for access. The token goes on stdin only: never in arguments, environment, .git/config or an error.
+ * approve exits 0 whatever the helper did, so the entry is read back (`credential fill`, same Git and helper — the
+ * helper reading its own entry asks nothing). origin is set first, so the copy can be linked even if this fails.
+ */
+export async function saveCredential(root: string, identity: string, clone: string, username: string, secret: string,
+  signal?: AbortSignal, platform: NodeJS.Platform = process.platform) {
+  // A line break or NUL would add fields of its own to the helper's input.
+  if (!secret || /[\r\n\0]/.test(secret)) fail("INVALID_INPUT");
+  const {url, config} = await httpsOrigin(clone, username, platform);
+  const fields = credentialFields(new URL(url), username);
+  await assertWorktree(root, identity, signal);
+  await setOrigin(root, url, signal);
+  const git = gitRunner(root, signal, config);
+  await git(["credential", "approve"], {input: fields + "password=" + secret + "\n\n"});
+  const read = await git(["credential", "fill"], {input: fields + "\n", codes: [0, 128]}).catch(() => null);
+  if (read?.code !== 0 || /^password=(.*)$/m.exec(read.text)?.[1] !== secret) fail("CREDENTIAL_NOT_SAVED");
 }

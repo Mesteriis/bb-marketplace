@@ -24,7 +24,7 @@ import { resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { catalogGit, catalogLocal } from "./src/adapters/bb/catalog-host.ts";
 import { ciStack, ciTemplateFolder } from "./src/adapters/bb/ci-template-host.ts";
-import { publishFirst, scaffoldCreate } from "./src/adapters/bb/scaffold-host.ts";
+import { publishFirst, saveCredential, scaffoldCreate } from "./src/adapters/bb/scaffold-host.ts";
 
 /** The watches of copies whose Review is open; built on the first renewal, with that call's context. */
 let leases: WatchLeases | null = null;
@@ -134,6 +134,10 @@ export default experimental_defineHostEntry({
     async ciTemplateFolder({folder}) {
       try { const found = await ciTemplateFolder(folder); return {ok:true as const, files:found.files, skipped:found.skipped.slice(0, 1000)}; }
       catch (error) { return failureFor(error,"INVALID_PATH"); }
+    },
+    async scaffoldCredential({root, identity, clone, username, secret}, {signal}) {
+      try { await saveCredential(root, identity, clone, username, secret, signal); return {ok:true as const}; }
+      catch (error) { return failureFor(error,"GIT_REJECTED"); }
     },
     async scaffoldPublish({root, identity, clone, username}, {signal}) {
       try { await publishFirst(root, identity, clone, username, undefined, signal); return {ok:true as const}; }

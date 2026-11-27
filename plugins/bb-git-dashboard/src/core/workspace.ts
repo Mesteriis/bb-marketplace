@@ -62,6 +62,7 @@ const next: Record<string, string> = {
   AUTHOR_REQUIRED: "Enter the Git author name and email, or set them in this repository’s local Git config.",
   WORKTREE_REPLACED: "The registered worktree changed on disk. Verify the target and attach it again.",
   CREDENTIAL_VAULT_UNAVAILABLE: "Check Credential Vault in BB Settings and retry.",
+  CREDENTIAL_NOT_SAVED: "The Keychain did not keep the token: unlock the login keychain on that Mac, add the credential by hand, then push from Git.",
   CREDENTIAL_VAULT_MISSING: "The saved Vault credential is missing. Restore it before using this connection.",
   CREDENTIAL_BINDING_CHANGED: "The credential is bound to its original provider account and server.",
   NOT_FOUND: "Refresh the catalog and choose an existing entry.",

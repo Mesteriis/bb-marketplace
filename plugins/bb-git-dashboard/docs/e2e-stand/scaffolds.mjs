@@ -83,7 +83,8 @@ try {
   const writesBefore = readFileSync(process.env.STAND + "/forge/writes.log", "utf8").split("\n").filter(Boolean).length;
   await pushedForm.getByRole("button", { name: "Review project…" }).click();
   const pushDialog = page.getByRole("dialog");
-  check("the preview names the account, the repository and its visibility", await visible(pushDialog.getByText(/^New repository · stand \(gitea\) · stand\/pushed-service · private · main pushed/)));
+  check("the preview names the account, the repository and its visibility, and says the token goes into the Keychain for its address",
+    await visible(pushDialog.getByText(/^New repository · stand \(gitea\) · stand\/pushed-service · private · the token of stand is saved in the Keychain for the new repository's address only, then main is pushed/)));
   await pushDialog.getByRole("button", { name: "Confirm" }).click();
   check("the repository was made and main pushed, with nothing left to do", await visible(page.getByText(/Repository stand\/pushed-service has main\./), 60000)
     && await catalog.locator(".git-error").count() === 0, await catalog.locator(".git-error").allInnerTexts());
@@ -93,6 +94,17 @@ try {
   check("the forge has main at the local head", execFileSync("git", ["-C", bare, "rev-parse", "main"], {encoding: "utf8"}).trim() === pushedGit("rev-parse", "HEAD"));
   check("origin is the plain clone address and main follows it; no credential in the config", /^https:\/\/localhost:\d+\/stand\/pushed-service\.git$/.test(pushedGit("remote", "get-url", "origin"))
     && pushedGit("rev-parse", "--abbrev-ref", "main@{upstream}") === "origin/main" && !/@|token|password/i.test(readFileSync(pushedRoot + "/.git/config", "utf8")));
+  // 0.13.2: the plugin handed the token to the credential helper for this repository's path and the account's user, and the
+  // push found it there (the Gitea stand-in refuses the new repository without it). On the stand the helper is run.sh's
+  // file-backed stand-in, never a Keychain: reading one from here would ask on the desktop.
+  const port = new URL(pushedGit("remote", "get-url", "origin")).port;
+  const helper = readFileSync(process.env.STAND + "/forge/credentials.log", "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line));
+  const exact = "https|localhost:" + port + "|stand/pushed-service.git|stand";
+  const stores = helper.filter(entry => entry.action === "store");
+  check("the account's token was stored for the new repository's exact address and the account's user, and for nothing else", stores.length >= 1
+    && stores.every(entry => entry.key === exact && entry.fields.password === "stand-token"), stores.map(entry => entry.key));
+  check("the push asked the helper for exactly that address, and nothing was erased", helper.some(entry => entry.action === "get" && entry.key === exact)
+    && !helper.some(entry => entry.action === "erase"));
   const created = readFileSync(process.env.STAND + "/forge/writes.log", "utf8").split("\n").filter(Boolean).slice(writesBefore).map(line => JSON.parse(line));
   check("the repository was asked for once, private", created.length === 1 && created[0].path === "/api/v1/user/repos" && created[0].body.private === true
     && created[0].body.name === "pushed-service", created);
