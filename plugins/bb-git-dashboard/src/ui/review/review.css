@@ -52,3 +52,13 @@
 .git-ws .git-review-markdown :is(pre, table) { max-width: 100%; overflow-x: auto; }
 .git-ws .git-review-markdown img { max-width: 100%; }
 .git-ws .git-jira-link { text-decoration: underline; text-underline-offset: 3px; color: inherit; }
+/* Files of a pull request: the list beside the diffs, above them on a narrow panel. */
+.git-ws .git-pr-files { display: grid; grid-template-columns: minmax(180px, 260px) minmax(0, 1fr); gap: 12px; align-items: start; }
+.git-ws .git-pr-file-list { position: sticky; top: 0; display: flex; flex-direction: column; gap: 2px; max-height: 80vh; overflow: auto; }
+.git-ws .git-pr-file-list button { display: flex; align-items: center; gap: 6px; text-align: left; border: 0; background: none; padding: 4px 6px; border-radius: 4px; min-width: 0; }
+.git-ws .git-pr-file-list button:hover, .git-ws .git-pr-file-list button:focus-visible { background: color-mix(in srgb, var(--git-focus) 14%, transparent); }
+.git-ws .git-pr-file-list .git-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 900px) {
+  .git-ws .git-pr-files { grid-template-columns: minmax(0, 1fr); }
+  .git-ws .git-pr-file-list { position: static; max-height: 30vh; }
+}

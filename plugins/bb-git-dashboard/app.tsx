@@ -23,6 +23,7 @@ import { useReviewRevisions } from "./src/app/review-signal.ts";
 import { ciApi, codeReviewApi, failed, historyApi, okValue } from "./src/app/apis.tsx";
 import { ciTab, historyTab, reviewTab, ThreadCi, ThreadHistory, ThreadReview, registerHistoryShortcut, registerReviewSurfaces } from "./src/app/thread-tabs.tsx";
 import "./src/ui/git.css";
+import { withCodeTheme } from "./src/app/code-theme.tsx";
 
 type Client = ReturnType<typeof useRpc<typeof rpc>>;
 type Host = {id: string; name: string};
@@ -443,14 +444,14 @@ function Approval({interaction,submit,cancel}:PluginPendingInteractionProps) {
 }
 
 export default definePluginApp(app => {
-  app.slots.experimental_tab({...pullTab,title:"Pinned pull request",icon:"GitPullRequest",layout:"flush",component:PinnedPull});
+  app.slots.experimental_tab({...pullTab,title:"Pinned pull request",icon:"GitPullRequest",layout:"flush",component:withCodeTheme(PinnedPull)});
   app.slots.pendingInteraction({id:"git-confirm",component:Approval});
-  app.slots.navPanel({id:"git", title:"Git", icon:"GitBranch", path:"git", component:Dashboard, experimental_sidebar:ProjectsSidebar});
-  app.slots.experimental_tab({id:"git-thread", title:"Git", icon:"GitBranch", context:{kind:"thread"}, availability:"fixed", layout:"flush", component:ThreadGit});
-  app.slots.experimental_tab({id:tab.id, title:"Pinned Git", icon:"GitBranch", context:{kind:"thread"}, availability:"action", layout:"flush", component:PinnedGit});
+  app.slots.navPanel({id:"git", title:"Git", icon:"GitBranch", path:"git", component:withCodeTheme(Dashboard), experimental_sidebar:ProjectsSidebar});
+  app.slots.experimental_tab({id:"git-thread", title:"Git", icon:"GitBranch", context:{kind:"thread"}, availability:"fixed", layout:"flush", component:withCodeTheme(ThreadGit)});
+  app.slots.experimental_tab({id:tab.id, title:"Pinned Git", icon:"GitBranch", context:{kind:"thread"}, availability:"action", layout:"flush", component:withCodeTheme(PinnedGit)});
   app.slots.experimental_tab({...historyTab, title:"Git History", icon:"FolderGit", layout:"flush", component:ThreadHistory});
   app.slots.experimental_tab({...ciTab, title:"CI/CD", icon:"Workflow", layout:"flush", component:ThreadCi});
-  app.slots.experimental_tab({...reviewTab, title:"Review", icon:"FileDiff", layout:"flush", component:ThreadReview});
+  app.slots.experimental_tab({...reviewTab, title:"Review", icon:"FileDiff", layout:"flush", component:withCodeTheme(ThreadReview)});
   // The Review's palette commands: each opens the thread's Review tab and leaves its action there.
   app.slots.experimental_appOverlay({id:"review-open", component:ReviewOpenOverlay});
   app.commands.register({id:"review-open", title:"Makosh Git: review this thread's changes", isAvailable:context => context.threadId !== null,
@@ -465,5 +466,5 @@ export default definePluginApp(app => {
   }
   registerHistoryShortcut(app.slots);
   registerReviewSurfaces(app.slots);
-  app.slots.experimental_tab({id:tab.id, title:"Pinned Git", icon:"GitBranch", context:{kind:"nav-panel", panelId:"git"}, availability:"action", layout:"flush", component:PinnedGit});
+  app.slots.experimental_tab({id:tab.id, title:"Pinned Git", icon:"GitBranch", context:{kind:"nav-panel", panelId:"git"}, availability:"action", layout:"flush", component:withCodeTheme(PinnedGit)});
 });

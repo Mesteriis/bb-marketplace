@@ -15,6 +15,7 @@ import { codeReviewHandlers } from "./src/adapters/bb/code-review-rpc.ts";
 import { codeReviewRunTools, codeReviewTools, namesRun, registerCodeReviewTools } from "./src/adapters/bb/code-review-tools.ts";
 import { inboxHandlers } from "./src/adapters/bb/inbox-rpc.ts";
 import { reviewHandlers } from "./src/adapters/bb/review-rpc.ts";
+import { grammarRoute } from "./src/adapters/bb/grammar-route.ts";
 import { pullMutation } from "./src/core/providers.ts";
 import { remoteTarget } from "./src/core/publication.ts";
 import { registerAgentWork } from "./src/adapters/bb/agent-work.ts";
@@ -159,6 +160,8 @@ export default function plugin(bb: BbPluginApi) {
       other.projectId === location.projectId && other.hostId === location.hostId && other.path === location.path) === index);
   }
   const codeReview = codeReviewHandlers(bb, linkedCopy, threadId => threadContext(threadId).then(context => context.copy.id, () => null));
+  // The diff highlighter's grammars, one language per request.
+  bb.http.route("GET", "/grammar", grammarRoute());
   bb.rpc.register(rpc, {
     ...ci.handlers,
     ...codeReview.handlers,

@@ -63,7 +63,7 @@ SOFTWARE.
 ## bb-github-pr-dashboard
 
 - Source: https://github.com/ahsan7162/bb-github-pr-dashboard, upstream revision e1e1881a6beddb7419bf117c9bd1743ada73a22e (vendored in this repository as `plugins/bb-github-pr-dashboard`; ported from that directory as of repository commit 898660bcd3b467d73b5d879d1185f5be06191264).
-- Used in: `src/core/pulls/model.ts` (inbox row, blockers and search; adapted to every forge), `src/core/pulls/github.ts` (GitHub GraphQL mapping, checks and stacks), `src/core/pulls/watch.ts` (alert diffing and push text), `src/core/pulls/queries.ts` (GraphQL text of the tabs and the watcher), `src/core/pulls/{detail,github-detail,diff,review,prompt,agent-target}.ts` (pull request detail, its GitHub mapping, files and line anchors, review rules, agent prompts and thread target), `tests/pulls-ported.test.ts` and `tests/pulls-detail-ported.test.ts` (tests).
+- Used in: `src/core/pulls/model.ts` (inbox row, blockers and search; adapted to every forge), `src/core/pulls/github.ts` (GitHub GraphQL mapping, checks and stacks), `src/core/pulls/watch.ts` (alert diffing and push text), `src/core/pulls/queries.ts` (GraphQL text of the tabs and the watcher), `src/core/pulls/{detail,github-detail,diff,review,prompt,agent-target}.ts` (pull request detail, its GitHub mapping, files and line anchors, review rules, agent prompts and thread target), `tests/pulls-ported.test.ts` and `tests/pulls-detail-ported.test.ts` (tests). Since 0.9.3 also: `src/core/pulls/jira.ts` (the Jira links of `prs.ts`: `jiraPrefixes`, `jiraSite`, `jiraHref`, `linkJira`, as they are) and `src/ui/review/pr-text.tsx` (follows `JiraTitle` and `Body` of `detail.tsx`, with `tests/pulls-jira.test.ts` from `prs.test.ts`).
 - License: MIT
 
 ```
@@ -130,6 +130,37 @@ diffity is licensed under the MIT License:
 MIT License
 
 Copyright (c) 2026 Kamran Ahmed
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+## Shiki
+
+- Source: https://github.com/shikijs/shiki, npm packages `shiki`, `@shikijs/core`, `@shikijs/engine-javascript`, `@shikijs/langs`, `@shikijs/types`, `@shikijs/primitive`, `@shikijs/vscode-textmate` 4.6.0 (vscode-textmate 10.1.0), with `oniguruma-to-es`, `regex`, `regex-recursion` and `regex-utilities` (MIT) under the JavaScript regex engine. A dependency, not copied: `bb plugin build` bundles it.
+- Used in: `src/ui/highlight/shiki.ts` (the highlighter core and its JavaScript regex engine, in the app bundle) and `src/adapters/bb/grammars.ts` (52 TextMate grammars of `@shikijs/langs`, in the server bundle, served one per request by `GET /grammar`).
+- License: MIT. `@shikijs/langs` is published under MIT; the grammars it carries come from their upstream repositories through https://github.com/shikijs/textmate-grammars-themes, which lists each grammar's source and license.
+
+```
+MIT License
+
+Copyright (c) 2021 Pine Wu
+Copyright (c) 2023 Anthony Fu <https://github.com/antfu>
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

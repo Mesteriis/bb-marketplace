@@ -142,3 +142,21 @@ export function lineAnchor(rows: DiffLine[], a: number, b: number): {side: "LEFT
   const contextLine = last.kind === "ctx" ? (range.side === "RIGHT" ? last.oldLine : last.newLine) : null;
   return {side: range.side, line: range.line, startLine, contextLine};
 }
+
+/** A row of the side-by-side layout, by index into the patch's rows: a hunk header, or the old row beside the new one. */
+export type SplitIndex = {kind: "hunk"; index: number} | {kind: "pair"; old: number | null; new: number | null};
+/** Context on both sides; each run of removed rows beside the run of added rows after it, the longer run going on alone. */
+export function splitIndexes(rows: readonly DiffLine[]): SplitIndex[] {
+  const out: SplitIndex[] = [];
+  for (let index = 0; index < rows.length;) {
+    const kind = rows[index]!.kind;
+    if (kind === "hunk") { out.push({kind: "hunk", index}); index++; continue; }
+    if (kind === "ctx") { out.push({kind: "pair", old: index, new: index}); index++; continue; }
+    const removed: number[] = [];
+    const added: number[] = [];
+    while (index < rows.length && rows[index]!.kind === "del") removed.push(index++);
+    while (index < rows.length && rows[index]!.kind === "add") added.push(index++);
+    for (let line = 0; line < Math.max(removed.length, added.length); line++) out.push({kind: "pair", old: removed[line] ?? null, new: added[line] ?? null});
+  }
+  return out;
+}

@@ -11,6 +11,8 @@ import { PrMenu } from "./pr-menu.tsx";
 import { PrBody, PrText, PrTitle } from "./pr-text.tsx";
 import "./review.css";
 
+/** Side by side or unified, kept across pull requests and visits. */
+const SPLIT_KEY = "bb-git-dashboard:pr-split";
 const tabs = ["Overview", "Checks", "Files", "Commits", "Comments"] as const;
 type Tab = typeof tabs[number];
 const eventLabel: Record<ReviewEvent, string> = {COMMENT: "Comment", APPROVE: "Approve", REQUEST_CHANGES: "Request changes"};
@@ -38,6 +40,8 @@ export function PrPage({api, accountId, repo, number, onStep, revision = 0}: {ap
   const [summary, setSummary] = useState("");
   const [event, setEvent] = useState<ReviewEvent>("COMMENT");
   const [wrap, setWrap] = useState(false);
+  const [split, setSplitState] = useState(() => { try { return localStorage.getItem(SPLIT_KEY) === "1"; } catch { return false; } });
+  const setSplit = (value: boolean) => { setSplitState(value); try { localStorage.setItem(SPLIT_KEY, value ? "1" : "0"); } catch { /* the choice lasts for this visit */ } };
   const [title, setTitle] = useState<string | null>(null);
   const [description, setDescription] = useState<string | null>(null);
   const [reviewer, setReviewer] = useState("");
@@ -66,6 +70,12 @@ export function PrPage({api, accountId, repo, number, onStep, revision = 0}: {ap
     return () => window.removeEventListener("keydown", keys);
   }, [onStep]);
 
+  /** Scrolls a file of the Files tab into view and focuses it. */
+  const showFile = (path: string) => {
+    const section = Array.from(document.querySelectorAll<HTMLElement>(".git-pr-file-diffs > .git-review-file")).find(element => element.dataset.path === path);
+    section?.scrollIntoView({block: "start"});
+    section?.focus({preventScroll: true});
+  };
   const act = async (action: PrAction, label: string, after?: () => Promise<void>) => {
     setNotice("");
     try { setPreview({...await api.prepare(target, action, view?.detail.headSha ?? null), title: label, kind: action.kind, after}); }
@@ -86,6 +96,7 @@ export function PrPage({api, accountId, repo, number, onStep, revision = 0}: {ap
   const unresolved = detail.threads.filter(thread => !thread.isResolved);
   const failing = detail.checks.filter(check => check.status === "failing");
   const threadCan = {reply: can.reply, resolve: can.resolve, delete: can.deleteComment};
+  const threadsOf = (file: PrFileView) => detail.threads.filter(thread => thread.path === file.path || (file.previousPath !== null && thread.path === file.previousPath));
 
   return <PrText api={api} pr={detail}><section className="git-review" aria-label={"Pull request " + detail.repo + " #" + detail.number}>
     <header className="git-review-head">
@@ -167,6 +178,7 @@ export function PrPage({api, accountId, repo, number, onStep, revision = 0}: {ap
 
     {tab === "Files" && <div className="git-stack">
       <div className="git-row">
+        <label className="git-review-check"><input type="checkbox" checked={split} onChange={change => setSplit(change.target.checked)}/> Side by side</label>
         <label className="git-review-check"><input type="checkbox" checked={wrap} onChange={change => setWrap(change.target.checked)}/> Wrap long lines</label>
         {!can.lineComment && <span className="git-muted">{limitations.lineComment}</span>}
         {drafts.length > 0 && <span className="git-muted">{drafts.length} comment{drafts.length === 1 ? "" : "s"} in your review</span>}
@@ -185,10 +197,22 @@ export function PrPage({api, accountId, repo, number, onStep, revision = 0}: {ap
         {limitations.requestChanges && <p className="git-muted">{limitations.requestChanges}</p>}
       </form>}
       {!files ? <p className="git-muted" role="status">Loading files…</p> : files.length === 0 ? <p className="git-muted">No changed files.</p> :
-        files.map(file => <FileDiff key={file.path} file={file} wrap={wrap} canComment={open && can.lineComment} can={threadCan}
-          threads={detail.threads.filter(thread => thread.path === file.path || (file.previousPath !== null && thread.path === file.previousPath))}
+        <div className="git-pr-files">
+        <nav className="git-pr-file-list" aria-label="Changed files">
+          {files.map(file => {
+            const waiting = threadsOf(file).filter(thread => !thread.isResolved).length;
+            return <button key={file.path} type="button" title={file.path} onClick={() => showFile(file.path)}>
+              <span className="git-path">{file.path}</span>
+              {waiting > 0 && <span className="git-review-tag" aria-label={waiting + " open comment threads"}>{waiting}</span>}
+              <span className="git-inbox-plus">+{file.additions}</span><span className="git-inbox-minus">−{file.deletions}</span>
+            </button>;
+          })}
+        </nav>
+        <div className="git-stack git-pr-file-diffs">{files.map(file => <FileDiff key={file.path} file={file} wrap={wrap} split={split} canComment={open && can.lineComment} can={threadCan}
+          threads={threadsOf(file)}
           act={action => void act(action, action.kind === "lineComment" ? "Line comment" : action.kind === "resolve" ? (action.resolved ? "Resolve" : "Unresolve") : action.kind === "deleteComment" ? "Delete comment" : "Reply")}
-          ask={thread => void ask({kind: "thread", threadId: thread.id})} onDraft={draft => setDrafts(previous => [...previous, draft])}/>)}
+          ask={thread => void ask({kind: "thread", threadId: thread.id})} onDraft={draft => setDrafts(previous => [...previous, draft])}/>)}</div>
+        </div>}
     </div>}
 
     {tab === "Commits" && <ul className="git-review-checks">
