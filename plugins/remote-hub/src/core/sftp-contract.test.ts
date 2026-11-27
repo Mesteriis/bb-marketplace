@@ -168,6 +168,11 @@ describe("refusals and events", () => {
     for (const cls of Object.values(SFTP_REFUSALS)) expect(["forbidden", "not_found", "conflict", "invalid"]).toContain(cls);
   });
 
+  it("a dead channel has two codes: channel_closed when nothing was sent, outcome_unknown when a change was sent and not answered", () => {
+    expect(SFTP_REFUSALS.channel_closed).toBe("not_found");
+    expect(SFTP_REFUSALS.outcome_unknown).toBe("conflict");
+  });
+
   it("a channel event names the channel and its state, nothing else", () => {
     expect(sftpChannelEventSchema.safeParse({ channelId: CH, state: "revoked" }).success).toBe(true);
     expect(sftpChannelEventSchema.safeParse({ channelId: CH, state: "open", host: "h" }).success).toBe(false);

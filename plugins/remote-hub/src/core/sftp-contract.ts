@@ -211,6 +211,10 @@ export const SFTP_REFUSALS = {
   host_key_changed: "forbidden",
   permission_denied: "forbidden",
   profile_not_found: "not_found",
+  /**
+   * The channel is gone (closed, revoked, or its helper generation ended) and the request was NOT sent to the server: for a
+   * changing operation (write, mkdir, rename, remove) nothing was applied. Opening a new channel and repeating is safe.
+   */
   channel_closed: "not_found",
   no_such_file: "not_found",
   profile_not_sftp: "invalid",
@@ -228,6 +232,11 @@ export const SFTP_REFUSALS = {
   not_empty: "conflict",
   /** The server cannot do what was asked (an atomic overwrite without posix-rename). */
   unsupported: "conflict",
+  /**
+   * Only for a changing operation: the request WAS sent and the channel died before the server's answer came. It may or may
+   * not have been applied; Remote Hub does not repeat it. (A read, list, stat or realpath lost the same way is `channel_closed`.)
+   */
+  outcome_unknown: "conflict",
   failure: "conflict",
 } as const satisfies Record<string, "forbidden" | "not_found" | "conflict" | "invalid">;
 export type SftpRefusalCode = keyof typeof SFTP_REFUSALS;
