@@ -55,13 +55,14 @@ it("publishes the actual staging path and rejects commit after a target update",
   try {
     await writeFile(file, "old");
     const old = await provider.stat(target, signal);
-    const session = await provider.openWrite(target, signal);
+    const tempName = { t: ".job-17-item-2.part" };
+    const session = await provider.openWrite(target, { tempName }, signal);
     await session.write(0n, Uint8Array.of(255), signal);
-    const tempName = session.tempPath.segments.at(-1);
-    expect(tempName).toEqual({ t: expect.stringMatching(/^\.target\.commander-.*\.part$/) });
-    if (!tempName || !("t" in tempName)) throw new Error("Expected a text staging name");
-    const temp = join(root, tempName.t);
+    const temp = join(root, ".job-17-item-2.part");
     expect(session.tempPath).toEqual(fixturePath(temp));
+    expect(await readFile(temp)).toEqual(Buffer.from([255]));
+    await expect(provider.openWrite(target, { tempName }, signal))
+      .rejects.toMatchObject({ code: "already_exists" });
     expect(await readFile(temp)).toEqual(Buffer.from([255]));
     await writeFile(file, "newer");
     await expect(session.commit({
@@ -85,7 +86,7 @@ it("uses the SDK's 30-minute limit for copy, hash and commit only", async () => 
   await provider.stat(path, signal);
   await provider.copyWithin(path, path, { replace: false }, signal);
   await provider.sha256(path, signal);
-  const written = await provider.openWrite(path, signal);
+  const written = await provider.openWrite(path, { tempName: { t: ".stage" } }, signal);
   await written.commit({ replace: false, expectTarget: null }, signal);
 
   expect(call.mock.calls.map(([method, , opts]) => [method, opts.timeoutMs])).toEqual([
@@ -101,7 +102,7 @@ it("classifies an unconfirmed mutation separately from a failed read and cancell
   });
   const provider = createLocalProvider(endpoint, { call: call as unknown as Parameters<typeof createLocalProvider>[1]["call"] });
   const path = fixture;
-  const stage = await provider.openWrite(path, signal);
+  const stage = await provider.openWrite(path, { tempName: { t: ".stage" } }, signal);
   for (const mutate of [
     () => stage.commit({ replace: true, expectTarget: null }, signal),
     () => provider.rename(path, path, { replace: false }, signal),

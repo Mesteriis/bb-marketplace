@@ -3,10 +3,10 @@ import { constants, type BigIntStats } from "node:fs";
 import { link, open, rename, unlink, type FileHandle } from "node:fs/promises";
 import { CommanderError } from "../../../core/errors.ts";
 import { type Fingerprint } from "../../../core/model.ts";
-import { join, parent, type NameSegment, type ResourcePath } from "../../../core/path.ts";
+import { join, NameSegment, parent, type ResourcePath } from "../../../core/path.ts";
 import { changed, fingerprint, hashFile, noFollow, requireVersion, verifyVersionHash, type ExpectedVersion } from "./files.ts";
 import { hasErrno, linkUnavailable } from "./errors.ts";
-import { type NamePlatform } from "./names.ts";
+import { validateTargetName, type NamePlatform } from "./names.ts";
 import { childPath, decodeName, encodeName, lstatOrNull, recheckParent, requireAbsent, resolvePath, sameNode } from "./paths.ts";
 
 type PublishedFile = Fingerprint & { atomicNoReplace?: false; orphanedTempPath?: ResourcePath };
@@ -71,13 +71,13 @@ export class WriteSessions {
     private readonly options: WriteOptions,
   ) {}
 
-  async open(target: ResourcePath, signal: AbortSignal, retain?: () => Lease) {
+  async open(target: ResourcePath, tempName: NameSegment | undefined, signal: AbortSignal, retain?: () => Lease) {
     if (this.disposed) throw new CommanderError("cancelled", "Worker disposed");
     if (this.sessions.size >= MAX_SESSIONS) {
       throw new CommanderError("limit_exceeded", "Too many active write sessions");
     }
     const session = randomUUID();
-    const stage = this.createStage(target, session, signal, retain);
+    const stage = this.createStage(target, session, tempName, signal, retain);
     const record: Session = { stage, tail: stage.then(() => {}, () => {}) };
     this.sessions.set(session, record);
     try {
@@ -91,9 +91,19 @@ export class WriteSessions {
   }
 
   /** Windows lacks O_NOFOLLOW. Exclusive creation is followed by an inode check against lstat. */
-  private async createStage(target: ResourcePath, session: string, signal: AbortSignal, retain?: () => Lease) {
+  private async createStage(
+    target: ResourcePath, session: string, requested: NameSegment | undefined,
+    signal: AbortSignal, retain?: () => Lease,
+  ) {
     const resolved = await resolvePath(target, this.platform, { target: true });
-    const tempName = stagingName(target.segments.at(-1)!, session, this.platform);
+    const targetName = target.segments.at(-1)!;
+    // Only copyWithin owns its staging name; openWrite passes the checkpoint's name.
+    const tempName = requested === undefined ? stagingName(targetName, session, this.platform) : requested;
+    if (!NameSegment.safeParse(tempName).success) throw new CommanderError("invalid_name", "Invalid staging name");
+    validateTargetName(tempName, this.platform);
+    if (encodeName(tempName).equals(encodeName(targetName))) {
+      throw new CommanderError("invalid_name", "Staging name must differ from the target name");
+    }
     const directory = resolved.parentStats!;
     const temp = childPath(resolved.parent!, tempName);
     signal.throwIfAborted();
@@ -113,6 +123,11 @@ export class WriteSessions {
       const current = await lstatOrNull(temp);
       if (!current?.isFile() || !sameNode(current, opened)) throw changed();
       await recheckParent(resolved);
+      // A filesystem may alias distinct byte names, for example case variants.
+      const currentTarget = await lstatOrNull(resolved.full);
+      if (currentTarget && sameNode(currentTarget, opened)) {
+        throw new CommanderError("invalid_name", "Staging name resolves to the target");
+      }
       return stage;
     } catch (error) {
       await this.finish(session, stage, true);

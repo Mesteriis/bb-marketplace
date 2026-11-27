@@ -1,5 +1,6 @@
 /// <reference lib="es2024.promise" />
 
+import { randomUUID } from "node:crypto";
 import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, truncate, unlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,6 +13,7 @@ let root: string;
 let fs: ReturnType<typeof createHostFs>;
 const at = (name = "") => fixturePath(join(root, name));
 const ctx = { signal: new AbortController().signal };
+const nextTempName = () => ({ t: ".target.commander-" + randomUUID() + ".part" });
 
 beforeEach(async () => {
   root = await mkdtemp(join(await realpath(tmpdir()), "commander-s4-"));
@@ -73,7 +75,7 @@ it("rejects a stale read fingerprint", async () => {
 });
 
 async function stage(target = at("target")) {
-  const opened = await fs.handlers.writeOpen({ target }, ctx);
+  const opened = await fs.handlers.writeOpen({ target, tempName: nextTempName() }, ctx);
   await fs.handlers.writeChunk({ session: opened.session, offset: "2", b64: "AwQ=" }, ctx);
   await fs.handlers.writeChunk({ session: opened.session, offset: "0", b64: "AQI=" }, ctx);
   await fs.handlers.writeChunk({ session: opened.session, offset: "4", b64: "/w==" }, ctx);
@@ -188,7 +190,7 @@ it("expires an idle session and deletes its staging file", async () => {
     return () => {};
   } });
   try {
-    const { session } = await timed.handlers.writeOpen({ target: at("target") }, ctx);
+    const { session } = await timed.handlers.writeOpen({ target: at("target"), tempName: nextTempName() }, ctx);
     expect(await readdir(root)).toHaveLength(1);
     await expire();
     expect(await readdir(root)).toEqual([]);
@@ -327,8 +329,8 @@ it.each(["abort", "ttl", "dispose"] as const)("reports the stage of a moved pare
     scheduleExpiry: (callback) => { expire = callback; return () => {}; },
   });
   await mkdir(join(root, "parent"));
-  const valid = await fs.handlers.writeOpen({ target: at("target") }, ctx);
-  const { session, tempName } = await fs.handlers.writeOpen({ target: at("parent/target") }, ctx);
+  const valid = await fs.handlers.writeOpen({ target: at("target"), tempName: nextTempName() }, ctx);
+  const { session, tempName } = await fs.handlers.writeOpen({ target: at("parent/target"), tempName: nextTempName() }, ctx);
   const tempPath = joinResource(at("parent"), tempName);
   await rename(join(root, "parent"), join(root, "moved"));
   await symlink(join(root, "moved"), join(root, "parent"), windows ? "junction" : "dir");
@@ -363,8 +365,8 @@ it("refuses a target symlink and every mutation through an intermediate symlink"
   await symlink(join(root, "other", "victim"), join(root, "target"));
   await symlink(join(root, "other"), join(root, "nested", "link"), windows ? "junction" : "dir");
   for (const mutation of [
-    () => fs.handlers.writeOpen({ target: at("target") }, ctx),
-    () => fs.handlers.writeOpen({ target: at("nested/link/victim") }, ctx),
+    () => fs.handlers.writeOpen({ target: at("target"), tempName: nextTempName() }, ctx),
+    () => fs.handlers.writeOpen({ target: at("nested/link/victim"), tempName: nextTempName() }, ctx),
     () => fs.handlers.rename({ from: at("source"), to: at("nested/link/victim"), replace: true }, ctx),
     () => fs.handlers.mkdir({ path: at("nested/link/new") }, ctx),
     () => fs.handlers.remove({ path: at("nested/link/victim"), kind: "file" }, ctx),
@@ -539,7 +541,7 @@ it("does not report an orphan when unlink succeeded and lease cleanup failed", a
   await fs.dispose();
   const reports: unknown[] = [];
   fs = createHostFs({ onOrphan: (orphan) => { reports.push(orphan); } });
-  const { session } = await fs.handlers.writeOpen({ target: at("target") }, {
+  const { session } = await fs.handlers.writeOpen({ target: at("target"), tempName: nextTempName() }, {
     ...ctx,
     experimental_retainWorker: () => ({ dispose: async () => { throw new Error("lease failed"); } }),
   });
@@ -567,4 +569,30 @@ it("reports an orphan when unlink sees ENOENT after its parent is moved", async 
   await expect(fs.handlers.writeAbort({ session }, ctx)).resolves.toEqual({ orphanedTempPath: tempPath });
   expect(records).toEqual([{ session, targetPath: target, tempPath, reason: "parent_changed" }]);
   expect(await readdir(join(root, "moved"))).toHaveLength(1);
+});
+
+it("writes to the exact caller-chosen stage beside the target", async () => {
+  await mkdir(join(root, "nested"));
+  const tempName = { t: ".job-17-item-2.part" };
+  const opened = await fs.handlers.writeOpen({ target: at("nested/target"), tempName }, ctx);
+  expect(opened.tempName).toEqual(tempName);
+  await fs.handlers.writeChunk({ session: opened.session, offset: "0", b64: "AQID" }, ctx);
+  expect(await readdir(join(root, "nested"))).toEqual([".job-17-item-2.part"]);
+  expect(await readFile(join(root, "nested", ".job-17-item-2.part"))).toEqual(Buffer.from([1, 2, 3]));
+});
+
+it("rejects an occupied stage name without truncating the existing file", async () => {
+  await writeFile(join(root, ".job-17-item-2.part"), "previous stage");
+  await expect(fs.handlers.writeOpen({
+    target: at("target"), tempName: { t: ".job-17-item-2.part" },
+  }, ctx)).rejects.toMatchObject({ code: "already_exists" });
+  expect(await readFile(join(root, ".job-17-item-2.part"), "utf8")).toBe("previous stage");
+  expect(await readdir(root)).toEqual([".job-17-item-2.part"]);
+});
+
+it.each(["../escaped.part", "target"])("rejects unsafe staging name %j before creating a file", async (t) => {
+  await expect(fs.handlers.writeOpen({
+    target: at("target"), tempName: { t },
+  }, ctx)).rejects.toMatchObject({ code: "invalid_name" });
+  expect(await readdir(root)).toEqual([]);
 });

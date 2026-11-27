@@ -30,7 +30,7 @@ export const HostFsContract = {
     output: z.object({ b64: chunk }).strict(),
   },
   writeOpen: {
-    input: z.object({ target: ResourcePath }).strict(),
+    input: z.object({ target: ResourcePath, tempName: NameSegment }).strict(),
     output: session.extend({ tempName: NameSegment }),
   },
   writeChunk: { input: session.extend({ offset: Size, b64: chunk }), output: empty },

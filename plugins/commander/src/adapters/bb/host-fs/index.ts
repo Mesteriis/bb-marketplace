@@ -179,8 +179,8 @@ export function createHostFs(options: WriteOptions & { platform?: NamePlatform }
         return { b64: buffer.subarray(0, bytesRead).toString("base64") };
       });
     }),
-    writeOpen: handle<"writeOpen">(({ target }, { signal, experimental_retainWorker }) =>
-      writes.open(target, signal, experimental_retainWorker)),
+    writeOpen: handle<"writeOpen">(({ target, tempName }, { signal, experimental_retainWorker }) =>
+      writes.open(target, tempName, signal, experimental_retainWorker)),
     writeChunk: handle<"writeChunk">(async ({ session, offset, b64 }, { signal }) => {
       await writes.write(session, position(offset), Buffer.from(b64, "base64"), signal);
       return {};
@@ -273,7 +273,7 @@ export function createHostFs(options: WriteOptions & { platform?: NamePlatform }
     copyWithin: handle<"copyWithin">(async ({ from, to, replace, expectTarget }, { signal }) => {
       const source = await resolvePath(from, platform);
       return withRegularFile(source.full, source.stats, signal, async (file, opened) => {
-        const { session } = await writes.open(to, signal);
+        const { session } = await writes.open(to, undefined, signal);
         try {
           await forEachChunk(file, signal, (chunk, offset) => writes.write(session, offset, chunk, signal));
           if (!matches(await file.stat({ bigint: true }), {

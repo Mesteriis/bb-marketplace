@@ -1,7 +1,7 @@
 import { experimental_PluginRpcCallError, type ExperimentalHostClient } from "@get-bb/plugin-sdk";
 import { CommanderError, CommanderErrorShape } from "../../core/errors.ts";
 import { type Capability, type Endpoint, type Fingerprint } from "../../core/model.ts";
-import { join, parent, type ResourcePath } from "../../core/path.ts";
+import { join, parent, type NameSegment, type ResourcePath } from "../../core/path.ts";
 import { type FileProvider } from "../../core/provider.ts";
 import { fromBig } from "../../core/size.ts";
 import { type HostFsContract, type HostFsInput, type HostFsMethod, type HostFsOutput } from "../../core/wire/host-fs.ts";
@@ -99,12 +99,13 @@ export function createLocalProvider(
       const bytes = Buffer.from(b64, "base64");
       return new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.length);
     },
-    async openWrite(target: ResourcePath, signal: AbortSignal) {
+    async openWrite(target: ResourcePath, { tempName }: { tempName: NameSegment }, signal: AbortSignal) {
       const directory = parent(target);
       if (!directory) throw new CommanderError("permission_denied", "Cannot modify a filesystem root");
-      const { session, tempName } = await call("writeOpen", { target }, signal);
+      const tempPath = join(directory, tempName);
+      const { session } = await call("writeOpen", { target, tempName }, signal);
       return {
-        tempPath: join(directory, tempName),
+        tempPath,
         async write(offset, bytes, signal) {
           await call("writeChunk", { session, offset: fromBig(offset), b64: Buffer.from(bytes).toString("base64") }, signal);
         },
