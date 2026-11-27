@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "./vitest-expect.ts";
 
 import { parseRange } from "../src/core/code-review/git-spec.ts";
-import { createRunGit, diff, listFiles, newFilePatch, parseNameStatus, parseNumstat, rangeCommits, splitPatch, unquote } from "../src/adapters/bb/review-git.ts";
+import { createRunGit, diff, listFiles, newFilePatch, recentCommits, parseNameStatus, parseNumstat, rangeCommits, splitPatch, unquote } from "../src/adapters/bb/review-git.ts";
 import { ignoreFor, patternLines } from "../src/adapters/bb/review-ignore.ts";
 const roots: string[] = [];
 afterEach(() => {
@@ -175,6 +175,20 @@ describe("the host's git diffs", () => {
     writeFileSync(join(root, "secret.env"), "x\n");
     expect(await listFiles(run, root, "panel REVIEW")).toEqual({ paths: ["src/review/Panel.tsx"], more: false });
     expect((await listFiles(run, root, "")).paths).toEqual([".gitignore", "a.txt", "src/other.ts", "src/review/Panel.tsx"]);
+  });
+
+  it("lists HEAD's latest commits, newest first, and none in a repository without commits", async () => {
+    const root = repo();
+    const run = createRunGit();
+    writeFileSync(join(root, "a.txt"), "changed\n");
+    git(root, "commit", "-qam", "second: with a | in it");
+    const commits = await recentCommits(run, root);
+    expect(commits.map((commit) => commit.subject)).toEqual(["second: with a | in it", "first"]);
+    expect(commits[0]!.sha).toBe(git(root, "rev-parse", "HEAD"));
+    const empty = mkdtempSync(join(tmpdir(), "code-review-empty-"));
+    roots.push(empty);
+    git(empty, "init", "-q");
+    expect(await recentCommits(run, empty)).toEqual([]);
   });
 
   it("refuses unknown revisions", async () => {

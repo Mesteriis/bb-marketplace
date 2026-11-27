@@ -28,6 +28,7 @@ export const codeReviewContract = {
   reviewDeleteOrphans: {input: z.object({sessionIds: z.array(reviewId).min(1).max(200)}), output: answer({deleted: z.number().int(), deletedThreads: z.number().int()})},
   /** A thread's Info row: its copy's open and total comment threads; null when it works on no copy. */
   reviewThreadCounts: {input: z.object({threadId: id}), output: answer({counts: z.object({copyId: id, open: z.number().int(), total: z.number().int()}).nullable()})},
+  reviewCommits: {input: z.object({copyId: id}), output: answer({commits: z.array(z.object({sha: z.string(), subject: z.string()}))})},
   reviewSearchFiles: {input: z.object({copyId: id, query: z.string().max(200)}), output: answer({paths: z.array(z.string()), more: z.boolean()})},
   reviewFileEntry: {input: z.object({copyId: id, path: z.string().min(1).max(4096)}), output: answer({file: reviewDiffFileSchema})},
   reviewRevert: {input: z.object({sessionId: reviewId, path: z.string().min(1).max(4096), revision: z.string().regex(/^[0-9a-f]{16}$/),

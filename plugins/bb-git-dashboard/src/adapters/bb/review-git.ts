@@ -374,3 +374,13 @@ export async function listFiles(run: RunGit, root: string, query: string): Promi
   const found = [...new Set(listed.stdout.split("\0").filter(Boolean))].filter((path) => words.every((word) => path.toLowerCase().includes(word))).sort();
   return { paths: found.slice(0, FILE_SEARCH_MAX), more: found.length > FILE_SEARCH_MAX };
 }
+
+/** The latest commits of HEAD for the commit view's list: full hash and subject, newest first. */
+export async function recentCommits(run: RunGit, root: string, limit = 50): Promise<{ sha: string; subject: string }[]> {
+  const listed = await run(root, ["log", "-z", "--format=%H%x1f%s", "-n", String(limit), "HEAD"], { allowFailure: true });
+  if (!listed.ok) return [];
+  return listed.stdout.split("\0").filter(Boolean).map((entry) => {
+    const [sha, subject] = entry.replace(/^\n/, "").split("\x1f");
+    return { sha: sha!, subject: (subject ?? "").slice(0, 200) };
+  }).filter((commit) => /^[0-9a-f]{40,64}$/.test(commit.sha));
+}

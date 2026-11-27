@@ -56,6 +56,14 @@ export function ReviewPanel({api, copyId, currentThreadId, revision, initialFile
   const [wrap, setWrap] = useState(kept.wrap);
   const [split, setSplit] = useState(kept.split);
   const [clearing, setClearing] = useState(false);
+  // HEAD's latest commits, read when the commit view is picked.
+  const [commits, setCommits] = useState<{sha: string; subject: string}[]>([]);
+  useEffect(() => {
+    if (kind !== "commit") return;
+    let active = true;
+    api.commits(copyId).then(list => { if (active) setCommits(list); }, () => { if (active) setCommits([]); });
+    return () => { active = false; };
+  }, [api, copyId, kind]);
   const [finding, setFinding] = useState(false);
   const [query, setQuery] = useState("");
   const [matchCase, setMatchCase] = useState(false);
@@ -282,6 +290,10 @@ export function ReviewPanel({api, copyId, currentThreadId, revision, initialFile
         {kinds.map(item => <option key={item.kind} value={item.kind}>{item.label}</option>)}</select>
       {(kind === "branch" || kind === "all") && <input aria-label="Base branch" placeholder="default branch" value={base}
         onChange={event => setBase(event.target.value)} onKeyDown={event => { if (event.key === "Enter") show(); }}/>}
+      {kind === "commit" && commits.length > 0 && <select aria-label="Commit" value={commits.some(commit => commit.sha === sha) ? sha : ""}
+        onChange={event => { setSha(event.target.value); setError(""); setAuto(false); if (event.target.value) setApplied({kind: "commit", sha: event.target.value}); }}>
+        <option value="">Recent commits…</option>
+        {commits.map(commit => <option key={commit.sha} value={commit.sha}>{commit.sha.slice(0, 7)} {commit.subject}</option>)}</select>}
       {kind === "commit" && <input aria-label="Commit hash" placeholder="commit hash" value={sha}
         onChange={event => setSha(event.target.value)} onKeyDown={event => { if (event.key === "Enter") show(); }}/>}
       {kind === "range" && <input aria-label="Range" placeholder="main...HEAD" value={range}

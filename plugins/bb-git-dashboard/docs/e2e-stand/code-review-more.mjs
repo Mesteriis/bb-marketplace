@@ -130,6 +130,12 @@ try {
   check("a file with a thread stays in Any file", await review.getByLabel("What to review").inputValue() === "files"
     && await visible(review.getByRole("article", { name: /Comment thread on README\.md:1/ })));
 
+  await review.getByLabel("What to review").selectOption("commit");
+  const commitList = review.getByLabel("Commit", { exact: true });
+  await until(async () => await commitList.locator("option").count() > 1);
+  const featureCommit = await commitList.locator("option").evaluateAll(options => options.find(option => option.textContent.includes("feature work"))?.value ?? "");
+  await commitList.selectOption(featureCommit);
+  check("a recent commit is picked from the list", await visible(review.getByRole("region", { name: "feature.txt" })) && /^[0-9a-f]{40}$/.test(featureCommit), featureCommit);
   await page.goto(url + "plugins/bb-git-dashboard/git", { waitUntil: "load" });
   check("the Reviews button counts open comment threads", await visible(page.getByRole("button", { name: /^Reviews/ }).getByLabel(/open comment threads/)));
   await page.getByRole("button", { name: /^Reviews/ }).click();

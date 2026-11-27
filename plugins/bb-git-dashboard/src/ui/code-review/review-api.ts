@@ -25,6 +25,8 @@ export type CodeReviewApi = {
   clear(sessionId: string): Promise<{deletedThreads: number; closedRuns: number}>;
   setViewed(sessionId: string, path: string, revision: string, viewed: boolean): Promise<void>;
   viewState(scope: string, sessionId: string): Promise<ViewState>;
+  /** HEAD's latest commits, for the commit view's list. */
+  commits(copyId: string): Promise<{sha: string; subject: string}[]>;
   /** The Any file view: files of the copy matching a query, and one file as the view shows it. */
   searchFiles(copyId: string, query: string): Promise<{paths: string[]; more: boolean}>;
   fileEntry(copyId: string, path: string): Promise<ReviewDiffFile>;

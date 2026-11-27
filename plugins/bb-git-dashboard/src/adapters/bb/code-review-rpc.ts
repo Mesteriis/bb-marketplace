@@ -203,6 +203,11 @@ export function codeReviewHandlers(bb: BbPluginApi, copyOf: (copyId: string) => 
     reviewSummaries: handle(async () => ({reviews: await service.summaries()})),
     reviewDeleteOrphans: handle(({sessionIds}: {sessionIds: string[]}) => runs.deleteOrphans(sessionIds)),
     reviewThreadCounts: handle(async ({threadId}: {threadId: string}) => ({counts: await service.threadCounts(threadId)})),
+    reviewCommits: handle(async ({copyId}: {copyId: string}) => {
+      const copy = await copyOf(copyId);
+      if (!copy) throw new Error("NOT_FOUND");
+      return {commits: value(await host.call("reviewCommits", {root: copy.root, identity: copy.identity}, at(copy))).commits};
+    }),
     reviewSearchFiles: handle(({copyId, query}: {copyId: string; query: string}) => service.searchFiles(copyId, query)),
     reviewFileEntry: handle(async ({copyId, path}: {copyId: string; path: string}) => ({file: await service.fileEntry(copyId, path)})),
     reviewRevert: handle(async ({sessionId, path, revision, hunks}: {sessionId: string; path: string; revision: string; hunks: number[] | null}) => {
