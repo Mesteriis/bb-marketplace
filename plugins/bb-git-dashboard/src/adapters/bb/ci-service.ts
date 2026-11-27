@@ -48,7 +48,8 @@ export function ciService(deps: CiDeps) {
     if (!log) return {job: job.name, lines: await api.notes(runId, job.id).catch(() => [] as string[])};
     const lines = log.text.split("\n");
     const at = errorLine(lines);
-    return {job: job.name, lines: at === null ? lines.slice(-40) : errorExcerpt(lines, at)};
+    const notes = await api.notes(runId, job.id).catch(() => [] as string[]);
+    return {job: job.name, lines: [...(at === null ? lines.slice(-40) : errorExcerpt(lines, at)), ...(notes.length ? ["", "Annotations:", ...notes] : [])]};
   }
 
   return {
@@ -71,7 +72,7 @@ export function ciService(deps: CiDeps) {
     async log(copyId: string, runId: string, jobId: string) {
       const {api} = await context(copyId);
       const log = await api.log(runId, jobId);
-      return {log, errorLine: log ? errorLine(log.text.split("\n")) : null, notes: log ? [] : await api.notes(runId, jobId).catch(() => [])};
+      return {log, errorLine: log ? errorLine(log.text.split("\n")) : null, notes: await api.notes(runId, jobId).catch(() => [] as string[])};
     },
     async workflows(copyId: string) {
       const {linked, api} = await context(copyId);

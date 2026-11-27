@@ -48,6 +48,7 @@ export function LogView({api, copyId, runId, job, liveLog, liveLimitation}: {
     : <p className="git-muted" role="status">The forge has not published a log for this job yet.</p>;
   const lines = log.text.replace(/\n$/, "").split("\n");
   return <div className="git-stack">
+    {notes.length > 0 && <ul className="git-ci-lines" aria-label="Annotations">{notes.map((note, index) => <li key={index}>{note}</li>)}</ul>}
     {log.truncated && <p className="git-muted">Showing the end of a long log.</p>}
     {errorAt !== null && <p className="git-muted">Opened at the error on line {errorAt + 1}.</p>}
     <pre className="git-code git-ci-log" aria-label={"Log of " + job.name}>{lines.map((line, index) =>

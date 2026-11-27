@@ -7,10 +7,20 @@ export function cleanLog(text: string) {
   return text.replace(ansi, "").split(/\r?\n/).map(line => line.replace(/\r/g, "").replace(stamp, "")).join("\n");
 }
 
-/** Index of the last error marker (`##[error]`, used by GitHub, Gitea and Azure runners), or null. */
+const closing = /^##\[error\]Process completed with exit code \d+\.?$/;
+
+/**
+ * Index of the last error marker (`##[error]`, used by GitHub, Gitea and Azure runners), or null. The runner's own
+ * closing "Process completed with exit code N" line is chosen only when no other error was logged.
+ */
 export function errorLine(lines: string[]): number | null {
-  for (let index = lines.length - 1; index >= 0; index--) if (marker.test(lines[index])) return index;
-  return null;
+  let fallback: number | null = null;
+  for (let index = lines.length - 1; index >= 0; index--) {
+    if (!marker.test(lines[index])) continue;
+    if (!closing.test(lines[index])) return index;
+    fallback ??= index;
+  }
+  return fallback;
 }
 
 /** Up to `count` lines ending at the error line, with consecutive repeats (progress spinners) collapsed. */

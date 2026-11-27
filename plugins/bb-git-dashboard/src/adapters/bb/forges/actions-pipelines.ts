@@ -72,7 +72,10 @@ export function actionsPipelines(account: Account, repo: Repo, token: string, se
       // On GitHub a job is a check run with the same id; Gitea has no annotations API.
       if (gitea) return [];
       return array(await get("/check-runs/" + segment(jobId) + "/annotations")).map(object)
-        .filter(row => row.annotation_level === "failure").map(row => text(row.message)).filter(Boolean).slice(0, 10);
+        .filter(row => row.annotation_level === "failure" && text(row.message))
+        // ".github" marks an annotation on the workflow itself rather than on a file.
+        .map(row => text(row.path) && text(row.path) !== ".github" ? text(row.path) + ":" + (Number(row.start_line) || 1) + " — " + text(row.message) : text(row.message))
+        .slice(0, 10);
     },
     async workflows() {
       return array(object(await get("/actions/workflows?" + paging(1, 100))).workflows).map(object)

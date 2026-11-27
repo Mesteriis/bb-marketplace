@@ -119,6 +119,11 @@ test("a GitHub job that never started explains itself through its check-run anno
     {annotation_level: "notice", message: "unrelated"}])});
   assert.deepEqual(await actionsPipelines(github, repo(github), token, send).notes("9", "77"),
     ["The job was not started because recent account payments have failed."]);
+  const located = forge({"GET /repos/octo/sandbox/check-runs/77/annotations": () => Response.json([
+    {annotation_level: "failure", path: "src/greeting.txt", start_line: 2, message: "Sandbox failure requested"},
+    {annotation_level: "failure", path: ".github", start_line: 1, message: "Process completed with exit code 1."}])});
+  assert.deepEqual(await actionsPipelines(github, repo(github), token, located.send).notes("9", "77"),
+    ["src/greeting.txt:2 — Sandbox failure requested", "Process completed with exit code 1."]);
   assert.deepEqual(await actionsPipelines(gitea, repo(gitea), token, forge({}).send).notes("9", "77"), []);
 });
 

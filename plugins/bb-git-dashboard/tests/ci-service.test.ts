@@ -69,3 +69,15 @@ test("a confirmation is refused when the copy was linked to another repository m
   await assert.rejects(service.confirm(preview.id), {message: "PREVIEW_EXPIRED"});
   assert.deepEqual(writes, []);
 });
+
+test("a failed job's annotations come with its log", async () => {
+  const send = (async (target: string | URL) => {
+    const path = new URL(String(target)).pathname;
+    if (path.endsWith("/actions/jobs/77/logs")) return new Response("##[error]Sandbox failure requested\n##[error]Process completed with exit code 1.\n");
+    if (path.endsWith("/check-runs/77/annotations")) return Response.json([{annotation_level: "failure", path: "src/greeting.txt", start_line: 2, message: "Sandbox failure requested"}]);
+    return new Response("{}", {status: 404});
+  }) as typeof fetch;
+  const service = ciService({copy: async () => copy, linked: async () => ({account: account("github"), token: "fixture-token-value", repo}), send});
+  assert.deepEqual(await service.log("c1", "9", "77"), {log: {text: "##[error]Sandbox failure requested\n##[error]Process completed with exit code 1.\n", truncated: false},
+    errorLine: 0, notes: ["src/greeting.txt:2 — Sandbox failure requested"]});
+});

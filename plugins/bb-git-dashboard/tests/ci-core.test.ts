@@ -55,9 +55,9 @@ test("logs lose ANSI colours and runner timestamps", () => {
     "##[error]boom\nnext");
 });
 
-test("the error line is the last error marker, and the excerpt is the lines before it without repeated spinners", () => {
+test("the error line is the last meaningful error marker, and the excerpt is the lines before a line without repeated spinners", () => {
   const lines = ["setup", "compile", "##[error]first", "retry", "progress 1", "progress 1", "progress 1", "assert failed: src/greeting.txt:2", "##[error]Process completed with exit code 1.", "post"];
-  assert.equal(errorLine(lines), 8);
+  assert.equal(errorLine(lines), 2);
   assert.equal(errorLine(["ok", "fine"]), null);
   assert.deepEqual(errorExcerpt(lines, 8, 4), ["retry", "progress 1", "assert failed: src/greeting.txt:2", "##[error]Process completed with exit code 1."]);
 });
@@ -113,4 +113,10 @@ test("empty optional inputs are left out so the workflow's defaults apply", asyn
   const spec = dispatchSpec({on: {workflow_dispatch: {inputs: {outcome: {type: "choice", options: ["success", "failure"], required: true}, message: {}, environment: {type: "environment"}}}}});
   assert.deepEqual(dispatchValues(spec, {outcome: "failure", message: "", environment: "  ", extra: "x"}), {outcome: "failure"});
   assert.deepEqual(dispatchValues(spec, {outcome: "success", message: "hi"}), {outcome: "success", message: "hi"});
+});
+
+test("the error line is the meaningful error, not the runner's closing exit-code line", () => {
+  const lines = ["shard 2", "##[error]Sandbox failure requested", "##[error]Process completed with exit code 1.", "post"];
+  assert.equal(errorLine(lines), 1);
+  assert.equal(errorLine(["build", "##[error]Process completed with exit code 2."]), 1);
 });
