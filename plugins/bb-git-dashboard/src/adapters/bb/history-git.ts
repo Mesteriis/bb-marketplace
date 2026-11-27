@@ -3,12 +3,24 @@ import { isAbsolute } from "node:path";
 import { objectName, type HistoryPage } from "../../core/history/model.ts";
 import { detailFormat, fileChanges, parseCommits, parseDetail, parseRefs, refFormat, summaryFormat, workingChanges } from "../../core/history/parse.ts";
 import { gitRunner, type GitRun } from "./git-process.ts";
+import { filePath } from "./local-git.ts";
+
+/** Reads that grow with the repository (refs, status, logs, file lists) may use more than the default cap. */
+const large = 8 * 1024 * 1024;
 
 /** All refs except tools' own bookkeeping refs. */
 const allRefs = ["--exclude=refs/t3/checkpoints", "--exclude=refs/t3/checkpoints/*", "--all"];
 const diffFlags = ["--no-ext-diff", "--no-textconv", "--no-color"];
-/** Merges are shown against their first parent, the way a branch's own history reads. */
-const commitDiff = ["diff-tree", "-r", "--root", "-m", "--first-parent", ...diffFlags];
+/**
+ * The change a commit brings, against its first parent (so a merge shows what it brought into its branch). A root
+ * commit is compared with the empty tree. `diff-tree -m --first-parent` is not used: it still diffs every parent.
+ */
+async function commitDiff(git: GitRun, commit: string, options: string[]) {
+  const parent = await git(["rev-parse", "--verify", "--quiet", commit + "^1"], {codes: [0, 1]});
+  return parent.code === 0
+    ? ["diff", ...diffFlags, ...options, parent.text.trim(), commit]
+    : ["diff-tree", "-r", "--root", ...diffFlags, ...options, "--no-commit-id", commit];
+}
 
 function hashOf(value: string) {
   if (!objectName.safeParse(value).success) throw new Error("INVALID_INPUT");
@@ -23,7 +35,7 @@ function pathOf(value: string) {
 
 async function refs(git: GitRun) {
   const [raw, head, branch] = await Promise.all([
-    git(["for-each-ref", "--sort=refname", "--format=" + refFormat]),
+    git(["for-each-ref", "--sort=refname", "--format=" + refFormat], {limit: large}),
     git(["rev-parse", "--verify", "--quiet", "HEAD"], {codes: [0, 1]}),
     git(["symbolic-ref", "--quiet", "HEAD"], {codes: [0, 1]}),
   ]);
@@ -33,8 +45,8 @@ async function refs(git: GitRun) {
 
 async function working(git: GitRun, hasHead: boolean) {
   const [status, counts] = await Promise.all([
-    git(["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=all"]),
-    hasHead ? git(["diff", "--numstat", "-z", ...diffFlags, "HEAD"]) : Promise.resolve({text: "", code: 0}),
+    git(["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=all"], {limit: large}),
+    hasHead ? git(["diff", "--numstat", "-z", ...diffFlags, "HEAD"], {limit: large}) : Promise.resolve({text: "", code: 0}),
   ]);
   return {status: status.text, files: workingChanges(status.text, counts.text)};
 }
@@ -44,7 +56,7 @@ export async function historyPage(root: string, offset: number, limit: number, s
   const git = gitRunner(root, signal);
   const found = await refs(git);
   const [log, count, work] = await Promise.all([
-    git(["log", ...allRefs, "--topo-order", "--format=" + summaryFormat, "--max-count=" + (limit + 1), "--skip=" + offset]),
+    git(["log", ...allRefs, "--topo-order", "--format=" + summaryFormat, "--max-count=" + (limit + 1), "--skip=" + offset], {limit: large}),
     git(["rev-list", ...allRefs, "--count"]),
     working(git, found.hasHead),
   ]);
@@ -61,7 +73,7 @@ export async function historyPage(root: string, offset: number, limit: number, s
 export async function historyRevision(root: string, signal?: AbortSignal) {
   const git = gitRunner(root, signal);
   const found = await refs(git);
-  const status = await git(["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=all"]);
+  const status = await git(["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=all"], {limit: large});
   return createHash("sha256").update(found.revision + "\n" + status.text).digest("hex");
 }
 
@@ -71,8 +83,8 @@ export async function commitDetails(root: string, hash: string, signal?: AbortSi
   const [found, detail, names, counts] = await Promise.all([
     refs(git),
     git(["show", "-s", "--format=" + detailFormat, commit]),
-    git([...commitDiff, "--name-status", "-z", "--no-commit-id", commit]),
-    git([...commitDiff, "--numstat", "-z", "--no-commit-id", commit]),
+    commitDiff(git, commit, ["--name-status", "-z"]).then(args => git(args, {limit: large})),
+    commitDiff(git, commit, ["--numstat", "-z"]).then(args => git(args, {limit: large})),
   ]);
   const parsed = parseDetail(detail.text, found.byHash);
   if (!parsed) throw new Error("NOT_FOUND");
@@ -82,14 +94,18 @@ export async function commitDetails(root: string, hash: string, signal?: AbortSi
 export async function commitPatch(root: string, hash: string, path: string, signal?: AbortSignal) {
   const commit = hashOf(hash);
   const file = pathOf(path);
-  return {text: (await gitRunner(root, signal)([...commitDiff, "-p", "--no-commit-id", commit, "--", file])).text};
+  const git = gitRunner(root, signal);
+  return {text: (await git([...await commitDiff(git, commit, ["-p"]), "--", file])).text};
 }
 
+/** The working tree's change of one file listed by `git status`; ignored and unlisted files are not read. */
 export async function workingPatch(root: string, path: string, signal?: AbortSignal) {
-  const file = pathOf(path);
+  const file = await filePath(root, pathOf(path));
   const git = gitRunner(root, signal);
-  const tracked = (await git(["ls-files", "--error-unmatch", "--", file], {codes: [0, 1]})).code === 0;
+  const status = (await git(["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", file])).text.split("\0")
+    .find(record => record.slice(3) === file);
+  if (!status) throw new Error("INVALID_PATH");
+  if (status.startsWith("??")) return {text: (await git(["diff", ...diffFlags, "--no-index", "--", "/dev/null", file], {codes: [0, 1]})).text};
   const hasHead = (await git(["rev-parse", "--verify", "--quiet", "HEAD"], {codes: [0, 1]})).code === 0;
-  if (tracked) return {text: (await git(["diff", ...diffFlags, ...(hasHead ? ["HEAD"] : ["--cached"]), "--", file])).text};
-  return {text: (await git(["diff", ...diffFlags, "--no-index", "--", "/dev/null", file], {codes: [0, 1]})).text};
+  return {text: (await git(["diff", ...diffFlags, ...(hasHead ? ["HEAD"] : ["--cached"]), "--", file])).text};
 }

@@ -32,3 +32,10 @@ export function settle(value: Run, jobs: Job[], now: number): Run {
     : jobs.some(item => item.state === "cancelled") ? "cancelled" : "success";
   return {...value, state};
 }
+
+/** Whole minutes a queued run has waited since it was queued or re-queued; null when it is not queued. */
+export function queuedMinutes(value: Run, now: number): number | null {
+  if (value.state !== "queued") return null;
+  const since = Date.parse(value.updatedAt ?? value.createdAt);
+  return Number.isFinite(since) ? Math.max(0, Math.floor((now - since) / 60_000)) : null;
+}

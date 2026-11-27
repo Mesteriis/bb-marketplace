@@ -1,3 +1,4 @@
+// Row geometry follows plugins/git-history/app.tsx GraphCell (MIT, © 2026 Yusuf Akbulut).
 import type { GraphRow } from "../../core/history/graph.ts";
 
 export const rowHeight = 30;

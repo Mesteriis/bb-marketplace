@@ -28,3 +28,4 @@
   .git-ws .git-history { grid-template-columns: 1fr; }
   .git-ws .git-history-meta { display: none; }
 }
+.git-ws .git-history-graph-clip { flex: none; overflow: hidden; display: block; }

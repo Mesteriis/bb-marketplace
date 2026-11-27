@@ -59,7 +59,10 @@ export function actionsPipelines(account: Account, repo: Repo, token: string, se
   return {
     async runs(filter: RunFilter, page) {
       if (filter !== "active") return list(page, filter === "failed" ? "failure" : undefined);
-      const parts = await Promise.all(["in_progress", "queued", "waiting"].map(status => list(page, status)));
+      // The status filter is served from an index that can lag behind a run that just started, so the newest
+      // runs are also read unfiltered and their active ones kept.
+      const parts = await Promise.all([...["in_progress", "queued", "waiting"].map(status => list(page, status)),
+        list(1).then(recent => ({items: recent.items.filter(item => item.state === "running" || item.state === "queued"), more: false}))]);
       // A run can change state between the requests and appear twice; keep its first copy.
       const unique = new Map(parts.flatMap(part => part.items).map(item => [item.id, item] as const).reverse());
       return {items: [...unique.values()].sort((left, right) => right.createdAt.localeCompare(left.createdAt)),

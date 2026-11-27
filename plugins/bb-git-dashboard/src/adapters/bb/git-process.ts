@@ -1,6 +1,8 @@
 import { spawn } from "node:child_process";
 
-export type GitRun = (args: string[], options?: {input?: string; index?: string; codes?: number[]; author?:{name:string;email:string}}) => Promise<{text: string; code: number}>;
+export type GitRun = (args: string[], options?: {input?: string; index?: string; codes?: number[]; author?:{name:string;email:string};
+  /** Output cap in bytes; 512 KiB unless a read needs more (refs and status of large repositories). */
+  limit?: number}) => Promise<{text: string; code: number}>;
 
 export function gitRunner(root: string, signal?: AbortSignal, transport?: {username: string; helper: string}): GitRun {
   return (args, options = {}) => new Promise((resolve, reject) => {
@@ -34,7 +36,7 @@ export function gitRunner(root: string, signal?: AbortSignal, transport?: {usern
     let tooLarge = false;
     git.stdout.on("data", (chunk: Buffer) => {
       size += chunk.length;
-      if (size > 512 * 1024) {
+      if (size > (options.limit ?? 512 * 1024)) {
         tooLarge = true;
         git.kill("SIGKILL");
       } else chunks.push(chunk);

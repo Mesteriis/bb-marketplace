@@ -120,3 +120,11 @@ test("the error line is the meaningful error, not the runner's closing exit-code
   assert.equal(errorLine(lines), 1);
   assert.equal(errorLine(["build", "##[error]Process completed with exit code 2."]), 1);
 });
+
+test("a queued run says how long it has waited", async () => {
+  const { queuedMinutes } = await import("../src/core/ci/model.ts");
+  const now = Date.parse("2026-11-27T11:00:00Z");
+  assert.equal(queuedMinutes({...run, state: "queued", updatedAt: "2026-11-27T10:48:30Z"}, now), 11);
+  assert.equal(queuedMinutes({...run, state: "queued", updatedAt: null, createdAt: "2026-11-27T10:59:50Z"}, now), 0);
+  assert.equal(queuedMinutes({...run, state: "running"}, now), null);
+});

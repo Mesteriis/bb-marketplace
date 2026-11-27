@@ -20,7 +20,8 @@ async function directory(path: string) {
   return resolved;
 }
 
-async function filePath(root: string, path: string) {
+/** A literal path inside the worktree: no `..`, no `.git`, and no ancestor that resolves outside through a link. */
+export async function filePath(root: string, path: string) {
   if (isAbsolute(path) || path.split("/").some(part => !part || part === "." || part === ".." || part.toLowerCase() === ".git")) {
     gitError("INVALID_PATH");
   }

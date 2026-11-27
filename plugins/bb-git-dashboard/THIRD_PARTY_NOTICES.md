@@ -33,7 +33,7 @@ SOFTWARE.
 ## bb-git-history
 
 - Source: https://github.com/yusuf8834/bb-git-history, revision 816bc8c329bcea6276cd9be5fd19dec1926aa584 (vendored in this repository as `plugins/git-history`).
-- Used in: `src/core/history/graph.ts` (lane layout, as is), `src/core/history/parse.ts` (parsing of Git output, adapted), `tests/history-graph.test.ts` (tests, moved to node:test).
+- Used in: `src/core/history/graph.ts` (lane layout, as is), `src/ui/history/graph-cell.tsx` (row geometry of the graph), `src/core/history/parse.ts` (parsing of Git output, adapted), `tests/history-graph.test.ts` (tests, moved to node:test).
 - License: MIT
 
 ```

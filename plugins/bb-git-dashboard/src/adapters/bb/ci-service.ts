@@ -72,7 +72,9 @@ export function ciService(deps: CiDeps) {
     async log(copyId: string, runId: string, jobId: string) {
       const {api} = await context(copyId);
       const log = await api.log(runId, jobId);
-      return {log, errorLine: log ? errorLine(log.text.split("\n")) : null, notes: await api.notes(runId, jobId).catch(() => [] as string[])};
+      const at = log ? errorLine(log.text.split("\n")) : null;
+      // Annotations exist once a job failed; a running job's log is polled and needs no extra request.
+      return {log, errorLine: at, notes: !log || at !== null ? await api.notes(runId, jobId).catch(() => [] as string[]) : []};
     },
     async workflows(copyId: string) {
       const {linked, api} = await context(copyId);

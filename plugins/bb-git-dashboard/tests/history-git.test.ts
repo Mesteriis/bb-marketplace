@@ -81,3 +81,34 @@ test("hashes and paths are checked before Git runs", async () => {
     await assert.rejects(workingPatch(root, "/etc/passwd"), {message: "INVALID_PATH"});
   } finally { done(); }
 });
+
+test("a merge lists only what it changes against its first parent", async () => {
+  const {root, git, done} = repository();
+  try {
+    writeFileSync(join(root, "a.txt"), "1\n"); git("add", "."); git("commit", "-qm", "base");
+    git("switch", "-q", "-c", "feature"); writeFileSync(join(root, "b.txt"), "2\n"); git("add", "."); git("commit", "-qm", "feature");
+    git("switch", "-q", "main"); writeFileSync(join(root, "c.txt"), "3\n"); git("add", "."); git("commit", "-qm", "main work");
+    git("merge", "-q", "--no-ff", "feature", "-m", "merge");
+    const merge = git("rev-parse", "HEAD");
+    assert.deepEqual((await commitDetails(root, merge)).files, [{path: "b.txt", status: "added", additions: 1, deletions: 0}]);
+    const patch = (await commitPatch(root, merge, "b.txt")).text;
+    assert.equal(patch.match(/^diff --git/gm)?.length, 1);
+  } finally { done(); }
+});
+
+test("working patches cover staged deletions and stay inside the working tree's listed changes", async () => {
+  const {root, git, done} = repository();
+  try {
+    writeFileSync(join(root, "gone.txt"), "bye\n"); writeFileSync(join(root, ".gitignore"), ".env\n"); git("add", "."); git("commit", "-qm", "base");
+    git("rm", "-q", "gone.txt");
+    assert.match((await workingPatch(root, "gone.txt")).text, /^-bye$/m);
+    writeFileSync(join(root, ".env"), "SECRET=1\n");
+    await assert.rejects(workingPatch(root, ".env"), {message: "INVALID_PATH"}, "ignored files are not read");
+    const outside = realpathSync(mkdtempSync(join(tmpdir(), "outside-")));
+    writeFileSync(join(outside, "s"), "outside\n");
+    const { symlinkSync } = await import("node:fs");
+    symlinkSync(outside, join(root, "lnk"));
+    await assert.rejects(workingPatch(root, "lnk/s"), {message: "INVALID_PATH"}, "nothing behind a link out of the tree");
+    rmSync(outside, {recursive: true, force: true});
+  } finally { done(); }
+});

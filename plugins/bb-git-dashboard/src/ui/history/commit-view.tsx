@@ -26,6 +26,7 @@ export function ChangeView({api, copyId, hash, uncommitted}: {api: HistoryApi; c
     if (!path) return;
     let active = true;
     setPatch(undefined);
+    setError("");
     api.patch(copyId, hash, path).then(text => { if (active) setPatch(text); }, cause => { if (active) setError(message(cause)); });
     return () => { active = false; };
   }, [api, copyId, hash, path]);

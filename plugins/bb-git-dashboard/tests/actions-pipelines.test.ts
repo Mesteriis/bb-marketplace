@@ -42,7 +42,7 @@ test("active runs combine running and queued, newest first", async () => {
     call.url.includes("status=in_progress") ? [row(1, "in_progress", "2026-11-27T10:00:00Z")] : [row(2, "queued", "2026-11-27T10:05:00Z")]})});
   const page = await actionsPipelines(github, repo(github), token, send).runs("active", 1);
   assert.deepEqual(page.items.map(item => [item.id, item.state]), [["2", "queued"], ["1", "running"]]);
-  assert.deepEqual(calls.map(call => new URLSearchParams(call.url.split("?")[1]).get("status")).sort(), ["in_progress", "queued", "waiting"]);
+  assert.deepEqual(calls.map(call => new URLSearchParams(call.url.split("?")[1]).get("status") ?? "unfiltered").sort(), ["in_progress", "queued", "unfiltered", "waiting"]);
 });
 
 test("Gitea uses its API prefix and limit paging", async () => {
@@ -145,7 +145,7 @@ test("run and job links are kept only when they point at the forge over https", 
 test("runs waiting for approval count as active", async () => {
   const {send, calls} = forge({"GET /repos/octo/sandbox/actions/runs": () => Response.json({workflow_runs: []})});
   await actionsPipelines(github, repo(github), token, send).runs("active", 1);
-  assert.deepEqual(calls.map(call => new URLSearchParams(call.url.split("?")[1]).get("status")).sort(), ["in_progress", "queued", "waiting"]);
+  assert.deepEqual(calls.map(call => new URLSearchParams(call.url.split("?")[1]).get("status") ?? "unfiltered").sort(), ["in_progress", "queued", "unfiltered", "waiting"]);
 });
 
 test("a log redirect to plain http or with credentials in the URL is refused", async () => {
@@ -154,4 +154,12 @@ test("a log redirect to plain http or with credentials in the URL is refused", a
     await assert.rejects(actionsPipelines(github, repo(github), token, send).log("9", "77"), {message: "PROVIDER_REJECTED"});
     assert.equal(calls.length, 1);
   }
+});
+
+test("Active also finds a running run that the forge's status filter has not indexed yet", async () => {
+  const running = {...runRow, id: 77, status: "in_progress", conclusion: null, created_at: "2026-11-27T11:00:00Z"};
+  const {send} = forge({"GET /repos/octo/sandbox/actions/runs": call =>
+    Response.json({workflow_runs: new URLSearchParams(call.url.split("?")[1]).get("status") ? [] : [running, runRow]})});
+  const items = (await actionsPipelines(github, repo(github), token, send).runs("active", 1)).items;
+  assert.deepEqual(items.map(item => [item.id, item.state]), [["77", "running"]]);
 });

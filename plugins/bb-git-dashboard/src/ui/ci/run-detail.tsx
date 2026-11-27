@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { CiAction } from "../../core/ci/actions.ts";
 import type { Job, Run } from "../../core/ci/model.ts";
-import { message, stateLabel, type CiApi, type RunsPage } from "./ci-api.ts";
+import { message, stateLabel, stateText, type CiApi, type RunsPage } from "./ci-api.ts";
 import { ConfirmDialog } from "./confirm-dialog.tsx";
 import { LogView } from "./log-view.tsx";
 import { ThreadPicker } from "./thread-picker.tsx";
@@ -57,7 +57,7 @@ export function RunDetail({api, copyId, runId, page, onBack, onChanged}: {
     <div className="git-row git-ci-run-title">
       <button type="button" onClick={onBack}>All runs</button>
       <h3>{run.workflow} #{run.number ?? run.id}</h3>
-      <span className="git-state" data-state={run.state}>{stateLabel[run.state]}</span>
+      <span className="git-state" data-state={run.state}>{stateText(run)}</span>
       <span className="git-muted">{[run.branch, run.event, run.attempt > 1 ? "attempt " + run.attempt : null].filter(Boolean).join(" · ")}</span>
       {run.url && <a href={run.url} target="_blank" rel="noreferrer">Open on the forge</a>}
     </div>

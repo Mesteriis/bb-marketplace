@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { RunFilter } from "../../core/ci/model.ts";
-import { message, stateLabel, type CiApi, type RunsPage } from "./ci-api.ts";
+import { message, stateLabel, stateText, type CiApi, type RunsPage } from "./ci-api.ts";
 import { DispatchForm } from "./dispatch-form.tsx";
 import { RunDetail } from "./run-detail.tsx";
 import { ThreadPicker } from "./thread-picker.tsx";
@@ -59,7 +59,7 @@ export function CiPanel({api, copyId}: {api: CiApi; copyId: string}) {
       <tbody>{data.items.map(run => <tr key={run.id + "#" + run.attempt} data-selected="false" onClick={() => setSelected(run.id)}>
         <th scope="row"><button type="button" className="git-table-entry" onClick={event => { event.stopPropagation(); setSelected(run.id); }}>
           {run.workflow} #{run.number ?? run.id}</button>{run.title && <span className="git-muted"> {run.title}</span>}</th>
-        <td><span className="git-state" data-state={run.state}>{stateLabel[run.state]}</span></td>
+        <td><span className="git-state" data-state={run.state}>{stateText(run)}</span></td>
         <td>{run.branch ?? "—"}</td><td data-col="event">{run.event ?? "—"}</td>
         <td><time dateTime={run.createdAt}>{when(run.createdAt)}</time></td>
       </tr>)}</tbody>
