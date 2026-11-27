@@ -8,6 +8,12 @@ import { bytes, damaged, date, shortPath, type EndpointView, type JobView, type 
 import { ProblemLine } from "./pane.tsx";
 import { approvalState, batchRenameText, operationText, reasonText, ru, stateText } from "./strings.ts";
 
+/** A finished batch rename that left items pending: those were returned to their places, not renamed. */
+export function returnedPendingNote(job: OperationJob): boolean {
+  const finished = job.state === "completed" || job.state === "failed" || job.state === "unknown" || job.state === "cancelled";
+  return finished && job.plan.kind === "rename" && job.plan.items.length > 1 && job.items.some(({ outcome }) => outcome === "pending");
+}
+
 /**
  * Owner-only: where an unconfirmed batch item may still hold its temporary name. Only
  * unknown items get a hint, and only batch renames (a single rename has no temporary names).
@@ -90,6 +96,7 @@ function JobCard({ job, endpoints, compact, onInspect, onSkip, onCancel, onRetry
     {pendingConflict && <div className="cm-meta">{reasonText[pendingConflict.reason]}</div>}
     {job.error && <ProblemLine problem={{ code: job.error.code, message: "" }} />}
     {tempNameHint(job) && <div className="cm-meta" role="note">{tempNameHint(job)}</div>}
+    {returnedPendingNote(job) && <div className="cm-meta" role="note">{batchRenameText.returnedPending}</div>}
     {retryNotes?.[job.id] && <div className="cm-meta">{retryNotes[job.id].kind === "nothing"
       ? ru.retryNothing : ru.retryWaitsForCheck((retryNotes[job.id] as { count: number }).count)}</div>}
     <div className="cm-actions">

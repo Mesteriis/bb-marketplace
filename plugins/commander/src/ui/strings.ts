@@ -124,6 +124,8 @@ export const batchRenameText = {
     "Batch rename retry is not available: check the job": "Повтор пакетного переименования недоступен: сверьте задание",
     "Batch rename cancel is unavailable: the second phase is running": "Отмена недоступна: идёт вторая фаза переименования",
   } as Record<string, string>,
+  // A pending item of a finished batch was returned to its place, not renamed.
+  returnedPending: "Ожидающие элементы возвращены на место и не переименованы",
   tempNames: (paths: string[]) => "Файлы могли остаться под временными именами: " + paths.join(", ")
     + ". Проверьте каталоги: если исходного имени нет, переименуйте файл вручную.",
   problems: {

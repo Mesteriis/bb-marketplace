@@ -689,3 +689,128 @@ test("after a restart, recover() then cancel() on one runner is refused while th
   expect(text(provider.contents(parsePosix("/b.txt")))).toBe("AAA");
   expect(text(provider.contents(parsePosix("/a.txt")))).toBe("BB");
 });
+
+test("a stage record and a matching temporary name beside a live source file, explained by no landing, is unknown and nothing moves", async () => {
+  const { provider, runner, newRunner, at } = await setup([["/a.txt", "A", "1000"], ["/c.txt", "C", "2000"]]);
+  const plan = await renamePlan([
+    { from: "/a.txt", to: "/x.txt", fingerprint: fp("1", "1000"), expect: "absent" },
+    { from: "/c.txt", to: "/y.txt", fingerprint: fp("1", "2000"), expect: "absent" },
+  ]);
+  let crashing: Promise<void> | null = null;
+  provider.delay = async (op, path, signal) => {
+    if (op !== "rename" || isTemp(path) || crashing) return;
+    crashing = runner.shutdown();
+    if (!signal.aborted) {
+      await new Promise((_, reject) => signal.addEventListener("abort", () => reject(new CommanderError("cancelled", "stop"))));
+    }
+    signal.throwIfAborted();
+  };
+  const { id } = await runner.submit(plan);
+  await vi.waitFor(() => expect(crashing).not.toBeNull());
+  await crashing;
+  provider.delay = undefined;
+  // A live file appears at the first item's source name: no other item's landing explains it.
+  provider.put(parsePosix("/a.txt"), new TextEncoder().encode("Z"), "9000");
+  await newRunner().recover();
+  const job = await at(id, "unknown");
+  expect(job.items.map(({ outcome }) => outcome)).toEqual(["unknown", "pending"]);
+  const first = tempNameFor(id, 0);
+  expect(text(provider.contents(parsePosix("/" + ("t" in first ? first.t : ""))))).toBe("A");
+  expect(text(provider.contents(parsePosix("/a.txt")))).toBe("Z");
+  expect(text(provider.contents(parsePosix("/c.txt")))).toBe("C");
+});
+
+test("a cancel recovery with a record but neither temporary name nor source file is unknown, not cancelled", async () => {
+  const { provider, runner, newRunner, store, at } = await setup([["/a.txt", "A", "1000"], ["/c.txt", "C", "2000"]]);
+  const plan = await renamePlan([
+    { from: "/a.txt", to: "/x.txt", fingerprint: fp("1", "1000"), expect: "absent" },
+    { from: "/c.txt", to: "/y.txt", fingerprint: fp("1", "2000"), expect: "absent" },
+  ]);
+  let crashing: Promise<void> | null = null;
+  provider.delay = async (op, path, signal) => {
+    if (op !== "rename" || isTemp(path) || crashing) return;
+    crashing = runner.shutdown();
+    if (!signal.aborted) {
+      await new Promise((_, reject) => signal.addEventListener("abort", () => reject(new CommanderError("cancelled", "stop"))));
+    }
+    signal.throwIfAborted();
+  };
+  const { id } = await runner.submit(plan);
+  await vi.waitFor(() => expect(crashing).not.toBeNull());
+  await crashing;
+  provider.delay = undefined;
+  // The first item's staged file is gone, and its source name is empty: nothing shows it went back.
+  const first = tempNameFor(id, 0);
+  await provider.remove(parsePosix("/" + ("t" in first ? first.t : "")), { kind: "file" }, new AbortController().signal);
+  await store.update(id, { error: new CommanderError("cancelled", "Job cancelled").toShape() }, "running");
+  await newRunner().recover();
+  const job = await at(id, "unknown");
+  expect(job.items.map(({ outcome }) => outcome)).toEqual(["unknown", "pending"]);
+  expect(job.error?.code).toBe("outcome_unknown");
+  expect(text(provider.contents(parsePosix("/c.txt")))).toBe("C");
+});
+
+test("a confirmed landing is not done in the journal until its record is written: before the restart the item is pending", async () => {
+  const { provider, runner, newRunner, store, at } = await setup([["/a.txt", "A", "1000"], ["/c.txt", "C", "2000"]]);
+  const plan = await renamePlan([
+    { from: "/a.txt", to: "/x.txt", fingerprint: fp("1", "1000"), expect: "absent" },
+    { from: "/c.txt", to: "/y.txt", fingerprint: fp("1", "2000"), expect: "absent" },
+  ]);
+  let crashing: Promise<void> | null = null;
+  provider.delay = async (op, path, signal) => {
+    // Stop at the confirmation read after the first move, before its done record is written.
+    if (op !== "stat" || leaf(path) !== "x.txt" || crashing) return;
+    const previous = provider.calls.at(-2);
+    if (!(previous?.op === "rename" && leaf(previous.path) === "x.txt")) return;
+    crashing = runner.shutdown();
+    if (!signal.aborted) {
+      await new Promise((_, reject) => signal.addEventListener("abort", () => reject(new CommanderError("cancelled", "stop"))));
+    }
+    signal.throwIfAborted();
+  };
+  const { id } = await runner.submit(plan);
+  await vi.waitFor(() => expect(crashing).not.toBeNull());
+  await crashing;
+  expect((await store.get(id))?.items.map(({ outcome }) => outcome)).toEqual(["pending", "pending"]);
+  provider.delay = undefined;
+  await newRunner().recover();
+  await at(id, "completed");
+  expect(text(provider.contents(parsePosix("/x.txt")))).toBe("A");
+  expect(text(provider.contents(parsePosix("/y.txt")))).toBe("C");
+});
+
+test("a foreign directory under a temporary name, with no record of the item, survives a cancel recovery: unknown, no rename", async () => {
+  const { provider, runner, newRunner, store, at } = await setup([["/c.txt", "C", "2000"]]);
+  // The foreign directory sits under the temporary name of item 0, with the planned size and mtime.
+  const first = tempNameFor(JOB_ID, 0);
+  const firstName = "t" in first ? first.t : "";
+  await provider.mkdir(parsePosix("/" + firstName), new AbortController().signal);
+  const foreign = await provider.stat(parsePosix("/" + firstName), new AbortController().signal);
+  const plan = await renamePlan([
+    { from: "/d", to: "/x", fingerprint: { size: foreign!.size, mtimeNs: foreign!.mtimeNs }, expect: "absent", kind: "dir" },
+    { from: "/c.txt", to: "/y.txt", fingerprint: fp("1", "2000"), expect: "absent" },
+  ]);
+  // Stop at the very first read, before any item is decided; then the job is cancelled.
+  let crashing: Promise<void> | null = null;
+  provider.delay = async (op, _path, signal) => {
+    if (op !== "stat" || crashing) return;
+    crashing = runner.shutdown();
+    if (!signal.aborted) {
+      await new Promise((_, reject) => signal.addEventListener("abort", () => reject(new CommanderError("cancelled", "stop"))));
+    }
+    signal.throwIfAborted();
+  };
+  const { id } = await runner.submit(plan);
+  await vi.waitFor(() => expect(crashing).not.toBeNull());
+  await crashing;
+  provider.delay = undefined;
+  await store.update(id, { error: new CommanderError("cancelled", "Job cancelled").toShape() }, "running");
+  const renamesBefore = provider.calls.filter(({ op }) => op === "rename").length;
+  await newRunner().recover();
+  const job = await at(id, "unknown");
+  expect(job.items.map(({ outcome }) => outcome)).toEqual(["unknown", "pending"]);
+  expect(provider.calls.filter(({ op }) => op === "rename").length).toBe(renamesBefore);
+  expect(await provider.stat(parsePosix("/" + firstName), new AbortController().signal)).not.toBeNull();
+  expect(await provider.stat(parsePosix("/x"), new AbortController().signal)).toBeNull();
+  expect(text(provider.contents(parsePosix("/c.txt")))).toBe("C");
+});

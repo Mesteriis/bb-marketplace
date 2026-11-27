@@ -132,3 +132,17 @@ test("the temporary-name hint gives each unknown item its own path: root, nested
   expect(tempNameHint(batch(["/a.txt", "/d/b.txt"], ["done", "failed"]))).toBeNull();
   expect(tempNameHint(batch(["/a.txt"], ["unknown"]))).toBeNull();
 });
+
+test("a finished batch with pending items says they were returned, not renamed; a running or single rename does not", async () => {
+  const { returnedPendingNote } = await import("./queue.tsx");
+  const job = (state: string, outcomes: string[], kind: "rename" | "copy" = "rename", count = outcomes.length) => ({
+    state,
+    plan: { kind, items: Array.from({ length: count }, () => ({})) },
+    items: outcomes.map((outcome) => ({ outcome, error: null })),
+  } as unknown as Parameters<typeof returnedPendingNote>[0]);
+  expect(returnedPendingNote(job("failed", ["failed", "pending"]))).toBe(true);
+  expect(returnedPendingNote(job("cancelled", ["pending", "pending"]))).toBe(true);
+  expect(returnedPendingNote(job("running", ["done", "pending"]))).toBe(false);
+  expect(returnedPendingNote(job("completed", ["done", "done"]))).toBe(false);
+  expect(returnedPendingNote(job("failed", ["pending"], "rename", 1))).toBe(false);
+});

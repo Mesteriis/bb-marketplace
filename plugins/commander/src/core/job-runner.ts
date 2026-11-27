@@ -924,6 +924,26 @@ export class JobRunner {
     return (await location.provider.sha256(location.path, signal)) === expected;
   }
 
+  /**
+   * Whether the entry at this item's source name is the confirmed landing of another item of
+   * the batch: that item has a phase-2 intent, its temporary name is gone, and the entry has
+   * its version and proof. Only a cycle can put another item's result on this name.
+   */
+  private async landingExplainsSource(plan: OperationPlan, jobId: string, index: number, at: Seen, signal: AbortSignal): Promise<boolean> {
+    const item = plan.items[index];
+    const source = this.location(item.source!);
+    const caseSensitive = source.provider.endpoint.caseSensitive;
+    for (const [other, otherItem] of plan.items.entries()) {
+      if (other === index || otherItem.target === null || !samePath(otherItem.target.path, item.source!.path, caseSensitive)) continue;
+      const record = await this.store.lastCheckpoint(jobId, other);
+      if (record?.phase !== "committed") continue;
+      const otherTemp = await observe(this.batchTemp(plan, jobId, other), this.context(jobId, other, signal));
+      if (otherTemp !== null || !this.sizedAs(at, otherItem)) continue;
+      if (await this.provesRecorded(source, otherItem.kind, record, signal)) return true;
+    }
+    return false;
+  }
+
   /** Reads an item's state from the endpoint and its record. Nothing is written here. */
   private async batchState(plan: OperationPlan, jobId: string, index: number, signal: AbortSignal): Promise<BatchState> {
     const item = plan.items[index];
@@ -940,7 +960,10 @@ export class JobRunner {
     if (staged !== null) {
       // A temporary name is ours only with a record; a restart that finds it must prove the content.
       if (!recorded || !this.sizedAs(staged, item)) return "unknown";
-      return await this.provesRecorded(temp, item.kind, record, signal) ? "staged" : "unknown";
+      if (!await this.provesRecorded(temp, item.kind, record, signal)) return "unknown";
+      // A live file at the source name is explained only by another item's confirmed landing in a cycle.
+      if (from === null) return "staged";
+      return await this.landingExplainsSource(plan, jobId, index, from, signal) ? "staged" : "unknown";
     }
     if (intent) {
       if (!this.sizedAs(to, item)) return "unknown";
@@ -1049,6 +1072,19 @@ export class JobRunner {
     const committed = job.items.some((item) => item.outcome === "done") || records.some((record) => record?.phase === "committed");
     if (cancelling && !committed) {
       const failures = await this.restoreBatch(job.plan, job.id, pending);
+      // An item with its own record must be seen at its source before the cancel completes; a missing
+      // file with no temporary name is unknown, never a successful rollback.
+      for (const index of pending) {
+        if (failures.has(index)) continue;
+        const record = await this.store.lastCheckpoint(job.id, index);
+        if (record?.via !== "rename") continue;
+        const item = job.plan.items[index];
+        const source = this.location(item.source!);
+        const seen = await observe(source, this.context(job.id, index, this.stopping.signal));
+        if (!this.sizedAs(seen, item) || !await this.provesRecorded(source, item.kind, record, this.stopping.signal)) {
+          failures.set(index, new CommanderError("outcome_unknown", "The item could not be confirmed at its source"));
+        }
+      }
       const latest = await this.store.get(job.id);
       if (latest?.state !== "interrupted") return;
       const [first] = failures.values();
