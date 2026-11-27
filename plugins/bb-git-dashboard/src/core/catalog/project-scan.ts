@@ -9,6 +9,14 @@ export type Verdict =
   | {path: string; kind: "worktree" | "submodule"; parent: string}
   | {path: string; kind: "skipped"; reason: SkipReason};
 
+export const verdict = z.discriminatedUnion("kind", [
+  z.object({path: z.string(), kind: z.literal("project")}),
+  z.object({path: z.string(), kind: z.enum(["worktree", "submodule"]), parent: z.string()}),
+  z.object({path: z.string(), kind: z.literal("skipped"), reason: z.enum(["hidden", "excluded", "broken-gitdir"])}),
+]);
+export const defaultProjectsRoot = "/Users/owner/projects";
+export const maxDepth = 6;
+
 export const scanPreview = z.object({
   root: z.string(), truncated: z.boolean(), projects: z.number().int(), worktrees: z.number().int(), submodules: z.number().int(),
   skipped: z.array(z.object({reason: z.enum(["hidden", "excluded", "broken-gitdir"]), count: z.number().int(), examples: z.array(z.string())})),

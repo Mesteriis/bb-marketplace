@@ -2,6 +2,9 @@ import { experimental_defineHostEntry } from "@get-bb/plugin-sdk/host";
 import { hostContract } from "./src/adapters/bb/host-contract.ts";
 import { failureFor } from "./src/core/workspace.ts";
 import { sshHostname } from "./src/adapters/bb/ssh-config.ts";
+import { walkProjects } from "./src/adapters/bb/project-walk.ts";
+import { maxDepth } from "./src/core/catalog/project-scan.ts";
+import { isAbsolute } from "node:path";
 import { assertWorktree, originUrl, cloneHttps, cloneLocal, exchangeHttps, localGit, worktreeIdentity } from "./src/adapters/bb/local-git.ts";
 
 import { execFile } from "node:child_process";
@@ -56,6 +59,14 @@ export default experimental_defineHostEntry({
         return {ok:true as const, url:await originUrl(root,signal)};
       }
       catch (error) { return failureFor(error,"NO_ORIGIN"); }
+    },
+    async scanProjects({root, exclude}) {
+      try {
+        if (!isAbsolute(root)) throw new Error("INVALID_PATH");
+        const result = await walkProjects(root,{exclude,maxDepth});
+        return {ok:true as const, verdicts:result.verdicts.slice(0,20_000), truncated:result.truncated || result.verdicts.length > 20_000};
+      }
+      catch (error) { return failureFor(error,"INVALID_PATH"); }
     },
     async sshHostname({alias}) {
       try { return {ok:true as const, hostname:await sshHostname(alias)}; }

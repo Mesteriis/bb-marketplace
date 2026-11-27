@@ -8,6 +8,7 @@ import { failureFor, id as validId, request, type Copy, type Operation } from ".
 import { hostContract } from "./src/adapters/bb/host-contract.ts";
 import { remoteService } from "./src/adapters/bb/remote-service.ts";
 import { forgeLinking } from "./src/adapters/bb/forge-rpc.ts";
+import { projectCatalog } from "./src/adapters/bb/project-catalog.ts";
 import { pullMutation } from "./src/core/providers.ts";
 import { remoteTarget } from "./src/core/publication.ts";
 import { registerAgentWork } from "./src/adapters/bb/agent-work.ts";
@@ -97,6 +98,7 @@ export default function plugin(bb: BbPluginApi) {
   const linkKey = (copy:Copy) => "repository-link/" + repositoryKey(copy);
   const forge = forgeLinking(bb,linkKey,() => remote);
   const remote = remoteService(bb,loadCopy,saveCopy,forge.originMatches);
+  const catalog = projectCatalog(bb);
   type Target = z.infer<typeof remoteTarget>;
   const validatedProject = async (projectId:string | undefined) =>
     !projectId || (await bb.sdk.projects.list()).some(project => project.id === projectId);
@@ -179,6 +181,7 @@ export default function plugin(bb: BbPluginApi) {
       if (result.ok) broadcast(copyId);
       return result;
     },
+    projectScanPreview: ({hostId},context) => clientOnly(context) ? catalog.preview(hostId) : denied(),
     repositoryFeatures: async ({copyId,section},context) => {
       if (!clientOnly(context)) return denied();
       const copy = await linkedCopy(copyId);
