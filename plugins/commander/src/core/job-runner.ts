@@ -7,6 +7,7 @@ import {
   type Fingerprint, type ItemOutcome, type PlanItem, type ResourceRef,
 } from "./model.ts";
 import { isAncestorOrSelf, join, parent, samePath, type ResourcePath } from "./path.ts";
+import type { ChangedItem } from "./planner.ts";
 import { READ_CHUNK_MAX, type FileProvider, type WriteSession } from "./provider.ts";
 import {
   confirmVerified, fingerprint, isCaseOnlyPair, matches, nameSpelling, matchesTarget, observe, readChunks, reconcileItem, removeStagedTemp, tempNameFor, TransferHash, verifyCopy,
@@ -23,11 +24,12 @@ export interface RunnerDeps {
   chunkBytes?: number;
   retryDelay?(milliseconds: number, signal: AbortSignal): Promise<void>;
   revalidate?(plan: OperationPlan, signal: AbortSignal): Promise<{ ok: true } | {
-    ok: false; changed: { index: number; reason: "source_changed" | "target_changed" }[];
+    ok: false; changed: ChangedItem[];
   }>;
   onEvent(e: { jobId: string; kind: "progress" | "state" | "conflict" }): void;
 }
 
+type SubmitOptions = { awaitsOwner: boolean; syncDeleteConflict?: ChangedItem };
 type Patch = Parameters<JobStore["update"]>[1];
 type EventKind = Parameters<RunnerDeps["onEvent"]>[0]["kind"];
 type Decision = { conflict: Conflict; action: ConflictAction };
@@ -137,11 +139,11 @@ export class JobRunner {
     }
   }
 
-  submit(plan: OperationPlan, opts?: { awaitsOwner: boolean }): Promise<OperationJob> {
+  submit(plan: OperationPlan, opts?: SubmitOptions): Promise<OperationJob> {
     return this.accept(() => this.submitPlan(plan, opts));
   }
 
-  private async submitPlan(plan: OperationPlan, opts?: { awaitsOwner: boolean }): Promise<OperationJob> {
+  private async submitPlan(plan: OperationPlan, opts?: SubmitOptions): Promise<OperationJob> {
     plan = await this.validPlan(plan);
     this.stopping.signal.throwIfAborted();
     const now = this.deps.now().toISOString();
@@ -153,7 +155,15 @@ export class JobRunner {
     });
     await this.store.create(job);
     this.deps.onEvent({ jobId: job.id, kind: "state" });
-    if (!job.awaitsOwner) await this.start(job);
+    if (job.awaitsOwner) return job;
+    // S13: a failed delete preflight must be recorded before launching any item.
+    const changed = opts?.syncDeleteConflict;
+    if (changed) {
+      const item = plan.items[changed.index];
+      await this.startInConflict(job, changed.index, new ItemConflict(changed.reason, item.fingerprint, null));
+      return this.requireJob(job.id);
+    }
+    await this.start(job);
     return job;
   }
 
@@ -181,11 +191,7 @@ export class JobRunner {
     if (absenceConflict !== undefined) {
       const item = plan.items[absenceConflict];
       const counterpart = await this.syncDeleteCounterpart(item, context);
-      if (!await this.change(job, "start")) throw new CommanderError("changed_since_plan", "Job is no longer awaiting approval");
-      const running = await this.requireJob(id);
-      if (running.state === "running") {
-        await this.requestConflict(running, absenceConflict, new ItemConflict("target_changed", item.fingerprint, counterpart));
-      }
+      await this.startInConflict(job, absenceConflict, new ItemConflict("target_changed", item.fingerprint, counterpart));
       return;
     }
     if (checked && !checked.ok) throw new CommanderError("changed_since_plan", "Plan changed before approval");
@@ -215,10 +221,14 @@ export class JobRunner {
       if (!await this.start(job, plan)) throw new CommanderError("changed_since_plan", "Job is no longer awaiting approval");
       return;
     }
+    await this.startInConflict(job, targetConflict.index, targetConflict.conflict);
+  }
+
+  private async startInConflict(job: OperationJob, index: number, conflict: ItemConflict): Promise<void> {
     this.stopping.signal.throwIfAborted();
-    if (!await this.change(job, "start")) throw new CommanderError("changed_since_plan", "Job is no longer awaiting approval");
-    const running = await this.requireJob(id);
-    if (running.state === "running") await this.requestConflict(running, targetConflict.index, targetConflict.conflict);
+    if (!await this.change(job, "start")) throw new CommanderError("changed_since_plan", "Job is no longer pending");
+    const running = await this.requireJob(job.id);
+    if (running.state === "running") await this.requestConflict(running, index, conflict);
   }
 
   async reject(id: string): Promise<void> {

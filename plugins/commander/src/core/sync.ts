@@ -94,10 +94,12 @@ export async function buildSyncPlan(
       }
     }
     const items = absenceRoot ? plan.items.map((item) => {
-      const relative = item.source!.path.segments.slice(from.path.segments.length);
+      // The comparison proved the top-level entry absent. Every descendant
+      // inherits that proof, so a newly created empty counterpart also blocks it.
+      const rootName = item.source!.path.segments[from.path.segments.length];
       return { ...item, requireAbsent: {
         endpoint: absenceRoot.endpoint,
-        path: relative.reduce(join, absenceRoot.path),
+        path: join(absenceRoot.path, rootName),
       } };
     }) : plan.items;
     const unsigned = { ...plan, syncId: id, items };

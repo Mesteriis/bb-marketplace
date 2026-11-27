@@ -165,9 +165,9 @@ test("protects every entry of a removed directory and counts nested files in the
     ...req, includeDeletes: true, filters: { exclude: ["extra.txt"] },
   }, deps, signal);
   expect(deletes?.items.map((item) => item.requireAbsent)).toEqual([
-    { endpoint: "host:left", path: { segments: [{ t: "old" }, { t: "sub" }, { t: "a.txt" }] } },
-    { endpoint: "host:left", path: { segments: [{ t: "old" }, { t: "sub" }] } },
-    { endpoint: "host:left", path: { segments: [{ t: "old" }, { t: "b.txt" }] } },
+    { endpoint: "host:left", path: { segments: [{ t: "old" }] } },
+    { endpoint: "host:left", path: { segments: [{ t: "old" }] } },
+    { endpoint: "host:left", path: { segments: [{ t: "old" }] } },
     { endpoint: "host:left", path: { segments: [{ t: "old" }] } },
   ]);
   expect(deletes?.items).toHaveLength(4);
@@ -185,4 +185,28 @@ test("only a sync deletion may carry an absence predicate, which is bound to its
   await expect(revalidate(tampered, deps, signal)).rejects.toMatchObject({
     code: "internal", message: "The plan does not match its digest",
   });
+});
+
+test("an empty counterpart /old appearing after the checkpoint protects /old/b.txt", async () => {
+  const { req, deps, left, right, runner, store } = fixture();
+  const old = parsePosix("/old");
+  const nested = parsePosix("/old/b.txt");
+  try {
+    await right.mkdir(old, signal);
+    right.put(nested, Uint8Array.of(17));
+    const { deletes } = await buildSyncPlan({
+      ...req, includeDeletes: true, filters: { exclude: ["extra.txt"] },
+    }, deps, signal);
+    const checkpoint = store.checkpoint.bind(store);
+    vi.spyOn(store, "checkpoint").mockImplementation(async (value) => {
+      await checkpoint(value);
+      await left.mkdir(old, signal);
+    });
+    const { id } = await runner.submit(deletes!);
+    await vi.waitFor(async () => expect((await store.get(id))?.pendingConflict).toMatchObject({
+      itemIndex: 0, reason: "target_changed",
+    }));
+    expect(right.calls.filter(({ op }) => op === "remove")).toHaveLength(0);
+    expect(right.contents(nested)).toEqual(Uint8Array.of(17));
+  } finally { await runner.shutdown(); }
 });

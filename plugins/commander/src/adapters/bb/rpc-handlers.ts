@@ -430,13 +430,14 @@ export function createOperations(deps: {
             throw new CommanderError("limit_exceeded", "Commander approval queue is full");
           }
         }
-        // S13: check the original snapshot before submission. The runner rechecks each
-        // item and owns the conflict transition; keep the original fingerprints.
-        if (plan.syncId && !awaitsOwner) await revalidate(plan, planner, signal);
+        // S13: record a stale deletion plan as a conflict before the runner can
+        // remove even an unrelated item. Copies keep the runner's per-item checks.
+        const checked = plan.syncId && !awaitsOwner ? await revalidate(plan, planner, signal) : undefined;
+        const syncDeleteConflict = plan.kind === "delete" && checked?.ok === false ? checked.changed[0] : undefined;
         signal.throwIfAborted();
         if (plans.get(planId) !== entry) throw refusal("conflict", "Plan is no longer available");
         plans.delete(planId);
-        return runner.submit(plan, { awaitsOwner });
+        return runner.submit(plan, { awaitsOwner, syncDeleteConflict });
       });
     },
     async jobs(input: RpcInput<"job_list">) {
