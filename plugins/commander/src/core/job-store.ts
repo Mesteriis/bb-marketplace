@@ -28,7 +28,8 @@ export interface Checkpoint {
 export interface JobStore {
   create(job: OperationJob): Promise<void>;
   get(id: string): Promise<OperationJob | null>;
-  list(filter: { states?: JobState[]; limit: number }): Promise<OperationJob[]>;
+  /** A thread ID scopes the page to that agent; "*" selects agent jobs across threads. */
+  list(filter: { states?: JobState[]; limit: number; threadId?: string }): Promise<OperationJob[]>;
 
   /** Apply the patch atomically if the job still has the expected state. */
   update(

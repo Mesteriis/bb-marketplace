@@ -194,6 +194,15 @@ export function createSqliteJobStore(db: Database): JobStore {
   const byId = db.prepare<[string], JobRow>(`${jobRows} WHERE id = ?`);
   const byRowId = db.prepare<[string], JobRow>(`${jobRows} WHERE rowid = ?`);
   const byUpdate = db.prepare<[], JobRow>(`${jobRows} ORDER BY updated_at DESC, id ASC`);
+  const agentRows = (scope: "all" | "thread") => db.prepare<{
+    threadId?: string; states: string | null; scanLimit: number;
+  }, JobRow>(`${jobRows}
+    WHERE initiator_kind = 'agent' ${scope === "thread" ? "AND thread_id = @threadId" : ""}
+      AND (@states IS NULL OR state IN (SELECT value FROM json_each(@states)))
+    ORDER BY updated_at DESC, id ASC LIMIT @scanLimit
+  `);
+  const byThread = agentRows("thread");
+  const allAgents = agentRows("all");
   const countStoredTerminal = db.prepare<[], number>(
     `SELECT count(*) FROM jobs WHERE state IN ${TERMINAL_STATES}`,
   ).pluck();
@@ -309,12 +318,18 @@ export function createSqliteJobStore(db: Database): JobStore {
       if (damaged) return row ? null : unreadableJob(damaged, id);
       return row ? showRow(row) : null;
     },
-    async list({ states, limit }) {
+    async list({ states, limit, threadId }) {
       if (limit <= 0 || states?.length === 0) return [];
       const jobs: OperationJob[] = [];
       // An unreadable row is `unknown` regardless of its stored state.
-      // Decode before filtering and stop as soon as the page is full.
-      for (const row of byUpdate.iterate()) {
+      // When unknown is requested, any stored state can contribute a row.
+      const rows = threadId === undefined ? byUpdate.iterate()
+        : (threadId === "*" ? allAgents : byThread).iterate({
+          threadId,
+          states: !states || states.includes("unknown") ? null : JSON.stringify(states),
+          scanLimit: states ? -1 : limit,
+        });
+      for (const row of rows) {
         const job = showRow(row);
         if (!states || states.includes(job.state)) jobs.push(job);
         if (jobs.length >= limit) break;
