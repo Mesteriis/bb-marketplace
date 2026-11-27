@@ -15,12 +15,14 @@ type Location = {hostId:string;projectId:string;path:string;name:string|null};
 const sections = ["Code","History","Actions","Issues","Variables"] as const;
 type Section = typeof sections[number];
 
-export function ProjectWorkspace({copies,hosts,projects,locations,subPath,loaded,error,api,onOpen,onAttach,onClone,renderWorktree}: {
+export function ProjectWorkspace({copies,hosts,projects,locations,subPath,loaded,error,api,onOpen,onAttach,onClone,renderWorktree,inboxBadge = null}: {
   copies:Copy[]; hosts:Host[]; projects:Project[]; locations:Location[]; subPath:string;
   loaded:boolean; error:string; api:RepositoryApi & ConnectionApi & {trees(id:string):Promise<GitResult>};
   onOpen(path:string):void; onAttach(hostId:string,root:string,projectId?:string):Promise<Copy>;
   onClone(hostId:string,source:string,destination:string,projectId?:string):Promise<Copy>;
   renderWorktree(copy:Copy,host:string,attach:(root:string)=>Promise<void>):ReactNode;
+  /** Unseen My PRs alerts, or null when there are none or the badge is off. */
+  inboxBadge?:number|null;
 }) {
   const groups = useMemo(() => projectTree(projects,copies), [copies,projects]);
   const [first, second] = subPath.split("/");
@@ -55,6 +57,8 @@ export function ProjectWorkspace({copies,hosts,projects,locations,subPath,loaded
       {copy && <button onClick={() => onOpen("")}>Все проекты</button>}
       {!copy && <input aria-label="Поиск по каталогу" placeholder="Репозиторий, ветка или путь…" type="search"
         value={query} onChange={event => setQuery(event.target.value)}/>}
+      <button onClick={() => onOpen("inbox")}>Мои PR{inboxBadge !== null &&
+        <span className="git-inbox-badge" aria-label={inboxBadge + " new"}>{inboxBadge}</span>}</button>
       <button aria-expanded={connections} onClick={() => setConnections(!connections)}>Подключения</button>
     </header>
     {connections &&       <section className="git-project-connections">
@@ -62,7 +66,7 @@ export function ProjectWorkspace({copies,hosts,projects,locations,subPath,loaded
         <button type="button" onClick={() => setConnecting(true)}>+ Add connection</button>
         {accounts.map(account => <div className="git-connection" key={account.id}>
           <span aria-hidden="true">⛓</span> <span>{account.label}</span>
-          <span className="git-muted">{account.kind === "azure" ? "Azure Repos" : account.kind === "gitea" ? "Gitea" : "GitHub"}</span>
+          <span className="git-muted">{{azure: "Azure Repos", gitea: "Gitea", gitlab: "GitLab", github: "GitHub"}[account.kind]}</span>
         </div>)}
         {accountError && <p role="alert" className="git-error">{accountError}</p>}
         <button type="button" onClick={() => onOpen("remotes")}>Browse provider repositories</button>

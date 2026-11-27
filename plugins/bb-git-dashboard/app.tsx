@@ -10,11 +10,14 @@ import type { ConnectionApi } from "./src/ui/connection-wizard.tsx";
 import type { RepositoryApi } from "./src/ui/repository-panel.tsx";
 import { Worktree } from "./src/ui/worktree.tsx";
 import { Remotes, type RemoteApi } from "./src/ui/remotes.tsx";
+import { InboxPage, InboxToasts } from "./src/ui/pulls/inbox-page.tsx";
+import type { AlertSummary, InboxApi } from "./src/ui/pulls/inbox-api.ts";
 import "./src/ui/git.css";
 
 type Client = ReturnType<typeof useRpc<typeof rpc>>;
 type Host = {id: string; name: string};
 const signal = "git-workspace-changed";
+const inboxSignal = "inbox-alerts";
 const tab = {id:"git-pinned", availability:"action"} as const;
 const pullTab = {id:"git-pinned-pr",availability:"action",context:{kind:"nav-panel",panelId:"git"}} as const;
 function failed(result: Failure): never { throw new Error(result.code + " · " + result.next); }
@@ -238,9 +241,26 @@ function Dashboard({subPath}: {subPath: string}) {
       return result.ok ? result : failed(result);
     },
   }), [client]);
+  const inbox = useMemo<InboxApi>(() => ({
+    list: async tab => okValue(await client.call("inboxList",{tab})),
+    alerts: async () => okValue(await client.call("inboxAlerts",{})),
+    seen: async () => okValue(await client.call("inboxSeen",{})),
+  }), [client]);
+  const [alerts,setAlerts] = useState<AlertSummary|null>(null);
+  const readAlerts = useCallback(() => { inbox.alerts().then(setAlerts,() => {}); }, [inbox]);
+  useEffect(readAlerts, [readAlerts]);
+  useRealtime(inboxSignal, readAlerts);
+  const badge = alerts?.badge && alerts.unseen > 0 ? alerts.unseen : null;
   const open = (path:string) => navigate.toPluginPanel("git",path ? {subPath:path} : undefined);
   return <div className="git-ws-frame"><div className="git-ws">
-    {subPath === "remotes" ? <>
+    <InboxToasts alerts={alerts}/>
+    {subPath === "inbox" ? <>
+      <nav aria-label="Git workspace" className="git-row git-section-tabs">
+        <button type="button" onClick={() => open("")}>Projects</button>
+        <span>My PRs</span>
+      </nav>
+      <InboxPage api={inbox} alerts={alerts} onSeen={() => { inbox.seen().then(setAlerts,() => {}); }}/>
+    </> : subPath === "remotes" ? <>
       <nav aria-label="Git workspace" className="git-row git-section-tabs">
         <button type="button" onClick={() => open("")}>Projects</button>
         <span>Provider repositories</span>
@@ -251,7 +271,7 @@ function Dashboard({subPath}: {subPath: string}) {
         }
       }}/>
     </> : <ProjectWorkspace copies={copies} hosts={hosts} projects={projects} locations={locations} subPath={subPath}
-      loaded={loaded} error={error} api={api} onOpen={open}
+      loaded={loaded} error={error} api={api} onOpen={open} inboxBadge={badge}
       onAttach={async (hostId,root,projectId) => {
         const result = await client.call("attach",{hostId,root,projectId});
         return result.ok ? result.value : failed(result);
