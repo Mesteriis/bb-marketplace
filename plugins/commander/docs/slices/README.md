@@ -40,9 +40,15 @@
 - `THIRD_PARTY_NOTICES.md`: S0 — запись о вендоренных компонентах, S2 —
   записи о коде доноров; новые записи добавляются рядом, чужие не
   переписываются.
-- `src/core/provider.ts` (S1): S3 добавляет в `WriteSession` поле
-  `readonly tempPath: ResourcePath` — единственная правка; S4 и S5 его
-  заполняют в своих реализациях.
+- `src/core/provider.ts` (S1): правит S3 — `WriteSession.tempPath`,
+  `rename(…, { replace, expectTarget? })`, `remove(…, { kind, expect? })`;
+  S4 и S5 реализуют сверку непосредственно перед действием и документируют
+  окно неатомарности.
+- `src/core/model.ts` (S1): S2 добавляет `PlanItem.expectTarget:
+  Fingerprint | "absent" | null` (входит в digest); planner заполняет его
+  stat-ом цели.
+- `Checkpoint` (S3): `tempPath`, `targetPath`, `expectTarget`, `verified`;
+  S6 хранит их в `*_json`-колонках.
 - `JobStore.update` может менять `awaitsOwner` (S3 — контракт, S6 —
   колонка `awaits_owner`); выход из `pending` атомарно сбрасывает флаг.
 - `src/ui/index.ts` создаёт S0 как заглушку, дальше им владеет S8;
@@ -63,8 +69,9 @@
 | S7 | `S7-server-rpc-agents.md` | S2–S6 | `server.ts`, `host.ts`, `src/core/wire/rpc.ts`, `src/adapters/bb/rpc-handlers.ts`, `src/adapters/bb/endpoints.ts`, `src/adapters/bb/agent-tools.ts`, `src/adapters/bb/agent-grants.ts`, `src/adapters/bb/cli.ts`, `skills/commander/SKILL.md`, `docs/security.md`, `server.test.ts` |
 | S8 | `S8-ui.md` | S7, выбор дизайна | `app.tsx`, `app.test.tsx`, `src/ui/**` |
 
-S2, S3, S4, S5 идут параллельно после S1. S6 стартует, когда интерфейс
-`JobStore` (S3, файл `src/core/job-store.ts`) слит — это первая задача S3.
+S2, S3, S4, S5 идут параллельно после S1. Порядок слияния: S2 → S3 → S6,
+S4, S5 (контракты `model.ts` от S2 и `provider.ts`/`job-store.ts` от S3
+должны быть в ветке раньше реализаций).
 S8 ждёт выбора варианта на Design canvas. Заглушки `server.ts`, `app.tsx`,
 `host.ts` создаёт S0; после слияния S0 ими владеют только S7 (`server.ts`,
 `host.ts`) и S8 (`app.tsx`).

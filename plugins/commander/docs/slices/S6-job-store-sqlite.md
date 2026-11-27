@@ -27,8 +27,10 @@ export function createSqliteJobStore(db: Database): JobStore;
   awaits_owner INTEGER NOT NULL DEFAULT 0 CHECK (awaits_owner IN (0,1)))`;
   индекс по `(state, updated_at)`.
 - `checkpoints(job_id TEXT, item_index INTEGER, phase TEXT, bytes_done TEXT,
-  temp_path_json TEXT, at TEXT, PRIMARY KEY(job_id, item_index))` — хранится
-  последняя точка элемента.
+  temp_path_json TEXT, target_path_json TEXT, expect_target_json TEXT,
+  verified_json TEXT, at TEXT, PRIMARY KEY(job_id, item_index))` — хранится
+  последняя точка элемента; поля `Checkpoint` S3 (`tempPath`, `targetPath`,
+  `expectTarget`, `verified`) — только в `*_json`.
 - Всё чтение проходит zod-схемы S1 (`OperationJob.parse`); битая строка →
   job помечается `unknown` с ошибкой `internal`, а не падение всего списка.
 - `awaitsOwner` — отдельная колонка `awaits_owner`; `update`, переводящий
@@ -61,6 +63,9 @@ export function createSqliteJobStore(db: Database): JobStore;
 - Ретенция: 1001 терминальный job → после следующего `create` их 1000,
   нетерминальные не тронуты.
 - `migrate` дважды — идемпотентно.
+- Checkpoint с `expectTarget: "absent"`, `expectTarget` = отпечаток и
+  `verified: {size:"5368709120", sha256:<литерал>}` → `lastCheckpoint`
+  возвращает их `deepEqual`.
 
 ## Ожидаемый diff
 

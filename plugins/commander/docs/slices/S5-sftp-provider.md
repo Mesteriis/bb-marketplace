@@ -76,6 +76,11 @@ export function createSftpProvider(opts: {
   stat, read, realpath); для write/rename/remove — не повторять, бросать
   `outcome_unknown` при неоднозначном исходе.
 - `WriteSession.tempPath` (контракт S3) = путь temp-файла ниже.
+- `rename`/`remove` с `expectTarget`/`expect` (контракт S3): `stat` и сверка
+  непосредственно перед `hub_sftp_op rename|remove`; расхождение →
+  `changed_since_plan`. Окно неатомарности здесь шире (два RPC через Remote
+  Hub) — описать в комментарии; `expectTarget: "absent"` с
+  `overwrite:false` полагается на `exists` сервера, а не на stat.
 - `openWrite(target)`: temp-имя `.<name>.commander-<uuid>.part` в каталоге
   цели; первый кусок `create: "exclusive"` offset 0, последующие
   `create: "existing"`; `commit({replace:false})` → `rename(overwrite:false)`
@@ -117,6 +122,8 @@ export function createSftpProvider(opts: {
 - Байтовое имя `{bytes:"/w=="}` от мока → сегмент `{b:"/w=="}` и обратно
   тот же путь в `write`.
 - Каталог 10 001 запись → `limit_exceeded`.
+- `remove` с устаревшим `expect` → `changed_since_plan`, ни одного
+  `hub_sftp_op remove` не отправлено.
 - Зеркало `base64Bytes`: строка base64 ровно 4 MiB проходит схему без
   переполнения стека; 4 194 303 и 4 194 304 байта — принимаются, 4 194 305 и
   4 194 306 — отказ; URL-алфавит (`-`, `_`) — отказ.

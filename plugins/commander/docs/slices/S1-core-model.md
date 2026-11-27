@@ -108,6 +108,8 @@ export const PlanItem = z.object({
   target: ResourceRef.nullable(),          // null для delete
   kind: EntryKind,
   fingerprint: Fingerprint.nullable(),     // источника на момент плана; null для mkdir
+  // После ревью S3 (решение координатора): + expectTarget: Fingerprint | "absent" | null —
+  // состояние цели на момент плана, входит в digest; правит S2 (исключение владения).
 }).strict();
 
 export const OperationPlan = z.object({
@@ -216,6 +218,9 @@ export interface FileProvider {
   mkdir(path: ResourcePath, signal: AbortSignal): Promise<void>;
   rename(from: ResourcePath, to: ResourcePath, opts: { replace: boolean }, signal: AbortSignal): Promise<void>;
   remove(path: ResourcePath, opts: { kind: EntryKind }, signal: AbortSignal): Promise<void>;   // каталог — только пустой
+  // После ревью S3: rename(from, to, { replace, expectTarget? }) и
+  // remove(path, { kind, expect? }) — сверка отпечатка непосредственно перед
+  // действием; правит S3 (исключение владения), реализуют S4 и S5.
   copyWithin?(from: ResourcePath, to: ResourcePath, opts: { replace: boolean }, signal: AbortSignal): Promise<Fingerprint>;
   sha256?(path: ResourcePath, signal: AbortSignal): Promise<string>;
 }

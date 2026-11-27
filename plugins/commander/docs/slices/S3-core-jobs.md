@@ -14,10 +14,16 @@ S6), `src/core/job-machine.ts`, `src/core/job-runner.ts`,
 `src/core/reconcile.ts`, `src/core/testing/fake-provider.ts`,
 `src/core/testing/memory-job-store.ts` и `*.test.ts`.
 
-Исключение владения: S3 правит `src/core/provider.ts` (S1) ровно одним
-изменением — `WriteSession` получает `readonly tempPath: ResourcePath`
-(путь временного файла, который реализация создала рядом с целью). Это
-тоже первая задача среза, вместе с `job-store.ts`: от неё зависят S4 и S5.
+Исключение владения: S3 правит `src/core/provider.ts` (S1) — и только
+этими изменениями:
+- `WriteSession` получает `readonly tempPath: ResourcePath` (путь временного
+  файла, который реализация создала рядом с целью);
+- `rename(from, to, { replace, expectTarget?: Fingerprint | "absent" })` и
+  `remove(path, { kind, expect?: Fingerprint })` — провайдер сверяет
+  отпечаток непосредственно перед действием и при расхождении бросает
+  `changed_since_plan`.
+Это первая задача среза вместе с `job-store.ts`: от неё зависят S4, S5, S6.
+Ордер слияния: S2 → S3 → S6, S4, S5.
 
 ## Контракт
 
@@ -26,7 +32,11 @@ S6), `src/core/job-machine.ts`, `src/core/job-runner.ts`,
 export interface Checkpoint {
   jobId: string; itemIndex: number;
   phase: "copying" | "committed" | "verified" | "source_removed";
-  bytesDone: Size; tempPath: ResourcePath | null;     // из WriteSession.tempPath
+  bytesDone: Size;
+  tempPath: ResourcePath | null;                       // из WriteSession.tempPath
+  targetPath: ResourcePath | null;
+  expectTarget: Fingerprint | "absent" | null;        // из PlanItem или решения конфликта
+  verified: { size: Size; sha256?: string } | null;    // заполняется в фазе verified
 }
 export interface JobStore {
   create(job: OperationJob): Promise<void>;
@@ -72,7 +82,10 @@ export class JobRunner {
 
 Правила исполнения (каждое — тест):
 
-1. Перед каждым элементом `stat` источника и цели. Источник не совпал с
+1. Перед каждым элементом `stat` источника и цели; цель сверяется с
+   `PlanItem.expectTarget` (расхождение → конфликт `target_changed`).
+   В `rename`/`remove`/`commit` передаётся ожидаемый отпечаток, чтобы
+   провайдер сверил его непосредственно перед действием. Источник не совпал с
    `fingerprint` плана → конфликт `source_changed` (не политика, всегда
    спрашивать). Цель существует → по `conflictPolicy`; `ask` →
    `awaiting_decision`, исполнение элемента ждёт `decide`.
