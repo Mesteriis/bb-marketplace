@@ -38,13 +38,21 @@ fn main() {
     if args[1] == "compat" {
         use std::io::Read;
         let mut archive = zip::ZipArchive::new(File::open(&args[2]).unwrap()).unwrap();
-        assert!(archive.by_index_decrypt(0, b"incorrect").is_err());
+        if let Ok(mut file) = archive.by_index_decrypt(0, b"incorrect") {
+            // ZipCrypto's one-byte header check can accept a wrong password.
+            // Drain the entry so the reader can check its CRC at EOF.
+            let mut data = Vec::new();
+            if file.read_to_end(&mut data).is_ok() {
+                assert_ne!(data, b"payload");
+            }
+            println!("Wrong password passed the header check; payload rejected");
+        }
         let mut file = archive.by_index_decrypt(0, b"synthetic").unwrap();
         assert_eq!(file.name(), "café.txt");
         assert_eq!(file.name_raw(), b"caf\x82.txt");
-        let mut data = String::new();
-        file.read_to_string(&mut data).unwrap();
-        assert_eq!(data, "payload");
+        let mut data = Vec::new();
+        file.read_to_end(&mut data).unwrap();
+        assert_eq!(data, b"payload");
         println!("ZIP64 CP437 encrypted read PASS");
         return;
     }
