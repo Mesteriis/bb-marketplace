@@ -28,3 +28,8 @@ test("actions are validated: no empty text, sane lines, a bounded review", () =>
   assert.equal(prAction.safeParse({kind: "merge", method: "octopus"}).success, false);
   assert.equal(prAction.safeParse({kind: "requestReviewer", reviewer: "a b"}).success, false);
 });
+
+test("deleting a comment says where and quotes it", () => {
+  assert.deepEqual(describePrAction(pr, {kind: "deleteComment", commentId: "1", threadId: null, body: "Old"}), ["Delete your comment on o/r #7", "Old"]);
+  assert.deepEqual(describePrAction(pr, {kind: "deleteComment", commentId: "1", threadId: "T", body: "Old"}), ["Delete your comment in a review thread on o/r #7", "Old"]);
+});

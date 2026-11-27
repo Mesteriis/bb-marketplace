@@ -97,3 +97,14 @@ test("a write that stops halfway says how far it got", async () => {
   const preview = await service.prepare("a", "o/r", 7, {kind: "review", event: "APPROVE", body: "", comments: []});
   await assert.rejects(service.confirm(preview.id), {message: "OUTCOME_PARTIAL"});
 });
+
+test("only a comment the forge shows as yours can be deleted", async () => {
+  const mine = {id: "C1", canDelete: true, author: "me", avatarUrl: null, body: "Old", createdAt: "", url: ""};
+  const {service, acts} = setup("gitea", {timeline: [{...mine, reviewState: null}, {...mine, id: "C2", canDelete: false, author: "ann", reviewState: null}],
+    threads: [{id: "T", comments: [{...mine, id: "C3"}]}]} as unknown as Partial<PrDetail>);
+  await assert.rejects(service.prepare("a", "o/r", 7, {kind: "deleteComment", commentId: "C2", threadId: null, body: "Old"}), {message: "NOT_YOUR_COMMENT"});
+  await assert.rejects(service.prepare("a", "o/r", 7, {kind: "deleteComment", commentId: "C3", threadId: null, body: "Old"}), {message: "NOT_YOUR_COMMENT"});
+  const preview = await service.prepare("a", "o/r", 7, {kind: "deleteComment", commentId: "C3", threadId: "T", body: "Old"});
+  await service.confirm(preview.id);
+  assert.deepEqual(acts, ["deleteComment"]);
+});

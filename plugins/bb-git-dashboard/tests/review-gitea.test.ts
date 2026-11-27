@@ -104,3 +104,11 @@ test("only the pull request itself is required: every other part degrades to a n
     "Commit status could not be read (PROVIDER_DENIED).",
   ]);
 });
+
+test("a deleted discussion comment is one DELETE; a review comment is refused before anything is sent", async () => {
+  const {send, calls} = gitea({["DELETE " + repo + "/issues/comments/5"]: () => new Response(null, {status: 204})});
+  const api = giteaReview(account, token, "o/r", send);
+  await api.act(7, {kind: "deleteComment", commentId: "5", threadId: null, body: "x"}, current);
+  await assert.rejects(api.act(7, {kind: "deleteComment", commentId: "2", threadId: "2", body: "x"}, current), {message: "PROVIDER_UNSUPPORTED"});
+  assert.deepEqual(calls.map(call => [call.method, call.path.replace(repo, "")]), [["DELETE", "/issues/comments/5"]]);
+});

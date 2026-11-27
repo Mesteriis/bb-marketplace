@@ -124,6 +124,11 @@ export const PR_DETAIL_QUERY = `query($owner: String!, $name: String!, $number: 
 
 // ---- Writes GitHub's REST API lacks: thread replies and resolution, draft state ----
 
+/** GitHub deletes a discussion comment and a review comment through different mutations. */
+export const deleteCommentMutation = (review: boolean) => review
+  ? "mutation($id: ID!) { deletePullRequestReviewComment(input: { id: $id }) { clientMutationId } }"
+  : "mutation($id: ID!) { deleteIssueComment(input: { id: $id }) { clientMutationId } }";
+
 export const REPLY_MUTATION = `mutation($threadId: ID!, $body: String!) {
   addPullRequestReviewThreadReply(input: { pullRequestReviewThreadId: $threadId, body: $body }) {
     comment { url state }

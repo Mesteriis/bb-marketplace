@@ -2,9 +2,9 @@ import type { Forge } from "./model.ts";
 
 /** Pull request operations a forge may lack. Checked against each forge's API documentation on 2026-11-27. */
 export type PullOperation = "comment" | "reply" | "resolve" | "lineComment" | "approve" | "requestChanges" | "requestReviewer" |
-  "editTitle" | "editBody" | "draft" | "state" | "merge" | "patch";
+  "editTitle" | "editBody" | "draft" | "state" | "merge" | "patch" | "deleteComment";
 export const pullOperations: PullOperation[] = ["comment", "reply", "resolve", "lineComment", "approve", "requestChanges", "requestReviewer",
-  "editTitle", "editBody", "draft", "state", "merge", "patch"];
+  "editTitle", "editBody", "draft", "state", "merge", "patch", "deleteComment"];
 
 const limitations: Record<Forge, Partial<Record<PullOperation, string>>> = {
   github: {},

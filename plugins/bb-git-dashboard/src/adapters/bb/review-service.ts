@@ -93,6 +93,11 @@ export function reviewService(deps: Deps) {
       if (!read.headSha || (shown && shown !== read.headSha)) throw new Error("STALE_HEAD");
       // GitHub keeps one pending review per person; a new review or line comment is refused while one is open.
       if (read.pendingReviewId && (action.kind === "review" || action.kind === "lineComment")) throw new Error("PENDING_REVIEW");
+      // The forge would refuse someone else's comment too; this keeps the preview from offering it at all.
+      if (action.kind === "deleteComment") {
+        const place = action.threadId === null ? read.timeline ?? [] : read.threads?.find(thread => thread.id === action.threadId)?.comments ?? [];
+        if (!place.some(comment => comment.id === action.commentId && comment.canDelete)) throw new Error("NOT_YOUR_COMMENT");
+      }
       return remember("pull", async () => {
         const current = await review.detail(number);
         if (current.headSha !== read.headSha) throw new Error("STALE_HEAD");

@@ -9,7 +9,7 @@ type Thread = PrDetailView["threads"][number];
  * agent left as drafts, to post (each after confirming), edit or discard.
  */
 export function ThreadView({thread, can, act, ask, showPath = true, drafts = [], onPost, onEdit, onDiscard}: {
-  thread: Thread; can: {reply: boolean; resolve: boolean}; act(action: PrAction): void; ask(): void; showPath?: boolean;
+  thread: Thread; can: {reply: boolean; resolve: boolean; delete?: boolean}; act(action: PrAction): void; ask(): void; showPath?: boolean;
   drafts?: AgentDraft[]; onPost?(draft: AgentDraft, resolve: boolean): void; onEdit?(draft: AgentDraft, body: string): Promise<void>; onDiscard?(draft: AgentDraft): Promise<void>;
 }) {
   const [reply, setReply] = useState("");
@@ -25,7 +25,9 @@ export function ThreadView({thread, can, act, ask, showPath = true, drafts = [],
       {thread.isPending && <span className="git-review-tag">Pending review</span>}
     </header>
     {thread.comments.map((comment, index) => <div key={comment.id || index} className="git-review-comment">
-      <div className="git-muted">{comment.author} · {comment.createdAt.slice(0, 16).replace("T", " ")}</div>
+      <div className="git-row git-muted">{comment.author} · {comment.createdAt.slice(0, 16).replace("T", " ")}
+        {comment.canDelete && can.delete && <button type="button" className="git-link-button" aria-label={"Delete " + comment.author + "'s comment"}
+          onClick={() => act({kind: "deleteComment", commentId: comment.id, threadId: thread.id, body: comment.body.slice(0, 8000)})}>Delete</button>}</div>
       <p className="git-review-body">{comment.body}</p>
     </div>)}
     {drafts.map(draft => <AgentDraftCard key={draft.commentId} draft={draft} canPost={live && can.reply} canResolve={live && can.resolve && thread.canToggleResolved && !thread.isResolved}

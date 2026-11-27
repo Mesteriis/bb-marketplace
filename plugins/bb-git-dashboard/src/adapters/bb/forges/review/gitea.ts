@@ -1,6 +1,6 @@
 import { partial } from "../../../../core/partial.ts";
 import type { PrAction } from "../../../../core/pulls/actions.ts";
-import type { Comment, PrDetail, Reviewer, Thread, TimelineEntry } from "../../../../core/pulls/detail.ts";
+import { ownComments, type Comment, type PrDetail, type Reviewer, type Thread, type TimelineEntry } from "../../../../core/pulls/detail.ts";
 import type { PrFile } from "../../../../core/pulls/diff.ts";
 import type { CheckStatus } from "../../../../core/pulls/github.ts";
 import type { PullReview } from "../../../../core/pulls/review-port.ts";
@@ -112,7 +112,9 @@ export function giteaReview(account: Account, token: string, path: string, send:
         commitCount: commits.length, myReviewOid: null,
         fromFork: !!text(object(object(raw.head).repo).full_name) && text(object(object(raw.head).repo).full_name) !== text(object(object(raw.base).repo).full_name),
       };
-      return ownLinks(account, detail);
+      // Gitea's comment DELETE answers 204 for a review comment without deleting it: only discussion comments are offered.
+      const own = ownComments(detail);
+      return ownLinks(account, {...own, threads: own.threads.map(thread => ({...thread, comments: thread.comments.map(comment => ({...comment, canDelete: false}))}))});
     },
     async files(number) {
       const [rows, diff] = await Promise.all([get("/pulls/" + number + "/files?limit=1000").then(array),
@@ -123,7 +125,7 @@ export function giteaReview(account: Account, token: string, path: string, send:
     },
     async act(number, action: PrAction, current) {
       const pull = "/pulls/" + number;
-      const write = (method: "POST" | "PATCH", target: string, body?: unknown) => http(repo + target, {method, ...(body === undefined ? {} : {body})});
+      const write = (method: "POST" | "PATCH" | "DELETE", target: string, body?: unknown) => http(repo + target, {method, ...(body === undefined ? {} : {body})});
       const anchor = (value: {path: string; line: number; side: "LEFT" | "RIGHT"; body: string}) =>
         ({path: value.path, body: value.body, ...(value.side === "RIGHT" ? {new_position: value.line, old_position: 0} : {old_position: value.line, new_position: 0})});
       switch (action.kind) {
@@ -139,6 +141,10 @@ export function giteaReview(account: Account, token: string, path: string, send:
         case "draft": await write("PATCH", pull, {title: action.draft ? "WIP: " + current.title.replace(draftPrefix, "") : current.title.replace(draftPrefix, "")}); break;
         case "state": await write("PATCH", pull, {state: action.open ? "open" : "closed"}); break;
         case "merge": await write("POST", pull + "/merge", {Do: action.method, head_commit_id: current.headSha}); break;
+        case "deleteComment":
+          if (action.threadId !== null) throw new Error("PROVIDER_UNSUPPORTED");
+          await write("DELETE", "/issues/comments/" + segment(action.commentId));
+          break;
       }
       return {outcome: "completed"};
     },

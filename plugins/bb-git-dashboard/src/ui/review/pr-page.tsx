@@ -84,7 +84,7 @@ export function PrPage({api, accountId, repo, number, onStep, revision = 0}: {ap
   const events = reviewEvents(detail.viewer, detail.author).filter(name => name === "COMMENT" || can[name === "APPROVE" ? "approve" : "requestChanges"]);
   const unresolved = detail.threads.filter(thread => !thread.isResolved);
   const failing = detail.checks.filter(check => check.status === "failing");
-  const threadCan = {reply: can.reply, resolve: can.resolve};
+  const threadCan = {reply: can.reply, resolve: can.resolve, delete: can.deleteComment};
 
   return <section className="git-review" aria-label={"Pull request " + detail.repo + " #" + detail.number}>
     <header className="git-review-head">
@@ -143,7 +143,9 @@ export function PrPage({api, accountId, repo, number, onStep, revision = 0}: {ap
         </form>}
       {detail.timeline.length === 0 && <p className="git-muted">No description or comments yet.</p>}
       {detail.timeline.map((entry, index) => <article key={index} className="git-review-comment">
-        <div className="git-muted">{entry.author}{entry.reviewState ? " · " + entry.reviewState.toLowerCase().replaceAll("_", " ") : ""} · {entry.createdAt.slice(0, 16).replace("T", " ")}</div>
+        <div className="git-row git-muted">{entry.author}{entry.reviewState ? " · " + entry.reviewState.toLowerCase().replaceAll("_", " ") : ""} · {entry.createdAt.slice(0, 16).replace("T", " ")}
+          {entry.canDelete && can.deleteComment && <button type="button" className="git-link-button" aria-label={"Delete " + entry.author + "'s comment"}
+            onClick={() => void act({kind: "deleteComment", commentId: entry.id, threadId: null, body: entry.body.slice(0, 8000)}, "Delete comment")}>Delete</button>}</div>
         {entry.body && <p className="git-review-body">{entry.body}</p>}
       </article>)}
       {can.comment && <form className="git-stack" onSubmit={formEvent => { formEvent.preventDefault(); if (comment.trim()) void act({kind: "comment", body: comment}, "Comment"); }}>
@@ -184,7 +186,7 @@ export function PrPage({api, accountId, repo, number, onStep, revision = 0}: {ap
       {!files ? <p className="git-muted" role="status">Loading files…</p> : files.length === 0 ? <p className="git-muted">No changed files.</p> :
         files.map(file => <FileDiff key={file.path} file={file} wrap={wrap} canComment={open && can.lineComment} can={threadCan}
           threads={detail.threads.filter(thread => thread.path === file.path || (file.previousPath !== null && thread.path === file.previousPath))}
-          act={action => void act(action, action.kind === "lineComment" ? "Line comment" : action.kind === "resolve" ? (action.resolved ? "Resolve" : "Unresolve") : "Reply")}
+          act={action => void act(action, action.kind === "lineComment" ? "Line comment" : action.kind === "resolve" ? (action.resolved ? "Resolve" : "Unresolve") : action.kind === "deleteComment" ? "Delete comment" : "Reply")}
           ask={thread => void ask({kind: "thread", threadId: thread.id})} onDraft={draft => setDrafts(previous => [...previous, draft])}/>)}
     </div>}
 
@@ -197,7 +199,7 @@ export function PrPage({api, accountId, repo, number, onStep, revision = 0}: {ap
     {tab === "Comments" && <div className="git-stack">
       {detail.threads.length === 0 && <p className="git-muted">No review threads.</p>}
       {detail.threads.map(thread => <ThreadView key={thread.id + ":" + thread.comments.length} thread={thread} can={threadCan}
-        act={action => void act(action, action.kind === "resolve" ? (action.resolved ? "Resolve" : "Unresolve") : "Reply")}
+        act={action => void act(action, action.kind === "resolve" ? (action.resolved ? "Resolve" : "Unresolve") : action.kind === "deleteComment" ? "Delete comment" : "Reply")}
         ask={() => void ask({kind: "thread", threadId: thread.id})}
         drafts={agentDrafts.filter(draft => draft.externalId === thread.id)}
         onPost={(draft, resolve) => void act({kind: "reply", threadId: thread.id, body: draft.body}, resolve ? "Post the agent's reply, then resolve" : "Post the agent's reply", async () => {

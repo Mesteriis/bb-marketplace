@@ -44,3 +44,6 @@
 .git-ws .git-pr-menu-list button:hover, .git-ws .git-pr-menu-list button:focus { background: color-mix(in srgb, var(--git-focus) 14%, transparent); }
 .git-ws .git-branch-copy { padding: 0; }
 .git-ws .git-pr-menu > [role="dialog"] { position: absolute; right: 0; top: 100%; z-index: 6; width: min(32em, 90vw); max-height: 60vh; overflow: auto; background: var(--background); }
+/* A quiet action on a comment's byline: Delete. */
+.git-ws .git-link-button { margin-left: auto; border: 0; background: none; padding: 0 4px; font: inherit; color: var(--muted-foreground); text-decoration: underline; cursor: pointer; }
+.git-ws .git-link-button:hover, .git-ws .git-link-button:focus-visible { color: var(--destructive); }

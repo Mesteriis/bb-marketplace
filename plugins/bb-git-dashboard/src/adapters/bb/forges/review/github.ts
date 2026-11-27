@@ -1,7 +1,7 @@
 import type { PrAction } from "../../../../core/pulls/actions.ts";
 import { toFiles, type RestFile } from "../../../../core/pulls/diff.ts";
 import { toDetail, type RawDetail } from "../../../../core/pulls/github-detail.ts";
-import { DRAFT_PR_MUTATION, PR_DETAIL_QUERY, READY_PR_MUTATION, REPLY_MUTATION, resolveThreadMutation } from "../../../../core/pulls/queries.ts";
+import { deleteCommentMutation, DRAFT_PR_MUTATION, PR_DETAIL_QUERY, READY_PR_MUTATION, REPLY_MUTATION, resolveThreadMutation } from "../../../../core/pulls/queries.ts";
 import type { PullReview } from "../../../../core/pulls/review-port.ts";
 import type { Account } from "../../../../core/providers.ts";
 import { forgePrefix } from "../../forge-provider.ts";
@@ -54,6 +54,7 @@ export function githubReview(account: Account, token: string, path: string, send
         case "editBody": await write("PATCH", pull, {body: action.body}); break;
         case "draft": await graphql(action.draft ? DRAFT_PR_MUTATION : READY_PR_MUTATION, {prId: current.id}, true); break;
         case "state": await write("PATCH", pull, {state: action.open ? "open" : "closed"}); break;
+        case "deleteComment": await graphql(deleteCommentMutation(action.threadId !== null), {id: action.commentId}, true); break;
         case "merge": {
           const {payload} = await write("PUT", pull + "/merge", {sha: current.headSha, merge_method: action.method});
           if (object(payload).merged !== true) throw new Error("OUTCOME_UNKNOWN");

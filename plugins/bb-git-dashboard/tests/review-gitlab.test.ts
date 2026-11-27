@@ -136,3 +136,12 @@ test("a complete read has no notices", async () => {
   const {send} = gitlab(routes);
   assert.deepEqual((await gitlabReview(account, token, "group/sub/app", send).detail(7)).notices, []);
 });
+
+test("a deleted comment is a DELETE of its note", async () => {
+  const gone = () => new Response(null, {status: 204});
+  const {send, calls} = gitlab({["DELETE " + mr + "/notes/41"]: gone, ["DELETE " + mr + "/notes/42"]: gone});
+  const api = gitlabReview(account, token, "group/sub/app", send);
+  await api.act(7, {kind: "deleteComment", commentId: "41", threadId: null, body: "x"}, current);
+  await api.act(7, {kind: "deleteComment", commentId: "42", threadId: "d1", body: "x"}, current);
+  assert.deepEqual(calls.map(call => [call.method, call.path.replace(mr, "MR")]), [["DELETE", "MR/notes/41"], ["DELETE", "MR/notes/42"]]);
+});

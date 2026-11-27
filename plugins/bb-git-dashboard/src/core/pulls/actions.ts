@@ -25,6 +25,8 @@ export const prAction = z.discriminatedUnion("kind", [
   z.object({kind: z.literal("draft"), draft: z.boolean()}),
   z.object({kind: z.literal("state"), open: z.boolean()}),
   z.object({kind: z.literal("merge"), method: z.enum(["merge", "squash", "rebase"])}),
+  /** One of the viewer's own comments: on the discussion (`threadId` null) or in a review thread. */
+  z.object({kind: z.literal("deleteComment"), commentId: z.string().min(1).max(200), threadId: z.string().min(1).max(200).nullable(), body: z.string().max(8000)}),
 ]);
 export type PrAction = z.infer<typeof prAction>;
 type About = {number: number; repo: string; headRefName: string; baseRefName: string};
@@ -51,5 +53,6 @@ export function describePrAction(pr: About, action: PrAction): string[] {
     case "draft": return [action.draft ? "Convert " + name + " to a draft" : "Mark " + name + " ready for review"];
     case "state": return [(action.open ? "Reopen " : "Close ") + name];
     case "merge": return [methods[action.method] + " " + name + ": " + pr.headRefName + " into " + pr.baseRefName];
+    case "deleteComment": return ["Delete your comment" + (action.threadId ? " in a review thread" : "") + " on " + name, action.body];
   }
 }

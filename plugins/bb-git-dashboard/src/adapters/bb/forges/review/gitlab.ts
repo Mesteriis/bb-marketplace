@@ -1,6 +1,6 @@
 import { partial } from "../../../../core/partial.ts";
 import type { PrAction } from "../../../../core/pulls/actions.ts";
-import type { Comment, PrDetail, Reviewer, Thread, TimelineEntry } from "../../../../core/pulls/detail.ts";
+import { ownComments, type Comment, type PrDetail, type Reviewer, type Thread, type TimelineEntry } from "../../../../core/pulls/detail.ts";
 import type { PrFile } from "../../../../core/pulls/diff.ts";
 import type { CheckStatus } from "../../../../core/pulls/github.ts";
 import type { PullReview } from "../../../../core/pulls/review-port.ts";
@@ -107,7 +107,7 @@ export function gitlabReview(account: Account, token: string, path: string, send
         fromFork: raw.source_project_id !== undefined && raw.source_project_id !== raw.target_project_id,
         diffRefs: sha(refs.base_sha) && sha(refs.start_sha) && head ? {base: refs.base_sha as string, head, start: refs.start_sha as string} : null,
       };
-      return ownLinks(account, detail);
+      return ownLinks(account, ownComments(detail));
     },
     async files(number) {
       return (await pages(mr(number) + "/diffs")).map((row): PrFile => {
@@ -129,6 +129,8 @@ export function gitlabReview(account: Account, token: string, path: string, send
       };
       switch (action.kind) {
         case "comment": await http(target + "/notes", {method: "POST", body: {body: action.body}}); break;
+        // A note in a discussion is a note of the merge request too: one endpoint deletes either.
+        case "deleteComment": await http(target + "/notes/" + segment(action.commentId), {method: "DELETE"}); break;
         case "reply": await http(target + "/discussions/" + segment(action.threadId) + "/notes", {method: "POST", body: {body: action.body}}); break;
         case "resolve": await http(target + "/discussions/" + segment(action.threadId), {method: "PUT", body: {resolved: action.resolved}}); break;
         case "lineComment": await http(target + "/discussions", {method: "POST", body: {body: action.body, position: position(action)}}); break;
