@@ -377,10 +377,22 @@ test("stages a source outside /data and a delete even with delete rights", async
   } finally { await bb.dispose(); }
 });
 
-function remoteFixture() {
+/**
+ * BB 0.50.1 delivers a refusal of another plugin's RPC through `bb.sdk.plugins.callRpc` as the SDK client's
+ * BbHttpError ("HTTP <status>: <message>", code = the refusal class), not as experimental_PluginRpcCallError.
+ */
+class BbHttpErrorLike extends Error {
+  constructor(readonly status: number, readonly code: string, message: string) {
+    super(`HTTP ${status}: ${message}`);
+    this.name = "BbHttpError";
+  }
+}
+const REFUSAL_STATUS = { forbidden: 403, not_found: 404, conflict: 409, invalid: 400 } as const;
+
+function remoteFixture(options: { hostKey?: "trusted" | "unknown" | "changed"; refusalAs?: "sdk" | "http" } = {}) {
   const profileId = "5b568675-f842-4a96-83e0-78ae53d96024";
   const endpoint = "sftp:" + profileId;
-  const remote = new RemoteHubMock();
+  const remote = new RemoteHubMock({ hostKey: options.hostKey ?? "trusted" });
   remote.seedDir("/data");
   remote.seedDir("/data/out");
   remote.seedFile("/data/a", "fixture");
@@ -396,13 +408,79 @@ function remoteFixture() {
         return "op" in output && output.op === "realpath" ? { op: "realpath", path: { text: "/home/test" } } : output;
       } catch (error) {
         if (error instanceof SftpRefusal) {
-          throw new experimental_PluginRpcCallError({ code: SFTP_REFUSALS[error.code], message: error.message });
+          const code = SFTP_REFUSALS[error.code];
+          if (options.refusalAs === "http") throw new BbHttpErrorLike(REFUSAL_STATUS[code], code, error.message);
+          throw new experimental_PluginRpcCallError({ code, message: error.message });
         }
         throw error;
       }
     },
   };
 }
+
+for (const refusalAs of ["sdk", "http"] as const) {
+  for (const hostKey of ["unknown", "changed"] as const) {
+    test(`reports a ${hostKey} SFTP host key as host_key_rejected (refusal as ${refusalAs})`, async () => {
+      const fixture = remoteFixture({ hostKey, refusalAs });
+      const bb = await backend(undefined, fixture.callRpc);
+      try {
+        await expect(bb.rpc("endpoint_home", { endpoint: fixture.endpoint }))
+          .rejects.toMatchObject({
+            code: "invalid",
+            message: '{"code":"host_key_rejected","message":"Remote Hub did not trust the host key","retryable":false}',
+          });
+      } finally { await bb.dispose(); }
+    });
+  }
+}
+
+test("keeps a missing consent apart from a transport failure when BB reports refusals over HTTP", async () => {
+  const fixture = remoteFixture({ refusalAs: "http" });
+  const bb = await backend(undefined, async (args) => {
+    if (args.method === "hub_sftp_open") throw new BbHttpErrorLike(403, "forbidden", "consent_revoked: grant revoked");
+    return fixture.callRpc(args);
+  });
+  try {
+    await expect(bb.rpc("endpoint_home", { endpoint: fixture.endpoint }))
+      .rejects.toMatchObject({
+        code: "forbidden",
+        message: '{"code":"consent_required","message":"Remote Hub did not grant access","retryable":false}',
+      });
+  } finally { await bb.dispose(); }
+});
+
+test("treats an HTTP failure whose class does not match the refusal as a transport failure", async () => {
+  const fixture = remoteFixture({ refusalAs: "http" });
+  const bb = await backend(undefined, async (args) => {
+    if (args.method === "hub_sftp_open") throw new BbHttpErrorLike(400, "invalid", "host_key_unknown: wrong class");
+    return fixture.callRpc(args);
+  });
+  try {
+    await expect(bb.rpc("endpoint_home", { endpoint: fixture.endpoint })).rejects.toMatchObject({
+      code: "invalid",
+      message: '{"code":"connection_failed","message":"SFTP home directory is unavailable","retryable":true}',
+    });
+  } finally { await bb.dispose(); }
+});
+
+test("reports a host key that changes after the home loaded as host_key_rejected on a listing", async () => {
+  const fixture = remoteFixture({ refusalAs: "http" });
+  let changed = false;
+  const bb = await backend(undefined, async (args) => {
+    if (changed && args.method === "hub_sftp_op") throw new BbHttpErrorLike(404, "not_found", "channel_closed: generation changed");
+    if (changed && args.method === "hub_sftp_open") throw new BbHttpErrorLike(403, "forbidden", "host_key_changed: key differs");
+    return fixture.callRpc(args);
+  });
+  try {
+    await bb.rpc("endpoint_home", { endpoint: fixture.endpoint });
+    changed = true;
+    await expect(bb.rpc("dir_list", { ref: { endpoint: fixture.endpoint, path: parsePosix("/data") }, cursor: null, limit: 10 }))
+      .rejects.toMatchObject({
+        code: "invalid",
+        message: '{"code":"host_key_rejected","message":"The server\'s host key is not trusted; decide it on the Remote Hub page","retryable":false}',
+      });
+  } finally { await bb.dispose(); }
+});
 
 test("coalesces the first concurrent SFTP home loads", async () => {
   const fixture = remoteFixture();
