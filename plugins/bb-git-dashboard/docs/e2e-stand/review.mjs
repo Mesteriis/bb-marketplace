@@ -41,7 +41,7 @@ try {
   check("the failing check offers Fix with agent", await visible(pr.locator("li", { hasText: "ci/test" }).getByRole("button", { name: "Fix with agent" })));
   await pr.getByRole("navigation", { name: "Pull request sections" }).getByRole("button", { name: /^Files/ }).click();
   check("the review thread sits under its line", await visible(pr.locator(".git-review-diff .git-review-thread", { hasText: "wrold?" })));
-  await pr.getByRole("button", { name: "Comment on line 2", exact: true }).click();
+  await pr.getByRole("region", { name: "src/greeting.txt", exact: true }).getByRole("button", { name: "Comment on line 2", exact: true }).click();
   await pr.getByRole("textbox", { name: "Line comment" }).fill("Should read world.");
   await pr.locator(".git-review-composer").getByRole("button", { name: "Comment", exact: true }).click();
   check("a line comment is previewed with its place", await confirm(page, "Comment on src/greeting.txt line 2 of stand/beta #3"));
@@ -83,6 +83,8 @@ try {
   check("and is pinned to the reviewed head", approve?.body?.sha === "d".repeat(40), approve);
 
   await page.getByRole("button", { name: "My PRs" }).click();
+  // My PRs comes back on the tab it was left on (Review requested): the draft is on Open.
+  await page.getByRole("navigation", { name: "Pull request tabs" }).getByRole("button", { name: /^Open/ }).click();
   await page.locator(".git-inbox-item", { hasText: "Follow-up on retries" }).locator("a").first().click();
   const draft = page.getByRole("region", { name: "Pull request stand/gamma #6" });
   await draft.getByRole("button", { name: "Ready for review" }).click({ timeout: 20000 });

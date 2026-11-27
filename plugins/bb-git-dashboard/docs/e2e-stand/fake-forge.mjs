@@ -24,7 +24,7 @@ const workflow = "on:\n  push:\n  workflow_dispatch:\n    inputs:\n      outcome
 const issue = (number, title, login, state, merged) => ({id: 500 + number, number, title, state, html_url: origin + "/stand/beta/pulls/" + number,
   user: {login}, repository: {full_name: "stand/beta"}, created_at: "2026-11-27T09:0" + number + ":00Z", updated_at: "2026-11-27T11:0" + number + ":00Z",
   closed_at: state === "closed" ? "2026-11-27T10:00:00Z" : null, pull_request: {merged, merged_at: merged ? "2026-11-27T10:00:00Z" : null, draft: false}});
-const inbox = {created_open: [issue(3, "Add greeting check", "stand", "open", false)], review_requested_open: [issue(4, "Tidy README", "alice", "open", false)],
+const inbox = {created_open: [issue(3, "[ABC-12] Add greeting check", "stand", "open", false)], review_requested_open: [issue(4, "Tidy README", "alice", "open", false)],
   created_closed: [issue(1, "Initial import", "stand", "closed", true)]};
 const pulls = {3: {mergeable: false, additions: 12, deletions: 3, head: {ref: "greeting", sha: "e".repeat(40)}},
   4: {mergeable: true, additions: 2, deletions: 2, head: {ref: "readme", sha: "f".repeat(40)}}};
@@ -41,6 +41,8 @@ createServer({cert: readFileSync(cert), key: readFileSync(key)}, (req, res) => {
     if (req.method !== "GET") {
       appendFileSync(log, JSON.stringify({method: req.method, path, body: body ? JSON.parse(body) : null}) + "\n");
       if (/\/actions\/(workflows\/[^/]+\/dispatches|runs\/\d+\/(rerun|rerun-failed-jobs|cancel))$/.test(path)) return json(res, 204);
+      // Deleting one's own discussion comment (pr-parity.mjs).
+      if (req.method === "DELETE" && /^\/api\/v1\/repos\/stand\/beta\/issues\/comments\/\d+$/.test(path)) return json(res, 204);
       // Pull request and issue writes of the review probe.
       if (/^\/api\/v1\/repos\/stand\/beta\/(issues(\/\d+\/comments)?|pulls\/\d+(\/(reviews|requested_reviewers|merge|comments\/\d+\/replies))?|issues\/\d+)$|^\/api\/v1\/repos\/stand\/beta\/pulls\/comments\/\d+\/(resolve|unresolve)$/.test(path))
         return json(res, 201, {id: 99, number: 9});
@@ -59,17 +61,20 @@ createServer({cert: readFileSync(cert), key: readFileSync(key)}, (req, res) => {
     const pull = /^\/api\/v1\/repos\/stand\/beta\/pulls\/(\d+)$/.exec(path);
     if (pull && pulls[pull[1]]) {
       const found = inbox.created_open.concat(inbox.review_requested_open).find(item => item.number === Number(pull[1]));
-      return json(res, 200, {id: 900 + Number(pull[1]), number: Number(pull[1]), title: found?.title ?? "", body: "Checks the greeting.", state: "open", merged: false,
+      return json(res, 200, {id: 900 + Number(pull[1]), number: Number(pull[1]), title: found?.title ?? "", body: Number(pull[1]) === 3 ? "Checks the greeting for ABC-12, **carefully**. See https://acme.atlassian.net/browse/ABC-1." : "Checks the greeting.", state: "open", merged: false,
         user: {login: found?.user.login ?? "stand"}, html_url: found?.html_url, changed_files: 1, labels: [], requested_reviewers: [], created_at: found?.created_at,
         ...pulls[pull[1]], base: {ref: "main", repo: {default_branch: "main"}}});
     }
-    if (path === r + "/pulls/3/files") return json(res, 200, [{filename: "src/greeting.txt", status: "changed", additions: 1, deletions: 1}]);
+    if (path === r + "/pulls/3/files") return json(res, 200, [{filename: "src/greeting.txt", status: "changed", additions: 1, deletions: 1},
+      {filename: "src/greeting.ts", status: "changed", additions: 1, deletions: 1}]);
     if (path === r + "/pulls/3.diff") { res.writeHead(200, {"content-type": "text/plain"});
-      return res.end("diff --git a/src/greeting.txt b/src/greeting.txt\n--- a/src/greeting.txt\n+++ b/src/greeting.txt\n@@ -1,2 +1,2 @@\n hello\n-world\n+wrold\n"); }
-    if (path === r + "/issues/3/comments") return json(res, 200, [{id: 31, body: "Looks close.", user: {login: "alice"}, created_at: "2026-11-27T10:30:00Z", html_url: origin + "/stand/beta/pulls/3#c31"}]);
+      return res.end("diff --git a/src/greeting.txt b/src/greeting.txt\n--- a/src/greeting.txt\n+++ b/src/greeting.txt\n@@ -1,2 +1,2 @@\n hello\n-world\n+wrold\n" +
+        "diff --git a/src/greeting.ts b/src/greeting.ts\n--- a/src/greeting.ts\n+++ b/src/greeting.ts\n@@ -1,2 +1,2 @@\n export const greeting = \"hello\";\n-const target = \"world\";\n+const target = \"wrold\";\n"); }
+    if (path === r + "/issues/3/comments") return json(res, 200, [{id: 31, body: "Looks close.", user: {login: "alice"}, created_at: "2026-11-27T10:30:00Z", html_url: origin + "/stand/beta/pulls/3#c31"},
+      {id: 32, body: "My own note.", user: {login: "stand"}, created_at: "2026-11-27T10:35:00Z", html_url: origin + "/stand/beta/pulls/3#c32"}]);
     if (path === r + "/pulls/3/reviews") return json(res, 200, [{id: 41, user: {login: "alice"}, state: "REQUEST_CHANGES", body: "Typo on line 2.", submitted_at: "2026-11-27T10:40:00Z"}]);
     if (path === r + "/pulls/3/reviews/41/comments") return json(res, 200, [{id: 42, body: "wrold?", user: {login: "alice"}, path: "src/greeting.txt", position: 2,
-      original_position: 2, commit_id: "e".repeat(40), created_at: "2026-11-27T10:40:00Z", html_url: origin + "/stand/beta/pulls/3#c42", resolver: null}]);
+      original_position: 2, diff_hunk: "@@ -1,2 +1,2 @@\n hello\n-world\n+wrold", commit_id: "e".repeat(40), created_at: "2026-11-27T10:40:00Z", html_url: origin + "/stand/beta/pulls/3#c42", resolver: null}]);
     if (path === r + "/pulls/3/commits") return json(res, 200, [{sha: "e".repeat(40), commit: {message: "Check the greeting", author: {name: "stand", date: "2026-11-27T09:30:00Z"}}}]);
     if (path === r + "/commits/" + "e".repeat(40) + "/status") return json(res, 200, {state: "failure", statuses: [{context: "ci/test", status: "failure", target_url: origin + "/stand/beta/actions/runs/2"}]});
     if (path === r + "/commits/" + "f".repeat(40) + "/status") return json(res, 200, {state: "success", statuses: [{context: "ci/test", status: "success"}]});
