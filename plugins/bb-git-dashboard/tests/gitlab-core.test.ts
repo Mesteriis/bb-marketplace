@@ -5,7 +5,9 @@ import { cleanLog, errorLine } from "../src/core/ci/log.ts";
 import { gitlabDispatchSpec } from "../src/core/ci/dispatch.ts";
 
 test("GitLab pipeline and job statuses map to the common states", () => {
-  for (const status of ["created", "waiting_for_resource", "preparing", "pending", "scheduled", "manual"]) assert.equal(gitlabState(status), "queued", status);
+  for (const status of ["created", "waiting_for_resource", "preparing", "pending", "scheduled"]) assert.equal(gitlabState(status), "queued", status);
+  // Waiting for someone to start a manual job (a deploy gate) is not a queue: the pipeline stopped there.
+  assert.equal(gitlabState("manual"), "neutral");
   assert.equal(gitlabState("running"), "running");
   assert.equal(gitlabState("success"), "success");
   assert.equal(gitlabState("failed"), "failure");

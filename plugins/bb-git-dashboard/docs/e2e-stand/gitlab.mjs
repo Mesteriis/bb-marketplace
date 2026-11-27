@@ -51,6 +51,7 @@ try {
   check("section markers and colours are removed", !/section_(start|end)|\u001b|\[0K/.test(logText));
   await page.screenshot({ path: out + "/gitlab-run.png", fullPage: true });
 
+  check("Re-run all is not offered on GitLab", await page.getByRole("button", { name: "Re-run all jobs" }).count() === 0);
   await page.getByRole("button", { name: "Re-run failed jobs" }).click();
   const dialog = page.getByRole("dialog");
   check("retry asks for confirmation first", await visible(dialog.getByText("Re-run failed jobs of Pipeline #2")) && writes().length === 0);

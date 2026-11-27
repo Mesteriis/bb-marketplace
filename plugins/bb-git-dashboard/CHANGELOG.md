@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.0 — 2026-11-27
+
+- **GitLab** (gitlab.com and self-managed, including a non-standard port): connect an account with a personal access token; the wizard offers GitLab self-managed for other servers. Member projects in the catalog, nested groups included.
+- GitLab merge requests: list, details with the diff, discussion without system notes and the head pipeline; create, comment, request a reviewer (a server that keeps one reviewer reports it), reopen, and merge pinned to the reviewed head. A server older than GitLab 15.7 shows the diff as unsupported. A merge request from a fork is marked as such.
+- GitLab CI/CD in the Actions tab: pipelines with All, Active and Failed filters; jobs named by stage; the job trace while the job runs, opened at the job's own `ERROR:` line rather than the runner's closing "Job failed" line, with section markers and colours removed; Run pipeline with the variables `.gitlab-ci.yml` describes (`description` and `options`, after an optional `spec:` header); retry failed jobs and cancel, each after confirmation; GitLab has no re-run of all jobs, and the tab says so instead of starting a new pipeline on another commit. A pipeline stopped at a manual job is shown as stopped, not queued. A failed job states GitLab's failure reason; large pipelines and variable lists are read page by page. A CI configuration kept in another project gives no form; the pipeline still runs with its defaults.
+- GitLab issues with labels, and CI/CD variables by name, type, protection, masking and environment. Variable values are never read out; without the Maintainer role the tab says so.
+- The test stand serves one run; reusing a stand is refused, as its tokens stay bound to the previous run's servers.
+
 ## 0.4.0 — 2026-11-27
 
 - **History** tab: the commit graph over all branches, tags and remotes with labels for HEAD, branches and tags; uncommitted changes on top; a commit's files and patches (merges against their first parent); older commits on demand; refreshes when refs or the working tree change. Git runs read-only on the copy's own host. The lane layout and Git output parsing come from plugins/git-history (MIT).

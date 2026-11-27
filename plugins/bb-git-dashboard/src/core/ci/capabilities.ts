@@ -5,7 +5,7 @@ const limitations: Record<Kind, Partial<Record<CiOperation, string>>> = {
   github: {liveLog: "GitHub publishes a job log when the job ends."},
   gitea: {},
   azure: {dispatchInputs: "Azure runtime parameters are not supported; the pipeline runs with its defaults."},
-  gitlab: {},
+  gitlab: {rerunAll: "GitLab retries failed jobs only; start a new pipeline with Run pipeline."},
 };
 
 export function ciLimitation(kind: Kind, operation: CiOperation): string | null {

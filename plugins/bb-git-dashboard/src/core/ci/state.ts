@@ -29,9 +29,12 @@ export function azureState(status: string, result: string | null): CiState {
   return "neutral";
 }
 
-/** GitLab pipeline and job status. A cancellation in progress still runs. */
+/**
+ * GitLab pipeline and job status. A cancellation in progress still runs; `manual` waits for someone to start a job
+ * (a deploy gate), so the pipeline has stopped rather than queued.
+ */
 export function gitlabState(status: string): CiState {
-  if (["created", "waiting_for_resource", "preparing", "pending", "scheduled", "manual"].includes(status)) return "queued";
+  if (["created", "waiting_for_resource", "preparing", "pending", "scheduled"].includes(status)) return "queued";
   if (status === "running" || status === "canceling") return "running";
   if (status === "success" || status === "skipped") return status;
   if (status === "failed") return "failure";

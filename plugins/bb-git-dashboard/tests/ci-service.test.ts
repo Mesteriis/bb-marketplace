@@ -56,7 +56,8 @@ test("dispatching an unknown workflow is refused before anything is written", as
 test("GitLab copies read pipelines; unknown copies are reported, not guessed", async () => {
   const gitlab = await setup("gitlab").service.runs("c1", "all", 1);
   assert.equal(gitlab.forge, "gitlab");
-  assert.deepEqual(gitlab.limitations, {});
+  assert.deepEqual(gitlab.limitations, {rerunAll: "GitLab retries failed jobs only; start a new pipeline with Run pipeline."});
+  assert.equal(gitlab.operations.rerunAll, false);
   await assert.rejects(setup().service.runs("other", "all", 1), {message: "NOT_FOUND"});
 });
 

@@ -51,20 +51,21 @@ export function gitlabProvider(account: Account, http: Http): Provider {
     },
     repository: async path => gitlabRepo(account, (await http(gitlabProject(pathOf(path)))).payload),
     async pulls(repo, page) {
-      const rows = array((await http(project(repo) + "/merge_requests?state=all&order_by=updated_at&per_page=" + size + "&page=" + page)).payload);
-      return {items: rows.map(row => toPull(row, repo)), more: rows.length === size};
+      const {payload, headers} = await http(project(repo) + "/merge_requests?state=all&order_by=updated_at&per_page=" + size + "&page=" + page);
+      return {items: array(payload).map(row => toPull(row, repo)), more: Boolean(headers.get("x-next-page"))};
     },
     pull: getPull,
     branch: getBranch,
     async details(repo, number) {
       const issues: string[] = [];
-      const load = async (kind: string, path: string) => {
-        try { return (await http(path)).payload; }
+      const load = async (kind: string, path: string, unsupported = false) => {
+        try { return (await http(path, {unsupported})).payload; }
         catch (error) { issues.push(kind + " · " + (error instanceof Error ? error.message : "PROVIDER_UNAVAILABLE")); return null; }
       };
       const [current, diffs, notes] = await Promise.all([
         http(mr(repo, number)).then(result => object(result.payload)),
-        load("Diff", mr(repo, number) + "/diffs?per_page=100"),
+        // `/diffs` arrived in GitLab 15.7; an older server answers 404.
+        load("Diff", mr(repo, number) + "/diffs?per_page=100", true),
         load("Comments", mr(repo, number) + "/notes?sort=asc&per_page=50"),
       ]);
       const diff = diffs === null ? null : array(diffs).map(object).map(file => {
@@ -102,7 +103,9 @@ export function gitlabProvider(account: Account, http: Http): Provider {
           if (!user || !Number.isSafeInteger(user.id)) throw new Error("PROVIDER_REJECTED");
           // GitLab replaces the reviewer list, so the current reviewers are sent along.
           const existing = array(raw.reviewers).map(object).map(row => row.id).filter(Number.isSafeInteger) as number[];
-          await http(mr(repo, action.number), {method: "PUT", body: {reviewer_ids: [...new Set([...existing, user.id as number])]}});
+          const {payload} = await http(mr(repo, action.number), {method: "PUT", body: {reviewer_ids: [...new Set([...existing, user.id as number])]}});
+          // GitLab Free keeps one reviewer and drops the rest without an error.
+          if (!array(object(payload).reviewers).some(row => object(row).id === user.id)) throw new Error("PROVIDER_UNSUPPORTED");
           break;
         }
         case "reopen":

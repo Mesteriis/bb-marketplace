@@ -30,13 +30,17 @@ export async function gitlabFeatures(repo: Repo, section: RepositorySection, htt
       updated: text(row.updated_at) || null, url: link(row.web_url, repo),
     }))};
   }
-  let payload: unknown;
-  try { payload = (await http(root + "/variables?per_page=100")).payload; }
-  catch (error) {
+  const rows: Record<string, unknown>[] = [];
+  try {
+    for (let page = 1; page <= 10; page++) {
+      const {payload, headers} = await http(root + "/variables?per_page=100&page=" + page);
+      rows.push(...array(payload).map(object).filter(row => text(row.key)));
+      if (!headers.get("x-next-page")) break;
+    }
+  } catch (error) {
     if (error instanceof Error && error.message === "PROVIDER_DENIED") return {items: [], notice: "CI/CD variables need the Maintainer role in this project."};
     throw error;
   }
-  const rows = array(payload).map(object).filter(row => text(row.key));
   return {notice: "Values are not shown.", items: rows.map((row): Row => {
     const kind = row.variable_type === "file" ? "File" : "Variable";
     const scope = text(row.environment_scope) || "*";

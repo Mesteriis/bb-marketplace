@@ -72,7 +72,7 @@ test("writes go to the merge request endpoints with the expected head", async ()
     "GET /api/v4/projects/42/merge_requests/7": () => Response.json({...mr, reviewers: [{id: 3}]}),
     "GET /api/v4/users": () => Response.json([{id: 5, username: "rev"}]),
     "POST /api/v4/projects/42/merge_requests": ok, "POST /api/v4/projects/42/merge_requests/7/notes": ok,
-    "PUT /api/v4/projects/42/merge_requests/7": ok, "PUT /api/v4/projects/42/merge_requests/7/merge": ok,
+    "PUT /api/v4/projects/42/merge_requests/7": () => Response.json({iid: 7, state: "opened", reviewers: [{id: 3}, {id: 5}]}), "PUT /api/v4/projects/42/merge_requests/7/merge": ok,
   });
   const api = provider(account, token, send);
   const sha = "a".repeat(40);
@@ -115,4 +115,25 @@ test("a self-managed GitLab on its own port is checked through /api/v4/user", as
     username: "", token: "fixture-token-value"}, "gl", send);
   assert.equal(result.username, "octo");
   assert.deepEqual(paths, ["gitlab.example.org:8443/api/v4/user", "gitlab.example.org:8443/api/v4/projects"]);
+});
+
+test("a merge request page is the last one when GitLab names no next page", async () => {
+  const many = Array.from({length: 40}, (_, index) => ({...mr, iid: index + 1}));
+  const {send} = gitlab({"GET /api/v4/projects/42/merge_requests": () => Response.json(many, {headers: {"x-next-page": ""}})});
+  assert.equal((await provider(account, token, send).pulls(repo, 1)).more, false);
+});
+
+test("a server without the diffs endpoint is reported as unsupported", async () => {
+  const {send} = gitlab({"GET /api/v4/projects/42/merge_requests/7": () => Response.json(mr), "GET /api/v4/projects/42/merge_requests/7/notes": () => Response.json([])});
+  assert.deepEqual((await provider(account, token, send).details(repo, 7)).issues, ["Diff · PROVIDER_UNSUPPORTED"]);
+});
+
+test("a reviewer the server did not keep is reported, not counted as added", async () => {
+  const {send} = gitlab({
+    "GET /api/v4/projects/42/merge_requests/7": () => Response.json({...mr, reviewers: [{id: 3}]}),
+    "GET /api/v4/users": () => Response.json([{id: 5, username: "rev"}]),
+    // GitLab Free keeps one reviewer.
+    "PUT /api/v4/projects/42/merge_requests/7": () => Response.json({iid: 7, state: "opened", reviewers: [{id: 3}]}),
+  });
+  await assert.rejects(provider(account, token, send).mutate(repo, {kind: "review", number: 7, expected: "a".repeat(40), reviewer: "rev"}), {message: "PROVIDER_UNSUPPORTED"});
 });

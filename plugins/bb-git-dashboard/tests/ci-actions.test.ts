@@ -8,7 +8,8 @@ import type { Run } from "../src/core/ci/model.ts";
 test("each forge states which CI operations it offers", () => {
   assert.deepEqual(ciCapabilities("github"), {dispatch: true, dispatchInputs: true, rerunFailed: true, rerunAll: true, cancel: true, liveLog: false});
   assert.deepEqual(ciCapabilities("azure"), {dispatch: true, dispatchInputs: false, rerunFailed: true, rerunAll: true, cancel: true, liveLog: true});
-  assert.deepEqual(ciCapabilities("gitlab"), {dispatch: true, dispatchInputs: true, rerunFailed: true, rerunAll: true, cancel: true, liveLog: true});
+  assert.deepEqual(ciCapabilities("gitlab"), {dispatch: true, dispatchInputs: true, rerunFailed: true, rerunAll: false, cancel: true, liveLog: true});
+  assert.equal(ciLimitation("gitlab", "rerunAll"), "GitLab retries failed jobs only; start a new pipeline with Run pipeline.");
   assert.equal(ciLimitation("github", "liveLog"), "GitHub publishes a job log when the job ends.");
   assert.equal(ciLimitation("azure", "dispatchInputs"), "Azure runtime parameters are not supported; the pipeline runs with its defaults.");
   assert.equal(ciLimitation("gitea", "cancel"), null);

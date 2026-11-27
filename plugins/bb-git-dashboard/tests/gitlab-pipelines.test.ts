@@ -64,19 +64,18 @@ test("the Run pipeline form reads the CI file at the chosen ref", async () => {
   assert.deepEqual(await api.dispatchSpec(external, "main"), {dispatchable: true, inputs: []});
 });
 
-test("running, retrying, re-running and cancelling use the pipeline API", async () => {
+test("running, retrying and cancelling use the pipeline API; re-running all is not offered", async () => {
   const ok = () => Response.json({id: 502});
   const {send, calls} = gitlab({["POST " + base + "/pipeline"]: ok, ["POST " + base + "/pipelines/501/retry"]: ok,
     ["POST " + base + "/pipelines/501/cancel"]: ok, ["GET " + base + "/pipelines/501"]: () => Response.json(pipeline)});
   const api = gitlabPipelines(account, repo, token, send);
   await api.dispatch({id: "pipeline", name: ".gitlab-ci.yml", path: ".gitlab-ci.yml"}, "main", {DEPLOY_ENV: "production"});
   await api.rerun("501", true);
-  await api.rerun("501", false);
+  await assert.rejects(api.rerun("501", false), {message: "PROVIDER_UNSUPPORTED"});
   await api.cancel("501");
   assert.deepEqual(calls.filter(call => call.method === "POST").map(call => [call.path, call.body]), [
     [base + "/pipeline", {ref: "main", variables: [{key: "DEPLOY_ENV", value: "production"}]}],
     [base + "/pipelines/501/retry", undefined],
-    [base + "/pipeline", {ref: "main", variables: []}],
     [base + "/pipelines/501/cancel", undefined],
   ]);
 });
@@ -84,4 +83,26 @@ test("running, retrying, re-running and cancelling use the pipeline API", async 
 test("a failed job explains itself through its failure reason", async () => {
   const {send} = gitlab({["GET " + base + "/jobs/9"]: () => Response.json({id: 9, status: "failed", failure_reason: "script_failure"})});
   assert.deepEqual(await gitlabPipelines(account, repo, token, send).notes("501", "9"), ["Failure reason: script failure"]);
+});
+
+test("Active lists a pipeline once even when it moves from pending to running between the two reads", async () => {
+  const {send} = gitlab({["GET " + base + "/pipelines"]: () => Response.json([pipeline, {...pipeline, id: 500}], {headers: {"x-next-page": ""}})});
+  const page = await gitlabPipelines(account, repo, token, send).runs("active", 1);
+  assert.deepEqual(page.items.map(item => item.id), ["501", "500"]);
+});
+
+test("every page of a large pipeline's jobs is read", async () => {
+  const job = (id: number) => ({id, name: "j" + id, stage: "test", status: "success", started_at: null, finished_at: null, web_url: null});
+  const {send, calls} = gitlab({["GET " + base + "/pipelines/501/jobs"]: call => call.query.get("page") === "2"
+    ? Response.json([job(1)], {headers: {"x-next-page": ""}}) : Response.json([job(3), job(2)], {headers: {"x-next-page": "2"}})});
+  const jobs = await gitlabPipelines(account, repo, token, send).jobs("501");
+  assert.deepEqual(jobs.map(item => item.id), ["1", "2", "3"]);
+  assert.equal(calls.length, 2);
+});
+
+test("a ref without the CI file gives an empty Run pipeline form, not an error", async () => {
+  const {send} = gitlab({["GET " + base]: () => Response.json({id: 42, ci_config_path: null})});
+  const api = gitlabPipelines(account, repo, token, send);
+  const [workflow] = await api.workflows();
+  assert.deepEqual(await api.dispatchSpec(workflow, "no-ci"), {dispatchable: true, inputs: []});
 });

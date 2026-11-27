@@ -49,3 +49,17 @@ test("the Actions section of a GitLab project lists its pipelines", async () => 
   assert.deepEqual((await repositoryFeatures(account, repo, "actions", h)).items, [{id: "501", name: "Pipeline #12", status: "failed", detail: "main",
     updated: "2026-11-27T10:05:00Z", url: "https://gitlab.example.org/group/sub/app/-/pipelines/501"}]);
 });
+
+test("every page of GitLab variables is read", async () => {
+  const variable = (key: string) => ({key, value: "fixture-secret-value", variable_type: "env_var", protected: false, masked: false, environment_scope: "*"});
+  const paths: string[] = [];
+  const send = (async (target: string | URL) => {
+    const url = new URL(String(target));
+    paths.push(url.search);
+    return url.searchParams.get("page") === "2" ? Response.json([variable("B")], {headers: {"x-next-page": ""}})
+      : Response.json([variable("A")], {headers: {"x-next-page": "2"}});
+  }) as typeof fetch;
+  const result = await repositoryFeatures(account, repo, "variables", client(account, "fixture-token-value", send));
+  assert.deepEqual(result.items.map(item => item.name), ["A", "B"]);
+  assert.equal(paths.length, 2);
+});
