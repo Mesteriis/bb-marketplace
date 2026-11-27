@@ -11,6 +11,7 @@ import { inboxContract } from "../../core/pulls/contract.ts";
 import { reviewContract } from "../../core/pulls/review-contract.ts";
 import { historyContract } from "../../core/history/contract.ts";
 import { codeReviewContract } from "../../core/code-review/contract.ts";
+import { catalogContract } from "../../core/catalog/contract.ts";
 import { scanPreview } from "../../core/catalog/project-scan.ts";
 import { projectNode } from "../../core/catalog/project-tree.ts";
 import { forgeStatus, linkTarget } from "../../core/forge/contract.ts";
@@ -25,6 +26,7 @@ export const rpc = defineRpcContract({
   ...reviewContract,
   ...historyContract,
   ...codeReviewContract,
+  ...catalogContract,
   checkConnection: {input:connectionInput,output:z.discriminatedUnion("ok",[failure,success.extend({value:connectionCheck})])},
   saveConnection: {input:connectionInput,output:z.discriminatedUnion("ok",[failure,success.extend({value:account})])},
   accounts: {input:z.null(),output:z.discriminatedUnion("ok",[failure,success.extend({items:z.array(account)})])},

@@ -69,6 +69,7 @@ export function ProjectWorkspace({copies,hosts,projects,locations,subPath,loaded
         value={query} onChange={event => setQuery(event.target.value)}/>}
       <button onClick={() => onOpen("inbox")}>Мои PR{inboxBadge !== null &&
         <span className="git-inbox-badge" aria-label={inboxBadge + " new"}>{inboxBadge}</span>}</button>
+      <button onClick={() => onOpen("catalog")}>Каталог</button>
       <button onClick={() => onOpen("ci")}>CI/CD</button>
       <button onClick={() => onOpen("reviews")}>Reviews{reviewsBadge ? <span className="git-inbox-badge" aria-label={reviewsBadge + " open comment threads"}>{reviewsBadge}</span> : null}</button>
       <button aria-expanded={connections} onClick={() => setConnections(!connections)}>Подключения</button>

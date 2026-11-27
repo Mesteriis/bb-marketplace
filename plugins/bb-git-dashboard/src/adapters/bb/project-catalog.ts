@@ -12,6 +12,11 @@ export function projectCatalog(bb: BbPluginApi) {
   });
   const host = bb.hosts.experimental_client({contract: hostContract});
   return {
+    /** The projects folder and the names the walk skips, as set. */
+    async rules() {
+      const {projectsRoot, projectExclude} = await settings.get();
+      return {root: projectsRoot, exclude: parseExclude(projectExclude)};
+    },
     async preview(hostId: string) {
       try {
         const {projectsRoot, projectExclude} = await settings.get();

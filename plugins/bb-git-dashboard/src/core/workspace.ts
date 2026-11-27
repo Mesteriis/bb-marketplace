@@ -54,6 +54,8 @@ const next: Record<string, string> = {
   CONFLICT_MARKERS: "Answer every conflict: the text still has conflict markers.",
   NO_SEQUENCE: "No merge, rebase or cherry-pick is in progress. Refresh the working copy.",
   UNMERGED_PATH: "Resolve every conflicted file before continuing.",
+  OUTSIDE_PROJECTS: "Only projects inside the projects folder can be fetched or pulled from the catalog.",
+  NO_ACCOUNT: "Connect an account for this repository's server to fetch it over HTTPS, or use an SSH remote.",
   IGNORED_IN_THE_WAY: "Move the ignored files the other side tracks out of the way, then try again: Git would overwrite them.",
   SEQUENCE_STOPPED: "Git did not go on: the commit may be empty after the resolution. Skip it, or Abort.",
   CANCELLED: "The operation was cancelled before execution.",

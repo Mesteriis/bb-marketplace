@@ -10,7 +10,13 @@ export type GitRun = (args: string[], options?: {input?: string; index?: string;
   /** How long the command may run, 25 s unless it replays commits (a merge or rebase of a large branch). */
   timeout?: number}) => Promise<{text: string; code: number; truncated?: boolean}>;
 
-export function gitRunner(root: string, signal?: AbortSignal, transport?: {username: string; helper: string}): GitRun {
+/**
+ * How a command may reach a remote: HTTPS with one account's credential helper, or SSH with the user's own keys and
+ * agent in batch mode (it never asks). Without one only local paths are reachable.
+ */
+export type Transport = {username: string; helper: string} | {ssh: true};
+
+export function gitRunner(root: string, signal?: AbortSignal, transport?: Transport): GitRun {
   return (args, options = {}) => new Promise((resolve, reject) => {
     const env: NodeJS.ProcessEnv = {
       PATH: process.env.PATH, HOME: process.env.HOME, SystemRoot: process.env.SystemRoot,
@@ -21,6 +27,8 @@ export function gitRunner(root: string, signal?: AbortSignal, transport?: {usern
       GIT_COMMITTER_NAME:(options.committer ?? options.author)?.name, GIT_COMMITTER_EMAIL:(options.committer ?? options.author)?.email,
       // No command ever waits for an editor: merge and rebase take their prepared messages and plans as they are.
       GIT_EDITOR: "true", GIT_SEQUENCE_EDITOR: "true", GIT_MERGE_AUTOEDIT: "no",
+      ...(transport && "ssh" in transport ? {SSH_AUTH_SOCK: process.env.SSH_AUTH_SOCK,
+        GIT_SSH_COMMAND: "ssh -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=yes"} : {}),
     };
     const git = spawn("git", [
       "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
@@ -28,7 +36,7 @@ export function gitRunner(root: string, signal?: AbortSignal, transport?: {usern
       "-c", "core.untrackedCache=false",
       "-c", "maintenance.auto=false", "-c", "gc.auto=0",
       "-c", "protocol.allow=never",
-      ...(transport ? [
+      ...(transport && "ssh" in transport ? ["-c", "protocol.ssh.allow=always"] : transport ? [
         "-c", "protocol.https.allow=always", "-c", "http.followRedirects=false",
         "-c", "http.sslVerify=true", "-c", "credential.helper=",
         "-c", "credential.helper=" + transport.helper, "-c", "credential.useHttpPath=true",

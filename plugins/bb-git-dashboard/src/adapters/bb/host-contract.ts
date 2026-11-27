@@ -25,6 +25,12 @@ export const hostContract = defineRpcContract({
   originUrl: {input:z.object({root:path,identity}),output:z.discriminatedUnion("ok",[failure,z.object({ok:z.literal(true),url:z.string().max(1000)})])},
   scanProjects: {input:z.object({root:path,exclude:z.array(z.string().max(255)).max(100)}),
     output:z.discriminatedUnion("ok",[failure,z.object({ok:z.literal(true),verdicts:z.array(verdict).max(20_000),truncated:z.boolean()})])},
+  /** The catalog's local half: the projects of the projects folder with their remote URLs. */
+  catalogLocal: {input:z.object({root:path,exclude:z.array(z.string().max(255)).max(100)}),
+    output:z.discriminatedUnion("ok",[failure,z.object({ok:z.literal(true),root:path,truncated:z.boolean(),
+      projects:z.array(z.object({path,name:z.string(),remotes:z.array(z.string().max(1000))})).max(20_000)})])},
+  /** Status, fetch or pull of one project inside the projects folder; HTTPS takes the matching account's username. */
+  catalogGit: {input:z.object({projectsRoot:path,root:path,action:z.enum(["status","fetch","pull"]),https:z.object({username}).nullable()}),output:gitResponse},
   probeForge: {input:z.object({origin:z.url().max(300)}),output:z.object({kind:z.enum(["gitea","gitlab","unreachable"]).nullable()})},
   historyPage: {input:z.object({root:path,identity,offset:z.number().int().min(0),limit:z.number().int().min(1).max(200)}),
     output:z.discriminatedUnion("ok",[failure,z.object({ok:z.literal(true),value:historyPage})])},

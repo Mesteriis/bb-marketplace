@@ -9,6 +9,7 @@ import { hostContract } from "./src/adapters/bb/host-contract.ts";
 import { remoteService } from "./src/adapters/bb/remote-service.ts";
 import { forgeLinking } from "./src/adapters/bb/forge-rpc.ts";
 import { projectCatalog } from "./src/adapters/bb/project-catalog.ts";
+import { catalogHandlers } from "./src/adapters/bb/catalog-rpc.ts";
 import { ciHandlers } from "./src/adapters/bb/ci-rpc.ts";
 import { historyHandlers } from "./src/adapters/bb/history-rpc.ts";
 import { codeReviewHandlers } from "./src/adapters/bb/code-review-rpc.ts";
@@ -168,6 +169,7 @@ export default function plugin(bb: BbPluginApi) {
     ...codeReview.handlers,
     ...historyHandlers(bb, linkedCopy),
     ...inboxHandlers(bb, {accounts: remote.accountList, credential: remote.credential}),
+    ...catalogHandlers(bb, {rules: catalog.rules, accounts: remote.accountList, repositories: remote.repositories, pulls: remote.pulls}),
     ...reviewHandlers(bb, {credential: remote.credential, mirror: codeReview.service}),
     checkConnection: (input,context) => clientOnly(context) ? remote.checkConnection(input) : denied(),
     saveConnection: (input,context) => clientOnly(context) ? remote.saveConnection(input) : denied(),

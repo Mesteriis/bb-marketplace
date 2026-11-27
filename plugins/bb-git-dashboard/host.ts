@@ -22,6 +22,7 @@ import { execFile } from "node:child_process";
 import { homedir } from "node:os";
 import { resolve, sep } from "node:path";
 import { promisify } from "node:util";
+import { catalogGit, catalogLocal } from "./src/adapters/bb/catalog-host.ts";
 
 /** The watches of copies whose Review is open; built on the first renewal, with that call's context. */
 let leases: WatchLeases | null = null;
@@ -120,6 +121,14 @@ export default experimental_defineHostEntry({
         return {ok:true as const, url:await originUrl(root,signal)};
       }
       catch (error) { return failureFor(error,"NO_ORIGIN"); }
+    },
+    async catalogLocal({root, exclude}, {signal}) {
+      try { return {ok:true as const, ...await catalogLocal(root, exclude, signal)}; }
+      catch (error) { return failureFor(error,"INVALID_PATH"); }
+    },
+    async catalogGit({projectsRoot, root, action, https}, {signal}) {
+      try { return {ok:true as const, value:await catalogGit(projectsRoot, root, action, https, signal)}; }
+      catch (error) { return failureFor(error,"GIT_RESULT_UNKNOWN"); }
     },
     async scanProjects({root, exclude}, {signal}) {
       try {

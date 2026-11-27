@@ -27,6 +27,8 @@ import { withCodeTheme } from "./src/app/code-theme.tsx";
 import { NotificationSettings } from "./src/app/notification-settings.tsx";
 import { PrLinkOverlay } from "./src/app/pr-links.tsx";
 import { AlertToastsOverlay, useInboxBadge } from "./src/app/alerts.tsx";
+import { CatalogPage } from "./src/ui/catalog/catalog-page.tsx";
+import type { CatalogApi } from "./src/ui/catalog/catalog-api.ts";
 
 type Client = ReturnType<typeof useRpc<typeof rpc>>;
 type Host = {id: string; name: string};
@@ -273,6 +275,27 @@ function Dashboard({subPath}: {subPath: string}) {
   useRealtime(inboxSignal, readAlerts);
   const badge = alerts?.badge && alerts.unseen > 0 ? alerts.unseen : null;
   const open = (path:string) => navigate.toPluginPanel("git",path ? {subPath:path} : undefined);
+  const catalogApi = useMemo<CatalogApi>(() => ({
+    catalog: async (hostId,refresh) => okValue(await client.call("catalogView",{hostId,refresh})),
+    bulk: async (hostId,roots,action) => okValue(await client.call("catalogBulk",{hostId,roots,action})).results,
+    pulls: async repos => okValue(await client.call("catalogPulls",{repos})).results,
+    prepareClone: async (repo,hostId,destination) => {
+      const result = await client.call("prepare",{accountId:repo.accountId,repoId:repo.id,action:{kind:"clone",hostId,destination}});
+      return result.ok ? result.value : failed(result);
+    },
+    clone: async previewId => {
+      const result = await client.call("publish",{previewId});
+      if (!result.ok) return failed(result);
+      if (result.value.status !== "completed") throw new Error(result.value.code ?? "OUTCOME_UNKNOWN");
+      return {copyId: result.value.copyId ?? null};
+    },
+    open: async (hostId,path) => {
+      const result = await client.call("attach",{hostId,root:path});
+      if (!result.ok) failed(result);
+      else open(result.value.id);
+    },
+    openPull: (accountId,repo,number) => open(refPath("pr",{accountId,repo,number})),
+  }), [client]);
   const reviewsApi = useMemo<ReviewsApi>(() => ({
     summaries: async () => okValue(await client.call("reviewSummaries",{})).reviews,
     deleteOrphans: async sessionIds => okValue(await client.call("reviewDeleteOrphans",{sessionIds})),
@@ -323,6 +346,12 @@ function Dashboard({subPath}: {subPath: string}) {
       </nav>
       <InboxPage api={inbox} alerts={alerts} onSeen={() => { inbox.seen().then(setAlerts,() => {}); }}
         onOpen={(item,list) => { setOrder(list); open(refPath("pr",{accountId:item.accountId,repo:item.repo,number:item.number})); }}/>
+    </> : subPath === "catalog" ? <>
+      <nav aria-label="Git workspace" className="git-row git-section-tabs">
+        <button type="button" onClick={() => open("")}>Projects</button>
+        <span>Catalog</span>
+      </nav>
+      <CatalogPage api={catalogApi} hosts={hosts}/>
     </> : subPath === "remotes" ? <>
       <nav aria-label="Git workspace" className="git-row git-section-tabs">
         <button type="button" onClick={() => open("")}>Projects</button>
