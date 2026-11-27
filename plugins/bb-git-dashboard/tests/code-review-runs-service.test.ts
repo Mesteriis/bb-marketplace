@@ -11,7 +11,7 @@ import { memoryDb } from "./review-db.ts";
 const COPY: Copy = {id: "copy_1", hostId: "host_1", root: "/work/app", identity: "a".repeat(64), projectId: "proj_1"};
 const PATCH = "@@ -1,2 +1,3 @@\n one\n-two\n+TWO\n+three\n";
 
-function setup(options: {copy?: Copy; spawnFails?: string; modes?: string[] | null} = {}) {
+function setup(options: {copy?: Copy; spawnFails?: string; modes?: string[] | null; diffGate?: Promise<void>} = {}) {
   let now = 1_000;
   const db = memoryDb();
   const store = new ReviewStore(db, () => now);
@@ -27,7 +27,7 @@ function setup(options: {copy?: Copy; spawnFails?: string; modes?: string[] | nu
   const turnStarts = new Map<string, number>();
   const metadata: Record<string, unknown> = {};
   const threadCopies: Record<string, string> = {thr_owner: "copy_1", thr_elsewhere: "copy_2"};
-  const host = {diff: async () => ({value: uncommitted, target: {kind: "uncommitted" as const}}), read: async () => ({text: "", sha256: ""}),
+  const host = {diff: async () => { await options.diffGate; return {value: uncommitted, target: {kind: "uncommitted" as const}}; }, read: async () => ({text: "", sha256: ""}),
     write: async () => ({sha256: ""})};
   const review = codeReviewService({store, copy: async () => copy, host,
     threads: {send: async () => {}, providerName: async () => "Codex", turnStart: async id => turnStarts.get(id) ?? null,
@@ -222,3 +222,30 @@ async function until(condition: () => boolean) {
   for (let index = 0; index < 50 && !condition(); index++) await new Promise(resolve => setTimeout(resolve, 5));
   return condition();
 }
+
+test("Clear review deletes the view's threads and sends, closes its runs and archives their threads", async () => {
+  const {service, session, comment, store, runs, archived, review, execution} = setup();
+  const sent = comment("one");
+  comment("two");
+  await review.send(session.id, "thr_owner", [sent.id], "");
+  const run = await service.startReview({sessionId: session.id, threadId: "thr_owner", focuses: [], instructions: "", execution});
+  const other = store.session("copy_1", "staged");
+  store.createThread({sessionId: other.id, filePath: "b.ts", side: null, startLine: 0, endLine: 0, severity: null, anchorContent: null, body: "stays"});
+  assert.deepEqual(await service.clearReview(session.id), {deletedThreads: 2, closedRuns: 1});
+  assert.deepEqual(store.threads(session.id), []);
+  assert.deepEqual(store.threadsSentTo("thr_owner"), []);
+  assert.equal(runs.run(run.id)!.status, "closed");
+  assert.deepEqual(archived, ["thr_run1"]);
+  assert.equal(store.threads(other.id).length, 1);
+});
+
+test("a run asked for before Clear review never appears in the cleared view", async () => {
+  let release: () => void = () => {};
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const {service, session, runs, spawned, execution} = setup({diffGate: gate});
+  const starting = service.startSummary({sessionId: session.id, threadId: "thr_owner", execution});
+  await service.clearReview(session.id);
+  release();
+  await assert.rejects(starting, /CLEARED/);
+  assert.deepEqual([runs.open(session.id), spawned.length], [[], 0]);
+});

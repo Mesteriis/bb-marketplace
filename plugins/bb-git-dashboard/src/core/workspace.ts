@@ -84,6 +84,7 @@ const next: Record<string, string> = {
   FILE_NOT_IN_DIFF: "Comment on a file of the diff under review.",
   RUN_PLACE_REQUIRED: "Attach this working copy to a BB project, or start the run from a thread working in it.",
   UNKNOWN_RUN: "Refresh the review: this AI run no longer exists.",
+  CLEARED: "The review was cleared while this was being set up; nothing was started.",
 };
 /** An error with a code `failureFor` knows and a `detail` for the agent. */
 export class CodedError extends Error {

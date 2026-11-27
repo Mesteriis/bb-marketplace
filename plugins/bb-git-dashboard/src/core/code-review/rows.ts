@@ -31,3 +31,25 @@ export function displayRows(patch: string): DisplayRow[] {
   }
   return rows;
 }
+
+/** A row of the split layout: a hunk header across both sides, or the old line beside the new one (either may be absent). */
+export type SplitRow = {kind: "hunk"; text: string} | {kind: "pair"; old: DisplayRow | null; new: DisplayRow | null};
+
+/**
+ * Unified rows side by side: context on both sides, and each run of removed lines beside the run of added lines that
+ * follows it, line by line, the longer run going on alone.
+ */
+export function splitRows(rows: readonly DisplayRow[]): SplitRow[] {
+  const out: SplitRow[] = [];
+  for (let index = 0; index < rows.length;) {
+    const row = rows[index];
+    if (row.kind === "hunk") { out.push({kind: "hunk", text: row.text}); index++; continue; }
+    if (row.kind === "context") { out.push({kind: "pair", old: row, new: row}); index++; continue; }
+    const removed: DisplayRow[] = [];
+    const added: DisplayRow[] = [];
+    while (index < rows.length && rows[index].kind === "deletion") removed.push(rows[index++]);
+    while (index < rows.length && rows[index].kind === "addition") added.push(rows[index++]);
+    for (let line = 0; line < Math.max(removed.length, added.length); line++) out.push({kind: "pair", old: removed[line] ?? null, new: added[line] ?? null});
+  }
+  return out;
+}

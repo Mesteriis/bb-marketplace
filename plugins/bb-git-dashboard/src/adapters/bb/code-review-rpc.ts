@@ -145,8 +145,8 @@ export function codeReviewHandlers(bb: BbPluginApi, copyOf: (copyId: string) => 
     catch (error) { return failureFor(error, "GIT_REJECTED"); }
   };
   const handlers = {
-    reviewView: handle(({copyId, target, ignoreWhitespace}: {copyId: string; target: Parameters<typeof service.view>[1]; ignoreWhitespace: boolean}) =>
-      service.view(copyId, target, ignoreWhitespace)),
+    reviewView: handle(({copyId, target, ignoreWhitespace, auto}: {copyId: string; target: Parameters<typeof service.view>[1]; ignoreWhitespace: boolean; auto?: boolean}) =>
+      service.view(copyId, target, ignoreWhitespace, auto === true)),
     reviewCreateThread: handle(async ({sessionId, viewerThreadId, ...input}: {sessionId: string; viewerThreadId?: string | null} & Parameters<typeof service.createThread>[1]) => {
       const thread = await service.createThread(sessionId, input);
       return {thread, reviewer: await reviewerNote(thread, input.body, viewerThreadId)};
@@ -172,6 +172,7 @@ export function codeReviewHandlers(bb: BbPluginApi, copyOf: (copyId: string) => 
       ({run: await runs.startExplain({...input, threadId: viewerThreadId ?? null})})),
     reviewFix: handle(async ({viewerThreadId, ...input}: Omit<Parameters<typeof runs.fixInNewThread>[0], "threadId"> & {viewerThreadId?: string | null}) =>
       runs.fixInNewThread({...input, threadId: viewerThreadId ?? null})),
+    reviewClear: handle(({sessionId}: {sessionId: string}) => runs.clearReview(sessionId)),
     reviewCloseRun: handle(async ({runId}: {runId: string}) => { await runs.close(runId); return {}; }),
     reviewTargets: handle(async ({copyId}: {copyId: string}) => {
       const copy = await copyOf(copyId);

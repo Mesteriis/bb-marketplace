@@ -72,6 +72,9 @@ export function codeReviewRuns(deps: RunDeps) {
   const {store, runs} = deps;
   /** Each view's latest question to its reviewer: the next waits for it, so two never race. */
   const asking = new Map<string, Promise<unknown>>();
+  /** How many times each view was cleared: a start asked for before a Clear review gives up instead of appearing after it. */
+  const clears = new Map<string, number>();
+  const clearCount = (sessionId: string) => clears.get(sessionId) ?? 0;
 
   function session(sessionId: string) {
     return store.sessionById(sessionId) ?? fail("NOT_FOUND");
@@ -113,10 +116,11 @@ export function codeReviewRuns(deps: RunDeps) {
    * thread. A thread that calls in first is bound by its metadata (`bindIfPending`). A run closed while BB started
    * it has its thread archived at once; a start that fails leaves a failed run saying why, with its sends taken back.
    */
-  async function spawn(input: {sessionId: string; copy: Copy; threadId: string | null; kind: RunKind; focus: string | null;
+  async function spawn(input: {sessionId: string; clears: number; copy: Copy; threadId: string | null; kind: RunKind; focus: string | null;
     execution: Execution | null; title: string; prompt: string; grants?: {threadIds: readonly string[]; note: string}}): Promise<ReviewRun> {
     const known = input.execution;
     const place = await placeOf(input.copy, input.threadId);
+    if (clearCount(input.sessionId) !== input.clears) fail("CLEARED");
     const run = runs.create({sessionId: input.sessionId, kind: input.kind, focus: input.focus, providerId: known?.providerId ?? "",
       model: known?.model || null, parentThreadId: "parentThreadId" in place ? place.parentThreadId : null, baseline: null});
     const grant = input.grants ? store.recordSend(input.sessionId, pendingRunThread(run.id), input.grants.threadIds, input.grants.note) : null;
@@ -159,6 +163,7 @@ export function codeReviewRuns(deps: RunDeps) {
   /** Queues the thread as a new turn of the view's reviewer, or starts a reviewer when the view has none. */
   async function sendToReviewer(reviewThreadId: string, viewerThreadId: string | null): Promise<ReviewRun | null> {
     const asked = store.thread(reviewThreadId) ?? fail("NOT_FOUND");
+    const cleared = clearCount(asked.sessionId);
     const reviewer = runs.reviewer(asked.sessionId);
     // A question still queued behind a turn the reviewer has not started is read by that turn: not sent again.
     if (reviewer?.threadId && asked.delivery?.state === "sent" && asked.delivery.threadId === reviewer.threadId) {
@@ -181,7 +186,7 @@ export function codeReviewRuns(deps: RunDeps) {
         deps.log("Reviewer run " + reviewer.id + " could not take a question (" + String(error) + "); starting a new one.");
       }
     }
-    return spawn({sessionId: thread.sessionId, copy, threadId: viewerThreadId, kind: "review", focus: null, execution: null,
+    return spawn({sessionId: thread.sessionId, clears: cleared, copy, threadId: viewerThreadId, kind: "review", focus: null, execution: null,
       title: "Reviewer: " + describeLocation(thread), prompt: reviewerPrompt(target, thread, false, commits),
       grants: {threadIds: [thread.id], note: ""}});
   }
@@ -234,33 +239,37 @@ export function codeReviewRuns(deps: RunDeps) {
     list: (sessionId: string) => runs.open(session(sessionId).id),
 
     async startReview(input: {sessionId: string; threadId: string | null; focuses: readonly string[]; instructions: string; execution: Execution}) {
+      const cleared = clearCount(input.sessionId);
       const {owner, copy, target, commits} = await view(input.sessionId);
       const focus = input.focuses.length ? input.focuses.join(", ") : null;
-      return spawn({sessionId: owner.id, copy, threadId: input.threadId, kind: "review", focus, execution: input.execution,
+      return spawn({sessionId: owner.id, clears: cleared, copy, threadId: input.threadId, kind: "review", focus, execution: input.execution,
         title: "Review: " + (focus ?? "changes"), prompt: reviewPrompt({target, commits, focus, instructions: input.instructions})});
     },
 
     async startSummary(input: {sessionId: string; threadId: string | null; execution: Execution}) {
+      const cleared = clearCount(input.sessionId);
       const {owner, copy, target, commits} = await view(input.sessionId);
-      return spawn({sessionId: owner.id, copy, threadId: input.threadId, kind: "summary", focus: null, execution: input.execution,
+      return spawn({sessionId: owner.id, clears: cleared, copy, threadId: input.threadId, kind: "summary", focus: null, execution: input.execution,
         title: "Summary of the changes", prompt: summaryPrompt(target, commits)});
     },
 
     /** Explains a file (`startLine` 0) or lines of it, with the settings' provider and model. */
     async startExplain(input: {sessionId: string; threadId: string | null; filePath: string; side: Side | null; startLine: number; endLine: number; code: string | null}) {
+      const cleared = clearCount(input.sessionId);
       const {owner, copy, target, commits} = await view(input.sessionId);
       const place = {filePath: input.filePath, side: input.startLine === 0 ? null : input.side ?? "new" as const, startLine: input.startLine,
         endLine: Math.max(input.endLine, input.startLine), code: input.code};
       const lines = place.startLine === 0 ? "" : place.startLine === place.endLine ? ":" + place.startLine : ":" + place.startLine + "-" + place.endLine;
-      return spawn({sessionId: owner.id, copy, threadId: input.threadId, kind: "explain", focus: place.filePath + lines, execution: null,
+      return spawn({sessionId: owner.id, clears: cleared, copy, threadId: input.threadId, kind: "explain", focus: place.filePath + lines, execution: null,
         title: "Explain " + (place.filePath.split("/").pop() ?? place.filePath) + lines, prompt: explainPrompt(target, place, commits)});
     },
 
     /** Sends open comment threads to a new thread on the same copy. */
     async fixInNewThread(input: {sessionId: string; threadId: string | null; threadIds: readonly string[]; note: string; execution: Execution}) {
+      const cleared = clearCount(input.sessionId);
       const {owner, copy, target} = await view(input.sessionId);
       const chosen = openThreads(owner.id, input.threadIds);
-      const run = await spawn({sessionId: owner.id, copy, threadId: input.threadId, kind: "fix", focus: null, execution: input.execution,
+      const run = await spawn({sessionId: owner.id, clears: cleared, copy, threadId: input.threadId, kind: "fix", focus: null, execution: input.execution,
         title: "Review fixes: " + plural(chosen.length, "comment"), prompt: fixPrompt({target, threads: chosen, note: input.note}),
         grants: {threadIds: chosen.map(row => row.id), note: input.note}});
       return {run, count: chosen.length};
@@ -284,6 +293,21 @@ export function codeReviewRuns(deps: RunDeps) {
     },
 
     askReviewer,
+
+    /**
+     * Clear review: every comment thread of the view is deleted and every open run closed, then its thread archived.
+     * The store goes first, so a run still working finds its rights gone.
+     */
+    async clearReview(sessionId: string) {
+      const owner = session(sessionId);
+      clears.set(owner.id, clearCount(owner.id) + 1);
+      const open = runs.open(owner.id);
+      const deletedThreads = store.clearSession(owner.id);
+      for (const run of open) runs.close(run.id);
+      changed(owner.id);
+      await Promise.all(open.flatMap(run => run.threadId ? [archive(run.threadId)] : []));
+      return {deletedThreads, closedRuns: open.length};
+    },
 
     /** Closes a run: it loses its rights first, then its thread is archived. */
     async close(runId: string) {

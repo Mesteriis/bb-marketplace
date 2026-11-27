@@ -16,7 +16,9 @@ export type ExecutionPickerProps = {value: Execution; onChange(value: Execution)
 
 /** What the line review asks of the host; the entry point implements it over RPC. `viewer`: the thread whose tab asks. */
 export type CodeReviewApi = {
-  view(copyId: string, target: TargetRequest, ignoreWhitespace: boolean): Promise<ReviewView>;
+  /** `auto`: a first look; an empty uncommitted view gives way to the branch's commits. */
+  view(copyId: string, target: TargetRequest, ignoreWhitespace: boolean, auto?: boolean): Promise<ReviewView>;
+  clear(sessionId: string): Promise<{deletedThreads: number; closedRuns: number}>;
   /** Each gives why the comment's @reviewer could not start a reviewer, or null. */
   createThread(sessionId: string, thread: NewThread, viewer?: string | null): Promise<{threadId: string; reviewer: string | null}>;
   addComment(threadId: string, body: string, viewer?: string | null): Promise<{reviewer: string | null}>;

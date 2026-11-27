@@ -280,6 +280,17 @@ export class ReviewStore {
     })();
   }
 
+  /** Deletes a session's threads (their comments go with them) and sends; returns how many threads there were. */
+  clearSession(sessionId: string): number {
+    return this.db.transaction(() => {
+      const {count} = this.db.prepare("SELECT count(*) AS count FROM review_threads WHERE session_id = ?").get(sessionId) as {count: number};
+      // Threads first: they point at sends.
+      this.db.prepare("DELETE FROM review_threads WHERE session_id = ?").run(sessionId);
+      this.db.prepare("DELETE FROM review_sends WHERE session_id = ?").run(sessionId);
+      return Number(count);
+    })();
+  }
+
   /** The threads sent to `bbThreadId` still waiting for an answer, with when they were sent. */
   waitingOn(bbThreadId: string) {
     return (this.db.prepare(`SELECT t.id, t.session_id, t.send_id, s.created_at AS sent_at FROM review_threads t JOIN review_sends s ON s.id = t.send_id

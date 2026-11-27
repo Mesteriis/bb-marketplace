@@ -64,7 +64,8 @@ const reviewerText = (note: {code: string; next: string} | null) => note ? "The 
 /** The line review over RPC; shared by the Git panel and the thread's Review tab. */
 export function codeReviewApi(client: Client, navigate: Navigate): CodeReviewApi {
   return {
-    view: async (copyId, target, ignoreWhitespace) => okValue(await client.call("reviewView", {copyId, target, ignoreWhitespace})),
+    view: async (copyId, target, ignoreWhitespace, auto) => okValue(await client.call("reviewView", {copyId, target, ignoreWhitespace, auto: auto === true})),
+    clear: async sessionId => okValue(await client.call("reviewClear", {sessionId})),
     createThread: async (sessionId, thread, viewer) => {
       const made = okValue(await client.call("reviewCreateThread", {sessionId, ...thread, viewerThreadId: viewer ?? null}));
       return {threadId: made.thread.id, reviewer: reviewerText(made.reviewer)};

@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { codeReviewService } from "../src/adapters/bb/code-review-service.ts";
 import { ReviewStore } from "../src/adapters/bb/review-store.ts";
 import type { ReviewDiff } from "../src/core/code-review/diff.ts";
+import type { TargetRequest } from "../src/core/code-review/model.ts";
 import type { Target } from "../src/core/code-review/model.ts";
 import type { Copy } from "../src/core/workspace.ts";
 import { memoryDb } from "./review-db.ts";
@@ -12,7 +13,7 @@ const copy: Copy = {id: "c1", hostId: "mac", root: "/w/app", identity: "a".repea
 const patch = ["diff --git a/a.ts b/a.ts", "--- a/a.ts", "+++ b/a.ts", "@@ -1,3 +1,3 @@", " one", "-two", "+TWO", " three", ""].join("\n");
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");
 
-function setup(options: {threadCopy?: Record<string, string>; turnStart?: number | null; sendFails?: boolean} = {}) {
+function setup(options: {threadCopy?: Record<string, string>; turnStart?: number | null; sendFails?: boolean; empty?: TargetRequest["kind"][]} = {}) {
   let now = 1_000;
   const store = new ReviewStore(memoryDb(), () => now);
   let file = "one\nTWO\nthree\n";
@@ -23,7 +24,7 @@ function setup(options: {threadCopy?: Record<string, string>; turnStart?: number
   const service = codeReviewService({
     store, copy: async id => id === "c1" ? copy : undefined,
     host: {
-      diff: async (_copy, request) => ({value: diff, target: (request.kind === "branch" && !request.base ? {kind: "branch", base: "main"} : request) as Target}),
+      diff: async (_copy, request) => ({value: options.empty?.includes(request.kind) ? {...diff, files: []} : diff, target: (request.kind === "branch" && !request.base ? {kind: "branch", base: "main"} : request) as Target}),
       read: async () => ({text: file, sha256: sha(file)}),
       write: async (_copy, _path, expected, text) => { if (expected !== sha(file)) throw new Error("CHANGED"); file = text; return {sha256: sha(text)}; },
     },
@@ -169,4 +170,14 @@ test("a long commented range is cut in the message to the agent", async () => {
     comments: [{id: "c", authorType: "user", authorName: "You", body: "Why?", createdAt: 1, editedAt: null}]}]});
   assert.match(text, /x{4000}\n… \(cut; read the file\)\n```\n/);
   assert.doesNotMatch(text, /```end/);
+});
+
+test("a first look at an empty uncommitted view shows the branch's commits instead, when there are any", async () => {
+  const empty = setup({empty: ["uncommitted"]});
+  assert.deepEqual((await empty.service.view("c1", {kind: "uncommitted"}, false, true)).target, {kind: "branch", base: "main"});
+  assert.deepEqual((await empty.service.view("c1", {kind: "uncommitted"}, false)).target, {kind: "uncommitted"});
+  const both = setup({empty: ["uncommitted", "branch"]});
+  assert.deepEqual((await both.service.view("c1", {kind: "uncommitted"}, false, true)).target, {kind: "uncommitted"});
+  const changed = setup();
+  assert.deepEqual((await changed.service.view("c1", {kind: "uncommitted"}, false, true)).target, {kind: "uncommitted"});
 });

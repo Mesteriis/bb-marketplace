@@ -21,3 +21,10 @@ test("a local patch shows its hunks and lines with both numbers, skipping the fi
 test("a removed line starting with dashes inside a hunk is a line, not a header", () => {
   assert.deepEqual(displayRows("@@ -1 +0,0 @@\n---- gone\n").map(row => [row.kind, row.text]), [["hunk", "@@ -1 +0,0 @@"], ["deletion", "--- gone"]]);
 });
+
+test("split rows put each removed run beside the added run after it, and context on both sides", async () => {
+  const {splitRows} = await import("../src/core/code-review/rows.ts");
+  const rows = displayRows(["@@ -1,4 +1,4 @@", " keep", "-a", "-b", "+A", " end", "+tail", ""].join("\n").replace("@@ -1,4 +1,4 @@", "@@ -1,4 +1,4 @@"));
+  const shape = splitRows(rows).map(row => row.kind === "hunk" ? "hunk" : (row.old?.text ?? "·") + "|" + (row.new?.text ?? "·"));
+  assert.deepEqual(shape, ["hunk", "keep|keep", "a|A", "b|·", "end|end", "·|tail"]);
+});

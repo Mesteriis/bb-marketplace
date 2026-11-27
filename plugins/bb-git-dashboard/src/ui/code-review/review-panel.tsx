@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { keepView, readView, viewScope, type ViewStorage } from "../../core/code-review/view-memory.ts";
 import { parseRange, rangeText } from "../../core/code-review/git-spec.ts";
 import { describeTarget, GENERAL_PATH, type ReviewRun, type TargetRequest } from "../../core/code-review/model.ts";
 import type { ExplainPlace } from "../../core/code-review/run-prompts.ts";
@@ -29,14 +30,24 @@ function request(kind: Kind, base: string, sha: string, range: string): TargetRe
  * threads to the agent working on the copy. `revision` changes when the review changed elsewhere.
  */
 export function ReviewPanel({api, copyId, currentThreadId, revision}: {api: CodeReviewApi; copyId: string; currentThreadId?: string; revision: number}) {
-  const [kind, setKind] = useState<Kind>("uncommitted");
-  const [base, setBase] = useState("");
-  const [sha, setSha] = useState("");
-  const [range, setRange] = useState("main...HEAD");
-  const [applied, setApplied] = useState<TargetRequest>({kind: "uncommitted"});
-  const [ignoreWhitespace, setIgnoreWhitespace] = useState(false);
-  const [onlyCommented, setOnlyCommented] = useState(false);
-  const [wrap, setWrap] = useState(false);
+  const scope = viewScope(copyId, currentThreadId);
+  // What this tab or copy kept from the last visit; read once, as the starting state.
+  const [kept] = useState(() => readView(browserStorage(), scope));
+  const start = kept.target;
+  const [kind, setKind] = useState<Kind>(start?.kind ?? "uncommitted");
+  const [base, setBase] = useState(start && (start.kind === "branch" || start.kind === "all") ? start.base ?? "" : "");
+  const [sha, setSha] = useState(start?.kind === "commit" ? start.sha : "");
+  const [range, setRange] = useState(start?.kind === "range" ? rangeText(start) : "main...HEAD");
+  const [applied, setApplied] = useState<TargetRequest>(start ?? {kind: "uncommitted"});
+  // Until a view is picked, the first look may show the branch's commits instead of an empty uncommitted view.
+  const [auto, setAuto] = useState(start === null);
+  const [ignoreWhitespace, setIgnoreWhitespace] = useState(kept.ignoreWhitespace);
+  const [onlyCommented, setOnlyCommented] = useState(kept.onlyCommented);
+  const [wrap, setWrap] = useState(kept.wrap);
+  const [split, setSplit] = useState(kept.split);
+  const [clearing, setClearing] = useState(false);
+  useEffect(() => keepView(browserStorage(), scope, {target: auto ? null : applied, ignoreWhitespace, onlyCommented, wrap, split}),
+    [scope, auto, applied, ignoreWhitespace, onlyCommented, wrap, split]);
   const [view, setView] = useState<ReviewView>();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -53,10 +64,15 @@ export function ReviewPanel({api, copyId, currentThreadId, revision}: {api: Code
     let active = true;
     setLoading(true);
     // A view that fails to load leaves none on screen, so nothing is commented or sent to the previous one.
-    api.view(copyId, applied, ignoreWhitespace).then(next => { if (active) { setView(next); setError(""); } },
+    api.view(copyId, applied, ignoreWhitespace, auto).then(next => {
+      if (!active) return;
+      setView(next); setError("");
+      // The first look chose the branch's commits: the picker says so, and the choice is not kept.
+      if (auto && next.target.kind === "branch") { setKind("branch"); setBase(next.target.base); }
+    },
       cause => { if (active) { setView(undefined); setError(message(cause)); } }).finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [api, copyId, applied, ignoreWhitespace, revision, reload]);
+  }, [api, copyId, applied, ignoreWhitespace, auto, revision, reload]);
   const refresh = useCallback(() => setReload(value => value + 1), []);
   const sessionId = view?.sessionId;
   useEffect(() => {
@@ -69,11 +85,20 @@ export function ReviewPanel({api, copyId, currentThreadId, revision}: {api: Code
   const choose = (next: Kind) => {
     setKind(next);
     const asked = request(next, base, sha, range);
-    if (typeof asked !== "string") setApplied(asked);
+    if (typeof asked !== "string") { setAuto(false); setApplied(asked); }
   };
   const show = () => {
     const asked = request(kind, base, sha, range);
-    if (typeof asked === "string") setError(asked); else { setError(""); setApplied(asked); }
+    if (typeof asked === "string") setError(asked); else { setError(""); setAuto(false); setApplied(asked); }
+  };
+  const clear = async () => {
+    if (!view) return;
+    try {
+      const {deletedThreads, closedRuns} = await api.clear(view.sessionId);
+      setStatus("Cleared " + deletedThreads + " comment thread" + (deletedThreads === 1 ? "" : "s") + (closedRuns ? " and closed " + closedRuns + " AI run" + (closedRuns === 1 ? "" : "s") : "") + ".");
+    } catch (cause) { setStatus("Could not clear the review: " + message(cause)); }
+    setClearing(false);
+    refresh();
   };
   const create = async (thread: NewThread) => {
     if (!view) return;
@@ -123,6 +148,7 @@ export function ReviewPanel({api, copyId, currentThreadId, revision}: {api: Code
       <label><input type="checkbox" checked={ignoreWhitespace} onChange={event => setIgnoreWhitespace(event.target.checked)}/> Hide whitespace</label>
       <label><input type="checkbox" checked={onlyCommented} onChange={event => setOnlyCommented(event.target.checked)}/> Only files with comments</label>
       <label><input type="checkbox" checked={wrap} onChange={event => setWrap(event.target.checked)}/> Wrap lines</label>
+      <label><input type="checkbox" checked={split} onChange={event => setSplit(event.target.checked)}/> Side by side</label>
       <button type="button" onClick={refresh} disabled={loading}>{loading ? "Loading…" : "Reload"}</button>
     </div>
     {view && <div className="git-row git-code-review-bar">
@@ -132,11 +158,19 @@ export function ReviewPanel({api, copyId, currentThreadId, revision}: {api: Code
       <span className="git-ci-spacer"/>
       <button type="button" aria-expanded={general} onClick={() => setGeneral(value => !value)}>Comment on the diff</button>
       <button type="button" aria-expanded={reviewing} disabled={!view.files.length} onClick={() => setReviewing(value => !value)}>AI review</button>
+      <button type="button" aria-expanded={clearing} disabled={!threads.length && !runs.length} onClick={() => setClearing(value => !value)}>Clear review</button>
       <button type="button" className="git-primary" aria-expanded={sending} disabled={!open} onClick={() => setSending(value => !value)}>Send to agent ({open})</button>
     </div>}
     {status && <p className="git-muted" role="status">{status}</p>}
     {error && <p className="git-error" role="alert">{error}</p>}
     {!view && !error && <p className="git-muted" role="status">Reading the diff…</p>}
+    {view && clearing && <div className="git-ci-threads git-stack" role="alertdialog" aria-label="Clear review">
+      <p>Delete all {threads.length} comment thread{threads.length === 1 ? "" : "s"} of this view{runs.length ? " and close its " + runs.length + " AI run" + (runs.length === 1 ? "" : "s") + ", archiving their threads" : ""}? This cannot be undone.</p>
+      <div className="git-row">
+        <button type="button" className="git-danger" onClick={() => void clear()}>Clear review</button>
+        <button type="button" autoFocus onClick={() => setClearing(false)}>Cancel</button>
+      </div>
+    </div>}
     {view && <RunList api={api} runs={runs} onClosed={refresh}/>}
     {view && reviewing && <AiReviewForm api={api} copyId={copyId} sessionId={view.sessionId} viewer={viewer} onClose={() => setReviewing(false)}
       onStarted={(_run, text) => { setReviewing(false); setStatus(text); refresh(); }}/>}
@@ -154,7 +188,12 @@ export function ReviewPanel({api, copyId, currentThreadId, revision}: {api: Code
       {outdated.map(thread => <ThreadCard key={thread.id} thread={thread} api={liveApi} current={undefined} canApply={false} showPath outdated/>)}
     </section>}
     {view && !view.files.length && <p className="git-muted">{view.target.kind === "uncommitted" ? "No uncommitted changes." : "Nothing changed in this view."}</p>}
-    {view && files.map(file => <FileDiff key={view.sessionId + file.path} file={file} wrap={wrap} workingCopy={working} api={liveApi} onCreate={create} onExplain={explain} explaining={explaining}
+    {view && files.map(file => <FileDiff key={view.sessionId + file.path} file={file} wrap={wrap} split={split} workingCopy={working} api={liveApi} onCreate={create} onExplain={explain} explaining={explaining}
       threads={threads.filter(thread => thread.filePath === file.path && placed(thread.id)?.state !== "outdated")} placements={view.placements}/>)}
   </section>;
+}
+
+/** This browser's storage for what a Review keeps; none where the page may not use it. */
+function browserStorage(): ViewStorage | undefined {
+  try { return typeof window === "undefined" ? undefined : window.localStorage; } catch { return undefined; }
 }

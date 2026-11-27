@@ -69,9 +69,18 @@ export function codeReviewService(deps: CodeReviewDeps) {
   }
 
   return {
-    async view(copyId: string, request: TargetRequest, ignoreWhitespace: boolean) {
+    /**
+     * A view of the copy with its threads placed. With `auto` (a first look, no view picked yet) an empty uncommitted
+     * view gives way to the branch's commits since its base, when there are any.
+     */
+    async view(copyId: string, request: TargetRequest, ignoreWhitespace: boolean, auto = false) {
       const copy = await copyOf(copyId);
-      const {value, target} = await deps.host.diff(copy, request, ignoreWhitespace);
+      let {value, target} = await deps.host.diff(copy, request, ignoreWhitespace);
+      if (auto && request.kind === "uncommitted" && value.files.length === 0) {
+        // A copy without a base branch has no branch view: the uncommitted one stands.
+        const branch = await deps.host.diff(copy, {kind: "branch"}, ignoreWhitespace).catch(() => null);
+        if (branch && branch.value.files.length > 0) ({value, target} = branch);
+      }
       const key = targetKey(targetSchema.parse(target));
       const {id: sessionId} = store.session(copy.id, key);
       const files = new Map(value.files.flatMap(file => file.patch === null ? [] : [[file.path, parsePatchLines(file.patch)] as const]));

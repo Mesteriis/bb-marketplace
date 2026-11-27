@@ -14,7 +14,8 @@ const runAnswer = answer({run: reviewRunSchema});
 const reviewer = z.object({code: z.string(), next: z.string()}).nullable();
 /** The line review of a working copy; only the app calls it. */
 export const codeReviewContract = {
-  reviewView: {input: z.object({copyId: id, target: targetRequestSchema, ignoreWhitespace: z.boolean()}),
+  /** `auto`: a first look, no view picked yet; an empty uncommitted view gives way to the branch's commits. */
+  reviewView: {input: z.object({copyId: id, target: targetRequestSchema, ignoreWhitespace: z.boolean(), auto: z.boolean().optional()}),
     output: answer({sessionId: reviewId, target: targetSchema, files: z.array(reviewDiffFileSchema), truncated: z.boolean(),
       baseSha: z.string().nullable(), headSha: z.string().nullable(), threads: z.array(reviewThreadSchema), placements: z.record(z.string(), placementSchema)})},
   reviewCreateThread: {input: z.object({sessionId: reviewId, filePath: z.string().min(1).max(4096), side: sideSchema.nullable(),
@@ -43,4 +44,6 @@ export const codeReviewContract = {
   reviewFix: {input: z.object({sessionId: reviewId, threadIds: z.array(reviewId).min(1).max(200), note: z.string().max(BODY_MAX_CHARS),
     execution: executionSchema}).merge(viewer), output: answer({run: reviewRunSchema, count: z.number().int()})},
   reviewCloseRun: {input: z.object({runId: reviewId}), output: answer({})},
+  /** Deletes every comment thread of the view and closes its AI runs. */
+  reviewClear: {input: z.object({sessionId: reviewId}), output: answer({deletedThreads: z.number().int(), closedRuns: z.number().int()})},
 };

@@ -18,3 +18,10 @@
 .git-ws .git-code-review-execution { gap: 6px; }
 .git-ws .git-warning { margin: 0; color: #b8860b; }
 .git-ws .git-code-review [aria-pressed="true"] { font-weight: 600; }
+.git-ws .git-review-split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); min-width: max-content; }
+.git-ws .git-review-diff[data-wrap] .git-review-split { min-width: 0; }
+.git-ws .git-review-split > .git-review-row { grid-template-columns: 3.4em minmax(0, 1fr); min-width: 0; overflow: hidden; }
+.git-ws .git-review-diff[data-wrap] .git-review-split .git-review-code { white-space: pre-wrap; overflow-wrap: anywhere; }
+.git-ws .git-review-split > .git-review-row + .git-review-row { border-left: 1px solid var(--border); }
+.git-ws .git-review-row[data-kind="none"] { background: color-mix(in srgb, var(--border) 25%, transparent); }
+.git-ws .git-danger { border-color: var(--destructive); color: var(--destructive); }
