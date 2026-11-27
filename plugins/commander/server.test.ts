@@ -1,4 +1,6 @@
 import { expect, test, vi } from "vitest";
+import { randomUUID } from "node:crypto";
+import { MIGRATIONS } from "./src/adapters/bb/migrations.ts";
 import { experimental_PluginRpcCallError, type BbPluginApi, type PluginAgentToolContext, type PluginCliRegistration } from "@get-bb/plugin-sdk";
 import Database from "better-sqlite3";
 import { z } from "zod";
@@ -448,6 +450,7 @@ test("revoking a grant leaves an explicitly approved job running", async () => {
 test("limits the number of expanded agent plan items for one directory", async () => {
   const bb = await backend();
   try {
+    await bb.rpc("agent_grants_set", { grant: { ...dataGrant, permissions: ["observe"] } });
     const dir = parsePosix("/data");
     const entry = (number: number) => ({
       name: { t: "entry-" + number }, kind: "file" as const, size: "1", mtimeNs: "1",
@@ -504,5 +507,176 @@ test("reconciles a copy under cancellation when its grant was lost before reload
     if (restarted) await restarted.dispose();
     else if (firstDisposed) bb.db.close();
     else await bb.dispose();
+  }
+});
+
+test("returns one fixed planning refusal for missing and non-directory destinations outside the grant", async () => {
+  const bb = await backend();
+  try {
+    await bb.rpc("agent_grants_set", { grant: { ...dataGrant, permissions: ["read", "write"] } });
+    bb.disk.put(parsePosix("/out/file"), Uint8Array.of(9), "1");
+    const denied = { code: "forbidden", message: "Commander refused the request" };
+    expect(await bb.tool("commander_plan", { ...request, targetDir: ref("/out/missing") })).toEqual(denied);
+    expect(await bb.tool("commander_plan", { ...request, targetDir: ref("/out/file") })).toEqual(denied);
+  } finally { await bb.dispose(); }
+});
+
+test.each(["job_cancel", "agent_grants_revoke"] as const)("%s manages an active job after recovery of a later job fails", async (method) => {
+  const bb = await backend();
+  let restarted: typeof bb | undefined;
+  let firstDisposed = false;
+  const actual = sqliteStore.createSqliteJobStore;
+  let spy: ReturnType<typeof vi.spyOn> | undefined;
+  try {
+    const first = await submitAgent(bb, dataCopy);
+    const second = await submitAgent(bb, { ...dataCopy, targetDir: ref("/out") });
+    await bb.rpc("agent_grants_set", { grant: { ...dataGrant, scope: parsePosix("/"), permissions: ["read", "write"] } });
+    // Seed interrupted automatic jobs, without performing an owner approval transition.
+    bb.db.prepare("UPDATE jobs SET awaits_owner = 0 WHERE id IN (?, ?)").run(first.jobId, second.jobId);
+    const update = bb.db.prepare("UPDATE jobs SET state = 'running', updated_at = ? WHERE id = ?");
+    update.run("2026-11-27T02:00:00.000Z", first.jobId);
+    update.run("2026-11-27T01:00:00.000Z", second.jobId);
+    await bb.dispose(false);
+    firstDisposed = true;
+    const firstRunning = Promise.withResolvers<void>();
+    bb.disk.delay = async (op, path, signal) => {
+      if (op !== "stat" || !samePath(path, parsePosix("/data/out/a"), true)) return;
+      const aborted = new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+      firstRunning.resolve();
+      await aborted;
+      signal.throwIfAborted();
+    };
+    spy = vi.spyOn(sqliteStore, "createSqliteJobStore").mockImplementation((db) => {
+      const store = actual(db);
+      const original = store.update.bind(store);
+      store.update = async (id, patch, state) => {
+        if (id === second.jobId && patch.state === "interrupted") {
+          await firstRunning.promise;
+          throw new Error("private failure in second job");
+        }
+        return original(id, patch, state);
+      };
+      return store;
+    });
+    restarted = await backend(bb);
+    await expect(restarted.serviceResult()).rejects.toThrow("Commander recovery failed");
+    const args = method === "job_cancel" ? { jobId: first.jobId } : { ...dataGrant, scope: parsePosix("/") };
+    await expect(restarted.rpc(method, args)).resolves.toEqual({});
+    const jobs = z.object({ jobs: z.array(z.object({ id: z.string(), state: z.string() })) })
+      .parse(await restarted.rpc("job_list", {})).jobs;
+    expect(jobs.find(({ id }) => id === first.jobId)?.state).toBe("cancelled");
+    expect(jobs.find(({ id }) => id === second.jobId)?.state).toBe(method === "job_cancel" ? "running" : "cancel_requested");
+    expect(restarted.kv.get("agent-grants")).toHaveLength(method === "job_cancel" ? 1 : 0);
+    expect(restarted.disk.contents(parsePosix("/data/out/a"))).toBeNull();
+  } finally {
+    if (restarted) await restarted.dispose();
+    else if (firstDisposed) bb.db.close();
+    else await bb.dispose();
+    spy?.mockRestore();
+  }
+});
+
+function seedApprovalRows(db: Database.Database, jobId: string, threadId: string, count: number, state = "pending") {
+  const insert = db.prepare(`INSERT INTO jobs (id, plan_json, state, progress_json, current_item, pending_conflict_json,
+    items_json, error_json, created_at, updated_at, initiator_kind, thread_id, awaits_owner)
+    SELECT ?, json_set(plan_json, '$.initiator.threadId', ?), ?, progress_json,
+      NULL, NULL, items_json, NULL, created_at, updated_at, 'agent', ?, ?
+    FROM jobs WHERE id = ?`);
+  for (let i = 0; i < count; i++) insert.run(randomUUID(), threadId, state, threadId, state === "pending" ? 1 : 0, jobId);
+}
+
+test("caps approval queues at sixteen per thread and 256 total before creating a job", async () => {
+  const bb = await backend();
+  try {
+    const first = await submitAgent(bb, request);
+    seedApprovalRows(bb.db, first.jobId, agent.threadId, 14);
+    expect((await submitAgent(bb, request)).status).toBe("awaiting_owner");
+    const denied = { code: "limit_exceeded", message: "Commander approval queue is full" };
+    const run = async (context: PluginAgentToolContext) => {
+      const { id, digest } = ticket.parse(await bb.tool("commander_plan", request, context));
+      return bb.tool("commander_run", { planId: id, digest }, context);
+    };
+    expect(await run(agent)).toEqual(denied);
+    for (let i = 0; i < 15; i++) seedApprovalRows(bb.db, first.jobId, "fixture-" + i, i === 0 ? 15 : 16);
+    expect(await run({ ...agent, threadId: "last-slot" })).toMatchObject({ status: "awaiting_owner" });
+    expect(await run({ ...agent, threadId: "over-limit" })).toEqual(denied);
+    expect(bb.db.prepare("SELECT count(*) FROM jobs WHERE awaits_owner = 1").pluck().get()).toBe(256);
+  } finally { await bb.dispose(); }
+});
+
+test("an unknown page with no matches decodes at most 200 rows and resumes at its cursor", async () => {
+  const bb = await backend();
+  try {
+    const first = await submitAgent(bb, request);
+    bb.db.prepare("UPDATE jobs SET plan_json = '{' WHERE id = ?").run(first.jobId);
+    const seed = await submitAgent(bb, request);
+    seedApprovalRows(bb.db, seed.jobId, agent.threadId, 205, "completed");
+    const decode = vi.spyOn(OperationJob, "parse");
+    try {
+      const page = z.object({ jobs: z.array(z.unknown()), nextCursor: z.string() })
+        .parse(await bb.tool("commander_jobs", { limit: 1, states: ["unknown"] }));
+      expect(page.jobs).toEqual([]);
+      expect(decode).toHaveBeenCalledTimes(200);
+      decode.mockClear();
+      expect(await bb.tool("commander_jobs", { limit: 1, states: ["unknown"], cursor: page.nextCursor })).toEqual({
+        jobs: [{ id: first.jobId, state: "unknown", damaged: true, message: "Stored job is damaged" }],
+      });
+      expect(decode).toHaveBeenCalledTimes(7);
+    } finally { decode.mockRestore(); }
+  } finally { await bb.dispose(); }
+});
+
+test("append-only migrations persist explicit approval in the job store across reopening", async () => {
+  const bb = await backend();
+  try {
+    const plan = ticket.parse(await bb.tool("commander_plan", request));
+    const first = submission.parse(await bb.tool("commander_run", { planId: plan.id, digest: plan.digest }));
+    const second = await submitAgent(bb, request);
+    await bb.rpc("plan_approve", { jobId: first.jobId, digest: plan.digest });
+    const reopened = sqliteStore.createSqliteJobStore(bb.db);
+    expect(MIGRATIONS).toHaveLength(6);
+    expect(reopened.hasOwnerApproval(first.jobId)).toBe(true);
+    expect(reopened.hasOwnerApproval(second.jobId)).toBe(false);
+  } finally { await bb.dispose(); }
+});
+
+test("saves grants and queues cancellation before the recovery service is ready", async () => {
+  const bb = await backend();
+  let restarted: typeof bb | undefined;
+  let firstDisposed = false;
+  const ready = Promise.withResolvers<void>();
+  const actual = sqliteStore.createSqliteJobStore;
+  let spy: ReturnType<typeof vi.spyOn> | undefined;
+  try {
+    const { jobId } = await submitAgent(bb, dataCopy);
+    bb.db.prepare("UPDATE jobs SET awaits_owner = 0 WHERE id = ?").run(jobId);
+    bb.db.prepare("UPDATE jobs SET state = 'running' WHERE id = ?").run(jobId);
+    await bb.dispose(false);
+    firstDisposed = true;
+    spy = vi.spyOn(sqliteStore, "createSqliteJobStore").mockImplementation((db) => {
+      const store = actual(db);
+      const list = store.list.bind(store);
+      store.list = vi.fn(list).mockImplementationOnce(async (filter) => {
+        await ready.promise;
+        return list(filter);
+      });
+      return store;
+    });
+    restarted = await backend(bb);
+    const grant = { ...dataGrant, permissions: ["read", "write"] };
+    await expect(restarted.rpc("agent_grants_set", { grant })).resolves.toEqual({});
+    await expect(restarted.rpc("agent_grants_list", {})).resolves.toEqual({ grants: [grant] });
+    await expect(restarted.rpc("job_cancel", { jobId })).resolves.toEqual({});
+    await expect(restarted.rpc("job_list", {})).resolves.toMatchObject({ jobs: [{ id: jobId, state: "cancel_requested" }] });
+    ready.resolve();
+    await vi.waitFor(async () => expect(await restarted!.rpc("job_list", {}))
+      .toMatchObject({ jobs: [{ id: jobId, state: "cancelled" }] }));
+    expect(restarted.disk.contents(parsePosix("/data/out/a"))).toBeNull();
+  } finally {
+    ready.resolve();
+    if (restarted) await restarted.dispose();
+    else if (firstDisposed) bb.db.close();
+    else await bb.dispose();
+    spy?.mockRestore();
   }
 });

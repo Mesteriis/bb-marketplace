@@ -1,8 +1,8 @@
 import { experimental_PluginRpcRefusal, type ExperimentalPluginRpcHandlersWithContext, type PluginKvStorage } from "@get-bb/plugin-sdk";
 import { CommanderError, isCommanderError } from "../../core/errors.ts";
 import type { JobRunner } from "../../core/job-runner.ts";
-import type { JobStore } from "../../core/job-store.ts";
-import type { Initiator, OperationJob, OperationPlan, ResourceRef } from "../../core/model.ts";
+import type { AgentJobStore } from "../../core/job-store.ts";
+import type { Initiator, JobState, OperationJob, OperationPlan, ResourceRef } from "../../core/model.ts";
 import { parent } from "../../core/path.ts";
 import { authorize, REQUIRED } from "../../core/permissions.ts";
 import { buildPlan, type PlannerDeps } from "../../core/planner.ts";
@@ -18,6 +18,8 @@ const maxPlans = 128;
 const maxAgentPlanBytes = 4 * 1024 * 1024;
 const maxThreadPlans = 32;
 const maxAgentPlanItems = 10_000;
+const maxThreadApprovals = 16;
+const maxApprovals = 256;
 const lifetime = 30 * 60 * 1000;
 const activeStates = ["pending", "running", "awaiting_decision", "cancel_requested", "interrupted"] as const;
 
@@ -83,13 +85,13 @@ function canObserve(rows: AgentGrant[], ref: ResourceRef) {
 export function createOperations(deps: {
   endpoints: Endpoints;
   runner: JobRunner;
-  store: JobStore;
+  store: AgentJobStore;
   planner: PlannerDeps;
   grants: ReturnType<typeof createAgentGrants>;
   kv: PluginKvStorage;
   publish(kind: "job" | "dir" | "endpoints", id: string): void;
   ready(): Promise<void>;
-  hasOwnerApproval(id: string): boolean;
+  isManaged(id: string): boolean;
 }) {
   const { endpoints, runner, store, planner, grants, kv, publish } = deps;
   const plans = new Map<string, { plan: OperationPlan; bytes: number; created: number }>();
@@ -162,7 +164,7 @@ export function createOperations(deps: {
     const uncovered: OperationJob[] = [];
     for (const job of jobs) {
       const { initiator } = job.plan;
-      if (initiator.kind !== "agent" || job.awaitsOwner || deps.hasOwnerApproval(job.id)) continue;
+      if (initiator.kind !== "agent" || job.awaitsOwner || store.hasOwnerApproval(job.id)) continue;
       let rows = grantsByThread.get(initiator.threadId);
       if (!rows) {
         rows = await grants.forThread(initiator.threadId);
@@ -173,19 +175,44 @@ export function createOperations(deps: {
     return uncovered;
   }
 
-  function changeGrants(threadId: string, update: () => Promise<void>) {
-    return serializeAccess(async () => {
-      await deps.ready();
-      await update();
-      const active = await store.list({ states: ["pending", "running", "awaiting_decision", "cancel_requested"],
-        threadId, limit: Number.MAX_SAFE_INTEGER });
-      const cancellations = await uncoveredJobs(active);
-      const results = await Promise.allSettled(cancellations.map(({ id }) => runner.cancel(id)));
-      if (results.some(({ status }) => status === "rejected")) {
-        throw refusal("conflict", "Grant updated but job cancellation could not be confirmed");
+  const cancellable: ReadonlySet<JobState> = new Set(activeStates);
+  async function requestCancel(job: OperationJob) {
+    let current: OperationJob | null = job;
+    while (current && cancellable.has(current.state)) {
+      if (current.state === "pending" || deps.isManaged(current.id)) {
+        await runner.cancel(current.id);
+        return;
       }
-      return {};
+      if (current.state === "cancel_requested") return;
+      // A persisted job may have a checkpoint from a previous process.
+      // Preserve it and let recovery reconcile in cancellation mode.
+      if (await store.update(current.id, {
+        state: "cancel_requested", pendingConflict: null, updatedAt: planner.now().toISOString(),
+      }, current.state)) {
+        publish("job", current.id);
+        return;
+      }
+      current = await store.get(current.id);
+    }
+  }
+
+  async function changeGrants(threadId: string, update: () => Promise<void>) {
+    const cancellations = await serializeAccess(async () => {
+      await update();
+      const active = await store.list({ states: [...activeStates],
+        threadId, limit: Number.MAX_SAFE_INTEGER });
+      return uncoveredJobs(active);
     });
+    const results = await Promise.allSettled(cancellations.map(requestCancel));
+    if (results.some(({ status }) => status === "rejected")) {
+      throw refusal("conflict", "Grant updated but job cancellation could not be confirmed");
+    }
+    return {};
+  }
+
+  async function jobPage({ states, limit, cursor }: RpcInput<"job_list">, threadId?: string) {
+    if (states?.includes("unknown")) return store.listUnknownPage({ states, limit, cursor, threadId });
+    return { jobs: await store.list({ states, limit, threadId }) };
   }
 
   return {
@@ -213,10 +240,23 @@ export function createOperations(deps: {
     async createPlan(input: RpcInput<"plan_create">, initiator: Initiator, signal: AbortSignal) {
       const limits = initiator.kind === "agent" ? { ...planner.limits, maxItems: maxAgentPlanItems } : planner.limits;
       if (input.sources.length > limits.maxItems) throw refusal("invalid", "Selection exceeds the plan item limit");
-      const ids = input.sources.map(({ endpoint }) => endpoint);
-      if (input.targetDir) ids.push(input.targetDir.endpoint);
-      await endpoints.prepare(ids, signal);
-      const plan = await buildPlan({ ...input, initiator }, { ...planner, limits }, signal);
+      const paths = [...input.sources];
+      if (input.targetDir) paths.push(input.targetDir);
+      if (input.kind === "rename" && input.sources[0]) {
+        const { endpoint, path } = input.sources[0];
+        const directory = parent(path);
+        if (directory) paths.push({ endpoint, path: directory });
+      }
+      const rows = initiator.kind === "agent" ? await grants.forThread(initiator.threadId) : [];
+      const restricted = initiator.kind === "agent" && paths.some((ref) => !canObserve(rows, ref));
+      let plan: OperationPlan;
+      try {
+        await endpoints.prepare(paths.map(({ endpoint }) => endpoint), signal);
+        plan = await buildPlan({ ...input, initiator }, { ...planner, limits }, signal);
+      } catch (error) {
+        if (restricted) throw refusal("forbidden", "Commander planning failed outside the metadata grant");
+        throw error;
+      }
       remember(plan);
       return plan;
     },
@@ -234,22 +274,30 @@ export function createOperations(deps: {
       return serializeAccess(async () => {
         const rows = initiator.kind === "agent" ? await grants.forThread(initiator.threadId) : [];
         const awaitsOwner = initiator.kind === "agent" && !autoRunAllowed(plan, initiator, operationGrants(rows, plan));
+        if (initiator.kind === "agent" && awaitsOwner) {
+          const size = store.approvalQueueSize(initiator.threadId);
+          if (size.thread >= maxThreadApprovals || size.total >= maxApprovals) {
+            throw new CommanderError("limit_exceeded", "Commander approval queue is full");
+          }
+        }
         signal.throwIfAborted();
         if (plans.get(planId) !== entry) throw refusal("conflict", "Plan is no longer available");
         plans.delete(planId);
         return runner.submit(plan, { awaitsOwner });
       });
     },
-    jobs: (input: RpcInput<"job_list">) => store.list(input),
+    async jobs(input: RpcInput<"job_list">) {
+      const page = await jobPage(input);
+      return { ...page, jobs: page.jobs.map(jobView) };
+    },
     async agentJobs(input: RpcInput<"job_list">, threadId: string) {
-      const jobs = await store.list({ ...input, threadId });
+      const page = await jobPage(input, threadId);
       const rows = await grants.forThread(threadId);
-      return jobs.map((job) => agentJobView(job, rows));
+      return { ...page, jobs: page.jobs.map((job) => agentJobView(job, rows)) };
     },
     async cancel(id: string, initiator: Initiator) {
-      await deps.ready();
-      await requireJob(id, initiator.kind === "agent" ? initiator : undefined);
-      await runner.cancel(id);
+      const job = await requireJob(id, initiator.kind === "agent" ? initiator : undefined);
+      await requestCancel(job);
       return {};
     },
     async decide({ jobId, ...decision }: RpcInput<"job_decide">, signal: AbortSignal) {
@@ -299,16 +347,7 @@ export function createOperations(deps: {
       const uncovered = await uncoveredJobs(recovery);
       for (const job of uncovered) {
         signal.throwIfAborted();
-        if (job.state === "cancel_requested") continue;
-        if (job.state === "pending") {
-          await runner.cancel(job.id);
-          continue;
-        }
-        // The previous process may have stopped after persisting the grant
-        // change. Recover the last checkpoint in cancellation mode.
-        if (await store.update(job.id, {
-          state: "cancel_requested", pendingConflict: null, updatedAt: planner.now().toISOString(),
-        }, job.state)) publish("job", job.id);
+        await requestCancel(job);
       }
     },
     listGrants: grants.list,
@@ -339,7 +378,7 @@ export function createRpcHandlers(ops: Operations): ExperimentalPluginRpcHandler
     entry_stat: ({ ref }, ctx) => ops.stat(ref, owner, ctx.experimental_signal),
     plan_create: (input, ctx) => ops.createPlan(input, owner, ctx.experimental_signal),
     plan_run: (input, ctx) => ops.runPlan(input, owner, ctx.experimental_signal),
-    job_list: async (input) => ({ jobs: (await ops.jobs(input)).map(jobView) }),
+    job_list: (input) => ops.jobs(input),
     job_decide: (input, ctx) => ops.decide(input, ctx.experimental_signal),
     job_cancel: ({ jobId }) => ops.cancel(jobId, owner),
     plan_approve: (input, ctx) => ops.approve(input, ctx.experimental_signal),

@@ -73,8 +73,12 @@ export const rpcSchemas = {
   plan_create: { input: PlanInput, output: OperationPlan },
   plan_run: { input: z.strictObject({ planId: z.uuid(), digest }), output: OperationJob },
   job_list: {
-    input: z.strictObject({ states: z.array(JobState).max(9).optional(), limit: z.int().min(1).max(200).default(100) }),
-    output: z.strictObject({ jobs: z.array(JobView).max(200) }),
+    input: z.strictObject({
+      states: z.array(JobState).max(9).optional(),
+      limit: z.int().min(1).max(200).default(100),
+      cursor: z.string().regex(/^-?(?:0|[1-9]\d{0,18})$/).optional(),
+    }).refine(({ cursor, states }) => cursor === undefined || states?.includes("unknown") === true),
+    output: z.strictObject({ jobs: z.array(JobView).max(200), nextCursor: z.string().optional() }),
   },
   job_decide: { input: ConflictDecision.extend(jobId.shape), output: empty },
   job_cancel: { input: jobId, output: empty },

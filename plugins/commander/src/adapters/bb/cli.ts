@@ -2,7 +2,7 @@ import { cliCommand, defineCli, PluginCliError, PLUGIN_CLI_OUTPUT_MAX_BYTES, typ
 import type { z } from "zod";
 import { parsePosix } from "../../core/path.ts";
 import { rpcSchemas } from "../../core/wire/rpc.ts";
-import { jobView, publicError, type Operations } from "./rpc-handlers.ts";
+import { publicError, type Operations } from "./rpc-handlers.ts";
 
 const owner = { kind: "owner" } as const;
 const endpoint = { name: "endpoint", description: "Endpoint ID", required: true } as const;
@@ -88,7 +88,7 @@ export function registerCli(cli: BbPluginApi["cli"], ops: Operations) {
       jobs: cliCommand({
         summary: "List file operation jobs",
         options: { limit: { type: "integer", min: 1, max: 200, default: 100, description: "Maximum number of jobs" } },
-        run: ({ options }) => show(async () => ({ jobs: (await ops.jobs({ limit: options.limit })).map(jobView) })),
+        run: ({ options }) => show(() => ops.jobs({ limit: options.limit })),
       }),
       cancel: cliCommand({
         summary: "Cancel a file operation job",

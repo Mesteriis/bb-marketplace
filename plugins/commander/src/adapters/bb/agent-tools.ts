@@ -1,5 +1,6 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
+import { isCommanderError } from "../../core/errors.ts";
 import type { Entry, Initiator } from "../../core/model.ts";
 import { rpcSchemas, threadId } from "../../core/wire/rpc.ts";
 import { publicError, type Operations } from "./rpc-handlers.ts";
@@ -29,6 +30,11 @@ export function registerAgentTools(agents: BbPluginApi["agents"], ops: Operation
           if (Buffer.byteLength(text) <= 64 * 1024) return { content: [{ type: "text", text }] };
           return { isError: true, content: [{ type: "text", text: JSON.stringify({ code: "limit_exceeded", message: "Use a smaller page limit" }) }] };
         } catch (error) {
+          if (name === "run" && isCommanderError(error) && error.code === "limit_exceeded") {
+            return { isError: true, content: [{ type: "text", text: JSON.stringify({
+              code: "limit_exceeded", message: "Commander approval queue is full",
+            }) }] };
+          }
           const { code } = publicError(error);
           return { isError: true, content: [{ type: "text", text: JSON.stringify({ code, message: "Commander refused the request" }) }] };
         }
@@ -56,7 +62,7 @@ export function registerAgentTools(agents: BbPluginApi["agents"], ops: Operation
       return { jobId: job.id, status: job.awaitsOwner ? "awaiting_owner" : "submitted" };
     });
   register("jobs", "List this thread's file operation states.", rpcSchemas.job_list.input,
-    async (input, agent) => ({ jobs: await ops.agentJobs(input, agent.threadId) }));
+    (input, agent) => ops.agentJobs(input, agent.threadId));
   register("cancel", "Cancel one of this thread's file operations.", rpcSchemas.job_cancel.input,
     ({ jobId }, agent) => ops.cancel(jobId, agent));
 }
