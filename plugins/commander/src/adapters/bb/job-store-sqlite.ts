@@ -23,7 +23,7 @@ interface JobRow {
   awaits_owner: number;
 }
 
-const TERMINAL_STATES = new Set(["completed", "failed", "cancelled", "unknown"]);
+const TERMINAL_STATES = "('completed', 'failed', 'cancelled', 'unknown')";
 const PATCH_FIELDS = new Set<PropertyKey>([
   "state", "progress", "currentItem", "pendingConflict", "items", "error", "updatedAt", "awaitsOwner",
 ]);
@@ -99,16 +99,21 @@ function decodeJob(row: JobRow): OperationJob | null {
   }
 }
 
-function rowUuid(rowId: string): string {
+function rowUuid(rowId: string, slot: number): string {
   // UUIDv8 carries every bit of the signed SQLite rowid without a lossy JS number.
   const hex = BigInt.asUintN(64, BigInt(rowId)).toString(16).padStart(16, "0");
-  return `00000000-${hex.slice(0, 4)}-8000-8000-${hex.slice(4)}`;
+  const prefix = slot.toString(16).padStart(8, "0");
+  return `${prefix}-${hex.slice(0, 4)}-8000-8000-${hex.slice(4)}`;
 }
 
-function unreadableJob(row: JobRow): OperationJob {
+function rowIdFromUuid(uuid: string): string | null {
+  const parts = /^[0-9a-f]{8}-([0-9a-f]{4})-8000-8000-([0-9a-f]{12})$/.exec(uuid);
+  return parts ? BigInt.asIntN(64, BigInt(`0x${parts[1]}${parts[2]}`)).toString() : null;
+}
+
+function unreadableJob(row: JobRow, id: string): OperationJob {
   // Present a terminal record with no executable resources. Keep the damaged
   // row intact for diagnosis and never allow a state update to revive it.
-  const id = JobId.safeParse(row.id).data ?? rowUuid(row.row_id);
   const createdAt = Timestamp.safeParse(row.created_at).data ?? "1970-01-01T00:00:00.000Z";
   const initiator = Initiator.safeParse(row.initiator_kind === "owner"
     ? { kind: row.initiator_kind }
@@ -156,13 +161,24 @@ export function createSqliteJobStore(db: Database): JobStore {
   const deleteCheckpoints = db.prepare("DELETE FROM checkpoints WHERE job_id = (SELECT id FROM jobs WHERE rowid = ?)");
   const deleteJob = db.prepare("DELETE FROM jobs WHERE rowid = ?");
 
-  // Read rowid as text to keep all 64 bits. Compare times as UTC instants so
-  // rows written by an older adapter without milliseconds also sort correctly.
+  // Read rowid as text to keep all 64 bits.
   const jobRows = "SELECT CAST(rowid AS TEXT) AS row_id, * FROM jobs";
   const byId = db.prepare<[string], JobRow>(`${jobRows} WHERE id = ?`);
-  const byUpdate = db.prepare<[], JobRow>(`
-    ${jobRows}
-    ORDER BY coalesce(unixepoch(updated_at, 'subsec'), unixepoch(created_at, 'subsec'), 0) DESC, id ASC
+  const byRowId = db.prepare<[string], JobRow>(`${jobRows} WHERE rowid = ?`);
+  const idExists = db.prepare("SELECT 1 FROM jobs WHERE id = ?").pluck();
+  const byUpdate = db.prepare<[], JobRow>(`${jobRows} ORDER BY updated_at DESC, id ASC`);
+  const countStoredTerminal = db.prepare<[], number>(
+    `SELECT count(*) FROM jobs WHERE state IN ${TERMINAL_STATES}`,
+  ).pluck();
+  const storedNonterminal = db.prepare<[], JobRow>(`${jobRows} WHERE state NOT IN ${TERMINAL_STATES}`);
+  const expiredRows = db.prepare<[string, number], { row_id: string }>(`
+    SELECT CAST(row_id AS TEXT) AS row_id FROM (
+      SELECT rowid AS row_id, id, updated_at FROM jobs WHERE state IN ${TERMINAL_STATES}
+      UNION ALL
+      SELECT rowid AS row_id, id, updated_at FROM jobs
+      WHERE rowid IN (SELECT CAST(value AS INTEGER) FROM json_each(?))
+    )
+    ORDER BY updated_at DESC, id ASC LIMIT -1 OFFSET ?
   `);
   const updateJob = db.prepare(`
     UPDATE jobs SET state = @state, progress_json = @progress_json,
@@ -181,8 +197,31 @@ export function createSqliteJobStore(db: Database): JobStore {
     "SELECT * FROM checkpoints WHERE job_id = ? AND item_index = ?",
   );
 
+  function findDamagedRowByAlias(id: string): JobRow | null {
+    const rowId = rowIdFromUuid(id);
+    const row = rowId === null ? undefined : byRowId.get(rowId);
+    return row && !JobId.safeParse(row.id).success ? row : null;
+  }
+
+  function showRow(row: JobRow): OperationJob {
+    const job = decodeJob(row);
+    if (job) return job;
+    const { data: validId } = JobId.safeParse(row.id);
+    if (validId !== undefined) return unreadableJob(row, validId);
+
+    // Each slot encodes the same rowid. Skip physical IDs already stored.
+    for (let slot = 0; slot <= 0xffffffff; slot++) {
+      const alias = rowUuid(row.row_id, slot);
+      if (!idExists.get(alias)) return unreadableJob(row, alias);
+    }
+    throw new CommanderError("internal", "No available identifier for the damaged job");
+  }
+
   const create = db.transaction((input: OperationJob) => {
     const job = OperationJob.parse(input);
+    // Reserve aliases while their damaged row exists, so a stale listed
+    // alias can never resolve to a newly created healthy job.
+    if (findDamagedRowByAlias(job.id)) throw new CommanderError("already_exists", "Job already exists");
     const { initiator } = job.plan;
     const { changes } = insert.run({
       ...mutableColumns(job),
@@ -195,17 +234,17 @@ export function createSqliteJobStore(db: Database): JobStore {
     if (changes !== 1) throw new CommanderError("already_exists", "Job already exists");
     if (!beyondRetentionLimit.get(TERMINAL_LIMIT)) return;
 
-    const expired: string[] = [];
-    let terminalCount = 0;
-    for (const row of byUpdate.iterate()) {
-      // A damaged row is unknown and therefore terminal, including when its
-      // stored state was active. Stored terminal rows count either way.
-      const isTerminal = TERMINAL_STATES.has(row.state) || decodeJob(row) === null;
-      if (isTerminal && ++terminalCount > TERMINAL_LIMIT) expired.push(row.row_id);
+    const storedTerminalCount = countStoredTerminal.get() ?? 0;
+    const damagedRowIds: string[] = [];
+    for (const row of storedNonterminal.iterate()) {
+      if (!decodeJob(row)) damagedRowIds.push(row.row_id);
     }
-    for (const rowId of expired) {
-      deleteCheckpoints.run(rowId);
-      deleteJob.run(rowId);
+    if (storedTerminalCount + damagedRowIds.length <= TERMINAL_LIMIT) return;
+
+    const expired = expiredRows.all(JSON.stringify(damagedRowIds), TERMINAL_LIMIT);
+    for (const { row_id } of expired) {
+      deleteCheckpoints.run(row_id);
+      deleteJob.run(row_id);
     }
   });
 
@@ -227,11 +266,13 @@ export function createSqliteJobStore(db: Database): JobStore {
 
   return {
     async create(job) {
-      create(job);
+      create.immediate(job);
     },
     async get(id) {
       const row = byId.get(id);
-      return row ? decodeJob(row) ?? unreadableJob(row) : null;
+      if (row) return showRow(row);
+      const damaged = findDamagedRowByAlias(id);
+      return damaged ? unreadableJob(damaged, id) : null;
     },
     async list({ states, limit }) {
       if (limit <= 0 || states?.length === 0) return [];
@@ -239,7 +280,7 @@ export function createSqliteJobStore(db: Database): JobStore {
       // An unreadable row is `unknown` regardless of its stored state.
       // Decode before filtering and stop as soon as the page is full.
       for (const row of byUpdate.iterate()) {
-        const job = decodeJob(row) ?? unreadableJob(row);
+        const job = showRow(row);
         if (!states || states.includes(job.state)) jobs.push(job);
         if (jobs.length >= limit) break;
       }

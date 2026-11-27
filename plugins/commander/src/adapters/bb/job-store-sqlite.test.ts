@@ -3,7 +3,7 @@ import { registerHooks } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { CommanderError } from "../../core/errors.ts";
 import type { Checkpoint, JobStore } from "../../core/job-store.ts";
 import { OperationJob } from "../../core/model.ts";
@@ -205,6 +205,9 @@ test("creation keeps the newest 1000 terminal jobs and prunes their old checkpoi
 });
 
 test("normalizes stored dates and prunes the earlier terminal job at the 1000-job boundary", async () => {
+  db.function("unixepoch", { varargs: true }, () => {
+    throw new Error("This SQLite has no unixepoch subsec support");
+  });
   await store.create({
     ...job,
     createdAt: "2026-11-27T00:00:00Z",
@@ -246,6 +249,29 @@ test("prunes a damaged pending job as terminal unknown", async () => {
   expect(await store.get(job.id)).toBeNull();
   expect(await store.list({ states: ["completed", "failed", "cancelled", "unknown"], limit: 2000 }))
     .toHaveLength(1000);
+});
+
+test("counts stored terminal jobs in SQLite without decoding them during create", async () => {
+  await store.create({ ...job, state: "completed", awaitsOwner: false });
+  seedTerminalJobs(1000, 1);
+  let terminalCounts = 0;
+  const peer = new Database(filename, {
+    verbose(sql) {
+      if (typeof sql === "string" && /SELECT count\(\*\) FROM jobs WHERE state IN/i.test(sql)) {
+        terminalCounts++;
+      }
+    },
+  });
+  const parse = vi.spyOn(OperationJob, "parse");
+  try {
+    await createSqliteJobStore(peer).create({ ...job, id: secondId, state: "failed", awaitsOwner: false });
+    expect(parse).toHaveBeenCalledTimes(1);
+    expect(terminalCounts).toBe(1);
+    expect(peer.prepare("SELECT count(*) FROM jobs").pluck().get()).toBe(1000);
+  } finally {
+    parse.mockRestore();
+    peer.close();
+  }
 });
 
 test("rejects plan in a patch even if the replacement plan matches the new outcomes", async () => {
@@ -303,6 +329,31 @@ test("assigns distinct stable UUIDs from rowid and preserves valid initiators on
   expect(await store.list({ states: ["unknown"], limit: 2 })).toStrictEqual([first, second]);
 });
 
+test("looks up the damaged job by its listed UUID even if a healthy job owns its first candidate", async () => {
+  const occupied = "00000000-0000-8000-8000-00000000002a";
+  const healthy = { ...job, id: occupied };
+  await store.create(healthy);
+  await store.create(job);
+  db.prepare("UPDATE jobs SET rowid = 42, id = 'damaged' WHERE id = ?").run(job.id);
+
+  const [damaged] = await store.list({ states: ["unknown"], limit: 1 });
+  expect(damaged).toMatchObject({ id: "00000001-0000-8000-8000-00000000002a", state: "unknown" });
+  expect(await store.get(damaged.id)).toStrictEqual(damaged);
+  expect(await store.get(occupied)).toStrictEqual(healthy);
+});
+
+test("a new job cannot claim a UUID already exposed for a damaged row", async () => {
+  await store.create(job);
+  db.prepare("UPDATE jobs SET rowid = 42, id = 'damaged' WHERE id = ?").run(job.id);
+  const [damaged] = await store.list({ states: ["unknown"], limit: 1 });
+  expect(damaged.id).toBe("00000000-0000-8000-8000-00000000002a");
+  expect(await store.get(damaged.id)).toStrictEqual(damaged);
+  await expect(store.create({ ...job, id: damaged.id })).rejects.toMatchObject({
+    code: "already_exists", message: "Job already exists",
+  });
+  expect(await store.get(damaged.id)).toStrictEqual(damaged);
+});
+
 test("SQLite rejects setting awaits_owner directly on a running job", async () => {
   await store.create({ ...job, state: "running", awaitsOwner: false });
   expect(() => db.prepare("UPDATE jobs SET awaits_owner = 1 WHERE id = ?").run(job.id))
@@ -333,16 +384,25 @@ async function loadSdkTestHost() {
   }
 }
 
-test("two SDK migration calls preserve a single journal entry and the existing row", async () => {
+test("the SDK creates tables in a clean database and the second migrate preserves its journal", async () => {
   const { createFakePluginHost } = await loadSdkTestHost();
   const { bb } = createFakePluginHost({ pluginId: "commander-s6-migration" });
-  bb.storage.migrate(db, MIGRATIONS);
-  await store.create(job);
-  const journal = db.prepare("SELECT * FROM _bb_migrations ORDER BY id");
-  const entries = journal.all();
-  expect(entries).toEqual([{ id: 0, applied_at: expect.any(Number), statement_hash: expect.stringMatching(/^[a-f0-9]{64}$/) }]);
+  const cleanDb = new Database(join(directory, "sdk.sqlite"));
+  try {
+    const tables = cleanDb.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name").pluck();
+    expect(tables.all()).toStrictEqual([]);
 
-  bb.storage.migrate(db, MIGRATIONS);
-  expect(journal.all()).toStrictEqual(entries);
-  expect(await createSqliteJobStore(db).get(job.id)).toStrictEqual(job);
+    bb.storage.migrate(cleanDb, MIGRATIONS);
+    expect(tables.all()).toStrictEqual(["_bb_migrations", "checkpoints", "jobs"]);
+    await createSqliteJobStore(cleanDb).create(job);
+    const journal = cleanDb.prepare("SELECT * FROM _bb_migrations ORDER BY id");
+    const entries = journal.all();
+    expect(entries).toEqual([{ id: 0, applied_at: expect.any(Number), statement_hash: expect.stringMatching(/^[a-f0-9]{64}$/) }]);
+
+    bb.storage.migrate(cleanDb, MIGRATIONS);
+    expect(journal.all()).toStrictEqual(entries);
+    expect(await createSqliteJobStore(cleanDb).get(job.id)).toStrictEqual(job);
+  } finally {
+    cleanDb.close();
+  }
 });
