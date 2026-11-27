@@ -342,13 +342,14 @@ describe.skipIf(!dockerOk)("agent control over SSH: connect, owner decides the h
     const key2 = `${plain.generation}.${plain.sessionId}`;
     c.access.set(profileId, "input", false);
     expect(c.service.agentControl(plain)).toBe("never");
-    // ssh asks its question (here the password) IN the terminal: an agent can read that, and could have typed the answer if it were allowed to drive.
+    // ssh asks its question IN the terminal: an agent can read that, and could have typed the answer if it were allowed to drive.
+    // The host-key file is empty, so the question is the host key's, whatever the machine's ssh configuration says (0.2.1).
     let seen = "";
     const viewed = await c.view(plain);
     await poll(async () => {
       seen = c.text(await c.call("remote_terminal_read", { sessionId: key2, sinceOffset: 0 })) + viewed.socket.sent.map((d) => (d instanceof Uint8Array ? new TextDecoder().decode(d) : String(d))).join("");
-      return seen.includes("password:");
-    }, 40_000, "ssh's password question in the terminal").catch((e: Error) => {
+      return seen.includes("continue connecting");
+    }, 40_000, "ssh's host-key question in the terminal").catch((e: Error) => {
       throw new Error(e.message + " (last read: " + seen.slice(-400) + ")");
     });
     const missing = c.text(await c.call("remote_control_acquire", { sessionId: `${plain.generation}.99999` }));

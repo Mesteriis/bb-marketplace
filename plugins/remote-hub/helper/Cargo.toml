@@ -1,6 +1,6 @@
 [package]
 name = "remote-hub-helper"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 description = "Remote Hub supervision helper: owns PTY sessions and speaks the versioned stdio protocol."
 license = "MIT"

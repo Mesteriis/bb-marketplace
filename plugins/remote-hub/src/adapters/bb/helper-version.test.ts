@@ -11,9 +11,9 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 test("the helper version the plugin expects is the crate's version and the package's version", () => {
   const cargo = /^version = "([^"]+)"/m.exec(readFileSync(join(root, "helper", "Cargo.toml"), "utf8"))?.[1];
   const pkg = (JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { version: string }).version;
-  expect(cargo).toBe("0.2.0");
-  expect(pkg).toBe("0.2.0");
-  expect(HELPER_VERSION).toBe("0.2.0");
+  expect(cargo).toBe("0.2.1");
+  expect(pkg).toBe("0.2.1");
+  expect(HELPER_VERSION).toBe("0.2.1");
 });
 
 test.skipIf(!existsSync(join(root, "bin", "remote-hub-helper")))("the shipped helper binary passes the plugin's own start check (checksum and version)", async () => {

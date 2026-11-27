@@ -189,17 +189,22 @@ export function createRpcHandlers({ service, profiles, credentials, imports, age
       // client, decides how the session authenticates (the one prompt that is expected).
       let target: SshOpenTarget = input.target;
       let askpass: { credentialRef: string } | undefined;
-      if (input.credentialRef !== undefined) {
+      // The profile this open really belongs to (same host, port and user), or none.
+      const profileId = profiles.attribute(input.profileId, endpoint);
+      // The profile's saved credential is used whether or not the page sent its reference: a page that read its list
+      // before the password was saved must not open the session as if there were none (ssh would then follow the user's
+      // own configuration and ask in the terminal).
+      const credentialRef = input.credentialRef ?? (profileId === undefined ? undefined : (profiles.get(profileId)?.credentialRef ?? undefined));
+      if (credentialRef !== undefined) {
         try {
-          const authMethod = credentials.authorizeSsh(input.credentialRef, endpoint, input.target.identityFile);
+          const authMethod = credentials.authorizeSsh(credentialRef, endpoint, input.target.identityFile);
           target = { ...input.target, authMethod };
-          askpass = { credentialRef: input.credentialRef };
+          askpass = { credentialRef };
         } catch (error) {
           if (error instanceof CredentialError) throw credentialRefusal(error);
           throw error;
         }
       }
-      const profileId = profiles.attribute(input.profileId, endpoint);
       return profiles.track(profileId, () => withHelper(() => service.sshOpen(target, input.cols, input.rows, profileId, askpass)));
     },
     rdp_open: async (input) => {

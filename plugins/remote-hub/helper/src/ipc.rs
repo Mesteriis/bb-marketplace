@@ -830,6 +830,10 @@ fn handle(
                     }
                 }
             }
+            if askpass.is_none() && program == "/usr/bin/ssh" {
+                // No saved secret: the user's configuration applies, but a new host key is still the owner's decision.
+                argv = crate::ssh_args::with_plain_session_options(&argv);
+            }
             let spec = build_spawn_spec(program, argv, env, cwd);
             match spec {
                 Ok(spec) => match match &askpass {

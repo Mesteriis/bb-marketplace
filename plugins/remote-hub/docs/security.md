@@ -106,6 +106,14 @@
 - **Limits.** A command runs as the saved user with that user's rights: exec is the power to act as that user. The
   helper's own bounds do not limit what the remote command does on the server.
 
+## Host keys in a session without a saved secret
+
+A terminal session without a saved password or passphrase follows the user's own ssh configuration and known_hosts, with
+one exception the helper adds on the command line: `StrictHostKeyChecking=ask`. It wins over `no` or `accept-new` in a
+configuration file, so a host key nobody confirmed is always asked about in the terminal and never added on its own
+(0.2.1; before it such a configuration was obeyed). An open that names its profile uses that profile's saved credential
+even when the page did not send the reference.
+
 ## SFTP for other plugins
 
 - **Who.** Six RPCs (`hub_sftp_*`) answer only a caller the host reports as a plugin and act for that plugin id; the input

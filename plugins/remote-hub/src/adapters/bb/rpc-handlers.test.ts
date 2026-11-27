@@ -235,6 +235,30 @@ describe("ssh_open and a saved credential", () => {
     expect(service.sshOpen).not.toHaveBeenCalled();
   });
 
+  it("an open that names its profile uses that profile's saved credential even when the page did not send the reference", async () => {
+    // The page read its list before the password was saved (or another client saved it): the profile is what counts.
+    const { profiles, credentials, handlers, service } = setup();
+    const p = profiles.save({ fields: SSH });
+    const { ref } = await credentials.save({ profileId: p.id, secret: SECRET });
+    await expect(handlers.ssh_open(sshInput({}, { profileId: p.id }))).resolves.toEqual(HANDLE);
+    const call = service.sshOpen.mock.calls[0] as unknown as unknown[];
+    expect((call[0] as { authMethod?: string }).authMethod).toBe("password");
+    expect(call[4]).toEqual({ credentialRef: ref });
+  });
+
+  it("a profile id with another destination lends its saved credential to nothing", async () => {
+    const { profiles, credentials, handlers, service } = setup();
+    const p = profiles.save({ fields: SSH });
+    await credentials.save({ profileId: p.id, secret: SECRET });
+    for (const change of [{ host: "evil.example.test" }, { port: 22 }, { user: "admin" }]) await handlers.ssh_open(sshInput({ ...change }, { profileId: p.id }));
+    expect(service.sshOpen).toHaveBeenCalledTimes(3);
+    for (const call of service.sshOpen.mock.calls as unknown as unknown[][]) {
+      expect((call[0] as { authMethod?: string }).authMethod).toBeUndefined();
+      expect(call[3]).toBeUndefined();
+      expect(call[4]).toBeUndefined();
+    }
+  });
+
   it("without a reference the open is unchanged: no authMethod, no askpass", async () => {
     const { handlers, service } = setup();
     await handlers.ssh_open(sshInput({}));

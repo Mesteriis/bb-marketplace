@@ -208,6 +208,28 @@ describe.skipIf(!runDocker)("ssh service integration through the real socket han
     expect(info?.reason).toBe("ssh_error");
     expect(statSync(emptyKh).size).toBe(0);
   });
+
+  it("a configuration that says accept-new or no still gets the question: a new host key is never accepted on its own", { timeout: 60_000 }, async () => {
+    for (const setting of ["accept-new", "no"]) {
+      const kh = join(tmp, "empty_known_hosts_" + setting);
+      writeFileSync(kh, "");
+      const lax = join(tmp, "config_" + setting);
+      writeFileSync(lax, "Host *\n  StrictHostKeyChecking " + setting + "\n");
+      const target = { host: "127.0.0.1", port, configFile: lax, knownHostsFile: kh, identityFile: key, extraOptions: [] as string[] };
+      const handle = await service.sshOpen(target, 80, 24);
+      const token = service.sessionAttach(handle);
+      const handlers = wireSocket(service)("ws://bb/api/attach?attach=" + token);
+      const socket = makeSocket();
+      await handlers.onOpen(socket);
+      const out = await drainAndAck(socket, handlers, "Are you sure you want to continue connecting");
+      expect(out, setting).toContain("Are you sure you want to continue connecting");
+      expect(out, setting).not.toContain("Permanently added");
+      expect(out, setting).not.toContain("~#");
+      handlers.onMessage(socket, new TextEncoder().encode("no\n"));
+      await sleep(1000);
+      expect(statSync(kh).size, setting).toBe(0);
+    }
+  });
 });
 
 describe.skipIf(!enabled)("credit flow through the real service wiring (test-hooks)", () => {

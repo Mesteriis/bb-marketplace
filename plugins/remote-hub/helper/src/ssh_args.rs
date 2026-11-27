@@ -77,6 +77,23 @@ pub fn split_exec_argv(argv: &[String]) -> Result<(Vec<String>, String), String>
     Ok((plain, command.clone()))
 }
 
+/// A session WITHOUT a saved secret follows the user's own ssh configuration, with one exception: a host key nobody
+/// confirmed is asked about, in the terminal, whatever that configuration says. On the command line the option wins over
+/// `StrictHostKeyChecking no` or `accept-new` in a file, so no session opened here accepts a new key on its own.
+pub const PLAIN_SESSION_OPTIONS: [&str; 1] = ["StrictHostKeyChecking=ask"];
+
+/// The argv of such a session with those options put before the "--" that precedes the destination.
+pub fn with_plain_session_options(argv: &[String]) -> Vec<String> {
+    let at = argv.len().saturating_sub(2);
+    let mut out = argv[..at].to_vec();
+    for o in PLAIN_SESSION_OPTIONS {
+        out.push("-o".to_string());
+        out.push(o.to_string());
+    }
+    out.extend(argv[at..].iter().cloned());
+    out
+}
+
 /// An SFTP channel's argv as the client sends it: `ssh -T <session options> -- <host>`, with no command (the helper adds
 /// the subsystem itself, so a channel can never run anything else). Returns the `-tt` form `validate_ssh_spawn` checks.
 pub fn split_sftp_argv(argv: &[String]) -> Result<Vec<String>, String> {
@@ -531,6 +548,17 @@ mod tests {
         for option in ["StrictHostKeyChecking=no", "StrictHostKeyChecking=accept-new", "ProxyCommand=sh", "UserKnownHostsFile=/dev/null", "LocalCommand=id", "BatchMode=yes"] {
             let plain = split_sftp_argv(&argv(&["ssh", "-T", "-o", option, "--", "box.test"])).unwrap();
             assert!(validate_ssh_spawn("/usr/bin/ssh", &plain, &HashMap::new()).is_err(), "{option}");
+        }
+    }
+
+    #[test]
+    fn a_session_without_a_saved_secret_always_asks_about_a_new_host_key() {
+        let sent = argv(&["ssh", "-tt", "-l", "root", "-p", "2222", "-F", "/home/u/.ssh/config", "--", "box.test"]);
+        assert_eq!(with_plain_session_options(&sent), argv(&["ssh", "-tt", "-l", "root", "-p", "2222", "-F", "/home/u/.ssh/config", "-o", "StrictHostKeyChecking=ask", "--", "box.test"]));
+        assert_eq!(with_plain_session_options(&argv(&["ssh", "-tt", "--", "box.test"])), argv(&["ssh", "-tt", "-o", "StrictHostKeyChecking=ask", "--", "box.test"]));
+        // The client itself can never send that option, or a weaker one.
+        for option in ["StrictHostKeyChecking=ask", "StrictHostKeyChecking=no", "StrictHostKeyChecking=accept-new"] {
+            assert!(validate_ssh_spawn("/usr/bin/ssh", &argv(&["ssh", "-tt", "-o", option, "--", "box.test"]), &HashMap::new()).is_err(), "{option}");
         }
     }
 
