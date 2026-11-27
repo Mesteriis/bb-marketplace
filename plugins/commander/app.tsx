@@ -358,7 +358,7 @@ function CommanderPage({ compact = false, environment, threadId }: { compact?: b
       const estimate = await rpc.call("scan_start", {
         kind: "dirs", ...paths, by: "sha256", mtimeToleranceMs: 0, limit: LIST_PAGE_MAX, estimateOnly: true,
       });
-      if (!("estimateId" in estimate)) throw new CommanderError("internal", "Не удалось оценить объём чтения");
+      if (!("estimateId" in estimate)) throw new CommanderError("internal", ru.sync.estimateFailed);
       return estimate;
     },
     create: (request, estimateId) => rpc.call("sync_create", { ...request, estimateId }),

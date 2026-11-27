@@ -19,15 +19,15 @@ export interface SyncActions {
 function bytes(value: string | bigint) {
   const size = BigInt(value);
   const format = new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 1 });
-  if (size < 1000n) return format.format(size) + " Б";
-  if (size < 1_000_000n) return format.format(Number(size / 100n) / 10) + " КБ";
-  if (size < 1_000_000_000n) return format.format(Number(size / 100_000n) / 10) + " МБ";
-  return format.format(Number(size / 100_000_000n) / 10) + " ГБ";
+  if (size < 1000n) return format.format(size) + " " + ru.sync.units[0];
+  if (size < 1_000_000n) return format.format(Number(size / 100n) / 10) + " " + ru.sync.units[1];
+  if (size < 1_000_000_000n) return format.format(Number(size / 100_000n) / 10) + " " + ru.sync.units[2];
+  return format.format(Number(size / 100_000_000n) / 10) + " " + ru.sync.units[3];
 }
 
 function PlanFiles({ plan }: { plan: OperationPlan }) {
   return <details>
-    <summary>Показать список ({plan.items.length})</summary>
+    <summary>{ru.sync.files(plan.items.length)}</summary>
     <ul className="cm-grid">
       {plan.items.map(({ source, target }, index) => <li key={index} className="break-all">
         {source && displayPath(source.path)}{target && <> → {displayPath(target.path)}</>}
@@ -95,32 +95,30 @@ export function SyncDialog({ paths, labels, api, close }: {
       onCloseAutoFocus={(event) => event.preventDefault()}
       onPointerDownOutside={(event) => event.preventDefault()}
       onEscapeKeyDown={(event) => { if (busy) event.preventDefault(); }}>
-      <DialogTitle>План синхронизации</DialogTitle>
+      <DialogTitle>{ru.sync.title}</DialogTitle>
       <DialogDescription className="cm-dialog-description break-all">
         {labels[0]} · {displayPath(paths.left.path)} {direction === "both" ? "↔" : direction === "right-to-left" ? "←" : "→"} {labels[1]} · {displayPath(paths.right.path)}
       </DialogDescription>
       <fieldset disabled={busy} className="cm-detail border-y border-border py-3">
-        <legend>Направление</legend>
+        <legend>{ru.sync.direction}</legend>
         <div className="flex flex-wrap gap-x-4 gap-y-2">
-          {([
-            ["left-to-right", "Слева → направо"], ["right-to-left", "Справа → налево"], ["both", "В обе стороны"],
-          ] as const).map(([value, label]) => <label key={value} className="flex items-center gap-2">
+          {(["left-to-right", "right-to-left", "both"] as const).map((value) => <label key={value} className="flex items-center gap-2">
             <input type="radio" name="sync-direction" checked={direction === value} onChange={() => { setDirection(value); reset(); }} />
-            {label}
+            {ru.sync.directions[value]}
           </label>)}
         </div>
         <label className="flex items-center gap-2">
           <input type="checkbox" checked={by === "sha256"} onChange={(event) => { setBy(event.currentTarget.checked ? "sha256" : "size+mtime"); reset(); }} />
-          Сравнить по SHA-256
+          {ru.sync.compareHash}
         </label>
         <label className="flex items-center gap-2">
           <input type="checkbox" disabled={direction === "both"} checked={direction !== "both" && includeDeletes}
             onChange={(event) => { setIncludeDeletes(event.currentTarget.checked); reset(); }} />
-          Рассчитать отдельный план удалений
+          {ru.sync.planDeletes}
         </label>
       </fieldset>
 
-      {estimate && <p role="status">Чтение для сравнения по SHA-256 · {bytes(estimate.bytesPlanned)}</p>}
+      {estimate && <p role="status">{ru.sync.estimate(bytes(estimate.bytesPlanned))}</p>}
       {sync && <div className="cm-detail">
         {sync.copies.map((plan) => {
           const done = submitted.includes(plan.id);
@@ -130,19 +128,17 @@ export function SyncDialog({ paths, labels, api, close }: {
                 const checked = event.currentTarget.checked;
                 setChosen((previous) => checked ? [...previous, plan.id] : previous.filter((id) => id !== plan.id));
               }} />
-              <strong>{plan.conflictPolicy === "overwriteIfNewer" ? "Обновить изменённые" : "Копировать новые"} → {toLabel(plan)}</strong>
-              <span className="ml-auto">{done ? "В очереди" : plan.items.length + " · " + bytes(plan.totalBytes)}</span>
+              <strong>{plan.conflictPolicy === "overwriteIfNewer" ? ru.sync.update : ru.sync.copy} → {toLabel(plan)}</strong>
+              <span className="ml-auto">{done ? ru.sync.queued : plan.items.length + " · " + bytes(plan.totalBytes)}</span>
             </label>
             <PlanFiles plan={plan} />
           </section>;
         })}
         {sync.conflicts.length > 0 && <details className="rounded-md border border-border p-3">
-          <summary>Оставить без изменений ({sync.conflicts.length})</summary>
-          <p>{direction === "both" ? "Версии различаются на двух сторонах."
-            : "На стороне назначения файл новее или сравнение не определило безопасное обновление."}</p>
+          <summary>{ru.sync.unchanged(sync.conflicts.length)}</summary>
           <ul>
-            {sync.conflicts.map(({ left, right }, index) => <li key={index} className="break-all">
-              {nameOf(left.name)} · {bytes(left.size)} ↔ {bytes(right.size)}
+            {sync.conflicts.map(({ left, right, reason }, index) => <li key={index} className="break-all">
+              {nameOf(left.name)} · {bytes(left.size)} ↔ {bytes(right.size)} · {ru.sync.reasons[reason]}
             </li>)}
           </ul>
         </details>}
@@ -150,31 +146,31 @@ export function SyncDialog({ paths, labels, api, close }: {
           borderColor: "color-mix(in srgb, var(--destructive, #db6a73) 55%, var(--border))",
           backgroundColor: "color-mix(in srgb, var(--destructive, #db6a73) 7%, var(--background))",
         }}>
-          <h3 className="font-semibold">Удаления — отдельный набор</h3>
+          <h3 className="font-semibold">{ru.sync.deletes}</h3>
           {deletion ? <>
             <PlanFiles plan={deletion} />
-            {submitted.includes(deletion.id) ? <p role="status">Удаления в очереди.</p> : <>
+            {submitted.includes(deletion.id) ? <p role="status">{ru.sync.deletesQueued}</p> : <>
               <label className="flex items-center gap-2">
                 <input type="checkbox" checked={confirmDelete} disabled={busy} onChange={(event) => setConfirmDelete(event.currentTarget.checked)} />
-                Выбрать удаления ({deletion.items.length})
+                {ru.sync.selectDeletes(deletion.items.length)}
               </label>
-              <p>{bytes(deletion.totalBytes)} · Требуется право на удаление.</p>
+              <p>{bytes(deletion.totalBytes)} · {ru.sync.deletePermission}</p>
               <Button type="button" size="sm" variant="destructive" disabled={!confirmDelete || busy}
                 onClick={() => perform(async () => {
                   await api.run(deletion);
                   setSubmitted((previous) => [...previous, deletion.id]);
                   setConfirmDelete(false);
-                })}>Подтвердить удаления</Button>
+                })}>{ru.sync.confirmDeletes}</Button>
             </>}
-          </> : <p>{includeDeletes && direction !== "both" ? "Файлов для удаления нет." : "По умолчанию выключены."}</p>}
+          </> : <p>{includeDeletes && direction !== "both" ? ru.sync.nothingToDelete : ru.sync.deletesOff}</p>}
         </section>
-        <p className="text-muted-foreground">Перед запуском файлы сверяются повторно. Изменившийся файл потребует решения.</p>
+        <p className="text-muted-foreground">{ru.sync.recheck}</p>
       </div>}
       {problem && <ProblemLine problem={problem} />}
       <div className="cm-actions flex-wrap">
-        {sync && <span className="mr-auto">{count} действий · {bytes(transfer)} по сети</span>}
+        {sync && <span className="mr-auto">{ru.sync.summary(count, bytes(transfer))}</span>}
         <Button type="button" size="sm" variant="outline" disabled={busy} onClick={close}>
-          {submitted.length ? "Закрыть" : ru.cancel}
+          {submitted.length ? ru.close : ru.cancel}
         </Button>
         {sync ? <Button type="button" size="sm" className="cm-primary" disabled={busy || pending.length === 0}
           onClick={() => perform(async () => {
@@ -182,9 +178,9 @@ export function SyncDialog({ paths, labels, api, close }: {
               await api.run(plan);
               setSubmitted((previous) => [...previous, plan.id]);
             }
-          })}>Подтвердить план</Button>
+          })}>{ru.sync.confirmPlan}</Button>
           : <Button type="button" size="sm" className="cm-primary" disabled={busy} onClick={prepare}>
-            {estimate ? "Подтвердить чтение" : busy ? "Сравнение…" : "Построить план"}
+            {estimate ? ru.sync.confirmRead : busy ? ru.sync.preparing : ru.sync.build}
           </Button>}
       </div>
     </DialogContent>

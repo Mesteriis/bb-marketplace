@@ -85,6 +85,7 @@ export const PlanItem = z.object({
   kind: EntryKind,
   fingerprint: Fingerprint.nullable(),     // источника на момент плана; null для mkdir
   expectTarget: ExpectedTarget.nullable(), // цели на момент плана; null ровно когда нет цели
+  requireAbsent: ResourceRef.optional(),   // отсутствующий путь на противоположной стороне sync-delete
 }).strict().superRefine((item, ctx) => {
   if ((item.target === null) !== (item.expectTarget === null)) {
     ctx.addIssue({ code: "custom", path: ["expectTarget"], message: "expectTarget is set exactly when there is a target" });
@@ -111,6 +112,14 @@ const OperationPlanBase = z.object({
 }).strict();
 
 export const OperationPlan = OperationPlanBase.superRefine((plan, ctx) => {
+  if (plan.kind !== "delete" || !plan.syncId) {
+    plan.items.forEach((item, index) => {
+      if (item.requireAbsent) ctx.addIssue({
+        code: "custom", path: ["items", index, "requireAbsent"],
+        message: "An absence condition requires a synchronization deletion plan",
+      });
+    });
+  }
   // targetDir is the destination of copy, move and mkdir; delete and rename have none.
   const needsTargetDir = plan.kind === "mkdir" || plan.kind === "copy" || plan.kind === "move";
   if (needsTargetDir !== (plan.targetDir !== null)) {

@@ -1,6 +1,6 @@
 import { compareDirs, type DirDiff } from "./compare.ts";
 import { CommanderError } from "./errors.ts";
-import { planDigest, type Entry, type Initiator, type OperationPlan, type ResourceRef } from "./model.ts";
+import { OperationPlan, planDigest, type Entry, type Initiator, type ResourceRef } from "./model.ts";
 import { displayPath, isAncestorOrSelf, join, samePath } from "./path.ts";
 import { buildPlan, type PlannerDeps } from "./planner.ts";
 import { LIST_PAGE_MAX } from "./provider.ts";
@@ -19,7 +19,7 @@ export interface SyncPlan {
   id: string;
   copies: OperationPlan[];
   deletes: OperationPlan | null;
-  conflicts: { left: Entry; right: Entry; reason: "both_changed" }[];
+  conflicts: { left: Entry; right: Entry; reason: "target_newer" | "differs" }[];
 }
 
 export async function buildSyncPlan(
@@ -60,16 +60,16 @@ export async function buildSyncPlan(
   for (const [a, b] of diff.differ) {
     if (!wanted(a) || !wanted(b)) continue;
     const [source, target] = direction === "right-to-left" ? [b, a] : [a, b];
-    if (direction !== "both" && source.kind === "file" && target.kind === "file"
-      && source.mtimeNs !== null && target.mtimeNs !== null && BigInt(source.mtimeNs) > BigInt(target.mtimeNs)) {
-      updates.push([source, target]);
-    } else {
-      conflicts.push({ left: a, right: b, reason: "both_changed" });
-    }
+    const order = direction !== "both" && source.kind === "file" && target.kind === "file"
+      && source.mtimeNs !== null && target.mtimeNs !== null
+      ? BigInt(source.mtimeNs) - BigInt(target.mtimeNs) : 0n;
+    if (order > 0n) updates.push([source, target]);
+    else conflicts.push({ left: a, right: b, reason: order < 0n ? "target_newer" : "differs" });
   }
 
   async function make(
     from: ResourceRef, entries: [Entry, Entry | null][], targetDir: ResourceRef | null,
+    absenceRoot?: ResourceRef,
   ): Promise<OperationPlan | null> {
     if (!entries.length) return null;
     const sources = entries.map(([entry]) => ({ endpoint: from.endpoint, path: join(from.path, entry.name) }));
@@ -93,8 +93,15 @@ export async function buildSyncPlan(
         throw new CommanderError("changed_since_plan", "Directory entries changed during synchronization planning");
       }
     }
-    const unsigned = { ...plan, syncId: id };
-    return { ...unsigned, digest: await planDigest(unsigned) };
+    const items = absenceRoot ? plan.items.map((item) => {
+      const relative = item.source!.path.segments.slice(from.path.segments.length);
+      return { ...item, requireAbsent: {
+        endpoint: absenceRoot.endpoint,
+        path: relative.reduce(join, absenceRoot.path),
+      } };
+    }) : plan.items;
+    const unsigned = { ...plan, syncId: id, items };
+    return OperationPlan.parse({ ...unsigned, digest: await planDigest(unsigned) });
   }
 
   const absent = (entries: DirDiff["onlyLeft"]): [Entry, null][] => entries.map((entry) => [entry, null]);
@@ -112,7 +119,7 @@ export async function buildSyncPlan(
   }
 
   const deletes = !includeDeletes ? null : direction === "right-to-left"
-    ? await make(left, absent(onlyLeft), null)
-    : await make(right, absent(onlyRight), null);
+    ? await make(left, absent(onlyLeft), null, right)
+    : await make(right, absent(onlyRight), null, left);
   return { id, copies, deletes, conflicts };
 }

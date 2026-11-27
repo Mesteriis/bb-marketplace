@@ -168,7 +168,26 @@ export class JobRunner {
     }
     const plan = await this.validPlan(job.plan);
     const context = this.context(id, 0, this.stopping.signal);
+    // S13: a counterpart that appeared while waiting for the owner becomes a
+    // persisted conflict, before any item in this plan is allowed to delete.
     const checked = await this.deps.revalidate?.(plan, context.signal);
+    let absenceConflict = checked?.ok === false
+      ? checked.changed.find(({ index, reason }) => reason === "target_changed" && plan.items[index].requireAbsent)?.index
+      : undefined;
+    for (const [index, item] of plan.items.entries()) {
+      if (absenceConflict !== undefined) break;
+      if (item.requireAbsent && await this.syncDeleteCounterpart(item, context)) absenceConflict = index;
+    }
+    if (absenceConflict !== undefined) {
+      const item = plan.items[absenceConflict];
+      const counterpart = await this.syncDeleteCounterpart(item, context);
+      if (!await this.change(job, "start")) throw new CommanderError("changed_since_plan", "Job is no longer awaiting approval");
+      const running = await this.requireJob(id);
+      if (running.state === "running") {
+        await this.requestConflict(running, absenceConflict, new ItemConflict("target_changed", item.fingerprint, counterpart));
+      }
+      return;
+    }
     if (checked && !checked.ok) throw new CommanderError("changed_since_plan", "Plan changed before approval");
     // Sources are checked before any target is touched.
     const currents: (Awaited<ReturnType<typeof observe>>)[] = [];
@@ -357,6 +376,8 @@ export class JobRunner {
     const unsigned: Omit<OperationPlan, "digest"> = {
       id: this.deps.uuid(),
       createdAt: this.deps.now().toISOString(),
+      // S13: retry preserves the group and the signed absence predicates on kept items.
+      ...(job.plan.syncId ? { syncId: job.plan.syncId } : {}),
       // The retrying party owns the new plan, so its grants are checked when it runs.
       initiator,
       kind: job.plan.kind,
@@ -407,13 +428,13 @@ export class JobRunner {
 
   private async recordConfirmed(job: OperationJob, indices: number[]): Promise<void> {
     const items = job.items.slice();
-    let bytes = toBig(job.progress.bytesDone);
     for (const index of indices) {
       items[index] = { outcome: "done", error: null };
-      bytes += this.itemBytes(job, index, "done");
     }
-    // An unknown item already counts in itemsDone; confirming it adds only its bytes.
-    const progress = this.progress(job, bytes);
+    // An unknown item already counts in itemsDone and may have reported its bytes.
+    const completedBytes = items.reduce((bytes, item, index) => bytes + this.itemBytes(job, index, item.outcome), 0n);
+    const reportedBytes = toBig(job.progress.bytesDone);
+    const progress = this.progress(job, completedBytes > reportedBytes ? completedBytes : reportedBytes);
     if (!await this.patch(job, { items, progress }, "progress")) {
       throw new CommanderError("changed_since_plan", "Job changed while it was checked for retry");
     }
@@ -478,11 +499,16 @@ export class JobRunner {
       const progress = this.progress(job, completedBytes);
       if (!await this.patch(job, { progress }, "progress")) continue;
       const index = job.currentItem;
+      let checkpoint: Checkpoint | null = null;
       try {
         if (index !== null && job.items[index].outcome === "pending") {
-          // A cancelled recovery still needs read access to confirm the checkpoint.
-          await this.recoverStartedItem({ ...job, progress }, index, cancelling,
-            cancelling ? this.stopping.signal : signal);
+          // The runner writes prepared before issuing any mutation. With no checkpoint the item stays pending.
+          checkpoint = await this.store.lastCheckpoint(id, index);
+          if (checkpoint) {
+            // A cancelled recovery still needs read access to confirm the checkpoint.
+            await this.recoverStartedItem({ ...job, progress }, index, checkpoint, cancelling,
+              cancelling ? this.stopping.signal : signal);
+          }
         }
       } catch {
         this.stopping.signal.throwIfAborted();
@@ -490,7 +516,7 @@ export class JobRunner {
         if (latest?.state !== "interrupted") continue;
         const error = new CommanderError("outcome_unknown", "Interrupted job outcome could not be confirmed");
         if (index !== null) {
-          await this.record(latest, index, "unknown", error);
+          await this.recordUnknown(latest, index, error, completedBytes, checkpoint);
           if ((await this.store.get(id))?.state === "unknown") return "unknown";
         } else if (await this.change(latest, "reconciled_unknown", { error: error.toShape(), currentItem: null })) {
           return "unknown";
@@ -510,13 +536,8 @@ export class JobRunner {
   }
 
   private async recoverStartedItem(
-    job: OperationJob, index: number, cancelling: boolean, signal: AbortSignal,
+    job: OperationJob, index: number, checkpoint: Checkpoint, cancelling: boolean, signal: AbortSignal,
   ): Promise<void> {
-    // The runner writes prepared before issuing any mutation. A missing
-    // checkpoint is therefore safe to leave pending.
-    const checkpoint = await this.store.lastCheckpoint(job.id, index);
-    if (!checkpoint) return;
-
     const item = job.plan.items[index];
     const source = item.source && this.location(item.source);
     const target = this.recoveredTarget(item, checkpoint);
@@ -658,7 +679,9 @@ export class JobRunner {
           const error = safeError(caught);
           const cancelled = signal.aborted || current.state === "cancel_requested";
           if (error.code === "outcome_unknown") {
-            await this.record(current, index, "unknown", error, job.progress.bytesDone);
+            // The checkpoint advances after stat confirms the acknowledged write.
+            const checkpoint = await this.store.lastCheckpoint(id, index);
+            await this.recordUnknown(current, index, error, toBig(job.progress.bytesDone), checkpoint);
             return;
           }
           if (!cancelled) {
@@ -715,9 +738,20 @@ export class JobRunner {
     }, "conflict");
   }
 
+  // S13: guard metadata is read without hashing or following file contents.
+  private async syncDeleteCounterpart(item: PlanItem, context: VerifyContext): Promise<Fingerprint | null> {
+    return item.requireAbsent ? fingerprint(await observe(this.location(item.requireAbsent), context)) : null;
+  }
+
   private async perform(job: OperationJob, index: number, context: ItemContext, decision?: Decision): Promise<ItemResult> {
     const item = job.plan.items[index];
     const source = item.source && this.location(item.source);
+    // S13: skipping a conflict must also skip its removal if the counterpart still exists.
+    if (item.requireAbsent) {
+      if (decision?.action === "skip") return "skipped";
+      const counterpart = await this.syncDeleteCounterpart(item, context);
+      if (counterpart) throw new ItemConflict("target_changed", item.fingerprint, counterpart);
+    }
     if (job.plan.kind === "move" && item.kind === "dir" && source) {
       // A child may have paused for a decision across a restart. Restore the
       // parent on demand even if startup only restored the pending conflict.
@@ -812,7 +846,10 @@ export class JobRunner {
     switch (job.plan.kind) {
       case "delete":
         if (!source || !sourceFingerprint) break;
-        return await this.removeSource(source, item.kind, sourceFingerprint, context) ? "done" : "source_retained";
+        return await this.removeSource(source, item.kind, sourceFingerprint, context, null, item.requireAbsent ? async () => {
+          const counterpart = await this.syncDeleteCounterpart(item, context);
+          if (counterpart) throw new ItemConflict("target_changed", sourceFingerprint, counterpart);
+        } : undefined) ? "done" : "source_retained";
       case "mkdir":
         if (!destination) break;
         await this.makeDirectory(destination, oldTarget, replace, context, unchanged, sourceFingerprint);
@@ -1105,8 +1142,11 @@ export class JobRunner {
 
   private async removeSource(
     source: Location, kind: PlanItem["kind"], expect: Fingerprint, context: ItemContext, target: Location | null = null,
+    beforeRemove?: () => Promise<void>,
   ): Promise<boolean> {
     const { mutate, signal } = context;
+    // S13: check after the checkpoint and immediately before the deleting call.
+    await beforeRemove?.();
     try {
       await mutate(() => source.provider.remove(source.path, { kind, expect }, signal),
         (check) => this.unchanged(source, expect, target, context.saved().committed ?? "absent", check));
@@ -1210,6 +1250,13 @@ export class JobRunner {
   private async reportBytes(job: OperationJob, bytes: bigint): Promise<void> {
     const updated = this.progress(job, toBig(job.progress.bytesDone) + bytes);
     await this.patch(job, { progress: updated }, "progress");
+  }
+
+  private recordUnknown(
+    job: OperationJob, index: number, error: CommanderError, completedBytes: bigint, checkpoint: Checkpoint | null,
+  ): Promise<void> {
+    const confirmedBytes = completedBytes + toBig(checkpoint?.bytesDone ?? "0");
+    return this.record(job, index, "unknown", error, this.progress(job, confirmedBytes).bytesDone);
   }
 
   private async record(

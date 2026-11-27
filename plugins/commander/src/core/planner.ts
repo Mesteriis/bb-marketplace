@@ -499,6 +499,11 @@ async function itemChange(
     const unchanged = entry !== null && entry.kind === item.kind && sameFingerprint(entry, item.fingerprint);
     if (!unchanged) return "source_changed";
   }
+  // S13: the counterpart must remain absent for a synchronization deletion.
+  if (item.requireAbsent) {
+    const { endpoint, path } = item.requireAbsent;
+    if (await deps.provider(endpoint).stat(path, signal) !== null) return "target_changed";
+  }
   if (item.target !== null && item.expectTarget !== null) {
     if (item.source !== null && sameEntryRef(item.source, item.target, caseOf)) {
       // Only a rename may target its own source (a case-only change). For copy or move the

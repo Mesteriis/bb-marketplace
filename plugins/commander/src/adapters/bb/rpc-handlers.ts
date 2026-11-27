@@ -58,7 +58,10 @@ function ownedBy(initiator: Initiator, jobInitiator: Initiator) {
 }
 
 function refs(plan: OperationPlan): string[] {
-  return [plan.sourceEndpoint, plan.targetEndpoint].filter((id) => id !== null);
+  // S13: deletion does not write to the opposite endpoint, but still needs its absence proof.
+  return [...new Set([plan.sourceEndpoint, plan.targetEndpoint, ...plan.items.flatMap(
+    ({ requireAbsent }) => requireAbsent ? [requireAbsent.endpoint] : [],
+  )].filter((id) => id !== null))];
 }
 
 function autoRunAllowed(plan: OperationPlan, initiator: Initiator, grants: AgentGrant[]) {
@@ -459,6 +462,8 @@ export function createOperations(deps: {
       await deps.ready();
       const job = await requireJob(id, initiator.kind === "agent" ? initiator : undefined);
       if (initiator.kind === "agent") {
+        // S13: retry revalidates the counterpart, so read access must still cover it.
+        await checkScanRead(initiator, job.plan.items.flatMap(({ requireAbsent }) => requireAbsent ? [requireAbsent] : []));
         // Grants are checked on the job's own items before reconciliation may write anything.
         const rows = await grants.forThread(initiator.threadId);
         if (!authorize(initiator, job.plan, operationGrants(rows, job.plan)).ok || !unknownTargetsWritable(rows, job)) {

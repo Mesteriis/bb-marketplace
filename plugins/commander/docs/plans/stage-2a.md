@@ -234,18 +234,23 @@ Modify `src/adapters/bb/rpc-handlers.ts`, `src/core/wire/rpc.ts`,
 `agent-tools.ts`.
 
 **Consumes:** `compareDirs` (задача 2), `buildPlan`, `revalidate`.
-**Согласованное отклонение:** S13 добавляет в `src/core/model.ts` только
-опциональный UUID `OperationPlanBase.syncId`. При наличии он включается в
-digest. Планы этапа 1 сохраняют прежний digest, а SQLite хранит поле в
-`plan_json` без миграции.
+**Согласованное отклонение:** S13 добавляет в `src/core/model.ts`
+опциональные поля `OperationPlanBase.syncId` и `PlanItem.requireAbsent`.
+Второе поле допустимо только в delete-плане с `syncId` и указывает путь,
+который должен отсутствовать на противоположной стороне. Оба поля при наличии
+входят в digest. Планы этапа 1 сохраняют прежний digest, а SQLite хранит поля
+в `plan_json` без миграции.
 **Produces:**
 - `interface SyncRequest { left: ResourceRef; right: ResourceRef; direction: "left-to-right" | "right-to-left" | "both"; by: "size+mtime" | "sha256"; includeDeletes: boolean; filters?: { exclude: string[] } }`.
 - `buildSyncPlan(req, deps): Promise<SyncPlan>`;
-  `SyncPlan = { id: string; copies: OperationPlan[]; deletes: OperationPlan | null; conflicts: { left: Entry; right: Entry; reason: "both_changed" }[] }`.
+  `SyncPlan = { id: string; copies: OperationPlan[]; deletes: OperationPlan | null; conflicts: { left: Entry; right: Entry; reason: "target_newer" | "differs" }[] }`.
   `deletes` = `null` при `includeDeletes: false`; при `true` — отдельный
   `delete`-план, подтверждается отдельно и требует `delete`.
 - Запуск: каждый план — обычное задание с `syncId`; перед запуском
-  `revalidate`.
+  `revalidate`. Отсутствие пути для удаления проверяется при запуске, при
+  подтверждении отложенного задания и непосредственно перед `remove`. Если
+  путь появился, конфликт предлагает пропуск или отмену. Список и объём
+  удалений учитывают вложенные элементы.
 - Сравнение S10 сопоставляет непосредственных потомков. Неполное сравнение
   блокирует план. Фильтр `exclude` принимает точные имена потомков на обеих
   сторонах. В режиме «В обе стороны» удаление недоступно: для него нужно
@@ -254,7 +259,7 @@ digest. Планы этапа 1 сохраняют прежний digest, а SQL
 
 - [ ] Test `includeDeletes false, right-only file → deletes null, file untouched after run`
 - [ ] Test `includeDeletes true → deletes plan with exactly the right-only entries`
-- [ ] Test `direction both, file changed on both sides → conflict both_changed, not copied`
+- [ ] Test `direction both, file changed on both sides → conflict differs, not copied`
 - [ ] Test `source changed after plan → item conflict source_changed`
 - [ ] Test `agent with write but no delete: includeDeletes true → deletes plan awaits owner`
 - [ ] UI по артборду; commit
@@ -393,10 +398,16 @@ Remote Hub `9da1d6bb`, тестовый sshd (Alpine) в Docker на `127.0.0.1:
 
 Находки:
 
-1. После `outcome_unknown` на сервере остаётся `.commander-<uuid>-0.part`
-   (108 МиБ, 0644), `progress.bytesDone` показывает 0 — отдельный срез.
-2. Смена ключа проверена только после reload Commander; поведение
-   кэшированного провайдера — тот же срез.
+1. После `outcome_unknown` на сервере оставался `.commander-<uuid>-0.part`
+   (108 МиБ, 0644), а `progress.bytesDone` показывал 0. Закрыто срезом S5-live.
+   Прогресс сохраняет последний подтверждённый чекпоинт элемента поверх
+   ранее завершённых байтов. Неизвестность исхода выражена состоянием задания
+   и исходом элемента. Тесты с SFTP-моком подтверждают, что повтор S17 удаляет
+   временный файл один раз у владельца и у агента с правом записи на каталог
+   цели. Без этого права файл остаётся.
+2. Смена ключа на стенде проверялась после reload Commander. Закрыто срезом
+   S5-live: тесты на уже открытом SFTP-провайдере подтверждают
+   `host_key_rejected` при чтении и записи после отказа Remote Hub.
 3. Профиль Remote Hub `authType: "agent"` даёт `auth_failed`: `~/.ssh/config`
    владельца задаёт `IdentityAgent` (1Password) и `IdentitiesOnly yes`, поэтому
    `SSH_AUTH_SOCK` не используется. Проверка шла профилем `key` с

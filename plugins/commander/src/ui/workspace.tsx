@@ -532,12 +532,14 @@ export function Workspace(props: WorkspaceProps) {
         focusScanPanel.current = true;
         close();
       }} /> : <>
-    <header className="cm-heading">
+    <header className="cm-heading flex-wrap [&>button]:shrink-0 [&>button]:whitespace-nowrap">
       {compact && <h1><Icon name="Folder" />Commander</h1>}
       {!dialog && retryConflict ? <div className="cm-retry">
         <ProblemLine problem={retryConflict.problem} truncate />
         <Button size="sm" variant="outline" disabled={busy} onClick={() => goBack(retryConflict.view)}>{ru.retryConflict}</Button>
-      </div> : <><span className="cm-hint">{compact ? ru.threadEnvironment : ru.shortcut}</span><span className="cm-fill" /></>}
+      </div> : <span className="cm-fill min-w-0 overflow-hidden">
+        <span className="cm-hint inline-block max-w-full truncate align-middle">{compact ? ru.threadEnvironment : ru.shortcut}</span>
+      </span>}
       {!compact && <><Button size="sm" variant="outline" aria-label={ru.swap} onClick={() => { setCursor({}); update((previous) => ({ ...previous, left: previous.right, right: previous.left })); }}>
         <Icon name="ArrowUpDown" /><span>{ru.swap}</span></Button>
         <Button size="sm" variant="outline" aria-label={ru.compare} disabled={!left || !right}
@@ -550,13 +552,13 @@ export function Workspace(props: WorkspaceProps) {
             } });
           }}>
           <Icon name="FileDiff" /><span>{ru.compare}</span></Button></>}
-      {props.sync && <Button size="sm" variant="outline" aria-label="Синхронизация" disabled={!left || !right}
+      {props.sync && <Button size="sm" variant="outline" aria-label={ru.sync.action} disabled={!left || !right}
         onClick={() => {
           if (!left || !right) return;
           const a = currentRef(left), b = currentRef(right);
           open({ kind: "sync", paths: { left: a, right: b },
             labels: [endpointsBySide.left?.label ?? a.endpoint, endpointsBySide.right?.label ?? b.endpoint] });
-        }}><Icon name="ArrowUpDown" /><span>Синхронизация</span></Button>}
+        }}><Icon name="ArrowUpDown" /><span>{ru.sync.action}</span></Button>}
       <Button size="sm" variant="outline" aria-label={ru.scanChecksum} disabled={!ready || current?.kind !== "file"} onClick={() => {
         if (!tab || current?.kind !== "file") return;
         open({ kind: "scan", subject: { kind: "checksum", file: {

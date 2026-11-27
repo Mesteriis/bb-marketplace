@@ -145,7 +145,7 @@ export const SyncResult = z.strictObject({
   id: z.uuid(),
   copies: z.array(OperationPlan).max(2),
   deletes: OperationPlan.nullable(),
-  conflicts: z.array(z.strictObject({ left: Entry, right: Entry, reason: z.literal("both_changed") })).max(LIST_PAGE_MAX),
+  conflicts: z.array(z.strictObject({ left: Entry, right: Entry, reason: z.enum(["target_newer", "differs"]) })).max(LIST_PAGE_MAX),
 });
 
 export const rpcSchemas = {

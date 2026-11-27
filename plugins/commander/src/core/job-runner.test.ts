@@ -393,6 +393,23 @@ test("does not retry a mutation whose outcome is unknown or run later items", as
   expect(to.calls.filter(({ op }) => op === "commit")).toHaveLength(1);
 });
 
+test("keeps the last confirmed 108 MiB after a write reply is lost", async () => {
+  const { runner, plan, store, at, to } = await setup({ size: 109 * mib });
+  const openWrite = to.openWrite.bind(to);
+  vi.spyOn(to, "openWrite").mockImplementation(async (...args) => {
+    const session = await openWrite(...args);
+    return { ...session, write: async (offset, bytes, signal) => {
+      await session.write(offset, bytes, signal);
+      if (offset === 113246208n) throw new CommanderError("outcome_unknown", "Write reply lost");
+    } };
+  });
+  const { id } = await runner.submit(plan);
+  const job = await at(id, "unknown");
+  expect(job.error?.code).toBe("outcome_unknown");
+  expect((await store.lastCheckpoint(id, 0))?.bytesDone).toBe("113246208");
+  expect(job.progress.bytesDone).toBe("113246208");
+});
+
 test("reconciles an untouched overwrite target after a restart", async () => {
   const { runner, plan, store, to, at } = await setup({ policy: "overwrite" });
   const { id } = await runner.submit(plan, { awaitsOwner: true });
@@ -448,6 +465,32 @@ test("does not verify source_removed using only a matching file length", async (
   expect(await runner.recover()).toEqual({ resumed: [], unknown: [id] });
   expect((await at(id, "unknown")).items[0].outcome).toBe("unknown");
 });
+
+test.each([[0, "3"], [1, "6"]] as const)(
+  "keeps confirmed checkpoint bytes when recovery fails after %s completed items",
+  async (index, expectedBytes) => {
+    const { runner, newRunner, plan, store, to, at } = await setup({ count: 2 });
+    const { id } = await runner.submit(plan, { awaitsOwner: true });
+    const items = [
+      { outcome: index === 0 ? "pending" as const : "done" as const, error: null },
+      { outcome: "pending" as const, error: null },
+    ];
+    await store.update(id, { state: "running", awaitsOwner: false, currentItem: index, items,
+      progress: { itemsDone: index, itemsTotal: 2, bytesDone: "3", bytesTotal: "6" } }, "pending");
+    const path = index === 0 ? target : parsePosix("/b1");
+    const tempPath = parsePosix("/.commander-223e4567-e89b-42d3-a456-000000000001-" + index + ".part");
+    await store.checkpoint({
+      jobId: id, itemIndex: index, phase: "copying", bytesDone: "3", tempPath,
+      tempFingerprint: { size: "3", mtimeNs: "2" }, targetPath: path, expectTarget: "absent", verified: null,
+    });
+    to.failOn.push({ op: "stat", path: tempPath, times: 1, error: new CommanderError("permission_denied", "Denied") });
+
+    expect(await newRunner().recover()).toEqual({ resumed: [], unknown: [id] });
+    const job = await at(id, "unknown");
+    expect(job.items[index].outcome).toBe("unknown");
+    expect(job.progress.bytesDone).toBe(expectedBytes);
+  },
+);
 
 test("accepts both legacy conflicts and conflicts with explicit resolutions", () => {
   const conflict = {
@@ -1623,6 +1666,7 @@ test("retry plans only the failed item and keeps a confirmed unknown item done",
   expect(failed.items.map(({ outcome }) => outcome)).toEqual(["done", "failed", "unknown"]);
 
   const retry = (await runner.retryJob(id, { kind: "owner" })).plan;
+  expect((await store.get(id))!.progress.bytesDone).toBe("6");
   expect(retry!.items.map(({ source }) => source?.path.segments)).toEqual([[{ t: "a1" }]]);
   expect(retry!.totalBytes).toBe("3");
   expect((await store.get(id))!.items.map(({ outcome }) => outcome)).toEqual(["done", "failed", "done"]);
