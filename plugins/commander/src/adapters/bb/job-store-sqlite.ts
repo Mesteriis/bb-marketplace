@@ -1,7 +1,7 @@
 import type { Database } from "better-sqlite3";
 import { z } from "zod";
 import { CommanderError } from "../../core/errors.ts";
-import type { Checkpoint, JobStore } from "../../core/job-store.ts";
+import type { AgentJobStore, Checkpoint, JobStore } from "../../core/job-store.ts";
 import { Fingerprint, Initiator, OperationJob, type OperationPlan } from "../../core/model.ts";
 import { ResourcePath } from "../../core/path.ts";
 import { Size } from "../../core/size.ts";
@@ -175,7 +175,7 @@ function unreadableJob(row: JobRow, id: string): OperationJob {
   });
 }
 
-export function createSqliteJobStore(db: Database): JobStore {
+export function createSqliteJobStore(db: Database): AgentJobStore {
   const insert = db.prepare(`
     INSERT INTO jobs (
       id, plan_json, state, progress_json, current_item, pending_conflict_json,
@@ -194,6 +194,30 @@ export function createSqliteJobStore(db: Database): JobStore {
   const byId = db.prepare<[string], JobRow>(`${jobRows} WHERE id = ?`);
   const byRowId = db.prepare<[string], JobRow>(`${jobRows} WHERE rowid = ?`);
   const byUpdate = db.prepare<[], JobRow>(`${jobRows} ORDER BY updated_at DESC, id ASC`);
+  const agentRows = (scope: "all" | "thread") => db.prepare<{
+    threadId?: string; states: string | null; scanLimit: number;
+  }, JobRow>(`${jobRows}
+    WHERE initiator_kind = 'agent' ${scope === "thread" ? "AND thread_id = @threadId" : ""}
+      AND (@states IS NULL OR state IN (SELECT value FROM json_each(@states)))
+    ORDER BY updated_at DESC, id ASC LIMIT @scanLimit
+  `);
+  const byThread = agentRows("thread");
+  const allAgents = agentRows("all");
+  const maxPageScan = 200;
+  const scanRows = (scope: "owner" | "agent") => db.prepare<{ cursor: string | null; threadId?: string }, JobRow>(`${jobRows}
+    WHERE (@cursor IS NULL OR rowid < CAST(@cursor AS INTEGER))
+      ${scope === "agent" ? "AND initiator_kind = 'agent' AND thread_id = @threadId" : ""}
+    ORDER BY rowid DESC LIMIT ${maxPageScan + 1}
+  `);
+  const ownerScan = scanRows("owner");
+  const agentScan = scanRows("agent");
+  const approvalRecorded = db.prepare<[string], number>(
+    "SELECT 1 FROM commander_owner_approvals WHERE job_id = ?",
+  ).pluck();
+  const countApprovals = db.prepare<[string], { thread: number; total: number }>(`
+    SELECT count(CASE WHEN thread_id = ? THEN 1 END) AS thread, count(*) AS total
+    FROM jobs WHERE state = 'pending' AND awaits_owner = 1 AND initiator_kind = 'agent'
+  `);
   const countStoredTerminal = db.prepare<[], number>(
     `SELECT count(*) FROM jobs WHERE state IN ${TERMINAL_STATES}`,
   ).pluck();
@@ -298,6 +322,8 @@ export function createSqliteJobStore(db: Database): JobStore {
   });
 
   return {
+    hasOwnerApproval: (id) => approvalRecorded.get(id) === 1,
+    approvalQueueSize: (threadId) => countApprovals.get(threadId)!,
     async create(job) {
       create.immediate(job);
     },
@@ -309,17 +335,37 @@ export function createSqliteJobStore(db: Database): JobStore {
       if (damaged) return row ? null : unreadableJob(damaged, id);
       return row ? showRow(row) : null;
     },
-    async list({ states, limit }) {
+    async list({ states, limit, threadId }) {
       if (limit <= 0 || states?.length === 0) return [];
       const jobs: OperationJob[] = [];
       // An unreadable row is `unknown` regardless of its stored state.
-      // Decode before filtering and stop as soon as the page is full.
-      for (const row of byUpdate.iterate()) {
+      // When unknown is requested, any stored state can contribute a row.
+      const rows = threadId === undefined ? byUpdate.iterate()
+        : (threadId === "*" ? allAgents : byThread).iterate({
+          threadId,
+          states: !states || states.includes("unknown") ? null : JSON.stringify(states),
+          scanLimit: states ? -1 : limit,
+        });
+      for (const row of rows) {
         const job = showRow(row);
         if (!states || states.includes(job.state)) jobs.push(job);
         if (jobs.length >= limit) break;
       }
       return jobs;
+    },
+    async listUnknownPage({ states, limit, threadId, cursor }) {
+      const jobs: OperationJob[] = [];
+      const statement = threadId === undefined ? ownerScan : agentScan;
+      let lastRow: string | undefined;
+      let scanned = 0;
+      for (const row of statement.iterate({ threadId, cursor: cursor ?? null })) {
+        if (scanned === maxPageScan || jobs.length >= limit) return { jobs, nextCursor: lastRow };
+        const job = showRow(row);
+        if (states.includes(job.state)) jobs.push(job);
+        lastRow = row.row_id;
+        scanned++;
+      }
+      return { jobs };
     },
     async update(id, patch, expected) {
       assertWritableJobId(id);

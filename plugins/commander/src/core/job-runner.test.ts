@@ -1531,3 +1531,60 @@ test("a rename that only changes the Unicode normalisation form is not a case-on
   expect(isCaseOnlyPair(at("\u00e4"), at("a\u0308"))).toBe(false);
   expect(isCaseOnlyPair(at("A"), at("a"))).toBe(true);
 });
+
+test("shutdown interrupts a write and leaves the write intent for the next runner", async () => {
+  const { runner, newRunner, plan, store, to, at } = await setup();
+  const writing = pause();
+  const finish = pause();
+  const cancelled = vi.spyOn(runner, "cancel");
+  let aborted = false;
+  to.delay = async (op, _path, signal) => {
+    if (op !== "write") return;
+    const interrupted = new Promise<void>((resolve) => signal.addEventListener("abort", () => {
+      aborted = true;
+      resolve();
+    }, { once: true }));
+    writing.release();
+    await interrupted;
+    await finish.promise;
+    signal.throwIfAborted();
+  };
+  const { id } = await runner.submit(plan);
+  await writing.promise;
+  let stopped = false;
+  const shutdown = runner.shutdown().then(() => { stopped = true; });
+  await vi.waitFor(() => expect(aborted).toBe(true));
+  expect(stopped).toBe(false);
+  finish.release();
+  await shutdown;
+  expect(cancelled).not.toHaveBeenCalled();
+  expect(await store.get(id)).toMatchObject({
+    state: "running", currentItem: 0, items: [{ outcome: "pending", error: null }], error: null,
+  });
+  expect(await store.lastCheckpoint(id, 0)).toMatchObject({
+    phase: "copying", bytesDone: "0", writing: { offset: "0", length: 3 },
+  });
+  expect(to.temporaryCount).toBe(1);
+  expect(to.contents(target)).toBeNull();
+
+  to.delay = undefined;
+  const updates = vi.spyOn(store, "update");
+  expect(await newRunner().recover()).toEqual({ resumed: [id], unknown: [] });
+  expect(updates).toHaveBeenCalledWith(id, expect.objectContaining({ state: "interrupted" }), "running");
+  expect((await at(id, "completed")).items).toEqual([{ outcome: "done", error: null }]);
+  expect(to.temporaryCount).toBe(0);
+  expect(to.contents(target)).toEqual(Uint8Array.of(42, 42, 42));
+});
+
+test("an idle runner shuts down idempotently and refuses new work", async () => {
+  const { runner, plan, store } = await setup();
+  const { id } = await runner.submit(plan, { awaitsOwner: true });
+  await expect(runner.shutdown()).resolves.toBeUndefined();
+  await expect(runner.shutdown()).resolves.toBeUndefined();
+  const error = { code: "internal", message: "runner is shutting down" };
+  await expect(runner.submit(plan)).rejects.toMatchObject(error);
+  await expect(runner.approve(id)).rejects.toMatchObject(error);
+  await expect(runner.decide(id, { conflictId: id, action: "skip", applyTo: "this" })).rejects.toMatchObject(error);
+  await expect(runner.recover()).rejects.toMatchObject(error);
+  expect(await store.list({ limit: 10 })).toMatchObject([{ id, state: "pending", awaitsOwner: true }]);
+});

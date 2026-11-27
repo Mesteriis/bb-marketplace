@@ -197,3 +197,25 @@ it("treats an acknowledged remote cancellation after dispatch as an unknown muta
   await expect(provider.mkdir(path, signal)).rejects.toMatchObject({ code: "outcome_unknown" });
   await expect(provider.stat(path, signal)).rejects.toMatchObject({ code: "cancelled" });
 });
+
+it("transports a plain JSON host error and preserves its code and retryability", async () => {
+  const host = createHostFs();
+  const harness = experimental_createHostEntryHarness(experimental_defineHostEntry({
+    contract: HostFsContract, handlers: host.rpcHandlers, dispose: host.dispose,
+  }));
+  const path = { segments: [] };
+  const expected = { code: "permission_denied", message: "Cannot modify a filesystem root", retryable: false };
+  const input = { path, kind: "dir" as const };
+  const provider = createLocalProvider(endpoint, {
+    call: (method, params, options) => harness.experimental_call(method, params, { signal: options.signal }),
+  });
+  try {
+    const failure = await host.rpcHandlers.remove(input, { signal } as Parameters<typeof host.rpcHandlers.remove>[1])
+      .catch((error: unknown) => error);
+    expect(Object.getPrototypeOf(failure)).toBe(Error.prototype);
+    expect(failure).toMatchObject({ message: JSON.stringify(expected) });
+    await expect(provider.remove(path, { kind: "dir" }, signal)).rejects.toMatchObject(expected);
+  } finally {
+    await harness.experimental_dispose();
+  }
+});

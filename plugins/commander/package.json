@@ -9,13 +9,14 @@
   },
   "bb": {
     "name": "Makosh Commander [Experimental]",
-    "description": "Experimental two-pane file manager for BB. Early scaffold: the Commander page is a placeholder.",
+    "description": "Browse local and SFTP file endpoints, plan transfers, and track jobs with Makosh Commander CLI and agent tools. SFTP requires Remote Hub.",
     "branding": {
       "icon": "./assets/icon.svg"
     },
     "server": "./server.ts",
     "app": "./app.tsx",
-    "host": "./host.ts"
+    "host": "./host.ts",
+    "skills": ["skills"]
   },
   "scripts": {
     "build": "bb plugin build",
@@ -47,7 +48,7 @@
     "typescript": "^5.7.0",
     "vitest": "^5.1.0"
   },
-  "description": "Experimental two-pane file manager for BB. Early scaffold: the Commander page is a placeholder.",
+  "description": "Browse local and SFTP file endpoints, plan transfers, and track jobs with Makosh Commander CLI and agent tools. SFTP requires Remote Hub.",
   "license": "MIT",
   "repository": {
     "type": "git",
