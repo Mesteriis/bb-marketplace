@@ -13,6 +13,7 @@ type PublishedFile = Fingerprint & { atomicNoReplace?: false; orphanedTempPath?:
 type CleanupResult = { orphanedTempPath?: ResourcePath };
 export type StagingOrphan = {
   session: string;
+  targetPath: ResourcePath;
   tempPath: ResourcePath;
   reason: "parent_changed" | "cleanup_failed";
 };
@@ -63,6 +64,7 @@ export class WriteSessions {
   private readonly sessions = new Map<string, Session>();
   private disposed = false;
   private publishing = Promise.resolve();
+  private readonly orphanReports = new Set<Promise<void>>();
 
   constructor(
     private readonly platform: NamePlatform,
@@ -131,8 +133,8 @@ export class WriteSessions {
   }
 
   /**
-   * Preserve POSIX permission bits when replacing a file. Extended attributes
-   * and ACLs of the old target are not copied to the staged inode.
+   * Preserve the old target's owner/group/other rwx bits on replacement.
+   * The new inode does not inherit setuid, setgid, sticky, xattrs, or ACLs.
    */
   commit(session: string, replace: boolean, expect: ExpectedVersion, signal: AbortSignal): Promise<PublishedFile> {
     return this.run(session, async (stage) => {
@@ -155,8 +157,9 @@ export class WriteSessions {
         if (currentTarget?.isSymbolicLink()) throw new CommanderError("permission_denied", "Symbolic link at target");
         if (expect && expect !== "absent" && currentTarget && !currentTarget.isFile()) throw changed();
         requireVersion(currentTarget, expect, hashed);
+        if (!replace && currentTarget) throw new CommanderError("already_exists", "Target exists");
         const mode = replace && currentTarget?.isFile()
-          ? Number(currentTarget.mode & 0o7777n)
+          ? Number(currentTarget.mode & 0o777n)
           : 0o644 & ~process.umask();
         let cleanup = false;
         let atomicNoReplace: false | undefined;
@@ -218,6 +221,9 @@ export class WriteSessions {
   async dispose(): Promise<void> {
     this.disposed = true;
     await Promise.allSettled([...this.sessions.keys()].map((session) => this.abort(session)));
+    // A TTL cleanup can already have removed its session from the map.
+    await this.publishing;
+    await Promise.all(this.orphanReports);
   }
 
   private async removeStage(stage: StagedFile): Promise<StagingOrphan["reason"] | undefined> {
@@ -227,14 +233,18 @@ export class WriteSessions {
     const temp = childPath(resolved.full, tempName);
     const staged = await file.stat({ bigint: true });
     const current = await lstatOrNull(temp);
+    const parentStillHere = async () => {
+      const currentParent = await lstatOrNull(resolved.full);
+      return currentParent?.isDirectory() && sameNode(currentParent, directory);
+    };
+    if (!await parentStillHere()) return "parent_changed";
     if (!current) return;
     if (!current.isFile() || !sameNode(current, staged)) return "cleanup_failed";
-    const currentParent = await lstatOrNull(resolved.full);
-    if (!currentParent?.isDirectory() || !sameNode(currentParent, directory)) return "parent_changed";
     try {
       await (this.options.unlink ?? unlink)(temp);
     } catch (error) {
       if (!hasErrno(error, "ENOENT")) throw error;
+      if (!await parentStillHere()) return "parent_changed";
     }
   }
 
@@ -253,21 +263,30 @@ export class WriteSessions {
     try {
       await stage.file.close();
     } catch {
-      reason ??= "cleanup_failed";
+      console.warn("[commander] Could not close staging file", { session });
     }
     try {
       await stage.lease?.dispose();
     } catch {
-      reason ??= "cleanup_failed";
+      console.warn("[commander] Could not release staging worker lease", { session });
     }
     if (!reason) return {};
     const tempPath = join(parent(stage.target)!, stage.tempName);
-    const orphan = { session, tempPath, reason };
+    this.reportOrphan({ session, targetPath: stage.target, tempPath, reason });
+    return { orphanedTempPath: tempPath };
+  }
+
+  private reportOrphan(orphan: StagingOrphan): void {
+    const { session, reason } = orphan;
     const warn = () => { console.warn("[commander] Staging requires reconciliation", { session, reason }); };
     const report = this.options.onOrphan;
-    if (report) void Promise.resolve().then(() => report(orphan)).catch(warn);
-    else warn();
-    return { orphanedTempPath: tempPath };
+    if (!report) {
+      warn();
+      return;
+    }
+    const pending = Promise.resolve().then(() => report(orphan)).catch(warn);
+    this.orphanReports.add(pending);
+    void pending.then(() => { this.orphanReports.delete(pending); });
   }
 
   private async run<T>(

@@ -1,4 +1,4 @@
-import { type ExperimentalHostClient } from "@get-bb/plugin-sdk";
+import { experimental_PluginRpcCallError, type ExperimentalHostClient } from "@get-bb/plugin-sdk";
 import { CommanderError, CommanderErrorShape } from "../../core/errors.ts";
 import { type Capability, type Endpoint, type Fingerprint } from "../../core/model.ts";
 import { join, parent, type ResourcePath } from "../../core/path.ts";
@@ -24,13 +24,21 @@ function translate(method: HostFsMethod, error: unknown, signal?: AbortSignal): 
   if (error instanceof Error && error.message.length <= 4096) {
     try {
       const shape = CommanderErrorShape.safeParse(JSON.parse(error.message));
-      if (shape.success) return new CommanderError(shape.data.code, shape.data.message, shape.data.retryable);
+      if (shape.success && (shape.data.code !== "cancelled" || !mutations.has(method))) {
+        return new CommanderError(shape.data.code, shape.data.message, shape.data.retryable);
+      }
     } catch {
       // Transport failures may carry arbitrary diagnostics; keep them out of Commander.
     }
   }
-  if (signal?.aborted) return new CommanderError("cancelled", "Host filesystem call cancelled");
+  if (error instanceof experimental_PluginRpcCallError) {
+    if (error.code === "invalid_input" || error.code === "invalid_json") {
+      return new CommanderError("invalid_path", "Invalid host filesystem request");
+    }
+    if (error.code === "unknown_method") return new CommanderError("internal", "Host filesystem method is unavailable");
+  }
   if (mutations.has(method)) return new CommanderError("outcome_unknown", "Host did not confirm the filesystem operation");
+  if (signal?.aborted) return new CommanderError("cancelled", "Host filesystem call cancelled");
   return new CommanderError("connection_failed", "Host filesystem call failed");
 }
 
@@ -40,12 +48,14 @@ export function createLocalProvider(
   const hostId = endpoint.hostId;
   if (!hostId || endpoint.provider !== "local") throw new CommanderError("invalid_path", "Expected a local host endpoint");
 
-  async function call<M extends HostFsMethod>(method: M, input: HostFsInput<M>, signal?: AbortSignal) {
+  async function call<M extends HostFsMethod>(
+    method: M, input: HostFsInput<M>, signal?: AbortSignal, hashesFile = false,
+  ) {
+    if (signal?.aborted) throw new CommanderError("cancelled", "Host filesystem call cancelled before dispatch");
     try {
-      signal?.throwIfAborted();
       return await client.call(method, input, {
         hostId: hostId!, signal,
-        ...(longCalls.has(method) ? { timeoutMs: LONG_CALL_TIMEOUT_MS } : {}),
+        ...(hashesFile || longCalls.has(method) ? { timeoutMs: LONG_CALL_TIMEOUT_MS } : {}),
       });
     } catch (error) {
       throw translate(method, error, signal);
@@ -106,9 +116,12 @@ export function createLocalProvider(
     },
     async mkdir(path, signal) { await call("mkdir", { path }, signal); },
     async rename(from, to, opts, signal) {
-      await notify("rename", to, await call("rename", { from, to, ...opts }, signal));
+      const hashesFile = typeof opts.expectTarget === "object" && opts.expectTarget.sha256 !== undefined;
+      await notify("rename", to, await call("rename", { from, to, ...opts }, signal, hashesFile));
     },
-    async remove(path, opts, signal) { await call("remove", { path, ...opts }, signal); },
+    async remove(path, opts, signal) {
+      await call("remove", { path, ...opts }, signal, opts.expect?.sha256 !== undefined);
+    },
     async copyWithin(from, to, opts, signal) {
       return fingerprintResult("copyWithin", to, await call("copyWithin", { from, to, ...opts }, signal));
     },

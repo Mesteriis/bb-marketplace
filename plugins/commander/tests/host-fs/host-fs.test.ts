@@ -1,13 +1,16 @@
+/// <reference lib="es2024.promise" />
+
 import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, truncate, unlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { createHostFs } from "../../src/adapters/bb/host-fs/index.ts";
-import { join as joinResource, parsePosix } from "../../src/core/path.ts";
+import { join as joinResource } from "../../src/core/path.ts";
+import { fixturePath, windows } from "./fixtures.ts";
 
 let root: string;
 let fs: ReturnType<typeof createHostFs>;
-const at = (name = "") => parsePosix(join(root, name));
+const at = (name = "") => fixturePath(join(root, name));
 const ctx = { signal: new AbortController().signal };
 
 beforeEach(async () => {
@@ -78,7 +81,7 @@ async function stage(target = at("target")) {
 }
 
 it("commits three chunks at their offsets and publishes mode 0644", async () => {
-  const mask = process.umask(0o022);
+  const mask = windows ? undefined : process.umask(0o022);
   try {
     const { session, tempName } = await stage();
     expect(tempName).toEqual({ t: expect.stringMatching(/^\.target\.commander-.*\.part$/) });
@@ -87,9 +90,9 @@ it("commits three chunks at their offsets and publishes mode 0644", async () => 
       .resolves.toMatchObject({ size: "5" });
     expect(await readFile(join(root, "target"))).toEqual(Buffer.from([1, 2, 3, 4, 255]));
     expect(await readdir(root)).toEqual(["target"]);
-    expect((await lstat(join(root, "target"))).mode & 0o777).toBe(0o644);
+    if (!windows) expect((await lstat(join(root, "target"))).mode & 0o777).toBe(0o644);
   } finally {
-    process.umask(mask);
+    if (mask !== undefined) process.umask(mask);
   }
 });
 
@@ -167,7 +170,7 @@ it("preserves a nonempty directory on remove", async () => {
   expect(await readFile(join(root, "directory", "child"), "utf8")).toBe("keep");
 });
 
-it("maps a directory with mode 000 to permission_denied", async () => {
+it.skipIf(windows)("maps a directory with mode 000 to permission_denied", async () => {
   await chmod(root, 0);
   try {
     await expect(fs.handlers.list({ path: at(), cursor: null, limit: 1 }, ctx))
@@ -233,7 +236,7 @@ it("keeps staging private throughout target verification and lets other mutation
   await fs.dispose();
   fs = createHostFs({
     hashTarget: async () => {
-      expect((await lstat(temp)).mode & 0o777).toBe(0o600);
+      if (!windows) expect((await lstat(temp)).mode & 0o777).toBe(0o600);
       await fs.handlers.mkdir({ path: at("other") }, ctx);
       return "a".repeat(64);
     },
@@ -245,11 +248,11 @@ it("keeps staging private throughout target verification and lets other mutation
   await expect(fs.handlers.writeCommit({
     session, replace: true, expectTarget: { size: "3", mtimeNs: current.mtimeNs.toString(), sha256: "b".repeat(64) },
   }, ctx)).rejects.toMatchObject({ code: "changed_since_plan" });
-  expect((await lstat(temp)).mode & 0o777).toBe(0o600);
+  if (!windows) expect((await lstat(temp)).mode & 0o777).toBe(0o600);
   expect((await lstat(join(root, "other"))).isDirectory()).toBe(true);
 });
 
-it("preserves the mode of the replaced file", async () => {
+it.skipIf(windows)("preserves the mode of the replaced file", async () => {
   const target = join(root, "target");
   await writeFile(target, "old");
   await chmod(target, 0o750);
@@ -269,7 +272,7 @@ it("reports published bytes even when the staging unlink fails", async () => {
   const tempPath = joinResource(at(), tempName);
   await expect(fs.handlers.writeCommit({ session, replace: false, expectTarget: null }, ctx))
     .resolves.toMatchObject({ size: "5", orphanedTempPath: tempPath });
-  expect(orphans).toEqual([{ session, tempPath, reason: "cleanup_failed" }]);
+  expect(orphans).toEqual([{ session, targetPath: at("target"), tempPath, reason: "cleanup_failed" }]);
   expect(await readFile(join(root, "target"))).toEqual(Buffer.from([1, 2, 3, 4, 255]));
   expect(await readdir(root)).toHaveLength(2);
 });
@@ -328,7 +331,7 @@ it.each(["abort", "ttl", "dispose"] as const)("reports the stage of a moved pare
   const { session, tempName } = await fs.handlers.writeOpen({ target: at("parent/target") }, ctx);
   const tempPath = joinResource(at("parent"), tempName);
   await rename(join(root, "parent"), join(root, "moved"));
-  await symlink(join(root, "moved"), join(root, "parent"));
+  await symlink(join(root, "moved"), join(root, "parent"), windows ? "junction" : "dir");
   if (how === "abort") {
     await expect(fs.handlers.writeAbort({ session }, ctx)).resolves.toEqual({ orphanedTempPath: tempPath });
   } else if (how === "ttl") {
@@ -338,7 +341,7 @@ it.each(["abort", "ttl", "dispose"] as const)("reports the stage of a moved pare
     expect((await readdir(root)).sort()).toEqual(["moved", "parent"]);
     await expect(fs.handlers.writeAbort({ session: valid.session }, ctx)).resolves.toEqual({});
   }
-  expect(orphans).toEqual([{ session, tempPath, reason: "parent_changed" }]);
+  expect(orphans).toEqual([{ session, targetPath: at("parent/target"), tempPath, reason: "parent_changed" }]);
   expect(await readdir(join(root, "moved"))).toHaveLength(1);
 });
 
@@ -358,7 +361,7 @@ it("refuses a target symlink and every mutation through an intermediate symlink"
   await writeFile(join(root, "other", "victim"), "keep");
   await writeFile(join(root, "source"), "keep too");
   await symlink(join(root, "other", "victim"), join(root, "target"));
-  await symlink(join(root, "other"), join(root, "nested", "link"));
+  await symlink(join(root, "other"), join(root, "nested", "link"), windows ? "junction" : "dir");
   for (const mutation of [
     () => fs.handlers.writeOpen({ target: at("target") }, ctx),
     () => fs.handlers.writeOpen({ target: at("nested/link/victim") }, ctx),
@@ -455,4 +458,113 @@ it("replaces a regular rename target whose expected fingerprint still matches", 
   }, ctx);
   expect(await readFile(target, "utf8")).toBe("source");
   expect(await readdir(root)).toEqual(["target"]);
+});
+
+it.skipIf(windows)("drops special permission bits on replacement", async ({ skip }) => {
+  const target = join(root, "target");
+  await writeFile(target, "old");
+  await chmod(target, 0o4755);
+  const mode = (await lstat(target)).mode & 0o7777;
+  if (process.platform === "darwin" && mode === 0o755) skip("This test filesystem strips setuid");
+  expect(mode).toBe(0o4755);
+  const { session } = await stage();
+  await fs.handlers.writeCommit({ session, replace: true, expectTarget: null }, ctx);
+  expect((await lstat(target)).mode & 0o7777).toBe(0o755);
+});
+
+it("keeps staging private and skips link when the target is already occupied", async () => {
+  await fs.dispose();
+  let links = 0;
+  fs = createHostFs({ link: async (from, to) => { links++; await link(from, to); } });
+  await writeFile(join(root, "target"), "occupied");
+  const { session, tempName } = await stage();
+  await expect(fs.handlers.writeCommit({ session, replace: false, expectTarget: null }, ctx))
+    .rejects.toMatchObject({ code: "already_exists" });
+  expect(links).toBe(0);
+  if (!windows && "t" in tempName) {
+    expect((await lstat(join(root, tempName.t))).mode & 0o777).toBe(0o600);
+  }
+  expect(await readFile(join(root, "target"), "utf8")).toBe("occupied");
+});
+
+it("awaits an asynchronous orphan record that started in the TTL callback", async () => {
+  await fs.dispose();
+  let expire!: () => Promise<void>;
+  const recording = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const records: unknown[] = [];
+  fs = createHostFs({
+    scheduleExpiry: (callback) => { expire = callback; return () => {}; },
+    unlink: async () => { throw Object.assign(new Error("injected"), { code: "EPERM" }); },
+    onOrphan: async (orphan) => {
+      recording.resolve();
+      await release.promise;
+      records.push(orphan);
+    },
+  });
+  const { session, tempName } = await stage();
+  const expiry = expire();
+  await recording.promise;
+  const disposal = fs.dispose();
+  const disposedEarly = await Promise.race([
+    disposal.then(() => true),
+    new Promise<false>((resolve) => setImmediate(() => resolve(false))),
+  ]);
+  release.resolve();
+  await Promise.all([expiry, disposal]);
+  expect(disposedEarly).toBe(false);
+  expect(records).toEqual([{
+    session, targetPath: at("target"), tempPath: joinResource(at(), tempName), reason: "cleanup_failed",
+  }]);
+});
+
+it("records the target and stage of an internal copy with failed cleanup", async () => {
+  await fs.dispose();
+  const report = Promise.withResolvers<unknown>();
+  fs = createHostFs({
+    unlink: async () => { throw Object.assign(new Error("injected"), { code: "EPERM" }); },
+    onOrphan: (orphan) => { report.resolve(orphan); },
+  });
+  await writeFile(join(root, "source"), "copy");
+  const copied = await fs.handlers.copyWithin({ from: at("source"), to: at("target"), replace: false }, ctx);
+  const stageName = (await readdir(root)).find((name) => name.endsWith(".part"))!;
+  expect(stageName).toMatch(/^\.target\.commander-.*\.part$/);
+  expect(copied).toMatchObject({ size: "4", orphanedTempPath: at(stageName) });
+  await expect(report.promise).resolves.toMatchObject({
+    targetPath: at("target"), tempPath: at(stageName), reason: "cleanup_failed",
+  });
+});
+
+it("does not report an orphan when unlink succeeded and lease cleanup failed", async () => {
+  await fs.dispose();
+  const reports: unknown[] = [];
+  fs = createHostFs({ onOrphan: (orphan) => { reports.push(orphan); } });
+  const { session } = await fs.handlers.writeOpen({ target: at("target") }, {
+    ...ctx,
+    experimental_retainWorker: () => ({ dispose: async () => { throw new Error("lease failed"); } }),
+  });
+  const fingerprint = await fs.handlers.writeCommit({ session, replace: false, expectTarget: null }, ctx);
+  expect(fingerprint).toMatchObject({ size: "0" });
+  expect(fingerprint).not.toHaveProperty("orphanedTempPath");
+  expect(reports).toEqual([]);
+  expect(await readdir(root)).toEqual(["target"]);
+});
+
+it("reports an orphan when unlink sees ENOENT after its parent is moved", async () => {
+  await fs.dispose();
+  const records: unknown[] = [];
+  fs = createHostFs({
+    unlink: async (temp) => {
+      await rename(join(root, "parent"), join(root, "moved"));
+      await unlink(temp);
+    },
+    onOrphan: (orphan) => { records.push(orphan); },
+  });
+  await mkdir(join(root, "parent"));
+  const target = at("parent/target");
+  const { session, tempName } = await stage(target);
+  const tempPath = joinResource(at("parent"), tempName);
+  await expect(fs.handlers.writeAbort({ session }, ctx)).resolves.toEqual({ orphanedTempPath: tempPath });
+  expect(records).toEqual([{ session, targetPath: target, tempPath, reason: "parent_changed" }]);
+  expect(await readdir(join(root, "moved"))).toHaveLength(1);
 });

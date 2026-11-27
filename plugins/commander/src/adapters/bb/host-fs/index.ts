@@ -8,6 +8,8 @@
  * POSIX directory/symlink rename without replacement uses a final absence check
  * followed by rename. That sequence can race with external target creation.
  * Filesystems that reject hard links use the same fallback and report it.
+ * BB caps each host RPC at 30 minutes. copyWithin and sha256 may time out
+ * for very large files.
  */
 import { experimental_PluginRpcRefusal, type ExperimentalHostRpcHandlers } from "@get-bb/plugin-sdk";
 import { link, mkdir, opendir, rename, rmdir, unlink } from "node:fs/promises";
