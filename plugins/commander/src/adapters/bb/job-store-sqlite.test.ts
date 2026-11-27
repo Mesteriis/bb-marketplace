@@ -20,11 +20,13 @@ const job: OperationJob = {
     initiator: { kind: "agent", threadId: "thr_test" },
     sourceEndpoint: "host:test",
     targetEndpoint: "host:test",
+    targetDir: { endpoint: "host:test", path: { segments: [{ t: "Копия" }] } },
     items: [{
       source: { endpoint: "host:test", path: { segments: [{ t: "Отчёты" }, { b: "/w==" }] } },
       target: { endpoint: "host:test", path: { segments: [{ t: "Копия" }, { b: "/w==" }] } },
       kind: "file",
       fingerprint: { size: "18446744073709551615", mtimeNs: null },
+      expectTarget: "absent",
     }],
     conflictPolicy: "ask",
     route: "same-endpoint",
@@ -161,6 +163,11 @@ test("returns a damaged job as unknown without hiding healthy jobs", async () =>
   expect(jobs).toContainEqual({ ...job, id: secondId });
   expect(await store.get(job.id)).toMatchObject({
     id: job.id, state: "unknown", awaitsOwner: false,
+    plan: {
+      kind: "delete",
+      targetDir: null,
+      items: [{ source: null, target: null, expectTarget: null }],
+    },
     error: { code: "internal", retryable: false },
   });
   const unknown = await store.list({ states: ["unknown"], limit: 10 });
