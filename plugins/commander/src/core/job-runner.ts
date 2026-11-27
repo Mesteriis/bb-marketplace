@@ -37,10 +37,6 @@ const cancelledError = new CommanderError("cancelled", "Job cancelled");
 const sourceRetained = "Source changed; source retained";
 const moveCancelled = "Move cancelled; source retained";
 
-function plannedTarget(item: PlanItem): Checkpoint["expectTarget"] {
-  // S2 adds this field to the core schema when its branch is integrated.
-  return (item as PlanItem & { expectTarget?: Checkpoint["expectTarget"] }).expectTarget ?? null;
-}
 type Run = {
   controller: AbortController;
   done: Promise<void>;
@@ -119,25 +115,25 @@ export class JobRunner {
     const context = this.context(id, 0, new AbortController().signal);
     const checked = await this.deps.revalidate?.(plan, context.signal);
     if (checked && !checked.ok) throw new CommanderError("changed_since_plan", "Plan changed before approval");
-    const targetDirectory = (plan as OperationPlan & { targetDir?: ResourceRef | ResourcePath | null }).targetDir;
-    if (targetDirectory) {
-      const ref = "endpoint" in targetDirectory ? targetDirectory
-        : plan.targetEndpoint && { endpoint: plan.targetEndpoint, path: targetDirectory };
-      if (!ref || (await observe(this.location(ref), context))?.kind !== "dir") {
-        throw new CommanderError("changed_since_plan", "Plan target directory changed before approval");
-      }
-    }
-    let targetConflict: { index: number; conflict: ItemConflict } | undefined;
-    for (const [index, item] of plan.items.entries()) {
+    // Sources are checked before any target is touched.
+    const currents: (Awaited<ReturnType<typeof observe>>)[] = [];
+    for (const item of plan.items) {
       const current = item.source && await observe(this.location(item.source), context, Boolean(item.fingerprint?.sha256));
       if (item.source && (!current || current.kind !== item.kind || !matches(current, item.fingerprint))) {
         throw new CommanderError("changed_since_plan", "Plan source changed before approval");
       }
-      const expected = plannedTarget(item);
+      currents.push(current);
+    }
+    if (plan.targetDir && (await observe(this.location(plan.targetDir), context))?.kind !== "dir") {
+      throw new CommanderError("changed_since_plan", "Plan target directory changed before approval");
+    }
+    let targetConflict: { index: number; conflict: ItemConflict } | undefined;
+    for (const [index, item] of plan.items.entries()) {
+      const expected = item.expectTarget;
       if (!targetConflict && item.target && expected !== null) {
         const target = await observe(this.location(item.target), context, expected !== "absent" && Boolean(expected.sha256));
         if (!matchesTarget(target, expected)) {
-          targetConflict = { index, conflict: new ItemConflict("target_changed", fingerprint(current), fingerprint(target)) };
+          targetConflict = { index, conflict: new ItemConflict("target_changed", fingerprint(currents[index]), fingerprint(target)) };
         }
       }
     }
@@ -465,7 +461,7 @@ export class JobRunner {
     const saved = restore?.itemIndex === index ? restore : undefined;
     if (saved) this.restored.delete(job.id);
     let target = item.target && this.location({ ...item.target, path: saved?.targetPath ?? item.target.path });
-    const expectedTarget = saved?.expectTarget ?? plannedTarget(item);
+    const expectedTarget = saved?.expectTarget ?? item.expectTarget;
     const expectedSource = decision?.conflict.source ?? item.fingerprint;
     const { signal, mutate } = context;
     const expandedDirectory = this.expandedDirectory(job, index, source);

@@ -33,6 +33,7 @@ async function setup(options: {
       target: { endpoint: "host:to", path: output },
       kind: "file" as const,
       fingerprint: { size: String(size), mtimeNs: "1" },
+      expectTarget: "absent" as const,
     };
   });
   const unsigned: Omit<OperationPlan, "digest"> = {
@@ -42,6 +43,7 @@ async function setup(options: {
     kind: options.kind ?? "copy",
     sourceEndpoint: "host:from",
     targetEndpoint: "host:to",
+    targetDir: options.kind === "delete" || options.kind === "rename" ? null : { endpoint: "host:to", path: { segments: [] } },
     items,
     route: "relay-server",
     conflictPolicy: options.policy ?? "ask",
@@ -74,6 +76,16 @@ async function setup(options: {
   return { runner, newRunner, plan, store, from, to, retryDelay, at };
 }
 
+/** Rebuild the plan the way the planner would after a target already exists. */
+async function planningExisting(plan: OperationPlan, provider: FakeProvider): Promise<OperationPlan> {
+  const { digest: _digest, ...unsigned } = plan;
+  for (const item of unsigned.items) {
+    const entry = item.target && await provider.stat(item.target.path, new AbortController().signal);
+    if (item.target) item.expectTarget = entry ? { size: entry.size, mtimeNs: entry.mtimeNs } : "absent";
+  }
+  return { ...unsigned, digest: await planDigest(unsigned) };
+}
+
 test("relays 10 MiB in ten sequential 1 MiB chunks", async () => {
   const { runner, plan, at, from, to } = await setup({ size: 10 * mib });
   from.trackRelayReads = true;
@@ -89,7 +101,7 @@ test.each(["this", "remaining_same_reason"] as const)("scopes skip decisions to 
   const { runner, plan, at, to } = await setup({ count: 2 });
   to.put(target, Uint8Array.of(7), "1");
   to.put(parsePosix("/b1"), Uint8Array.of(8), "1");
-  const { id } = await runner.submit(plan);
+  const { id } = await runner.submit(await planningExisting(plan, to));
   const first = await at(id, "awaiting_decision", 0);
   expect(first.pendingConflict?.reason).toBe("exists");
   await runner.decide(id, { conflictId: first.pendingConflict!.id, action: "skip", applyTo });
@@ -223,8 +235,10 @@ test("uses same-endpoint copy and refuses a late target replacement", async () =
   const { digest: _digest, ...unsigned } = plan;
   unsigned.route = "same-endpoint";
   unsigned.targetEndpoint = "host:from";
+  unsigned.targetDir = { endpoint: "host:from", path: { segments: [] } };
   unsigned.conflictPolicy = "overwrite";
   unsigned.items[0].target!.endpoint = "host:from";
+  unsigned.items[0].expectTarget = { size: "1", mtimeNs: "1" };
   from.delay = async (op) => {
     if (op === "copyWithin") from.put(target, Uint8Array.of(8), "2");
   };
@@ -321,6 +335,7 @@ test("moves an expanded directory across endpoints and removes its source after 
     target: { endpoint: "host:to", path: output },
     kind: "dir",
     fingerprint: { size: "0", mtimeNs: dir.mtimeNs },
+    expectTarget: "absent",
   });
 
   const { id } = await runner.submit({ ...unsigned, digest: await planDigest(unsigned) });
@@ -506,6 +521,7 @@ test.each(["delete", "mkdir", "rename"] as const)("executes a %s plan", async (k
   const item = unsigned.items[0];
   if (kind === "delete") {
     item.target = null;
+    item.expectTarget = null;
     unsigned.targetEndpoint = null;
   } else if (kind === "mkdir") {
     item.kind = "dir";
@@ -533,6 +549,7 @@ test.each(["remove", "rename"] as const)("checks both locations after interrupti
   const { digest: _digest, ...unsigned } = plan;
   if (operation === "remove") {
     unsigned.items[0].target = null;
+    unsigned.items[0].expectTarget = null;
     unsigned.targetEndpoint = null;
   } else {
     unsigned.items[0].target!.endpoint = "host:from";
@@ -557,14 +574,7 @@ test.each(["remove", "rename"] as const)("checks both locations after interrupti
 });
 
 test("flags a target that appeared after an explicitly absent plan target", async () => {
-  const { runner, plan, to, at } = await setup({
-    policy: "overwrite",
-    revalidate: async (snapshot) => {
-      // S2 adds the field to the schema. This fake models its checked snapshot.
-      Object.assign(snapshot.items[0], { expectTarget: "absent" });
-      return { ok: true, plan: snapshot };
-    },
-  });
+  const { runner, plan, to, at } = await setup({ policy: "overwrite" });
   const job = await runner.submit(plan, { awaitsOwner: true });
   to.put(target, Uint8Array.of(7), "2");
   await runner.approve(job.id);
@@ -659,7 +669,7 @@ test("preserves a target conflict if a second restart interrupts conflict recove
   to.delay = async (op) => {
     if (op === "commit") to.put(target, Uint8Array.of(8), "3");
   };
-  const { id } = await runner.submit(plan);
+  const { id } = await runner.submit(await planningExisting(plan, to));
   const initial = await at(id, "awaiting_decision", 0);
   expect(initial.pendingConflict?.reason).toBe("target_changed");
   const update = store.update.bind(store);
@@ -728,7 +738,7 @@ test("restores a staged parent directory after restarting during a child move", 
   unsigned.items[0].source!.path = child;
   unsigned.items[0].target!.path = copy;
   unsigned.items.unshift({ source: { endpoint: "host:from", path: input }, target: { endpoint: "host:to", path: output },
-    kind: "dir", fingerprint: { size: "0", mtimeNs: dir.mtimeNs } });
+    kind: "dir", fingerprint: { size: "0", mtimeNs: dir.mtimeNs }, expectTarget: "absent" });
   const waiting = pause();
   const checkpoint = store.checkpoint.bind(store);
   vi.spyOn(store, "checkpoint").mockImplementation(async (point) => {
@@ -825,7 +835,7 @@ test("restores staged parent directories when a restarted child conflict is deci
   unsigned.items[0].source!.path = child;
   unsigned.items[0].target!.path = copy;
   unsigned.items.unshift({ source: { endpoint: "host:from", path: input }, target: { endpoint: "host:to", path: output },
-    kind: "dir", fingerprint: { size: "0", mtimeNs: dir.mtimeNs } });
+    kind: "dir", fingerprint: { size: "0", mtimeNs: dir.mtimeNs }, expectTarget: "absent" });
   const { id } = await runner.submit({ ...unsigned, digest: await planDigest(unsigned) });
   const conflict = (await at(id, "awaiting_decision", 1)).pendingConflict!;
   const restarted = newRunner();
@@ -896,7 +906,7 @@ test("keeps the source directory if a completed child's destination disappears",
   unsigned.items[0].source!.path = child;
   unsigned.items[0].target!.path = copy;
   unsigned.items.unshift({ source: { endpoint: "host:from", path: input }, target: { endpoint: "host:to", path: output },
-    kind: "dir", fingerprint: { size: "0", mtimeNs: dir.mtimeNs } });
+    kind: "dir", fingerprint: { size: "0", mtimeNs: dir.mtimeNs }, expectTarget: "absent" });
   const update = store.update.bind(store);
   vi.spyOn(store, "update").mockImplementation(async (...args) => {
     const updated = await update(...args);
@@ -1056,11 +1066,12 @@ test("records verified evidence for a child recovered after rename before the di
   const { digest: _digest, ...unsigned } = plan;
   unsigned.items = [
     { source: { endpoint: "host:from", path: input }, target: { endpoint: "host:from", path: output }, kind: "dir",
-      fingerprint: { size: "0", mtimeNs: dir.mtimeNs } },
+      fingerprint: { size: "0", mtimeNs: dir.mtimeNs }, expectTarget: "absent" },
     { source: { endpoint: "host:from", path: parsePosix("/tree/child") },
-      target: { endpoint: "host:from", path: parsePosix("/tree-copy/child") }, kind: "file", fingerprint: { size: "3", mtimeNs: "1" } },
+      target: { endpoint: "host:from", path: parsePosix("/tree-copy/child") }, kind: "file", fingerprint: { size: "3", mtimeNs: "1" }, expectTarget: "absent" },
   ];
   unsigned.targetEndpoint = "host:from";
+  unsigned.targetDir = { endpoint: "host:from", path: { segments: [] } };
   const lost = pause();
   const checkpoint = store.checkpoint.bind(store);
   vi.spyOn(store, "checkpoint").mockImplementation(async (point) => {

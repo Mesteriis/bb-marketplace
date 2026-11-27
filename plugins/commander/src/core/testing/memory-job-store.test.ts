@@ -12,11 +12,13 @@ const job: OperationJob = {
     initiator: { kind: "owner" },
     sourceEndpoint: null,
     targetEndpoint: "host:test",
+    targetDir: { endpoint: "host:test", path: { segments: [] } },
     items: [{
       source: null,
       target: { endpoint: "host:test", path: { segments: [{ t: "folder" }] } },
       kind: "dir",
       fingerprint: null,
+      expectTarget: "absent",
     }],
     conflictPolicy: "ask",
     route: "same-endpoint",

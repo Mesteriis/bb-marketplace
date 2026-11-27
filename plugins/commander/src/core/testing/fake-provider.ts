@@ -30,6 +30,8 @@ export class FakeProvider implements FileProvider {
   private liveReadBytes = 0;
   private clock = 100;
   private readonly entries = new Set<StoredEntry>();
+  /** The endpoint root always exists as a directory; no operation may replace or remove it. */
+  private readonly root: StoredEntry = { path: { segments: [] }, kind: "dir", bytes: new Uint8Array(), mtimeNs: "1" };
   copyWithin?: FileProvider["copyWithin"];
   sha256?: FileProvider["sha256"];
 
@@ -72,6 +74,7 @@ export class FakeProvider implements FileProvider {
 
   async stat(path: ResourcePath, signal: AbortSignal): Promise<Entry | null> {
     await this.before("stat", path, signal);
+    if (path.segments.length === 0) return this.asEntry(this.root);
     const entry = this.find(path);
     return entry ? this.asEntry(entry) : null;
   }
