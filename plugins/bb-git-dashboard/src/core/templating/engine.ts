@@ -18,7 +18,9 @@ export const line = z.string().max(200).regex(/^[^\u0000-\u001f\u007f]*$/).refin
 const name = z.string().regex(/^[a-z][A-Za-z0-9]{0,39}$/);
 const label = z.string().min(1).max(80);
 export const templateParam = z.discriminatedUnion("kind", [
-  z.object({name, label, kind: z.literal("text"), default: word}),
+  /** `pattern` narrows the values further (a package or module name), as a regular expression source. */
+  z.object({name, label, kind: z.literal("text"), default: word,
+    pattern: z.string().max(200).refine(source => { try { new RegExp(source, "u"); return true; } catch { return false; } }).optional()}),
   z.object({name, label, kind: z.literal("choice"), default: word, choices: z.array(word).min(1).max(20)}),
   z.object({name, label, kind: z.literal("flag"), default: z.boolean()}),
   /** Free text such as a description or an author: as it is only in raw text (Markdown, plain), elsewhere through |json. */
@@ -30,7 +32,8 @@ export type TemplateValues = Record<string, string | boolean>;
 export const invalid = (detail: string) => new CodedError("TEMPLATE_INVALID", detail);
 const fits = (param: TemplateParam, value: unknown) => param.kind === "flag" ? typeof value === "boolean"
   : param.kind === "line" ? typeof value === "string" && line.safeParse(value).success
-  : typeof value === "string" && word.safeParse(value).success && (param.kind === "text" || param.choices.includes(value));
+  : typeof value === "string" && word.safeParse(value).success
+    && (param.kind === "text" ? !param.pattern || new RegExp(param.pattern, "u").test(value) : param.choices.includes(value));
 
 /**
  * The values to render with: the ones given, else a suggestion when it fits the parameter, else the default. A given
@@ -43,7 +46,9 @@ export function resolveParams(params: TemplateParam[], given: TemplateValues, su
     if (Object.hasOwn(given, param.name)) {
       if (!fits(param, given[param.name])) throw invalid("value of " + param.name + " does not fit the parameter");
       values[param.name] = given[param.name]!;
-    } else values[param.name] = Object.hasOwn(suggested, param.name) && fits(param, suggested[param.name]) ? suggested[param.name]! : param.default;
+    } else if (Object.hasOwn(suggested, param.name) && fits(param, suggested[param.name])) values[param.name] = suggested[param.name]!;
+    else if (fits(param, param.default)) values[param.name] = param.default;
+    else throw invalid("the default of " + param.name + " does not fit the parameter");
   }
   return values;
 }
@@ -97,7 +102,8 @@ const secretRules: [string, RegExp][] = [
   ["a private key", /-----BEGIN [A-Z ]*PRIVATE KEY-----/],
   ["a forge or cloud token", /\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|xox[abposr]-[A-Za-z0-9-]{10,})/],
   ["credentials in an address", /[a-z][a-z0-9+.-]*:\/\/[^\s/:@]+:[^\s/@]+@/i],
-  ["an IP address", /\b(?:\d{1,3}\.){3}\d{1,3}\b/],
+  // Loopback (127.x) and the any-address (0.0.0.0) name no machine.
+  ["an IP address", /\b(?!127\.|0\.0\.0\.0\b)(?:\d{1,3}\.){3}\d{1,3}\b/],
 ];
 const addressRules: [string, RegExp][] = [
   // A pipeline that names a server can send what it builds, or its secrets, there: CI templates name none.

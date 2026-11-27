@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { renderText, resolveParams, type TemplateParam } from "../src/core/templating/engine.ts";
+import { renderText, resolveParams, secretIssues, type TemplateParam } from "../src/core/templating/engine.ts";
 
 const params: TemplateParam[] = [
   {name: "name", label: "Name", kind: "text", default: "app"},
@@ -30,4 +30,18 @@ test("sections work as in CI templates and every line is checked whether kept or
   const values = {name: "app", description: "", docker: false};
   assert.equal(renderText("a\n{{#docker}}\nDockerfile {{name}}\n{{/docker}}\nb\n", params, values, {raw: true}), "a\nb\n");
   assert.throws(() => renderText("{{#docker}}\n{{nope}}\n{{/docker}}\n", params, values, {raw: true}), /TEMPLATE_INVALID/);
+});
+
+test("a text parameter may narrow its values with a pattern; a default that breaks it is the template's fault", () => {
+  const pkg: TemplateParam[] = [{name: "package", label: "Package", kind: "text", default: "app", pattern: "^[a-z_][a-z0-9_]*$"}];
+  assert.deepEqual(resolveParams(pkg, {package: "my_app"}, {}), {package: "my_app"});
+  assert.throws(() => resolveParams(pkg, {package: "my-app"}, {}), /TEMPLATE_INVALID/);
+  // A suggestion that does not fit falls back to the default.
+  assert.deepEqual(resolveParams(pkg, {}, {package: "My-App"}), {package: "app"});
+  assert.throws(() => resolveParams([{name: "package", label: "Package", kind: "text", default: "Bad-Default", pattern: "^[a-z_][a-z0-9_]*$"}], {}, {}), /TEMPLATE_INVALID/);
+});
+
+test("loopback and the any-address are no machine's address; others are", () => {
+  assert.deepEqual(secretIssues("host = \"127.0.0.1\"\nbind: 0.0.0.0:8000\n", {addresses: false}), []);
+  assert.deepEqual(secretIssues("upstream 192.168.1.20\n", {addresses: false}), ["an IP address"]);
 });
