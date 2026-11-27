@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { pullCapabilities, pullLimitation } from "../src/core/pulls/capabilities.ts";
+import { mergeMethods, pullCapabilities, pullLimitation } from "../src/core/pulls/capabilities.ts";
 
 test("each forge states which pull request writes it offers", () => {
   assert.equal(Object.values(pullCapabilities("github")).every(Boolean), true);
@@ -9,4 +9,9 @@ test("each forge states which pull request writes it offers", () => {
   assert.deepEqual(Object.entries(pullCapabilities("azure")).filter(([, ok]) => !ok).map(([name]) => name), ["lineComment", "draft", "patch"]);
   assert.equal(pullLimitation("gitlab", "requestChanges"), "GitLab's API has no request-changes review; leave a comment or withhold approval.");
   assert.equal(pullLimitation("github", "merge"), null);
+});
+
+test("GitLab merges or squashes in one request; the others also rebase", () => {
+  assert.deepEqual(mergeMethods("gitlab"), ["merge", "squash"]);
+  assert.deepEqual(mergeMethods("gitea"), ["merge", "squash", "rebase"]);
 });

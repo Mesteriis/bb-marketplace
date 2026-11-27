@@ -76,6 +76,8 @@ export interface PrDetail {
   id: string;
   /** Head commit when read: every write is checked against it. */
   headSha: string | null;
+  /** GitLab's diff refs, which anchor a line comment. */
+  diffRefs?: {base: string; head: string; start: string} | null;
   /** The signed-in GitHub user looking at the PR. */
   viewer: string;
   number: number;

@@ -4,7 +4,9 @@ const text = z.string().trim().min(1).max(8000);
 /** A repository-relative path, never escaping the repository. */
 const filePath = z.string().min(1).max(1000).refine(value => !value.startsWith("/") && !value.split("/").some(part => part === ".." || part === ""), "INVALID_PATH");
 const line = z.number().int().min(1).max(10_000_000);
-const anchorShape = {path: filePath, line, side: z.enum(["LEFT", "RIGHT"]), startLine: line.nullable(), body: text};
+const anchorShape = {path: filePath, line, side: z.enum(["LEFT", "RIGHT"]), startLine: line.nullable(), body: text,
+  /** For an unchanged row: its line number on the other side (GitLab anchors such a row on both). */
+  contextLine: line.nullable().optional()};
 const inRange = (value: {line: number; startLine: number | null}) => value.startLine === null || value.startLine <= value.line;
 const anchor = z.object(anchorShape).refine(inRange, "INVALID_RANGE");
 

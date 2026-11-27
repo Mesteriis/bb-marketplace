@@ -23,3 +23,8 @@ export function pullLimitation(forge: Forge, operation: PullOperation): string |
 export function pullCapabilities(forge: Forge): Record<PullOperation, boolean> {
   return Object.fromEntries(pullOperations.map(operation => [operation, pullLimitation(forge, operation) === null])) as Record<PullOperation, boolean>;
 }
+
+/** Merge methods a forge performs in one request. GitLab rebases as a separate step, so it offers merge and squash. */
+export function mergeMethods(forge: Forge): ("merge" | "squash" | "rebase")[] {
+  return forge === "gitlab" ? ["merge", "squash"] : ["merge", "squash", "rebase"];
+}
