@@ -13,6 +13,7 @@ interface StoredEntry {
   bytes: Uint8Array;
   mtimeNs: string;
   temporary?: boolean;
+  size?: number;
 }
 
 export class FakeProvider implements FileProvider {
@@ -126,6 +127,8 @@ export class FakeProvider implements FileProvider {
         if (offset !== BigInt(length)) throw new CommanderError("invalid_path", "Expected sequential offset");
         chunks.push(bytes.slice());
         length += bytes.byteLength;
+        temp.size = length;
+        temp.mtimeNs = String(++this.clock);
         relayBuffers.get(bytes)?.();
         relayBuffers.delete(bytes);
       },
@@ -233,11 +236,11 @@ export class FakeProvider implements FileProvider {
   }
 
   private fingerprint(entry: StoredEntry): Fingerprint {
-    return { size: String(entry.bytes.byteLength), mtimeNs: entry.mtimeNs };
+    return { size: String(entry.size ?? entry.bytes.byteLength), mtimeNs: entry.mtimeNs };
   }
 
   private matches(entry: StoredEntry, fingerprint: Fingerprint): boolean {
-    if (String(entry.bytes.byteLength) !== fingerprint.size || entry.mtimeNs !== fingerprint.mtimeNs) return false;
+    if (String(entry.size ?? entry.bytes.byteLength) !== fingerprint.size || entry.mtimeNs !== fingerprint.mtimeNs) return false;
     if (!fingerprint.sha256) return true;
     const hash = new TransferHash();
     hash.update(entry.bytes);

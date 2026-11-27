@@ -13,6 +13,7 @@ export interface WriteSession {
    */
   readonly tempPath: ResourcePath;
 
+  /** Write to the already opened temporary file. Never report already_exists. */
   write(offset: bigint, bytes: Uint8Array, signal: AbortSignal): Promise<void>;
 
   /**

@@ -9,7 +9,7 @@ import {
 import { isAncestorOrSelf, join, parent, samePath, type ResourcePath } from "./path.ts";
 import { READ_CHUNK_MAX, type FileProvider, type WriteSession } from "./provider.ts";
 import {
-  confirmVerified, fingerprint, matches, matchesTarget, observe, readChunks, reconcileItem, tempNameFor, TransferHash, verifyCopy,
+  confirmVerified, fingerprint, matches, matchesTarget, observe, readChunks, reconcileItem, removeStagedTemp, tempNameFor, TransferHash, verifyCopy,
   type Location, type VerifyContext,
 } from "./reconcile.ts";
 import { fromBig, toBig } from "./size.ts";
@@ -372,7 +372,7 @@ export class JobRunner {
           if (directory) {
             const checkpoint = await this.store.lastCheckpoint(id, index);
             if (checkpoint) context.load(checkpoint);
-            const removed = await this.finishDirectory(directory, context);
+            const removed = await this.finishDirectory(job, directory, context);
             await this.record(await this.requireJob(id), index, "done", undefined, job.progress.bytesDone, removed ? undefined : sourceRetained);
           } else {
             const outcome = await this.perform(job, index, context, decision);
@@ -522,49 +522,64 @@ export class JobRunner {
     await context.mark("prepared", { targetPath: destination?.path ?? null, expectTarget: destination ? expectTarget : null });
     const unchanged = (proof: VerifyContext) => this.unchanged(source, sourceFingerprint, destination, expectTarget, proof);
 
-    try {
-      switch (job.plan.kind) {
-        case "delete":
-          if (!source || !sourceFingerprint) break;
-          return await this.removeSource(source, item.kind, sourceFingerprint, context) ? "done" : "source_retained";
-        case "mkdir":
-          if (!destination) break;
-          await this.makeDirectory(destination, oldTarget, replace, context, unchanged);
-          return "done";
-        case "rename":
-        case "move":
-          if (!source || !destination || !sourceFingerprint) break;
-          if (sameEndpoint && !expandedDirectory) {
-            try {
-              await mutate(() => source.provider.rename(source.path, destination.path, { replace, expectTarget }, signal), unchanged);
-              return "done";
-            } catch (error) {
-              if (job.plan.kind !== "move" || safeError(error).code !== "unsupported") throw error;
+    switch (job.plan.kind) {
+      case "delete":
+        if (!source || !sourceFingerprint) break;
+        return await this.removeSource(source, item.kind, sourceFingerprint, context) ? "done" : "source_retained";
+      case "mkdir":
+        if (!destination) break;
+        await this.makeDirectory(destination, oldTarget, replace, context, unchanged);
+        return "done";
+      case "rename":
+      case "move":
+        if (!source || !destination || !sourceFingerprint) break;
+        if (sameEndpoint && !expandedDirectory) {
+          await context.mark("prepared", { via: "rename" });
+          let renamed = false;
+          try {
+            await mutate(() => source.provider.rename(source.path, destination.path, { replace, expectTarget }, signal), unchanged);
+            renamed = true;
+          } catch (error) {
+            const code = safeError(error).code;
+            if (code === "changed_since_plan") {
+              throw new ItemConflict("target_changed", sourceFingerprint, fingerprint(await observe(destination, context)));
             }
+            if (job.plan.kind !== "move" || code !== "unsupported") throw error;
           }
-          if (job.plan.kind === "rename") throw new CommanderError("unsupported", "Cannot rename across endpoints");
-          if (item.kind === "dir") {
-            await this.makeDirectory(destination, oldTarget, replace, context, unchanged);
-            const committed = fingerprint(await observe(destination, context));
-            if (!committed) throw new CommanderError("outcome_unknown", "Destination directory could not be confirmed");
-            await context.mark("verified", { committed, verified: { size: committed.size } });
-            return { source, target: destination };
+          if (renamed) {
+            const probe = () => observe(destination, context, Boolean(sourceFingerprint.sha256));
+            const entry = await probe().catch(async () => {
+              if (!signal.aborted) return null;
+              const { jobId, itemIndex } = context.saved();
+              const check = this.context(jobId, itemIndex, new AbortController().signal);
+              return observe(destination, check, Boolean(sourceFingerprint.sha256)).catch(() => null);
+            });
+            if (entry?.kind !== item.kind || !matches(entry, sourceFingerprint)) {
+              throw new CommanderError("outcome_unknown", "Renamed destination could not be confirmed");
+            }
+            await context.mark("verified", {
+              bytesDone: item.kind === "file" ? entry.size : "0", committed: fingerprint(entry)!,
+              verified: entry.sha256 ? { size: entry.size, sha256: entry.sha256 } : { size: entry.size },
+            });
+            return "done";
           }
-          await this.copy(item, source, destination, sourceFingerprint, replace, expectTarget, job.plan, context, unchanged);
-          const result = await this.finishMove(source, destination, sourceFingerprint, context);
-          return result === "removed" ? "done" : result;
-        case "copy":
-          if (!source || !destination || !sourceFingerprint) break;
-          await this.copy(item, source, destination, sourceFingerprint, replace, expectTarget, job.plan, context, unchanged);
-          return "done";
-      }
-    } catch (error) {
-      if (error instanceof ItemConflict) throw error;
-      const code = safeError(error).code;
-      if ((code === "already_exists" || code === "changed_since_plan") && destination) {
-        throw new ItemConflict("target_changed", sourceFingerprint, fingerprint(await observe(destination, context)));
-      }
-      throw error;
+        }
+        if (job.plan.kind === "rename") throw new CommanderError("unsupported", "Cannot rename across endpoints");
+        if (item.kind === "dir") {
+          await context.mark("prepared", { via: "copy" });
+          await this.makeDirectory(destination, oldTarget, replace, context, unchanged);
+          const committed = fingerprint(await observe(destination, context));
+          if (!committed) throw new CommanderError("outcome_unknown", "Destination directory could not be confirmed");
+          await context.mark("verified", { committed, verified: { size: committed.size } });
+          return { source, target: destination };
+        }
+        await this.copy(item, source, destination, sourceFingerprint, replace, expectTarget, job.plan, context, unchanged);
+        const result = await this.finishMove(source, destination, sourceFingerprint, context);
+        return result === "removed" ? "done" : result;
+      case "copy":
+        if (!source || !destination || !sourceFingerprint) break;
+        await this.copy(item, source, destination, sourceFingerprint, replace, expectTarget, job.plan, context, unchanged);
+        return "done";
     }
     throw new CommanderError("invalid_path", "Plan item is missing an endpoint");
   }
@@ -589,7 +604,19 @@ export class JobRunner {
     });
   }
 
-  private async finishDirectory({ source, target }: PreparedDirectory, context: ItemContext): Promise<boolean> {
+  private async finishDirectory(
+    job: OperationJob, { source, target }: PreparedDirectory, context: ItemContext,
+  ): Promise<boolean> {
+    for (const [index, child] of job.plan.items.entries()) {
+      if (job.items[index].outcome !== "done" || child.source?.endpoint !== source.provider.endpoint.id
+          || child.source.path.segments.length <= source.path.segments.length
+          || !isAncestorOrSelf(source.path, child.source.path, source.provider.endpoint.caseSensitive)) continue;
+      const checkpoint = await this.store.lastCheckpoint(job.id, index);
+      const destination = checkpoint && this.recoveredTarget(child, checkpoint);
+      if (!checkpoint || !destination || !await confirmVerified(destination, checkpoint, child.kind, context)) {
+        throw new CommanderError("outcome_unknown", "A completed child's destination could not be verified; source directory retained");
+      }
+    }
     const destination = await observe(target, context);
     if (destination?.kind !== "dir") throw new CommanderError("changed_since_plan", "Destination directory changed");
     const entry = await observe(source, context);
@@ -640,6 +667,7 @@ export class JobRunner {
     unchanged: (proof: VerifyContext) => Promise<boolean>,
   ): Promise<void> {
     const { signal, call, mark, mutate } = context;
+    await mark("prepared", { via: "copy" });
     if (item.kind === "dir" && plan.kind === "copy") {
       const entry = await observe(target, context);
       await this.makeDirectory(target, entry, replace, context, unchanged);
@@ -654,76 +682,106 @@ export class JobRunner {
       }
     };
     await confirmSource();
+    const commitTarget = async (action: () => Promise<Fingerprint>) => {
+      try {
+        return await mutate(action, unchanged);
+      } catch (error) {
+        const code = safeError(error).code;
+        if (code === "changed_since_plan" || code === "already_exists") {
+          throw new ItemConflict("target_changed", expected, fingerprint(await observe(target, context)));
+        }
+        throw error;
+      }
+    };
     let committed: Fingerprint;
     let sourceHash: string | undefined;
     const verify = expected.sha256 ? "sha256" : plan.verify;
-    try {
-      if (source.provider.endpoint.id === provider.endpoint.id && provider.copyWithin) {
-        committed = await mutate(() => provider.copyWithin!(source.path, path, { replace, expectTarget }, signal), unchanged);
-      } else {
-        const { jobId, itemIndex } = context.saved();
-        const tempName = tempNameFor(jobId, itemIndex);
-        const dir = parent(path);
-        if (!dir) throw new CommanderError("invalid_path", "Cannot write root");
-        const tempPath = join(dir, tempName);
-        const sensitive = provider.endpoint.caseSensitive;
-        if (samePath(tempPath, path, sensitive)
-            || (source.provider.endpoint.id === provider.endpoint.id && samePath(tempPath, source.path, sensitive))) {
-          throw new CommanderError("invalid_path", "Temporary path overlaps an operation endpoint");
-        }
-        await mark("prepared", { tempPath });
-        let session: WriteSession;
-        try {
-          session = await mutate(() => provider.openWrite(path, { tempName }, signal), unchanged);
-        } catch (error) {
-          if (safeError(error).code !== "already_exists") throw error;
+    if (source.provider.endpoint.id === provider.endpoint.id && provider.copyWithin) {
+      committed = await commitTarget(() => provider.copyWithin!(source.path, path, { replace, expectTarget }, signal));
+    } else {
+      const { jobId, itemIndex } = context.saved();
+      const tempName = tempNameFor(jobId, itemIndex);
+      const dir = parent(path);
+      if (!dir) throw new CommanderError("invalid_path", "Cannot write root");
+      const tempPath = join(dir, tempName);
+      const sensitive = provider.endpoint.caseSensitive;
+      if (samePath(tempPath, path, sensitive)
+          || (source.provider.endpoint.id === provider.endpoint.id && samePath(tempPath, source.path, sensitive))) {
+        throw new CommanderError("invalid_path", "Temporary path overlaps an operation endpoint");
+      }
+      const temp = { provider, path: tempPath };
+      await mark("prepared", { tempPath });
+      let session: WriteSession;
+      signal.throwIfAborted();
+      try {
+        session = await provider.openWrite(path, { tempName }, signal);
+      } catch (error) {
+        const failure = safeError(error);
+        if (failure.code === "already_exists") {
           await mark("prepared", { tempPath: null });
           throw new CommanderError("outcome_unknown", "Temporary path already belongs to another entry");
         }
-        if (!samePath(session.tempPath, tempPath, sensitive)) {
-          throw new CommanderError("outcome_unknown", "Provider returned an unexpected temporary path");
+        if (failure.retryable || signal.aborted || failure.code === "outcome_unknown") {
+          const check = this.context(jobId, itemIndex, new AbortController().signal);
+          await removeStagedTemp(temp, check);
+          if (failure.code !== "outcome_unknown" && !await unchanged(check).catch(() => false)) {
+            throw new CommanderError("outcome_unknown", "Mutation state after openWrite could not be confirmed");
+          }
         }
+        throw error;
+      }
+      if (!samePath(session.tempPath, tempPath, sensitive)) {
+        throw new CommanderError("outcome_unknown", "Provider returned an unexpected temporary path");
+      }
+      const recordTemp = async (bytesDone: string) => {
+        const entry = await observe(temp, context);
+        if (entry?.kind !== "file" || entry.size !== bytesDone) {
+          throw new CommanderError("outcome_unknown", "Temporary file did not match the acknowledged write");
+        }
+        await mark("copying", { bytesDone, tempFingerprint: fingerprint(entry)! });
+      };
+      try {
+        await recordTemp("0");
+        const hash = verify === "sha256" ? new TransferHash() : null;
         try {
-          await mark("copying");
-          const hash = verify === "sha256" ? new TransferHash() : null;
-          let bytesDone = 0n;
-          try {
-            await readChunks(source, expected, this.chunkBytes, signal, call, async (bytes, offset) => {
-              await call(() => session.write(offset, bytes, signal));
-              hash?.update(bytes);
-              bytesDone = offset + BigInt(bytes.length);
-              await context.progress(bytesDone);
+          await readChunks(source, expected, this.chunkBytes, signal, call, async (bytes, offset) => {
+            await call(async () => {
+              try {
+                await session.write(offset, bytes, signal);
+              } catch (error) {
+                if (safeError(error).code === "already_exists") {
+                  throw new CommanderError("outcome_unknown", "Write reported an unexpected temporary file collision");
+                }
+                throw error;
+              }
             });
-          } catch (error) {
-            if (safeError(error).code === "changed_since_plan") await confirmSource();
-            throw error;
-          }
-          sourceHash = hash?.finish();
-          if (expected.sha256 && sourceHash !== expected.sha256) {
-            throw new ItemConflict("source_changed", { ...expected, sha256: sourceHash }, expectTarget === "absent" ? null : expectTarget);
-          }
-          await confirmSource();
-          await mark("copying", { bytesDone: fromBig(bytesDone) });
-          committed = await mutate(() => session.commit({ replace, expectTarget: expectTarget === "absent" ? null : expectTarget }, signal), unchanged);
+            hash?.update(bytes);
+            const bytesDone = offset + BigInt(bytes.length);
+            await recordTemp(fromBig(bytesDone));
+            await context.progress(bytesDone);
+          });
         } catch (error) {
-          try {
-            await session.abort();
-          } catch {
-            throw new CommanderError("outcome_unknown", "Temporary file cleanup could not be confirmed");
-          }
+          if (safeError(error).code === "changed_since_plan") await confirmSource();
           throw error;
         }
+        sourceHash = hash?.finish();
+        if (expected.sha256 && sourceHash !== expected.sha256) {
+          throw new ItemConflict("source_changed", { ...expected, sha256: sourceHash }, expectTarget === "absent" ? null : expectTarget);
+        }
+        await confirmSource();
+        committed = await commitTarget(() => session.commit({ replace, expectTarget: expectTarget === "absent" ? null : expectTarget }, signal));
+      } catch (error) {
+        if (safeError(error).code === "outcome_unknown") throw error;
+        try {
+          await session.abort();
+        } catch {
+          throw new CommanderError("outcome_unknown", "Temporary file cleanup could not be confirmed");
+        }
+        throw error;
       }
-    } catch (error) {
-      if (error instanceof ItemConflict) throw error;
-      const { code } = safeError(error);
-      if (code === "changed_since_plan" || code === "already_exists") {
-        throw new ItemConflict("target_changed", expected, fingerprint(await observe(target, context)));
-      }
-      throw error;
     }
     try {
-      await mark("committed", { committed, bytesDone: expected.size, tempPath: null });
+      await mark("committed", { committed, bytesDone: expected.size, tempPath: null, tempFingerprint: undefined });
       const verified = await verifyCopy(source, target, expected, verify, context, sourceHash ?? expected.sha256, committed);
       await mark("verified", { verified });
     } catch (error) {

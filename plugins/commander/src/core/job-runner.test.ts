@@ -196,8 +196,8 @@ test.each(["copying", "committed", "missing-temp"] as const)("recovers %s withou
     jobId: submitted.id,
     itemIndex: 0,
     phase: phase === "committed" ? "committed" : "copying",
-    bytesDone: "3",
-    tempPath: temp, targetPath: null, expectTarget: null, verified: null,
+    bytesDone: temp ? "0" : "3",
+    tempPath: temp, tempFingerprint: temp ? { size: "0", mtimeNs: "101" } : undefined, targetPath: null, expectTarget: null, verified: null,
   });
   to.calls.length = 0;
   const { resumed, unknown } = await runner.recover();
@@ -382,7 +382,8 @@ test("reconciles an untouched overwrite target after a restart", async () => {
   to.put(target, Uint8Array.of(7), "2");
   const { tempPath } = await to.openWrite(target, { tempName: tempNameFor(id, 0) }, new AbortController().signal);
   await store.checkpoint({ jobId: id, itemIndex: 0, bytesDone: "0", phase: "copying",
-    tempPath, targetPath: target, expectTarget: { size: "1", mtimeNs: "2" }, verified: null });
+    tempPath, tempFingerprint: { size: "0", mtimeNs: "101" }, targetPath: target,
+    expectTarget: { size: "1", mtimeNs: "2" }, verified: null });
   expect(await runner.recover()).toEqual({ resumed: [id], unknown: [] });
   expect((await at(id, "completed")).items[0].outcome).toBe("done");
   expect(to.contents(target)).toEqual(Uint8Array.of(42, 42, 42));
@@ -396,7 +397,7 @@ test.each(["cancel_requested", "interrupted"] as const)(
     await store.update(id, { state, currentItem: 0, error: { code: "cancelled", message: "Job cancelled", retryable: false } }, "pending");
     const { tempPath } = await to.openWrite(target, { tempName: tempNameFor(id, 0) }, new AbortController().signal);
     await store.checkpoint({ jobId: id, itemIndex: 0, bytesDone: "0", phase: "copying",
-      tempPath, targetPath: target, expectTarget: "absent", verified: null });
+      tempPath, tempFingerprint: { size: "0", mtimeNs: "101" }, targetPath: target, expectTarget: "absent", verified: null });
     to.calls.length = 0;
     expect(await runner.recover()).toEqual({ resumed: [], unknown: [] });
     expect((await at(id, "cancelled")).items.map(({ outcome }) => outcome)).toEqual(["pending", "pending"]);
@@ -627,7 +628,7 @@ test("persists the exact temporary path before openWrite and recovers a created 
   await started.promise;
   const tempPath = parsePosix("/.commander-223e4567-e89b-42d3-a456-000000000001-0.part");
   expect(await store.lastCheckpoint(id, 0)).toEqual({
-    jobId: id, itemIndex: 0, phase: "prepared", bytesDone: "0", tempPath,
+    jobId: id, itemIndex: 0, phase: "prepared", bytesDone: "0", tempPath, via: "copy",
     targetPath: { segments: [{ t: "b" }] }, expectTarget: "absent", verified: null,
   });
   const foreign = parsePosix("/.other-job.part");
@@ -783,6 +784,9 @@ test("restarts from a verified move checkpoint written by the runner", async () 
   const checkpoint = store.checkpoint.bind(store);
   const write = vi.spyOn(store, "checkpoint").mockImplementation(async (point) => {
     await checkpoint(point);
+    if (point.phase === "copying" && point.bytesDone === "3") {
+      expect(point.tempFingerprint).toEqual({ size: "3", mtimeNs: "102" });
+    }
     if (point.phase === "verified") {
       paused.release();
       return new Promise(() => {});
@@ -792,9 +796,9 @@ test("restarts from a verified move checkpoint written by the runner", async () 
   await paused.promise;
   expect(await store.lastCheckpoint(id, 0)).toEqual({
     jobId: "223e4567-e89b-42d3-a456-000000000001", itemIndex: 0,
-    phase: "verified", bytesDone: "3", tempPath: null,
+    phase: "verified", bytesDone: "3", tempPath: null, via: "copy",
     targetPath: { segments: [{ t: "b" }] }, expectTarget: "absent",
-    committed: { size: "3", mtimeNs: "102" },
+    committed: { size: "3", mtimeNs: "103" },
     verified: { size: "3", sha256: "596f4162a52f315b2ad0fa53fd30a2769d02a41ed7439123790966eee4ceb5cd" },
   });
   write.mockRestore();
@@ -844,4 +848,113 @@ test("marks a prepared job unknown if cleanup of its owned temporary file fails"
   expect((await at(id, "unknown")).items[0].outcome).toBe("unknown");
   expect(to.calls.filter(({ op }) => op === "remove")).toHaveLength(1);
   expect(to.temporaryCount).toBe(1);
+});
+
+test.each([
+  ["prepared", "3", "unknown"],
+  ["copying", "4", "unknown"],
+  ["copying", "3", "cancelled"],
+] as const)("only cleans a temp with recorded evidence in %s at size %s", async (phase, actualSize, state) => {
+  const { runner, plan, store, to, at } = await setup();
+  const { id } = await runner.submit(plan, { awaitsOwner: true });
+  await store.update(id, { state: "cancel_requested", currentItem: 0 }, "pending");
+  const tempPath = parsePosix("/.commander-223e4567-e89b-42d3-a456-000000000001-0.part");
+  const contents = new Uint8Array(Number(actualSize)).fill(7);
+  to.put(tempPath, contents, "100");
+  await store.checkpoint({ jobId: id, itemIndex: 0, phase, bytesDone: "3", tempPath,
+    tempFingerprint: phase === "copying" ? { size: "3", mtimeNs: "100" } : undefined,
+    via: "copy", targetPath: target, expectTarget: "absent", verified: null });
+  expect(await runner.recover()).toEqual({ resumed: [], unknown: state === "unknown" ? [id] : [] });
+  expect((await at(id, state)).items[0].outcome).toBe(state === "unknown" ? "unknown" : "pending");
+  expect(to.contents(tempPath)).toEqual(state === "unknown" ? contents : null);
+});
+
+test("does not infer a cross-endpoint move from matching metadata in copying", async () => {
+  const { runner, plan, store, from, to, at } = await setup({ kind: "move" });
+  const { id } = await runner.submit(plan, { awaitsOwner: true });
+  await store.update(id, { state: "running", currentItem: 0 }, "pending");
+  await from.remove(source, { kind: "file" }, new AbortController().signal);
+  to.put(target, Uint8Array.of(9, 9, 9), "1");
+  await store.checkpoint({ jobId: id, itemIndex: 0, phase: "copying", bytesDone: "3", tempPath: null,
+    via: "copy", targetPath: target, expectTarget: "absent", verified: null });
+  expect(await runner.recover()).toEqual({ resumed: [], unknown: [id] });
+  expect((await at(id, "unknown")).items[0].outcome).toBe("unknown");
+});
+
+test("keeps the source directory if a completed child's destination disappears", async () => {
+  const { runner, plan, store, from, to, at } = await setup({ kind: "move" });
+  const input = parsePosix("/tree");
+  const output = parsePosix("/tree-copy");
+  const child = parsePosix("/tree/child");
+  const copy = parsePosix("/tree-copy/child");
+  const signal = new AbortController().signal;
+  await from.mkdir(input, signal);
+  const dir = (await from.stat(input, signal))!;
+  from.put(child, Uint8Array.of(42, 42, 42), "1");
+  const { digest: _digest, ...unsigned } = plan;
+  unsigned.items[0].source!.path = child;
+  unsigned.items[0].target!.path = copy;
+  unsigned.items.unshift({ source: { endpoint: "host:from", path: input }, target: { endpoint: "host:to", path: output },
+    kind: "dir", fingerprint: { size: "0", mtimeNs: dir.mtimeNs } });
+  const update = store.update.bind(store);
+  vi.spyOn(store, "update").mockImplementation(async (...args) => {
+    const updated = await update(...args);
+    if (updated && args[1].items?.[1].outcome === "done" && args[1].items[0].outcome === "pending") {
+      await to.remove(copy, { kind: "file" }, signal);
+      await to.remove(output, { kind: "dir" }, signal);
+      await to.mkdir(output, signal);
+    }
+    return updated;
+  });
+  const { id } = await runner.submit({ ...unsigned, digest: await planDigest(unsigned) });
+  expect((await at(id, "unknown")).items.map(({ outcome }) => outcome)).toEqual(["unknown", "done"]);
+  expect((await from.stat(input, signal))?.kind).toBe("dir");
+  expect(from.calls.filter(({ op, path }) => op === "remove" && path.segments.length === 1)).toHaveLength(0);
+});
+
+test("treats already_exists from write as unknown rather than a target conflict", async () => {
+  const { runner, plan, to, at } = await setup();
+  to.failOn.push({ op: "write", path: target, times: 1, error: new CommanderError("already_exists", "Write reported a collision") });
+  const { id } = await runner.submit(plan);
+  expect((await at(id, "unknown")).items[0].outcome).toBe("unknown");
+  expect(to.calls.filter(({ op }) => op === "commit")).toHaveLength(0);
+  expect(to.contents(target)).toBeNull();
+});
+
+test.each(["retryable", "cancelled", "non-empty"] as const)("reconciles a temp left by an openWrite failure: %s", async (mode) => {
+  const { runner, plan, store, to, at } = await setup();
+  const opened = pause();
+  const openWrite = to.openWrite.bind(to);
+  vi.spyOn(to, "openWrite").mockImplementationOnce(async (...args) => {
+    const session = await openWrite(...args);
+    opened.release();
+    if (mode === "cancelled") {
+      const signal = args[2];
+      await new Promise<void>((_, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+    }
+    if (mode === "non-empty") to.put(session.tempPath, Uint8Array.of(7), "100");
+    throw new CommanderError("timeout", "Open reply lost", true);
+  });
+  const { id } = await runner.submit(plan);
+  await opened.promise;
+  if (mode === "cancelled") await runner.cancel(id);
+  await at(id, mode === "cancelled" ? "cancelled" : mode === "non-empty" ? "unknown" : "failed");
+  const point = await store.lastCheckpoint(id, 0);
+  expect(point?.phase).toBe("prepared");
+  expect(to.contents(point!.tempPath!)).toEqual(mode === "non-empty" ? Uint8Array.of(7) : null);
+  expect(to.calls.filter(({ op }) => op === "remove")).toHaveLength(mode === "non-empty" ? 0 : 1);
+});
+
+test.each(["copying", "committed"] as const)("recovers a missing move source in %s only with matching commit evidence", async (phase) => {
+  const { runner, plan, store, from, to, at } = await setup({ kind: "move" });
+  const { id } = await runner.submit(plan, { awaitsOwner: true });
+  await store.update(id, { state: "running", currentItem: 0 }, "pending");
+  await from.remove(source, { kind: "file" }, new AbortController().signal);
+  to.put(target, Uint8Array.of(42, 42, 42), "50");
+  await store.checkpoint({ jobId: id, itemIndex: 0, phase, bytesDone: "3", tempPath: null,
+    via: "copy", targetPath: target, expectTarget: "absent", verified: null, committed: { size: "3", mtimeNs: "50" } });
+  const done = phase === "committed";
+  expect(await runner.recover()).toEqual({ resumed: done ? [id] : [], unknown: done ? [] : [id] });
+  expect((await at(id, done ? "completed" : "unknown")).items[0].outcome).toBe(done ? "done" : "unknown");
+  expect(to.calls.filter(({ op }) => op === "openWrite")).toHaveLength(0);
 });

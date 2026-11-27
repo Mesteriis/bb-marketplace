@@ -8,6 +8,10 @@ export interface Checkpoint {
   phase: "prepared" | "copying" | "committed" | "verified" | "source_removed";
   bytesDone: Size;
   tempPath: ResourcePath | null;
+  /** Last observed version of the temporary file after a confirmed write. */
+  tempFingerprint?: Fingerprint;
+  /** Actual route taken by this item, including a failed rename's copy fallback. */
+  via?: "rename" | "copy";
   targetPath: ResourcePath | null;
   expectTarget: Fingerprint | "absent" | null;
   verified: { size: Size; sha256?: string } | null;

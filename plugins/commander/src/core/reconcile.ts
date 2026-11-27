@@ -192,6 +192,23 @@ export async function confirmVerified(
     && (!checkpoint.committed || matches(entry, checkpoint.committed));
 }
 
+export async function removeStagedTemp(
+  temp: Location, context: VerifyContext, expected?: Fingerprint, requirePresent = false,
+): Promise<void> {
+  const staged = await observe(temp, context, Boolean(expected?.sha256)).catch(() => {
+    throw new CommanderError("outcome_unknown", "Temporary file version could not be confirmed");
+  });
+  if (!staged && !requirePresent) return;
+  if (staged?.kind !== "file" || (expected ? !matches(staged, expected) : staged.size !== "0")) {
+    throw new CommanderError("outcome_unknown", "Temporary file does not match the recorded evidence");
+  }
+  try {
+    await temp.provider.remove(temp.path, { kind: "file", expect: fingerprint(staged)! }, context.signal);
+  } catch {
+    throw new CommanderError("outcome_unknown", "Temporary file could not be removed");
+  }
+}
+
 type Recovery = "pending" | "done" | "deferred_directory" | { verified: NonNullable<Checkpoint["verified"]> };
 
 export async function reconcileItem(
@@ -199,7 +216,6 @@ export async function reconcileItem(
   plan: OperationPlan, context: VerifyContext, save: (checkpoint: Checkpoint) => Promise<void>,
 ): Promise<Recovery> {
   const unknown = () => new CommanderError("outcome_unknown", "Interrupted mutation could not be confirmed");
-  const { call, signal } = context;
   const expected = item.fingerprint;
   if (checkpoint.phase === "prepared" || checkpoint.phase === "copying") {
     const expectTarget = checkpoint.expectTarget;
@@ -208,8 +224,9 @@ export async function reconcileItem(
       Boolean((expectTarget && expectTarget !== "absent" && expectTarget.sha256) || expected?.sha256));
     if (plan.kind === "mkdir" && after?.kind === "dir") return "done";
     if (plan.kind === "delete" && source && before === null) return "done";
-    if ((plan.kind === "rename" || plan.kind === "move") && before === null && expected
-        && after?.kind === item.kind && matches(after, expected)) return "done";
+    const wasRename = plan.kind === "rename" || (plan.kind === "move" && checkpoint.via === "rename"
+      && source?.provider.endpoint.id === target?.provider.endpoint.id);
+    if (wasRename && before === null && expected && after?.kind === item.kind && matches(after, expected)) return "done";
     const temp = checkpoint.tempPath;
     if (temp && target) {
       const { provider, path } = target;
@@ -220,15 +237,10 @@ export async function reconcileItem(
           || (source && provider.endpoint.id === source.provider.endpoint.id && samePath(source.path, temp, sensitive))) {
         throw unknown();
       }
-      const staged = await call(() => provider.stat(temp, signal));
-      if (!staged && checkpoint.phase !== "prepared") throw unknown();
-      if (staged) {
-        if (staged.kind !== "file") throw unknown();
-        // Record the intent before cleanup so a second interruption can see
-        // that an absent temporary file is consistent with this reconciliation.
-        await save({ ...checkpoint, phase: "prepared" });
-        await provider.remove(temp, { kind: "file", expect: fingerprint(staged)! }, signal);
-      }
+      if (checkpoint.phase === "copying" && checkpoint.tempFingerprint?.size !== checkpoint.bytesDone) throw unknown();
+      await removeStagedTemp({ provider, path: temp }, context,
+        checkpoint.phase === "copying" ? checkpoint.tempFingerprint : undefined, checkpoint.phase === "copying");
+      await save({ ...checkpoint, phase: "prepared", tempFingerprint: undefined });
     } else if (checkpoint.phase === "copying") {
       throw unknown();
     }
@@ -237,8 +249,16 @@ export async function reconcileItem(
   }
   if (!target || !source || !expected) throw unknown();
   const observed = await observe(source, context, Boolean(expected.sha256));
-  if (checkpoint.phase === "source_removed" || (checkpoint.phase === "verified" && observed === null)) {
-    if (plan.kind === "move" && observed === null && await confirmVerified(target, checkpoint, item.kind, context)) return "done";
+  if (checkpoint.phase === "source_removed" || observed === null) {
+    if ((plan.kind !== "move" && plan.kind !== "rename") || observed !== null) throw unknown();
+    if (checkpoint.verified) {
+      if (await confirmVerified(target, checkpoint, item.kind, context)) return "done";
+      throw unknown();
+    }
+    if (checkpoint.phase === "committed" && checkpoint.committed?.size === checkpoint.bytesDone) {
+      const destination = await observe(target, context, Boolean(checkpoint.committed.sha256));
+      if (destination?.kind === item.kind && matches(destination, checkpoint.committed)) return "done";
+    }
     throw unknown();
   }
   if (checkpoint.phase === "verified" && plan.kind === "move" && item.kind === "dir") {
