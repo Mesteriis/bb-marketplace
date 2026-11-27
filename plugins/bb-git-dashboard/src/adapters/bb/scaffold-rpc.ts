@@ -6,6 +6,7 @@ import type { ScaffoldRequest } from "../../core/scaffolds/contract.ts";
 import { buildScaffold, type ScaffoldOutput } from "../../core/scaffolds/model.ts";
 import { repositoryLine, validOwner, type RepositoryChoice } from "../../core/scaffolds/repository.ts";
 import type { Account, Provider } from "../../core/providers.ts";
+import type { RemoteOutcome } from "../../core/publication.ts";
 import { CodedError, failureFor, type Copy } from "../../core/workspace.ts";
 import { builtinScaffolds } from "../../templates/scaffolds/index.ts";
 import { hostContract } from "./host-contract.ts";
@@ -20,6 +21,8 @@ type Deps = {
   api(accountId: string): Promise<{account: Account; api: Provider}>;
   /** Remembers a provider repository by path and links the copy to it, as a connected copy is. */
   link(copy: Copy, accountId: string, path: string): Promise<void>;
+  /** Writes an entry of the remote activity log, as publications do, before and after an outside write. */
+  record(entry: RemoteOutcome): Promise<void>;
 };
 type Prepared = {hostId: string; projectsRoot: string; category: string; name: string; files: ScaffoldOutput[];
   author: ScaffoldRequest["author"]; message: string; expires: number; description: string;
@@ -75,9 +78,18 @@ export function scaffoldHandlers(bb: BbPluginApi, deps: Deps) {
       let repositoryText: string | null = null;
       if (input.repository) {
         const account = (await deps.accounts()).find(item => item.id === input.repository!.accountId) ?? (() => { throw new Error("ACCOUNT_UNCONFIGURED"); })();
-        if (!validOwner(account.kind, input.repository.owner)) throw new CodedError("INVALID_INPUT", "the owner does not fit a " + account.kind + " repository");
-        repository = {...input.repository, stamp: JSON.stringify(account)};
-        repositoryText = repositoryLine(account, input.repository, name) + " · main pushed with the account's credential from the Keychain";
+        // The account's own login as owner is the account's user (the organisation endpoint does not know it).
+        const owner = input.repository.owner !== null && account.kind !== "azure" && input.repository.owner.toLowerCase() === account.username.toLowerCase()
+          ? null : input.repository.owner;
+        if (!validOwner(account.kind, owner)) throw new CodedError("INVALID_INPUT", "the owner does not fit a " + account.kind + " repository");
+        if (account.kind === "azure" && owner !== null) {
+          const visibility = await (await deps.api(account.id)).api.repositoryVisibility?.(owner);
+          if (visibility !== input.repository.visibility) throw new CodedError("VISIBILITY_MISMATCH", "the Azure project " + owner + " is " + (visibility ?? "unknown"));
+        }
+        const choice = {...input.repository, owner};
+        repository = {...choice, stamp: JSON.stringify(account)};
+        repositoryText = repositoryLine(account, choice, name) + " · main pushed over HTTPS with the Keychain entry of " + account.username +
+          " for the new repository's path; without one the repository stays empty";
       }
       const now = Date.now();
       // A new preview of the same place replaces the earlier one; expired ones go.
@@ -113,12 +125,20 @@ export function scaffoldHandlers(bb: BbPluginApi, deps: Deps) {
       if (!made.ok) throw new Error(made.code);
       const copy = await deps.saveCopy(record.hostId, made.root, made.identity,
         {...(made.repository ? {repository: made.repository} : {}), ...(made.repositoryName ? {repositoryName: made.repositoryName} : {})})
-        .catch(() => { throw new CodedError("OUTCOME_UNKNOWN", "the project was made at " + made.root + " but not attached: open it from the catalog"); });
+        .catch(() => { throw new CodedError("OUTCOME_UNKNOWN", "the project was made at " + made.root + " but not attached: open it from the catalog"
+          + (record.repository ? "; no repository was created on the forge" : "")); });
       bb.realtime.publish("git-workspace-changed", {copyId: copy.id});
       if (!record.repository) return {copyId: copy.id, root: made.root, repository: null, notes: []};
       // The project is made: whatever happens with the repository now, it stays, and the answer says what is left.
       const choice = record.repository;
       const code = (error: unknown) => failureFor(error, "OUTCOME_UNKNOWN").code;
+      const where = (choice.owner ?? "the account's user") + "/" + record.name;
+      // The outside writes go into the activity log first, as publications do, and the log is completed after them.
+      const entry: RemoteOutcome = {id: randomUUID(), kind: "repository", target: {accountId: choice.accountId, repoId: "new:" + record.name},
+        at: new Date().toISOString(), status: "pending", actor: "human", copyId: copy.id,
+        summary: ["New " + choice.visibility + " repository " + where, "First push of main from " + made.root]};
+      const finish = (patch: Partial<RemoteOutcome>) => deps.record({...entry, ...patch}).catch(() => {});
+      await deps.record(entry).catch(() => {});
       let created: Awaited<ReturnType<Provider["createRepository"]>>;
       let account: Account;
       try {
@@ -127,14 +147,22 @@ export function scaffoldHandlers(bb: BbPluginApi, deps: Deps) {
         account = found.account;
         created = await found.api.createRepository({owner: choice.owner, name: record.name, description: record.description, visibility: choice.visibility});
       } catch (error) {
-        return {copyId: copy.id, root: made.root, repository: null,
-          notes: ["The project was made, but the repository was not created (" + code(error) + "). Create it on the forge, then push main from Git."]};
+        const failed = code(error);
+        await finish({status: failed === "OUTCOME_UNKNOWN" ? "unknown" : "failed", code: failed});
+        return {copyId: copy.id, root: made.root, repository: null, notes: [failed === "OUTCOME_UNKNOWN"
+          ? "The project was made; the forge did not answer whether repository " + where + " was created. Look for it on the forge before creating it again."
+          : "The project was made, but the repository was not created (" + failed + "). Create it on the forge, then push main from Git."]};
       }
       const notes: string[] = [];
       const pushed = await host.call("scaffoldPublish", {root: made.root, identity: made.identity, clone: created.clone, username: account.username},
         {hostId: record.hostId, timeoutMs: 120_000}).catch(() => failureFor(undefined, "GIT_RESULT_UNKNOWN"));
-      if (!pushed.ok) notes.push("Repository " + created.path + " was created empty: main was not pushed (" + pushed.code +
-        "). Put the account's HTTPS credential in the Keychain, then push main from Git.");
+      if (!pushed.ok) notes.push(pushed.code === "GIT_RESULT_UNKNOWN"
+        ? "Repository " + created.path + " was created; the push of main did not answer and may have gone through. Fetch in Git to see, then push main if it is missing."
+        : "Repository " + created.path + " was created empty: main was not pushed (" + pushed.code + "). Add the HTTPS credential of " + account.username +
+          " for " + created.clone + " to the Keychain, then push main from Git.");
+      await finish({status: pushed.ok ? "completed" : pushed.code === "GIT_RESULT_UNKNOWN" ? "unknown" : "failed",
+        target: {accountId: choice.accountId, repoId: created.id}, ...(pushed.ok ? {} : {code: pushed.code}),
+        summary: ["New " + choice.visibility + " repository " + created.path, pushed.ok ? "main pushed from " + made.root : "main not pushed from " + made.root]});
       // Linking checks the copy's origin, which the push step set.
       await deps.link(copy, choice.accountId, created.path).catch((error: unknown) => {
         notes.push("Repository " + created.path + " was created but not linked to the copy (" + code(error) + "); link it in the repository panel.");

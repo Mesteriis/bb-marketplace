@@ -97,6 +97,7 @@ const next: Record<string, string> = {
   CLEARED: "The review was cleared while this was being set up; nothing was started.",
   DESTINATION_EXISTS: "A folder of that name is already there: choose another name.",
   INVALID_DESTINATION: "Choose an existing category of the projects folder and a plain folder name.",
+  VISIBILITY_MISMATCH: "An Azure repository takes its project's visibility: choose the project's visibility, or another project.",
   BRANCH_EXISTS: "Choose a branch name that is not on the forge yet: the file goes into a new branch.",
   TEMPLATE_INVALID: "Check the template and its values: the detail names what does not fit.",
 };

@@ -58,7 +58,7 @@ if [ "$(uname)" = Darwin ]; then
 fi
 
 env -i HOME="$STAND/home" PATH="$PATH" TMPDIR="${TMPDIR:-/tmp}" \
-  NODE_EXTRA_CA_CERTS="$STAND/forge/cert.pem" GIT_SSL_CAINFO="$STAND/forge/cert.pem" \
+  NODE_EXTRA_CA_CERTS="$STAND/forge/cert.pem" MAKOSH_GIT_CA_FILE="$STAND/forge/cert.pem" \
   BB_TELEMETRY=false BB_SKIP_ONBOARDING=true NODE_ENV=production \
   node "$BB_APP/dist/bb-app.js" --data-dir "$STAND/data" \
   --server-port "$SERVER_PORT" --host-daemon-port "$DAEMON_PORT" \

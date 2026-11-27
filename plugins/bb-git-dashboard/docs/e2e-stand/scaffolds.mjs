@@ -86,7 +86,7 @@ try {
   check("the preview names the account, the repository and its visibility", await visible(pushDialog.getByText(/^New repository · stand \(gitea\) · stand\/pushed-service · private · main pushed/)));
   await pushDialog.getByRole("button", { name: "Confirm" }).click();
   check("the repository was made and main pushed, with nothing left to do", await visible(page.getByText(/Repository stand\/pushed-service has main\./), 60000)
-    && await catalog.locator(".git-error").count() === 0);
+    && await catalog.locator(".git-error").count() === 0, await catalog.locator(".git-error").allInnerTexts());
   const pushedRoot = process.env.STAND + "/home/projects/pushed-service";
   const pushedGit = (...args) => execFileSync("git", ["-C", pushedRoot, ...args], {encoding: "utf8"}).trim();
   const bare = process.env.STAND + "/forge/git/stand/pushed-service.git";

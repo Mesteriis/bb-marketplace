@@ -1,5 +1,6 @@
 import { pull as pullSchema, repo as repoSchema, type Account, type Provider, type Pull, type Repo } from "../../core/providers.ts";
 import { array, cloneUrl, object, originOf, segment, sha, text, type Http } from "./provider-http.ts";
+import { CodedError } from "../../core/workspace.ts";
 
 const pageSize = 50;
 const refPrefix = "refs/heads/";
@@ -62,6 +63,13 @@ export function azureProvider(account: Account, http: Http): Provider {
       if (!cursor) throw new Error("NO_REMOTE_BRANCH");
     }
     throw new Error("GIT_OUTPUT_LIMIT");
+  }
+  async function projectOf(owner: string) {
+    if ([".", ".."].includes(owner)) throw new Error("INVALID_INPUT");
+    const row = object((await http(endpoint(scope + "/_apis/projects/" + segment(owner)))).payload);
+    if (!text(row.id)) throw new Error("NOT_FOUND");
+    // Anything but an explicit "private" counts as public: the check errs towards the warning.
+    return {id: text(row.id), visibility: row.visibility === "private" ? "private" as const : "public" as const};
   }
   function azureRepo(row: Record<string, unknown>) {
     const project = text(object(row.project).name);
@@ -140,11 +148,14 @@ export function azureProvider(account: Account, http: Http): Provider {
       return {pull:value, diff:null, changes, comments, checks, issues};
     },
     branch,
+    async repositoryVisibility(owner) {
+      return (await projectOf(owner)).visibility;
+    },
     async createRepository(spec) {
-      // Azure repositories live in a project and take its visibility.
+      // Azure repositories live in a project and take its visibility: one other than the choice is refused.
       if (spec.owner === null || [".", ".."].includes(spec.owner)) throw new Error("INVALID_INPUT");
-      const project = text(object((await http(endpoint(scope + "/_apis/projects/" + segment(spec.owner)))).payload).id);
-      if (!project) throw new Error("NOT_FOUND");
+      const {id: project, visibility} = await projectOf(spec.owner);
+      if (visibility !== spec.visibility) throw new CodedError("VISIBILITY_MISMATCH", "the Azure project " + spec.owner + " is " + visibility);
       const {payload} = await http(endpoint(scope + "/" + segment(spec.owner) + "/_apis/git/repositories"), {method:"POST", body:{name:spec.name, project:{id:project}}});
       return azureRepo(object(payload));
     },

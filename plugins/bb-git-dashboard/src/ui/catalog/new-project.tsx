@@ -66,7 +66,11 @@ function ScaffoldForm({api, hostId, root, categories, entry, suggested, accounts
       <label>Commit author<input value={author.name} maxLength={200} placeholder="Name" onChange={event => setAuthor(previous => ({...previous, name: event.target.value}))}/></label>
       <label>Email<input value={author.email} maxLength={200} type="email" placeholder="name@example.org" onChange={event => setAuthor(previous => ({...previous, email: event.target.value}))}/></label>
     </div>
-    {accounts.length > 0 && <label className="git-ci-check"><input type="checkbox" checked={remote.on} onChange={event => setRemote(previous => ({...previous, on: event.target.checked}))}/>
+    {accounts.length > 0 && <label className="git-ci-check"><input type="checkbox" checked={remote.on} onChange={event => {
+      setRemote(previous => ({...previous, on: event.target.checked}));
+      // The CI follows the repository's forge.
+      if (event.target.checked && account) setForge(account.kind);
+    }}/>
       <span>Create a repository on a forge and push main</span></label>}
     {remote.on && <div className="git-row">
       <label>Account<select value={remote.accountId} onChange={event => {
@@ -77,10 +81,10 @@ function ScaffoldForm({api, hostId, root, categories, entry, suggested, accounts
       <label>{account?.kind === "azure" ? "Azure project" : "Owner (empty: " + (account?.username ?? "you") + ")"}
         <input value={remote.owner} maxLength={255} placeholder={account?.kind === "gitlab" ? "group/subgroup" : account?.kind === "azure" ? "Project" : "organization"}
           onChange={event => setRemote(previous => ({...previous, owner: event.target.value}))}/></label>
-      {account?.kind !== "azure" && <label>Visibility<select value={remote.visibility} onChange={event => setRemote(previous => ({...previous, visibility: event.target.value as "private" | "public"}))}>
+      {<label>{account?.kind === "azure" ? "Visibility (the project's)" : "Visibility"}<select value={remote.visibility} onChange={event => setRemote(previous => ({...previous, visibility: event.target.value as "private" | "public"}))}>
         <option value="private">Private</option><option value="public">Public</option></select></label>}
     </div>}
-    {remote.on && remote.visibility === "public" && account?.kind !== "azure" && <p className="git-error" role="alert">Public: anyone can read the repository and its history.</p>}
+    {remote.on && remote.visibility === "public" && <p className="git-error" role="alert">Public: anyone can read the repository and its history.</p>}
     {remote.on && !ownerReady && <p className="git-muted">{account?.kind === "azure" ? "Name the Azure project the repository goes into." : "The owner is an organization or a group path."}</p>}
     <p className="git-muted git-path">{destination ?? "The name must be a folder name: letters, digits and . _ -"}</p>
     {!built.ok ? <p className="git-error" role="alert">{built.problem}</p> : <div className="git-new-project-files">

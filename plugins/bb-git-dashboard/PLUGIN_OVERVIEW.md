@@ -8,7 +8,7 @@ Each working copy is matched to its forge from its `origin` remote (SSH aliases 
 
 ## Projects folder and catalog
 
-The **Projects folder** setting (default `~/projects`) and its exclusion list define the projects: a folder with `.git`; worktrees and submodules belong to their parent; hidden folders, `node_modules`, `vendor` and `references` are skipped. **Каталог** lists them beside every account's repositories, marks what is cloned, clones into a category, fetches or pulls chosen projects, and makes a **New project** from a scaffold (Python, Go, BB plugin or your own).
+The **Projects folder** setting (default `~/projects`) and its exclusion list define the projects: a folder with `.git`; worktrees and submodules belong to their parent; hidden folders, `node_modules`, `vendor` and `references` are skipped. **Каталог** lists them beside every account's repositories, marks what is cloned, clones into a category, fetches or pulls chosen projects, and makes a **New project** from a scaffold (Python, Go, BB plugin or your own) and its private repository.
 
 ## History
 
@@ -34,4 +34,4 @@ The Actions tab and a thread's **CI/CD** tab list GitHub Actions, Gitea Actions,
 
 Connect GitHub, GitLab, Azure Repos or Gitea accounts. Repository tabs show Code, CI/CD, issues and variables where supported. Secret and variable values stay in the provider. Review clone, fetch, push and PR actions before confirming them. HTTPS Git uses the account’s credential in the host’s macOS Keychain. API tokens go to Makosh Credential Vault when enabled, with a fallback copy in BB’s secret settings.
 
-Grant agents read or local write access and review their publication and worktree requests in BB. Pinned tabs keep their worktree or pull request.
+Grant agents read or local write access and review their publication and worktree requests in BB. Pinned tabs keep their target.

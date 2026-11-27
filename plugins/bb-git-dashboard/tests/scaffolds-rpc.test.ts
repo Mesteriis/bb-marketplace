@@ -8,10 +8,11 @@ const request = {hostId: "host-1", key: "builtin:python-service-uv", values: {na
   author: {name: "Stand Author", email: "author@example.invalid"}, repository: null};
 
 /** A server with one machine; `answer` is what the host's scaffoldCreate returns, or throws for a lost answer. */
-function server(answer: () => Promise<unknown>, more: {publish?: () => Promise<unknown>; create?: () => Promise<unknown>} = {}) {
+function server(answer: () => Promise<unknown>, more: {publish?: () => Promise<unknown>; create?: () => Promise<unknown>; account?: () => typeof account} = {}) {
   const calls: {name: string; input: unknown}[] = [];
   const created: unknown[] = [];
   const linked: unknown[] = [];
+  const log: {id: string; kind: string; status: string; summary: string[]; code?: string}[] = [];
   const saved: unknown[] = [];
   let root = "~/projects";
   const bb = {
@@ -25,9 +26,10 @@ function server(answer: () => Promise<unknown>, more: {publish?: () => Promise<u
   } as unknown as BbPluginApi;
   const handlers = scaffoldHandlers(bb, {rules: async () => ({root}), saveCopy: async (...args) => { saved.push(args); return {id: "copy-1"} as never; },
     accounts: async () => [account],
-    api: async () => ({account, api: {createRepository: async (spec: unknown) => { created.push(spec); return (more.create ?? (async () => repo))(); }} as never}),
-    link: async (_copy, accountId, path) => { linked.push([accountId, path]); }});
-  return {handlers, calls, saved, created, linked, setRoot: (value: string) => { root = value; }};
+    api: async () => ({account: (more.account ?? (() => account))(), api: {createRepository: async (spec: unknown) => { created.push(spec); return (more.create ?? (async () => repo))(); }} as never}),
+    link: async (_copy, accountId, path) => { linked.push([accountId, path]); },
+    record: async entry => { log.push(entry); }});
+  return {handlers, calls, saved, created, linked, log, setRoot: (value: string) => { root = value; }};
 }
 const account = {kind: "gitea" as const, id: "acc-1", label: "Stand", origin: "https://git.example.org", organization: "", username: "octo"};
 const repo = {id: "9", accountId: "acc-1", project: "octo", name: "notes", path: "octo/notes", clone: "https://git.example.org/octo/notes.git", branch: "main", canPush: true};
@@ -84,7 +86,8 @@ test("a repository asked for is private unless public is chosen and spelled out,
   const pub = await handlers.scaffoldPrepare({...request, repository: {accountId: "acc-1", owner: null, visibility: "public"}}, client);
   assert.ok(pub.ok);
   if (!pub.ok) return;
-  assert.equal(pub.preview.lines.at(-1), "New repository · Stand (gitea) · octo/notes · PUBLIC: anyone can read it · main pushed with the account's credential from the Keychain");
+  assert.equal(pub.preview.lines.at(-1), "New repository · Stand (gitea) · octo/notes · PUBLIC: anyone can read it · main pushed over HTTPS with the Keychain entry of octo"
+    + " for the new repository's path; without one the repository stays empty");
   const priv = await handlers.scaffoldPrepare({...request, values: {name: "notes", description: "Notes"}, repository: {accountId: "acc-1", owner: "team", visibility: "private"}}, client);
   assert.ok(priv.ok);
   if (!priv.ok) return;
@@ -118,4 +121,49 @@ test("a push that does not go through, or a repository that is not created, leav
   assert.equal(notMade.repository, null);
   assert.match(notMade.notes[0] ?? "", /repository was not created \(PROVIDER_DENIED\)/);
   assert.deepEqual(createFails.calls.map(call => call.name), ["scaffoldCreate"]);
+});
+
+test("outside writes are logged before and after; a lost answer is told apart from a refusal; the account's own login is its user", async () => {
+  const ok = server(made);
+  const mine = await ok.handlers.scaffoldPrepare({...request, repository: {accountId: "acc-1", owner: "Octo", visibility: "private"}}, client);
+  assert.ok(mine.ok);
+  if (!mine.ok) return;
+  assert.match(mine.preview.lines.at(-1) ?? "", /· octo\/notes · private ·/);
+  await ok.handlers.scaffoldCreate({previewId: mine.preview.id}, client);
+  assert.deepEqual(ok.created, [{owner: null, name: "notes", description: "", visibility: "private"}]);
+  assert.deepEqual(ok.log.map(entry => [entry.kind, entry.status]), [["repository", "pending"], ["repository", "completed"]]);
+  assert.equal(ok.log[0]!.id, ok.log[1]!.id);
+  assert.deepEqual(ok.log[1]!.summary, ["New private repository octo/notes", "main pushed from /home/owner/projects/notes"]);
+
+  const lost = server(made, {create: async () => { throw new Error("OUTCOME_UNKNOWN"); }});
+  const one = await lost.handlers.scaffoldPrepare({...request, repository: {accountId: "acc-1", owner: null, visibility: "private"}}, client);
+  assert.ok(one.ok);
+  if (!one.ok) return;
+  const unknown = await lost.handlers.scaffoldCreate({previewId: one.preview.id}, client);
+  assert.ok(unknown.ok);
+  if (!unknown.ok) return;
+  assert.match(unknown.notes[0] ?? "", /did not answer whether repository the account's user\/notes was created\. Look for it/);
+  assert.deepEqual(lost.log.map(entry => entry.status), ["pending", "unknown"]);
+
+  const silentPush = server(made, {publish: async () => { throw new Error("timeout"); }});
+  const two = await silentPush.handlers.scaffoldPrepare({...request, repository: {accountId: "acc-1", owner: null, visibility: "private"}}, client);
+  assert.ok(two.ok);
+  if (!two.ok) return;
+  const maybe = await silentPush.handlers.scaffoldCreate({previewId: two.preview.id}, client);
+  assert.ok(maybe.ok);
+  if (!maybe.ok) return;
+  assert.match(maybe.notes[0] ?? "", /push of main did not answer and may have gone through/);
+});
+
+test("an account changed since the preview makes no repository", async () => {
+  const changed = server(made, {account: () => ({...account, username: "someone-else"})});
+  const prepared = await changed.handlers.scaffoldPrepare({...request, repository: {accountId: "acc-1", owner: null, visibility: "private"}}, client);
+  assert.ok(prepared.ok);
+  if (!prepared.ok) return;
+  const done = await changed.handlers.scaffoldCreate({previewId: prepared.preview.id}, client);
+  assert.ok(done.ok);
+  if (!done.ok) return;
+  assert.equal(done.repository, null);
+  assert.match(done.notes[0] ?? "", /not created \(PREVIEW_EXPIRED\)/);
+  assert.deepEqual(changed.created, []);
 });

@@ -21,5 +21,7 @@ test("the preview says where the repository goes and whether it is private, in w
   assert.equal(repositoryLine(account, {owner: null, visibility: "private"}, "notes"), "New repository · Work (github) · octo/notes · private");
   assert.equal(repositoryLine(account, {owner: "team", visibility: "public"}, "notes"), "New repository · Work (github) · team/notes · PUBLIC: anyone can read it");
   assert.equal(repositoryLine({kind: "azure", label: "AZ", username: "octo"}, {owner: "Tools", visibility: "private"}, "notes"),
-    "New repository · AZ (azure) · Tools/notes · visibility of the Azure project Tools");
+    "New repository · AZ (azure) · Tools/notes · private (as the Azure project Tools, checked)");
+  assert.equal(repositoryLine({kind: "azure", label: "AZ", username: "octo"}, {owner: "Open", visibility: "public"}, "notes"),
+    "New repository · AZ (azure) · Open/notes · PUBLIC: anyone can read it (as the Azure project Open, checked)");
 });

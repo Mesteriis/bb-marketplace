@@ -151,6 +151,7 @@ export default function plugin(bb: BbPluginApi) {
       await kv.set(linkKey(copy), target);
       broadcast(copy.id);
     },
+    record: entry => kv.set("remote-operation/" + entry.id, entry),
   });
   const validatedProject = async (projectId:string | undefined) =>
     !projectId || (await bb.sdk.projects.list()).some(project => project.id === projectId);

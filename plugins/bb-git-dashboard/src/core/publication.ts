@@ -20,7 +20,7 @@ export const preview = z.object({
 });
 export type Preview = z.infer<typeof preview>;
 export const remoteOutcome = z.object({
-  id, kind:z.enum(["clone","fetch","push","pull","ciFile"]),
+  id, kind:z.enum(["clone","fetch","push","pull","ciFile","repository"]),
   target:remoteTarget, at:z.string(), status:z.enum(["pending","completed","accepted","failed","unknown"]),
   actor:z.string(), summary:z.array(z.string()), code:z.string().optional(),
   pullNumber:z.number().optional(), copyId:id.optional(),

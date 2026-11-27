@@ -63,7 +63,8 @@ test("GitLab: a project in the user's namespace, or in a group found by its path
 test("Azure: a repository in the named project, whose visibility is the project's", async () => {
   const account: Account = {kind: "azure", id: "az", label: "AZ", origin: "https://dev.azure.com", organization: "org", username: "octo"};
   const {send, calls} = server("https://dev.azure.com", {
-    "GET /org/_apis/projects/Tools": () => Response.json({id: "p-1", name: "Tools"}),
+    "GET /org/_apis/projects/Tools": () => Response.json({id: "p-1", name: "Tools", visibility: "private"}),
+    "GET /org/_apis/projects/Open": () => Response.json({id: "p-2", name: "Open", visibility: "public"}),
     "POST /org/Tools/_apis/git/repositories": () => Response.json({id: "r-9", name: "notes", project: {name: "Tools"},
       remoteUrl: "https://org@dev.azure.com/org/Tools/_git/notes"}, {status: 201}),
   });
@@ -72,4 +73,8 @@ test("Azure: a repository in the named project, whose visibility is the project'
     clone: "https://dev.azure.com/org/Tools/_git/notes", branch: null, canPush: null});
   assert.deepEqual(calls[1]!.body, {name: "notes", project: {id: "p-1"}});
   await assert.rejects(api.createRepository(spec), {message: "INVALID_INPUT"});
+  // A repository takes its project's visibility: one that differs from the choice is refused before anything is made.
+  assert.equal(await api.repositoryVisibility!("Open"), "public");
+  await assert.rejects(api.createRepository({...spec, owner: "Open"}), (error: Error & {detail?: string}) => error.message === "VISIBILITY_MISMATCH" && /public/.test(error.detail ?? ""));
+  assert.equal(calls.filter(call => call.method === "POST").length, 1);
 });

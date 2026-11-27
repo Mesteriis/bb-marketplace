@@ -16,7 +16,7 @@ export function validOwner(kind: Account["kind"], owner: string | null): boolean
 /** The preview's line for the repository: where it goes and who can read it, a public one spelled out. */
 export function repositoryLine(account: Pick<Account, "kind" | "label" | "username">, choice: RepositoryChoice, name: string) {
   const where = (choice.owner ?? account.username) + "/" + name;
-  const visibility = account.kind === "azure" ? "visibility of the Azure project " + choice.owner
-    : choice.visibility === "public" ? "PUBLIC: anyone can read it" : "private";
+  const chosen = choice.visibility === "public" ? "PUBLIC: anyone can read it" : "private";
+  const visibility = account.kind === "azure" ? chosen + " (as the Azure project " + choice.owner + ", checked)" : chosen;
   return "New repository · " + account.label + " (" + account.kind + ") · " + where + " · " + visibility;
 }

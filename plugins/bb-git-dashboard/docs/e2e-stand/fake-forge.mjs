@@ -30,8 +30,9 @@ const inbox = {created_open: [issue(3, "[ABC-12] Add greeting check", "stand", "
   created_closed: [issue(1, "Initial import", "stand", "closed", true)]};
 const pulls = {3: {mergeable: false, additions: 12, deletions: 3, head: {ref: "greeting", sha: "e".repeat(40)}},
   4: {mergeable: true, additions: 2, deletions: 2, head: {ref: "readme", sha: "f".repeat(40)}}};
-// Repositories made through the API (scaffolds.mjs): bare repositories served over HTTPS by git http-backend, push
-// allowed without a credential, next to the write log.
+// Repositories made through the API (scaffolds.mjs): bare repositories served over HTTPS by git http-backend next to
+// the write log. Push needs no credential here: a credential request would make git ask the Keychain on the machine
+// running the stand (its helper can show a desktop dialog), and the Keychain path is checked live, not on the stand.
 const gitRoot = join(dirname(log), "git");
 const made = new Map();
 const madeRepo = name => ({...repo, id: 100 + [...made.keys()].indexOf(name), name, full_name: "stand/" + name, clone_url: origin + "/stand/" + name + ".git", private: made.get(name).private});

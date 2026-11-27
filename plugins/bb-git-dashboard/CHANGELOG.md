@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.13.1 — 2026-11-27
+
+A new project's repository on a forge.
+
+- **New project…** can also create the repository with a connected GitHub, GitLab, Gitea or Azure DevOps account — in the account's own namespace, an organization, a GitLab group or an Azure project — and push main to it. The repository is **private** unless Public is chosen; a public one is spelled out in the form and in the preview. An Azure repository takes its project's visibility, which is checked against the choice before anything is made.
+- The first push goes the way fetch and push do: origin is the plain clone address, and Git takes the HTTPS credential from the macOS Keychain entry for the new repository's path (add it before, or push main from Git later). No token reaches the remote address, `.git/config` or a command line. Afterwards main follows origin/main and the copy is linked to the repository.
+- A step that does not go through leaves the project made and says what is left; a lost answer is told apart from a refusal. Creating the repository and pushing are recorded in the publication activity.
+- `MAKOSH_GIT_CA_FILE`, when set for BB, is the CA bundle HTTPS Git verifies forges against (a self-hosted forge on a private CA).
+
 ## 0.13.0 — 2026-11-27
 
 Scaffolds: new projects from a skeleton.

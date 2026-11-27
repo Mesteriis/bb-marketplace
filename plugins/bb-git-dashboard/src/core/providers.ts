@@ -60,6 +60,8 @@ export interface Provider {
    * Azure: in that project, whose visibility the repository takes).
    */
   createRepository(spec: NewRepository): Promise<Repo>;
+  /** Azure only: the visibility of the project a new repository would take. */
+  repositoryVisibility?(owner: string): Promise<"private" | "public">;
 }
 export type NewRepository = {owner: string | null; name: string; description: string; visibility: "private" | "public"};
 export type NewFile = {branch: string; base: string; baseBranch: string; path: string; content: string; message: string};
