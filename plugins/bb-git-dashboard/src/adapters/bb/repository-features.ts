@@ -2,6 +2,7 @@ import type { Account, Repo } from "../../core/providers.ts";
 import type { FeatureList, RepositorySection } from "../../core/repository-features.ts";
 import { limitation } from "../../core/forge/capabilities.ts";
 import { forgePrefix, forgeRepositoryPath } from "./forge-provider.ts";
+import { gitlabFeatures } from "./forges/gitlab-features.ts";
 import { array, object, segment, text, type Http } from "./provider-http.ts";
 
 type Row = FeatureList["items"][number];
@@ -14,6 +15,7 @@ function link(value:unknown, repo:Repo) {
 }
 
 export async function repositoryFeatures(account:Account, repo:Repo, section:RepositorySection, http:Http):Promise<FeatureList> {
+  if (account.kind === "gitlab") return gitlabFeatures(repo, section, http);
   const read = async (path:string) => (await http(path)).payload;
   if (account.kind === "azure") {
     if (section === "issues") return {items:[],notice:limitation("azure","issues")};
