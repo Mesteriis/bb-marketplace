@@ -234,6 +234,10 @@ Modify `src/adapters/bb/rpc-handlers.ts`, `src/core/wire/rpc.ts`,
 `agent-tools.ts`.
 
 **Consumes:** `compareDirs` (задача 2), `buildPlan`, `revalidate`.
+**Согласованное отклонение:** S13 добавляет в `src/core/model.ts` только
+опциональный UUID `OperationPlanBase.syncId`. При наличии он включается в
+digest. Планы этапа 1 сохраняют прежний digest, а SQLite хранит поле в
+`plan_json` без миграции.
 **Produces:**
 - `interface SyncRequest { left: ResourceRef; right: ResourceRef; direction: "left-to-right" | "right-to-left" | "both"; by: "size+mtime" | "sha256"; includeDeletes: boolean; filters?: { exclude: string[] } }`.
 - `buildSyncPlan(req, deps): Promise<SyncPlan>`;
@@ -242,6 +246,11 @@ Modify `src/adapters/bb/rpc-handlers.ts`, `src/core/wire/rpc.ts`,
   `delete`-план, подтверждается отдельно и требует `delete`.
 - Запуск: каждый план — обычное задание с `syncId`; перед запуском
   `revalidate`.
+- Сравнение S10 сопоставляет непосредственных потомков. Неполное сравнение
+  блокирует план. Фильтр `exclude` принимает точные имена потомков на обеих
+  сторонах. В режиме «В обе стороны» удаление недоступно: для него нужно
+  выбрать одну сторону назначения. Новые и обновляемые файлы можно
+  подтвердить независимо. Удаления имеют отдельный список и подтверждение.
 
 - [ ] Test `includeDeletes false, right-only file → deletes null, file untouched after run`
 - [ ] Test `includeDeletes true → deletes plan with exactly the right-only entries`

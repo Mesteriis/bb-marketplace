@@ -76,6 +76,15 @@ export function registerAgentTools(agents: BbPluginApi["agents"], ops: Operation
         : { id: null, digest: null, status: "nothing_to_retry", excluded };
     });
 
+  // S13: tickets are executable only by their initiator; deletions wait for separate owner approval.
+  register("sync", "Plan synchronization of immediate directory entries. Show the owner the plan before submitting tickets. For remote SHA-256, first call commander_compare with kind dirs, limit 1000, mtimeToleranceMs 0 and estimateOnly, then pass the confirmed estimateId. Submit the delete ticket separately for owner approval.",
+    rpcSchemas.sync_create.input, async (input, agent, signal) => {
+      const sync = await ops.createSync(input, agent, signal);
+      const ticket = ({ id, digest }: { id: string; digest: string }) => ({ id, digest });
+      return { id: sync.id, copies: sync.copies.map(ticket), deletes: sync.deletes && ticket(sync.deletes),
+        conflicts: sync.conflicts.map(({ left, right, reason }) => ({ left: metadata(left), right: metadata(right), reason })) };
+    });
+
   register("checksum", "Compute SHA-256 with read access. For a remote file, estimateOnly returns the byte count to show the owner; pass the issued estimateId after confirmation.",
     ChecksumScan.omit({ kind: true }), (input, agent, signal) => ops.scanTool({ kind: "checksum", ...input }, agent, signal));
   register("compare", "Compare files or immediate directory entries with read access on both endpoints. Show the estimate to the owner before starting remote reads with estimateId.",

@@ -13,6 +13,7 @@ import { activeTab, currentRef, keyOf, nameOf, nativePath, otherSide, problemOf,
 import { Pane, ProblemLine, rowHeight, upKey } from "./pane.tsx";
 import { Queue, type QueueProps, type RetryNote } from "./queue.tsx";
 import { ru } from "./strings.ts";
+import { SyncDialog, type SyncActions } from "./sync-dialog.tsx";
 import { Viewer } from "./viewer.tsx";
 
 type ConflictView = { kind: "conflict"; job: OperationJob };
@@ -24,6 +25,7 @@ type DialogState = { kind: "plan"; plan: OperationPlan; job?: OperationJob }
   | { kind: "scan"; subject: ScanSubject }
   | { kind: "content"; source: string; target: string; returnTo: ConflictView }
   | { kind: "view"; ref: ResourceRef; title: string; mode: ViewKind | "auto"; result: ViewResult | null; problem: Problem | null }
+  | { kind: "sync"; paths: Parameters<SyncActions["estimate"]>[0]; labels: [string, string] }
   | { kind: "settings" };
 
 export interface WorkspaceProps {
@@ -53,6 +55,7 @@ export interface WorkspaceProps {
   retryNotes: Record<string, RetryNote>;
   onPreview: (ref: ResourceRef) => void;
   scans: ScanActions;
+  sync?: SyncActions;
   startingScans: ReadonlySet<ScanSubject["kind"]>;
   onView: (ref: ResourceRef, mode: ViewKind | "auto") => Promise<ViewResult>;
   onCompare: (source: ResourceRef, target: ResourceRef) => Promise<[string, string]>;
@@ -547,6 +550,13 @@ export function Workspace(props: WorkspaceProps) {
             } });
           }}>
           <Icon name="FileDiff" /><span>{ru.compare}</span></Button></>}
+      {props.sync && <Button size="sm" variant="outline" aria-label="Синхронизация" disabled={!left || !right}
+        onClick={() => {
+          if (!left || !right) return;
+          const a = currentRef(left), b = currentRef(right);
+          open({ kind: "sync", paths: { left: a, right: b },
+            labels: [endpointsBySide.left?.label ?? a.endpoint, endpointsBySide.right?.label ?? b.endpoint] });
+        }}><Icon name="ArrowUpDown" /><span>Синхронизация</span></Button>}
       <Button size="sm" variant="outline" aria-label={ru.scanChecksum} disabled={!ready || current?.kind !== "file"} onClick={() => {
         if (!tab || current?.kind !== "file") return;
         open({ kind: "scan", subject: { kind: "checksum", file: {
@@ -640,6 +650,7 @@ export function Workspace(props: WorkspaceProps) {
         <Button size="sm" variant="outline" onClick={close}>{ru.close}</Button>
       </div>
     </Modal>}
+    {dialog?.kind === "sync" && props.sync && <SyncDialog paths={dialog.paths} labels={dialog.labels} api={props.sync} close={close} />}
     {dialog?.kind === "settings" && <Modal title={ru.keySettings} description={ru.keyHint} close={close}>
       <div className="cm-keymap">{(Object.keys(shortcuts) as Shortcut[]).map((key) => <label key={key}>
         {shortcutText[key]}<input readOnly value={bindings[key] ?? shortcuts[key].join(" / ")}

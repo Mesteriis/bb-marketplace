@@ -95,6 +95,7 @@ export type PlanItem = z.infer<typeof PlanItem>;
 // The plain shape. Refinements are added below; zod 4 forbids .omit() on a refined object.
 const OperationPlanBase = z.object({
   id: z.string().uuid(),
+  syncId: z.string().uuid().optional(),
   kind: OperationKind,
   createdAt: z.string().datetime(),
   initiator: Initiator,

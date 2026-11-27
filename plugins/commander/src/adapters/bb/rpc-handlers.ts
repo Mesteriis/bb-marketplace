@@ -11,6 +11,8 @@ import { parent } from "../../core/path.ts";
 import { toBig } from "../../core/size.ts";
 import { authorize, REQUIRED } from "../../core/permissions.ts";
 import { buildPlan, revalidate, type PlannerDeps } from "../../core/planner.ts";
+import { LIST_PAGE_MAX } from "../../core/provider.ts";
+import { buildSyncPlan } from "../../core/sync.ts";
 import { UiState, rpcSchemas, type AgentGrant, type DamagedJob, type GrantKey, type RpcInput, type ScanResult } from "../../core/wire/rpc.ts";
 import { SFTP_REFUSALS, SftpRefusal } from "../../core/wire/remote-hub-sftp.ts";
 import { covers, type createAgentGrants } from "./agent-grants.ts";
@@ -127,8 +129,11 @@ export function createOperations(deps: {
     return result;
   }
 
-  function remember(plan: OperationPlan) {
-    const bytes = Buffer.byteLength(JSON.stringify(plan));
+  // S13: reserve the whole batch so a sync preview never returns an evicted ticket.
+  function remember(plan: OperationPlan, ...batch: OperationPlan[]) {
+    const additions = [plan, ...batch].map((plan) => ({ plan, bytes: Buffer.byteLength(JSON.stringify(plan)) }));
+    const bytes = additions.reduce((total, entry) => total + entry.bytes, 0);
+    const countAdded = additions.length;
     const initiator = plan.initiator;
     const agent = initiator.kind === "agent";
     const actorLimit = agent ? maxThreadPlans : maxPlans;
@@ -146,19 +151,21 @@ export function createOperations(deps: {
         otherBytes += entry.bytes;
       }
     }
-    if (otherCount >= maxPlans || otherBytes + bytes > maxPlanBytes) {
+    if (otherCount + countAdded > maxPlans || otherBytes + bytes > maxPlanBytes) {
       throw refusal("conflict", "Agent plan pool is full");
     }
     let ownBytes = own.reduce((total, [, size]) => total + size, 0);
     for (let index = 0; index < own.length; index++) {
       const count = own.length - index;
-      if (count < actorLimit && ownBytes + bytes <= actorBytesLimit
-        && otherCount + count < maxPlans && otherBytes + ownBytes + bytes <= maxPlanBytes) break;
+      if (count + countAdded <= actorLimit && ownBytes + bytes <= actorBytesLimit
+        && otherCount + count + countAdded <= maxPlans && otherBytes + ownBytes + bytes <= maxPlanBytes) break;
       const [id, size] = own[index];
       plans.delete(id);
       ownBytes -= size;
     }
-    plans.set(plan.id, { plan: structuredClone(plan), bytes, created: now });
+    for (const { plan, bytes } of additions) {
+      plans.set(plan.id, { plan: structuredClone(plan), bytes, created: now });
+    }
   }
 
   async function requireJob(id: string, initiator?: Initiator) {
@@ -373,6 +380,33 @@ export function createOperations(deps: {
         throw error;
       }
     },
+    // S13: use the same bounded scan and estimate as directory comparison when remote bytes are needed.
+    async createSync(input: RpcInput<"sync_create">, initiator: Initiator, signal: AbortSignal) {
+      const { estimateId, ...request } = input;
+      const paths = [request.left, request.right];
+      const ids = [...new Set(paths.map(({ endpoint }) => endpoint))];
+      await checkScanRead(initiator, paths);
+      await deps.ready();
+      await endpoints.prepare(ids, signal);
+      const compared = request.by === "sha256" && ids.some((id) => id.startsWith("sftp:"))
+        ? await this.scanTool({
+          kind: "dirs", left: request.left, right: request.right, by: request.by,
+          mtimeToleranceMs: 0, limit: LIST_PAGE_MAX, estimateId,
+        }, initiator, signal)
+        : undefined;
+      if (compared !== undefined && (!compared || !("onlyLeft" in compared))) {
+        throw refusal("conflict", "Directory comparison is unavailable");
+      }
+      const limits = initiator.kind === "agent" ? { ...planner.limits, maxItems: maxAgentPlanItems } : planner.limits;
+      const sync = await buildSyncPlan(request, { ...planner, initiator, limits, compared }, signal);
+      return serializeAccess(async () => {
+        await checkScanRead(initiator, paths);
+        signal.throwIfAborted();
+        const [first, ...rest] = [...sync.copies, ...(sync.deletes ? [sync.deletes] : [])];
+        if (first) remember(first, ...rest);
+        return sync;
+      });
+    },
     async runPlan({ planId, digest }: RpcInput<"plan_run">, initiator: Initiator, signal: AbortSignal) {
       await deps.ready();
       const entry = plans.get(planId);
@@ -393,6 +427,9 @@ export function createOperations(deps: {
             throw new CommanderError("limit_exceeded", "Commander approval queue is full");
           }
         }
+        // S13: check the original snapshot before submission. The runner rechecks each
+        // item and owns the conflict transition; keep the original fingerprints.
+        if (plan.syncId && !awaitsOwner) await revalidate(plan, planner, signal);
         signal.throwIfAborted();
         if (plans.get(planId) !== entry) throw refusal("conflict", "Plan is no longer available");
         plans.delete(planId);
@@ -574,7 +611,7 @@ export function createOperations(deps: {
           const safe = (entry: (typeof result.onlyLeft)[number]) => ({ ...entry, linkTarget: null });
           const { equal: _equal, ...diff } = result;
           return { ...diff, onlyLeft: result.onlyLeft.map(safe), onlyRight: result.onlyRight.map(safe),
-            differ: result.differ.map(([left, right]) => [safe(left), safe(right)]) };
+            differ: result.differ.map(([left, right]): [Entry, Entry] => [safe(left), safe(right)]) };
         }
         return result;
       } finally {
@@ -627,6 +664,7 @@ export function createRpcHandlers(ops: Operations): ExperimentalPluginRpcHandler
     dir_list: (input, ctx) => ops.list(input, owner, ctx.experimental_signal),
     entry_stat: ({ ref }, ctx) => ops.stat(ref, owner, ctx.experimental_signal),
     file_read: (input, ctx) => ops.read(input, owner, ctx.experimental_signal).catch(changedRefusal),
+    sync_create: (input, ctx) => ops.createSync(input, owner, ctx.experimental_signal),
     plan_create: (input, ctx) => ops.createPlan(input, owner, ctx.experimental_signal),
     plan_run: (input, ctx) => ops.runPlan(input, owner, ctx.experimental_signal),
     job_list: (input) => ops.jobs(input),

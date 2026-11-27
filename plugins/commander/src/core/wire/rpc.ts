@@ -132,7 +132,24 @@ export const ScanGetView = z.strictObject({
 export type ScanGetView = z.infer<typeof ScanGetView>;
 const FileVersion = Fingerprint.pick({ size: true, mtimeNs: true });
 
+// S13: an estimate ID is obtained from the S10 directory scan for remote SHA-256.
+export const SyncInput = z.strictObject({
+  left: ResourceRef, right: ResourceRef,
+  direction: z.enum(["left-to-right", "right-to-left", "both"]),
+  by: z.enum(["size+mtime", "sha256"]),
+  includeDeletes: z.boolean().default(false),
+  filters: z.strictObject({ exclude: z.array(z.string().min(1).max(1024)).max(LIST_PAGE_MAX) }).optional(),
+  estimateId: z.uuid().optional(),
+});
+export const SyncResult = z.strictObject({
+  id: z.uuid(),
+  copies: z.array(OperationPlan).max(2),
+  deletes: OperationPlan.nullable(),
+  conflicts: z.array(z.strictObject({ left: Entry, right: Entry, reason: z.literal("both_changed") })).max(LIST_PAGE_MAX),
+});
+
 export const rpcSchemas = {
+  sync_create: { input: SyncInput, output: SyncResult },
   endpoints_list: { input: empty, output: z.strictObject({ endpoints: z.array(EndpointView) }) },
   endpoint_home: { input: z.strictObject({ endpoint: EndpointId }), output: z.strictObject({ path: ResourcePath }) },
   dir_list: {

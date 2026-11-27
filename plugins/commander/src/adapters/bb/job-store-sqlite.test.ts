@@ -6,7 +6,7 @@ import Database from "better-sqlite3";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { CommanderError } from "../../core/errors.ts";
 import type { Checkpoint, JobStore } from "../../core/job-store.ts";
-import { OperationJob } from "../../core/model.ts";
+import { OperationJob, planDigest } from "../../core/model.ts";
 import { createSqliteJobStore } from "./job-store-sqlite.ts";
 import { MIGRATIONS } from "./migrations.ts";
 
@@ -558,4 +558,11 @@ test.each([1, 2, 3])("upgrades a v%i checkpoint without inventing recovery metad
   } finally {
     legacyDb.close();
   }
+});
+
+test("S13 preserves the signed synchronization plan through SQLite create and get", async () => {
+  const plan = { ...job.plan, syncId: "123e4567-e89b-42d3-a456-426614174001" };
+  const syncJob = { ...job, plan: { ...plan, digest: await planDigest(plan) } };
+  await store.create(syncJob);
+  expect(await store.get(job.id)).toStrictEqual(syncJob);
 });
