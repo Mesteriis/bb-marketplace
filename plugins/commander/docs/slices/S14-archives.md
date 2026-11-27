@@ -38,6 +38,7 @@ USTAR/PAX, `flate2` не в зависимостях); 7z/RAR; многотом�
 | `package.json` | `scripts` (`build:helper`, `helper:sums`, `check:build`) и поле `files` (включить `bin/commander-archive-helper`, `bin/SHA256SUMS`); остальное не трогаю; файл правит и S18 — слияние по очереди |
 | корневой `THIRD_PARTY_NOTICES.md` | запись по `cargo metadata --locked --format-version 1 --filter-platform aarch64-apple-darwin`: **каждый** крейт из `Cargo.lock`, попадающий в бинарник (имя, версия, лицензия, источник), `zip` 8.6.0 и `tar` 0.4.46 отдельными строками; текст лицензий приложен, если требует лицензия; сверка списка скриптом `scripts/check-notices.mjs` (расхождение с `cargo metadata` — ошибка `check:build`) |
 | `.gitignore` | `helper/target/` |
+| `src/core/errors.ts`, `errors.test.ts` | `ErrorCode += invalid_archive`, `reason?: ArchiveReason` (§10) — разрешено координатором |
 
 ## 3. Процесс helper
 
@@ -143,7 +144,7 @@ USTAR/PAX, `flate2` не в зависимостях); 7z/RAR; многотом�
   пароль-литерал не встречается ни в записи, ни в argv/env, ни в stderr).
   В БД, настройки, логи, ответы RPC и агенту пароль не попадает; агентское
   чтение пароль владельца не использует — шифрованный архив для агента →
-  `password_required`; tool, принимающего пароль, нет.
+  `auth_failed`/`password_required`; tool, принимающего пароль, нет.
   **Остаточный риск (записан):** пароль приходит из диалога UI через RPC как
   JS-строка (не стирается GC), ключевой материал внутри крейта `zip` не
   обёрнут в `Zeroizing`; процесс helper живёт до `close`.
@@ -479,48 +480,79 @@ UI (снимки 1440×900 и 768×900): Enter на архиве → панел�
 `package.json` правит и S18 — слияние по очереди); `.tar.gz/.tgz` не делать;
 точные дубли имён — отказ всего архива с понятным текстом (§10); ссылки при
 распаковке всегда отклоняются; порог 64 КиБ — льгота только для одной записи
-плюс общий коэффициент (§5.3).
+плюс общий коэффициент (§5.3); коды ошибок — `ErrorCode += invalid_archive`
+и необязательный закрытый `reason` в `CommanderErrorShape` (§10), правку
+`src/core/errors.ts` и её тесты делает S14 отдельным блоком.
 
 Остаются:
-1. Коды ошибок helper не расширяют `ErrorCode` (§10); добавление — правка
-   `errors.ts` вне владения S14.
-2. Пароль живёт только в helper; при рестарте плагина/helper вводится заново.
-3. Сборка helper: `cargo` есть локально (rustc 1.97); бинарник коммитится как
+1. Пароль живёт только в helper; при рестарте плагина/helper вводится заново.
+2. Сборка helper: `cargo` есть локально (rustc 1.97); бинарник коммитится как
    у Remote Hub, подпись ad-hoc; карантин на чистой машине — до релиза, не в
    этом срезе.
-4. Изменение существующего ZIP/TAR — `unsupported` (ADR: сначала проверка
+3. Изменение существующего ZIP/TAR — `unsupported` (ADR: сначала проверка
    метаданных).
-5. `RLIMIT_AS` не считаем гарантией (§3); результат теста — в спецификацию.
+4. `RLIMIT_AS` не считаем гарантией (§3); результат теста — в спецификацию.
+5. Добавление `invalid_archive` затрагивает потребителей `ErrorCode`
+   (исчерпывающие `switch`/таблицы UI, `rpc.ts`): правки в них — только своими
+   блоками; если найдётся несовместимое место вне владения — стоп и вопрос.
 
-## 10. Таблица ошибок
+## 10. Коды ошибок и подкоды (`reason`)
 
-Единого `ErrorCode` на каждый код helper нет: `ErrorCode` (S1) конечен
-(`errors.ts`). Предлагаю **не расширять enum**, а передавать код helper в
-`message` как префикс `[bad_tar]` (для логов/агента) и отображать русскую
-строку по таблице; если ревью решит добавить коды — правка `errors.ts` вне
-владения S14, вопрос в тред Commander.
+Решение координатора. В `src/core/errors.ts` (правка вне плана, разрешена):
+- `ErrorCode` += `"invalid_archive"`;
+- `CommanderErrorShape` += необязательное `reason?: ArchiveReason` — **закрытый**
+  `z.enum` (ниже); `CommanderError` получает необязательный четвёртый
+  аргумент конструктора/опцию `reason`, `toShape()` его выдаёт. Префиксов вида
+  `[bad_tar]` в `message` нет; UI выбирает текст по `code` + `reason`.
+- Ошибки без `reason` читаются и пишутся как раньше (поле необязательно,
+  `strict()` схема остаётся). Тесты: старая форма без `reason` проходит схему;
+  `reason: "no_such_reason"` **не проходит**; `reason` из enum проходит;
+  `toShape()` без `reason` не добавляет ключ; `message` по-прежнему ≤ 500.
 
-| Код helper / адаптера | `ErrorCode` | Класс RPC | Строка UI (RU) | Агент видит |
+`ArchiveReason` (закрытый список, один enum на все подкоды):
+`bad_tar, bad_zip, bad_eocd, bad_zip64, bad_range, bad_pax, count_mismatch,
+scan_mismatch, overlapping_entries, local_name_mismatch, multi_volume,
+truncated, size_overflow, duplicate_name, size_mismatch, crc_mismatch,
+aes_auth_failed, unsupported_format, unsupported_compression,
+unsupported_pax_size, archives_unavailable, meta_too_large,
+directory_too_large, too_many_entries, name_too_long, total_exceeded,
+ratio_exceeded, too_many_open_archives, password_required, bad_password,
+helper_checksum_failed, helper_version_mismatch, helper_crashed,
+protocol_error`.
+
+Коды helper → `ErrorCode` + `reason` → строка UI. Строки UI — русские; агент
+видит `code`, `reason`, `retryable` и безопасное `message` (без путей и имён
+записей).
+
+| Код helper / адаптера | `ErrorCode` | `reason` | Класс | Строка UI (RU) |
 |---|---|---|---|---|
-| `archives_unavailable` | `unsupported` | отказ, не повторять | «Архивы недоступны: нет helper для платформы» (или «helper перезапускался слишком часто; откройте архив заново») | `unsupported`, `[archives_unavailable]` |
-| `helper_checksum_failed` | `internal` | сбой установки | «Модуль архивов повреждён: контрольная сумма не совпала. Переустановите плагин» | `internal`, `[helper_checksum_failed]` (без путей) |
-| `helper_version_mismatch` | `internal` | сбой установки | «Модуль архивов несовместим с версией плагина» | `internal` |
-| `helper_crashed` | `internal` (retryable) | сбой, можно повторить | «Модуль архивов остановился. Повторите; пароль придётся ввести заново» | `internal`, retryable |
-| `protocol_error` | `internal` | сбой | то же, что `helper_crashed` | `internal` |
-| `password_required` | `consent_required` | ждёт владельца | «Архив зашифрован: введите пароль» | `consent_required`, `[password_required]`; пароль не запрашивается |
-| `bad_password_or_corrupt` | `permission_denied` | отказ | «Неверный пароль или повреждённые данные» | то же, без деталей |
-| `too_many_open_archives` | `limit_exceeded` | повторить позже | «Открыто слишком много архивов (максимум 4)» | `limit_exceeded` |
-| `duplicate_name` | `unsupported` | отказ | **«В архиве повторяются имена записей; распаковка невозможна»** (для TAR: «…(так бывает после `tar -r`)») | `unsupported`, `[duplicate_name]` |
-| `meta_too_large`, `directory_too_large`, `too_many_entries`, `name_too_long` | `limit_exceeded` | отказ | «Архив слишком велик или устроен необычно: превышен предел служебных данных / числа записей» | `limit_exceeded` |
-| `limit_exceeded` (размер/коэффициент) | `limit_exceeded` | отказ | «Превышен предел распаковки» либо текст про коэффициент (§5.3) | `limit_exceeded` |
-| `link_not_supported`, `link_escapes` | элемент `refused` | элемент плана | «Ссылки при распаковке не поддерживаются» / «Ссылка выходит за каталог назначения» | элемент плана с причиной |
-| `unsafe_name`, `backslash`, `name_encoding`, `special_file`, `name_collision` | элемент `refused` | элемент плана | «Запись пропущена: небезопасное имя» и т. п. по причине | элемент плана с причиной |
-| `bad_tar`, `bad_zip`, `bad_eocd`, `bad_zip64`, `bad_range`, `bad_pax`, `count_mismatch`, `scan_mismatch`, `overlapping_entries`, `local_name_mismatch`, `multi_volume`, `truncated`, `size_overflow` | `unsupported` | отказ | «Архив повреждён или имеет неподдерживаемую структуру» (подробный код — в деталях) | `unsupported`, `[код]` |
-| `unsupported_format`, `unsupported_compression`, `unsupported_pax_size` | `unsupported` | отказ | «Формат или вариант архива не поддерживается» | `unsupported` |
-| `size_mismatch`, `crc_mismatch`, `aes_auth_failed` | `internal` | элемент `failed`, temp убирает раннер | «Данные записи повреждены (контрольная сумма)» | `internal` |
-| `changed_since_open` | `changed_since_plan` | конфликт | «Архив изменился на диске; обновите панель» | `changed_since_plan` |
-| `no_space` (staging/копия) | `no_space` | отказ | «Не хватает места для временного файла» | `no_space` |
-| `cancelled`, `timeout` | `cancelled`, `timeout` | — | стандартные строки Commander | то же |
+| `bad_tar`, `bad_zip`, `bad_eocd`, `bad_zip64`, `bad_range`, `bad_pax`, `count_mismatch`, `scan_mismatch`, `overlapping_entries`, `local_name_mismatch`, `multi_volume`, `truncated`, `size_overflow` | `invalid_archive` | тот же код | отказ | «Архив повреждён или имеет неподдерживаемую структуру» |
+| `duplicate_name` | `invalid_archive` | `duplicate_name` | отказ | **«В архиве повторяются имена записей; распаковка невозможна»**; для TAR добавляется: «(так бывает после `tar -r`)» |
+| `size_mismatch`, `crc_mismatch`, `aes_auth_failed` | `invalid_archive` | тот же код | элемент `failed`, temp убирает раннер | «Данные записи повреждены (контрольная сумма или размер)» |
+| `unsupported_format`, `unsupported_compression`, `unsupported_pax_size` | `unsupported` | тот же код | отказ | «Формат или вариант архива не поддерживается» |
+| `archives_unavailable` | `unsupported` | `archives_unavailable` | отказ, не повторять | «Архивы недоступны: нет helper для платформы» (или «Модуль архивов перезапускался слишком часто; откройте архив заново») |
+| `meta_too_large`, `directory_too_large`, `too_many_entries`, `name_too_long` | `limit_exceeded` | тот же код | отказ | «Архив устроен необычно: превышен предел служебных данных, числа записей или длины имени» |
+| `total_exceeded` | `limit_exceeded` | `total_exceeded` | отказ | «Превышен предел распаковки (общий размер)» |
+| `ratio_exceeded` | `limit_exceeded` | `ratio_exceeded` | отказ | «Архив сжат сильнее допустимого (коэффициент > N:1); возможно, это архивная бомба. Поднять предел можно в настройках» |
+| `too_many_open_archives` | `limit_exceeded` | `too_many_open_archives`, `retryable` | повторить позже | «Открыто слишком много архивов (максимум 4)» |
+| `password_required` | `auth_failed` | `password_required` | ждёт владельца (`awaitsOwner`) | «Архив зашифрован: введите пароль» |
+| `bad_password` (в т. ч. `bad_password_or_corrupt` ZipCrypto) | `auth_failed` | `bad_password` | отказ, ввод повторить | «Неверный пароль или повреждённые данные» |
+| `helper_checksum_failed` | `internal` | `helper_checksum_failed` | сбой установки | «Модуль архивов повреждён: контрольная сумма не совпала. Переустановите плагин» |
+| `helper_version_mismatch` | `internal` | `helper_version_mismatch` | сбой установки | «Модуль архивов несовместим с версией плагина» |
+| `helper_crashed`, `protocol_error` | `internal`, `retryable` | тот же код | сбой, можно повторить | «Модуль архивов остановился. Повторите; пароль придётся ввести заново» |
+| `changed_since_open` | `changed_since_plan` | — | конфликт | «Архив изменился на диске; обновите панель» |
+| `no_space` (staging/копия) | `no_space` | — | отказ | «Не хватает места для временного файла» |
+| `cancelled`, `timeout` | `cancelled`, `timeout` | — | — | стандартные строки Commander |
+
+Агент: шифрованный архив → `auth_failed` + `password_required` (пароль не
+запрашивается и не принимается); оценка копии без `estimateId` →
+`consent_required` (код S10, не `reason`).
+
+Элементы плана распаковки с причинами `refused` (`unsafe_name`, `backslash`,
+`name_encoding`, `special_file`, `name_collision`, `link_not_supported`,
+`link_escapes`, `encrypted_no_password`) — **не ошибки**, а поля элемента
+плана (отдельный enum `RefusedReason`, §5.4); в `ErrorCode` не попадают.
+Открытие архива с `duplicate_name` отказывает целиком (ошибка выше).
 
 ## 11. Падение helper, рестарт, публикация
 
