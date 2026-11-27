@@ -4,10 +4,10 @@
 
 CI templates.
 
-- **Templates** in the Actions tab: the stack is read from the copy's HEAD (Node.js with its package manager, Node version and scripts; Python with uv, Poetry, pip or a bare pyproject and pytest; Go with its version; Rust; a Dockerfile), and the templates of the linked forge that suit it come first.
+- **Templates** in the Actions tab: the stack is read from the copy at `origin/<default branch>` as last fetched, else at HEAD (Node.js with its package manager, Node version and scripts; Python with uv, Poetry, pip or a bare pyproject and pytest; Go with its version; Rust; a Dockerfile), and the templates of the linked forge that suit it come first.
 - Built-in templates for Node.js, Python, Go, Rust and a Docker image build on GitHub Actions, Gitea Actions, GitLab CI and Azure Pipelines. They hold only the pipeline and its parameters: no secrets, nothing deployed or pushed.
-- Own templates in the same JSON format from the **CI templates: own templates** setting or a folder on the copy's machine (**CI templates: folder of own templates**). A template that does not render with its defaults, or carries a private key, a token, credentials in an address or an IP address, is listed with the reason and not offered.
-- The form shows each parameter and the file as it will be written; a value that does not fit its parameter is refused before anything is sent. **Create branch and pull request** renders the file again on the server, previews the new branch from the default branch's head, and after confirmation commits the file there through the forge's API and opens the pull request. If the branch was made but the pull request was not, the outcome says so.
+- Own templates in the same JSON format from the **CI templates: own templates** setting or a folder on the copy's machine (**CI templates: folder of own templates**). A template that does not render with its defaults, or carries a private key, a token, an address, an IP address or a `.env` file, is listed with the reason and not offered.
+- The form shows each parameter and the file as it will be written; a value that does not fit its parameter is refused before anything is sent. **Create branch and pull request** renders the file again on the server, previews the new branch from the default branch's head, and after confirmation commits the file there through the forge's API and opens the pull request. The branch must be new; a template writes only where its forge reads CI files. If a branch was left by a failed write, the outcome names it (on GitHub a branch whose file was refused is removed again).
 - On GitHub, writing a workflow file needs a token with the `workflow` scope.
 
 ## 0.11.0 — 2026-11-27
