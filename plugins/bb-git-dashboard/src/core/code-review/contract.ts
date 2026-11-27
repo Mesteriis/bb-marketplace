@@ -2,6 +2,7 @@ import { z } from "zod";
 import { answer } from "../answer.ts";
 import { id } from "../workspace.ts";
 import { placementSchema } from "./placement.ts";
+import { viewStateSchema } from "./view-state.ts";
 import { reviewDiffFileSchema } from "./diff.ts";
 import { ANCHOR_MAX_CHARS, BODY_MAX_CHARS, executionSchema, reviewRunSchema, reviewThreadSchema, severitySchema, sideSchema, targetRequestSchema, targetSchema, threadStatusSchema } from "./model.ts";
 
@@ -21,6 +22,8 @@ export const codeReviewContract = {
       threads: z.array(reviewThreadSchema), placements: z.record(z.string(), placementSchema),
       /** Where the copy is, to open its files in BB's preview. */
       copy: z.object({hostId: id, root: z.string().max(4096)}), colorBlind: z.boolean().optional()})},
+  reviewViewState: {input: z.object({scope: z.string().max(140), sessionId: reviewId}), output: answer({state: viewStateSchema})},
+  reviewSaveViewState: {input: z.object({scope: z.string().max(140), sessionId: reviewId, state: viewStateSchema}), output: answer({kept: z.boolean()})},
   reviewSetViewed: {input: z.object({sessionId: reviewId, path: z.string().min(1).max(4096), revision: z.string().max(64), viewed: z.boolean()}), output: answer({})},
   reviewCreateThread: {input: z.object({sessionId: reviewId, filePath: z.string().min(1).max(4096), side: sideSchema.nullable(),
     startLine: z.number().int().min(0), endLine: z.number().int().min(0), anchorContent: z.string().max(ANCHOR_MAX_CHARS).nullable(),

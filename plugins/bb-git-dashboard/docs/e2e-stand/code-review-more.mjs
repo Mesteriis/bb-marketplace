@@ -92,6 +92,13 @@ try {
   check("Open shows the file in BB's preview", await visible(page.getByText("and changed again").filter({ hasNot: page.locator(".git-review-code") })));
 
   await review.getByRole("region", { name: "watched.txt" }).getByRole("button", { name: "Comment on line 1" }).click();
+  await review.getByLabel("Line comment").fill("Unsent for now");
+  await review.getByRole("region", { name: "many/f03.txt" }).getByRole("button", { name: "▾" }).click();
+  await page.waitForTimeout(1500);
+  review = await open();
+  check("an unsent line comment and a folded file survive a reload", await visible(review.getByLabel("Line comment"))
+    && await review.getByLabel("Line comment").inputValue() === "Unsent for now"
+    && await review.getByRole("region", { name: "many/f03.txt" }).locator(".git-review-row").count() === 0);
   await review.getByLabel("Line comment").fill("To be **cleared**.");
   await review.getByRole("button", { name: "Comment", exact: true }).click();
   const thread = review.getByRole("article", { name: /Comment thread on watched\.txt:1/ });

@@ -1,4 +1,6 @@
 import { useState, type KeyboardEvent } from "react";
+import type { Draft } from "../../core/code-review/view-state.ts";
+import { useKept } from "./kept-state.tsx";
 import { SEVERITY_OPTIONS } from "./severity.ts";
 import { describeLocation, type ReviewComment, type ReviewThread, type Severity } from "../../core/code-review/model.ts";
 import { bodyParts, insertSuggestion, suggestionLines, suggestionState } from "../../core/code-review/suggestion.ts";
@@ -8,24 +10,38 @@ import { deliveryLabel, message, severityLabel, type CodeReviewApi } from "./rev
  * A comment box: ⌘/Ctrl+Enter sends, Escape cancels; "Suggest a change" adds a suggestion block seeded with the
  * commented lines. `severity` is offered on a new thread only.
  */
-export function Composer({label, initial = "", code, withSeverity, submitLabel, onSubmit, onCancel}: {
+export function Composer({label, initial = "", code, withSeverity, submitLabel, onSubmit, onCancel, draftKey, draftRange}: {
   label: string; initial?: string; code?: string | null; withSeverity?: boolean; submitLabel: string;
   onSubmit(body: string, severity: Severity | null): Promise<void>; onCancel?(): void;
+  /** Where the unsent text is kept (see view-state.ts), so it survives leaving the thread. */
+  draftKey?: string; draftRange?: Draft["range"];
 }) {
-  const [body, setBody] = useState(initial);
-  const [severity, setSeverity] = useState<Severity | "">("");
+  const kept = useKept();
+  const saved = draftKey ? kept.draft(draftKey) : undefined;
+  const [body, setBodyState] = useState(saved?.body ?? initial);
+  const [severity, setSeverityState] = useState<Severity | "">(saved?.severity ?? "");
+  const keep = (nextBody: string, nextSeverity: Severity | "") => {
+    if (draftKey) kept.setDraft(draftKey, nextBody === initial ? null : {body: nextBody, severity: nextSeverity || null, ...draftRange ? {range: draftRange} : {}});
+  };
+  const setBody = (value: string | ((current: string) => string)) => setBodyState(current => {
+    const next = typeof value === "function" ? value(current) : value;
+    keep(next, severity);
+    return next;
+  });
+  const setSeverity = (value: Severity | "") => { setSeverityState(value); keep(body, value); };
+  const cancel = onCancel && (() => { if (draftKey) kept.setDraft(draftKey, null); onCancel(); });
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
   const submit = async () => {
     if (!body.trim() || pending) return;
     setPending(true); setError("");
-    try { await onSubmit(body, severity || null); setBody(""); }
+    try { await onSubmit(body, severity || null); setBodyState(""); if (draftKey) kept.setDraft(draftKey, null); }
     catch (cause) { setError(message(cause)); }
     finally { setPending(false); }
   };
   const keys = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); void submit(); }
-    if (event.key === "Escape" && onCancel) { event.preventDefault(); onCancel(); }
+    if (event.key === "Escape" && cancel) { event.preventDefault(); cancel(); }
   };
   return <form className="git-review-composer" onSubmit={event => { event.preventDefault(); void submit(); }}>
     <textarea aria-label={label} value={body} rows={3} autoFocus placeholder="Mention @reviewer to ask the AI reviewer."
@@ -37,7 +53,7 @@ export function Composer({label, initial = "", code, withSeverity, submitLabel, 
       </select>}
       {code !== undefined && code !== null && <button type="button" onClick={() => setBody(current => insertSuggestion(current, current.length, code).body)}>Suggest a change</button>}
       <span className="git-ci-spacer"/>
-      {onCancel && <button type="button" onClick={onCancel}>Cancel</button>}
+      {cancel && <button type="button" onClick={cancel}>Cancel</button>}
       <button type="submit" className="git-primary" disabled={pending || !body.trim()}>{pending ? "Saving…" : submitLabel}</button>
     </div>
     {error && <p className="git-error" role="alert">{error}</p>}
@@ -80,8 +96,10 @@ function Body({comment, thread, current, canApply, api}: {comment: ReviewComment
 export function ThreadCard({thread, api, current, canApply, showPath, outdated}: {
   thread: ReviewThread; api: CodeReviewApi; current: string | undefined; canApply: boolean; showPath?: boolean; outdated?: boolean;
 }) {
-  const [replying, setReplying] = useState(false);
-  const [editing, setEditing] = useState<string | null>(null);
+  const kept = useKept();
+  // A reply or an edit left unsent opens again with its text.
+  const [replying, setReplying] = useState(() => kept.draft("reply:" + thread.id) !== undefined);
+  const [editing, setEditing] = useState<string | null>(() => thread.comments.find(comment => kept.draft("edit:" + comment.id))?.id ?? null);
   const [error, setError] = useState("");
   const [shown, setShown] = useState(false);
   const act = (work: Promise<void>) => { setError(""); work.catch(cause => setError(message(cause))); };
@@ -112,7 +130,7 @@ export function ThreadCard({thread, api, current, canApply, showPath, outdated}:
           </>}
         </div>
         {editing === comment.id
-          ? <Composer label="Edit comment" initial={comment.body} submitLabel="Save" onCancel={() => setEditing(null)}
+          ? <Composer label="Edit comment" initial={comment.body} submitLabel="Save" onCancel={() => setEditing(null)} draftKey={"edit:" + comment.id}
             onSubmit={async body => { await api.editComment(comment.id, body); setEditing(null); }}/>
           : <Body comment={comment} thread={thread} current={current} canApply={canApply} api={api}/>}
       </div>)}
@@ -122,7 +140,7 @@ export function ThreadCard({thread, api, current, canApply, showPath, outdated}:
         {!closed && <button type="button" onClick={() => act(api.setStatus(thread.id, "dismissed"))}>Dismiss</button>}
         {closed && <button type="button" onClick={() => act(api.setStatus(thread.id, "open"))}>Reopen</button>}
       </div>
-      {replying && <Composer label="Reply" submitLabel="Reply" onCancel={() => setReplying(false)}
+      {replying && <Composer label="Reply" submitLabel="Reply" onCancel={() => setReplying(false)} draftKey={"reply:" + thread.id}
         onSubmit={async body => { await api.addComment(thread.id, body); setReplying(false); }}/>}
     </>}
     {api.reviewerNote?.(thread.id) && <p className="git-warning" role="status">{api.reviewerNote(thread.id)}</p>}

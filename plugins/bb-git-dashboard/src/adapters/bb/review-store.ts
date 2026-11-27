@@ -95,6 +95,14 @@ export const REVIEW_MIGRATIONS: string[] = [
      marked_at INTEGER NOT NULL,
      PRIMARY KEY (session_id, path)
    )`,
+  // What each tab (a thread's, or a copy's in Git) keeps of a view: drafts, folds, scroll (core/code-review/view-state.ts).
+  `CREATE TABLE review_view_states (
+     scope TEXT NOT NULL,
+     session_id TEXT NOT NULL REFERENCES review_sessions(id) ON DELETE CASCADE,
+     saved_at INTEGER NOT NULL,
+     state TEXT NOT NULL,
+     PRIMARY KEY (scope, session_id)
+   )`,
 ];
 
 export type Session = {id: string; copyId: string; targetKey: string};
@@ -286,6 +294,18 @@ export class ReviewStore {
         .run(input.threadId, input.callerThreadId, input.ackBefore, input.ackBefore);
       return commentId;
     })();
+  }
+
+  /** What `scope`'s tab kept of a session's view, as saved; null when nothing was kept. */
+  viewState(scope: string, sessionId: string): string | null {
+    return (this.db.prepare("SELECT state FROM review_view_states WHERE scope = ? AND session_id = ?").get(scope, sessionId) as {state: string} | undefined)?.state ?? null;
+  }
+
+  /** Keeps a tab's state unless one saved later (by `savedAt`) is there: two windows can flush out of order. */
+  saveViewState(scope: string, sessionId: string, savedAt: number, state: string): boolean {
+    return Number(this.db.prepare(`INSERT INTO review_view_states (scope, session_id, saved_at, state) VALUES (?, ?, ?, ?)
+      ON CONFLICT (scope, session_id) DO UPDATE SET saved_at = excluded.saved_at, state = excluded.state WHERE excluded.saved_at >= review_view_states.saved_at`)
+      .run(scope, sessionId, savedAt, state).changes) > 0;
   }
 
   /** The session's Viewed marks: path to the change revision each was made at. */

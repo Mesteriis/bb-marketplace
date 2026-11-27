@@ -7,6 +7,7 @@ import { displayRows, splitRows, type DisplayRow } from "../../core/code-review/
 import type { ExplainPlace } from "../../core/code-review/run-prompts.ts";
 import type { CodeReviewApi, NewThread, Placement } from "./review-api.ts";
 import { Composer, ThreadCard } from "./thread-card.tsx";
+import { useKept } from "./kept-state.tsx";
 
 const sideOf = (row: DisplayRow): Side => row.kind === "deletion" ? "old" : "new";
 const lineOf = (row: DisplayRow) => row.kind === "deletion" ? row.oldLine! : row.newLine!;
@@ -48,11 +49,18 @@ export function FileDiff({file, threads, placements, wrap, split, workingCopy, a
   const items: Item[] = useMemo(() => split ? splitRows(rows)
     : rows.map(row => row.kind === "hunk" ? {kind: "hunk" as const, text: row.text} : {kind: "single" as const, row}), [rows, split]);
   const lines = useMemo(() => file.patch ? parsePatchLines(file.patch) : null, [file.patch]);
-  const [selection, setSelection] = useState<{side: Side; from: number; to: number} | null>(null);
-  const [fileComment, setFileComment] = useState(false);
+  const kept = useKept();
+  // An unsent line comment comes back with its lines selected; one on the file, opened.
+  const [selection, setSelection] = useState<{side: Side; from: number; to: number} | null>(() => {
+    const range = kept.draft("line:" + file.path)?.range;
+    return range ? {side: range.side, from: range.start, to: range.end} : null;
+  });
+  const [fileComment, setFileComment] = useState(() => kept.draft("file:" + file.path) !== undefined);
   // A change of more than LARGE_CHANGE lines starts folded: it is slow to show and rarely read line by line.
   const large = file.additions + file.deletions > LARGE_CHANGE;
-  const [closed, setClosed] = useState(large || file.viewed === true);
+  const [closed, setClosedState] = useState(() => kept.fold(file.path) ?? (large || file.viewed === true));
+  const setClosed = setClosedState;
+  const toggleFold = () => setClosedState(current => { kept.setFold(file.path, !current); return !current; });
   // Marking a file Viewed folds it; a mark that went stale (its change moved on) unfolds it.
   useEffect(() => { if (file.viewed !== undefined) setClosed(file.viewed || large); }, [file.viewed, large]);
   const [marking, setMarking] = useState(false);
@@ -83,7 +91,7 @@ export function FileDiff({file, threads, placements, wrap, split, workingCopy, a
   const additions = file.binary ? "binary" : "+" + file.additions + " −" + file.deletions;
   return <section className="git-review-file" aria-label={file.path} data-path={file.path} tabIndex={-1}>
     <header className="git-row git-review-file-head">
-      <button type="button" className="git-link" aria-expanded={!closed} onClick={() => setClosed(value => !value)}>{closed ? "▸" : "▾"}</button>
+      <button type="button" className="git-link" aria-expanded={!closed} onClick={toggleFold}>{closed ? "▸" : "▾"}</button>
       <strong className="git-path">{file.previousPath ? file.previousPath + " → " : ""}{file.path}</strong>
       <span className="git-muted">{file.untracked ? "untracked" : file.changeKind.replace("_", " ")} · {additions}{large ? " · large change" : ""}</span>
       {threads.length > 0 && <span className="git-review-tag">{threads.filter(thread => thread.status === "open").length} open</span>}
@@ -95,7 +103,7 @@ export function FileDiff({file, threads, placements, wrap, split, workingCopy, a
       <button type="button" aria-expanded={fileComment} onClick={() => setFileComment(value => !value)}>Comment on file</button>
     </header>
     {!closed && <>
-      {fileComment && <Composer label={"Comment on " + file.path} withSeverity submitLabel="Comment" onCancel={() => setFileComment(false)}
+      {fileComment && <Composer label={"Comment on " + file.path} withSeverity submitLabel="Comment" onCancel={() => setFileComment(false)} draftKey={"file:" + file.path}
         onSubmit={async (body, severity) => { await onCreate({filePath: file.path, side: null, startLine: 0, endLine: 0, anchorContent: null, severity, body}); setFileComment(false); }}/>}
       {wholeFile.map(thread => <ThreadCard key={thread.id} thread={thread} api={api} current={undefined} canApply={false}/>)}
       {file.deferred ? (patchError
@@ -132,7 +140,8 @@ export function FileDiff({file, threads, placements, wrap, split, workingCopy, a
                 <button type="button" disabled={explaining} onClick={() => { void onExplain({filePath: file.path, side: selection.side, startLine: range.start, endLine: range.end, code: selectedCode}); setSelection(null); }}>
                   Explain {range.start === range.end ? "this line" : "these lines"}</button>
               </div>
-              <Composer label="Line comment" withSeverity code={selection.side === "new" ? selectedCode : null} submitLabel="Comment" onCancel={() => setSelection(null)}
+              <Composer key={selection.side + range.start + "-" + range.end} label="Line comment" withSeverity code={selection.side === "new" ? selectedCode : null} submitLabel="Comment"
+                onCancel={() => setSelection(null)} draftKey={"line:" + file.path} draftRange={{side: selection.side, start: range.start, end: range.end}}
                 onSubmit={async (body, severity) => {
                   await onCreate({filePath: file.path, side: selection.side, startLine: range.start, endLine: range.end, anchorContent: selectedCode, severity, body});
                   setSelection(null);

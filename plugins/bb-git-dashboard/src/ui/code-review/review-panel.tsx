@@ -5,6 +5,8 @@ import { parseRange, rangeText } from "../../core/code-review/git-spec.ts";
 import { describeTarget, GENERAL_PATH, type ReviewRun, type TargetRequest } from "../../core/code-review/model.ts";
 import type { ExplainPlace } from "../../core/code-review/run-prompts.ts";
 import { AiReviewForm, RunList } from "./ai-runs.tsx";
+import { KeptContext, useKeptState } from "./kept-state.tsx";
+import { orphanDrafts } from "../../core/code-review/view-state.ts";
 import { useReviewCommands, type ReviewCommand } from "./commands.ts";
 import { FindBar, GoToDialog } from "./navigate-bar.tsx";
 import { commentOrder, findMatches, goToItems, step, type GoToItem } from "./navigation.ts";
@@ -126,6 +128,9 @@ export function ReviewPanel({api, copyId, currentThreadId, revision}: {api: Code
     return () => { active = false; clearInterval(timer); document.removeEventListener("visibilitychange", renew); };
   }, [api, copyId]);
   const sessionId = view?.sessionId;
+  const keptState = useKeptState(api, scope, sessionId, root);
+  // An unsent comment on the whole diff opens again with its text.
+  useEffect(() => { if (keptState.ready && keptState.kept.draft("general")) setGeneral(true); }, [keptState.ready, keptState.kept]);
   useEffect(() => {
     if (!sessionId) { setRuns([]); return; }
     let active = true;
@@ -238,6 +243,7 @@ export function ReviewPanel({api, copyId, currentThreadId, revision}: {api: Code
     actions[command]();
   });
   const open = threads.filter(thread => thread.status === "open").length;
+  const orphans = view && keptState.ready ? orphanDrafts(keptState.state, new Set(view.files.map(file => file.path))) : [];
   const working = view ? workingViews.has(view.target.kind) : false;
   // ⌘/Ctrl+F finds and ⌘/Ctrl+P goes to, while focus is inside this Review.
   const keys = (event: KeyboardEvent) => {
@@ -245,7 +251,7 @@ export function ReviewPanel({api, copyId, currentThreadId, revision}: {api: Code
     if (event.key === "f") { event.preventDefault(); setFinding(true); }
     if (event.key === "p") { event.preventDefault(); setGoingTo(true); }
   };
-  return <section ref={root} onKeyDown={keys} className="git-project-code git-stack git-code-review" aria-label="Review" data-palette={view?.colorBlind ? "color-blind" : undefined}>
+  return <KeptContext.Provider value={keptState.kept}><section ref={root} onKeyDown={keys} className="git-project-code git-stack git-code-review" aria-label="Review" data-palette={view?.colorBlind ? "color-blind" : undefined}>
     <div className="git-row git-code-review-bar">
       <select aria-label="What to review" value={kind} onChange={event => choose(event.target.value as Kind)}>
         {kinds.map(item => <option key={item.kind} value={item.kind}>{item.label}</option>)}</select>
@@ -299,7 +305,7 @@ export function ReviewPanel({api, copyId, currentThreadId, revision}: {api: Code
       onClose={() => setSending(false)} onSent={text => { setSending(false); setStatus(text); refresh(); }}/>}
     {view && (general || generalThreads.length > 0) && <section className="git-stack" aria-label="About the whole diff">
       <h3>About the whole diff</h3>
-      {general && <Composer label="Comment on the whole diff" withSeverity submitLabel="Comment" onCancel={() => setGeneral(false)}
+      {general && <Composer label="Comment on the whole diff" withSeverity submitLabel="Comment" onCancel={() => setGeneral(false)} draftKey="general"
         onSubmit={async (body, severity) => { await create({filePath: GENERAL_PATH, side: null, startLine: 0, endLine: 0, anchorContent: null, severity, body}); setGeneral(false); }}/>}
       {generalThreads.map(thread => <ThreadCard key={thread.id} thread={thread} api={liveApi} current={undefined} canApply={false}/>)}
     </section>}
@@ -308,14 +314,23 @@ export function ReviewPanel({api, copyId, currentThreadId, revision}: {api: Code
       <p className="git-muted">The lines these threads were made on changed or left this view.</p>
       {outdated.map(thread => <ThreadCard key={thread.id} thread={thread} api={liveApi} current={undefined} canApply={false} showPath outdated/>)}
     </section>}
+    {view && keptState.ready && orphans.length > 0 && <section className="git-stack" aria-label="Unsent comments on files not in this view">
+      <h3>Unsent comments on files not in this view</h3>
+      <p className="git-muted">Kept from an earlier visit; their files are not in this view now.</p>
+      <ul className="git-stack">{orphans.map(orphan => <li key={orphan.key} className="git-row">
+        <span className="git-path">{orphan.path}</span><span className="git-muted">{orphan.draft.body.split("\n")[0].slice(0, 100)}</span>
+        <span className="git-ci-spacer"/>
+        <button type="button" onClick={() => keptState.kept.setDraft(orphan.key, null)}>Discard</button>
+      </li>)}</ul>
+    </section>}
     {view && !view.files.length && <p className="git-muted">{view.target.kind === "uncommitted" ? "No uncommitted changes." : "Nothing changed in this view."}</p>}
-    {view && files.map(file => <FileDiff key={view.sessionId + file.path} file={file} wrap={wrap} split={split}
+    {view && keptState.ready && files.map(file => <FileDiff key={view.sessionId + file.path} file={file} wrap={wrap} split={split}
       patchError={file.deferred ? patchError : ""} onRetryPatch={() => setPatchRetry(value => value + 1)}
       onViewed={(revision, on) => markViewed(file.path, revision, on)}
       onOpen={file.changeKind === "deleted" ? undefined : line => api.openFile(view.copy.hostId, joinPath(view.copy.root, file.path), line)} workingCopy={working} api={liveApi} onCreate={create} onExplain={explain} explaining={explaining}
       found={foundIn.get(file.path)} current={at?.path === file.path ? at.row : null} reveal={reveal?.path === file.path ? reveal.token : undefined}
       threads={threads.filter(thread => thread.filePath === file.path && placed(thread.id)?.state !== "outdated")} placements={view.placements}/>)}
-  </section>;
+  </section></KeptContext.Provider>;
 }
 
 /** This browser's storage for what a Review keeps; none where the page may not use it. */

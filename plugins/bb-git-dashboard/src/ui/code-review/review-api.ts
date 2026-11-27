@@ -2,6 +2,7 @@ import type { ReviewDiffFile } from "../../core/code-review/diff.ts";
 import type { ComponentType } from "react";
 import type { Execution, ReviewRun, ReviewThread, Severity, Side, Target, TargetRequest, ThreadStatus } from "../../core/code-review/model.ts";
 import type { ExplainPlace } from "../../core/code-review/run-prompts.ts";
+import type { ViewState } from "../../core/code-review/view-state.ts";
 
 export type Placement = {state: "anchored" | "moved"; startLine: number; endLine: number} | {state: "outdated"};
 export type ReviewView = {sessionId: string; target: Target; files: ReviewDiffFile[]; truncated: boolean; ignored?: number; baseSha: string | null; headSha: string | null;
@@ -23,6 +24,8 @@ export type CodeReviewApi = {
   view(copyId: string, target: TargetRequest, ignoreWhitespace: boolean, auto?: boolean): Promise<ReviewView>;
   clear(sessionId: string): Promise<{deletedThreads: number; closedRuns: number}>;
   setViewed(sessionId: string, path: string, revision: string, viewed: boolean): Promise<void>;
+  viewState(scope: string, sessionId: string): Promise<ViewState>;
+  saveViewState(scope: string, sessionId: string, state: ViewState): Promise<void>;
   /** Opens a file of the copy, at a line, in BB's preview. */
   openFile(hostId: string, path: string, line: number | null): void;
   /** The patches of up to 25 deferred files of a view. */

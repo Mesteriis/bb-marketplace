@@ -192,6 +192,9 @@ export function codeReviewHandlers(bb: BbPluginApi, copyOf: (copyId: string) => 
       ({run: await runs.startExplain({...input, threadId: viewerThreadId ?? null})})),
     reviewFix: handle(async ({viewerThreadId, ...input}: Omit<Parameters<typeof runs.fixInNewThread>[0], "threadId"> & {viewerThreadId?: string | null}) =>
       runs.fixInNewThread({...input, threadId: viewerThreadId ?? null})),
+    reviewViewState: handle(({scope, sessionId}: {scope: string; sessionId: string}) => ({state: service.viewState(scope, sessionId)})),
+    reviewSaveViewState: handle(({scope, sessionId, state}: {scope: string; sessionId: string; state: Parameters<typeof service.saveViewState>[2]}) =>
+      service.saveViewState(scope, sessionId, state)),
     reviewSetViewed: handle(({sessionId, path, revision, viewed}: {sessionId: string; path: string; revision: string; viewed: boolean}) => {
       service.setViewed(sessionId, path, revision, viewed); return {};
     }),

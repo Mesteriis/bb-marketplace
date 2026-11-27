@@ -2,6 +2,7 @@ import { placeThread, type Placement } from "../../core/code-review/anchors.ts";
 import { changeRevision, PATCH_BATCH, patchPaths, withPatches, type ReviewDiff, type ReviewDiffFile } from "../../core/code-review/diff.ts";
 import { ANCHOR_MAX_CHARS, BODY_MAX_CHARS, GENERAL_PATH, targetKey, targetSchema, type Severity, type Side, type Target, type TargetRequest } from "../../core/code-review/model.ts";
 import { contentLines, parsePatchLines } from "../../core/code-review/patch-lines.ts";
+import { readViewState, viewStateSchema, type ViewState } from "../../core/code-review/view-state.ts";
 import { sendPrompt } from "../../core/code-review/prompt.ts";
 import { bodyParts, replaceLines } from "../../core/code-review/suggestion.ts";
 import type { Copy } from "../../core/workspace.ts";
@@ -38,6 +39,7 @@ export type DiffOptions = {patches?: boolean; paths?: readonly string[]};
 
 /** Views whose new side is the working tree, where a suggestion can be written. */
 const workingViews = new Set<Target["kind"]>(["uncommitted", "unstaged", "all"]);
+const scopeOf = (scope: string) => /^(thread|copy):[A-Za-z0-9_-]{1,128}$/.test(scope) ? scope : fail("INVALID_INPUT");
 const fail = (code: string): never => { throw new Error(code); };
 function text(body: string) {
   const trimmed = body.trim();
@@ -107,6 +109,16 @@ export function codeReviewService(deps: CodeReviewDeps) {
       return {sessionId, target, ...value, threads, placements, copy: {hostId: copy.hostId, root: copy.root}};
     },
     threads: (sessionId: string) => store.threads(sessionId),
+
+    /** What a tab (`scope`: `thread:<id>` or `copy:<id>`) kept of a view: drafts, folds, scroll. */
+    viewState(scope: string, sessionId: string): ViewState {
+      session(sessionId);
+      return readViewState(store.viewState(scopeOf(scope), sessionId));
+    },
+    saveViewState(scope: string, sessionId: string, state: ViewState) {
+      session(sessionId);
+      return {kept: store.saveViewState(scopeOf(scope), sessionId, state.savedAt, JSON.stringify(viewStateSchema.parse(state)))};
+    },
 
     /** Marks a file Viewed at the change the view showed (`revision`, from `changeRevision`), or clears its mark. */
     setViewed(sessionId: string, path: string, revision: string, viewed: boolean) {

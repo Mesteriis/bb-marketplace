@@ -99,3 +99,13 @@ test("a Viewed mark is kept per session and file at the change it was made at, a
   assert.equal(store.clearSession(session.id), 0);
   assert.deepEqual(Object.fromEntries(store.viewed(session.id)), {"a.ts": "r3"});
 });
+
+test("a tab's kept view state is replaced only by one saved later", () => {
+  const {store, session} = setup();
+  assert.equal(store.viewState("thread:t1", session.id), null);
+  assert.equal(store.saveViewState("thread:t1", session.id, 10, "{\"a\":1}"), true);
+  assert.equal(store.saveViewState("thread:t1", session.id, 5, "{\"a\":0}"), false);
+  assert.equal(store.saveViewState("thread:t1", session.id, 12, "{\"a\":2}"), true);
+  assert.equal(store.viewState("thread:t1", session.id), "{\"a\":2}");
+  assert.equal(store.viewState("thread:t2", session.id), null);
+});
