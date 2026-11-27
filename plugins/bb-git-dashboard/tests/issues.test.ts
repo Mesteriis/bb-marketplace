@@ -37,7 +37,7 @@ test("GitHub: an issue with its comments, and create, comment and close", async 
   });
   const api = githubIssues(account, token, "o/r", send);
   assert.deepEqual(await api.detail(3), {number: 3, title: "Crash", body: "Steps", open: true, author: "sam", labels: ["bug"],
-    url: "https://github.com/o/r/issues/3", createdAt: created, comments: [{author: "ann", body: "Same here", createdAt: created, url: ""}]});
+    url: "https://github.com/o/r/issues/3", createdAt: created, notice: null, comments: [{author: "ann", body: "Same here", createdAt: created, url: ""}]});
   assert.deepEqual(await api.act({kind: "create", title: "New", body: "B"}), {number: 4});
   await api.act({kind: "comment", number: 3, body: "Hi"});
   await api.act({kind: "state", number: 3, open: false});
@@ -80,4 +80,19 @@ test("Gitea: an issue and its comments, and create, comment and reopen", async (
   await api.act({kind: "state", number: 5, open: true});
   assert.deepEqual(calls.filter(call => call.method !== "GET").map(call => [call.method, call.path.replace(repo, "I"), call.body]),
     [["POST", "I", {title: "New", body: "B"}], ["PATCH", "I/5", {state: "open"}]]);
+});
+
+test("an issue whose comments fail to load still opens, and says so", async () => {
+  const account: Account = {kind: "gitlab", id: "gl", label: "GL", origin: "https://gitlab.example.org", organization: "", username: "me"};
+  const issue = "/api/v4/projects/group%2Fapp/issues";
+  const {send} = fake({
+    ["GET " + issue + "/1"]: () => Response.json({iid: 1, title: "Crash", description: "", state: "opened", author: {username: "sam"}, labels: [], web_url: "", created_at: created}),
+    ["GET " + issue + "/1/notes"]: () => new Response("busy", {status: 503}),
+  });
+  const detail = await gitlabIssues(account, token, "group/app", send).detail(1);
+  assert.deepEqual([detail.title, detail.comments, detail.notice], ["Crash", [], "Comments could not be read (PROVIDER_UNAVAILABLE)."]);
+  const github = fake({"GET /repos/o/r/issues/3": () => Response.json({number: 3, title: "T", body: "", state: "open", user: {login: "a"}, labels: [], created_at: created}),
+    "GET /repos/o/r/issues/3/comments": () => new Response("", {status: 429})});
+  const gh: Account = {kind: "github", id: "gh", label: "GH", origin: "https://api.github.com", organization: "", username: "me"};
+  assert.equal((await githubIssues(gh, token, "o/r", github.send).detail(3)).notice, "Comments could not be read (PROVIDER_RATE_LIMITED).");
 });

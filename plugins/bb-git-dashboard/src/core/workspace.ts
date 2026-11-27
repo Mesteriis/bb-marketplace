@@ -33,7 +33,7 @@ const next: Record<string, string> = {
   INVALID_PATH: "Select a literal path inside this worktree.",
   STALE_HUNK: "Reload the diff and select the hunk again.",
   STALE_INDEX: "Review the updated index before committing.",
-  STALE_HEAD: "Review the current branch and HEAD again.",
+  STALE_HEAD: "The branch or pull request changed since it was read. Refresh it and review it again.",
   DIRTY_WORKTREE: "Save or commit the current edits before changing branches.",
   INDEX_LOCKED: "Wait for the other Git operation to finish, then refresh.",
   NO_UPSTREAM: "Configure an upstream for this branch.",
@@ -56,6 +56,7 @@ const next: Record<string, string> = {
   NOT_FOUND: "Refresh the catalog and choose an existing entry.",
   PROJECT_REQUIRED: "Attach this working copy to a BB project to hand CI runs to its threads.",
   PROVIDER_CONFLICT: "The forge refused this in the current state of the run. Refresh and try again later.",
+  PROVIDER_RATE_LIMITED: "The forge's request limit is reached. Wait a minute and refresh.",
   SSH_CONFIG_UNAVAILABLE: "Check the SSH host alias in ~/.ssh/config on the working copy’s host.",
   OPERATION_EXISTS: "Look up the previous operation before starting a new one.",
 };

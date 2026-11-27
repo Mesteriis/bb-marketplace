@@ -1,6 +1,6 @@
-import type { Issues } from "../../../../core/issues/model.ts";
+import { optional, type Issues } from "../../../../core/issues/model.ts";
 import type { Account } from "../../../../core/providers.ts";
-import { array, client, object, text } from "../../provider-http.ts";
+import { array, client, object, type Json, text } from "../../provider-http.ts";
 import { gitlabProject } from "../gitlab-provider.ts";
 import { ownLink } from "../inbox/shared.ts";
 import { repoParts } from "../review/shared.ts";
@@ -12,11 +12,11 @@ export function gitlabIssues(account: Account, token: string, path: string, send
   const base = gitlabProject(path) + "/issues";
   return {
     async detail(number) {
-      const [raw, notes] = await Promise.all([http(base + "/" + number).then(result => object(result.payload)),
-        http(base + "/" + number + "/notes?sort=asc&per_page=100").then(result => array(result.payload).map(object))]);
+      const [raw, {value: notes, notice}] = await Promise.all([http(base + "/" + number).then(result => object(result.payload)),
+        optional(http(base + "/" + number + "/notes?sort=asc&per_page=100").then(result => array(result.payload).map(object)), [] as Json[])]);
       return {number, title: text(raw.title), body: text(raw.description), open: raw.state === "opened", author: text(object(raw.author).username) || "ghost",
         labels: array(raw.labels).map(label => typeof label === "string" ? label : text(object(label).name)).filter(Boolean),
-        url: ownLink(account, raw.web_url) ?? "", createdAt: text(raw.created_at),
+        url: ownLink(account, raw.web_url) ?? "", createdAt: text(raw.created_at), notice,
         comments: notes.filter(row => row.system !== true).map(row => ({author: text(object(row.author).username) || "ghost", body: text(row.body),
           createdAt: text(row.created_at), url: ""}))};
     },

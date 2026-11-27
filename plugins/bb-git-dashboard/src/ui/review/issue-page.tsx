@@ -38,6 +38,7 @@ export function IssuePage({api, accountId, repo, number, onCreated}: {api: Revie
           {issue.open ? "Close issue" : "Reopen issue"}</button></div>
       </header>
       {issue.body && <article className="git-review-comment"><p className="git-review-body">{issue.body}</p></article>}
+      {issue.notice && <p className="git-muted" role="status">{issue.notice}</p>}
       {issue.comments.map((item, index) => <article key={index} className="git-review-comment">
         <div className="git-muted">{item.author} · {item.createdAt.slice(0, 16).replace("T", " ")}</div><p className="git-review-body">{item.body}</p></article>)}
       <form className="git-stack" onSubmit={event => { event.preventDefault(); if (comment.trim()) void act({kind: "comment", number: issue.number, body: comment}, "Comment"); }}>

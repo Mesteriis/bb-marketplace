@@ -41,7 +41,7 @@ export const reviewContract = {
   prAsk: {input: z.object({...target, subject: agentSubject}), output: answer({threadId: id, created: z.boolean()})},
   issueDetail: {input: z.object(target), output: answer({issue: z.object({number: z.number().int(), title: z.string(), body: z.string(), open: z.boolean(),
     author: z.string(), labels: z.array(z.string()), url: z.string(), createdAt: z.string(),
-    comments: z.array(z.object({author: z.string(), body: z.string(), createdAt: z.string(), url: z.string()}))})})},
+    comments: z.array(z.object({author: z.string(), body: z.string(), createdAt: z.string(), url: z.string()})), notice: z.string().nullable()})})},
   issuePrepare: {input: z.object({accountId: id, repo: z.string().min(3).max(500), action: issueAction}), output: preview},
   issueConfirm: {input: z.object({previewId: id}), output: answer({number: z.number().int()})},
 };

@@ -1,6 +1,6 @@
-import type { Issues } from "../../../../core/issues/model.ts";
+import { optional, type Issues } from "../../../../core/issues/model.ts";
 import type { Account } from "../../../../core/providers.ts";
-import { array, client, object, segment, text } from "../../provider-http.ts";
+import { array, client, object, type Json, segment, text } from "../../provider-http.ts";
 import { ownLink } from "../inbox/shared.ts";
 import { repoParts } from "../review/shared.ts";
 
@@ -11,11 +11,11 @@ export function giteaIssues(account: Account, token: string, path: string, send:
   const base = "/api/v1/repos/" + segment(owner) + "/" + segment(name) + "/issues";
   return {
     async detail(number) {
-      const [raw, comments] = await Promise.all([http(base + "/" + number).then(result => object(result.payload)),
-        http(base + "/" + number + "/comments").then(result => array(result.payload).map(object))]);
+      const [raw, {value: comments, notice}] = await Promise.all([http(base + "/" + number).then(result => object(result.payload)),
+        optional(http(base + "/" + number + "/comments").then(result => array(result.payload).map(object)), [] as Json[])]);
       if (raw.pull_request) throw new Error("NOT_FOUND");
       return {number, title: text(raw.title), body: text(raw.body), open: raw.state === "open", author: text(object(raw.user).login) || "ghost",
-        labels: array(raw.labels).map(label => text(object(label).name)).filter(Boolean), url: ownLink(account, raw.html_url) ?? "", createdAt: text(raw.created_at),
+        labels: array(raw.labels).map(label => text(object(label).name)).filter(Boolean), url: ownLink(account, raw.html_url) ?? "", createdAt: text(raw.created_at), notice,
         comments: comments.map(row => ({author: text(object(row.user).login) || "ghost", body: text(row.body), createdAt: text(row.created_at),
           url: ownLink(account, row.html_url) ?? ""}))};
     },

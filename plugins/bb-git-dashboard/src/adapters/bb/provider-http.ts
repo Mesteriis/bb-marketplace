@@ -37,12 +37,42 @@ export function authorization(account: Account, token: string) {
   return account.kind === "azure" ? "Basic " + Buffer.from(":" + token).toString("base64") : (account.kind === "gitea" ? "token " : "Bearer ") + token;
 }
 
-export function client(account: Account, token: string, send: typeof fetch): Http {
+/** How long the forge asks to wait, in ms: Retry-After (seconds or a date), else RateLimit-Reset (a Unix time or seconds). */
+function waitOf(headers: Headers, now: number): number | null {
+  const after = headers.get("retry-after");
+  if (after && /^\d+$/.test(after)) return Number(after) * 1000;
+  if (after && Number.isFinite(Date.parse(after))) return Math.max(0, Date.parse(after) - now);
+  const reset = headers.get("ratelimit-reset") ?? headers.get("x-ratelimit-reset");
+  if (reset && /^\d+$/.test(reset)) { const value = Number(reset); return value > 1e9 ? Math.max(0, value * 1000 - now) : value * 1000; }
+  return null;
+}
+const maxRetries = 2;
+const maxWait = 4000;
+type Timing = {sleep?(ms: number): Promise<void>; now?(): number};
+
+/**
+ * A forge API client. Reads are retried up to twice after 429 or 5xx, waiting as the forge asks when that is at most a
+ * few seconds; writes are never repeated. A lasting limit is PROVIDER_RATE_LIMITED, lasting 5xx PROVIDER_UNAVAILABLE.
+ */
+export function client(account: Account, token: string, send: typeof fetch, timing: Timing = {}): Http {
+  const sleep = timing.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)));
+  const now = timing.now ?? Date.now;
   const origin = originOf(account);
   if (!token || /[\r\n]/.test(token)) throw new Error("ACCOUNT_UNCONFIGURED");
   const basic = Buffer.from(":" + token).toString("base64");
   const header = authorization(account, token);
-  return async (path, options = {}) => {
+  const request: Http = async (path, options = {}) => {
+    for (let attempt = 0; ; attempt++) {
+      try { return await once(path, options); }
+      catch (error) {
+        const wait = (error as {retryAfter?: number}).retryAfter;
+        const writing = options.method !== undefined && !options.read;
+        if (writing || wait === undefined || attempt >= maxRetries || wait > maxWait) throw error;
+        await sleep(wait);
+      }
+    }
+  };
+  const once: Http = async (path, options = {}) => {
     const url = new URL(path, origin);
     if (url.origin !== origin) throw new Error("INVALID_INPUT");
     const writing = options.method !== undefined && !options.read;
@@ -60,7 +90,10 @@ export function client(account: Account, token: string, send: typeof fetch): Htt
         if (writing && response.status >= 500) throw new Error("OUTCOME_UNKNOWN");
         if (response.status === 409) throw new Error("PROVIDER_CONFLICT");
         if ([401,403,404].includes(response.status)) throw new Error("PROVIDER_DENIED");
-        if (response.status >= 500 || response.status === 429) throw new Error("PROVIDER_UNAVAILABLE");
+        if (response.status === 429 || response.status >= 500) {
+          const failure = new Error(response.status === 429 ? "PROVIDER_RATE_LIMITED" : "PROVIDER_UNAVAILABLE");
+          throw Object.assign(failure, {retryAfter: waitOf(response.headers, now()) ?? 1000});
+        }
         throw new Error("PROVIDER_REJECTED");
       }
       const reader = response.body?.getReader();
@@ -85,8 +118,9 @@ export function client(account: Account, token: string, send: typeof fetch): Htt
       const payload = options.raw ? redact(raw) : raw ? JSON.parse(raw, (_, value) => typeof value === "string" ? redact(value) : value) : null;
       return {payload, headers:response.headers};
     } catch (error) {
-      if (error instanceof Error && /^(OUTCOME_UNKNOWN|PROVIDER_DENIED|PROVIDER_REJECTED|PROVIDER_UNAVAILABLE|PROVIDER_UNSUPPORTED|PROVIDER_CONFLICT|GIT_OUTPUT_LIMIT)$/.test(error.message)) throw error;
+      if (error instanceof Error && /^(OUTCOME_UNKNOWN|PROVIDER_DENIED|PROVIDER_REJECTED|PROVIDER_UNAVAILABLE|PROVIDER_RATE_LIMITED|PROVIDER_UNSUPPORTED|PROVIDER_CONFLICT|GIT_OUTPUT_LIMIT)$/.test(error.message)) throw error;
       throw new Error(writing ? "OUTCOME_UNKNOWN" : "PROVIDER_UNAVAILABLE");
     }
   };
+  return request;
 }

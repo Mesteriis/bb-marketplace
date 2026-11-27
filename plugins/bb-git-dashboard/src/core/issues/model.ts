@@ -2,7 +2,15 @@ import { z } from "zod";
 
 export type IssueComment = {author: string; body: string; createdAt: string; url: string};
 export type IssueDetail = {number: number; title: string; body: string; open: boolean; author: string; labels: string[]; url: string;
-  createdAt: string; comments: IssueComment[]};
+  createdAt: string; comments: IssueComment[];
+  /** Set when a part of the issue (its comments) could not be read; the rest is shown. */
+  notice: string | null};
+
+/** A part of an issue read on its own: its failure leaves the issue readable with a notice. */
+export async function optional<T>(read: Promise<T>, fallback: T): Promise<{value: T; notice: string | null}> {
+  try { return {value: await read, notice: null}; }
+  catch (error) { return {value: fallback, notice: "Comments could not be read (" + (error instanceof Error && /^[A-Z_]+$/.test(error.message) ? error.message : "PROVIDER_UNAVAILABLE") + ")."}; }
+}
 
 const text = z.string().trim().min(1).max(60_000);
 /** Every write on an issue; previewed and confirmed like pull request writes. */
