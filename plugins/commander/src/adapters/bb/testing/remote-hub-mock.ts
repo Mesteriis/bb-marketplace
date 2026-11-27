@@ -37,6 +37,8 @@ export interface RemoteHubMockOptions {
   failAll?: SftpRefusalCode;
   /** The detail text the refusal carries (the host's own text, which a client must not show). */
   refusalDetail?: string;
+  /** hub_sftp_open fails at the transport (the reply is lost), not with a refusal. */
+  openTransportFault?: boolean;
   /** The channel cannot be opened: hub_sftp_open is refused with this code. */
   openFailure?: SftpRefusalCode;
   /**
@@ -60,6 +62,10 @@ export interface RemoteHubMockOptions {
   onOpen?: (opened: number) => void;
   /** Every write reply says this many bytes were written, whatever was sent. */
   writtenOverride?: number;
+  /** Runs when an operation reaches the helper, with its kind; the test may abort here. */
+  onOperation?: (op: SftpOp) => void;
+  /** A rename is applied at once, but its reply is withheld until releaseHeld(). */
+  holdRename?: boolean;
 }
 
 export interface MockCall {
@@ -131,9 +137,12 @@ export class RemoteHubMock implements RemoteHubPort {
   private armed: "drop" | "abort" | undefined;
   private lastApplied: SftpOp | undefined;
   private readonly options: RemoteHubMockOptions;
+  private readonly heldReply: Promise<void> | undefined;
+  private releaseReply: (() => void) | undefined;
 
   constructor(options: RemoteHubMockOptions = {}) {
     this.options = options;
+    this.heldReply = options.holdRename ? new Promise<void>((resolve) => { this.releaseReply = resolve; }) : undefined;
     this.consent = options.consent ?? "granted";
     this.hostKey = options.hostKey ?? "trusted";
     this.failNext = options.failNext;
@@ -174,6 +183,16 @@ export class RemoteHubMock implements RemoteHubPort {
     this.consent = "revoked";
   }
 
+  /** Releases a withheld rename reply. */
+  releaseHeld(): void {
+    this.releaseReply?.();
+  }
+
+  /** Every open channel dies at once, as when the helper restarts, without a new generation. */
+  expireChannels(): void {
+    for (const channel of this.channels.values()) channel.alive = false;
+  }
+
   /** Arms a transport fault for the next MUTATION; reads before it do not consume it. */
   arm(fault: "drop" | "abort"): void {
     this.armed = fault;
@@ -200,8 +219,11 @@ export class RemoteHubMock implements RemoteHubPort {
         return this.open((parsed as { profileId: string }).profileId) as SftpOutput<M>;
       case "hub_sftp_close":
         return this.close((parsed as { channelId: string }).channelId) as SftpOutput<M>;
-      case "hub_sftp_op":
-        return this.operate(parsed as SftpOpInput) as SftpOutput<M>;
+      case "hub_sftp_op": {
+        const reply = this.operate(parsed as SftpOpInput);
+        if ((parsed as SftpOpInput).op === "rename" && this.heldReply) await this.heldReply;
+        return reply as SftpOutput<M>;
+      }
       default:
         throw new Error(`remote-hub-mock does not model ${method}`);
     }
@@ -217,6 +239,7 @@ export class RemoteHubMock implements RemoteHubPort {
 
   private open(profileId: string): { channelId: string; generation: string } {
     this.options.onOpen?.(this.opCount("open"));
+    if (this.options.openTransportFault) throw new Error("socket hang up");
     if (profileId !== PROFILE) this.refuse("profile_not_found");
     if (this.consent === "revoked") this.refuse("consent_revoked");
     if (this.consent !== "granted") this.refuse("consent_required");
@@ -235,6 +258,7 @@ export class RemoteHubMock implements RemoteHubPort {
   }
 
   private operate(input: SftpOpInput): Record<string, unknown> {
+    this.options.onOperation?.(input.op);
     const channel = this.channels.get(input.channelId);
     if (!channel || !channel.alive) this.refuse("channel_closed");
     if (this.consent === "revoked") {

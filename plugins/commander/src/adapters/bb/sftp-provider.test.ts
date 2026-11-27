@@ -211,7 +211,7 @@ describe("cancellation", () => {
     await expectCode(provider.read(at("x.txt"), 0n, 3, null, signal()), "cancelled");
   });
 
-  it("an abort during a mutation, after sending, is outcome_unknown", async () => {
+  it("an AbortError from the port during a mutation is outcome_unknown", async () => {
     const { provider } = setup({ faultNext: "abort" });
     const session = await provider.openWrite(at("f.txt"), signal());
     await expectCode(session.write(0n, bytes("abc"), signal()), "outcome_unknown");
@@ -517,8 +517,8 @@ describe("writes", () => {
     mock.seedDir("/dir");
     const session = await provider.openWrite(at("dir", "report.txt"), signal());
     expect(session.tempPath.segments.slice(0, 1)).toEqual([seg("dir")]);
+    expect(session.tempPath.segments[1]).toEqual({ t: expect.stringMatching(/^\.report\.txt\.commander-[0-9a-f-]{36}\.part$/) });
     const temp = session.tempPath.segments[1];
-    expect("t" in temp && /^\.report\.txt\.commander-[0-9a-f-]{36}\.part$/.test(temp.t)).toBe(true);
 
     const tempFile = `/dir/${(temp as { t: string }).t}`;
     await session.write(0n, bytes("abc"), signal());
@@ -535,7 +535,8 @@ describe("writes", () => {
     const name = "n".repeat(1000);
     const session = await provider.openWrite(at(name), signal());
     const last = session.tempPath.segments.at(-1);
-    expect(last !== undefined && "t" in last && last.t.length <= 1024).toBe(true);
+    expect(last).toEqual({ t: expect.stringMatching(/^\.n{200}\.commander-[0-9a-f-]{36}\.part$/) });
+    expect((last as { t: string }).t.length).toBeLessThanOrEqual(1024);
     await session.write(0n, bytes("abc"), signal());
     await session.commit({ replace: false, expectTarget: null }, signal());
     expect(text(mock.bytesAt(`/${name}`))).toBe("abc");
@@ -802,5 +803,62 @@ describe("empty commit checks the written count (review repair)", () => {
     await expectCode(session.commit({ replace: false, expectTarget: null }, signal()), "outcome_unknown");
     expect(mock.opCount("op:rename")).toBe(0);
     expect(mock.opCount("op:remove")).toBe(0);
+  });
+});
+
+describe("shared open, reopen after abort, race with a held rename (third review)", () => {
+  it("two parallel calls share one open: the aborted one is cancelled, the live one gets its result", async () => {
+    const aborting = new AbortController();
+    const { mock, provider } = setup();
+    mock.seedFile("/x.txt", "abc");
+    const first = provider.stat(at("x.txt"), aborting.signal);
+    const second = provider.stat(at("x.txt"), signal());
+    aborting.abort();
+    await expectCode(first, "cancelled");
+    expect(await second).toMatchObject({ kind: "file", size: "3" });
+    expect(mock.opCount("open")).toBe(1);
+  });
+
+  it("a shared open that fails for a transport reason: the live caller gets connection_failed, not cancelled", async () => {
+    const aborting = new AbortController();
+    const { provider } = setup({ openTransportFault: true });
+    const first = provider.stat(at("x.txt"), aborting.signal);
+    const second = provider.stat(at("x.txt"), signal());
+    aborting.abort();
+    await expectCode(first, "cancelled");
+    await expectCode(second, "connection_failed");
+  });
+
+  it("an abort during the first operation: the channel is not reopened", async () => {
+    const aborting = new AbortController();
+    const { mock, provider } = setup({ failNext: "channel_closed", onOperation: () => aborting.abort() });
+    await expectCode(provider.list(at(), { cursor: null, limit: 10 }, aborting.signal), "cancelled");
+    expect(mock.opCount("open")).toBe(1);
+  });
+
+  it("a read that finds the channel closed reopens it while a rename waits: atomicReplace is not declared", async () => {
+    const { mock, provider } = setup({ holdRename: true });
+    mock.seedFile("/a.txt", "a");
+    mock.seedFile("/t.txt", "old");
+    const renaming = provider.rename(at("a.txt"), at("t.txt"), { replace: true }, signal());
+    for (let turn = 0; turn < 200 && mock.opCount("op:rename") === 0; turn++) await new Promise((done) => setTimeout(done, 0));
+    expect(mock.opCount("op:rename")).toBe(1);
+    mock.expireChannels();
+    // The rename is applied on the server already; only its reply is held, so the read sees "a".
+    expect(text(await provider.read(at("t.txt"), 0n, 1, null, signal()))).toBe("a");
+    expect(mock.opCount("open")).toBe(2);
+    mock.releaseHeld();
+    await renaming;
+    expect(provider.capabilities.has("atomicReplace")).toBe(false);
+  });
+
+  it("rename with replace false and a fingerprint expectation is internal, with no rename sent", async () => {
+    const { mock, provider } = setup();
+    mock.seedFile("/a.txt", "a");
+    await expectCode(
+      provider.rename(at("a.txt"), at("t.txt"), { replace: false, expectTarget: { size: "3", mtimeNs: "1795790479000000000" } }, signal()),
+      "internal",
+    );
+    expect(mock.opCount("op:rename")).toBe(0);
   });
 });

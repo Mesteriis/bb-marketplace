@@ -269,10 +269,33 @@ export function createSftpProvider(options: SftpProviderOptions): SftpProvider {
     }
   }
 
+  /**
+   * Waits for a shared open on behalf of ONE caller. The caller's own signal decides its cancellation: the shared
+   * open itself runs on a signal no caller owns, so one caller's abort never fails another caller's wait.
+   */
+  function waitForOpen(shared: Promise<string>, signal: AbortSignal): Promise<string> {
+    if (signal.aborted) return Promise.reject(commanderError("cancelled"));
+    return new Promise<string>((resolve, reject) => {
+      const onAbort = () => reject(commanderError("cancelled"));
+      signal.addEventListener("abort", onAbort, { once: true });
+      shared.then(
+        (value) => {
+          signal.removeEventListener("abort", onAbort);
+          resolve(value);
+        },
+        (error: unknown) => {
+          signal.removeEventListener("abort", onAbort);
+          // The shared failure is neutral; the caller's own signal turns it into cancelled if that is what it asked for.
+          reject(signal.aborted ? commanderError("cancelled") : error);
+        },
+      );
+    });
+  }
+
   function openChannel(signal: AbortSignal): Promise<string> {
     if (channelId !== null) return Promise.resolve(channelId);
     if (opening === null) {
-      opening = callPort("hub_sftp_open", { profileId }, signal).then(
+      opening = callPort("hub_sftp_open", { profileId }, new AbortController().signal).then(
         (opened) => {
           channelId = opened.channelId;
           opening = null;
@@ -281,11 +304,25 @@ export function createSftpProvider(options: SftpProviderOptions): SftpProvider {
         (error: unknown) => {
           opening = null;
           if (error instanceof SftpRefusal || error instanceof ZodError) throw error;
-          throw transportError(error, signal);
+          throw commanderError("connection_failed");
         },
       );
     }
-    return opening;
+    return waitForOpen(opening, signal);
+  }
+
+  /** One operation. A read is reopened once on a closed channel, and never after the caller has aborted. */
+  async function execute(build: (channel: string) => SftpOpInput, mutating: boolean, signal: AbortSignal): Promise<SftpOpOutput> {
+    if (signal.aborted) throw commanderError("cancelled");
+    const first = await openChannel(signal);
+    try {
+      return await send(build(first), mutating, signal);
+    } catch (error) {
+      if (mutating || !(error instanceof SftpRefusal && error.code === "channel_closed")) throw error;
+      if (signal.aborted) throw commanderError("cancelled");
+      const second = await openChannel(signal);
+      return send(build(second), false, signal);
+    }
   }
 
   /** One call on the channel. A mutation is never repeated; its ambiguous failures are outcome_unknown. */
@@ -311,19 +348,6 @@ export function createSftpProvider(options: SftpProviderOptions): SftpProvider {
     return output;
   }
 
-  /** One operation. A read is reopened once on a closed channel; a second closed channel ends the retry. */
-  async function execute(build: (channel: string) => SftpOpInput, mutating: boolean, signal: AbortSignal): Promise<SftpOpOutput> {
-    if (signal.aborted) throw commanderError("cancelled");
-    const first = await openChannel(signal);
-    try {
-      return await send(build(first), mutating, signal);
-    } catch (error) {
-      if (mutating || !(error instanceof SftpRefusal && error.code === "channel_closed")) throw error;
-      const second = await openChannel(signal);
-      return send(build(second), false, signal);
-    }
-  }
-
   async function statEntry(path: ResourcePath, signal: AbortSignal): Promise<Entry | null> {
     try {
       const out = narrow(
@@ -337,6 +361,7 @@ export function createSftpProvider(options: SftpProviderOptions): SftpProvider {
     }
   }
 
+  /** A removal. With an expectation (see `remove`), the check and the removal are two calls: the window is as in renameOp. */
   async function removeOp(path: ResourcePath, kind: "file" | "dir", signal: AbortSignal): Promise<void> {
     narrow(
       await execute((channel) => ({ channelId: channel, op: "remove", path: toWirePath(path), kind }), true, signal),
@@ -348,6 +373,10 @@ export function createSftpProvider(options: SftpProviderOptions): SftpProvider {
    * Rename under the S3 contract. A Fingerprint expectation is checked by a read first; a mismatch sends no rename.
    * "absent" is decided by the server's `exists` answer to an overwrite:false rename. atomicReplace is declared only
    * when an existing target was replaced atomically on the channel that is still open.
+   *
+   * Race window: the read and the rename are two calls. Another client may change the target between them; the
+   * server's own rename check (overwrite) is the last guard, and a fingerprint change inside the window is not seen.
+   * A Fingerprint expectation with replace:false is an inconsistent call (there is nothing to replace): internal.
    */
   async function renameOp(
     from: ResourcePath,
@@ -355,6 +384,9 @@ export function createSftpProvider(options: SftpProviderOptions): SftpProvider {
     opts: { replace: boolean; expectTarget?: Fingerprint | "absent" },
     signal: AbortSignal,
   ): Promise<void> {
+    if (!opts.replace && opts.expectTarget !== undefined && opts.expectTarget !== "absent") {
+      throw commanderError("internal");
+    }
     const overwrite = opts.expectTarget === "absent" ? false : opts.replace;
     let existed = false;
     if (opts.expectTarget !== undefined && opts.expectTarget !== "absent") {
@@ -597,6 +629,10 @@ export function createSftpProvider(options: SftpProviderOptions): SftpProvider {
       await guard(() => renameOp(from, to, opts, signal));
     },
 
+    /**
+     * Removes a file, or an empty directory. With `expect`, the entry is read first and a mismatch sends no remove.
+     * Race window: the read and the remove are two calls; an entry changed between them is removed. Document, do not hide.
+     */
     async remove(path, opts, signal) {
       await guard(async () => {
         if (opts.expect !== undefined) {
