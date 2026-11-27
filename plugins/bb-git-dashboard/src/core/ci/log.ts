@@ -1,13 +1,19 @@
 const ansi = /\u001b\[[0-9;?]*[ -\/]*[@-~]/g;
 const stamp = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z ?/;
-/** `##[error]` from GitHub, Gitea and Azure runners; `ERROR:` from GitLab runners. */
-const marker = /^(?:##\[error\]|ERROR: )/;
+/** `##[error]` from GitHub, Gitea and Azure runners; `ERROR:` (or `ERROR ` from a job's own script) on GitLab. */
+const marker = /^(?:##\[error\]|ERROR[: ])/;
+/** After a GitLab runner's timestamp: the stream number, O(ut) or E(rr), and + for a continued line. */
+const stream = /^[0-9a-f]{2}[OE]\+?/;
 /** GitLab's collapsible section markers, which precede the section's first line. */
 const section = /section_(?:start|end):\d+:[\w.\-\[\]=,]*\r?/g;
 
 /** Removes ANSI colours, carriage returns and the runner's leading timestamps. */
 export function cleanLog(text: string) {
-  return text.replace(ansi, "").replace(section, "").split(/\r?\n/).map(line => line.replace(/\r/g, "").replace(stamp, "")).join("\n");
+  return text.replace(ansi, "").replace(section, "").split(/\r?\n/).map(line => {
+    const plain = line.replace(/\r/g, "");
+    const rest = plain.replace(stamp, "");
+    return rest === plain ? rest : rest.replace(stream, "").replace(/^ /, "");
+  }).join("\n");
 }
 
 /** The runner's own closing line, chosen only when nothing else failed. */

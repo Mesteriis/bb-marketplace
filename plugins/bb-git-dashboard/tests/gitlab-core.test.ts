@@ -39,3 +39,20 @@ test("the Run pipeline form comes from prefilled variables with descriptions", (
   ]});
   assert.deepEqual(gitlabDispatchSpec(null), {dispatchable: true, inputs: []});
 });
+
+test("a timestamped GitLab trace loses its stream prefixes, and an ERROR line without a colon is the error", () => {
+  // As gitlab.com runners print it (live check of makosh-git-sandbox, pipeline 3123039777, job test [2]).
+  const trace = [
+    "2026-11-27T12:00:01.100000Z 01O $ if [ \"$OUTCOME\" = \"failure\" ] && [ \"$SHARD\" = \"2\" ]; then echo \"ERROR Sandbox failure requested\"; exit 1; fi",
+    "2026-11-27T12:00:01.200000Z 01O ERROR Sandbox failure requested",
+    "2026-11-27T12:00:01.300000Z 01E+continued on stderr",
+    "2026-11-27T12:00:02.000000Z 00O ERROR: Job failed: exit code 1",
+  ].join("\n");
+  const lines = cleanLog(trace).split("\n");
+  assert.deepEqual(lines.slice(1), ["ERROR Sandbox failure requested", "continued on stderr", "ERROR: Job failed: exit code 1"]);
+  assert.equal(errorLine(lines), 1);
+  // Text that only looks like a prefix keeps it when the line has no timestamp.
+  assert.equal(cleanLog("01O is a fine word"), "01O is a fine word");
+  // ERROR as part of a longer word is no marker.
+  assert.equal(errorLine(["ERRORS: 0", "done"]), null);
+});
