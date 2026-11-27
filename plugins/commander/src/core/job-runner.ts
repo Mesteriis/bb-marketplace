@@ -528,7 +528,7 @@ export class JobRunner {
         return await this.removeSource(source, item.kind, sourceFingerprint, context) ? "done" : "source_retained";
       case "mkdir":
         if (!destination) break;
-        await this.makeDirectory(destination, oldTarget, replace, context, unchanged);
+        await this.makeDirectory(destination, oldTarget, replace, context, unchanged, sourceFingerprint);
         return "done";
       case "rename":
       case "move":
@@ -541,7 +541,7 @@ export class JobRunner {
             renamed = true;
           } catch (error) {
             const code = safeError(error).code;
-            if (code === "changed_since_plan") {
+            if (code === "changed_since_plan" || code === "already_exists") {
               throw new ItemConflict("target_changed", sourceFingerprint, fingerprint(await observe(destination, context)));
             }
             if (job.plan.kind !== "move" || code !== "unsupported") throw error;
@@ -567,7 +567,7 @@ export class JobRunner {
         if (job.plan.kind === "rename") throw new CommanderError("unsupported", "Cannot rename across endpoints");
         if (item.kind === "dir") {
           await context.mark("prepared", { via: "copy" });
-          await this.makeDirectory(destination, oldTarget, replace, context, unchanged);
+          await this.makeDirectory(destination, oldTarget, replace, context, unchanged, sourceFingerprint);
           const committed = fingerprint(await observe(destination, context));
           if (!committed) throw new CommanderError("outcome_unknown", "Destination directory could not be confirmed");
           await context.mark("verified", { committed, verified: { size: committed.size } });
@@ -655,10 +655,17 @@ export class JobRunner {
 
   private async makeDirectory(
     target: Location, old: Entry | null, replace: boolean, context: ItemContext,
-    unchanged: (proof: VerifyContext) => Promise<boolean>,
+    unchanged: (proof: VerifyContext) => Promise<boolean>, sourceVersion: Fingerprint | null = null,
   ): Promise<void> {
     if (replace && old?.kind === "dir") return;
-    await context.mutate(() => target.provider.mkdir(target.path, context.signal), unchanged);
+    try {
+      await context.mutate(() => target.provider.mkdir(target.path, context.signal), unchanged);
+    } catch (error) {
+      if (safeError(error).code === "already_exists") {
+        throw new ItemConflict("target_changed", sourceVersion, fingerprint(await observe(target, context)));
+      }
+      throw error;
+    }
   }
 
   private async copy(
@@ -670,7 +677,7 @@ export class JobRunner {
     await mark("prepared", { via: "copy" });
     if (item.kind === "dir" && plan.kind === "copy") {
       const entry = await observe(target, context);
-      await this.makeDirectory(target, entry, replace, context, unchanged);
+      await this.makeDirectory(target, entry, replace, context, unchanged, expected);
       return;
     }
     if (item.kind !== "file") throw new CommanderError("unsupported", "Provider cannot transfer this entry kind");
@@ -734,17 +741,19 @@ export class JobRunner {
         throw new CommanderError("outcome_unknown", "Provider returned an unexpected temporary path");
       }
       const recordTemp = async (bytesDone: string) => {
+        // Buffered providers may show less than was acknowledged, never more.
         const entry = await observe(temp, context);
-        if (entry?.kind !== "file" || entry.size !== bytesDone) {
+        if (entry?.kind !== "file" || toBig(entry.size) > toBig(bytesDone)) {
           throw new CommanderError("outcome_unknown", "Temporary file did not match the acknowledged write");
         }
-        await mark("copying", { bytesDone, tempFingerprint: fingerprint(entry)! });
+        await mark("copying", { bytesDone, tempFingerprint: fingerprint(entry)!, writing: undefined });
       };
       try {
         await recordTemp("0");
         const hash = verify === "sha256" ? new TransferHash() : null;
         try {
           await readChunks(source, expected, this.chunkBytes, signal, call, async (bytes, offset) => {
+            await mark("copying", { writing: { offset: fromBig(offset), length: bytes.length } });
             await call(async () => {
               try {
                 await session.write(offset, bytes, signal);

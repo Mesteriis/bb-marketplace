@@ -26,6 +26,8 @@ test("JobStore exposes a state CAS and the last checkpoint for one item", () => 
     expectTarget: Fingerprint | "absent" | null;
     verified: { size: string; sha256?: string } | null;
     committed?: Fingerprint;
+    writing?: { offset: string; length: number };
+    cleanup?: { tempPath: ResourcePath; tempFingerprint: Fingerprint };
   }>();
 });
 
