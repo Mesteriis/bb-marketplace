@@ -13,8 +13,9 @@ import type { PveAnswer, PveProvisionAnswer } from "../../core/pve-targets.ts";
 import type { SshAskpassEvent } from "../../core/ssh-askpass-protocol.ts";
 import type { RdpOptions } from "../../core/rdp-options.ts";
 import type { KnownHostsOverlay } from "../../core/import-book.ts";
-import { buildSshExecSpawn, buildSshSpawn, type SshTarget } from "../../core/ssh-args.ts";
-import { HelperProcess, type HelperStatus, HelperRuntimeError, HelperRequestError, PveRequestFailure, type PveSessionEvent, type RdpHelperEvent } from "./helper-process.ts";
+import { buildSshExecSpawn, buildSshSftpSpawn, buildSshSpawn, type SshTarget } from "../../core/ssh-args.ts";
+import { HelperProcess, type HelperStatus, HelperRuntimeError, HelperRequestError, PveRequestFailure, type PveSessionEvent, type RdpHelperEvent, type SftpSink } from "./helper-process.ts";
+import type { SftpStream } from "../../core/sftp-channels.ts";
 import type { RdpInfo, RdpTarget, SessionHandle } from "../../core/rpc.ts";
 import { parseUpdateChunk, RDP_STATES, type RdpInputEvent } from "../../core/rdp-protocol.ts";
 import type { RdpDecision } from "../../core/rpc.ts";
@@ -134,6 +135,11 @@ export interface RemoteHubService {
   execRead(handle: ExecHandle, stdoutFrom: number, stderrFrom: number, max: number): Promise<ExecSnapshot>;
   execCancel(handle: ExecHandle): Promise<ExecSnapshot>;
   execForget(handle: ExecHandle): Promise<void>;
+  /**
+   * Opens an SFTP channel (ssh with the sftp subsystem, no pty) for another plugin's file operations. With a saved
+   * credential the rules of a remote command apply; without one ssh asks nothing (an agent, or a key without a passphrase).
+   */
+  sftpOpen(target: SshTarget, credentialRef: string | null, sink: SftpSink): Promise<SftpStream>;
   /** A run ended (the helper says so unasked). */
   onExecFinished(cb: (event: { handle: ExecHandle; exitCode: number | null; signal: number | null; reason: string; refused: string | null }) => void): () => void;
   /** Askpass events of an SSH session: open prompts and what happened to a saved credential. Replays what is open. */
@@ -991,6 +997,16 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
       const spec = buildSshExecSpawn({ ...target }, command, deps.env ?? process.env);
       const execId = await hp.execRun(spec, { credentialRef }, timeoutMs, maxBytes);
       return { generation: hp.currentGeneration, execId };
+    },
+    async sftpOpen(target, credentialRef, sink) {
+      const hp = await start();
+      const spec = buildSshSftpSpawn({ ...target }, deps.env ?? process.env);
+      const sftpId = await hp.sftpOpen(spec, credentialRef === null ? null : { credentialRef }, sink);
+      return {
+        generation: hp.currentGeneration,
+        write: (bytes) => hp.sftpWrite(sftpId, bytes),
+        close: () => void hp.sftpClose(sftpId).catch(() => {}),
+      };
     },
     async execRead(handle, stdoutFrom, stderrFrom, max) {
       const hp = await execHelper(handle);

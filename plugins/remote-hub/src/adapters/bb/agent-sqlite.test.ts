@@ -32,10 +32,10 @@ describe("agent settings in SQLite", () => {
 
 describe("agent grants in SQLite", () => {
   it("are appended after every earlier migration and survive a restart", async () => {
-    // The RDP-options and the Proxmox statements came after them (append only): the agent statements are the block just before.
+    // The RDP-options, the Proxmox and the plugin-grant statements came after them (append only): the agent statements are the block just before.
     const { PROFILE_RDP_OPTIONS_MIGRATIONS, PROFILE_PVE_MIGRATIONS } = await import("./profile-sqlite.ts");
     const { PVE_MIGRATIONS } = await import("./pve-sqlite.ts");
-    const after = PROFILE_RDP_OPTIONS_MIGRATIONS.length + PROFILE_PVE_MIGRATIONS.length + PVE_MIGRATIONS.length;
+    const after = PROFILE_RDP_OPTIONS_MIGRATIONS.length + PROFILE_PVE_MIGRATIONS.length + PVE_MIGRATIONS.length + (await import("./plugin-grants-sqlite.ts")).PLUGIN_GRANT_MIGRATIONS.length;
     expect(ALL_MIGRATIONS.slice(-(AGENT_MIGRATIONS.length + after), -after)).toEqual(AGENT_MIGRATIONS);
     const book = new AgentAccessBook({ store: createSqliteAgentGrantStore(db), profiles: { has: () => true }, now: () => new Date("2026-11-18T12:00:00.000Z") });
     book.set(P1, "exec", true);

@@ -16,6 +16,7 @@ import type { AgentControlRpc } from "./agent-control-rpc.ts";
 import type { RemoteHubService } from "./service.ts";
 import type { PveRpc } from "./pve-rpc.ts";
 import { PveRpcError } from "./pve-rpc.ts";
+import { createSftpOwnerHandlers, createSftpPluginHandlers, sftpRefusal, type SftpRpcDeps } from "./sftp-rpc.ts";
 
 type Input<K extends keyof RpcSchemas> = z.output<RpcSchemas[K]["input"]>;
 type Output<K extends keyof RpcSchemas> = z.input<RpcSchemas[K]["output"]>;
@@ -91,9 +92,11 @@ export interface RpcHandlerDeps {
   pve?: PveRpc;
   /** The owner opened a console on this connection successfully: whatever blocked agents on it is lifted. */
   ownerOpened?: (profileId: string) => void;
+  /** SFTP for other plugins by the owner's grant. */
+  sftp?: SftpRpcDeps;
 }
 
-export function createRpcHandlers({ service, profiles, credentials, imports, agents, agentControl, openedBy, pve, ownerOpened }: RpcHandlerDeps): RpcHandlers {
+export function createRpcHandlers({ service, profiles, credentials, imports, agents, agentControl, openedBy, pve, ownerOpened, sftp }: RpcHandlerDeps): RpcHandlers {
   const withPve = async <T>(run: (p: PveRpc) => T | Promise<T>): Promise<T> => {
     if (pve === undefined) throw new experimental_PluginRpcRefusal({ code: "not_found", message: "Proxmox support is not available" });
     try {
@@ -155,7 +158,15 @@ export function createRpcHandlers({ service, profiles, credentials, imports, age
     }
   };
 
-  return ownerOnly({
+  const unavailable = (): never => {
+    throw sftpRefusal("failure");
+  };
+  const none = { sftp_access_list: unavailable, sftp_access_grant: unavailable, sftp_access_decline: unavailable, sftp_access_revoke: unavailable, sftp_access_revoke_all: unavailable };
+  const noPlugin = { hub_sftp_profiles: unavailable, hub_sftp_request_access: unavailable, hub_sftp_grants: unavailable, hub_sftp_open: unavailable, hub_sftp_op: unavailable, hub_sftp_close: unavailable };
+  const forOwner = ownerOnly({
+    ...(sftp === undefined ? none : createSftpOwnerHandlers(sftp, OWNER_RPC)),
+    // Replaced below: these six are for OTHER plugins, the opposite of every handler here.
+    ...noPlugin,
     helper_status: () => withHelper(() => service.helperStatus()),
     echo_open: (input) => withHelper(() => service.echoOpen(input.cols, input.rows)),
     echo_input: (input) =>
@@ -226,7 +237,10 @@ export function createRpcHandlers({ service, profiles, credentials, imports, age
             throw error;
           }
         }
-        return imports.decorate([(await credentials.saveProfile(input)).profile])[0] as Profile;
+        const saved = (await credentials.saveProfile(input)).profile;
+        // A channel was opened to where the connection pointed before; it does not follow an edit.
+        sftp?.channels.profileGone(saved.id);
+        return imports.decorate([saved])[0] as Profile;
       }),
     known_hosts_list: () => withImport(() => withHelper(() => imports.trustedHosts())),
     known_hosts_forget: (input) => withImport(() => withHelper(async () => ({ removed: await imports.forgetHost(input.host) }))),
@@ -247,6 +261,10 @@ export function createRpcHandlers({ service, profiles, credentials, imports, age
       withProfile(async () => {
         const result = await credentials.deleteProfile(input.id, input.deleteCredential ?? false);
         if (result.deleted) pve?.onProfileDeleted(input.id);
+        if (result.deleted && sftp !== undefined) {
+          sftp.channels.profileGone(input.id);
+          sftp.grants.forgetProfile(input.id);
+        }
         return result;
       }),
     pve_targets: (input) => withPve(async (p) => ({ connections: await p.targets({ profileIds: input.profileIds, refresh: input.refresh }) })),
@@ -386,4 +404,5 @@ export function createRpcHandlers({ service, profiles, credentials, imports, age
     session_attach: (input) =>
       withHelper(() => ({ token: service.sessionAttach({ generation: input.generation, sessionId: input.sessionId }, input.liveKind) })),
   });
+  return sftp === undefined ? forOwner : { ...forOwner, ...createSftpPluginHandlers(sftp) };
 }

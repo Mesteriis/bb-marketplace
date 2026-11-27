@@ -131,6 +131,13 @@ export class PluginGrantBook {
     return out;
   }
 
+  /** Every grant in force, for the Remote Hub page. */
+  granted(): Array<{ pluginId: string; profileId: string; level: SftpLevel; grantedAt: string | null }> {
+    const out: Array<{ pluginId: string; profileId: string; level: SftpLevel; grantedAt: string | null }> = [];
+    for (const r of this.deps.store.all()) if (r.level !== null) out.push({ pluginId: r.pluginId, profileId: r.profileId, level: r.level, grantedAt: r.grantedAt });
+    return out;
+  }
+
   /** The requests waiting for the owner, for the Remote Hub page. */
   pending(): Array<{ requestId: string; pluginId: string; profileId: string; level: SftpLevel; reason: string | null; requestedAt: string }> {
     return this.deps.store

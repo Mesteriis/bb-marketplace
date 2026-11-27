@@ -135,7 +135,7 @@ describe("upgrading a database made by the schema before the needs_config backfi
     const { AGENT_MIGRATIONS } = await import("./agent-sqlite.ts");
     const { PROFILE_RDP_OPTIONS_MIGRATIONS, PROFILE_PVE_MIGRATIONS } = await import("./profile-sqlite.ts");
     const { PVE_MIGRATIONS } = await import("./pve-sqlite.ts");
-    expect(ALL_MIGRATIONS.slice(previous.length)).toEqual([...NEEDS_CONFIG_BACKFILL, ...AGENT_MIGRATIONS, ...PROFILE_RDP_OPTIONS_MIGRATIONS, ...PROFILE_PVE_MIGRATIONS, ...PVE_MIGRATIONS]);
+    expect(ALL_MIGRATIONS.slice(previous.length)).toEqual([...NEEDS_CONFIG_BACKFILL, ...AGENT_MIGRATIONS, ...PROFILE_RDP_OPTIONS_MIGRATIONS, ...PROFILE_PVE_MIGRATIONS, ...PVE_MIGRATIONS, ...(await import("./plugin-grants-sqlite.ts")).PLUGIN_GRANT_MIGRATIONS]);
     const db = new Database(":memory:");
     for (const statement of previous) db.exec(statement);
     const profile = (id: string, name: string) =>
@@ -180,7 +180,7 @@ describe("RDP connection options in the profile store (P1)", () => {
     const { ALL_MIGRATIONS } = await import("./migrations.ts");
     const { PROFILE_RDP_OPTIONS_MIGRATIONS, PROFILE_PVE_MIGRATIONS } = await import("./profile-sqlite.ts");
     const { PVE_MIGRATIONS } = await import("./pve-sqlite.ts");
-    const later = [...PROFILE_PVE_MIGRATIONS, ...PVE_MIGRATIONS];
+    const later = [...PROFILE_PVE_MIGRATIONS, ...PVE_MIGRATIONS, ...(await import("./plugin-grants-sqlite.ts")).PLUGIN_GRANT_MIGRATIONS];
     const previous = ALL_MIGRATIONS.slice(0, ALL_MIGRATIONS.length - PROFILE_RDP_OPTIONS_MIGRATIONS.length - later.length);
     const db = new Database(":memory:");
     for (const statement of previous) db.exec(statement);
@@ -230,7 +230,7 @@ describe("the Proxmox migrations", () => {
     const { ALL_MIGRATIONS } = await import("./migrations.ts");
     const { PROFILE_PVE_MIGRATIONS } = await import("./profile-sqlite.ts");
     const { PVE_MIGRATIONS } = await import("./pve-sqlite.ts");
-    const previous = ALL_MIGRATIONS.slice(0, ALL_MIGRATIONS.length - PROFILE_PVE_MIGRATIONS.length - PVE_MIGRATIONS.length);
+    const previous = ALL_MIGRATIONS.slice(0, ALL_MIGRATIONS.length - PROFILE_PVE_MIGRATIONS.length - PVE_MIGRATIONS.length - (await import("./plugin-grants-sqlite.ts")).PLUGIN_GRANT_MIGRATIONS.length);
     const db = new Database(":memory:");
     for (const statement of previous) db.exec(statement);
     db.prepare(

@@ -31,6 +31,8 @@ export interface SftpProfileFacts {
   agent: boolean;
   /** A password connection without a saved password: nobody can type it for a channel. */
   needsSecret: boolean;
+  /** An imported alias that was never resolved to where it really goes. */
+  needsConfig?: boolean;
 }
 
 export type SftpChannelState = "open" | "closed" | "revoked" | "hostkey_changed";
@@ -83,6 +85,7 @@ export class SftpChannels {
     if (profile.protocol !== "ssh") throw new SftpOpError("profile_not_sftp");
     const allowed = this.deps.grants.check(pluginId, profileId, "read");
     if (!allowed.ok) throw new SftpOpError(allowed.code);
+    if (profile.needsConfig === true) throw new SftpOpError("profile_needs_config");
     if (profile.needsSecret) throw new SftpOpError("credential_missing");
     if (this.held(pluginId) >= SFTP_LIMITS.channelsPerPlugin) throw new SftpOpError("limit_exceeded");
 

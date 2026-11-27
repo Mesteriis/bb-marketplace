@@ -35,6 +35,11 @@ import { createSqliteCredentialStore } from "./src/adapters/bb/credential-sqlite
 import { createFsSourceReader } from "./src/adapters/bb/fs-source-reader.ts";
 import { createSqliteImportStore } from "./src/adapters/bb/import-sqlite.ts";
 import { createRpcHandlers } from "./src/adapters/bb/rpc-handlers.ts";
+import { createSqlitePluginGrantStore } from "./src/adapters/bb/plugin-grants-sqlite.ts";
+import { createHostKeyHint, createSftpTransport, sftpProfileFacts, sshAgentPresent } from "./src/adapters/bb/sftp-transport.ts";
+import { PluginGrantBook } from "./src/core/plugin-grants.ts";
+import { SftpChannels } from "./src/core/sftp-channels.ts";
+import { SFTP_EVENTS_CHANNEL } from "./src/core/sftp-contract.ts";
 import { createPveRpc } from "./src/adapters/bb/pve-rpc.ts";
 import { createPveTools } from "./src/core/agent-pve-tools.ts";
 import { createSqlitePveConsoleTabs, createSqlitePveGuestLinks } from "./src/adapters/bb/pve-sqlite.ts";
@@ -94,7 +99,38 @@ export default function plugin(bb: BbPluginApi): void {
   const agentAudit = new AgentAudit({ store: createSqliteAgentAuditStore(db), now: () => new Date() });
   const registry = new AgentSessionRegistry();
   const pveRpc = createPveRpc({ service, profiles, credentials, links: createSqlitePveGuestLinks(db), tabs: createSqlitePveConsoleTabs(db), newId: () => randomUUID(), now: () => new Date(), audit: agentAudit });
+  // SFTP for other plugins by the owner's grant: the grants are stored, the channels live only as long as this process.
+  const publishSftp = (payload: unknown): void => {
+    try {
+      bb.realtime.publish(SFTP_EVENTS_CHANNEL, payload);
+    } catch {
+      // a page or plugin that cannot be told is not a reason to fail the call
+    }
+  };
+  let sftpChannels: SftpChannels | undefined;
+  const pluginGrants = new PluginGrantBook({
+    store: createSqlitePluginGrantStore(db),
+    now: () => new Date(),
+    newId: () => randomUUID(),
+    profileExists: (id) => profiles.get(id) !== null,
+    onChange: (change) => {
+      // A grant that is gone ends the channels opened under it, before anyone is told.
+      if (change.state === "revoked" || change.state === "none") sftpChannels?.revoked(change.pluginId, change.profileId);
+      publishSftp({ type: "sftp.consent", profileId: change.profileId, state: change.state });
+    },
+  });
+  sftpChannels = new SftpChannels({
+    grants: pluginGrants,
+    transport: createSftpTransport({ service, profiles, credentials }),
+    profile: (id) => sftpProfileFacts(profiles.get(id)),
+    agentPresent: () => sshAgentPresent(process.env),
+    newId: () => randomUUID(),
+    now: () => new Date(),
+    onEvent: (event) => publishSftp({ channelId: event.channelId, state: event.state }),
+  });
+  const sftpAll = sftpChannels;
   const handlers = createRpcHandlers({
+    sftp: { channels: sftpAll, grants: pluginGrants, profiles, hostKeyKnown: createHostKeyHint({ service }), audit: agentAudit },
     service,
     profiles,
     credentials,
@@ -124,6 +160,7 @@ export default function plugin(bb: BbPluginApi): void {
 
   bb.onDispose(() => {
     disposed = true;
+    sftpAll.closeAll();
     service.stop();
     void bridge?.then((endpoint) => endpoint.close()).catch(() => {});
   });

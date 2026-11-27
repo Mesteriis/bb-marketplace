@@ -1,5 +1,6 @@
 // The BB RPC contract for the Remote Hub page, as plain zod schemas.
 // server.ts wraps these with the SDK's defineRpcContract.
+import { SFTP_LEVELS, sftpMethods } from "./sftp-contract.ts";
 import { z } from "zod";
 import { credentialBindSchema } from "./credential.ts";
 import { profileInputSchema, profileSchema } from "./profile.ts";
@@ -248,7 +249,28 @@ const pveFailureSchema = z.object({
   profileId: z.string().optional(),
 });
 
+const sftpPluginId = z.string().min(1).max(200);
+/** The owner's page for what other plugins may do over SFTP. Identifiers, levels and times only. */
+export const sftpOwnerMethods = {
+  sftp_access_list: {
+    input: z.object({}).strict(),
+    output: z
+      .object({
+        requests: z.array(z.object({ requestId: z.string(), pluginId: z.string(), profileId: z.string(), level: z.enum(SFTP_LEVELS), reason: z.string().nullable(), requestedAt: z.string() }).strict()),
+        grants: z.array(z.object({ pluginId: z.string(), profileId: z.string(), level: z.enum(SFTP_LEVELS), grantedAt: z.string().nullable() }).strict()),
+        channels: z.array(z.object({ channelId: z.string(), pluginId: z.string(), profileId: z.string(), openedAt: z.string() }).strict()),
+      })
+      .strict(),
+  },
+  sftp_access_grant: { input: z.object({ pluginId: sftpPluginId, profileId: z.string().uuid(), level: z.enum(SFTP_LEVELS) }).strict(), output: z.object({ granted: z.literal(true) }).strict() },
+  sftp_access_decline: { input: z.object({ requestId: z.string().uuid() }).strict(), output: z.object({ declined: z.boolean() }).strict() },
+  sftp_access_revoke: { input: z.object({ pluginId: sftpPluginId, profileId: z.string().uuid() }).strict(), output: z.object({ revoked: z.boolean(), channelsClosed: z.number().int() }).strict() },
+  sftp_access_revoke_all: { input: z.object({}).strict(), output: z.object({ revoked: z.number().int() }).strict() },
+} as const;
+
 export const rpcSchemas = {
+  ...sftpMethods,
+  ...sftpOwnerMethods,
   helper_status: {
     input: z.null(),
     output: helperStatusSchema,
