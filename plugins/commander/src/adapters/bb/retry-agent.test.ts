@@ -5,7 +5,8 @@ import type { AgentJobStore } from "../../core/job-store.ts";
 import { JobRunner } from "../../core/job-runner.ts";
 import { planDigest, type OperationPlan } from "../../core/model.ts";
 import { parsePosix } from "../../core/path.ts";
-import type { PlannerDeps } from "../../core/planner.ts";
+import { revalidate, type PlannerDeps } from "../../core/planner.ts";
+import type { FileProvider } from "../../core/provider.ts";
 import type { ScanRunner } from "../../core/scan-job.ts";
 import { FakeProvider } from "../../core/testing/fake-provider.ts";
 import { MemoryJobStore } from "../../core/testing/memory-job-store.ts";
@@ -13,19 +14,37 @@ import { createAgentGrants } from "./agent-grants.ts";
 import type { Endpoints } from "./endpoints.ts";
 import { registerAgentTools } from "./agent-tools.ts";
 import { createOperations } from "./rpc-handlers.ts";
+import { createSftpProvider } from "./sftp-provider.ts";
+import { RemoteHubMock } from "./testing/remote-hub-mock.ts";
 
 const date = "2026-11-27T00:00:00.000Z";
 const signal = new AbortController().signal;
 const agent = { kind: "agent", threadId: "thread-a" } as const;
 const refusalText = "Commander planning failed outside the metadata grant";
 
-/** `unknown` makes the commit reply lost after the temporary file was written, so reconciliation has a temp to remove. */
-async function failedAgentJob(outcome: "failed" | "unknown" = "failed") {
+async function failedAgentJob(outcome: "failed" | "unknown" | "sftp-unknown" = "failed") {
   const from = new FakeProvider("host:from");
-  const to = new FakeProvider("host:to");
+  const profileId = "5b568675-f842-4a96-83e0-78ae53d96024";
+  const targetEndpoint = "sftp:" + profileId;
+  const remote = new RemoteHubMock({
+    onOperation(op) {
+      // The exclusive create succeeds. The first data write lands, then its reply is lost.
+      if (op === "write" && remote.appliedCount("write") === 1) remote.dieNext(op);
+    },
+  });
+  const to = outcome === "sftp-unknown"
+    ? createSftpProvider({
+      port: remote, profileId,
+      endpoint: { id: targetEndpoint, provider: "sftp", label: "test", machine: "test", hostId: null, readOnly: false, caseSensitive: true },
+    })
+    : new FakeProvider("host:to");
+  const provider = (id: string): FileProvider => id === "host:from" ? from : to;
   from.put(parsePosix("/a"), new Uint8Array(3).fill(42), "1");
-  to.failOn.push({ op: "commit", path: parsePosix("/b"), times: 1, error: outcome === "failed"
-    ? new CommanderError("permission_denied", "Denied") : new CommanderError("outcome_unknown", "Commit reply lost", true) });
+  if (to instanceof FakeProvider) {
+    const error = outcome === "failed" ? new CommanderError("permission_denied", "Denied")
+      : new CommanderError("outcome_unknown", "Commit reply lost");
+    to.failOn.push({ op: "commit", path: parsePosix("/b"), times: 1, error });
+  }
   // The fake store only needs the job queries; the approval queries are unused by the retry path.
   const store = Object.assign(new MemoryJobStore(), {
     hasOwnerApproval: () => false,
@@ -33,11 +52,16 @@ async function failedAgentJob(outcome: "failed" | "unknown" = "failed") {
     listUnknownPage: async () => ({ jobs: [] }),
   }) as unknown as AgentJobStore;
   let nextId = 0;
-  const runner = new JobRunner({
-    store,
-    provider: (id) => id === "host:from" ? from : to,
+  const planner: PlannerDeps = {
+    provider,
     now: () => new Date(date),
     uuid: () => "223e4567-e89b-42d3-a456-" + String(++nextId).padStart(12, "0"),
+    limits: { maxItems: 10, maxDepth: 10 },
+    protectedPathsFor: () => [],
+  };
+  const runner = new JobRunner({
+    store, provider, now: planner.now, uuid: planner.uuid,
+    revalidate: (plan, signal) => revalidate(plan, planner, signal),
     onEvent: () => {},
   });
   const unsigned: Omit<OperationPlan, "digest"> = {
@@ -46,11 +70,11 @@ async function failedAgentJob(outcome: "failed" | "unknown" = "failed") {
     initiator: agent,
     kind: "copy",
     sourceEndpoint: "host:from",
-    targetEndpoint: "host:to",
-    targetDir: { endpoint: "host:to", path: { segments: [] } },
+    targetEndpoint: to.endpoint.id,
+    targetDir: { endpoint: to.endpoint.id, path: { segments: [] } },
     items: [{
       source: { endpoint: "host:from", path: parsePosix("/a") },
-      target: { endpoint: "host:to", path: parsePosix("/b") },
+      target: { endpoint: to.endpoint.id, path: parsePosix("/b") },
       kind: "file",
       fingerprint: { size: "3", mtimeNs: "1" },
       expectTarget: "absent",
@@ -68,11 +92,11 @@ async function failedAgentJob(outcome: "failed" | "unknown" = "failed") {
     set: async (key: string, value: unknown) => { kv.set(key, value); },
   } as unknown as PluginKvStorage;
   const ops = createOperations({
-    // Retry reads no endpoint or planner state; the plan runs later through plan_run.
-    endpoints: {} as Endpoints,
+    // The fixture providers are ready before retry and plan_run.
+    endpoints: { prepare: async () => {} } as unknown as Endpoints,
     runner,
     store,
-    planner: {} as PlannerDeps,
+    planner,
     // Retry starts no scan.
     scans: {} as ScanRunner,
     grants: createAgentGrants(pluginKv),
@@ -81,7 +105,7 @@ async function failedAgentJob(outcome: "failed" | "unknown" = "failed") {
     ready: async () => {},
     isManaged: () => false,
   });
-  return { ops, kv, job, from, to };
+  return { ops, kv, job, from, to, remote, targetEndpoint };
 }
 
 test("an agent without a grant on the job's endpoints gets the planning refusal and no retry plan", async () => {
@@ -122,6 +146,41 @@ test("the commander_retry tool gives a granted agent a plan ticket and refuses a
   expect(await body()).toMatchObject({ status: "planned", digest: expect.any(String) });
 });
 
+test.each(["owner", "agent"] as const)("SFTP retry removes the staged write once and copies the file as %s", async (kind) => {
+  const { ops, kv, job, remote, targetEndpoint } = await failedAgentJob("sftp-unknown");
+  const temp = "/.commander-223e4567-e89b-42d3-a456-000000000001-0.part";
+  expect(await ops.job(job.id)).toMatchObject({ state: "unknown", error: { code: "outcome_unknown" } });
+  expect(remote.bytesAt(temp)).toEqual(Uint8Array.of(42, 42, 42));
+  expect(remote.exists("/b")).toBe(false);
+
+  if (kind === "agent") {
+    kv.set("agent-grants", [
+      { threadId: "thread-a", endpoint: "host:from", scope: parsePosix("/a"), permissions: ["read"] },
+      { threadId: "thread-a", endpoint: targetEndpoint, scope: parsePosix("/"), permissions: ["write"] },
+    ]);
+  }
+  const initiator = kind === "agent" ? agent : { kind: "owner" } as const;
+  const { plan } = await ops.retry(job.id, initiator, signal);
+  expect(plan?.items).toHaveLength(1);
+  expect(remote.exists(temp)).toBe(false);
+
+  const run = await ops.runPlan({ planId: plan!.id, digest: plan!.digest }, initiator, signal);
+  await vi.waitFor(async () => expect((await ops.job(run.id))?.state).toBe("completed"));
+  expect(remote.opCount("op:remove")).toBe(1);
+  expect(remote.bytesAt("/b")).toEqual(Uint8Array.of(42, 42, 42));
+});
+
+test("SFTP retry preserves the staged write without a directory grant", async () => {
+  const { ops, kv, job, remote, targetEndpoint } = await failedAgentJob("sftp-unknown");
+  kv.set("agent-grants", [
+    { threadId: "thread-a", endpoint: "host:from", scope: parsePosix("/a"), permissions: ["read"] },
+    { threadId: "thread-a", endpoint: targetEndpoint, scope: parsePosix("/b"), permissions: ["write"] },
+  ]);
+  await expect(ops.retry(job.id, agent, signal)).rejects.toMatchObject({ message: refusalText });
+  expect(remote.opCount("op:remove")).toBe(0);
+  expect(remote.bytesAt("/.commander-223e4567-e89b-42d3-a456-000000000001-0.part")).toEqual(Uint8Array.of(42, 42, 42));
+});
+
 test("an agent retry that would reconcile an unknown item needs write on the target directory", async () => {
   const { ops, kv, job, from, to } = await failedAgentJob("unknown");
   // Read on the source and write on the target file only: the directory beside the target is not covered.
@@ -130,7 +189,8 @@ test("an agent retry that would reconcile an unknown item needs write on the tar
     { threadId: "thread-a", endpoint: "host:to", scope: parsePosix("/b"), permissions: ["write"] },
   ]);
   await expect(ops.retry(job.id, agent, signal)).rejects.toMatchObject({ message: refusalText });
-  expect(to.calls.filter(({ op }) => op === "remove")).toHaveLength(0);
+  expect(to).toBeInstanceOf(FakeProvider);
+  expect((to as FakeProvider).calls.filter(({ op }) => op === "remove")).toHaveLength(0);
   expect(from.calls.filter(({ op }) => op === "remove")).toHaveLength(0);
 
   kv.set("agent-grants", [
