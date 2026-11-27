@@ -1,6 +1,8 @@
 import { spawn } from "node:child_process";
 
 export type GitRun = (args: string[], options?: {input?: string; index?: string; codes?: number[]; author?:{name:string;email:string};
+  /** The committer alone, so a rebase keeps each replayed commit's author. */
+  committer?: {name: string; email: string};
   /** Output cap in bytes; 512 KiB unless a read needs more (refs and status of large repositories). */
   limit?: number;
   /** Past the cap, keep the output up to its last whole line and mark it truncated instead of failing. */
@@ -14,7 +16,9 @@ export function gitRunner(root: string, signal?: AbortSignal, transport?: {usern
       GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0", GIT_LITERAL_PATHSPECS: "1",
       GIT_NO_REPLACE_OBJECTS: "1", GIT_INDEX_FILE: options.index,
       GIT_AUTHOR_NAME:options.author?.name, GIT_AUTHOR_EMAIL:options.author?.email,
-      GIT_COMMITTER_NAME:options.author?.name, GIT_COMMITTER_EMAIL:options.author?.email,
+      GIT_COMMITTER_NAME:(options.committer ?? options.author)?.name, GIT_COMMITTER_EMAIL:(options.committer ?? options.author)?.email,
+      // No command ever waits for an editor: merge and rebase take their prepared messages and plans as they are.
+      GIT_EDITOR: "true", GIT_SEQUENCE_EDITOR: "true", GIT_MERGE_AUTOEDIT: "no",
     };
     const git = spawn("git", [
       "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",

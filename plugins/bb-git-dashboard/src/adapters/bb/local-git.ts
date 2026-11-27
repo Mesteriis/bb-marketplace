@@ -4,6 +4,9 @@ import { copyFile, lstat, mkdtemp, open, realpath, rename, rm, stat, utimes } fr
 import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { author, type GitAction, type GitResult } from "../../core/git.ts";
 import { gitRunner, type GitRun } from "./git-process.ts";
+import { mergeGit, type MergeAction } from "./merge-git.ts";
+
+const mergeKinds = new Set<GitAction["kind"]>(["sequence", "mergePreview", "conflict", "merge", "rebase", "abort", "continue", "skip", "resolve", "take"]);
 
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 const gitError = (code: string): never => { throw new Error(code); };
@@ -272,6 +275,9 @@ export async function localGit(path: string, action: GitAction, signal?: AbortSi
   const root = await validateWorktree(path, signal, action.kind === "worktrees");
   if (root !== path) gitError("INVALID_WORKTREE");
   const git = gitRunner(root, signal);
+  if (mergeKinds.has(action.kind)) {
+    return mergeGit({git, root, status: () => status(git, root), filePath: file => filePath(root, file)}, action as MergeAction);
+  }
   switch (action.kind) {
     case "status": return status(git, root);
     case "history": return {root, text: (await git(["log", "-n", "75", "--format=%H %as %s", "--no-show-signature"], {codes: [0, 128]})).text};
@@ -349,6 +355,8 @@ export async function localGit(path: string, action: GitAction, signal?: AbortSi
       return status(git, root);
     }
   }
+  // The merge actions were answered above.
+  return gitError("INVALID_INPUT");
 }
 
 async function httpsOrigin(clone: string, username: string) {
