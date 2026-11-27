@@ -8,7 +8,7 @@ import activate from "./server.ts";
 import { parsePosix, samePath } from "./src/core/path.ts";
 import { FakeProvider } from "./src/core/testing/fake-provider.ts";
 import * as sqliteStore from "./src/adapters/bb/job-store-sqlite.ts";
-import { OperationJob } from "./src/core/model.ts";
+import { OperationJob, type EntryKind, type Fingerprint } from "./src/core/model.ts";
 import { RemoteHubMock } from "./src/adapters/bb/testing/remote-hub-mock.ts";
 import { SFTP_REFUSALS, SftpRefusal, type SftpMethodName } from "./src/core/wire/remote-hub-sftp.ts";
 
@@ -58,11 +58,16 @@ async function backend(
       hosts: { list: async () => [{ id: "test", name: "Test host" }] },
       plugins: { callRpc },
     },
-    hosts: { experimental_client: () => ({ call: async (method: string, data: { path: ReturnType<typeof parsePosix> } & Parameters<NonNullable<FakeProvider["copyWithin"]>>[2] & { from: ReturnType<typeof parsePosix>; to: ReturnType<typeof parsePosix>; cursor: string | null; limit: number }, ctx: { signal?: AbortSignal }) => {
+    hosts: { experimental_client: () => ({ call: async (method: string, data: { path: ReturnType<typeof parsePosix> } & Parameters<NonNullable<FakeProvider["copyWithin"]>>[2] & { from: ReturnType<typeof parsePosix>; to: ReturnType<typeof parsePosix>; cursor: string | null; limit: number; kind: EntryKind; expect?: Fingerprint }, ctx: { signal?: AbortSignal }) => {
       if (method === "home") return { path: parsePosix("/home/test"), caseSensitive: true };
       if (method === "stat") return disk.stat(data.path, ctx.signal ?? agent.signal);
       if (method === "list") return disk.list(data.path, data, ctx.signal ?? agent.signal);
       if (method === "copyWithin") return disk.copyWithin!(data.from, data.to, data, ctx.signal ?? agent.signal);
+      if (method === "sha256") return { hex: await disk.sha256!(data.path, ctx.signal ?? agent.signal) };
+      if (method === "remove") {
+        await disk.remove(data.path, data, ctx.signal ?? agent.signal);
+        return {};
+      }
       throw new Error("unexpected test method");
     } }) },
     storage: {
@@ -769,4 +774,57 @@ test("masks both missing paths and a full plan quota outside the grant", async (
     expect(missing).toEqual({ code: "forbidden", message: "Commander refused the request" });
     expect(await bb.tool("commander_plan", remove)).toEqual(missing);
   } finally { await bb.dispose(); }
+});
+
+test("cancels a recovering move before source removal and records the verified copy", async () => {
+  const bb = await backend();
+  let restarted: typeof bb | undefined;
+  let firstDisposed = false;
+  const verifying = Promise.withResolvers<AbortSignal>();
+  const finishVerify = Promise.withResolvers<void>();
+  try {
+    const store = sqliteStore.createSqliteJobStore(bb.db);
+    const id = "523e4567-e89b-42d3-a456-426614174000";
+    const plan = await bb.rpc("plan_create", { ...request, kind: "move" });
+    const date = "2026-11-27T01:00:00.000Z";
+    await store.create(OperationJob.parse({
+      id, plan, state: "running", currentItem: 0, pendingConflict: null, awaitsOwner: false,
+      progress: { itemsDone: 0, itemsTotal: 1, bytesDone: "1", bytesTotal: "1" },
+      items: [{ outcome: "pending", error: null }], error: null, createdAt: date, updatedAt: date,
+    }));
+    const source = parsePosix("/data/a");
+    const target = parsePosix("/out/a");
+    const digest = "684888c0ebb17f374298b65ee2807526c066094c701bcc7ebbe1c1095f494fc1";
+    bb.disk.put(target, Uint8Array.of(42), "2");
+    bb.disk.enableChecksum();
+    await store.checkpoint({
+      jobId: id, itemIndex: 0, phase: "committed", bytesDone: "1", tempPath: null, targetPath: target,
+      expectTarget: "absent", via: "copy", committed: { size: "1", mtimeNs: "2" },
+      verified: null, sourceHash: digest,
+    });
+    await bb.dispose(false);
+    firstDisposed = true;
+    let checks = 0;
+    bb.disk.delay = async (op, path, signal) => {
+      if (op !== "sha256" || !samePath(path, target, true) || ++checks !== 2) return;
+      verifying.resolve(signal);
+      await finishVerify.promise;
+    };
+    restarted = await backend(bb);
+    const operationSignal = await verifying.promise;
+    await expect(restarted.rpc("job_cancel", { jobId: id })).resolves.toEqual({});
+    finishVerify.resolve();
+    await vi.waitFor(async () => expect(await store.get(id)).toMatchObject({
+      state: "cancelled", items: [{ outcome: "done", error: "Move cancelled; source retained" }],
+    }), { timeout: 500 });
+    expect(operationSignal.aborted).toBe(true);
+    expect(bb.disk.calls.filter(({ op }) => op === "remove")).toEqual([]);
+    expect(bb.disk.contents(source)).toEqual(Uint8Array.of(42));
+    expect(bb.disk.contents(target)).toEqual(Uint8Array.of(42));
+  } finally {
+    finishVerify.resolve();
+    if (restarted) await restarted.dispose();
+    else if (firstDisposed) bb.db.close();
+    else await bb.dispose();
+  }
 });

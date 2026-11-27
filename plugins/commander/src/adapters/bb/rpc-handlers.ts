@@ -183,12 +183,16 @@ export function createOperations(deps: {
         await runner.cancel(current.id);
         return;
       }
-      if (current.state === "cancel_requested") return;
+      if (current.state === "cancel_requested") {
+        runner.signalRecoveryCancellation(current.id);
+        return;
+      }
       // A persisted job may have a checkpoint from a previous process.
       // Preserve it and let recovery reconcile in cancellation mode.
       if (await store.update(current.id, {
         state: "cancel_requested", pendingConflict: null, updatedAt: planner.now().toISOString(),
       }, current.state)) {
+        runner.signalRecoveryCancellation(current.id);
         publish("job", current.id);
         return;
       }

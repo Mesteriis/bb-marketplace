@@ -79,6 +79,7 @@ export class JobRunner {
   private readonly store: JobStore;
   private readonly chunkBytes: number;
   private readonly active = new Map<string, Run>();
+  private readonly recovering = new Map<string, AbortController>();
   private readonly stopping = new AbortController();
   private readonly operations = new Set<Promise<unknown>>();
   private stopped?: Promise<void>;
@@ -242,6 +243,11 @@ export class JobRunner {
     return this.accept(() => this.recoverJobs());
   }
 
+  /** Notify a recovery pass after its cancellation request has been persisted. */
+  signalRecoveryCancellation(id: string): void {
+    this.recovering.get(id)?.abort(cancelledError);
+  }
+
   private async recoverJobs(): Promise<{ resumed: string[]; unknown: string[] }> {
     const result: { resumed: string[]; unknown: string[] } = { resumed: [], unknown: [] };
     const jobs = await this.store.list({
@@ -249,13 +255,21 @@ export class JobRunner {
       limit: Number.MAX_SAFE_INTEGER,
     });
     for (const { id } of jobs) {
-      const outcome = await this.recoverJob(id);
-      if (outcome) result[outcome].push(id);
+      if (this.recovering.has(id)) continue;
+      const cancellation = new AbortController();
+      this.recovering.set(id, cancellation);
+      try {
+        const signal = AbortSignal.any([this.stopping.signal, cancellation.signal]);
+        const outcome = await this.recoverJob(id, signal);
+        if (outcome) result[outcome].push(id);
+      } finally {
+        this.recovering.delete(id);
+      }
     }
     return result;
   }
 
-  private async recoverJob(id: string): Promise<"resumed" | "unknown" | undefined> {
+  private async recoverJob(id: string, signal: AbortSignal): Promise<"resumed" | "unknown" | undefined> {
     for (;;) {
       this.stopping.signal.throwIfAborted();
       const job = await this.store.get(id);
@@ -286,7 +300,9 @@ export class JobRunner {
       const index = job.currentItem;
       try {
         if (index !== null && job.items[index].outcome === "pending") {
-          await this.recoverStartedItem({ ...job, progress }, index, cancelling);
+          // A cancelled recovery still needs read access to confirm the checkpoint.
+          await this.recoverStartedItem({ ...job, progress }, index, cancelling,
+            cancelling ? this.stopping.signal : signal);
         }
       } catch {
         this.stopping.signal.throwIfAborted();
@@ -314,18 +330,18 @@ export class JobRunner {
   }
 
   private async recoverStartedItem(
-    job: OperationJob, index: number, cancelling: boolean, saved?: Checkpoint,
+    job: OperationJob, index: number, cancelling: boolean, signal: AbortSignal,
   ): Promise<void> {
     // The runner writes prepared before issuing any mutation. A missing
     // checkpoint is therefore safe to leave pending.
-    const checkpoint = saved ?? await this.store.lastCheckpoint(job.id, index);
+    const checkpoint = await this.store.lastCheckpoint(job.id, index);
     if (!checkpoint) return;
 
     const item = job.plan.items[index];
     const source = item.source && this.location(item.source);
     const target = this.recoveredTarget(item, checkpoint);
 
-    const context = this.context(job.id, index, this.stopping.signal);
+    const context = this.context(job.id, index, signal);
     context.load(checkpoint);
     const outcome = await reconcileItem(checkpoint, source, target, item, job.plan, context,
       (point) => this.store.checkpoint(point));
@@ -354,7 +370,10 @@ export class JobRunner {
         if (result !== "removed") warning = result === "move_cancelled" ? moveCancelled : sourceRetained;
       }
     }
-    await this.record(job, index, "done", undefined, job.progress.bytesDone, warning);
+    this.stopping.signal.throwIfAborted();
+    // A verified copy is a completed item even when its source was retained.
+    const current = signal.aborted ? await this.requireJob(job.id) : job;
+    await this.record(current, index, "done", undefined, job.progress.bytesDone, warning);
   }
 
   private recoveredTarget(item: PlanItem, checkpoint: Checkpoint): Location | null {
@@ -939,6 +958,7 @@ export class JobRunner {
       throw error;
     }
     if (!verified) throw missing();
+    if (context.signal.aborted) return confirmCancellation();
     if (!await this.removeSource(source, "file", version, context, target)) {
       return context.signal.aborted ? confirmCancellation() : "source_retained";
     }
