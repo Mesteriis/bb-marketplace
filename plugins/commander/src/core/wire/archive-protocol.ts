@@ -244,5 +244,7 @@ export const ArchiveEntry = z.object({
   encrypted: z.boolean(),
   linkB64: z.string().max(8192).optional(),
   synthetic: z.boolean().optional(),
+  /** The helper's own refusal of this record (unsafe name, link, special file, ...). */
+  refused: z.string().max(64).optional(),
 }).strict();
 export type ArchiveEntry = z.infer<typeof ArchiveEntry>;

@@ -1,6 +1,7 @@
 import { CommanderError } from "../../core/errors.ts";
 import type { Capability, Endpoint, Entry, Fingerprint } from "../../core/model.ts";
 import type { NameSegment, ResourcePath } from "../../core/path.ts";
+import { classifyEntry, type RefusedReason } from "../../core/archive-guard.ts";
 import type { FileProvider, ListPage, WriteSession } from "../../core/provider.ts";
 import type { ArchiveEntry } from "../../core/wire/archive-protocol.ts";
 import type { HelperResult, RequestOptions } from "./archive-helper.ts";
@@ -53,9 +54,34 @@ function lastSegment(raw: Uint8Array): NameSegment {
   }
 }
 
+/**
+ * Why an entry cannot be extracted: the helper's own flag first, then the same guard again on the raw name
+ * (second line). A password is assumed: an encrypted entry is asked about when it is read, not refused here.
+ */
+function refusalOf(entry: ArchiveEntry): RefusedReason | string | null {
+  if (entry.refused) return entry.refused;
+  if (entry.synthetic) return null;
+  return classifyEntry({
+    kind: entry.kind, name: decode(entry.nameB64),
+    ...(entry.linkB64 === undefined ? {} : { link: decode(entry.linkB64) }), encrypted: entry.encrypted,
+  }, { hasPassword: true });
+}
+
+function refusalError(reason: string): CommanderError {
+  if (reason === "link_not_supported" || reason === "link_escapes") {
+    return new CommanderError("unsupported", "Links in archives are not extracted", false, reason);
+  }
+  if (reason === "special_file") return new CommanderError("unsupported", "Special files in archives are not extracted");
+  if (reason === "backslash" || reason === "name_encoding") return new CommanderError("invalid_name", "The archive entry name cannot be used");
+  return new CommanderError("invalid_path", "The archive entry path is not safe");
+}
+
 function toEntry(entry: ArchiveEntry): Entry {
   const name = lastSegment(decode(entry.nameB64));
-  const kind: Entry["kind"] = entry.kind === "file" ? "file" : entry.kind === "dir" ? "dir" : entry.kind === "symlink" ? "symlink" : "other";
+  // A refused record is never shown as a plain file or directory, so no plan can copy it by accident.
+  const refused = refusalOf(entry) !== null;
+  const kind: Entry["kind"] = refused ? (entry.kind === "symlink" ? "symlink" : "other")
+    : entry.kind === "file" ? "file" : entry.kind === "dir" ? "dir" : entry.kind === "symlink" ? "symlink" : "other";
   let linkTarget: Entry["linkTarget"] = null;
   if (entry.linkB64 !== undefined) {
     const raw = decode(entry.linkB64);
@@ -113,6 +139,8 @@ export class ArchiveProvider implements FileProvider {
   private async entryForRead(path: ResourcePath, expect: Fingerprint | null, signal: AbortSignal): Promise<ArchiveEntry> {
     const entry = await this.find(path, signal);
     if (!entry) throw new CommanderError("not_found", "Archive entry not found");
+    const refusal = refusalOf(entry);
+    if (refusal !== null) throw refusalError(refusal);
     if (entry.kind === "dir") throw new CommanderError("is_a_directory", "Archive entry is a directory");
     if (entry.kind !== "file") throw new CommanderError("unsupported", "Archive entry is not a regular file");
     if (expect) {

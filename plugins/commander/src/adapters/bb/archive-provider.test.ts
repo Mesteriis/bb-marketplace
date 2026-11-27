@@ -135,6 +135,33 @@ describe("read", () => {
   });
 });
 
+describe("refused entries", () => {
+  it("never shows a refused record as a file or directory and refuses to read it with the specific reason", async () => {
+    const entries = [
+      { ...file(0, "l", 0), kind: "symlink" as const, linkB64: b64("../../outside"), refused: "link_escapes" },
+      { ...file(1, "docs/h", 0), kind: "hardlink" as const, linkB64: b64("docs/x") },
+      // The helper did not flag it: the TypeScript guard is the second line.
+      { ...file(2, "../x", 3), nameB64: b64("../x") },
+      { ...file(3, "ok.txt", 3) },
+    ];
+    const { rpc } = rpcWith((body) => body.t === "list"
+      ? { json: { t: "ok", cursor: null, entries } }
+      : { json: { t: "ok", entry: entries[Number((body as unknown as { idx?: number }).idx ?? 0)] } });
+    const page = await make(rpc).list(parsePosix("/"), { cursor: null, limit: 10 }, signal);
+    expect(page.entries.map((e) => [e.name, e.kind])).toEqual([
+      [{ t: "l" }, "symlink"], [{ t: "h" }, "other"], [{ t: "x" }, "other"], [{ t: "ok.txt" }, "file"],
+    ]);
+    for (const [index, expected] of [
+      [0, { code: "unsupported", reason: "link_escapes" }],
+      [1, { code: "unsupported", reason: "link_not_supported" }],
+      [2, { code: "invalid_path" }],
+    ] as const) {
+      const one = rpcWith(() => ({ json: { t: "ok", entry: entries[index] } }));
+      await expect(make(one.rpc).read(parsePosix("/n"), 0n, 1, null, signal)).rejects.toMatchObject(expected);
+    }
+  });
+});
+
 describe("finishRead (the integrity barrier)", () => {
   const path = parsePosix("/a.bin");
   it("runs read_finish after the whole entry was read", async () => {
