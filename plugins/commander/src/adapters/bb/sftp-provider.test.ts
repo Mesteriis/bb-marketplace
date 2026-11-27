@@ -447,10 +447,23 @@ describe("atomic replace", () => {
     expect(provider.capabilities.has("atomicReplace")).toBe(false);
   });
 
-  it("a rename whose reply is for another operation is internal", async () => {
+  it("a rename whose reply is for another operation is outcome_unknown, not retryable", async () => {
     const { mock, provider } = setup({ misreply: true });
     mock.seedFile("/a.txt", "a");
-    await expectCode(provider.rename(at("a.txt"), at("b.txt"), { replace: false }, signal()), "internal");
+    const error = await expectCode(provider.rename(at("a.txt"), at("b.txt"), { replace: false }, signal()), "outcome_unknown");
+    expect(error.retryable).toBe(false);
+  });
+
+  it("a write whose reply is for another operation is outcome_unknown", async () => {
+    const { provider } = setup({ misreply: true });
+    const session = await provider.openWrite(at("f.txt"), signal());
+    await expectCode(session.write(0n, bytes("abc"), signal()), "outcome_unknown");
+  });
+
+  it("a read whose reply is for another operation is internal", async () => {
+    const { mock, provider } = setup({ misreply: true });
+    mock.seedFile("/x.txt", "abc");
+    await expectCode(provider.read(at("x.txt"), 0n, 3, null, signal()), "internal");
   });
 
   it("a listing whose reply is for another operation is internal", async () => {
@@ -676,5 +689,118 @@ describe("channel lifecycle", () => {
     await provider.close();
     expect(mock.opCount("close")).toBe(1);
     expect(mock.channelAlive()).toBe(false);
+  });
+});
+
+describe("expected target and expected entry (S3 contract)", () => {
+  // 3 bytes, mtime 1795790479: the fingerprint of "abc" as stat reports it.
+  const SIZE3 = { size: "3", mtimeNs: "1795790479000000000" };
+
+  it("rename with an expected fingerprint that does not match is changed_since_plan, and no rename is sent", async () => {
+    const { mock, provider } = setup();
+    mock.seedFile("/a.txt", "a");
+    mock.seedFile("/t.txt", "old!");
+    await expectCode(provider.rename(at("a.txt"), at("t.txt"), { replace: true, expectTarget: SIZE3 }, signal()), "changed_since_plan");
+    expect(mock.opCount("op:rename")).toBe(0);
+    expect(text(mock.bytesAt("/t.txt"))).toBe("old!");
+  });
+
+  it("rename with a matching expected fingerprint replaces the target", async () => {
+    const { mock, provider } = setup();
+    mock.seedFile("/a.txt", "a");
+    mock.seedFile("/t.txt", "abc");
+    await provider.rename(at("a.txt"), at("t.txt"), { replace: true, expectTarget: SIZE3 }, signal());
+    expect(text(mock.bytesAt("/t.txt"))).toBe("a");
+    expect(mock.exists("/a.txt")).toBe(false);
+  });
+
+  it("rename expecting absence onto an existing target is changed_since_plan, and nothing is overwritten", async () => {
+    const { mock, provider } = setup();
+    mock.seedFile("/a.txt", "a");
+    mock.seedFile("/t.txt", "abc");
+    await expectCode(provider.rename(at("a.txt"), at("t.txt"), { replace: true, expectTarget: "absent" }, signal()), "changed_since_plan");
+    expect(text(mock.bytesAt("/t.txt"))).toBe("abc");
+    expect(mock.exists("/a.txt")).toBe(true);
+  });
+
+  it("rename expecting absence onto a free name succeeds", async () => {
+    const { mock, provider } = setup();
+    mock.seedFile("/a.txt", "a");
+    await provider.rename(at("a.txt"), at("free.txt"), { replace: false, expectTarget: "absent" }, signal());
+    expect(text(mock.bytesAt("/free.txt"))).toBe("a");
+  });
+
+  it("rename expecting a fingerprint when the target is absent is changed_since_plan, with no rename sent", async () => {
+    const { mock, provider } = setup();
+    mock.seedFile("/a.txt", "a");
+    await expectCode(provider.rename(at("a.txt"), at("gone.txt"), { replace: true, expectTarget: SIZE3 }, signal()), "changed_since_plan");
+    expect(mock.opCount("op:rename")).toBe(0);
+  });
+
+  it("remove with an expected fingerprint that changed is changed_since_plan, and no remove is sent", async () => {
+    const { mock, provider } = setup();
+    mock.seedFile("/x.txt", "abc");
+    mock.setMtime("/x.txt", 1795790480);
+    await expectCode(provider.remove(at("x.txt"), { kind: "file", expect: SIZE3 }, signal()), "changed_since_plan");
+    expect(mock.opCount("op:remove")).toBe(0);
+    expect(mock.exists("/x.txt")).toBe(true);
+  });
+
+  it("remove with a matching expected fingerprint removes the file", async () => {
+    const { mock, provider } = setup();
+    mock.seedFile("/x.txt", "abc");
+    await provider.remove(at("x.txt"), { kind: "file", expect: SIZE3 }, signal());
+    expect(mock.exists("/x.txt")).toBe(false);
+  });
+});
+
+describe("atomic replace and consent (review repair)", () => {
+  it("an unknown rename outcome does not declare atomicReplace", async () => {
+    const { mock, provider } = setup();
+    mock.seedFile("/a.txt", "a");
+    mock.seedFile("/t.txt", "old");
+    await provider.stat(at("t.txt"), signal());
+    mock.arm("drop");
+    await expectCode(provider.rename(at("a.txt"), at("t.txt"), { replace: true }, signal()), "outcome_unknown");
+    expect(provider.capabilities.has("atomicReplace")).toBe(false);
+  });
+
+  it("consent revoked drops the channel and withdraws atomicReplace", async () => {
+    const { mock, provider } = setup();
+    mock.seedFile("/a.txt", "a");
+    mock.seedFile("/t.txt", "old");
+    await provider.rename(at("a.txt"), at("t.txt"), { replace: true }, signal());
+    expect(provider.capabilities.has("atomicReplace")).toBe(true);
+    mock.revoke();
+    await expectCode(provider.list(at(), { cursor: null, limit: 10 }, signal()), "consent_required");
+    expect(provider.capabilities.has("atomicReplace")).toBe(false);
+    expect(mock.channelAlive()).toBe(false);
+  });
+});
+
+describe("abort checked before each port call (review repair)", () => {
+  it("an abort while hub_sftp_open is in flight: mkdir is cancelled and nothing is mutated", async () => {
+    const aborting = new AbortController();
+    const { mock, provider } = setup({ onOpen: (opened) => { if (opened === 1) aborting.abort(); } });
+    await expectCode(provider.mkdir(at("d"), aborting.signal), "cancelled");
+    expect(mock.opCount("op:mkdir")).toBe(0);
+    expect(mock.exists("/d")).toBe(false);
+  });
+
+  it("an abort during the reopen that a closed channel triggers sends no second read", async () => {
+    const aborting = new AbortController();
+    const { mock, provider } = setup({ failNext: "channel_closed", onOpen: (opened) => { if (opened === 2) aborting.abort(); } });
+    await expectCode(provider.list(at(), { cursor: null, limit: 10 }, aborting.signal), "cancelled");
+    expect(mock.opCount("op:list")).toBe(1);
+  });
+});
+
+describe("empty commit checks the written count (review repair)", () => {
+  it("a write reply that disagrees on the empty file is outcome_unknown, with no rename or remove", async () => {
+    const { mock, provider } = setup({ writtenOverride: 5 });
+    const session = await provider.openWrite(at("empty.txt"), signal());
+    await expectCode(session.commit({ replace: false, expectTarget: null }, signal()), "outcome_unknown");
+    expect(mock.opCount("op:rename")).toBe(0);
+    expect(mock.opCount("op:remove")).toBe(0);
   });
 });

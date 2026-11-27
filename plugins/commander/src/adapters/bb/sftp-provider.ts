@@ -290,11 +290,14 @@ export function createSftpProvider(options: SftpProviderOptions): SftpProvider {
 
   /** One call on the channel. A mutation is never repeated; its ambiguous failures are outcome_unknown. */
   async function send(input: SftpOpInput, mutating: boolean, signal: AbortSignal): Promise<SftpOpOutput> {
+    // Checked right before the call: an abort during hub_sftp_open or before a retry sends nothing.
+    if (signal.aborted) throw commanderError("cancelled");
+    let output: SftpOpOutput;
     try {
-      return await callPort("hub_sftp_op", input, signal);
+      output = await callPort("hub_sftp_op", input, signal);
     } catch (error) {
       if (error instanceof SftpRefusal) {
-        if (error.code === "channel_closed") dropChannel(input.channelId);
+        if (error.code === "channel_closed" || error.code === "consent_revoked") dropChannel(input.channelId);
         if (mutating && !DEFINITIVE.has(error.code)) throw commanderError("outcome_unknown");
         throw error;
       }
@@ -303,6 +306,9 @@ export function createSftpProvider(options: SftpProviderOptions): SftpProvider {
       if (error instanceof ZodError) throw error;
       throw transportError(error, signal);
     }
+    // A reply to another operation says nothing about this one: unknown for a mutation, internal for a read.
+    if (output.op !== input.op) throw commanderError(mutating ? "outcome_unknown" : "internal");
+    return output;
   }
 
   /** One operation. A read is reopened once on a closed channel; a second closed channel ends the retry. */
@@ -338,17 +344,48 @@ export function createSftpProvider(options: SftpProviderOptions): SftpProvider {
     );
   }
 
-  async function renameOp(from: ResourcePath, to: ResourcePath, replace: boolean, existed: boolean, signal: AbortSignal): Promise<void> {
-    narrow(
-      await execute(
-        (channel) => ({ channelId: channel, op: "rename", from: toWirePath(from), to: toWirePath(to), overwrite: replace }),
-        true,
-        signal,
-      ),
-      "rename",
-    );
-    // atomicReplace is declared only after a replacing rename of an EXISTING target has passed on this channel.
-    if (replace && existed) capabilities.add("atomicReplace");
+  /**
+   * Rename under the S3 contract. A Fingerprint expectation is checked by a read first; a mismatch sends no rename.
+   * "absent" is decided by the server's `exists` answer to an overwrite:false rename. atomicReplace is declared only
+   * when an existing target was replaced atomically on the channel that is still open.
+   */
+  async function renameOp(
+    from: ResourcePath,
+    to: ResourcePath,
+    opts: { replace: boolean; expectTarget?: Fingerprint | "absent" },
+    signal: AbortSignal,
+  ): Promise<void> {
+    const overwrite = opts.expectTarget === "absent" ? false : opts.replace;
+    let existed = false;
+    if (opts.expectTarget !== undefined && opts.expectTarget !== "absent") {
+      const current = await statEntry(to, signal);
+      if (current === null || !sameFingerprint(fingerprintOf(current), opts.expectTarget)) {
+        throw commanderError("changed_since_plan");
+      }
+      existed = true;
+    } else if (overwrite) {
+      existed = (await statEntry(to, signal)) !== null;
+    }
+    const sent: { channel: string | null } = { channel: null };
+    try {
+      narrow(
+        await execute(
+          (channel) => {
+            sent.channel = channel;
+            return { channelId: channel, op: "rename", from: toWirePath(from), to: toWirePath(to), overwrite };
+          },
+          true,
+          signal,
+        ),
+        "rename",
+      );
+    } catch (error) {
+      if (opts.expectTarget === "absent" && error instanceof SftpRefusal && error.code === "exists") {
+        throw commanderError("changed_since_plan");
+      }
+      throw error;
+    }
+    if (overwrite && existed && sent.channel !== null && sent.channel === channelId) capabilities.add("atomicReplace");
   }
 
   /** One write call. A refused creation or an unknown outcome is reported to the session through `onHalt`. */
@@ -431,19 +468,18 @@ export function createSftpProvider(options: SftpProviderOptions): SftpProvider {
         return guard(async () => {
           checkOpen();
           if (!created) {
-            // An empty file: the contract allows an empty first chunk.
-            await writeChunk(tempPath, 0n, new Uint8Array(0), "exclusive", signal, setHalt);
+            // An empty file: the contract allows an empty first chunk. Its reply must say 0 bytes written.
+            const written = await writeChunk(tempPath, 0n, new Uint8Array(0), "exclusive", signal, setHalt);
+            if (written !== 0) {
+              setHalt("outcome_unknown");
+              throw commanderError("outcome_unknown");
+            }
             created = true;
           }
           const target: ResourcePath = { segments: [...parent, last] };
-          const current = opts.replace ? await statEntry(target, signal) : null;
-          if (opts.replace && opts.expectTarget !== null) {
-            if (current === null || !sameFingerprint(fingerprintOf(current), opts.expectTarget)) {
-              throw commanderError("changed_since_plan");
-            }
-          }
+          const expectTarget = opts.replace && opts.expectTarget !== null ? opts.expectTarget : undefined;
           try {
-            await renameOp(tempPath, target, opts.replace, current !== null, signal);
+            await renameOp(tempPath, target, { replace: opts.replace, expectTarget }, signal);
           } catch (error) {
             if (isUnknown(error)) setHalt("outcome_unknown");
             throw error;
@@ -558,14 +594,19 @@ export function createSftpProvider(options: SftpProviderOptions): SftpProvider {
     },
 
     async rename(from, to, opts, signal) {
-      await guard(async () => {
-        const existed = opts.replace ? (await statEntry(to, signal)) !== null : false;
-        await renameOp(from, to, opts.replace, existed, signal);
-      });
+      await guard(() => renameOp(from, to, opts, signal));
     },
 
     async remove(path, opts, signal) {
-      await guard(() => removeOp(path, opts.kind === "dir" ? "dir" : "file", signal));
+      await guard(async () => {
+        if (opts.expect !== undefined) {
+          const current = await statEntry(path, signal);
+          if (current === null || !sameFingerprint(fingerprintOf(current), opts.expect)) {
+            throw commanderError("changed_since_plan");
+          }
+        }
+        await removeOp(path, opts.kind === "dir" ? "dir" : "file", signal);
+      });
     },
 
     async close() {

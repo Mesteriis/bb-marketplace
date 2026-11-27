@@ -56,6 +56,10 @@ export interface RemoteHubMockOptions {
   dirSize?: number;
   /** Adds this field to every operation reply, to prove that the client's schema refuses it. */
   leakField?: "password";
+  /** Runs inside hub_sftp_open, with the number of opens so far (this one included): the test may abort here. */
+  onOpen?: (opened: number) => void;
+  /** Every write reply says this many bytes were written, whatever was sent. */
+  writtenOverride?: number;
 }
 
 export interface MockCall {
@@ -124,6 +128,7 @@ export class RemoteHubMock implements RemoteHubPort {
   private bumped = false;
   private failNext: SftpRefusalCode | undefined;
   private fault: "drop" | "abort" | undefined;
+  private armed: "drop" | "abort" | undefined;
   private lastApplied: SftpOp | undefined;
   private readonly options: RemoteHubMockOptions;
 
@@ -169,6 +174,11 @@ export class RemoteHubMock implements RemoteHubPort {
     this.consent = "revoked";
   }
 
+  /** Arms a transport fault for the next MUTATION; reads before it do not consume it. */
+  arm(fault: "drop" | "abort"): void {
+    this.armed = fault;
+  }
+
   channelAlive(): boolean {
     return [...this.channels.values()].some((channel) => channel.alive);
   }
@@ -206,6 +216,7 @@ export class RemoteHubMock implements RemoteHubPort {
   }
 
   private open(profileId: string): { channelId: string; generation: string } {
+    this.options.onOpen?.(this.opCount("open"));
     if (profileId !== PROFILE) this.refuse("profile_not_found");
     if (this.consent === "revoked") this.refuse("consent_revoked");
     if (this.consent !== "granted") this.refuse("consent_required");
@@ -241,8 +252,11 @@ export class RemoteHubMock implements RemoteHubPort {
     if (input.op === "write" && this.options.failWrite) this.refuse(this.options.failWrite);
     if (input.op === "stat" && this.options.statFailsAfterRename && this.lastApplied === "rename") this.refuse("failure");
 
-    const fault = this.fault;
+    // faultNext hits the next operation of any kind; arm() hits only the next mutation and skips reads.
+    const reads = input.op === "list" || input.op === "stat" || input.op === "realpath" || input.op === "read";
+    const fault = reads ? this.fault : (this.armed ?? this.fault);
     this.fault = undefined;
+    if (!reads) this.armed = undefined;
     if (fault === "abort") {
       throw new DOMException("The operation was aborted.", "AbortError");
     }
@@ -258,6 +272,9 @@ export class RemoteHubMock implements RemoteHubPort {
     if (fault === "drop") throw new Error("socket hang up");
 
     if (this.options.misreply) return { op: input.op === "remove" ? "mkdir" : "remove" };
+    if (input.op === "write" && this.options.writtenOverride !== undefined) {
+      return { ...output, written: this.options.writtenOverride };
+    }
     return this.options.leakField ? { ...output, [this.options.leakField]: "hunter2" } : output;
   }
 
