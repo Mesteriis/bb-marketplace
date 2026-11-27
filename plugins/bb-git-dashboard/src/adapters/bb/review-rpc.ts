@@ -2,7 +2,8 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { z } from "zod";
 import { agentPlan, projectsOfRepo, type AgentThread } from "../../core/pulls/agent-target.ts";
 import type { FixSubject } from "../../core/pulls/detail.ts";
-import { findingsPrompt, fixPrompt } from "../../core/pulls/prompt.ts";
+import { answerNote, findingsPrompt, fixPrompt } from "../../core/pulls/prompt.ts";
+import type { codeReviewService } from "./code-review-service.ts";
 import type { agentSubject } from "../../core/pulls/review-contract.ts";
 import type { Account } from "../../core/providers.ts";
 import { failureFor } from "../../core/workspace.ts";
@@ -12,7 +13,9 @@ type Caller = {experimental_caller: {kind: string}};
 type Target = {accountId: string; repo: string; number: number};
 
 /** Pull request and issue RPC for the app, and Fix with agent: the pull request's branch thread, else a new thread in its project. */
-export function reviewHandlers(bb: BbPluginApi, deps: {credential(id: string): Promise<{account: Account; token: string}>}) {
+export function reviewHandlers(bb: BbPluginApi, deps: {credential(id: string): Promise<{account: Account; token: string}>;
+  /** The line review's mirror of pull request threads: what Fix with agent sends, and the agents' draft answers. */
+  mirror: Pick<ReturnType<typeof codeReviewService>, "mirrorPull" | "recordPullSend" | "dropPullSend" | "pullDrafts" | "editDraft" | "dropDraft">}) {
   const service = reviewService(deps);
   const handle = <I, O extends object>(action: (input: I) => Promise<O>) => async (input: I, context: Caller) => {
     if (context.experimental_caller.kind !== "client") return failureFor(undefined, "ACCESS_DENIED");
@@ -27,13 +30,21 @@ export function reviewHandlers(bb: BbPluginApi, deps: {credential(id: string): P
       : subject.kind === "check" ? failed.filter(check => check.name === subject.name).map(check => ({kind: "check" as const, check}))
       : [...detail.threads.filter(thread => !thread.isResolved).map(thread => ({kind: "thread" as const, thread})), ...failed.map(check => ({kind: "check" as const, check}))];
     if (!subjects.length) throw new Error("NOT_FOUND");
-    const text = subject.kind === "all" ? findingsPrompt(detail, subjects) : fixPrompt(detail, subjects[0]);
+    // The review threads are mirrored first, so the agent can answer them by id; its answers come back as drafts here.
+    const sent = subjects.flatMap(item => item.kind === "thread" ? [item.thread] : []);
+    const {sessionId, ids} = deps.mirror.mirrorPull(accountId, repo, number, detail.threads);
+    const text = (subject.kind === "all" ? findingsPrompt(detail, subjects) : fixPrompt(detail, subjects[0]))
+      + answerNote(sent.map(thread => ({id: ids[thread.id], path: thread.path, line: thread.line})));
+    const mirrored = sent.map(thread => ids[thread.id]);
     const projectIds = projectsOfRepo(account.kind, repo, await bb.sdk.projects.list());
     const threads = (await Promise.all(projectIds.map(projectId => bb.sdk.threads.list({projectId, archived: false, limit: 100})))).flat();
     const plan = agentPlan(detail, projectIds, threads as unknown as AgentThread[]);
     if ("error" in plan) throw new Error(plan.error);
     if ("send" in plan) {
-      await bb.sdk.threads.send({threadId: plan.send, mode: "queue-if-active", input: [{type: "text", text, mentions: []}]});
+      const recorded = mirrored.length ? deps.mirror.recordPullSend(sessionId, plan.send, mirrored) : null;
+      // A message that does not arrive grants nothing.
+      await bb.sdk.threads.send({threadId: plan.send, mode: "queue-if-active", input: [{type: "text", text, mentions: []}]})
+        .catch((error: unknown) => { if (recorded) deps.mirror.dropPullSend(recorded.id); throw error; });
       return {threadId: plan.send, created: false};
     }
     // A managed worktree started from the head branch, so the project's own checkout is left alone.
@@ -42,6 +53,7 @@ export function reviewHandlers(bb: BbPluginApi, deps: {credential(id: string): P
         baseBranch: plan.spawn.baseBranch ? {kind: "named", name: plan.spawn.baseBranch} : {kind: "default"}}}}) as {threadId?: string; id?: string};
     const threadId = spawned.threadId ?? spawned.id;
     if (!threadId) throw new Error("OUTCOME_UNKNOWN");
+    if (mirrored.length) deps.mirror.recordPullSend(sessionId, threadId, mirrored);
     return {threadId, created: true};
   }
   return {
@@ -51,6 +63,10 @@ export function reviewHandlers(bb: BbPluginApi, deps: {credential(id: string): P
       service.prepare(accountId, repo, number, action, shown)),
     prConfirm: handle(({previewId}: {previewId: string}) => service.confirm(previewId)),
     prAsk: handle(ask),
+    /** Agents' unposted answers on the pull request's threads; posting goes through prPrepare like any reply. */
+    prDrafts: handle(async ({accountId, repo, number}: Target) => ({drafts: deps.mirror.pullDrafts(accountId, repo, number)})),
+    prDraftEdit: handle(async ({commentId, body}: {commentId: string; body: string}) => { deps.mirror.editDraft(commentId, body); return {}; }),
+    prDraftDrop: handle(async ({commentId}: {commentId: string}) => { deps.mirror.dropDraft(commentId); return {}; }),
     issueDetail: handle(({accountId, repo, number}: Target) => service.issueDetail(accountId, repo, number)),
     issuePrepare: handle(({accountId, repo, action}: {accountId: string; repo: string; action: Parameters<typeof service.issuePrepare>[2]}) =>
       service.issuePrepare(accountId, repo, action)),

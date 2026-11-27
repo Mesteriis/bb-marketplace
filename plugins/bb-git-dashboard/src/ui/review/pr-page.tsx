@@ -5,7 +5,7 @@ import { ConfirmDialog } from "../ci/confirm-dialog.tsx";
 import { FileDiff, type DraftComment } from "./diff-view.tsx";
 import { useAutoRetry } from "./auto-retry.ts";
 import { RateLimited } from "./rate-limited.tsx";
-import { message, type PrFileView, type PrRef, type PrView, type Preview, type ReviewApi } from "./review-api.ts";
+import { message, type AgentDraft, type PrFileView, type PrRef, type PrView, type Preview, type ReviewApi } from "./review-api.ts";
 import { ThreadView } from "./thread-view.tsx";
 import "./review.css";
 
@@ -16,14 +16,20 @@ const methodLabel = {merge: "Merge", squash: "Squash and merge", rebase: "Rebase
 const stateLabel: Record<string, string> = {OPEN: "Open", CLOSED: "Closed", MERGED: "Merged"};
 
 /** A pull request: header and state actions, then its discussion, checks, files with line threads, commits and threads. */
-export function PrPage({api, accountId, repo, number, onStep}: {api: ReviewApi; accountId: string; repo: string; number: number; onStep?(step: -1 | 1): void}) {
+export function PrPage({api, accountId, repo, number, onStep, revision = 0}: {api: ReviewApi; accountId: string; repo: string; number: number; onStep?(step: -1 | 1): void;
+  /** Changes when an agent's answer may have arrived: the drafts are read again. */
+  revision?: number}) {
   // Kept by value: a re-render of the app (an alert arriving) must not reload the page and drop a review in progress.
   const target = useMemo<PrRef>(() => ({accountId, repo, number}), [accountId, repo, number]);
   const [view, setView] = useState<PrView | null>(null);
   const [files, setFiles] = useState<PrFileView[] | null>(null);
   const [tab, setTab] = useState<Tab>("Overview");
   const [error, setError] = useState("");
-  const [preview, setPreview] = useState<(Preview & {title: string; kind: PrAction["kind"]}) | null>(null);
+  const [preview, setPreview] = useState<(Preview & {title: string; kind: PrAction["kind"]; after?: () => Promise<void>}) | null>(null);
+  // Agents' answers on review threads, kept for the owner to post (sent there with Fix with agent).
+  const [agentDrafts, setAgentDrafts] = useState<AgentDraft[]>([]);
+  const readDrafts = useCallback(() => { api.drafts(target).then(setAgentDrafts, () => {}); }, [api, target]);
+  useEffect(readDrafts, [readDrafts, revision]);
   const [notice, setNotice] = useState("");
   const [comment, setComment] = useState("");
   const [drafts, setDrafts] = useState<DraftComment[]>([]);
@@ -58,9 +64,9 @@ export function PrPage({api, accountId, repo, number, onStep}: {api: ReviewApi; 
     return () => window.removeEventListener("keydown", keys);
   }, [onStep]);
 
-  const act = async (action: PrAction, label: string) => {
+  const act = async (action: PrAction, label: string, after?: () => Promise<void>) => {
     setNotice("");
-    try { setPreview({...await api.prepare(target, action, view?.detail.headSha ?? null), title: label, kind: action.kind}); }
+    try { setPreview({...await api.prepare(target, action, view?.detail.headSha ?? null), title: label, kind: action.kind, after}); }
     catch (failure) { setNotice(message(failure)); }
   };
   const ask = async (subject: Parameters<ReviewApi["ask"]>[1]) => {
@@ -189,14 +195,25 @@ export function PrPage({api, accountId, repo, number, onStep}: {api: ReviewApi; 
       {detail.threads.length === 0 && <p className="git-muted">No review threads.</p>}
       {detail.threads.map(thread => <ThreadView key={thread.id + ":" + thread.comments.length} thread={thread} can={threadCan}
         act={action => void act(action, action.kind === "resolve" ? (action.resolved ? "Resolve" : "Unresolve") : "Reply")}
-        ask={() => void ask({kind: "thread", threadId: thread.id})}/>)}
+        ask={() => void ask({kind: "thread", threadId: thread.id})}
+        drafts={agentDrafts.filter(draft => draft.externalId === thread.id)}
+        onPost={(draft, resolve) => void act({kind: "reply", threadId: thread.id, body: draft.body}, resolve ? "Post the agent's reply, then resolve" : "Post the agent's reply", async () => {
+          await api.dropDraft(draft.commentId);
+          readDrafts();
+          // Resolving is a step of its own, confirmed like any other.
+          if (resolve && thread.canToggleResolved && !thread.isResolved) await act({kind: "resolve", threadId: thread.id, resolved: true}, "Resolve");
+        })}
+        onEdit={async (draft, body) => { await api.editDraft(draft.commentId, body); readDrafts(); }}
+        onDiscard={async draft => { await api.dropDraft(draft.commentId); readDrafts(); }}/>)}
     </div>}
 
     {preview && <ConfirmDialog title={preview.title} lines={preview.lines} onConfirm={async () => {
       const result = await api.confirm(preview.id);
       setNotice(result.outcome === "accepted" ? "Accepted: the forge finishes it shortly." : "Done.");
     }} onClose={done => {
+      const after = preview.after;
       setPreview(null);
+      if (done && after) after().catch(failure => setNotice(message(failure)));
       if (done) { setComment(""); setTitle(null); setDescription(null); setReviewer(""); if (preview.kind === "review") { setDrafts([]); setSummary(""); } setFiles(null); void load(); }
     }}/>}
   </section>;

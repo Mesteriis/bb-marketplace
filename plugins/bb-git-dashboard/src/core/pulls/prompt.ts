@@ -84,3 +84,13 @@ export function findingsPrompt(pr: PromptPr, subjects: readonly FixSubject[]): s
   ].join("\n");
 }
 
+
+/**
+ * How the agent answers a pull request's review threads it was sent: by their Makosh Git ids, from its own thread.
+ * Its answers are drafts the owner posts to the forge.
+ */
+export function answerNote(threads: readonly {id: string; path: string; line: number | null}[]): string {
+  if (!threads.length) return "";
+  return "\n\nWhen a review thread is dealt with, answer it from this thread with `bb git-dashboard review reply <id>` (or `resolve <id>` once the change is made), or the `git_review_reply` / `git_review_resolve` tools. Your answer is kept as a draft that the owner posts to the pull request. The threads:\n"
+    + threads.map(thread => "- `" + thread.id + "` " + thread.path + (thread.line ? ":" + thread.line : "")).join("\n");
+}

@@ -270,3 +270,19 @@ test("a thread's Info row counts its copy's threads, and an open request names t
   assert.deepEqual(await service.requestOpen("thr_work", {kind: "staged"}, "src/a.ts"), {copyId: "c1", target: {kind: "staged"}, file: "src/a.ts"});
   await assert.rejects(service.requestOpen("thr_other", {kind: "staged"}, null), /NOT_FOUND/);
 });
+
+test("a pull request's threads sent to an agent come back as drafts the owner can edit, post or discard", async () => {
+  const {service, store} = setup();
+  const forgeThread = {id: "PRRT_1", path: "a.ts", side: "RIGHT" as const, startLine: null, line: 5, isResolved: false, comments: [{author: "alice", body: "Rename?"}]};
+  const {sessionId, ids} = service.mirrorPull("acc", "o/r", 7, [forgeThread]);
+  store.recordSend(sessionId, "thr_work", [ids.PRRT_1], "");
+  const answered = await service.answer("thr_work", ids.PRRT_1.slice(0, 6), "resolve", "Renamed.");
+  assert.deepEqual([answered.status, answered.comments.at(-1)?.draft], ["open", "resolve"]);
+  const drafts = service.pullDrafts("acc", "o/r", 7);
+  assert.deepEqual(drafts.map(row => [row.externalId, row.draft, row.body, row.authorName]), [["PRRT_1", "resolve", "Renamed.", "Claude Code"]]);
+  service.editDraft(drafts[0].commentId, "Renamed it.");
+  assert.equal(service.pullDrafts("acc", "o/r", 7)[0].body, "Renamed it.");
+  service.dropDraft(drafts[0].commentId);
+  assert.deepEqual(service.pullDrafts("acc", "o/r", 7), []);
+  assert.deepEqual((await service.summaries()).filter(row => row.copyId.startsWith("forge:")), []);
+});

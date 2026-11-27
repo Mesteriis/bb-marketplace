@@ -37,3 +37,4 @@
 .git-ws .git-review-check { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
 .git-ws .git-review-check > input { padding: 0; margin: 0; }
 .git-ws .git-review-submit { border: 1px solid var(--border); border-radius: 7px; padding: 10px; background: var(--card); }
+.git-ws .git-review-draft { border-left: 3px solid #d4a017; padding-left: 8px; }

@@ -164,7 +164,7 @@ export default function plugin(bb: BbPluginApi) {
     ...codeReview.handlers,
     ...historyHandlers(bb, linkedCopy),
     ...inboxHandlers(bb, {accounts: remote.accountList, credential: remote.credential}),
-    ...reviewHandlers(bb, {credential: remote.credential}),
+    ...reviewHandlers(bb, {credential: remote.credential, mirror: codeReview.service}),
     checkConnection: (input,context) => clientOnly(context) ? remote.checkConnection(input) : denied(),
     saveConnection: (input,context) => clientOnly(context) ? remote.saveConnection(input) : denied(),
     accounts: (_,context) => clientOnly(context) ? remote.accounts() : denied(),

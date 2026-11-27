@@ -124,3 +124,24 @@ test("the Reviews page lists sessions with threads, newest first, and a session 
   assert.equal(store.sessionById(session.id), null);
   assert.deepEqual(store.summaries().map(row => row.copyId), ["copy_2"]);
 });
+
+test("a pull request's threads are mirrored with the forge's comments, and an agent's answer there is a draft that leaves the status", () => {
+  const {store} = setup();
+  const session = store.session("forge:acc", "pr:o/r#7");
+  const forge = {filePath: "a.ts", side: "new" as const, startLine: 3, endLine: 4, resolved: false,
+    comments: [{author: "alice", body: "Why this?"}, {author: "bob", body: "Agreed."}]};
+  const id = store.mirrorThread(session.id, "PRRT_1", forge);
+  assert.equal(store.mirrorThread(session.id, "PRRT_1", {...forge, comments: [{author: "alice", body: "Why this, really?"}]}), id);
+  store.recordSend(session.id, "thr_a", [id], "");
+  assert.notEqual(store.answerAsAgent({threadId: id, callerThreadId: "thr_a", ackBefore: null, authorName: "Codex", body: "Fixed in 1a2b.", status: "resolved"}), null);
+  const thread = store.thread(id)!;
+  assert.deepEqual([thread.status, thread.comments.map(comment => [comment.authorName, comment.body, comment.draft ?? null])],
+    ["open", [["alice", "Why this, really?", null], ["Codex", "Fixed in 1a2b.", "resolve"]]]);
+  store.mirrorThread(session.id, "PRRT_1", forge);
+  assert.deepEqual(store.drafts(session.id).map(row => [row.externalId, row.draft, row.body]), [["PRRT_1", "resolve", "Fixed in 1a2b."]]);
+  const draftId = store.drafts(session.id)[0].commentId;
+  store.editDraft(draftId, "Fixed in 1a2b3c.");
+  assert.equal(store.drafts(session.id)[0].body, "Fixed in 1a2b3c.");
+  store.dropDraft(draftId);
+  assert.deepEqual(store.drafts(session.id), []);
+});

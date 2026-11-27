@@ -91,6 +91,10 @@ export function reviewCommands(deps: ReviewCliDeps) {
       const text = textOf(words, encoded);
       await deps.bind(caller(threadId));
       const thread = await deps.answer(caller(threadId), id, action, text).catch(refused);
+      const draft = thread.comments.at(-1)?.draft;
+      // On a pull request's thread the answer waits for the owner, who posts it to the forge.
+      if (draft) return {exitCode: 0, stdout: "Saved a draft " + (draft === "resolve" ? "reply that resolves" : "reply") + " in comment thread " + thread.id
+        + " (" + describeLocation(thread) + "); the owner posts it to the pull request.\n"};
       return {exitCode: 0, stdout: done[action] + " comment thread " + thread.id + " (" + describeLocation(thread) + ").\n"};
     },
     /** An AI review run's comment on lines of a file, the whole file (`--line 0`) or the whole diff (`--general`). */

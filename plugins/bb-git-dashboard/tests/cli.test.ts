@@ -119,3 +119,11 @@ test("review open asks for this thread's review on a view and file, and refuses 
   assert.match((await cli.run(["review", "open", "--commit", "zz"], {threadId: "thr_1"})).stderr ?? "", /7 to 64 hex/);
   assert.match((await cli.run(["review", "open"], {threadId: "thr_none"})).stderr ?? "", /NOT_FOUND/);
 });
+
+test("an answer on a pull request's thread says it is a draft the owner posts", async () => {
+  const drafted = {...thread(), comments: [...thread().comments, {id: "d", authorType: "agent" as const, authorName: "Codex", body: "Done.", createdAt: 2, editedAt: null, draft: "resolve" as const}]};
+  const cli = gitDashboardCli(ciCli({context: async () => ({copyId: "c", permission: "read"}), service: {} as never, approve: async () => false}),
+    reviewCommands({sentTo: () => [], answer: async () => drafted, comment: async () => drafted, bind: async () => {}, open: async () => ({copyId: "c", route: "r"})}));
+  assert.equal((await cli.run(["review", "resolve", "abcd", "Done."], {threadId: "thr_1"})).stdout,
+    "Saved a draft reply that resolves in comment thread abcdef123456 (src/a.ts:3-4 (new side)); the owner posts it to the pull request.\n");
+});

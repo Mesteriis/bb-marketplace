@@ -103,6 +103,11 @@ export const REVIEW_MIGRATIONS: string[] = [
      state TEXT NOT NULL,
      PRIMARY KEY (scope, session_id)
    )`,
+  // A pull request's review threads mirrored from the forge (their forge id), and agents' answers there kept as
+  // drafts the owner posts.
+  `ALTER TABLE review_threads ADD COLUMN external_id TEXT`,
+  `CREATE UNIQUE INDEX review_threads_external ON review_threads(session_id, external_id) WHERE external_id IS NOT NULL`,
+  `ALTER TABLE review_comments ADD COLUMN draft TEXT CHECK (draft IN ('reply', 'resolve'))`,
 ];
 
 export type Session = {id: string; copyId: string; targetKey: string};
@@ -112,7 +117,11 @@ type Author = {type: "user" | "agent"; name: string};
 type ThreadRow = {id: string; session_id: string; file_path: string; side: Side | null; start_line: number; end_line: number;
   status: ThreadStatus; severity: Severity | null; anchor_content: string | null; send_id: string | null; delivery: DeliveryState | null;
   created_at: number; updated_at: number; bb_thread_id: string | null; sent_at: number | null};
-type CommentRow = {id: string; thread_id: string; author_type: "user" | "agent"; author_name: string; body: string; created_at: number; edited_at: number | null};
+type CommentRow = {id: string; thread_id: string; author_type: "user" | "agent"; author_name: string; body: string; created_at: number; edited_at: number | null;
+  draft: "reply" | "resolve" | null};
+/** A forge review thread as mirrored: where it is, whether it is resolved, and its comments, oldest first. */
+export type MirroredThread = {filePath: string; side: Side | null; startLine: number; endLine: number; resolved: boolean;
+  comments: {author: string; body: string}[]};
 
 /** Twelve hex characters: short enough for an agent to type, and found by any unique prefix of four or more. */
 export const newId = () => randomBytes(6).toString("hex");
@@ -286,8 +295,11 @@ export class ReviewStore {
       const may = this.db.prepare("SELECT 1 FROM review_threads t LEFT JOIN review_sends s ON s.id = t.send_id WHERE t.id = ? AND " + agentMay)
         .get(input.threadId, ...callerParams(input.callerThreadId));
       if (may === undefined) return null;
+      // On a mirrored forge thread the answer is a draft the owner posts; the status stays the forge's.
+      const mirrored = (this.db.prepare("SELECT external_id FROM review_threads WHERE id = ?").get(input.threadId) as {external_id: string | null}).external_id !== null;
       const commentId = this.insertComment(input.threadId, {type: "agent", name: input.authorName}, input.body, at);
-      if (input.status !== null) this.db.prepare("UPDATE review_threads SET status = ? WHERE id = ?").run(input.status, input.threadId);
+      if (mirrored) this.db.prepare("UPDATE review_comments SET draft = ? WHERE id = ?").run(input.status === "resolved" ? "resolve" : "reply", commentId);
+      else if (input.status !== null) this.db.prepare("UPDATE review_threads SET status = ? WHERE id = ?").run(input.status, input.threadId);
       this.db.prepare("UPDATE review_threads SET updated_at = ? WHERE id = ?").run(at, input.threadId);
       this.db.prepare(`UPDATE review_threads SET delivery = 'answered' WHERE id = ? AND send_id IN
         (SELECT id FROM review_sends WHERE bb_thread_id = ? AND (? IS NULL OR created_at <= ?))`)
@@ -349,6 +361,49 @@ export class ReviewStore {
     })();
   }
 
+  /**
+   * Mirrors a forge review thread into a session by its forge id: made the first time, then its place, status and
+   * forge comments replaced by the forge's; drafts on it stay. Returns the mirror's id.
+   */
+  mirrorThread(sessionId: string, externalId: string, thread: MirroredThread): string {
+    const at = this.now();
+    return this.db.transaction(() => {
+      const found = this.db.prepare("SELECT id FROM review_threads WHERE session_id = ? AND external_id = ?").get(sessionId, externalId) as {id: string} | undefined;
+      const id = found?.id ?? newId();
+      const status = thread.resolved ? "resolved" : "open";
+      if (found) {
+        this.db.prepare("UPDATE review_threads SET file_path = ?, side = ?, start_line = ?, end_line = ?, status = ?, updated_at = ? WHERE id = ?")
+          .run(thread.filePath, thread.side, thread.startLine, thread.endLine, status, at, id);
+        this.db.prepare("DELETE FROM review_comments WHERE thread_id = ? AND draft IS NULL").run(id);
+      } else {
+        this.db.prepare(`INSERT INTO review_threads (id, session_id, file_path, side, start_line, end_line, status, external_id, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, sessionId, thread.filePath, thread.side, thread.startLine, thread.endLine, status, externalId, at, at);
+      }
+      // The forge's comments come before any draft, in their order.
+      thread.comments.forEach((comment, index) => this.db.prepare(`INSERT INTO review_comments (id, thread_id, author_type, author_name, body, created_at)
+        VALUES (?, ?, 'user', ?, ?, ?)`).run(newId(), id, comment.author, comment.body, index - thread.comments.length));
+      return id;
+    })();
+  }
+
+  /** The agents' unposted answers on a session's mirrored threads, oldest first. */
+  drafts(sessionId: string) {
+    return (this.db.prepare(`SELECT c.id, c.thread_id, t.external_id, c.draft, c.body, c.author_name, c.created_at FROM review_comments c
+      JOIN review_threads t ON t.id = c.thread_id WHERE t.session_id = ? AND c.draft IS NOT NULL ORDER BY c.created_at, c.rowid`).all(sessionId) as
+      {id: string; thread_id: string; external_id: string; draft: "reply" | "resolve"; body: string; author_name: string; created_at: number}[])
+      .map(row => ({commentId: row.id, threadId: row.thread_id, externalId: row.external_id, draft: row.draft, body: row.body, authorName: row.author_name,
+        createdAt: Number(row.created_at)}));
+  }
+
+  editDraft(commentId: string, body: string) {
+    this.db.prepare("UPDATE review_comments SET body = ?, edited_at = ? WHERE id = ? AND draft IS NOT NULL").run(body, this.now(), commentId);
+  }
+
+  /** Drops a draft: discarded, or posted (the next mirror brings the forge's copy). */
+  dropDraft(commentId: string) {
+    this.db.prepare("DELETE FROM review_comments WHERE id = ? AND draft IS NOT NULL").run(commentId);
+  }
+
   /** The threads sent to `bbThreadId` still waiting for an answer, with when they were sent. */
   waitingOn(bbThreadId: string) {
     return (this.db.prepare(`SELECT t.id, t.session_id, t.send_id, s.created_at AS sent_at FROM review_threads t JOIN review_sends s ON s.id = t.send_id
@@ -394,5 +449,6 @@ export class ReviewStore {
 }
 
 function toComment(row: CommentRow): ReviewComment {
-  return {id: row.id, authorType: row.author_type, authorName: row.author_name, body: row.body, createdAt: row.created_at, editedAt: row.edited_at};
+  return {id: row.id, authorType: row.author_type, authorName: row.author_name, body: row.body, createdAt: row.created_at, editedAt: row.edited_at,
+    ...row.draft ? {draft: row.draft} : {}};
 }

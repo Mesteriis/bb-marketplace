@@ -42,6 +42,12 @@ export type DiffOptions = {patches?: boolean; paths?: readonly string[]};
 
 /** Views whose new side is the working tree, where a suggestion can be written. */
 const workingViews = new Set<Target["kind"]>(["uncommitted", "unstaged", "all", "files"]);
+/** A pull request's mirrored threads live in a session of their own, keyed by the account and the pull request. */
+const FORGE = "forge:";
+const pullKey = (repo: string, number: number) => "pr:" + repo + "#" + number;
+/** A forge review thread as a pull request's page reads it. */
+export type PullThread = {id: string; path: string; side: "LEFT" | "RIGHT"; startLine: number | null; line: number | null; isResolved: boolean;
+  comments: {author: string; body: string}[]};
 const scopeOf = (scope: string) => /^(thread|copy):[A-Za-z0-9_-]{1,128}$/.test(scope) ? scope : fail("INVALID_INPUT");
 const fail = (code: string): never => { throw new Error(code); };
 function text(body: string) {
@@ -139,7 +145,8 @@ export function codeReviewService(deps: CodeReviewDeps) {
 
     /** Every review with threads for the Reviews page: its copy (null when gone: an orphan), view and counts. */
     async summaries() {
-      const rows = store.summaries();
+      // A pull request's mirror is no working copy's review: its page shows it.
+      const rows = store.summaries().filter(row => !row.copyId.startsWith(FORGE));
       const copies = new Map(await Promise.all([...new Set(rows.map(row => row.copyId))].map(async id => [id, await deps.copy(id).catch(() => undefined)] as const)));
       return rows.map(row => {
         const copy = copies.get(row.copyId);
@@ -157,6 +164,41 @@ export function codeReviewService(deps: CodeReviewDeps) {
       const copyId = await deps.threads.copyOf(threadId).catch(() => null) ?? fail("NOT_FOUND");
       if (file !== null && (file.length > 4096 || !file.trim())) fail("INVALID_INPUT");
       return {copyId, target, file};
+    },
+
+    /**
+     * Mirrors a pull request's review threads (as its page read them) into its own review session, so an agent they
+     * are sent to answers them like any thread; its answers there are drafts. Returns each forge id's mirror.
+     */
+    mirrorPull(accountId: string, repo: string, number: number, threads: readonly PullThread[]) {
+      const {id: sessionId} = store.session(FORGE + accountId, pullKey(repo, number));
+      const ids: Record<string, string> = {};
+      for (const thread of threads) {
+        const line = thread.line ?? 0;
+        ids[thread.id] = store.mirrorThread(sessionId, thread.id, {filePath: thread.path || GENERAL_PATH, side: line ? (thread.side === "LEFT" ? "old" : "new") : null,
+          startLine: line ? thread.startLine ?? line : 0, endLine: line, resolved: thread.isResolved,
+          comments: thread.comments.map(comment => ({author: comment.author, body: comment.body.slice(0, BODY_MAX_CHARS)}))});
+      }
+      return {sessionId, ids};
+    },
+    /** Records that mirrored threads went to an agent's thread, so it may answer them; undone when the message fails. */
+    recordPullSend(sessionId: string, bbThreadId: string, threadIds: readonly string[]) {
+      return store.recordSend(sessionId, bbThreadId, threadIds, "");
+    },
+    dropPullSend: (sendId: string) => store.dropSend(sendId),
+    /** Agents' unposted answers on a pull request's threads, by forge thread id. */
+    pullDrafts(accountId: string, repo: string, number: number) {
+      return store.drafts(store.session(FORGE + accountId, pullKey(repo, number)).id);
+    },
+    editDraft(commentId: string, body: string) {
+      const draft = store.comment(commentId);
+      if (!draft?.draft) fail("NOT_FOUND");
+      store.editDraft(commentId, text(body));
+    },
+    /** A draft discarded, or posted to the forge (the forge's copy shows from then on). */
+    dropDraft(commentId: string) {
+      if (!store.comment(commentId)?.draft) fail("NOT_FOUND");
+      store.dropDraft(commentId);
     },
 
     /** Files of the copy for the Any file view's search. */

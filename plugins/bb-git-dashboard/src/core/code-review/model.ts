@@ -63,6 +63,8 @@ export const commentSchema = z.object({
   id: z.string(), authorType: authorTypeSchema,
   /** Who wrote it: "You" for the owner, the provider's name for an agent. */
   authorName: z.string(), body: z.string(), createdAt: z.number(), editedAt: z.number().nullable(),
+  /** An agent's answer on a mirrored pull request thread, kept for the owner to post: as a reply, or a reply that resolves. */
+  draft: z.enum(["reply", "resolve"]).optional(),
 }).strict();
 export type ReviewComment = z.infer<typeof commentSchema>;
 export const deliverySchema = z.object({

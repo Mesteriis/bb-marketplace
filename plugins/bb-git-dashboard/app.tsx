@@ -240,6 +240,9 @@ function Dashboard({subPath}: {subPath: string}) {
     prepare: async (ref,action,shown) => okValue(await client.call("prPrepare",{...ref,action,shown})),
     confirm: async previewId => okValue(await client.call("prConfirm",{previewId})),
     ask: async (ref,subject) => okValue(await client.call("prAsk",{...ref,subject})),
+    drafts: async ref => okValue(await client.call("prDrafts",ref)).drafts,
+    editDraft: async (commentId,body) => { okValue(await client.call("prDraftEdit",{commentId,body})); },
+    dropDraft: async commentId => { okValue(await client.call("prDraftDrop",{commentId})); },
     openThread: threadId => navigate.toThread(threadId),
     issue: async ref => okValue(await client.call("issueDetail",ref)).issue,
     issuePrepare: async (accountId,repo,action) => okValue(await client.call("issuePrepare",{accountId,repo,action})),
@@ -280,7 +283,7 @@ function Dashboard({subPath}: {subPath: string}) {
           <span>{ref.repo} {ref.kind === "pr" ? "#" + ref.number : ref.number === "new" ? "· new issue" : "issue #" + ref.number}</span>
         </nav>
         {ref.kind === "pr" && typeof ref.number === "number"
-          ? <PrPage key={subPath} api={review} accountId={ref.accountId} repo={ref.repo} number={ref.number} onStep={order.length ? step : undefined}/>
+          ? <PrPage key={subPath} api={review} accountId={ref.accountId} repo={ref.repo} number={ref.number} onStep={order.length ? step : undefined} revision={reviewRevision}/>
           : <IssuePage key={subPath} api={review} accountId={ref.accountId} repo={ref.repo} number={ref.number}
             onCreated={number => open(refPath("issue",{accountId:ref.accountId,repo:ref.repo,number}))}/>}
       </>;

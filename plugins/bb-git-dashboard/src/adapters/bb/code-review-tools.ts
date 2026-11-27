@@ -38,7 +38,8 @@ export function registerCodeReviewTools(bb: BbPluginApi, service: ReturnType<typ
     parameters: z.object({threadId: z.string().min(4).max(64), text: z.string().min(1).max(BODY_MAX_CHARS)}),
     execute: ({threadId: id, text}, {threadId}) => guarded(threadId, async () => {
       const thread = await service.answer(threadId, id, action, text);
-      return {threadId: thread.id, status: thread.status};
+      const draft = thread.comments.at(-1)?.draft;
+      return draft ? {threadId: thread.id, draft, note: "Saved as a draft on the pull request's thread; the owner posts it."} : {threadId: thread.id, status: thread.status};
     }),
   });
   answer("reply", "Answer in a line-review comment thread you may answer; it stays open. 1-3 short sentences, cite path:line.");

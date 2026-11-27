@@ -10,6 +10,8 @@ export type PrFileView = Ok<typeof reviewContract.prFiles>["files"][number];
 export type IssueView = Ok<typeof reviewContract.issueDetail>["issue"];
 export type Preview = {id: string; lines: string[]};
 export type PrRef = {accountId: string; repo: string; number: number};
+/** An agent's answer on a review thread (its forge id), kept for the owner to post: a reply, or a reply that resolves. */
+export type AgentDraft = Ok<typeof reviewContract.prDrafts>["drafts"][number];
 export type ReviewApi = {
   detail(ref: PrRef): Promise<PrView>;
   files(ref: PrRef): Promise<PrFileView[]>;
@@ -18,6 +20,9 @@ export type ReviewApi = {
   confirm(previewId: string): Promise<{outcome: "completed" | "accepted"}>;
   ask(ref: PrRef, subject: z.infer<typeof agentSubject>): Promise<{threadId: string; created: boolean}>;
   openThread(threadId: string): void;
+  drafts(ref: PrRef): Promise<AgentDraft[]>;
+  editDraft(commentId: string, body: string): Promise<void>;
+  dropDraft(commentId: string): Promise<void>;
   issue(ref: PrRef): Promise<IssueView>;
   issuePrepare(accountId: string, repo: string, action: IssueAction): Promise<Preview>;
   issueConfirm(previewId: string): Promise<{number: number}>;
