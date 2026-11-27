@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { definePluginApp, experimental_copyToClipboard, experimental_useAppPanel, Markdown, UrlLink, useBbNavigate, useRealtime, useRpc, useSettings } from "@get-bb/plugin-sdk/app";
+import { definePluginApp, experimental_copyToClipboard, experimental_useAppPanel, experimental_usePluginId, Markdown, UrlLink, useBbNavigate, useRealtime, useRpc, useSettings } from "@get-bb/plugin-sdk/app";
 import type { JsonValue, PluginPendingInteractionProps } from "@get-bb/plugin-sdk/app";
 import type { rpc } from "./src/adapters/bb/rpc.ts";
 import type { GitAction } from "./src/core/git.ts";
@@ -24,6 +24,7 @@ import { ciApi, codeReviewApi, failed, historyApi, okValue } from "./src/app/api
 import { ciTab, historyTab, reviewTab, ThreadCi, ThreadHistory, ThreadReview, registerHistoryShortcut, registerReviewSurfaces } from "./src/app/thread-tabs.tsx";
 import "./src/ui/git.css";
 import { withCodeTheme } from "./src/app/code-theme.tsx";
+import { NotificationSettings } from "./src/app/notification-settings.tsx";
 
 type Client = ReturnType<typeof useRpc<typeof rpc>>;
 type Host = {id: string; name: string};
@@ -177,6 +178,7 @@ function ProjectsSidebar({subPath}: {subPath:string}) {
 }
 
 function Dashboard({subPath}: {subPath: string}) {
+  const pluginId = experimental_usePluginId();
   const {client, copies, hosts, projects, locations, loaded, error} = useCatalog();
   const navigate = useBbNavigate();
   const panel = experimental_useAppPanel();
@@ -233,9 +235,11 @@ function Dashboard({subPath}: {subPath: string}) {
   }), [client, navigate]);
   const inbox = useMemo<InboxApi>(() => ({
     list: async tab => okValue(await client.call("inboxList",{tab})),
+    history: async tab => okValue(await client.call("inboxHistory",{tab})),
     alerts: async () => okValue(await client.call("inboxAlerts",{})),
     seen: async () => okValue(await client.call("inboxSeen",{})),
-  }), [client]);
+    SettingsLink: ({children}) => <UrlLink href={"/settings/plugins/"+encodeURIComponent(pluginId)} className="git-inbox-bell" title="Notification settings">{children}</UrlLink>,
+  }), [client, pluginId]);
   const review = useMemo<ReviewApi>(() => ({
     detail: async ref => okValue(await client.call("prDetail",ref)),
     files: async ref => okValue(await client.call("prFiles",ref)).files,
@@ -446,6 +450,7 @@ function Approval({interaction,submit,cancel}:PluginPendingInteractionProps) {
 export default definePluginApp(app => {
   app.slots.experimental_tab({...pullTab,title:"Pinned pull request",icon:"GitPullRequest",layout:"flush",component:withCodeTheme(PinnedPull)});
   app.slots.pendingInteraction({id:"git-confirm",component:Approval});
+  app.slots.settingsSection({id:"notifications", title:"Notifications", description:"How My PRs tells you that CI started failing or someone commented on your pull requests.", component:NotificationSettings});
   app.slots.navPanel({id:"git", title:"Git", icon:"GitBranch", path:"git", component:withCodeTheme(Dashboard), experimental_sidebar:ProjectsSidebar});
   app.slots.experimental_tab({id:"git-thread", title:"Git", icon:"GitBranch", context:{kind:"thread"}, availability:"fixed", layout:"flush", component:withCodeTheme(ThreadGit)});
   app.slots.experimental_tab({id:tab.id, title:"Pinned Git", icon:"GitBranch", context:{kind:"thread"}, availability:"action", layout:"flush", component:withCodeTheme(PinnedGit)});

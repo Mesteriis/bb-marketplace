@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { inboxTabs, type InboxTab } from "../../core/pulls/inbox.ts";
 import { matchesSearch } from "../../core/pulls/model.ts";
-import { forgeNames, grouped, severity, tabLabels, type AlertSummary, type InboxApi, type InboxItem, type InboxList } from "./inbox-api.ts";
+import { ago, forgeNames, grouped, openStats, severity, showing, tabLabels, type AlertSummary, type InboxApi, type InboxItem, type InboxList } from "./inbox-api.ts";
 import "./inbox.css";
 
 const message = (error: unknown) => error instanceof Error ? error.message : "Request failed.";
@@ -28,6 +28,19 @@ export function InboxPage({api, alerts, onSeen, onOpen}: {api: InboxApi; alerts:
   const search = useRef<HTMLInputElement>(null);
   const rows = useRef<(HTMLAnchorElement | null)[]>([]);
 
+  // When the list was last read, and a clock for "Updated N ago".
+  const [readAt, setReadAt] = useState<number | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => { const timer = setInterval(() => setNow(Date.now()), 30_000); return () => clearInterval(timer); }, []);
+  // Merged and Closed keep only their newest rows; a search there reads the whole history once per tab.
+  const [history, setHistory] = useState<{tab: InboxTab; groups: InboxList["groups"]} | "loading" | null>(null);
+  const searchesHistory = (tab === "merged" || tab === "closed") && query.trim() !== "";
+  useEffect(() => {
+    if (!searchesHistory || (history !== null && (history === "loading" || history.tab === tab))) return;
+    const asked = tab as "merged" | "closed";
+    setHistory("loading");
+    api.history(asked).then(result => setHistory({tab: asked, groups: result.groups}), () => setHistory(null));
+  }, [searchesHistory, tab, history, api]);
   const latest = useRef(0);
   const load = useCallback(async (next: InboxTab) => {
     // Only the latest request may fill the page: a slower answer for a tab left behind is dropped.
@@ -37,13 +50,18 @@ export function InboxPage({api, alerts, onSeen, onOpen}: {api: InboxApi; alerts:
       const result = await api.list(next);
       if (request !== latest.current) return;
       setList(result);
+      setReadAt(Date.now());
       setCounts(previous => ({...previous, ...result.counts}));
     } catch (failure) { if (request === latest.current) setError(message(failure)); }
     finally { if (request === latest.current) setPending(false); }
   }, [api]);
-  useEffect(() => { setList(null); setCursor(0); setHidden(remembered("makosh-git-inbox-hidden/" + tab)); void load(tab); }, [tab, load]);
+  useEffect(() => { setList(null); setCursor(0); setHistory(null); setHidden(remembered("makosh-git-inbox-hidden/" + tab)); void load(tab); }, [tab, load]);
 
-  const groups = useMemo(() => list ? grouped(list, item => matchesSearch(item, query), hidden) : [], [list, query, hidden]);
+  const whole = searchesHistory && history !== null && history !== "loading" && history.tab === tab ? history : null;
+  const source = useMemo(() => list ? (whole ? {...list, groups: whole.groups} : list) : null, [list, whole]);
+  const groups = useMemo(() => source ? grouped(source, item => matchesSearch(item, query), hidden) : [], [source, query, hidden]);
+  const stats = useMemo(() => tab === "open" && list ? openStats(list.groups.flatMap(group => group.items)) : null, [tab, list]);
+  const allKeys = groups.flatMap(group => group.repos.map(repo => repo.key));
   const flat = groups.flatMap(group => group.repos.flatMap(repo => folded.has(repo.key) ? [] : repo.items));
   const hiddenCount = hidden.size;
 
@@ -69,7 +87,9 @@ export function InboxPage({api, alerts, onSeen, onOpen}: {api: InboxApi; alerts:
       <h2>My PRs</h2>
       <input ref={search} type="search" aria-label="Search pull requests" placeholder="Title, #number, repository, author or blocker  ( / )"
         value={query} onChange={event => setQuery(event.target.value)}/>
+      {readAt !== null && <span className="git-muted git-inbox-updated">Updated {ago(readAt, now)}</span>}
       <button type="button" disabled={pending} onClick={() => void load(tab)}>Refresh</button>
+      {api.SettingsLink && <api.SettingsLink><span aria-hidden="true">🔔</span><span className="git-sr">Notification settings</span></api.SettingsLink>}
     </div>
     <nav className="git-inbox-tabs" aria-label="Pull request tabs">
       {inboxTabs.map(name => <button key={name} type="button" aria-current={name === tab ? "page" : undefined} onClick={() => setTab(name)}>
@@ -82,6 +102,17 @@ export function InboxPage({api, alerts, onSeen, onOpen}: {api: InboxApi; alerts:
         <a href={alert.url} target="_blank" rel="noreferrer">{alert.headline}</a> <span className="git-muted">{alert.detail}</span>
       </li>)}</ul>
     </section>}
+    {stats && <div className="git-inbox-stats" role="list" aria-label="Open pull requests at a glance">
+      {([["CI failing", stats.ciFailing, "bad"], ["Unresolved comments", stats.unresolved, "bad"], ["Changes requested", stats.changesRequested, "warn"],
+        ["Ready to merge", stats.ready, "good"]] as const).map(([label, value, tone]) =>
+        <div key={label} role="listitem" className="git-inbox-stat" data-tone={value > 0 ? tone : undefined}><span className="git-muted">{label}</span><strong>{value}</strong></div>)}
+    </div>}
+    {groups.some(group => group.repos.length) && <div className="git-row git-inbox-folds">
+      <button type="button" className="git-link" onClick={() => { const next = new Set([...folded, ...allKeys]); remember("makosh-git-inbox-folded", next); setFolded(next); }}>Collapse all</button>
+      <button type="button" className="git-link" onClick={() => { const next = new Set([...folded].filter(key => !allKeys.includes(key))); remember("makosh-git-inbox-folded", next); setFolded(next); }}>Expand all</button>
+      {searchesHistory && (history === "loading" ? <span className="git-muted" role="status">Reading the whole history…</span>
+        : whole && <span className="git-muted">Searching the whole history: {whole.groups.reduce((sum, group) => sum + group.items.length, 0)} pull requests.</span>)}
+    </div>}
     {error && <p className="git-error" role="alert">{error}</p>}
     {pending && !list && <p className="git-muted" role="status">Loading pull requests…</p>}
     {hiddenCount > 0 && <p className="git-muted">{hiddenCount} hidden {hiddenCount === 1 ? "repository" : "repositories"} on this tab ·{" "}
@@ -92,6 +123,7 @@ export function InboxPage({api, alerts, onSeen, onOpen}: {api: InboxApi; alerts:
       {group.error && <p className="git-error" role="alert">{group.error}</p>}
       {group.notice && <p className="git-muted" role="status">{group.notice}</p>}
       {!group.error && !group.repos.length && <p className="git-muted">{query ? "Nothing matches the search." : "Nothing here."}</p>}
+      {!query && (() => { const note = showing(group.items.length, group.total, tab === "merged" || tab === "closed"); return note && <p className="git-muted">{note}</p>; })()}
       {group.repos.map(repo => <div key={repo.key} className="git-inbox-repo">
         <div className="git-row git-inbox-repo-head">
           <button type="button" className="git-link" aria-expanded={!folded.has(repo.key)}

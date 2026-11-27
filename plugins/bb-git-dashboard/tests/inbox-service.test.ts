@@ -80,3 +80,17 @@ test("baselines of accounts that were removed are forgotten", async () => {
   await watchRound(deps, on);
   assert.deepEqual([...data.keys()], ["inbox-watch/b"]);
 });
+
+test("each account's list says how many the forge counts; a history search reads the whole history where the forge can", async () => {
+  const inboxes: Record<string, PullInbox> = {
+    a: {list: async () => ({items: [pr("a1")], counts: {merged: 40}, notice: null}), watch: async () => null,
+      history: async () => ({items: [pr("a1"), pr("a2")], total: 40})},
+    c: {list: async () => ({items: [pr("c1")], counts: {}, notice: null}), watch: async () => null},
+  };
+  const accounts = [account("a"), account("c", "gitlab")];
+  const service = inboxService({accounts: async () => accounts,
+    credential: async id => ({account: accounts.find(item => item.id === id)!, token: "t"}), inbox: found => inboxes[found.id]});
+  assert.deepEqual((await service.list("merged")).groups.map(group => [group.account.id, group.total]), [["a", 40], ["c", null]]);
+  const history = await service.history("merged");
+  assert.deepEqual(history.groups.map(group => [group.account.id, group.items.map(item => item.id), group.total]), [["a", ["a1", "a2"], 40], ["c", ["c1"], null]]);
+});

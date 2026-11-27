@@ -31,14 +31,19 @@ export function inboxHandlers(bb: BbPluginApi, deps: Deps) {
     const [list, current] = await Promise.all([stored(), settings.get()]);
     return {alerts: list, unseen: list.filter(alert => !alert.seen).length, toasts: current.inboxToasts, badge: current.inboxBadge};
   }
-  async function push(alerts: InboxAlert[]) {
-    if (!alerts.length || !(await settings.get()).inboxDesktop) return;
+  /** Sends alerts through Push notifications when the setting allows; says whether they went out, and on how many channels. */
+  async function push(alerts: InboxAlert[]): Promise<{sent: boolean; message: string}> {
+    if (!alerts.length) return {sent: false, message: "Nothing to send."};
+    if (!(await settings.get()).inboxDesktop) return {sent: false, message: "Sending through Push notifications is off in these settings."};
     try {
-      await bb.sdk.plugins.callRpc({pluginId: "push-notifications", method: "notifications.send", input: pushText(alerts),
+      const sent = await bb.sdk.plugins.callRpc({pluginId: "push-notifications", method: "notifications.send", input: pushText(alerts),
         outputSchema: pushSent, signal: AbortSignal.timeout(15_000)});
+      return sent.channels.length ? {sent: true, message: "Sent through Push notifications: " + sent.channels.join(", ") + "."}
+        : {sent: false, message: "Push notifications has no channel turned on."};
     } catch (error) {
       // A missing or disabled Push notifications must not stop the watcher.
       bb.log.warn("My PRs alert not pushed: " + (error instanceof Error ? error.message : String(error)));
+      return {sent: false, message: "Push notifications did not take it: install or enable that plugin."};
     }
   }
   async function round() {
@@ -75,7 +80,17 @@ export function inboxHandlers(bb: BbPluginApi, deps: Deps) {
   };
   return {
     inboxList: handle(({tab}: {tab: InboxTab}) => service.list(tab)),
+    inboxHistory: handle(({tab}: {tab: "merged" | "closed"}) => service.history(tab)),
     inboxAlerts: handle(async () => summary()),
+    /** A test alert, as a real one arrives: in the list, as a toast and through Push notifications. */
+    inboxTest: handle(async () => {
+      const at = new Date().toISOString();
+      const alert: InboxAlert = {id: "test:" + at, kind: "test", repo: "", number: 0, url: "", seen: false, at, accountId: "",
+        headline: "Test alert from Makosh Git", detail: "This is how failing CI and new comments on your pull requests reach you."};
+      await kv.set("inbox-alerts", [alert, ...await stored()].slice(0, maxAlerts));
+      bb.realtime.publish(inboxChannel, {added: 1});
+      return {...await summary(), push: await push([alert])};
+    }),
     inboxSeen: handle(async () => {
       await kv.set("inbox-alerts", (await stored()).map(alert => ({...alert, seen: true})));
       bb.realtime.publish(inboxChannel, {seen: true});
