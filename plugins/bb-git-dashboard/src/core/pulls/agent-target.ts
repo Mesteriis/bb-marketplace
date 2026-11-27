@@ -1,5 +1,7 @@
 // Ported from plugins/bb-github-pr-dashboard/prs.ts (MIT, © 2026 Muhammad Ahsan, revision 898660bc).
 // Which BB thread or project a pull request belongs to. No I/O.
+import { parseRemote, providerPath } from "../forge/remote-url.ts";
+import type { Forge } from "./model.ts";
 
 export function repoOfRemote(remote: string | null): string | null {
   const match = remote?.match(/github\.com[:/]+([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/i);
@@ -83,3 +85,21 @@ export function linkCandidates(
     .map((t) => ({ id: t.id, title: t.title ?? t.titleFallback ?? "Untitled thread", project: names.get(t.projectId) ?? "", updatedAt: t.updatedAt }));
 }
 
+
+// ---- Any forge (Makosh Git): projects by their remote, the thread on the pull request's branch ----
+
+
+/** Projects whose git remote is this repository, on any forge, compared by provider path. */
+export function projectsOfRepo(forge: Forge, path: string, projects: readonly {id: string; gitRemoteUrl: string | null}[]): string[] {
+  const wanted = path.toLowerCase();
+  return projects.filter(project => {
+    const remote = project.gitRemoteUrl ? parseRemote(project.gitRemoteUrl) : null;
+    return remote !== null && providerPath(forge, remote)?.toLowerCase() === wanted;
+  }).map(project => project.id);
+}
+
+/** The most recently updated open thread of these projects whose environment is on the branch. */
+export function branchThread(threads: readonly AgentThread[], projectIds: readonly string[], branch: string): string | null {
+  return threads.filter(thread => thread.archivedAt === null && projectIds.includes(thread.projectId) && thread.environmentBranchName === branch)
+    .sort((left, right) => right.updatedAt - left.updatedAt)[0]?.id ?? null;
+}

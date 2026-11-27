@@ -8,6 +8,7 @@ import { copy, failure, gitResponse, id, operation, request } from "../../core/w
 
 import { ciContract } from "../../core/ci/contract.ts";
 import { inboxContract } from "../../core/pulls/contract.ts";
+import { reviewContract } from "../../core/pulls/review-contract.ts";
 import { historyContract } from "../../core/history/contract.ts";
 import { scanPreview } from "../../core/catalog/project-scan.ts";
 import { projectNode } from "../../core/catalog/project-tree.ts";
@@ -20,6 +21,7 @@ const copyResponse = z.discriminatedUnion("ok", [failure, success.extend({value:
 export const rpc = defineRpcContract({
   ...ciContract,
   ...inboxContract,
+  ...reviewContract,
   ...historyContract,
   checkConnection: {input:connectionInput,output:z.discriminatedUnion("ok",[failure,success.extend({value:connectionCheck})])},
   saveConnection: {input:connectionInput,output:z.discriminatedUnion("ok",[failure,success.extend({value:account})])},

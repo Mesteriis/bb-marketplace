@@ -1,0 +1,55 @@
+import type { BbPluginApi } from "@get-bb/plugin-sdk";
+import type { z } from "zod";
+import { branchThread, projectsOfRepo } from "../../core/pulls/agent-target.ts";
+import type { FixSubject } from "../../core/pulls/detail.ts";
+import { findingsPrompt, fixPrompt } from "../../core/pulls/prompt.ts";
+import type { agentSubject } from "../../core/pulls/review-contract.ts";
+import type { Account } from "../../core/providers.ts";
+import { failureFor } from "../../core/workspace.ts";
+import { reviewService } from "./review-service.ts";
+
+type Caller = {experimental_caller: {kind: string}};
+type Target = {accountId: string; repo: string; number: number};
+
+/** Pull request and issue RPC for the app, and Fix with agent: the pull request's branch thread, else a new thread in its project. */
+export function reviewHandlers(bb: BbPluginApi, deps: {credential(id: string): Promise<{account: Account; token: string}>}) {
+  const service = reviewService(deps);
+  const handle = <I, O extends object>(action: (input: I) => Promise<O>) => async (input: I, context: Caller) => {
+    if (context.experimental_caller.kind !== "client") return failureFor(undefined, "ACCESS_DENIED");
+    try { return {ok: true as const, ...await action(input)}; }
+    catch (error) { return failureFor(error, "PROVIDER_UNAVAILABLE"); }
+  };
+  async function ask({accountId, repo, number, subject}: Target & {subject: z.infer<typeof agentSubject>}) {
+    const {account} = await deps.credential(accountId);
+    const {detail} = await service.detail(accountId, repo, number);
+    const failed = detail.checks.filter(check => check.status === "failing");
+    const subjects: FixSubject[] = subject.kind === "thread" ? detail.threads.filter(thread => thread.id === subject.threadId).map(thread => ({kind: "thread" as const, thread}))
+      : subject.kind === "check" ? failed.filter(check => check.name === subject.name).map(check => ({kind: "check" as const, check}))
+      : [...detail.threads.filter(thread => !thread.isResolved).map(thread => ({kind: "thread" as const, thread})), ...failed.map(check => ({kind: "check" as const, check}))];
+    if (!subjects.length) throw new Error("NOT_FOUND");
+    const text = subject.kind === "all" ? findingsPrompt(detail, subjects) : fixPrompt(detail, subjects[0]);
+    const projectIds = projectsOfRepo(account.kind, repo, await bb.sdk.projects.list());
+    const threads = (await Promise.all(projectIds.map(projectId => bb.sdk.threads.list({projectId, archived: false, limit: 100})))).flat();
+    const existing = branchThread(threads as Parameters<typeof branchThread>[0], projectIds, detail.headRefName);
+    if (existing) {
+      await bb.sdk.threads.send({threadId: existing, mode: "queue-if-active", input: [{type: "text", text, mentions: []}]});
+      return {threadId: existing, created: false};
+    }
+    if (!projectIds.length) throw new Error("PROJECT_REQUIRED");
+    const spawned = await bb.sdk.threads.spawn({projectId: projectIds[0], prompt: text, title: "Fix " + repo + " #" + number, environment: {type: "project-default"}}) as {threadId?: string; id?: string};
+    const threadId = spawned.threadId ?? spawned.id;
+    if (!threadId) throw new Error("OUTCOME_UNKNOWN");
+    return {threadId, created: true};
+  }
+  return {
+    prDetail: handle(({accountId, repo, number}: Target) => service.detail(accountId, repo, number)),
+    prFiles: handle(({accountId, repo, number}: Target) => service.files(accountId, repo, number)),
+    prPrepare: handle(({accountId, repo, number, action}: Target & {action: Parameters<typeof service.prepare>[3]}) => service.prepare(accountId, repo, number, action)),
+    prConfirm: handle(({previewId}: {previewId: string}) => service.confirm(previewId)),
+    prAsk: handle(ask),
+    issueDetail: handle(({accountId, repo, number}: Target) => service.issueDetail(accountId, repo, number)),
+    issuePrepare: handle(({accountId, repo, action}: {accountId: string; repo: string; action: Parameters<typeof service.issuePrepare>[2]}) =>
+      service.issuePrepare(accountId, repo, action)),
+    issueConfirm: handle(({previewId}: {previewId: string}) => service.issueConfirm(previewId)),
+  };
+}

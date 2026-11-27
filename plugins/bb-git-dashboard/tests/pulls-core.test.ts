@@ -30,3 +30,15 @@ test("without stack data, a PR based on another open PR's branch in the same rep
   const fromMain = pr({id: "f", number: 15, headRefName: "main"});
   assert.equal(linkStacks([fromMain, pr({id: "g", number: 16})])[1].stackedOn, null);
 });
+
+test("a pull request's projects are found by their remote on any forge, and its thread by branch", async () => {
+  const {branchThread, projectsOfRepo} = await import("../src/core/pulls/agent-target.ts");
+  const projects = [{id: "p1", gitRemoteUrl: "git@gitlab.example.org:group/sub/app.git"}, {id: "p2", gitRemoteUrl: "https://gitlab.example.org/Group/Sub/App"},
+    {id: "p3", gitRemoteUrl: "https://gitlab.example.org/group/other.git"}, {id: "p4", gitRemoteUrl: null}];
+  assert.deepEqual(projectsOfRepo("gitlab", "group/sub/app", projects), ["p1", "p2"]);
+  const thread = (id: string, projectId: string, branch: string | null, updatedAt: number, archivedAt: number | null = null) =>
+    ({id, projectId, environmentId: "e", environmentBranchName: branch, archivedAt, updatedAt, title: null, titleFallback: null});
+  assert.equal(branchThread([thread("t1", "p1", "retries", 1), thread("t2", "p2", "retries", 5), thread("t3", "p3", "retries", 9),
+    thread("t4", "p1", "retries", 7, 1), thread("t5", "p1", "main", 8)], ["p1", "p2"], "retries"), "t2");
+  assert.equal(branchThread([], ["p1"], "retries"), null);
+});
