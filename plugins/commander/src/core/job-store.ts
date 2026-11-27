@@ -1,12 +1,18 @@
-import type { JobState, OperationJob } from "./model.ts";
+import type { Fingerprint, JobState, OperationJob } from "./model.ts";
+import type { ResourcePath } from "./path.ts";
 import type { Size } from "./size.ts";
 
 export interface Checkpoint {
   jobId: string;
   itemIndex: number;
-  phase: "copying" | "committed" | "verified" | "source_removed";
+  phase: "prepared" | "copying" | "committed" | "verified" | "source_removed";
   bytesDone: Size;
-  tempName: string | null;
+  tempPath: ResourcePath | null;
+  targetPath: ResourcePath | null;
+  expectTarget: Fingerprint | "absent" | null;
+  verified: { size: Size; sha256?: string } | null;
+  /** Fingerprint returned by commit, retained through later phases. */
+  committed?: Fingerprint;
 }
 
 export interface JobStore {

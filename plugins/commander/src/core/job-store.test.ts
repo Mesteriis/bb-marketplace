@@ -2,7 +2,7 @@ import { expectTypeOf, test } from "vitest";
 import type { Checkpoint, JobStore } from "./job-store.ts";
 import type { WriteSession } from "./provider.ts";
 import type { ResourcePath } from "./path.ts";
-import type { JobState, OperationJob } from "./model.ts";
+import type { Fingerprint, JobState, OperationJob } from "./model.ts";
 
 test("JobStore exposes a state CAS and the last checkpoint for one item", () => {
   expectTypeOf<JobStore["update"]>().parameters.toEqualTypeOf<[
@@ -17,9 +17,13 @@ test("JobStore exposes a state CAS and the last checkpoint for one item", () => 
   expectTypeOf<Checkpoint>().toEqualTypeOf<{
     jobId: string;
     itemIndex: number;
-    phase: "copying" | "committed" | "verified" | "source_removed";
+    phase: "prepared" | "copying" | "committed" | "verified" | "source_removed";
     bytesDone: string;
-    tempName: string | null;
+    tempPath: ResourcePath | null;
+    targetPath: ResourcePath | null;
+    expectTarget: Fingerprint | "absent" | null;
+    verified: { size: string; sha256?: string } | null;
+    committed?: Fingerprint;
   }>();
 });
 

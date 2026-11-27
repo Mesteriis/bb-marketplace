@@ -63,15 +63,23 @@ export interface FileProvider {
 
   mkdir(path: ResourcePath, signal: AbortSignal): Promise<void>;
 
+  /**
+   * Check the expected target version or absence immediately before renaming.
+   * Report changed_since_plan on mismatch. Document any non-atomic check window.
+   */
   rename(
     from: ResourcePath,
     to: ResourcePath,
-    opts: { replace: boolean },
+    opts: { replace: boolean; expectTarget?: Fingerprint | "absent" },
     signal: AbortSignal,
   ): Promise<void>;
 
-  /** A directory must be empty. */
-  remove(path: ResourcePath, opts: { kind: EntryKind }, signal: AbortSignal): Promise<void>;
+  /**
+   * A directory must be empty. Check the expected entry version immediately
+   * before removal; report changed_since_plan on mismatch. Document any
+   * non-atomic check window.
+   */
+  remove(path: ResourcePath, opts: { kind: EntryKind; expect?: Fingerprint }, signal: AbortSignal): Promise<void>;
 
   /**
    * As part of confirmed replacement, the provider must check expectTarget:

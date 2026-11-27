@@ -25,7 +25,9 @@ export class MemoryJobStore implements JobStore {
   async update(id: string, patch: Parameters<JobStore["update"]>[1], expectState: OperationJob["state"]): Promise<boolean> {
     const job = this.jobs.get(id);
     if (job?.state !== expectState) return false;
-    this.jobs.set(id, OperationJob.parse({ ...job, ...patch }));
+    const updated = { ...job, ...patch };
+    if (job.state === "pending" && updated.state !== "pending") updated.awaitsOwner = false;
+    this.jobs.set(id, OperationJob.parse(updated));
     return true;
   }
 
