@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import type { GitAction, GitResult } from "../core/git.ts";
 import type { Copy, Operation } from "../core/workspace.ts";
+import { ConflictEditor } from "./merge/conflict-editor.tsx";
+import { BranchList, SequenceBar, type Sequence } from "./merge/merge-actions.tsx";
 
 export type RunGit = (action: GitAction) => Promise<GitResult>;
 type View = "Changes" | "History" | "Branches" | "Worktrees" | "Activity";
@@ -31,14 +33,17 @@ export function Worktree({copy, host, run, refresh, loadOperations, attach, pin}
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
   const [revision, setRevision] = useState(0);
+  // A merge, rebase, cherry-pick or revert left in progress, and the conflicted file open in the editor.
+  const [sequence, setSequence] = useState<Sequence | null>(null);
+  const [resolving, setResolving] = useState<string | null>(null);
 
   const report = useCallback((cause: unknown) => setError(cause instanceof Error ? cause.message : "Request failed"), []);
   useEffect(() => {
     let active = true;
     const load = async () => {
       try {
-        const result = await run({kind:"status"});
-        if (active) setState(result);
+        const [result, progress] = await Promise.all([run({kind:"status"}), run({kind:"sequence"})]);
+        if (active) { setState(result); setSequence(progress.sequence ?? null); }
       } catch (error) { if (active) report(error); }
     };
     void load();
@@ -127,6 +132,10 @@ export function Worktree({copy, host, run, refresh, loadOperations, attach, pin}
     </nav>
     {error && <p role="alert" className="git-error">{error}</p>}
     {pending && <p role="status">Git operation in progress…</p>}
+    {state && sequence && <SequenceBar sequence={sequence} state={state} run={run} onError={report} onResolve={setResolving}
+      onChanged={() => { setResolving(null); setRevision(value => value + 1); }}/>}
+    {resolving && sequence && <ConflictEditor key={resolving} path={resolving} kind={sequence.kind} run={run} onError={report}
+      onChanged={() => setRevision(value => value + 1)} onClose={() => setResolving(null)}/>}
     {view === "Changes" && state && <>
       <div className="git-changes-grid"><div className="git-change-sidebar git-stack">
       {files.length === 0 && <p className="git-muted">Working tree is clean.</p>}
@@ -137,8 +146,9 @@ export function Worktree({copy, host, run, refresh, loadOperations, attach, pin}
           return <div key={file.path} className="git-file">
             <button type="button" className="git-entry" title={file.path} aria-current={selected?.path === file.path && selected.staged === list.staged}
               onClick={() => setSelected({path:file.path, staged:list.staged})}><span className="git-file-mark">{(list.staged ? file.index : file.worktree).replace(".", "?")}</span>{file.path}</button>
-            <button type="button" disabled={pending || conflict} title={conflict ? "Resolve this conflict in the worktree first" : undefined}
-              onClick={handle({kind:"stage", path:file.path, staged:list.staged})}>{conflict ? "Conflict" : list.staged ? "Unstage" : "Stage"}</button>
+            {conflict && sequence ? <button type="button" onClick={() => setResolving(file.path)}>Resolve…</button>
+              : <button type="button" disabled={pending || conflict} title={conflict ? "Resolve this conflict in the worktree first" : undefined}
+                onClick={handle({kind:"stage", path:file.path, staged:list.staged})}>{conflict ? "Conflict" : list.staged ? "Unstage" : "Stage"}</button>}
           </div>;
         })}</div>
       </section>)}
@@ -208,7 +218,9 @@ export function Worktree({copy, host, run, refresh, loadOperations, attach, pin}
           <button type="button" disabled={pending || !branch || !destination} onClick={handle({kind:"worktree",branch,destination,...(base ? {base} : {})})}>Create worktree</button>
         </>}
       </div>
-      {view === "Branches" && <pre className="git-code">{detail?.text ?? "Reading branches…"}</pre>}
+      {view === "Branches" && (detail?.text !== undefined && state ? <BranchList text={detail.text} state={state} sequence={sequence} run={run} onError={report}
+        onChanged={result => { setRevision(value => value + 1); if (result.sequence?.conflicts.length) setResolving(result.sequence.conflicts[0]!.path); }}/>
+        : <p className="git-muted" role="status">Reading branches…</p>)}
       {view === "Worktrees" && (detail?.worktrees ?? []).map(tree => <div className="git-row git-path" key={tree.path}>
         <span>{tree.branch ?? "Detached"} · {tree.path}</span>
         {tree.path !== copy.root && attach && <button type="button" onClick={() => attach(tree.path).catch(report)}>Open worktree</button>}

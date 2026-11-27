@@ -1,0 +1,29 @@
+/* Branches with Merge and Rebase. */
+.git-ws .git-merge-branches { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.git-ws .git-merge-branches li { gap: 8px; padding: 4px 6px; border-radius: 4px; min-width: 0; }
+.git-ws .git-merge-branches li[data-current] { background: color-mix(in srgb, var(--git-focus) 10%, transparent); }
+.git-ws .git-merge-branches .git-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* What is in progress. */
+.git-ws .git-merge-sequence { display: grid; gap: 6px; padding: 8px 12px; margin: 8px 0; border: 1px solid #d4a017; border-radius: 6px;
+  background: color-mix(in srgb, #d4a017 8%, transparent); }
+.git-ws .git-merge-conflicts { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.git-ws .git-merge-conflicts li { gap: 8px; min-width: 0; }
+
+/* The conflict editor: the sides of each conflict side by side, the result under them. */
+.git-ws .git-merge-editor { display: grid; gap: 12px; margin: 8px 0; }
+.git-ws .git-merge-editor header { gap: 8px; flex-wrap: wrap; }
+.git-ws .git-merge-block { display: grid; gap: 6px; padding: 8px; border: 1px solid var(--border); border-radius: 6px; }
+.git-ws .git-merge-block[data-answered] { border-color: color-mix(in srgb, #42a675 60%, var(--border)); }
+.git-ws .git-merge-block .git-row { flex-wrap: wrap; gap: 6px; }
+.git-ws .git-merge-block button[aria-pressed="true"] { background: color-mix(in srgb, var(--git-focus) 18%, transparent); font-weight: 600; }
+.git-ws .git-merge-sides { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.git-ws .git-merge-sides[data-three] { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.git-ws .git-merge-side { display: grid; align-content: start; gap: 2px; min-width: 0; overflow-x: auto; }
+.git-ws .git-merge-side[data-side="ours"] { border-inline-start: 3px solid #4a8fd4; padding-inline-start: 6px; }
+.git-ws .git-merge-side[data-side="theirs"] { border-inline-start: 3px solid #d4824a; padding-inline-start: 6px; }
+.git-ws .git-merge-side[data-side="base"] { border-inline-start: 3px solid var(--border); padding-inline-start: 6px; }
+.git-ws .git-merge-line { display: flex; gap: 6px; align-items: baseline; min-width: 0; }
+.git-ws .git-merge-line code, .git-ws .git-merge-base { white-space: pre; font-size: 12px; }
+.git-ws .git-merge-text { width: 100%; font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; }
+@media (max-width: 900px) { .git-ws .git-merge-sides, .git-ws .git-merge-sides[data-three] { grid-template-columns: minmax(0, 1fr); } }
