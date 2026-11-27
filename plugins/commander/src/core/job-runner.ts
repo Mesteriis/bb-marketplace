@@ -7,6 +7,7 @@ import {
   type Fingerprint, type ItemOutcome, type PlanItem, type ResourceRef,
 } from "./model.ts";
 import { isAncestorOrSelf, join, parent, samePath, type ResourcePath } from "./path.ts";
+import type { ChangedItem } from "./planner.ts";
 import { READ_CHUNK_MAX, type FileProvider, type WriteSession } from "./provider.ts";
 import {
   confirmVerified, fingerprint, isCaseOnlyPair, matches, nameSpelling, matchesTarget, observe, readChunks, reconcileItem, removeStagedTemp, tempNameFor, TransferHash, verifyCopy,
@@ -23,11 +24,12 @@ export interface RunnerDeps {
   chunkBytes?: number;
   retryDelay?(milliseconds: number, signal: AbortSignal): Promise<void>;
   revalidate?(plan: OperationPlan, signal: AbortSignal): Promise<{ ok: true } | {
-    ok: false; changed: { index: number; reason: "source_changed" | "target_changed" }[];
+    ok: false; changed: ChangedItem[];
   }>;
   onEvent(e: { jobId: string; kind: "progress" | "state" | "conflict" }): void;
 }
 
+type SubmitOptions = { awaitsOwner: boolean; syncDeleteConflict?: ChangedItem };
 type Patch = Parameters<JobStore["update"]>[1];
 type EventKind = Parameters<RunnerDeps["onEvent"]>[0]["kind"];
 type Decision = { conflict: Conflict; action: ConflictAction };
@@ -137,23 +139,31 @@ export class JobRunner {
     }
   }
 
-  submit(plan: OperationPlan, opts?: { awaitsOwner: boolean }): Promise<OperationJob> {
+  submit(plan: OperationPlan, opts?: SubmitOptions): Promise<OperationJob> {
     return this.accept(() => this.submitPlan(plan, opts));
   }
 
-  private async submitPlan(plan: OperationPlan, opts?: { awaitsOwner: boolean }): Promise<OperationJob> {
+  private async submitPlan(plan: OperationPlan, opts?: SubmitOptions): Promise<OperationJob> {
     plan = await this.validPlan(plan);
     this.stopping.signal.throwIfAborted();
     const now = this.deps.now().toISOString();
+    const id = this.deps.uuid();
+    const awaitsOwner = opts?.awaitsOwner ?? false;
+    // S13: persist the failed preflight with the job so recovery cannot see a runnable state.
+    const changed = awaitsOwner ? undefined : opts?.syncDeleteConflict;
+    const pendingConflict: Conflict | null = changed ? {
+      id: this.deps.uuid(), jobId: id, itemIndex: changed.index, reason: changed.reason,
+      source: plan.items[changed.index].fingerprint, target: null, allowedResolutions: ["skip", "cancel"],
+    } : null;
     const job = OperationJob.parse({
-      id: this.deps.uuid(), plan, state: "pending", awaitsOwner: opts?.awaitsOwner ?? false,
-      currentItem: null, pendingConflict: null, error: null, createdAt: now, updatedAt: now,
+      id, plan, state: pendingConflict ? "awaiting_decision" : "pending", awaitsOwner,
+      currentItem: pendingConflict?.itemIndex ?? null, pendingConflict, error: null, createdAt: now, updatedAt: now,
       progress: { itemsDone: 0, itemsTotal: plan.items.length, bytesDone: "0", bytesTotal: plan.totalBytes },
       items: plan.items.map(() => ({ outcome: "pending", error: null })),
     });
     await this.store.create(job);
-    this.deps.onEvent({ jobId: job.id, kind: "state" });
-    if (!job.awaitsOwner) await this.start(job);
+    this.deps.onEvent({ jobId: job.id, kind: pendingConflict ? "conflict" : "state" });
+    if (!awaitsOwner && !pendingConflict) await this.start(job);
     return job;
   }
 
@@ -168,7 +178,31 @@ export class JobRunner {
     }
     const plan = await this.validPlan(job.plan);
     const context = this.context(id, 0, this.stopping.signal);
+    // S13: a counterpart that appeared while waiting for the owner becomes a
+    // persisted conflict, before any item in this plan is allowed to delete.
     const checked = await this.deps.revalidate?.(plan, context.signal);
+    let absenceConflict = checked?.ok === false
+      ? checked.changed.find(({ index, reason }) => reason === "target_changed" && plan.items[index].requireAbsent)?.index
+      : undefined;
+    for (const [index, item] of plan.items.entries()) {
+      if (absenceConflict !== undefined) break;
+      if (item.requireAbsent && await this.syncDeleteCounterpart(item, context)) absenceConflict = index;
+    }
+    if (absenceConflict !== undefined) {
+      const item = plan.items[absenceConflict];
+      const counterpart = await this.syncDeleteCounterpart(item, context);
+      const conflict = new ItemConflict("target_changed", item.fingerprint, counterpart);
+      const state = transition(transition(job.state, "start"), "conflict");
+      this.stopping.signal.throwIfAborted();
+      // S13: one CAS commits approval and the conflict without exposing a runnable state.
+      if (!await this.patch(job, {
+        state, awaitsOwner: false, currentItem: absenceConflict,
+        pendingConflict: this.conflictRecord(job, absenceConflict, conflict),
+      }, "conflict")) {
+        throw new CommanderError("changed_since_plan", "Job is no longer awaiting approval");
+      }
+      return;
+    }
     if (checked && !checked.ok) throw new CommanderError("changed_since_plan", "Plan changed before approval");
     // Sources are checked before any target is touched.
     const currents: (Awaited<ReturnType<typeof observe>>)[] = [];
@@ -196,10 +230,14 @@ export class JobRunner {
       if (!await this.start(job, plan)) throw new CommanderError("changed_since_plan", "Job is no longer awaiting approval");
       return;
     }
+    await this.startInConflict(job, targetConflict.index, targetConflict.conflict);
+  }
+
+  private async startInConflict(job: OperationJob, index: number, conflict: ItemConflict): Promise<void> {
     this.stopping.signal.throwIfAborted();
-    if (!await this.change(job, "start")) throw new CommanderError("changed_since_plan", "Job is no longer awaiting approval");
-    const running = await this.requireJob(id);
-    if (running.state === "running") await this.requestConflict(running, targetConflict.index, targetConflict.conflict);
+    if (!await this.change(job, "start")) throw new CommanderError("changed_since_plan", "Job is no longer pending");
+    const running = await this.requireJob(job.id);
+    if (running.state === "running") await this.requestConflict(running, index, conflict);
   }
 
   async reject(id: string): Promise<void> {
@@ -357,6 +395,8 @@ export class JobRunner {
     const unsigned: Omit<OperationPlan, "digest"> = {
       id: this.deps.uuid(),
       createdAt: this.deps.now().toISOString(),
+      // S13: retry preserves the group and the signed absence predicates on kept items.
+      ...(job.plan.syncId ? { syncId: job.plan.syncId } : {}),
       // The retrying party owns the new plan, so its grants are checked when it runs.
       initiator,
       kind: job.plan.kind,
@@ -698,7 +738,7 @@ export class JobRunner {
       && isAncestorOrSelf(source.path, following.path, source.provider.endpoint.caseSensitive));
   }
 
-  private async requestConflict(job: OperationJob, index: number, conflict: ItemConflict, progress = job.progress): Promise<void> {
+  private conflictRecord(job: OperationJob, index: number, conflict: ItemConflict): Conflict {
     const item = job.plan.items[index];
     const expanded = this.expandedDirectory(job, index, item.source && this.location(item.source));
     const allowedResolutions: ConflictAction[] = ["skip", "cancel"];
@@ -708,18 +748,32 @@ export class JobRunner {
         allowedResolutions.push("overwrite");
       }
     }
+    return {
+      id: this.deps.uuid(), jobId: job.id, itemIndex: index, reason: conflict.reason,
+      source: conflict.source, target: conflict.target, allowedResolutions,
+    };
+  }
+
+  private async requestConflict(job: OperationJob, index: number, conflict: ItemConflict, progress = job.progress): Promise<void> {
     await this.change(job, "conflict", {
-      currentItem: index, progress,
-      pendingConflict: {
-        id: this.deps.uuid(), jobId: job.id, itemIndex: index, reason: conflict.reason,
-        source: conflict.source, target: conflict.target, allowedResolutions,
-      },
+      currentItem: index, progress, pendingConflict: this.conflictRecord(job, index, conflict),
     }, "conflict");
+  }
+
+  // S13: guard metadata is read without hashing or following file contents.
+  private async syncDeleteCounterpart(item: PlanItem, context: VerifyContext): Promise<Fingerprint | null> {
+    return item.requireAbsent ? fingerprint(await observe(this.location(item.requireAbsent), context)) : null;
   }
 
   private async perform(job: OperationJob, index: number, context: ItemContext, decision?: Decision): Promise<ItemResult> {
     const item = job.plan.items[index];
     const source = item.source && this.location(item.source);
+    // S13: skipping a conflict must also skip its removal if the counterpart still exists.
+    if (item.requireAbsent) {
+      if (decision?.action === "skip") return "skipped";
+      const counterpart = await this.syncDeleteCounterpart(item, context);
+      if (counterpart) throw new ItemConflict("target_changed", item.fingerprint, counterpart);
+    }
     if (job.plan.kind === "move" && item.kind === "dir" && source) {
       // A child may have paused for a decision across a restart. Restore the
       // parent on demand even if startup only restored the pending conflict.
@@ -814,7 +868,10 @@ export class JobRunner {
     switch (job.plan.kind) {
       case "delete":
         if (!source || !sourceFingerprint) break;
-        return await this.removeSource(source, item.kind, sourceFingerprint, context) ? "done" : "source_retained";
+        return await this.removeSource(source, item.kind, sourceFingerprint, context, null, item.requireAbsent ? async () => {
+          const counterpart = await this.syncDeleteCounterpart(item, context);
+          if (counterpart) throw new ItemConflict("target_changed", sourceFingerprint, counterpart);
+        } : undefined) ? "done" : "source_retained";
       case "mkdir":
         if (!destination) break;
         await this.makeDirectory(destination, oldTarget, replace, context, unchanged, sourceFingerprint);
@@ -1107,8 +1164,11 @@ export class JobRunner {
 
   private async removeSource(
     source: Location, kind: PlanItem["kind"], expect: Fingerprint, context: ItemContext, target: Location | null = null,
+    beforeRemove?: () => Promise<void>,
   ): Promise<boolean> {
     const { mutate, signal } = context;
+    // S13: check after the checkpoint and immediately before the deleting call.
+    await beforeRemove?.();
     try {
       await mutate(() => source.provider.remove(source.path, { kind, expect }, signal),
         (check) => this.unchanged(source, expect, target, context.saved().committed ?? "absent", check));

@@ -234,18 +234,39 @@ Modify `src/adapters/bb/rpc-handlers.ts`, `src/core/wire/rpc.ts`,
 `agent-tools.ts`.
 
 **Consumes:** `compareDirs` (задача 2), `buildPlan`, `revalidate`.
+**Согласованное отклонение:** S13 добавляет в `src/core/model.ts`
+опциональные поля `OperationPlanBase.syncId` и `PlanItem.requireAbsent`.
+Второе поле допустимо только в delete-плане с `syncId` и указывает путь,
+который должен отсутствовать на противоположной стороне. Оба поля при наличии
+входят в digest. Планы этапа 1 сохраняют прежний digest, а SQLite хранит поля
+в `plan_json` без миграции.
 **Produces:**
 - `interface SyncRequest { left: ResourceRef; right: ResourceRef; direction: "left-to-right" | "right-to-left" | "both"; by: "size+mtime" | "sha256"; includeDeletes: boolean; filters?: { exclude: string[] } }`.
 - `buildSyncPlan(req, deps): Promise<SyncPlan>`;
-  `SyncPlan = { id: string; copies: OperationPlan[]; deletes: OperationPlan | null; conflicts: { left: Entry; right: Entry; reason: "both_changed" }[] }`.
+  `SyncPlan = { id: string; copies: OperationPlan[]; deletes: OperationPlan | null; conflicts: { left: Entry; right: Entry; reason: "target_newer" | "differs" }[] }`.
   `deletes` = `null` при `includeDeletes: false`; при `true` — отдельный
   `delete`-план, подтверждается отдельно и требует `delete`.
 - Запуск: каждый план — обычное задание с `syncId`; перед запуском
-  `revalidate`.
+  `revalidate`. Отсутствие пути для удаления проверяется при запуске, при
+  подтверждении отложенного задания и непосредственно перед `remove`. Если
+  путь появился, конфликт предлагает пропуск или отмену. При запуске владельцем
+  задание и такой конфликт сохраняются одной записью сразу в
+  `awaiting_decision`, до первого удаления. Если конфликт обнаружен при
+  одобрении задания агента, `JobStore.update` сохраняет его и отметку
+  одобрения в одной транзакции. Согласованная правка SQLite-адаптера
+  обходится без миграции, триггер обычного одобрения сохранён. Каждый вложенный
+  элемент наследует проверку отсутствия корня сравниваемого поддерева, даже
+  если по другую сторону появился пока пустой каталог. Список и объём
+  удалений учитывают вложенные элементы.
+- Сравнение S10 сопоставляет непосредственных потомков. Неполное сравнение
+  блокирует план. Фильтр `exclude` принимает точные имена потомков на обеих
+  сторонах. В режиме «В обе стороны» удаление недоступно: для него нужно
+  выбрать одну сторону назначения. Новые и обновляемые файлы можно
+  подтвердить независимо. Удаления имеют отдельный список и подтверждение.
 
 - [ ] Test `includeDeletes false, right-only file → deletes null, file untouched after run`
 - [ ] Test `includeDeletes true → deletes plan with exactly the right-only entries`
-- [ ] Test `direction both, file changed on both sides → conflict both_changed, not copied`
+- [ ] Test `direction both, file changed on both sides → conflict differs, not copied`
 - [ ] Test `source changed after plan → item conflict source_changed`
 - [ ] Test `agent with write but no delete: includeDeletes true → deletes plan awaits owner`
 - [ ] UI по артборду; commit
