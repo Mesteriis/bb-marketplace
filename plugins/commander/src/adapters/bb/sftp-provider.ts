@@ -78,8 +78,10 @@ const ERROR_CODE: Record<SftpRefusalCode, ErrorCode> = {
 };
 
 /**
- * Refusals the server gives when it did NOT apply the operation. Any other refusal of a mutation
- * (unreachable, failure, channel_closed) can hide an applied change, so it is outcome_unknown.
+ * Refusals the server gives when it did NOT apply the operation (a changing operation is then safe to report as
+ * failed). Not listed here, and therefore outcome_unknown for a mutation: unreachable and failure (the request may
+ * have been applied) and outcome_unknown itself. channel_closed is not listed either: the request was never sent,
+ * so it is repeated once (see execute), and a second channel_closed is connection_failed.
  */
 const DEFINITIVE: ReadonlySet<SftpRefusalCode> = new Set<SftpRefusalCode>([
   "caller_not_plugin",
@@ -342,7 +344,10 @@ export function createSftpProvider(options: SftpProviderOptions): SftpProvider {
       output = await callPort("hub_sftp_op", input, signal);
     } catch (error) {
       if (error instanceof SftpRefusal) {
-        if (error.code === "channel_closed" || error.code === "consent_revoked") dropChannel(input.channelId);
+        // A refusal that ends the channel (closed, revoked, or lost after a send) drops it, and with it atomicReplace.
+        if (error.code === "channel_closed" || error.code === "consent_revoked" || error.code === "outcome_unknown") {
+          dropChannel(input.channelId);
+        }
         // channel_closed: the request never reached the server, so the caller may repeat it once (see execute).
         if (mutating && error.code !== "channel_closed" && !DEFINITIVE.has(error.code)) throw commanderError("outcome_unknown");
         throw error;

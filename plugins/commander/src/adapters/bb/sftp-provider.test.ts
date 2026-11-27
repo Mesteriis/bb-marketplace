@@ -153,7 +153,7 @@ describe("ambiguous outcome of a mutation (a transport failure after sending)", 
     expect(mock.exists("/d")).toBe(true);
   });
 
-  it.each(["unreachable", "failure"] as const)("a creating write refused with %s is outcome_unknown from openWrite", async (code) => {
+  it.each(["outcome_unknown", "unreachable", "failure"] as const)("a creating write refused with %s is outcome_unknown from openWrite", async (code) => {
     const { provider } = setup({ failAll: code });
     const error = await expectCode(openWrite(provider, at("f.txt"), signal()), "outcome_unknown");
     expect(error.retryable).toBe(false);
@@ -657,7 +657,6 @@ describe("error mapping", () => {
     ["permission_denied", "permission_denied", false],
     ["profile_not_found", "unsupported", false],
     ["channel_closed", "connection_failed", true],
-    ["outcome_unknown", "outcome_unknown", false],
     ["no_such_file", "not_found", false],
     ["profile_not_sftp", "unsupported", false],
     ["limit_exceeded", "limit_exceeded", false],
@@ -675,9 +674,12 @@ describe("error mapping", () => {
     ["failure", "internal", false],
   ];
 
-  it("the table covers every refusal code of the contract", () => {
-    expect(TABLE.map(([code]) => code).sort()).toEqual(Object.keys(SFTP_REFUSALS).sort());
-    expect(TABLE).toHaveLength(24);
+  // outcome_unknown is a refusal only a changing operation can get (see the mutation test below).
+  const MUTATION_ONLY = ["outcome_unknown"] as const;
+
+  it("the tables cover every refusal code of the contract", () => {
+    expect([...TABLE.map(([code]) => code), ...MUTATION_ONLY].sort()).toEqual(Object.keys(SFTP_REFUSALS).sort());
+    expect(TABLE).toHaveLength(23);
   });
 
   it.each(TABLE)("refusal %s on a read is %s (retryable %s), with no leaked text", async (code, expected, retryable) => {
@@ -1008,5 +1010,56 @@ describe("an aborted session is finished (final review)", () => {
     await expectCode(a.write(0n, bytes("x"), signal()), "internal");
     expect(mock.calls.length).toBe(before);
     expect(text(mock.bytesAt("/.gone.part"))).toBe("other");
+  });
+});
+
+describe("an outcome_unknown refusal drops the channel (final review of 8eac67cc)", () => {
+  it("after an outcome_unknown on mkdir, the next independent operation opens a new channel once, and atomicReplace is withdrawn", async () => {
+    const { mock, provider } = setup();
+    mock.seedFile("/a.txt", "a");
+    mock.seedFile("/t.txt", "old");
+    await provider.rename(at("a.txt"), at("t.txt"), { replace: true }, signal());
+    expect(provider.capabilities.has("atomicReplace")).toBe(true);
+
+    mock.dieNext("mkdir");
+    await expectCode(provider.mkdir(at("d"), signal()), "outcome_unknown");
+    expect(provider.capabilities.has("atomicReplace")).toBe(false);
+
+    const opensBefore = mock.opCount("open");
+    const statsBefore = mock.opCount("op:stat");
+    const entry = await provider.stat(at("t.txt"), signal());
+    expect(entry).toMatchObject({ kind: "file" });
+    expect(mock.opCount("open")).toBe(opensBefore + 1);
+    // One stat, no channel_closed on the old channel first: the drop happened when outcome_unknown came back.
+    expect(mock.opCount("op:stat")).toBe(statsBefore + 1);
+  });
+
+  it("a rename whose helper dies after applying it is outcome_unknown, and is not repeated", async () => {
+    const { mock, provider } = setup();
+    mock.seedFile("/a.txt", "a");
+    mock.dieNext("rename");
+    await expectCode(provider.rename(at("a.txt"), at("b.txt"), { replace: false }, signal()), "outcome_unknown");
+    expect(mock.appliedCount("rename")).toBe(1);
+    expect(mock.opCount("op:rename")).toBe(1);
+    expect(mock.exists("/b.txt")).toBe(true);
+  });
+
+  it("a read whose helper dies is channel_closed on the wire, so the read is repeated once and succeeds", async () => {
+    const { mock, provider } = setup();
+    mock.seedFile("/x.txt", "abc");
+    mock.dieNext("read");
+    expect(text(await provider.read(at("x.txt"), 0n, 3, null, signal()))).toBe("abc");
+    expect(mock.opCount("op:read")).toBe(2);
+    expect(mock.opCount("open")).toBe(2);
+  });
+
+  it.each(["mkdir", "rename", "remove"] as const)("%s after channel_closed is repeated once on a new channel and applied once", async (op) => {
+    const { mock, provider } = setup({ failNext: "channel_closed" });
+    mock.seedFile("/a.txt", "a");
+    if (op === "mkdir") await provider.mkdir(at("d"), signal());
+    if (op === "rename") await provider.rename(at("a.txt"), at("b.txt"), { replace: false }, signal());
+    if (op === "remove") await provider.remove(at("a.txt"), { kind: "file" }, signal());
+    expect(mock.appliedCount(op)).toBe(1);
+    expect(mock.opCount("open")).toBe(2);
   });
 });

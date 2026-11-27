@@ -316,7 +316,9 @@ export class RemoteHubMock implements RemoteHubPort {
     if (this.dieOn === input.op) {
       this.dieOn = undefined;
       for (const channel of this.channels.values()) channel.alive = false;
-      this.refuse("outcome_unknown");
+      // A read that loses its channel is channel_closed (not sent, so repeatable); a changing operation that was sent
+      // and never answered is outcome_unknown.
+      this.refuse(reads ? "channel_closed" : "outcome_unknown");
     }
 
     if (this.options.misreply) return { op: input.op === "remove" ? "mkdir" : "remove" };
