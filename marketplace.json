@@ -328,6 +328,26 @@
       }
     },
     {
+      "id": "makosh-commander",
+      "displayName": "Makosh Commander [Experimental]",
+      "description": "Experimental two-pane file manager for BB. Early scaffold: the Commander page is a placeholder.",
+      "icon": {
+        "url": "./plugins/commander/assets/icon.svg"
+      },
+      "author": {
+        "name": "Mesteriis",
+        "github": "Mesteriis",
+        "url": "https://github.com/Mesteriis"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/commander",
+          "ref": "main"
+        }
+      }
+    },
+    {
       "id": "context-health",
       "displayName": "Context Health",
       "description": "Inspect thread context usage, skills, instructions and conversation content.",
