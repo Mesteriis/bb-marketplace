@@ -298,8 +298,9 @@ export function createSftpProvider(options: SftpProviderOptions): SftpProvider {
         if (mutating && !DEFINITIVE.has(error.code)) throw commanderError("outcome_unknown");
         throw error;
       }
-      if (error instanceof ZodError) throw error;
+      // A reply the schema refuses (ZodError) or a lost reply: a mutation may have been applied, so its outcome is unknown.
       if (mutating) throw commanderError("outcome_unknown");
+      if (error instanceof ZodError) throw error;
       throw transportError(error, signal);
     }
   }

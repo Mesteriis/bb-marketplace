@@ -3,6 +3,7 @@
 import { describe, expect, it } from "vitest";
 import {
   REMOTE_HUB_SFTP_CONTRACT,
+  base64Bytes,
   SFTP_EVENTS_CHANNEL,
   SFTP_LIMITS,
   SFTP_REFUSALS,
@@ -23,7 +24,7 @@ const P = "5b568675-f842-4a96-83e0-78ae53d96024";
 
 describe("contract id", () => {
   it("names the Remote Hub commit it mirrors", () => {
-    expect(REMOTE_HUB_SFTP_CONTRACT).toBe("remote-hub@0bdc04d8");
+    expect(REMOTE_HUB_SFTP_CONTRACT).toBe("remote-hub@ea8e3bfa");
     expect(SFTP_EVENTS_CHANNEL).toBe("remote-hub.sftp");
   });
 });
@@ -144,13 +145,38 @@ describe("methods", () => {
 });
 
 describe("base64 chunk limit", () => {
-  // Buffer.alloc(n) encodes to base64 of n decoded bytes; 4 MiB is the most a chunk carries.
+  // Buffer.alloc(n) encodes to base64 of n decoded bytes; 4 MiB (4194304 bytes) is the most a chunk carries.
   const encoded = (bytes: number) => Buffer.alloc(bytes, 1).toString("base64");
 
-  it("accepts exactly 4194304 decoded bytes in a read reply, and refuses 4194305 and 4194306", () => {
+  it("counts decoded bytes, padding included", () => {
+    expect(base64Bytes("AAAA")).toBe(3);
+    expect(base64Bytes("AAA=")).toBe(2);
+    expect(base64Bytes("AA==")).toBe(1);
+    expect(base64Bytes("")).toBe(0);
+  });
+
+  it("refuses text that is not canonical base64: a URL-alphabet character, a padding in the middle, a bad length", () => {
+    expect(base64Bytes("-_8=")).toBeNull();
+    expect(base64Bytes("AB=C")).toBeNull();
+    expect(base64Bytes("A===")).toBeNull();
+    expect(base64Bytes("AAA")).toBeNull();
+  });
+
+  it("accepts 4194303 and 4194304 decoded bytes in a read reply, and refuses 4194305 and 4194306", () => {
+    expect(sftpOpOutputSchema.safeParse({ op: "read", data: encoded(4194303), eof: true }).success).toBe(true);
     expect(sftpOpOutputSchema.safeParse({ op: "read", data: encoded(4194304), eof: true }).success).toBe(true);
     expect(sftpOpOutputSchema.safeParse({ op: "read", data: encoded(4194305), eof: true }).success).toBe(false);
     expect(sftpOpOutputSchema.safeParse({ op: "read", data: encoded(4194306), eof: true }).success).toBe(false);
+  });
+
+  it("a full 4 MiB text (5592408 characters) passes the schema without overflowing the stack", () => {
+    const full = encoded(4194304);
+    expect(full.length).toBe(5592408);
+    expect(sftpOpInputSchema.safeParse({ channelId: CH, op: "write", path: { text: "/f" }, offset: "0", data: full, create: "exclusive" }).success).toBe(true);
+  });
+
+  it("refuses the URL alphabet in a read reply, even at the right length", () => {
+    expect(sftpOpOutputSchema.safeParse({ op: "read", data: "-_8=", eof: true }).success).toBe(false);
   });
 
   it("applies the same limit to a write chunk", () => {

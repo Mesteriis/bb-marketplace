@@ -1,4 +1,4 @@
-// Ручное zod-зеркало контракта Remote Hub для других плагинов (remote-hub@0bdc04d8):
+// Ручное zod-зеркало контракта Remote Hub для других плагинов (remote-hub@ea8e3bfa):
 // plugins/remote-hub/src/core/sftp-contract.ts. Плагины не импортируют файлы друг друга,
 // поэтому схемы переписаны здесь. Ничего, кроме zod и самого себя, не импортирует.
 //
@@ -6,7 +6,7 @@
 // ссылки на учётные данные или имени элемента Keychain (все объекты `.strict()`).
 import { z } from "zod";
 
-export const REMOTE_HUB_SFTP_CONTRACT = "remote-hub@0bdc04d8";
+export const REMOTE_HUB_SFTP_CONTRACT = "remote-hub@ea8e3bfa";
 
 export const SFTP_LIMITS = {
   /** Наибольший объём байт одного чтения или одной записи. */
@@ -30,25 +30,32 @@ export function levelAllows(granted: SftpLevel, needed: SftpLevel): boolean {
 }
 
 /**
- * Canonical padded base64: length a multiple of 4, the alphabet, then at most two `=` at the very end.
- * Written as a plain scan, not as a nested regex: the grouped pattern overflows the V8 stack on a 4 MiB chunk.
+ * How many bytes canonical base64 text decodes to, or null when it is not canonical base64 (standard alphabet, length a
+ * multiple of four, at most two `=` and only at the end). One pass over the text: a 4 MiB chunk is 5.6 million characters,
+ * which a regular expression with a repeated group cannot take.
  */
-const BASE64_BODY = /^[A-Za-z0-9+/]*={0,2}$/;
-function isBase64(value: string): boolean {
-  return value.length % 4 === 0 && BASE64_BODY.test(value);
+export function base64Bytes(text: string): number | null {
+  const n = text.length;
+  if (n % 4 !== 0) return null;
+  let pad = 0;
+  if (n > 0 && text.charCodeAt(n - 1) === 61) pad = text.charCodeAt(n - 2) === 61 ? 2 : 1;
+  for (let i = 0; i < n - pad; i++) {
+    const c = text.charCodeAt(i);
+    const ok = (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c === 43 || c === 47;
+    if (!ok) return null;
+  }
+  return (n / 4) * 3 - pad;
 }
-/** Bytes a canonical base64 string decodes to: four characters make three bytes, less the padding. */
-function decodedLength(value: string): number {
-  const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0;
-  return (value.length / 4) * 3 - padding;
-}
-/** Canonical base64 whose DECODED length is at most maxBytes. */
+
+/** Canonical base64 of at most `maxBytes` DECODED bytes (the padding is counted, so one byte over is refused). */
 const base64Schema = (maxBytes: number) =>
   z
     .string()
     .max(Math.ceil(maxBytes / 3) * 4)
-    .refine(isBase64)
-    .refine((value) => decodedLength(value) <= maxBytes, "decodes to more bytes than the limit");
+    .refine((s) => {
+      const bytes = base64Bytes(s);
+      return bytes !== null && bytes <= maxBytes;
+    }, "not canonical base64, or more bytes than allowed");
 
 /**
  * Путь или имя на сервере. `text`, если это валидный UTF-8; `bytes` (base64 сырых байтов), если нет,
@@ -113,7 +120,11 @@ export const sftpOpInputSchema = z.union([
     onChannel("realpath", { path: sftpPathSchema }),
     onChannel("read", { path: sftpPathSchema, offset: uint64Schema, length: z.number().int().min(1).max(SFTP_LIMITS.chunkBytes) }),
     onChannel("mkdir", { path: sftpPathSchema }),
-    /** `overwrite: true` заменяет существующую цель атомарно, где сервер может (posix-rename); иначе `unsupported`. */
+    /**
+     * `overwrite: false`: цель не должна существовать (иначе `exists`). `overwrite: true`: атомарная замена, которую
+     * может только сервер с расширением posix-rename. Без него `overwrite: true` ВСЕГДА `unsupported`, есть цель или нет:
+     * Remote Hub не эмулирует remove+rename и не отвечает по тому, что лежит на сервере.
+     */
     onChannel("rename", { from: sftpPathSchema, to: sftpPathSchema, overwrite: z.boolean() }),
     /** Удаляет один файл или ОДИН ПУСТОЙ каталог; рекурсии на сервере нет. */
     onChannel("remove", { path: sftpPathSchema, kind: z.enum(["file", "dir"]) }),

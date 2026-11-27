@@ -60,7 +60,7 @@ function tempName(session: SftpWriteSession): string {
 
 describe("contract and capabilities", () => {
   it("exports the contract id it mirrors and declares only the stage-one capabilities", () => {
-    expect(REMOTE_HUB_SFTP_CONTRACT).toBe("remote-hub@0bdc04d8");
+    expect(REMOTE_HUB_SFTP_CONTRACT).toBe("remote-hub@ea8e3bfa");
     const { provider } = setup();
     expect([...provider.capabilities].sort()).toEqual(["list", "mkdir", "read", "remove", "rename", "seek", "stat", "write"]);
     expect(provider.capabilities.has("atomicReplace")).toBe(false);
@@ -631,6 +631,33 @@ describe("error mapping", () => {
     const { provider } = setup({ failNext: "auth_failed", refusalDetail: LEAK });
     const error = await expectCode(provider.list(at(), { cursor: null, limit: 10 }, signal()), "auth_failed");
     expect(error.message).toBe("Sign-in to the SFTP server failed");
+  });
+
+  it("a mkdir whose reply carries an extra field is outcome_unknown, and the directory was applied", async () => {
+    const { mock, provider } = setup({ leakField: "password" });
+    const error = await expectCode(provider.mkdir(at("d"), signal()), "outcome_unknown");
+    expect(error.retryable).toBe(false);
+    expect(error.message).toBe("The outcome of the operation is unknown");
+    expect(error.message).not.toContain("password");
+    expect(mock.exists("/d")).toBe(true);
+  });
+
+  it("a rename whose reply carries an extra field is outcome_unknown, and the rename was applied", async () => {
+    const { mock, provider } = setup({ leakField: "password" });
+    mock.seedFile("/a.txt", "a");
+    const error = await expectCode(provider.rename(at("a.txt"), at("b.txt"), { replace: false }, signal()), "outcome_unknown");
+    expect(error.retryable).toBe(false);
+    expect(error.toShape().message).not.toContain("hunter2");
+    expect(mock.exists("/b.txt")).toBe(true);
+  });
+
+  it("a full 4 MiB write chunk goes through the schema in one call", async () => {
+    const { mock, provider } = setup();
+    const session = await provider.openWrite(at("full.bin"), signal());
+    await session.write(0n, new Uint8Array(4 * MIB), signal());
+    await session.commit({ replace: false, expectTarget: null }, signal());
+    expect(mock.opCount("op:write")).toBe(1);
+    expect(mock.bytesAt("/full.bin")?.byteLength).toBe(4 * MIB);
   });
 
   it("a reply with a field the schema does not allow is internal, with no field name in the message", async () => {
