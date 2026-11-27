@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { renderText, resolveParams, secretIssues, type TemplateParam } from "../src/core/templating/engine.ts";
+import { renderText, resolveParams, secretIssues, templateParam, type TemplateParam } from "../src/core/templating/engine.ts";
 
 const params: TemplateParam[] = [
   {name: "name", label: "Name", kind: "text", default: "app"},
@@ -44,4 +44,11 @@ test("a text parameter may narrow its values with a pattern; a default that brea
 test("loopback and the any-address are no machine's address; others are", () => {
   assert.deepEqual(secretIssues("host = \"127.0.0.1\"\nbind: 0.0.0.0:8000\n", {addresses: false}), []);
   assert.deepEqual(secretIssues("upstream 192.168.1.20\n", {addresses: false}), ["an IP address"]);
+});
+
+test("a pattern with a quantified group inside a quantifier is refused, so a value cannot hang the server", () => {
+  for (const pattern of ["^(a+)+$", "^(a|aa)*$", "^([a-z]*)*x$", "(x+){2,}"])
+    assert.equal(templateParam.safeParse({name: "p", label: "P", kind: "text", default: "a", pattern}).success, false, pattern);
+  assert.equal(templateParam.safeParse({name: "p", label: "P", kind: "text", default: "a", pattern: "^[a-z_][a-z0-9_]*(/[a-z]+)+$"}).success, false);
+  assert.equal(templateParam.safeParse({name: "p", label: "P", kind: "text", default: "a", pattern: "^[a-z_][a-z0-9_]{0,59}$"}).success, true);
 });

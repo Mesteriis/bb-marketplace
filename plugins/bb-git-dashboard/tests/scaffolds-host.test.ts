@@ -57,3 +57,14 @@ test("a file path that would leave the project fails, and the half-made folder i
   assert.ok(!existsSync(join(base, "projects/Personal/bad")));
   assert.ok(!existsSync(join(base, "projects/Personal/out.txt")));
 });
+
+test("the host too refuses a .git path of any case at any depth, and a project inside another project's working tree", async () => {
+  for (const path of [".GIT/config", "sub/.git/config", "a/.Git/hooks/x"])
+    await assert.rejects(scaffoldCreate(join(base, "projects"), "Personal", "cased", [{path, text: "x", executable: false}], author, "x"), {message: "INVALID_PATH"}, path);
+  assert.ok(!existsSync(join(base, "projects/Personal/cased")));
+  mkdirSync(join(base, "projects/Personal/repo/inner"), {recursive: true});
+  git(join(base, "projects/Personal/repo"), "init", "-q");
+  await assert.rejects(scaffoldCreate(join(base, "projects"), "Personal/repo", "nested", files, author, "x"), {message: "INVALID_DESTINATION"});
+  await assert.rejects(scaffoldCreate(join(base, "projects"), "Personal/repo/inner", "nested", files, author, "x"), {message: "INVALID_DESTINATION"});
+  assert.ok(!existsSync(join(base, "projects/Personal/repo/nested")));
+});

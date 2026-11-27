@@ -11,7 +11,8 @@ export type ScaffoldFileWrite = {path: string; text: string; executable: boolean
 /** A relative path of plain segments inside the project, never into `.git`. */
 const relative = (path: string) => {
   const parts = path.split("/");
-  if (!path || parts.some(part => !part || part === "." || part === ".." || part.includes("\\")) || parts[0] === ".git") fail("INVALID_PATH");
+  // .git in any case and at any depth: on a case-insensitive disk .GIT is the repository's own folder.
+  if (!path || parts.some(part => !part || part === "." || part === ".." || part.includes("\\") || part.toLowerCase() === ".git")) fail("INVALID_PATH");
   return parts;
 };
 
@@ -27,6 +28,9 @@ export async function scaffoldCreate(projectsRoot: string, category: string, nam
   const target = clonePath(folder, category, name) ?? fail("INVALID_DESTINATION");
   const parent = await realpath(dirname(target)).catch(() => fail("INVALID_DESTINATION"));
   if (parent !== dirname(target) || (parent !== folder && !parent.startsWith(folder + sep))) fail("INVALID_DESTINATION");
+  // A category is a folder that holds projects, not a project: nothing between the projects folder and the new one has .git.
+  for (let dir = parent; dir !== folder && dir.startsWith(folder + sep); dir = dirname(dir))
+    if (await lstat(join(dir, ".git")).then(() => true, () => false)) fail("INVALID_DESTINATION");
   if (await lstat(target).then(() => true, (error: NodeJS.ErrnoException) => error.code === "ENOENT" ? false : Promise.reject(error))) fail("DESTINATION_EXISTS");
   await mkdir(target);
   try {

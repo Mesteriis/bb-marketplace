@@ -25,7 +25,12 @@ export type Scaffold = z.infer<typeof scaffold>;
 export type ScaffoldOutput = {path: string; text: string; executable: boolean};
 
 /** A file whose text is prose, where free text goes as it is; every other file is code or configuration. */
-const prose = (path: string) => /\.(md|txt)$/i.test(path) || /(^|\/)(LICENSE|NOTICE)$/.test(path);
+const prose = (path: string) => /\.md$/i.test(path) || /(^|\/)(LICENSE|NOTICE)$/.test(path);
+/**
+ * A file a shell, Make or Docker reads, where `$`, backticks and quotes expand even inside a JSON string: free text goes
+ * nowhere into it (words, such as names and versions, are safe there).
+ */
+const shellLike = (path: string) => /(^|\/)(Makefile|GNUmakefile|Dockerfile|Containerfile)$|\.(sh|bash|zsh|mk|Dockerfile|ps1|bat|cmd)$|(^|\/)\.env\.example$/i.test(path);
 const folderName = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$/;
 /** Found secret-like text: named apart from a template that does not render. */
 class SecretFound extends CodedError {}
@@ -42,7 +47,8 @@ function holds(when: string | undefined, values: TemplateValues, params: Map<str
 function safePath(path: string) {
   const parts = path.split("/");
   const file = parts.at(-1)!;
-  if (!path || parts.some(part => !/^[A-Za-z0-9_.@+-]+$/.test(part) || part === "." || part === "..") || parts[0] === ".git"
+  // .git in any case and at any depth: on a case-insensitive disk .GIT is the repository's own folder.
+  if (!path || parts.some(part => !/^[A-Za-z0-9_.@+-]+$/.test(part) || part === "." || part === ".." || part.toLowerCase() === ".git")
     || (/^\.env(\.|$)/.test(file) && file !== ".env.example")) throw invalid("unsafe file path " + JSON.stringify(path));
   return path;
 }
@@ -55,8 +61,10 @@ function safePath(path: string) {
 export function buildScaffold(source: Scaffold, given: TemplateValues, suggested: Record<string, string | boolean>):
   {values: TemplateValues; files: ScaffoldOutput[]} {
   const list = [...commonParams, ...source.params];
+  const folderRule = () => invalid("the project name must be a folder name: letters, digits, '.', '_' and '-'");
+  if (Object.hasOwn(given, "name") && !folderName.test(String(given.name))) throw folderRule();
   const values = resolveParams(list, given, suggested);
-  if (!folderName.test(String(values.name))) throw invalid("the project name must be a folder name: letters, digits, '.', '_' and '-'");
+  if (!folderName.test(String(values.name))) throw folderRule();
   const author = String(values.author).trim();
   const params = new Map([...list, ...derivedParams].map(param => [param.name, param]));
   const all = {...values, holder: author || values.name + " contributors"};
@@ -65,8 +73,9 @@ export function buildScaffold(source: Scaffold, given: TemplateValues, suggested
     for (const file of files) {
       if (!holds(file.when, all, params)) continue;
       const path = safePath(substitute(file.path, params, all, false));
-      if (out.has(path)) throw invalid("two files have the path " + path);
-      const text = renderText(file.body, [...params.values()], all, {raw: prose(path)});
+      if ([...out.keys()].some(other => other.toLowerCase() === path.toLowerCase())) throw invalid("two files have the path " + path);
+      const lines = shellLike(path) ? [...params.values()].filter(param => param.kind !== "line") : [...params.values()];
+      const text = renderText(file.body, lines, all, {raw: prose(path)});
       const found = secretIssues(text, {addresses: false});
       if (found.length) throw new SecretFound("TEMPLATE_INVALID", path + " has " + found.join(", "));
       out.set(path, {path, text, executable: file.executable === true});

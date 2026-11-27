@@ -66,7 +66,9 @@ test("a file may not leave the project, write into .git, or be a .env file other
 });
 
 test("the project name is a folder and package name, and the common parameters cannot be redefined", () => {
-  for (const name of ["My App", "-x", "a/b", ".hidden"]) assert.throws(() => buildScaffold(tiny, {name}, {}), /TEMPLATE_INVALID/, name);
+  for (const name of ["My App", "-x", "a/b", ".hidden"])
+    assert.throws(() => buildScaffold(tiny, {name}, {}), (error: Error & {detail?: string}) => error.message === "TEMPLATE_INVALID"
+      && /the project name must be a folder name/.test(error.detail ?? ""), name);
   assert.deepEqual(scaffoldIssues({...tiny, params: [{name: "license", label: "L", kind: "text", default: "x"}]}),
     ["The scaffold redefines the common parameter license."]);
 });
@@ -92,4 +94,20 @@ test("offered scaffolds: built-in ones, then own ones from the settings list and
   ]);
   assert.deepEqual(ownScaffolds("settings", "[1"), [{source: "settings", name: "settings", raw: null, error: "The scaffolds setting is not a JSON list."}]);
   assert.deepEqual(ownScaffolds("settings", ""), []);
+});
+
+test("no file goes into a .git folder of any case, at any depth, and paths that differ only in case are one path", () => {
+  for (const path of [".GIT/config", ".Git/hooks/pre-commit", "sub/.git/config", "a/.GIT/x"])
+    assert.throws(() => buildScaffold({...tiny, files: [{path, body: "x\n"}]}, {}, {}), /TEMPLATE_INVALID/, path);
+  assert.throws(() => buildScaffold({...tiny, files: [{path: "docs/Guide.md", body: "a\n"}, {path: "docs/guide.md", body: "b\n"}]}, {}, {}), /TEMPLATE_INVALID/);
+});
+
+test("free text goes as it is into Markdown, LICENSE and NOTICE only; never into a shell, Make or Docker file, even quoted", () => {
+  const withText = (path: string, body: string) => ({...tiny, files: [{path, body}]});
+  assert.throws(() => buildScaffold(withText("requirements.txt", "{{description}}\n"), {}, {}), /TEMPLATE_INVALID/);
+  assert.throws(() => buildScaffold(withText("CMakeLists.txt", "project({{description}})\n"), {}, {}), /TEMPLATE_INVALID/);
+  for (const path of ["Makefile", "scripts/run.sh", "Dockerfile", "docker/api.Dockerfile", "rules.mk", ".env.example"])
+    assert.throws(() => buildScaffold(withText(path, "X = {{description|json}}\n"), {description: "costs $(rm -rf /)"}, {}), /TEMPLATE_INVALID/, path);
+  // Words (names, versions) are safe there.
+  assert.ok(buildScaffold(withText("Makefile", "NAME = {{name}}\n"), {}, {}).files.some(file => file.path === "Makefile"));
 });

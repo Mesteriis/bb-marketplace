@@ -20,9 +20,12 @@ export function scaffoldCi(files: ScaffoldOutput[], scaffold: Scaffold, forge: C
   }));
   const input = {paths: root, manifests};
   const stacks = detectStacks(input);
-  const template = builtinTemplates.find(item => item.forge === forge && item.stacks.includes(stacks[0]?.id ?? "docker") && stacks.length > 0);
+  const first = stacks[0];
+  const template = first && builtinTemplates.find(item => item.forge === forge && item.stacks.includes(first.id));
   if (!template) return null;
   const own = Object.fromEntries(Object.entries(scaffold.ci ?? {}).filter(([key]) => template.params.some(param => param.name === key)));
-  const values = resolveValues(template, {}, {...templateDefaults(template, stacks, {...repo, make: makeCheck(input)}), ...own});
+  // A web/ folder with its own package.json is checked too (Go projects with a web UI).
+  const web = paths.includes("web/package.json");
+  const values = resolveValues(template, {}, {...templateDefaults(template, stacks, {...repo, make: makeCheck(input)}), web, ...own});
   return {...renderTemplate(template, values), template: template.id};
 }

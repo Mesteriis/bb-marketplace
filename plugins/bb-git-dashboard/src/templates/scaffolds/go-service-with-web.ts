@@ -10,7 +10,7 @@ export const goServiceWithWeb: Scaffold = {
   title: "Go service with a web UI",
   description: "Go HTTP service (cmd/, internal/, golangci-lint, govulncheck) with an optional React + Vite + TypeScript UI and Docker.",
   params: [
-    {name: "module", label: "Go module path", kind: "text", default: "example.com/my-project", pattern: "^[a-z0-9][a-z0-9.-]*(/[A-Za-z0-9_.-]+)+$"},
+    {name: "module", label: "Go module path", kind: "text", default: "example.com/my-project", pattern: "^(?!.*//)(?!.*\\.\\.)[a-z0-9][a-z0-9.-]*/[A-Za-z0-9_./-]*[A-Za-z0-9_]$"},
     {name: "binary", label: "Command name", kind: "text", default: "server", pattern: "^[a-z][a-z0-9-]{0,39}$"},
     {name: "web", label: "Web UI in web/ (React, Vite, TypeScript)", kind: "flag", default: true},
     {name: "docker", label: "Dockerfile and compose.yaml", kind: "flag", default: false},
@@ -165,12 +165,16 @@ LINT := bin/golangci-lint-$(GOLANGCI_LINT_VERSION)
 
 .PHONY: check fmt fmt-check vet lint test vuln build web-install web-check web-build
 
+# WEB=0 leaves web/ out (CI checks it in a job of its own where one image cannot hold both Go and Node.js).
+WEB ?= 1
+CHECKS := fmt-check vet lint test vuln
 {{#web}}
-check: fmt-check vet lint test vuln web-check
+ifneq ($(WEB),0)
+CHECKS += web-check
+endif
 {{/web}}
-{{^web}}
-check: fmt-check vet lint test vuln
-{{/web}}
+
+check: $(CHECKS)
 
 fmt:
 \tgofmt -w .
@@ -181,9 +185,10 @@ fmt-check:
 vet:
 \tgo vet ./...
 
-# golangci-lint is installed as a pinned binary, as its documentation advises, not through go install.
+# golangci-lint is installed as a pinned binary, as its documentation advises, not through go install; the install
+# script is taken from the same release tag, and it checks the binary's checksum.
 $(LINT):
-\tcurl -sSfL https://golangci-lint.run/install.sh | sh -s -- -b bin $(GOLANGCI_LINT_VERSION)
+\tcurl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/$(GOLANGCI_LINT_VERSION)/install.sh | sh -s -- -b bin $(GOLANGCI_LINT_VERSION)
 \tmv bin/golangci-lint $(LINT)
 
 lint: $(LINT)
@@ -376,8 +381,8 @@ describe("readHealth", () => {
 {{#web}}
 FROM node:${v.node}-slim AS web
 WORKDIR /web
-COPY web/package.json web/package-lock.json ./
-RUN npm ci
+COPY web/package*.json ./
+RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
 COPY web/ ./
 RUN npm run build
 

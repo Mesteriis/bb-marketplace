@@ -4,7 +4,7 @@ import { scaffoldCi } from "../../core/scaffolds/ci.ts";
 import { offerScaffolds, ownScaffolds, type OwnScaffold } from "../../core/scaffolds/catalog.ts";
 import type { ScaffoldRequest } from "../../core/scaffolds/contract.ts";
 import { buildScaffold, type ScaffoldOutput } from "../../core/scaffolds/model.ts";
-import { failureFor, type Copy } from "../../core/workspace.ts";
+import { CodedError, failureFor, type Copy } from "../../core/workspace.ts";
 import { builtinScaffolds } from "../../templates/scaffolds/index.ts";
 import { hostContract } from "./host-contract.ts";
 
@@ -62,8 +62,10 @@ export function scaffoldHandlers(bb: BbPluginApi, deps: Deps) {
         .sort((a, b) => a.path < b.path ? -1 : 1) : files;
       const {root} = await deps.rules();
       const now = Date.now();
-      for (const [key, record] of previews) if (record.expires < now) previews.delete(key);
-      if (previews.size >= 32) throw new Error("REPO_LIMIT");
+      // A new preview of the same place replaces the earlier one; expired ones go.
+      for (const [key, record] of previews) if (record.expires < now || (record.hostId === input.hostId && record.projectsRoot === root
+        && record.category === input.category && record.name === name)) previews.delete(key);
+      if (previews.size >= 64) throw new Error("REPO_LIMIT");
       const id = randomUUID();
       const message = "Initial commit from the " + entry.scaffold.title + " scaffold";
       previews.set(id, {hostId: input.hostId, projectsRoot: root, category: input.category, name, files: all, author: input.author, message, expires: now + ttl});
@@ -80,12 +82,18 @@ export function scaffoldHandlers(bb: BbPluginApi, deps: Deps) {
       const record = previews.get(previewId);
       previews.delete(previewId);
       if (!record || record.expires < Date.now()) throw new Error("PREVIEW_EXPIRED");
+      // The projects folder changed since the preview: the place shown is not where the catalog now looks.
+      if ((await deps.rules()).root !== record.projectsRoot) throw new Error("PREVIEW_EXPIRED");
+      const place = [record.projectsRoot.replace(/\/+$/, ""), record.category, record.name].filter(Boolean).join("/");
+      const unknown = () => new CodedError("OUTCOME_UNKNOWN", "the project may have been made at " + place + ": look there, and open it from the catalog to attach it");
       const made = await host.call("scaffoldCreate", {projectsRoot: record.projectsRoot, category: record.category, name: record.name,
         files: record.files, author: record.author, message: record.message}, {hostId: record.hostId, timeoutMs: 60_000})
-        .catch(() => failureFor(undefined, "OUTCOME_UNKNOWN"));
+        .catch(() => null);
+      if (!made) throw unknown();
       if (!made.ok) throw new Error(made.code);
       const copy = await deps.saveCopy(record.hostId, made.root, made.identity,
-        {...(made.repository ? {repository: made.repository} : {}), ...(made.repositoryName ? {repositoryName: made.repositoryName} : {})});
+        {...(made.repository ? {repository: made.repository} : {}), ...(made.repositoryName ? {repositoryName: made.repositoryName} : {})})
+        .catch(() => { throw new CodedError("OUTCOME_UNKNOWN", "the project was made at " + made.root + " but not attached: open it from the catalog"); });
       bb.realtime.publish("git-workspace-changed", {copyId: copy.id});
       return {copyId: copy.id, root: made.root};
     }),

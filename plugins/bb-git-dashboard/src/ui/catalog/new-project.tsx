@@ -69,7 +69,11 @@ function ScaffoldForm({api, hostId, root, categories, entry, suggested, onCreate
     <div className="git-row"><button type="submit" className="git-primary" disabled={pending || !built.ok || !destination || !authorReady}>
       {pending ? "Working…" : "Review project…"}</button></div>
     {preview && <ConfirmDialog title={"Create " + String(values.name)} lines={preview.lines} onClose={() => setPreview(null)}
-      onConfirm={async () => { const made = await api.createScaffold(preview.id); onCreated(made.root); }}>
+      onConfirm={async () => {
+        // The preview is spent once Confirm runs: whatever happens, the dialog closes and the form says why.
+        try { const made = await api.createScaffold(preview.id); onCreated(made.root); }
+        catch (cause) { setError(message(cause)); }
+      }}>
       <details><summary>{preview.files.length} files</summary>
         <ul className="git-ci-lines">{preview.files.map(item => <li key={item.path} className="git-path">{item.path} · {item.bytes} B</li>)}</ul></details>
     </ConfirmDialog>}

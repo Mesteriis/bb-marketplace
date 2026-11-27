@@ -50,11 +50,14 @@ test("go-service-with-web: the module path and command name, web/ only with its 
   const withWeb = buildScaffold(byId("go-service-with-web"), {module: "example.org/team/tool", binary: "tool"}, {}).files;
   assert.equal(file(withWeb, "go.mod"), "module example.org/team/tool\n\ngo 1.26.0\n\ntoolchain go1.27.4\n");
   assert.match(file(withWeb, "cmd/tool/main.go")!, /^\t"example\.org\/team\/tool\/internal\/server"$/m);
-  assert.match(file(withWeb, "Makefile")!, /^check: fmt-check vet lint test vuln web-check$/m);
+  assert.match(file(withWeb, "Makefile")!, /^CHECKS := fmt-check vet lint test vuln\nifneq \(\$\(WEB\),0\)\nCHECKS \+= web-check\nendif\n\ncheck: \$\(CHECKS\)$/m);
+  assert.match(file(withWeb, "Makefile")!, /https:\/\/raw\.githubusercontent\.com\/golangci\/golangci-lint\/\$\(GOLANGCI_LINT_VERSION\)\/install\.sh/);
   assert.equal(JSON.parse(file(withWeb, "web/package.json")!).devDependencies.typescript, "~6.0.3");
   const plain = buildScaffold(byId("go-service-with-web"), {web: false}, {}).files;
   assert.ok(!plain.some(item => item.path.startsWith("web/")));
-  assert.match(file(plain, "Makefile")!, /^check: fmt-check vet lint test vuln$/m);
+  assert.match(file(plain, "Makefile")!, /^CHECKS := fmt-check vet lint test vuln\n\ncheck: \$\(CHECKS\)$/m);
+  const docker = buildScaffold(byId("go-service-with-web"), {docker: true}, {}).files;
+  assert.match(file(docker, "Dockerfile")!, /^COPY web\/package\*\.json \.\/\nRUN if \[ -f package-lock\.json \]; then npm ci; else npm install; fi$/m);
   assert.doesNotMatch(file(plain, "Makefile")!, /web-check:/);
   assert.throws(() => buildScaffold(byId("go-service-with-web"), {module: "Example.org/x"}, {}), /TEMPLATE_INVALID/);
 });

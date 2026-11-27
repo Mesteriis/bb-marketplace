@@ -1,0 +1,78 @@
+// Browser probe of 0.13.0: New project in the Catalog — a Python scaffold with free text, GitHub Actions CI and an
+// author; a name that is no folder name refused in the form; the preview before anything is written; then the folder
+// in the projects folder with its files, git init on main and one commit by the author, listed in the catalog; the
+// same name again refused. Usage: node scaffolds.mjs <bbUrl> <toolsDir> <chrome> <outDir>   (env STAND). Last line is PASS or FAIL.
+import { execFileSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+
+const [url, tools, chrome, out] = process.argv.slice(2);
+const project = process.env.STAND + "/home/projects/notes-service";
+const git = (...args) => execFileSync("git", ["-C", project, ...args], {encoding: "utf8"}).trim();
+const { chromium } = createRequire(tools + "/")("playwright-core");
+const browser = await chromium.launch({ executablePath: chrome, headless: true });
+const failures = [];
+const check = (name, ok, detail) => { console.log((ok ? "ok   " : "FAIL ") + name + (detail === undefined ? "" : " — " + JSON.stringify(detail))); if (!ok) failures.push(name); };
+const visible = async (locator, timeout = 30000) => { await locator.first().waitFor({ timeout }).catch(() => {}); return await locator.count() > 0; };
+try {
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  const errors = [];
+  page.on("pageerror", error => errors.push(String(error).slice(0, 200)));
+  await page.goto(url + "plugins/bb-git-dashboard/git", { waitUntil: "load" });
+  await page.getByRole("button", { name: "Каталог" }).click({ timeout: 30000 });
+  const catalog = page.getByRole("region", { name: "Catalog" });
+  await catalog.getByRole("button", { name: "New project…" }).click({ timeout: 60000 });
+  const section = page.getByRole("region", { name: "New project" });
+  const form = section.getByRole("form", { name: "New Python service (uv)" });
+  check("the scaffolds are offered, the Python service first", await visible(form));
+  await form.getByLabel("Project name (folder and package)").fill("My App");
+  check("a name that is no folder name is refused before anything is sent", await visible(form.getByText(/the project name must be a folder name/))
+    && await form.getByRole("button", { name: "Review project…" }).isDisabled());
+  await form.getByLabel("Project name (folder and package)").fill("notes-service");
+  await form.getByLabel("Python package (import name)").fill("notes");
+  await form.getByLabel("One-line description").fill("Notes \"service\" for: everyone");
+  await form.getByLabel("Kind of service").selectOption("fastapi");
+  await form.getByLabel("Commit author").fill("Stand Author");
+  await form.getByLabel("Email").fill("author@example.invalid");
+  const files = form.getByRole("list", { name: "Files" });
+  check("the files include the common ones, the service and the CI file", await visible(files.getByRole("button", { name: ".github/workflows/ci.yml" }))
+    && await visible(files.getByRole("button", { name: "LICENSE" })) && await visible(files.getByRole("button", { name: "src/notes/app.py" })));
+  await files.getByRole("button", { name: "pyproject.toml" }).click();
+  check("free text is escaped in pyproject.toml", (await form.getByLabel("Content of pyproject.toml").innerText()).includes("description = \"Notes \\\"service\\\" for: everyone\""));
+  await page.screenshot({ path: out + "/scaffolds-form.png", fullPage: true });
+
+  await form.getByRole("button", { name: "Review project…" }).click();
+  const dialog = page.getByRole("dialog");
+  check("the project is previewed before anything is written", await visible(dialog.getByText(/^Python service \(uv\) · \d+ files$/))
+    && await visible(dialog.getByText("CI · .github/workflows/ci.yml (python-github)")) && await visible(dialog.getByText(/first commit by Stand Author <author@example\.invalid>/))
+    && !existsSync(project));
+  await dialog.getByRole("button", { name: "Confirm" }).click();
+  check("the catalog says the project was made", await visible(page.getByText(/Created .*\/projects\/notes-service with its first commit/)));
+  check("the folder has its files, git on main and one commit by the author", existsSync(project + "/pyproject.toml") && existsSync(project + "/src/notes/app.py")
+    && git("branch", "--show-current") === "main" && git("log", "--format=%an <%ae>|%s") === "Stand Author <author@example.invalid>|Initial commit from the Python service (uv) scaffold"
+    && git("status", "--porcelain") === "");
+  const workflow = readFileSync(project + "/.github/workflows/ci.yml", "utf8");
+  check("the CI file installs with uv and runs make check", /run: pip install uv && uv sync\n/.test(workflow) && /run: make check\n$/.test(workflow), workflow.slice(-200));
+  check("the new project is listed in the catalog", await visible(catalog.getByRole("list", { name: "Local projects" }).getByText("notes-service", { exact: true }), 60000));
+
+  await catalog.getByRole("button", { name: "New project…" }).click();
+  const again = page.getByRole("region", { name: "New project" }).getByRole("form", { name: "New Python service (uv)" });
+  await again.getByLabel("Project name (folder and package)").fill("notes-service");
+  await again.getByLabel("Commit author").fill("Stand Author");
+  await again.getByLabel("Email").fill("author@example.invalid");
+  await again.getByRole("button", { name: "Review project…" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Confirm" }).click();
+  check("the same name again is refused in the form and nothing is overwritten", await visible(again.getByRole("alert").filter({hasText: "DESTINATION_EXISTS"}))
+    && await page.getByRole("dialog").count() === 0 && git("log", "--format=%s").split("\n").length === 1);
+
+  await page.setViewportSize({ width: 768, height: 900 });
+  await page.waitForTimeout(300);
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  check("no horizontal overflow at 768 px", overflow <= 0, overflow);
+  await page.screenshot({ path: out + "/scaffolds-768.png", fullPage: true });
+  check("no page errors", errors.length === 0, errors);
+} catch (error) {
+  check("probe ran to the end", false, String(error).slice(0, 1500));
+} finally { await browser.close(); }
+console.log(failures.length ? "FAIL" : "PASS");
+process.exit(failures.length ? 1 : 0);

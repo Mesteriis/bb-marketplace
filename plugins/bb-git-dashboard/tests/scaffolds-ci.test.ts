@@ -18,10 +18,11 @@ test("the created project's CI comes from the CI template of its stack, with the
   assert.match(python.text, /run: pip install uv && uv sync\n/);
   assert.match(python.text, /run: make check\n$/);
 
-  const go = ci("go-service-with-web", "gitlab")!;
+  const go = ci("go-service-with-web", "gitlab", {web: false})!;
   assert.equal(go.path, ".gitlab-ci.yml");
   assert.match(go.text, /^ {2}image: golang:1\.26$/m);
   assert.match(go.text, /^ {4}- make check$/m);
+  assert.doesNotMatch(go.text, /^web:/m);
 
   const plugin = ci("bb-plugin", "azure")!;
   assert.equal(plugin.path, "azure-pipelines.yml");
@@ -34,4 +35,14 @@ test("the created project's CI comes from the CI template of its stack, with the
 
 test("no forge chosen means no CI file", () => {
   assert.equal(ci("python-service-uv", null), null);
+});
+
+test("a Go project with web/ gets Node.js for it: in the same job on Actions and Azure, in a job of its own on GitLab", () => {
+  const gitlab = ci("go-service-with-web", "gitlab")!.text;
+  assert.match(gitlab, /^ {4}- make check WEB=0$/m);
+  assert.match(gitlab, /\nweb:\n {2}image: node:24\n {2}script:\n {4}- make web-check\n$/);
+  const github = ci("go-service-with-web", "github")!.text;
+  assert.match(github, /- uses: actions\/setup-node@v4\n {8}with:\n {10}node-version: "24"\n/);
+  assert.match(github, /run: make check\n$/);
+  assert.match(ci("go-service-with-web", "azure")!.text, /- task: NodeTool@0\n {4}inputs:\n {6}versionSpec: "24\.x"\n/);
 });

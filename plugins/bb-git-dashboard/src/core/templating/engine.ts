@@ -16,11 +16,16 @@ export const word = z.string().regex(/^[A-Za-z0-9_][A-Za-z0-9._\/@+-]{0,99}$/);
 /** One line of free text: no control characters and no template braces. */
 export const line = z.string().max(200).regex(/^[^\u0000-\u001f\u007f]*$/).refine(value => !/\{\{|\}\}/.test(value));
 const name = z.string().regex(/^[a-z][A-Za-z0-9]{0,39}$/);
+const group = String.raw`\((?:[^()\\]|\\.)*`;
+const nested = new RegExp(group + String.raw`(?:[+*|]|\{\d)(?:[^()\\]|\\.)*\)(?:[+*]|\{\d)`);
 const label = z.string().min(1).max(80);
 export const templateParam = z.discriminatedUnion("kind", [
-  /** `pattern` narrows the values further (a package or module name), as a regular expression source. */
+  /**
+   * `pattern` narrows the values further (a package or module name), as a regular expression source. A quantified
+   * group holding a quantifier or an alternation is refused: such a pattern can take exponential time on one value.
+   */
   z.object({name, label, kind: z.literal("text"), default: word,
-    pattern: z.string().max(200).refine(source => { try { new RegExp(source, "u"); return true; } catch { return false; } }).optional()}),
+    pattern: z.string().max(200).refine(source => { try { new RegExp(source, "u"); return !nested.test(source); } catch { return false; } }).optional()}),
   z.object({name, label, kind: z.literal("choice"), default: word, choices: z.array(word).min(1).max(20)}),
   z.object({name, label, kind: z.literal("flag"), default: z.boolean()}),
   /** Free text such as a description or an author: as it is only in raw text (Markdown, plain), elsewhere through |json. */
