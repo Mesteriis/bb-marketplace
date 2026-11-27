@@ -81,3 +81,9 @@ test("Azure runtime parameters are not offered as a form", async () => {
   assert.deepEqual(await api.dispatchSpec({id: "12", name: "app-ci", path: null}, "main"), {dispatchable: true, inputs: []});
   await assert.rejects(api.dispatch({id: "12", name: "app-ci", path: null}, "main", {x: "1"}), {message: "PROVIDER_UNSUPPORTED"});
 });
+
+test("a tag given as a full ref is queued as that ref", async () => {
+  const {send, calls} = devops({["POST " + base + "/builds"]: () => Response.json({id: 503})});
+  await azurePipelines(account, repo, "fixture-token-value", send).dispatch({id: "12", name: "app-ci", path: null}, "refs/tags/v1.0", {});
+  assert.deepEqual(calls[0].body, {definition: {id: 12}, sourceBranch: "refs/tags/v1.0"});
+});

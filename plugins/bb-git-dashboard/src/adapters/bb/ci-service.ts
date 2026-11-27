@@ -28,7 +28,8 @@ export function pipelinesOf({account, token, repo}: Linked, send: typeof fetch =
 
 /** CI/CD reads and confirmed writes for a working copy's linked repository. */
 export function ciService(deps: CiDeps) {
-  const previews = new Map<string, {copyId: string; action: CiAction; lines: string[]; expires: number}>();
+  const previews = new Map<string, {copyId: string; target: string; action: CiAction; lines: string[]; expires: number}>();
+  const targetOf = ({account, repo}: Linked) => account.id + "|" + repo.id;
 
   async function context(copyId: string) {
     const copy = await deps.copy(copyId);
@@ -40,7 +41,8 @@ export function ciService(deps: CiDeps) {
   /** The failed job's log excerpt ending at its error line, for an agent. */
   async function excerpt(api: Pipelines, runId: string, jobId: string | null) {
     const jobs = await api.jobs(runId);
-    const job = jobs.find(item => item.id === jobId) ?? jobs.find(item => item.state === "failure") ?? null;
+    // An agent gets the failed job's log; a selected job that did not fail is not what it should read.
+    const job = jobs.find(item => item.id === jobId && item.state === "failure") ?? jobs.find(item => item.state === "failure") ?? null;
     if (!job) return {job: null, lines: [] as string[]};
     const log = await api.log(runId, job.id).catch(() => null);
     if (!log) return {job: job.name, lines: await api.notes(runId, job.id).catch(() => [] as string[])};
@@ -82,7 +84,7 @@ export function ciService(deps: CiDeps) {
       return api.dispatchSpec(workflow, ref);
     },
     async prepare(copyId: string, action: CiAction) {
-      const {api} = await context(copyId);
+      const {api, linked} = await context(copyId);
       let target: string;
       if (action.kind === "dispatch") {
         const workflow = (await api.workflows()).find(item => item.id === action.workflowId);
@@ -97,14 +99,16 @@ export function ciService(deps: CiDeps) {
       const id = randomUUID();
       const lines = describeAction(action, target);
       const expires = Date.now() + previewTtl;
-      previews.set(id, {copyId, action, lines, expires});
+      previews.set(id, {copyId, target: targetOf(linked), action, lines, expires});
       return {id, lines, expires: new Date(expires).toISOString()};
     },
     async confirm(previewId: string) {
       const preview = previews.get(previewId);
       previews.delete(previewId);
       if (!preview || preview.expires < Date.now()) throw new Error("PREVIEW_EXPIRED");
-      const {api} = await context(preview.copyId);
+      const {api, linked} = await context(preview.copyId);
+      // The copy may have been linked to another repository since the preview; never act on that one.
+      if (targetOf(linked) !== preview.target) throw new Error("PREVIEW_EXPIRED");
       const {action} = preview;
       if (action.kind === "dispatch") {
         const workflow = (await api.workflows()).find(item => item.id === action.workflowId);

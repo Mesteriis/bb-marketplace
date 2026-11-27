@@ -155,3 +155,12 @@ test("a server that has a configured account is known without probing, even on a
     {kind: "gitea", state: "known", origin: "https://localhost:8443", linked: {accountId: "local", repoId: "5"}});
   assert.equal(calls.probe, 0);
 });
+
+test("an https remote on another port of the same host is not taken for the configured server", async () => {
+  const {links} = setup("https://localhost:9999/stand/alpha.git", {
+    accounts: async () => [{kind: "gitea", id: "local", label: "local", origin: "https://localhost:8443", organization: "", username: "stand"}],
+  });
+  const status = await links.status(copy);
+  assert.equal(status.detection?.kind ?? null, null);
+  assert.equal(status.linked, null);
+});

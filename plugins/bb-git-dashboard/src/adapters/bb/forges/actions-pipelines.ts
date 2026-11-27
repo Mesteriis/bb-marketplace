@@ -11,22 +11,30 @@ import { fetchLog } from "./log-fetch.ts";
 const size = 30;
 const nullable = (value: unknown) => text(value) || null;
 
-function toRun(raw: unknown): Run {
+/** A forge link, kept only over https on the forge's own web origin. */
+function linkOn(web: string, value: unknown) {
+  try {
+    const url = new URL(text(value));
+    return url.protocol === "https:" && url.origin === web && !url.username && !url.password ? url.href : null;
+  } catch { return null; }
+}
+
+function toRun(raw: unknown, web: string): Run {
   const row = object(raw);
   return {
     id: String(row.id ?? ""), number: Number.isSafeInteger(row.run_number) ? row.run_number as number : null,
     workflow: text(row.name) || text(row.path) || "Workflow", workflowId: nullable(row.path) ?? (row.workflow_id === undefined ? null : String(row.workflow_id)),
     title: text(row.display_title) || text(row.name), branch: nullable(row.head_branch), sha: nullable(row.head_sha), event: nullable(row.event),
     state: githubState(text(row.status), nullable(row.conclusion)), attempt: Number.isSafeInteger(row.run_attempt) && (row.run_attempt as number) > 0 ? row.run_attempt as number : 1,
-    createdAt: text(row.created_at), updatedAt: nullable(row.updated_at), url: nullable(row.html_url), actor: nullable(object(row.actor).login),
+    createdAt: text(row.created_at), updatedAt: nullable(row.updated_at), url: linkOn(web, row.html_url), actor: nullable(object(row.actor).login),
   };
 }
 
-function toJob(raw: unknown): Job {
+function toJob(raw: unknown, web: string): Job {
   const row = object(raw);
   return {
     id: String(row.id ?? ""), name: text(row.name), state: githubState(text(row.status), nullable(row.conclusion)),
-    startedAt: nullable(row.started_at), completedAt: nullable(row.completed_at), url: nullable(row.html_url),
+    startedAt: nullable(row.started_at), completedAt: nullable(row.completed_at), url: linkOn(web, row.html_url),
     steps: array(row.steps).map(object).map(step => ({number: Number(step.number) || 0, name: text(step.name),
       state: githubState(text(step.status), nullable(step.conclusion))})),
   };
@@ -36,25 +44,29 @@ function toJob(raw: unknown): Job {
 export function actionsPipelines(account: Account, repo: Repo, token: string, send: typeof fetch = fetch): Pipelines {
   const gitea = account.kind === "gitea";
   const http = client(account, token, send);
+  const api = originOf(account);
+  const web = api === "https://api.github.com" ? "https://github.com" : api;
   const root = forgePrefix(account) + forgeRepositoryPath(repo);
   const get = async (path: string) => (await http(root + path)).payload;
   const write = (path: string, body?: unknown) => http(root + path, {method: "POST", body, unsupported: gitea}).then(() => undefined);
   const paging = (page: number, count = size) => (gitea ? "limit=" : "per_page=") + count + "&page=" + page;
   const list = async (page: number, status?: string) => {
     const payload = object(await get("/actions/runs?" + paging(page) + (status ? "&status=" + status : "")));
-    const items = array(payload.workflow_runs).map(toRun);
+    const items = array(payload.workflow_runs).map(row => toRun(row, web));
     const total = Number(payload.total_count);
     return {items, more: Number.isFinite(total) ? total > page * size : items.length === size};
   };
   return {
     async runs(filter: RunFilter, page) {
       if (filter !== "active") return list(page, filter === "failed" ? "failure" : undefined);
-      const parts = await Promise.all([list(page, "in_progress"), list(page, "queued")]);
-      return {items: parts.flatMap(part => part.items).sort((left, right) => right.createdAt.localeCompare(left.createdAt)),
+      const parts = await Promise.all(["in_progress", "queued", "waiting"].map(status => list(page, status)));
+      // A run can change state between the requests and appear twice; keep its first copy.
+      const unique = new Map(parts.flatMap(part => part.items).map(item => [item.id, item] as const).reverse());
+      return {items: [...unique.values()].sort((left, right) => right.createdAt.localeCompare(left.createdAt)),
         more: parts.some(part => part.more)};
     },
-    run: async runId => toRun(await get("/actions/runs/" + segment(runId))),
-    jobs: async runId => array(object(await get("/actions/runs/" + segment(runId) + "/jobs?" + paging(1, 100))).jobs).map(toJob),
+    run: async runId => toRun(await get("/actions/runs/" + segment(runId)), web),
+    jobs: async runId => array(object(await get("/actions/runs/" + segment(runId) + "/jobs?" + paging(1, 100))).jobs).map(row => toJob(row, web)),
     log: (_runId, jobId) => fetchLog(new URL(root + "/actions/jobs/" + segment(jobId) + "/logs", originOf(account)), authorization(account, token), send),
     async notes(_runId, jobId) {
       // On GitHub a job is a check run with the same id; Gitea has no annotations API.

@@ -14,6 +14,7 @@ export function LogView({api, copyId, runId, job, liveLog, liveLimitation}: {
   const [notes, setNotes] = useState<string[]>([]);
   const [error, setError] = useState("");
   const marker = useRef<HTMLSpanElement>(null);
+  const placed = useRef<number | null>(null);
   const running = job.state === "running" || job.state === "queued";
   useEffect(() => {
     let active = true;
@@ -30,10 +31,13 @@ export function LogView({api, copyId, runId, job, liveLog, liveLimitation}: {
     return () => { active = false; clearTimeout(timer); };
   }, [api, copyId, runId, job.id, running, liveLog]);
   // Scroll only the log itself: scrollIntoView would also move the page and hide the panel header.
+  // Only when the error line first appears or moves, so live polling does not undo the user's own scrolling.
   useEffect(() => {
     const line = marker.current;
     const pane = line?.closest("pre");
-    if (line && pane) pane.scrollTop = line.offsetTop - pane.clientHeight / 2;
+    if (!line || !pane || placed.current === errorAt) return;
+    pane.scrollTop = line.offsetTop - pane.clientHeight / 2;
+    placed.current = errorAt;
   }, [errorAt, log]);
 
   if (running && !liveLog) return <p className="git-muted" role="status">{liveLimitation ?? "The log is available when the job ends."}</p>;

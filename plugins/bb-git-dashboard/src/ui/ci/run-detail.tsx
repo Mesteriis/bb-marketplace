@@ -16,6 +16,7 @@ export function RunDetail({api, copyId, runId, page, onBack, onChanged}: {
   const [preview, setPreview] = useState<{title: string; id: string; lines: string[]}>();
   const [sending, setSending] = useState(false);
   const [asked, setAsked] = useState<{threadId: string; created: boolean}>();
+  const [asking, setAsking] = useState(false);
   const [revision, setRevision] = useState(0);
   useEffect(() => {
     let active = true;
@@ -23,7 +24,9 @@ export function RunDetail({api, copyId, runId, page, onBack, onChanged}: {
     const load = () => api.run(copyId, runId).then(result => {
       if (!active) return;
       setDetail(result);
-      setJobId(current => current ?? (result.jobs.find(job => job.state === "failure") ?? result.jobs[0])?.id ?? null);
+      // After a re-run a forge may give the jobs new ids; keep the selection only while it still exists.
+      setJobId(current => result.jobs.some(job => job.id === current) ? current
+        : (result.jobs.find(job => job.state === "failure") ?? result.jobs[0])?.id ?? null);
       if (result.run.state === "running" || result.run.state === "queued") timer = setTimeout(load, 15_000);
     }, cause => { if (active) setError(message(cause)); });
     void load();
@@ -37,8 +40,10 @@ export function RunDetail({api, copyId, runId, page, onBack, onChanged}: {
   };
   const ask = async () => {
     setError("");
+    setAsking(true);
     try { setAsked(await api.ask(copyId, runId, jobId)); }
     catch (cause) { setError(message(cause)); }
+    finally { setAsking(false); }
   };
   if (!detail) return <div className="git-stack">
     <div className="git-row"><button type="button" onClick={onBack}>All runs</button></div>
@@ -61,7 +66,7 @@ export function RunDetail({api, copyId, runId, page, onBack, onChanged}: {
         <button type="button" onClick={() => void prepare("Re-run failed jobs", {kind: "rerun", runId, failedOnly: true})}>Re-run failed jobs</button>}
       {finished && ops.rerunAll && <button type="button" onClick={() => void prepare("Re-run all jobs", {kind: "rerun", runId, failedOnly: false})}>Re-run all jobs</button>}
       {!finished && ops.cancel && <button type="button" onClick={() => void prepare("Cancel run", {kind: "cancel", runId})}>Cancel run</button>}
-      {run.state === "failure" && <button type="button" className="git-primary" onClick={() => void ask()}>Ask agent</button>}
+      {run.state === "failure" && <button type="button" className="git-primary" disabled={asking} onClick={() => void ask()}>{asking ? "Asking…" : "Ask agent"}</button>}
       <button type="button" aria-expanded={sending} onClick={() => setSending(value => !value)}>Send to threads</button>
     </div>
     {asked && <p role="status">{asked.created ? "An agent is investigating this run. " : "This run is already being investigated. "}

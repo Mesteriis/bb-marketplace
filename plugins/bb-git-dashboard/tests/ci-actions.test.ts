@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { ciCapabilities, ciLimitation } from "../src/core/ci/capabilities.ts";
-import { newFailures } from "../src/core/ci/watch.ts";
+import { failureKey, newFailures } from "../src/core/ci/watch.ts";
 import { ciAction, describeAction } from "../src/core/ci/actions.ts";
 import type { Run } from "../src/core/ci/model.ts";
 
@@ -14,8 +14,8 @@ test("each forge states which CI operations it offers", () => {
   assert.equal(ciLimitation("gitea", "cancel"), null);
 });
 
-const run = (id: string, state: Run["state"], attempt = 1): Run => ({id, number: Number(id), workflow: "CI", workflowId: null, title: "", branch: "main",
-  sha: null, event: "push", state, attempt, createdAt: "2026-11-27T10:00:00Z", updatedAt: null, url: null, actor: null});
+const run = (id: string, state: Run["state"], attempt = 1, updatedAt: string | null = null): Run => ({id, number: Number(id), workflow: "CI", workflowId: null, title: "", branch: "main",
+  sha: null, event: "push", state, attempt, createdAt: "2026-11-27T10:00:00Z", updatedAt, url: null, actor: null});
 
 test("the first look only records failures; later looks report each new failed attempt once", () => {
   const first = newFailures(null, [run("1", "failure"), run("2", "success")]);
@@ -36,4 +36,12 @@ test("write actions are validated and described for confirmation", () => {
   assert.deepEqual(describeAction({kind: "rerun", runId: "9", failedOnly: true}, "CI #7"), ["Re-run failed jobs of CI #7"]);
   assert.deepEqual(describeAction({kind: "rerun", runId: "9", failedOnly: false}, "CI #7"), ["Re-run all jobs of CI #7"]);
   assert.deepEqual(describeAction({kind: "cancel", runId: "9"}, "CI #7"), ["Cancel CI #7"]);
+});
+
+test("a retried run that fails again under the same id and attempt is a new failure", () => {
+  const first = newFailures([], [run("501", "failure", 1, "2026-11-27T10:03:00Z")]);
+  assert.equal(first.failed.length, 1);
+  assert.equal(newFailures(first.seen, [run("501", "failure", 1, "2026-11-27T10:03:00Z")]).failed.length, 0);
+  assert.equal(newFailures(first.seen, [run("501", "failure", 1, "2026-11-27T10:20:00Z")]).failed.length, 1);
+  assert.equal(failureKey(run("501", "failure", 1, "2026-11-27T10:20:00Z")), "501#1#2026-11-27T10:20:00Z");
 });

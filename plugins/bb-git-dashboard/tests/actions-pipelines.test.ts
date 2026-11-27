@@ -42,7 +42,7 @@ test("active runs combine running and queued, newest first", async () => {
     call.url.includes("status=in_progress") ? [row(1, "in_progress", "2026-11-27T10:00:00Z")] : [row(2, "queued", "2026-11-27T10:05:00Z")]})});
   const page = await actionsPipelines(github, repo(github), token, send).runs("active", 1);
   assert.deepEqual(page.items.map(item => [item.id, item.state]), [["2", "queued"], ["1", "running"]]);
-  assert.deepEqual(calls.map(call => new URLSearchParams(call.url.split("?")[1]).get("status")).sort(), ["in_progress", "queued"]);
+  assert.deepEqual(calls.map(call => new URLSearchParams(call.url.split("?")[1]).get("status")).sort(), ["in_progress", "queued", "waiting"]);
 });
 
 test("Gitea uses its API prefix and limit paging", async () => {
@@ -125,4 +125,28 @@ test("a GitHub job that never started explains itself through its check-run anno
 test("a write the forge refuses in the run's current state has its own code", async () => {
   const {send} = forge({"POST /repos/octo/sandbox/actions/runs/9/cancel": () => Response.json({message: "Cannot cancel"}, {status: 409})});
   await assert.rejects(actionsPipelines(github, repo(github), token, send).cancel("9"), {message: "PROVIDER_CONFLICT"});
+});
+
+test("run and job links are kept only when they point at the forge over https", async () => {
+  const foreign = {...runRow, html_url: "https://evil.example/phish"};
+  const {send} = forge({"GET /api/v1/repos/octo/sandbox/actions/runs": () => Response.json({workflow_runs: [foreign, {...runRow, id: 3, html_url: "https://git.example.org/octo/sandbox/actions/runs/3"}]})});
+  const items = (await actionsPipelines(gitea, repo(gitea), token, send).runs("all", 1)).items;
+  assert.deepEqual(items.map(item => item.url), [null, "https://git.example.org/octo/sandbox/actions/runs/3"]);
+  const gh = forge({"GET /repos/octo/sandbox/actions/runs": () => Response.json({workflow_runs: [runRow, {...runRow, html_url: "http://github.com/x"}]})});
+  assert.deepEqual((await actionsPipelines(github, repo(github), token, gh.send).runs("all", 1)).items.map(item => item.url),
+    ["https://github.com/octo/sandbox/actions/runs/45968318641", null]);
+});
+
+test("runs waiting for approval count as active", async () => {
+  const {send, calls} = forge({"GET /repos/octo/sandbox/actions/runs": () => Response.json({workflow_runs: []})});
+  await actionsPipelines(github, repo(github), token, send).runs("active", 1);
+  assert.deepEqual(calls.map(call => new URLSearchParams(call.url.split("?")[1]).get("status")).sort(), ["in_progress", "queued", "waiting"]);
+});
+
+test("a log redirect to plain http or with credentials in the URL is refused", async () => {
+  for (const location of ["http://logs.example.net/blob", "https://user:pw@logs.example.net/blob"]) {
+    const {send, calls} = forge({"GET /repos/octo/sandbox/actions/jobs/77/logs": () => new Response(null, {status: 302, headers: {location}})});
+    await assert.rejects(actionsPipelines(github, repo(github), token, send).log("9", "77"), {message: "PROVIDER_REJECTED"});
+    assert.equal(calls.length, 1);
+  }
 });

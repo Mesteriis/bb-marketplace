@@ -51,11 +51,13 @@ export function forgeLinks(ports: LinkPorts) {
   };
 
   /** A server the user configured an account for is that account's forge, whatever its name. */
-  async function configured(host: string): Promise<Detection | null> {
+  async function configured(host: string, port: number | null = null): Promise<Detection | null> {
     for (const account of await ports.accounts()) {
       try {
         const url = new URL(account.origin);
         if (url.hostname.toLowerCase() !== host) continue;
+        // An https remote names the web port; SSH ports say nothing about it.
+        if (port !== null && port !== Number(url.port || 443)) continue;
         const origin = url.hostname === "api.github.com" ? "https://github.com" : url.origin;
         return {kind: account.kind, origin, host, status: "known"};
       } catch { continue; }
@@ -64,8 +66,9 @@ export function forgeLinks(ports: LinkPorts) {
   }
 
   async function place(hostId: string, remote: RemoteRef, recheck = false): Promise<Place> {
-    let detection = await configured(remote.host) ?? await resolverFor(hostId).resolve(remote, {recheck});
-    if (!detection.kind) detection = await configured(detection.host) ?? detection;
+    const webPort = remote.transport === "https" ? remote.port ?? 443 : null;
+    let detection = await configured(remote.host, webPort) ?? await resolverFor(hostId).resolve(remote, {recheck});
+    if (!detection.kind) detection = await configured(detection.host, webPort) ?? detection;
     const resolved = {...remote, host: detection.host};
     return {
       detection,

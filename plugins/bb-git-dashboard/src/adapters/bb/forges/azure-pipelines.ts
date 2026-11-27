@@ -73,7 +73,7 @@ export function azurePipelines(account: Account, repo: Repo, token: string, send
     dispatchSpec: async () => ({dispatchable: true, inputs: []}),
     async dispatch(workflow, ref, inputs) {
       if (Object.keys(inputs).length) throw new Error("PROVIDER_UNSUPPORTED");
-      await queue({definition: {id: Number(workflow.id)}, sourceBranch: "refs/heads/" + ref});
+      await queue({definition: {id: Number(workflow.id)}, sourceBranch: ref.startsWith("refs/") ? ref : "refs/heads/" + ref});
     },
     async rerun(runId, failedOnly) {
       if (failedOnly) {

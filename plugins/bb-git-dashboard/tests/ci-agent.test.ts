@@ -10,6 +10,7 @@ const run = {id: 9, run_number: 7, name: "CI", status: "completed", conclusion: 
 const send = (async (target: string | URL) => {
   const path = new URL(String(target)).pathname;
   if (path.endsWith("/actions/runs/9")) return Response.json(run);
+  if (path.endsWith("/actions/runs")) return Response.json({total_count: 1, workflow_runs: [run]});
   if (path.endsWith("/actions/runs/9/jobs")) return Response.json({jobs: [{id: 77, name: "test (2)", status: "completed", conclusion: "failure", steps: []}]});
   if (path.endsWith("/actions/jobs/77/logs")) return new Response("setup\nassert failed: src/greeting.txt:2\n##[error]Process completed with exit code 1.\npost\n");
   return new Response("{}", {status: 404});
@@ -24,19 +25,19 @@ function fakeBb() {
       delete: async (key: string) => { store.delete(key); }, list: async (prefix: string) => [...store.keys()].filter(key => key.startsWith(prefix))}},
     background: {service: () => {}},
     sdk: {threads: {
-      spawn: async (args: {prompt: string; title: string; environment: unknown}) => { spawned.push(args); return {id: "thr_new"}; },
+      spawn: async (args: {prompt: string; title: string; environment: unknown}) => { spawned.push(args); await new Promise(resolve => setTimeout(resolve, 20)); return {id: "thr_new"}; },
       send: async (args: {threadId: string; input: {text: string}[]}) => {
         if (args.threadId === "thr_gone") throw new Error("NOT_FOUND");
         messages.push({threadId: args.threadId, text: args.input[0].text});
         return {};
       },
-      list: async () => [{id: "thr_a", title: "Fix CI"}],
+      list: async () => [{id: "thr_a", title: "Fix CI"}, {id: "thr_gone", title: "Old"}],
     }},
   } as unknown as BbPluginApi;
   const service = ciService({copy: async () => copy, send,
     linked: async () => ({account: {kind: "github", id: "a", label: "A", origin: "https://github.com", organization: "", username: "octo"}, token: "fixture-token-value",
       repo: {id: "1", accountId: "a", project: "octo", name: "sandbox", path: "octo/sandbox", clone: "https://github.com/octo/sandbox.git", branch: "main", canPush: true}})});
-  return {agent: ciAgent(bb, service, () => {}), spawned, messages};
+  return {agent: ciAgent(bb, service, () => {}), spawned, messages, store};
 }
 
 test("asking an agent opens one investigation thread on the copy, with the fenced error excerpt", async () => {
@@ -60,7 +61,36 @@ test("sending to threads reports each thread that could not take the message", a
 test("subscriptions are listed with the project's threads and can be cleared", async () => {
   const {agent} = fakeBb();
   await agent.subscribe("c1", ["thr_a", "thr_a"]);
-  assert.deepEqual(await agent.threads("c1"), {threads: [{id: "thr_a", title: "Fix CI"}], subscribed: ["thr_a"]});
+  assert.deepEqual(await agent.threads("c1"), {threads: [{id: "thr_a", title: "Fix CI"}, {id: "thr_gone", title: "Old"}], subscribed: ["thr_a"]});
   await agent.subscribe("c1", []);
   assert.deepEqual((await agent.threads("c1")).subscribed, []);
+});
+
+test("runs go only to threads of the copy's project", async () => {
+  const {agent, messages} = fakeBb();
+  await assert.rejects(agent.send("c1", "9", null, ["thr_a", "thr_other_project"]), {message: "ACCESS_DENIED"});
+  await assert.rejects(agent.subscribe("c1", ["thr_other_project"]), {message: "ACCESS_DENIED"});
+  assert.equal(messages.length, 0);
+});
+
+test("asking twice at once opens one thread", async () => {
+  const {agent, spawned} = fakeBb();
+  const [first, second] = await Promise.all([agent.ask("c1", "9", null), agent.ask("c1", "9", null)]);
+  assert.equal(spawned.length, 1);
+  assert.deepEqual([first.threadId, second.threadId], ["thr_new", "thr_new"]);
+});
+
+test("the watcher remembers a failure only after delivering it", async () => {
+  const {agent, messages, store} = fakeBb();
+  await agent.subscribe("c1", ["thr_gone"]);
+  store.set("ci-seen/c1", []);
+  await agent.watchOnce("c1");
+  assert.deepEqual(store.get("ci-seen/c1"), [], "nothing was delivered, so the failure is retried next round");
+  await agent.subscribe("c1", ["thr_a"]);
+  store.set("ci-seen/c1", []);
+  await agent.watchOnce("c1");
+  assert.equal(messages.length, 1);
+  assert.equal((store.get("ci-seen/c1") as string[]).length, 1);
+  await agent.watchOnce("c1");
+  assert.equal(messages.length, 1);
 });

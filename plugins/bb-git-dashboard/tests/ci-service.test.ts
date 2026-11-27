@@ -9,7 +9,7 @@ const account = (kind: Account["kind"]): Account => ({kind, id: "a", label: "A",
 const repo: Repo = {id: "1", accountId: "a", project: "octo", name: "sandbox", path: "octo/sandbox", clone: "https://github.com/octo/sandbox.git", branch: "main", canPush: true};
 const run = {id: 9, run_number: 7, name: "CI", path: ".github/workflows/ci.yml", status: "completed", conclusion: "failure", run_attempt: 1, created_at: "2026-11-27T10:00:00Z"};
 
-function setup(kind: Account["kind"] = "github") {
+function setup(kind: Account["kind"] = "github", linkedRepo: () => Repo = () => repo) {
   const writes: string[] = [];
   const send = (async (target: string | URL, init?: RequestInit) => {
     const url = new URL(String(target));
@@ -20,7 +20,7 @@ function setup(kind: Account["kind"] = "github") {
     if (url.pathname.endsWith("/check-runs/77/annotations")) return Response.json([{annotation_level: "failure", message: "The job was not started because of billing."}]);
     return new Response("{}", {status: 404});
   }) as typeof fetch;
-  const service = ciService({copy: async id => id === "c1" ? copy : undefined, linked: async () => ({account: account(kind), token: "fixture-token-value", repo}), send});
+  const service = ciService({copy: async id => id === "c1" ? copy : undefined, linked: async () => ({account: account(kind), token: "fixture-token-value", repo: linkedRepo()}), send});
   return {service, writes};
 }
 
@@ -59,4 +59,13 @@ test("GitLab and unknown copies are reported, not guessed", async () => {
 
 test("a job without a log is explained by the forge's notes", async () => {
   assert.deepEqual(await setup().service.log("c1", "9", "77"), {log: null, errorLine: null, notes: ["The job was not started because of billing."]});
+});
+
+test("a confirmation is refused when the copy was linked to another repository meanwhile", async () => {
+  let current = repo;
+  const {service, writes} = setup("github", () => current);
+  const preview = await service.prepare("c1", {kind: "cancel", runId: "9"});
+  current = {...repo, id: "2", path: "octo/other", name: "other", clone: "https://github.com/octo/other.git"};
+  await assert.rejects(service.confirm(preview.id), {message: "PREVIEW_EXPIRED"});
+  assert.deepEqual(writes, []);
 });
