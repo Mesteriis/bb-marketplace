@@ -1,0 +1,53 @@
+{
+  "name": "bb-plugin-makosh-credential-vault",
+  "version": "0.1.0",
+  "description": "Encrypted password storage on macOS for BB plugins, with imports from Keychain and 1Password.",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Mesteriis/bb-marketplace.git",
+    "directory": "plugins/credential-vault"
+  },
+  "engines": {
+    "bb": ">=0.50",
+    "bbPluginSdk": ">=0.6.157"
+  },
+  "bb": {
+    "name": "Credential Vault",
+    "description": "Encrypted password storage on macOS for BB plugins, with imports from Keychain and 1Password.",
+    "branding": {
+      "icon": "Lock"
+    },
+    "server": "./server.ts",
+    "app": "./app.tsx",
+    "skills": [
+      "skills"
+    ]
+  },
+  "files": [
+    "dist",
+    "bin",
+    "skills",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "bb plugin build",
+    "build:helper": "sh native/build.sh",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test tests",
+    "check": "npm run typecheck && npm test"
+  },
+  "dependencies": {
+    "@get-bb/plugin-sdk": "0.6.157",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "7.6.13",
+    "@types/node": "22.20.5",
+    "@types/react": "19.3.0",
+    "hono": "^4.13.20",
+    "react": "19.3.1",
+    "typescript": "5.9.3"
+  }
+}
