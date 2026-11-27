@@ -1,18 +1,19 @@
 // In-memory Remote Hub SFTP helper, modelled on the schemas in src/core/wire/remote-hub-sftp.ts.
-// It validates every request with the mirrored schema (so a stray field fails loudly) and answers
-// with refusals as the host does: SftpRefusal with a stable code. Test-only; not shipped.
+// It validates every request with the mirrored schema (a stray field fails loudly) and answers with
+// refusals as the host does: SftpRefusal with a stable code. Test-only; not shipped.
 import { randomUUID } from "node:crypto";
 import {
   SFTP_LIMITS,
   SftpRefusal,
+  type RemoteHubPort,
+  type SftpInput,
   type SftpLevel,
   type SftpMethodName,
-  type SftpInput,
   type SftpOp,
   type SftpOpInput,
   type SftpOutput,
+  type SftpPath,
   type SftpRefusalCode,
-  type RemoteHubPort,
   levelAllows,
   neededLevel,
   sftpMethods,
@@ -24,14 +25,33 @@ export interface RemoteHubMockOptions {
   consent?: MockConsent;
   level?: SftpLevel;
   hostKey?: "trusted" | "unknown" | "changed";
-  /** The helper restarts once, after this many operations; channels of the old generation die. */
+  /** The helper restarts once, after this many applied operations; channels of the old generation die. */
   generationBumpAfter?: number;
-  /** false: rename with overwrite is refused as unsupported (no posix-rename). */
+  /** false: any rename with overwrite is refused as unsupported (no posix-rename). */
   posixRename?: boolean;
   /** Every write operation fails with this refusal. */
   failWrite?: "unreachable";
   /** The next operation fails with this refusal, then the mock behaves again. */
   failNext?: SftpRefusalCode;
+  /** Every operation fails with this refusal. */
+  failAll?: SftpRefusalCode;
+  /** The detail text the refusal carries (the host's own text, which a client must not show). */
+  refusalDetail?: string;
+  /** The channel cannot be opened: hub_sftp_open is refused with this code. */
+  openFailure?: SftpRefusalCode;
+  /**
+   * The next operation fails at the transport: "drop" applies it and then loses the reply;
+   * "abort" fails before anything is applied, as a cancelled call does.
+   */
+  faultNext?: "drop" | "abort";
+  /** Reads answer with more bytes than asked ("oversize") or an empty chunk without eof ("empty-no-eof"). */
+  readFault?: "oversize" | "empty-no-eof";
+  /** Every operation is answered with the reply of another operation. */
+  misreply?: boolean;
+  /** A stat right after a rename is refused with `failure`: the rename landed, the final stat did not. */
+  statFailsAfterRename?: boolean;
+  /** Extra names listed under the root, as the server would send them (hostile names included). */
+  extraNames?: SftpPath[];
   /** Creates /big with this many files. */
   dirSize?: number;
   /** Adds this field to every operation reply, to prove that the client's schema refuses it. */
@@ -46,6 +66,7 @@ export interface MockCall {
 interface FsNode {
   kind: "file" | "dir";
   data: Uint8Array;
+  mtime: number;
 }
 
 interface Channel {
@@ -56,19 +77,18 @@ interface Channel {
 const MTIME = 1795790479;
 const PROFILE = "5b568675-f842-4a96-83e0-78ae53d96024";
 const SLASH = 0x2f;
-const decoder = () => new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 function bytesOf(path: string | Uint8Array): Uint8Array {
   return typeof path === "string" ? new TextEncoder().encode(path) : path;
 }
 
-function wireBytes(path: { text: string } | { bytes: string }): Uint8Array {
+function wireBytes(path: SftpPath): Uint8Array {
   return "text" in path ? new TextEncoder().encode(path.text) : new Uint8Array(Buffer.from(path.bytes, "base64"));
 }
 
-function wireOf(bytes: Uint8Array): { text: string } | { bytes: string } {
+function wireOf(bytes: Uint8Array): SftpPath {
   try {
-    return { text: decoder().decode(bytes) };
+    return { text: new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes) };
   } catch {
     return { bytes: Buffer.from(bytes).toString("base64") };
   }
@@ -86,18 +106,7 @@ function parentOf(bytes: Uint8Array): Uint8Array | null {
 }
 
 function nameOf(bytes: Uint8Array): Uint8Array {
-  const index = bytes.lastIndexOf(SLASH);
-  return bytes.slice(index + 1);
-}
-
-function concat(...parts: Uint8Array[]): Uint8Array {
-  const out = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
-  let offset = 0;
-  for (const part of parts) {
-    out.set(part, offset);
-    offset += part.length;
-  }
-  return out;
+  return bytes.slice(bytes.lastIndexOf(SLASH) + 1);
 }
 
 function newGeneration(): string {
@@ -109,11 +118,13 @@ export class RemoteHubMock implements RemoteHubPort {
   private readonly nodes = new Map<string, { path: Uint8Array; node: FsNode }>();
   private readonly channels = new Map<string, Channel>();
   private consent: MockConsent;
-  private hostKey: "trusted" | "unknown" | "changed";
+  private readonly hostKey: "trusted" | "unknown" | "changed";
   private generation = newGeneration();
-  private operations = 0;
+  private applied = 0;
   private bumped = false;
   private failNext: SftpRefusalCode | undefined;
+  private fault: "drop" | "abort" | undefined;
+  private lastApplied: SftpOp | undefined;
   private readonly options: RemoteHubMockOptions;
 
   constructor(options: RemoteHubMockOptions = {}) {
@@ -121,6 +132,7 @@ export class RemoteHubMock implements RemoteHubPort {
     this.consent = options.consent ?? "granted";
     this.hostKey = options.hostKey ?? "trusted";
     this.failNext = options.failNext;
+    this.fault = options.faultNext;
     this.seedDir("/");
     if (options.dirSize !== undefined) {
       this.seedDir("/big");
@@ -131,12 +143,18 @@ export class RemoteHubMock implements RemoteHubPort {
   }
 
   seedDir(path: string | Uint8Array): void {
-    this.put(bytesOf(path), { kind: "dir", data: new Uint8Array() });
+    this.put(bytesOf(path), { kind: "dir", data: new Uint8Array(), mtime: MTIME });
   }
 
   seedFile(path: string | Uint8Array, data: string | Uint8Array): void {
-    const bytes = typeof data === "string" ? new TextEncoder().encode(data) : data;
-    this.put(bytesOf(path), { kind: "file", data: bytes });
+    const content = typeof data === "string" ? new TextEncoder().encode(data) : data;
+    this.put(bytesOf(path), { kind: "file", data: content, mtime: MTIME });
+  }
+
+  setMtime(path: string | Uint8Array, seconds: number): void {
+    const found = this.nodes.get(keyOf(bytesOf(path)));
+    if (!found) throw new Error("setMtime: no such path in the mock");
+    found.node.mtime = seconds;
   }
 
   bytesAt(path: string | Uint8Array): Uint8Array | undefined {
@@ -184,7 +202,7 @@ export class RemoteHubMock implements RemoteHubPort {
   }
 
   private refuse(code: SftpRefusalCode): never {
-    throw new SftpRefusal(code);
+    throw new SftpRefusal(code, this.options.refusalDetail);
   }
 
   private open(profileId: string): { channelId: string; generation: string } {
@@ -193,6 +211,7 @@ export class RemoteHubMock implements RemoteHubPort {
     if (this.consent !== "granted") this.refuse("consent_required");
     if (this.hostKey === "unknown") this.refuse("host_key_unknown");
     if (this.hostKey === "changed") this.refuse("host_key_changed");
+    if (this.options.openFailure) this.refuse(this.options.openFailure);
     const channelId = randomUUID();
     this.channels.set(channelId, { alive: true, generation: this.generation });
     return { channelId, generation: this.generation };
@@ -204,7 +223,7 @@ export class RemoteHubMock implements RemoteHubPort {
     return { closed: channel !== undefined };
   }
 
-  private operate(input: SftpOpInput): unknown {
+  private operate(input: SftpOpInput): Record<string, unknown> {
     const channel = this.channels.get(input.channelId);
     if (!channel || !channel.alive) this.refuse("channel_closed");
     if (this.consent === "revoked") {
@@ -213,20 +232,32 @@ export class RemoteHubMock implements RemoteHubPort {
     }
     if (this.consent !== "granted") this.refuse("consent_required");
     if (!levelAllows(this.options.level ?? "write", neededLevel(input.op))) this.refuse("permission_denied");
+    if (this.options.failAll) this.refuse(this.options.failAll);
     if (this.failNext) {
       const code = this.failNext;
       this.failNext = undefined;
       this.refuse(code);
     }
     if (input.op === "write" && this.options.failWrite) this.refuse(this.options.failWrite);
+    if (input.op === "stat" && this.options.statFailsAfterRename && this.lastApplied === "rename") this.refuse("failure");
+
+    const fault = this.fault;
+    this.fault = undefined;
+    if (fault === "abort") {
+      throw new DOMException("The operation was aborted.", "AbortError");
+    }
 
     const output = this.execute(input);
-    this.operations += 1;
-    if (!this.bumped && this.options.generationBumpAfter === this.operations) {
+    this.lastApplied = input.op;
+    this.applied += 1;
+    if (!this.bumped && this.options.generationBumpAfter === this.applied) {
       this.bumped = true;
       this.generation = newGeneration();
       for (const old of this.channels.values()) old.alive = false;
     }
+    if (fault === "drop") throw new Error("socket hang up");
+
+    if (this.options.misreply) return { op: input.op === "remove" ? "mkdir" : "remove" };
     return this.options.leakField ? { ...output, [this.options.leakField]: "hunter2" } : output;
   }
 
@@ -234,7 +265,7 @@ export class RemoteHubMock implements RemoteHubPort {
     return {
       type: node.kind === "dir" ? ("dir" as const) : ("file" as const),
       size: String(node.data.length),
-      mtime: MTIME,
+      mtime: node.mtime,
       mode: node.kind === "dir" ? 0o40755 : 0o100644,
       linkTarget: null,
     };
@@ -251,37 +282,50 @@ export class RemoteHubMock implements RemoteHubPort {
     if (parent && this.lookup(parent).kind !== "dir") this.refuse("no_such_file");
   }
 
+  private hasChildren(dir: Uint8Array): boolean {
+    return [...this.nodes.values()].some(({ path }) => {
+      const parent = parentOf(path);
+      return parent !== null && keyOf(parent) === keyOf(dir);
+    });
+  }
+
   private execute(input: SftpOpInput): Record<string, unknown> {
     switch (input.op) {
       case "list": {
-        const dirBytes = wireBytes(input.path);
-        if (this.lookup(dirBytes).kind !== "dir") this.refuse("no_such_file");
+        const dir = wireBytes(input.path);
+        if (this.lookup(dir).kind !== "dir") this.refuse("no_such_file");
         const children = [...this.nodes.values()]
           .filter(({ path }) => {
             const parent = parentOf(path);
-            return parent !== null && keyOf(parent) === keyOf(dirBytes) && path.length > 0;
+            return parent !== null && keyOf(parent) === keyOf(dir);
           })
           .sort((a, b) => keyOf(a.path).localeCompare(keyOf(b.path)));
         if (children.length > SFTP_LIMITS.listTotal) this.refuse("limit_exceeded");
+        const rows: Array<{ name: SftpPath; attrs: ReturnType<RemoteHubMock["attrsOf"]> }> = children.map(({ path, node }) => ({
+          name: wireOf(nameOf(path)),
+          attrs: this.attrsOf(node),
+        }));
+        if (keyOf(dir) === keyOf(new Uint8Array([SLASH]))) {
+          for (const name of this.options.extraNames ?? []) {
+            rows.push({ name, attrs: { type: "file", size: "0", mtime: MTIME, mode: 0o100644, linkTarget: null } });
+          }
+        }
         const start = input.cursor ? Number(input.cursor) : 0;
         const size = input.limit ?? SFTP_LIMITS.listPage;
-        const page = children.slice(start, start + size);
-        const next = start + size < children.length ? String(start + size) : null;
-        return {
-          op: "list",
-          entries: page.map(({ path, node }) => ({ name: wireOf(nameOf(path)), attrs: this.attrsOf(node) })),
-          nextCursor: next,
-        };
+        const next = start + size < rows.length ? String(start + size) : null;
+        return { op: "list", entries: rows.slice(start, start + size), nextCursor: next };
       }
-      case "stat": {
-        const node = this.lookup(wireBytes(input.path));
-        return { op: "stat", attrs: this.attrsOf(node) };
-      }
+      case "stat":
+        return { op: "stat", attrs: this.attrsOf(this.lookup(wireBytes(input.path))) };
       case "realpath":
         return { op: "realpath", path: input.path };
       case "read": {
         const node = this.lookup(wireBytes(input.path));
         if (node.kind !== "file") this.refuse("failure");
+        if (this.options.readFault === "empty-no-eof") return { op: "read", data: "", eof: false };
+        if (this.options.readFault === "oversize") {
+          return { op: "read", data: Buffer.alloc(input.length + 1).toString("base64"), eof: true };
+        }
         const offset = Number(input.offset);
         const chunk = node.data.slice(offset, offset + input.length);
         return {
@@ -302,23 +346,24 @@ export class RemoteHubMock implements RemoteHubPort {
         const next = new Uint8Array(Math.max(previous.length, offset + data.length));
         next.set(previous, 0);
         next.set(data, offset);
-        this.put(path, { kind: "file", data: next });
+        this.put(path, { kind: "file", data: next, mtime: MTIME });
         return { op: "write", written: data.length };
       }
       case "mkdir": {
         const path = wireBytes(input.path);
         if (this.nodes.has(keyOf(path))) this.refuse("exists");
         this.requireParent(path);
-        this.put(path, { kind: "dir", data: new Uint8Array() });
+        this.put(path, { kind: "dir", data: new Uint8Array(), mtime: MTIME });
         return { op: "mkdir" };
       }
       case "rename": {
         const from = wireBytes(input.from);
         const to = wireBytes(input.to);
         const node = this.lookup(from);
+        // Real SFTP without posix-rename has no atomic overwrite at all, present target or not.
+        if (input.overwrite && this.options.posixRename === false) this.refuse("unsupported");
         const target = this.nodes.get(keyOf(to));
         if (target && !input.overwrite) this.refuse("exists");
-        if (target && input.overwrite && this.options.posixRename === false) this.refuse("unsupported");
         this.requireParent(to);
         this.nodes.delete(keyOf(from));
         this.put(to, node);
@@ -327,17 +372,12 @@ export class RemoteHubMock implements RemoteHubPort {
       case "remove": {
         const path = wireBytes(input.path);
         const node = this.lookup(path);
-        if (input.kind === "dir" && node.kind === "dir") {
-          const hasChild = [...this.nodes.values()].some(({ path: child }) => {
-            const parent = parentOf(child);
-            return parent !== null && keyOf(parent) === keyOf(path);
-          });
-          if (hasChild) this.refuse("not_empty");
-        }
+        if (input.kind === "file" && node.kind === "dir") this.refuse("permission_denied");
+        if (input.kind === "dir" && node.kind === "file") this.refuse("permission_denied");
+        if (input.kind === "dir" && this.hasChildren(path)) this.refuse("not_empty");
         this.nodes.delete(keyOf(path));
         return { op: "remove" };
       }
     }
   }
 }
-

@@ -1,12 +1,16 @@
 // FileProvider for SFTP, reached through Remote Hub's plugin RPC (hub_sftp_*). Adapter: it knows the
 // Remote Hub wire contract (src/core/wire/remote-hub-sftp.ts) and maps it onto the core's ports.
 // Commander holds no secret here: keys, host keys and sign-in stay inside Remote Hub.
+//
+// Error rules, applied in one place (`send`):
+// - a refusal is definitive when the server says the operation was not applied (see DEFINITIVE);
+// - any other failure of a mutation after it was sent is outcome_unknown and is never repeated;
+// - a read may be repeated once on a closed channel; a cancelled read is cancelled.
 import { randomUUID } from "node:crypto";
 import { ZodError } from "zod";
 import { CommanderError, type ErrorCode } from "../../core/errors.ts";
-import { Entry } from "../../core/model.ts";
-import type { Capability, Endpoint, Fingerprint } from "../../core/model.ts";
-import type { NameSegment, ResourcePath } from "../../core/path.ts";
+import { Entry, type Capability, type Endpoint, type Fingerprint } from "../../core/model.ts";
+import { NameSegment, type ResourcePath } from "../../core/path.ts";
 import { LIST_PAGE_MAX, READ_CHUNK_MAX, type FileProvider, type WriteSession } from "../../core/provider.ts";
 import {
   SFTP_LIMITS,
@@ -29,6 +33,12 @@ export interface SftpWriteSession extends WriteSession {
   readonly tempPath: ResourcePath;
 }
 
+/** The core's FileProvider, with openWrite giving the session that carries its tempPath. */
+export type SftpProvider = Omit<FileProvider, "openWrite"> & {
+  openWrite(target: ResourcePath, signal: AbortSignal): Promise<SftpWriteSession>;
+  close(): Promise<void>;
+};
+
 export interface SftpProviderOptions {
   port: RemoteHubPort;
   profileId: string;
@@ -37,7 +47,8 @@ export interface SftpProviderOptions {
 
 const SLASH = 0x2f;
 const DOT = 0x2e;
-const IDEMPOTENT: ReadonlySet<SftpOp> = new Set<SftpOp>(["list", "stat", "realpath", "read"]);
+/** Bytes of the target's name kept in the temp name, so the temp name stays a valid segment. */
+const TEMP_STEM_BYTES = 200;
 
 /** Refusal code → core error code. Remote Hub's own text is never copied into the message. */
 const ERROR_CODE: Record<SftpRefusalCode, ErrorCode> = {
@@ -47,7 +58,7 @@ const ERROR_CODE: Record<SftpRefusalCode, ErrorCode> = {
   host_key_unknown: "host_key_rejected",
   host_key_changed: "host_key_rejected",
   permission_denied: "permission_denied",
-  profile_not_found: "not_found",
+  profile_not_found: "unsupported",
   channel_closed: "connection_failed",
   no_such_file: "not_found",
   profile_not_sftp: "unsupported",
@@ -66,8 +77,37 @@ const ERROR_CODE: Record<SftpRefusalCode, ErrorCode> = {
   failure: "internal",
 };
 
+/**
+ * Refusals the server gives when it did NOT apply the operation. Any other refusal of a mutation
+ * (unreachable, failure, channel_closed) can hide an applied change, so it is outcome_unknown.
+ */
+const DEFINITIVE: ReadonlySet<SftpRefusalCode> = new Set<SftpRefusalCode>([
+  "caller_not_plugin",
+  "consent_required",
+  "consent_revoked",
+  "host_key_unknown",
+  "host_key_changed",
+  "permission_denied",
+  "profile_not_found",
+  "profile_not_sftp",
+  "limit_exceeded",
+  "invalid_path",
+  "profile_needs_config",
+  "agent_unavailable",
+  "keychain_locked",
+  "keychain_needs_approval",
+  "credential_missing",
+  "auth_failed",
+  "no_such_file",
+  "exists",
+  "not_empty",
+  "unsupported",
+]);
+
 /** Fixed, safe messages: no key path, no Keychain name, no text from the server. */
 const MESSAGE: Partial<Record<ErrorCode, string>> = {
+  cancelled: "Cancelled",
+  changed_since_plan: "The target changed since the plan",
   consent_required: "Remote Hub has no grant for this profile",
   host_key_rejected: "The server's host key is not trusted; decide it on the Remote Hub page",
   auth_failed: "Sign-in to the SFTP server failed",
@@ -79,9 +119,7 @@ const MESSAGE: Partial<Record<ErrorCode, string>> = {
   unsupported: "The server cannot do this operation",
   limit_exceeded: "Directory has more entries than can be listed",
   invalid_path: "Invalid resource path",
-  changed_since_plan: "The target changed since the plan",
-  outcome_unknown: "The outcome of the write is unknown",
-  cancelled: "Cancelled",
+  outcome_unknown: "The outcome of the operation is unknown",
   internal: "Remote Hub call failed",
 };
 
@@ -89,13 +127,29 @@ function commanderError(code: ErrorCode): CommanderError {
   return new CommanderError(code, MESSAGE[code] ?? "Remote Hub call failed", code === "connection_failed");
 }
 
-/** Maps a refusal to the core error; core errors and schema errors pass through unchanged. */
+function isUnknown(error: unknown): boolean {
+  return error instanceof CommanderError && error.code === "outcome_unknown";
+}
+
+function isAbort(error: unknown, signal: AbortSignal): boolean {
+  return signal.aborted || (typeof error === "object" && error !== null && "name" in error && error.name === "AbortError");
+}
+
+/** A transport failure of a read or of a call before anything was applied. */
+function transportError(error: unknown, signal: AbortSignal): CommanderError {
+  return isAbort(error, signal) ? commanderError("cancelled") : commanderError("connection_failed");
+}
+
+/**
+ * Maps refusals to core errors. A core error passes. A schema error, a reply for another
+ * operation, or anything unexpected becomes internal, with fixed text and no field name.
+ */
 async function guard<T>(work: () => Promise<T>): Promise<T> {
   try {
     return await work();
   } catch (error) {
     if (error instanceof SftpRefusal) throw commanderError(ERROR_CODE[error.code]);
-    if (error instanceof CommanderError || error instanceof ZodError) throw error;
+    if (error instanceof CommanderError) throw error;
     throw commanderError("internal");
   }
 }
@@ -115,8 +169,10 @@ function concat(parts: Uint8Array[]): Uint8Array {
   return out;
 }
 
+const encode = (value: string) => new TextEncoder().encode(value);
+
 function segmentBytes(name: NameSegment): Uint8Array {
-  return "t" in name ? new TextEncoder().encode(name.t) : new Uint8Array(Buffer.from(name.b, "base64"));
+  return "t" in name ? encode(name.t) : new Uint8Array(Buffer.from(name.b, "base64"));
 }
 
 /** Text when the bytes are valid UTF-8, else the raw bytes in base64 (the contract's rule). */
@@ -140,6 +196,18 @@ function segmentFromWire(name: SftpPath): NameSegment {
   return "text" in name ? { t: name.text } : segmentFromBytes(new Uint8Array(Buffer.from(name.bytes, "base64")));
 }
 
+/**
+ * A name the server sent, as a core segment. "." and ".." are skipped (null). Anything else the core
+ * would not accept (a slash, a NUL, over 1024 characters) is internal; its text is not echoed.
+ */
+function trustedName(name: SftpPath): NameSegment | null {
+  const segment = segmentFromWire(name);
+  if ("t" in segment && (segment.t === "." || segment.t === "..")) return null;
+  const parsed = NameSegment.safeParse(segment);
+  if (!parsed.success) throw commanderError("internal");
+  return parsed.data;
+}
+
 function toWirePath(path: ResourcePath): SftpPath {
   if (path.segments.length === 0) return { text: "/" };
   const bytes = concat(path.segments.map((name) => concat([new Uint8Array([SLASH]), segmentBytes(name)])));
@@ -147,17 +215,16 @@ function toWirePath(path: ResourcePath): SftpPath {
   return wireOf(bytes);
 }
 
-/** The root has no name of its own; a listing never returns it, so only stat of "/" reaches this. */
+/** The root has no name of its own; the valid segment t:"root" stands for it (as in S4). */
 function nameOfPath(path: ResourcePath): NameSegment {
-  const last = path.segments.at(-1);
-  return last ?? { t: "/" };
+  return path.segments.at(-1) ?? { t: "root" };
 }
 
 function isHidden(name: NameSegment): boolean {
   return "t" in name ? name.t.startsWith(".") : Buffer.from(name.b, "base64")[0] === DOT;
 }
 
-function linkFromWire(target: SftpPath): { t: string } | { b: string } {
+function linkTargetOf(target: SftpPath): { t: string } | { b: string } {
   const segment = segmentFromWire(target);
   return "t" in segment ? { t: segment.t } : { b: segment.b };
 }
@@ -170,7 +237,7 @@ function toEntry(name: NameSegment, attrs: SftpAttrs): Entry {
     mtimeNs: attrs.mtime === null ? null : (BigInt(attrs.mtime) * 1_000_000_000n).toString(),
     mtimePrecision: attrs.mtime === null ? "unknown" : "s",
     mode: attrs.mode !== null && attrs.mode <= 0o177777 ? attrs.mode : null,
-    linkTarget: attrs.linkTarget === null ? null : linkFromWire(attrs.linkTarget),
+    linkTarget: attrs.linkTarget === null ? null : linkTargetOf(attrs.linkTarget),
     hidden: isHidden(name),
   };
 }
@@ -183,12 +250,6 @@ function sameFingerprint(a: Fingerprint, b: Fingerprint): boolean {
   return a.size === b.size && a.mtimeNs === b.mtimeNs;
 }
 
-/** The core's FileProvider, with openWrite giving the session that carries its tempPath. */
-export type SftpProvider = Omit<FileProvider, "openWrite"> & {
-  openWrite(target: ResourcePath, signal: AbortSignal): Promise<SftpWriteSession>;
-  close(): Promise<void>;
-};
-
 export function createSftpProvider(options: SftpProviderOptions): SftpProvider {
   const { port, profileId, endpoint } = options;
   const capabilities = new Set<Capability>(["list", "stat", "read", "write", "mkdir", "rename", "remove", "seek"]);
@@ -200,6 +261,14 @@ export function createSftpProvider(options: SftpProviderOptions): SftpProvider {
     return port.call(method, input, signal).then((raw) => sftpMethods[method].output.parse(raw) as SftpOutput<M>);
   }
 
+  /** Losing a channel also withdraws what was declared on it: atomicReplace belongs to a channel. */
+  function dropChannel(id: string): void {
+    if (channelId === id) {
+      channelId = null;
+      capabilities.delete("atomicReplace");
+    }
+  }
+
   function openChannel(signal: AbortSignal): Promise<string> {
     if (channelId !== null) return Promise.resolve(channelId);
     if (opening === null) {
@@ -207,45 +276,51 @@ export function createSftpProvider(options: SftpProviderOptions): SftpProvider {
         (opened) => {
           channelId = opened.channelId;
           opening = null;
-          // atomicReplace belongs to a channel: it is declared again only after a replacing rename passes here.
-          capabilities.delete("atomicReplace");
           return opened.channelId;
         },
         (error: unknown) => {
           opening = null;
-          throw error;
+          if (error instanceof SftpRefusal || error instanceof ZodError) throw error;
+          throw transportError(error, signal);
         },
       );
     }
     return opening;
   }
 
-  /**
-   * One operation on the open channel. A closed channel (helper restart, or consent revoked and the
-   * channel dropped) is reopened once for idempotent operations; a mutating one is never repeated and
-   * its outcome is reported as unknown.
-   */
-  async function execute(
-    build: (channel: string) => SftpOpInput,
-    idempotent: boolean,
-    signal: AbortSignal,
-  ): Promise<SftpOpOutput> {
+  /** One call on the channel. A mutation is never repeated; its ambiguous failures are outcome_unknown. */
+  async function send(input: SftpOpInput, mutating: boolean, signal: AbortSignal): Promise<SftpOpOutput> {
+    try {
+      return await callPort("hub_sftp_op", input, signal);
+    } catch (error) {
+      if (error instanceof SftpRefusal) {
+        if (error.code === "channel_closed") dropChannel(input.channelId);
+        if (mutating && !DEFINITIVE.has(error.code)) throw commanderError("outcome_unknown");
+        throw error;
+      }
+      if (error instanceof ZodError) throw error;
+      if (mutating) throw commanderError("outcome_unknown");
+      throw transportError(error, signal);
+    }
+  }
+
+  /** One operation. A read is reopened once on a closed channel; a second closed channel ends the retry. */
+  async function execute(build: (channel: string) => SftpOpInput, mutating: boolean, signal: AbortSignal): Promise<SftpOpOutput> {
+    if (signal.aborted) throw commanderError("cancelled");
     const first = await openChannel(signal);
     try {
-      return await callPort("hub_sftp_op", build(first), signal);
+      return await send(build(first), mutating, signal);
     } catch (error) {
-      if (!(error instanceof SftpRefusal && error.code === "channel_closed")) throw error;
-      if (channelId === first) channelId = null;
-      if (!idempotent) throw commanderError("outcome_unknown");
+      if (mutating || !(error instanceof SftpRefusal && error.code === "channel_closed")) throw error;
       const second = await openChannel(signal);
-      return callPort("hub_sftp_op", build(second), signal);
+      return send(build(second), false, signal);
     }
   }
 
   async function statEntry(path: ResourcePath, signal: AbortSignal): Promise<Entry | null> {
     try {
       const out = narrow(
-        await execute((channel) => ({ channelId: channel, op: "stat", path: toWirePath(path), follow: false }), true, signal),
+        await execute((channel) => ({ channelId: channel, op: "stat", path: toWirePath(path), follow: false }), false, signal),
         "stat",
       );
       return toEntry(nameOfPath(path), out.attrs);
@@ -257,111 +332,148 @@ export function createSftpProvider(options: SftpProviderOptions): SftpProvider {
 
   async function removeOp(path: ResourcePath, kind: "file" | "dir", signal: AbortSignal): Promise<void> {
     narrow(
-      await execute((channel) => ({ channelId: channel, op: "remove", path: toWirePath(path), kind }), false, signal),
+      await execute((channel) => ({ channelId: channel, op: "remove", path: toWirePath(path), kind }), true, signal),
       "remove",
     );
   }
 
-  async function renameOp(from: ResourcePath, to: ResourcePath, replace: boolean, signal: AbortSignal): Promise<void> {
-    await execute(
-      (channel) => ({ channelId: channel, op: "rename", from: toWirePath(from), to: toWirePath(to), overwrite: replace }),
-      false,
-      signal,
+  async function renameOp(from: ResourcePath, to: ResourcePath, replace: boolean, existed: boolean, signal: AbortSignal): Promise<void> {
+    narrow(
+      await execute(
+        (channel) => ({ channelId: channel, op: "rename", from: toWirePath(from), to: toWirePath(to), overwrite: replace }),
+        true,
+        signal,
+      ),
+      "rename",
     );
-    if (replace) capabilities.add("atomicReplace");
+    // atomicReplace is declared only after a replacing rename of an EXISTING target has passed on this channel.
+    if (replace && existed) capabilities.add("atomicReplace");
+  }
+
+  /** One write call. A refused creation or an unknown outcome is reported to the session through `onHalt`. */
+  async function writeChunk(
+    tempPath: ResourcePath,
+    offset: bigint,
+    slice: Uint8Array,
+    create: "exclusive" | "existing",
+    signal: AbortSignal,
+    onHalt: (code: ErrorCode) => void,
+  ): Promise<number> {
+    try {
+      const out = narrow(
+        await execute(
+          (channel) => ({
+            channelId: channel,
+            op: "write",
+            path: toWirePath(tempPath),
+            offset: offset.toString(),
+            data: Buffer.from(slice).toString("base64"),
+            create,
+          }),
+          true,
+          signal,
+        ),
+        "write",
+      );
+      return out.written;
+    } catch (error) {
+      if (isUnknown(error)) onHalt("outcome_unknown");
+      if (error instanceof SftpRefusal && error.code === "exists" && create === "exclusive") onHalt("already_exists");
+      throw error;
+    }
   }
 
   async function openWriteSession(target: ResourcePath): Promise<SftpWriteSession> {
     const last = target.segments.at(-1);
     if (last === undefined) throw commanderError("invalid_path");
     const parent = target.segments.slice(0, -1);
-    const tempName = segmentFromBytes(
-      concat([new Uint8Array([DOT]), segmentBytes(last), new TextEncoder().encode(`.commander-${randomUUID()}.part`)]),
-    );
+    const stem = segmentFromBytes(segmentBytes(last).slice(0, TEMP_STEM_BYTES));
+    const tempName = segmentFromBytes(concat([new Uint8Array([DOT]), segmentBytes(stem), encode(`.commander-${randomUUID()}.part`)]));
+    if (!NameSegment.safeParse(tempName).success) throw commanderError("internal");
     const tempPath: ResourcePath = { segments: [...parent, tempName] };
 
-    let wroteAny = false;
+    // created: a creating write has been answered, so the temp is known to exist and is ours to remove.
+    // halt: the session may no longer touch the temp (a refused creation, or an unknown outcome).
+    let created = false;
+    let halt: ErrorCode | null = null;
     let finished = false;
+    const setHalt = (code: ErrorCode) => {
+      halt = code;
+    };
+    const checkOpen = () => {
+      if (halt !== null) throw commanderError(halt);
+      if (finished) throw commanderError("internal");
+    };
 
     return {
       tempPath,
 
       async write(offset: bigint, bytes: Uint8Array, signal: AbortSignal): Promise<void> {
         return guard(async () => {
-          if (finished) throw commanderError("internal");
+          checkOpen();
           if (bytes.length === 0) return;
-          if (!wroteAny && offset !== 0n) throw new CommanderError("internal", "A write session starts at offset 0");
+          if (!created && offset !== 0n) throw new CommanderError("internal", "A write session starts at offset 0");
           for (let done = 0; done < bytes.length; done += READ_CHUNK_MAX) {
             const slice = bytes.subarray(done, done + READ_CHUNK_MAX);
-            const at = offset + BigInt(done);
-            const create = wroteAny ? "existing" : "exclusive";
-            wroteAny = true;
-            const out = narrow(
-              await execute(
-                (channel) => ({
-                  channelId: channel,
-                  op: "write",
-                  path: toWirePath(tempPath),
-                  offset: at.toString(),
-                  data: Buffer.from(slice).toString("base64"),
-                  create,
-                }),
-                false,
-                signal,
-              ),
-              "write",
-            );
-            if (out.written !== slice.length) throw commanderError("internal");
+            const create = created ? "existing" : "exclusive";
+            const written = await writeChunk(tempPath, offset + BigInt(done), slice, create, signal, setHalt);
+            if (written !== slice.length) {
+              setHalt("outcome_unknown");
+              throw commanderError("outcome_unknown");
+            }
+            created = true;
           }
         });
       },
 
       async commit(opts, signal: AbortSignal): Promise<Fingerprint> {
         return guard(async () => {
-          if (finished) throw commanderError("internal");
-          if (!wroteAny) {
+          checkOpen();
+          if (!created) {
             // An empty file: the contract allows an empty first chunk.
-            narrow(
-              await execute(
-                (channel) => ({
-                  channelId: channel,
-                  op: "write",
-                  path: toWirePath(tempPath),
-                  offset: "0",
-                  data: "",
-                  create: "exclusive",
-                }),
-                false,
-                signal,
-              ),
-              "write",
-            );
-            wroteAny = true;
+            await writeChunk(tempPath, 0n, new Uint8Array(0), "exclusive", signal, setHalt);
+            created = true;
           }
-          const target = { segments: [...parent, last] };
+          const target: ResourcePath = { segments: [...parent, last] };
+          const current = opts.replace ? await statEntry(target, signal) : null;
           if (opts.replace && opts.expectTarget !== null) {
-            const current = await statEntry(target, signal);
             if (current === null || !sameFingerprint(fingerprintOf(current), opts.expectTarget)) {
               throw commanderError("changed_since_plan");
             }
           }
-          await renameOp(tempPath, target, opts.replace, signal);
+          try {
+            await renameOp(tempPath, target, opts.replace, current !== null, signal);
+          } catch (error) {
+            if (isUnknown(error)) setHalt("outcome_unknown");
+            throw error;
+          }
           finished = true;
-          const landed = await statEntry(target, signal);
-          if (landed === null) throw commanderError("internal");
-          return fingerprintOf(landed);
+          try {
+            const landed = await statEntry(target, signal);
+            if (landed === null) throw commanderError("outcome_unknown");
+            return fingerprintOf(landed);
+          } catch {
+            // The rename has landed; whatever the final stat says, the outcome seen here is unknown.
+            throw commanderError("outcome_unknown");
+          }
         });
       },
 
       async abort(): Promise<void> {
         return guard(async () => {
-          if (finished) return;
+          // Only a temp this session created, and whose state is known, may be removed.
+          if (halt !== null || finished || !created) return;
           try {
             await removeOp(tempPath, "file", new AbortController().signal);
           } catch (error) {
-            if (error instanceof SftpRefusal && error.code === "no_such_file") return;
+            if (error instanceof SftpRefusal && error.code === "no_such_file") {
+              created = false;
+              return;
+            }
+            if (isUnknown(error)) setHalt("outcome_unknown");
             throw error;
           }
+          created = false;
         });
       },
     };
@@ -382,15 +494,17 @@ export function createSftpProvider(options: SftpProviderOptions): SftpProvider {
               ...(opts.cursor !== null ? { cursor: opts.cursor } : {}),
               limit: Math.min(opts.limit, LIST_PAGE_MAX),
             }),
-            true,
+            false,
             signal,
           ),
           "list",
         );
-        return {
-          entries: out.entries.map((item) => toEntry(segmentFromWire(item.name), item.attrs)),
-          cursor: out.nextCursor,
-        };
+        const entries: Entry[] = [];
+        for (const item of out.entries) {
+          const name = trustedName(item.name);
+          if (name !== null) entries.push(toEntry(name, item.attrs));
+        }
+        return { entries, cursor: out.nextCursor };
       });
     },
 
@@ -415,12 +529,14 @@ export function createSftpProvider(options: SftpProviderOptions): SftpProvider {
           const out = narrow(
             await execute(
               (channel) => ({ channelId: channel, op: "read", path: toWirePath(path), offset: readAt.toString(), length: want }),
-              true,
+              false,
               signal,
             ),
             "read",
           );
           const chunk = new Uint8Array(Buffer.from(out.data, "base64"));
+          if (chunk.length > want) throw commanderError("internal");
+          if (chunk.length === 0 && !out.eof) throw commanderError("internal");
           parts.push(chunk);
           total += chunk.length;
           position += BigInt(chunk.length);
@@ -436,12 +552,15 @@ export function createSftpProvider(options: SftpProviderOptions): SftpProvider {
 
     async mkdir(path, signal) {
       await guard(async () => {
-        narrow(await execute((channel) => ({ channelId: channel, op: "mkdir", path: toWirePath(path) }), false, signal), "mkdir");
+        narrow(await execute((channel) => ({ channelId: channel, op: "mkdir", path: toWirePath(path) }), true, signal), "mkdir");
       });
     },
 
     async rename(from, to, opts, signal) {
-      await guard(() => renameOp(from, to, opts.replace, signal));
+      await guard(async () => {
+        const existed = opts.replace ? (await statEntry(to, signal)) !== null : false;
+        await renameOp(from, to, opts.replace, existed, signal);
+      });
     },
 
     async remove(path, opts, signal) {
@@ -453,7 +572,7 @@ export function createSftpProvider(options: SftpProviderOptions): SftpProvider {
         if (opening !== null) await opening.catch(() => undefined);
         const open = channelId;
         if (open === null) return;
-        channelId = null;
+        dropChannel(open);
         await callPort("hub_sftp_close", { channelId: open }, new AbortController().signal);
       });
     },

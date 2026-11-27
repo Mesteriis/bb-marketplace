@@ -37,8 +37,18 @@ const BASE64_BODY = /^[A-Za-z0-9+/]*={0,2}$/;
 function isBase64(value: string): boolean {
   return value.length % 4 === 0 && BASE64_BODY.test(value);
 }
-const base64Text = (maxBytes: number) => z.string().max(Math.ceil(maxBytes / 3) * 4);
-const base64Schema = (maxBytes: number) => base64Text(maxBytes).refine(isBase64);
+/** Bytes a canonical base64 string decodes to: four characters make three bytes, less the padding. */
+function decodedLength(value: string): number {
+  const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0;
+  return (value.length / 4) * 3 - padding;
+}
+/** Canonical base64 whose DECODED length is at most maxBytes. */
+const base64Schema = (maxBytes: number) =>
+  z
+    .string()
+    .max(Math.ceil(maxBytes / 3) * 4)
+    .refine(isBase64)
+    .refine((value) => decodedLength(value) <= maxBytes, "decodes to more bytes than the limit");
 
 /**
  * Путь или имя на сервере. `text`, если это валидный UTF-8; `bytes` (base64 сырых байтов), если нет,
@@ -46,7 +56,7 @@ const base64Schema = (maxBytes: number) => base64Text(maxBytes).refine(isBase64)
  */
 export const sftpPathSchema = z.union([
   z.object({ text: z.string().min(1).max(SFTP_LIMITS.pathBytes).refine((s) => !s.includes("\u0000"), "a path has no NUL") }).strict(),
-  z.object({ bytes: base64Text(SFTP_LIMITS.pathBytes).min(4).refine(isBase64) }).strict(),
+  z.object({ bytes: base64Schema(SFTP_LIMITS.pathBytes).refine((value) => value.length >= 4, "at least one byte") }).strict(),
 ]);
 export type SftpPath = z.infer<typeof sftpPathSchema>;
 
@@ -237,8 +247,9 @@ export type SftpRefusalCode = keyof typeof SFTP_REFUSALS;
 export class SftpRefusal extends Error {
   readonly code: SftpRefusalCode;
 
-  constructor(code: SftpRefusalCode) {
-    super(`${code}: refused by Remote Hub`);
+  /** `detail` is the host's own text; a client must never copy it into what it shows. */
+  constructor(code: SftpRefusalCode, detail = "refused by Remote Hub") {
+    super(`${code}: ${detail}`);
     this.name = "SftpRefusal";
     this.code = code;
   }

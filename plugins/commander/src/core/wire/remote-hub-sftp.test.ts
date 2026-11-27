@@ -143,6 +143,31 @@ describe("methods", () => {
   });
 });
 
+describe("base64 chunk limit", () => {
+  // Buffer.alloc(n) encodes to base64 of n decoded bytes; 4 MiB is the most a chunk carries.
+  const encoded = (bytes: number) => Buffer.alloc(bytes, 1).toString("base64");
+
+  it("accepts exactly 4194304 decoded bytes in a read reply, and refuses 4194305 and 4194306", () => {
+    expect(sftpOpOutputSchema.safeParse({ op: "read", data: encoded(4194304), eof: true }).success).toBe(true);
+    expect(sftpOpOutputSchema.safeParse({ op: "read", data: encoded(4194305), eof: true }).success).toBe(false);
+    expect(sftpOpOutputSchema.safeParse({ op: "read", data: encoded(4194306), eof: true }).success).toBe(false);
+  });
+
+  it("applies the same limit to a write chunk", () => {
+    const write = (data: string) => sftpOpInputSchema.safeParse({ channelId: CH, op: "write", path: { text: "/f" }, offset: "0", data, create: "truncate" }).success;
+    expect(write(encoded(4194304))).toBe(true);
+    expect(write(encoded(4194305))).toBe(false);
+  });
+});
+
+describe("refusal detail", () => {
+  it("keeps the code as the message start; the detail is the host's text and is never read by the client", () => {
+    const refusal = new SftpRefusal("auth_failed", "identityFile ~/.ssh/id_x Keychain:foo");
+    expect(refusal.code).toBe("auth_failed");
+    expect(refusal.message.startsWith("auth_failed: ")).toBe(true);
+  });
+});
+
 describe("refusals and events", () => {
   it("every stable code maps to one of the host's four refusal classes; there is no expiry code", () => {
     expect(SFTP_REFUSALS.caller_not_plugin).toBe("forbidden");
