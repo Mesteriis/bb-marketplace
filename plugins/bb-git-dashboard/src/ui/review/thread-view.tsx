@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { PrAction } from "../../core/pulls/actions.ts";
 import { message, type AgentDraft, type PrDetailView } from "./review-api.ts";
+import { PrBody } from "./pr-text.tsx";
 
 type Thread = PrDetailView["threads"][number];
 
@@ -28,7 +29,7 @@ export function ThreadView({thread, can, act, ask, showPath = true, drafts = [],
       <div className="git-row git-muted">{comment.author} · {comment.createdAt.slice(0, 16).replace("T", " ")}
         {comment.canDelete && can.delete && <button type="button" className="git-link-button" aria-label={"Delete " + comment.author + "'s comment"}
           onClick={() => act({kind: "deleteComment", commentId: comment.id, threadId: thread.id, body: comment.body.slice(0, 8000)})}>Delete</button>}</div>
-      <p className="git-review-body">{comment.body}</p>
+      <PrBody content={comment.body}/>
     </div>)}
     {drafts.map(draft => <AgentDraftCard key={draft.commentId} draft={draft} canPost={live && can.reply} canResolve={live && can.resolve && thread.canToggleResolved && !thread.isResolved}
       onPost={resolve => onPost?.(draft, resolve)} onEdit={body => onEdit ? onEdit(draft, body) : Promise.resolve()} onDiscard={() => onDiscard ? onDiscard(draft) : Promise.resolve()}/>)}

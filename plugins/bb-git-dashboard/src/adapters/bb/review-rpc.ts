@@ -1,5 +1,5 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
-import type { z } from "zod";
+import { z } from "zod";
 import { agentPlan, linkCandidates, projectsOfRepo, spawnHost, type AgentThread } from "../../core/pulls/agent-target.ts";
 import type { FixSubject } from "../../core/pulls/detail.ts";
 import { answerNote, findingsPrompt, fixPrompt, prPrompts } from "../../core/pulls/prompt.ts";
@@ -99,6 +99,17 @@ export function reviewHandlers(bb: BbPluginApi, deps: {credential(id: string): P
     prDrafts: handle(async ({accountId, repo, number}: Target) => ({drafts: deps.mirror.pullDrafts(accountId, repo, number)})),
     prDraftEdit: handle(async ({commentId, body}: {commentId: string; body: string}) => { deps.mirror.editDraft(commentId, body); return {}; }),
     prDraftDrop: handle(async ({commentId}: {commentId: string}) => { deps.mirror.dropDraft(commentId); return {}; }),
+    prJira: handle(async () => {
+      try {
+        const status = await bb.sdk.plugins.callRpc({pluginId: "my-jira", method: "auth_status", input: null,
+          outputSchema: z.object({site: z.object({url: z.string()}).nullable()}).passthrough()});
+        const site = status.site?.url ?? "";
+        return {plugin: true, siteUrl: /^https:\/\/[^\s]{1,490}$/.test(site) ? site : null};
+      } catch {
+        // Not installed or not running: keys go to the Jira site the pull request links to, if any.
+        return {plugin: false, siteUrl: null};
+      }
+    }),
     issueDetail: handle(({accountId, repo, number}: Target) => service.issueDetail(accountId, repo, number)),
     issuePrepare: handle(({accountId, repo, action}: {accountId: string; repo: string; action: Parameters<typeof service.issuePrepare>[2]}) =>
       service.issuePrepare(accountId, repo, action)),

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { definePluginApp, experimental_copyToClipboard, experimental_useAppPanel, useBbNavigate, useRealtime, useRpc, useSettings } from "@get-bb/plugin-sdk/app";
+import { definePluginApp, experimental_copyToClipboard, experimental_useAppPanel, Markdown, UrlLink, useBbNavigate, useRealtime, useRpc, useSettings } from "@get-bb/plugin-sdk/app";
 import type { JsonValue, PluginPendingInteractionProps } from "@get-bb/plugin-sdk/app";
 import type { rpc } from "./src/adapters/bb/rpc.ts";
 import type { GitAction } from "./src/core/git.ts";
@@ -251,6 +251,9 @@ function Dashboard({subPath}: {subPath: string}) {
     copy: text => { void experimental_copyToClipboard({text}); },
     editDraft: async (commentId,body) => { okValue(await client.call("prDraftEdit",{commentId,body})); },
     dropDraft: async commentId => { okValue(await client.call("prDraftDrop",{commentId})); },
+    jira: async () => okValue(await client.call("prJira",{})),
+    Markdown: ({content}) => <Markdown content={content}/>,
+    Link: ({href,children}) => <UrlLink href={href} className="git-jira-link">{children}</UrlLink>,
     openThread: threadId => navigate.toThread(threadId),
     issue: async ref => okValue(await client.call("issueDetail",ref)).issue,
     issuePrepare: async (accountId,repo,action) => okValue(await client.call("issuePrepare",{accountId,repo,action})),

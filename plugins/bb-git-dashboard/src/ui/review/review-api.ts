@@ -1,3 +1,4 @@
+import type { ComponentType, ReactNode } from "react";
 import type { z } from "zod";
 import type { IssueAction } from "../../core/issues/model.ts";
 import type { PrAction } from "../../core/pulls/actions.ts";
@@ -29,6 +30,12 @@ export type ReviewApi = {
   copy(text: string): void;
   editDraft(commentId: string, body: string): Promise<void>;
   dropDraft(commentId: string): Promise<void>;
+  /** Where Jira keys open: My Jira when it runs, else the Jira site. */
+  jira(): Promise<{plugin: boolean; siteUrl: string | null}>;
+  /** BB's Markdown, for descriptions and comments from the forge. */
+  Markdown: ComponentType<{content: string}>;
+  /** BB's link: a BB route opens in BB, anything else in the browser. */
+  Link: ComponentType<{href: string; children: ReactNode}>;
   issue(ref: PrRef): Promise<IssueView>;
   issuePrepare(accountId: string, repo: string, action: IssueAction): Promise<Preview>;
   issueConfirm(previewId: string): Promise<{number: number}>;

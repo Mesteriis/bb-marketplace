@@ -8,6 +8,7 @@ import { RateLimited } from "./rate-limited.tsx";
 import { message, type AgentDraft, type PrFileView, type PrRef, type PrView, type Preview, type ReviewApi } from "./review-api.ts";
 import { ThreadView } from "./thread-view.tsx";
 import { PrMenu } from "./pr-menu.tsx";
+import { PrBody, PrText, PrTitle } from "./pr-text.tsx";
 import "./review.css";
 
 const tabs = ["Overview", "Checks", "Files", "Commits", "Comments"] as const;
@@ -86,11 +87,11 @@ export function PrPage({api, accountId, repo, number, onStep, revision = 0}: {ap
   const failing = detail.checks.filter(check => check.status === "failing");
   const threadCan = {reply: can.reply, resolve: can.resolve, delete: can.deleteComment};
 
-  return <section className="git-review" aria-label={"Pull request " + detail.repo + " #" + detail.number}>
+  return <PrText api={api} pr={detail}><section className="git-review" aria-label={"Pull request " + detail.repo + " #" + detail.number}>
     <header className="git-review-head">
       <div className="git-row">
         <span className="git-review-state" data-state={detail.state}>{detail.isDraft && open ? "Draft" : stateLabel[detail.state] ?? detail.state}</span>
-        {title === null ? <h2>{detail.title} <span className="git-muted">#{detail.number}</span></h2>
+        {title === null ? <h2><PrTitle title={detail.title}/> <span className="git-muted">#{detail.number}</span></h2>
           : <form className="git-row" onSubmit={formEvent => { formEvent.preventDefault(); if (title.trim()) void act({kind: "editTitle", title}, "Rename"); }}>
             <input aria-label="Title" value={title} onChange={change => setTitle(change.target.value)}/><button type="submit">Save</button>
             <button type="button" onClick={() => setTitle(null)}>Cancel</button></form>}
@@ -146,7 +147,7 @@ export function PrPage({api, accountId, repo, number, onStep, revision = 0}: {ap
         <div className="git-row git-muted">{entry.author}{entry.reviewState ? " · " + entry.reviewState.toLowerCase().replaceAll("_", " ") : ""} · {entry.createdAt.slice(0, 16).replace("T", " ")}
           {entry.canDelete && can.deleteComment && <button type="button" className="git-link-button" aria-label={"Delete " + entry.author + "'s comment"}
             onClick={() => void act({kind: "deleteComment", commentId: entry.id, threadId: null, body: entry.body.slice(0, 8000)}, "Delete comment")}>Delete</button>}</div>
-        {entry.body && <p className="git-review-body">{entry.body}</p>}
+        {entry.body && <PrBody content={entry.body}/>}
       </article>)}
       {can.comment && <form className="git-stack" onSubmit={formEvent => { formEvent.preventDefault(); if (comment.trim()) void act({kind: "comment", body: comment}, "Comment"); }}>
         <textarea aria-label="Comment" value={comment} onChange={change => setComment(change.target.value)} rows={3} placeholder="Leave a comment"/>
@@ -221,5 +222,5 @@ export function PrPage({api, accountId, repo, number, onStep, revision = 0}: {ap
       if (done && after) after().catch(failure => setNotice(message(failure)));
       if (done) { setComment(""); setTitle(null); setDescription(null); setReviewer(""); if (preview.kind === "review") { setDrafts([]); setSummary(""); } setFiles(null); void load(); }
     }}/>}
-  </section>;
+  </section></PrText>;
 }

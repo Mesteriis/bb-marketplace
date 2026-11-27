@@ -48,6 +48,8 @@ export const reviewContract = {
     draft: z.enum(["reply", "resolve"]), body: z.string(), authorName: z.string(), createdAt: z.number()}))})},
   prDraftEdit: {input: z.object({commentId: z.string().regex(/^[0-9a-f]{12}$/), body: z.string().min(1).max(20_000)}), output: answer({})},
   prDraftDrop: {input: z.object({commentId: z.string().regex(/^[0-9a-f]{12}$/)}), output: answer({})},
+  /** Whether BB's My Jira plugin runs here (Jira keys then open in it), and its Jira site. Read-only. */
+  prJira: {input: z.object({}), output: answer({plugin: z.boolean(), siteUrl: z.string().url().max(500).nullable()})},
   issueDetail: {input: z.object(target), output: answer({issue: z.object({number: z.number().int(), title: z.string(), body: z.string(), open: z.boolean(),
     author: z.string(), labels: z.array(z.string()), url: z.string(), createdAt: z.string(),
     comments: z.array(z.object({author: z.string(), body: z.string(), createdAt: z.string(), url: z.string()})), notice: z.string().nullable()})})},
