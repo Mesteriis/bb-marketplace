@@ -206,3 +206,18 @@ describe("the views diff-review read from bb's Git plugin", () => {
     await expect(diff(run, root, { kind: "all", base: "nope" }, false)).rejects.toThrow("Unknown revision 'nope'");
   });
 });
+
+describe("the default base of the branch views", () => {
+  it("is origin's HEAD when the clone knows it, else main, else master, else none", async () => {
+    const { defaultBase } = await import("../src/adapters/bb/review-git.ts");
+    const root = repo();
+    expect(await defaultBase(run, root)).toBe("main");
+    git(root, "branch", "-m", "main", "trunk");
+    expect(await defaultBase(run, root)).toBeNull();
+    git(root, "branch", "master");
+    expect(await defaultBase(run, root)).toBe("master");
+    git(root, "update-ref", "refs/remotes/origin/trunk", "HEAD");
+    git(root, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/trunk");
+    expect(await defaultBase(run, root)).toBe("origin/trunk");
+  });
+});

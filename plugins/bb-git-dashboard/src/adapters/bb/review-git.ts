@@ -326,3 +326,11 @@ async function untrackedFile(root: string, path: string, used: number, use: (byt
   return { ...base, additions: lines, binary: false, patch, tooLarge: false };
 }
 
+
+/** The base the branch views compare against when none is given: origin's HEAD, else main, else master. */
+export async function defaultBase(run: RunGit, root: string): Promise<string | null> {
+  const remote = await run(root, ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"], { allowFailure: true });
+  if (remote.ok && remote.stdout.trim()) return remote.stdout.trim();
+  for (const branch of ["main", "master"]) if (await verify(run, root, `refs/heads/${branch}`) !== null) return branch;
+  return null;
+}
