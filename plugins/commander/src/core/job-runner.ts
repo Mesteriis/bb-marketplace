@@ -564,6 +564,10 @@ export class JobRunner {
               renamed = await spelled() === "target";
               if (!renamed) throw error;
             } else {
+              if (caseOnly && code === "changed_since_plan") {
+                // The target is the source itself, so the version that changed is the source's.
+                throw new ItemConflict("source_changed", fingerprint(await observe(source, context)), null);
+              }
               if (code === "changed_since_plan" || code === "already_exists") {
                 throw new ItemConflict("target_changed", sourceFingerprint, fingerprint(await observe(destination, context)));
               }

@@ -271,6 +271,9 @@ export function isCaseOnlyPair(source: Location, target: Location): boolean {
     && !samePath(source.path, target.path, true);
 }
 
+/** Listing pages read when checking a spelling; a longer listing is treated as unreadable. */
+const SPELLING_PAGE_BUDGET = 1000;
+
 /**
  * stat sees one entry under both spellings, so only the directory listing shows
  * which spelling exists: "source" (not renamed yet), "target" (renamed) or null.
@@ -282,17 +285,27 @@ export async function nameSpelling(
   const from = source.path.segments.at(-1);
   const to = target.path.segments.at(-1);
   if (!dir || !from || !to) return null;
-  const exact = (name: NameSegment, want: NameSegment) => samePath({ segments: [name] }, { segments: [want] }, true);
+  // Same spelling after NFC normalisation; case stays exact.
+  const key = (name: NameSegment) => "b" in name ? "b:" + name.b : "t:" + name.t.normalize("NFC");
+  const fromKey = key(from);
+  const toKey = key(to);
   let sawSource = false;
   let sawTarget = false;
-  for (let cursor: string | null = null;;) {
+  const seenCursors = new Set<string>();
+  let cursor: string | null = null;
+  for (let pages = 1;; pages++) {
+    context.signal.throwIfAborted();
     const page: Awaited<ReturnType<FileProvider["list"]>> = await context.call(
       () => target.provider.list(dir, { cursor, limit: LIST_PAGE_MAX }, context.signal));
+    // A page without entries but with a cursor, a repeated cursor or an endless listing proves nothing.
+    if (page.entries.length === 0 && page.cursor !== null) return null;
     for (const { name } of page.entries) {
-      sawSource ||= exact(name, from);
-      sawTarget ||= exact(name, to);
+      sawSource ||= key(name) === fromKey;
+      sawTarget ||= key(name) === toKey;
     }
     if (page.cursor === null) break;
+    if (pages >= SPELLING_PAGE_BUDGET || seenCursors.has(page.cursor)) return null;
+    seenCursors.add(page.cursor);
     cursor = page.cursor;
   }
   return sawTarget && !sawSource ? "target" : sawSource && !sawTarget ? "source" : null;

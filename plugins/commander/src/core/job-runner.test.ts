@@ -1461,3 +1461,40 @@ test("cancelling during a case-only rename records its actual result", async () 
   expect(renames()).toHaveLength(1);
   expect(await names()).toEqual([{ t: "a" }]);
 });
+
+test("a case-only rename that finds its source changed asks about source_changed with the new version", async () => {
+  const { fake, upper, plan, runner, at } = await caseRename();
+  const original = fake.rename.bind(fake);
+  vi.spyOn(fake, "rename").mockImplementationOnce(async (...args) => {
+    fake.put(upper, Uint8Array.of(1, 2, 3), "8");
+    return original(...args);
+  });
+  const { id } = await runner.submit(plan);
+  const conflict = (await at(id, "awaiting_decision")).pendingConflict!;
+  expect(conflict.reason).toBe("source_changed");
+  expect(conflict.source).toEqual({ size: "3", mtimeNs: "8" });
+  expect(conflict.target).toBeNull();
+});
+
+test("a broken listing after a case-only rename leaves the item unknown after a bounded number of list calls", async () => {
+  const { fake, plan, store, runner, newRunner, at } = await caseRename();
+  const lost = pause();
+  const checkpoint = store.checkpoint.bind(store);
+  vi.spyOn(store, "checkpoint").mockImplementation(async (point) => {
+    if (point.phase === "verified") {
+      lost.release();
+      return new Promise(() => {});
+    }
+    await checkpoint(point);
+  });
+  const { id } = await runner.submit(plan);
+  await lost.promise;
+  vi.mocked(store.checkpoint).mockRestore();
+  const list = vi.spyOn(fake, "list").mockImplementation(async () => ({
+    entries: [{ name: { t: "x" }, kind: "file", size: "1", mtimeNs: "1", mtimePrecision: "ns", mode: null, linkTarget: null, hidden: false }],
+    cursor: "same",
+  }));
+  expect(await newRunner().recover()).toEqual({ resumed: [], unknown: [id] });
+  expect((await at(id, "unknown")).items[0].outcome).toBe("unknown");
+  expect(list).toHaveBeenCalledTimes(2);
+});
