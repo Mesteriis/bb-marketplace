@@ -1,13 +1,17 @@
 const ansi = /\u001b\[[0-9;?]*[ -\/]*[@-~]/g;
 const stamp = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z ?/;
-const marker = /^##\[error\]/;
+/** `##[error]` from GitHub, Gitea and Azure runners; `ERROR:` from GitLab runners. */
+const marker = /^(?:##\[error\]|ERROR: )/;
+/** GitLab's collapsible section markers, which precede the section's first line. */
+const section = /section_(?:start|end):\d+:[\w.\-\[\]=,]*\r?/g;
 
 /** Removes ANSI colours, carriage returns and the runner's leading timestamps. */
 export function cleanLog(text: string) {
-  return text.replace(ansi, "").split(/\r?\n/).map(line => line.replace(/\r/g, "").replace(stamp, "")).join("\n");
+  return text.replace(ansi, "").replace(section, "").split(/\r?\n/).map(line => line.replace(/\r/g, "").replace(stamp, "")).join("\n");
 }
 
-const closing = /^##\[error\]Process completed with exit code \d+\.?$/;
+/** The runner's own closing line, chosen only when nothing else failed. */
+const closing = /^(?:##\[error\]Process completed with exit code \d+\.?|ERROR: Job failed: .*)$/;
 
 /**
  * Index of the last error marker (`##[error]`, used by GitHub, Gitea and Azure runners), or null. The runner's own

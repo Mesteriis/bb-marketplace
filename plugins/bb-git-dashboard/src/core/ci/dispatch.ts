@@ -44,3 +44,19 @@ export function dispatchValues(spec: DispatchSpec, values: Record<string, string
     return value.trim() || input.required ? [[input.name, value]] : [];
   }));
 }
+
+/**
+ * GitLab's Run pipeline form: top-level `variables` that carry a `description` are offered, with their `value` as
+ * the default and `options` as a choice. Other variables keep their configured values.
+ */
+export function gitlabDispatchSpec(document: unknown): DispatchSpec {
+  const variables = record(record(document)?.variables);
+  if (!variables) return {dispatchable: true, inputs: []};
+  return {dispatchable: true, inputs: Object.entries(variables).flatMap(([name, raw]) => {
+    const spec = record(raw);
+    if (!spec || scalar(spec.description) === null) return [];
+    const options = Array.isArray(spec.options) ? spec.options.map(option => String(option)) : [];
+    return [{name, description: scalar(spec.description), required: false, type: options.length ? "choice" as const : "string" as const,
+      default: scalar(spec.value), options}];
+  })};
+}

@@ -78,6 +78,8 @@ export function actionsPipelines(account: Account, repo: Repo, token: string, se
         .filter(row => row.annotation_level === "failure" && text(row.message))
         // ".github" marks an annotation on the workflow itself rather than on a file.
         .map(row => text(row.path) && text(row.path) !== ".github" ? text(row.path) + ":" + (Number(row.start_line) || 1) + " — " + text(row.message) : text(row.message))
+        // The runner's closing "Process completed with exit code N" is kept only when nothing more specific exists.
+        .filter((note, _, all) => !/^Process completed with exit code \d+\.?$/.test(note) || all.length === 1)
         .slice(0, 10);
     },
     async workflows() {
