@@ -1046,3 +1046,36 @@ describe("revalidate on a copy whose target matches its source only under case f
     ).rejects.toMatchObject({ code: "invalid_path" });
   });
 });
+
+describe("revalidate re-checks target overlaps under the current case rules", () => {
+  it("refuses two absent targets that now fold onto one path after the endpoint became case-insensitive", async () => {
+    // Copying /d/A and /d/a into an empty /out: distinct targets while the endpoint is case-sensitive.
+    const files: Array<[string, EntryKind, string]> = [
+      ["/d", "dir", "0"],
+      ["/d/A", "file", "1"],
+      ["/d/a", "file", "1"],
+      ["/out", "dir", "0"],
+    ];
+    const sensitive = new MemoryProvider(endpoint("host:x", false, true), files);
+    const plan = await buildPlan(
+      {
+        kind: "copy",
+        initiator: { kind: "owner" },
+        sources: [ref("host:x", "/d/A"), ref("host:x", "/d/a")],
+        targetDir: ref("host:x", "/out"),
+        newName: null,
+        conflictPolicy: "ask",
+        verify: "size",
+      },
+      depsFor(treeProviders(sensitive)),
+      signal(),
+    );
+    expect(plan.items.map((item) => displayPath(item.target!.path))).toEqual(["/out/A", "/out/a"]);
+    expect(plan.items.map((item) => item.expectTarget)).toEqual(["absent", "absent"]);
+
+    const insensitive = new MemoryProvider(endpoint("host:x", false, false), files);
+    await expect(
+      revalidate(plan, depsFor(treeProviders(insensitive)), signal()),
+    ).rejects.toMatchObject({ code: "invalid_path" });
+  });
+});

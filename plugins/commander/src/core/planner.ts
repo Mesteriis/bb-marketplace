@@ -467,7 +467,10 @@ export async function revalidate(
   }
   await assertPlanStillAllowed(snapshot, deps, signal);
 
+  // Targets were planned distinct under plan-time case rules. The endpoint may fold
+  // them now, so the target overlap rules run again under the current rules.
   const caseOf = (id: EndpointId) => deps.provider(id).endpoint.caseSensitive;
+  assertNoTargetOverlap(snapshot.items, caseOf, snapshot.kind);
   const changed: ChangedItem[] = [];
   for (const [index, item] of snapshot.items.entries()) {
     signal.throwIfAborted();
