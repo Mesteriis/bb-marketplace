@@ -462,6 +462,35 @@ it("replaces a regular rename target whose expected fingerprint still matches", 
   expect(await readdir(root)).toEqual(["target"]);
 });
 
+for (const { condition, expectedName } of [
+  { condition: "source fingerprint", expectedName: "a" },
+  { condition: "absent", expectedName: "A" },
+] as const) {
+  it(`handles a case-only rename with ${condition} on a case-insensitive filesystem`, async ({ skip }) => {
+    const contents = "case-only rename fixture";
+    await writeFile(join(root, "A"), contents);
+    try {
+      await lstat(join(root, "a"));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") skip("Requires a case-insensitive filesystem");
+      throw error;
+    }
+
+    const source = await fs.handlers.stat({ path: at("A") }, ctx);
+    if (!source) throw new Error("Missing source fixture");
+    const expectTarget = condition === "absent" ? "absent" : { size: source.size, mtimeNs: source.mtimeNs };
+    const result = fs.handlers.rename({ from: at("A"), to: at("a"), replace: true, expectTarget }, ctx);
+    if (condition === "absent") {
+      await expect(result).rejects.toMatchObject({ code: "changed_since_plan" });
+    } else {
+      await expect(result).resolves.toEqual({});
+    }
+    const page = await fs.handlers.list({ path: at(), cursor: null, limit: 10 }, ctx);
+    expect(page.entries.map(({ name }) => name)).toEqual([{ t: expectedName }]);
+    expect(await readFile(join(root, expectedName), "utf8")).toBe(contents);
+  });
+}
+
 it.skipIf(windows)("drops special permission bits on replacement", async ({ skip }) => {
   const target = join(root, "target");
   await writeFile(target, "old");
