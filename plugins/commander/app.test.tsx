@@ -663,3 +663,35 @@ test("Escape closes comparison and returns focus to the active file panel", asyn
   fireEvent.keyDown(title, { key: "Escape" });
   await waitFor(() => expect(document.activeElement).toBe(grid()));
 });
+
+test("reopened comparison waits for the original delayed start and adopts its ID", async () => {
+  const remote = { ...endpoint, provider: "sftp", id: "sftp:123e4567-e89b-42d3-a456-426614174000", hostId: null };
+  saved!.right.tabs[0]!.endpoint = remote.id;
+  const late = Promise.withResolvers<typeof scanJob>();
+  const call = host.call.getMockImplementation()!;
+  host.call.mockClear().mockImplementation(async (method, input) => {
+    if (method === "endpoints_list") return { endpoints: [endpoint, remote] };
+    if (method === "scan_start") return input.estimateOnly ? {
+      estimateId: remoteEstimateId, bytesPlanned: "16", bytesByEndpoint: [{ endpoint: remote.id, bytesPlanned: "16" }],
+    } : late.promise;
+    if (method === "scan_get") return { job: scanJob, result: null };
+    return call(method, input);
+  });
+  const actualStarts = () => host.call.mock.calls.filter(([method, input]) => method === "scan_start" && !input.estimateOnly);
+  mount();
+  await leftFile();
+  fireEvent.click(screen.getByRole("button", { name: "Сравнить каталоги" }));
+  fireEvent.click(screen.getByRole("button", { name: "Сверить по SHA-256" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Подтвердить чтение" }));
+  expect(actualStarts()).toHaveLength(1);
+  fireEvent.keyDown(screen.getByRole("heading", { name: "Сравнение каталогов", level: 1 }), { key: "Escape" });
+  fireEvent.click(screen.getByRole("button", { name: "Сравнить каталоги" }));
+  const startAgain = screen.getByRole<HTMLButtonElement>("button", { name: "Сверить по SHA-256" });
+  expect(startAgain.disabled).toBe(true);
+  fireEvent.click(startAgain);
+  late.resolve(scanJob);
+  await screen.findByRole("progressbar");
+  expect(host.call).toHaveBeenCalledWith("scan_get", { scanId });
+  expect(actualStarts()).toHaveLength(1);
+  expect(host.call.mock.calls.filter(([method, input]) => method === "scan_start" && input.estimateOnly)).toHaveLength(1);
+});

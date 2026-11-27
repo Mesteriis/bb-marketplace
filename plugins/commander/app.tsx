@@ -198,14 +198,37 @@ function useJobs(rpc: Rpc, revision: number) {
 
 function CommanderPage({ compact = false, environment, threadId }: { compact?: boolean; environment?: string; threadId?: string }) {
   const rpc = useRpc<typeof rpcSchemas>();
-  const scans = useMemo<ScanActions>(() => ({
-    start: (input) => rpc.call("scan_start", input),
-    get: (scanId) => rpc.call("scan_get", { scanId }),
-    cancel: (scanId) => rpc.call("scan_cancel", { scanId }),
-  }), [rpc]);
   const sdk = useSdk();
   const navigate = useBbNavigate();
   const { state, update, endpoints, problem, refreshEndpoints } = useWorkspaceState(rpc, sdk, threadId, environment);
+  // A scan screen can close before scan_start returns. Keep one pending start
+  // for each kind, matching the two slots in the persisted workspace state.
+  const starting = useRef(new Set<"dirs" | "checksum">());
+  const [startingScans, setStartingScans] = useState<ReadonlySet<"dirs" | "checksum">>(() => new Set());
+  const scans = useMemo<ScanActions>(() => ({
+    async start(input) {
+      const { estimateOnly, estimateId: _estimateId, ...request } = input;
+      if (estimateOnly) return rpc.call("scan_start", input);
+      if (starting.current.has(request.kind)) throw new CommanderError("limit_exceeded", ru.busy);
+      starting.current.add(request.kind);
+      setStartingScans(new Set(starting.current));
+      try {
+        const reply = await rpc.call("scan_start", input);
+        if ("id" in reply) {
+          const scanId = reply.id;
+          update((previous) => request.kind === "dirs"
+            ? { ...previous, lastComparison: { scanId, request } }
+            : { ...previous, lastChecksum: { scanId, request } }, true);
+        }
+        return reply;
+      } finally {
+        starting.current.delete(request.kind);
+        setStartingScans(new Set(starting.current));
+      }
+    },
+    get: (scanId) => rpc.call("scan_get", { scanId }),
+    cancel: (scanId) => rpc.call("scan_cancel", { scanId }),
+  }), [rpc, update]);
   const [bindings, setBindings] = useState(loadBindings);
   const [revisions, setRevisions] = useState({ left: 0, right: 0, job: 0 });
   const changes = useRef(new Set<string>());
@@ -306,9 +329,7 @@ function CommanderPage({ compact = false, environment, threadId }: { compact?: b
   };
   const mutate = async (action: Promise<unknown>) => { const result = await action; refresh("job"); return result; };
   const identity = (job: OperationJob) => ({ jobId: job.id, digest: job.plan.digest });
-  return <Workspace scans={scans} onRememberScan={({ scanId, request }) => update((previous) => request.kind === "dirs"
-    ? { ...previous, lastComparison: { scanId, request } }
-    : { ...previous, lastChecksum: { scanId, request } }, true)} state={state} update={update} endpoints={endpoints} compact={compact} queue={queue} problem={problem}
+  return <Workspace scans={scans} startingScans={startingScans} state={state} update={update} endpoints={endpoints} compact={compact} queue={queue} problem={problem}
     directories={{ left: leftDir, right: rightDir }} bindings={bindings}
     onBindings={(value) => {
       setBindings(value);

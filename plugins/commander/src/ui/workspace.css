@@ -405,13 +405,13 @@
   grid-row: 1 / span 3;
   grid-template-rows: subgrid;
 }
-.cm-scan-pane header { display: grid; gap: 8px; padding: 12px; min-width: 0; }
+.cm-scan-pane header { display: grid; align-content: start; gap: 8px; padding: 12px; min-width: 0; }
 .cm-scan-pane header strong, .cm-scan-path, .cm-scan-rows td {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.cm-scan .cm-scan-path { margin: 0; }
+.cm-scan .cm-scan-path { align-self: start; margin: 0; }
 .cm-scan-controls { min-height: 30px; }
 .cm-scan-modes, .cm-scan-modes label {
   display: flex;

@@ -10,12 +10,12 @@ import { ru, stateText } from "./strings.ts";
 
 type Request = SavedUiScan["request"];
 export interface ScanActions {
-  start(input: RpcInput<"scan_start">): Promise<ScanGetView["job"] | ScanEstimateView>;
+  start(input: Extract<RpcInput<"scan_start">, { kind: Request["kind"] }>): Promise<ScanGetView["job"] | ScanEstimateView>;
   get(id: string): Promise<ScanGetView | null>;
   cancel(id: string): Promise<unknown>;
 }
 
-type Target = { ref: ResourceRef; label: string; readOnly: boolean };
+type Target = { ref: ResourceRef; label: string; readOnly?: boolean };
 export type ScanSubject = { kind: "dirs"; left: Target; right: Target } | { kind: "checksum"; file: Target };
 type Phase = { state: "idle" | "starting" }
   | { state: "confirm"; estimate: ScanEstimateView }
@@ -40,8 +40,8 @@ function DirectoryComparison({ subject, diff, controls, hideEqual }: {
   return <div className="cm-scan-panes">
     {columns.map((side) => <section className="cm-pane cm-scan-pane" key={side}>
       <header>
-        <strong className="cm-meta">{subject[side].label} · {subject[side].ref.endpoint.startsWith("sftp:") ? ru.sftp : ru.local} · {
-          subject[side].readOnly ? ru.readOnly : ru.writable}</strong>
+        <strong className="cm-meta">{subject[side].label} · {subject[side].ref.endpoint.startsWith("sftp:") ? ru.sftp : ru.local}{
+          subject[side].readOnly === undefined ? "" : " · " + (subject[side].readOnly ? ru.readOnly : ru.writable)}</strong>
         <code className="cm-address cm-scan-path" title={displayPath(subject[side].ref.path)}>{displayPath(subject[side].ref.path)}</code>
         <div className="cm-scan-controls">{side === "left" && controls}</div>
       </header>
@@ -73,14 +73,15 @@ function DirectoryComparison({ subject, diff, controls, hideEqual }: {
   </div>;
 }
 
-export function CompareView({ subject, api, saved, remember, close }: {
-  subject: ScanSubject; api: ScanActions; saved?: SavedUiScan; remember(scan: SavedUiScan): void; close(): void;
+export function CompareView({ subject, api, saved, pending, close }: {
+  subject: ScanSubject; api: ScanActions; saved?: SavedUiScan; pending: boolean; close(): void;
 }) {
-  const [phase, setPhase] = useState<Phase>(() => saved ? { state: "restoring", id: saved.scanId } : { state: "idle" });
+  const [phase, setPhase] = useState<Phase>(() => saved && !pending ? { state: "restoring", id: saved.scanId } : { state: "idle" });
   const [problem, setProblem] = useState<Problem | null>(null);
   const [cancelling, setCancelling] = useState(false);
   const [hideEqual, setHideEqual] = useState(false);
   const last = useRef<Request | null>(saved?.request ?? null);
+  const adopted = useRef(pending ? undefined : saved?.scanId);
   const title = subject.kind === "dirs" ? ru.scanTitle : ru.scanChecksum;
   const heading = useRef<HTMLHeadingElement>(null);
   const confirm = useRef<HTMLButtonElement>(null);
@@ -91,7 +92,14 @@ export function CompareView({ subject, api, saved, remember, close }: {
   const result = phase.state === "scan" ? phase.view.result : null;
   const diff = result && "onlyLeft" in result ? result : null;
   const expired = phase.state === "unavailable" || (phase.state === "scan" && phase.view.reason === "result_expired");
-  const busy = phase.state === "starting" || !!pollId;
+  const awaitingSavedId = saved !== undefined && adopted.current !== saved.scanId;
+  const busy = pending || phase.state === "starting" || !!pollId || awaitingSavedId;
+  useEffect(() => {
+    if (pending || !saved || adopted.current === saved.scanId) return;
+    adopted.current = saved.scanId;
+    last.current = saved.request;
+    setPhase({ state: "restoring", id: saved.scanId });
+  }, [pending, saved]);
   useEffect(() => { if (phase.state === "confirm") confirm.current?.focus(); }, [phase.state]);
 
   useEffect(() => {
@@ -129,7 +137,7 @@ export function CompareView({ subject, api, saved, remember, close }: {
       });
       if ("estimateId" in reply) setPhase({ state: "confirm", estimate: reply });
       else {
-        remember({ scanId: reply.id, request });
+        adopted.current = reply.id;
         setPhase({ state: "scan", view: { job: reply, result: null } });
       }
     } catch (error) {
@@ -197,7 +205,7 @@ export function CompareView({ subject, api, saved, remember, close }: {
         </p>}
         {facts && <dl className="cm-facts">{facts.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>}
         {job?.partial && job.state === "done" && <p role="status">{ru.scanPartial}</p>}
-        {(phase.state === "starting" || phase.state === "restoring") && <p role="status">{ru.busy}</p>}
+        {(pending || phase.state === "starting" || phase.state === "restoring") && <p role="status">{ru.busy}</p>}
         {phase.state === "confirm" && <>
           <div className="cm-scan-estimate">
             {(last.current?.kind === "checksum" || last.current?.by === "sha256") && <strong>{ru.scanHashes}</strong>}

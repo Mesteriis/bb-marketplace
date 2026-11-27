@@ -46,7 +46,7 @@ export interface WorkspaceProps {
   onCancel: (job: OperationJob) => Promise<unknown>;
   onPreview: (ref: ResourceRef) => void;
   scans: ScanActions;
-  onRememberScan(scan: SavedUiScan): void;
+  startingScans: ReadonlySet<ScanSubject["kind"]>;
   onCompare: (source: ResourceRef, target: ResourceRef) => Promise<[string, string]>;
   onTerminal: (ref: ResourceRef) => Promise<void>;
   onOpenThread: (threadId: string) => void;
@@ -123,6 +123,7 @@ export function Workspace(props: WorkspaceProps) {
   const [busy, setBusy] = useState(false);
   const running = useRef(false);
   const focusReturn = useRef<HTMLElement | null>(null);
+  const focusScanPanel = useRef(false);
   const conflictFocus = useRef<{ jobId: string; conflictId: string; jobs: typeof props.queue.jobs } | null>(null);
   useLayoutEffect(() => {
     if (!root.current || typeof ResizeObserver === "undefined") return;
@@ -202,6 +203,12 @@ export function Workspace(props: WorkspaceProps) {
     ? props.queue.jobs.find((job): job is OperationJob => job.id === dialog.job?.id && "plan" in job) : null;
   useLayoutEffect(() => {
     if (dialog) return;
+    if (focusScanPanel.current) {
+      focusScanPanel.current = false;
+      focusReturn.current = null;
+      grids[side].current?.focus({ preventScroll: true });
+      return;
+    }
     const pending = conflictFocus.current;
     if (pending) {
       if (pending.jobs === props.queue.jobs && !props.queue.error) return;
@@ -487,8 +494,8 @@ export function Workspace(props: WorkspaceProps) {
 
   return <div ref={root} className="cm-workspace" data-compact={compact} onKeyDown={onKeyDown}>
     {dialog?.kind === "scan" ? <CompareView subject={dialog.subject} api={props.scans} saved={savedScan(state, dialog.subject)}
-      remember={props.onRememberScan} close={() => {
-        focusReturn.current = root.current?.querySelector(".cm-scan h1") ?? null;
+      pending={props.startingScans.has(dialog.subject.kind)} close={() => {
+        focusScanPanel.current = true;
         close();
       }} /> : <>
     <header className="cm-heading">
@@ -504,15 +511,15 @@ export function Workspace(props: WorkspaceProps) {
             if (!left || !right) return;
             const a = currentRef(left), b = currentRef(right);
             open({ kind: "scan", subject: { kind: "dirs",
-              left: { ref: a, label: endpointsBySide.left?.label ?? a.endpoint, readOnly: endpointsBySide.left?.readOnly ?? true },
-              right: { ref: b, label: endpointsBySide.right?.label ?? b.endpoint, readOnly: endpointsBySide.right?.readOnly ?? true },
+              left: { ref: a, label: endpointsBySide.left?.label ?? a.endpoint, readOnly: endpointsBySide.left?.readOnly },
+              right: { ref: b, label: endpointsBySide.right?.label ?? b.endpoint, readOnly: endpointsBySide.right?.readOnly },
             } });
           }}>
           <Icon name="FileDiff" /><span>{ru.compare}</span></Button></>}
       <Button size="sm" variant="outline" aria-label={ru.scanChecksum} disabled={!ready || current?.kind !== "file"} onClick={() => {
         if (!tab || current?.kind !== "file") return;
         open({ kind: "scan", subject: { kind: "checksum", file: {
-          ref: { endpoint: tab.endpoint, path: join(tab.path, current.name) }, label: endpoint?.label ?? tab.endpoint, readOnly: endpoint?.readOnly ?? true,
+          ref: { endpoint: tab.endpoint, path: join(tab.path, current.name) }, label: endpoint?.label ?? tab.endpoint, readOnly: endpoint?.readOnly,
         } } });
       }}><Icon name="Hash" /><span>SHA-256</span></Button>
       <Button ref={queueToggle} size="sm" variant="ghost" className="cm-queue-toggle" aria-label={ru.queue} aria-expanded={queueOpen}
