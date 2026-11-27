@@ -9,7 +9,7 @@ import {
 import { isAncestorOrSelf, join, parent, samePath, type ResourcePath } from "./path.ts";
 import { READ_CHUNK_MAX, type FileProvider, type WriteSession } from "./provider.ts";
 import {
-  confirmVerified, fingerprint, matches, matchesTarget, observe, readChunks, reconcileItem, removeStagedTemp, tempNameFor, TransferHash, verifyCopy,
+  confirmVerified, fingerprint, isCaseOnlyPair, matches, nameSpelling, matchesTarget, observe, readChunks, reconcileItem, removeStagedTemp, tempNameFor, TransferHash, verifyCopy,
   type Location, type VerifyContext,
 } from "./reconcile.ts";
 import { fromBig, toBig } from "./size.ts";
@@ -415,8 +415,8 @@ export class JobRunner {
   }
 
   private isCaseOnlyRename(plan: OperationPlan, item: PlanItem): boolean {
-    if (plan.kind !== "rename" || !item.source || !item.target || item.source.endpoint !== item.target.endpoint) return false;
-    return samePath(item.source.path, item.target.path, this.location(item.source).provider.endpoint.caseSensitive);
+    return plan.kind === "rename" && Boolean(item.source && item.target)
+      && isCaseOnlyPair(this.location(item.source!), this.location(item.target!));
   }
 
   private expandedDirectory(job: OperationJob, index: number, source: Location | null): boolean {
@@ -473,7 +473,7 @@ export class JobRunner {
     if (target && (job.plan.kind === "copy" || job.plan.kind === "move") && this.blockedParent(job, index, target)) return "skipped";
     const oldSource = source && await observe(source, context, Boolean(expectedSource?.sha256));
     // A case-only rename names its own source: S2 plans it with an absent target, and it is no conflict.
-    const caseOnlyRename = this.isCaseOnlyRename(job.plan, item);
+    const caseOnlyRename = job.plan.kind === "rename" && Boolean(source && target && isCaseOnlyPair(source, target));
     const oldTarget = target && !caseOnlyRename ? await observe(target, context, Boolean(
       decision?.conflict.target?.sha256 || (expectedTarget && expectedTarget !== "absent" && expectedTarget.sha256),
     )) : null;
@@ -519,7 +519,10 @@ export class JobRunner {
       replace = action === "overwrite" && targetFingerprint !== null;
     }
 
-    if (caseOnlyRename && sourceFingerprint) {
+    // Decided on the destination actually chosen: a conflict resolution or a restored
+    // checkpoint may have moved it off the planned case-only name.
+    const caseOnly = job.plan.kind === "rename" && Boolean(source && target && isCaseOnlyPair(source, target));
+    if (caseOnly && sourceFingerprint) {
       // The entry at the target path is the source itself; the provider checks that version.
       replace = true;
       expectTarget = sourceFingerprint;
@@ -528,7 +531,14 @@ export class JobRunner {
     if (oldSource && oldSource.kind !== item.kind) throw new CommanderError("changed_since_plan", "Source type changed");
     const destination = target;
     await context.mark("prepared", { targetPath: destination?.path ?? null, expectTarget: destination ? expectTarget : null });
-    const unchanged = (proof: VerifyContext) => this.unchanged(source, sourceFingerprint, destination, expectTarget, proof);
+    const unchanged = caseOnly && source && destination
+      ? async (proof: VerifyContext) => await nameSpelling(source, destination, proof) === "source"
+        && matches(fingerprint(await observe(source, proof)), sourceFingerprint)
+      : (proof: VerifyContext) => this.unchanged(source, sourceFingerprint, destination, expectTarget, proof);
+    const spelled = async () => {
+      const { jobId, itemIndex } = context.saved();
+      return nameSpelling(source!, destination!, this.context(jobId, itemIndex, new AbortController().signal)).catch(() => null);
+    };
 
     switch (job.plan.kind) {
       case "delete":
@@ -549,10 +559,16 @@ export class JobRunner {
             renamed = true;
           } catch (error) {
             const code = safeError(error).code;
-            if (code === "changed_since_plan" || code === "already_exists") {
-              throw new ItemConflict("target_changed", sourceFingerprint, fingerprint(await observe(destination, context)));
+            if (caseOnly && code === "outcome_unknown") {
+              // Only the listing tells whether the lost rename took effect.
+              renamed = await spelled() === "target";
+              if (!renamed) throw error;
+            } else {
+              if (code === "changed_since_plan" || code === "already_exists") {
+                throw new ItemConflict("target_changed", sourceFingerprint, fingerprint(await observe(destination, context)));
+              }
+              if (job.plan.kind !== "move" || code !== "unsupported") throw error;
             }
-            if (job.plan.kind !== "move" || code !== "unsupported") throw error;
           }
           if (renamed) {
             const probe = () => observe(destination, context, Boolean(sourceFingerprint.sha256));
@@ -562,7 +578,7 @@ export class JobRunner {
               const check = this.context(jobId, itemIndex, new AbortController().signal);
               return observe(destination, check, Boolean(sourceFingerprint.sha256)).catch(() => null);
             });
-            if (entry?.kind !== item.kind || !matches(entry, sourceFingerprint)) {
+            if (entry?.kind !== item.kind || !matches(entry, sourceFingerprint) || (caseOnly && await spelled() !== "target")) {
               throw new CommanderError("outcome_unknown", "Renamed destination could not be confirmed");
             }
             await context.mark("verified", {

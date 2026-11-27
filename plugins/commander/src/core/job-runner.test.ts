@@ -1337,3 +1337,127 @@ test("still rejects a copy whose target folds onto its own source", async () => 
   expect(job.items[0].error).toBe("Destination overlaps source");
   expect(fake.contents(parsePosix("/A"))).toEqual(Uint8Array.of(1));
 });
+
+async function caseRename() {
+  const fake = new FakeProvider("host:ci", false);
+  const dir = parsePosix("/d");
+  const upper = parsePosix("/d/A");
+  await fake.mkdir(dir, signal());
+  fake.put(upper, Uint8Array.of(1, 2, 3), "7");
+  const plan = await buildPlan({
+    kind: "rename", initiator: { kind: "owner" }, sources: [{ endpoint: "host:ci", path: upper }], targetDir: null,
+    newName: { t: "a" }, conflictPolicy: "ask", verify: "size",
+  }, {
+    provider: () => fake, now: () => new Date(date), uuid: () => "323e4567-e89b-42d3-a456-426614174000",
+    limits: { maxItems: 100, maxDepth: 10 }, protectedPathsFor: () => [],
+  }, signal());
+  const store = new MemoryJobStore();
+  let next = 0;
+  const newRunner = () => new JobRunner({
+    store, provider: () => fake, now: () => new Date(date),
+    uuid: () => "423e4567-e89b-42d3-a456-" + String(++next).padStart(12, "0"), onEvent: () => {},
+  });
+  const names = async () => (await fake.list(dir, { cursor: null, limit: 10 }, signal())).entries.map(({ name }) => name);
+  const at = (id: string, state: JobState) => vi.waitFor(async () => {
+    const job = (await store.get(id))!;
+    expect(job.state).toBe(state);
+    return job;
+  });
+  return { fake, dir, upper, plan, store, newRunner, runner: newRunner(), names, at, renames: () => fake.calls.filter(({ op }) => op === "rename") };
+}
+
+test("a rename decision on a changed case-only source targets a new name without replacing anything", async () => {
+  const { fake, upper, plan, runner, names, at } = await caseRename();
+  fake.put(upper, Uint8Array.of(1, 2, 3), "8");
+  const rename = vi.spyOn(fake, "rename");
+  const { id } = await runner.submit(plan);
+  const conflict = (await at(id, "awaiting_decision")).pendingConflict!;
+  expect(conflict.reason).toBe("source_changed");
+  await runner.decide(id, { conflictId: conflict.id, action: "rename", applyTo: "this" });
+  expect((await at(id, "completed")).items[0].outcome).toBe("done");
+  expect(rename).toHaveBeenCalledTimes(1);
+  expect(rename.mock.calls[0].slice(0, 3)).toEqual([upper, parsePosix("/d/a (2)"), { replace: false, expectTarget: "absent" }]);
+  expect(await names()).toEqual([{ t: "a (2)" }]);
+});
+
+test("a lost reply after a successful case-only rename is done without a second rename", async () => {
+  const { fake, plan, runner, names, at, renames } = await caseRename();
+  const original = fake.rename.bind(fake);
+  vi.spyOn(fake, "rename").mockImplementationOnce(async (...args) => {
+    await original(...args);
+    throw new CommanderError("timeout", "Reply lost", true);
+  });
+  const { id } = await runner.submit(plan);
+  expect((await at(id, "completed")).items[0].outcome).toBe("done");
+  expect(renames()).toHaveLength(1);
+  expect(await names()).toEqual([{ t: "a" }]);
+});
+
+test("a case-only rename that failed before applying stays failed, not done", async () => {
+  const { fake, plan, runner, names, at } = await caseRename();
+  vi.spyOn(fake, "rename").mockImplementationOnce(async () => {
+    throw new CommanderError("timeout", "Reply lost", true);
+  });
+  const { id } = await runner.submit(plan);
+  expect((await at(id, "failed")).items[0].outcome).toBe("failed");
+  expect(await names()).toEqual([{ t: "A" }]);
+});
+
+test("restarting between a case-only rename and its verified checkpoint finishes it as done", async () => {
+  const { fake, plan, store, runner, newRunner, names, at, renames } = await caseRename();
+  const lost = pause();
+  const checkpoint = store.checkpoint.bind(store);
+  vi.spyOn(store, "checkpoint").mockImplementation(async (point) => {
+    if (point.phase === "verified") {
+      lost.release();
+      return new Promise(() => {});
+    }
+    await checkpoint(point);
+  });
+  const { id } = await runner.submit(plan);
+  await lost.promise;
+  vi.mocked(store.checkpoint).mockRestore();
+  expect(await names()).toEqual([{ t: "a" }]);
+  expect(await newRunner().recover()).toEqual({ resumed: [id], unknown: [] });
+  expect((await at(id, "completed")).items[0].outcome).toBe("done");
+  expect(renames()).toHaveLength(1);
+  expect(fake.contents(parsePosix("/d/a"))).toEqual(Uint8Array.of(1, 2, 3));
+});
+
+test("restarting before a case-only rename was applied leaves it pending and runs it once", async () => {
+  const { plan, store, runner, newRunner, names, at, renames } = await caseRename();
+  const lost = pause();
+  const checkpoint = store.checkpoint.bind(store);
+  vi.spyOn(store, "checkpoint").mockImplementation(async (point) => {
+    await checkpoint(point);
+    if (point.phase === "prepared" && point.via === "rename") {
+      lost.release();
+      return new Promise(() => {});
+    }
+  });
+  const { id } = await runner.submit(plan);
+  await lost.promise;
+  vi.mocked(store.checkpoint).mockRestore();
+  expect(await names()).toEqual([{ t: "A" }]);
+  expect(await newRunner().recover()).toEqual({ resumed: [id], unknown: [] });
+  expect((await at(id, "completed")).items[0].outcome).toBe("done");
+  expect(renames()).toHaveLength(1);
+  expect(await names()).toEqual([{ t: "a" }]);
+});
+
+test("cancelling during a case-only rename records its actual result", async () => {
+  const { fake, plan, runner, names, at, renames } = await caseRename();
+  const original = fake.rename.bind(fake);
+  const applied = pause();
+  vi.spyOn(fake, "rename").mockImplementationOnce(async (from, to, opts, stepSignal) => {
+    await original(from, to, opts, stepSignal);
+    applied.release();
+    await new Promise<void>((_, reject) => stepSignal.addEventListener("abort", () => reject(stepSignal.reason), { once: true }));
+  });
+  const { id } = await runner.submit(plan);
+  await applied.promise;
+  await runner.cancel(id);
+  expect((await at(id, "cancelled")).items[0].outcome).toBe("done");
+  expect(renames()).toHaveLength(1);
+  expect(await names()).toEqual([{ t: "a" }]);
+});
