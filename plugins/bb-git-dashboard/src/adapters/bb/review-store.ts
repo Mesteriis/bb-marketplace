@@ -87,6 +87,14 @@ export const REVIEW_MIGRATIONS: string[] = [
    )`,
   `CREATE INDEX review_runs_session ON review_runs(session_id)`,
   `CREATE INDEX review_runs_bb_thread ON review_runs(bb_thread_id)`,
+  // 0.9.2: Viewed marks, each at the change (`changeRevision`) it was made at.
+  `CREATE TABLE review_viewed (
+     session_id TEXT NOT NULL REFERENCES review_sessions(id) ON DELETE CASCADE,
+     path TEXT NOT NULL,
+     revision TEXT NOT NULL,
+     marked_at INTEGER NOT NULL,
+     PRIMARY KEY (session_id, path)
+   )`,
 ];
 
 export type Session = {id: string; copyId: string; targetKey: string};
@@ -278,6 +286,19 @@ export class ReviewStore {
         .run(input.threadId, input.callerThreadId, input.ackBefore, input.ackBefore);
       return commentId;
     })();
+  }
+
+  /** The session's Viewed marks: path to the change revision each was made at. */
+  viewed(sessionId: string): Map<string, string> {
+    const rows = this.db.prepare("SELECT path, revision FROM review_viewed WHERE session_id = ?").all(sessionId) as {path: string; revision: string}[];
+    return new Map(rows.map(row => [row.path, row.revision]));
+  }
+
+  /** Marks a file Viewed at `revision`, or clears its mark with null. */
+  setViewed(sessionId: string, path: string, revision: string | null) {
+    if (revision === null) this.db.prepare("DELETE FROM review_viewed WHERE session_id = ? AND path = ?").run(sessionId, path);
+    else this.db.prepare(`INSERT INTO review_viewed (session_id, path, revision, marked_at) VALUES (?, ?, ?, ?)
+      ON CONFLICT (session_id, path) DO UPDATE SET revision = excluded.revision, marked_at = excluded.marked_at`).run(sessionId, path, revision, this.now());
   }
 
   /** Deletes a session's threads (their comments go with them) and sends; returns how many threads there were. */

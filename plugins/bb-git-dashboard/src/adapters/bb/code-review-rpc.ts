@@ -6,6 +6,7 @@ import { codeReviewRuns, type RunPlace } from "./code-review-runs.ts";
 import { codeReviewService, type DiffOptions } from "./code-review-service.ts";
 import { hostContract, hostSignals } from "./host-contract.ts";
 import { RunStore } from "./review-run-store.ts";
+import { MAX_PATTERNS, patternLines } from "./review-ignore.ts";
 import { REVIEW_MIGRATIONS, ReviewStore, type ReviewDb } from "./review-store.ts";
 
 type Caller = {experimental_caller: {kind: string}};
@@ -36,7 +37,16 @@ export function codeReviewHandlers(bb: BbPluginApi, copyOf: (copyId: string) => 
   bb.storage.migrate(db, REVIEW_MIGRATIONS);
   const store = new ReviewStore(db);
   const runStore = new RunStore(db);
+  /** The ignore patterns of every diff a Review reads, from the settings as they are now. */
+  const ignoreOf = async () => {
+    const {ignorePatterns, readIgnoreFiles} = await settings.get();
+    return {patterns: patternLines(ignorePatterns).slice(0, MAX_PATTERNS), readFiles: readIgnoreFiles};
+  };
   const settings = bb.settings.define({
+    ignorePatterns: {type: "string", label: "Line review: files to leave out", default: "", experimental_multiline: true,
+      description: "Generated files, lockfiles and the like, one gitignore pattern per line (for example `*.lock` or `dist/`)."},
+    readIgnoreFiles: {type: "boolean", label: "Line review: read the copy's .diffityignore", default: true,
+      description: "Also leave out what `.diffityignore` and `.git/info/diffityignore` list, as diffity and diff-review do."},
     aiProvider: {type: "string", label: "Line review: provider for AI runs", default: "claude-code",
       description: "The provider AI reviews, summaries and fixes in a new thread start with (each run can pick another): claude-code, codex, opencode, … A reviewer started by @reviewer and Explain use it too."},
     aiModel: {type: "string", label: "Line review: model for AI runs", default: "",
@@ -61,7 +71,7 @@ export function codeReviewHandlers(bb: BbPluginApi, copyOf: (copyId: string) => 
     store, copy: copyOf,
     host: {
       diff: async (copy, target, ignoreWhitespace, options = {}) => {
-        const result = value(await host.call("reviewDiff", {root: copy.root, identity: copy.identity, target, ignoreWhitespace,
+        const result = value(await host.call("reviewDiff", {root: copy.root, identity: copy.identity, target, ignoreWhitespace, ignore: await ignoreOf(),
           ...options.patches === false ? {patches: false} : {}, ...options.paths ? {paths: [...options.paths]} : {}}, at(copy)));
         return {value: result.value, target: result.target};
       },
@@ -82,7 +92,7 @@ export function codeReviewHandlers(bb: BbPluginApi, copyOf: (copyId: string) => 
   });
 
   const diff = async (copy: Copy, target: Parameters<typeof service.view>[1], options: DiffOptions = {}) => {
-    const result = value(await host.call("reviewDiff", {root: copy.root, identity: copy.identity, target, ignoreWhitespace: false,
+    const result = value(await host.call("reviewDiff", {root: copy.root, identity: copy.identity, target, ignoreWhitespace: false, ignore: await ignoreOf(),
       ...options.patches === false ? {patches: false} : {}, ...options.paths ? {paths: [...options.paths]} : {}}, at(copy)));
     return {value: result.value, target: result.target};
   };
@@ -180,6 +190,9 @@ export function codeReviewHandlers(bb: BbPluginApi, copyOf: (copyId: string) => 
       ({run: await runs.startExplain({...input, threadId: viewerThreadId ?? null})})),
     reviewFix: handle(async ({viewerThreadId, ...input}: Omit<Parameters<typeof runs.fixInNewThread>[0], "threadId"> & {viewerThreadId?: string | null}) =>
       runs.fixInNewThread({...input, threadId: viewerThreadId ?? null})),
+    reviewSetViewed: handle(({sessionId, path, revision, viewed}: {sessionId: string; path: string; revision: string; viewed: boolean}) => {
+      service.setViewed(sessionId, path, revision, viewed); return {};
+    }),
     reviewPatches: handle(({copyId, target, ignoreWhitespace, files}: {copyId: string; target: Parameters<typeof service.patches>[1]; ignoreWhitespace: boolean;
       files: Parameters<typeof service.patches>[3]}) => service.patches(copyId, target, ignoreWhitespace, files)),
     reviewWatch: handle(async ({copyId}: {copyId: string}) => {

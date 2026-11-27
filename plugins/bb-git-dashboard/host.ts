@@ -8,6 +8,7 @@ import { createRunGit, defaultBase, diff as reviewDiff, GitError } from "./src/a
 import type { Target } from "./src/core/code-review/model.ts";
 import { readReviewFile, writeReviewFile } from "./src/adapters/bb/review-files.ts";
 import { WATCH_IGNORED, WatchLeases } from "./src/adapters/bb/review-watch.ts";
+import { ignoreFor } from "./src/adapters/bb/review-ignore.ts";
 import { hostSignals } from "./src/adapters/bb/host-contract.ts";
 import type { ExperimentalHostRpcContext } from "@get-bb/plugin-sdk/host";
 
@@ -117,7 +118,7 @@ export default experimental_defineHostEntry({
       try { await assertWorktree(root,identity,signal); return {ok:true as const, value:await commitDetails(root,hash,signal)}; }
       catch (error) { return failureFor(error,"GIT_REJECTED"); }
     },
-    async reviewDiff({root, identity, target, ignoreWhitespace, patches, paths}, {signal}) {
+    async reviewDiff({root, identity, target, ignoreWhitespace, patches, paths, ignore}, {signal}) {
       try {
         await assertWorktree(root,identity,signal);
         const reviewGit = createRunGit(60_000, signal);
@@ -128,7 +129,8 @@ export default experimental_defineHostEntry({
           if (!base) throw new GitError("Unknown revision 'main'.");
           resolved = {kind: target.kind, base};
         } else resolved = target as Target;
-        const value = await reviewDiff(reviewGit, root, resolved, ignoreWhitespace, {patches, paths});
+        const ignored = ignore ? await ignoreFor(reviewGit, root, ignore.patterns, ignore.readFiles) : null;
+        const value = await reviewDiff(reviewGit, root, resolved, ignoreWhitespace, {patches, paths, ignored});
         // A commit's review is kept under its full hash, however short the hash it was asked by.
         return {ok:true as const, value, target:resolved.kind === "commit" && value.headSha ? {kind:"commit" as const, sha:value.headSha} : resolved};
       } catch (error) {

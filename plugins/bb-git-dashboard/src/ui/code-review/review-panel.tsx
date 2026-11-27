@@ -130,6 +130,13 @@ export function ReviewPanel({api, copyId, currentThreadId, revision}: {api: Code
     const asked = request(kind, base, sha, range);
     if (typeof asked === "string") setError(asked); else { setError(""); setAuto(false); setApplied(asked); }
   };
+  const markViewed = async (path: string, revision: string, on: boolean) => {
+    if (!view) return;
+    try {
+      await api.setViewed(view.sessionId, path, revision, on);
+      setView(current => current && {...current, files: current.files.map(file => file.path === path ? {...file, viewed: on} : file)});
+    } catch (cause) { setStatus("Could not mark " + path + ": " + message(cause)); }
+  };
   const clear = async () => {
     if (!view) return;
     try {
@@ -193,7 +200,7 @@ export function ReviewPanel({api, copyId, currentThreadId, revision}: {api: Code
     {view && <div className="git-row git-code-review-bar">
       <span className="git-muted">{describeTarget(view.target)}{view.target.kind === "range" ? " (" + rangeText(view.target) + ")" : ""} · {view.files.length} file{view.files.length === 1 ? "" : "s"}
         {" "}· +{view.files.reduce((sum, file) => sum + file.additions, 0)} −{view.files.reduce((sum, file) => sum + file.deletions, 0)}
-        {view.truncated ? " · the diff was cut short" : ""}</span>
+        {view.ignored ? " · " + view.ignored + " ignored" : ""}{view.truncated ? " · the diff was cut short" : ""}</span>
       <span className="git-ci-spacer"/>
       <button type="button" aria-expanded={general} onClick={() => setGeneral(value => !value)}>Comment on the diff</button>
       <button type="button" aria-expanded={reviewing} disabled={!view.files.length} onClick={() => setReviewing(value => !value)}>AI review</button>
@@ -228,7 +235,9 @@ export function ReviewPanel({api, copyId, currentThreadId, revision}: {api: Code
     </section>}
     {view && !view.files.length && <p className="git-muted">{view.target.kind === "uncommitted" ? "No uncommitted changes." : "Nothing changed in this view."}</p>}
     {view && files.map(file => <FileDiff key={view.sessionId + file.path} file={file} wrap={wrap} split={split}
-      patchError={file.deferred ? patchError : ""} onRetryPatch={() => setPatchRetry(value => value + 1)} workingCopy={working} api={liveApi} onCreate={create} onExplain={explain} explaining={explaining}
+      patchError={file.deferred ? patchError : ""} onRetryPatch={() => setPatchRetry(value => value + 1)}
+      onViewed={(revision, on) => markViewed(file.path, revision, on)}
+      onOpen={file.changeKind === "deleted" ? undefined : line => api.openFile(view.copy.hostId, joinPath(view.copy.root, file.path), line)} workingCopy={working} api={liveApi} onCreate={create} onExplain={explain} explaining={explaining}
       threads={threads.filter(thread => thread.filePath === file.path && placed(thread.id)?.state !== "outdated")} placements={view.placements}/>)}
   </section>;
 }
@@ -236,4 +245,10 @@ export function ReviewPanel({api, copyId, currentThreadId, revision}: {api: Code
 /** This browser's storage for what a Review keeps; none where the page may not use it. */
 function browserStorage(): ViewStorage | undefined {
   try { return typeof window === "undefined" ? undefined : window.localStorage; } catch { return undefined; }
+}
+
+/** A path of the copy on its host; the host's own separator when its root shows one. */
+function joinPath(root: string, path: string) {
+  const separator = root.includes("\\") && !root.includes("/") ? "\\" : "/";
+  return root.replace(/[\\/]+$/, "") + separator + (separator === "/" ? path : path.replaceAll("/", "\\"));
 }

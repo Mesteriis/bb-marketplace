@@ -4,7 +4,8 @@ import type { Execution, ReviewRun, ReviewThread, Severity, Side, Target, Target
 import type { ExplainPlace } from "../../core/code-review/run-prompts.ts";
 
 export type Placement = {state: "anchored" | "moved"; startLine: number; endLine: number} | {state: "outdated"};
-export type ReviewView = {sessionId: string; target: Target; files: ReviewDiffFile[]; truncated: boolean; baseSha: string | null; headSha: string | null;
+export type ReviewView = {sessionId: string; target: Target; files: ReviewDiffFile[]; truncated: boolean; ignored?: number; baseSha: string | null; headSha: string | null;
+  copy: {hostId: string; root: string};
   threads: ReviewThread[]; placements: Record<string, Placement>};
 export type NewThread = {filePath: string; side: Side | null; startLine: number; endLine: number; anchorContent: string | null; severity: Severity | null; body: string};
 
@@ -19,6 +20,9 @@ export type CodeReviewApi = {
   /** `auto`: a first look; an empty uncommitted view gives way to the branch's commits. */
   view(copyId: string, target: TargetRequest, ignoreWhitespace: boolean, auto?: boolean): Promise<ReviewView>;
   clear(sessionId: string): Promise<{deletedThreads: number; closedRuns: number}>;
+  setViewed(sessionId: string, path: string, revision: string, viewed: boolean): Promise<void>;
+  /** Opens a file of the copy, at a line, in BB's preview. */
+  openFile(hostId: string, path: string, line: number | null): void;
   /** The patches of up to 25 deferred files of a view. */
   patches(copyId: string, target: Target, ignoreWhitespace: boolean, files: ReviewDiffFile[]): Promise<ReviewDiffFile[]>;
   /** Keeps the copy watched for 90 seconds; its changes arrive as a new `revision`. */

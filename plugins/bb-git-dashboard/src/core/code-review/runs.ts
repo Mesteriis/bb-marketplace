@@ -2,7 +2,7 @@
  * Rules of the review's AI runs that need no host. Ported from diff-review server/runs.ts (MIT, gpambrozio); see
  * THIRD_PARTY_NOTICES.md. Changed: the copy's fingerprint is taken from the uncommitted view's diff the host reads.
  */
-import type { ReviewDiff } from "./diff.ts";
+import { changeRevision, type ReviewDiff } from "./diff.ts";
 import type { RunKind } from "./model.ts";
 
 /** The permission modes a run may start in: BB's "Approve for me" (`auto`) and "Accept edits". */
@@ -36,8 +36,7 @@ export const readsOnly = (kind: RunKind) => kind !== "fix";
 
 /** One short hash per changed file of the uncommitted view: what the file's change is, not the change itself. */
 export function fingerprint(diff: ReviewDiff): Record<string, string> {
-  return Object.fromEntries(diff.files.map(file => [file.path,
-    hash([file.changeKind, file.previousPath ?? "", file.additions, file.deletions, file.binary, file.patch ?? ""].join("\u0000"))]));
+  return Object.fromEntries(diff.files.map(file => [file.path, changeRevision(file)]));
 }
 
 /** Files whose uncommitted change differs between two fingerprints, sorted. */
@@ -58,12 +57,7 @@ export function ranges(lines: readonly number[]): string {
   return parts.join(", ");
 }
 
-/** FNV-1a, 64 bits as hex: enough to tell two versions of a file's change apart. */
-function hash(text: string): string {
-  let value = 0xcbf29ce484222325n;
-  for (const byte of new TextEncoder().encode(text)) value = BigInt.asUintN(64, (value ^ BigInt(byte)) * 0x100000001b3n);
-  return value.toString(16).padStart(16, "0");
-}
+
 
 /** The focuses an AI review offers; none means every pass. */
 export const REVIEW_FOCUSES = ["Security", "Performance", "Correctness", "Naming", "Tests", "Types"] as const;

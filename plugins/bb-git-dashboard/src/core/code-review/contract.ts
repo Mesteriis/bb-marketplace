@@ -17,7 +17,11 @@ export const codeReviewContract = {
   /** `auto`: a first look, no view picked yet; an empty uncommitted view gives way to the branch's commits. */
   reviewView: {input: z.object({copyId: id, target: targetRequestSchema, ignoreWhitespace: z.boolean(), auto: z.boolean().optional()}),
     output: answer({sessionId: reviewId, target: targetSchema, files: z.array(reviewDiffFileSchema), truncated: z.boolean(),
-      baseSha: z.string().nullable(), headSha: z.string().nullable(), threads: z.array(reviewThreadSchema), placements: z.record(z.string(), placementSchema)})},
+      ignored: z.number().int().nonnegative().optional(), baseSha: z.string().nullable(), headSha: z.string().nullable(),
+      threads: z.array(reviewThreadSchema), placements: z.record(z.string(), placementSchema),
+      /** Where the copy is, to open its files in BB's preview. */
+      copy: z.object({hostId: id, root: z.string().max(4096)})})},
+  reviewSetViewed: {input: z.object({sessionId: reviewId, path: z.string().min(1).max(4096), revision: z.string().max(64), viewed: z.boolean()}), output: answer({})},
   reviewCreateThread: {input: z.object({sessionId: reviewId, filePath: z.string().min(1).max(4096), side: sideSchema.nullable(),
     startLine: z.number().int().min(0), endLine: z.number().int().min(0), anchorContent: z.string().max(ANCHOR_MAX_CHARS).nullable(),
     severity: severitySchema.nullable(), body}).merge(viewer),

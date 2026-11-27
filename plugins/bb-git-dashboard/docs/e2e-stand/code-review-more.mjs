@@ -67,6 +67,19 @@ try {
   check("a large change starts folded and says so", await visible(large.getByText(/large change/)) && await large.locator(".git-review-row").count() === 0);
   await page.screenshot({ path: out + "/code-review-more.png", fullPage: false });
 
+  const watched = review.getByRole("region", { name: "watched.txt" });
+  await watched.getByLabel("Viewed").check();
+  check("Viewed folds the file and survives a reload", await until(async () => await watched.locator(".git-review-row").count() === 0)
+    && await (async () => { await review.getByRole("button", { name: "Reload" }).click(); await page.waitForTimeout(1500); return await watched.getByLabel("Viewed").isChecked(); })());
+  writeFileSync(join(repo, "watched.txt"), "seen without reload\nand changed again\n");
+  check("a Viewed file whose change moves on is unmarked", await until(async () => !(await watched.getByLabel("Viewed").isChecked())));
+  writeFileSync(join(repo, ".diffityignore"), "large.txt\n");
+  await review.getByRole("button", { name: "Reload" }).click();
+  check("the copy's .diffityignore leaves files out and says how many", await visible(review.getByText(/· 1 ignored/))
+    && await until(async () => await review.getByRole("region", { name: "large.txt" }).count() === 0));
+  await watched.getByRole("button", { name: "Open", exact: true }).click();
+  check("Open shows the file in BB's preview", await visible(page.getByText("and changed again").filter({ hasNot: page.locator(".git-review-code") })));
+
   await review.getByRole("region", { name: "watched.txt" }).getByRole("button", { name: "Comment on line 1" }).click();
   await review.getByLabel("Line comment").fill("To be cleared.");
   await review.getByRole("button", { name: "Comment", exact: true }).click();

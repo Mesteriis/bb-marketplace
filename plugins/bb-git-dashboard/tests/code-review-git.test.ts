@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it } from "./vitest-expect.ts";
 
 import { parseRange } from "../src/core/code-review/git-spec.ts";
 import { createRunGit, diff, newFilePatch, parseNameStatus, parseNumstat, rangeCommits, splitPatch, unquote } from "../src/adapters/bb/review-git.ts";
+import { ignoreFor, patternLines } from "../src/adapters/bb/review-ignore.ts";
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -140,6 +141,28 @@ describe("the host's git diffs", () => {
     const some = await diff(run, root, { kind: "uncommitted" }, false, { paths: ["b[1].txt", "d.txt", "c.txt"] });
     expect(some.files.map((file) => [file.path, file.changeKind, file.previousPath, file.patch !== null])).toEqual([
       ["d.txt", "renamed", "c.txt", true], ["b[1].txt", "added", null, true]]);
+  });
+
+  it("leaves out what the setting and the ignore files list, and counts it; a linked worktree reads the main repository's info file", async () => {
+    const root = repo();
+    const run = createRunGit();
+    writeFileSync(join(root, "yarn.lock"), "x\n");
+    writeFileSync(join(root, "gen.ts"), "x\n");
+    writeFileSync(join(root, "kept.ts"), "x\n");
+    writeFileSync(join(root, "dist.js"), "x\n");
+    writeFileSync(join(root, ".diffityignore"), "# generated\ngen.ts\n");
+    writeFileSync(join(root, ".git/info/diffityignore"), "dist.js\n");
+    const ignored = await ignoreFor(run, root, patternLines("*.lock\n\n# none\n"), true);
+    const view = await diff(run, root, { kind: "uncommitted" }, false, { ignored });
+    expect([view.files.map((file) => file.path).sort(), view.ignored]).toEqual([[".diffityignore", "kept.ts"], 3]);
+    const settingOnly = await diff(run, root, { kind: "uncommitted" }, false, { ignored: await ignoreFor(run, root, ["*.lock"], false) });
+    expect(settingOnly.ignored).toEqual(1);
+    const tree = join(root, "..", "linked-" + Date.now());
+    git(root, "worktree", "add", "-q", tree);
+    roots.push(tree);
+    writeFileSync(join(tree, "dist.js"), "x\n");
+    const linked = await diff(run, tree, { kind: "uncommitted" }, false, { ignored: await ignoreFor(run, tree, [], true) });
+    expect([linked.files.map((file) => file.path), linked.ignored]).toEqual([[], 1]);
   });
 
   it("refuses unknown revisions", async () => {

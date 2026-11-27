@@ -1,4 +1,5 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { changeRevision } from "../../core/code-review/diff.ts";
 import type { ReviewDiffFile } from "../../core/code-review/diff.ts";
 import type { ReviewThread, Side } from "../../core/code-review/model.ts";
 import { linesText, parsePatchLines } from "../../core/code-review/patch-lines.ts";
@@ -26,10 +27,14 @@ function anchorsOf(item: Item): {side: Side; line: number}[] {
  * One file of the review: its patch as rows with each thread under the last line it is placed on. Click a line
  * number to comment, Shift+click another line on the same side to comment on the range.
  */
-export function FileDiff({file, threads, placements, wrap, split, workingCopy, api, onCreate, onExplain, explaining, patchError, onRetryPatch}: {
+export function FileDiff({file, threads, placements, wrap, split, workingCopy, api, onCreate, onExplain, explaining, patchError, onRetryPatch, onViewed, onOpen}: {
   file: ReviewDiffFile; threads: ReviewThread[]; placements: Record<string, Placement>; wrap: boolean; split: boolean; workingCopy: boolean;
   /** Why the deferred patch could not be read; Retry reads the batches again. */
   patchError: string; onRetryPatch(): void;
+  /** Marks the file Viewed at the change shown, or clears the mark. */
+  onViewed(revision: string, viewed: boolean): Promise<void>;
+  /** Opens the working copy's file at a line in BB's preview; absent for a deleted file. */
+  onOpen?(line: number | null): void;
   api: CodeReviewApi; onCreate(thread: NewThread): Promise<void>;
   /** Starts an AI run that explains the file or the selected lines. */
   onExplain(place: ExplainPlace): Promise<void>; explaining: boolean;
@@ -42,7 +47,10 @@ export function FileDiff({file, threads, placements, wrap, split, workingCopy, a
   const [fileComment, setFileComment] = useState(false);
   // A change of more than LARGE_CHANGE lines starts folded: it is slow to show and rarely read line by line.
   const large = file.additions + file.deletions > LARGE_CHANGE;
-  const [closed, setClosed] = useState(large);
+  const [closed, setClosed] = useState(large || file.viewed === true);
+  // Marking a file Viewed folds it; a mark that went stale (its change moved on) unfolds it.
+  useEffect(() => { if (file.viewed !== undefined) setClosed(file.viewed || large); }, [file.viewed, large]);
+  const [marking, setMarking] = useState(false);
   const below = new Map<string, ReviewThread[]>();
   const wholeFile: ReviewThread[] = [];
   for (const thread of threads) {
@@ -69,6 +77,9 @@ export function FileDiff({file, threads, placements, wrap, split, workingCopy, a
       <span className="git-muted">{file.untracked ? "untracked" : file.changeKind.replace("_", " ")} · {additions}{large ? " · large change" : ""}</span>
       {threads.length > 0 && <span className="git-review-tag">{threads.filter(thread => thread.status === "open").length} open</span>}
       <span className="git-ci-spacer"/>
+      {onOpen && <button type="button" title="Opens the working copy's file in BB's preview" onClick={() => onOpen(null)}>Open</button>}
+      {!file.deferred && <label className="git-review-viewed"><input type="checkbox" checked={file.viewed === true} disabled={marking}
+        onChange={event => { const on = event.target.checked; setMarking(true); onViewed(changeRevision(file), on).finally(() => setMarking(false)); }}/> Viewed</label>}
       <button type="button" disabled={explaining} onClick={() => void onExplain({filePath: file.path, side: null, startLine: 0, endLine: 0, code: null})}>Explain</button>
       <button type="button" aria-expanded={fileComment} onClick={() => setFileComment(value => !value)}>Comment on file</button>
     </header>

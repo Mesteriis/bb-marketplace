@@ -34,7 +34,9 @@ export const hostContract = defineRpcContract({
     output:z.discriminatedUnion("ok",[failure,z.object({ok:z.literal(true),value:patchText})])},
   /** `patches: false` lists files only (each patch deferred); `paths` limits the diff to those paths. */
   reviewDiff: {input:z.object({root:path,identity,target:targetRequestSchema,ignoreWhitespace:z.boolean(),patches:z.boolean().optional(),
-    paths:z.array(z.string().min(1).max(4096)).max(200).optional()}),
+    paths:z.array(z.string().min(1).max(4096)).max(200).optional(),
+    /** Gitignore patterns to leave out, and whether to add the copy's own ignore files to them. */
+    ignore:z.object({patterns:z.array(z.string().max(1000)).max(1000),readFiles:z.boolean()}).optional()}),
     output:z.discriminatedUnion("ok",[failure,z.object({ok:z.literal(true),value:reviewDiffSchema,target:targetSchema})])},
   reviewFile: {input:z.object({root:path,identity,path:z.string().min(1).max(4096)}),
     output:z.discriminatedUnion("ok",[failure,z.object({ok:z.literal(true),text:z.string(),sha256:z.string()})])},

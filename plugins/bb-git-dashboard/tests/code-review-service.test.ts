@@ -212,3 +212,16 @@ test("a view reads the first 25 patches and those of commented files; the rest s
   assert.deepEqual((calls[2] as {paths: string[]}).paths, ["f25.ts", "f26.ts", "f27.ts", "f29.ts", "old.ts"]);
   await assert.rejects(service.patches("c1", {kind: "uncommitted"}, false, all), /INVALID_INPUT/);
 });
+
+test("a file marked Viewed shows so until its change moves on; the view says where the copy is", async () => {
+  const {service, store} = setup();
+  const first = await service.view("c1", {kind: "uncommitted"}, false);
+  assert.deepEqual([first.files[0].viewed, first.copy], [false, {hostId: "mac", root: "/w/app"}]);
+  const {changeRevision} = await import("../src/core/code-review/diff.ts");
+  service.setViewed(first.sessionId, "a.ts", changeRevision(first.files[0]), true);
+  assert.equal((await service.view("c1", {kind: "uncommitted"}, false)).files[0].viewed, true);
+  store.setViewed(first.sessionId, "a.ts", "an older change");
+  assert.equal((await service.view("c1", {kind: "uncommitted"}, false)).files[0].viewed, false);
+  service.setViewed(first.sessionId, "a.ts", "", false);
+  assert.deepEqual(Object.fromEntries(store.viewed(first.sessionId)), {});
+});

@@ -1,5 +1,5 @@
 import { placeThread, type Placement } from "../../core/code-review/anchors.ts";
-import { PATCH_BATCH, patchPaths, withPatches, type ReviewDiff, type ReviewDiffFile } from "../../core/code-review/diff.ts";
+import { changeRevision, PATCH_BATCH, patchPaths, withPatches, type ReviewDiff, type ReviewDiffFile } from "../../core/code-review/diff.ts";
 import { ANCHOR_MAX_CHARS, BODY_MAX_CHARS, GENERAL_PATH, targetKey, targetSchema, type Severity, type Side, type Target, type TargetRequest } from "../../core/code-review/model.ts";
 import { contentLines, parsePatchLines } from "../../core/code-review/patch-lines.ts";
 import { sendPrompt } from "../../core/code-review/prompt.ts";
@@ -62,6 +62,11 @@ export function codeReviewService(deps: CodeReviewDeps) {
     return await deps.copy(copyId) ?? fail("NOT_FOUND");
   }
   const changed = (sessionId: string) => deps.changed(session(sessionId).copyId);
+  /** Each file whose patch was read, with whether its Viewed mark is at this very change; deferred ones are told later. */
+  function markViewed(sessionId: string, files: ReviewDiffFile[]) {
+    const marks = store.viewed(sessionId);
+    return files.map(file => file.deferred ? file : {...file, viewed: marks.get(file.path) === changeRevision(file)});
+  }
 
   /** The thread an agent named by a unique prefix of its id, among those sent to its own thread only. */
   function named(callerThreadId: string, prefix: string) {
@@ -94,20 +99,28 @@ export function codeReviewService(deps: CodeReviewDeps) {
       }
       const key = targetKey(targetSchema.parse(target));
       const {id: sessionId} = store.session(copy.id, key);
+      value = {...value, files: markViewed(sessionId, value.files)};
       const files = new Map(value.files.flatMap(file => file.patch === null ? [] : [[file.path, parsePatchLines(file.patch)] as const]));
       const threads = store.threads(sessionId);
       const placements: Record<string, Placement> = Object.fromEntries(threads.map(row => [row.id,
         placeThread(row, value.files.some(file => file.path === row.filePath) ? files.get(row.filePath) ?? {old: new Map(), new: new Map()} : undefined)]));
-      return {sessionId, target, ...value, threads, placements};
+      return {sessionId, target, ...value, threads, placements, copy: {hostId: copy.hostId, root: copy.root}};
     },
     threads: (sessionId: string) => store.threads(sessionId),
+
+    /** Marks a file Viewed at the change the view showed (`revision`, from `changeRevision`), or clears its mark. */
+    setViewed(sessionId: string, path: string, revision: string, viewed: boolean) {
+      session(sessionId);
+      if (path.length > 4096 || (viewed && !/^[0-9a-f]{16}$/.test(revision))) fail("INVALID_INPUT");
+      store.setViewed(sessionId, path, viewed ? revision : null);
+    },
 
     /** The patches of some files of a view the list left deferred, as the host reads them now. */
     async patches(copyId: string, target: Target, ignoreWhitespace: boolean, files: readonly ReviewDiffFile[]) {
       const copy = await copyOf(copyId);
       if (files.length > PATCH_BATCH) fail("INVALID_INPUT");
       const read = await deps.host.diff(copy, target, ignoreWhitespace, {paths: patchPaths(files)});
-      return {files: read.value.files};
+      return {files: markViewed(store.session(copy.id, targetKey(target)).id, read.value.files)};
     },
 
     async createThread(sessionId: string, input: NewThreadInput) {

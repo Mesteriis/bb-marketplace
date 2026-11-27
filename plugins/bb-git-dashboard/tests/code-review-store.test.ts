@@ -86,3 +86,16 @@ test("a copy's threads are counted, open and all", () => {
   thread();
   assert.deepEqual(store.counts("copy_1"), {total: 1, open: 1});
 });
+
+test("a Viewed mark is kept per session and file at the change it was made at, and cleared on request", () => {
+  const {store, session} = setup();
+  store.setViewed(session.id, "a.ts", "r1");
+  store.setViewed(session.id, "b.ts", "r2");
+  store.setViewed(session.id, "a.ts", "r3");
+  assert.deepEqual(Object.fromEntries(store.viewed(session.id)), {"a.ts": "r3", "b.ts": "r2"});
+  store.setViewed(session.id, "b.ts", null);
+  assert.deepEqual(Object.fromEntries(store.viewed(session.id)), {"a.ts": "r3"});
+  assert.deepEqual(Object.fromEntries(store.viewed(store.session("copy_1", "staged").id)), {});
+  assert.equal(store.clearSession(session.id), 0);
+  assert.deepEqual(Object.fromEntries(store.viewed(session.id)), {"a.ts": "r3"});
+});

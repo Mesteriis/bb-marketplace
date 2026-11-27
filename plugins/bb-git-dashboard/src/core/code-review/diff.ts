@@ -17,6 +17,8 @@ export const reviewDiffFileSchema = z.object({
   tooLarge: z.boolean(),
   /** The patch was not read yet: the view reads it later, with the next batch of files. */
   deferred: z.boolean().optional(),
+  /** Marked Viewed at this very change; a file whose change moved on since is not. */
+  viewed: z.boolean().optional(),
 }).strict();
 export type ReviewDiffFile = z.infer<typeof reviewDiffFileSchema>;
 
@@ -24,6 +26,8 @@ export const reviewDiffSchema = z.object({
   files: z.array(reviewDiffFileSchema),
   /** Files were left out: the diff has more than the host sends. */
   truncated: z.boolean(),
+  /** How many changed files the ignore patterns left out. */
+  ignored: z.number().int().nonnegative().optional(),
   /** The commits the two sides are, when they are commits. */
   baseSha: z.string().nullable(),
   headSha: z.string().nullable(),
@@ -39,4 +43,16 @@ export const patchPaths = (files: readonly ReviewDiffFile[]) => [...new Set(file
 export function withPatches(files: readonly ReviewDiffFile[], read: readonly ReviewDiffFile[]): ReviewDiffFile[] {
   const byPath = new Map(read.map(file => [file.path, file]));
   return files.map(file => { const found = byPath.get(file.path); return found && file.deferred ? found : file; });
+}
+
+/** One short hash of a file's change: it differs whenever the change does. A Viewed mark holds the one it was made at. */
+export function changeRevision(file: Pick<ReviewDiffFile, "changeKind" | "previousPath" | "additions" | "deletions" | "binary" | "patch">): string {
+  return hash([file.changeKind, file.previousPath ?? "", file.additions, file.deletions, file.binary, file.patch ?? ""].join("\u0000"));
+}
+
+/** FNV-1a, 64 bits as hex: enough to tell two versions of a file's change apart. */
+function hash(text: string): string {
+  let value = 0xcbf29ce484222325n;
+  for (const byte of new TextEncoder().encode(text)) value = BigInt.asUintN(64, (value ^ BigInt(byte)) * 0x100000001b3n);
+  return value.toString(16).padStart(16, "0");
 }
