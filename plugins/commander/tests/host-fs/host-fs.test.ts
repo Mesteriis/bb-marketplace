@@ -1,7 +1,7 @@
 /// <reference lib="es2024.promise" />
 
 import { randomUUID } from "node:crypto";
-import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, truncate, unlink, utimes, writeFile } from "node:fs/promises";
+import { chmod, link, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm, symlink, truncate, unlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it } from "vitest";
@@ -477,16 +477,23 @@ it.skipIf(windows)("drops special permission bits on replacement", async ({ skip
 it("keeps staging private and skips link when the target is already occupied", async () => {
   await fs.dispose();
   let links = 0;
-  fs = createHostFs({ link: async (from, to) => { links++; await link(from, to); } });
+  const modes: number[] = [];
+  fs = createHostFs({
+    link: async (from, to) => { links++; await link(from, to); },
+    chmodStage: async (file, mode) => { modes.push(mode); await file.chmod(mode); },
+  });
   await writeFile(join(root, "target"), "occupied");
   const { session, tempName } = await stage();
   await expect(fs.handlers.writeCommit({ session, replace: false, expectTarget: null }, ctx))
     .rejects.toMatchObject({ code: "already_exists" });
   expect(links).toBe(0);
+  expect(modes).toEqual([]);
   if (!windows && "t" in tempName) {
     expect((await lstat(join(root, tempName.t))).mode & 0o777).toBe(0o600);
   }
   expect(await readFile(join(root, "target"), "utf8")).toBe("occupied");
+  await fs.handlers.writeCommit({ session, replace: true, expectTarget: null }, ctx);
+  expect(modes).toHaveLength(1);
 });
 
 it("awaits an asynchronous orphan record that started in the TTL callback", async () => {
@@ -594,5 +601,66 @@ it.each(["../escaped.part", "target"])("rejects unsafe staging name %j before cr
   await expect(fs.handlers.writeOpen({
     target: at("target"), tempName: { t },
   }, ctx)).rejects.toMatchObject({ code: "invalid_name" });
+  expect(await readdir(root)).toEqual([]);
+});
+
+async function observeStageOpens(rejectCleanup = false) {
+  await fs.dispose();
+  let opens = 0;
+  fs = createHostFs({
+    openStage: (path, flags, mode) => { opens++; return open(path, flags, mode); },
+    // A post-open rejection cannot hide an accidental creation from readdir.
+    ...(rejectCleanup ? {
+      unlink: async () => { throw Object.assign(new Error("injected"), { code: "EPERM" }); },
+      onOrphan: () => {},
+    } : {}),
+  });
+  return () => opens;
+}
+
+async function caseProbe() {
+  await writeFile(join(root, "CasEProbe"), "");
+  return lstat(join(root, "caseProbe")).then(() => false, (error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return true;
+    throw error;
+  });
+}
+
+it("rejects case aliases before opening on a case-insensitive filesystem", async ({ skip }) => {
+  if (await caseProbe()) skip("Requires a case-insensitive filesystem");
+  const opens = await observeStageOpens(true);
+  await expect(fs.handlers.writeOpen({
+    target: at("Report"), tempName: { t: "report" },
+  }, ctx)).rejects.toMatchObject({ code: "invalid_name" });
+  expect(opens()).toBe(0);
+  expect(await readdir(root)).toEqual(["CasEProbe"]);
+});
+
+it("rejects case variants before open when an empty directory gives no case evidence", async () => {
+  const opens = await observeStageOpens(true);
+  await expect(fs.handlers.writeOpen({
+    target: at("Report"), tempName: { t: "report" },
+  }, ctx)).rejects.toMatchObject({ code: "invalid_name" });
+  expect(opens()).toBe(0);
+  expect(await readdir(root)).toEqual([]);
+});
+
+it("allows distinct case variants when the directory is known to be case-sensitive", async ({ skip }) => {
+  if (!await caseProbe()) skip("Requires a case-sensitive filesystem");
+  const opens = await observeStageOpens();
+  const { tempName } = await fs.handlers.writeOpen({
+    target: at("Report"), tempName: { t: "report" },
+  }, ctx);
+  expect(tempName).toEqual({ t: "report" });
+  expect(opens()).toBe(1);
+  expect((await readdir(root)).sort()).toEqual(["CasEProbe", "report"]);
+});
+
+it.skipIf(process.platform !== "darwin")("rejects NFC and NFD aliases before opening on macOS", async () => {
+  const opens = await observeStageOpens(true);
+  await expect(fs.handlers.writeOpen({
+    target: at("Caf\u00E9"), tempName: { t: "Cafe\u0301" },
+  }, ctx)).rejects.toMatchObject({ code: "invalid_name" });
+  expect(opens()).toBe(0);
   expect(await readdir(root)).toEqual([]);
 });

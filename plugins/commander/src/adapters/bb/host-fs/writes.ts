@@ -7,7 +7,9 @@ import { join, NameSegment, parent, type ResourcePath } from "../../../core/path
 import { changed, fingerprint, hashFile, noFollow, requireVersion, verifyVersionHash, type ExpectedVersion } from "./files.ts";
 import { hasErrno, linkUnavailable } from "./errors.ts";
 import { validateTargetName, type NamePlatform } from "./names.ts";
-import { childPath, decodeName, encodeName, lstatOrNull, recheckParent, requireAbsent, resolvePath, sameNode } from "./paths.ts";
+import {
+  childPath, decodeName, encodeName, lstatOrNull, recheckParent, requireAbsent, resolvePath, sameNode, stagingNameConflicts,
+} from "./paths.ts";
 
 type PublishedFile = Fingerprint & { atomicNoReplace?: false; orphanedTempPath?: ResourcePath };
 type CleanupResult = { orphanedTempPath?: ResourcePath };
@@ -21,6 +23,8 @@ export interface WriteOptions {
   scheduleExpiry?: ScheduleExpiry;
   link?: typeof link;
   unlink?: typeof unlink;
+  openStage?: typeof open;
+  chmodStage?: (file: FileHandle, mode: number) => Promise<void>;
   hashTarget?: typeof hashFile;
   onOrphan?: (orphan: StagingOrphan) => void | Promise<void>;
 }
@@ -101,7 +105,7 @@ export class WriteSessions {
     const tempName = requested === undefined ? stagingName(targetName, session, this.platform) : requested;
     if (!NameSegment.safeParse(tempName).success) throw new CommanderError("invalid_name", "Invalid staging name");
     validateTargetName(tempName, this.platform);
-    if (encodeName(tempName).equals(encodeName(targetName))) {
+    if (await stagingNameConflicts(resolved.parent!, targetName, tempName)) {
       throw new CommanderError("invalid_name", "Staging name must differ from the target name");
     }
     const directory = resolved.parentStats!;
@@ -112,7 +116,9 @@ export class WriteSessions {
     const lease = retain?.();
     let file: FileHandle;
     try {
-      file = await open(temp, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | noFollow, 0o600);
+      file = await (this.options.openStage ?? open)(
+        temp, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | noFollow, 0o600,
+      );
     } catch (error) {
       await lease?.dispose();
       throw error;
@@ -180,7 +186,7 @@ export class WriteSessions {
         let atomicNoReplace: false | undefined;
         try {
           signal.throwIfAborted();
-          await file.chmod(mode);
+          await this.setStageMode(file, mode);
           if (replace && expect !== "absent") {
             await rename(temp, resolved.full);
           } else {
@@ -190,7 +196,7 @@ export class WriteSessions {
             } catch (error) {
               if (expect === "absent" && hasErrno(error, "EEXIST")) throw changed();
               if (!linkUnavailable(error)) throw error;
-              await file.chmod(0o600);
+              await this.setStageMode(file, 0o600);
               await recheckParent(resolved);
               const fallbackTemp = await lstatOrNull(temp);
               if (!fallbackTemp?.isFile() || !sameNode(fallbackTemp, stagedStats)) throw changed();
@@ -199,14 +205,14 @@ export class WriteSessions {
               }
               await requireAbsent(resolved.full, expect === "absent");
               signal.throwIfAborted();
-              await file.chmod(mode);
+              await this.setStageMode(file, mode);
               await rename(temp, resolved.full);
               atomicNoReplace = false;
             }
           }
         } catch (error) {
           try {
-            await file.chmod(0o600);
+            await this.setStageMode(file, 0o600);
           } catch {
             await this.finish(session, stage, true);
           }
@@ -220,6 +226,10 @@ export class WriteSessions {
         };
       });
     });
+  }
+
+  private setStageMode(file: FileHandle, mode: number): Promise<void> {
+    return this.options.chmodStage?.(file, mode) ?? file.chmod(mode);
   }
 
   // Serialize version checks and mutations within this worker, including across sessions.

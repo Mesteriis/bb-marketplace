@@ -1,5 +1,5 @@
 import type { BigIntStats } from "node:fs";
-import { lstat } from "node:fs/promises";
+import { lstat, opendir } from "node:fs/promises";
 import { win32 } from "node:path";
 import { CommanderError } from "../../../core/errors.ts";
 import { type NameSegment, ResourcePath } from "../../../core/path.ts";
@@ -39,6 +39,47 @@ export async function lstatOrNull(path: FsPath): Promise<BigIntStats | null> {
 
 export function sameNode(left: BigIntStats, right: BigIntStats): boolean {
   return left.dev === right.dev && left.ino === right.ino;
+}
+
+export async function stagingNameConflicts(parent: FsPath, target: NameSegment, temp: NameSegment): Promise<boolean> {
+  if (encodeName(target).equals(encodeName(temp))) return true;
+  if (!("t" in target) || !("t" in temp)) return false;
+  const targetText = process.platform === "darwin" ? target.t.normalize("NFC") : target.t;
+  const tempText = process.platform === "darwin" ? temp.t.normalize("NFC") : temp.t;
+  if (targetText === tempText) return true;
+  if (targetText.toUpperCase() !== tempText.toUpperCase()) return false;
+  return !await directoryShowsCaseSensitivity(parent);
+}
+
+/** Use a read-only lookup in the actual directory. Empty, unreadable and inconclusive directories fail closed. */
+async function directoryShowsCaseSensitivity(path: FsPath): Promise<boolean> {
+  try {
+    // Node supports Buffer names at runtime even though opendir's types omit the encoding.
+    const directory = await opendir(path, { encoding: "buffer" as BufferEncoding });
+    try {
+      for (let index = 0; index < 32; index++) {
+        const entry = await directory.read();
+        if (!entry) return false;
+        const name = decodeName(Buffer.from(entry.name));
+        if (!("t" in name)) continue;
+        const alternate = name.t.replace(/[A-Za-z]/u, (letter) =>
+          letter === letter.toLowerCase() ? letter.toUpperCase() : letter.toLowerCase());
+        if (alternate === name.t) continue;
+        const originalPath = childPath(path, name);
+        const original = await lstatOrNull(originalPath);
+        if (!original) continue;
+        const alias = await lstatOrNull(childPath(path, { t: alternate }));
+        const current = await lstatOrNull(originalPath);
+        if (current && sameNode(original, current)) return !alias || !sameNode(original, alias);
+      }
+      return false;
+    } finally {
+      await directory.close();
+    }
+  } catch (error) {
+    if (hasErrno(error, "EACCES") || hasErrno(error, "EPERM")) return false;
+    throw error;
+  }
 }
 
 export function requireDirectory(stats: BigIntStats): void {
