@@ -65,7 +65,7 @@ try {
     && await review.getByRole("region", { name: "many/f29.txt" }).locator(".git-review-code", { hasText: "line 29" }).count() > 0));
   await review.getByRole("button", { name: "Find", exact: true }).click();
   await review.getByLabel("Find", { exact: true }).fill("line 2");
-  check("Find counts the matches before stepping", await review.getByRole("search", { name: "Find in the diff" }).getByRole("status").innerText() === "11 matches");
+  check("Find counts the matches before stepping", await until(async () => await review.getByRole("search", { name: "Find in the diff" }).getByRole("status").innerText() === "11 matches"));
   const status = await review.getByRole("search", { name: "Find in the diff" }).getByRole("status").innerText();
   await review.getByLabel("Find", { exact: true }).press("Enter");
   check("Find steps to a match and marks it", await until(async () => await review.getByRole("search", { name: "Find in the diff" }).getByRole("status").innerText() === "1 of 11"
