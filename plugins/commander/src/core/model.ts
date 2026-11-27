@@ -107,6 +107,9 @@ export type JobState = z.infer<typeof JobState>;
 
 export const ConflictReason = z.enum(["exists", "source_changed", "target_changed", "type_mismatch"]);
 export type ConflictReason = z.infer<typeof ConflictReason>;
+export const ConflictAction = z.enum(["overwrite", "skip", "rename", "cancel"]);
+export type ConflictAction = z.infer<typeof ConflictAction>;
+
 export const Conflict = z.object({
   id: z.string().uuid(),
   jobId: z.string().uuid(),
@@ -114,11 +117,10 @@ export const Conflict = z.object({
   reason: ConflictReason,
   source: Fingerprint.nullable(),
   target: Fingerprint.nullable(),
+  allowedResolutions: z.array(ConflictAction).optional(),
 }).strict();
 export type Conflict = z.infer<typeof Conflict>;
 
-export const ConflictAction = z.enum(["overwrite", "skip", "rename", "cancel"]);
-export type ConflictAction = z.infer<typeof ConflictAction>;
 export const ConflictDecision = z.object({
   conflictId: z.string().uuid(),
   action: ConflictAction,

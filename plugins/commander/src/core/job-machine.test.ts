@@ -19,6 +19,9 @@ test.each<[JobState, JobEvent, JobState]>([
   ["interrupted", "reconciled_done", "completed"],
   ["interrupted", "reconciled_unknown", "unknown"],
   ["interrupted", "resume", "running"],
+  ["interrupted", "cancel_done", "cancelled"],
+  ["running", "outcome_unknown", "unknown"],
+  ["cancel_requested", "outcome_unknown", "unknown"],
 ])("%s + %s → %s", (state, event, expected) => {
   expect(transition(state, event)).toBe(expected);
 });
