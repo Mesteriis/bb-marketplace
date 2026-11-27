@@ -20,6 +20,14 @@ const jobs = {
 const lines = Array.from({length: 120}, (_, i) => "2026-11-27T10:02:" + String(i % 60).padStart(2, "0") + ".0000000Z step output " + (i + 1));
 lines.splice(90, 0, "2026-11-27T10:02:30.0000000Z ##[error]src/greeting.txt:2: expected \"hello\"");
 const workflow = "on:\n  push:\n  workflow_dispatch:\n    inputs:\n      outcome:\n        type: choice\n        options: [success, failure]\n        default: success\n      message:\n        description: Greeting\n";
+// Incoming pull requests: #3 is mine with a conflict and failing CI; #4 asks for my review; #1 was merged.
+const issue = (number, title, login, state, merged) => ({id: 500 + number, number, title, state, html_url: origin + "/stand/beta/pulls/" + number,
+  user: {login}, repository: {full_name: "stand/beta"}, created_at: "2026-11-27T09:0" + number + ":00Z", updated_at: "2026-11-27T11:0" + number + ":00Z",
+  closed_at: state === "closed" ? "2026-11-27T10:00:00Z" : null, pull_request: {merged, merged_at: merged ? "2026-11-27T10:00:00Z" : null, draft: false}});
+const inbox = {created_open: [issue(3, "Add greeting check", "stand", "open", false)], review_requested_open: [issue(4, "Tidy README", "alice", "open", false)],
+  created_closed: [issue(1, "Initial import", "stand", "closed", true)]};
+const pulls = {3: {mergeable: false, additions: 12, deletions: 3, head: {ref: "greeting", sha: "e".repeat(40)}},
+  4: {mergeable: true, additions: 2, deletions: 2, head: {ref: "readme", sha: "f".repeat(40)}}};
 const json = (res, status, body) => { res.writeHead(status, {"content-type": "application/json"}); res.end(body === undefined ? "" : JSON.stringify(body)); };
 
 createServer({cert: readFileSync(cert), key: readFileSync(key)}, (req, res) => {
@@ -39,6 +47,16 @@ createServer({cert: readFileSync(cert), key: readFileSync(key)}, (req, res) => {
     if (path === "/api/v1/user") return json(res, 200, {login: "stand"});
     if (path === "/api/v1/user/repos") return json(res, 200, [repo]);
     if (path === r) return json(res, 200, repo);
+    if (path === "/api/v1/repos/issues/search") {
+      const flag = ["created", "review_requested", "reviewed", "assigned"].find(name => url.searchParams.get(name) === "true");
+      const items = inbox[flag + "_" + url.searchParams.get("state")] ?? [];
+      res.setHeader("x-total-count", String(items.length));
+      return json(res, 200, items.slice(0, Number(url.searchParams.get("limit") ?? 50)));
+    }
+    const pull = /^\/api\/v1\/repos\/stand\/beta\/pulls\/(\d+)$/.exec(path);
+    if (pull && pulls[pull[1]]) return json(res, 200, {number: Number(pull[1]), ...pulls[pull[1]], base: {ref: "main", repo: {default_branch: "main"}}});
+    if (path === r + "/commits/" + "e".repeat(40) + "/status") return json(res, 200, {state: "failure", statuses: [{context: "ci/test", status: "failure", target_url: origin + "/stand/beta/actions/runs/2"}]});
+    if (path === r + "/commits/" + "f".repeat(40) + "/status") return json(res, 200, {state: "success", statuses: [{context: "ci/test", status: "success"}]});
     if (path === r + "/actions/runs") {
       const status = url.searchParams.get("status");
       const items = status === "failure" ? runs.filter(item => item.conclusion === "failure") : status ? [] : runs;

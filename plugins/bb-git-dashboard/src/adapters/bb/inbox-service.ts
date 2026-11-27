@@ -1,4 +1,4 @@
-import type { InboxPage, InboxTab, PullInbox } from "../../core/pulls/inbox.ts";
+import { inboxTabs, type InboxPage, type InboxTab, type PullInbox } from "../../core/pulls/inbox.ts";
 import type { InboxPr } from "../../core/pulls/model.ts";
 import { diffWatch, type Alert, type WatchState } from "../../core/pulls/watch.ts";
 import type { Account } from "../../core/providers.ts";
@@ -42,8 +42,13 @@ export function inboxService(deps: Credentials) {
           return {account: summary, items: [], notice: null, error: codeOf(error), counts: {}};
         }
       }));
+      // A sum over some accounts would read as the whole: a tab any answering account cannot count gets no total.
+      const answered = groups.filter(group => group.error === null);
       const counts: Partial<Record<InboxTab, number>> = {};
-      for (const group of groups) for (const [name, count] of Object.entries(group.counts) as [InboxTab, number][]) counts[name] = (counts[name] ?? 0) + count;
+      for (const name of inboxTabs) {
+        if (!answered.length || answered.some(group => group.counts[name] === undefined)) continue;
+        counts[name] = answered.reduce((sum, group) => sum + group.counts[name]!, 0);
+      }
       return {tab, counts, groups: groups.map(({counts: _counts, ...group}) => group)};
     },
   };

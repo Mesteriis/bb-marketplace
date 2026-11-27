@@ -73,6 +73,9 @@ cli plugin list --json > "$STAND/plugin-list.json"
 node -e 'const l=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).plugins??[];const p=l.find(x=>x.id==="bb-git-dashboard");console.log(JSON.stringify({id:p?.id,version:p?.version,status:p?.status,error:p?.error}));process.exit(p?.status==="running"?0:1)' "$STAND/plugin-list.json"
 cli plugin config bb-git-dashboard set accounts "[{\"kind\":\"gitea\",\"id\":\"stand-gitea\",\"label\":\"stand\",\"origin\":\"https://localhost:$FORGE_PORT\",\"organization\":\"\",\"username\":\"stand\"},{\"kind\":\"gitlab\",\"id\":\"stand-gitlab\",\"label\":\"stand\",\"origin\":\"https://localhost:$GITLAB_PORT\",\"organization\":\"\",\"username\":\"stand\"}]" >/dev/null
 cli plugin config bb-git-dashboard set tokens '{"stand-gitea":"stand-token","stand-gitlab":"stand-gitlab-token"}' >/dev/null
+# The My PRs watcher: a 2-minute round, restarted so its first round records a baseline with the accounts above.
+cli plugin config bb-git-dashboard set inboxEveryMinutes 2 >/dev/null
+cli plugin reload bb-git-dashboard >/dev/null
 id_of() { node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).id))'; }
 PROJECT=$(cli project create --name stand-alpha --root "$R" --json | id_of)
 BETA=$(cli project create --name stand-beta --root "$B" --json | id_of)

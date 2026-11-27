@@ -23,7 +23,8 @@ test("a tab gathers every account; a failing account reports its code and the ot
   const result = await service.list("open");
   assert.deepEqual(result.groups.map(group => [group.account.id, group.items.map(item => [item.id, item.accountId, item.forge]), group.error, group.notice]),
     [["a", [["a1", "a", "github"]], null, null], ["b", [], "PROVIDER_DENIED", null], ["c", [["c1", "c", "gitlab"]], null, "note"]]);
-  assert.deepEqual(result.counts, {open: 2, review: 2});
+  // Account c answered without a review count, so the review total is unknown rather than 2.
+  assert.deepEqual(result.counts, {open: 2});
 });
 
 const watched = (failing: string[]): Watched => ({id: "PR_1", repo: "o/r", number: 1, title: "T", url: "https://github.com/o/r/pull/1", failing, lastComment: null});
@@ -56,4 +57,17 @@ test("one account failing does not stop the round; turning alerts off forgets th
   assert.deepEqual([...data.keys()], ["inbox-watch/b"]);
   await watchRound(deps, {ci: false, comments: false, ignore: ""});
   assert.deepEqual([...data.keys()], []);
+});
+
+test("a tab's total is shown only when every account that answered knows its count", async () => {
+  const accounts = [account("a"), account("b", "gitea"), account("c")];
+  const inboxes: Record<string, PullInbox> = {
+    a: {list: async () => ({items: [], counts: {open: 1, merged: 0}, notice: null}), watch: async () => null},
+    // Gitea has no count for merged pull requests.
+    b: {list: async () => ({items: [pr("b1")], counts: {open: 2}, notice: null}), watch: async () => null},
+    c: {list: async () => { throw new Error("PROVIDER_DENIED"); }, watch: async () => null},
+  };
+  const service = inboxService({accounts: async () => accounts, credential: async id => ({account: accounts.find(item => item.id === id)!, token: "t"}),
+    inbox: found => inboxes[found.id]});
+  assert.deepEqual((await service.list("open")).counts, {open: 3});
 });

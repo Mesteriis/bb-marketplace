@@ -24,6 +24,14 @@ const config = "spec:\n  inputs: {}\n---\nvariables:\n  DEPLOY_ENV:\n    value: 
   "  INTERNAL:\n    value: x\nunit:\n  stage: test\n  script: [make test]\n";
 const issues = [{iid: 4, title: "Greeting is wrong", state: "opened", labels: ["bug"], updated_at: "2026-11-27T11:00:00Z", web_url: web + "/-/issues/4"}];
 const variables = [{key: "DEPLOY_TOKEN", value: "stand-variable-value", variable_type: "env_var", protected: true, masked: true, environment_scope: "*"}];
+const started = Date.now();
+const mr = (iid, title, author, extra) => ({id: 700 + iid, iid, project_id: 7, title, state: "opened", draft: false, web_url: web + "/-/merge_requests/" + iid,
+  references: {full: "stand/gamma!" + iid}, author: {username: author}, source_branch: "topic-" + iid, target_branch: "main",
+  created_at: "2026-11-27T09:00:00Z", updated_at: "2026-11-27T11:0" + iid + ":00Z", merged_at: null, closed_at: null, has_conflicts: false,
+  detailed_merge_status: "mergeable", ...extra});
+const mrs = {created_by_me: [mr(5, "Retry flaky test", "stand", {detailed_merge_status: "ci_still_running"}),
+  mr(6, "Follow-up on retries", "stand", {source_branch: "topic-6", target_branch: "topic-5", draft: true, detailed_merge_status: "draft_status"})],
+  reviews_for_me: [mr(8, "Rename variables", "alice", {detailed_merge_status: "requested_changes"})]};
 const json = (res, status, body, headers = {}) => { res.writeHead(status, {"content-type": "application/json", ...headers}); res.end(body === undefined ? "" : JSON.stringify(body)); };
 const text = (res, body) => { res.writeHead(200, {"content-type": "text/plain"}); res.end(body); };
 
@@ -67,6 +75,16 @@ createServer({cert: readFileSync(cert), key: readFileSync(key)}, (req, res) => {
     if (path === p + "/issues") return json(res, 200, issues, {"x-next-page": ""});
     if (path === p + "/variables") return json(res, 200, variables);
     if (path === p + "/merge_requests") return json(res, 200, [], {"x-next-page": ""});
+    if (path === "/api/v4/merge_requests") {
+      const items = url.searchParams.get("state") === "opened" ? mrs[url.searchParams.get("scope")] ?? [] : [];
+      return json(res, 200, items.slice(0, Number(url.searchParams.get("per_page") ?? 20)), {"x-total": String(items.length)});
+    }
+    const request = /^\/api\/v4\/projects\/7\/merge_requests\/(\d+)$/.exec(path);
+    if (request) {
+      const found = Object.values(mrs).flat().find(item => item.iid === Number(request[1]));
+      const failed = found?.iid === 5 && Date.now() - started > 30_000;
+      return found ? json(res, 200, {...found, head_pipeline: {id: 600 + found.iid, status: failed ? "failed" : "running"}}) : json(res, 404, {message: "404 Not found"});
+    }
     return json(res, 404, {message: "404 Not found"});
   });
 }).listen(Number(port));
