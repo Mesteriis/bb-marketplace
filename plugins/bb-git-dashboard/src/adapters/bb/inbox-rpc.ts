@@ -24,6 +24,10 @@ export function inboxHandlers(bb: BbPluginApi, deps: Deps) {
     inboxIgnore: {type: "string", label: "My PRs: never alert for comments from (comma-separated logins)", default: ""},
     inboxEveryMinutes: {type: "number", label: "My PRs: check every (minutes)", experimental_schema: z.number().int().min(2).max(60), default: 5},
   });
+  // Turning toasts or the unread count off or on takes effect at once: the app reads the alert summary again.
+  settings.onChange((next, prev) => {
+    if (next.inboxToasts !== prev.inboxToasts || next.inboxBadge !== prev.inboxBadge) bb.realtime.publish(inboxChannel, {settings: true});
+  });
   const kv = bb.storage.kv;
   const service = inboxService(deps);
   const stored = async () => await kv.get<InboxAlert[]>("inbox-alerts") ?? [];

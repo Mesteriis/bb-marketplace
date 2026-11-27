@@ -213,6 +213,8 @@ function Row({item, tab, current, bind, onFocus, onOpen}: {item: InboxItem; tab:
 export function InboxToasts({alerts, onOpen}: {alerts: AlertSummary | null; onOpen(alert: AlertSummary["alerts"][number]): void}) {
   const [shown, setShown] = useState<AlertSummary["alerts"]>([]);
   const known = useRef<Set<string> | null>(null);
+  // Alerts made after the toasts mounted are new even when the first summary read arrives late (its first try failed).
+  const mounted = useRef(new Date().toISOString());
   // Each toast owns its timer, so a later update of the alert list cannot keep one on screen.
   const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const dismiss = useCallback((id: string) => {
@@ -223,8 +225,8 @@ export function InboxToasts({alerts, onOpen}: {alerts: AlertSummary | null; onOp
   useEffect(() => {
     if (!alerts) return;
     const ids = new Set(alerts.alerts.map(alert => alert.id));
-    if (known.current === null) { known.current = ids; return; }
-    const fresh = alerts.toasts ? alerts.alerts.filter(alert => !known.current!.has(alert.id) && !alert.seen) : [];
+    const first = known.current === null;
+    const fresh = alerts.toasts ? alerts.alerts.filter(alert => !alert.seen && (first ? alert.at > mounted.current : !known.current!.has(alert.id))) : [];
     known.current = ids;
     for (const alert of fresh) timers.current.set(alert.id, setTimeout(() => dismiss(alert.id), 8000));
     if (fresh.length) setShown(previous => [...fresh, ...previous].slice(0, 3));

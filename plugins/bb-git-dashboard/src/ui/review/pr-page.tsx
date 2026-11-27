@@ -119,7 +119,9 @@ export function PrPage({api, accountId, repo, number, onStep, position, revision
   const {detail, capabilities: can, limitations} = view;
   const open = detail.state === "OPEN";
   const events = reviewEvents(detail.viewer, detail.author).filter(name => name === "COMMENT" || can[name === "APPROVE" ? "approve" : "requestChanges"]);
-  const unresolved = detail.threads.filter(thread => !thread.isResolved);
+  // Drafts of your unsubmitted review are not counted: only you see them, on Files.
+  const unresolved = detail.threads.filter(thread => !thread.isResolved && !thread.isPending);
+  const published = detail.threads.filter(thread => !thread.isPending).length;
   const failing = detail.checks.filter(check => check.status === "failing");
   const threadCan = {reply: can.reply, resolve: can.resolve, delete: can.deleteComment};
   // Comments: Unresolved or Resolved, without the drafts of your unsubmitted review (they show under their lines on Files).
@@ -176,7 +178,7 @@ export function PrPage({api, accountId, repo, number, onStep, position, revision
     <nav className="git-inbox-tabs" aria-label="Pull request sections">
       {tabs.map(name => <button key={name} type="button" aria-current={name === tab ? "page" : undefined} onClick={() => setTab(name)}>{name}
         {name === "Checks" && detail.checks.length > 0 && <span className="git-inbox-count">{detail.checks.length}</span>}
-        {name === "Comments" && detail.threads.length > 0 && <span className="git-inbox-count">{unresolved.length}/{detail.threads.length}</span>}
+        {name === "Comments" && published > 0 && <span className="git-inbox-count">{unresolved.length}/{published}</span>}
         {name === "Commits" && <span className="git-inbox-count">{detail.commitCount}</span>}</button>)}
     </nav>
 
