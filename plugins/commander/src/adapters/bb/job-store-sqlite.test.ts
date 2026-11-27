@@ -351,29 +351,52 @@ test("assigns distinct stable UUIDs from rowid and preserves valid initiators on
   expect(await store.list({ states: ["unknown"], limit: 2 })).toStrictEqual([first, second]);
 });
 
-test("looks up the damaged job by its listed UUID even if a healthy job owns its first candidate", async () => {
-  const occupied = "00000000-0000-8000-8000-00000000002a";
-  const healthy = { ...job, id: occupied };
-  await store.create(healthy);
+test("a damaged row keeps its UUID after an occupied neighbor is pruned and the database reopens", async () => {
+  const alias = "00000000-0000-8000-8000-000000000400";
+  await store.create({
+    ...job,
+    id: alias,
+    state: "completed",
+    awaitsOwner: false,
+    updatedAt: "2026-11-26T00:00:00.000Z",
+  });
   await store.create(job);
-  db.prepare("UPDATE jobs SET rowid = 42, id = 'damaged' WHERE id = ?").run(job.id);
+  seedTerminalJobs(999, 1);
+  db.prepare("UPDATE jobs SET rowid = 1024, id = 'damaged', updated_at = ? WHERE id = ?")
+    .run("2026-11-28T00:00:00.000Z", job.id);
 
   const [damaged] = await store.list({ states: ["unknown"], limit: 1 });
-  expect(damaged).toMatchObject({ id: "00000001-0000-8000-8000-00000000002a", state: "unknown" });
-  expect(await store.get(damaged.id)).toStrictEqual(damaged);
-  expect(await store.get(occupied)).toStrictEqual(healthy);
+  expect(damaged).toMatchObject({ id: alias, state: "unknown" });
+  expect(await store.get(alias)).toBeNull();
+
+  await store.create({ ...job, id: secondId });
+  expect(db.prepare("SELECT id FROM jobs WHERE id = ?").pluck().get(alias)).toBeUndefined();
+
+  db.close();
+  db = new Database(filename);
+  store = createSqliteJobStore(db);
+  expect(await store.list({ states: ["unknown"], limit: 1 })).toStrictEqual([damaged]);
+  expect(await store.get(alias)).toStrictEqual(damaged);
 });
 
-test("a new job cannot claim a UUID already exposed for a damaged row", async () => {
+test("only the exact damaged UUID resolves to the row and is reserved during create", async () => {
+  const alias = "00000000-0000-8000-8000-00000000002a";
+  const unrelatedId = "ffffffff-0000-8000-8000-00000000002a";
   await store.create(job);
   db.prepare("UPDATE jobs SET rowid = 42, id = 'damaged' WHERE id = ?").run(job.id);
   const [damaged] = await store.list({ states: ["unknown"], limit: 1 });
-  expect(damaged.id).toBe("00000000-0000-8000-8000-00000000002a");
-  expect(await store.get(damaged.id)).toStrictEqual(damaged);
-  await expect(store.create({ ...job, id: damaged.id })).rejects.toMatchObject({
+
+  expect(damaged.id).toBe(alias);
+  expect(await store.get(alias)).toStrictEqual(damaged);
+  expect(await store.get(unrelatedId)).toBeNull();
+  await expect(store.create({ ...job, id: alias })).rejects.toMatchObject({
     code: "already_exists", message: "Job already exists",
   });
-  expect(await store.get(damaged.id)).toStrictEqual(damaged);
+  expect(await store.get(alias)).toStrictEqual(damaged);
+
+  const unrelated = { ...job, id: unrelatedId };
+  await store.create(unrelated);
+  expect(await store.get(unrelatedId)).toStrictEqual(unrelated);
 });
 
 test("SQLite rejects setting awaits_owner directly on a running job", async () => {

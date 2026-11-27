@@ -104,16 +104,16 @@ function decodeJob(row: JobRow): OperationJob | null {
   }
 }
 
-function rowUuid(rowId: string, slot: number): string {
-  // UUIDv8 carries every bit of the signed SQLite rowid without a lossy JS number.
+function rowUuid(rowId: string): string {
+  // The last 12 hex digits hold the low 48 bits, and the second UUID group
+  // holds the high 16 bits of the signed SQLite rowid without loss.
   const hex = BigInt.asUintN(64, BigInt(rowId)).toString(16).padStart(16, "0");
-  const prefix = slot.toString(16).padStart(8, "0");
-  return `${prefix}-${hex.slice(0, 4)}-8000-8000-${hex.slice(4)}`;
+  return `00000000-${hex.slice(0, 4)}-8000-8000-${hex.slice(4)}`;
 }
 
 function rowIdFromUuid(uuid: string): string | null {
-  const parts = /^[0-9a-f]{8}-([0-9a-f]{4})-8000-8000-([0-9a-f]{12})$/.exec(uuid);
-  return parts ? BigInt.asIntN(64, BigInt(`0x${parts[1]}${parts[2]}`)).toString() : null;
+  const parts = /^00000000-([0-9a-f]{4})-8000-8000-([0-9a-f]{12})$/.exec(uuid);
+  return parts && parts[0] === uuid ? BigInt.asIntN(64, BigInt(`0x${parts[1]}${parts[2]}`)).toString() : null;
 }
 
 function unreadableJob(row: JobRow, id: string): OperationJob {
@@ -170,7 +170,6 @@ export function createSqliteJobStore(db: Database): JobStore {
   const jobRows = "SELECT CAST(rowid AS TEXT) AS row_id, * FROM jobs";
   const byId = db.prepare<[string], JobRow>(`${jobRows} WHERE id = ?`);
   const byRowId = db.prepare<[string], JobRow>(`${jobRows} WHERE rowid = ?`);
-  const idExists = db.prepare("SELECT 1 FROM jobs WHERE id = ?").pluck();
   const byUpdate = db.prepare<[], JobRow>(`${jobRows} ORDER BY updated_at DESC, id ASC`);
   const countStoredTerminal = db.prepare<[], number>(
     `SELECT count(*) FROM jobs WHERE state IN ${TERMINAL_STATES}`,
@@ -219,21 +218,14 @@ export function createSqliteJobStore(db: Database): JobStore {
   function showRow(row: JobRow): OperationJob {
     const job = decodeJob(row);
     if (job) return job;
-    const { data: validId } = JobId.safeParse(row.id);
-    if (validId !== undefined) return unreadableJob(row, validId);
-
-    // Each slot encodes the same rowid. Skip physical IDs already stored.
-    for (let slot = 0; slot <= 0xffffffff; slot++) {
-      const alias = rowUuid(row.row_id, slot);
-      if (!idExists.get(alias)) return unreadableJob(row, alias);
-    }
-    throw new CommanderError("internal", "No available identifier for the damaged job");
+    const id = JobId.safeParse(row.id).data ?? rowUuid(row.row_id);
+    return unreadableJob(row, id);
   }
 
   const create = db.transaction((input: OperationJob) => {
     const job = OperationJob.parse(input);
-    // Reserve aliases while their damaged row exists, so a stale listed
-    // alias can never resolve to a newly created healthy job.
+    // An existing damaged row reserves its exact UUIDv8 alias. Creating a job
+    // with that ID reports already_exists. randomUUID() produces UUIDv4.
     if (findDamagedRowByAlias(job.id)) throw new CommanderError("already_exists", "Job already exists");
     const { initiator } = job.plan;
     const { changes } = insert.run({
@@ -283,9 +275,11 @@ export function createSqliteJobStore(db: Database): JobStore {
     },
     async get(id) {
       const row = byId.get(id);
-      if (row) return showRow(row);
       const damaged = findDamagedRowByAlias(id);
-      return damaged ? unreadableJob(damaged, id) : null;
+      // An old physical ID can predate alias reservation. The two rows
+      // share an identifier until retention removes one of them.
+      if (damaged) return row ? null : unreadableJob(damaged, id);
+      return row ? showRow(row) : null;
     },
     async list({ states, limit }) {
       if (limit <= 0 || states?.length === 0) return [];
