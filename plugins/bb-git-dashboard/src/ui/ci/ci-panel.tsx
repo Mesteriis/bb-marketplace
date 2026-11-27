@@ -55,12 +55,12 @@ export function CiPanel({api, copyId}: {api: CiApi; copyId: string}) {
     {!data && !error && <p className="git-muted" role="status">Loading runs…</p>}
     {data && !data.items.length && <p className="git-muted">{filter === "all" ? "No runs yet." : filter === "active" ? "Nothing is running." : "No failed runs."}</p>}
     {data && data.items.length > 0 && <div className="git-workspace-table"><table>
-      <thead><tr><th scope="col">Run</th><th scope="col">Status</th><th scope="col">Branch</th><th scope="col">Event</th><th scope="col">Started</th></tr></thead>
+      <thead><tr><th scope="col">Run</th><th scope="col">Status</th><th scope="col">Branch</th><th scope="col" data-col="event">Event</th><th scope="col">Started</th></tr></thead>
       <tbody>{data.items.map(run => <tr key={run.id + "#" + run.attempt} data-selected="false" onClick={() => setSelected(run.id)}>
         <th scope="row"><button type="button" className="git-table-entry" onClick={event => { event.stopPropagation(); setSelected(run.id); }}>
           {run.workflow} #{run.number ?? run.id}</button>{run.title && <span className="git-muted"> {run.title}</span>}</th>
         <td><span className="git-state" data-state={run.state}>{stateLabel[run.state]}</span></td>
-        <td>{run.branch ?? "—"}</td><td>{run.event ?? "—"}</td>
+        <td>{run.branch ?? "—"}</td><td data-col="event">{run.event ?? "—"}</td>
         <td><time dateTime={run.createdAt}>{when(run.createdAt)}</time></td>
       </tr>)}</tbody>
     </table></div>}

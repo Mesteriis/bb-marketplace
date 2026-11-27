@@ -27,7 +27,12 @@ export function LogView({api, copyId, runId, job, liveLog, liveLimitation}: {
     if (!running || liveLog) void load();
     return () => { active = false; clearTimeout(timer); };
   }, [api, copyId, runId, job.id, running, liveLog]);
-  useEffect(() => { marker.current?.scrollIntoView({block: "center"}); }, [errorAt, log]);
+  // Scroll only the log itself: scrollIntoView would also move the page and hide the panel header.
+  useEffect(() => {
+    const line = marker.current;
+    const pane = line?.closest("pre");
+    if (line && pane) pane.scrollTop = line.offsetTop - pane.clientHeight / 2;
+  }, [errorAt, log]);
 
   if (running && !liveLog) return <p className="git-muted" role="status">{liveLimitation ?? "The log is available when the job ends."}</p>;
   if (error) return <p className="git-error" role="alert">{error}</p>;

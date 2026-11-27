@@ -7,6 +7,13 @@ const [url, tools, chrome, out] = process.argv.slice(2);
 const { chromium } = createRequire(tools + "/")("playwright-core");
 const browser = await chromium.launch({ executablePath: chrome, headless: true });
 const failures = [];
+/** Picks the project source whose path ends with `suffix` in the attach form, when the form offers a choice. */
+async function chooseCopy(page, suffix) {
+  const select = page.locator(".git-add-copy select").first();
+  if (!await select.count()) return;
+  const value = await select.locator("option").evaluateAll((options, end) => options.find(option => option.textContent.trim().endsWith(end))?.value ?? "", suffix);
+  await select.selectOption(value);
+}
 const check = (name, ok, detail) => { console.log((ok ? "ok   " : "FAIL ") + name + (detail === undefined ? "" : " — " + JSON.stringify(detail))); if (!ok) failures.push(name); };
 try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
@@ -17,6 +24,7 @@ try {
   await add.waitFor({ timeout: 30000 });
   check("git panel opens", true);
   await add.click();
+  await chooseCopy(page, "/alpha");
   await page.getByRole("button", { name: "Подключить и показать worktree" }).click();
   const entry = page.locator("button.git-table-entry", { hasText: "alpha" }).first();
   await entry.waitFor({ timeout: 30000 }).catch(() => {});
