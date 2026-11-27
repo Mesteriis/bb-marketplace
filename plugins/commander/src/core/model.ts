@@ -66,7 +66,7 @@ export const Initiator = z.discriminatedUnion("kind", [
 ]);
 export type Initiator = z.infer<typeof Initiator>;
 
-export const OperationKind = z.enum(["copy", "move", "rename", "mkdir", "delete"]);
+export const OperationKind = z.enum(["copy", "move", "rename", "mkdir", "delete", "pack"]);
 export type OperationKind = z.infer<typeof OperationKind>;
 export const ConflictPolicy = z.enum(["ask", "overwrite", "skip", "rename", "overwriteIfNewer"]);
 export type ConflictPolicy = z.infer<typeof ConflictPolicy>;

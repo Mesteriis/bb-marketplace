@@ -81,7 +81,7 @@ export const ru = {
     shown: (shown: number, total: string) => "Показано " + shown + " из " + total + " байт",
   },
 };
-export const operationText = { copy: "Копирование", move: "Перемещение", rename: "Переименование", mkdir: "Создание каталога", delete: "Удаление" };
+export const operationText = { copy: "Копирование", move: "Перемещение", rename: "Переименование", mkdir: "Создание каталога", delete: "Удаление", pack: "Создание архива" };
 export const stateText = {
   pending: "В очереди", running: "Выполняется", awaiting_decision: "Ждёт решения",
   completed: "Готово", failed: "Ошибка", cancel_requested: "Отмена запрошена",

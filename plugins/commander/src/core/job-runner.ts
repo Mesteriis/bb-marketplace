@@ -1049,7 +1049,9 @@ export class JobRunner {
       };
       try {
         await recordTemp("0");
-        const hash = verify === "sha256" ? new TransferHash() : null;
+        // Archive sources and pack always hash the transferred bytes: commitIntent needs them as proof (S14).
+        const proofNeeded = source.provider.endpoint.id.startsWith("archive:") || plan.kind === "pack";
+        const hash = verify === "sha256" || proofNeeded ? new TransferHash() : null;
         try {
           await readChunks(source, expected, this.chunkBytes, signal, call, async (bytes, offset) => {
             await mark("copying", { writing: { offset: fromBig(offset), length: bytes.length } });
@@ -1077,6 +1079,11 @@ export class JobRunner {
           throw new ItemConflict("source_changed", { ...expected, sha256: sourceHash }, expectTarget === "absent" ? null : expectTarget);
         }
         await confirmSource();
+        if (proofNeeded) {
+          const tempFingerprint = context.saved().tempFingerprint;
+          if (!tempFingerprint || !sourceHash) throw new CommanderError("outcome_unknown", "Temporary file proof is missing before commit");
+          await mark("copying", { commitIntent: { size: expected.size, sha256: sourceHash, tempFingerprint } });
+        }
         committed = await commitTarget(() => session.commit({ replace, expectTarget: expectTarget === "absent" ? null : expectTarget }, signal));
       } catch (error) {
         if (this.stopping.signal.aborted) throw shutdownError;
@@ -1091,7 +1098,7 @@ export class JobRunner {
     }
     try {
       await mark("committed", {
-        committed, bytesDone: expected.size, tempPath: null, tempFingerprint: undefined,
+        committed, bytesDone: expected.size, tempPath: null, tempFingerprint: undefined, commitIntent: undefined,
         sourceHash: sourceHash ?? expected.sha256,
       });
       const verified = await verifyCopy(source, target, expected, verify, context, sourceHash ?? expected.sha256, committed);

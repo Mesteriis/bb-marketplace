@@ -339,6 +339,66 @@ async function reconcileCaseOnly(
   return "done";
 }
 
+/** The saved plan item may replace an existing target: only conflictPolicy survives a restart. */
+function replacementProven(plan: OperationPlan, item: PlanItem, expectTarget: Fingerprint): boolean {
+  if (plan.conflictPolicy === "overwrite") return true;
+  if (plan.conflictPolicy !== "overwriteIfNewer") return false;
+  const source = item.fingerprint?.mtimeNs;
+  const target = expectTarget.mtimeNs;
+  return source != null && target != null && BigInt(source) > BigInt(target);
+}
+
+/**
+ * Recovery of an archive-source or pack item that saved commitIntent before session.commit.
+ * Published: the temp is gone and the target's SHA-256 equals the intent. Not published: the temp still matches
+ * the intent (fingerprint and SHA-256) and the target is as planned, so the temp is renamed into place.
+ * Anything else is unknown. The earlier WriteSession is lost, so the republish uses provider.rename.
+ */
+async function reconcileCommitIntent(
+  checkpoint: Checkpoint & { commitIntent: NonNullable<Checkpoint["commitIntent"]> },
+  source: Location | null, target: Location, item: PlanItem, plan: OperationPlan,
+  context: VerifyContext, save: (checkpoint: Checkpoint) => Promise<void>,
+): Promise<"done"> {
+  const unknown = (message = "Interrupted publication could not be confirmed") => new CommanderError("outcome_unknown", message);
+  const { commitIntent: intent } = checkpoint;
+  const { provider, path } = target;
+  const sensitive = provider.endpoint.caseSensitive;
+  const tempPath = checkpoint.tempPath;
+  const dir = parent(path);
+  if (!tempPath || !dir || !samePath(tempPath, join(dir, tempNameFor(checkpoint.jobId, checkpoint.itemIndex)), sensitive)
+      || samePath(path, tempPath, sensitive)) throw unknown();
+  const expectTarget = checkpoint.expectTarget ?? "absent";
+  const expected = item.fingerprint;
+  if (source) {
+    const before = await observe(source, context);
+    if (!expected || !before || !matches(before, expected)) throw unknown();
+  }
+  const staged = await observe({ provider, path: tempPath }, context, true);
+  const published = await observe(target, context, true);
+  const intended = (entry: Awaited<ReturnType<typeof observe>>) =>
+    entry?.kind === "file" && entry.size === intent.size && entry.sha256 === intent.sha256;
+  const finish = async (entry: NonNullable<Awaited<ReturnType<typeof observe>>>) => {
+    await save({
+      ...checkpoint, phase: "verified", bytesDone: entry.size, committed: fingerprint(entry)!, tempFingerprint: undefined,
+      verified: { size: entry.size, sha256: intent.sha256 }, sourceHash: undefined,
+    });
+    return "done" as const;
+  };
+  if (staged === null && published && intended(published) && !matchesTarget(published, expectTarget)) return finish(published);
+  if (!staged || staged.kind !== "file" || !intended(staged) || !matches(staged, intent.tempFingerprint)) throw unknown();
+  if (!matchesTarget(published, expectTarget)) throw unknown();
+  const replace = expectTarget !== "absent";
+  if (replace && (!replacementProven(plan, item, expectTarget) || !provider.capabilities.has("atomicReplace"))) throw unknown();
+  try {
+    await provider.rename(tempPath, path, { replace, expectTarget }, context.signal);
+  } catch {
+    throw unknown();
+  }
+  const after = await observe(target, context, true);
+  if (!after || !intended(after)) throw unknown();
+  return finish(after);
+}
+
 type Recovery = "pending" | "done" | "deferred_directory" | { verified: NonNullable<Checkpoint["verified"]> };
 
 export async function reconcileItem(
@@ -366,6 +426,9 @@ export async function reconcileItem(
         verified: after.sha256 ? { size: after.size, sha256: after.sha256 } : { size: after.size },
       });
       return "done";
+    }
+    if (checkpoint.commitIntent && target) {
+      return reconcileCommitIntent({ ...checkpoint, commitIntent: checkpoint.commitIntent }, source, target, item, plan, context, save);
     }
     const temp = checkpoint.tempPath;
     if (temp && target) {

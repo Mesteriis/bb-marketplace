@@ -15,6 +15,7 @@ export const REQUIRED: Record<OperationKind, Permission[]> = {
   rename: ["write"],
   mkdir: ["write"],
   delete: ["delete"],
+  pack: ["read", "write"],
 };
 
 /**
@@ -28,6 +29,7 @@ const SOURCE_SIDE: Record<OperationKind, Permission[]> = {
   rename: ["write"],
   mkdir: [],
   delete: ["delete"],
+  pack: ["read"],
 };
 
 const TARGET_SIDE: Record<OperationKind, Permission[]> = {
@@ -36,6 +38,7 @@ const TARGET_SIDE: Record<OperationKind, Permission[]> = {
   rename: ["write"],
   mkdir: ["write"],
   delete: [],
+  pack: ["write"],
 };
 
 export interface Grant {
