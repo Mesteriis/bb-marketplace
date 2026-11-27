@@ -228,3 +228,17 @@ test("a crash after the first move of a cycle's second phase restarts and finish
   expect(text(provider.contents(parsePosix("/b.txt")))).toBe("AAA");
   expect(text(provider.contents(parsePosix("/a.txt")))).toBe("BB");
 });
+
+test("retry of a finished batch rename is refused with the 2a text and plans nothing", async () => {
+  const { provider, runner, at } = await setup([["/a.txt", "A", "1000"], ["/c.txt", "C", "2000"]]);
+  const plan = await renamePlan([
+    { from: "/a.txt", to: "/x.txt", fingerprint: fp("1", "1000"), expect: "absent" },
+    { from: "/c.txt", to: "/y.txt", fingerprint: fp("1", "2000"), expect: "absent" },
+  ]);
+  provider.put(parsePosix("/a.txt"), new TextEncoder().encode("AAAA"), "1500");
+  const { id } = await runner.submit(plan);
+  await at(id, "failed");
+  await expect(runner.retryJob(id, { kind: "owner" })).rejects.toThrow(
+    "Повтор пакетного переименования недоступен: сверьте задание",
+  );
+});

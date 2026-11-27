@@ -294,6 +294,10 @@ export class JobRunner {
     if (!finishedStates.has(job.state)) {
       throw new CommanderError("changed_since_plan", "Only a finished job can be retried");
     }
+    // S12 (stage 2a): a batch rename is not retried; its staged names need a dedicated reconciliation.
+    if (isBatchRename(job.plan)) {
+      throw new CommanderError("unsupported", "Повтор пакетного переименования недоступен: сверьте задание");
+    }
     const verdicts = new Map<number, Verdict>();
     const verdictOf = async (index: number) => {
       let verdict = verdicts.get(index);
