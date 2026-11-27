@@ -14,6 +14,8 @@ const { chromium } = createRequire(tools + "/")("playwright-core");
 const browser = await chromium.launch({ executablePath: chrome, headless: true });
 const failures = [];
 const check = (name, ok, detail) => { console.log((ok ? "ok   " : "FAIL ") + name + (detail === undefined ? "" : " — " + JSON.stringify(detail))); if (!ok) failures.push(name); };
+// Waits for a condition instead of a fixed pause: a loaded machine answers later.
+const until = async (condition, timeout = 10000) => { const end = Date.now() + timeout; while (Date.now() < end) { if (await condition()) return true; await new Promise(resolve => setTimeout(resolve, 250)); } return false; };
 const visible = async (locator, timeout = 20000) => { await locator.first().waitFor({ timeout }).catch(() => {}); return await locator.count() > 0; };
 async function confirm(page, text) {
   const dialog = page.getByRole("dialog");
@@ -85,9 +87,18 @@ try {
   await page.getByRole("button", { name: "+ Подключить копию" }).click({ timeout: 30000 });
   const select = page.locator(".git-add-copy select").first();
   const value = await select.locator("option").evaluateAll(options => options.find(option => option.textContent.trim().endsWith("/gamma"))?.value ?? "");
+  // gitlab.mjs may have attached it already: then the form is closed again rather than left over the page.
   if (value) { await select.selectOption(value); await page.getByRole("button", { name: "Подключить и показать worktree" }).click(); }
-  await page.locator("button.git-table-entry", { hasText: "gamma" }).first().click();
-  await page.getByRole("navigation", { name: "Repository sections" }).getByRole("button", { name: "Issues" }).click();
+  else await page.getByRole("button", { name: "+ Подключить копию" }).click();
+  const sections = page.getByRole("navigation", { name: "Repository sections" });
+  const openGamma = async () => {
+    for (let attempt = 0; attempt < 3 && await sections.count() === 0; attempt++) {
+      await page.locator("button.git-table-entry", { hasText: "gamma" }).first().click();
+      await until(async () => await sections.count() > 0, 5000);
+    }
+    await sections.getByRole("button", { name: "Issues" }).click();
+  };
+  await openGamma();
   await page.getByRole("button", { name: "#4 Greeting is wrong" }).click({ timeout: 20000 });
   const issue = page.getByRole("region", { name: "Issue stand/gamma #4" });
   check("an issue opens with its comments", await visible(issue.getByText("It says wrold.")) && await visible(issue.getByText("Confirmed.")));
@@ -96,8 +107,7 @@ try {
   check("an issue comment is previewed", await confirm(page, "Comment on stand/gamma issue #4"));
   check("and reaches GitLab", gitlab().some(write => write.path.endsWith("/issues/4/notes") && write.body?.body === "Fixed in !5."));
   await page.getByRole("button", { name: "Projects", exact: true }).click();
-  await page.locator("button.git-table-entry", { hasText: "gamma" }).first().click();
-  await page.getByRole("navigation", { name: "Repository sections" }).getByRole("button", { name: "Issues" }).click();
+  await openGamma();
   await page.getByRole("button", { name: "New issue" }).click({ timeout: 20000 });
   await page.getByRole("textbox", { name: "Issue title" }).fill("Add a backoff");
   await page.getByRole("button", { name: "Open issue" }).click();
@@ -113,7 +123,8 @@ try {
   await page.screenshot({ path: out + "/review-768.png", fullPage: true });
   check("no page errors", errors.length === 0, errors);
 } catch (error) {
-  check("probe ran to the end", false, String(error).slice(0, 300));
+  await browser.contexts()[0]?.pages()[0]?.screenshot({ path: out + "/review-failure.png", fullPage: true }).catch(() => {});
+  check("probe ran to the end", false, String(error).slice(0, 600));
 } finally { await browser.close(); }
 console.log(failures.length ? "FAIL" : "PASS");
 process.exit(failures.length ? 1 : 0);

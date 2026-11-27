@@ -11,6 +11,8 @@ const { chromium } = createRequire(tools + "/")("playwright-core");
 const browser = await chromium.launch({ executablePath: chrome, headless: true });
 const failures = [];
 const check = (name, ok, detail) => { console.log((ok ? "ok   " : "FAIL ") + name + (detail === undefined ? "" : " — " + JSON.stringify(detail))); if (!ok) failures.push(name); };
+// Waits for a condition instead of a fixed pause: a loaded machine answers later.
+const until = async (condition, timeout = 10000) => { const end = Date.now() + timeout; while (Date.now() < end) { if (await condition()) return true; await new Promise(resolve => setTimeout(resolve, 250)); } return false; };
 const visible = async (locator, timeout = 20000) => { await locator.first().waitFor({ timeout }).catch(() => {}); return await locator.count() > 0; };
 try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
@@ -30,7 +32,7 @@ try {
   const failedRun = page.getByRole("button", { name: "CI #2" });
   check("runs listed with their state", await visible(failedRun) && await visible(page.locator(".git-state[data-state=success]")));
   await page.getByRole("group", { name: "Runs to show" }).getByRole("button", { name: "Failed" }).click();
-  await page.waitForTimeout(800);
+  await until(async () => await page.getByRole("button", { name: "CI #1" }).count() === 0);
   check("failed filter shows only the failed run", await page.getByRole("button", { name: "CI #1" }).count() === 0 && await failedRun.count() === 1);
   await page.screenshot({ path: out + "/ci-runs.png", fullPage: true });
 
@@ -49,7 +51,7 @@ try {
   const dialog = page.getByRole("dialog");
   check("re-run asks for confirmation first", await visible(dialog.getByText("Re-run failed jobs of CI #2")) && writes().length === 0);
   await dialog.getByRole("button", { name: "Confirm" }).click();
-  await page.waitForTimeout(800);
+  await until(() => writes().length > 0);
   check("re-run reached the forge once", JSON.stringify(writes().map(write => write.path)) === JSON.stringify(["/api/v1/repos/stand/beta/actions/runs/2/rerun-failed-jobs"]), writes());
 
   await page.getByRole("button", { name: "Ask agent" }).click();
@@ -64,7 +66,7 @@ try {
   await form.getByRole("button", { name: "Run workflow" }).click();
   check("manual run asks for confirmation with its inputs", await visible(page.getByRole("dialog").getByText("outcome = failure")));
   await page.getByRole("dialog").getByRole("button", { name: "Confirm" }).click();
-  await page.waitForTimeout(800);
+  await until(() => writes().some(write => write.path.endsWith("/dispatches")));
   const dispatch = writes().find(write => write.path.endsWith("/dispatches"));
   check("manual run reached the forge with its inputs", dispatch?.path === "/api/v1/repos/stand/beta/actions/workflows/ci.yml/dispatches" &&
     dispatch.body?.ref === "main" && JSON.stringify(dispatch.body?.inputs) === JSON.stringify({outcome: "failure"}), dispatch);

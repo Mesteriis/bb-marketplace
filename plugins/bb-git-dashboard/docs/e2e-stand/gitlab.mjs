@@ -12,6 +12,8 @@ const { chromium } = createRequire(tools + "/")("playwright-core");
 const browser = await chromium.launch({ executablePath: chrome, headless: true });
 const failures = [];
 const check = (name, ok, detail) => { console.log((ok ? "ok   " : "FAIL ") + name + (detail === undefined ? "" : " — " + JSON.stringify(detail))); if (!ok) failures.push(name); };
+// Waits for a condition instead of a fixed pause: a loaded machine answers later.
+const until = async (condition, timeout = 10000) => { const end = Date.now() + timeout; while (Date.now() < end) { if (await condition()) return true; await new Promise(resolve => setTimeout(resolve, 250)); } return false; };
 const visible = async (locator, timeout = 20000) => { await locator.first().waitFor({ timeout }).catch(() => {}); return await locator.count() > 0; };
 try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
@@ -35,10 +37,10 @@ try {
   check("pipelines listed with their state", listed && await visible(page.locator(".git-state[data-state=running]")) &&
     await visible(page.getByRole("button", { name: "Pipeline #1" })));
   await page.getByRole("group", { name: "Runs to show" }).getByRole("button", { name: "Active" }).click();
-  await page.waitForTimeout(800);
+  await until(async () => await failed.count() === 0);
   check("Active shows only the running pipeline", await page.getByRole("button", { name: "Pipeline #3" }).count() === 1 && await failed.count() === 0);
   await page.getByRole("group", { name: "Runs to show" }).getByRole("button", { name: "Failed" }).click();
-  await page.waitForTimeout(800);
+  await until(async () => await page.getByRole("button", { name: "Pipeline #3" }).count() === 0);
   check("Failed shows only the failed pipeline", await failed.count() === 1 && await page.getByRole("button", { name: "Pipeline #3" }).count() === 0);
   await page.screenshot({ path: out + "/gitlab-runs.png", fullPage: true });
 
@@ -56,7 +58,7 @@ try {
   const dialog = page.getByRole("dialog");
   check("retry asks for confirmation first", await visible(dialog.getByText("Re-run failed jobs of Pipeline #2")) && writes().length === 0);
   await dialog.getByRole("button", { name: "Confirm" }).click();
-  await page.waitForTimeout(800);
+  await until(() => writes().length > 0);
   check("retry reached GitLab once", JSON.stringify(writes().map(write => write.path)) === JSON.stringify(["/api/v4/projects/7/pipelines/102/retry"]), writes());
 
   await page.getByRole("button", { name: "All runs" }).click();
@@ -69,7 +71,7 @@ try {
   await form.getByRole("button", { name: "Run workflow" }).click();
   check("Run pipeline asks for confirmation with its variable", await visible(page.getByRole("dialog").getByText("DEPLOY_ENV = production")));
   await page.getByRole("dialog").getByRole("button", { name: "Confirm" }).click();
-  await page.waitForTimeout(800);
+  await until(() => writes().some(write => write.path === "/api/v4/projects/7/pipeline"));
   const started = writes().find(write => write.path === "/api/v4/projects/7/pipeline");
   check("Run pipeline reached GitLab with its variable", started?.body?.ref === "main" &&
     JSON.stringify(started.body.variables) === JSON.stringify([{key: "DEPLOY_ENV", value: "production"}]), started);
