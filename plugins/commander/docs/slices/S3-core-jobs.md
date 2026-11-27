@@ -14,6 +14,11 @@ S6), `src/core/job-machine.ts`, `src/core/job-runner.ts`,
 `src/core/reconcile.ts`, `src/core/testing/fake-provider.ts`,
 `src/core/testing/memory-job-store.ts` и `*.test.ts`.
 
+Исключение владения: S3 правит `src/core/provider.ts` (S1) ровно одним
+изменением — `WriteSession` получает `readonly tempPath: ResourcePath`
+(путь временного файла, который реализация создала рядом с целью). Это
+тоже первая задача среза, вместе с `job-store.ts`: от неё зависят S4 и S5.
+
 ## Контракт
 
 ```ts
@@ -21,13 +26,17 @@ S6), `src/core/job-machine.ts`, `src/core/job-runner.ts`,
 export interface Checkpoint {
   jobId: string; itemIndex: number;
   phase: "copying" | "committed" | "verified" | "source_removed";
-  bytesDone: Size; tempName: string | null;
+  bytesDone: Size; tempPath: ResourcePath | null;     // из WriteSession.tempPath
 }
 export interface JobStore {
   create(job: OperationJob): Promise<void>;
   get(id: string): Promise<OperationJob | null>;
   list(filter: { states?: JobState[]; limit: number }): Promise<OperationJob[]>;
-  update(id: string, patch: Partial<Pick<OperationJob, "state"|"progress"|"currentItem"|"pendingConflict"|"items"|"error"|"updatedAt">>, expectState: JobState): Promise<boolean>; // CAS по state
+  update(id: string, patch: Partial<Pick<OperationJob, "state"|"progress"|"currentItem"|"pendingConflict"|"items"|"error"|"updatedAt"|"awaitsOwner">>, expectState: JobState): Promise<boolean>; // CAS по state
+  // awaitsOwner меняется только при state pending; переход из pending в любое
+  // другое состояние атомарно (в том же update) сбрасывает его в false —
+  // реализации делают это сами, даже если patch его не передал. Результат
+  // проходит инварианты OperationJob S1 (superRefine).
   checkpoint(c: Checkpoint): Promise<void>;
   lastCheckpoint(jobId: string, itemIndex: number): Promise<Checkpoint | null>;
 }

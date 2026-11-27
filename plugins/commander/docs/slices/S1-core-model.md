@@ -202,6 +202,9 @@ export interface WriteSession {
   // expectTarget: target must still match (changed → target_changed).
   commit(opts: { replace: boolean; expectTarget: Fingerprint | null }, signal: AbortSignal): Promise<Fingerprint>;
   abort(): Promise<void>;       // удаляет временный файл; идемпотентно
+  // Решение координатора (после слияния S1): добавляется
+  // `readonly tempPath: ResourcePath` — путь временного файла для checkpoint
+  // и reconciliation. Правку provider.ts делает S3 (исключение владения).
 }
 export interface FileProvider {
   readonly endpoint: Endpoint;

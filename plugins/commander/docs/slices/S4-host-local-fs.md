@@ -49,6 +49,8 @@ export const HostFsContract = {
   APFS/ext4; при нуле младших 6 цифр не понижать — честно `ns`).
 - `read` — сверка `expect` (size + mtimeNs) по `fstat` открытого
   дескриптора, затем `read` по offset.
+- `local-provider` выставляет `WriteSession.tempPath` (контракт S3) =
+  каталог цели + `tempName` из ответа `writeOpen`.
 - Запись: temp `.<name>.commander-<uuid>.part` в каталоге цели
   (`wx`, 0600), сессии ≤ 8, TTL простоя 120 с (abort); `writeCommit` —
   `fsync`, затем `replace=false`: `link(temp, target)` + `unlink(temp)`

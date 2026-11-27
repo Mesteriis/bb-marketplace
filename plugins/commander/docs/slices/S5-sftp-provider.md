@@ -66,6 +66,7 @@ export function createSftpProvider(opts: {
   `generation` → одна попытка переоткрыть для идемпотентных операций (list,
   stat, read, realpath); для write/rename/remove — не повторять, бросать
   `outcome_unknown` при неоднозначном исходе.
+- `WriteSession.tempPath` (контракт S3) = путь temp-файла ниже.
 - `openWrite(target)`: temp-имя `.<name>.commander-<uuid>.part` в каталоге
   цели; первый кусок `create: "exclusive"` offset 0, последующие
   `create: "existing"`; `commit({replace:false})` → `rename(overwrite:false)`
