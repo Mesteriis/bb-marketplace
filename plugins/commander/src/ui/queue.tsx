@@ -31,11 +31,9 @@ function JobCard({ job, endpoints, compact, onInspect, onSkip, onCancel }: {
     ? Number(BigInt(progress.bytesDone) * 100n / total)
     : progress.itemsTotal ? Math.floor(progress.itemsDone * 100 / progress.itemsTotal) : 0;
   const label = job.awaitsOwner ? approvalState : stateText[job.state];
-  const tone = job.awaitsOwner || pendingConflict ? "warning" : job.state === "completed" ? "success"
-    : job.state === "failed" ? "destructive" : "primary";
   const conflict = job.state === "awaiting_decision" ? pendingConflict : null;
 
-  if (compact) return <article className="cm-job cm-mini-job" aria-label={operationText[plan.kind]} data-tone={tone}>
+  if (compact) return <article className="cm-job cm-mini-job" aria-label={operationText[plan.kind]}>
     <div className="cm-mini-line">
       <Icon name={plan.initiator.kind === "owner" ? "UserRound" : "Bot"} />
       <span title={target || undefined}>{conflict ? reasonText[conflict.reason] : operationText[plan.kind] + (endpoint ? " → " + endpoint.label : "")}</span>
@@ -47,7 +45,7 @@ function JobCard({ job, endpoints, compact, onInspect, onSkip, onCancel }: {
       aria-valuenow={percent} className="cm-progress"><span style={{ width: percent + "%" }} /></div>}
   </article>;
 
-  return <article className="cm-job" aria-label={operationText[plan.kind]} data-tone={tone}>
+  return <article className="cm-job" aria-label={operationText[plan.kind]}>
     <strong><Icon name={plan.initiator.kind === "owner" ? "UserRound" : "Bot"} />
       <span title={target || undefined}>{heading}{endpoint && <> {target ? "→ " : "· "}{endpoint.label}</>}
         {compactTarget && <>:{compactTarget}</>}</span></strong>

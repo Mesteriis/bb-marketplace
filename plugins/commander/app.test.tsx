@@ -101,6 +101,39 @@ test("F5 opens a copy plan from the grid and leaves foreign and address inputs a
   expect(within(plan).getByText("/приёмник")).toBeDefined();
 });
 
+test("a read-only destination blocks copy and move, and its own panel blocks writes", async () => {
+  const readOnly = { ...endpoint, id: "host:archive", hostId: "archive", label: "Архив", readOnly: true };
+  saved!.right.tabs[0]!.endpoint = "host:archive";
+  const call = host.call.getMockImplementation()!;
+  host.call.mockImplementation(async (method, input) =>
+    method === "endpoints_list" ? { endpoints: [endpoint, readOnly] } : call(method, input));
+
+  mount();
+  fireEvent.click(await leftFile());
+  const right = grid("Правая панель");
+  const file = await within(right).findByRole("row", { name: /пример\.txt/ });
+  const badge = within(right.parentElement!).getByRole("img", { name: "Только чтение" });
+  expect(badge.textContent).toBe("Только чтение");
+  const action = (name: string) => screen.getByRole("button", { name }) as HTMLButtonElement;
+  host.call.mockClear();
+
+  expect(action("Копировать (F5)").disabled).toBe(true);
+  expect(action("Переместить (F6)").disabled).toBe(true);
+  fireEvent.keyDown(grid(), { key: "F5" });
+  fireEvent.keyDown(grid(), { key: "F6" });
+  fireEvent.click(file);
+
+  expect(action("Копировать (F5)").disabled).toBe(false);
+  expect(action("Переместить (F6)").disabled).toBe(true);
+  expect(action("Каталог (F7)").disabled).toBe(true);
+  expect(action("Удалить (F8)").disabled).toBe(true);
+  fireEvent.keyDown(right, { key: "F6" });
+  fireEvent.keyDown(right, { key: "F7" });
+  fireEvent.keyDown(right, { key: "F8" });
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(host.call.mock.calls.filter(([method]) => method === "plan_create")).toEqual([]);
+});
+
 test("Tab switches the focused grid and remount restores path and selection during debounce", async () => {
   const first = mount();
   fireEvent.doubleClick(await leftFile("вложенный"));

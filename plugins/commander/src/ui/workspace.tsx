@@ -505,10 +505,6 @@ export function Workspace(props: WorkspaceProps) {
           ? nameOf(tabs[pane]!.path.segments.at(-1)!) : endpointsBySide[pane]?.label ?? ru[pane]}</span>
       </Button>)}</div>
     {(props.problem || problem && !dialog) && <ProblemLine problem={(problem ?? props.problem)!} />}
-    {!dialog && retryConflict && <div className="cm-retry">
-      <ProblemLine problem={retryConflict.problem} />
-      <Button size="sm" variant="outline" disabled={busy} onClick={() => goBack(retryConflict.view)}>{ru.retryConflict}</Button>
-    </div>}
     {notice && <div className="cm-empty" role="status">{notice}</div>}
     <div className="cm-work" data-queue={queueOpen}>
       {sides.map((pane) => {
@@ -531,6 +527,10 @@ export function Workspace(props: WorkspaceProps) {
       {queue}
     </div>
     <footer ref={toolbar} className="cm-toolbar">
+      {!dialog && retryConflict && <div className="cm-retry">
+        <ProblemLine problem={retryConflict.problem} />
+        <Button size="sm" variant="outline" disabled={busy} onClick={() => goBack(retryConflict.view)}>{ru.retryConflict}</Button>
+      </div>}
       {actions.filter(({ key }) => !compact || key === "copy" || key === "preview").map(({ key, icon }) => {
         const shortcut = bindings[key] ?? shortcuts[key][0];
         const label = compact && key === "copy" ? ru.compactCopy : shortcutText[key];
