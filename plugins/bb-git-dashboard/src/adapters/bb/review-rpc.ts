@@ -101,7 +101,7 @@ export function reviewHandlers(bb: BbPluginApi, deps: {credential(id: string): P
     prDraftDrop: handle(async ({commentId}: {commentId: string}) => { deps.mirror.dropDraft(commentId); return {}; }),
     prJira: handle(async () => {
       try {
-        const status = await bb.sdk.plugins.callRpc({pluginId: "my-jira", method: "auth_status", input: null,
+        const status = await bb.sdk.plugins.callRpc({pluginId: "my-jira", method: "auth_status", input: null, signal: AbortSignal.timeout(5_000),
           outputSchema: z.object({site: z.object({url: z.string()}).nullable()}).passthrough()});
         const site = status.site?.url ?? "";
         return {plugin: true, siteUrl: /^https:\/\/[^\s]{1,490}$/.test(site) ? site : null};

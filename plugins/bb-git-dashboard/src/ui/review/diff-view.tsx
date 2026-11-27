@@ -1,7 +1,8 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
+import { LARGE_CHANGE } from "../code-review/file-diff.tsx";
 import type { PrAction } from "../../core/pulls/actions.ts";
 import { lineAnchor, parsePatch, splitIndexes, type DiffLine } from "../../core/pulls/diff.ts";
-import { CodeText, useHighlight } from "../highlight/use-highlight.tsx";
+import { CodeText, useHighlight, useNear } from "../highlight/use-highlight.tsx";
 import type { PrDetailView, PrFileView } from "./review-api.ts";
 import { ThreadView } from "./thread-view.tsx";
 
@@ -21,7 +22,10 @@ export function FileDiff({file, threads, wrap, split = false, canComment, act, a
 }) {
   const rows = useMemo(() => file.patch ? parsePatch(file.patch) : [], [file.patch]);
   const pairs = useMemo(() => split ? splitIndexes(rows) : null, [rows, split]);
-  const tokensOf = useHighlight(file.path, rows, true);
+  // Painted once near the viewport, and not at all over LARGE_CHANGE lines, as Review folds them.
+  const section = useRef<HTMLElement>(null);
+  const near = useNear(section);
+  const tokensOf = useHighlight(file.path, rows, near && file.additions + file.deletions <= LARGE_CHANGE);
   const [selection, setSelection] = useState<{from: number; to: number} | null>(null);
   const [body, setBody] = useState("");
   const byLine = new Map<string, Thread[]>();
@@ -60,7 +64,7 @@ export function FileDiff({file, threads, wrap, split = false, canComment, act, a
     </div>
   </form>;
   const open = threads.filter(thread => !thread.isResolved).length;
-  return <section className="git-review-file" aria-label={file.path} data-path={file.path} tabIndex={-1}>
+  return <section ref={section} className="git-review-file" aria-label={file.path} data-path={file.path} tabIndex={-1}>
     <header className="git-row git-review-file-head">
       <strong className="git-path">{file.previousPath ? file.previousPath + " → " : ""}{file.path}</strong>
       <span className="git-muted">{file.status}</span>

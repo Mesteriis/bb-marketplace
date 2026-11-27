@@ -34,7 +34,8 @@ export function useHighlight(path: string, rows: readonly {kind: string; text: s
         () => {}); // Shiki, the grammar or the theme did not load: the diff stays as it is, plain.
     return () => { live = false; };
   }, [enabled, theme, language, rows]);
-  const value = painted && painted.rows === rows ? painted.value : null;
+  // Tokens of another theme are not shown: a theme that failed to load leaves the diff plain, not in the old colours.
+  const value = painted && painted.rows === rows && painted.theme === theme ? painted.value : null;
   return useMemo(() => (row, side) => {
     const place = value?.at[row];
     if (!value || !place) return null;
@@ -42,6 +43,23 @@ export function useHighlight(path: string, rows: readonly {kind: string; text: s
     const line = place[which];
     return line === null ? null : value[which][line] ?? null;
   }, [value]);
+}
+
+/**
+ * Whether an element has come within a screen of the viewport (and stays true): a long page paints only the files
+ * read, not all of them at once.
+ */
+export function useNear(element: { readonly current: Element | null }): boolean {
+  const [near, setNear] = useState(false);
+  useEffect(() => {
+    const target = element.current;
+    if (near || !target) return;
+    if (typeof IntersectionObserver === "undefined") { setNear(true); return; }
+    const observer = new IntersectionObserver(entries => { if (entries.some(entry => entry.isIntersecting)) { setNear(true); observer.disconnect(); } }, {rootMargin: "100% 0px"});
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [element, near]);
+  return near;
 }
 
 const styleOf = (token: Token) => ({color: token.color, fontStyle: token.fontStyle && token.fontStyle & 1 ? "italic" : undefined,

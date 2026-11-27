@@ -36,7 +36,7 @@ export function jiraHref(key: string, target: { plugin: boolean; siteUrl: string
  * point at My Jira when it runs. Code, and text already inside a link, stay as they are.
  */
 export function linkJira(markdown: string, prefixes: ReadonlySet<string>, href: (key: string) => string | null, plugin: boolean): string {
-  const token = /(```[\s\S]*?```|`[^`\n]*`|\[[^\]\n]*\]\([^)\s]*\)|<https?:[^>\s]+>|https?:\/\/[^\s)<>\]]+)/g;
+  const token = /(```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`\n]*`|\[[^\]\n]*\]\([^)\s]*\)|<https?:[^>\s]+>|https?:\/\/[^\s)<>\]]+)/g;
   const keys = prefixes.size > 0 ? new RegExp(`(^|[^A-Za-z0-9/_-])((?:${[...prefixes].join("|")})-\\d+)(?![A-Za-z0-9_-])`, "g") : null;
   const plain = (text: string) =>
     keys ? text.replace(keys, (all, pre: string, key: string) => {

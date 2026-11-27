@@ -108,3 +108,13 @@ test("only a comment the forge shows as yours can be deleted", async () => {
   await service.confirm(preview.id);
   assert.deepEqual(acts, ["deleteComment"]);
 });
+
+test("a delete previews the forge's text and author, and does not wait on the head", async () => {
+  const theirs = {id: "C9", canDelete: true, author: "bob", avatarUrl: null, body: "On the forge", createdAt: "", url: "", reviewState: null};
+  const {service, acts, move} = setup("github", {viewer: "me", timeline: [theirs], threads: []} as unknown as Partial<PrDetail>);
+  const preview = await service.prepare("a", "o/r", 7, {kind: "deleteComment", commentId: "C9", threadId: null, body: "Sent by the page"}, "0".repeat(40));
+  assert.deepEqual(preview.lines, ["Delete bob's comment on o/r #7", "On the forge"]);
+  move();
+  await service.confirm(preview.id);
+  assert.deepEqual(acts, ["deleteComment"]);
+});

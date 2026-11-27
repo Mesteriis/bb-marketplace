@@ -9,7 +9,7 @@ import type { CodeReviewApi, NewThread, Placement } from "./review-api.ts";
 import { Composer, ThreadCard } from "./thread-card.tsx";
 import { useKept } from "./kept-state.tsx";
 import { RevertForm } from "./revert-form.tsx";
-import { CodeText, useHighlight } from "../highlight/use-highlight.tsx";
+import { CodeText, useHighlight, useNear } from "../highlight/use-highlight.tsx";
 
 const sideOf = (row: DisplayRow): Side => row.kind === "deletion" ? "old" : "new";
 const lineOf = (row: DisplayRow) => row.kind === "deletion" ? row.oldLine! : row.newLine!;
@@ -76,7 +76,9 @@ export function FileDiff({file, threads, placements, wrap, split, workingCopy, a
     setClosed(file.viewed || large);
   }, [file.viewed, large]);
   // Painted only while unfolded and read: a folded or deferred file costs nothing.
-  const tokensOf = useHighlight(file.path, rows, !closed && !file.deferred);
+  const section = useRef<HTMLElement>(null);
+  const near = useNear(section);
+  const tokensOf = useHighlight(file.path, rows, near && !closed && !file.deferred);
   const [marking, setMarking] = useState(false);
   const [reverting, setReverting] = useState(false);
   useEffect(() => { if (reveal) setClosed(false); }, [reveal]);
@@ -104,7 +106,7 @@ export function FileDiff({file, threads, placements, wrap, split, workingCopy, a
   const inSide = (side: Side, line: number) => selection !== null && range !== null && side === selection.side && line >= range.start && line <= range.end;
   const inSelection = (row: DisplayRow) => row.kind !== "hunk" && inSide(sideOf(row), lineOf(row));
   const additions = file.binary ? "binary" : "+" + file.additions + " −" + file.deletions;
-  return <section className="git-review-file" aria-label={file.path} data-path={file.path} tabIndex={-1}>
+  return <section ref={section} className="git-review-file" aria-label={file.path} data-path={file.path} tabIndex={-1}>
     <header className="git-row git-review-file-head">
       <button type="button" className="git-link" aria-expanded={!closed} onClick={toggleFold}>{closed ? "▸" : "▾"}</button>
       <strong className="git-path">{file.previousPath ? file.previousPath + " → " : ""}{file.path}</strong>

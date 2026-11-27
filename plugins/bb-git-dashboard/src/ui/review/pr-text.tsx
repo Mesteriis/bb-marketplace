@@ -11,7 +11,8 @@ let asked: Promise<JiraTarget> | null = null;
 export function PrText({api, pr, children}: {api: ReviewApi; pr: {title: string; headRefName: string; body: string}; children: ReactNode}) {
   const [target, setTarget] = useState<JiraTarget | null>(null);
   useEffect(() => {
-    asked ??= api.jira().catch(() => ({plugin: false, siteUrl: null}));
+    // A failed answer is not kept: the next page asks again (My Jira may start later).
+    asked ??= api.jira().catch(() => { asked = null; return {plugin: false, siteUrl: null}; });
     let live = true;
     void asked.then(value => { if (live) setTarget(value); });
     return () => { live = false; };

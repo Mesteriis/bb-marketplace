@@ -10,6 +10,7 @@ export type Token = {content: string; color?: string; fontStyle?: number};
 const MAX_LINE = 1_000;
 let core: Promise<HighlighterCore> | null = null;
 const themes = new Map<CodeTheme, string>();
+let themeCount = 0;
 const grammarLoads = new Map<LanguageId, Promise<void>>();
 
 /** The highlighter, created on first use: Shiki and its JavaScript regex engine load only when a diff is shown. */
@@ -39,7 +40,8 @@ export async function tokenize(code: string, language: LanguageId, theme: CodeTh
   let name = themes.get(theme);
   if (!name) {
     // A theme document per name and mode: BB changes the document when the palette or light/dark changes.
-    name = "bb-" + theme.type + "-" + theme.name + "-" + themes.size;
+    // Named before the await, from a counter: two documents loading at once never share a name.
+    name = "bb-" + theme.type + "-" + theme.name + "-" + ++themeCount;
     await shiki.loadTheme({...theme, name, tokenColors: [...theme.tokenColors]} as Parameters<HighlighterCore["loadTheme"]>[0]);
     themes.set(theme, name);
   }

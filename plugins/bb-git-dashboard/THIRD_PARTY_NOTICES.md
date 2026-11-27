@@ -152,7 +152,7 @@ SOFTWARE.
 
 ## Shiki
 
-- Source: https://github.com/shikijs/shiki, npm packages `shiki`, `@shikijs/core`, `@shikijs/engine-javascript`, `@shikijs/langs`, `@shikijs/types`, `@shikijs/primitive`, `@shikijs/vscode-textmate` 4.6.0 (vscode-textmate 10.1.0), with `oniguruma-to-es`, `regex`, `regex-recursion` and `regex-utilities` (MIT) under the JavaScript regex engine. A dependency, not copied: `bb plugin build` bundles it.
+- Source: https://github.com/shikijs/shiki, npm packages `shiki`, `@shikijs/langs` (a direct dependency: the server bundles its grammars), `@shikijs/core`, `@shikijs/engine-javascript`, `@shikijs/types`, `@shikijs/primitive`, `@shikijs/vscode-textmate` 4.6.0 (vscode-textmate 10.1.0), with `oniguruma-to-es`, `regex`, `regex-recursion` and `regex-utilities` (MIT) under the JavaScript regex engine. A dependency, not copied: `bb plugin build` bundles it.
 - Used in: `src/ui/highlight/shiki.ts` (the highlighter core and its JavaScript regex engine, in the app bundle) and `src/adapters/bb/grammars.ts` (52 TextMate grammars of `@shikijs/langs`, in the server bundle, served one per request by `GET /grammar`).
 - License: MIT. `@shikijs/langs` is published under MIT; the grammars it carries come from their upstream repositories through https://github.com/shikijs/textmate-grammars-themes, which lists each grammar's source and license.
 

@@ -48,13 +48,14 @@ export function InboxPage({api, alerts, onSeen, onOpen}: {api: InboxApi; alerts:
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => { const timer = setInterval(() => setNow(Date.now()), 30_000); return () => clearInterval(timer); }, []);
   // Merged and Closed keep only their newest rows; a search there reads the whole history once per tab.
-  const [history, setHistory] = useState<{tab: InboxTab; groups: InboxList["groups"]} | "loading" | null>(null);
+  // A failed read is kept for its tab: the search falls back to the loaded rows rather than asking again and again.
+  const [history, setHistory] = useState<{tab: InboxTab; groups: InboxList["groups"] | null} | "loading" | null>(null);
   const searchesHistory = (tab === "merged" || tab === "closed") && query.trim() !== "";
   useEffect(() => {
     if (!searchesHistory || (history !== null && (history === "loading" || history.tab === tab))) return;
     const asked = tab as "merged" | "closed";
     setHistory("loading");
-    api.history(asked).then(result => setHistory({tab: asked, groups: result.groups}), () => setHistory(null));
+    api.history(asked).then(result => setHistory({tab: asked, groups: result.groups}), () => setHistory({tab: asked, groups: null}));
   }, [searchesHistory, tab, history, api]);
   const latest = useRef(0);
   const load = useCallback(async (next: InboxTab) => {
@@ -97,10 +98,11 @@ export function InboxPage({api, alerts, onSeen, onOpen}: {api: InboxApi; alerts:
     return () => scroller.removeEventListener("scroll", save);
   }, [list !== null]);
 
-  const whole = searchesHistory && history !== null && history !== "loading" && history.tab === tab ? history : null;
+  const whole = searchesHistory && history !== null && history !== "loading" && history.tab === tab && history.groups ? {groups: history.groups} : null;
   const source = useMemo(() => list ? (whole ? {...list, groups: whole.groups} : list) : null, [list, whole]);
   const groups = useMemo(() => source ? grouped(source, item => matchesSearch(item, query), hidden) : [], [source, query, hidden]);
-  const stats = useMemo(() => tab === "open" && list ? openStats(list.groups.flatMap(group => group.items)) : null, [tab, list]);
+  // The tiles count what the tab shows: hidden repositories are left out.
+  const stats = useMemo(() => tab === "open" && list ? openStats(grouped(list, () => true, hidden).flatMap(group => group.repos.flatMap(repo => repo.items))) : null, [tab, list, hidden]);
   const allKeys = groups.flatMap(group => group.repos.map(repo => repo.key));
   const flat = groups.flatMap(group => group.repos.flatMap(repo => folded.has(repo.key) ? [] : repo.items));
   const hiddenCount = hidden.size;
@@ -139,7 +141,7 @@ export function InboxPage({api, alerts, onSeen, onOpen}: {api: InboxApi; alerts:
     {alerts && alerts.unseen > 0 && <section className="git-inbox-new" aria-label="New since you last looked">
       <div className="git-row"><strong>New since you last looked</strong><button type="button" onClick={onSeen}>Mark as seen</button></div>
       <ul>{alerts.alerts.filter(alert => !alert.seen).slice(0, 10).map(alert => <li key={alert.id}>
-        <a href={alert.url} target="_blank" rel="noreferrer">{alert.headline}</a> <span className="git-muted">{alert.detail}</span>
+        {alert.url ? <a href={alert.url} target="_blank" rel="noreferrer">{alert.headline}</a> : <strong>{alert.headline}</strong>} <span className="git-muted">{alert.detail}</span>
       </li>)}</ul>
     </section>}
     {stats && <div className="git-inbox-stats" role="list" aria-label="Open pull requests at a glance">
@@ -230,7 +232,8 @@ export function InboxToasts({alerts}: {alerts: AlertSummary | null}) {
   if (!shown.length) return null;
   return <div className="git-inbox-toasts" role="status" aria-live="polite">
     {shown.map(alert => <div key={alert.id} className="git-inbox-toast">
-      <a href={alert.url} target="_blank" rel="noreferrer"><strong>{alert.headline}</strong><span>{alert.detail}</span></a>
+      {alert.url ? <a href={alert.url} target="_blank" rel="noreferrer"><strong>{alert.headline}</strong><span>{alert.detail}</span></a>
+        : <div><strong>{alert.headline}</strong><span>{alert.detail}</span></div>}
       <button type="button" className="git-link" aria-label="Close" onClick={() => dismiss(alert.id)}>×</button>
     </div>)}
   </div>;

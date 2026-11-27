@@ -35,3 +35,7 @@ test("jira: a pull request's keys open on the site its description links to when
   assert.equal(jiraLinker(pr, {plugin: true, siteUrl: "https://x.atlassian.net"}).href("ABC-12"), "/plugins/my-jira/tickets/ABC-12");
   assert.equal(jiraLinker({...pr, body: ""}, {plugin: false, siteUrl: null}).href("ABC-12"), null);
 });
+
+test("jira: keys inside ~~~ fences stay as they are", () => {
+  assert.equal(linkJira("~~~\nABC-1\n~~~ and ABC-2", new Set(["ABC"]), (k) => "/j/" + k, false), "~~~\nABC-1\n~~~ and [ABC-2](/j/ABC-2)");
+});
