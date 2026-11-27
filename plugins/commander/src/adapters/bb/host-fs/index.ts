@@ -11,7 +11,7 @@
  * BB caps each host RPC at 30 minutes. copyWithin and sha256 may time out
  * for very large files.
  */
-import { experimental_PluginRpcRefusal, type ExperimentalHostRpcHandlers } from "@get-bb/plugin-sdk";
+import type { ExperimentalHostRpcHandlers } from "@get-bb/plugin-sdk";
 import { link, mkdir, opendir, rename, rmdir, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { CommanderError } from "../../../core/errors.ts";
@@ -46,15 +46,6 @@ function indexFromCursor(cursor: string | null, version: string): number {
 
 function versionOf(stats: NonNullable<Awaited<ReturnType<typeof lstatOrNull>>>): string {
   return [stats.dev, stats.ino].join(":");
-}
-
-function refusal(error: unknown): experimental_PluginRpcRefusal {
-  const shape = fsError(error).toShape();
-  const code = shape.code === "not_found" ? "not_found"
-    : shape.code === "permission_denied" ? "forbidden"
-    : shape.code === "already_exists" || shape.code === "changed_since_plan" ? "conflict" : "invalid";
-  // SDK refusals transport a message. Encode only the public, stack-free shape.
-  return new experimental_PluginRpcRefusal({ code, message: JSON.stringify(shape) });
 }
 
 export function createHostFs(options: WriteOptions & { platform?: NamePlatform } = {}) {
@@ -308,7 +299,8 @@ export function createHostFs(options: WriteOptions & { platform?: NamePlatform }
       try {
         return await fn(input, context);
       } catch (error) {
-        throw refusal(error);
+        // The host worker transports the message of a plain Error.
+        throw new Error(JSON.stringify(fsError(error).toShape()));
       }
     };
   }
