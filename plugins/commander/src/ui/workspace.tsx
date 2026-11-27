@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import type { ConflictAction, Entry, OperationJob, OperationPlan, ResourceRef } from "../core/model.ts";
@@ -6,17 +6,20 @@ import { displayPath, join, NameSegment, parent, parsePosix, type ResourcePath }
 import type { AgentGrant, UiState } from "../core/wire/rpc.ts";
 import { ConflictDialog, Modal, PlanDialog, TextDialog } from "./dialogs.tsx";
 import { chord, findShortcut, shortcuts, shortcutText, type KeyBindings, type Shortcut } from "./keyboard.ts";
-import { activeTab, currentRef, keyOf, nameOf, nativePath, otherSide, problemOf, selectionInfo, sides, visibleEntries,
+import { activeTab, currentRef, keyOf, nameOf, nativePath, otherSide, problemOf, selectionInfo, shortPath, sides, visibleEntries,
   type Directory, type EndpointView, type PlanCheck, type PlanRequest, type Problem, type Side, type Tab } from "./model.ts";
 import { Pane, ProblemLine, rowHeight, upKey } from "./pane.tsx";
 import { Queue, type QueueProps } from "./queue.tsx";
 import { ru } from "./strings.ts";
 
+type ConflictView = { kind: "conflict"; job: OperationJob };
+type Cursor = { key: string; index: number; explicit: boolean };
 type DialogState = { kind: "plan"; plan: OperationPlan; job?: OperationJob }
-  | { kind: "conflict" | "cancel"; job: OperationJob }
+  | ConflictView
+  | { kind: "cancel"; job: OperationJob; returnTo?: ConflictView }
   | { kind: "text"; title: string; label: string; initial?: string; submit: (value: string) => void }
   | { kind: "compare"; difference: [number, number, number, number] }
-  | { kind: "content"; source: string; target: string }
+  | { kind: "content"; source: string; target: string; returnTo: ConflictView }
   | { kind: "settings" };
 
 export interface WorkspaceProps {
@@ -84,16 +87,44 @@ function filterAndSort(directory: Directory | undefined, tab: Tab | undefined) {
   return directory && tab ? visibleEntries(directory.entries, tab) : noEntries;
 }
 
+function closestRow(previous: Entry[], current: Entry[], position: Cursor) {
+  const visible = new Map(current.map((entry, index) => [keyOf(entry.name), index]));
+  const at = previous.findIndex((entry) => keyOf(entry.name) === position.key);
+  if (at >= 0) {
+    for (let distance = 1; distance < previous.length; distance++) {
+      for (const neighbor of [previous[at + distance], previous[at - distance]]) {
+        const index = neighbor ? visible.get(keyOf(neighbor.name)) : undefined;
+        if (index !== undefined) return index;
+      }
+    }
+  }
+  return Math.min(position.index, current.length - 1);
+}
+
 export function Workspace(props: WorkspaceProps) {
   const { state, update, endpoints, directories, compact, bindings } = props;
-  const [queueOpen, setQueueOpen] = useState(false);
-  const [cursor, setCursor] = useState<Partial<Record<Side, string>>>({});
+  const root = useRef<HTMLDivElement>(null);
+  const queueToggle = useRef<HTMLButtonElement>(null);
+  const queueId = useId();
+  const [narrowQueue, setNarrowQueue] = useState(false);
+  const [width, setWidth] = useState<number>();
+  const wide = !compact && (width === undefined || width >= 1200);
+  const queueOpen = wide ? state.inspectorCollapsed !== true : narrowQueue;
+  const [cursor, setCursor] = useState<Partial<Record<Side, Cursor>>>({});
+  const previousRows = useRef<Record<Side, Entry[]>>({ left: [], right: [] });
   const [dialog, setDialog] = useState<DialogState | null>(null);
   const [same, setSame] = useState(false);
   const [problem, setProblem] = useState<Problem | null>(null);
   const [busy, setBusy] = useState(false);
   const running = useRef(false);
   const focusReturn = useRef<HTMLElement | null>(null);
+  const conflictFocus = useRef<{ jobId: string; conflictId: string; jobs: typeof props.queue.jobs } | null>(null);
+  useLayoutEffect(() => {
+    if (!root.current || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(([entry]) => setWidth(entry.contentRect.width));
+    observer.observe(root.current);
+    return () => observer.disconnect();
+  }, []);
   const leftGrid = useRef<HTMLDivElement>(null), rightGrid = useRef<HTMLDivElement>(null);
   const grids = { left: leftGrid, right: rightGrid };
   const side = state.activePane, opposite = otherSide(side);
@@ -104,10 +135,32 @@ export function Workspace(props: WorkspaceProps) {
   const all = { left: leftEntries, right: rightEntries }, entries = all[side];
   const endpointsBySide = { left: endpoints.find((item) => item.id === left?.endpoint), right: endpoints.find((item) => item.id === right?.endpoint) };
   const endpoint = endpointsBySide[side], target = endpointsBySide[opposite];
-  const current = entries.find((entry) => keyOf(entry.name) === cursor[side]) ?? (cursor[side] === upKey ? undefined : entries[0]);
+  const itemAtCursor = entries.find((entry) => keyOf(entry.name) === cursor[side]?.key);
+  const current = cursor[side]?.explicit ? itemAtCursor : undefined;
+  useLayoutEffect(() => {
+    for (const pane of sides) {
+      const position = cursor[pane], value = tabs[pane], directory = directories[pane];
+      if (!value || !directory || directory.loading || directory.error) continue;
+      const rows = all[pane], above = parent(value.path), previous = previousRows.current[pane];
+      previousRows.current[pane] = rows;
+      if (!position) continue;
+      if (position.key === upKey && above || rows.some((entry) => keyOf(entry.name) === position.key)) continue;
+      const index = closestRow(previous, rows, position);
+      const next = rows[index];
+      const replacement = next ? { key: keyOf(next.name), index, explicit: false }
+        : above ? { key: upKey, index: 0, explicit: false } : undefined;
+      setCursor((previous) => ({ ...previous, [pane]: replacement }));
+      if (replacement) revealCursor(pane, next ? index + Number(!!above) : 0);
+    }
+  }, [leftEntries, rightEntries, directories.left?.loading, directories.right?.loading, cursor]);
   const targetReady = !!target && !target.readOnly && !directories[opposite]?.loading && !directories[opposite]?.error;
   const ready = !!endpoint && !directories[side]?.error && !directories[side]?.loading;
-  const selected = !!tab?.selection.length || !!current;
+  const selectedNames = useMemo(() => {
+    if (!tab?.selection.length || !directories[side]) return [];
+    const existing = new Set(directories[side].entries.map((entry) => keyOf(entry.name)));
+    return tab.selection.filter((name) => existing.has(keyOf(name)));
+  }, [tab?.selection, directories[side]]);
+  const selected = selectedNames.length > 0 || !!current;
   const can: Record<string, boolean> = {
     preview: ready && endpoint?.provider === "local" && !!endpoint.hostId && current?.kind !== "dir" && !!current &&
       "t" in current.name && !!tab && nativePath(tab.path) !== null,
@@ -120,12 +173,55 @@ export function Workspace(props: WorkspaceProps) {
   const activeJob = dialog && "job" in dialog && dialog.job
     ? props.queue.jobs.find((job): job is OperationJob => job.id === dialog.job?.id && "plan" in job) : null;
   useLayoutEffect(() => {
-    if (dialog || !focusReturn.current) return;
+    if (dialog) return;
+    const pending = conflictFocus.current;
+    if (pending) {
+      if (pending.jobs === props.queue.jobs && !props.queue.error) return;
+      conflictFocus.current = null;
+      focusReturn.current = null;
+      const oldIndex = pending.jobs.findIndex((job) => job.id === pending.jobId);
+      const updatedIndex = props.queue.jobs.findIndex((job) => job.id === pending.jobId);
+      const remaining = new Set(props.queue.jobs.slice(Math.max(0, updatedIndex < 0 ? oldIndex : updatedIndex))
+        .flatMap((job) => "plan" in job && job.state === "awaiting_decision" && job.pendingConflict
+          && job.pendingConflict.id !== pending.conflictId ? [job.pendingConflict.id] : []));
+      const buttons = Array.from(root.current?.querySelectorAll<HTMLButtonElement>("[data-conflict-id]") ?? []);
+      const next = buttons.find((button) => button.dataset.conflictId && remaining.has(button.dataset.conflictId)
+        && getComputedStyle(button).visibility !== "hidden");
+      queueMicrotask(() => {
+        if (next?.isConnected) {
+          next.focus({ preventScroll: true });
+          if (document.activeElement === next) return;
+        }
+        const first = all[side][0];
+        if (!cursor[side] && first) {
+          setCursor((previous) => ({ ...previous, [side]: { key: keyOf(first.name), index: 0, explicit: false } }));
+          revealCursor(side, Number(!!(tab && parent(tab.path))));
+        }
+        grids[side].current?.focus({ preventScroll: true });
+      });
+      return;
+    }
+    if (!focusReturn.current) return;
     const previous = focusReturn.current;
     focusReturn.current = null;
     queueMicrotask(() => { if (previous.isConnected) previous.focus({ preventScroll: true }); });
-  }, [dialog]);
+  }, [dialog, props.queue.jobs, props.queue.error, side]);
   const close = () => { setDialog(null); setProblem(null); };
+  const goBack = (returnTo: ConflictView) => { setProblem(null); setDialog(returnTo); };
+  function decide(job: OperationJob, action: ConflictAction, apply: boolean) {
+    const conflict = job.pendingConflict;
+    if (!conflict) return;
+    const previous = props.queue.jobs;
+    void perform(() => props.onDecide(job, action, apply), () => {
+      conflictFocus.current = { jobId: job.id, conflictId: conflict.id, jobs: previous };
+      close();
+    });
+  }
+  function toggleQueue() {
+    if (!wide) { setNarrowQueue(!queueOpen); return; }
+    update((previous) => ({ ...previous, inspectorCollapsed: queueOpen }));
+    if (queueOpen) queueMicrotask(() => queueToggle.current?.focus({ preventScroll: true }));
+  }
   const open = (next: DialogState) => {
     if (!dialog) focusReturn.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setProblem(null);
@@ -165,7 +261,9 @@ export function Workspace(props: WorkspaceProps) {
   }
   function point(pane: Side, entry: Entry | null, mark = false) {
     const key = entry ? keyOf(entry.name) : upKey;
-    setCursor((previous) => ({ ...previous, [pane]: key }));
+    setCursor((previous) => ({ ...previous, [pane]: {
+      key, index: Math.max(0, entry ? all[pane].indexOf(entry) : 0), explicit: true,
+    } }));
     if (entry && mark) patch(pane, (item) => ({
       ...item, selection: item.selection.some((name) => keyOf(name) === key)
         ? item.selection.filter((name) => keyOf(name) !== key) : [...item.selection, entry.name].slice(0, 10_000),
@@ -187,7 +285,7 @@ export function Workspace(props: WorkspaceProps) {
     if (!tab) return;
     const result = name === null ? null : NameSegment.safeParse({ t: name });
     if (result && !result.success) { setProblem({ code: "invalid_name", message: ru.invalidName }); return; }
-    const multi = tab.selection.length ? tab.selection : current ? [current.name] : [];
+    const multi = selectedNames.length ? selectedNames : current ? [current.name] : [];
     const names = kind === "mkdir" ? [] : kind === "rename" ? current ? [current.name] : [] : multi;
     void perform(async () => {
       const plan = await props.onCreate({
@@ -219,7 +317,7 @@ export function Workspace(props: WorkspaceProps) {
       if (next?.getClientRects().length || typeof ResizeObserver === "undefined") next?.focus({ preventScroll: true });
       else requestAnimationFrame(() => next?.focus({ preventScroll: true }));
     } else if (action === "up") goUp(side);
-    else if (action === "toggle") { if (current) point(side, current, true); }
+    else if (action === "toggle") { if (itemAtCursor) point(side, itemAtCursor, true); }
     else if (action === "invert") applyMask(action, "*");
     else if (action === "mark" || action === "unmark") open({ kind: "text", title: shortcutText[action], label: ru.mask, initial: "*", submit: (value) => applyMask(action, value) });
     else if (can[action] && tab) {
@@ -250,7 +348,7 @@ export function Workspace(props: WorkspaceProps) {
         const conflict = dialog.job.pendingConflict;
         if (action && conflict && (conflict.allowedResolutions?.includes(action) ?? true)) {
           event.preventDefault();
-          void perform(() => props.onDecide(dialog.job, action, same), close);
+          decide(dialog.job, action, same);
         }
       }
       return;
@@ -268,12 +366,12 @@ export function Workspace(props: WorkspaceProps) {
     if (!inGrid || event.ctrlKey || event.metaKey || event.altKey || !tab) return;
     const above = parent(tab.path);
     if (event.key === "Enter") {
-      if (current || cursor[side] === upKey) { event.preventDefault(); openEntry(side, current ?? null); }
+      if (itemAtCursor || cursor[side]?.key === upKey) { event.preventDefault(); openEntry(side, itemAtCursor ?? null); }
       return;
     }
     const offset = Number(!!above), count = entries.length + offset;
     if (!count) return;
-    const currentIndex = cursor[side] === upKey && above ? 0 : current ? entries.indexOf(current) + offset : 0;
+    const currentIndex = cursor[side]?.key === upKey && above ? 0 : itemAtCursor ? entries.indexOf(itemAtCursor) + offset : -1;
     const node = grids[side].current;
     const step = Math.max(1, Math.floor((node?.clientHeight ?? 0) / rowHeight) - 1);
     const destinations: Record<string, number> = {
@@ -284,13 +382,17 @@ export function Workspace(props: WorkspaceProps) {
     event.preventDefault();
     const index = Math.min(count - 1, Math.max(0, destinations[event.key]));
     point(side, entries[index - offset] ?? null, event.shiftKey);
-    if (node) {
-      const firstPixel = index * rowHeight, lastPixel = (index + 2) * rowHeight;
-      if (firstPixel < node.scrollTop || lastPixel > node.scrollTop + node.clientHeight) {
-        node.scrollTop = firstPixel < node.scrollTop ? firstPixel : Math.max(0, lastPixel - (node.clientHeight || 560));
-        patch(side, (value) => ({ ...value, scrollTop: node.scrollTop }));
-        if (!node.clientHeight) node.dispatchEvent(new Event("scroll"));
-      }
+    revealCursor(side, index);
+  }
+  function revealCursor(pane: Side, index: number) {
+    const node = grids[pane].current;
+    if (!node) return;
+    const firstPixel = index * rowHeight, lastPixel = (index + 2) * rowHeight;
+    const height = node.clientHeight || 560;
+    if (firstPixel < node.scrollTop || lastPixel > node.scrollTop + height) {
+      node.scrollTop = firstPixel < node.scrollTop ? firstPixel : Math.max(0, lastPixel - height);
+      patch(pane, (value) => ({ ...value, scrollTop: node.scrollTop }));
+      if (!node.clientHeight) node.dispatchEvent(new Event("scroll"));
     }
   }
   function tabAction(pane: Side, kind: "select" | "add" | "close", index?: number) {
@@ -310,22 +412,25 @@ export function Workspace(props: WorkspaceProps) {
     else if (job.pendingConflict) open({ kind: "conflict", job });
   }
   const info = selectionInfo(directories.left?.entries ?? [], left?.selection ?? []);
-  const selection = { ...info, destination: right ? (endpointsBySide.right?.label ?? right.endpoint) + ":" + displayPath(right.path) : "—" };
-  const queue = <Queue {...props.queue} endpoints={endpoints} open={queueOpen} compact={compact} selection={selection}
+  const targetLabel = right ? (endpointsBySide.right?.label ?? right.endpoint) + ":" : "";
+  const selection = { ...info, destination: right ? targetLabel + shortPath(right.path) : "—",
+    fullDestination: right ? targetLabel + displayPath(right.path) : "—" };
+  const queue = <Queue {...props.queue} endpoints={endpoints} id={queueId} open={queueOpen} collapse={wide ? toggleQueue : undefined} compact={compact} selection={selection}
     onInspect={inspect} onSkip={(job) => void perform(() => props.onDecide(job, "skip", false))}
     onCancel={(job) => open({ kind: "cancel", job })} />;
 
-  return <div className="cm-workspace" data-compact={compact} onKeyDown={onKeyDown}>
+  return <div ref={root} className="cm-workspace" data-compact={compact} onKeyDown={onKeyDown}>
     <header className="cm-heading">
-      <h1>{compact && <Icon name="Folder" />}Commander</h1>
+      {compact && <h1><Icon name="Folder" />Commander</h1>}
       <span className="cm-hint">{compact ? ru.threadEnvironment : ru.shortcut}</span><span className="cm-fill" />
-      {!compact && <><Button size="sm" variant="outline" onClick={() => { setCursor({}); update((previous) => ({ ...previous, left: previous.right, right: previous.left })); }}>
+      {!compact && <><Button size="sm" variant="outline" aria-label={ru.swap} onClick={() => { setCursor({}); update((previous) => ({ ...previous, left: previous.right, right: previous.left })); }}>
         <Icon name="ArrowUpDown" /><span>{ru.swap}</span></Button>
-        <Button size="sm" variant="outline" disabled={!ready || !destination || !directories.left || !directories.right ||
+        <Button size="sm" variant="outline" aria-label={ru.compare} disabled={!ready || !destination || !directories.left || !directories.right ||
           directories.left.loading || directories.right.loading || !!directories.left.error || !!directories.right.error}
           onClick={() => open({ kind: "compare", difference: compareEntries(directories.left!.entries, directories.right!.entries) })}>
           <Icon name="FileDiff" /><span>{ru.compare}</span></Button></>}
-      <Button size="sm" variant="ghost" className="cm-queue-toggle" aria-label={ru.queue} aria-expanded={queueOpen} onClick={() => setQueueOpen(!queueOpen)}>
+      <Button ref={queueToggle} size="sm" variant="ghost" className="cm-queue-toggle" aria-label={ru.queue} aria-expanded={queueOpen}
+        aria-controls={queueId} data-queue-open={queueOpen} onClick={toggleQueue}>
         <Icon name="ListTodo" /><span className="cm-count">{props.queue.jobs.length}</span></Button>
       <Button size="sm" variant="ghost" aria-label={ru.keySettings} onClick={() => open({ kind: "settings" })}><Icon name="Keyboard" /></Button>
       {compact && <Button size="sm" variant="ghost" aria-label={ru.fullPage} onClick={props.onOpenPage}><Icon name="PanelRight" /></Button>}
@@ -342,7 +447,7 @@ export function Workspace(props: WorkspaceProps) {
         const value = tabs[pane], source = endpointsBySide[pane];
         return <Pane key={pane} side={pane} active={pane === side} tab={value} tabs={state[pane].tabs} activeIndex={state[pane].activeTab}
           endpoints={endpoints} endpoint={source} directory={directories[pane]} entries={all[pane]}
-          cursor={cursor[pane] ?? (all[pane][0] ? keyOf(all[pane][0].name) : null)}
+          cursor={cursor[pane]?.key ?? null}
           grid={grids[pane]} onFocus={() => setPane(pane)} onTab={(index) => tabAction(pane, "select", index)}
           onAddTab={() => tabAction(pane, "add")} onCloseTab={() => tabAction(pane, "close")}
           onEndpoint={(id) => void perform(() => props.onEndpoint(pane, id), () => setCursor((previous) => ({ ...previous, [pane]: undefined })))}
@@ -359,11 +464,11 @@ export function Workspace(props: WorkspaceProps) {
     </div>
     <footer className="cm-toolbar">
       {actions.filter(({ key }) => !compact || key === "copy" || key === "preview").map(({ key, icon }) =>
-        <Button key={key} aria-keyshortcuts={bindings[key] ?? shortcuts[key][0]} size="sm" variant="outline" disabled={busy || !can[key]}
+        <Button key={key} aria-label={compact && key === "copy" ? ru.compactCopy : shortcutText[key]} aria-keyshortcuts={bindings[key] ?? shortcuts[key][0]} size="sm" variant="outline" disabled={busy || !can[key]}
           onClick={() => invoke(key)}><Icon name={icon} /><span>{compact && key === "copy" ? ru.compactCopy : shortcutText[key]}</span>
           {!compact && <kbd>{bindings[key] ?? shortcuts[key][0]}</kbd>}</Button>)}
       <span className="cm-fill" />
-      {endpoint?.provider === "local" && <Button size="sm" variant="outline" disabled={!can.terminal || busy}
+      {endpoint?.provider === "local" && <Button size="sm" variant="outline" aria-label={compact ? ru.compactTerminal : ru.terminal} className="cm-terminal" disabled={!can.terminal || busy}
         onClick={() => { if (tab) void perform(() => props.onTerminal(currentRef(tab))); }}>
         <Icon name="Terminal" /><span>{compact ? ru.compactTerminal : ru.terminal}</span></Button>}
     </footer>
@@ -373,16 +478,16 @@ export function Workspace(props: WorkspaceProps) {
       reject={() => { if (dialog.job) void perform(() => props.onReject(dialog.job!), close); }}
       openThread={props.onOpenThread} close={close} busy={busy} error={problem} />}
     {dialog?.kind === "conflict" && <ConflictDialog key={dialog.job.pendingConflict?.id} job={dialog.job} endpoints={endpoints} same={same} onSame={setSame}
-      decide={(action, same) => void perform(() => props.onDecide(dialog.job, action, same), close)}
+      decide={(action, same) => decide(dialog.job, action, same)}
       compare={(source, targetRef) => void perform(async () => {
         const [leftText, rightText] = await props.onCompare(source, targetRef);
-        open({ kind: "content", source: leftText, target: rightText });
+        open({ kind: "content", source: leftText, target: rightText, returnTo: dialog });
       })}
-      cancel={() => open({ kind: "cancel", job: dialog.job })} close={close} busy={busy} error={problem} />}
-    {dialog?.kind === "cancel" && <Modal title={ru.cancelJob} description={ru.cancelConfirm} close={close} busy={busy}>
+      cancel={() => open({ kind: "cancel", job: dialog.job, returnTo: dialog })} close={close} busy={busy} error={problem} />}
+    {dialog?.kind === "cancel" && <Modal title={ru.cancelJob} description={ru.cancelConfirm} close={dialog.returnTo ? () => goBack(dialog.returnTo!) : close} busy={busy}>
       {problem && <ProblemLine problem={problem} />}
       <div className="cm-actions">
-        <Button size="sm" variant="outline" onClick={close} disabled={busy}>{ru.close}</Button>
+        <Button size="sm" variant="outline" onClick={dialog.returnTo ? () => goBack(dialog.returnTo!) : close} disabled={busy}>{ru.close}</Button>
         <Button size="sm" variant="destructive" disabled={busy || !activeJob} onClick={() => void perform(() => props.onCancel(dialog.job), close)}>{ru.cancelJob}</Button>
       </div>
     </Modal>}
@@ -391,12 +496,12 @@ export function Workspace(props: WorkspaceProps) {
         <div key={label}><dt>{label}</dt><dd>{dialog.difference[index]}</dd></div>)}</dl>
       <Button size="sm" variant="outline" onClick={close}>{ru.close}</Button>
     </Modal>}
-    {dialog?.kind === "content" && <Modal title={ru.content} description={dialog.source === dialog.target ? ru.compareEqual : ru.compareChanged} close={close}>
+    {dialog?.kind === "content" && <Modal title={ru.content} description={dialog.source === dialog.target ? ru.compareEqual : ru.compareChanged} close={() => goBack(dialog.returnTo)}>
       <div className="cm-pair">
         <div className="cm-detail"><strong>{ru.source}</strong><pre>{dialog.source}</pre></div>
         <div className="cm-detail"><strong>{ru.existing}</strong><pre>{dialog.target}</pre></div>
       </div>
-      <Button size="sm" variant="outline" onClick={close}>{ru.close}</Button>
+      <Button size="sm" variant="outline" onClick={() => goBack(dialog.returnTo)}>{ru.close}</Button>
     </Modal>}
     {dialog?.kind === "settings" && <Modal title={ru.keySettings} description={ru.keyHint} close={close}>
       <div className="cm-keymap">{(Object.keys(shortcuts) as Shortcut[]).map((key) => <label key={key}>

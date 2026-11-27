@@ -35,7 +35,7 @@ async function initialState(rpc: Rpc, sdk: Sdk, environment: string | undefined,
   const first = endpoints.find((endpoint) => endpoint.provider === "local") ?? endpoints[0];
   let preferred: EndpointView | undefined = first;
   let cwd: string | undefined;
-  if (environment) {
+  if (environment && !saved) {
     const env = await sdk.environments.get({ environmentId: environment });
     preferred = endpoints.find((endpoint) => endpoint.hostId === env.hostId);
     if (!preferred) throw new CommanderError("not_found", ru.noThreadEndpoint);
@@ -44,7 +44,7 @@ async function initialState(rpc: Rpc, sdk: Sdk, environment: string | undefined,
   const second = endpoints.find((endpoint) => endpoint.id !== preferred?.id) ?? preferred;
   const initialize = async (pane: Side, source: EndpointView | undefined, threadPath?: string) => {
     const existing = activeTab(state, pane);
-    if (existing && !threadPath && !(environment && pane === "left") && endpoints.some((item) => item.id === existing.endpoint)) return state[pane];
+    if (existing && endpoints.some((item) => item.id === existing.endpoint)) return state[pane];
     if (!source) return emptyState[pane];
     let path;
     if (threadPath) path = parsePosix(threadPath);
@@ -53,10 +53,10 @@ async function initialState(rpc: Rpc, sdk: Sdk, environment: string | undefined,
     return { tabs: [newTab(source.id, path)], activeTab: 0 };
   };
   const [left, right] = await Promise.all([initialize("left", preferred, cwd), initialize("right", second)]);
-  return { ...state, left, right, activePane: environment ? "left" : state.activePane };
+  return { ...state, left, right };
 }
 
-function useWorkspaceState(rpc: Rpc, sdk: Sdk, compact: boolean, environment: string | undefined) {
+function useWorkspaceState(rpc: Rpc, sdk: Sdk, threadId: string | undefined, environment: string | undefined) {
   const [state, setState] = useState<UiState>(emptyState);
   const [endpoints, setEndpoints] = useState<EndpointView[]>([]);
   const [problem, setProblem] = useState<Problem | null>(null);
@@ -66,20 +66,20 @@ function useWorkspaceState(rpc: Rpc, sdk: Sdk, compact: boolean, environment: st
   const mounted = useRef(false);
   const flush = useCallback(() => {
     clearTimeout(timer.current);
-    if (!dirty.current || compact) return;
+    if (!dirty.current) return;
     dirty.current = false;
     const snapshot = current.current;
     pendingWrite = pendingWrite.then(async () => {
-      await rpc.call("ui_state_set", { state: snapshot });
+      await rpc.call("ui_state_set", { state: snapshot, ...(threadId ? { threadId } : {}) });
     }).catch((error) => { if (mounted.current) setProblem(problemOf(error)); });
-  }, [compact, rpc]);
+  }, [rpc, threadId]);
 
   useEffect(() => {
     mounted.current = true;
     const load = async () => {
       await pendingWrite;
       const [{ state: saved }, { endpoints: sources }] = await Promise.all([
-        rpc.call("ui_state_get", {}), rpc.call("endpoints_list", {}),
+        rpc.call("ui_state_get", threadId ? { threadId } : {}), rpc.call("endpoints_list", {}),
       ]);
       if (!active) return;
       setEndpoints(sources);
@@ -87,22 +87,25 @@ function useWorkspaceState(rpc: Rpc, sdk: Sdk, compact: boolean, environment: st
       if (!active) return;
       current.current = next;
       setState(next);
+      if (threadId && !saved && next.left.tabs.length > 0) {
+        dirty.current = true;
+        timer.current = setTimeout(flush, delay);
+      }
     };
     let active = true;
     void load().catch((error) => { if (active) setProblem(problemOf(error)); });
     return () => { active = false; mounted.current = false; flush(); };
-  }, [rpc, sdk, environment, flush]);
+  }, [rpc, sdk, environment, threadId, flush]);
 
   const update = useCallback((change: (state: UiState) => UiState) => {
     const next = change(current.current);
     if (next === current.current) return;
     current.current = next;
     setState(next);
-    if (compact) return;
     dirty.current = true;
     clearTimeout(timer.current);
     timer.current = setTimeout(flush, delay);
-  }, [compact, flush]);
+  }, [flush]);
 
   const refreshEndpoints = useCallback(async () => {
     try { setEndpoints((await rpc.call("endpoints_list", {})).endpoints); }
@@ -190,7 +193,7 @@ function CommanderPage({ compact = false, environment, threadId }: { compact?: b
   const rpc = useRpc<typeof rpcSchemas>();
   const sdk = useSdk();
   const navigate = useBbNavigate();
-  const { state, update, endpoints, problem, refreshEndpoints } = useWorkspaceState(rpc, sdk, compact, environment);
+  const { state, update, endpoints, problem, refreshEndpoints } = useWorkspaceState(rpc, sdk, threadId, environment);
   const [bindings, setBindings] = useState(loadBindings);
   const [revisions, setRevisions] = useState({ left: 0, right: 0, job: 0 });
   const changes = useRef(new Set<string>());

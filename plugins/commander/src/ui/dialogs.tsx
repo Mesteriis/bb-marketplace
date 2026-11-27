@@ -4,10 +4,10 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import type { ConflictAction, Fingerprint, OperationJob, OperationPlan, ResourceRef } from "../core/model.ts";
-import { displayPath } from "../core/path.ts";
+import { displayPath, parent } from "../core/path.ts";
 import type { AgentGrant } from "../core/wire/rpc.ts";
 import { isAncestorOrSelf } from "../core/path.ts";
-import { bytes, date, problemOf, type EndpointView, type PlanCheck, type Problem } from "./model.ts";
+import { bytes, date, nameOf, problemOf, shortPath, type EndpointView, type PlanCheck, type Problem } from "./model.ts";
 import { ProblemLine } from "./pane.tsx";
 import { operationText, reasonText, ru } from "./strings.ts";
 
@@ -20,7 +20,7 @@ export function Modal({ title, description, close, children, busy }: {
       onEscapeKeyDown={(event) => { event.preventDefault(); if (!busy) close(); }}
       onPointerDownOutside={(event) => event.preventDefault()}>
       <DialogTitle>{title}</DialogTitle>
-      <DialogDescription className={description ? undefined : "sr-only"}>{description ?? title}</DialogDescription>
+      <DialogDescription className={description ? "cm-dialog-description" : "sr-only"}>{description ?? title}</DialogDescription>
       {children}
     </DialogContent>
   </Dialog>;
@@ -44,14 +44,42 @@ function Resource({ value, endpoints }: { value: ResourceRef; endpoints: Endpoin
   return <><small>{endpoint?.label ?? value.endpoint}{endpoint && endpoint.machine !== endpoint.label && <> · {endpoint.machine}</>}</small>
     <code>{displayPath(value.path)}</code></>;
 }
-function FingerprintCard({ label, value, refValue, endpoints }: {
-  label: string; value: Fingerprint | null; refValue: ResourceRef | null | undefined; endpoints: EndpointView[];
+const durationFormats = (["day", "hour", "minute", "second"] as const).map((unit) =>
+  new Intl.NumberFormat("ru", { style: "unit", unit, unitDisplay: "long" }));
+const durationUnits = [86400n, 3600n, 60n, 1n] as const;
+
+function timeDifference(newer: Fingerprint | null, older: Fingerprint | null) {
+  if (!newer?.mtimeNs || !older?.mtimeNs) return null;
+  const difference = BigInt(newer.mtimeNs) - BigInt(older.mtimeNs);
+  if (difference <= 0n) return null;
+  const seconds = difference / 1_000_000_000n;
+  const unit = durationUnits.findIndex((value) => seconds >= value);
+  return unit === -1 ? ru.lessThanSecond : durationFormats[unit].format(seconds / durationUnits[unit]);
+}
+
+function FingerprintCard({ label, value, other, refValue, endpoints }: {
+  label: string; value: Fingerprint | null; other: Fingerprint | null;
+  refValue: ResourceRef | null | undefined; endpoints: EndpointView[];
 }) {
-  return <div className="cm-detail">
-    <strong>{label}</strong>
-    {refValue && <Resource value={refValue} endpoints={endpoints} />}
-    {value ? <><span>{bytes(value.size)} · {date(value.mtimeNs, true)}</span>{value.sha256 && <code>{value.sha256}</code>}</> : <span>{ru.noFingerprint}</span>}
-  </div>;
+  const endpoint = endpoints.find((entry) => entry.id === refValue?.endpoint);
+  const name = refValue?.path.segments.at(-1);
+  const dir = refValue ? parent(refValue.path) : null;
+  const location = dir ? (endpoint?.label ?? refValue!.endpoint) + ":" : "";
+  const newer = timeDifference(value, other);
+  return <section className="cm-detail cm-fingerprint" aria-label={label}>
+    <span className="cm-meta">{label}</span>
+    <strong className="cm-fingerprint-name" title={name ? nameOf(name) : undefined}>{name ? nameOf(name) : "—"}</strong>
+    <span className="cm-meta cm-fingerprint-path" title={dir ? location + displayPath(dir) : undefined}>
+      {dir ? location + shortPath(dir) : "—"}
+    </span>
+    <dl className="cm-facts">
+      <dt>{ru.size}</dt><dd>{value ? bytes(value.size) : "—"}</dd>
+      <dt>{ru.date}</dt><dd>{value ? date(value.mtimeNs, true) : "—"}</dd>
+    </dl>
+    <div className="cm-freshness">{newer && <span className="cm-good">{ru.newer(newer)}</span>}</div>
+    {value?.sha256 && <code title={value.sha256}>{value.sha256}</code>}
+    {!value && <span className="cm-meta">{ru.noFingerprint}</span>}
+  </section>;
 }
 
 export function ConflictDialog({ job, endpoints, decide, compare, cancel, close, busy, error, same, onSame }: {
@@ -69,19 +97,22 @@ export function ConflictDialog({ job, endpoints, decide, compare, cancel, close,
     { action: "rename", label: ru.keepBoth, key: "r" },
   ] as const;
   const source = item?.source, target = item?.target;
+  const name = (target ?? source)?.path.segments.at(-1);
+  const title = name ? conflict.reason === "exists" ? ru.conflictExists(nameOf(name))
+    : ru.conflictForFile(nameOf(name), reasonText[conflict.reason]) : reasonText[conflict.reason];
   const localTarget = !!target && endpoints.some((endpoint) => endpoint.id === target.endpoint && endpoint.provider === "local");
   const localFile = (ref: ResourceRef) => ref.path.segments.every((segment) => "t" in segment)
     && endpoints.some((endpoint) => endpoint.id === ref.endpoint && endpoint.provider === "local" && endpoint.hostId);
-  return <Modal title={reasonText[conflict.reason]} description={operationText[job.plan.kind] + " · " + job.id}
+  return <Modal title={title} description={operationText[job.plan.kind]}
     close={close} busy={busy}>
     <div className="cm-pair">
-      <FingerprintCard label={ru.source} value={conflict.source} refValue={source} endpoints={endpoints} />
-      <FingerprintCard label={ru.existing} value={conflict.target} refValue={target} endpoints={endpoints} />
+      <FingerprintCard label={ru.source} value={conflict.source} other={conflict.target} refValue={source} endpoints={endpoints} />
+      <FingerprintCard label={ru.existing} value={conflict.target} other={conflict.source} refValue={target} endpoints={endpoints} />
     </div>
     {error && <ProblemLine problem={error} />}
     <div className="cm-actions">
       {controls.filter(({ action }) => allowed.has(action)).map(({ action, label, key }) =>
-        <Button key={action} size="sm" variant={action === "overwrite" ? "default" : "outline"} disabled={busy}
+        <Button key={action} size="sm" variant={action === "overwrite" ? "default" : "outline"} className={action === "overwrite" ? "cm-primary" : undefined} disabled={busy}
           onClick={() => decide(action, same)}>{label} <kbd>{key === "Enter" ? "↵" : key.toUpperCase()}</kbd></Button>)}
       {item?.kind === "file" && source && target && localFile(source) && localFile(target) &&
         <Button size="sm" variant="outline" onClick={() => compare(source, target)}>{ru.content}</Button>}
@@ -89,6 +120,7 @@ export function ConflictDialog({ job, endpoints, decide, compare, cancel, close,
     <label className="cm-checkbox"><Checkbox checked={same} onCheckedChange={(value) => onSame(value === true)} />{ru.sameReason}</label>
     {allowed.has("overwrite") && <small className="cm-meta">{localTarget ? ru.atomicLocal : ru.atomicUnavailable}</small>}
     <div className="cm-actions">
+      <small className="cm-meta cm-job-id" title={job.id}>{job.id}</small>
       {allowed.has("cancel") && <Button size="sm" variant="outline" disabled={busy} onClick={cancel}>{ru.cancelJob}</Button>}
       <Button size="sm" variant="ghost" disabled={busy} onClick={close}>{ru.close} <kbd>Esc</kbd></Button>
     </div>
@@ -159,7 +191,7 @@ export function PlanDialog({ plan, job, endpoints, inspect, run, reject, openThr
     <PlanDetails plan={plan} endpoints={endpoints} grants={grants ?? []} />
     {error && <ProblemLine problem={error} />}
     <div className="cm-actions">
-      <Button size="sm" disabled={busy || !!job && !check?.ok} onClick={run}>{job ? ru.approve : ru.run}</Button>
+      <Button size="sm" className="cm-primary" disabled={busy || !!job && !check?.ok} onClick={run}>{job ? ru.approve : ru.run}</Button>
       {job && <Button size="sm" variant="outline" disabled={busy} onClick={reject}>{ru.reject}</Button>}
       {threadId && <Button size="sm" variant="outline" onClick={() => openThread(threadId)}>{ru.openThread}</Button>}
       <Button size="sm" variant="ghost" disabled={busy} onClick={close}>{ru.close}</Button>

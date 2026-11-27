@@ -90,6 +90,17 @@ export function date(value: string | null, nanoseconds = false): string {
   const instant = new Date(nanoseconds ? Number(BigInt(value) / 1_000_000n) : value);
   return Number.isNaN(instant.getTime()) ? "—" : clock.format(instant);
 }
+const compactClock = new Intl.DateTimeFormat("ru", {
+  day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit",
+});
+export function shortDate(value: string | null): string {
+  if (value === null) return "—";
+  const instant = new Date(Number(BigInt(value) / 1_000_000n));
+  return Number.isNaN(instant.getTime()) ? "—" : compactClock.format(instant).replace(",", "");
+}
+export function shortPath(path: ResourcePath): string {
+  return (path.segments.length > 2 ? "…/" : "/") + path.segments.slice(-2).map(nameOf).join("/");
+}
 export function selectionInfo(entries: Entry[], selection: NameSegment[]) {
   const keys = new Set(selection.map(keyOf));
   let count = 0, size = 0n;
