@@ -359,3 +359,39 @@ Modify `src/adapters/bb/rpc-handlers.ts`, `src/core/wire/rpc.ts`.
 (после 2), 7 (после 1). Волна 3: 9 (после 1, 2, 8), 10. Затем 11.
 Задача 5 не ждёт задачу 2 и идёт во второй волне только из-за общей правки
 `planner.ts` с задачей 4 — их ветки сливаются последовательно.
+
+## Живая проверка SFTP 2026-11-27
+
+Стенд: изолированный BB 0.50.1 (свои `--data-dir`, HOME и связка ключей),
+Commander из `feature/commander-hostkey` (`e33670e0`, включает курсор S5),
+Remote Hub `9da1d6bb`, тестовый sshd (Alpine) в Docker на `127.0.0.1:52785`.
+Вызовы через CLI `bb makosh-commander`; интерфейс в живом BB не проверялся.
+
+| Сценарий | Результат |
+|---|---|
+| Неизвестный ключ хоста | `host_key_rejected` (раньше `connection_failed`) |
+| Листинг `/` после доверия ключу | работает |
+| Копирование локально → SFTP, 5 МиБ, имя с кириллицей | `completed`, SHA-256 совпал |
+| Копирование SFTP → локально | `completed`, SHA-256 совпал |
+| Повторная загрузка того же файла | `awaiting_decision`, `reason: exists`; отмена работает |
+| Цель — каталог `root` 0555 | `failed`, `permission_denied`, файлов нет |
+| Смена ключа sshd | аудит `host_key_changed`, Commander `host_key_rejected` (после reload плагина) |
+| Отзыв гранта | закрыт 1 канал, `ls` → `consent_required`, эндпоинт `readOnly` |
+| Обрыв (`docker pause` посреди 256 МиБ) | через ~60 с `unknown`, `outcome_unknown` |
+
+Находки:
+
+1. После `outcome_unknown` на сервере остаётся `.commander-<uuid>-0.part`
+   (108 МиБ, 0644), `progress.bytesDone` показывает 0 — отдельный срез.
+2. Смена ключа проверена только после reload Commander; поведение
+   кэшированного провайдера — тот же срез.
+3. Профиль Remote Hub `authType: "agent"` даёт `auth_failed`: `~/.ssh/config`
+   владельца задаёт `IdentityAgent` (1Password) и `IdentitiesOnly yes`, поэтому
+   `SSH_AUTH_SOCK` не используется. Проверка шла профилем `key` с
+   `identityFile`. Вопрос Remote Hub.
+4. Профиль с паролем — общий `failure` в аудите Remote Hub, Commander
+   показывает `connection_failed`. Причина не выяснена; вопрос Remote Hub.
+
+Стенд удалён: контейнер, образ, тестовый ssh-agent, каталог стенда со
+связкой ключей и тестовыми ключами, запись тестового хоста в
+`~/.ssh/known_hosts`.
