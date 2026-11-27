@@ -765,21 +765,20 @@ export class JobRunner {
         await this.record(await this.requireJob(id), index, "done");
       }
       const latest = await this.requireJob(id);
-      if (latest.state === "running") await this.change(latest, "all_done", { currentItem: null });
+      if (latest.state === "running") await this.change(latest, "all_done", { currentItem: null, error: null });
     } catch (caught) {
       // Shutdown: keep the staged moves; the next runner reads them back.
       if (this.stopping.signal.aborted) return;
       const stop = caught instanceof BatchStop ? caught : null;
       const failure = stop?.failure ?? safeError(caught);
       const index = stop?.index ?? current;
-      const undo = moved.filter((item) => !finished.has(item));
+      // The item that cannot be confirmed stays where it is; every other staged item goes back.
+      const undo = moved.filter((item) => !finished.has(item) && (failure.code !== "outcome_unknown" || item !== index));
       let restoreFailure: CommanderError | null = null;
-      if (failure.code !== "outcome_unknown") {
-        try {
-          await this.restoreBatch(plan, id, undo);
-        } catch (restoreError) {
-          restoreFailure = safeError(restoreError);
-        }
+      try {
+        await this.restoreBatch(plan, id, undo);
+      } catch (restoreError) {
+        restoreFailure = safeError(restoreError);
       }
       if (stop === null && signal.aborted && restoreFailure === null) return;   // cancel: undone, the run finishes as cancelled
       if (index === null) {
@@ -823,9 +822,14 @@ export class JobRunner {
       if (spelled === "target" && sized(to)) return "done";
       return "unknown";
     }
-    if (staged !== null) return from === null && sized(staged) ? "staged" : "unknown";
-    if (from === null) return sized(to) ? "done" : "unknown";
-    return sized(from) ? "original" : "changed";
+    // The temporary name decides first: in a cycle the source name may already hold another item's result.
+    if (staged !== null) return sized(staged) ? "staged" : "unknown";
+    // The source name still holding this item's version means it has not moved yet. Identical
+    // metadata on both sides is ambiguous; treating it as not moved is safe, because the second
+    // phase then refuses an occupied target and the item returns to its source.
+    if (sized(from)) return "original";
+    if (sized(to)) return "done";
+    return from === null ? "unknown" : "changed";
   }
 
   private async stageBatchItem(plan: OperationPlan, jobId: string, index: number, signal: AbortSignal): Promise<void> {
@@ -871,7 +875,10 @@ export class JobRunner {
 
   private async recoverBatchRename(job: OperationJob, cancelling: boolean): Promise<"resumed" | undefined> {
     const pending = job.items.flatMap((item, index) => (item.outcome === "pending" ? [index] : []));
-    if (cancelling) {
+    // Once a move to a target has landed, the batch is committed: a cancel then completes it,
+    // because the staged names of a cycle cannot all return to their sources.
+    const committed = job.items.some((item) => item.outcome === "done");
+    if (cancelling && !committed) {
       try {
         await this.restoreBatch(job.plan, job.id, pending);
       } catch (error) {

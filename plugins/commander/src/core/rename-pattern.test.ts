@@ -105,3 +105,23 @@ test("an unchanged name keeps its entry and is no problem", () => {
   const rows = names([file("a.txt")], { template: "[N].[E]" });
   expect(rows).toEqual([{ to: "a.txt", problem: null }]);
 });
+
+test('alternation inside a quantified group (?:a|aa)+$ is refused as unsafe_regex', () => {
+  const rows = names([file("aaaa!.txt")], { find: { regex: "(?:a|aa)+$" }, replace: "x" });
+  expect(rows).toEqual([{ to: null, problem: "unsafe_regex" }]);
+});
+
+test('template ".[E]" on "a.txt" leaves the base empty → problem "empty"', () => {
+  const rows = names([file("a.txt")], { template: ".[E]" });
+  expect(rows).toEqual([{ to: null, problem: "empty" }]);
+});
+
+test('[E] used twice is replaced at every place: "[E]_[E]" on "a.txt" → "txt_txt"', () => {
+  const rows = names([file("a.txt")], { template: "[E]_[E]" });
+  expect(rows).toEqual([{ to: "txt_txt", problem: null }]);
+});
+
+test('the default template "[N].[E]" leaves a name without an extension unchanged: "README" stays "README"', () => {
+  const rows = names([file("README")], { template: "[N].[E]" });
+  expect(rows).toEqual([{ to: "README", problem: null }]);
+});

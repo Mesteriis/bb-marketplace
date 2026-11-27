@@ -40,7 +40,7 @@ export interface PreviewOptions {
   caseSensitive?: boolean;
 }
 
-// Placeholder for [E] while the case transform runs, so the extension keeps its own case.
+// Stands for [E] while the case transform runs, so the extension keeps its own case.
 const EXT_MARK = "";
 
 /** Name split at the first dot that is not the leading character, as in naming.ts. */
@@ -49,26 +49,35 @@ function splitText(name: string): { base: string; ext: string } {
   return dot === -1 ? { base: name, ext: "" } : { base: name.slice(0, dot), ext: name.slice(dot + 1) };
 }
 
+class RenameRefusal extends Error {
+  constructor(readonly problem: RenameProblem) {
+    super(problem);
+  }
+}
+
+/** A group followed by a quantifier, with its body. */
+const QUANTIFIED_GROUP = /\(((?:[^()\\]|\\.)*)\)(?:[+*]|\{\d*,?\d*\})/g;
+
 /**
- * Nested quantifiers such as (a+)+ or (.*)* backtrack exponentially on a failing
- * name. JavaScript cannot interrupt a running RegExp, so such patterns are refused
- * before they run. Heuristic: a group that contains a quantifier and is itself quantified.
+ * A quantified group whose body alternates or quantifies again, such as (a+)+,
+ * (.*)* or (?:a|aa)+, can backtrack exponentially on a failing name. JavaScript
+ * cannot interrupt a running RegExp, so these patterns are refused before they run.
+ * This is a conservative heuristic, not a complete analysis.
  */
-const NESTED_QUANTIFIER = /\((?:[^()\\]|\\.)*[+*](?:[^()\\]|\\.)*\)(?:[+*]|\{\d*,?\d*\})/;
+function hasRiskyQuantifiedGroup(source: string): boolean {
+  for (const match of source.matchAll(QUANTIFIED_GROUP)) {
+    if (/[|+*{]/.test(match[1])) return true;
+  }
+  return false;
+}
 
 function compileFind(find: NonNullable<RenamePattern["find"]>): RegExp | null {
   if (!("regex" in find)) return null;
-  if (NESTED_QUANTIFIER.test(find.regex)) throw new RenameRefusal("unsafe_regex");
+  if (hasRiskyQuantifiedGroup(find.regex)) throw new RenameRefusal("unsafe_regex");
   try {
     return new RegExp(find.regex, "g");
   } catch {
     throw new RenameRefusal("invalid_regex");
-  }
-}
-
-class RenameRefusal extends Error {
-  constructor(readonly problem: RenameProblem) {
-    super(problem);
   }
 }
 
@@ -79,6 +88,7 @@ function applyFind(base: string, pattern: RenamePattern, regex: RegExp | null): 
   if (regex) {
     const started = globalThis.performance.now();
     const out = base.replace(regex, replacement);
+    // Measured after the run: a slow match cannot be interrupted, so the result is refused.
     if (globalThis.performance.now() - started > REGEX_TIME_LIMIT_MS) throw new RenameRefusal("regex_timeout");
     return out;
   }
@@ -121,19 +131,20 @@ function applyCase(text: string, mode: NonNullable<RenamePattern["case"]>): stri
 function renderName(name: string, pattern: RenamePattern, index: number, regex: RegExp | null): string {
   const { base, ext } = splitText(name);
   const found = applyFind(base, pattern, regex);
-  const withExt = (text: string) => (ext === "" ? text : text + "." + ext);
   if (pattern.template === undefined) {
     const kept = applyCase(found, pattern.case ?? "keep");
     if (kept === "") throw new RenameRefusal("empty");
-    return withExt(kept);
+    return ext === "" ? kept : kept + "." + ext;
   }
+  // Without an extension, the dot before [E] and [E] itself disappear, so no trailing dot is left.
+  const template = ext === "" ? pattern.template.replace(/\.?\[E\]/g, "") : pattern.template;
   const width = pattern.counter?.width ?? 1;
   const counter = (pattern.counter?.start ?? 1) + index * (pattern.counter?.step ?? 1);
-  const templated = expandTemplate(pattern.template, found, counter, width);
-  const cased = applyCase(templated.replace(EXT_MARK, ""), pattern.case ?? "keep");
-  const stripped = cased.replace("", "");
-  if (stripped === "" || stripped === "." + ext) throw new RenameRefusal("empty");
-  return cased.includes("") ? cased.replace("", ext) : withExt(cased);
+  const cased = applyCase(expandTemplate(template, found, counter, width), pattern.case ?? "keep");
+  const baseText = cased.split(EXT_MARK).join("");
+  if (baseText === "" || baseText === ".") throw new RenameRefusal("empty");
+  if (template.includes("[E]")) return cased.split(EXT_MARK).join(ext);
+  return ext === "" ? cased : cased + "." + ext;
 }
 
 function keyOf(text: string, caseSensitive: boolean): string {

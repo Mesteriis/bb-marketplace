@@ -120,3 +120,9 @@ test("entries from two directories cannot share one batch", async () => {
   const pending = buildPlan(batch(["/src/a.txt", "/other/b.txt"], { template: "[N]_[C]" }), depsFor(provider), signal());
   await expect(pending).rejects.toMatchObject({ code: "invalid_path" });
 });
+
+test("the same entry listed twice refuses the batch", async () => {
+  const provider = await world([["/src/a.txt", "1"]]);
+  const pending = buildPlan(batch(["/src/a.txt", "/src/a.txt"], { template: "[N]_[C]" }), depsFor(provider), signal());
+  await expect(pending).rejects.toBeInstanceOf(CommanderError);
+});

@@ -106,6 +106,11 @@ test("case-only A.txt → a.txt on a case-insensitive endpoint completes beside 
   expect(text(provider.contents(parsePosix("/a.txt")))).toBe("X");
   expect(text(provider.contents(parsePosix("/d.txt")))).toBe("C");
   expect(provider.contents(parsePosix("/c.txt"))).toBeNull();
+  // The contents lookup folds case; the listing shows the spelling that actually landed.
+  const page = await provider.list(parsePosix("/"), { cursor: null, limit: 100 }, new AbortController().signal);
+  const names = page.entries.map((entry) => ("t" in entry.name ? entry.name.t : ""));
+  expect(names).toContain("a.txt");
+  expect(names).not.toContain("A.txt");
 });
 
 test("a crash between the phases resumes on restart and finishes the swap without losing a file", async () => {
@@ -195,4 +200,31 @@ test("a source changed after planning fails its item before anything moves", asy
   expect(job.items.map(({ outcome }) => outcome)).toEqual(["failed", "pending"]);
   expect(text(provider.contents(parsePosix("/a.txt")))).toBe("AAAA");
   expect(text(provider.contents(parsePosix("/c.txt")))).toBe("C");
+});
+
+test("a crash after the first move of a cycle's second phase restarts and finishes the swap", async () => {
+  const { provider, runner, newRunner, store, at } = await setup([["/a.txt", "AAA", "1000"], ["/b.txt", "BB", "2000"]]);
+  const plan = await renamePlan([
+    { from: "/a.txt", to: "/b.txt", fingerprint: fp("3", "1000"), expect: fp("2", "2000") },
+    { from: "/b.txt", to: "/a.txt", fingerprint: fp("2", "2000"), expect: fp("3", "1000") },
+  ]);
+  // Stop when the second item's phase-2 move (to /a.txt) is about to run: /b.txt already holds AAA.
+  let crashing: Promise<void> | null = null;
+  provider.delay = async (op, path, signal) => {
+    if (op !== "rename" || isTemp(path) || leaf(path) !== "a.txt" || crashing) return;
+    crashing = runner.shutdown();
+    if (!signal.aborted) {
+      await new Promise((_, reject) => signal.addEventListener("abort", () => reject(new CommanderError("cancelled", "stop"))));
+    }
+    signal.throwIfAborted();
+  };
+  const { id } = await runner.submit(plan);
+  await vi.waitFor(() => expect(crashing).not.toBeNull());
+  await crashing;
+  expect((await store.get(id))?.state).toBe("running");
+  provider.delay = undefined;
+  await newRunner().recover();
+  await at(id, "completed");
+  expect(text(provider.contents(parsePosix("/b.txt")))).toBe("AAA");
+  expect(text(provider.contents(parsePosix("/a.txt")))).toBe("BB");
 });
