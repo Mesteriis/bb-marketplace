@@ -66,8 +66,8 @@ export function registerAgentTools(agents: BbPluginApi["agents"], ops: Operation
   register("cancel", "Cancel one of this thread's file operations.", rpcSchemas.job_cancel.input,
     ({ jobId }, agent) => ops.cancel(jobId, agent));
 
-  register("checksum", "Compute SHA-256 with read access. For a remote file, estimateOnly returns the byte count to show the owner; approvedBytes confirms that count.",
+  register("checksum", "Compute SHA-256 with read access. For a remote file, estimateOnly returns the byte count to show the owner; pass the issued estimateId after confirmation.",
     ChecksumScan.omit({ kind: true }), (input, agent, signal) => ops.scanTool({ kind: "checksum", ...input }, agent, signal));
-  register("compare", "Compare files or immediate directory entries with read access on both endpoints. Show the estimate to the owner before approving remote reads with approvedBytes.",
+  register("compare", "Compare files or immediate directory entries with read access on both endpoints. Show the estimate to the owner before starting remote reads with estimateId.",
     CompareScan, (input, agent, signal) => ops.scanTool(input, agent, signal));
 }

@@ -146,7 +146,7 @@ function withinTolerance(a: Entry, b: Entry, toleranceMs: number) {
 
 /** Compares the immediate children of each directory. */
 export async function compareDirs(a: Location, b: Location, opts: DirCompareOptions, signal: AbortSignal,
-  read: ReadOptions & { listings?: [DirListing, DirListing]; onItem?(): void } = {}): Promise<DirDiff> {
+  read: ReadOptions & { listings?: [DirListing, DirListing]; onItem?(): void; onEqual?(left: Entry, right: Entry): void } = {}): Promise<DirDiff> {
   const [left, right] = read.listings ?? [await scanDir(a, opts.limit, signal), await scanDir(b, opts.limit, signal)];
   const result: DirDiff = { onlyLeft: [], onlyRight: [], differ: [], same: 0, partial: left.partial || right.partial };
   const caseSensitive = a.provider.endpoint.caseSensitive || b.provider.endpoint.caseSensitive;
@@ -171,7 +171,10 @@ export async function compareDirs(a: Location, b: Location, opts: DirCompareOpti
           }
         }
       }
-      if (same) result.same++;
+      if (same) {
+        result.same++;
+        read.onEqual?.(entry, other);
+      }
       else result.differ.push([entry, other]);
     }
     read.onItem?.();

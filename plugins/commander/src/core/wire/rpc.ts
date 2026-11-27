@@ -71,6 +71,7 @@ const scanBytes = z.string().regex(/^(0|[1-9]\d{0,25})$/);
 const scanId = z.strictObject({ scanId: z.uuid() });
 const scanControl = {
   estimateOnly: z.boolean().optional(),
+  estimateId: z.uuid().optional(),
   approvedBytes: scanBytes.optional(),
 };
 export const ChecksumScan = z.strictObject({ kind: z.literal("checksum"), ref: ResourceRef, ...scanControl });
@@ -100,10 +101,17 @@ const scanResult = z.union([
   z.strictObject({ comparison: z.enum(["same", "different"]) }),
   z.strictObject({
     onlyLeft: z.array(Entry).max(LIST_PAGE_MAX), onlyRight: z.array(Entry).max(LIST_PAGE_MAX),
-    differ: z.array(z.tuple([Entry, Entry])).max(LIST_PAGE_MAX), same: z.int().nonnegative(), partial: z.boolean(),
+    differ: z.array(z.tuple([Entry, Entry])).max(LIST_PAGE_MAX),
+    equal: z.array(z.tuple([Entry, Entry])).max(LIST_PAGE_MAX).optional(), same: z.int().nonnegative(), partial: z.boolean(),
   }),
 ]);
 export type ScanResult = z.infer<typeof scanResult>;
+
+export const ScanEstimateView = z.strictObject({ estimateId: z.uuid(), bytesPlanned: scanBytes });
+export const ScanGetView = z.strictObject({
+  job: ScanJobView, result: scanResult.nullable(), reason: z.literal("result_expired").optional(),
+});
+export type ScanGetView = z.infer<typeof ScanGetView>;
 
 export const rpcSchemas = {
   endpoints_list: { input: empty, output: z.strictObject({ endpoints: z.array(EndpointView) }) },
@@ -154,12 +162,12 @@ export const rpcSchemas = {
   },
   ui_state_get: { input: uiScope, output: z.strictObject({ state: UiState.nullable() }) },
   ui_state_set: { input: uiScope.extend({ state: UiState }), output: empty },
-  // Estimate with metadata only, then pass the displayed byte count when starting remote reads.
+  // Estimate with metadata only, then pass the issued estimate ID after confirmation.
   scan_start: {
     input: z.union([ChecksumScan, CompareScan]),
-    output: z.union([z.strictObject({ bytesPlanned: scanBytes }), ScanJobView]),
+    output: z.union([ScanEstimateView, ScanJobView]),
   },
-  scan_get: { input: scanId, output: z.strictObject({ job: ScanJobView, result: scanResult.nullable() }).nullable() },
+  scan_get: { input: scanId, output: ScanGetView.nullable() },
   scan_cancel: { input: scanId, output: empty },
 };
 

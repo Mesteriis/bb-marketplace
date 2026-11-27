@@ -44,3 +44,24 @@ test("changing a wildcard grant cancels active agent scans but keeps owner scans
   await Promise.all([a, b, owner].map(({ id }) => runner.wait(id)));
   expect([a, b, owner].map(({ id }) => runner.get(id)?.state)).toEqual(["cancelled", "cancelled", "done"]);
 });
+
+test("reserves 8 owner slots, at most 4 per agent thread and 8 across agents", async () => {
+  let next = 0;
+  const runner = new ScanRunner(() => String(++next));
+  const pending = Promise.withResolvers<void>();
+  const start = (threadId?: string) => runner.start({
+    kind: "compare", endpoints: ["host:test"],
+    initiator: threadId ? { kind: "agent", threadId } : { kind: "owner" },
+  }, () => pending.promise);
+  try {
+    for (let i = 0; i < 4; i++) start("a");
+    expect(() => start("a")).toThrow("Commander scan pool is unavailable");
+    for (let i = 0; i < 4; i++) start("b");
+    expect(() => start("c")).toThrow("Commander scan pool is unavailable");
+    for (let i = 0; i < 8; i++) expect(start().state).toBe("running");
+    expect(() => start()).toThrow("Commander scan pool is unavailable");
+  } finally {
+    pending.resolve();
+    await runner.shutdown();
+  }
+});

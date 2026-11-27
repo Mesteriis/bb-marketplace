@@ -4,7 +4,7 @@ import { checksum, compareDirs, compareFiles, estimateRead, scanDir, scanFile } 
 import { CommanderError, isCommanderError } from "../../core/errors.ts";
 import type { JobRunner } from "../../core/job-runner.ts";
 import type { AgentJobStore } from "../../core/job-store.ts";
-import type { Initiator, JobState, OperationJob, OperationPlan, ResourceRef } from "../../core/model.ts";
+import type { Entry, Initiator, JobState, OperationJob, OperationPlan, ResourceRef } from "../../core/model.ts";
 import type { ScanContext, ScanRunner } from "../../core/scan-job.ts";
 import { parent } from "../../core/path.ts";
 import { authorize, REQUIRED } from "../../core/permissions.ts";
@@ -101,6 +101,9 @@ export function createOperations(deps: {
 }) {
   const { endpoints, runner, store, planner, grants, kv, publish } = deps;
   const plans = new Map<string, { plan: OperationPlan; bytes: number; created: number }>();
+  const scanEstimates = new Map<string, {
+    initiator: Initiator; request: string; snapshot: string; expires: number;
+  }>();
   let accessQueue: Promise<unknown> = Promise.resolve();
 
   function serializeAccess<T>(action: () => Promise<T>): Promise<T> {
@@ -235,6 +238,7 @@ export function createOperations(deps: {
       const expected = await scanFile({ provider, path }, signal);
       return {
         bytes: estimateRead([expected]),
+        snapshot: [expected],
         async work(ctx: ScanContext): Promise<ScanResult> {
           const sha256 = await checksum(provider, path, ctx.signal, { ...scanHash(ctx), expected });
           ctx.progress({ items: 1 });
@@ -250,6 +254,7 @@ export function createOperations(deps: {
       const b = await scanFile(right, signal);
       return {
         bytes: input.mode === "size" || a.size !== b.size ? 0n : estimateRead([a, b]),
+        snapshot: [a, b],
         async work(ctx: ScanContext): Promise<ScanResult> {
           const comparison = await compareFiles(left, right, input.mode, ctx.signal, { ...scanHash(ctx), expected: [a, b] });
           ctx.progress({ items: 1 });
@@ -262,14 +267,29 @@ export function createOperations(deps: {
     const b = await scanDir(right, input.limit, signal);
     return {
       bytes: input.by === "sha256" ? estimateRead(a.entries) + estimateRead(b.entries) : 0n,
+      snapshot: [a, b],
       async work(ctx: ScanContext): Promise<ScanResult> {
+        const equal: [Entry, Entry][] = [];
         const diff = await compareDirs(left, right, input, ctx.signal, {
           ...scanHash(ctx), listings: [a, b], onItem: () => ctx.progress({ items: 1 }),
+          onEqual: (left, right) => equal.push([left, right]),
         });
         if (diff.partial) ctx.markPartial("Directory entry limit reached");
-        return diff;
+        return { ...diff, equal };
       },
     };
+  }
+
+  function requireScanEstimate(id: string, initiator: Initiator, request: string) {
+    const estimate = scanEstimates.get(id);
+    if (!estimate || Date.now() >= estimate.expires) {
+      scanEstimates.delete(id);
+      throw refusal("forbidden", "Scan estimate is missing or expired");
+    }
+    if (!ownedBy(initiator, estimate.initiator) || estimate.request !== request) {
+      throw refusal("forbidden", "Scan estimate does not match the request");
+    }
+    return estimate;
   }
 
   async function checkScanRead(initiator: Initiator, paths: ResourceRef[]) {
@@ -433,16 +453,37 @@ export function createOperations(deps: {
       const ids = [...new Set(paths.map(({ endpoint }) => endpoint))];
       await checkScanRead(initiator, paths);
       await deps.ready();
+      const remote = ids.some((id) => id.startsWith("sftp:"));
+      const { estimateId, estimateOnly, approvedBytes: _legacyApproval, ...scan } = input;
+      const request = JSON.stringify(scan);
+      if (!estimateOnly && remote && !estimateId) {
+        throw refusal("forbidden", "A remote scan requires a confirmed estimate");
+      }
+      if (!estimateOnly && estimateId) requireScanEstimate(estimateId, initiator, request);
       await endpoints.prepare(ids, signal);
-      const { bytes, work } = await prepareScan(input, signal);
+      const { bytes, snapshot, work } = await prepareScan(input, signal);
+      const snapshotDigest = createHash("sha256").update(JSON.stringify(snapshot)).digest("hex");
       return serializeAccess(async () => {
         await checkScanRead(initiator, paths);
         await deps.ready();
         signal.throwIfAborted();
-        if (input.estimateOnly) return { bytesPlanned: bytes.toString() };
-        if (bytes > 0n && ids.some((id) => id.startsWith("sftp:"))
-          && (input.approvedBytes === undefined || BigInt(input.approvedBytes) < bytes)) {
-          throw refusal("forbidden", "Confirm the estimated byte count before starting a remote scan");
+        if (estimateOnly) {
+          const now = Date.now();
+          for (const [id, estimate] of scanEstimates) {
+            if (now >= estimate.expires) scanEstimates.delete(id);
+          }
+          // Keep estimate issuance bounded and prevent agents from evicting owner estimates.
+          const ownPool = [...scanEstimates].filter(([, item]) => item.initiator.kind === initiator.kind);
+          const poolLimit = initiator.kind === "owner" ? 32 : 64;
+          if (ownPool.length >= poolLimit) throw refusal("conflict", "Scan estimate pool is full");
+          const id = planner.uuid();
+          scanEstimates.set(id, { initiator, request, snapshot: snapshotDigest, expires: now + 600_000 });
+          return { estimateId: id, bytesPlanned: bytes.toString() };
+        }
+        if (estimateId) {
+          const estimate = requireScanEstimate(estimateId, initiator, request);
+          scanEstimates.delete(estimateId);
+          if (estimate.snapshot !== snapshotDigest) throw refusal("conflict", "Scan metadata changed; estimate again");
         }
         const job = deps.scans.start({
           kind: input.kind === "checksum" ? "checksum" : "compare", initiator, endpoints: ids, bytesPlanned: bytes,
@@ -452,7 +493,10 @@ export function createOperations(deps: {
     },
     scanGet(id: string) {
       const job = deps.scans.get(id);
-      return job && { job: scanJobView(job), result: deps.scans.result<ScanResult>(id) };
+      if (!job) return null;
+      const result = deps.scans.result<ScanResult>(id);
+      return { job: scanJobView(job), result,
+        ...(job.state === "done" && result === null ? { reason: "result_expired" as const } : {}) };
     },
     scanCancel(id: string) {
       deps.scans.cancel(id);
@@ -473,7 +517,8 @@ export function createOperations(deps: {
         const result = deps.scans.result<ScanResult>(started.id);
         if (result && "onlyLeft" in result) {
           const safe = (entry: (typeof result.onlyLeft)[number]) => ({ ...entry, linkTarget: null });
-          return { ...result, onlyLeft: result.onlyLeft.map(safe), onlyRight: result.onlyRight.map(safe),
+          const { equal: _equal, ...diff } = result;
+          return { ...diff, onlyLeft: result.onlyLeft.map(safe), onlyRight: result.onlyRight.map(safe),
             differ: result.differ.map(([left, right]) => [safe(left), safe(right)]) };
         }
         return result;

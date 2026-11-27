@@ -27,7 +27,10 @@ export interface ScanStore {
 }
 
 type ScanSpec = Pick<ScanJob, "kind" | "initiator" | "endpoints"> & { bytesPlanned?: bigint | null };
-const maxRunning = 8;
+const maxOwnerRunning = 8;
+const maxAgentRunning = 8;
+const maxThreadRunning = 4;
+const interrupted = Symbol("scan interrupted by shutdown");
 const maxResults = 16;
 
 export class ScanRunner {
@@ -38,7 +41,7 @@ export class ScanRunner {
   constructor(private readonly uuid: () => string, private readonly store?: ScanStore) {}
 
   start<R>(spec: ScanSpec, work: (ctx: ScanContext) => Promise<R>): ScanJob {
-    if (this.closed || this.active.size >= maxRunning) {
+    if (this.closed || !this.hasSlot(spec.initiator)) {
       throw new CommanderError("limit_exceeded", "Commander scan pool is unavailable");
     }
     const { kind, initiator, endpoints, bytesPlanned = null } = spec;
@@ -71,9 +74,13 @@ export class ScanRunner {
         signal.throwIfAborted();
       } catch (error) {
         job.partial = true;
-        job.state = signal.aborted ? "cancelled" : "failed";
-        job.error = signal.aborted ? new CommanderError("cancelled", "Scan cancelled")
-          : isCommanderError(error) ? error : new CommanderError("internal", "Scan failed");
+        if (signal.aborted) {
+          job.state = signal.reason === interrupted ? "interrupted" : "cancelled";
+          job.error = job.state === "interrupted" ? null : new CommanderError("cancelled", "Scan cancelled");
+        } else {
+          job.state = "failed";
+          job.error = isCommanderError(error) ? error : new CommanderError("internal", "Scan failed");
+        }
         this.remember(job, null);
         return;
       }
@@ -114,8 +121,23 @@ export class ScanRunner {
   async shutdown(): Promise<void> {
     this.closed = true;
     const active = [...this.active.values()];
-    for (const { controller } of active) controller.abort();
+    for (const { controller } of active) controller.abort(interrupted);
     await Promise.allSettled(active.map(({ done }) => done));
+  }
+
+  private hasSlot(initiator: Initiator): boolean {
+    let owners = 0;
+    let agents = 0;
+    let thread = 0;
+    for (const { job } of this.active.values()) {
+      if (job.initiator.kind === "owner") owners++;
+      else {
+        agents++;
+        if (initiator.kind === "agent" && job.initiator.threadId === initiator.threadId) thread++;
+      }
+    }
+    return initiator.kind === "owner" ? owners < maxOwnerRunning
+      : agents < maxAgentRunning && thread < maxThreadRunning;
   }
 
   private readonly completed = new Map<string, ScanJob>();

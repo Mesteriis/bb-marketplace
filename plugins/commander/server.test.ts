@@ -1001,3 +1001,93 @@ test("keeps the Commander page and two thread layouts separate and reads the old
     await expect(bb.rpc("ui_state_get", { threadId: "thread-c" })).resolves.toEqual({ state: null });
   } finally { await bb.dispose(); }
 });
+
+const checksumRequest = { kind: "checksum", ref: ref("/data/a") };
+const scanTicket = z.object({ id: z.uuid() });
+const scanEstimate = z.object({ estimateId: z.uuid(), bytesPlanned: z.string() });
+
+test.each(["done", "running"] as const)("scan %s reports the correct state after plugin restart", async (state) => {
+  const bb = await backend();
+  let restarted: Awaited<ReturnType<typeof backend>> | undefined;
+  try {
+    bb.disk.enableChecksum();
+    if (state === "running") {
+      bb.disk.delay = async (op, _path, signal) => {
+        if (op !== "sha256") return;
+        if (!signal.aborted) await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+      };
+    }
+    const { id: scanId } = scanTicket.parse(await bb.rpc("scan_start", checksumRequest));
+    await vi.waitFor(async () => expect(await bb.rpc("scan_get", { scanId })).toMatchObject({ job: { state } }));
+    await bb.dispose(false);
+    restarted = await backend(bb);
+    if (state === "done") {
+      await expect(restarted.rpc("scan_get", { scanId })).resolves.toMatchObject({
+        job: { state: "done", partial: false }, result: null, reason: "result_expired",
+      });
+    } else {
+      await expect(restarted.rpc("scan_get", { scanId })).resolves.toMatchObject({
+        job: { state: "interrupted", partial: true }, result: null,
+      });
+    }
+  } finally { await (restarted ?? bb).dispose(); }
+});
+
+test("scan_cancel marks a running scan cancelled and scan_get refuses a plugin caller", async () => {
+  const bb = await backend();
+  try {
+    bb.disk.enableChecksum();
+    bb.disk.delay = async (op, _path, signal) => {
+      if (op === "sha256" && !signal.aborted) {
+        await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+      }
+    };
+    const { id: scanId } = scanTicket.parse(await bb.rpc("scan_start", checksumRequest));
+    await expect(bb.rpc("scan_get", { scanId }, { ...client, experimental_caller: { kind: "plugin", pluginId: "other" } }))
+      .rejects.toMatchObject({ code: "forbidden", message: "Commander RPC requires an owner client" });
+    await expect(bb.rpc("scan_cancel", { scanId })).resolves.toEqual({});
+    await vi.waitFor(async () => expect(await bb.rpc("scan_get", { scanId }))
+      .toMatchObject({ job: { state: "cancelled", partial: true }, result: null }));
+  } finally { await bb.dispose(); }
+});
+
+test("SFTP estimate binds actor, request and metadata and can only start one scan", async () => {
+  const fixture = remoteFixture({});
+  const bb = await backend(undefined, fixture.callRpc);
+  const input = { kind: "checksum", ref: { endpoint: fixture.endpoint, path: parsePosix("/data/a") } };
+  const clock = vi.spyOn(Date, "now");
+  try {
+    const now = Date.now();
+    clock.mockReturnValue(now);
+    await expect(bb.rpc("scan_start", { ...input, approvedBytes: "7" }))
+      .rejects.toMatchObject({ code: "forbidden", message: "A remote scan requires a confirmed estimate" });
+    const estimate = scanEstimate.parse(await bb.rpc("scan_start", { ...input, estimateOnly: true }));
+    expect(estimate.bytesPlanned).toBe("7");
+    expect(fixture.remote.opCount("op:read")).toBe(0);
+    await bb.rpc("agent_grants_set", { grant: {
+      threadId: "thread-a", endpoint: fixture.endpoint, scope: parsePosix("/"), permissions: ["read"],
+    } });
+    await expect(bb.tool("commander_checksum", { ref: input.ref, estimateId: estimate.estimateId }))
+      .resolves.toEqual({ code: "forbidden", message: "Commander refused the request" });
+    clock.mockReturnValue(now + 600_000);
+    await expect(bb.rpc("scan_start", { ...input, estimateId: estimate.estimateId }))
+      .rejects.toMatchObject({ code: "forbidden", message: "Scan estimate is missing or expired" });
+
+    const stale = scanEstimate.parse(await bb.rpc("scan_start", { ...input, estimateOnly: true }));
+    fixture.remote.seedFile("/data/a", "changed snapshot");
+    await expect(bb.rpc("scan_start", { ...input, estimateId: stale.estimateId }))
+      .rejects.toMatchObject({ code: "conflict", message: "Scan metadata changed; estimate again" });
+    expect(fixture.remote.opCount("op:read")).toBe(0);
+
+    const fresh = scanEstimate.parse(await bb.rpc("scan_start", { ...input, estimateOnly: true }));
+    expect(fresh.bytesPlanned).toBe("16");
+    const { id: scanId } = scanTicket.parse(await bb.rpc("scan_start", { ...input, estimateId: fresh.estimateId }));
+    await vi.waitFor(async () => expect(await bb.rpc("scan_get", { scanId }))
+      .toMatchObject({ job: { state: "done", progress: { items: 1, bytes: "16", bytesPlanned: "16" } } }));
+    await expect(bb.rpc("scan_start", { ...input, estimateId: fresh.estimateId }))
+      .rejects.toMatchObject({ code: "forbidden", message: "Scan estimate is missing or expired" });
+  } finally {
+    clock.mockRestore();
+    await bb.dispose();
+  }
+});
