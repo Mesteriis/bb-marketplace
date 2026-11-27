@@ -9,6 +9,11 @@ import { approvalState, operationText, reasonText, ru, stateText } from "./strin
 const plurals = new Intl.PluralRules("ru");
 const pluralIndex = { one: 0, few: 1, many: 2, other: 2, two: 2, zero: 2 } as const;
 const cancellable = new Set(["pending", "running", "awaiting_decision", "interrupted"]);
+const stateIcons = {
+  pending: "Clock", approval: "Lock", running: "Play", awaiting_decision: "CircleQuestion",
+  completed: "CircleCheck", failed: "AlertTriangle", cancel_requested: "Clock",
+  cancelled: "CircleX", interrupted: "Pause", unknown: "CircleQuestion",
+};
 
 function JobCard({ job, endpoints, compact, onInspect, onSkip, onCancel }: {
   job: JobView; endpoints: EndpointView[]; compact?: boolean;
@@ -30,29 +35,32 @@ function JobCard({ job, endpoints, compact, onInspect, onSkip, onCancel }: {
   const percent = job.state === "completed" ? 100 : total > 0n
     ? Number(BigInt(progress.bytesDone) * 100n / total)
     : progress.itemsTotal ? Math.floor(progress.itemsDone * 100 / progress.itemsTotal) : 0;
-  const label = job.awaitsOwner ? approvalState : stateText[job.state];
+  const state = job.awaitsOwner ? "approval" : job.state;
+  const label = state === "approval" ? approvalState : stateText[state];
+  const status = <span className="cm-job-tone"><Icon name={stateIcons[state]} aria-hidden="true" />{label}</span>;
   const conflict = job.state === "awaiting_decision" ? pendingConflict : null;
 
-  if (compact) return <article className="cm-job cm-mini-job" aria-label={operationText[plan.kind]}>
+  if (compact) return <article className="cm-job cm-mini-job" aria-label={operationText[plan.kind]} data-state={state}>
     <div className="cm-mini-line">
       <Icon name={plan.initiator.kind === "owner" ? "UserRound" : "Bot"} />
       <span title={target || undefined}>{conflict ? reasonText[conflict.reason] : operationText[plan.kind] + (endpoint ? " → " + endpoint.label : "")}</span>
       {conflict && <Button size="sm" variant="outline" data-conflict-id={conflict.id} onClick={() => onInspect(job)}>{ru.compactResolve}</Button>}
       {job.awaitsOwner && <Button size="sm" variant="outline" onClick={() => onInspect(job)}>{ru.inspectPlan}</Button>}
-      {job.state === "running" && <span className="cm-job-tone">{percent}%</span>}
+      {job.state === "running" && <span>{percent}%</span>}
     </div>
+    {status}
     {job.state === "running" && <div role="progressbar" aria-label={label} aria-valuemin={0} aria-valuemax={100}
       aria-valuenow={percent} className="cm-progress"><span style={{ width: percent + "%" }} /></div>}
   </article>;
 
-  return <article className="cm-job" aria-label={operationText[plan.kind]}>
+  return <article className="cm-job" aria-label={operationText[plan.kind]} data-state={state}>
     <strong><Icon name={plan.initiator.kind === "owner" ? "UserRound" : "Bot"} />
       <span title={target || undefined}>{heading}{endpoint && <> {target ? "→ " : "· "}{endpoint.label}</>}
         {compactTarget && <>:{compactTarget}</>}</span></strong>
     <div role="progressbar" aria-label={label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent} className="cm-progress">
       <span style={{ width: percent + "%" }} />
     </div>
-    <div className="cm-meta"><span className="cm-job-tone">{label}</span> · {plan.initiator.kind === "owner"
+    <div className="cm-meta">{status} · {plan.initiator.kind === "owner"
       ? ru.owner : ru.thread + " " + plan.initiator.threadId}</div>
     <div className="cm-meta">{progress.itemsDone} / {progress.itemsTotal}
       {total > 0n && <> · {bytes(progress.bytesDone)} / {bytes(progress.bytesTotal)}</>}</div>
