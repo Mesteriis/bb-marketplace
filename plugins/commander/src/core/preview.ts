@@ -90,16 +90,15 @@ function rasterMime(head: Uint8Array): ImageMime | null {
   return null;
 }
 
-/** SVG by extension, or by an <svg> root element. A substring such as "<svg" inside text is not enough. */
-function isSvg(name: string, head: Uint8Array): boolean {
-  if (/\.svg$/i.test(name)) return true;
+/** SVG is an image only when its root element is <svg>; the name alone decides nothing. */
+function isSvg(head: Uint8Array): boolean {
   return SVG_ROOT.test(new TextDecoder("utf-8").decode(head));
 }
 
-export function mimeFor(name: string, head: Uint8Array): ImageMime | undefined {
+export function mimeFor(head: Uint8Array): ImageMime | undefined {
   const raster = rasterMime(head);
   if (raster) return raster;
-  return isSvg(name, head) ? "image/svg+xml" : undefined;
+  return isSvg(head) ? "image/svg+xml" : undefined;
 }
 
 /**
@@ -118,8 +117,8 @@ function isText(bytes: Uint8Array, final: boolean): boolean {
 }
 
 /** Classifies a window by its name and bytes. Names are data; the bytes decide the content. */
-export function detectKind(name: string, bytes: Uint8Array, final: boolean): ViewKind {
-  if (mimeFor(name, bytes.subarray(0, HEAD_BYTES))) return "image";
+export function detectKind(bytes: Uint8Array, final: boolean): ViewKind {
+  if (mimeFor(bytes.subarray(0, HEAD_BYTES))) return "image";
   return isText(bytes, final) ? "text" : "binary";
 }
 
@@ -174,11 +173,10 @@ export async function readForView(
   const after = await provider.stat(path, signal);
   if (!after || after.kind !== "file" || !sameVersion(version, { size: after.size, mtimeNs: after.mtimeNs })) throw changed();
 
-  const name = entryName(path);
   const truncated = opts.offset + BigInt(bytes.byteLength) < size;
-  const mime = mimeFor(name, bytes.subarray(0, HEAD_BYTES));
+  const mime = mimeFor(bytes.subarray(0, HEAD_BYTES));
   return {
-    kind: detectKind(name, bytes, !truncated),
+    kind: detectKind(bytes, !truncated),
     text: isText(bytes, !truncated),
     ...(mime ? { mime } : {}),
     bytes,
@@ -232,8 +230,8 @@ function binaryBody(window: ViewWindow): WireBody {
   };
 }
 
-function imageBody(name: string, window: ViewWindow): WireBody {
-  const mime = window.mime ?? mimeFor(name, window.bytes.subarray(0, HEAD_BYTES));
+function imageBody(window: ViewWindow): WireBody {
+  const mime = window.mime ?? mimeFor(window.bytes.subarray(0, HEAD_BYTES));
   if (!mime) throw new CommanderError("unsupported", "Not an image");
   return { kind: "image", mime, base64: base64Of(window.bytes), truncated: window.truncated };
 }
@@ -257,10 +255,11 @@ function fitPrefix(window: ViewWindow, make: (window: ViewWindow) => WireBody, m
 /**
  * Largest chunk whose reply fits. Base64 takes 4 characters per 3 bytes and needs no JSON escaping,
  * so the size follows from the reply without a search. The room is measured with an empty chunk
- * flagged truncated, the larger of the two flags, so the result never overflows.
+ * flagged `truncated: false`: a chunk that reaches the end of the file is one character longer
+ * than one that does not, so the larger reply sets the budget.
  */
 function fitChunk(window: ViewWindow, measure: (body: WireBody) => number): WireBody {
-  const room = MAX_RESPONSE_BYTES - measure(chunkBody(prefixOf(window, 0)));
+  const room = MAX_RESPONSE_BYTES - measure({ kind: "chunk", offset: window.offset.toString(), base64: "", truncated: false });
   const length = Math.min(window.bytes.length, Math.floor(Math.floor(room / 4) * 3));
   return chunkBody(prefixOf(window, length));
 }
@@ -271,7 +270,7 @@ function fitChunk(window: ViewWindow, measure: (body: WireBody) => number): Wire
  * always. An image whose whole content does not fit the reply comes as chunks, which the
  * owner joins into one blob with the same version on every chunk (see assembleImage).
  */
-export function replyFor(name: string, window: ViewWindow, requested: ViewKind | "auto", audience: Audience): WireView {
+export function replyFor(window: ViewWindow, requested: ViewKind | "auto", audience: Audience): WireView {
   const modes: ViewKind[] = [];
   if (window.text) modes.push("text");
   if (audience === "owner" && window.kind === "image" && window.offset === 0n && window.size <= BigInt(MAX_IMAGE_BYTES)) modes.push("image");
@@ -289,7 +288,7 @@ export function replyFor(name: string, window: ViewWindow, requested: ViewKind |
 
   if (chosen === "image") {
     // Only a window of the whole file is an image; a part of a larger file comes as chunks.
-    const whole = imageBody(name, window);
+    const whole = imageBody(window);
     if (!window.truncated && measure(whole) <= MAX_RESPONSE_BYTES) return reply(whole);
     return reply(fitChunk(window, measure));
   }
@@ -314,7 +313,6 @@ export function fromWire(wire: WireView): ViewResult {
  * a change of the file between chunks fails with changed_since_plan instead of mixing versions.
  */
 export async function assembleImage(
-  name: string,
   first: WireView,
   fetchChunk: (offset: bigint, expect: Version) => Promise<WireView>,
 ): Promise<ViewResult> {
@@ -328,6 +326,7 @@ export async function assembleImage(
   for (;;) {
     if (reply.view.kind !== "chunk") throw new CommanderError("internal", "Image chunk expected");
     if (!sameVersion(reply.version, first.version)) throw changed();
+    if (reply.view.offset !== offset.toString()) throw new CommanderError("internal", "Image chunk is not at the requested offset");
     const part = bytesOf(reply.view.base64);
     if (part.byteLength === 0) throw new CommanderError("internal", "Empty image chunk");
     parts.push(part);
@@ -335,13 +334,14 @@ export async function assembleImage(
     if (offset >= size) break;
     reply = await fetchChunk(offset, first.version);
   }
+  if (offset !== size) throw new CommanderError("internal", "Image chunks do not add up to the file size");
   const bytes = new Uint8Array(Number(offset));
   let position = 0;
   for (const part of parts) {
     bytes.set(part, position);
     position += part.byteLength;
   }
-  const mime = mimeFor(name, bytes.subarray(0, HEAD_BYTES));
+  const mime = mimeFor(bytes.subarray(0, HEAD_BYTES));
   if (!mime) throw new CommanderError("unsupported", "Not an image");
   return { model: { kind: "image", mime, bytes, truncated: false }, modes: first.modes, version: first.version };
 }

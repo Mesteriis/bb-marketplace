@@ -256,7 +256,7 @@ export function createOperations(deps: {
       await endpoints.prepare([ref.endpoint], signal);
       const window = await readForView(endpoints.provider(ref.endpoint), ref.path,
         { offset: toBig(offset), length, ...(expect ? { expect } : {}) }, signal);
-      return replyFor(entryName(ref.path), window, mode, initiator.kind === "agent" ? "agent" : "owner");
+      return replyFor(window, mode, initiator.kind === "agent" ? "agent" : "owner");
     },
     async createPlan(input: RpcInput<"plan_create">, initiator: Initiator, signal: AbortSignal) {
       const limits = initiator.kind === "agent" ? { ...planner.limits, maxItems: maxAgentPlanItems } : planner.limits;

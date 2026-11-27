@@ -46,44 +46,51 @@ describe("hexLines", () => {
 
 describe("detectKind", () => {
   it("recognizes PNG by its signature", () => {
-    expect(detectKind("picture.png", PNG_HEAD, true)).toBe("image");
+    expect(detectKind(PNG_HEAD, true)).toBe("image");
   });
 
-  it("treats SVG by extension as an image", () => {
-    expect(detectKind("logo.svg", text("<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>"), true)).toBe("image");
+  it("treats a .svg file with an <svg> root as an image", () => {
+    expect(detectKind(text("<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>"), true)).toBe("image");
+  });
+
+  it("does not take page.svg for an image when its root is HTML", () => {
+    const html = text("<!doctype html><html><body><script>alert(1)</script></body></html>");
+    expect(detectKind(html, true)).toBe("text");
+    const view = window({ kind: "text", text: true, bytes: html });
+    expect(replyFor(view, "auto", "owner").modes).toEqual(["text", "binary"]);
   });
 
   it("treats an XML root <svg> as an image even without the extension", () => {
-    expect(detectKind("drawing", text("<?xml version=\"1.0\"?>\n<!-- made by hand -->\n<svg width=\"1\"/>"), true)).toBe("image");
+    expect(detectKind(text("<?xml version=\"1.0\"?>\n<!-- made by hand -->\n<svg width=\"1\"/>"), true)).toBe("image");
   });
 
   it("does not treat the substring <svg inside text as an image", () => {
-    expect(detectKind("notes.txt", text("write <svg> tags in the docs"), true)).toBe("text");
+    expect(detectKind(text("write <svg> tags in the docs"), true)).toBe("text");
   });
 
   it("keeps HTML as text, so it is shown as source and never rendered", () => {
-    expect(detectKind("page.html", text("<html><script>alert(1)</script></html>"), true)).toBe("text");
+    expect(detectKind(text("<html><script>alert(1)</script></html>"), true)).toBe("text");
   });
 
   it("classifies a NUL byte as binary", () => {
-    expect(detectKind("data.bin", Uint8Array.from([0x41, 0x00, 0x42]), true)).toBe("binary");
+    expect(detectKind(Uint8Array.from([0x41, 0x00, 0x42]), true)).toBe("binary");
   });
 
   it("classifies bytes that are not valid UTF-8 as binary", () => {
-    expect(detectKind("legacy.txt", Uint8Array.from([0xff, 0xfe, 0x41]), true)).toBe("binary");
+    expect(detectKind(Uint8Array.from([0xff, 0xfe, 0x41]), true)).toBe("binary");
   });
 
   it("treats an incomplete sequence at the end of the file as binary", () => {
-    expect(detectKind("note.txt", Uint8Array.from([0x41, 0xc3]), true)).toBe("binary");
+    expect(detectKind(Uint8Array.from([0x41, 0xc3]), true)).toBe("binary");
   });
 
   it("holds back an incomplete sequence at the end of a middle window", () => {
-    expect(detectKind("note.txt", Uint8Array.from([0x41, 0xc3]), false)).toBe("text");
+    expect(detectKind(Uint8Array.from([0x41, 0xc3]), false)).toBe("text");
   });
 
   it("classifies a control character as binary, while tab, newline and carriage return stay text", () => {
-    expect(detectKind("notes.txt", Uint8Array.from([0x41, 0x01]), true)).toBe("binary");
-    expect(detectKind("notes.txt", Uint8Array.from([0x41, 0x09, 0x0a, 0x0d, 0x42]), true)).toBe("text");
+    expect(detectKind(Uint8Array.from([0x41, 0x01]), true)).toBe("binary");
+    expect(detectKind(Uint8Array.from([0x41, 0x09, 0x0a, 0x0d, 0x42]), true)).toBe("text");
   });
 });
 
@@ -157,23 +164,23 @@ describe("replies for the owner and the agent", () => {
   it("offers text and binary for a text file, and the agent gets the same modes", () => {
     const view = window({ kind: "text", text: true, bytes: text("hi") });
 
-    expect(replyFor("a.txt", view, "auto", "owner").modes).toEqual(["text", "binary"]);
-    expect(replyFor("a.txt", view, "auto", "agent").modes).toEqual(["text", "binary"]);
-    expect(fromWire(replyFor("a.txt", view, "auto", "owner")).model).toEqual({ kind: "text", text: "hi", truncated: false });
+    expect(replyFor(view, "auto", "owner").modes).toEqual(["text", "binary"]);
+    expect(replyFor(view, "auto", "agent").modes).toEqual(["text", "binary"]);
+    expect(fromWire(replyFor(view, "auto", "owner")).model).toEqual({ kind: "text", text: "hi", truncated: false });
   });
 
   it("offers text for an SVG source and image for the owner, while the agent gets text and hex only", () => {
     const svg = text("<svg xmlns=\"http://www.w3.org/2000/svg\"/>");
     const view = window({ kind: "image", mime: "image/svg+xml", text: true, bytes: svg });
 
-    expect(replyFor("logo.svg", view, "auto", "owner").modes).toEqual(["text", "image", "binary"]);
-    expect(replyFor("logo.svg", view, "auto", "agent").modes).toEqual(["text", "binary"]);
+    expect(replyFor(view, "auto", "owner").modes).toEqual(["text", "image", "binary"]);
+    expect(replyFor(view, "auto", "agent").modes).toEqual(["text", "binary"]);
   });
 
   it("gives the agent hex for a PNG, never image bytes", () => {
     const view = window({ kind: "image", mime: "image/png", bytes: PNG_HEAD });
 
-    const reply = replyFor("picture.png", view, "image", "agent");
+    const reply = replyFor(view, "image", "agent");
 
     expect(reply.modes).toEqual(["binary"]);
     expect(reply.view).toEqual({
@@ -184,7 +191,7 @@ describe("replies for the owner and the agent", () => {
   it("gives the owner a PNG as base64 under image/png, offering hex too", () => {
     const view = window({ kind: "image", mime: "image/png", bytes: PNG_HEAD });
 
-    expect(replyFor("picture.png", view, "auto", "owner")).toEqual({
+    expect(replyFor(view, "auto", "owner")).toEqual({
       version: { size: "16", mtimeNs: "1" },
       modes: ["image", "binary"],
       view: { kind: "image", mime: "image/png", base64: "iVBORw0KGgoAAAANSUhEUg==", truncated: false },
@@ -194,7 +201,7 @@ describe("replies for the owner and the agent", () => {
   it("cuts 2 MiB of ASCII so the owner's JSON reply is at most 1048576 bytes and truncated", () => {
     const view = window({ kind: "text", text: true, bytes: new Uint8Array(MAX_VIEW_BYTES).fill(0x41), size: 2n * 1024n * 1024n, truncated: true });
 
-    const reply = replyFor("ascii.txt", view, "text", "owner");
+    const reply = replyFor(view, "text", "owner");
 
     expect(responseBytes(reply, "owner")).toBeLessThanOrEqual(1048576);
     expect(reply.view).toMatchObject({ kind: "text", truncated: true });
@@ -204,7 +211,7 @@ describe("replies for the owner and the agent", () => {
     const bytes = new Uint8Array(2 * 1024 * 1024).fill(0x22);
     const view = window({ kind: "text", text: true, bytes: bytes.subarray(0, MAX_VIEW_BYTES), size: 2n * 1024n * 1024n, truncated: true });
 
-    const reply = replyFor("quotes.txt", view, "auto", "agent");
+    const reply = replyFor(view, "auto", "agent");
 
     expect(MAX_RESPONSE_BYTES).toBe(1048576);
     expect(responseBytes(reply, "agent")).toBeLessThanOrEqual(1048576);
@@ -215,7 +222,7 @@ describe("replies for the owner and the agent", () => {
     const bytes = new Uint8Array(600 * 1024).fill(0x01);
     const view = window({ kind: "binary", text: false, bytes: bytes.subarray(0, MAX_VIEW_BYTES) });
 
-    const reply = replyFor("controls.dat", view, "auto", "agent");
+    const reply = replyFor(view, "auto", "agent");
 
     expect(reply.modes).toEqual(["binary"]);
     // Hex with the ASCII column is several times the size of the bytes, so the reply is cut.
@@ -227,7 +234,7 @@ describe("replies for the owner and the agent", () => {
   it("offers no image above 32 MiB", () => {
     const view = window({ kind: "image", mime: "image/png", bytes: PNG_HEAD, size: BigInt(MAX_IMAGE_BYTES) + 1n, truncated: true });
 
-    expect(replyFor("huge.png", view, "auto", "owner").modes).toEqual(["binary"]);
+    expect(replyFor(view, "auto", "owner").modes).toEqual(["binary"]);
   });
 });
 
@@ -244,11 +251,11 @@ describe("owner image assembly", () => {
     provider.put(path("big.png"), PNG_3MIB);
     const fetchChunk = async (offset: bigint, expect: { size: string; mtimeNs: string | null }) => {
       const view = await readForView(provider, path("big.png"), { offset, length: MAX_VIEW_BYTES, expect }, signal());
-      return replyFor("big.png", view, "image", "owner");
+      return replyFor(view, "image", "owner");
     };
-    const first = replyFor("big.png", await readForView(provider, path("big.png"), { offset: 0n, length: MAX_VIEW_BYTES }, signal()), "image", "owner");
+    const first = replyFor(await readForView(provider, path("big.png"), { offset: 0n, length: MAX_VIEW_BYTES }, signal()), "image", "owner");
 
-    const result = await assembleImage("big.png", first, fetchChunk);
+    const result = await assembleImage(first, fetchChunk);
 
     expect(result.model.kind).toBe("image");
     expect(result.model.kind === "image" && result.model.mime).toBe("image/png");
@@ -259,21 +266,21 @@ describe("owner image assembly", () => {
   it("fails with changed_since_plan when the file changes between chunks", async () => {
     const provider = new FakeProvider("local");
     provider.put(path("moving.png"), PNG_3MIB);
-    const first = replyFor("moving.png", await readForView(provider, path("moving.png"), { offset: 0n, length: MAX_VIEW_BYTES }, signal()), "image", "owner");
+    const first = replyFor(await readForView(provider, path("moving.png"), { offset: 0n, length: MAX_VIEW_BYTES }, signal()), "image", "owner");
     provider.put(path("moving.png"), PNG_3MIB.subarray(0, 2 * 1024 * 1024));
 
     const fetchChunk = async (offset: bigint, expect: { size: string; mtimeNs: string | null }) =>
-      replyFor("moving.png", await readForView(provider, path("moving.png"), { offset, length: MAX_VIEW_BYTES, expect }, signal()), "image", "owner");
+      replyFor(await readForView(provider, path("moving.png"), { offset, length: MAX_VIEW_BYTES, expect }, signal()), "image", "owner");
 
-    await expect(assembleImage("moving.png", first, fetchChunk)).rejects.toMatchObject({ code: "changed_since_plan" });
+    await expect(assembleImage(first, fetchChunk)).rejects.toMatchObject({ code: "changed_since_plan" });
   });
 
   it("returns a whole small image without chunks", async () => {
     const provider = new FakeProvider("local");
     provider.put(path("small.png"), PNG_HEAD);
-    const first = replyFor("small.png", await readForView(provider, path("small.png"), { offset: 0n, length: MAX_VIEW_BYTES }, signal()), "image", "owner");
+    const first = replyFor(await readForView(provider, path("small.png"), { offset: 0n, length: MAX_VIEW_BYTES }, signal()), "image", "owner");
 
-    const result = await assembleImage("small.png", first, async () => { throw new Error("no chunk expected"); });
+    const result = await assembleImage(first, async () => { throw new Error("no chunk expected"); });
 
     expect(result.model).toEqual({ kind: "image", mime: "image/png", bytes: PNG_HEAD, truncated: false });
   });
@@ -282,12 +289,60 @@ describe("owner image assembly", () => {
 describe("wire form", () => {
   it("round-trips a reply through fromWire", () => {
     const view = window({ kind: "image", mime: "image/png", bytes: PNG_HEAD });
-    const reply: WireView = replyFor("picture.png", view, "auto", "owner");
+    const reply: WireView = replyFor(view, "auto", "owner");
 
     expect(fromWire(reply)).toEqual({
       model: { kind: "image", mime: "image/png", bytes: PNG_HEAD, truncated: false },
       modes: ["image", "binary"],
       version: { size: "16", mtimeNs: "1" },
     });
+  });
+});
+
+describe("owner chunk size", () => {
+  // A chunk of a file: `bytes` from `offset` of a `size`-byte file, mtimeNs "111".
+  const chunkAt = (size: number, offset: number, bytes: number) => window({
+    kind: "image", mime: "image/png", bytes: new Uint8Array(bytes).fill(0x41), offset: BigInt(offset),
+    size: BigInt(size), truncated: offset + bytes < size, version: { size: String(size), mtimeNs: "111" },
+  });
+
+  it("keeps the whole owner reply within 1 MiB for a chunk from offset 786 327 of a 1 572 657-byte file", () => {
+    const reply = replyFor(chunkAt(1572657, 786327, 786330), "image", "owner");
+
+    expect(reply.view).toMatchObject({ kind: "chunk", offset: "786327" });
+    expect(responseBytes(reply, "owner")).toBeLessThanOrEqual(1048576);
+  });
+
+  it("keeps a final chunk within 1 MiB when its remainder is one character longer than the fitted length", () => {
+    // Remainder 786 328 bytes, one longer than the chunk that fits (786 327): taken whole, the reply
+    // would be 1 048 577 bytes with truncated: false.
+    const reply = replyFor(chunkAt(1572655, 786327, 786328), "image", "owner");
+
+    expect(reply.view).toMatchObject({ kind: "chunk", truncated: true });
+    expect(responseBytes(reply, "owner")).toBeLessThanOrEqual(1048576);
+  });
+});
+
+describe("owner image assembly checks", () => {
+  const png = (bytes: number) => {
+    const data = new Uint8Array(bytes);
+    data.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
+    return data;
+  };
+
+  it("refuses a chunk that does not start where it was requested", async () => {
+    const first = replyFor(window({ kind: "image", mime: "image/png", bytes: png(MAX_VIEW_BYTES), size: 3145728n, truncated: true, version: version("3145728") }), "image", "owner");
+    // The second request is for the end of the first chunk; the reply repeats offset 0.
+    await expect(assembleImage(first, async () => first)).rejects.toMatchObject({ code: "internal" });
+  });
+
+  it("refuses chunks that do not add up to the file size", async () => {
+    const short: WireView = {
+      version: version("1000"), modes: ["image", "binary"],
+      view: { kind: "chunk", offset: "0", base64: Buffer.from(png(1024)).toString("base64"), truncated: false },
+    };
+
+    await expect(assembleImage(short, async () => { throw new Error("no second chunk expected"); }))
+      .rejects.toMatchObject({ code: "internal" });
   });
 });

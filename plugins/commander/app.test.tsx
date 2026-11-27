@@ -4,7 +4,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { Entry, OperationJob } from "./src/core/model.ts";
 import { CommanderError } from "./src/core/errors.ts";
 import { parsePosix } from "./src/core/path.ts";
-import { entryName, MAX_VIEW_BYTES, readForView, replyFor, type WireView } from "./src/core/preview.ts";
+import { MAX_VIEW_BYTES, readForView, replyFor, type WireView } from "./src/core/preview.ts";
 import { FakeProvider } from "./src/core/testing/fake-provider.ts";
 import type { UiState } from "./src/core/wire/rpc.ts";
 
@@ -550,7 +550,7 @@ function serveFileRead(provider: FakeProvider, file: ReturnType<typeof parsePosi
         length: (input.length as number | undefined) ?? MAX_VIEW_BYTES,
         ...(input.expect ? { expect: input.expect as { size: string; mtimeNs: string | null } } : {}),
       }, new AbortController().signal);
-      return JSON.parse(JSON.stringify(replyFor(entryName(file), window, (input.mode as "auto") ?? "auto", "owner"))) as WireView;
+      return JSON.parse(JSON.stringify(replyFor(window, (input.mode as "auto") ?? "auto", "owner"))) as WireView;
     } catch (error) {
       // The RPC handler sends changed_since_plan as a conflict whose message carries the code.
       if (error instanceof CommanderError && error.code === "changed_since_plan") {

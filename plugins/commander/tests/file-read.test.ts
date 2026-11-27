@@ -175,7 +175,7 @@ test("owner joins a 3 MiB PNG from chunks and gets the same bytes back", async (
     const first = await bb.rpc("file_read", { ref: ref("/data/big.png") }) as WireView;
     expect(first.view.kind).toBe("chunk");
 
-    const result = await assembleImage("big.png", first, (offset, expect) =>
+    const result = await assembleImage(first, (offset, expect) =>
       bb.rpc("file_read", { ref: ref("/data/big.png"), mode: "image", offset: offset.toString(), expect }) as Promise<WireView>);
 
     expect(result.model.kind === "image" && result.model.mime).toBe("image/png");
@@ -190,7 +190,7 @@ test("a chunk after the file changed fails with the conflict whose message carri
     const first = await bb.rpc("file_read", { ref: ref("/data/big.png") }) as WireView;
     bb.disk.put(parsePosix("/data/big.png"), PNG_3MIB.subarray(0, 2 * 1024 * 1024), "2");
 
-    await expect(assembleImage("big.png", first, (offset, expect) =>
+    await expect(assembleImage(first, (offset, expect) =>
       bb.rpc("file_read", { ref: ref("/data/big.png"), mode: "image", offset: offset.toString(), expect }) as Promise<WireView>))
       .rejects.toMatchObject({
         code: "conflict",
