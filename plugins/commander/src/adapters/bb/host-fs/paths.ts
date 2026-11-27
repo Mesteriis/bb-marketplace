@@ -2,7 +2,7 @@ import type { BigIntStats } from "node:fs";
 import { lstat } from "node:fs/promises";
 import { win32 } from "node:path";
 import { CommanderError } from "../../../core/errors.ts";
-import { type NameSegment, type ResourcePath } from "../../../core/path.ts";
+import { type NameSegment, ResourcePath } from "../../../core/path.ts";
 import { hasErrno } from "./errors.ts";
 import { validateTargetName, type NamePlatform } from "./names.ts";
 
@@ -46,6 +46,16 @@ export function requireDirectory(stats: BigIntStats): void {
   if (!stats.isDirectory()) throw new CommanderError("not_a_directory", "Expected a directory");
 }
 
+export function parseWindowsPath(absolute: string): ResourcePath {
+  if (/^[/\\]{2}/u.test(absolute)) throw new CommanderError("unsupported", "UNC paths are not supported");
+  const drive = /^([a-z]:)[/\\]/iu.exec(absolute);
+  if (!drive) throw new CommanderError("invalid_path", "An absolute Windows drive path is required");
+  const names = absolute.slice(drive[0].length).split(/[/\\]/u).filter(Boolean);
+  const path = ResourcePath.safeParse({ segments: [drive[1]!, ...names].map((t) => ({ t })) });
+  if (!path.success) throw new CommanderError("invalid_path", "Invalid Windows drive path");
+  return path.data;
+}
+
 export async function resolvePath(path: ResourcePath, platform: NamePlatform, opts: {
   target?: boolean;
   mutable?: boolean;
@@ -81,4 +91,21 @@ export async function resolvePath(path: ResourcePath, platform: NamePlatform, op
     throw new CommanderError("permission_denied", "Symbolic link at target");
   }
   return { full, parent, parentStats, stats };
+}
+
+export async function recheckParent({ parent, parentStats }: Awaited<ReturnType<typeof resolvePath>>): Promise<void> {
+  if (!parent || !parentStats) throw new CommanderError("permission_denied", "Cannot modify a filesystem root");
+  const current = await lstatOrNull(parent);
+  if (current?.isSymbolicLink()) throw new CommanderError("permission_denied", "Symbolic link in directory path");
+  if (!current || !current.isDirectory() || !sameNode(current, parentStats)) {
+    throw new CommanderError("changed_since_plan", "Parent directory changed");
+  }
+}
+
+export async function requireAbsent(path: FsPath, plannedAbsent = false): Promise<void> {
+  const stats = await lstatOrNull(path);
+  if (!stats) return;
+  if (stats.isSymbolicLink()) throw new CommanderError("permission_denied", "Symbolic link at target");
+  if (plannedAbsent) throw new CommanderError("changed_since_plan", "Target appeared since planning");
+  throw new CommanderError("already_exists", "Target exists");
 }

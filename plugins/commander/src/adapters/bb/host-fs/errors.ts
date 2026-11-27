@@ -18,3 +18,7 @@ export function fsError(error: unknown, signal?: AbortSignal): CommanderError {
   const code = (typeof errno === "string" && errnoCodes.get(errno)) || "internal";
   return new CommanderError(code, "Filesystem operation failed");
 }
+
+export function linkUnavailable(error: unknown): boolean {
+  return ["EPERM", "ENOTSUP", "EOPNOTSUPP"].some((code) => hasErrno(error, code));
+}

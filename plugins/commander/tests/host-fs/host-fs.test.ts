@@ -1,9 +1,9 @@
-import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, truncate, writeFile } from "node:fs/promises";
+import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, truncate, unlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { createHostFs } from "../../src/adapters/bb/host-fs/index.ts";
-import { parsePosix } from "../../src/core/path.ts";
+import { join as joinResource, parsePosix } from "../../src/core/path.ts";
 
 let root: string;
 let fs: ReturnType<typeof createHostFs>;
@@ -69,8 +69,8 @@ it("rejects a stale read fingerprint", async () => {
   }, ctx)).rejects.toMatchObject({ code: "changed_since_plan" });
 });
 
-async function stage() {
-  const opened = await fs.handlers.writeOpen({ target: at("target") }, ctx);
+async function stage(target = at("target")) {
+  const opened = await fs.handlers.writeOpen({ target }, ctx);
   await fs.handlers.writeChunk({ session: opened.session, offset: "2", b64: "AwQ=" }, ctx);
   await fs.handlers.writeChunk({ session: opened.session, offset: "0", b64: "AQI=" }, ctx);
   await fs.handlers.writeChunk({ session: opened.session, offset: "4", b64: "/w==" }, ctx);
@@ -126,7 +126,7 @@ it("rejects copy when the planned target changed or appeared", async () => {
     }, ctx)).rejects.toMatchObject({ code: "changed_since_plan" });
     expect(await readFile(join(root, "target"), "utf8")).toBe("intervening update");
   }
-  expect(await readdir(root)).toEqual(["source", "target"]);
+  expect((await readdir(root)).sort()).toEqual(["source", "target"]);
 });
 
 it("copies regular files and hashes their bytes on the host", async () => {
@@ -224,4 +224,150 @@ it("publishes only one replacement for two writers with the same planned target"
     expect.objectContaining({ status: "fulfilled", value: expect.objectContaining({ size: "5" }) }),
     expect.objectContaining({ status: "rejected", reason: expect.objectContaining({ code: "changed_since_plan" }) }),
   ]));
+});
+
+it("keeps staging private throughout target verification and lets other mutations run", async () => {
+  const target = join(root, "target");
+  await writeFile(target, "old");
+  let temp: string;
+  await fs.dispose();
+  fs = createHostFs({
+    hashTarget: async () => {
+      expect((await lstat(temp)).mode & 0o777).toBe(0o600);
+      await fs.handlers.mkdir({ path: at("other") }, ctx);
+      return "a".repeat(64);
+    },
+  });
+  const { session, tempName } = await stage();
+  if (!("t" in tempName)) throw new Error("Expected a text staging name");
+  temp = join(root, tempName.t);
+  const current = await lstat(target, { bigint: true });
+  await expect(fs.handlers.writeCommit({
+    session, replace: true, expectTarget: { size: "3", mtimeNs: current.mtimeNs.toString(), sha256: "b".repeat(64) },
+  }, ctx)).rejects.toMatchObject({ code: "changed_since_plan" });
+  expect((await lstat(temp)).mode & 0o777).toBe(0o600);
+  expect((await lstat(join(root, "other"))).isDirectory()).toBe(true);
+});
+
+it("preserves the mode of the replaced file", async () => {
+  const target = join(root, "target");
+  await writeFile(target, "old");
+  await chmod(target, 0o750);
+  const { session } = await stage();
+  await fs.handlers.writeCommit({ session, replace: true, expectTarget: null }, ctx);
+  expect((await lstat(target)).mode & 0o7777).toBe(0o750);
+});
+
+it("reports published bytes even when the staging unlink fails", async () => {
+  const orphans: unknown[] = [];
+  await fs.dispose();
+  fs = createHostFs({
+    unlink: async () => { throw Object.assign(new Error("injected"), { code: "EPERM" }); },
+    onOrphan: (orphan) => { orphans.push(orphan); },
+  });
+  const { session, tempName } = await stage();
+  const tempPath = joinResource(at(), tempName);
+  await expect(fs.handlers.writeCommit({ session, replace: false, expectTarget: null }, ctx))
+    .resolves.toMatchObject({ size: "5", orphanedTempPath: tempPath });
+  expect(orphans).toEqual([{ session, tempPath, reason: "cleanup_failed" }]);
+  expect(await readFile(join(root, "target"))).toEqual(Buffer.from([1, 2, 3, 4, 255]));
+  expect(await readdir(root)).toHaveLength(2);
+});
+
+it("keeps a replaced rename source after linking its original inode", async () => {
+  const source = join(root, "source");
+  await writeFile(source, "original");
+  await fs.dispose();
+  fs = createHostFs({
+    link: async (from, to) => {
+      await link(from, to);
+      await unlink(source);
+      await writeFile(source, "intervening");
+    },
+  });
+  await expect(fs.handlers.rename({ from: at("source"), to: at("target"), replace: false }, ctx))
+    .rejects.toMatchObject({ code: "outcome_unknown" });
+  expect(await readFile(source, "utf8")).toBe("intervening");
+  expect(await readFile(join(root, "target"), "utf8")).toBe("original");
+});
+
+it.each(["EPERM", "ENOTSUP"])("marks the fallback after link returns %s", async (code) => {
+  await fs.dispose();
+  fs = createHostFs({ link: async () => { throw Object.assign(new Error("injected"), { code }); } });
+  const { session } = await stage();
+  await expect(fs.handlers.writeCommit({ session, replace: false, expectTarget: null }, ctx))
+    .resolves.toMatchObject({ size: "5", atomicNoReplace: false });
+  expect(await readdir(root)).toEqual(["target"]);
+  expect(await readFile(join(root, "target"))).toEqual(Buffer.from([1, 2, 3, 4, 255]));
+});
+
+it("preserves a target inserted before the fallback rename", async () => {
+  await fs.dispose();
+  fs = createHostFs({
+    link: async () => {
+      await writeFile(join(root, "target"), "external");
+      throw Object.assign(new Error("injected"), { code: "ENOTSUP" });
+    },
+  });
+  const { session } = await stage();
+  await expect(fs.handlers.writeCommit({ session, replace: false, expectTarget: null }, ctx))
+    .rejects.toMatchObject({ code: "already_exists" });
+  expect(await readFile(join(root, "target"), "utf8")).toBe("external");
+});
+
+it.each(["abort", "ttl", "dispose"] as const)("reports the stage of a moved parent on %s", async (how) => {
+  const orphans: unknown[] = [];
+  let expire!: () => Promise<void>;
+  await fs.dispose();
+  fs = createHostFs({
+    onOrphan: (orphan) => { orphans.push(orphan); },
+    scheduleExpiry: (callback) => { expire = callback; return () => {}; },
+  });
+  await mkdir(join(root, "parent"));
+  const valid = await fs.handlers.writeOpen({ target: at("target") }, ctx);
+  const { session, tempName } = await fs.handlers.writeOpen({ target: at("parent/target") }, ctx);
+  const tempPath = joinResource(at("parent"), tempName);
+  await rename(join(root, "parent"), join(root, "moved"));
+  await symlink(join(root, "moved"), join(root, "parent"));
+  if (how === "abort") {
+    await expect(fs.handlers.writeAbort({ session }, ctx)).resolves.toEqual({ orphanedTempPath: tempPath });
+  } else if (how === "ttl") {
+    await expire();
+  } else {
+    await fs.dispose();
+    expect((await readdir(root)).sort()).toEqual(["moved", "parent"]);
+    await expect(fs.handlers.writeAbort({ session: valid.session }, ctx)).resolves.toEqual({});
+  }
+  expect(orphans).toEqual([{ session, tempPath, reason: "parent_changed" }]);
+  expect(await readdir(join(root, "moved"))).toHaveLength(1);
+});
+
+it("keeps a cursor valid after a directory timestamp change", async () => {
+  await writeFile(join(root, "a"), "");
+  await writeFile(join(root, "b"), "");
+  const page = await fs.handlers.list({ path: at(), cursor: null, limit: 1 }, ctx);
+  expect(page.cursor).toMatch(/^1:\d+:\d+$/);
+  await utimes(root, 1000, 1000);
+  await expect(fs.handlers.list({ path: at(), cursor: page.cursor, limit: 1 }, ctx))
+    .resolves.toMatchObject({ cursor: null });
+});
+
+it("refuses a target symlink and every mutation through an intermediate symlink", async () => {
+  await mkdir(join(root, "nested"));
+  await mkdir(join(root, "other"));
+  await writeFile(join(root, "other", "victim"), "keep");
+  await writeFile(join(root, "source"), "keep too");
+  await symlink(join(root, "other", "victim"), join(root, "target"));
+  await symlink(join(root, "other"), join(root, "nested", "link"));
+  for (const mutation of [
+    () => fs.handlers.writeOpen({ target: at("target") }, ctx),
+    () => fs.handlers.writeOpen({ target: at("nested/link/victim") }, ctx),
+    () => fs.handlers.rename({ from: at("source"), to: at("nested/link/victim"), replace: true }, ctx),
+    () => fs.handlers.mkdir({ path: at("nested/link/new") }, ctx),
+    () => fs.handlers.remove({ path: at("nested/link/victim"), kind: "file" }, ctx),
+  ]) {
+    await expect(mutation()).rejects.toMatchObject({ code: "permission_denied" });
+  }
+  expect(await readdir(join(root, "other"))).toEqual(["victim"]);
+  expect(await readFile(join(root, "other", "victim"), "utf8")).toBe("keep");
 });

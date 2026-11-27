@@ -1,16 +1,25 @@
+/**
+ * Known limits
+ * Node has no openat/renameat2 API. Intermediate components can change between
+ * lstat and an operation. Parent, leaf and descriptor checks narrow those windows.
+ * Conditional replace is serialized with mutations within this worker. External
+ * processes can still change the target between the final check and rename.
+ * POSIX directory/symlink rename without replacement uses a final absence check
+ * followed by rename. That sequence can race with external target creation.
+ * Filesystems that reject hard links use the same fallback and report it.
+ */
 import { experimental_PluginRpcRefusal, type ExperimentalHostRpcHandlers } from "@get-bb/plugin-sdk";
 import { link, mkdir, opendir, rename, rmdir, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
-import { win32 } from "node:path";
 import { CommanderError } from "../../../core/errors.ts";
 import { type Entry } from "../../../core/model.ts";
-import { parsePosix, ResourcePath } from "../../../core/path.ts";
+import { parsePosix } from "../../../core/path.ts";
 import { type HostFsContract, type HostFsInput, type HostFsMethod, type HostFsOutput } from "../../../core/wire/host-fs.ts";
-import { fsError, hasErrno } from "./errors.ts";
+import { fsError, hasErrno, linkUnavailable } from "./errors.ts";
 import { changed, describe, entryKind, forEachChunk, hashFile, matches, position, withRegularFile } from "./files.ts";
 import { type NamePlatform } from "./names.ts";
-import { childPath, decodeName, lstatOrNull, requireDirectory, resolvePath, sameNode } from "./paths.ts";
-import { WriteSessions, type ScheduleExpiry } from "./writes.ts";
+import { childPath, decodeName, lstatOrNull, parseWindowsPath, recheckParent, requireAbsent, requireDirectory, resolvePath, sameNode } from "./paths.ts";
+import { WriteSessions, type WriteOptions } from "./writes.ts";
 
 interface Context {
   signal: AbortSignal;
@@ -23,7 +32,7 @@ type Handlers = { [M in HostFsMethod]: Handler<M> };
 
 function indexFromCursor(cursor: string | null, version: string): number {
   if (!cursor) return 0;
-  const match = /^(\d+):(\d+:\d+:-?\d+:-?\d+)$/u.exec(cursor);
+  const match = /^(\d+):(\d+:\d+)$/u.exec(cursor);
   if (!match || !Number.isSafeInteger(Number(match[1]))) {
     throw new CommanderError("invalid_path", "Invalid directory cursor");
   }
@@ -32,7 +41,7 @@ function indexFromCursor(cursor: string | null, version: string): number {
 }
 
 function versionOf(stats: NonNullable<Awaited<ReturnType<typeof lstatOrNull>>>): string {
-  return [stats.dev, stats.ino, stats.mtimeNs, stats.ctimeNs].join(":");
+  return [stats.dev, stats.ino].join(":");
 }
 
 function refusal(error: unknown): experimental_PluginRpcRefusal {
@@ -44,9 +53,9 @@ function refusal(error: unknown): experimental_PluginRpcRefusal {
   return new experimental_PluginRpcRefusal({ code, message: JSON.stringify(shape) });
 }
 
-export function createHostFs(options: { platform?: NamePlatform; scheduleExpiry?: ScheduleExpiry } = {}) {
+export function createHostFs(options: WriteOptions & { platform?: NamePlatform } = {}) {
   const platform = options.platform ?? (process.platform === "win32" ? "win32" : "posix");
-  const writes = new WriteSessions(platform, options.scheduleExpiry);
+  const writes = new WriteSessions(platform, options);
   const shutdown = new AbortController();
   const pending = new Set<Promise<unknown>>();
   let lifecycle: AbortSignal | undefined;
@@ -163,14 +172,12 @@ export function createHostFs(options: { platform?: NamePlatform; scheduleExpiry?
     }),
     writeCommit: handle<"writeCommit">(({ session, replace, expectTarget }, { signal }) =>
       writes.commit(session, replace, expectTarget, signal)),
-    writeAbort: handle<"writeAbort">(async ({ session }) => {
-      await writes.abort(session);
-      return {};
-    }, true),
+    writeAbort: handle<"writeAbort">(({ session }) => writes.abort(session), true),
     mkdir: handle<"mkdir">(({ path }, { signal }) => writes.publish(async () => {
-      const { full } = await resolvePath(path, platform, { target: true });
+      const target = await resolvePath(path, platform, { target: true });
+      await recheckParent(target);
       signal.throwIfAborted();
-      await mkdir(full);
+      await mkdir(target.full);
       return {};
     })),
     rename: handle<"rename">(({ from, to, replace }, { signal }) => writes.publish(async () => {
@@ -178,22 +185,53 @@ export function createHostFs(options: { platform?: NamePlatform; scheduleExpiry?
       const target = await resolvePath(to, platform, { target: true });
       if (!source.stats) throw new CommanderError("not_found", "Source does not exist");
       if (!replace && target.stats) throw new CommanderError("already_exists", "Target exists");
+
+      await recheckParent(source);
+      await recheckParent(target);
       signal.throwIfAborted();
       if (!replace && source.stats.isFile()) {
-        await link(source.full, target.full);
+        let linked = false;
         try {
-          await unlink(source.full);
-        } catch {
-          throw new CommanderError("outcome_unknown", "Both rename paths may exist");
+          await (options.link ?? link)(source.full, target.full);
+          linked = true;
+        } catch (error) {
+          if (!linkUnavailable(error)) throw error;
         }
-      } else {
-        await rename(source.full, target.full);
+        if (linked) {
+          try {
+            await recheckParent(source);
+            await recheckParent(target);
+            const bound = await lstatOrNull(target.full);
+            const current = await lstatOrNull(source.full);
+            if (!bound || !current || !sameNode(bound, source.stats) || !sameNode(current, bound)) throw changed();
+            await (options.unlink ?? unlink)(source.full);
+          } catch {
+            throw new CommanderError("outcome_unknown", "Rename could not confirm removal of the original source");
+          }
+          return {};
+        }
       }
-      return {};
+
+      // rename itself has no no-clobber flag on this API. Recheck after a failed link or directory lookup.
+      await recheckParent(source);
+      await recheckParent(target);
+      const current = await lstatOrNull(source.full);
+      if (!current || !sameNode(current, source.stats)) throw changed();
+      if (!replace) await requireAbsent(target.full);
+      else if ((await lstatOrNull(target.full))?.isSymbolicLink()) {
+        throw new CommanderError("permission_denied", "Symbolic link at target");
+      }
+      signal.throwIfAborted();
+      await rename(source.full, target.full);
+      return replace ? {} : { atomicNoReplace: false as const };
     })),
     remove: handle<"remove">(({ path, kind }, { signal }) => writes.publish(async () => {
-      const { full, stats } = await resolvePath(path, platform, { mutable: true });
+      const resolved = await resolvePath(path, platform, { mutable: true });
+      const { full, stats } = resolved;
       if (stats && entryKind(stats) !== kind) throw changed();
+      await recheckParent(resolved);
+      const current = await lstatOrNull(full);
+      if (current && (!stats || !sameNode(current, stats))) throw changed();
       signal.throwIfAborted();
       if (kind === "dir") await rmdir(full);
       else await unlink(full);
@@ -220,12 +258,7 @@ export function createHostFs(options: { platform?: NamePlatform; scheduleExpiry?
     }),
     home: handle<"home">(async () => {
       const home = homedir();
-      if (platform === "win32") {
-        const absolute = win32.parse(home);
-        const names = home.slice(absolute.root.length).split("\\").filter(Boolean);
-        const path = ResourcePath.parse({ segments: [absolute.root.slice(0, 2), ...names].map((t) => ({ t })) });
-        return { path, caseSensitive: false };
-      }
+      if (platform === "win32") return { path: parseWindowsPath(home), caseSensitive: false };
       const path = parsePosix(home);
       const { parent, stats } = await resolvePath(path, platform);
       const name = path.segments.at(-1);

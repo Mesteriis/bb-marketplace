@@ -6,7 +6,9 @@ import { type Entry, type EntryKind, type Fingerprint } from "../../../core/mode
 import { type NameSegment } from "../../../core/path.ts";
 import { READ_CHUNK_MAX } from "../../../core/provider.ts";
 import { fromBig, toBig, type Size } from "../../../core/size.ts";
-import { decodeName, encodeName, sameNode, type FsPath } from "./paths.ts";
+import { decodeName, encodeName, lstatOrNull, sameNode, type FsPath } from "./paths.ts";
+
+export const noFollow = process.platform === "win32" ? 0 : constants.O_NOFOLLOW;
 
 export function entryKind(stats: BigIntStats): EntryKind {
   if (stats.isFile()) return "file";
@@ -49,6 +51,7 @@ export function position(offset: Size): number {
   return Number(n);
 }
 
+/** Windows lacks O_NOFOLLOW. Compare the opened descriptor against a fresh lstat there. */
 export async function withRegularFile<T>(
   path: FsPath, stats: BigIntStats | null, signal: AbortSignal,
   use: (file: FileHandle, opened: BigIntStats) => Promise<T>,
@@ -57,10 +60,14 @@ export async function withRegularFile<T>(
   if (stats.isDirectory()) throw new CommanderError("is_a_directory", "Expected a regular file");
   if (!stats.isFile()) throw new CommanderError("unsupported", "Only regular files can be read");
   signal.throwIfAborted();
-  const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  const file = await open(path, constants.O_RDONLY | noFollow | constants.O_NONBLOCK);
   try {
     const opened = await file.stat({ bigint: true });
     if (!opened.isFile() || !sameNode(stats, opened)) throw changed();
+    if (process.platform === "win32") {
+      const current = await lstatOrNull(path);
+      if (!current?.isFile() || !sameNode(current, opened)) throw changed();
+    }
     signal.throwIfAborted();
     return await use(file, opened);
   } finally {

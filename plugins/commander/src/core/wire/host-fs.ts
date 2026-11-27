@@ -10,6 +10,12 @@ const chunk = canonicalBase64(Math.ceil(READ_CHUNK_MAX / 3) * 4)
 const path = z.object({ path: ResourcePath }).strict();
 const empty = z.object({}).strict();
 const session = z.object({ session: z.uuid() }).strict();
+const publication = z.object({
+  atomicNoReplace: z.literal(false).optional(),
+  orphanedTempPath: ResourcePath.optional(),
+}).strict();
+const publishedFile = Fingerprint.extend(publication.shape);
+const writeCleanup = publication.pick({ orphanedTempPath: true });
 const transfer = z.object({ from: ResourcePath, to: ResourcePath, replace: z.boolean() }).strict();
 
 export const HostFsContract = {
@@ -29,15 +35,15 @@ export const HostFsContract = {
   writeChunk: { input: session.extend({ offset: Size, b64: chunk }), output: empty },
   writeCommit: {
     input: session.extend({ replace: z.boolean(), expectTarget: Fingerprint.nullable() }),
-    output: Fingerprint,
+    output: publishedFile,
   },
-  writeAbort: { input: session, output: empty },
+  writeAbort: { input: session, output: writeCleanup },
   mkdir: { input: path, output: empty },
-  rename: { input: transfer, output: empty },
+  rename: { input: transfer, output: publication.pick({ atomicNoReplace: true }) },
   remove: { input: path.extend({ kind: EntryKind }), output: empty },
   copyWithin: {
     input: transfer.extend({ expectTarget: Fingerprint.or(z.literal("absent")).optional() }),
-    output: Fingerprint,
+    output: publishedFile,
   },
   sha256: { input: path, output: z.object({ hex: z.string().regex(/^[0-9a-f]{64}$/) }).strict() },
   home: { input: empty, output: z.object({ path: ResourcePath, caseSensitive: z.boolean() }).strict() },

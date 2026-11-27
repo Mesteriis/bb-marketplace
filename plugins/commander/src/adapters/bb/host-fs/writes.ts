@@ -3,13 +3,27 @@ import { constants, type BigIntStats } from "node:fs";
 import { link, open, rename, unlink, type FileHandle } from "node:fs/promises";
 import { CommanderError } from "../../../core/errors.ts";
 import { type Fingerprint } from "../../../core/model.ts";
-import { parent, type NameSegment, type ResourcePath } from "../../../core/path.ts";
-import { changed, fingerprint, hashFile, matches, withRegularFile } from "./files.ts";
-import { hasErrno } from "./errors.ts";
+import { join, parent, type NameSegment, type ResourcePath } from "../../../core/path.ts";
+import { changed, fingerprint, hashFile, matches, noFollow, withRegularFile } from "./files.ts";
+import { hasErrno, linkUnavailable } from "./errors.ts";
 import { type NamePlatform } from "./names.ts";
-import { childPath, decodeName, encodeName, lstatOrNull, requireDirectory, resolvePath, sameNode } from "./paths.ts";
+import { childPath, decodeName, encodeName, lstatOrNull, recheckParent, requireAbsent, resolvePath, sameNode } from "./paths.ts";
 
 type TargetVersion = Fingerprint | "absent" | null | undefined;
+type PublishedFile = Fingerprint & { atomicNoReplace?: false; orphanedTempPath?: ResourcePath };
+type CleanupResult = { orphanedTempPath?: ResourcePath };
+export type StagingOrphan = {
+  session: string;
+  tempPath: ResourcePath;
+  reason: "parent_changed" | "cleanup_failed";
+};
+export interface WriteOptions {
+  scheduleExpiry?: ScheduleExpiry;
+  link?: typeof link;
+  unlink?: typeof unlink;
+  hashTarget?: typeof hashFile;
+  onOrphan?: (orphan: StagingOrphan) => void | Promise<void>;
+}
 type Lease = { dispose(): Promise<void> };
 export type ScheduleExpiry = (callback: () => Promise<void>, delayMs: number) => () => void;
 
@@ -53,7 +67,7 @@ export class WriteSessions {
 
   constructor(
     private readonly platform: NamePlatform,
-    private readonly scheduleExpiry: ScheduleExpiry = defaultSchedule,
+    private readonly options: WriteOptions,
   ) {}
 
   async open(target: ResourcePath, signal: AbortSignal, retain?: () => Lease) {
@@ -75,18 +89,32 @@ export class WriteSessions {
     }
   }
 
+  /** Windows lacks O_NOFOLLOW. Exclusive creation is followed by an inode check against lstat. */
   private async createStage(target: ResourcePath, session: string, signal: AbortSignal, retain?: () => Lease) {
     const resolved = await resolvePath(target, this.platform, { target: true });
     const tempName = stagingName(target.segments.at(-1)!, session, this.platform);
     const directory = resolved.parentStats!;
     const temp = childPath(resolved.parent!, tempName);
     signal.throwIfAborted();
+    await recheckParent(resolved);
+    signal.throwIfAborted();
     const lease = retain?.();
+    let file: FileHandle;
     try {
-      const file = await open(temp, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
-      return { file, target, directory, tempName, lease };
+      file = await open(temp, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | noFollow, 0o600);
     } catch (error) {
       await lease?.dispose();
+      throw error;
+    }
+    const stage = { file, target, directory, tempName, lease };
+    try {
+      const opened = await file.stat({ bigint: true });
+      const current = await lstatOrNull(temp);
+      if (!current?.isFile() || !sameNode(current, opened)) throw changed();
+      await recheckParent(resolved);
+      return stage;
+    } catch (error) {
+      await this.finish(session, stage, true);
       throw error;
     }
   }
@@ -103,41 +131,73 @@ export class WriteSessions {
     });
   }
 
-  commit(session: string, replace: boolean, expect: TargetVersion, signal: AbortSignal): Promise<Fingerprint> {
+  /**
+   * Preserve POSIX permission bits when replacing a file. Extended attributes
+   * and ACLs of the old target are not copied to the staged inode.
+   */
+  commit(session: string, replace: boolean, expect: TargetVersion, signal: AbortSignal): Promise<PublishedFile> {
     return this.run(session, async (stage) => {
       const { file, target, directory, tempName } = stage;
       signal.throwIfAborted();
+      await file.sync();
+      const stagedStats = await file.stat({ bigint: true });
+      const hashed = await this.verifyTargetHash(target, expect, signal);
       return this.publish(async () => {
         signal.throwIfAborted();
+        const resolved = await resolvePath(target, this.platform, { target: true });
+        if (!sameNode(resolved.parentStats!, directory)) throw changed();
+        const temp = childPath(resolved.parent!, tempName);
+        const currentTemp = await lstatOrNull(temp);
+        if (!currentTemp?.isFile() || !sameNode(currentTemp, stagedStats)) throw changed();
+        await recheckParent(resolved);
+        const currentTarget = await lstatOrNull(resolved.full);
+        if (currentTarget?.isSymbolicLink()) throw new CommanderError("permission_denied", "Symbolic link at target");
+        this.checkTarget(currentTarget, expect, hashed);
+        const mode = replace && currentTarget?.isFile()
+          ? Number(currentTarget.mode & 0o7777n)
+          : 0o644 & ~process.umask();
+        let cleanup = false;
+        let atomicNoReplace: false | undefined;
         try {
-          await file.chmod(0o644 & ~process.umask());
-          await file.sync();
-          const stagedStats = await file.stat({ bigint: true });
-          const resolved = await resolvePath(target, this.platform, { target: true });
-          if (!sameNode(resolved.parentStats!, directory)) throw changed();
-          const temp = childPath(resolved.parent!, tempName);
-          const currentTemp = await lstatOrNull(temp);
-          if (!currentTemp || !sameNode(currentTemp, stagedStats)) throw changed();
-          await this.checkTarget(resolved.full, expect, signal);
           signal.throwIfAborted();
+          await file.chmod(mode);
           if (replace && expect !== "absent") {
             await rename(temp, resolved.full);
-            await this.finish(session, stage);
           } else {
             try {
-              await link(temp, resolved.full);
+              await (this.options.link ?? link)(temp, resolved.full);
+              cleanup = true;
             } catch (error) {
               if (expect === "absent" && hasErrno(error, "EEXIST")) throw changed();
-              throw error;
+              if (!linkUnavailable(error)) throw error;
+              await file.chmod(0o600);
+              await recheckParent(resolved);
+              const fallbackTemp = await lstatOrNull(temp);
+              if (!fallbackTemp?.isFile() || !sameNode(fallbackTemp, stagedStats)) throw changed();
+              if (expect && expect !== "absent") {
+                this.checkTarget(await lstatOrNull(resolved.full), expect, hashed);
+              }
+              await requireAbsent(resolved.full, expect === "absent");
+              signal.throwIfAborted();
+              await file.chmod(mode);
+              await rename(temp, resolved.full);
+              atomicNoReplace = false;
             }
-            await this.finish(session, stage, temp);
           }
-          return fingerprint(stagedStats);
         } catch (error) {
-          // A failed publish keeps the stage available for retry/abort, with private permissions.
-          if (this.sessions.has(session)) await file.chmod(0o600);
+          try {
+            await file.chmod(0o600);
+          } catch {
+            await this.finish(session, stage, true);
+          }
           throw error;
         }
+        // Publication succeeded. Cleanup and reporting cannot change this outcome.
+        return {
+          ...fingerprint(stagedStats),
+          ...(atomicNoReplace === false ? { atomicNoReplace } : {}),
+          ...await this.finish(session, stage, cleanup),
+        };
       });
     });
   }
@@ -149,60 +209,87 @@ export class WriteSessions {
     return result;
   }
 
-  private async checkTarget(full: string | Buffer, expect: TargetVersion, signal: AbortSignal): Promise<void> {
-    if (expect == null) return;
-    const stats = await lstatOrNull(full);
-    if (stats?.isSymbolicLink()) throw new CommanderError("permission_denied", "Symbolic link at target");
-    if (expect === "absent") {
-      if (stats) throw changed();
-      return;
-    }
+  private async verifyTargetHash(
+    target: ResourcePath, expect: TargetVersion, signal: AbortSignal,
+  ): Promise<BigIntStats | null> {
+    if (!expect || expect === "absent" || !expect.sha256) return null;
+    const { full, stats } = await resolvePath(target, this.platform, { target: true });
     if (!stats?.isFile() || !matches(stats, expect)) throw changed();
-    if (expect.sha256) {
-      const hex = await withRegularFile(full, stats, signal, async (file, opened) => {
-        if (!matches(opened, expect)) throw changed();
-        return hashFile(file, signal);
-      });
-      const current = await lstatOrNull(full);
-      if (hex !== expect.sha256 || !current || !sameNode(stats, current) || !matches(current, expect)) throw changed();
-    }
+    return withRegularFile(full, stats, signal, async (file, opened) => {
+      if (!matches(opened, expect)) throw changed();
+      const hex = await (this.options.hashTarget ?? hashFile)(file, signal);
+      const after = await file.stat({ bigint: true });
+      if (hex !== expect.sha256 || !matches(after, expect)) throw changed();
+      return opened;
+    });
   }
 
-  abort(session: string): Promise<void> {
-    return this.run(session, async (stage) => {
-      let tempToRemove: string | Buffer | undefined;
-      try {
-        const directory = await resolvePath(parent(stage.target)!, this.platform);
-        if (directory.stats && sameNode(directory.stats, stage.directory)) {
-          requireDirectory(directory.stats);
-          const temp = childPath(directory.full, stage.tempName);
-          const current = await lstatOrNull(temp);
-          const staged = await stage.file.stat({ bigint: true });
-          if (current && sameNode(current, staged)) tempToRemove = temp;
-        }
-      } finally {
-        await this.finish(session, stage, tempToRemove);
-      }
-    }, () => {});
+  private checkTarget(current: BigIntStats | null, expect: TargetVersion, hashed: BigIntStats | null): void {
+    if (expect == null) return;
+    if (expect === "absent") {
+      if (current) throw changed();
+      return;
+    }
+    if (!current?.isFile() || !matches(current, expect) || (hashed && !sameNode(current, hashed))) throw changed();
+  }
+
+  abort(session: string): Promise<CleanupResult> {
+    return this.run(session, (stage) => this.publish(() => this.finish(session, stage, true)), () => ({}));
   }
 
   async dispose(): Promise<void> {
     this.disposed = true;
-    const outcomes = await Promise.allSettled([...this.sessions.keys()].map((session) => this.abort(session)));
-    for (const outcome of outcomes) if (outcome.status === "rejected") throw outcome.reason;
+    await Promise.allSettled([...this.sessions.keys()].map((session) => this.abort(session)));
   }
 
-  private async finish(session: string, stage: StagedFile, temp?: string | Buffer) {
-    this.sessions.delete(session);
+  private async removeStage(stage: StagedFile): Promise<StagingOrphan["reason"] | undefined> {
+    const { target, directory, tempName, file } = stage;
+    const resolved = await resolvePath(parent(target)!, this.platform);
+    if (!resolved.stats?.isDirectory() || !sameNode(resolved.stats, directory)) return "parent_changed";
+    const temp = childPath(resolved.full, tempName);
+    const staged = await file.stat({ bigint: true });
+    const current = await lstatOrNull(temp);
+    if (!current) return;
+    if (!current.isFile() || !sameNode(current, staged)) return "cleanup_failed";
+    const currentParent = await lstatOrNull(resolved.full);
+    if (!currentParent?.isDirectory() || !sameNode(currentParent, directory)) return "parent_changed";
     try {
-      if (temp) await unlink(temp);
-    } finally {
+      await (this.options.unlink ?? unlink)(temp);
+    } catch (error) {
+      if (!hasErrno(error, "ENOENT")) throw error;
+    }
+  }
+
+  private async finish(session: string, stage: StagedFile, cleanup: boolean): Promise<CleanupResult> {
+    this.sessions.delete(session);
+    let reason: StagingOrphan["reason"] | undefined;
+    if (cleanup) {
       try {
-        await stage.file.close();
-      } finally {
-        await stage.lease?.dispose();
+        reason = await this.removeStage(stage);
+      } catch (error) {
+        reason = hasErrno(error, "ENOENT") || (error instanceof CommanderError && (
+          error.code === "permission_denied" || error.code === "not_a_directory"
+        )) ? "parent_changed" : "cleanup_failed";
       }
     }
+    try {
+      await stage.file.close();
+    } catch {
+      reason ??= "cleanup_failed";
+    }
+    try {
+      await stage.lease?.dispose();
+    } catch {
+      reason ??= "cleanup_failed";
+    }
+    if (!reason) return {};
+    const tempPath = join(parent(stage.target)!, stage.tempName);
+    const orphan = { session, tempPath, reason };
+    const warn = () => { console.warn("[commander] Staging requires reconciliation", { session, reason }); };
+    const report = this.options.onOrphan;
+    if (report) void Promise.resolve().then(() => report(orphan)).catch(warn);
+    else warn();
+    return { orphanedTempPath: tempPath };
   }
 
   private async run<T>(
@@ -228,6 +315,6 @@ export class WriteSessions {
   private armExpiry(session: string, record: Session) {
     if (this.disposed || this.sessions.get(session) !== record) return;
     record.cancelExpiry?.();
-    record.cancelExpiry = this.scheduleExpiry(() => this.abort(session), IDLE_MS);
+    record.cancelExpiry = (this.options.scheduleExpiry ?? defaultSchedule)(async () => { await this.abort(session); }, IDLE_MS);
   }
 }

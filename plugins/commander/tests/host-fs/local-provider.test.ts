@@ -74,3 +74,59 @@ it("publishes the actual staging path and rejects commit after a target update",
     await rm(root, { recursive: true, force: true });
   }
 });
+
+it("uses the SDK's 30-minute limit for copy, hash and commit only", async () => {
+  const call = vi.fn().mockResolvedValue({
+    session: "04782287-b8ae-4cb3-9d1a-fb6e9e501870", tempName: { t: ".stage" }, size: "0", mtimeNs: "0",
+  });
+  const provider = createLocalProvider(endpoint, { call });
+  const path = parsePosix("/fixture");
+  await provider.stat(path, signal);
+  await provider.copyWithin(path, path, { replace: false }, signal);
+  await provider.sha256(path, signal);
+  const written = await provider.openWrite(path, signal);
+  await written.commit({ replace: false, expectTarget: null }, signal);
+
+  expect(call.mock.calls.map(([method, , opts]) => [method, opts.timeoutMs])).toEqual([
+    ["stat", undefined], ["copyWithin", 1_800_000], ["sha256", 1_800_000],
+    ["writeOpen", undefined], ["writeCommit", 1_800_000],
+  ]);
+});
+
+it("classifies an unconfirmed mutation separately from a failed read and cancellation", async () => {
+  const call = vi.fn(async (method: string) => {
+    if (method === "writeOpen") return { session: "04782287-b8ae-4cb3-9d1a-fb6e9e501870", tempName: { t: ".stage" } };
+    throw new Error("Host RPC timed out");
+  });
+  const provider = createLocalProvider(endpoint, { call: call as unknown as Parameters<typeof createLocalProvider>[1]["call"] });
+  const path = parsePosix("/fixture");
+  const stage = await provider.openWrite(path, signal);
+  for (const mutate of [
+    () => stage.commit({ replace: true, expectTarget: null }, signal),
+    () => provider.rename(path, path, { replace: false }, signal),
+    () => provider.remove(path, { kind: "file" }, signal),
+    () => provider.copyWithin(path, path, { replace: false }, signal),
+    () => provider.mkdir(path, signal),
+  ]) {
+    await expect(mutate()).rejects.toMatchObject({ code: "outcome_unknown", retryable: false });
+  }
+  await expect(provider.stat(path, signal)).rejects.toMatchObject({ code: "connection_failed" });
+
+  const cancelled = new AbortController();
+  call.mockImplementationOnce(async () => {
+    cancelled.abort();
+    throw new Error("Transport closed");
+  });
+  await expect(provider.remove(path, { kind: "file" }, cancelled.signal))
+    .rejects.toMatchObject({ code: "cancelled" });
+});
+
+it("reports a non-atomic publication to the caller while returning a strict fingerprint", async () => {
+  const onResult = vi.fn();
+  const provider = createLocalProvider(endpoint, {
+    call: vi.fn().mockResolvedValue({ size: "3", mtimeNs: "1", atomicNoReplace: false }),
+  }, { onResult });
+  const path = parsePosix("/fixture");
+  expect(await provider.copyWithin(path, path, { replace: false }, signal)).toEqual({ size: "3", mtimeNs: "1" });
+  expect(onResult).toHaveBeenCalledWith({ method: "copyWithin", target: path, atomicNoReplace: false });
+});

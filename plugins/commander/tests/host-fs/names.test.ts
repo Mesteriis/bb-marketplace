@@ -15,3 +15,18 @@ it.each(["CONSOLE", "COM10", "nul_", "Привет.txt"])("accepts Windows targe
 it.each(["a:b", "CON", "name."])("accepts POSIX target %j", (t) => {
   expect(() => validateTargetName({ t }, "posix")).not.toThrow();
 });
+
+it("builds Windows drive paths independently of the test OS", async () => {
+  const { parseWindowsPath } = await import("../../src/adapters/bb/host-fs/paths.ts");
+  expect(parseWindowsPath(String.raw`C:\Users\Привет`)).toEqual({
+    segments: [{ t: "C:" }, { t: "Users" }, { t: "Привет" }],
+  });
+  expect(parseWindowsPath("D:/")).toEqual({ segments: [{ t: "D:" }] });
+  expect(() => parseWindowsPath("E:relative")).toThrow(expect.objectContaining({ code: "invalid_path" }));
+});
+
+it("refuses a UNC home explicitly", async () => {
+  const { parseWindowsPath } = await import("../../src/adapters/bb/host-fs/paths.ts");
+  expect(() => parseWindowsPath(String.raw`\\server\share\home`))
+    .toThrow(expect.objectContaining({ code: "unsupported" }));
+});
