@@ -783,11 +783,10 @@ ADD COLUMN`, **миграция № 8 (индекс 7 в `MIGRATIONS`, посл�
   2. **Цель существует** (`expectTarget` — отпечаток; в том числе когда «цель и
      temp существуют») — это ветка **разрешённой замены**, не безусловный
      `unknown`. Поля `item.replace` в `PlanItem`/`Checkpoint` **нет**;
-     разрешение — одно из двух: (а) `plan.conflictPolicy ∈ {overwrite,
-     overwriteIfNewer}`; (б) **записанное решение владельца по конфликту этого
-     элемента** с действием `overwrite` (`ConflictDecision.action`, сохранённое
-     в задании; **где оно сохраняется — уточняю в коде первым шагом**; если
-     в сохранённом задании оно не читается — действует только источник (а)).
+     разрешение после рестарта доказывает **только** `plan.conflictPolicy ∈
+     {overwrite, overwriteIfNewer}`: решения владельца по конфликтам хранятся
+     лишь в памяти раннера (`job-runner.ts:105`, `Map decisions`) и в БД не
+     попадают, поэтому при политике `ask`/`skip`/`rename` → `unknown`.
      При выполнении всех условий → `rename(temp, target, { replace: true,
      expectTarget: исходный })`, затем SHA-256 цели → `done`.
   3. Нет `atomicReplace` (SFTP без posix-rename), разрешение не доказано,
@@ -796,11 +795,10 @@ ADD COLUMN`, **миграция № 8 (индекс 7 в `MIGRATIONS`, посл�
   Тесты (по одному на каждый пункт): пересоздать провайдера (новый экземпляр,
   пустая таблица сессий) → ветка 1 с `{replace:false, expectTarget:"absent"}`,
   `openWrite` не вызван, `done`; ветка 2 при `conflictPolicy: "overwrite"`;
-  при `overwriteIfNewer`; при записанном решении владельца `overwrite` (политика
-  `ask`) → rename с `replace:true`, `done`; **отсутствие каждого условия** по
+  при `overwriteIfNewer` → rename с `replace:true`, `done`; политика `ask` после
+  решения владельца `overwrite` (решение утрачено при рестарте) → `unknown`; **отсутствие каждого условия** по
   отдельности (temp изменён; SHA-256 temp другой; цель не совпала с
-  `expectTarget`; политика `ask`/`skip`/`rename` без решения `overwrite`;
-  решение владельца `skip`/`rename`; нет `atomicReplace` — SFTP-мок с
+  `expectTarget`; политика `ask`/`skip`/`rename`; нет `atomicReplace` — SFTP-мок с
   `posixRename: false`) → `unknown`, `rename` не вызван.
 - Любой другой исход (цель другого вида, цель и temp на месте, сверка
   недоступна) → `unknown`, решает владелец.
