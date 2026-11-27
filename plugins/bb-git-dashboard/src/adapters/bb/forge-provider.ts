@@ -10,6 +10,7 @@ export function forgeRepositoryPath(repo: Repo) {
 }
 export function forgePrefix(account: Account) {
   if (account.kind === "gitea") return "/api/v1";
+  if (account.kind === "gitlab") return "/api/v4";
   return ["github.com","api.github.com"].includes(new URL(account.origin).hostname) ? "" : "/api/v3";
 }
 function normalized(raw: unknown) {
