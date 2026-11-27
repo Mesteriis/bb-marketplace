@@ -2,6 +2,10 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { Entry, OperationJob } from "./src/core/model.ts";
+import { CommanderError } from "./src/core/errors.ts";
+import { parsePosix } from "./src/core/path.ts";
+import { MAX_VIEW_BYTES, readForView, replyFor, type WireView } from "./src/core/preview.ts";
+import { FakeProvider } from "./src/core/testing/fake-provider.ts";
 import type { UiState } from "./src/core/wire/rpc.ts";
 
 const host = vi.hoisted(() => ({
@@ -708,4 +712,94 @@ test("reopened comparison waits for the original delayed start and adopts its ID
   expect(host.call).toHaveBeenCalledWith("scan_get", { scanId });
   expect(actualStarts()).toHaveLength(1);
   expect(host.call.mock.calls.filter(([method, input]) => method === "scan_start" && input.estimateOnly)).toHaveLength(1);
+});
+
+// The owner's file_read, served by the same core code the RPC handler uses: a 3 MiB PNG on a fake host.
+const PNG_3MIB = (() => {
+  const bytes = new Uint8Array(3 * 1024 * 1024);
+  bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
+  for (let index = 8; index < bytes.length; index++) bytes[index] = index % 251;
+  return bytes;
+})();
+
+function serveFileRead(provider: FakeProvider, file: ReturnType<typeof parsePosix>, input: Record<string, unknown>) {
+  return (async () => {
+    try {
+      const window = await readForView(provider, file, {
+        offset: BigInt((input.offset as string | undefined) ?? "0"),
+        length: (input.length as number | undefined) ?? MAX_VIEW_BYTES,
+        ...(input.expect ? { expect: input.expect as { size: string; mtimeNs: string | null } } : {}),
+      }, new AbortController().signal);
+      return JSON.parse(JSON.stringify(replyFor(window, (input.mode as "auto") ?? "auto", "owner"))) as WireView;
+    } catch (error) {
+      // The RPC handler sends changed_since_plan as a conflict whose message carries the code.
+      if (error instanceof CommanderError && error.code === "changed_since_plan") {
+        throw Object.assign(new Error(JSON.stringify({ code: error.code, message: error.message })), { code: "conflict" });
+      }
+      throw error;
+    }
+  })();
+}
+
+function serveOwnerFiles(provider: FakeProvider, file: ReturnType<typeof parsePosix>) {
+  const base = host.call.getMockImplementation()!;
+  const fileReads: Record<string, unknown>[] = [];
+  host.call.mockImplementation(async (method: string, input: Record<string, unknown>) => {
+    if (method !== "file_read") return base(method, input);
+    fileReads.push(input);
+    return serveFileRead(provider, file, input);
+  });
+  return fileReads;
+}
+
+async function openViewerOnPng() {
+  host.navigate.experimental_openFilePreview.mockReturnValue(false);
+  mount();
+  fireEvent.click(await leftFile());
+  fireEvent.keyDown(grid(), { key: "F3" });
+  return screen.findByRole("dialog", { name: "пример.txt" });
+}
+
+test("F3 assembles a 3 MiB image from chunks that all carry the first version", async () => {
+  const provider = new FakeProvider("host:fixture");
+  const file = parsePosix("/данные/пример.png");
+  provider.put(file, PNG_3MIB, "1");
+  const fileReads = serveOwnerFiles(provider, file);
+  const createObjectURL = vi.fn((_blob: Blob) => "blob:commander/assembled");
+  URL.createObjectURL = createObjectURL;
+  URL.revokeObjectURL = vi.fn();
+
+  const dialog = await openViewerOnPng();
+
+  await waitFor(() => expect(within(dialog).getByRole("img", { name: "пример.txt" }).getAttribute("src")).toBe("blob:commander/assembled"));
+  const blob = createObjectURL.mock.calls[0]![0];
+  expect(blob.size).toBe(3145728);
+  expect(blob.type).toBe("image/png");
+  expect(fileReads.length).toBeGreaterThan(1);
+  for (const later of fileReads.slice(1)) {
+    expect(later).toMatchObject({ mode: "image", expect: { size: "3145728", mtimeNs: "1" } });
+  }
+});
+
+test("F3 reports the file changed between two chunks of one image", async () => {
+  const provider = new FakeProvider("host:fixture");
+  const file = parsePosix("/данные/пример.png");
+  provider.put(file, PNG_3MIB, "1");
+  const fileReads = serveOwnerFiles(provider, file);
+  // The file is replaced after the second chunk has been served; the third chunk must fail.
+  const served = host.call.getMockImplementation()!;
+  let chunks = 0;
+  host.call.mockImplementation(async (method: string, input: Record<string, unknown>) => {
+    if (method !== "file_read") return served(method, input);
+    chunks++;
+    const reply = await served(method, input);
+    if (chunks === 2) provider.put(file, PNG_3MIB.subarray(0, 2 * 1024 * 1024), "2");
+    return reply;
+  });
+
+  const dialog = await openViewerOnPng();
+
+  expect(await within(dialog).findByText("Файл изменился во время просмотра")).toBeDefined();
+  expect(within(dialog).queryByRole("img")).toBeNull();
+  expect(fileReads.length).toBe(3);
 });

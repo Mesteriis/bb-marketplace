@@ -6,7 +6,9 @@ import type { JobRunner } from "../../core/job-runner.ts";
 import type { AgentJobStore } from "../../core/job-store.ts";
 import type { Entry, Initiator, JobState, OperationJob, OperationPlan, ResourceRef } from "../../core/model.ts";
 import type { ScanContext, ScanRunner } from "../../core/scan-job.ts";
+import { entryName, readForView, replyFor } from "../../core/preview.ts";
 import { parent } from "../../core/path.ts";
+import { toBig } from "../../core/size.ts";
 import { authorize, REQUIRED } from "../../core/permissions.ts";
 import { buildPlan, revalidate, type PlannerDeps } from "../../core/planner.ts";
 import { UiState, rpcSchemas, type AgentGrant, type DamagedJob, type GrantKey, type RpcInput, type ScanResult } from "../../core/wire/rpc.ts";
@@ -174,6 +176,12 @@ export function createOperations(deps: {
     return job;
   }
 
+  async function checkRead(initiator: Initiator, ref: ResourceRef) {
+    if (initiator.kind === "owner") return;
+    const rows = effectiveGrants(await grants.forThread(initiator.threadId), ref.endpoint);
+    if (!covers(rows, ref, "read")) throw refusal("forbidden", "Path is outside the agent's grant");
+  }
+
   async function checkMetadata(initiator: Initiator, ref: ResourceRef) {
     if (initiator.kind === "owner") return;
     if (!canObserve(await grants.forThread(initiator.threadId), ref)) {
@@ -334,6 +342,14 @@ export function createOperations(deps: {
       await checkMetadata(initiator, ref);
       await endpoints.prepare([ref.endpoint], signal);
       return endpoints.provider(ref.endpoint).stat(ref.path, signal);
+    },
+    async read(input: RpcInput<"file_read">, initiator: Initiator, signal: AbortSignal) {
+      const { ref, offset, length, mode, expect } = input;
+      await checkRead(initiator, ref);
+      await endpoints.prepare([ref.endpoint], signal);
+      const window = await readForView(endpoints.provider(ref.endpoint), ref.path,
+        { offset: toBig(offset), length, ...(expect ? { expect } : {}) }, signal);
+      return replyFor(window, mode, initiator.kind === "agent" ? "agent" : "owner");
     },
     async createPlan(input: RpcInput<"plan_create">, initiator: Initiator, signal: AbortSignal) {
       const limits = initiator.kind === "agent" ? { ...planner.limits, maxItems: maxAgentPlanItems } : planner.limits;
@@ -595,12 +611,22 @@ function scanHash(ctx: ScanContext) {
   };
 }
 
+// The owner sees a file that changed while it was viewed as a conflict whose message carries the
+// internal code, so the viewer can tell it apart from other conflicts.
+function changedRefusal(error: unknown): never {
+  if (isCommanderError(error) && error.code === "changed_since_plan") {
+    throw refusal("conflict", JSON.stringify({ code: error.code, message: error.message }));
+  }
+  throw error;
+}
+
 export function createRpcHandlers(ops: Operations): ExperimentalPluginRpcHandlersWithContext<typeof rpcSchemas> {
   const handlers: ExperimentalPluginRpcHandlersWithContext<typeof rpcSchemas> = {
     endpoints_list: (_, ctx) => ops.endpointsList(owner, ctx.experimental_signal),
     endpoint_home: ({ endpoint }, ctx) => ops.home(endpoint, ctx.experimental_signal),
     dir_list: (input, ctx) => ops.list(input, owner, ctx.experimental_signal),
     entry_stat: ({ ref }, ctx) => ops.stat(ref, owner, ctx.experimental_signal),
+    file_read: (input, ctx) => ops.read(input, owner, ctx.experimental_signal).catch(changedRefusal),
     plan_create: (input, ctx) => ops.createPlan(input, owner, ctx.experimental_signal),
     plan_run: (input, ctx) => ops.runPlan(input, owner, ctx.experimental_signal),
     job_list: (input) => ops.jobs(input),

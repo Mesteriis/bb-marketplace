@@ -1,11 +1,13 @@
 import { z } from "zod";
 import {
   ConflictDecision, ConflictPolicy, Endpoint, EndpointId, Entry, Initiator, JobProgress, JobState,
-  OperationJob, OperationKind, OperationPlan, Permission, ResourceRef, Verify,
+  OperationJob, OperationKind, OperationPlan, Permission, ResourceRef, Verify, Fingerprint,
 } from "../model.ts";
 import { CommanderErrorShape } from "../errors.ts";
 import { NameSegment, ResourcePath } from "../path.ts";
 import { LIST_PAGE_MAX } from "../provider.ts";
+import { IMAGE_MIMES, MAX_RESPONSE_BYTES, MAX_VIEW_BYTES, VIEW_KINDS } from "../preview.ts";
+import { Size } from "../size.ts";
 import { sftpMethods } from "./remote-hub-sftp.ts";
 
 const empty = z.strictObject({});
@@ -128,6 +130,7 @@ export const ScanGetView = z.strictObject({
   job: ScanJobView, result: scanResult.nullable(), reason: z.literal("result_expired").optional(),
 });
 export type ScanGetView = z.infer<typeof ScanGetView>;
+const FileVersion = Fingerprint.pick({ size: true, mtimeNs: true });
 
 export const rpcSchemas = {
   endpoints_list: { input: empty, output: z.strictObject({ endpoints: z.array(EndpointView) }) },
@@ -137,6 +140,39 @@ export const rpcSchemas = {
     output: z.strictObject({ entries: z.array(Entry).max(LIST_PAGE_MAX), cursor: z.string().max(2048).nullable() }),
   },
   entry_stat: { input: z.strictObject({ ref: ResourceRef }), output: Entry.nullable() },
+  // Window of a file for F3 and the agent read tool. A reply is at most 1 MiB as JSON (the agent's
+  // tool result is measured with its text escaped). `modes` lists what the file offers; `mode` picks
+  // one. `expect` is the version of an earlier window, so chunks of one view share a version.
+  file_read: {
+    input: z.strictObject({
+      ref: ResourceRef,
+      offset: Size.default("0"),
+      length: z.int().min(1).max(MAX_VIEW_BYTES).default(MAX_VIEW_BYTES),
+      mode: z.enum(["auto", ...VIEW_KINDS]).default("auto"),
+      expect: FileVersion.optional(),
+    }),
+    output: z.strictObject({
+      version: FileVersion,
+      modes: z.array(z.enum(VIEW_KINDS)).min(1).max(3),
+      view: z.discriminatedUnion("kind", [
+        z.strictObject({ kind: z.literal("text"), text: z.string().max(MAX_RESPONSE_BYTES), truncated: z.boolean() }),
+        z.strictObject({
+          kind: z.literal("image"),
+          mime: z.enum(IMAGE_MIMES),
+          base64: z.string().max(MAX_RESPONSE_BYTES),
+          truncated: z.boolean(),
+        }),
+        z.strictObject({
+          kind: z.literal("binary"),
+          lines: z.array(z.string().max(160)).max(MAX_RESPONSE_BYTES / 16),
+          truncated: z.boolean(),
+          shown: z.int().nonnegative().max(MAX_RESPONSE_BYTES),
+          total: Size,
+        }),
+        z.strictObject({ kind: z.literal("chunk"), offset: Size, base64: z.string().max(MAX_RESPONSE_BYTES), truncated: z.boolean() }),
+      ]),
+    }),
+  },
   plan_create: { input: PlanInput, output: OperationPlan },
   plan_run: { input: z.strictObject({ planId: z.uuid(), digest }), output: OperationJob },
   // Обычная выдача идёт по updated_at DESC (при равенстве по id ASC).

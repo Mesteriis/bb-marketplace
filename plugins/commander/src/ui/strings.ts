@@ -59,6 +59,11 @@ export const ru = {
   scanHideEqual: "Скрыть одинаковые", scanTolerance: "По размеру и времени изменения, допуск 2 с",
   scanPartial: "Результат неполный: достигнут предел записей",
   nameSort: "Имя", sizeSort: "Размер", dateSort: "Изменён",
+  view: {
+    truncated: "Показана только первая часть файла", changed: "Файл изменился во время просмотра", group: "Режим просмотра",
+    text: "Текст", hex: "Hex", image: "Изображение",
+    shown: (shown: number, total: string) => "Показано " + shown + " из " + total + " байт",
+  },
 };
 export const operationText = { copy: "Копирование", move: "Перемещение", rename: "Переименование", mkdir: "Создание каталога", delete: "Удаление" };
 export const stateText = {

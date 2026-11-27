@@ -2,6 +2,7 @@ import { definePluginApp, useBbNavigate, useRealtime, useRpc, useSdk, type Exper
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LIST_PAGE_MAX } from "./src/core/provider.ts";
 import { parsePosix } from "./src/core/path.ts";
+import { assembleImage, type ViewKind, type WireView } from "./src/core/preview.ts";
 import { CommanderError } from "./src/core/errors.ts";
 import { JobState, type ConflictAction, type Entry, type OperationJob, type OperationPlan, type ResourceRef } from "./src/core/model.ts";
 import { type UiState, type rpcSchemas } from "./src/core/wire/rpc.ts";
@@ -330,6 +331,12 @@ function CommanderPage({ compact = false, environment, threadId }: { compact?: b
       throw new CommanderError("unsupported", ru.terminalUnavailable);
     }
   };
+  // Owner view: one file_read; a whole image comes at once, a larger one as chunks with one version.
+  const loadView = async (ref: ResourceRef, mode: ViewKind | "auto") => {
+    const first: WireView = await rpc.call("file_read", { ref, mode });
+    return assembleImage(first,
+      (offset, expect) => rpc.call("file_read", { ref, mode: "image", offset: offset.toString(), expect }));
+  };
   const mutate = async (action: Promise<unknown>) => { const result = await action; refresh("job"); return result; };
   const identity = (job: OperationJob) => ({ jobId: job.id, digest: job.plan.digest });
   const retryUnfinished = async (job: OperationJob) => {
@@ -373,7 +380,7 @@ function CommanderPage({ compact = false, environment, threadId }: { compact?: b
     }}
     onCancel={(job) => mutate(rpc.call("job_cancel", { jobId: job.id }))}
     onRetry={(job) => mutate(retryUnfinished(job))}
-    onPreview={preview} onCompare={(source, target) => Promise.all([readText(source), readText(target)])}
+    onPreview={preview} onView={(ref, mode) => loadView(ref, mode)} onCompare={(source, target) => Promise.all([readText(source), readText(target)])}
     onTerminal={terminal} onOpenThread={(id) => navigate.toThread(id)} onOpenPage={() => navigate.toPluginPanel("commander")} />;
 }
 

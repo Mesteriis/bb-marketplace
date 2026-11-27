@@ -458,3 +458,14 @@
   .cm-scan-panes, .cm-scan-file { flex: 1 0 auto; overflow: visible; }
   .cm-scan-side { flex: 0 0 auto; border-left: 0; border-top: 1px solid var(--border); overflow: visible; }
 }
+/* File viewer (F3): segmented mode control, monospace text and hex, muted offset and ASCII columns. */
+.commander-viewer { display: flex; flex-direction: column; gap: 8px; padding: 12px 16px; font-size: 13px; }
+.commander-viewer-modes { display: inline-flex; align-self: flex-start; overflow: hidden; border: 1px solid var(--border); border-radius: 6px; }
+.commander-viewer-modes button { padding: 4px 10px; border: 0; background: transparent; color: var(--muted-foreground); font-size: 12px; cursor: pointer; }
+.commander-viewer-modes button[aria-pressed="true"] { background: var(--accent); color: var(--foreground); }
+.commander-viewer-text, .commander-viewer-hex { margin: 0; overflow: auto; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12.5px; line-height: 22px; }
+.commander-viewer-text { padding: 12px 16px; white-space: pre-wrap; }
+.commander-viewer-hex { padding: 12px 16px; white-space: pre; }
+.commander-viewer img { display: block; align-self: flex-start; width: auto; max-width: 100%; height: auto; }
+.commander-viewer p { margin: 0; font-size: 12px; color: var(--muted-foreground); }
+.commander-hex-off, .commander-hex-asc { color: var(--muted-foreground); }

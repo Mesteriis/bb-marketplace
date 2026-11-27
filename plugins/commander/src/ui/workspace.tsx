@@ -5,6 +5,7 @@ import type { ConflictAction, Entry, OperationJob, OperationPlan, ResourceRef } 
 import { displayPath, join, NameSegment, parent, parsePosix, samePath, type ResourcePath } from "../core/path.ts";
 import type { AgentGrant, SavedUiScan, UiState } from "../core/wire/rpc.ts";
 import { CompareView, type ScanActions, type ScanSubject } from "./compare-view.tsx";
+import type { ViewKind, ViewResult } from "../core/preview.ts";
 import { ConflictDialog, Modal, PlanDialog, TextDialog } from "./dialogs.tsx";
 import { chord, findShortcut, shortcuts, shortcutText, type KeyBindings, type Shortcut } from "./keyboard.ts";
 import { activeTab, currentRef, keyOf, nameOf, nativePath, otherSide, problemOf, selectionInfo, shortPath, sides, visibleEntries,
@@ -12,6 +13,7 @@ import { activeTab, currentRef, keyOf, nameOf, nativePath, otherSide, problemOf,
 import { Pane, ProblemLine, rowHeight, upKey } from "./pane.tsx";
 import { Queue, type QueueProps, type RetryNote } from "./queue.tsx";
 import { ru } from "./strings.ts";
+import { Viewer } from "./viewer.tsx";
 
 type ConflictView = { kind: "conflict"; job: OperationJob };
 type Cursor = { key: string; index: number; explicit: boolean };
@@ -21,6 +23,7 @@ type DialogState = { kind: "plan"; plan: OperationPlan; job?: OperationJob }
   | { kind: "text"; title: string; label: string; initial?: string; submit: (value: string) => void }
   | { kind: "scan"; subject: ScanSubject }
   | { kind: "content"; source: string; target: string; returnTo: ConflictView }
+  | { kind: "view"; ref: ResourceRef; title: string; mode: ViewKind | "auto"; result: ViewResult | null; problem: Problem | null }
   | { kind: "settings" };
 
 export interface WorkspaceProps {
@@ -51,6 +54,7 @@ export interface WorkspaceProps {
   onPreview: (ref: ResourceRef) => void;
   scans: ScanActions;
   startingScans: ReadonlySet<ScanSubject["kind"]>;
+  onView: (ref: ResourceRef, mode: ViewKind | "auto") => Promise<ViewResult>;
   onCompare: (source: ResourceRef, target: ResourceRef) => Promise<[string, string]>;
   onTerminal: (ref: ResourceRef) => Promise<void>;
   onOpenThread: (threadId: string) => void;
@@ -175,14 +179,14 @@ export function Workspace(props: WorkspaceProps) {
   }, [tab?.selection, directories[side]]);
   const selected = cursor[side]?.key !== upKey && (selectedNames.length > 0 || !!current);
   const can: Record<string, boolean> = {
-    preview: ready && endpoint?.provider === "local" && !!endpoint.hostId && current?.kind !== "dir" && !!current &&
-      "t" in current.name && !!tab && nativePath(tab.path) !== null,
+    preview: ready && current?.kind !== "dir" && !!current && "t" in current.name && !!tab,
     copy: ready && targetReady && selected, move: ready && targetReady && selected && !endpoint?.readOnly,
     mkdir: ready && !endpoint?.readOnly, remove: ready && selected && !endpoint?.readOnly,
     rename: ready && !!current && !endpoint?.readOnly,
     terminal: !!ready && endpoint?.provider === "local" && !!endpoint.hostId && !!tab && nativePath(tab.path) !== null,
   };
-  can.edit = can.preview;
+  can.edit = ready && endpoint?.provider === "local" && !!endpoint.hostId && current?.kind !== "dir" && !!current &&
+    "t" in current.name && !!tab && nativePath(tab.path) !== null;
   useLayoutEffect(() => {
     const bar = toolbar.current;
     if (!bar) return;
@@ -352,7 +356,27 @@ export function Workspace(props: WorkspaceProps) {
     if (entry === null) goUp(pane);
     else if (entry.kind === "dir") {
       try { navigate(pane, join(value.path, entry.name)); } catch (error) { setProblem(problemOf(error)); }
-    } else preview(value, entry);
+    } else view(value, entry);
+  }
+  function view(value: Tab, entry: Entry) {
+    const ref = { endpoint: value.endpoint, path: join(value.path, entry.name) };
+    // A local file with a host path opens in BB's own preview when it succeeds; the DOM guarantees of
+    // the Commander viewer do not cover that preview. Anything else, such as SFTP, falls back to
+    // the Commander viewer, which reads the window through file_read.
+    try { props.onPreview(ref); return; } catch { /* No native preview for this entry. */ }
+    open({ kind: "view", ref, title: "t" in entry.name ? entry.name.t : "", mode: "auto", result: null, problem: null });
+    void loadView(ref, "auto");
+  }
+  async function loadView(ref: ResourceRef, mode: ViewKind | "auto") {
+    try {
+      const result = await props.onView(ref, mode);
+      setDialog((current) => current?.kind === "view" && current.ref === ref ? { ...current, result, problem: null } : current);
+    } catch (error) {
+      const failure = problemOf(error);
+      // A file that changed while it was viewed; the owner RPC reports it under this internal code.
+      const problem = failure.code === "changed_since_plan" ? { code: failure.code, message: ru.view.changed } : failure;
+      setDialog((current) => current?.kind === "view" && current.ref === ref ? { ...current, result: null, problem } : current);
+    }
   }
   function preview(value: Tab, entry: Entry) {
     try { props.onPreview({ endpoint: value.endpoint, path: join(value.path, entry.name) }); }
@@ -398,7 +422,8 @@ export function Workspace(props: WorkspaceProps) {
     else if (action === "invert") applyMask(action, "*");
     else if (action === "mark" || action === "unmark") open({ kind: "text", title: shortcutText[action], label: ru.mask, initial: "*", submit: (value) => applyMask(action, value) });
     else if (can[action] && tab) {
-      if (action === "preview" || action === "edit") { if (current) preview(tab, current); }
+      if (action === "preview") { if (current) view(tab, current); }
+      else if (action === "edit") { if (current) preview(tab, current); }
       else if (action === "mkdir" || action === "rename") open({
         kind: "text", title: shortcutText[action], label: ru.fileName,
         initial: action === "rename" && current && "t" in current.name ? current.name.t : "",
@@ -605,6 +630,15 @@ export function Workspace(props: WorkspaceProps) {
         <div className="cm-detail"><strong>{ru.existing}</strong><pre>{dialog.target}</pre></div>
       </div>
       <Button size="sm" variant="outline" disabled={busy} onClick={() => goBack(dialog.returnTo)}>{ru.close}</Button>
+    </Modal>}
+    {dialog?.kind === "view" && <Modal title={dialog.title} close={close}>
+      {dialog.result && <Viewer name={dialog.title} model={dialog.result.model} modes={dialog.result.modes}
+        onMode={(mode) => { setDialog({ ...dialog, mode, result: null, problem: null }); void loadView(dialog.ref, mode); }} />}
+      {dialog.problem && <ProblemLine problem={dialog.problem} />}
+      <div className="cm-actions">
+        {dialog.problem && <Button size="sm" variant="outline" onClick={() => { setDialog({ ...dialog, result: null, problem: null }); void loadView(dialog.ref, dialog.mode); }}>{ru.refresh}</Button>}
+        <Button size="sm" variant="outline" onClick={close}>{ru.close}</Button>
+      </div>
     </Modal>}
     {dialog?.kind === "settings" && <Modal title={ru.keySettings} description={ru.keyHint} close={close}>
       <div className="cm-keymap">{(Object.keys(shortcuts) as Shortcut[]).map((key) => <label key={key}>
