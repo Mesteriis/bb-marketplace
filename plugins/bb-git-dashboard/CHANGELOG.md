@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.0 — 2026-11-27
+
+- **Pull request page** for GitHub, GitLab, Gitea and Azure DevOps, opened from My PRs (click or Enter; ↗ still opens the forge; [ and ] step through the list): header with state, branches, size, blockers, reviewers and labels; Overview with the description and discussion; Checks with what failed; Files with the patch, line threads under their lines and Wrap long lines; Commits; Comments with every review thread.
+- Writes, each previewed and confirmed, refused when the head moved since the preview and offered only where the forge can: comment; reply and resolve or unresolve a thread; comment on a line or a Shift-selected range (GitLab and Gitea anchor a range on its last line); a review as comment, approve or request changes with pending line comments; request a reviewer; rename and edit the description; ready for review or draft; close or reopen; merge, squash or rebase by the forge's methods. Not offered: request-changes reviews on GitLab (its API has none); line comments, patches and the draft state on Azure DevOps (its API returns no line diff and does not change the draft state); rebase-merge on GitLab.
+- **Fix with agent** on a review thread or a failed check, or **Fix all with agent**: the prompt goes to the newest thread on the pull request's branch in a project whose remote is the repository, on any forge, else a new thread starts there.
+- **Issues** open from the Issues section of GitHub, GitLab and Gitea repositories, with comments, close or reopen, and **New issue**.
+- Pull request detail, files, patch rows, review rules and agent prompts are ported from bb-github-pr-dashboard (MIT) with their tests.
+
 ## 0.6.0 — 2026-11-27
 
 - **My PRs**: one page for every connected GitHub, GitLab, Gitea and Azure DevOps account, with Open, Review requested, Reviewed, Assigned, Merged and Closed tabs and their counts (a tab total only when every account can count it). Rows are grouped by account and repository, newest first, and lead with what blocks each pull request: draft, stacked on another one, merge conflicts, failing CI with the number of checks, CI running, changes requested, unresolved comments, awaiting review, and each forge's own reasons (GitLab's "Needs rebase", Azure's "Waiting for author"); a stripe shows the worst one. Reviewed marks a review the author pushed past. Search by every word, fold or hide a repository per tab, j/k and Enter, / to search. An account that fails shows its error while the others load. List, blocker, check, stack, search and watcher logic is ported from bb-github-pr-dashboard (MIT).

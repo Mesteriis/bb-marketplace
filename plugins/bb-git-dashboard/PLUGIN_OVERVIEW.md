@@ -4,7 +4,7 @@ Open Git from BB navigation and choose a project and repository in the tree. Att
 
 ## Forge and account detection
 
-Each working copy is matched to its forge from its `origin` remote; SSH aliases are resolved with `ssh -G`, reading only the host name. GitHub, GitLab and Azure DevOps are recognised by name; other servers are identified once through their public version endpoint, asked from the working copy’s host without credentials (loopback and private addresses are never asked), and the answer is cached for 30 days (one day for unknown or unreachable servers). The account is chosen automatically: on GitHub the account that owns the repository, then a member of its organization, then the only account that can see it; on other forges the account of that server. When two accounts fit equally, the repository panel asks which one to use.
+Each working copy is matched to its forge from its `origin` remote (SSH aliases through `ssh -G`). Well-known forges are recognised by name, other servers once through their public version endpoint, asked without credentials from the copy's host and cached. The account is chosen automatically by owner, organization or server; when two fit equally, the repository panel asks.
 
 ## Projects folder
 
@@ -18,12 +18,16 @@ The History tab of a working copy draws the commit graph over all branches, tags
 
 **Мои PR** lists the pull requests of every connected GitHub, GitLab, Gitea and Azure DevOps account by tab (Open, Review requested, Reviewed, Assigned, Merged, Closed), each led by what blocks it. Search, fold or hide repositories, move with j/k. A background check alerts you when CI starts failing or someone comments, as a toast, a count on the button and through Push notifications.
 
+## Pull requests and issues
+
+A pull request opens with its discussion, checks, files with line threads and commits. Comment, reply and resolve, comment on lines, submit a review, request reviewers, rename, mark ready or draft, close, reopen and merge, each after a confirmation and where the forge allows it. Fix with agent sends a thread or failed check to the pull request's thread. Issues open with their comments, can be closed, reopened and created.
+
 ## CI/CD
 
-The Actions tab of a connected repository lists GitHub Actions, Gitea Actions, GitLab CI/CD or Azure Pipelines runs with All, Active and Failed filters. A run shows its jobs and steps and opens the failed job's log at its error line. Re-run failed or all jobs, cancel a run, or run a workflow with the inputs it declares (GitLab: the variables `.gitlab-ci.yml` describes); every change is shown for confirmation first. Ask agent opens an investigation thread on the working copy with the error excerpt, Send to threads passes the same excerpt to chosen threads, and failure notifications send each new failed run to them. Log text reaches agents as fenced, untrusted data.
+The Actions tab lists GitHub Actions, Gitea Actions, GitLab CI/CD or Azure Pipelines runs with All, Active and Failed filters, opens a failed job's log at its error line, and re-runs, cancels or runs a workflow after a confirmation. Ask agent and Send to threads pass the error excerpt to agents as fenced, untrusted text.
 
-## Remote repositories and pull requests
+## Remote repositories
 
-Connect GitHub, GitLab, Azure Repos or Gitea accounts. Repository tabs show Code, CI/CD runs, issues and variables where supported by the selected provider. Secret and GitLab CI/CD variable values stay in the provider. Browse repositories and pull requests, read discussion and checks, and review clone, fetch, push and PR actions before confirming them. HTTPS Git transport uses the selected account’s credential in the execution host’s macOS Keychain. The connection wizard stores API tokens in Makosh Credential Vault when enabled and keeps a fallback copy in BB’s secret settings.
+Connect GitHub, GitLab, Azure Repos or Gitea accounts. Repository tabs show Code, CI/CD runs, issues and variables where supported. Secret and GitLab CI/CD variable values stay in the provider. Review clone, fetch, push and PR actions before confirming them. HTTPS Git transport uses the selected account’s credential in the execution host’s macOS Keychain. The connection wizard stores API tokens in Makosh Credential Vault when enabled and keeps a fallback copy in BB’s secret settings.
 
 The thread’s Git panel resolves its registered working copy. Grant agents read or local write access and review their publication and worktree requests in BB. Pinned tabs keep their selected worktree or pull request when the selection in Git changes.

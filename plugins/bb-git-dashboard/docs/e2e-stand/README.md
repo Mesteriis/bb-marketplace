@@ -9,7 +9,7 @@ Needs `git`, `node`, `npm`, `curl`, access to `registry.npmjs.org`, BB at
 `run.sh` outside them.
 
 ```sh
-S=$(docs/e2e-stand/prepare.sh "$PWD") && docs/e2e-stand/run.sh "$S" "$PWD/docs/e2e-stand/smoke.mjs" "$PWD/docs/e2e-stand/ci.mjs" "$PWD/docs/e2e-stand/history.mjs" "$PWD/docs/e2e-stand/gitlab.mjs" "$PWD/docs/e2e-stand/inbox.mjs"
+S=$(docs/e2e-stand/prepare.sh "$PWD") && docs/e2e-stand/run.sh "$S" "$PWD/docs/e2e-stand/smoke.mjs" "$PWD/docs/e2e-stand/ci.mjs" "$PWD/docs/e2e-stand/history.mjs" "$PWD/docs/e2e-stand/gitlab.mjs" "$PWD/docs/e2e-stand/inbox.mjs" "$PWD/docs/e2e-stand/review.mjs"
 ```
 
 - `prepare.sh` copies this package into a new `$TMPDIR/git-dashboard-stand.*`, runs `npm ci` and
@@ -40,6 +40,12 @@ S=$(docs/e2e-stand/prepare.sh "$PWD") && docs/e2e-stand/run.sh "$S" "$PWD/docs/e
   stack, search, j/k, hiding a repository, Review requested and Merged; then the watcher (2-minute round on the
   stand) alerts when a merge request's pipeline starts failing: toast, New since you last looked, the count on
   **Мои PR**, Mark as seen. It waits up to four minutes for the alert.
+
+- `review.mjs` — pull request and issue pages: a Gitea pull request opened from My PRs with its conflict, review,
+  discussion and failing check, its review thread under its line, a line comment and a comment; a GitLab merge
+  request's thread resolved, an approval of another author's merge request pinned to the head, no request-changes
+  review, a draft made ready; a GitLab issue's comment and a new issue — each through the confirmation dialog and once
+  in the stand-ins' write logs.
 
 - `history.mjs` — the History tab of `stand-alpha`: commit count over all branches, the merge with its branch and
   tag labels, more than one lane, the uncommitted change on top with its patch, a commit's files and patch,
