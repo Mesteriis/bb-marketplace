@@ -1,6 +1,6 @@
 # S14. Архивы как источник и создание — спецификация helper-протокола
 
-Статус: **ревизия 5 после повторного ревью astra+opus (repair)**, кода нет; ждёт повторного ревью.
+Статус: **ревизия 6 после повторного ревью astra+opus (repair)**, кода нет; ждёт повторного ревью.
 Решения координатора A–H и правки ревью 1–7 внесены ниже (§3, §4, §5, §6, §7, §10, §11).
 Основание: ADR 0002 (accepted), [план 2a, задача 7](../plans/stage-2a.md),
 [приёмка S14](../../research/stage-2-libs.md#приёмка-s14), `docs/security.md`.
@@ -38,7 +38,7 @@ USTAR/PAX, `flate2` не в зависимостях); 7z/RAR; многотом�
 | `package.json` | `scripts` (`build:helper`, `helper:sums`, `check:build`) и поле `files` (включить `bin/commander-archive-helper`, `bin/SHA256SUMS`); остальное не трогаю; файл правит и S18 — слияние по очереди |
 | корневой `THIRD_PARTY_NOTICES.md` | запись по `cargo metadata --locked --format-version 1 --filter-platform aarch64-apple-darwin`: **каждый** крейт из `Cargo.lock`, попадающий в бинарник (имя, версия, лицензия, источник), `zip` 8.6.0 и `tar` 0.4.46 отдельными строками; текст лицензий приложен, если требует лицензия; сверка списка скриптом `scripts/check-notices.mjs` (расхождение с `cargo metadata` — ошибка `check:build`) |
 | `.gitignore` | `helper/target/` |
-| `src/adapters/bb/rpc-handlers.ts` (блок `publicError`), `src/core/job-store.ts` (`Checkpoint.commitIntent`, только после решения координатора), `src/adapters/bb/migrations.ts` (JSON-колонка) | см. §10, §11 |
+| `src/adapters/bb/rpc-handlers.ts` (блок `publicError`), `src/core/job-store.ts` (`Checkpoint.commitIntent`, внутри существующего JSON, без миграции) | см. §10, §11 |
 | `src/core/errors.ts`, `errors.test.ts` | `ErrorCode += invalid_archive`, `reason?` с проверкой пары code+reason (§10) — разрешено координатором |
 
 ## 3. Процесс helper
@@ -72,7 +72,7 @@ USTAR/PAX, `flate2` не в зависимостях); 7z/RAR; многотом�
   шагом среза — тест на macOS arm64 (процесс выделяет сверх лимита; результат
   записывается в спецификацию и в `hello.rlimit_as: "enforced"|"not_enforced"|
   "failed"`). **На rlimit не опираемся.** Защита: ограниченные буферы (§4–§5),
-  лимит CPU **на запрос**: перед каждым запросом helper читает `getrusage` и ставит `RLIMIT_CPU` soft = использованное + 120 с (hard = soft + 5 с); `SIGXCPU` → выход, адаптер видит `helper_crashed` и перезапускает по правилам §11 (суммарно на процесс лимита нет, долгий `read` с непрерывными кадрами CPU-бюджет запроса обновляет на каждый data-кадр), `RLIMIT_CORE=0`
+  лимит CPU **на запрос**: перед каждым запросом helper читает `getrusage` и ставит один soft-предел `RLIMIT_CPU` = использованное + 120 с на запрос (hard **не трогает**, внутри запроса предел не обновляется, в том числе на data-кадрах); `SIGXCPU` → выход, адаптер видит `helper_crashed` и перезапускает по правилам §11; долгий `read` укладывается в бюджет запроса, дальше адаптер шлёт новые запросы, `RLIMIT_CORE=0`
   (пароль не попадает в core), тайм-аут на запрос **30 с без единого кадра**
   (длинный `read` шлёт data-кадры и не упирается; по истечении — `helper_crashed`
   с причиной `timeout`, SIGKILL), и **сторож RSS в адаптере**: опрос
@@ -101,7 +101,7 @@ USTAR/PAX, `flate2` не в зависимостях); 7z/RAR; многотом�
   endpoint / `dataDir` — ссылки внутри корня helper не разрешает, но ссылки
   *в* пути до корня считаются доверенной конфигурацией.
   **Сверка:** `expect` для локального архива **обязателен**; первая сверка —
-  по `fstat` уже **открытого** fd **до** разбора (расхождение →
+  `dev`, `ino`, `size`, `mtime` из `open.expect` (исходный `stat` адаптера) против `fstat` уже **открытого** fd **до** разбора (расхождение →
   `changed_since_open`, разбор не начинается); все последующие сверки
   сравнивают с **исходным отпечатком** (`dev, ino, size, mtime`), а не с
   предыдущим ответом. `verify` не принимает строку пути: helper заново обходит
@@ -110,9 +110,11 @@ USTAR/PAX, `flate2` не в зависимостях); 7z/RAR; многотом�
   пропажа → `changed_since_open`.
   **Какой это endpoint — «машина сервера».** Признак — поле хоста в
   `bb.sdk.hosts.list()` (идентификатор/флаг локальной машины сервера плагина);
-  первым шагом среза проверяю декларации SDK 0.6.132 и записываю точное имя
-  вызова в спецификацию. **Если надёжного признака нет — всегда приватная
-  копия (§7), без «пути без копии».** Тест: файл подменён между предварительным
+  **В SDK 0.6.132 у `hosts.list()` такого флага нет.** Кандидат —
+  `primaryHostId` из `bb.sdk.system.config()`, но равенство «основной хост =
+  машина процесса сервера плагина» не доказано; **до доказательства на стенде
+  всегда приватная копия (§7), без «пути без копии»** (записано как
+  ограничение). Тест: файл подменён между предварительным
   `stat` и `open` (rename нового файла на место) → `changed_since_plan`. Предпроверка и разбор
   идут по одному дескриптору (Node не имеет `openat`, поэтому обход делает
   helper). Адаптер до `open` сверяет fingerprint архива с `expect` от
@@ -183,13 +185,13 @@ base64 сырых байт: форматы допускают не-UTF-8 име�
 
 | `t` | Поля | Ответ `ok` |
 |---|---|---|
-| `open` | `rootB64`, `segmentsB64[]`, `format: "auto"\|"zip"\|"tar"`, `limits: {maxTotalBytes, maxEntries, maxRatio}`, `expect?: {size, mtimeNs}` | `{handle:1, format, fingerprint:{size, mtimeNs, dev, ino}, entries, totalSize, totalCompressed, encrypted:boolean, metaBytes}` или `need_password` сначала, если шифрованы имена/каталог (WinZip AES шифрует тела; имена в ZIP открыты — пароль нужен только на `read_open`) |
+| `open` | `rootB64`, `segmentsB64[]`, `format: "auto"\|"zip"\|"tar"`, `limits: {maxTotalBytes, maxEntries, maxRatio}`, `expect: {size, mtimeNs, dev, ino}` (обязателен) | `{handle:1, format, fingerprint:{size, mtimeNs, dev, ino}, entries, totalSize, totalCompressed, encrypted:boolean, metaBytes}` или `need_password` сначала, если шифрованы имена/каталог (WinZip AES шифрует тела; имена в ZIP открыты — пароль нужен только на `read_open`) |
 | `list` | `prefix` (байты, `""` = корень), `cursor: string\|null`, `limit ≤ 1000`; страница также ограничена **сериализованным размером control-кадра < 1 МиБ** (helper заканчивает страницу раньше и возвращает `cursor`; одна запись ≤ 16 КиБ в JSON гарантируется лимитом имени 4096 байт) | `{entries: ArchiveEntry[], cursor}` — прямые потомки `prefix`, в порядке индекса; промежуточные каталоги, которых нет в архиве, синтезируются (`synthetic:true`) |
 | `stat` | `nameB64` | `{entry: ArchiveEntry\|null}` |
 | `read_open` | `id` (индекс записи) | `{stream, size}`; шифрованная запись — `need_password` |
 | `read` | `stream`, `length ≤ 4 МиБ` | data-кадр с байтами (0 байт = конец) и `ok{pos}` |
 | `read_close` | `stream` | `ok` |
-| `verify` | — | `{changed:boolean}` (`fstat(fd)` против `stat(path)`: размер, mtime, dev, ino) |
+| `verify` | — | `{changed:boolean}`: обход от корня по сегментам `open` (§3, `fstatat(AT_SYMLINK_NOFOLLOW)`) и сравнение `dev, ino, size, mtime` с исходным отпечатком |
 | `cancel` | `req` | `ok` (прерывает текущий запрос с `err cancelled`) |
 | `pack_open` | см. §6 | |
 | `close` | — | `ok`, затем выход 0 |
@@ -516,12 +518,8 @@ UI (снимки 1440×900 и 768×900): Enter на архиве → панел�
 `errors.test.ts` — во владении S14; класс RPC `invalid_archive` → `invalid`.
 
 Остаются:
-1. **Решение координатора по `Checkpoint.commitIntent`** (§11): поле в
-   `job-store.ts` (контракт S3/S6, колонка JSON в S6) и блок в
-   `job-runner.ts` перед `session.commit`. Без него — фолбэк §11 (ручное
-   подтверждение при потерянном commit).
-2. Признак «host — машина сервера» (§3): имя вызова SDK уточняю первым шагом;
-   нет признака — всегда приватная копия.
+1. `Checkpoint.commitIntent` — закрыто: решено координатором (§11).
+2. Признак «host — машина сервера» (§3): флага нет, `primaryHostId` не доказан; до доказательства на стенде всегда приватная копия.
 3. Пароль живёт только в helper; при рестарте плагина/helper вводится заново.
 4. Сборка helper: `cargo` есть локально (rustc 1.97); бинарник коммитится как
    у Remote Hub, подпись ad-hoc; карантин на чистой машине — до релиза.
@@ -658,29 +656,38 @@ AES, шифрование TAR.
 
 **Доказательство публикации и правка раннера.** Сейчас `job-runner.ts:1078`
 вызывает `session.commit(...)`, а `committed` пишется после возврата
-(`:1091`); до этого в чекпоинте есть только `tempPath` и `tempFingerprint`
-(последний `recordTemp`) — без `sourceHash` и без признака «commit
-отправлен». **Правка нужна** (в `job-runner.ts`, отдельный блок S14, плюс
-добавление поля в `Checkpoint` из `job-store.ts` — **контракт S3/S6**, прошу
-решение координатора): непосредственно **перед** `session.commit`
-раннер делает `mark("copying", { commitIntent: { size, sha256 | null,
-tempFingerprint, targetPath, expectTarget } })` (S6 хранит в `*_json`-колонке;
-миграция с тестом на fixture-БД). Сверка при восстановлении (reconcile):
-если есть `commitIntent`, temp **отсутствует**, а цель существует с
-`size == commitIntent.size` и (`sha256 == commitIntent.sha256`, если он есть,
-иначе `mtime == tempFingerprint.mtime` и `size`) → публикация доказана:
-`committed`, **без повторного commit**; если цель отсутствует, а temp на месте
-→ commit не дошёл: повтор безопасен; любой другой исход (цель другого вида,
-цель есть и temp есть, сверка недоступна) → `unknown`, решает владелец.
-Дополнительно раннер (в том же блоке) маппит
-`connection_failed`/`timeout` из `write`/`commit` удалённого провайдера в
-`outcome_unknown` (сейчас маппится только `outcome_unknown`,
-`:1054–1056`); для локального провайдера эти коды остаются подтверждёнными
-отказами. Тесты: SFTP-мок, у которого `write` теряет ответ после применения →
-`outcome_unknown`, temp не удалён; **ответ на `commit` потерян после rename** →
-задание `done`, второй `commit` не вызван (счётчик = 1); потерян до rename →
-повтор commit один раз; цель подменена третьей стороной → `unknown`.
-Если координатор не разрешит поле `Checkpoint`, фолбэк: для `pack` и
-распаковки всегда `verify: sha256` (S3 `verifyCopy` уже сверяет цель по
-`sourceHash`), а потерянный commit → `outcome_unknown` без автоматического
-`done` — владелец подтверждает вручную.
+(`:1091`). **Правка (решено координатором):** в `Checkpoint` добавляется
+необязательное `commitIntent?: { size: string, sha256: string, tempFingerprint:
+Fingerprint }` — **внутри существующего checkpoint JSON, без миграции и без
+других полей** (`targetPath`, `expectTarget` уже есть в чекпоинте).
+Раннер (блок S14 в `job-runner.ts`) пишет его непосредственно **до**
+`session.commit` — **только для заданий с источником `archive:` и для `pack`**
+(обобщение на остальные задания — позже). Старый чекпоинт без поля читается
+как раньше (тест на фикстуре чекпоинта этапа 1 `main@b44884df`, не только
+`job.error`).
+
+**Сверка после потери ответа на `commit` (reconcile):**
+- `done` **только** при совпадении SHA-256 содержимого **цели** с
+  `commitIntent.sha256`; размер + mtime недостаточны; если SHA-256 цели
+  прочитать нельзя (нет права, обрыв, провайдер) → `unknown`. Тест: цель с тем
+  же размером и mtime, но другими байтами → `unknown`.
+- Повторный `commit` после рестарта (цели нет, temp есть) — **только** если
+  temp совпадает с `commitIntent.tempFingerprint` **и** SHA-256 temp равен
+  `commitIntent.sha256`, а цель соответствует исходному `expectTarget`
+  (отсутствует либо прежний отпечаток); иначе `unknown`.
+- Любой другой исход (цель другого вида, цель и temp на месте, сверка
+  недоступна) → `unknown`, решает владелец.
+
+**Коды раннера не меняются:** сопоставления `connection_failed`/`timeout` →
+`outcome_unknown` в раннере нет (это изменило бы все SFTP-задания и
+противоречит S5). Раннер опирается на `outcome_unknown`, который провайдер сам
+отдаёт для неоднозначных изменений (`connection_failed` = запрос не
+отправлен). Иная семантика `timeout` при `write` — отдельная правка S5, не в
+этом срезе; записано как известное ограничение.
+
+Тесты: SFTP-мок, у которого `write` теряет ответ после применения и отдаёт
+`outcome_unknown` → temp не удалён; **ответ на `commit` потерян после rename** →
+SHA-256 цели совпал → `done`, второй `commit` не вызван (счётчик = 1); цель того
+же размера и mtime с другими байтами → `unknown`; цели нет, temp совпал по
+отпечатку и SHA-256 → один повторный commit; temp изменён → `unknown`;
+чекпоинт без `commitIntent` читается.
