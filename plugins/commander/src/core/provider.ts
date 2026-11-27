@@ -13,7 +13,12 @@ export interface WriteSession {
    */
   readonly tempPath: ResourcePath;
 
-  /** Write to the already opened temporary file. Never report already_exists. */
+  /**
+   * Write to the already opened temporary file. Never report already_exists.
+   * After the call resolves, stat(tempPath) should show the written size. A
+   * provider with buffered handles may show less (never more than offset plus
+   * bytes written); the runner then records the observed size and does not fail.
+   */
   write(offset: bigint, bytes: Uint8Array, signal: AbortSignal): Promise<void>;
 
   /**

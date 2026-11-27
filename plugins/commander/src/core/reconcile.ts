@@ -3,7 +3,7 @@ import type { Checkpoint } from "./job-store.ts";
 import type { Entry, Fingerprint, OperationPlan, PlanItem, ResourceRef } from "./model.ts";
 import { join, NameSegment, parent, samePath } from "./path.ts";
 import type { FileProvider } from "./provider.ts";
-import { toBig } from "./size.ts";
+import { fromBig, toBig } from "./size.ts";
 
 export interface Location {
   provider: FileProvider;
@@ -209,6 +209,57 @@ export async function removeStagedTemp(
   }
 }
 
+/**
+ * Remove a temp that this queue created, trusting only recorded evidence: the
+ * last fingerprint and write intent in the checkpoint, or a saved cleanup intent.
+ * The intent is saved before the removal, so a repeated recovery may find the
+ * temp already gone.
+ */
+async function recoverTemp(
+  checkpoint: Checkpoint, temp: Location, context: VerifyContext, save: (checkpoint: Checkpoint) => Promise<void>,
+): Promise<void> {
+  const unknown = (message: string) => new CommanderError("outcome_unknown", message);
+  const copying = checkpoint.phase === "copying";
+  const recorded = checkpoint.tempFingerprint;
+  if (copying && !recorded) throw unknown("Temporary file has no recorded version");
+  const staged = await observe(temp, context).catch(() => {
+    throw unknown("Temporary file version could not be confirmed");
+  });
+  let cleanup = checkpoint.cleanup;
+  if (cleanup) {
+    if (!samePath(cleanup.tempPath, temp.path, temp.provider.endpoint.caseSensitive)) {
+      throw unknown("Cleanup intent names another path");
+    }
+    if (staged && (staged.kind !== "file" || !matches(staged, cleanup.tempFingerprint))) {
+      throw unknown("Temporary file does not match the saved cleanup intent");
+    }
+  } else if (staged) {
+    let ours = staged.kind === "file";
+    if (ours && !copying) ours = staged.size === "0";
+    if (ours && copying) {
+      const size = toBig(staged.size);
+      const upper = checkpoint.writing ? toBig(checkpoint.writing.offset) + BigInt(checkpoint.writing.length) : toBig(checkpoint.bytesDone);
+      // Trust the stat lag window: a buffered handle may have grown the file after it was recorded.
+      // Without a write intent the file must also not be older than the recorded version.
+      ours = size >= toBig(recorded!.size) && size <= upper
+        && (checkpoint.writing !== undefined || (staged.mtimeNs !== null && recorded!.mtimeNs !== null && toBig(staged.mtimeNs) >= toBig(recorded!.mtimeNs)));
+    }
+    if (!ours) throw unknown("Temporary file does not match the recorded evidence");
+    cleanup = { tempPath: temp.path, tempFingerprint: fingerprint(staged)! };
+    await save({ ...checkpoint, cleanup });
+  }
+  // A recorded temp that is physically missing is not proof by itself either way:
+  // the caller still checks that source and target match the recorded versions.
+  if (staged) {
+    try {
+      await temp.provider.remove(temp.path, { kind: "file", expect: cleanup!.tempFingerprint }, context.signal);
+    } catch {
+      throw unknown("Temporary file could not be removed");
+    }
+  }
+  await save({ ...checkpoint, phase: "prepared", tempFingerprint: undefined, writing: undefined, cleanup: undefined });
+}
+
 type Recovery = "pending" | "done" | "deferred_directory" | { verified: NonNullable<Checkpoint["verified"]> };
 
 export async function reconcileItem(
@@ -226,7 +277,14 @@ export async function reconcileItem(
     if (plan.kind === "delete" && source && before === null) return "done";
     const wasRename = plan.kind === "rename" || (plan.kind === "move" && checkpoint.via === "rename"
       && source?.provider.endpoint.id === target?.provider.endpoint.id);
-    if (wasRename && before === null && expected && after?.kind === item.kind && matches(after, expected)) return "done";
+    if (wasRename && before === null && expected && after?.kind === item.kind && matches(after, expected)) {
+      // A parent directory accepts a finished child only with recorded proof.
+      await save({
+        ...checkpoint, phase: "verified", bytesDone: item.kind === "file" ? after.size : "0", committed: fingerprint(after)!,
+        verified: after.sha256 ? { size: after.size, sha256: after.sha256 } : { size: after.size },
+      });
+      return "done";
+    }
     const temp = checkpoint.tempPath;
     if (temp && target) {
       const { provider, path } = target;
@@ -237,11 +295,9 @@ export async function reconcileItem(
           || (source && provider.endpoint.id === source.provider.endpoint.id && samePath(source.path, temp, sensitive))) {
         throw unknown();
       }
-      if (checkpoint.phase === "copying" && checkpoint.tempFingerprint?.size !== checkpoint.bytesDone) throw unknown();
-      await removeStagedTemp({ provider, path: temp }, context,
-        checkpoint.phase === "copying" ? checkpoint.tempFingerprint : undefined, checkpoint.phase === "copying");
-      await save({ ...checkpoint, phase: "prepared", tempFingerprint: undefined });
-    } else if (checkpoint.phase === "copying") {
+      await recoverTemp(checkpoint, { provider, path: temp }, context, save);
+    } else if (checkpoint.phase === "copying" && expectTarget === null) {
+      // Without a temp or a recorded target version nothing proves the copy never committed.
       throw unknown();
     }
     if ((source && (!before || !matches(before, expected))) || !matchesTarget(after, expectTarget)) throw unknown();
@@ -256,8 +312,19 @@ export async function reconcileItem(
       throw unknown();
     }
     if (checkpoint.phase === "committed" && checkpoint.committed?.size === checkpoint.bytesDone) {
-      const destination = await observe(target, context, Boolean(checkpoint.committed.sha256));
-      if (destination?.kind === item.kind && matches(destination, checkpoint.committed)) return "done";
+      // A sha256 plan needs the source's hash as evidence; size and mtime alone prove nothing.
+      const hash = expected.sha256 ?? checkpoint.sourceHash;
+      const hashed = plan.verify === "sha256" || Boolean(hash);
+      if (hashed && !hash) throw unknown();
+      const destination = await observe(target, context, hashed || Boolean(checkpoint.committed.sha256));
+      if (destination?.kind === item.kind && matches(destination, checkpoint.committed)
+          && (!hashed || destination.sha256 === hash)) {
+        await save({
+          ...checkpoint, phase: "verified",
+          verified: hashed ? { size: destination.size, sha256: hash } : { size: destination.size },
+        });
+        return "done";
+      }
     }
     throw unknown();
   }

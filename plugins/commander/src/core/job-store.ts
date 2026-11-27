@@ -17,6 +17,12 @@ export interface Checkpoint {
   verified: { size: Size; sha256?: string } | null;
   /** Fingerprint returned by commit, retained through later phases. */
   committed?: Fingerprint;
+  /** sha256 of the source computed during transfer, saved with the committed phase. */
+  sourceHash?: string;
+  /** Saved before each session.write, cleared by the checkpoint that confirms it. */
+  writing?: { offset: Size; length: number };
+  /** Saved by recovery before it removes a temp, so a repeated recovery may rely on it. */
+  cleanup?: { tempPath: ResourcePath; tempFingerprint: Fingerprint };
 }
 
 export interface JobStore {

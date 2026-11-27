@@ -24,6 +24,8 @@ export class FakeProvider implements FileProvider {
   readonly calls: { op: Op; path: ResourcePath }[] = [];
   delay?: (op: Op, path: ResourcePath, signal: AbortSignal) => Promise<void>;
   trackRelayReads = false;
+  /** Hide the last N written bytes from stat of an open temp, like a buffered SFTP handle. */
+  tempStatLag = 0;
   peakReadBytes = 0;
   private liveReadBytes = 0;
   private clock = 100;
@@ -127,7 +129,7 @@ export class FakeProvider implements FileProvider {
         if (offset !== BigInt(length)) throw new CommanderError("invalid_path", "Expected sequential offset");
         chunks.push(bytes.slice());
         length += bytes.byteLength;
-        temp.size = length;
+        temp.size = Math.max(0, length - this.tempStatLag);
         temp.mtimeNs = String(++this.clock);
         relayBuffers.get(bytes)?.();
         relayBuffers.delete(bytes);
