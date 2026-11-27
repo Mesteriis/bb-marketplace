@@ -28,3 +28,13 @@
 .git-ci-dialog .git-primary { background: var(--primary); color: var(--primary-foreground); }
 .git-ws .git-ci .git-state, .git-ws .git-ci thead th { white-space: nowrap; }
 @container (max-width: 720px) { .git-ws .git-ci-run-body { grid-template-columns: 1fr; } .git-ws .git-ci [data-col="event"] { display: none; } }
+.git-ws .git-ci-tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 0; }
+.git-ws .git-ci-tile { border: 1px solid var(--border); border-radius: 7px; padding: 8px 10px; background: var(--card); min-width: 0; }
+.git-ws .git-ci-tile dt { font-size: 12px; color: var(--muted-foreground); }
+.git-ws .git-ci-tile dd { margin: 2px 0 0; font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.git-ws .git-ci-tile[data-state="failure"] dd { color: var(--destructive); }
+.git-ws .git-ci-log-tools { gap: 8px; align-items: center; flex-wrap: wrap; }
+.git-ws .git-ci-log-tools input[type="search"] { flex: 1 1 12em; min-width: 0; }
+.git-ws .git-ci-thread-note { display: grid; gap: 4px; }
+.git-ws .git-ci-thread-note textarea { font: inherit; min-height: 3.2em; resize: vertical; }
+@container (max-width: 520px) { .git-ws .git-ci-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

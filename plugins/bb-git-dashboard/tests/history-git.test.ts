@@ -112,3 +112,23 @@ test("working patches cover staged deletions and stay inside the working tree's 
     rmSync(outside, {recursive: true, force: true});
   } finally { done(); }
 });
+
+test("a patch over the size cap comes back cut at a whole line and marked, not as an error", async () => {
+  const {root, git, done} = repository();
+  try {
+    writeFileSync(join(root, "big.txt"), "seed\n"); git("add", "."); git("commit", "-qm", "base");
+    // 40 000 lines of 50 characters: about 2 MB of added lines, over the 1.5 MB cap.
+    writeFileSync(join(root, "big.txt"), Array.from({length: 40_000}, (_, index) => String(index).padStart(49, "x")).join("\n") + "\n");
+    git("add", "."); git("commit", "-qm", "big");
+    const patch = await commitPatch(root, git("rev-parse", "HEAD"), "big.txt");
+    assert.equal(patch.truncated, true);
+    assert.ok(patch.text.length <= 1.5 * 1024 * 1024);
+    assert.ok(patch.text.endsWith("\n"));
+    assert.match(patch.text, /^\+x+0$/m);
+    writeFileSync(join(root, "new.txt"), "small\n");
+    const working = await workingPatch(root, "new.txt");
+    assert.equal(working.truncated, false);
+    const small = await commitPatch(root, git("rev-parse", "HEAD~1"), "big.txt");
+    assert.equal(small.truncated, false);
+  } finally { done(); }
+});

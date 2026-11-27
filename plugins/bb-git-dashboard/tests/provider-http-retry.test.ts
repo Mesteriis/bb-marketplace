@@ -47,3 +47,15 @@ test("stale heads and rate limits keep their own codes and advice", () => {
   assert.match(failureFor(new Error("STALE_HEAD"), "X").next, /changed since/);
   assert.match(failureFor(new Error("PROVIDER_RATE_LIMITED"), "X").next, /limit/);
 });
+
+test("a lasting limit says when the forge will take reads again, so a page can retry by itself", async () => {
+  const long = forge([() => new Response("", {status: 429, headers: {"ratelimit-reset": String(now / 1000 + 42)}})]);
+  const error = await client(account, "fixture-token-value", long.send, {sleep: long.sleep, now: () => now})("/api/v4/user").catch(cause => cause);
+  assert.deepEqual(failureFor(error, "X"), {ok: false, code: "PROVIDER_RATE_LIMITED", next: failureFor(new Error("PROVIDER_RATE_LIMITED"), "X").next, retryIn: 42});
+  // Past an hour, or with no hint, there is nothing to count down.
+  const far = Object.assign(new Error("PROVIDER_RATE_LIMITED"), {retryAfter: 7_200_000});
+  assert.equal("retryIn" in failureFor(far, "X"), false);
+  assert.equal("retryIn" in failureFor(new Error("PROVIDER_RATE_LIMITED"), "X"), false);
+  // Other codes never carry it.
+  assert.equal("retryIn" in failureFor(Object.assign(new Error("PROVIDER_UNAVAILABLE"), {retryAfter: 5000}), "X"), false);
+});

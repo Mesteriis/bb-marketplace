@@ -8,6 +8,12 @@ const pageSize = 100;
 /** RPC handlers of the History tab; Git runs on the copy's own host, read-only. */
 export function historyHandlers(bb: BbPluginApi, copyOf: (copyId: string) => Promise<Copy | undefined>) {
   const host = bb.hosts.experimental_client({contract: hostContract});
+  // Read by the app through useSettings(); the server only declares them.
+  bb.settings.define({
+    historyGraph: {type: "boolean", label: "History: draw branch and merge lanes", description: "Off shows the history as one list without the graph.", default: true},
+    historyHeaderShortcut: {type: "boolean", label: "History: show a Git History button in the thread header",
+      description: "Git History stays available from the thread panel's New tab either way.", default: false},
+  });
   const on = <I extends {copyId: string}, O extends {ok: boolean}>(call: (copy: Copy, input: I) => Promise<O>) => async (input: I, context: Caller) => {
     if (context.experimental_caller.kind !== "client") return failureFor(undefined, "ACCESS_DENIED");
     const copy = await copyOf(input.copyId);
@@ -22,7 +28,7 @@ export function historyHandlers(bb: BbPluginApi, copyOf: (copyId: string) => Pro
     historyCommit: on((copy, {hash}: {copyId: string; hash: string}) => host.call("historyCommit", {...target(copy), hash}, {hostId: copy.hostId})),
     historyPatch: on(async (copy, {hash, path}: {copyId: string; hash: string | null; path: string}) => {
       const result = await host.call("historyPatch", {...target(copy), hash, path}, {hostId: copy.hostId});
-      return result.ok ? {ok: true as const, text: result.value.text} : result;
+      return result.ok ? {ok: true as const, text: result.value.text, truncated: result.value.truncated} : result;
     }),
   };
 }

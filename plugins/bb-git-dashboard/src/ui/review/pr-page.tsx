@@ -3,6 +3,8 @@ import type { PrAction } from "../../core/pulls/actions.ts";
 import { canSubmitReview, reviewEvents, type ReviewEvent } from "../../core/pulls/review.ts";
 import { ConfirmDialog } from "../ci/confirm-dialog.tsx";
 import { FileDiff, type DraftComment } from "./diff-view.tsx";
+import { useAutoRetry } from "./auto-retry.ts";
+import { RateLimited } from "./rate-limited.tsx";
 import { message, type PrFileView, type PrRef, type PrView, type Preview, type ReviewApi } from "./review-api.ts";
 import { ThreadView } from "./thread-view.tsx";
 import "./review.css";
@@ -32,11 +34,12 @@ export function PrPage({api, accountId, repo, number, onStep}: {api: ReviewApi; 
   const [reviewer, setReviewer] = useState("");
   const [method, setMethod] = useState<"merge" | "squash" | "rebase">("merge");
 
+  const retry = useAutoRetry(() => void load());
   const load = useCallback(async () => {
     setError("");
     try { const next = await api.detail(target); setView(next); setMethod(next.mergeMethods[0] ?? "merge"); }
-    catch (failure) { setError(message(failure)); }
-  }, [api, target]);
+    catch (failure) { if (!retry.schedule(failure)) setError(message(failure)); }
+  }, [api, target, retry.schedule]);
   useEffect(() => { setView(null); setFiles(null); setDrafts([]); setTab("Overview"); void load(); }, [load]);
   useEffect(() => {
     if (tab !== "Files" || files) return;
@@ -65,7 +68,9 @@ export function PrPage({api, accountId, repo, number, onStep}: {api: ReviewApi; 
     catch (failure) { setNotice(message(failure)); }
   };
   if (error && !view) return <section className="git-review"><p className="git-error" role="alert">{error}</p></section>;
-  if (!view) return <section className="git-review"><p className="git-muted" role="status">Loading the pull request…</p></section>;
+  if (!view) return <section className="git-review">
+    {retry.left !== null ? <RateLimited left={retry.left} onNow={() => { retry.cancel(); void load(); }}/>
+      : error ? <p className="git-error" role="alert">{error}</p> : <p className="git-muted" role="status">Loading the pull request…</p>}</section>;
   const {detail, capabilities: can, limitations} = view;
   const open = detail.state === "OPEN";
   const events = reviewEvents(detail.viewer, detail.author).filter(name => name === "COMMENT" || can[name === "APPROVE" ? "approve" : "requestChanges"]);

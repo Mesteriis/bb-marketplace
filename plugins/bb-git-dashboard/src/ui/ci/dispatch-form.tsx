@@ -9,8 +9,10 @@ function initialValues(inputs: DispatchInput[]) {
 }
 
 /** Runs a workflow by hand with the inputs its `workflow_dispatch` trigger declares. */
-export function DispatchForm({api, copyId, inputsLimitation, onClose, onDone}: {
+export function DispatchForm({api, copyId, inputsLimitation, onClose, onDone, initialWorkflow = null, initialRef = null}: {
   api: CiApi; copyId: string; inputsLimitation: string | null; onClose(): void; onDone(): void;
+  /** Preselected from a run: its workflow and branch; a workflow no longer listed falls back to the first one. */
+  initialWorkflow?: string | null; initialRef?: string | null;
 }) {
   const [workflows, setWorkflows] = useState<Workflow[]>();
   const [workflowId, setWorkflowId] = useState("");
@@ -24,11 +26,11 @@ export function DispatchForm({api, copyId, inputsLimitation, onClose, onDone}: {
     api.workflows(copyId).then(result => {
       if (!active) return;
       setWorkflows(result.workflows);
-      setWorkflowId(result.workflows[0]?.id ?? "");
-      setRef(result.defaultBranch ?? "");
+      setWorkflowId(result.workflows.find(item => item.id === initialWorkflow)?.id ?? result.workflows[0]?.id ?? "");
+      setRef(initialRef ?? result.defaultBranch ?? "");
     }, cause => { if (active) setError(message(cause)); });
     return () => { active = false; };
-  }, [api, copyId]);
+  }, [api, copyId, initialWorkflow, initialRef]);
   useEffect(() => {
     if (!workflowId || !ref.trim()) return;
     let active = true;

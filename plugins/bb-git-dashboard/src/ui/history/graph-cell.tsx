@@ -24,3 +24,11 @@ export function GraphCell({row, width, head}: {row: GraphRow; width: number; hea
     <circle cx={at} cy={middle} r={head ? 5 : 4} fill={head ? "var(--background)" : color(row.commitLane)} stroke={color(row.commitLane)} strokeWidth={head ? 2.5 : 1.5}/>
   </svg>;
 }
+
+/** The lanes that run on through a day heading placed above `row`, so the graph stays unbroken. */
+export function LanesThrough({row, width, height}: {row: GraphRow; width: number; height: number}) {
+  const lanes = row.startsHere ? row.topLanes : [...new Set([...row.topLanes, row.commitLane])];
+  return <svg className="git-history-graph" width={width} height={height} viewBox={`0 0 ${width} ${height}`} aria-hidden="true">
+    {lanes.map(lane => <line key={lane} x1={x(lane)} y1={0} x2={x(lane)} y2={height} stroke={color(lane)}/>)}
+  </svg>;
+}

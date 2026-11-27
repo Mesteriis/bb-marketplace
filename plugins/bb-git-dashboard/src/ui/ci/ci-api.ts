@@ -7,6 +7,7 @@ import type { CiOperation } from "../../core/ci/capabilities.ts";
 export type RunsPage = {items: Run[]; more: boolean; forge: "github" | "gitlab" | "gitea" | "azure";
   operations: Record<CiOperation, boolean>; limitations: Record<string, string>};
 export type ThreadRef = {id: string; title: string};
+export type OverviewRow = {copyId: string; repository: string; forge: RunsPage["forge"]; runs: Run[]; error: string | null};
 
 /** Everything the CI section asks of the host; the entry point implements it over RPC. */
 export type CiApi = {
@@ -19,7 +20,14 @@ export type CiApi = {
   confirm(previewId: string): Promise<void>;
   threads(copyId: string): Promise<{threads: ThreadRef[]; subscribed: string[]}>;
   ask(copyId: string, runId: string, jobId: string | null): Promise<{threadId: string; created: boolean}>;
-  send(copyId: string, runId: string, jobId: string | null, threadIds: string[]): Promise<{sent: string[]; failed: {threadId: string; code: string}[]}>;
+  send(copyId: string, runId: string, jobId: string | null, threadIds: string[], options?: {note?: string; includeLogs?: boolean}):
+    Promise<{sent: string[]; failed: {threadId: string; code: string}[]}>;
+  /** Opens the composer with the investigation prompt, so the owner picks the model and the thread's place. */
+  compose(copyId: string, runId: string, jobId: string | null): Promise<void>;
+  /** The latest runs of every linked repository. */
+  overview(): Promise<{repositories: OverviewRow[]}>;
+  /** Puts text on the clipboard; false when the browser refused. */
+  copy(text: string): Promise<boolean>;
   subscribe(copyId: string, threadIds: string[]): Promise<{subscribed: string[]}>;
   openThread(threadId: string): void;
 };

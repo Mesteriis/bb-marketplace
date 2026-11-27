@@ -16,7 +16,9 @@ export const operation = z.object({
 export type Operation = z.infer<typeof operation>;
 
 export const request = z.object({copyId: id, action: gitAction, operationId: id.optional()});
-export const failure = z.object({ok: z.literal(false), code: z.string(), next: z.string(), operationId: id.optional()});
+/** `retryIn`: seconds until a rate-limited forge takes reads again, when it said so. */
+export const failure = z.object({ok: z.literal(false), code: z.string(), next: z.string(), operationId: id.optional(),
+  retryIn: z.number().int().min(1).max(3600).optional()});
 export type Failure = z.infer<typeof failure>;
 export const gitResponse = z.discriminatedUnion("ok", [failure,
   z.object({ok: z.literal(true), value: gitResult, operationId: id.optional()}),
@@ -71,5 +73,8 @@ const known = new Set([...Object.keys(next), "INVALID_REMOTE", "GIT_PROCESS_UNAV
 export function failureFor(error: unknown, fallback: string, operationId?: string): Failure {
   const reason = error instanceof Error ? error.message : "";
   const code = known.has(reason) ? reason : fallback;
-  return {ok: false, code, next: next[code] ?? "Review the selected target and refresh its state.", ...(operationId ? {operationId} : {})};
+  const wait = code === "PROVIDER_RATE_LIMITED" ? (error as {retryAfter?: unknown} | null)?.retryAfter : undefined;
+  const retryIn = typeof wait === "number" && wait > 0 && wait <= 3_600_000 ? Math.max(1, Math.ceil(wait / 1000)) : undefined;
+  return {ok: false, code, next: next[code] ?? "Review the selected target and refresh its state.", ...(operationId ? {operationId} : {}),
+    ...(retryIn ? {retryIn} : {})};
 }

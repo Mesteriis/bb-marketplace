@@ -91,11 +91,15 @@ export async function commitDetails(root: string, hash: string, signal?: AbortSi
   return {...parsed, files: fileChanges(names.text, counts.text)};
 }
 
+/** A patch is shown up to 1.5 MB; a longer one is cut at a whole line and says so. */
+const patchRead = {limit: 1.5 * 1024 * 1024, truncate: true};
+const shown = ({text, truncated}: {text: string; truncated?: boolean}) => ({text, truncated: truncated === true});
+
 export async function commitPatch(root: string, hash: string, path: string, signal?: AbortSignal) {
   const commit = hashOf(hash);
   const file = pathOf(path);
   const git = gitRunner(root, signal);
-  return {text: (await git([...await commitDiff(git, commit, ["-p"]), "--", file])).text};
+  return shown(await git([...await commitDiff(git, commit, ["-p"]), "--", file], patchRead));
 }
 
 /** The working tree's change of one file listed by `git status`; ignored and unlisted files are not read. */
@@ -105,7 +109,7 @@ export async function workingPatch(root: string, path: string, signal?: AbortSig
   const status = (await git(["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", file])).text.split("\0")
     .find(record => record.slice(3) === file);
   if (!status) throw new Error("INVALID_PATH");
-  if (status.startsWith("??")) return {text: (await git(["diff", ...diffFlags, "--no-index", "--", "/dev/null", file], {codes: [0, 1]})).text};
+  if (status.startsWith("??")) return shown(await git(["diff", ...diffFlags, "--no-index", "--", "/dev/null", file], {...patchRead, codes: [0, 1]}));
   const hasHead = (await git(["rev-parse", "--verify", "--quiet", "HEAD"], {codes: [0, 1]})).code === 0;
-  return {text: (await git(["diff", ...diffFlags, ...(hasHead ? ["HEAD"] : ["--cached"]), "--", file])).text};
+  return shown(await git(["diff", ...diffFlags, ...(hasHead ? ["HEAD"] : ["--cached"]), "--", file], patchRead));
 }

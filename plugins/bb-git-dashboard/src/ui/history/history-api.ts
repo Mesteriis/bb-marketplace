@@ -6,6 +6,6 @@ export type HistoryApi = {
   revision(copyId: string): Promise<string>;
   commit(copyId: string, hash: string): Promise<CommitDetails>;
   /** `hash` null reads the working tree's change against HEAD. */
-  patch(copyId: string, hash: string | null, path: string): Promise<string>;
+  patch(copyId: string, hash: string | null, path: string): Promise<{text: string; truncated: boolean}>;
 };
 export const message = (error: unknown) => error instanceof Error ? error.message : "Request failed.";

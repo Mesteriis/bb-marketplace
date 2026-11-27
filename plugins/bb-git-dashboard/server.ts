@@ -17,6 +17,7 @@ import { pullMutation } from "./src/core/providers.ts";
 import { remoteTarget } from "./src/core/publication.ts";
 import { registerAgentWork } from "./src/adapters/bb/agent-work.ts";
 import { approve } from "./src/adapters/bb/approve.ts";
+import { ciCli, ciCommands } from "./src/adapters/bb/ci-cli.ts";
 import { rpc } from "./src/adapters/bb/rpc.ts";
 
 const changed = "git-workspace-changed";
@@ -105,6 +106,10 @@ export default function plugin(bb: BbPluginApi) {
   const catalog = projectCatalog(bb);
   const ci = ciHandlers(bb, {
     copy: linkedCopy,
+    async copies() {
+      const saved = await Promise.all((await kv.list("copy/")).map(key => kv.get<Copy>(key)));
+      return Promise.all(saved.filter(copy => copy !== undefined).map(enrich));
+    },
     async linked(copy) {
       const target = await kv.get<Target>(linkKey(copy));
       if (!target) throw new Error("ACCOUNT_UNCONFIGURED");
@@ -149,7 +154,7 @@ export default function plugin(bb: BbPluginApi) {
       other.projectId === location.projectId && other.hostId === location.hostId && other.path === location.path) === index);
   }
   bb.rpc.register(rpc, {
-    ...ci,
+    ...ci.handlers,
     ...historyHandlers(bb, linkedCopy),
     ...inboxHandlers(bb, {accounts: remote.accountList, credential: remote.credential}),
     ...reviewHandlers(bb, {credential: remote.credential}),
@@ -425,6 +430,15 @@ export default function plugin(bb: BbPluginApi) {
         return JSON.stringify({local,remote:operationId ? rows.filter(row => row.id === operationId) : rows});
       } catch (error) { return JSON.stringify(failureFor(error,"HOST_UNAVAILABLE")); }
     },
+  });
+
+  bb.cli.register({
+    name: "git-dashboard", summary: "Makosh Git: CI/CD of the thread's working copy", commands: ciCommands,
+    run: ciCli({
+      context: async threadId => { const {copy, permission} = await threadContext(threadId); return {copyId: copy.id, permission}; },
+      service: ci.service,
+      approve: (threadId, previewId, title, lines, signal) => approve(bb, threadId, previewId, title, lines, signal),
+    }),
   });
 
   registerAgentWork(bb,threadContext,saveCopy);

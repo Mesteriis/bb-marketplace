@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { definePluginApp, experimental_useAppPanel, useBbNavigate, useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
+import { definePluginApp, experimental_useAppPanel, useBbNavigate, useRealtime, useRpc, useSettings } from "@get-bb/plugin-sdk/app";
 import type { JsonValue, PluginPendingInteractionProps } from "@get-bb/plugin-sdk/app";
 import type { rpc } from "./src/adapters/bb/rpc.ts";
 import type { GitAction } from "./src/core/git.ts";
@@ -13,8 +13,11 @@ import { Remotes, type RemoteApi } from "./src/ui/remotes.tsx";
 import { InboxPage, InboxToasts } from "./src/ui/pulls/inbox-page.tsx";
 import type { AlertSummary, InboxApi, InboxItem } from "./src/ui/pulls/inbox-api.ts";
 import { PrPage } from "./src/ui/review/pr-page.tsx";
+import { CiOverview } from "./src/ui/ci/ci-overview.tsx";
 import { IssuePage } from "./src/ui/review/issue-page.tsx";
 import { parseRef, refPath, type ReviewApi } from "./src/ui/review/review-api.ts";
+import { ciApi, failed, historyApi, okValue } from "./src/app/apis.ts";
+import { ciTab, historyTab, ThreadCi, ThreadHistory, registerHistoryShortcut } from "./src/app/thread-tabs.tsx";
 import "./src/ui/git.css";
 
 type Client = ReturnType<typeof useRpc<typeof rpc>>;
@@ -23,7 +26,7 @@ const signal = "git-workspace-changed";
 const inboxSignal = "inbox-alerts";
 const tab = {id:"git-pinned", availability:"action"} as const;
 const pullTab = {id:"git-pinned-pr",availability:"action",context:{kind:"nav-panel",panelId:"git"}} as const;
-function failed(result: Failure): never { throw new Error(result.code + " · " + result.next); }
+
 
 function useCatalog() {
   const client = useRpc<typeof rpc>();
@@ -168,17 +171,11 @@ function ProjectsSidebar({subPath}: {subPath:string}) {
   </nav>;
 }
 
-/** The value of an `ok` answer without its envelope; a failure throws its code. */
-function okValue<T extends {ok: boolean}>(result: T): Omit<Extract<T, {ok: true}>, "ok"> {
-  if (!result.ok) failed(result as unknown as Failure);
-  const {ok: _ok, ...value} = result as Extract<T, {ok: true}>;
-  return value;
-}
-
 function Dashboard({subPath}: {subPath: string}) {
   const {client, copies, hosts, projects, locations, loaded, error} = useCatalog();
   const navigate = useBbNavigate();
   const panel = experimental_useAppPanel();
+  const historyGraph = useSettings().values?.historyGraph !== false;
   const api = useMemo<RemoteApi & RepositoryApi & ConnectionApi & {trees(id:string):Promise<import("./src/core/git.ts").GitResult>}>(() => ({
     checkConnection: async input => {
       const result = await client.call("checkConnection",input);
@@ -207,26 +204,8 @@ function Dashboard({subPath}: {subPath: string}) {
       const result = await client.call("repositoryLink",{copyId});
       return result.ok ? result.target : failed(result);
     },
-    ci: {
-      runs: async (copyId,filter,page) => okValue(await client.call("ciRuns",{copyId,filter,page})),
-      run: async (copyId,runId) => okValue(await client.call("ciRun",{copyId,runId})),
-      log: async (copyId,runId,jobId) => okValue(await client.call("ciLog",{copyId,runId,jobId})),
-      workflows: async copyId => okValue(await client.call("ciWorkflows",{copyId})),
-      form: async (copyId,workflowId,ref) => okValue(await client.call("ciForm",{copyId,workflowId,ref})),
-      prepare: async (copyId,action) => okValue(await client.call("ciPrepare",{copyId,action})),
-      confirm: async previewId => { okValue(await client.call("ciConfirm",{previewId})); },
-      threads: async copyId => okValue(await client.call("ciThreads",{copyId})),
-      ask: async (copyId,runId,jobId) => okValue(await client.call("ciAsk",{copyId,runId,jobId})),
-      send: async (copyId,runId,jobId,threadIds) => okValue(await client.call("ciSend",{copyId,runId,jobId,threadIds})),
-      subscribe: async (copyId,threadIds) => okValue(await client.call("ciSubscribe",{copyId,threadIds})),
-      openThread: threadId => navigate.toThread(threadId),
-    },
-    history: {
-      page: async (copyId,offset) => okValue(await client.call("historyPage",{copyId,offset})).value,
-      revision: async copyId => okValue(await client.call("historyRevision",{copyId})).revision,
-      commit: async (copyId,hash) => okValue(await client.call("historyCommit",{copyId,hash})).value,
-      patch: async (copyId,hash,path) => okValue(await client.call("historyPatch",{copyId,hash,path})).text,
-    },
+    ci: ciApi(client, navigate),
+    history: historyApi(client),
     forgeStatus: async (copyId,recheck) => {
       const result = await client.call("forgeStatus",{copyId,recheck});
       return result.ok ? result.value : failed(result);
@@ -243,7 +222,7 @@ function Dashboard({subPath}: {subPath: string}) {
       const result = await client.call("repositoryFeatures",{copyId,section});
       return result.ok ? result : failed(result);
     },
-  }), [client]);
+  }), [client, navigate]);
   const inbox = useMemo<InboxApi>(() => ({
     list: async tab => okValue(await client.call("inboxList",{tab})),
     alerts: async () => okValue(await client.call("inboxAlerts",{})),
@@ -287,7 +266,13 @@ function Dashboard({subPath}: {subPath: string}) {
           : <IssuePage key={subPath} api={review} accountId={ref.accountId} repo={ref.repo} number={ref.number}
             onCreated={number => open(refPath("issue",{accountId:ref.accountId,repo:ref.repo,number}))}/>}
       </>;
-    })() : subPath === "inbox" ? <>
+    })() : subPath === "ci" ? <>
+      <nav aria-label="Git workspace" className="git-row git-section-tabs">
+        <button type="button" onClick={() => open("")}>Projects</button>
+        <span>CI/CD</span>
+      </nav>
+      <CiOverview api={api.ci} onOpen={copyId => open(copyId + "/actions")}/>
+    </> : subPath === "inbox" ? <>
       <nav aria-label="Git workspace" className="git-row git-section-tabs">
         <button type="button" onClick={() => open("")}>Projects</button>
         <span>My PRs</span>
@@ -305,7 +290,7 @@ function Dashboard({subPath}: {subPath: string}) {
         }
       }}/>
     </> : <ProjectWorkspace copies={copies} hosts={hosts} projects={projects} locations={locations} subPath={subPath}
-      loaded={loaded} error={error} api={api} onOpen={open} inboxBadge={badge}
+      loaded={loaded} error={error} api={api} onOpen={open} inboxBadge={badge} historyGraph={historyGraph}
       onOpenIssue={(accountId,repo,number) => open(refPath("issue",{accountId,repo,number}))}
       onAttach={async (hostId,root,projectId) => {
         const result = await client.call("attach",{hostId,root,projectId});
@@ -425,5 +410,8 @@ export default definePluginApp(app => {
   app.slots.navPanel({id:"git", title:"Git", icon:"GitBranch", path:"git", component:Dashboard, experimental_sidebar:ProjectsSidebar});
   app.slots.experimental_tab({id:"git-thread", title:"Git", icon:"GitBranch", context:{kind:"thread"}, availability:"fixed", layout:"flush", component:ThreadGit});
   app.slots.experimental_tab({id:tab.id, title:"Pinned Git", icon:"GitBranch", context:{kind:"thread"}, availability:"action", layout:"flush", component:PinnedGit});
+  app.slots.experimental_tab({...historyTab, title:"Git History", icon:"FolderGit", layout:"flush", component:ThreadHistory});
+  app.slots.experimental_tab({...ciTab, title:"CI/CD", icon:"Workflow", layout:"flush", component:ThreadCi});
+  registerHistoryShortcut(app.slots);
   app.slots.experimental_tab({id:tab.id, title:"Pinned Git", icon:"GitBranch", context:{kind:"nav-panel", panelId:"git"}, availability:"action", layout:"flush", component:PinnedGit});
 });

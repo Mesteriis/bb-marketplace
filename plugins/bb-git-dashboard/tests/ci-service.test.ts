@@ -85,3 +85,45 @@ test("a failed job's annotations come with its log", async () => {
   assert.deepEqual(await service.log("c1", "9", "77"), {log: {text: "##[error]Sandbox failure requested\n##[error]Process completed with exit code 1.\n", truncated: false},
     errorLine: 0, notes: ["src/greeting.txt:2 — Sandbox failure requested"]});
 });
+
+test("Run workflow is offered only when the token may push; an unknown permission keeps it", async () => {
+  assert.equal((await setup("github", () => ({...repo, canPush: false})).service.runs("c1", "all", 1)).operations.dispatch, false);
+  assert.equal((await setup("github", () => ({...repo, canPush: null})).service.runs("c1", "all", 1)).operations.dispatch, true);
+  assert.equal((await setup().service.runs("c1", "all", 1)).operations.dispatch, true);
+});
+
+test("the workflow list is read once per five minutes for the same repository", async () => {
+  let reads = 0;
+  let now = Date.parse("2026-11-27T10:00:00Z");
+  const send = (async (target: string | URL) => {
+    if (new URL(String(target)).pathname.endsWith("/actions/workflows")) { reads++; return Response.json({workflows: [{id: 123, name: "CI", path: ".github/workflows/ci.yml"}]}); }
+    return new Response("{}", {status: 404});
+  }) as typeof fetch;
+  const service = ciService({copy: async () => copy, linked: async () => ({account: account("github"), token: "fixture-token-value", repo}), send, now: () => now});
+  await service.workflows("c1");
+  now += 4 * 60_000;
+  assert.deepEqual((await service.workflows("c1")).workflows.map(item => item.name), ["CI"]);
+  assert.equal(reads, 1);
+  now += 2 * 60_000;
+  await service.workflows("c1");
+  assert.equal(reads, 2);
+});
+
+test("the overview reads each linked repository once and reports the unreachable one", async () => {
+  const copies: Copy[] = [copy, {...copy, id: "c2", root: "/w/sandbox-2"}, {...copy, id: "c3", root: "/w/other"}, {...copy, id: "c4", root: "/w/loose"}];
+  const other: Repo = {...repo, id: "2", name: "other", path: "octo/other"};
+  const send = (async (target: string | URL) => {
+    const path = new URL(String(target)).pathname;
+    if (path === "/repos/octo/sandbox/actions/runs") return Response.json({workflow_runs: [run], total_count: 1});
+    if (path === "/repos/octo/other/actions/runs") return Response.json({message: "Not Found"}, {status: 404});
+    return new Response("{}", {status: 404});
+  }) as typeof fetch;
+  const service = ciService({copy: async id => copies.find(item => item.id === id), send,
+    linked: async item => {
+      if (item.id === "c4") throw new Error("ACCOUNT_UNCONFIGURED");
+      return {account: account("github"), token: "fixture-token-value", repo: item.id === "c3" ? other : repo};
+    }});
+  const overview = await service.overview(copies);
+  assert.deepEqual(overview.repositories.map(row => [row.copyId, row.repository, row.forge, row.runs.length, row.error]),
+    [["c1", "octo/sandbox", "github", 1, null], ["c3", "octo/other", "github", 0, "PROVIDER_DENIED"]]);
+});

@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import type { IssueAction } from "../../core/issues/model.ts";
 import { ConfirmDialog } from "../ci/confirm-dialog.tsx";
+import { RateLimited } from "./rate-limited.tsx";
+import { useAutoRetry } from "./auto-retry.ts";
 import { message, type IssueView, type Preview, type ReviewApi } from "./review-api.ts";
 import "./review.css";
 
@@ -12,11 +14,12 @@ export function IssuePage({api, accountId, repo, number, onCreated}: {api: Revie
   const [comment, setComment] = useState("");
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
+  const retry = useAutoRetry(() => void load());
   const load = useCallback(async () => {
     if (number === "new") return;
     setError("");
-    try { setIssue(await api.issue({accountId, repo, number})); } catch (failure) { setError(message(failure)); }
-  }, [api, accountId, repo, number]);
+    try { setIssue(await api.issue({accountId, repo, number})); } catch (failure) { if (!retry.schedule(failure)) setError(message(failure)); }
+  }, [api, accountId, repo, number, retry.schedule]);
   useEffect(() => { setIssue(null); void load(); }, [load]);
   const act = async (action: IssueAction, label: string) => {
     setError("");
@@ -28,7 +31,8 @@ export function IssuePage({api, accountId, repo, number, onCreated}: {api: Revie
       <input aria-label="Issue title" placeholder="Title" value={title} onChange={event => setTitle(event.target.value)}/>
       <textarea aria-label="Issue description" rows={6} placeholder="Description" value={body} onChange={event => setBody(event.target.value)}/>
       <div className="git-row"><button type="submit" className="git-primary" disabled={!title.trim()}>Open issue</button></div>
-    </form> : !issue ? <p className={error ? "git-error" : "git-muted"} role={error ? "alert" : "status"}>{error || "Loading the issue…"}</p> : <>
+    </form> : !issue ? retry.left !== null ? <RateLimited left={retry.left} onNow={() => { retry.cancel(); void load(); }}/>
+      : <p className={error ? "git-error" : "git-muted"} role={error ? "alert" : "status"}>{error || "Loading the issue…"}</p> : <>
       <header className="git-review-head">
         <div className="git-row"><span className="git-review-state" data-state={issue.open ? "OPEN" : "CLOSED"}>{issue.open ? "Open" : "Closed"}</span>
           <h2>{issue.title} <span className="git-muted">#{issue.number}</span></h2>

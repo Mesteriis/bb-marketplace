@@ -9,7 +9,7 @@ const counts = (file: FileChange) => file.additions === null ? "binary" : "+" + 
 export function ChangeView({api, copyId, hash, uncommitted}: {api: HistoryApi; copyId: string; hash: string | null; uncommitted: FileChange[]}) {
   const [details, setDetails] = useState<CommitDetails>();
   const [path, setPath] = useState<string | null>(null);
-  const [patch, setPatch] = useState<string>();
+  const [patch, setPatch] = useState<{text: string; truncated: boolean}>();
   const [error, setError] = useState("");
   useEffect(() => {
     let active = true;
@@ -45,6 +45,6 @@ export function ChangeView({api, copyId, hash, uncommitted}: {api: HistoryApi; c
         <span className="git-history-status" data-status={file.status}>{file.status}</span> <span className="git-path">{file.path}</span>
         <span className="git-muted"> {counts(file)}</span></button></li>)}</ul>}
     {error && <p className="git-error" role="alert">{error}</p>}
-    {path && (patch === undefined ? !error && <p className="git-muted" role="status">Loading patch…</p> : <PatchView text={patch} label={"Patch of " + path}/>)}
+    {path && (patch === undefined ? !error && <p className="git-muted" role="status">Loading patch…</p> : <PatchView text={patch.text} truncated={patch.truncated} label={"Patch of " + path}/>)}
   </section>;
 }

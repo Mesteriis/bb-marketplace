@@ -47,3 +47,12 @@ export function logTail(text: string, max: number) {
   const cut = tail.indexOf("\n");
   return {text: cut >= 0 ? tail.slice(cut + 1) : tail, truncated: true};
 }
+
+/** Numbers of the lines that contain every word of the filter, case ignored and symbols taken literally. */
+export function filterLines(lines: string[], query: string) {
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+  return lines.flatMap((line, index) => {
+    const text = line.toLowerCase();
+    return words.every(word => text.includes(word)) ? [index] : [];
+  });
+}

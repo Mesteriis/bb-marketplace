@@ -3,7 +3,7 @@ import type { CiAction } from "../../core/ci/actions.ts";
 import { describeAction } from "../../core/ci/actions.ts";
 import { ciCapabilities, ciLimitation, type CiOperation } from "../../core/ci/capabilities.ts";
 import { errorLine, errorExcerpt } from "../../core/ci/log.ts";
-import { settle, type RunFilter } from "../../core/ci/model.ts";
+import { settle, type Run, type RunFilter } from "../../core/ci/model.ts";
 import type { Pipelines } from "../../core/ci/pipelines.ts";
 import type { Account, Repo } from "../../core/providers.ts";
 import type { Copy } from "../../core/workspace.ts";
@@ -16,10 +16,16 @@ export type CiDeps = {
   copy(copyId: string): Promise<Copy | undefined>;
   /** The copy's linked provider repository, origin checked; throws ACCOUNT_UNCONFIGURED when not linked. */
   linked(copy: Copy): Promise<Linked>;
+  /** Every attached copy, for the overview across repositories. */
+  copies?(): Promise<Copy[]>;
   send?: typeof fetch;
+  now?: () => number;
 };
+export type OverviewRow = {copyId: string; repository: string; forge: Account["kind"]; runs: Run[]; error: string | null};
 const operations: CiOperation[] = ["dispatch", "dispatchInputs", "rerunFailed", "rerunAll", "cancel", "liveLog"];
 const previewTtl = 5 * 60_000;
+const workflowTtl = 5 * 60_000;
+const codeOf = (error: unknown) => error instanceof Error && /^[A-Z_]+$/.test(error.message) ? error.message : "PROVIDER_UNAVAILABLE";
 
 export function pipelinesOf({account, token, repo}: Linked, send: typeof fetch = fetch): Pipelines {
   if (account.kind === "github" || account.kind === "gitea") return actionsPipelines(account, repo, token, send);
@@ -31,6 +37,17 @@ export function pipelinesOf({account, token, repo}: Linked, send: typeof fetch =
 export function ciService(deps: CiDeps) {
   const previews = new Map<string, {copyId: string; target: string; action: CiAction; lines: string[]; expires: number}>();
   const targetOf = ({account, repo}: Linked) => account.id + "|" + repo.id;
+  const now = deps.now ?? Date.now;
+  /** Workflow lists change rarely; the form, the CLI and the run list share one read per five minutes. */
+  const workflowCache = new Map<string, {value: Awaited<ReturnType<Pipelines["workflows"]>>; expires: number}>();
+  async function cachedWorkflows(linked: Linked, api: Pipelines) {
+    const key = targetOf(linked);
+    const hit = workflowCache.get(key);
+    if (hit && hit.expires > now()) return hit.value;
+    const value = await api.workflows();
+    workflowCache.set(key, {value, expires: now() + workflowTtl});
+    return value;
+  }
 
   async function context(copyId: string) {
     const copy = await deps.copy(copyId);
@@ -56,6 +73,25 @@ export function ciService(deps: CiDeps) {
   return {
     context,
     excerpt,
+    /** The latest runs of every linked repository, one copy per repository; copies without a link are left out. */
+    async overview(copies: Copy[]) {
+      const seen = new Set<string>();
+      const rows: OverviewRow[] = [];
+      for (let index = 0; index < copies.length; index += 4) {
+        const batch = await Promise.all(copies.slice(index, index + 4).map(async copy => {
+          const linked = await deps.linked(copy).catch(() => null);
+          if (!linked) return null;
+          const key = targetOf(linked);
+          if (seen.has(key)) return null;
+          seen.add(key);
+          const row = {copyId: copy.id, repository: linked.repo.path, forge: linked.account.kind};
+          try { return {...row, runs: (await pipelinesOf(linked, deps.send).runs("all", 1)).items, error: null}; }
+          catch (error) { return {...row, runs: [], error: codeOf(error)}; }
+        }));
+        rows.push(...batch.filter(row => row !== null));
+      }
+      return {repositories: rows};
+    },
     async runs(copyId: string, filter: RunFilter, page: number) {
       const {linked, api} = await context(copyId);
       const kind = linked.account.kind;
@@ -63,7 +99,13 @@ export function ciService(deps: CiDeps) {
         const text = ciLimitation(kind, operation);
         return text ? [[operation, text]] : [];
       }));
-      return {...await api.runs(filter, page), forge: kind, operations: ciCapabilities(kind), limitations};
+      const allowed = ciCapabilities(kind);
+      // A token known not to push cannot start a workflow; an unknown permission is left to the forge to refuse.
+      if (allowed.dispatch && linked.repo.canPush === false) {
+        allowed.dispatch = false;
+        limitations.dispatch = "Your token cannot push to this repository, so it cannot start workflows.";
+      }
+      return {...await api.runs(filter, page), forge: kind, operations: allowed, limitations};
     },
     async run(copyId: string, runId: string) {
       const {api} = await context(copyId);
@@ -79,11 +121,11 @@ export function ciService(deps: CiDeps) {
     },
     async workflows(copyId: string) {
       const {linked, api} = await context(copyId);
-      return {workflows: await api.workflows(), defaultBranch: linked.repo.branch};
+      return {workflows: await cachedWorkflows(linked, api), defaultBranch: linked.repo.branch};
     },
     async form(copyId: string, workflowId: string, ref: string) {
-      const {api} = await context(copyId);
-      const workflow = (await api.workflows()).find(item => item.id === workflowId);
+      const {api, linked} = await context(copyId);
+      const workflow = (await cachedWorkflows(linked, api)).find(item => item.id === workflowId);
       if (!workflow) throw new Error("NOT_FOUND");
       return api.dispatchSpec(workflow, ref);
     },

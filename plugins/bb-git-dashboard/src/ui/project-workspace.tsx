@@ -15,8 +15,10 @@ type Location = {hostId:string;projectId:string;path:string;name:string|null};
 const sections = ["Code","History","Actions","Issues","Variables"] as const;
 type Section = typeof sections[number];
 
-export function ProjectWorkspace({copies,hosts,projects,locations,subPath,loaded,error,api,onOpen,onAttach,onClone,renderWorktree,inboxBadge = null,onOpenIssue}: {
+export function ProjectWorkspace({copies,hosts,projects,locations,subPath,loaded,error,api,onOpen,onAttach,onClone,renderWorktree,inboxBadge = null,onOpenIssue,historyGraph = true}: {
   copies:Copy[]; hosts:Host[]; projects:Project[]; locations:Location[]; subPath:string;
+  /** The History tab draws branch and merge lanes; off by the historyGraph setting. */
+  historyGraph?:boolean;
   loaded:boolean; error:string; api:RepositoryApi & ConnectionApi & {trees(id:string):Promise<GitResult>};
   onOpen(path:string):void; onAttach(hostId:string,root:string,projectId?:string):Promise<Copy>;
   onClone(hostId:string,source:string,destination:string,projectId?:string):Promise<Copy>;
@@ -60,6 +62,7 @@ export function ProjectWorkspace({copies,hosts,projects,locations,subPath,loaded
         value={query} onChange={event => setQuery(event.target.value)}/>}
       <button onClick={() => onOpen("inbox")}>Мои PR{inboxBadge !== null &&
         <span className="git-inbox-badge" aria-label={inboxBadge + " new"}>{inboxBadge}</span>}</button>
+      <button onClick={() => onOpen("ci")}>CI/CD</button>
       <button aria-expanded={connections} onClick={() => setConnections(!connections)}>Подключения</button>
     </header>
     {connections &&       <section className="git-project-connections">
@@ -114,7 +117,7 @@ export function ProjectWorkspace({copies,hosts,projects,locations,subPath,loaded
           openCopy(registered,"Code");
         })}
       </>}
-      {loaded && copy && section === "History" && <HistoryPanel key={copy.id} api={api.history} copyId={copy.id}/>}
+      {loaded && copy && section === "History" && <HistoryPanel key={copy.id} api={api.history} copyId={copy.id} graph={historyGraph}/>}
       {loaded && copy && section !== "Code" && section !== "History" && <RepositoryPanel key={copy.id + section} copyId={copy.id} name={repo!.name}
         accounts={accounts} api={api} onAddConnection={() => setConnecting(true)} section={section.toLowerCase() as RepositorySection} onOpenIssue={onOpenIssue}/>}
       {connecting && <ConnectionWizard api={api} onClose={() => setConnecting(false)} onSaved={account => {

@@ -2,7 +2,9 @@ import { spawn } from "node:child_process";
 
 export type GitRun = (args: string[], options?: {input?: string; index?: string; codes?: number[]; author?:{name:string;email:string};
   /** Output cap in bytes; 512 KiB unless a read needs more (refs and status of large repositories). */
-  limit?: number}) => Promise<{text: string; code: number}>;
+  limit?: number;
+  /** Past the cap, keep the output up to its last whole line and mark it truncated instead of failing. */
+  truncate?: boolean}) => Promise<{text: string; code: number; truncated?: boolean}>;
 
 export function gitRunner(root: string, signal?: AbortSignal, transport?: {username: string; helper: string}): GitRun {
   return (args, options = {}) => new Promise((resolve, reject) => {
@@ -34,10 +36,13 @@ export function gitRunner(root: string, signal?: AbortSignal, transport?: {usern
     const chunks: Buffer[] = [];
     let size = 0;
     let tooLarge = false;
+    const limit = options.limit ?? 512 * 1024;
     git.stdout.on("data", (chunk: Buffer) => {
+      if (tooLarge) return;
       size += chunk.length;
-      if (size > (options.limit ?? 512 * 1024)) {
+      if (size > limit) {
         tooLarge = true;
+        if (options.truncate) chunks.push(chunk.subarray(0, chunk.length - (size - limit)));
         git.kill("SIGKILL");
       } else chunks.push(chunk);
     });
@@ -45,7 +50,13 @@ export function gitRunner(root: string, signal?: AbortSignal, transport?: {usern
     git.stdin.end(options.input);
     git.on("error", (error: NodeJS.ErrnoException) => reject(new Error(error.code === "ABORT_ERR" ? "GIT_RESULT_UNKNOWN" : "GIT_PROCESS_UNAVAILABLE")));
     git.on("close", code => {
-      if (tooLarge) reject(new Error("GIT_OUTPUT_LIMIT"));
+      if (tooLarge && options.truncate) {
+        const bytes = Buffer.concat(chunks);
+        // A newline byte never sits inside a UTF-8 sequence, so cutting after it keeps the text decodable.
+        const whole = bytes.subarray(0, bytes.lastIndexOf(0x0a) + 1);
+        try { resolve({text: new TextDecoder("utf-8", {fatal: true, ignoreBOM: true}).decode(whole), code: 0, truncated: true}); }
+        catch { reject(new Error("GIT_UNSUPPORTED_ENCODING")); }
+      } else if (tooLarge) reject(new Error("GIT_OUTPUT_LIMIT"));
       else if (code !== null && (options.codes ?? [0]).includes(code)) {
         const bytes = Buffer.concat(chunks);
         try {
