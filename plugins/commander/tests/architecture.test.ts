@@ -1,7 +1,7 @@
 // Keeps the host-agnostic layers free of host code, so a move from BB to
 // another host (Tauri is the planned one) replaces adapters instead of the
 // plugin. docs/architecture.md at the repository root states the rule.
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -41,11 +41,8 @@ interface Layer {
 }
 
 function violations(layer: Layer): string[] {
-  const directory = resolve(pluginRoot, layer.directory);
-  // S0 ships before the core and UI slices create their source directories.
-  if (!existsSync(directory)) return [];
   const reachable = layer.reachable.map((dir) => resolve(pluginRoot, dir));
-  return sourceFiles(directory).flatMap((file) =>
+  return sourceFiles(resolve(pluginRoot, layer.directory)).flatMap((file) =>
     importSpecifiers(readFileSync(file, "utf8"))
       .filter((specifier) => {
         if (specifier.startsWith(".")) {
@@ -100,6 +97,10 @@ describe("import scanner", () => {
 });
 
 describe("host-agnostic layers", () => {
+  it.each([core, ui])("$directory has source files to check", (layer) => {
+    expect(sourceFiles(resolve(pluginRoot, layer.directory)).length).toBeGreaterThan(0);
+  });
+
   it("src/core imports only zod and itself", () => {
     expect(violations(core)).toEqual([]);
   });

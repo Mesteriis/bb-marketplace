@@ -9,16 +9,13 @@
   },
   "bb": {
     "name": "Makosh Commander [Experimental]",
-    "description": "Two-pane file manager for local folders and BB hosts (SFTP via Remote Hub in progress). Experimental.",
+    "description": "Experimental two-pane file manager for BB. Early scaffold: the Commander page is a placeholder.",
     "branding": {
       "icon": "./assets/icon.svg"
     },
     "server": "./server.ts",
     "app": "./app.tsx",
-    "host": "./host.ts",
-    "skills": [
-      "skills"
-    ]
+    "host": "./host.ts"
   },
   "scripts": {
     "build": "bb plugin build",
@@ -50,7 +47,7 @@
     "typescript": "^5.7.0",
     "vitest": "^5.1.0"
   },
-  "description": "Two-pane file manager for local folders and BB hosts (SFTP via Remote Hub in progress). Experimental.",
+  "description": "Experimental two-pane file manager for BB. Early scaffold: the Commander page is a placeholder.",
   "license": "MIT",
   "repository": {
     "type": "git",

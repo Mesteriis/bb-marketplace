@@ -330,7 +330,7 @@
     {
       "id": "makosh-commander",
       "displayName": "Makosh Commander [Experimental]",
-      "description": "Two-pane file manager for local folders and BB hosts (SFTP via Remote Hub in progress). Experimental.",
+      "description": "Experimental two-pane file manager for BB. Early scaffold: the Commander page is a placeholder.",
       "icon": {
         "url": "./plugins/commander/assets/icon.svg"
       },
