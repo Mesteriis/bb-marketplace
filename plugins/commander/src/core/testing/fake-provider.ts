@@ -74,7 +74,6 @@ export class FakeProvider implements FileProvider {
 
   async stat(path: ResourcePath, signal: AbortSignal): Promise<Entry | null> {
     await this.before("stat", path, signal);
-    if (path.segments.length === 0) return this.asEntry(this.root);
     const entry = this.find(path);
     return entry ? this.asEntry(entry) : null;
   }
@@ -110,6 +109,7 @@ export class FakeProvider implements FileProvider {
 
   async openWrite(path: ResourcePath, opts: Parameters<FileProvider["openWrite"]>[1], signal: AbortSignal): Promise<WriteSession> {
     await this.before("openWrite", path, signal);
+    this.forbidRoot(path);
     const dir = parent(path);
     if (!dir) throw new CommanderError("invalid_path", "Cannot write root");
     const tempPath = join(dir, opts.tempName);
@@ -163,15 +163,19 @@ export class FakeProvider implements FileProvider {
 
   async mkdir(path: ResourcePath, signal: AbortSignal): Promise<void> {
     await this.before("mkdir", path, signal);
+    this.forbidRoot(path);
     this.checkTarget(path, false);
     this.set({ path, kind: "dir", bytes: new Uint8Array(), mtimeNs: String(++this.clock) });
   }
 
   async rename(from: ResourcePath, to: ResourcePath, opts: Parameters<FileProvider["rename"]>[2], signal: AbortSignal): Promise<void> {
     await this.before("rename", to, signal);
+    this.forbidRoot(from, to);
     const entry = this.require(from);
-    this.checkTarget(to, opts.replace, opts.expectTarget);
-    if (this.same(from, to)) return;
+    // A case-only change on a case-insensitive endpoint renames the entry onto itself.
+    const caseOnly = this.same(from, to) && !samePath(from, to, true);
+    if (!caseOnly) this.checkTarget(to, opts.replace, opts.expectTarget);
+    if (this.same(from, to) && !caseOnly) return;
     const tree = entry.kind === "dir"
       ? [...this.entries].filter((child) => isAncestorOrSelf(from, child.path, this.endpoint.caseSensitive))
       : [entry];
@@ -183,6 +187,7 @@ export class FakeProvider implements FileProvider {
 
   async remove(path: ResourcePath, opts: Parameters<FileProvider["remove"]>[1], signal: AbortSignal): Promise<void> {
     await this.before("remove", path, signal);
+    this.forbidRoot(path);
     const candidate = this.find(path);
     if (opts.expect && (!candidate || !this.matches(candidate, opts.expect))) {
       throw new CommanderError("changed_since_plan", "Source changed");
@@ -225,6 +230,7 @@ export class FakeProvider implements FileProvider {
   }
 
   private find(path: ResourcePath): StoredEntry | undefined {
+    if (path.segments.length === 0) return this.root;
     return [...this.entries].find((entry) => this.same(entry.path, path));
   }
 
@@ -234,7 +240,12 @@ export class FakeProvider implements FileProvider {
     return entry;
   }
 
+  private forbidRoot(...paths: ResourcePath[]): void {
+    if (paths.some((path) => path.segments.length === 0)) throw new CommanderError("invalid_path", "The root cannot be changed");
+  }
+
   private set(entry: StoredEntry): void {
+    this.forbidRoot(entry.path);
     const existing = this.find(entry.path);
     if (existing) this.entries.delete(existing);
     this.entries.add(entry);

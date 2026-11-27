@@ -3,6 +3,7 @@ import { CommanderError } from "./errors.ts";
 import { JobRunner, type RunnerDeps } from "./job-runner.ts";
 import { Conflict, OperationJob, planDigest, type JobState, type OperationPlan } from "./model.ts";
 import { parsePosix } from "./path.ts";
+import { buildPlan } from "./planner.ts";
 import { FakeProvider } from "./testing/fake-provider.ts";
 import { tempNameFor } from "./reconcile.ts";
 import type { Checkpoint } from "./job-store.ts";
@@ -124,8 +125,9 @@ test("asks about a changed source despite overwrite policy", async () => {
 test("checks the target fingerprint again at commit after overwrite approval", async () => {
   const { runner, plan, at, to } = await setup();
   to.put(target, Uint8Array.of(7), "1");
-  const { id } = await runner.submit(plan);
+  const { id } = await runner.submit(await planningExisting(plan, to));
   const conflict = (await at(id, "awaiting_decision", 0)).pendingConflict!;
+  expect(conflict.reason).toBe("exists");
   to.delay = async (op) => {
     if (op === "commit") to.put(target, Uint8Array.of(8), "2");
   };
@@ -499,8 +501,10 @@ test.each(["approve", "reject"] as const)("only %s wins the approval CAS", async
 test.each(["skip", "cancel"] as const)("only %s wins the decision CAS", async (winner) => {
   const { runner, plan, store, at, to } = await setup();
   to.put(target, Uint8Array.of(5), "2");
-  const { id } = await runner.submit(plan);
-  const conflictId = (await at(id, "awaiting_decision")).pendingConflict!.id;
+  const { id } = await runner.submit(await planningExisting(plan, to));
+  const pending = (await at(id, "awaiting_decision")).pendingConflict!;
+  expect(pending.reason).toBe("exists");
+  const conflictId = pending.id;
   const gate = delayUpdate(store, winner === "skip" ? "cancel_requested" : "running");
   const loser = runner.decide(id, { conflictId, action: winner === "skip" ? "cancel" : "skip", applyTo: "this" });
   const rejected = expect(loser).rejects.toMatchObject({ code: "changed_since_plan" });
@@ -836,8 +840,9 @@ test("restores staged parent directories when a restarted child conflict is deci
   unsigned.items[0].target!.path = copy;
   unsigned.items.unshift({ source: { endpoint: "host:from", path: input }, target: { endpoint: "host:to", path: output },
     kind: "dir", fingerprint: { size: "0", mtimeNs: dir.mtimeNs }, expectTarget: "absent" });
-  const { id } = await runner.submit({ ...unsigned, digest: await planDigest(unsigned) });
+  const { id } = await runner.submit(await planningExisting({ ...unsigned, digest: await planDigest(unsigned) }, to));
   const conflict = (await at(id, "awaiting_decision", 1)).pendingConflict!;
+  expect(conflict.reason).toBe("exists");
   const restarted = newRunner();
   await restarted.recover();
   await restarted.decide(id, { conflictId: conflict.id, action: "overwrite", applyTo: "this" });
@@ -1274,4 +1279,61 @@ test("clears the source hash when a missing-source recovery is recorded as verif
   const point = await store.lastCheckpoint(id, 0);
   expect(point?.phase).toBe("verified");
   expect(point?.sourceHash).toBeUndefined();
+});
+
+test("renames only the case of a name on a case-insensitive endpoint, from the real S2 plan to the final spelling", async () => {
+  const fake = new FakeProvider("host:ci", false);
+  const dir = parsePosix("/d");
+  const upper = parsePosix("/d/A");
+  await fake.mkdir(dir, signal());
+  fake.put(upper, Uint8Array.of(1, 2, 3), "7");
+  const plan = await buildPlan({
+    kind: "rename", initiator: { kind: "owner" }, sources: [{ endpoint: "host:ci", path: upper }], targetDir: null,
+    newName: { t: "a" }, conflictPolicy: "ask", verify: "size",
+  }, {
+    provider: () => fake, now: () => new Date(date), uuid: () => "323e4567-e89b-42d3-a456-426614174000",
+    limits: { maxItems: 100, maxDepth: 10 }, protectedPathsFor: () => [],
+  }, signal());
+  expect(plan.items[0].expectTarget).toBe("absent");
+  const store = new MemoryJobStore();
+  let next = 0;
+  const runner = new JobRunner({
+    store, provider: () => fake, now: () => new Date(date), uuid: () => "423e4567-e89b-42d3-a456-" + String(++next).padStart(12, "0"),
+    onEvent: () => {},
+  });
+  const { id } = await runner.submit(plan, { awaitsOwner: true });
+  await runner.approve(id);
+  const job = await vi.waitFor(async () => {
+    const current = (await store.get(id))!;
+    expect(current.state).toBe("completed");
+    return current;
+  });
+  expect(job.items[0].outcome).toBe("done");
+  const names = (await fake.list(dir, { cursor: null, limit: 10 }, signal())).entries.map(({ name }) => name);
+  expect(names).toEqual([{ t: "a" }]);
+  expect(fake.contents(upper)).toEqual(Uint8Array.of(1, 2, 3));
+});
+
+test("still rejects a copy whose target folds onto its own source", async () => {
+  const fake = new FakeProvider("host:ci", false);
+  fake.put(parsePosix("/A"), Uint8Array.of(1), "7");
+  const entry = (await fake.stat(parsePosix("/A"), signal()))!;
+  const unsigned: Omit<OperationPlan, "digest"> = {
+    id: "123e4567-e89b-42d3-a456-426614174000", createdAt: date, initiator: { kind: "owner" }, kind: "copy",
+    sourceEndpoint: "host:ci", targetEndpoint: "host:ci", targetDir: { endpoint: "host:ci", path: { segments: [] } },
+    items: [{ source: { endpoint: "host:ci", path: parsePosix("/A") }, target: { endpoint: "host:ci", path: parsePosix("/a") },
+      kind: "file", fingerprint: { size: entry.size, mtimeNs: entry.mtimeNs }, expectTarget: "absent" }],
+    route: "same-endpoint", conflictPolicy: "ask", verify: "size", totalBytes: "1",
+  };
+  const store = new MemoryJobStore();
+  const runner = new JobRunner({ store, provider: () => fake, now: () => new Date(date), uuid: () => "523e4567-e89b-42d3-a456-000000000001", onEvent: () => {} });
+  const { id } = await runner.submit({ ...unsigned, digest: await planDigest(unsigned) });
+  const job = await vi.waitFor(async () => {
+    const current = (await store.get(id))!;
+    expect(["failed", "awaiting_decision", "completed", "unknown"]).toContain(current.state);
+    return current;
+  });
+  expect(job.state).toBe("failed");
+  expect(job.items[0].error).toBe("Destination overlaps source");
+  expect(fake.contents(parsePosix("/A"))).toEqual(Uint8Array.of(1));
 });

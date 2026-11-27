@@ -63,3 +63,18 @@ test("opens exactly the caller-selected temporary path exclusively", async () =>
   await expect(provider.openWrite(target, opts, signal)).rejects.toMatchObject({ code: "already_exists" });
   await session.abort();
 });
+
+test("shows the root to every existence check and refuses to change it", async () => {
+  const provider = new FakeProvider("host:test");
+  const root = parsePosix("/");
+  provider.put(parsePosix("/a"), Uint8Array.of(1), "5");
+  expect((await provider.stat(root, signal))?.kind).toBe("dir");
+  await expect(provider.mkdir(root, signal)).rejects.toMatchObject({ code: "invalid_path" });
+  expect(() => provider.put(root, Uint8Array.of(1))).toThrowError(expect.objectContaining({ code: "invalid_path" }));
+  await expect(provider.remove(root, { kind: "dir" }, signal)).rejects.toMatchObject({ code: "invalid_path" });
+  await expect(provider.rename(parsePosix("/a"), root, { replace: true }, signal)).rejects.toMatchObject({ code: "invalid_path" });
+  await expect(provider.rename(root, parsePosix("/b"), { replace: false }, signal)).rejects.toMatchObject({ code: "invalid_path" });
+  await expect(provider.openWrite(root, { tempName: { t: ".r.part" } }, signal)).rejects.toMatchObject({ code: "invalid_path" });
+  expect((await provider.list(root, { cursor: null, limit: 10 }, signal)).entries.map(({ name }) => name)).toEqual([{ t: "a" }]);
+  expect(provider.contents(parsePosix("/a"))).toEqual(Uint8Array.of(1));
+});

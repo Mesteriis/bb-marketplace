@@ -130,7 +130,7 @@ export class JobRunner {
     let targetConflict: { index: number; conflict: ItemConflict } | undefined;
     for (const [index, item] of plan.items.entries()) {
       const expected = item.expectTarget;
-      if (!targetConflict && item.target && expected !== null) {
+      if (!targetConflict && item.target && expected !== null && !this.isCaseOnlyRename(plan, item)) {
         const target = await observe(this.location(item.target), context, expected !== "absent" && Boolean(expected.sha256));
         if (!matchesTarget(target, expected)) {
           targetConflict = { index, conflict: new ItemConflict("target_changed", fingerprint(currents[index]), fingerprint(target)) };
@@ -414,6 +414,11 @@ export class JobRunner {
     }
   }
 
+  private isCaseOnlyRename(plan: OperationPlan, item: PlanItem): boolean {
+    if (plan.kind !== "rename" || !item.source || !item.target || item.source.endpoint !== item.target.endpoint) return false;
+    return samePath(item.source.path, item.target.path, this.location(item.source).provider.endpoint.caseSensitive);
+  }
+
   private expandedDirectory(job: OperationJob, index: number, source: Location | null): boolean {
     const item = job.plan.items[index];
     const following = job.plan.items[index + 1]?.source;
@@ -467,13 +472,15 @@ export class JobRunner {
     const expandedDirectory = this.expandedDirectory(job, index, source);
     if (target && (job.plan.kind === "copy" || job.plan.kind === "move") && this.blockedParent(job, index, target)) return "skipped";
     const oldSource = source && await observe(source, context, Boolean(expectedSource?.sha256));
-    const oldTarget = target && await observe(target, context, Boolean(
+    // A case-only rename names its own source: S2 plans it with an absent target, and it is no conflict.
+    const caseOnlyRename = this.isCaseOnlyRename(job.plan, item);
+    const oldTarget = target && !caseOnlyRename ? await observe(target, context, Boolean(
       decision?.conflict.target?.sha256 || (expectedTarget && expectedTarget !== "absent" && expectedTarget.sha256),
-    ));
+    )) : null;
     const sourceFingerprint = fingerprint(oldSource);
     const targetFingerprint = fingerprint(oldTarget);
     const sameEndpoint = source && target && source.provider.endpoint.id === target.provider.endpoint.id;
-    if (source && target && sameEndpoint && isAncestorOrSelf(source.path, target.path, source.provider.endpoint.caseSensitive)) {
+    if (source && target && sameEndpoint && !caseOnlyRename && isAncestorOrSelf(source.path, target.path, source.provider.endpoint.caseSensitive)) {
       throw new CommanderError("invalid_path", "Destination overlaps source");
     }
     const sourceChanged = source && (!oldSource || oldSource.kind !== item.kind || !matches(sourceFingerprint, item.fingerprint));
