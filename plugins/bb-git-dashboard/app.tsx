@@ -162,6 +162,13 @@ function ProjectsSidebar({subPath}: {subPath:string}) {
   </nav>;
 }
 
+/** The value of an `ok` answer without its envelope; a failure throws its code. */
+function okValue<T extends {ok: boolean}>(result: T): Omit<Extract<T, {ok: true}>, "ok"> {
+  if (!result.ok) failed(result as unknown as Failure);
+  const {ok: _ok, ...value} = result as Extract<T, {ok: true}>;
+  return value;
+}
+
 function Dashboard({subPath}: {subPath: string}) {
   const {client, copies, hosts, projects, locations, loaded, error} = useCatalog();
   const navigate = useBbNavigate();
@@ -193,6 +200,20 @@ function Dashboard({subPath}: {subPath: string}) {
     link: async copyId => {
       const result = await client.call("repositoryLink",{copyId});
       return result.ok ? result.target : failed(result);
+    },
+    ci: {
+      runs: async (copyId,filter,page) => okValue(await client.call("ciRuns",{copyId,filter,page})),
+      run: async (copyId,runId) => okValue(await client.call("ciRun",{copyId,runId})),
+      log: async (copyId,runId,jobId) => okValue(await client.call("ciLog",{copyId,runId,jobId})),
+      workflows: async copyId => okValue(await client.call("ciWorkflows",{copyId})),
+      form: async (copyId,workflowId,ref) => okValue(await client.call("ciForm",{copyId,workflowId,ref})),
+      prepare: async (copyId,action) => okValue(await client.call("ciPrepare",{copyId,action})),
+      confirm: async previewId => { okValue(await client.call("ciConfirm",{previewId})); },
+      threads: async copyId => okValue(await client.call("ciThreads",{copyId})),
+      ask: async (copyId,runId,jobId) => okValue(await client.call("ciAsk",{copyId,runId,jobId})),
+      send: async (copyId,runId,jobId,threadIds) => okValue(await client.call("ciSend",{copyId,runId,jobId,threadIds})),
+      subscribe: async (copyId,threadIds) => okValue(await client.call("ciSubscribe",{copyId,threadIds})),
+      openThread: threadId => navigate.toThread(threadId),
     },
     forgeStatus: async (copyId,recheck) => {
       const result = await client.call("forgeStatus",{copyId,recheck});

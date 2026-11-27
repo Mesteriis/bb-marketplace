@@ -50,7 +50,7 @@ export function ProjectWorkspace({copies,hosts,projects,locations,subPath,loaded
 
   return <div className="git-project-layout git-catalog-layout">
     <header className="git-project-bar">
-      <strong className="git-project-brand"><span aria-hidden="true">⑂</span> Git Workspace</strong>
+      <strong className="git-project-brand"><span aria-hidden="true">⑂</span> Makosh Git</strong>
       {copy && <button onClick={() => onOpen("")}>Все проекты</button>}
       {!copy && <input aria-label="Поиск по каталогу" placeholder="Репозиторий, ветка или путь…" type="search"
         value={query} onChange={event => setQuery(event.target.value)}/>}

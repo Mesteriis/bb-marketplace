@@ -50,8 +50,22 @@ export function forgeLinks(ports: LinkPorts) {
     return resolver;
   };
 
+  /** A server the user configured an account for is that account's forge, whatever its name. */
+  async function configured(host: string): Promise<Detection | null> {
+    for (const account of await ports.accounts()) {
+      try {
+        const url = new URL(account.origin);
+        if (url.hostname.toLowerCase() !== host) continue;
+        const origin = url.hostname === "api.github.com" ? "https://github.com" : url.origin;
+        return {kind: account.kind, origin, host, status: "known"};
+      } catch { continue; }
+    }
+    return null;
+  }
+
   async function place(hostId: string, remote: RemoteRef, recheck = false): Promise<Place> {
-    const detection = await resolverFor(hostId).resolve(remote, {recheck});
+    let detection = await configured(remote.host) ?? await resolverFor(hostId).resolve(remote, {recheck});
+    if (!detection.kind) detection = await configured(detection.host) ?? detection;
     const resolved = {...remote, host: detection.host};
     return {
       detection,

@@ -3,6 +3,8 @@ import type { Account, Repo } from "../core/providers.ts";
 import type { FeatureList, RepositorySection } from "../core/repository-features.ts";
 import type { RemoteApi } from "./remotes.tsx";
 import { ForgeStatusLine, type ForgeStatus } from "./forge-status.tsx";
+import { CiPanel } from "./ci/ci-panel.tsx";
+import type { CiApi } from "./ci/ci-api.ts";
 
 type Link = {accountId:string;repoId:string};
 export type RepositoryApi = Pick<RemoteApi,"accounts"|"repositories"|"status"> & {
@@ -11,10 +13,11 @@ export type RepositoryApi = Pick<RemoteApi,"accounts"|"repositories"|"status"> &
   forgeConnect(copyId:string,accountId:string):Promise<void>;
   setLink(copyId:string,target:Link|null):Promise<void>;
   features(copyId:string,section:RepositorySection):Promise<{repo:Repo;features:FeatureList}>;
+  ci:CiApi;
 };
 
 const labels = {
-  actions:{title:"Workflow runs", idle:"No workflow runs found.", detail:"Branch"},
+  actions:{title:"CI/CD", idle:"No workflow runs found.", detail:"Branch"},
   issues:{title:"Issues", idle:"No issues found.", detail:"Labels"},
   variables:{title:"Variables and secrets", idle:"No repository variables or secrets found.", detail:"Value"},
 };
@@ -44,7 +47,7 @@ export function RepositoryPanel({copyId,name,accounts,api,section,onAddConnectio
       setForge(status);
       const link = status.linked;
       setTarget(link);
-      if (link) {
+      if (link && section !== "actions") {
         const response = await api.features(copyId,section);
         if (active) setData(response);
       }
@@ -72,7 +75,7 @@ export function RepositoryPanel({copyId,name,accounts,api,section,onAddConnectio
   return <section className="git-project-code git-repository-panel">
     <div className="git-project-title"><div><h2>{label.title}</h2>
       <p className="git-muted">{data?.repo.path ?? name}{provider ? " · " + provider.label : ""}</p></div>
-      {target && <div className="git-row">
+      {target && section !== "actions" && <div className="git-row">
         {section === "issues" && <select aria-label="Issue state" value={filter} onChange={event => setFilter(event.target.value)}>
           <option value="all">All states</option><option value="open">Open</option><option value="closed">Closed</option>
         </select>}
@@ -86,7 +89,9 @@ export function RepositoryPanel({copyId,name,accounts,api,section,onAddConnectio
     {(target === null || changing) && (accounts.length > 0
       ? <ConnectionPicker accounts={accounts} target={target} api={api} onChange={change}/>
       : <div className="git-row"><button type="button" onClick={onAddConnection}>Add connection</button></div>)}
+    {target && section === "actions" && <div className="git-row"><button type="button" aria-expanded={changing} onClick={() => setChanging(value => !value)}>Connection</button></div>}
     {notice && <p className="git-error" role="alert">{notice}</p>}
+    {target && section === "actions" && <CiPanel api={api.ci} copyId={copyId}/>}
     {pending && <p role="status" className="git-muted">Loading {label.title.toLowerCase()}…</p>}
     {error && <p role="alert" className="git-error">{error}</p>}
     {data?.features.notice && <p className="git-muted" role="status">{data.features.notice}</p>}

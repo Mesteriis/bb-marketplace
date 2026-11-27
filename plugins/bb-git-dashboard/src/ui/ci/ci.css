@@ -1,0 +1,29 @@
+.git-ws .git-ci-toolbar { justify-content: space-between; }
+.git-ws .git-ci-spacer { flex: 1 1 auto; }
+.git-ws .git-ci [aria-pressed="true"] { background: var(--git-selected); color: var(--git-focus); border-color: var(--git-focus); }
+.git-ws .git-ci-run-title { gap: 10px; }
+.git-ws .git-ci-run-title h3 { margin: 0; font-size: 14px; }
+.git-ws .git-ci-run-body { display: grid; grid-template-columns: minmax(180px, 28%) minmax(0, 1fr); gap: 12px; min-width: 0; }
+.git-ws .git-ci-jobs, .git-ws .git-ci-steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; min-width: 0; }
+.git-ws .git-ci-jobs > li > button { width: 100%; text-align: start; overflow-wrap: anywhere; }
+.git-ws .git-ci-jobs > li > button[aria-current="true"] { background: var(--git-selected); color: var(--git-focus); }
+.git-ws .git-ci-steps { padding: 4px 0 6px 12px; color: var(--muted-foreground); font-size: 12px; }
+.git-ws .git-ci-log-pane { min-width: 0; }
+.git-ws .git-ci-log { max-height: 62vh; white-space: pre-wrap; overflow-wrap: anywhere; }
+.git-ws .git-ci-line { display: block; padding-inline-start: 4.2em; text-indent: -4.2em; }
+.git-ws .git-ci-number { display: inline-block; width: 3.6em; margin-inline-end: .6em; text-align: end; color: var(--muted-foreground); text-indent: 0; user-select: none; }
+.git-ws .git-ci-line[data-error] { background: color-mix(in srgb, var(--destructive) 16%, transparent); }
+.git-ws .git-ci-dispatch, .git-ws .git-ci-threads { border: 1px solid var(--border); border-radius: 7px; padding: 12px; background: var(--card); }
+.git-ws .git-ci-dispatch label { display: grid; gap: 4px; }
+.git-ws .git-ci-dispatch label.git-ci-check { grid-template-columns: auto 1fr; align-items: center; }
+.git-ws .git-ci-dispatch label.git-ci-check > input { order: -1; }
+.git-ws .git-ci-threads legend { padding: 0 4px; font-weight: 600; }
+.git-ws .git-ci-thread-list { display: grid; gap: 4px; max-height: 30vh; overflow: auto; }
+.git-ci-dialog { border: 1px solid var(--border); border-radius: 10px; background: var(--background); color: var(--foreground); padding: 16px; width: min(460px, calc(100vw - 32px)); }
+.git-ci-dialog::backdrop { background: rgb(0 0 0 / .35); }
+.git-ci-dialog h2 { margin: 0; font-size: 15px; }
+.git-ci-lines { margin: 0; padding-inline-start: 18px; display: grid; gap: 4px; overflow-wrap: anywhere; }
+.git-ci-dialog-actions { justify-content: flex-end; }
+.git-ci-dialog button { font: inherit; color: inherit; border: 1px solid var(--border); border-radius: 6px; background: var(--background); padding: 6px 9px; cursor: pointer; }
+.git-ci-dialog .git-primary { background: var(--primary); color: var(--primary-foreground); }
+@container (max-width: 720px) { .git-ws .git-ci-run-body { grid-template-columns: 1fr; } }

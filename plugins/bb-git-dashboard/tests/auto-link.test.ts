@@ -97,11 +97,8 @@ test("a copy without a usable origin reports no remote", async () => {
   assert.equal(status.reason, "none");
 });
 
-test("a server that did not answer is not looked up", async () => {
-  const {links, calls} = setup("git@gitlab.example.net:team/app.git", {
-    probe: async () => "unreachable",
-    accounts: async () => [{kind: "gitlab", id: "gl", label: "gl", origin: "https://gitlab.example.net", organization: "", username: "u"}],
-  });
+test("a server without an account that did not answer is not looked up", async () => {
+  const {links, calls} = setup("git@gitlab.example.net:team/app.git", {probe: async () => "unreachable"});
   const status = await links.status(copy);
   assert.deepEqual({kind: status.detection?.kind, state: status.detection?.status, reason: status.reason, linked: status.linked},
     {kind: "gitlab", state: "unreachable", reason: "none", linked: null});
@@ -146,4 +143,15 @@ test("addresses that point inside the network are not probed", async () => {
     assert.equal(calls.probe, 0, origin);
     assert.equal(status.detection?.kind ?? null, null, origin);
   }
+});
+
+test("a server that has a configured account is known without probing, even on an internal name", async () => {
+  const {links, calls} = setup("https://localhost:8443/stand/alpha.git", {
+    accounts: async () => [{kind: "gitea", id: "local", label: "local", origin: "https://localhost:8443", organization: "", username: "stand"}],
+    lookup: async (accountId, path) => ({target: {accountId, repoId: "5"}, clone: "https://localhost:8443/" + path + ".git"}),
+  });
+  const status = await links.status(copy);
+  assert.deepEqual({kind: status.detection?.kind, state: status.detection?.status, origin: status.detection?.origin, linked: status.linked},
+    {kind: "gitea", state: "known", origin: "https://localhost:8443", linked: {accountId: "local", repoId: "5"}});
+  assert.equal(calls.probe, 0);
 });
