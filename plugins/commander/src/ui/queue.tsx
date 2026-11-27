@@ -11,8 +11,6 @@ const pluralIndex = { one: 0, few: 1, many: 2, other: 2, two: 2, zero: 2 } as co
 const cancellable = new Set(["pending", "running", "awaiting_decision", "interrupted"]);
 // S17: только задания, у которых есть невыполненные элементы (failed или unknown).
 const retryable = new Set(["failed", "unknown"]);
-// Временная строка до переноса в strings.ts (владеет S8).
-const retryUnfinished = "Повторить невыполненное";
 const stateIcons = {
   pending: "Clock", approval: "Lock", running: "Play", awaiting_decision: "CircleQuestion",
   completed: "CircleCheck", failed: "AlertTriangle", cancel_requested: "Clock",
@@ -79,7 +77,7 @@ function JobCard({ job, endpoints, compact, onInspect, onSkip, onCancel, onRetry
       {cancellable.has(job.state) && !job.awaitsOwner && !conflict &&
         <Button size="sm" variant="outline" onClick={() => onCancel(job)}>{ru.cancelJob}</Button>}
       {onRetry && retryable.has(job.state) && !job.awaitsOwner && !conflict &&
-        <Button size="sm" variant="outline" onClick={() => onRetry(job)}>{retryUnfinished}</Button>}
+        <Button size="sm" variant="outline" onClick={() => onRetry(job)}>{ru.retryUnfinished}</Button>}
     </div>
   </article>;
 }

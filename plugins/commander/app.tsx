@@ -326,6 +326,8 @@ function CommanderPage({ compact = false, environment, threadId }: { compact?: b
       await mutate(rpc.call("job_decide", { jobId: job.id, conflictId: job.pendingConflict.id, action, applyTo: same ? "remaining_same_reason" : "this" }));
     }}
     onCancel={(job) => mutate(rpc.call("job_cancel", { jobId: job.id }))}
+    onRetry={(job) => mutate(rpc.call("job_retry", { jobId: job.id })
+      .then((plan) => rpc.call("plan_run", { planId: plan.id, digest: plan.digest })))}
     onPreview={preview} onCompare={(source, target) => Promise.all([readText(source), readText(target)])}
     onTerminal={terminal} onOpenThread={(id) => navigate.toThread(id)} onOpenPage={() => navigate.toPluginPanel("commander")} />;
 }

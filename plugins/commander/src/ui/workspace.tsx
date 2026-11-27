@@ -43,6 +43,8 @@ export interface WorkspaceProps {
   onReloadConflict: (jobId: string) => Promise<OperationJob | null>;
   onDecide: (job: OperationJob, action: ConflictAction, same: boolean) => Promise<unknown>;
   onCancel: (job: OperationJob) => Promise<unknown>;
+  /** S17: повтор невыполненного; хост создаёт план повтора и запускает его. */
+  onRetry: (job: OperationJob) => Promise<unknown>;
   onPreview: (ref: ResourceRef) => void;
   onCompare: (source: ResourceRef, target: ResourceRef) => Promise<[string, string]>;
   onTerminal: (ref: ResourceRef) => Promise<void>;
@@ -480,7 +482,8 @@ export function Workspace(props: WorkspaceProps) {
     fullDestination: right ? targetLabel + displayPath(right.path) : "—" };
   const queue = <Queue {...props.queue} endpoints={endpoints} id={queueId} open={queueOpen} collapse={queueOpen ? toggleQueue : undefined} compact={compact} selection={selection}
     onInspect={inspect} onSkip={(job) => decide(job, "skip", false)}
-    onCancel={(job) => open({ kind: "cancel", job })} />;
+    onCancel={(job) => open({ kind: "cancel", job })}
+    onRetry={(job) => void props.onRetry(job)} />;
 
   return <div ref={root} className="cm-workspace" data-compact={compact} onKeyDown={onKeyDown}>
     <header className="cm-heading">

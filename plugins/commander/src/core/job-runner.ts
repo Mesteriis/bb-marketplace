@@ -263,16 +263,57 @@ export class JobRunner {
     if (job.state !== "failed" && job.state !== "unknown") {
       throw new CommanderError("changed_since_plan", "Only a failed or unknown job can be retried");
     }
-    const kept: number[] = [];
-    const confirmed: number[] = [];
+    const verdicts = new Map<number, "done" | "retry" | "unresolved">();
+    const verdictOf = async (index: number) => {
+      let verdict = verdicts.get(index);
+      if (!verdict) {
+        verdict = await this.confirmUnknown(job, index);
+        verdicts.set(index, verdict);
+      }
+      return verdict;
+    };
+    const selected = new Set<number>();
+    const queue: number[] = [];
+    const select = (index: number) => {
+      if (selected.has(index)) return;
+      selected.add(index);
+      queue.push(index);
+    };
     for (const [index, { outcome }] of job.items.entries()) {
-      if (outcome === "failed") kept.push(index);
-      if (outcome !== "unknown") continue;
-      const verdict = await this.confirmUnknown(job, index);
-      if (verdict === "done") confirmed.push(index);
-      if (verdict === "retry") kept.push(index);
+      if (outcome === "failed") select(index);
+      else if (outcome === "unknown" && (await verdictOf(index)) === "retry") select(index);
     }
+    // A child cannot succeed before its directory exists: a failed or unproven
+    // directory above a selected item is planned first, so it runs first.
+    while (queue.length) {
+      const target = job.plan.items[queue.pop()!].target;
+      if (!target) continue;
+      const caseSensitive = this.deps.provider(target.endpoint).endpoint.caseSensitive;
+      for (const [index, item] of job.plan.items.entries()) {
+        if (selected.has(index) || item.kind !== "dir" || !item.target || item.target.endpoint !== target.endpoint) continue;
+        if (!isAncestorOrSelf(item.target.path, target.path, caseSensitive)) continue;
+        const { outcome } = job.items[index];
+        if (outcome === "failed" || (outcome === "unknown" && (await verdictOf(index)) === "retry")) select(index);
+      }
+    }
+    // The runner skips a child only because a directory above it is not done
+    // (blockedParent), before any conflict decision. Such a child was never
+    // tried, so it follows a selected directory into the plan.
+    for (const [index, item] of job.plan.items.entries()) {
+      if (selected.has(index) || job.items[index].outcome !== "skipped" || !item.target) continue;
+      const child = item.target;
+      const caseSensitive = this.deps.provider(child.endpoint).endpoint.caseSensitive;
+      const blocked = [...selected].some((dir) => {
+        const ancestor = job.plan.items[dir].target;
+        return job.plan.items[dir].kind === "dir" && ancestor !== null && ancestor.endpoint === child.endpoint
+          && ancestor.path.segments.length < child.path.segments.length
+          && isAncestorOrSelf(ancestor.path, child.path, caseSensitive);
+      });
+      if (blocked) select(index);
+    }
+    const confirmed = [...verdicts].filter(([, verdict]) => verdict === "done").map(([index]) => index);
     if (confirmed.length) await this.recordConfirmed(job, confirmed);
+    const kept = [...selected].sort((a, b) => a - b);
     if (kept.length === 0) throw new CommanderError("unsupported", "No item can be retried safely");
 
     const items = kept.map((index) => job.plan.items[index]);

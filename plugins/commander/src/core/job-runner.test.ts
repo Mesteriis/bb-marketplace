@@ -1663,3 +1663,65 @@ test("retry refuses a plan whose source changed since the failed run", async () 
   await expect(runner.retryJob(id, { kind: "owner" })).rejects.toMatchObject({ code: "changed_since_plan" });
   expect(revalidate).toHaveBeenCalledTimes(1);
 });
+
+/** The write to `name` lands, but its commit reply is lost before the runner records it. */
+function loseCommitReply(to: FakeProvider, name: string) {
+  const openWrite = to.openWrite.bind(to);
+  vi.spyOn(to, "openWrite").mockImplementation(async (path, opts, signal) => {
+    const session = await openWrite(path, opts, signal);
+    const segment = path.segments.at(-1);
+    if (!segment || !("t" in segment) || segment.t !== name) return session;
+    const commit = session.commit.bind(session);
+    return { ...session, commit: async (commitOpts, stepSignal) => {
+      await commit(commitOpts, stepSignal);
+      throw new CommanderError("outcome_unknown", "Commit reply lost", true);
+    } };
+  });
+}
+
+test("retry does not plan an unknown item that reconciliation cannot confirm", async () => {
+  const { runner, plan, store, to, at } = await setup({ count: 3 });
+  to.failOn.push({ op: "commit", path: parsePosix("/b"), times: 1, error: new CommanderError("permission_denied", "Denied") });
+  loseCommitReply(to, "b1");
+  const { id } = await runner.submit(plan);
+  expect((await at(id, "unknown")).items.map(({ outcome }) => outcome)).toEqual(["failed", "unknown", "pending"]);
+
+  const retry = await runner.retryJob(id, { kind: "owner" });
+  expect(retry.items.map(({ source }) => source?.path.segments)).toEqual([[{ t: "a" }]]);
+  expect((await store.get(id))!.items.map(({ outcome }) => outcome)).toEqual(["failed", "unknown", "pending"]);
+});
+
+test("retry plans a failed directory before the failed children inside it", async () => {
+  const { runner, plan, to, from, at } = await setup({ count: 1 });
+  const signal = new AbortController().signal;
+  const tree = parsePosix("/tree");
+  await from.mkdir(tree, signal);
+  const dir = (await from.stat(tree, signal))!;
+  const child = parsePosix("/tree/child");
+  from.put(child, Uint8Array.of(42, 42, 42), "1");
+  to.failOn.push({ op: "mkdir", path: parsePosix("/tree-copy"), times: 1, error: new CommanderError("permission_denied", "Denied") });
+
+  const { digest: _digest, ...unsigned } = plan;
+  unsigned.items = [
+    {
+      source: { endpoint: "host:from", path: tree }, target: { endpoint: "host:to", path: parsePosix("/tree-copy") },
+      kind: "dir", fingerprint: { size: "0", mtimeNs: dir.mtimeNs }, expectTarget: "absent",
+    },
+    {
+      source: { endpoint: "host:from", path: child }, target: { endpoint: "host:to", path: parsePosix("/tree-copy/child") },
+      kind: "file", fingerprint: { size: "3", mtimeNs: "1" }, expectTarget: "absent",
+    },
+  ];
+  unsigned.totalBytes = "3";
+  const { id } = await runner.submit({ ...unsigned, digest: await planDigest(unsigned) });
+  expect((await at(id, "failed")).items.map(({ outcome }) => outcome)).toEqual(["failed", "skipped"]);
+
+  const retry = await runner.retryJob(id, { kind: "owner" });
+  expect(retry.items.map(({ kind, source }) => [kind, source?.path.segments])).toEqual([
+    ["dir", [{ t: "tree" }]],
+    ["file", [{ t: "tree" }, { t: "child" }]],
+  ]);
+  const retried = await runner.submit(retry);
+  await at(retried.id, "completed");
+  expect(to.contents(parsePosix("/tree-copy/child"))).toEqual(Uint8Array.of(42, 42, 42));
+});

@@ -311,7 +311,14 @@ export function createOperations(deps: {
     // S17: план повтора принадлежит запрашивающему, поэтому plan_run проверит его гранты.
     async retry(id: string, initiator: Initiator, signal: AbortSignal) {
       await deps.ready();
-      await requireJob(id, initiator.kind === "agent" ? initiator : undefined);
+      const job = await requireJob(id, initiator.kind === "agent" ? initiator : undefined);
+      if (initiator.kind === "agent") {
+        // Grants are checked on the job's own items before reconciliation may write anything.
+        const rows = await grants.forThread(initiator.threadId);
+        if (!authorize(initiator, job.plan, operationGrants(rows, job.plan)).ok) {
+          throw refusal("forbidden", "Commander planning failed outside the metadata grant");
+        }
+      }
       signal.throwIfAborted();
       const plan = await runner.retryJob(id, initiator);
       remember(plan);

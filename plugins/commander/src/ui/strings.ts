@@ -13,6 +13,7 @@ export const ru = {
   compareLimit: "Сравнение доступно для двух текстовых файлов до 128 КБ", allItems: "Список объектов",
   cancel: "Отмена", cancelJob: "Отменить задание", run: "Запустить", next: "Далее",
   retryConflict: "Проверить снова",
+  retryUnfinished: "Повторить невыполненное",
   conflictEnded: "Конфликт больше не ожидает решения",
   conflictExists: (file: string) => file + " уже есть в назначении",
   conflictForFile: (file: string, reason: string) => file + " · " + reason,
