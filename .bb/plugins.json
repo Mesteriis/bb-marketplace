@@ -72,6 +72,10 @@
       "source": "./plugins/codex-realtime"
     },
     {
+      "name": "commander",
+      "source": "./plugins/commander"
+    },
+    {
       "name": "context-health",
       "source": "./plugins/context-health"
     },

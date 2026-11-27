@@ -17,6 +17,9 @@ Name the source, the revision, the license, and the paths it landed in.
 - The same registry at tag `desktop-v0.50.1` supplies Button, Card, Input,
   Textarea and their helpers in `plugins/telegram/components/ui/` and
   `plugins/telegram/lib/utils.ts`.
+- Also `plugins/commander/components/ui/`, `plugins/commander/lib/`, and
+  `plugins/commander/hooks/` copied from the Mail paths above in revision
+  `9c432d0c474ceff229d310617ed9eaebacab410a`.
 - License: MIT, Copyright (c) 2026 Michael Yong.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
