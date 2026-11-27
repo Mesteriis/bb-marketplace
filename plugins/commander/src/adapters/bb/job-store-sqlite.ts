@@ -1,7 +1,7 @@
 import type { Database } from "better-sqlite3";
 import { z } from "zod";
 import { CommanderError } from "../../core/errors.ts";
-import type { Checkpoint, JobStore } from "../../core/job-store.ts";
+import type { AgentJobStore, Checkpoint, JobStore } from "../../core/job-store.ts";
 import { Fingerprint, Initiator, OperationJob, type OperationPlan } from "../../core/model.ts";
 import { ResourcePath } from "../../core/path.ts";
 import { Size } from "../../core/size.ts";
@@ -175,7 +175,7 @@ function unreadableJob(row: JobRow, id: string): OperationJob {
   });
 }
 
-export function createSqliteJobStore(db: Database): JobStore {
+export function createSqliteJobStore(db: Database): AgentJobStore {
   const insert = db.prepare(`
     INSERT INTO jobs (
       id, plan_json, state, progress_json, current_item, pending_conflict_json,
@@ -203,6 +203,21 @@ export function createSqliteJobStore(db: Database): JobStore {
   `);
   const byThread = agentRows("thread");
   const allAgents = agentRows("all");
+  const maxPageScan = 200;
+  const scanRows = (scope: "owner" | "agent") => db.prepare<{ cursor: string | null; threadId?: string }, JobRow>(`${jobRows}
+    WHERE (@cursor IS NULL OR rowid < CAST(@cursor AS INTEGER))
+      ${scope === "agent" ? "AND initiator_kind = 'agent' AND thread_id = @threadId" : ""}
+    ORDER BY rowid DESC LIMIT ${maxPageScan + 1}
+  `);
+  const ownerScan = scanRows("owner");
+  const agentScan = scanRows("agent");
+  const approvalRecorded = db.prepare<[string], number>(
+    "SELECT 1 FROM commander_owner_approvals WHERE job_id = ?",
+  ).pluck();
+  const countApprovals = db.prepare<[string], { thread: number; total: number }>(`
+    SELECT count(CASE WHEN thread_id = ? THEN 1 END) AS thread, count(*) AS total
+    FROM jobs WHERE state = 'pending' AND awaits_owner = 1 AND initiator_kind = 'agent'
+  `);
   const countStoredTerminal = db.prepare<[], number>(
     `SELECT count(*) FROM jobs WHERE state IN ${TERMINAL_STATES}`,
   ).pluck();
@@ -307,6 +322,8 @@ export function createSqliteJobStore(db: Database): JobStore {
   });
 
   return {
+    hasOwnerApproval: (id) => approvalRecorded.get(id) === 1,
+    approvalQueueSize: (threadId) => countApprovals.get(threadId)!,
     async create(job) {
       create.immediate(job);
     },
@@ -335,6 +352,20 @@ export function createSqliteJobStore(db: Database): JobStore {
         if (jobs.length >= limit) break;
       }
       return jobs;
+    },
+    async listUnknownPage({ states, limit, threadId, cursor }) {
+      const jobs: OperationJob[] = [];
+      const statement = threadId === undefined ? ownerScan : agentScan;
+      let lastRow: string | undefined;
+      let scanned = 0;
+      for (const row of statement.iterate({ threadId, cursor: cursor ?? null })) {
+        if (scanned === maxPageScan || jobs.length >= limit) return { jobs, nextCursor: lastRow };
+        const job = showRow(row);
+        if (states.includes(job.state)) jobs.push(job);
+        lastRow = row.row_id;
+        scanned++;
+      }
+      return { jobs };
     },
     async update(id, patch, expected) {
       assertWritableJobId(id);

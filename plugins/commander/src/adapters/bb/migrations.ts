@@ -45,4 +45,19 @@ export const MIGRATIONS: string[] = [
     ALTER TABLE checkpoints ADD COLUMN cleanup_json TEXT;
     ALTER TABLE checkpoints ADD COLUMN source_hash TEXT;
   `,
+  `
+  CREATE INDEX IF NOT EXISTS jobs_agent_updated_at ON jobs (thread_id, updated_at DESC, id ASC)
+    WHERE initiator_kind = 'agent';
+  CREATE TABLE IF NOT EXISTS commander_owner_approvals (job_id TEXT PRIMARY KEY);
+  CREATE TRIGGER IF NOT EXISTS commander_record_owner_approval AFTER UPDATE OF state ON jobs
+    WHEN old.awaits_owner = 1 AND new.state = 'running'
+    BEGIN INSERT OR IGNORE INTO commander_owner_approvals VALUES (new.id); END;
+  CREATE TRIGGER IF NOT EXISTS commander_forget_owner_approval AFTER DELETE ON jobs
+    BEGIN DELETE FROM commander_owner_approvals WHERE job_id = old.id; END;
+`,
+  `
+    CREATE INDEX IF NOT EXISTS jobs_pending_owner_by_thread ON jobs (thread_id)
+      WHERE state = 'pending' AND awaits_owner = 1 AND initiator_kind = 'agent';
+    CREATE INDEX IF NOT EXISTS jobs_agent_thread_scan ON jobs (thread_id) WHERE initiator_kind = 'agent';
+  `,
 ];
