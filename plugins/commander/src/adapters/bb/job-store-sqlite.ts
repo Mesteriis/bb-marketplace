@@ -143,14 +143,17 @@ function unreadableJob(row: JobRow, id: string): OperationJob {
   const initiator = Initiator.safeParse(row.initiator_kind === "owner"
     ? { kind: row.initiator_kind }
     : { kind: row.initiator_kind, threadId: row.thread_id });
+  // S2 permits a delete plan with no target directory or target expectation.
+  // The diagnostic item also has no source, so it describes no file operation.
   const plan: OperationPlan = {
     id,
-    kind: "copy",
+    kind: "delete",
     createdAt,
     initiator: initiator.data ?? { kind: "owner" },
     sourceEndpoint: null,
     targetEndpoint: null,
-    items: [{ source: null, target: null, kind: "other", fingerprint: null }],
+    targetDir: null,
+    items: [{ source: null, target: null, kind: "other", fingerprint: null, expectTarget: null }],
     conflictPolicy: "ask",
     route: "same-endpoint",
     verify: "size",
