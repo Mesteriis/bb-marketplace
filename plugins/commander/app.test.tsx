@@ -803,3 +803,22 @@ test("F3 reports the file changed between two chunks of one image", async () => 
   expect(within(dialog).queryByRole("img")).toBeNull();
   expect(fileReads.length).toBe(3);
 });
+
+test("S11 panel cancellation aborts the HTTP scan_start call itself", async () => {
+  const fetchScan = vi.fn((_url: string, init: RequestInit) => new Promise<Response>((_resolve, reject) => {
+    init.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+  }));
+  vi.stubGlobal("fetch", fetchScan);
+  try {
+    mount();
+    await leftFile();
+    fireEvent.click(within(grid().parentElement!).getByRole("button", { name: "Поиск" }));
+    fireEvent.click(screen.getByRole("button", { name: "Найти" }));
+    const [url, request] = fetchScan.mock.calls[0];
+    expect(url).toBe("/api/v1/plugins/makosh-commander/rpc/scan_start");
+    expect(request.signal?.aborted).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Закрыть поиск" }));
+    expect(request.signal?.aborted).toBe(true);
+    expect(screen.queryByRole("grid", { name: "Найденные файлы" })).toBeNull();
+  } finally { vi.unstubAllGlobals(); }
+});

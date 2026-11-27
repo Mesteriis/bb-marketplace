@@ -54,6 +54,8 @@ class MemoryProvider implements FileProvider {
   listCalls = 0;
   private readonly byKey = new Map<string, Stored>();
   private readonly childKeys = new Map<string, Set<string>>();
+  // Children in listing order, kept so a page does not copy a 100 001-entry directory.
+  private readonly childOrder = new Map<string, string[]>();
 
   /** Lookups fold case on a case-insensitive endpoint, as the real filesystem does. */
   private fold(text: string): string {
@@ -76,7 +78,12 @@ class MemoryProvider implements FileProvider {
     this.byKey.set(key, { path, entry: { ...fileEntry("", size), name, kind } });
     const parentKey = this.fold(displayPath(parent(path) ?? { segments: [] }));
     const siblings = this.childKeys.get(parentKey) ?? new Set<string>();
-    siblings.add(key);
+    if (!siblings.has(key)) {
+      siblings.add(key);
+      const order = this.childOrder.get(parentKey) ?? [];
+      order.push(key);
+      this.childOrder.set(parentKey, order);
+    }
     this.childKeys.set(parentKey, siblings);
   }
 
@@ -99,7 +106,7 @@ class MemoryProvider implements FileProvider {
   ): Promise<ListPage> {
     signal.throwIfAborted();
     this.listCalls++;
-    const keys = [...(this.childKeys.get(this.fold(displayPath(path))) ?? [])];
+    const keys = this.childOrder.get(this.fold(displayPath(path))) ?? [];
     const start = opts.cursor === null ? 0 : Number(opts.cursor);
     const size = Math.min(opts.limit, this.pageSize);
     const page = keys.slice(start, start + size).map((key) => this.byKey.get(key)!.entry);
@@ -387,10 +394,13 @@ describe("buildPlan limits and streaming", () => {
       signal(),
     );
 
-  function bigFixture(): Array<[string, EntryKind, string]> {
+  // One read-only directory of 100 001 files, built once for the tests that only list it.
+  let big: MemoryProvider | undefined;
+  function bigProvider(): MemoryProvider {
+    if (big) return big;
     const files: Array<[string, EntryKind, string]> = [["/big", "dir", "0"], ["/out", "dir", "0"]];
     for (let index = 0; index < 100_001; index++) files.push([`/big/f${index}`, "file", "0"]);
-    return files;
+    return big = new MemoryProvider(endpoint("host:x"), files);
   }
 
   it("accepts a directory nested 64 levels deep", async () => {
@@ -403,14 +413,14 @@ describe("buildPlan limits and streaming", () => {
   });
 
   it("rejects 100001 items with limit_exceeded", async () => {
-    const deps = depsFor(treeProviders(new MemoryProvider(endpoint("host:x"), bigFixture())));
+    const deps = depsFor(treeProviders(bigProvider()));
     await expect(
       buildPlan(copyRequest([ref("host:x", "/big")], ref("host:x", "/out")), deps, signal()),
     ).rejects.toMatchObject({ code: "limit_exceeded" });
   });
 
   it("clamps a configured maxItems to the schema limit of 100000", async () => {
-    const deps = depsFor(treeProviders(new MemoryProvider(endpoint("host:x"), bigFixture())), {
+    const deps = depsFor(treeProviders(bigProvider()), {
       limits: { maxItems: 10_000_000, maxDepth: 64 },
     });
     await expect(

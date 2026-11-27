@@ -12,7 +12,7 @@ import { ru } from "./strings.ts";
 
 type Request = Extract<RpcInput<"scan_start">, { kind: "search" }>;
 export interface SearchActions {
-  start(input: Request): Promise<ScanGetView["job"] | ScanEstimateView>;
+  start(input: Request, signal: AbortSignal): Promise<ScanGetView["job"] | ScanEstimateView>;
   get(id: string): Promise<ScanGetView | null>;
   cancel(id: string): Promise<unknown>;
 }
@@ -44,6 +44,7 @@ export function SearchPanel({ side, active, root, label, savedId, grid, api, onF
   const [view, setView] = useState<ScanGetView | null>(null);
   const [estimate, setEstimate] = useState<{ request: Request; reply: ScanEstimateView } | null>(null);
   const [pending, setPending] = useState(false);
+  const pendingRequest = useRef<AbortController | null>(null);
   const [problem, setProblem] = useState<Problem | null>(null);
   const [advanced, setAdvanced] = useState(false);
   const [content, setContent] = useState("");
@@ -98,12 +99,22 @@ export function SearchPanel({ side, active, root, label, savedId, grid, api, onF
     return () => { active = false; clearTimeout(timer); };
   }, [id, api, t.expired]);
 
+  useEffect(() => () => pendingRequest.current?.abort(), []);
+
   async function start(request: Request, estimateOnly = false) {
+    if (pendingRequest.current) return;
+    const controller = new AbortController();
+    pendingRequest.current = controller;
     setEstimate(null);
     setProblem(null);
     setPending(true);
     try {
-      const reply = await api.start(estimateOnly ? { ...request, estimateOnly: true } : request);
+      const reply = await api.start(estimateOnly ? { ...request, estimateOnly: true } : request, controller.signal);
+      if (controller.signal.aborted) {
+        // The response may have arrived as the user cancelled. Cancel its job too.
+        if ("id" in reply) await api.cancel(reply.id);
+        return;
+      }
       if ("estimateId" in reply) setEstimate({ request, reply });
       else {
         setId(reply.id);
@@ -113,8 +124,14 @@ export function SearchPanel({ side, active, root, label, savedId, grid, api, onF
         setSelected(new Set());
         if (viewport.current) viewport.current.scrollTop = 0;
       }
-    } catch (error) { setProblem(problemOf(error)); }
-    finally { setPending(false); }
+    } catch (error) {
+      if (!controller.signal.aborted) setProblem(problemOf(error));
+    } finally {
+      if (pendingRequest.current === controller) {
+        pendingRequest.current = null;
+        if (!controller.signal.aborted) setPending(false);
+      }
+    }
   }
 
   function submit(event: FormEvent<HTMLFormElement>) {
@@ -136,8 +153,22 @@ export function SearchPanel({ side, active, root, label, savedId, grid, api, onF
     void start(request, remote && !!request.content);
   }
 
+  function abortStart() {
+    if (!pendingRequest.current) return false;
+    pendingRequest.current.abort();
+    pendingRequest.current = null;
+    setPending(false);
+    return true;
+  }
+
+  function close() {
+    abortStart();
+    if (id && !savedId && job?.state === "running") void api.cancel(id).catch(() => {});
+    onClose();
+  }
+
   function cancel() {
-    if (!id) return;
+    if (abortStart() || !id) return;
     void api.cancel(id).catch((error: unknown) => setProblem(problemOf(error)));
   }
 
@@ -179,7 +210,7 @@ export function SearchPanel({ side, active, root, label, savedId, grid, api, onF
       <div className="cm-heading" style={{ padding: 0, flexWrap: "wrap" }}>
         <Icon name="Search" /><strong>{savedId ? t.virtual : t.title}</strong>
         <span className="cm-fill" />
-        <Button type="button" size="sm" variant="ghost" aria-label={t.close} disabled={busy} onClick={onClose}><Icon name="X" /></Button>
+        <Button type="button" size="sm" variant="ghost" aria-label={t.close} onClick={close}><Icon name="X" /></Button>
       </div>
       <code className="cm-address cm-scan-path" style={{ margin: 0, paddingInline: 8, display: "block", lineHeight: "32px" }} title={displayPath(root.path)}>{label} · {displayPath(root.path)}</code>
       {!savedId && <form onSubmit={submit} onChange={() => setEstimate(null)}>
@@ -250,13 +281,13 @@ export function SearchPanel({ side, active, root, label, savedId, grid, api, onF
         ? Number(job.progress.bytes) / Number(job.progress.bytesPlanned) : undefined} />}
       <div className="cm-heading" style={{ padding: 0, flexWrap: "wrap" }}>
         <span className="cm-meta" aria-live="polite">
-          {busy ? (id ? t.progress : t.preparing) : job?.state === "cancelled" ? t.cancelled : job?.state === "interrupted" ? t.interrupted : ""}
+          {busy ? (pending ? t.preparing : t.progress) : job?.state === "cancelled" ? t.cancelled : job?.state === "interrupted" ? t.interrupted : ""}
           {result && <>{hits.length} {t.found} · </>}
           {job && <>{job.progress.items} {t.visited}</>}
           {job?.partial && <> · <strong>{t.partial}</strong></>}
         </span>
         <span className="cm-fill" />
-        {job?.state === "running" && <Button size="sm" variant="outline" onClick={cancel}>{t.cancel}</Button>}
+        {(pending || job?.state === "running") && <Button size="sm" variant="outline" onClick={cancel}>{t.cancel}</Button>}
         {current && <Button size="sm" variant="outline" onClick={() => onOpen(current)}>{current.entry.kind === "dir" ? t.openFolder : t.preview}</Button>}
         {current && onCopy && <Button size="sm" variant="outline" onClick={copy}>{t.copy}{selected.size > 0 && " (" + selected.size + ")"}</Button>}
         {!savedId && id && result && <Button size="sm" variant="outline" onClick={() => onSave(id)}>{t.save}</Button>}

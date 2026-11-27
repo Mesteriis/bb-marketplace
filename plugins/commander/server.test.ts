@@ -1124,3 +1124,141 @@ test("a seventeenth estimate on one agent thread is refused while another thread
       .resolves.toMatchObject({ bytesPlanned: "1", estimateId: expect.any(String) });
   } finally { await bb.dispose(); }
 });
+
+test("S11 RPC bounds SFTP content, binds the estimate, and restricts agent output", async () => {
+  const fixture = remoteFixture();
+  fixture.remote.seedFile("/data/a", "header\nneedle" + "z".repeat(250));
+  fixture.remote.seedFile("/data/b", "needle" + "x".repeat(450));
+  const bb = await backend(undefined, fixture.callRpc);
+  const root = { endpoint: fixture.endpoint, path: parsePosix("/data") };
+  const request = { kind: "search", root, content: { text: "needle", caseSensitive: true }, limits: { maxBytesRead: "300" } };
+  try {
+    await expect(bb.rpc("scan_start", request)).rejects.toMatchObject({
+      code: "forbidden", message: expect.stringContaining("content_search_needs_consent"),
+    });
+    await expect(bb.tool("commander_search", { root })).resolves.toMatchObject({ code: "forbidden" });
+    await bb.rpc("agent_grants_set", { grant: { threadId: "thread-a", endpoint: fixture.endpoint,
+      scope: parsePosix("/"), permissions: ["read"] } });
+    await expect(bb.tool("commander_search", { root, content: request.content, limits: request.limits }))
+      .resolves.toMatchObject({ code: "content_search_needs_consent" });
+    const estimate = z.object({ estimateId: z.uuid(), bytesPlanned: z.string() })
+      .parse(await bb.rpc("scan_start", { ...request, estimateOnly: true }));
+    expect(estimate.bytesPlanned).toBe("263");
+    expect(fixture.remote.opCount("op:read")).toBe(0);
+    await expect(bb.tool("commander_search", { root, content: request.content, limits: request.limits, estimateId: estimate.estimateId }))
+      .resolves.toMatchObject({ code: "forbidden" });
+    const { id } = z.object({ id: z.uuid() }).parse(await bb.rpc("scan_start", { ...request, estimateId: estimate.estimateId }));
+    await vi.waitFor(async () => expect(await bb.rpc("scan_get", { scanId: id })).toMatchObject({
+      job: { kind: "search", partial: true, state: "done", progress: { bytes: "263", bytesPlanned: "263" } },
+      result: { partial: true, hits: [{ ref: { endpoint: fixture.endpoint, path: parsePosix("/data/a") },
+        line: { number: 2, text: "needle" + "z".repeat(194) } }] },
+    }));
+    expect(fixture.remote.opCount("op:read")).toBe(1);
+    await expect(bb.rpc("scan_start", { ...request, estimateId: estimate.estimateId }))
+      .rejects.toMatchObject({ code: "forbidden" });
+    const agentInput = { root, content: request.content, limits: request.limits };
+    const ticket = z.object({ estimateId: z.uuid(), bytesPlanned: z.literal("263") })
+      .parse(await bb.tool("commander_search", { ...agentInput, estimateOnly: true }));
+    await expect(bb.tool("commander_search", { ...agentInput, estimateId: ticket.estimateId })).resolves.toMatchObject({
+      partial: true, hits: [{ line: { number: 2, text: "needle" + "z".repeat(194) } }],
+    });
+  } finally { await bb.dispose(); }
+});
+
+test("S11 RPC cancels remote read before another request", async () => {
+  const fixture = remoteFixture();
+  fixture.remote.seedFile("/data/a", "x".repeat(131_073));
+  let reads = 0;
+  let finish!: () => void;
+  const waiting = new Promise<void>((resolve) => { finish = resolve; });
+  const bb = await backend(undefined, async (args) => {
+    if (args.method === "hub_sftp_op" && (args.input as { op: string }).op === "read") {
+      reads++;
+      await waiting;
+    }
+    return fixture.callRpc(args);
+  });
+  const input = { kind: "search", root: { endpoint: fixture.endpoint, path: parsePosix("/data") },
+    content: { text: "needle", caseSensitive: true }, limits: { maxBytesRead: "131073" } };
+  try {
+    const { estimateId } = z.object({ estimateId: z.uuid(), bytesPlanned: z.literal("131073") })
+      .parse(await bb.rpc("scan_start", { ...input, estimateOnly: true }));
+    const { id: scanId } = z.object({ id: z.uuid() })
+      .parse(await bb.rpc("scan_start", { ...input, estimateId }));
+    await vi.waitFor(() => expect(reads).toBe(1));
+    await bb.rpc("scan_cancel", { scanId });
+    finish();
+    await vi.waitFor(async () => expect(await bb.rpc("scan_get", { scanId }))
+      .toMatchObject({ job: { state: "cancelled", partial: true }, result: null }));
+    expect(reads).toBe(1);
+  } finally { finish(); await bb.dispose(); }
+});
+
+test("S11 RPC caps the full serialized agent tool result at 1 MiB", async () => {
+  const bb = await backend();
+  try {
+    const root = { endpoint: "host:test", path: parsePosix("/data") };
+    for (let index = 0; index < 1150; index++) {
+      bb.disk.put(parsePosix("/data/" + String(index) + '"'.repeat(180)), new Uint8Array());
+    }
+    await bb.rpc("agent_grants_set", { grant: { threadId: "thread-a", endpoint: root.endpoint,
+      scope: root.path, permissions: ["read"] } });
+    const result = await bb.tool("commander_search", { root });
+    expect(result).toMatchObject({ partial: true, hits: expect.any(Array) });
+    expect((result as { hits: unknown[] }).hits.length).toBeGreaterThan(0);
+    const envelope = { content: [{ type: "text", text: JSON.stringify(result) }] };
+    expect(Buffer.byteLength(JSON.stringify(envelope))).toBeLessThanOrEqual(1048576);
+  } finally { await bb.dispose(); }
+});
+
+test.each(["estimate", "confirmed start"] as const)("S11 aborts %s after the first SFTP list request", async (phase) => {
+  const fixture = remoteFixture();
+  for (const name of ["a", "b"]) fixture.remote.seedFile("/data/out/" + name, "needle");
+  const controller = new AbortController();
+  let lists = 0;
+  let armed = false;
+  const bb = await backend(undefined, async (args) => {
+    if (armed && args.method === "hub_sftp_op" && (args.input as { op: string }).op === "list") {
+      lists++;
+      expect(args.signal.aborted).toBe(false);
+      const page = await fixture.callRpc(args);
+      controller.abort();
+      return page;
+    }
+    return fixture.callRpc(args);
+  });
+  const request = { kind: "search", root: { endpoint: fixture.endpoint, path: parsePosix("/data") },
+    content: { text: "needle", caseSensitive: true }, limits: { maxBytesRead: "1024" } };
+  try {
+    const input = phase === "estimate" ? { ...request, estimateOnly: true } : {
+      ...request, ...z.object({ estimateId: z.uuid() }).parse(await bb.rpc("scan_start", { ...request, estimateOnly: true })),
+    };
+    armed = true;
+    await expect(bb.rpc("scan_start", input, { ...client, experimental_signal: controller.signal })).rejects.toBeDefined();
+    expect(lists).toBe(1);
+    expect(fixture.remote.opCount("op:read")).toBe(0);
+  } finally { await bb.dispose(); }
+});
+
+// The second fixture adds one visible character beyond the response limit.
+const line200 = "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789"
+  + "abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij";
+test.each([
+  { length: 200, line: line200 },
+  { length: 201, line: line200 + "!" },
+])("S11 agent returns exactly 200 characters for a $length-character match", async ({ length, line }) => {
+  const fixture = remoteFixture();
+  expect(line).toHaveLength(length);
+  fixture.remote.seedFile("/data/a", line + "\n");
+  const root = { endpoint: fixture.endpoint, path: parsePosix("/data") };
+  const bb = await backend(undefined, fixture.callRpc);
+  try {
+    await bb.rpc("agent_grants_set", { grant: { threadId: "thread-a", endpoint: root.endpoint,
+      scope: parsePosix("/"), permissions: ["read"] } });
+    const input = { root, content: { text: "0123", caseSensitive: true }, limits: { maxBytesRead: "202" } };
+    const { estimateId } = z.object({ estimateId: z.uuid() })
+      .parse(await bb.tool("commander_search", { ...input, estimateOnly: true }));
+    await expect(bb.tool("commander_search", { ...input, estimateId }))
+      .resolves.toMatchObject({ partial: false, hits: [{ line: { number: 1, text: line200 } }] });
+  } finally { await bb.dispose(); }
+});

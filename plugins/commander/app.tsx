@@ -1,12 +1,12 @@
 import type { SearchActions } from "./src/ui/search-panel.tsx";
-import { definePluginApp, useBbNavigate, useRealtime, useRpc, useSdk, type ExperimentalThreadTabProps } from "@get-bb/plugin-sdk/app";
+import { definePluginApp, experimental_PluginRpcCallError, useBbNavigate, useRealtime, useRpc, useSdk, type ExperimentalThreadTabProps } from "@get-bb/plugin-sdk/app";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LIST_PAGE_MAX } from "./src/core/provider.ts";
 import { parsePosix } from "./src/core/path.ts";
 import { assembleImage, type ViewKind, type WireView } from "./src/core/preview.ts";
 import { CommanderError } from "./src/core/errors.ts";
 import { JobState, type ConflictAction, type Entry, type OperationJob, type OperationPlan, type ResourceRef } from "./src/core/model.ts";
-import { type UiState, type rpcSchemas } from "./src/core/wire/rpc.ts";
+import { rpcSchemas, type UiState } from "./src/core/wire/rpc.ts";
 import { Workspace } from "./src/ui/index.ts";
 import type { RetryNote } from "./src/ui/queue.tsx";
 import { activeTab, currentRef, emptyState, nativePath, newTab, problemOf, unloaded,
@@ -18,6 +18,21 @@ import "./src/ui/workspace.css";
 
 type Rpc = ReturnType<typeof useRpc<typeof rpcSchemas>>;
 type Sdk = ReturnType<typeof useSdk>;
+// S11: SDK 0.6.132's useRpc.call cannot take a signal. The HTTP RPC endpoint
+// propagates a disconnected request to the handler's experimental_signal.
+const startSearch: SearchActions["start"] = async (input, signal) => {
+  const response = await fetch("/api/v1/plugins/makosh-commander/rpc/scan_start", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+    signal,
+  });
+  const envelope = await response.json() as { ok?: boolean; result?: unknown; error?: unknown } | null;
+  if (!response.ok || envelope?.ok !== true) throw experimental_PluginRpcCallError.from(envelope?.error);
+  return rpcSchemas.scan_start.output.parse(envelope.result);
+};
+
 const delay = 250;
 let pendingWrite = Promise.resolve();
 const bindingsKey = "makosh-commander:key-bindings";
@@ -232,12 +247,12 @@ function CommanderPage({ compact = false, environment, threadId }: { compact?: b
     get: (scanId) => rpc.call("scan_get", { scanId }),
     cancel: (scanId) => rpc.call("scan_cancel", { scanId }),
   }), [rpc, update]);
-  // S11: search has pane-scoped state; use the shared scan transport.
+  // S11: polling and job cancellation use the shared scan transport.
   const search = useMemo<SearchActions>(() => ({
-    start: (input) => rpc.call("scan_start", input),
+    start: startSearch,
     get: scans.get,
     cancel: scans.cancel,
-  }), [rpc, scans]);
+  }), [scans]);
   const [bindings, setBindings] = useState(loadBindings);
   // S17: the last retry result by job id: nothing to retry, or files waiting for a directory check.
   const [retryNotes, setRetryNotes] = useState<Record<string, RetryNote>>({});

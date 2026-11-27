@@ -229,6 +229,10 @@ describe("replies for the owner and the agent", () => {
     expect(reply.view).toMatchObject({ kind: "binary", truncated: true, total: "614400" });
     expect(reply.view.kind === "binary" && reply.view.shown).toBeLessThan(614400);
     expect(responseBytes(reply, "agent")).toBeLessThanOrEqual(1048576);
+    // The fit slices lines rendered once for the window: every shown byte has its line, no more.
+    if (reply.view.kind !== "binary") throw new Error("expected binary");
+    expect(reply.view.lines[0]).toBe("00000000  01 01 01 01 01 01 01 01  01 01 01 01 01 01 01 01  |................|");
+    expect(reply.view.lines).toHaveLength(Math.ceil(reply.view.shown / 16));
   });
 
   it("offers no image above 32 MiB", () => {
