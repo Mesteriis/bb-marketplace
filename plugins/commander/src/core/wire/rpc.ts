@@ -6,6 +6,7 @@ import {
 import { CommanderErrorShape } from "../errors.ts";
 import { NameSegment, ResourcePath } from "../path.ts";
 import { LIST_PAGE_MAX } from "../provider.ts";
+import { RenamePattern } from "../rename-pattern.ts";
 import { IMAGE_MIMES, MAX_RESPONSE_BYTES, MAX_VIEW_BYTES, VIEW_KINDS } from "../preview.ts";
 import { Size } from "../size.ts";
 import { sftpMethods } from "./remote-hub-sftp.ts";
@@ -40,6 +41,8 @@ export const PlanInput = z.strictObject({
   newName: NameSegment.nullable(),
   conflictPolicy: ConflictPolicy,
   verify: Verify,
+  // S12: a batch rename of every source by a pattern (rename only; newName is then null).
+  pattern: RenamePattern.nullable().optional(),
 });
 
 export const DamagedJob = z.strictObject({

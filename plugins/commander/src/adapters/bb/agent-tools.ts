@@ -53,7 +53,8 @@ export function registerAgentTools(agents: BbPluginApi["agents"], ops: Operation
     });
   register("stat", "Get one entry's metadata within the owner's grant.", rpcSchemas.entry_stat.input,
     async ({ ref }, agent, signal) => metadata(await ops.stat(ref, agent, signal)));
-  register("plan", "Create a file operation plan and return its ticket. Show the requested operation to the owner before running.", rpcSchemas.plan_create.input,
+  // S12: a batch rename is a rename plan with a pattern and several sources of one directory (at most 10000).
+  register("plan", "Create a file operation plan and return its ticket. Show the requested operation to the owner before running. A batch rename passes a pattern and several sources of one directory.", rpcSchemas.plan_create.input,
     async (input, agent, signal) => {
       const { id, digest } = await ops.createPlan(input, agent, signal);
       return { id, digest, status: "planned" };

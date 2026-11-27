@@ -87,3 +87,27 @@ export const errorText: Record<string, string> = {
   cancelled: stateText.cancelled, timeout: "Время ожидания истекло", unsupported: "Действие не поддерживается",
   limit_exceeded: "Достигнут предел операции", outcome_unknown: stateText.unknown, internal: ru.unknownError,
 };
+
+// S12: массовое переименование. Строки своего блока; общий словарь ru не меняется.
+export const batchRenameText = {
+  title: "Переименовать пачку",
+  description: "Шаблон, поиск и замена, регистр и счётчик; проверка — до создания плана",
+  template: "Шаблон имени",
+  templateHint: "[N] — имя без расширения, [E] — расширение, [C] — счётчик, [C:3] — счётчик из 3 знаков, [N1-3] — срез имени",
+  find: "Найти", replace: "Заменить на", regex: "регулярное выражение",
+  counterStart: "Счётчик с", counterStep: "Шаг", counterWidth: "Знаков",
+  caseMode: "Регистр", caseKeep: "как есть", caseLower: "нижний", caseUpper: "ВЕРХНИЙ", caseTitle: "Заглавные слова",
+  preview: "Предпросмотр переименования", from: "Было", to: "Станет", state: "Состояние", ok: "Готово",
+  makePlan: "Создать план", pendingPlan: "План создаётся",
+  summary: (changed: number, conflicts: number) =>
+    changed + " к переименованию · " + conflicts + (conflicts === 1 ? " конфликт" : " конфликтов") + " · расширения сохраняются",
+  problems: {
+    empty: "Имя станет пустым",
+    invalid_name: "Недопустимое имя",
+    duplicate: "Совпадает с именем другого файла пачки",
+    exists: "Имя уже есть в каталоге и не входит в пачку",
+    invalid_regex: "Регулярное выражение не разобрано",
+    unsafe_regex: "Регулярное выражение отклонено: возможен долгий перебор",
+    regex_timeout: "Регулярное выражение работает дольше 50 мс на имя",
+  } as Record<string, string>,
+};
