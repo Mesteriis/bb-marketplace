@@ -7,12 +7,12 @@ import { capabilities, limitation } from "../src/core/forge/capabilities.ts";
 import { provider } from "../src/adapters/bb/provider.ts";
 import { providerCredentials } from "../src/adapters/bb/provider-credentials.ts";
 
-// The exact JSON stored in the maintainer's installation before 0.2.0.
-const installed = '[{"kind":"github","id":"afca39a3-8243-4cf9-bbe2-fb018fbdb406","label":"personal","origin":"https://github.com","organization":"","username":"Mesteriis"},{"kind":"github","id":"fbd507f6-fd73-4c22-b061-19a0801fa119","label":"office","origin":"https://github.com","organization":"","username":"second-account"}]';
+// The shape of accounts saved by 0.1.0; reference values computed with the 0.1.0 code.
+const installed = '[{"kind":"github","id":"11111111-2222-4333-8444-555555555555","label":"personal","origin":"https://github.com","organization":"","username":"Octo-Owner"},{"kind":"github","id":"66666666-7777-4888-9999-aaaaaaaaaaaa","label":"office","origin":"https://github.com","organization":"","username":"work-login"}]';
 
 test("accounts saved by 0.1.0 parse unchanged and default to the Vault token source", () => {
   const rows = z.array(account).parse(JSON.parse(installed));
-  assert.deepEqual(rows.map(row => [row.username, sourceOf(row)]), [["Mesteriis", "vault"], ["second-account", "vault"]]);
+  assert.deepEqual(rows.map(row => [row.username, sourceOf(row)]), [["Octo-Owner", "vault"], ["work-login", "vault"]]);
   // Linked repositories are matched by this exact JSON stamp.
   assert.equal(JSON.stringify(rows), installed);
 });
@@ -27,8 +27,8 @@ test("the Vault reference and binding of an existing account do not change", asy
   const [first] = z.array(account).parse(JSON.parse(installed));
   await credentials.resolve(first, () => "token-value");
   const [[ref, secret]] = [...stored];
-  assert.equal(ref, "bb-git-dashboard:provider:v1:c27daf2e610a8539317a337bfcb53c3e0bec778d7905a457aa362eee9f26e696");
-  assert.equal(JSON.parse(secret).binding, "22c8348b61363dbc02faa2a9dbf6a345fd4d539a46fbb5a94848d76e2b9ea7f5");
+  assert.equal(ref, "bb-git-dashboard:provider:v1:cf4c4732fd3b8f8a55b60871950a2f22c893ea7afd75d2146826534e3f67cc49");
+  assert.equal(JSON.parse(secret).binding, "4e5187ffa5f18fa1cf5fab5673337d5f7d601c866af74c15c989e6817a5779af");
 });
 
 test("gitlab.com remotes are detected as GitLab", () => {
@@ -37,7 +37,7 @@ test("gitlab.com remotes are detected as GitLab", () => {
 });
 
 test("GitLab accounts are declared but have no API client yet", () => {
-  const gitlab = account.parse({kind: "gitlab", id: "g", label: "GitLab", origin: "https://gitlab.com", username: "mesteriis"});
+  const gitlab = account.parse({kind: "gitlab", id: "g", label: "GitLab", origin: "https://gitlab.com", username: "octo-owner"});
   assert.throws(() => provider(gitlab, "token"), /PROVIDER_UNSUPPORTED/);
 });
 

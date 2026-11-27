@@ -41,7 +41,6 @@ export function RepositoryPanel({copyId,name,accounts,api,section,onAddConnectio
     setData(undefined);
     api.forgeStatus(copyId,recheck).then(async status => {
       if (!active) return;
-      setRecheck(false);
       setForge(status);
       const link = status.linked;
       setTarget(link);
@@ -49,7 +48,7 @@ export function RepositoryPanel({copyId,name,accounts,api,section,onAddConnectio
         const response = await api.features(copyId,section);
         if (active) setData(response);
       }
-    }).catch(error => {if(active) setError(message(error));}).finally(() => {if(active) setPending(false);});
+    }).catch(error => {if(active) setError(message(error));}).finally(() => {if(active) {setPending(false); setRecheck(false);}});
     return () => {active = false;};
   }, [api,copyId,revision,section]);
 

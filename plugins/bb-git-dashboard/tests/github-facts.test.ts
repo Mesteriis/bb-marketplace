@@ -3,17 +3,17 @@ import assert from "node:assert/strict";
 import { accountFacts } from "../src/adapters/bb/github-facts.ts";
 import type { Account } from "../src/core/providers.ts";
 
-const account: Account = {kind: "github", id: "office", label: "office", origin: "https://github.com", organization: "", username: "second-account"};
+const account: Account = {kind: "github", id: "office", label: "office", origin: "https://github.com", organization: "", username: "work-login"};
 
 test("organization logins come from /user/orgs across pages", async () => {
-  const pages = [[{login: "office-org"}, {login: "Other"}], []];
+  const pages = [[{login: "work-org"}, {login: "Other"}], []];
   const seen: string[] = [];
   const facts = accountFacts(async () => ({account, token: "fixture-token-value"}), async target => {
     const url = new URL(String(target));
     seen.push(url.pathname + url.search);
     return Response.json(pages[Number(url.searchParams.get("page")) - 1] ?? []);
   });
-  assert.deepEqual(await facts.orgs("office"), ["office-org", "Other"]);
+  assert.deepEqual(await facts.orgs("office"), ["work-org", "Other"]);
   assert.equal(seen[0], "/user/orgs?per_page=100&page=1");
 });
 

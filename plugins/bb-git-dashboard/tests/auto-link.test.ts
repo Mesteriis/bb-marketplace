@@ -6,10 +6,10 @@ import type { Copy } from "../src/core/workspace.ts";
 
 const copy: Copy = {id: "c1", hostId: "mac", root: "/Users/owner/projects/Personal/sandbox", identity: "a".repeat(64)};
 const accounts: Account[] = [
-  {kind: "github", id: "personal", label: "personal", origin: "https://github.com", organization: "", username: "Mesteriis"},
-  {kind: "github", id: "office", label: "office", origin: "https://github.com", organization: "", username: "second-account"},
+  {kind: "github", id: "personal", label: "personal", origin: "https://github.com", organization: "", username: "Octo-Owner"},
+  {kind: "github", id: "office", label: "office", origin: "https://github.com", organization: "", username: "work-login"},
 ];
-const sandbox = "https://github.com/Mesteriis/makosh-git-sandbox.git";
+const sandbox = "https://github.com/Octo-Owner/sandbox-repo.git";
 
 function setup(origin: string, overrides: Partial<LinkPorts> = {}) {
   const calls = {probe: 0, lookup: [] as string[], orgs: 0};
@@ -17,7 +17,7 @@ function setup(origin: string, overrides: Partial<LinkPorts> = {}) {
   const cache = new Map<string, {kind: null | "github" | "gitlab" | "gitea" | "azure"; checkedAt: number}>();
   const ports: LinkPorts = {
     origin: async () => origin,
-    sshHostname: async (_hostId, alias) => alias === "github-office" ? "github.com" : alias,
+    sshHostname: async (_hostId, alias) => alias === "github-work-alias" ? "github.com" : alias,
     probe: async () => { calls.probe++; return "gitea"; },
     cache: {get: async host => cache.get(host), set: async (host, value) => { cache.set(host, value); }},
     now: () => 1_000,
@@ -27,23 +27,27 @@ function setup(origin: string, overrides: Partial<LinkPorts> = {}) {
     links: {get: async item => links.get(item.id), set: async (item, target) => { links.set(item.id, target); }},
     ...overrides,
   };
-  return {links: forgeLinks(ports), stored: links, calls};
+  return {links: forgeLinks(ports), stored: links, calls, ports};
+}
+/** A new resolver over the same storage, as after a reload, with some ports replaced. */
+function forgeLinksOver(state: ReturnType<typeof setup>, overrides: Partial<LinkPorts>) {
+  return forgeLinks({...state.ports, ...overrides});
 }
 
 test("a copy cloned through an SSH alias connects to the owner's account automatically", async () => {
-  const {links, stored, calls} = setup("git@github-office:Mesteriis/makosh-git-sandbox.git");
+  const {links, stored, calls} = setup("git@github-work-alias:Octo-Owner/sandbox-repo.git");
   const status = await links.status(copy);
   assert.deepEqual({remote: status.remote, kind: status.detection?.kind, chosen: status.chosen, reason: status.reason, linked: status.linked},
-    {remote: {host: "github.com", path: "Mesteriis/makosh-git-sandbox"}, kind: "github", chosen: "personal", reason: "owner",
+    {remote: {host: "github.com", path: "Octo-Owner/sandbox-repo"}, kind: "github", chosen: "personal", reason: "owner",
       linked: {accountId: "personal", repoId: "7"}});
   assert.deepEqual(stored.get("c1"), {accountId: "personal", repoId: "7"});
-  assert.deepEqual(calls.lookup, ["personal:Mesteriis/makosh-git-sandbox"]);
+  assert.deepEqual(calls.lookup, ["personal:Octo-Owner/sandbox-repo"]);
   assert.equal((await links.status(copy)).reason, "linked");
-  assert.deepEqual(calls.lookup, ["personal:Mesteriis/makosh-git-sandbox"]);
+  assert.deepEqual(calls.lookup, ["personal:Octo-Owner/sandbox-repo"]);
 });
 
 test("a repeated status check reuses the cached forge", async () => {
-  const {links, calls} = setup("git@git.acme.example:team/app.git");
+  const {links, calls} = setup("git@git.example.org:team/app.git");
   await links.status(copy);
   const again = await links.status(copy);
   assert.equal(calls.probe, 1);
@@ -64,15 +68,15 @@ test("an ambiguous copy waits for the user's choice and then connects", async ()
 });
 
 test("connecting with an account of another forge is refused", async () => {
-  const {links} = setup("https://github.com/Mesteriis/makosh-git-sandbox.git", {
-    accounts: async () => [...accounts, {kind: "gitea", id: "g", label: "g", origin: "https://git.acme.example", organization: "", username: "u"}],
+  const {links} = setup("https://github.com/Octo-Owner/sandbox-repo.git", {
+    accounts: async () => [...accounts, {kind: "gitea", id: "g", label: "g", origin: "https://git.example.org", organization: "", username: "u"}],
   });
   await assert.rejects(links.connect(copy, "g"), {message: "ACCESS_DENIED"});
 });
 
 test("a provider repository that is not the copy's origin is not linked", async () => {
-  const {links, stored} = setup("git@github.com:Mesteriis/makosh-git-sandbox.git", {
-    lookup: async accountId => ({target: {accountId, repoId: "7"}, clone: "https://github.com/Mesteriis/other.git"}),
+  const {links, stored} = setup("git@github.com:Octo-Owner/sandbox-repo.git", {
+    lookup: async accountId => ({target: {accountId, repoId: "7"}, clone: "https://github.com/Octo-Owner/other.git"}),
   });
   const status = await links.status(copy);
   assert.equal(status.linked, null);
@@ -81,9 +85,9 @@ test("a provider repository that is not the copy's origin is not linked", async 
 });
 
 test("SSH and HTTPS remotes of one repository match for provider features", async () => {
-  const {links} = setup("git@github-office:Mesteriis/makosh-git-sandbox.git");
-  assert.equal(await links.originMatches(copy, "https://github.com/mesteriis/makosh-git-sandbox.git"), true);
-  assert.equal(await links.originMatches(copy, "https://github.com/Mesteriis/other.git"), false);
+  const {links} = setup("git@github-work-alias:Octo-Owner/sandbox-repo.git");
+  assert.equal(await links.originMatches(copy, "https://github.com/octo-owner/sandbox-repo.git"), true);
+  assert.equal(await links.originMatches(copy, "https://github.com/Octo-Owner/other.git"), false);
 });
 
 test("a copy without a usable origin reports no remote", async () => {
@@ -94,12 +98,52 @@ test("a copy without a usable origin reports no remote", async () => {
 });
 
 test("a server that did not answer is not looked up", async () => {
-  const {links, calls} = setup("git@gitlab.acme.example:team/app.git", {
+  const {links, calls} = setup("git@gitlab.example.net:team/app.git", {
     probe: async () => "unreachable",
-    accounts: async () => [{kind: "gitlab", id: "gl", label: "gl", origin: "https://gitlab.acme.example", organization: "", username: "u"}],
+    accounts: async () => [{kind: "gitlab", id: "gl", label: "gl", origin: "https://gitlab.example.net", organization: "", username: "u"}],
   });
   const status = await links.status(copy);
   assert.deepEqual({kind: status.detection?.kind, state: status.detection?.status, reason: status.reason, linked: status.linked},
     {kind: "gitlab", state: "unreachable", reason: "none", linked: null});
   assert.deepEqual(calls.lookup, []);
+});
+
+const azureCopy = (origin: string, extra: Partial<LinkPorts> = {}) => setup(origin, {
+  accounts: async () => [{kind: "azure", id: "az-b", label: "B", origin: "https://dev.azure.com", organization: "orgB", username: "u"}],
+  lookup: async (accountId, path) => ({target: {accountId, repoId: "r"}, clone: "https://dev.azure.com/orgB/" + path.replace("/", "/_git/")}),
+  ...extra,
+});
+
+test("an Azure copy of one organization is never linked to another organization's repository", async () => {
+  const {links, stored, calls} = azureCopy("git@ssh.dev.azure.com:v3/orgA/P/R");
+  const status = await links.status(copy);
+  assert.equal(status.linked, null);
+  assert.equal(status.reason, "none");
+  assert.deepEqual(calls.lookup, []);
+  await assert.rejects(links.connect(copy, "az-b"), {message: "ACCESS_DENIED"});
+  assert.equal(await links.originMatches(copy, "https://dev.azure.com/orgB/P/_git/R"), false);
+  assert.equal(stored.size, 0);
+});
+
+test("an Azure copy links to the account of its own organization", async () => {
+  const {links} = azureCopy("https://orgb.visualstudio.com/P/_git/R");
+  assert.deepEqual((await links.status(copy)).linked, {accountId: "az-b", repoId: "r"});
+});
+
+test("a linked copy keeps its link when the host cannot be asked", async () => {
+  const state = setup("git@github.com:Octo-Owner/sandbox-repo.git");
+  await state.links.status(copy);
+  const offline = forgeLinksOver(state, {origin: async () => { throw new Error("HOST_UNAVAILABLE"); }});
+  const status = await offline.status(copy);
+  assert.deepEqual({linked: status.linked, reason: status.reason, error: status.error}, {linked: {accountId: "personal", repoId: "7"}, reason: "linked", error: "HOST_UNAVAILABLE"});
+  await assert.rejects(offline.originMatches(copy, sandbox), {message: "HOST_UNAVAILABLE"});
+});
+
+test("addresses that point inside the network are not probed", async () => {
+  for (const origin of ["git@127.0.0.1:a/b.git", "https://169.254.169.254/a/b", "https://10.0.0.5/a/b", "git@localhost:a/b", "https://box.local/a/b", "https://[::1]/a/b"]) {
+    const {links, calls} = setup(origin);
+    const status = await links.status(copy);
+    assert.equal(calls.probe, 0, origin);
+    assert.equal(status.detection?.kind ?? null, null, origin);
+  }
 });

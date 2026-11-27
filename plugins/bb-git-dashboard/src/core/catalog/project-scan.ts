@@ -14,7 +14,8 @@ export const verdict = z.discriminatedUnion("kind", [
   z.object({path: z.string(), kind: z.enum(["worktree", "submodule"]), parent: z.string()}),
   z.object({path: z.string(), kind: z.literal("skipped"), reason: z.enum(["hidden", "excluded", "broken-gitdir"])}),
 ]);
-export const defaultProjectsRoot = "/Users/owner/projects";
+/** `~` is expanded on the host that is scanned. */
+export const defaultProjectsRoot = "~/projects";
 export const maxDepth = 6;
 
 export const scanPreview = z.object({

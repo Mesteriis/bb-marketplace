@@ -22,5 +22,6 @@ export const hostContract = defineRpcContract({
   originUrl: {input:z.object({root:path,identity}),output:z.discriminatedUnion("ok",[failure,z.object({ok:z.literal(true),url:z.string().max(1000)})])},
   scanProjects: {input:z.object({root:path,exclude:z.array(z.string().max(255)).max(100)}),
     output:z.discriminatedUnion("ok",[failure,z.object({ok:z.literal(true),verdicts:z.array(verdict).max(20_000),truncated:z.boolean()})])},
+  probeForge: {input:z.object({origin:z.url().max(300)}),output:z.object({kind:z.enum(["gitea","gitlab","unreachable"]).nullable()})},
   sshHostname: {input:z.object({alias:z.string().max(253)}),output:z.discriminatedUnion("ok",[failure,z.object({ok:z.literal(true),hostname:z.string().max(253)})])},
 });

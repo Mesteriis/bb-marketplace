@@ -139,6 +139,6 @@ test("BB repository metadata permits catalog reads while other Git commands keep
 test("reads the origin URL as configured and reports a missing origin", async () => {
   const { originUrl } = await service();
   await assert.rejects(originUrl(root), {message: "NO_ORIGIN"});
-  git("remote", "add", "origin", "git@github-office:Mesteriis/makosh-git-sandbox.git");
-  assert.equal(await originUrl(root), "git@github-office:Mesteriis/makosh-git-sandbox.git");
+  git("remote", "add", "origin", "git@github-work-alias:Octo-Owner/sandbox-repo.git");
+  assert.equal(await originUrl(root), "git@github-work-alias:Octo-Owner/sandbox-repo.git");
 });

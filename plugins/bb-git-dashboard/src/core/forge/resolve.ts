@@ -30,6 +30,12 @@ function wellKnown(host: string): {kind: ForgeKind; origin: string} | null {
   return null;
 }
 
+/** Loopback, link-local, private and other in-network names are never probed from the plugin. */
+export function internalHost(host: string) {
+  if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(host) || host.includes(":")) return true;
+  return host === "localhost" || /\.(?:local|localhost|internal|lan|home\.arpa)$/.test(host);
+}
+
 /** A server that cannot be reached is taken at its name only when the name says GitLab. */
 const namedKind = (host: string): ForgeKind | null => /^gitlab[.-]/.test(host) ? "gitlab" : null;
 
@@ -59,10 +65,11 @@ export function forgeResolver(ports: ResolverPorts) {
 
   return {
     async resolve(remote: RemoteRef, options: {recheck?: boolean} = {}): Promise<Detection> {
+      if (options.recheck) aliases.delete(remote.host);
       const host = await hostnameOf(remote);
       const known = wellKnown(host);
       if (known) return {...known, host, status: "known"};
-      if (!host.includes(".")) return {kind: null, origin: null, host, status: "unknown"};
+      if (!host.includes(".") || internalHost(host)) return {kind: null, origin: null, host, status: "unknown"};
       const origin = "https://" + host;
       if (!options.recheck) {
         const cached = await ports.cache.get(host);

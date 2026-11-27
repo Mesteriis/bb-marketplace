@@ -40,7 +40,7 @@ test("redirects, HTML and oversized bodies identify nothing", async () => {
 
 test("a host that never answers is unreachable", async () => {
   const {send} = server({"/api/v1/version": () => "timeout", "/api/v4/version": () => "timeout"});
-  assert.equal(await probeForge("https://gitlab.acme.example", send), "unreachable");
+  assert.equal(await probeForge("https://gitlab.example.net", send), "unreachable");
 });
 
 test("probes send no credentials and do not follow redirects", async () => {

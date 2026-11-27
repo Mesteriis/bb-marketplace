@@ -4,11 +4,11 @@ Open Git from BB navigation and choose a project and repository in the tree. Att
 
 ## Forge and account detection
 
-Each working copy is matched to its forge from the `origin` remote. SSH host aliases are resolved with `ssh -G` on the copy's host, reading only the host name. GitHub, GitLab and Azure DevOps are recognised by name; other servers are identified once through their public version endpoint, without credentials, and the answer is cached for 30 days (one day for unknown or unreachable servers). The account is chosen automatically: on GitHub the account that owns the repository, then a member of its organization, then the only account that can see it; on other forges the account of that server. When two accounts fit equally, the repository panel asks which one to use. GitLab is recognised but not yet connected.
+Each working copy is matched to its forge from the `origin` remote. SSH host aliases are resolved with `ssh -G` on the copy's host, reading only the host name. GitHub, GitLab and Azure DevOps are recognised by name; other servers are identified once through their public version endpoint, asked from the working copy’s host without credentials (loopback and private addresses are never asked), and the answer is cached for 30 days (one day for unknown or unreachable servers). The account is chosen automatically: on GitHub the account that owns the repository, then a member of its organization, then the only account that can see it; on other forges the account of that server. When two accounts fit equally, the repository panel asks which one to use. GitLab is recognised but not yet connected.
 
 ## Projects folder
 
-The **Projects folder** setting (default `/Users/owner/projects`) and its exclusion list define which folders count as projects: a folder with a `.git` directory is a project, a linked worktree or a submodule belongs to its parent, and hidden folders, `node_modules`, `vendor` and `references` are skipped. A preview counts the projects found and lists what was skipped and why.
+The **Projects folder** setting (default `~/projects` on the scanned host) and its exclusion list define which folders count as projects: a folder with a `.git` directory is a project, a linked worktree or a submodule belongs to its parent, and hidden folders, `node_modules`, `vendor` and `references` are skipped. A preview counts the projects found and lists what was skipped and why.
 
 ## Remote repositories and pull requests
 

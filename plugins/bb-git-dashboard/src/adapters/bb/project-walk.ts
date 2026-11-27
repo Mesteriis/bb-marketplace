@@ -17,13 +17,13 @@ async function gitdirOf(folder: string) {
 }
 
 /** Reads the projects folder without following symlinks or entering `.git`. Read-only. */
-export async function walkProjects(root: string, rules: ScanRules, limit = 200_000): Promise<{verdicts: Verdict[]; truncated: boolean}> {
+export async function walkProjects(root: string, rules: ScanRules, limit = 200_000, signal?: AbortSignal): Promise<{verdicts: Verdict[]; truncated: boolean}> {
   const verdicts: Verdict[] = [];
   let visited = 0;
   let truncated = false;
 
   async function visit(folder: string, depth: number, skipped: {reason: SkipReason; remaining: number} | null) {
-    if (++visited > limit) { truncated = true; return; }
+    if (++visited > limit || signal?.aborted) { truncated = true; return; }
     let entries: Dirent[];
     try { entries = await readdir(folder, {withFileTypes: true}); } catch { return; }
     const git = entries.find(entry => entry.name === ".git");

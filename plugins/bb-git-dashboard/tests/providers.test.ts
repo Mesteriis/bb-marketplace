@@ -91,9 +91,9 @@ test("does not repeat an external write after a lost response or expose its exce
 });
 
 const lookups = [
-  {kind:"github", origin:"https://api.github.com", organization:"", path:"Mesteriis/makosh-git-sandbox", url:"/repos/Mesteriis/makosh-git-sandbox",
-    body:{id:7,name:"makosh-git-sandbox",full_name:"Mesteriis/makosh-git-sandbox",clone_url:"https://github.com/Mesteriis/makosh-git-sandbox.git",default_branch:"main",permissions:{push:true}},
-    expected:{id:"7",path:"Mesteriis/makosh-git-sandbox",project:"Mesteriis",branch:"main",canPush:true}},
+  {kind:"github", origin:"https://api.github.com", organization:"", path:"Octo-Owner/sandbox-repo", url:"/repos/Octo-Owner/sandbox-repo",
+    body:{id:7,name:"sandbox-repo",full_name:"Octo-Owner/sandbox-repo",clone_url:"https://github.com/Octo-Owner/sandbox-repo.git",default_branch:"main",permissions:{push:true}},
+    expected:{id:"7",path:"Octo-Owner/sandbox-repo",project:"Octo-Owner",branch:"main",canPush:true}},
   {kind:"gitea", origin:"https://git.example.invalid", organization:"", path:"team/demo", url:"/api/v1/repos/team/demo",
     body:{id:5,name:"demo",full_name:"team/demo",clone_url:"https://git.example.invalid/team/demo.git",default_branch:"dev"},
     expected:{id:"5",path:"team/demo",project:"team",branch:"dev",canPush:null}},

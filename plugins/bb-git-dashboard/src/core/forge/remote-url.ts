@@ -56,3 +56,13 @@ export function providerPath(kind: Kind, remote: RemoteRef): string | null {
   if (parts[0] === "v3" && parts.length === 4) return parts[2] + "/" + parts[3];
   return null;
 }
+
+/** The Azure DevOps organization a remote belongs to, lower-cased; null for other servers. */
+export function azureOrganization(remote: RemoteRef): string | null {
+  const parts = remote.path.split("/");
+  const named = /^([a-z0-9][a-z0-9-]*)\.visualstudio\.com$/.exec(remote.host);
+  if (named) return named[1];
+  if (remote.host === "dev.azure.com") return parts[0]?.toLowerCase() ?? null;
+  if (remote.host === "ssh.dev.azure.com" && parts[0] === "v3") return parts[1]?.toLowerCase() ?? null;
+  return null;
+}

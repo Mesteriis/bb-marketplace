@@ -2,13 +2,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { sshHostname } from "../src/adapters/bb/ssh-config.ts";
 
-const output = "user git\nhostname github.com\nport 22\nidentityfile ~/.ssh/id_office\nproxycommand none\n";
+const output = "user git\nhostname github.com\nport 22\nidentityfile ~/.ssh/id_work\nproxycommand none\n";
 
 test("only the hostname is taken from ssh -G output", async () => {
   const calls: string[][] = [];
-  const hostname = await sshHostname("github-office", async args => { calls.push(args); return output; });
+  const hostname = await sshHostname("github-work-alias", async args => { calls.push(args); return output; });
   assert.equal(hostname, "github.com");
-  assert.deepEqual(calls, [["-G", "--", "github-office"]]);
+  assert.deepEqual(calls, [["-G", "--", "github-work-alias"]]);
 });
 
 test("an alias that looks like an option or carries spaces is refused before ssh runs", async () => {

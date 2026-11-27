@@ -2,6 +2,7 @@ import { experimental_defineHostEntry } from "@get-bb/plugin-sdk/host";
 import { hostContract } from "./src/adapters/bb/host-contract.ts";
 import { failureFor } from "./src/core/workspace.ts";
 import { sshHostname } from "./src/adapters/bb/ssh-config.ts";
+import { probeForge } from "./src/adapters/bb/forge-probe.ts";
 import { walkProjects } from "./src/adapters/bb/project-walk.ts";
 import { maxDepth } from "./src/core/catalog/project-scan.ts";
 import { isAbsolute } from "node:path";
@@ -60,13 +61,19 @@ export default experimental_defineHostEntry({
       }
       catch (error) { return failureFor(error,"NO_ORIGIN"); }
     },
-    async scanProjects({root, exclude}) {
+    async scanProjects({root, exclude}, {signal}) {
       try {
-        if (!isAbsolute(root)) throw new Error("INVALID_PATH");
-        const result = await walkProjects(root,{exclude,maxDepth});
+        const folder = root === "~" || root.startsWith("~/") ? homedir() + root.slice(1) : root;
+        if (!isAbsolute(folder)) throw new Error("INVALID_PATH");
+        const result = await walkProjects(folder,{exclude,maxDepth},undefined,signal);
         return {ok:true as const, verdicts:result.verdicts.slice(0,20_000), truncated:result.truncated || result.verdicts.length > 20_000};
       }
       catch (error) { return failureFor(error,"INVALID_PATH"); }
+    },
+    async probeForge({origin}) {
+      const url = new URL(origin);
+      if (url.protocol !== "https:" || url.pathname !== "/" || url.username || url.password || url.search) return {kind:null};
+      return {kind:await probeForge(url.origin)};
     },
     async sshHostname({alias}) {
       try { return {ok:true as const, hostname:await sshHostname(alias)}; }

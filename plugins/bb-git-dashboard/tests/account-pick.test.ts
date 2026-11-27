@@ -5,11 +5,11 @@ import type { Detection } from "../src/core/forge/resolve.ts";
 import type { Account } from "../src/core/providers.ts";
 
 const github: Detection = {kind: "github", origin: "https://github.com", host: "github.com", status: "known"};
-const gitea: Detection = {kind: "gitea", origin: "https://git.acme.example", host: "git.acme.example", status: "cached"};
+const gitea: Detection = {kind: "gitea", origin: "https://git.example.org", host: "git.example.org", status: "cached"};
 const accounts: Account[] = [
-  {kind: "github", id: "personal", label: "personal", origin: "https://github.com", organization: "", username: "Mesteriis"},
-  {kind: "github", id: "office", label: "office", origin: "https://github.com", organization: "", username: "second-account"},
-  {kind: "gitea", id: "acme", label: "acme", origin: "https://git.acme.example", organization: "", username: "avm"},
+  {kind: "github", id: "personal", label: "personal", origin: "https://github.com", organization: "", username: "Octo-Owner"},
+  {kind: "github", id: "office", label: "office", origin: "https://github.com", organization: "", username: "work-login"},
+  {kind: "gitea", id: "corp", label: "corp", origin: "https://git.example.org", organization: "", username: "avm"},
 ];
 function facts(orgs: Record<string, string[]> = {}, visible: Record<string, string[]> = {}): GithubFacts & {calls: string[]} {
   const calls: string[] = [];
@@ -22,13 +22,13 @@ function facts(orgs: Record<string, string[]> = {}, visible: Record<string, stri
 
 test("a GitHub repository owned by an account's login picks that account without API calls", async () => {
   const known = facts();
-  assert.deepEqual(await pickAccount(github, "mesteriis/makosh-git-sandbox", accounts, known),
+  assert.deepEqual(await pickAccount(github, "octo-owner/sandbox-repo", accounts, known),
     {chosen: "personal", candidates: ["personal", "office"], reason: "owner"});
   assert.deepEqual(known.calls, []);
 });
 
 test("an organization repository picks the account that is a member", async () => {
-  assert.deepEqual(await pickAccount(github, "office-org/app", accounts, facts({office: ["office-org"]})),
+  assert.deepEqual(await pickAccount(github, "work-org/aihub", accounts, facts({office: ["work-org"]})),
     {chosen: "office", candidates: ["personal", "office"], reason: "organization"});
 });
 
@@ -46,13 +46,13 @@ test("two equally fitting accounts are not guessed", async () => {
 
 test("a failing lookup for one account only rules that account out", async () => {
   const broken: Account[] = [{...accounts[0], id: "broken", username: "other"}, accounts[1]];
-  assert.deepEqual(await pickAccount(github, "office-org/app", broken, facts({office: ["office-org"]})),
+  assert.deepEqual(await pickAccount(github, "work-org/aihub", broken, facts({office: ["work-org"]})),
     {chosen: "office", candidates: ["broken", "office"], reason: "organization"});
 });
 
 test("other forges pick by server origin", async () => {
-  assert.deepEqual(await pickAccount(gitea, "group/app", accounts, facts()), {chosen: "acme", candidates: ["acme"], reason: "host"});
-  assert.deepEqual(await pickAccount({...gitea, origin: "https://git.dev.acme.example", host: "git.dev.acme.example"}, "g/a", accounts, facts()),
+  assert.deepEqual(await pickAccount(gitea, "group/app", accounts, facts()), {chosen: "corp", candidates: ["corp"], reason: "host"});
+  assert.deepEqual(await pickAccount({...gitea, origin: "https://git2.example.org", host: "git2.example.org"}, "g/a", accounts, facts()),
     {chosen: null, candidates: [], reason: "none"});
 });
 

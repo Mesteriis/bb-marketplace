@@ -2,7 +2,6 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { forgeLinks } from "../../core/forge/links.ts";
 import type { CachedForge } from "../../core/forge/resolve.ts";
 import { failureFor, type Copy } from "../../core/workspace.ts";
-import { probeForge } from "./forge-probe.ts";
 import { accountFacts } from "./github-facts.ts";
 import { hostContract } from "./host-contract.ts";
 import type { remoteService } from "./remote-service.ts";
@@ -21,10 +20,10 @@ export function forgeLinking(bb: BbPluginApi, linkKey: (copy: Copy) => string, r
   const links = forgeLinks({
     origin: async copy => unwrap(await host.call("originUrl", {root: copy.root, identity: copy.identity}, {hostId: copy.hostId})).url,
     sshHostname: async (hostId, alias) => unwrap(await host.call("sshHostname", {alias}, {hostId})).hostname,
-    probe: origin => probeForge(origin),
+    probe: async (hostId, origin) => (await host.call("probeForge", {origin}, {hostId})).kind,
     cache: {
-      get: hostname => kv.get<CachedForge>("forge-host/" + hostname),
-      set: (hostname, value) => kv.set("forge-host/" + hostname, value),
+      get: key => kv.get<CachedForge>("forge-host/" + key),
+      set: (key, value) => kv.set("forge-host/" + key, value),
     },
     now: Date.now,
     accounts: () => remote().accountList(),
@@ -33,7 +32,7 @@ export function forgeLinking(bb: BbPluginApi, linkKey: (copy: Copy) => string, r
     links: {get: copy => kv.get<Target>(linkKey(copy)), set: (copy, target) => kv.set(linkKey(copy), target)},
   });
   return {
-    originMatches: (copy: Copy, clone: string) => links.originMatches(copy, clone).catch(() => false),
+    originMatches: (copy: Copy, clone: string) => links.originMatches(copy, clone),
     status: async (copy: Copy, recheck: boolean) => {
       try { return {ok: true as const, value: await links.status(copy, {recheck})}; }
       catch (error) { return failureFor(error, "PROVIDER_UNAVAILABLE"); }

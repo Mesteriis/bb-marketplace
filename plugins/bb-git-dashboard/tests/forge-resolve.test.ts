@@ -22,8 +22,8 @@ function setup(options: {aliases?: Record<string, string>; probes?: Record<strin
 const remote = (value: string) => parseRemote(value)!;
 
 test("an SSH alias resolves through ssh -G to a well-known forge without probing", async () => {
-  const {resolver, calls} = setup({aliases: {"github-office": "github.com"}});
-  assert.deepEqual(await resolver.resolve(remote("git@github-office:Org/r.git")),
+  const {resolver, calls} = setup({aliases: {"github-work-alias": "github.com"}});
+  assert.deepEqual(await resolver.resolve(remote("git@github-work-alias:Org/r.git")),
     {kind: "github", origin: "https://github.com", host: "github.com", status: "known"});
   assert.deepEqual(calls.probe, []);
 });
@@ -36,16 +36,16 @@ test("Azure SSH and visualstudio.com hosts map to dev.azure.com", async () => {
 });
 
 test("an unknown host is probed once and then served from the cache", async () => {
-  const {resolver, calls} = setup({probes: {"https://git.acme.example": "gitea"}});
-  assert.deepEqual(await resolver.resolve(remote("https://git.acme.example/g/r.git")),
-    {kind: "gitea", origin: "https://git.acme.example", host: "git.acme.example", status: "probed"});
-  assert.equal((await resolver.resolve(remote("git@git.acme.example:g/other.git"))).status, "cached");
-  assert.deepEqual(calls.probe, ["https://git.acme.example"]);
+  const {resolver, calls} = setup({probes: {"https://git.example.org": "gitea"}});
+  assert.deepEqual(await resolver.resolve(remote("https://git.example.org/g/r.git")),
+    {kind: "gitea", origin: "https://git.example.org", host: "git.example.org", status: "probed"});
+  assert.equal((await resolver.resolve(remote("git@git.example.org:g/other.git"))).status, "cached");
+  assert.deepEqual(calls.probe, ["https://git.example.org"]);
 });
 
 test("parallel lookups of one host share a single probe", async () => {
-  const {resolver, calls} = setup({probes: {"https://git.dev.acme.example": "gitea"}});
-  const results = await Promise.all([1, 2, 3].map(() => resolver.resolve(remote("https://git.dev.acme.example/a/b"))));
+  const {resolver, calls} = setup({probes: {"https://git2.example.org": "gitea"}});
+  const results = await Promise.all([1, 2, 3].map(() => resolver.resolve(remote("https://git2.example.org/a/b"))));
   assert.deepEqual(results.map(result => result.kind), ["gitea", "gitea", "gitea"]);
   assert.equal(calls.probe.length, 1);
 });
@@ -64,13 +64,13 @@ test("a found forge is cached for 30 days, an unknown host for one day", async (
 });
 
 test("an unreachable host is reported and rechecked on request", async () => {
-  const {resolver, calls} = setup({probes: {"https://gitlab.acme.example": "unreachable"}});
-  assert.deepEqual(await resolver.resolve(remote("git@gitlab.acme.example:team/app.git")),
-    {kind: "gitlab", origin: "https://gitlab.acme.example", host: "gitlab.acme.example", status: "unreachable"});
+  const {resolver, calls} = setup({probes: {"https://gitlab.example.net": "unreachable"}});
+  assert.deepEqual(await resolver.resolve(remote("git@gitlab.example.net:team/app.git")),
+    {kind: "gitlab", origin: "https://gitlab.example.net", host: "gitlab.example.net", status: "unreachable"});
   // The cached answer still says the server did not answer, without probing again.
-  assert.equal((await resolver.resolve(remote("git@gitlab.acme.example:team/app.git"))).status, "unreachable");
+  assert.equal((await resolver.resolve(remote("git@gitlab.example.net:team/app.git"))).status, "unreachable");
   assert.equal(calls.probe.length, 1);
-  await resolver.resolve(remote("git@gitlab.acme.example:team/app.git"), {recheck: true});
+  await resolver.resolve(remote("git@gitlab.example.net:team/app.git"), {recheck: true});
   assert.equal(calls.probe.length, 2);
 });
 
