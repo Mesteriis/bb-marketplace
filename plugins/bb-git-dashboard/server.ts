@@ -15,6 +15,7 @@ import { scaffoldHandlers } from "./src/adapters/bb/scaffold-rpc.ts";
 import { provider } from "./src/adapters/bb/provider.ts";
 import { ciHandlers } from "./src/adapters/bb/ci-rpc.ts";
 import { historyHandlers } from "./src/adapters/bb/history-rpc.ts";
+import { interfaceHandlers } from "./src/adapters/bb/interface-rpc.ts";
 import { codeReviewHandlers } from "./src/adapters/bb/code-review-rpc.ts";
 import { codeReviewRunTools, codeReviewTools, namesRun, registerCodeReviewTools } from "./src/adapters/bb/code-review-tools.ts";
 import { inboxHandlers } from "./src/adapters/bb/inbox-rpc.ts";
@@ -198,6 +199,7 @@ export default function plugin(bb: BbPluginApi) {
     ...scaffolds,
     ...codeReview.handlers,
     ...historyHandlers(bb, linkedCopy),
+    ...interfaceHandlers(bb),
     ...inboxHandlers(bb, {accounts: remote.accountList, credential: remote.credential}),
     ...catalogHandlers(bb, {rules: catalog.rules, accounts: remote.accountList, repositories: remote.repositories, pulls: remote.pulls}),
     ...reviewHandlers(bb, {credential: remote.credential, mirror: codeReview.service}),
