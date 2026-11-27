@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { parsePosix } from "./path.ts";
-import { detectKind, hexLines, MAX_VIEW_BYTES, readForView, viewModel } from "./preview.ts";
+import { detectKind, fromWire, hexLines, MAX_VIEW_BYTES, readForView, toWire, viewModel } from "./preview.ts";
+import type { FileProvider } from "./provider.ts";
 import { FakeProvider } from "./testing/fake-provider.ts";
 
 const PNG_HEAD = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52]);
@@ -71,6 +72,36 @@ describe("readForView", () => {
     expect(view.kind).toBe("text");
     expect(view.bytes.byteLength).toBe(5);
     expect(view.truncated).toBe(false);
+  });
+});
+
+describe("readForView consistency", () => {
+  it("fails with changed_since_plan when the file changes between stat and read", async () => {
+    const provider = new FakeProvider("local");
+    const path = parsePosix("/moving.txt");
+    provider.put(path, text("first version"));
+    // Changes the file after stat has returned the fingerprint, before the window read.
+    const racing: FileProvider = Object.assign(Object.create(provider) as FileProvider, {
+      stat: async (target: Parameters<FileProvider["stat"]>[0], signal: AbortSignal) => {
+        const entry = await provider.stat(target, signal);
+        provider.put(path, text("second, longer version"));
+        return entry;
+      },
+    });
+
+    await expect(readForView(racing, path, { offset: 0n, length: 4096 }, new AbortController().signal))
+      .rejects.toMatchObject({ code: "changed_since_plan" });
+  });
+});
+
+describe("wire form", () => {
+  it("carries image bytes as base64 and restores them exactly", () => {
+    const model = viewModel("picture.png", { kind: "image", mime: "image/png", bytes: PNG_HEAD, offset: 0n, size: 16n, truncated: false });
+
+    const wire = toWire(model);
+
+    expect(wire).toEqual({ kind: "image", mime: "image/png", base64: "iVBORw0KGgoAAAANSUhEUg==", truncated: false });
+    expect(fromWire(wire)).toEqual(model);
   });
 });
 

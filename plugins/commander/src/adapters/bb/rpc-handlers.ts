@@ -3,7 +3,9 @@ import { CommanderError, isCommanderError } from "../../core/errors.ts";
 import type { JobRunner } from "../../core/job-runner.ts";
 import type { AgentJobStore } from "../../core/job-store.ts";
 import type { Initiator, JobState, OperationJob, OperationPlan, ResourceRef } from "../../core/model.ts";
+import { entryName, readForView, toWire, viewModel } from "../../core/preview.ts";
 import { parent } from "../../core/path.ts";
+import { toBig } from "../../core/size.ts";
 import { authorize, REQUIRED } from "../../core/permissions.ts";
 import { buildPlan, revalidate, type PlannerDeps } from "../../core/planner.ts";
 import { UiState, rpcSchemas, type AgentGrant, type DamagedJob, type GrantKey, type RpcInput } from "../../core/wire/rpc.ts";
@@ -153,6 +155,12 @@ export function createOperations(deps: {
     return job;
   }
 
+  async function checkRead(initiator: Initiator, ref: ResourceRef) {
+    if (initiator.kind === "owner") return;
+    const rows = effectiveGrants(await grants.forThread(initiator.threadId), ref.endpoint);
+    if (!covers(rows, ref, "read")) throw refusal("forbidden", "Path is outside the agent's grant");
+  }
+
   async function checkMetadata(initiator: Initiator, ref: ResourceRef) {
     if (initiator.kind === "owner") return;
     if (!canObserve(await grants.forThread(initiator.threadId), ref)) {
@@ -241,6 +249,13 @@ export function createOperations(deps: {
       await checkMetadata(initiator, ref);
       await endpoints.prepare([ref.endpoint], signal);
       return endpoints.provider(ref.endpoint).stat(ref.path, signal);
+    },
+    async read(input: RpcInput<"file_read">, initiator: Initiator, signal: AbortSignal) {
+      const { ref, offset, length } = input;
+      await checkRead(initiator, ref);
+      await endpoints.prepare([ref.endpoint], signal);
+      const view = await readForView(endpoints.provider(ref.endpoint), ref.path, { offset: toBig(offset), length }, signal);
+      return toWire(viewModel(entryName(ref.path), view));
     },
     async createPlan(input: RpcInput<"plan_create">, initiator: Initiator, signal: AbortSignal) {
       const limits = initiator.kind === "agent" ? { ...planner.limits, maxItems: maxAgentPlanItems } : planner.limits;
@@ -394,6 +409,7 @@ export function createRpcHandlers(ops: Operations): ExperimentalPluginRpcHandler
     endpoint_home: ({ endpoint }, ctx) => ops.home(endpoint, ctx.experimental_signal),
     dir_list: (input, ctx) => ops.list(input, owner, ctx.experimental_signal),
     entry_stat: ({ ref }, ctx) => ops.stat(ref, owner, ctx.experimental_signal),
+    file_read: (input, ctx) => ops.read(input, owner, ctx.experimental_signal),
     plan_create: (input, ctx) => ops.createPlan(input, owner, ctx.experimental_signal),
     plan_run: (input, ctx) => ops.runPlan(input, owner, ctx.experimental_signal),
     job_list: (input) => ops.jobs(input),

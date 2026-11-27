@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import type { ViewModel } from "../core/preview.ts";
-
-const TRUNCATED_NOTE = "Показана только первая часть файла";
+import { ru } from "./strings.ts";
 
 /**
  * Renders a file window. Text and hex are plain text inside <pre>, so markup in a
@@ -14,7 +13,7 @@ export function Viewer({ name, model }: { name: string; model: ViewModel }) {
       {model.kind === "image" ? <ImageView name={name} mime={model.mime} bytes={model.bytes} /> : null}
       {model.kind === "text" ? <pre className="commander-viewer-text">{model.text}</pre> : null}
       {model.kind === "binary" ? <pre className="commander-viewer-hex">{model.lines.join("\n")}</pre> : null}
-      {model.truncated ? <p role="status">{TRUNCATED_NOTE}</p> : null}
+      {model.truncated ? <p role="status">{ru.viewTruncated}</p> : null}
     </section>
   );
 }

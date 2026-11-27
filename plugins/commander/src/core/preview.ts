@@ -9,12 +9,15 @@ export const MAX_VIEW_BYTES = 1024 * 1024;
 const HEAD_BYTES = 512;
 const HEX_WIDTH = 16;
 
+export const IMAGE_MIMES = ["image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml"] as const;
+export type ImageMime = (typeof IMAGE_MIMES)[number];
+
 export type ViewKind = "text" | "image" | "binary";
 
 export interface ViewWindow {
   kind: ViewKind;
   /** MIME type for image windows; SVG is an image and is shown only through img. */
-  mime?: string;
+  mime?: ImageMime;
   bytes: Uint8Array;
   offset: bigint;
   size: bigint;
@@ -24,7 +27,7 @@ export interface ViewWindow {
 /** What the viewer renders. Text is shown as source, never as markup. */
 export type ViewModel =
   | { kind: "text"; text: string; truncated: boolean }
-  | { kind: "image"; mime: string; bytes: Uint8Array; truncated: boolean }
+  | { kind: "image"; mime: ImageMime; bytes: Uint8Array; truncated: boolean }
   | { kind: "binary"; lines: string[]; truncated: boolean };
 
 function startsWith(head: Uint8Array, magic: readonly number[]): boolean {
@@ -35,7 +38,7 @@ function asciiAt(head: Uint8Array, offset: number, text: string): boolean {
   return [...text].every((char, index) => head[offset + index] === char.charCodeAt(0));
 }
 
-function rasterMime(head: Uint8Array): string | null {
+function rasterMime(head: Uint8Array): ImageMime | null {
   if (startsWith(head, [0x89, 0x50, 0x4e, 0x47])) return "image/png";
   if (startsWith(head, [0xff, 0xd8, 0xff])) return "image/jpeg";
   if (startsWith(head, [0x47, 0x49, 0x46, 0x38])) return "image/gif";
@@ -62,7 +65,7 @@ function isText(head: Uint8Array): boolean {
   }
 }
 
-export function mimeFor(name: string, head: Uint8Array): string | undefined {
+export function mimeFor(name: string, head: Uint8Array): ImageMime | undefined {
   const raster = rasterMime(head);
   if (raster) return raster;
   return isSvg(name, head) ? "image/svg+xml" : undefined;
@@ -86,7 +89,8 @@ export function hexLines(bytes: Uint8Array, offset: bigint): string[] {
   return lines;
 }
 
-function nameOf(path: ResourcePath): string {
+/** Last path segment as text; binary-only names give an empty string. */
+export function entryName(path: ResourcePath): string {
   const last = path.segments.at(-1);
   return last && "t" in last ? last.t : "";
 }
@@ -111,8 +115,10 @@ export async function readForView(
 
   const size = toBig(entry.size);
   const length = Math.min(opts.length, MAX_VIEW_BYTES);
-  const bytes = await provider.read(path, opts.offset, length, null, signal);
-  const name = nameOf(path);
+  // The fingerprint from stat makes every window come from the same version of the file.
+  const expect = { size: entry.size, mtimeNs: entry.mtimeNs };
+  const bytes = await provider.read(path, opts.offset, length, expect, signal);
+  const name = entryName(path);
   const head = bytes.subarray(0, HEAD_BYTES);
   const mime = mimeFor(name, head);
   const kind = detectKind(name, head);
@@ -130,10 +136,42 @@ export async function readForView(
 /** Turns a window into what the viewer shows: source text, an image, or hex lines. */
 export function viewModel(name: string, view: ViewWindow): ViewModel {
   if (view.kind === "image") {
-    return { kind: "image", mime: view.mime ?? mimeFor(name, view.bytes) ?? "application/octet-stream", bytes: view.bytes, truncated: view.truncated };
+    const mime = view.mime ?? mimeFor(name, view.bytes);
+    if (!mime) throw new RangeError("Image window without a known image type");
+    return { kind: "image", mime, bytes: view.bytes, truncated: view.truncated };
   }
   if (view.kind === "text") {
     return { kind: "text", text: new TextDecoder("utf-8").decode(view.bytes), truncated: view.truncated };
   }
   return { kind: "binary", lines: hexLines(view.bytes, view.offset), truncated: view.truncated };
+}
+
+/** JSON form of a view window for the RPC and agent tool. Image bytes travel as base64. */
+export type WireView =
+  | { kind: "text"; text: string; truncated: boolean }
+  | { kind: "image"; mime: ImageMime; base64: string; truncated: boolean }
+  | { kind: "binary"; lines: string[]; truncated: boolean };
+
+export function base64Of(bytes: Uint8Array): string {
+  let binary = "";
+  for (let start = 0; start < bytes.length; start += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(start, start + 0x8000));
+  }
+  return btoa(binary);
+}
+
+export function bytesOf(base64: string): Uint8Array {
+  return Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
+}
+
+export function toWire(model: ViewModel): WireView {
+  if (model.kind === "image") return { kind: "image", mime: model.mime, base64: base64Of(model.bytes), truncated: model.truncated };
+  if (model.kind === "text") return { kind: "text", text: model.text, truncated: model.truncated };
+  return { kind: "binary", lines: model.lines, truncated: model.truncated };
+}
+
+export function fromWire(wire: WireView): ViewModel {
+  if (wire.kind === "image") return { kind: "image", mime: wire.mime, bytes: bytesOf(wire.base64), truncated: wire.truncated };
+  if (wire.kind === "text") return { kind: "text", text: wire.text, truncated: wire.truncated };
+  return { kind: "binary", lines: wire.lines, truncated: wire.truncated };
 }

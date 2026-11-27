@@ -5,6 +5,8 @@ import {
 } from "../model.ts";
 import { NameSegment, ResourcePath } from "../path.ts";
 import { LIST_PAGE_MAX } from "../provider.ts";
+import { IMAGE_MIMES, MAX_VIEW_BYTES } from "../preview.ts";
+import { Size } from "../size.ts";
 import { sftpMethods } from "./remote-hub-sftp.ts";
 
 const empty = z.strictObject({});
@@ -74,6 +76,24 @@ export const rpcSchemas = {
     output: z.strictObject({ entries: z.array(Entry).max(LIST_PAGE_MAX), cursor: z.string().max(2048).nullable() }),
   },
   entry_stat: { input: z.strictObject({ ref: ResourceRef }), output: Entry.nullable() },
+  // Window of a file for F3 and the agent read tool. Length is capped at 1 MiB; image bytes are base64.
+  file_read: {
+    input: z.strictObject({
+      ref: ResourceRef,
+      offset: Size.default("0"),
+      length: z.int().min(1).max(MAX_VIEW_BYTES).default(MAX_VIEW_BYTES),
+    }),
+    output: z.discriminatedUnion("kind", [
+      z.strictObject({ kind: z.literal("text"), text: z.string().max(MAX_VIEW_BYTES), truncated: z.boolean() }),
+      z.strictObject({
+        kind: z.literal("image"),
+        mime: z.enum(IMAGE_MIMES),
+        base64: z.string().max(Math.ceil(MAX_VIEW_BYTES / 3) * 4),
+        truncated: z.boolean(),
+      }),
+      z.strictObject({ kind: z.literal("binary"), lines: z.array(z.string().max(96)).max(MAX_VIEW_BYTES / 16), truncated: z.boolean() }),
+    ]),
+  },
   plan_create: { input: PlanInput, output: OperationPlan },
   plan_run: { input: z.strictObject({ planId: z.uuid(), digest }), output: OperationJob },
   // Обычная выдача идёт по updated_at DESC (при равенстве по id ASC).
