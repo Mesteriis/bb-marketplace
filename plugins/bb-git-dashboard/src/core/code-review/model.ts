@@ -42,6 +42,8 @@ export const targetRequestSchema = z.discriminatedUnion("kind", [
   z.object({kind: z.literal("all"), base: base.optional()}).strict(),
   z.object({kind: z.literal("commit"), sha}).strict(),
   z.object({kind: z.literal("range"), from: revisionSchema, to: revisionSchema, symmetric: z.boolean()}).strict(),
+  /** Any file of the working copy, changed or not, commented as it reads now. */
+  z.object({kind: z.literal("files")}).strict(),
 ]);
 export type TargetRequest = z.infer<typeof targetRequestSchema>;
 /** A view with every part filled in; with the copy, the key of a review session. */
@@ -53,6 +55,7 @@ export const targetSchema = z.discriminatedUnion("kind", [
   z.object({kind: z.literal("all"), base}).strict(),
   z.object({kind: z.literal("commit"), sha}).strict(),
   z.object({kind: z.literal("range"), from: revisionSchema, to: revisionSchema, symmetric: z.boolean()}).strict(),
+  z.object({kind: z.literal("files")}).strict(),
 ]);
 export type Target = z.infer<typeof targetSchema>;
 
@@ -118,7 +121,7 @@ export type Execution = z.infer<typeof executionSchema>;
 /** The key a session is stored under for a view. */
 export function targetKey(target: Target): string {
   switch (target.kind) {
-    case "uncommitted": case "staged": case "unstaged": return target.kind;
+    case "uncommitted": case "staged": case "unstaged": case "files": return target.kind;
     case "branch": return "branch:" + target.base;
     case "all": return "all:" + target.base;
     case "commit": return "commit:" + target.sha.toLowerCase();
@@ -136,6 +139,7 @@ export function describeTarget(target: Target): string {
     case "all": return "all changes since " + target.base + ", committed and not";
     case "commit": return "commit " + target.sha.slice(0, 7);
     case "range": return "the range " + rangeText(target);
+    case "files": return "files of the working copy as they are";
   }
 }
 

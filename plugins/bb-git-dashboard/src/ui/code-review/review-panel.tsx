@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import { PATCH_BATCH, withPatches } from "../../core/code-review/diff.ts";
+import { PATCH_BATCH, withPatches, type ReviewDiffFile } from "../../core/code-review/diff.ts";
 import { keepView, readView, viewScope, type ViewStorage } from "../../core/code-review/view-memory.ts";
 import { parseRange, rangeText } from "../../core/code-review/git-spec.ts";
 import { describeTarget, GENERAL_PATH, type ReviewRun, type TargetRequest } from "../../core/code-review/model.ts";
@@ -9,6 +9,7 @@ import { KeptContext, useKeptState } from "./kept-state.tsx";
 import { orphanDrafts } from "../../core/code-review/view-state.ts";
 import { useReviewCommands, type ReviewCommand } from "./commands.ts";
 import { FindBar, GoToDialog } from "./navigate-bar.tsx";
+import { FileSearch } from "./file-search.tsx";
 import { commentOrder, findMatches, goToItems, step, type GoToItem } from "./navigation.ts";
 import { FileDiff } from "./file-diff.tsx";
 import { message, type CodeReviewApi, type NewThread, type ReviewView } from "./review-api.ts";
@@ -20,8 +21,9 @@ type Kind = TargetRequest["kind"];
 const kinds: {kind: Kind; label: string}[] = [
   {kind: "uncommitted", label: "Uncommitted changes"}, {kind: "staged", label: "Staged"}, {kind: "unstaged", label: "Unstaged"},
   {kind: "branch", label: "Branch commits since base"}, {kind: "all", label: "All changes since base"}, {kind: "commit", label: "A commit"}, {kind: "range", label: "A range"},
+  {kind: "files", label: "Any file"},
 ];
-const workingViews = new Set<Kind>(["uncommitted", "unstaged", "all"]);
+const workingViews = new Set<Kind>(["uncommitted", "unstaged", "all", "files"]);
 
 /** The view the picker's fields describe, or an error to show instead of reading it. */
 function request(kind: Kind, base: string, sha: string, range: string): TargetRequest | string {
@@ -60,6 +62,8 @@ export function ReviewPanel({api, copyId, currentThreadId, revision}: {api: Code
   const [goToQuery, setGoToQuery] = useState("");
   const [commentAt, setCommentAt] = useState("");
   const [reveal, setReveal] = useState<{path: string; token: number} | null>(null);
+  // Files opened in the Any file view besides those with threads, by session.
+  const [opened, setOpened] = useState<{sessionId: string; files: ReviewDiffFile[]}>({sessionId: "", files: []});
   const root = useRef<HTMLElement>(null);
   useEffect(() => keepView(browserStorage(), scope, {target: auto ? null : applied, ignoreWhitespace, onlyCommented, wrap, split}),
     [scope, auto, applied, ignoreWhitespace, onlyCommented, wrap, split]);
@@ -194,7 +198,16 @@ export function ReviewPanel({api, copyId, currentThreadId, revision}: {api: Code
   const placed = (id: string) => view?.placements[id];
   const generalThreads = threads.filter(thread => thread.filePath === GENERAL_PATH);
   const outdated = threads.filter(thread => thread.filePath !== GENERAL_PATH && placed(thread.id)?.state === "outdated");
-  const files = (view?.files ?? []).filter(file => !onlyCommented || threads.some(thread => thread.filePath === file.path));
+  const extra = view && opened.sessionId === view.sessionId ? opened.files.filter(file => !view.files.some(shown => shown.path === file.path)) : [];
+  const files = [...view?.files ?? [], ...extra].filter(file => !onlyCommented || threads.some(thread => thread.filePath === file.path));
+  const openFile = async (path: string) => {
+    if (!view) return;
+    const sessionId = view.sessionId;
+    const file = await api.fileEntry(copyId, path);
+    setOpened(current => ({sessionId, files: [...current.sessionId === sessionId ? current.files.filter(item => item.path !== path) : [], file]}));
+    reach(path, `section[data-path="${CSS.escape(path)}"]`);
+  };
+  const search = useCallback((query: string) => api.searchFiles(copyId, query), [api, copyId]);
   const matches = useMemo(() => finding ? findMatches(files, query, matchCase) : [], [finding, files, query, matchCase]);
   const at = matches[matchIndex] ?? null;
   const foundIn = useMemo(() => {
@@ -324,10 +337,12 @@ export function ReviewPanel({api, copyId, currentThreadId, revision}: {api: Code
         <button type="button" onClick={() => keptState.kept.setDraft(orphan.key, null)}>Discard</button>
       </li>)}</ul>
     </section>}
-    {view && !view.files.length && <p className="git-muted">{view.target.kind === "uncommitted" ? "No uncommitted changes." : "Nothing changed in this view."}</p>}
+    {view?.target.kind === "files" && <FileSearch search={search} onPick={openFile}/>}
+    {view && !files.length && <p className="git-muted">{view.target.kind === "files" ? "Find a file to show and comment on it." : view.target.kind === "uncommitted" ? "No uncommitted changes." : "Nothing changed in this view."}</p>}
     {view && keptState.ready && files.map(file => <FileDiff key={view.sessionId + file.path} file={file} wrap={wrap} split={split}
       patchError={file.deferred ? patchError : ""} onRetryPatch={() => setPatchRetry(value => value + 1)}
-      onViewed={(revision, on) => markViewed(file.path, revision, on)}
+      onViewed={(revision, on) => markViewed(file.path, revision, on)} hunksPickable={!ignoreWhitespace}
+      onRevert={view.target.kind === "uncommitted" ? async (revision, hunks) => { await api.revert(view.sessionId, file.path, revision, hunks); refresh(); } : undefined}
       onOpen={file.changeKind === "deleted" ? undefined : line => api.openFile(view.copy.hostId, joinPath(view.copy.root, file.path), line)} workingCopy={working} api={liveApi} onCreate={create} onExplain={explain} explaining={explaining}
       found={foundIn.get(file.path)} current={at?.path === file.path ? at.row : null} reveal={reveal?.path === file.path ? reveal.token : undefined}
       threads={threads.filter(thread => thread.filePath === file.path && placed(thread.id)?.state !== "outdated")} placements={view.placements}/>)}

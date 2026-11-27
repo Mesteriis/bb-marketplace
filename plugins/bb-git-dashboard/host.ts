@@ -4,11 +4,12 @@ import { failureFor } from "./src/core/workspace.ts";
 import { sshHostname } from "./src/adapters/bb/ssh-config.ts";
 import { commitDetails, commitPatch, historyPage, historyRevision, workingPatch } from "./src/adapters/bb/history-git.ts";
 import { probeForge } from "./src/adapters/bb/forge-probe.ts";
-import { createRunGit, defaultBase, diff as reviewDiff, GitError } from "./src/adapters/bb/review-git.ts";
+import { createRunGit, defaultBase, diff as reviewDiff, GitError, listFiles } from "./src/adapters/bb/review-git.ts";
 import type { Target } from "./src/core/code-review/model.ts";
 import { readReviewFile, writeReviewFile } from "./src/adapters/bb/review-files.ts";
 import { WATCH_IGNORED, WatchLeases } from "./src/adapters/bb/review-watch.ts";
 import { ignoreFor } from "./src/adapters/bb/review-ignore.ts";
+import { revertShown } from "./src/adapters/bb/review-revert.ts";
 import { hostSignals } from "./src/adapters/bb/host-contract.ts";
 import type { ExperimentalHostRpcContext } from "@get-bb/plugin-sdk/host";
 
@@ -40,6 +41,19 @@ export default experimental_defineHostEntry({
   experimental_signals: hostSignals,
   dispose: async () => { if (sweeper) clearInterval(sweeper); leases?.stopAll(); },
   handlers: {
+    async reviewFiles({root, identity, query}, {signal}) {
+      try {
+        await assertWorktree(root, identity, signal);
+        return {ok: true as const, ...await listFiles(createRunGit(60_000, signal), root, query)};
+      } catch (error) { return failureFor(error, "GIT_REJECTED"); }
+    },
+    async reviewRevert({root, identity, path, revision, hunks}, {signal}) {
+      try {
+        await assertWorktree(root, identity, signal);
+        await revertShown(createRunGit(60_000, signal), root, path, revision, hunks);
+        return {ok: true as const};
+      } catch (error) { return failureFor(error, "OUTCOME_UNKNOWN"); }
+    },
     async reviewWatch({root, identity}, context) {
       try {
         await assertWorktree(root, identity, context.signal);

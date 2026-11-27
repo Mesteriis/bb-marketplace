@@ -17,6 +17,8 @@ export const reviewDiffFileSchema = z.object({
   tooLarge: z.boolean(),
   /** The patch was not read yet: the view reads it later, with the next batch of files. */
   deferred: z.boolean().optional(),
+  /** The whole file as it reads now (the Any file view), not a change. */
+  whole: z.boolean().optional(),
   /** Marked Viewed at this very change; a file whose change moved on since is not. */
   viewed: z.boolean().optional(),
 }).strict();
@@ -55,4 +57,12 @@ function hash(text: string): string {
   let value = 0xcbf29ce484222325n;
   for (const byte of new TextEncoder().encode(text)) value = BigInt.asUintN(64, (value ^ BigInt(byte)) * 0x100000001b3n);
   return value.toString(16).padStart(16, "0");
+}
+
+/** A whole file as a patch of context lines only, so the Review shows it, and comments on it, like any diff. */
+export function wholeFileEntry(path: string, text: string): ReviewDiffFile {
+  const lines = text.split("\n");
+  if (lines.at(-1) === "") lines.pop();
+  const patch = lines.length ? "@@ -1," + lines.length + " +1," + lines.length + " @@\n" + lines.map(line => " " + line).join("\n") + "\n" : null;
+  return {path, previousPath: null, changeKind: "modified", additions: 0, deletions: 0, binary: false, untracked: false, patch, tooLarge: false, whole: true};
 }

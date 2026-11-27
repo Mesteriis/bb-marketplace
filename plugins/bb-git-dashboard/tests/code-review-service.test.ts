@@ -19,6 +19,7 @@ function setup(options: {threadCopy?: Record<string, string>; turnStart?: number
   let file = "one\nTWO\nthree\n";
   const sent: {threadId: string; text: string}[] = [];
   const published: string[] = [];
+  const reverted: unknown[] = [];
   const diff: ReviewDiff = {files: [{path: "a.ts", previousPath: null, changeKind: "modified", additions: 1, deletions: 1, binary: false, untracked: false, patch, tooLarge: false}],
     truncated: false, baseSha: null, headSha: null};
   const service = codeReviewService({
@@ -27,6 +28,8 @@ function setup(options: {threadCopy?: Record<string, string>; turnStart?: number
       diff: async (_copy, request) => ({value: options.empty?.includes(request.kind) ? {...diff, files: []} : diff, target: (request.kind === "branch" && !request.base ? {kind: "branch", base: "main"} : request) as Target}),
       read: async () => ({text: file, sha256: sha(file)}),
       write: async (_copy, _path, expected, text) => { if (expected !== sha(file)) throw new Error("CHANGED"); file = text; return {sha256: sha(text)}; },
+      revert: async (_copy, path, revision, hunks) => { reverted.push({path, revision, hunks}); },
+      files: async (_copy, query) => ({paths: ["a.ts", "b.md"].filter(path => path.includes(query)), more: false}),
     },
     threads: {
       send: async (threadId, text) => { if (options.sendFails) throw new Error("THREAD_UNAVAILABLE"); sent.push({threadId, text}); },
@@ -36,7 +39,7 @@ function setup(options: {threadCopy?: Record<string, string>; turnStart?: number
     },
     changed: copyId => published.push(copyId),
   });
-  return {service, store, sent, published, file: () => file, setFile: (text: string) => { file = text; }, tick: (ms = 10) => { now += ms; }};
+  return {service, store, sent, published, reverted, file: () => file, setFile: (text: string) => { file = text; }, tick: (ms = 10) => { now += ms; }};
 }
 
 test("a view reads the diff, makes its session and places each thread against the current lines", async () => {
@@ -197,7 +200,7 @@ test("a view reads the first 25 patches and those of commented files; the rest s
         return {value: {files: chosen.map(item => options.patches === false ? {...item, patch: null, deferred: true} : item), truncated: false, baseSha: null, headSha: null},
           target: request as Target};
       },
-      read: async () => ({text: "", sha256: ""}), write: async () => ({sha256: ""}),
+      read: async () => ({text: "", sha256: ""}), write: async () => ({sha256: ""}), revert: async () => {}, files: async () => ({paths: [], more: false}),
     },
     threads: {send: async () => {}, providerName: async () => "x", turnStart: async () => null, copyOf: async () => null},
     changed: () => {},
@@ -224,4 +227,25 @@ test("a file marked Viewed shows so until its change moves on; the view says whe
   assert.equal((await service.view("c1", {kind: "uncommitted"}, false)).files[0].viewed, false);
   service.setViewed(first.sessionId, "a.ts", "", false);
   assert.deepEqual(Object.fromEntries(store.viewed(first.sessionId)), {});
+});
+
+test("Revert goes to the copy's host only from the uncommitted view", async () => {
+  const {service, store, reverted, published} = setup();
+  const {sessionId} = await service.view("c1", {kind: "uncommitted"}, false);
+  await service.revert(sessionId, "a.ts", "0123456789abcdef", [1]);
+  assert.deepEqual(reverted, [{path: "a.ts", revision: "0123456789abcdef", hunks: [1]}]);
+  assert.ok(published.length > 0);
+  await assert.rejects(service.revert(store.session("c1", "staged").id, "a.ts", "0123456789abcdef", null), /NOT_UNCOMMITTED/);
+});
+
+test("Any file shows the files that have threads, finds and opens others, and places threads on their lines", async () => {
+  const {service, store, setFile} = setup();
+  setFile("alpha\nbeta\ngamma\n");
+  const sessionId = store.session("c1", "files").id;
+  store.createThread({sessionId, filePath: "a.ts", side: "new", startLine: 2, endLine: 2, severity: null, anchorContent: "beta", body: "Why?"});
+  const view = await service.view("c1", {kind: "files"}, false);
+  assert.deepEqual(view.files.map(file => [file.path, file.whole, file.patch]), [["a.ts", true, "@@ -1,3 +1,3 @@\n alpha\n beta\n gamma\n"]]);
+  assert.deepEqual(view.placements[view.threads[0].id], {state: "anchored", startLine: 2, endLine: 2});
+  assert.deepEqual(await service.searchFiles("c1", "."), {paths: ["a.ts", "b.md"], more: false});
+  assert.equal((await service.fileEntry("c1", "a.ts")).whole, true);
 });

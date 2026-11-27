@@ -28,14 +28,14 @@ function setup(options: {copy?: Copy; spawnFails?: string; modes?: string[] | nu
   const metadata: Record<string, unknown> = {};
   const threadCopies: Record<string, string> = {thr_owner: "copy_1", thr_elsewhere: "copy_2"};
   const host = {diff: async () => { await options.diffGate; return {value: uncommitted, target: {kind: "uncommitted" as const}}; }, read: async () => ({text: "", sha256: ""}),
-    write: async () => ({sha256: ""})};
+    write: async () => ({sha256: ""}), revert: async () => {}, files: async () => ({paths: [], more: false})};
   const review = codeReviewService({store, copy: async () => copy, host,
     threads: {send: async () => {}, providerName: async () => "Codex", turnStart: async id => turnStarts.get(id) ?? null,
       copyOf: async id => threadCopies[id] ?? null},
     changed: id => changes.push(id)});
   let next = 0;
   const service = codeReviewRuns({
-    store, runs, review, copy: async () => copy, diff: host.diff,
+    store, runs, review, copy: async () => copy, diff: host.diff, read: async () => "alpha\nbeta\n",
     settings: async () => ({aiProvider: "", aiModel: "", aiPermissionMode: "auto"}),
     bb: {
       thread: async id => ({environmentId: id === "thr_owner" ? "env_1" : null, originPluginId: id.startsWith("thr_run") ? "bb-git-dashboard" : "other"}),
@@ -248,4 +248,15 @@ test("a run asked for before Clear review never appears in the cleared view", as
   release();
   await assert.rejects(starting, /CLEARED/);
   assert.deepEqual([runs.open(session.id), spawned.length], [[], 0]);
+});
+
+test("in the Any file view a run comments on the file's own lines", async () => {
+  const {service, store, runs, execution} = setup();
+  const files = store.session("copy_1", "files");
+  const run = runs.create({sessionId: files.id, kind: "review", focus: null, providerId: "codex", model: null, parentThreadId: null, baseline: null});
+  runs.bind(run.id, "thr_files");
+  void execution;
+  const made = await service.addComment("thr_files", {filePath: "notes.md", side: "new", startLine: 2, endLine: 2, severity: null, body: "Typo"});
+  assert.equal(made.anchorContent, "beta");
+  await assert.rejects(service.addComment("thr_files", {filePath: "notes.md", side: "new", startLine: 5, endLine: 5, severity: null, body: "x"}), /LINE_NOT_IN_DIFF/);
 });

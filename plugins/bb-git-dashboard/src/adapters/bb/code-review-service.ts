@@ -1,5 +1,5 @@
 import { placeThread, type Placement } from "../../core/code-review/anchors.ts";
-import { changeRevision, PATCH_BATCH, patchPaths, withPatches, type ReviewDiff, type ReviewDiffFile } from "../../core/code-review/diff.ts";
+import { changeRevision, PATCH_BATCH, patchPaths, wholeFileEntry, withPatches, type ReviewDiff, type ReviewDiffFile } from "../../core/code-review/diff.ts";
 import { ANCHOR_MAX_CHARS, BODY_MAX_CHARS, GENERAL_PATH, targetKey, targetSchema, type Severity, type Side, type Target, type TargetRequest } from "../../core/code-review/model.ts";
 import { contentLines, parsePatchLines } from "../../core/code-review/patch-lines.ts";
 import { readViewState, viewStateSchema, type ViewState } from "../../core/code-review/view-state.ts";
@@ -16,6 +16,9 @@ export type CodeReviewDeps = {
     diff(copy: Copy, target: TargetRequest, ignoreWhitespace: boolean, options?: DiffOptions): Promise<{value: ReviewDiff; target: Target}>;
     read(copy: Copy, path: string): Promise<{text: string; sha256: string}>;
     write(copy: Copy, path: string, expected: string, text: string): Promise<{sha256: string}>;
+    revert(copy: Copy, path: string, revision: string, hunks: number[] | null): Promise<void>;
+    /** The copy's files whose path holds every word of `query`. */
+    files(copy: Copy, query: string): Promise<{paths: string[]; more: boolean}>;
   };
   threads: {
     send(threadId: string, text: string): Promise<void>;
@@ -38,7 +41,7 @@ export type DiffOptions = {patches?: boolean; paths?: readonly string[]};
 
 
 /** Views whose new side is the working tree, where a suggestion can be written. */
-const workingViews = new Set<Target["kind"]>(["uncommitted", "unstaged", "all"]);
+const workingViews = new Set<Target["kind"]>(["uncommitted", "unstaged", "all", "files"]);
 const scopeOf = (scope: string) => /^(thread|copy):[A-Za-z0-9_-]{1,128}$/.test(scope) ? scope : fail("INVALID_INPUT");
 const fail = (code: string): never => { throw new Error(code); };
 function text(body: string) {
@@ -93,6 +96,12 @@ export function codeReviewService(deps: CodeReviewDeps) {
         if (branch && branch.value.files.length > 0) ({value, target} = branch);
       }
       const commented = new Set(store.threads(store.session(copy.id, targetKey(targetSchema.parse(target))).id).map(row => row.filePath));
+      if (target.kind === "files") {
+        // Any file: the files that have threads, each as it reads now; one that cannot be read leaves its threads outdated.
+        const entries = await Promise.all([...commented].filter(path => path !== GENERAL_PATH).sort()
+          .map(path => deps.host.read(copy, path).then(file => wholeFileEntry(path, file.text), () => null)));
+        value = {...value, files: entries.filter(entry => entry !== null)};
+      }
       const deferred = value.files.filter(file => file.deferred);
       const eager = [...deferred.slice(0, PATCH_BATCH), ...deferred.slice(PATCH_BATCH).filter(file => commented.has(file.path))];
       if (eager.length) {
@@ -110,6 +119,14 @@ export function codeReviewService(deps: CodeReviewDeps) {
     },
     threads: (sessionId: string) => store.threads(sessionId),
 
+    /** Reverts a file (or some hunks) of the uncommitted view, while its change is the one shown (`revision`). */
+    async revert(sessionId: string, path: string, revision: string, hunks: number[] | null) {
+      const owner = session(sessionId);
+      if (owner.targetKey !== "uncommitted") fail("NOT_UNCOMMITTED");
+      await deps.host.revert(await copyOf(owner.copyId), path, revision, hunks);
+      changed(sessionId);
+    },
+
     /** What a tab (`scope`: `thread:<id>` or `copy:<id>`) kept of a view: drafts, folds, scroll. */
     viewState(scope: string, sessionId: string): ViewState {
       session(sessionId);
@@ -118,6 +135,16 @@ export function codeReviewService(deps: CodeReviewDeps) {
     saveViewState(scope: string, sessionId: string, state: ViewState) {
       session(sessionId);
       return {kept: store.saveViewState(scopeOf(scope), sessionId, state.savedAt, JSON.stringify(viewStateSchema.parse(state)))};
+    },
+
+    /** Files of the copy for the Any file view's search. */
+    async searchFiles(copyId: string, query: string) {
+      if (query.length > 200) fail("INVALID_INPUT");
+      return deps.host.files(await copyOf(copyId), query);
+    },
+    /** A file of the copy as the Any file view shows it. */
+    async fileEntry(copyId: string, path: string) {
+      return wholeFileEntry(path, (await deps.host.read(await copyOf(copyId), path)).text);
     },
 
     /** Marks a file Viewed at the change the view showed (`revision`, from `changeRevision`), or clears its mark. */
@@ -258,7 +285,7 @@ export function codeReviewService(deps: CodeReviewDeps) {
 
 /** A session's view from its key, when no view was read since the server started. */
 export function targetFromKey(key: string): Target {
-  if (key === "uncommitted" || key === "staged" || key === "unstaged") return {kind: key};
+  if (key === "uncommitted" || key === "staged" || key === "unstaged" || key === "files") return {kind: key};
   const [kind, rest] = [key.slice(0, key.indexOf(":")), key.slice(key.indexOf(":") + 1)];
   if (kind === "branch" || kind === "all") return {kind, base: rest};
   if (kind === "commit") return {kind, sha: rest};

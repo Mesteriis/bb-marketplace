@@ -66,6 +66,9 @@ export function codeReviewApi(client: Client, navigate: Navigate): CodeReviewApi
   return {
     view: async (copyId, target, ignoreWhitespace, auto) => okValue(await client.call("reviewView", {copyId, target, ignoreWhitespace, auto: auto === true})),
     clear: async sessionId => okValue(await client.call("reviewClear", {sessionId})),
+    searchFiles: async (copyId, query) => okValue(await client.call("reviewSearchFiles", {copyId, query})),
+    fileEntry: async (copyId, path) => okValue(await client.call("reviewFileEntry", {copyId, path})).file,
+    revert: async (sessionId, path, revision, hunks) => { okValue(await client.call("reviewRevert", {sessionId, path, revision, hunks})); },
     viewState: async (scope, sessionId) => okValue(await client.call("reviewViewState", {scope, sessionId})).state,
     saveViewState: async (scope, sessionId, state) => { okValue(await client.call("reviewSaveViewState", {scope, sessionId, state})); },
     setViewed: async (sessionId, path, revision, viewed) => { okValue(await client.call("reviewSetViewed", {sessionId, path, revision, viewed})); },

@@ -8,6 +8,7 @@ import type { ExplainPlace } from "../../core/code-review/run-prompts.ts";
 import type { CodeReviewApi, NewThread, Placement } from "./review-api.ts";
 import { Composer, ThreadCard } from "./thread-card.tsx";
 import { useKept } from "./kept-state.tsx";
+import { RevertForm } from "./revert-form.tsx";
 
 const sideOf = (row: DisplayRow): Side => row.kind === "deletion" ? "old" : "new";
 const lineOf = (row: DisplayRow) => row.kind === "deletion" ? row.oldLine! : row.newLine!;
@@ -29,7 +30,7 @@ function anchorsOf(item: Item): {side: Side; line: number}[] {
  * number to comment, Shift+click another line on the same side to comment on the range.
  */
 export function FileDiff({file, threads, placements, wrap, split, workingCopy, api, onCreate, onExplain, explaining, patchError, onRetryPatch, onViewed, onOpen,
-  found, current, reveal}: {
+  found, current, reveal, onRevert, hunksPickable}: {
   file: ReviewDiffFile; threads: ReviewThread[]; placements: Record<string, Placement>; wrap: boolean; split: boolean; workingCopy: boolean;
   /** Why the deferred patch could not be read; Retry reads the batches again. */
   patchError: string; onRetryPatch(): void;
@@ -41,6 +42,10 @@ export function FileDiff({file, threads, placements, wrap, split, workingCopy, a
   found?: ReadonlySet<number>; current?: number | null;
   /** Changes when something in this file is to be shown: the file unfolds. */
   reveal?: number;
+  /** Reverts the file (`hunks` null) or some hunks to HEAD; absent where the view cannot revert. */
+  onRevert?(revision: string, hunks: number[] | null): Promise<void>;
+  /** Whether hunks can be picked: not with whitespace hidden, whose hunks are not git's. */
+  hunksPickable?: boolean;
   api: CodeReviewApi; onCreate(thread: NewThread): Promise<void>;
   /** Starts an AI run that explains the file or the selected lines. */
   onExplain(place: ExplainPlace): Promise<void>; explaining: boolean;
@@ -70,6 +75,7 @@ export function FileDiff({file, threads, placements, wrap, split, workingCopy, a
     setClosed(file.viewed || large);
   }, [file.viewed, large]);
   const [marking, setMarking] = useState(false);
+  const [reverting, setReverting] = useState(false);
   useEffect(() => { if (reveal) setClosed(false); }, [reveal]);
   const indexOf = useMemo(() => new Map(rows.map((row, index) => [row, index])), [rows]);
   const mark = (row: DisplayRow | null) => {
@@ -99,15 +105,20 @@ export function FileDiff({file, threads, placements, wrap, split, workingCopy, a
     <header className="git-row git-review-file-head">
       <button type="button" className="git-link" aria-expanded={!closed} onClick={toggleFold}>{closed ? "▸" : "▾"}</button>
       <strong className="git-path">{file.previousPath ? file.previousPath + " → " : ""}{file.path}</strong>
-      <span className="git-muted">{file.untracked ? "untracked" : file.changeKind.replace("_", " ")} · {additions}{large ? " · large change" : ""}</span>
+      <span className="git-muted">{file.whole ? "file · " + rows.filter(row => row.kind !== "hunk").length + " lines"
+        : (file.untracked ? "untracked" : file.changeKind.replace("_", " ")) + " · " + additions + (large ? " · large change" : "")}</span>
       {threads.length > 0 && <span className="git-review-tag">{threads.filter(thread => thread.status === "open").length} open</span>}
       <span className="git-ci-spacer"/>
       {onOpen && <button type="button" title="Opens the working copy's file in BB's preview" onClick={() => onOpen(null)}>Open</button>}
-      {!file.deferred && <label className="git-review-viewed"><input type="checkbox" checked={file.viewed === true} disabled={marking}
+      {onRevert && !file.deferred && file.changeKind !== "renamed" && file.changeKind !== "copied" &&
+        <button type="button" aria-expanded={reverting} onClick={() => setReverting(value => !value)}>Revert…</button>}
+      {!file.deferred && !file.whole && <label className="git-review-viewed"><input type="checkbox" checked={file.viewed === true} disabled={marking}
         onChange={event => { const on = event.target.checked; setMarking(true); onViewed(changeRevision(file), on).finally(() => setMarking(false)); }}/> Viewed</label>}
       <button type="button" disabled={explaining} onClick={() => void onExplain({filePath: file.path, side: null, startLine: 0, endLine: 0, code: null})}>Explain</button>
       <button type="button" aria-expanded={fileComment} onClick={() => setFileComment(value => !value)}>Comment on file</button>
     </header>
+    {reverting && onRevert && <RevertForm path={file.path} changeKind={file.untracked ? "added" : file.changeKind} patch={hunksPickable ? file.patch : null}
+      onRevert={hunks => onRevert(changeRevision(file), hunks)} onClose={() => setReverting(false)}/>}
     {!closed && <>
       {fileComment && <Composer label={"Comment on " + file.path} withSeverity submitLabel="Comment" onCancel={() => setFileComment(false)} draftKey={"file:" + file.path}
         onSubmit={async (body, severity) => { await onCreate({filePath: file.path, side: null, startLine: 0, endLine: 0, anchorContent: null, severity, body}); setFileComment(false); }}/>}

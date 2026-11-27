@@ -17,7 +17,7 @@ import type { ReviewDiff } from "../../core/code-review/diff.ts";
 import { mentionsReviewer } from "../../core/code-review/mentions.ts";
 import { describeLocation, GENERAL_PATH, type Execution, type ReviewRun, type ReviewThread, type RunKind, type Severity, type Side,
   type Target, type TargetRequest } from "../../core/code-review/model.ts";
-import { linesText, parsePatchLines } from "../../core/code-review/patch-lines.ts";
+import { contentLines, linesText, parsePatchLines } from "../../core/code-review/patch-lines.ts";
 import { explainPrompt, fixPrompt, reviewerPrompt, reviewPrompt, summaryPrompt, type RangeCommits } from "../../core/code-review/run-prompts.ts";
 import { changedFiles, fingerprint, ranges, readsOnly, reasoningLevel, runPermissionMode, spawnPermissionMode, SUMMARY_MAX_CHARS,
   type RunPermissionMode } from "../../core/code-review/runs.ts";
@@ -42,6 +42,8 @@ export type RunDeps = {
   copy(copyId: string): Promise<Copy | undefined>;
   /** The view's diff on the copy's host; throws its code. */
   diff(copy: Copy, target: TargetRequest, options?: DiffOptions): Promise<{value: ReviewDiff; target: Target}>;
+  /** A text file of the copy, for comments in the Any file view. */
+  read(copy: Copy, path: string): Promise<string>;
   settings(): Promise<RunSettings>;
   bb: {
     thread(threadId: string): Promise<{environmentId: string | null; originPluginId: string | null}>;
@@ -196,6 +198,11 @@ export function codeReviewRuns(deps: RunDeps) {
     const owner = session(sessionId);
     const copy = await deps.copy(owner.copyId) ?? fail("NOT_FOUND");
     const target = targetFromKey(owner.targetKey);
+    if (target.kind === "files") {
+      // Any file: the lines are the file's own, as it reads now.
+      const text = await deps.read(copy, path).catch(() => { throw new CodedError("FILE_NOT_IN_DIFF", path + " is not a readable text file of this working copy."); });
+      return contentLines(text);
+    }
     const {value} = await deps.diff(copy, target, {patches: false});
     const listed = value.files.find(item => item.path === path);
     if (!listed) {

@@ -81,6 +81,11 @@ export function codeReviewHandlers(bb: BbPluginApi, copyOf: (copyId: string) => 
         const {text, sha256} = value(await host.call("reviewFile", {root: copy.root, identity: copy.identity, path}, at(copy)));
         return {text, sha256};
       },
+      files: async (copy, query) => {
+        const {paths, more} = value(await host.call("reviewFiles", {root: copy.root, identity: copy.identity, query}, at(copy)));
+        return {paths, more};
+      },
+      revert: async (copy, path, revision, hunks) => { value(await host.call("reviewRevert", {root: copy.root, identity: copy.identity, path, revision, hunks}, at(copy))); },
       write: async (copy, path, expected, text) =>
         ({sha256: value(await host.call("reviewWrite", {root: copy.root, identity: copy.identity, path, expected, text}, at(copy))).sha256}),
     },
@@ -100,7 +105,8 @@ export function codeReviewHandlers(bb: BbPluginApi, copyOf: (copyId: string) => 
   };
   const routing = (place: RunPlace) => "environmentId" in place ? {environmentId: place.environmentId} : {hostId: place.hostId, projectId: place.projectId};
   const runs = codeReviewRuns({
-    store, runs: runStore, review: service, copy: copyOf, diff, settings: () => settings.get(), threadCopy, pluginId: bb.pluginId,
+    store, runs: runStore, review: service, copy: copyOf, diff,
+    read: async (copy, path) => value(await host.call("reviewFile", {root: copy.root, identity: copy.identity, path}, at(copy))).text, settings: () => settings.get(), threadCopy, pluginId: bb.pluginId,
     changed: copyId => bb.realtime.publish(codeReviewSignal, {copyId}),
     log: message => bb.log.warn(message),
     bb: {
@@ -192,6 +198,11 @@ export function codeReviewHandlers(bb: BbPluginApi, copyOf: (copyId: string) => 
       ({run: await runs.startExplain({...input, threadId: viewerThreadId ?? null})})),
     reviewFix: handle(async ({viewerThreadId, ...input}: Omit<Parameters<typeof runs.fixInNewThread>[0], "threadId"> & {viewerThreadId?: string | null}) =>
       runs.fixInNewThread({...input, threadId: viewerThreadId ?? null})),
+    reviewSearchFiles: handle(({copyId, query}: {copyId: string; query: string}) => service.searchFiles(copyId, query)),
+    reviewFileEntry: handle(async ({copyId, path}: {copyId: string; path: string}) => ({file: await service.fileEntry(copyId, path)})),
+    reviewRevert: handle(async ({sessionId, path, revision, hunks}: {sessionId: string; path: string; revision: string; hunks: number[] | null}) => {
+      await service.revert(sessionId, path, revision, hunks); return {};
+    }),
     reviewViewState: handle(({scope, sessionId}: {scope: string; sessionId: string}) => ({state: service.viewState(scope, sessionId)})),
     reviewSaveViewState: handle(({scope, sessionId, state}: {scope: string; sessionId: string; state: Parameters<typeof service.saveViewState>[2]}) =>
       service.saveViewState(scope, sessionId, state)),

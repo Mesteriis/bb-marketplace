@@ -22,6 +22,10 @@ export const codeReviewContract = {
       threads: z.array(reviewThreadSchema), placements: z.record(z.string(), placementSchema),
       /** Where the copy is, to open its files in BB's preview. */
       copy: z.object({hostId: id, root: z.string().max(4096)}), colorBlind: z.boolean().optional()})},
+  reviewSearchFiles: {input: z.object({copyId: id, query: z.string().max(200)}), output: answer({paths: z.array(z.string()), more: z.boolean()})},
+  reviewFileEntry: {input: z.object({copyId: id, path: z.string().min(1).max(4096)}), output: answer({file: reviewDiffFileSchema})},
+  reviewRevert: {input: z.object({sessionId: reviewId, path: z.string().min(1).max(4096), revision: z.string().regex(/^[0-9a-f]{16}$/),
+    hunks: z.array(z.number().int().min(0).max(10_000)).max(10_000).nullable()}), output: answer({})},
   reviewViewState: {input: z.object({scope: z.string().max(140), sessionId: reviewId}), output: answer({state: viewStateSchema})},
   reviewSaveViewState: {input: z.object({scope: z.string().max(140), sessionId: reviewId, state: viewStateSchema}), output: answer({kept: z.boolean()})},
   reviewSetViewed: {input: z.object({sessionId: reviewId, path: z.string().min(1).max(4096), revision: z.string().max(64), viewed: z.boolean()}), output: answer({})},

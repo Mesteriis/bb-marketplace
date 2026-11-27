@@ -28,3 +28,14 @@ test("split rows put each removed run beside the added run after it, and context
   const shape = splitRows(rows).map(row => row.kind === "hunk" ? "hunk" : (row.old?.text ?? "·") + "|" + (row.new?.text ?? "·"));
   assert.deepEqual(shape, ["hunk", "keep|keep", "a|A", "b|·", "end|end", "·|tail"]);
 });
+
+test("a whole file reads as context lines that comments can be placed on", async () => {
+  const {wholeFileEntry} = await import("../src/core/code-review/diff.ts");
+  const {parsePatchLines, linesText} = await import("../src/core/code-review/patch-lines.ts");
+  const entry = wholeFileEntry("a.md", "one\ntwo\nthree\n");
+  assert.equal(entry.patch, "@@ -1,3 +1,3 @@\n one\n two\n three\n");
+  assert.deepEqual(displayRows(entry.patch!).map(row => [row.kind, row.newLine]), [["hunk", null], ["context", 1], ["context", 2], ["context", 3]]);
+  assert.equal(linesText(parsePatchLines(entry.patch!), "new", 2, 3), "two\nthree");
+  assert.equal(wholeFileEntry("e.txt", "").patch, null);
+  assert.equal(wholeFileEntry("n.txt", "no newline").patch, "@@ -1,1 +1,1 @@\n no newline\n");
+});

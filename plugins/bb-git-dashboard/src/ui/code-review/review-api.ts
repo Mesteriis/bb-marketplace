@@ -25,6 +25,11 @@ export type CodeReviewApi = {
   clear(sessionId: string): Promise<{deletedThreads: number; closedRuns: number}>;
   setViewed(sessionId: string, path: string, revision: string, viewed: boolean): Promise<void>;
   viewState(scope: string, sessionId: string): Promise<ViewState>;
+  /** The Any file view: files of the copy matching a query, and one file as the view shows it. */
+  searchFiles(copyId: string, query: string): Promise<{paths: string[]; more: boolean}>;
+  fileEntry(copyId: string, path: string): Promise<ReviewDiffFile>;
+  /** Reverts a file of the uncommitted view (`hunks` null) or some of its hunks, while it is as shown. */
+  revert(sessionId: string, path: string, revision: string, hunks: number[] | null): Promise<void>;
   saveViewState(scope: string, sessionId: string, state: ViewState): Promise<void>;
   /** Opens a file of the copy, at a line, in BB's preview. */
   openFile(hostId: string, path: string, line: number | null): void;

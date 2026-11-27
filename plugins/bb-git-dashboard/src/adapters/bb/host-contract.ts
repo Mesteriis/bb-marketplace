@@ -43,6 +43,12 @@ export const hostContract = defineRpcContract({
   reviewWrite: {input:z.object({root:path,identity,path:z.string().min(1).max(4096),expected:z.string().regex(/^[0-9a-f]{64}$/),text:z.string().max(2*1024*1024)}),
     output:z.discriminatedUnion("ok",[failure,z.object({ok:z.literal(true),sha256:z.string()})])},
   sshHostname: {input:z.object({alias:z.string().max(253)}),output:z.discriminatedUnion("ok",[failure,z.object({ok:z.literal(true),hostname:z.string().max(253)})])},
+  /** The copy's files whose path holds every word of `query` (Any file view). */
+  reviewFiles: {input:z.object({root:path,identity,query:z.string().max(200)}),
+    output:z.discriminatedUnion("ok",[failure,z.object({ok:z.literal(true),paths:z.array(z.string()),more:z.boolean()})])},
+  /** Reverts an uncommitted file, or hunks of it, while its change is still the one shown (`changeRevision`). */
+  reviewRevert: {input:z.object({root:path,identity,path:z.string().min(1).max(4096),revision:z.string().regex(/^[0-9a-f]{16}$/),
+    hunks:z.array(z.number().int().min(0).max(10_000)).max(10_000).nullable()}),output:z.discriminatedUnion("ok",[failure,z.object({ok:z.literal(true)})])},
   /** Starts or renews the 90-second watch of a working copy an open Review shows. */
   reviewWatch: {input:z.object({root:path,identity}),output:z.discriminatedUnion("ok",[failure,z.object({ok:z.literal(true)})])},
 });

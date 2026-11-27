@@ -131,6 +131,9 @@ export async function plan(run: RunGit, root: string, spec: Target): Promise<Pla
       if (fork === null) throw new GitError(`'${spec.base}' and HEAD have no common ancestor.`);
       return { args: [fork], untracked: true, baseSha: fork, headSha: null };
     }
+    case "files":
+      // Any file is read as it is, never diffed (`diff` answers it before planning).
+      throw new GitError("The Any file view has no diff.");
     case "range": {
       const left = await known(spec.from);
       const right = await known(spec.to);
@@ -263,6 +266,7 @@ export async function rangeCommits(run: RunGit, root: string, spec: Extract<Targ
  */
 export async function diff(run: RunGit, root: string, spec: Target, ignoreWhitespace: boolean,
   options: { patches?: boolean; paths?: readonly string[]; ignored?: ((path: string) => boolean) | null } = {}): Promise<HostDiff> {
+  if (spec.kind === "files") return { files: [], truncated: false, baseSha: null, headSha: null };
   const ignored = options.ignored ?? (() => false);
   let skipped = 0;
   const { args: planned, untracked, baseSha, headSha } = await plan(run, root, spec);
@@ -355,4 +359,18 @@ export async function defaultBase(run: RunGit, root: string): Promise<string | n
   if (remote.ok && remote.stdout.trim()) return remote.stdout.trim();
   for (const branch of ["main", "master"]) if (await verify(run, root, `refs/heads/${branch}`) !== null) return branch;
   return null;
+}
+
+/** Most files a search in the Any file view lists. */
+export const FILE_SEARCH_MAX = 100;
+
+/**
+ * The copy's files whose path holds every word of `query` (any case): tracked ones and untracked ones git does not
+ * ignore, sorted, at most `FILE_SEARCH_MAX`.
+ */
+export async function listFiles(run: RunGit, root: string, query: string): Promise<{ paths: string[]; more: boolean }> {
+  const listed = await run(root, ["ls-files", "-z", "--cached", "--others", "--exclude-standard"], { maxBuffer: 64 * 1024 * 1024 });
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+  const found = [...new Set(listed.stdout.split("\0").filter(Boolean))].filter((path) => words.every((word) => path.toLowerCase().includes(word))).sort();
+  return { paths: found.slice(0, FILE_SEARCH_MAX), more: found.length > FILE_SEARCH_MAX };
 }

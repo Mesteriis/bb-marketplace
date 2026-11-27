@@ -3,7 +3,7 @@
 // 30 untracked files read in batches, a large change starts folded, Clear review. Last line is PASS or FAIL.
 // Usage: node code-review-more.mjs <bbUrl> <toolsDir> <chrome> <outDir>   (env STAND)
 import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 
@@ -110,6 +110,26 @@ try {
   await review.getByRole("alertdialog", { name: "Clear review" }).getByRole("button", { name: "Clear review" }).click();
   check("Clear review deletes the view's threads", await visible(review.getByText(/Cleared 1 comment thread/))
     && await until(async () => await review.getByRole("article", { name: /Comment thread on watched\.txt:1/ }).count() === 0));
+  writeFileSync(join(repo, "README.md"), "a\nchanged by hand\n");
+  const readme = review.getByRole("region", { name: "README.md" });
+  check("the edit shows", await visible(readme.locator(".git-review-code", { hasText: "changed by hand" })));
+  await readme.getByRole("button", { name: "Revert…" }).click();
+  await review.getByRole("alertdialog", { name: "Revert README.md" }).getByRole("button", { name: "Revert", exact: true }).click();
+  check("Revert puts the file back as committed", await until(async () => readFileSync(join(repo, "README.md"), "utf8") === "a\n")
+    && await until(async () => await review.getByRole("region", { name: "README.md" }).count() === 0));
+
+  await review.getByLabel("What to review").selectOption("files");
+  await review.getByLabel("File to show").fill("READ");
+  await review.getByRole("search", { name: "Find a file" }).getByRole("button", { name: "README.md" }).click();
+  const whole = review.getByRole("region", { name: "README.md" });
+  check("Any file shows a file as it is", await visible(whole.getByText(/file · 1 lines/)));
+  await whole.getByRole("button", { name: "Comment on line 1" }).click();
+  await review.getByLabel("Line comment").fill("About the whole README");
+  await review.getByRole("button", { name: "Comment", exact: true }).click();
+  review = await open();
+  check("a file with a thread stays in Any file", await review.getByLabel("What to review").inputValue() === "files"
+    && await visible(review.getByRole("article", { name: /Comment thread on README\.md:1/ })));
+
   await page.setViewportSize({ width: 768, height: 900 });
   await page.waitForTimeout(300);
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);

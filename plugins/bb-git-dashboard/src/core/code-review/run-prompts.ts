@@ -66,6 +66,8 @@ export function gitCommandFor(target: Target, commits: RangeCommits | null = nul
       return "`git diff --cached`";
     case "unstaged":
       return "`git diff`, plus the untracked files `git status --porcelain` lists";
+    case "files":
+      return "no diff: read the files themselves as they are in the working copy";
     case "range":
       return commits === null ? `\`git diff ${rangeText(target)}\`` : `\`git diff ${commits.baseSha} ${commits.headSha}\` (the commits the tab compares for ${rangeText(target)})`;
   }

@@ -11,6 +11,7 @@ const matches = (error: Error, pattern?: RegExp | string) =>
 export function expect(actual: unknown) {
   return {
     toBe: (expected: unknown) => assert.strictEqual(actual, expected),
+    toMatch: (pattern: RegExp) => assert.match(String(actual), pattern),
     toEqual: (expected: unknown) => assert.deepStrictEqual(actual, expected),
     toBeNull: () => assert.strictEqual(actual, null),
     toContain: (part: unknown) => assert.ok(contains(actual, part), `expected ${JSON.stringify(actual)?.slice(0, 200)} to contain ${JSON.stringify(part)}`),

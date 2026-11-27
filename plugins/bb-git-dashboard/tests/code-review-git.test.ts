@@ -2,14 +2,14 @@
 // fetch, the index fingerprint and the host-entry harness tests are not ported with them; the views diff-review
 // read from bb's Git plugin (uncommitted, branch, all, commit) are tested at the end.
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "./vitest-expect.ts";
 
 import { parseRange } from "../src/core/code-review/git-spec.ts";
-import { createRunGit, diff, newFilePatch, parseNameStatus, parseNumstat, rangeCommits, splitPatch, unquote } from "../src/adapters/bb/review-git.ts";
+import { createRunGit, diff, listFiles, newFilePatch, parseNameStatus, parseNumstat, rangeCommits, splitPatch, unquote } from "../src/adapters/bb/review-git.ts";
 import { ignoreFor, patternLines } from "../src/adapters/bb/review-ignore.ts";
 const roots: string[] = [];
 afterEach(() => {
@@ -163,6 +163,18 @@ describe("the host's git diffs", () => {
     writeFileSync(join(tree, "dist.js"), "x\n");
     const linked = await diff(run, tree, { kind: "uncommitted" }, false, { ignored: await ignoreFor(run, tree, [], true) });
     expect([linked.files.map((file) => file.path), linked.ignored]).toEqual([[], 1]);
+  });
+
+  it("finds files of the copy by every word of a query, untracked ones too, ignored ones not", async () => {
+    const root = repo();
+    const run = createRunGit();
+    mkdirSync(join(root, "src/review"), { recursive: true });
+    writeFileSync(join(root, "src/review/Panel.tsx"), "x\n");
+    writeFileSync(join(root, "src/other.ts"), "x\n");
+    writeFileSync(join(root, ".gitignore"), "secret.env\n");
+    writeFileSync(join(root, "secret.env"), "x\n");
+    expect(await listFiles(run, root, "panel REVIEW")).toEqual({ paths: ["src/review/Panel.tsx"], more: false });
+    expect((await listFiles(run, root, "")).paths).toEqual([".gitignore", "a.txt", "src/other.ts", "src/review/Panel.tsx"]);
   });
 
   it("refuses unknown revisions", async () => {

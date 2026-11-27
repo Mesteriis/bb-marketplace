@@ -84,6 +84,8 @@ const next: Record<string, string> = {
   FILE_NOT_IN_DIFF: "Comment on a file of the diff under review.",
   RUN_PLACE_REQUIRED: "Attach this working copy to a BB project, or start the run from a thread working in it.",
   UNKNOWN_RUN: "Refresh the review: this AI run no longer exists.",
+  REVERT_REFUSED: "Revert this change with git: the Review does not revert it.",
+  NOT_UNCOMMITTED: "Revert works in the Uncommitted changes view.",
   CLEARED: "The review was cleared while this was being set up; nothing was started.",
 };
 /** An error with a code `failureFor` knows and a `detail` for the agent. */
