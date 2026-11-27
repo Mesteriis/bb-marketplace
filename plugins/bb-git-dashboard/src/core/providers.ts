@@ -55,5 +55,11 @@ export interface Provider {
   mutate(repo: Repo, action: PullMutation): Promise<{number: number; outcome: "accepted" | "completed"}>;
   /** Creates one new file in a new branch started at the `base` commit of `baseBranch`; returns the new commit. */
   createFile(repo: Repo, change: NewFile): Promise<string>;
+  /**
+   * Creates an empty repository, of the account's user when `owner` is null, else of that organization or group (on
+   * Azure: in that project, whose visibility the repository takes).
+   */
+  createRepository(spec: NewRepository): Promise<Repo>;
 }
+export type NewRepository = {owner: string | null; name: string; description: string; visibility: "private" | "public"};
 export type NewFile = {branch: string; base: string; baseBranch: string; path: string; content: string; message: string};

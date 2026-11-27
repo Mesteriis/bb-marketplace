@@ -29,6 +29,8 @@ export function gitRunner(root: string, signal?: AbortSignal, transport?: Transp
       GIT_EDITOR: "true", GIT_SEQUENCE_EDITOR: "true", GIT_MERGE_AUTOEDIT: "no",
       ...(transport && "ssh" in transport ? {SSH_AUTH_SOCK: process.env.SSH_AUTH_SOCK,
         GIT_SSH_COMMAND: "ssh -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=yes"} : {}),
+      // A forge on a private certificate authority: an extra CA from the environment, verification stays on.
+      ...(transport && !("ssh" in transport) && process.env.GIT_SSL_CAINFO ? {GIT_SSL_CAINFO: process.env.GIT_SSL_CAINFO} : {}),
     };
     const git = spawn("git", [
       "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",

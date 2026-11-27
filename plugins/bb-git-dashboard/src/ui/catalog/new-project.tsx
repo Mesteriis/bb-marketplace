@@ -5,6 +5,7 @@ import { scaffoldCi } from "../../core/scaffolds/ci.ts";
 import type { ScaffoldsView } from "../../core/scaffolds/contract.ts";
 import { buildScaffold } from "../../core/scaffolds/model.ts";
 import { commonParams } from "../../core/scaffolds/overlay.ts";
+import { validOwner } from "../../core/scaffolds/repository.ts";
 import type { TemplateValues } from "../../core/templating/engine.ts";
 import { CodedError } from "../../core/workspace.ts";
 import { message } from "../ci/ci-api.ts";
@@ -17,13 +18,18 @@ const forges: [CiForge | "", string][] = [["", "No CI file"], ["github", "GitHub
 const sources = {builtin: "Built-in", settings: "Settings", folder: "Folder"} as const;
 
 /** The form of one scaffold: where the project goes, its values, CI, author, and the files as they will be written. */
-function ScaffoldForm({api, hostId, root, categories, entry, suggested, onCreated}: {api: CatalogApi; hostId: string; root: string;
-  categories: string[]; entry: Offered; suggested: TemplateValues; onCreated(root: string): void}) {
+type Created = Awaited<ReturnType<CatalogApi["createScaffold"]>>;
+function ScaffoldForm({api, hostId, root, categories, entry, suggested, accounts, onCreated}: {api: CatalogApi; hostId: string; root: string;
+  categories: string[]; entry: Offered; suggested: TemplateValues; accounts: ScaffoldsView["accounts"]; onCreated(made: Created): void}) {
   const params = useMemo(() => [...commonParams, ...entry.scaffold.params], [entry]);
   const [values, setValues] = useState<TemplateValues>(() => Object.fromEntries(params.map(param => [param.name, suggested[param.name] ?? param.default])));
   const [category, setCategory] = useState(categories.includes("") ? "" : categories[0] ?? "");
   const [forge, setForge] = useState<CiForge | "">("github");
   const [author, setAuthor] = useState({name: "", email: ""});
+  // A repository on a forge: off unless asked for, private unless public is chosen.
+  const [remote, setRemote] = useState({on: false, accountId: accounts[0]?.id ?? "", owner: "", visibility: "private" as "private" | "public"});
+  const account = accounts.find(item => item.id === remote.accountId);
+  const ownerReady = !remote.on || (account !== undefined && (account.kind !== "azure" || remote.owner.trim() !== "") && validOwner(account.kind, remote.owner.trim() || null));
   const [shown, setShown] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
@@ -43,7 +49,8 @@ function ScaffoldForm({api, hostId, root, categories, entry, suggested, onCreate
   const submit = (event: FormEvent) => {
     event.preventDefault();
     setPending(true); setError("");
-    api.prepareScaffold({hostId, key: entry.key, values, category, ciForge: forge || null, author: {name: author.name.trim(), email: author.email.trim()}})
+    api.prepareScaffold({hostId, key: entry.key, values, category, ciForge: forge || null, author: {name: author.name.trim(), email: author.email.trim()},
+      repository: remote.on && account ? {accountId: account.id, owner: remote.owner.trim() || null, visibility: remote.visibility} : null})
       .then(setPreview, failure => setError(message(failure))).finally(() => setPending(false));
   };
   return <form className="git-stack git-ci-dispatch" aria-label={"New " + entry.scaffold.title} onSubmit={submit}>
@@ -59,6 +66,22 @@ function ScaffoldForm({api, hostId, root, categories, entry, suggested, onCreate
       <label>Commit author<input value={author.name} maxLength={200} placeholder="Name" onChange={event => setAuthor(previous => ({...previous, name: event.target.value}))}/></label>
       <label>Email<input value={author.email} maxLength={200} type="email" placeholder="name@example.org" onChange={event => setAuthor(previous => ({...previous, email: event.target.value}))}/></label>
     </div>
+    {accounts.length > 0 && <label className="git-ci-check"><input type="checkbox" checked={remote.on} onChange={event => setRemote(previous => ({...previous, on: event.target.checked}))}/>
+      <span>Create a repository on a forge and push main</span></label>}
+    {remote.on && <div className="git-row">
+      <label>Account<select value={remote.accountId} onChange={event => {
+        const next = accounts.find(item => item.id === event.target.value);
+        setRemote(previous => ({...previous, accountId: event.target.value}));
+        if (next) setForge(next.kind);
+      }}>{accounts.map(item => <option key={item.id} value={item.id}>{item.label} ({item.kind})</option>)}</select></label>
+      <label>{account?.kind === "azure" ? "Azure project" : "Owner (empty: " + (account?.username ?? "you") + ")"}
+        <input value={remote.owner} maxLength={255} placeholder={account?.kind === "gitlab" ? "group/subgroup" : account?.kind === "azure" ? "Project" : "organization"}
+          onChange={event => setRemote(previous => ({...previous, owner: event.target.value}))}/></label>
+      {account?.kind !== "azure" && <label>Visibility<select value={remote.visibility} onChange={event => setRemote(previous => ({...previous, visibility: event.target.value as "private" | "public"}))}>
+        <option value="private">Private</option><option value="public">Public</option></select></label>}
+    </div>}
+    {remote.on && remote.visibility === "public" && account?.kind !== "azure" && <p className="git-error" role="alert">Public: anyone can read the repository and its history.</p>}
+    {remote.on && !ownerReady && <p className="git-muted">{account?.kind === "azure" ? "Name the Azure project the repository goes into." : "The owner is an organization or a group path."}</p>}
     <p className="git-muted git-path">{destination ?? "The name must be a folder name: letters, digits and . _ -"}</p>
     {!built.ok ? <p className="git-error" role="alert">{built.problem}</p> : <div className="git-new-project-files">
       <ul aria-label="Files">{built.files.map(item => <li key={item.path}>
@@ -66,12 +89,12 @@ function ScaffoldForm({api, hostId, root, categories, entry, suggested, onCreate
       {file && <pre className="git-code" aria-label={"Content of " + file.path}>{file.text || "(empty)"}</pre>}
     </div>}
     {error && <p className="git-error" role="alert">{error}</p>}
-    <div className="git-row"><button type="submit" className="git-primary" disabled={pending || !built.ok || !destination || !authorReady}>
+    <div className="git-row"><button type="submit" className="git-primary" disabled={pending || !built.ok || !destination || !authorReady || !ownerReady}>
       {pending ? "Working…" : "Review project…"}</button></div>
     {preview && <ConfirmDialog title={"Create " + String(values.name)} lines={preview.lines} onClose={() => setPreview(null)}
       onConfirm={async () => {
         // The preview is spent once Confirm runs: whatever happens, the dialog closes and the form says why.
-        try { const made = await api.createScaffold(preview.id); onCreated(made.root); }
+        try { onCreated(await api.createScaffold(preview.id)); }
         catch (cause) { setError(message(cause)); }
       }}>
       <details><summary>{preview.files.length} files</summary>
@@ -82,7 +105,7 @@ function ScaffoldForm({api, hostId, root, categories, entry, suggested, onCreate
 
 /** New project: a scaffold, made into a folder of the projects folder with git init and a first commit, after a preview. */
 export function NewProject({api, hostId, root, categories, onClose, onCreated}: {api: CatalogApi; hostId: string; root: string;
-  categories: string[]; onClose(): void; onCreated(root: string): void}) {
+  categories: string[]; onClose(): void; onCreated(made: Created): void}) {
   const [view, setView] = useState<ScaffoldsView | null>(null);
   const [error, setError] = useState("");
   const [key, setKey] = useState("");
@@ -101,7 +124,7 @@ export function NewProject({api, hostId, root, categories, onClose, onCreated}: 
         <ul>{view.rejected.map(item => <li key={item.source + item.name}><strong>{item.name}</strong> ({sources[item.source]}): {item.issues.join(" ")}</li>)}</ul></details>}
       <label className="git-ci-template-pick">Scaffold<select value={key} onChange={event => setKey(event.target.value)}>
         {view.offered.map(item => <option key={item.key} value={item.key}>{item.scaffold.title}</option>)}</select></label>
-      {entry && <ScaffoldForm key={entry.key} api={api} hostId={hostId} root={root} categories={categories} entry={entry} suggested={view.suggested} onCreated={onCreated}/>}
+      {entry && <ScaffoldForm key={entry.key} api={api} hostId={hostId} root={root} categories={categories} entry={entry} suggested={view.suggested} accounts={view.accounts} onCreated={onCreated}/>}
     </>}
   </section>;
 }

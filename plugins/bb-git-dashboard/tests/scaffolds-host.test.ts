@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { scaffoldCreate } from "../src/adapters/bb/scaffold-host.ts";
+import { publishFirst, scaffoldCreate } from "../src/adapters/bb/scaffold-host.ts";
 
 let base: string;
 const git = (cwd: string, ...args: string[]) => execFileSync("git", args, {cwd, encoding: "utf8"});
@@ -67,4 +67,22 @@ test("the host too refuses a .git path of any case at any depth, and a project i
   await assert.rejects(scaffoldCreate(join(base, "projects"), "Personal/repo", "nested", files, author, "x"), {message: "INVALID_DESTINATION"});
   await assert.rejects(scaffoldCreate(join(base, "projects"), "Personal/repo/inner", "nested", files, author, "x"), {message: "INVALID_DESTINATION"});
   assert.ok(!existsSync(join(base, "projects/Personal/repo/nested")));
+});
+
+test("the first push adds origin as the plain clone address, refuses another origin, and never writes a credential", async () => {
+  const made = await scaffoldCreate(join(base, "projects"), "Personal", "pushed", files, author, "Initial");
+  const root = made.root;
+  await assert.rejects(publishFirst(root, made.identity, "https://git.example.org/octo/pushed.git", "octo", async () => { throw new Error("PUSH_FAILED"); }),
+    {message: "PUSH_FAILED"});
+  assert.equal(git(root, "remote", "get-url", "origin").trim(), "https://git.example.org/octo/pushed.git");
+  // Again with the same origin is fine; the push is what decides.
+  const head = git(root, "rev-parse", "HEAD").trim();
+  const pushed: unknown[] = [];
+  await publishFirst(root, made.identity, "https://git.example.org/octo/pushed.git", "octo", async (...args) => { pushed.push(args); });
+  assert.deepEqual(pushed, [[root, "https://git.example.org/octo/pushed.git", "octo", {kind: "push", expected: head, branch: "main"}, undefined]]);
+  assert.equal(git(root, "rev-parse", "--abbrev-ref", "main@{upstream}").trim(), "origin/main");
+  assert.equal(git(root, "rev-parse", "origin/main").trim(), head);
+  assert.doesNotMatch(readFileSync(join(root, ".git/config"), "utf8"), /@|token|password/i);
+  await assert.rejects(publishFirst(root, made.identity, "https://git.example.org/other/x.git", "octo", async () => {}), {message: "REMOTE_MISMATCH"});
+  await assert.rejects(publishFirst(root, made.identity, "https://octo:secret@git.example.org/octo/pushed.git", "octo", async () => {}), {message: "INVALID_REMOTE"});
 });

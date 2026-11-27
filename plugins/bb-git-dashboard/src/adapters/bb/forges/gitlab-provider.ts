@@ -81,6 +81,13 @@ export function gitlabProvider(account: Account, http: Http): Provider {
         checks: pipeline.id === undefined ? [] : [{name: "Pipeline #" + String(pipeline.id), state: text(pipeline.status)}],
       };
     },
+    async createRepository(spec) {
+      const namespace = spec.owner === null ? null : object((await http(api + "/namespaces/" + segment(spec.owner))).payload).id;
+      if (spec.owner !== null && typeof namespace !== "number") throw new Error("NOT_FOUND");
+      const {payload} = await http(api + "/projects", {method: "POST", body: {name: spec.name, path: spec.name, description: spec.description,
+        visibility: spec.visibility, initialize_with_readme: false, default_branch: "main", ...(namespace === null ? {} : {namespace_id: namespace})}});
+      return gitlabRepo(account, payload);
+    },
     async createFile(repo, change) {
       const {payload} = await http(project(repo) + "/repository/commits", {method: "POST", body: {
         branch: change.branch, start_sha: change.base, commit_message: change.message,

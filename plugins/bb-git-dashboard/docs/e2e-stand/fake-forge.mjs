@@ -1,8 +1,10 @@
 // HTTPS stand-in for a Gitea server (API v1) with one repository, stand/beta, and its Actions runs.
 // Requests must carry the stand token. Every write is appended to $FORGE_LOG as one JSON line.
 // Usage: node fake-forge.mjs <cert.pem> <key.pem> <port> <log>
-import { appendFileSync, readFileSync } from "node:fs";
+import { spawn, execFileSync } from "node:child_process";
+import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { createServer } from "node:https";
+import { dirname, join } from "node:path";
 
 const [cert, key, port, log] = process.argv.slice(2);
 const origin = "https://localhost:" + port;
@@ -28,6 +30,35 @@ const inbox = {created_open: [issue(3, "[ABC-12] Add greeting check", "stand", "
   created_closed: [issue(1, "Initial import", "stand", "closed", true)]};
 const pulls = {3: {mergeable: false, additions: 12, deletions: 3, head: {ref: "greeting", sha: "e".repeat(40)}},
   4: {mergeable: true, additions: 2, deletions: 2, head: {ref: "readme", sha: "f".repeat(40)}}};
+// Repositories made through the API (scaffolds.mjs): bare repositories served over HTTPS by git http-backend, push
+// allowed without a credential, next to the write log.
+const gitRoot = join(dirname(log), "git");
+const made = new Map();
+const madeRepo = name => ({...repo, id: 100 + [...made.keys()].indexOf(name), name, full_name: "stand/" + name, clone_url: origin + "/stand/" + name + ".git", private: made.get(name).private});
+function smartHttp(req, res, path) {
+  const backend = spawn("git", ["http-backend"], {env: {...process.env, GIT_PROJECT_ROOT: gitRoot, GIT_HTTP_EXPORT_ALL: "1",
+    PATH_INFO: path, REQUEST_METHOD: req.method, QUERY_STRING: new URL(req.url, origin).search.slice(1),
+    CONTENT_TYPE: req.headers["content-type"] ?? "", REMOTE_USER: "stand", REMOTE_ADDR: "127.0.0.1"}});
+  req.pipe(backend.stdin);
+  let head = Buffer.alloc(0);
+  let started = false;
+  backend.stdout.on("data", chunk => {
+    if (started) return res.write(chunk);
+    head = Buffer.concat([head, chunk]);
+    const end = head.indexOf("\r\n\r\n");
+    if (end < 0) return;
+    started = true;
+    let status = 200;
+    for (const line of head.subarray(0, end).toString("utf8").split("\r\n")) {
+      const [key, ...rest] = line.split(":");
+      if (key.toLowerCase() === "status") status = Number(rest.join(":").trim().split(" ")[0]);
+      else res.setHeader(key, rest.join(":").trim());
+    }
+    res.writeHead(status);
+    res.write(head.subarray(end + 4));
+  });
+  backend.on("close", () => res.end());
+}
 // Branches: main, and the ones a new file was committed to (ci-templates.mjs).
 const branches = {main: "a".repeat(40)};
 const json = (res, status, body) => { res.writeHead(status, {"content-type": "application/json"}); res.end(body === undefined ? "" : JSON.stringify(body)); };
@@ -36,6 +67,8 @@ createServer({cert: readFileSync(cert), key: readFileSync(key)}, (req, res) => {
   const url = new URL(req.url, origin);
   const path = url.pathname;
   if (path === "/api/v1/version") return json(res, 200, {version: "1.25.3"});
+  const smart = /^\/stand\/([a-z0-9._-]+)\.git\/(info\/refs|git-upload-pack|git-receive-pack)$/.exec(path);
+  if (smart && made.has(smart[1])) return smartHttp(req, res, path);
   if (req.headers.authorization !== "token stand-token") return json(res, 401, {message: "token required"});
   let body = "";
   req.on("data", chunk => { body += chunk; });
@@ -52,6 +85,16 @@ createServer({cert: readFileSync(cert), key: readFileSync(key)}, (req, res) => {
         return json(res, 201, {content: {path: decodeURIComponent(file[1])}, commit: {sha: "d".repeat(40), parents: [{sha: branches[input.branch]}]}});
       }
       if (req.method === "POST" && path === "/api/v1/repos/stand/beta/pulls") return json(res, 201, {number: 9});
+      if (req.method === "POST" && path === "/api/v1/user/repos") {
+        const input = JSON.parse(body);
+        if (!/^[a-z0-9._-]+$/.test(input.name) || made.has(input.name)) return json(res, 409, {message: "exists"});
+        const bare = join(gitRoot, "stand", input.name + ".git");
+        mkdirSync(bare, {recursive: true});
+        execFileSync("git", ["init", "-q", "--bare", "-b", "main", bare]);
+        execFileSync("git", ["-C", bare, "config", "http.receivepack", "true"]);
+        made.set(input.name, {private: input.private === true});
+        return json(res, 201, madeRepo(input.name));
+      }
       // Deleting one's own discussion comment (pr-parity.mjs).
       if (req.method === "DELETE" && /^\/api\/v1\/repos\/stand\/beta\/issues\/comments\/\d+$/.test(path)) return json(res, 204);
       // Pull request and issue writes of the review probe.
@@ -64,6 +107,8 @@ createServer({cert: readFileSync(cert), key: readFileSync(key)}, (req, res) => {
     // A second repository no working copy has, for the catalog's clone (catalog.mjs).
     if (path === "/api/v1/user/repos") return json(res, 200, [repo, {...repo, id: 6, name: "delta", full_name: "stand/delta", clone_url: origin + "/stand/delta.git"}]);
     if (path === r) return json(res, 200, repo);
+    const own = /^\/api\/v1\/repos\/stand\/([a-z0-9._-]+)$/.exec(path);
+    if (own && made.has(own[1])) return json(res, 200, madeRepo(own[1]));
     const named = /^\/api\/v1\/repos\/stand\/beta\/branches\/(.+)$/.exec(path);
     if (named) { const head = branches[decodeURIComponent(named[1])]; return head ? json(res, 200, {name: decodeURIComponent(named[1]), commit: {id: head}}) : json(res, 404, {message: "not found"}); }
     if (path === "/api/v1/repos/issues/search") {

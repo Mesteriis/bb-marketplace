@@ -39,7 +39,7 @@ export function CatalogPage({api, hosts}: {api: CatalogApi; hosts: Host[]}) {
   const [pulls, setPulls] = useState<PullsResult[] | null>(null);
   const [cloning, setCloning] = useState<RemoteRow | null>(null);
   const [creating, setCreating] = useState(false);
-  const [created, setCreated] = useState("");
+  const [created, setCreated] = useState<{root: string; repository: {path: string; pushed: boolean} | null; notes: string[]} | null>(null);
   // One bulk action at a time: two fetches of the same project would meet on its index lock.
   const [busy, setBusy] = useState(false);
   const load = useCallback(async (refresh: boolean) => {
@@ -68,7 +68,7 @@ export function CatalogPage({api, hosts}: {api: CatalogApi; hosts: Host[]}) {
   const failedSources = view?.sources.filter(source => !source.ok) ?? [];
 
   if (creating && view) return <NewProject api={api} hostId={hostId} root={view.root} categories={view.categories} onClose={() => setCreating(false)}
-    onCreated={root => { setCreating(false); setCreated(root); void load(false); }}/>;
+    onCreated={made => { setCreating(false); setCreated(made); void load(false); }}/>;
   return <section className="git-catalog" aria-label="Catalog">
     <div className="git-row git-catalog-toolbar">
       <h2>Catalog</h2>
@@ -76,10 +76,14 @@ export function CatalogPage({api, hosts}: {api: CatalogApi; hosts: Host[]}) {
         {hosts.map(host => <option key={host.id} value={host.id}>{host.name}</option>)}</select>}
       <input type="search" aria-label="Search the catalog" placeholder="Name, path or remote" value={query} onChange={event => setQuery(event.target.value)}/>
       <button type="button" disabled={pending} onClick={() => void load(true)}>Refresh</button>
-      <button type="button" disabled={!view} onClick={() => { setCreated(""); setCreating(true); }}>New project…</button>
+      <button type="button" disabled={!view} onClick={() => { setCreated(null); setCreating(true); }}>New project…</button>
     </div>
-    {created && <p role="status">Created <span className="git-path">{created}</span> with its first commit; it is attached in Git.
-      <button type="button" className="git-link" onClick={() => void api.open(hostId, created).catch(failure => setError(message(failure)))}>Open</button></p>}
+    {created && <div role="status">
+      <p>Created <span className="git-path">{created.root}</span> with its first commit; it is attached in Git.
+        {created.repository && <> Repository <span className="git-path">{created.repository.path}</span>{created.repository.pushed ? " has main." : " was created."}</>}
+        <button type="button" className="git-link" onClick={() => void api.open(hostId, created.root).catch(failure => setError(message(failure)))}>Open</button></p>
+      {created.notes.map(note => <p key={note} className="git-error">{note}</p>)}
+    </div>}
     {view && <p className="git-muted">Projects folder: <span className="git-path">{view.root}</span>{view.truncated ? " · the walk stopped early: some projects are missing" : ""}</p>}
     {failedSources.map(source => <p key={source.id} className="git-error" role="alert">{source.label} ({forgeName[source.kind]}) did not answer: {source.error}
       {source.count ? " · showing the " + source.count + " repositories it listed before" : ""}</p>)}

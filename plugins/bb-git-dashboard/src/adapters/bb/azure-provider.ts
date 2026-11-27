@@ -140,6 +140,14 @@ export function azureProvider(account: Account, http: Http): Provider {
       return {pull:value, diff:null, changes, comments, checks, issues};
     },
     branch,
+    async createRepository(spec) {
+      // Azure repositories live in a project and take its visibility.
+      if (spec.owner === null || [".", ".."].includes(spec.owner)) throw new Error("INVALID_INPUT");
+      const project = text(object((await http(endpoint(scope + "/_apis/projects/" + segment(spec.owner)))).payload).id);
+      if (!project) throw new Error("NOT_FOUND");
+      const {payload} = await http(endpoint(scope + "/" + segment(spec.owner) + "/_apis/git/repositories"), {method:"POST", body:{name:spec.name, project:{id:project}}});
+      return azureRepo(object(payload));
+    },
     async createFile(repo, change) {
       // A push whose ref update names the base commit as the old value starts the new branch there.
       const {payload} = await http(endpoint(repoPath(repo) + "/pushes"), {method:"POST", body:{

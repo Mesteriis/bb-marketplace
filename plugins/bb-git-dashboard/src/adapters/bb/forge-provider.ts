@@ -104,6 +104,12 @@ export function forgeProvider(account: Account, request: Http): Provider {
         ],
       };
     },
+    async createRepository(spec) {
+      const target = spec.owner === null ? "/user/repos" : "/orgs/" + segment(spec.owner) + "/repos";
+      const {payload} = await http(target, {method:"POST", body:{name:spec.name, description:spec.description,
+        private:spec.visibility === "private", auto_init:false, ...(github ? {} : {default_branch:"main"})}});
+      return forgeRepo(payload);
+    },
     async createFile(repo, change) {
       const root = forgeRepositoryPath(repo);
       const file = root + "/contents/" + change.path.split("/").map(segment).join("/");

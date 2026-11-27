@@ -65,6 +65,38 @@ try {
   check("the same name again is refused in the form and nothing is overwritten", await visible(again.getByRole("alert").filter({hasText: "DESTINATION_EXISTS"}))
     && await page.getByRole("dialog").count() === 0 && git("log", "--format=%s").split("\n").length === 1);
 
+  // 0.13.1: a repository on the Gitea stand-in, private by default, and the first push to it.
+  await page.getByRole("button", { name: "Back to the catalog" }).click();
+  await catalog.getByRole("button", { name: "New project…" }).click();
+  const pushedForm = page.getByRole("region", { name: "New project" }).getByRole("form", { name: "New Python service (uv)" });
+  await pushedForm.getByLabel("Project name (folder and package)").fill("pushed-service");
+  await pushedForm.getByLabel("Python package (import name)").fill("pushed");
+  await pushedForm.getByLabel("Commit author").fill("Stand Author");
+  await pushedForm.getByLabel("Email").fill("author@example.invalid");
+  await pushedForm.getByLabel("Create a repository on a forge and push main").check();
+  await pushedForm.getByLabel("Account").selectOption({ label: "stand (gitea)" });
+  check("a new repository is private unless chosen otherwise, and public is warned about", await pushedForm.getByLabel("Visibility").inputValue() === "private"
+    && await pushedForm.getByText("Public: anyone can read").count() === 0);
+  await pushedForm.getByLabel("Visibility").selectOption("public");
+  check("public is spelled out before anything is sent", await visible(pushedForm.getByText("Public: anyone can read the repository and its history.")));
+  await pushedForm.getByLabel("Visibility").selectOption("private");
+  const writesBefore = readFileSync(process.env.STAND + "/forge/writes.log", "utf8").split("\n").filter(Boolean).length;
+  await pushedForm.getByRole("button", { name: "Review project…" }).click();
+  const pushDialog = page.getByRole("dialog");
+  check("the preview names the account, the repository and its visibility", await visible(pushDialog.getByText(/^New repository · stand \(gitea\) · stand\/pushed-service · private · main pushed/)));
+  await pushDialog.getByRole("button", { name: "Confirm" }).click();
+  check("the repository was made and main pushed, with nothing left to do", await visible(page.getByText(/Repository stand\/pushed-service has main\./), 60000)
+    && await catalog.locator(".git-error").count() === 0);
+  const pushedRoot = process.env.STAND + "/home/projects/pushed-service";
+  const pushedGit = (...args) => execFileSync("git", ["-C", pushedRoot, ...args], {encoding: "utf8"}).trim();
+  const bare = process.env.STAND + "/forge/git/stand/pushed-service.git";
+  check("the forge has main at the local head", execFileSync("git", ["-C", bare, "rev-parse", "main"], {encoding: "utf8"}).trim() === pushedGit("rev-parse", "HEAD"));
+  check("origin is the plain clone address and main follows it; no credential in the config", /^https:\/\/localhost:\d+\/stand\/pushed-service\.git$/.test(pushedGit("remote", "get-url", "origin"))
+    && pushedGit("rev-parse", "--abbrev-ref", "main@{upstream}") === "origin/main" && !/@|token|password/i.test(readFileSync(pushedRoot + "/.git/config", "utf8")));
+  const created = readFileSync(process.env.STAND + "/forge/writes.log", "utf8").split("\n").filter(Boolean).slice(writesBefore).map(line => JSON.parse(line));
+  check("the repository was asked for once, private", created.length === 1 && created[0].path === "/api/v1/user/repos" && created[0].body.private === true
+    && created[0].body.name === "pushed-service", created);
+
   await page.setViewportSize({ width: 768, height: 900 });
   await page.waitForTimeout(300);
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);

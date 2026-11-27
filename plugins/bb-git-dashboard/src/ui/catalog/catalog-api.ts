@@ -25,5 +25,5 @@ export type CatalogApi = {
   /** The server's render of a scaffold and the preview of the project it makes. */
   prepareScaffold(request: ScaffoldRequest): Promise<{id: string; lines: string[]; files: {path: string; bytes: number}[]}>;
   /** Makes the prepared project; it is attached as a working copy. */
-  createScaffold(previewId: string): Promise<{copyId: string; root: string}>;
+  createScaffold(previewId: string): Promise<{copyId: string; root: string; repository: {path: string; pushed: boolean} | null; notes: string[]}>;
 };

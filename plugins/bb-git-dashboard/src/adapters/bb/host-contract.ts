@@ -65,6 +65,8 @@ export const hostContract = defineRpcContract({
     files:z.array(z.object({path:z.string().min(1).max(200),text:z.string().max(2*1024*1024),executable:z.boolean()})).max(400),
     author:z.object({name:z.string().trim().min(1).max(200),email:z.string().trim().min(3).max(200)}),message:z.string().min(1).max(200)}),
     output:rootResponse},
+  /** The first push of a project made from a scaffold to its new forge repository (HTTPS, the system credential helper). */
+  scaffoldPublish: {input:z.object({root:path,identity,clone,username}),output:z.discriminatedUnion("ok",[failure,z.object({ok:z.literal(true)})])},
   reviewFiles: {input:z.object({root:path,identity,query:z.string().max(200)}),
     output:z.discriminatedUnion("ok",[failure,z.object({ok:z.literal(true),paths:z.array(z.string()),more:z.boolean()})])},
   /** Reverts an uncommitted file, or hunks of it, while its change is still the one shown (`changeRevision`). */

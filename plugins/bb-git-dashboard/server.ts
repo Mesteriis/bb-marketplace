@@ -12,6 +12,7 @@ import { projectCatalog } from "./src/adapters/bb/project-catalog.ts";
 import { catalogHandlers } from "./src/adapters/bb/catalog-rpc.ts";
 import { ciTemplateHandlers } from "./src/adapters/bb/ci-templates-rpc.ts";
 import { scaffoldHandlers } from "./src/adapters/bb/scaffold-rpc.ts";
+import { provider } from "./src/adapters/bb/provider.ts";
 import { ciHandlers } from "./src/adapters/bb/ci-rpc.ts";
 import { historyHandlers } from "./src/adapters/bb/history-rpc.ts";
 import { codeReviewHandlers } from "./src/adapters/bb/code-review-rpc.ts";
@@ -136,7 +137,21 @@ export default function plugin(bb: BbPluginApi) {
     },
     prepare: request => remote.prepare(request),
   });
-  const scaffolds = scaffoldHandlers(bb, {rules: catalog.rules, saveCopy: (hostId, root, identity, metadata) => saveCopy(hostId, root, identity, metadata)});
+  const scaffolds = scaffoldHandlers(bb, {
+    rules: catalog.rules,
+    saveCopy: (hostId, root, identity, metadata) => saveCopy(hostId, root, identity, metadata),
+    accounts: remote.accountList,
+    async api(accountId) {
+      const {account, token} = await remote.credential(accountId);
+      return {account, api: provider(account, token)};
+    },
+    async link(copy, accountId, path) {
+      const {target} = await remote.lookup(accountId, path);
+      await remote.matches(target, copy);
+      await kv.set(linkKey(copy), target);
+      broadcast(copy.id);
+    },
+  });
   const validatedProject = async (projectId:string | undefined) =>
     !projectId || (await bb.sdk.projects.list()).some(project => project.id === projectId);
   // Previously attached copies can be grouped after the host verifies the stored identity.

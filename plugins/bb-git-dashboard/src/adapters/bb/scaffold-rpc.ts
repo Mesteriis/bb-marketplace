@@ -4,6 +4,8 @@ import { scaffoldCi } from "../../core/scaffolds/ci.ts";
 import { offerScaffolds, ownScaffolds, type OwnScaffold } from "../../core/scaffolds/catalog.ts";
 import type { ScaffoldRequest } from "../../core/scaffolds/contract.ts";
 import { buildScaffold, type ScaffoldOutput } from "../../core/scaffolds/model.ts";
+import { repositoryLine, validOwner, type RepositoryChoice } from "../../core/scaffolds/repository.ts";
+import type { Account, Provider } from "../../core/providers.ts";
 import { CodedError, failureFor, type Copy } from "../../core/workspace.ts";
 import { builtinScaffolds } from "../../templates/scaffolds/index.ts";
 import { hostContract } from "./host-contract.ts";
@@ -13,9 +15,15 @@ type Deps = {
   /** The projects folder as set. */
   rules(): Promise<{root: string}>;
   saveCopy(hostId: string, root: string, identity: string, metadata: Pick<Copy, "repository" | "repositoryName">): Promise<Copy>;
+  accounts(): Promise<Account[]>;
+  /** The provider API of an account. */
+  api(accountId: string): Promise<{account: Account; api: Provider}>;
+  /** Remembers a provider repository by path and links the copy to it, as a connected copy is. */
+  link(copy: Copy, accountId: string, path: string): Promise<void>;
 };
 type Prepared = {hostId: string; projectsRoot: string; category: string; name: string; files: ScaffoldOutput[];
-  author: ScaffoldRequest["author"]; message: string; expires: number};
+  author: ScaffoldRequest["author"]; message: string; expires: number; description: string;
+  repository: (RepositoryChoice & {accountId: string; stamp: string}) | null};
 const ttl = 10 * 60_000;
 
 /** New projects from scaffolds: what is offered, a preview of what would be written, and the project made after confirmation. */
@@ -51,7 +59,8 @@ export function scaffoldHandlers(bb: BbPluginApi, deps: Deps) {
     catch (error) { return failureFor(error, "GIT_REJECTED"); }
   };
   return {
-    scaffoldsView: handle(async ({hostId}: {hostId: string}) => ({...await offer(hostId), suggested: {year: year()}})),
+    scaffoldsView: handle(async ({hostId}: {hostId: string}) => ({...await offer(hostId), suggested: {year: year()},
+      accounts: (await deps.accounts()).map(({id, label, kind, username}) => ({id, label, kind, username}))})),
     scaffoldPrepare: handle(async (input: ScaffoldRequest) => {
       const {offered} = await offer(input.hostId);
       const entry = offered.find(item => item.key === input.key) ?? (() => { throw new Error("NOT_FOUND"); })();
@@ -61,6 +70,15 @@ export function scaffoldHandlers(bb: BbPluginApi, deps: Deps) {
       const all = ci ? [...files.filter(file => file.path !== ci.path), {path: ci.path, text: ci.text, executable: false}]
         .sort((a, b) => a.path < b.path ? -1 : 1) : files;
       const {root} = await deps.rules();
+      // The repository, when one is asked for: its account must exist and the owner fit its forge.
+      let repository: Prepared["repository"] = null;
+      let repositoryText: string | null = null;
+      if (input.repository) {
+        const account = (await deps.accounts()).find(item => item.id === input.repository!.accountId) ?? (() => { throw new Error("ACCOUNT_UNCONFIGURED"); })();
+        if (!validOwner(account.kind, input.repository.owner)) throw new CodedError("INVALID_INPUT", "the owner does not fit a " + account.kind + " repository");
+        repository = {...input.repository, stamp: JSON.stringify(account)};
+        repositoryText = repositoryLine(account, input.repository, name) + " · main pushed with the account's credential from the Keychain";
+      }
       const now = Date.now();
       // A new preview of the same place replaces the earlier one; expired ones go.
       for (const [key, record] of previews) if (record.expires < now || (record.hostId === input.hostId && record.projectsRoot === root
@@ -68,7 +86,8 @@ export function scaffoldHandlers(bb: BbPluginApi, deps: Deps) {
       if (previews.size >= 64) throw new Error("REPO_LIMIT");
       const id = randomUUID();
       const message = "Initial commit from the " + entry.scaffold.title + " scaffold";
-      previews.set(id, {hostId: input.hostId, projectsRoot: root, category: input.category, name, files: all, author: input.author, message, expires: now + ttl});
+      previews.set(id, {hostId: input.hostId, projectsRoot: root, category: input.category, name, files: all, author: input.author, message,
+        expires: now + ttl, description: String(values.description), repository});
       return {preview: {id, expires: new Date(now + ttl).toISOString(), files: all.map(file => ({path: file.path, bytes: Buffer.byteLength(file.text)})),
         lines: [
           entry.scaffold.title + " · " + all.length + " files",
@@ -76,6 +95,7 @@ export function scaffoldHandlers(bb: BbPluginApi, deps: Deps) {
           ci ? "CI · " + ci.path + " (" + ci.template + ")" : "No CI file",
           "git init on main · first commit by " + input.author.name + " <" + input.author.email + ">",
           message,
+          ...(repositoryText ? [repositoryText] : ["No repository on a forge"]),
         ]}};
     }),
     scaffoldCreate: handle(async ({previewId}: {previewId: string}) => {
@@ -95,7 +115,32 @@ export function scaffoldHandlers(bb: BbPluginApi, deps: Deps) {
         {...(made.repository ? {repository: made.repository} : {}), ...(made.repositoryName ? {repositoryName: made.repositoryName} : {})})
         .catch(() => { throw new CodedError("OUTCOME_UNKNOWN", "the project was made at " + made.root + " but not attached: open it from the catalog"); });
       bb.realtime.publish("git-workspace-changed", {copyId: copy.id});
-      return {copyId: copy.id, root: made.root};
+      if (!record.repository) return {copyId: copy.id, root: made.root, repository: null, notes: []};
+      // The project is made: whatever happens with the repository now, it stays, and the answer says what is left.
+      const choice = record.repository;
+      const code = (error: unknown) => failureFor(error, "OUTCOME_UNKNOWN").code;
+      let created: Awaited<ReturnType<Provider["createRepository"]>>;
+      let account: Account;
+      try {
+        const found = await deps.api(choice.accountId);
+        if (JSON.stringify(found.account) !== choice.stamp) throw new Error("PREVIEW_EXPIRED");
+        account = found.account;
+        created = await found.api.createRepository({owner: choice.owner, name: record.name, description: record.description, visibility: choice.visibility});
+      } catch (error) {
+        return {copyId: copy.id, root: made.root, repository: null,
+          notes: ["The project was made, but the repository was not created (" + code(error) + "). Create it on the forge, then push main from Git."]};
+      }
+      const notes: string[] = [];
+      const pushed = await host.call("scaffoldPublish", {root: made.root, identity: made.identity, clone: created.clone, username: account.username},
+        {hostId: record.hostId, timeoutMs: 120_000}).catch(() => failureFor(undefined, "GIT_RESULT_UNKNOWN"));
+      if (!pushed.ok) notes.push("Repository " + created.path + " was created empty: main was not pushed (" + pushed.code +
+        "). Put the account's HTTPS credential in the Keychain, then push main from Git.");
+      // Linking checks the copy's origin, which the push step set.
+      await deps.link(copy, choice.accountId, created.path).catch((error: unknown) => {
+        notes.push("Repository " + created.path + " was created but not linked to the copy (" + code(error) + "); link it in the repository panel.");
+      });
+      bb.realtime.publish("git-workspace-changed", {copyId: copy.id});
+      return {copyId: copy.id, root: made.root, repository: {path: created.path, pushed: pushed.ok}, notes};
     }),
   };
 }
