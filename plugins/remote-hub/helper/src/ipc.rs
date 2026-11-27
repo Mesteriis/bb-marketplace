@@ -23,6 +23,8 @@ use std::ffi::CString;
 /// reading stdin while it is full (backpressure) instead of buffering without
 /// limit.
 const OUTBOX_CAP: usize = 4 * 1024 * 1024;
+/// Room an SFTP channel's output needs before any of it is read: one stream frame and the control frame that ends a channel.
+const SFTP_RESERVE: usize = crate::sftp::READ_CHUNK + 8 * 1024;
 /// Headroom reserved so a single control response (e.g. a close's drained
 /// tail) always fits without crossing OUTBOX_CAP.
 const OUTBOX_RESERVE: usize = 512 * 1024;
@@ -144,6 +146,8 @@ fn request_id(req: &Request) -> Option<u64> {
         | Request::ExecRead { id, .. }
         | Request::ExecCancel { id, .. }
         | Request::ExecForget { id, .. }
+        | Request::SftpOpen { id, .. }
+        | Request::SftpClose { id, .. }
         | Request::SshPromptAnswer { id, .. }
         | Request::OpenRdp { id, .. }
         | Request::OpenPve { id, .. }
@@ -437,6 +441,63 @@ fn resolve_rdp_credential(
     }
 }
 
+/// What a run with nobody to answer questions needs before ssh starts (a remote command, an SFTP channel).
+struct UnattendedSsh {
+    /// The saved credential, what it must be bound to, and the one prompt it answers.
+    askpass_plan: Option<(String, crate::binding::Bind, String)>,
+    /// The private known_hosts file ssh reads; removed when the run ends.
+    copy: Option<crate::known_hosts::SessionCopy>,
+    /// Options to put before the "--" that precedes the host.
+    options: Vec<String>,
+}
+
+/// Checks the saved credential against what the argv is going to do and pins the host key to what the owner already
+/// confirmed. An unknown host is never decided here: the answer is `host_key_unknown`. Err is the encoded refusal.
+fn prepare_unattended_ssh(id: u64, real: bool, program: &str, plain: &[String], askpass: &Option<protocol::AskpassSpec>, current_exe: &str) -> Result<UnattendedSsh, Vec<u8>> {
+    let mut askpass_plan: Option<(String, crate::binding::Bind, String)> = None;
+    if let Some(spec) = askpass {
+        if !valid_credential_ref(&spec.credential_ref) {
+            return Err(rdp_error(id, "invalid_credential_ref", "not a Remote Hub credential reference".to_string()));
+        }
+        let Ok(facts) = askpass_session_facts(program, plain, spec) else {
+            return Err(rdp_error(id, "ssh_option_rejected", "a run with a saved secret needs -F none, one fixed method and its user or key".to_string()));
+        };
+        let bound = match keychain_child(current_exe, "bind", &spec.credential_ref, None, None).and_then(keychain_ok) {
+            Ok(reply) => reply.bind,
+            Err(refusal) => return Err(protocol::encode_response(&refusal.into_response(id))),
+        };
+        let required = required_bind(&facts);
+        if bound.as_ref() != Some(&required) {
+            return Err(protocol::encode_response(&CredentialRefusal::Mismatch.into_response(id)));
+        }
+        askpass_plan = Some((spec.credential_ref.clone(), required, facts.expected_prompt()));
+    }
+    // Host keys: only a key the owner already confirmed counts.
+    let mut copy: Option<crate::known_hosts::SessionCopy> = None;
+    let mut options = Vec::new();
+    if (real || crate::known_hosts::test_overlay_configured()) && !plain.iter().any(|a| a.starts_with("UserKnownHostsFile=")) {
+        let lines = crate::known_hosts::read_lines().unwrap_or_default();
+        let facts = crate::ssh_args::askpass_facts(plain);
+        let known = match &facts {
+            Ok(f) => crate::known_hosts::knows_endpoint(&lines, &f.host, f.port),
+            Err(_) => false,
+        };
+        if real && !known {
+            return Err(rdp_error(id, "host_key_unknown", "this server's host key has not been confirmed by the owner yet".to_string()));
+        }
+        if real {
+            match crate::known_hosts::session_copy().and_then(|c| crate::known_hosts::ssh_known_hosts_option(&c.path).map(|o| (c, o))) {
+                Ok((c, option)) => {
+                    options = exec_known_hosts_options(&option);
+                    copy = Some(c);
+                }
+                Err(e) => return Err(protocol::encode_response(&known_hosts_error(id, e))),
+            }
+        }
+    }
+    Ok(UnattendedSsh { askpass_plan, copy, options })
+}
+
 /// What an askpass session is going to do, from its own argv; with test-hooks a free-form program
 /// (a fake ssh) may state it instead.
 fn askpass_session_facts(program: &str, argv: &[String], spec: &protocol::AskpassSpec) -> Result<crate::ssh_args::SshFacts, String> {
@@ -568,48 +629,14 @@ fn handle(
             if !(1_000..=600_000).contains(&timeout_ms) || !(1_024..=4 * 1024 * 1024).contains(&max_bytes) {
                 return Ok(rdp_error(id, "exec_limits_rejected", "timeout or output bound out of range".to_string()));
             }
+            let prepared = match prepare_unattended_ssh(id, real, &program, &plain, &askpass, current_exe) {
+                Ok(prepared) => prepared,
+                Err(answer) => return Ok(answer),
+            };
             let mut argv = argv;
-            let mut askpass_plan: Option<(String, crate::binding::Bind, String)> = None;
-            if let Some(spec) = &askpass {
-                if !valid_credential_ref(&spec.credential_ref) {
-                    return Ok(rdp_error(id, "invalid_credential_ref", "not a Remote Hub credential reference".to_string()));
-                }
-                let Ok(facts) = askpass_session_facts(&program, &plain, spec) else {
-                    return Ok(rdp_error(id, "ssh_option_rejected", "a run with a saved secret needs -F none, one fixed method and its user or key".to_string()));
-                };
-                let bound = match keychain_child(current_exe, "bind", &spec.credential_ref, None, None).and_then(keychain_ok) {
-                    Ok(reply) => reply.bind,
-                    Err(refusal) => return Ok(protocol::encode_response(&refusal.into_response(id))),
-                };
-                let required = required_bind(&facts);
-                if bound.as_ref() != Some(&required) {
-                    return Ok(protocol::encode_response(&CredentialRefusal::Mismatch.into_response(id)));
-                }
-                askpass_plan = Some((spec.credential_ref.clone(), required, facts.expected_prompt()));
-            }
-            // Host keys: only a key the owner already confirmed counts. An unknown host is never decided by a run.
-            let mut copy: Option<crate::known_hosts::SessionCopy> = None;
-            if (real || crate::known_hosts::test_overlay_configured()) && !plain.iter().any(|a| a.starts_with("UserKnownHostsFile=")) {
-                let lines = crate::known_hosts::read_lines().unwrap_or_default();
-                let facts = crate::ssh_args::askpass_facts(&plain);
-                let known = match &facts {
-                    Ok(f) => crate::known_hosts::knows_endpoint(&lines, &f.host, f.port),
-                    Err(_) => false,
-                };
-                if real && !known {
-                    return Ok(rdp_error(id, "host_key_unknown", "this server's host key has not been confirmed by the owner yet".to_string()));
-                }
-                if real {
-                    match crate::known_hosts::session_copy().and_then(|c| crate::known_hosts::ssh_known_hosts_option(&c.path).map(|o| (c, o))) {
-                        Ok((c, option)) => {
-                            let at = argv.len().saturating_sub(3); // before the "--" that precedes the host and the command
-                            argv.splice(at..at, exec_known_hosts_options(&option));
-                            copy = Some(c);
-                        }
-                        Err(e) => return Ok(protocol::encode_response(&known_hosts_error(id, e))),
-                    }
-                }
-            }
+            let at = argv.len().saturating_sub(3); // before the "--" that precedes the host and the command
+            argv.splice(at..at, prepared.options);
+            let (askpass_plan, copy) = (prepared.askpass_plan, prepared.copy);
             let spec = crate::exec::ExecSpec { program, argv, env: env.into_iter().collect(), timeout: std::time::Duration::from_millis(timeout_ms), max_bytes };
             match manager.exec_start(spec, askpass_plan, current_exe, copy) {
                 Ok(exec_id) => Ok(protocol::encode_response(&Response::ExecStarted { id, exec_id })),
@@ -617,6 +644,58 @@ fn handle(
                 Err(crate::exec::ExecError::Spawn(_)) => Ok(rdp_error(id, "exec_spawn_failed", "the command could not be started".to_string())),
             }
         }
+        Request::SftpOpen { id, program, argv, env, askpass } => {
+            let rejected = || rdp_error(id, "ssh_option_rejected", "sftp.open carries a disallowed program or option".to_string());
+            let real = program == "/usr/bin/ssh";
+            if !real && !cfg!(feature = "test-hooks") {
+                return Ok(rejected());
+            }
+            let mut final_argv = argv.clone();
+            let (mut askpass_plan, mut copy) = (None, None);
+            if real {
+                let Ok(plain) = crate::ssh_args::split_sftp_argv(&argv).and_then(|plain| crate::ssh_args::validate_ssh_spawn(&program, &plain, &env).map(|()| plain)) else {
+                    return Ok(rejected());
+                };
+                let mut options: Vec<String> = Vec::new();
+                if askpass.is_some() {
+                    let prepared = match prepare_unattended_ssh(id, real, &program, &plain, &askpass, current_exe) {
+                        Ok(prepared) => prepared,
+                        Err(answer) => return Ok(answer),
+                    };
+                    options = prepared.options;
+                    askpass_plan = prepared.askpass_plan;
+                    copy = prepared.copy;
+                } else {
+                    if !crate::ssh_args::sftp_agent_argv_ok(&plain) {
+                        return Ok(rejected());
+                    }
+                    for o in crate::ssh_args::SFTP_AGENT_OPTIONS {
+                        options.push("-o".to_string());
+                        options.push(o.to_string());
+                    }
+                }
+                for o in crate::ssh_args::SFTP_COMMON_OPTIONS {
+                    options.push("-o".to_string());
+                    options.push(o.to_string());
+                }
+                final_argv = crate::ssh_args::sftp_final_argv(&argv, &options);
+            } else if askpass.is_some() {
+                // A fake ssh of a test build: the same credential checks, the argv as given.
+                let prepared = match prepare_unattended_ssh(id, real, &program, &argv, &askpass, current_exe) {
+                    Ok(prepared) => prepared,
+                    Err(answer) => return Ok(answer),
+                };
+                askpass_plan = prepared.askpass_plan;
+                copy = prepared.copy;
+            }
+            let spec = crate::sftp::SftpSpec { program, argv: final_argv, env: env.into_iter().collect() };
+            match manager.sftp_start(spec, askpass_plan, current_exe, copy) {
+                Ok(sftp_id) => Ok(protocol::encode_response(&Response::SftpOpened { id, sftp_id })),
+                Err(crate::sftp::SftpError::TooMany) => Ok(rdp_error(id, "too_many_channels", "too many SFTP channels are open".to_string())),
+                Err(crate::sftp::SftpError::Spawn(_)) => Ok(rdp_error(id, "sftp_spawn_failed", "the channel could not be started".to_string())),
+            }
+        }
+        Request::SftpClose { id, sftp_id } => Ok(if manager.sftp.close(sftp_id) { protocol::encode_response(&Response::SftpClosing { id }) } else { rdp_error(id, "unknown_sftp", format!("no channel {sftp_id}")) }),
         Request::ExecRead { id, exec_id, stdout_from, stderr_from, max } => Ok(match manager.exec.read(exec_id, stdout_from, stderr_from, max.min(1 << 20)) {
             Some(snap) => exec_state(id, exec_id, snap),
             None => rdp_error(id, "unknown_exec", format!("no run {exec_id}")),
@@ -1550,6 +1629,7 @@ enum PollRole {
     Rdp(u32),
     Pve(u32),
     Askpass,
+    Sftp,
 }
 
 pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
@@ -1674,6 +1754,13 @@ pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
             fds.push(pollfd(pfd, events));
         }
 
+        // SFTP channels: their pipes only wake the loop; the bytes move in the pump below.
+        let sftp_room = outbox.len() + SFTP_RESERVE <= OUTBOX_CAP;
+        for (sfd, events) in guard.manager.sftp.poll_fds(sftp_room) {
+            roles.push(PollRole::Sftp);
+            fds.push(pollfd(sfd, events));
+        }
+
         // The askpass socket and its open requests (stage 3b-2).
         for afd in guard.manager.askpass_fds() {
             roles.push(PollRole::Askpass);
@@ -1745,7 +1832,7 @@ pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
                         crate::pve::glue::relay_frames(&mut guard.pve, &mut outbox, &current_exe, *pid_, frames);
                     }
                 }
-                PollRole::Stdin | PollRole::Askpass => {}
+                PollRole::Stdin | PollRole::Askpass | PollRole::Sftp => {}
             }
         }
 
@@ -1768,6 +1855,12 @@ pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
                 | crate::askpass::BrokerEvent::CredentialFailed { session_id, .. }
                 | crate::askpass::BrokerEvent::PromptRefused { session_id, .. } => Some(*session_id),
             };
+            if let Some(sid) = exec_id.filter(|sid| guard.manager.sftp.contains(*sid)) {
+                if let Some((_, kind)) = exec_note {
+                    guard.manager.sftp.note_refusal(sid, kind);
+                }
+                continue;
+            }
             if let Some(eid) = exec_id.filter(|eid| guard.manager.exec.contains(*eid)) {
                 if let Some((_, kind)) = exec_note {
                     guard.manager.exec.note_refusal(eid, kind);
@@ -1791,6 +1884,16 @@ pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
         for f in guard.manager.exec_pump() {
             let refused = guard.manager.exec.refused(f.id);
             outbox.extend(protocol::encode_response(&Response::ExecFinished { exec_id: f.id, exit_code: f.exit_code, signal: f.signal, reason: f.reason, refused }));
+        }
+
+        // SFTP channels: what the client sent goes in, what the server wrote goes out while the outbox has room.
+        let sftp_budget = (OUTBOX_CAP.saturating_sub(outbox.len())).saturating_sub(SFTP_RESERVE);
+        let (sftp_out, sftp_closed) = guard.manager.sftp_pump(sftp_budget);
+        for o in sftp_out {
+            outbox.extend(protocol::encode_stream(o.id, o.seq, &o.data));
+        }
+        for c in sftp_closed {
+            outbox.extend(protocol::encode_response(&Response::SftpClosed { sftp_id: c.id, exit_code: c.exit_code, signal: c.signal, reason: c.reason, refused: c.refused, stderr: c.stderr }));
         }
 
         guard.manager.merge_host_keys_pending();
@@ -1889,7 +1992,10 @@ pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
                 Ok(Some(IncomingFrame::Stream { session_id, data })) => {
                     // Binary terminal input; overflow is dropped (backpressure). Ids come from one allocator, so an id belongs
                     // to the PTY manager or to the PVE manager (a Proxmox terminal), never both.
-                    if guard.pve.contains(session_id) {
+                    if guard.manager.sftp.contains(session_id) {
+                        // An SFTP channel: protocol bytes, queued whole (a channel that overflows is closed, never thinned).
+                        let _ = guard.manager.sftp.write(session_id, &data);
+                    } else if guard.pve.contains(session_id) {
                         // A graphical console takes raw RFB only through `pve.vnc_input`.
                         if !guard.pve.is_vnc(session_id) {
                             let _ = guard.pve.enqueue_input_from(session_id, "human", &data);

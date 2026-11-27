@@ -120,6 +120,43 @@ fn production_rejects_freeform_and_misshapen_exec_runs_and_needs_a_saved_credent
     let _ = child.wait();
 }
 
+/// An SFTP channel in a production build: only `/usr/bin/ssh` in the strict session shape with `-T` and no command, and
+/// nothing that weakens the host-key check. (Refusals only: a channel that starts would read the real ssh files.)
+#[test]
+fn production_rejects_freeform_and_misshapen_sftp_channels_and_any_weaker_host_key_check() {
+    let (mut child, mut stdin, mut stdout) = start();
+    send_req(&mut stdin, &Request::Hello { protocol: PROTOCOL_VERSION });
+    assert!(matches!(read_response(&mut stdout), Response::HelloAck { .. }));
+    let cases: Vec<(&str, Vec<&str>)> = vec![
+        ("/bin/sh", vec!["sh", "-c", "id"]),
+        ("/usr/libexec/sftp-server", vec!["sftp-server"]),
+        ("/usr/bin/ssh", vec!["ssh", "-tt", "--", "h"]),
+        ("/usr/bin/ssh", vec!["ssh", "-T", "--", "h", "sftp"]),
+        ("/usr/bin/ssh", vec!["ssh", "-T", "--", "h", "id"]),
+        ("/usr/bin/ssh", vec!["ssh", "-T", "-s", "--", "h"]),
+        ("/usr/bin/ssh", vec!["ssh", "-T", "h"]),
+        ("/usr/bin/ssh", vec!["ssh", "-T", "-o", "StrictHostKeyChecking=no", "--", "h"]),
+        ("/usr/bin/ssh", vec!["ssh", "-T", "-o", "StrictHostKeyChecking=accept-new", "--", "h"]),
+        ("/usr/bin/ssh", vec!["ssh", "-T", "-o", "UserKnownHostsFile=/dev/null", "--", "h"]),
+        ("/usr/bin/ssh", vec!["ssh", "-T", "-o", "ProxyCommand=evil", "--", "h"]),
+        ("/usr/bin/ssh", vec!["ssh", "-T", "-oProxyCommand=evil", "--", "h"]),
+        // without a saved secret the caller chooses neither a host-key file nor a method, and -F none has no meaning
+        ("/usr/bin/ssh", vec!["ssh", "-T", "-o", "UserKnownHostsFile=/tmp/known", "--", "h"]),
+        ("/usr/bin/ssh", vec!["ssh", "-T", "-l", "u", "-o", "PreferredAuthentications=password", "--", "h"]),
+        ("/usr/bin/ssh", vec!["ssh", "-T", "-F", "none", "--", "h"]),
+    ];
+    for (i, (program, argv)) in cases.into_iter().enumerate() {
+        send_req(&mut stdin, &Request::SftpOpen { id: 1 + i as u64, program: program.to_string(), argv: argv.iter().map(|s| s.to_string()).collect(), env: HashMap::new(), askpass: None });
+        match read_response(&mut stdout) {
+            Response::Error { code, .. } => assert_eq!(code, "ssh_option_rejected", "case {i}"),
+            other => panic!("case {i}: expected a refusal, got {other:?}"),
+        }
+    }
+    drop(stdin);
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 /// The keychain test hooks (a keychain chosen by path, created on demand) exist
 /// only in test-hooks builds: the production binary has no such string, so no
 /// environment variable can point it at another keychain. (Not exercised by

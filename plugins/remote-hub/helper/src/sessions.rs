@@ -110,6 +110,7 @@ pub struct SessionManager {
     /// Remote commands (stage 4b-2): ids come from the same allocator as sessions.
     pub(crate) exec: crate::exec::ExecManager,
     exec_copies: HashMap<u32, crate::known_hosts::SessionCopy>,
+    pub(crate) sftp: crate::sftp::SftpManager,
 }
 
 /// How long a first-use hold lasts at most: long enough for a person to read a host-key question.
@@ -324,6 +325,7 @@ impl SessionManager {
             endpoint_holds: HashMap::new(),
             exec: crate::exec::ExecManager::new(),
             exec_copies: HashMap::new(),
+            sftp: crate::sftp::SftpManager::new(),
         }
     }
 
@@ -337,27 +339,7 @@ impl SessionManager {
         copy: Option<crate::known_hosts::SessionCopy>,
     ) -> Result<u32, crate::exec::ExecError> {
         let id = self.ids.next().ok_or(crate::exec::ExecError::Spawn(0))?;
-        let mut nonce = None;
-        if askpass.is_some() {
-            if self.askpass.is_none() {
-                self.askpass = Some(crate::askpass::Broker::new(helper_exe).map_err(|e| crate::exec::ExecError::Spawn(e.raw_os_error().unwrap_or(0)))?);
-            }
-            let broker = self.askpass.as_mut().expect("just created");
-            let (n, env) = broker.prepare();
-            nonce = Some(n);
-            #[cfg(feature = "test-hooks")]
-            let mut env = env;
-            #[cfg(feature = "test-hooks")]
-            for key in ["REMOTE_HUB_KEYCHAIN_PATH", "REMOTE_HUB_ASKPASS_UI_TIMEOUT_MS"] {
-                if let Ok(value) = std::env::var(key) {
-                    env.push((key.to_string(), value));
-                }
-            }
-            for (k, v) in env {
-                spec.env.retain(|(ek, _)| *ek != k);
-                spec.env.push((k, v));
-            }
-        }
+        let nonce = self.unattended_askpass_env(askpass.is_some(), helper_exe, &mut spec.env).map_err(crate::exec::ExecError::Spawn)?;
         match self.exec.start(id, spec) {
             Ok(()) => {
                 if let (Some(n), Some((reference, bind, expected))) = (nonce, askpass) {
@@ -382,6 +364,82 @@ impl SessionManager {
                 Err(e)
             }
         }
+    }
+
+    /// Prepares the askpass of a run nobody watches: creates the broker if needed and puts its variables into `env`.
+    /// Returns the nonce to register the started program under. Err is an errno.
+    fn unattended_askpass_env(&mut self, wanted: bool, helper_exe: &str, env: &mut Vec<(String, String)>) -> Result<Option<String>, i32> {
+        if !wanted {
+            return Ok(None);
+        }
+        if self.askpass.is_none() {
+            self.askpass = Some(crate::askpass::Broker::new(helper_exe).map_err(|e| e.raw_os_error().unwrap_or(0))?);
+        }
+        let broker = self.askpass.as_mut().expect("just created");
+        let (n, vars) = broker.prepare();
+        #[cfg(feature = "test-hooks")]
+        let mut vars = vars;
+        #[cfg(feature = "test-hooks")]
+        for key in ["REMOTE_HUB_KEYCHAIN_PATH", "REMOTE_HUB_ASKPASS_UI_TIMEOUT_MS"] {
+            if let Ok(value) = std::env::var(key) {
+                vars.push((key.to_string(), value));
+            }
+        }
+        for (k, v) in vars {
+            env.retain(|(ek, _)| *ek != k);
+            env.push((k, v));
+        }
+        Ok(Some(n))
+    }
+
+    /// Starts an SFTP channel under a fresh id, with the same askpass and host-key rules as a remote command.
+    pub fn sftp_start(
+        &mut self,
+        mut spec: crate::sftp::SftpSpec,
+        askpass: Option<(String, crate::binding::Bind, String)>,
+        helper_exe: &str,
+        copy: Option<crate::known_hosts::SessionCopy>,
+    ) -> Result<u32, crate::sftp::SftpError> {
+        let id = self.ids.next().ok_or(crate::sftp::SftpError::Spawn(0))?;
+        let nonce = self.unattended_askpass_env(askpass.is_some(), helper_exe, &mut spec.env).map_err(crate::sftp::SftpError::Spawn)?;
+        match self.sftp.start(id, spec) {
+            Ok(()) => {
+                if let (Some(n), Some((reference, bind, expected))) = (nonce, askpass) {
+                    let pid = self.sftp.pid(id).unwrap_or(0);
+                    if let Some(broker) = self.askpass.as_mut() {
+                        broker.register(&n, id, pid, &reference, bind, &expected);
+                        broker.set_refuse(id);
+                    }
+                }
+                if let Some(c) = copy {
+                    self.exec_copies.insert(id, c);
+                }
+                Ok(id)
+            }
+            Err(e) => {
+                if let (Some(n), Some(broker)) = (nonce, self.askpass.as_mut()) {
+                    broker.discard(&n);
+                }
+                if let Some(c) = copy {
+                    let _ = std::fs::remove_file(&c.path);
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// Relays bytes and reaps; ends the askpass of the channels that closed and removes their host-key copies.
+    pub fn sftp_pump(&mut self, budget: usize) -> (Vec<crate::sftp::Output>, Vec<crate::sftp::Closed>) {
+        let (outputs, closed) = self.sftp.pump(budget);
+        for c in &closed {
+            if let Some(b) = self.askpass.as_mut() {
+                b.session_closed(c.id);
+            }
+            if let Some(copy) = self.exec_copies.remove(&c.id) {
+                let _ = std::fs::remove_file(&copy.path);
+            }
+        }
+        (outputs, closed)
     }
 
     /// Reads, enforces limits, reaps; ends the askpass of the runs that finished and removes their host-key copies.
@@ -1162,6 +1220,7 @@ impl SessionManager {
 
     pub fn terminate_all(&mut self) {
         self.exec.terminate_all();
+        self.sftp.terminate_all();
         for (_, c) in self.exec_copies.drain() {
             let _ = std::fs::remove_file(&c.path);
         }

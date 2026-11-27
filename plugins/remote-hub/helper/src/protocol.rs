@@ -92,6 +92,24 @@ pub enum Request {
         #[serde(rename = "maxBytes")]
         max_bytes: usize,
     },
+    /// Opens an SFTP channel: `ssh -s sftp` with NO pty. The argv is the strict shape of `session.open_ssh` with `-T` and no
+    /// command; the helper adds the subsystem. Bytes then travel as stream frames under the channel's id, both ways.
+    #[serde(rename = "sftp.open")]
+    SftpOpen {
+        id: u64,
+        program: String,
+        argv: Vec<String>,
+        env: HashMap<String, String>,
+        /// A saved credential answered from the Keychain. Without one ssh asks nothing at all (an agent or a plain key).
+        #[serde(default)]
+        askpass: Option<AskpassSpec>,
+    },
+    #[serde(rename = "sftp.close")]
+    SftpClose {
+        id: u64,
+        #[serde(rename = "sftpId")]
+        sftp_id: u32,
+    },
     /// What a run has produced from the given offsets (at most `max` bytes per stream).
     #[serde(rename = "exec.read")]
     ExecRead {
@@ -423,6 +441,30 @@ pub enum Response {
         signal: Option<i32>,
         reason: String,
         refused: Option<String>,
+    },
+    #[serde(rename = "sftp.opened")]
+    SftpOpened {
+        id: u64,
+        #[serde(rename = "sftpId")]
+        sftp_id: u32,
+    },
+    /// The answer to sftp.close; `sftp.closed` follows when the program is gone.
+    #[serde(rename = "sftp.closing")]
+    SftpClosing { id: u64 },
+    /// A channel ended (unsolicited), after all of its output was sent.
+    #[serde(rename = "sftp.closed")]
+    SftpClosed {
+        #[serde(rename = "sftpId")]
+        sftp_id: u32,
+        #[serde(rename = "exitCode")]
+        exit_code: Option<i32>,
+        signal: Option<i32>,
+        /// exited, closed, input_overflow.
+        reason: String,
+        /// A question ssh asked that was refused, or what happened to the saved credential.
+        refused: Option<String>,
+        /// The head of ssh's stderr, for the plugin's own backend to classify; never passed on.
+        stderr: String,
     },
     #[serde(rename = "exec.forgotten")]
     ExecForgotten { id: u64 },

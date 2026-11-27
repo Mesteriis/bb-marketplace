@@ -39,6 +39,11 @@ path = "tests/exec_process.rs"
 required-features = ["test-hooks"]
 
 [[test]]
+name = "sftp_process"
+path = "tests/sftp_process.rs"
+required-features = ["test-hooks"]
+
+[[test]]
 name = "owner_process"
 path = "tests/owner_process.rs"
 required-features = ["test-hooks"]

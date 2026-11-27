@@ -121,6 +121,8 @@ impl Helper {
                 | Response::ExecStarted { id, .. }
                 | Response::ExecState { id, .. }
                 | Response::ExecForgotten { id }
+                | Response::SftpOpened { id, .. }
+                | Response::SftpClosing { id }
                 | Response::RdpAck { id, .. }
                 | Response::CredentialOk { id }
                 | Response::CredentialStatus { id, .. }

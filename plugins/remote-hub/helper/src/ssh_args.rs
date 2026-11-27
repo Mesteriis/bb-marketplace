@@ -77,6 +77,55 @@ pub fn split_exec_argv(argv: &[String]) -> Result<(Vec<String>, String), String>
     Ok((plain, command.clone()))
 }
 
+/// An SFTP channel's argv as the client sends it: `ssh -T <session options> -- <host>`, with no command (the helper adds
+/// the subsystem itself, so a channel can never run anything else). Returns the `-tt` form `validate_ssh_spawn` checks.
+pub fn split_sftp_argv(argv: &[String]) -> Result<Vec<String>, String> {
+    if argv.len() < 4 || argv[0] != "ssh" || argv[1] != "-T" || argv[argv.len() - 2] != "--" {
+        return Err(ssh_option_rejected());
+    }
+    let mut plain = argv.to_vec();
+    plain[1] = "-tt".to_string();
+    Ok(plain)
+}
+
+/// A channel WITHOUT a saved secret (an agent, or a key that needs no passphrase) reads the user's own ssh
+/// configuration and host-key files, so the caller may choose neither a host-key file nor an authentication method:
+/// the only `-o` is the IdentitiesOnly=yes that goes with `-i`.
+pub fn sftp_agent_argv_ok(plain: &[String]) -> bool {
+    let last = plain.len().saturating_sub(2);
+    let mut i = 2;
+    while i < last {
+        if plain[i] == "-o" && plain.get(i + 1).map(String::as_str) != Some("IdentitiesOnly=yes") {
+            return false;
+        }
+        if plain[i] == "-F" && plain.get(i + 1).map(String::as_str) == Some("none") {
+            return false;
+        }
+        i += 2;
+    }
+    true
+}
+
+/// What the helper adds to a channel without a saved secret. Nobody can answer a question, so ssh asks none
+/// (BatchMode); a host key is accepted only if the user's files already hold it, whatever the configuration says
+/// (StrictHostKeyChecking=yes on the command line wins over it), and those files are never changed. The channel is its
+/// own connection (no shared master that was checked by someone else, no forwarding, no local command).
+pub const SFTP_AGENT_OPTIONS: [&str; 8] =
+    ["BatchMode=yes", "StrictHostKeyChecking=yes", "UpdateHostKeys=no", "ControlPath=none", "ClearAllForwardings=yes", "ForwardAgent=no", "ForwardX11=no", "PermitLocalCommand=no"];
+/// What every channel gets: a bounded connect and a dead connection noticed.
+pub const SFTP_COMMON_OPTIONS: [&str; 3] = ["ConnectTimeout=20", "ServerAliveInterval=15", "ServerAliveCountMax=3"];
+
+/// The argv ssh is started with: the client's options, the helper's own, then `-s -- <host> sftp`.
+pub fn sftp_final_argv(argv: &[String], options: &[String]) -> Vec<String> {
+    let at = argv.len() - 2;
+    let mut out = argv[..at].to_vec();
+    out.extend(options.iter().cloned());
+    out.push("-s".to_string());
+    out.extend(argv[at..].iter().cloned());
+    out.push("sftp".to_string());
+    out
+}
+
 pub fn validate_ssh_spawn(
     program: &str,
     argv: &[String],
@@ -456,6 +505,45 @@ mod tests {
             let a: Vec<String> = ["ssh", "-tt", "-o", option, "--", "example.com"].iter().map(|s| s.to_string()).collect();
             assert!(validate_ssh_spawn("/usr/bin/ssh", &a, &env(&[("TERM", "xterm-256color")])).is_err(), "{option}");
         }
+    }
+
+    #[test]
+    fn an_sftp_argv_is_the_session_argv_with_capital_t_and_no_command_and_the_helper_adds_the_subsystem() {
+        let sent = argv(&["ssh", "-T", "-l", "root", "-F", "none", "-o", "PreferredAuthentications=password", "-o", "NumberOfPasswordPrompts=2", "--", "box.test"]);
+        let plain = split_sftp_argv(&sent).unwrap();
+        assert_eq!(plain[1], "-tt");
+        assert!(validate_ssh_spawn("/usr/bin/ssh", &plain, &HashMap::new()).is_ok());
+        let fin = sftp_final_argv(&sent, &argv(&["-o", "ConnectTimeout=20"]));
+        assert_eq!(fin, argv(&["ssh", "-T", "-l", "root", "-F", "none", "-o", "PreferredAuthentications=password", "-o", "NumberOfPasswordPrompts=2", "-o", "ConnectTimeout=20", "-s", "--", "box.test", "sftp"]));
+        // A command word, a missing "--", a pty or another program shape is refused.
+        for bad in [
+            vec!["ssh", "-T", "-l", "root", "--", "box.test", "sftp"],
+            vec!["ssh", "-T", "-l", "root", "--", "box.test", "rm -rf /"],
+            vec!["ssh", "-tt", "-l", "root", "--", "box.test"],
+            vec!["ssh", "-T", "-l", "root", "box.test"],
+            vec!["ssh", "-T", "--"],
+            vec!["sftp", "-T", "--", "box.test"],
+        ] {
+            let ok = split_sftp_argv(&argv(&bad)).and_then(|plain| validate_ssh_spawn("/usr/bin/ssh", &plain, &HashMap::new()));
+            assert!(ok.is_err(), "{bad:?}");
+        }
+        // Options that would weaken the host-key check or run something locally never pass validation.
+        for option in ["StrictHostKeyChecking=no", "StrictHostKeyChecking=accept-new", "ProxyCommand=sh", "UserKnownHostsFile=/dev/null", "LocalCommand=id", "BatchMode=yes"] {
+            let plain = split_sftp_argv(&argv(&["ssh", "-T", "-o", option, "--", "box.test"])).unwrap();
+            assert!(validate_ssh_spawn("/usr/bin/ssh", &plain, &HashMap::new()).is_err(), "{option}");
+        }
+    }
+
+    #[test]
+    fn a_channel_without_a_saved_secret_chooses_no_host_key_file_and_no_method() {
+        let ok = |parts: &[&str]| sftp_agent_argv_ok(&split_sftp_argv(&argv(parts)).unwrap());
+        assert!(ok(&["ssh", "-T", "-l", "root", "-p", "2222", "--", "box.test"]));
+        assert!(ok(&["ssh", "-T", "-i", "/keys/id", "-o", "IdentitiesOnly=yes", "--", "box.test"]));
+        assert!(ok(&["ssh", "-T", "-F", "/home/u/.ssh/config", "--", "box.test"]));
+        assert!(!ok(&["ssh", "-T", "-o", "UserKnownHostsFile=/tmp/k", "--", "box.test"]));
+        assert!(!ok(&["ssh", "-T", "-o", "PreferredAuthentications=password", "--", "box.test"]));
+        assert!(!ok(&["ssh", "-T", "-F", "none", "--", "box.test"]), "-F none belongs to a saved secret");
+        assert!(SFTP_AGENT_OPTIONS.contains(&"StrictHostKeyChecking=yes") && SFTP_AGENT_OPTIONS.contains(&"BatchMode=yes"));
     }
 
     #[test]
