@@ -1,1 +1,1 @@
-Experimental two-pane file manager for BB. Early scaffold: the Commander page is a placeholder.
+Browse local and SFTP file endpoints, plan transfers, and track jobs with Makosh Commander CLI and agent tools. SFTP requires Remote Hub.

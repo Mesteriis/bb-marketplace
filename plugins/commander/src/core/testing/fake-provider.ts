@@ -13,6 +13,7 @@ interface StoredEntry {
   bytes: Uint8Array;
   mtimeNs: string;
   temporary?: boolean;
+  size?: number;
 }
 
 export class FakeProvider implements FileProvider {
@@ -23,10 +24,14 @@ export class FakeProvider implements FileProvider {
   readonly calls: { op: Op; path: ResourcePath }[] = [];
   delay?: (op: Op, path: ResourcePath, signal: AbortSignal) => Promise<void>;
   trackRelayReads = false;
+  /** Hide the last N written bytes from stat of an open temp, like a buffered SFTP handle. */
+  tempStatLag = 0;
   peakReadBytes = 0;
   private liveReadBytes = 0;
   private clock = 100;
   private readonly entries = new Set<StoredEntry>();
+  /** The endpoint root always exists as a directory; no operation may replace or remove it. */
+  private readonly root: StoredEntry = { path: { segments: [] }, kind: "dir", bytes: new Uint8Array(), mtimeNs: "1" };
   copyWithin?: FileProvider["copyWithin"];
   sha256?: FileProvider["sha256"];
 
@@ -104,6 +109,7 @@ export class FakeProvider implements FileProvider {
 
   async openWrite(path: ResourcePath, opts: Parameters<FileProvider["openWrite"]>[1], signal: AbortSignal): Promise<WriteSession> {
     await this.before("openWrite", path, signal);
+    this.forbidRoot(path);
     const dir = parent(path);
     if (!dir) throw new CommanderError("invalid_path", "Cannot write root");
     const tempPath = join(dir, opts.tempName);
@@ -126,6 +132,8 @@ export class FakeProvider implements FileProvider {
         if (offset !== BigInt(length)) throw new CommanderError("invalid_path", "Expected sequential offset");
         chunks.push(bytes.slice());
         length += bytes.byteLength;
+        temp.size = Math.max(0, length - this.tempStatLag);
+        temp.mtimeNs = String(++this.clock);
         relayBuffers.get(bytes)?.();
         relayBuffers.delete(bytes);
       },
@@ -155,15 +163,17 @@ export class FakeProvider implements FileProvider {
 
   async mkdir(path: ResourcePath, signal: AbortSignal): Promise<void> {
     await this.before("mkdir", path, signal);
+    this.forbidRoot(path);
     this.checkTarget(path, false);
     this.set({ path, kind: "dir", bytes: new Uint8Array(), mtimeNs: String(++this.clock) });
   }
 
   async rename(from: ResourcePath, to: ResourcePath, opts: Parameters<FileProvider["rename"]>[2], signal: AbortSignal): Promise<void> {
     await this.before("rename", to, signal);
+    this.forbidRoot(from, to);
     const entry = this.require(from);
     this.checkTarget(to, opts.replace, opts.expectTarget);
-    if (this.same(from, to)) return;
+    if (samePath(from, to, true)) return;
     const tree = entry.kind === "dir"
       ? [...this.entries].filter((child) => isAncestorOrSelf(from, child.path, this.endpoint.caseSensitive))
       : [entry];
@@ -175,6 +185,7 @@ export class FakeProvider implements FileProvider {
 
   async remove(path: ResourcePath, opts: Parameters<FileProvider["remove"]>[1], signal: AbortSignal): Promise<void> {
     await this.before("remove", path, signal);
+    this.forbidRoot(path);
     const candidate = this.find(path);
     if (opts.expect && (!candidate || !this.matches(candidate, opts.expect))) {
       throw new CommanderError("changed_since_plan", "Source changed");
@@ -217,6 +228,7 @@ export class FakeProvider implements FileProvider {
   }
 
   private find(path: ResourcePath): StoredEntry | undefined {
+    if (path.segments.length === 0) return this.root;
     return [...this.entries].find((entry) => this.same(entry.path, path));
   }
 
@@ -226,18 +238,23 @@ export class FakeProvider implements FileProvider {
     return entry;
   }
 
+  private forbidRoot(...paths: ResourcePath[]): void {
+    if (paths.some((path) => path.segments.length === 0)) throw new CommanderError("invalid_path", "The root cannot be changed");
+  }
+
   private set(entry: StoredEntry): void {
+    this.forbidRoot(entry.path);
     const existing = this.find(entry.path);
     if (existing) this.entries.delete(existing);
     this.entries.add(entry);
   }
 
   private fingerprint(entry: StoredEntry): Fingerprint {
-    return { size: String(entry.bytes.byteLength), mtimeNs: entry.mtimeNs };
+    return { size: String(entry.size ?? entry.bytes.byteLength), mtimeNs: entry.mtimeNs };
   }
 
   private matches(entry: StoredEntry, fingerprint: Fingerprint): boolean {
-    if (String(entry.bytes.byteLength) !== fingerprint.size || entry.mtimeNs !== fingerprint.mtimeNs) return false;
+    if (String(entry.size ?? entry.bytes.byteLength) !== fingerprint.size || entry.mtimeNs !== fingerprint.mtimeNs) return false;
     if (!fingerprint.sha256) return true;
     const hash = new TransferHash();
     hash.update(entry.bytes);

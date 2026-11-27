@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { CommanderErrorShape } from "./errors.ts";
-import { NameSegment, ResourcePath, canonicalBase64 } from "./path.ts";
+import { NameSegment, ResourcePath, canonicalBase64, isAncestorOrSelf } from "./path.ts";
 import { Size, toBig } from "./size.ts";
 
 export const ProviderKind = z.enum(["local", "sftp"]);
@@ -75,21 +75,32 @@ export type Route = z.infer<typeof Route>;
 export const Verify = z.enum(["size", "sha256"]);
 export type Verify = z.infer<typeof Verify>;
 
+/** The target's state at plan time: "absent", or its fingerprint when it exists. */
+export const ExpectedTarget = z.union([Fingerprint, z.literal("absent")]);
+export type ExpectedTarget = z.infer<typeof ExpectedTarget>;
+
 export const PlanItem = z.object({
   source: ResourceRef.nullable(),          // null для mkdir
   target: ResourceRef.nullable(),          // null для delete
   kind: EntryKind,
   fingerprint: Fingerprint.nullable(),     // источника на момент плана; null для mkdir
-}).strict();
+  expectTarget: ExpectedTarget.nullable(), // цели на момент плана; null ровно когда нет цели
+}).strict().superRefine((item, ctx) => {
+  if ((item.target === null) !== (item.expectTarget === null)) {
+    ctx.addIssue({ code: "custom", path: ["expectTarget"], message: "expectTarget is set exactly when there is a target" });
+  }
+});
 export type PlanItem = z.infer<typeof PlanItem>;
 
-export const OperationPlan = z.object({
+// The plain shape. Refinements are added below; zod 4 forbids .omit() on a refined object.
+const OperationPlanBase = z.object({
   id: z.string().uuid(),
   kind: OperationKind,
   createdAt: z.string().datetime(),
   initiator: Initiator,
   sourceEndpoint: EndpointId.nullable(),
   targetEndpoint: EndpointId.nullable(),
+  targetDir: ResourceRef.nullable(),       // каталог назначения для copy, move, mkdir; иначе null
   items: z.array(PlanItem).min(1).max(100_000),
   conflictPolicy: ConflictPolicy,
   route: Route,
@@ -97,6 +108,43 @@ export const OperationPlan = z.object({
   totalBytes: Size,
   digest: z.string().regex(/^[0-9a-f]{64}$/),   // SHA-256 канонического JSON плана без digest
 }).strict();
+
+export const OperationPlan = OperationPlanBase.superRefine((plan, ctx) => {
+  // targetDir is the destination of copy, move and mkdir; delete and rename have none.
+  const needsTargetDir = plan.kind === "mkdir" || plan.kind === "copy" || plan.kind === "move";
+  if (needsTargetDir !== (plan.targetDir !== null)) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["targetDir"],
+      message: needsTargetDir
+        ? "targetDir is required for mkdir, copy and move"
+        : "targetDir must be null for delete and rename",
+    });
+    return;
+  }
+  const targetDir = plan.targetDir;
+  if (targetDir === null) return;
+  if (targetDir.endpoint !== plan.targetEndpoint) {
+    ctx.addIssue({ code: "custom", path: ["targetDir", "endpoint"], message: "targetDir must be on targetEndpoint" });
+  }
+  // copy, move and mkdir write every item to a path strictly inside targetDir. Exact
+  // comparison: the planner builds each target as targetDir + name, so no case folding applies.
+  plan.items.forEach((item, index) => {
+    if (!needsTargetDir) return;
+    if (item.target === null || item.expectTarget === null) {
+      ctx.addIssue({ code: "custom", path: ["items", index, "target"], message: "copy, move and mkdir items need a target and an expectTarget" });
+      return;
+    }
+    if (item.target.endpoint !== targetDir.endpoint) {
+      ctx.addIssue({ code: "custom", path: ["items", index, "target", "endpoint"], message: "A target must be on targetDir's endpoint" });
+    }
+    const strictlyInside = item.target.path.segments.length > targetDir.path.segments.length
+      && isAncestorOrSelf(targetDir.path, item.target.path, true);
+    if (!strictlyInside) {
+      ctx.addIssue({ code: "custom", path: ["items", index, "target"], message: "A target must lie strictly inside targetDir" });
+    }
+  });
+});
 export type OperationPlan = z.infer<typeof OperationPlan>;
 
 export const JobState = z.enum([
@@ -167,8 +215,8 @@ export const OperationJob = z.object({
   if (job.awaitsOwner && job.state !== "pending") {
     ctx.addIssue({ code: "custom", path: ["awaitsOwner"], message: "Owner approval requires a pending job" });
   }
-  if (job.pendingConflict !== null && job.state !== "awaiting_decision") {
-    ctx.addIssue({ code: "custom", path: ["pendingConflict"], message: "A pending conflict requires an awaiting-decision job" });
+  if (job.pendingConflict !== null && job.state !== "awaiting_decision" && job.state !== "interrupted") {
+    ctx.addIssue({ code: "custom", path: ["pendingConflict"], message: "A pending conflict requires an awaiting-decision or interrupted job" });
   }
   if (job.currentItem !== null && job.currentItem >= job.items.length) {
     ctx.addIssue({ code: "custom", path: ["currentItem"], message: "Current item is outside the job" });
@@ -176,7 +224,7 @@ export const OperationJob = z.object({
 });
 export type OperationJob = z.infer<typeof OperationJob>;
 
-const UnsignedPlan = OperationPlan.omit({ digest: true }).strip();
+const UnsignedPlan = OperationPlanBase.omit({ digest: true }).strip();
 
 export async function planDigest(plan: Omit<OperationPlan, "digest">): Promise<string> {
   const unsigned = UnsignedPlan.parse(plan);

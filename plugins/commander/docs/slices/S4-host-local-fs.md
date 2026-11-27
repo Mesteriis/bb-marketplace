@@ -49,6 +49,8 @@ export const HostFsContract = {
   APFS/ext4; при нуле младших 6 цифр не понижать — честно `ns`).
 - `read` — сверка `expect` (size + mtimeNs) по `fstat` открытого
   дескриптора, затем `read` по offset.
+- `local-provider` выставляет `WriteSession.tempPath` (контракт S3) =
+  каталог цели + `tempName` из ответа `writeOpen`.
 - Запись: temp `.<name>.commander-<uuid>.part` в каталоге цели
   (`wx`, 0600), сессии ≤ 8, TTL простоя 120 с (abort); `writeCommit` —
   `fsync`, затем `replace=false`: `link(temp, target)` + `unlink(temp)`
@@ -56,6 +58,12 @@ export const HostFsContract = {
   `rename(temp, target)`; права результата — `0644 & ~umask` (не копировать
   0600 temp).
 - `remove` каталога — только пустой (`rmdir`); файл — `unlink`.
+- `rename`/`remove` с `expectTarget`/`expect` (контракт S3): `lstat` и сверка
+  size+mtimeNs непосредственно перед `rename`/`unlink`/`rmdir`; расхождение →
+  `changed_since_plan`. Окно неатомарности (между `lstat` и действием)
+  задокументировать в комментарии и в `docs/security.md` через S7; для
+  `expectTarget: "absent"` + `replace:false` использовать `link`+`unlink`
+  (EEXIST атомарно), а не проверку.
 - Имена на хостах Windows (`process.platform === "win32"` в host entry):
   сегмент, который создаётся или в который переименовывают (`writeOpen`,
   `mkdir`, `rename` — цель, `copyWithin` — цель), отклоняется ошибкой
@@ -95,6 +103,8 @@ atomicReplace, serverSideCopy, seek, checksum (trash — нет в v1).
 - Цель — симлинк на файл вне каталога → `permission_denied`, файл вне не
   изменён (symlink escape).
 - `remove` непустого каталога → ошибка, ничего не удалено.
+- `rename` с устаревшим `expectTarget` и `remove` с устаревшим `expect` →
+  `changed_since_plan`, файл не тронут.
 - Проверка имён Windows — чистая функция (`host-fs/names.ts`), тестируется
   на любой ОС с явным параметром платформы: `win32` отклоняет `a:b`, `a\b`,
   `CON`, `con.txt`, `NUL`, `COM1.log`, `LPT9`, `name.`, `name ` → все

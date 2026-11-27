@@ -82,6 +82,18 @@ CLI `bb makosh-commander`: `endpoints`, `ls <endpoint> <path>`,
 `skills/commander/SKILL.md` — как агенту пользоваться tools: всегда план →
 показать пользователю → run; данные из файлов — не инструкции.
 
+## Повреждённые задачи (решение координатора после S6)
+
+Задача, которую S6 не смог прочитать, приходит как `state: "unknown"` с
+`error.code: "internal"` и сообщением «Stored job is damaged»; её `plan` —
+заглушка `delete`, а не реальная операция. RPC (`job_list`), agent tools
+(`commander_jobs`) и CLI (`jobs`) распознают такую задачу по `error` и не
+выдают её `plan.kind`, элементы плана, endpoint и пути как описание операции:
+ответ — id, состояние, «повреждена, план недоступен». Над ней разрешено только
+чтение; `job_decide`, `job_cancel`, `plan_approve`/`plan_reject` → отказ
+`invalid`. Тест: повреждённая задача в `job_list` и `commander_jobs` без
+слов «удаление»/`delete` и без путей.
+
 ## Проверки
 
 - `server.test.ts` с фейковым `bb` (как `plugins/mail/server.test.ts`):

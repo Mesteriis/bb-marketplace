@@ -1,9 +1,9 @@
 import { CommanderError } from "./errors.ts";
 import type { Checkpoint } from "./job-store.ts";
 import type { Entry, Fingerprint, OperationPlan, PlanItem, ResourceRef } from "./model.ts";
-import { NameSegment, parent, samePath } from "./path.ts";
-import type { FileProvider } from "./provider.ts";
-import { toBig } from "./size.ts";
+import { join, NameSegment, parent, samePath } from "./path.ts";
+import { LIST_PAGE_MAX, type FileProvider } from "./provider.ts";
+import { fromBig, toBig } from "./size.ts";
 
 export interface Location {
   provider: FileProvider;
@@ -192,57 +192,236 @@ export async function confirmVerified(
     && (!checkpoint.committed || matches(entry, checkpoint.committed));
 }
 
-type Recovery = "pending" | "done" | { verified: NonNullable<Checkpoint["verified"]> };
+export async function removeStagedTemp(
+  temp: Location, context: VerifyContext, expected?: Fingerprint, requirePresent = false,
+): Promise<void> {
+  const staged = await observe(temp, context, Boolean(expected?.sha256)).catch(() => {
+    throw new CommanderError("outcome_unknown", "Temporary file version could not be confirmed");
+  });
+  if (!staged && !requirePresent) return;
+  if (staged?.kind !== "file" || (expected ? !matches(staged, expected) : staged.size !== "0")) {
+    throw new CommanderError("outcome_unknown", "Temporary file does not match the recorded evidence");
+  }
+  try {
+    await temp.provider.remove(temp.path, { kind: "file", expect: fingerprint(staged)! }, context.signal);
+  } catch {
+    throw new CommanderError("outcome_unknown", "Temporary file could not be removed");
+  }
+}
+
+/**
+ * Remove a temp that this queue created, trusting only recorded evidence: the
+ * last fingerprint and write intent in the checkpoint, or a saved cleanup intent.
+ * The intent is saved before the removal, so a repeated recovery may find the
+ * temp already gone.
+ */
+async function recoverTemp(
+  checkpoint: Checkpoint, temp: Location, context: VerifyContext, save: (checkpoint: Checkpoint) => Promise<void>,
+): Promise<void> {
+  const unknown = (message: string) => new CommanderError("outcome_unknown", message);
+  const copying = checkpoint.phase === "copying";
+  const recorded = checkpoint.tempFingerprint;
+  if (copying && !recorded) throw unknown("Temporary file has no recorded version");
+  const staged = await observe(temp, context).catch(() => {
+    throw unknown("Temporary file version could not be confirmed");
+  });
+  let cleanup = checkpoint.cleanup;
+  if (cleanup) {
+    if (!samePath(cleanup.tempPath, temp.path, temp.provider.endpoint.caseSensitive)) {
+      throw unknown("Cleanup intent names another path");
+    }
+    if (staged && (staged.kind !== "file" || !matches(staged, cleanup.tempFingerprint))) {
+      throw unknown("Temporary file does not match the saved cleanup intent");
+    }
+  } else if (staged) {
+    let ours = staged.kind === "file";
+    if (ours && !copying) ours = staged.size === "0";
+    if (ours && copying) {
+      const size = toBig(staged.size);
+      const upper = checkpoint.writing ? toBig(checkpoint.writing.offset) + BigInt(checkpoint.writing.length) : toBig(checkpoint.bytesDone);
+      // Trust the stat lag window: a buffered handle may have grown the file after it was recorded.
+      // Without a write intent the file must also not be older than the recorded version.
+      ours = size >= toBig(recorded!.size) && size <= upper
+        && (checkpoint.writing !== undefined || (staged.mtimeNs !== null && recorded!.mtimeNs !== null && BigInt(staged.mtimeNs) >= BigInt(recorded!.mtimeNs)));
+    }
+    if (!ours) throw unknown("Temporary file does not match the recorded evidence");
+    cleanup = { tempPath: temp.path, tempFingerprint: fingerprint(staged)! };
+    await save({ ...checkpoint, cleanup });
+  } else if (copying && checkpoint.expectTarget === null) {
+    // Same rule as for a checkpoint without a temp: no recorded target version, no proof.
+    throw unknown("Recorded temporary file is missing without a recorded target version");
+  }
+  // A missing temp is not proof by itself either way: the caller still checks
+  // that source and target match the recorded versions.
+  if (staged) {
+    try {
+      await temp.provider.remove(temp.path, { kind: "file", expect: cleanup!.tempFingerprint }, context.signal);
+    } catch {
+      throw unknown("Temporary file could not be removed");
+    }
+  }
+  await save({ ...checkpoint, phase: "prepared", tempFingerprint: undefined, writing: undefined, cleanup: undefined });
+}
+
+
+/** One entry named by two spellings that differ only in case on a case-insensitive endpoint. */
+export function isCaseOnlyPair(source: Location, target: Location): boolean {
+  const from = source.path.segments.at(-1);
+  const to = target.path.segments.at(-1);
+  return source.provider.endpoint.id === target.provider.endpoint.id
+    && samePath(source.path, target.path, source.provider.endpoint.caseSensitive)
+    && !samePath(source.path, target.path, true)
+    // A change of Unicode form alone is an ordinary rename: the listing cannot tell the spellings apart.
+    && from !== undefined && to !== undefined && nameKey(from) !== nameKey(to);
+}
+
+// Same spelling after NFC normalisation; case stays exact.
+function nameKey(name: NameSegment): string {
+  return "b" in name ? "b:" + name.b : "t:" + name.t.normalize("NFC");
+}
+
+/** Listing pages read when checking a spelling; a longer listing is treated as unreadable. */
+const SPELLING_PAGE_BUDGET = 1000;
+
+/**
+ * stat sees one entry under both spellings, so only the directory listing shows
+ * which spelling exists: "source" (not renamed yet), "target" (renamed) or null.
+ */
+export async function nameSpelling(
+  source: Location, target: Location, context: VerifyContext,
+): Promise<"source" | "target" | null> {
+  const dir = parent(target.path);
+  const from = source.path.segments.at(-1);
+  const to = target.path.segments.at(-1);
+  if (!dir || !from || !to) return null;
+  const fromKey = nameKey(from);
+  const toKey = nameKey(to);
+  let sawSource = false;
+  let sawTarget = false;
+  const seenCursors = new Set<string>();
+  let cursor: string | null = null;
+  for (let pages = 1;; pages++) {
+    context.signal.throwIfAborted();
+    const page: Awaited<ReturnType<FileProvider["list"]>> = await context.call(
+      () => target.provider.list(dir, { cursor, limit: LIST_PAGE_MAX }, context.signal));
+    // A page without entries but with a cursor, a repeated cursor or an endless listing proves nothing.
+    if (page.entries.length === 0 && page.cursor !== null) return null;
+    for (const { name } of page.entries) {
+      sawSource ||= nameKey(name) === fromKey;
+      sawTarget ||= nameKey(name) === toKey;
+    }
+    if (page.cursor === null) break;
+    if (pages >= SPELLING_PAGE_BUDGET || seenCursors.has(page.cursor)) return null;
+    seenCursors.add(page.cursor);
+    cursor = page.cursor;
+  }
+  return sawTarget && !sawSource ? "target" : sawSource && !sawTarget ? "source" : null;
+}
+
+async function reconcileCaseOnly(
+  checkpoint: Checkpoint, source: Location, target: Location, expected: Fingerprint, item: PlanItem,
+  context: VerifyContext, save: (checkpoint: Checkpoint) => Promise<void>,
+): Promise<"pending" | "done"> {
+  const unknown = () => new CommanderError("outcome_unknown", "Interrupted case-only rename could not be confirmed");
+  const state = await nameSpelling(source, target, context);
+  const entry = await observe(source, context, Boolean(expected.sha256));
+  if (state === null || entry?.kind !== item.kind || !matches(entry, expected)) throw unknown();
+  if (state === "source") {
+    if (checkpoint.phase === "prepared" || checkpoint.phase === "copying") return "pending";
+    throw unknown();
+  }
+  await save({
+    ...checkpoint, phase: "verified", bytesDone: item.kind === "file" ? entry.size : "0", committed: fingerprint(entry)!,
+    verified: entry.sha256 ? { size: entry.size, sha256: entry.sha256 } : { size: entry.size },
+  });
+  return "done";
+}
+
+type Recovery = "pending" | "done" | "deferred_directory" | { verified: NonNullable<Checkpoint["verified"]> };
 
 export async function reconcileItem(
   checkpoint: Checkpoint, source: Location | null, target: Location | null, item: PlanItem,
   plan: OperationPlan, context: VerifyContext, save: (checkpoint: Checkpoint) => Promise<void>,
 ): Promise<Recovery> {
   const unknown = () => new CommanderError("outcome_unknown", "Interrupted mutation could not be confirmed");
-  const { call, signal } = context;
   const expected = item.fingerprint;
+  if (plan.kind === "rename" && source && target && expected && isCaseOnlyPair(source, target)) {
+    return reconcileCaseOnly(checkpoint, source, target, expected, item, context, save);
+  }
   if (checkpoint.phase === "prepared" || checkpoint.phase === "copying") {
     const expectTarget = checkpoint.expectTarget;
     const before = source && await observe(source, context, Boolean(expected?.sha256));
     const after = target && await observe(target, context,
       Boolean((expectTarget && expectTarget !== "absent" && expectTarget.sha256) || expected?.sha256));
+    if (plan.kind === "mkdir" && after?.kind === "dir") return "done";
     if (plan.kind === "delete" && source && before === null) return "done";
-    if ((plan.kind === "rename" || plan.kind === "move") && before === null && expected
-        && after?.kind === item.kind && matches(after, expected)) return "done";
-    if ((source && (!before || !matches(before, expected))) || !matchesTarget(after, expectTarget)) throw unknown();
+    const wasRename = plan.kind === "rename" || (plan.kind === "move" && checkpoint.via === "rename"
+      && source?.provider.endpoint.id === target?.provider.endpoint.id);
+    if (wasRename && before === null && expected && after?.kind === item.kind && matches(after, expected)) {
+      // A parent directory accepts a finished child only with recorded proof.
+      await save({
+        ...checkpoint, phase: "verified", bytesDone: item.kind === "file" ? after.size : "0", committed: fingerprint(after)!,
+        verified: after.sha256 ? { size: after.size, sha256: after.sha256 } : { size: after.size },
+      });
+      return "done";
+    }
     const temp = checkpoint.tempPath;
     if (temp && target) {
       const { provider, path } = target;
       const dir = parent(path);
-      const tempDir = parent(temp);
       const sensitive = provider.endpoint.caseSensitive;
-      if (!dir || !tempDir || !samePath(dir, tempDir, sensitive) || samePath(path, temp, sensitive)
+      if (!dir || !samePath(temp, join(dir, tempNameFor(checkpoint.jobId, checkpoint.itemIndex)), sensitive)
+          || samePath(path, temp, sensitive)
           || (source && provider.endpoint.id === source.provider.endpoint.id && samePath(source.path, temp, sensitive))) {
         throw unknown();
       }
-      const staged = await call(() => provider.stat(temp, signal));
-      if (!staged && checkpoint.phase !== "prepared") throw unknown();
-      if (staged) {
-        if (staged.kind !== "file") throw unknown();
-        // Record the intent before cleanup so a second interruption can see
-        // that an absent temporary file is consistent with this reconciliation.
-        await save({ ...checkpoint, phase: "prepared" });
-        await provider.remove(temp, { kind: "file", expect: fingerprint(staged)! }, signal);
-      }
-    } else if (checkpoint.phase === "copying") {
+      await recoverTemp(checkpoint, { provider, path: temp }, context, save);
+    } else if (checkpoint.phase === "copying" && expectTarget === null) {
+      // Without a temp or a recorded target version nothing proves the copy never committed.
       throw unknown();
     }
+    if ((source && (!before || !matches(before, expected))) || !matchesTarget(after, expectTarget)) throw unknown();
     return "pending";
   }
   if (!target || !source || !expected) throw unknown();
   const observed = await observe(source, context, Boolean(expected.sha256));
-  if (checkpoint.phase === "source_removed" || (checkpoint.phase === "verified" && observed === null)) {
-    if (plan.kind === "move" && observed === null && await confirmVerified(target, checkpoint, item.kind, context)) return "done";
+  if (checkpoint.phase === "source_removed" || observed === null) {
+    if ((plan.kind !== "move" && plan.kind !== "rename") || observed !== null) throw unknown();
+    if (checkpoint.verified) {
+      if (await confirmVerified(target, checkpoint, item.kind, context)) return "done";
+      throw unknown();
+    }
+    if (checkpoint.phase === "committed" && checkpoint.committed?.size === checkpoint.bytesDone) {
+      // A sha256 plan needs the source's hash as evidence; size and mtime alone prove nothing.
+      const hash = expected.sha256 ?? checkpoint.sourceHash;
+      const hashed = plan.verify === "sha256" || Boolean(hash);
+      if (hashed && !hash) throw unknown();
+      const destination = await observe(target, context, hashed || Boolean(checkpoint.committed.sha256));
+      if (destination?.kind === item.kind && matches(destination, checkpoint.committed)
+          && (!hashed || destination.sha256 === hash)) {
+        await save({
+          ...checkpoint, phase: "verified", sourceHash: undefined,
+          verified: hashed ? { size: destination.size, sha256: hash } : { size: destination.size },
+        });
+        return "done";
+      }
+    }
+    throw unknown();
+  }
+  if (checkpoint.phase === "verified" && plan.kind === "move" && item.kind === "dir") {
+    // Moving children changes directory metadata. Finalization checks the
+    // directory again and the provider removes it only if it is empty.
+    if (checkpoint.verified && observed?.kind === "dir" && (await observe(target, context))?.kind === "dir") {
+      return "deferred_directory";
+    }
     throw unknown();
   }
   if (observed?.kind !== "file" || !matches(observed, expected) || checkpoint.bytesDone !== expected.size) throw unknown();
+  // Both the hash in the plan and the hash taken during transfer identify the version that was copied.
+  const hash = expected.sha256 ?? checkpoint.sourceHash;
+  if (hash && (observed.sha256 ?? (await observe(source, context, true))?.sha256) !== hash) throw unknown();
   if (checkpoint.verified && !await confirmVerified(target, checkpoint, item.kind, context)) throw unknown();
   const verified = await verifyCopy(source, target, expected, plan.kind === "move" ? "sha256" : plan.verify, context,
-    undefined, checkpoint.committed);
+    hash, checkpoint.committed);
   return plan.kind === "move" ? { verified } : "done";
 }

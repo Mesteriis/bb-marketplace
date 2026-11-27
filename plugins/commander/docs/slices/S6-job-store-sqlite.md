@@ -23,19 +23,34 @@ export function createSqliteJobStore(db: Database): JobStore;
 - `jobs(id TEXT PK, plan_json TEXT NOT NULL, state TEXT NOT NULL,
   progress_json TEXT NOT NULL, current_item INTEGER, pending_conflict_json TEXT,
   items_json TEXT NOT NULL, error_json TEXT, created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL, initiator_kind TEXT NOT NULL, thread_id TEXT)`;
+  updated_at TEXT NOT NULL, initiator_kind TEXT NOT NULL, thread_id TEXT,
+  awaits_owner INTEGER NOT NULL DEFAULT 0 CHECK (awaits_owner IN (0,1)))`;
   индекс по `(state, updated_at)`.
 - `checkpoints(job_id TEXT, item_index INTEGER, phase TEXT, bytes_done TEXT,
-  temp_name_json TEXT, at TEXT, PRIMARY KEY(job_id, item_index))` — хранится
-  последняя точка элемента.
+  temp_path_json TEXT, target_path_json TEXT, expect_target_json TEXT,
+  verified_json TEXT, at TEXT, PRIMARY KEY(job_id, item_index))` — хранится
+  последняя точка элемента; поля `Checkpoint` S3 (`tempPath`, `targetPath`,
+  `expectTarget`, `verified`) — только в `*_json`.
 - Всё чтение проходит zod-схемы S1 (`OperationJob.parse`); битая строка →
   job помечается `unknown` с ошибкой `internal`, а не падение всего списка.
+  Если у битой строки не читается и `id`, ей выдаётся псевдоним из
+  зарезервированного диапазона `00000000-xxxx-8000-8000-xxxxxxxxxxxx`, где
+  `xxxx` и последние 12 hex — полные 64 бита `rowid` строки. Обычные задачи
+  такой id получить не могут (генератор и `create` отвергают префикс
+  `00000000-` с `8000-8000`).
+- `awaitsOwner` — отдельная колонка `awaits_owner`; `update`, переводящий
+  job из `pending`, в том же `UPDATE` ставит `awaits_owner = 0`; запись
+  `awaits_owner = 1` при `state != 'pending'` отвергается (CHECK или проверка
+  до запроса) — инвариант S1.
 - `update(..., expectState)` — `UPDATE … WHERE id=? AND state=?`, возврат
   `changes === 1`.
 - Хранение: последние 1000 терминальных jobs; старше — удаляются при
   `create` (одна транзакция).
-- Никаких путей/имён в отдельных колонках (только внутри plan_json), чтобы
-  не индексировать содержимое.
+- Пути и имена ни в одной таблице не раскладываются в собственные текстовые
+  колонки и не индексируются: путь хранится только как сериализованный
+  `ResourcePath` в `*_json`-колонке (`plan_json`, `temp_path_json`), чтобы
+  не индексировать содержимое. Checkpoint с `temp_path_json` этому правилу
+  соответствует.
 
 ## Проверки
 
@@ -44,12 +59,18 @@ export function createSqliteJobStore(db: Database): JobStore;
 - create → get возвращает `deepEqual` исходному job (литерал фикстуры с
   кириллицей, байтовым сегментом и `Size` "18446744073709551615").
 - CAS: два `update` с одним `expectState` — первый `true`, второй `false`.
+- `pending` + `awaitsOwner: true` → `update({state:"running"}, "pending")` →
+  `get` даёт `awaitsOwner: false` без явного поля в patch; попытка
+  `awaitsOwner: true` у `running` — отказ, строка не изменена.
 - Повреждённый `plan_json` у одной строки → `list` возвращает остальные +
   эту со `state: "unknown"`.
 - Закрыть и переоткрыть файл БД → данные на месте (эмуляция рестарта).
 - Ретенция: 1001 терминальный job → после следующего `create` их 1000,
   нетерминальные не тронуты.
 - `migrate` дважды — идемпотентно.
+- Checkpoint с `expectTarget: "absent"`, `expectTarget` = отпечаток и
+  `verified: {size:"5368709120", sha256:<литерал>}` → `lastCheckpoint`
+  возвращает их `deepEqual`.
 
 ## Ожидаемый diff
 

@@ -13,6 +13,12 @@ export interface WriteSession {
    */
   readonly tempPath: ResourcePath;
 
+  /**
+   * Write to the already opened temporary file. Never report already_exists.
+   * After the call resolves, stat(tempPath) should show the written size. A
+   * provider with buffered handles may show less (never more than offset plus
+   * bytes written); the runner then records the observed size and does not fail.
+   */
   write(offset: bigint, bytes: Uint8Array, signal: AbortSignal): Promise<void>;
 
   /**
@@ -69,6 +75,11 @@ export interface FileProvider {
   /**
    * Check the expected target version or absence immediately before renaming.
    * Report changed_since_plan on mismatch. Document any non-atomic check window.
+   * If from and to name one entry (they differ only in case on a case-insensitive
+   * endpoint), the caller passes replace: true and expectTarget = the source's
+   * fingerprint; the provider checks it as usual. With replace: true the provider
+   * does not emulate the replacement with a separate removal of the target: if
+   * there is no atomic rename over an existing target, it reports unsupported.
    */
   rename(
     from: ResourcePath,
