@@ -112,3 +112,17 @@ test("an operation an older Gitea does not have is reported as unsupported", asy
   await assert.rejects(actionsPipelines(gitea, repo(gitea), token, send).rerun("9", false), {message: "PROVIDER_UNSUPPORTED"});
   await assert.rejects(actionsPipelines(gitea, repo(gitea), token, send).cancel("9"), {message: "PROVIDER_UNSUPPORTED"});
 });
+
+test("a GitHub job that never started explains itself through its check-run annotations", async () => {
+  const {send} = forge({"GET /repos/octo/sandbox/check-runs/77/annotations": () => Response.json([
+    {annotation_level: "failure", message: "The job was not started because recent account payments have failed."},
+    {annotation_level: "notice", message: "unrelated"}])});
+  assert.deepEqual(await actionsPipelines(github, repo(github), token, send).notes("9", "77"),
+    ["The job was not started because recent account payments have failed."]);
+  assert.deepEqual(await actionsPipelines(gitea, repo(gitea), token, forge({}).send).notes("9", "77"), []);
+});
+
+test("a write the forge refuses in the run's current state has its own code", async () => {
+  const {send} = forge({"POST /repos/octo/sandbox/actions/runs/9/cancel": () => Response.json({message: "Cannot cancel"}, {status: 409})});
+  await assert.rejects(actionsPipelines(github, repo(github), token, send).cancel("9"), {message: "PROVIDER_CONFLICT"});
+});

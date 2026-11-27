@@ -54,6 +54,7 @@ const next: Record<string, string> = {
   CREDENTIAL_VAULT_MISSING: "The saved Vault credential is missing. Restore it before using this connection.",
   CREDENTIAL_BINDING_CHANGED: "The credential is bound to its original provider account and server.",
   NOT_FOUND: "Refresh the catalog and choose an existing entry.",
+  PROVIDER_CONFLICT: "The forge refused this in the current state of the run. Refresh and try again later.",
   SSH_CONFIG_UNAVAILABLE: "Check the SSH host alias in ~/.ssh/config on the working copy’s host.",
   OPERATION_EXISTS: "Look up the previous operation before starting a new one.",
 };

@@ -67,7 +67,7 @@ try {
   await page.waitForTimeout(800);
   const dispatch = writes().find(write => write.path.endsWith("/dispatches"));
   check("manual run reached the forge with its inputs", dispatch?.path === "/api/v1/repos/stand/beta/actions/workflows/ci.yml/dispatches" &&
-    dispatch.body?.ref === "main" && dispatch.body?.inputs?.outcome === "failure", dispatch);
+    dispatch.body?.ref === "main" && JSON.stringify(dispatch.body?.inputs) === JSON.stringify({outcome: "failure"}), dispatch);
 
   await page.setViewportSize({ width: 768, height: 900 });
   await page.waitForTimeout(300);

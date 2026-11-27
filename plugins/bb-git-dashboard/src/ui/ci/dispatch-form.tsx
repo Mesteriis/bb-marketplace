@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
-import type { DispatchInput, DispatchSpec } from "../../core/ci/dispatch.ts";
+import { dispatchValues, type DispatchInput, type DispatchSpec } from "../../core/ci/dispatch.ts";
 import type { Workflow } from "../../core/ci/pipelines.ts";
 import { message, type CiApi } from "./ci-api.ts";
 import { ConfirmDialog } from "./confirm-dialog.tsx";
@@ -46,7 +46,7 @@ export function DispatchForm({api, copyId, inputsLimitation, onClose, onDone}: {
     setError("");
     const missing = spec?.inputs.filter(input => input.required && !values[input.name]?.trim()).map(input => input.name) ?? [];
     if (missing.length) { setError("Fill in " + missing.join(", ") + "."); return; }
-    try { setPreview(await api.prepare(copyId, {kind: "dispatch", workflowId, ref: ref.trim(), inputs: values})); }
+    try { setPreview(await api.prepare(copyId, {kind: "dispatch", workflowId, ref: ref.trim(), inputs: spec ? dispatchValues(spec, values) : {}})); }
     catch (cause) { setError(message(cause)); }
   };
   const field = (input: DispatchInput) => {

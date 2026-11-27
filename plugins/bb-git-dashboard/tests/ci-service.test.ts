@@ -17,6 +17,7 @@ function setup(kind: Account["kind"] = "github") {
     if (url.pathname.endsWith("/actions/workflows")) return Response.json({workflows: [{id: 123, name: "CI", path: ".github/workflows/ci.yml"}]});
     if (url.pathname.endsWith("/actions/runs/9")) return Response.json(run);
     if (url.pathname.endsWith("/actions/runs")) return Response.json({workflow_runs: [run], total_count: 1});
+    if (url.pathname.endsWith("/check-runs/77/annotations")) return Response.json([{annotation_level: "failure", message: "The job was not started because of billing."}]);
     return new Response("{}", {status: 404});
   }) as typeof fetch;
   const service = ciService({copy: async id => id === "c1" ? copy : undefined, linked: async () => ({account: account(kind), token: "fixture-token-value", repo}), send});
@@ -54,4 +55,8 @@ test("dispatching an unknown workflow is refused before anything is written", as
 test("GitLab and unknown copies are reported, not guessed", async () => {
   await assert.rejects(setup("gitlab").service.runs("c1", "all", 1), {message: "PROVIDER_UNSUPPORTED"});
   await assert.rejects(setup().service.runs("other", "all", 1), {message: "NOT_FOUND"});
+});
+
+test("a job without a log is explained by the forge's notes", async () => {
+  assert.deepEqual(await setup().service.log("c1", "9", "77"), {log: null, errorLine: null, notes: ["The job was not started because of billing."]});
 });

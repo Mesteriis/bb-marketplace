@@ -54,6 +54,7 @@ export function client(account: Account, token: string, send: typeof fetch): Htt
         await response.body?.cancel();
         if (options.unsupported && (response.status === 404 || response.status === 405)) throw new Error("PROVIDER_UNSUPPORTED");
         if (writing && response.status >= 500) throw new Error("OUTCOME_UNKNOWN");
+        if (response.status === 409) throw new Error("PROVIDER_CONFLICT");
         if ([401,403,404].includes(response.status)) throw new Error("PROVIDER_DENIED");
         if (response.status >= 500 || response.status === 429) throw new Error("PROVIDER_UNAVAILABLE");
         throw new Error("PROVIDER_REJECTED");
@@ -80,7 +81,7 @@ export function client(account: Account, token: string, send: typeof fetch): Htt
       const payload = options.raw ? redact(raw) : raw ? JSON.parse(raw, (_, value) => typeof value === "string" ? redact(value) : value) : null;
       return {payload, headers:response.headers};
     } catch (error) {
-      if (error instanceof Error && /^(OUTCOME_UNKNOWN|PROVIDER_DENIED|PROVIDER_REJECTED|PROVIDER_UNAVAILABLE|PROVIDER_UNSUPPORTED|GIT_OUTPUT_LIMIT)$/.test(error.message)) throw error;
+      if (error instanceof Error && /^(OUTCOME_UNKNOWN|PROVIDER_DENIED|PROVIDER_REJECTED|PROVIDER_UNAVAILABLE|PROVIDER_UNSUPPORTED|PROVIDER_CONFLICT|GIT_OUTPUT_LIMIT)$/.test(error.message)) throw error;
       throw new Error(writing ? "OUTCOME_UNKNOWN" : "PROVIDER_UNAVAILABLE");
     }
   };

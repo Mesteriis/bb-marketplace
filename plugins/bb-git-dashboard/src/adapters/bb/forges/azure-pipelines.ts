@@ -65,6 +65,7 @@ export function azurePipelines(account: Account, repo: Repo, token: string, send
       if (!Number.isSafeInteger(logId)) return null;
       return fetchLog(new URL(endpoint(build(runId) + "/logs/" + logId), originOf(account)), authorization(account, token), send);
     },
+    notes: async () => [],
     async workflows() {
       return values(await get("/definitions", {repositoryId: repo.id, repositoryType: "TfsGit"})).map(object)
         .map((row): Workflow => ({id: String(row.id ?? ""), name: text(row.name), path: nullable(row.path)}));

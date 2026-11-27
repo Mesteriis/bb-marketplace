@@ -11,6 +11,8 @@ export interface Pipelines {
   jobs(runId: string): Promise<Job[]>;
   /** Null while the forge has no log for the job yet (GitHub publishes it when the job ends). */
   log(runId: string, jobId: string): Promise<JobLog>;
+  /** What the forge says about a job besides its log, e.g. why it never started. Empty where unsupported. */
+  notes(runId: string, jobId: string): Promise<string[]>;
   workflows(): Promise<Workflow[]>;
   dispatchSpec(workflow: Workflow, ref: string): Promise<DispatchSpec>;
   dispatch(workflow: Workflow, ref: string, inputs: Record<string, string>): Promise<void>;

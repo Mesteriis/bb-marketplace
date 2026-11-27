@@ -14,7 +14,7 @@ export const ciContract = {
       operations, limitations: z.record(z.string(), z.string())})},
   ciRun: {input: z.object({copyId: id, runId}), output: answer({run, jobs: z.array(job)})},
   ciLog: {input: z.object({copyId: id, runId, jobId: runId}),
-    output: answer({log: z.object({text: z.string(), truncated: z.boolean()}).nullable(), errorLine: z.number().int().nullable()})},
+    output: answer({log: z.object({text: z.string(), truncated: z.boolean()}).nullable(), errorLine: z.number().int().nullable(), notes: z.array(z.string())})},
   ciWorkflows: {input: z.object({copyId: id}),
     output: answer({workflows: z.array(z.object({id: z.string(), name: z.string(), path: z.string().nullable()})), defaultBranch: z.string().nullable()})},
   ciForm: {input: z.object({copyId: id, workflowId: runId, ref: z.string().min(1).max(250)}), output: answer(dispatchSpecSchema.shape)},

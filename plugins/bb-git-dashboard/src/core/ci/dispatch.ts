@@ -36,3 +36,11 @@ export function dispatchSpec(document: unknown): DispatchSpec {
     };
   })};
 }
+
+/** Values to send: declared inputs only, and blank optional ones left out so the workflow's defaults apply. */
+export function dispatchValues(spec: DispatchSpec, values: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(spec.inputs.flatMap(input => {
+    const value = values[input.name] ?? "";
+    return value.trim() || input.required ? [[input.name, value]] : [];
+  }));
+}

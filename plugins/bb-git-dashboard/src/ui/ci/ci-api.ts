@@ -12,7 +12,7 @@ export type ThreadRef = {id: string; title: string};
 export type CiApi = {
   runs(copyId: string, filter: RunFilter, page: number): Promise<RunsPage>;
   run(copyId: string, runId: string): Promise<{run: Run; jobs: Job[]}>;
-  log(copyId: string, runId: string, jobId: string): Promise<{log: JobLog; errorLine: number | null}>;
+  log(copyId: string, runId: string, jobId: string): Promise<{log: JobLog; errorLine: number | null; notes: string[]}>;
   workflows(copyId: string): Promise<{workflows: Workflow[]; defaultBranch: string | null}>;
   form(copyId: string, workflowId: string, ref: string): Promise<DispatchSpec>;
   prepare(copyId: string, action: CiAction): Promise<{id: string; lines: string[]; expires: string}>;

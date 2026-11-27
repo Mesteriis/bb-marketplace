@@ -56,6 +56,12 @@ export function actionsPipelines(account: Account, repo: Repo, token: string, se
     run: async runId => toRun(await get("/actions/runs/" + segment(runId))),
     jobs: async runId => array(object(await get("/actions/runs/" + segment(runId) + "/jobs?" + paging(1, 100))).jobs).map(toJob),
     log: (_runId, jobId) => fetchLog(new URL(root + "/actions/jobs/" + segment(jobId) + "/logs", originOf(account)), authorization(account, token), send),
+    async notes(_runId, jobId) {
+      // On GitHub a job is a check run with the same id; Gitea has no annotations API.
+      if (gitea) return [];
+      return array(await get("/check-runs/" + segment(jobId) + "/annotations")).map(object)
+        .filter(row => row.annotation_level === "failure").map(row => text(row.message)).filter(Boolean).slice(0, 10);
+    },
     async workflows() {
       return array(object(await get("/actions/workflows?" + paging(1, 100))).workflows).map(object)
         .map((row): Workflow => ({id: String(row.id ?? ""), name: text(row.name) || text(row.path), path: nullable(row.path)}));
