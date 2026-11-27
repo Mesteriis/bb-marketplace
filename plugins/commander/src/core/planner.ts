@@ -7,6 +7,7 @@ import {
   assertNotReplacingSource,
   assertRemovable,
   assertWritable,
+  segmentKey,
 } from "./guards.ts";
 import {
   ConflictPolicy,
@@ -18,6 +19,7 @@ import {
   planDigest,
   type EndpointId,
   type Entry,
+  type ExpectedTarget as ExpectedTargetValue,
   type PlanItem,
   type Route,
 } from "./model.ts";
@@ -97,6 +99,12 @@ function lastSegment(path: ResourcePath): NameSegment {
   return name;
 }
 
+function sameNameExactly(a: NameSegment, b: NameSegment): boolean {
+  if ("t" in a && "t" in b) return a.t === b.t;
+  if ("b" in a && "b" in b) return a.b === b.b;
+  return false;
+}
+
 /** A requested source that is missing is not_found; a child that vanished mid-walk is a change. */
 async function statExisting(
   provider: FileProvider,
@@ -120,13 +128,30 @@ async function assertDirectoryTarget(provider: FileProvider, path: ResourcePath,
   if (entry.kind !== "dir") throw invalidRequest("The target must be a directory");
 }
 
+/** The target's state now, in the shape the plan records it. */
+async function expectationAt(
+  provider: FileProvider,
+  path: ResourcePath,
+  signal: AbortSignal,
+): Promise<ExpectedTargetValue> {
+  const entry = await provider.stat(path, signal);
+  return entry === null ? "absent" : { size: entry.size, mtimeNs: entry.mtimeNs };
+}
+
+/** Shared by all sources of one plan: every listed page counts, not only one tree's. */
+interface Budget {
+  pages: number;
+}
+
 interface Walk {
   provider: FileProvider;
   kind: OperationKind;
   items: PlanItem[];
+  targetProvider: FileProvider | null;
   targetEndpoint: EndpointId | null;
   maxItems: number;
   maxDepth: number;
+  budget: Budget;
   signal: AbortSignal;
 }
 
@@ -155,6 +180,9 @@ async function walk(
   if (depth > w.maxDepth) {
     throw new CommanderError("limit_exceeded", "The tree is nested too deeply");
   }
+  const expectTarget = tgtPath === null || w.targetProvider === null
+    ? null
+    : await expectationAt(w.targetProvider, tgtPath, w.signal);
   const item: PlanItem = {
     source: { endpoint: w.provider.endpoint.id, path: srcPath },
     target: tgtPath === null || w.targetEndpoint === null
@@ -162,6 +190,7 @@ async function walk(
       : { endpoint: w.targetEndpoint, path: tgtPath },
     kind: entry.kind,
     fingerprint: { size: entry.size, mtimeNs: entry.mtimeNs },
+    expectTarget,
   };
   const postOrder = w.kind === "delete";
   if (!postOrder) pushItem(w, item);
@@ -177,11 +206,26 @@ async function walkChildren(
   depth: number,
 ): Promise<void> {
   const seenCursors = new Set<string>();
+  const seenNames = new Set<string>();
   let cursor: string | null = null;
   do {
     w.signal.throwIfAborted();
+    w.budget.pages++;
+    if (w.budget.pages > w.maxItems + 1) {
+      throw new CommanderError("limit_exceeded", "The listing used too many pages");
+    }
     const page = await w.provider.list(srcPath, { cursor, limit: LIST_PAGE_MAX }, w.signal);
+    // A page with no entries and a cursor makes no progress: the provider is broken.
+    if (page.entries.length === 0 && page.cursor !== null) {
+      throw new CommanderError("internal", "The provider returned an empty page with a cursor");
+    }
     for (const child of page.entries) {
+      // The same name twice in one listing means the directory changed under the plan.
+      const key = segmentKey(child.name, w.provider.endpoint.caseSensitive);
+      if (seenNames.has(key)) {
+        throw new CommanderError("changed_since_plan", "The listing repeated a name");
+      }
+      seenNames.add(key);
       const childPath = join(srcPath, child.name);
       const childEntry = await statExisting(w.provider, childPath, w.signal, "changed_since_plan");
       await walk(w, childPath, childEntry, tgtPath === null ? null : join(tgtPath, child.name), depth + 1);
@@ -225,6 +269,10 @@ export async function buildPlan(
   deps: PlannerDeps,
   signal: AbortSignal,
 ): Promise<OperationPlan> {
+  // Checked before the schema so a huge selection is refused as a limit, not as a schema error.
+  if (Array.isArray(rawRequest.sources) && rawRequest.sources.length > SCHEMA_MAX_ITEMS) {
+    throw new CommanderError("limit_exceeded", "The selection has too many sources");
+  }
   const req = snapshotRequest(rawRequest);
   signal.throwIfAborted();
   const caseOf = (id: EndpointId) => deps.provider(id).endpoint.caseSensitive;
@@ -263,6 +311,9 @@ export async function buildPlan(
       if (req.sources.length !== 1 || req.newName === null || req.targetDir !== null) {
         throw invalidRequest("rename needs exactly one source and a new name");
       }
+      if (sameNameExactly(lastSegment(req.sources[0].path), req.newName)) {
+        throw new CommanderError("invalid_name", "The new name equals the current name");
+      }
       targetEndpoint = sourceEndpoint;
       assertWritable(deps.provider(sourceEndpoint!).endpoint);
       assertRemovable(req.sources[0], deps.protectedPathsFor(req.sources[0].endpoint));
@@ -282,17 +333,22 @@ export async function buildPlan(
   }
 
   assertNoSourceOverlap(req.sources, caseOf);
-  if (req.targetDir !== null && req.kind !== "rename" && req.kind !== "delete") {
+  const recordsTargetDir = req.kind === "copy" || req.kind === "move" || req.kind === "mkdir";
+  if (recordsTargetDir && req.targetDir !== null) {
     await assertDirectoryTarget(deps.provider(req.targetDir.endpoint), req.targetDir.path, signal);
   }
 
   const items: PlanItem[] = [];
+  const budget: Budget = { pages: 0 };
   if (req.kind === "mkdir") {
+    const path = join(req.targetDir!.path, req.newName!);
+    const provider = deps.provider(targetEndpoint!);
     items.push({
       source: null,
-      target: { endpoint: targetEndpoint!, path: join(req.targetDir!.path, req.newName!) },
+      target: { endpoint: targetEndpoint!, path },
       kind: "dir",
       fingerprint: null,
+      expectTarget: await expectationAt(provider, path, signal),
     });
   } else if (req.kind === "rename") {
     const source = req.sources[0];
@@ -300,19 +356,32 @@ export async function buildPlan(
     const sourceParent = parent(source.path);
     if (sourceParent === null) throw invalidRequest("The root cannot be renamed");
     const entry = await statExisting(provider, source.path, signal, "not_found");
+    const targetPath = join(sourceParent, req.newName!);
     items.push({
       source: { endpoint: source.endpoint, path: source.path },
-      target: { endpoint: source.endpoint, path: join(sourceParent, req.newName!) },
+      target: { endpoint: source.endpoint, path: targetPath },
       kind: entry.kind,
       fingerprint: { size: entry.size, mtimeNs: entry.mtimeNs },
+      expectTarget: await expectationAt(provider, targetPath, signal),
     });
   } else {
+    const targetProvider = targetEndpoint === null ? null : deps.provider(targetEndpoint);
     for (const source of req.sources) {
       const provider = deps.provider(source.endpoint);
       const entry = await statExisting(provider, source.path, signal, "not_found");
       const target = req.kind === "delete" ? null : join(req.targetDir!.path, lastSegment(source.path));
       await walk(
-        { provider, kind: req.kind, items, targetEndpoint, maxItems, maxDepth: deps.limits.maxDepth, signal },
+        {
+          provider,
+          kind: req.kind,
+          items,
+          targetProvider,
+          targetEndpoint,
+          maxItems,
+          maxDepth: deps.limits.maxDepth,
+          budget,
+          signal,
+        },
         source.path,
         entry,
         target,
@@ -329,6 +398,7 @@ export async function buildPlan(
     initiator: req.initiator,
     sourceEndpoint,
     targetEndpoint,
+    targetDir: recordsTargetDir ? req.targetDir : null,
     items,
     conflictPolicy: req.conflictPolicy,
     route: routeFor(sourceEndpoint, targetEndpoint),
@@ -339,9 +409,12 @@ export async function buildPlan(
   return OperationPlan.parse({ ...unsigned, digest });
 }
 
-/** Every removal and write the plan needs must still be allowed under current policy. */
-async function assertPlanStillAllowed(plan: OperationPlan, deps: PlannerDeps): Promise<void> {
+/** Every write, removal and target directory the plan needs must still be allowed. */
+async function assertPlanStillAllowed(plan: OperationPlan, deps: PlannerDeps, signal: AbortSignal): Promise<void> {
   const removes = plan.kind === "delete" || plan.kind === "move" || plan.kind === "rename";
+  if (plan.targetDir !== null) {
+    await assertDirectoryTarget(deps.provider(plan.targetDir.endpoint), plan.targetDir.path, signal);
+  }
   for (const item of plan.items) {
     if (item.target !== null) assertWritable(deps.provider(item.target.endpoint).endpoint);
     if (removes && item.source !== null) {
@@ -351,9 +424,17 @@ async function assertPlanStillAllowed(plan: OperationPlan, deps: PlannerDeps): P
   }
 }
 
+function sameFingerprint(current: Entry, expected: { size: string; mtimeNs: string | null }): boolean {
+  return current.size === expected.size && current.mtimeNs === expected.mtimeNs;
+}
+
 /**
- * Checks that the plan is intact and that its sources still match. Returns the
- * indexes of items whose kind, size or mtime changed, or that are gone.
+ * Checks the plan against the current state and returns the snapshot it checked.
+ * The snapshot is taken synchronously, before the first await, so a caller's
+ * later mutation of `plan` cannot reach the checks or the returned plan.
+ *
+ * Returns the indexes of items whose source (kind, size or mtime) changed or
+ * vanished, or whose target no longer matches expectTarget.
  *
  * Known limit: a directory's mtimeNs can be null (the provider cannot report it).
  * A null matches null, so a change to such a directory's contents is not seen
@@ -363,23 +444,34 @@ export async function revalidate(
   plan: OperationPlan,
   deps: PlannerDeps,
   signal: AbortSignal,
-): Promise<{ ok: true } | { ok: false; changed: number[] }> {
-  const { digest, ...unsigned } = plan;
+): Promise<{ ok: true; plan: OperationPlan } | { ok: false; changed: number[] }> {
+  const parsed = OperationPlan.safeParse(structuredClone(plan));
+  if (!parsed.success) throw new CommanderError("internal", "The plan does not match its schema");
+  const snapshot = parsed.data;
+
+  const { digest, ...unsigned } = snapshot;
   if ((await planDigest(unsigned)) !== digest) {
     throw new CommanderError("internal", "The plan does not match its digest");
   }
-  await assertPlanStillAllowed(plan, deps);
+  await assertPlanStillAllowed(snapshot, deps, signal);
 
   const changed: number[] = [];
-  for (const [index, item] of plan.items.entries()) {
-    if (item.source === null || item.fingerprint === null) continue;
+  for (const [index, item] of snapshot.items.entries()) {
     signal.throwIfAborted();
-    const entry = await deps.provider(item.source.endpoint).stat(item.source.path, signal);
-    const unchanged = entry !== null
-      && entry.kind === item.kind
-      && entry.size === item.fingerprint.size
-      && entry.mtimeNs === item.fingerprint.mtimeNs;
+    let unchanged = true;
+    if (item.source !== null && item.fingerprint !== null) {
+      const entry = await deps.provider(item.source.endpoint).stat(item.source.path, signal);
+      unchanged = entry !== null
+        && entry.kind === item.kind
+        && sameFingerprint(entry, item.fingerprint);
+    }
+    if (unchanged && item.target !== null && item.expectTarget !== null) {
+      const current = await deps.provider(item.target.endpoint).stat(item.target.path, signal);
+      unchanged = item.expectTarget === "absent"
+        ? current === null
+        : current !== null && sameFingerprint(current, item.expectTarget);
+    }
     if (!unchanged) changed.push(index);
   }
-  return changed.length === 0 ? { ok: true } : { ok: false, changed };
+  return changed.length === 0 ? { ok: true, plan: snapshot } : { ok: false, changed };
 }

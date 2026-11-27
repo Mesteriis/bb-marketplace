@@ -77,7 +77,8 @@ export function assertWritable(endpoint: Endpoint): void {
 
 type CaseOf = (endpoint: EndpointId) => boolean;
 
-function segmentKey(name: NameSegment, caseSensitive: boolean): string {
+/** Equal keys mean the same name on that endpoint (case folded when it is case-insensitive). */
+export function segmentKey(name: NameSegment, caseSensitive: boolean): string {
   if ("b" in name) return "b" + name.b;
   return "t" + (caseSensitive ? name.t : name.t.normalize("NFC").toLowerCase());
 }
@@ -121,30 +122,39 @@ export function assertNoSourceOverlap(sources: ResourceRef[], caseOf: CaseOf): v
   }
 }
 
+/** The key of a path itself, the same one prefixKeys ends with. */
+function selfKey(ref: ResourceRef, caseOf: CaseOf): string {
+  const keys = prefixKeys(ref, caseOf(ref.endpoint));
+  return keys[keys.length - 1];
+}
+
 /**
- * Rejects two items that write to the same target, and a computed target that is
- * an ancestor of, or equal to, another item's source on the same endpoint. Such a
- * plan would overwrite material it still has to read. Example: move [/src/a,
- * /out/a/b] into /out lands /src/a at /out/a, which contains the source /out/a/b.
+ * Rejects two items that write to the same target, and a target that lands on
+ * another item's source on the same endpoint. Such a plan would overwrite material
+ * it still has to read. Example: move [/src/a, /out/a/b] into /out lands /src/a at
+ * /out/a, which contains the source /out/a/b.
+ *
+ * An item's own source is not compared with its own target: a rename that only
+ * changes letter case on a case-insensitive endpoint (/d/A -> /d/a) is allowed.
+ * An exact no-op rename is refused by the planner.
  */
 export function assertNoTargetOverlap(items: PlanItem[], caseOf: CaseOf): void {
-  const targets = new Set<string>();
-  for (const item of items) {
-    if (item.target === null) continue;
-    const key = prefixKeys(item.target, caseOf(item.target.endpoint));
-    const self = key[key.length - 1];
-    if (targets.has(self)) {
+  const owners = new Map<string, number>();
+  items.forEach((item, index) => {
+    if (item.target === null) return;
+    const key = selfKey(item.target, caseOf);
+    if (owners.has(key)) {
       throw new CommanderError("invalid_path", "Two items would write to the same target");
     }
-    targets.add(self);
-  }
-  if (targets.size === 0) return;
-  for (const item of items) {
-    if (item.source === null) continue;
+    owners.set(key, index);
+  });
+  items.forEach((item, index) => {
+    if (item.source === null) return;
     for (const key of prefixKeys(item.source, caseOf(item.source.endpoint))) {
-      if (targets.has(key)) {
+      const owner = owners.get(key);
+      if (owner !== undefined && owner !== index) {
         throw new CommanderError("invalid_path", "A target would land on another item's source");
       }
     }
-  }
+  });
 }

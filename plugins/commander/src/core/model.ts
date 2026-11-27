@@ -75,12 +75,21 @@ export type Route = z.infer<typeof Route>;
 export const Verify = z.enum(["size", "sha256"]);
 export type Verify = z.infer<typeof Verify>;
 
+/** The target's state at plan time: "absent", or its fingerprint when it exists. */
+export const ExpectedTarget = z.union([Fingerprint, z.literal("absent")]);
+export type ExpectedTarget = z.infer<typeof ExpectedTarget>;
+
 export const PlanItem = z.object({
   source: ResourceRef.nullable(),          // null для mkdir
   target: ResourceRef.nullable(),          // null для delete
   kind: EntryKind,
   fingerprint: Fingerprint.nullable(),     // источника на момент плана; null для mkdir
-}).strict();
+  expectTarget: ExpectedTarget.nullable(), // цели на момент плана; null ровно когда нет цели
+}).strict().superRefine((item, ctx) => {
+  if ((item.target === null) !== (item.expectTarget === null)) {
+    ctx.addIssue({ code: "custom", path: ["expectTarget"], message: "expectTarget is set exactly when there is a target" });
+  }
+});
 export type PlanItem = z.infer<typeof PlanItem>;
 
 export const OperationPlan = z.object({
@@ -90,6 +99,7 @@ export const OperationPlan = z.object({
   initiator: Initiator,
   sourceEndpoint: EndpointId.nullable(),
   targetEndpoint: EndpointId.nullable(),
+  targetDir: ResourceRef.nullable(),       // каталог назначения для copy, move, mkdir; иначе null
   items: z.array(PlanItem).min(1).max(100_000),
   conflictPolicy: ConflictPolicy,
   route: Route,

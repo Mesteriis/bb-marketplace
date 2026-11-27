@@ -8,11 +8,13 @@ const plan = {
   initiator: { kind: "owner" },
   sourceEndpoint: null,
   targetEndpoint: "host:test",
+  targetDir: { endpoint: "host:test", path: { segments: [] } },
   items: [{
     source: null,
     target: { endpoint: "host:test", path: { segments: [{ t: "Привет" }] } },
     kind: "dir",
     fingerprint: null,
+    expectTarget: "absent",
   }],
   conflictPolicy: "ask",
   route: "same-endpoint",
@@ -20,7 +22,8 @@ const plan = {
   totalBytes: "0",
 } satisfies Omit<OperationPlan, "digest">;
 
-const digest = "fe0f1fba822b6fe1c5e4b62663cb7e47a1a50fe1ad42ce4b5f158b6f032bbc33";
+// Recomputed with an independent canonical hash (sorted keys) after targetDir and expectTarget were added.
+const digest = "204af016dbd3b54a5992205737c80f46dcc4d79a75d30e390218b28f4766dc04";
 
 it("accepts host and SFTP endpoint IDs", () => {
   expect(EndpointId.parse("host:host_qu7wvy3gxm")).toBe("host:host_qu7wvy3gxm");
@@ -57,8 +60,10 @@ it("hashes the canonical JSON independently of top-level and nested key order", 
     verify: "size",
     route: "same-endpoint",
     conflictPolicy: "ask",
+    targetDir: { path: { segments: [] }, endpoint: "host:test" },
     items: [{
       kind: "dir",
+      expectTarget: "absent",
       target: { path: { segments: [{ t: "Привет" }] }, endpoint: "host:test" },
       fingerprint: null,
       source: null,
