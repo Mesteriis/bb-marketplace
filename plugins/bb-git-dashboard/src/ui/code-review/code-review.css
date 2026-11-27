@@ -32,3 +32,9 @@
 .git-ws .git-code-review[data-palette="color-blind"] .git-code-review-suggestion .git-added { color: #0072b2; }
 .git-ws .git-code-review[data-palette="color-blind"] .git-code-review-suggestion .git-removed { color: #b35c00; }
 .git-ws .git-review-body > * { margin: 0; }
+.git-ws .git-code-review-find { flex-wrap: wrap; gap: 6px; align-items: center; position: sticky; top: 0; z-index: 2; background: var(--background); padding: 4px 0; }
+.git-ws .git-code-review-goto ul { list-style: none; margin: 0; padding: 0; max-height: 18em; overflow: auto; }
+.git-ws .git-code-review-goto li { padding: 3px 6px; cursor: pointer; overflow-wrap: anywhere; }
+.git-ws .git-code-review-goto li[aria-selected="true"] { background: color-mix(in srgb, var(--git-focus) 18%, transparent); }
+.git-ws .git-review-row[data-found] { box-shadow: inset 3px 0 0 #d4a017; }
+.git-ws .git-review-row[data-current] { box-shadow: inset 3px 0 0 var(--git-focus); outline: 1px solid var(--git-focus); outline-offset: -1px; }

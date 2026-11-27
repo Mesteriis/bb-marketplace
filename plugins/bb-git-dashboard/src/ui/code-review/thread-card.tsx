@@ -88,7 +88,7 @@ export function ThreadCard({thread, api, current, canApply, showPath, outdated}:
   const closed = thread.status !== "open";
   // A closed thread starts folded; an open one always shows, also after it is reopened elsewhere.
   const open = !closed || shown;
-  return <article className="git-review-thread" data-resolved={closed || undefined} aria-label={"Comment thread on " + describeLocation(thread)}>
+  return <article className="git-review-thread" data-thread-id={thread.id} tabIndex={-1} data-resolved={closed || undefined} aria-label={"Comment thread on " + describeLocation(thread)}>
     <header className="git-row git-code-review-thread-head">
       {showPath && <span className="git-path">{describeLocation(thread)}</span>}
       {thread.severity && <span className="git-review-tag" data-severity={thread.severity}>{severityLabel[thread.severity]}</span>}

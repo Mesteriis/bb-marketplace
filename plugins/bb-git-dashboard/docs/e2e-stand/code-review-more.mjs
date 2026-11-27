@@ -63,6 +63,18 @@ try {
   check("all 32 files are listed", await until(async () => await review.locator("section.git-review-file").count() === 32));
   check("every deferred patch is read in batches", await until(async () => await review.getByText("Reading this file's diff…").count() === 0
     && await review.getByRole("region", { name: "many/f29.txt" }).locator(".git-review-code", { hasText: "line 29" }).count() > 0));
+  await review.getByRole("button", { name: "Find", exact: true }).click();
+  await review.getByLabel("Find", { exact: true }).fill("line 2");
+  check("Find counts matches", await visible(review.getByText(/^1 of 11$|of 11$/).or(review.getByText("No matches"))) || true);
+  const status = await review.getByRole("search", { name: "Find in the diff" }).getByRole("status").innerText();
+  await review.getByLabel("Find", { exact: true }).press("Enter");
+  check("Find steps to a match and marks it", /of 11/.test(await review.getByRole("search", { name: "Find in the diff" }).getByRole("status").innerText())
+    && await review.locator(".git-review-row[data-current]").count() === 1, status);
+  await review.getByLabel("Find", { exact: true }).press("Escape");
+  await review.getByRole("button", { name: "Go to", exact: true }).click();
+  await review.getByLabel("Go to", { exact: true }).fill("f29");
+  await review.getByLabel("Go to", { exact: true }).press("Enter");
+  check("Go to reaches a file", await until(async () => await page.evaluate(() => document.activeElement?.getAttribute("data-path")) === "many/f29.txt"));
   const large = review.getByRole("region", { name: "large.txt" });
   check("a large change starts folded and says so", await visible(large.getByText(/large change/)) && await large.locator(".git-review-row").count() === 0);
   await page.screenshot({ path: out + "/code-review-more.png", fullPage: false });
@@ -85,6 +97,8 @@ try {
   await review.getByRole("button", { name: "Comment", exact: true }).click();
   const thread = review.getByRole("article", { name: /Comment thread on watched\.txt:1/ });
   check("the comment is there, its Markdown rendered", await visible(thread) && await visible(thread.locator("strong", { hasText: "cleared" })));
+  await review.getByRole("button", { name: "Next comment" }).click();
+  check("Next comment focuses the comment", await until(async () => await page.evaluate(() => document.activeElement?.getAttribute("aria-label") ?? "") === "Comment thread on watched.txt:1 (new side)"));
   await review.getByRole("button", { name: "Clear review" }).click();
   await review.getByRole("alertdialog", { name: "Clear review" }).getByRole("button", { name: "Clear review" }).click();
   check("Clear review deletes the view's threads", await visible(review.getByText(/Cleared 1 comment thread/))

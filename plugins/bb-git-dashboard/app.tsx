@@ -16,6 +16,7 @@ import { PrPage } from "./src/ui/review/pr-page.tsx";
 import { CiOverview } from "./src/ui/ci/ci-overview.tsx";
 import { IssuePage } from "./src/ui/review/issue-page.tsx";
 import { parseRef, refPath, type ReviewApi } from "./src/ui/review/review-api.ts";
+import { dispatchReviewCommand, REVIEW_COMMANDS, type ReviewCommand } from "./src/ui/code-review/commands.ts";
 import { ciApi, codeReviewApi, failed, historyApi, okValue } from "./src/app/apis.tsx";
 import { ciTab, historyTab, reviewTab, ThreadCi, ThreadHistory, ThreadReview, registerHistoryShortcut } from "./src/app/thread-tabs.tsx";
 import "./src/ui/git.css";
@@ -416,6 +417,17 @@ export default definePluginApp(app => {
   app.slots.experimental_tab({...historyTab, title:"Git History", icon:"FolderGit", layout:"flush", component:ThreadHistory});
   app.slots.experimental_tab({...ciTab, title:"CI/CD", icon:"Workflow", layout:"flush", component:ThreadCi});
   app.slots.experimental_tab({...reviewTab, title:"Review", icon:"FileDiff", layout:"flush", component:ThreadReview});
+  // The Review's palette commands: each opens the thread's Review tab and leaves its action there.
+  app.commands.register({id:"review-open", title:"Makosh Git: review this thread's changes", isAvailable:context => context.threadId !== null,
+    run:context => { context.experimental_panel.openTab({tab:reviewTab, title:"Review"}); }});
+  for (const [id, title] of Object.entries(REVIEW_COMMANDS) as [ReviewCommand, string][]) {
+    app.commands.register({id:"review-" + id, title:"Makosh Git Review: " + title, isAvailable:context => context.threadId !== null,
+      run:context => {
+        if (context.threadId === null) return;
+        context.experimental_panel.openTab({tab:reviewTab, title:"Review"});
+        dispatchReviewCommand(context.threadId, id);
+      }});
+  }
   registerHistoryShortcut(app.slots);
   app.slots.experimental_tab({id:tab.id, title:"Pinned Git", icon:"GitBranch", context:{kind:"nav-panel", panelId:"git"}, availability:"action", layout:"flush", component:PinnedGit});
 });

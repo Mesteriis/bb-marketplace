@@ -1,10 +1,13 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { PATCH_BATCH, withPatches } from "../../core/code-review/diff.ts";
 import { keepView, readView, viewScope, type ViewStorage } from "../../core/code-review/view-memory.ts";
 import { parseRange, rangeText } from "../../core/code-review/git-spec.ts";
 import { describeTarget, GENERAL_PATH, type ReviewRun, type TargetRequest } from "../../core/code-review/model.ts";
 import type { ExplainPlace } from "../../core/code-review/run-prompts.ts";
 import { AiReviewForm, RunList } from "./ai-runs.tsx";
+import { useReviewCommands, type ReviewCommand } from "./commands.ts";
+import { FindBar, GoToDialog } from "./navigate-bar.tsx";
+import { commentOrder, findMatches, goToItems, step, type GoToItem } from "./navigation.ts";
 import { FileDiff } from "./file-diff.tsx";
 import { message, type CodeReviewApi, type NewThread, type ReviewView } from "./review-api.ts";
 import { SendForm } from "./send-form.tsx";
@@ -47,6 +50,15 @@ export function ReviewPanel({api, copyId, currentThreadId, revision}: {api: Code
   const [wrap, setWrap] = useState(kept.wrap);
   const [split, setSplit] = useState(kept.split);
   const [clearing, setClearing] = useState(false);
+  const [finding, setFinding] = useState(false);
+  const [query, setQuery] = useState("");
+  const [matchCase, setMatchCase] = useState(false);
+  const [matchIndex, setMatchIndex] = useState(-1);
+  const [goingTo, setGoingTo] = useState(false);
+  const [goToQuery, setGoToQuery] = useState("");
+  const [commentAt, setCommentAt] = useState("");
+  const [reveal, setReveal] = useState<{path: string; token: number} | null>(null);
+  const root = useRef<HTMLElement>(null);
   useEffect(() => keepView(browserStorage(), scope, {target: auto ? null : applied, ignoreWhitespace, onlyCommented, wrap, split}),
     [scope, auto, applied, ignoreWhitespace, onlyCommented, wrap, split]);
   const [view, setView] = useState<ReviewView>();
@@ -177,9 +189,63 @@ export function ReviewPanel({api, copyId, currentThreadId, revision}: {api: Code
   const generalThreads = threads.filter(thread => thread.filePath === GENERAL_PATH);
   const outdated = threads.filter(thread => thread.filePath !== GENERAL_PATH && placed(thread.id)?.state === "outdated");
   const files = (view?.files ?? []).filter(file => !onlyCommented || threads.some(thread => thread.filePath === file.path));
+  const matches = useMemo(() => finding ? findMatches(files, query, matchCase) : [], [finding, files, query, matchCase]);
+  const at = matches[matchIndex] ?? null;
+  const foundIn = useMemo(() => {
+    const byPath = new Map<string, Set<number>>();
+    for (const match of matches) byPath.set(match.path, (byPath.get(match.path) ?? new Set()).add(match.row));
+    return byPath;
+  }, [matches]);
+  /** Unfolds `path` (when given), then scrolls `selector` into view inside this Review and focuses it. */
+  const reach = (path: string | null, selector: string) => {
+    if (path) setReveal(current => ({path, token: (current?.token ?? 0) + 1}));
+    setTimeout(() => {
+      const found = root.current?.querySelector<HTMLElement>(selector);
+      found?.scrollIntoView({block: "center"});
+      found?.focus({preventScroll: true});
+    }, 60);
+  };
+  const stepMatch = (delta: 1 | -1) => {
+    const next = step(matches.length, matchIndex, delta);
+    setMatchIndex(next);
+    const match = matches[next];
+    if (match) reach(match.path, `section[data-path="${CSS.escape(match.path)}"] [data-row="${match.row}"]`);
+  };
+  const order = commentOrder(files, threads);
+  const stepComment = (delta: 1 | -1) => {
+    const next = step(order.length, order.indexOf(commentAt), delta);
+    const id = order[next];
+    if (!id) return;
+    setCommentAt(id);
+    const thread = threads.find(item => item.id === id);
+    reach(thread && thread.filePath !== GENERAL_PATH ? thread.filePath : null, `[data-thread-id="${CSS.escape(id)}"]`);
+  };
+  const goTo = (item: GoToItem) => {
+    setGoingTo(false);
+    if (item.kind === "view") { choose(item.view as Kind); return; }
+    if (item.kind === "file") { reach(item.path, `section[data-path="${CSS.escape(item.path)}"]`); return; }
+    const thread = threads.find(row => row.id === item.id);
+    setCommentAt(item.id);
+    reach(thread && thread.filePath !== GENERAL_PATH ? thread.filePath : null, `[data-thread-id="${CSS.escape(item.id)}"]`);
+  };
+  useReviewCommands(currentThreadId ?? "copy:" + copyId, (command: ReviewCommand) => {
+    const actions: Record<ReviewCommand, () => void> = {
+      reload: refresh, send: () => setSending(true), "ai-review": () => setReviewing(true), "comment-diff": () => setGeneral(true),
+      find: () => setFinding(true), "go-to": () => setGoingTo(true), "next-comment": () => stepComment(1), "previous-comment": () => stepComment(-1),
+      "toggle-style": () => setSplit(value => !value), "toggle-only-commented": () => setOnlyCommented(value => !value),
+      "toggle-whitespace": () => setIgnoreWhitespace(value => !value), clear: () => setClearing(true),
+    };
+    actions[command]();
+  });
   const open = threads.filter(thread => thread.status === "open").length;
   const working = view ? workingViews.has(view.target.kind) : false;
-  return <section className="git-project-code git-stack git-code-review" aria-label="Review" data-palette={view?.colorBlind ? "color-blind" : undefined}>
+  // ⌘/Ctrl+F finds and ⌘/Ctrl+P goes to, while focus is inside this Review.
+  const keys = (event: KeyboardEvent) => {
+    if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
+    if (event.key === "f") { event.preventDefault(); setFinding(true); }
+    if (event.key === "p") { event.preventDefault(); setGoingTo(true); }
+  };
+  return <section ref={root} onKeyDown={keys} className="git-project-code git-stack git-code-review" aria-label="Review" data-palette={view?.colorBlind ? "color-blind" : undefined}>
     <div className="git-row git-code-review-bar">
       <select aria-label="What to review" value={kind} onChange={event => choose(event.target.value as Kind)}>
         {kinds.map(item => <option key={item.kind} value={item.kind}>{item.label}</option>)}</select>
@@ -202,11 +268,20 @@ export function ReviewPanel({api, copyId, currentThreadId, revision}: {api: Code
         {" "}· +{view.files.reduce((sum, file) => sum + file.additions, 0)} −{view.files.reduce((sum, file) => sum + file.deletions, 0)}
         {view.ignored ? " · " + view.ignored + " ignored" : ""}{view.truncated ? " · the diff was cut short" : ""}</span>
       <span className="git-ci-spacer"/>
+      <button type="button" aria-label="Previous comment" disabled={!order.length} onClick={() => stepComment(-1)}>↑ Comment</button>
+      <button type="button" aria-label="Next comment" disabled={!order.length} onClick={() => stepComment(1)}>↓ Comment</button>
+      <button type="button" aria-expanded={finding} onClick={() => setFinding(value => !value)}>Find</button>
+      <button type="button" aria-expanded={goingTo} onClick={() => setGoingTo(value => !value)}>Go to</button>
       <button type="button" aria-expanded={general} onClick={() => setGeneral(value => !value)}>Comment on the diff</button>
       <button type="button" aria-expanded={reviewing} disabled={!view.files.length} onClick={() => setReviewing(value => !value)}>AI review</button>
       <button type="button" aria-expanded={clearing} disabled={!threads.length && !runs.length} onClick={() => setClearing(value => !value)}>Clear review</button>
       <button type="button" className="git-primary" aria-expanded={sending} disabled={!open} onClick={() => setSending(value => !value)}>Send to agent ({open})</button>
     </div>}
+    {view && finding && <FindBar query={query} matchCase={matchCase} count={matches.length} current={matchIndex}
+      onQuery={value => { setQuery(value); setMatchIndex(-1); }} onMatchCase={value => { setMatchCase(value); setMatchIndex(-1); }} onStep={stepMatch}
+      onClose={() => { setFinding(false); setMatchIndex(-1); }}/>}
+    {view && goingTo && <GoToDialog items={goToItems(view.files, threads, kinds, goToQuery)} onQuery={setGoToQuery} onPick={goTo}
+      onClose={() => setGoingTo(false)}/>}
     {status && <p className="git-muted" role="status">{status}</p>}
     {error && <p className="git-error" role="alert">{error}</p>}
     {!view && !error && <p className="git-muted" role="status">Reading the diff…</p>}
@@ -238,6 +313,7 @@ export function ReviewPanel({api, copyId, currentThreadId, revision}: {api: Code
       patchError={file.deferred ? patchError : ""} onRetryPatch={() => setPatchRetry(value => value + 1)}
       onViewed={(revision, on) => markViewed(file.path, revision, on)}
       onOpen={file.changeKind === "deleted" ? undefined : line => api.openFile(view.copy.hostId, joinPath(view.copy.root, file.path), line)} workingCopy={working} api={liveApi} onCreate={create} onExplain={explain} explaining={explaining}
+      found={foundIn.get(file.path)} current={at?.path === file.path ? at.row : null} reveal={reveal?.path === file.path ? reveal.token : undefined}
       threads={threads.filter(thread => thread.filePath === file.path && placed(thread.id)?.state !== "outdated")} placements={view.placements}/>)}
   </section>;
 }

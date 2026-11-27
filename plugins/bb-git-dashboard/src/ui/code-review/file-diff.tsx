@@ -27,7 +27,8 @@ function anchorsOf(item: Item): {side: Side; line: number}[] {
  * One file of the review: its patch as rows with each thread under the last line it is placed on. Click a line
  * number to comment, Shift+click another line on the same side to comment on the range.
  */
-export function FileDiff({file, threads, placements, wrap, split, workingCopy, api, onCreate, onExplain, explaining, patchError, onRetryPatch, onViewed, onOpen}: {
+export function FileDiff({file, threads, placements, wrap, split, workingCopy, api, onCreate, onExplain, explaining, patchError, onRetryPatch, onViewed, onOpen,
+  found, current, reveal}: {
   file: ReviewDiffFile; threads: ReviewThread[]; placements: Record<string, Placement>; wrap: boolean; split: boolean; workingCopy: boolean;
   /** Why the deferred patch could not be read; Retry reads the batches again. */
   patchError: string; onRetryPatch(): void;
@@ -35,6 +36,10 @@ export function FileDiff({file, threads, placements, wrap, split, workingCopy, a
   onViewed(revision: string, viewed: boolean): Promise<void>;
   /** Opens the working copy's file at a line in BB's preview; absent for a deleted file. */
   onOpen?(line: number | null): void;
+  /** Rows (indices into the file's rows) Find matched, and the one it is on. */
+  found?: ReadonlySet<number>; current?: number | null;
+  /** Changes when something in this file is to be shown: the file unfolds. */
+  reveal?: number;
   api: CodeReviewApi; onCreate(thread: NewThread): Promise<void>;
   /** Starts an AI run that explains the file or the selected lines. */
   onExplain(place: ExplainPlace): Promise<void>; explaining: boolean;
@@ -51,6 +56,12 @@ export function FileDiff({file, threads, placements, wrap, split, workingCopy, a
   // Marking a file Viewed folds it; a mark that went stale (its change moved on) unfolds it.
   useEffect(() => { if (file.viewed !== undefined) setClosed(file.viewed || large); }, [file.viewed, large]);
   const [marking, setMarking] = useState(false);
+  useEffect(() => { if (reveal) setClosed(false); }, [reveal]);
+  const indexOf = useMemo(() => new Map(rows.map((row, index) => [row, index])), [rows]);
+  const mark = (row: DisplayRow | null) => {
+    const index = row ? indexOf.get(row) : undefined;
+    return index === undefined ? {} : {"data-row": index, "data-found": found?.has(index) || undefined, "data-current": current === index || undefined};
+  };
   const below = new Map<string, ReviewThread[]>();
   const wholeFile: ReviewThread[] = [];
   for (const thread of threads) {
@@ -70,7 +81,7 @@ export function FileDiff({file, threads, placements, wrap, split, workingCopy, a
   const inSide = (side: Side, line: number) => selection !== null && range !== null && side === selection.side && line >= range.start && line <= range.end;
   const inSelection = (row: DisplayRow) => row.kind !== "hunk" && inSide(sideOf(row), lineOf(row));
   const additions = file.binary ? "binary" : "+" + file.additions + " −" + file.deletions;
-  return <section className="git-review-file" aria-label={file.path}>
+  return <section className="git-review-file" aria-label={file.path} data-path={file.path} tabIndex={-1}>
     <header className="git-row git-review-file-head">
       <button type="button" className="git-link" aria-expanded={!closed} onClick={() => setClosed(value => !value)}>{closed ? "▸" : "▾"}</button>
       <strong className="git-path">{file.previousPath ? file.previousPath + " → " : ""}{file.path}</strong>
@@ -94,7 +105,7 @@ export function FileDiff({file, threads, placements, wrap, split, workingCopy, a
         <div className="git-review-diff" data-wrap={wrap || undefined} role="group" aria-label={"Diff of " + file.path}>
           {items.map((item, index) => <div key={index}>
             {item.kind === "hunk" ? <div className="git-review-row" data-kind="hunk"><span className="git-review-hunk">{item.text}</span></div>
-              : item.kind === "single" ? <div className="git-review-row" data-kind={kindOf(item.row)} data-selected={inSelection(item.row) || undefined}>
+              : item.kind === "single" ? <div className="git-review-row" data-kind={kindOf(item.row)} data-selected={inSelection(item.row) || undefined} {...mark(item.row)}>
                 <button type="button" className="git-review-number" aria-label={item.row.kind === "deletion" ? "Comment on old line " + item.row.oldLine : "Comment on line " + item.row.newLine}
                   onClick={event => pick(item.row, event.shiftKey)}>{item.row.oldLine ?? ""}</button>
                 <button type="button" className="git-review-number" tabIndex={-1} aria-hidden="true" onClick={event => pick(item.row, event.shiftKey)}>{item.row.newLine ?? ""}</button>
@@ -104,7 +115,8 @@ export function FileDiff({file, threads, placements, wrap, split, workingCopy, a
                 const row = item[side];
                 const line = row ? (side === "old" ? row.oldLine : row.newLine) : null;
                 const kind = !row ? "none" : row.kind === "context" ? "ctx" : side === "old" ? "del" : "add";
-                return <div key={side} className="git-review-row" data-kind={kind} data-selected={row && line !== null && inSide(side, line) || undefined}>
+                return <div key={side} className="git-review-row" data-kind={kind} data-selected={row && line !== null && inSide(side, line) || undefined}
+                  {...(side === "new" || row?.kind !== "context" ? mark(row) : {})}>
                   {row && line !== null ? <>
                     <button type="button" className="git-review-number" aria-label={(side === "old" ? "Comment on old line " : "Comment on line ") + line} onClick={event => pickAt(side, line, event.shiftKey)}>{line}</button>
                     <code className="git-review-code">{kind === "add" ? "+" : kind === "del" ? "−" : " "}{row.text}</code>
