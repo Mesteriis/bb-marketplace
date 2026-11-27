@@ -8,7 +8,7 @@ Each working copy is matched to its forge from its `origin` remote (SSH aliases 
 
 ## Projects folder
 
-The **Projects folder** setting (default `~/projects` on the scanned host) and its exclusion list define which folders count as projects: a folder with a `.git` directory is a project, a repository inside another project's folder is listed under that project, a linked worktree or a submodule belongs to its parent, and hidden folders, `node_modules`, `vendor` and `references` are skipped. A preview counts the top-level and nested projects found, returns them as a tree and lists what was skipped and why.
+The **Projects folder** setting (default `~/projects` on the scanned host) and its exclusion list define which folders count as projects: a folder with `.git` is a project, a repository inside another project's folder is listed under that project, a linked worktree or a submodule belongs to its parent, and hidden folders, `node_modules`, `vendor` and `references` are skipped. A preview shows the projects found as a tree and what was skipped and why.
 
 ## History
 
@@ -16,11 +16,11 @@ The History tab of a working copy, also a **Git History** tab in a thread and an
 
 ## Line review
 
-**Review**, in Git or a thread's tab, shows a working copy's diff. Comment on lines, files or the whole diff, suggest changes and apply them, and send the threads to the copy's agent, which answers each with `bb git-dashboard review`.
+**Review**, in Git or a thread's tab, shows a working copy's diff. Comment on lines, files or the whole diff, suggest and apply changes, and send threads to the copy's agent, which answers each with `bb git-dashboard review`. AI runs review, summarize, explain or fix in their own threads; @reviewer asks the reviewer.
 
 ## My PRs
 
-**Мои PR** lists the pull requests of every connected GitHub, GitLab, Gitea and Azure DevOps account by tab (Open, Review requested, Reviewed, Assigned, Merged, Closed), each led by what blocks it. Search, fold or hide repositories, move with j/k. A background check alerts you when CI starts failing or someone comments, as a toast, a count on the button and through Push notifications.
+**Мои PR** lists the pull requests of every connected GitHub, GitLab, Gitea and Azure DevOps account by tab (Open, Review requested, Reviewed, Assigned, Merged, Closed), each led by what blocks it. Search, fold or hide repositories, j/k moves. A background check alerts you when CI starts failing or someone comments, as a toast, a count on the button and through Push notifications.
 
 ## Pull requests and issues
 

@@ -25,8 +25,8 @@ export function ExecutionChoice({api, run, disabled}: {api: CodeReviewApi; run: 
   const {defaults, execution, setExecution, error} = run;
   const Picker = api.ExecutionPicker;
   return <div className="git-stack git-code-review-execution">
-    <span className="git-muted">Runs in a new thread under this one, on this working copy, in {defaults?.permissionMode === "accept-edits" ? "Accept edits" : "Approve for me"} mode
-      (Makosh Git settings), or in full mode with a provider that lacks it.</span>
+    <span className="git-muted">Runs in a new thread {defaults?.place?.kind === "environment" ? "under this one" : "in the working copy's project"}, on this working copy,
+      in {defaults?.permissionMode === "accept-edits" ? "Accept edits" : "Approve for me"} mode (Makosh Git settings), or in full mode with a provider that lacks it.</span>
     {error ? <p className="git-error" role="alert">{error}</p>
       : !defaults ? <span className="git-muted" role="status">Loading the providers…</span>
       : defaults.place && execution ? <Picker value={execution} onChange={setExecution} routing={defaults.place} disabled={disabled}/>

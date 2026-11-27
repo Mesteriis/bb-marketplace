@@ -9,7 +9,7 @@ Needs `git`, `node`, `npm`, `curl`, access to `registry.npmjs.org`, BB at
 `run.sh` outside them.
 
 ```sh
-S=$(docs/e2e-stand/prepare.sh "$PWD") && docs/e2e-stand/run.sh "$S" "$PWD/docs/e2e-stand/smoke.mjs" "$PWD/docs/e2e-stand/ci.mjs" "$PWD/docs/e2e-stand/code-review.mjs" "$PWD/docs/e2e-stand/history.mjs" "$PWD/docs/e2e-stand/gitlab.mjs" "$PWD/docs/e2e-stand/inbox.mjs" "$PWD/docs/e2e-stand/review.mjs"
+S=$(docs/e2e-stand/prepare.sh "$PWD") && docs/e2e-stand/run.sh "$S" "$PWD/docs/e2e-stand/smoke.mjs" "$PWD/docs/e2e-stand/ci.mjs" "$PWD/docs/e2e-stand/code-review.mjs" "$PWD/docs/e2e-stand/code-review-runs.mjs" "$PWD/docs/e2e-stand/history.mjs" "$PWD/docs/e2e-stand/gitlab.mjs" "$PWD/docs/e2e-stand/inbox.mjs" "$PWD/docs/e2e-stand/review.mjs"
 ```
 
 - `prepare.sh` copies this package into a new `$TMPDIR/git-dashboard-stand.*`, runs `npm ci` and
@@ -29,6 +29,13 @@ S=$(docs/e2e-stand/prepare.sh "$PWD") && docs/e2e-stand/run.sh "$S" "$PWD/docs/e
   log opens at its error line, scrolling only the log; re-run failed jobs and a manual run with inputs go through
   the confirmation dialog and reach the stand-in exactly once (`$S/forge/writes.log`); Ask agent opens a thread;
   layout at 768 px.
+
+- `code-review.mjs` — line review of `stand-beta`'s uncommitted change: a line comment with a severity, Send to agent
+  into the thread Ask agent opened, the answer through `bb git-dashboard review` from that thread, shown Answered.
+
+- `code-review-runs.mjs` — after `code-review.mjs`: the AI review dialog and BB's picker, a review run started with
+  a focus, its thread commenting through `bb git-dashboard review comment` (a line off the diff is refused with the
+  lines shown), Close taking its rights, Explain on a file, Fix in a new thread offered.
 
 - `gitlab.mjs` — `stand-gamma` has its origin on `fake-gitlab.mjs`, a self-managed GitLab stand-in on the same
   host name as the Gitea one, told apart by port: automatic connection; pipelines with the Active and Failed

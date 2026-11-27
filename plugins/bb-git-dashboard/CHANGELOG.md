@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.9.1 — 2026-11-27
+
+AI runs of the line review, the second part of taking over diff-review (0.9.2 brings the rest).
+
+- **AI review** in Review: an agent reviews the view, with focuses (Security, Performance, Correctness, Naming, Tests, Types) and your own instructions, or summarizes it, in a thread of its own on the working copy, a child of the reviewed thread when there is one. Its comments arrive as line, file or whole-diff threads signed by its provider.
+- **Explain** on a file, or on selected lines, starts a run that leaves the explanation as a comment there.
+- **@reviewer** (or @agent) in a comment asks the view's reviewer: the question goes to the latest open review run's thread as a new turn, or starts a reviewer.
+- **Fix in a new thread** in Send to agent sends the chosen threads to a new thread on the copy instead of an existing one; it answers them like any thread they were sent to.
+- **AI runs** under the toolbar: each run's state, Open thread, and Close, which archives its thread and takes away its rights. A run that should not edit lists the files that changed on the copy while it ran.
+- The picker is BB's own provider, model and reasoning picker, reading the catalog where the run starts. New settings: **Line review: provider for AI runs**, **model for AI runs** and **permission mode for AI runs** (Approve for me or Accept edits; full mode where the provider lacks it).
+- An AI review run may answer every thread of its review. Runs comment with `git_review_comment` and `git_review_general_comment`, or `bb git-dashboard review comment`; a comment off the diff is refused with the lines the diff shows.
+- Ported from diff-review (MIT): the run prompts, @reviewer mentions, the run service, store and tools.
+
 ## 0.9.0 — 2026-11-27
 
 Line review, the first part of taking over diff-review (0.9.1 brings its AI runs, 0.9.2 the rest).
