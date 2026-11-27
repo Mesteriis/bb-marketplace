@@ -47,6 +47,9 @@ const CheckpointValue = z.strictObject({
   committed: Fingerprint.optional(),
   writing: z.strictObject({ offset: Size, length: z.number().int().nonnegative() }).optional(),
   cleanup: z.strictObject({ tempPath: ResourcePath, tempFingerprint: Fingerprint }).optional(),
+  commitIntent: z.strictObject({
+    size: Size, sha256: z.string().regex(/^[0-9a-f]{64}$/), tempFingerprint: Fingerprint,
+  }).optional(),
   sourceHash: Fingerprint.shape.sha256,
 });
 
@@ -64,6 +67,7 @@ interface CheckpointRow {
   committed_json: string | null;
   writing_json: string | null;
   cleanup_json: string | null;
+  commit_intent_json?: string | null;
   source_hash: string | null;
   at: string;
 }
@@ -242,10 +246,10 @@ export function createSqliteJobStore(db: Database): AgentJobStore {
     INSERT INTO checkpoints (
       job_id, item_index, phase, bytes_done, temp_path_json, temp_fingerprint_json, via,
       target_path_json, expect_target_json, verified_json, committed_json,
-      writing_json, cleanup_json, source_hash, at
+      writing_json, cleanup_json, commit_intent_json, source_hash, at
     )
     SELECT @jobId, @itemIndex, @phase, @bytesDone, @tempPath, @tempFingerprint, @via,
-      @targetPath, @expectTarget, @verified, @committed, @writing, @cleanup, @sourceHash, @at
+      @targetPath, @expectTarget, @verified, @committed, @writing, @cleanup, @commitIntent, @sourceHash, @at
     WHERE EXISTS (SELECT 1 FROM jobs WHERE id = @jobId)
     ON CONFLICT(job_id, item_index) DO UPDATE SET
       phase = excluded.phase, bytes_done = excluded.bytes_done,
@@ -255,6 +259,7 @@ export function createSqliteJobStore(db: Database): AgentJobStore {
       expect_target_json = excluded.expect_target_json, verified_json = excluded.verified_json,
       committed_json = excluded.committed_json,
       writing_json = excluded.writing_json, cleanup_json = excluded.cleanup_json,
+      commit_intent_json = excluded.commit_intent_json,
       source_hash = excluded.source_hash, at = excluded.at
   `);
   const readCheckpoint = db.prepare<[string, number], CheckpointRow>(
@@ -385,6 +390,7 @@ export function createSqliteJobStore(db: Database): AgentJobStore {
         verified: encodeJson(checkpoint.verified),
         committed: encodeJson(checkpoint.committed ?? null),
         writing: encodeJson(checkpoint.writing ?? null),
+        commitIntent: encodeJson(checkpoint.commitIntent ?? null),
         cleanup: encodeJson(checkpoint.cleanup ?? null),
         sourceHash: checkpoint.sourceHash ?? null,
         at: new Date().toISOString(),
@@ -410,6 +416,7 @@ export function createSqliteJobStore(db: Database): AgentJobStore {
           ...(row.committed_json === null ? {} : { committed: decodeJson(row.committed_json) }),
           ...(row.writing_json === null ? {} : { writing: decodeJson(row.writing_json) }),
           ...(row.cleanup_json === null ? {} : { cleanup: decodeJson(row.cleanup_json) }),
+          ...(row.commit_intent_json == null ? {} : { commitIntent: decodeJson(row.commit_intent_json) }),
           ...(row.source_hash === null ? {} : { sourceHash: row.source_hash }),
         });
       } catch {
