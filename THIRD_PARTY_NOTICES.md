@@ -497,7 +497,9 @@ SOFTWARE.
 - Source: npm `lucide-static@1.82.0` (<https://lucide.dev>), SVG files
   unchanged; also embedded as data URIs in the artboard HTML.
 - Paths: `plugins/commander/docs/design/v2/icons/`,
-  `plugins/commander/docs/design/v2/*.html`. Design reference only, not
+  `plugins/commander/docs/design/v2/*.html`,
+  `plugins/commander/docs/design/v2/stage-2a/icons/`,
+  `plugins/commander/docs/design/v2/stage-2a/*.html`. Design reference only, not
   shipped in the plugin build. The artboards name the Inter font, which is
   not vendored here.
 - License: ISC, Copyright (c) 2026 Lucide Icons and Contributors (full text in
