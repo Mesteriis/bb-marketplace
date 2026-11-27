@@ -21,7 +21,7 @@ test("uses case sensitivity when checking target fingerprints", async () => {
   const provider = new FakeProvider("host:test", false);
   const real = parsePosix("/File");
   provider.put(real, Uint8Array.of(2), "7");
-  const session = await provider.openWrite(parsePosix("/file"), signal);
+  const session = await provider.openWrite(parsePosix("/file"), { tempName: { t: ".file.part" } }, signal);
   await session.write(0n, Uint8Array.of(3), signal);
   await expect(session.commit({ replace: true, expectTarget: { mtimeNs: "6", size: "1" } }, signal))
     .rejects.toMatchObject({ code: "changed_since_plan" });
@@ -52,4 +52,14 @@ test("checks the rename target and moves the full directory tree", async () => {
   expect(await provider.stat(from, signal)).toBeNull();
   expect(provider.contents(parsePosix("/from/file"))).toBeNull();
   expect(provider.contents(parsePosix("/to/file"))).toEqual(Uint8Array.of(2));
+});
+
+test("opens exactly the caller-selected temporary path exclusively", async () => {
+  const provider = new FakeProvider("host:test");
+  const target = parsePosix("/nested/file");
+  const opts = { tempName: { t: ".selected.part" } };
+  const session = await provider.openWrite(target, opts, signal);
+  expect(session.tempPath).toEqual({ segments: [{ t: "nested" }, { t: ".selected.part" }] });
+  await expect(provider.openWrite(target, opts, signal)).rejects.toMatchObject({ code: "already_exists" });
+  await session.abort();
 });

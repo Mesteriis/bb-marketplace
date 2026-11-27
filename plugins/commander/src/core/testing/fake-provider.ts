@@ -102,11 +102,15 @@ export class FakeProvider implements FileProvider {
     return bytes;
   }
 
-  async openWrite(path: ResourcePath, signal: AbortSignal): Promise<WriteSession> {
+  async openWrite(path: ResourcePath, opts: Parameters<FileProvider["openWrite"]>[1], signal: AbortSignal): Promise<WriteSession> {
     await this.before("openWrite", path, signal);
     const dir = parent(path);
     if (!dir) throw new CommanderError("invalid_path", "Cannot write root");
-    const tempPath = join(dir, { t: ".commander-" + ++this.clock + ".part" });
+    const tempPath = join(dir, opts.tempName);
+    if (this.same(path, tempPath) || this.find(tempPath)) {
+      throw new CommanderError("already_exists", "Temporary path already exists");
+    }
+    this.clock++;
     const temp: StoredEntry = { path: tempPath, bytes: new Uint8Array(), mtimeNs: String(this.clock), kind: "file", temporary: true };
     this.set(temp);
     const chunks: Uint8Array[] = [];

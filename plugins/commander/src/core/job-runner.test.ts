@@ -1,9 +1,10 @@
 import { expect, test, vi } from "vitest";
 import { CommanderError } from "./errors.ts";
-import { JobRunner } from "./job-runner.ts";
-import { planDigest, type JobState, type OperationJob, type OperationPlan } from "./model.ts";
+import { JobRunner, type RunnerDeps } from "./job-runner.ts";
+import { Conflict, planDigest, type JobState, type OperationJob, type OperationPlan } from "./model.ts";
 import { parsePosix } from "./path.ts";
 import { FakeProvider } from "./testing/fake-provider.ts";
+import { tempNameFor } from "./reconcile.ts";
 import { MemoryJobStore } from "./testing/memory-job-store.ts";
 
 const date = "2026-11-27T00:00:00.000Z";
@@ -17,6 +18,7 @@ async function setup(options: {
   kind?: OperationPlan["kind"];
   policy?: OperationPlan["conflictPolicy"];
   verify?: OperationPlan["verify"];
+  revalidate?: RunnerDeps["revalidate"];
 } = {}) {
   const from = new FakeProvider("host:from");
   const to = new FakeProvider("host:to");
@@ -56,6 +58,7 @@ async function setup(options: {
     uuid: () => "223e4567-e89b-42d3-a456-" + String(++nextId).padStart(12, "0"),
     chunkBytes: mib,
     retryDelay,
+    revalidate: options.revalidate,
     onEvent: () => {},
   });
   async function at(id: string, state: JobState, item?: number): Promise<OperationJob> {
@@ -109,7 +112,9 @@ test("checks the target fingerprint again at commit after overwrite approval", a
   to.put(target, Uint8Array.of(7), "1");
   const { id } = await runner.submit(plan);
   const conflict = (await at(id, "awaiting_decision", 0)).pendingConflict!;
-  to.put(target, Uint8Array.of(8), "2");
+  to.delay = async (op) => {
+    if (op === "commit") to.put(target, Uint8Array.of(8), "2");
+  };
   await runner.decide(id, { conflictId: conflict.id, action: "overwrite", applyTo: "this" });
   expect((await at(id, "awaiting_decision", 0)).pendingConflict?.reason).toBe("target_changed");
   expect(to.contents(target)).toEqual(Uint8Array.of(8));
@@ -184,7 +189,7 @@ test.each(["copying", "committed", "missing-temp"] as const)("recovers %s withou
   const { runner, plan, store, to, at } = await setup();
   const submitted = await runner.submit(plan, { awaitsOwner: true });
   await store.update(submitted.id, { state: "running", awaitsOwner: false, currentItem: 0 }, "pending");
-  const temp = phase === "copying" ? (await to.openWrite(target, new AbortController().signal)).tempPath : null;
+  const temp = phase === "copying" ? (await to.openWrite(target, { tempName: tempNameFor(submitted.id, 0) }, new AbortController().signal)).tempPath : null;
   if (phase === "committed") to.put(target, Uint8Array.of(42, 42, 42), "2");
   await store.checkpoint({
     jobId: submitted.id,
@@ -244,7 +249,7 @@ test("records unknown when cancellation cannot confirm temporary-file cleanup", 
   const { id } = await runner.submit(plan);
   await started;
   await runner.cancel(id);
-  expect((await at(id, "cancelled")).items.map(({ outcome }) => outcome)).toEqual(["unknown", "pending"]);
+  expect((await at(id, "unknown")).items.map(({ outcome }) => outcome)).toEqual(["unknown", "pending"]);
   expect(to.temporaryCount).toBe(1);
 });
 
@@ -291,7 +296,7 @@ test("records a committed item as unknown if cancellation interrupts verificatio
   const { id } = await runner.submit(plan);
   await started;
   await runner.cancel(id);
-  expect((await at(id, "cancelled")).items[0].outcome).toBe("unknown");
+  expect((await at(id, "unknown")).items[0].outcome).toBe("unknown");
   expect(to.contents(target)).toEqual(Uint8Array.of(42, 42, 42));
   expect(to.temporaryCount).toBe(0);
 });
@@ -338,4 +343,272 @@ test("keeps an unresolved target change pending after restart even with overwrit
   expect(await runner.recover()).toEqual({ resumed: [id], unknown: [] });
   expect((await at(id, "awaiting_decision")).pendingConflict).toEqual(conflict);
   expect(to.calls).toEqual([]);
+});
+
+test("treats sha256 drift with the same size and mtime as a changed source", async () => {
+  const { runner, plan, from, to } = await setup();
+  const { digest: _oldDigest, ...unsigned } = plan;
+  unsigned.items[0].fingerprint!.sha256 = "596f4162a52f315b2ad0fa53fd30a2769d02a41ed7439123790966eee4ceb5cd";
+  const { id } = await runner.submit({ ...unsigned, digest: await planDigest(unsigned) }, { awaitsOwner: true });
+  from.put(source, Uint8Array.of(1, 2, 3), "1");
+  await expect(runner.approve(id)).rejects.toMatchObject({ code: "changed_since_plan" });
+  expect(to.calls).toEqual([]);
+});
+
+test("does not persist decisions for later source changes", async () => {
+  const { runner, plan, from, to, at } = await setup({ count: 2 });
+  from.put(source, Uint8Array.of(7), "2");
+  from.put(parsePosix("/a1"), Uint8Array.of(8), "2");
+  const { id } = await runner.submit(plan);
+  const first = (await at(id, "awaiting_decision", 0)).pendingConflict!;
+  await runner.decide(id, { conflictId: first.id, action: "skip", applyTo: "remaining_same_reason" });
+  expect((await at(id, "awaiting_decision", 1)).pendingConflict?.reason).toBe("source_changed");
+  expect(to.contents(parsePosix("/b1"))).toBeNull();
+});
+
+test("does not retry a mutation whose outcome is unknown or run later items", async () => {
+  const { runner, plan, at, to } = await setup({ count: 2 });
+  to.failOn.push({ op: "commit", path: target, times: 1, error: new CommanderError("outcome_unknown", "Commit reply lost", true) });
+  const { id } = await runner.submit(plan);
+  expect((await at(id, "unknown")).items.map(({ outcome }) => outcome)).toEqual(["unknown", "pending"]);
+  expect(to.calls.filter(({ op }) => op === "commit")).toHaveLength(1);
+});
+
+test("reconciles an untouched overwrite target after a restart", async () => {
+  const { runner, plan, store, to, at } = await setup({ policy: "overwrite" });
+  const { id } = await runner.submit(plan, { awaitsOwner: true });
+  await store.update(id, { state: "running", awaitsOwner: false, currentItem: 0 }, "pending");
+  to.put(target, Uint8Array.of(7), "2");
+  const { tempPath } = await to.openWrite(target, { tempName: tempNameFor(id, 0) }, new AbortController().signal);
+  await store.checkpoint({ jobId: id, itemIndex: 0, bytesDone: "0", phase: "copying",
+    tempPath, targetPath: target, expectTarget: { size: "1", mtimeNs: "2" }, verified: null });
+  expect(await runner.recover()).toEqual({ resumed: [id], unknown: [] });
+  expect((await at(id, "completed")).items[0].outcome).toBe("done");
+  expect(to.contents(target)).toEqual(Uint8Array.of(42, 42, 42));
+});
+
+test.each(["cancel_requested", "interrupted"] as const)(
+  "finishes a durable cancellation found in %s without restarting the transfer",
+  async (state) => {
+    const { runner, plan, store, to, at } = await setup({ count: 2 });
+    const { id } = await runner.submit(plan, { awaitsOwner: true });
+    await store.update(id, { state, currentItem: 0, error: { code: "cancelled", message: "Job cancelled", retryable: false } }, "pending");
+    const { tempPath } = await to.openWrite(target, { tempName: tempNameFor(id, 0) }, new AbortController().signal);
+    await store.checkpoint({ jobId: id, itemIndex: 0, bytesDone: "0", phase: "copying",
+      tempPath, targetPath: target, expectTarget: "absent", verified: null });
+    to.calls.length = 0;
+    expect(await runner.recover()).toEqual({ resumed: [], unknown: [] });
+    expect((await at(id, "cancelled")).items.map(({ outcome }) => outcome)).toEqual(["pending", "pending"]);
+    expect(to.temporaryCount).toBe(0);
+    expect(to.calls.some(({ op }) => op === "openWrite")).toBe(false);
+  },
+);
+
+test("preserves a changed move source at the remove boundary", async () => {
+  const { runner, plan, from, to, at } = await setup({ kind: "move" });
+  from.delay = async (op) => {
+    if (op === "remove") from.put(source, Uint8Array.of(7), "2");
+  };
+  const { id } = await runner.submit(plan);
+  const completed = await at(id, "completed");
+  expect(completed.items[0]).toEqual({ outcome: "done", error: "Source changed; source retained" });
+  expect(from.contents(source)).toEqual(Uint8Array.of(7));
+  expect(to.contents(target)).toEqual(Uint8Array.of(42, 42, 42));
+});
+
+test("does not verify source_removed using only a matching file length", async () => {
+  const { runner, plan, store, from, to, at } = await setup({ kind: "move" });
+  const { id } = await runner.submit(plan, { awaitsOwner: true });
+  await store.update(id, { state: "running", currentItem: 0 }, "pending");
+  await from.remove(source, { kind: "file" }, new AbortController().signal);
+  to.put(target, Uint8Array.of(1, 2, 3), "2");
+  await store.checkpoint({ jobId: id, itemIndex: 0, bytesDone: "3", phase: "source_removed",
+    tempPath: null, targetPath: target, expectTarget: "absent",
+    verified: { size: "3", sha256: "596f4162a52f315b2ad0fa53fd30a2769d02a41ed7439123790966eee4ceb5cd" } });
+  expect(await runner.recover()).toEqual({ resumed: [], unknown: [id] });
+  expect((await at(id, "unknown")).items[0].outcome).toBe("unknown");
+});
+
+test("accepts both legacy conflicts and conflicts with explicit resolutions", () => {
+  const conflict = {
+    id: "333e4567-e89b-42d3-a456-426614174000",
+    jobId: "223e4567-e89b-42d3-a456-426614174000",
+    itemIndex: 0,
+    reason: "target_changed",
+    source: null,
+    target: null,
+  };
+  expect(Conflict.parse(conflict)).toEqual(conflict);
+  expect(Conflict.parse({ ...conflict, allowedResolutions: ["skip", "cancel"] }).allowedResolutions).toEqual(["skip", "cancel"]);
+});
+
+function pause() {
+  let release!: () => void;
+  const promise = new Promise<void>((resolve) => { release = resolve; });
+  return { promise, release };
+}
+
+function delayUpdate(store: MemoryJobStore, state: JobState) {
+  const entered = pause();
+  const proceed = pause();
+  const update = store.update.bind(store);
+  vi.spyOn(store, "update").mockImplementation(async (id, patch, expected) => {
+    if (patch.state === state) {
+      entered.release();
+      await proceed.promise;
+    }
+    return update(id, patch, expected);
+  });
+  return { entered: entered.promise, release: proceed.release };
+}
+
+test.each(["approve", "reject"] as const)("only %s wins the approval CAS", async (winner) => {
+  const { runner, plan, store, at } = await setup();
+  const { id } = await runner.submit(plan, { awaitsOwner: true });
+  const gate = delayUpdate(store, winner === "approve" ? "cancel_requested" : "running");
+  const loser = winner === "approve" ? runner.reject(id) : runner.approve(id);
+  const rejected = expect(loser).rejects.toMatchObject({ code: "changed_since_plan" });
+  await gate.entered;
+  try {
+    await runner[winner](id);
+  } finally {
+    gate.release();
+  }
+  await rejected;
+  expect((await at(id, winner === "approve" ? "completed" : "cancelled")).awaitsOwner).toBe(false);
+});
+
+test.each(["skip", "cancel"] as const)("only %s wins the decision CAS", async (winner) => {
+  const { runner, plan, store, at, to } = await setup();
+  to.put(target, Uint8Array.of(5), "2");
+  const { id } = await runner.submit(plan);
+  const conflictId = (await at(id, "awaiting_decision")).pendingConflict!.id;
+  const gate = delayUpdate(store, winner === "skip" ? "cancel_requested" : "running");
+  const loser = runner.decide(id, { conflictId, action: winner === "skip" ? "cancel" : "skip", applyTo: "this" });
+  const rejected = expect(loser).rejects.toMatchObject({ code: "changed_since_plan" });
+  await gate.entered;
+  try {
+    await runner.decide(id, { conflictId, action: winner, applyTo: "this" });
+  } finally {
+    gate.release();
+  }
+  await rejected;
+  expect((await at(id, winner === "skip" ? "completed" : "cancelled")).items[0].outcome)
+    .toBe(winner === "skip" ? "skipped" : "pending");
+});
+
+test.each(["delete", "mkdir", "rename"] as const)("executes a %s plan", async (kind) => {
+  const { runner, plan, from, to, at } = await setup({ kind });
+  const { digest: _digest, ...unsigned } = plan;
+  const item = unsigned.items[0];
+  if (kind === "delete") {
+    item.target = null;
+    unsigned.targetEndpoint = null;
+  } else if (kind === "mkdir") {
+    item.kind = "dir";
+    item.source = null;
+    item.fingerprint = null;
+    unsigned.sourceEndpoint = null;
+    unsigned.totalBytes = "0";
+  } else {
+    item.target!.endpoint = "host:from";
+    unsigned.targetEndpoint = "host:from";
+    unsigned.route = "same-endpoint";
+  }
+  const { id } = await runner.submit({ ...unsigned, digest: await planDigest(unsigned) });
+  expect((await at(id, "completed")).items[0].outcome).toBe("done");
+  if (kind === "mkdir") {
+    expect((await to.stat(target, new AbortController().signal))?.kind).toBe("dir");
+  } else {
+    expect(from.contents(source)).toBeNull();
+    if (kind === "rename") expect(from.contents(target)).toEqual(Uint8Array.of(42, 42, 42));
+  }
+});
+
+test.each(["remove", "rename"] as const)("checks both locations after interruption during %s", async (operation) => {
+  const { runner, plan, from, at } = await setup({ kind: operation === "remove" ? "delete" : "rename" });
+  const { digest: _digest, ...unsigned } = plan;
+  if (operation === "remove") {
+    unsigned.items[0].target = null;
+    unsigned.targetEndpoint = null;
+  } else {
+    unsigned.items[0].target!.endpoint = "host:from";
+    unsigned.targetEndpoint = "host:from";
+  }
+  const ready = pause();
+  from.delay = async (op, _path, signal) => {
+    if (operation !== op) return;
+    ready.release();
+    await new Promise<void>((_, reject) => signal.addEventListener("abort", () => {
+      // An external change makes it impossible to tell which mutation took effect.
+      from.put(source, Uint8Array.of(6), "2");
+      reject(signal.reason);
+    }, { once: true }));
+  };
+  const { id } = await runner.submit({ ...unsigned, digest: await planDigest(unsigned) });
+  await ready.promise;
+  await runner.cancel(id);
+  expect((await at(id, "unknown")).items[0].outcome).toBe("unknown");
+  expect(from.contents(source)).toEqual(Uint8Array.of(6));
+  expect(from.calls.filter(({ op }) => op === operation)).toHaveLength(1);
+});
+
+test("flags a target that appeared after an explicitly absent plan target", async () => {
+  const { runner, plan, to, at } = await setup({
+    policy: "overwrite",
+    revalidate: async (snapshot) => {
+      // S2 adds the field to the schema. This fake models its checked snapshot.
+      Object.assign(snapshot.items[0], { expectTarget: "absent" });
+      return { ok: true, plan: snapshot };
+    },
+  });
+  const job = await runner.submit(plan, { awaitsOwner: true });
+  to.put(target, Uint8Array.of(7), "2");
+  await runner.approve(job.id);
+  expect((await at(job.id, "awaiting_decision")).pendingConflict?.reason).toBe("target_changed");
+  expect(to.contents(target)).toEqual(Uint8Array.of(7));
+  expect(to.calls.some(({ op }) => op === "openWrite")).toBe(false);
+});
+
+test("retains a target selected by rename when restoring a prepared checkpoint", async () => {
+  const { runner, plan, store, to, at } = await setup({ verify: "sha256" });
+  const { id } = await runner.submit(plan, { awaitsOwner: true });
+  const renamed = parsePosix("/b (2)");
+  to.put(target, Uint8Array.of(7), "2");
+  await store.update(id, { state: "running", currentItem: 0 }, "pending");
+  await store.checkpoint({ jobId: id, itemIndex: 0, bytesDone: "0", phase: "prepared",
+    tempPath: null, targetPath: renamed, expectTarget: "absent", verified: null });
+  expect(await runner.recover()).toEqual({ resumed: [id], unknown: [] });
+  expect((await at(id, "completed")).items[0].outcome).toBe("done");
+  expect(to.contents(target)).toEqual(Uint8Array.of(7));
+  expect(to.contents(renamed)).toEqual(Uint8Array.of(42, 42, 42));
+});
+
+test("can finish cancellation after a second restart following temporary cleanup", async () => {
+  const { runner, plan, store, to, at } = await setup({ count: 2 });
+  const { id } = await runner.submit(plan, { awaitsOwner: true });
+  await store.update(id, { state: "interrupted", currentItem: 0,
+    error: { code: "cancelled", message: "Job cancelled", retryable: false } }, "pending");
+  const signal = new AbortController().signal;
+  const session = await to.openWrite(target, { tempName: tempNameFor(id, 0) }, signal);
+  await store.checkpoint({ jobId: id, itemIndex: 0, bytesDone: "0", phase: "prepared",
+    tempPath: session.tempPath, targetPath: target, expectTarget: "absent", verified: null });
+  await session.abort();
+  to.calls.length = 0;
+  expect(await runner.recover()).toEqual({ resumed: [], unknown: [] });
+  expect((await at(id, "cancelled")).items.map(({ outcome }) => outcome)).toEqual(["pending", "pending"]);
+  expect(to.calls.map(({ op }) => op)).toEqual(["stat", "stat"]);
+});
+
+test("does not replay commit after a retryable failure if the destination changed", async () => {
+  const { runner, plan, at, to } = await setup({ count: 2 });
+  to.delay = async (op) => {
+    if (op !== "commit") return;
+    to.put(target, Uint8Array.of(9, 9, 9), "10");
+    throw new CommanderError("timeout", "Commit reply lost", true);
+  };
+  const { id } = await runner.submit(plan);
+  expect((await at(id, "unknown")).items.map(({ outcome }) => outcome)).toEqual(["unknown", "pending"]);
+  expect(to.calls.filter(({ op }) => op === "commit")).toHaveLength(1);
+  expect(to.contents(target)).toEqual(Uint8Array.of(9, 9, 9));
 });
