@@ -37,7 +37,8 @@ try {
   let pr = await openPull();
   const thread = pr.locator("article.git-review-thread", { hasText: "wrold?" });
   await thread.getByRole("button", { name: "Fix with agent" }).click();
-  check("Fix with agent opens the agent's thread", await until(async () => /thr_[A-Za-z0-9_-]+/.test(page.url())), page.url());
+  const reached = await until(async () => /thr_[A-Za-z0-9_-]+/.test(page.url()));
+  check("Fix with agent opens the agent's thread", reached, reached ? undefined : (await pr.locator(".git-muted[role=status], [role=alert], .git-review-notice").allInnerTexts()).join(" | ").slice(0, 400));
   const agentThread = page.url().match(/thr_[A-Za-z0-9_-]+/)?.[0];
 
   const listed = JSON.parse(bb(["git-dashboard", "review", "list", "--json"], agentThread));

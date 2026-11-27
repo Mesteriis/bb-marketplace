@@ -20,7 +20,11 @@ export function reviewHandlers(bb: BbPluginApi, deps: {credential(id: string): P
   const handle = <I, O extends object>(action: (input: I) => Promise<O>) => async (input: I, context: Caller) => {
     if (context.experimental_caller.kind !== "client") return failureFor(undefined, "ACCESS_DENIED");
     try { return {ok: true as const, ...await action(input)}; }
-    catch (error) { return failureFor(error, "PROVIDER_UNAVAILABLE"); }
+    catch (error) {
+      // A code is the answer; anything else is a fault worth a line in the log (its text never reaches the page).
+      if (!(error instanceof Error && /^[A-Z_]+$/.test(error.message))) bb.log.warn("Pull request request failed: " + (error instanceof Error ? error.message : String(error)).slice(0, 300));
+      return failureFor(error, "PROVIDER_UNAVAILABLE");
+    }
   };
   async function ask({accountId, repo, number, subject}: Target & {subject: z.infer<typeof agentSubject>}) {
     const {account} = await deps.credential(accountId);
@@ -47,9 +51,13 @@ export function reviewHandlers(bb: BbPluginApi, deps: {credential(id: string): P
         .catch((error: unknown) => { if (recorded) deps.mirror.dropPullSend(recorded.id); throw error; });
       return {threadId: plan.send, created: false};
     }
-    // A managed worktree started from the head branch, so the project's own checkout is left alone.
+    // A managed worktree started from the head branch, so the project's own checkout is left alone; on the machine
+    // that holds the project's environments (BB requires the host for any workspace but a personal one).
+    const environments = await bb.sdk.environments.list({projectId: plan.spawn.projectId, limit: 20}) as {hostId?: string | null}[];
+    const hostId = environments.find(environment => environment.hostId)?.hostId;
+    if (!hostId) throw new Error("HOST_UNAVAILABLE");
     const spawned = await bb.sdk.threads.spawn({projectId: plan.spawn.projectId, prompt: text, title: "Fix " + repo + " #" + number,
-      environment: {type: "host", workspace: {type: "managed-worktree",
+      environment: {type: "host", hostId, workspace: {type: "managed-worktree",
         baseBranch: plan.spawn.baseBranch ? {kind: "named", name: plan.spawn.baseBranch} : {kind: "default"}}}}) as {threadId?: string; id?: string};
     const threadId = spawned.threadId ?? spawned.id;
     if (!threadId) throw new Error("OUTCOME_UNKNOWN");

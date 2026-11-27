@@ -9,7 +9,7 @@ Needs `git`, `node`, `npm`, `curl`, access to `registry.npmjs.org`, BB at
 `run.sh` outside them.
 
 ```sh
-S=$(docs/e2e-stand/prepare.sh "$PWD") && docs/e2e-stand/run.sh "$S" "$PWD/docs/e2e-stand/smoke.mjs" "$PWD/docs/e2e-stand/ci.mjs" "$PWD/docs/e2e-stand/code-review.mjs" "$PWD/docs/e2e-stand/code-review-runs.mjs" "$PWD/docs/e2e-stand/history.mjs" "$PWD/docs/e2e-stand/gitlab.mjs" "$PWD/docs/e2e-stand/inbox.mjs" "$PWD/docs/e2e-stand/review.mjs"
+S=$(docs/e2e-stand/prepare.sh "$PWD") && docs/e2e-stand/run.sh "$S" "$PWD/docs/e2e-stand/smoke.mjs" "$PWD/docs/e2e-stand/ci.mjs" "$PWD/docs/e2e-stand/code-review.mjs" "$PWD/docs/e2e-stand/code-review-runs.mjs" "$PWD/docs/e2e-stand/code-review-more.mjs" "$PWD/docs/e2e-stand/history.mjs" "$PWD/docs/e2e-stand/gitlab.mjs" "$PWD/docs/e2e-stand/inbox.mjs" "$PWD/docs/e2e-stand/review.mjs" "$PWD/docs/e2e-stand/code-review-drafts.mjs"
 ```
 
 - `prepare.sh` copies this package into a new `$TMPDIR/git-dashboard-stand.*`, runs `npm ci` and
@@ -36,6 +36,15 @@ S=$(docs/e2e-stand/prepare.sh "$PWD") && docs/e2e-stand/run.sh "$S" "$PWD/docs/e
 - `code-review-runs.mjs` — after `code-review.mjs`: the AI review dialog and BB's picker, a review run started with
   a focus, its thread commenting through `bb git-dashboard review comment` (a line off the diff is refused with the
   lines shown), Close taking its rights, Explain on a file, Fix in a new thread offered.
+
+- `code-review-more.mjs` — line review on `stand-gamma` (attached here): a clean branch opens on its commits; the picked
+  view and Side by side survive a reload; an edit on disk shows without Reload (the host's watch); 30 untracked files
+  read in batches; a large change starts folded; Find, Go to, next comment; Viewed, `.diffityignore`, Open; an unsent
+  comment and a fold survive a reload; Markdown; Revert; Any file; Clear review; the Reviews page and its badge.
+
+- `code-review-drafts.mjs` — after `review.mjs`: Fix with agent on the Gitea pull request's review thread, the agent
+  thread's answer through `bb git-dashboard review reply` kept as a draft, edited on the pull request's page, then
+  posted through the confirmation dialog to Gitea once.
 
 - `gitlab.mjs` — `stand-gamma` has its origin on `fake-gitlab.mjs`, a self-managed GitLab stand-in on the same
   host name as the Gitea one, told apart by port: automatic connection; pipelines with the Active and Failed
