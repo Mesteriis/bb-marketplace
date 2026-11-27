@@ -36,9 +36,9 @@ test("gitlab.com remotes are detected as GitLab", () => {
   assert.deepEqual(detectProvider("git@gitlab.com:group/project.git"), {kind: "gitlab", origin: "https://gitlab.com", organization: ""});
 });
 
-test("GitLab accounts are declared but have no API client yet", () => {
+test("GitLab accounts get an API client", () => {
   const gitlab = account.parse({kind: "gitlab", id: "g", label: "GitLab", origin: "https://gitlab.com", username: "octo-owner"});
-  assert.throws(() => provider(gitlab, "token"), /PROVIDER_UNSUPPORTED/);
+  assert.equal(typeof provider(gitlab, "fixture-token-value").repositories, "function");
 });
 
 test("capabilities state what each forge offers in this release", () => {
