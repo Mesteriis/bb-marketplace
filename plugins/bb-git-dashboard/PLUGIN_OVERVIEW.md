@@ -4,7 +4,7 @@ Open Git from BB navigation and choose a project and repository in the tree. Att
 
 ## Forge and account detection
 
-Each working copy is matched to its forge from the `origin` remote. SSH host aliases are resolved with `ssh -G` on the copy's host, reading only the host name. GitHub, GitLab and Azure DevOps are recognised by name; other servers are identified once through their public version endpoint, asked from the working copy’s host without credentials (loopback and private addresses are never asked), and the answer is cached for 30 days (one day for unknown or unreachable servers). The account is chosen automatically: on GitHub the account that owns the repository, then a member of its organization, then the only account that can see it; on other forges the account of that server. When two accounts fit equally, the repository panel asks which one to use.
+Each working copy is matched to its forge from its `origin` remote; SSH aliases are resolved with `ssh -G`, reading only the host name. GitHub, GitLab and Azure DevOps are recognised by name; other servers are identified once through their public version endpoint, asked from the working copy’s host without credentials (loopback and private addresses are never asked), and the answer is cached for 30 days (one day for unknown or unreachable servers). The account is chosen automatically: on GitHub the account that owns the repository, then a member of its organization, then the only account that can see it; on other forges the account of that server. When two accounts fit equally, the repository panel asks which one to use.
 
 ## Projects folder
 
@@ -13,6 +13,10 @@ The **Projects folder** setting (default `~/projects` on the scanned host) and i
 ## History
 
 The History tab of a working copy draws the commit graph over all branches, tags and remotes, labels HEAD, branches and tags, lists uncommitted changes on top, and opens a commit's files and patches. It reads Git on the copy's own host without changing anything and refreshes when refs or the working tree change.
+
+## My PRs
+
+**Мои PR** lists the pull requests of every connected GitHub, GitLab, Gitea and Azure DevOps account by tab (Open, Review requested, Reviewed, Assigned, Merged, Closed), each led by what blocks it. Search, fold or hide repositories, move with j/k. A background check alerts you when CI starts failing or someone comments, as a toast, a count on the button and through Push notifications.
 
 ## CI/CD
 
