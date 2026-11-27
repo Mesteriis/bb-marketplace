@@ -25,13 +25,15 @@
 - Никаких реальных секретов, адресов и личных путей в fixtures; временные
   каталоги через `mkdtemp`.
 - Заимствованный код (MIT-доноры) — запись в корневой `THIRD_PARTY_NOTICES.md`;
-  этот файл принадлежит только S2.
+  записями о коде доноров владеет S2. Исключение: S0 добавляет туда запись о
+  вендоренных компонентах `components/**`, `lib/**`, `hooks/**` в том же
+  изменении (AGENTS.md).
 
 ## Порядок и владение
 
 | Срез | Файл спецификации | Зависит от | Владеет (пути от `plugins/commander/`, если не указано иное) |
 |---|---|---|---|
-| S0 | `S0-scaffold.md` | — | `package.json`, `package-lock.json`, `tsconfig.json`, `vitest.config.ts`, `tests/architecture.test.ts`, `components/**`, `lib/**`, `hooks/**`, `assets/icon.svg`, `PLUGIN_OVERVIEW.md`, `README.md`, `CHANGELOG.md`, `.gitignore`; в корне: запись `commander` в `.bb/plugins.json` и `marketplace.json` |
+| S0 | `S0-scaffold.md` | — | `package.json`, `package-lock.json`, `tsconfig.json`, `vitest.config.ts`, `tests/architecture.test.ts`, `components/**`, `lib/**`, `hooks/**`, `assets/icon.svg`, `PLUGIN_OVERVIEW.md`, `README.md`, `CHANGELOG.md`, `.gitignore`; в корне: запись `commander` в `.bb/plugins.json` и `marketplace.json`, запись о вендоренных компонентах в `THIRD_PARTY_NOTICES.md` |
 | S1 | `S1-core-model.md` | S0 | `src/core/model.ts`, `src/core/provider.ts`, `src/core/errors.ts`, `src/core/size.ts`, `src/core/path.ts` и их `*.test.ts` |
 | S2 | `S2-core-planning.md` | S1 | `src/core/planner.ts`, `src/core/guards.ts`, `src/core/naming.ts`, `src/core/permissions.ts` и их тесты; корневой `THIRD_PARTY_NOTICES.md` |
 | S3 | `S3-core-jobs.md` | S1 | `src/core/job-machine.ts`, `src/core/job-runner.ts`, `src/core/reconcile.ts`, `src/core/job-store.ts`, `src/core/testing/fake-provider.ts`, `src/core/testing/memory-job-store.ts` и тесты |
