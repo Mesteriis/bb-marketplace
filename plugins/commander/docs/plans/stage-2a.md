@@ -269,6 +269,12 @@ Modify `src/ui/workspace.tsx`, `agent-tools.ts` (`commander_read`).
   `<pre>`; hex — 16 байт в строке; изображения — `blob:` URL в `<img>`
   (SVG — только как `<img>`, не inline); HTML — как текст.
 - Tool `commander_read` (право `read`, лимит 1 МиБ, бинарное → hex).
+- Решения координатора после ревью: лимит 1 МиБ — на весь результат tool с
+  оболочкой; агенту только текст или hex; владельцу изображения до 32 МиБ из
+  окон одной версии. На локальном F3 при успешном нативном просмотре BB
+  (`onPreview`) показывается просмотр BB, а не наш `viewer.tsx`: гарантии
+  DOM-тестов (SVG только `<img>`, HTML текстом) относятся только к нашему
+  просмотру.
 
 - [ ] Test `svg file renders via <img src=blob:>, no <svg> element in DOM`
 - [ ] Test `html file shows source text; no iframe/script in DOM`
