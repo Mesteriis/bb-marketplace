@@ -44,6 +44,11 @@ export const codeReviewContract = {
   reviewFix: {input: z.object({sessionId: reviewId, threadIds: z.array(reviewId).min(1).max(200), note: z.string().max(BODY_MAX_CHARS),
     execution: executionSchema}).merge(viewer), output: answer({run: reviewRunSchema, count: z.number().int()})},
   reviewCloseRun: {input: z.object({runId: reviewId}), output: answer({})},
+  /** The patches of up to 25 files a view left deferred. */
+  reviewPatches: {input: z.object({copyId: id, target: targetSchema, ignoreWhitespace: z.boolean(), files: z.array(reviewDiffFileSchema).min(1).max(25)}),
+    output: answer({files: z.array(reviewDiffFileSchema)})},
+  /** Keeps the copy watched for 90 seconds: changes to its files reload its Review. */
+  reviewWatch: {input: z.object({copyId: id}), output: answer({})},
   /** Deletes every comment thread of the view and closes its AI runs. */
   reviewClear: {input: z.object({sessionId: reviewId}), output: answer({deletedThreads: z.number().int(), closedRuns: z.number().int()})},
 };

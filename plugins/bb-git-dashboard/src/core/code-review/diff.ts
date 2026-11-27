@@ -15,6 +15,8 @@ export const reviewDiffFileSchema = z.object({
   /** Null when the file's patch is too large to send or it is binary. */
   patch: z.string().nullable(),
   tooLarge: z.boolean(),
+  /** The patch was not read yet: the view reads it later, with the next batch of files. */
+  deferred: z.boolean().optional(),
 }).strict();
 export type ReviewDiffFile = z.infer<typeof reviewDiffFileSchema>;
 
@@ -27,3 +29,14 @@ export const reviewDiffSchema = z.object({
   headSha: z.string().nullable(),
 }).strict();
 export type ReviewDiff = z.infer<typeof reviewDiffSchema>;
+
+/** How many patches a view reads at once: the first ones with the list, the rest in batches of this many. */
+export const PATCH_BATCH = 25;
+
+/** The paths to ask the host for, to read these files' patches: a rename's old path too, or it reads as an addition. */
+export const patchPaths = (files: readonly ReviewDiffFile[]) => [...new Set(files.flatMap(file => file.previousPath ? [file.path, file.previousPath] : [file.path]))];
+/** `files` with the patches read for some of them in place. */
+export function withPatches(files: readonly ReviewDiffFile[], read: readonly ReviewDiffFile[]): ReviewDiffFile[] {
+  const byPath = new Map(read.map(file => [file.path, file]));
+  return files.map(file => { const found = byPath.get(file.path); return found && file.deferred ? found : file; });
+}

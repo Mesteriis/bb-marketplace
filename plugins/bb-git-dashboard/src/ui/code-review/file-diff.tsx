@@ -10,6 +10,7 @@ import { Composer, ThreadCard } from "./thread-card.tsx";
 const sideOf = (row: DisplayRow): Side => row.kind === "deletion" ? "old" : "new";
 const lineOf = (row: DisplayRow) => row.kind === "deletion" ? row.oldLine! : row.newLine!;
 const keyOf = (side: Side, line: number) => side + ":" + line;
+export const LARGE_CHANGE = 2_000;
 const kindOf = (row: DisplayRow) => row.kind === "addition" ? "add" : row.kind === "deletion" ? "del" : "ctx";
 /** What the diff lays out: unified rows, or old and new side by side. */
 type Item = {kind: "hunk"; text: string} | {kind: "single"; row: DisplayRow} | {kind: "pair"; old: DisplayRow | null; new: DisplayRow | null};
@@ -25,8 +26,10 @@ function anchorsOf(item: Item): {side: Side; line: number}[] {
  * One file of the review: its patch as rows with each thread under the last line it is placed on. Click a line
  * number to comment, Shift+click another line on the same side to comment on the range.
  */
-export function FileDiff({file, threads, placements, wrap, split, workingCopy, api, onCreate, onExplain, explaining}: {
+export function FileDiff({file, threads, placements, wrap, split, workingCopy, api, onCreate, onExplain, explaining, patchError, onRetryPatch}: {
   file: ReviewDiffFile; threads: ReviewThread[]; placements: Record<string, Placement>; wrap: boolean; split: boolean; workingCopy: boolean;
+  /** Why the deferred patch could not be read; Retry reads the batches again. */
+  patchError: string; onRetryPatch(): void;
   api: CodeReviewApi; onCreate(thread: NewThread): Promise<void>;
   /** Starts an AI run that explains the file or the selected lines. */
   onExplain(place: ExplainPlace): Promise<void>; explaining: boolean;
@@ -37,7 +40,9 @@ export function FileDiff({file, threads, placements, wrap, split, workingCopy, a
   const lines = useMemo(() => file.patch ? parsePatchLines(file.patch) : null, [file.patch]);
   const [selection, setSelection] = useState<{side: Side; from: number; to: number} | null>(null);
   const [fileComment, setFileComment] = useState(false);
-  const [closed, setClosed] = useState(false);
+  // A change of more than LARGE_CHANGE lines starts folded: it is slow to show and rarely read line by line.
+  const large = file.additions + file.deletions > LARGE_CHANGE;
+  const [closed, setClosed] = useState(large);
   const below = new Map<string, ReviewThread[]>();
   const wholeFile: ReviewThread[] = [];
   for (const thread of threads) {
@@ -61,7 +66,7 @@ export function FileDiff({file, threads, placements, wrap, split, workingCopy, a
     <header className="git-row git-review-file-head">
       <button type="button" className="git-link" aria-expanded={!closed} onClick={() => setClosed(value => !value)}>{closed ? "▸" : "▾"}</button>
       <strong className="git-path">{file.previousPath ? file.previousPath + " → " : ""}{file.path}</strong>
-      <span className="git-muted">{file.untracked ? "untracked" : file.changeKind.replace("_", " ")} · {additions}</span>
+      <span className="git-muted">{file.untracked ? "untracked" : file.changeKind.replace("_", " ")} · {additions}{large ? " · large change" : ""}</span>
       {threads.length > 0 && <span className="git-review-tag">{threads.filter(thread => thread.status === "open").length} open</span>}
       <span className="git-ci-spacer"/>
       <button type="button" disabled={explaining} onClick={() => void onExplain({filePath: file.path, side: null, startLine: 0, endLine: 0, code: null})}>Explain</button>
@@ -71,7 +76,10 @@ export function FileDiff({file, threads, placements, wrap, split, workingCopy, a
       {fileComment && <Composer label={"Comment on " + file.path} withSeverity submitLabel="Comment" onCancel={() => setFileComment(false)}
         onSubmit={async (body, severity) => { await onCreate({filePath: file.path, side: null, startLine: 0, endLine: 0, anchorContent: null, severity, body}); setFileComment(false); }}/>}
       {wholeFile.map(thread => <ThreadCard key={thread.id} thread={thread} api={api} current={undefined} canApply={false}/>)}
-      {!file.patch ? <p className="git-muted">{file.binary ? "Binary file: no line diff." : "This file's diff is too large to show."}</p> :
+      {file.deferred ? (patchError
+          ? <p className="git-error" role="alert">Could not read this diff: {patchError} <button type="button" onClick={onRetryPatch}>Retry</button></p>
+          : <p className="git-muted" role="status">Reading this file's diff…</p>)
+        : !file.patch ? <p className="git-muted">{file.binary ? "Binary file: no line diff." : "This file's diff is too large to show."}</p> :
         <div className="git-review-diff" data-wrap={wrap || undefined} role="group" aria-label={"Diff of " + file.path}>
           {items.map((item, index) => <div key={index}>
             {item.kind === "hunk" ? <div className="git-review-row" data-kind="hunk"><span className="git-review-hunk">{item.text}</span></div>

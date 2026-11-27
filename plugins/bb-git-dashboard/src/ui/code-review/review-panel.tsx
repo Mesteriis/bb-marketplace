@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { PATCH_BATCH, withPatches } from "../../core/code-review/diff.ts";
 import { keepView, readView, viewScope, type ViewStorage } from "../../core/code-review/view-memory.ts";
 import { parseRange, rangeText } from "../../core/code-review/git-spec.ts";
 import { describeTarget, GENERAL_PATH, type ReviewRun, type TargetRequest } from "../../core/code-review/model.ts";
@@ -66,7 +67,7 @@ export function ReviewPanel({api, copyId, currentThreadId, revision}: {api: Code
     // A view that fails to load leaves none on screen, so nothing is commented or sent to the previous one.
     api.view(copyId, applied, ignoreWhitespace, auto).then(next => {
       if (!active) return;
-      setView(next); setError("");
+      setView(next); setError(""); setLoaded(value => value + 1);
       // The first look chose the branch's commits: the picker says so, and the choice is not kept.
       if (auto && next.target.kind === "branch") { setKind("branch"); setBase(next.target.base); }
     },
@@ -74,6 +75,44 @@ export function ReviewPanel({api, copyId, currentThreadId, revision}: {api: Code
     return () => { active = false; };
   }, [api, copyId, applied, ignoreWhitespace, auto, revision, reload]);
   const refresh = useCallback(() => setReload(value => value + 1), []);
+  // The patches the view left deferred, read in batches after it shows; a failed batch waits for Retry.
+  const [loaded, setLoaded] = useState(0);
+  const [patchError, setPatchError] = useState("");
+  const [patchRetry, setPatchRetry] = useState(0);
+  const viewRef = useRef(view);
+  viewRef.current = view;
+  useEffect(() => {
+    const shown = viewRef.current;
+    if (!shown) return;
+    let active = true;
+    setPatchError("");
+    (async () => {
+      for (;;) {
+        const current = viewRef.current;
+        const batch = current?.sessionId === shown.sessionId ? current.files.filter(file => file.deferred).slice(0, PATCH_BATCH) : [];
+        if (!active || !batch.length) return;
+        const files = await api.patches(copyId, shown.target, ignoreWhitespace, batch);
+        if (!active) return;
+        // A file the host no longer lists keeps no patch rather than asking again forever.
+        const answered = new Set(files.map(file => file.path));
+        setView(view => view && view.sessionId === shown.sessionId ? {...view, files: withPatches(view.files, files)
+          .map(file => file.deferred && batch.some(asked => asked.path === file.path) && !answered.has(file.path) ? {...file, deferred: false} : file)} : view);
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
+    })().catch(cause => { if (active) setPatchError(message(cause)); });
+    return () => { active = false; };
+    // A new load or a Retry starts over; patches arriving do not.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [api, copyId, loaded, patchRetry]);
+  // While the Review is on screen its copy stays watched: an edit, a stage or a commit reloads it by itself.
+  useEffect(() => {
+    let active = true;
+    const renew = () => { if (active && !document.hidden) api.watch(copyId).catch(() => { /* the button still reloads */ }); };
+    renew();
+    const timer = setInterval(renew, 30_000);
+    document.addEventListener("visibilitychange", renew);
+    return () => { active = false; clearInterval(timer); document.removeEventListener("visibilitychange", renew); };
+  }, [api, copyId]);
   const sessionId = view?.sessionId;
   useEffect(() => {
     if (!sessionId) { setRuns([]); return; }
@@ -188,7 +227,8 @@ export function ReviewPanel({api, copyId, currentThreadId, revision}: {api: Code
       {outdated.map(thread => <ThreadCard key={thread.id} thread={thread} api={liveApi} current={undefined} canApply={false} showPath outdated/>)}
     </section>}
     {view && !view.files.length && <p className="git-muted">{view.target.kind === "uncommitted" ? "No uncommitted changes." : "Nothing changed in this view."}</p>}
-    {view && files.map(file => <FileDiff key={view.sessionId + file.path} file={file} wrap={wrap} split={split} workingCopy={working} api={liveApi} onCreate={create} onExplain={explain} explaining={explaining}
+    {view && files.map(file => <FileDiff key={view.sessionId + file.path} file={file} wrap={wrap} split={split}
+      patchError={file.deferred ? patchError : ""} onRetryPatch={() => setPatchRetry(value => value + 1)} workingCopy={working} api={liveApi} onCreate={create} onExplain={explain} explaining={explaining}
       threads={threads.filter(thread => thread.filePath === file.path && placed(thread.id)?.state !== "outdated")} placements={view.placements}/>)}
   </section>;
 }

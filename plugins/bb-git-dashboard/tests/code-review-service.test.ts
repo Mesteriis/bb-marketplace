@@ -181,3 +181,34 @@ test("a first look at an empty uncommitted view shows the branch's commits inste
   const changed = setup();
   assert.deepEqual((await changed.service.view("c1", {kind: "uncommitted"}, false, true)).target, {kind: "uncommitted"});
 });
+
+test("a view reads the first 25 patches and those of commented files; the rest stay deferred until asked for", async () => {
+  const file = (index: number) => ({path: "f" + String(index).padStart(2, "0") + ".ts", previousPath: index === 29 ? "old.ts" : null, changeKind: index === 29 ? "renamed" as const : "modified" as const,
+    additions: 1, deletions: 1, binary: false, untracked: false, patch, tooLarge: false});
+  const all = Array.from({length: 30}, (_, index) => file(index));
+  const calls: unknown[] = [];
+  const store = new ReviewStore(memoryDb());
+  const service = codeReviewService({
+    store, copy: async () => copy,
+    host: {
+      diff: async (_copy, request, _ws, options = {}) => {
+        calls.push(options);
+        const chosen = options.paths ? all.filter(item => options.paths!.includes(item.path)) : all;
+        return {value: {files: chosen.map(item => options.patches === false ? {...item, patch: null, deferred: true} : item), truncated: false, baseSha: null, headSha: null},
+          target: request as Target};
+      },
+      read: async () => ({text: "", sha256: ""}), write: async () => ({sha256: ""}),
+    },
+    threads: {send: async () => {}, providerName: async () => "x", turnStart: async () => null, copyOf: async () => null},
+    changed: () => {},
+  });
+  const sessionId = store.session("c1", "uncommitted").id;
+  store.createThread({sessionId, filePath: "f28.ts", side: null, startLine: 0, endLine: 0, severity: null, anchorContent: null, body: "x"});
+  const view = await service.view("c1", {kind: "uncommitted"}, false);
+  assert.deepEqual(view.files.filter(item => item.deferred).map(item => item.path), ["f25.ts", "f27.ts", "f26.ts", "f29.ts"].sort());
+  assert.equal((calls[1] as {paths: string[]}).paths.length, 26);
+  const rest = await service.patches("c1", {kind: "uncommitted"}, false, view.files.filter(item => item.deferred));
+  assert.deepEqual(rest.files.map(item => [item.path, item.patch !== null]), [["f25.ts", true], ["f26.ts", true], ["f27.ts", true], ["f29.ts", true]]);
+  assert.deepEqual((calls[2] as {paths: string[]}).paths, ["f25.ts", "f26.ts", "f27.ts", "f29.ts", "old.ts"]);
+  await assert.rejects(service.patches("c1", {kind: "uncommitted"}, false, all), /INVALID_INPUT/);
+});

@@ -125,6 +125,23 @@ describe("the host's git diffs", () => {
     expect(hidden.files.map((file) => [file.path, file.patch !== null])).toEqual([["b.txt", true]]);
   });
 
+  it("lists files without patches, then reads the patches of chosen paths, renames and untracked files included", async () => {
+    const root = repo();
+    const run = createRunGit();
+    writeFileSync(join(root, "a.txt"), "one\nTWO\n");
+    writeFileSync(join(root, "b[1].txt"), "glob\n");
+    writeFileSync(join(root, "c.txt"), "c\n");
+    git(root, "add", "c.txt");
+    git(root, "commit", "-q", "-m", "c");
+    git(root, "mv", "c.txt", "d.txt");
+    const listed = await diff(run, root, { kind: "uncommitted" }, false, { patches: false });
+    expect(listed.files.map((file) => [file.path, file.patch, file.deferred ?? false, file.additions])).toEqual([
+      ["a.txt", null, true, 1], ["d.txt", null, true, 0], ["b[1].txt", null, true, 1]]);
+    const some = await diff(run, root, { kind: "uncommitted" }, false, { paths: ["b[1].txt", "d.txt", "c.txt"] });
+    expect(some.files.map((file) => [file.path, file.changeKind, file.previousPath, file.patch !== null])).toEqual([
+      ["d.txt", "renamed", "c.txt", true], ["b[1].txt", "added", null, true]]);
+  });
+
   it("refuses unknown revisions", async () => {
     const root = repo();
     await expect(diff(run, root, { kind: "range", from: "nope", to: "HEAD", symmetric: false }, false)).rejects.toThrow("Unknown revision 'nope'");

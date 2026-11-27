@@ -32,11 +32,17 @@ export const hostContract = defineRpcContract({
   historyCommit: {input:z.object({root:path,identity,hash:z.string().max(64)}),output:z.discriminatedUnion("ok",[failure,z.object({ok:z.literal(true),value:commitDetails})])},
   historyPatch: {input:z.object({root:path,identity,hash:z.string().max(64).nullable(),path}),
     output:z.discriminatedUnion("ok",[failure,z.object({ok:z.literal(true),value:patchText})])},
-  reviewDiff: {input:z.object({root:path,identity,target:targetRequestSchema,ignoreWhitespace:z.boolean()}),
+  /** `patches: false` lists files only (each patch deferred); `paths` limits the diff to those paths. */
+  reviewDiff: {input:z.object({root:path,identity,target:targetRequestSchema,ignoreWhitespace:z.boolean(),patches:z.boolean().optional(),
+    paths:z.array(z.string().min(1).max(4096)).max(200).optional()}),
     output:z.discriminatedUnion("ok",[failure,z.object({ok:z.literal(true),value:reviewDiffSchema,target:targetSchema})])},
   reviewFile: {input:z.object({root:path,identity,path:z.string().min(1).max(4096)}),
     output:z.discriminatedUnion("ok",[failure,z.object({ok:z.literal(true),text:z.string(),sha256:z.string()})])},
   reviewWrite: {input:z.object({root:path,identity,path:z.string().min(1).max(4096),expected:z.string().regex(/^[0-9a-f]{64}$/),text:z.string().max(2*1024*1024)}),
     output:z.discriminatedUnion("ok",[failure,z.object({ok:z.literal(true),sha256:z.string()})])},
   sshHostname: {input:z.object({alias:z.string().max(253)}),output:z.discriminatedUnion("ok",[failure,z.object({ok:z.literal(true),hostname:z.string().max(253)})])},
+  /** Starts or renews the 90-second watch of a working copy an open Review shows. */
+  reviewWatch: {input:z.object({root:path,identity}),output:z.discriminatedUnion("ok",[failure,z.object({ok:z.literal(true)})])},
 });
+/** What the host entry tells the server by itself: a watched copy changed. */
+export const hostSignals = {reviewCopyChanged: {payload: z.object({root: path})}};

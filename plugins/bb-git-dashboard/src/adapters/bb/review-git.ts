@@ -257,14 +257,22 @@ export async function rangeCommits(run: RunGit, root: string, spec: Extract<Targ
   return { baseSha: baseSha!, headSha: headSha! };
 }
 
-export async function diff(run: RunGit, root: string, spec: Target, ignoreWhitespace: boolean): Promise<HostDiff> {
-  const { args, untracked, baseSha, headSha } = await plan(run, root, spec);
+/**
+ * A view's diff. `patches: false` lists the files with their counts only, each patch `deferred`; `paths` limits the
+ * diff to those paths (taken literally; give a rename's old path too, or it reads as an addition).
+ */
+export async function diff(run: RunGit, root: string, spec: Target, ignoreWhitespace: boolean,
+  options: { patches?: boolean; paths?: readonly string[] } = {}): Promise<HostDiff> {
+  const { args: planned, untracked, baseSha, headSha } = await plan(run, root, spec);
+  const withPatches = options.patches !== false;
+  const only = options.paths === undefined ? null : new Set(options.paths);
+  const args = only === null ? planned : [...planned, "--", ...[...only].map((path) => ":(literal)" + path)];
   const extra = ignoreWhitespace ? ["-w"] : [];
   const [names, numbers, full] = await Promise.all([
     run(root, [...BASE_ARGS, "--name-status", "-z", ...args]),
     run(root, [...BASE_ARGS, "--numstat", "-z", ...extra, ...args]),
     // A diff too large to read whole (a vendored tree, a lockfile) lists its files without patches.
-    run(root, [...BASE_ARGS, ...extra, ...args], { maxBuffer: DIFF_MAX_BYTES * 4 }).catch((error: unknown) => {
+    !withPatches ? null : run(root, [...BASE_ARGS, ...extra, ...args], { maxBuffer: DIFF_MAX_BYTES * 4 }).catch((error: unknown) => {
       if (error instanceof GitError && error.message.includes("output too large")) return null;
       throw error;
     }),
@@ -283,8 +291,9 @@ export async function diff(run: RunGit, root: string, spec: Target, ignoreWhites
     const section = sections.get(entry.path) ?? null;
     // With whitespace hidden, a file whose only changes were whitespace has no patch left: git leaves
     // it out of the diff altogether (git 2.54), or prints its header alone. A mode change still shows.
+    if (only !== null && !only.has(entry.path)) continue;
     if (ignoreWhitespace && full !== null && entry.kind === "modified" && !count.binary && (section === null || (!section.includes("\n@@") && !/^(old|new) mode /m.test(section)))) continue;
-    const tooLarge = full === null || (section !== null && (section.length > FILE_PATCH_MAX_BYTES || bytes + section.length > DIFF_MAX_BYTES));
+    const tooLarge = withPatches && (full === null || (section !== null && (section.length > FILE_PATCH_MAX_BYTES || bytes + section.length > DIFF_MAX_BYTES)));
     if (section !== null && !tooLarge) bytes += section.length;
     files.push({
       path: entry.path,
@@ -294,18 +303,20 @@ export async function diff(run: RunGit, root: string, spec: Target, ignoreWhites
       deletions: count.deletions,
       binary: count.binary,
       untracked: false,
-      patch: count.binary || tooLarge ? null : section,
+      patch: count.binary || tooLarge || !withPatches ? null : section,
       tooLarge,
+      ...(!withPatches && !count.binary ? { deferred: true } : {}),
     });
   }
   if (untracked) {
     const listed = await run(root, ["ls-files", "--others", "--exclude-standard", "-z"]);
-    for (const path of listed.stdout.split("\0").filter((entry) => entry !== "")) {
+    for (const path of listed.stdout.split("\0").filter((entry) => entry !== "" && (only === null || only.has(entry)))) {
       if (files.length >= DIFF_MAX_FILES) {
         truncated = true;
         break;
       }
-      files.push(await untrackedFile(root, path, bytes, (added) => (bytes += added)));
+      const file = await untrackedFile(root, path, bytes, (added) => (bytes += added));
+      files.push(withPatches || file.patch === null ? file : { ...file, patch: null, deferred: true });
     }
   }
   return { files, truncated, baseSha, headSha };

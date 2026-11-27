@@ -19,6 +19,10 @@ export type CodeReviewApi = {
   /** `auto`: a first look; an empty uncommitted view gives way to the branch's commits. */
   view(copyId: string, target: TargetRequest, ignoreWhitespace: boolean, auto?: boolean): Promise<ReviewView>;
   clear(sessionId: string): Promise<{deletedThreads: number; closedRuns: number}>;
+  /** The patches of up to 25 deferred files of a view. */
+  patches(copyId: string, target: Target, ignoreWhitespace: boolean, files: ReviewDiffFile[]): Promise<ReviewDiffFile[]>;
+  /** Keeps the copy watched for 90 seconds; its changes arrive as a new `revision`. */
+  watch(copyId: string): Promise<void>;
   /** Each gives why the comment's @reviewer could not start a reviewer, or null. */
   createThread(sessionId: string, thread: NewThread, viewer?: string | null): Promise<{threadId: string; reviewer: string | null}>;
   addComment(threadId: string, body: string, viewer?: string | null): Promise<{reviewer: string | null}>;

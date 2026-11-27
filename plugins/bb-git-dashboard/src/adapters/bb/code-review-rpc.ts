@@ -3,8 +3,8 @@ import { failureFor, type Copy } from "../../core/workspace.ts";
 import { RUN_PERMISSION_MODES } from "../../core/code-review/runs.ts";
 import { RUN_METADATA_KEY } from "../../core/code-review/tool-names.ts";
 import { codeReviewRuns, type RunPlace } from "./code-review-runs.ts";
-import { codeReviewService } from "./code-review-service.ts";
-import { hostContract } from "./host-contract.ts";
+import { codeReviewService, type DiffOptions } from "./code-review-service.ts";
+import { hostContract, hostSignals } from "./host-contract.ts";
 import { RunStore } from "./review-run-store.ts";
 import { REVIEW_MIGRATIONS, ReviewStore, type ReviewDb } from "./review-store.ts";
 
@@ -25,7 +25,13 @@ function value<T extends {ok: boolean}>(result: T): Extract<T, {ok: true}> {
  */
 export function codeReviewHandlers(bb: BbPluginApi, copyOf: (copyId: string) => Promise<Copy | undefined>,
   threadCopy: (threadId: string) => Promise<string | null>) {
-  const host = bb.hosts.experimental_client({contract: hostContract});
+  const host = bb.hosts.experimental_client({contract: hostContract, experimental_signals: hostSignals});
+  /** The copies whose open Review watches them, by host and root: a change there reloads their Review. */
+  const watched = new Map<string, Set<string>>();
+  const watchKey = (hostId: string, root: string) => hostId + "\u0000" + root;
+  host.experimental_onSignal("reviewCopyChanged", ({hostId, payload}) => {
+    for (const copyId of watched.get(watchKey(hostId, payload.root)) ?? []) bb.realtime.publish(codeReviewSignal, {copyId});
+  });
   const db = bb.storage.database() as unknown as ReviewDb & Parameters<typeof bb.storage.migrate>[0];
   bb.storage.migrate(db, REVIEW_MIGRATIONS);
   const store = new ReviewStore(db);
@@ -54,8 +60,9 @@ export function codeReviewHandlers(bb: BbPluginApi, copyOf: (copyId: string) => 
   const service = codeReviewService({
     store, copy: copyOf,
     host: {
-      diff: async (copy, target, ignoreWhitespace) => {
-        const result = value(await host.call("reviewDiff", {root: copy.root, identity: copy.identity, target, ignoreWhitespace}, at(copy)));
+      diff: async (copy, target, ignoreWhitespace, options = {}) => {
+        const result = value(await host.call("reviewDiff", {root: copy.root, identity: copy.identity, target, ignoreWhitespace,
+          ...options.patches === false ? {patches: false} : {}, ...options.paths ? {paths: [...options.paths]} : {}}, at(copy)));
         return {value: result.value, target: result.target};
       },
       read: async (copy, path) => {
@@ -74,8 +81,9 @@ export function codeReviewHandlers(bb: BbPluginApi, copyOf: (copyId: string) => 
     changed: copyId => bb.realtime.publish(codeReviewSignal, {copyId}),
   });
 
-  const diff = async (copy: Copy, target: Parameters<typeof service.view>[1]) => {
-    const result = value(await host.call("reviewDiff", {root: copy.root, identity: copy.identity, target, ignoreWhitespace: false}, at(copy)));
+  const diff = async (copy: Copy, target: Parameters<typeof service.view>[1], options: DiffOptions = {}) => {
+    const result = value(await host.call("reviewDiff", {root: copy.root, identity: copy.identity, target, ignoreWhitespace: false,
+      ...options.patches === false ? {patches: false} : {}, ...options.paths ? {paths: [...options.paths]} : {}}, at(copy)));
     return {value: result.value, target: result.target};
   };
   const routing = (place: RunPlace) => "environmentId" in place ? {environmentId: place.environmentId} : {hostId: place.hostId, projectId: place.projectId};
@@ -172,6 +180,16 @@ export function codeReviewHandlers(bb: BbPluginApi, copyOf: (copyId: string) => 
       ({run: await runs.startExplain({...input, threadId: viewerThreadId ?? null})})),
     reviewFix: handle(async ({viewerThreadId, ...input}: Omit<Parameters<typeof runs.fixInNewThread>[0], "threadId"> & {viewerThreadId?: string | null}) =>
       runs.fixInNewThread({...input, threadId: viewerThreadId ?? null})),
+    reviewPatches: handle(({copyId, target, ignoreWhitespace, files}: {copyId: string; target: Parameters<typeof service.patches>[1]; ignoreWhitespace: boolean;
+      files: Parameters<typeof service.patches>[3]}) => service.patches(copyId, target, ignoreWhitespace, files)),
+    reviewWatch: handle(async ({copyId}: {copyId: string}) => {
+      const copy = await copyOf(copyId);
+      if (!copy) throw new Error("NOT_FOUND");
+      value(await host.call("reviewWatch", {root: copy.root, identity: copy.identity}, at(copy)));
+      const key = watchKey(copy.hostId, copy.root);
+      watched.set(key, (watched.get(key) ?? new Set()).add(copy.id));
+      return {};
+    }),
     reviewClear: handle(({sessionId}: {sessionId: string}) => runs.clearReview(sessionId)),
     reviewCloseRun: handle(async ({runId}: {runId: string}) => { await runs.close(runId); return {}; }),
     reviewTargets: handle(async ({copyId}: {copyId: string}) => {

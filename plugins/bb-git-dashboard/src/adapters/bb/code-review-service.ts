@@ -1,5 +1,5 @@
 import { placeThread, type Placement } from "../../core/code-review/anchors.ts";
-import type { ReviewDiff } from "../../core/code-review/diff.ts";
+import { PATCH_BATCH, patchPaths, withPatches, type ReviewDiff, type ReviewDiffFile } from "../../core/code-review/diff.ts";
 import { ANCHOR_MAX_CHARS, BODY_MAX_CHARS, GENERAL_PATH, targetKey, targetSchema, type Severity, type Side, type Target, type TargetRequest } from "../../core/code-review/model.ts";
 import { contentLines, parsePatchLines } from "../../core/code-review/patch-lines.ts";
 import { sendPrompt } from "../../core/code-review/prompt.ts";
@@ -12,7 +12,7 @@ export type CodeReviewDeps = {
   copy(copyId: string): Promise<Copy | undefined>;
   /** Git on the copy's host; each throws its code. */
   host: {
-    diff(copy: Copy, target: TargetRequest, ignoreWhitespace: boolean): Promise<{value: ReviewDiff; target: Target}>;
+    diff(copy: Copy, target: TargetRequest, ignoreWhitespace: boolean, options?: DiffOptions): Promise<{value: ReviewDiff; target: Target}>;
     read(copy: Copy, path: string): Promise<{text: string; sha256: string}>;
     write(copy: Copy, path: string, expected: string, text: string): Promise<{sha256: string}>;
   };
@@ -32,6 +32,9 @@ export type CodeReviewDeps = {
 export type NewThreadInput = {filePath: string; side: Side | null; startLine: number; endLine: number; anchorContent: string | null;
   severity: Severity | null; body: string};
 export type AgentAction = "reply" | "resolve" | "dismiss";
+/** `patches: false` lists the files only; `paths` limits the diff to those paths. */
+export type DiffOptions = {patches?: boolean; paths?: readonly string[]};
+
 
 /** Views whose new side is the working tree, where a suggestion can be written. */
 const workingViews = new Set<Target["kind"]>(["uncommitted", "unstaged", "all"]);
@@ -75,11 +78,19 @@ export function codeReviewService(deps: CodeReviewDeps) {
      */
     async view(copyId: string, request: TargetRequest, ignoreWhitespace: boolean, auto = false) {
       const copy = await copyOf(copyId);
-      let {value, target} = await deps.host.diff(copy, request, ignoreWhitespace);
+      // The list first; then the patches of the first files and of the commented ones. The rest come in batches.
+      let {value, target} = await deps.host.diff(copy, request, ignoreWhitespace, {patches: false});
       if (auto && request.kind === "uncommitted" && value.files.length === 0) {
         // A copy without a base branch has no branch view: the uncommitted one stands.
-        const branch = await deps.host.diff(copy, {kind: "branch"}, ignoreWhitespace).catch(() => null);
+        const branch = await deps.host.diff(copy, {kind: "branch"}, ignoreWhitespace, {patches: false}).catch(() => null);
         if (branch && branch.value.files.length > 0) ({value, target} = branch);
+      }
+      const commented = new Set(store.threads(store.session(copy.id, targetKey(targetSchema.parse(target))).id).map(row => row.filePath));
+      const deferred = value.files.filter(file => file.deferred);
+      const eager = [...deferred.slice(0, PATCH_BATCH), ...deferred.slice(PATCH_BATCH).filter(file => commented.has(file.path))];
+      if (eager.length) {
+        const read = await deps.host.diff(copy, target, ignoreWhitespace, {paths: patchPaths(eager)});
+        value = {...value, files: withPatches(value.files, read.value.files)};
       }
       const key = targetKey(targetSchema.parse(target));
       const {id: sessionId} = store.session(copy.id, key);
@@ -90,6 +101,14 @@ export function codeReviewService(deps: CodeReviewDeps) {
       return {sessionId, target, ...value, threads, placements};
     },
     threads: (sessionId: string) => store.threads(sessionId),
+
+    /** The patches of some files of a view the list left deferred, as the host reads them now. */
+    async patches(copyId: string, target: Target, ignoreWhitespace: boolean, files: readonly ReviewDiffFile[]) {
+      const copy = await copyOf(copyId);
+      if (files.length > PATCH_BATCH) fail("INVALID_INPUT");
+      const read = await deps.host.diff(copy, target, ignoreWhitespace, {paths: patchPaths(files)});
+      return {files: read.value.files};
+    },
 
     async createThread(sessionId: string, input: NewThreadInput) {
       session(sessionId);

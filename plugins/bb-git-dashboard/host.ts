@@ -7,6 +7,9 @@ import { probeForge } from "./src/adapters/bb/forge-probe.ts";
 import { createRunGit, defaultBase, diff as reviewDiff, GitError } from "./src/adapters/bb/review-git.ts";
 import type { Target } from "./src/core/code-review/model.ts";
 import { readReviewFile, writeReviewFile } from "./src/adapters/bb/review-files.ts";
+import { WATCH_IGNORED, WatchLeases } from "./src/adapters/bb/review-watch.ts";
+import { hostSignals } from "./src/adapters/bb/host-contract.ts";
+import type { ExperimentalHostRpcContext } from "@get-bb/plugin-sdk/host";
 
 import { walkProjects } from "./src/adapters/bb/project-walk.ts";
 import { maxDepth } from "./src/core/catalog/project-scan.ts";
@@ -18,9 +21,31 @@ import { homedir } from "node:os";
 import { resolve, sep } from "node:path";
 import { promisify } from "node:util";
 
+/** The watches of copies whose Review is open; built on the first renewal, with that call's context. */
+let leases: WatchLeases | null = null;
+let sweeper: ReturnType<typeof setInterval> | null = null;
+function watchLeases(context: ExperimentalHostRpcContext<typeof hostSignals>) {
+  // Leases that ran out end even when no Review renews anything any more.
+  sweeper ??= setInterval(() => leases?.sweep(), 30_000);
+  sweeper.unref?.();
+  leases ??= new WatchLeases(
+    (root, listener) => context.experimental_watch({rootPath: root, ignoredPaths: WATCH_IGNORED, debounceMs: 400, maxWaitMs: 2000}, listener),
+    root => { void context.experimental_emitSignal("reviewCopyChanged", {root}).catch(() => { /* the next change tries again */ }); });
+  return leases;
+}
+
 export default experimental_defineHostEntry({
   contract: hostContract,
+  experimental_signals: hostSignals,
+  dispose: async () => { if (sweeper) clearInterval(sweeper); leases?.stopAll(); },
   handlers: {
+    async reviewWatch({root, identity}, context) {
+      try {
+        await assertWorktree(root, identity, context.signal);
+        await watchLeases(context).renew(root);
+        return {ok: true as const};
+      } catch (error) { return failureFor(error, "HOST_UNAVAILABLE"); }
+    },
     async trash({root,identity},{signal}) {
       try {
         if (process.platform !== "darwin") throw new Error("TRASH_UNAVAILABLE");
@@ -92,7 +117,7 @@ export default experimental_defineHostEntry({
       try { await assertWorktree(root,identity,signal); return {ok:true as const, value:await commitDetails(root,hash,signal)}; }
       catch (error) { return failureFor(error,"GIT_REJECTED"); }
     },
-    async reviewDiff({root, identity, target, ignoreWhitespace}, {signal}) {
+    async reviewDiff({root, identity, target, ignoreWhitespace, patches, paths}, {signal}) {
       try {
         await assertWorktree(root,identity,signal);
         const reviewGit = createRunGit(60_000, signal);
@@ -103,7 +128,7 @@ export default experimental_defineHostEntry({
           if (!base) throw new GitError("Unknown revision 'main'.");
           resolved = {kind: target.kind, base};
         } else resolved = target as Target;
-        const value = await reviewDiff(reviewGit, root, resolved, ignoreWhitespace);
+        const value = await reviewDiff(reviewGit, root, resolved, ignoreWhitespace, {patches, paths});
         // A commit's review is kept under its full hash, however short the hash it was asked by.
         return {ok:true as const, value, target:resolved.kind === "commit" && value.headSha ? {kind:"commit" as const, sha:value.headSha} : resolved};
       } catch (error) {

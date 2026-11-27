@@ -24,7 +24,7 @@ import { changedFiles, fingerprint, ranges, readsOnly, reasoningLevel, runPermis
 import { RUN_METADATA_KEY } from "../../core/code-review/tool-names.ts";
 import { CodedError, type Copy } from "../../core/workspace.ts";
 import { pendingRunThread, type RunStore } from "./review-run-store.ts";
-import { targetFromKey, type codeReviewService } from "./code-review-service.ts";
+import { targetFromKey, type codeReviewService, type DiffOptions } from "./code-review-service.ts";
 import type { ReviewStore } from "./review-store.ts";
 
 /** Where BB reads providers and starts a run's thread: the reviewed thread's environment, or the copy's host. */
@@ -41,7 +41,7 @@ export type RunDeps = {
   review: Pick<ReturnType<typeof codeReviewService>, "createAgentThread">;
   copy(copyId: string): Promise<Copy | undefined>;
   /** The view's diff on the copy's host; throws its code. */
-  diff(copy: Copy, target: TargetRequest): Promise<{value: ReviewDiff; target: Target}>;
+  diff(copy: Copy, target: TargetRequest, options?: DiffOptions): Promise<{value: ReviewDiff; target: Target}>;
   settings(): Promise<RunSettings>;
   bb: {
     thread(threadId: string): Promise<{environmentId: string | null; originPluginId: string | null}>;
@@ -96,7 +96,7 @@ export function codeReviewRuns(deps: RunDeps) {
     const owner = session(sessionId);
     const copy = await deps.copy(owner.copyId) ?? fail("NOT_FOUND");
     const target = targetFromKey(owner.targetKey);
-    const commits: RangeCommits | null = target.kind === "range" ? await deps.diff(copy, target).then(({value}) =>
+    const commits: RangeCommits | null = target.kind === "range" ? await deps.diff(copy, target, {patches: false}).then(({value}) =>
       value.baseSha && value.headSha ? {baseSha: value.baseSha, headSha: value.headSha} : null) : null;
     return {owner, copy, target, commits};
   }
@@ -195,12 +195,17 @@ export function codeReviewRuns(deps: RunDeps) {
   async function linesOf(sessionId: string, path: string) {
     const owner = session(sessionId);
     const copy = await deps.copy(owner.copyId) ?? fail("NOT_FOUND");
-    const {value} = await deps.diff(copy, targetFromKey(owner.targetKey));
-    const file = value.files.find(item => item.path === path);
-    if (!file) {
+    const target = targetFromKey(owner.targetKey);
+    const {value} = await deps.diff(copy, target, {patches: false});
+    const listed = value.files.find(item => item.path === path);
+    if (!listed) {
       const shown = value.files.slice(0, 40).map(item => item.path);
       throw new CodedError("FILE_NOT_IN_DIFF", "Files in the diff: " + (shown.join(", ") || "none") + (value.files.length > shown.length ? ", …" : "") + ".");
     }
+    // The listing has no patches: the one file's is read on its own (with a rename's old path, to stay a rename).
+    const file = listed.deferred
+      ? (await deps.diff(copy, target, {paths: listed.previousPath ? [listed.path, listed.previousPath] : [listed.path]})).value.files.find(item => item.path === path) ?? listed
+      : listed;
     if (file.patch === null) throw new CodedError("LINE_NOT_IN_DIFF", path + " has no line diff here (binary or too large); comment on the whole file with startLine 0.");
     return parsePatchLines(file.patch);
   }

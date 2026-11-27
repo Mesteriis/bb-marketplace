@@ -66,6 +66,8 @@ export function codeReviewApi(client: Client, navigate: Navigate): CodeReviewApi
   return {
     view: async (copyId, target, ignoreWhitespace, auto) => okValue(await client.call("reviewView", {copyId, target, ignoreWhitespace, auto: auto === true})),
     clear: async sessionId => okValue(await client.call("reviewClear", {sessionId})),
+    patches: async (copyId, target, ignoreWhitespace, files) => okValue(await client.call("reviewPatches", {copyId, target, ignoreWhitespace, files})).files,
+    watch: async copyId => { okValue(await client.call("reviewWatch", {copyId})); },
     createThread: async (sessionId, thread, viewer) => {
       const made = okValue(await client.call("reviewCreateThread", {sessionId, ...thread, viewerThreadId: viewer ?? null}));
       return {threadId: made.thread.id, reviewer: reviewerText(made.reviewer)};
