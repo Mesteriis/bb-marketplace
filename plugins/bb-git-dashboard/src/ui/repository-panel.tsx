@@ -100,7 +100,7 @@ export function RepositoryPanel({copyId,name,accounts,api,section,onAddConnectio
     {data && !rows.length && !data.features.notice && <p className="git-muted">{filter === "all" ? label.idle : "No matching issues on this page."}</p>}
     {rows.length > 0 && <div className="git-workspace-table"><table>
       <thead><tr><th scope="col">Name</th><th scope="col">{section === "variables" ? "Type" : "Status"}</th>
-        <th scope="col">{label.detail}</th><th scope="col">Updated</th></tr></thead>
+        <th scope="col">{section === "variables" && forge?.detection?.kind === "gitlab" ? "Settings" : label.detail}</th><th scope="col">Updated</th></tr></thead>
       <tbody>{rows.map(row => <tr key={row.id}><th scope="row">{row.url
         ? <a href={row.url} target="_blank" rel="noreferrer">{row.name}</a> : row.name}</th>
         <td><span className="git-state" data-state={row.status}>{row.status || "—"}</span></td>

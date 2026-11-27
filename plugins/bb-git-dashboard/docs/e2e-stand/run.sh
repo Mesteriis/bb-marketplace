@@ -6,11 +6,13 @@
 set -eu
 STAND="$1"; shift
 [ -d "$STAND/plugin/dist" ] || { echo "not a prepared stand: $STAND"; exit 2; }
+# Each run takes new ports, so the stand-in servers move; saved tokens stay bound to the old server and are refused.
+[ ! -e "$STAND/facts.env" ] || { echo "stand already used, prepare a new one: $STAND"; exit 2; }
 HERE=$(cd "$(dirname "$0")" && pwd)
 BB_APP=${BB_APP:-/Applications/dev/bb.app/Contents/Resources/app.asar.unpacked/node_modules/bb-app}
 CHROME=${CHROME:-$(ls -d "$HOME"/Library/Caches/ms-playwright/chromium_headless_shell-*/chrome-headless-shell-mac-*/chrome-headless-shell 2>/dev/null | tail -1)}
-PORTS=$(node -e 'const n=require("node:net");const f=()=>new Promise(r=>{const s=n.createServer();s.listen(0,"127.0.0.1",()=>{const p=s.address().port;s.close(()=>r(p))})});(async()=>console.log(await f(),await f(),await f()))()')
-SERVER_PORT=$(echo "$PORTS" | cut -d' ' -f1); DAEMON_PORT=$(echo "$PORTS" | cut -d' ' -f2); FORGE_PORT=$(echo "$PORTS" | cut -d' ' -f3)
+PORTS=$(node -e 'const n=require("node:net");const f=()=>new Promise(r=>{const s=n.createServer();s.listen(0,"127.0.0.1",()=>{const p=s.address().port;s.close(()=>r(p))})});(async()=>console.log(await f(),await f(),await f(),await f()))()')
+SERVER_PORT=$(echo "$PORTS" | cut -d' ' -f1); DAEMON_PORT=$(echo "$PORTS" | cut -d' ' -f2); FORGE_PORT=$(echo "$PORTS" | cut -d' ' -f3); GITLAB_PORT=$(echo "$PORTS" | cut -d' ' -f4)
 URL="http://127.0.0.1:$SERVER_PORT"
 cli() { env -i HOME="$STAND/home" PATH="$PATH" TMPDIR="${TMPDIR:-/tmp}" NODE_EXTRA_CA_CERTS="$STAND/forge/cert.pem" BB_TELEMETRY=false BB_DATA_DIR="$STAND/data" BB_SERVER_URL="$URL" BB_HOST_DAEMON_PORT="$DAEMON_PORT" node "$BB_APP/dist/bb.js" "$@"; }
 
@@ -33,10 +35,18 @@ openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=localhost" -addext 
   -keyout "$STAND/forge/key.pem" -out "$STAND/forge/cert.pem" 2>/dev/null
 node "$HERE/fake-forge.mjs" "$STAND/forge/cert.pem" "$STAND/forge/key.pem" "$FORGE_PORT" "$STAND/forge/writes.log" > "$STAND/forge/forge.log" 2>&1 &
 FORGE=$!
+# A stand-in self-managed GitLab on the same host name, told apart from the Gitea one by its port.
+: > "$STAND/forge/gitlab-writes.log"
+node "$HERE/fake-gitlab.mjs" "$STAND/forge/cert.pem" "$STAND/forge/key.pem" "$GITLAB_PORT" "$STAND/forge/gitlab-writes.log" > "$STAND/forge/gitlab.log" 2>&1 &
+GITLAB=$!
 B="$STAND/home/projects/beta"; rm -rf "$B"; mkdir -p "$B"
 git -C "$B" init -q -b main
 echo a > "$B/README.md"; git -C "$B" add .; git -C "$B" -c user.email=stand@example.invalid -c user.name=stand commit -qm "first commit"
 git -C "$B" remote add origin "https://localhost:$FORGE_PORT/stand/beta.git"
+G="$STAND/home/projects/gamma"; rm -rf "$G"; mkdir -p "$G"
+git -C "$G" init -q -b main
+echo a > "$G/README.md"; git -C "$G" add .; git -C "$G" -c user.email=stand@example.invalid -c user.name=stand commit -qm "first commit"
+git -C "$G" remote add origin "https://localhost:$GITLAB_PORT/stand/gamma.git"
 
 env -i HOME="$STAND/home" PATH="$PATH" TMPDIR="${TMPDIR:-/tmp}" \
   NODE_EXTRA_CA_CERTS="$STAND/forge/cert.pem" \
@@ -46,7 +56,7 @@ env -i HOME="$STAND/home" PATH="$PATH" TMPDIR="${TMPDIR:-/tmp}" \
   --bundled --no-in-app-updates > "$STAND/bb-app.log" 2>&1 &
 LAUNCHER=$!
 stop() {
-  kill -TERM "$FORGE" 2>/dev/null || true
+  kill -TERM "$FORGE" "$GITLAB" 2>/dev/null || true
   kill -TERM "$LAUNCHER" 2>/dev/null || true
   i=0; while kill -0 "$LAUNCHER" 2>/dev/null && [ $i -lt 60 ]; do sleep 0.5; i=$((i+1)); done
   if kill -0 "$LAUNCHER" 2>/dev/null; then kill -KILL "$LAUNCHER"; fi
@@ -61,12 +71,13 @@ echo "== server $URL"
 cli plugin install "$STAND/plugin" --yes >/dev/null
 cli plugin list --json > "$STAND/plugin-list.json"
 node -e 'const l=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).plugins??[];const p=l.find(x=>x.id==="bb-git-dashboard");console.log(JSON.stringify({id:p?.id,version:p?.version,status:p?.status,error:p?.error}));process.exit(p?.status==="running"?0:1)' "$STAND/plugin-list.json"
-cli plugin config bb-git-dashboard set accounts "[{\"kind\":\"gitea\",\"id\":\"stand-gitea\",\"label\":\"stand\",\"origin\":\"https://localhost:$FORGE_PORT\",\"organization\":\"\",\"username\":\"stand\"}]" >/dev/null
-cli plugin config bb-git-dashboard set tokens '{"stand-gitea":"stand-token"}' >/dev/null
+cli plugin config bb-git-dashboard set accounts "[{\"kind\":\"gitea\",\"id\":\"stand-gitea\",\"label\":\"stand\",\"origin\":\"https://localhost:$FORGE_PORT\",\"organization\":\"\",\"username\":\"stand\"},{\"kind\":\"gitlab\",\"id\":\"stand-gitlab\",\"label\":\"stand\",\"origin\":\"https://localhost:$GITLAB_PORT\",\"organization\":\"\",\"username\":\"stand\"}]" >/dev/null
+cli plugin config bb-git-dashboard set tokens '{"stand-gitea":"stand-token","stand-gitlab":"stand-gitlab-token"}' >/dev/null
 id_of() { node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).id))'; }
 PROJECT=$(cli project create --name stand-alpha --root "$R" --json | id_of)
 BETA=$(cli project create --name stand-beta --root "$B" --json | id_of)
-printf 'URL=%s/\nPROJECT=%s\nREPO=%s\nBETA=%s\nFORGE=https://localhost:%s\n' "$URL" "$PROJECT" "$R" "$BETA" "$FORGE_PORT" > "$STAND/facts.env"
+GAMMA=$(cli project create --name stand-gamma --root "$G" --json | id_of)
+printf 'URL=%s/\nPROJECT=%s\nREPO=%s\nBETA=%s\nGAMMA=%s\nFORGE=https://localhost:%s\nGITLAB=https://localhost:%s\n' "$URL" "$PROJECT" "$R" "$BETA" "$GAMMA" "$FORGE_PORT" "$GITLAB_PORT" > "$STAND/facts.env"
 cat "$STAND/facts.env"
 mkdir -p "$STAND/out"
 status=0
