@@ -1,6 +1,6 @@
 # S14. Архивы как источник и создание — спецификация helper-протокола
 
-Статус: **ревизия 10 после повторного ревью astra+opus (repair)**, кода нет; ждёт повторного ревью.
+Статус: **ревизия 11 после повторного ревью astra+opus (repair)**, кода нет; ждёт повторного ревью.
 Решения координатора A–H и правки ревью 1–7 внесены ниже (§3, §4, §5, §6, §7, §10, §11).
 Основание: ADR 0002 (accepted), [план 2a, задача 7](../plans/stage-2a.md),
 [приёмка S14](../../research/stage-2-libs.md#приёмка-s14), `docs/security.md`.
@@ -387,7 +387,7 @@ expectTarget})`) — то есть `pack` = обычное задание с tem
 
 - `EndpointId` += `archive:<uuid>` (как `sftp:`; regex расширяется, строки
   этапа 1 читаются без изменений). Реестр `archives`: `uuid → {sourceRef,
-  fingerprint (size+mtime источника), localCopy?: path, limits}`; живёт в
+  fingerprint (`{size, mtimeNs}` источника), localCopy?: path, limits}`; живёт в
   памяти сервера плагина **и** в таблице БД `archives` (миграция № 9, ниже)
   для восстановления очереди после рестарта (задание из `archive:<uuid>`
   должно найти источник); пароль и путь локальной копии в БД не пишутся
@@ -397,31 +397,51 @@ expectTarget})`) — то есть `pack` = обычное задание с tem
   1. **№ 8 (индекс 7)** — `ALTER TABLE checkpoints ADD COLUMN
      commit_intent_json TEXT` (после `scan_jobs` S10, § 11);
   2. **№ 9 (индекс 8)** — `CREATE TABLE archives (id TEXT PRIMARY KEY,
-     source_json TEXT NOT NULL, fingerprint_json TEXT NOT NULL, limits_json
-     TEXT NOT NULL, created_at TEXT NOT NULL)`; удаление строки — при
-     закрытии архива и по сроку (7 суток без заданий).
+     source_json TEXT NOT NULL, fingerprint_json TEXT NOT NULL, created_at
+     TEXT NOT NULL, last_referenced_at TEXT NOT NULL)`; жизненный цикл строки
+     — ниже.
   **Столбцы `archives` (полный закрытый список, решено координатором при
   условии «без паролей, путей копий и других секретов»):**
 
   | Столбец | Тип | Содержимое |
   |---|---|---|
   | `id` | `TEXT PRIMARY KEY` | uuid из `archive:<uuid>` |
-  | `source_json` | `TEXT NOT NULL` | `{endpoint, path}` — `ResourceRef` исходного архива (путь на endpoint источника, не путь копии) |
-  | `fingerprint_json` | `TEXT NOT NULL` | `{size, mtime}` исходного файла (`Fingerprint` провайдера) |
-  | `limits_json` | `TEXT NOT NULL` | `{maxTotalBytes, maxEntries, maxRatio}` |
+  | `source_json` | `TEXT NOT NULL` | строгий `ResourceRef` `{endpoint, path}` исходного архива (путь на endpoint источника, не путь копии) |
+  | `fingerprint_json` | `TEXT NOT NULL` | строгий `{size, mtimeNs}` исходного файла (поля `Fingerprint` без `sha256`, `strict`-схема) |
   | `created_at` | `TEXT NOT NULL` | время создания (строка `Timestamp`) |
+  | `last_referenced_at` | `TEXT NOT NULL` | время последнего **снятия** ссылки (`Timestamp`); при создании = `created_at` |
 
-  Других столбцов нет: ни пароля (в любом виде, включая хеш), ни пути или
+  **Лимиты в реестр не пишутся**: `maxTotalBytes`/`maxEntries`/`maxRatio` берутся из
+  плана задания и настроек владельца в момент `open`. Других столбцов нет: ни пароля (в любом виде, включая хеш), ни пути или
   имени локальной копии, ни `dev`/`ino`, ни содержимого записей, ни
   `installId`/путей каталога копий. Любое добавление столбца — новая
   миграция с отдельным решением координатора.
   **Тесты схемы (литералы):** `PRAGMA table_info(archives)` возвращает
-  **ровно** `id, source_json, fingerprint_json, limits_json, created_at`
-  (порядок и типы как в таблице); ни одно имя столбца не содержит
+  **ровно пять столбцов** `id, source_json, fingerprint_json, created_at,
+  last_referenced_at` (порядок и типы как в таблице); `limits_json` отсутствует; ни одно имя столбца не содержит
   `pass`, `secret`, `key`, `token`, `copy`, `temp`, `tmp`, `local`; после
   открытия шифрованного архива с паролем-литералом и создания копии дамп
   строки (`SELECT *`) не содержит ни пароль, ни путь каталога копий
   (`commander-archives-`), ни `os.tmpdir()`.
+  **Жизненный цикл строки `archives`.** Закрытие панели архива строку
+  **не удаляет**, если на `archive:<uuid>` ссылается любое сохранённое задание
+  (ссылка = задание в **незавершённом** состоянии — `pending`, `running`,
+  `awaiting_decision`, `interrupted`, `cancel_requested`, `unknown` — у которого
+  `sourceEndpoint`/`targetEndpoint` плана или ресурс элемента равен
+  `archive:<uuid>`; `completed`, `failed`, `cancelled` ссылкой не считаются).
+  **Поиск ссылок — по разобранному схемой `plan_json`** (`OperationPlan.parse`
+  каждой строки незавершённых заданий, сравнение полей `endpoint`), **без
+  `LIKE`/подстрок по JSON**; повреждённая строка задания считается ссылкой
+  (строка `archives` не удаляется). Отдельный столбец `archive_id` в `jobs`
+  **не вводится**; если он понадобится (медленный разбор) — это новая
+  миграция, сначала вопрос координатору. Строка удаляется **только после освобождения последней
+  ссылки**: при каждом снятии ссылки (задание перешло в терминальное, панель
+  закрыта) `last_referenced_at = now`; очистка (при старте и раз в час)
+  удаляет строки **без ссылок и с `last_referenced_at` старше 7 суток**.
+  Тест: закрыть панель с ожидающим заданием → закрыть и переоткрыть БД →
+  источник восстановлен по UUID (`list`/`open` работают) → задание завершено →
+  очистка с часами «+7 суток + 1 с» удаляет строку; «+6 суток» не удаляет;
+  панель закрыта, ссылок нет → строка живёт до срока и удаляется после.
   Номера согласуются по очереди слияния срезов (S14 сливается после S13; если
   к началу кода в ветке этапа добавлены другие миграции — стоп и вопрос, не
   перенумеровывать). Тест «в журнале ровно N миграций» (`job-store-sqlite.test.ts`,
@@ -462,12 +482,14 @@ expectTarget})`) — то есть `pack` = обычное задание с tem
   **Соседний активный экземпляр под тем же UID не трогается**; другие
   каталоги `os.tmpdir()`, каталоги других установок и пользователей не
   трогаются (проверка владельца `uid`, `lstat` без следования по ссылкам,
-  удаление без `follow`). Тест: два экземпляра (активный сосед с живым pid и
+  удаление без `follow`). **Если `ps` недоступен (нет файла, ошибка, таймаут 2 с) или вывод не разобран
+  — замок считается живым, ничего не удаляется** (тест: поддельный `ps` с
+  мусором/ошибкой → подкаталоги целы). Тест: два экземпляра (активный сосед с живым pid и
   замком + подкаталог мёртвого владельца) — удалён только мёртвый; подкаталог без
   замка остаётся; pid жив, но время старта другое → удаляется. **Отпечаток для
   `open.expect` (`dev, ino, size, mtime`) адаптер берёт из собственного `lstat`
   копии** (для не-копии — из `lstat` исходного локального файла); у
-  `FileProvider` `dev`/`ino` нет (`Fingerprint` = size+mtime), поэтому
+  `FileProvider` `dev`/`ino` нет (`Fingerprint` = `size`+`mtimeNs`), поэтому
   провайдерский отпечаток служит только сверке источника на endpoint.
 - **Права (решение B).** Чтение `archive:<uuid>` = право `read` на исходный ref
   архива (владелец и агент); распаковка = `copy` из `archive:` в цель — права
@@ -477,7 +499,7 @@ expectTarget})`) — то есть `pack` = обычное задание с tem
   `list`, `stat` → `stat`, `read(path, offset, length, expect)` → `read_open`
   (с кэшем одного текущего потока) + `read`; `expect` сверяется с
   fingerprint записи; `openWrite/mkdir/rename/remove/copyWithin/sha256` —
-  `CommanderError("unsupported")`. Fingerprint записи: `{size, mtime}`
+  `CommanderError("unsupported")`. Fingerprint записи: `{size, mtimeNs}`
   из архива; fingerprint самого архива проверяется в helper (`verify`) при
   каждом чтении — смена файла = `changed_since_plan`.
 - Распаковка: `buildPlan` с источником `archive:` — обычный `copy` на
@@ -747,28 +769,39 @@ ADD COLUMN`, **миграция № 8 (индекс 7 в `MIGRATIONS`, посл�
   `commitIntent.sha256`; размер + mtime недостаточны; если SHA-256 цели
   прочитать нельзя (нет права, обрыв, провайдер) → `unknown`. Тест: цель с тем
   же размером и mtime, но другими байтами → `unknown`.
-- Повторная публикация после рестарта (цели нет, temp есть) — **только**
-  если temp совпадает с `commitIntent.tempFingerprint` **и** SHA-256 temp равен
-  `commitIntent.sha256`, а цель соответствует исходному `expectTarget`
-  (отсутствует либо прежний отпечаток); иначе `unknown`. Прежняя
-  `WriteSession` утрачена, а `openWrite` эксклюзивен (`already_exists` на
-  своём temp), поэтому проверенный temp публикуется **не через
-  `session.commit`**, а `provider.rename(tempPath, targetPath, …)`. В
-  `Checkpoint` нет `replace`, поэтому условие выводится только из
-  `expectTarget`: **цели нет** (`expectTarget === "absent"`) → явно
-  `rename(temp, target, { replace: false, expectTarget: "absent" })`;
-  результат сверяется SHA-256 цели → `done`. Если план ожидал **существующую
-  цель** (`expectTarget` — отпечаток) или условие неизвестно → **`unknown`
-  без rename**, решает владелец — **кроме** случая, когда `replace=true`
-  доказуемо следует из плана (`item.replace` в `plan_json` задания) **и** у
-  провайдера есть `atomicReplace`; тогда `rename(temp, target, { replace:
-  true, expectTarget: исходный })`. Нет `atomicReplace` (SFTP без
-  posix-rename) → `unknown`. Тесты: пересоздать провайдера (новый экземпляр,
-  пустая таблица сессий) → `rename` с `{replace:false, expectTarget:"absent"}`,
-  `openWrite` не вызван, `done`; ожидалась существующая цель → `unknown`,
-  rename не вызван; SFTP-мок с `posixRename: false` и `replace=true` →
-  `unknown`; локальный провайдер (`atomicReplace`) и `replace=true` → rename
-  с исходным `expectTarget`.
+- Повторная публикация после рестарта — **только** при одновременном
+  выполнении: temp подтверждён (совпал с `commitIntent.tempFingerprint` **и**
+  SHA-256 temp равен `commitIntent.sha256`); цель совпадает с исходным
+  `expectTarget` (отсутствует либо прежний отпечаток); для замены — разрешение
+  доказано; у провайдера есть `atomicReplace`. Иначе `unknown` без `rename`.
+  Прежняя `WriteSession` утрачена, а `openWrite` эксклюзивен, поэтому
+  проверенный temp публикуется **не через `session.commit`**, а
+  `provider.rename(tempPath, targetPath, …)`. Ветки:
+  1. **Цели нет** (`expectTarget === "absent"`) → `rename(temp, target,
+     { replace: false, expectTarget: "absent" })`; результат сверяется
+     SHA-256 цели → `done`.
+  2. **Цель существует** (`expectTarget` — отпечаток; в том числе когда «цель и
+     temp существуют») — это ветка **разрешённой замены**, не безусловный
+     `unknown`. Поля `item.replace` в `PlanItem`/`Checkpoint` **нет**;
+     разрешение — одно из двух: (а) `plan.conflictPolicy ∈ {overwrite,
+     overwriteIfNewer}`; (б) **записанное решение владельца по конфликту этого
+     элемента** с действием `overwrite` (`ConflictDecision.action`, сохранённое
+     в задании; **где оно сохраняется — уточняю в коде первым шагом**; если
+     в сохранённом задании оно не читается — действует только источник (а)).
+     При выполнении всех условий → `rename(temp, target, { replace: true,
+     expectTarget: исходный })`, затем SHA-256 цели → `done`.
+  3. Нет `atomicReplace` (SFTP без posix-rename), разрешение не доказано,
+     цель не совпала с `expectTarget` или любое иное условие неизвестно →
+     `unknown`, решает владелец.
+  Тесты (по одному на каждый пункт): пересоздать провайдера (новый экземпляр,
+  пустая таблица сессий) → ветка 1 с `{replace:false, expectTarget:"absent"}`,
+  `openWrite` не вызван, `done`; ветка 2 при `conflictPolicy: "overwrite"`;
+  при `overwriteIfNewer`; при записанном решении владельца `overwrite` (политика
+  `ask`) → rename с `replace:true`, `done`; **отсутствие каждого условия** по
+  отдельности (temp изменён; SHA-256 temp другой; цель не совпала с
+  `expectTarget`; политика `ask`/`skip`/`rename` без решения `overwrite`;
+  решение владельца `skip`/`rename`; нет `atomicReplace` — SFTP-мок с
+  `posixRename: false`) → `unknown`, `rename` не вызван.
 - Любой другой исход (цель другого вида, цель и temp на месте, сверка
   недоступна) → `unknown`, решает владелец.
 
