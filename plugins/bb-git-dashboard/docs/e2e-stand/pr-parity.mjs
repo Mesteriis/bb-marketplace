@@ -47,7 +47,7 @@ try {
   });
 
   await page.goto(url + "plugins/bb-git-dashboard/git", { waitUntil: "load" });
-  await page.getByRole("button", { name: /^Мои PR/ }).click({ timeout: 30000 });
+  await page.getByRole("navigation", { name: "Makosh Git" }).getByRole("button", { name: /^My PRs\b/ }).click({ timeout: 30000 });
   const inbox = page.getByRole("region", { name: "My pull requests" });
   const row = inbox.locator(".git-inbox-item", { hasText: "Add greeting check" });
   check("My PRs lists the open pull request", await visible(row));
@@ -81,7 +81,7 @@ try {
   check("and reaches Gitea as one DELETE of that comment", await until(async () => writes().filter(write => write.method === "DELETE" && write.path === "/api/v1/repos/stand/beta/issues/comments/32").length === 1),
     writes().filter(write => write.method === "DELETE"));
 
-  await page.getByRole("button", { name: "My PRs" }).click();
+  await page.getByRole("navigation", { name: "Makosh Git" }).getByRole("button", { name: /^My\ PRs\b/ }).click();
   check("back on My PRs the search is kept", await until(async () => await inbox.getByLabel("Search pull requests").inputValue().catch(() => "") === "greeting"));
   check("and the opened row has the focus", await until(async () => (await active(page)).row !== null), await active(page));
   await row.locator("a").first().click();
@@ -144,7 +144,7 @@ try {
   await send.click();
   check("it answers how the alert went out", await visible(page.getByRole("status").filter({ hasText: /The alert is in My PRs\./ })));
   await page.goto(url + "plugins/bb-git-dashboard/git", { waitUntil: "load" });
-  await page.getByRole("button", { name: /^Мои PR/ }).click({ timeout: 30000 });
+  await page.getByRole("navigation", { name: "Makosh Git" }).getByRole("button", { name: /^My PRs\b/ }).click({ timeout: 30000 });
   check("the test alert is in My PRs", await visible(page.getByText("Test alert from Makosh Git")));
 
   await page.setViewportSize({ width: 768, height: 900 });

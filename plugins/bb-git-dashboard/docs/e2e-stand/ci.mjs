@@ -92,8 +92,7 @@ try {
   check("manual run reached the forge with its inputs", dispatch?.path === "/api/v1/repos/stand/beta/actions/workflows/ci.yml/dispatches" &&
     dispatch.body?.ref === "main" && JSON.stringify(dispatch.body?.inputs) === JSON.stringify({outcome: "failure"}), dispatch);
 
-  await page.getByRole("button", { name: "Все проекты" }).first().click();
-  await page.getByRole("button", { name: "CI/CD", exact: true }).click();
+  await page.getByRole("navigation", { name: "Makosh Git" }).getByRole("button", { name: /^CI\/CD\b/ }).click();
   check("CI/CD overview lists runs across repositories with tiles", await visible(page.getByRole("heading", { name: "CI/CD" })) &&
     await visible(page.getByRole("combobox", { name: "Repository" })) && await visible(page.locator(".git-ci-tiles")) &&
     await visible(page.locator("td", { hasText: "stand/beta" })));

@@ -7,6 +7,7 @@ import type { Copy } from "../core/workspace.ts";
 import { ConnectionWizard, type ConnectionApi } from "./connection-wizard.tsx";
 import { RepositoryPanel, type RepositoryApi } from "./repository-panel.tsx";
 import "./project-workspace.css";
+import { PageHead } from "./shell/page-head.tsx";
 import { HistoryPanel } from "./history/history-panel.tsx";
 import { ReviewPanel } from "./code-review/review-panel.tsx";
 
@@ -16,7 +17,7 @@ type Location = {hostId:string;projectId:string;path:string;name:string|null};
 const sections = ["Code","History","Review","Actions","Issues","Variables"] as const;
 type Section = typeof sections[number];
 
-export function ProjectWorkspace({copies,hosts,projects,locations,subPath,loaded,error,api,onOpen,onAttach,onClone,renderWorktree,inboxBadge = null,reviewsBadge = null,onOpenIssue,historyGraph = true,reviewRevisions = {}}: {
+export function ProjectWorkspace({copies,hosts,projects,locations,subPath,loaded,error,api,onOpen,onAttach,onClone,renderWorktree,onOpenIssue,historyGraph = true,reviewRevisions = {},title}: {
   copies:Copy[]; hosts:Host[]; projects:Project[]; locations:Location[]; subPath:string;
   /** The History tab draws branch and merge lanes; off by the historyGraph setting. */
   historyGraph?:boolean;
@@ -26,10 +27,8 @@ export function ProjectWorkspace({copies,hosts,projects,locations,subPath,loaded
   onOpen(path:string):void; onAttach(hostId:string,root:string,projectId?:string):Promise<Copy>;
   onClone(hostId:string,source:string,destination:string,projectId?:string):Promise<Copy>;
   renderWorktree(copy:Copy,host:string,attach:(root:string)=>Promise<void>):ReactNode;
-  /** Unseen My PRs alerts, or null when there are none or the badge is off. */
-  inboxBadge?:number|null;
-  /** Open comment threads over every review, for the Reviews button; null for none. */
-  reviewsBadge?:number|null;
+  /** The page title of the projects list, in the interface language. */
+  title:string;
   onOpenIssue?(accountId:string,repo:string,number:number|"new"):void;
 }) {
   const groups = useMemo(() => projectTree(projects,copies), [copies,projects]);
@@ -44,7 +43,6 @@ export function ProjectWorkspace({copies,hosts,projects,locations,subPath,loaded
   const copy = repo?.copies.find(copy => copy.id === first);
   const section = sections.find(section => section.toLowerCase() === second) ?? "Code";
   const [query,setQuery] = useState("");
-  const [connections,setConnections] = useState(false);
   const [adding,setAdding] = useState(false);
   const [accounts,setAccounts] = useState<Account[]>([]);
   const [accountError,setAccountError] = useState("");
@@ -62,29 +60,10 @@ export function ProjectWorkspace({copies,hosts,projects,locations,subPath,loaded
     !copies.some(copy => copy.hostId === location.hostId && copy.root === location.path));
 
   return <div className="git-project-layout git-catalog-layout">
-    <header className="git-project-bar">
-      <strong className="git-project-brand"><span aria-hidden="true">⑂</span> Makosh Git</strong>
-      {copy && <button onClick={() => onOpen("")}>Все проекты</button>}
-      {!copy && <input aria-label="Поиск по каталогу" placeholder="Репозиторий, ветка или путь…" type="search"
-        value={query} onChange={event => setQuery(event.target.value)}/>}
-      <button onClick={() => onOpen("inbox")}>Мои PR{inboxBadge !== null &&
-        <span className="git-inbox-badge" aria-label={inboxBadge + " new"}>{inboxBadge}</span>}</button>
-      <button onClick={() => onOpen("catalog")}>Каталог</button>
-      <button onClick={() => onOpen("ci")}>CI/CD</button>
-      <button onClick={() => onOpen("reviews")}>Reviews{reviewsBadge ? <span className="git-inbox-badge" aria-label={reviewsBadge + " open comment threads"}>{reviewsBadge}</span> : null}</button>
-      <button aria-expanded={connections} onClick={() => setConnections(!connections)}>Подключения</button>
-    </header>
-    {connections &&       <section className="git-project-connections">
-        <h2>Connections</h2>
-        <button type="button" onClick={() => setConnecting(true)}>+ Add connection</button>
-        {accounts.map(account => <div className="git-connection" key={account.id}>
-          <span aria-hidden="true">⛓</span> <span>{account.label}</span>
-          <span className="git-muted">{{azure: "Azure Repos", gitea: "Gitea", gitlab: "GitLab", github: "GitHub"}[account.kind]}</span>
-        </div>)}
-        {accountError && <p role="alert" className="git-error">{accountError}</p>}
-        <button type="button" onClick={() => onOpen("remotes")}>Browse provider repositories</button>
-      </section>}
+    {!copy && <PageHead title={title} actions={<input className="g-inp" aria-label="Поиск по каталогу" placeholder="Репозиторий, ветка или путь…" type="search"
+      value={query} onChange={event => setQuery(event.target.value)}/>}/>}
     <main className="git-project-main">
+      {accountError && copy && section !== "Code" && section !== "History" && section !== "Review" && <p role="alert" className="git-panel-message git-error">{accountError}</p>}
       {copy && <nav className="git-repository-tabs" aria-label="Repository sections">
         {sections.map(item => <button key={item} type="button" aria-current={item === section ? "page" : undefined}
           disabled={!copy && item !== "Code"} onClick={() => {if(copy) openCopy(copy,item);}}>{item}</button>)}

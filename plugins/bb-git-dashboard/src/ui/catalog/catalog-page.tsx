@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useModal } from "../system/dialog.tsx";
 import { clonePath } from "../../core/catalog/catalog.ts";
 import { NewProject } from "./new-project.tsx";
 import { ConfirmDialog } from "../ci/confirm-dialog.tsx";
@@ -164,11 +165,7 @@ function CloneDialog({row, root, categories, hostId, api, onClose, onDone}: {row
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
   const dialog = useRef<HTMLDialogElement>(null);
-  useEffect(() => {
-    const element = dialog.current;
-    if (!preview) element?.showModal();
-    return () => element?.close();
-  }, [preview]);
+  useModal(dialog, !preview);
   const destination = clonePath(root, category, name.trim());
   if (preview) return <ConfirmDialog key="clone" title={"Clone " + row.repo.path} lines={preview.lines} onConfirm={async () => { await api.clone(preview.id); }}
     onClose={done => done ? onDone() : onClose()}/>;

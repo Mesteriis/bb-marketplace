@@ -51,7 +51,7 @@ export function sidebarFolders(rows:ReturnType<typeof projectTree>, query:string
     const path = row.folder?.path ?? "";
     const hostId = row.folder?.hostId ?? "";
     const key = JSON.stringify([hostId,path]);
-    const label = path.split(/[\\/]/).filter(Boolean).pop() || path || "Без папки";
+    const label = path.split(/[\\/]/).filter(Boolean).pop() || path;
     if (![row.name,path,label,...(row.sources ?? []).map(source => source.path)].some(value => value.toLocaleLowerCase().includes(needle))) continue;
     const folder = folders.get(key) ?? {key,path,hostId,label,rows:[]};
     folder.rows.push(row);

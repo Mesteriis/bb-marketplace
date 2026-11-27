@@ -1,6 +1,6 @@
 ## Git in BB
 
-Open Git from BB navigation and choose a project and repository in the tree. Attach working copies from the project’s sources, ready environments or a trusted path on a selected machine. Inspect staged, unstaged and untracked changes, stage individual text hunks, commit the index, compare commits, and manage branches and linked worktrees. Merge or rebase after a preview of the conflicts, then resolve them in an editor.
+Git’s side column holds its sections, the project tree and a Russian/English switch. Attach working copies from the project’s sources, ready environments or a trusted path on a selected machine. Inspect staged, unstaged and untracked changes, stage individual text hunks, commit the index, compare commits, and manage branches and linked worktrees. Merge or rebase after a preview of the conflicts, then resolve them in an editor.
 
 ## Forge and account detection
 

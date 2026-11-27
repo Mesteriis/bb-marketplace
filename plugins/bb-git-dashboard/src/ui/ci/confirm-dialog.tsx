@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
+import { useModal } from "../system/dialog.tsx";
 import { message } from "./ci-api.ts";
 
 /** Shows what a CI write will do and performs it only on Confirm. */
@@ -12,11 +13,7 @@ export function ConfirmDialog({title, lines, onConfirm, onClose, children, disab
   const dialog = useRef<HTMLDialogElement>(null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
-  useEffect(() => {
-    const element = dialog.current;
-    element?.showModal();
-    return () => element?.close();
-  }, []);
+  useModal(dialog);
   const confirm = async () => {
     setPending(true);
     setError("");

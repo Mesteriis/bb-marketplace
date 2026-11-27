@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useModal } from "./system/dialog.tsx";
 import { limitation } from "../core/forge/capabilities.ts";
 import { connectionInput, detectProvider, type ConnectionCheck, type ConnectionInput } from "../core/connection.ts";
 import type { Account } from "../core/providers.ts";
@@ -41,11 +42,10 @@ export function ConnectionWizard({api,onClose,onSaved}:{
   const org = organization ?? detection?.organization ?? "";
   const active = useRef(true);
 
+  useModal(dialog);
   useEffect(() => {
-    const element = dialog.current;
-    element?.showModal();
     active.current = true;
-    return () => {active.current = false; element?.close();};
+    return () => {active.current = false;};
   },[]);
   useEffect(() => {heading.current?.focus();},[step]);
 

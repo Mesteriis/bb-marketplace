@@ -14,6 +14,7 @@ import { codeReviewContract } from "../../core/code-review/contract.ts";
 import { catalogContract } from "../../core/catalog/contract.ts";
 import { ciTemplatesContract } from "../../core/ci-templates/contract.ts";
 import { scaffoldsContract } from "../../core/scaffolds/contract.ts";
+import { interfaceContract } from "../../core/i18n/contract.ts";
 import { scanPreview } from "../../core/catalog/project-scan.ts";
 import { projectNode } from "../../core/catalog/project-tree.ts";
 import { forgeStatus, linkTarget } from "../../core/forge/contract.ts";
@@ -31,6 +32,7 @@ export const rpc = defineRpcContract({
   ...catalogContract,
   ...ciTemplatesContract,
   ...scaffoldsContract,
+  ...interfaceContract,
   checkConnection: {input:connectionInput,output:z.discriminatedUnion("ok",[failure,success.extend({value:connectionCheck})])},
   saveConnection: {input:connectionInput,output:z.discriminatedUnion("ok",[failure,success.extend({value:account})])},
   accounts: {input:z.null(),output:z.discriminatedUnion("ok",[failure,success.extend({items:z.array(account)})])},

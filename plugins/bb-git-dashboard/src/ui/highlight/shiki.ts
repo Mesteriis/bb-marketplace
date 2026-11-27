@@ -8,6 +8,8 @@ export type Token = {content: string; color?: string; fontStyle?: number};
 
 /** Lines longer than this stay plain: minified code is slow to tokenize and unreadable either way. */
 const MAX_LINE = 1_000;
+/** Milliseconds Shiki may spend on one line before the rest of it stays plain, so a pathological line never stalls a diff. */
+export const TIME_LIMIT = 500;
 let core: Promise<HighlighterCore> | null = null;
 const themes = new Map<CodeTheme, string>();
 let themeCount = 0;
@@ -25,7 +27,8 @@ function highlighter(): Promise<HighlighterCore> {
  * Each line of `code` as coloured tokens in BB's code theme, the grammar fetched through `grammar` on first use. Rejects when Shiki,
  * the grammar or the theme cannot be loaded; the caller then shows the code plain.
  */
-export async function tokenize(code: string, language: LanguageId, theme: CodeTheme, grammar: (id: LanguageId) => Promise<unknown>): Promise<Token[][]> {
+export async function tokenize(code: string, language: LanguageId, theme: CodeTheme, grammar: (id: LanguageId) => Promise<unknown>,
+  {timeLimit = TIME_LIMIT}: {timeLimit?: number} = {}): Promise<Token[][]> {
   const shiki = await highlighter();
   if (!shiki.getLoadedLanguages().includes(language)) {
     // One request per language, shared by every diff that waits for it.
@@ -45,6 +48,6 @@ export async function tokenize(code: string, language: LanguageId, theme: CodeTh
     await shiki.loadTheme({...theme, name, tokenColors: [...theme.tokenColors]} as Parameters<HighlighterCore["loadTheme"]>[0]);
     themes.set(theme, name);
   }
-  const lines: ThemedToken[][] = shiki.codeToTokensBase(code, {lang: language, theme: name, tokenizeMaxLineLength: MAX_LINE});
+  const lines: ThemedToken[][] = shiki.codeToTokensBase(code, {lang: language, theme: name, tokenizeMaxLineLength: MAX_LINE, tokenizeTimeLimit: timeLimit});
   return lines.map(line => line.map(token => ({content: token.content, color: token.color, fontStyle: token.fontStyle})));
 }

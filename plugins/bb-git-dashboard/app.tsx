@@ -22,6 +22,12 @@ import { requestOfKey, ReviewOpenOverlay, reviewRoute } from "./src/app/review-o
 import { useReviewRevisions } from "./src/app/review-signal.ts";
 import { ciApi, codeReviewApi, failed, historyApi, okValue } from "./src/app/apis.tsx";
 import { ciTab, historyTab, reviewTab, ThreadCi, ThreadHistory, ThreadReview, registerHistoryShortcut, registerReviewSurfaces } from "./src/app/thread-tabs.tsx";
+import { Sidebar, type SidebarApi } from "./src/ui/shell/sidebar.tsx";
+import { ConnectionsPage } from "./src/ui/connections-page.tsx";
+import { useT } from "./src/ui/i18n/use-t.tsx";
+import { accountsChanged, onAccountsChanged, withInterface } from "./src/app/interface.tsx";
+import "./src/ui/system/tokens.css";
+import "./src/ui/system/system.css";
 import "./src/ui/git.css";
 import { withCodeTheme } from "./src/app/code-theme.tsx";
 import { NotificationSettings } from "./src/app/notification-settings.tsx";
@@ -84,104 +90,52 @@ function BoundWorktree({copy, client, host, attach, pin}: {
   return <Worktree copy={copy} host={host ?? copy.hostId} run={run} refresh={revision} loadOperations={operations} attach={attach} pin={pin}/>;
 }
 
+/** Open comment threads over every line review, for the Reviews count. */
+function useOpenReviews(client: Client) {
+  const revision = useReviewRevisions().any;
+  const [open, setOpen] = useState(0);
+  useEffect(() => {
+    let active = true;
+    client.call("reviewSummaries", {}).then(result => {
+      if (active && result.ok) setOpen(result.reviews.filter(row => !row.orphan).reduce((sum, row) => sum + row.open, 0));
+    }, () => {});
+    return () => { active = false; };
+  }, [client, revision]);
+  return open;
+}
+
+/** Connected accounts, for the Connections count. */
+function useAccountCount(client: Client) {
+  const [count, setCount] = useState<number | null>(null);
+  useEffect(() => {
+    let active = true;
+    const read = () => { client.call("accounts").then(result => { if (active && result.ok) setCount(result.items.length); }, () => {}); };
+    read();
+    const stop = onAccountsChanged(read);
+    return () => { active = false; stop(); };
+  }, [client]);
+  return count;
+}
+
 function ProjectsSidebar({subPath}: {subPath:string}) {
   const {client,projects,projectCopies:copies,hiddenRepositories,hosts,hiddenProjects,reload,error,loaded} = useCatalog();
   const navigate = useBbNavigate();
-  const groups = useMemo(() => projectTree(projects,copies), [projects,copies]);
-  const [query,setQuery] = useState("");
-  const folders = useMemo(() => nestedFolders(groups,query), [groups,query]);
-  const [closed,setClosed] = useState<Set<string>>(new Set());
-  const open = (path:string) => navigate.toPluginPanel("git", {subPath:path});
-  const [manage,setManage] = useState<string|null>(null);
-  const [confirm,setConfirm] = useState<{source:Source;mode:"unlink"|"trash"}|null>(null);
-  const [typed,setTyped] = useState("");
-  const [busy,setBusy] = useState(false);
-  const [notice,setNotice] = useState("");
-  async function act(run:()=>Promise<void>) {
-    setBusy(true);
-    setNotice("");
-    try { await run(); await reload(); }
-    catch (err) { setNotice(err instanceof Error ? err.message : "Операция не выполнена"); }
-    finally { setBusy(false); }
-  }
-  async function visibility(project:Project,hidden:boolean) {
-    const result = await client.call("projectVisibility",{projectId:project.id,hidden});
-    if (!result.ok) throw new Error(result.next);
-    if (hidden && (subPath === "project/"+encodeURIComponent(project.id) ||
-      copies.some(copy => copy.projectId === project.id && copy.id === subPath.split("/")[0]))) open("");
-    setManage(null);
-  }
-  function folderView(folder:FolderNode) {
-    const expanded = Boolean(query.trim()) || !closed.has(folder.key);
-    const heading = <><span aria-hidden="true">{expanded ? "▾" : "▸"}</span><strong>{folder.label}</strong><small>{folder.count}</small></>;
-    return <section key={folder.key}>
-      {query.trim() ? <div className="git-folder">{heading}</div> :
-        <button className="git-folder" aria-expanded={expanded} onClick={() => setClosed(previous => {
-          const next = new Set(previous);
-          if (next.has(folder.key)) next.delete(folder.key);
-          else next.add(folder.key);
-          return next;
-        })}>{heading}</button>}
-      {expanded && <div className="git-folder-children">{folder.rows.map(group => {
-        const path = "project/" + encodeURIComponent(group.id);
-        const current = subPath === path || group.repositories.some(repo => repo.copies.some(copy => copy.id === subPath.split("/")[0]));
-        return <div key={path}><div className="git-sidebar-row">
-          <button className="git-project-link" title={group.name} aria-current={current} onClick={() => open(path)}>{group.name}</button>
-          {<button disabled={busy} aria-label={"Источники и действия · "+group.name} aria-expanded={manage === group.id}
-            onClick={() => {setManage(manage === group.id ? null : group.id);setConfirm(null);setNotice("");}}>⋯</button>}
-        </div>
-        {manage === group.id && <div className="git-source-actions">
-          {group.repositories.length > 0 && <strong>Репозитории</strong>}
-          {group.repositories.map(repo => {
-            const hidden = hiddenRepositories.includes(JSON.stringify([group.id,repo.key]));
-            return <button key={repo.key} disabled={busy} onClick={() => void act(async () => {
-              const result = await client.call("repositoryVisibility",{projectId:group.id,copyId:repo.copies[0].id,hidden:!hidden});
-              if (!result.ok) throw new Error(result.next);
-              if (!hidden && repo.copies.some(c => c.id === subPath.split("/")[0])) open("project/"+encodeURIComponent(group.id));
-            })}>{hidden ? "Вернуть" : "Убрать из каталога"} · {repo.name}</button>;
-          })}
-          <strong>Источники</strong>
-          {!group.sources?.length && <small>Источников нет</small>}
-          {group.sources?.map(source => <div key={source.id} className="git-source-item">
-            <small>{hosts.find(host => host.id === source.hostId)?.name ?? source.hostId}{source.isDefault && " · Основной"}</small>
-            <code>{source.path}</code>
-            {confirm?.source.id === source.id ? <>
-              <strong>{confirm.mode === "trash" ? "Переместить папку со всем содержимым в Корзину на этом хосте?" : "Отвязать этот источник от проекта BB? Файлы сохранятся."}</strong>
-              {confirm.mode === "trash" && <input aria-label="Введите полный путь" placeholder="Введите полный путь" value={typed} onChange={e => setTyped(e.target.value)}/>}
-              <button disabled={busy || (confirm.mode === "trash" && typed !== source.path)} onClick={() => void act(async () => {
-                const result = await client.call("removeSource",{projectId:group.id,sourceId:source.id,path:source.path,hostId:source.hostId,mode:confirm.mode});
-                if (!result.ok) throw new Error(result.next);
-                setNotice(confirm.mode === "trash" ? "Папка перемещена в Корзину. Источник можно отвязать." : "Источник отвязан.");
-                setConfirm(null);
-              })}>Подтвердить</button>
-              <button disabled={busy} onClick={() => setConfirm(null)}>Отмена</button>
-            </> : <>
-              <button disabled={busy} onClick={() => setConfirm({source,mode:"unlink"})}>Отвязать источник от BB</button>
-              <button disabled={busy} onClick={() => {setTyped("");setConfirm({source,mode:"trash"});}}>Переместить папку в Корзину…</button>
-            </>}
-          </div>)}
-          {group.id && <button disabled={busy} onClick={() => void act(() => visibility(group,true))}>Убрать проект из Git Workspace</button>}
-        </div>}</div>;
-      })}{folder.children.map(folderView)}</div>}
-    </section>;
-  }
-  return <nav className="git-ws git-sidebar" aria-label="Проекты Git">
-    <input type="search" aria-label="Найти проект" placeholder="Проект, папка или источник…" value={query}
-      onChange={event => setQuery(event.target.value)}/>
-    <button aria-current={subPath === ""} onClick={() => open("")}>Все проекты</button>
-    {notice && <p role="status">{notice}</p>}
-    <div className="git-sidebar-list" role="region" aria-label="Список проектов" tabIndex={0}>
-      {error && <p role="alert">{error}</p>}
-      {!loaded && <p role="status">Загрузка…</p>}
-      {loaded && !error && !folders.length && <p role="status">Проекты не найдены</p>}
-      {folders.map(folderView)}
-      {hiddenProjects.length > 0 && <details><summary>Скрытые проекты ({hiddenProjects.length})</summary>
-        {hiddenProjects.map(p => <button key={p.id} disabled={busy} onClick={() => void act(() => visibility(p,false))}>Вернуть · {p.name}</button>)}</details>}
-    </div>
-  </nav>;
+  const inbox = useInboxBadge();
+  const reviews = useOpenReviews(client);
+  const accounts = useAccountCount(client);
+  const api = useMemo<SidebarApi>(() => ({
+    projectVisibility: async (projectId, hidden) => { const result = await client.call("projectVisibility", {projectId, hidden}); if (!result.ok) throw new Error(result.next); },
+    repositoryVisibility: async (projectId, copyId, hidden) => { const result = await client.call("repositoryVisibility", {projectId, copyId, hidden}); if (!result.ok) throw new Error(result.next); },
+    removeSource: async input => { const result = await client.call("removeSource", input); if (!result.ok) throw new Error(result.next); },
+    reload,
+  }), [client, reload]);
+  return <Sidebar subPath={subPath} open={path => navigate.toPluginPanel("git", path ? {subPath: path} : undefined)} projects={projects} copies={copies}
+    hosts={hosts} hiddenRepositories={hiddenRepositories} hiddenProjects={hiddenProjects} loaded={loaded} error={error} api={api}
+    counts={{inbox: inbox?.count ?? null, reviews: reviews || null, connections: accounts}}/>;
 }
 
 function Dashboard({subPath}: {subPath: string}) {
+  const t = useT();
   const pluginId = experimental_usePluginId();
   const {client, copies, hosts, projects, locations, loaded, error} = useCatalog();
   const navigate = useBbNavigate();
@@ -273,7 +227,6 @@ function Dashboard({subPath}: {subPath: string}) {
   const readAlerts = useCallback(() => { inbox.alerts().then(setAlerts,() => {}); }, [inbox]);
   useEffect(readAlerts, [readAlerts]);
   useRealtime(inboxSignal, readAlerts);
-  const badge = alerts?.badge && alerts.unseen > 0 ? alerts.unseen : null;
   const open = (path:string) => navigate.toPluginPanel("git",path ? {subPath:path} : undefined);
   const catalogApi = useMemo<CatalogApi>(() => ({
     catalog: async (hostId,refresh) => okValue(await client.call("catalogView",{hostId,refresh})),
@@ -303,13 +256,6 @@ function Dashboard({subPath}: {subPath: string}) {
     summaries: async () => okValue(await client.call("reviewSummaries",{})).reviews,
     deleteOrphans: async sessionIds => okValue(await client.call("reviewDeleteOrphans",{sessionIds})),
   }), [client]);
-  // Open comment threads over every review, for the Reviews button.
-  const [reviewsOpen,setReviewsOpen] = useState(0);
-  useEffect(() => {
-    let active = true;
-    reviewsApi.summaries().then(rows => { if (active) setReviewsOpen(rows.filter(row => !row.orphan).reduce((sum,row) => sum + row.open,0)); },() => {});
-    return () => { active = false; };
-  }, [reviewsApi,reviewRevision]);
   const openReview = (copyId:string,targetKey:string,file:string|null) => open(reviewRoute(copyId,requestOfKey(targetKey),file));
   return <div className="git-ws-frame"><div className="git-ws">
     {parseRef(subPath) ? (() => {
@@ -320,53 +266,30 @@ function Dashboard({subPath}: {subPath: string}) {
         if (next) open(refPath("pr",{accountId:next.accountId,repo:next.repo,number:next.number}));
       };
       return <>
-        <nav aria-label="Git workspace" className="git-row git-section-tabs">
-          <button type="button" onClick={() => open("")}>Projects</button>
-          <button type="button" onClick={() => open("inbox")}>My PRs</button>
-          <span>{ref.repo} {ref.kind === "pr" ? "#" + ref.number : ref.number === "new" ? "· new issue" : "issue #" + ref.number}</span>
-        </nav>
         {ref.kind === "pr" && typeof ref.number === "number"
           ? <PrPage key={subPath} api={review} accountId={ref.accountId} repo={ref.repo} number={ref.number} onStep={order.length ? step : undefined} position={index < 0 ? undefined : {index,total:order.length}} revision={reviewRevisions.byCopy["forge:" + ref.accountId] ?? 0}/>
           : <IssuePage key={subPath} api={review} accountId={ref.accountId} repo={ref.repo} number={ref.number}
             onCreated={number => open(refPath("issue",{accountId:ref.accountId,repo:ref.repo,number}))}/>}
       </>;
     })() : subPath === "reviews" ? <>
-      <nav aria-label="Git workspace" className="git-row git-section-tabs">
-        <button type="button" onClick={() => open("")}>Projects</button>
-        <span>Reviews</span>
-      </nav>
       <ReviewsPage api={reviewsApi} revision={reviewRevision} onOpen={(copyId, targetKey) => openReview(copyId, targetKey, null)}/>
     </> : subPath === "ci" ? <>
-      <nav aria-label="Git workspace" className="git-row git-section-tabs">
-        <button type="button" onClick={() => open("")}>Projects</button>
-        <span>CI/CD</span>
-      </nav>
       <CiOverview api={api.ci} onOpen={copyId => open(copyId + "/actions")}/>
     </> : subPath === "inbox" ? <>
-      <nav aria-label="Git workspace" className="git-row git-section-tabs">
-        <button type="button" onClick={() => open("")}>Projects</button>
-        <span>My PRs</span>
-      </nav>
       <InboxPage api={inbox} alerts={alerts} onSeen={() => { inbox.seen().then(setAlerts,() => {}); }}
         onOpen={(item,list) => { setOrder(list); open(refPath("pr",{accountId:item.accountId,repo:item.repo,number:item.number})); }}/>
     </> : subPath === "catalog" ? <>
-      <nav aria-label="Git workspace" className="git-row git-section-tabs">
-        <button type="button" onClick={() => open("")}>Projects</button>
-        <span>Catalog</span>
-      </nav>
       <CatalogPage api={catalogApi} hosts={hosts}/>
+    </> : subPath === "connections" ? <>
+      <ConnectionsPage api={api} title={t("section.connections")} onBrowse={() => open("remotes")} onChanged={accountsChanged}/>
     </> : subPath === "remotes" ? <>
-      <nav aria-label="Git workspace" className="git-row git-section-tabs">
-        <button type="button" onClick={() => open("")}>Projects</button>
-        <span>Provider repositories</span>
-      </nav>
       <Remotes api={api} hosts={hosts} copies={copies} onOpen={open} onPin={(repo,number) => {
         if (!panel.openTab({tab:pullTab,params:{accountId:repo.accountId,repoId:repo.id,number},title:repo.name+" #"+number})) {
           throw new Error("The panel did not accept this pull request.");
         }
       }}/>
     </> : <ProjectWorkspace copies={copies} hosts={hosts} projects={projects} locations={locations} subPath={subPath}
-      loaded={loaded} error={error} api={api} onOpen={open} inboxBadge={badge} reviewsBadge={reviewsOpen || null} historyGraph={historyGraph} reviewRevisions={reviewRevisions.byCopy}
+      loaded={loaded} error={error} api={api} onOpen={open} title={t("section.projects")} historyGraph={historyGraph} reviewRevisions={reviewRevisions.byCopy}
       onOpenIssue={(accountId,repo,number) => open(refPath("issue",{accountId,repo,number}))}
       onAttach={async (hostId,root,projectId) => {
         const result = await client.call("attach",{hostId,root,projectId});
@@ -484,7 +407,7 @@ export default definePluginApp(app => {
   app.slots.experimental_tab({...pullTab,title:"Pinned pull request",icon:"GitPullRequest",layout:"flush",component:withCodeTheme(PinnedPull)});
   app.slots.pendingInteraction({id:"git-confirm",component:Approval});
   app.slots.settingsSection({id:"notifications", title:"Notifications", description:"How My PRs tells you that CI started failing or someone commented on your pull requests.", component:NotificationSettings});
-  app.slots.navPanel({id:"git", title:"Git", icon:"GitBranch", path:"git", component:withCodeTheme(Dashboard), experimental_useBadge:useInboxBadge, experimental_sidebar:ProjectsSidebar});
+  app.slots.navPanel({id:"git", title:"Git", icon:"GitBranch", path:"git", component:withCodeTheme(withInterface(Dashboard)), experimental_useBadge:useInboxBadge, experimental_sidebar:withInterface(ProjectsSidebar)});
   app.slots.experimental_tab({id:"git-thread", title:"Git", icon:"GitBranch", context:{kind:"thread"}, availability:"fixed", layout:"flush", component:withCodeTheme(ThreadGit)});
   app.slots.experimental_tab({id:tab.id, title:"Pinned Git", icon:"GitBranch", context:{kind:"thread"}, availability:"action", layout:"flush", component:withCodeTheme(PinnedGit)});
   app.slots.experimental_tab({...historyTab, title:"Git History", icon:"FolderGit", layout:"flush", component:ThreadHistory});

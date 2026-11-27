@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.14.0 — 2026-11-27
+
+The new interface, first slice: its system and the side column.
+
+- **One navigation.** The Git panel's sidebar now holds every section — My PRs, CI/CD, Reviews, Projects, Catalog — with their counts (new alerts, open comment threads, connected accounts), the projects folder tree with each project's sources and actions (⋯), Connections and the language. The row of section buttons above the projects and the breadcrumbs that served as navigation are gone. `/` puts the cursor in the sidebar search.
+- **Connections** is a section of its own: the connected accounts, **+ Add connection** and the accounts' repositories.
+- **Russian and English.** The interface language follows BB's until RU or EN is chosen in the sidebar or **Interface language** (As in BB / Русский / English) in the plugin settings; the choice is kept for every window. The sidebar uses it now; each section follows as it moves to the new interface.
+- **Colours from BB's theme.** Status colours and their tones are derived from BB's background, so they hold 4.5:1 in BB's light and dark modes and in every palette BB ships (Catppuccin, Dracula, Gruvbox, Nord, Solarized), with no theme of the plugin's own.
+- Dialogs keep the keyboard focus inside and give it back to the button that opened them; Escape in a dialog closes the dialog only (it used to close the whole Git panel behind it). The catalog's check boxes no longer stretch across their row.
+
 ## 0.13.2 — 2026-11-27
 
 The token of a new repository in the Keychain.
