@@ -19,7 +19,7 @@ Name the source, the revision, the license, and the paths it landed in.
   `plugins/telegram/lib/utils.ts`.
 - Also `plugins/commander/components/ui/`, `plugins/commander/lib/`, and
   `plugins/commander/hooks/` copied from the Mail paths above in revision
-  `9c432d0c474ceff229d310617ed9eaebacab410a`.
+  `c1fee6f8e8b6f2a5c54aa0b843fc3fe8fa232c2f` (main; identical to the revision copied).
 - License: MIT, Copyright (c) 2026 Michael Yong.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
