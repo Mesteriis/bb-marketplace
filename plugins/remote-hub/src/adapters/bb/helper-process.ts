@@ -35,7 +35,7 @@ import type { SshSpawnSpec } from "../../core/ssh-args.ts";
 
 export const HELPER_BIN_NAME = "remote-hub-helper";
 /** Must match helper/Cargo.toml version; the adapter refuses a mismatch. */
-export const HELPER_VERSION = "0.1.0";
+export const HELPER_VERSION = "0.2.0";
 /** How long the hello handshake may take before it is reported as handshake_timeout. */
 export const HANDSHAKE_TIMEOUT_MS = 5_000;
 
