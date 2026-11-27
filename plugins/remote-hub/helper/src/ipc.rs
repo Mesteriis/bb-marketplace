@@ -199,6 +199,7 @@ impl CredentialRefusal {
                 "keychain_needs_approval" => crate::keychain::KeychainError::NeedsApproval.message(),
                 "allow_timed_out" => "macOS did not get an answer to its dialog in time; try Allow access again",
                 "keychain_denied" => crate::keychain::KeychainError::Denied.message(),
+                "vault_unavailable" => crate::keychain::KeychainError::VaultUnavailable.message(),
                 "credential_missing" => crate::keychain::KeychainError::Missing.message(),
                 "credential_unbound" => crate::keychain::KeychainError::Unbound.message(),
                 _ => crate::keychain::KeychainError::Unavailable.message(),
@@ -316,7 +317,9 @@ fn keychain_child_timed(
     let text = serde_json::to_string(&request).map_err(|_| unavailable())?;
     let deadline = std::time::Instant::now() + timeout;
     let timed_out = || CredentialRefusal::Keychain(timeout_code.to_string());
-    let mut child = Command::new(current_exe)
+    let mut command = Command::new(current_exe);
+    crate::vault_bridge::configure_child(&mut command);
+    let mut child = command
         .arg("--keychain-op")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

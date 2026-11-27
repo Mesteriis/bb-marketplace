@@ -153,6 +153,20 @@ describe("RdpPage: a saved password (stage 3b-1)", () => {
     expect(screen.getByText(/Используется сохранённый пароль/)).toBeTruthy();
   });
 
+  it("offers migration next to a legacy access error and only starts it when clicked", async () => {
+    const migrate = vi.fn(async () => {});
+    const onRdpOpen = vi.fn(async () => { throw new Error("keychain_needs_approval: legacy"); });
+    const prefill = fill();
+    render(<RdpPage {...props({ onRdpOpen, onMigrateCredential: migrate })} prefill={prefill} />);
+    fireEvent.click(screen.getByText("Подключить"));
+    await flush();
+    expect(migrate).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Перенести сохранённый пароль" }));
+    await flush();
+    expect(migrate).toHaveBeenCalledWith(prefill.credentialRef);
+    expect(screen.getByText("Пароль перенесён. Повторите подключение.")).toBeTruthy();
+  });
+
   it("a prefill without a reference keeps the typed-password form", () => {
     render(<RdpPage {...props()} prefill={fill({ credentialRef: null })} />);
     expect(screen.getByLabelText("пароль")).toBeTruthy();

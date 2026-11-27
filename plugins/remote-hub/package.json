@@ -1,7 +1,7 @@
 {
   "name": "bb-plugin-makosh-remote-hub",
   "version": "0.1.0",
-  "description": "Experimental SSH/RDP manager with Proxmox VE guest discovery and consoles (strict TLS, Keychain secrets) through a Rust helper.",
+  "description": "SSH, RDP and Proxmox VE sessions through a Rust helper, with saved credentials in Credential Vault.",
   "private": true,
   "type": "module",
   "license": "MIT",
@@ -28,7 +28,7 @@
   },
   "bb": {
     "name": "Remote Hub [Experimental]",
-    "description": "Experimental SSH/RDP manager with Proxmox VE guest discovery and consoles (strict TLS, Keychain secrets) through a Rust helper.",
+    "description": "SSH, RDP and Proxmox VE sessions through a Rust helper, with saved credentials in Credential Vault.",
     "branding": {
       "icon": "./assets/icon.svg"
     },

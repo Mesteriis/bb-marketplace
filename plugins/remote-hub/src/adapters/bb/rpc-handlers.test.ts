@@ -339,6 +339,18 @@ describe("agent access RPCs (stage 4a): the owner's page is the only way to chan
     await expect(call.agent_access_set!({ profileId: p.id, level: "observe", recordCommands: false }, CLIENT_CALLER)).resolves.toMatchObject({ level: "observe" });
   });
 
+  it("exposes Vault import destinations only to Credential Vault's backend", async () => {
+    const { handlers, profiles } = await withAgents();
+    const p = profiles.save({ fields: RDP });
+    const vaultCaller = { experimental_caller: { kind: "plugin" as const, pluginId: "makosh-credential-vault" } };
+    await expect(handlers.experimental_vault_targets(null, PLUGIN_CALLER)).rejects.toMatchObject({ code: "forbidden" });
+    await expect(handlers.experimental_vault_targets(null, CLIENT_CALLER)).rejects.toMatchObject({ code: "forbidden" });
+    await expect(handlers.experimental_vault_targets(null, vaultCaller)).resolves.toEqual([
+      { id: p.id, name: p.name, protocol: "rdp", host: p.host, username: p.username, revision: JSON.stringify([p.updatedAt, null]), ref: null, shared: false },
+    ]);
+    await expect(handlers.profile_list(null, vaultCaller)).rejects.toMatchObject({ code: "forbidden" });
+  });
+
   it("Y2: every grant change and revoke is audited as the owner RPC with old and new level", async () => {
     const { handlers, profiles, audit } = await withAgents();
     const p = profiles.save({ fields: RDP });

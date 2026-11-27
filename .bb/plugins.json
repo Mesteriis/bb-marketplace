@@ -348,6 +348,10 @@
       "source": "./plugins/navigation"
     },
     {
+      "name": "credential-vault",
+      "source": "./plugins/credential-vault"
+    },
+    {
       "name": "chertog",
       "source": "./plugins/chertog"
     },

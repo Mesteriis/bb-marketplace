@@ -15,3 +15,4 @@ pub mod pve;
 pub mod rdp;
 pub mod ssh_args;
 pub mod threads;
+pub mod vault_bridge;

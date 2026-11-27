@@ -470,6 +470,23 @@ export const rpcSchemas = {
     input: z.object({ id: z.string().uuid(), deleteCredential: z.boolean().optional() }),
     output: z.object({ deleted: z.boolean(), credentialDeleted: z.boolean().optional(), credentialError: z.string().optional() }),
   },
+  experimental_vault_targets: {
+    input: z.null(),
+    output: z.array(z.object({ id: z.string().uuid(), name: z.string(), protocol: z.enum(["ssh", "rdp", "pve"]),
+      host: z.string(), username: z.string().nullable(), revision: z.string(), ref: z.string().nullable(), shared: z.boolean() })),
+  },
+  experimental_vault_import: {
+    input: z.object({
+      profileId: z.string().uuid(),
+      expectedRevision: z.string().min(1).max(100),
+      expectedRef: z.string().max(96).nullable(),
+      source: z.discriminatedUnion("kind", [
+        z.object({ kind: z.literal("keychain") }).strict(),
+        z.object({ kind: z.literal("onepassword"), secret: z.string().min(1).max(4096), replace: z.boolean() }).strict(),
+      ]),
+    }).strict(),
+    output: z.object({ imported: z.literal(true) }),
+  },
   credential_list: {
     input: z.null(),
     output: z.array(credentialViewSchema),

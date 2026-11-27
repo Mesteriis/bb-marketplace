@@ -595,3 +595,81 @@ fn allow_access_has_a_hard_timeout_and_the_child_is_gone() {
     // an ordinary keychain call keeps its own short bound and code
     assert_eq!(code(&f.status(2, REF)), "keychain_unavailable");
 }
+
+#[test]
+fn a_legacy_rdp_password_is_migrated_once_and_reused_with_keychain_locked() {
+    use std::collections::HashMap;
+    use std::io::{Read, Write};
+    use std::os::unix::net::{UnixListener, UnixStream};
+
+    let mut f = Fixture::new("vault");
+    let server = silent_server();
+    f.bind_port = server.port;
+    assert!(matches!(f.save(1, REF, SECRET), Response::CredentialOk { .. }));
+    f.helper.take().unwrap().shutdown();
+
+    // macOS Unix socket paths are shorter than a typical TMPDIR.
+    let socket_dir = PathBuf::from(format!("/tmp/rh-vault-test-{}", std::process::id()));
+    std::os::unix::fs::DirBuilderExt::mode(&mut std::fs::DirBuilder::new(), 0o700).create(&socket_dir).unwrap();
+    let socket = socket_dir.join("s");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let token = "a".repeat(64);
+    let server_token = token.clone();
+    let vault = std::thread::spawn(move || {
+        let mut values: HashMap<String, String> = HashMap::new();
+        let mut imports = 0;
+        for stream in listener.incoming() {
+            let mut stream = stream.unwrap();
+            let mut request = String::new();
+            stream.read_to_string(&mut request).unwrap();
+            if request.is_empty() { break; }
+            let req: serde_json::Value = serde_json::from_str(&request).unwrap();
+            assert_eq!(req["token"], server_token);
+            let reference = req["ref"].as_str().unwrap();
+            let reply = match req["op"].as_str().unwrap() {
+                "get" => serde_json::json!({ "value": values.get(reference) }),
+                "import" => {
+                    imports += 1;
+                    let absent = !values.contains_key(reference);
+                    if absent {
+                        values.insert(reference.to_owned(), req["value"].as_str().unwrap().to_owned());
+                    }
+                    serde_json::json!({ "stored": absent })
+                }
+                "put" => {
+                    values.insert(reference.to_owned(), req["value"].as_str().unwrap().to_owned());
+                    serde_json::json!({ "stored": true })
+                }
+                _ => panic!("unexpected vault operation"),
+            };
+            stream.write_all(reply.to_string().as_bytes()).unwrap();
+        }
+        imports
+    });
+    let path = f.path.clone();
+    let env = [
+        (FAKE, "credential"),
+        ("REMOTE_HUB_KEYCHAIN_PATH", path.to_str().unwrap()),
+        ("REMOTE_HUB_VAULT_SOCKET", socket.to_str().unwrap()),
+        ("REMOTE_HUB_VAULT_TOKEN", token.as_str()),
+    ];
+    let verify_open = |f: &mut Fixture, id| {
+        let opened = f.open_with(id, None, Some(REF), server.port);
+        let Response::SessionOpened { session_id, .. } = opened else { panic!("expected session.opened, got {opened:?}") };
+        f.h().wait_state(session_id, &format!("pw_sha256={SECRET_DIGEST}"));
+        assert!(!f.h().stderr_text().contains(SECRET));
+    };
+    f.helper = Some(start(&env));
+    verify_open(&mut f, 2);
+    f.helper.take().unwrap().shutdown();
+
+    assert!(Command::new("/usr/bin/security").arg("lock-keychain").arg(&path).status().unwrap().success());
+    f.helper = Some(start(&env));
+    verify_open(&mut f, 3);
+    assert!(matches!(f.delete(4, REF), Response::CredentialOk { .. }));
+    assert_eq!(code(&f.open_with(5, None, Some(REF), server.port)), "credential_missing");
+    f.helper.take().unwrap().shutdown();
+    drop(UnixStream::connect(&socket).unwrap());
+    assert_eq!(vault.join().unwrap(), 1);
+    std::fs::remove_dir_all(socket_dir).unwrap();
+}

@@ -28,6 +28,8 @@ export type RpcHandlers = { [K in keyof RpcSchemas]: (input: Input<K>, ctx?: Rpc
 
 /** Who the audit names for a change made through the owner's page. */
 export const OWNER_RPC = "owner RPC";
+const VAULT_PLUGIN_ID = "makosh-credential-vault";
+const vaultMethods = new Set(["experimental_vault_targets", "experimental_vault_import"]);
 
 /**
  * These RPCs are the owner's page talking to this plugin. Another plugin has no business calling them, least of
@@ -38,7 +40,14 @@ export function ownerOnly(handlers: RpcHandlers): RpcHandlers {
   const wrapped: Record<string, unknown> = {};
   for (const [name, handler] of Object.entries(handlers) as Array<[string, (input: unknown, ctx?: RpcCallContext) => unknown]>) {
     wrapped[name] = async (input: unknown, ctx?: RpcCallContext) => {
-      if (ctx?.experimental_caller?.kind === "plugin") throw new experimental_PluginRpcRefusal({ code: "forbidden", message: "this RPC is for the Remote Hub page, not for other plugins" });
+      const caller = ctx?.experimental_caller;
+      if (vaultMethods.has(name)) {
+        if (caller?.kind !== "plugin" || caller.pluginId !== VAULT_PLUGIN_ID) {
+          throw new experimental_PluginRpcRefusal({ code: "forbidden", message: "Credential Vault backend required" });
+        }
+      } else if (caller?.kind === "plugin") {
+        throw new experimental_PluginRpcRefusal({ code: "forbidden", message: "this RPC is for the Remote Hub page, not for other plugins" });
+      }
       return await handler(input, ctx);
     };
   }
@@ -54,10 +63,13 @@ export function credentialRefusal(error: CredentialError): experimental_PluginRp
     keychain_denied: "forbidden",
     credential_target_mismatch: "forbidden",
     keychain_unavailable: "not_found",
+    vault_unavailable: "conflict",
     credential_unknown: "not_found",
     credential_missing: "not_found",
     profile_not_found: "not_found",
     credential_exists: "conflict",
+    credential_shared: "conflict",
+    profile_changed: "conflict",
     profile_needs_config: "invalid",
   };
   return new experimental_PluginRpcRefusal({ code: codeOf[error.code] ?? "invalid", message: error.code + ": " + error.message });
@@ -265,6 +277,27 @@ export function createRpcHandlers({ service, profiles, credentials, imports, age
     pve_onboard_plan: (input) => withPve((p) => p.onboardPlan(input)),
     pve_onboard_apply: (input) => withPve((p) => p.onboardApply(input)),
     pve_onboard_connect: (input) => withPve((p) => p.onboardConnect(input)),
+    experimental_vault_targets: () => imports.decorate(profiles.list())
+      .filter((p) => p.authType === "password" && p.needsConfig !== true)
+      .map((p) => ({ id: p.id, name: p.name, protocol: p.protocol, host: p.host, username: p.username,
+        revision: credentials.importRevision(p), ref: p.credentialRef,
+        shared: p.credentialRef !== null && profiles.usersOf(p.credentialRef).some((other) => other.id !== p.id) })),
+    experimental_vault_import: (input) => withProfile(async () => {
+      const source = input.source;
+      let importedRef: string;
+      if (source.kind === "keychain") {
+        const ref = credentials.importTarget(input).credentialRef;
+        if (ref === null) throw new CredentialError("credential_missing", "no saved password to migrate");
+        await service.credentialAllow(ref);
+        importedRef = ref;
+      } else {
+        importedRef = await credentials.importPassword({ ...input, secret: source.secret, replace: source.replace });
+      }
+      if (await credentials.status(importedRef) !== "present" || profiles.get(input.profileId)?.credentialRef !== importedRef) {
+        throw new CredentialError("vault_unavailable", "the imported password could not be verified");
+      }
+      return { imported: true as const };
+    }),
     credential_list: () => credentials.list(),
     credential_save: (input) => withProfile(() => credentials.save(input)),
     credential_update: (input) =>

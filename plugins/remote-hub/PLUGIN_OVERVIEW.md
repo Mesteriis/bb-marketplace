@@ -15,12 +15,8 @@ guest discovery. SSH runs in xterm, RDP on a canvas, through a Rust helper.
 - Saved profiles: a tree in the sidebar with search and groups (Proxmox opens to its
   guests); an editor. A profile holds no password or key,
   only last-opened time and recent failure codes.
-- Saved passwords and key passphrases live in the macOS Keychain, never in the
-  profile, database, page or any log, and work only for the host, port, user
-  (domain) or key file they were saved for; editing those forgets them. SSH uses
-  them through OpenSSH's askpass hook, served by the helper: one prompt, once,
-  with no SSH config (`-F none`). Host-key questions are answered by you, never saved.
-  A Credentials screen manages them.
+- Saved passwords and key passphrases use Credential Vault. Existing records are
+  copied as needed, keeping their endpoint or key binding and any RDP certificate pin.
 - Import (each source off until you switch it on): ssh config aliases (read as
   text, ssh -G only if you allow it), /etc/hosts names, public-key metadata, agent keys and
   known_hosts keys (only ticked ones are trusted). Profiles keep their source; re-importing changes
@@ -34,7 +30,7 @@ guest discovery. SSH runs in xterm, RDP on a canvas, through a Rust helper.
 Passwords saved before bindings existed must be saved again. Helper unsigned. A saved RDP password is bound to
 host, port, user and domain and, after its first accepted use, to that server
 certificate (trust on first sight): save it again to start over.
-One-time codes are always typed by you. macOS may ask to approve Keychain access. "Last opened" means the open succeeded, not that the login was accepted.
+One-time codes are always typed by you. macOS may ask once to read a legacy record during migration. "Last opened" means the open succeeded, not that the login was accepted.
 Cmd+V types the clipboard (RDP, VM). No remote resize, Kerberos. NLA, strict TLS and Proxmox are tested against fixtures. The helper is built with npm run build:helper (Rust, aarch64-apple-darwin).
 
 ## Source

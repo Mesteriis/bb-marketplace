@@ -363,6 +363,12 @@ export function HubPage(props: HubPageProps) {
               embedded
               onStatus={onRdpStatus}
               actionsRef={rdpActions}
+              {...(credentialsApi === undefined ? {} : {
+                onMigrateCredential: async (ref: string) => {
+                  const result = await credentialsApi.allow(ref);
+                  if (result.state !== "present") throw new Error("vault_unavailable: migration was not verified");
+                },
+              })}
               onRdpOpen={async (target, size, profileId, options) => {
                 try {
                   return await props.rdp.onRdpOpen(target, size, profileId, options);

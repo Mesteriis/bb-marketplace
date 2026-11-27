@@ -58,6 +58,7 @@ export const CREDENTIAL_ERROR_CODES = [
   "allow_timed_out",
   "keychain_denied",
   "keychain_unavailable",
+  "vault_unavailable",
   "credential_missing",
   "invalid_credential_ref",
   "invalid_credential_source",

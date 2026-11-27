@@ -41,6 +41,8 @@ pub enum KeychainError {
     Missing,
     /// No keychain, or any other failure.
     Unavailable,
+    /// The central Credential Vault could not safely complete the operation.
+    VaultUnavailable,
     /// The item exists but carries no binding (saved before bindings existed): it is never used.
     Unbound,
 }
@@ -55,6 +57,7 @@ impl KeychainError {
             KeychainError::Missing => "credential_missing",
             KeychainError::Unavailable => "keychain_unavailable",
             KeychainError::Unbound => "credential_unbound",
+            KeychainError::VaultUnavailable => "vault_unavailable",
         }
     }
 
@@ -66,6 +69,7 @@ impl KeychainError {
             KeychainError::Missing => "the saved credential no longer exists in the Keychain",
             KeychainError::Unavailable => "the Keychain is not available",
             KeychainError::Unbound => "this saved credential has no binding; save it again",
+            KeychainError::VaultUnavailable => "Credential Vault is unavailable; check its status in BB",
         }
     }
 }
@@ -154,18 +158,12 @@ impl Keychain {
 
     /// Saves the secret TOGETHER with what it is for, as one Keychain item.
     pub fn set_item(&self, account: &str, bind: &Bind, secret: &Secret) -> Result<(), KeychainError> {
-        let stored = StoredItem { magic: ENVELOPE_MAGIC.to_string(), v: 1, bind: bind.clone(), secret: secret.clone() };
-        let text = serde_json::to_string(&stored).map_err(|_| KeychainError::Unavailable)?;
-        self.set(account, &Secret::new(text))
+        self.set(account, &Secret::new(encode_item(bind, secret)?))
     }
 
     /// The secret and its binding. An item without a binding is `Unbound`, never a bare secret.
     pub fn get_item(&self, account: &str) -> Result<Item, KeychainError> {
-        let raw = self.get(account)?;
-        match serde_json::from_str::<StoredItem>(raw.expose()) {
-            Ok(stored) if stored.magic == ENVELOPE_MAGIC && stored.v == 1 && stored.bind.is_valid() => Ok(Item { bind: stored.bind, secret: stored.secret }),
-            _ => Err(KeychainError::Unbound),
-        }
+        decode_item(self.get(account)?.expose())
     }
 
     /// The owner's "Allow access": ONE read with interaction enabled. Never call this from the long-lived helper; `run_op` only.
@@ -357,8 +355,30 @@ mod imp {
     /// One read of an item with user interaction ENABLED, so macOS may ask the owner (and offer "Always Allow"). Only the
     /// short-lived `--keychain-op` child may call this (see `run_op`): the long-lived helper's switch stays off for good.
     pub fn get_interactive(target: &Target, account: &str) -> Result<Vec<u8>, KeychainError> {
+        use core_foundation::base::TCFType;
         validate_first(target)?;
+        // Resolve and validate the default file before enabling dialogs. A missing
+        // Keychain is an error, never a reason to offer the system reset dialog.
+        let quiet = SecKeychain::disable_user_interaction().map_err(|e| classify(e.code()))?;
         let keychain = open(target)?;
+        let raw = keychain.as_concrete_TypeRef() as *mut std::ffi::c_void;
+        let mut path = [0 as std::ffi::c_char; 4096];
+        let mut len = (path.len() - 1) as u32;
+        let mut status = 0u32;
+        if unsafe { SecKeychainGetPath(raw, &mut len, path.as_mut_ptr()) } != 0
+            || len as usize >= path.len() || unsafe { SecKeychainGetStatus(raw, &mut status) } != 0
+        {
+            return Err(KeychainError::Unavailable);
+        }
+        use std::os::unix::ffi::OsStrExt;
+        let actual = unsafe { std::ffi::CStr::from_ptr(path.as_ptr()) };
+        if !std::path::Path::new(std::ffi::OsStr::from_bytes(actual.to_bytes())).is_file() {
+            return Err(KeychainError::Unavailable);
+        }
+        if status & 1 == 0 {
+            return Err(KeychainError::Locked);
+        }
+        drop(quiet);
         let (password, _item) = keychain.find_generic_password(SERVICE, account).map_err(|e| classify(e.code()))?;
         Ok(password.to_vec())
     }
@@ -408,7 +428,6 @@ mod imp {
     #[link(name = "Security", kind = "framework")]
     extern "C" {
         fn SecKeychainItemDelete(item: *mut std::ffi::c_void) -> i32;
-        #[cfg(feature = "test-hooks")]
         fn SecKeychainGetPath(keychain: *mut std::ffi::c_void, length: *mut u32, path: *mut std::ffi::c_char) -> i32;
         fn SecKeychainGetStatus(keychain: *mut std::ffi::c_void, status: *mut u32) -> i32;
     }
@@ -492,6 +511,10 @@ pub struct OpReply {
 
 /// Executes one request against `keychain`. Pure of I/O, so it is tested directly.
 pub fn execute(keychain: &Keychain, request: &OpRequest) -> OpReply {
+    execute_with(&Storage { legacy: keychain, vault: None }, request)
+}
+
+fn execute_with(keychain: &Storage<'_>, request: &OpRequest) -> OpReply {
     let fail = |e: KeychainError| OpReply { error: Some(e.code().to_string()), ..OpReply::default() };
     match (request.op.as_str(), &request.secret) {
         ("save", Some(secret)) => match &request.bind {
@@ -503,7 +526,7 @@ pub fn execute(keychain: &Keychain, request: &OpRequest) -> OpReply {
         },
         // Test-hooks only: a bare secret with no binding, as a pre-binding helper would have stored.
         #[cfg(feature = "test-hooks")]
-        ("save_raw", Some(secret)) => match keychain.set(&request.reference, secret) {
+        ("save_raw", Some(secret)) => match keychain.legacy.set(&request.reference, secret) {
             Ok(()) => OpReply::default(),
             Err(e) => fail(e),
         },
@@ -560,6 +583,92 @@ pub fn execute(keychain: &Keychain, request: &OpRequest) -> OpReply {
     }
 }
 
+fn encode_item(bind: &Bind, secret: &Secret) -> Result<String, KeychainError> {
+    let stored = StoredItem { magic: ENVELOPE_MAGIC.to_string(), v: 1, bind: bind.clone(), secret: secret.clone() };
+    serde_json::to_string(&stored).map_err(|_| KeychainError::Unavailable)
+}
+
+fn decode_item(raw: &str) -> Result<Item, KeychainError> {
+    match serde_json::from_str::<StoredItem>(raw) {
+        Ok(stored) if stored.magic == ENVELOPE_MAGIC && stored.v == 1 && stored.bind.is_valid() => {
+            Ok(Item { bind: stored.bind, secret: stored.secret })
+        }
+        _ => Err(KeychainError::Unbound),
+    }
+}
+
+// A deletion marker prevents a retained legacy backup from ever being re-imported.
+const DELETED: &str = "remote-hub/deleted-v1";
+
+struct Storage<'a> {
+    legacy: &'a Keychain,
+    vault: Option<&'a crate::vault_bridge::Client>,
+}
+
+impl Storage<'_> {
+    fn get_item(&self, reference: &str) -> Result<Item, KeychainError> {
+        self.read_item(reference, false)
+    }
+
+    fn read_item(&self, reference: &str, interactive: bool) -> Result<Item, KeychainError> {
+        let Some(vault) = self.vault else { return self.legacy.get_item(reference) };
+        if let Some(current) = vault.get(reference)? {
+            return Self::decode_vault(&current);
+        }
+        let raw = if interactive {
+            let bytes = imp::get_interactive(&self.legacy.target, reference)?;
+            Secret::new(String::from_utf8(bytes).map_err(|_| KeychainError::Unbound)?)
+        } else {
+            self.legacy.get(reference)?
+        };
+        let legacy = decode_item(raw.expose())?;
+        let inserted = vault.write("import", reference, raw.expose())?;
+        let stored = vault.get(reference)?.ok_or(KeychainError::VaultUnavailable)?;
+        let item = Self::decode_vault(&stored)?;
+        // A concurrent import or replacement wins. If this child inserted,
+        // verify that the value and the original binding survived the write.
+        if inserted && (item.bind != legacy.bind || item.secret != legacy.secret) {
+            return Err(KeychainError::VaultUnavailable);
+        }
+        Ok(item)
+    }
+
+    fn decode_vault(raw: &str) -> Result<Item, KeychainError> {
+        if raw == DELETED {
+            return Err(KeychainError::Missing);
+        }
+        decode_item(raw)
+    }
+
+    fn set_item(&self, reference: &str, bind: &Bind, secret: &Secret) -> Result<(), KeychainError> {
+        let Some(vault) = self.vault else { return self.legacy.set_item(reference, bind, secret) };
+        let item = encode_item(bind, secret)?;
+        if !vault.write("put", reference, &item)? {
+            return Err(KeychainError::VaultUnavailable);
+        }
+        Ok(())
+    }
+
+    fn delete(&self, reference: &str) -> Result<(), KeychainError> {
+        let Some(vault) = self.vault else { return self.legacy.delete(reference) };
+        if !vault.write("put", reference, DELETED)? {
+            return Err(KeychainError::VaultUnavailable);
+        }
+        Ok(())
+    }
+
+    fn exists(&self, reference: &str) -> Result<bool, KeychainError> {
+        if self.vault.is_none() {
+            return self.legacy.exists(reference);
+        }
+        match self.get_item(reference) {
+            Ok(_) => Ok(true),
+            Err(KeychainError::Missing) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+}
+
 /// The `--keychain-op` entry point: one request in, one reply out.
 pub fn run_op() -> i32 {
     use std::io::{Read, Write};
@@ -582,14 +691,29 @@ pub fn run_op() -> i32 {
         return fake_op(&mode);
     }
     let Ok(request) = serde_json::from_str::<OpRequest>(&input) else { return 2 };
-    // The one operation that may show a macOS dialog; it exists only here, in the short-lived child, never in `execute`.
-    let reply = if request.op == "allow" {
-        match Keychain::from_env().allow(&request.reference) {
-            Ok(()) => OpReply { present: Some(true), ..OpReply::default() },
-            Err(e) => OpReply { error: Some(e.code().to_string()), ..OpReply::default() },
+    if !valid_credential_ref(&request.reference) {
+        return 2;
+    }
+    let legacy = Keychain::from_env();
+    let reply = match crate::vault_bridge::Client::from_env() {
+        Err(error) => OpReply { error: Some(error.code().to_string()), ..OpReply::default() },
+        Ok(vault) => {
+            let store = Storage { legacy: &legacy, vault: vault.as_ref() };
+            if request.op == "allow" {
+                // Only an owner action may ask macOS about a legacy item.
+                let result = if store.vault.is_some() {
+                    store.read_item(&request.reference, true).map(|_| ())
+                } else {
+                    legacy.allow(&request.reference)
+                };
+                match result {
+                    Ok(()) => OpReply { present: Some(true), ..OpReply::default() },
+                    Err(e) => OpReply { error: Some(e.code().to_string()), ..OpReply::default() },
+                }
+            } else {
+                execute_with(&store, &request)
+            }
         }
-    } else {
-        execute(&Keychain::from_env(), &request)
     };
     let Ok(text) = serde_json::to_string(&reply) else { return 2 };
     let mut out = std::io::stdout();

@@ -808,7 +808,7 @@
     {
       "id": "makosh-remote-hub",
       "displayName": "Remote Hub [Experimental]",
-      "description": "Experimental SSH/RDP manager with Proxmox VE guest discovery and consoles (strict TLS, Keychain secrets) through a Rust helper.",
+      "description": "SSH, RDP and Proxmox VE sessions through a Rust helper, with saved credentials in Credential Vault.",
       "icon": {
         "url": "./plugins/remote-hub/assets/icon.svg"
       },
@@ -1631,6 +1631,23 @@
         "git": {
           "url": "https://github.com/Mesteriis/bb-marketplace.git",
           "subdir": "plugins/navigation",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "makosh-credential-vault",
+      "displayName": "Credential Vault",
+      "description": "Encrypted password storage on macOS for BB plugins, with imports from Keychain and 1Password.",
+      "icon": "Lock",
+      "author": {
+        "name": "Mesteriis",
+        "github": "Mesteriis"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/credential-vault",
           "ref": "main"
         }
       }

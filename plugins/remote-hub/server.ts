@@ -11,11 +11,10 @@ import { publishAgentSignals } from "./src/adapters/bb/agent-signals.ts";
 import { AgentFeed } from "./src/core/agent-feed.ts";
 import { WatcherBook } from "./src/core/watchers.ts";
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
-import { HELPER_BIN_NAME, HelperProcess } from "./src/adapters/bb/helper-process.ts";
+import { experimental_spawnHostProcess } from "@get-bb/plugin-sdk/process";
+import { dispatchVault, startVaultBridge } from "./src/adapters/bb/vault-bridge.ts";
+import { HelperProcess } from "./src/adapters/bb/helper-process.ts";
 import { ALL_MIGRATIONS } from "./src/adapters/bb/migrations.ts";
 import { AgentAccessBook } from "./src/core/agent-access.ts";
 import { AgentAudit } from "./src/core/agent-audit.ts";
@@ -46,19 +45,6 @@ import { rpcSchemas } from "./src/core/rpc.ts";
 
 export const rpcContract = defineRpcContract(rpcSchemas);
 
-/**
- * The plugin root: server.ts lives there in a checkout and is compiled to
- * dist/ by bb plugin build, so try the current directory and its parent.
- */
-function pluginRootDir(): string {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const candidates = [here, dirname(here)];
-  for (const dir of candidates) {
-    if (existsSync(join(dir, "bin", HELPER_BIN_NAME))) return dir;
-  }
-  return here;
-}
-
 export default function plugin(bb: BbPluginApi): void {
   const db = bb.storage.database();
   bb.storage.migrate(db, ALL_MIGRATIONS);
@@ -67,9 +53,25 @@ export default function plugin(bb: BbPluginApi): void {
   const watchers = new WatcherBook({ now: () => Date.now() });
   const agentSettings = new AgentSettings(createSqliteAgentSettingsStore(db));
   const feed = new AgentFeed();
+  let bridge: ReturnType<typeof startVaultBridge> | undefined;
+  let disposed = false;
   const service = createRemoteHubService({
     control: createControlGate(leases, watchers, agentSettings),
-    startHelper: () => HelperProcess.start(pluginRootDir()),
+    startHelper: async () => {
+      bridge ??= startVaultBridge(dispatchVault(bb.sdk.plugins)).catch((error) => {
+        bridge = undefined;
+        throw error;
+      });
+      const [endpoint, installed] = await Promise.all([bridge, bb.sdk.plugins.list()]);
+      if (disposed) throw new Error("Remote Hub stopped");
+      const root = installed.plugins.find((entry) => entry.id === bb.pluginId)?.rootDir;
+      if (!root) throw new Error("Remote Hub installation directory unavailable");
+      return HelperProcess.start(root, (bin, args) =>
+        experimental_spawnHostProcess(bin, args, {
+          env: { ...process.env, REMOTE_HUB_VAULT_SOCKET: endpoint.path, REMOTE_HUB_VAULT_TOKEN: endpoint.token },
+        }),
+      );
+    },
     trust: createRdpTrustStore(createSqliteRdpTrust(db)),
   });
   const profiles = new ProfileBook({
@@ -121,6 +123,8 @@ export default function plugin(bb: BbPluginApi): void {
   registerStreamSocket(bb, { service, audit: agentAudit, watchers, feed });
 
   bb.onDispose(() => {
+    disposed = true;
     service.stop();
+    void bridge?.then((endpoint) => endpoint.close()).catch(() => {});
   });
 }

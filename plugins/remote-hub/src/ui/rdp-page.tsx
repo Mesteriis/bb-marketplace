@@ -56,6 +56,7 @@ export interface RdpPageProps {
   /** `options` are those of Quick connect (a preset); a saved profile's own options are applied by the service. */
   onRdpOpen: (target: RdpConnectTarget, size: { width: number; height: number }, profileId?: string, options?: RdpOptions) => Promise<SessionHandle>;
   prefill?: RdpPrefill;
+  onMigrateCredential?: (ref: string) => Promise<void>;
   onAttach: (handle: SessionHandle) => Promise<RdpAttach>;
   /** The service's close result; its reason is what the page shows. */
   onClose: (handle: SessionHandle) => Promise<{ reason?: string | null } | void>;
@@ -123,6 +124,8 @@ export function RdpPage(props: RdpPageProps) {
   const [connecting, setConnecting] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [migrationRef, setMigrationRef] = useState<string | null>(null);
+  const [migrating, setMigrating] = useState(false);
   const [fit, setFit] = useState<FitMode>("fit");
   const [deciding, setDeciding] = useState(false);
   const canvasHandle = useRef<RdpCanvasHandle | null>(null);
@@ -136,6 +139,7 @@ export function RdpPage(props: RdpPageProps) {
   const edit = (set: (value: string) => void) => (value: string) => {
     linked.current = null;
     setSavedRef(null);
+    setMigrationRef(null);
     set(value);
   };
   const lastPrefill = useRef<number | null>(null);
@@ -150,6 +154,7 @@ export function RdpPage(props: RdpPageProps) {
     setPassword("");
     linked.current = { profileId: fill.profileId, size: fill.width !== null && fill.height !== null ? { width: fill.width, height: fill.height } : null };
     setSavedRef(fill.credentialRef ?? null);
+    setMigrationRef(null);
     passwordInput.current?.focus();
   }, [props.prefill]);
 
@@ -209,7 +214,8 @@ export function RdpPage(props: RdpPageProps) {
       setError("port must be a whole number from 1 to 65535");
       return;
     }
-    if (opening.current) return;
+    if (opening.current || migrating) return;
+    setMigrationRef(null);
     // The password leaves component state HERE; only this call's closure holds it.
     const useSaved = savedRef !== null;
     const secret = password;
@@ -233,7 +239,13 @@ export function RdpPage(props: RdpPageProps) {
     } catch (e) {
       opening.current = false;
       setConnecting(null);
-      setError(errorTextFromMessage(e instanceof Error ? e.message : String(e)));
+      const message = e instanceof Error ? e.message : String(e);
+      if (message.startsWith("keychain_needs_approval:") && useSaved && props.onMigrateCredential !== undefined) {
+        setMigrationRef(savedRef);
+        setError("macOS требует подтвердить чтение старой записи для переноса в Credential Vault.");
+      } else {
+        setError(errorTextFromMessage(message));
+      }
       return;
     }
     opening.current = false;
@@ -309,6 +321,21 @@ export function RdpPage(props: RdpPageProps) {
 
   const state = view?.state ?? (connecting !== null ? "connecting" : error !== null ? "error" : "idle");
   const live = view !== null && view.state !== "closed";
+  const migrate = async () => {
+    if (migrationRef === null || migrationRef !== savedRef || props.onMigrateCredential === undefined || migrating) return;
+    setMigrating(true);
+    try {
+      await props.onMigrateCredential(migrationRef);
+      setMigrationRef(null);
+      setError(null);
+      setNotice("Пароль перенесён. Повторите подключение.");
+    } catch (e) {
+      setError(errorTextFromMessage(e instanceof Error ? e.message : String(e)));
+    } finally {
+      setMigrating(false);
+    }
+  };
+
   const ready = view?.state === "desktop_ready";
   const prompt = view?.prompt ?? null;
 
@@ -423,6 +450,11 @@ export function RdpPage(props: RdpPageProps) {
           <p className="rh-error" role="alert">
             {error}
           </p>
+        )}
+        {migrationRef !== null && migrationRef === savedRef && (
+          <button type="button" disabled={migrating} onClick={() => void migrate()}>
+            {migrating ? "Ожидаем разрешение macOS…" : "Перенести сохранённый пароль"}
+          </button>
         )}
         {view !== null && view.attach !== null && (
           <>

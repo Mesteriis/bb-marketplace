@@ -42,6 +42,9 @@ fn main() {
         None
     };
 
+    if remote_hub_helper::vault_bridge::configure().is_err() {
+        std::process::exit(2);
+    }
     std::process::exit(ipc::run(echo_argv));
 }
 

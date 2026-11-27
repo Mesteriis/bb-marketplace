@@ -420,3 +420,18 @@ describe("CredentialBook.adopt (a secret the helper saved itself)", () => {
     expect(book.get(p.id)?.credentialRef).toBeNull();
   });
 });
+
+describe("CredentialBook.importPassword", () => {
+  it("requires confirmation for replacement and refuses an outdated profile selection", async () => {
+    const { profiles, vault, book } = setup();
+    const profile = profiles.save({ fields: RDP });
+    const { ref } = await book.save({ profileId: profile.id, secret: "existing fixture" });
+    const current = profiles.get(profile.id)!;
+    const input = { profileId: profile.id, expectedRef: ref, expectedRevision: book.importRevision(current), secret: "import fixture", replace: false };
+    await expect(book.importPassword(input)).rejects.toMatchObject({ code: "credential_exists" });
+    await expect(book.importPassword({ ...input, expectedRef: null, replace: true })).rejects.toMatchObject({ code: "profile_changed" });
+    expect(vault.items.get(ref)).toBe("existing fixture");
+    await expect(book.importPassword({ ...input, replace: true })).resolves.toBe(ref);
+    expect(vault.items.get(ref)).toBe("import fixture");
+  });
+});

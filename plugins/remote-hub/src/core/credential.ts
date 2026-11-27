@@ -82,6 +82,7 @@ const STATE_OF_CODE: Record<string, CredentialState> = {
   keychain_needs_approval: "needs_approval",
   keychain_denied: "denied",
   keychain_unavailable: "unavailable",
+  vault_unavailable: "unavailable",
   credential_missing: "missing",
 };
 
@@ -259,6 +260,41 @@ export class CredentialBook {
   private static withNote(error: unknown, cleanupCode: string | null): unknown {
     if (cleanupCode === null || !(error instanceof CredentialError)) return error;
     return new CredentialError(error.code, `${error.message} (and the Keychain item could not be removed: ${cleanupCode}; it is listed as unfinished)`);
+  }
+
+  importPassword(input: { profileId: string; expectedRef: string | null; expectedRevision: string; secret: string; replace: boolean }): Promise<string> {
+    return this.locked("profile:" + input.profileId, async () => {
+      const profile = this.importTarget(input);
+      const ref = profile.credentialRef;
+      if (ref === null) {
+        return (await this.saveLocked({ profileId: profile.id, secret: input.secret })).ref;
+      }
+      if (!input.replace) throw new CredentialError("credential_exists", "confirm replacement of the saved password");
+      await this.locked("ref:" + ref, async () => {
+        this.importTarget(input);
+        if (this.deps.profiles.usersOf(ref).some((p) => p.id !== profile.id)) {
+          throw new CredentialError("credential_shared", "the saved password is shared by multiple profiles");
+        }
+        await this.updateLocked(ref, input.secret);
+      });
+      return ref;
+    });
+  }
+
+  importRevision(profile: Profile): string {
+    const credential = profile.credentialRef === null ? null : this.deps.store.get(profile.credentialRef);
+    return JSON.stringify([profile.updatedAt, credential?.updatedAt ?? null]);
+  }
+
+  importTarget(input: { profileId: string; expectedRef: string | null; expectedRevision: string }): Profile {
+    const profile = this.deps.profiles.get(input.profileId);
+    if (profile === null || this.importRevision(profile) !== input.expectedRevision || profile.credentialRef !== input.expectedRef) {
+      throw new CredentialError("profile_changed", "select the current connection before importing");
+    }
+    if (profile.authType !== "password" || profile.needsConfig === true) {
+      throw new CredentialError("credential_not_applicable", "this connection does not accept a saved password");
+    }
+    return profile;
   }
 
   update(ref: string, secret: string): Promise<void> {
