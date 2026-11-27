@@ -24,7 +24,7 @@ const P = "5b568675-f842-4a96-83e0-78ae53d96024";
 
 describe("contract id", () => {
   it("names the Remote Hub commit it mirrors", () => {
-    expect(REMOTE_HUB_SFTP_CONTRACT).toBe("remote-hub@22933aad");
+    expect(REMOTE_HUB_SFTP_CONTRACT).toBe("remote-hub@e1b0d502");
     expect(SFTP_EVENTS_CHANNEL).toBe("remote-hub.sftp");
   });
 });
@@ -63,6 +63,12 @@ describe("limits", () => {
 
 describe("operations", () => {
   const ok = (op: object) => sftpOpInputSchema.safeParse({ channelId: CH, ...op }).success;
+
+  it("passes back an opaque list cursor of up to 1024 characters (remote-hub@e1b0d502)", () => {
+    expect(ok({ op: "list", path: { text: "/var" }, cursor: "c".repeat(1024) })).toBe(true);
+    expect(ok({ op: "list", path: { text: "/var" }, cursor: "c".repeat(1025) })).toBe(false);
+    expect(ok({ op: "list", path: { text: "/var" }, cursor: "" })).toBe(false);
+  });
 
   it("accepts each operation in its own shape and nothing else", () => {
     expect(ok({ op: "list", path: { text: "/var" } })).toBe(true);
