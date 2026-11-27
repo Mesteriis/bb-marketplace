@@ -89,3 +89,63 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+## diff-review
+
+- Source: https://github.com/gpambrozio/bb-plugins (`diff-review`), upstream revision 240f0372f9292084756612227624f5f6185a341a (vendored in this repository as `plugins/diff-review` through the fork https://github.com/Mesteriis/gpambrozio-bb-plugins, branch `marketplace/diff-review`, commit 2130a3f470ad1ddc3ddc4f5b1a8f48dce5ccec14; ported from that directory as of repository commit da73dd23).
+- Used in: `src/core/code-review/{anchors,patch-lines,suggestion,revert,git-spec}.ts` (as they are, imports adjusted), `src/core/code-review/model.ts` (the review model of `shared/types.ts`: sessions per working copy instead of per BB environment, without the `files` and `pr` views), `tests/code-review-anchors.test.ts` and `tests/code-review-suggestion.test.ts` (tests, vitest replaced by node:test with `tests/vitest-expect.ts`).
+- License: MIT (the package's `license` field; author gpambrozio). The plugin directory carries no license file of its own; the MIT terms are:
+
+```
+MIT License
+
+Copyright (c) gpambrozio
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+### diffity, through diff-review
+
+diff-review adapts parts of [diffity](https://github.com/nilbuild/diffity) (commits `ce9de40` and `ebeb656`); the parts ported here keep that origin: `suggestion.ts` adapts diffity's `src/features/suggestions/suggestion.ts`, the review model and the `__general__` / line 0 conventions follow `src-tauri/src/core/store.rs`.
+
+diffity is licensed under the MIT License:
+
+```
+MIT License
+
+Copyright (c) 2026 Kamran Ahmed
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```

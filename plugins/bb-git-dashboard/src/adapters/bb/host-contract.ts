@@ -1,4 +1,6 @@
 import { defineRpcContract } from "@get-bb/plugin-sdk";
+import { targetSchema } from "../../core/code-review/model.ts";
+import { reviewDiffSchema } from "../../core/code-review/diff.ts";
 import { z } from "zod";
 import { gitAction, path } from "../../core/git.ts";
 import { failure, gitResponse } from "../../core/workspace.ts";
@@ -30,5 +32,11 @@ export const hostContract = defineRpcContract({
   historyCommit: {input:z.object({root:path,identity,hash:z.string().max(64)}),output:z.discriminatedUnion("ok",[failure,z.object({ok:z.literal(true),value:commitDetails})])},
   historyPatch: {input:z.object({root:path,identity,hash:z.string().max(64).nullable(),path}),
     output:z.discriminatedUnion("ok",[failure,z.object({ok:z.literal(true),value:patchText})])},
+  reviewDiff: {input:z.object({root:path,identity,target:targetSchema,ignoreWhitespace:z.boolean()}),
+    output:z.discriminatedUnion("ok",[failure,z.object({ok:z.literal(true),value:reviewDiffSchema})])},
+  reviewFile: {input:z.object({root:path,identity,path:z.string().min(1).max(4096)}),
+    output:z.discriminatedUnion("ok",[failure,z.object({ok:z.literal(true),text:z.string(),sha256:z.string()})])},
+  reviewWrite: {input:z.object({root:path,identity,path:z.string().min(1).max(4096),expected:z.string().regex(/^[0-9a-f]{64}$/),text:z.string().max(2*1024*1024)}),
+    output:z.discriminatedUnion("ok",[failure,z.object({ok:z.literal(true),sha256:z.string()})])},
   sshHostname: {input:z.object({alias:z.string().max(253)}),output:z.discriminatedUnion("ok",[failure,z.object({ok:z.literal(true),hostname:z.string().max(253)})])},
 });

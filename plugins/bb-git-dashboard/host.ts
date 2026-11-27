@@ -4,6 +4,10 @@ import { failureFor } from "./src/core/workspace.ts";
 import { sshHostname } from "./src/adapters/bb/ssh-config.ts";
 import { commitDetails, commitPatch, historyPage, historyRevision, workingPatch } from "./src/adapters/bb/history-git.ts";
 import { probeForge } from "./src/adapters/bb/forge-probe.ts";
+import { createRunGit, diff as reviewDiff, GitError } from "./src/adapters/bb/review-git.ts";
+import { readReviewFile, writeReviewFile } from "./src/adapters/bb/review-files.ts";
+
+const reviewGit = createRunGit();
 import { walkProjects } from "./src/adapters/bb/project-walk.ts";
 import { maxDepth } from "./src/core/catalog/project-scan.ts";
 import { isAbsolute } from "node:path";
@@ -87,6 +91,24 @@ export default experimental_defineHostEntry({
     async historyCommit({root, identity, hash}, {signal}) {
       try { await assertWorktree(root,identity,signal); return {ok:true as const, value:await commitDetails(root,hash,signal)}; }
       catch (error) { return failureFor(error,"GIT_REJECTED"); }
+    },
+    async reviewDiff({root, identity, target, ignoreWhitespace}, {signal}) {
+      try {
+        await assertWorktree(root,identity,signal);
+        return {ok:true as const, value:await reviewDiff(reviewGit, root, target, ignoreWhitespace)};
+      } catch (error) {
+        // diff-review's git reports in sentences; the plugin answers in codes.
+        const unknown = error instanceof GitError && /^Unknown revision|no common ancestor/.test(error.message);
+        return failureFor(unknown ? new Error("UNKNOWN_REVISION") : error, error instanceof GitError && error.message.includes("too large") ? "GIT_OUTPUT_LIMIT" : "GIT_REJECTED");
+      }
+    },
+    async reviewFile({root, identity, path}, {signal}) {
+      try { await assertWorktree(root,identity,signal); return {ok:true as const, ...await readReviewFile(root,path)}; }
+      catch (error) { return failureFor(error,"INVALID_PATH"); }
+    },
+    async reviewWrite({root, identity, path, expected, text}, {signal}) {
+      try { await assertWorktree(root,identity,signal); return {ok:true as const, ...await writeReviewFile(root,path,expected,text)}; }
+      catch (error) { return failureFor(error,"OUTCOME_UNKNOWN"); }
     },
     async historyPatch({root, identity, hash, path}, {signal}) {
       try {

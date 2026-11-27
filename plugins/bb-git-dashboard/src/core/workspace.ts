@@ -63,6 +63,10 @@ const next: Record<string, string> = {
   OUTCOME_PARTIAL: "Only part of this was sent before the forge failed. Refresh and check what arrived before sending again.",
   SSH_CONFIG_UNAVAILABLE: "Check the SSH host alias in ~/.ssh/config on the working copy’s host.",
   OPERATION_EXISTS: "Look up the previous operation before starting a new one.",
+  UNKNOWN_REVISION: "Choose a branch, tag or commit that exists in this working copy.",
+  CHANGED: "The file changed since the review was loaded. Reload the review and apply it again.",
+  BINARY_FILE: "Suggestions apply to text files only.",
+  FILE_TOO_LARGE: "Suggestions apply to files up to 1 MB.",
 };
 const known = new Set([...Object.keys(next), "INVALID_REMOTE", "GIT_PROCESS_UNAVAILABLE", "GIT_REJECTED",
   "GIT_UNSUPPORTED_ENCODING", "INVALID_BRANCH", "INVALID_DESTINATION", "DESTINATION_EXISTS",
