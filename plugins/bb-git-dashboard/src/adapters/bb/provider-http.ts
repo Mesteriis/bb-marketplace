@@ -24,20 +24,26 @@ export function cloneUrl(account: Account, value: unknown): string {
   if (account.kind === "azure" && !url.pathname.toLowerCase().startsWith("/" + account.organization.toLowerCase() + "/")) throw new Error("REMOTE_MISMATCH");
   return url.href;
 }
-type Options = {method?: "POST" | "PATCH" | "PUT"; body?: unknown; accept?: string; raw?: boolean};
+type Options = {method?: "POST" | "PATCH" | "PUT"; body?: unknown; accept?: string; raw?: boolean;
+  /** 404 and 405 mean the server has no such operation (older self-hosted versions). */
+  unsupported?: boolean};
 export type Http = (path: string, options?: Options) => Promise<{payload: unknown; headers: Headers}>;
+
+export function authorization(account: Account, token: string) {
+  return account.kind === "azure" ? "Basic " + Buffer.from(":" + token).toString("base64") : (account.kind === "gitea" ? "token " : "Bearer ") + token;
+}
 
 export function client(account: Account, token: string, send: typeof fetch): Http {
   const origin = originOf(account);
   if (!token || /[\r\n]/.test(token)) throw new Error("ACCOUNT_UNCONFIGURED");
   const basic = Buffer.from(":" + token).toString("base64");
-  const authorization = account.kind === "azure" ? "Basic " + basic : (account.kind === "gitea" ? "token " : "Bearer ") + token;
+  const header = authorization(account, token);
   return async (path, options = {}) => {
     const url = new URL(path, origin);
     if (url.origin !== origin) throw new Error("INVALID_INPUT");
     const writing = options.method !== undefined;
     try {
-      const headers = new Headers({authorization, accept:options.accept ?? "application/json"});
+      const headers = new Headers({authorization:header, accept:options.accept ?? "application/json"});
       if (account.kind === "github") headers.set("X-GitHub-Api-Version", "2022-11-28");
       if (options.body !== undefined) headers.set("content-type", "application/json");
       const response = await send(url, {
@@ -46,6 +52,7 @@ export function client(account: Account, token: string, send: typeof fetch): Htt
       });
       if (!response.ok) {
         await response.body?.cancel();
+        if (options.unsupported && (response.status === 404 || response.status === 405)) throw new Error("PROVIDER_UNSUPPORTED");
         if (writing && response.status >= 500) throw new Error("OUTCOME_UNKNOWN");
         if ([401,403,404].includes(response.status)) throw new Error("PROVIDER_DENIED");
         if (response.status >= 500 || response.status === 429) throw new Error("PROVIDER_UNAVAILABLE");
@@ -73,7 +80,7 @@ export function client(account: Account, token: string, send: typeof fetch): Htt
       const payload = options.raw ? redact(raw) : raw ? JSON.parse(raw, (_, value) => typeof value === "string" ? redact(value) : value) : null;
       return {payload, headers:response.headers};
     } catch (error) {
-      if (error instanceof Error && /^(OUTCOME_UNKNOWN|PROVIDER_DENIED|PROVIDER_REJECTED|PROVIDER_UNAVAILABLE|GIT_OUTPUT_LIMIT)$/.test(error.message)) throw error;
+      if (error instanceof Error && /^(OUTCOME_UNKNOWN|PROVIDER_DENIED|PROVIDER_REJECTED|PROVIDER_UNAVAILABLE|PROVIDER_UNSUPPORTED|GIT_OUTPUT_LIMIT)$/.test(error.message)) throw error;
       throw new Error(writing ? "OUTCOME_UNKNOWN" : "PROVIDER_UNAVAILABLE");
     }
   };
