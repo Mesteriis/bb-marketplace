@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { offerScaffolds, ownScaffolds } from "../src/core/scaffolds/catalog.ts";
 import { buildScaffold, scaffoldIssues, type Scaffold } from "../src/core/scaffolds/model.ts";
 
 const tiny: Scaffold = {
@@ -74,4 +75,21 @@ test("a scaffold is checked as a whole: it renders with every choice and flag, a
   assert.deepEqual(scaffoldIssues(tiny), []);
   assert.deepEqual(scaffoldIssues({...tiny, files: [{path: "x.md", body: "{{#docker}}\n{{nope}}\n{{/docker}}\n"}]}), ["The scaffold does not render: unknown name nope."]);
   assert.deepEqual(scaffoldIssues({...tiny, files: [{path: "deploy.md", body: "ssh admin@10.1.2.3\n"}]}), ["deploy.md has an IP address."]);
+});
+
+test("offered scaffolds: built-in ones, then own ones from the settings list and the folder; broken ones named with the reason", () => {
+  const own = {...tiny, id: "own"};
+  const {offered, rejected} = offerScaffolds([tiny], [
+    {source: "settings", name: "own", raw: own},
+    {source: "folder", name: "bad.json", raw: {...tiny, id: "bad", files: [{path: "x.md", body: "{{nope}}\n"}]}},
+    {source: "folder", name: "broken.json", raw: null, error: "The file is not JSON."},
+    {source: "folder", name: "again.json", raw: own},
+  ]);
+  assert.deepEqual(offered.map(entry => [entry.key, entry.source]), [["builtin:tiny", "builtin"], ["settings:own", "settings"], ["folder:own", "folder"]]);
+  assert.deepEqual(rejected, [
+    {source: "folder", name: "bad.json", issues: ["The scaffold does not render: unknown name nope."]},
+    {source: "folder", name: "broken.json", issues: ["The file is not JSON."]},
+  ]);
+  assert.deepEqual(ownScaffolds("settings", "[1"), [{source: "settings", name: "settings", raw: null, error: "The scaffolds setting is not a JSON list."}]);
+  assert.deepEqual(ownScaffolds("settings", ""), []);
 });

@@ -279,6 +279,9 @@ function Dashboard({subPath}: {subPath: string}) {
     catalog: async (hostId,refresh) => okValue(await client.call("catalogView",{hostId,refresh})),
     bulk: async (hostId,roots,action) => okValue(await client.call("catalogBulk",{hostId,roots,action})).results,
     pulls: async repos => okValue(await client.call("catalogPulls",{repos})).results,
+    scaffolds: async hostId => okValue(await client.call("scaffoldsView", {hostId})),
+    prepareScaffold: async request => okValue(await client.call("scaffoldPrepare", request)).preview,
+    createScaffold: async previewId => okValue(await client.call("scaffoldCreate", {previewId})),
     prepareClone: async (repo,hostId,destination) => {
       const result = await client.call("prepare",{accountId:repo.accountId,repoId:repo.id,action:{kind:"clone",hostId,destination}});
       return result.ok ? result.value : failed(result);

@@ -60,6 +60,11 @@ export const hostContract = defineRpcContract({
   /** The own CI templates folder's JSON files. */
   ciTemplateFolder: {input:z.object({folder:z.string().min(1).max(1000)}),output:z.discriminatedUnion("ok",[failure,z.object({ok:z.literal(true),
     files:z.array(z.object({name:z.string().max(255),text:z.string().max(64*1024)})).max(50),skipped:z.array(z.string().max(255)).max(1000)})])},
+  /** Makes a new project from a scaffold's files inside the projects folder: git init and the first commit. */
+  scaffoldCreate: {input:z.object({projectsRoot:z.string().min(1).max(4096),category:z.string().max(1024),name:z.string().min(1).max(100),
+    files:z.array(z.object({path:z.string().min(1).max(200),text:z.string().max(2*1024*1024),executable:z.boolean()})).max(400),
+    author:z.object({name:z.string().trim().min(1).max(200),email:z.string().trim().min(3).max(200)}),message:z.string().min(1).max(200)}),
+    output:rootResponse},
   reviewFiles: {input:z.object({root:path,identity,query:z.string().max(200)}),
     output:z.discriminatedUnion("ok",[failure,z.object({ok:z.literal(true),paths:z.array(z.string()),more:z.boolean()})])},
   /** Reverts an uncommitted file, or hunks of it, while its change is still the one shown (`changeRevision`). */

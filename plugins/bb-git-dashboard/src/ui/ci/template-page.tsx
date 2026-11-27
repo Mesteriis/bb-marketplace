@@ -1,24 +1,16 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { templateDefaults } from "../../core/ci-templates/catalog.ts";
 import type { CiTemplatesView } from "../../core/ci-templates/contract.ts";
-import { renderTemplate, resolveValues, secretIssues, type CiParam, type CiValues } from "../../core/ci-templates/render.ts";
+import { renderTemplate, resolveValues, secretIssues, type CiValues } from "../../core/ci-templates/render.ts";
 import { CodedError } from "../../core/workspace.ts";
 import { message, type CiApi } from "./ci-api.ts";
 import { ConfirmDialog } from "./confirm-dialog.tsx";
+import { ParamField } from "../templating/param-field.tsx";
 
 type Offered = CiTemplatesView["offered"][number];
 const stackNames: Record<string, string> = {node: "Node.js", python: "Python", go: "Go", rust: "Rust", docker: "Docker"};
 const sourceNames = {builtin: "Built-in", settings: "Settings", folder: "Folder"} as const;
 const forgeNames = {github: "GitHub Actions", gitea: "Gitea Actions", gitlab: "GitLab CI", azure: "Azure Pipelines"} as const;
-
-/** One parameter of the template as a field. */
-function Field({param, value, onChange}: {param: CiParam; value: string | boolean; onChange(value: string | boolean): void}) {
-  if (param.kind === "flag") return <label className="git-ci-check"><input type="checkbox" checked={value === true} onChange={event => onChange(event.target.checked)}/>
-    <span>{param.label}</span></label>;
-  if (param.kind === "choice") return <label>{param.label}<select value={String(value)} onChange={event => onChange(event.target.value)}>
-    {param.choices.map(choice => <option key={choice} value={choice}>{choice}</option>)}</select></label>;
-  return <label>{param.label}<input value={String(value)} maxLength={100} onChange={event => onChange(event.target.value)}/></label>;
-}
 
 /** The form of one template: its values, the new branch and pull request, and the file as it will be written. */
 function TemplateForm({api, copyId, view, entry, onDone}: {api: CiApi; copyId: string; view: CiTemplatesView; entry: Offered;
@@ -50,7 +42,7 @@ function TemplateForm({api, copyId, view, entry, onDone}: {api: CiApi; copyId: s
     <div className="git-row git-ci-run-title"><h3>{template.title}</h3><span className="git-muted">{sourceNames[entry.source]}</span></div>
     {template.description && <p className="git-muted">{template.description}</p>}
     {view.forge === "github" && <p className="git-muted">GitHub accepts a workflow file only from a token with the workflow scope.</p>}
-    {template.params.map(param => <Field key={param.name} param={param} value={values[param.name] ?? param.default}
+    {template.params.map(param => <ParamField key={param.name} param={param} value={values[param.name] ?? param.default}
       onChange={value => setValues(previous => ({...previous, [param.name]: value}))}/>)}
     <label>New branch<input value={branch} required maxLength={250} pattern="[A-Za-z0-9_][A-Za-z0-9_.\/\-]*" onChange={event => setBranch(event.target.value)}/></label>
     <label>Pull request title<input value={title} required maxLength={220} onChange={event => setTitle(event.target.value)}/></label>

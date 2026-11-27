@@ -1,5 +1,6 @@
 import type { z } from "zod";
 import type { catalogContract } from "../../core/catalog/contract.ts";
+import type { ScaffoldRequest, ScaffoldsView } from "../../core/scaffolds/contract.ts";
 
 type Ok<T extends {output: z.ZodType}> = Omit<Extract<z.infer<T["output"]>, {ok: true}>, "ok">;
 export type CatalogView = Ok<typeof catalogContract.catalogView>;
@@ -19,4 +20,10 @@ export type CatalogApi = {
   /** Attaches a local project as a working copy (if it is not yet) and opens it. */
   open(hostId: string, path: string): Promise<void>;
   openPull(accountId: string, repo: string, number: number): void;
+  /** The scaffolds for a new project on a machine. */
+  scaffolds(hostId: string): Promise<ScaffoldsView>;
+  /** The server's render of a scaffold and the preview of the project it makes. */
+  prepareScaffold(request: ScaffoldRequest): Promise<{id: string; lines: string[]; files: {path: string; bytes: number}[]}>;
+  /** Makes the prepared project; it is attached as a working copy. */
+  createScaffold(previewId: string): Promise<{copyId: string; root: string}>;
 };

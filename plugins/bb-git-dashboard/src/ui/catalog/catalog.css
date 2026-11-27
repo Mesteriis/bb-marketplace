@@ -10,3 +10,8 @@
 .git-ws .git-catalog-result { font-size: 12px; color: var(--destructive); }
 .git-ws .git-catalog-result[data-ok] { color: var(--muted-foreground); }
 .git-ws .git-catalog-pulls { display: grid; gap: 8px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px; }
+
+.git-ws .git-new-project-files { display: grid; grid-template-columns: minmax(180px, 280px) minmax(0, 1fr); gap: 12px; align-items: start; }
+.git-ws .git-new-project-files ul { margin: 0; padding: 0; list-style: none; max-height: 55vh; overflow: auto; }
+.git-ws .git-new-project-files button[aria-pressed="true"] { font-weight: 600; }
+@media (max-width: 720px) { .git-ws .git-new-project-files { grid-template-columns: minmax(0, 1fr); } }
