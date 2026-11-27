@@ -1,0 +1,116 @@
+import { expect, it } from "vitest";
+import {
+  NameSegment,
+  displayPath,
+  isAncestorOrSelf,
+  join,
+  parent,
+  parsePosix,
+  samePath,
+} from "./path.ts";
+
+it("parses Unicode text into separate POSIX segments", () => {
+  expect(parsePosix("/home/Привет/😀.txt")).toEqual({
+    segments: [{ t: "home" }, { t: "Привет" }, { t: "😀.txt" }],
+  });
+});
+
+it.each(["a", "/a/../b", "/a/./b", "/a\0b", "/a//b", "/a/"])(
+  "returns invalid_path for %j",
+  (text) => {
+    expect(() => parsePosix(text)).toThrow(expect.objectContaining({ code: "invalid_path" }));
+  },
+);
+
+it("does not include the invalid input in the error message", () => {
+  expect(() => parsePosix("private-name")).toThrow(/^Invalid resource path$/);
+});
+
+it("displays each raw byte as an escape", () => {
+  expect(displayPath({ segments: [{ b: "/w==" }] })).toBe("/\\xff");
+  expect(displayPath({ segments: [{ b: "gP8=" }] })).toBe("/\\x80\\xff");
+});
+
+it.each(["Lw==", "AA==", "Lg==", "Li4=", "A", "/y8=", "/wA="])(
+  "rejects malformed or unsafe byte segment %s",
+  (b) => {
+    expect(NameSegment.safeParse({ b }).success).toBe(false);
+  },
+);
+
+it("requires the text representation for valid UTF-8 names", () => {
+  expect(NameSegment.safeParse({ b: "YQ==" }).success).toBe(false);
+});
+
+it("compares ancestor paths by whole segments under the requested case policy", () => {
+  expect(isAncestorOrSelf(parsePosix("/A"), parsePosix("/a/b"), false)).toBe(true);
+  expect(isAncestorOrSelf(parsePosix("/A"), parsePosix("/a/b"), true)).toBe(false);
+  expect(isAncestorOrSelf(parsePosix("/a"), parsePosix("/ab/c"), false)).toBe(false);
+  expect(isAncestorOrSelf(parsePosix("/"), parsePosix("/a/b"), true)).toBe(true);
+  expect(isAncestorOrSelf(parsePosix("/a/b"), parsePosix("/a"), true)).toBe(false);
+});
+
+it("uses NFC only when comparing case-insensitively", () => {
+  const decomposed = parsePosix("/E\u0301");
+  const composed = parsePosix("/é");
+  expect(decomposed).toEqual({ segments: [{ t: "E\u0301" }] });
+  expect(samePath(decomposed, composed, false)).toBe(true);
+  expect(samePath(decomposed, composed, true)).toBe(false);
+});
+
+it("compares raw names by decoded bytes under either case policy", () => {
+  const padded = { segments: [{ b: "/w==" }] };
+  expect(samePath(padded, { segments: [{ b: "/w==" }] }, true)).toBe(true);
+  expect(samePath(padded, { segments: [{ b: "/g==" }] }, false)).toBe(false);
+  expect(samePath(padded, { segments: [{ t: "\\xff" }] }, false)).toBe(false);
+});
+
+it("requires equal path lengths for equality", () => {
+  expect(samePath(parsePosix("/a"), parsePosix("/a/b"), true)).toBe(false);
+});
+
+it("represents root as an empty path with no parent", () => {
+  const root = parsePosix("/");
+  expect(root).toEqual({ segments: [] });
+  expect(parent(root)).toBeNull();
+  expect(displayPath(root)).toBe("/");
+});
+
+it("joins and drops segments without mutating the original path", () => {
+  const directory = parsePosix("/home");
+  expect(join(directory, { b: "/w==" })).toEqual({ segments: [{ t: "home" }, { b: "/w==" }] });
+  expect(parent(directory)).toEqual({ segments: [] });
+  expect(directory).toEqual({ segments: [{ t: "home" }] });
+});
+
+it("rejects a join beyond the path segment limit", () => {
+  const directory = { segments: Array.from({ length: 4096 }, () => ({ t: "a" })) };
+  expect(() => join(directory, { t: "b" })).toThrow(expect.objectContaining({ code: "invalid_path" }));
+});
+
+it.each(["\uD800", "\uDC00"])("rejects lone UTF-16 surrogates", (t) => {
+  expect(NameSegment.safeParse({ t }).success).toBe(false);
+});
+
+it("accepts a complete surrogate pair", () => {
+  expect(NameSegment.parse({ t: "😀" })).toEqual({ t: "😀" });
+});
+
+it.each(["/w", "/x=="])("rejects noncanonical base64 %s", (b) => {
+  expect(NameSegment.safeParse({ b }).success).toBe(false);
+});
+
+it("accepts canonical padded base64", () => {
+  expect(NameSegment.parse({ b: "/w==" })).toEqual({ b: "/w==" });
+});
+
+it("distinguishes literal text from escaped bytes", () => {
+  expect(displayPath({ segments: [{ t: "\\xff" }] })).toBe("/\\\\xff");
+  expect(displayPath({ segments: [{ b: "/w==" }] })).toBe("/\\xff");
+});
+
+it("escapes control and bidi characters in text", () => {
+  expect(displayPath({ segments: [{ t: "a\u202Eb\n" }] })).toBe("/a\\u{202E}b\\u{0A}");
+  expect(displayPath({ segments: [{ t: "\x00\x1f\x7f\x80\x9f\u200e\u200f\u202a\u2066\u2069" }] }))
+    .toBe("/\\u{00}\\u{1F}\\u{7F}\\u{80}\\u{9F}\\u{200E}\\u{200F}\\u{202A}\\u{2066}\\u{2069}");
+});
