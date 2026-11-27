@@ -45,6 +45,8 @@ export function codeReviewHandlers(bb: BbPluginApi, copyOf: (copyId: string) => 
   const settings = bb.settings.define({
     ignorePatterns: {type: "string", label: "Line review: files to leave out", default: "", experimental_multiline: true,
       description: "Generated files, lockfiles and the like, one gitignore pattern per line (for example `*.lock` or `dist/`)."},
+    colorBlindDiffs: {type: "boolean", label: "Line review: colours for colour blindness", default: false,
+      description: "Show added lines in blue and removed lines in orange instead of green and red."},
     readIgnoreFiles: {type: "boolean", label: "Line review: read the copy's .diffityignore", default: true,
       description: "Also leave out what `.diffityignore` and `.git/info/diffityignore` list, as diffity and diff-review do."},
     aiProvider: {type: "string", label: "Line review: provider for AI runs", default: "claude-code",
@@ -163,8 +165,8 @@ export function codeReviewHandlers(bb: BbPluginApi, copyOf: (copyId: string) => 
     catch (error) { return failureFor(error, "GIT_REJECTED"); }
   };
   const handlers = {
-    reviewView: handle(({copyId, target, ignoreWhitespace, auto}: {copyId: string; target: Parameters<typeof service.view>[1]; ignoreWhitespace: boolean; auto?: boolean}) =>
-      service.view(copyId, target, ignoreWhitespace, auto === true)),
+    reviewView: handle(async ({copyId, target, ignoreWhitespace, auto}: {copyId: string; target: Parameters<typeof service.view>[1]; ignoreWhitespace: boolean; auto?: boolean}) =>
+      ({...await service.view(copyId, target, ignoreWhitespace, auto === true), colorBlind: (await settings.get()).colorBlindDiffs})),
     reviewCreateThread: handle(async ({sessionId, viewerThreadId, ...input}: {sessionId: string; viewerThreadId?: string | null} & Parameters<typeof service.createThread>[1]) => {
       const thread = await service.createThread(sessionId, input);
       return {thread, reviewer: await reviewerNote(thread, input.body, viewerThreadId)};

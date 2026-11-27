@@ -179,7 +179,7 @@ export function ReviewPanel({api, copyId, currentThreadId, revision}: {api: Code
   const files = (view?.files ?? []).filter(file => !onlyCommented || threads.some(thread => thread.filePath === file.path));
   const open = threads.filter(thread => thread.status === "open").length;
   const working = view ? workingViews.has(view.target.kind) : false;
-  return <section className="git-project-code git-stack git-code-review" aria-label="Review">
+  return <section className="git-project-code git-stack git-code-review" aria-label="Review" data-palette={view?.colorBlind ? "color-blind" : undefined}>
     <div className="git-row git-code-review-bar">
       <select aria-label="What to review" value={kind} onChange={event => choose(event.target.value as Kind)}>
         {kinds.map(item => <option key={item.kind} value={item.kind}>{item.label}</option>)}</select>

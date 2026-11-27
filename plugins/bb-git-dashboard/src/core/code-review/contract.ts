@@ -20,7 +20,7 @@ export const codeReviewContract = {
       ignored: z.number().int().nonnegative().optional(), baseSha: z.string().nullable(), headSha: z.string().nullable(),
       threads: z.array(reviewThreadSchema), placements: z.record(z.string(), placementSchema),
       /** Where the copy is, to open its files in BB's preview. */
-      copy: z.object({hostId: id, root: z.string().max(4096)})})},
+      copy: z.object({hostId: id, root: z.string().max(4096)}), colorBlind: z.boolean().optional()})},
   reviewSetViewed: {input: z.object({sessionId: reviewId, path: z.string().min(1).max(4096), revision: z.string().max(64), viewed: z.boolean()}), output: answer({})},
   reviewCreateThread: {input: z.object({sessionId: reviewId, filePath: z.string().min(1).max(4096), side: sideSchema.nullable(),
     startLine: z.number().int().min(0), endLine: z.number().int().min(0), anchorContent: z.string().max(ANCHOR_MAX_CHARS).nullable(),

@@ -66,8 +66,9 @@ function Suggestion({code, current, anchor, canApply, onApply}: {code: string; c
 
 /** A comment's text and its suggestion blocks; the text is shown as written, never as HTML. */
 function Body({comment, thread, current, canApply, api}: {comment: ReviewComment; thread: ReviewThread; current: string | undefined; canApply: boolean; api: CodeReviewApi}) {
+  const Markdown = api.Markdown;
   return <>{bodyParts(comment.body).map((part, index) => part.kind === "text"
-    ? <p key={index} className="git-review-body">{part.text.trim()}</p>
+    ? Markdown ? <div key={index} className="git-review-body"><Markdown content={part.text.trim()}/></div> : <p key={index} className="git-review-body">{part.text.trim()}</p>
     : <Suggestion key={index} code={part.code} current={current} anchor={thread.anchorContent}
       canApply={canApply && thread.status === "open" && thread.side === "new"} onApply={() => api.apply(thread.id, comment.id)}/>)}</>;
 }

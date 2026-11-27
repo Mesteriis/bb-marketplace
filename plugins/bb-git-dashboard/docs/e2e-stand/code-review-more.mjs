@@ -81,9 +81,10 @@ try {
   check("Open shows the file in BB's preview", await visible(page.getByText("and changed again").filter({ hasNot: page.locator(".git-review-code") })));
 
   await review.getByRole("region", { name: "watched.txt" }).getByRole("button", { name: "Comment on line 1" }).click();
-  await review.getByLabel("Line comment").fill("To be cleared.");
+  await review.getByLabel("Line comment").fill("To be **cleared**.");
   await review.getByRole("button", { name: "Comment", exact: true }).click();
-  check("the comment is there", await visible(review.getByRole("article", { name: /Comment thread on watched\.txt:1/ })));
+  const thread = review.getByRole("article", { name: /Comment thread on watched\.txt:1/ });
+  check("the comment is there, its Markdown rendered", await visible(thread) && await visible(thread.locator("strong", { hasText: "cleared" })));
   await review.getByRole("button", { name: "Clear review" }).click();
   await review.getByRole("alertdialog", { name: "Clear review" }).getByRole("button", { name: "Clear review" }).click();
   check("Clear review deletes the view's threads", await visible(review.getByText(/Cleared 1 comment thread/))

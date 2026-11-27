@@ -6,6 +6,8 @@ import type { ExplainPlace } from "../../core/code-review/run-prompts.ts";
 export type Placement = {state: "anchored" | "moved"; startLine: number; endLine: number} | {state: "outdated"};
 export type ReviewView = {sessionId: string; target: Target; files: ReviewDiffFile[]; truncated: boolean; ignored?: number; baseSha: string | null; headSha: string | null;
   copy: {hostId: string; root: string};
+  /** Additions and removals in blue and orange instead of green and red (a setting). */
+  colorBlind?: boolean;
   threads: ReviewThread[]; placements: Record<string, Placement>};
 export type NewThread = {filePath: string; side: Side | null; startLine: number; endLine: number; anchorContent: string | null; severity: Severity | null; body: string};
 
@@ -47,6 +49,8 @@ export type CodeReviewApi = {
   fix(sessionId: string, threadIds: string[], note: string, execution: Execution, viewer: string | null): Promise<{run: ReviewRun; count: number}>;
   closeRun(runId: string): Promise<void>;
   ExecutionPicker: ComponentType<ExecutionPickerProps>;
+  /** BB's Markdown, rendered like a chat message body; comments show as plain text without it. */
+  Markdown?: ComponentType<{content: string}>;
   /** Why the last @reviewer in a thread could not start a reviewer, kept by the panel until the next comment there. */
   reviewerNote?(threadId: string): string | null;
 };

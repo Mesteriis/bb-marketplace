@@ -26,3 +26,9 @@
 .git-ws .git-review-row[data-kind="none"] { background: color-mix(in srgb, var(--border) 25%, transparent); }
 .git-ws .git-danger { border-color: var(--destructive); color: var(--destructive); }
 .git-ws .git-review-viewed { display: inline-flex; gap: 4px; align-items: center; white-space: nowrap; }
+/* Okabe–Ito blue and orange: told apart with every common colour-vision deficiency. */
+.git-ws .git-code-review[data-palette="color-blind"] .git-review-row[data-kind="add"] { background: color-mix(in srgb, #0072b2 16%, transparent); }
+.git-ws .git-code-review[data-palette="color-blind"] .git-review-row[data-kind="del"] { background: color-mix(in srgb, #e69f00 20%, transparent); }
+.git-ws .git-code-review[data-palette="color-blind"] .git-code-review-suggestion .git-added { color: #0072b2; }
+.git-ws .git-code-review[data-palette="color-blind"] .git-code-review-suggestion .git-removed { color: #b35c00; }
+.git-ws .git-review-body > * { margin: 0; }

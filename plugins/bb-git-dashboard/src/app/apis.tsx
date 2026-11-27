@@ -1,4 +1,4 @@
-import { experimental_copyToClipboard, experimental_ProviderModelPicker as ProviderModelPicker, type useBbNavigate, type useRpc } from "@get-bb/plugin-sdk/app";
+import { experimental_copyToClipboard, experimental_ProviderModelPicker as ProviderModelPicker, Markdown, type useBbNavigate, type useRpc } from "@get-bb/plugin-sdk/app";
 import type { rpc } from "../adapters/bb/rpc.ts";
 import type { Failure } from "../core/workspace.ts";
 import type { CiApi } from "../ui/ci/ci-api.ts";
@@ -91,6 +91,7 @@ export function codeReviewApi(client: Client, navigate: Navigate): CodeReviewApi
     fix: async (sessionId, threadIds, note, execution, viewer) => okValue(await client.call("reviewFix", {sessionId, threadIds, note, execution, viewerThreadId: viewer})),
     closeRun: async runId => { okValue(await client.call("reviewCloseRun", {runId})); },
     ExecutionPicker,
+    Markdown: ({content}) => <Markdown content={content}/>,
     openThread: threadId => navigate.toThread(threadId),
   };
 }
