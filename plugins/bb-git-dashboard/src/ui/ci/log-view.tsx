@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { Job } from "../../core/ci/model.ts";
+import { isActive, type Job } from "../../core/ci/model.ts";
 import type { JobLog } from "../../core/ci/pipelines.ts";
 import { message, type CiApi } from "./ci-api.ts";
 
@@ -15,7 +15,7 @@ export function LogView({api, copyId, runId, job, liveLog, liveLimitation}: {
   const [error, setError] = useState("");
   const marker = useRef<HTMLSpanElement>(null);
   const placed = useRef<number | null>(null);
-  const running = job.state === "running" || job.state === "queued";
+  const running = isActive(job.state);
   useEffect(() => {
     let active = true;
     let timer: ReturnType<typeof setTimeout> | undefined;

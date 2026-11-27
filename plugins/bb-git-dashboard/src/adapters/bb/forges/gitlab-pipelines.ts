@@ -2,7 +2,7 @@ import { parseAllDocuments } from "yaml";
 import { gitlabDispatchSpec } from "../../../core/ci/dispatch.ts";
 import type { Job, Run, RunFilter } from "../../../core/ci/model.ts";
 import type { Pipelines, Workflow } from "../../../core/ci/pipelines.ts";
-import { gitlabState } from "../../../core/ci/state.ts";
+import { gitlabJobState, gitlabState } from "../../../core/ci/state.ts";
 import type { Account, Repo } from "../../../core/providers.ts";
 import { array, authorization, client, object, originOf, segment, text } from "../provider-http.ts";
 import { fetchLog } from "./log-fetch.ts";
@@ -78,7 +78,7 @@ export function gitlabPipelines(account: Account, repo: Repo, token: string, sen
       }
       rows.sort((left, right) => Number(left.id) - Number(right.id));
       return rows.map((row): Job => ({
-        id: id(row.id), name: [text(row.stage), text(row.name)].filter(Boolean).join(" · "), state: gitlabState(text(row.status)),
+        id: id(row.id), name: [text(row.stage), text(row.name)].filter(Boolean).join(" · "), state: gitlabJobState(text(row.status)),
         startedAt: nullable(row.started_at), completedAt: nullable(row.finished_at), url: webLink(account, row.web_url), steps: [],
       }));
     },

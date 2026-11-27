@@ -26,7 +26,7 @@ export type CiApi = {
 
 export const message = (error: unknown) => error instanceof Error ? error.message : "Request failed.";
 export const stateLabel: Record<Run["state"], string> = {
-  queued: "Queued", running: "Running", success: "Succeeded", failure: "Failed", cancelled: "Cancelled", skipped: "Skipped", neutral: "Neutral",
+  queued: "Queued", waiting: "Waiting for an earlier stage", running: "Running", success: "Succeeded", failure: "Failed", cancelled: "Cancelled", skipped: "Skipped", neutral: "Neutral",
 };
 
 /** The state as shown: a queued run says how long the forge has kept it waiting. */

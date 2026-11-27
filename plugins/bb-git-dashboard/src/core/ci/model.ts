@@ -1,9 +1,12 @@
 import { z } from "zod";
 
-export const ciState = z.enum(["queued", "running", "success", "failure", "cancelled", "skipped", "neutral"]);
+/** `waiting`: a job of a stage the pipeline has not reached yet (GitLab), not queued for a runner. */
+export const ciState = z.enum(["queued", "waiting", "running", "success", "failure", "cancelled", "skipped", "neutral"]);
 export type CiState = z.infer<typeof ciState>;
 const terminal = new Set<CiState>(["success", "failure", "cancelled", "skipped", "neutral"]);
 export const isTerminal = (state: CiState) => terminal.has(state);
+/** Not finished yet: queued, waiting for its stage or running. */
+export const isActive = (state: CiState) => !terminal.has(state);
 
 export const run = z.object({
   id: z.string(), number: z.number().int().nullable(), workflow: z.string(), workflowId: z.string().nullable(),

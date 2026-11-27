@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { RunFilter } from "../../core/ci/model.ts";
+import { isActive, type RunFilter } from "../../core/ci/model.ts";
 import { message, stateLabel, stateText, type CiApi, type RunsPage } from "./ci-api.ts";
 import { DispatchForm } from "./dispatch-form.tsx";
 import { RunDetail } from "./run-detail.tsx";
@@ -26,7 +26,7 @@ export function CiPanel({api, copyId}: {api: CiApi; copyId: string}) {
       if (!active) return;
       setData(result);
       setError("");
-      const busy = result.items.some(run => run.state === "running" || run.state === "queued");
+      const busy = result.items.some(run => isActive(run.state));
       timer = setTimeout(load, busy ? 15_000 : 60_000);
     }, cause => { if (active) setError(message(cause)); });
     void load();

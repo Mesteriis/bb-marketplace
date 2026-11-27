@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { CiAction } from "../../core/ci/actions.ts";
-import type { Job, Run } from "../../core/ci/model.ts";
+import { isActive, type Job, type Run } from "../../core/ci/model.ts";
 import { message, stateLabel, stateText, type CiApi, type RunsPage } from "./ci-api.ts";
 import { ConfirmDialog } from "./confirm-dialog.tsx";
 import { LogView } from "./log-view.tsx";
@@ -27,7 +27,7 @@ export function RunDetail({api, copyId, runId, page, onBack, onChanged}: {
       // After a re-run a forge may give the jobs new ids; keep the selection only while it still exists.
       setJobId(current => result.jobs.some(job => job.id === current) ? current
         : (result.jobs.find(job => job.state === "failure") ?? result.jobs[0])?.id ?? null);
-      if (result.run.state === "running" || result.run.state === "queued") timer = setTimeout(load, 15_000);
+      if (isActive(result.run.state)) timer = setTimeout(load, 15_000);
     }, cause => { if (active) setError(message(cause)); });
     void load();
     return () => { active = false; clearTimeout(timer); };
@@ -51,7 +51,7 @@ export function RunDetail({api, copyId, runId, page, onBack, onChanged}: {
   </div>;
   const {run, jobs} = detail;
   const job = jobs.find(item => item.id === jobId) ?? null;
-  const finished = run.state !== "running" && run.state !== "queued";
+  const finished = !isActive(run.state);
   const ops = page.operations;
   return <div className="git-stack git-ci-run">
     <div className="git-row git-ci-run-title">

@@ -1,6 +1,6 @@
 import { parse } from "yaml";
 import { dispatchSpec } from "../../../core/ci/dispatch.ts";
-import type { Job, Run, RunFilter } from "../../../core/ci/model.ts";
+import { isActive, type Job, type Run, type RunFilter } from "../../../core/ci/model.ts";
 import type { Pipelines, Workflow } from "../../../core/ci/pipelines.ts";
 import { githubState } from "../../../core/ci/state.ts";
 import type { Account, Repo } from "../../../core/providers.ts";
@@ -62,7 +62,7 @@ export function actionsPipelines(account: Account, repo: Repo, token: string, se
       // The status filter is served from an index that can lag behind a run that just started, so the newest
       // runs are also read unfiltered and their active ones kept.
       const parts = await Promise.all([...["in_progress", "queued", "waiting"].map(status => list(page, status)),
-        list(1).then(recent => ({items: recent.items.filter(item => item.state === "running" || item.state === "queued"), more: false}))]);
+        list(1).then(recent => ({items: recent.items.filter(item => isActive(item.state)), more: false}))]);
       // A run can change state between the requests and appear twice; keep its first copy.
       const unique = new Map(parts.flatMap(part => part.items).map(item => [item.id, item] as const).reverse());
       return {items: [...unique.values()].sort((left, right) => right.createdAt.localeCompare(left.createdAt)),

@@ -1,4 +1,5 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
+import { isActive } from "../../core/ci/model.ts";
 import { failurePrompt } from "../../core/ci/prompt.ts";
 import { failureKey, newFailures } from "../../core/ci/watch.ts";
 import type { Copy } from "../../core/workspace.ts";
@@ -58,7 +59,7 @@ export function ciAgent(bb: BbPluginApi, service: Service, changed: (copyId: str
     const threads = await kv.get<string[]>(subscriptionKey(copyId)) ?? [];
     if (!threads.length) return {active: false};
     const {items} = await service.runs(copyId, "all", 1);
-    const active = items.some(run => run.state === "running" || run.state === "queued");
+    const active = items.some(run => isActive(run.state));
     const previous = await kv.get<string[]>(seenKey(copyId)) ?? null;
     const result = newFailures(previous, items);
     if (previous === null) { await kv.set(seenKey(copyId), result.seen); return {active}; }

@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { gitlabState } from "../src/core/ci/state.ts";
+import { gitlabJobState, gitlabState } from "../src/core/ci/state.ts";
+import { isActive } from "../src/core/ci/model.ts";
+import { stateText } from "../src/ui/ci/ci-api.ts";
 import { cleanLog, errorLine } from "../src/core/ci/log.ts";
 import { gitlabDispatchSpec } from "../src/core/ci/dispatch.ts";
 
@@ -55,4 +57,18 @@ test("a timestamped GitLab trace loses its stream prefixes, and an ERROR line wi
   assert.equal(cleanLog("01O is a fine word"), "01O is a fine word");
   // ERROR as part of a longer word is no marker.
   assert.equal(errorLine(["ERRORS: 0", "done"]), null);
+});
+
+test("a GitLab job of a stage not reached yet waits for it; a created pipeline is queued", () => {
+  // Live check: during a retry the manual deploy job is "created" until the test stage ends.
+  assert.equal(gitlabJobState("created"), "waiting");
+  assert.equal(gitlabJobState("manual"), "neutral");
+  assert.equal(gitlabJobState("failed"), "failure");
+  assert.equal(gitlabState("created"), "queued");
+  assert.equal(isActive("waiting"), true);
+  assert.equal(isActive("queued"), true);
+  assert.equal(isActive("neutral"), false);
+  const run = {id: "1", number: 1, workflow: "Pipeline", workflowId: "pipeline", title: "main", branch: "main", sha: null, event: null,
+    state: "waiting" as const, attempt: 1, createdAt: "2026-11-27T10:00:00Z", updatedAt: "2026-11-27T10:00:00Z", url: null, actor: null};
+  assert.equal(stateText(run, Date.parse("2026-11-27T10:30:00Z")), "Waiting for an earlier stage");
 });

@@ -41,3 +41,8 @@ export function gitlabState(status: string): CiState {
   if (status === "canceled") return "cancelled";
   return "neutral";
 }
+
+/** A GitLab job: `created` means its stage has not been reached yet, unlike a created pipeline, which is queued. */
+export function gitlabJobState(status: string): CiState {
+  return status === "created" ? "waiting" : gitlabState(status);
+}

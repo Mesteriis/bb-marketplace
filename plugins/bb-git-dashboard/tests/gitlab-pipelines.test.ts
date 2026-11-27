@@ -37,12 +37,14 @@ test("pipelines are listed with the forge's own filters", async () => {
 test("jobs come with their stage, and a job's trace is read while it runs", async () => {
   const {send} = gitlab({
     ["GET " + base + "/pipelines/501/jobs"]: () => Response.json([{id: 9, name: "test", stage: "test", status: "running", started_at: "2026-11-27T10:01:00Z",
-      finished_at: null, web_url: "https://gitlab.example.org/group/sub/app/-/jobs/9"}]),
+      finished_at: null, web_url: "https://gitlab.example.org/group/sub/app/-/jobs/9"},
+      {id: 10, name: "deploy", stage: "deploy", status: "created", started_at: null, finished_at: null, web_url: null}]),
     ["GET " + base + "/jobs/9/trace"]: () => new Response("section_start:1:step_script\r\u001b[0K$ make\nERROR: build broke\n"),
   });
   const api = gitlabPipelines(account, repo, token, send);
   assert.deepEqual(await api.jobs("501"), [{id: "9", name: "test · test", state: "running", startedAt: "2026-11-27T10:01:00Z", completedAt: null,
-    url: "https://gitlab.example.org/group/sub/app/-/jobs/9", steps: []}]);
+    url: "https://gitlab.example.org/group/sub/app/-/jobs/9", steps: []},
+    {id: "10", name: "deploy · deploy", state: "waiting", startedAt: null, completedAt: null, url: null, steps: []}]);
   assert.deepEqual(await api.log("501", "9"), {text: "$ make\nERROR: build broke\n", truncated: false});
 });
 
