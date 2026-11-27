@@ -4,6 +4,7 @@ import { JobRunner, type RunnerDeps } from "./job-runner.ts";
 import { Conflict, planDigest, type JobState, type OperationJob, type OperationPlan } from "./model.ts";
 import { parsePosix } from "./path.ts";
 import { FakeProvider } from "./testing/fake-provider.ts";
+import { tempNameFor } from "./reconcile.ts";
 import { MemoryJobStore } from "./testing/memory-job-store.ts";
 
 const date = "2026-11-27T00:00:00.000Z";
@@ -188,7 +189,7 @@ test.each(["copying", "committed", "missing-temp"] as const)("recovers %s withou
   const { runner, plan, store, to, at } = await setup();
   const submitted = await runner.submit(plan, { awaitsOwner: true });
   await store.update(submitted.id, { state: "running", awaitsOwner: false, currentItem: 0 }, "pending");
-  const temp = phase === "copying" ? (await to.openWrite(target, new AbortController().signal)).tempPath : null;
+  const temp = phase === "copying" ? (await to.openWrite(target, { tempName: tempNameFor(submitted.id, 0) }, new AbortController().signal)).tempPath : null;
   if (phase === "committed") to.put(target, Uint8Array.of(42, 42, 42), "2");
   await store.checkpoint({
     jobId: submitted.id,
@@ -378,7 +379,7 @@ test("reconciles an untouched overwrite target after a restart", async () => {
   const { id } = await runner.submit(plan, { awaitsOwner: true });
   await store.update(id, { state: "running", awaitsOwner: false, currentItem: 0 }, "pending");
   to.put(target, Uint8Array.of(7), "2");
-  const { tempPath } = await to.openWrite(target, new AbortController().signal);
+  const { tempPath } = await to.openWrite(target, { tempName: tempNameFor(id, 0) }, new AbortController().signal);
   await store.checkpoint({ jobId: id, itemIndex: 0, bytesDone: "0", phase: "copying",
     tempPath, targetPath: target, expectTarget: { size: "1", mtimeNs: "2" }, verified: null });
   expect(await runner.recover()).toEqual({ resumed: [id], unknown: [] });
@@ -392,7 +393,7 @@ test.each(["cancel_requested", "interrupted"] as const)(
     const { runner, plan, store, to, at } = await setup({ count: 2 });
     const { id } = await runner.submit(plan, { awaitsOwner: true });
     await store.update(id, { state, currentItem: 0, error: { code: "cancelled", message: "Job cancelled", retryable: false } }, "pending");
-    const { tempPath } = await to.openWrite(target, new AbortController().signal);
+    const { tempPath } = await to.openWrite(target, { tempName: tempNameFor(id, 0) }, new AbortController().signal);
     await store.checkpoint({ jobId: id, itemIndex: 0, bytesDone: "0", phase: "copying",
       tempPath, targetPath: target, expectTarget: "absent", verified: null });
     to.calls.length = 0;
@@ -589,7 +590,7 @@ test("can finish cancellation after a second restart following temporary cleanup
   await store.update(id, { state: "interrupted", currentItem: 0,
     error: { code: "cancelled", message: "Job cancelled", retryable: false } }, "pending");
   const signal = new AbortController().signal;
-  const session = await to.openWrite(target, signal);
+  const session = await to.openWrite(target, { tempName: tempNameFor(id, 0) }, signal);
   await store.checkpoint({ jobId: id, itemIndex: 0, bytesDone: "0", phase: "prepared",
     tempPath: session.tempPath, targetPath: target, expectTarget: "absent", verified: null });
   await session.abort();

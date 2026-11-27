@@ -1,13 +1,17 @@
 import { CommanderError } from "./errors.ts";
 import type { Checkpoint } from "./job-store.ts";
 import type { Entry, Fingerprint, OperationPlan, PlanItem, ResourceRef } from "./model.ts";
-import { parent, samePath } from "./path.ts";
+import { NameSegment, parent, samePath } from "./path.ts";
 import type { FileProvider } from "./provider.ts";
 import { toBig } from "./size.ts";
 
 export interface Location {
   provider: FileProvider;
   path: ResourceRef["path"];
+}
+
+export function tempNameFor(jobId: string, itemIndex: number): NameSegment {
+  return NameSegment.parse({ t: `.commander-${jobId}-${itemIndex}.part` });
 }
 
 type Observation = Entry & { sha256?: string };

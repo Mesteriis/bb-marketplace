@@ -9,7 +9,7 @@ import {
 import { isAncestorOrSelf, join, parent, samePath, type ResourcePath } from "./path.ts";
 import { READ_CHUNK_MAX, type FileProvider } from "./provider.ts";
 import {
-  confirmVerified, fingerprint, matches, matchesTarget, observe, readChunks, reconcileItem, TransferHash, verifyCopy,
+  confirmVerified, fingerprint, matches, matchesTarget, observe, readChunks, reconcileItem, tempNameFor, TransferHash, verifyCopy,
   type Location, type VerifyContext,
 } from "./reconcile.ts";
 import { fromBig, toBig } from "./size.ts";
@@ -622,7 +622,9 @@ export class JobRunner {
       if (source.provider.endpoint.id === provider.endpoint.id && provider.copyWithin) {
         committed = await mutate(() => provider.copyWithin!(source.path, path, { replace, expectTarget }, signal), unchanged);
       } else {
-        const session = await mutate(() => provider.openWrite(path, signal), unchanged);
+        const { jobId, itemIndex } = context.saved();
+        const tempName = tempNameFor(jobId, itemIndex);
+        const session = await mutate(() => provider.openWrite(path, { tempName }, signal), unchanged);
         try {
           await mark("copying", { tempPath: session.tempPath });
           const hash = verify === "sha256" ? new TransferHash() : null;

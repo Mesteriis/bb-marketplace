@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { TransferHash } from "./reconcile.ts";
+import { tempNameFor, TransferHash } from "./reconcile.ts";
 
 test.each([
   ["", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"],
@@ -12,4 +12,10 @@ test.each([
   const bytes = new TextEncoder().encode(input);
   for (let i = 0; i < bytes.length; i += 7) hash.update(bytes.subarray(i, i + 7));
   expect(hash.finish()).toBe(expected);
+});
+
+test("derives an exclusive temporary name from the job and item", () => {
+  expect(tempNameFor("223e4567-e89b-42d3-a456-426614174000", 12)).toEqual({
+    t: ".commander-223e4567-e89b-42d3-a456-426614174000-12.part",
+  });
 });
