@@ -191,7 +191,16 @@ export class JobRunner {
     if (absenceConflict !== undefined) {
       const item = plan.items[absenceConflict];
       const counterpart = await this.syncDeleteCounterpart(item, context);
-      await this.startInConflict(job, absenceConflict, new ItemConflict("target_changed", item.fingerprint, counterpart));
+      const conflict = new ItemConflict("target_changed", item.fingerprint, counterpart);
+      const state = transition(transition(job.state, "start"), "conflict");
+      this.stopping.signal.throwIfAborted();
+      // S13: one CAS commits approval and the conflict without exposing a runnable state.
+      if (!await this.patch(job, {
+        state, awaitsOwner: false, currentItem: absenceConflict,
+        pendingConflict: this.conflictRecord(job, absenceConflict, conflict),
+      }, "conflict")) {
+        throw new CommanderError("changed_since_plan", "Job is no longer awaiting approval");
+      }
       return;
     }
     if (checked && !checked.ok) throw new CommanderError("changed_since_plan", "Plan changed before approval");
@@ -729,7 +738,7 @@ export class JobRunner {
       && isAncestorOrSelf(source.path, following.path, source.provider.endpoint.caseSensitive));
   }
 
-  private async requestConflict(job: OperationJob, index: number, conflict: ItemConflict, progress = job.progress): Promise<void> {
+  private conflictRecord(job: OperationJob, index: number, conflict: ItemConflict): Conflict {
     const item = job.plan.items[index];
     const expanded = this.expandedDirectory(job, index, item.source && this.location(item.source));
     const allowedResolutions: ConflictAction[] = ["skip", "cancel"];
@@ -739,12 +748,15 @@ export class JobRunner {
         allowedResolutions.push("overwrite");
       }
     }
+    return {
+      id: this.deps.uuid(), jobId: job.id, itemIndex: index, reason: conflict.reason,
+      source: conflict.source, target: conflict.target, allowedResolutions,
+    };
+  }
+
+  private async requestConflict(job: OperationJob, index: number, conflict: ItemConflict, progress = job.progress): Promise<void> {
     await this.change(job, "conflict", {
-      currentItem: index, progress,
-      pendingConflict: {
-        id: this.deps.uuid(), jobId: job.id, itemIndex: index, reason: conflict.reason,
-        source: conflict.source, target: conflict.target, allowedResolutions,
-      },
+      currentItem: index, progress, pendingConflict: this.conflictRecord(job, index, conflict),
     }, "conflict");
   }
 

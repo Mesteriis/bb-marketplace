@@ -566,3 +566,40 @@ test("S13 preserves the signed synchronization plan through SQLite create and ge
   await store.create(syncJob);
   expect(await store.get(job.id)).toStrictEqual(syncJob);
 });
+
+test("a failed approval CAS records no approval and changes no job state", async () => {
+  await store.create(job);
+  expect(await store.update(job.id, {
+    state: "awaiting_decision", awaitsOwner: false, currentItem: 0, pendingConflict: {
+      id: secondId, jobId: job.id, itemIndex: 0, reason: "target_changed",
+      source: null, target: null, allowedResolutions: ["skip", "cancel"],
+    },
+  }, "running")).toBe(false);
+  expect(db.prepare("SELECT job_id FROM commander_owner_approvals").all()).toEqual([]);
+  expect(await store.get(job.id)).toStrictEqual(job);
+});
+
+test("ordinary approval inserts exactly once through the running trigger", async () => {
+  const inserts: string[] = [];
+  db.function("observe_approval_insert", (id: string) => { inserts.push(id); return null; });
+  db.exec(`CREATE TRIGGER observe_approval BEFORE INSERT ON commander_owner_approvals
+    BEGIN SELECT observe_approval_insert(new.job_id); END`);
+  await store.create(job);
+  expect(await store.update(job.id, { state: "running" }, "pending")).toBe(true);
+  expect(db.prepare("SELECT job_id FROM commander_owner_approvals").all()).toEqual([{ job_id: job.id }]);
+  expect(inserts).toEqual(["223e4567-e89b-42d3-a456-426614174000"]);
+});
+
+test("a failed approval insert rolls back the transition to awaiting_decision", async () => {
+  db.exec(`CREATE TRIGGER refuse_approval BEFORE INSERT ON commander_owner_approvals
+    BEGIN SELECT RAISE(ABORT, 'approval insert failed'); END`);
+  await store.create(job);
+  await expect(store.update(job.id, {
+    state: "awaiting_decision", awaitsOwner: false, currentItem: 0, pendingConflict: {
+      id: secondId, jobId: job.id, itemIndex: 0, reason: "target_changed",
+      source: null, target: null, allowedResolutions: ["skip", "cancel"],
+    },
+  }, "pending")).rejects.toThrow("approval insert failed");
+  expect(await store.get(job.id)).toStrictEqual(job);
+  expect(db.prepare("SELECT job_id FROM commander_owner_approvals").all()).toEqual([]);
+});
