@@ -1,6 +1,5 @@
-import manifest from "./package.json";
 import type { SearchActions } from "./src/ui/search-panel.tsx";
-import { definePluginApp, experimental_PluginRpcCallError, useBbNavigate, useRealtime, useRpc, useSdk, type ExperimentalThreadTabProps } from "@get-bb/plugin-sdk/app";
+import { definePluginApp, experimental_PluginRpcCallError, experimental_usePluginId, useBbNavigate, useRealtime, useRpc, useSdk, type ExperimentalThreadTabProps } from "@get-bb/plugin-sdk/app";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LIST_PAGE_MAX } from "./src/core/provider.ts";
 import { parsePosix } from "./src/core/path.ts";
@@ -21,9 +20,8 @@ type Rpc = ReturnType<typeof useRpc<typeof rpcSchemas>>;
 type Sdk = ReturnType<typeof useSdk>;
 // S11: the pinned SDK cannot take a signal. Use HTTP cancellation when the
 // transport is available; both paths also accept a request-id cancellation.
-const pluginId = manifest.name.replace(/^bb-plugin-/, "");
-async function startSearch(rpc: Rpc, input: Parameters<SearchActions["start"]>[0], signal: AbortSignal) {
-  let response: Response;
+async function startSearch(rpc: Rpc, pluginId: string, input: Parameters<SearchActions["start"]>[0], signal: AbortSignal) {
+  let response: Response | undefined;
   let envelope: { ok?: boolean; result?: unknown; error?: unknown } | null;
   try {
     response = await fetch(`/api/v1/plugins/${encodeURIComponent(pluginId)}/rpc/scan_start`, {
@@ -38,7 +36,9 @@ async function startSearch(rpc: Rpc, input: Parameters<SearchActions["start"]>[0
     envelope = await response.json();
   } catch (error) {
     signal.throwIfAborted();
-    if (!(error instanceof TypeError)) throw error;
+    // A successful status can arrive before a truncated JSON body. Reuse the
+    // same request id so the server can replay an already-created job.
+    if (!(error instanceof TypeError) && !(error instanceof SyntaxError && response?.status === 200)) throw error;
     return rpc.call("scan_start", input);
   }
   signal.throwIfAborted();
@@ -229,6 +229,7 @@ function useJobs(rpc: Rpc, revision: number) {
 
 function CommanderPage({ compact = false, environment, threadId }: { compact?: boolean; environment?: string; threadId?: string }) {
   const rpc = useRpc<typeof rpcSchemas>();
+  const pluginId = experimental_usePluginId();
   const sdk = useSdk();
   const navigate = useBbNavigate();
   const { state, update, endpoints, problem, refreshEndpoints } = useWorkspaceState(rpc, sdk, threadId, environment);
@@ -262,11 +263,11 @@ function CommanderPage({ compact = false, environment, threadId }: { compact?: b
   }), [rpc, update]);
   // S11: polling and job cancellation use the shared scan transport.
   const search = useMemo<SearchActions>(() => ({
-    start: (input, signal) => startSearch(rpc, input, signal),
+    start: (input, signal) => startSearch(rpc, pluginId, input, signal),
     get: scans.get,
     cancel: scans.cancel,
     cancelRequest: (clientRequestId) => rpc.call("scan_cancel", { clientRequestId }),
-  }), [rpc, scans]);
+  }), [pluginId, rpc, scans]);
   const [bindings, setBindings] = useState(loadBindings);
   // S17: the last retry result by job id: nothing to retry, or files waiting for a directory check.
   const [retryNotes, setRetryNotes] = useState<Record<string, RetryNote>>({});

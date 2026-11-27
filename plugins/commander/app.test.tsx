@@ -16,6 +16,7 @@ const host = vi.hoisted(() => ({
 vi.mock("@get-bb/plugin-sdk/app", () => ({
   definePluginApp: (register: unknown) => register,
   useRpc: () => host,
+  experimental_usePluginId: () => "commander:fixture",
   useRealtime: () => {},
   useBbNavigate: () => host.navigate,
   useSdk: () => host.sdk,
@@ -815,7 +816,7 @@ test("S11 panel cancellation aborts the HTTP scan_start call itself", async () =
     fireEvent.click(within(grid().parentElement!).getByRole("button", { name: "Поиск" }));
     fireEvent.click(screen.getByRole("button", { name: "Найти" }));
     const [url, request] = fetchScan.mock.calls[0];
-    expect(url).toBe("/api/v1/plugins/makosh-commander/rpc/scan_start");
+    expect(url).toBe("/api/v1/plugins/commander%3Afixture/rpc/scan_start");
     expect(request.signal?.aborted).toBe(false);
     fireEvent.click(screen.getByRole("button", { name: "Закрыть поиск" }));
     expect(request.signal?.aborted).toBe(true);
@@ -823,7 +824,7 @@ test("S11 panel cancellation aborts the HTTP scan_start call itself", async () =
   } finally { vi.unstubAllGlobals(); }
 });
 
-test.each(["network", "response body", 401, 404] as const)("S11 falls back to SDK RPC for %s and cancels by request id", async (failure) => {
+test.each(["network", "response body", "truncated JSON", "empty JSON", 401, 404] as const)("S11 falls back to SDK RPC for %s and cancels by request id", async (failure) => {
   const serve = host.call.getMockImplementation()!;
   const sdkStart = vi.fn((_input: unknown) => new Promise<never>(() => {}));
   const cancel = vi.fn(async (_input: unknown) => ({}));
@@ -834,6 +835,10 @@ test.each(["network", "response body", 401, 404] as const)("S11 falls back to SD
     if (failure === "response body") {
       const stream = new ReadableStream({ start(controller) { controller.error(new TypeError("Connection lost")); } });
       return new Response(stream);
+    }
+    if (failure === "truncated JSON" || failure === "empty JSON") {
+      const body = failure === "truncated JSON" ? '{"ok":true,"result":' : "";
+      return new Response(body, { status: 200, headers: { "content-type": "application/json" } });
     }
     return new Response(null, { status: failure });
   });
