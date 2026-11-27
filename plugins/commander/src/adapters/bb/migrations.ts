@@ -36,4 +36,8 @@ export const MIGRATIONS: string[] = [
     ALTER TABLE checkpoints ADD COLUMN verified_json TEXT;
     ALTER TABLE checkpoints ADD COLUMN committed_json TEXT;
   `,
+  `
+    ALTER TABLE checkpoints ADD COLUMN temp_fingerprint_json TEXT;
+    ALTER TABLE checkpoints ADD COLUMN via TEXT CHECK (via IN ('rename', 'copy'));
+  `,
 ];

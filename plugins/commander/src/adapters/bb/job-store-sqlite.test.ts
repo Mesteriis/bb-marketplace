@@ -49,6 +49,12 @@ const checkpoint: Checkpoint = {
   phase: "prepared",
   bytesDone: "18446744073709551615",
   tempPath: { segments: [{ t: "Копии" }, { b: "/w==" }, { t: ".Копия.partial" }] },
+  tempFingerprint: {
+    size: "18446744073709551615",
+    mtimeNs: "1732665600000000001",
+    sha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  },
+  via: "copy",
   targetPath: { segments: [{ t: "Копии" }, { b: "/w==" }, { t: "Копия" }] },
   expectTarget: { size: "12", mtimeNs: "1732665600000000000" },
   verified: { size: "18446744073709551615", sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
@@ -162,6 +168,8 @@ test("reopens every checkpoint field and replaces nullable and optional fields o
   expect(await store.lastCheckpoint(job.id, 0)).toBeNull();
   await store.checkpoint(checkpoint);
   await store.checkpoint({ ...checkpoint, itemIndex: 1 });
+  const renamed: Checkpoint = { ...checkpoint, itemIndex: 2, phase: "committed", via: "rename" };
+  await store.checkpoint(renamed);
 
   const replacement: Checkpoint = {
     jobId: job.id,
@@ -175,7 +183,8 @@ test("reopens every checkpoint field and replaces nullable and optional fields o
   };
   await store.checkpoint(replacement);
   expect(db.prepare(`
-    SELECT temp_path_json, target_path_json, expect_target_json, verified_json, committed_json
+    SELECT temp_path_json, target_path_json, expect_target_json, verified_json, committed_json,
+      temp_fingerprint_json, via
     FROM checkpoints WHERE item_index = 1
   `).get()).toEqual({
     temp_path_json: null,
@@ -183,6 +192,8 @@ test("reopens every checkpoint field and replaces nullable and optional fields o
     expect_target_json: '"absent"',
     verified_json: null,
     committed_json: null,
+    temp_fingerprint_json: null,
+    via: null,
   });
 
   db.close();
@@ -192,6 +203,7 @@ test("reopens every checkpoint field and replaces nullable and optional fields o
   expect(await store.get(job.id)).toStrictEqual(job);
   expect(await store.lastCheckpoint(job.id, 0)).toStrictEqual(checkpoint);
   expect(await store.lastCheckpoint(job.id, 1)).toStrictEqual(replacement);
+  expect(await store.lastCheckpoint(job.id, 2)).toStrictEqual(renamed);
 });
 
 function seedTerminalJobs(count: number, firstOffset: number): void {
@@ -473,6 +485,7 @@ test("the SDK creates tables in a clean database and the second migrate preserve
     expect(entries).toEqual([
       { id: 0, applied_at: expect.any(Number), statement_hash: expect.stringMatching(/^[a-f0-9]{64}$/) },
       { id: 1, applied_at: expect.any(Number), statement_hash: expect.stringMatching(/^[a-f0-9]{64}$/) },
+      { id: 2, applied_at: expect.any(Number), statement_hash: expect.stringMatching(/^[a-f0-9]{64}$/) },
     ]);
 
     bb.storage.migrate(cleanDb, MIGRATIONS);
@@ -483,14 +496,14 @@ test("the SDK creates tables in a clean database and the second migrate preserve
   }
 });
 
-test("upgrades a v1 checkpoint without inventing target or verification metadata", async () => {
+test.each([1, 2])("upgrades a v%i checkpoint without inventing recovery metadata", async (version) => {
   const { createFakePluginHost } = await loadSdkTestHost();
   const { bb } = createFakePluginHost({ pluginId: "commander-s6-checkpoint-upgrade" });
   const legacyDb = new Database(join(directory, "v1.sqlite"));
   try {
-    bb.storage.migrate(legacyDb, MIGRATIONS.slice(0, 1));
-    const journal = legacyDb.prepare("SELECT * FROM _bb_migrations WHERE id = 0");
-    const migrationOne = journal.get();
+    bb.storage.migrate(legacyDb, MIGRATIONS.slice(0, version));
+    const journal = legacyDb.prepare("SELECT * FROM _bb_migrations WHERE id < ? ORDER BY id");
+    const originalEntries = journal.all(version);
     legacyDb.prepare(`
       INSERT INTO checkpoints (job_id, item_index, phase, bytes_done, temp_path_json, at)
       VALUES (?, 0, 'copying', '18446744073709551615', '{"segments":[{"t":".Копия.partial"}]}', ?),
@@ -498,8 +511,8 @@ test("upgrades a v1 checkpoint without inventing target or verification metadata
     `).run(job.id, date, job.id, date);
 
     bb.storage.migrate(legacyDb, MIGRATIONS);
-    expect(legacyDb.prepare("SELECT id FROM _bb_migrations ORDER BY id").pluck().all()).toEqual([0, 1]);
-    expect(journal.get()).toStrictEqual(migrationOne);
+    expect(legacyDb.prepare("SELECT id FROM _bb_migrations ORDER BY id").pluck().all()).toEqual([0, 1, 2]);
+    expect(journal.all(version)).toStrictEqual(originalEntries);
 
     const migrated = createSqliteJobStore(legacyDb);
     expect(await migrated.lastCheckpoint(job.id, 0)).toStrictEqual({

@@ -39,6 +39,8 @@ const CheckpointValue = z.strictObject({
   phase: z.enum(["prepared", "copying", "committed", "verified", "source_removed"]),
   bytesDone: Size,
   tempPath: ResourcePath.nullable(),
+  tempFingerprint: Fingerprint.optional(),
+  via: z.enum(["rename", "copy"]).optional(),
   targetPath: ResourcePath.nullable(),
   expectTarget: z.union([Fingerprint, z.literal("absent")]).nullable(),
   verified: Fingerprint.pick({ size: true, sha256: true }).nullable(),
@@ -51,6 +53,8 @@ interface CheckpointRow {
   phase: string;
   bytes_done: string;
   temp_path_json: string | null;
+  temp_fingerprint_json: string | null;
+  via: string | null;
   target_path_json: string | null;
   expect_target_json: string | null;
   verified_json: string | null;
@@ -203,15 +207,17 @@ export function createSqliteJobStore(db: Database): JobStore {
   `);
   const writeCheckpoint = db.prepare(`
     INSERT INTO checkpoints (
-      job_id, item_index, phase, bytes_done, temp_path_json, target_path_json,
-      expect_target_json, verified_json, committed_json, at
+      job_id, item_index, phase, bytes_done, temp_path_json, temp_fingerprint_json, via,
+      target_path_json, expect_target_json, verified_json, committed_json, at
     )
-    SELECT @jobId, @itemIndex, @phase, @bytesDone, @tempPath, @targetPath,
-      @expectTarget, @verified, @committed, @at
+    SELECT @jobId, @itemIndex, @phase, @bytesDone, @tempPath, @tempFingerprint, @via,
+      @targetPath, @expectTarget, @verified, @committed, @at
     WHERE EXISTS (SELECT 1 FROM jobs WHERE id = @jobId)
     ON CONFLICT(job_id, item_index) DO UPDATE SET
       phase = excluded.phase, bytes_done = excluded.bytes_done,
-      temp_path_json = excluded.temp_path_json, target_path_json = excluded.target_path_json,
+      temp_path_json = excluded.temp_path_json,
+      temp_fingerprint_json = excluded.temp_fingerprint_json, via = excluded.via,
+      target_path_json = excluded.target_path_json,
       expect_target_json = excluded.expect_target_json, verified_json = excluded.verified_json,
       committed_json = excluded.committed_json, at = excluded.at
   `);
@@ -314,6 +320,8 @@ export function createSqliteJobStore(db: Database): JobStore {
       const { changes } = writeCheckpoint.run({
         ...checkpoint,
         tempPath: encodeJson(checkpoint.tempPath),
+        tempFingerprint: encodeJson(checkpoint.tempFingerprint ?? null),
+        via: checkpoint.via ?? null,
         targetPath: encodeJson(checkpoint.targetPath),
         expectTarget: encodeJson(checkpoint.expectTarget),
         verified: encodeJson(checkpoint.verified),
@@ -333,6 +341,8 @@ export function createSqliteJobStore(db: Database): JobStore {
           phase: row.phase,
           bytesDone: row.bytes_done,
           tempPath: decodeJson(row.temp_path_json),
+          ...(row.temp_fingerprint_json === null ? {} : { tempFingerprint: decodeJson(row.temp_fingerprint_json) }),
+          ...(row.via === null ? {} : { via: row.via }),
           targetPath: decodeJson(row.target_path_json),
           expectTarget: decodeJson(row.expect_target_json),
           verified: decodeJson(row.verified_json),
