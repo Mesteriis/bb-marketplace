@@ -157,6 +157,9 @@ export function createSftpProvider(opts: {
 
 ## Расхождение слитого кода с контрактом (после слияния S5 @ `8a0837a2`)
 
+Закрыто: S5-follow-up @ `3408a056` приводит код к `remote-hub@22933aad`;
+отложенные мелочи — в `after-stage-1.md`.
+
 Код S5 в ветке Commander следует контракту `ea8e3bfa`
 (`REMOTE_HUB_SFTP_CONTRACT = "remote-hub@ea8e3bfa"`). До `37fdffcd`/`22933aad`
 не доведено:
