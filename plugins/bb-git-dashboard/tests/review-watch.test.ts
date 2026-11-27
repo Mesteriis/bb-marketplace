@@ -54,3 +54,10 @@ test("stopping all ends every watch, leased or not", async () => {
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(disposed.sort(), ["/w/a", "/w/b"]);
 });
+
+test("a linked worktree is watched with its git directories, which live outside it", async () => {
+  const { watchedFolders } = await import("../src/adapters/bb/review-watch.ts");
+  assert.deepEqual(watchedFolders("/w/app", "/w/app/.git", "/w/app/.git"), ["/w/app"]);
+  assert.deepEqual(watchedFolders("/w/feature", "/w/app/.git/worktrees/feature", "/w/app/.git"), ["/w/feature", "/w/app/.git/worktrees/feature", "/w/app/.git"]);
+  assert.deepEqual(watchedFolders("/w/app", null, null), ["/w/app"]);
+});

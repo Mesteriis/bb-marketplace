@@ -105,6 +105,8 @@ export function ReviewPanel({api, copyId, currentThreadId, revision, initialFile
   const refresh = useCallback(() => setReload(value => value + 1), []);
   // The patches the view left deferred, read in batches after it shows; a failed batch waits for Retry.
   const [loaded, setLoaded] = useState(0);
+  const loadedRef = useRef(0);
+  loadedRef.current = loaded;
   const [patchError, setPatchError] = useState("");
   const [patchRetry, setPatchRetry] = useState(0);
   const viewRef = useRef(view);
@@ -112,6 +114,8 @@ export function ReviewPanel({api, copyId, currentThreadId, revision, initialFile
   useEffect(() => {
     const shown = viewRef.current;
     if (!shown) return;
+    // A batch read for an earlier load of this same view (whitespace switched, the copy changed) is not merged.
+    const load = loaded;
     let active = true;
     setPatchError("");
     (async () => {
@@ -120,7 +124,7 @@ export function ReviewPanel({api, copyId, currentThreadId, revision, initialFile
         const batch = current?.sessionId === shown.sessionId ? current.files.filter(file => file.deferred).slice(0, PATCH_BATCH) : [];
         if (!active || !batch.length) return;
         const files = await api.patches(copyId, shown.target, ignoreWhitespace, batch);
-        if (!active) return;
+        if (!active || loadedRef.current !== load) return;
         // A file the host no longer lists keeps no patch rather than asking again forever.
         const answered = new Set(files.map(file => file.path));
         setView(view => view && view.sessionId === shown.sessionId ? {...view, files: withPatches(view.files, files)
@@ -136,11 +140,13 @@ export function ReviewPanel({api, copyId, currentThreadId, revision, initialFile
   useEffect(() => {
     let active = true;
     const renew = () => { if (active && !document.hidden) api.watch(copyId).catch(() => { /* the button still reloads */ }); };
+    // Back on screen: the lease may have ended meanwhile, so the diff is read again too.
+    const shown = () => { if (!document.hidden) { renew(); refresh(); } };
     renew();
     const timer = setInterval(renew, 30_000);
-    document.addEventListener("visibilitychange", renew);
-    return () => { active = false; clearInterval(timer); document.removeEventListener("visibilitychange", renew); };
-  }, [api, copyId]);
+    document.addEventListener("visibilitychange", shown);
+    return () => { active = false; clearInterval(timer); document.removeEventListener("visibilitychange", shown); };
+  }, [api, copyId, refresh]);
   const sessionId = view?.sessionId;
   const keptState = useKeptState(api, scope, sessionId, root);
   // An unsent comment on the whole diff opens again with its text.
@@ -209,7 +215,10 @@ export function ReviewPanel({api, copyId, currentThreadId, revision, initialFile
   const generalThreads = threads.filter(thread => thread.filePath === GENERAL_PATH);
   const outdated = threads.filter(thread => thread.filePath !== GENERAL_PATH && placed(thread.id)?.state === "outdated");
   const extra = view && opened.sessionId === view.sessionId ? opened.files.filter(file => !view.files.some(shown => shown.path === file.path)) : [];
-  const files = [...view?.files ?? [], ...extra].filter(file => !onlyCommented || threads.some(thread => thread.filePath === file.path));
+  const files = useMemo(() => [...view?.files ?? [], ...extra].filter(file => !onlyCommented || threads.some(thread => thread.filePath === file.path)),
+    // `extra` and `threads` follow `view` and `opened`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [view, opened, onlyCommented]);
   const openFile = async (path: string) => {
     if (!view) return;
     const sessionId = view.sessionId;
@@ -365,7 +374,7 @@ export function ReviewPanel({api, copyId, currentThreadId, revision, initialFile
     {view && keptState.ready && files.map(file => <FileDiff key={view.sessionId + file.path} file={file} wrap={wrap} split={split}
       patchError={file.deferred ? patchError : ""} onRetryPatch={() => setPatchRetry(value => value + 1)}
       onViewed={(revision, on) => markViewed(file.path, revision, on)} hunksPickable={!ignoreWhitespace}
-      onRevert={view.target.kind === "uncommitted" ? async (revision, hunks) => { await api.revert(view.sessionId, file.path, revision, hunks); refresh(); } : undefined}
+      onRevert={view.target.kind === "uncommitted" && !ignoreWhitespace ? async (revision, hunks) => { await api.revert(view.sessionId, file.path, revision, hunks); refresh(); } : undefined}
       onOpen={file.changeKind === "deleted" ? undefined : line => api.openFile(view.copy.hostId, joinPath(view.copy.root, file.path), line)} workingCopy={working} api={liveApi} onCreate={create} onExplain={explain} explaining={explaining}
       found={foundIn.get(file.path)} current={at?.path === file.path ? at.row : null} reveal={reveal?.path === file.path ? reveal.token : undefined}
       threads={threads.filter(thread => thread.filePath === file.path && placed(thread.id)?.state !== "outdated")} placements={view.placements}/>)}

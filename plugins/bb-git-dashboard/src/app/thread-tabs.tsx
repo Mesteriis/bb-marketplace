@@ -7,6 +7,7 @@ import { CiPanel } from "../ui/ci/ci-panel.tsx";
 import { HistoryPanel } from "../ui/history/history-panel.tsx";
 import { ciApi, codeReviewApi, historyApi } from "./apis.tsx";
 import { ReviewPanel } from "../ui/code-review/review-panel.tsx";
+import { useReviewRevisions } from "./review-signal.ts";
 
 const signal = "git-workspace-changed";
 /** The thread's Git History tab; also what the header shortcut opens. */
@@ -56,9 +57,8 @@ export function ThreadReview({threadId}: {threadId: string}) {
   const {client, state} = useThreadCopy(threadId);
   const navigate = useBbNavigate();
   const api = useMemo(() => codeReviewApi(client, navigate), [client, navigate]);
-  const [revision, setRevision] = useState(0);
-  useRealtime("code-review-changed", useCallback(() => setRevision(value => value + 1), []));
-  return <ThreadFrame state={state}>{copy => <ReviewPanel key={copy.id} api={api} copyId={copy.id} currentThreadId={threadId} revision={revision}/>}</ThreadFrame>;
+  const revisions = useReviewRevisions();
+  return <ThreadFrame state={state}>{copy => <ReviewPanel key={copy.id} api={api} copyId={copy.id} currentThreadId={threadId} revision={revisions.byCopy[copy.id] ?? 0}/>}</ThreadFrame>;
 }
 
 const headerShortcut: PluginThreadActionRegistration<boolean> = {
@@ -89,9 +89,10 @@ const reviewShortcut: PluginThreadActionRegistration<boolean> = {
 function ReviewInfoRow({threadId}: ExperimentalThreadInfoProps) {
   const client = useRpc<typeof rpc>();
   const panel = experimental_useAppPanel();
-  const [counts, setCounts] = useState<{open: number; total: number} | null>(null);
-  const [revision, setRevision] = useState(0);
-  useRealtime("code-review-changed", useCallback(() => setRevision(value => value + 1), []));
+  const [counts, setCounts] = useState<{copyId: string; open: number; total: number} | null>(null);
+  const revisions = useReviewRevisions();
+  // Its own copy's changes only; until the copy is known, any change reads again.
+  const revision = counts ? revisions.byCopy[counts.copyId] ?? 0 : revisions.any;
   useEffect(() => {
     let active = true;
     client.call("reviewThreadCounts", {threadId}).then(result => { if (active) setCounts(result.ok ? result.counts : null); }, () => {});

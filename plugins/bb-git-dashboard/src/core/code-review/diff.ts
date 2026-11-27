@@ -19,6 +19,8 @@ export const reviewDiffFileSchema = z.object({
   deferred: z.boolean().optional(),
   /** The whole file as it reads now (the Any file view), not a change. */
   whole: z.boolean().optional(),
+  /** The new side's content as git names it, for a file shown without a patch (binary, too large): what tells its changes apart. */
+  blob: z.string().max(64).optional(),
   /** Marked Viewed at this very change; a file whose change moved on since is not. */
   viewed: z.boolean().optional(),
 }).strict();
@@ -48,8 +50,8 @@ export function withPatches(files: readonly ReviewDiffFile[], read: readonly Rev
 }
 
 /** One short hash of a file's change: it differs whenever the change does. A Viewed mark holds the one it was made at. */
-export function changeRevision(file: Pick<ReviewDiffFile, "changeKind" | "previousPath" | "additions" | "deletions" | "binary" | "patch">): string {
-  return hash([file.changeKind, file.previousPath ?? "", file.additions, file.deletions, file.binary, file.patch ?? ""].join("\u0000"));
+export function changeRevision(file: Pick<ReviewDiffFile, "changeKind" | "previousPath" | "additions" | "deletions" | "binary" | "patch" | "blob">): string {
+  return hash([file.changeKind, file.previousPath ?? "", file.additions, file.deletions, file.binary, file.patch ?? "", file.blob ?? ""].join("\u0000"));
 }
 
 /** FNV-1a, 64 bits as hex: enough to tell two versions of a file's change apart. */

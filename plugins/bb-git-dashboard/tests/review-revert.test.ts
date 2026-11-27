@@ -417,3 +417,23 @@ describe("reverting what the Review showed", () => {
     await expect(revertShown(run, root, "c.txt", changeRevision(moved), null)).rejects.toThrow("REVERT_REFUSED");
   });
 });
+
+describe("paths with glob characters", () => {
+  it("reverts the file named, not one its name matches as a pattern", async () => {
+    const { revertShown } = await import("../src/adapters/bb/review-revert.ts");
+    const { changeRevision } = await import("../src/core/code-review/diff.ts");
+    const { diff } = await import("../src/adapters/bb/review-git.ts");
+    const root = repo();
+    mkdirSync(join(root, "app/s"), { recursive: true });
+    writeFileSync(join(root, "app/s/page.tsx"), "committed\n");
+    git(root, "add", ".");
+    git(root, "commit", "-q", "-m", "page");
+    writeFileSync(join(root, "app/s/page.tsx"), "edited\n");
+    mkdirSync(join(root, "app/[slug]"), { recursive: true });
+    writeFileSync(join(root, "app/[slug]/page.tsx"), "new\n");
+    const shown = (await diff(run, root, { kind: "uncommitted" }, false, { paths: ["app/[slug]/page.tsx"] })).files[0]!;
+    await revertShown(run, root, "app/[slug]/page.tsx", changeRevision(shown), null);
+    expect(existsSync(join(root, "app/[slug]/page.tsx"))).toBe(false);
+    expect(readFileSync(join(root, "app/s/page.tsx"), "utf8")).toBe("edited\n");
+  });
+});

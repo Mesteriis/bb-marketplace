@@ -191,6 +191,21 @@ describe("the host's git diffs", () => {
     expect(await recentCommits(run, empty)).toEqual([]);
   });
 
+  it("names a binary file's content, so its change is told apart when the bytes change", async () => {
+    const { changeRevision } = await import("../src/core/code-review/diff.ts");
+    const root = repo();
+    const run = createRunGit();
+    writeFileSync(join(root, "pic.bin"), Buffer.from([0, 1, 2, 3]));
+    git(root, "add", "pic.bin");
+    const staged = (await diff(run, root, { kind: "staged" }, false, { paths: ["pic.bin"] })).files[0]!;
+    const first = (await diff(run, root, { kind: "uncommitted" }, false, { paths: ["pic.bin"] })).files[0]!;
+    writeFileSync(join(root, "pic.bin"), Buffer.from([0, 9, 9, 9]));
+    const second = (await diff(run, root, { kind: "uncommitted" }, false, { paths: ["pic.bin"] })).files[0]!;
+    expect([first.binary, first.patch, typeof first.blob]).toEqual([true, null, "string"]);
+    expect(changeRevision(first) === changeRevision(second)).toBe(false);
+    expect(staged.blob).toBe(first.blob);
+  });
+
   it("refuses unknown revisions", async () => {
     const root = repo();
     await expect(diff(run, root, { kind: "range", from: "nope", to: "HEAD", symmetric: false }, false)).rejects.toThrow("Unknown revision 'nope'");

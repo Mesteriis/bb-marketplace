@@ -275,3 +275,11 @@ test("deleting orphan reviews takes only those whose copy is still gone, closing
   assert.deepEqual(archived, ["thr_old"]);
   assert.equal(store.threads(live.id).length, 1);
 });
+
+test("a pull request's mirror and a copy that could not be looked up are not deleted as orphans", async () => {
+  const {service, store} = setup();
+  const mirror = store.session("forge:acc", "pr:o/r#1");
+  store.createThread({sessionId: mirror.id, filePath: "a.ts", side: null, startLine: 0, endLine: 0, severity: null, anchorContent: null, body: "x"});
+  assert.deepEqual(await service.deleteOrphans([mirror.id]), {deleted: 0, deletedThreads: 0});
+  assert.notEqual(store.sessionById(mirror.id), null);
+});

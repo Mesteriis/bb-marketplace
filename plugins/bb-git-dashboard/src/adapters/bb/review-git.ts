@@ -327,7 +327,24 @@ export async function diff(run: RunGit, root: string, spec: Target, ignoreWhites
       files.push(withPatches || file.patch === null ? file : { ...file, patch: null, deferred: true });
     }
   }
+  // A file read without a patch is told apart by its content: git's name for the new side's bytes.
+  if (withPatches) {
+    for (const file of files) {
+      if (file.patch !== null || file.changeKind === "deleted" || file.deferred) continue;
+      const blob = await contentName(run, root, spec, headSha, file.path);
+      if (blob) file.blob = blob;
+    }
+  }
   return { files, truncated, baseSha, headSha, ...(skipped ? { ignored: skipped } : {}) };
+}
+
+/** git's object name for the new side of `path` in a view: the index's when staged, a commit's, else the working file's. */
+async function contentName(run: RunGit, root: string, spec: Target, headSha: string | null, path: string): Promise<string | null> {
+  const args = spec.kind === "staged" ? ["rev-parse", "--verify", "-q", ":" + path]
+    : headSha !== null ? ["rev-parse", "--verify", "-q", headSha + ":" + path]
+    : ["hash-object", "--path=" + path, "--", path];
+  const result = await run(root, args, { allowFailure: true });
+  return result.ok ? result.stdout.trim() || null : null;
 }
 
 async function untrackedFile(root: string, path: string, used: number, use: (bytes: number) => void): Promise<HostDiffFile> {

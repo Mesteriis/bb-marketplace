@@ -52,3 +52,16 @@ export class WatchLeases {
 
   watching = () => [...this.leases.keys()];
 }
+
+/** What a git directory outside the copy holds that moves for nobody's diff. */
+export const GIT_DIR_IGNORED = ["objects", "logs", "fsmonitor--daemon", "worktrees/*/logs"];
+
+/**
+ * The folders whose changes move a copy's diff: the copy itself, and for a linked worktree (its `.git` a file) its own
+ * git directory (index, HEAD) and the shared one (refs), which live outside it.
+ */
+export function watchedFolders(root: string, gitDir: string | null, commonDir: string | null): string[] {
+  const inside = (folder: string) => folder === root || folder.startsWith(root.replace(/\/+$/, "") + "/");
+  return [root, ...[gitDir, commonDir].filter((folder): folder is string => !!folder && !inside(folder))]
+    .filter((folder, index, all) => all.indexOf(folder) === index);
+}

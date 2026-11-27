@@ -329,7 +329,10 @@ export function codeReviewRuns(deps: RunDeps) {
       let deleted = 0, deletedThreads = 0;
       for (const sessionId of new Set(sessionIds)) {
         const owner = store.sessionById(sessionId);
-        if (!owner || await deps.copy(owner.copyId).catch(() => undefined)) continue;
+        // A pull request's mirror is no copy's review; a copy that could not be looked up is not known to be gone.
+        if (!owner || owner.copyId.startsWith("forge:")) continue;
+        const copy = await deps.copy(owner.copyId).then(found => found ?? null, () => "unknown" as const);
+        if (copy !== null) continue;
         clears.set(owner.id, clearCount(owner.id) + 1);
         const open = runs.open(owner.id);
         deletedThreads += store.threads(owner.id).length;

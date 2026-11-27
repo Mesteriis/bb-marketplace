@@ -19,6 +19,7 @@ import { parseRef, refPath, type ReviewApi } from "./src/ui/review/review-api.ts
 import { dispatchReviewCommand, REVIEW_COMMANDS, type ReviewCommand } from "./src/ui/code-review/commands.ts";
 import { ReviewsPage, type ReviewsApi } from "./src/ui/code-review/reviews-page.tsx";
 import { requestOfKey, ReviewOpenOverlay, reviewRoute } from "./src/app/review-open.tsx";
+import { useReviewRevisions } from "./src/app/review-signal.ts";
 import { ciApi, codeReviewApi, failed, historyApi, okValue } from "./src/app/apis.tsx";
 import { ciTab, historyTab, reviewTab, ThreadCi, ThreadHistory, ThreadReview, registerHistoryShortcut, registerReviewSurfaces } from "./src/app/thread-tabs.tsx";
 import "./src/ui/git.css";
@@ -179,8 +180,8 @@ function Dashboard({subPath}: {subPath: string}) {
   const navigate = useBbNavigate();
   const panel = experimental_useAppPanel();
   const historyGraph = useSettings().values?.historyGraph !== false;
-  const [reviewRevision, setReviewRevision] = useState(0);
-  useRealtime("code-review-changed", useCallback(() => setReviewRevision(value => value + 1), []));
+  const reviewRevisions = useReviewRevisions();
+  const reviewRevision = reviewRevisions.any;
   const api = useMemo<RemoteApi & RepositoryApi & ConnectionApi & {trees(id:string):Promise<import("./src/core/git.ts").GitResult>}>(() => ({
     checkConnection: async input => {
       const result = await client.call("checkConnection",input);
@@ -283,7 +284,7 @@ function Dashboard({subPath}: {subPath: string}) {
           <span>{ref.repo} {ref.kind === "pr" ? "#" + ref.number : ref.number === "new" ? "· new issue" : "issue #" + ref.number}</span>
         </nav>
         {ref.kind === "pr" && typeof ref.number === "number"
-          ? <PrPage key={subPath} api={review} accountId={ref.accountId} repo={ref.repo} number={ref.number} onStep={order.length ? step : undefined} revision={reviewRevision}/>
+          ? <PrPage key={subPath} api={review} accountId={ref.accountId} repo={ref.repo} number={ref.number} onStep={order.length ? step : undefined} revision={reviewRevisions.byCopy["forge:" + ref.accountId] ?? 0}/>
           : <IssuePage key={subPath} api={review} accountId={ref.accountId} repo={ref.repo} number={ref.number}
             onCreated={number => open(refPath("issue",{accountId:ref.accountId,repo:ref.repo,number}))}/>}
       </>;
@@ -317,7 +318,7 @@ function Dashboard({subPath}: {subPath: string}) {
         }
       }}/>
     </> : <ProjectWorkspace copies={copies} hosts={hosts} projects={projects} locations={locations} subPath={subPath}
-      loaded={loaded} error={error} api={api} onOpen={open} inboxBadge={badge} reviewsBadge={reviewsOpen || null} historyGraph={historyGraph} reviewRevision={reviewRevision}
+      loaded={loaded} error={error} api={api} onOpen={open} inboxBadge={badge} reviewsBadge={reviewsOpen || null} historyGraph={historyGraph} reviewRevisions={reviewRevisions.byCopy}
       onOpenIssue={(accountId,repo,number) => open(refPath("issue",{accountId,repo,number}))}
       onAttach={async (hostId,root,projectId) => {
         const result = await client.call("attach",{hostId,root,projectId});

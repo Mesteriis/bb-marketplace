@@ -162,12 +162,14 @@ function sameBytes(a: Buffer, b: Buffer): boolean {
 }
 
 async function entryOf(run: RunGit, root: string, path: string, absolute: string): Promise<Entry> {
-  const raw = await run(root, ["diff", "--no-ext-diff", "--raw", "--no-abbrev", "-z", "HEAD", "--", path], { allowFailure: true });
+  // The path is taken literally (`app/[slug]` is no pattern), and the record must be this path's own.
+  const literal = ":(literal)" + path;
+  const raw = await run(root, ["diff", "--no-ext-diff", "--raw", "--no-abbrev", "-z", "HEAD", "--", literal], { allowFailure: true });
   if (!raw.ok) throw new RevertRefused("This workspace has no commit to revert to.");
-  const head = raw.stdout.split("\0")[0] ?? "";
+  const [head = "", named = ""] = raw.stdout.split("\0");
   const match = /^:(\d{6}) (\d{6}) ([0-9a-f]+) ([0-9a-f]+) [A-Z]\d*$/.exec(head);
-  if (match !== null) return { oldMode: match[1]!, newMode: match[2]!, oldBlob: match[3]! };
-  const untracked = await run(root, ["ls-files", "--others", "--exclude-standard", "-z", "--", path]);
+  if (match !== null && named === path) return { oldMode: match[1]!, newMode: match[2]!, oldBlob: match[3]! };
+  const untracked = await run(root, ["ls-files", "--others", "--exclude-standard", "-z", "--", literal]);
   if (!untracked.stdout.split("\0").includes(path)) throw new RevertRefused(`${path} has no uncommitted change now.`);
   const file = working(absolute);
   if (file === null) throw new RevertRefused(`${path} has no uncommitted change now.`);

@@ -7,7 +7,7 @@ import { probeForge } from "./src/adapters/bb/forge-probe.ts";
 import { createRunGit, defaultBase, diff as reviewDiff, GitError, listFiles, recentCommits } from "./src/adapters/bb/review-git.ts";
 import type { Target } from "./src/core/code-review/model.ts";
 import { readReviewFile, writeReviewFile } from "./src/adapters/bb/review-files.ts";
-import { WATCH_IGNORED, WatchLeases } from "./src/adapters/bb/review-watch.ts";
+import { GIT_DIR_IGNORED, WATCH_IGNORED, WatchLeases, watchedFolders } from "./src/adapters/bb/review-watch.ts";
 import { ignoreFor } from "./src/adapters/bb/review-ignore.ts";
 import { revertShown } from "./src/adapters/bb/review-revert.ts";
 import { hostSignals } from "./src/adapters/bb/host-contract.ts";
@@ -31,7 +31,16 @@ function watchLeases(context: ExperimentalHostRpcContext<typeof hostSignals>) {
   sweeper ??= setInterval(() => leases?.sweep(), 30_000);
   sweeper.unref?.();
   leases ??= new WatchLeases(
-    (root, listener) => context.experimental_watch({rootPath: root, ignoredPaths: WATCH_IGNORED, debounceMs: 400, maxWaitMs: 2000}, listener),
+    async (root, listener) => {
+      // A linked worktree's index and HEAD (and the refs) live in git directories outside it: those are watched too.
+      const run = createRunGit(10_000);
+      const dir = async (flag: string) => (await run(root, ["rev-parse", flag], {allowFailure: true})).stdout.trim() || null;
+      const common = await dir("--git-common-dir");
+      const folders = watchedFolders(root, await dir("--absolute-git-dir"), common && (isAbsolute(common) ? common : resolve(root, common)));
+      const watches = await Promise.all(folders.map(folder => context.experimental_watch({rootPath: folder, ignoredPaths: folder === root ? WATCH_IGNORED : folder === folders.at(-1) && folders.length > 2 ? [...GIT_DIR_IGNORED, "index"] : GIT_DIR_IGNORED,
+        debounceMs: 400, maxWaitMs: 2000}, listener)));
+      return {dispose: async () => { await Promise.all(watches.map(watch => watch.dispose())); }};
+    },
     root => { void context.experimental_emitSignal("reviewCopyChanged", {root}).catch(() => { /* the next change tries again */ }); });
   return leases;
 }

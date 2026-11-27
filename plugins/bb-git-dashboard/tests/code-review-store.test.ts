@@ -145,3 +145,14 @@ test("a pull request's threads are mirrored with the forge's comments, and an ag
   store.dropDraft(draftId);
   assert.deepEqual(store.drafts(session.id), []);
 });
+
+test("mirrors of forge threads that are gone are dropped with their drafts", () => {
+  const {store} = setup();
+  const session = store.session("forge:acc", "pr:o/r#7");
+  const place = {filePath: "a.ts", side: null, startLine: 0, endLine: 0, resolved: false, comments: [{author: "a", body: "x"}]};
+  const kept = store.mirrorThread(session.id, "T1", place);
+  const gone = store.mirrorThread(session.id, "T2", place);
+  assert.equal(store.dropMirrorsExcept(session.id, ["T1"]), 1);
+  assert.deepEqual([store.thread(kept) !== null, store.thread(gone)], [true, null]);
+  assert.deepEqual(store.summaries().map(row => row.copyId), []);
+});

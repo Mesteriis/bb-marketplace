@@ -323,7 +323,7 @@ export class ReviewStore {
   /** Every session that has threads, with its open and total counts, the latest change first (the Reviews page). */
   summaries(limit = 500) {
     return (this.db.prepare(`SELECT s.id, s.copy_id, s.target_key, sum(t.status = 'open') AS open, count(t.id) AS total, max(t.updated_at) AS updated_at
-      FROM review_sessions s JOIN review_threads t ON t.session_id = s.id GROUP BY s.id ORDER BY updated_at DESC LIMIT ?`).all(limit) as
+      FROM review_sessions s JOIN review_threads t ON t.session_id = s.id WHERE s.copy_id NOT LIKE 'forge:%' GROUP BY s.id ORDER BY updated_at DESC LIMIT ?`).all(limit) as
       {id: string; copy_id: string; target_key: string; open: number | null; total: number; updated_at: number}[])
       .map(row => ({sessionId: row.id, copyId: row.copy_id, targetKey: row.target_key, open: Number(row.open ?? 0), total: Number(row.total), updatedAt: Number(row.updated_at)}));
   }
@@ -384,6 +384,16 @@ export class ReviewStore {
         VALUES (?, ?, 'user', ?, ?, ?)`).run(newId(), id, comment.author, comment.body, index - thread.comments.length));
       return id;
     })();
+  }
+
+  /** Drops the mirrors of forge threads the forge no longer has, with their drafts; returns how many went. */
+  dropMirrorsExcept(sessionId: string, externalIds: readonly string[]): number {
+    const keep = new Set(externalIds);
+    const gone = (this.db.prepare("SELECT id, external_id FROM review_threads WHERE session_id = ? AND external_id IS NOT NULL").all(sessionId) as
+      {id: string; external_id: string}[]).filter(row => !keep.has(row.external_id));
+    const drop = this.db.prepare("DELETE FROM review_threads WHERE id = ?");
+    this.db.transaction(() => { for (const row of gone) drop.run(row.id); })();
+    return gone.length;
   }
 
   /** The agents' unposted answers on a session's mirrored threads, oldest first. */

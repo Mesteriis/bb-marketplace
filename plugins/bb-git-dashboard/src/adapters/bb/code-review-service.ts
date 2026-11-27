@@ -179,6 +179,8 @@ export function codeReviewService(deps: CodeReviewDeps) {
           startLine: line ? thread.startLine ?? line : 0, endLine: line, resolved: thread.isResolved,
           comments: thread.comments.map(comment => ({author: comment.author, body: comment.body.slice(0, BODY_MAX_CHARS)}))});
       }
+      // A thread the forge no longer has takes its mirror and drafts with it: nobody answers it any more.
+      store.dropMirrorsExcept(sessionId, threads.map(thread => thread.id));
       return {sessionId, ids};
     },
     /** Records that mirrored threads went to an agent's thread, so it may answer them; undone when the message fails. */
