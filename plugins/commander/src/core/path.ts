@@ -1,3 +1,5 @@
+/// <reference lib="es2024.string" />
+
 import { z } from "zod";
 import { CommanderError } from "./errors.ts";
 
@@ -5,19 +7,22 @@ function isValidSegment(name: string): boolean {
   return !name.includes("/") && !name.includes("\0") && name !== "." && name !== "..";
 }
 
-function isRawName(base64: string): boolean {
-  const decoder = new TextDecoder("utf-8", { fatal: true });
-  let bytes: string;
-  try {
-    bytes = atob(base64);
-  } catch {
-    return false;
-  }
+export function canonicalBase64(maxLength: number) {
+  return z.string().min(1).max(maxLength, { abort: true }).refine((value) => {
+    try {
+      return btoa(atob(value)) === value;
+    } catch {
+      return false;
+    }
+  }, { abort: true });
+}
 
+function isRawName(base64: string): boolean {
+  const bytes = atob(base64);
   if (!isValidSegment(bytes)) return false;
 
   try {
-    decoder.decode(Uint8Array.from(bytes, (byte) => byte.charCodeAt(0)));
+    new TextDecoder("utf-8", { fatal: true }).decode(Uint8Array.from(bytes, (byte) => byte.charCodeAt(0)));
     return false;
   } catch {
     return true;
@@ -25,9 +30,11 @@ function isRawName(base64: string): boolean {
 }
 
 export const NameSegment = z.union([
-  z.object({ t: z.string().min(1).max(1024).refine(isValidSegment) }).strict(),
   z.object({
-    b: z.string().max(1400).regex(/^[A-Za-z0-9+/]+={0,2}$/).refine(isRawName, { abort: true }),
+    t: z.string().min(1).max(1024).refine((name) => name.isWellFormed()).refine(isValidSegment),
+  }).strict(),
+  z.object({
+    b: canonicalBase64(1400).refine(isRawName),
   }).strict(),
 ]);
 export type NameSegment = z.infer<typeof NameSegment>;
@@ -51,9 +58,17 @@ export function parsePosix(text: string): ResourcePath {
   return parsed.data;
 }
 
+const DISPLAY_ESCAPE = /[\\\u0000-\u001F\u007F-\u009F\u200E\u200F\u202A-\u202E\u2066-\u2069]/g;
+
 export function displayPath(path: ResourcePath): string {
   const segments = path.segments.map((name) => {
-    if ("t" in name) return name.t;
+    if ("t" in name) {
+      return name.t.replace(DISPLAY_ESCAPE, (char) => {
+        if (char === "\\") return "\\\\";
+        const hex = char.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0");
+        return "\\u{" + hex + "}";
+      });
+    }
     return Array.from(atob(name.b), (byte) => {
       return "\\x" + byte.charCodeAt(0).toString(16).padStart(2, "0");
     }).join("");

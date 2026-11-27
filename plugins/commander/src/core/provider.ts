@@ -11,8 +11,9 @@ export interface WriteSession {
 
   /**
    * With replace=false, fail atomically with already_exists if the target exists.
-   * With expectTarget set, require the target to still match the fingerprint.
-   * A fingerprint mismatch corresponds to the target_changed conflict reason.
+   * As part of replacement, the provider must check a non-null expectTarget
+   * against the current target. On mismatch, report changed_since_plan;
+   * callers surface this as a target_changed conflict.
    */
   commit(
     opts: { replace: boolean; expectTarget: Fingerprint | null },
@@ -26,6 +27,11 @@ export interface WriteSession {
 /** Providers report failures as CommanderError. */
 export interface FileProvider {
   readonly endpoint: Endpoint;
+  /**
+   * Advertise serverSideCopy exactly when copyWithin is implemented, and
+   * checksum exactly when sha256 is implemented. The watch, trash and
+   * permissions flags are reserved for later stages and have no stage-one methods.
+   */
   readonly capabilities: ReadonlySet<Capability>;
 
   list(
@@ -61,10 +67,15 @@ export interface FileProvider {
   /** A directory must be empty. */
   remove(path: ResourcePath, opts: { kind: EntryKind }, signal: AbortSignal): Promise<void>;
 
+  /**
+   * As part of confirmed replacement, the provider must check expectTarget:
+   * a fingerprint must still match and "absent" requires no target.
+   * On mismatch, report changed_since_plan for a target_changed conflict.
+   */
   copyWithin?(
     from: ResourcePath,
     to: ResourcePath,
-    opts: { replace: boolean },
+    opts: { replace: boolean; expectTarget?: Fingerprint | "absent" },
     signal: AbortSignal,
   ): Promise<Fingerprint>;
 

@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { EndpointId, OperationJob, OperationPlan, planDigest } from "./model.ts";
+import { EndpointId, Entry, Fingerprint, OperationJob, OperationPlan, planDigest } from "./model.ts";
 
 const plan = {
   id: "123e4567-e89b-42d3-a456-426614174000",
@@ -72,20 +72,21 @@ it("hashes the canonical JSON independently of top-level and nested key order", 
   })).toBe(digest);
 });
 
+const job = {
+  id: "223e4567-e89b-42d3-a456-426614174000",
+  plan: { ...plan, digest },
+  state: "pending",
+  progress: { itemsDone: 0, itemsTotal: 1, bytesDone: "0", bytesTotal: "0" },
+  currentItem: null,
+  pendingConflict: null,
+  awaitsOwner: false,
+  items: [{ outcome: "pending", error: null }],
+  error: null,
+  createdAt: "2026-11-27T00:00:00.000Z",
+  updatedAt: "2026-11-27T00:00:00.000Z",
+} satisfies OperationJob;
+
 it("validates a pending job and uses decimal strings for its progress", () => {
-  const job = {
-    id: "223e4567-e89b-42d3-a456-426614174000",
-    plan: { ...plan, digest },
-    state: "pending",
-    progress: { itemsDone: 0, itemsTotal: 1, bytesDone: "0", bytesTotal: "0" },
-    currentItem: null,
-    pendingConflict: null,
-    awaitsOwner: false,
-    items: [{ outcome: "pending", error: null }],
-    error: null,
-    createdAt: "2026-11-27T00:00:00.000Z",
-    updatedAt: "2026-11-27T00:00:00.000Z",
-  };
   expect(OperationJob.parse(job)).toEqual(job);
   expect(OperationJob.safeParse({
     ...job,
@@ -96,4 +97,78 @@ it("validates a pending job and uses decimal strings for its progress", () => {
 it("excludes the digest when rehashing a complete plan", async () => {
   const signedPlan = OperationPlan.parse({ ...plan, digest });
   expect(await planDigest(signedPlan)).toBe(digest);
+});
+
+it("rejects an endpoint UUID made entirely of hyphens", () => {
+  expect(EndpointId.safeParse("sftp:------------------------------------").success).toBe(false);
+});
+
+const entry = {
+  name: { t: "link" },
+  kind: "symlink",
+  size: "0",
+  mtimeNs: "0",
+  mtimePrecision: "ns",
+  mode: null,
+  linkTarget: null,
+  hidden: false,
+};
+
+it.each(["-0", "007", "-007"])("rejects noncanonical mtimeNs %j", (mtimeNs) => {
+  expect(Entry.safeParse({ ...entry, mtimeNs }).success).toBe(false);
+  expect(Fingerprint.safeParse({ size: "0", mtimeNs }).success).toBe(false);
+});
+
+it("accepts zero and negative timestamps in canonical form", () => {
+  expect(Entry.parse(entry).mtimeNs).toBe("0");
+  expect(Fingerprint.parse({ size: "0", mtimeNs: "-1" }).mtimeNs).toBe("-1");
+});
+
+it("preserves relative link targets as text or raw bytes", () => {
+  expect(Entry.parse({ ...entry, linkTarget: { t: "../target" } }).linkTarget)
+    .toEqual({ t: "../target" });
+  expect(Entry.parse({ ...entry, linkTarget: { b: "Li4v/w==" } }).linkTarget)
+    .toEqual({ b: "Li4v/w==" });
+  expect(Entry.safeParse({ ...entry, linkTarget: { b: "/x==" } }).success).toBe(false);
+});
+
+it("ignores extra fields when hashing the plan", async () => {
+  const annotated = { ...plan, label: "fixture annotation" };
+  expect(await planDigest(annotated)).toBe(digest);
+});
+
+const conflict = {
+  id: "323e4567-e89b-42d3-a456-426614174000",
+  jobId: "223e4567-e89b-42d3-a456-426614174000",
+  itemIndex: 0,
+  reason: "exists",
+  source: null,
+  target: null,
+} satisfies NonNullable<OperationJob["pendingConflict"]>;
+
+it.each([
+  ["job item count", { items: [] }, ["items"]],
+  ["finished item count", { progress: { ...job.progress, itemsDone: 2 } }, ["progress", "itemsDone"]],
+  ["transferred bytes", { progress: { ...job.progress, bytesDone: "9007199254740993", bytesTotal: "9007199254740992" } }, ["progress", "bytesDone"]],
+  ["owner approval", { state: "running", awaitsOwner: true }, ["awaitsOwner"]],
+  ["conflict", { pendingConflict: conflict }, ["pendingConflict"]],
+  ["current item", { currentItem: 1 }, ["currentItem"]],
+] as const)("rejects a job with invalid %s", (_name, patch, path) => {
+  const result = OperationJob.safeParse({ ...job, ...patch });
+  expect(result.error?.issues.map((issue) => issue.path)).toContainEqual(path);
+});
+
+it("accepts pending jobs waiting for owner approval", () => {
+  const pending = { ...job, awaitsOwner: true };
+  expect(OperationJob.parse(pending)).toEqual(pending);
+});
+
+it("accepts an unknown job with an unknown item outcome", () => {
+  const unknown = { ...job, state: "unknown", items: [{ outcome: "unknown", error: null }] };
+  expect(OperationJob.parse(unknown)).toEqual(unknown);
+});
+
+it("accepts a conflict for an awaiting-decision job", () => {
+  const awaiting = { ...job, state: "awaiting_decision", pendingConflict: conflict, currentItem: 0 };
+  expect(OperationJob.parse(awaiting)).toEqual(awaiting);
 });

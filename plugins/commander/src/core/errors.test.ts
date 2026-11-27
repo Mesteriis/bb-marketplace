@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { CommanderError, CommanderErrorShape, isCommanderError } from "./errors.ts";
+import { CommanderError, CommanderErrorShape, ErrorCode, isCommanderError } from "./errors.ts";
 
 it("serializes a retryable error without its stack", () => {
   const error = new CommanderError("timeout", "Request timed out", true);
@@ -28,4 +28,18 @@ it("recognizes instances without accepting arbitrary errors or wire shapes", () 
 it("bounds the message in the wire shape", () => {
   const error = new CommanderError("internal", "a".repeat(500) + "b");
   expect(CommanderErrorShape.parse(error.toShape()).message).toBe("a".repeat(500));
+});
+
+it("does not split an emoji at the wire message limit", () => {
+  const error = new CommanderError("internal", "a".repeat(499) + "😀");
+  expect(error.toShape().message).toBe("a".repeat(499));
+});
+
+it("preserves the invalid_name code for a target filesystem error", () => {
+  expect(ErrorCode.parse("invalid_name")).toBe("invalid_name");
+  expect(new CommanderError("invalid_name", "Invalid target filename").toShape()).toEqual({
+    code: "invalid_name",
+    message: "Invalid target filename",
+    retryable: false,
+  });
 });

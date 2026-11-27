@@ -24,3 +24,21 @@ it("adds sizes without losing integer precision", () => {
 it("rejects overflow beyond the wire size limit", () => {
   expect(() => addSize("99999999999999999999", "1")).toThrow(RangeError);
 });
+
+it.each(["", " 1", "0x10", "-1", "1e3", "01", "100000000000000000000"])(
+  "rejects invalid wire sizes before conversion or addition %j",
+  (size) => {
+    expect(() => toBig(size)).toThrow(RangeError);
+    expect(() => addSize("1", size)).toThrow(RangeError);
+    expect(() => addSize(size, "1")).toThrow(RangeError);
+  },
+);
+
+it("accepts a 20-digit wire size", () => {
+  expect(toBig("99999999999999999999")).toBe(99999999999999999999n);
+  expect(addSize("99999999999999999998", "1")).toBe("99999999999999999999");
+});
+
+it("rejects numeric input that bypassed wire decoding", () => {
+  expect(() => toBig(1 as unknown as Size)).toThrow(RangeError);
+});

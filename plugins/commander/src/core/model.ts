@@ -1,11 +1,11 @@
 import { z } from "zod";
 import { CommanderErrorShape } from "./errors.ts";
-import { NameSegment, ResourcePath } from "./path.ts";
-import { Size } from "./size.ts";
+import { NameSegment, ResourcePath, canonicalBase64 } from "./path.ts";
+import { Size, toBig } from "./size.ts";
 
 export const ProviderKind = z.enum(["local", "sftp"]);
 export type ProviderKind = z.infer<typeof ProviderKind>;
-export const EndpointId = z.string().regex(/^(host:[A-Za-z0-9_-]{1,64}|sftp:[0-9a-f-]{36})$/);
+export const EndpointId = z.string().regex(/^(host:[A-Za-z0-9_-]{1,64}|sftp:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/);
 export type EndpointId = z.infer<typeof EndpointId>;
 export const Endpoint = z.object({
   id: EndpointId,
@@ -25,14 +25,21 @@ export const EntryKind = z.enum(["file", "dir", "symlink", "other"]);
 export type EntryKind = z.infer<typeof EntryKind>;
 export const TimePrecision = z.enum(["ns", "us", "ms", "s", "unknown"]);
 export type TimePrecision = z.infer<typeof TimePrecision>;
+const MtimeNs = z.string().regex(/^(0|-?[1-9]\d{0,21})$/).nullable();
+
+const LinkTarget = z.union([
+  z.object({ t: z.string().max(4096).refine((target) => target.isWellFormed()) }).strict(),
+  z.object({ b: canonicalBase64(5464) }).strict(),
+]);
+
 export const Entry = z.object({
   name: NameSegment,
   kind: EntryKind,
   size: Size,
-  mtimeNs: z.string().regex(/^-?\d{1,22}$/).nullable(),
+  mtimeNs: MtimeNs,
   mtimePrecision: TimePrecision,
   mode: z.number().int().min(0).max(0o177777).nullable(),
-  linkTarget: z.string().max(4096).nullable(),   // как прочитано, для показа; не разрешается
+  linkTarget: LinkTarget.nullable(),           // Stored as read, including relative targets.
   hidden: z.boolean(),
 }).strict();
 export type Entry = z.infer<typeof Entry>;
@@ -45,7 +52,7 @@ export type Capability = z.infer<typeof Capability>;
 
 export const Fingerprint = z.object({
   size: Size,
-  mtimeNs: z.string().regex(/^-?\d{1,22}$/).nullable(),
+  mtimeNs: MtimeNs,
   sha256: z.string().regex(/^[0-9a-f]{64}$/).optional(),
 }).strict();
 export type Fingerprint = z.infer<typeof Fingerprint>;
@@ -142,12 +149,35 @@ export const OperationJob = z.object({
   error: CommanderErrorShape.nullable(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
-}).strict();
+}).strict().superRefine((job, ctx) => {
+  if (job.items.length !== job.plan.items.length) {
+    ctx.addIssue({ code: "custom", path: ["items"], message: "Expected one outcome per plan item" });
+  }
+  const { itemsDone, itemsTotal, bytesDone, bytesTotal } = job.progress;
+  if (itemsDone > itemsTotal) {
+    ctx.addIssue({ code: "custom", path: ["progress", "itemsDone"], message: "Items done exceeds total" });
+  }
+  // Zod refinements can run even when a regex check has already reported an issue.
+  if (Size.safeParse(bytesDone).success && Size.safeParse(bytesTotal).success
+      && toBig(bytesDone) > toBig(bytesTotal)) {
+    ctx.addIssue({ code: "custom", path: ["progress", "bytesDone"], message: "Bytes done exceeds total" });
+  }
+  if (job.awaitsOwner && job.state !== "pending") {
+    ctx.addIssue({ code: "custom", path: ["awaitsOwner"], message: "Owner approval requires a pending job" });
+  }
+  if (job.pendingConflict !== null && job.state !== "awaiting_decision") {
+    ctx.addIssue({ code: "custom", path: ["pendingConflict"], message: "A pending conflict requires an awaiting-decision job" });
+  }
+  if (job.currentItem !== null && job.currentItem >= job.items.length) {
+    ctx.addIssue({ code: "custom", path: ["currentItem"], message: "Current item is outside the job" });
+  }
+});
 export type OperationJob = z.infer<typeof OperationJob>;
 
+const UnsignedPlan = OperationPlan.omit({ digest: true }).strip();
+
 export async function planDigest(plan: Omit<OperationPlan, "digest">): Promise<string> {
-  const unsigned: Partial<OperationPlan> = { ...plan };
-  delete unsigned.digest;
+  const unsigned = UnsignedPlan.parse(plan);
   const canonical = JSON.stringify(unsigned, (_key, value: unknown) => {
     if (value === null || typeof value !== "object" || Array.isArray(value)) return value;
     const record = value as Record<string, unknown>;
