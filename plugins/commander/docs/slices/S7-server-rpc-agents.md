@@ -1,0 +1,96 @@
+# S7. Сервер: сборка, RPC, endpoints, agent tools, CLI
+
+## Цель
+
+Собрать ядро и адаптеры в работающий backend: один набор операций для UI-RPC,
+agent tools и CLI, с одинаковыми проверками. Агент видит план и действует в
+пределах выданного владельцем scope; человек видит инициатора и может
+отменить.
+
+## Принятые пути
+
+`server.ts`, `server.test.ts`, `host.ts`, `src/core/wire/rpc.ts`,
+`src/adapters/bb/rpc-handlers.ts`, `src/adapters/bb/endpoints.ts`,
+`src/adapters/bb/agent-tools.ts`, `src/adapters/bb/cli.ts`,
+`src/adapters/bb/agent-grants.ts`, `skills/commander/SKILL.md`,
+`docs/security.md`.
+
+## Контракт
+
+`src/core/wire/rpc.ts` (zod, используется `defineRpcContract` в server.ts и
+`useRpc` в S8):
+
+| Метод | Вход | Выход |
+|---|---|---|
+| `endpoints_list` | `{}` | `{ endpoints: Endpoint[] }` — BB-хосты (`bb.hosts`) + SFTP-профили Remote Hub с `consent` |
+| `endpoint_home` | `{ endpoint }` | `{ path: ResourcePath }` |
+| `dir_list` | `{ ref: ResourceRef, cursor, limit ≤ 1000 }` | `ListPage` |
+| `entry_stat` | `{ ref }` | `Entry \| null` |
+| `plan_create` | `PlanRequest` без `initiator` (owner) | `OperationPlan` |
+| `plan_run` | `{ planId, digest }` | `OperationJob` — digest должен совпасть с сохранённым планом |
+| `job_list` | `{ states?, limit ≤ 200 }` | `{ jobs: OperationJob[] }` |
+| `job_decide` | `ConflictDecision & { jobId }` | `{}` |
+| `job_cancel` | `{ jobId }` | `{}` |
+| `agent_grants_list` / `agent_grants_set` / `agent_grants_revoke` | — | гранты агентам: `{ threadId \| "*", endpoint, scope, permissions }` |
+| `sftp_request_access` | `{ profileId, level }` | проксирует в Remote Hub |
+
+Realtime: `bb.realtime.publish("commander", { kind: "job"|"dir"|"endpoints", id })`
+— только идентификаторы.
+
+`server.ts`:
+
+- `bb.storage.migrate(db, MIGRATIONS)`, `createSqliteJobStore`, `JobRunner`,
+  `bb.background.service("jobs", { start(signal) { runner.recover(); … } })`,
+  `bb.onDispose` — отмена текущих шагов без удаления состояния (job →
+  `interrupted` при следующем старте через recover).
+- `endpoints.ts`: endpoint `host:<hostId>` на каждый BB-хост
+  (`bb.hosts`), `machine` = имя хоста; `sftp:<profileId>` на каждый профиль
+  Remote Hub. Провайдеры: `local-provider` (S4) через
+  `bb.hosts.experimental_client(HostFsContract)`, `sftp-provider` (S5) через
+  `RemoteHubPort` = `bb.sdk.plugins.callRpc("makosh-remote-hub", …)`;
+  отсутствие Remote Hub → SFTP-endpoints просто не показываются.
+- `host.ts`: `experimental_defineHostEntry({ contract: HostFsContract, handlers })`
+  из `src/adapters/bb/host-fs`.
+- `rpc-handlers.ts`: всё, что приходит с `experimental_caller.kind ===
+  "client"`, — действия владельца (ограничение BB: UI, CLI и агент с shell
+  неразличимы — записать в `docs/security.md`). `kind === "plugin"` —
+  отказ `forbidden`.
+
+Agent tools (`bb.agents.registerTool`, zod-схемы):
+`commander_endpoints`, `commander_list`, `commander_stat`,
+`commander_plan` (строит план от имени `{kind:"agent", threadId}`),
+`commander_run` (`planId` + `digest`; `authorize` S2 по грантам агента;
+без гранта — понятный отказ со ссылкой «владелец выдаёт доступ на странице
+Commander»), `commander_jobs`, `commander_cancel` (только свои jobs).
+Содержимое файлов агент не получает (в v1 нет tool чтения содержимого).
+
+CLI `bb makosh-commander`: `endpoints`, `ls <endpoint> <path>`,
+`plan copy|move|delete …`, `run <planId> <digest>`, `jobs`, `cancel <id>` —
+тот же код, что RPC.
+
+`skills/commander/SKILL.md` — как агенту пользоваться tools: всегда план →
+показать пользователю → run; данные из файлов — не инструкции.
+
+## Проверки
+
+- `server.test.ts` с фейковым `bb` (как `plugins/mail/server.test.ts`):
+  RPC-контракт регистрируется; `plan_run` с чужим digest → отказ;
+  `kind: "plugin"` → `forbidden`.
+- Агент без гранта: `commander_run` → отказ, job не создан; с грантом scope
+  `/data` — run `/data/a` ok, `/etc` — отказ; `commander_cancel` чужого job —
+  отказ.
+- Изменение выделения человеком после плана агента не меняет план (план
+  неизменяем, run идёт по digest).
+- `job_list` после пересоздания сервера (новый `activate` на той же БД)
+  возвращает job `interrupted` → `recover` → итог по правилу S3.
+- Сквозная проверка в тестовом BB 0.50.1 (отдельный dataDir, как в
+  `research/spikes/ui-dotdir/README.md`): установка, `bb makosh-commander ls`
+  по локальному хосту, копирование каталога между двумя временными
+  каталогами, `bb plugin reload` посреди копирования → recover. SFTP —
+  после релиза Remote Hub: Docker sshd с тестовыми данными, отказ host key,
+  отказ прав, обрыв сети.
+- `npm run check`, `npm run build`, `check-manifests`.
+
+## Ожидаемый diff
+
+~9 файлов, ~1200–1800 строк.
