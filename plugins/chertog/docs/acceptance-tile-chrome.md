@@ -8,7 +8,7 @@
 
 Скрипты подготовки те же, что в [e2e-stand.md](e2e-stand.md), с двумя отличиями: `prepare.sh` копирует и собирает оба плагина (как в [acceptance-open.md](acceptance-open.md)), а потоки сеются [acceptance-tile-chrome/seed.mjs](acceptance-tile-chrome/seed.mjs). Проба [acceptance-tile-chrome/probe.mjs](acceptance-tile-chrome/probe.mjs) запускается как `node probe.mjs <url> <каталог playwright> <chromium> <каталог снимков> <ширина> <высота> <суффикс>`. Каждый прогон нужен с новым суффиксом и новым `data-dir`: раскладка хранится на сервере стенда и переживает окно, а прочитанный тред уходит из списка «Сейчас». [narrow.mjs](acceptance-tile-chrome/narrow.mjs) открывает десять тредов подряд, чтобы получить узкие тайлы. Журнал: [acceptance-tile-chrome/stand-run.txt](acceptance-tile-chrome/stand-run.txt).
 
-Снимки лежат в `$BB_THREAD_STORAGE/tile-chrome-shots/task3/` (`/Users/avm/.bb/thread-storage/thr_p7jb5h4meu/tile-chrome-shots/task3/`); предыдущие срезы в `task1/` и `task2/` рядом.
+Снимки лежат в `$BB_THREAD_STORAGE/tile-chrome-shots/task3/` (`/Users/owner/.bb/thread-storage/thr_p7jb5h4meu/tile-chrome-shots/task3/`); предыдущие срезы в `task1/` и `task2/` рядом.
 
 ## Что показал прогон
 

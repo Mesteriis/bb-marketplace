@@ -19,7 +19,7 @@
 `feat/remote-hub-sftp` (после переноса ветки на новый main — коммит `22933aad`; содержимое
 `sftp-contract.ts` то же, что в `37fdffcd`; история правок: `0bdc04d8`,
 `ea8e3bfa`, `37fdffcd`; рабочая копия
-`/Users/avm/projects/Personal/bb-main/.worktrees/remote-hub-sftp`), id плагина
+`/Users/owner/projects/Personal/bb-main/.worktrees/remote-hub-sftp`), id плагина
 `makosh-remote-hub`. Плагины не импортируют файлы друг друга (AGENTS.md), поэтому
 `src/core/wire/remote-hub-sftp.ts` — ручное zod-зеркало этого файла:
 `SFTP_LIMITS`, `sftpPathSchema`, `uint64Schema`, `sftpAttrsSchema`,

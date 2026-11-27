@@ -6,12 +6,12 @@
 
 Обозначения путей:
 
-- `DTS` = `/Users/avm/projects/Personal/bb-main/plugins/mail/node_modules/@get-bb/plugin-sdk/bundled-types/` (SDK 0.6.132: `package.json:3`).
+- `DTS` = `/Users/owner/projects/Personal/bb-main/plugins/mail/node_modules/@get-bb/plugin-sdk/bundled-types/` (SDK 0.6.132: `package.json:3`).
   `app.d.ts` = `DTS/bb-plugin-sdk-app.d.ts` (фронтенд, `@get-bb/plugin-sdk/app`); `sdk.d.ts` = `DTS/bb-plugin-sdk.d.ts` (корень: бэкенд + типы клиента);
   `host.d.ts` = `DTS/bb-plugin-sdk-host.d.ts`; `process.d.ts` = `DTS/bb-plugin-sdk-process.d.ts`.
 - `UP` = `.../plugins/commander/research/upstream/get-bb` (upstream main, commit b0ddaad7; `packages/plugin-sdk/package.json` = 0.6.205, `apps/desktop/package.json` = 0.50.1).
   Тега/коммита 0.50.1 в upstream нет (нет .git), поэтому main может опережать 0.50.1.
-- `INST` = `/Users/avm/Library/Application Support/Makosh BB Backend/runtime/node_modules/bb-app` — реально установленный BB 0.50.1
+- `INST` = `/Users/owner/Library/Application Support/Makosh BB Backend/runtime/node_modules/bb-app` — реально установленный BB 0.50.1
   (`~/.bb/bb-app-runtime.json`: version 0.50.1, surface web). Собранный бандл, читал grep-ом.
 
 Три разные версии SDK:

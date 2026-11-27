@@ -58,7 +58,7 @@ The monorepo shared dependencies needed by the Scott Sunarto packages are vendor
 | account-pool-balanced | git:https://github.com/OXI-717/bb-plugins.git@semver:account-pool-balanced/:^0.4.1 | BB managed catalog |
 | action-topbar | git:https://github.com/MateoCerquetella/bb-plugins.git@semver:action-topbar/:^0.1.5 | ./plugins/action-topbar |
 | agent-icons | git:https://github.com/ponomr/bb-plugin-agent-icons.git@semver:^0.2.0 | BB managed catalog |
-| agent-instructions | path:/Users/avm/projects/Personal/bb-smsunarto-plugins/plugins/agent-instructions | ./plugins/agent-instructions |
+| agent-instructions | path:/Users/owner/projects/Personal/bb-smsunarto-plugins/plugins/agent-instructions | ./plugins/agent-instructions |
 | agent-plugins | git:https://github.com/patleeman/bb-plugins.git@semver:agent-plugins/:^0.3.0 | BB managed catalog |
 | agent-traces | git:https://github.com/charpeni/bb-plugins.git@semver:agent-traces/:^1.0.0 | BB managed catalog |
 | ai-usage | npm:@goodit/bb-plugin-ai-usage@>=0.12.0 <1.0.0 | BB managed catalog |
@@ -75,25 +75,25 @@ The monorepo shared dependencies needed by the Scott Sunarto packages are vendor
 | desktop-browser-agent | git:https://github.com/qwadrox/bb-plugin-desktop-browser-agent.git@semver:^0.5.0 | BB managed catalog |
 | dictation-shortcuts | git:https://github.com/architawr/bb-plugin-dictation-shortcuts.git@semver:^0.2.1 | BB managed catalog |
 | diff-review | git:https://github.com/gpambrozio/bb-plugins.git@semver:diff-review/:>=0.5.1 | BB managed catalog |
-| docker | path:/Users/avm/projects/Personal/bb-plugin-docker-local | ./plugins/docker |
+| docker | path:/Users/owner/projects/Personal/bb-plugin-docker-local | ./plugins/docker |
 | dockside | git:https://github.com/MateoCerquetella/bb-plugins.git@semver:dockside/:^0.1.0 | BB managed catalog |
-| genui | path:/Users/avm/projects/Personal/bb-smsunarto-plugins/plugins/genui | ./plugins/genui |
+| genui | path:/Users/owner/projects/Personal/bb-smsunarto-plugins/plugins/genui | ./plugins/genui |
 | gh-copilot | git:https://github.com/ai-ecoverse/bb-gh-copilot.git@semver:^1.0.0 | BB managed catalog |
 | gigaam | git:https://github.com/AiXenix/bb-plugin-gigaam.git@semver:^0.1.0 | BB managed catalog |
 | gitea | git:https://github.com/Nick-Motion/bb-plugin-gitea.git@semver:^1.0.2 | BB managed catalog |
 | github-actions | git:https://github.com/pers0na2dev/bb-github-actions.git@semver:^0.1.1 | BB managed catalog |
-| gtd-sidebar | path:/Users/avm/projects/Personal/bb-smsunarto-plugins/plugins/gtd-sidebar | ./plugins/gtd-sidebar |
+| gtd-sidebar | path:/Users/owner/projects/Personal/bb-smsunarto-plugins/plugins/gtd-sidebar | ./plugins/gtd-sidebar |
 | handoff | git:https://github.com/vburojevic/bb-plugin-handoff.git@semver:>=0.7.0 | BB managed catalog |
 | hotspot | git:https://github.com/Hazihell/bb-plugin-hotspot.git@semver:^0.1.0 | BB managed catalog |
 | image-preview | git:https://github.com/Dwite/bb-plugin-image-preview.git@semver:^0.1.0 | BB managed catalog |
 | impromptu-ui | git:https://github.com/danielbachhuber/bb-plugins.git@semver:impromptu-ui/:^0.1.0 | BB managed catalog |
 | inline-review | git:https://github.com/rdanhau/bb-plugin-inline-review.git@semver:^1.0.0 | BB managed catalog |
 | kodaforge | git:https://github.com/Kodaks94/bb-plugin-kodaforge.git@>=0.4.0 <1.0.0 | ./plugins/kodaforge |
-| makosh-ai | path:/Users/avm/Library/Application Support/Makosh BB Backend/plugins/ai | ./plugins/makosh-ai |
-| makosh-mail | path:/Users/avm/projects/Personal/bb-main/.worktrees/live/plugins/mail | ./plugins/makosh-mail |
-| makosh-navigation | path:/Users/avm/projects/Personal/bb-main/.worktrees/navigation-customizer/plugins/navigation | ./plugins/makosh-navigation |
-| makosh-sidebar | path:/Users/avm/projects/Personal/bb-main/plugins/sidebar | ./plugins/makosh-sidebar |
-| makosh-taskboard | path:/Users/avm/projects/Personal/bb-main/plugins/taskboard | ./plugins/makosh-taskboard |
+| makosh-ai | path:/Users/owner/Library/Application Support/Makosh BB Backend/plugins/ai | ./plugins/makosh-ai |
+| makosh-mail | path:/Users/owner/projects/Personal/bb-main/.worktrees/live/plugins/mail | ./plugins/makosh-mail |
+| makosh-navigation | path:/Users/owner/projects/Personal/bb-main/.worktrees/navigation-customizer/plugins/navigation | ./plugins/makosh-navigation |
+| makosh-sidebar | path:/Users/owner/projects/Personal/bb-main/plugins/sidebar | ./plugins/makosh-sidebar |
+| makosh-taskboard | path:/Users/owner/projects/Personal/bb-main/plugins/taskboard | ./plugins/makosh-taskboard |
 | mcp-hub | git:https://github.com/fgbm/bb-plugin-mcp-hub.git@semver:^0.1.0 | BB managed catalog |
 | memory-explorer | git:https://github.com/d-asensio/bb-plugin-memory-explorer.git@semver:>=0.1.0 <1.0.0 | BB managed catalog |
 | next-prompt | git:https://github.com/CrazyCoder/bb-plugin-next-prompt.git@semver:>=0.4.0 | BB managed catalog |
@@ -101,17 +101,17 @@ The monorepo shared dependencies needed by the Scott Sunarto packages are vendor
 | plugin-updates | git:https://github.com/frankieshakes/bb-plugin-updates.git@semver:^0.1.1 | BB managed catalog |
 | prompt-shaper | git:https://github.com/brsbl/bb-plugins.git@semver:prompt-shaper/:^0.1.2 | BB managed catalog |
 | read-aloud | git:https://github.com/csells/bb-plugins.git@semver:read-aloud/:^0.1.1 | BB managed catalog |
-| read-aloud-local | path:/Users/avm/projects/Personal/bb-read-aloud-local | ./plugins/read-aloud-local |
-| ru | path:/Users/avm/projects/Personal/bb-plugin-ru | ./plugins/ru |
-| scott-secrets | path:/Users/avm/projects/Personal/bb-smsunarto-plugins/plugins/scott-secrets | ./plugins/scott-secrets |
+| read-aloud-local | path:/Users/owner/projects/Personal/bb-read-aloud-local | ./plugins/read-aloud-local |
+| ru | path:/Users/owner/projects/Personal/bb-plugin-ru | ./plugins/ru |
+| scott-secrets | path:/Users/owner/projects/Personal/bb-smsunarto-plugins/plugins/scott-secrets | ./plugins/scott-secrets |
 | session-history | git:https://github.com/neonick/bb-plugin-session-history.git@semver:^0.1.0 | BB managed catalog |
 | skills | git:https://github.com/gpambrozio/bb-plugins.git@semver:skills/:^0.4.0 | ./plugins/skills |
-| source-control | path:/Users/avm/projects/Personal/bb-smsunarto-plugins/plugins/source-control | ./plugins/source-control |
+| source-control | path:/Users/owner/projects/Personal/bb-smsunarto-plugins/plugins/source-control | ./plugins/source-control |
 | specs | git:https://github.com/peteabu/bb-plugin-specs.git@semver:^0.1.0 | BB managed catalog |
-| steel-browser | path:/Users/avm/projects/Personal/bb-main/plugins/steel-browser | ./plugins/steel-browser |
+| steel-browser | path:/Users/owner/projects/Personal/bb-main/plugins/steel-browser | ./plugins/steel-browser |
 | thread-images | git:https://github.com/kartollikaa/bb-plugin-thread-images.git@semver:^0.1.3 | BB managed catalog |
 | tree-sidebar | git:https://github.com/chadbailey59/bb-plugin-tree-sidebar.git@semver:^0.1.0 | BB managed catalog |
-| tree-sidebar-local | path:/Users/avm/projects/Personal/bb-tree-sidebar-local | ./plugins/tree-sidebar-local |
+| tree-sidebar-local | path:/Users/owner/projects/Personal/bb-tree-sidebar-local | ./plugins/tree-sidebar-local |
 | voice-mode | git:https://github.com/steveafrost/bb-plugin-voice-mode.git@semver:>=0.1.5 | BB managed catalog |
 | wiki | git:https://github.com/himynameisjonas/bb-plugin-wiki.git@semver:^0.1.0 | BB managed catalog |
 | worktree-ports | git:https://github.com/to-infinity-labs/bb-plugin-worktree-ports.git@semver:^0.1.0 | BB managed catalog |

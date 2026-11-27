@@ -1,9 +1,9 @@
 # Telegram в BB · вариант 1
 
-- [Выбранный макет](/Users/avm/.codex/generated_images/01a1ded4-16f6-7850-8932-2005e8f2d8a1/exec-72e6f6dc-9d3f-4c5c-911a-4537b69c2f34.png)
-- [Сравнение рядом](/Users/avm/.codex/visualizations/2026/11/15/01a1ded4-16f6-7850-8932-2005e8f2d8a1/telegram-variant1-comparison.jpg)
-- [Широкая панель](/Users/avm/.codex/visualizations/2026/11/15/01a1ded4-16f6-7850-8932-2005e8f2d8a1/telegram-variant1-desktop.jpg)
-- [Узкая панель](/Users/avm/.codex/visualizations/2026/11/15/01a1ded4-16f6-7850-8932-2005e8f2d8a1/telegram-variant1-compact.jpg)
+- [Выбранный макет](/Users/owner/.codex/generated_images/01a1ded4-16f6-7850-8932-2005e8f2d8a1/exec-72e6f6dc-9d3f-4c5c-911a-4537b69c2f34.png)
+- [Сравнение рядом](/Users/owner/.codex/visualizations/2026/11/15/01a1ded4-16f6-7850-8932-2005e8f2d8a1/telegram-variant1-comparison.jpg)
+- [Широкая панель](/Users/owner/.codex/visualizations/2026/11/15/01a1ded4-16f6-7850-8932-2005e8f2d8a1/telegram-variant1-desktop.jpg)
+- [Узкая панель](/Users/owner/.codex/visualizations/2026/11/15/01a1ded4-16f6-7850-8932-2005e8f2d8a1/telegram-variant1-compact.jpg)
 
 Снимки показывают открытое меню вложений на синтетических чатах. Размер исходного макета 1717 × 916 px. Размеры сохранённых снимков 938 × 875 px и 368 × 624 px. Узкий снимок обрезан до границы отрисованной панели. При сравнении изображения приведены к масштабу общей страницы. Геометрия проверена отдельно в CSS-пикселях при ширинах 1209 и 368, с DPR 1,125 во время замеров. Для сравнения использованы компоновка, положение меню относительно поля ввода и видимые зазоры. Пиксельное совпадение с иллюстрацией не измерялось.
 
@@ -26,15 +26,15 @@ final result: passed
 | Сообщения и детали | Правый клик открыл контекстное меню конкретной строки. Метаданные открылись в правой панели BB. |
 | Фотоальбом и файлы | Альбом из трёх фото отображается мозаикой. Иконки PDF и XLSX загрузились локально и показали разные типы. Иконки взяты из закреплённой версии Material Icon Theme. |
 
-- [Просмотр фото на desktop](/Users/avm/.codex/visualizations/2026/11/15/01a1ded4-16f6-7850-8932-2005e8f2d8a1/telegram-feed-options/carousel-desktop.jpg)
-- [Полноэкранная карусель на мобильной ширине](/Users/avm/.codex/visualizations/2026/11/15/01a1ded4-16f6-7850-8932-2005e8f2d8a1/telegram-feed-options/carousel-mobile.jpg)
-- [Мозаика и карточки файлов](/Users/avm/.codex/visualizations/2026/11/15/01a1ded4-16f6-7850-8932-2005e8f2d8a1/telegram-feed-options/file-cards.jpg)
+- [Просмотр фото на desktop](/Users/owner/.codex/visualizations/2026/11/15/01a1ded4-16f6-7850-8932-2005e8f2d8a1/telegram-feed-options/carousel-desktop.jpg)
+- [Полноэкранная карусель на мобильной ширине](/Users/owner/.codex/visualizations/2026/11/15/01a1ded4-16f6-7850-8932-2005e8f2d8a1/telegram-feed-options/carousel-mobile.jpg)
+- [Мозаика и карточки файлов](/Users/owner/.codex/visualizations/2026/11/15/01a1ded4-16f6-7850-8932-2005e8f2d8a1/telegram-feed-options/file-cards.jpg)
 
 В основном BB проверены вход с сохранённой сессией, меню сообщения и открытие метаданных в «Избранном». На финальном `npm run check` прошло 1766 тестов, 4 пропущены. Сборка и `git diff --check` завершились успешно.
 
 ## Mini App и доступ агента
 
-[Утверждённый макет](/Users/avm/.codex/generated_images/01a1ded4-16f6-7850-8932-2005e8f2d8a1/exec-892c4a80-e0f6-4a62-9fee-9b2c837add8e.png).
+[Утверждённый макет](/Users/owner/.codex/generated_images/01a1ded4-16f6-7850-8932-2005e8f2d8a1/exec-892c4a80-e0f6-4a62-9fee-9b2c837add8e.png).
 
 Во встроенном браузере сопоставили макет и открытое окно с журналом на одном экране. Сравнение охватывает оболочку BB. Внутри отрисован сторонний демонстрационный экран, поэтому его содержимое и оформление отличаются от Atlas на макете. Шапка, пропорции правой панели, статус доступа и строки журнала сверены отдельно. После первого сравнения убрали фон у иконок, перенесли перезагрузку в меню и добавили оформленную строку режима доступа.
 
@@ -44,7 +44,7 @@ final result: passed
 
 ## Выпадающий список области поиска · вариант 2
 
-[Выбранный макет](/Users/avm/.codex/generated_images/01a1ded4-16f6-7850-8932-2005e8f2d8a1/exec-493e58e1-91fd-4378-a153-91ca3c437a55.png)
+[Выбранный макет](/Users/owner/.codex/generated_images/01a1ded4-16f6-7850-8932-2005e8f2d8a1/exec-493e58e1-91fd-4378-a153-91ca3c437a55.png)
 
 Встроенный браузер показал список чатов при пустом поле и выбор области после ввода. Открытое меню сверено с макетом по положению внутри поля, привязке к правой границе и галочке выбранного пункта. В панели основного BB шириной 236 CSS-пикселей меню начиналось на 2 пикселя ниже поля и выравнивалось по внутренней кромке его правой границы. Текст запроса и кнопка области помещались рядом. На синтетической панели проверены раскрытие «Ещё…», выбор сообщений и возврат к чатам после очистки.
 
@@ -52,7 +52,7 @@ final result: passed
 
 ## Общие медиа · вариант 2
 
-[Выбранный макет](/Users/avm/.codex/generated_images/01a1ded4-16f6-7850-8932-2005e8f2d8a1/exec-bee79276-6cb5-4510-8256-19520790bc1d.png)
+[Выбранный макет](/Users/owner/.codex/generated_images/01a1ded4-16f6-7850-8932-2005e8f2d8a1/exec-bee79276-6cb5-4510-8256-19520790bc1d.png)
 
 Во встроенном браузере сверена медиатека на синтетических материалах. При ширине рабочей области 900 CSS-пикселей показаны четыре колонки, квадратные превью и два заголовка месяцев. Список чатов остаётся слева. При ширине 320 пикселей показаны три колонки, прокручивается только полоса категорий. Проверены вход из деталей чата, фильтр по дате, выбор плитки и возврат в переписку. Выбранная категория выделена нижней границей, счётчик помещается в одну строку.
 
@@ -60,10 +60,10 @@ final result: passed
 
 ## Просмотр общих медиа и медиа из сообщения · вариант 3
 
-- [Выбранный макет](/Users/avm/.codex/generated_images/01a1ded4-16f6-7850-8932-2005e8f2d8a1/exec-72dfe49a-ca87-4627-a46d-9f6493bef2c6.png)
-- [Сравнение макета и реализации](/Users/avm/.codex/visualizations/2026/11/15/01a1ded4-16f6-7850-8932-2005e8f2d8a1/telegram-viewer-variant3-comparison.jpg)
-- [Результат распознавания](/Users/avm/.codex/visualizations/2026/11/15/01a1ded4-16f6-7850-8932-2005e8f2d8a1/telegram-viewer-ocr-result.jpg)
-- [Компактный экран](/Users/avm/.codex/visualizations/2026/11/15/01a1ded4-16f6-7850-8932-2005e8f2d8a1/telegram-viewer-compact.jpg)
+- [Выбранный макет](/Users/owner/.codex/generated_images/01a1ded4-16f6-7850-8932-2005e8f2d8a1/exec-72dfe49a-ca87-4627-a46d-9f6493bef2c6.png)
+- [Сравнение макета и реализации](/Users/owner/.codex/visualizations/2026/11/15/01a1ded4-16f6-7850-8932-2005e8f2d8a1/telegram-viewer-variant3-comparison.jpg)
+- [Результат распознавания](/Users/owner/.codex/visualizations/2026/11/15/01a1ded4-16f6-7850-8932-2005e8f2d8a1/telegram-viewer-ocr-result.jpg)
+- [Компактный экран](/Users/owner/.codex/visualizations/2026/11/15/01a1ded4-16f6-7850-8932-2005e8f2d8a1/telegram-viewer-compact.jpg)
 
 Сравнивал окно фото с открытыми деталями на синтетическом чате. Исходный макет 1487 × 1058 px. Desktop измерен в viewport 950 × 675 CSS px, DPR 1,125. IAB записал активную область примерно 633 × 449 px внутри JPEG 950 × 675 px. В сравнении активная область и макет нормализованы к 950 × 674 px. Компактные замеры выполнены при 378 × 751 CSS px. Кадр также обрезан до области, отрисованной IAB.
 
@@ -75,11 +75,11 @@ final result: passed
 
 ## Киноинтерфейс видео и наложение в просмотрщике · вариант 1
 
-- [Макет с верхним наложением](/Users/avm/.codex/generated_images/01a1ded4-16f6-7850-8932-2005e8f2d8a1/exec-a502640d-3f08-4b7b-9359-f5beaf3b6db6.png)
-- [Сравнение макета и реализации](/Users/avm/.codex/visualizations/2026/11/15/01a1ded4-16f6-7850-8932-2005e8f2d8a1/telegram-cinema-comparison.jpg)
-- [Видео на широком экране](/Users/avm/.codex/visualizations/2026/11/15/01a1ded4-16f6-7850-8932-2005e8f2d8a1/telegram-cinema-desktop.jpg)
-- [Вертикальное видео на узком экране](/Users/avm/.codex/visualizations/2026/11/15/01a1ded4-16f6-7850-8932-2005e8f2d8a1/telegram-cinema-portrait.jpg)
-- [Верхняя панель поверх фото](/Users/avm/.codex/visualizations/2026/11/15/01a1ded4-16f6-7850-8932-2005e8f2d8a1/telegram-cinema-photo-overlay.jpg)
+- [Макет с верхним наложением](/Users/owner/.codex/generated_images/01a1ded4-16f6-7850-8932-2005e8f2d8a1/exec-a502640d-3f08-4b7b-9359-f5beaf3b6db6.png)
+- [Сравнение макета и реализации](/Users/owner/.codex/visualizations/2026/11/15/01a1ded4-16f6-7850-8932-2005e8f2d8a1/telegram-cinema-comparison.jpg)
+- [Видео на широком экране](/Users/owner/.codex/visualizations/2026/11/15/01a1ded4-16f6-7850-8932-2005e8f2d8a1/telegram-cinema-desktop.jpg)
+- [Вертикальное видео на узком экране](/Users/owner/.codex/visualizations/2026/11/15/01a1ded4-16f6-7850-8932-2005e8f2d8a1/telegram-cinema-portrait.jpg)
+- [Верхняя панель поверх фото](/Users/owner/.codex/visualizations/2026/11/15/01a1ded4-16f6-7850-8932-2005e8f2d8a1/telegram-cinema-photo-overlay.jpg)
 
 Сравнивал широкое окно воспроизведения с открытой нижней панелью. Макет 1487 × 1058 px, отрисованный широкий снимок 1707 × 960 px. В сравнении оба кадра приведены к ячейкам 1024 × 738 px с сохранением пропорций. Источник кадра в проверке — тестовый ролик. Для узкого режима измерены 376 × 753 CSS px, DPR 0,75. Снимок IAB обрезан по реально отрисованной области.
 
@@ -91,11 +91,11 @@ final result: passed
 
 ## Файлы и отправка в ИИ · вариант 2
 
-- [Макет инспектора](/Users/avm/.codex/generated_images/01a1ded4-16f6-7850-8932-2005e8f2d8a1/exec-108b7324-cf23-4c5c-83ea-b21f8d885358.png)
-- [Сравнение](/Users/avm/.codex/visualizations/2026/11/15/01a1ded4-16f6-7850-8932-2005e8f2d8a1/telegram-file-inspector-comparison.jpg)
-- [Панель файла](/Users/avm/.codex/visualizations/2026/11/15/01a1ded4-16f6-7850-8932-2005e8f2d8a1/telegram-file-inspector-desktop.jpg)
-- [Выбор получателей](/Users/avm/.codex/visualizations/2026/11/15/01a1ded4-16f6-7850-8932-2005e8f2d8a1/telegram-files-send-ai.jpg)
-- [Компактный режим](/Users/avm/.codex/visualizations/2026/11/15/01a1ded4-16f6-7850-8932-2005e8f2d8a1/telegram-file-inspector-compact.jpg)
+- [Макет инспектора](/Users/owner/.codex/generated_images/01a1ded4-16f6-7850-8932-2005e8f2d8a1/exec-108b7324-cf23-4c5c-83ea-b21f8d885358.png)
+- [Сравнение](/Users/owner/.codex/visualizations/2026/11/15/01a1ded4-16f6-7850-8932-2005e8f2d8a1/telegram-file-inspector-comparison.jpg)
+- [Панель файла](/Users/owner/.codex/visualizations/2026/11/15/01a1ded4-16f6-7850-8932-2005e8f2d8a1/telegram-file-inspector-desktop.jpg)
+- [Выбор получателей](/Users/owner/.codex/visualizations/2026/11/15/01a1ded4-16f6-7850-8932-2005e8f2d8a1/telegram-files-send-ai.jpg)
+- [Компактный режим](/Users/owner/.codex/visualizations/2026/11/15/01a1ded4-16f6-7850-8932-2005e8f2d8a1/telegram-file-inspector-compact.jpg)
 
 Сравнение выполнено с открытым Markdown-файлом. Размер макета 1487 × 1058 px, широкого снимка 1707 × 960 px. Изображения размещены рядом в ячейках 960 × 700 px с сохранением пропорций. Компактный viewport 376 × 753 CSS px. Содержимое файлов и названия в проверке синтетические.
 
@@ -123,7 +123,7 @@ final result: passed
 
 ## Общие медиа → Аудио · вариант 2
 
-[Макет и результат рядом](/Users/avm/.codex/visualizations/2026/11/15/01a1ded4-16f6-7850-8932-2005e8f2d8a1/telegram-audio-comparison.jpg) · [Список](/Users/avm/.codex/visualizations/2026/11/15/01a1ded4-16f6-7850-8932-2005e8f2d8a1/telegram-audio-list.jpg) · [Компактное окно](/Users/avm/.codex/visualizations/2026/11/15/01a1ded4-16f6-7850-8932-2005e8f2d8a1/telegram-audio-narrow.jpg)
+[Макет и результат рядом](/Users/owner/.codex/visualizations/2026/11/15/01a1ded4-16f6-7850-8932-2005e8f2d8a1/telegram-audio-comparison.jpg) · [Список](/Users/owner/.codex/visualizations/2026/11/15/01a1ded4-16f6-7850-8932-2005e8f2d8a1/telegram-audio-list.jpg) · [Компактное окно](/Users/owner/.codex/visualizations/2026/11/15/01a1ded4-16f6-7850-8932-2005e8f2d8a1/telegram-audio-narrow.jpg)
 
 Сравнение открытого плеера выполнено на широком тёмном экране. Макет 1672 × 941 px, браузерный снимок 1707 × 960 px. Для сравнения оба изображения приведены к ячейкам 960 × 630 px с сохранением пропорций. Браузер показывает синтетическую запись и изолированную медиатеку. Форма волны и метаданные отражают тестовую запись.
 
@@ -137,13 +137,13 @@ final result: passed
 
 На пользовательских снимках свёрнутая панель занимала несколько строк, а в окне длинной записи пустовало место под волну. На синтетическом потоке 58:25 окно с линейной шкалой заняло 186 CSS px по высоте, мини-плеер занял 45 CSS px. При фактической ширине 520 CSS px горизонтального переполнения нет. Escape сворачивает окно и сохраняет позицию и воспроизведение. Проверены перемотка на 10 секунд в модальном окне, переход стрелкой на шкале мини-плеера, повторное разворачивание и наличие очереди в деталях.
 
-[Длинная запись](/Users/avm/.codex/visualizations/2026/11/15/01a1ded4-16f6-7850-8932-2005e8f2d8a1/telegram-audio-long-compact.jpg) · [Мини-плеер](/Users/avm/.codex/visualizations/2026/11/15/01a1ded4-16f6-7850-8932-2005e8f2d8a1/telegram-audio-mini.jpg)
+[Длинная запись](/Users/owner/.codex/visualizations/2026/11/15/01a1ded4-16f6-7850-8932-2005e8f2d8a1/telegram-audio-long-compact.jpg) · [Мини-плеер](/Users/owner/.codex/visualizations/2026/11/15/01a1ded4-16f6-7850-8932-2005e8f2d8a1/telegram-audio-mini.jpg)
 
 final result: passed
 
 ## Голосовые и видеосообщения · вариант 3
 
-[Макет и результат рядом](/Users/avm/.codex/visualizations/2026/11/15/01a1ded4-16f6-7850-8932-2005e8f2d8a1/telegram-speech-comparison.jpg) · [Узкая раскладка](/Users/avm/.codex/visualizations/2026/11/15/01a1ded4-16f6-7850-8932-2005e8f2d8a1/telegram-speech-reader-narrow.jpg)
+[Макет и результат рядом](/Users/owner/.codex/visualizations/2026/11/15/01a1ded4-16f6-7850-8932-2005e8f2d8a1/telegram-speech-comparison.jpg) · [Узкая раскладка](/Users/owner/.codex/visualizations/2026/11/15/01a1ded4-16f6-7850-8932-2005e8f2d8a1/telegram-speech-reader-narrow.jpg)
 
 Сравнение с выбранным макетом выполнено на тёмной теме с открытой расшифровкой. Снимки сведены в ячейки 960 × 700 px. На снимке реализации показана медиатека в изолированной тестовой оболочке с синтетическими именами и записями. Проверены ритм списка, разбиение по датам, типографика, цвет выделения, контраст иконок, читаемость расшифровки и круглая форма видеосообщения. В первом узком снимке панель оставалась сбоку. После правки на фактической ширине 520 CSS px расшифровка открывается под списком без горизонтального переполнения.
 
@@ -153,7 +153,7 @@ final result: passed
 
 ## Уведомления Telegram · вариант 2
 
-[Сравнение с макетом](/Users/avm/.codex/visualizations/2026/11/15/01a1ded4-16f6-7850-8932-2005e8f2d8a1/telegram-notification-comparison.jpg) · [Раскрытая стопка](/Users/avm/.codex/visualizations/2026/11/15/01a1ded4-16f6-7850-8932-2005e8f2d8a1/telegram-notification-expanded.jpg)
+[Сравнение с макетом](/Users/owner/.codex/visualizations/2026/11/15/01a1ded4-16f6-7850-8932-2005e8f2d8a1/telegram-notification-comparison.jpg) · [Раскрытая стопка](/Users/owner/.codex/visualizations/2026/11/15/01a1ded4-16f6-7850-8932-2005e8f2d8a1/telegram-notification-expanded.jpg)
 
 Сравнены цвет, типографика и четыре элемента карточки: аватар слева, заголовок с контекстом, текст и действие «Прочитано». Для сравнения выбранный макет и область верхнего левого угла браузерного снимка приведены к ячейкам 720 × 360 px. На тестовой карточке показаны инициалы, фотография загружается при наличии аватара чата. Кнопка раскрытия стопки добавлена по запросу пользователя.
 
@@ -163,7 +163,7 @@ final result: passed
 
 ## Настройки Telegram · вариант 1
 
-[Сравнение с макетом](/Users/avm/.codex/visualizations/2026/11/15/01a1ded4-16f6-7850-8932-2005e8f2d8a1/telegram-settings-comparison.jpg) · [Рабочий BB](/Users/avm/.codex/visualizations/2026/11/15/01a1ded4-16f6-7850-8932-2005e8f2d8a1/telegram-settings-bb.jpg)
+[Сравнение с макетом](/Users/owner/.codex/visualizations/2026/11/15/01a1ded4-16f6-7850-8932-2005e8f2d8a1/telegram-settings-comparison.jpg) · [Рабочий BB](/Users/owner/.codex/visualizations/2026/11/15/01a1ded4-16f6-7850-8932-2005e8f2d8a1/telegram-settings-bb.jpg)
 
 Сравнён раздел «Уведомления» на тёмной теме. Область из макета 943 × 672 px сопоставлена с областью реализации 942 × 672 px при размере CSS 943 × 672. В первом снимке лишние поля занимали основное место. После правки текст уведомлений, звук и исключения стали отдельными строками, редкие параметры собраны под раскрытием. Иерархия, цвет выбранного раздела, шрифт BB, отступы, скругления и штатные иконки проверены на сравнении. Экран содержит настройки без изображений. Состояние разрешения и название звука на тестовом снимке заданы синтетическими данными. В рабочем BB показано действие запроса разрешения.
 

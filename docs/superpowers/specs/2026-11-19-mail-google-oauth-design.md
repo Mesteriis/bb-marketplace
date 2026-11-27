@@ -196,7 +196,7 @@ done.
   production before relying on the feature. The code is the same either
   way. With the client shipped to every install, the 100-user cap is shared
   by all installs.
-- **Workspace account** (`itquick.ai`): its administrator may block
+- **Workspace account** (`office.example`): its administrator may block
   third-party clients. Then that account stays on an app password; nothing
   in the code depends on it.
 

@@ -295,7 +295,7 @@ snapshot и preview; не вызывает SDK или RPC.
   после повторного чтения файлов. Это repo metadata, не install в работающий BB.
   Записать любое vendored BB/UI происхождение в notices в той же правке.
 - [ ] После осмотра реальной структуры вызвать
-  `/Users/avm/.local/bin/zed-init --update /Users/avm/projects/Personal/bb-main`
+  `/Users/owner/.local/bin/zed-init --update /Users/owner/projects/Personal/bb-main`
   (при исполнении из worktree — его фактический абсолютный root). Проверить diff
   и cwd задач, сохранить ручные записи; не запускать Zed/другие приложения.
 - [ ] Run из package `npm run check`, `npm run build`; из root
