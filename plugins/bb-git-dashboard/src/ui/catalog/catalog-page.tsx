@@ -37,6 +37,8 @@ export function CatalogPage({api, hosts}: {api: CatalogApi; hosts: Host[]}) {
   const [asked, setAsked] = useState<Bulk | null>(null);
   const [pulls, setPulls] = useState<PullsResult[] | null>(null);
   const [cloning, setCloning] = useState<RemoteRow | null>(null);
+  // One bulk action at a time: two fetches of the same project would meet on its index lock.
+  const [busy, setBusy] = useState(false);
   const load = useCallback(async (refresh: boolean) => {
     if (!hostId) return;
     setPending(true); setError("");
@@ -53,9 +55,13 @@ export function CatalogPage({api, hosts}: {api: CatalogApi; hosts: Host[]}) {
   const shown = tab === "local" ? local.map(row => row.path) : remote.map(row => row.key);
   const chosen = shown.filter(key => picked.has(key));
   const run = async (action: Bulk) => {
-    const answers = await api.bulk(hostId, chosen, action);
-    setResults(previous => { const next = new Map(previous); for (const answer of answers) next.set(answer.root, answer); return next; });
+    setBusy(true);
+    try {
+      const answers = await api.bulk(hostId, chosen, action);
+      setResults(previous => { const next = new Map(previous); for (const answer of answers) next.set(answer.root, answer); return next; });
+    } finally { setBusy(false); }
   };
+  const tooMany = chosen.length > 50 ? "At most 50 projects at a time" : undefined;
   const failedSources = view?.sources.filter(source => !source.ok) ?? [];
 
   return <section className="git-catalog" aria-label="Catalog">
@@ -81,9 +87,10 @@ export function CatalogPage({api, hosts}: {api: CatalogApi; hosts: Host[]}) {
           onChange={event => setPicked(previous => { const next = new Set(previous); for (const key of shown) if (event.target.checked) next.add(key); else next.delete(key); return next; })}/> All shown</label>
         <span className="git-muted">{chosen.length} chosen</span>
         {tab === "local" ? <>
-          <button type="button" disabled={!chosen.length} onClick={() => void run("status").catch(failure => setError(message(failure)))}>Status</button>
-          <button type="button" disabled={!chosen.length} onClick={() => setAsked("fetch")}>Fetch</button>
-          <button type="button" disabled={!chosen.length} onClick={() => setAsked("pull")}>Pull</button>
+          <button type="button" disabled={!chosen.length || !!tooMany || busy} title={tooMany} onClick={() => void run("status").catch(failure => setError(message(failure)))}>Status</button>
+          <button type="button" disabled={!chosen.length || !!tooMany || busy} title={tooMany} onClick={() => setAsked("fetch")}>Fetch</button>
+          <button type="button" disabled={!chosen.length || !!tooMany || busy} title={tooMany} onClick={() => setAsked("pull")}>Pull</button>
+          {busy && <span className="git-muted" role="status">Working…</span>}
         </> : <button type="button" disabled={!chosen.length || chosen.length > 20} title={chosen.length > 20 ? "At most 20 repositories at a time" : undefined}
           onClick={() => {
             const repos = remote.filter(row => picked.has(row.key)).map(row => ({accountId: row.repo.accountId, repoId: row.repo.id}));
@@ -126,7 +133,8 @@ export function CatalogPage({api, hosts}: {api: CatalogApi; hosts: Host[]}) {
       </section>}
     </>}
     {asked && view && <ConfirmDialog title={(asked === "fetch" ? "Fetch " : "Pull ") + chosen.length + (chosen.length === 1 ? " project" : " projects")}
-      lines={[asked === "fetch" ? "Fetch each project's origin: its branches, no tags." : "Fetch each project's origin and fast-forward its branch where it is clean and behind its upstream.",
+      lines={[asked === "fetch" ? "Fetch each project's origin: its branches, no tags; branches deleted there leave their origin/… copies." :
+        "Fetch each project's origin (branches deleted there leave their origin/… copies), then fast-forward the branch where it follows origin, is clean and is behind.",
         "SSH remotes use your SSH keys; HTTPS remotes the connected account of their server.", ...chosen.slice(0, 15).map(path => relative(view.root, path)),
         ...(chosen.length > 15 ? ["and " + (chosen.length - 15) + " more"] : [])]}
       onConfirm={() => run(asked)} onClose={() => setAsked(null)}/>}

@@ -69,7 +69,8 @@ export async function catalogGit(projectsRoot: string, root: string, action: Cat
   await gitRunner(project, signal, transport!)(["fetch", "--no-tags", "--no-recurse-submodules", "--prune", "origin", "+refs/heads/*:refs/remotes/origin/*"], {timeout: 2 * 60_000});
   if (action === "pull") {
     const state = await localGit(project, {kind: "status"}, signal);
-    if (state.upstream && !state.files?.length && (state.behind ?? 0) > 0) return localGit(project, {kind: "fastForward"}, signal);
+    // Only a branch that follows origin was brought up to date by this fetch: one following another remote is left as it is.
+    if (state.upstream?.startsWith("origin/") && !state.files?.length && (state.behind ?? 0) > 0) return localGit(project, {kind: "fastForward"}, signal);
     return state;
   }
   return localGit(project, {kind: "status"}, signal);

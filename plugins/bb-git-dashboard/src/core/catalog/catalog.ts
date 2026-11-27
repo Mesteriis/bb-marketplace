@@ -16,17 +16,17 @@ export function remoteKey(url: string): string | null {
   return (remote.host + "/" + remote.path).toLowerCase();
 }
 
-/** Every `url` inside a `[remote "…"]` section of a git config file. */
+/** Every `url` inside a `[remote "…"]` section of a git config file, origin's first: fetch and pull use origin. */
 export function parseConfigRemotes(config: string): string[] {
-  const urls: string[] = [];
-  let inRemote = false;
+  const urls: {name: string; url: string}[] = [];
+  let remote: string | null = null;
   for (const raw of config.split(/\r?\n/)) {
     const line = raw.trim();
-    if (line.startsWith("[")) { inRemote = /^\[remote\s+"[^"]*"\]$/.test(line); continue; }
-    const match = inRemote ? /^url\s*=\s*(.+)$/.exec(line) : null;
-    if (match) urls.push(match[1]!.trim());
+    if (line.startsWith("[")) { remote = /^\[remote\s+"([^"]*)"\]$/.exec(line)?.[1] ?? null; continue; }
+    const match = remote !== null ? /^url\s*=\s*(.+)$/.exec(line) : null;
+    if (match) urls.push({name: remote!, url: match[1]!.trim()});
   }
-  return urls;
+  return [...urls.filter(entry => entry.name === "origin"), ...urls.filter(entry => entry.name !== "origin")].map(entry => entry.url);
 }
 
 export type LocalProject = {path: string; name: string; remotes: string[]};
@@ -68,6 +68,8 @@ export function keepFailedSources(previous: readonly CatalogSource[], next: read
   });
 }
 
+const segment = /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}$/;
+
 /** The folders of the projects folder that hold projects (`OSS`, `Work/team`), the folder itself as "", sorted. */
 export function categoriesOf(root: string, projects: readonly string[]): string[] {
   const base = root.replace(/\/+$/, "");
@@ -76,12 +78,12 @@ export function categoriesOf(root: string, projects: readonly string[]): string[
     if (!path.startsWith(base + "/")) continue;
     const parts = path.slice(base.length + 1).split("/");
     parts.pop();
-    if (parts.length) folders.add(parts.join("/"));
+    // Only folders a clone can go into (see clonePath): a space or other sign in a name leaves the folder out.
+    if (parts.length && parts.every(part => segment.test(part))) folders.add(parts.join("/"));
   }
   return [...folders].sort((left, right) => left.localeCompare(right));
 }
 
-const segment = /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}$/;
 /** Where a clone goes: a category folder of the projects folder and a new folder name; null when either would leave it. */
 export function clonePath(root: string, category: string, name: string): string | null {
   const parts = category === "" ? [] : category.split("/");

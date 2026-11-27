@@ -37,7 +37,7 @@ export function Worktree({copy, host, run, refresh, loadOperations, attach, pin}
   const [sequence, setSequence] = useState<Sequence | null>(null);
   const [resolving, setResolving] = useState<string | null>(null);
   // A commit taken in by a merge or rebase that arrived while it was being confirmed.
-  const [raced, setRaced] = useState<string | null>(null);
+  const [raced, setRaced] = useState<{sha: string; made: string | null} | null>(null);
 
   const report = useCallback((cause: unknown) => setError(cause instanceof Error ? cause.message : "Request failed"), []);
   useEffect(() => {
@@ -134,7 +134,7 @@ export function Worktree({copy, host, run, refresh, loadOperations, attach, pin}
     </nav>
     {error && <p role="alert" className="git-error">{error}</p>}
     {pending && <p role="status">Git operation in progress…</p>}
-    {state && raced && <RaceNotice raced={raced} head={state.head ?? null} branch={state.branch ?? null} sequence={sequence} run={run} onError={report}
+    {state && raced && <RaceNotice raced={raced.sha} made={raced.made} head={state.head ?? null} branch={state.branch ?? null} sequence={sequence} run={run} onError={report}
       onChanged={() => setRevision(value => value + 1)} onDismiss={() => setRaced(null)}/>}
     {state && sequence && <SequenceBar sequence={sequence} state={state} run={run} onError={report} onResolve={setResolving}
       onChanged={() => { setResolving(null); setRevision(value => value + 1); }}/>}
@@ -223,7 +223,7 @@ export function Worktree({copy, host, run, refresh, loadOperations, attach, pin}
         </>}
       </div>
       {view === "Branches" && (detail?.text !== undefined && state ? <BranchList text={detail.text} state={state} sequence={sequence} run={run} onError={report}
-        onChanged={result => { setRevision(value => value + 1); setRaced(result.raced ?? null); if (result.sequence?.conflicts.length) setResolving(result.sequence.conflicts[0]!.path); }}/>
+        onChanged={result => { setRevision(value => value + 1); setRaced(result.raced ? {sha: result.raced, made: result.head ?? null} : null); if (result.sequence?.conflicts.length) setResolving(result.sequence.conflicts[0]!.path); }}/>
         : <p className="git-muted" role="status">Reading branches…</p>)}
       {view === "Worktrees" && (detail?.worktrees ?? []).map(tree => <div className="git-row git-path" key={tree.path}>
         <span>{tree.branch ?? "Detached"} · {tree.path}</span>

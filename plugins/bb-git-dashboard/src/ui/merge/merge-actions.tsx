@@ -124,19 +124,24 @@ export function SequenceBar({sequence, state, run, onChanged, onError, onResolve
  * is still in progress Abort puts everything back; once it is done, Undo returns the branch to where it was just
  * before (the late commit included), after a confirmation.
  */
-export function RaceNotice({raced, head, branch, sequence, run, onChanged, onDismiss, onError}: {raced: string; head: string | null; branch: string | null;
+export function RaceNotice({raced, made, head, branch, sequence, run, onChanged, onDismiss, onError}: {raced: string;
+  /** The head the merge or rebase left: Undo is offered only while the branch is still there. */
+  made: string | null; head: string | null; branch: string | null;
   sequence: Sequence | null; run: RunGit; onChanged(result: GitResult): void; onDismiss(): void; onError(error: unknown): void}) {
   const [asked, setAsked] = useState(false);
+  // A commit made since (here or in a terminal) would be lost by going back: then Undo is not offered.
+  const undoable = !!made && made === head;
   return <section className="git-merge-race" role="alert" aria-label="A commit arrived during the confirmation">
     <p>While you were confirming, commit <code>{raced.slice(0, 12)}</code> reached {branch ?? "the branch"}; the {sequence?.kind ?? "operation"} took it in.</p>
     <div className="git-row">
       {sequence ? <span className="git-muted">Abort the {sequence.kind} above to put everything back.</span>
-        : head && <button type="button" onClick={() => setAsked(true)}>Undo</button>}
+        : undoable ? <button type="button" onClick={() => setAsked(true)}>Undo</button>
+        : <span className="git-muted">The branch has moved on since: undo it by hand if you need to.</span>}
       <button type="button" onClick={onDismiss}>Keep it</button>
     </div>
-    {asked && head && <ConfirmDialog title="Undo the merge or rebase" lines={["Put " + (branch ?? "the branch") + " back at " + raced.slice(0, 12) + ", the commit that arrived, as it was just before.",
+    {asked && undoable && made && <ConfirmDialog title="Undo the merge or rebase" lines={["Put " + (branch ?? "the branch") + " back at " + raced.slice(0, 12) + ", the commit that arrived, as it was just before.",
       "Commits made by the merge or rebase leave the branch; local changes stay."]}
-      onConfirm={async () => { onChanged(await run({kind: "undo", to: raced, expected: head})); onDismiss(); }}
+      onConfirm={async () => { onChanged(await run({kind: "undo", to: raced, expected: made})); onDismiss(); }}
       onClose={() => setAsked(false)}/>}
   </section>;
 }

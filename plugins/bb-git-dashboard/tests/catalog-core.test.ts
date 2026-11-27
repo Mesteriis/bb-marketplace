@@ -53,3 +53,12 @@ test("categories are the folders that hold projects; a clone goes into one, with
   assert.equal(clonePath("/p", "", "app"), "/p/app");
   for (const [category, name] of [["../x", "a"], ["OSS", "../a"], ["OSS", ".hidden"], ["/abs", "a"], ["OSS", "a/b"], ["OSS", ""]]) assert.equal(clonePath("/p", category!, name!), null, category + " " + name);
 });
+
+test("origin goes first among a config's remotes, whatever their order in the file", () => {
+  const config = ['[remote "upstream"]', "\turl = https://github.com/up/app.git", '[remote "origin"]', "\turl = git@gitlab.corp:me/app.git"].join("\n");
+  assert.deepEqual(parseConfigRemotes(config), ["git@gitlab.corp:me/app.git", "https://github.com/up/app.git"]);
+});
+
+test("a category a clone cannot go into (a space in its name) is not offered", () => {
+  assert.deepEqual(categoriesOf("/p", ["/p/My Projects/a", "/p/OSS/b"]), ["", "OSS"]);
+});
