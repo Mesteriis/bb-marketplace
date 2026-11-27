@@ -132,6 +132,13 @@ export function codeReviewHandlers(bb: BbPluginApi, copyOf: (copyId: string) => 
   bb.events.on("thread.idle", ({thread, lastAssistantText}) => { void turnEnded(thread, lastAssistantText, false); });
   bb.events.on("thread.failed", ({thread, error}) => { void turnEnded(thread, error, true); });
 
+  /** The comment is saved either way; a reviewer that cannot start is reported with it. */
+  const reviewerNote = async (thread: NonNullable<ReturnType<typeof store.thread>>, body: string, viewerThreadId: string | null | undefined) => {
+    const code = await runs.onUserComment(thread, body, viewerThreadId ?? null).catch((error: unknown) => error instanceof Error ? error.message : "GIT_REJECTED");
+    if (code === null) return null;
+    const {code: known, next} = failureFor(new Error(code), "GIT_REJECTED");
+    return {code: known, next};
+  };
   const handle = <I, O extends object>(action: (input: I) => O | Promise<O>) => async (input: I, context: Caller) => {
     if (context.experimental_caller.kind !== "client") return failureFor(undefined, "ACCESS_DENIED");
     try { return {ok: true as const, ...await action(input)}; }
@@ -142,14 +149,12 @@ export function codeReviewHandlers(bb: BbPluginApi, copyOf: (copyId: string) => 
       service.view(copyId, target, ignoreWhitespace)),
     reviewCreateThread: handle(async ({sessionId, viewerThreadId, ...input}: {sessionId: string; viewerThreadId?: string | null} & Parameters<typeof service.createThread>[1]) => {
       const thread = await service.createThread(sessionId, input);
-      runs.onUserComment(thread, input.body, viewerThreadId ?? null);
-      return {thread};
+      return {thread, reviewer: await reviewerNote(thread, input.body, viewerThreadId)};
     }),
-    reviewAddComment: handle(({threadId, body, viewerThreadId}: {threadId: string; body: string; viewerThreadId?: string | null}) => {
+    reviewAddComment: handle(async ({threadId, body, viewerThreadId}: {threadId: string; body: string; viewerThreadId?: string | null}) => {
       service.addComment(threadId, body);
       const thread = store.thread(threadId);
-      if (thread) runs.onUserComment(thread, body, viewerThreadId ?? null);
-      return {};
+      return {reviewer: thread ? await reviewerNote(thread, body, viewerThreadId) : null};
     }),
     reviewEditComment: handle(({commentId, body}: {commentId: string; body: string}) => { service.editComment(commentId, body); return {}; }),
     reviewDeleteComment: handle(({commentId}: {commentId: string}) => { service.deleteComment(commentId); return {}; }),

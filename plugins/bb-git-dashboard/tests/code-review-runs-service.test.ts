@@ -204,3 +204,21 @@ test("a thread that calls in before BB answered its start is bound only when BB 
   await service.bindIfPending("thr_run9");
   assert.equal(runs.run(run.id)!.threadId, "thr_run9");
 });
+
+test("@reviewer answers at once why no reviewer can start, and starts one in the background otherwise", async () => {
+  const lonely = setup({copy: {...COPY, projectId: undefined}});
+  const asked = lonely.comment("@reviewer why?");
+  assert.equal(await lonely.service.onUserComment(asked, "@reviewer why?", null), "RUN_PLACE_REQUIRED");
+  assert.deepEqual(lonely.runs.open(lonely.session.id), []);
+  const {service, comment, spawned} = setup();
+  const plain = comment("no mention");
+  assert.equal(await service.onUserComment(plain, "no mention", "thr_owner"), null);
+  const mentioned = comment("@agent look");
+  assert.equal(await service.onUserComment(mentioned, "@agent look", "thr_owner"), null);
+  assert.equal(await until(() => spawned.length === 1), true);
+});
+
+async function until(condition: () => boolean) {
+  for (let index = 0; index < 50 && !condition(); index++) await new Promise(resolve => setTimeout(resolve, 5));
+  return condition();
+}

@@ -59,12 +59,18 @@ function ExecutionPicker({value, onChange, routing, disabled}: ExecutionPickerPr
   return <ProviderModelPicker value={value} onChange={onChange} routing={routing} disabled={disabled}/>;
 }
 
+const reviewerText = (note: {code: string; next: string} | null) => note ? "The reviewer was not asked: " + note.code + " · " + note.next : null;
+
 /** The line review over RPC; shared by the Git panel and the thread's Review tab. */
 export function codeReviewApi(client: Client, navigate: Navigate): CodeReviewApi {
   return {
     view: async (copyId, target, ignoreWhitespace) => okValue(await client.call("reviewView", {copyId, target, ignoreWhitespace})),
-    createThread: async (sessionId, thread, viewer) => { okValue(await client.call("reviewCreateThread", {sessionId, ...thread, viewerThreadId: viewer ?? null})); },
-    addComment: async (threadId, body, viewer) => { okValue(await client.call("reviewAddComment", {threadId, body, viewerThreadId: viewer ?? null})); },
+    createThread: async (sessionId, thread, viewer) => {
+      const made = okValue(await client.call("reviewCreateThread", {sessionId, ...thread, viewerThreadId: viewer ?? null}));
+      return {threadId: made.thread.id, reviewer: reviewerText(made.reviewer)};
+    },
+    addComment: async (threadId, body, viewer) =>
+      ({reviewer: reviewerText(okValue(await client.call("reviewAddComment", {threadId, body, viewerThreadId: viewer ?? null})).reviewer)}),
     editComment: async (commentId, body) => { okValue(await client.call("reviewEditComment", {commentId, body})); },
     deleteComment: async commentId => { okValue(await client.call("reviewDeleteComment", {commentId})); },
     setStatus: async (threadId, status) => { okValue(await client.call("reviewSetStatus", {threadId, status})); },

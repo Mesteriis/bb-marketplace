@@ -10,6 +10,8 @@ const body = z.string().min(1).max(BODY_MAX_CHARS);
 /** The thread whose Review tab asked; null from the copy's own Review section. */
 const viewer = z.object({viewerThreadId: id.nullable().optional()});
 const runAnswer = answer({run: reviewRunSchema});
+/** Why a comment's @reviewer could not start a reviewer; null when it was asked or nobody was mentioned. */
+const reviewer = z.object({code: z.string(), next: z.string()}).nullable();
 /** The line review of a working copy; only the app calls it. */
 export const codeReviewContract = {
   reviewView: {input: z.object({copyId: id, target: targetRequestSchema, ignoreWhitespace: z.boolean()}),
@@ -18,8 +20,8 @@ export const codeReviewContract = {
   reviewCreateThread: {input: z.object({sessionId: reviewId, filePath: z.string().min(1).max(4096), side: sideSchema.nullable(),
     startLine: z.number().int().min(0), endLine: z.number().int().min(0), anchorContent: z.string().max(ANCHOR_MAX_CHARS).nullable(),
     severity: severitySchema.nullable(), body}).merge(viewer),
-    output: answer({thread: reviewThreadSchema})},
-  reviewAddComment: {input: z.object({threadId: reviewId, body}).merge(viewer), output: answer({})},
+    output: answer({thread: reviewThreadSchema, reviewer})},
+  reviewAddComment: {input: z.object({threadId: reviewId, body}).merge(viewer), output: answer({reviewer})},
   reviewEditComment: {input: z.object({commentId: reviewId, body}), output: answer({})},
   reviewDeleteComment: {input: z.object({commentId: reviewId}), output: answer({})},
   reviewSetStatus: {input: z.object({threadId: reviewId, status: threadStatusSchema}), output: answer({})},

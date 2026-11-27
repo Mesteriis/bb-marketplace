@@ -17,8 +17,9 @@ export type ExecutionPickerProps = {value: Execution; onChange(value: Execution)
 /** What the line review asks of the host; the entry point implements it over RPC. `viewer`: the thread whose tab asks. */
 export type CodeReviewApi = {
   view(copyId: string, target: TargetRequest, ignoreWhitespace: boolean): Promise<ReviewView>;
-  createThread(sessionId: string, thread: NewThread, viewer?: string | null): Promise<void>;
-  addComment(threadId: string, body: string, viewer?: string | null): Promise<void>;
+  /** Each gives why the comment's @reviewer could not start a reviewer, or null. */
+  createThread(sessionId: string, thread: NewThread, viewer?: string | null): Promise<{threadId: string; reviewer: string | null}>;
+  addComment(threadId: string, body: string, viewer?: string | null): Promise<{reviewer: string | null}>;
   editComment(commentId: string, body: string): Promise<void>;
   deleteComment(commentId: string): Promise<void>;
   setStatus(threadId: string, status: ThreadStatus): Promise<void>;
@@ -36,6 +37,8 @@ export type CodeReviewApi = {
   fix(sessionId: string, threadIds: string[], note: string, execution: Execution, viewer: string | null): Promise<{run: ReviewRun; count: number}>;
   closeRun(runId: string): Promise<void>;
   ExecutionPicker: ComponentType<ExecutionPickerProps>;
+  /** Why the last @reviewer in a thread could not start a reviewer, kept by the panel until the next comment there. */
+  reviewerNote?(threadId: string): string | null;
 };
 export const message = (error: unknown) => error instanceof Error ? error.message : "Request failed.";
 export const severityLabel: Record<Severity, string> = {"must-fix": "Must fix", suggestion: "Suggestion", nit: "Nit", question: "Question"};

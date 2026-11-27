@@ -266,10 +266,21 @@ export function codeReviewRuns(deps: RunDeps) {
       return {run, count: chosen.length};
     },
 
-    /** An owner's comment with @reviewer or @agent asks the view's reviewer, in the background. */
-    onUserComment(thread: ReviewThread, body: string, viewerThreadId: string | null) {
-      if (!mentionsReviewer(body)) return;
+    /**
+     * An owner's comment with @reviewer or @agent asks the view's reviewer, in the background. Returns the code of why
+     * no reviewer can start, or null.
+     */
+    async onUserComment(thread: ReviewThread, body: string, viewerThreadId: string | null): Promise<string | null> {
+      if (!mentionsReviewer(body)) return null;
+      // A reviewer that cannot start says why at once, for the comment that asked; the start itself runs in the background.
+      if (!runs.reviewer(thread.sessionId)?.threadId) {
+        const copy = await deps.copy(session(thread.sessionId).copyId);
+        if (!copy) return "NOT_FOUND";
+        const refused = await placeOf(copy, viewerThreadId).then(() => null, (error: unknown) => error instanceof Error ? error.message : "RUN_PLACE_REQUIRED");
+        if (refused) return refused;
+      }
       askReviewer(thread.id, viewerThreadId).catch(error => deps.log("Could not ask the reviewer about " + thread.id + ": " + String(error)));
+      return null;
     },
 
     askReviewer,

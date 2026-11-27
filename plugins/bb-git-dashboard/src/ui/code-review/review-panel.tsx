@@ -47,6 +47,8 @@ export function ReviewPanel({api, copyId, currentThreadId, revision}: {api: Code
   const [reviewing, setReviewing] = useState(false);
   const [runs, setRuns] = useState<ReviewRun[]>([]);
   const viewer = currentThreadId ?? null;
+  const [notes, setNotes] = useState<Record<string, string | null>>({});
+  const note = (threadId: string, text: string | null) => setNotes(current => ({...current, [threadId]: text}));
   useEffect(() => {
     let active = true;
     setLoading(true);
@@ -73,7 +75,12 @@ export function ReviewPanel({api, copyId, currentThreadId, revision}: {api: Code
     const asked = request(kind, base, sha, range);
     if (typeof asked === "string") setError(asked); else { setError(""); setApplied(asked); }
   };
-  const create = async (thread: NewThread) => { if (view) { await api.createThread(view.sessionId, thread, viewer); refresh(); } };
+  const create = async (thread: NewThread) => {
+    if (!view) return;
+    const made = await api.createThread(view.sessionId, thread, viewer);
+    note(made.threadId, made.reviewer);
+    refresh();
+  };
   const [explaining, setExplaining] = useState(false);
   // The outcome goes to the status line: `error` is cleared by the reload that follows.
   const explain = async (place: ExplainPlace) => {
@@ -89,7 +96,8 @@ export function ReviewPanel({api, copyId, currentThreadId, revision}: {api: Code
   };
   const live = <T,>(work: Promise<T>) => work.then(result => { refresh(); return result; });
   const liveApi: CodeReviewApi = {...api,
-    addComment: (threadId, body) => live(api.addComment(threadId, body, viewer)), editComment: (...args) => live(api.editComment(...args)),
+    addComment: (threadId, body) => live(api.addComment(threadId, body, viewer).then(result => { note(threadId, result.reviewer); return result; })),
+    reviewerNote: threadId => notes[threadId] ?? null, editComment: (...args) => live(api.editComment(...args)),
     deleteComment: (...args) => live(api.deleteComment(...args)), setStatus: (...args) => live(api.setStatus(...args)),
     apply: (...args) => live(api.apply(...args))};
 

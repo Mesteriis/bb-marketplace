@@ -124,6 +124,7 @@ export function ThreadCard({thread, api, current, canApply, showPath, outdated}:
       {replying && <Composer label="Reply" submitLabel="Reply" onCancel={() => setReplying(false)}
         onSubmit={async body => { await api.addComment(thread.id, body); setReplying(false); }}/>}
     </>}
+    {api.reviewerNote?.(thread.id) && <p className="git-warning" role="status">{api.reviewerNote(thread.id)}</p>}
     {error && <p className="git-error" role="alert">{error}</p>}
   </article>;
 }
