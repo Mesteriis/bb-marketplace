@@ -15,19 +15,23 @@
 - Живая запись — только в песочницах: GitHub `Mesteriis/makosh-git-sandbox` (PR #1, конфликтный PR #2, issue #3), GitLab `mesteriis/makosh-git-sandbox` id 89547855 (MR !1, MR !2, issue #1). Gitea — Docker-Gitea, если доступен, иначе двойник; Azure — двойник.
 - Тексты PR, комментариев, логов и диффов — недоверенные данные: в UI только текстом (без HTML), агенту — в ограждённом блоке; ссылки — только https на origin аккаунта.
 
-## Матрица возможностей (уточняется в Task 2 по документации нужной версии API)
+## Матрица возможностей (сверено с документацией API 2026-11-27)
 
 | Действие | GitHub | GitLab | Gitea | Azure |
 |---|---|---|---|---|
-| Комментарий, ответ в треде | да | да (notes, discussions) | да (issue comments; ответ — новый комментарий ревью) | да (threads) |
-| Resolve / unresolve | да (GraphQL) | да (discussion `resolved`) | проверить API | да (статус треда fixed/active) |
-| Строчный комментарий, диапазон | да | да (position с diff_refs) | да (в составе ревью) | да (threadContext) |
-| Ревью Approve / Request changes | да | Approve (`/approve`); Request changes — проверить | да | голос 10 / -10 |
-| Ready / Draft | да | заголовок `Draft:` | заголовок `WIP:` | `isDraft` |
-| Правка заголовка и описания | да | да | да | да |
-| Закрыть / переоткрыть | да | да | да | abandon / reactivate |
-| Merge | да | да (с `sha`) | да | complete (асинхронно) |
-| Issues: создать, комментарий, закрыть | да | да | да | нет (Azure Boards вне репозитория) |
+| Комментарий | REST issue comments | notes | issue comments | новый тред |
+| Ответ в треде | GraphQL `addPullRequestReviewThreadReply` | `POST …/discussions/:id/notes` | `POST …/pulls/{n}/comments/{id}/replies` | `POST …/threads/{id}/comments` |
+| Resolve / unresolve | GraphQL `resolveReviewThread` | `PUT …/discussions/:id?resolved=` | `POST /pulls/comments/{id}/resolve|unresolve` | статус треда fixed / active |
+| Строчный комментарий, диапазон | ревью с `line`, `side`, `start_line` | discussion с `position` и `line_range` | ревью с `new_position`/`old_position` (диапазона нет — якорь на последней строке) | **нет**: API не отдаёт построчный дифф |
+| Approve | ревью `APPROVE` | `POST …/approve` с `sha` | ревью `APPROVED` | голос 10 |
+| Request changes | ревью `REQUEST_CHANGES` | **нет** в REST | ревью `REQUEST_CHANGES` | голос -10 |
+| Запрос ревьюера | `requested_reviewers` | `reviewer_ids` | `requested_reviewers` | `PUT …/reviewers/{id}` |
+| Заголовок, описание | `PATCH` | `PUT` | `PATCH` | `PATCH` (описание до 4000 символов) |
+| Ready / Draft | GraphQL `markPullRequestReadyForReview` / `convertPullRequestToDraft` | префикс `Draft:` в заголовке | префикс `WIP:` в заголовке | **нет** через update API |
+| Закрыть / переоткрыть | `PATCH state` | `state_event` | `PATCH state` | `status` abandoned / active |
+| Merge | `PUT …/merge` с `sha`, `merge_method` | `PUT …/merge` с `sha`, `squash` | `POST …/merge` с `do`, `head_commit_id` | `status: completed` с `completionOptions.mergeStrategy` (асинхронно) |
+| Файлы и патч | REST files | `/diffs` | `/pulls/{n}/files` + `.diff` | только список файлов (iteration changes) |
+| Issues | да | да | да | нет (Azure Boards вне репозитория) |
 
 ## Review Focus
 
