@@ -9,7 +9,7 @@ import {
 import { isAncestorOrSelf, join, parent, samePath } from "./path.ts";
 import { READ_CHUNK_MAX, type FileProvider } from "./provider.ts";
 import {
-  fingerprint, matches, readChunks, reconcileCopy, temporaryName, TransferHash, verifyCopy,
+  fingerprint, matches, readChunks, reconcileCopy, TransferHash, verifyCopy,
   type Location, type VerifyContext,
 } from "./reconcile.ts";
 import { fromBig, toBig } from "./size.ts";
@@ -34,7 +34,7 @@ type Run = {
 };
 type ItemContext = VerifyContext & {
   progress(bytes: bigint): Promise<void>;
-  mark(phase: Checkpoint["phase"], bytesDone: string, tempName?: string): Promise<void>;
+  mark(phase: Checkpoint["phase"], bytesDone: string, tempPath?: Checkpoint["tempPath"]): Promise<void>;
 };
 
 class ItemConflict extends Error {
@@ -507,8 +507,8 @@ export class JobRunner {
       } else {
         const session = await call(() => provider.openWrite(path, signal));
         try {
-          const tempName = temporaryName(session.tempPath, target);
-          await mark("copying", "0", tempName);
+          const tempPath = session.tempPath;
+          await mark("copying", "0", tempPath);
           const hash = plan.verify === "sha256" ? new TransferHash() : null;
           let bytesDone = 0n;
           try {
@@ -528,7 +528,7 @@ export class JobRunner {
           sourceHash = hash?.finish();
           const actual = fingerprint(await call(() => source.provider.stat(source.path, signal)));
           if (!matches(actual, expected)) throw new ItemConflict("source_changed", actual, expectTarget);
-          await mark("copying", fromBig(bytesDone), tempName);
+          await mark("copying", fromBig(bytesDone), tempPath);
           committed = await call(() => session.commit({ replace, expectTarget: replace ? expectTarget : null }, signal));
         } catch (error) {
           try {
@@ -583,8 +583,8 @@ export class JobRunner {
           }
         }
       },
-      mark: (phase, bytesDone, tempName = undefined) => this.store.checkpoint({
-        jobId, itemIndex, phase, bytesDone, tempName: tempName ?? null,
+      mark: (phase, bytesDone, tempPath = null) => this.store.checkpoint({
+        jobId, itemIndex, phase, bytesDone, tempPath, targetPath: null, expectTarget: null, verified: null,
       }),
     };
   }

@@ -1,7 +1,7 @@
 import { CommanderError } from "./errors.ts";
 import type { Checkpoint } from "./job-store.ts";
 import type { Entry, Fingerprint, OperationPlan, ResourceRef } from "./model.ts";
-import { join, parent, samePath, type NameSegment, type ResourcePath } from "./path.ts";
+import { parent, samePath } from "./path.ts";
 import type { FileProvider } from "./provider.ts";
 import { toBig } from "./size.ts";
 
@@ -101,26 +101,6 @@ export class TransferHash {
 }
 
 
-const rawPrefix = "~commander-bytes~";
-
-export function temporaryName(temp: ResourcePath, target: Location): string {
-  const dir = parent(target.path);
-  const tempDir = parent(temp);
-  const name = temp.segments.at(-1);
-  const sensitive = target.provider.endpoint.caseSensitive;
-  if (!dir || !tempDir || !name || !samePath(dir, tempDir, sensitive) || samePath(temp, target.path, sensitive)) {
-    throw new CommanderError("internal", "Temporary file is not beside its destination");
-  }
-  return "t" in name ? name.t : rawPrefix + name.b.replaceAll("/", "_").replaceAll("+", "-");
-}
-
-function temporarySegment(encoded: string): NameSegment {
-  if (encoded.startsWith(rawPrefix)) {
-    return { b: encoded.slice(rawPrefix.length).replaceAll("_", "/").replaceAll("-", "+") };
-  }
-  return { t: encoded };
-}
-
 export type ProviderCall = <T>(call: () => Promise<T>) => Promise<T>;
 
 export async function readChunks(
@@ -185,12 +165,10 @@ export async function reconcileCopy(
   const { provider, path } = target;
   if (checkpoint.phase === "copying") {
     const dir = parent(path);
-    if (!dir || !checkpoint.tempName) throw new CommanderError("outcome_unknown", "Missing temporary file name");
-    const name = temporarySegment(checkpoint.tempName);
-    const text = "t" in name ? name.t : atob(name.b);
-    const temp = join(dir, name);
+    const temp = checkpoint.tempPath;
+    const tempDir = temp && parent(temp);
     const sensitive = provider.endpoint.caseSensitive;
-    if (!/\.commander-[a-z0-9-]+\.part$/i.test(text) || samePath(path, temp, sensitive)
+    if (!dir || !temp || !tempDir || !samePath(dir, tempDir, sensitive) || samePath(path, temp, sensitive)
         || (provider.endpoint.id === source.provider.endpoint.id && samePath(source.path, temp, sensitive))) {
       throw new CommanderError("outcome_unknown", "Invalid temporary path");
     }

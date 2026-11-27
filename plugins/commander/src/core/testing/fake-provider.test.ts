@@ -28,3 +28,28 @@ test("uses case sensitivity when checking target fingerprints", async () => {
   await session.abort();
   expect(provider.contents(real)).toEqual(Uint8Array.of(2));
 });
+
+test("checks the removal fingerprint and preserves the changed file", async () => {
+  const provider = new FakeProvider("host:test");
+  const file = parsePosix("/file");
+  provider.put(file, Uint8Array.of(2), "7");
+  await expect(provider.remove(file, { kind: "file", expect: { size: "1", mtimeNs: "6" } }, signal))
+    .rejects.toMatchObject({ code: "changed_since_plan" });
+  expect(provider.contents(file)).toEqual(Uint8Array.of(2));
+});
+
+test("checks the rename target and moves the full directory tree", async () => {
+  const provider = new FakeProvider("host:test");
+  const from = parsePosix("/from");
+  const to = parsePosix("/to");
+  await provider.mkdir(from, signal);
+  await provider.mkdir(to, signal);
+  provider.put(parsePosix("/from/file"), Uint8Array.of(2), "7");
+  await expect(provider.rename(from, to, { replace: true, expectTarget: "absent" }, signal))
+    .rejects.toMatchObject({ code: "changed_since_plan" });
+  const entry = (await provider.stat(to, signal))!;
+  await provider.rename(from, to, { replace: true, expectTarget: { size: "0", mtimeNs: entry.mtimeNs } }, signal);
+  expect(await provider.stat(from, signal)).toBeNull();
+  expect(provider.contents(parsePosix("/from/file"))).toBeNull();
+  expect(provider.contents(parsePosix("/to/file"))).toEqual(Uint8Array.of(2));
+});

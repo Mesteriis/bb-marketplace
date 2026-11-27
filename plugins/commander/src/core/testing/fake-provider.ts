@@ -1,6 +1,6 @@
 import { CommanderError } from "../errors.ts";
 import type { Capability, Endpoint, Entry, Fingerprint } from "../model.ts";
-import { join, parent, samePath, type ResourcePath } from "../path.ts";
+import { isAncestorOrSelf, join, parent, samePath, type ResourcePath } from "../path.ts";
 import { READ_CHUNK_MAX, type FileProvider, type WriteSession } from "../provider.ts";
 import { TransferHash } from "../reconcile.ts";
 
@@ -155,17 +155,27 @@ export class FakeProvider implements FileProvider {
     this.set({ path, kind: "dir", bytes: new Uint8Array(), mtimeNs: String(++this.clock) });
   }
 
-  async rename(from: ResourcePath, to: ResourcePath, opts: { replace: boolean }, signal: AbortSignal): Promise<void> {
+  async rename(from: ResourcePath, to: ResourcePath, opts: Parameters<FileProvider["rename"]>[2], signal: AbortSignal): Promise<void> {
     await this.before("rename", to, signal);
     const entry = this.require(from);
-    this.checkTarget(to, opts.replace);
-    this.entries.delete(entry);
-    this.set({ ...entry, path: to });
+    this.checkTarget(to, opts.replace, opts.expectTarget);
+    if (this.same(from, to)) return;
+    const tree = entry.kind === "dir"
+      ? [...this.entries].filter((child) => isAncestorOrSelf(from, child.path, this.endpoint.caseSensitive))
+      : [entry];
+    for (const child of tree) this.entries.delete(child);
+    for (const child of tree) {
+      this.set({ ...child, path: { segments: [...to.segments, ...child.path.segments.slice(from.segments.length)] } });
+    }
   }
 
-  async remove(path: ResourcePath, opts: { kind: Entry["kind"] }, signal: AbortSignal): Promise<void> {
+  async remove(path: ResourcePath, opts: Parameters<FileProvider["remove"]>[1], signal: AbortSignal): Promise<void> {
     await this.before("remove", path, signal);
-    const entry = this.require(path);
+    const candidate = this.find(path);
+    if (opts.expect && (!candidate || !this.matches(candidate, opts.expect))) {
+      throw new CommanderError("changed_since_plan", "Source changed");
+    }
+    const entry = candidate ?? this.require(path);
     if (entry.kind !== opts.kind) throw new CommanderError("changed_since_plan", "Entry type changed");
     if (entry.kind === "dir" && [...this.entries].some((child) => {
       const dir = parent(child.path);

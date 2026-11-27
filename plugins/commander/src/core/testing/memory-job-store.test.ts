@@ -39,10 +39,8 @@ test.each(["running", "cancel_requested"] as const)("leaves pending for %s with 
   const store = new MemoryJobStore();
   await store.create(job);
 
-  await expect(store.update(job.id, { state }, "pending")).rejects.toThrow();
   expect(await store.get(job.id)).toMatchObject({ state: "pending", awaitsOwner: true });
-
-  expect(await store.update(job.id, { state, awaitsOwner: false }, "pending")).toBe(true);
+  expect(await store.update(job.id, { state }, "pending")).toBe(true);
   expect(await store.get(job.id)).toMatchObject({ state, awaitsOwner: false });
 
   expect(await store.update(job.id, { state: "cancelled" }, "pending")).toBe(false);

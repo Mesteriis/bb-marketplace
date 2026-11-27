@@ -184,14 +184,14 @@ test.each(["copying", "committed", "missing-temp"] as const)("recovers %s withou
   const { runner, plan, store, to, at } = await setup();
   const submitted = await runner.submit(plan, { awaitsOwner: true });
   await store.update(submitted.id, { state: "running", awaitsOwner: false, currentItem: 0 }, "pending");
-  const temp = phase === "copying" ? (await to.openWrite(target, new AbortController().signal)).tempPath.segments.at(-1) : null;
+  const temp = phase === "copying" ? (await to.openWrite(target, new AbortController().signal)).tempPath : null;
   if (phase === "committed") to.put(target, Uint8Array.of(42, 42, 42), "2");
   await store.checkpoint({
     jobId: submitted.id,
     itemIndex: 0,
     phase: phase === "committed" ? "committed" : "copying",
     bytesDone: "3",
-    tempName: temp && "t" in temp ? temp.t : null,
+    tempPath: temp, targetPath: null, expectTarget: null, verified: null,
   });
   to.calls.length = 0;
   const { resumed, unknown } = await runner.recover();
@@ -261,7 +261,7 @@ test("does not delete a changed source or replay an ambiguous move on recovery",
   await store.update(id, { state: "running", awaitsOwner: false, currentItem: 0 }, "pending");
   to.put(target, Uint8Array.of(42, 42, 42), "2");
   from.put(source, Uint8Array.of(7, 7, 7), "2");
-  await store.checkpoint({ jobId: id, itemIndex: 0, phase: "verified", bytesDone: "3", tempName: null });
+  await store.checkpoint({ jobId: id, itemIndex: 0, phase: "verified", bytesDone: "3", tempPath: null, targetPath: null, expectTarget: null, verified: null });
   expect(await runner.recover()).toEqual({ resumed: [], unknown: [id] });
   expect((await at(id, "unknown")).items[0].outcome).toBe("unknown");
   expect(from.contents(source)).toEqual(Uint8Array.of(7, 7, 7));
