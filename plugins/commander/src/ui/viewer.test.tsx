@@ -52,12 +52,13 @@ describe("Viewer", () => {
     const { container } = render(
       <Viewer name="data.bin" model={{
         kind: "binary",
-        lines: ["00000000  89 50 4e 47 0d 0a 1a 0a 00 00 00 0d 49 48 44 52"],
-        truncated: false,
+        lines: ["00000000  89 50 4e 47 0d 0a 1a 0a  00 00 00 0d 49 48 44 52  |.PNG........IHDR|"],
+        truncated: false, shown: 16, total: "16",
       }} />,
     );
 
     expect(container.querySelector("pre")?.textContent)
-      .toBe("00000000  89 50 4e 47 0d 0a 1a 0a 00 00 00 0d 49 48 44 52");
+      .toBe("00000000  89 50 4e 47 0d 0a 1a 0a  00 00 00 0d 49 48 44 52  |.PNG........IHDR|");
+    expect(container.querySelector(".commander-viewer-count")?.textContent).toBe("Показано 16 из 16 байт");
   });
 });

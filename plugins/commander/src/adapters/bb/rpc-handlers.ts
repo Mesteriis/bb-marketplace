@@ -3,7 +3,7 @@ import { CommanderError, isCommanderError } from "../../core/errors.ts";
 import type { JobRunner } from "../../core/job-runner.ts";
 import type { AgentJobStore } from "../../core/job-store.ts";
 import type { Initiator, JobState, OperationJob, OperationPlan, ResourceRef } from "../../core/model.ts";
-import { entryName, readForView, toWire, viewFor } from "../../core/preview.ts";
+import { entryName, readForView, replyFor } from "../../core/preview.ts";
 import { parent } from "../../core/path.ts";
 import { toBig } from "../../core/size.ts";
 import { authorize, REQUIRED } from "../../core/permissions.ts";
@@ -251,11 +251,12 @@ export function createOperations(deps: {
       return endpoints.provider(ref.endpoint).stat(ref.path, signal);
     },
     async read(input: RpcInput<"file_read">, initiator: Initiator, signal: AbortSignal) {
-      const { ref, offset, length, mode } = input;
+      const { ref, offset, length, mode, expect } = input;
       await checkRead(initiator, ref);
       await endpoints.prepare([ref.endpoint], signal);
-      const window = await readForView(endpoints.provider(ref.endpoint), ref.path, { offset: toBig(offset), length }, signal);
-      return toWire(viewFor(entryName(ref.path), window, mode));
+      const window = await readForView(endpoints.provider(ref.endpoint), ref.path,
+        { offset: toBig(offset), length, ...(expect ? { expect } : {}) }, signal);
+      return replyFor(entryName(ref.path), window, mode, initiator.kind === "agent" ? "agent" : "owner");
     },
     async createPlan(input: RpcInput<"plan_create">, initiator: Initiator, signal: AbortSignal) {
       const limits = initiator.kind === "agent" ? { ...planner.limits, maxItems: maxAgentPlanItems } : planner.limits;
@@ -403,13 +404,22 @@ function agentJobView(job: OperationJob, grants: AgentGrant[]) {
   return damaged(job) ?? (visible ? { ...summary, progress: job.progress, initiator: job.plan.initiator } : summary);
 }
 
+// The owner sees a file that changed while it was viewed as a conflict whose message carries the
+// internal code, so the viewer can tell it apart from other conflicts.
+function changedRefusal(error: unknown): never {
+  if (isCommanderError(error) && error.code === "changed_since_plan") {
+    throw refusal("conflict", JSON.stringify({ code: error.code, message: error.message }));
+  }
+  throw error;
+}
+
 export function createRpcHandlers(ops: Operations): ExperimentalPluginRpcHandlersWithContext<typeof rpcSchemas> {
   const handlers: ExperimentalPluginRpcHandlersWithContext<typeof rpcSchemas> = {
     endpoints_list: (_, ctx) => ops.endpointsList(owner, ctx.experimental_signal),
     endpoint_home: ({ endpoint }, ctx) => ops.home(endpoint, ctx.experimental_signal),
     dir_list: (input, ctx) => ops.list(input, owner, ctx.experimental_signal),
     entry_stat: ({ ref }, ctx) => ops.stat(ref, owner, ctx.experimental_signal),
-    file_read: (input, ctx) => ops.read(input, owner, ctx.experimental_signal),
+    file_read: (input, ctx) => ops.read(input, owner, ctx.experimental_signal).catch(changedRefusal),
     plan_create: (input, ctx) => ops.createPlan(input, owner, ctx.experimental_signal),
     plan_run: (input, ctx) => ops.runPlan(input, owner, ctx.experimental_signal),
     job_list: (input) => ops.jobs(input),

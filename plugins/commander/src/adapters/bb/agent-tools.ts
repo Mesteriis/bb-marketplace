@@ -26,9 +26,10 @@ export function registerAgentTools(agents: BbPluginApi["agents"], ops: Operation
             return { isError: true, content: [{ type: "text", text: JSON.stringify({ code: "invalid", message: "Invalid Commander request" }) }] };
           }
           ctx.signal.throwIfAborted();
-          const result = await execute(parsed.data, { kind: "agent", threadId: id.data }, ctx.signal);
-          const text = JSON.stringify(result);
-          if (Buffer.byteLength(text) <= maxBytes) return { content: [{ type: "text", text }] };
+          const text = JSON.stringify(await execute(parsed.data, { kind: "agent", threadId: id.data }, ctx.signal));
+          // The limit applies to the whole tool result: the text is JSON inside the content envelope.
+          const result = { content: [{ type: "text" as const, text }] };
+          if (Buffer.byteLength(JSON.stringify(result)) <= maxBytes) return result;
           return { isError: true, content: [{ type: "text", text: JSON.stringify({ code: "limit_exceeded", message: "Use a smaller page limit" }) }] };
         } catch (error) {
           if (name === "run" && isCommanderError(error) && error.code === "limit_exceeded") {

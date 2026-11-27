@@ -1,7 +1,7 @@
 import { z } from "zod";
 import {
   ConflictDecision, ConflictPolicy, Endpoint, EndpointId, Entry, Initiator, JobProgress, JobState,
-  OperationJob, OperationKind, OperationPlan, Permission, ResourceRef, Verify,
+  OperationJob, OperationKind, OperationPlan, Permission, ResourceRef, Verify, Fingerprint,
 } from "../model.ts";
 import { NameSegment, ResourcePath } from "../path.ts";
 import { LIST_PAGE_MAX } from "../provider.ts";
@@ -68,6 +68,8 @@ export type UiState = z.infer<typeof UiState>;
 
 const uiScope = z.strictObject({ threadId: threadId.optional() });
 
+const FileVersion = Fingerprint.pick({ size: true, mtimeNs: true });
+
 export const rpcSchemas = {
   endpoints_list: { input: empty, output: z.strictObject({ endpoints: z.array(EndpointView) }) },
   endpoint_home: { input: z.strictObject({ endpoint: EndpointId }), output: z.strictObject({ path: ResourcePath }) },
@@ -76,17 +78,19 @@ export const rpcSchemas = {
     output: z.strictObject({ entries: z.array(Entry).max(LIST_PAGE_MAX), cursor: z.string().max(2048).nullable() }),
   },
   entry_stat: { input: z.strictObject({ ref: ResourceRef }), output: Entry.nullable() },
-  // Window of a file for F3 and the agent read tool. Length is capped at 1 MiB; image bytes are base64.
-  // Window of a file for F3 and the agent read tool. The JSON response is at most 1 MiB; `modes` lists
-  // the representations the file offers, and `mode` picks one (auto: the file's own kind).
+  // Window of a file for F3 and the agent read tool. A reply is at most 1 MiB as JSON (the agent's
+  // tool result is measured with its text escaped). `modes` lists what the file offers; `mode` picks
+  // one. `expect` is the version of an earlier window, so chunks of one view share a version.
   file_read: {
     input: z.strictObject({
       ref: ResourceRef,
       offset: Size.default("0"),
       length: z.int().min(1).max(MAX_VIEW_BYTES).default(MAX_VIEW_BYTES),
       mode: z.enum(["auto", ...VIEW_KINDS]).default("auto"),
+      expect: FileVersion.optional(),
     }),
     output: z.strictObject({
+      version: FileVersion,
       modes: z.array(z.enum(VIEW_KINDS)).min(1).max(3),
       view: z.discriminatedUnion("kind", [
         z.strictObject({ kind: z.literal("text"), text: z.string().max(MAX_RESPONSE_BYTES), truncated: z.boolean() }),
@@ -96,7 +100,14 @@ export const rpcSchemas = {
           base64: z.string().max(MAX_RESPONSE_BYTES),
           truncated: z.boolean(),
         }),
-        z.strictObject({ kind: z.literal("binary"), lines: z.array(z.string().max(96)).max(MAX_RESPONSE_BYTES / 16), truncated: z.boolean() }),
+        z.strictObject({
+          kind: z.literal("binary"),
+          lines: z.array(z.string().max(160)).max(MAX_RESPONSE_BYTES / 16),
+          truncated: z.boolean(),
+          shown: z.int().nonnegative().max(MAX_RESPONSE_BYTES),
+          total: Size,
+        }),
+        z.strictObject({ kind: z.literal("chunk"), offset: Size, base64: z.string().max(MAX_RESPONSE_BYTES), truncated: z.boolean() }),
       ]),
     }),
   },

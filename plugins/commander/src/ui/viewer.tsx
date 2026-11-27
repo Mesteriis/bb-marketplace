@@ -27,6 +27,7 @@ export function Viewer({ name, model, modes, onMode }: {
       {model.kind === "image" ? <ImageView name={name} mime={model.mime} bytes={model.bytes} /> : null}
       {model.kind === "text" ? <pre className="commander-viewer-text">{model.text}</pre> : null}
       {model.kind === "binary" ? <pre className="commander-viewer-hex">{model.lines.join("\n")}</pre> : null}
+      {model.kind === "binary" ? <p className="commander-viewer-count">{ru.view.shown(model.shown, model.total)}</p> : null}
       {model.truncated ? <p role="status">{ru.view.truncated}</p> : null}
     </section>
   );

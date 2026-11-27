@@ -2,7 +2,7 @@ import { definePluginApp, useBbNavigate, useRealtime, useRpc, useSdk, type Exper
 import { useCallback, useEffect, useRef, useState } from "react";
 import { LIST_PAGE_MAX } from "./src/core/provider.ts";
 import { parsePosix } from "./src/core/path.ts";
-import { fromWire } from "./src/core/preview.ts";
+import { assembleImage, entryName, type ViewKind, type WireView } from "./src/core/preview.ts";
 import { CommanderError } from "./src/core/errors.ts";
 import { JobState, type ConflictAction, type Entry, type OperationJob, type OperationPlan, type ResourceRef } from "./src/core/model.ts";
 import { type UiState, type rpcSchemas } from "./src/core/wire/rpc.ts";
@@ -298,6 +298,12 @@ function CommanderPage({ compact = false, environment, threadId }: { compact?: b
       throw new CommanderError("unsupported", ru.terminalUnavailable);
     }
   };
+  // Owner view: one file_read; a whole image comes at once, a larger one as chunks with one version.
+  const loadView = async (ref: ResourceRef, mode: ViewKind | "auto") => {
+    const first: WireView = await rpc.call("file_read", { ref, mode });
+    return assembleImage(entryName(ref.path), first,
+      (offset, expect) => rpc.call("file_read", { ref, mode: "image", offset: offset.toString(), expect }));
+  };
   const mutate = async (action: Promise<unknown>) => { const result = await action; refresh("job"); return result; };
   const identity = (job: OperationJob) => ({ jobId: job.id, digest: job.plan.digest });
   return <Workspace state={state} update={update} endpoints={endpoints} compact={compact} queue={queue} problem={problem}
@@ -327,7 +333,7 @@ function CommanderPage({ compact = false, environment, threadId }: { compact?: b
       await mutate(rpc.call("job_decide", { jobId: job.id, conflictId: job.pendingConflict.id, action, applyTo: same ? "remaining_same_reason" : "this" }));
     }}
     onCancel={(job) => mutate(rpc.call("job_cancel", { jobId: job.id }))}
-    onPreview={preview} onView={(ref, mode) => rpc.call("file_read", { ref, mode }).then(fromWire)} onCompare={(source, target) => Promise.all([readText(source), readText(target)])}
+    onPreview={preview} onView={(ref, mode) => loadView(ref, mode)} onCompare={(source, target) => Promise.all([readText(source), readText(target)])}
     onTerminal={terminal} onOpenThread={(id) => navigate.toThread(id)} onOpenPage={() => navigate.toPluginPanel("commander")} />;
 }
 

@@ -346,8 +346,9 @@ export function Workspace(props: WorkspaceProps) {
   }
   function view(value: Tab, entry: Entry) {
     const ref = { endpoint: value.endpoint, path: join(value.path, entry.name) };
-    // A local file with a host path opens in BB's own preview. Anything else, such as SFTP,
-    // falls back to the Commander viewer, which reads the window through file_read.
+    // A local file with a host path opens in BB's own preview when it succeeds; the DOM guarantees of
+    // the Commander viewer do not cover that preview. Anything else, such as SFTP, falls back to
+    // the Commander viewer, which reads the window through file_read.
     try { props.onPreview(ref); return; } catch { /* No native preview for this entry. */ }
     open({ kind: "view", ref, title: "t" in entry.name ? entry.name.t : "", mode: "auto", result: null, problem: null });
     void loadView(ref, "auto");
@@ -358,8 +359,8 @@ export function Workspace(props: WorkspaceProps) {
       setDialog((current) => current?.kind === "view" && current.ref === ref ? { ...current, result, problem: null } : current);
     } catch (error) {
       const failure = problemOf(error);
-      // The only conflict a window read can report is a file that changed during the read.
-      const problem = failure.code === "conflict" ? { code: failure.code, message: ru.view.changed } : failure;
+      // A file that changed while it was viewed; the owner RPC reports it under this internal code.
+      const problem = failure.code === "changed_since_plan" ? { code: failure.code, message: ru.view.changed } : failure;
       setDialog((current) => current?.kind === "view" && current.ref === ref ? { ...current, result: null, problem } : current);
     }
   }

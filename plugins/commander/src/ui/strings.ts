@@ -46,6 +46,7 @@ export const ru = {
   view: {
     truncated: "Показана только первая часть файла", changed: "Файл изменился во время просмотра", group: "Режим просмотра",
     text: "Текст", hex: "Hex", image: "Изображение",
+    shown: (shown: number, total: string) => "Показано " + shown + " из " + total + " байт",
   },
 };
 export const operationText = { copy: "Копирование", move: "Перемещение", rename: "Переименование", mkdir: "Создание каталога", delete: "Удаление" };
