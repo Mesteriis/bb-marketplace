@@ -80,7 +80,7 @@ id_of() { node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>consol
 PROJECT=$(cli project create --name stand-alpha --root "$R" --json | id_of)
 BETA=$(cli project create --name stand-beta --root "$B" --json | id_of)
 GAMMA=$(cli project create --name stand-gamma --root "$G" --json | id_of)
-printf 'URL=%s/\nPROJECT=%s\nREPO=%s\nBETA=%s\nGAMMA=%s\nFORGE=https://localhost:%s\nGITLAB=https://localhost:%s\n' "$URL" "$PROJECT" "$R" "$BETA" "$GAMMA" "$FORGE_PORT" "$GITLAB_PORT" > "$STAND/facts.env"
+printf 'URL=%s/\nPROJECT=%s\nREPO=%s\nBETA=%s\nGAMMA=%s\nFORGE=https://localhost:%s\nGITLAB=https://localhost:%s\nDAEMON_PORT=%s\nBB_APP=%s\n' "$URL" "$PROJECT" "$R" "$BETA" "$GAMMA" "$FORGE_PORT" "$GITLAB_PORT" "$DAEMON_PORT" "$BB_APP" > "$STAND/facts.env"
 cat "$STAND/facts.env"
 mkdir -p "$STAND/out"
 status=0
