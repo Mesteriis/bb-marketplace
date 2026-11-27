@@ -59,3 +59,11 @@ test("a lasting limit says when the forge will take reads again, so a page can r
   // Other codes never carry it.
   assert.equal("retryIn" in failureFor(Object.assign(new Error("PROVIDER_UNAVAILABLE"), {retryAfter: 5000}), "X"), false);
 });
+
+test("GitHub's primary limit (403 with no requests left) is a rate limit, not a denial", async () => {
+  const limited = forge([() => new Response("", {status: 403, headers: {"x-ratelimit-remaining": "0", "x-ratelimit-reset": String(now / 1000 + 30)}})]);
+  const error = await client({...account, kind: "github", origin: "https://api.github.com"}, "fixture-token-value", limited.send, {sleep: limited.sleep, now: () => now})("/user").catch(cause => cause);
+  assert.deepEqual([error.message, failureFor(error, "X").retryIn], ["PROVIDER_RATE_LIMITED", 30]);
+  const denied = forge([() => new Response("", {status: 403, headers: {"x-ratelimit-remaining": "4999"}})]);
+  await assert.rejects(client(account, "fixture-token-value", denied.send, {sleep: denied.sleep, now: () => now})("/user"), {message: "PROVIDER_DENIED"});
+});

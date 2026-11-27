@@ -49,3 +49,10 @@ describe("filterLines", () => {
     assert.deepEqual(filterLines(lines, ".*"), []);
   });
 });
+
+describe("elapsed of a re-run", () => {
+  it("counts from the attempt's own start when the forge gives it", () => {
+    const rerun = run("1", "success", {attempt: 2, createdAt: "2026-11-20T10:00:00Z", startedAt: "2026-11-27T10:00:00Z", updatedAt: "2026-11-27T10:04:00Z"});
+    assert.equal(elapsed(rerun, Date.parse("2026-11-27T12:00:00Z")), "4m 0s");
+  });
+});

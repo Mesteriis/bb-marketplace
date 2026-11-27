@@ -15,7 +15,7 @@ export function ciSummary(runs: Run[]) {
 
 /** How long a run has taken: to now while active, to its last update once finished. */
 export function elapsed(run: Run, now: number) {
-  const start = Date.parse(run.createdAt);
+  const start = Date.parse(run.startedAt ?? run.createdAt);
   const end = isActive(run.state) ? now : run.updatedAt ? Date.parse(run.updatedAt) : NaN;
   if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
   const seconds = Math.max(0, Math.floor((end - start) / 1000));

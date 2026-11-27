@@ -32,7 +32,7 @@ test("GitHub runs are normalized and the failed filter is asked from the API", a
   assert.equal(calls[0].url, "/repos/octo/sandbox/actions/runs?per_page=30&page=1&status=failure");
   assert.deepEqual(page.items[0], {id: "45968318641", number: 7, workflow: "CI", workflowId: ".github/workflows/ci.yml", title: "Dispatch",
     branch: "main", sha: "a".repeat(40), event: "workflow_dispatch", state: "failure", attempt: 1, createdAt: "2026-11-27T10:00:00Z",
-    updatedAt: "2026-11-27T10:02:00Z", url: "https://github.com/octo/sandbox/actions/runs/45968318641", actor: "octo"});
+    updatedAt: "2026-11-27T10:02:00Z", url: "https://github.com/octo/sandbox/actions/runs/45968318641", actor: "octo", startedAt: null});
   assert.equal(page.more, true);
 });
 

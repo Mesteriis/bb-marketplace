@@ -18,16 +18,18 @@ export type SendOptions = {note?: string; includeLogs?: boolean};
 
 /** Hands failed runs to agents: a new investigation thread, messages to chosen threads, and subscriptions. */
 export function ciAgent(bb: BbPluginApi, service: Service, changed: (copyId: string) => void,
-  config: () => Promise<CiAgentConfig> = async () => ({model: ""})) {
+  config: () => Promise<CiAgentConfig> = async () => ({model: ""}),
+  /** The working copy attached to a thread's environment, or null. */
+  threadCopy: (threadId: string) => Promise<string | null> = async () => null) {
   const kv = bb.storage.kv;
   const asking = new Map<string, Promise<{threadId: string; created: boolean}>>();
 
-  async function prompt(copyId: string, runId: string, jobId: string | null, includeLogs = true) {
+  async function prompt(copyId: string, runId: string, jobId: string | null, includeLogs = true, elsewhere = false) {
     const {copy, linked, api} = await service.context(copyId);
     const run = await api.run(runId);
     const {job, lines} = await service.excerpt(api, runId, jobId);
     return {run, copy,
-      text: failurePrompt({forge: forgeNames[linked.account.kind], repository: linked.repo.path, run, job, excerpt: includeLogs ? lines : []})};
+      text: failurePrompt({forge: forgeNames[linked.account.kind], repository: linked.repo.path, run, job, excerpt: includeLogs ? lines : [], elsewhere})};
   }
 
   async function send(threadIds: string[], text: string) {
@@ -55,17 +57,33 @@ export function ciAgent(bb: BbPluginApi, service: Service, changed: (copyId: str
     return bb.sdk.threads.list({projectId: (await projectOf(copy)).projectId, archived: false, limit: 100});
   }
 
-  /** Only threads of the copy's own project may receive its CI output. */
+  /**
+   * Only threads of the copy's project (or the fallback project) may receive its CI output, and threads whose own
+   * environment is this copy, wherever they are filed.
+   */
   async function ownThreads(copyId: string, threadIds: string[]) {
+    const unique = [...new Set(threadIds)];
+    const here = new Set((await Promise.all(unique.map(async id => await threadCopy(id).catch(() => null) === copyId ? id : null))).filter(id => id !== null));
+    const rest = unique.filter(id => !here.has(id));
+    if (!rest.length) return {threads: unique, allHere: true};
     const allowed = new Set((await projectThreads(copyId)).map(thread => thread.id));
-    if (threadIds.some(id => !allowed.has(id))) throw new Error("ACCESS_DENIED");
-    return [...new Set(threadIds)];
+    if (rest.some(id => !allowed.has(id))) throw new Error("ACCESS_DENIED");
+    return {threads: unique, allHere: false};
   }
 
   /** One round for one copy: new failures go to the subscribed threads and are remembered once delivered. */
   async function watchOnce(copyId: string) {
-    const threads = await kv.get<string[]>(subscriptionKey(copyId)) ?? [];
-    if (!threads.length) return {active: false};
+    const stored = await kv.get<string[]>(subscriptionKey(copyId)) ?? [];
+    if (!stored.length) return {active: false};
+    // The project or the fallback setting may have changed since the subscription was saved: check again.
+    const threads = await ownThreads(copyId, stored).then(result => result.threads, async () => {
+      const allowed = new Set(await projectThreads(copyId).then(rows => rows.map(row => row.id), () => [] as string[]));
+      return stored.filter(id => allowed.has(id));
+    });
+    if (threads.length !== stored.length) {
+      if (threads.length) await kv.set(subscriptionKey(copyId), threads);
+      else { await kv.delete(subscriptionKey(copyId)); await kv.delete(seenKey(copyId)); return {active: false}; }
+    }
     const {items} = await service.runs(copyId, "all", 1);
     const active = items.some(run => isActive(run.state));
     const previous = await kv.get<string[]>(seenKey(copyId)) ?? null;
@@ -109,7 +127,7 @@ export function ciAgent(bb: BbPluginApi, service: Service, changed: (copyId: str
       return {threads: rows.map(row => ({id: row.id, title: row.title || row.id})), subscribed: await kv.get<string[]>(subscriptionKey(copyId)) ?? []};
     },
     async ask(copyId: string, runId: string, jobId: string | null) {
-      const {run, copy, text} = await prompt(copyId, runId, jobId);
+      const {run, copy, text: base} = await prompt(copyId, runId, jobId);
       const key = askKey(copyId, failureKey(run));
       const pending = asking.get(key);
       if (pending) return {...await pending, created: false};
@@ -117,6 +135,7 @@ export function ciAgent(bb: BbPluginApi, service: Service, changed: (copyId: str
         const existing = await kv.get<string>(key);
         if (existing) return {threadId: existing, created: false};
         const {projectId, own} = await projectOf(copy);
+        const text = own ? base : (await prompt(copyId, runId, jobId, true, true)).text;
         const model = (await config()).model.trim();
         // The fallback project does not hold this copy, so its thread starts where that project starts threads.
         const spawned = await bb.sdk.threads.spawn({
@@ -136,18 +155,22 @@ export function ciAgent(bb: BbPluginApi, service: Service, changed: (copyId: str
     },
     async send(copyId: string, runId: string, jobId: string | null, threadIds: string[], options: SendOptions = {}) {
       const targets = await ownThreads(copyId, threadIds);
-      const {text} = await prompt(copyId, runId, jobId, options.includeLogs ?? true);
+      const {copy} = await service.context(copyId);
+      // Threads of a fallback project do not hold the copy; a thread whose own environment is the copy does.
+      const elsewhere = !copy.projectId && !targets.allHere;
+      const {text} = await prompt(copyId, runId, jobId, options.includeLogs ?? true, elsewhere);
       const note = options.note?.trim();
-      return send(targets, note ? note + "\n\n" + text : text);
+      return send(targets.threads, note ? note + "\n\n" + text : text);
     },
     /** The investigation prompt for the composer, where the owner picks the model; with the project it would start in. */
     async compose(copyId: string, runId: string, jobId: string | null) {
-      const {copy, text} = await prompt(copyId, runId, jobId);
-      const projectId = await projectOf(copy).then(found => found.projectId, () => null);
-      return {prompt: text, projectId};
+      const {copy} = await service.context(copyId);
+      const found = await projectOf(copy).catch(() => null);
+      const {text} = await prompt(copyId, runId, jobId, true, found ? !found.own : false);
+      return {prompt: text, projectId: found?.projectId ?? null, hostId: found?.own ? copy.hostId : null};
     },
     async subscribe(copyId: string, threadIds: string[]) {
-      const subscribed = threadIds.length ? await ownThreads(copyId, threadIds) : [];
+      const subscribed = threadIds.length ? (await ownThreads(copyId, threadIds)).threads : [];
       if (subscribed.length) await kv.set(subscriptionKey(copyId), subscribed);
       else { await kv.delete(subscriptionKey(copyId)); await kv.delete(seenKey(copyId)); }
       return {subscribed};

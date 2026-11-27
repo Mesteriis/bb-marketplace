@@ -65,13 +65,14 @@ export function LogView({api, copyId, runId, job, liveLog, liveLimitation}: {
       <input type="search" aria-label="Filter log lines" placeholder="Filter" value={query} onChange={event => setQuery(event.target.value)}/>
       {filtering && <span className="git-muted" role="status">{shown.length} of {lines.length} lines</span>}
       <label><input type="checkbox" checked={follow} onChange={event => setFollow(event.target.checked)}/> Follow the end</label>
-      <button type="button" onClick={() => void api.copy(log.text).then(done => setCopied(done ? "Log copied." : "The browser did not allow copying."))}>Copy log</button>
+      <button type="button" onClick={() => void api.copy(filtering ? shown.map(index => lines[index]).join("\n") : log.text)
+        .then(done => setCopied(done ? (filtering ? "Shown lines copied." : "Log copied.") : "The browser did not allow copying."))}>{filtering ? "Copy shown lines" : "Copy log"}</button>
       {job.url && <a href={job.url} target="_blank" rel="noreferrer">Open job on the forge</a>}
       {copied && <span className="git-muted" role="status">{copied}</span>}
     </div>
     {notes.length > 0 && <ul className="git-ci-lines" aria-label="Annotations">{notes.map((note, index) => <li key={index}>{note}</li>)}</ul>}
     {log.truncated && <p className="git-muted">Showing the end of a long log.</p>}
-    {errorAt !== null && <p className="git-muted">Opened at the error on line {errorAt + 1}.</p>}
+    {errorAt !== null && !filtering && <p className="git-muted">Opened at the error on line {errorAt + 1}.</p>}
     <pre ref={pane} className="git-code git-ci-log" aria-label={"Log of " + job.name}>{shown.map(index =>
       <span key={index} className="git-ci-line" data-error={index === errorAt || undefined} ref={index === errorAt ? marker : undefined}>
         <span className="git-ci-number" aria-hidden="true">{index + 1}</span>{lines[index] + "\n"}</span>)}</pre>

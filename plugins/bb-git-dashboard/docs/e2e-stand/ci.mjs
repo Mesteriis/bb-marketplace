@@ -31,6 +31,10 @@ try {
   check("Gitea and its account detected and connected", await visible(page.getByText(/Gitea · localhost\/stand\/beta · stand \(stand\)/)));
   const failedRun = page.getByRole("button", { name: "CI #2" });
   check("runs listed with their state", await visible(failedRun) && await visible(page.locator(".git-state[data-state=success]")));
+  const tiles = page.getByRole("definition");
+  check("tiles sum up running, queued, failed and the success rate", await visible(page.locator(".git-ci-tiles")) &&
+    JSON.stringify(await page.locator(".git-ci-tile dt").allInnerTexts()) === JSON.stringify(["Running", "Queued", "Failed", "Success rate"]) && await tiles.count() === 4);
+  check("runs show their duration", await page.locator("thead th", { hasText: "Duration" }).count() === 1);
   await page.getByRole("group", { name: "Runs to show" }).getByRole("button", { name: "Failed" }).click();
   await until(async () => await page.getByRole("button", { name: "CI #1" }).count() === 0);
   check("failed filter shows only the failed run", await page.getByRole("button", { name: "CI #1" }).count() === 0 && await failedRun.count() === 1);
@@ -46,6 +50,19 @@ try {
   const [first, last] = await page.locator(".git-ci-jobs > li").evaluateAll(items => items.map(item => item.getBoundingClientRect().top));
   check("jobs are listed together at the top", last - first < 60, last - first);
   await page.screenshot({ path: out + "/ci-run.png", fullPage: true });
+  const filter = page.getByRole("searchbox", { name: "Filter log lines" });
+  await filter.fill("greeting");
+  check("the log filter keeps matching lines and counts them", await visible(page.getByText(/^\d+ of \d+ lines$/)) &&
+    (await page.locator(".git-ci-log .git-ci-line").allInnerTexts()).every(line => line.includes("greeting")));
+  await filter.fill("");
+  await page.getByLabel("Follow the end").check();
+  check("Follow the end scrolls the log to its end", await until(() => page.locator(".git-ci-log").evaluate(pane => pane.scrollTop + pane.clientHeight >= pane.scrollHeight - 2)));
+  await page.getByLabel("Follow the end").uncheck();
+  await page.getByRole("button", { name: "Copy log" }).click();
+  check("Copy log reports its outcome", await visible(page.getByText(/^(Log copied\.|The browser did not allow copying\.)$/)));
+  check("run has Copy link and Run workflow with inputs", await page.getByRole("button", { name: "Copy link" }).count() === 1 &&
+    await page.getByRole("button", { name: "Run workflow with inputs…" }).count() === 1);
+  check("a failed run offers Ask agent with another model", await page.getByRole("button", { name: "Ask agent with another model…" }).count() === 1);
 
   await page.getByRole("button", { name: "Re-run failed jobs" }).click();
   const dialog = page.getByRole("dialog");
@@ -54,11 +71,15 @@ try {
   await until(() => writes().length > 0);
   check("re-run reached the forge once", JSON.stringify(writes().map(write => write.path)) === JSON.stringify(["/api/v1/repos/stand/beta/actions/runs/2/rerun-failed-jobs"]), writes());
 
-  await page.getByRole("button", { name: "Ask agent" }).click();
+  await page.getByRole("button", { name: "Ask agent", exact: true }).click();
   check("Ask agent opens an investigation thread", await visible(page.getByText(/An agent is investigating this run|already being investigated/)));
 
+  await page.getByRole("button", { name: "Send to threads" }).click();
+  check("Send to threads takes a message and the log excerpt switch", await visible(page.getByLabel("Add a message (optional)")) &&
+    await page.getByLabel("Include log excerpts of failed jobs").isChecked());
+  await page.getByRole("button", { name: "Send to threads" }).click();
   await page.getByRole("button", { name: "All runs" }).click();
-  await page.getByRole("button", { name: "Run workflow" }).first().click();
+  await page.getByRole("button", { name: "Run workflow", exact: true }).first().click();
   const form = page.getByRole("form", { name: "Run workflow" });
   const outcome = form.getByRole("combobox").nth(1);
   check("dispatch form offers the declared choice", await visible(form.getByText("outcome")) && (await outcome.locator("option").allInnerTexts()).join(",") === "success,failure");
@@ -71,6 +92,14 @@ try {
   check("manual run reached the forge with its inputs", dispatch?.path === "/api/v1/repos/stand/beta/actions/workflows/ci.yml/dispatches" &&
     dispatch.body?.ref === "main" && JSON.stringify(dispatch.body?.inputs) === JSON.stringify({outcome: "failure"}), dispatch);
 
+  await page.getByRole("button", { name: "Все проекты" }).first().click();
+  await page.getByRole("button", { name: "CI/CD", exact: true }).click();
+  check("CI/CD overview lists runs across repositories with tiles", await visible(page.getByRole("heading", { name: "CI/CD" })) &&
+    await visible(page.getByRole("combobox", { name: "Repository" })) && await visible(page.locator(".git-ci-tiles")) &&
+    await visible(page.locator("td", { hasText: "stand/beta" })));
+  await page.screenshot({ path: out + "/ci-overview.png", fullPage: true });
+  await page.locator("button.git-table-entry", { hasText: "CI #2" }).first().click();
+  check("an overview row opens its repository's CI/CD", await visible(page.getByRole("button", { name: "CI #2" })));
   await page.setViewportSize({ width: 768, height: 900 });
   await page.waitForTimeout(300);
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);

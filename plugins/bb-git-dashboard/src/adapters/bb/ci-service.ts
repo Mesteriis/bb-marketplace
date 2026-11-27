@@ -18,6 +18,8 @@ export type CiDeps = {
   linked(copy: Copy): Promise<Linked>;
   /** Every attached copy, for the overview across repositories. */
   copies?(): Promise<Copy[]>;
+  /** The working copy attached to a thread's environment, or null. */
+  threadCopy?(threadId: string): Promise<string | null>;
   send?: typeof fetch;
   now?: () => number;
 };

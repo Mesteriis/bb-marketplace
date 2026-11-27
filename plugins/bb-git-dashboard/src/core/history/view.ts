@@ -19,11 +19,14 @@ const dayOf = (time: number, offset: number) => Math.floor((time + offset * 60_0
  * Consecutive commits of one calendar day in the viewer's zone, labelled Today, Yesterday,
  * a weekday within the last week, or the date. A day that returns after a gap starts a new group.
  */
-export function dayGroups(commits: CommitSummary[], now: number, offset: number): DayGroup[] {
-  const today = dayOf(now, offset);
+export function dayGroups(commits: CommitSummary[], now: number, offset: number | ((time: number) => number)): DayGroup[] {
+  // A function gives each moment its own offset, so a daylight-saving change does not move commits to the next day.
+  const offsetAt = typeof offset === "number" ? () => offset : offset;
+  const today = dayOf(now, offsetAt(now));
   const groups: (DayGroup & {day: number})[] = [];
   commits.forEach((commit, index) => {
-    const day = dayOf(Date.parse(commit.authorDate), offset);
+    const time = Date.parse(commit.authorDate);
+    const day = dayOf(time, offsetAt(time));
     const last = groups[groups.length - 1];
     if (last && last.day === day) { last.count++; return; }
     const ago = today - day;

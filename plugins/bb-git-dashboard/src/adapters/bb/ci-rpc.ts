@@ -17,7 +17,7 @@ export function ciHandlers(bb: BbPluginApi, deps: CiDeps, changed: (copyId: stri
   const agent = ciAgent(bb, service, changed, async () => {
     const {ciFallbackProject, ciAnalysisModel} = await settings.get();
     return {fallbackProject: ciFallbackProject, model: ciAnalysisModel};
-  });
+  }, deps.threadCopy);
   const handle = <I, O extends object>(action: (input: I) => Promise<O>) => async (input: I, context: Caller) => {
     if (context.experimental_caller.kind !== "client") return failureFor(undefined, "ACCESS_DENIED");
     try { return {ok: true as const, ...await action(input)}; }

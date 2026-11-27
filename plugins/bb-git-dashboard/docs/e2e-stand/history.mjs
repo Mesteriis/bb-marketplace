@@ -40,6 +40,22 @@ try {
   await page.locator(".git-history-row", { hasText: "feature work" }).click();
   check("a commit shows its files and patch", await visible(page.getByRole("region", { name: "Commit" }).getByText("feature.txt")) &&
     await visible(page.locator(".git-history-patch .git-added", { hasText: "+2" })));
+  const patch = page.getByRole("region", { name: "Commit" });
+  check("a patch counts its changed lines", await visible(patch.getByText(/^\d+ changed lines?$/)) && await visible(patch.locator(".git-history-patch-head .git-added")));
+  await patch.getByLabel("Wrap long lines").check();
+  check("Wrap long lines wraps the patch", await patch.locator(".git-history-patch[data-wrap]").count() === 1);
+  check("commits are grouped by day", await page.locator(".git-history-day").count() >= 1);
+  const search = page.getByRole("searchbox", { name: "Find in loaded commits" });
+  await search.fill("feature");
+  check("search counts its matches", await visible(page.getByText(/^\d+ match(es)? *$/)), await page.locator(".git-history-search [role=status]").textContent().catch(() => null));
+  check("search marks matching rows and dims the rest", await page.locator(".git-history-rows li[data-match]").count() >= 1 &&
+    await page.locator(".git-history-rows li[data-index]:not([data-match])").count() >= 1);
+  await search.press("Enter");
+  check("Enter selects a match", await page.locator(".git-history-rows li[data-match] .git-history-row[aria-current=true]").count() === 1);
+  await search.fill("");
+  await page.getByRole("button", { name: "Refresh" }).first().click();
+  check("Refresh reloads the history", await visible(page.getByRole("button", { name: "Refresh" }).first()) &&
+    await visible(page.getByText("5 commits on all branches · on main")));
   await page.setViewportSize({ width: 768, height: 900 });
   await page.waitForTimeout(300);
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);

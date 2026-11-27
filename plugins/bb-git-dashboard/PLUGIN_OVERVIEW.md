@@ -12,7 +12,7 @@ The **Projects folder** setting (default `~/projects` on the scanned host) and i
 
 ## History
 
-The History tab of a working copy draws the commit graph over all branches, tags and remotes, labels HEAD, branches and tags, lists uncommitted changes on top, and opens a commit's files and patches. It reads Git on the copy's own host without changing anything and refreshes when refs or the working tree change.
+The History tab of a working copy, also a **Git History** tab in a thread and an optional thread header button, draws the commit graph over all branches, tags and remotes grouped by day, lists uncommitted changes on top, and opens a commit's files and patches. Find in loaded commits by subject, hash, author or ref. It reads Git on the copy's own host without changing anything.
 
 ## My PRs
 
@@ -24,7 +24,7 @@ A pull request opens with its discussion, checks, files with line threads and co
 
 ## CI/CD
 
-The Actions tab lists GitHub Actions, Gitea Actions, GitLab CI/CD or Azure Pipelines runs with All, Active and Failed filters, opens a failed job's log at its error line, and re-runs, cancels or runs a workflow after a confirmation. Ask agent and Send to threads pass the error excerpt to agents as fenced, untrusted text.
+The Actions tab and a thread's **CI/CD** tab list GitHub Actions, Gitea Actions, GitLab CI/CD or Azure Pipelines runs with tiles and filters, open a failed job's log at its error line, and re-run, cancel or run a workflow after a confirmation. **CI/CD** in Git sums up every linked repository. Ask agent, Send to threads and `bb git-dashboard ci` pass runs to agents as fenced, untrusted text.
 
 ## Remote repositories
 

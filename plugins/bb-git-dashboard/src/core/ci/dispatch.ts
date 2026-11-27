@@ -60,3 +60,9 @@ export function gitlabDispatchSpec(document: unknown): DispatchSpec {
       default: scalar(spec.value), options}];
   })};
 }
+
+/** The workflow a run names: runs carry the workflow's id, or on GitHub and Gitea its file path. */
+export function workflowOf<W extends {id: string; path: string | null}>(workflows: W[], key: string | null): W | undefined {
+  if (!key) return undefined;
+  return workflows.find(item => item.id === key) ?? workflows.find(item => item.path === key);
+}

@@ -24,7 +24,11 @@ export function CiOverview({api, onOpen}: {api: CiApi; onOpen(copyId: string): v
       setError("");
       const busy = result.repositories.some(row => row.runs.some(run => isActive(run.state)));
       timer = setTimeout(load, busy ? 15_000 : 60_000);
-    }, cause => { if (active) setError(message(cause)); });
+    }, cause => {
+      if (!active) return;
+      setError(message(cause));
+      timer = setTimeout(load, 60_000);
+    });
     void load();
     return () => { active = false; clearTimeout(timer); };
   }, [api, revision]);

@@ -16,7 +16,8 @@ const send = (async (target: string | URL) => {
   return new Response("{}", {status: 404});
 }) as typeof fetch;
 
-function fakeBb(options: {copy?: Copy; config?: {fallbackProject?: string; model: string}} = {}) {
+function fakeBb(options: {copy?: Copy; config?: {fallbackProject?: string; model: string}; threads?: {id: string; title: string}[];
+  threadCopies?: Record<string, string>} = {}) {
   const store = new Map<string, unknown>();
   const spawned: {prompt: string; title: string; environment: unknown; projectId: string; model?: string}[] = [];
   const listed: unknown[] = [];
@@ -32,14 +33,15 @@ function fakeBb(options: {copy?: Copy; config?: {fallbackProject?: string; model
         messages.push({threadId: args.threadId, text: args.input[0].text});
         return {};
       },
-      list: async (args: unknown) => { listed.push(args); return [{id: "thr_a", title: "Fix CI"}, {id: "thr_gone", title: "Old"}]; },
+      list: async (args: unknown) => { listed.push(args); return options.threads ?? [{id: "thr_a", title: "Fix CI"}, {id: "thr_gone", title: "Old"}]; },
     }},
   } as unknown as BbPluginApi;
   const service = ciService({copy: async () => options.copy ?? copy, send,
     linked: async () => ({account: {kind: "github", id: "a", label: "A", origin: "https://github.com", organization: "", username: "octo"}, token: "fixture-token-value",
       repo: {id: "1", accountId: "a", project: "octo", name: "sandbox", path: "octo/sandbox", clone: "https://github.com/octo/sandbox.git", branch: "main", canPush: true}})});
   const config = options.config ?? {model: ""};
-  return {agent: ciAgent(bb, service, () => {}, async () => config), spawned, messages, store, listed};
+  const threadCopy = async (threadId: string) => options.threadCopies?.[threadId] ?? null;
+  return {agent: ciAgent(bb, service, () => {}, async () => config, threadCopy), spawned, messages, store, listed};
 }
 
 test("asking an agent opens one investigation thread on the copy, with the fenced error excerpt", async () => {
@@ -134,4 +136,34 @@ test("the prompt for the composer comes with the project to start in, or none", 
   assert.match(own.prompt, /assert failed/);
   assert.equal((await fakeBb({copy: loose}).agent.compose("c2", "9", null)).projectId, null);
   assert.equal((await fakeBb({copy: loose, config: {fallbackProject: "proj_fallback", model: ""}}).agent.compose("c2", "9", null)).projectId, "proj_fallback");
+});
+
+test("a thread whose own working copy is this copy may receive its runs, even outside the project list", async () => {
+  const {agent, messages} = fakeBb({copy: loose, threadCopies: {thr_here: "c2"}});
+  assert.deepEqual(await agent.send("c2", "9", null, ["thr_here"]), {sent: ["thr_here"], failed: []});
+  await assert.rejects(agent.send("c2", "9", null, ["thr_elsewhere"]), {message: "PROJECT_REQUIRED"});
+  assert.equal(messages.length, 1);
+});
+
+test("the watcher drops subscribed threads that are no longer allowed before it delivers", async () => {
+  const {agent, messages, store} = fakeBb({threads: [{id: "thr_b", title: "Other"}]});
+  store.set("ci-subscription/c1", ["thr_a"]);
+  store.set("ci-seen/c1", []);
+  await agent.watchOnce("c1");
+  assert.equal(messages.length, 0);
+  assert.equal(store.has("ci-subscription/c1"), false);
+});
+
+test("a thread in the fallback project is told the repository is not in its workspace", async () => {
+  const {agent, spawned} = fakeBb({copy: loose, config: {fallbackProject: "proj_fallback", model: ""}});
+  await agent.ask("c2", "9", null);
+  assert.match(spawned[0].prompt, /This thread's workspace is not that repository/);
+  const own = fakeBb();
+  await own.agent.ask("c1", "9", null);
+  assert.doesNotMatch(own.spawned[0].prompt, /workspace is not that repository/);
+});
+
+test("the composer starts on the copy's own host when the copy is in its project", async () => {
+  assert.equal((await fakeBb().agent.compose("c1", "9", null)).hostId, "mac");
+  assert.equal((await fakeBb({copy: loose, config: {fallbackProject: "proj_fallback", model: ""}}).agent.compose("c2", "9", null)).hostId, null);
 });

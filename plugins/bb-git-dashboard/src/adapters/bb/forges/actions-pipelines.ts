@@ -27,6 +27,7 @@ function toRun(raw: unknown, web: string): Run {
     title: text(row.display_title) || text(row.name), branch: nullable(row.head_branch), sha: nullable(row.head_sha), event: nullable(row.event),
     state: githubState(text(row.status), nullable(row.conclusion)), attempt: Number.isSafeInteger(row.run_attempt) && (row.run_attempt as number) > 0 ? row.run_attempt as number : 1,
     createdAt: text(row.created_at), updatedAt: nullable(row.updated_at), url: linkOn(web, row.html_url), actor: nullable(object(row.actor).login),
+    startedAt: nullable(row.run_started_at),
   };
 }
 

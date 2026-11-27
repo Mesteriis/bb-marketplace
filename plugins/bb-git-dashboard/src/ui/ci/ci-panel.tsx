@@ -80,7 +80,7 @@ export function CiPanel({api, copyId, currentThreadId}: {api: CiApi; copyId: str
       }}/>}
     {error && <p className="git-error" role="alert">{error}</p>}
     {!data && !error && <p className="git-muted" role="status">Loading runs…</p>}
-    {data && data.items.length > 0 && <CiTiles runs={data.items}/>}
+    {data && filter === "all" && data.items.length > 0 && <CiTiles runs={data.items}/>}
     {data && !data.items.length && <p className="git-muted">{filter === "all" ? "No runs yet." : filter === "active" ? "Nothing is running." : "No failed runs."}</p>}
     {data && data.items.length > 0 && <div className="git-workspace-table"><table>
       <thead><tr><th scope="col">Run</th><th scope="col">Status</th><th scope="col">Branch</th><th scope="col" data-col="event">Event</th><th scope="col">Started</th><th scope="col">Duration</th>{data.operations.dispatch && <th scope="col" aria-label="Actions"/>}</tr></thead>

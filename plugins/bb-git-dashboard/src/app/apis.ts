@@ -33,8 +33,8 @@ export function ciApi(client: Client, navigate: Navigate): CiApi {
     ask: async (copyId, runId, jobId) => okValue(await client.call("ciAsk", {copyId, runId, jobId})),
     send: async (copyId, runId, jobId, threadIds, options = {}) => okValue(await client.call("ciSend", {copyId, runId, jobId, threadIds, ...options})),
     compose: async (copyId, runId, jobId) => {
-      const {prompt, projectId} = okValue(await client.call("ciCompose", {copyId, runId, jobId}));
-      navigate.toCompose({initialPrompt: prompt, focusPrompt: true, ...(projectId ? {projectId} : {})});
+      const {prompt, projectId, hostId} = okValue(await client.call("ciCompose", {copyId, runId, jobId}));
+      navigate.toCompose({initialPrompt: prompt, focusPrompt: true, ...(projectId ? {projectId} : {}), ...(hostId ? {hostId} : {})});
     },
     overview: async () => okValue(await client.call("ciOverview", {})),
     subscribe: async (copyId, threadIds) => okValue(await client.call("ciSubscribe", {copyId, threadIds})),

@@ -89,9 +89,11 @@ export function client(account: Account, token: string, send: typeof fetch, timi
         if (options.unsupported && (response.status === 404 || response.status === 405)) throw new Error("PROVIDER_UNSUPPORTED");
         if (writing && response.status >= 500) throw new Error("OUTCOME_UNKNOWN");
         if (response.status === 409) throw new Error("PROVIDER_CONFLICT");
-        if ([401,403,404].includes(response.status)) throw new Error("PROVIDER_DENIED");
-        if (response.status === 429 || response.status >= 500) {
-          const failure = new Error(response.status === 429 ? "PROVIDER_RATE_LIMITED" : "PROVIDER_UNAVAILABLE");
+        // GitHub answers its primary rate limit with 403 and no requests left.
+        const spent = response.status === 403 && response.headers.get("x-ratelimit-remaining") === "0";
+        if ([401,403,404].includes(response.status) && !spent) throw new Error("PROVIDER_DENIED");
+        if (response.status === 429 || spent || response.status >= 500) {
+          const failure = new Error(response.status === 429 || spent ? "PROVIDER_RATE_LIMITED" : "PROVIDER_UNAVAILABLE");
           throw Object.assign(failure, {retryAfter: waitOf(response.headers, now()) ?? 1000});
         }
         throw new Error("PROVIDER_REJECTED");

@@ -71,7 +71,9 @@ export function HistoryPanel({api, copyId, graph = true}: {api: HistoryApi; copy
   const rows = useMemo(() => layoutCommitGraph(commits), [commits]);
   const full = graph ? graphWidth(Math.max(1, ...rows.map(row => row.laneCount))) : 0;
   const width = Math.min(full, maxGraph);
-  const days = useMemo(() => new Map(dayGroups(commits, Date.now(), -new Date().getTimezoneOffset()).map(group => [group.start, group])), [commits]);
+  // Keyed by the calendar day too, so Today and Yesterday move on at midnight in a tab left open.
+  const today = new Date().toDateString();
+  const days = useMemo(() => new Map(dayGroups(commits, Date.now(), time => -new Date(time).getTimezoneOffset()).map(group => [group.start, group])), [commits, today]);
   const searching = query.trim().length > 0;
   const matches = useMemo(() => searching ? commits.flatMap((commit, index) => matchesCommit(commit, query) ? [index] : []) : [], [commits, query, searching]);
   const matched = useMemo(() => new Set(matches), [matches]);

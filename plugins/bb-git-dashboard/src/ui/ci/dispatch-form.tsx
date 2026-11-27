@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { dispatchValues, type DispatchInput, type DispatchSpec } from "../../core/ci/dispatch.ts";
+import { dispatchValues, workflowOf, type DispatchInput, type DispatchSpec } from "../../core/ci/dispatch.ts";
 import type { Workflow } from "../../core/ci/pipelines.ts";
 import { message, type CiApi } from "./ci-api.ts";
 import { ConfirmDialog } from "./confirm-dialog.tsx";
@@ -26,7 +26,7 @@ export function DispatchForm({api, copyId, inputsLimitation, onClose, onDone, in
     api.workflows(copyId).then(result => {
       if (!active) return;
       setWorkflows(result.workflows);
-      setWorkflowId(result.workflows.find(item => item.id === initialWorkflow)?.id ?? result.workflows[0]?.id ?? "");
+      setWorkflowId(workflowOf(result.workflows, initialWorkflow)?.id ?? result.workflows[0]?.id ?? "");
       setRef(initialRef ?? result.defaultBranch ?? "");
     }, cause => { if (active) setError(message(cause)); });
     return () => { active = false; };

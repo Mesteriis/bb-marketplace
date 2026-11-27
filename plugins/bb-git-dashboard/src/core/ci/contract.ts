@@ -24,7 +24,7 @@ export const ciContract = {
   ciSend: {input: z.object({copyId: id, runId, jobId: runId.nullable(), threadIds: z.array(id).min(1).max(20),
     note: z.string().max(2000).optional(), includeLogs: z.boolean().optional()}),
     output: answer({sent: z.array(id), failed: z.array(z.object({threadId: id, code: z.string()}))})},
-  ciCompose: {input: z.object({copyId: id, runId, jobId: runId.nullable()}), output: answer({prompt: z.string(), projectId: id.nullable()})},
+  ciCompose: {input: z.object({copyId: id, runId, jobId: runId.nullable()}), output: answer({prompt: z.string(), projectId: id.nullable(), hostId: z.string().nullable()})},
   ciOverview: {input: z.object({}), output: answer({repositories: z.array(z.object({copyId: id, repository: z.string(),
     forge: z.enum(["github", "gitlab", "gitea", "azure"]), runs: z.array(run), error: z.string().nullable()}))})},
   ciSubscribe: {input: z.object({copyId: id, threadIds: z.array(id).max(20)}), output: answer({subscribed: z.array(id)})},

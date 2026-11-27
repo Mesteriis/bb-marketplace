@@ -91,3 +91,12 @@ describe("patchStats", () => {
     assert.deepEqual(patchStats(""), {added: 0, removed: 0});
   });
 });
+
+describe("dayGroups across a daylight-saving change", () => {
+  it("places each commit by its own offset", () => {
+    // Summer +180, winter +120: 22:30Z on Nov 26 is 00:30 on the 27th locally, 22:30Z on Jul 1 is 01:30 on Jul 2.
+    const offsetAt = (time: number) => new Date(time).getUTCMonth() === 6 ? 180 : 120;
+    const groups = dayGroups([commit("a", "2026-11-26T22:30:00Z"), commit("b", "2026-07-01T22:30:00Z")], Date.parse("2026-11-27T10:00:00Z"), offsetAt);
+    assert.deepEqual(groups.map(group => group.label), ["Today", "2026-07-02"]);
+  });
+});

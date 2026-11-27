@@ -26,7 +26,9 @@ function bounded(lines: string[]) {
  * Asks an agent to investigate a failed run. Everything the forge supplied — names, branch, links, log lines — is
  * untrusted (a fork can name a workflow or job), so it all stays inside one fenced block labelled as data.
  */
-export function failurePrompt(input: {forge: string; repository: string; run: Run; job: string | null; excerpt: string[]}) {
+export function failurePrompt(input: {forge: string; repository: string; run: Run; job: string | null; excerpt: string[];
+  /** The thread does not have the repository checked out (a fallback project): it must not change its own workspace. */
+  elsewhere?: boolean}) {
   const {run} = input;
   const data = [
     "Workflow: " + run.workflow + " — run #" + (run.number ?? run.id) + (run.attempt > 1 ? ", attempt " + run.attempt : ""),
@@ -38,7 +40,10 @@ export function failurePrompt(input: {forge: string; repository: string; run: Ru
   ];
   const fenced = fence(data);
   return [
-    "A CI run failed. Find the cause and propose a fix in this repository.",
+    ...(input.elsewhere ? [
+      "A CI run failed. Find the cause and propose a fix as a patch for the repository named below.",
+      "This thread's workspace is not that repository: do not change files here to fix it.",
+    ] : ["A CI run failed. Find the cause and propose a fix in this repository."]),
     "",
     "- Forge: " + input.forge,
     "- Repository: " + input.repository,

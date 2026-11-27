@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.8.0 — 2026-11-27
+
+Parity with git-history and github-actions, so both can be removed.
+
+- **History in a thread:** a Git History tab in the thread panel's New tab, and a Git History button in the thread header when **History: show a Git History button in the thread header** is on.
+- **History:** Find in loaded commits by subject, hash prefix, author, e-mail or ref, with the match count; Enter and Shift+Enter step through matches. A Refresh button. Commits grouped by day (Today, Yesterday, weekday, date) under sticky headings with their count. At most three refs per row, the rest as "+N". Conventional-commit prefixes are marked. **History: draw branch and merge lanes** turns the graph off. Patches have Wrap long lines, +/− counts and "N changed lines". A patch over 1.5 MB is cut at a whole line and says so instead of failing.
+- **CI/CD in a thread:** a CI/CD tab for the thread's working copy, with **Send to this thread**.
+- **CI/CD overview:** **CI/CD** in Git lists the latest runs of every linked repository, with an All repositories filter and Running, Queued, Failed and Success rate tiles; the tiles also head each repository's runs. Durations tick while a run is active.
+- **Logs:** a line filter with its count, Copy log, Follow the end, Open job on the forge.
+- **Runs:** Run with inputs… from a run row or a run opens Run workflow on its workflow and branch; Copy link; Run workflow is offered only when the token may push. Workflow lists are read once per five minutes.
+- **Agents:** **CI/CD: project for investigations of repositories without a BB project** lets Ask agent, Send and failure notifications work for copies outside BB projects (the thread starts in that project's default environment). **CI/CD: model for failure investigations** picks the model of new investigation threads. **Ask agent with another model…** opens the composer with the prompt. Send to threads takes a message (a default one for a failed run) and an Include log excerpts switch, and remembers the last recipients.
+- **CLI:** `bb git-dashboard ci list|show|workflows|run|rerun|cancel` on the thread's working copy. Reads need Read access; writes need Stage and commit and the owner's approval in the thread. The git-dashboard skill describes it.
+- **Rate limits:** a pull request or issue page refused by the forge's rate limit counts down the seconds the forge named and reads again by itself, with Try now.
+
 ## 0.7.1 — 2026-11-27
 
 - A pull request page needs only the pull request itself: on GitLab, Gitea and Azure DevOps its discussions, reviews, approvals, commits, statuses and your own user are read on their own, and one that fails leaves the page open with a line saying what is missing and why (live check on gitlab.com, where one such read answered 401 and took the whole merge request page down).

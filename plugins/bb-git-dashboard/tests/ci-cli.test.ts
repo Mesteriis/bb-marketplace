@@ -9,20 +9,26 @@ const run = (id: string, state: Run["state"], extra: Partial<Run> = {}): Run => 
   state, attempt: 1, createdAt: "2026-11-27T10:00:00Z", updatedAt: "2026-11-27T10:03:00Z", url: null, actor: null, ...extra,
 });
 
-function setup(permission: "none" | "read" | "write" = "write", approved = true) {
+function setup(permission: "none" | "read" | "write" = "write", approved = true, rerunAll = true, dynamic = false) {
   const prepared: CiAction[] = [];
   const confirmed: string[] = [];
   const asked: {threadId: string; title: string; lines: string[]}[] = [];
   const deps: CiCliDeps = {
     context: async threadId => { if (threadId !== "thr_1") throw new Error("NOT_FOUND"); return {copyId: "c1", permission}; },
     service: {
-      runs: async (_copyId, filter) => ({items: [run("7", "failure"), run("8", "running", {workflow: "Deploy", workflowId: "124"})]
+      runs: async (_copyId, filter) => ({operations: {dispatch: true, dispatchInputs: true, rerunFailed: true, rerunAll: rerunAll, cancel: true, liveLog: true},
+        limitations: (rerunAll ? {} : {rerunAll: "GitLab retries failed jobs only."}) as Record<string, string>, items: [run("7", "failure"), run("8", "running", {workflow: "Deploy", workflowId: "124"})]
         .filter(item => filter === "all" || (filter === "failed" ? item.state === "failure" : item.state === "running")), more: false}),
       run: async () => ({run: run("7", "failure"), jobs: [{id: "77", name: "test", state: "failure", startedAt: null, completedAt: null, url: null, steps: []}]}),
-      workflows: async () => ({workflows: [{id: "123", name: "CI", path: ".github/workflows/ci.yml"}, {id: "124", name: "Deploy", path: ".github/workflows/deploy.yml"}], defaultBranch: "main"}),
-      form: async (_copyId, workflowId) => workflowId === "124"
-        ? {dispatchable: true, inputs: [{name: "env", type: "choice", required: true, description: null, default: null, options: ["staging", "production"]}]}
-        : {dispatchable: false, inputs: []},
+      workflows: async () => ({workflows: [{id: "123", name: "CI", path: ".github/workflows/ci.yml"}, {id: "124", name: "Deploy", path: ".github/workflows/deploy.yml"},
+        ...(dynamic ? [{id: "125", name: "CodeQL", path: "dynamic/github-code-scanning/codeql"}] : [])], defaultBranch: "main"}),
+      form: async (_copyId, workflowId) => {
+        if (workflowId === "125") throw new Error("PROVIDER_DENIED");
+        return workflowId === "124"
+          ? {dispatchable: true, inputs: [{name: "env", type: "choice", required: true, description: null, default: null, options: ["staging", "production"]},
+            {name: "region", type: "string", required: true, description: null, default: "eu", options: []}]}
+          : {dispatchable: false, inputs: []};
+      },
       prepare: async (_copyId, action) => { prepared.push(action); return {id: "prev_1", lines: ["described " + action.kind], expires: "2026-11-27T10:05:00Z"}; },
       confirm: async previewId => { confirmed.push(previewId); return {done: true as const}; },
     },
@@ -51,14 +57,14 @@ test("workflows show which can run by hand and their inputs", async () => {
   const {cli} = setup("read");
   const listed = await cli(["ci", "workflows"], {threadId: "thr_1"});
   assert.deepEqual(listed.stdout!.split("\n"), ["default branch: main", "123  CI  .github/workflows/ci.yml  [no manual trigger]",
-    "124  Deploy  .github/workflows/deploy.yml  [manual]", "    env: choice (required) [staging|production]"]);
+    "124  Deploy  .github/workflows/deploy.yml  [manual]", "    env: choice (required) [staging|production]", "    region: string (required) = eu"]);
 });
 
 test("a write asks the owner in the thread and happens only after approval", async () => {
   const {cli, prepared, confirmed, asked} = setup();
   const result = await cli(["ci", "run", "deploy.yml", "--ref", "release", "env=staging"], {threadId: "thr_1"});
   assert.equal(result.exitCode, 0, result.stderr);
-  assert.deepEqual(prepared, [{kind: "dispatch", workflowId: "124", ref: "release", inputs: {env: "staging"}}]);
+  assert.deepEqual(prepared, [{kind: "dispatch", workflowId: "124", ref: "release", inputs: {env: "staging", region: "eu"}}]);
   assert.deepEqual(asked, [{threadId: "thr_1", title: "Approve CI: run workflow", lines: ["described dispatch"]}]);
   assert.deepEqual(confirmed, ["prev_1"]);
   await cli(["ci", "rerun", "7"], {threadId: "thr_1"});
@@ -97,4 +103,23 @@ test("help and unknown commands print the usage", async () => {
   const wrong = await cli(["ci", "explode"], {threadId: "thr_1"});
   assert.equal(wrong.exitCode, 1);
   assert.match(wrong.stderr!, /^Usage/);
+});
+
+test("the CLI's command list fits BB's registration rule", async () => {
+  const {ciCommands} = await import("../src/adapters/bb/ci-cli.ts");
+  for (const command of ciCommands) assert.match(command.name, /^[a-z0-9-]+$/);
+  assert.ok(ciCommands.every(command => command.summary && command.usage));
+});
+
+test("a workflow whose file cannot be read is listed without its inputs, not failing the list", async () => {
+  const {cli} = setup("read", true, true, true);
+  const listed = await cli(["ci", "workflows"], {threadId: "thr_1"});
+  assert.equal(listed.exitCode, 0, listed.stderr);
+  assert.equal(listed.stdout!.split("\n").at(-1), "125  CodeQL  dynamic/github-code-scanning/codeql  [inputs not readable: PROVIDER_DENIED]");
+});
+
+test("a write the forge cannot do is refused before the owner is asked", async () => {
+  const {cli, asked} = setup("write", true, false);
+  const result = await cli(["ci", "rerun", "7", "--all"], {threadId: "thr_1"});
+  assert.deepEqual([result.exitCode, result.stderr, asked.length], [1, "PROVIDER_UNSUPPORTED · GitLab retries failed jobs only.", 0]);
 });

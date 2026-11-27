@@ -13,6 +13,8 @@ export const run = z.object({
   title: z.string(), branch: z.string().nullable(), sha: z.string().nullable(), event: z.string().nullable(),
   state: ciState, attempt: z.number().int().min(1), createdAt: z.string(), updatedAt: z.string().nullable(),
   url: z.string().nullable(), actor: z.string().nullable(),
+  /** When this attempt started, if the forge says; a re-run keeps its first attempt's `createdAt`. */
+  startedAt: z.string().nullable().optional(),
 });
 export type Run = z.infer<typeof run>;
 export const step = z.object({number: z.number().int(), name: z.string(), state: ciState});

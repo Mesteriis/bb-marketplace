@@ -106,6 +106,7 @@ export default function plugin(bb: BbPluginApi) {
   const catalog = projectCatalog(bb);
   const ci = ciHandlers(bb, {
     copy: linkedCopy,
+    threadCopy: threadId => threadContext(threadId).then(context => context.copy.id, () => null),
     async copies() {
       const saved = await Promise.all((await kv.list("copy/")).map(key => kv.get<Copy>(key)));
       return Promise.all(saved.filter(copy => copy !== undefined).map(enrich));
