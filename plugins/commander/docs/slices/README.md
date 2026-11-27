@@ -47,8 +47,12 @@
 - `src/core/model.ts` (S1): S2 добавляет `PlanItem.expectTarget:
   Fingerprint | "absent" | null` (входит в digest); planner заполняет его
   stat-ом цели.
-- `Checkpoint` (S3): `tempPath`, `targetPath`, `expectTarget`, `verified`;
-  S6 хранит их в `*_json`-колонках.
+- `src/core/model.ts` (S1): S3 добавляет в `Conflict` опциональное
+  `allowedResolutions: ConflictAction[]`.
+- `Checkpoint` (S3): `tempPath`, `targetPath`, `expectTarget`, `verified`,
+  опциональное `committed: Fingerprint`; S6 хранит их в `*_json`-колонках.
+  Контракт S3 зафиксирован в коммите `77e204b9`; S4, S5, S6 вливают его в
+  свои ветки.
 - `JobStore.update` может менять `awaitsOwner` (S3 — контракт, S6 —
   колонка `awaits_owner`); выход из `pending` атомарно сбрасывает флаг.
 - `src/ui/index.ts` создаёт S0 как заглушку, дальше им владеет S8;
