@@ -1,6 +1,6 @@
 # S14. Архивы как источник и создание — спецификация helper-протокола
 
-Статус: **ревизия 8 после повторного ревью astra+opus (repair)**, кода нет; ждёт повторного ревью.
+Статус: **ревизия 9 после повторного ревью astra+opus (repair)**, кода нет; ждёт повторного ревью.
 Решения координатора A–H и правки ревью 1–7 внесены ниже (§3, §4, §5, §6, §7, §10, §11).
 Основание: ADR 0002 (accepted), [план 2a, задача 7](../plans/stage-2a.md),
 [приёмка S14](../../research/stage-2-libs.md#приёмка-s14), `docs/security.md`.
@@ -23,7 +23,7 @@ USTAR/PAX, `flate2` не в зависимостях); 7z/RAR; многотом�
 Из плана задачи 7: `src/core/archive-guard.ts`,
 `src/adapters/bb/archive-provider.ts`, `src/adapters/bb/archive-writer.ts`;
 правки `model.ts`, `permissions.ts`, `planner.ts`, `job-runner.ts`,
-`migrations.ts`, `src/ui/pane.tsx` (каждая — отдельным блоком).
+`migrations.ts` (миграции № 8 и № 9, §7), `src/ui/pane.tsx` (каждая — отдельным блоком).
 
 **Сверх списка плана (прошу подтвердить; без них helper не собрать и не
 проверить):**
@@ -38,7 +38,7 @@ USTAR/PAX, `flate2` не в зависимостях); 7z/RAR; многотом�
 | `package.json` | `scripts` (`build:helper`, `helper:sums`, `check:build`) и поле `files` (включить `bin/commander-archive-helper`, `bin/SHA256SUMS`); остальное не трогаю; файл правит и S18 — слияние по очереди |
 | корневой `THIRD_PARTY_NOTICES.md` | запись по `cargo metadata --locked --format-version 1 --filter-platform aarch64-apple-darwin`: **каждый** крейт из `Cargo.lock`, попадающий в бинарник (имя, версия, лицензия, источник), `zip` 8.6.0 и `tar` 0.4.46 отдельными строками; текст лицензий приложен, если требует лицензия; сверка списка скриптом `scripts/check-notices.mjs` (расхождение с `cargo metadata` — ошибка `check:build`) |
 | `.gitignore` | `helper/target/` |
-| `src/adapters/bb/rpc-handlers.ts` (блок `publicError`), `src/core/job-store.ts` (`Checkpoint.commitIntent`), `src/adapters/bb/job-store-sqlite.ts` и `migrations.ts` (колонка `commit_intent_json`, миграция № 8, индекс 7) | см. §10, §11 |
+| `src/adapters/bb/rpc-handlers.ts` (блок `publicError`), `src/core/job-store.ts` (`Checkpoint.commitIntent`), `src/adapters/bb/job-store-sqlite.ts` и `migrations.ts` (колонка `commit_intent_json`, миграция № 8; таблица `archives`, миграция № 9) | см. §10, §11 |
 | `src/core/errors.ts`, `errors.test.ts` | `ErrorCode += invalid_archive`, `reason?` с проверкой пары code+reason (§10) — разрешено координатором |
 
 ## 3. Процесс helper
@@ -388,13 +388,31 @@ expectTarget})`) — то есть `pack` = обычное задание с tem
 - `EndpointId` += `archive:<uuid>` (как `sftp:`; regex расширяется, строки
   этапа 1 читаются без изменений). Реестр `archives`: `uuid → {sourceRef,
   fingerprint (size+mtime источника), localCopy?: path, limits}`; живёт в
-  памяти сервера плагина + строка в БД (миграция, тест на fixture-БД этапа 1
-  `main@b44884df`) для восстановления очереди; пароль в реестр/БД не
-  пишется.
+  памяти сервера плагина **и** в таблице БД `archives` (миграция № 9, ниже)
+  для восстановления очереди после рестарта (задание из `archive:<uuid>`
+  должно найти источник); пароль и путь локальной копии в БД не пишутся
+  (копия — только в памяти/каталоге §7, после рестарта создаётся заново).
+
+  **Миграции S14 (полный список, append-only, решено координатором):**
+  1. **№ 8 (индекс 7)** — `ALTER TABLE checkpoints ADD COLUMN
+     commit_intent_json TEXT` (после `scan_jobs` S10, § 11);
+  2. **№ 9 (индекс 8)** — `CREATE TABLE archives (id TEXT PRIMARY KEY,
+     source_json TEXT NOT NULL, fingerprint_json TEXT NOT NULL, limits_json
+     TEXT NOT NULL, created_at TEXT NOT NULL)`; удаление строки — при
+     закрытии архива и по сроку (7 суток без заданий).
+  Номера согласуются по очереди слияния срезов (S14 сливается после S13; если
+  к началу кода в ветке этапа добавлены другие миграции — стоп и вопрос, не
+  перенумеровывать). Тест «в журнале ровно N миграций» (`job-store-sqlite.test.ts`,
+  тест журнала SDK) обновляется **в том же коммите**, что и миграции:
+  ожидание = число миграций ветки + 2; тест на fixture-БД этапа 1
+  (`main@b44884df`) — старые чекпоинты и задания читаются.
 - **Источник архива (решение A).** (1) Архив на endpoint **той же машины, что
   сервер плагина** (`host:<id>` совпадает с машиной сервера): без копии, helper
   открывает обходом от корня endpoint (§3), fingerprint сверяется до `open` и
-  после каждого запроса. (2) **Любой другой endpoint** (SFTP, host другой
+  после каждого запроса — **путь отключён до доказательства `primaryHostId` на
+  стенде; сейчас всегда приватная копия** (код пути «без копии» не включается;
+  тест: локальный `host:<id>` тоже идёт через копию, `open` получает корень
+  каталога копий, а не корень endpoint). (2) **Любой endpoint** (SFTP, host другой
   машины): приватная копия в **серверном приватном каталоге** (см. «Каталог копий и staging» ниже) через `FileProvider.read` с `expect`; **перед копированием —
   одноразовая оценка объёма как в S10** (`estimateId`, привязка к инициатору,
   показывается объём чтения); агенту копия — только с правом `read` на файл
@@ -406,13 +424,25 @@ expectTarget})`) — то есть `pack` = обычное задание с tem
   (сироты в каталоге копий без записи в реестре)**.
 - **Каталог копий и staging (на машине сервера).** Helper работает на машине
   сервера плагина, поэтому и копии архивов (§7), и staging `pack` (§6) лежат
-  там же: адаптер создаёт `mkdtemp(join(os.tmpdir(), "commander-archives-"))`
+  там же: адаптер создаёт приватный каталог **конкретной установки**
+  `os.tmpdir()/commander-archives-<installId>/` (`installId` — случайный
+  идентификатор установки плагина, хранится в настройках плагина) с правами
+  **0700**, а в нём на каждый запуск сервера — подкаталог `mkdtemp` с файлом-замком
+  `lock` (JSON `{pid, startedAt}`: pid процесса и время старта процесса по
+  `ps -o lstart= -p <pid>`; файл пишется `O_EXCL`, 0600, держится до выхода)
   через `node:fs` с правами **0700** (файлы 0600, `O_EXCL|O_NOFOLLOW`).
   `experimental_paths.dataDir` **не используется**: он есть только у хостового
-  воркера и может быть на другой машине. Сироты (каталоги `commander-archives-*`
-  без записи в реестре, старше текущего запуска) удаляются при старте плагина;
-  чужие каталоги и каталоги других пользователей не трогаются (проверка
-  владельца `uid` и `lstat` без следования по ссылкам). **Отпечаток для
+  воркера и может быть на другой машине. **Очистка сирот** при старте — только
+  внутри `commander-archives-<installId>/` и только подкаталоги **с замком, чей
+  владелец не жив** (процесса с таким `pid` нет **или** время старта процесса
+  не совпадает с записанным — защита от переиспользования pid); подкаталог без
+  замка или с нечитаемым замком не удаляется, а помечается в журнале кодов.
+  **Соседний активный экземпляр под тем же UID не трогается**; другие
+  каталоги `os.tmpdir()`, каталоги других установок и пользователей не
+  трогаются (проверка владельца `uid`, `lstat` без следования по ссылкам,
+  удаление без `follow`). Тест: два экземпляра (активный сосед с живым pid и
+  замком + подкаталог мёртвого владельца) — удалён только мёртвый; подкаталог без
+  замка остаётся; pid жив, но время старта другое → удаляется. **Отпечаток для
   `open.expect` (`dev, ino, size, mtime`) адаптер берёт из собственного `lstat`
   копии** (для не-копии — из `lstat` исходного локального файла); у
   `FileProvider` `dev`/`ino` нет (`Fingerprint` = size+mtime), поэтому
@@ -675,7 +705,7 @@ Fingerprint }` — **без других полей** (`targetPath`, `expectTarg
 (`job-store-sqlite.ts`: `writeCheckpoint` `:242`, `lastCheckpoint` `:399`;
 колонки `temp_fingerprint_json`, `cleanup_json` и т. д.); общей JSON-колонки
 «всего чекпоинта» **нет**. Поэтому «внутри существующего JSON» невозможно без
-новой колонки. **Решено координатором:** миграция с **одной** новой
+новой колонки. **Решено координатором (окончательно):** миграция с **одной** новой
 необязательной колонкой `commit_intent_json TEXT` (`ALTER TABLE checkpoints
 ADD COLUMN`, **миграция № 8 (индекс 7 в `MIGRATIONS`, после `scan_jobs`)**, как `cleanup_json` в `migrations.ts:45`), без перезаписи старых
 строк. Формат: старые строки — `NULL` (поле отсутствует, читается как раньше);
@@ -701,11 +731,22 @@ ADD COLUMN`, **миграция № 8 (индекс 7 в `MIGRATIONS`, посл�
   (отсутствует либо прежний отпечаток); иначе `unknown`. Прежняя
   `WriteSession` утрачена, а `openWrite` эксклюзивен (`already_exists` на
   своём temp), поэтому проверенный temp публикуется **не через
-  `session.commit`**, а `provider.rename(tempPath, targetPath, { replace,
-  expectTarget: исходный })` (`replace` и `expectTarget` берутся из
-  чекпоинта); результат сверяется SHA-256 цели → `done`. Тест: пересоздать
-  провайдер (новый экземпляр, пустая таблица сессий) → rename опубликовал
-  temp, `openWrite` не вызван, `done`.
+  `session.commit`**, а `provider.rename(tempPath, targetPath, …)`. В
+  `Checkpoint` нет `replace`, поэтому условие выводится только из
+  `expectTarget`: **цели нет** (`expectTarget === "absent"`) → явно
+  `rename(temp, target, { replace: false, expectTarget: "absent" })`;
+  результат сверяется SHA-256 цели → `done`. Если план ожидал **существующую
+  цель** (`expectTarget` — отпечаток) или условие неизвестно → **`unknown`
+  без rename**, решает владелец — **кроме** случая, когда `replace=true`
+  доказуемо следует из плана (`item.replace` в `plan_json` задания) **и** у
+  провайдера есть `atomicReplace`; тогда `rename(temp, target, { replace:
+  true, expectTarget: исходный })`. Нет `atomicReplace` (SFTP без
+  posix-rename) → `unknown`. Тесты: пересоздать провайдера (новый экземпляр,
+  пустая таблица сессий) → `rename` с `{replace:false, expectTarget:"absent"}`,
+  `openWrite` не вызван, `done`; ожидалась существующая цель → `unknown`,
+  rename не вызван; SFTP-мок с `posixRename: false` и `replace=true` →
+  `unknown`; локальный провайдер (`atomicReplace`) и `replace=true` → rename
+  с исходным `expectTarget`.
 - Любой другой исход (цель другого вида, цель и temp на месте, сверка
   недоступна) → `unknown`, решает владелец.
 
