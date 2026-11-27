@@ -72,9 +72,10 @@ nothing. When the text cannot settle which agent applies (a `Match` block, an un
 will not follow) it does not claim the agent is missing: the refusal is `auth_failed`. Remote Hub does not override the
 owner's configuration.
 
-**Unknown codes.** The set of codes grows. A client treats a code it does not know as `failure` (an internal failure of
-the operation) and keeps the message only for a log, never for a decision. The class of a refusal (`forbidden`,
-`not_found`, `conflict`, `invalid`) always stays one of those four.
+**Unknown codes.** The set of codes grows. A client should treat a code it does not know as an internal `failure` and
+keep the message only for a log, never for a decision. The class of a refusal (`forbidden`, `not_found`, `conflict`,
+`invalid`) always stays one of those four. Not every released client does this yet: Commander, until its copy of the
+contract is updated, shows an unknown code as `connection_failed`.
 
 `keychain_unavailable` (new in Remote Hub 0.2.2; 0.2.1 answered `failure` in this case) means the saved credential could not be read because the Keychain or Credential Vault could not
 be reached at all (as opposed to `keychain_locked` and `keychain_needs_approval`, which the owner can fix with an unlock

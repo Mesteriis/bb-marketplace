@@ -178,6 +178,12 @@ function includeInto(word: string, conds: Cond[], depth: number, state: ReadStat
     state.incomplete = true;
     return;
   }
+  // Only `~` and `~/...` stand for the home directory; `~user/...` names another user's, which the text cannot say.
+  if (word.startsWith("~") && word !== "~" && !word.startsWith("~/")) {
+    issues.push("an Include with ~user was not followed");
+    state.incomplete = true;
+    return;
+  }
   const result = opts.include(word.startsWith("~") ? opts.home + word.slice(1) : word);
   if (!result.complete) {
     issues.push("an Include was refused, unreadable or over the scan's limits");
@@ -320,20 +326,31 @@ export type DirectiveLookup = { kind: "value"; value: string } | { kind: "none" 
 export const SSH_INCLUDE_MAX_DEPTH = 16;
 
 /**
- * The first value of a directive (`IdentityAgent`...) that ssh would take for `host`, from the text of a config and the files
- * its Include lines name, read where the Include stands. `none`: no line applies. `unknown`: the text cannot say: a Match
- * block holds the directive before any certain value, or something was not read faithfully (a refused, cyclic, too deep or
- * cut Include, a file cut at its limit). `rootPath` is the identity of the main file, so an Include of it is a cycle.
+ * The first value of each directive (`IdentityAgent`, `HostName`...) that ssh would take for `host`, from the text of a config and
+ * the files its Include lines name, read where the Include stands. The text is read ONCE, so every key sees the same files
+ * and the budget of `opts.include` is spent once. `none`: no line applies. `unknown`: the text cannot say: a Match block holds
+ * the directive before any certain value, or something was not read faithfully (a refused, cyclic, too deep or cut Include, a
+ * file cut at its limit). `rootPath` is the identity of the main file, so an Include of it is a cycle.
  */
-export function lookupDirective(text: string, key: string, host: string, opts: ConfigOptions & { rootPath?: string }): DirectiveLookup {
+export function lookupDirectives(text: string, keys: string[], host: string, opts: ConfigOptions & { rootPath?: string }): Record<string, DirectiveLookup> {
   const state: ReadState = { opts: { ...opts, maxDepth: opts.maxDepth ?? SSH_INCLUDE_MAX_DEPTH }, issues: [], items: [], hostChains: [], incomplete: opts.truncated === true, stack: opts.rootPath === undefined ? [] : [opts.rootPath] };
   readInto(text, [], 0, state);
-  const wanted = key.toLowerCase();
-  for (const { conds, directive: d } of state.items) {
-    if (d.key !== wanted) continue;
-    if (conds.some((c) => c.kind === "host" && !hostSelects(c.patterns, host))) continue;
-    if (conds.some((c) => c.kind === "match")) return { kind: "unknown" };
-    return state.incomplete ? { kind: "unknown" } : { kind: "value", value: splitWords(d.value)[0] ?? "" };
+  const out: Record<string, DirectiveLookup> = {};
+  for (const key of keys) {
+    const wanted = key.toLowerCase();
+    let found: DirectiveLookup | null = null;
+    for (const { conds, directive: d } of state.items) {
+      if (d.key !== wanted) continue;
+      if (conds.some((c) => c.kind === "host" && !hostSelects(c.patterns, host))) continue;
+      found = conds.some((c) => c.kind === "match") || state.incomplete ? { kind: "unknown" } : { kind: "value", value: splitWords(d.value)[0] ?? "" };
+      break;
+    }
+    out[key] = found ?? (state.incomplete ? { kind: "unknown" } : { kind: "none" });
   }
-  return state.incomplete ? { kind: "unknown" } : { kind: "none" };
+  return out;
+}
+
+/** One directive of `lookupDirectives`. */
+export function lookupDirective(text: string, key: string, host: string, opts: ConfigOptions & { rootPath?: string }): DirectiveLookup {
+  return lookupDirectives(text, [key], host, opts)[key] as DirectiveLookup;
 }

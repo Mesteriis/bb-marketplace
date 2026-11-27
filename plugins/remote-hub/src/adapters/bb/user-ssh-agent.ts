@@ -7,7 +7,7 @@ import { lstatSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { isAbsolute, join } from "node:path";
 import type { IncludeBudget } from "../../core/import-book.ts";
-import { lookupDirective, type IncludeResult } from "../../core/ssh-config.ts";
+import { lookupDirectives, type DirectiveLookup, type IncludeResult } from "../../core/ssh-config.ts";
 import { createFsSourceReader } from "./fs-source-reader.ts";
 
 const MAX_CONFIG_BYTES = 256 * 1024;
@@ -40,7 +40,7 @@ export interface AgentQuery {
 const UNKNOWN: AgentResolution = { kind: "unknown" };
 
 /** Expands the tokens and variables ssh knows in an IdentityAgent path; null when one cannot be settled from the text. */
-function expandPath(value: string, q: AgentQuery): string | null {
+function expandPath(value: string, q: AgentQuery, hostName: DirectiveLookup): string | null {
   let rest = value;
   if (rest === "~" || rest.startsWith("~/")) rest = q.home + rest.slice(1);
   else if (rest.startsWith("~")) return null; // ~user
@@ -55,7 +55,6 @@ function expandPath(value: string, q: AgentQuery): string | null {
       else if (t === "u" && q.user !== null) out += q.user;
       else if (t === "i" && q.uid !== null) out += String(q.uid);
       else if (t === "h") {
-        const hostName = lookupDirective(q.config.text, "HostName", q.host, { home: q.home, include: q.config.include, truncated: q.config.truncated, rootPath: q.config.rootPath });
         if (hostName.kind === "unknown" || (hostName.kind === "value" && /[%$]/.test(hostName.value))) return null;
         out += hostName.kind === "value" ? hostName.value : q.host;
       } else return null; // %L %l %n %p %r and anything else
@@ -74,7 +73,8 @@ function expandPath(value: string, q: AgentQuery): string | null {
 /** The agent socket ssh would use for `host`. */
 export function agentSocketFor(q: AgentQuery): AgentResolution {
   const fromEnv: AgentResolution = q.env.SSH_AUTH_SOCK === undefined || q.env.SSH_AUTH_SOCK === "" ? { kind: "none" } : { kind: "socket", path: q.env.SSH_AUTH_SOCK };
-  const found = lookupDirective(q.config.text, "IdentityAgent", q.host, { home: q.home, include: q.config.include, truncated: q.config.truncated, rootPath: q.config.rootPath });
+  // One read of the configuration: both directives come from the same files (an Include draws on a budget).
+  const { IdentityAgent: found, HostName: hostName } = lookupDirectives(q.config.text, ["IdentityAgent", "HostName"], q.host, { home: q.home, include: q.config.include, truncated: q.config.truncated, rootPath: q.config.rootPath }) as Record<"IdentityAgent" | "HostName", DirectiveLookup>;
   if (found.kind === "unknown") return UNKNOWN;
   if (found.kind === "none" || found.value === "SSH_AUTH_SOCK") return fromEnv;
   if (found.value === "none") return { kind: "none" };
@@ -83,7 +83,7 @@ export function agentSocketFor(q: AgentQuery): AgentResolution {
     const resolved = q.env[found.value.slice(1)];
     return resolved === undefined || resolved === "" || !isAbsolute(resolved) ? UNKNOWN : { kind: "socket", path: resolved };
   }
-  const path = expandPath(found.value, q);
+  const path = expandPath(found.value, q, hostName);
   return path === null ? UNKNOWN : { kind: "socket", path };
 }
 

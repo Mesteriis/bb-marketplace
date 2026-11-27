@@ -134,6 +134,12 @@ describe("Include in the owner's configuration", () => {
     expect(resolve(home(chain(17)))).toEqual(UNKNOWN);
   });
 
+  it("reads the configuration once: %h still finds HostName after more than 32 included files", () => {
+    const files: Record<string, string> = { config: "Include conf.d/*.conf\nIdentityAgent /run/a-%h.sock\n" };
+    for (let i = 0; i < 33; i++) files[`conf.d/f${String(i).padStart(2, "0")}.conf`] = i === 32 ? "HostName real.example\n" : "# nothing\n";
+    expect(resolve(home(files))).toEqual(sock("/run/a-real.example.sock"));
+  });
+
   it("is no config at all when ~/.ssh/config is missing, and unknown when it cannot be read", () => {
     const empty = mkdtempSync(join(tmpdir(), "rh-agent-"));
     made.push(empty);

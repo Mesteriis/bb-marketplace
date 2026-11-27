@@ -102,6 +102,14 @@ Host web
     expect(none.incomplete).toBe(false);
   });
 
+  it("an Include with ~user is not followed (only ~ and ~/ stand for the home directory) and says so", () => {
+    const asked: string[] = [];
+    const parse = parseSshConfig("Include ~other/conf.d/a.conf\nInclude ~/conf.d/a.conf\nHost a\n", opts({}, { include: (pattern) => (asked.push(pattern), { files: [], complete: true }) }));
+    expect(asked).toEqual(["/home/fixture/conf.d/a.conf"]);
+    expect(parse.incomplete).toBe(true);
+    expect(parse.issues.join(" ")).toContain("~user");
+  });
+
   it("an Include nested too deeply is not followed and says so", () => {
     const files = { "one": "Include two\nHost x\n", "two": "Include three\n", "three": "Include four\n", "four": "Host deep\n" };
     const parse = parseSshConfig("Include one\n", { ...opts(files), maxDepth: 3 });
